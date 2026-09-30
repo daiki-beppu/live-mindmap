@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "duration": 40,
+  "source_path": "short.m4a",
+  "transcript": {
+    "tracks": ["speaker"],
+    "diagnostics": {},
+    "segments": [
+      { "track": "speaker", "start_seconds": 0.5, "end_seconds": 9.8, "text": "今日は採用の進め方を決めます", "confidence": 0.9 },
+      { "track": "speaker", "start_seconds": 9.8, "end_seconds": 19.2, "text": "面接を何回にするかですね", "confidence": 0.9 },
+      { "track": "speaker", "start_seconds": 19.2, "end_seconds": 28.0, "text": "2 回にしましょう", "confidence": 0.9 }
+    ]
+  }
+}

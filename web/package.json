@@ -1,0 +1,9 @@
+{
+  "name": "@live-mindmap/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "echo \"web: no tests yet\"",
+    "typecheck": "echo \"web: nothing to typecheck yet\""
+  }
+}

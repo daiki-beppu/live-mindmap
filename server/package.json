@@ -1,0 +1,21 @@
+{
+  "name": "@live-mindmap/server",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "live-mindmap": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "node src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.285"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
