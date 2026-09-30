@@ -13,10 +13,10 @@ describe("CLI", () => {
     const calls: DiffInput[] = [];
     const script: Op[][] = [
       [
-        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["u1"] },
-        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["u2"] },
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
       ],
-      [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["u3"] }],
+      [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
     ];
     const updater = async (input: DiffInput) => {
       calls.push(input);
@@ -25,8 +25,8 @@ describe("CLI", () => {
     const out: string[] = [];
     const deps = { updater, sessionsDir, stdout: (s: string) => out.push(s) };
 
-    await runCli(["replay", fixture], deps);
-    expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["u1", "u2"], ["u3"]]);
+    await runCli(["play", fixture], deps);
+    expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"], ["r3"]]);
 
     out.length = 0;
     await runCli(["export", "--format", "json"], deps);
@@ -41,12 +41,12 @@ describe("CLI", () => {
             {
               kind: "論点",
               text: "面接は何回か",
-              status: "決定済み",
+              pointStatus: "決定済み",
               children: [
                 {
                   kind: "決定",
                   text: "2 回にする",
-                  evidence: [{ id: "u3", track: "相手", start: 19.2, end: 28.0, text: "2 回にしましょう" }],
+                  evidence: [{ id: "r3", track: "相手", start: 19.2, end: 28.0, text: "2 回にしましょう" }],
                 },
               ],
             },

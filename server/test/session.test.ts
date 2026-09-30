@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSession, type DiffInput, type LogEvent, type Op, type Utterance } from "../src/core/index.ts";
+import { createSession, type DiffInput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 
 let seq = 0;
-const utt = (text: string, extra: Partial<Utterance> = {}): Utterance => {
+const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
   seq++;
-  return { id: `u${seq}`, track: "相手", start: seq * 10, end: seq * 10 + 9, text, ...extra };
+  return { id: `r${seq}`, track: "相手", start: seq * 10, end: seq * 10 + 9, text, ...extra };
 };
 
 // 台本どおりに差分操作を返す偽物の差分更新。呼ばれた入力を記録する。
@@ -26,7 +26,7 @@ function setup(...script: Op[][]) {
 
 // 台本の 1 手ごとに発言を 2 つ流し、差分更新を 1 回ずつ起こす。流した発言の ID を手ごとに返す。
 async function play(...script: (Op[] | ((ids: string[][]) => Op[]))[]) {
-  const pairs = script.map(() => [utt("発言"), utt("発言")] as const);
+  const pairs = script.map(() => [remark("発言"), remark("発言")] as const);
   const ids = pairs.map((p) => p.map((u) => u.id));
   const resolved = script.map((s) => (typeof s === "function" ? s(ids) : s));
   const { session, calls, events } = setup(...resolved);
@@ -62,25 +62,47 @@ describe("差分操作の検証と適用", () => {
     expect(dropped[0]).toMatchObject({ op: { text: "面接は 2 回" }, reason: expect.stringContaining("論点") });
   });
 
-  it("根拠に既知の発言が 1 つもない追加は捨てる", async () => {
-    const { byText, dropped } = await play([
-      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["u-unknown"] },
+  it("知らない発言を根拠に挙げた追加と更新は、一部だけでも捨てて理由を残す", async () => {
+    const { byText, dropped } = await play(
+      (ids) => [
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+        { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!, "r-unknown"] },
+      ],
+      [{ op: "update", node: "n1", text: "中途採用", evidence: ["r-unknown"] }],
+    );
+    expect(byText("予算")).toBeUndefined();
+    expect(byText("採用")).toBeDefined();
+    expect(byText("中途採用")).toBeUndefined();
+    expect(dropped.map((d) => [d.op.op, d.reason])).toEqual([
+      ["add", "根拠に知らない発言がある: r-unknown"],
+      ["update", "根拠に知らない発言がある: r-unknown"],
     ]);
-    expect(byText("採用")).toBeUndefined();
-    expect(dropped[0]!.reason).toContain("根拠");
+  });
+
+  it("既存のノードの ID と重なる仮 ID の追加は捨て、後続の操作は既存のノードを指す", async () => {
+    const { byText, dropped } = await play(
+      (ids) => [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] }],
+      (ids) => [
+        { op: "add", ref: "n1", parent: "root", kind: "議題", text: "予算", evidence: [ids[1]![0]!] },
+        { op: "add", ref: "t2", parent: "n1", kind: "課題", text: "面接官が足りない", evidence: [ids[1]![1]!] },
+      ],
+    );
+    expect(byText("予算")).toBeUndefined();
+    expect(byText("面接官が足りない")!.parent).toBe(byText("採用")!.id);
+    expect(dropped.map((d) => d.reason)).toEqual(["仮 ID が既存の ID と重なる"]);
   });
 
   it("論点は子に決定を持つと決定済みになり、決定を削除すると未決に戻る", async () => {
     const first = await play((ids) => [
       { op: "add", ref: "t1", parent: "root", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
     ]);
-    expect(first.byText("面接は何回か")!.status).toBe("未決");
+    expect(first.byText("面接は何回か")!.pointStatus).toBe("未決");
 
     const { byText, snap } = await play(
       (ids) => [{ op: "add", ref: "t1", parent: "root", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] }],
       (ids) => [{ op: "add", ref: "t2", parent: "n1", kind: "決定", text: "2 回にする", evidence: [ids[1]![0]!] }],
     );
-    expect(byText("面接は何回か")!.status).toBe("決定済み");
+    expect(byText("面接は何回か")!.pointStatus).toBe("決定済み");
 
     const decisionId = snap.nodes.find((n) => n.kind === "決定")!.id;
     const after = await play(
@@ -89,7 +111,7 @@ describe("差分操作の検証と適用", () => {
       [{ op: "delete", node: decisionId }],
     );
     expect(after.byText("2 回にする")).toBeUndefined();
-    expect(after.byText("面接は何回か")!.status).toBe("未決");
+    expect(after.byText("面接は何回か")!.pointStatus).toBe("未決");
   });
 
   it("子を持つノードの削除と、TODO の下への追加は捨てる", async () => {
@@ -113,8 +135,8 @@ describe("差分操作の検証と適用", () => {
         { op: "add", ref: "t4", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
       ],
       [
-        { op: "merge", from: "n2", into: "n1" },
-        { op: "merge", from: "n4", into: "n1" },
+        { op: "combine", from: "n2", into: "n1" },
+        { op: "combine", from: "n4", into: "n1" },
       ],
     );
     expect(byText("面接の担当が偏る")).toBeUndefined();
@@ -135,13 +157,13 @@ describe("差分操作の検証と適用", () => {
         { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [ids[0]![1]!] },
       ],
       (ids) => [
-        { op: "update", node: "n3", text: "3 回にする", evidence: [ids[1]![0]!], proposalStatus: "却下" },
+        { op: "update", node: "n3", text: "3 回にする", evidence: [ids[1]![0]!], planStatus: "却下" },
         { op: "move", node: "n2", parent: "n1" },
         { op: "move", node: "n1", parent: "n3" },
       ],
     );
     const node = (id: string) => snap.nodes.find((n) => n.id === id)!;
-    expect(node("n3")).toMatchObject({ text: "3 回にする", proposalStatus: "却下", parent: "n2", evidence: [ids[0]![1], ids[1]![0]] });
+    expect(node("n3")).toMatchObject({ text: "3 回にする", planStatus: "却下", parent: "n2", evidence: [ids[0]![1], ids[1]![0]] });
     expect(node("n2").parent).toBe("n1");
     expect(dropped).toHaveLength(1);
     expect(dropped[0]!.reason).toContain("子孫");
@@ -167,7 +189,7 @@ describe("ログ", () => {
 
 describe("差分更新の呼び出し", () => {
   it("発言が 2 つたまると差分更新を呼び、返った追加をマップに入れる", async () => {
-    const a = utt("今日は採用の話をします"), b = utt("まず面接の回数から");
+    const a = remark("今日は採用の話をします"), b = remark("まず面接の回数から");
     const { session, calls } = setup([
       { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id, b.id] },
     ]);
@@ -185,9 +207,9 @@ describe("差分更新の呼び出し", () => {
   });
 
   it("重複の印が付いた発言は数えず入力にも入れないが、ログには残す", async () => {
-    const a = utt("予算は来週決めます", { track: "相手" });
-    const echo = utt("予算は来週決めます", { track: "自分", duplicate: true });
-    const b = utt("担当は佐藤さんで");
+    const a = remark("予算は来週決めます", { track: "相手" });
+    const echo = remark("予算は来週決めます", { track: "自分", duplicate: true });
+    const b = remark("担当は佐藤さんで");
     const { session, calls, events } = setup();
 
     session.push(a);
@@ -199,7 +221,7 @@ describe("差分更新の呼び出し", () => {
     await session.idle();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id, b.id]);
-    const logged = events.flatMap((e) => (e.type === "utterance" ? [e.utterance] : []));
+    const logged = events.flatMap((e) => (e.type === "remark" ? [e.remark] : []));
     expect(logged).toContainEqual(echo);
   });
 
@@ -209,7 +231,7 @@ describe("差分更新の呼び出し", () => {
     const updater = (input: DiffInput) =>
       new Promise<{ ops: Op[] }>((resolve) => calls.push({ input, reply: () => resolve({ ops: [] }) }));
     const session = createSession({ title: "定例", updater, log: () => {} });
-    const [a, b, c, d, e] = ["一", "二", "三", "四", "五"].map((t) => utt(t));
+    const [a, b, c, d, e] = ["一", "二", "三", "四", "五"].map((t) => remark(t));
 
     session.push(a!);
     session.push(b!);
@@ -237,7 +259,7 @@ describe("差分更新の呼び出し", () => {
       return { ops: [{ op: "noop", reason: "雑談" }] };
     };
     const session = createSession({ title: "定例", updater, log: (e) => events.push(e) });
-    for (const t of ["一", "二", "三", "四"]) session.push(utt(t));
+    for (const t of ["一", "二", "三", "四"]) session.push(remark(t));
     await session.idle();
 
     const diffs = events.filter((e) => e.type === "diff");
@@ -252,7 +274,7 @@ describe("差分更新の呼び出し", () => {
   });
 
   it("1 つだけ残った発言は、終わりの flush で流す", async () => {
-    const [a, b, c] = ["一", "二", "三"].map((t) => utt(t));
+    const [a, b, c] = ["一", "二", "三"].map((t) => remark(t));
     const { session, calls } = setup();
 
     session.push(a!);

@@ -1,0 +1,6 @@
+{
+  // 中核は Node の実行環境に依存しない（ADR 0003）。Node の型を外して型検査する。
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": [] },
+  "include": ["src/core"]
+}

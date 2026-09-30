@@ -1,20 +1,12 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
-//   replay <文字起こしファイル>   録音サンプルの文字起こしを待ち時間なしで流し、マップを組み立てる
+//   play <文字起こしファイル>     録音サンプルの文字起こしを待ち時間なしで再生し、マップを組み立てる
 //   export --format json          最新のセッションのマップを標準出力に出す
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import {
-  createSession,
-  fromTranscript,
-  replay,
-  toJsonExport,
-  type DiffUpdater,
-  type Snapshot,
-  type Utterance,
-} from "./core/index.ts";
+import { createSession, fromTranscript, playback, type DiffUpdater } from "./core/index.ts";
 
 export type CliDeps = {
   updater?: DiffUpdater;
@@ -22,9 +14,9 @@ export type CliDeps = {
   stdout?: (s: string) => void;
 };
 
-// セッションのフォルダに置く、その時点のマップ。別のプロセスの export がこれを読む。
+// セッションのフォルダに置く、その時点のエクスポート。別のプロセスの export がこれを読む。
 // サーバーが状態を持つようになったら（#35）、export はサーバーに聞く形に差し替える。
-type State = { snapshot: Snapshot; utterances: Utterance[] };
+const EXPORT_FILE = "export.json";
 
 const defaultSessionsDir = () => process.env.LIVE_MINDMAP_SESSIONS ?? join(homedir(), ".live-mindmap", "sessions");
 
@@ -39,37 +31,37 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
   const [command, ...rest] = positionals;
 
   switch (command) {
-    case "replay": {
+    case "play": {
       const file = rest[0];
-      if (!file) throw new Error("usage: replay <文字起こしファイル>");
+      if (!file) throw new Error("usage: play <文字起こしファイル>");
       const updater = deps.updater ?? (await import("./claude.ts")).claudeUpdater;
       const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
       mkdirSync(dir, { recursive: true });
-      const utterances: Utterance[] = [];
       const session = createSession({
         title: basename(file).replace(/\.transcript\.json$/, ""),
         updater,
         log: (event) => {
           appendFileSync(join(dir, "log.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
-          if (event.type === "utterance") utterances.push(event.utterance);
-          const state: State = { snapshot: session.snapshot(), utterances };
-          writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+          writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
         },
       });
-      await replay(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))));
+      await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))));
       stdout(`${dir}\n`);
       return;
     }
     case "export": {
       if (values.format !== "json") throw new Error(`未対応の形式: ${values.format}（いまは --format json だけ）`);
-      const latest = readdirSync(sessionsDir).sort().at(-1);
+      // セッションのフォルダ（名前は開始時刻）のうち、エクスポートを持つ最新のもの
+      const latest = existsSync(sessionsDir)
+        ? readdirSync(sessionsDir).filter((d) => existsSync(join(sessionsDir, d, EXPORT_FILE))).sort().at(-1)
+        : undefined;
       if (!latest) throw new Error(`セッションがありません: ${sessionsDir}`);
-      const state: State = JSON.parse(readFileSync(join(sessionsDir, latest, "state.json"), "utf8"));
-      stdout(JSON.stringify(toJsonExport(state.snapshot, state.utterances), null, 2) + "\n");
+      const exported = JSON.parse(readFileSync(join(sessionsDir, latest, EXPORT_FILE), "utf8"));
+      stdout(JSON.stringify(exported, null, 2) + "\n");
       return;
     }
     default:
-      throw new Error("usage: live-mindmap <replay|export> ...");
+      throw new Error("usage: live-mindmap <play|export> ...");
   }
 }
 

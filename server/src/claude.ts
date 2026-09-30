@@ -2,7 +2,7 @@
 // Claude の呼び出しはこの関数の後ろに閉じる。アプリとして配布するときは、API キーで
 // Anthropic API を直接呼ぶ実装に差し替える（ADR 0003）。プロンプトは試作 v3 の方針。
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { children, issueStatus, KINDS, type DiffUpdater, type MindMap, type Op, type Utterance } from "./core/index.ts";
+import { children, KINDS, PLAN_STATUSES, pointStatus, ROOT_ID, type DiffInput, type DiffUpdater, type MeetingMap, type Op, type Remark } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
 
@@ -20,16 +20,16 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 - TODO: 会議で決まった、誰かが後で行う作業。担当者（会話に出た名前）と期限は任意。子を持たない。
 
 # 差分操作
-- add: 親・種別・本文・根拠（発言 id を 1 つ以上）を指定してノードを作る。ref に仮 id（例 "a1"）を付けると、同じ応答の後続の操作から親として参照できる。論点を解決するには、その論点の子に決定を add する。
+- add: 親・種別・本文・根拠（発言 id を 1 つ以上）を指定してノードを作る。ref に仮 id（例 "a1"）を付けると、同じ応答の後続の操作から親として参照できる。仮 id は既存ノードの id（n1 など）と重ねない。論点を解決するには、その論点の子に決定を add する。
 - update: ノードの本文を書き換え、根拠を足す。案の状態（検討中 / 却下）の切り替えもこれで表す。種別は変えられない。本文は追記せず、言い直した結果の全文で置き換える。
-- merge: 同じ種別のノード from を into にまとめる。from の根拠と子は into に移る。
+- combine: 同じ種別のノード from を into にまとめる。from の根拠と子は into に移る。
 - move: ノードの親を変える。子孫も一緒に移る。
 - delete: 誤認識や読み違いで作った、子を持たないノードを消す。却下された案は削除せず update で 却下 にする。
 - noop: 新しい発言を見たうえで、マップを変えないと判断したことを表す。
 
 # 方針
 ## 粒度
-- マップは画面共有で参加者が読み、会議の後に見返す。60 分の会議で 50 ノード前後、root からの深さ 4 段（議題 → 論点 → 案・課題・決定 → 補足）までを目安にする。毎回添える「マップの状態」を見て、目安を超えそうなら新しいノードを増やすより既存ノードの update や merge を選ぶ。
+- マップは画面共有で参加者が読み、会議の後に見返す。60 分の会議で 50 ノード前後、root からの深さ 4 段（議題 → 論点 → 案・課題・決定 → 補足）までを目安にする。毎回添える「マップの状態」を見て、目安を超えそうなら新しいノードを増やすより既存ノードの update や combine を選ぶ。
 - 子ノードにするのは、親とは別の主張（別の理由・別の懸念・派生した案）のときだけ。言い換え、具体例、経緯、同じ主張の補強は、ノードを作らず既存ノードに根拠を足す update にする。
 - 課題の子に課題を連ねない。課題や案が 1 つの親の下に 6 つを超えそうなら、何の問いに答えようとしているかで論点を立て、既存ノードを move で束ねる。
 
@@ -47,9 +47,9 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 - 根拠には「新しい発言」の id を使う。直前の発言は文脈を理解するためのもので、根拠に使ってよいのは新しい発言の続きとして必要な場合だけ。
 - 1 回の応答の操作は少なく保つ。迷ったら何もしない。`;
 
-const evidence = { type: "array", items: { type: "string" }, minItems: 1, description: "根拠の発言 id（例 s12）" };
+const evidence = { type: "array", items: { type: "string" }, minItems: 1, description: "根拠の発言 id（例 r12）" };
 const nodeRef = { type: "string", description: "既存ノードの id（例 n3）か、同じ応答で add した ref" };
-const obj = (op: string, props: Record<string, unknown>, required: string[]) => ({
+const opSchema = (op: string, props: Record<string, unknown>, required: string[]) => ({
   type: "object",
   properties: { op: { const: op }, ...props },
   required: ["op", ...required],
@@ -63,12 +63,12 @@ const SCHEMA = {
       type: "array",
       items: {
         anyOf: [
-          obj("add", { ref: { type: "string" }, parent: nodeRef, kind: { enum: [...KINDS] }, text: { type: "string" }, evidence, assignee: { type: "string" }, due: { type: "string" } }, ["ref", "parent", "kind", "text", "evidence"]),
-          obj("update", { node: nodeRef, text: { type: "string" }, evidence, proposalStatus: { enum: ["検討中", "却下"] } }, ["node", "evidence"]),
-          obj("merge", { from: nodeRef, into: nodeRef }, ["from", "into"]),
-          obj("move", { node: nodeRef, parent: nodeRef }, ["node", "parent"]),
-          obj("delete", { node: nodeRef }, ["node"]),
-          obj("noop", { reason: { type: "string" } }, ["reason"]),
+          opSchema("add", { ref: { type: "string" }, parent: nodeRef, kind: { enum: [...KINDS] }, text: { type: "string" }, evidence, assignee: { type: "string" }, due: { type: "string" } }, ["ref", "parent", "kind", "text", "evidence"]),
+          opSchema("update", { node: nodeRef, text: { type: "string" }, evidence, planStatus: { enum: [...PLAN_STATUSES] } }, ["node", "evidence"]),
+          opSchema("combine", { from: nodeRef, into: nodeRef }, ["from", "into"]),
+          opSchema("move", { node: nodeRef, parent: nodeRef }, ["node", "parent"]),
+          opSchema("delete", { node: nodeRef }, ["node"]),
+          opSchema("noop", { reason: { type: "string" } }, ["reason"]),
         ],
       },
     },
@@ -78,34 +78,34 @@ const SCHEMA = {
 };
 
 const fmtTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-const fmtUtt = (u: Utterance) => `${u.id} [${fmtTime(u.start)}] ${u.text}`;
+const fmtRemark = (r: Remark) => `${r.id} [${fmtTime(r.start)}] ${r.text}`;
 
 // 根拠は渡さず、ID・種別・状態・本文だけを字下げした木で出す
-function renderOutline(map: MindMap, rootId: string): string {
+function renderOutline(map: MeetingMap): string {
   const lines: string[] = [];
   const walk = (id: string, depth: number) => {
     const n = map.nodes[id]!;
-    const status = n.kind === "論点" ? `(${issueStatus(map, id)})` : n.proposalStatus === "却下" ? "(却下)" : "";
+    const status = n.kind === "論点" ? `(${pointStatus(map, id)})` : n.planStatus === "却下" ? "(却下)" : "";
     const todo = n.kind === "TODO" && (n.assignee || n.due) ? ` [${[n.assignee, n.due].filter(Boolean).join(" / ")}]` : "";
     lines.push(`${"  ".repeat(depth)}- ${n.id} ${n.kind}${status}: ${n.text}${todo}`);
     for (const c of children(map, id)) walk(c.id, depth + 1);
   };
-  walk(rootId, 0);
+  walk(ROOT_ID, 0);
   return lines.join("\n");
 }
 
-function mapStats(map: MindMap, rootId: string, now: number): string {
-  const ids = map.order.filter((id) => id !== rootId);
+function mapStats(map: MeetingMap, now: number): string {
+  const ids = map.order.filter((id) => id !== ROOT_ID);
   const depth = (id: string) => { let d = 0; for (let c = map.nodes[id]; c?.parent; c = map.nodes[c.parent]) d++; return d; };
   return `経過 ${Math.round(now / 60)} 分・ノード ${ids.length}・最大の深さ ${Math.max(0, ...ids.map(depth))}（目安: 60 分で 50 前後、深さ 4 まで）`;
 }
 
-export function buildPrompt({ rootId, map, recent, fresh }: Parameters<DiffUpdater>[0]): string {
+export function buildPrompt({ map, recent, fresh }: DiffInput): string {
   return [
-    "## マップの状態", mapStats(map, rootId, fresh.at(-1)!.end), "",
-    `## 現在のマップ（ルートの ID: ${rootId}）`, renderOutline(map, rootId), "",
-    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtUtt).join("\n") : "（なし）", "",
-    "## 新しい発言", fresh.map(fmtUtt).join("\n"),
+    "## マップの状態", mapStats(map, fresh.at(-1)!.end), "",
+    `## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map), "",
+    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
+    "## 新しい発言", fresh.map(fmtRemark).join("\n"),
   ].join("\n");
 }
 

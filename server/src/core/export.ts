@@ -1,13 +1,15 @@
 // エクスポート（JSON）: マップの木に、根拠の発言の本文・トラック・時刻を添える
-import type { Snapshot, SnapshotNode, Utterance } from "./session.ts";
+import { ROOT_ID } from "./map.ts";
+import type { Remark, Snapshot, SnapshotNode } from "./session.ts";
 
 export type ExportNode = Omit<SnapshotNode, "parent" | "evidence"> & {
-  evidence: Utterance[];
+  evidence: Remark[];
   children: ExportNode[];
 };
+export type JsonExport = { root: ExportNode };
 
-export function toJsonExport(snapshot: Snapshot, utterances: Iterable<Utterance>): { root: ExportNode } {
-  const byId = new Map([...utterances].map((u) => [u.id, u]));
+export function toJsonExport(snapshot: Snapshot, remarks: Iterable<Remark>): JsonExport {
+  const byId = new Map([...remarks].map((r) => [r.id, r]));
   const build = (node: SnapshotNode): ExportNode => {
     const { parent: _parent, evidence, ...rest } = node;
     return {
@@ -16,5 +18,5 @@ export function toJsonExport(snapshot: Snapshot, utterances: Iterable<Utterance>
       children: snapshot.nodes.filter((n) => n.parent === node.id).map(build),
     };
   };
-  return { root: build(snapshot.nodes.find((n) => n.id === snapshot.rootId)!) };
+  return { root: build(snapshot.nodes.find((n) => n.id === ROOT_ID)!) };
 }
