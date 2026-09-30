@@ -10,8 +10,9 @@ const W = 250, GAP_X = 70, GAP_Y = 12;
 // 文字数から高さを見積もる（本番では実寸を測る）
 const heightOf = (n: ViewNode) => (n.kind === "会議" ? 56 : 40 + Math.ceil((n.text.length * 16) / (W - 28)) * 20);
 
-function layout(view: View): Record<string, { x: number; y: number; h: number }> {
-  const pos: Record<string, { x: number; y: number; h: number }> = {};
+// 兄弟を作られた順に上から積み、親は子の範囲の中央に置く。案 D も使う
+export function layout(view: View, heightOf: (n: ViewNode) => number, colW: number, gapX: number, gapY: number) {
+  const pos: Record<string, { x: number; y: number; h: number; depth: number }> = {};
   let cursor = 0;
   const place = (id: string, depth: number): [number, number] => {
     const n = view.byId[id]!;
@@ -19,17 +20,17 @@ function layout(view: View): Record<string, { x: number; y: number; h: number }>
     const kids = view.children[id] ?? [];
     const top = cursor;
     if (!kids.length) {
-      cursor += h + GAP_Y;
-      pos[id] = { x: depth * (W + GAP_X), y: top, h };
+      cursor += h + gapY;
+      pos[id] = { x: depth * (colW + gapX), y: top, h, depth };
       return [top, top + h];
     }
     const spans = kids.map((k) => place(k, depth + 1));
     const mid = (spans[0]![0] + spans[spans.length - 1]![1]) / 2;
     let y = mid - h / 2;
     if (y < top) y = top;
-    pos[id] = { x: depth * (W + GAP_X), y, h };
-    if (y + h + GAP_Y > cursor) cursor = y + h + GAP_Y;
-    return [Math.min(top, y), Math.max(cursor - GAP_Y, y + h)];
+    pos[id] = { x: depth * (colW + gapX), y, h, depth };
+    if (y + h + gapY > cursor) cursor = y + h + gapY;
+    return [Math.min(top, y), Math.max(cursor - gapY, y + h)];
   };
   place("root", 0);
   return pos;
@@ -72,7 +73,7 @@ const nodeTypes = { card: Card };
 
 function Inner({ view, selected, onSelect, showHot, autoFit }: VariantProps) {
   const rf = useReactFlow();
-  const pos = useMemo(() => layout(view), [view]);
+  const pos = useMemo(() => layout(view, heightOf, W, GAP_X, GAP_Y), [view]);
   const nodes: Node<CardData>[] = view.nodes.map((n) => ({
     id: n.id, type: "card", position: { x: pos[n.id]!.x, y: pos[n.id]!.y },
     data: { n, selected: selected === n.id, showHot }, draggable: false,

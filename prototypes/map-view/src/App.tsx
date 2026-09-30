@@ -6,6 +6,7 @@ import { buildView, CHANGE_LABEL, fmt, KIND_STYLE, listRuns, loadRun, prepare, t
 import { VariantFlow } from "./VariantFlow";
 import { VariantMarkmap } from "./VariantMarkmap";
 import { VariantPlait } from "./VariantPlait";
+import { VariantSoft } from "./VariantSoft";
 import { Switcher } from "./Switcher";
 
 export type VariantProps = { view: View; selected: string | null; onSelect: (id: string | null) => void; showHot: boolean; autoFit: boolean };
@@ -14,6 +15,7 @@ const VARIANTS = [
   { key: "A", name: "React Flow（カード＋自前の木レイアウト）", C: VariantFlow },
   { key: "B", name: "markmap（線の上に文字）", C: VariantMarkmap },
   { key: "C", name: "Plait / Drawnix（マインドマップ編集器）", C: VariantPlait },
+  { key: "D", name: "React Flow を C 風に描き直し", C: VariantSoft },
 ];
 
 const param = (k: string, d: string) => new URLSearchParams(location.search).get(k) ?? d;

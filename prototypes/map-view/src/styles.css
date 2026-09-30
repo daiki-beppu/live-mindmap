@@ -65,3 +65,28 @@ g.markmap-node { cursor: pointer; }
 /* 案 C: Plait */
 .plait-host { width: 100%; height: 100%; }
 .plait-host .plait-board-container { width: 100%; height: 100%; }
+
+/* 案 D: React Flow を C（Plait / Drawnix）風に */
+.soft .react-flow__handle { opacity: 0; width: 1px; height: 1px; min-width: 0; min-height: 0; border: 0; }
+.soft .react-flow__node { transition: transform 650ms cubic-bezier(.2,.8,.2,1); }
+.soft .branch { transition: d 650ms cubic-bezier(.2,.8,.2,1), stroke-width .3s; opacity: .85; }
+.soft .branch-fresh { animation: grow .9s ease-out; }
+@keyframes grow { from { stroke-dasharray: 0 2000; } to { stroke-dasharray: 2000 0; } }
+.topic {
+  display: inline-flex; gap: 6px; align-items: baseline;
+  background: var(--bg); border: 1.5px solid var(--c); border-radius: 6px;
+  padding: 7px 12px; font-size: 15px; line-height: 22px; color: #1f2937; width: max-content;
+  transition: box-shadow .4s, border-color .4s, opacity .4s;
+}
+.topic-root { background: #fff; border: 2px solid #374151; font-size: 20px; font-weight: 700; padding: 12px 20px; }
+.topic-l1 { font-size: 16px; font-weight: 700; }
+.topic .mark { font-weight: 800; color: var(--c); }
+.topic .mark-論点:not(.done) { color: #d97706; }
+.topic .mark.done { color: #059669; }
+.topic-who { font-size: 12px; color: #0f766e; white-space: nowrap; }
+.topic.rejected { opacity: .45; } .topic.rejected .topic-t { text-decoration: line-through; }
+.topic.recent { box-shadow: 0 0 0 2px #fdba74; }
+.topic.fresh { animation: fadein .9s ease-out; box-shadow: 0 0 0 3px #ef4444; }
+.topic.selected { box-shadow: 0 0 0 3px #2563eb !important; }
+.topic.hot { outline: 3px solid #f59e0b; outline-offset: 3px; animation: breathe 1.4s ease-in-out infinite; }
+@keyframes fadein { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
