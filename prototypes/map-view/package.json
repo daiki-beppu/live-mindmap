@@ -1,0 +1,40 @@
+{
+  "name": "map-view",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun extract.ts && vite",
+    "data": "bun extract.ts"
+  },
+  "dependencies": {
+    "@plait-board/react-board": "^0.4.0-0",
+    "@plait-board/react-text": "^0.4.0-0",
+    "@plait/common": "0.89.2",
+    "@plait/core": "0.89.2",
+    "@plait/draw": "0.89.2",
+    "@plait/layouts": "0.89.2",
+    "@plait/mind": "0.89.2",
+    "@plait/text-plugins": "0.89.2",
+    "@xyflow/react": "^12.12.0",
+    "d3-hierarchy": "^3.1.2",
+    "immer": "^11.1.18",
+    "is-hotkey": "^0.2.0",
+    "markmap-common": "^0.18.9",
+    "markmap-lib": "^0.18.12",
+    "markmap-view": "^0.18.12",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "slate": "0.116",
+    "slate-dom": "0.116",
+    "slate-history": "0.115",
+    "slate-react": "0.116"
+  },
+  "devDependencies": {
+    "@types/d3-hierarchy": "^3.1.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}
