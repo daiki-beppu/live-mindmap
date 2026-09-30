@@ -1,7 +1,7 @@
 // PROTOTYPE — 案 A: React Flow。ノードは自前の React コンポーネント（カード）、配置は自前の左→右の木レイアウト。
 // 兄弟は作られた順に並べるので、追加で動くのは「追加された位置より下」だけ。位置の変化は CSS transition で滑らせる。
-import { useEffect, useMemo, useRef } from "react";
-import { ReactFlow, ReactFlowProvider, Handle, Position, useReactFlow, type Node, type Edge, type NodeProps } from "@xyflow/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactFlow, ReactFlowProvider, Handle, Position, useReactFlow, type Node, type Edge, type NodeProps, type NodeChange, type NodeDimensionChange } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { CHANGE_LABEL, KIND_STYLE, type View, type ViewNode } from "./data";
 import type { VariantProps } from "./App";
@@ -73,10 +73,16 @@ const nodeTypes = { card: Card };
 
 function Inner({ view, selected, onSelect, showHot, autoFit }: VariantProps) {
   const rf = useReactFlow();
+  // React Flow が測った実寸をノードに戻す（戻さないとノードが隠れたままになる）
+  const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({});
+  const onNodesChange = (changes: NodeChange[]) => {
+    const upd = changes.filter((c): c is NodeDimensionChange => c.type === "dimensions" && !!c.dimensions);
+    if (upd.length) setDims((d) => { const n = { ...d }; for (const c of upd) n[c.id] = c.dimensions!; return n; });
+  };
   const pos = useMemo(() => layout(view, heightOf, W, GAP_X, GAP_Y), [view]);
   const nodes: Node<CardData>[] = view.nodes.map((n) => ({
     id: n.id, type: "card", position: { x: pos[n.id]!.x, y: pos[n.id]!.y },
-    data: { n, selected: selected === n.id, showHot }, draggable: false,
+    data: { n, selected: selected === n.id, showHot }, draggable: false, measured: dims[n.id],
   }));
   const edges: Edge[] = view.nodes.filter((n) => n.parent).map((n) => ({
     id: `${n.parent}-${n.id}`, source: n.parent!, target: n.id, type: "default",
@@ -92,7 +98,7 @@ function Inner({ view, selected, onSelect, showHot, autoFit }: VariantProps) {
   }, [view.step, autoFit, rf]);
   return (
     <ReactFlow
-      nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange}
       onNodeClick={(_, n) => onSelect(n.id)} onPaneClick={() => onSelect(null)}
       nodesConnectable={false} minZoom={0.1}
       className="flow"

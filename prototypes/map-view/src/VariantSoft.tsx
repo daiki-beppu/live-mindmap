@@ -1,11 +1,11 @@
 // PROTOTYPE — 案 D: React Flow の仕組みのまま、見た目を案 C（Plait / Drawnix）に寄せたもの。
 // 「C が綺麗に見えるのはライブラリのおかげか、描き方のおかげか」を確かめる。
 // 描き方: 種別の淡い塗りと細い枠の角丸ノード、種別色の太く曲がった枝（根元ほど太い）、バッジを使わない。
-// 配置は案 A と同じ木レイアウトだが、高さは描画後の実寸を使う（見積もりによる重なりを無くす）。
+// 配置は案 A と同じ木レイアウトだが、高さは React Flow が測った実寸を使う（見積もりによる重なりを無くす）。
 import { useEffect, useMemo, useState } from "react";
 import {
-  ReactFlow, ReactFlowProvider, Handle, Position, useReactFlow, useNodesInitialized,
-  type Node, type Edge, type NodeProps, type EdgeProps,
+  ReactFlow, ReactFlowProvider, Handle, Position, useReactFlow,
+  type Node, type Edge, type NodeProps, type EdgeProps, type NodeChange, type NodeDimensionChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { KIND_STYLE, type ViewNode } from "./data";
@@ -52,25 +52,17 @@ const edgeTypes = { branch: Branch };
 
 function Inner({ view, selected, onSelect, showHot, autoFit }: VariantProps) {
   const rf = useReactFlow();
-  const initialized = useNodesInitialized();
-  // 描画後の実寸。変わったら配置し直す
-  const [measured, setMeasured] = useState<Record<string, number>>({});
-  const pos = useMemo(() => layout(view, (n) => measured[n.id] ?? estimate(n), COL, GAP_X, GAP_Y), [view, measured]);
-
-  useEffect(() => {
-    if (!initialized) return;
-    const next: Record<string, number> = {};
-    let changed = false;
-    for (const n of rf.getNodes()) {
-      const h = n.measured?.height;
-      if (h) { next[n.id] = h; if (measured[n.id] !== h) changed = true; }
-    }
-    if (changed) setMeasured(next);
-  });
+  // React Flow が測った実寸。onNodesChange で受け取ってノードに戻さないと、ノードは隠れたままになる
+  const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({});
+  const onNodesChange = (changes: NodeChange[]) => {
+    const upd = changes.filter((c): c is NodeDimensionChange => c.type === "dimensions" && !!c.dimensions);
+    if (upd.length) setDims((d) => { const n = { ...d }; for (const c of upd) n[c.id] = c.dimensions!; return n; });
+  };
+  const pos = useMemo(() => layout(view, (n) => dims[n.id]?.height ?? estimate(n), COL, GAP_X, GAP_Y), [view, dims]);
 
   const nodes: Node<D>[] = view.nodes.map((n) => ({
     id: n.id, type: "topic", position: { x: pos[n.id]!.x, y: pos[n.id]!.y },
-    data: { n, selected: selected === n.id, showHot, depth: pos[n.id]!.depth }, draggable: false,
+    data: { n, selected: selected === n.id, showHot, depth: pos[n.id]!.depth }, draggable: false, measured: dims[n.id],
   }));
   const edges: Edge[] = view.nodes.filter((n) => n.parent).map((n) => {
     const depth = pos[n.id]!.depth;
@@ -85,11 +77,11 @@ function Inner({ view, selected, onSelect, showHot, autoFit }: VariantProps) {
     if (!autoFit) return;
     const id = setTimeout(() => rf.fitView({ duration: 600, padding: 0.06, maxZoom: 1.3 }), 120);
     return () => clearTimeout(id);
-  }, [view.step, measured, autoFit, rf]);
+  }, [view.step, Object.keys(dims).length, autoFit, rf]);
 
   return (
     <ReactFlow
-      nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange}
       onNodeClick={(_, n) => onSelect(n.id)} onPaneClick={() => onSelect(null)}
       nodesConnectable={false} minZoom={0.1} className="soft"
     />
