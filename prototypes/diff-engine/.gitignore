@@ -1,0 +1,5 @@
+# ラン結果には公開会議の文字起こし全文が入るので git に入れない（~/live-mindmap-samples/diff-engine-runs/ に置く）
+runs/
+logs/
+report.html
+runs-gate-eval*.json

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>差分更新エンジン試作</title>
+<style>
+  :root { --bg:#fafaf9; --fg:#1c1917; --mut:#78716c; --line:#e7e5e4; --card:#fff; --acc:#2563eb; --add:#dcfce7; --upd:#fef9c3; --bad:#fee2e2;
+    --k-議題:#1d4ed8; --k-論点:#b45309; --k-案:#7c3aed; --k-決定:#15803d; --k-課題:#be123c; --k-TODO:#0e7490; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1c1917; --fg:#f5f5f4; --mut:#a8a29e; --line:#44403c; --card:#292524; --add:#14532d; --upd:#713f12; --bad:#7f1d1d;
+    --k-議題:#93c5fd; --k-論点:#fcd34d; --k-案:#c4b5fd; --k-決定:#86efac; --k-課題:#fda4af; --k-TODO:#67e8f9; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.6 system-ui, "Hiragino Sans", sans-serif; }
+  header { padding:16px 20px 8px; }
+  h1 { font-size:18px; margin:0 0 4px; } .q { color:var(--mut); margin:0; max-width:900px; }
+  main { padding:0 20px 40px; }
+  table { border-collapse:collapse; width:100%; background:var(--card); margin:12px 0; font-size:13px; }
+  th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; } tr.sel td { background:color-mix(in srgb, var(--acc) 12%, transparent); } tr[data-i] { cursor:pointer; }
+  .bar { display:flex; gap:12px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  input[type=range] { flex:1; min-width:200px; accent-color:var(--acc); }
+  button { font:inherit; padding:4px 10px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; cursor:pointer; }
+  .cols { display:grid; grid-template-columns: minmax(0,3fr) minmax(0,2fr); gap:16px; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow:auto; }
+  .card h2 { font-size:13px; color:var(--mut); margin:0 0 8px; font-weight:600; }
+  ul.tree, ul.tree ul { list-style:none; margin:0; padding-left:18px; } ul.tree { padding-left:0; }
+  .node { padding:1px 4px; border-radius:4px; cursor:pointer; display:inline-block; }
+  .node.added { background:var(--add); } .node.updated { background:var(--upd); }
+  .kind { font-size:11px; font-weight:700; margin-right:4px; }
+  .st { font-size:11px; color:var(--mut); margin-left:4px; } .rej { text-decoration:line-through; color:var(--mut); }
+  .seg { margin:4px 0; } .seg .t { color:var(--mut); font-variant-numeric:tabular-nums; margin-right:6px; }
+  .op { font-family:ui-monospace, monospace; font-size:12px; margin:3px 0; padding:2px 6px; border-radius:4px; white-space:pre-wrap; }
+  .op.bad { background:var(--bad); } .meta { color:var(--mut); font-size:12px; }
+  .ev { border-left:3px solid var(--acc); padding-left:8px; margin-top:8px; }
+  .empty { color:var(--mut); padding:40px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>差分更新エンジン試作</h1>
+  <p class="q">録音済みの会議を時間順に再生し、Claude が既存のマップに差分操作（追加・更新・統合・移動・削除・何もしない）を出したとき、マップがどう育つかを確かめる。ランを選び、スライダーで会議の時間を進める。緑は直前の呼び出しで追加、黄は更新されたノード。ノードをクリックすると根拠の発言が出る。</p>
+</header>
+<main>
+  <div class="bar"><label>ラン JSON を読み込む <input type="file" id="files" multiple accept=".json"></label></div>
+  <div id="app"><div class="empty">runs/*.json を読み込むか、<code>bun bundle.ts</code> で埋め込み済みの report.html を開く</div></div>
+</main>
+<script>
+const EMBEDDED = /*RUNS*/[];
+let runs = [], cur = 0, stepIdx = 0, focus = null;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const fmt = (s) => `${String(Math.floor(s/60)).padStart(2,"0")}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+const KINDS = ["議題","論点","案","決定","課題","TODO"];
+
+function stats(r) {
+  const calls = r.steps.filter((s) => s.call);
+  const lat = calls.map((s) => s.call.latencyMs).sort((a,b) => a-b);
+  const segById = Object.fromEntries(r.segments.map((s) => [s.id, s]));
+  // 反映遅延: 発言が終わってから、その発言を含む呼び出しの結果がマップに載るまで
+  const delays = calls.flatMap((s) => s.segIds.map((id) => s.at - segById[id].end + s.call.latencyMs / 1000)).sort((a,b) => a-b);
+  const last = r.steps.at(-1).map;
+  const byKind = Object.fromEntries(KINDS.map((k) => [k, Object.values(last.nodes).filter((n) => n.kind === k).length]));
+  const ops = r.steps.flatMap((s) => s.results);
+  const opCount = (o) => ops.filter((x) => x.ok && x.op.op === o).length;
+  const nodes = Object.values(last.nodes).filter((n) => n.id !== "root");
+  const lens = nodes.map((n) => [...n.text].length).sort((a,b) => a-b);
+  const fan = {}; for (const n of nodes) { const k = n.parent + "/" + n.kind; fan[k] = (fan[k]||0) + 1; }
+  const depth = (id) => { let d = 0; for (let c = last.nodes[id]; c && c.parent; c = last.nodes[c.parent]) d++; return d; };
+  return { lenP90: lens[Math.floor(lens.length*0.9)], lenMax: lens.at(-1), fanMax: Math.max(...Object.values(fan)), depth: Math.max(...nodes.map((n) => depth(n.id))), calls: calls.length, cost: calls.reduce((t,s) => t + s.call.costUSD, 0), p50: lat[Math.floor(lat.length/2)], p95: lat[Math.floor(lat.length*0.95)],
+    delay: delays[Math.floor(delays.length/2)], delay95: delays[Math.floor(delays.length*0.95)],
+    bad: ops.filter((x) => !x.ok).length, errors: calls.filter((s) => s.call.error).length, byKind,
+    add: opCount("add"), update: opCount("update"), merge: opCount("merge"), move: opCount("move"), del: opCount("delete") };
+}
+
+function render() {
+  if (!runs.length) return;
+  const r = runs[cur], step = r.steps[stepIdx], map = step.map;
+  const prevMap = stepIdx > 0 ? r.steps[stepIdx-1].map : { nodes: {} };
+  const touched = new Set(step.results.filter((x) => x.ok && x.op.op !== "add").map((x) => x.nodeId));
+  const kids = {}; for (const id of map.order) { const p = map.nodes[id].parent; if (p) (kids[p] ??= []).push(id); }
+  const tree = (id) => {
+    const n = map.nodes[id];
+    const cls = !prevMap.nodes[id] && id !== "root" ? "added" : touched.has(id) ? "updated" : "";
+    const status = n.kind === "論点" ? ((kids[id]||[]).some((c) => map.nodes[c].kind === "決定") ? "決定済み" : "未決") : n.kind === "TODO" ? [n.assignee, n.due].filter(Boolean).join(" / ") : "";
+    const label = id === "root" ? `<b>${esc(n.text)}</b>` : `<span class="kind" style="color:var(--k-${n.kind})">${n.kind}</span><span class="${n.proposalStatus === "却下" ? "rej" : ""}">${esc(n.text)}</span>${status ? `<span class="st">${esc(status)}</span>` : ""}<span class="st">${n.id}</span>`;
+    return `<li><span class="node ${cls}" data-id="${id}">${label}</span>${(kids[id]||[]).length ? `<ul>${kids[id].map(tree).join("")}</ul>` : ""}</li>`;
+  };
+  const segById = Object.fromEntries(r.segments.map((s) => [s.id, s]));
+  const fn = focus && map.nodes[focus];
+  const rows = runs.map((x, i) => { const s = stats(x); return `<tr data-i="${i}" class="${i===cur?"sel":""}"><td>${esc(x.config.name)}</td><td>${s.calls}</td><td>$${s.cost.toFixed(2)}</td><td>${(s.p50/1000).toFixed(1)} / ${(s.p95/1000).toFixed(1)}s</td><td>${s.delay.toFixed(0)} / ${s.delay95.toFixed(0)}s</td><td>${KINDS.map((k) => s.byKind[k]).join(" / ")}</td><td>${s.add} / ${s.update} / ${s.merge} / ${s.move} / ${s.del}</td><td>${s.lenP90} / ${s.lenMax}字</td><td>${s.fanMax}</td><td>${s.depth}</td><td>${s.bad}</td><td>${s.errors}</td></tr>`; }).join("");
+  $("#app").innerHTML = `
+    <table><thead><tr><th>ラン</th><th>呼び出し</th><th>概算費用</th><th>応答 p50/p95</th><th>反映遅延 p50/p95</th><th>議題/論点/案/決定/課題/TODO</th><th>追加/更新/統合/移動/削除</th><th>本文 p90/最大</th><th>同種の子 最大</th><th>深さ</th><th>不正な操作</th><th>失敗</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="bar"><button id="prev">◀</button><input type="range" id="slider" min="0" max="${r.steps.length-1}" value="${stepIdx}"><button id="next">▶</button>
+      <span>会議 ${fmt(step.at)} ・ ${stepIdx+1}/${r.steps.length} 回目</span></div>
+    <div class="cols">
+      <div class="card"><h2>この時点のマップ（ノード ${Object.keys(map.nodes).length-1}）</h2><ul class="tree">${tree("root")}</ul>
+        ${fn ? `<div class="ev"><b>${esc(fn.kind)}: ${esc(fn.text)}</b> の根拠${fn.evidence.map((id) => segById[id]).filter(Boolean).map((s) => `<div class="seg"><span class="t">${s.id} ${fmt(s.start)}</span>${esc(s.text)}</div>`).join("")}</div>` : ""}</div>
+      <div class="card"><h2>この回の呼び出し</h2>
+        <div class="meta">${step.call ? `${step.call.latencyMs}ms ・ $${step.call.costUSD.toFixed(4)} ・ 入力 ${step.call.usage.input + step.call.usage.cacheRead + step.call.usage.cacheWrite}（キャッシュ読み ${step.call.usage.cacheRead}）・ 出力 ${step.call.usage.output}${step.call.error ? ` ・ 失敗 ${esc(step.call.error)}` : ""}` : "ゲートが捨てた（Claude を呼んでいない）"}</div>
+        ${step.hint ? `<h2 style="margin-top:10px">判断モデルの見立て</h2><div class="op">${esc(step.hint)}</div>` : ""}
+        ${step.gate ? step.gate.map((g, i) => `<div class="meta">${step.segIds[i]}: 中身 ${g.mapWorthy.toFixed(2)} ・ 転換 ${g.topicShift.toFixed(2)} ・ 関係 ${esc(g.target)} (${g.targetConfidence.toFixed(2)}) ・ ${g.latencyMs}ms</div>`).join("") : ""}
+        <h2 style="margin-top:10px">操作</h2>${step.results.map((x) => `<div class="op ${x.ok ? "" : "bad"}">${esc(JSON.stringify(x.op))}${x.ok ? "" : `\n→ ${esc(x.error)}`}</div>`).join("") || `<div class="meta">なし</div>`}
+        <h2 style="margin-top:10px">新しい発言</h2>${step.segIds.map((id) => segById[id]).map((s) => `<div class="seg"><span class="t">${s.id} ${fmt(s.start)}</span>${esc(s.text)}</div>`).join("")}
+      </div>
+    </div>`;
+  $("#slider").oninput = (e) => { stepIdx = +e.target.value; render(); };
+  $("#prev").onclick = () => { stepIdx = Math.max(0, stepIdx-1); render(); };
+  $("#next").onclick = () => { stepIdx = Math.min(r.steps.length-1, stepIdx+1); render(); };
+  document.querySelectorAll("tr[data-i]").forEach((tr) => tr.onclick = () => { cur = +tr.dataset.i; stepIdx = Math.min(stepIdx, runs[cur].steps.length-1); focus = null; render(); });
+  document.querySelectorAll(".node[data-id]").forEach((el) => el.onclick = () => { focus = el.dataset.id; render(); });
+}
+document.addEventListener("keydown", (e) => { if (!runs.length) return; if (e.key === "ArrowRight") { stepIdx = Math.min(runs[cur].steps.length-1, stepIdx+1); render(); } if (e.key === "ArrowLeft") { stepIdx = Math.max(0, stepIdx-1); render(); } });
+$("#files").onchange = async (e) => { for (const f of e.target.files) runs.push(JSON.parse(await f.text())); stepIdx = runs[cur].steps.length-1; render(); };
+if (EMBEDDED.length) { runs = EMBEDDED; stepIdx = runs[0].steps.length-1; render(); }
+</script>
+</body>
+</html>
