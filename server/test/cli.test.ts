@@ -299,6 +299,18 @@ describe("CLI", () => {
       const last = received.at(-1)!;
       expect(last.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
       expect(last.nodes.find((x) => x.kind === "論点")).toMatchObject({ pointStatus: "決定済み" });
+      // 変わったこと: 反映ごとに round が進み、その反映の新しい発言の end の最大値を時刻として、記録が積み上がって届く
+      expect(received.map((s) => s.round)).toEqual([0, 1, 2]);
+      expect(received[0]!.changes).toEqual([]);
+      expect(received[1]!.changes).toEqual([
+        { round: 1, at: 19.2, change: "追加", node: "n1", kind: "議題", text: "採用" },
+        { round: 1, at: 19.2, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" },
+      ]);
+      expect(last.changes).toEqual([
+        ...received[1]!.changes,
+        { round: 2, at: 28, change: "決定済み化", node: "n2", kind: "論点", text: "面接は何回か" },
+        { round: 2, at: 28, change: "追加", node: "n3", kind: "決定", text: "2 回にする" },
+      ]);
       expect(out.join("")).toMatch(/^([^\n]+\n){3}$/); // 書き出した 3 ファイルのパスだけ
     });
 

@@ -45,7 +45,7 @@ async function original() {
       { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [id(0, 0)] },
       { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [id(0, 1)] },
       { op: "add", ref: "t4", parent: "root", kind: "課題", text: "面接官が足りない", evidence: [id(0, 1)] },
-      { op: "add", ref: "t5", parent: "root", kind: "課題", text: "面接の担当が偏る", evidence: [id(0, 1)] },
+      { op: "add", ref: "t5", parent: "root", kind: "課題", text: "面接の担当が偏る", evidence: [id(0, 0)] }, // 統合で統合先が新しく得る根拠
     ],
     [
       { op: "update", node: "n3", text: "3 回にする", evidence: [id(1, 0)], planStatus: "却下" },
@@ -90,6 +90,9 @@ describe("ログからの復元", () => {
 
     expect(restored.snapshot()).toEqual(session.snapshot());
     expect(restored.exportJson()).toEqual(session.exportJson());
+    // 変わったこと（round・at・記録）もログから同じ値に戻る
+    expect(restored.snapshot().changes).toEqual(session.snapshot().changes);
+    expect(restored.snapshot().round).toBe(session.snapshot().round);
   });
 
   it("元のマップにこの経路の全種類の変化が出ている（テストの前提）", async () => {
@@ -104,6 +107,13 @@ describe("ログからの復元", () => {
     const diffs = events.flatMap((e) => (e.type === "diff" ? [e] : []));
     expect(diffs.some((d) => d.dropped.length > 0)).toBe(true);
     expect(diffs.some((d) => d.error !== undefined)).toBe(true);
+    // 変わったこと: 成功した 5 回の反映で round が進み（失敗した 1 回は進まない）、全種類の変化が記録されている
+    expect(snap.round).toBe(5);
+    const types = new Set(snap.changes.map((c) => c.change));
+    expect(types).toEqual(new Set(["追加", "更新", "決定済み化", "却下", "移動", "統合"]));
+    expect(snap.changes.find((c) => c.change === "統合")).toMatchObject({ node: "n4", round: 2 });
+    expect(snap.changes.find((c) => c.change === "決定済み化")).toMatchObject({ node: "n2", round: 2 });
+    expect(snap.changes.find((c) => c.change === "却下")).toMatchObject({ node: "n3", round: 2 });
   });
 
   it("復元の間は差分更新を呼ばず、イベントをログに書き直さない", async () => {
