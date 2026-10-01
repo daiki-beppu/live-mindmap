@@ -1,0 +1,8 @@
+{
+  "name": "@live-mindmap/helper",
+  "private": true,
+  "scripts": {
+    "test": "echo \"helper: tested by hand (ADR 0002)\"",
+    "typecheck": "echo \"helper: Swift\""
+  }
+}
