@@ -6,13 +6,14 @@ export type MapNodeData = {
   color: string;
   mark: string | null;
   rejected: boolean;
+  changed: boolean; // 今回の反映で変わった（赤い枠）
 };
 
 // 受け取った値を描くだけ（表示専用）。
 export function MapNode({ data }: NodeProps<Node<MapNodeData, "map">>) {
   return (
     <div
-      className={data.rejected ? "map-node map-node--rejected" : "map-node"}
+      className={["map-node", data.rejected && "map-node--rejected", data.changed && "map-node--changed"].filter(Boolean).join(" ")}
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />

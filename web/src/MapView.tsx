@@ -10,9 +10,11 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useState } from "react";
 import type { Snapshot } from "../../server/src/core/index.ts";
+import { changedNodeIds } from "./changes.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH } from "./layout.ts";
 import { MapNode, type MapNodeData } from "./MapNode.tsx";
+import { useAnimatedPositions } from "./useAnimatedPositions.ts";
 
 const nodeTypes = { map: MapNode };
 
@@ -39,13 +41,19 @@ function MapCanvas({ snapshot }: { snapshot: Snapshot }) {
     });
   };
 
-  const { nodes, edges } = useMemo(() => {
+  // 目標の位置。表示する位置は、ここへ向けて補間する
+  const target = useMemo(() => {
     const heights = Object.fromEntries(Object.entries(dims).map(([id, d]) => [id, d.height]));
-    const pos = layout(snapshot.nodes, heights);
-    const nodes: Node<MapNodeData, "map">[] = snapshot.nodes.map((n) => ({
+    return layout(snapshot.nodes, heights);
+  }, [snapshot.nodes, dims]);
+  const positions = useAnimatedPositions(snapshot.nodes, target);
+
+  const nodes = useMemo(() => {
+    const changed = changedNodeIds(snapshot);
+    return snapshot.nodes.map((n): Node<MapNodeData, "map"> => ({
       id: n.id,
       type: "map",
-      position: pos[n.id] ?? { x: 0, y: 0 },
+      position: positions[n.id] ?? { x: 0, y: 0 },
       width: NODE_WIDTH,
       measured: dims[n.id],
       data: {
@@ -53,13 +61,18 @@ function MapCanvas({ snapshot }: { snapshot: Snapshot }) {
         color: KIND_COLOR[n.kind],
         mark: markOf(n),
         rejected: n.kind === "案" && n.planStatus === "却下",
+        changed: changed.has(n.id),
       },
     }));
-    const edges: Edge[] = snapshot.nodes.flatMap((n) =>
-      n.parent ? [{ id: `${n.parent}->${n.id}`, source: n.parent, target: n.id, style: { stroke: KIND_COLOR[n.kind], strokeWidth: 2 } }] : [],
-    );
-    return { nodes, edges };
-  }, [snapshot, dims]);
+  }, [snapshot, positions, dims]);
+
+  const edges = useMemo(
+    (): Edge[] =>
+      snapshot.nodes.flatMap((n) =>
+        n.parent ? [{ id: `${n.parent}->${n.id}`, source: n.parent, target: n.id, style: { stroke: KIND_COLOR[n.kind], strokeWidth: 2 } }] : [],
+      ),
+    [snapshot.nodes],
+  );
 
   // 反映のたびに（位置・寸法が変わるたびに）全体を画面に収める
   useEffect(() => {

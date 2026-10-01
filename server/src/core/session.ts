@@ -1,5 +1,6 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。ログの書き先は外から渡す。
+import { diffMaps, type Change } from "./changes.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, emptyMap, pointStatus, type Dropped, type MapNode, type MeetingMap, type Op, type PointStatus } from "./map.ts";
 
@@ -32,7 +33,9 @@ export type LogEvent =
 
 // 論点の状態は保存していないので、スナップショットを作るときに導いて載せる
 export type SnapshotNode = MapNode & { pointStatus?: PointStatus };
-export type Snapshot = { nodes: SnapshotNode[] };
+// 変わったこと（反映の履歴）。round は成功した反映の通し番号、at は反映に渡した新しい発言の end の最大値（会議の中の秒）。
+export type ChangeEntry = Change & { round: number; at: number };
+export type Snapshot = { nodes: SnapshotNode[]; round: number; changes: ChangeEntry[] };
 
 export type SessionOptions = { title: string; updater: DiffUpdater; log: (event: LogEvent) => void };
 
@@ -45,11 +48,24 @@ type SessionState = {
   processed: Remark[]; // 差分更新に渡した発言
   remarks: Remark[]; // 受け取ったすべての発言（重複の印つきも含む）
   known: Set<string>; // 差分更新に渡した発言の ID
+  round: number; // 成功した反映の通し番号
+  changes: ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
 };
+
+// 成功した反映を 1 回記録する。変化がなくても round は進める（前回の赤い枠を消すため）。
+// ライブ（callUpdater）と復元（restoreSession）が同じ関数を通す。
+function recordRound(state: Pick<SessionState, "round" | "changes">, before: MeetingMap, after: MeetingMap, fresh: Remark[]) {
+  state.round += 1;
+  const at = Math.max(...fresh.map((r) => r.end));
+  for (const c of diffMaps(before, after)) state.changes.push({ ...c, round: state.round, at });
+}
 
 export function createSession({ title, updater, log }: SessionOptions) {
   log({ type: "start", title });
-  return openSession({ map: emptyMap(title), pending: [], processed: [], remarks: [], known: new Set() }, { updater, log });
+  return openSession(
+    { map: emptyMap(title), pending: [], processed: [], remarks: [], known: new Set(), round: 0, changes: [] },
+    { updater, log },
+  );
 }
 
 // ログのイベントを順に適用関数へ流して、セッションを元の状態に戻す。
@@ -59,6 +75,7 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
   const remarks: Remark[] = [];
   const processed: Remark[] = [];
   const known = new Set<string>();
+  const history = { round: 0, changes: [] as ChangeEntry[] };
   for (const event of events) {
     const e = event as LogEvent;
     switch (e.type) {
@@ -70,20 +87,24 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
         break;
       case "diff": {
         if (!map) throw new Error("ログの diff より前に start がありません");
+        const fresh: Remark[] = [];
         for (const id of e.input.fresh) {
           const r = remarks.find((x) => x.id === id);
           if (!r) throw new Error(`ログに発言がありません: ${id}`);
           known.add(id);
           processed.push(r);
+          fresh.push(r);
         }
-        map = applyOps(map, e.ops, known).map;
+        const next = applyOps(map, e.ops, known).map;
+        if (e.error === undefined) recordRound(history, map, next, fresh);
+        map = next;
         break;
       }
     }
   }
   if (!map) throw new Error("ログに start がありません");
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id));
-  return openSession({ map, pending, processed, remarks, known }, options);
+  return openSession({ map, pending, processed, remarks, known, ...history }, options);
 }
 
 function openSession(state: SessionState, { updater, log }: Omit<SessionOptions, "title">) {
@@ -117,6 +138,8 @@ function openSession(state: SessionState, { updater, log }: Omit<SessionOptions,
       return;
     }
     const applied = applyOps(map, ops, known);
+    // 送信（log）より先に記録する。log の中で届くスナップショットに今回分が載る
+    recordRound(state, map, applied.map, fresh);
     map = applied.map;
     log({ type: "diff", input, ops, dropped: applied.dropped });
   }
@@ -126,7 +149,7 @@ function openSession(state: SessionState, { updater, log }: Omit<SessionOptions,
       const n = cloneNode(map.nodes[id]!);
       return n.kind === "論点" ? { ...n, pointStatus: pointStatus(map, id) } : n;
     });
-    return { nodes };
+    return { nodes, round: state.round, changes: state.changes.map((c) => ({ ...c })) };
   }
 
   return {

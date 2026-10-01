@@ -1,4 +1,6 @@
-html, body, #root, .map { margin: 0; width: 100%; height: 100%; }
+html, body, #root { margin: 0; width: 100%; height: 100%; }
+.layout { display: flex; width: 100%; height: 100%; }
+.map { flex: 1; min-width: 0; height: 100%; }
 body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .waiting { margin: 0; padding: 2rem; color: #6b7280; }
 
@@ -20,8 +22,20 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 }
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
 .map-node__text { overflow-wrap: anywhere; }
+/* 赤い枠は outline で描く（border の太さを変えると実寸が変わり、測った高さに基づく配置がずれる） */
+.map-node--changed { outline: 3px solid #dc2626; outline-offset: 2px; }
 .map-node--rejected { opacity: 0.45; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 
 /* Handle は描画に必要だが見せない */
 .react-flow__handle { opacity: 0; pointer-events: none; }
+
+/* 右側の「変わったこと」一覧 */
+.changes { flex: none; width: 300px; height: 100%; box-sizing: border-box; padding: 12px; overflow-y: auto; border-left: 1px solid #e5e7eb; font-size: 13px; color: #111827; }
+.changes h2 { margin: 0 0 8px; font-size: 14px; }
+.changes ul { margin: 0; padding: 0; list-style: none; }
+.changes__item { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
+.changes__time { color: #6b7280; font-variant-numeric: tabular-nums; }
+.changes__type { font-weight: 600; color: #dc2626; }
+.changes__kind { color: #6b7280; }
+.changes__text { flex-basis: 100%; overflow-wrap: anywhere; }

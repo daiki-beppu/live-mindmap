@@ -290,3 +290,107 @@ describe("差分更新の呼び出し", () => {
     expect(calls).toHaveLength(2);
   });
 });
+
+describe("変わったこと（反映の履歴）", () => {
+  // 反映ごとの手を順に返す偽物。Error なら失敗する。
+  function stepped(...script: (Op[] | Error)[]) {
+    let n = 0;
+    return async (): Promise<{ ops: Op[] }> => {
+      const s = script[n++] ?? [];
+      if (s instanceof Error) throw s;
+      return { ops: s };
+    };
+  }
+
+  // 発言を 2 つ流して反映を 1 回起こす。end は呼び出し側が決める。
+  async function reflect(session: ReturnType<typeof createSession>, ends: [number, number]) {
+    const rs = ends.map((end) => remark("発言", { end, start: end - 1 }));
+    for (const r of rs) session.push(r);
+    await session.idle();
+    return rs.map((r) => r.id);
+  }
+
+  it("同じセッションで 反映 → 反映 → 何もしない反映 → 失敗した反映 を続けると、round が進み、記録が積み上がる", async () => {
+    const events: LogEvent[] = [];
+    const [a, b] = [remark("一"), remark("二")];
+    const updater = stepped(
+      [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }],
+      [{ op: "update", node: "n1", text: "中途採用", evidence: [b.id] }],
+      [{ op: "noop", reason: "雑談" }],
+      new Error("timeout"),
+      [{ op: "add", ref: "t2", parent: "n1", kind: "論点", text: "面接は何回か", evidence: [b.id] }],
+    );
+    const session = createSession({ title: "定例", updater, log: (e) => events.push(e) });
+
+    expect(session.snapshot()).toMatchObject({ round: 0, changes: [] });
+
+    // 反映 1。新しい発言の end の最大値が at になる（最後の発言の end ではない）
+    session.push({ ...a, start: 1, end: 50 });
+    session.push({ ...b, start: 2, end: 30 });
+    await session.idle();
+    expect(session.snapshot().round).toBe(1);
+    expect(session.snapshot().changes).toEqual([{ round: 1, at: 50, change: "追加", node: "n1", kind: "議題", text: "採用" }]);
+
+    // 反映 2
+    await reflect(session, [60, 70]);
+    expect(session.snapshot().round).toBe(2);
+    expect(session.snapshot().changes).toEqual([
+      { round: 1, at: 50, change: "追加", node: "n1", kind: "議題", text: "採用" },
+      { round: 2, at: 70, change: "更新", node: "n1", kind: "議題", text: "中途採用" },
+    ]);
+
+    // 何もしない反映でも round は進む（前回の赤い枠を消すため）。記録は増えない
+    await reflect(session, [80, 90]);
+    expect(session.snapshot().round).toBe(3);
+    expect(session.snapshot().changes).toHaveLength(2);
+
+    // 失敗した反映では round も記録も進まない
+    await reflect(session, [100, 110]);
+    expect(events.at(-1)).toMatchObject({ type: "diff", error: expect.stringContaining("timeout") });
+    expect(session.snapshot().round).toBe(3);
+    expect(session.snapshot().changes).toHaveLength(2);
+
+    // 失敗の後の反映は、次の round として積み上がる
+    await reflect(session, [120, 125]);
+    expect(session.snapshot().round).toBe(4);
+    expect(session.snapshot().changes.at(-1)).toEqual({ round: 4, at: 125, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" });
+    expect(session.snapshot().changes).toHaveLength(3);
+  });
+
+  it("log が呼ばれた時点のスナップショットに、その反映の round と記録がすでに載っている（送信より先に記録する）", async () => {
+    const [a, b, c, d] = [remark("一"), remark("二"), remark("三"), remark("四")];
+    const updater = stepped(
+      [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }],
+      new Error("timeout"),
+    );
+    const seen: { failed: boolean; round: number; changes: number }[] = [];
+    const session = createSession({
+      title: "定例",
+      updater,
+      log: (e) => {
+        if (e.type !== "diff") return;
+        const s = session.snapshot();
+        seen.push({ failed: e.error !== undefined, round: s.round, changes: s.changes.length });
+      },
+    });
+    for (const r of [a, b, c, d]) session.push(r);
+    await session.idle();
+
+    expect(seen).toEqual([
+      { failed: false, round: 1, changes: 1 },
+      { failed: true, round: 1, changes: 1 },
+    ]);
+  });
+
+  it("snapshot() が返す changes は、あとから書き換えてもセッションの記録に影響しない", async () => {
+    const [a, b] = [remark("一"), remark("二")];
+    const updater = stepped([{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }]);
+    const session = createSession({ title: "定例", updater, log: () => {} });
+    session.push(a);
+    session.push(b);
+    await session.idle();
+
+    session.snapshot().changes.length = 0;
+    expect(session.snapshot().changes).toHaveLength(1);
+  });
+});

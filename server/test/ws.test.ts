@@ -8,6 +8,8 @@ const snap = (...texts: string[]): Snapshot => ({
     { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
     ...texts.map((text, i) => ({ id: `n${i + 1}`, parent: "root", kind: "議題" as const, text, evidence: ["r1"] })),
   ],
+  round: 0,
+  changes: [],
 });
 
 // つないだクライアント。届いたスナップショットを順に貯める。
