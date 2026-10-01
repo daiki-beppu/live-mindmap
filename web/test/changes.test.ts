@@ -15,6 +15,7 @@ const snapshot = (round: number, changes: ChangeEntry[]): Snapshot => ({
   nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }],
   round,
   changes,
+  remarks: [],
 });
 
 describe("changedNodeIds: 赤い枠を付けるノード", () => {

@@ -35,7 +35,8 @@ export type LogEvent =
 export type SnapshotNode = MapNode & { pointStatus?: PointStatus };
 // 変わったこと（反映の履歴）。round は成功した反映の通し番号、at は反映に渡した新しい発言の end の最大値（会議の中の秒）。
 export type ChangeEntry = Change & { round: number; at: number };
-export type Snapshot = { nodes: SnapshotNode[]; round: number; changes: ChangeEntry[] };
+// remarks は、いまのノードの根拠に挙がっている発言だけ（受け取った順・重複なし）。evidence の ID から引く。
+export type Snapshot = { nodes: SnapshotNode[]; round: number; changes: ChangeEntry[]; remarks: Remark[] };
 
 export type SessionOptions = { title: string; updater: DiffUpdater; log: (event: LogEvent) => void };
 
@@ -149,7 +150,13 @@ function openSession(state: SessionState, { updater, log }: Omit<SessionOptions,
       const n = cloneNode(map.nodes[id]!);
       return n.kind === "論点" ? { ...n, pointStatus: pointStatus(map, id) } : n;
     });
-    return { nodes, round: state.round, changes: state.changes.map((c) => ({ ...c })) };
+    const cited = new Set(nodes.flatMap((n) => n.evidence));
+    return {
+      nodes,
+      round: state.round,
+      changes: state.changes.map((c) => ({ ...c })),
+      remarks: remarks.filter((r) => cited.has(r.id)).map((r) => ({ ...r })),
+    };
   }
 
   return {
