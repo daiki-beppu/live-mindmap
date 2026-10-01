@@ -1,3 +1,4 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Snapshot } from "./core/index.ts";
 
@@ -11,25 +12,36 @@ export type SnapshotServer = {
 
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-function isLocalOrigin(origin: string): boolean {
+export function isLocalOrigin(origin: string): boolean {
   return URL.canParse(origin) && LOCAL_HOSTNAMES.has(new URL(origin).hostname);
 }
 
-export function startSnapshotServer({ port }: { port: number }): Promise<SnapshotServer> {
+export type SnapshotServerOptions = {
+  port: number;
+  // WebSocket のアップグレード以外の HTTP リクエストの処理。渡さなければ 404
+  onRequest?: (req: IncomingMessage, res: ServerResponse) => void;
+};
+
+export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions): Promise<SnapshotServer> {
   return new Promise((resolve, reject) => {
     let latest: string | undefined;
+    const http = createServer(
+      onRequest ??
+        ((_req, res) => {
+          res.writeHead(404).end();
+        }),
+    );
     const wss = new WebSocketServer({
-      port,
-      host: "127.0.0.1",
+      server: http,
       // 127.0.0.1 で待ち受けても、ブラウザ上の任意の Web ページからは接続できてしまう。Origin がローカルのものだけ受理する。
       verifyClient: ({ origin }: { origin?: string }) => origin === undefined || isLocalOrigin(origin),
     });
-    wss.once("error", reject);
+    http.once("error", reject);
     wss.on("connection", (client) => {
       if (latest !== undefined) client.send(latest);
     });
-    wss.once("listening", () => {
-      const address = wss.address();
+    http.listen(port, "127.0.0.1", () => {
+      const address = http.address();
       if (!address || typeof address === "string") return reject(new Error("TCP のポートで待ち受けていない"));
       resolve({
         port: address.port,
@@ -40,7 +52,11 @@ export function startSnapshotServer({ port }: { port: number }): Promise<Snapsho
         close: () =>
           new Promise<void>((done, fail) => {
             for (const client of wss.clients) client.terminate();
-            wss.close((e) => (e ? fail(e) : done()));
+            wss.close((e) => {
+              if (e) return fail(e);
+              http.close((e2) => (e2 ? fail(e2) : done()));
+              http.closeAllConnections();
+            });
           }),
       });
     });
