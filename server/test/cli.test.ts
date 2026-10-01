@@ -311,6 +311,12 @@ describe("CLI", () => {
         { round: 2, at: 28, change: "決定済み化", node: "n2", kind: "論点", text: "面接は何回か" },
         { round: 2, at: 28, change: "追加", node: "n3", kind: "決定", text: "2 回にする" },
       ]);
+      // 根拠: 届いたスナップショットから、ノードの根拠の ID で発言（時刻・本文）を引ける
+      const n1 = last.nodes.find((x) => x.id === "n1")!;
+      const r1 = last.remarks.find((r) => r.id === n1.evidence[0])!;
+      expect(r1).toMatchObject({ start: 0.5, end: 9.8, text: "今日は採用の進め方を決めます" });
+      expect(["自分", "相手"]).toContain(r1.track);
+      for (const node of last.nodes) for (const id of node.evidence) expect(last.remarks.some((r) => r.id === id)).toBe(true);
       expect(out.join("")).toMatch(/^([^\n]+\n){3}$/); // 書き出した 3 ファイルのパスだけ
     });
 

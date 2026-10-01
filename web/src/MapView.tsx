@@ -20,7 +20,9 @@ const nodeTypes = { map: MapNode };
 
 type Dims = Record<string, { width: number; height: number }>;
 
-function MapCanvas({ snapshot }: { snapshot: Snapshot }) {
+type SelectProps = { selectedId: string | null; onSelect: (nodeId: string) => void };
+
+function MapCanvas({ snapshot, selectedId, onSelect }: { snapshot: Snapshot } & SelectProps) {
   // React Flow が測った実寸。スナップショットが変わっても捨てない（測り直しは onNodesChange で上書きされる）。
   const [dims, setDims] = useState<Dims>({});
   const { fitView } = useReactFlow();
@@ -62,9 +64,11 @@ function MapCanvas({ snapshot }: { snapshot: Snapshot }) {
         mark: markOf(n),
         rejected: n.kind === "案" && n.planStatus === "却下",
         changed: changed.has(n.id),
+        selected: n.id === selectedId,
+        onSelect,
       },
     }));
-  }, [snapshot, positions, dims]);
+  }, [snapshot, positions, dims, selectedId, onSelect]);
 
   const edges = useMemo(
     (): Edge[] =>
@@ -88,6 +92,7 @@ function MapCanvas({ snapshot }: { snapshot: Snapshot }) {
       onNodesChange={onNodesChange}
       nodesDraggable={false}
       nodesConnectable={false}
+      nodesFocusable={false}
       elementsSelectable={false}
       panOnDrag={false}
       zoomOnScroll={false}
@@ -98,10 +103,10 @@ function MapCanvas({ snapshot }: { snapshot: Snapshot }) {
   );
 }
 
-export function MapView({ snapshot }: { snapshot: Snapshot }) {
+export function MapView({ snapshot, selectedId, onSelect }: { snapshot: Snapshot } & SelectProps) {
   return (
     <ReactFlowProvider>
-      <MapCanvas snapshot={snapshot} />
+      <MapCanvas snapshot={snapshot} selectedId={selectedId} onSelect={onSelect} />
     </ReactFlowProvider>
   );
 }

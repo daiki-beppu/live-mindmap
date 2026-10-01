@@ -10,6 +10,7 @@ const snap = (...texts: string[]): Snapshot => ({
   ],
   round: 0,
   changes: [],
+  remarks: [],
 });
 
 // つないだクライアント。届いたスナップショットを順に貯める。

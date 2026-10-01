@@ -8,10 +8,6 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node {
   box-sizing: border-box;
   width: 200px;
-  padding: 8px 12px;
-  display: flex;
-  gap: 6px;
-  align-items: baseline;
   font-size: 14px;
   line-height: 1.4;
   color: #111827;
@@ -20,6 +16,8 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
   border-radius: 8px;
   box-shadow: none;
 }
+/* 余白・並びは内側のボタンが持つ（外側は枠と塗りだけ。実寸は変えない） */
+.map-node__button { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; }
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
 .map-node__text { overflow-wrap: anywhere; }
 /* 赤い枠は outline で描く（border の太さを変えると実寸が変わり、測った高さに基づく配置がずれる） */
@@ -30,11 +28,27 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 /* Handle は描画に必要だが見せない */
 .react-flow__handle { opacity: 0; pointer-events: none; }
 
-/* 右側の「変わったこと」一覧 */
-.changes { flex: none; width: 300px; height: 100%; box-sizing: border-box; padding: 12px; overflow-y: auto; border-left: 1px solid #e5e7eb; font-size: 13px; color: #111827; }
+/* 右の列: 上に根拠、下に「変わったこと」 */
+.side { flex: none; width: 300px; height: 100%; display: flex; flex-direction: column; border-left: 1px solid #e5e7eb; font-size: 13px; color: #111827; }
+.evidence { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow-y: auto; border-bottom: 1px solid #e5e7eb; }
+.evidence h2 { margin: 0 0 8px; font-size: 14px; }
+.evidence p { margin: 0 0 6px; }
+.evidence ul { margin: 0; padding: 0; list-style: none; }
+.evidence__kind { font-weight: 600; }
+.evidence__status { margin-left: 8px; color: #6b7280; }
+.evidence__text { overflow-wrap: anywhere; }
+.evidence__empty { color: #6b7280; }
+.evidence__remark { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
+.evidence__time { color: #6b7280; font-variant-numeric: tabular-nums; }
+.evidence__track { font-weight: 600; }
+.evidence__remark-text { flex-basis: 100%; overflow-wrap: anywhere; }
+
+/* 「変わったこと」一覧 */
+.changes { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow-y: auto; }
 .changes h2 { margin: 0 0 8px; font-size: 14px; }
 .changes ul { margin: 0; padding: 0; list-style: none; }
-.changes__item { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
+.changes__item { border-bottom: 1px solid #f3f4f6; }
+.changes__button { display: flex; flex-wrap: wrap; gap: 4px 8px; width: 100%; padding: 6px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .changes__time { color: #6b7280; font-variant-numeric: tabular-nums; }
 .changes__type { font-weight: 600; color: #dc2626; }
 .changes__kind { color: #6b7280; }

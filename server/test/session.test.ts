@@ -394,3 +394,78 @@ describe("変わったこと（反映の履歴）", () => {
     expect(session.snapshot().changes).toHaveLength(1);
   });
 });
+
+describe("根拠の発言（snapshot().remarks）", () => {
+  const add = (ref: string, text: string, evidence: string[]): Op => ({ op: "add", ref, parent: "root", kind: "議題", text, evidence });
+
+  it("ノードの根拠に挙がった発言の 時刻・トラック・本文 を、ID で引ける形で含める", async () => {
+    const a = remark("採用の話をします", { track: "自分", start: 1.5, end: 9.5 });
+    const b = remark("面接を何回にするか", { track: "相手", start: 10, end: 19 });
+    const { session } = setup([add("t1", "採用", [a.id, b.id])]);
+    session.push(a);
+    session.push(b);
+    await session.idle();
+
+    const snap = session.snapshot();
+    const node = snap.nodes.find((n) => n.text === "採用")!;
+    expect(node.evidence).toEqual([a.id, b.id]);
+    for (const id of node.evidence) expect(snap.remarks.filter((r) => r.id === id)).toHaveLength(1);
+    expect(snap.remarks.find((r) => r.id === a.id)).toMatchObject({ track: "自分", start: 1.5, end: 9.5, text: "採用の話をします" });
+    expect(snap.remarks.find((r) => r.id === b.id)).toMatchObject({ track: "相手", start: 10, end: 19, text: "面接を何回にするか" });
+  });
+
+  it("どのノードの根拠にもなっていない発言（重複の印つき・未処理）は含めず、受け取った順に並べる", async () => {
+    const a = remark("一つ目");
+    const echo = remark("反響", { duplicate: true });
+    const b = remark("二つ目");
+    const c = remark("三つ目（反映待ち）");
+    const { session } = setup([add("t1", "採用", [b.id, a.id])]);
+    for (const r of [a, echo, b, c]) session.push(r);
+    await session.idle();
+
+    expect(session.snapshot().remarks.map((r) => r.id)).toEqual([a.id, b.id]);
+  });
+
+  it("複数のノードが同じ発言を根拠にしても、発言は 1 度だけ含める", async () => {
+    const [a, b] = [remark("一"), remark("二")];
+    const { session } = setup([add("t1", "採用", [a.id]), add("t2", "評価", [a.id, b.id])]);
+    session.push(a);
+    session.push(b);
+    await session.idle();
+
+    expect(session.snapshot().remarks.map((r) => r.id)).toEqual([a.id, b.id]);
+  });
+
+  it("同じセッションで update が根拠を足すと、その発言が次の snapshot から含まれる", async () => {
+    const [a, b, c, d] = [remark("一"), remark("二"), remark("三"), remark("四")];
+    const { session } = setup([add("t1", "採用", [a.id])], [{ op: "update", node: "n1", evidence: [c.id] }]);
+    session.push(a);
+    session.push(b);
+    await session.idle();
+    expect(session.snapshot().remarks.map((r) => r.id)).toEqual([a.id]);
+
+    session.push(c);
+    session.push(d);
+    await session.idle();
+    expect(session.snapshot().remarks.map((r) => r.id)).toEqual([a.id, c.id]);
+  });
+
+  it("ルートだけのマップでは remarks は空", () => {
+    const { session } = setup();
+    expect(session.snapshot().remarks).toEqual([]);
+  });
+
+  it("返した remarks を書き換えても、セッションの記録にも次の snapshot にも影響しない", async () => {
+    const [a, b] = [remark("元の本文"), remark("二")];
+    const { session } = setup([add("t1", "採用", [a.id])]);
+    session.push(a);
+    session.push(b);
+    await session.idle();
+
+    const first = session.snapshot();
+    first.remarks[0]!.text = "書き換え";
+    first.remarks.length = 0;
+    expect(session.snapshot().remarks.map((r) => r.text)).toEqual(["元の本文"]);
+    expect(a.text).toBe("元の本文");
+  });
+});
