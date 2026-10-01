@@ -8,3 +8,5 @@ pnpm --filter @live-mindmap/server cli play test/fixtures/short.transcript.json 
 # 2 つ目のターミナル: ブラウザアプリ（/ws を再生側へ proxy する）
 pnpm --filter @live-mindmap/web dev
 ```
+
+ライブのセッションでは、ルートで `pnpm dev` を実行すると、サーバーとこの表示が並行して起動する（使い方はルートの README）。

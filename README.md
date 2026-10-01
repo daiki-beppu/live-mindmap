@@ -48,3 +48,30 @@ AIは毎回マップを作り直さず、既存構造に対して次の操作を
 
 - 既存マインドマップアプリ（MindNode 等）への連携ではなく、会議専用のマインドマップUIを自作する
 - Web サービスを本体とする
+
+## ライブのセッション
+
+```sh
+pnpm dev   # ヘルパーをビルドし、サーバー（127.0.0.1:4319、LIVE_MINDMAP_PORT で変更）とブラウザの表示を並行して起動する
+```
+
+別のターミナルから、CLI でセッションを操作する（`pnpm --filter @live-mindmap/server cli ...`）。同時に扱うセッションは 1 つ。
+
+```sh
+cli apps                                  # 会議アプリの一覧（JSON）。bundle id を調べる
+cli start --app us.zoom.xos [--title 週次]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す
+cli stop                                  # ヘルパーを止め、map.md・map.json・map.drawnix を書き出して、そのパスを出す
+cli export --format json                  # 終了後も、最新のセッションのマップを取り出せる（表示も最後のマップのまま残る）
+```
+
+- ヘルパーの WebSocket にはサーバーだけがつなぐ。ポートはサーバーが空きを選んで渡す。
+- ヘルパーの実行ファイルは `helper/.build/debug/live-mindmap-helper`。`LIVE_MINDMAP_HELPER` で差し替えられる。
+- `pnpm dev` の実行中は 4319 をサーバーが使うので、`play` を同時に動かすときは `LIVE_MINDMAP_PORT` を変える（表示の proxy 先も同じ値を使う）。
+
+### 実機での確認手順（人が行う）
+
+1. `pnpm dev` を起動し、ブラウザで表示（`http://localhost:5173`）を開く
+2. Zoom かブラウザの会議（社外秘を含まないもの）を開き、音を出す
+3. `cli apps` にそのアプリが出ることを確かめ、`cli start --app <bundle id>` で開始する（初回はマイクの許可が要る）
+4. 話して、ブラウザのマップが組み上がることを見る
+5. `cli stop` で終了し、出力された 3 つのパスのファイルがあること、表示が最後のマップのまま残ること、`cli export --format json` で同じマップが取り出せることを確かめる

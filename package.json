@@ -4,6 +4,7 @@
   "type": "module",
   "packageManager": "pnpm@10.32.1",
   "scripts": {
+    "dev": "pnpm -r --parallel run dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   }
