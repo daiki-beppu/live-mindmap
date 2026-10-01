@@ -2,11 +2,14 @@
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 //   play <文字起こしファイル>     録音サンプルの文字起こしを待ち時間なしで再生し、マップを組み立てる
 //   export --format json          最新のセッションのマップを標準出力に出す
+//   eval [--truth <正解ファイル>] <セッションのフォルダ>...
+//                                 play で作ったランの指標を 1 ラン 1 行の表で出す。正解（{ "決定": [{ text, from, to }], "TODO": [...] }、
+//                                 from / to は会議の中の秒）を渡すと決定・TODO の再現率も出す
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { createSession, fromTranscript, playback, type DiffUpdater } from "./core/index.ts";
+import { createSession, formatTable, fromTranscript, parseTruth, playback, type DiffUpdater, type Run, type Truth } from "./core/index.ts";
 
 export type CliDeps = {
   updater?: DiffUpdater;
@@ -26,7 +29,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { format: { type: "string", default: "md" } },
+    options: { format: { type: "string", default: "md" }, truth: { type: "string" } },
   });
   const [command, ...rest] = positionals;
 
@@ -60,8 +63,27 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       stdout(JSON.stringify(exported, null, 2) + "\n");
       return;
     }
+    case "eval": {
+      if (rest.length === 0) throw new Error("usage: eval [--truth <正解ファイル>] <セッションのフォルダ>...");
+      let truth: Truth | undefined;
+      if (values.truth) {
+        try {
+          truth = parseTruth(JSON.parse(readFileSync(values.truth, "utf8")));
+        } catch (e) {
+          throw new Error(`正解ファイルが不正です: ${values.truth}（${e instanceof Error ? e.message : e}）`);
+        }
+      }
+      const runs: Run[] = rest.map((dir) => {
+        const file = join(dir, EXPORT_FILE);
+        if (!existsSync(file)) throw new Error(`セッションのマップがありません: ${file}`);
+        const exp = JSON.parse(readFileSync(file, "utf8"));
+        return { name: basename(dir), title: exp.root.text, exp };
+      });
+      stdout(formatTable(runs, truth));
+      return;
+    }
     default:
-      throw new Error("usage: live-mindmap <play|export> ...");
+      throw new Error("usage: live-mindmap <play|export|eval> ...");
   }
 }
 
