@@ -38,9 +38,17 @@ export type ChangeEntry = Change & { round: number; at: number };
 // remarks は、いまのノードの根拠に挙がっている発言だけ（受け取った順・重複なし）。evidence の ID から引く。
 export type Snapshot = { nodes: SnapshotNode[]; round: number; changes: ChangeEntry[]; remarks: Remark[] };
 
-export type SessionOptions = { title: string; updater: DiffUpdater; log: (event: LogEvent) => void };
+export type SessionOptions = {
+  title: string;
+  updater: DiffUpdater;
+  log: (event: LogEvent) => void;
+  // 待ち方。渡すと、最後の発言から QUIET_MS 新しい発言が来ないとき、1 つだけたまっていてもその 1 つで差分更新を呼ぶ。
+  // 渡さなければ待たない（playback の sleep と同じ形。中核は実行環境のタイマーを使わない）
+  sleep?: (ms: number) => Promise<void>;
+};
 
 const BATCH = 2;
+export const QUIET_MS = 5000; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
 const RECENT = 3;
 
 type SessionState = {
@@ -61,11 +69,11 @@ function recordRound(state: Pick<SessionState, "round" | "changes">, before: Mee
   for (const c of diffMaps(before, after)) state.changes.push({ ...c, round: state.round, at });
 }
 
-export function createSession({ title, updater, log }: SessionOptions) {
+export function createSession({ title, updater, log, sleep }: SessionOptions) {
   log({ type: "start", title });
   return openSession(
     { map: emptyMap(title), pending: [], processed: [], remarks: [], known: new Set(), round: 0, changes: [] },
-    { updater, log },
+    { updater, log, sleep },
   );
 }
 
@@ -108,20 +116,34 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
   return openSession({ map, pending, processed, remarks, known, ...history }, options);
 }
 
-function openSession(state: SessionState, { updater, log }: Omit<SessionOptions, "title">) {
+function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionOptions, "title">) {
   let { map, pending, processed } = state;
   const { remarks, known } = state;
   let inFlight: Promise<void> | null = null;
+  let gen = 0; // 新しい発言を受け取るたびに進める。古い待ちの解決を無視するための世代
+  let quiet = false; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
 
   // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
-  // 呼び出しの後に 1 つしか残っていなくても、2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
+  // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
   function startDiffIfReady(min = BATCH) {
     if (inFlight || pending.length < min) return;
     const fresh = pending;
     pending = [];
     inFlight = callUpdater(fresh).finally(() => {
       inFlight = null;
-      startDiffIfReady();
+      startDiffIfReady(quiet ? 1 : BATCH);
+    });
+  }
+
+  // 最後の発言から QUIET_MS 新しい発言が来なければ、たまった分で差分更新を呼ぶ。
+  // sleep は取り消せないので、世代が変わっていたら（その後に発言が来ていたら）何もしない。
+  function waitForQuiet() {
+    if (!sleep) return;
+    const g = gen;
+    void sleep(QUIET_MS).then(() => {
+      if (g !== gen) return;
+      quiet = true;
+      startDiffIfReady(1);
     });
   }
 
@@ -165,13 +187,16 @@ function openSession(state: SessionState, { updater, log }: Omit<SessionOptions,
       log({ type: "remark", remark: r });
       if (r.duplicate) return;
       pending.push(r);
+      gen += 1;
+      quiet = false;
       startDiffIfReady();
+      if (pending.length > 0) waitForQuiet();
     },
     // 呼び出し中のものと、それに続けて起きた呼び出しがすべて終わるまで待つ
     async idle() {
       while (inFlight) await inFlight;
     },
-    // 終わりに、2 つに満たず残った発言も流す（最後の発言を取りこぼさない）
+    // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
     async flush() {
       await this.idle();
       startDiffIfReady(1);

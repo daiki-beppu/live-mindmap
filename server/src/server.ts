@@ -150,6 +150,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         title,
         updater,
         publish: (snapshot) => snapshotServer.publish(snapshot),
+        sleep,
       });
       let count = 0;
       ws.on("message", (data) => {

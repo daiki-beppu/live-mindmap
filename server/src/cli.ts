@@ -65,11 +65,12 @@ export type RecordedSessionOptions = {
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
   updater: DiffUpdater;
   publish: (snapshot: Snapshot) => void;
+  sleep?: (ms: number) => Promise<void>; // 渡すと、最後の発言から一定時間たまった発言を 1 つでも差分更新に渡す
 };
 
 // セッションのフォルダ（名前は開始時刻）を作り、ログと export.json を書きながら、マップが変わるたびに publish する。
 // play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。
-export function startRecordedSession({ sessionsDir, title, updater, publish }: RecordedSessionOptions): { dir: string; session: Session } {
+export function startRecordedSession({ sessionsDir, title, updater, publish, sleep }: RecordedSessionOptions): { dir: string; session: Session } {
   const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
   mkdirSync(dir, { recursive: true });
   // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
@@ -77,6 +78,7 @@ export function startRecordedSession({ sessionsDir, title, updater, publish }: R
   session = createSession({
     title: title ?? basename(dir),
     updater,
+    sleep,
     log: (event) => {
       appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
       if (!session) return;
@@ -125,17 +127,16 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       let paths: string[];
       try {
         deps.onListening?.(server.port);
+        // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
+        const sleep = values.realtime ? (deps.sleep ?? realSleep) : undefined;
         const { dir, session } = startRecordedSession({
           sessionsDir,
           title: basename(file).replace(/\.transcript\.json$/, ""),
           updater,
           publish: server.publish,
+          sleep,
         });
-        await playback(
-          session,
-          fromTranscript(JSON.parse(readFileSync(file, "utf8"))),
-          values.realtime ? { sleep: deps.sleep ?? realSleep } : {},
-        );
+        await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))), sleep ? { sleep } : {});
         paths = writeSessionExports(dir, session.exportJson());
       } finally {
         await server.close();

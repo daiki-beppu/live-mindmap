@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSession, type DiffInput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
+import { createSession, QUIET_MS, type DiffInput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 
 let seq = 0;
 const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
@@ -288,6 +288,153 @@ describe("差分更新の呼び出し", () => {
     expect(calls[1]!.fresh.map((u) => u.id)).toEqual([c!.id]);
     await session.flush();
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("差分更新の呼び出し: 発言が 1 つでも一定時間で呼ぶ", () => {
+  // 待ち方（sleep）の偽物。呼ばれた待ちを貯め、テストの側から「時間が経った」ことにできる。
+  function fakeSleep() {
+    const timers: { ms: number; fire: () => void }[] = [];
+    const sleep = (ms: number) => new Promise<void>((resolve) => timers.push({ ms, fire: resolve }));
+    return { timers, sleep };
+  }
+  // 解決した待ちの後続（マイクロタスク・差分更新の呼び出し）が落ち着くまで進める
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const fireAll = async (timers: { fire: () => void }[]) => {
+    for (const t of timers) t.fire();
+    await settle();
+  };
+
+  // 応答をテストの側から返せる差分更新の偽物
+  function manual() {
+    const calls: { input: DiffInput; reply: () => void }[] = [];
+    const updater = (input: DiffInput) =>
+      new Promise<{ ops: Op[] }>((resolve) => calls.push({ input, reply: () => resolve({ ops: [] }) }));
+    return { calls, updater };
+  }
+  const ids = (input: DiffInput) => input.fresh.map((u) => u.id);
+
+  it("定数 QUIET_MS は 5 秒（ミリ秒）", () => {
+    expect(QUIET_MS).toBe(5000);
+  });
+
+  it("発言が 1 つだけたまり、最後の発言から QUIET_MS 経っても新しい発言が来なければ、その 1 つで差分更新を呼ぶ", async () => {
+    const { timers, sleep } = fakeSleep();
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const a = remark("今日は採用の話をします");
+
+    session.push(a);
+    await settle();
+    expect(calls).toHaveLength(0); // 待ちが切れる前は呼ばない
+    expect(timers.map((t) => t.ms)).toEqual([QUIET_MS]);
+
+    await fireAll(timers);
+    expect(calls).toHaveLength(1);
+    expect(ids(calls[0]!.input)).toEqual([a.id]);
+  });
+
+  it("QUIET_MS 以内に 2 つ目が来れば、2 つまとめて 1 回だけ呼ぶ。最初の発言の待ちが後で切れても呼びは増えない", async () => {
+    const { timers, sleep } = fakeSleep();
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const [a, b] = [remark("一"), remark("二")];
+
+    session.push(a);
+    await settle();
+    expect(calls).toHaveLength(0);
+    session.push(b);
+    expect(calls).toHaveLength(1);
+    expect(ids(calls[0]!.input)).toEqual([a.id, b.id]);
+
+    calls[0]!.reply();
+    await session.idle();
+    await fireAll(timers); // a の待ちが切れても、たまっている発言が無いので何も起きない
+    expect(calls).toHaveLength(1);
+  });
+
+  it("古い待ちが切れても、後から来た発言をその時点で流さない（待ちは最後の発言から数える）", async () => {
+    const { timers, sleep } = fakeSleep();
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const [a, b, c] = [remark("一"), remark("二"), remark("三")];
+
+    session.push(a);
+    session.push(b);
+    calls[0]!.reply();
+    await session.idle();
+    const stale = [...timers]; // a の時点で仕掛けられた待ち
+    session.push(c); // 1 つだけたまる。c の待ちはまだ切れていない
+    await fireAll(stale);
+    expect(calls).toHaveLength(1);
+
+    await fireAll(timers.filter((t) => !stale.includes(t))); // c の待ちが切れて、はじめて流す
+    expect(calls).toHaveLength(2);
+    expect(ids(calls[1]!.input)).toEqual([c.id]);
+  });
+
+  it("呼び出し中は、待ちが切れても呼ばない。終わった時点で、たまった発言を次の 1 回にまとめて呼ぶ", async () => {
+    const { timers, sleep } = fakeSleep();
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const [a, b, c] = [remark("一"), remark("二"), remark("三")];
+
+    session.push(a);
+    session.push(b);
+    expect(calls).toHaveLength(1); // a, b が呼び出し中
+    session.push(c);
+    await fireAll(timers); // c の待ちも切れる。それでも呼び出し中は呼ばない
+    expect(calls).toHaveLength(1);
+
+    calls[0]!.reply();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(ids(calls[1]!.input)).toEqual([c.id]);
+    expect(calls[1]!.input.recent.map((u) => u.id)).toEqual([a.id, b.id]);
+
+    calls[1]!.reply();
+    await session.idle();
+    await fireAll(timers);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("呼び出し中にたまった発言が 2 つ以上あれば、待ちが切れていなくても、終わった時点で 1 回にまとめて呼ぶ", async () => {
+    const { sleep } = fakeSleep();
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const [a, b, c, d] = [remark("一"), remark("二"), remark("三"), remark("四")];
+
+    for (const r of [a, b, c, d]) session.push(r);
+    expect(calls).toHaveLength(1);
+    calls[0]!.reply();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(ids(calls[1]!.input)).toEqual([c.id, d.id]);
+  });
+
+  it("呼び出しが終わった時点で 1 つだけたまっていて、その待ちがまだ切れていなければ、待ちが切れるまで呼ばない", async () => {
+    const { timers, sleep } = fakeSleep();
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const [a, b, c] = [remark("一"), remark("二"), remark("三")];
+
+    session.push(a);
+    session.push(b);
+    session.push(c);
+    calls[0]!.reply();
+    await session.idle();
+    expect(calls).toHaveLength(1);
+
+    await fireAll(timers);
+    expect(calls).toHaveLength(2);
+    expect(ids(calls[1]!.input)).toEqual([c.id]);
+  });
+
+  it("待ち方（sleep）を渡さなければ、1 つだけ残った発言は待たずに、flush まで呼ばない", async () => {
+    const { calls, updater } = manual();
+    const session = createSession({ title: "定例", updater, log: () => {} });
+
+    session.push(remark("一"));
+    await settle();
+    expect(calls).toHaveLength(0);
   });
 });
 

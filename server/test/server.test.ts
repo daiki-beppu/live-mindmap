@@ -42,7 +42,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 import { spawn } from "node:child_process";
 import { runCli } from "../src/cli.ts";
-import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
+import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
 import { startServer } from "../src/server.ts";
 
 // 疎通テスト: 偽のヘルパー（fixtures/fake-helper.ts）から発言を送り、CLI で開始・終了する。
@@ -188,6 +188,24 @@ describe("ライブのセッション", () => {
     // 終了後も export --format json で、書き出した map.json と同じマップを取り出せる
     expect(JSON.parse(await cli("export", "--format", "json"))).toEqual(JSON.parse(readFileSync(paths[1]!, "utf8")));
   });
+
+  // 実時間で QUIET_MS 待つ（server.ts の sleep は外から差し替えられない）。待ちの配線が外れると stop 前の反映が起きず失敗する
+  it(
+    "stop の前に発言が 1 件だけ届き QUIET_MS 新しい発言が来ないとき、その 1 件で差分更新が呼ばれ、接続中のクライアントへ反映後のマップが届く",
+    { timeout: QUIET_MS + 10_000 },
+    async () => {
+      const { server, cli, calls, writeScript } = await setup();
+      writeScript({ events: [remark("相手", 1, 5, "採用の面接について")] });
+      const before = await connect(server.port);
+
+      await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+      await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]), { timeout: QUIET_MS + 5_000 });
+      await vi.waitFor(() => expect(before.received.map((s) => s.round)).toEqual([0, 1]));
+
+      await cli("stop");
+    },
+  );
 
   it("進行中の start は拒否され、進行中のセッションを壊さない。終了後は新しいセッションを開始できる。セッションがない stop も拒否される", async () => {
     const { cli, records, sessionDirs, writeScript } = await setup();
