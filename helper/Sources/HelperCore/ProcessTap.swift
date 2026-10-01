@@ -26,7 +26,7 @@ public final class ProcessTap {
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
     private var deviceStarted = false
-    private var continuation: AsyncThrowingStream<AVAudioPCMBuffer, Error>.Continuation?
+    private var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
     private let queue = DispatchQueue(label: "live-mindmap.process-tap")
 
     public init(targets: [AudioProcess]) {
@@ -35,11 +35,11 @@ public final class ProcessTap {
 
     /// タップを開始する。途中で失敗したら、そこまでに作った資源を破棄してから throw する。
     /// 先に `stop()` が呼ばれていた場合は、資源を作らず、要素のない終わった流れを返す。
-    public func start() throws -> AsyncThrowingStream<AVAudioPCMBuffer, Error> {
+    public func start() throws -> AsyncThrowingStream<CapturedAudio, Error> {
         lock.lock()
         defer { lock.unlock() }
         if stopRequested {
-            let (stream, continuation) = AsyncThrowingStream.makeStream(of: AVAudioPCMBuffer.self, throwing: Error.self)
+            let (stream, continuation) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
             continuation.finish()
             return stream
         }
@@ -51,7 +51,7 @@ public final class ProcessTap {
         }
     }
 
-    private func startUnchecked() throws -> AsyncThrowingStream<AVAudioPCMBuffer, Error> {
+    private func startUnchecked() throws -> AsyncThrowingStream<CapturedAudio, Error> {
         // 対象のプロセスを必ず指定する（stereoMixdownOfProcesses）。全体タップの初期化は使わない。
         let description = CATapDescription(stereoMixdownOfProcesses: targets.map(\.objectID))
         description.uuid = UUID()
@@ -88,13 +88,15 @@ public final class ProcessTap {
 
         let limit = Self.backlogLimit
         let (stream, continuation) = AsyncThrowingStream.makeStream(
-            of: AVAudioPCMBuffer.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(limit))
+            of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(limit))
         self.continuation = continuation
 
-        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { _, input, _, _, _ in
+        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { _, input, inputTime, _, _ in
             guard let copy = Self.copyBuffer(input, format: format) else { return }
+            let hostTime = inputTime.pointee.mFlags.contains(.hostTimeValid) ? inputTime.pointee.mHostTime : AudioGetCurrentHostTime()
+            let captured = CapturedAudio(buffer: copy, hostTime: hostTime)
             // 満杯で入らなかったバッファは捨てずに、エラーで流れを終わらせる（時刻の意味を保つため）。
-            if case .dropped = continuation.yield(copy) {
+            if case .dropped = continuation.yield(captured) {
                 continuation.finish(throwing: ProcessTapError.backlogExceeded(limit: limit))
             }
         }

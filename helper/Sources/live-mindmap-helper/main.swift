@@ -1,3 +1,4 @@
+import CoreAudio
 import Dispatch
 import Foundation
 import HelperCore
@@ -26,34 +27,48 @@ private func listApps() throws {
 private func run(app bundleID: String, port: UInt16) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
-    let transcriber: Transcriber = SpeechAnalyzerTranscriber()
-    try await transcriber.prepare()
+    // 2 トラックは別の SpeechAnalyzer で処理する（1 つの transcriber は 1 回の transcribe にだけ使える）。
+    let theirTranscriber: Transcriber = SpeechAnalyzerTranscriber()
+    let myTranscriber: Transcriber = SpeechAnalyzerTranscriber()
+    try await theirTranscriber.prepare()
+    try await myTranscriber.prepare()
+    try await requestMicrophonePermission()
 
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes)")
 
     let tap = ProcessTap(targets: targets)
-    // SIGINT / SIGTERM は、タップを止めて音声の流れを終わらせる。以降は通常の終了経路で片付ける。
+    let microphone = MicrophoneCapture()
+    // SIGINT / SIGTERM は、タップとマイクを止めて音声の流れを終わらせる。以降は通常の終了経路で片付ける。
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
         signal(signalNumber, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
-        source.setEventHandler { tap.stop() }
+        source.setEventHandler {
+            tap.stop()
+            microphone.stop()
+        }
         source.resume()
         return source
     }
     defer { signalSources.forEach { $0.cancel() } }
 
     do {
-        let audio = try tap.start()
-        let results = try await transcriber.transcribe(audio)
-        try await relay(results, track: .相手, to: server)
+        // 2 トラック共通の時刻の基準。音声取得を始める直前に 1 回だけ取る。
+        let origin = AudioGetCurrentHostTime()
+        let theirAudio = try tap.start()
+        let myAudio = try microphone.start()
+        let theirResults = try await theirTranscriber.transcribe(theirAudio, origin: origin)
+        let myResults = try await myTranscriber.transcribe(myAudio, origin: origin)
+        try await relay(tracks: [(.相手, theirResults), (.自分, myResults)], to: server)
     } catch {
         tap.stop()
+        microphone.stop()
         await server.stop()
         throw error
     }
     tap.stop()
+    microphone.stop()
     await server.stop()
 }
 

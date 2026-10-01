@@ -48,7 +48,7 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
         analyzerFormat = format
     }
 
-    public func transcribe(_ audio: AsyncThrowingStream<AVAudioPCMBuffer, Error>) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
+    public func transcribe(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
         guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let limit = Self.backlogLimit
@@ -56,12 +56,16 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
         try await analyzer.start(inputSequence: inputs)
 
         let transcriber = self.transcriber
+        let timeline = TrackTimeline(origin: origin)
         return AsyncThrowingStream { continuation in
             // 音声 → 変換 → AnalyzerInput。音声が終わったら入力を閉じ、残りを確定させる。
             let feeder = Task {
                 var converter: AVAudioConverter?
                 do {
-                    for try await buffer in audio {
+                    for try await captured in audio {
+                        let buffer = captured.buffer
+                        // 結果の時刻は、アナライザに入れた最初の音声が 0。最初のバッファの取得時刻と共通の基準との差で補正する。
+                        timeline.record(captured)
                         if converter == nil {
                             converter = AVAudioConverter(from: buffer.format, to: format)
                         }
@@ -92,12 +96,12 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                 do {
                     for try await result in transcriber.results {
                         let range = result.range
-                        continuation.yield(TranscriptionResult(
+                        continuation.yield(timeline.align(TranscriptionResult(
                             text: String(result.text.characters),
                             isFinal: result.isFinal,
                             start: range.start.isNumeric ? range.start.seconds : 0,
                             end: range.end.isNumeric ? range.end.seconds : 0
-                        ))
+                        )))
                     }
                     continuation.finish()
                 } catch {
