@@ -8,7 +8,7 @@ const data = (extra: Partial<MapNodeData> = {}): MapNodeData => ({
   color: "#eab308",
   mark: "?",
   rejected: false,
-  changed: false,
+  changedRound: null,
   selected: false,
   onSelect: () => {},
   ...extra,
@@ -40,3 +40,38 @@ describe("MapNode: ノードのクリック", () => {
     expect(text).toContain("?");
   });
 });
+
+describe("MapNode: 変わったノードの塗り", () => {
+  const flashes = (d: MapNodeData) => findAll(call("n2", d), "span").filter((s) => s.props.className === "map-node__flash");
+
+  it("変わったノードには塗りの層が 1 つあり、読み上げの対象外で、ボタンの外にある", () => {
+    const tree = call("n2", data({ changedRound: 3 }));
+    const found = flashes(data({ changedRound: 3 }));
+    expect(found).toHaveLength(1);
+    expect(found[0]!.props["aria-hidden"]).toBe("true");
+    expect(findAll(findAll(tree, "button"), "span").filter((s) => s.props.className === "map-node__flash")).toHaveLength(0);
+  });
+
+  it("変わっていないノードには塗りの層がない", () => {
+    expect(flashes(data({ changedRound: null }))).toHaveLength(0);
+  });
+
+  it("赤い枠の class（map-node--changed）は付けない", () => {
+    const cls = String((call("n2", data({ changedRound: 3 })) as { props: { className: string } }).props.className);
+    expect(cls).not.toContain("map-node--changed");
+  });
+
+  it("塗りを足しても、ボタンは 1 つで、文字は本文と印だけ", () => {
+    const tree = call("n2", data({ changedRound: 3 }));
+    const buttons = findAll(tree, "button");
+    expect(buttons).toHaveLength(1);
+    expect(textOf(tree)).toBe("?面接は何回か");
+  });
+
+  it("反映が変わると塗りの key が変わり（やり直す）、同じ反映が再び届いても変わらない", () => {
+    const key = (r: number) => flashes(data({ changedRound: r }))[0]!.key;
+    expect(key(2)).not.toBe(key(3));
+    expect(key(2)).toBe(key(2));
+  });
+});
+

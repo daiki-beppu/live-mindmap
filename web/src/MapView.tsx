@@ -63,7 +63,7 @@ function MapCanvas({ snapshot, selectedId, onSelect }: { snapshot: Snapshot } & 
         color: KIND_COLOR[n.kind],
         mark: markOf(n),
         rejected: n.kind === "案" && n.planStatus === "却下",
-        changed: changed.has(n.id),
+        changedRound: changed.has(n.id) ? snapshot.round : null,
         selected: n.id === selectedId,
         onSelect,
       },

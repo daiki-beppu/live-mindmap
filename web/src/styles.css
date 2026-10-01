@@ -15,13 +15,18 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
   border: 1.5px solid var(--kind-color);
   border-radius: 8px;
   box-shadow: none;
+  position: relative;
 }
 /* 余白・並びは内側のボタンが持つ（外側は枠と塗りだけ。実寸は変えない） */
-.map-node__button { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; }
+.map-node__button { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; position: relative; }
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
 .map-node__text { overflow-wrap: anywhere; }
-/* 赤い枠は outline で描く（border の太さを変えると実寸が変わり、測った高さに基づく配置がずれる） */
-.map-node--changed { outline: 3px solid #dc2626; outline-offset: 2px; }
+/* 今回の反映で変わったノードは、背景の塗りが 1 秒周期でゆっくり 3 回点滅して消える（枠・影・バッジは足さない）。
+   色が徐々に戻る見せ方は利用者の評価で違和感があったため、点滅にした（2026-10-01）。
+   色 #fef08a は彩度の高い黄。一般的な薄い黄 #fef9c3 は論点の塗り（#eab308 の 15%、およそ #fcf4da）と
+   区別しにくいので避けた。 */
+.map-node__flash { position: absolute; inset: 0; border-radius: inherit; background: #fef08a; opacity: 0; animation: map-node-flash 1s ease-in-out 3; pointer-events: none; }
+@keyframes map-node-flash { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
 .map-node--rejected { opacity: 0.45; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 
@@ -50,6 +55,6 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .changes__item { border-bottom: 1px solid #f3f4f6; }
 .changes__button { display: flex; flex-wrap: wrap; gap: 4px 8px; width: 100%; padding: 6px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .changes__time { color: #6b7280; font-variant-numeric: tabular-nums; }
-.changes__type { font-weight: 600; color: #dc2626; }
+.changes__type { font-weight: 600; color: #374151; }
 .changes__kind { color: #6b7280; }
 .changes__text { flex-basis: 100%; overflow-wrap: anywhere; }
