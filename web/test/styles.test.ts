@@ -17,11 +17,17 @@ describe("styles.css: 変わったノードの強調", () => {
     for (const m of css.matchAll(/box-shadow\s*:\s*([^;]+);/g)) expect(m[1]!.trim()).toBe("none");
   });
 
-  it("塗りの層は 1 秒周期で 3 回点滅して消え、位置は absolute", () => {
-    const r = rule(".map-node__flash");
-    expect(r).toMatch(/position\s*:\s*absolute/);
-    expect(r).toMatch(/animation\s*:[^;]*\b1s\b[^;]*\s3;/); // 1 秒周期を 3 回
-    expect(r).toMatch(/opacity\s*:\s*0/); // 点滅の後は塗りが残らない
+  it("点滅は 1 秒周期で 3 回、ノードの塗りと枠だけを変え、文字は薄くしない（opacity を使わない）", () => {
+    expect(rule(".map-node--blink")).toMatch(/animation\s*:[^;]*\b1s\b[^;]*\s3;/); // 1 秒周期を 3 回
+    const frames = css.match(/@keyframes map-node-blink\s*\{([\s\S]*?)\}\s*\}/)?.[1] ?? "";
+    expect(frames).toMatch(/background-color/);
+    expect(frames).toMatch(/border-color/);
+    expect(frames).not.toMatch(/opacity|(?<!-)color\s*:/);
+    expect(css).not.toContain("map-node__flash");
+  });
+
+  it("変わったノードには細い黄色の枠を outline で付ける（実寸を変えない）", () => {
+    expect(rule(".map-node--blink")).toMatch(/outline\s*:\s*1\.5px solid #facc15/i);
   });
 
   it("「変わったこと」の変化の種類は赤でない", () => {

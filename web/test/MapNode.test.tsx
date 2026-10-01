@@ -41,37 +41,30 @@ describe("MapNode: ノードのクリック", () => {
   });
 });
 
-describe("MapNode: 変わったノードの塗り", () => {
-  const flashes = (d: MapNodeData) => findAll(call("n2", d), "span").filter((s) => s.props.className === "map-node__flash");
+describe("MapNode: 変わったノードの点滅", () => {
+  const root = (d: MapNodeData) => call("n2", d) as unknown as { key: string | null; props: { className: string } };
+  const cls = (d: MapNodeData) => root(d).props.className.split(" ");
 
-  it("変わったノードには塗りの層が 1 つあり、読み上げの対象外で、ボタンの外にある", () => {
+  it("変わったノードにだけ map-node--blink が付く", () => {
+    expect(cls(data({ changedRound: 3 }))).toContain("map-node--blink");
+    expect(cls(data({ changedRound: null }))).not.toContain("map-node--blink");
+  });
+
+  it("色の層（塗り）や赤い枠の class は足さない", () => {
+    expect(findAll(call("n2", data({ changedRound: 3 })), "span").filter((s) => s.props.className === "map-node__flash")).toHaveLength(0);
+    expect(cls(data({ changedRound: 3 }))).not.toContain("map-node--changed");
+  });
+
+  it("点滅しても、ボタンは 1 つで、文字は本文と印だけ", () => {
     const tree = call("n2", data({ changedRound: 3 }));
-    const found = flashes(data({ changedRound: 3 }));
-    expect(found).toHaveLength(1);
-    expect(found[0]!.props["aria-hidden"]).toBe("true");
-    expect(findAll(findAll(tree, "button"), "span").filter((s) => s.props.className === "map-node__flash")).toHaveLength(0);
-  });
-
-  it("変わっていないノードには塗りの層がない", () => {
-    expect(flashes(data({ changedRound: null }))).toHaveLength(0);
-  });
-
-  it("赤い枠の class（map-node--changed）は付けない", () => {
-    const cls = String((call("n2", data({ changedRound: 3 })) as { props: { className: string } }).props.className);
-    expect(cls).not.toContain("map-node--changed");
-  });
-
-  it("塗りを足しても、ボタンは 1 つで、文字は本文と印だけ", () => {
-    const tree = call("n2", data({ changedRound: 3 }));
-    const buttons = findAll(tree, "button");
-    expect(buttons).toHaveLength(1);
+    expect(findAll(tree, "button")).toHaveLength(1);
     expect(textOf(tree)).toBe("?面接は何回か");
   });
 
-  it("反映が変わると塗りの key が変わり（やり直す）、同じ反映が再び届いても変わらない", () => {
-    const key = (r: number) => flashes(data({ changedRound: r }))[0]!.key;
+  it("反映が変わると key が変わり（点滅をやり直す）、同じ反映が再び届いても変わらない", () => {
+    const key = (r: number | null) => root(data({ changedRound: r })).key;
     expect(key(2)).not.toBe(key(3));
     expect(key(2)).toBe(key(2));
+    expect(key(null)).not.toBe(key(2));
   });
 });
-
