@@ -2,9 +2,9 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileS
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli.ts";
-import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
+import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 
@@ -350,7 +350,51 @@ describe("CLI", () => {
       expect(slept).toEqual([]); // 指定しなければ待たない（待ち時間なし）
 
       await runCli(["play", fixture, "--realtime"], deps);
-      expect(slept).toEqual([9800, 9400, 8800]);
+      // 再生の待ち。セッションが差分更新を呼ぶまでの待ち（QUIET_MS）も同じ sleep を通るので、それを除いて見る
+      expect(slept.filter((ms) => ms !== QUIET_MS)).toEqual([9800, 9400, 8800]);
+    });
+
+    it("--realtime では、1 つ目の発言が QUIET_MS 経っても 2 つ目が来なければ、2 つ目を待たずにその 1 つで差分更新を呼ぶ", async () => {
+      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+      // 待ちはすべてテストの側から解決する（再生の待ちも、セッションの待ちも）
+      const timers: { ms: number; fired: boolean; fire: () => void }[] = [];
+      const sleep = (ms: number) =>
+        new Promise<void>((resolve) => timers.push({ ms: Math.round(ms), fired: false, fire: resolve }));
+      const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const calls: string[][] = [];
+      const updater = async (input: DiffInput) => {
+        calls.push(input.fresh.map((u) => u.id));
+        return { ops: [] as Op[] };
+      };
+      let finished = false;
+      const playing = runCli(["play", fixture, "--realtime"], { updater, sessionsDir, port: 0, sleep, stdout: () => {} }).then(
+        () => (finished = true),
+      );
+
+      // 1 つ目の発言までの再生の待ちを解決する。r1 が流れ、続く再生の待ち（r2 まで）と、r1 の QUIET_MS の待ちが仕掛かる
+      await vi.waitFor(() => expect(timers.length).toBeGreaterThan(0));
+      expect(timers[0]!.ms).toBe(9800);
+      timers[0]!.fired = true;
+      timers[0]!.fire();
+      await vi.waitFor(() => expect(timers.some((t) => t.ms === QUIET_MS)).toBe(true));
+      expect(calls).toEqual([]); // 待ちが切れる前は呼ばない
+
+      // r2 はまだ来ていない（再生の待ちは解決していない）。QUIET_MS が切れた時点で r1 だけで呼ぶ
+      const quiet = timers.find((t) => t.ms === QUIET_MS)!;
+      quiet.fired = true;
+      quiet.fire();
+      await vi.waitFor(() => expect(calls).toEqual([["r1"]]));
+
+      // 残りを流して再生を終わらせる
+      while (!finished) {
+        for (const t of timers) {
+          if (t.fired) continue;
+          t.fired = true;
+          t.fire();
+        }
+        await settle();
+      }
+      await playing;
     });
 
     it("再生が終わると WebSocket サーバーを閉じる（同じポートで続けて起動できる）", async () => {
