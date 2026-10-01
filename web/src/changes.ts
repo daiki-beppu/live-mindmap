@@ -1,7 +1,7 @@
 import type { Snapshot } from "../../server/src/core/index.ts";
 
-// 今回の反映（round が現在値）で変わったノード。赤い枠はここから導く。
-// 何もしない反映では round だけが進むので、前回の枠は消える。
+// 今回の反映（round が現在値）で変わったノード。強調はここから導く。
+// 何もしない反映では round だけが進むので、前回の強調は消える。
 export function changedNodeIds(snapshot: Snapshot): Set<string> {
   return new Set(snapshot.changes.filter((c) => c.round === snapshot.round).map((c) => c.node));
 }
