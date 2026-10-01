@@ -7,7 +7,7 @@ public enum Track: String, Sendable, Equatable {
 }
 
 /// STT が返す 1 件の結果。`isFinal` が true なら確定結果、false なら途中結果。
-/// `start` / `end` はキャプチャ開始からの秒数。
+/// `start` / `end` は、`run` が音声取得を始める直前を 0 とする、2 トラック共通の秒数。
 public struct TranscriptionResult: Sendable, Equatable {
     public var text: String
     public var isFinal: Bool
@@ -30,7 +30,10 @@ public enum HelperEvent: Sendable, Equatable {
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
-        let data = try JSONEncoder().encode(self)
+        // キーの順序を固定する（同じイベントは常に同じ文字列になる）。
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(self)
         guard let json = String(data: data, encoding: .utf8) else {
             throw EncodingError.invalidValue(self, .init(codingPath: [], debugDescription: "UTF-8 に変換できない"))
         }
