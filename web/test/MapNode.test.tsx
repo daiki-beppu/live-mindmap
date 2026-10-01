@@ -9,7 +9,6 @@ const data = (extra: Partial<MapNodeData> = {}): MapNodeData => ({
   mark: "?",
   rejected: false,
   changedRound: null,
-  root: false,
   selected: false,
   onSelect: () => {},
   ...extra,
@@ -76,11 +75,3 @@ describe("MapNode: 変わったノードの塗り", () => {
   });
 });
 
-describe("MapNode: ルートの中央揃え", () => {
-  const cls = (d: MapNodeData) => String((call("n1", d) as { props: { className: string } }).props.className).split(" ");
-
-  it("ルートだけに map-node--root が付く", () => {
-    expect(cls(data({ root: true }))).toContain("map-node--root");
-    expect(cls(data({ root: false }))).not.toContain("map-node--root");
-  });
-});

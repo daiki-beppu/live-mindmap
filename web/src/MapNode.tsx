@@ -7,7 +7,6 @@ export type MapNodeData = {
   mark: string | null;
   rejected: boolean;
   changedRound: number | null; // 今回の反映で変わったなら、その反映の round（塗りの強調）
-  root: boolean; // 会議の名前のノード（文字を中央揃えにする）
   selected: boolean; // 右の列に根拠を出している
   onSelect: (nodeId: string) => void;
 };
@@ -16,7 +15,7 @@ export type MapNodeData = {
 export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
   return (
     <div
-      className={["map-node", data.rejected && "map-node--rejected", data.root && "map-node--root"].filter(Boolean).join(" ")}
+      className={["map-node", data.rejected && "map-node--rejected"].filter(Boolean).join(" ")}
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       {data.changedRound !== null && <span key={data.changedRound} className="map-node__flash" aria-hidden="true" />}

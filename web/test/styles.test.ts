@@ -17,10 +17,11 @@ describe("styles.css: 変わったノードの強調", () => {
     for (const m of css.matchAll(/box-shadow\s*:\s*([^;]+);/g)) expect(m[1]!.trim()).toBe("none");
   });
 
-  it("塗りの層は約 3 秒のアニメーションで、位置は absolute", () => {
+  it("塗りの層は 1 秒周期で 3 回点滅して消え、位置は absolute", () => {
     const r = rule(".map-node__flash");
     expect(r).toMatch(/position\s*:\s*absolute/);
-    expect(r).toMatch(/animation\s*:[^;]*\b3s\b/);
+    expect(r).toMatch(/animation\s*:[^;]*\b1s\b[^;]*\s3;/); // 1 秒周期を 3 回
+    expect(r).toMatch(/opacity\s*:\s*0/); // 点滅の後は塗りが残らない
   });
 
   it("「変わったこと」の変化の種類は赤でない", () => {
@@ -28,9 +29,3 @@ describe("styles.css: 変わったノードの強調", () => {
   });
 });
 
-describe("styles.css: ルートの中央揃え", () => {
-  it("map-node--root のボタンだけを中央揃えにし、既定は left のまま", () => {
-    expect(rule(".map-node--root .map-node__button")).toMatch(/text-align\s*:\s*center/);
-    expect(rule(".map-node__button")).toMatch(/text-align\s*:\s*left/);
-  });
-});

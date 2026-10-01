@@ -21,12 +21,12 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node__button { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; position: relative; }
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
 .map-node__text { overflow-wrap: anywhere; }
-/* 今回の反映で変わったノードは、背景の塗りが約 3 秒で種別の塗りへ戻る（枠・影・バッジは足さない）。
+/* 今回の反映で変わったノードは、背景の塗りが 1 秒周期でゆっくり 3 回点滅して消える（枠・影・バッジは足さない）。
+   色が徐々に戻る見せ方は利用者の評価で違和感があったため、点滅にした（2026-10-01）。
    色 #fef08a は彩度の高い黄。一般的な薄い黄 #fef9c3 は論点の塗り（#eab308 の 15%、およそ #fcf4da）と
-   区別しにくいので避けた。ブラウザで論点と並べて見分けられることを確認すること。 */
-.map-node__flash { position: absolute; inset: 0; border-radius: inherit; background: #fef08a; animation: map-node-flash 3s ease-out forwards; pointer-events: none; }
-@keyframes map-node-flash { from { opacity: 1; } to { opacity: 0; } }
-.map-node--root .map-node__button { justify-content: center; text-align: center; }
+   区別しにくいので避けた。 */
+.map-node__flash { position: absolute; inset: 0; border-radius: inherit; background: #fef08a; opacity: 0; animation: map-node-flash 1s ease-in-out 3; pointer-events: none; }
+@keyframes map-node-flash { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
 .map-node--rejected { opacity: 0.45; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 
