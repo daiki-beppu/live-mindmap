@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
-//   play <文字起こしファイル>     録音サンプルの文字起こしを待ち時間なしで再生し、マップを組み立てる
+//   play <文字起こしファイル> [--realtime]
+//                                 録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。
+//                                 再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る
 //   export --format json          最新のセッションのマップを標準出力に出す
 //   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
+//   eval [--truth <正解ファイル>] <セッションのフォルダ>...
+//                                 play で作ったランの指標を 1 ラン 1 行の表で出す。正解（{ "決定": [{ text, from, to }], "TODO": [...] }、
+//                                 from / to は会議の中の秒）を渡すと決定・TODO の再現率も出す
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { createSession, fromTranscript, playback, restoreSession, type DiffUpdater, type Session } from "./core/index.ts";
+import { createSession, formatTable, fromTranscript, parseTruth, playback, restoreSession, type DiffUpdater, type Run, type Session, type Truth } from "./core/index.ts";
+import { startSnapshotServer } from "./ws.ts";
 
 export type CliDeps = {
   updater?: DiffUpdater;
   sessionsDir?: string;
   stdout?: (s: string) => void;
+  port?: number; // スナップショットを配信する WebSocket のポート。0 なら空きポート
+  sleep?: (ms: number) => Promise<void>; // --realtime のときの待ち方
+  onListening?: (port: number) => void;
 };
 
 // セッションのフォルダに置く、その時点のエクスポート。別のプロセスの export がこれを読む。
@@ -30,6 +39,10 @@ function latestSession(sessionsDir: string, file: string): string {
   return latest;
 }
 
+const DEFAULT_PORT = 4319;
+const defaultPort = () => Number(process.env.LIVE_MINDMAP_PORT ?? DEFAULT_PORT);
+const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 const defaultSessionsDir = () => process.env.LIVE_MINDMAP_SESSIONS ?? join(homedir(), ".live-mindmap", "sessions");
 
 export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> {
@@ -38,28 +51,41 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { format: { type: "string", default: "md" } },
+    options: { format: { type: "string", default: "md" }, realtime: { type: "boolean" }, truth: { type: "string" } },
   });
   const [command, ...rest] = positionals;
 
   switch (command) {
     case "play": {
       const file = rest[0];
-      if (!file) throw new Error("usage: play <文字起こしファイル>");
+      if (!file) throw new Error("usage: play <文字起こしファイル> [--realtime]");
       const updater = deps.updater ?? (await import("./claude.ts")).claudeUpdater;
       const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
       mkdirSync(dir, { recursive: true });
-      // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
-      let session: Session | undefined;
-      session = createSession({
-        title: basename(file).replace(/\.transcript\.json$/, ""),
-        updater,
-        log: (event) => {
-          appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
-          if (session) writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-        },
-      });
-      await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))));
+      const server = await startSnapshotServer({ port: deps.port ?? defaultPort() });
+      try {
+        deps.onListening?.(server.port);
+        // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
+        let session: Session | undefined;
+        session = createSession({
+          title: basename(file).replace(/\.transcript\.json$/, ""),
+          updater,
+          log: (event) => {
+            appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
+            if (!session) return;
+            writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
+            if (event.type === "diff" && !event.error) server.publish(session.snapshot());
+          },
+        });
+        server.publish(session.snapshot()); // 最初のルート
+        await playback(
+          session,
+          fromTranscript(JSON.parse(readFileSync(file, "utf8"))),
+          values.realtime ? { sleep: deps.sleep ?? realSleep } : {},
+        );
+      } finally {
+        await server.close();
+      }
       stdout(`${dir}\n`);
       return;
     }
@@ -87,8 +113,27 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       stdout(`${dir}\n`);
       return;
     }
+    case "eval": {
+      if (rest.length === 0) throw new Error("usage: eval [--truth <正解ファイル>] <セッションのフォルダ>...");
+      let truth: Truth | undefined;
+      if (values.truth) {
+        try {
+          truth = parseTruth(JSON.parse(readFileSync(values.truth, "utf8")));
+        } catch (e) {
+          throw new Error(`正解ファイルが不正です: ${values.truth}（${e instanceof Error ? e.message : e}）`);
+        }
+      }
+      const runs: Run[] = rest.map((dir) => {
+        const file = join(dir, EXPORT_FILE);
+        if (!existsSync(file)) throw new Error(`セッションのマップがありません: ${file}`);
+        const exp = JSON.parse(readFileSync(file, "utf8"));
+        return { name: basename(dir), title: exp.root.text, exp };
+      });
+      stdout(formatTable(runs, truth));
+      return;
+    }
     default:
-      throw new Error("usage: live-mindmap <play|export|restore> ...");
+      throw new Error("usage: live-mindmap <play|export|restore|eval> ...");
   }
 }
 

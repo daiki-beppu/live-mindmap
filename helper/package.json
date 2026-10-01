@@ -2,7 +2,7 @@
   "name": "@live-mindmap/helper",
   "private": true,
   "scripts": {
-    "test": "echo \"helper: tested by hand (ADR 0002)\"",
-    "typecheck": "echo \"helper: Swift\""
+    "test": "swift test -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+    "typecheck": "swift build"
   }
 }
