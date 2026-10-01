@@ -21,12 +21,13 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node__button { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; position: relative; }
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
 .map-node__text { overflow-wrap: anywhere; }
-/* 今回の反映で変わったノードは、背景の塗りが 1 秒周期でゆっくり 3 回点滅して消える（枠・影・バッジは足さない）。
-   色が徐々に戻る見せ方は利用者の評価で違和感があったため、点滅にした（2026-10-01）。
-   色 #fef08a は彩度の高い黄。一般的な薄い黄 #fef9c3 は論点の塗り（#eab308 の 15%、およそ #fcf4da）と
-   区別しにくいので避けた。 */
-.map-node__flash { position: absolute; inset: 0; border-radius: inherit; background: #fef08a; opacity: 0; animation: map-node-flash 1s ease-in-out 3; pointer-events: none; }
-@keyframes map-node-flash { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
+/* 今回の反映で変わったノードは、ノードの塗りと枠だけを 1 秒周期で 3 回ゆっくり薄くして戻す。
+   文字は薄くしない（opacity はノード全体にかかるので使わない）。影・バッジは足さない。
+   色の塗りで知らせる案・ノード全体の opacity で点滅する案は、実機で違和感があったため取りやめた（2026-10-01）。
+   50% だけを指定し、始まりと終わりは元の塗り・枠の色から補間させる。
+   枠は細い黄色を outline で描き、次の反映まで残す（border の太さを変えると実寸が変わり、測った高さに基づく配置がずれる）。 */
+.map-node--blink { outline: 1.5px solid #facc15; outline-offset: 2px; animation: map-node-blink 1s ease-in-out 3; }
+@keyframes map-node-blink { 50% { background-color: color-mix(in srgb, var(--kind-color) 4%, white); border-color: color-mix(in srgb, var(--kind-color) 35%, white); } }
 .map-node--rejected { opacity: 0.45; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 

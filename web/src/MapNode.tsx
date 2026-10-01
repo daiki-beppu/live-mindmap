@@ -6,7 +6,7 @@ export type MapNodeData = {
   color: string;
   mark: string | null;
   rejected: boolean;
-  changedRound: number | null; // 今回の反映で変わったなら、その反映の round（塗りの強調）
+  changedRound: number | null; // 今回の反映で変わったなら、その反映の round（点滅の強調）
   selected: boolean; // 右の列に根拠を出している
   onSelect: (nodeId: string) => void;
 };
@@ -14,11 +14,12 @@ export type MapNodeData = {
 // 受け取った値を描き、クリックは onSelect で通知するだけ（表示専用）。
 export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
   return (
+    // 反映ごとに key を変えて要素を作り直し、点滅のアニメーションを頭からやり直す
     <div
-      className={["map-node", data.rejected && "map-node--rejected"].filter(Boolean).join(" ")}
+      key={data.changedRound ?? "steady"}
+      className={["map-node", data.rejected && "map-node--rejected", data.changedRound !== null && "map-node--blink"].filter(Boolean).join(" ")}
       style={{ "--kind-color": data.color } as CSSProperties}
     >
-      {data.changedRound !== null && <span key={data.changedRound} className="map-node__flash" aria-hidden="true" />}
       <Handle type="target" position={Position.Left} isConnectable={false} />
       <button type="button" className="map-node__button" aria-pressed={data.selected} onClick={() => data.onSelect(id)}>
         {data.mark && <span className="map-node__mark">{data.mark}</span>}
