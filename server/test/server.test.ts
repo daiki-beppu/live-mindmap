@@ -43,7 +43,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 import { spawn } from "node:child_process";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
-import { startServer } from "../src/server.ts";
+import { HELPER_STOP_TIMEOUT_MS, startServer } from "../src/server.ts";
 
 // 疎通テスト: 偽のヘルパー（fixtures/fake-helper.ts）から発言を送り、CLI で開始・終了する。
 // サーバーは実物（HTTP + WebSocket + 子プロセスの起動）で、差分更新とヘルパーだけが偽物。
@@ -68,8 +68,8 @@ const OPS: Op[][] = [
   [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
 ];
 
-type Script = { apps: unknown; events: unknown[]; failRun?: { stderr: string; code: number } };
-type HelperRecord = { type: "run"; argv: string[]; pid: number } | { type: "connection" };
+type Script = { apps: unknown; events: unknown[]; failRun?: { stderr: string; code: number }; ignoreSigterm?: boolean };
+type HelperRecord = { type: "run"; argv: string[]; pid: number } | { type: "connection" } | { type: "signal"; signal: string };
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -156,7 +156,14 @@ describe("ライブのセッション", () => {
     // 会議中（stop の前）に、r1・r2 の反映が接続中のクライアントへ届く
     await vi.waitFor(() => expect(before.received.map((s) => s.nodes.length)).toEqual([1, 3]));
 
+    const stderr = vi.spyOn(process.stderr, "write");
+    cleanups.push(async () => stderr.mockRestore());
+    const stopStartedAt = Date.now();
     const stdout = await cli("stop");
+
+    // SIGTERM で終わるヘルパーでは、時間切れを待たず、SIGKILL にも切り替えない
+    expect(Date.now() - stopStartedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS);
+    expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(false);
 
     // 終了で、セッションのフォルダに 3 つのファイルが書かれ、そのパスが出る
     const [dir] = await sessionDirs();
@@ -283,6 +290,63 @@ describe("ライブのセッション", () => {
 
     await vi.waitFor(() => expect(() => process.kill(run.pid, 0)).toThrow());
   });
+
+  // 実時間で HELPER_STOP_TIMEOUT_MS 待つ（QUIET_MS と同じく、定数を export して実時間で確かめる）
+  it(
+    "ヘルパーが SIGTERM で終わらなくても、stop は時間内に戻り、それまでの発言でマップを確定して 3 つのファイルを書き、SIGKILL に切り替えたことを標準エラーに残す。同じサーバーで次のセッションも開始・終了できる",
+    { timeout: HELPER_STOP_TIMEOUT_MS + 10_000 },
+    async () => {
+      const stderr = vi.spyOn(process.stderr, "write");
+      cleanups.push(async () => stderr.mockRestore());
+      const { cli, calls, records, sessionDirs, writeScript } = await setup({ ignoreSigterm: true });
+      await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+      await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
+      const run = records().find((r) => r.type === "run");
+      if (run?.type !== "run") throw new Error("ヘルパーが起動していない");
+
+      const startedAt = Date.now();
+      const stdout = await cli("stop");
+      const elapsed = Date.now() - startedAt;
+
+      expect(elapsed).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
+      const [dir] = await sessionDirs();
+      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix")];
+      expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
+      for (const path of paths) expect(existsSync(path)).toBe(true);
+      // 届いていた発言（r1〜r3）で確定している
+      expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"], ["r3"]]);
+      expect(readFileSync(paths[1]!, "utf8")).toContain("2 回にする");
+      expect(readFileSync(paths[0]!, "utf8")).toContain("2 回にする");
+      // まず SIGTERM を送り、その後 SIGKILL で子を残さない
+      expect(records().filter((r) => r.type === "signal")).toEqual([{ type: "signal", signal: "SIGTERM" }]);
+      expect(() => process.kill(run.pid, 0)).toThrow();
+      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(true);
+
+      // stop の後も、同じサーバーで次のセッションを開始・終了できる
+      writeScript({ events: [] });
+      await cli("start", "--app", "us.zoom.xos", "--title", "次");
+      await cli("stop");
+      expect(await sessionDirs()).toHaveLength(2);
+    },
+  );
+
+  it(
+    "ヘルパーが SIGTERM で終わらなくても、サーバーの close は時間内に戻り、子プロセスを残さない",
+    { timeout: HELPER_STOP_TIMEOUT_MS + 10_000 },
+    async () => {
+      const { server, cli, records } = await setup({ ignoreSigterm: true });
+      await cli("start", "--app", "us.zoom.xos");
+      await vi.waitFor(() => expect(records().filter((r) => r.type === "connection")).toHaveLength(1));
+      const run = records().find((r) => r.type === "run");
+      if (run?.type !== "run") throw new Error("ヘルパーが起動していない");
+
+      const startedAt = Date.now();
+      await server.close();
+
+      expect(Date.now() - startedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
+      expect(() => process.kill(run.pid, 0)).toThrow();
+    },
+  );
 
   it("freePort の待機中に close() が始まったら、start はヘルパーを起動せずに失敗する", async () => {
     const { server, cli, records } = await setup();

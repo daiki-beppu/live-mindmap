@@ -25,6 +25,8 @@ export type ServerOptions = {
 export type Server = { port: number; close: () => Promise<void> };
 
 const RETRY_MS = 200;
+// SIGTERM を送ってから、SIGKILL に切り替えるまでの待ち時間
+export const HELPER_STOP_TIMEOUT_MS = 5_000;
 
 // 状態に合わない依頼や不正な依頼。HTTP のステータスつきで、wrapper が応答に変える
 class RequestError extends Error {
@@ -44,6 +46,23 @@ type State =
   | { kind: "stopping" };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// ヘルパーを止める。SIGTERM で終わらないヘルパー（#70）で、stop・close・start の後片付けが固まらないよう、時間切れなら SIGKILL に切り替える
+async function stopHelper(helper: Helper): Promise<void> {
+  if (helper.hasExited()) return;
+  helper.child.kill("SIGTERM");
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<true>((resolve) => {
+    timer = setTimeout(() => resolve(true), HELPER_STOP_TIMEOUT_MS);
+  });
+  const result = await Promise.race([helper.exited.then(() => false), timedOut]);
+  clearTimeout(timer);
+  if (result) {
+    process.stderr.write(`ヘルパーが SIGTERM から ${HELPER_STOP_TIMEOUT_MS}ms 経っても終了しないので、SIGKILL で止めます\n`);
+    helper.child.kill("SIGKILL");
+    await helper.exited;
+  }
+}
 
 // 空きポートを選ぶ（listen(0) で割り当てを受けてから閉じる）
 function freePort(): Promise<number> {
@@ -173,8 +192,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       return { dir };
     } catch (e) {
       if (starting.helper) {
-        starting.helper.child.kill("SIGTERM");
-        await starting.helper.exited;
+        await stopHelper(starting.helper);
       }
       state = { kind: "idle" };
       throw e;
@@ -188,9 +206,8 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     const { helper, ws, wsClosed, session, dir } = state;
     state = { kind: "stopping" };
     try {
-      if (!helper.hasExited()) helper.child.kill("SIGTERM");
       // 子の終了と WebSocket の close を待つ。close の前に届いた発言は、すべて push 済みになる
-      await Promise.all([helper.exited, wsClosed]);
+      await Promise.all([stopHelper(helper), wsClosed]);
       ws.terminate();
       await session.flush();
       return { paths: writeSessionExports(dir, session.exportJson()) };
@@ -243,8 +260,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     // closing は同期的に代入するので、開始中の start() が（freePort の後で）検知して spawn しない。
     close() {
       closing ??= (async () => {
-        if (current && !current.hasExited()) current.child.kill("SIGTERM");
-        await current?.exited;
+        if (current) await stopHelper(current);
         if (state.kind === "running") state.ws.terminate();
         await snapshotServer.close();
       })();

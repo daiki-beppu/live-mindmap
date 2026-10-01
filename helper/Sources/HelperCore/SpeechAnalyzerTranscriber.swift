@@ -61,8 +61,10 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
             // 音声 → 変換 → AnalyzerInput。音声が終わったら入力を閉じ、残りを確定させる。
             let feeder = Task {
                 var converter: AVAudioConverter?
+                var received = false
                 do {
                     for try await captured in audio {
+                        received = true
                         let buffer = captured.buffer
                         // 結果の時刻は、アナライザに入れた最初の音声が 0。最初のバッファの取得時刻と共通の基準との差で補正する。
                         timeline.record(captured)
@@ -85,6 +87,13 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                     return
                 }
                 inputBuilder.finish()
+                // 入力が 0 件のまま finalize を呼ぶと戻らず、結果の流れが終わらない（#70）。
+                // 確定させる結果がないので、結果の流れを先に閉じてから analyzer を捨てる。
+                if !received {
+                    continuation.finish()
+                    await analyzer.cancelAndFinishNow()
+                    return
+                }
                 do {
                     try await analyzer.finalizeAndFinishThroughEndOfInput()
                 } catch {
