@@ -37,7 +37,7 @@ async function play(script: Op[][], file = fixture): Promise<string> {
   const updater = async (_input: DiffInput) => ({ ops: script[n++] ?? [] });
   const out: string[] = [];
   await runCli(["play", file], { updater, sessionsDir, stdout: (s) => out.push(s) });
-  return out.join("").trim();
+  return dirname(out[0]!.split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
 }
 
 async function evalCli(args: string[]): Promise<string> {

@@ -2,8 +2,9 @@
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 //   play <文字起こしファイル> [--realtime]
 //                                 録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。
-//                                 再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る
-//   export --format json          最新のセッションのマップを標準出力に出す
+//                                 再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。
+//                                 終わると、セッションのフォルダに map.md・map.json・map.drawnix を書き出し、そのパスを出す
+//   export [--format md|json]     最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）
 //   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
 //   eval [--truth <正解ファイル>] <セッションのフォルダ>...
 //                                 play で作ったランの指標を 1 ラン 1 行の表で出す。正解（{ "決定": [{ text, from, to }], "TODO": [...] }、
@@ -12,7 +13,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { createSession, formatTable, fromTranscript, parseTruth, playback, restoreSession, type DiffUpdater, type Run, type Session, type Truth } from "./core/index.ts";
+import { createSession, exportFiles, formatTable, fromTranscript, parseTruth, playback, restoreSession, toMarkdown, type DiffUpdater, type JsonExport, type Run, type Session, type Truth } from "./core/index.ts";
 import { startSnapshotServer } from "./ws.ts";
 
 export type CliDeps = {
@@ -27,6 +28,16 @@ export type CliDeps = {
 // セッションのフォルダに置く、その時点のエクスポート。別のプロセスの export がこれを読む。
 // サーバーが状態を持つようになったら（#35）、export はサーバーに聞く形に差し替える。
 const EXPORT_FILE = "export.json";
+
+// セッション終了時の書き出し。スナップショットは 1 回だけ取り、3 形式に同じものを渡す。
+// ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
+export function writeSessionExports(dir: string, exp: JsonExport): string[] {
+  return Object.entries(exportFiles(exp)).map(([name, content]) => {
+    const path = join(dir, name);
+    writeFileSync(path, content.endsWith("\n") ? content : content + "\n");
+    return path;
+  });
+}
 
 const LOG_FILE = "log.jsonl";
 
@@ -63,6 +74,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
       mkdirSync(dir, { recursive: true });
       const server = await startSnapshotServer({ port: deps.port ?? defaultPort() });
+      let paths: string[];
       try {
         deps.onListening?.(server.port);
         // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
@@ -83,17 +95,20 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
           fromTranscript(JSON.parse(readFileSync(file, "utf8"))),
           values.realtime ? { sleep: deps.sleep ?? realSleep } : {},
         );
+        paths = writeSessionExports(dir, session.exportJson());
       } finally {
         await server.close();
       }
-      stdout(`${dir}\n`);
+      stdout(paths.map((p) => `${p}\n`).join(""));
       return;
     }
     case "export": {
-      if (values.format !== "json") throw new Error(`未対応の形式: ${values.format}（いまは --format json だけ）`);
+      if (values.format !== "md" && values.format !== "json") {
+        throw new Error(`未対応の形式: ${values.format}（md か json）`);
+      }
       const latest = latestSession(sessionsDir, EXPORT_FILE);
-      const exported = JSON.parse(readFileSync(join(sessionsDir, latest, EXPORT_FILE), "utf8"));
-      stdout(JSON.stringify(exported, null, 2) + "\n");
+      const exported: JsonExport = JSON.parse(readFileSync(join(sessionsDir, latest, EXPORT_FILE), "utf8"));
+      stdout(values.format === "md" ? toMarkdown(exported) : JSON.stringify(exported, null, 2) + "\n");
       return;
     }
     case "restore": {
