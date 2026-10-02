@@ -1,0 +1,27 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @live-mindmap/server exec playwright install chromium
+      - run: pnpm typecheck
+      - run: pnpm --filter @live-mindmap/server test
+      - run: pnpm --filter @live-mindmap/web test
+      # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
+      # ランナーには Xcode があるので swift test をそのまま使う
+      - run: swift test
+        working-directory: helper
