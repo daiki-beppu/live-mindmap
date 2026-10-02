@@ -30,7 +30,8 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
         transcriber = SpeechTranscriber(
             locale: Locale(identifier: "ja-JP"),
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
+            // .fastResults がないと、約 11.5 秒分の音声をまとめて処理し、途中結果も確定も塊で遅れて出る（2026-10-02 実測）
+            reportingOptions: [.volatileResults, .fastResults],
             attributeOptions: [.audioTimeRange]
         )
     }
