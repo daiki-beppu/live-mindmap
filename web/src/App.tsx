@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Captions } from "./Captions.tsx";
 import { ChangeList } from "./ChangeList.tsx";
 import { EvidencePanel } from "./EvidencePanel.tsx";
 import { evidenceOf } from "./evidence.ts";
@@ -13,7 +14,8 @@ export function App() {
   return (
     <div className="layout">
       <div className="map">
-        <MapView snapshot={snapshot} speaking={speaking} selectedId={selectedId} onSelect={setSelectedId} />
+        <MapView snapshot={snapshot} selectedId={selectedId} onSelect={setSelectedId} />
+        <Captions speaking={speaking} />
       </div>
       <div className="side">
         <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId)} />
