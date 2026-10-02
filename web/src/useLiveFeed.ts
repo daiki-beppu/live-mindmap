@@ -4,7 +4,7 @@ import type { Snapshot, SpeakingFrame, Track } from "../../server/src/core/index
 const RECONNECT_MS = 1000;
 
 export type Speaking = Record<Track, string>;
-const NO_SPEAKING: Speaking = { 相手: "", 自分: "" };
+export const NO_SPEAKING: Speaking = { 相手: "", 自分: "" };
 
 // /ws から届く frame を購読する。type が "speaking" のものは、トラックごとの「いま話している文字」。それ以外はスナップショット。
 // 切れたら 1 秒後につなぎ直し、切れている間も最後のスナップショットを持ち続ける。

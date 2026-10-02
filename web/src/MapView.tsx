@@ -1,7 +1,9 @@
 import {
+  getNodesBounds,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStoreApi,
   type Edge,
   type Node,
   type NodeChange,
@@ -28,10 +30,18 @@ type Dims = Record<string, { width: number; height: number }>;
 
 type SelectProps = { selectedId: string | null; onSelect: (nodeId: string) => void };
 
-function MapCanvas({ snapshot, speaking, selectedId, onSelect }: { snapshot: Snapshot; speaking: Speaking } & SelectProps) {
+// still は map.png の撮影用: 変わったノードの強調と位置の補間をなくし、大きなマップも全体を収める。
+// onFitted は still のとき、全ノードが測られ、全体を収めようとした後に呼ぶ。引数は、全ノードが画面に収まったか（撮る合図の判断材料）。
+type StillProps = { still?: boolean; onFitted?: (fitsAll: boolean) => void };
+
+// 撮影では、既定の最小倍率（0.5）より小さくして、大きなマップも収める。この下限でも収まらない場合は onFitted(false) で知らせる
+const STILL_MIN_ZOOM = 0.02;
+
+function MapCanvas({ snapshot, speaking, selectedId, onSelect, still = false, onFitted }: { snapshot: Snapshot; speaking: Speaking } & SelectProps & StillProps) {
   // React Flow が測った実寸。スナップショットが変わっても捨てない（測り直しは onNodesChange で上書きされる）。
   const [dims, setDims] = useState<Dims>({});
-  const { fitView } = useReactFlow();
+  const { fitView, getViewport } = useReactFlow();
+  const storeApi = useStoreApi();
 
   const onNodesChange = (changes: NodeChange[]) => {
     const measured = changes.filter((c): c is NodeDimensionChange => c.type === "dimensions" && !!c.dimensions);
@@ -54,7 +64,8 @@ function MapCanvas({ snapshot, speaking, selectedId, onSelect }: { snapshot: Sna
     const heights = Object.fromEntries(Object.entries(dims).map(([id, d]) => [id, d.height]));
     return layout(snapshot.nodes, heights);
   }, [snapshot.nodes, dims]);
-  const positions = useAnimatedPositions(snapshot.nodes, target);
+  const animated = useAnimatedPositions(snapshot.nodes, target);
+  const positions = still ? target : animated;
 
   // 仮のノード。正式な配置（layout）には入れず、補間中の正式なノードの位置から導く（正式なノードは動かない）
   const drafts = useMemo(() => draftsOf(speaking), [speaking]);
@@ -76,7 +87,7 @@ function MapCanvas({ snapshot, speaking, selectedId, onSelect }: { snapshot: Sna
         color: KIND_COLOR[n.kind],
         mark: markOf(n),
         rejected: n.kind === "案" && n.planStatus === "却下",
-        changedRound: changed.has(n.id) ? snapshot.round : null,
+        changedRound: !still && changed.has(n.id) ? snapshot.round : null,
         selected: n.id === selectedId,
         onSelect,
       },
@@ -90,7 +101,7 @@ function MapCanvas({ snapshot, speaking, selectedId, onSelect }: { snapshot: Sna
       data: { text: d.text },
     }));
     return [...formal, ...draftNodes];
-  }, [snapshot, positions, dims, selectedId, onSelect, drafts, draftPos]);
+  }, [snapshot, positions, dims, selectedId, onSelect, drafts, draftPos, still]);
 
   const edges = useMemo((): Edge[] => {
     const formal = snapshot.nodes.flatMap((n) =>
@@ -103,9 +114,26 @@ function MapCanvas({ snapshot, speaking, selectedId, onSelect }: { snapshot: Sna
 
   // 反映のたびに（位置・寸法が変わるたびに）全体を画面に収める
   useEffect(() => {
-    const frame = requestAnimationFrame(() => void fitView({ duration: 0, padding: 0.1 }));
-    return () => cancelAnimationFrame(frame);
-  }, [nodes, fitView]);
+    // 撮影では、すべての正式なノードが測られた後の配置を収めようとしてから、収まったかを知らせる
+    const measured = snapshot.nodes.every((n) => dims[n.id]);
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      void fitView({ duration: 0, padding: 0.1, ...(still ? { minZoom: STILL_MIN_ZOOM } : {}) }).then(() => {
+        if (!still || !measured || cancelled) return;
+        // fitView は下限の倍率で止まっても成功を返すので、実際に全体が画面に収まったかを自分で確かめる
+        const b = getNodesBounds(nodes);
+        const { x, y, zoom } = getViewport();
+        const { width, height } = storeApi.getState();
+        onFitted?.(
+          b.x * zoom + x >= 0 && b.y * zoom + y >= 0 && (b.x + b.width) * zoom + x <= width && (b.y + b.height) * zoom + y <= height,
+        );
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [nodes, fitView, getViewport, storeApi, still, snapshot.nodes, dims, onFitted]);
 
   return (
     <ReactFlow
@@ -121,15 +149,16 @@ function MapCanvas({ snapshot, speaking, selectedId, onSelect }: { snapshot: Sna
       zoomOnScroll={false}
       zoomOnPinch={false}
       zoomOnDoubleClick={false}
+      {...(still ? { minZoom: STILL_MIN_ZOOM } : {})}
       proOptions={{ hideAttribution: true }}
     />
   );
 }
 
-export function MapView({ snapshot, speaking, selectedId, onSelect }: { snapshot: Snapshot; speaking: Speaking } & SelectProps) {
+export function MapView({ snapshot, speaking, selectedId, onSelect, still, onFitted }: { snapshot: Snapshot; speaking: Speaking } & SelectProps & StillProps) {
   return (
     <ReactFlowProvider>
-      <MapCanvas snapshot={snapshot} speaking={speaking} selectedId={selectedId} onSelect={onSelect} />
+      <MapCanvas snapshot={snapshot} speaking={speaking} selectedId={selectedId} onSelect={onSelect} still={still} onFitted={onFitted} />
     </ReactFlowProvider>
   );
 }

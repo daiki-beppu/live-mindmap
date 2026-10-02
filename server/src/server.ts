@@ -2,7 +2,7 @@
 // 常駐サーバー（pnpm dev）。ADR 0003: ヘルパーはこのサーバーの子プロセスで、セッションの開始・終了は CLI から頼まれる。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
 //   POST /session/start   { app, title? } ヘルパーを `run --app <app> --port <空きポート>` で起動し、発言を中核へ流す
-//   POST /session/stop    ヘルパーを止め、map.md・map.json・map.drawnix を書き出す
+//   POST /session/stop    ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出す
 // スナップショットの WebSocket（ブラウザ向け）と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 // 状態は idle → starting → running → stopping → idle。開始・終了を受け付けるかは、この状態だけで決める。
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -10,6 +10,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { WebSocket } from "ws";
+import type { MapCapture } from "./capture.ts";
 import { defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
 import { partialFromHelper, remarkFromHelper, type DiffUpdater, type Session } from "./core/index.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
@@ -19,6 +20,7 @@ export type ServerOptions = {
   port: number; // 0 なら空きポート
   sessionsDir: string;
   updater: DiffUpdater;
+  capture: MapCapture; // 終了時の map.png の撮影
   helper: { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
   onListening?: (port: number) => void;
 };
@@ -148,7 +150,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 export async function startServer(options: ServerOptions): Promise<Server> {
-  const { sessionsDir, updater, helper: helperCommand } = options;
+  const { sessionsDir, updater, capture, helper: helperCommand } = options;
   let state: State = { kind: "idle" };
   let current: Helper | undefined; // 子プロセスの所有者はこのサーバー。終了時に止める
   let closing: Promise<void> | undefined;
@@ -223,7 +225,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       await Promise.all([stopHelper(helper), wsClosed]);
       ws.terminate();
       await session.flush();
-      return { paths: writeSessionExports(dir, session.exportJson()) };
+      return { paths: await writeSessionExports(dir, session.snapshot(), capture) };
     } finally {
       state = { kind: "idle" };
       // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
@@ -290,10 +292,12 @@ export async function startServer(options: ServerOptions): Promise<Server> {
 if (import.meta.main) {
   const helperPath = process.env.LIVE_MINDMAP_HELPER ?? join(import.meta.dirname, "../../helper/.build/debug/live-mindmap-helper");
   const { claudeUpdater } = await import("./claude.ts");
+  const { captureMap } = await import("./capture.ts");
   const server = await startServer({
     port: defaultPort(),
     sessionsDir: defaultSessionsDir(),
     updater: claudeUpdater,
+    capture: captureMap,
     helper: { command: helperPath, args: [] },
     onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
   });
