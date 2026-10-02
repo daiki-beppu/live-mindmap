@@ -35,3 +35,34 @@ describe("styles.css: 変わったノードの強調", () => {
   });
 });
 
+
+describe("styles.css: 仮のノード", () => {
+  const body = () => rule(".draft-node");
+  const hex = (value: string): [number, number, number] => {
+    const m = value.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    if (!m) throw new Error(`色が #rrggbb ではありません: ${value}`);
+    return [parseInt(m[1]!, 16), parseInt(m[2]!, 16), parseInt(m[3]!, 16)];
+  };
+  // 灰色（Tailwind の gray は少し青みがある: #9ca3af・#6b7280 はチャンネル差が 19〜21）。種別の色は彩度が高く、これを超える
+  const isGray = ([r, g, b]: [number, number, number]) => Math.max(r, g, b) - Math.min(r, g, b) <= 24;
+
+  it("正式なノードと同じ幅で、規則がある", () => {
+    expect(body()).not.toBe("");
+    expect(body()).toMatch(/width\s*:\s*200px/);
+  });
+
+  it("枠は破線で、灰色。文字も灰色。塗りはない", () => {
+    expect(body()).toMatch(/border\s*:[^;]*\bdashed\b/);
+    const border = body().match(/border\s*:[^;]*(#[0-9a-f]{6})/i)?.[1];
+    expect(isGray(hex(border!))).toBe(true);
+    const color = body().match(/(?:^|[;\s])color\s*:\s*(#[0-9a-f]{6})/i)?.[1];
+    expect(isGray(hex(color!))).toBe(true);
+    expect(body()).toMatch(/background\s*:\s*(none|transparent)\s*;/);
+  });
+
+  it("種別の色を使わず、影も付けない", () => {
+    expect(body()).not.toContain("--kind-color");
+    expect(body()).not.toMatch(/box-shadow\s*:(?!\s*none)/);
+    expect(body()).toMatch(/box-shadow\s*:\s*none/);
+  });
+});

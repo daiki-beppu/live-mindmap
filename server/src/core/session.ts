@@ -122,6 +122,7 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
   let inFlight: Promise<void> | null = null;
   let gen = 0; // 新しい発言を受け取るたびに進める。古い待ちの解決を無視するための世代
   let quiet = false; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
+  let reflecting: Remark[] = []; // 差分更新の結果待ちの発言。結果を log する直前に外す
 
   // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
   // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
@@ -152,11 +153,13 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
     for (const u of fresh) known.add(u.id);
     const input = { recent: recent.map((u) => u.id), fresh: fresh.map((u) => u.id), nodeCount: map.order.length - 1 };
     processed = [...processed, ...fresh];
+    reflecting = fresh;
     let ops: Op[];
     try {
       ({ ops } = await updater({ map, recent, fresh }));
     } catch (e) {
       // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
+      reflecting = [];
       log({ type: "diff", input, ops: [], dropped: [], error: String(e) });
       return;
     }
@@ -164,6 +167,7 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
     // 送信（log）より先に記録する。log の中で届くスナップショットに今回分が載る
     recordRound(state, map, applied.map, fresh);
     map = applied.map;
+    reflecting = [];
     log({ type: "diff", input, ops, dropped: applied.dropped });
   }
 
@@ -203,6 +207,10 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
       await this.idle();
     },
     snapshot,
+    // まだマップに反映していない発言（差分更新の結果待ち + 渡していないもの）。仮のノードの文字に使う。重複の印つきは含まない
+    unreflectedRemarks(): Remark[] {
+      return [...reflecting, ...pending].map((r) => ({ ...r }));
+    },
     // その時点のマップのエクスポート（JSON）
     exportJson(): JsonExport {
       return toJsonExport(snapshot(), remarks);

@@ -133,6 +133,50 @@ describe("スナップショットサーバー（WebSocket）", () => {
     },
   );
 
+  describe("つないだ直後の speaking", () => {
+    const frame = (track: "相手" | "自分", text: string) => ({ type: "speaking" as const, track, text });
+    // 接続して、スナップショットと speaking frame が出そろうまで受け取る
+    async function connectAndCollect(port: number, n: number) {
+      const c = await connect(port);
+      await c.until(n);
+      await settle();
+      const received = c.received as unknown[];
+      await c.close();
+      return received;
+    }
+
+    it("反映待ちの文字があるときにつないだクライアントへ、スナップショットの後に送り直す", async () => {
+      server = await startSnapshotServer({ port: 0 });
+      server.publish(snap("採用"));
+      server.speak(frame("相手", "あ い"));
+      expect(await connectAndCollect(server.port, 2)).toEqual([snap("採用"), frame("相手", "あ い")]);
+    });
+
+    it("トラックごとに 1 件まで送り、空のトラックは送らない", async () => {
+      server = await startSnapshotServer({ port: 0 });
+      server.speak(frame("相手", "あ"));
+      server.speak(frame("自分", ""));
+      expect(await connectAndCollect(server.port, 1)).toEqual([frame("相手", "あ")]);
+    });
+
+    it("同じトラックへ続けて送った場合は、最後の値だけを送り直す", async () => {
+      server = await startSnapshotServer({ port: 0 });
+      server.speak(frame("相手", "あ"));
+      server.speak(frame("相手", "あ い"));
+      expect(await connectAndCollect(server.port, 1)).toEqual([frame("相手", "あ い")]);
+    });
+
+    it("最後に空を送ったトラックは、つないでも何も届かない", async () => {
+      server = await startSnapshotServer({ port: 0 });
+      server.speak(frame("相手", "あ"));
+      server.speak(frame("相手", ""));
+      const c = await connect(server.port);
+      await settle();
+      expect(c.received).toEqual([]);
+      await c.close();
+    });
+  });
+
   it("close の後は、つないだままのクライアントがいても終了でき、新しい接続を受け付けない", async () => {
     server = await startSnapshotServer({ port: 0 });
     const { port } = server;
