@@ -79,3 +79,18 @@ cli export --format json                  # 終了後も、最新のセッショ
 5. `cli stop` で終了し、出力された 4 つのパス（map.png はマップだけの画像）のファイルがあること、表示が最後のマップのまま残ること、`cli export --format json` で同じマップが取り出せることを確かめる
 6. セッションのフォルダに `相手.m4a` と `自分.m4a` の 2 本が残っていることを確かめる。`map.json` の発言の start（秒）の位置から再生し、その発言が聞こえること（`相手` の発言は `相手.m4a`、`自分` の発言は `自分.m4a`）を確かめる
 7. もう一度 `cli start --app <bundle id> --no-audio` で開始して `cli stop` し、そのセッションのフォルダに `相手.m4a`・`自分.m4a` ができないことを確かめる
+
+## Claude の認証
+
+差分更新は Claude（Agent SDK 経由）を呼びます。自分の Anthropic API キーを環境変数で渡してください。費用は API キーの持ち主に請求されます。
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+pnpm dev
+```
+
+Claude のサブスク（Free / Pro / Max）の認証での利用は案内していません。Anthropic の規約で、第三者のアプリがサブスクの認証で要求を送ることが認められていないためです（[ADR 0004](docs/adr/0004-mit-license-no-monetization.md)）。
+
+## ライセンス
+
+[MIT](LICENSE)。依存先の `@anthropic-ai/claude-agent-sdk` は Anthropic の規約に従います。
