@@ -100,10 +100,25 @@ async function setup(initial: Partial<Script> = {}, capture: MapCapture = fakeCa
     calls.push(input);
     return { ops: OPS[calls.length - 1] ?? [] };
   };
+  // セッションごとに開く updater。開いた数と閉じた数を数える
+  const updaters = { opened: 0, closed: 0, callsAfterClose: 0 };
   const server = await startServer({
     port: 0,
     sessionsDir,
-    updater,
+    openUpdater: () => {
+      updaters.opened++;
+      let closed = false;
+      return {
+        update: async (input: DiffInput) => {
+          if (closed) updaters.callsAfterClose++;
+          return updater(input);
+        },
+        close: () => {
+          closed = true;
+          updaters.closed++;
+        },
+      };
+    },
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
     capture,
   });
@@ -118,7 +133,7 @@ async function setup(initial: Partial<Script> = {}, capture: MapCapture = fakeCa
     return out.join("");
   };
   const sessionDirs = async () => (existsSync(sessionsDir) ? (await readdir(sessionsDir)).sort().map((d) => join(sessionsDir, d)) : []);
-  return { server, cli, calls, writeScript, records, sessionDirs };
+  return { server, cli, calls, writeScript, records, sessionDirs, sessionsDir, updaters };
 }
 
 // つないだクライアントに届いた frame を、スナップショットと speaking（いま話している文字）に分けて貯める
@@ -409,6 +424,70 @@ describe("ライブのセッション", () => {
     await cli("start", "--app", "us.zoom.xos", "--title", "次");
     await cli("stop");
     await vi.waitFor(() => expect(before.received.map((s) => [s.nodes.length, s.nodes[0]!.text])).toEqual([[4, "前"], [1, "次"]]));
+  });
+
+  it("差分更新の updater は、セッションの開始で 1 つ開き、stop で閉じる。次のセッションは新しく開く", async () => {
+    const { cli, updaters, calls } = await setup();
+    expect(updaters).toMatchObject({ opened: 0, closed: 0 }); // サーバーを起動しただけでは開かない
+
+    await cli("start", "--app", "us.zoom.xos", "--title", "1 つ目");
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect(updaters).toMatchObject({ opened: 1, closed: 0 }); // 会議中は閉じない（発言のたびに開き直さない）
+
+    await cli("stop");
+    expect(updaters).toMatchObject({ opened: 1, closed: 1 });
+
+    await cli("start", "--app", "us.zoom.xos", "--title", "2 つ目");
+    await cli("stop");
+    expect(updaters).toMatchObject({ opened: 2, closed: 2 });
+  });
+
+  it("stop が途中で失敗しても、updater は閉じられる", async () => {
+    const { cli, updaters, sessionDirs } = await setup();
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    const [dir] = await sessionDirs();
+    rmSync(dir!, { recursive: true, force: true });
+
+    await expect(cli("stop")).rejects.toThrow();
+
+    expect(updaters).toMatchObject({ opened: 1, closed: 1 });
+  });
+
+  it("stop は、最後の差分更新が終わってから updater を閉じる（閉じたあとに呼ばれない）", async () => {
+    const { cli, calls, updaters } = await setup();
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+    await cli("stop"); // stop の flush で r3 の差分更新が走る
+
+    expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"], ["r3"]]);
+    expect(updaters).toMatchObject({ closed: 1, callsAfterClose: 0 });
+  });
+
+  it("ヘルパーにつないだ後（updater を開いた後）に、セッションのフォルダを作れず start が失敗しても、開いた updater は閉じられる", async () => {
+    const { cli, updaters, sessionsDir } = await setup();
+    writeFileSync(sessionsDir, ""); // フォルダの位置に通常ファイルがあり、mkdir できない
+
+    await expect(cli("start", "--app", "us.zoom.xos")).rejects.toThrow();
+
+    expect(updaters).toMatchObject({ opened: 1, closed: 1 });
+  });
+
+  it("進行中にサーバーが終わるとき、updater を閉じる", async () => {
+    const { server, cli, updaters } = await setup();
+    await cli("start", "--app", "us.zoom.xos");
+    expect(updaters).toMatchObject({ opened: 1, closed: 0 });
+
+    await server.close();
+
+    expect(updaters).toMatchObject({ opened: 1, closed: 1 });
+  });
+
+  it("セッションが無いままサーバーが終わっても、updater は開かれない", async () => {
+    const { server, updaters } = await setup();
+
+    await server.close();
+
+    expect(updaters).toMatchObject({ opened: 0, closed: 0 });
   });
 
   it("サーバーが終わるとき、起動していたヘルパーの子プロセスを残さない", async () => {

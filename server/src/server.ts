@@ -11,15 +11,16 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import type { MapCapture } from "./capture.ts";
+import type { SessionUpdater } from "./claude.ts";
 import { defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
-import { partialFromHelper, remarkFromHelper, type DiffUpdater, type Session } from "./core/index.ts";
+import { partialFromHelper, remarkFromHelper, type Session } from "./core/index.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
 import { isLocalOrigin, startSnapshotServer } from "./ws.ts";
 
 export type ServerOptions = {
   port: number; // 0 なら空きポート
   sessionsDir: string;
-  updater: DiffUpdater;
+  openUpdater: () => SessionUpdater; // セッションの開始ごとに 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
   capture: MapCapture; // 終了時の map.png の撮影
   helper: { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
   onListening?: (port: number) => void;
@@ -45,7 +46,7 @@ type Helper = { child: ChildProcess; stderr: () => string; exited: Promise<void>
 type State =
   | { kind: "idle" }
   | { kind: "starting"; helper?: Helper }
-  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; speaking: SpeakingRelay }
+  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; speaking: SpeakingRelay; updater: SessionUpdater }
   | { kind: "stopping" };
 
 type SpeakingRelay = ReturnType<typeof createSpeakingRelay>;
@@ -150,7 +151,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 export async function startServer(options: ServerOptions): Promise<Server> {
-  const { sessionsDir, updater, capture, helper: helperCommand } = options;
+  const { sessionsDir, openUpdater, capture, helper: helperCommand } = options;
   let state: State = { kind: "idle" };
   let current: Helper | undefined; // 子プロセスの所有者はこのサーバー。終了時に止める
   let closing: Promise<void> | undefined;
@@ -161,6 +162,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     }
     const starting: State & { kind: "starting" } = { kind: "starting" };
     state = starting;
+    let updater: SessionUpdater | undefined;
     try {
       const helperPort = await freePort();
       // close() は current だけを止める。freePort の待機中に close() が始まっていたら、ヘルパーを起動しない（子プロセスが残る）
@@ -171,10 +173,11 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない。接続の解決からここまで await を入れない
       // 反映が終わるたびに、未反映の発言が変わるので、いま話している文字を送り直す
       let speaking: SpeakingRelay | undefined;
+      updater = openUpdater();
       const { dir, session } = startRecordedSession({
         sessionsDir,
         title,
-        updater,
+        updater: updater.update,
         publish: (snapshot) => snapshotServer.publish(snapshot),
         sleep,
         onDiff: () => speaking?.flushAll(),
@@ -198,7 +201,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         }
       });
       const wsClosed = new Promise<void>((resolve) => (ws.readyState === WebSocket.CLOSED ? resolve() : ws.once("close", () => resolve())));
-      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, speaking: relay };
+      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, speaking: relay, updater };
       starting.helper.exited.then(() => {
         if (!closing && state.kind === "running" && state.helper === starting.helper) {
           process.stderr.write(`ヘルパーが終了しました: ${starting.helper!.stderr().trim()}\n`);
@@ -206,6 +209,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       });
       return { dir };
     } catch (e) {
+      updater?.close();
       if (starting.helper) {
         await stopHelper(starting.helper);
       }
@@ -218,7 +222,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     if (state.kind !== "running") {
       throw new RequestError(409, state.kind === "idle" ? "進行中のセッションがありません" : "セッションの開始・終了の処理中です");
     }
-    const { helper, ws, wsClosed, session, dir, speaking } = state;
+    const { helper, ws, wsClosed, session, dir, speaking, updater } = state;
     state = { kind: "stopping" };
     try {
       // 子の終了と WebSocket の close を待つ。close の前に届いた発言は、すべて push 済みになる
@@ -228,6 +232,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       return { paths: await writeSessionExports(dir, session.snapshot(), capture) };
     } finally {
       state = { kind: "idle" };
+      updater.close(); // session.flush() で最後の差分更新が終わっているので、ここで閉じる
       // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
       speaking.stop();
     }
@@ -280,6 +285,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         if (current) await stopHelper(current);
         if (state.kind === "running") {
           state.speaking.stop();
+          state.updater.close();
           state.ws.terminate();
         }
         await snapshotServer.close();
@@ -291,12 +297,12 @@ export async function startServer(options: ServerOptions): Promise<Server> {
 
 if (import.meta.main) {
   const helperPath = process.env.LIVE_MINDMAP_HELPER ?? join(import.meta.dirname, "../../helper/.build/debug/live-mindmap-helper");
-  const { claudeUpdater } = await import("./claude.ts");
+  const { openClaudeUpdater } = await import("./claude.ts");
   const { captureMap } = await import("./capture.ts");
   const server = await startServer({
     port: defaultPort(),
     sessionsDir: defaultSessionsDir(),
-    updater: claudeUpdater,
+    openUpdater: () => openClaudeUpdater(),
     capture: captureMap,
     helper: { command: helperPath, args: [] },
     onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),

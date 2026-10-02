@@ -136,11 +136,13 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
     case "play": {
       const file = rest[0];
       if (!file) throw new Error("usage: play <文字起こしファイル> [--realtime]");
-      const updater = deps.updater ?? (await import("./claude.ts")).claudeUpdater;
-      const capture = deps.capture ?? (await import("./capture.ts")).captureMap;
-      const server = await startSnapshotServer({ port: deps.port ?? defaultPort() });
+      const owned = deps.updater ? undefined : (await import("./claude.ts")).openClaudeUpdater(); // 自分で開いたものだけ閉じる
+      const updater = deps.updater ?? owned!.update;
       let paths: string[];
+      let server: Awaited<ReturnType<typeof startSnapshotServer>> | undefined;
       try {
+        const capture = deps.capture ?? (await import("./capture.ts")).captureMap;
+        server = await startSnapshotServer({ port: deps.port ?? defaultPort() });
         deps.onListening?.(server.port);
         // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
         const sleep = values.realtime ? (deps.sleep ?? realSleep) : undefined;
@@ -154,7 +156,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
         await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))), sleep ? { sleep } : {});
         paths = await writeSessionExports(dir, session.snapshot(), capture);
       } finally {
-        await server.close();
+        owned?.close();
+        await server?.close();
       }
       stdout(paths.map((p) => `${p}\n`).join(""));
       return;

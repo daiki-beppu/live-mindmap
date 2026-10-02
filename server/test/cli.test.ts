@@ -3,6 +3,10 @@ import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+// play の既定の updater（claude.ts を動的 import して開く）を、SDK を呼ばない偽物に差し替える
+const claude = vi.hoisted(() => ({ openClaudeUpdater: vi.fn() }));
+vi.mock("../src/claude.ts", () => claude);
 import type { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
@@ -193,6 +197,54 @@ describe("CLI", () => {
   it("未対応の形式はエラーにする", async () => {
     const { deps } = await played();
     await expect(runCli(["export", "--format", "xml"], deps)).rejects.toThrow("xml");
+  });
+
+  describe("play の既定の差分更新（claude.ts）", () => {
+    const opened = () => {
+      const state = { calls: 0, closed: 0, callsAfterClose: 0 };
+      let closed = false;
+      claude.openClaudeUpdater.mockReset();
+      claude.openClaudeUpdater.mockImplementation(() => ({
+        update: async () => {
+          state.calls++;
+          if (closed) state.callsAfterClose++;
+          return { ops: [] as Op[] };
+        },
+        close: () => {
+          closed = true;
+          state.closed++;
+        },
+      }));
+      return state;
+    };
+
+    it("updater を渡さないとき、再生のために 1 つ開き、1 回の再生の全発言を同じ updater に渡し、再生が終わったら閉じる", async () => {
+      const state = opened();
+      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+
+      await runCli(["play", fixture], { sessionsDir, port: 0, capture: fakeCapture, stdout: () => {} });
+
+      expect(claude.openClaudeUpdater).toHaveBeenCalledTimes(1);
+      expect(state).toEqual({ calls: 2, closed: 1, callsAfterClose: 0 });
+    });
+
+    it("再生が失敗しても、開いた updater は閉じる", async () => {
+      const state = opened();
+      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+
+      await expect(runCli(["play", join(sessionsDir, "無い.transcript.json")], { sessionsDir, port: 0, capture: fakeCapture, stdout: () => {} })).rejects.toThrow("ENOENT");
+
+      expect(state.closed).toBe(1);
+    });
+
+    it("updater を渡したときは、claude.ts を開かない（渡した側が持ち主なので閉じない）", async () => {
+      opened();
+      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+
+      await runCli(["play", fixture], { updater: async () => ({ ops: [] as Op[] }), sessionsDir, port: 0, capture: fakeCapture, stdout: () => {} });
+
+      expect(claude.openClaudeUpdater).not.toHaveBeenCalled();
+    });
   });
 
   describe("restore", () => {
