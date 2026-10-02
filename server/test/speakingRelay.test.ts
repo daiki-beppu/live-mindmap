@@ -141,21 +141,21 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
   it("反映に渡した発言の分だけが消え、反映に渡していない発言と途中結果は残る。続く反映で、残りも消える", async () => {
     const { session, say, partial, calls, frames, unreflectedAtPublish, add } = await setup();
 
-    say(remark(1, "相手", "あ"));
-    say(remark(2, "相手", "い")); // r1・r2 が差分更新に渡る（結果待ち）
+    say(remark(1, "相手", "赤"));
+    say(remark(2, "相手", "青")); // r1・r2 が差分更新に渡る（結果待ち）
     expect(calls).toHaveLength(1);
-    say(remark(3, "相手", "う")); // 反映に渡していない
+    say(remark(3, "相手", "緑")); // 反映に渡していない
     partial("相手", "…");
-    expect(textsOf(frames, "相手").at(-1)).toBe("あ い う …"); // 反映前: 結果待ちの発言も未反映の発言も、途中結果も
+    expect(textsOf(frames, "相手").at(-1)).toBe("赤 青 緑 …"); // 反映前: 結果待ちの発言も未反映の発言も、途中結果も
 
     calls[0]!.resolve(add(["r1", "r2"]));
     await session.idle();
 
-    expect(textsOf(frames, "相手").at(-1)).toBe("う …"); // r1・r2 だけが消える
+    expect(textsOf(frames, "相手").at(-1)).toBe("緑 …"); // r1・r2 だけが消える
     expect(unreflectedAtPublish.at(-1)).toEqual(["r3"]); // 反映したマップの送信の時点で、すでに反映済みの発言は未反映から外れている
 
-    say(remark(4, "相手", "え")); // 話し終えた（途中結果は空になる）。r3・r4 が差分更新に渡る
-    expect(textsOf(frames, "相手").at(-1)).toBe("う え");
+    say(remark(4, "相手", "黄")); // 話し終えた（途中結果は空になる）。r3・r4 が差分更新に渡る
+    expect(textsOf(frames, "相手").at(-1)).toBe("緑 黄");
     calls[1]!.resolve([{ op: "noop", reason: "なし" }]);
     await session.idle();
 
@@ -164,10 +164,10 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
 
   it("反映が失敗しても、その回に渡した発言は仮の文字から消える。マップは送られない", async () => {
     const { session, say, partial, calls, frames, unreflectedAtPublish } = await setup();
-    say(remark(1, "相手", "あ"));
-    say(remark(2, "相手", "い"));
+    say(remark(1, "相手", "赤"));
+    say(remark(2, "相手", "青"));
     partial("相手", "…");
-    expect(textsOf(frames, "相手").at(-1)).toBe("あ い …");
+    expect(textsOf(frames, "相手").at(-1)).toBe("赤 青 …");
     const publishedBefore = unreflectedAtPublish.length;
 
     calls[0]!.reject(new Error("差分更新の失敗"));
@@ -179,12 +179,12 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
 
   it("トラックごとに別の仮の文字になる。相手の反映待ちの発言は、自分の仮の文字に出ない", async () => {
     const { session, say, partial, calls, frames, add } = await setup();
-    say(remark(1, "相手", "あ"));
-    say(remark(2, "自分", "い"));
+    say(remark(1, "相手", "赤"));
+    say(remark(2, "自分", "青"));
     partial("相手", "…");
 
-    expect(textsOf(frames, "相手").at(-1)).toBe("あ …");
-    expect(textsOf(frames, "自分").at(-1)).toBe("い");
+    expect(textsOf(frames, "相手").at(-1)).toBe("赤 …");
+    expect(textsOf(frames, "自分").at(-1)).toBe("青");
 
     calls[0]!.resolve(add(["r1", "r2"]));
     await session.idle();

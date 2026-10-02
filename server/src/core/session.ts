@@ -27,7 +27,8 @@ export type DiffUpdater = (input: DiffInput) => Promise<DiffOutput>;
 
 export type LogEvent =
   | { type: "start"; title: string } // セッションの始まり。ルートの本文（タイトル）を残す
-  | { type: "remark"; remark: Remark }
+  // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
+  | { type: "remark"; remark: Remark; noContent?: true }
   // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）
   | { type: "diff"; input: { recent: string[]; fresh: string[]; nodeCount: number }; ops: Op[]; dropped: Dropped[]; error?: string };
 
@@ -51,10 +52,23 @@ const BATCH = 2;
 export const QUIET_MS = 1500; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
 const RECENT = 3;
 
+// 中身のない発言の判定に使うフィラー（長音 ー〜~ を除いた形）。確定した発言の語がこれだけなら中身なしとする
+export const FILLERS: ReadonlySet<string> = new Set([
+  "あ", "え", "う", "お", "ん", "うん", "ふん", "ええ", "はあ", "へえ", "ほう",
+  "あの", "えっと", "えと", "その", "まあ", "はい",
+]);
+
+// 発言が差分更新に渡す中身を持つか。空白・句読点で語に分け、長音を除いた各語がすべてフィラーなら false。
+// 文字数では判定しない（「賛成」は渡す）。前方一致でもない（「はい。では…」は渡す）
+export function hasContent(text: string): boolean {
+  const words = text.replace(/[ー〜~]/g, "").split(/[\s\p{P}\p{S}]+/u).filter((w) => w !== "");
+  return words.some((w) => !FILLERS.has(w));
+}
+
 type SessionState = {
   map: MeetingMap;
   pending: Remark[]; // 差分更新にまだ渡していない発言
-  processed: Remark[]; // 差分更新に渡した発言
+  processed: Remark[]; // 差分更新に渡した、中身のある発言
   remarks: Remark[]; // 受け取ったすべての発言（重複の印つきも含む）
   known: Set<string>; // 差分更新に渡した発言の ID
   round: number; // 成功した反映の通し番号
@@ -101,7 +115,7 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
           const r = remarks.find((x) => x.id === id);
           if (!r) throw new Error(`ログに発言がありません: ${id}`);
           known.add(id);
-          processed.push(r);
+          if (hasContent(r.text)) processed.push(r); // 旧形式のログの中身のない発言は、続きの差分更新の直前の発言にしない
           fresh.push(r);
         }
         const next = applyOps(map, e.ops, known).map;
@@ -112,7 +126,7 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
     }
   }
   if (!map) throw new Error("ログに start がありません");
-  const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id));
+  const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
   return openSession({ map, pending, processed, remarks, known, ...history }, options);
 }
 
@@ -188,6 +202,11 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
   return {
     push(r: Remark) {
       remarks.push(r);
+      if (!r.duplicate && !hasContent(r.text)) {
+        // 中身のない発言: ログには残すが、差分更新・未反映の発言・待ち時間には関わらせない
+        log({ type: "remark", remark: r, noContent: true });
+        return;
+      }
       log({ type: "remark", remark: r });
       if (r.duplicate) return;
       pending.push(r);
@@ -207,7 +226,7 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
       await this.idle();
     },
     snapshot,
-    // まだマップに反映していない発言（差分更新の結果待ち + 渡していないもの）。仮のノードの文字に使う。重複の印つきは含まない
+    // まだマップに反映していない発言（差分更新の結果待ち + 渡していないもの）。仮のノードの文字に使う。重複の印つき・中身のない発言は含まない
     unreflectedRemarks(): Remark[] {
       return [...reflecting, ...pending].map((r) => ({ ...r }));
     },

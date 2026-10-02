@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSession, QUIET_MS, type DiffInput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
+import { createSession, hasContent, QUIET_MS, type DiffInput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 
 let seq = 0;
 const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
@@ -288,6 +288,89 @@ describe("差分更新の呼び出し", () => {
     expect(calls[1]!.fresh.map((u) => u.id)).toEqual([c!.id]);
     await session.flush();
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("hasContent（中身のある発言か）", () => {
+  it.each([
+    ["あ"],
+    ["えー"],
+    ["うん"],
+    ["あ。"],
+    ["うん。"],
+    ["えー、あの"],
+    ["えーっと"],
+    ["はい"],
+    ["  "],
+    [""],
+  ])("フィラーだけの %j は中身なし", (text) => {
+    expect(hasContent(text)).toBe(false);
+  });
+
+  it.each([
+    ["はい。では採用の進め方を決めます。"],
+    ["今日は採用の進め方を決めます"],
+    ["2 回にしましょう"],
+    ["賛成"],
+    ["あの件は来週決めます"], // 語として区切られていない「あの」はフィラーではない
+    ["えー、予算は来週決めます"],
+  ])("意味のある %j は中身あり", (text) => {
+    expect(hasContent(text)).toBe(true);
+  });
+});
+
+describe("中身のない発言の扱い", () => {
+  it("差分更新に渡さず数えないが、捨てた印を付けてログには残す", async () => {
+    const a = remark("今日は採用の話をします");
+    const filler = remark("あ", { track: "自分" });
+    const b = remark("担当は佐藤さんで");
+    const { session, calls, events } = setup();
+
+    session.push(a);
+    session.push(filler);
+    await session.idle();
+    expect(calls).toHaveLength(0); // フィラーは 2 つ目として数えない
+
+    session.push(b);
+    await session.idle();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id, b.id]);
+
+    expect(events).toContainEqual({ type: "remark", remark: filler, noContent: true });
+    expect(events).toContainEqual({ type: "remark", remark: a });
+    const marked = events.filter((e) => e.type === "remark" && "noContent" in e);
+    expect(marked).toHaveLength(1);
+  });
+
+  it("中身のない発言だけでは差分更新を呼ばない", async () => {
+    const { session, calls } = setup();
+    session.push(remark("あ", { track: "自分" }));
+    session.push(remark("えー"));
+    session.push(remark("うん"));
+    await session.idle();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("中身のない発言は待ち時間の起点にならない（最後の中身のある発言から数える）", async () => {
+    const timers: { ms: number; fire: () => void }[] = [];
+    const sleep = (ms: number) => new Promise<void>((resolve) => timers.push({ ms, fire: resolve }));
+    const calls: DiffInput[] = [];
+    const updater = async (input: DiffInput) => {
+      calls.push(input);
+      return { ops: [] as Op[] };
+    };
+    const session = createSession({ title: "定例", updater, log: () => {}, sleep });
+    const a = remark("今日は採用の話をします");
+
+    session.push(a);
+    session.push(remark("あ", { track: "自分" }));
+    expect(timers).toHaveLength(1); // フィラーは新しい待ちを仕掛けない
+    for (const t of timers) t.fire();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await session.idle();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id]);
   });
 });
 
@@ -634,6 +717,24 @@ describe("unreflectedRemarks（反映前の発言）", () => {
     release({ ops: [{ op: "noop", reason: "なし" }] });
     await session.idle();
     expect(session.unreflectedRemarks().map((r) => r.id)).toEqual([c.id]);
+  });
+
+  it("中身のない発言は、渡す前も結果待ちの間も含まない", async () => {
+    let release: (out: { ops: Op[] }) => void = () => {};
+    const updater = () => new Promise<{ ops: Op[] }>((resolve) => (release = resolve));
+    const session = createSession({ title: "定例", updater, log: () => {} });
+    const [a, filler, b, filler2] = [remark("ア"), remark("あ", { track: "自分" }), remark("イ"), remark("えー")];
+
+    session.push(a);
+    session.push(filler);
+    expect(session.unreflectedRemarks().map((r) => r.id)).toEqual([a.id]);
+    session.push(b); // a・b が結果待ちになる
+    session.push(filler2);
+    expect(session.unreflectedRemarks().map((r) => r.id)).toEqual([a.id, b.id]);
+
+    release({ ops: [{ op: "noop", reason: "なし" }] });
+    await session.idle();
+    expect(session.unreflectedRemarks()).toEqual([]);
   });
 
   it("返した発言を書き換えても、セッションの記録にも次の呼び出しにも影響しない", () => {
