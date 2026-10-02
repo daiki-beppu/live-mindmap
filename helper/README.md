@@ -8,7 +8,9 @@
 
 - `Sources/HelperCore`: イベントの形、会議アプリの選択、Core Audio のプロセスタップ、マイク（AVAudioEngine）、SpeechAnalyzer、WebSocket
 - `Sources/live-mindmap-helper`: 引数の解釈と配線だけ。STT は `Transcriber` プロトコルの後ろにある
+- `Sources/stt-bench`: 音声認識の確定の遅れを測る開発者向けの道具（Issue #97）。製品の `live-mindmap-helper` には含まれない
 - `Tests/HelperCoreTests`: 純粋なロジックと WebSocket のローカル接続のテスト
+- `Tests/SttBenchTests`: `stt-bench` の合成の時刻計算（`say` や音声認識は使わない）
 
 ## 使い方
 
@@ -42,6 +44,23 @@ swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <d
 - 内蔵スピーカーと、USB・HDMI・AirPlay などの外部スピーカーでは判定する。イヤホン（内蔵のヘッドフォンジャック）と Bluetooth では判定せず、`duplicate` は常に false
 - 判定のため、`自分` の確定結果は後 8 秒の `相手` の発言を待ってから流れる（`相手` が無音でも 8 秒で流れる）。途中結果と `相手` の発言は待たない
 - 正規化後に 3 文字未満の発言は判定せず、印を付けない
+
+## 確定の遅れの計測（stt-bench）
+
+合成した音声を実時間で SpeechAnalyzer に流し、結果が届いた時刻を JSONL で出す。結論は `docs/investigations/2026-10-02-remark-finalization-latency.md`。
+
+```sh
+cd helper
+swift run -c release stt-bench synth bench/scenarios/continuous.json /tmp/stt97/cont      # 台本 → wav + 行の時刻 + 正解（--only <名前> --gap <秒>）
+swift run -c release stt-bench variants                                                   # 候補の設定の一覧
+swift run -c release stt-bench run --variant baseline /tmp/stt97/cont/short.wav [--load <音声2.wav>] > /tmp/stt97/short.jsonl
+node ../server/bench/sttLatency.ts /tmp/stt97/short.jsonl --lines /tmp/stt97/cont/short.lines.json [--quiet <秒>]
+```
+
+- 台本は `bench/scenarios/`（`continuous.json` は続けて話す・相づちが重なる音声、`bench6.json` は決定と TODO の正解付きの 6 場面）。声は `say`（A = Kyoko、B = Reed）
+- 合成した音声と計測の出力は、リポジトリの外（`/tmp` など）に置く。実会議の録音も入れない
+- `--load` は、同じ候補の 2 本目の認識を並行して流す（本番の 自分 / 相手 の 2 本同時に当たる）
+- 再生して再現率を出すのは `server/bench/sttReplay.ts`（Claude の認証が要る）
 
 ## テスト
 
