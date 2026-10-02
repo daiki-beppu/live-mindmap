@@ -66,11 +66,12 @@ export type RecordedSessionOptions = {
   updater: DiffUpdater;
   publish: (snapshot: Snapshot) => void;
   sleep?: (ms: number) => Promise<void>; // 渡すと、最後の発言から一定時間たまった発言を 1 つでも差分更新に渡す
+  onDiff?: () => void; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
 };
 
 // セッションのフォルダ（名前は開始時刻）を作り、ログと export.json を書きながら、マップが変わるたびに publish する。
 // play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。
-export function startRecordedSession({ sessionsDir, title, updater, publish, sleep }: RecordedSessionOptions): { dir: string; session: Session } {
+export function startRecordedSession({ sessionsDir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { dir: string; session: Session } {
   const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
   mkdirSync(dir, { recursive: true });
   // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
@@ -83,7 +84,9 @@ export function startRecordedSession({ sessionsDir, title, updater, publish, sle
       appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
       if (!session) return;
       writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-      if (event.type === "diff" && !event.error) publish(session.snapshot());
+      if (event.type !== "diff") return;
+      if (!event.error) publish(session.snapshot());
+      onDiff?.();
     },
   });
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く

@@ -31,6 +31,22 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node--rejected { opacity: 0.45; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 
+/* 仮のノード（いま話している文字）: 破線の枠・灰色の文字・塗りなしで、正式なノードと見分ける。種別の色・影・バッジは付けない */
+.draft-node {
+  box-sizing: border-box;
+  width: 200px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #6b7280;
+  background: none;
+  border: 1.5px dashed #9ca3af;
+  border-radius: 8px;
+  box-shadow: none;
+  position: relative;
+}
+.draft-node__text { overflow-wrap: anywhere; }
+
 /* Handle は描画に必要だが見せない */
 .react-flow__handle { opacity: 0; pointer-events: none; }
 

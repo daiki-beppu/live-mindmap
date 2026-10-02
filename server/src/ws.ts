@@ -1,12 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { Snapshot } from "./core/index.ts";
+import type { Snapshot, SpeakingFrame, Track } from "./core/index.ts";
 
 // マップ全体のスナップショットをブラウザへ送る。差分は送らない（ブラウザは受け取ったものを描くだけ）。
 // つないだクライアントには、その時点の最新をすぐ送る。つなぎ直しても最新に追いつく。
 export type SnapshotServer = {
   port: number;
   publish: (snapshot: Snapshot) => void;
+  // いま話している文字を、つないでいるクライアントへ送る。トラックごとに最後に送った値だけをメモリに持ち、
+  // 空でなければ、つないだ直後に送り直す（スナップショットには入れない）
+  speak: (frame: SpeakingFrame) => void;
   close: () => Promise<void>;
 };
 
@@ -25,6 +28,7 @@ export type SnapshotServerOptions = {
 export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions): Promise<SnapshotServer> {
   return new Promise((resolve, reject) => {
     let latest: string | undefined;
+    const speaking = new Map<Track, string>(); // トラックごとに最後に送った speaking frame
     const http = createServer(
       onRequest ??
         ((_req, res) => {
@@ -39,6 +43,7 @@ export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions):
     http.once("error", reject);
     wss.on("connection", (client) => {
       if (latest !== undefined) client.send(latest);
+      for (const data of speaking.values()) client.send(data);
     });
     http.listen(port, "127.0.0.1", () => {
       const address = http.address();
@@ -48,6 +53,12 @@ export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions):
         publish(snapshot) {
           latest = JSON.stringify(snapshot);
           for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(latest);
+        },
+        speak(frame) {
+          const data = JSON.stringify(frame);
+          if (frame.text === "") speaking.delete(frame.track);
+          else speaking.set(frame.track, data);
+          for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
         },
         close: () =>
           new Promise<void>((done, fail) => {

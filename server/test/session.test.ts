@@ -616,3 +616,36 @@ describe("根拠の発言（snapshot().remarks）", () => {
     expect(a.text).toBe("元の本文");
   });
 });
+
+describe("unreflectedRemarks（反映前の発言）", () => {
+  it("差分更新に渡した結果待ちの発言、続けて渡していない発言の順に返す。重複の印つきは含まない", async () => {
+    let release: (out: { ops: Op[] }) => void = () => {};
+    const updater = () => new Promise<{ ops: Op[] }>((resolve) => (release = resolve));
+    const session = createSession({ title: "定例", updater, log: () => {} });
+    const [a, b, dup, c] = [remark("ア"), remark("イ"), remark("重複", { duplicate: true }), remark("ウ")];
+
+    session.push(a);
+    session.push(dup);
+    expect(session.unreflectedRemarks().map((r) => r.id)).toEqual([a.id]); // まだ渡していない
+    session.push(b); // a・b が差分更新に渡り、結果待ちになる
+    session.push(c);
+    expect(session.unreflectedRemarks().map((r) => r.id)).toEqual([a.id, b.id, c.id]);
+
+    release({ ops: [{ op: "noop", reason: "なし" }] });
+    await session.idle();
+    expect(session.unreflectedRemarks().map((r) => r.id)).toEqual([c.id]);
+  });
+
+  it("返した発言を書き換えても、セッションの記録にも次の呼び出しにも影響しない", () => {
+    const session = createSession({ title: "定例", updater: async () => ({ ops: [] }), log: () => {} });
+    const a = remark("元の本文");
+    session.push(a);
+
+    const first = session.unreflectedRemarks();
+    first[0]!.text = "書き換え";
+    first.length = 0;
+
+    expect(session.unreflectedRemarks().map((r) => r.text)).toEqual(["元の本文"]);
+    expect(a.text).toBe("元の本文");
+  });
+});

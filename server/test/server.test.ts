@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 import { spawn } from "node:child_process";
 import { runCli } from "../src/cli.ts";
-import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
+import { QUIET_MS, type DiffInput, type Op, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
 import { HELPER_STOP_TIMEOUT_MS, startServer } from "../src/server.ts";
 
 // 疎通テスト: 偽のヘルパー（fixtures/fake-helper.ts）から発言を送り、CLI で開始・終了する。
@@ -51,12 +51,14 @@ const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const remark = (track: "自分" | "相手", start: number, end: number, text: string) => ({ type: "remark", track, start, end, text, duplicate: false });
-// partial は発言として数えられない（r の番号を消費しない）
+// partial は発言として数えられない（r の番号を消費しない）。本文は、マップにもログにも出ない専用の文字列
+const PARTIAL_1 = "はじまりの途中結果";
+const PARTIAL_2 = "にかいめの途中結果";
 const EVENTS = [
-  { type: "partial", track: "相手", text: "採用" },
+  { type: "partial", track: "相手", text: PARTIAL_1 },
   remark("相手", 1, 5, "採用の面接について"),
   remark("自分", 6, 9, "面接は何回にしますか"),
-  { type: "partial", track: "相手", text: "2 回" },
+  { type: "partial", track: "相手", text: PARTIAL_2 },
   remark("相手", 19.2, 28, "2 回にしましょう"),
 ];
 
@@ -113,17 +115,21 @@ async function setup(initial: Partial<Script> = {}) {
   return { server, cli, calls, writeScript, records, sessionDirs };
 }
 
-// つないだクライアントに届いたスナップショットを貯める
+// つないだクライアントに届いた frame を、スナップショットと speaking（いま話している文字）に分けて貯める
 async function connect(port: number) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   const received: Snapshot[] = [];
-  ws.addEventListener("message", (e) => received.push(JSON.parse(String(e.data))));
+  const speaking: SpeakingFrame[] = [];
+  ws.addEventListener("message", (e) => {
+    const frame = JSON.parse(String(e.data));
+    (frame.type === "speaking" ? speaking : received).push(frame);
+  });
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("接続できない")));
   });
   cleanups.push(async () => ws.close());
-  return { ws, received };
+  return { ws, received, speaking };
 }
 
 const logEvents = async (dir: string) =>
@@ -194,6 +200,70 @@ describe("ライブのセッション", () => {
 
     // 終了後も export --format json で、書き出した map.json と同じマップを取り出せる
     expect(JSON.parse(await cli("export", "--format", "json"))).toEqual(JSON.parse(readFileSync(paths[1]!, "utf8")));
+  });
+
+  it("ヘルパーの途中結果は、トラックごとの speaking として届く。終了で両トラックとも空になる。途中結果は差分更新・ログ・マップに入らない", async () => {
+    const { server, cli, calls, sessionDirs } = await setup();
+    const before = await connect(server.port);
+
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+    // 最初のイベントは相手の途中結果。そのまま、相手の「いま話している文字」の最初の frame になる
+    await vi.waitFor(() => expect(before.speaking.length).toBeGreaterThan(0));
+    expect(before.speaking[0]).toEqual({ type: "speaking", track: "相手", text: PARTIAL_1 });
+    // 確定した発言（反映前）も、そのトラックの frame に続けて出る
+    await vi.waitFor(() => expect(before.speaking.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか"))).toBe(true));
+
+    await cli("stop");
+
+    // 終了で、両トラックの最後の frame は空（仮のノードが残らない）
+    await vi.waitFor(() => {
+      for (const track of ["相手", "自分"] as const) expect(before.speaking.filter((f) => f.track === track).at(-1)?.text).toBe("");
+    });
+
+    // 差分更新に渡るのは発言だけ（途中結果は渡らず、r の番号も進めない）
+    for (const fresh of calls.flatMap((c) => c.fresh)) expect([PARTIAL_1, PARTIAL_2].some((p) => fresh.text.includes(p))).toBe(false);
+    // スナップショットの frame（type を持たない既存の形）は、途中結果を含まない
+    for (const snapshot of before.received) expect(JSON.stringify(snapshot)).not.toContain("途中結果");
+    // ログ・map.json・map.md は、行・ファイルごとに途中結果の本文を含まない
+    const [dir] = await sessionDirs();
+    for (const e of await logEvents(dir!)) {
+      expect(["start", "remark", "diff"]).toContain(e.type);
+      expect(JSON.stringify(e)).not.toContain("途中結果");
+    }
+    for (const file of ["map.json", "map.md", "map.drawnix", "export.json"]) expect(readFileSync(join(dir!, file), "utf8")).not.toContain("途中結果");
+  });
+
+  it("speaking は終了すると空になる。終了後に新しくつないだクライアントには、最新のスナップショットだけが届く", async () => {
+    const { server, cli } = await setup();
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    await cli("stop");
+
+    const after = await connect(server.port);
+    await vi.waitFor(() => expect(after.received).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(after.speaking).toEqual([]);
+  });
+
+  it("stop が途中で失敗しても、接続中のクライアントの speaking は空になり、新しくつないだクライアントに古い speaking は届かない", async () => {
+    const { server, cli, sessionDirs } = await setup();
+    const before = await connect(server.port);
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    await vi.waitFor(() => expect(before.speaking.some((f) => f.track === "相手" && f.text.includes("2 回にしましょう"))).toBe(true));
+
+    // 未反映の発言（r3）のログ書き込みを失敗させるため、セッションのフォルダを消す
+    const [dir] = await sessionDirs();
+    rmSync(dir!, { recursive: true, force: true });
+    await expect(cli("stop")).rejects.toThrow();
+
+    await vi.waitFor(() => {
+      for (const track of ["相手", "自分"] as const) expect(before.speaking.filter((f) => f.track === track).at(-1)?.text).toBe("");
+    });
+    const after = await connect(server.port);
+    await vi.waitFor(() => expect(after.received).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(after.speaking).toEqual([]);
   });
 
   // 実時間で QUIET_MS 待つ（server.ts の sleep は外から差し替えられない）。待ちの配線が外れると stop 前の反映が起きず失敗する

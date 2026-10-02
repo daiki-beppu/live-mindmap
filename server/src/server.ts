@@ -11,7 +11,8 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
-import { remarkFromHelper, type DiffUpdater, type Session } from "./core/index.ts";
+import { partialFromHelper, remarkFromHelper, type DiffUpdater, type Session } from "./core/index.ts";
+import { createSpeakingRelay } from "./speakingRelay.ts";
 import { isLocalOrigin, startSnapshotServer } from "./ws.ts";
 
 export type ServerOptions = {
@@ -42,8 +43,10 @@ type Helper = { child: ChildProcess; stderr: () => string; exited: Promise<void>
 type State =
   | { kind: "idle" }
   | { kind: "starting"; helper?: Helper }
-  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string }
+  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; speaking: SpeakingRelay }
   | { kind: "stopping" };
+
+type SpeakingRelay = ReturnType<typeof createSpeakingRelay>;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -164,26 +167,36 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       const ws = await connectToHelper(starting.helper, helperPort);
       // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
       // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない。接続の解決からここまで await を入れない
+      // 反映が終わるたびに、未反映の発言が変わるので、いま話している文字を送り直す
+      let speaking: SpeakingRelay | undefined;
       const { dir, session } = startRecordedSession({
         sessionsDir,
         title,
         updater,
         publish: (snapshot) => snapshotServer.publish(snapshot),
         sleep,
+        onDiff: () => speaking?.flushAll(),
       });
+      const relay = (speaking = createSpeakingRelay({ unreflected: () => session.unreflectedRemarks(), send: (frame) => snapshotServer.speak(frame) }));
       let count = 0;
       ws.on("message", (data) => {
         try {
-          const remark = remarkFromHelper(JSON.parse(String(data)), `r${count + 1}`);
-          if (!remark) return;
-          count++;
-          session.push(remark);
+          const event: unknown = JSON.parse(String(data));
+          const remark = remarkFromHelper(event, `r${count + 1}`);
+          if (remark) {
+            count++;
+            session.push(remark);
+            relay.remark(remark.track);
+            return;
+          }
+          const partial = partialFromHelper(event);
+          if (partial) relay.partial(partial.track, partial.text, partial.duplicate);
         } catch (e) {
           process.stderr.write(`ヘルパーのイベントを読み飛ばしました: ${e instanceof Error ? e.message : e}\n`);
         }
       });
       const wsClosed = new Promise<void>((resolve) => (ws.readyState === WebSocket.CLOSED ? resolve() : ws.once("close", () => resolve())));
-      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir };
+      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, speaking: relay };
       starting.helper.exited.then(() => {
         if (!closing && state.kind === "running" && state.helper === starting.helper) {
           process.stderr.write(`ヘルパーが終了しました: ${starting.helper!.stderr().trim()}\n`);
@@ -203,7 +216,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     if (state.kind !== "running") {
       throw new RequestError(409, state.kind === "idle" ? "進行中のセッションがありません" : "セッションの開始・終了の処理中です");
     }
-    const { helper, ws, wsClosed, session, dir } = state;
+    const { helper, ws, wsClosed, session, dir, speaking } = state;
     state = { kind: "stopping" };
     try {
       // 子の終了と WebSocket の close を待つ。close の前に届いた発言は、すべて push 済みになる
@@ -213,6 +226,8 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       return { paths: writeSessionExports(dir, session.exportJson()) };
     } finally {
       state = { kind: "idle" };
+      // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
+      speaking.stop();
     }
   }
 
@@ -261,7 +276,10 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     close() {
       closing ??= (async () => {
         if (current) await stopHelper(current);
-        if (state.kind === "running") state.ws.terminate();
+        if (state.kind === "running") {
+          state.speaking.stop();
+          state.ws.terminate();
+        }
         await snapshotServer.close();
       })();
       return closing;
