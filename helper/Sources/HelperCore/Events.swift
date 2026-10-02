@@ -64,7 +64,7 @@ extension HelperEvent: Encodable {
     }
 }
 
-/// STT の結果をイベントにする。重複の判定はヘルパーでは行わないので、`duplicate` は常に false。
+/// STT の結果をイベントにする。`duplicate` は常に false。重複の判定は `DuplicateMarker` が行い、呼び出し側（`relay`）が印を付ける。
 public func event(from result: TranscriptionResult, track: Track) -> HelperEvent {
     if result.isFinal {
         return .remark(track: track, start: result.start, end: result.end, text: result.text, duplicate: false)

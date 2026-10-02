@@ -27,6 +27,9 @@ private func listApps() throws {
 private func run(app bundleID: String, port: UInt16) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
+    // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
+    let outputRoute = try currentOutputRoute()
+    let duplicates = outputRoute.marksDuplicates ? DuplicateMarker() : nil
     // 2 トラックは別の SpeechAnalyzer で処理する（1 つの transcriber は 1 回の transcribe にだけ使える）。
     let theirTranscriber: Transcriber = SpeechAnalyzerTranscriber()
     let myTranscriber: Transcriber = SpeechAnalyzerTranscriber()
@@ -36,7 +39,7 @@ private func run(app bundleID: String, port: UInt16) async throws {
 
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
-    printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes)")
+    printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes, output: \(outputRoute))")
 
     let tap = ProcessTap(targets: targets)
     let microphone = MicrophoneCapture()
@@ -60,7 +63,7 @@ private func run(app bundleID: String, port: UInt16) async throws {
         let myAudio = try microphone.start()
         let theirResults = try await theirTranscriber.transcribe(theirAudio, origin: origin)
         let myResults = try await myTranscriber.transcribe(myAudio, origin: origin)
-        try await relay(tracks: [(.相手, theirResults), (.自分, myResults)], to: server)
+        try await relay(tracks: [(.相手, theirResults), (.自分, myResults)], to: server, duplicates: duplicates)
     } catch {
         tap.stop()
         microphone.stop()
