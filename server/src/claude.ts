@@ -1,7 +1,7 @@
 // 差分更新（Claude）。Sonnet 5.5 を Agent SDK（サブスクの認証）で呼ぶ。
 // Claude の呼び出しはこの関数の後ろに閉じる。アプリとして配布するときは、API キーで
 // Anthropic API を直接呼ぶ実装に差し替える（ADR 0003）。プロンプトは試作 v3 の方針。
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { children, KINDS, PLAN_STATUSES, pointStatus, ROOT_ID, type DiffInput, type DiffUpdater, type MeetingMap, type Op, type Remark } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
@@ -45,7 +45,10 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 - 挨拶、進行の段取り、相づち、雑談、番組の解説のような、会議の中身でない発言は noop にする。
 - 文字起こしには誤認識がある。意味が通るように読み替えてよいが、話されていない内容を足さない。
 - 根拠には「新しい発言」の id を使う。直前の発言は文脈を理解するためのもので、根拠に使ってよいのは新しい発言の続きとして必要な場合だけ。
-- 1 回の応答の操作は少なく保つ。迷ったら何もしない。`;
+- 1 回の応答の操作は少なく保つ。迷ったら何もしない。
+
+# 会話の扱い
+毎回のメッセージは独立した依頼です。前のメッセージのマップは古いので、そのメッセージの現在のマップだけを使ってください。`;
 
 const evidence = { type: "array", items: { type: "string" }, minItems: 1, description: "根拠の発言 id（例 r12）" };
 const nodeRef = { type: "string", description: "既存ノードの id（例 n3）か、同じ応答で add した ref" };
@@ -109,19 +112,110 @@ export function buildPrompt({ map, recent, fresh }: DiffInput): string {
   ].join("\n");
 }
 
-export const claudeUpdater: DiffUpdater = async (input) => {
-  for await (const m of query({
-    prompt: buildPrompt(input),
-    options: {
-      model: MODEL, systemPrompt: SYSTEM,
-      tools: [], settingSources: [], persistSession: false, maxTurns: 4,
-      mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
-      outputFormat: { type: "json_schema", schema: SCHEMA },
+// 1 つの query を開いたまま使い回す回数。会話の履歴がたまり続けないよう、この回数ごとに開き直す。
+// 14 は、計測（#75）で品質を確かめた最長の回数
+export const QUERY_RENEW_CALLS = 14;
+
+export type SessionUpdater = { update: DiffUpdater; close: () => void };
+
+type UserMessage = SDKUserMessage;
+
+// push で受け取ったメッセージを、query の prompt として順に流す。end で終わる
+function inputQueue() {
+  const pending: UserMessage[] = [];
+  let wake: (() => void) | undefined;
+  let ended = false;
+  const iterable: AsyncIterable<UserMessage> = {
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        const next = pending.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        if (ended) return;
+        await new Promise<void>((resolve) => (wake = resolve));
+      }
     },
-  })) {
-    if (m.type !== "result") continue;
-    if (m.subtype === "success" && m.structured_output) return { ops: (m.structured_output as { ops: Op[] }).ops };
-    throw new Error(`差分更新に失敗: ${m.subtype}`);
-  }
-  throw new Error("差分更新の結果が無い");
+  };
+  return {
+    iterable,
+    push(message: UserMessage) {
+      pending.push(message);
+      wake?.();
+    },
+    end() {
+      ended = true;
+      wake?.();
+    },
+  };
+}
+
+type Open = {
+  input: ReturnType<typeof inputQueue>;
+  query: Query;
+  output: AsyncIterator<SDKMessage>;
+  calls: number;
+  aborted: Promise<never>; // close されたら reject する。待っている next() が終わらなくても、呼び出しを止める
+  abort: () => void;
 };
+
+// 1 つのセッション（会議）で、開いたままの query を使い回す差分更新。
+// 最初の呼び出しで開き、回数・失敗・ストリームの終わりで開き直し、close() で閉じる。
+// 呼び出しは同時に 1 つしか走らない前提（core の session が直列に呼ぶ）。
+export function openClaudeUpdater(run: typeof query = query): SessionUpdater {
+  let current: Open | undefined;
+  let closed = false;
+
+  const open = (): Open => {
+    const input = inputQueue();
+    const query = run({
+      prompt: input.iterable,
+      options: {
+        model: MODEL, systemPrompt: SYSTEM,
+        tools: [], settingSources: [], persistSession: false, maxTurns: 4,
+        mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
+        outputFormat: { type: "json_schema", schema: SCHEMA },
+      },
+    });
+    let abort!: () => void;
+    const aborted = new Promise<never>((_, reject) => (abort = () => reject(new Error("差分更新の query を閉じました"))));
+    aborted.catch(() => {}); // 待つ呼び出しが無くても未処理の拒否にしない
+    return { input, query, output: query[Symbol.asyncIterator](), calls: 0, aborted, abort };
+  };
+
+  const discard = (q: Open) => {
+    if (current === q) current = undefined;
+    q.input.end();
+    q.query.close();
+    q.abort();
+  };
+
+  const update: DiffUpdater = async (input) => {
+    if (closed) throw new Error("差分更新の updater は閉じています");
+    if (current && current.calls >= QUERY_RENEW_CALLS) discard(current);
+    const q = (current ??= open());
+    q.calls++;
+    q.input.push({ type: "user", message: { role: "user", content: buildPrompt(input) }, parent_tool_use_id: null });
+    try {
+      for (;;) {
+        const { value: m, done } = await Promise.race([q.output.next(), q.aborted]);
+        if (done) throw new Error("差分更新の結果が無い");
+        if (m.type !== "result") continue;
+        if (m.subtype === "success" && m.structured_output) return { ops: (m.structured_output as { ops: Op[] }).ops };
+        throw new Error(`差分更新に失敗: ${m.subtype}`);
+      }
+    } catch (e) {
+      discard(q); // 失敗した query は使い続けず、次の呼び出しで開き直す
+      throw e;
+    }
+  };
+
+  return {
+    update,
+    close() {
+      closed = true;
+      if (current) discard(current);
+    },
+  };
+}
