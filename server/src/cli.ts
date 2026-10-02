@@ -37,7 +37,7 @@ const EXPORT_FILE = "export.json";
 
 // セッション終了時の書き出し。スナップショットは 1 回だけ取り、4 形式（md・json・drawnix・png）に同じものを渡す。
 // ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
-// テキストの 3 形式を先に書くので、撮影が失敗しても残る（失敗はそのまま伝える）。
+// テキストの 3 形式を先に書く。撮影が失敗したら（Chromium が無い等）、画像だけ諦めて標準エラーに理由を残し、3 つのパスを返す。
 export async function writeSessionExports(dir: string, snapshot: Snapshot, capture: MapCapture): Promise<string[]> {
   const paths = Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks))).map(([name, content]) => {
     const path = join(dir, name);
@@ -45,7 +45,12 @@ export async function writeSessionExports(dir: string, snapshot: Snapshot, captu
     return path;
   });
   const png = join(dir, "map.png");
-  await capture(snapshot, png);
+  try {
+    await capture(snapshot, png);
+  } catch (e) {
+    process.stderr.write(`map.png を書き出せませんでした: ${e instanceof Error ? e.message : String(e)}\n`);
+    return paths;
+  }
   return [...paths, png];
 }
 

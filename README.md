@@ -64,7 +64,7 @@ cli stop                                  # ヘルパーを止め、map.md・map
 cli export --format json                  # 終了後も、最新のセッションのマップを取り出せる（表示も最後のマップのまま残る）
 ```
 
-- `map.png`（`play` の終了時も同じ）は、サーバーが Playwright のヘッドレスブラウザで自分の表示ページを開いて撮る。ブラウザを開いていなくても撮れる。変わったノードの強調・仮のノード・右の列は写さない。初回だけ `pnpm --filter @live-mindmap/server exec playwright install chromium` で Chromium を入れる。
+- `map.png`（`play` の終了時も同じ）は、サーバーが Playwright のヘッドレスブラウザで自分の表示ページを開いて撮る。ブラウザを開いていなくても撮れる。変わったノードの強調・仮のノード・右の列は写さない。画像はノードを囲む範囲だけを切り抜く。初回だけ `pnpm --filter @live-mindmap/server exec playwright install chromium` で Chromium を入れる。撮れなかったとき（Chromium が無い等）は、map.png だけ除いて終わり、理由を標準エラーに出す。
 - ヘルパーの WebSocket にはサーバーだけがつなぐ。ポートはサーバーが空きを選んで渡す。
 - ヘルパーの実行ファイルは `helper/.build/debug/live-mindmap-helper`。`LIVE_MINDMAP_HELPER` で差し替えられる。
 - `pnpm dev` の実行中は 4319 をサーバーが使うので、`play` を同時に動かすときは `LIVE_MINDMAP_PORT` を変える（表示の proxy 先も同じ値を使う）。
