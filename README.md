@@ -59,12 +59,13 @@ pnpm dev   # ヘルパーをビルドし、サーバー（127.0.0.1:4319、LIVE_
 
 ```sh
 cli apps                                  # 会議アプリの一覧（JSON）。bundle id を調べる
-cli start --app us.zoom.xos [--title 週次]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す
+cli start --app us.zoom.xos [--title 週次] [--no-audio]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す。既定では、トラックごとの録音を、そのフォルダに残す（--no-audio で録音しない）
 cli stop                                  # ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す
 cli export --format json                  # 終了後も、最新のセッションのマップを取り出せる（表示も最後のマップのまま残る）
 ```
 
 - `map.png`（`play` の終了時も同じ）は、サーバーが Playwright のヘッドレスブラウザで自分の表示ページを開いて撮る。ブラウザを開いていなくても撮れる。変わったノードの強調・仮のノード・右の列は写さない。画像はノードを囲む範囲だけを切り抜く。初回だけ `pnpm --filter @live-mindmap/server exec playwright install chromium` で Chromium を入れる。撮れなかったとき（Chromium が無い等）は、map.png だけ除いて終わり、理由を標準エラーに出す。
+- 録音は、セッションのフォルダの `相手.m4a`・`自分.m4a`（AAC・モノラル）。録音の 0 秒は発言の時刻（`map.json` の start / end）の 0 秒と同じなので、発言の時刻から音声を聞き返せる。`stop` は、ヘルパーが録音を閉じるのを待ってから書き出す。ヘルパーが 5 秒以内に終わらず強制終了したときは、録音の書き終わりを確認できなかったことを標準エラーに出す（録音が不完全なことがある）。`stop` が出すパスは 4 つのまま（録音のパスは出さない）。
 - ヘルパーの WebSocket にはサーバーだけがつなぐ。ポートはサーバーが空きを選んで渡す。
 - ヘルパーの実行ファイルは `helper/.build/debug/live-mindmap-helper`。`LIVE_MINDMAP_HELPER` で差し替えられる。
 - `pnpm dev` の実行中は 4319 をサーバーが使うので、`play` を同時に動かすときは `LIVE_MINDMAP_PORT` を変える（表示の proxy 先も同じ値を使う）。
@@ -76,6 +77,8 @@ cli export --format json                  # 終了後も、最新のセッショ
 3. `cli apps` にそのアプリが出ることを確かめ、`cli start --app <bundle id>` で開始する（初回はマイクの許可が要る）
 4. 話して、ブラウザのマップが組み上がることを見る
 5. `cli stop` で終了し、出力された 4 つのパス（map.png はマップだけの画像）のファイルがあること、表示が最後のマップのまま残ること、`cli export --format json` で同じマップが取り出せることを確かめる
+6. セッションのフォルダに `相手.m4a` と `自分.m4a` の 2 本が残っていることを確かめる。`map.json` の発言の start（秒）の位置から再生し、その発言が聞こえること（`相手` の発言は `相手.m4a`、`自分` の発言は `自分.m4a`）を確かめる
+7. もう一度 `cli start --app <bundle id> --no-audio` で開始して `cli stop` し、そのセッションのフォルダに `相手.m4a`・`自分.m4a` ができないことを確かめる
 
 ## Claude の認証
 

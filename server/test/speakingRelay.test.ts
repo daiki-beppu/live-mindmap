@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startRecordedSession } from "../src/cli.ts";
+import { createSessionDir, startRecordedSession } from "../src/cli.ts";
 import type { DiffInput, DiffOutput, Op, Remark, Session, SpeakingFrame, Track } from "../src/core/index.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 
@@ -114,8 +114,9 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     let session: Session | undefined;
     let relay: ReturnType<typeof createSpeakingRelay> | undefined;
     const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-speaking-"));
+    const dir = createSessionDir(sessionsDir);
     const started = startRecordedSession({
-      sessionsDir,
+      dir,
       title: "定例",
       updater,
       publish: () => {
@@ -135,7 +136,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       vi.advanceTimersByTime(SPEAKING_INTERVAL_MS);
     };
     const add = (evidence: string[], text = "採用"): Op[] => [{ op: "add", ref: "t1", parent: "root", kind: "議題", text, evidence }];
-    return { session, relay, say, partial, calls, frames, unreflectedAtPublish, dir: started.dir, add };
+    return { session, relay, say, partial, calls, frames, unreflectedAtPublish, dir, add };
   }
 
   it("反映に渡した発言の分だけが消え、反映に渡していない発言と途中結果は残る。続く反映で、残りも消える", async () => {

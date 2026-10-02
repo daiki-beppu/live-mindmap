@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // 常駐サーバー（pnpm dev）。ADR 0003: ヘルパーはこのサーバーの子プロセスで、セッションの開始・終了は CLI から頼まれる。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
-//   POST /session/start   { app, title? } ヘルパーを `run --app <app> --port <空きポート>` で起動し、発言を中核へ流す
+//   POST /session/start   { app, title?, audio? } ヘルパーを `run --app <app> --port <空きポート> [--audio-dir <セッションのフォルダ>]` で起動し、発言を中核へ流す。
+//                         audio は既定で true（トラックごとの録音をセッションのフォルダに残す）。false なら録音しない
 //   POST /session/stop    ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出す（撮影に失敗したら map.png だけ除く）
 // スナップショットの WebSocket（ブラウザ向け）と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 // 状態は idle → starting → running → stopping → idle。開始・終了を受け付けるかは、この状態だけで決める。
@@ -12,7 +13,7 @@ import { join } from "node:path";
 import { WebSocket } from "ws";
 import type { MapCapture } from "./capture.ts";
 import type { SessionUpdater } from "./claude.ts";
-import { defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
+import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
 import { partialFromHelper, remarkFromHelper, type Session } from "./core/index.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
 import { isLocalOrigin, startSnapshotServer } from "./ws.ts";
@@ -46,7 +47,7 @@ type Helper = { child: ChildProcess; stderr: () => string; exited: Promise<void>
 type State =
   | { kind: "idle" }
   | { kind: "starting"; helper?: Helper }
-  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; speaking: SpeakingRelay; updater: SessionUpdater }
+  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; audio: boolean; speaking: SpeakingRelay; updater: SessionUpdater }
   | { kind: "stopping" };
 
 type SpeakingRelay = ReturnType<typeof createSpeakingRelay>;
@@ -54,8 +55,9 @@ type SpeakingRelay = ReturnType<typeof createSpeakingRelay>;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // ヘルパーを止める。SIGTERM で終わらないヘルパー（#70）で、stop・close・start の後片付けが固まらないよう、時間切れなら SIGKILL に切り替える
-async function stopHelper(helper: Helper): Promise<void> {
-  if (helper.hasExited()) return;
+// SIGKILL に切り替えたときだけ true を返す
+async function stopHelper(helper: Helper): Promise<boolean> {
+  if (helper.hasExited()) return false;
   helper.child.kill("SIGTERM");
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<true>((resolve) => {
@@ -68,6 +70,7 @@ async function stopHelper(helper: Helper): Promise<void> {
     helper.child.kill("SIGKILL");
     await helper.exited;
   }
+  return result;
 }
 
 // 空きポートを選ぶ（listen(0) で割り当てを受けてから閉じる）
@@ -156,7 +159,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
   let current: Helper | undefined; // 子プロセスの所有者はこのサーバー。終了時に止める
   let closing: Promise<void> | undefined;
 
-  async function start(app: string, title: string | undefined): Promise<{ dir: string }> {
+  async function start(app: string, title: string | undefined, audio: boolean): Promise<{ dir: string }> {
     if (state.kind !== "idle") {
       throw new RequestError(409, state.kind === "running" ? "セッションが進行中です（先に stop）" : "セッションの開始・終了の処理中です");
     }
@@ -167,15 +170,18 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       const helperPort = await freePort();
       // close() は current だけを止める。freePort の待機中に close() が始まっていたら、ヘルパーを起動しない（子プロセスが残る）
       if (closing) throw new RequestError(503, "サーバーを終了しています");
-      starting.helper = current = launchHelper(helperCommand.command, [...helperCommand.args, "run", "--app", app, "--port", String(helperPort)]);
+      // セッションのフォルダは、ヘルパーが録音を書き出す先として、起動の前に確定させる
+      const dir = createSessionDir(sessionsDir);
+      const helperArgs = ["run", "--app", app, "--port", String(helperPort), ...(audio ? ["--audio-dir", dir] : [])];
+      starting.helper = current = launchHelper(helperCommand.command, [...helperCommand.args, ...helperArgs]);
       const ws = await connectToHelper(starting.helper, helperPort);
       // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
       // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない。接続の解決からここまで await を入れない
       // 反映が終わるたびに、未反映の発言が変わるので、いま話している文字を送り直す
       let speaking: SpeakingRelay | undefined;
       updater = openUpdater();
-      const { dir, session } = startRecordedSession({
-        sessionsDir,
+      const { session } = startRecordedSession({
+        dir,
         title,
         updater: updater.update,
         publish: (snapshot) => snapshotServer.publish(snapshot),
@@ -201,7 +207,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         }
       });
       const wsClosed = new Promise<void>((resolve) => (ws.readyState === WebSocket.CLOSED ? resolve() : ws.once("close", () => resolve())));
-      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, speaking: relay, updater };
+      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, audio, speaking: relay, updater };
       starting.helper.exited.then(() => {
         if (!closing && state.kind === "running" && state.helper === starting.helper) {
           process.stderr.write(`ヘルパーが終了しました: ${starting.helper!.stderr().trim()}\n`);
@@ -222,11 +228,14 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     if (state.kind !== "running") {
       throw new RequestError(409, state.kind === "idle" ? "進行中のセッションがありません" : "セッションの開始・終了の処理中です");
     }
-    const { helper, ws, wsClosed, session, dir, speaking, updater } = state;
+    const { helper, ws, wsClosed, session, dir, audio, speaking, updater } = state;
     state = { kind: "stopping" };
     try {
       // 子の終了と WebSocket の close を待つ。close の前に届いた発言は、すべて push 済みになる
-      await Promise.all([stopHelper(helper), wsClosed]);
+      const [killed] = await Promise.all([stopHelper(helper), wsClosed]);
+      if (killed && audio) {
+        process.stderr.write(`録音の書き終わりを確認できないまま、セッションを閉じます。${dir} の 相手.m4a・自分.m4a が不完全なことがあります\n`);
+      }
       ws.terminate();
       await session.flush();
       return { paths: await writeSessionExports(dir, session.snapshot(), capture) };
@@ -247,7 +256,8 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         const body = await readJson(req);
         if (typeof body.app !== "string" || body.app === "") throw new RequestError(400, "app（会議アプリの bundle id）が必要です");
         if (body.title !== undefined && body.title !== null && typeof body.title !== "string") throw new RequestError(400, "title は文字列にします");
-        return start(body.app, body.title ?? undefined);
+        if (body.audio !== undefined && body.audio !== null && typeof body.audio !== "boolean") throw new RequestError(400, "audio は真偽値にします");
+        return start(body.app, body.title ?? undefined, body.audio ?? true);
       }
       case "POST /session/stop":
         return stop();

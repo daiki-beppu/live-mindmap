@@ -14,7 +14,7 @@ private func printError(_ message: String) {
 private let usage = """
 usage:
   live-mindmap-helper list
-  live-mindmap-helper run --app <bundle id> [--port <n>]
+  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>]
 """
 
 private func listApps() throws {
@@ -24,7 +24,7 @@ private func listApps() throws {
     print(String(decoding: try encoder.encode(apps), as: UTF8.self))
 }
 
-private func run(app bundleID: String, port: UInt16) async throws {
+private func run(app bundleID: String, port: UInt16, audioDir: String?) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
@@ -56,23 +56,43 @@ private func run(app bundleID: String, port: UInt16) async throws {
     }
     defer { signalSources.forEach { $0.cancel() } }
 
+    // 録音を閉じる Task。tap とマイクを止めて音声が終わった後に、終了前に待つ（録音ファイルを閉じてから終わる）。
+    var recordings: [Task<Void, Error>] = []
+    var failure: Error?
     do {
-        // 2 トラック共通の時刻の基準。音声取得を始める直前に 1 回だけ取る。
+        // 2 トラック共通の時刻の基準。音声取得を始める直前に 1 回だけ取る。録音の 0 秒もこれにそろえる。
         let origin = AudioGetCurrentHostTime()
-        let theirAudio = try tap.start()
-        let myAudio = try microphone.start()
+        let recorders = try audioDir.map { directory -> (their: TrackRecorder, my: TrackRecorder) in
+            let base = URL(fileURLWithPath: directory, isDirectory: true)
+            return (
+                their: try TrackRecorder(url: base.appendingPathComponent("\(Track.相手.rawValue).m4a"), origin: origin),
+                my: try TrackRecorder(url: base.appendingPathComponent("\(Track.自分.rawValue).m4a"), origin: origin)
+            )
+        }
+        var theirAudio = try tap.start()
+        var myAudio = try microphone.start()
+        if let recorders {
+            let their = recording(theirAudio, to: recorders.their)
+            let my = recording(myAudio, to: recorders.my)
+            theirAudio = their.stream
+            myAudio = my.stream
+            recordings = [their.finished, my.finished]
+        }
         let theirResults = try await theirTranscriber.transcribe(theirAudio, origin: origin)
         let myResults = try await myTranscriber.transcribe(myAudio, origin: origin)
         try await relay(tracks: [(.相手, theirResults), (.自分, myResults)], to: server, duplicates: duplicates)
+        failure = nil
     } catch {
-        tap.stop()
-        microphone.stop()
-        await server.stop()
-        throw error
+        failure = error
     }
     tap.stop()
     microphone.stop()
+    // 録音は全部閉じてから終わる。基準のエラーは、do 節のエラー、なければ 相手 → 自分 の順で最初の録音の失敗。
+    for recording in recordings {
+        if case .failure(let error) = await recording.result, failure == nil { failure = error }
+    }
     await server.stop()
+    if let failure { throw failure }
 }
 
 private func main() async -> Int32 {
@@ -84,6 +104,7 @@ private func main() async -> Int32 {
         case "run":
             var app: String?
             var port = defaultPort
+            var audioDir: String?
             var index = 1
             while index < arguments.count {
                 switch arguments[index] {
@@ -97,6 +118,9 @@ private func main() async -> Int32 {
                     }
                     port = value
                     index += 2
+                case "--audio-dir" where index + 1 < arguments.count:
+                    audioDir = arguments[index + 1]
+                    index += 2
                 default:
                     printError("不明な引数: \(arguments[index])\n\(usage)")
                     return 2
@@ -106,7 +130,7 @@ private func main() async -> Int32 {
                 printError("--app が必要\n\(usage)")
                 return 2
             }
-            try await run(app: app, port: port)
+            try await run(app: app, port: port, audioDir: audioDir)
         default:
             printError(usage)
             return 2

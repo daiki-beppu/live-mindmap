@@ -125,7 +125,7 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
         }
     }
 
-    private static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
+    static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
         let ratio = format.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 16
         guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {

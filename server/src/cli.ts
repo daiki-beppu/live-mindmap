@@ -5,8 +5,9 @@
 //                                 再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。
 //                                 終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを出す
 //   apps                          会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む
-//   start --app <bundle id> [--title <名前>]
-//                                 ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ
+//   start --app <bundle id> [--title <名前>] [--no-audio]
+//                                 ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ。
+//                                 既定では、トラックごとの録音（相手.m4a・自分.m4a）をセッションのフォルダに残す。--no-audio で録音しない
 //   stop                          ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す
 //   export [--format md|json]     最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）
 //   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
@@ -71,8 +72,15 @@ const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(reso
 
 export const defaultSessionsDir = () => process.env.LIVE_MINDMAP_SESSIONS ?? join(homedir(), ".live-mindmap", "sessions");
 
+// セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
+export function createSessionDir(sessionsDir: string): string {
+  const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export type RecordedSessionOptions = {
-  sessionsDir: string;
+  dir: string; // createSessionDir で作ったセッションのフォルダ
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
   updater: DiffUpdater;
   publish: (snapshot: Snapshot) => void;
@@ -80,11 +88,9 @@ export type RecordedSessionOptions = {
   onDiff?: () => void; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
 };
 
-// セッションのフォルダ（名前は開始時刻）を作り、ログと export.json を書きながら、マップが変わるたびに publish する。
+// 作成済みのセッションのフォルダに、ログと export.json を書きながら、マップが変わるたびに publish する。
 // play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。
-export function startRecordedSession({ sessionsDir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { dir: string; session: Session } {
-  const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
-  mkdirSync(dir, { recursive: true });
+export function startRecordedSession({ dir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { session: Session } {
   // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
   let session: Session | undefined;
   session = createSession({
@@ -103,7 +109,7 @@ export function startRecordedSession({ sessionsDir, title, updater, publish, sle
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く
   writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
   publish(session.snapshot()); // 最初のルート
-  return { dir, session };
+  return { session };
 }
 
 // 常駐サーバーへ依頼を送る。2xx 以外は、応答の { error } をメッセージにして例外にする
@@ -128,7 +134,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { format: { type: "string", default: "md" }, realtime: { type: "boolean" }, truth: { type: "string" }, app: { type: "string" }, title: { type: "string" } },
+    options: { format: { type: "string", default: "md" }, realtime: { type: "boolean" }, truth: { type: "string" }, app: { type: "string" }, title: { type: "string" }, "no-audio": { type: "boolean" } },
   });
   const [command, ...rest] = positionals;
 
@@ -146,8 +152,9 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
         deps.onListening?.(server.port);
         // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
         const sleep = values.realtime ? (deps.sleep ?? realSleep) : undefined;
-        const { dir, session } = startRecordedSession({
-          sessionsDir,
+        const dir = createSessionDir(sessionsDir);
+        const { session } = startRecordedSession({
+          dir,
           title: basename(file).replace(/\.transcript\.json$/, ""),
           updater,
           publish: server.publish,
@@ -168,8 +175,8 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       return;
     }
     case "start": {
-      if (!values.app) throw new Error("usage: start --app <bundle id> [--title <名前>]");
-      const { dir } = await requestServer(deps.port ?? defaultPort(), "POST", "/session/start", { app: values.app, title: values.title });
+      if (!values.app) throw new Error("usage: start --app <bundle id> [--title <名前>] [--no-audio]");
+      const { dir } = await requestServer(deps.port ?? defaultPort(), "POST", "/session/start", { app: values.app, title: values.title, audio: !values["no-audio"] });
       stdout(`${dir}\n`);
       return;
     }
