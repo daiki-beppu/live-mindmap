@@ -463,13 +463,18 @@ describe("ライブのセッション", () => {
     expect(updaters).toMatchObject({ closed: 1, callsAfterClose: 0 });
   });
 
-  it("ヘルパーにつないだ後（updater を開いた後）に、セッションのフォルダを作れず start が失敗しても、開いた updater は閉じられる", async () => {
-    const { cli, updaters, sessionsDir } = await setup();
+  it("セッションのフォルダを作れず start が失敗しても、ヘルパーも updater も起動せず、フォルダを直せば続けて start できる", async () => {
+    const { cli, records, updaters, sessionsDir } = await setup();
     writeFileSync(sessionsDir, ""); // フォルダの位置に通常ファイルがあり、mkdir できない
 
     await expect(cli("start", "--app", "us.zoom.xos")).rejects.toThrow();
 
-    expect(updaters).toMatchObject({ opened: 1, closed: 1 });
+    expect(records().filter((r) => r.type === "run")).toHaveLength(0);
+    expect(updaters).toMatchObject({ opened: 0, closed: 0 });
+
+    rmSync(sessionsDir);
+    await cli("start", "--app", "us.zoom.xos");
+    await cli("stop");
   });
 
   it("進行中にサーバーが終わるとき、updater を閉じる", async () => {
@@ -505,7 +510,7 @@ describe("ライブのセッション", () => {
   // 実時間で HELPER_STOP_TIMEOUT_MS 待つ（QUIET_MS と同じく、定数を export して実時間で確かめる）
   it(
     "ヘルパーが SIGTERM で終わらなくても、stop は時間内に戻り、それまでの発言でマップを確定して 4 つのファイルを書き、SIGKILL に切り替えたことを標準エラーに残す。同じサーバーで次のセッションも開始・終了できる",
-    { timeout: HELPER_STOP_TIMEOUT_MS + 10_000 },
+    { timeout: 2 * HELPER_STOP_TIMEOUT_MS + 10_000 },
     async () => {
       const stderr = vi.spyOn(process.stderr, "write");
       cleanups.push(async () => stderr.mockRestore());
@@ -532,11 +537,18 @@ describe("ライブのセッション", () => {
       expect(records().filter((r) => r.type === "signal")).toEqual([{ type: "signal", signal: "SIGTERM" }]);
       expect(() => process.kill(run.pid, 0)).toThrow();
       expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(true);
+      // 録音していたので、録音の書き終わりを確認できなかったことも標準エラーに残す
+      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("録音の書き終わりを確認できない"))).toBe(true);
+
+      // 録音していないセッションでは、強制終了しても録音の警告は出さない
+      stderr.mockClear();
+      writeScript({ events: [], ignoreSigterm: true });
+      await cli("start", "--app", "us.zoom.xos", "--title", "録音なし", "--no-audio");
+      await cli("stop");
+      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(true);
+      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("録音の書き終わり"))).toBe(false);
 
       // stop の後も、同じサーバーで次のセッションを開始・終了できる
-      writeScript({ events: [] });
-      await cli("start", "--app", "us.zoom.xos", "--title", "次");
-      await cli("stop");
       expect(await sessionDirs()).toHaveLength(2);
     },
   );
@@ -588,5 +600,93 @@ describe("ライブのセッション", () => {
 
     expect(response.status).toBe(403);
     expect(records().filter((r) => r.type === "run")).toHaveLength(0);
+  });
+
+  describe("録音", () => {
+    const audioDirArg = (argv: string[]) => argv[argv.indexOf("--audio-dir") + 1];
+
+    it("既定の start は、ヘルパーに --audio-dir としてセッションのフォルダ（log.jsonl があるフォルダ）を渡す", async () => {
+      const { cli, records, sessionDirs } = await setup();
+
+      await cli("start", "--app", "us.zoom.xos");
+
+      const argv = records().find((r) => r.type === "run")!.argv;
+      expect(argv).toContain("--audio-dir");
+      const dirs = await sessionDirs();
+      expect(dirs).toHaveLength(1);
+      expect(audioDirArg(argv)).toBe(dirs[0]);
+      expect(existsSync(join(dirs[0]!, "log.jsonl"))).toBe(true);
+      await cli("stop");
+    });
+
+    it("start に --no-audio を付けると、ヘルパーに --audio-dir を渡さず、セッションのフォルダに録音ファイルができない", async () => {
+      const { cli, records, sessionDirs } = await setup();
+
+      await cli("start", "--app", "us.zoom.xos", "--no-audio");
+      await cli("stop");
+
+      expect(records().find((r) => r.type === "run")!.argv).not.toContain("--audio-dir");
+      const [dir] = await sessionDirs();
+      expect(existsSync(join(dir!, "相手.m4a"))).toBe(false);
+      expect(existsSync(join(dir!, "自分.m4a"))).toBe(false);
+    });
+
+    it("HTTP の body に audio がなければ録音し、audio: false なら録音しない", async () => {
+      const { server, records } = await setup();
+      const post = (body: object) =>
+        fetch(`http://127.0.0.1:${server.port}/session/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const stop = () => fetch(`http://127.0.0.1:${server.port}/session/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+
+      expect((await post({ app: "us.zoom.xos" })).status).toBe(200);
+      expect((await stop()).status).toBe(200);
+      expect((await post({ app: "us.zoom.xos", audio: false })).status).toBe(200);
+      expect((await stop()).status).toBe(200);
+
+      const runs = records().filter((r) => r.type === "run");
+      expect(runs.map((r) => r.argv.includes("--audio-dir"))).toEqual([true, false]);
+    });
+
+    it("body の audio が boolean 以外なら 400 を返し、ヘルパーを起動せず、セッションのフォルダも作らない", async () => {
+      const { server, records, sessionDirs } = await setup();
+
+      for (const audio of ["no", 0, "false"]) {
+        const response = await fetch(`http://127.0.0.1:${server.port}/session/start`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ app: "us.zoom.xos", audio }),
+        });
+        expect(response.status).toBe(400);
+      }
+
+      expect(records().filter((r) => r.type === "run")).toHaveLength(0);
+      expect(await sessionDirs()).toEqual([]);
+    });
+
+    it("stop は、ヘルパーが録音を書き終えて終了するまで待ち、戻った時点で 2 つの録音が最後まで書かれている", async () => {
+      const stderr = vi.spyOn(process.stderr, "write");
+      cleanups.push(async () => stderr.mockRestore());
+      const { cli, sessionDirs } = await setup();
+      await cli("start", "--app", "us.zoom.xos");
+
+      await cli("stop");
+
+      // 強制終了していないので、録音の警告は出ない
+      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("録音の書き終わり"))).toBe(false);
+      const [dir] = await sessionDirs();
+      for (const name of ["相手.m4a", "自分.m4a"]) {
+        expect(readFileSync(join(dir!, name), "utf8")).toBe("complete");
+      }
+      // 録音を待った後に、セッションの書き出しまで終わっている
+      expect(existsSync(join(dir!, "map.json"))).toBe(true);
+    });
+
+    it("stop の標準出力は、録音のパスを足さず、これまでどおり 4 つのパスだけ", async () => {
+      const { cli } = await setup();
+      await cli("start", "--app", "us.zoom.xos");
+
+      const stdout = await cli("stop");
+
+      expect(stdout.split("\n").filter((l) => l !== "").map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
+    });
   });
 });
