@@ -13,6 +13,9 @@ let package = Package(
         // 引数の解釈と配線だけの薄い層
         .executableTarget(name: "live-mindmap-helper", dependencies: ["HelperCore"]),
         .testTarget(name: "HelperCoreTests", dependencies: ["HelperCore"]),
+        // 音声認識の確定の遅れを測る開発者向けの道具（Issue #97）。製品には含めない
+        .executableTarget(name: "stt-bench", dependencies: ["HelperCore"]),
+        .testTarget(name: "SttBenchTests", dependencies: ["stt-bench"]),
     ],
     swiftLanguageModes: [.v5]
 )
