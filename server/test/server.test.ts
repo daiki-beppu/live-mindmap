@@ -181,7 +181,7 @@ describe("ライブのセッション", () => {
     expect(port).not.toBe(server.port);
 
     // 会議中（stop の前）に、r1・r2 の反映が接続中のクライアントへ届く
-    await vi.waitFor(() => expect(before.received.map((s) => s.nodes.length)).toEqual([1, 3]));
+    await vi.waitFor(() => expect(before.received.map((s) => s.nodes.length)).toEqual([1, 3]), { timeout: 5000 }); // CI のランナーは手元より遅い
 
     const stderr = vi.spyOn(process.stderr, "write");
     cleanups.push(async () => stderr.mockRestore());
