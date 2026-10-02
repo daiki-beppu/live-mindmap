@@ -12,6 +12,8 @@ export type MapCapture = (snapshot: Snapshot, path: string) => Promise<void>;
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 const VIEWPORT = { width: 1600, height: 1000 };
 const READY_TIMEOUT_MS = 30_000;
+// 切り抜くとき、ノードの外側に残す余白（CSS px）
+const CROP_MARGIN = 32;
 
 // 撮影用のページを開いて fn に渡し、終わったら（失敗しても）ブラウザと Vite を閉じる
 export async function withCapturePage<T>(snapshot: Snapshot, fn: (page: Page) => Promise<T>): Promise<T> {
@@ -52,7 +54,17 @@ export async function withCapturePage<T>(snapshot: Snapshot, fn: (page: Page) =>
   }
 }
 
+// 画面全体ではなく、ノードを囲む範囲（と余白）だけを切り抜いて撮る。小さなマップでも余白だらけにならない
 export const captureMap: MapCapture = (snapshot, path) =>
   withCapturePage(snapshot, async (page) => {
-    await page.screenshot({ path, type: "png" });
+    const boxes = (await Promise.all((await page.locator(".react-flow__node").all()).map((node) => node.boundingBox()))).filter((b) => b !== null);
+    if (boxes.length === 0) {
+      await page.screenshot({ path, type: "png" });
+      return;
+    }
+    const x = Math.max(0, Math.min(...boxes.map((b) => b.x)) - CROP_MARGIN);
+    const y = Math.max(0, Math.min(...boxes.map((b) => b.y)) - CROP_MARGIN);
+    const right = Math.min(VIEWPORT.width, Math.max(...boxes.map((b) => b.x + b.width)) + CROP_MARGIN);
+    const bottom = Math.min(VIEWPORT.height, Math.max(...boxes.map((b) => b.y + b.height)) + CROP_MARGIN);
+    await page.screenshot({ path, type: "png", clip: { x, y, width: right - x, height: bottom - y } });
   });

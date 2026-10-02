@@ -2,7 +2,7 @@
 // 常駐サーバー（pnpm dev）。ADR 0003: ヘルパーはこのサーバーの子プロセスで、セッションの開始・終了は CLI から頼まれる。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
 //   POST /session/start   { app, title? } ヘルパーを `run --app <app> --port <空きポート>` で起動し、発言を中核へ流す
-//   POST /session/stop    ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出す
+//   POST /session/stop    ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出す（撮影に失敗したら map.png だけ除く）
 // スナップショットの WebSocket（ブラウザ向け）と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 // 状態は idle → starting → running → stopping → idle。開始・終了を受け付けるかは、この状態だけで決める。
 import { execFile, spawn, type ChildProcess } from "node:child_process";

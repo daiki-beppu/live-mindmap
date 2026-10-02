@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
@@ -110,19 +110,25 @@ describe("CLI", () => {
     expect(out.join("").trim().split("\n")).toHaveLength(4);
   });
 
-  it("再生で map.png の撮影が失敗すると、エラーになるが、3 つのテキストファイルは残る", async () => {
+  it("再生で map.png の撮影が失敗しても、画像だけ諦めて 3 つのテキストファイルを書き、そのパスを出す。理由は標準エラーに残す", async () => {
     const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     let n = 0;
+    const out: string[] = [];
     const capture: MapCapture = async () => {
       throw new Error("撮影に失敗");
     };
-    await expect(
-      runCli(["play", fixture], { updater: async () => ({ ops: script[n++] ?? [] }), sessionsDir, port: 0, capture, stdout: () => {} }),
-    ).rejects.toThrow("撮影に失敗");
+    try {
+      await runCli(["play", fixture], { updater: async () => ({ ops: script[n++] ?? [] }), sessionsDir, port: 0, capture, stdout: (s) => out.push(s) });
+      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("map.png を書き出せませんでした: 撮影に失敗"))).toBe(true);
+    } finally {
+      stderr.mockRestore();
+    }
     const [session] = await readdir(sessionsDir);
     const files = await readdir(join(sessionsDir, session!));
     expect(files).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix"]));
     expect(files).not.toContain("map.png");
+    expect(out.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix"]);
   });
 
   it("map.json は、直後の export --format json の出力と同じ内容", async () => {

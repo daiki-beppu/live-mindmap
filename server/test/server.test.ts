@@ -244,19 +244,24 @@ describe("ライブのセッション", () => {
     expect(readFileSync(join(dir!, "map.json"), "utf8")).toContain("2 回にする");
   });
 
-  it("map.png の撮影が失敗すると stop はエラーを返すが、3 つのテキストファイルは残り、セッションは idle に戻る（次の開始ができる）", async () => {
+  it("map.png の撮影が失敗しても stop は成功し、3 つのテキストファイルのパスを出す。理由は標準エラーに残し、セッションは idle に戻る", async () => {
+    const stderr = vi.spyOn(process.stderr, "write");
+    cleanups.push(async () => stderr.mockRestore());
     const { cli, calls, sessionDirs } = await setup({}, async () => {
       throw new Error("撮影に失敗");
     });
     await cli("start", "--app", "us.zoom.xos", "--title", "週次");
     await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
 
-    await expect(cli("stop")).rejects.toThrow("撮影に失敗");
+    const stdout = await cli("stop");
 
     const [dir] = await sessionDirs();
-    for (const file of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir!, file))).toBe(true);
+    const paths = ["map.md", "map.json", "map.drawnix"].map((file) => join(dir!, file));
+    expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
+    for (const path of paths) expect(existsSync(path)).toBe(true);
     expect(existsSync(join(dir!, "map.png"))).toBe(false);
-    await expect(cli("stop")).rejects.toThrow("進行中のセッションがありません"); // 処理中（stopping）に固まっていない
+    expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("map.png を書き出せませんでした: 撮影に失敗"))).toBe(true);
+    await expect(cli("stop")).rejects.toThrow("進行中のセッションがありません");
   });
 
   it("ヘルパーの途中結果は、トラックごとの speaking として届く。終了で両トラックとも空になる。途中結果は差分更新・ログ・マップに入らない", async () => {

@@ -92,6 +92,22 @@ describe("map.png の撮影", () => {
     expect(png.length).toBeGreaterThan(1000);
   });
 
+  it("ノードを囲む範囲だけを切り抜くので、横に細長い小さなマップは撮影画面（1600×1000）より背の低い画像になる", { timeout: TIMEOUT }, async () => {
+    const nodes: SnapshotNode[] = [
+      { id: "root", parent: null, kind: "会議", text: "週次", evidence: [] },
+      { id: "n1", parent: "root", kind: "議題", text: "採用の進め方", evidence: [] },
+    ];
+    const path = join(await mkdtemp(join(tmpdir(), "live-mindmap-")), "map.png");
+
+    await captureMap({ nodes, round: 1, changes: [], remarks: [] }, path);
+
+    // PNG の IHDR: 幅は 16〜19 バイト目、高さは 20〜23 バイト目（deviceScaleFactor 2 の実ピクセル）
+    const png = readFileSync(path);
+    const [width, height] = [png.readUInt32BE(16), png.readUInt32BE(20)];
+    expect(height).toBeLessThan(width / 2);
+    expect(height).toBeLessThan(1000 * 2);
+  });
+
   it("続けて 2 回撮れる（1 回目で起動した Vite・Chromium を残して競合しない）", { timeout: TIMEOUT * 2 }, async () => {
     const dir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
     await captureMap(bigSnapshot(), join(dir, "a.png"));
