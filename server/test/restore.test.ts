@@ -195,6 +195,73 @@ describe("ログからの復元", () => {
     expect(restored.snapshot()).toEqual(session.snapshot());
   });
 
+  it("中身のない発言は、印の有無にかかわらず復元後の未反映にも続きの差分更新の入力にも入れない", async () => {
+    const real = remark("今日は採用の話をします");
+    const filler = remark("あ", { track: "自分" });
+    const marked = remark("えー");
+    const events: LogEvent[] = [
+      { type: "start", title: "定例" },
+      { type: "remark", remark: real },
+      { type: "remark", remark: filler }, // 印のない（古い形式の）ログでも現行の基準で除く
+      { type: "remark", remark: marked, noContent: true },
+    ];
+    const next = remark("担当は佐藤さんで");
+    const cont = scripted([]);
+    const restored = restoreSession(viaJsonl(events), { updater: cont.updater, log: () => {} });
+
+    expect(restored.unreflectedRemarks().map((r) => r.id)).toEqual([real.id]);
+    restored.push(next);
+    await restored.idle();
+    expect(cont.calls).toHaveLength(1);
+    expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([real.id, next.id]);
+  });
+
+  // 中身のない発言が差分更新に渡っていた旧形式のログ（fresh にフィラーが入っている）
+  function legacyLogWithProcessedFillers() {
+    const f1 = remark("あ");
+    const r1 = remark("今日は採用の話をします");
+    const f2 = remark("えー");
+    const events: LogEvent[] = [
+      { type: "start", title: "定例" },
+      { type: "remark", remark: f1 },
+      { type: "diff", input: { recent: [], fresh: [f1.id], nodeCount: 0 }, ops: [], dropped: [] },
+      { type: "remark", remark: r1 },
+      { type: "remark", remark: f2 },
+      {
+        type: "diff",
+        input: { recent: [f1.id], fresh: [r1.id, f2.id], nodeCount: 0 },
+        ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [r1.id] }],
+        dropped: [],
+      },
+    ];
+    return { f1, r1, f2, events };
+  }
+
+  it("処理済みだった中身のない発言は、復元後の最初の差分更新の直前の発言に入れない", async () => {
+    const { r1, events } = legacyLogWithProcessedFillers();
+    const n1 = remark("担当は佐藤さんで");
+    const n2 = remark("来週までに");
+    const cont = scripted([]);
+    const restored = restoreSession(viaJsonl(events), { updater: cont.updater, log: () => {} });
+    restored.push(n1);
+    restored.push(n2);
+    await restored.idle();
+
+    expect(cont.calls).toHaveLength(1);
+    expect(cont.calls[0]!.recent.map((u) => u.id)).toEqual([r1.id]);
+    expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([n1.id, n2.id]);
+  });
+
+  it("中身のない発言を処理済みから除いても、復元した回数・変わったこと・マップは変わらない", () => {
+    const { r1, f2, events } = legacyLogWithProcessedFillers();
+    const restored = restoreSession(viaJsonl(events), { updater: forbidden().updater, log: () => {} });
+    const snap = restored.snapshot();
+
+    expect(snap.round).toBe(2);
+    expect(snap.changes).toEqual([{ change: "追加", node: "n1", kind: "議題", text: "採用", round: 2, at: f2.end }]);
+    expect(snap.nodes.find((n) => n.id === "n1")).toMatchObject({ text: "採用", evidence: [r1.id] });
+  });
+
   it("開始のイベントがないログは、ルートの本文を推測せずエラーにする", async () => {
     const { events } = await original();
     const withoutStart = viaJsonl(events).filter((e) => (e as { type: string }).type !== "start");
