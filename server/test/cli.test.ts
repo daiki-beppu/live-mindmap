@@ -3,10 +3,14 @@ import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
+
+// テストごとに Chromium を起動しないよう、画像の撮影は偽物にする（空のファイルを書くだけ）。実物は capture.test.ts と server.test.ts で確かめる
+const fakeCapture: MapCapture = async (_snapshot, path) => writeFileSync(path, "");
 
 describe("CLI", () => {
   it("文字起こしを再生すると、export --format json がその時点のマップを標準出力に出す", async () => {
@@ -24,7 +28,7 @@ describe("CLI", () => {
       return { ops: script[calls.length - 1] ?? [] };
     };
     const out: string[] = [];
-    const deps = { updater, sessionsDir, port: 0, stdout: (s: string) => out.push(s) };
+    const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
 
     await runCli(["play", fixture], deps);
     expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"], ["r3"]]);
@@ -69,7 +73,7 @@ describe("CLI", () => {
     let n = 0;
     const updater = async () => ({ ops: script[n++] ?? [] });
     const out: string[] = [];
-    const deps = { updater, sessionsDir, port: 0, stdout: (s: string) => out.push(s) };
+    const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
     await runCli(["play", fixture], deps);
     const [session] = await readdir(sessionsDir);
     const dir = join(sessionsDir, session!);
@@ -78,15 +82,47 @@ describe("CLI", () => {
     return { deps, out, dir, paths, sessionsDir };
   }
 
-  it("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix を書き出し、そのパスを順に出力する", async () => {
+  it("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを順に出力する", async () => {
     const { dir, paths } = await played();
-    expect(paths).toEqual([join(dir, "map.md"), join(dir, "map.json"), join(dir, "map.drawnix")]);
-    expect((await readdir(dir)).sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix"]));
+    expect(paths).toEqual([join(dir, "map.md"), join(dir, "map.json"), join(dir, "map.drawnix"), join(dir, "map.png")]);
+    expect((await readdir(dir)).sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix", "map.png"]));
     const md = await readFile(join(dir, "map.md"), "utf8");
     expect(md).toContain("# short");
     expect(md).toContain("面接は何回か → 2 回にする");
     const drawnix = JSON.parse(await readFile(join(dir, "map.drawnix"), "utf8"));
     expect(drawnix).toMatchObject({ type: "drawnix", elements: [{ type: "mindmap" }] });
+  });
+
+  it("再生の map.png は、書き出した map.md・map.json と同じ、再生の最後のマップを撮る（1 回だけ取ったスナップショットを渡す）", async () => {
+    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+    let n = 0;
+    const captured: Snapshot[] = [];
+    const capture: MapCapture = async (snapshot, path) => {
+      captured.push(snapshot);
+      writeFileSync(path, "");
+    };
+    const out: string[] = [];
+    await runCli(["play", fixture], { updater: async () => ({ ops: script[n++] ?? [] }), sessionsDir, port: 0, capture, stdout: (s) => out.push(s) });
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
+    expect(captured[0]!.round).toBe(2);
+    expect(out.join("").trim().split("\n")).toHaveLength(4);
+  });
+
+  it("再生で map.png の撮影が失敗すると、エラーになるが、3 つのテキストファイルは残る", async () => {
+    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+    let n = 0;
+    const capture: MapCapture = async () => {
+      throw new Error("撮影に失敗");
+    };
+    await expect(
+      runCli(["play", fixture], { updater: async () => ({ ops: script[n++] ?? [] }), sessionsDir, port: 0, capture, stdout: () => {} }),
+    ).rejects.toThrow("撮影に失敗");
+    const [session] = await readdir(sessionsDir);
+    const files = await readdir(join(sessionsDir, session!));
+    expect(files).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix"]));
+    expect(files).not.toContain("map.png");
   });
 
   it("map.json は、直後の export --format json の出力と同じ内容", async () => {
@@ -123,7 +159,7 @@ describe("CLI", () => {
     };
     const playOut: string[] = [];
     const out: string[] = [];
-    const playing = runCli(["play", fixture], { updater, sessionsDir, port: 0, stdout: (s) => playOut.push(s) });
+    const playing = runCli(["play", fixture], { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s) => playOut.push(s) });
     await secondCallReached;
 
     const [session] = await readdir(sessionsDir);
@@ -131,7 +167,7 @@ describe("CLI", () => {
     const before = (await readdir(dir)).sort();
     expect(before).toEqual(["export.json", "log.jsonl"]);
 
-    const deps = { updater, sessionsDir, port: 0, stdout: (s: string) => out.push(s) };
+    const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
     await runCli(["export"], deps);
     const md = out.join("");
     expect(md.startsWith("# short")).toBe(true);
@@ -168,7 +204,7 @@ describe("CLI", () => {
       let n = 0;
       const updater = async (_: DiffInput) => ({ ops: script[n++] ?? [] });
       const out: string[] = [];
-      const deps = { updater, sessionsDir, port: 0, stdout: (s: string) => out.push(s) };
+      const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
       await runCli(["play", fixture], deps);
       const dir = dirname(out.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
       out.length = 0;
@@ -193,7 +229,7 @@ describe("CLI", () => {
         called++;
         throw new Error("復元で差分更新が呼ばれた");
       };
-      const deps = { updater, sessionsDir, port: 0, stdout: (s: string) => out.push(s) };
+      const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
 
       out.length = 0;
       await runCli(["restore"], deps);
@@ -291,7 +327,7 @@ describe("CLI", () => {
         return { ops: script[n++] ?? [] };
       };
       const out: string[] = [];
-      await runCli(["play", fixture], { updater, sessionsDir, port: 0, onListening, stdout: (s) => out.push(s) });
+      await runCli(["play", fixture], { updater, sessionsDir, port: 0, capture: fakeCapture, onListening, stdout: (s) => out.push(s) });
       await new Promise((r) => setTimeout(r, 100)); // close 前に送られたものが届くのを待つ
 
       expect(received.map((s) => s.nodes.length)).toEqual([1, 3, 4]);
@@ -317,7 +353,7 @@ describe("CLI", () => {
       expect(r1).toMatchObject({ start: 0.5, end: 9.8, text: "今日は採用の進め方を決めます" });
       expect(["自分", "相手"]).toContain(r1.track);
       for (const node of last.nodes) for (const id of node.evidence) expect(last.remarks.some((r) => r.id === id)).toBe(true);
-      expect(out.join("")).toMatch(/^([^\n]+\n){3}$/); // 書き出した 3 ファイルのパスだけ
+      expect(out.join("")).toMatch(/^([^\n]+\n){4}$/); // 書き出した 4 ファイルのパスだけ
     });
 
     it("失敗した反映（マップが変わらない）ではスナップショットを送らない", async () => {
@@ -329,7 +365,7 @@ describe("CLI", () => {
         if (n++ === 0) throw new Error("失敗");
         return { ops: [] as Op[] };
       };
-      await runCli(["play", fixture], { updater, sessionsDir, port: 0, onListening, stdout: () => {} });
+      await runCli(["play", fixture], { updater, sessionsDir, port: 0, capture: fakeCapture, onListening, stdout: () => {} });
       await new Promise((r) => setTimeout(r, 100));
       expect(received.map((s) => s.nodes.length)).toEqual([1, 1]); // 初期のルート＋成功した 1 回（変更なし）だけ
     });
@@ -340,7 +376,7 @@ describe("CLI", () => {
       const deps = {
         updater: async () => ({ ops: [] as Op[] }),
         sessionsDir,
-        port: 0,
+        port: 0, capture: fakeCapture,
         sleep: async (ms: number) => {
           slept.push(Math.round(ms));
         },
@@ -367,7 +403,7 @@ describe("CLI", () => {
         return { ops: [] as Op[] };
       };
       let finished = false;
-      const playing = runCli(["play", fixture, "--realtime"], { updater, sessionsDir, port: 0, sleep, stdout: () => {} }).then(
+      const playing = runCli(["play", fixture, "--realtime"], { updater, sessionsDir, port: 0, capture: fakeCapture, sleep, stdout: () => {} }).then(
         () => (finished = true),
       );
 
@@ -403,7 +439,7 @@ describe("CLI", () => {
       const deps = {
         updater: async () => ({ ops: [] as Op[] }),
         sessionsDir,
-        port: 0,
+        port: 0, capture: fakeCapture,
         onListening: (p: number) => (port = p),
         stdout: () => {},
       };

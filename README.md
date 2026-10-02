@@ -60,10 +60,11 @@ pnpm dev   # ヘルパーをビルドし、サーバー（127.0.0.1:4319、LIVE_
 ```sh
 cli apps                                  # 会議アプリの一覧（JSON）。bundle id を調べる
 cli start --app us.zoom.xos [--title 週次]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す
-cli stop                                  # ヘルパーを止め、map.md・map.json・map.drawnix を書き出して、そのパスを出す
+cli stop                                  # ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す
 cli export --format json                  # 終了後も、最新のセッションのマップを取り出せる（表示も最後のマップのまま残る）
 ```
 
+- `map.png`（`play` の終了時も同じ）は、サーバーが Playwright のヘッドレスブラウザで自分の表示ページを開いて撮る。ブラウザを開いていなくても撮れる。変わったノードの強調・仮のノード・右の列は写さない。初回だけ `pnpm --filter @live-mindmap/server exec playwright install chromium` で Chromium を入れる。
 - ヘルパーの WebSocket にはサーバーだけがつなぐ。ポートはサーバーが空きを選んで渡す。
 - ヘルパーの実行ファイルは `helper/.build/debug/live-mindmap-helper`。`LIVE_MINDMAP_HELPER` で差し替えられる。
 - `pnpm dev` の実行中は 4319 をサーバーが使うので、`play` を同時に動かすときは `LIVE_MINDMAP_PORT` を変える（表示の proxy 先も同じ値を使う）。
@@ -74,4 +75,4 @@ cli export --format json                  # 終了後も、最新のセッショ
 2. Zoom かブラウザの会議（社外秘を含まないもの）を開き、音を出す
 3. `cli apps` にそのアプリが出ることを確かめ、`cli start --app <bundle id>` で開始する（初回はマイクの許可が要る）
 4. 話して、ブラウザのマップが組み上がることを見る
-5. `cli stop` で終了し、出力された 3 つのパスのファイルがあること、表示が最後のマップのまま残ること、`cli export --format json` で同じマップが取り出せることを確かめる
+5. `cli stop` で終了し、出力された 4 つのパス（map.png はマップだけの画像）のファイルがあること、表示が最後のマップのまま残ること、`cli export --format json` で同じマップが取り出せることを確かめる

@@ -43,7 +43,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 import { spawn } from "node:child_process";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
+import type { MapCapture } from "../src/capture.ts";
 import { HELPER_STOP_TIMEOUT_MS, startServer } from "../src/server.ts";
+
+// 通常のテストでは、テストごとに Chromium を起動しないよう、画像の撮影を偽物にする（空のファイルを書くだけ）。
+// 実物の撮影は、疎通のテスト（実物の captureMap）と capture.test.ts で確かめる。
+const fakeCapture: MapCapture = async (_snapshot, path) => writeFileSync(path, "");
 
 // 疎通テスト: 偽のヘルパー（fixtures/fake-helper.ts）から発言を送り、CLI で開始・終了する。
 // サーバーは実物（HTTP + WebSocket + 子プロセスの起動）で、差分更新とヘルパーだけが偽物。
@@ -78,7 +83,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function setup(initial: Partial<Script> = {}) {
+async function setup(initial: Partial<Script> = {}, capture: MapCapture = fakeCapture) {
   const dir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
   const sessionsDir = join(dir, "sessions");
   const scriptPath = join(dir, "script.json");
@@ -100,6 +105,7 @@ async function setup(initial: Partial<Script> = {}) {
     sessionsDir,
     updater,
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
+    capture,
   });
   cleanups.push(() => server.close());
 
@@ -171,10 +177,10 @@ describe("ライブのセッション", () => {
     expect(Date.now() - stopStartedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS);
     expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(false);
 
-    // 終了で、セッションのフォルダに 3 つのファイルが書かれ、そのパスが出る
+    // 終了で、セッションのフォルダに 4 つのファイルが書かれ、そのパスが出る
     const [dir] = await sessionDirs();
     expect(dir).toBeDefined();
-    const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix")];
+    const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png")];
     expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
     for (const path of paths) expect(existsSync(path)).toBe(true);
 
@@ -200,6 +206,57 @@ describe("ライブのセッション", () => {
 
     // 終了後も export --format json で、書き出した map.json と同じマップを取り出せる
     expect(JSON.parse(await cli("export", "--format", "json"))).toEqual(JSON.parse(readFileSync(paths[1]!, "utf8")));
+  });
+
+  it(
+    "ブラウザ（WebSocket のクライアント）を 1 つも開いていなくても、stop で map.png が書き出される。実物の撮影で、4 つ目のパスとして出る",
+    { timeout: 120_000 },
+    async () => {
+      const { cli, calls, sessionDirs } = await setup({}, (await import("../src/capture.ts")).captureMap);
+      await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+      await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
+
+      const stdout = await cli("stop"); // どのクライアントも接続していない
+
+      const [dir] = await sessionDirs();
+      const paths = stdout.split("\n").filter((l) => l !== "");
+      expect(paths).toHaveLength(4);
+      expect(paths[3]).toBe(join(dir!, "map.png"));
+      const png = readFileSync(paths[3]!);
+      expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      expect(png.length).toBeGreaterThan(1000);
+    },
+  );
+
+  it("stop が map.png の撮影に渡すスナップショットは、書き出す map.json と同じマップ（1 回だけ取ったもの）", async () => {
+    const received: Snapshot[] = [];
+    const { cli, calls, sessionDirs } = await setup({}, async (snapshot, path) => {
+      received.push(snapshot);
+      writeFileSync(path, "");
+    });
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
+    await cli("stop");
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.nodes.map((n) => n.text)).toEqual(["週次", "採用", "面接は何回か", "2 回にする"]);
+    const [dir] = await sessionDirs();
+    expect(readFileSync(join(dir!, "map.json"), "utf8")).toContain("2 回にする");
+  });
+
+  it("map.png の撮影が失敗すると stop はエラーを返すが、3 つのテキストファイルは残り、セッションは idle に戻る（次の開始ができる）", async () => {
+    const { cli, calls, sessionDirs } = await setup({}, async () => {
+      throw new Error("撮影に失敗");
+    });
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
+
+    await expect(cli("stop")).rejects.toThrow("撮影に失敗");
+
+    const [dir] = await sessionDirs();
+    for (const file of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir!, file))).toBe(true);
+    expect(existsSync(join(dir!, "map.png"))).toBe(false);
+    await expect(cli("stop")).rejects.toThrow("進行中のセッションがありません"); // 処理中（stopping）に固まっていない
   });
 
   it("ヘルパーの途中結果は、トラックごとの speaking として届く。終了で両トラックとも空になる。途中結果は差分更新・ログ・マップに入らない", async () => {
@@ -363,7 +420,7 @@ describe("ライブのセッション", () => {
 
   // 実時間で HELPER_STOP_TIMEOUT_MS 待つ（QUIET_MS と同じく、定数を export して実時間で確かめる）
   it(
-    "ヘルパーが SIGTERM で終わらなくても、stop は時間内に戻り、それまでの発言でマップを確定して 3 つのファイルを書き、SIGKILL に切り替えたことを標準エラーに残す。同じサーバーで次のセッションも開始・終了できる",
+    "ヘルパーが SIGTERM で終わらなくても、stop は時間内に戻り、それまでの発言でマップを確定して 4 つのファイルを書き、SIGKILL に切り替えたことを標準エラーに残す。同じサーバーで次のセッションも開始・終了できる",
     { timeout: HELPER_STOP_TIMEOUT_MS + 10_000 },
     async () => {
       const stderr = vi.spyOn(process.stderr, "write");
@@ -380,7 +437,7 @@ describe("ライブのセッション", () => {
 
       expect(elapsed).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
       const [dir] = await sessionDirs();
-      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix")];
+      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png")];
       expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
       for (const path of paths) expect(existsSync(path)).toBe(true);
       // 届いていた発言（r1〜r3）で確定している

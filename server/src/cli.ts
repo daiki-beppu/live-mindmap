@@ -3,11 +3,11 @@
 //   play <文字起こしファイル> [--realtime]
 //                                 録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。
 //                                 再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。
-//                                 終わると、セッションのフォルダに map.md・map.json・map.drawnix を書き出し、そのパスを出す
+//                                 終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを出す
 //   apps                          会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む
 //   start --app <bundle id> [--title <名前>]
 //                                 ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ
-//   stop                          ライブのセッションを終了し、map.md・map.json・map.drawnix を書き出して、そのパスを出す
+//   stop                          ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す
 //   export [--format md|json]     最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）
 //   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
 //   eval [--truth <正解ファイル>] <セッションのフォルダ>...
@@ -17,11 +17,13 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { createSession, exportFiles, formatTable, fromTranscript, parseTruth, playback, restoreSession, toMarkdown, type DiffUpdater, type JsonExport, type Run, type Session, type Snapshot, type Truth } from "./core/index.ts";
+import type { MapCapture } from "./capture.ts";
+import { createSession, exportFiles, formatTable, fromTranscript, parseTruth, playback, restoreSession, toJsonExport, toMarkdown, type DiffUpdater, type JsonExport, type Run, type Session, type Snapshot, type Truth } from "./core/index.ts";
 import { startSnapshotServer } from "./ws.ts";
 
 export type CliDeps = {
   updater?: DiffUpdater;
+  capture?: MapCapture; // map.png の撮影。省略したときは、Playwright で実際に撮る
   sessionsDir?: string;
   stdout?: (s: string) => void;
   port?: number; // スナップショットを配信する WebSocket のポート。0 なら空きポート
@@ -33,14 +35,18 @@ export type CliDeps = {
 // play もライブのセッションも、作成直後と log のたびに書く。サーバーが動いていなくても export できる。
 const EXPORT_FILE = "export.json";
 
-// セッション終了時の書き出し。スナップショットは 1 回だけ取り、3 形式に同じものを渡す。
+// セッション終了時の書き出し。スナップショットは 1 回だけ取り、4 形式（md・json・drawnix・png）に同じものを渡す。
 // ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
-export function writeSessionExports(dir: string, exp: JsonExport): string[] {
-  return Object.entries(exportFiles(exp)).map(([name, content]) => {
+// テキストの 3 形式を先に書くので、撮影が失敗しても残る（失敗はそのまま伝える）。
+export async function writeSessionExports(dir: string, snapshot: Snapshot, capture: MapCapture): Promise<string[]> {
+  const paths = Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks))).map(([name, content]) => {
     const path = join(dir, name);
     writeFileSync(path, content.endsWith("\n") ? content : content + "\n");
     return path;
   });
+  const png = join(dir, "map.png");
+  await capture(snapshot, png);
+  return [...paths, png];
 }
 
 const LOG_FILE = "log.jsonl";
@@ -126,6 +132,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       const file = rest[0];
       if (!file) throw new Error("usage: play <文字起こしファイル> [--realtime]");
       const updater = deps.updater ?? (await import("./claude.ts")).claudeUpdater;
+      const capture = deps.capture ?? (await import("./capture.ts")).captureMap;
       const server = await startSnapshotServer({ port: deps.port ?? defaultPort() });
       let paths: string[];
       try {
@@ -140,7 +147,7 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
           sleep,
         });
         await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))), sleep ? { sleep } : {});
-        paths = writeSessionExports(dir, session.exportJson());
+        paths = await writeSessionExports(dir, session.snapshot(), capture);
       } finally {
         await server.close();
       }
