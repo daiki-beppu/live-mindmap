@@ -76,3 +76,18 @@ cli export --format json                  # 終了後も、最新のセッショ
 3. `cli apps` にそのアプリが出ることを確かめ、`cli start --app <bundle id>` で開始する（初回はマイクの許可が要る）
 4. 話して、ブラウザのマップが組み上がることを見る
 5. `cli stop` で終了し、出力された 4 つのパス（map.png はマップだけの画像）のファイルがあること、表示が最後のマップのまま残ること、`cli export --format json` で同じマップが取り出せることを確かめる
+
+## Claude の認証
+
+差分更新は Claude（Agent SDK 経由）を呼びます。自分の Anthropic API キーを環境変数で渡してください。費用は API キーの持ち主に請求されます。
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+pnpm dev
+```
+
+Claude のサブスク（Free / Pro / Max）の認証での利用は案内していません。Anthropic の規約で、第三者のアプリがサブスクの認証で要求を送ることが認められていないためです（[ADR 0004](docs/adr/0004-mit-license-no-monetization.md)）。
+
+## ライセンス
+
+[MIT](LICENSE)。依存先の `@anthropic-ai/claude-agent-sdk` は Anthropic の規約に従います。

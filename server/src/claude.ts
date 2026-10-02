@@ -1,6 +1,5 @@
-// 差分更新（Claude）。Sonnet 5.5 を Agent SDK（サブスクの認証）で呼ぶ。
-// Claude の呼び出しはこの関数の後ろに閉じる。アプリとして配布するときは、API キーで
-// Anthropic API を直接呼ぶ実装に差し替える（ADR 0003）。プロンプトは試作 v3 の方針。
+// 差分更新（Claude）。Sonnet 5.5 を Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
+// Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v3 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { children, KINDS, PLAN_STATUSES, pointStatus, ROOT_ID, type DiffInput, type DiffUpdater, type MeetingMap, type Op, type Remark } from "./core/index.ts";
 
