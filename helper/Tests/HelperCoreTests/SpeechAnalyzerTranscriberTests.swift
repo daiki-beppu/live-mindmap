@@ -1,9 +1,12 @@
 import Testing
 import HelperCore
 
-// 本物の SpeechAnalyzer を使う。ja-JP のモデルがない・使えない環境では prepare() が失敗するので、その場合はテストも失敗する（環境の問題として報告する）。
+import Foundation
 
-@Suite("SpeechAnalyzerTranscriber の停止", .timeLimit(.minutes(1)))
+// 本物の SpeechAnalyzer を使う。ja-JP のモデルがない・使えない環境では prepare() が失敗するので、その場合はテストも失敗する（環境の問題として報告する）。
+// CI のランナーはモデルを持たず、テストのプロセスはモデルのダウンロードの状態も確かめられない（SFSpeechErrorDomain Code=1）ので、CI では流さない。
+
+@Suite("SpeechAnalyzerTranscriber の停止", .timeLimit(.minutes(1)), .disabled(if: ProcessInfo.processInfo.environment["CI"] != nil, "CI のランナーには ja-JP の音声認識モデルが無い"))
 struct SpeechAnalyzerTranscriberTests {
     private static let finishDeadline: Duration = .seconds(10)
 
