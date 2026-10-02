@@ -48,7 +48,7 @@ export type SessionOptions = {
 };
 
 const BATCH = 2;
-export const QUIET_MS = 5000; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
+export const QUIET_MS = 1500; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
 const RECENT = 3;
 
 type SessionState = {
