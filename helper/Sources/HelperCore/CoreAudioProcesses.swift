@@ -11,16 +11,21 @@ public enum CoreAudioError: Error, CustomStringConvertible {
     }
 }
 
-func audioAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+func audioAddress(
+    _ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress(
         mSelector: selector,
-        mScope: kAudioObjectPropertyScopeGlobal,
+        mScope: scope,
         mElement: kAudioObjectPropertyElementMain
     )
 }
 
-func audioProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, default initial: T) throws -> T {
-    var address = audioAddress(selector)
+func audioProperty<T>(
+    _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+    scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, default initial: T
+) throws -> T {
+    var address = audioAddress(selector, scope: scope)
     var value = initial
     var size = UInt32(MemoryLayout<T>.size)
     let status = withUnsafeMutableBytes(of: &value) { bytes in

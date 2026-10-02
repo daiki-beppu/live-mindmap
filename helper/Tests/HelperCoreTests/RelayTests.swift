@@ -20,7 +20,7 @@ struct RelayTests {
             continuation.yield(TranscriptionResult(text: "こんにちは", isFinal: true, start: 0, end: 2))
             continuation.finish()
         }
-        try await relay(results, track: .相手, to: server)
+        try await relay(results, track: .相手, to: server, duplicates: nil)
 
         var received: [String] = []
         for _ in 0..<2 {
@@ -87,7 +87,7 @@ struct MultiTrackRelayTests {
             TranscriptionResult(text: "こんに", isFinal: false, start: 0, end: 1),
             TranscriptionResult(text: "こんにちは", isFinal: true, start: 0.25, end: 2),
         ])
-        try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server)
+        try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: nil)
 
         let received = try await receiveTexts(task, count: 4)
         let expectedMine = [
@@ -120,7 +120,7 @@ struct MultiTrackRelayTests {
                 continuation.finish()
             }
         }
-        try await relay(tracks: [(.自分, finishedEarly), (.相手, late)], to: server)
+        try await relay(tracks: [(.自分, finishedEarly), (.相手, late)], to: server, duplicates: nil)
 
         let received = try await receiveTexts(task, count: 1)
         #expect(received == [try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "あとから", duplicate: false).jsonString()])
@@ -141,7 +141,7 @@ struct MultiTrackRelayTests {
         }
 
         do {
-            try await relay(tracks: [(.自分, failing), (.相手, neverEnding)], to: server)
+            try await relay(tracks: [(.自分, failing), (.相手, neverEnding)], to: server, duplicates: nil)
             Issue.record("エラーで終わるはずが、正常に戻った")
         } catch let error as TrackFailure {
             #expect(error == TrackFailure())
@@ -166,7 +166,7 @@ struct MultiTrackRelayTests {
         }
 
         do {
-            try await relay(tracks: [(.自分, neverEnding), (.相手, failing)], to: server)
+            try await relay(tracks: [(.自分, neverEnding), (.相手, failing)], to: server, duplicates: nil)
             Issue.record("エラーで終わるはずが、正常に戻った")
         } catch let error as TrackFailure {
             #expect(error == TrackFailure())
