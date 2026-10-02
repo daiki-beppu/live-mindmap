@@ -314,8 +314,8 @@ describe("差分更新の呼び出し: 発言が 1 つでも一定時間で呼�
   }
   const ids = (input: DiffInput) => input.fresh.map((u) => u.id);
 
-  it("定数 QUIET_MS は 5 秒（ミリ秒）", () => {
-    expect(QUIET_MS).toBe(5000);
+  it("定数 QUIET_MS は 1.5 秒（ミリ秒）", () => {
+    expect(QUIET_MS).toBe(1500);
   });
 
   it("発言が 1 つだけたまり、最後の発言から QUIET_MS 経っても新しい発言が来なければ、その 1 つで差分更新を呼ぶ", async () => {
