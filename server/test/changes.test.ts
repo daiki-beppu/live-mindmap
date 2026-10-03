@@ -205,3 +205,32 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
     expect(a).toEqual(aSnapshot);
   });
 });
+
+describe("種別「要点」を applyOps が受け入れる", () => {
+  const withPoint = (): MeetingMap =>
+    step(emptyMap("共有会"), [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ふりかえり", evidence: ["r1"] },
+      { op: "add", ref: "t2", parent: "t1", kind: "要点", text: "毎週 15 分で回す", evidence: ["r2"] },
+      { op: "add", ref: "t3", parent: "t2", kind: "要点", text: "司会は持ち回り", evidence: ["r3"] },
+    ]);
+
+  it("議題の下に要点を add でき、要点の下にも要点を add できる（要点は子を持てる）", () => {
+    const result = applyOps(emptyMap("共有会"), [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ふりかえり", evidence: ["r1"] },
+      { op: "add", ref: "t2", parent: "t1", kind: "要点", text: "毎週 15 分で回す", evidence: ["r2"] },
+      { op: "add", ref: "t3", parent: "t2", kind: "要点", text: "司会は持ち回り", evidence: ["r3"] },
+    ], known);
+
+    expect(result.map.order.map((id) => result.map.nodes[id]!.kind)).toEqual(["会議", "議題", "要点", "要点"]);
+    expect(result.map.nodes[result.map.order[3]!]!.parent).toBe(result.map.order[2]);
+  });
+
+  it("要点の本文を update で置き換えられ、変更の記録は「更新」になる", () => {
+    const base = withPoint();
+    const id = base.order[2]!;
+
+    expect(changesOf([{ op: "update", node: id, text: "毎週 20 分で回す", evidence: ["r4"] }], base)).toEqual([
+      { change: "更新", node: id, kind: "要点", text: "毎週 20 分で回す" },
+    ]);
+  });
+});

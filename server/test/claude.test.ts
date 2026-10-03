@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildPrompt, openClaudeUpdater, QUERY_RENEW_CALLS } from "../src/claude.ts";
+import { buildPrompt, NOOP_SCOPE, openClaudeUpdater, QUERY_RENEW_CALLS } from "../src/claude.ts";
+import { applyOps } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type Op } from "../src/core/index.ts";
 
 // 偽の query()。prompt（AsyncIterable）から user メッセージを 1 つ読むたびに、behave の指示どおり 1 回分の応答を返す。
@@ -180,5 +181,122 @@ describe("差分更新の query の後片付け", () => {
 
     expect(await pending).toBe("rejected");
     expect(created[0]!.closeCalls).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// query() に渡された options（systemPrompt と出力スキーマ）を記録する偽物
+type Options = { systemPrompt: string; outputFormat: { schema: unknown } };
+async function capturedOptions(calls = 1): Promise<Options[]> {
+  const seen: Options[] = [];
+  const run = ((params: { prompt: AsyncIterable<Message>; options: Options }) => {
+    seen.push(params.options);
+    const gen = (async function* () {
+      for await (const _ of params.prompt) {
+        yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "r" }] } };
+      }
+    })();
+    return Object.assign(gen, { close: () => {} });
+  }) as unknown as Parameters<typeof openClaudeUpdater>[0];
+  const updater = openClaudeUpdater(run);
+  for (let n = 1; n <= calls; n++) await updater.update(input(n));
+  updater.close();
+  return seen;
+}
+const systemPrompt = async () => (await capturedOptions())[0]!.systemPrompt;
+const count = (text: string, part: string) => text.split(part).length - 1;
+
+describe("system プロンプト: noop にする範囲", () => {
+  it("範囲の定義 NOOP_SCOPE が、見出し「# noop にする範囲」の下に 1 回だけ現れる", async () => {
+    const sys = await systemPrompt();
+
+    expect(NOOP_SCOPE).toEqual(expect.any(String));
+    expect(count(sys, NOOP_SCOPE)).toBe(1);
+    expect(count(sys, "# noop にする範囲")).toBe(1);
+    expect(sys.indexOf(NOOP_SCOPE)).toBeGreaterThan(sys.indexOf("# noop にする範囲"));
+  });
+
+  it("NOOP_SCOPE は、相づち・進行の段取り・聞き取れない断片・同じ内容の言い直しの 4 つを定義し、雑談や解説は noop の範囲に入れない", () => {
+    for (const part of ["相づち", "進行の段取り", "聞き取れない断片", "同じ内容の言い直し"]) expect(NOOP_SCOPE).toContain(part);
+    expect(NOOP_SCOPE).not.toContain("雑談、");
+    expect(NOOP_SCOPE).not.toContain("番組の解説");
+  });
+
+  it("雑談・番組の解説を noop にする旧い指示と、迷ったら何もしない指示は残らない", async () => {
+    const sys = await systemPrompt();
+
+    expect(sys).not.toContain("雑談、番組の解説のような");
+    expect(sys).not.toContain("迷ったら何もしない");
+  });
+
+  it("noop を広げる語は NOOP_SCOPE の外に書かれていない（noop の条件の定義は 1 か所）", async () => {
+    const outside = (await systemPrompt()).replace(NOOP_SCOPE, "");
+
+    expect(outside).not.toMatch(/(雑談|解説|挨拶)[^。\n]*noop にする/);
+  });
+});
+
+describe("system プロンプト: 共有・雑談型の会議で話題と要点を残す", () => {
+  it("要点を、紹介・体験談・おすすめ・質問とその答えを表す種別として語彙に定義する", async () => {
+    const sys = await systemPrompt();
+
+    const line = sys.split("\n").find((l) => l.startsWith("- 要点:"));
+    expect(line).toBeDefined();
+    for (const part of ["紹介", "体験談", "おすすめ"]) expect(line).toContain(part);
+  });
+
+  it("決定がなくても、話題を議題として立てて要点を残す指示がある", async () => {
+    const sys = await systemPrompt();
+
+    expect(sys).toMatch(/決定がなくても/);
+    expect(sys).toMatch(/議題として立て/);
+  });
+
+  it("紹介・解説・体験談の中の「〜にする」を、決定や TODO にせず要点にする指示がある。決定と TODO の既存の指示も残る", async () => {
+    const sys = await systemPrompt();
+
+    expect(sys).toContain("決定や TODO にせず、要点にする");
+    expect(sys).toContain("「〜にしましょう」「〜を結論とする」「〜を基準にする」のような合意は決定にする");
+    expect(sys).toContain("「〜さんが〜する」「〜を持ち帰る」「〜に当たる」のように、誰かが後でやると決まった作業は TODO にする");
+  });
+
+  it("目安（60 分で 50 ノード前後・深さ 4 段）の指示が残り、深さの例に要点が入る", async () => {
+    const sys = await systemPrompt();
+
+    expect(sys).toContain("60 分の会議で 50 ノード前後、root からの深さ 4 段");
+    expect(sys).toMatch(/案・課題・決定・要点/);
+  });
+
+  it("出力スキーマの add の kind に要点が入る", async () => {
+    const schema = JSON.stringify((await capturedOptions())[0]!.outputFormat.schema);
+
+    expect(schema).toContain('"要点"');
+  });
+});
+
+describe("system プロンプトは会議の種類によらず 1 つ", () => {
+  it("入力の違う 2 回の呼び出しと、開き直したあとの query で、systemPrompt は同じ文字列", async () => {
+    const seen = await capturedOptions(QUERY_RENEW_CALLS + 1);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]!.systemPrompt).toBe(seen[0]!.systemPrompt);
+  });
+});
+
+describe("種別「要点」の経路", () => {
+  it("buildPrompt のアウトラインに「要点:」の行が、親の字下げの下に出る", () => {
+    const known = new Set(["r1", "r2"]);
+    const { map } = applyOps(
+      emptyMap("共有会"),
+      [
+        { op: "add", ref: "a", parent: "root", kind: "議題", text: "ふりかえりのやり方", evidence: ["r1"] },
+        { op: "add", ref: "b", parent: "a", kind: "要点", text: "毎週 15 分で回している", evidence: ["r2"] },
+      ],
+      known,
+    );
+
+    const prompt = buildPrompt({ map, recent: [], fresh: [{ id: "r3", track: "相手", start: 3, end: 4, text: "x" }] });
+
+    expect(prompt).toMatch(/^ {2}- n1 議題: ふりかえりのやり方$/m);
+    expect(prompt).toMatch(/^ {4}- n2 要点: 毎週 15 分で回している$/m);
   });
 });

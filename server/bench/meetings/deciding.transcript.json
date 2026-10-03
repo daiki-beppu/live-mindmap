@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "duration": 319,
+  "source_path": "deciding.m4a",
+  "transcript": {
+    "tracks": [
+      "speaker",
+      "相手"
+    ],
+    "diagnostics": {},
+    "segments": [
+      {
+        "track": "speaker",
+        "start_seconds": 0.5,
+        "end_seconds": 12.5,
+        "text": "今日は新しい請求書システムの導入について決めます。論点は三つです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 12.5,
+        "end_seconds": 26.5,
+        "text": "一つ目は、どの製品にするか。二つ目は、いつ切り替えるか。三つ目は、移行作業の担当です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 26.5,
+        "end_seconds": 32.5,
+        "text": "了解です。まず製品から行きましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 32.5,
+        "end_seconds": 44.5,
+        "text": "候補は二つあります。クラウド型のA社と、自社サーバーで動かすB社です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 44.5,
+        "end_seconds": 54.5,
+        "text": "A社は月額が高いけれど、保守は任せられます",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 54.5,
+        "end_seconds": 66.5,
+        "text": "B社は初期費用だけで安いんですが、障害のときは自分たちで対応が要ります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 66.5,
+        "end_seconds": 76.5,
+        "text": "うちのインフラの人手を考えると、保守を持てる余裕はないですよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 76.5,
+        "end_seconds": 84.5,
+        "text": "確かに。去年も運用の人が一人抜けています",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 84.5,
+        "end_seconds": 92.5,
+        "text": "月額の差は年間で四十万円くらいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 92.5,
+        "end_seconds": 101.5,
+        "text": "その差なら、保守の手間を買うほうが安いと思います",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 101.5,
+        "end_seconds": 107.5,
+        "text": "では、製品はA社にしましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 107.5,
+        "end_seconds": 113.5,
+        "text": "異論なければ、A社に決定です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 113.5,
+        "end_seconds": 116.5,
+        "text": "はい、賛成です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 116.5,
+        "end_seconds": 121.5,
+        "text": "次は、切り替えの時期です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 121.5,
+        "end_seconds": 131.5,
+        "text": "決算の処理が三月にあるので、その前後は避けたいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 131.5,
+        "end_seconds": 139.5,
+        "text": "四月の頭だと、新年度の請求と重なりますね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 139.5,
+        "end_seconds": 151.5,
+        "text": "それなら二月の末に切り替えて、三月の決算は新システムで通しで見たいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 151.5,
+        "end_seconds": 164.5,
+        "text": "二月は並行稼働の期間を一か月は取りたいので、一月の頭から準備に入ることになります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 164.5,
+        "end_seconds": 174.5,
+        "text": "十分間に合います。では、本番の切り替えは二月末にしましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 174.5,
+        "end_seconds": 180.5,
+        "text": "はい、切り替えは二月末で決定です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 180.5,
+        "end_seconds": 185.5,
+        "text": "最後に、移行作業の担当です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 185.5,
+        "end_seconds": 194.5,
+        "text": "データの移行は、経理の田中さんが一番詳しいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 194.5,
+        "end_seconds": 198.5,
+        "text": "田中さんに頼めますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 198.5,
+        "end_seconds": 208.5,
+        "text": "聞いてみますが、おそらく大丈夫です。僕から田中さんに依頼します",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 208.5,
+        "end_seconds": 219.5,
+        "text": "お願いします。では、田中さんへの依頼は佐藤さんが今週中に行う、ということで",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 219.5,
+        "end_seconds": 223.5,
+        "text": "はい、今週中にやります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 223.5,
+        "end_seconds": 231.5,
+        "text": "もう一つ、A社との契約の手続きが必要です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 231.5,
+        "end_seconds": 237.5,
+        "text": "契約書の確認は法務ですよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 237.5,
+        "end_seconds": 248.5,
+        "text": "はい。私から法務に契約書のレビューを来週月曜までに依頼しておきます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 248.5,
+        "end_seconds": 251.5,
+        "text": "助かります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 251.5,
+        "end_seconds": 259.5,
+        "text": "あと、並行稼働のテスト項目は誰が作りますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 259.5,
+        "end_seconds": 269.5,
+        "text": "それは私が一覧を作って、二週間後の会議までに共有します",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 269.5,
+        "end_seconds": 284.5,
+        "text": "お願いします。懸念として、旧システムの請求書の形式が特殊なので、取り込みで崩れないかは気になります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 284.5,
+        "end_seconds": 295.5,
+        "text": "それは移行テストで確かめましょう。サンプルを十件ほど先に流します",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 295.5,
+        "end_seconds": 307.5,
+        "text": "そうですね。まとめると、製品はA社、切り替えは二月末、担当は田中さんです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 307.5,
+        "end_seconds": 311.5,
+        "text": "それで合ってます",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 311.5,
+        "end_seconds": 318.5,
+        "text": "では今日はこれで終わります。ありがとうございました",
+        "confidence": 0.9
+      }
+    ]
+  }
+}

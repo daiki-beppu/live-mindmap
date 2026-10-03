@@ -192,3 +192,42 @@ describe("exportFiles と map.json", () => {
     });
   });
 });
+
+describe("種別「要点」の書き出し", () => {
+  const shared = (): JsonExport => ({
+    root: node("root", "会議", "共有会", {
+      children: [
+        node("n1", "議題", "ふりかえり", {
+          evidence: [remark("r1", 0)],
+          children: [node("n2", "要点", "毎週 15 分で回している", { evidence: [remark("r2", 75)] })],
+        }),
+      ],
+    }),
+  });
+
+  it("map.md のアウトラインに、要点の本文と時刻が議題の下の項目として出る。決定・TODO・未決の論点の一覧には入らない", () => {
+    const md = toMarkdown(shared());
+
+    expect(md).toContain("## アウトライン\n- ふりかえり（00:00）\n  - 毎週 15 分で回している（01:15）");
+    expect(md).toContain("## 決定\n- なし");
+    expect(md).toContain("## TODO\n- なし");
+    expect(md).toContain("## 未決の論点\n- なし");
+  });
+
+  it("map.drawnix で、要点は色を持ち、ほかのどの種別とも違う塗りと枠になる", () => {
+    type El = { id: string; fill?: string; strokeColor?: string; branchColor?: string; children?: El[] };
+    const flat = (e: El): El[] => [e, ...(e.children ?? []).flatMap(flat)];
+    const byId = new Map(flat(toDrawnix(shared()).elements[0] as El).map((e) => [e.id, e]));
+    const point = byId.get("n2")!;
+
+    expect(point.fill).toEqual(expect.any(String));
+    expect(point.strokeColor).toEqual(expect.any(String));
+    expect(point.branchColor).toBe(point.strokeColor);
+    const others = Object.entries(KIND_COLORS).filter(([k]) => k !== "要点").map(([, c]) => c);
+    expect(others).toHaveLength(KINDS.length - 1);
+    for (const c of others) {
+      expect(c.fill).not.toBe(point.fill);
+      expect(c.stroke).not.toBe(point.strokeColor);
+    }
+  });
+});

@@ -1,0 +1,392 @@
+{
+  "schema_version": 1,
+  "duration": 608,
+  "source_path": "sharing.m4a",
+  "transcript": {
+    "tracks": [
+      "speaker",
+      "相手"
+    ],
+    "diagnostics": {},
+    "segments": [
+      {
+        "track": "speaker",
+        "start_seconds": 0.5,
+        "end_seconds": 16.1,
+        "text": "じゃあ始めますね。今日は最近触ったツールの共有会ということで",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 16.1,
+        "end_seconds": 21.3,
+        "text": "はーい、お願いします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 21.3,
+        "end_seconds": 38.2,
+        "text": "まず私から。ターミナルで使うタスクランナーのjustを紹介します",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 38.2,
+        "end_seconds": 53.8,
+        "text": "Makefileの代わりに使えて、コマンドの一覧が見やすいのが特徴です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 53.8,
+        "end_seconds": 60.3,
+        "text": "Makefileと何が違うんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 60.3,
+        "end_seconds": 78.5,
+        "text": "ビルド用の仕組みじゃなくて、ただコマンドに名前を付けて呼ぶ道具なんですよ。依存関係の判定がない分、書き方が素直です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 78.5,
+        "end_seconds": 83.7,
+        "text": "なるほど、ほう",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 83.7,
+        "end_seconds": 100.6,
+        "text": "個人的には、半年使って、READMEに手順を書かなくてよくなったのが一番助かりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 100.6,
+        "end_seconds": 105.8,
+        "text": "それは大きいですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 105.8,
+        "end_seconds": 116.2,
+        "text": "はい。ちなみにインストールはbrewで一発です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 116.2,
+        "end_seconds": 124,
+        "text": "ちょっと画面共有お願いできますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 124,
+        "end_seconds": 133.1,
+        "text": "はい、今出しますね。見えてますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 133.1,
+        "end_seconds": 137,
+        "text": "見えてます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 137,
+        "end_seconds": 153.9,
+        "text": "次は私が。最近作った、議事録を勝手に要約するスクリプトの話をします",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 153.9,
+        "end_seconds": 168.2,
+        "text": "録音から文字起こしして、決まったことだけ抜き出す仕組みなんですが",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 168.2,
+        "end_seconds": 182.5,
+        "text": "最初は精度が低くて、固有名詞がぜんぶ誤変換されていたんです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 182.5,
+        "end_seconds": 189,
+        "text": "あー、それはありますよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 189,
+        "end_seconds": 203.3,
+        "text": "それで辞書を渡す方式に変えたら、だいぶましになりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 203.3,
+        "end_seconds": 218.9,
+        "text": "体験として、辞書は二十語くらいでも効くので、まず試すのがおすすめです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 218.9,
+        "end_seconds": 229.3,
+        "text": "二十語でいいんですね。それは手軽ですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 229.3,
+        "end_seconds": 235.8,
+        "text": "ええと、えっと、その、ちょっと",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 235.8,
+        "end_seconds": 246.2,
+        "text": "質問いいですか。辞書はどうやって作ったんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 246.2,
+        "end_seconds": 261.8,
+        "text": "過去の議事録から、よく出る社名と製品名を拾って並べただけです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 261.8,
+        "end_seconds": 270.9,
+        "text": "なるほど。手作業で十分ということですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 270.9,
+        "end_seconds": 278.7,
+        "text": "そうです。凝らなくて大丈夫でした",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 278.7,
+        "end_seconds": 294.3,
+        "text": "ところで話は変わるんですが、昨日の夜のラーメンが本当においしくて",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 294.3,
+        "end_seconds": 299.5,
+        "text": "どこのお店ですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 299.5,
+        "end_seconds": 317.7,
+        "text": "駅の南口の、煮干しの濃いところです。行列が三十分で、それでも並ぶ価値がありました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 317.7,
+        "end_seconds": 324.2,
+        "text": "いいなあ、今度行きます",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 324.2,
+        "end_seconds": 338.5,
+        "text": "おすすめは、平日の十七時台に行くことです。空いてます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 338.5,
+        "end_seconds": 350.2,
+        "text": "覚えておきます。じゃあ話を戻して、次の話題に行きましょうか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 350.2,
+        "end_seconds": 361.9,
+        "text": "はい、次はこの前の勉強会で見た動画の話をします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 361.9,
+        "end_seconds": 378.8,
+        "text": "動画では、設定ファイルはリポジトリの同じ場所に置くべきだと言っていました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 378.8,
+        "end_seconds": 395.7,
+        "text": "理由は、探す手間がなくなって、新しい人が入ったときも迷わないからだそうです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 395.7,
+        "end_seconds": 407.4,
+        "text": "その動画の人は、チーム全体にそれをやれと言っているんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 407.4,
+        "end_seconds": 423,
+        "text": "いえ、あくまでその人のやり方の紹介です。うちでどうするかは話していません",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 423,
+        "end_seconds": 430.8,
+        "text": "了解です。参考にはなりますね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 430.8,
+        "end_seconds": 449,
+        "text": "あと、動画の中でログは構造化して出すほうがいいとも言っていました。検索しやすくなるそうです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 449,
+        "end_seconds": 465.9,
+        "text": "それは自分の現場でもやってます。jsonで出して、後からjqで絞り込む感じです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 465.9,
+        "end_seconds": 478.9,
+        "text": "体験談としては、障害調査の時間が半分くらいになりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 478.9,
+        "end_seconds": 490.6,
+        "text": "半分は大きいですね。始めるときに何か苦労はありましたか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 490.6,
+        "end_seconds": 508.8,
+        "text": "既存のログの形式がばらばらで、揃えるのが一番大変でした。そこだけは覚悟が要ります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 508.8,
+        "end_seconds": 516.6,
+        "text": "ありがとうございます。参考になります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 516.6,
+        "end_seconds": 523.1,
+        "text": "あの、ちょっと音が、ちょっと途切れて、いま",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 523.1,
+        "end_seconds": 530.9,
+        "text": "はい、聞こえてます。もう一度お願いします",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 530.9,
+        "end_seconds": 541.3,
+        "text": "ログの形式を揃えるのが大変だった、という話です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 541.3,
+        "end_seconds": 545.2,
+        "text": "はい、わかりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 545.2,
+        "end_seconds": 560.8,
+        "text": "それではあと一つ、エディタの拡張機能のおすすめを言って終わりにしましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 560.8,
+        "end_seconds": 576.4,
+        "text": "差分を行ごとに見られる拡張があって、レビューのときに重宝しています",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 576.4,
+        "end_seconds": 581.6,
+        "text": "名前を教えてください",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 581.6,
+        "end_seconds": 588.1,
+        "text": "チャットに貼っておきます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 588.1,
+        "end_seconds": 597.2,
+        "text": "ありがとうございます。今日はここまでにしますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 597.2,
+        "end_seconds": 603.7,
+        "text": "そうですね、お疲れさまでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 603.7,
+        "end_seconds": 607.6,
+        "text": "お疲れさまでした",
+        "confidence": 0.9
+      }
+    ]
+  }
+}

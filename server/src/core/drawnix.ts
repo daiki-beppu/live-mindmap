@@ -4,7 +4,7 @@ import type { ExportNode, JsonExport } from "./export.ts";
 import type { Kind } from "./map.ts";
 
 // 種別ごとに 1 色。ノードの淡い塗り・枠・親からの枝をこの色で揃える（表示の色もこれに合わせる）。
-// 色相は 議題=青、論点=黄、課題=赤、案=紫、決定=緑。TODO は資料に定めがないので橙。
+// 色相は 議題=青、論点=黄、課題=赤、案=紫、決定=緑。TODO は資料に定めがないので橙、要点=桃。
 export const KIND_COLORS: Record<Kind, { fill: string; stroke: string }> = {
   議題: { fill: "#dbeafe", stroke: "#3b82f6" },
   論点: { fill: "#fef9c3", stroke: "#eab308" },
@@ -12,6 +12,7 @@ export const KIND_COLORS: Record<Kind, { fill: string; stroke: string }> = {
   案: { fill: "#f3e8ff", stroke: "#a855f7" },
   決定: { fill: "#dcfce7", stroke: "#22c55e" },
   TODO: { fill: "#ffedd5", stroke: "#f97316" },
+  要点: { fill: "#fce7f3", stroke: "#ec4899" },
 };
 
 export type DrawnixElement = {
