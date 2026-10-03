@@ -106,9 +106,12 @@ public actor DuplicateMarker {
         generation += 1
         let current = generation
         deadlineReached = false
+        // 上限は保留を始めた時刻から数える。前の発言の待ちで遅れた分は、待ち時間から引く。
+        // 待ち時間はタスクの外で求める。タスクの中で求めると、Xcode 26.6（Swift 6.3.3）の debug ビルドで
+        // 「freed pointer was not the last allocation」で落ちた（PR #109 の二分探索）。
+        let wait = max(.zero, .seconds(duplicateHoldLimit) - (.now - heldSince))
         let timer = Task { [sleep] in
-            // 上限は保留を始めた時刻から数える。前の発言の待ちで遅れた分は、待ち時間から引く。
-            try? await sleep(max(.zero, .seconds(duplicateHoldLimit) - (.now - heldSince)))
+            try? await sleep(wait)
             guard !Task.isCancelled else { return }
             self.reachDeadline(generation: current)
         }
