@@ -26,7 +26,7 @@ public struct TranscriptionResult: Sendable, Equatable {
 /// `id` はサーバーが採番するので、ここでは持たない。
 public enum HelperEvent: Sendable, Equatable {
     case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
-    case partial(track: Track, text: String)
+    case partial(track: Track, start: Double, end: Double, text: String)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -56,9 +56,11 @@ extension HelperEvent: Encodable {
             try container.encode(end, forKey: .end)
             try container.encode(text, forKey: .text)
             try container.encode(duplicate, forKey: .duplicate)
-        case let .partial(track, text):
+        case let .partial(track, start, end, text):
             try container.encode("partial", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
+            try container.encode(start, forKey: .start)
+            try container.encode(end, forKey: .end)
             try container.encode(text, forKey: .text)
         }
     }
@@ -69,5 +71,5 @@ public func event(from result: TranscriptionResult, track: Track) -> HelperEvent
     if result.isFinal {
         return .remark(track: track, start: result.start, end: result.end, text: result.text, duplicate: false)
     }
-    return .partial(track: track, text: result.text)
+    return .partial(track: track, start: result.start, end: result.end, text: result.text)
 }
