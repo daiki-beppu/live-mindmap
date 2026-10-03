@@ -9,26 +9,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [head-backtrace, relay-main, rename-partial, skip-relay-suite, release, list-xcode]
+        variant: [main-repeat, head-filter-repeat, timer-do-catch, timer-precompute]
     steps:
       - uses: actions/checkout@v5
       - name: apply variant
         working-directory: helper
         run: |
+          git fetch origin main --depth=1
           case "${{ matrix.variant }}" in
-            relay-main) git checkout origin/main -- Sources/HelperCore/Relay.swift 2>/dev/null || { git fetch origin main --depth=1 && git checkout FETCH_HEAD -- Sources/HelperCore/Relay.swift; } ;;
-            rename-partial) sed -i '' 's/isDuplicate(partial/isDuplicatePartial(partial/g' Sources/HelperCore/*.swift Tests/HelperCoreTests/*.swift ;;
-            skip-relay-suite) sed -i '' 's/@Suite("重複の印を付ける転送"/@Suite("重複の印を付ける転送", .disabled()/' Tests/HelperCoreTests/DuplicateRelayTests.swift ;;
+            main-repeat) git checkout FETCH_HEAD -- . ;;
+            timer-do-catch) perl -pi -e 's/try\? await sleep\((.*)\)$/do { try await sleep($1) } catch { return }/' Sources/HelperCore/Duplicates.swift ;;
+            timer-precompute) perl -0pi -e 's/let timer = Task \{ \[sleep\] in/let wait = max(.zero, .seconds(duplicateHoldLimit) - (.now - heldSince))\n        let timer = Task { [sleep, wait] in/; s/try\? await sleep\(max.*\)\n/try? await sleep(wait)\n/' Sources/HelperCore/Duplicates.swift ;;
           esac
-          git diff --stat
+          git diff
       - name: test
         working-directory: helper
         env:
           SWIFT_BACKTRACE: enable=yes,interactive=no,symbolicate=full
         run: |
           xcodebuild -version; swift --version
+          swift build --build-tests
           case "${{ matrix.variant }}" in
-            list-xcode) ls /Applications | grep -i xcode ;;
-            release) swift test -c release --no-parallel ;;
-            *) swift test --no-parallel ;;
+            main-repeat|head-filter-repeat) for i in $(seq 1 10); do echo "== run $i"; swift test --skip-build --no-parallel --filter DuplicateRelayTests || exit 1; done ;;
+            *) swift test --skip-build --no-parallel ;;
           esac
