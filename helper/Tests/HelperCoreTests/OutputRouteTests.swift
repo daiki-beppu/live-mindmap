@@ -36,11 +36,11 @@ struct OutputRouteTests {
         #expect(outputRoute(transportType: fourCC("hdmi"), dataSource: nil) == .other)
     }
 
-    @Test("重複の判定をかけるのは、内蔵スピーカーと other だけ（イヤホン・Bluetooth はかけない）")
+    @Test("重複の判定をかけないのは、内蔵のヘッドフォンジャックのイヤホンだけ（Bluetooth はスピーカーのこともあるのでかける）")
     func marksDuplicates() {
         #expect(OutputRoute.builtInSpeaker.marksDuplicates)
         #expect(OutputRoute.other.marksDuplicates)
+        #expect(OutputRoute.bluetooth.marksDuplicates)
         #expect(!OutputRoute.headphones.marksDuplicates)
-        #expect(!OutputRoute.bluetooth.marksDuplicates)
     }
 }
