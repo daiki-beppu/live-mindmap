@@ -9,7 +9,7 @@ export const KIND_COLOR: Record<SnapshotNode["kind"], string> = {
   案: "#a855f7",
   決定: "#22c55e",
   TODO: "#14b8a6",
-  要点: "#ec4899",
+  要点: "#94a3b8", // 数が一番多くなる種別なので、1 段薄いグレーにして決定や TODO を目立たせる
 };
 
 // 印は 論点 ?、決定済みの論点と決定 ✓、TODO ☐ だけ。

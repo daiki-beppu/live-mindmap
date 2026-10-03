@@ -12,7 +12,7 @@ export const KIND_COLORS: Record<Kind, { fill: string; stroke: string }> = {
   案: { fill: "#f3e8ff", stroke: "#a855f7" },
   決定: { fill: "#dcfce7", stroke: "#22c55e" },
   TODO: { fill: "#ffedd5", stroke: "#f97316" },
-  要点: { fill: "#fce7f3", stroke: "#ec4899" },
+  要点: { fill: "#f1f5f9", stroke: "#94a3b8" },
 };
 
 export type DrawnixElement = {
