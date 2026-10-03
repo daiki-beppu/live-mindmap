@@ -76,11 +76,6 @@ public actor DuplicateMarker {
         self.sleep = sleep
     }
 
-    /// `相手` の結果を文脈に加える。確定結果は `add(theirs:)`、途中結果は `add(theirPartial:)` に振り分ける。
-    public func observe(theirs result: TranscriptionResult) {
-        if result.isFinal { add(theirs: result) } else { add(theirPartial: result) }
-    }
-
     /// `相手` の確定結果を文脈に加える。
     public func add(theirs result: TranscriptionResult) {
         theirs.append(result)

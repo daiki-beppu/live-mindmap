@@ -21,22 +21,14 @@ private func relayTheirs<Results: AsyncSequence>(
     _ results: Results, to server: WebSocketServer, duplicates: DuplicateMarker
 ) async throws where Results.Element == TranscriptionResult {
     for try await result in results {
-        // 確定か途中かの振り分けは判定器の中で行う。ここで if / else の両方に await を置くと、CI（Xcode 26.6）の swift test がクラッシュした
-        await duplicates.observe(theirs: result)
+        if result.isFinal {
+            await duplicates.add(theirs: result)
+        } else {
+            await duplicates.add(theirPartial: result)
+        }
         await server.broadcast(try event(from: result, track: .相手).jsonString())
     }
     await duplicates.finishTheirs()
-}
-
-/// `自分` の途中結果を、届いた時点の文脈で判定して印を付け、すぐ流す。
-/// relayMine のタスクグループの中に直接書くと、CI（Xcode 26.6）の swift test が「freed pointer was not the last allocation」で落ちたので、関数に分けている。
-private func relayMinePartial(
-    _ result: TranscriptionResult, to server: WebSocketServer, duplicates: DuplicateMarker
-) async throws {
-    let duplicate = await duplicates.isDuplicate(partial: result)
-    let partial = HelperEvent.partial(
-        track: .自分, start: result.start, end: result.end, text: result.text, duplicate: duplicate)
-    await server.broadcast(try partial.jsonString())
 }
 
 /// `自分` の途中結果は保留せず、届いた時点の文脈で判定して印を付け、すぐ流す。確定結果は判定を待つ間、順序を保って保留し、保留中の分がすべて流れるまで戻らない。
@@ -61,7 +53,10 @@ private func relayMine<Results: AsyncSequence>(
                 if result.isFinal {
                     heldContinuation.yield((result, .now))
                 } else {
-                    try await relayMinePartial(result, to: server, duplicates: duplicates)
+                    let partial = HelperEvent.partial(
+                        track: .自分, start: result.start, end: result.end, text: result.text,
+                        duplicate: await duplicates.isDuplicate(partial: result))
+                    await server.broadcast(try partial.jsonString())
                 }
             }
         }

@@ -23,5 +23,5 @@ jobs:
       - run: pnpm --filter @live-mindmap/web test
       # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
       # ランナーには Xcode があるので swift test をそのまま使う
-      - run: swift test --no-parallel
+      - run: swift test
         working-directory: helper
