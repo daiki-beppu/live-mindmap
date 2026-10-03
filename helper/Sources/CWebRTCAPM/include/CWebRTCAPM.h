@@ -10,8 +10,14 @@ extern "C" {
 
 typedef struct ApmHandle *ApmRef;
 
-/// 指定のサンプルレート・チャンネル数で APM を作る。失敗したら NULL。
-ApmRef apm_create(int sample_rate, int channels);
+/// AEC3（`EchoCanceller3Config`）に渡す設定。
+typedef struct {
+    /// `ep_strength.default_gain`: エコー経路の強さの初期値（AEC3 の既定は 1）
+    float ep_strength_default_gain;
+} ApmEchoSettings;
+
+/// 指定のサンプルレート・チャンネル数・AEC3 の設定で APM を作る。`settings` が NULL か、設定が AEC3 の検証を通らなければ NULL。
+ApmRef apm_create(int sample_rate, int channels, const ApmEchoSettings *settings);
 
 /// 参照（スピーカーに出た音）の 10 ms 分を渡す。`frames` は sample_rate / 100。成功なら 0。
 int apm_process_reverse(ApmRef handle, const float *frame, int frames);

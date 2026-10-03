@@ -4,7 +4,7 @@ import Foundation
 //   stt-bench synth <台本.json> <出力フォルダ> [--only <名前>] [--gap <秒>]
 //   stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>]   （結果を 1 行 1 結果の JSONL で標準出力へ）
 //   stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]
-//     AEC3 が開始直後に話者の声を削るかを測る（結果は 1 行 1 結果の JSONL）。候補: baseline、bypass-<秒>
+//     AEC3 が開始直後に話者の声を削るかを測る（結果は 1 行 1 結果の JSONL）。候補: baseline、production、bypass-<秒>
 //   stt-bench variants
 // 合成した音声・計測の出力はリポジトリの外に置く。
 
@@ -69,7 +69,7 @@ do {
         }
         if let value = option("--candidate", in: &args) {
             guard let candidates = try? value.split(separator: ",").map({ try EchoCandidate(String($0)).orThrow() }), !candidates.isEmpty else {
-                fail("--candidate は baseline か bypass-<秒> のカンマ区切り")
+                fail("--candidate は baseline、production、bypass-<秒> のカンマ区切り")
             }
             options.candidates = candidates
         }

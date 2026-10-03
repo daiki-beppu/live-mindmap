@@ -25,7 +25,7 @@ let package = Package(
             name: "CWebRTCAPM",
             cxxSettings: [
                 .unsafeFlags([
-                    "-std=c++17", "-DWEBRTC_POSIX", "-DWEBRTC_MAC",
+                    "-std=c++17", "-DWEBRTC_POSIX", "-DWEBRTC_MAC", "-DWEBRTC_APM_DEBUG_DUMP=0",
                     "-I\(webrtcAPM)/src", "-I\(webrtcAPM)/src/webrtc", "-I\(webrtcAPM)/build", "-I\(webrtcAPM)/abseil",
                 ]),
             ],
