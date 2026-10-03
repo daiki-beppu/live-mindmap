@@ -1,0 +1,1204 @@
+{
+  "schema_version": 1,
+  "duration": 3521,
+  "source_path": "long.m4a",
+  "transcript": {
+    "tracks": [
+      "speaker",
+      "相手"
+    ],
+    "diagnostics": {},
+    "segments": [
+      {
+        "track": "speaker",
+        "start_seconds": 0.5,
+        "end_seconds": 22.3,
+        "text": "じゃあ時間なので始めましょう。今日は持ち寄りの共有会です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 22.3,
+        "end_seconds": 34.8,
+        "text": "はい、お願いします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 34.8,
+        "end_seconds": 57.6,
+        "text": "順番は決めてないので、話したい人から行きましょう。まず私から",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 57.6,
+        "end_seconds": 78.4,
+        "text": "最近、自作のキーボードにはまっていて、その話をします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 78.4,
+        "end_seconds": 105.6,
+        "text": "と言っても部品を買って組み立てるだけなんですが、スイッチを選ぶところが沼でして",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 105.6,
+        "end_seconds": 123,
+        "text": "スイッチってそんなに種類があるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 123,
+        "end_seconds": 150.2,
+        "text": "あります。押したときに音が鳴るタイプ、静かなタイプ、重いもの軽いもの、色々です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 150.2,
+        "end_seconds": 173.5,
+        "text": "私は静音の赤軸系を選びました。夜に打っても家族に怒られないので",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 173.5,
+        "end_seconds": 185.5,
+        "text": "それは大事ですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 185.5,
+        "end_seconds": 220.5,
+        "text": "もう一つ、キーの配列を自分で並べ替えられるのが楽しいです。親指のところに変換キーを置いたら、肩こりが減りました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 220.5,
+        "end_seconds": 236.4,
+        "text": "へえ、体の負担まで変わるんですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 236.4,
+        "end_seconds": 261.2,
+        "text": "人によりますけどね。初めてなら、はんだ付け不要のキットがおすすめです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 261.2,
+        "end_seconds": 277.6,
+        "text": "はんだごてがなくても作れるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 277.6,
+        "end_seconds": 304.3,
+        "text": "はい、基板にスイッチを差すだけのキットがあります。一時間くらいで終わりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 304.3,
+        "end_seconds": 317.3,
+        "text": "あー、うーん、えっと",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 317.3,
+        "end_seconds": 330.3,
+        "text": "ここまでで質問あれば",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 330.3,
+        "end_seconds": 343.8,
+        "text": "値段はどのくらいですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 343.8,
+        "end_seconds": 369,
+        "text": "キットで一万円台の前半です。キーキャップを凝りだすと上がっていきますが",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 369,
+        "end_seconds": 385.9,
+        "text": "なるほど、そのくらいなら試せそうです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 385.9,
+        "end_seconds": 400.4,
+        "text": "じゃあ次の人、お願いします",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 400.4,
+        "end_seconds": 416.3,
+        "text": "私は、ベランダの菜園の話をします",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 416.3,
+        "end_seconds": 441.5,
+        "text": "春にミニトマトとバジルを植えたんですが、最初の失敗が水のやりすぎでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 441.5,
+        "end_seconds": 454.5,
+        "text": "ああ、ありがちですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 454.5,
+        "end_seconds": 475.8,
+        "text": "毎朝たっぷりあげていたら、根が腐って三株ダメにしました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 475.8,
+        "end_seconds": 506.9,
+        "text": "それで、土の表面が乾いてから指の第一関節くらいまで確かめてあげる方式に変えたら、持ち直しました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 506.9,
+        "end_seconds": 519.9,
+        "text": "指で確かめるんですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 519.9,
+        "end_seconds": 538.8,
+        "text": "はい。道具を買うまでもなく、それで十分でした",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 538.8,
+        "end_seconds": 563.6,
+        "text": "バジルは摘み取るほど脇芽が増えるので、料理にどんどん使うのがコツです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 563.6,
+        "end_seconds": 582,
+        "text": "それは嬉しいですね。収穫のたびに増えるなら",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 582,
+        "end_seconds": 606.8,
+        "text": "ただ、夏の直射日光は葉が焼けるので、午後だけ日よけの布をかけています",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 606.8,
+        "end_seconds": 621.7,
+        "text": "日よけは何を使ってるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 621.7,
+        "end_seconds": 643.5,
+        "text": "百円ショップの遮光ネットです。洗濯ばさみで留めるだけです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 643.5,
+        "end_seconds": 657.5,
+        "text": "それなら私もできそうです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 657.5,
+        "end_seconds": 689.1,
+        "text": "おすすめは、最初はミニトマト一鉢だけにすることです。育てる量を増やすと世話が追いつかなくなります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 689.1,
+        "end_seconds": 708.5,
+        "text": "ちょっと画面共有を切り替えますね。見えてますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 708.5,
+        "end_seconds": 719,
+        "text": "見えてます",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 719,
+        "end_seconds": 742.3,
+        "text": "じゃあ次の話題に行きます。家計簿アプリの話を聞いてもらえますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 742.3,
+        "end_seconds": 751.9,
+        "text": "どうぞ",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 751.9,
+        "end_seconds": 778.6,
+        "text": "私は三年くらい、レシートを撮るだけで自動で記録してくれるアプリを使っています",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 778.6,
+        "end_seconds": 804.8,
+        "text": "手入力だと三日で挫折するタイプなので、撮るだけという仕組みが合っていました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 804.8,
+        "end_seconds": 819.3,
+        "text": "読み取りの精度はどうですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 819.3,
+        "end_seconds": 845,
+        "text": "店名は割と合います。品目は間違うこともあって、月末にまとめて直しています",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 845,
+        "end_seconds": 876.1,
+        "text": "このアプリの良いところは、月ごとのグラフが自動で出て、食費だけ突出した月が一目で分かることです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 876.1,
+        "end_seconds": 890.6,
+        "text": "食費が多い月、ありますよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 890.6,
+        "end_seconds": 911.9,
+        "text": "ありました。外食が続いた月に、グラフを見て反省しました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 911.9,
+        "end_seconds": 939.1,
+        "text": "ただ、銀行との連携は設定が面倒で、私は途中でやめました。レシートだけで十分です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 939.1,
+        "end_seconds": 955.5,
+        "text": "それでも続けられるのが大事ですよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 955.5,
+        "end_seconds": 982.2,
+        "text": "はい。続くかどうかで選ぶのがおすすめです。多機能なものは最初の設定で疲れます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 982.2,
+        "end_seconds": 995.7,
+        "text": "無料でも使えるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 995.7,
+        "end_seconds": 1024.4,
+        "text": "基本機能は無料です。私は広告が気になって、年額の有料版に変えました。千円ちょっとです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1024.4,
+        "end_seconds": 1041.3,
+        "text": "なるほど、それなら払ってもいいですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1041.3,
+        "end_seconds": 1062.1,
+        "text": "えーと、ちょっとマイクの調子が、すみません、もう一回",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1062.1,
+        "end_seconds": 1076.6,
+        "text": "聞こえてますよ、大丈夫です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1076.6,
+        "end_seconds": 1091.1,
+        "text": "すみません、続けてください",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1091.1,
+        "end_seconds": 1122.7,
+        "text": "ええと、以上が家計簿アプリです。次の話題は、睡眠についてやりたいんですが、質問形式でもいいですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1122.7,
+        "end_seconds": 1148.9,
+        "text": "はい、じゃあ私が質問します。睡眠の質を上げるのに、一番効いたことは何ですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1148.9,
+        "end_seconds": 1175.6,
+        "text": "寝る前の一時間、スマホを見るのをやめたことです。代わりに紙の本を読んでいます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1175.6,
+        "end_seconds": 1188.6,
+        "text": "それだけで違いますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1188.6,
+        "end_seconds": 1220.7,
+        "text": "入眠が早くなりました。それまで布団に入ってから三十分くらいかかっていたのが、十分くらいになりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1220.7,
+        "end_seconds": 1236.1,
+        "text": "すごい。続けるコツはありますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1236.1,
+        "end_seconds": 1263.3,
+        "text": "スマホを寝室に持ち込まず、居間の充電器に置いています。物理的に離すのが確実です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1263.3,
+        "end_seconds": 1278.2,
+        "text": "目覚ましはどうしてるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1278.2,
+        "end_seconds": 1301,
+        "text": "昔ながらの目覚まし時計を買いました。千五百円くらいのものです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1301,
+        "end_seconds": 1321.8,
+        "text": "なるほど。じゃあ次の質問です。休日に寝だめはしますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1321.8,
+        "end_seconds": 1352.9,
+        "text": "しないようにしています。起きる時間を平日とずらすと、月曜がつらいので、一時間以内に収めています",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1352.9,
+        "end_seconds": 1365.9,
+        "text": "それは参考になります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1365.9,
+        "end_seconds": 1392.1,
+        "text": "私の睡眠の話も少し。コーヒーを午後二時以降やめたら、夜の目覚めが減りました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1392.1,
+        "end_seconds": 1406.1,
+        "text": "カフェインは効きますよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1406.1,
+        "end_seconds": 1430.4,
+        "text": "はい。代わりに麦茶にしています。体験として、一週間で効果が出ました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1430.4,
+        "end_seconds": 1444.9,
+        "text": "一週間なら試しやすいですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1444.9,
+        "end_seconds": 1466.7,
+        "text": "ところで話は変わりますが、この前の連休、どこか行きました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1466.7,
+        "end_seconds": 1487,
+        "text": "はい、家族で温泉に行きました。山の方の小さな宿です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1487,
+        "end_seconds": 1501,
+        "text": "いいですね。遠いんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1501,
+        "end_seconds": 1524.3,
+        "text": "車で三時間くらいです。途中で渋滞に巻き込まれて、倍かかりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1524.3,
+        "end_seconds": 1539.7,
+        "text": "連休の渋滞は避けられないですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1539.7,
+        "end_seconds": 1560.5,
+        "text": "ただ、宿の夕食の鍋が本当においしくて、全部忘れました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1560.5,
+        "end_seconds": 1577.9,
+        "text": "それは良い旅ですね。何鍋だったんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1577.9,
+        "end_seconds": 1595.8,
+        "text": "地元の鶏と野菜の鍋です。味噌仕立てでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1595.8,
+        "end_seconds": 1614.7,
+        "text": "おいしそう。次の連休はどこに行くか決めてます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1614.7,
+        "end_seconds": 1632.6,
+        "text": "まだです。海のほうに行きたいと思っていて",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1632.6,
+        "end_seconds": 1652.4,
+        "text": "海もいいですね。あ、そうそう、写真は撮りましたか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1652.4,
+        "end_seconds": 1672.2,
+        "text": "はい、宿の庭の紅葉がきれいで。あとで共有しますね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1672.2,
+        "end_seconds": 1697.9,
+        "text": "楽しみにしてます。じゃあ話を戻して、次回以降の共有会の運営を決めたいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1697.9,
+        "end_seconds": 1710.4,
+        "text": "はい、お願いします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1710.4,
+        "end_seconds": 1730.2,
+        "text": "論点は二つ。開催の頻度と、発表の担当の決め方です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1730.2,
+        "end_seconds": 1751,
+        "text": "まず頻度。今は不定期ですが、毎月にするか隔月にするか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1751,
+        "end_seconds": 1772.8,
+        "text": "毎月だとネタ切れしそうです。今日も準備に結構かかりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1772.8,
+        "end_seconds": 1791.7,
+        "text": "確かに。隔月だと間が空きすぎて、忘れませんか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1791.7,
+        "end_seconds": 1814,
+        "text": "カレンダーに先に入れておけば大丈夫です。隔月の第二水曜とか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1814,
+        "end_seconds": 1835.3,
+        "text": "第二水曜、いいですね。夕方の六時なら参加しやすいですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1835.3,
+        "end_seconds": 1854.2,
+        "text": "はい、その時間なら皆さん都合がつくと思います",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1854.2,
+        "end_seconds": 1874,
+        "text": "では、共有会は隔月の第二水曜の十八時にしましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1874,
+        "end_seconds": 1884,
+        "text": "賛成です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1884,
+        "end_seconds": 1901.4,
+        "text": "決定です。次に、発表の担当の決め方です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1901.4,
+        "end_seconds": 1916.3,
+        "text": "毎回、志願制だと偏りませんか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1916.3,
+        "end_seconds": 1940.6,
+        "text": "確かに、話したい人だけになりますね。持ち回りにするのはどうでしょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1940.6,
+        "end_seconds": 1970.7,
+        "text": "持ち回りだと、話すことがない人が困ります。五分の短い共有でもよいことにすれば負担は軽いです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 1970.7,
+        "end_seconds": 1994.5,
+        "text": "それなら、一人五分以上で、持ち回りにしましょう。順番は名簿の順で",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 1994.5,
+        "end_seconds": 2008.5,
+        "text": "はい、それでお願いします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2008.5,
+        "end_seconds": 2025.9,
+        "text": "では、発表は名簿順の持ち回りで決定です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2025.9,
+        "end_seconds": 2049.7,
+        "text": "それに伴う作業です。私が名簿を作って、次の回までに全員に回します",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2049.7,
+        "end_seconds": 2081.8,
+        "text": "お願いします。私は第二水曜の予定を、カレンダーに一年分登録して招待を送ります。今月末までにやります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2081.8,
+        "end_seconds": 2102.1,
+        "text": "助かります。それではこの二つを記録に残しておきます",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2102.1,
+        "end_seconds": 2120.5,
+        "text": "ここで少し休憩を入れましょうか。五分くらい",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2120.5,
+        "end_seconds": 2133.5,
+        "text": "はい、そうしましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2133.5,
+        "end_seconds": 2155.3,
+        "text": "再開します。次は私が見つけたポッドキャストの紹介をします",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2155.3,
+        "end_seconds": 2178.6,
+        "text": "歴史を題材にした番組で、一回が二十分くらいなのが聞きやすいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2178.6,
+        "end_seconds": 2195,
+        "text": "歴史ですか。私は苦手意識があります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2195,
+        "end_seconds": 2220.7,
+        "text": "私もそうだったんですが、人物の失敗談を中心に話す構成で、すっと入れました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2220.7,
+        "end_seconds": 2252.3,
+        "text": "この間の回では、ある国の王様が、会議を嫌って、全部手紙で決めるようにした、という話をしていました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2252.3,
+        "end_seconds": 2269.7,
+        "text": "それは面白い。結果はどうなったんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2269.7,
+        "end_seconds": 2297.4,
+        "text": "番組では、手紙が届くのに時間がかかりすぎて、国が回らなくなったと紹介していました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2297.4,
+        "end_seconds": 2324.6,
+        "text": "番組の結論としては、大事なことは直接会って話すようにすべきだ、という締めでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2324.6,
+        "end_seconds": 2339.5,
+        "text": "今の私たちにも通じる話ですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2339.5,
+        "end_seconds": 2370.6,
+        "text": "そうなんです。その回の最後に、司会の人が、次回からは短い回を増やすことにする、と言っていました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2370.6,
+        "end_seconds": 2385.1,
+        "text": "それは番組の方針の話ですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2385.1,
+        "end_seconds": 2407.9,
+        "text": "はい。聞き始めるなら、人物の失敗の回から入るのがおすすめです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2407.9,
+        "end_seconds": 2422.8,
+        "text": "アプリはどれで聞けるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2422.8,
+        "end_seconds": 2452.5,
+        "text": "普通のポッドキャストアプリで検索すれば出ます。再生速度を上げると一回が十五分で終わります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2452.5,
+        "end_seconds": 2465,
+        "text": "通勤中に聞けますね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2465,
+        "end_seconds": 2481.4,
+        "text": "その、ええと、あー、聞き取れ、えー",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2481.4,
+        "end_seconds": 2495.4,
+        "text": "次の話題に行きましょうか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2495.4,
+        "end_seconds": 2515.7,
+        "text": "はい、私は最近の料理の話をします。時短の鍋料理です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2515.7,
+        "end_seconds": 2537.5,
+        "text": "圧力鍋を買って、豚の角煮が三十分でできるようになりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2537.5,
+        "end_seconds": 2557.3,
+        "text": "三十分で角煮ですか。普通は何時間もかかりますよね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2557.3,
+        "end_seconds": 2577.6,
+        "text": "はい。肉が柔らかくなるのに圧力をかけると速いんです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2577.6,
+        "end_seconds": 2606.3,
+        "text": "ただ、最初に蓋の閉め方を間違えて、蒸気が噴き出しました。説明書は最初に読むべきでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2606.3,
+        "end_seconds": 2624.2,
+        "text": "それは怖いですね。けがはなかったんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2624.2,
+        "end_seconds": 2649.9,
+        "text": "はい、大丈夫でした。それからは、閉めるたびにマークの位置を確認しています",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2649.9,
+        "end_seconds": 2670.2,
+        "text": "確認の習慣は大事ですね。味付けはどうしてるんですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2670.2,
+        "end_seconds": 2699.9,
+        "text": "醤油と砂糖と酒を同量にして、あとは生姜を入れるだけです。分量を覚えやすいのが続く理由です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2699.9,
+        "end_seconds": 2718.8,
+        "text": "同量なら覚えられます。おすすめのレシピですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2718.8,
+        "end_seconds": 2739.6,
+        "text": "はい。圧力鍋なら、カレーの具も十分で柔らかくなります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2739.6,
+        "end_seconds": 2764.8,
+        "text": "それはいいなあ。うちにも一台ほしくなりました。サイズはどのくらいですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2764.8,
+        "end_seconds": 2788.6,
+        "text": "三リットルのものを使っています。二人から三人分にちょうどいいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2788.6,
+        "end_seconds": 2805,
+        "text": "なるほど。置き場所が気になりますが",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2805,
+        "end_seconds": 2826.3,
+        "text": "コンロの下の収納に入ります。重さもそこまでではないです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2826.3,
+        "end_seconds": 2846.6,
+        "text": "じゃあ次の話題に行きます。写真の話をしていいですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2846.6,
+        "end_seconds": 2855.7,
+        "text": "はい",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2855.7,
+        "end_seconds": 2880.9,
+        "text": "スマホで撮った写真の整理に、毎週日曜の夜、十五分だけ時間を取っています",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2880.9,
+        "end_seconds": 2904.2,
+        "text": "いい写真にだけ星を付けて、あとは消すんです。消す決断が大事です",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2904.2,
+        "end_seconds": 2919.6,
+        "text": "消すのが苦手で、溜まる一方です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2919.6,
+        "end_seconds": 2950.2,
+        "text": "私も昔はそうでした。ぶれた写真と同じ場面の連写は、見つけ次第消すルールにしたら楽になりました",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2950.2,
+        "end_seconds": 2963.7,
+        "text": "連写を全部残してました",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 2963.7,
+        "end_seconds": 2986.5,
+        "text": "それが容量を食う一番の原因です。一回の整理で数百枚は減ります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 2986.5,
+        "end_seconds": 3005.9,
+        "text": "今夜やってみます。ところで共有はどうしてますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3005.9,
+        "end_seconds": 3028.7,
+        "text": "家族とは共有アルバムを使っています。旅行のたびに一つ作ります",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3028.7,
+        "end_seconds": 3053.9,
+        "text": "いいですね。私は旅行の写真を、さっき言った宿のものも含めて、送りますね",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3053.9,
+        "end_seconds": 3079.6,
+        "text": "お願いします。じゃあ、最後の決める話題に行きます。共有資料の置き場所です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3079.6,
+        "end_seconds": 3104.4,
+        "text": "今は各自のフォルダに散らばっているので、共通の場所を一つ決めたいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3104.4,
+        "end_seconds": 3126.2,
+        "text": "候補は、共有ドライブとチャットのピン留めの二つでしょうか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3126.2,
+        "end_seconds": 3147.5,
+        "text": "チャットは流れて見えなくなるので、探しにくいと思います",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3147.5,
+        "end_seconds": 3172.3,
+        "text": "私もそう思います。共有ドライブに、回ごとのフォルダを作る形がいいです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3172.3,
+        "end_seconds": 3186.8,
+        "text": "フォルダ名は日付にしますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3186.8,
+        "end_seconds": 3205.2,
+        "text": "はい、年月日でそろえれば、並び順も自然です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3205.2,
+        "end_seconds": 3229.5,
+        "text": "では、資料の置き場所は共有ドライブの、日付名のフォルダにしましょう",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3229.5,
+        "end_seconds": 3239.5,
+        "text": "賛成です",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3239.5,
+        "end_seconds": 3265.7,
+        "text": "決定です。それで、今日の資料は私が整理して、今週中に共有ドライブへ置きます",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3265.7,
+        "end_seconds": 3293.4,
+        "text": "お願いします。私は、置き方のルールを短いメモにまとめて、来週の水曜までに配ります",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3293.4,
+        "end_seconds": 3311.3,
+        "text": "助かります。以上で決めることは全部ですね",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3311.3,
+        "end_seconds": 3327.2,
+        "text": "はい、あとは軽く雑談でいいですか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3327.2,
+        "end_seconds": 3347.5,
+        "text": "もちろん。そうだ、最後に一つだけ、読んだ本の紹介を",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3347.5,
+        "end_seconds": 3382.1,
+        "text": "小説で、離島の灯台守を主人公にした話です。静かな話ですが、季節の描写が細かくて、読み終えるのが惜しかったです",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3382.1,
+        "end_seconds": 3395.6,
+        "text": "タイトルは覚えてますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3395.6,
+        "end_seconds": 3422.3,
+        "text": "あとでチャットに書きます。一日三十ページずつ読むのが、ちょうどよい長さでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3422.3,
+        "end_seconds": 3443.6,
+        "text": "私も何か読みたくなりました。おすすめの順番はありますか",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3443.6,
+        "end_seconds": 3464.9,
+        "text": "まず短い一冊目から入るのがいいです。長い作品は後回しで",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3464.9,
+        "end_seconds": 3486.2,
+        "text": "はい、そうします。今日は色々な話が聞けて楽しかったです",
+        "confidence": 0.9
+      },
+      {
+        "track": "speaker",
+        "start_seconds": 3486.2,
+        "end_seconds": 3508,
+        "text": "こちらこそ。今日はここまでにしましょう。お疲れさまでした",
+        "confidence": 0.9
+      },
+      {
+        "track": "相手",
+        "start_seconds": 3508,
+        "end_seconds": 3520,
+        "text": "お疲れさまでした",
+        "confidence": 0.9
+      }
+    ]
+  }
+}

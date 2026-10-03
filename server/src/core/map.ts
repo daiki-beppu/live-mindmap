@@ -1,6 +1,6 @@
 // マップと差分操作。語彙と規則は CONTEXT.md / docs/adr/0001-map-is-a-tree.md に従う。
 
-export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO"] as const;
+export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO", "要点"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export const PLAN_STATUSES = ["検討中", "却下"] as const;

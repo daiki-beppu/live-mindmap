@@ -19,6 +19,7 @@ describe("markOf: 印は 論点 ?、決定済みの論点と決定 ✓、TODO �
   it.each([
     n("議題"),
     n("課題"),
+    n("要点"),
     n("案", { planStatus: "検討中" }),
     n("案", { planStatus: "却下" }),
     n("会議", { parent: null }),
@@ -26,6 +27,11 @@ describe("markOf: 印は 論点 ?、決定済みの論点と決定 ✓、TODO �
 });
 
 describe("KIND_COLOR: 種別ごとの色", () => {
+  it("要点の色が決まっていて、会議を含むほかの種別のどの色とも違う", () => {
+    expect(KIND_COLOR["要点"]).toBeTruthy();
+    for (const k of ["会議", "議題", "論点", "課題", "案", "決定", "TODO"] as const) expect(KIND_COLOR[k]).not.toBe(KIND_COLOR["要点"]);
+  });
+
   it("議題・論点・課題・案・決定・TODO の色がそれぞれ決まっていて、互いに違う", () => {
     const kinds = ["議題", "論点", "課題", "案", "決定", "TODO"] as const;
     const colors = kinds.map((k) => KIND_COLOR[k]);

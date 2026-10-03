@@ -105,7 +105,23 @@ describe("eval: ノード数・深さ・種別ごとの数", () => {
       決定: "1",
       課題: "0",
       TODO: "1",
+      要点: "0",
     });
+  });
+
+  it("種別ごとの数の列に「要点」があり、要点のノードを数える", async () => {
+    const scriptPoints: Op[][] = [
+      [
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ツールの共有", evidence: ["r1"] },
+        { op: "add", ref: "t2", parent: "t1", kind: "要点", text: "justの紹介", evidence: ["r2"] },
+        { op: "add", ref: "t3", parent: "t1", kind: "要点", text: "辞書は二十語でも効く", evidence: ["r2"] },
+      ],
+      [{ op: "add", ref: "t4", parent: "n3", kind: "要点", text: "作り方は手作業で十分", evidence: ["r3"] }],
+    ];
+    const { header, rows } = parseTable(await evalCli([await play(scriptPoints)]));
+
+    expect(header).toContain("要点");
+    expect(rows[0]).toMatchObject({ ノード: "4", 議題: "1", 要点: "3", 決定: "0", TODO: "0" });
   });
 
   it("--truth を付けないときは再現率の列を出さない", async () => {
