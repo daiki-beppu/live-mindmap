@@ -142,13 +142,27 @@ struct RunCancellerTests {
 
 @Suite("エコー計測: 候補と wav")
 struct EchoCandidateTests {
-    @Test("候補名は baseline と bypass-<有限な 0 以上の秒> だけ")
+    @Test("候補名は baseline、production、bypass-<有限な 0 以上の秒> だけ")
     func parsesCandidates() {
         #expect(EchoCandidate("baseline") == .baseline)
         #expect(EchoCandidate("bypass-3") == .bypass(seconds: 3))
         #expect(EchoCandidate("bypass-inf") == nil)
         #expect(EchoCandidate("bypass--1") == nil)
         #expect(EchoCandidate("other") == nil)
+    }
+
+    @Test("production は本番の設定（EchoCancellerSettings.production）で動かし、名前を往復できる")
+    func productionUsesProductionSettings() {
+        #expect(EchoCandidate("production") == .production)
+        #expect(EchoCandidate.production.name == "production")
+        #expect(EchoCandidate.production.settings == .production)
+        #expect(EchoCandidate.production.bypassSamples == 0)
+    }
+
+    @Test("baseline と bypass は #118 の設定（EchoCancellerSettings.baseline）で動かす")
+    func baselineAndBypassUseBaselineSettings() {
+        #expect(EchoCandidate.baseline.settings == .baseline)
+        #expect(EchoCandidate.bypass(seconds: 3).settings == .baseline)
     }
 
     @Test("bypass 区間の出力に出力の遅れを付ければ、遅れを補正した窓の残り方は 0 dB になる（runCanceller → windowResults の結合）")

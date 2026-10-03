@@ -22,12 +22,31 @@ public enum EchoCancellationError: Error, CustomStringConvertible {
 public let echoFrameSamples = 480
 public let echoSampleRate = 48_000
 
+/// AEC3（`EchoCanceller3Config`）の設定。項目は同名の AEC3 の設定項目に写す。
+public struct EchoCancellerSettings: Equatable, Sendable {
+    /// `ep_strength.default_gain`: エコー経路の強さの初期値。
+    public var epStrengthDefaultGain: Float
+
+    public init(epStrengthDefaultGain: Float) {
+        self.epStrengthDefaultGain = epStrengthDefaultGain
+    }
+
+    /// Issue #118 の計測の設定。固定コミットの AEC3 の既定値と同じ。変更前の数字を再現する基準なので、値を変えない。
+    public static let baseline = EchoCancellerSettings(epStrengthDefaultGain: 1)
+
+    /// 本番の設定（Issue #119）。`baseline` との違いは、エコー経路の強さの初期値を 1 から 0.01 に下げたことだけ。
+    /// 漏れの無い条件では、開始直後に参照との相関が無いのに、既定の初期値（1）が発話を削る。
+    /// 漏れのある条件では、5 秒以降の発話の残り方・漏れの低下量は変わらない（`docs/investigations/2026-10-04-aec-startup-config.md`）。
+    public static let production = EchoCancellerSettings(epStrengthDefaultGain: 0.01)
+}
+
 /// 実際の WebRTC AEC3（`CWebRTCAPM`）。48 kHz・モノラル固定。
 public final class WebRTCEchoCanceller: EchoCanceller, @unchecked Sendable {
     private let handle: ApmRef
 
-    public init() throws {
-        guard let handle = apm_create(Int32(echoSampleRate), 1) else { throw EchoCancellationError.createFailed }
+    public init(settings: EchoCancellerSettings = .production) throws {
+        var raw = ApmEchoSettings(ep_strength_default_gain: settings.epStrengthDefaultGain)
+        guard let handle = apm_create(Int32(echoSampleRate), 1, &raw) else { throw EchoCancellationError.createFailed }
         self.handle = handle
     }
 

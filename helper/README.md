@@ -47,7 +47,7 @@ swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <d
 - 参照とマイクは `hostTime` で揃える。マイクの 10 ms を処理する前に、その時刻までの参照の 10 ms をすべて AEC に渡し、足りないときは無音で埋める。参照が届くのを待つ間はマイクの処理を保留する（500 ms を超えたら無音で埋めて進める）。ファイルの先頭どうしで揃えると、ほとんど消えない
 - 両方を 48 kHz・モノラルに変換して 480 サンプルずつ渡す。出力の `hostTime` は元のマイクのまま
 - **`--audio-dir` の録音は、AEC の後の音**（STT が聞いた音と同じ）。スピーカーのとき `自分.m4a` には漏れが消えた音が入り、消す前の音は残らない
-- 設定は、エコーキャンセルと高域通過フィルターだけを有効にする（ゲイン制御とノイズ抑制は無効）
+- 設定は、エコーキャンセルと高域通過フィルターだけを有効にする（ゲイン制御とノイズ抑制は無効）。AEC3 の設定は、エコー経路の強さの初期値（`ep_strength.default_gain`）だけを既定の 1 から 0.01 に下げている（漏れの無い条件の開始直後に発話が削られるのを防ぐ。`docs/investigations/2026-10-04-aec-startup-config.md`）
 - Apple の Voice Processing と非公開 API は使わない。AEC3 で取り切れなかった漏れは、下の重複の印が保険として拾う
 - ライブラリは `scripts/build-webrtc-apm.sh` でビルドする（freedesktop の `webrtc-audio-processing` の固定コミット。`uv` が要る。meson と ninja は `uvx` で一時的に使う）。ビルド済みなら何もしない。無いまま `swift build` すると、スクリプトを走らせるよう促すエラーで止まる。`pnpm test` と `pnpm typecheck` は、ライブラリが無ければ先にスクリプトを走らせる
 
@@ -88,7 +88,7 @@ swift run -c release stt-bench echo /tmp/aec118/meeting.wav /tmp/aec118/self.wav
 ```
 
 - 出力の項目: `retentionDb`（発話の残り方。0 なら全部残る）、`leakReductionDb`（同じ区間の漏れの低下量）、`referenceRmsDbfs`。`--leak-gain-db -inf` は漏れの無い対照
-- `--candidate`: `baseline`（今の設定）、`bypass-<秒>`（開始から N 秒は AEC の出力を使わない。AEC には通し続ける）
+- `--candidate`: `baseline`（#118 の設定 = AEC3 の既定値）、`production`（本番の設定）、`bypass-<秒>`（開始から N 秒は AEC の出力を使わない。AEC には通し続ける）
 - `--at` の窓は発話の長さ（約 11 秒）なので、近い時刻は別の実行に分ける。`--out` は `stt-bench run` に渡せる 48 kHz の wav を書く
 
 ## テスト

@@ -19,13 +19,15 @@ struct EchoOptions {
     var out: URL?
 }
 
-/// 開始直後の対策の候補。`baseline` は今の設定（何もしない）、`bypass-<秒>` は開始から N 秒は AEC の出力を使わない。
+/// 開始直後の対策の候補。`baseline` は #118 の設定（AEC3 の既定値）、`production` は本番の設定（`EchoCancellerSettings.production`）、`bypass-<秒>` は開始から N 秒は AEC の出力を使わない（`baseline` の設定で動かす）。
 enum EchoCandidate: Equatable {
     case baseline
     case bypass(seconds: Double)
+    case production
 
     init?(_ name: String) {
         if name == "baseline" { self = .baseline; return }
+        if name == "production" { self = .production; return }
         if name.hasPrefix("bypass-"), let seconds = Double(name.dropFirst("bypass-".count)), seconds.isFinite, seconds >= 0 { self = .bypass(seconds: seconds); return }
         return nil
     }
@@ -34,12 +36,20 @@ enum EchoCandidate: Equatable {
         switch self {
         case .baseline: return "baseline"
         case .bypass(let seconds): return "bypass-\(seconds)"
+        case .production: return "production"
+        }
+    }
+
+    var settings: EchoCancellerSettings {
+        switch self {
+        case .baseline, .bypass: return .baseline
+        case .production: return .production
         }
     }
 
     var bypassSamples: Int {
         switch self {
-        case .baseline: return 0
+        case .baseline, .production: return 0
         case .bypass(let seconds): return Int(seconds * echoRate)
         }
     }
@@ -115,10 +125,10 @@ func runEcho(_ options: EchoOptions) throws {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     for candidate in options.candidates {
-        let outputDelay = try measureOutputDelay(makeCanceller: { try WebRTCEchoCanceller() })
+        let outputDelay = try measureOutputDelay(makeCanceller: { try WebRTCEchoCanceller(settings: candidate.settings) })
         for delayMs in options.delaysMs {
             let built = buildMicrophone(reference: reference, utterance: voice, delaySamples: delayMs * echoSampleRate / 1000, leakGain: leakGain, insertAt: insertAt)
-            let output = runCanceller(try WebRTCEchoCanceller(), reference: reference, microphone: built.microphone, bypassSamples: candidate.bypassSamples, bypassDelaySamples: outputDelay)
+            let output = runCanceller(try WebRTCEchoCanceller(settings: candidate.settings), reference: reference, microphone: built.microphone, bypassSamples: candidate.bypassSamples, bypassDelaySamples: outputDelay)
             let results = windowResults(built: built, output: output, outputDelay: outputDelay, reference: reference)
             for (result, seconds) in zip(results, options.atSeconds) {
                 let line = EchoResultLine(

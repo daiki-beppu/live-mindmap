@@ -106,5 +106,6 @@
 - #118 の訂正コメント（結論を「削られる（漏れ無し・開始直後）」に訂正）: https://github.com/daiki-beppu/live-mindmap/issues/118#issuecomment-5970307320
 - #118 の追記コメント（直し方の決定: 採用 = AEC3 の設定、不採用 = `bypass`）: https://github.com/daiki-beppu/live-mindmap/issues/118#issuecomment-5970412888
 - #118 の訂正コメント（`bypass` の不採用理由を、測定した範囲に限定。決定は変わらない）: https://github.com/daiki-beppu/live-mindmap/issues/118#issuecomment-5970496784
+- #119 の計測結果と、本番の設定の変更: `docs/investigations/2026-10-04-aec-startup-config.md`
 - 実装 issue（#30 の sub-issue）: https://github.com/daiki-beppu/live-mindmap/issues/119
 - #119 の決定コメント（同じ決定、受入条件、見直しの条件）: https://github.com/daiki-beppu/live-mindmap/issues/119#issuecomment-5970411862
