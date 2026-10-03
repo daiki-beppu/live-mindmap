@@ -12,8 +12,10 @@
 //   export [--format md|json]     最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）
 //   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
 //   eval [--truth <正解ファイル>] <セッションのフォルダ>...
-//                                 play で作ったランの指標を 1 ラン 1 行の表で出す。正解（{ "決定": [{ text, from, to }], "TODO": [...] }、
-//                                 from / to は会議の中の秒）を渡すと決定・TODO の再現率も出す
+//                                 play で作ったランの指標を 1 ラン 1 行の表で出す。正解（{ "決定": [{ text, from, to, keywords }], "TODO": [...] }、
+//                                 from / to は会議の中の秒、keywords は 1 件以上で要素は文字列か言い換えの文字列の配列）を渡すと決定・TODO の再現率も出す。
+//                                 当たる条件: 同じ種別で、根拠の発言が区間と重なり、keywords の要素すべて（配列はどれか 1 つ）がノードの本文に含まれる
+//                                 （NFKC で正規化し空白を除いて比べる）。ノードと正解は 1 対 1 で、当たる件数が最大になる割り当てで数える
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";

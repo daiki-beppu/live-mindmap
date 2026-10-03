@@ -1,10 +1,11 @@
 // 回帰評価（eval コマンド）。fixture は合成データで、実際の録音サンプルは使わない。
+import { readFileSync } from "node:fs";
 import { copyFile, mkdtemp, readdir, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.ts";
-import type { DiffInput, Op } from "../src/core/index.ts";
+import { type DiffInput, type Op, parseTruth } from "../src/core/index.ts";
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 // short.transcript.json の発言: r1 [0.5, 9.8] / r2 [9.8, 19.2] / r3 [19.2, 28.0]。差分更新の呼び出しは [r1, r2] と [r3] の 2 回。
@@ -178,67 +179,168 @@ describe("eval: 複数のランを並べる", () => {
   });
 });
 
-describe("eval: 正解との再現率", () => {
-  // 決定のノードの根拠は r1 [0.5, 9.8] と r3 [19.2, 28.0]、TODO のノードの根拠は r2 [9.8, 19.2]
-  const truth = {
-    決定: [
-      { text: "r3 の中", from: 20, to: 25 }, // 2 つ目の根拠 r3 と重なる
-      { text: "r1 の中", from: 1, to: 5 }, // 1 つ目の根拠 r1 と重なる
-      { text: "r3 の終わりに接する", from: 28, to: 30 },
-      { text: "r3 の始まりに接する", from: 10, to: 19.2 },
-      { text: "TODO の根拠とだけ重なる（種別が違う）", from: 10, to: 19 },
-      { text: "r3 の終わりの外", from: 28.1, to: 40 },
-    ],
-    TODO: [
-      { text: "r2 の中", from: 10, to: 15 },
-      { text: "決定の根拠とだけ重なる（種別が違う）", from: 20, to: 25 },
-    ],
-  };
+describe("eval: 正解との再現率（時刻の重なり）", () => {
+  // 決定のノード「2 回にする」の根拠は r1 [0.5, 9.8] と r3 [19.2, 28.0]、TODO のノード「求人票を直す」の根拠は r2 [9.8, 19.2]。
+  // 1 つのノードは正解 1 件にしか当たらないので、正解は 1 件ずつ評価する。
+  const decision = ["2回"];
+  const todo = ["求人票"];
+  const overlap: [string, "決定" | "TODO", number, number, string[], string][] = [
+    ["2 つ目の根拠 r3 の中", "決定", 20, 25, decision, "1/1 (100%)"],
+    ["1 つ目の根拠 r1 の中", "決定", 1, 5, decision, "1/1 (100%)"],
+    ["r3 の終わりに接する", "決定", 28, 30, decision, "1/1 (100%)"],
+    ["r3 の始まりに接する", "決定", 10, 19.2, decision, "1/1 (100%)"],
+    ["TODO の根拠とだけ重なる（種別が違う）", "決定", 10, 19, todo, "0/1 (0%)"],
+    ["r3 の終わりの外", "決定", 28.1, 40, decision, "0/1 (0%)"],
+    ["r2 の中", "TODO", 10, 15, todo, "1/1 (100%)"],
+    ["決定の根拠とだけ重なる（種別が違う）", "TODO", 20, 25, decision, "0/1 (0%)"],
+  ];
 
-  it("根拠の発言のどれか 1 つが正解の区間と重なれば再現できた（端が接するのも重なり）。種別が違うノードは数えない", async () => {
+  it.each(overlap)("%s", async (_name, kind, from, to, keywords, expected) => {
     const dir = await play(scriptA);
+    const truth = { 決定: [], TODO: [], [kind]: [{ text: "x", from, to, keywords }] };
     const { header, rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), dir]));
 
     expect(header.slice(-2)).toEqual(["決定の再現率", "TODO の再現率"]);
-    expect(rows[0]).toMatchObject({ 決定の再現率: "4/6 (67%)", "TODO の再現率": "1/2 (50%)" });
+    expect(rows[0]![kind === "決定" ? "決定の再現率" : "TODO の再現率"]).toBe(expected);
   });
 
   it("正解が 0 件の種別は 0/0 とし、割合は付けない", async () => {
     const dir = await play(scriptA);
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth({ 決定: [{ text: "x", from: 20, to: 25 }], TODO: [] }), dir]));
+    const truth = { 決定: [{ text: "x", from: 20, to: 25, keywords: decision }], TODO: [] };
+    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), dir]));
     expect(rows[0]).toMatchObject({ 決定の再現率: "1/1 (100%)", "TODO の再現率": "0/0" });
   });
 
+  const both = {
+    決定: [{ text: "x", from: 20, to: 25, keywords: decision }],
+    TODO: [{ text: "y", from: 10, to: 15, keywords: todo }],
+  };
+
   it("AI のノードが無ければ 0 件の再現になる", async () => {
     const dir = await play([[], []]);
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), dir]));
-    expect(rows[0]).toMatchObject({ 決定の再現率: "0/6 (0%)", "TODO の再現率": "0/2 (0%)" });
+    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(both), dir]));
+    expect(rows[0]).toMatchObject({ 決定の再現率: "0/1 (0%)", "TODO の再現率": "0/1 (0%)" });
   });
 
   it("同じ正解を複数のランに当てて、ランごとの再現率を並べる", async () => {
     const dirA = await play(scriptA);
     const dirEmpty = await play([[], []]);
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), dirA, dirEmpty]));
-    expect(rows.map((r) => r["決定の再現率"])).toEqual(["4/6 (67%)", "0/6 (0%)"]);
+    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(both), dirA, dirEmpty]));
+    expect(rows.map((r) => r["決定の再現率"])).toEqual(["1/1 (100%)", "0/1 (0%)"]);
+    expect(rows.map((r) => r["TODO の再現率"])).toEqual(["1/1 (100%)", "0/1 (0%)"]);
+  });
+});
+
+describe("eval: 正解との再現率（キーワード）", () => {
+  // 決定の親は論点に限る。議題と論点を 1 回目で作り、決定は 2 回目で足す（r3 は 2 回目から根拠に使える。論点は scriptA と同じく n2）
+  const base: Op[] = [
+    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+    { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
+  ];
+  const decisionNodes = (...nodes: { text: string; evidence?: string[] }[]): Op[][] => [
+    base,
+    nodes.map(({ text, evidence = ["r1"] }, i): Op => ({ op: "add", ref: `d${i}`, parent: "n2", kind: "決定", text, evidence })),
+  ];
+  const decisionNode = (text: string, evidence?: string[]) => decisionNodes({ text, evidence });
+  // 決定の再現率の列だけを返す
+  const decisionRecall = async (script: Op[][], items: { from: number; to: number; keywords: unknown }[]) => {
+    const truth = { 決定: items.map((i) => ({ text: "x", ...i })), TODO: [] };
+    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), await play(script)]));
+    return rows[0]!["決定の再現率"];
+  };
+
+  it("時刻が重なっても、キーワードを含まないノードは正解として数えない（含む正解は当たる）", async () => {
+    const script = decisionNode("面接は 2 回にする");
+    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["2回"] }])).toBe("1/1 (100%)");
+    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["3回"] }])).toBe("0/1 (0%)");
+  });
+
+  it("keywords の要素すべてが本文に含まれて初めて当たる（1 つ欠ければ外れる）", async () => {
+    const script = decisionNode("面接は 2 回にする");
+    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["面接", "2回"] }])).toBe("1/1 (100%)");
+    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["面接", "3回"] }])).toBe("0/1 (0%)");
+  });
+
+  it("1 つのノードは、区間が重なる 2 件の正解のうち 1 件にしか当たらない", async () => {
+    const script = decisionNode("予算の上限を決める", ["r1", "r3"]);
+    const items = [
+      { from: 1, to: 5, keywords: ["予算"] },
+      { from: 20, to: 25, keywords: ["上限"] },
+    ];
+    expect(await decisionRecall(script, items)).toBe("1/2 (50%)");
+  });
+
+  it("当てられる組み合わせが複数あるときは、当たる件数が最大になる割り当てを選ぶ（先頭から貪欲に当てると 1 件になる例）", async () => {
+    // N1「予算」「上限」を含む / N2「予算」だけ。T1「予算」は N1・N2 に、T2「上限」は N1 にだけ当たる。
+    // T1 を先に N1 へ当てると T2 が余る。T1→N2、T2→N1 なら 2 件。
+    const script = decisionNodes({ text: "予算の上限を決める" }, { text: "予算は据え置く" });
+    const items = [
+      { from: 1, to: 5, keywords: ["予算"] },
+      { from: 1, to: 5, keywords: ["上限"] },
+    ];
+    expect(await decisionRecall(script, items)).toBe("2/2 (100%)");
+  });
+
+  it("言い換えの候補（配列の要素）のどれか 1 つで当たる", async () => {
+    const keywords = ["切り替え", ["二月末", "2月末"]];
+    expect(await decisionRecall(decisionNode("切り替えは2月末にする"), [{ from: 1, to: 5, keywords }])).toBe("1/1 (100%)");
+    expect(await decisionRecall(decisionNode("切り替えは二月末にする"), [{ from: 1, to: 5, keywords }])).toBe("1/1 (100%)");
+  });
+
+  it("どの候補も含まれなければ外れる", async () => {
+    const keywords = ["切り替え", ["三月末", "3月末"]];
+    expect(await decisionRecall(decisionNode("切り替えは2月末にする"), [{ from: 1, to: 5, keywords }])).toBe("0/1 (0%)");
+  });
+
+  it("全角・半角と空白の違いで外れない（本文の側でもキーワードの側でも）", async () => {
+    expect(await decisionRecall(decisionNode("切り替えは ２ 月末"), [{ from: 1, to: 5, keywords: ["切り替え", "2月末"] }])).toBe("1/1 (100%)");
+    expect(await decisionRecall(decisionNode("切り替えは2月末"), [{ from: 1, to: 5, keywords: ["切り 替え", "２月末"] }])).toBe("1/1 (100%)");
+    expect(await decisionRecall(decisionNode("製品はＡ社にする"), [{ from: 1, to: 5, keywords: ["A社"] }])).toBe("1/1 (100%)");
+    expect(await decisionRecall(decisionNode("製品はA社にする"), [{ from: 1, to: 5, keywords: ["Ａ　社"] }])).toBe("1/1 (100%)");
+  });
+
+  it("漢数字と算用数字は読み替えない", async () => {
+    expect(await decisionRecall(decisionNode("切り替えは二月末にする"), [{ from: 1, to: 5, keywords: ["2月末"] }])).toBe("0/1 (0%)");
   });
 });
 
 describe("eval: 正解ファイルの検証", () => {
-  const item = { text: "x", from: 1, to: 2 };
+  const item = { text: "x", from: 1, to: 2, keywords: ["x"] };
   const invalid: [string, unknown][] = [
     ["JSON として読めない", "{ not json"],
     ["オブジェクトでない", []],
     ["決定のキーが無い", { TODO: [item] }],
     ["TODO のキーが無い", { 決定: [item] }],
     ["決定が配列でない", { 決定: item, TODO: [] }],
-    ["from が数でない", { 決定: [{ text: "x", from: "1", to: 2 }], TODO: [] }],
-    ["to が数でない", { 決定: [], TODO: [{ text: "x", from: 1 }] }],
-    ["from が to より大きい", { 決定: [{ text: "x", from: 5, to: 2 }], TODO: [] }],
+    ["from が数でない", { 決定: [{ ...item, from: "1" }], TODO: [] }],
+    ["to が数でない", { 決定: [], TODO: [{ text: "x", from: 1, keywords: ["x"] }] }],
+    ["from が to より大きい", { 決定: [{ ...item, from: 5, to: 2 }], TODO: [] }],
+    ["keywords が無い", { 決定: [{ text: "x", from: 1, to: 2 }], TODO: [] }],
+    ["keywords が空", { 決定: [{ ...item, keywords: [] }], TODO: [] }],
+    ["keywords が配列でなく文字列", { 決定: [{ ...item, keywords: "x" }], TODO: [] }],
+    ["keywords の要素が数", { 決定: [{ ...item, keywords: [1] }], TODO: [] }],
+    ["keywords の配列の中身が数", { 決定: [{ ...item, keywords: [["a", 1]] }], TODO: [] }],
+    ["keywords の要素が空の配列", { 決定: [{ ...item, keywords: [[]] }], TODO: [] }],
+    ["keywords の要素が空文字", { 決定: [{ ...item, keywords: [""] }], TODO: [] }],
+    ["keywords の要素が空白だけ", { 決定: [{ ...item, keywords: [" \u3000"] }], TODO: [] }],
   ];
 
   it.each(invalid)("%s正解は、ファイルのパスを含むエラーで止まる", async (_name, bad) => {
     const dir = await play(scriptA);
     const path = await writeTruth(bad);
     await expect(evalCli(["--truth", path, dir])).rejects.toThrow(path);
+  });
+
+  it("エラーは、どの種別の何件目かを含む", async () => {
+    const dir = await play(scriptA);
+    const path = await writeTruth({ 決定: [], TODO: [item, { text: "y", from: 1, to: 2 }] });
+    await expect(evalCli(["--truth", path, dir])).rejects.toThrow("「TODO」の 2 件目");
+  });
+});
+
+describe("eval: bench の正解ファイル", () => {
+  const meetings = join(import.meta.dirname, "../bench/meetings");
+  it.each(["deciding", "long", "sharing"])("%s.truth.json は、全件に keywords があり parseTruth を通る", (name) => {
+    expect(() => parseTruth(JSON.parse(readFileSync(join(meetings, `${name}.truth.json`), "utf8")))).not.toThrow();
   });
 });
