@@ -118,13 +118,13 @@ private func speak(_ text: String, voice: String, in dir: URL, index: Int) throw
     return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
 }
 
-private func writeWav(_ samples: [Float], to url: URL) throws {
+func writeWav(_ samples: [Float], to url: URL, sampleRate: Double = synthSampleRate) throws {
     let settings: [String: Any] = [
-        AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: synthSampleRate, AVNumberOfChannelsKey: 1,
+        AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: 1,
         AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
     ]
     let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: synthSampleRate, channels: 1, interleaved: false),
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
           let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))
     else { throw SynthError.sayFailed("書き出しバッファを作れない") }
     buffer.frameLength = AVAudioFrameCount(samples.count)

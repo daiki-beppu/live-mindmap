@@ -10,9 +10,9 @@
 - `scripts/build-webrtc-apm.sh`: AEC3 の静的ライブラリをビルドして `.deps/webrtc-apm/`（gitignore 済み）に置く
 - `Sources/HelperCore`: イベントの形、会議アプリの選択、Core Audio のプロセスタップ、マイク（AVAudioEngine）、SpeechAnalyzer、WebSocket
 - `Sources/live-mindmap-helper`: 引数の解釈と配線だけ。STT は `Transcriber` プロトコルの後ろにある
-- `Sources/stt-bench`: 音声認識の確定の遅れを測る開発者向けの道具（Issue #97）。製品の `live-mindmap-helper` には含まれない
+- `Sources/stt-bench`: 音声認識の確定の遅れ（Issue #97）と、AEC3 が開始直後に話者の声を削るか（Issue #118）を測る開発者向けの道具。製品の `live-mindmap-helper` には含まれない
 - `Tests/HelperCoreTests`: 純粋なロジックと WebSocket のローカル接続のテスト
-- `Tests/SttBenchTests`: `stt-bench` の合成の時刻計算（`say` や音声認識は使わない）
+- `Tests/SttBenchTests`: `stt-bench` の合成の時刻計算と、エコー計測の純粋な部分（偽の canceller を使い、`say`・音声認識・AEC3 は使わない）
 
 ## 使い方
 
@@ -74,6 +74,22 @@ node ../server/bench/sttLatency.ts /tmp/stt97/short.jsonl --lines /tmp/stt97/con
 - 合成した音声と計測の出力は、リポジトリの外（`/tmp` など）に置く。実会議の録音も入れない
 - `--load` は、同じ候補の 2 本目の認識を並行して流す（本番の 自分 / 相手 の 2 本同時に当たる）
 - 再生して再現率を出すのは `server/bench/sttReplay.ts`（Claude の認証が要る）
+
+## AEC3 の開始直後の計測（stt-bench echo）
+
+会議の音を参照にした、遅れと減衰付きの漏れに、既知の発話を開始 5・30・60 秒に足し、1 つの `WebRTCEchoCanceller` に連続して通す。発話の成分のエネルギーの残り方（dB）を、時刻別・遅れ別に JSONL で出す。結論は `docs/investigations/2026-10-03-aec-startup-double-talk.md`。
+
+```sh
+cd helper
+bash scripts/build-webrtc-apm.sh                                                          # AEC3 のビルド（済みなら何もしない）
+swift run -c release stt-bench synth bench/scenarios/echo.json /tmp/aec118                # meeting.wav（参照）と self.wav（発話）
+swift run -c release stt-bench echo /tmp/aec118/meeting.wav /tmp/aec118/self.wav --self-lines /tmp/aec118/self.lines.json \
+  [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate baseline,bypass-3] [--out /tmp/aec118/out] > /tmp/aec118/baseline.jsonl
+```
+
+- 出力の項目: `retentionDb`（発話の残り方。0 なら全部残る）、`leakReductionDb`（同じ区間の漏れの低下量）、`referenceRmsDbfs`。`--leak-gain-db -inf` は漏れの無い対照
+- `--candidate`: `baseline`（今の設定）、`bypass-<秒>`（開始から N 秒は AEC の出力を使わない。AEC には通し続ける）
+- `--at` の窓は発話の長さ（約 11 秒）なので、近い時刻は別の実行に分ける。`--out` は `stt-bench run` に渡せる 48 kHz の wav を書く
 
 ## テスト
 
