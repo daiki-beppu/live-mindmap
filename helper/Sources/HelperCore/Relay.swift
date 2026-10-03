@@ -53,9 +53,10 @@ private func relayMine<Results: AsyncSequence>(
                 if result.isFinal {
                     heldContinuation.yield((result, .now))
                 } else {
+                    // 判定は先に取り出す。引数の式の途中で await すると、CI の Swift でタスクのメモリ管理が壊れてクラッシュした
+                    let duplicate = await duplicates.isDuplicate(partial: result)
                     let partial = HelperEvent.partial(
-                        track: .自分, start: result.start, end: result.end, text: result.text,
-                        duplicate: await duplicates.isDuplicate(partial: result))
+                        track: .自分, start: result.start, end: result.end, text: result.text, duplicate: duplicate)
                     await server.broadcast(try partial.jsonString())
                 }
             }
