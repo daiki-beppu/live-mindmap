@@ -28,19 +28,28 @@ struct EventsTests {
         #expect(json["duplicate"] as? Bool == false)
     }
 
-    @Test("途中結果は発言とは別のイベントになり、トラック・開始・終了・本文を持つ（重複の印は持たない）")
+    @Test("途中結果は発言とは別のイベントになり、トラック・開始・終了・本文・重複の印を持つ（event(from:) の印は false）")
     func volatileResultBecomesPartial() throws {
         let result = TranscriptionResult(text: "こんに", isFinal: false, start: 1.5, end: 2.0)
         let event = event(from: result, track: .相手)
-        #expect(event == .partial(track: .相手, start: 1.5, end: 2.0, text: "こんに"))
+        #expect(event == .partial(track: .相手, start: 1.5, end: 2.0, text: "こんに", duplicate: false))
 
         let json = try decode(event)
-        #expect(Set(json.keys) == ["type", "track", "start", "end", "text"])
+        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate"])
         #expect(json["type"] as? String == "partial")
         #expect(json["track"] as? String == "相手")
         #expect(json["start"] as? Double == 1.5)
         #expect(json["end"] as? Double == 2.0)
         #expect(json["text"] as? String == "こんに")
+        #expect(json["duplicate"] as? Bool == false)
+    }
+
+    @Test("途中結果の重複の印は true も JSON に載る")
+    func partialDuplicateTrue() throws {
+        let json = try decode(.partial(track: .自分, start: 1, end: 2, text: "こんに", duplicate: true))
+        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate"])
+        #expect(json["type"] as? String == "partial")
+        #expect(json["duplicate"] as? Bool == true)
     }
 
     @Test("自分のトラックも同じ形で表せる")
@@ -50,7 +59,7 @@ struct EventsTests {
         #expect(remark["track"] as? String == "自分")
 
         let partial = try decode(event(from: TranscriptionResult(text: "は", isFinal: false, start: 0, end: 1), track: .自分))
-        #expect(Set(partial.keys) == ["type", "track", "start", "end", "text"])
+        #expect(Set(partial.keys) == ["type", "track", "start", "end", "text", "duplicate"])
         #expect(partial["track"] as? String == "自分")
     }
 

@@ -28,7 +28,7 @@ struct RelayTests {
             received.append(text)
         }
         let expected = [
-            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに").jsonString(),
+            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false).jsonString(),
             try HelperEvent.remark(track: .相手, start: 0, end: 2, text: "こんにちは", duplicate: false).jsonString(),
         ]
         #expect(received == expected)
@@ -91,11 +91,11 @@ struct MultiTrackRelayTests {
 
         let received = try await receiveTexts(task, count: 4)
         let expectedMine = [
-            try HelperEvent.partial(track: .自分, start: 0, end: 1, text: "は").jsonString(),
+            try HelperEvent.partial(track: .自分, start: 0, end: 1, text: "は", duplicate: false).jsonString(),
             try HelperEvent.remark(track: .自分, start: 0.5, end: 1.5, text: "はい", duplicate: false).jsonString(),
         ]
         let expectedTheirs = [
-            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに").jsonString(),
+            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false).jsonString(),
             try HelperEvent.remark(track: .相手, start: 0.25, end: 2, text: "こんにちは", duplicate: false).jsonString(),
         ]
         // トラック間の到着順は決まっていない。同じトラックの中の順序だけが保たれる。
