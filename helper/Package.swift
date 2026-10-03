@@ -36,7 +36,7 @@ let package = Package(
         .testTarget(name: "HelperCoreTests", dependencies: ["HelperCore"]),
         // 音声認識の確定の遅れを測る開発者向けの道具（Issue #97）。製品には含めない
         .executableTarget(name: "stt-bench", dependencies: ["HelperCore"]),
-        .testTarget(name: "SttBenchTests", dependencies: ["stt-bench"]),
+        .testTarget(name: "SttBenchTests", dependencies: ["stt-bench", "HelperCore"]),
     ],
     swiftLanguageModes: [.v5]
 )
