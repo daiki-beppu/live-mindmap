@@ -15,6 +15,7 @@ import type { MapCapture } from "./capture.ts";
 import type { SessionUpdater } from "./claude.ts";
 import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
 import { partialFromHelper, remarkFromHelper, type Session } from "./core/index.ts";
+import { openHelperSocket, type HelperSocket } from "./helperSocket.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
 import { isLocalOrigin, startSnapshotServer } from "./ws.ts";
@@ -112,15 +113,10 @@ function launchHelper(command: string, args: string[]): Helper {
 
 // ヘルパーの WebSocket へつなぐ。ヘルパーの準備（モデルやマイクの許可）には時間がかかることがあるので、
 // 子プロセスが生きている間は時間切れなしで再試行する。子が終わったら、その stderr を付けて失敗にする。
-async function connectToHelper(helper: Helper, port: number): Promise<WebSocket> {
+async function connectToHelper(helper: Helper, port: number): Promise<HelperSocket> {
   for (;;) {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    const opened = await new Promise<boolean>((resolve) => {
-      ws.once("open", () => resolve(true));
-      ws.once("error", () => resolve(false));
-    });
-    if (opened) return ws;
-    ws.terminate();
+    const socket = await openHelperSocket(`ws://127.0.0.1:${port}`);
+    if (socket) return socket;
     await Promise.race([sleep(RETRY_MS), helper.exited]);
     if (helper.hasExited()) {
       throw new Error(`ヘルパーが終了しました（${helper.child.exitCode ?? helper.child.signalCode}）: ${helper.stderr().trim()}`);
@@ -176,7 +172,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       const dir = createSessionDir(sessionsDir);
       const helperArgs = ["run", "--app", app, "--port", String(helperPort), ...(audio ? ["--audio-dir", dir] : [])];
       starting.helper = current = launchHelper(helperCommand.command, [...helperCommand.args, ...helperArgs]);
-      const ws = await connectToHelper(starting.helper, helperPort);
+      const { ws, listen } = await connectToHelper(starting.helper, helperPort);
       // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
       // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない。接続の解決からここまで await を入れない
       // 反映が終わるたびに、未反映の発言が変わるので、いま話している文字を送り直す
@@ -200,7 +196,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
           relay.remark(settled.track);
         },
       });
-      ws.on("message", (data) => {
+      listen((data) => {
         try {
           const event: unknown = JSON.parse(String(data));
           const remark = remarkFromHelper(event, "");
