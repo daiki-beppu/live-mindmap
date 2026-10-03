@@ -2,26 +2,33 @@ name: check
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 jobs:
-  check:
-    # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
+  bisect:
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [head-backtrace, relay-main, rename-partial, skip-relay-suite, release, list-xcode]
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @live-mindmap/server exec playwright install chromium
-      - run: pnpm typecheck
-      - run: pnpm --filter @live-mindmap/server test
-      - run: pnpm --filter @live-mindmap/web test
-      # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
-      # ランナーには Xcode があるので swift test をそのまま使う
-      - run: swift test --no-parallel
+      - name: apply variant
         working-directory: helper
+        run: |
+          case "${{ matrix.variant }}" in
+            relay-main) git checkout origin/main -- Sources/HelperCore/Relay.swift 2>/dev/null || { git fetch origin main --depth=1 && git checkout FETCH_HEAD -- Sources/HelperCore/Relay.swift; } ;;
+            rename-partial) sed -i '' 's/isDuplicate(partial/isDuplicatePartial(partial/g' Sources/HelperCore/*.swift Tests/HelperCoreTests/*.swift ;;
+            skip-relay-suite) sed -i '' 's/@Suite("重複の印を付ける転送"/@Suite("重複の印を付ける転送", .disabled()/' Tests/HelperCoreTests/DuplicateRelayTests.swift ;;
+          esac
+          git diff --stat
+      - name: test
+        working-directory: helper
+        env:
+          SWIFT_BACKTRACE: enable=yes,interactive=no,symbolicate=full
+        run: |
+          xcodebuild -version; swift --version
+          case "${{ matrix.variant }}" in
+            list-xcode) ls /Applications | grep -i xcode ;;
+            release) swift test -c release --no-parallel ;;
+            *) swift test --no-parallel ;;
+          esac
