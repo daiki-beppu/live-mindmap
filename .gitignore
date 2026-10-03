@@ -6,3 +6,6 @@ dist/
 .claude/worktrees/
 .takt/
 .build/
+
+# WebRTC AEC3 のビルド結果（helper/scripts/build-webrtc-apm.sh が作る）
+helper/.deps/webrtc-apm/
