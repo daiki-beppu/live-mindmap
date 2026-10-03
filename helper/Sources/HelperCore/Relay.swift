@@ -21,11 +21,8 @@ private func relayTheirs<Results: AsyncSequence>(
     _ results: Results, to server: WebSocketServer, duplicates: DuplicateMarker
 ) async throws where Results.Element == TranscriptionResult {
     for try await result in results {
-        if result.isFinal {
-            await duplicates.add(theirs: result)
-        } else {
-            await duplicates.add(theirPartial: result)
-        }
+        // 確定か途中かの振り分けは判定器の中で行う。ここで if / else の両方に await を置くと、CI（Xcode 26.6）の swift test がクラッシュした
+        await duplicates.observe(theirs: result)
         await server.broadcast(try event(from: result, track: .相手).jsonString())
     }
     await duplicates.finishTheirs()
