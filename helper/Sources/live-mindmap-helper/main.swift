@@ -71,6 +71,15 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?) async th
         }
         var theirAudio = try tap.start()
         var myAudio = try microphone.start()
+        // スピーカーのときだけ、タップの音を参照にした AEC3 でマイクのエコーを消してから、`自分` の STT と録音へ渡す。
+        // タップの流れは 1 か所でしか読めないので、`相手` の STT と AEC の参照に分ける。イヤホンのときは今まで通り素通し。
+        if outputRoute.marksDuplicates {
+            let (theirs, reference) = split(theirAudio)
+            theirAudio = theirs
+            myAudio = try echoCancelled(microphone: myAudio, reference: reference)
+            printError("echo cancellation: enabled (WebRTC AEC3, reference = process tap, output: \(outputRoute))")
+        }
+        // 録音は AEC の「後」の音（STT が聞いた音と同じ）。AEC の前の音は残らない。
         if let recorders {
             let their = recording(theirAudio, to: recorders.their)
             let my = recording(myAudio, to: recorders.my)

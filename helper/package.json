@@ -3,7 +3,8 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "test": "swift test -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
-    "typecheck": "swift build"
+    "build-apm": "test -f .deps/webrtc-apm/lib/libwebrtc-audio-processing-2.a || bash scripts/build-webrtc-apm.sh",
+    "test": "pnpm build-apm && swift test -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+    "typecheck": "pnpm build-apm && swift build"
   }
 }
