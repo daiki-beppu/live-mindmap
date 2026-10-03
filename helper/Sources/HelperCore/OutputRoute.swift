@@ -8,11 +8,12 @@ public enum OutputRoute: Sendable, Equatable {
     /// USB・HDMI・AirPlay など。外部スピーカーとして扱う。
     case other
 
-    /// `自分` の確定結果の重複判定をかけるか。イヤホンと Bluetooth（AirPods など）は声が漏れにくいので、かけない。
+    /// `自分` のマイクにエコーキャンセルと重複判定をかけるか。内蔵のヘッドフォンジャックのイヤホンだけかけない。
+    /// Bluetooth はスピーカーのこともあるのでかける（AirPods など漏れないものでは、AEC3 はほぼ素通しになる。Issue #116）。
     public var marksDuplicates: Bool {
         switch self {
-        case .builtInSpeaker, .other: return true
-        case .headphones, .bluetooth: return false
+        case .builtInSpeaker, .bluetooth, .other: return true
+        case .headphones: return false
         }
     }
 }
