@@ -2,6 +2,7 @@
 //   node fake-helper.ts <台本JSON> <記録ファイル> list
 //   node fake-helper.ts <台本JSON> <記録ファイル> run --app <id> --port <n>
 // 台本: { apps: unknown, events: unknown[], failRun?: { stderr: string; code: number }, ignoreSigterm?: boolean }
+//   delayedEvents: 接続の afterMs ミリ秒後に送るイベント（events の後に送る）。時間が経ってから届く確定結果を真似る
 //   ignoreSigterm: SIGTERM を受けても終わらない（SIGKILL でだけ終わる）。音が出ないまま止まらない実物のヘルパーを真似る
 //   --audio-dir <dir> があると、SIGTERM の後に少し遅れて <dir>/相手.m4a と <dir>/自分.m4a を書き終えてから終了する（書き終わる前にサーバーがセッションを閉じないことを確かめる）
 // 記録ファイルには 1 行 1 件の JSON を追記する: { type: "run", argv, pid }、{ type: "connection" }、{ type: "signal", signal: "SIGTERM" }
@@ -15,6 +16,7 @@ if (!scriptPath || !recordPath) throw new Error("usage: fake-helper.ts <台本JS
 const script = JSON.parse(readFileSync(scriptPath, "utf8")) as {
   apps: unknown;
   events: unknown[];
+  delayedEvents?: { afterMs: number; event: unknown }[];
   failRun?: { stderr: string; code: number };
   ignoreSigterm?: boolean;
 };
@@ -37,6 +39,9 @@ if (command === "list") {
     record({ type: "connection" });
     // 台本のイベントは接続を受けた直後に全部送る。送信は終了より前に済む
     for (const event of script.events) client.send(JSON.stringify(event));
+    for (const { afterMs, event } of script.delayedEvents ?? []) {
+      setTimeout(() => client.readyState === client.OPEN && client.send(JSON.stringify(event)), afterMs);
+    }
   });
   // 実物と同じく、SIGTERM で WebSocket を片付けて正常終了する（ignoreSigterm のときを除く）
   process.on("SIGTERM", () => {

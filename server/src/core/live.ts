@@ -16,15 +16,17 @@ export function remarkFromHelper(data: unknown, id: string): Remark | null {
   return { id, track: e.track, start: e.start, end: e.end, text: e.text, duplicate: e.duplicate === true };
 }
 
-export type HelperPartial = { track: Track; text: string; duplicate: boolean };
+export type HelperPartial = { track: Track; start: number; end: number; text: string; duplicate: boolean };
 
-// partial（いま話している途中結果）。仮のノードの表示だけに使い、差分更新・ログには入れない。partial 以外は null。
+// partial（いま話している途中結果）。仮のノードの表示と、1 秒更新されなかった発話の発言化（settle.ts）に使う。partial 以外は null。
+// 必須項目が壊れているときは、remark と同じく例外にする（start / end のない旧形式も受け付けない）。
 // duplicate の項目がない partial は、重複ではないものとして扱う。
 export function partialFromHelper(data: unknown): HelperPartial | null {
   if (typeof data !== "object" || data === null) throw new Error("ヘルパーのイベントがオブジェクトではありません");
   const e = data as Record<string, unknown>;
   if (e.type !== "partial") return null;
   if (!isTrack(e.track)) throw new Error(`partial の track が不正です: ${String(e.track)}`);
+  if (typeof e.start !== "number" || typeof e.end !== "number") throw new Error("partial の start / end が数値ではありません");
   if (typeof e.text !== "string") throw new Error("partial の text が文字列ではありません");
-  return { track: e.track, text: e.text, duplicate: e.duplicate === true };
+  return { track: e.track, start: e.start, end: e.end, text: e.text, duplicate: e.duplicate === true };
 }

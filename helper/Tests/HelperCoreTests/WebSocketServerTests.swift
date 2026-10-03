@@ -33,7 +33,7 @@ struct WebSocketServerTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let json = try HelperEvent.partial(track: .相手, text: "こんに").jsonString()
+        let json = try HelperEvent.partial(track: .相手, start: 1, end: 2, text: "こんに").jsonString()
         await server.broadcast(json)
         #expect(try await receiveText(task) == json)
     }
@@ -72,7 +72,7 @@ struct WebSocketServerTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let expected = try ["あ", "あい", "あいう"].map { try HelperEvent.partial(track: .相手, text: $0).jsonString() }
+        let expected = try ["あ", "あい", "あいう"].map { try HelperEvent.partial(track: .相手, start: 0, end: 1, text: $0).jsonString() }
         for json in expected { await server.broadcast(json) }
         var received: [String] = []
         for _ in expected { received.append(try await receiveText(task)) }

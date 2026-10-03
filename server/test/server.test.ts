@@ -56,14 +56,15 @@ const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const remark = (track: "自分" | "相手", start: number, end: number, text: string) => ({ type: "remark", track, start, end, text, duplicate: false });
-// partial は発言として数えられない（r の番号を消費しない）。本文は、マップにもログにも出ない専用の文字列
+// partial は、確定結果に覆われたとき（区間の中央が、直後の確定結果の区間に入る）は発言にならない（r の番号を消費しない）。
+// 本文は、マップにもログにも出ない専用の文字列
 const PARTIAL_1 = "はじまりの途中結果";
 const PARTIAL_2 = "にかいめの途中結果";
 const EVENTS = [
-  { type: "partial", track: "相手", text: PARTIAL_1 },
+  { type: "partial", track: "相手", start: 1, end: 3, text: PARTIAL_1 },
   remark("相手", 1, 5, "採用の面接について"),
   remark("自分", 6, 9, "面接は何回にしますか"),
-  { type: "partial", track: "相手", text: PARTIAL_2 },
+  { type: "partial", track: "相手", start: 19.2, end: 25, text: PARTIAL_2 },
   remark("相手", 19.2, 28, "2 回にしましょう"),
 ];
 
@@ -75,7 +76,7 @@ const OPS: Op[][] = [
   [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
 ];
 
-type Script = { apps: unknown; events: unknown[]; failRun?: { stderr: string; code: number }; ignoreSigterm?: boolean };
+type Script = { apps: unknown; events: unknown[]; delayedEvents?: { afterMs: number; event: unknown }[]; failRun?: { stderr: string; code: number }; ignoreSigterm?: boolean };
 type HelperRecord = { type: "run"; argv: string[]; pid: number } | { type: "connection" } | { type: "signal"; signal: string };
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -279,7 +280,7 @@ describe("ライブのセッション", () => {
     await expect(cli("stop")).rejects.toThrow("進行中のセッションがありません");
   });
 
-  it("ヘルパーの途中結果は、トラックごとの speaking として届く。終了で両トラックとも空になる。途中結果は差分更新・ログ・マップに入らない", async () => {
+  it("ヘルパーの途中結果は、トラックごとの speaking として届く。終了で両トラックとも空になる。確定結果に覆われた途中結果は差分更新・ログ・マップに入らない", async () => {
     const { server, cli, calls, sessionDirs } = await setup();
     const before = await connect(server.port);
 
@@ -309,6 +310,93 @@ describe("ライブのセッション", () => {
       expect(JSON.stringify(e)).not.toContain("途中結果");
     }
     for (const file of ["map.json", "map.md", "map.drawnix", "export.json"]) expect(readFileSync(join(dir!, file), "utf8")).not.toContain("途中結果");
+  });
+
+  it(
+    "確定結果が来なくても、相手の途中結果は 1 秒更新されなければ、最後の本文・区間で発言が 1 件、差分更新に渡る。ID は r1 で、ログにも発言として残る",
+    { timeout: 20_000 },
+    async () => {
+      const { cli, calls, sessionDirs } = await setup({
+        events: [
+          { type: "partial", track: "相手", start: 5, end: 6, text: "あしたの" },
+          { type: "partial", track: "相手", start: 5, end: 8, text: "あしたの会議は" },
+        ],
+      });
+      await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+      await vi.waitFor(() => expect(calls.flatMap((c) => c.fresh)).toHaveLength(1), { timeout: 10_000 });
+      expect(calls.flatMap((c) => c.fresh)[0]).toMatchObject({ id: "r1", track: "相手", start: 5, end: 8, text: "あしたの会議は" });
+
+      await cli("stop");
+
+      expect(calls.flatMap((c) => c.fresh)).toHaveLength(1); // 停止で増えない
+      const [dir] = await sessionDirs();
+      const remarks = (await logEvents(dir!)).filter((e) => e.type === "remark");
+      expect(remarks.map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あしたの会議は"]]);
+    },
+  );
+
+  it(
+    "出した後に届いた確定結果は捨てる。発言は増えず、次の発言の ID は r2 で番号が飛ばない",
+    { timeout: 20_000 },
+    async () => {
+      const { cli, calls, sessionDirs } = await setup({
+        events: [{ type: "partial", track: "相手", start: 5, end: 8, text: "あしたの会議" }],
+        delayedEvents: [
+          { afterMs: 2_000, event: remark("相手", 5.2, 8.2, "明日の会議は十時です。") }, // r1 を覆う確定結果。本文が違っても捨てる
+          { afterMs: 2_200, event: remark("相手", 30, 32, "べつの確定結果") },
+        ],
+      });
+      await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+      await vi.waitFor(() => expect(calls.flatMap((c) => c.fresh).map((u) => [u.id, u.text])).toEqual([["r1", "あしたの会議"], ["r2", "べつの確定結果"]]), {
+        timeout: 10_000,
+      });
+      await cli("stop");
+
+      const fresh = calls.flatMap((c) => c.fresh);
+      expect(fresh.map((u) => u.id)).toEqual(["r1", "r2"]);
+      expect(fresh.some((u) => u.text.includes("十時です"))).toBe(false);
+      const [dir] = await sessionDirs();
+      const remarks = (await logEvents(dir!)).filter((e) => e.type === "remark");
+      expect(remarks.map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あしたの会議"], ["r2", "べつの確定結果"]]);
+    },
+  );
+
+  it("停止は、まだ出ていない発話を落とさない。stop の後に、途中結果の最後の本文が差分更新に渡っている", { timeout: 20_000 }, async () => {
+    const { cli, calls } = await setup({ events: [{ type: "partial", track: "相手", start: 5, end: 8, text: "とちゅうでとめた" }] });
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+    await cli("stop");
+
+    expect(calls.flatMap((c) => c.fresh).map((u) => [u.id, u.text])).toEqual([["r1", "とちゅうでとめた"]]);
+  });
+
+  it("自分の途中結果は、1 秒を超えても発言にならない（相手の同じ入力は発言になる）。自分の発言は確定結果だけから作られる", { timeout: 20_000 }, async () => {
+    const { cli, calls, sessionDirs } = await setup({
+      events: [
+        { type: "partial", track: "相手", start: 5, end: 6, text: "あいてのとちゅう" },
+        { type: "partial", track: "自分", start: 5, end: 6, text: "じぶんのとちゅう" },
+        remark("自分", 20, 22, "じぶんの確定結果"),
+      ],
+    });
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+    // 守っている状態に到達する: 相手の途中結果は T 経って出ている（自分の途中結果は同時に届いており、出るなら同じ時刻に出る）
+    await vi.waitFor(() => expect(calls.flatMap((c) => c.fresh).some((u) => u.text === "あいてのとちゅう")).toBe(true), { timeout: 10_000 });
+    await cli("stop");
+
+    const fresh = calls.flatMap((c) => c.fresh);
+    expect(fresh.map((u) => [u.track, u.text])).toEqual(
+      expect.arrayContaining([
+        ["相手", "あいてのとちゅう"],
+        ["自分", "じぶんの確定結果"],
+      ]),
+    );
+    expect(fresh).toHaveLength(2);
+    expect(fresh.some((u) => u.text === "じぶんのとちゅう")).toBe(false);
+    const [dir] = await sessionDirs();
+    expect((await logEvents(dir!)).filter((e) => e.type === "remark")).toHaveLength(2);
   });
 
   it("speaking は終了すると空になる。終了後に新しくつないだクライアントには、最新のスナップショットだけが届く", async () => {

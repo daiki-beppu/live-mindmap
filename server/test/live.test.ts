@@ -17,7 +17,7 @@ describe("remarkFromHelper（ヘルパーのイベント → 発言）", () => {
   });
 
   it("partial（途中結果）は発言にならない", () => {
-    expect(remarkFromHelper({ type: "partial", track: "相手", text: "こんに" }, "r1")).toBeNull();
+    expect(remarkFromHelper({ type: "partial", track: "相手", start: 0, end: 1, text: "こんに" }, "r1")).toBeNull();
   });
 
   it("知らない type は読み飛ばす", () => {
@@ -34,15 +34,20 @@ describe("remarkFromHelper（ヘルパーのイベント → 発言）", () => {
 });
 
 describe("partialFromHelper（ヘルパーのイベント → いま話している文字）", () => {
-  it("partial は、トラックと本文を持つ。両トラックとも同じ形で変換される", () => {
-    expect(partialFromHelper({ type: "partial", track: "相手", text: "こんに" })).toMatchObject({ track: "相手", text: "こんに" });
-    expect(partialFromHelper({ type: "partial", track: "自分", text: "はい" })).toMatchObject({ track: "自分", text: "はい" });
+  it("partial は、トラック・開始・終了・本文を持つ。両トラックとも同じ形で変換される", () => {
+    expect(partialFromHelper({ type: "partial", track: "相手", start: 1.5, end: 3.25, text: "こんに" })).toMatchObject({
+      track: "相手",
+      start: 1.5,
+      end: 3.25,
+      text: "こんに",
+    });
+    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "はい" })).toMatchObject({ track: "自分", start: 0, end: 1, text: "はい" });
   });
 
   it("duplicate は、true のときだけ重複の印になる。項目がなければ（#36 より前の partial は）印なし", () => {
-    expect(partialFromHelper({ type: "partial", track: "自分", text: "あ", duplicate: true })!.duplicate).toBe(true);
-    expect(partialFromHelper({ type: "partial", track: "自分", text: "あ", duplicate: false })!.duplicate).toBe(false);
-    expect(partialFromHelper({ type: "partial", track: "自分", text: "あ" })!.duplicate).toBe(false);
+    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "あ", duplicate: true })!.duplicate).toBe(true);
+    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "あ", duplicate: false })!.duplicate).toBe(false);
+    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "あ" })!.duplicate).toBe(false);
   });
 
   it("remark や知らない type は途中結果ではないので null", () => {
@@ -51,9 +56,13 @@ describe("partialFromHelper（ヘルパーのイベント → いま話してい
   });
 
   it.each([
-    ["不正なトラック", { type: "partial", track: "司会", text: "あ" }],
-    ["本文の欠落", { type: "partial", track: "相手" }],
-    ["本文の型違い", { type: "partial", track: "相手", text: 1 }],
+    ["不正なトラック", { type: "partial", track: "司会", start: 0, end: 1, text: "あ" }],
+    ["本文の欠落", { type: "partial", track: "相手", start: 0, end: 1 }],
+    ["本文の型違い", { type: "partial", track: "相手", start: 0, end: 1, text: 1 }],
+    ["start の欠落（start / end を持たない旧形式）", { type: "partial", track: "相手", text: "あ" }],
+    ["end の欠落", { type: "partial", track: "相手", start: 0, text: "あ" }],
+    ["start の型違い", { type: "partial", track: "相手", start: "0", end: 1, text: "あ" }],
+    ["end の型違い", { type: "partial", track: "相手", start: 0, end: "1", text: "あ" }],
   ])("partial の必須項目が壊れていたら、読み飛ばさずに例外にする（%s）", (_name, data) => {
     expect(() => partialFromHelper(data)).toThrow();
   });

@@ -15,6 +15,7 @@ import type { MapCapture } from "./capture.ts";
 import type { SessionUpdater } from "./claude.ts";
 import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
 import { partialFromHelper, remarkFromHelper, type Session } from "./core/index.ts";
+import { createRemarkSettling } from "./remarkSettling.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
 import { isLocalOrigin, startSnapshotServer } from "./ws.ts";
 
@@ -47,10 +48,11 @@ type Helper = { child: ChildProcess; stderr: () => string; exited: Promise<void>
 type State =
   | { kind: "idle" }
   | { kind: "starting"; helper?: Helper }
-  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; audio: boolean; speaking: SpeakingRelay; updater: SessionUpdater }
+  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void>; session: Session; dir: string; audio: boolean; speaking: SpeakingRelay; settling: RemarkSettling; updater: SessionUpdater }
   | { kind: "stopping" };
 
 type SpeakingRelay = ReturnType<typeof createSpeakingRelay>;
+type RemarkSettling = ReturnType<typeof createRemarkSettling>;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -190,24 +192,34 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       });
       const relay = (speaking = createSpeakingRelay({ unreflected: () => session.unreflectedRemarks(), send: (frame) => snapshotServer.speak(frame) }));
       let count = 0;
+      // 発言は、確定結果と、1 秒更新されなかった途中結果のどちらからも、ここを通って差分更新・ログ・speaking へ届く（ID は push の直前に振る）
+      const settling = createRemarkSettling({
+        emit: (settled) => {
+          count++;
+          session.push({ ...settled, id: `r${count}` });
+          relay.remark(settled.track);
+        },
+      });
       ws.on("message", (data) => {
         try {
           const event: unknown = JSON.parse(String(data));
-          const remark = remarkFromHelper(event, `r${count + 1}`);
+          const remark = remarkFromHelper(event, "");
           if (remark) {
-            count++;
-            session.push(remark);
-            relay.remark(remark.track);
+            const { id: _id, ...settled } = remark;
+            settling.final(settled);
             return;
           }
           const partial = partialFromHelper(event);
-          if (partial) relay.partial(partial.track, partial.text, partial.duplicate);
+          if (partial) {
+            relay.partial(partial.track, partial.text, partial.duplicate);
+            settling.partial(partial);
+          }
         } catch (e) {
           process.stderr.write(`ヘルパーのイベントを読み飛ばしました: ${e instanceof Error ? e.message : e}\n`);
         }
       });
       const wsClosed = new Promise<void>((resolve) => (ws.readyState === WebSocket.CLOSED ? resolve() : ws.once("close", () => resolve())));
-      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, audio, speaking: relay, updater };
+      state = { kind: "running", helper: starting.helper, ws, wsClosed, session, dir, audio, speaking: relay, settling, updater };
       starting.helper.exited.then(() => {
         if (!closing && state.kind === "running" && state.helper === starting.helper) {
           process.stderr.write(`ヘルパーが終了しました: ${starting.helper!.stderr().trim()}\n`);
@@ -228,7 +240,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     if (state.kind !== "running") {
       throw new RequestError(409, state.kind === "idle" ? "進行中のセッションがありません" : "セッションの開始・終了の処理中です");
     }
-    const { helper, ws, wsClosed, session, dir, audio, speaking, updater } = state;
+    const { helper, ws, wsClosed, session, dir, audio, speaking, settling, updater } = state;
     state = { kind: "stopping" };
     try {
       // 子の終了と WebSocket の close を待つ。close の前に届いた発言は、すべて push 済みになる
@@ -237,6 +249,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         process.stderr.write(`録音の書き終わりを確認できないまま、セッションを閉じます。${dir} の 相手.m4a・自分.m4a が不完全なことがあります\n`);
       }
       ws.terminate();
+      settling.drain(); // 確定結果に覆われなかった最後の発話を落とさない
       await session.flush();
       return { paths: await writeSessionExports(dir, session.snapshot(), capture) };
     } finally {
@@ -244,6 +257,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       updater.close(); // session.flush() で最後の差分更新が終わっているので、ここで閉じる
       // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
       speaking.stop();
+      settling.stop();
     }
   }
 
@@ -295,6 +309,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         if (current) await stopHelper(current);
         if (state.kind === "running") {
           state.speaking.stop();
+          state.settling.stop();
           state.updater.close();
           state.ws.terminate();
         }

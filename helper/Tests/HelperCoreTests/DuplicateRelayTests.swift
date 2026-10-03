@@ -162,7 +162,7 @@ struct DuplicateRelayTests {
         defer { relaying.cancel() }
 
         let received = try await receiveTexts(task, count: 1)
-        #expect(received == [try HelperEvent.partial(track: .自分, text: "明日の").jsonString()])
+        #expect(received == [try HelperEvent.partial(track: .自分, start: 3, end: 4, text: "明日の").jsonString()])
     }
 
     @Test("相手が何も話さなくても、保留時間が過ぎたら自分の確定結果は印なしで流れる")
