@@ -54,6 +54,14 @@ private func remark(_ track: Track, _ text: String, _ start: Double, _ end: Doub
     try HelperEvent.remark(track: track, start: start, end: end, text: text, duplicate: duplicate).jsonString()
 }
 
+private func partialResult(_ text: String, _ start: Double, _ end: Double) -> TranscriptionResult {
+    TranscriptionResult(text: text, isFinal: false, start: start, end: end)
+}
+
+private func partialEvent(_ track: Track, _ text: String, _ start: Double, _ end: Double, duplicate: Bool) throws -> String {
+    try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate).jsonString()
+}
+
 @Suite("重複の印を付ける転送", .timeLimit(.minutes(1)))
 struct DuplicateRelayTests {
     @Test("同じ時間帯の相手と重なる自分の確定結果に印が付き、相手の確定結果には付かない")
@@ -162,7 +170,77 @@ struct DuplicateRelayTests {
         defer { relaying.cancel() }
 
         let received = try await receiveTexts(task, count: 1)
-        #expect(received == [try HelperEvent.partial(track: .自分, start: 3, end: 4, text: "明日の").jsonString()])
+        #expect(received == [try partialEvent(.自分, "明日の", 3, 4, duplicate: false)])
+    }
+
+    @Test("自分の確定結果が保留中で、どちらの流れも終わらなくても、相手の途中結果と同じ自分の途中結果は印付きですぐ届く")
+    func partialMarkedWhileRemarkHeld() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: DuplicateMarker()) }
+        defer { relaying.cancel() }
+
+        // 自分の確定結果を保留に入れる。相手は終わらないので、判定は待ち続ける。
+        mineContinuation.yield(final(other, 0, 2))
+        // 相手の途中結果が流れ終わってから（文脈に入ってから）、自分の途中結果を流す。
+        theirsContinuation.yield(partialResult(sentence, 10, 13))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, sentence, 10, 13, duplicate: false)])
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true)])
+    }
+
+    @Test("相手の途中結果・確定結果とほぼ同じ自分の途中結果は印付き、違う内容は印なしで流れる。相手の途中結果は印なし")
+    func marksPartialsAgainstTheirs() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        // 同じ判定器で、相手 → 自分の順に流し終える（並行実行に結果が左右されない）。
+        let marker = DuplicateMarker()
+        let theirs = finishedStream([partialResult(sentence, 10, 13), final(other, 30, 33)])
+        try await relay(theirs, track: .相手, to: server, duplicates: marker)
+        let mine = finishedStream([
+            partialResult("明日の会議は十時", 10.5, 12),
+            partialResult("了解です、少し確認します", 10.5, 12),
+            partialResult("来週の火曜日に資料", 31, 32),
+        ])
+        try await relay(mine, track: .自分, to: server, duplicates: marker)
+
+        let received = try await receiveTexts(task, count: 5)
+        #expect(received == [
+            try partialEvent(.相手, sentence, 10, 13, duplicate: false),
+            try remark(.相手, other, 30, 33, duplicate: false),
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true),
+            try partialEvent(.自分, "了解です、少し確認します", 10.5, 12, duplicate: false),
+            try partialEvent(.自分, "来週の火曜日に資料", 31, 32, duplicate: true),
+        ])
+    }
+
+    @Test("判定器がないときは、相手の途中結果と同じ自分の途中結果にも印を付けない")
+    func noMarkerNeverMarksPartial() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        try await relay(finishedStream([partialResult(sentence, 10, 13)]), track: .相手, to: server, duplicates: nil)
+        try await relay(finishedStream([partialResult(sentence, 10.5, 13)]), track: .自分, to: server, duplicates: nil)
+
+        let received = try await receiveTexts(task, count: 2)
+        #expect(received == [
+            try partialEvent(.相手, sentence, 10, 13, duplicate: false),
+            try partialEvent(.自分, sentence, 10.5, 13, duplicate: false),
+        ])
     }
 
     @Test("相手が何も話さなくても、保留時間が過ぎたら自分の確定結果は印なしで流れる")

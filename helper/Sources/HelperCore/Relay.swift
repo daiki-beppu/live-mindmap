@@ -1,6 +1,6 @@
 /// STT の結果をイベントにして、WebSocket の全クライアントへ流す。結果の流れが終わるまで戻らない。
 /// `duplicates` が nil なら、重複の印は付けない（`duplicate` は常に false）。
-/// 非 nil なら、`相手` の確定結果を判定器に渡し、`自分` の確定結果に印を付けて流す（捨てない）。
+/// 非 nil なら、`相手` の確定結果と最新の途中結果を判定器に渡し、`自分` の確定結果と途中結果に印を付けて流す（捨てない）。
 public func relay<Results: AsyncSequence>(
     _ results: Results, track: Track, to server: WebSocketServer, duplicates: DuplicateMarker?
 ) async throws where Results.Element == TranscriptionResult {
@@ -16,18 +16,22 @@ public func relay<Results: AsyncSequence>(
     }
 }
 
-/// `相手` の結果は保留せず流し、確定結果は判定器の文脈にも加える。
+/// `相手` の結果は保留せず流し、確定結果と途中結果は判定器の文脈にも加える。`相手` の途中結果の `duplicate` は常に false。
 private func relayTheirs<Results: AsyncSequence>(
     _ results: Results, to server: WebSocketServer, duplicates: DuplicateMarker
 ) async throws where Results.Element == TranscriptionResult {
     for try await result in results {
-        if result.isFinal { await duplicates.add(theirs: result) }
+        if result.isFinal {
+            await duplicates.add(theirs: result)
+        } else {
+            await duplicates.add(theirPartial: result)
+        }
         await server.broadcast(try event(from: result, track: .相手).jsonString())
     }
     await duplicates.finishTheirs()
 }
 
-/// `自分` の途中結果はすぐ流す。確定結果は判定を待つ間、順序を保って保留し、保留中の分がすべて流れるまで戻らない。
+/// `自分` の途中結果は保留せず、届いた時点の文脈で判定して印を付け、すぐ流す。確定結果は判定を待つ間、順序を保って保留し、保留中の分がすべて流れるまで戻らない。
 private func relayMine<Results: AsyncSequence>(
     _ results: Results, to server: WebSocketServer, duplicates: DuplicateMarker
 ) async throws where Results.Element == TranscriptionResult {
@@ -49,7 +53,10 @@ private func relayMine<Results: AsyncSequence>(
                 if result.isFinal {
                     heldContinuation.yield((result, .now))
                 } else {
-                    await server.broadcast(try event(from: result, track: .自分).jsonString())
+                    let partial = HelperEvent.partial(
+                        track: .自分, start: result.start, end: result.end, text: result.text,
+                        duplicate: await duplicates.isDuplicate(partial: result))
+                    await server.broadcast(try partial.jsonString())
                 }
             }
         }

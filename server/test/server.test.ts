@@ -399,6 +399,25 @@ describe("ライブのセッション", () => {
     expect((await logEvents(dir!)).filter((e) => e.type === "remark")).toHaveLength(2);
   });
 
+  it("ヘルパーが重複の印を付けた自分の途中結果は字幕（speaking）に出ない。印のない自分の途中結果は出る", async () => {
+    const LEAKED = "もれたあいてのこえ";
+    const OWN = "じぶんのこえ";
+    const { server, cli } = await setup({
+      events: [
+        { type: "partial", track: "自分", start: 1, end: 2, text: LEAKED, duplicate: true },
+        { type: "partial", track: "自分", start: 3, end: 4, text: OWN, duplicate: false },
+      ],
+    });
+    const before = await connect(server.port);
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+
+    // 守っている状態に到達する: 印のない自分の途中結果は字幕に出る（印付きは、その前に届いている）
+    await vi.waitFor(() => expect(before.speaking.some((f) => f.track === "自分" && f.text.includes(OWN))).toBe(true));
+    await cli("stop");
+
+    expect(before.speaking.filter((f) => f.track === "自分").some((f) => f.text.includes(LEAKED))).toBe(false);
+  });
+
   it("speaking は終了すると空になる。終了後に新しくつないだクライアントには、最新のスナップショットだけが届く", async () => {
     const { server, cli } = await setup();
     await cli("start", "--app", "us.zoom.xos", "--title", "週次");
