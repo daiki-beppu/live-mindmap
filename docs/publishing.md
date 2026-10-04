@@ -10,7 +10,7 @@ live-mindmap を GitHub で public にするときの手順です。方針は [A
 - README の「ライセンス」と「Claude の認証」（API キーでの認証の案内）
 - 点検の結果
   - シークレット: `gitleaks git --log-opts="--all"` で、78 コミットから検出は 0 件。削除済みの `prototypes/diff-engine/.env.op` は 1Password の参照だけで、値は含まない
-  - 会議の音声・文字起こし: 履歴に無い。評価用のサンプルは `~/live-mindmap-samples/` にあり、git の外に置いている
+  - 会議の音声・文字起こし: 履歴に無い。評価用のサンプルは `~/live-mindmap-samples/` にあり、git の外に置いている（2026-10-04 に、公開会議の音声から、内容を書き換えて TTS で合成した会議に置き換えた）
   - issue・PR・docs/knowledge: 社外秘の内容も、文字起こしの長い引用も無い
   - 依存パッケージ: MIT と両立する。`@anthropic-ai/claude-agent-sdk` だけは Anthropic 独自の規約だが、同梱しないので問題ない
 
