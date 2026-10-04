@@ -55,7 +55,7 @@ function collapseRuns(visible: SnapshotNode[], folded: Set<string>, keep: Set<st
       if (run.length >= 2) {
         const id = `run:${run[0]!.id}`;
         members[id] = run.map((r) => r.id);
-        const node: SnapshotNode = { id, parent: pid, kind: "議題", text: `済みの議題 ${run.length} 件`, evidence: [] };
+        const node: SnapshotNode = { id, parent: pid, kind: "議題", text: `議題 ${run.length} 件`, evidence: [] };
         run.forEach((r, i) => replaced.set(r.id, i === 0 ? node : null));
       }
       run = [];

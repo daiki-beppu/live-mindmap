@@ -32,6 +32,7 @@ function App() {
   const [camera, setCamera] = useState<Camera>((params.get("camera") as Camera) ?? "focus");
   const [nested, setNested] = useState(params.get("nest") === "1");
   const [runs, setRuns] = useState(params.get("runs") !== "0");
+  const [stale, setStale] = useState(Number(params.get("stale") ?? "15"));
   const [hint, setHint] = useState<Hint>((params.get("hint") as Hint) ?? "text");
   const [playing, setPlaying] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -94,8 +95,8 @@ function App() {
   const focusTopic = pinned ?? frame.current;
   // 選択で見ている議題と、その祖先を開く
   const opened = new Set<string>();
-  for (let cur: string | null | undefined = pinned; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
-  const folded = foldedIds(frame, opened);
+  for (const start of [pinned, frame.current]) for (let cur: string | null | undefined = start; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
+  const folded = foldedIds(frame, opened, stale);
   const V = VARIANTS[variant].C;
   const topics = frame.snapshot.nodes.filter((n) => n.kind === "議題");
   const openCount = topics.filter((t) => !frame.closed.has(t.id)).length;
@@ -155,6 +156,13 @@ function App() {
           <input type="checkbox" checked={runs} onChange={(e) => (setRuns(e.target.checked), setParam("runs", e.target.checked ? "1" : "0"))} />
           済みの並びをまとめる
         </label>
+        <select value={stale} onChange={(e) => (setStale(Number(e.target.value)), setParam("stale", e.target.value))}>
+          {[0, 10, 15, 20, 30].map((m) => (
+            <option key={m} value={m}>
+              {m === 0 ? "古い話し中も開く" : `${m} 分触れなければ畳む`}
+            </option>
+          ))}
+        </select>
         <span className="proto-bar__sep" />
         <button type="button" onClick={() => setPlaying((p) => !p)}>{playing ? "■" : "▶"}</button>
         <button type="button" onClick={() => setIndex((i) => Math.max(0, i - 1))}>−1</button>

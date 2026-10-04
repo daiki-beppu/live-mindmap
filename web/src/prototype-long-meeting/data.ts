@@ -113,8 +113,10 @@ export function frameAt(m: Meeting, index: number, nested = false): Frame {
 
 // 畳む: 既定は済みの議題・論点。open は人（と、ここでは根拠を見るための選択）の上書きで開いているもの。
 // 将来の人の開閉は「上書きがあればそれ、なければ済みから」（#129）。今回は上書きを選択からだけ作る。
-export function foldedIds(frame: Frame, open: ReadonlySet<string>): Set<string> {
-  return new Set([...frame.closed].filter((id) => !open.has(id)));
+// staleMin: 話し中でも、最後に触れてからこの分数たった議題は畳む（データは話し中のまま。0 なら畳まない）
+export function foldedIds(frame: Frame, open: ReadonlySet<string>, staleMin = 0): Set<string> {
+  const stale = staleMin > 0 ? Object.entries(frame.lastTouched).filter(([, t]) => frame.at - t > staleMin * 60).map(([id]) => id) : [];
+  return new Set([...frame.closed, ...stale].filter((id) => !open.has(id)));
 }
 
 // 畳んだノードの子孫（描かないノード）
