@@ -31,8 +31,9 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?) async th
     let outputRoute = try currentOutputRoute()
     let duplicates = outputRoute.marksDuplicates ? DuplicateMarker() : nil
     // 2 トラックは別の SpeechAnalyzer で処理する（1 つの transcriber は 1 回の transcribe にだけ使える）。
-    let theirTranscriber: Transcriber = SpeechAnalyzerTranscriber()
-    let myTranscriber: Transcriber = SpeechAnalyzerTranscriber()
+    // 区間がほぼ無音の認識結果は、両トラックとも SilenceFilteringTranscriber が捨てる（Issue #144）。
+    let theirTranscriber: Transcriber = SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber())
+    let myTranscriber: Transcriber = SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber())
     try await theirTranscriber.prepare()
     try await myTranscriber.prepare()
     try await requestMicrophonePermission()
