@@ -24,13 +24,67 @@ const CLOSED_VIEW_TEXT = `
 現在のマップで「（済み）」が付いた議題・論点は畳んである。配下の案・課題・要点は省いて見せている。そこへ話が戻ったら、見えている議題・論点の id に add・update する。同じ議題や論点を新しく作り直さない。
 `;
 
+
+// 粒度の方針。v1 は今の作り（60 分で 50 ノード前後）。v2 は issue #137 の試作（議題の立て方・議題ごとの目安・議題の一覧）
+export type Granularity = "v1" | "v2" | "v3";
+const TOPIC_DEF: Record<Granularity, string> = {
+  get v3() { return this.v2; },
+  v1: "会議で扱う話題のまとまり。答えを出す対象ではない。",
+  v2: "会議の中で、話がしばらく集まる話題のまとまり。答えを出す対象ではない。会議そのもの（会議の目的や、会議全体で答えようとしている問い）は議題にも論点にもしない。それはルートが表す。",
+};
+const GRANULARITY_TEXT = {
+  v1: `## 粒度
+- マップは画面共有で参加者が読み、会議の後に見返す。60 分の会議で 50 ノード前後、root からの深さ 4 段（議題 → 論点 → 案・課題・決定・要点 → 補足）までを目安にする。毎回添える「マップの状態」を見て、目安を超えそうなら新しいノードを増やすより既存ノードの update や combine を選ぶ。
+- 子ノードにするのは、親とは別の主張（別の理由・別の懸念・派生した案）のときだけ。具体例、経緯、同じ主張の補強は、ノードを作らず既存ノードに根拠を足す update にする。
+- 課題の子に課題を連ねない。課題や案が 1 つの親の下に 6 つを超えそうなら、何の問いに答えようとしているかで論点を立て、既存ノードを move で束ねる。`,
+  v2: `## 議題の立て方
+- ルートは会議そのもの。会議の目的や、会議全体で答えようとしている問い（例: 「どんな本を作るか」「新製品をどうするか」）は、議題にも論点にもしない。その下位の話題（届け先、大きさ、部数、値段…）を、それぞれ議題としてルートの子に add する。
+- 話の対象（扱う物・写真・発表・発表者・問い）が変わったら、短い話でも新しい議題をルートの子に add する。今の議題の下に押し込まない。紹介や発表が 1 つずつ続く場面では、1 つ（1 人）ごとに議題を立てる。
+- 前の議題の話に戻ったら、新しく作らず、「議題の一覧」にあるその議題の id に add・update する。
+- 議題の下に議題を置かない。
+
+## 粒度
+- マップは画面共有で参加者が読み、会議の後に見返す。画面は今の議題を中心に見せるので、1 つの議題は 15〜20 ノード、root からの深さ 4 段（議題 → 論点 → 案・課題・決定・要点 → 補足）までを目安にする。会議全体のノード数には目安を設けない。
+- 毎回添える「議題の一覧」で、今の議題の大きさを見る。目安を超えそうなら、これからの話を新しい議題として立てる。すでにあるノードを別の議題へ動かし直さない。
+- 子ノードにするのは、親とは別の主張（別の理由・別の懸念・派生した案）のときだけ。具体例、経緯、同じ主張の補強は、ノードを作らず既存ノードに根拠を足す update にする。
+- 課題の子に課題を連ねない。課題や案が 1 つの親の下に 6 つを超えそうなら、何の問いに答えようとしているかで論点を立て、既存ノードを move で束ねる。
+
+## 閉じる
+- 新しい議題を立てたときは、「議題の一覧」の話し中の議題を見直し、話が明らかに別へ移って戻る気配がないものを close する。論点も同じ。迷うときは閉じない。
+`,
+  v3: `## 議題の立て方
+- ルートは会議そのもの。会議の目的や、会議全体で答えようとしている問い（例: 「どんな本を作るか」「新製品をどうするか」）は、議題にも論点にもしない。その下位の話題（届け先、大きさ、部数、値段…）を、それぞれ議題としてルートの子に add する。
+- マップは会議の記録として後で見返す。議題名を見れば、その下に何があるかが分かるようにする。
+- 話の対象（扱う物・写真・発表・発表者）が変わったら、短い話でも新しい議題をルートの子に add する。紹介や発表が 1 つずつ続く場面では、1 つ（1 人）ごとに議題を立てる。
+- 1 つの発表・紹介の中で出た例・派生した案・周りの反応は、その発表の議題の下に案や要点として置く。「発表9-2」のように番号を振って議題を分けない。
+- 新しい問いが出たとき、今の議題名に収まる問いなら、その議題の下に論点として置く。議題名に収まらない問いなら、新しい議題を立てる（例: 議題「本の届け先」の中で「出版社から出すか自費か」が話され始めたら、新しい議題にする）。
+- 前の議題の話に戻ったら、新しく作らずその議題の id に add・update する。済みの議題は「議題の一覧」に出ないので、現在のマップや変更に出てきた id を使う。
+- 議題の下に議題を置かない。
+
+## 粒度
+- マップは画面共有で参加者が読み、会議の後に見返す。画面は今の議題を中心に見せ、済みの議題・論点は畳む。1 つの議題の話し中の部分（済みの論点の下は数えない）は 15〜20 ノード、root からの深さ 4 段（議題 → 論点 → 案・課題・決定・要点 → 補足）までを目安にする。会議全体のノード数には目安を設けない。
+- 毎回添える「議題の一覧」で、今の議題の話し中の大きさを見る。目安を超えそうなら、答えが出た論点や話の移った論点を close するか、これからの話を新しい議題として立てる。すでにあるノードを別の議題へ動かし直さない。
+- 子ノードにするのは、親とは別の主張（別の理由・別の懸念・派生した案）のときだけ。具体例、経緯、同じ主張の補強は、ノードを作らず既存ノードに根拠を足す update にする。
+- 課題の子に課題を連ねない。課題や案が 1 つの親の下に 6 つを超えそうなら、何の問いに答えようとしているかで論点を立て、既存ノードを move で束ねる。
+
+## 閉じる
+- 毎回、「議題の一覧」の話し中の議題と、今の議題の中の論点を見直す。最後に触れてからしばらく経ち、話が明らかに別へ移って戻る気配がないものを close する。迷うときは閉じない。
+- 直前の応答や今回の応答で触れた議題・論点は閉じられない（無効になる）。新しい議題に移ったばかりの応答では前の議題を閉じず、次の応答以降で閉じる。
+`,
+};
+const PREFER_UPDATE = {
+  v3: "- 1 回の応答の操作は少なく保つ。同じ話の中で迷ったら、新しいノードを増やすより既存ノードの update を選ぶ。ただし、話の対象が変わったときや、議題名に収まらない問いが出たときは新しい議題を立てる。",
+  v1: "- 1 回の応答の操作は少なく保つ。迷ったら、新しいノードを増やすより既存ノードの update を選ぶ。",
+  v2: "- 1 回の応答の操作は少なく保つ。同じ話の中で迷ったら、新しいノードを増やすより既存ノードの update を選ぶ。ただし、話の対象が変わったときは新しい議題を立てる。",
+};
+
 // system は毎回同じ文字列にして、前置きをキャッシュに乗せる
-const makeSystem = (CLOSE_OP: string, CLOSED_VIEW: string, CONVERSATION: string) => `あなたは会議のマインドマップを継続的に組み立てる担当者です。
+const makeSystem = (CLOSE_OP: string, CLOSED_VIEW: string, CONVERSATION: string, TOPIC_DEF: string, GRANULARITY: string, PREFER_UPDATE: string) => `あなたは会議のマインドマップを継続的に組み立てる担当者です。
 会議の文字起こしが少しずつ届きます。毎回、現在のマップと新しい発言を読み、マップへの差分操作だけを返してください。マップを作り直してはいけません。
 
 # マップの語彙
 - マップは会議をルートとする木。ルートの id は「現在のマップ」の先頭に書いてあり、最初の議題はルートの子に add する。ノード同士の関係は親子だけ。
-- 議題: 会議で扱う話題のまとまり。答えを出す対象ではない。
+- 議題: ${TOPIC_DEF}
 - 論点: 会議の中で答えを出すべき問い。決定を子に持つと「決定済み」、持たなければ「未決」。
 - 案: 論点への答えの候補、または議題の中で出た自由なアイデア。状態は 検討中 / 却下。
 - 決定: 論点に対して会議で出した答え。親は必ず論点。子を持たない。採用した案の内容は決定の本文に書く。
@@ -47,11 +101,7 @@ const makeSystem = (CLOSE_OP: string, CLOSED_VIEW: string, CONVERSATION: string)
 - noop: 新しい発言を見たうえで、マップを変えないと判断したことを表す。
 ${CLOSE_OP}
 # 方針
-## 粒度
-- マップは画面共有で参加者が読み、会議の後に見返す。60 分の会議で 50 ノード前後、root からの深さ 4 段（議題 → 論点 → 案・課題・決定・要点 → 補足）までを目安にする。毎回添える「マップの状態」を見て、目安を超えそうなら新しいノードを増やすより既存ノードの update や combine を選ぶ。
-- 子ノードにするのは、親とは別の主張（別の理由・別の懸念・派生した案）のときだけ。具体例、経緯、同じ主張の補強は、ノードを作らず既存ノードに根拠を足す update にする。
-- 課題の子に課題を連ねない。課題や案が 1 つの親の下に 6 つを超えそうなら、何の問いに答えようとしているかで論点を立て、既存ノードを move で束ねる。
-
+${GRANULARITY}
 ## 本文
 - 本文は 40 字以内の日本語の名詞句か一文。発言の言い回しをそのまま写さない。例や経緯は本文に書かない。
 - update で本文を変えるときは、書き足さず、より的確な短い言い方の全文で置き換える。
@@ -70,7 +120,7 @@ ${CLOSE_OP}
 ## その他
 - 文字起こしには誤認識がある。意味が通るように読み替えてよいが、話されていない内容を足さない。
 - 根拠には「新しい発言」の id を使う。直前の発言は文脈を理解するためのもので、根拠に使ってよいのは新しい発言の続きとして必要な場合だけ。
-- 1 回の応答の操作は少なく保つ。迷ったら、新しいノードを増やすより既存ノードの update を選ぶ。
+${PREFER_UPDATE}
 
 # noop にする範囲
 ${NOOP_SCOPE}
@@ -182,18 +232,44 @@ function renderChanges(before: MeetingMap, beforeClosed: ReadonlySet<string>, af
   return lines.join("\n") || "（変更なし）";
 }
 
-function buildDiffPrompt({ map, recent, fresh }: DiffInput, changes: string): string {
+// v2: 全体の数の代わりに、議題の一覧（id・名前・話し中 / 済み・ノード数）を毎回添える
+function topicStats(map: MeetingMap, now: number, closed: ReadonlySet<string>): string {
+  const size = (id: string): number => children(map, id).reduce((a, c) => a + 1 + size(c.id), 0);
+  const topics = map.order.filter((id) => map.nodes[id]!.kind === "議題");
+  const open = topics.filter((id) => !closed.has(id)).length;
   return [
-    "## マップの状態", mapStats(map, fresh.at(-1)!.end), "",
+    `経過 ${Math.round(now / 60)} 分（目安: 1 つの議題は 15〜20 ノード、深さ 4 まで）`,
+    "",
+    `## 議題の一覧（話し中 ${open}・済み ${topics.length - open}）`,
+    ...topics.map((id) => `- ${id} ${map.nodes[id]!.text}（${closed.has(id) ? "済み" : "話し中"}・${size(id)} ノード）`),
+  ].join("\n") + (topics.length ? "" : "（まだ無い）");
+}
+
+// v3: 議題の一覧は話し中だけ。最後に触れた分と、話し中の部分の大きさ（済みの論点の下は数えない）を載せる。済みは件数だけ
+function topicStatsV3(map: MeetingMap, now: number, closed: ReadonlySet<string>, lastTouched: ReadonlyMap<string, number>): string {
+  const size = (id: string): number => children(map, id).reduce((a, c) => a + 1 + (closed.has(c.id) ? 0 : size(c.id)), 0);
+  const topics = map.order.filter((id) => map.nodes[id]!.kind === "議題");
+  const open = topics.filter((id) => !closed.has(id));
+  return [
+    `経過 ${Math.round(now / 60)} 分（目安: 1 つの議題の話し中の部分は 15〜20 ノード、深さ 4 まで）`,
+    "",
+    `## 議題の一覧（話し中 ${open.length}・済み ${topics.length - open.length}。済みは省略）`,
+    ...open.map((id) => `- ${id} ${map.nodes[id]!.text}（話し中 ${size(id)} ノード・最後に触れたのは ${Math.round((lastTouched.get(id) ?? 0) / 60)} 分）`),
+  ].join("\n") + (open.length ? "" : "（まだ無い）");
+}
+
+function buildDiffPrompt({ recent, fresh }: DiffInput, changes: string, stats: string): string {
+  return [
+    "## マップの状態", stats, "",
     "## 前回からのマップの変更", changes, "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
     "## 新しい発言", fresh.map(fmtRemark).join("\n"),
   ].join("\n");
 }
 
-export function buildPrompt({ map, recent, fresh }: DiffInput, closed: ReadonlySet<string> = new Set(), style: ClosedStyle = "full"): string {
+export function buildPrompt({ map, recent, fresh }: DiffInput, closed: ReadonlySet<string> = new Set(), style: ClosedStyle = "full", stats = mapStats(map, fresh.at(-1)!.end)): string {
   return [
-    "## マップの状態", mapStats(map, fresh.at(-1)!.end), "",
+    "## マップの状態", stats, "",
     `## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map, closed, style), "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
     "## 新しい発言", fresh.map(fmtRemark).join("\n"),
@@ -252,16 +328,18 @@ type Open = {
 // 1 つのセッション（会議）で、開いたままの query を使い回す差分更新。
 // 最初の呼び出しで開き、回数・失敗・ストリームの終わりで開き直し、close() で閉じる。
 // 呼び出しは同時に 1 つしか走らない前提（core の session が直列に呼ぶ）。
-export function openClaudeUpdater(run: typeof query = query, style: ClosedStyle = "full", closesLog?: string, diff = false): SessionUpdater & { closedSet: Set<string>; prompt: (input: DiffInput) => string } {
+export function openClaudeUpdater(run: typeof query = query, style: ClosedStyle = "full", closesLog?: string, diff = false, granularity: Granularity = "v1"): SessionUpdater & { closedSet: Set<string>; prompt: (input: DiffInput) => string } {
   let current: Open | undefined;
   let closed = false;
   const withClose = style !== "full";
-  const SYSTEM = makeSystem(withClose ? CLOSE_OP_TEXT : "", withClose ? CLOSED_VIEW_TEXT : "", diff ? CONVERSATION_DIFF : CONVERSATION_FULL);
+  const SYSTEM = makeSystem(withClose ? CLOSE_OP_TEXT : "", withClose ? CLOSED_VIEW_TEXT : "", diff ? CONVERSATION_DIFF : CONVERSATION_FULL, TOPIC_DEF[granularity], GRANULARITY_TEXT[granularity], PREFER_UPDATE[granularity]);
   // 次の呼び出しで送るプロンプト。query の最初の呼び出しでは全体、それ以降は（diff のとき）前回からの変更
+  const lastTouched = new Map<string, number>();
+  const stats = (input: DiffInput) => granularity === "v3" ? topicStatsV3(input.map, input.fresh.at(-1)!.end, closedSet, lastTouched) : granularity === "v2" ? topicStats(input.map, input.fresh.at(-1)!.end, closedSet) : mapStats(input.map, input.fresh.at(-1)!.end);
   const promptFor = (input: DiffInput, q: Open | undefined) =>
     diff && q?.sent && q.calls < QUERY_RENEW_CALLS
-      ? buildDiffPrompt(input, renderChanges(q.sent.map, q.sent.closed, input.map, closedSet))
-      : buildPrompt(input, closedSet, style);
+      ? buildDiffPrompt(input, renderChanges(q.sent.map, q.sent.closed, input.map, closedSet), stats(input))
+      : buildPrompt(input, closedSet, style, stats(input));
   const SCHEMA = makeSchema(withClose);
   const closedSet = new Set<string>();
   const known = new Set<string>();
@@ -292,6 +370,7 @@ export function openClaudeUpdater(run: typeof query = query, style: ClosedStyle 
       closedSet.add(c.node);
       log({ at, type: "close", node: c.node, kind: n.kind, text: n.text });
     }
+    for (const id of touched) for (const anc of ancestors(after, id)) lastTouched.set(anc, at);
     touchedBefore = touched;
     return rest;
   };

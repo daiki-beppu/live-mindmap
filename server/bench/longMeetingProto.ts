@@ -1,4 +1,4 @@
-// PROTOTYPE（issue #130 の試作）: longMeeting.ts を、bench/protoClaude.ts（閉じる・済みの議題を畳んで渡す）で流す版。--style full|title|outcomes。閉じる・開き直しは closes.jsonl に残す。
+// PROTOTYPE（issue #130・#137 の試作。--granularity v1|v2 は #137）: longMeeting.ts を、bench/protoClaude.ts（閉じる・済みの議題を畳んで渡す）で流す版。--style full|title|outcomes。閉じる・開き直しは closes.jsonl に残す。
 // 文字起こしを待ち時間なしで再生し（play と同じ流し方）、差分更新 1 回ごとに次を calls.jsonl に残す:
 //   会議の中の時刻・応答時間（壁時計）・プロンプトの文字数とアウトラインの文字数・SDK の result（usage / total_cost_usd / duration）
 // あわせて log.jsonl（play と同じ形）と、10 分ごとのスナップショット（snapshots/<分>.json）を書く。
@@ -8,10 +8,10 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { query, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { openClaudeUpdater, type ClosedStyle } from "./protoClaude.ts";
+import { openClaudeUpdater, type ClosedStyle, type Granularity } from "./protoClaude.ts";
 import { createSession, fromTranscript, type DiffUpdater } from "../src/core/index.ts";
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { budget: { type: "string", default: "15" }, title: { type: "string" }, style: { type: "string", default: "outcomes" }, diff: { type: "boolean", default: false } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { budget: { type: "string", default: "15" }, title: { type: "string" }, style: { type: "string", default: "outcomes" }, diff: { type: "boolean", default: false }, granularity: { type: "string", default: "v1" } } });
 const [file, out] = positionals;
 if (!file || !out) throw new Error("usage: node bench/longMeeting.ts <文字起こし> <出力フォルダ> [--budget <ドル>]");
 const budget = Number(values.budget);
@@ -35,7 +35,7 @@ const run: typeof query = (args) => {
   return q as Query;
 };
 
-const owned = openClaudeUpdater(run, values.style as ClosedStyle, join(out, "closes.jsonl"), values.diff);
+const owned = openClaudeUpdater(run, values.style as ClosedStyle, join(out, "closes.jsonl"), values.diff, values.granularity as Granularity);
 let calls = 0;
 let costSum = 0;
 let prevQuery = 0;
