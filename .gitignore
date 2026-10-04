@@ -9,3 +9,6 @@ dist/
 
 # WebRTC AEC3 のビルド結果（helper/scripts/build-webrtc-apm.sh が作る）
 helper/.deps/webrtc-apm/
+
+# 試作の画面の素材（issue #131）。素材の文字を含むので入れない
+web/public/proto-long/

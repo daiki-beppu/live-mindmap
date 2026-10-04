@@ -1,0 +1,26 @@
+/* PROTOTYPE（issue #131） */
+
+/* 畳んだ（済みの）ノード: 塗りを薄く、文字を灰色に。影・バッジは足さない */
+.proto-node--folded { background: color-mix(in srgb, var(--kind-color) 5%, white); border-color: color-mix(in srgb, var(--kind-color) 55%, white); color: #4b5563; }
+.proto-node__hint { display: block; margin-top: 2px; font-size: 12px; color: #6b7280; }
+/* Drawnix の畳んだ枝の印: 右端の線の先に、数を入れた小さな丸 */
+.proto-node__count { position: absolute; right: -22px; top: 50%; transform: translateY(-50%); min-width: 18px; height: 18px; padding: 0 3px; box-sizing: border-box; border: 1.5px solid var(--kind-color); border-radius: 9px; background: #fff; font-size: 11px; line-height: 15px; text-align: center; color: #374151; }
+/* 今の議題: 枠を 1 段太く見せる（outline。実寸は変えない） */
+.proto-node--current { outline: 2px solid var(--kind-color); outline-offset: 2px; }
+
+/* B: 左端の目次 */
+.proto-b { display: flex; width: 100%; height: 100%; }
+.proto-b__toc { flex: none; width: 240px; height: 100%; margin: 0; padding: 12px 0; box-sizing: border-box; overflow-y: auto; list-style: none; border-right: 1px solid #e5e7eb; font-size: 13px; }
+.proto-b__canvas { flex: 1; min-width: 0; height: 100%; position: relative; }
+.proto-b__item button { display: block; width: 100%; padding: 5px 12px 5px 14px; border: 0; border-left: 3px solid transparent; background: none; font: inherit; color: #111827; text-align: left; cursor: pointer; }
+.proto-b__item--closed button { color: #9ca3af; }
+.proto-b__item--shown button { border-left-color: #3b82f6; background: #f3f6fb; }
+.proto-b__item--current .proto-b__title { font-weight: 600; }
+.proto-b__hint { display: block; font-size: 11px; color: #9ca3af; }
+
+/* 試作の操作バー（評価する画面の一部ではない） */
+.proto-bar { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 6px; max-width: calc(100vw - 20px); padding: 6px 10px; background: #111827; color: #f9fafb; border-radius: 999px; font: 12px system-ui, sans-serif; box-shadow: 0 2px 10px rgb(0 0 0 / 0.3); flex-wrap: wrap; justify-content: center; }
+.proto-bar button, .proto-bar select { font: inherit; background: #374151; color: #f9fafb; border: 0; border-radius: 6px; padding: 3px 7px; cursor: pointer; }
+.proto-bar input[type="range"] { width: 160px; }
+.proto-bar__sep { width: 1px; height: 18px; background: #4b5563; }
+.proto-bar__info { color: #d1d5db; white-space: nowrap; }
