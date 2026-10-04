@@ -31,6 +31,7 @@ function App() {
   const [variant, setVariant] = useState<VariantKey>((params.get("variant") as VariantKey) ?? "A");
   const [camera, setCamera] = useState<Camera>((params.get("camera") as Camera) ?? "focus");
   const [nested, setNested] = useState(params.get("nest") === "1");
+  const [runs, setRuns] = useState(params.get("runs") !== "0");
   const [hint, setHint] = useState<Hint>((params.get("hint") as Hint) ?? "text");
   const [playing, setPlaying] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -114,6 +115,7 @@ function App() {
             selectedId={selectedId}
             onSelect={onSelect}
             onPickTopic={setPinned}
+            runs={runs}
           />
         </div>
         <div className="side">
@@ -148,6 +150,10 @@ function App() {
         <label>
           <input type="checkbox" checked={nested} onChange={(e) => (setNested(e.target.checked), setParam("nest", e.target.checked ? "1" : "0"))} />
           入れ子の議題
+        </label>
+        <label>
+          <input type="checkbox" checked={runs} onChange={(e) => (setRuns(e.target.checked), setParam("runs", e.target.checked ? "1" : "0"))} />
+          済みの並びをまとめる
         </label>
         <span className="proto-bar__sep" />
         <button type="button" onClick={() => setPlaying((p) => !p)}>{playing ? "■" : "▶"}</button>

@@ -17,6 +17,7 @@ export type VariantProps = {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onPickTopic: (id: string) => void;
+  runs: boolean; // A: 済みの兄弟の議題が 2 つ以上続いたら 1 つにまとめる
 };
 
 function useCommon({ frame, folded, focusTopic }: VariantProps) {
@@ -42,24 +43,68 @@ function useCommon({ frame, folded, focusTopic }: VariantProps) {
   }, [snapshot, folded, focusTopic]);
 }
 
+// A のまとめ: 同じ親の下で、畳んだ議題が 2 つ以上続いたら「済みの議題 N 件」の 1 ノードに置き換える
+function collapseRuns(visible: SnapshotNode[], folded: Set<string>, keep: Set<string>) {
+  const kids = new Map<string, SnapshotNode[]>();
+  for (const n of visible) if (n.parent) kids.set(n.parent, [...(kids.get(n.parent) ?? []), n]);
+  const replaced = new Map<string, SnapshotNode | null>(); // 元の ID → まとめたノード（先頭）か null（消す）
+  const members: Record<string, string[]> = {};
+  for (const [pid, list] of kids) {
+    let run: SnapshotNode[] = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        const id = `run:${run[0]!.id}`;
+        members[id] = run.map((r) => r.id);
+        const node: SnapshotNode = { id, parent: pid, kind: "議題", text: `済みの議題 ${run.length} 件`, evidence: [] };
+        run.forEach((r, i) => replaced.set(r.id, i === 0 ? node : null));
+      }
+      run = [];
+    };
+    for (const k of list) {
+      if (k.kind === "議題" && folded.has(k.id) && !keep.has(k.id)) run.push(k);
+      else flush();
+    }
+    flush();
+  }
+  const nodes = visible.flatMap((n) => (replaced.has(n.id) ? (replaced.get(n.id) ? [replaced.get(n.id)!] : []) : [n]));
+  return { nodes, members };
+}
+
 export function VariantA(p: VariantProps) {
   const c = useCommon(p);
-  const lay = useCallback((h: Record<string, number>) => layout(c.visible, h), [c.visible]);
+  const { nodes, members, folded, hints, changed, focusIds } = useMemo(() => {
+    const keep = new Set<string>(p.frame.current ? [p.frame.current] : []);
+    const r = p.runs ? collapseRuns(c.visible, p.folded, keep) : { nodes: c.visible, members: {} as Record<string, string[]> };
+    const folded = new Set([...p.folded, ...Object.keys(r.members)]);
+    const hints = { ...c.hints };
+    const changed = new Set(c.changed);
+    for (const [id, ms] of Object.entries(r.members)) {
+      const titles = ms.map((m) => c.byId.get(m)!.text);
+      hints[id] = { text: `${titles[0]} 〜 ${titles.at(-1)}`, count: ms.length };
+      if (ms.some((m) => changed.has(m))) changed.add(id);
+    }
+    // カメラは今の議題に加えて、祖先の議題（入れ子の親）も入れる
+    const chain: string[] = [];
+    for (let cur = p.focusTopic ? c.byId.get(p.focusTopic)?.parent : undefined; cur && cur !== "root"; cur = c.byId.get(cur)?.parent) chain.push(cur);
+    return { ...r, folded, hints, changed, focusIds: [...c.focusIds, ...chain] };
+  }, [c, p.folded, p.runs, p.frame.current, p.focusTopic]);
+  const lay = useCallback((h: Record<string, number>) => layout(nodes, h), [nodes]);
+  void members;
   return (
     <ProtoCanvas
-      nodes={c.visible}
+      nodes={nodes}
       layout={lay}
       edges
       round={p.frame.snapshot.round}
-      changed={c.changed}
-      folded={p.folded}
-      hints={c.hints}
+      changed={changed}
+      folded={folded}
+      hints={hints}
       hint={p.hint}
       current={p.frame.current}
       selectedId={p.selectedId}
       onSelect={p.onSelect}
       camera={p.camera}
-      focusIds={c.focusIds}
+      focusIds={focusIds}
       anchorIds={c.anchorIds}
       aimKey={`${p.frame.snapshot.round}:${p.focusTopic}`}
       topicKey={String(p.focusTopic)}
