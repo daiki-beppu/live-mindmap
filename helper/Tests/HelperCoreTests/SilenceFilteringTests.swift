@@ -9,11 +9,11 @@ import Testing
 
 private let testSampleRate = 48_000.0
 
-/// -30 dBFS（RMS）の定数値。声の大きさの目安（order.md:37）。
+/// -30 dBFS（RMS）の定数値。声の大きさの目安（Issue #144）。
 private let loudValue: Float = 0.0316228
 /// 完全な無音。
 private let silentValue: Float = 0
-/// -80 dBFS（RMS）の定数値。0 ではないが、しきい値（-70 dBFS）より小さい（order.md:32「しきい値より小さければ捨てます」）。
+/// -80 dBFS（RMS）の定数値。0 ではないが、しきい値（-70 dBFS）より小さい。
 private let belowThresholdValue: Float = 0.0001
 
 /// 一定の音量が続く区間をつなげた音声の流れ。最初のバッファだけ `firstHostTime` を使う。

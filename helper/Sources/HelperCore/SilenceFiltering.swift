@@ -5,7 +5,7 @@ import Foundation
 // （AEC の後）の音量がしきい値未満なら、その結果（途中結果・確定とも）をヘルパーから送らない。判定は区間の音量だけで行い、
 // 文の中身（テキストの長さ・語彙）では判定しない。
 
-/// ほぼ無音と判定するしきい値（dBFS, RMS）。人の声は小声でもこれより大きくなる（order.md:35 の根拠）。
+/// ほぼ無音と判定するしきい値（dBFS, RMS）。人の声は小声でもこれより大きくなる。
 let silenceThresholdDBFS: Double = -70
 
 /// `silenceThresholdDBFS` を二乗平均の値に変換したもの（dBFS = 10 * log10(二乗平均) の逆算）。比較はこの値 1 つで行う。
@@ -97,7 +97,7 @@ final class TrackLoudness: @unchecked Sendable {
     }
 
     /// 測れないフレーム範囲を記録する。呼び出し元でロック済みの前提。`.nan` は `isBelowSilenceThreshold` で
-    /// 「測れない」として扱われ、要件どおり捨てられない（`C-UNMEASURABLE-KEEP`）。
+    /// 「測れない」として扱われ、捨てられない（測れない区間の結果は捨てない）。
     private func writeUnmeasurable(frames: Int) {
         for frame in 0..<frames {
             energies[(recordedFrames + frame) % energies.count] = .nan
@@ -214,7 +214,7 @@ private func filteredStream(
 }
 
 /// `result` の区間（start〜end）の音量がしきい値未満か。測れない区間（`nil`）は、ほぼ無音とみなさない
-/// （`C-UNMEASURABLE-KEEP`: 測れない＝捨てない）。
+/// （測れない区間の結果は捨てない）。
 private func isSilent(_ result: TranscriptionResult, loudness: TrackLoudness) -> Bool {
     loudness.isBelowSilenceThreshold(start: result.start, end: result.end) ?? false
 }
