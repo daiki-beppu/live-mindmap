@@ -30,6 +30,7 @@ function App() {
   const [index, setIndex] = useState(0);
   const [variant, setVariant] = useState<VariantKey>((params.get("variant") as VariantKey) ?? "A");
   const [camera, setCamera] = useState<Camera>((params.get("camera") as Camera) ?? "focus");
+  const [nested, setNested] = useState(params.get("nest") === "1");
   const [hint, setHint] = useState<Hint>((params.get("hint") as Hint) ?? "text");
   const [playing, setPlaying] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -50,7 +51,7 @@ function App() {
     return () => clearInterval(t);
   }, [playing, meeting]);
 
-  const frame = useMemo(() => (meeting ? frameAt(meeting, index) : null), [meeting, index]);
+  const frame = useMemo(() => (meeting ? frameAt(meeting, index, nested) : null), [meeting, index, nested]);
 
   // 反映で何か変わったら、選択で見ていた議題から今の議題に戻る
   useEffect(() => {
@@ -90,7 +91,10 @@ function App() {
 
   if (!meeting || !frame) return <p className="waiting">素材を読み込んでいます</p>;
   const focusTopic = pinned ?? frame.current;
-  const folded = foldedIds(frame, new Set(pinned ? [pinned] : []));
+  // 選択で見ている議題と、その祖先を開く
+  const opened = new Set<string>();
+  for (let cur: string | null | undefined = pinned; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
+  const folded = foldedIds(frame, opened);
   const V = VARIANTS[variant].C;
   const topics = frame.snapshot.nodes.filter((n) => n.kind === "議題");
   const openCount = topics.filter((t) => !frame.closed.has(t.id)).length;
@@ -141,6 +145,10 @@ function App() {
             </option>
           ))}
         </select>
+        <label>
+          <input type="checkbox" checked={nested} onChange={(e) => (setNested(e.target.checked), setParam("nest", e.target.checked ? "1" : "0"))} />
+          入れ子の議題
+        </label>
         <span className="proto-bar__sep" />
         <button type="button" onClick={() => setPlaying((p) => !p)}>{playing ? "■" : "▶"}</button>
         <button type="button" onClick={() => setIndex((i) => Math.max(0, i - 1))}>−1</button>

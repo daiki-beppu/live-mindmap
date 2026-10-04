@@ -127,9 +127,31 @@ export function VariantC(p: VariantProps) {
 export function VariantB(p: VariantProps) {
   const c = useCommon(p);
   const { snapshot, closed, current, lastTouched } = p.frame;
-  const topics = snapshot.nodes.filter((n) => n.kind === "議題" && n.parent === "root");
+  // 目次: 議題を作られた順に、入れ子の深さで字下げする。済みの親の議題の子は、見ている議題の親でなければ隠す
+  const depthOf = (id: string) => {
+    let d = 0;
+    for (let cur = c.byId.get(id)?.parent; cur && cur !== "root"; cur = c.byId.get(cur)?.parent) d++;
+    return d;
+  };
   const shown = p.focusTopic;
-  const nodes = useMemo(() => c.visible.filter((n) => n.id === shown || (n.id !== shown && shown !== null && topicOf(c.byId, n.id) === shown)).map((n) => (n.id === shown ? { ...n, parent: null } : n)), [c, shown]);
+  const chain: string[] = []; // 見ている議題の祖先の議題
+  for (let cur = shown ? c.byId.get(shown)?.parent : undefined; cur && cur !== "root"; cur = c.byId.get(cur)?.parent) chain.unshift(cur);
+  const topics: typeof snapshot.nodes = [];
+  const walkTopics = (pid: string) => {
+    for (const n of snapshot.nodes) {
+      if (n.parent !== pid || n.kind !== "議題") continue;
+      topics.push(n);
+      if (!closed.has(n.id) || chain.includes(n.id)) walkTopics(n.id);
+    }
+  };
+  walkTopics("root");
+  // キャンバス: 祖先の議題を 1 本の鎖でつなぎ、その先に見ている議題の木（写真 ─ 写真1 ─ 話題）
+  const nodes = useMemo(() => {
+    if (shown === null) return [];
+    const sub = c.visible.filter((n) => n.id !== shown && topicOf(c.byId, n.id) === shown);
+    const head = [...chain, shown].map((id, i, all) => ({ ...c.byId.get(id)!, parent: i === 0 ? null : all[i - 1]! }));
+    return [...head, ...sub];
+  }, [c, shown, chain.join()]);
   const lay = useCallback((h: Record<string, number>) => layout(nodes, h), [nodes]);
   const listRef = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -142,6 +164,7 @@ export function VariantB(p: VariantProps) {
           <li
             key={t.id}
             data-id={t.id}
+            style={{ paddingLeft: depthOf(t.id) * 16 }}
             className={["proto-b__item", closed.has(t.id) && "proto-b__item--closed", t.id === shown && "proto-b__item--shown", t.id === current && "proto-b__item--current"].filter(Boolean).join(" ")}
           >
             <button type="button" onClick={() => p.onPickTopic(t.id)}>

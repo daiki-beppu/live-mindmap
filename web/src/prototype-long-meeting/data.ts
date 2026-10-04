@@ -47,12 +47,40 @@ export function topicOf(byId: Map<string, SnapshotNode>, id: string): string | n
 
 const cache = new Map<string, Frame>();
 
-export function frameAt(m: Meeting, index: number): Frame {
-  const key = `${m.name}:${index}`;
+// 入れ子の議題の模擬（利用者の案、2026-10-04）: AI の出力は変えず、議題名から親の議題を付け直す。
+// parent が既存の議題ならその下へ、無ければ text の議題を作って（最初の子の直前に）入れる。
+const NESTS: Record<string, { parent?: string; text: string; match: RegExp }[]> = {
+  parnassus: [{ parent: "n1", text: "", match: /^写真/ }],
+  silly: [
+    { text: "ネタの仕込み方", match: /^ネタ/ },
+    { text: "仕込み済みの人向けのコツ", match: /^(仕込み済み|コツ)/ },
+    { text: "発表", match: /^発表/ },
+  ],
+};
+
+function nest(name: string, snapshot: Snapshot): Snapshot {
+  let nodes = [...snapshot.nodes];
+  (NESTS[name] ?? []).forEach((g, gi) => {
+    const kids = nodes.filter((n) => n.kind === "議題" && n.parent === "root" && n.id !== g.parent && g.match.test(n.text));
+    if (kids.length === 0) return;
+    let pid = g.parent;
+    if (!pid || !nodes.some((n) => n.id === pid)) {
+      pid = `group${gi}`;
+      const first = nodes.indexOf(kids[0]!);
+      nodes.splice(first, 0, { id: pid, parent: "root", kind: "議題", text: g.text, evidence: kids[0]!.evidence });
+    }
+    const ids = new Set(kids.map((k) => k.id));
+    nodes = nodes.map((n) => (ids.has(n.id) ? { ...n, parent: pid! } : n));
+  });
+  return { ...snapshot, nodes };
+}
+
+export function frameAt(m: Meeting, index: number, nested = false): Frame {
+  const key = `${m.name}:${index}:${nested}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const session = restoreSession(m.events.slice(0, m.diffEnds[index]), { updater: async () => ({ ops: [] }), log: () => {} });
-  const snapshot = session.snapshot();
+  const snapshot = nested ? nest(m.name, session.snapshot()) : session.snapshot();
   const at = m.diffAt[index]!;
   const closed = new Set<string>();
   for (const c of m.closes) {
@@ -61,12 +89,21 @@ export function frameAt(m: Meeting, index: number): Frame {
     if (c.type === "reopen") closed.delete(c.node);
   }
   const byId = new Map(snapshot.nodes.map((n) => [n.id, n]));
+  if (nested) {
+    // 子の議題を持つ議題は、子の議題がすべて済みなら済み、1 つでも話し中なら話し中（深い方から）
+    for (const n of [...snapshot.nodes].reverse()) {
+      const subs = snapshot.nodes.filter((k) => k.parent === n.id && k.kind === "議題");
+      if (n.kind !== "議題" || subs.length === 0) continue;
+      if (subs.every((k) => closed.has(k.id))) closed.add(n.id);
+      else closed.delete(n.id);
+    }
+  }
   const lastTouched: Record<string, number> = {};
   let current: string | null = null;
   for (const c of snapshot.changes) {
     const t = topicOf(byId, c.node);
     if (!t) continue;
-    lastTouched[t] = c.at;
+    for (let u: string | null = t; u; u = byId.get(u)?.parent ?? null) if (byId.get(u)?.kind === "議題") lastTouched[u] = c.at;
     current = t; // 直近の反映が当たった議題（同じ反映で複数なら最後のもの）
   }
   const frame = { index, at, snapshot, closed, lastTouched, current };
