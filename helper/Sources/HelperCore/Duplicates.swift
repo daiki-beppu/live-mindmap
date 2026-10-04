@@ -1,7 +1,7 @@
 import Foundation
 
 // スピーカーで会議を聞くと、相手の声がマイクにも入る。`自分` の確定結果と途中結果のうち、
-// 前後 8 秒の `相手` の発言とほぼ同じ文字列のものを重複とみなし、印を付けて流す（捨てない）。
+// 前後 8 秒の `相手` の発言（確定結果と、確定前の最新の途中結果）とほぼ同じ文字列のものを重複とみなし、印を付けて流す（捨てない）。
 
 /// 前後に見る時間（秒）。2 トラックの区切りは揃わず、STT の確定にも遅れがあるため、広めに取る。
 let duplicateWindow: Double = 8
@@ -54,7 +54,7 @@ private func theirContext(around mine: TranscriptionResult, among theirs: [Trans
         .joined()
 }
 
-/// `mine`（`自分` の確定結果）が、前後 8 秒の `相手` の確定結果と重複しているか。
+/// `mine`（`自分` の確定結果）が、前後 8 秒の `相手` の発言（確定結果。呼び出し側が途中結果を加えてもよい）と重複しているか。
 public func isDuplicate(_ mine: TranscriptionResult, among theirs: [TranscriptionResult]) -> Bool {
     exceedsThreshold(mine.text, in: theirContext(around: mine, among: theirs))
 }
@@ -102,6 +102,7 @@ public actor DuplicateMarker {
     }
 
     /// `mine` が重複かを返す。後 8 秒の `相手` の確定結果が届く、`相手` の流れが終わる、保留の上限に達する、のどれかで判定する。
+    /// 文脈は、前後 8 秒の `相手` の確定結果と、窓に重なる `相手` の最新の途中結果。
     public func resolve(_ mine: TranscriptionResult, heldSince: ContinuousClock.Instant) async -> Bool {
         generation += 1
         let current = generation
@@ -123,7 +124,9 @@ public actor DuplicateMarker {
             }
         }
         timer.cancel()
-        let result = HelperCore.isDuplicate(mine, among: theirs)
+        // 上限で打ち切ったとき、長く続く `相手` の発言の確定はまだ届いていない。その発言の途中結果も文脈に入れ、
+        // 漏れた `自分` の発言を取りこぼさない。途中結果は確定後も残るので、確定結果と同じ窓で絞る。
+        let result = HelperCore.isDuplicate(mine, among: theirs + [theirLatestPartial].compactMap { $0 })
         // 以降の `自分` の発言は、この発言の start の 8 秒前より後に始まる。それより前に終わった `相手` の発言は要らない。
         theirs.removeAll { $0.end < mine.start - duplicateWindow }
         return result
