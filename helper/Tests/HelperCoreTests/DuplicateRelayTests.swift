@@ -62,6 +62,44 @@ private func partialEvent(_ track: Track, _ text: String, _ start: Double, _ end
     try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate).jsonString()
 }
 
+/// Issue #141 の状況。`相手` の発言が保留の上限より長く続き、その確定結果は上限に達した後に届く。
+/// 同じ判定器・同じ `relay` の上で、(1) `相手` の途中結果が届く (2) `自分` の確定結果が保留される
+/// (3) 保留の上限に達する (4) `自分` の確定結果が流れる (5) `相手` の確定結果が届く、の順に流し、
+/// (4) で届いた `自分` の確定結果のイベントと、(5) まで含めて届いたイベントを返す。
+private func relayRemarkReleasedBeforeTheirFinal(
+    theirPartial: TranscriptionResult, mine mineResult: TranscriptionResult, theirFinal: TranscriptionResult
+) async throws -> (releasedRemark: String, rest: [String]) {
+    let server = WebSocketServer(port: 0)
+    let port = try await server.start()
+    defer { Task { await server.stop() } }
+    let task = try await connect(to: server, port: port)
+    defer { task.cancel(with: .goingAway, reason: nil) }
+
+    let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+    let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+    // 保留の上限を、実時間ではなく外からの合図で到達させる。
+    let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+    let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+    let marker = DuplicateMarker(sleep: { _ in
+        enteredContinuation.yield()
+        for await _ in limit { return }
+    })
+    let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+    defer { relaying.cancel() }
+
+    theirsContinuation.yield(theirPartial)
+    _ = try await receiveTexts(task, count: 1)
+    mineContinuation.yield(mineResult)
+    var signals = entered.makeAsyncIterator()
+    await signals.next()
+    limitContinuation.yield()
+    let released = try await receiveTexts(task, count: 1)
+
+    theirsContinuation.yield(theirFinal)
+    let rest = try await receiveTexts(task, count: 1)
+    return (released[0], rest)
+}
+
 @Suite("重複の印を付ける転送", .timeLimit(.minutes(1)))
 struct DuplicateRelayTests {
     @Test("同じ時間帯の相手と重なる自分の確定結果に印が付き、相手の確定結果には付かない")
@@ -262,6 +300,49 @@ struct DuplicateRelayTests {
 
         let received = try await receiveTexts(task, count: 1)
         #expect(received == [try remark(.自分, sentence, 0, 2, duplicate: false)])
+    }
+
+    @Test("相手の確定結果が保留の上限より後に届いても、相手が話している途中結果と同じ自分の確定結果には印が付く（Issue の 1 件目）")
+    func marksRemarkWhenTheirFinalArrivesAfterHoldLimitCase1() async throws {
+        let theirPartialText = "じゃあ始めましょうか。今日は最近使ってよかったものを"
+        let result = try await relayRemarkReleasedBeforeTheirFinal(
+            theirPartial: partialResult(theirPartialText, 2.9, 15.6),
+            mine: final("じゃあ始めましょう", 3.1, 6.7),
+            theirFinal: final("じゃあ始めましょうか。今日は最近使ってよかったものを", 2.9, 15.9))
+
+        #expect(result.releasedRemark == (try remark(.自分, "じゃあ始めましょう", 3.1, 6.7, duplicate: true)))
+        #expect(result.rest == [try remark(.相手, "じゃあ始めましょうか。今日は最近使ってよかったものを", 2.9, 15.9, duplicate: false)])
+    }
+
+    @Test("相手の確定結果が保留の上限より後に届いても、相手が話している途中結果と同じ自分の確定結果には印が付く（Issue の 2 件目）")
+    func marksRemarkWhenTheirFinalArrivesAfterHoldLimitCase2() async throws {
+        let result = try await relayRemarkReleasedBeforeTheirFinal(
+            theirPartial: partialResult("あともう一つおすすめの本があって", 57.9, 70),
+            mine: final("もう一つ", 58.1, 61.2),
+            theirFinal: final("あともう一つおすすめの本があって", 57.9, 74.7))
+
+        #expect(result.releasedRemark == (try remark(.自分, "もう一つ", 58.1, 61.2, duplicate: true)))
+        #expect(result.rest == [try remark(.相手, "あともう一つおすすめの本があって", 57.9, 74.7, duplicate: false)])
+    }
+
+    @Test("相手の確定結果が保留の上限より後に届くとき、相手の途中結果と内容が違う自分の確定結果には印が付かない")
+    func doesNotMarkDifferentRemarkWhenTheirFinalArrivesAfterHoldLimit() async throws {
+        let result = try await relayRemarkReleasedBeforeTheirFinal(
+            theirPartial: partialResult("じゃあ始めましょうか。今日は最近使ってよかったものを", 2.9, 15.6),
+            mine: final("了解です、少し確認します", 3.1, 6.7),
+            theirFinal: final("じゃあ始めましょうか。今日は最近使ってよかったものを", 2.9, 15.9))
+
+        #expect(result.releasedRemark == (try remark(.自分, "了解です、少し確認します", 3.1, 6.7, duplicate: false)))
+    }
+
+    @Test("確定結果の判定でも、時間範囲が前後 8 秒の窓に重ならない古い相手の途中結果は文脈に入れない")
+    func ignoresStaleTheirPartialForRemark() async throws {
+        let result = try await relayRemarkReleasedBeforeTheirFinal(
+            theirPartial: partialResult(sentence, 0, 3),
+            mine: final(sentence, 40, 43),
+            theirFinal: final(other, 41, 44))
+
+        #expect(result.releasedRemark == (try remark(.自分, sentence, 40, 43, duplicate: false)))
     }
 
     @Test("エラーでキャンセルされたら、保留中の自分の確定結果は送られない")
