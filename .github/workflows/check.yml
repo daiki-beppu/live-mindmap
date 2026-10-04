@@ -10,17 +10,17 @@ jobs:
     # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @live-mindmap/server exec playwright install chromium
       # helper のビルド（pnpm typecheck の swift build と swift test）の前に、WebRTC AEC3 のライブラリを用意する
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/cache@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/cache@v6
         with:
           path: helper/.deps/webrtc-apm
           key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
