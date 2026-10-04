@@ -1,0 +1,33 @@
+scripts:
+  setup: |
+    set -e
+    cd "$ORCA_WORKTREE_PATH"
+
+    # Orca は .worktreeinclude を読まないので、Claude Code / Codex と同じ動きをここで再現する。
+    # .worktreeinclude に一致し、かつ gitignore 済みのファイルだけを本体から写す（追跡ファイルは対象外）。
+    # node_modules 配下は依存パッケージの同名ファイルなので除く。入れ子の worktree は git が辿らない。
+    if [ -f .worktreeinclude ]; then
+      git -C "$ORCA_ROOT_PATH" ls-files --others --ignored --exclude-from="$ORCA_WORKTREE_PATH/.worktreeinclude" \
+        | git -C "$ORCA_ROOT_PATH" check-ignore --stdin \
+        | grep -Ev '(^|/)node_modules/' \
+        | while IFS= read -r f; do
+            mkdir -p "$(dirname "$f")"
+            cp -p "$ORCA_ROOT_PATH/$f" "$f"
+            echo "copied $f"
+          done
+    fi
+
+    vp install
+
+    # helper の AEC3 静的ライブラリは、無ければ typecheck / test が作るが 2 分半かかる。
+    # 本体にビルド済みがあり、ビルドスクリプト（固定コミット）が同じなら写して済ませる。
+    APM_ROOT="$ORCA_ROOT_PATH/helper/.deps/webrtc-apm"
+    APM="helper/.deps/webrtc-apm"
+    if [ -f "$APM_ROOT/lib/libwebrtc-audio-processing-2.a" ] && [ ! -e "$APM" ] \
+      && cmp -s "$ORCA_ROOT_PATH/helper/scripts/build-webrtc-apm.sh" helper/scripts/build-webrtc-apm.sh; then
+      mkdir -p "$APM"
+      cp -R "$APM_ROOT/lib" "$APM_ROOT/src" "$APM/"
+      # abseil は本体の src を指す絶対パスのリンクなので、写した src を指し直す
+      ln -sfn "$ORCA_WORKTREE_PATH/$APM/src/subprojects/$(basename "$(readlink "$APM_ROOT/abseil")")" "$APM/abseil"
+      echo "copied $APM"
+    fi
