@@ -29,6 +29,31 @@ struct StreamSplitTests {
         #expect(try await hostTimes(second) == [1, 2, 3, 4, 5])
     }
 
+    @Test("2 つの流れは同じ中身の別々のバッファを受け取り、同じ AVAudioPCMBuffer を共有しない（Issue #160）")
+    func deliversSeparateBuffersWithTheSameSamples() async throws {
+        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
+        let (first, second) = split(upstream)
+
+        // 相手のタップと同じ 2ch interleaved。サンプルごとに値を変え、中身が丸ごと写ったかを確かめる
+        let original = constantAudio(value: 0, frames: 480, sampleRate: 48_000, channels: 2, interleaved: true, hostTime: 7)
+        let samples = original.buffer.floatChannelData![0]
+        for i in 0..<(480 * 2) { samples[i] = Float(i) / 1000 }
+        input.yield(original)
+        input.finish()
+
+        let firstItems = try await collect(first)
+        let secondItems = try await collect(second)
+        #expect(firstItems.count == 1 && secondItems.count == 1)
+        let a = firstItems[0], b = secondItems[0]
+        #expect(a.buffer !== b.buffer)
+        #expect(a.hostTime == 7 && b.hostTime == 7)
+        #expect(b.buffer.format == a.buffer.format)
+        #expect(b.buffer.frameLength == a.buffer.frameLength)
+        let aSamples = UnsafeBufferPointer(start: a.buffer.floatChannelData![0], count: 480 * 2)
+        let bSamples = UnsafeBufferPointer(start: b.buffer.floatChannelData![0], count: 480 * 2)
+        #expect(Array(aSamples) == Array(bSamples))
+    }
+
     @Test("上流がエラーで終わると、2 つの流れの両方が、届いた要素のあとに同じエラーで終わる")
     func propagatesUpstreamErrorToBothStreams() async throws {
         let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
