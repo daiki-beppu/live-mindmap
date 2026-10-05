@@ -9,6 +9,9 @@
 //                                 ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ。
 //                                 既定では、トラックごとの録音（相手.m4a・自分.m4a）をセッションのフォルダに残す。--no-audio で録音しない
 //   stop                          ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す
+//   status                         取り込みの状態（動いている／途切れている／止まった／セッションなし）・セッションのフォルダ・
+//                                 起動し直した回数・最後の途切れの時刻を出す
+//   resume                         止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける
 //   export [--format md|json]     最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）
 //   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
 //   eval [--truth <正解ファイル>] <セッションのフォルダ>...
@@ -21,7 +24,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import type { MapCapture } from "./capture.ts";
-import { createSession, exportFiles, formatTable, fromTranscript, parseTruth, playback, restoreSession, toJsonExport, toMarkdown, type DiffUpdater, type JsonExport, type Run, type Session, type Snapshot, type Truth } from "./core/index.ts";
+import { createSession, exportFiles, formatIntakeStatus, formatTable, fromTranscript, parseTruth, playback, restoreSession, toJsonExport, toMarkdown, type DiffUpdater, type IntakeLogEvent, type JsonExport, type LogEvent, type Run, type Session, type Snapshot, type Truth } from "./core/index.ts";
 import { startSnapshotServer } from "./ws.ts";
 
 export type CliDeps = {
@@ -92,7 +95,13 @@ export type RecordedSessionOptions = {
 
 // 作成済みのセッションのフォルダに、ログと export.json を書きながら、マップが変わるたびに publish する。
 // play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。
-export function startRecordedSession({ dir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { session: Session } {
+// appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
+// session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
+export function startRecordedSession({ dir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { session: Session; appendLog: (event: IntakeLogEvent) => void } {
+  // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する
+  const writeLogLine = (event: LogEvent | IntakeLogEvent) => {
+    appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
+  };
   // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
   let session: Session | undefined;
   session = createSession({
@@ -100,7 +109,7 @@ export function startRecordedSession({ dir, title, updater, publish, sleep, onDi
     updater,
     sleep,
     log: (event) => {
-      appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
+      writeLogLine(event);
       if (!session) return;
       writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
       if (event.type !== "diff") return;
@@ -111,7 +120,7 @@ export function startRecordedSession({ dir, title, updater, publish, sleep, onDi
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く
   writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
   publish(session.snapshot()); // 最初のルート
-  return { session };
+  return { session, appendLog: writeLogLine };
 }
 
 // 常駐サーバーへ依頼を送る。2xx 以外は、応答の { error } をメッセージにして例外にする
@@ -185,6 +194,15 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
     case "stop": {
       const { paths } = await requestServer(deps.port ?? defaultPort(), "POST", "/session/stop");
       stdout((paths as string[]).map((p) => `${p}\n`).join(""));
+      return;
+    }
+    case "resume": {
+      await requestServer(deps.port ?? defaultPort(), "POST", "/session/resume");
+      return;
+    }
+    case "status": {
+      const report = await requestServer(deps.port ?? defaultPort(), "GET", "/session/status");
+      stdout(formatIntakeStatus(report));
       return;
     }
     case "export": {

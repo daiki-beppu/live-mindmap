@@ -1,5 +1,5 @@
 import type { Track } from "../../server/src/core/index.ts";
-import type { Speaking } from "./useLiveFeed.ts";
+import type { Speaking } from "./liveFeed.ts";
 
 // 字幕に残す文の数（トラックごと）。古い文は文ごとまとめて消す（文字単位で前から削ると目が滑る）
 export const CAPTION_LINES = 2;

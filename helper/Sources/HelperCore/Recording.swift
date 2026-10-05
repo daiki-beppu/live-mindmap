@@ -11,6 +11,12 @@ let recordingSampleRate = 48_000.0
 let recordingBitRate = 64_000
 let recordingChannelCount = 1
 
+/// 録音ファイルの名前。起動し直すたびに `attempt` を増やすことで、前回の録音を上書きしない（Issue #161）。
+/// 1 回目（`attempt == 1`）は今まで通り番号を付けない。
+public func recordingFileName(track: Track, attempt: Int) -> String {
+    attempt > 1 ? "\(track.rawValue)-\(attempt).m4a" : "\(track.rawValue).m4a"
+}
+
 /// 基準時刻 `origin` から最初のバッファの取得時刻までの無音のフレーム数。取得時刻が基準と同じか前なら 0。
 func leadingSilenceFrames(origin: UInt64, firstHostTime: UInt64, sampleRate: Double) -> AVAudioFrameCount {
     AVAudioFrameCount((offsetSeconds(from: origin, to: firstHostTime) * sampleRate).rounded())
@@ -46,7 +52,7 @@ public final class TrackRecorder: @unchecked Sendable {
         if !aligned {
             aligned = true
             let silence = leadingSilenceFrames(origin: origin, firstHostTime: audio.hostTime, sampleRate: format.sampleRate)
-            if silence > 0 { try file.write(from: try Self.silentBuffer(frames: silence, format: format)) }
+            if silence > 0 { try Self.writeSilence(frames: silence, format: format, to: file) }
         }
         if converter == nil {
             converter = AVAudioConverter(from: audio.buffer.format, to: format)
@@ -84,6 +90,20 @@ public final class TrackRecorder: @unchecked Sendable {
             throw TranscriberError.conversionFailed(conversionError?.localizedDescription ?? "不明")
         }
         return output
+    }
+
+    // 1 回に確保する無音バッファの上限（1 秒分）。起動し直し（Issue #161）は、最初の origin を引き継ぐため、
+    // 前回の起動からの経過時間がそのまま無音の長さになり得る（数十分に達することもある）。一括で 1 つの
+    // AVAudioPCMBuffer に確保すると、その経過時間に比例したメモリを使うので、一定の大きさずつ繰り返し書く。
+    private static let maxSilenceChunkFrames: AVAudioFrameCount = 48_000
+
+    private static func writeSilence(frames: AVAudioFrameCount, format: AVAudioFormat, to file: AVAudioFile) throws {
+        var remaining = frames
+        while remaining > 0 {
+            let chunk = min(remaining, maxSilenceChunkFrames)
+            try file.write(from: try silentBuffer(frames: chunk, format: format))
+            remaining -= chunk
+        }
     }
 
     private static func silentBuffer(frames: AVAudioFrameCount, format: AVAudioFormat) throws -> AVAudioPCMBuffer {

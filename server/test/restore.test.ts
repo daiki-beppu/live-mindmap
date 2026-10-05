@@ -148,6 +148,31 @@ describe("ログからの復元", () => {
     expect(restored.exportJson()).toEqual(session.exportJson());
   });
 
+  // Issue #161: ヘルパーの予期せぬ終了・起動し直し・諦め・resume を記録する新しいログの種類（intake-stopped・intake-restarted・
+  // intake-gave-up）があっても、復元は壊れない（order.md:74 が明示）。知らない種類を読み飛ばす既存の規則（`core/session.ts` の
+  // switch に default がない）を使うので、CT-RESTORE はこの固有の種類で確かめる（前のテストの汎用の未知種類とは別の検証）
+  it("ヘルパーが止まった・起動し直した・諦めた・resume のログ（intake-stopped・intake-restarted・intake-gave-up）を含んでいても、復元は同じマップに戻り、それらの行はマップに反映されない", async () => {
+    const { session, events } = await original();
+    const lines = viaJsonl(events);
+    const withIntakeEvents = [
+      lines[0],
+      { type: "intake-stopped", code: 1, signal: null, stderrTail: ["error: boom"] },
+      ...lines.slice(1, 3),
+      { type: "intake-restarted", trigger: "auto" },
+      ...lines.slice(3, 5),
+      { type: "intake-gave-up" },
+      { type: "intake-restarted", trigger: "resume" },
+      ...lines.slice(5),
+    ];
+    const { updater } = forbidden();
+    const restored = restoreSession(withIntakeEvents, { updater, log: () => {} });
+
+    expect(restored.snapshot()).toEqual(session.snapshot());
+    expect(restored.exportJson()).toEqual(session.exportJson());
+    // intake 系の行の内容（stderr 等）がマップへ漏れていない
+    expect(JSON.stringify(restored.exportJson())).not.toContain("boom");
+  });
+
   it("復元したセッションは続きの発言を受け取り、元のセッションと同じ入力・同じマップになる", async () => {
     const { events, lone } = await original();
     const next = remark("続きの発言");

@@ -74,4 +74,20 @@ struct EventsTests {
         let json = try decode(.remark(track: .相手, start: 0, end: 1, text: "a", duplicate: false))
         #expect(json["id"] == nil)
     }
+
+    // Issue #161: 原点（host time）の通知。64 bit の値は JSON の number では桁が落ちるので、文字列として積む（要件 #22）
+    @Test("origin は hostTime を持つ。JSON では文字列として積み、2^53 を超える値でも桁が落ちない")
+    func originCarriesHostTimeAsString() throws {
+        let event = HelperEvent.origin(hostTime: 9_007_199_254_740_993)
+        let json = try decode(event)
+        #expect(Set(json.keys) == ["type", "hostTime"])
+        #expect(json["type"] as? String == "origin")
+        #expect(json["hostTime"] as? String == "9007199254740993")
+    }
+
+    @Test("origin の値が等しければイベントも等しい")
+    func originEquality() {
+        #expect(HelperEvent.origin(hostTime: 42) == HelperEvent.origin(hostTime: 42))
+        #expect(HelperEvent.origin(hostTime: 1) != HelperEvent.origin(hostTime: 2))
+    }
 }

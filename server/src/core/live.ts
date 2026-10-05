@@ -30,3 +30,14 @@ export function partialFromHelper(data: unknown): HelperPartial | null {
   if (typeof e.text !== "string") throw new Error("partial の text が文字列ではありません");
   return { track: e.track, start: e.start, end: e.end, text: e.text, duplicate: e.duplicate === true };
 }
+
+// origin（ヘルパーが決めた時刻の原点。host time）。64 bit の値は JSON の number では桁が落ちるので、
+// ヘルパーは文字列で送る。ここではその文字列をそのまま返す（サーバーは --origin へそのまま渡すだけで、数値として扱わない）。
+// remark・partial・知らない type は原点の通知ではないので null。必須項目が壊れていれば例外にする（number 型の hostTime も拒否する）。
+export function originFromHelper(data: unknown): string | null {
+  if (typeof data !== "object" || data === null) throw new Error("ヘルパーのイベントがオブジェクトではありません");
+  const e = data as Record<string, unknown>;
+  if (e.type !== "origin") return null;
+  if (typeof e.hostTime !== "string" || !/^\d+$/.test(e.hostTime)) throw new Error("origin の hostTime が数字の文字列ではありません");
+  return e.hostTime;
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { partialFromHelper, remarkFromHelper } from "../src/core/index.ts";
+import { originFromHelper, partialFromHelper, remarkFromHelper } from "../src/core/index.ts";
 
 // ヘルパーのイベントの形は helper/README.md「イベントの形」が正本
 describe("remarkFromHelper（ヘルパーのイベント → 発言）", () => {
@@ -65,5 +65,27 @@ describe("partialFromHelper（ヘルパーのイベント → いま話してい
     ["end の型違い", { type: "partial", track: "相手", start: 0, end: "1", text: "あ" }],
   ])("partial の必須項目が壊れていたら、読み飛ばさずに例外にする（%s）", (_name, data) => {
     expect(() => partialFromHelper(data)).toThrow();
+  });
+});
+
+// 原点（host time）の通知イベント。64 bit の値は JSON の number では桁が落ちるので、文字列のまま運ぶ（order.md:60、要件 #22）。
+describe("originFromHelper（ヘルパーのイベント → 原点の host time）", () => {
+  it("origin は、渡された hostTime を文字列のまま返す（2^53 を超える値でも桁が落ちない）", () => {
+    expect(originFromHelper({ type: "origin", hostTime: "9007199254740993" })).toBe("9007199254740993");
+  });
+
+  it("remark・partial・知らない type は原点の通知ではないので null", () => {
+    expect(originFromHelper({ type: "remark", track: "相手", start: 0, end: 1, text: "あ", duplicate: false })).toBeNull();
+    expect(originFromHelper({ type: "partial", track: "相手", start: 0, end: 1, text: "あ" })).toBeNull();
+    expect(originFromHelper({ type: "heartbeat" })).toBeNull();
+  });
+
+  it.each([
+    ["オブジェクトではない", "origin"],
+    ["hostTime が数値（JSON の number は桁が落ちるので受け付けない）", { type: "origin", hostTime: 9007199254740993 }],
+    ["hostTime が数字でない文字列", { type: "origin", hostTime: "12a" }],
+    ["hostTime の欠落", { type: "origin" }],
+  ])("origin の必須項目が壊れていたら、読み飛ばさずに例外にする（%s）", (_name, data) => {
+    expect(() => originFromHelper(data)).toThrow();
   });
 });

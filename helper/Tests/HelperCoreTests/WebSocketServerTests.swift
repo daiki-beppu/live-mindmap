@@ -114,6 +114,40 @@ struct WebSocketServerTests {
         #expect(await server.clientCount == 0)
     }
 
+    // Issue #161: 原点のイベントは、ヘルパーが起動した直後（接続より前）に決まることが多く、
+    // 通常の broadcast だとクライアント不在時に失われる（要件 #58）。保持して、後から接続したクライアントにも送る
+    @Test("broadcastRetained で送った内容を、後から接続したクライアントにも送る（register の受信開始より前に届く）")
+    func broadcastRetainedReachesLateJoiningClient() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let json = try HelperEvent.origin(hostTime: 9_007_199_254_740_993).jsonString()
+        await server.broadcastRetained(json) // まだ誰も接続していない
+
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        #expect(try await receiveText(task) == json)
+    }
+
+    @Test("broadcastRetained は、すでに接続しているクライアントにも通常の broadcast と同じく届く")
+    func broadcastRetainedReachesConnectedClient() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+
+        let json = try HelperEvent.origin(hostTime: 1).jsonString()
+        await server.broadcastRetained(json)
+        #expect(try await receiveText(task) == json)
+    }
+
     @Test("接続中のクライアントがいる状態で stop すると、接続が閉じて clientCount が 0 になる")
     func stopClosesConnectedClients() async throws {
         let server = WebSocketServer(port: 0)

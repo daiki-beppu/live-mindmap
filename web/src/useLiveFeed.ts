@@ -1,17 +1,14 @@
 import { useEffect, useState } from "react";
-import type { Snapshot, SpeakingFrame, Track } from "../../server/src/core/index.ts";
+import type { IntakeFrame, Snapshot, SpeakingFrame } from "../../server/src/core/index.ts";
+import { applyFrame, applyOpen, createFeedState, type FeedState } from "./liveFeed.ts";
 
 const RECONNECT_MS = 1000;
 
-export type Speaking = Record<Track, string>;
-const NO_SPEAKING: Speaking = { 相手: "", 自分: "" };
-
-// /ws から届く frame を購読する。type が "speaking" のものは、トラックごとの「いま話している文字」。それ以外はスナップショット。
-// 切れたら 1 秒後につなぎ直し、切れている間も最後のスナップショットを持ち続ける。
-// つなぎ直したときは空に戻し、サーバーが送り直す現在の文字で埋める（古い文字を残さない）。
-export function useLiveFeed(): { snapshot: Snapshot | null; speaking: Speaking } {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [speaking, setSpeaking] = useState<Speaking>(NO_SPEAKING);
+// /ws から届く frame を購読する WebSocket の糊（接続・再接続・購読だけを担う）。frame の分類・状態更新の規則は
+// liveFeed.ts（React を使わない純粋なモジュール）に置く。切れたら 1 秒後につなぎ直し、切れている間も最後の
+// スナップショットを持ち続ける。つなぎ直したときは applyOpen（字幕だけ空に戻す。取り込みの状態は保つ）を通す。
+export function useLiveFeed(): FeedState {
+  const [state, setState] = useState<FeedState>(createFeedState);
 
   useEffect(() => {
     let ws: WebSocket | undefined;
@@ -20,11 +17,10 @@ export function useLiveFeed(): { snapshot: Snapshot | null; speaking: Speaking }
 
     const connect = () => {
       ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-      ws.onopen = () => setSpeaking(NO_SPEAKING);
+      ws.onopen = () => setState(applyOpen);
       ws.onmessage = (e) => {
-        const frame = JSON.parse(String(e.data)) as Snapshot | SpeakingFrame;
-        if ("type" in frame && frame.type === "speaking") setSpeaking((prev) => ({ ...prev, [frame.track]: frame.text }));
-        else setSnapshot(frame as Snapshot);
+        const frame = JSON.parse(String(e.data)) as Snapshot | SpeakingFrame | IntakeFrame;
+        setState((prev) => applyFrame(prev, frame));
       };
       ws.onclose = () => {
         if (!stopped) timer = setTimeout(connect, RECONNECT_MS);
@@ -39,5 +35,5 @@ export function useLiveFeed(): { snapshot: Snapshot | null; speaking: Speaking }
     };
   }, []);
 
-  return { snapshot, speaking };
+  return state;
 }

@@ -177,6 +177,50 @@ describe("スナップショットサーバー（WebSocket）", () => {
     });
   });
 
+  // Issue #161 U-A: 取り込みの状態（途切れている／止まった／動いている／セッションなし）の保持・再送。
+  // connect() はスナップショットとして型付けしているが、実際には受け取った JSON をそのまま積むだけなので、
+  // intake frame（{ type: "intake", status }）もそのまま届く（ws.ts の契約だけを確かめる。振り分け自体は web 側の liveFeed.test.ts）
+  describe("つないだ直後の intake（取り込みの状態）", () => {
+    const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => ({ type: "intake" as const, status });
+
+    it.each(["running", "interrupted", "stopped", "none"] as const)(
+      "status: %s は保持して、後から接続したクライアントにも届く",
+      async (status) => {
+        server = await startSnapshotServer({ port: 0 });
+        server.intake(intakeFrame(status));
+        const c = await connect(server.port);
+        await c.until(1);
+        await settle();
+        expect(c.received).toEqual([intakeFrame(status)]);
+        await c.close();
+      },
+    );
+
+    it("続けて送った場合は、最後の値だけを保持して送り直す", async () => {
+      server = await startSnapshotServer({ port: 0 });
+      server.intake(intakeFrame("interrupted"));
+      server.intake(intakeFrame("stopped"));
+      const c = await connect(server.port);
+      await c.until(1);
+      await settle();
+      expect(c.received).toEqual([intakeFrame("stopped")]);
+      await c.close();
+    });
+
+    // Issue #161 U-G: none も保持対象に含める。切断中にセッションが終わった（running → none）場合でも、
+    // 再接続したクライアントへ最後の状態（none）だけが 1 件届き、古い running は送り返さない。
+    it("続けて送った場合、保持するのは最後の 1 件だけ（running → none の順でも none だけが届く）", async () => {
+      server = await startSnapshotServer({ port: 0 });
+      server.intake(intakeFrame("running"));
+      server.intake(intakeFrame("none"));
+      const c = await connect(server.port);
+      await c.until(1);
+      await settle();
+      expect(c.received).toEqual([intakeFrame("none")]);
+      await c.close();
+    });
+  });
+
   it("close の後は、つないだままのクライアントがいても終了でき、新しい接続を受け付けない", async () => {
     server = await startSnapshotServer({ port: 0 });
     const { port } = server;

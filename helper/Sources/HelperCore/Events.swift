@@ -27,6 +27,8 @@ public struct TranscriptionResult: Sendable, Equatable {
 public enum HelperEvent: Sendable, Equatable {
     case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
     case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
+    /// 2 トラック共通の時刻の基準（`AudioGetCurrentHostTime()` の値）の通知。ヘルパー起動につき 1 回だけ流す（Issue #161）。
+    case origin(hostTime: UInt64)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -43,7 +45,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate
+        case type, track, start, end, text, duplicate, hostTime
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -63,6 +65,10 @@ extension HelperEvent: Encodable {
             try container.encode(end, forKey: .end)
             try container.encode(text, forKey: .text)
             try container.encode(duplicate, forKey: .duplicate)
+        case let .origin(hostTime):
+            try container.encode("origin", forKey: .type)
+            // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
+            try container.encode(String(hostTime), forKey: .hostTime)
         }
     }
 }

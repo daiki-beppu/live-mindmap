@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import type { Snapshot, SpeakingFrame, Track } from "./core/index.ts";
+import type { IntakeFrame, Snapshot, SpeakingFrame, Track } from "./core/index.ts";
 
 // マップ全体のスナップショットをブラウザへ送る。差分は送らない（ブラウザは受け取ったものを描くだけ）。
 // つないだクライアントには、その時点の最新をすぐ送る。つなぎ直しても最新に追いつく。
@@ -10,6 +10,17 @@ export type SnapshotServer = {
   // いま話している文字を、つないでいるクライアントへ送る。トラックごとに最後に送った値だけをメモリに持ち、
   // 空でなければ、つないだ直後に送り直す（スナップショットには入れない）
   speak: (frame: SpeakingFrame) => void;
+  // 取り込みの状態（途切れている／止まった／動いている／セッションが終わった）を、つないでいるクライアントへ送る。
+  // 最後に送った状態は status に関わらず保持し、後から接続した（再接続を含む）クライアントにも今の状態が
+  // 届く（CT-LATE-JOIN）。「今の取り込み状態」の正本はサーバーにあり、途中から・再接続で繋いだブラウザが
+  // 実フレームを受け取るまで状態を知らない空白を作らない（ブラウザ側が frame の無さを「running」として代用する
+  // 二重所有をやめる。Issue #161 U-A）。none も保持対象に含める理由: 切断中にセッションが終わった場合、
+  // 再接続したブラウザへ none を届けないと、途切れ・止まったの一言が無期限に残ってしまう（Issue #161 U-G）。
+  // none は途切れ・止まったの文を出さない値なので、新規接続へ送っても CT-NOTICE-CLEAR は破れない
+  // （web/src/intake.ts の遷移規則で確認済み）。
+  // つないでいるクライアントには、none なら途切れ・止まったの一言がそのまま消える
+  // （running だと「再開した」とブラウザ側が解釈するため、セッションが終わっただけのときは none を使う）
+  intake: (frame: IntakeFrame) => void;
   close: () => Promise<void>;
 };
 
@@ -29,6 +40,7 @@ export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions):
   return new Promise((resolve, reject) => {
     let latest: string | undefined;
     const speaking = new Map<Track, string>(); // トラックごとに最後に送った speaking frame
+    let retainedIntake: string | undefined; // 保持している取り込みの状態（最後に送った 1 件。status に関わらず持つ）
     const http = createServer(
       onRequest ??
         ((_req, res) => {
@@ -44,6 +56,7 @@ export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions):
     wss.on("connection", (client) => {
       if (latest !== undefined) client.send(latest);
       for (const data of speaking.values()) client.send(data);
+      if (retainedIntake !== undefined) client.send(retainedIntake);
     });
     http.listen(port, "127.0.0.1", () => {
       const address = http.address();
@@ -58,6 +71,11 @@ export function startSnapshotServer({ port, onRequest }: SnapshotServerOptions):
           const data = JSON.stringify(frame);
           if (frame.text === "") speaking.delete(frame.track);
           else speaking.set(frame.track, data);
+          for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
+        },
+        intake(frame) {
+          const data = JSON.stringify(frame);
+          retainedIntake = data;
           for (const client of wss.clients) if (client.readyState === WebSocket.OPEN) client.send(data);
         },
         close: () =>
