@@ -6,7 +6,7 @@ import { applyOps, cloneNode, emptyMap, pointStatus, type Dropped, type MapNode,
 
 export type Track = "自分" | "相手";
 
-// 発言（CONTEXT.md）
+// 発言（GLOSSARY.md）
 export type Remark = {
   id: string;
   track: Track;
