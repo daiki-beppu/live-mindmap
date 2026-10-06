@@ -38,3 +38,6 @@ jobs:
         if: always()
         run: node -e 'const r=require("./server/vitest-server.json");for(const f of r.testResults.sort((a,b)=>(b.endTime-b.startTime)-(a.endTime-a.startTime)))console.log(((f.endTime-f.startTime)/1000).toFixed(1).padStart(6),"s",f.status,f.name.split("/test/")[1])'
       - run: pnpm --filter @live-mindmap/web test
+      - name: slowest tests
+        if: always()
+        run: node -e 'const r=require("./server/vitest-server.json");const t=r.testResults.flatMap(f=>f.assertionResults.map(a=>({d:a.duration??0,f:f.name.split("/test/")[1],n:a.fullName})));t.sort((a,b)=>b.d-a.d);for(const x of t.slice(0,30))console.log((x.d/1000).toFixed(1).padStart(6),"s",x.f,"|",x.n);console.log("total tests",t.length,"sum",(t.reduce((s,x)=>s+x.d,0)/1000).toFixed(1));for(const f of ["server.test.ts","eval.test.ts"]){const u=t.filter(x=>x.f===f);console.log(f,u.length,"tests sum",(u.reduce((s,x)=>s+x.d,0)/1000).toFixed(1))}'
