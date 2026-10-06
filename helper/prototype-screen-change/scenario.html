@@ -1,0 +1,143 @@
+<!doctype html>
+<!-- PROTOTYPE（使い捨て、issue #252）: 会議アプリのウィンドウに映る共有画面の「動き方」を台本どおりに再生する。
+     Chrome で開き、そのウィンドウを record で取り込む。?t0=<epoch ms> の時刻から台本が始まる。 -->
+<meta charset="utf-8">
+<title>Meet - 麦の穂 Q3 レビュー</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1f2125; overflow: hidden; }
+  #wrap { position: absolute; left: 50%; top: 50%; width: 1280px; height: 720px; transform-origin: 0 0; }
+  #base { position: absolute; inset: 0; width: 1280px; height: 720px; }
+  canvas, .ov { position: absolute; }
+  #slideArea { left: 29px; top: 77px; width: 1008px; height: 567px; overflow: hidden; display: none; background: #fbfaf7; }
+  #doc { position: absolute; left: 0; top: 0; width: 1008px; }
+  #doc div { width: 1008px; height: 567px; background-size: 1280px 720px; background-position: -29px -77px; border-bottom: 2px solid #ddd; }
+  #dot { width: 14px; height: 14px; border-radius: 50%; display: none; }
+  #cover { left: 29px; background: #fbfaf7; display: none; }
+  #ring { border: 3px solid #5bd16a; border-radius: 10px; display: none; box-sizing: border-box; }
+  #cell { font: 22px "Hiragino Sans", sans-serif; color: #222; background: #fff; text-align: right; display: none; padding: 0 14px; box-sizing: border-box; line-height: 52px; }
+</style>
+<div id="wrap">
+  <img id="base" src="slides/gallery.png">
+  <div id="slideArea" class="ov"><div id="doc"></div></div>
+  <div id="cover" class="ov"></div>
+  <div id="cell" class="ov"></div>
+  <div id="ring" class="ov"></div>
+  <div id="dot" class="ov"></div>
+</div>
+<script>
+const wrap = document.getElementById("wrap");
+function fit() {
+  const s = Math.min(innerWidth / 1280, innerHeight / 720);
+  wrap.style.transform = `scale(${s}) translate(-50%, -50%)`;
+}
+addEventListener("resize", fit); fit();
+
+const $ = (id) => document.getElementById(id);
+const base = $("base"), slideArea = $("slideArea"), doc = $("doc"), dot = $("dot"), cover = $("cover"), ring = $("ring"), cell = $("cell");
+for (const id of ["s4", "s5", "s6"]) { const d = document.createElement("div"); d.style.backgroundImage = `url(slides/${id}.png)`; doc.append(d); }
+
+// 生きたカメラの小窓・動画の代わり。毎フレーム、色の塊が動き、細かい雑音が乗る
+const canvases = [];
+function liveCanvas(x, y, w, h, kind) {
+  const c = document.createElement("canvas");
+  c.width = w / 2; c.height = h / 2; c.style.left = x + "px"; c.style.top = y + "px"; c.style.width = w + "px"; c.style.height = h + "px";
+  c.style.borderRadius = kind === "video" ? "0" : "8px"; c.style.display = "none"; c.dataset.kind = kind;
+  wrap.insertBefore(c, cover); canvases.push(c); return c;
+}
+const thumbs = [121, 243, 365, 487].map((y) => liveCanvas(1064, y, 200, 112, "face"));
+const tiles = [[16, 16], [647, 16], [16, 367], [647, 367]].map(([x, y]) => liveCanvas(x, y, 617, 337, "face"));
+const video = liveCanvas(29 + 480, 77 + 120, 470, 300, "video");
+function paint(c, t, i) {
+  const g = c.getContext("2d"), w = c.width, h = c.height;
+  if (c.dataset.kind === "face") {
+    g.fillStyle = ["#4a4038", "#3a4450", "#50463c", "#3c4a40"][i % 4]; g.fillRect(0, 0, w, h);
+    const cx = w / 2 + Math.sin(t / 900 + i) * w * 0.04, cy = h * 0.55 + Math.cos(t / 700 + i) * h * 0.03;
+    g.fillStyle = "#d9b49a"; g.beginPath(); g.ellipse(cx, cy, w * 0.13, h * 0.3, 0, 0, 7); g.fill();
+    g.fillStyle = "#2a2522"; g.beginPath(); g.ellipse(cx, cy - h * 0.22, w * 0.14, h * 0.12, 0, 0, 7); g.fill();
+  } else {
+    g.fillStyle = "#123"; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < 6; k++) {
+      g.fillStyle = `hsl(${(t / 20 + k * 60) % 360} 70% 55%)`;
+      g.fillRect((Math.sin(t / 600 + k) * 0.4 + 0.5) * w - 30, (Math.cos(t / 800 + k * 2) * 0.4 + 0.5) * h - 20, 60, 40);
+    }
+  }
+  const img = g.getImageData(0, 0, w, h), d = img.data; // カメラの雑音
+  for (let p = 0; p < d.length; p += 4) { const n = (Math.random() - 0.5) * 18; d[p] += n; d[p + 1] += n; d[p + 2] += n; }
+  g.putImageData(img, 0, 0);
+}
+
+const t0 = Number(new URLSearchParams(location.search).get("t0")) || Date.now();
+// 台本（秒）。同じものを viewer が正解として読む（scenario.json）
+const PHASES = [
+  [0, "gallery-still", "共有なし・カメラオフ（話している人の枠だけ 4 秒ごとに動く）"],
+  [12, "gallery-live", "共有なし・カメラオン（顔が常に動く）"],
+  [24, "s1", "s1 を共有・小窓は生きた映像・話している人の枠が 4 秒ごとに移る・28〜36 秒にカーソルが動く"],
+  [40, "s2", "s2 にぱっと切り替え"],
+  [52, "s3", "s3 へ 0.6 秒のフェード・56〜60 秒にレーザーポインター"],
+  [64, "scroll", "縦長の資料（s4→s5→s6）を 3 回スクロールして止める・82〜88 秒は止まらずゆっくり"],
+  [90, "s7-video", "s7 の右半分で動画が流れ続ける"],
+  [108, "s8-reveal", "s8 の項目（3 行）が 3 秒ごとに 1 行ずつ出る"],
+  [122, "s2-edit", "s2 の表のセルを 126〜130 秒に書き換える（1,580 → 1,620）"],
+  [136, "gallery-live2", "共有を止める（顔だけ）"],
+  [146, "other-tab", "別のタブに切り替え（ウィンドウには関係ないページ）"],
+  [156, "s5", "Meet のタブに戻り、s5 を共有"],
+  [166, "end", "終わり"],
+];
+
+function show(slide) { base.src = `slides/${slide}.png`; }
+function frame() {
+  const now = Date.now(), t = (now - t0) / 1000;
+  requestAnimationFrame(frame);
+  const phase = [...PHASES].reverse().find(([s]) => t >= s)?.[1] ?? "before";
+  const gallery = phase.startsWith("gallery") || phase === "other-tab" || phase === "before";
+  const live = phase !== "gallery-still" && phase !== "before";
+  // 背景
+  if (gallery) show("gallery");
+  else if (phase === "scroll") show("s4");
+  else if (phase === "s7-video") show("s7");
+  else if (phase === "s8-reveal") show("s8");
+  else if (phase === "s2-edit") show("s2");
+  else if (phase === "s3") base.style.opacity = 1, show(t < 52.6 ? "s2" : "s3");
+  else if (phase === "end") show("s5");
+  else show(phase);
+  // s3 へのフェード（52〜52.6 秒は s2 の上に s3 を重ねる代わりに、明るさで近似）
+  base.style.opacity = phase === "s3" && t < 52.6 ? String(1 - (t - 52) / 0.6 * 0.7) : "1";
+  // 生きた映像
+  for (const c of tiles) c.style.display = gallery && live ? "block" : "none";
+  for (const c of thumbs) c.style.display = !gallery && live ? "block" : "none";
+  video.style.display = phase === "s7-video" ? "block" : "none";
+  canvases.forEach((c, i) => { if (c.style.display === "block") paint(c, now, i); });
+  // 話している人の枠
+  // 話している人が 4 秒ごとに替わる（顔だけのときは大きな枠、共有中は右の小窓の枠）
+  ring.style.display = phase === "end" || phase === "before" ? "none" : "block";
+  { const k = Math.floor(t / 4) % 4;
+    if (gallery) { const [x, y] = [[16, 16], [647, 16], [16, 367], [647, 367]][k]; Object.assign(ring.style, { left: x + "px", top: y + "px", width: "617px", height: "337px" }); }
+    else Object.assign(ring.style, { left: "1064px", top: [121, 243, 365, 487][k] + "px", width: "200px", height: "112px" }); }
+  // カーソル・レーザー
+  const cursor = phase === "s1" && t >= 28 && t < 36, laser = phase === "s3" && t >= 56 && t < 60;
+  dot.style.display = cursor || laser ? "block" : "none";
+  if (cursor || laser) {
+    dot.style.background = laser ? "#ff2a2a" : "#111";
+    dot.style.left = 200 + Math.sin(t * 1.3) * 300 + 300 + "px"; dot.style.top = 300 + Math.cos(t * 0.9) * 150 + "px";
+  }
+  // スクロール: 64→ 3 回（各 1.5 秒）動いて 5 秒止まる、82〜88 はゆっくり動き続ける
+  slideArea.style.display = phase === "scroll" ? "block" : "none";
+  if (phase === "scroll") {
+    const u = t - 64, steps = [[3, 300], [9.5, 500], [16, 400]];
+    let y = 0;
+    for (const [s, d] of steps) y += d * Math.min(1, Math.max(0, (u - s) / 1.5));
+    if (u > 18) y += Math.min(6, Math.max(0, u - 18)) * 40;
+    doc.style.transform = `translateY(${-y}px)`;
+  }
+  // s8 の項目: 下から隠しておき、3 秒ごとに 1 行ずつ出す
+  cover.style.display = phase === "s8-reveal" ? "block" : "none";
+  if (phase === "s8-reveal") { const shown = Math.min(3, Math.floor((t - 108) / 3)); const top = 77 + 150 + shown * 80; Object.assign(cover.style, { top: top + "px", width: "1008px", height: Math.max(0, 644 - 30 - top) + "px" }); }
+  // セルの書き換え（北口店の売上 1,580 の位置）
+  cell.style.display = phase === "s2-edit" && t >= 126 ? "block" : "none";
+  if (phase === "s2-edit" && t >= 126) {
+    const text = ["1,58", "1,5", "1,", "1,6", "1,62", "1,620"][Math.min(5, Math.floor((t - 126) / 0.7))];
+    Object.assign(cell.style, { left: "240px", top: "465px", width: "196px", height: "50px" }); cell.textContent = text + (Math.floor(t * 2) % 2 ? "|" : " ");
+  }
+}
+frame();
+</script>

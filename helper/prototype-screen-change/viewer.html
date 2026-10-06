@@ -1,0 +1,118 @@
+<!doctype html>
+<!-- PROTOTYPE（使い捨て、issue #252）: 取り込んだフレームに判定を当て、どこで送るかを見る。build.mjs が data.js と一緒に置く -->
+<meta charset="utf-8">
+<title>共有画面の変化の判定（試作）</title>
+<style>
+  body { font: 14px/1.6 "Hiragino Sans", system-ui, sans-serif; color: #222; background: #fafaf8; margin: 0; padding: 24px 32px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .lead { color: #555; margin: 0 0 20px; max-width: 900px; }
+  .row { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; }
+  .params { display: grid; grid-template-columns: max-content 140px 48px; gap: 2px 10px; align-items: center; font-size: 13px; }
+  .params input[type=range] { width: 140px; }
+  .params .v { font-variant-numeric: tabular-nums; color: #2a5bd7; }
+  .score { font-size: 15px; }
+  .score b { font-size: 22px; margin-right: 4px; }
+  canvas { display: block; background: #fff; border: 1px solid #e4e2dc; margin-top: 16px; }
+  table { border-collapse: collapse; margin-top: 16px; font-size: 13px; }
+  td, th { padding: 4px 10px; border-bottom: 1px solid #ebe8e1; text-align: left; vertical-align: middle; }
+  th { color: #666; font-weight: 500; }
+  td.n { font-variant-numeric: tabular-nums; text-align: right; }
+  img.th { width: 160px; display: block; }
+  .ok { color: #2f7d4a; } .bad { color: #b8392f; } .mute { color: #888; }
+  .legend span { margin-right: 14px; font-size: 12px; color: #555; }
+  .legend i { display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; }
+</style>
+<h1>共有画面の「中身が変わった」をどう判定するか</h1>
+<p class="lead">台本ページ（静止・切り替え・カーソル・スクロール・動画・1 行ずつ出す・セルの書き換え・顔だけ・別タブ）を Chrome で再生し、そのウィンドウを 4 fps で取り込んだ。下のつまみで判定のしきい値を変えると、送る画面（▲）と「共有画面なし」（■）がその場で出し直される。上の帯は台本の場面、灰色の枠は送ってほしい時間の幅。</p>
+<div class="row">
+  <div class="params" id="params"></div>
+  <div>
+    <div class="score" id="score"></div>
+    <div class="legend" style="margin-top:8px">
+      <span><i style="background:#2a5bd7"></i>送った画面との差（%）</span>
+      <span><i style="background:#e0902a"></i>いま動いているマス（%）</span>
+      <span><i style="background:#9a9a9a"></i>前に送った画面と同じ（枠が移っただけ）</span>
+      <span><i style="background:#c9c3f0"></i>OS の dirtyRects の面積（%）</span>
+    </div>
+  </div>
+</div>
+<canvas id="plot" width="1600" height="300" style="width:1600px;height:300px"></canvas>
+<table id="events"></table>
+<script src="data.js"></script>
+<script src="detector.js"></script>
+<script>
+const PHASES = [
+  [0, "顔（カメラオフ）"], [12, "顔（カメラオン）"], [24, "s1・カーソル"], [40, "s2"], [52, "s3・フェード・レーザー"],
+  [64, "スクロール"], [90, "s7・動画"], [108, "s8・1 行ずつ"], [122, "s2・セル書き換え"], [136, "共有を止める"], [146, "別のタブ"], [156, "s5"], [166, "終わり"],
+];
+// 送ってほしいもの: [種類, 始まり, 終わり, 何か]。optional は送っても送らなくてもよい
+const WANT = [
+  ["screen", 24, 27, "s1 が映る"], ["screen", 40, 43, "s2 に切り替わる"], ["screen", 52, 55, "s3（フェードで 1 回）"],
+  ["screen", 64, 67, "縦長の資料が映る"], ["screen", 67, 71, "1 回目のスクロールが止まる"], ["screen", 74, 78, "2 回目が止まる"], ["screen", 80, 84, "3 回目が止まる"],
+  ["screen", 82, 92, "ゆっくり動き続けたあと"], ["screen", 90, 93, "s7 が映る（動画は追わない）"],
+  ["screen", 108, 111, "s8（1 行目）"], ["screen", 111, 114, "2 行目"], ["screen", 114, 117, "3 行目"],
+  ["screen", 122, 125, "s2 に戻る"], ["screen", 126, 133, "セルが 1,620 になる"],
+  ["screen", 136, 140, "共有が止まる（顔の並びを 1 枚送る）"], ["none", 146, 149, "別のタブ"], ["screen", 156, 159, "s5"],
+];
+const OPTIONAL = [[-10, 0, "台本が始まる前"], [0, 24, "顔だけの間"], [82, 90, "スクロールし続ける間"]];
+
+const frames = DATA.frames.filter((f) => f.status === "complete").map((f) => ({ ...f, sig: Uint8Array.from(atob(f.sig), (c) => c.charCodeAt(0)) }));
+const params = { ...DEFAULTS };
+const RANGES = {
+  pixel: [4, 60, 1, "送った画面と違うマス（輝度の差）"], content: [0.1, 10, 0.1, "中身が変わった（違うマスの %）"],
+  movePixel: [1, 20, 1, "動いた（前のフレームとの輝度の差）"], margin: [0, 4, 1, "広く動く場所の周りを外す幅（マス）"], wideMove: [1, 25, 1, "広く動く（周り 5×5 の動くマス数）"], hold: [0.25, 4, 0.25, "止まってから送るまで（秒）"],
+  busyTau: [2, 60, 1, "よく動く場所を見る幅（秒）"], busy: [0.05, 1, 0.05, "よく動く（動いたフレームの割合）"],
+  burst: [0.5, 10, 0.5, "ひと続きの動きの切れ目（秒）"],
+  history: [0, 60, 1, "前に送った画面を覚える枚数"], recurPixel: [1, 20, 1, "前の画面と同じとみなす輝度の差"], wide: [1, 60, 1, "前の画面に戻っても送る範囲（%）"],
+  movingOnly: [0, 100, 5, "顔か動画だけ（動いているマスの %）"], movingFor: [0.5, 10, 0.5, "それが続く秒数"], maxWait: [0, 30, 1, "動き続けても送る間隔（秒、0 で送らない）"],
+};
+const box = document.getElementById("params");
+for (const [k, [min, max, st, label]] of Object.entries(RANGES)) {
+  const l = document.createElement("label"); l.textContent = label;
+  const r = Object.assign(document.createElement("input"), { type: "range", min, max, step: st, value: params[k] });
+  const v = Object.assign(document.createElement("span"), { className: "v", textContent: params[k] });
+  r.oninput = () => { params[k] = +r.value; v.textContent = r.value; run(); };
+  box.append(l, r, v);
+}
+{
+  const l = document.createElement("label"); l.textContent = "タイトルに含む語";
+  const r = Object.assign(document.createElement("input"), { value: params.titleMatch });
+  r.oninput = () => { params.titleMatch = r.value; run(); };
+  box.append(l, r, document.createElement("span"));
+}
+
+function run() {
+  const d = createDetector({ ...params, ...(frames[0].sig.length === 64 * 36 ? { W: 64, H: 36 } : {}) }), events = [], series = [];
+  for (const f of frames) { const r = d.step(f); events.push(...r.events.map((e) => ({ ...e, thumb: e.thumb ?? f.thumb }))); series.push({ t: f.t, ...r.metrics, dirty: f.dirty }); }
+  // 照合: 送ってほしいもの 1 件に、出来事を 1 件まで当てる
+  const used = new Set(), hit = WANT.map(([type, a, b]) => { const i = events.findIndex((e, i) => !used.has(i) && e.type === type && e.t >= a - 0.3 && e.t <= b); if (i >= 0) used.add(i); return i; });
+  events.forEach((e, i) => { e.match = used.has(i) ? WANT[hit.indexOf(i)][3] : OPTIONAL.find(([a, b]) => e.t >= a && e.t < b)?.[2] ?? null; e.extra = !used.has(i) && !e.match; });
+  const got = hit.filter((i) => i >= 0).length, extra = events.filter((e) => e.extra).length;
+  document.getElementById("score").innerHTML = `<b class="${got === WANT.length ? "ok" : "bad"}">${got}/${WANT.length}</b>送ってほしいものを送れた　<b class="${extra ? "bad" : "ok"}">${extra}</b>余計に送った　<span class="mute">（送った画面 ${events.filter((e) => e.type === "screen").length} 枚、1 時間に直すと ${Math.round(events.filter((e) => e.type === "screen").length / 166 * 3600)} 枚）</span>`;
+  draw(series, events, hit);
+  const tb = document.getElementById("events");
+  tb.innerHTML = "<tr><th>映り始め</th><th>送った</th><th>場面</th><th>出来事</th><th>当てはまる期待</th><th></th></tr>" + events.map((e) =>
+    `<tr><td class="n">${e.t.toFixed(1)}</td><td class="n">${(e.at ?? e.t).toFixed(1)}</td><td>${[...PHASES].reverse().find(([s]) => e.t >= s)?.[1] ?? ""}</td>` +
+    `<td>${e.type === "screen" ? "画面を送る（" + e.why + "）" : "共有画面なし（" + e.reason + "）"}</td>` +
+    `<td class="${e.extra ? "bad" : "ok"}">${e.extra ? "余計" : e.match}</td><td>${e.type === "screen" ? `<img class="th" src="${e.thumb}">` : ""}</td></tr>`).join("") +
+    WANT.filter((_, i) => hit[i] < 0).map(([type, a, b, what]) => `<tr><td class="n">${a}〜${b}</td><td></td><td></td><td class="bad">漏れ: ${what}</td><td></td><td></td></tr>`).join("");
+}
+
+function draw(series, events, hit) {
+  const c = document.getElementById("plot"), g = c.getContext("2d"), W = c.width, H = c.height, T = 170;
+  const x = (t) => 10 + (t / T) * (W - 20), top = 40, ph = H - top - 30, y = (v) => top + ph - Math.min(100, v) / 100 * ph;
+  g.clearRect(0, 0, W, H); g.font = "11px Hiragino Sans";
+  PHASES.forEach(([s, label], i) => { const e = PHASES[i + 1]?.[0] ?? T; g.fillStyle = i % 2 ? "#f1efe9" : "#e8e5dc"; g.fillRect(x(s), 0, x(e) - x(s), 16); g.fillStyle = "#555"; g.fillText(label, x(s) + 3, 12); });
+  WANT.forEach(([type, a, b], i) => { g.strokeStyle = hit[i] >= 0 ? "#b9d9c2" : "#e6a9a3"; g.lineWidth = 1; g.strokeRect(x(a), 20, x(b) - x(a), 14); });
+  for (let t = 0; t <= T; t += 10) { g.fillStyle = "#999"; g.fillText(t + "s", x(t) - 6, H - 8); g.fillStyle = "#f0eee8"; g.fillRect(x(t), top, 1, ph); }
+  const line = (key, color, scale = 1) => { g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath(); series.forEach((s, i) => (i ? g.lineTo : g.moveTo).call(g, x(s.t), y((s[key] ?? 0) * scale))); g.stroke(); };
+  line("dirty", "#c9c3f0"); line("recur", "#9a9a9a", 8); line("moving", "#e0902a"); line("change", "#2a5bd7");
+  g.strokeStyle = "#2a5bd7"; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(10, y(params.content)); g.lineTo(W - 10, y(params.content)); g.stroke(); g.setLineDash([]);
+  for (const e of events) {
+    g.fillStyle = e.extra ? "#b8392f" : e.type === "screen" ? "#2a5bd7" : "#666";
+    if (e.type === "screen") { g.beginPath(); g.moveTo(x(e.t), 22); g.lineTo(x(e.t) - 5, 33); g.lineTo(x(e.t) + 5, 33); g.fill(); }
+    else g.fillRect(x(e.t) - 5, 22, 10, 10);
+  }
+}
+run();
+</script>
