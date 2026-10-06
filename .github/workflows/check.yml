@@ -9,21 +9,22 @@ jobs:
   # 変更したパスで走らせるジョブを選ぶ。main への push は全部走らせる
   changes:
     runs-on: ubuntu-slim
+    permissions:
+      pull-requests: read
     outputs:
       ts: ${{ steps.filter.outputs.ts }}
       swift: ${{ steps.filter.outputs.swift }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-          persist-credentials: false
+      # checkout せず、PR の変更ファイルを API で取る
       - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo "ts=true" >> "$GITHUB_OUTPUT"; echo "swift=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # PR の checkout はマージコミットで、第 1 親がベースの先端
-          files=$(git diff --name-only HEAD^1 HEAD)
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
           # 既知の docs 以外が 1 つでもあれば走らせる（知らないパスは走る側に倒す）
           code=$(printf '%s\n' "$files" | grep -Ev '^(docs/|LICENSE$)|\.md$' || true)
           ts=false; swift=false
@@ -46,8 +47,36 @@ jobs:
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web typecheck
       - run: pnpm --filter @live-mindmap/web test
 
-  # server.test.ts は 1 ファイルで server テスト全体の時間を決めるので（--shard はファイル単位で割れない）、
-  # トップレベルの describe ごとに別ジョブにする。重いもの同士を同じジョブで流すと遅くなる
+  # server.test.ts は 1 ファイルで server テスト全体の時間を決める（--shard はファイル単位で、ファイルの中は割れない）。
+  # vitest list でテストの一覧を取り、行番号で絞って（file:line）テスト単位で均等に割る。
+  # 新しく足したテストも自動でどれかのシャードに入る
+  server-split:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    name: server.test.ts (${{ matrix.shard }}/4)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          install: false
+      - run: pnpm install --frozen-lockfile
+      # 実物の撮影を確かめるテストが 1 件ある
+      - run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - working-directory: server
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          targets=$(pnpm exec vitest list test/server.test.ts --json \
+            | jq -r --argjson n 4 --argjson i "$SHARD" 'sort_by(.location.line) | to_entries[] | select(.key % $n == $i) | "test/server.test.ts:\(.value.location.line)"')
+          echo "$targets"
+          pnpm exec vitest run $targets
+
   server:
     needs: changes
     if: needs.changes.outputs.ts == 'true'
@@ -56,12 +85,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: live
-            args: 'test/server.test.ts -t "ライブのセッション"'
-            chromium: true
-          - name: restart
-            args: 'test/server.test.ts -t "Issue #161"'
-            chromium: false
           - name: capture
             args: test/capture.test.ts
             chromium: true
@@ -126,7 +149,7 @@ jobs:
   # always() が無いと、依存が落ちたときに skipped（= Success 扱い）になって落ちた PR がマージできてしまう
   check:
     if: always()
-    needs: [changes, typecheck, server, helper]
+    needs: [changes, typecheck, server-split, server, helper]
     runs-on: ubuntu-slim
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
