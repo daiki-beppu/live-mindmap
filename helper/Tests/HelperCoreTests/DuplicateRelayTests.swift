@@ -33,10 +33,53 @@ private func connect(to server: WebSocketServer, port: UInt16) async throws -> U
 private func receiveTexts(_ task: URLSessionWebSocketTask, count: Int) async throws -> [String] {
     var received: [String] = []
     for _ in 0..<count {
-        guard case .string(let text) = try await task.receive() else { Issue.record("テキストフレームでない"); return received }
+        guard let text = await receiveText(task) else { return received }
         received.append(text)
     }
     return received
+}
+
+/// テキストフレーム 1 件を待つ。`receive` は Task のキャンセルに応じず、@Suite の時間制限でも止まらないので、
+/// 待っても届かないときは接続を閉じて終わらせ、テストが止まらずに落ちるようにする。
+private func receiveText(_ task: URLSessionWebSocketTask) async -> String? {
+    await withTaskGroup(of: String?.self) { group in
+        group.addTask {
+            guard case .string(let text) = try? await task.receive() else { return nil }
+            return text
+        }
+        group.addTask { try? await Task.sleep(for: .seconds(5)); return nil }
+        let first = await group.next() ?? nil
+        if first == nil {
+            Issue.record("テキストフレームが届かない")
+            task.cancel(with: .goingAway, reason: nil)
+        }
+        group.cancelAll()
+        return first
+    }
+}
+
+/// 合図を 1 件待つ。`receiveText` と同じ理由で、来ないときは @Suite の時間制限を待たずに落とす。
+private func awaitSignal(_ signals: AsyncStream<Void>) async {
+    let arrived = await withTaskGroup(of: Bool.self) { group in
+        group.addTask { for await _ in signals { return true }; return false }
+        group.addTask { try? await Task.sleep(for: .seconds(5)); return false }
+        let first = await group.next() ?? false
+        group.cancelAll()
+        return first
+    }
+    if !arrived { Issue.record("合図が届かない") }
+}
+
+/// それ以上フレームが届かないことを確かめる。`receive` は Task のキャンセルに応じないので、確かめた後は接続を閉じて終わらせる。
+private func receivesNothingMore(_ task: URLSessionWebSocketTask) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask { (try? await task.receive()) != nil }
+        group.addTask { try? await Task.sleep(for: .milliseconds(500)); return false }
+        let arrived = await group.next() ?? false
+        task.cancel(with: .goingAway, reason: nil)
+        group.cancelAll()
+        return !arrived
+    }
 }
 
 private func finishedStream(_ results: [TranscriptionResult]) -> AsyncThrowingStream<TranscriptionResult, Error> {
@@ -90,8 +133,7 @@ private func relayRemarkReleasedBeforeTheirFinal(
     theirsContinuation.yield(theirPartial)
     _ = try await receiveTexts(task, count: 1)
     mineContinuation.yield(mineResult)
-    var signals = entered.makeAsyncIterator()
-    await signals.next()
+    await awaitSignal(entered)
     limitContinuation.yield()
     let released = try await receiveTexts(task, count: 1)
 
@@ -190,25 +232,432 @@ struct DuplicateRelayTests {
         ])
     }
 
-    @Test("自分の途中結果は保留せず、すぐ流れる")
-    func partialIsNotHeld() async throws {
+    @Test("自分の途中結果は、区間が重なる相手の文字が届く前には流れず、届いてから印付きで流れる")
+    func holdsPartialUntilOverlappingTheirTextArrives() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
         let task = try await connect(to: server, port: port)
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        // どちらの流れも終わらない。確定結果が保留されても、途中結果は届く。
-        let mine = AsyncThrowingStream<TranscriptionResult, Error> { continuation in
-            continuation.yield(final(sentence, 0, 2))
-            continuation.yield(TranscriptionResult(text: "明日の", isFinal: false, start: 3, end: 4))
-        }
-        let theirs = AsyncThrowingStream<TranscriptionResult, Error> { _ in }
-        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: DuplicateMarker()) }
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        // 保留に入った合図を受け、上限には達させない。相手の到着だけで解放されることを見る。
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
         defer { relaying.cancel() }
 
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        await awaitSignal(entered)
+
+        theirsContinuation.yield(partialResult(sentence, 10, 13))
+
+        // 保留せずに流していれば、印なしの自分の途中結果がこの 2 件に混ざる。
+        let received = try await receiveTexts(task, count: 2)
+        #expect(Set(received) == [
+            try partialEvent(.相手, sentence, 10, 13, duplicate: false),
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true),
+        ])
+    }
+
+    @Test("区間が重ならない相手の文字が届いても、自分の途中結果は保留されたまま")
+    func keepsPartialHeldWhenTheirTextDoesNotOverlap() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        await awaitSignal(entered)
+
+        // 区間が離れた相手の途中結果。これで解放されるなら、この 1 件に自分の途中結果が混ざる。
+        theirsContinuation.yield(partialResult(other, 40, 43))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, other, 40, 43, duplicate: false)])
+
+        // 区間が重なる相手の途中結果が届いて、はじめて解放される。
+        theirsContinuation.yield(partialResult(sentence, 10, 13))
+        let received = try await receiveTexts(task, count: 2)
+        #expect(Set(received) == [
+            try partialEvent(.相手, sentence, 10, 13, duplicate: false),
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true),
+        ])
+    }
+
+    @Test("自分の途中結果は、相手の確定結果（add(theirs:) 経由）でも、区間が重なれば保留が解放されて印付きで流れる")
+    func holdsPartialUntilOverlappingTheirFinalArrives() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        await awaitSignal(entered)
+
+        // `partialResult` ではなく確定結果。`add(theirs:)` が保留の解放を起こすことを見る
+        // （`add(theirPartial:)` とは別の配線）。
+        theirsContinuation.yield(final(sentence, 10, 13))
+
+        let received = try await receiveTexts(task, count: 2)
+        #expect(Set(received) == [
+            try remark(.相手, sentence, 10, 13, duplicate: false),
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true),
+        ])
+    }
+
+    @Test("区間が重なる相手の文字が届かないとき、自分の途中結果は保留の上限（1 秒）で判定され、印なしで流れる")
+    func releasesHeldPartialAtHoldLimit() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let durations = DurationLog()
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        // 上限を、実時間ではなく外からの合図で到達させる。要求された待ち時間も記録する。
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { duration in
+            durations.append(duration)
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        await awaitSignal(entered)
+        limitContinuation.yield()
+
         let received = try await receiveTexts(task, count: 1)
-        #expect(received == [try partialEvent(.自分, "明日の", 3, 4, duplicate: false)])
+        #expect(received == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false)])
+        #expect(durations.values == [.seconds(1)])
+    }
+
+    @Test("印なしで流した自分の途中結果は、後から区間が重なる相手の文字が届くと印付きで流し直される")
+    func rechecksBroadcastPartialWhenTheirTextArrivesLater() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        // 上限にすぐ到達させ、相手の文脈がない時点の判定で流させる。
+        let marker = DuplicateMarker(sleep: { _ in })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false)])
+
+        theirsContinuation.yield(partialResult(sentence, 10, 13))
+
+        let received = try await receiveTexts(task, count: 2)
+        #expect(Set(received) == [
+            try partialEvent(.相手, sentence, 10, 13, duplicate: false),
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true),
+        ])
+    }
+
+    @Test("印なしで流した自分の途中結果は、相手の確定結果（add(theirs:) 経由）が届いても印付きで流し直される")
+    func rechecksBroadcastPartialWhenTheirFinalArrivesLater() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        // 上限にすぐ到達させ、相手の文脈がない時点の判定で流させる。
+        let marker = DuplicateMarker(sleep: { _ in })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false)])
+
+        // `partialResult` ではなく確定結果。`add(theirs:)` が照らし直しを起こすことを見る
+        // （`add(theirPartial:)` とは別の配線）。
+        theirsContinuation.yield(final(sentence, 10, 13))
+
+        let received = try await receiveTexts(task, count: 2)
+        #expect(Set(received) == [
+            try remark(.相手, sentence, 10, 13, duplicate: false),
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: true),
+        ])
+    }
+
+    @Test("自分の確定結果が届いた後は、区間が重なる相手の文字が届いても、流した途中結果を流し直さない")
+    func stopsRecheckAfterMyRemarkArrives() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        // 流し直しの対象になる、印なしの途中結果を先に作る。
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false)])
+
+        // 確定結果が流れたことで、その途中結果は発言になっている。
+        mineContinuation.yield(final(other, 20, 22))
+        #expect(try await receiveTexts(task, count: 1) == [try remark(.自分, other, 20, 22, duplicate: false)])
+
+        theirsContinuation.yield(partialResult(sentence, 10, 13))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, sentence, 10, 13, duplicate: false)])
+        #expect(await receivesNothingMore(task))
+    }
+
+    @Test("自分の確定結果が届いたとき、まだ保留中（未解放）の途中結果は、その時点の文脈で判定され、確定結果より先に流れる。流した後は二重送出も流し直しも起きない")
+    func finalArrivalEmitsStillHeldPartial() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        // 途中結果の保留（1 秒）だけ合図で制御する。確定結果の保留（8 秒）は、相手の文脈が無いので
+        // すぐ終えてよく、ここでは区別してすぐ返す。
+        let marker = DuplicateMarker(sleep: { duration in
+            guard duration == .seconds(1) else { return }
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        // 自分の途中結果が保留に入る（相手の文脈はまだない）。
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        await awaitSignal(entered)
+
+        // 保留が解放される前（上限にも相手の到着にも達する前）に、別の区切りの確定結果が届く。
+        // 保留中の途中結果は捨てられず、確定結果（判定待ちが最大 8 秒ある）より先に流れる。
+        mineContinuation.yield(final(other, 20, 22))
+        #expect(try await receiveTexts(task, count: 2) == [
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false),
+            try remark(.自分, other, 20, 22, duplicate: false),
+        ])
+
+        // 古い保留のタイマーを発火させ、相手の文字も届かせる。流した時点で保留は解かれ、
+        // 照らし直しの対象からも外れているので、二重送出も流し直しも起きない。
+        limitContinuation.yield()
+        theirsContinuation.yield(partialResult(sentence, 10, 13))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.相手, sentence, 10, 13, duplicate: false)])
+        #expect(await receivesNothingMore(task))
+    }
+
+    @Test("判定の済んだ自分の途中結果と確定結果は、1 つの流れに積んだ順で取り出せる（確定結果が同じ発話の途中結果を追い越さない）")
+    func mineDecisionsCarryPartialAndRemarkInOrder() async {
+        // 相手の流れが終わっている状態。途中結果は保留されずその場で判定され、確定結果の判定も待たずに返るため、
+        // 送信順序を 1 つの流れが決めていなければ確定結果が先に出ていく。
+        let marker = DuplicateMarker(sleep: { _ in })
+        await marker.finishTheirs()
+
+        // `relayMine` と同じ順に呼ぶ（途中結果 → 確定結果の到着 → 判定 → 出力）。
+        let mineFinal = final("明日の会議は十時", 10.5, 12)
+        await marker.hold(minePartial: partialResult("明日の会議は十時", 10.5, 12))
+        await marker.emitHeldPartialAndEndRecheck()
+        let duplicate = await marker.resolve(mineFinal, heldSince: ContinuousClock.now)
+        await marker.emit(resolvedRemark: mineFinal, duplicate: duplicate)
+        await marker.finishMineDecisions()
+
+        var decisions: [MineDecision] = []
+        for await decision in marker.mineDecisions { decisions.append(decision) }
+        #expect(decisions.map(\.result) == [partialResult("明日の会議は十時", 10.5, 12), mineFinal])
+        #expect(decisions.map(\.duplicate) == [false, false])
+    }
+
+    @Test("相手の流れが終わった後でも、同じ発話の自分の途中結果は確定結果より先に届く")
+    func broadcastsPartialBeforeRemarkForSameUtterance() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        // 相手の流れを先に終える。この状態では確定結果の判定が待たずに返るので、送信の所有者が 1 つでなければ
+        // 確定結果が途中結果を追い越しうる（追い越すと、確定で消した字幕へ古い本文が戻る）。
+        let marker = DuplicateMarker()
+        try await relay(finishedStream([]), track: .相手, to: server, duplicates: marker)
+        try await relay(
+            finishedStream([partialResult("明日の会議は十時", 10.5, 12), final("明日の会議は十時", 10.5, 12)]),
+            track: .自分, to: server, duplicates: marker)
+
+        let received = try await receiveTexts(task, count: 2)
+        #expect(received == [
+            try partialEvent(.自分, "明日の会議は十時", 10.5, 12, duplicate: false),
+            try remark(.自分, "明日の会議は十時", 10.5, 12, duplicate: false),
+        ])
+    }
+
+    @Test("書き換えた自分の途中結果が重なりの即時判定に切り替わったら、古い保留とタイマーも解除される（古い内容が後から流れない）")
+    func rewriteIntoImmediateJudgeClearsStaleHold() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        // 保留に入った合図を受け、上限には達させない（テスト内で明示的に発火させる）。
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        // 相手の確定結果が先に届いている。区間は 11.2〜15 で、自分の最初の途中結果（10〜11）とは重ならない。
+        theirsContinuation.yield(final(sentence, 11.2, 15))
+        #expect(try await receiveTexts(task, count: 1) == [try remark(.相手, sentence, 11.2, 15, duplicate: false)])
+
+        // 自分の最初の途中結果は相手と重ならないので保留される。
+        mineContinuation.yield(partialResult(sentence, 10, 11))
+        await awaitSignal(entered)
+
+        // 書き換え（10〜11.5）で区間が伸び、相手と重なるようになる。即時判定され、古い保留は解除されるはず。
+        mineContinuation.yield(partialResult(sentence, 10, 11.5))
+        #expect(try await receiveTexts(task, count: 1) == [try partialEvent(.自分, sentence, 10, 11.5, duplicate: true)])
+
+        // 保留が解除されていれば、古いタイマーが発火しても、古い区間（10〜11）の途中結果は流れない。
+        limitContinuation.yield()
+        #expect(await receivesNothingMore(task))
+    }
+
+    @Test("保留中に自分の途中結果が書き換わると、新しいほうで保留し直され、上限は最初の到着から数えたまま延びない")
+    func rewriteDuringHoldKeepsOriginalLimit() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let durations = DurationLog()
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { theirsContinuation.finish() }
+        // 上限には到達させない。要求された待ち時間を記録してから合図を送るので、合図を待てば記録はアサーションより前に終わる。
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let marker = DuplicateMarker(sleep: { duration in
+            durations.append(duration)
+            enteredContinuation.yield()
+            try await Task.sleep(for: .seconds(60))
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        mineContinuation.yield(partialResult("マリ", 10, 11))
+        // 1 本目のタイマーが要求した待ち時間の記録を確立してから書き換える。
+        await awaitSignal(entered)
+        mineContinuation.yield(partialResult("マリコ", 10, 11.5))
+        mineContinuation.finish()
+
+        let received = try await receiveTexts(task, count: 1)
+        #expect(received == [try partialEvent(.自分, "マリコ", 10, 11.5, duplicate: false)])
+        // 書き換えでタイマーが作り直されていれば、2 本目の待ち時間がここで記録される。
+        // 増えないことの確認なので、`receivesNothingMore` と同じく有界で打ち切る。
+        for _ in 0..<10 where durations.values.count < 2 { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(durations.values == [.seconds(1)])
+    }
+
+    @Test("保留中に自分の途中結果が書き換わった後、実際に保留の上限へ到達したときに流れるのは新しいほうの内容")
+    func deadlineAfterRewriteEmitsLatestPartial() async {
+        // 上限を、実時間ではなく外からの合図で到達させる。`rewriteDuringHoldKeepsOriginalLimit` は
+        // 流れの終了（finishMine 経由）で解放するため、書き換え後に実際にタイマーが発火した経路は
+        // ここで確認する。判定器を直接呼び、各 `hold` の完了を待ってから上限へ進める
+        // （流れへの投入だけでは、保留値の更新がタイマーより先に終わる保証がない）。
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+
+        await marker.hold(minePartial: partialResult("マリ", 10, 11))
+        await awaitSignal(entered)
+        // 保留中に書き換わる（タイマーが作り直されないことは `rewriteDuringHoldKeepsOriginalLimit` で確認済み）。
+        await marker.hold(minePartial: partialResult("マリコ", 10, 11.5))
+        limitContinuation.yield()
+
+        var decisions = marker.mineDecisions.makeAsyncIterator()
+        let released = await decisions.next()
+        #expect(released?.result == partialResult("マリコ", 10, 11.5))
+        #expect(released?.duplicate == false)
+        // 古い「マリ」が別に流れていないことを確かめる。
+        await marker.finishMineDecisions()
+        let rest = await decisions.next()
+        #expect(rest == nil)
     }
 
     @Test("自分の確定結果が保留中で、どちらの流れも終わらなくても、相手の途中結果と同じ自分の途中結果は印付きですぐ届く")
@@ -367,22 +816,64 @@ struct DuplicateRelayTests {
         defer { relaying.cancel() }
 
         // 判定待ちに入ってから相手を失敗させ、キャンセルが判定待ちの最中に起きる状態にする。
-        var signals = entered.makeAsyncIterator()
-        await signals.next()
+        await awaitSignal(entered)
         failingContinuation.finish(throwing: TrackFailure())
         _ = try? await relaying.value
 
-        // 一定時間待っても何も届かないこと。
-        let arrived = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { (try? await task.receive()) != nil }
-            group.addTask { try? await Task.sleep(for: .milliseconds(500)); return false }
-            let first = await group.next() ?? false
-            // receive は Task のキャンセルに応じないので、接続を閉じて終わらせる。
-            task.cancel(with: .goingAway, reason: nil)
-            group.cancelAll()
-            return first
+        #expect(await receivesNothingMore(task))
+    }
+
+    @Test("エラーでキャンセルされたら、保留中の自分の途中結果は送られず、relay はそのエラーで終わる")
+    func cancelledHeldPartialIsNotBroadcast() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        defer { mineContinuation.finish() }
+        let (failing, failingContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        // 途中結果が保留に入った合図。上限には達させない。
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (limit, limitContinuation) = AsyncStream.makeStream(of: Void.self)
+        defer { limitContinuation.finish() }
+        let marker = DuplicateMarker(sleep: { _ in
+            enteredContinuation.yield()
+            for await _ in limit { return }
+        })
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, failing)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        // 保留に入ってから相手を失敗させ、キャンセルが保留の最中に起きる状態にする。
+        mineContinuation.yield(partialResult("明日の会議は十時", 10.5, 12))
+        await awaitSignal(entered)
+        failingContinuation.finish(throwing: TrackFailure())
+
+        do {
+            try await relaying.value
+            Issue.record("エラーで終わるはずが、正常に戻った")
+        } catch let error as TrackFailure {
+            #expect(error == TrackFailure())
         }
-        #expect(!arrived)
+        #expect(await receivesNothingMore(task))
+    }
+
+    @Test("どちらの流れも正常に終わるとき、保留中の自分の途中結果はちょうど 1 回流れる")
+    func heldPartialIsBroadcastOnceWhenStreamsFinish() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        try await relay(
+            tracks: [(.自分, finishedStream([partialResult("明日の", 3, 4)])), (.相手, finishedStream([]))],
+            to: server, duplicates: DuplicateMarker())
+
+        let received = try await receiveTexts(task, count: 1)
+        #expect(received == [try partialEvent(.自分, "明日の", 3, 4, duplicate: false)])
+        #expect(await receivesNothingMore(task))
     }
 
     @Test("保留の上限は保留に入れた時刻から数え、前の発言の待ちで遅れた分は引かれる")

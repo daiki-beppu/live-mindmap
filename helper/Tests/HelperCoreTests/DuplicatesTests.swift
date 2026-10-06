@@ -86,9 +86,26 @@ struct IsDuplicateTests {
         #expect(isDuplicate(mine, among: theirs))
     }
 
-    @Test("3 文字未満の発言は、相手と同じでも重複にしない")
-    func tooShort() {
-        #expect(!isDuplicate(result("はい", 0, 1), among: [result("はい", 0, 1)]))
+    @Test("正規化後 3 文字未満の発言は、相手と時間が重なれば重複、重ならなければ重複でない")
+    func shortFragmentUsesTimeOverlap() {
+        let theirs = [result("はいはいはい", 0, 3)]
+        #expect(isDuplicate(result("はい", 0, 1), among: theirs))
+        #expect(!isDuplicate(result("はい", 10, 11), among: theirs))
+    }
+
+    @Test("句読点・空白・記号を除いて 3 文字未満になる発言も、内容ではなく時間の重なりで判定する")
+    func shortFragmentAfterNormalizationUsesTimeOverlap() {
+        let theirs = [result("はいはいはい", 0, 3)]
+        #expect(isDuplicate(result("は、い。", 0, 1), among: theirs))
+        #expect(isDuplicate(result("は い", 0, 1), among: theirs))
+        #expect(isDuplicate(result("は!い", 0, 1), among: theirs))
+    }
+
+    @Test("正規化後 3 文字以上なら、時間が重なっても内容で判定する")
+    func threeOrMoreCharactersUsesContent() {
+        let theirs = [result("来週の火曜日に資料を送ります", 0, 3)]
+        #expect(!isDuplicate(result("はいは", 0, 1), among: theirs))
+        #expect(!isDuplicate(result("はいはい", 0, 1), among: theirs))
     }
 
     @Test("相手の発言がなければ重複でない")
@@ -175,12 +192,27 @@ struct IsDuplicatePartialTests {
         #expect(!(await DuplicateMarker().isDuplicate(partial: partial(sentence, 0, 3))))
     }
 
-    @Test("正規化後に 3 文字未満の途中結果は、同じ文脈があっても重複にしない")
-    func tooShort() async {
+    @Test("正規化後 3 文字未満の途中結果は、相手の確定結果と時間が重なれば重複、重ならなければ重複でない")
+    func shortPartialUsesTimeOverlapWithTheirRemark() async {
         let marker = DuplicateMarker()
         await marker.add(theirs: result("はいはいはい", 0, 3))
+        #expect(await marker.isDuplicate(partial: partial("は、い。", 0, 1)))
+        #expect(!(await marker.isDuplicate(partial: partial("は、い。", 10, 11))))
+    }
+
+    @Test("正規化後 3 文字未満の途中結果は、相手の最新の途中結果とも時間の重なりで判定する")
+    func shortPartialUsesTimeOverlapWithTheirPartial() async {
+        let marker = DuplicateMarker()
         await marker.add(theirPartial: partial("はいはいはい", 0, 3))
-        #expect(!(await marker.isDuplicate(partial: partial("は、い。", 0, 1))))
+        #expect(await marker.isDuplicate(partial: partial("はい", 0, 1)))
+        #expect(!(await marker.isDuplicate(partial: partial("はい", 10, 11))))
+    }
+
+    @Test("途中結果も、正規化後 3 文字以上なら時間が重なっても内容で判定する")
+    func threeOrMoreCharactersPartialUsesContent() async {
+        let marker = DuplicateMarker()
+        await marker.add(theirs: result("来週の火曜日に資料を送ります", 0, 3))
+        #expect(!(await marker.isDuplicate(partial: partial("はいは", 0, 1))))
     }
 
     @Test("確定結果と同じしきい値: 被覆率 0.5 は重複でなく、約 0.67 は重複")
