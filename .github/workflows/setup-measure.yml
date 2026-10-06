@@ -1,0 +1,163 @@
+# 調査用（issue #222）。各ジョブのセットアップの時間だけを測る。main には入れない
+name: setup-measure
+
+on:
+  push:
+    branches: [research/ci-setup]
+  workflow_dispatch:
+
+jobs:
+  empty:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: preinstalled
+        run: |
+          for c in node pnpm uv uvx python3; do printf '%s: ' "$c"; (command -v "$c" && "$c" --version) || echo none; done
+
+  # 今の check.yml と同じ並び
+  current:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: pw full
+        run: pnpm --filter @live-mindmap/server exec playwright install chromium
+      - name: pw launch
+        continue-on-error: true
+        working-directory: server
+        run: node -e "import('playwright').then(m=>m.chromium.launch()).then(b=>b.close()).then(()=>console.log('launched'))"
+
+  # pnpm/setup@v3: pnpm（単体バイナリ）と Node を 1 ステップで入れる
+  pnpm-setup:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          cache: true
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - run: node --version
+
+  # pnpm/action-setup のキャッシュで store を戻す（setup-node はキャッシュなし）
+  action-setup-cache:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+
+  # キャッシュなしでレジストリから取る
+  no-cache:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+
+  # playwright: headless shell だけ / キャッシュ / Linux の依存
+  playwright:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: pw only-shell
+        run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - name: pw launch (no deps)
+        continue-on-error: true
+        working-directory: server
+        run: node -e "import('playwright').then(m=>m.chromium.launch()).then(b=>b.close()).then(()=>console.log('launched'))"
+      - name: pw install-deps
+        if: runner.os == 'Linux'
+        run: pnpm --filter @live-mindmap/server exec playwright install-deps chromium --only-shell
+      - name: pw launch (after deps)
+        if: runner.os == 'Linux'
+        working-directory: server
+        run: node -e "import('playwright').then(m=>m.chromium.launch()).then(b=>b.close()).then(()=>console.log('launched'))"
+
+  playwright-cache:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: pwver
+        run: echo "v=$(node -p "require('./server/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: pwcache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.os == 'macOS' && '~/Library/Caches/ms-playwright' || '~/.cache/ms-playwright' }}
+          key: pw-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.pwver.outputs.v }}
+      - name: pw only-shell (on miss)
+        if: steps.pwcache.outputs.cache-hit != 'true'
+        run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - name: pw launch
+        continue-on-error: true
+        working-directory: server
+        run: node -e "import('playwright').then(m=>m.chromium.launch()).then(b=>b.close()).then(()=>console.log('launched'))"
+
+  # node_modules がある状態で（setup-uv の既定はリポジトリ全体を glob で探す）
+  uv:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-26]
+        cache: ["auto", "false"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: setup-uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: ${{ matrix.cache }}
