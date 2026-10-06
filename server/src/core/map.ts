@@ -1,38 +1,83 @@
 // マップと差分操作。語彙と規則は GLOSSARY.md / docs/adr/0001-map-is-a-tree.md に従う。
+// 型は Schema を正本にして導き、値は普通のオブジェクトのままにする（ADR 0007）。
+import { Schema } from "effect";
 
 export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO", "要点"] as const;
 export type Kind = (typeof KINDS)[number];
+const KindSchema = Schema.Literals(KINDS);
 
 export const PLAN_STATUSES = ["検討中", "却下"] as const;
 export type PlanStatus = (typeof PLAN_STATUSES)[number]; // 案の状態
+const PlanStatusSchema = Schema.Literals(PLAN_STATUSES);
 export type PointStatus = "未決" | "決定済み"; // 論点の状態（保存せず導く）
 
 export const ROOT_ID = "root";
 
-export type MapNode = {
-  id: string;
-  parent: string | null; // null はルート（会議）だけ
-  kind: Kind | "会議";
-  text: string;
-  planStatus?: PlanStatus; // 案だけ
-  assignee?: string; // TODO だけ
-  due?: string; // TODO だけ
-  evidence: string[]; // 発言の ID。ルート以外は 1 つ以上
-};
+export const MapNode = Schema.Struct({
+  id: Schema.String,
+  parent: Schema.mutableKey(Schema.NullOr(Schema.String)), // null はルート（会議）だけ
+  kind: Schema.Literals([...KINDS, "会議"]),
+  text: Schema.mutableKey(Schema.String),
+  planStatus: Schema.optionalKey(Schema.mutableKey(PlanStatusSchema)), // 案だけ
+  assignee: Schema.optionalKey(Schema.String), // TODO だけ
+  due: Schema.optionalKey(Schema.String), // TODO だけ
+  // 発言の ID。ルート以外は 1 つ以上（ルートは emptyMap が空で作るので、要素数は検査しない）
+  evidence: Schema.mutable(Schema.Array(Schema.String)),
+});
+export type MapNode = typeof MapNode["Type"];
 
 // ノードは作られた順に order に並ぶ。兄弟の並びはこの順で決まる。
-export type MeetingMap = { nodes: Record<string, MapNode>; order: string[]; nextId: number };
+export const MeetingMap = Schema.Struct({
+  nodes: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(MapNode))),
+  order: Schema.mutableKey(Schema.mutable(Schema.Array(Schema.String))),
+  nextId: Schema.mutableKey(Schema.Number),
+});
+export type MeetingMap = typeof MeetingMap["Type"];
+
+// 根拠とノード参照の説明はドメインの説明なので Schema の注釈に置く（段 7 でここから Claude に渡す JSON Schema を作る）。
+// 要素数は検査しない: ログの保存形式（Op・Dropped・LogEvent）は、根拠が空のまま捨てた add / update も
+// 元の形で残す（session.ts の log）。根拠 1 件以上という制約は Claude への出力契約（DiffOutput）だけが持つ。
+const Evidence = Schema.mutable(Schema.Array(Schema.String)).annotate({ description: "根拠の発言 id（例 r12）" });
+const NodeRef = Schema.String.annotate({ description: "既存ノードの id（例 n3）か、同じ応答で add した ref" });
 
 // AI が出す差分操作。`ref` は、同じ応答の後続の操作から親として指すための仮 ID。
-export type Op =
-  | { op: "add"; ref: string; parent: string; kind: Kind; text: string; evidence: string[]; assignee?: string; due?: string }
-  | { op: "update"; node: string; text?: string; evidence: string[]; planStatus?: PlanStatus }
-  | { op: "combine"; from: string; into: string }
-  | { op: "move"; node: string; parent: string }
-  | { op: "delete"; node: string }
-  | { op: "noop"; reason: string };
+export const Op = Schema.Union([
+  Schema.Struct({
+    op: Schema.Literal("add"),
+    ref: Schema.String,
+    parent: NodeRef,
+    kind: KindSchema,
+    text: Schema.String,
+    evidence: Evidence,
+    assignee: Schema.optionalKey(Schema.String),
+    due: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    op: Schema.Literal("update"),
+    node: NodeRef,
+    text: Schema.optionalKey(Schema.String),
+    evidence: Evidence,
+    planStatus: Schema.optionalKey(PlanStatusSchema),
+  }),
+  Schema.Struct({ op: Schema.Literal("combine"), from: NodeRef, into: NodeRef }),
+  Schema.Struct({ op: Schema.Literal("move"), node: NodeRef, parent: NodeRef }),
+  Schema.Struct({ op: Schema.Literal("delete"), node: NodeRef }),
+  Schema.Struct({ op: Schema.Literal("noop"), reason: Schema.String }),
+]);
+export type Op = typeof Op["Type"];
 
-export type Dropped = { op: Op; reason: string };
+export const Dropped = Schema.Struct({ op: Op, reason: Schema.String });
+export type Dropped = typeof Dropped["Type"];
+
+// Claude の structured_output の形。段 7 でここから JSON Schema を作り、受け取った値を検証する。
+// add / update の根拠だけ、Op の構造定義を再利用したまま 1 件以上を要求する（claude.ts:70 の minItems: 1 と同じ制約）。
+const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
+  add.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
+  update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
+  ...rest,
+]);
+export const DiffOutput = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)) });
+export type DiffOutput = typeof DiffOutput["Type"];
 
 export function emptyMap(title: string): MeetingMap {
   return {

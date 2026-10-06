@@ -1,6 +1,26 @@
 // ヘルパーが WebSocket で流すイベント（helper/README.md「イベントの形」）を発言に変える。
 // Node の実行環境に依存しない（ADR 0003）。
-import type { Remark, Track } from "./session.ts";
+import { Effect, Schema } from "effect";
+import { Track, type Remark } from "./session.ts";
+
+// partial（途中結果）と remark（確定結果）が共通して持つ項目。
+// duplicate の項目がないイベントは、重複ではないものとして扱う（helper/README.md「イベントの形」）
+const helperRemarkFields = {
+  track: Track,
+  start: Schema.Number,
+  end: Schema.Number,
+  text: Schema.String,
+  duplicate: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+};
+
+// ヘルパーのイベントの形（helper/README.md「イベントの形」）。段 3 で decodeHelperEvent から使う。
+// hostTime は 64 bit の値で JSON の number では桁が落ちるため、数字だけの文字列に限る（number は受け付けない）。
+export const HelperEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("remark"), ...helperRemarkFields }),
+  Schema.Struct({ type: Schema.Literal("partial"), ...helperRemarkFields }),
+  Schema.Struct({ type: Schema.Literal("origin"), hostTime: Schema.String.check(Schema.isPattern(/^\d+$/)) }),
+]);
+export type HelperEvent = typeof HelperEvent["Type"];
 
 const isTrack = (v: unknown): v is Track => v === "自分" || v === "相手";
 
@@ -16,7 +36,8 @@ export function remarkFromHelper(data: unknown, id: string): Remark | null {
   return { id, track: e.track, start: e.start, end: e.end, text: e.text, duplicate: e.duplicate === true };
 }
 
-export type HelperPartial = { track: Track; start: number; end: number; text: string; duplicate: boolean };
+export const HelperPartial = Schema.Struct(helperRemarkFields);
+export type HelperPartial = typeof HelperPartial["Type"];
 
 // partial（いま話している途中結果）。仮のノードの表示と、1 秒更新されなかった発話の発言化（settle.ts）に使う。partial 以外は null。
 // 必須項目が壊れているときは、remark と同じく例外にする（start / end のない旧形式も受け付けない）。
