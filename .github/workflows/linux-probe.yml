@@ -1,0 +1,40 @@
+# 調査用（issue #218）。research/ci-linux ブランチでだけ動く使い捨てのワークフロー。
+# server・web の型検査とテストが ubuntu ランナーで通るか、どこで時間を使うかを確かめる。
+name: linux-probe
+
+on:
+  push:
+    branches: [research/ci-linux]
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        deps: [plain, with-deps]
+        include:
+          - os: macos-26
+            deps: plain
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - if: matrix.deps == 'plain'
+        run: pnpm --filter @live-mindmap/server exec playwright install chromium
+      - if: matrix.deps == 'with-deps'
+        run: pnpm --filter @live-mindmap/server exec playwright install --with-deps chromium
+      - run: nproc || sysctl -n hw.ncpu; free -m || true; fc-list :lang=ja | head -5 || true
+      - run: pnpm --filter @live-mindmap/server typecheck
+      - run: pnpm --filter @live-mindmap/web typecheck
+      - name: server test
+        run: pnpm --filter @live-mindmap/server exec vitest run --reporter=default --reporter=json --outputFile=vitest-server.json
+      - name: per-file durations
+        if: always()
+        run: node -e 'const r=require("./server/vitest-server.json");for(const f of r.testResults.sort((a,b)=>(b.endTime-b.startTime)-(a.endTime-a.startTime)))console.log(((f.endTime-f.startTime)/1000).toFixed(1).padStart(6),"s",f.status,f.name.split("/test/")[1])'
+      - run: pnpm --filter @live-mindmap/web test
