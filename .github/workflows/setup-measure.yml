@@ -169,3 +169,46 @@ jobs:
         uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: ${{ matrix.cache }}
+
+  # pnpm/setup@v3 をキャッシュなしで（レジストリから取るほうが速いかを見る）
+  pnpm-setup-nocache:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - run: node --version
+
+  # macOS はランナーに Node 24 が入っている。pnpm だけ入れる
+  pnpm-setup-noruntime:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - run: node --version
+
+  # setup-node（キャッシュなし）+ npm で pnpm を入れる
+  npm-global:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm install -g pnpm@12.9.1
+      - run: pnpm install --frozen-lockfile
