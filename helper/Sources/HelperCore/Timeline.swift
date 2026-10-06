@@ -1,8 +1,6 @@
 import AVFoundation
 import CoreAudio
 
-// issue #220 の計測用の変更（1 ファイルだけ中身を変える）
-
 /// 取得した時点のホスト時刻を付けた音声バッファ。2 トラックの時刻を同じ基準で揃えるために使う。
 /// バッファは取得側がコピーして渡し、以後は受け取った側だけが読む。
 public struct CapturedAudio: @unchecked Sendable {
