@@ -6,29 +6,132 @@ on:
     branches: [main]
 
 jobs:
-  check:
+  # 変更したパスで走らせるジョブを選ぶ。main への push は全部走らせる
+  changes:
+    runs-on: ubuntu-slim
+    outputs:
+      ts: ${{ steps.filter.outputs.ts }}
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: filter
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "ts=true" >> "$GITHUB_OUTPUT"; echo "swift=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # PR の checkout はマージコミットで、第 1 親がベースの先端
+          files=$(git diff --name-only HEAD^1 HEAD)
+          # 既知の docs 以外が 1 つでもあれば走らせる（知らないパスは走る側に倒す）
+          code=$(printf '%s\n' "$files" | grep -Ev '^(docs/|LICENSE$)|\.md$' || true)
+          ts=false; swift=false
+          if printf '%s\n' "$code" | grep -Ev '^helper/' | grep -q .; then ts=true; fi
+          if printf '%s\n' "$code" | grep -Eq '^(helper/|\.github/workflows/)'; then swift=true; fi
+          echo "ts=$ts" >> "$GITHUB_OUTPUT"; echo "swift=$swift" >> "$GITHUB_OUTPUT"
+
+  typecheck:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          install: false
+      - run: pnpm install --frozen-lockfile
+      # ルートの pnpm typecheck は helper の swift build まで走るので、TS の 2 パッケージに絞る
+      - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web typecheck
+      - run: pnpm --filter @live-mindmap/web test
+
+  # server.test.ts は 1 ファイルで server テスト全体の時間を決めるので（--shard はファイル単位で割れない）、
+  # トップレベルの describe ごとに別ジョブにする。重いもの同士を同じジョブで流すと遅くなる
+  server:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: live
+            args: test/server.test.ts -t "ライブのセッション"
+            chromium: true
+          - name: restart
+            args: test/server.test.ts -t "Issue #161"
+            chromium: false
+          - name: capture
+            args: test/capture.test.ts
+            chromium: true
+          - name: rest
+            args: --exclude test/server.test.ts --exclude test/capture.test.ts
+            chromium: false
+    name: server (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - if: matrix.chromium
+        run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - run: pnpm exec vitest run ${{ matrix.args }}
+        working-directory: server
+
+  helper:
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
     # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @live-mindmap/server exec playwright install chromium
-      # helper のビルド（pnpm typecheck の swift build と swift test）の前に、WebRTC AEC3 のライブラリを用意する
-      - uses: astral-sh/setup-uv@v10.2.0
-      - uses: actions/cache@v6
+      # WebRTC AEC3 のライブラリ。キャッシュが外れたときだけ uv を入れてビルドする
+      - id: apm
+        uses: actions/cache@v6
         with:
           path: helper/.deps/webrtc-apm
           key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
-      - run: bash helper/scripts/build-webrtc-apm.sh
-      - run: pnpm typecheck
-      - run: pnpm --filter @live-mindmap/server test
-      - run: pnpm --filter @live-mindmap/web test
+      - if: steps.apm.outputs.cache-hit != 'true'
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: false
+      - if: steps.apm.outputs.cache-hit != 'true'
+        run: bash helper/scripts/build-webrtc-apm.sh
+      - id: swift
+        run: echo "version=$(swift --version 2>&1 | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      # PR で保存したキャッシュは他の PR から使えないので、保存は main の push だけ
+      - id: build-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: helper/.build
+          key: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-${{ hashFiles('helper/Package.swift', 'helper/Sources/**', 'helper/Tests/**', 'helper/scripts/build-webrtc-apm.sh') }}
+          restore-keys: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-
+      # checkout で mtime が変わるので、中身のハッシュで比べて変わっていないファイルはコンパイルしない
+      - run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
+        working-directory: helper
       # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
       # ランナーには Xcode があるので swift test をそのまま使う
-      - run: swift test
+      - run: swift test --skip-build
         working-directory: helper
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: helper/.build
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+
+  # ruleset の必須チェック。ID を変えない。
+  # always() が無いと、依存が落ちたときに skipped（= Success 扱い）になって落ちた PR がマージできてしまう
+  check:
+    if: always()
+    needs: [changes, typecheck, server, helper]
+    runs-on: ubuntu-slim
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON"
+          exit 1
