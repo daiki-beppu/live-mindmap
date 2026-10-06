@@ -41,3 +41,6 @@ jobs:
       - name: slowest tests
         if: always()
         run: node -e 'const r=require("./server/vitest-server.json");const t=r.testResults.flatMap(f=>f.assertionResults.map(a=>({d:a.duration??0,f:f.name.split("/test/")[1],n:a.fullName})));t.sort((a,b)=>b.d-a.d);for(const x of t.slice(0,30))console.log((x.d/1000).toFixed(1).padStart(6),"s",x.f,"|",x.n);console.log("total tests",t.length,"sum",(t.reduce((s,x)=>s+x.d,0)/1000).toFixed(1));for(const f of ["server.test.ts","eval.test.ts"]){const u=t.filter(x=>x.f===f);console.log(f,u.length,"tests sum",(u.reduce((s,x)=>s+x.d,0)/1000).toFixed(1))}'
+      - name: per-describe sums
+        if: always()
+        run: node -e 'const r=require("./server/vitest-server.json");const m={};for(const f of r.testResults)for(const a of f.assertionResults){const k=f.name.split("/test/")[1]+" > "+(a.ancestorTitles[0]??"(top)");m[k]=(m[k]??[0,0]);m[k][0]+=a.duration??0;m[k][1]++}for(const [k,[d,n]] of Object.entries(m).sort((a,b)=>b[1][0]-a[1][0]).slice(0,12))console.log((d/1000).toFixed(1).padStart(6),"s",n,"tests",k)'
