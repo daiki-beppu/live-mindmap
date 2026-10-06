@@ -21,3 +21,7 @@ Run before a PR: `bash helper/scripts/build-webrtc-apm.sh` (builds the WebRTC AE
 ### Recorded sessions
 
 Inspect a saved session (or a folder of them) by counts only, never the remark text: `cd server && node bench/sessionStats.ts <dir>...` prints remarks, duration, overlap and recording loudness per track. Counting `log.jsonl` with `sort | uniq -c` merges `相手` and `自分` under a UTF-8 locale; prefix `LC_ALL=C` when counting by hand.
+
+### Evaluation samples
+
+Synthetic meetings for regression evals and measurements (audio, transcript, truth, how to make new ones) live outside the repo; start from `~/live-mindmap-samples/README.md`.
