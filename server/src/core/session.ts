@@ -1,20 +1,23 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。ログの書き先は外から渡す。
+import { Schema } from "effect";
 import { diffMaps, type Change } from "./changes.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
-import { applyOps, cloneNode, emptyMap, pointStatus, type Dropped, type MapNode, type MeetingMap, type Op, type PointStatus } from "./map.ts";
+import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
 
-export type Track = "自分" | "相手";
+export const Track = Schema.Literals(["自分", "相手"]);
+export type Track = typeof Track["Type"];
 
 // 発言（GLOSSARY.md）
-export type Remark = {
-  id: string;
-  track: Track;
-  start: number; // 会議の中の秒
-  end: number;
-  text: string;
-  duplicate?: boolean; // 重複の印。付いた発言は差分更新に使わない
-};
+export const Remark = Schema.Struct({
+  id: Schema.String,
+  track: Track,
+  start: Schema.Number, // 会議の中の秒
+  end: Schema.Number,
+  text: Schema.mutableKey(Schema.String),
+  duplicate: Schema.optionalKey(Schema.Boolean), // 重複の印。付いた発言は差分更新に使わない
+});
+export type Remark = typeof Remark["Type"];
 
 // ルートの ID はいつも ROOT_ID
 export type DiffInput = {
@@ -22,15 +25,29 @@ export type DiffInput = {
   recent: Remark[]; // 直前に処理済みの発言（文脈用）
   fresh: Remark[]; // 新しい発言
 };
-export type DiffOutput = { ops: Op[] };
 export type DiffUpdater = (input: DiffInput) => Promise<DiffOutput>;
 
-export type LogEvent =
-  | { type: "start"; title: string } // セッションの始まり。ルートの本文（タイトル）を残す
+// ログの行の形。段 6 でここから読み込みを検証する。
+// cli.ts が `{ at, ...event }` で書くので、余分なキーは厳格にしない（保存済みのログを読めなくしない）
+export const LogEvent = Schema.Union([
+  // セッションの始まり。ルートの本文（タイトル）を残す
+  Schema.Struct({ type: Schema.Literal("start"), title: Schema.String }),
   // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
-  | { type: "remark"; remark: Remark; noContent?: true }
-  // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）
-  | { type: "diff"; input: { recent: string[]; fresh: string[]; nodeCount: number }; ops: Op[]; dropped: Dropped[]; error?: string };
+  Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) }),
+  Schema.Struct({
+    type: Schema.Literal("diff"),
+    // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）
+    input: Schema.Struct({
+      recent: Schema.mutable(Schema.Array(Schema.String)),
+      fresh: Schema.mutable(Schema.Array(Schema.String)),
+      nodeCount: Schema.Number,
+    }),
+    ops: Schema.mutable(Schema.Array(Op)),
+    dropped: Schema.mutable(Schema.Array(Dropped)),
+    error: Schema.optionalKey(Schema.String),
+  }),
+]);
+export type LogEvent = typeof LogEvent["Type"];
 
 // 論点の状態は保存していないので、スナップショットを作るときに導いて載せる
 export type SnapshotNode = MapNode & { pointStatus?: PointStatus };
