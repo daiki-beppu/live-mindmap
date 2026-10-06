@@ -69,3 +69,9 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .captions__track { flex: none; font-size: 12px; color: #9ca3af; }
 .captions__lines { min-width: 0; }
 .captions__line { margin: 0; overflow-wrap: anywhere; }
+
+/* 取り込みの状態の一言（字幕の横。Issue #161）: バッジ・影は重ねず、控えめな文字だけで出す。
+   .captions の右端（中央から幅 min(80%, 720px) の半分）の 12px 外に置く。
+   transform: translate() の % は要素自身の幅が基準になり、.captions の幅を基準にできないため、
+   同じ % が .map（直近の absolute 位置指定の親）を基準に解決される left の calc() で配置する（2026-10-05） */
+.intake-notice { position: absolute; left: calc(50% + min(80%, 720px) / 2 + 12px); bottom: 24px; font-size: 13px; color: #6b7280; pointer-events: none; z-index: 5; white-space: nowrap; }

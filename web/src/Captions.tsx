@@ -1,5 +1,5 @@
 import { captionsOf } from "./captions.ts";
-import type { Speaking } from "./useLiveFeed.ts";
+import type { Speaking } from "./liveFeed.ts";
 
 // いま話している文字（反映前の発言と途中結果）を、マップの下端に字幕として重ねる。マップのデータには入れない。
 // 文ごとに行を分け、新しい文は次の行に出す。古い文は行ごと消える。

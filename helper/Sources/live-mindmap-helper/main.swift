@@ -4,8 +4,7 @@ import Foundation
 import HelperCore
 
 // 配線だけの層。STT は Transcriber プロトコルの後ろにあり、ここでは Speech を使わない。
-
-private let defaultPort: UInt16 = 8765
+// 引数の解釈は HelperCore の parseRunArguments に任せる（既定のポートもそちら）。
 
 private func printError(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -14,7 +13,7 @@ private func printError(_ message: String) {
 private let usage = """
 usage:
   live-mindmap-helper list
-  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>]
+  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>]
 """
 
 private func listApps() throws {
@@ -24,7 +23,7 @@ private func listApps() throws {
     print(String(decoding: try encoder.encode(apps), as: UTF8.self))
 }
 
-private func run(app bundleID: String, port: UInt16, audioDir: String?) async throws {
+private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
@@ -62,12 +61,15 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?) async th
     var failure: Error?
     do {
         // 2 トラック共通の時刻の基準。音声取得を始める直前に 1 回だけ取る。録音の 0 秒もこれにそろえる。
-        let origin = AudioGetCurrentHostTime()
+        // サーバーがヘルパーを再起動したときは `--origin` で元の基準を渡し、時刻を 0 から振り直さない（Issue #161）。
+        let origin = explicitOrigin ?? AudioGetCurrentHostTime()
+        // 原点は接続より前に決まることが多く、通常の broadcast だとクライアント不在時に失われるので、保持して流す。
+        try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString())
         let recorders = try audioDir.map { directory -> (their: TrackRecorder, my: TrackRecorder) in
             let base = URL(fileURLWithPath: directory, isDirectory: true)
             return (
-                their: try TrackRecorder(url: base.appendingPathComponent("\(Track.相手.rawValue).m4a"), origin: origin),
-                my: try TrackRecorder(url: base.appendingPathComponent("\(Track.自分.rawValue).m4a"), origin: origin)
+                their: try TrackRecorder(url: base.appendingPathComponent(recordingFileName(track: .相手, attempt: audioIndex)), origin: origin),
+                my: try TrackRecorder(url: base.appendingPathComponent(recordingFileName(track: .自分, attempt: audioIndex)), origin: origin)
             )
         }
         var theirAudio = try tap.start()
@@ -112,35 +114,14 @@ private func main() async -> Int32 {
         case "list":
             try listApps()
         case "run":
-            var app: String?
-            var port = defaultPort
-            var audioDir: String?
-            var index = 1
-            while index < arguments.count {
-                switch arguments[index] {
-                case "--app" where index + 1 < arguments.count:
-                    app = arguments[index + 1]
-                    index += 2
-                case "--port" where index + 1 < arguments.count:
-                    guard let value = UInt16(arguments[index + 1]) else {
-                        printError("--port は 0〜65535 の整数にする\n\(usage)")
-                        return 2
-                    }
-                    port = value
-                    index += 2
-                case "--audio-dir" where index + 1 < arguments.count:
-                    audioDir = arguments[index + 1]
-                    index += 2
-                default:
-                    printError("不明な引数: \(arguments[index])\n\(usage)")
-                    return 2
-                }
-            }
-            guard let app else {
-                printError("--app が必要\n\(usage)")
+            let rest = Array(arguments.dropFirst())
+            switch parseRunArguments(rest) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
                 return 2
+            case .success(let args):
+                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex)
             }
-            try await run(app: app, port: port, audioDir: audioDir)
         default:
             printError(usage)
             return 2

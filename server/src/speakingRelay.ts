@@ -51,6 +51,18 @@ export function createSpeakingRelay({ unreflected, send }: SpeakingRelayOptions)
       if (stopped) return;
       for (const track of TRACKS) flush(track);
     },
+    // 予約をすべて取り消し、両トラックの空の frame を送る。stop との違いは、以後も送れる状態を保つこと
+    // （取り込みの途切れの瞬間に使う。永久停止すると、起動し直し後の字幕が届かなくなる。CT-SPEAKING-CLEAR）
+    clear() {
+      if (stopped) return;
+      for (const track of TRACKS) {
+        const s = state[track];
+        clearTimeout(s.timer);
+        s.timer = undefined;
+        s.partial = "";
+        send({ type: "speaking", track, text: "" });
+      }
+    },
     // 予約をすべて取り消し、両トラックの空の frame を送る。以後は何も送らない
     stop() {
       if (stopped) return;

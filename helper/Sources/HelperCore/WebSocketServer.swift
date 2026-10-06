@@ -20,6 +20,9 @@ public actor WebSocketServer {
     private var clients: [ObjectIdentifier: NWConnection] = [:]
     private var stopped = false
     private let queue = DispatchQueue(label: "live-mindmap.websocket")
+    /// `broadcastRetained` で最後に送った内容。後から接続したクライアントにも送る（Issue #161）。
+    /// このヘルパーの 1 回の実行につき 1 度しか使わない（`origin` イベント）ので、1 件だけ覚える。
+    private var retained: String?
 
     /// `port` が 0 のときは空きポートを使う。
     public init(port: UInt16) {
@@ -69,14 +72,26 @@ public actor WebSocketServer {
 
     /// 接続中の全クライアントにテキストフレームを送る。クライアントがいなくても失敗しない。
     public func broadcast(_ text: String) {
+        for connection in clients.values {
+            send(text, to: connection)
+        }
+    }
+
+    /// `broadcast` と同じく今つながっているクライアント全員に送り、かつ内容を覚えておく。
+    /// 後から接続したクライアントにも、接続した直後に同じ内容を送る（`register` から呼ぶ）。
+    public func broadcastRetained(_ text: String) {
+        retained = text
+        broadcast(text)
+    }
+
+    private func send(_ text: String, to connection: NWConnection) {
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
-        for (id, connection) in clients {
-            connection.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
-                guard error != nil, let self else { return }
-                Task { await self.remove(id) }
-            })
-        }
+        let id = ObjectIdentifier(connection)
+        connection.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
+            guard error != nil, let self else { return }
+            Task { await self.remove(id) }
+        })
     }
 
     /// 待ち受けと全接続を閉じる。以後、新しい接続は受け付けない。
@@ -108,6 +123,7 @@ public actor WebSocketServer {
     private func register(_ connection: NWConnection) {
         guard !stopped else { return connection.cancel() }
         clients[ObjectIdentifier(connection)] = connection
+        if let retained { send(retained, to: connection) }
         receiveLoop(connection)
     }
 
