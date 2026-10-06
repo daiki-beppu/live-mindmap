@@ -9,6 +9,7 @@ on:
 jobs:
   empty:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -20,6 +21,7 @@ jobs:
   # 今の check.yml と同じ並び
   current:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -41,6 +43,7 @@ jobs:
   # pnpm/setup@v3: pnpm（単体バイナリ）と Node を 1 ステップで入れる
   pnpm-setup:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -57,6 +60,7 @@ jobs:
   # pnpm/action-setup のキャッシュで store を戻す（setup-node はキャッシュなし）
   action-setup-cache:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -74,6 +78,7 @@ jobs:
   # キャッシュなしでレジストリから取る
   no-cache:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -89,6 +94,7 @@ jobs:
   # playwright: headless shell だけ / キャッシュ / Linux の依存
   playwright:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -108,7 +114,7 @@ jobs:
         run: node -e "import('playwright').then(m=>m.chromium.launch()).then(b=>b.close()).then(()=>console.log('launched'))"
       - name: pw install-deps
         if: runner.os == 'Linux'
-        run: pnpm --filter @live-mindmap/server exec playwright install-deps chromium --only-shell
+        run: pnpm --filter @live-mindmap/server exec playwright install-deps chromium
       - name: pw launch (after deps)
         if: runner.os == 'Linux'
         working-directory: server
@@ -116,6 +122,7 @@ jobs:
 
   playwright-cache:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
@@ -145,6 +152,7 @@ jobs:
   # node_modules がある状態で（setup-uv の既定はリポジトリ全体を glob で探す）
   uv:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26]
         cache: ["auto", "false"]
