@@ -57,10 +57,10 @@ jobs:
       matrix:
         include:
           - name: live
-            args: test/server.test.ts -t "ライブのセッション"
+            args: 'test/server.test.ts -t "ライブのセッション"'
             chromium: true
           - name: restart
-            args: test/server.test.ts -t "Issue #161"
+            args: 'test/server.test.ts -t "Issue #161"'
             chromium: false
           - name: capture
             args: test/capture.test.ts
