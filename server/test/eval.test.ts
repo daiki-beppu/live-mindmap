@@ -340,7 +340,7 @@ describe("eval: 正解ファイルの検証", () => {
 
 describe("eval: bench の正解ファイル", () => {
   const meetings = join(import.meta.dirname, "../bench/meetings");
-  it.each(["deciding", "long", "sharing"])("%s.truth.json は、全件に keywords があり parseTruth を通る", (name) => {
+  it.each(["deciding", "lecture", "long", "sharing"])("%s.truth.json は、全件に keywords があり parseTruth を通る", (name) => {
     expect(() => parseTruth(JSON.parse(readFileSync(join(meetings, `${name}.truth.json`), "utf8")))).not.toThrow();
   });
 });
