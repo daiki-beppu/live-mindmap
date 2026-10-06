@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { SnapshotNode } from "../../../server/src/core/index.ts";
 import { GAP_X, GAP_Y, layout, NODE_WIDTH, type Position } from "../layout.ts";
 import { hiddenIds, hintText, summaryOf, topicOf, type Frame } from "./data.ts";
-import { ProtoCanvas, type Camera, type Hint } from "./ProtoCanvas.tsx";
+import { ProtoCanvas, type Camera, type Hint, type View } from "./ProtoCanvas.tsx";
 
 export type VariantProps = {
   frame: Frame;
@@ -18,6 +18,7 @@ export type VariantProps = {
   onSelect: (id: string) => void;
   onPickTopic: (id: string) => void;
   runs: boolean; // A: 済みの兄弟の議題が 2 つ以上続いたら 1 つにまとめる
+  view?: View; // PROTOTYPE（issue #285）: 人が動かす操作
 };
 
 function useCommon({ frame, folded, focusTopic }: VariantProps) {
@@ -92,6 +93,7 @@ export function VariantA(p: VariantProps) {
   void members;
   return (
     <ProtoCanvas
+      view={p.view}
       nodes={nodes}
       layout={lay}
       edges
@@ -148,6 +150,7 @@ export function VariantC(p: VariantProps) {
   const lay = useCallback((h: Record<string, number>) => gridLayout(nodes, h, 1500), [nodes]);
   return (
     <ProtoCanvas
+      view={p.view}
       nodes={nodes}
       layout={lay}
       edges
@@ -222,6 +225,7 @@ export function VariantB(p: VariantProps) {
       </ol>
       <div className="proto-b__canvas">
         <ProtoCanvas
+      view={p.view}
           nodes={nodes}
           layout={lay}
           edges

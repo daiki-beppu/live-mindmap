@@ -1,6 +1,7 @@
 // PROTOTYPE（issue #131）: 案 A・C が共有する React Flow の画面とカメラ。配置は各案が渡す。
 import {
   Handle,
+  useStore,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -21,6 +22,15 @@ import { useAnimatedPositions } from "../useAnimatedPositions.ts";
 
 export type Hint = "none" | "text" | "count";
 export type Camera = "focus" | "glance" | "fit";
+
+// PROTOTYPE（issue #285）: 人が動かす操作。mode は App が持つ（follow: 自動のカメラ／manual: 人が動かした／overview: 全体を見る）
+export type ViewMode = "follow" | "manual" | "overview";
+export type View = {
+  mode: ViewMode;
+  minZoom: number; // 人が縮められる下限
+  offscreen: boolean; // 画面の外で変わったノードの印を縁に出す
+  onUserMove: () => void;
+};
 
 type ProtoData = {
   text: string;
@@ -84,6 +94,7 @@ export type CanvasProps = {
   anchorIds: string[]; // 寄る範囲が画面に収まらないとき、優先して見せるノード（直近に変わったノード）
   aimKey: string; // これが変わったら狙い直す
   topicKey: string; // これが変わったら議題が変わった（glance で全体を見せる）
+  view?: View;
 };
 
 const READABLE_MIN = 0.75; // 画面共有で読める下限の倍率（14px → 10.5px）
@@ -160,6 +171,12 @@ function Canvas(p: CanvasProps) {
   const glanceUntil = useRef(0);
   const lastTopic = useRef(p.topicKey);
   useEffect(() => {
+    const mode = p.view?.mode ?? "follow";
+    if (mode === "manual") return;
+    if (mode === "overview") {
+      const f = requestAnimationFrame(() => void fitView({ duration: 600, padding: 0.05, minZoom: 0.02, maxZoom: MAX_ZOOM }));
+      return () => cancelAnimationFrame(f);
+    }
     const aim = () => {
       const { width, height } = store.getState();
       if (!width || !height) return;
@@ -198,7 +215,7 @@ function Canvas(p: CanvasProps) {
     const f = requestAnimationFrame(aim);
     return () => cancelAnimationFrame(f);
     // 寸法が測れたら狙い直す（dims）。位置の補間（positions）では狙い直さない
-  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView]);
+  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode]);
 
   return (
     <ReactFlow
@@ -210,13 +227,59 @@ function Canvas(p: CanvasProps) {
       nodesConnectable={false}
       nodesFocusable={false}
       elementsSelectable={false}
-      panOnDrag={false}
+      panOnDrag={!!p.view}
+      panOnScroll={!!p.view}
       zoomOnScroll={false}
-      zoomOnPinch={false}
+      zoomOnPinch={!!p.view}
+      zoomActivationKeyCode={p.view ? ["Meta", "Control"] : null}
       zoomOnDoubleClick={false}
-      minZoom={0.02}
+      panActivationKeyCode={null}
+      selectionKeyCode={null}
+      multiSelectionKeyCode={null}
+      deleteKeyCode={null}
+      minZoom={p.view?.mode === "overview" ? 0.02 : (p.view?.minZoom ?? 0.02)}
+      maxZoom={2}
+      onMoveStart={(e) => e && p.view?.onUserMove()}
+      onMove={(e) => e && p.view?.onUserMove()}
       proOptions={{ hideAttribution: true }}
-    />
+    >
+      {p.view?.offscreen && p.view.mode !== "follow" && <Offscreen ids={[...p.changed]} target={target} dims={dims} round={p.round} />}
+    </ReactFlow>
+  );
+}
+
+// 画面の外で変わったノードを、その方向の縁に小さな点と議題の文字で知らせる。押すとそのノードへ移す（人の操作のまま）
+function Offscreen({ ids, target, dims, round }: { ids: string[]; target: Record<string, Pos>; dims: Record<string, { width: number; height: number }>; round: number }) {
+  const [tx, ty, zoom] = useStore((s) => s.transform);
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
+  const { setCenter } = useReactFlow();
+  const m = 14;
+  const marks = ids.flatMap((id) => {
+    const q = target[id];
+    if (!q) return [];
+    const h = dims[id]?.height ?? 40;
+    const sx = tx + (q.x + NODE_WIDTH / 2) * zoom;
+    const sy = ty + (q.y + h / 2) * zoom;
+    const inside = tx + (q.x + NODE_WIDTH) * zoom > 0 && tx + q.x * zoom < width && ty + (q.y + h) * zoom > 0 && ty + q.y * zoom < height;
+    if (inside) return [];
+    return [{ id, x: Math.min(Math.max(sx, m), width - m), y: Math.min(Math.max(sy, m), height - m), cx: q.x + NODE_WIDTH / 2, cy: q.y + h / 2 }];
+  });
+  // 縁で重なる印は 1 つにまとめる
+  const shown = marks.filter((k, i) => marks.findIndex((o) => Math.hypot(o.x - k.x, o.y - k.y) < 20) === i);
+  return (
+    <>
+      {shown.map((k) => (
+        <button
+          key={`${k.id}:${round}`}
+          type="button"
+          className="proto-offscreen"
+          style={{ left: k.x, top: k.y }}
+          title="画面の外で変わったノード"
+          onClick={() => void setCenter(k.cx, k.cy, { zoom: Math.max(zoom, 0.75), duration: 400 })}
+        />
+      ))}
+    </>
   );
 }
 
