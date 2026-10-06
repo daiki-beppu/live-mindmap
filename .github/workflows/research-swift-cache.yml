@@ -1,0 +1,104 @@
+# 一時的な計測用（issue #220）。research/ci-swift-cache ブランチだけで走る
+name: research-swift-cache
+
+on:
+  push:
+    branches: [research/ci-swift-cache]
+  workflow_dispatch:
+
+jobs:
+  # 今の形: swift build（typecheck）と swift test を別々に。キャッシュなし
+  split:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/cache@v6
+        with:
+          path: helper/.deps/webrtc-apm
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+      - run: bash helper/scripts/build-webrtc-apm.sh
+      - run: xcodebuild -version; swift --version; sysctl -n hw.ncpu
+      - name: swift build
+        working-directory: helper
+        run: /usr/bin/time -p swift build 2>&1 | tee ../build.log | tail -5; grep -c Compiling ../build.log || true
+      - name: swift test
+        working-directory: helper
+        run: /usr/bin/time -p swift test 2>&1 | tee ../test.log | tail -5; grep -c Compiling ../test.log || true
+
+  # build --build-tests → test --skip-build と、同じジョブ内での mtime の影響
+  shared:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/cache@v6
+        with:
+          path: helper/.deps/webrtc-apm
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+      - run: bash helper/scripts/build-webrtc-apm.sh
+      - name: swift build --build-tests
+        working-directory: helper
+        run: /usr/bin/time -p swift build --build-tests 2>&1 | tee ../b1.log | tail -3; grep -c Compiling ../b1.log || true
+      - name: swift test --skip-build
+        working-directory: helper
+        run: /usr/bin/time -p swift test --skip-build 2>&1 | tail -5
+      - name: no-op rebuild
+        working-directory: helper
+        run: /usr/bin/time -p swift build --build-tests 2>&1 | tail -3
+      - name: rebuild after touching every file
+        working-directory: helper
+        run: |
+          git ls-files . | xargs touch
+          /usr/bin/time -p swift build --build-tests 2>&1 | tee ../b2.log | tail -3; grep -c Compiling ../b2.log || true
+      - name: rebuild after touching every file, file hashing on
+        working-directory: helper
+        run: |
+          /usr/bin/time -p swift build --build-tests -Xswiftc -enable-incremental-file-hashing 2>&1 | tail -3
+          git ls-files . | xargs touch
+          /usr/bin/time -p swift build --build-tests -Xswiftc -enable-incremental-file-hashing 2>&1 | tee ../b3.log | tail -3; grep -c Compiling ../b3.log || true
+          grep Compiling ../b3.log | head -20 || true
+      - name: test --skip-build after hashing builds
+        working-directory: helper
+        run: /usr/bin/time -p swift test --skip-build 2>&1 | tail -3
+
+  # .build を actions/cache で持ち越す。1 回目で保存、2 回目以降で復元
+  cached:
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [plain, hashing]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/cache@v6
+        with:
+          path: helper/.deps/webrtc-apm
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+      - run: bash helper/scripts/build-webrtc-apm.sh
+      - id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: helper/.build
+          key: research-swift-${{ matrix.variant }}-${{ github.sha }}
+          restore-keys: research-swift-${{ matrix.variant }}-
+      - run: |
+          echo "hit=${{ steps.restore.outputs.cache-hit }} matched=${{ steps.restore.outputs.cache-matched-key }}"
+          du -sh helper/.build || true
+      - name: swift build --build-tests
+        working-directory: helper
+        run: |
+          FLAGS=""
+          if [ "${{ matrix.variant }}" = hashing ]; then FLAGS="-Xswiftc -enable-incremental-file-hashing"; fi
+          /usr/bin/time -p swift build --build-tests $FLAGS 2>&1 | tee ../b.log | tail -3; grep -c Compiling ../b.log || true
+          grep Compiling ../b.log | head -20 || true
+      - name: swift test --skip-build
+        working-directory: helper
+        run: /usr/bin/time -p swift test --skip-build 2>&1 | tail -3
+      - run: du -sh helper/.build
+      - if: steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: helper/.build
+          key: research-swift-${{ matrix.variant }}-${{ github.sha }}
