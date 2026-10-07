@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useReducer, useRef } from "react";
+import { useCallback, useMemo, useReducer, useRef, useState } from "react";
 import { ReviewControls } from "./ReviewControls.tsx";
 import { initialPlayback, PLAYBACK_RATES, playbackReducer, type PlaybackEvent } from "./reviewPlayback.ts";
 import { buildReviewTimeline, reviewChapters, reviewMarks, snapshotAt, speakingAt, topicNameOf } from "./reviewTimeline.ts";
@@ -18,6 +18,8 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
   const context = useMemo(() => ({ duration: timeline.duration, reflectionTimes: timeline.reflectionTimes, rates: audioUrl ? AUDIO_RATES : PLAYBACK_RATES }), [timeline, audioUrl]);
   const [state, dispatch] = useReducer((s: ReturnType<typeof initialPlayback>, e: PlaybackEvent) => playbackReducer(s, e, context), timeline.duration, (duration) => initialPlayback(duration, audioUrl ? AUDIO_RATES[0] : undefined));
   const audio = useRef<HTMLAudioElement>(null);
+  // 人が時刻を動かした回数（▶・シーク・反映の前後）。elapsed・audioTime・ended・setRate では増やさない
+  const [timeMoves, setTimeMoves] = useState(0);
   usePlaybackClock(
     state.playing && !audioUrl,
     useCallback((seconds: number) => dispatch({ type: "elapsed", seconds }), []),
@@ -31,6 +33,7 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
   // 操作: 今の reducer の規則で行き先の時刻を決めて dispatch し、音声つきなら、その時刻を currentTime に書く（止めている間も同じ）
   const operate = (event: PlaybackEvent) => {
     const next = playbackReducer(state, event, context);
+    setTimeMoves((n) => n + 1);
     dispatch(event);
     if (audio.current && next.time !== state.time) audio.current.currentTime = next.time;
   };
@@ -38,7 +41,7 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
   return (
     <div className="review">
       <div className="review__session">
-        <SessionView snapshot={snapshot} speaking={speakingAt(timeline, state.time)} />
+        <SessionView snapshot={snapshot} speaking={speakingAt(timeline, state.time)} review={{ timeMoves }} />
       </div>
       <ReviewControls
         time={state.time}
