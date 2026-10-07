@@ -251,7 +251,7 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
       });
 
       expect(format.type).toBe("json_schema");
-      expect(objects.length).toBeGreaterThanOrEqual(7); // 最上位 1 つと 6 操作
+      expect(objects.length).toBeGreaterThanOrEqual(7); // 最上位 1 つと 7 操作
       for (const object of objects) expect(object.additionalProperties).toBe(false);
     }));
 
@@ -266,7 +266,7 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
       expect(refs).toBe(0);
     }));
 
-  it.effect("DiffOutput の 6 操作（add・update・combine・move・delete・noop）が anyOf に入り、add と update の根拠は 1 件以上（minItems: 1）を要求する", () =>
+  it.effect("DiffOutput の 7 操作（add・update・combine・move・delete・noop・close）が anyOf に入り、add と update の根拠は 1 件以上（minItems: 1）を要求する", () =>
     Effect.gen(function* () {
       const { schema } = yield* schemaOf();
       const operations = new Map<string, Record<string, unknown>>();
@@ -277,7 +277,11 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
         if (name) operations.set(name, n);
       });
 
-      expect([...operations.keys()].sort()).toEqual(["add", "combine", "delete", "move", "noop", "update"]);
+      expect([...operations.keys()].sort()).toEqual(["add", "close", "combine", "delete", "move", "noop", "update"]);
+      // close は対象 ID のみ（根拠・理由は持たない）
+      const close = operations.get("close")!;
+      expect(Object.keys(close.properties as object).sort()).toEqual(["node", "op"]);
+      expect([...(close.required as string[])].sort()).toEqual(["node", "op"]);
       for (const name of ["add", "update"]) {
         const evidence = (operations.get(name)!.properties as Record<string, { minItems?: number }>).evidence;
         expect(evidence?.minItems).toBe(1);
@@ -740,6 +744,42 @@ describe("種別「要点」の経路", () => {
     expect(prompt).toMatch(/^ {2}- n1 議題: ふりかえりのやり方$/m);
     expect(prompt).toMatch(/^ {4}- n2 要点: 毎週 15 分で回している$/m);
   });
+});
+
+describe("議題・論点の「済み」（close）の経路", () => {
+  const known = new Set(["r1", "r2", "r3"]);
+  const fresh = [{ id: "r4", track: "相手" as const, start: 4, end: 5, text: "x" }];
+
+  it("buildPrompt のアウトラインは、済みの議題・論点の行にだけ「（済み）」を付ける", () => {
+    const opened = applyOps(
+      emptyMap("定例"),
+      [
+        { op: "add", ref: "a", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+        { op: "add", ref: "b", parent: "a", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
+        { op: "add", ref: "c", parent: "root", kind: "議題", text: "予算", evidence: ["r3"] },
+      ],
+      known,
+      { round: 1, at: 0 },
+    ).map;
+    // 根拠が足された反映の 2 つ後の反映で閉じる（直前の反映なら捨てられる）
+    const closed = applyOps(opened, [{ op: "close", node: "n1" }, { op: "close", node: "n2" }], known, { round: 3, at: 0 });
+    expect(closed.dropped).toEqual([]);
+
+    const prompt = buildPrompt({ map: closed.map, recent: [], fresh });
+
+    expect(prompt).toMatch(/^ {2}- n1 議題: 採用（済み）$/m);
+    expect(prompt).toMatch(/^ {4}- n2 論点\(未決\): 面接は何回か（済み）$/m);
+    expect(prompt).toMatch(/^ {2}- n3 議題: 予算$/m); // 話し中の行には付けない
+    expect(count(prompt, "（済み）")).toBe(2);
+  });
+
+  it.effect("system プロンプトの差分操作に close の説明がある（会議の話が別へ移り戻る気配がないときだけ・迷うときは閉じない・根拠は持たない・自動で話し中に戻る）", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(sys).toContain("close");
+      for (const part of ["済み", "迷うときは閉じない", "根拠は持たない", "話し中に戻る", "開き直す操作は無い"]) expect(sys).toContain(part);
+    }));
 });
 
 describe("system プロンプト: 会話の扱い", () => {

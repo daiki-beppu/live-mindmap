@@ -34,6 +34,7 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 - combine: 同じ種別のノード from を into にまとめる。from の根拠と子は into に移る。
 - move: ノードの親を変える。子孫も一緒に移る。
 - delete: 誤認識や読み違いで作った、子を持たないノードを消す。却下された案は削除せず update で 却下 にする。
+- close: 議題か論点を「済み」にする。会議の話が明らかに別へ移り、戻る気配がないときだけ使う。迷うときは閉じない。根拠は持たない。済みの議題・論点やその子孫に add・update・combine・move をすると、自動で話し中に戻る（開き直す操作は無い）。話が戻ってきたら、畳まれていても見えている id にそのまま add・update する。
 - noop: 新しい発言を見たうえで、マップを変えないと判断したことを表す。
 
 # 方針
@@ -85,7 +86,7 @@ function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): str
 function renderOutline(map: MeetingMap): string {
   const lines: string[] = [];
   const walk = (id: string, depth: number) => {
-    lines.push(`${"  ".repeat(depth)}- ${nodeLabel(map, id)}`);
+    lines.push(`${"  ".repeat(depth)}- ${nodeLabel(map, id)}${map.nodes[id]!.talkStatus ? "（済み）" : ""}`);
     for (const c of children(map, id)) walk(c.id, depth + 1);
   };
   walk(ROOT_ID, 0);
