@@ -27,6 +27,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
+    // 途中で入力の機器が変わったら、マイクの流れが `MicrophoneError.configurationChanged` で終わり、ヘルパーは 1 で終わる。
+    // サーバーの起動し直し（Issue #161）で、新しい機器の形式と出力先で取り込み直す（Issue #232）。
     let outputRoute = try currentOutputRoute()
     let duplicates = outputRoute.marksDuplicates ? DuplicateMarker() : nil
     // 2 トラックは別の SpeechAnalyzer で処理する（1 つの transcriber は 1 回の transcribe にだけ使える）。
