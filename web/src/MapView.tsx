@@ -13,7 +13,20 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "../../server/src/core/index.ts";
-import { cameraFocus, focusViewport, nodeRect, shouldMoveCamera } from "./camera.ts";
+import {
+  cameraFocus,
+  clampUserZoom,
+  focusViewport,
+  nodeRect,
+  overviewViewport,
+  panViewport,
+  shouldMoveCamera,
+  OVERVIEW_MIN_ZOOM,
+  USER_MAX_ZOOM,
+  USER_MIN_ZOOM,
+  zoomAroundCenter,
+  type Viewport,
+} from "./camera.ts";
 import { changedNodeIds } from "./changes.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH } from "./layout.ts";
@@ -40,9 +53,6 @@ type ViewingProps = {
 
 // 撮影では、既定の最小倍率（0.5）より小さくして、大きなマップも収める。この下限でも収まらない場合は onFitted(false) で知らせる
 const STILL_MIN_ZOOM = 0.02;
-// 人が操作するときの倍率の範囲（自動のカメラの範囲は camera.ts）
-const USER_MIN_ZOOM = 0.5;
-const USER_MAX_ZOOM = 2;
 
 function MapCanvas({
   snapshot,
@@ -60,6 +70,8 @@ function MapCanvas({
   const storeApi = useStoreApi();
   // 最後に今の議題へ寄せた反映の round。変更の無い反映では寄せ直さない
   const placedRound = useRef<number | null>(null);
+  // 全体を見る前の倍率・位置。全体を見ている間だけ持つ
+  const beforeOverview = useRef<Viewport | null>(null);
 
   const onNodesChange = (changes: NodeChange[]) => {
     const measured = changes.filter((c): c is NodeDimensionChange => c.type === "dimensions" && !!c.dimensions);
@@ -128,18 +140,75 @@ function MapCanvas({
   const lastSeq = useRef(camera?.seq);
   if (camera && camera.seq !== lastSeq.current) {
     lastSeq.current = camera.seq;
-    if (camera.command === "refocus") placedRound.current = null;
+    if (camera.command.type === "refocus") placedRound.current = null;
   }
-  const manual = !still && viewing?.mode === "manual";
+  // 自動のカメラを止めている間（人が動かしている・全体を見ている）
+  const paused = !still && viewing !== undefined && viewing.mode !== "auto";
+  const overview = !still && viewing?.mode === "overview";
+
+  // 全体を見る前の倍率・位置を、全体を見に行く前に覚える。戻る（restore）以外で全体を見る状態を抜けたら捨てる
+  const wasOverview = useRef(false);
+  useEffect(() => {
+    if (overview && !wasOverview.current) beforeOverview.current = getViewport();
+    if (!overview && wasOverview.current && camera?.command.type !== "restore") beforeOverview.current = null;
+    wasOverview.current = overview;
+  }, [overview, camera, getViewport]);
+
+  // キーの指示。setViewport の動き（event が null）は userMoved にならない
+  useEffect(() => {
+    const command = camera?.command;
+    if (!command) return;
+    const { width, height } = storeApi.getState();
+    const size = { width, height };
+    const current = getViewport();
+    switch (command.type) {
+      case "zoomBy":
+        void setViewport(zoomAroundCenter(current, clampUserZoom(current.zoom * command.factor), size), { duration: 0 });
+        break;
+      case "zoomTo":
+        void setViewport(zoomAroundCenter(current, clampUserZoom(command.zoom), size), { duration: 0 });
+        break;
+      case "pan":
+        // 全体を見ていて 0.5 未満の倍率から人の状態に移るときは、人の範囲に収めてから動かす
+        void setViewport(panViewport(zoomAroundCenter(current, clampUserZoom(current.zoom), size), command, size), { duration: 0 });
+        break;
+      case "restore": {
+        const before = beforeOverview.current;
+        beforeOverview.current = null;
+        if (before) void setViewport(before, { duration: 0 });
+        break;
+      }
+    }
+    // 指示は seq が変わったときだけ実行する
+  }, [camera?.seq]);
+
+  // 全体を見ている間は、目標の位置で測った全体の箱に一度で収める。ノードの増加・実寸の確定・指示のたびに収め直す
+  useEffect(() => {
+    if (!overview) return;
+    const frame = requestAnimationFrame(() => {
+      const { width, height } = storeApi.getState();
+      const v = overviewViewport(tree.ids, target, dims, { width, height });
+      if (v) void setViewport(v, { duration: 0 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [overview, tree, target, dims, camera?.seq, storeApi, setViewport]);
 
   // 人が動かしたとき（event がある）だけ知らせる。setViewport や fitView の動き（event が null）は数えない
   const onUserMove = (event: unknown) => {
-    if (event) onViewingEvent?.({ type: "userMoved" }, tree);
+    if (!event) return;
+    onViewingEvent?.({ type: "userMoved" }, tree);
+    // 全体を見ている間の 0.5 未満の倍率から人の操作に移るときは、人の範囲に収める（minZoom の切り替えは今の倍率を変えない）
+    const current = getViewport();
+    const zoom = clampUserZoom(current.zoom);
+    if (zoom !== current.zoom) {
+      const { width, height } = storeApi.getState();
+      void setViewport(zoomAroundCenter(current, zoom, { width, height }), { duration: 0 });
+    }
   };
 
   // 反映のたびに（位置・寸法が変わるたびに）、撮影では全体を、ふだんは今の議題を画面に収める。今の議題が無いときも全体を収める
   useEffect(() => {
-    if (manual) return;
+    if (paused) return;
     const focus = still ? null : cameraFocus(snapshot);
     if (focus) {
       // 補間中の位置ではなく目標の位置で測る
@@ -172,7 +241,7 @@ function MapCanvas({
       cancelled = true;
       cancelAnimationFrame(frame);
     };
-  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted, manual, camera?.seq]);
+  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted, paused, camera?.seq]);
 
   return (
     <ReactFlow
@@ -197,7 +266,7 @@ function MapCanvas({
             panOnScroll: true,
             panOnScrollMode: PanOnScrollMode.Free,
             zoomOnPinch: true,
-            minZoom: USER_MIN_ZOOM,
+            minZoom: overview ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM,
             maxZoom: USER_MAX_ZOOM,
             onMoveStart: onUserMove,
             onMove: onUserMove,

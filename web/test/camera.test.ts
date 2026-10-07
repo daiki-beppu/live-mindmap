@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { cameraFocus, focusViewport, nodeRect, shouldMoveCamera } from "../src/camera.ts";
+import {
+  OVERVIEW_MIN_ZOOM,
+  USER_MAX_ZOOM,
+  USER_MIN_ZOOM,
+  cameraFocus,
+  clampUserZoom,
+  focusViewport,
+  nodeRect,
+  overviewViewport,
+  panViewport,
+  shouldMoveCamera,
+  zoomAroundCenter,
+} from "../src/camera.ts";
+import { NODE_WIDTH } from "../src/layout.ts";
 
 const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題"): SnapshotNode => ({
   id,
@@ -135,5 +148,93 @@ describe("shouldMoveCamera: 何も変わらない反映ではカメラを動か�
     const changes = [change("D1", 1)];
     expect(shouldMoveCamera(snap({ round: 2, changes, lastChanged: "D2" }), 1)).toBe(true);
     expect(shouldMoveCamera(snap({ round: 2, changes }), 1)).toBe(false);
+  });
+});
+
+describe("clampUserZoom: 人の倍率は 0.5〜2 倍", () => {
+  it("範囲の外は端に収め、中は変えない", () => {
+    expect(USER_MIN_ZOOM).toBe(0.5);
+    expect(USER_MAX_ZOOM).toBe(2);
+    expect(clampUserZoom(2 * 1.25)).toBe(2);
+    expect(clampUserZoom(0.5 / 1.25)).toBe(0.5);
+    expect(clampUserZoom(0.02 * 1.25)).toBe(0.5);
+    expect(clampUserZoom(1.25)).toBe(1.25);
+  });
+});
+
+// 画面中心のワールド座標
+const centerOf = (v: { x: number; y: number; zoom: number }) => ({ x: (size.width / 2 - v.x) / v.zoom, y: (size.height / 2 - v.y) / v.zoom });
+
+describe("zoomAroundCenter: 画面の中心を保って倍率を変える", () => {
+  it("拡大・縮小・倍率 1.0 のどれでも、変える前と同じワールド座標が画面の中心に残る", () => {
+    const before = { x: -300, y: 120, zoom: 0.8 };
+    for (const zoom of [1, 1.25, 0.64]) {
+      const after = zoomAroundCenter(before, zoom, size);
+      expect(after.zoom).toBeCloseTo(zoom);
+      expect(centerOf(after).x).toBeCloseTo(centerOf(before).x);
+      expect(centerOf(after).y).toBeCloseTo(centerOf(before).y);
+    }
+  });
+});
+
+describe("panViewport: 画面の 1/3 ずつ移動する", () => {
+  const v = { x: 100, y: 50, zoom: 1.3 };
+
+  it("→ なら右側が見えてくるよう x が width/3 減る。y と zoom は変わらない", () => {
+    expect(panViewport(v, { dx: 1, dy: 0 }, size)).toEqual({ x: 100 - size.width / 3, y: 50, zoom: 1.3 });
+  });
+
+  it("← は x が width/3 増える", () => {
+    expect(panViewport(v, { dx: -1, dy: 0 }, size)).toEqual({ x: 100 + size.width / 3, y: 50, zoom: 1.3 });
+  });
+
+  it("↓ なら下側が見えてくるよう y が height/3 減り、↑ は増える", () => {
+    expect(panViewport(v, { dx: 0, dy: 1 }, size)).toEqual({ x: 100, y: 50 - size.height / 3, zoom: 1.3 });
+    expect(panViewport(v, { dx: 0, dy: -1 }, size)).toEqual({ x: 100, y: 50 + size.height / 3, zoom: 1.3 });
+  });
+});
+
+describe("overviewViewport: 全体を目標の位置で収める", () => {
+  const dims = { a: { height: 40 }, b: { height: 40 } };
+
+  it("渡した目標の位置の外接箱が画面に収まり、箱の中心が画面の中央に来る", () => {
+    const target = { a: { x: 0, y: 0 }, b: { x: 3000, y: 1600 } };
+    const v = overviewViewport(["a", "b"], target, dims, size)!;
+    const left = 0, top = 0, right = 3000 + NODE_WIDTH, bottom = 1600 + 40;
+    expect(fits(rect(left, top, right - left, bottom - top), v)).toBe(true);
+    expect(v.zoom).toBeLessThan(1);
+    expect(((left + right) / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
+    expect(((top + bottom) / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
+  });
+
+  it("補間中の位置ではなく、渡した目標の位置で測る（目標だけが違う入力で結果が違う）", () => {
+    const near = overviewViewport(["a", "b"], { a: { x: 0, y: 0 }, b: { x: 400, y: 200 } }, dims, size)!;
+    const far = overviewViewport(["a", "b"], { a: { x: 0, y: 0 }, b: { x: 4000, y: 2400 } }, dims, size)!;
+    expect(far.zoom).toBeLessThan(near.zoom);
+  });
+
+  it("人の下限 0.5 を守らず、全体が収まるまで縮める（下限は 0.02）", () => {
+    const target = { a: { x: 0, y: 0 }, b: { x: 20000, y: 12000 } };
+    const v = overviewViewport(["a", "b"], target, dims, size)!;
+    expect(OVERVIEW_MIN_ZOOM).toBe(0.02);
+    expect(v.zoom).toBeLessThan(USER_MIN_ZOOM);
+    expect(v.zoom).toBeGreaterThanOrEqual(OVERVIEW_MIN_ZOOM);
+    expect(fits(rect(0, 0, 20000 + NODE_WIDTH, 12040), v)).toBe(true);
+  });
+
+  it("小さな全体でも人の上限 2 倍を超えない", () => {
+    const v = overviewViewport(["a"], { a: { x: 10, y: 10 } }, dims, size)!;
+    expect(v.zoom).toBeLessThanOrEqual(USER_MAX_ZOOM);
+  });
+
+  it("見せる id だけで測る（targets にある別のノードは含めない）", () => {
+    const target = { a: { x: 0, y: 0 }, b: { x: 0, y: 0 }, far: { x: 30000, y: 20000 } };
+    const only = overviewViewport(["a", "b"], target, dims, size)!;
+    const withFar = overviewViewport(["a", "b", "far"], target, dims, size)!;
+    expect(only.zoom).toBeGreaterThan(withFar.zoom);
+  });
+
+  it("見せるノードがなければ null", () => {
+    expect(overviewViewport([], {}, {}, size)).toBeNull();
   });
 });

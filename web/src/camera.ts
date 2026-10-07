@@ -4,11 +4,17 @@ import { DEFAULT_HEIGHT, NODE_WIDTH, type Position } from "./layout.ts";
 // 倍率の範囲。下限 0.75 は、14px の文字が 10.5px で映る大きさ。
 export const MIN_ZOOM = 0.75;
 export const MAX_ZOOM = 1.1;
+// 人が操作するときの倍率の範囲
+export const USER_MIN_ZOOM = 0.5;
+export const USER_MAX_ZOOM = 2;
+// 全体を収めるときの下限（人の下限 0.5 では大きなマップが収まらない）
+export const OVERVIEW_MIN_ZOOM = 0.02;
 // 寄せ先の外接箱の周りの余白（px）
 const PADDING = 40;
 
 export type Rect = { x: number; y: number; width: number; height: number };
 export type Viewport = { x: number; y: number; zoom: number };
+type Size = { width: number; height: number };
 
 // カメラが寄せるノード（今の議題・祖先の議題・今の議題の子孫）と、下限でも収まらないときの中心にするノード
 // （今の反映で最後に変わったノード。寄せ先の外でもよい。無ければ今の議題）。
@@ -42,15 +48,54 @@ export function nodeRect(id: string, target: Record<string, Position>, dims: Rec
 
 // rects の外接箱が（余白込みで）収まる倍率（MIN_ZOOM〜MAX_ZOOM）で、画面の中央に映す。
 // MIN_ZOOM でも収まらないときは、center の中心を画面の中央にする。画面座標は 座標 × zoom + x（y）
-export function focusViewport(rects: Rect[], center: Rect, size: { width: number; height: number }): Viewport {
+export function focusViewport(rects: Rect[], center: Rect, size: Size): Viewport {
+  const { left, top, right, bottom, fitZoom } = fitBox(rects, size);
+  const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitZoom));
+  const [cx, cy] = fitZoom >= MIN_ZOOM ? [(left + right) / 2, (top + bottom) / 2] : [center.x + center.width / 2, center.y + center.height / 2];
+  return { x: size.width / 2 - cx * zoom, y: size.height / 2 - cy * zoom, zoom };
+}
+
+// rects の外接箱と、それが（余白込みで）画面に収まる倍率（範囲に収める前）
+function fitBox(rects: Rect[], size: Size) {
   const left = Math.min(...rects.map((r) => r.x));
   const top = Math.min(...rects.map((r) => r.y));
   const right = Math.max(...rects.map((r) => r.x + r.width));
   const bottom = Math.max(...rects.map((r) => r.y + r.height));
   const fitZoom = Math.min(size.width / (right - left + PADDING * 2), size.height / (bottom - top + PADDING * 2));
-  const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitZoom));
-  const [cx, cy] = fitZoom >= MIN_ZOOM ? [(left + right) / 2, (top + bottom) / 2] : [center.x + center.width / 2, center.y + center.height / 2];
+  return { left, top, right, bottom, fitZoom };
+}
+
+// 人が操作する倍率を 0.5〜2 倍に収める
+export function clampUserZoom(zoom: number): number {
+  return Math.min(USER_MAX_ZOOM, Math.max(USER_MIN_ZOOM, zoom));
+}
+
+// 画面の中心に映っているワールド座標を保ったまま、倍率を zoom にする
+export function zoomAroundCenter(viewport: Viewport, zoom: number, size: Size): Viewport {
+  const cx = (size.width / 2 - viewport.x) / viewport.zoom;
+  const cy = (size.height / 2 - viewport.y) / viewport.zoom;
   return { x: size.width / 2 - cx * zoom, y: size.height / 2 - cy * zoom, zoom };
+}
+
+// 画面の 1/3 ずつ動かす。dx・dy は見えてくる側の向き（dx = 1 なら右側が見える）。倍率は変えない
+export function panViewport(viewport: Viewport, dir: { dx: number; dy: number }, size: Size): Viewport {
+  return { x: viewport.x - (dir.dx * size.width) / 3, y: viewport.y - (dir.dy * size.height) / 3, zoom: viewport.zoom };
+}
+
+// ids のノードを、目標の位置で測った外接箱で、画面の中央に一度で収める（OVERVIEW_MIN_ZOOM〜USER_MAX_ZOOM）。ids が空なら null
+export function overviewViewport(
+  ids: string[],
+  target: Record<string, Position>,
+  dims: Record<string, { height: number }>,
+  size: Size,
+): Viewport | null {
+  if (ids.length === 0) return null;
+  const { left, top, right, bottom, fitZoom } = fitBox(
+    ids.map((id) => nodeRect(id, target, dims)),
+    size,
+  );
+  const zoom = Math.min(USER_MAX_ZOOM, Math.max(OVERVIEW_MIN_ZOOM, fitZoom));
+  return { x: size.width / 2 - ((left + right) / 2) * zoom, y: size.height / 2 - ((top + bottom) / 2) * zoom, zoom };
 }
 
 // 今の round に変わったノードが無く、すでにこの round より前に寄せていれば動かさない。
