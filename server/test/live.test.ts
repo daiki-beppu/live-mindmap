@@ -1,91 +1,116 @@
-import { describe, expect, it } from "vitest";
-import { originFromHelper, partialFromHelper, remarkFromHelper } from "../src/core/index.ts";
+import { assert, describe, it } from "@effect/vitest";
+import { Effect, Result, Schema } from "effect";
+import { decodeHelperEvent } from "../src/core/index.ts";
 
-// ヘルパーのイベントの形は helper/README.md「イベントの形」が正本
-describe("remarkFromHelper（ヘルパーのイベント → 発言）", () => {
-  it("remark は、渡された ID を付けた発言になる。両トラックとも同じ形で変換される", () => {
-    const base = { type: "remark", start: 1.5, end: 3.25, text: "こんにちは", duplicate: false };
+// ヘルパーのイベントの形は helper/README.md「イベントの形」が正本。
+// 段 3（Issue #240）で remarkFromHelper・partialFromHelper・originFromHelper を decodeHelperEvent に
+// まとめた（order.md:34, 47, 61）。期待値は、置き換え前のこのファイルが固定していたものと同じにする
+// （order.md:61「期待値は同じ」）。戻り値の形だけが変わる: 知っているイベントは { kind: "known", event }、
+// 知らない type は失敗ではなく { kind: "unknown" }、壊れた入力（不正な JSON を含む）はタグ付きの失敗になる。
 
-    expect(remarkFromHelper({ ...base, track: "相手" }, "r1")).toMatchObject({
-      id: "r1",
-      track: "相手",
-      start: 1.5,
-      end: 3.25,
-      text: "こんにちは",
-    });
-    expect(remarkFromHelper({ ...base, track: "自分" }, "r2")).toMatchObject({ id: "r2", track: "自分" });
+// decode の成功を主張し、decode した値を返す。失敗していれば SchemaError の message を示して落ちる
+// （coreSchema.test.ts の expectDecodeSuccess と同じ idiom）
+function expectDecodeSuccess<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
+  return Effect.gen(function* () {
+    const result = yield* Effect.result(effect);
+    if (Result.isFailure(result)) assert.fail(`decode に失敗した: ${result.failure.message}`);
+    return result.success;
+  });
+}
+
+// decode の失敗（タグ付きの失敗）を主張する
+function expectDecodeFailure<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
+  return Effect.gen(function* () {
+    const result = yield* Effect.result(effect);
+    assert.isTrue(Result.isFailure(result), "decode が成功してしまった（壊れた入力のはずが通った）");
+  });
+}
+
+describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知っている／知らないイベント）", () => {
+  describe("remark（確定結果）", () => {
+    it.effect("両トラックとも同じ形で decode され、type・track・start・end・text を保つ", () =>
+      Effect.gen(function* () {
+        const base = { type: "remark", start: 1.5, end: 3.25, text: "こんにちは", duplicate: false } as const;
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ ...base, track: "相手" })));
+        assert.deepStrictEqual(decoded, { kind: "known", event: { ...base, track: "相手" } });
+        const decoded2 = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ ...base, track: "自分" })));
+        if (decoded2.kind !== "known" || decoded2.event.type !== "remark") return assert.fail("remark のはず");
+        assert.strictEqual(decoded2.event.track, "自分");
+      }));
+
+    it.effect.each([
+      ["不正なトラック", { type: "remark", track: "司会", start: 0, end: 1, text: "あ" }],
+      ["本文の欠落", { type: "remark", track: "相手", start: 0, end: 1 }],
+      ["秒数の型違い", { type: "remark", track: "相手", start: "0", end: 1, text: "あ" }],
+    ])("必須項目が壊れていたら、読み飛ばさずにタグ付きの失敗になる（%s）", (_name, data) =>
+      expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
-  it("partial（途中結果）は発言にならない", () => {
-    expect(remarkFromHelper({ type: "partial", track: "相手", start: 0, end: 1, text: "こんに" }, "r1")).toBeNull();
+  describe("partial（途中結果）", () => {
+    it.effect("両トラックとも同じ形で decode され、track・start・end・text を保つ", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(
+          decodeHelperEvent(JSON.stringify({ type: "partial", track: "相手", start: 1.5, end: 3.25, text: "こんに" })),
+        );
+        assert.deepStrictEqual(decoded, { kind: "known", event: { type: "partial", track: "相手", start: 1.5, end: 3.25, text: "こんに", duplicate: false } });
+        const decoded2 = yield* expectDecodeSuccess(
+          decodeHelperEvent(JSON.stringify({ type: "partial", track: "自分", start: 0, end: 1, text: "はい" })),
+        );
+        if (decoded2.kind !== "known" || decoded2.event.type !== "partial") return assert.fail("partial のはず");
+        assert.deepStrictEqual({ track: decoded2.event.track, start: decoded2.event.start, end: decoded2.event.end, text: decoded2.event.text }, { track: "自分", start: 0, end: 1, text: "はい" });
+      }));
+
+    it.effect("duplicate は true のときだけ重複の印になる。項目がなければ（#36 より前の partial は）印なし", () =>
+      Effect.gen(function* () {
+        for (const [duplicateField, expected] of [[{ duplicate: true }, true], [{ duplicate: false }, false], [{}, false]] as const) {
+          const decoded = yield* expectDecodeSuccess(
+            decodeHelperEvent(JSON.stringify({ type: "partial", track: "自分", start: 0, end: 1, text: "あ", ...duplicateField })),
+          );
+          if (decoded.kind !== "known" || decoded.event.type !== "partial") return assert.fail("partial のはず");
+          assert.strictEqual(decoded.event.duplicate, expected);
+        }
+      }));
+
+    it.effect.each([
+      ["不正なトラック", { type: "partial", track: "司会", start: 0, end: 1, text: "あ" }],
+      ["本文の欠落", { type: "partial", track: "相手", start: 0, end: 1 }],
+      ["本文の型違い", { type: "partial", track: "相手", start: 0, end: 1, text: 1 }],
+      ["start の欠落（start / end を持たない旧形式）", { type: "partial", track: "相手", text: "あ" }],
+      ["end の欠落", { type: "partial", track: "相手", start: 0, text: "あ" }],
+      ["start の型違い", { type: "partial", track: "相手", start: "0", end: 1, text: "あ" }],
+      ["end の型違い", { type: "partial", track: "相手", start: 0, end: "1", text: "あ" }],
+    ])("必須項目が壊れていたら、読み飛ばさずにタグ付きの失敗になる（%s）", (_name, data) =>
+      expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
-  it("知らない type は読み飛ばす", () => {
-    expect(remarkFromHelper({ type: "heartbeat" }, "r1")).toBeNull();
+  // 原点（host time）の通知イベント。64 bit の値は JSON の number では桁が落ちるので、文字列のまま運ぶ（order.md:60、要件 #22）。
+  describe("origin（ヘルパーが決めた時刻の原点）", () => {
+    it.effect("渡された hostTime を文字列のまま保つ（2^53 を超える値でも桁が落ちない）", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "origin", hostTime: "9007199254740993" })));
+        assert.deepStrictEqual(decoded, { kind: "known", event: { type: "origin", hostTime: "9007199254740993" } });
+      }));
+
+    it.effect.each([
+      ["hostTime が数値（JSON の number は桁が落ちるので受け付けない）", { type: "origin", hostTime: 9007199254740993 }],
+      ["hostTime が数字でない文字列", { type: "origin", hostTime: "12a" }],
+      ["hostTime の欠落", { type: "origin" }],
+    ])("必須項目が壊れていたら、読み飛ばさずにタグ付きの失敗になる（%s）", (_name, data) =>
+      expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
-  it.each([
-    ["不正なトラック", { type: "remark", track: "司会", start: 0, end: 1, text: "あ" }],
-    ["本文の欠落", { type: "remark", track: "相手", start: 0, end: 1 }],
-    ["秒数の型違い", { type: "remark", track: "相手", start: "0", end: 1, text: "あ" }],
-  ])("remark の必須項目が壊れていたら、読み飛ばさずに例外にする（%s）", (_name, data) => {
-    expect(() => remarkFromHelper(data, "r1")).toThrow();
-  });
-});
+  describe("知らない type・壊れた入力", () => {
+    it.effect("知らない type は失敗にならず、「知らないイベント」として返る", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "heartbeat" })));
+        assert.deepStrictEqual(decoded, { kind: "unknown" });
+      }));
 
-describe("partialFromHelper（ヘルパーのイベント → いま話している文字）", () => {
-  it("partial は、トラック・開始・終了・本文を持つ。両トラックとも同じ形で変換される", () => {
-    expect(partialFromHelper({ type: "partial", track: "相手", start: 1.5, end: 3.25, text: "こんに" })).toMatchObject({
-      track: "相手",
-      start: 1.5,
-      end: 3.25,
-      text: "こんに",
-    });
-    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "はい" })).toMatchObject({ track: "自分", start: 0, end: 1, text: "はい" });
-  });
+    it.effect("不正な JSON はタグ付きの失敗になる", () => expectDecodeFailure(decodeHelperEvent("{")));
 
-  it("duplicate は、true のときだけ重複の印になる。項目がなければ（#36 より前の partial は）印なし", () => {
-    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "あ", duplicate: true })!.duplicate).toBe(true);
-    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "あ", duplicate: false })!.duplicate).toBe(false);
-    expect(partialFromHelper({ type: "partial", track: "自分", start: 0, end: 1, text: "あ" })!.duplicate).toBe(false);
-  });
+    it.effect("オブジェクトではない入力（type を見分けられない）はタグ付きの失敗になる", () =>
+      expectDecodeFailure(decodeHelperEvent(JSON.stringify("origin"))));
 
-  it("remark や知らない type は途中結果ではないので null", () => {
-    expect(partialFromHelper({ type: "remark", track: "相手", start: 0, end: 1, text: "あ" })).toBeNull();
-    expect(partialFromHelper({ type: "heartbeat" })).toBeNull();
-  });
-
-  it.each([
-    ["不正なトラック", { type: "partial", track: "司会", start: 0, end: 1, text: "あ" }],
-    ["本文の欠落", { type: "partial", track: "相手", start: 0, end: 1 }],
-    ["本文の型違い", { type: "partial", track: "相手", start: 0, end: 1, text: 1 }],
-    ["start の欠落（start / end を持たない旧形式）", { type: "partial", track: "相手", text: "あ" }],
-    ["end の欠落", { type: "partial", track: "相手", start: 0, text: "あ" }],
-    ["start の型違い", { type: "partial", track: "相手", start: "0", end: 1, text: "あ" }],
-    ["end の型違い", { type: "partial", track: "相手", start: 0, end: "1", text: "あ" }],
-  ])("partial の必須項目が壊れていたら、読み飛ばさずに例外にする（%s）", (_name, data) => {
-    expect(() => partialFromHelper(data)).toThrow();
-  });
-});
-
-// 原点（host time）の通知イベント。64 bit の値は JSON の number では桁が落ちるので、文字列のまま運ぶ（order.md:60、要件 #22）。
-describe("originFromHelper（ヘルパーのイベント → 原点の host time）", () => {
-  it("origin は、渡された hostTime を文字列のまま返す（2^53 を超える値でも桁が落ちない）", () => {
-    expect(originFromHelper({ type: "origin", hostTime: "9007199254740993" })).toBe("9007199254740993");
-  });
-
-  it("remark・partial・知らない type は原点の通知ではないので null", () => {
-    expect(originFromHelper({ type: "remark", track: "相手", start: 0, end: 1, text: "あ", duplicate: false })).toBeNull();
-    expect(originFromHelper({ type: "partial", track: "相手", start: 0, end: 1, text: "あ" })).toBeNull();
-    expect(originFromHelper({ type: "heartbeat" })).toBeNull();
-  });
-
-  it.each([
-    ["オブジェクトではない", "origin"],
-    ["hostTime が数値（JSON の number は桁が落ちるので受け付けない）", { type: "origin", hostTime: 9007199254740993 }],
-    ["hostTime が数字でない文字列", { type: "origin", hostTime: "12a" }],
-    ["hostTime の欠落", { type: "origin" }],
-  ])("origin の必須項目が壊れていたら、読み飛ばさずに例外にする（%s）", (_name, data) => {
-    expect(() => originFromHelper(data)).toThrow();
+    it.effect("type の欄がないオブジェクトはタグ付きの失敗になる", () => expectDecodeFailure(decodeHelperEvent(JSON.stringify({}))));
   });
 });

@@ -42,10 +42,16 @@ export class RestartGaveUp extends Schema.TaggedError<RestartGaveUp>()("RestartG
   }
 }
 
-const FAILURES = [SessionBusy, SessionTransition, NoSession, IntakeNotStopped, Aborted, RestartGaveUp] as const;
+// セッションの開始で、ヘルパーが接続する前に終わった。code・signal は終わり方（どちらも無ければ null）、
+// stderrTail は標準エラーの末尾
+export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExited", {
+  code: Schema.NullOr(Schema.Number),
+  signal: Schema.NullOr(Schema.String),
+  stderrTail: Schema.Array(Schema.String),
+}) {
+  override get message(): string {
+    return `ヘルパーが終了しました（${this.code ?? this.signal}）: ${this.stderrTail.join("\n")}`;
+  }
+}
 
-export type SessionFailure = InstanceType<(typeof FAILURES)[number]>;
-
-// セッションの側（まだ古いコード）が投げたものが、タグ付きの失敗かどうか。
-// そうでないものは予期しない失敗なので、呼び出し側が defect にする
-export const isSessionFailure = (u: unknown): u is SessionFailure => FAILURES.some((failure) => u instanceof failure);
+export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | Aborted | RestartGaveUp | HelperExited;

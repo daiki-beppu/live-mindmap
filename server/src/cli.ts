@@ -1,47 +1,48 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
-import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Cause, Config, Console, Effect, Layer, Option, Predicate, Queue, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
-import { MapCapture, type PromiseMapCapture } from "./capture.ts";
+import { MapCapture } from "./capture.ts";
 import { DiffUpdater, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
-  createSession,
-  exportFiles,
   formatIntakeStatus,
   formatTable,
   fromTranscript,
   JsonExport,
   playback,
   restoreSession,
-  toJsonExport,
   toMarkdown,
   TranscriptFile,
-  type DiffUpdater as UpdateFn,
-  type IntakeLogEvent,
   type IntakeStatusReport,
-  type LogEvent,
   type Run,
-  type Session,
   type Snapshot,
 } from "./core/index.ts";
 import { openListener, serveFeed } from "./http.ts";
-import { ReviewBuild, writeReviewPages, type PromiseReviewPages, type ReviewVariant } from "./review.ts";
+import { ReviewBuild, writeReviewPages } from "./review.ts";
+import {
+  captureWarning,
+  createSessionDir,
+  EXPORT_FILE,
+  LOG_FILE,
+  REVIEW_VARIANTS,
+  reviewWarning,
+  startRecordedSession,
+  writeExportFiles,
+} from "./sessionFiles.ts";
 import { describe, formatIssues, InvalidTruthFile, oneLine, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
+// セッションのファイル操作は sessionFiles.ts にある。既存の import 元（cli.ts）を保つために再公開する
+export { createSessionDir, startRecordedSession, writeSessionExports, type RecordedSessionOptions } from "./sessionFiles.ts";
+
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
-
-// セッションのフォルダに置く、その時点のエクスポート。別のプロセスの export がこれを読む。
-// play もライブのセッションも、作成直後と log のたびに書く。サーバーが動いていなくても export できる。
-const EXPORT_FILE = "export.json";
-const LOG_FILE = "log.jsonl";
 
 /* ----------------------------------------------------------------------------
  * 失敗: サブコマンドの中身の失敗はタグ付きにし、入口の表 1 つで日本語の 1 行に変える
@@ -162,47 +163,6 @@ const latestSession = (sessionsDir: string, file: string) =>
  * セッションの保存・公開（ライブのセッションとも共有する）
  * -------------------------------------------------------------------------- */
 
-// テキストの 3 形式（map.md・map.json・map.drawnix）を書き、書いたパスを順に返す
-function writeExportFiles(dir: string, snapshot: Snapshot): string[] {
-  return Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks))).map(([name, content]) => {
-    const path = join(dir, name);
-    writeFileSync(path, content.endsWith("\n") ? content : content + "\n");
-    return path;
-  });
-}
-
-const captureWarning = (reason: string) => `map.png を書き出せませんでした: ${reason}`;
-const reviewWarning = (reason: string) => `map.html を書き出せませんでした: ${reason}`;
-
-// 見返し用の HTML の版。今は map.html だけ
-const REVIEW_VARIANTS: readonly ReviewVariant[] = [{ file: "map.html" }];
-
-// セッション終了時の書き出し。スナップショットは 1 回だけ取り、5 形式（md・json・drawnix・png・html）を書く。
-// ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
-// テキストの 3 形式を先に書く。撮影・HTML の書き出しは互いに独立で、失敗したもの（Chromium が無い等）だけ諦めて、
-// 標準エラーに理由を残し、書けたもののパスを返す。
-export async function writeSessionExports(
-  dir: string,
-  snapshot: Snapshot,
-  capture: PromiseMapCapture,
-  writeReview: PromiseReviewPages,
-): Promise<string[]> {
-  const paths = writeExportFiles(dir, snapshot);
-  const png = join(dir, "map.png");
-  try {
-    await capture(snapshot, png);
-    paths.push(png);
-  } catch (e) {
-    process.stderr.write(captureWarning(e instanceof Error ? e.message : String(e)) + "\n");
-  }
-  try {
-    paths.push(...(await writeReview(dir, join(dir, LOG_FILE), REVIEW_VARIANTS)));
-  } catch (e) {
-    process.stderr.write(reviewWarning(e instanceof Error ? e.message : String(e)) + "\n");
-  }
-  return paths;
-}
-
 // CLI 側の書き出し。警告は Console（差し替え可能）へ出す以外、writeSessionExports と同じ順・同じ結果
 const writeExportsAndCapture = Effect.fnUntraced(function* (
   dir: string,
@@ -222,52 +182,6 @@ const writeExportsAndCapture = Effect.fnUntraced(function* (
   else paths.push(...reviewed.success);
   return paths;
 });
-
-// セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
-export function createSessionDir(sessionsDir: string): string {
-  const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-export type RecordedSessionOptions = {
-  dir: string; // createSessionDir で作ったセッションのフォルダ
-  title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
-  updater: UpdateFn;
-  publish: (snapshot: Snapshot) => void;
-  sleep?: (ms: number) => Promise<void>; // 渡すと、最後の発言から一定時間たまった発言を 1 つでも差分更新に渡す
-  onDiff?: () => void; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
-};
-
-// 作成済みのセッションのフォルダに、ログと export.json を書きながら、マップが変わるたびに publish する。
-// play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。
-// appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
-// session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
-export function startRecordedSession({ dir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { session: Session; appendLog: (event: IntakeLogEvent) => void } {
-  // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する
-  const writeLogLine = (event: LogEvent | IntakeLogEvent) => {
-    appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
-  };
-  // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
-  let session: Session | undefined;
-  session = createSession({
-    title: title ?? basename(dir),
-    updater,
-    sleep,
-    log: (event) => {
-      writeLogLine(event);
-      if (!session) return;
-      writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-      if (event.type !== "diff") return;
-      if (!event.error) publish(session.snapshot());
-      onDiff?.();
-    },
-  });
-  // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く
-  writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-  publish(session.snapshot()); // 最初のルート
-  return { session, appendLog: writeLogLine };
-}
 
 /* ----------------------------------------------------------------------------
  * 常駐サーバーへの依頼（HTTP の境界）
