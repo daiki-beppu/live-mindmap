@@ -75,11 +75,17 @@ function nest(name: string, snapshot: Snapshot): Snapshot {
   return { ...snapshot, nodes };
 }
 
-export function frameAt(m: Meeting, index: number, nested = false): Frame {
-  const key = `${m.name}:${index}:${nested}`;
+// PROTOTYPE（issue #300）: ops を渡すと、index の反映のうち先頭の ops 件の差分操作までの時点を作る（差分操作 1 件ずつのコマ送り）
+export function frameAt(m: Meeting, index: number, nested = false, ops?: number): Frame {
+  const key = `${m.name}:${index}:${nested}:${ops ?? "all"}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const session = restoreSession(m.events.slice(0, m.diffEnds[index]), { updater: async () => ({ ops: [] }), log: () => {} });
+  const events = m.events.slice(0, m.diffEnds[index]);
+  if (ops !== undefined) {
+    const diff = events[events.length - 1] as { ops: unknown[] };
+    events[events.length - 1] = { ...diff, ops: diff.ops.slice(0, ops) };
+  }
+  const session = restoreSession(events, { updater: async () => ({ ops: [] }), log: () => {} });
   const snapshot = nested ? nest(m.name, session.snapshot()) : session.snapshot();
   const at = m.diffAt[index]!;
   const closed = new Set<string>();

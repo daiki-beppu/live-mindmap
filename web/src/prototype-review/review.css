@@ -1,0 +1,46 @@
+/* PROTOTYPE（issue #300） */
+/* マップの列: マップの下に見返しの操作を置く（マップに重ねない） */
+.review-col { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; }
+.review-col > .map { flex: 1; height: auto; min-height: 0; }
+/* 字幕は操作の上に（列の出し入れでは動かさない） */
+.review-col .map .captions { bottom: 84px; }
+/* 試作の切り替えは上に（下は評価する操作が使う） */
+.review-switch { top: 10px; bottom: auto; }
+
+/* 見返しの操作: 白地に細い線だけ。影・バッジは足さない */
+.review-player { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid #e5e7eb; background: #fff; font: 13px system-ui, sans-serif; color: #374151; user-select: none; }
+.review-player button, .review-player select { font: inherit; color: inherit; }
+.review-player__play, .review-player__btn { flex: none; width: 30px; height: 30px; padding: 0; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; line-height: 1; }
+.review-player__play { border-color: #9ca3af; }
+.review-player__time { flex: none; font-variant-numeric: tabular-nums; color: #111827; }
+.review-player__speed { flex: none; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; padding: 3px 4px; }
+
+/* A: 時刻の軸 */
+.review-a__track { position: relative; flex: 1; height: 28px; cursor: pointer; touch-action: none; }
+.review-a__rail, .review-a__done { position: absolute; left: 0; top: 13px; height: 2px; background: #e5e7eb; }
+.review-a__rail { right: 0; }
+.review-a__done { background: #6b7280; }
+.review-a__topic { position: absolute; top: 9px; width: 1px; height: 10px; background: #9ca3af; }
+.review-a__key { position: absolute; top: 2px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; }
+.review-a__thumb { position: absolute; top: 8px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #111827; }
+.review-a__hover { position: absolute; bottom: 26px; transform: translateX(-50%); padding: 1px 5px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
+
+/* B: 反映の目盛り。1 列が反映 1 回、下から差分操作を積む */
+.review-b__where { flex: none; width: 300px; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
+.review-b__op { font-size: 12px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.review-b__track { flex: 1; height: 32px; display: flex; align-items: flex-end; gap: 1px; cursor: pointer; touch-action: none; }
+.review-b__col { flex-basis: 0; min-width: 0; display: flex; flex-direction: column-reverse; gap: 1px; }
+.review-b__cell { display: block; height: 4px; background: #cbd5e1; opacity: 0.25; }
+.review-b__cell--done { opacity: 0.8; }
+.review-b__cell--now { opacity: 1; outline: 1.5px solid #111827; outline-offset: 0; }
+
+/* C: 議題の章立て */
+.review-c__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.review-c__head { display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
+.review-c__title { overflow: hidden; text-overflow: ellipsis; color: #111827; }
+.review-c__track { position: relative; height: 20px; }
+.review-c__chapter { position: absolute; top: 0; height: 20px; box-sizing: border-box; padding: 0 4px; border: 0; border-left: 1px solid #fff; background: #eef2f7; color: #6b7280; font-size: 11px !important; text-align: left; white-space: nowrap; overflow: hidden; cursor: pointer; }
+.review-c__chapter span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.review-c__chapter--done { background: #dbe3ee; }
+.review-c__chapter--now { background: color-mix(in srgb, #3b82f6 22%, white); color: #111827; }
+.review-c__head-line { position: absolute; top: -3px; width: 2px; height: 26px; margin-left: -1px; background: #111827; pointer-events: none; }
