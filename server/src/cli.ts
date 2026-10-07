@@ -17,9 +17,11 @@ import {
   DiffUpdater,
   fromTranscript,
   JsonExport,
+  LogEvent,
   SessionLog,
   playback,
   restoreSession,
+  restoreState,
   toMarkdown,
   TranscriptFile,
   type IntakeStatusReport,
@@ -405,26 +407,31 @@ const exportCommand = Command.make(
   }),
 ).pipe(Command.withDescription("最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）"));
 
+// log.jsonl を 1 行ずつ JSON として読む。行番号は空行を除く前に採る（人がログを開いたときの行と合わせる）。restore と eval で共有する
+const readLogLines = Effect.fn("readLogLines")(function* (path: string) {
+  const text = yield* readTextFile(path).pipe(Effect.mapError((message) => new CommandFailed({ message })));
+  const lines = text
+    .split("\n")
+    .map((line, i) => ({ text: line, no: i + 1 }))
+    .filter((line) => line.text.trim() !== "");
+  const events: unknown[] = [];
+  for (const line of lines) {
+    events.push(
+      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(line.text).pipe(
+        Effect.mapError((e) => new BrokenLogLine({ line: line.no, reason: decodeReason(e) })),
+      ),
+    );
+  }
+  return { lines, events };
+});
+
 const restore = Command.make(
   "restore",
   {},
   Effect.fn("restore")(function* () {
     const sessionsDir = yield* sessionsDirConfig;
     const dir = join(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
-    const text = yield* readTextFile(join(dir, LOG_FILE)).pipe(Effect.mapError((message) => new CommandFailed({ message })));
-    // 行番号は空行を除く前に採る（人がログを開いたときの行と合わせる）
-    const lines = text
-      .split("\n")
-      .map((line, i) => ({ text: line, no: i + 1 }))
-      .filter((line) => line.text.trim() !== "");
-    const events: unknown[] = [];
-    for (const line of lines) {
-      events.push(
-        yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(line.text).pipe(
-          Effect.mapError((e) => new BrokenLogLine({ line: line.no, reason: decodeReason(e) })),
-        ),
-      );
-    }
+    const { lines, events } = yield* readLogLines(join(dir, LOG_FILE));
     // 復元では差分更新を呼ばない。呼ばれたら defect にする。ログは書き直さない
     const session = yield* restoreSession(events).pipe(
       Effect.provide(
@@ -520,13 +527,30 @@ const evaluate = Command.make(
       const exp = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonExport))(text).pipe(
         Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
       );
-      runs.push({ name: basename(dir), title: exp.root.text, exp });
+      const logPath = join(dir, LOG_FILE);
+      if (!existsSync(logPath)) {
+        runs.push({ name: basename(dir), title: exp.root.text, exp });
+        continue;
+      }
+      // 検証は restore と同じ restoreState で行う。壊れた行は、どのランか分かるようにパスと行番号を添えて失敗にする
+      const { lines, events } = yield* readLogLines(logPath).pipe(
+        Effect.catchTag("BrokenLogLine", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` }))),
+      );
+      yield* restoreState(events).pipe(
+        Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${lines[e.index]?.no ?? 1} 行目が読めません: ${e.reason}` }))),
+      );
+      const log: LogEvent[] = [];
+      for (const event of events) {
+        if (!Predicate.isObject(event) || !("type" in event) || !(event.type === "start" || event.type === "remark" || event.type === "diff")) continue;
+        log.push(yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(Effect.orDie));
+      }
+      runs.push({ name: basename(dir), title: exp.root.text, exp, log });
     }
     yield* write(formatTable(runs, expected, screen));
   }),
 ).pipe(
   Command.withDescription(
-    "play で作ったランの指標を 1 ラン 1 行の表で出す。--truth を渡すと決定・TODO の再現率も、--screen-truth を渡すと指す発言・うち記憶・話だけ・出てはいけないの列も出す"
+    "play で作ったランの指標を 1 ラン 1 行の表で出す。log.jsonl があれば、本文の書き換えの回数÷発言の数・1 ノードの書き換えの最多・話し中の兄弟の最多も出す（無ければ -）。--truth を渡すと決定・TODO の再現率も、--screen-truth を渡すと指す発言・うち記憶・話だけ・出てはいけないの列も出す"
       + "（当たる条件と 1 対 1 の数え方は core/evaluate.ts の matches・recall が持つ）",
   ),
 );

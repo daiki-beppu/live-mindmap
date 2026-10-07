@@ -1,6 +1,6 @@
 // 回帰評価（eval コマンド）。fixture は合成データで、実際の録音サンプルは使わない。
 import { readFileSync, writeFileSync } from "node:fs";
-import { copyFile, mkdtemp, readdir, rename, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -241,6 +241,64 @@ describe("eval: 複数のランを並べる", () => {
   });
 });
 
+describe("eval: log.jsonl から数える 3 指標", () => {
+  const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
+  // 1 回目の呼び出し [r1, r2] で議題と要点を立て、2 回目の [r3] で要点の本文を変える（書き換え 1 回）。発言は 3 件
+  const scriptRewrite: Op[][] = [
+    [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ツールの共有", evidence: ["r1"] },
+      { op: "add", ref: "t2", parent: "t1", kind: "要点", text: "justの紹介", evidence: ["r2"] },
+    ],
+    [{ op: "update", node: "n2", text: "justは辞書を育てる", evidence: ["r3"] }],
+  ];
+  // 2 回目は根拠を足すだけ（text を渡さない）
+  const scriptEvidenceOnly: Op[][] = [scriptRewrite[0]!, [{ op: "update", node: "n2", evidence: ["r3"] }]];
+
+  it("3 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", async () => {
+    const truth = await writeTruth({ 決定: [], TODO: [] });
+    const { header, rows } = parseTable(await evalCli(["--truth", truth, await play(scriptRewrite)]));
+
+    expect(header.slice(-5)).toEqual([...LOG_HEADERS, "決定の再現率", "TODO の再現率"]);
+    expect(header.indexOf(LOG_HEADERS[0]!)).toBe(header.indexOf("要点") + 1);
+    expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
+  });
+
+  it("--truth を付けなくても 3 列は出る", async () => {
+    const { header, rows } = parseTable(await evalCli([await play(scriptRewrite)]));
+
+    expect(header.slice(-3)).toEqual(LOG_HEADERS);
+    expect(rows[0]!["書き換え/発言"]).toBe("1/3 (0.33)");
+  });
+
+  it("根拠だけの update は書き換えに数えない", async () => {
+    const { rows } = parseTable(await evalCli([await play(scriptEvidenceOnly)]));
+
+    expect(rows[0]).toMatchObject({ "書き換え/発言": "0/3 (0.00)", "1 ノードの書き換えの最多": "0" });
+  });
+
+  it("話し中の兄弟の最多は、ルート直下を含む全ての親から取る（scriptA は議題の下に論点と TODO の 2 つ）", async () => {
+    const { rows } = parseTable(await evalCli([await play(scriptA)]));
+
+    expect(rows[0]).toMatchObject({ "書き換え/発言": "0/3 (0.00)", "話し中の兄弟の最多": "2" });
+  });
+
+  it("type が文字列でない行（配列 [\"diff\"]）は restore と同じく読み飛ばし、表の値は変わらない", async () => {
+    const dir = await play(scriptRewrite);
+    await appendFile(join(dir, "log.jsonl"), '\n{"type":["diff"]}\n');
+    const { rows } = parseTable(await evalCli([dir]));
+
+    expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
+  });
+
+  it("log.jsonl が無いラン（export.json だけ）は 3 列とも - で、eval は失敗しない", async () => {
+    const dir = await play(scriptRewrite);
+    await rm(join(dir, "log.jsonl"));
+    const { rows } = parseTable(await evalCli([dir]));
+
+    expect(LOG_HEADERS.map((h) => rows[0]![h])).toEqual(["-", "-", "-"]);
+  });
+});
+
 describe("eval: 正解との再現率（時刻の重なり）", () => {
   // 決定のノード「2 回にする」の根拠は r1 [0.5, 9.8] と r3 [19.2, 28.0]、TODO のノード「求人票を直す」の根拠は r2 [9.8, 19.2]。
   // 1 つのノードは正解 1 件にしか当たらないので、正解は 1 件ずつ評価する。
@@ -432,7 +490,7 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
       const { header, rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(screenTruth({ 指す発言: [point(["採用"])] })), await play(scriptA)]));
       expect(header.slice(0, 4)).toEqual(["ラン", "会議", "ノード", "深さ"]);
       expect(header.slice(-4)).toEqual(SCREEN_HEADERS);
-      expect(header).toHaveLength(4 + 7 + 4);
+      expect(header).toHaveLength(4 + 7 + 3 + 4);
       expect(header.some((h) => h.includes("再現率"))).toBe(false);
       expect(rows[0]).toMatchObject({ ノード: "5", 深さ: "3" });
     });

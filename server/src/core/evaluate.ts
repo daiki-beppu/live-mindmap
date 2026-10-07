@@ -1,7 +1,9 @@
 // 回帰評価: 再生したマップの指標と、正解の決定・TODO に対する再現率。Node に依存しない（ADR 0003）。
 import { Predicate, Schema } from "effect";
 import type { ExportNode, JsonExport } from "./export.ts";
+import { logMetrics } from "./logMetrics.ts";
 import { KINDS, type Kind } from "./map.ts";
+import type { LogEvent } from "./session.ts";
 
 // 比べる前に、本文とキーワードの両方にかける。全角・半角の違いと空白を吸収する（漢数字と算用数字は読み替えない）
 const normalize = (s: string) => s.normalize("NFKC").replace(/\s/g, "");
@@ -107,7 +109,7 @@ export type ScreenTruth = typeof ScreenTruth["Type"];
 
 export type Metrics = { nodes: number; depth: number; byKind: Record<Kind, number> };
 export type Recall = { hit: number; total: number };
-export type Run = { name: string; title: string; exp: JsonExport };
+export type Run = { name: string; title: string; exp: JsonExport; log?: readonly LogEvent[] }; // log は log.jsonl の行（無いランは省く）
 
 function parseKeywords(raw: unknown, at: string): Keyword[] {
   const fail = () => new Error(`${at}: keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）`);
@@ -239,6 +241,15 @@ const formatCount = ({ hit, total }: Recall) => `${hit}/${total}`;
 
 const RECALL_HEADERS: Record<TruthKind, string> = { 決定: "決定の再現率", TODO: "TODO の再現率" };
 
+// log.jsonl から数える 3 指標の見出しと値。ログが無いランは - にする。書き換え/発言は n/m (0.xx)（発言が 0 件なら 0/0）
+const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
+function formatLogMetrics(log: readonly LogEvent[] | undefined): string[] {
+  if (!log) return LOG_HEADERS.map(() => "-");
+  const m = logMetrics(log);
+  const ratio = m.remarks === 0 ? "0/0" : `${m.rewrites}/${m.remarks} (${(m.rewrites / m.remarks).toFixed(2)})`;
+  return [ratio, String(m.maxRewritesPerNode), String(m.maxOpenSiblings)];
+}
+
 const formatRecall = ({ hit, total }: Recall) => (total === 0 ? "0/0" : `${hit}/${total} (${Math.round((hit / total) * 100)}%)`);
 
 // 表のセルに入れる文字列。区切りの `|` と、その直前の `\` をエスケープし、改行は空白 1 つにして 1 行に保つ
@@ -249,15 +260,15 @@ const escapeCell = (cell: string) => cell.replace(/[\\|]/g, "\\$&").replace(/\r\
 // screen があるときは、その後ろに共有画面の 4 列（取れた数/項目数。出てはいけないは漏れた項目の数/項目数）を足す
 export function formatTable(runs: Run[], truth?: Truth, screen?: ScreenTruth): string {
   const header = [
-    "ラン", "会議", "ノード", "深さ", ...KINDS,
+    "ラン", "会議", "ノード", "深さ", ...KINDS, ...LOG_HEADERS,
     ...(truth ? TRUTH_KINDS.map((k) => RECALL_HEADERS[k]) : []),
     ...(screen ? SCREEN_HEADERS : []),
   ];
-  const rows = runs.map(({ name, title, exp }) => {
+  const rows = runs.map(({ name, title, exp, log }) => {
     const m = measure(exp);
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
     const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
-    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...recalls, ...scores].map(String);
+    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...formatLogMetrics(log), ...recalls, ...scores].map(String);
   });
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";

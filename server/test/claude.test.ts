@@ -755,15 +755,13 @@ describe("system プロンプト: 議題の立て方・入れ子・目安・閉�
       }
     }));
 
-  it.effect("議題の立て方: ルートは会議そのもの・1 つ（1 人）ごとに議題・発表の中は番号で分けない・議題名に収まれば論点・戻ったら同じ id・同じ話の中で迷ったら update", () =>
+  it.effect("議題の立て方: ルートは会議そのもの・1 つ（1 人）ごとに議題・発表の中は番号で分けない・議題名に収まれば論点・戻ったら同じ id", () =>
     Effect.gen(function* () {
       const sys = yield* systemPrompt;
       const section = sectionOf(sys, "## 議題の立て方");
 
       for (const part of ["会議そのもの", "1 つ（1 人）ごと", "番号", "議題名に収まる", "id に add・update"]) expect(section, part).toContain(part);
       expect(section).toContain("議題にも論点にもしない");
-      expect(sys).toContain("同じ話の中で迷ったら");
-      expect(sys).not.toMatch(/(?<!同じ話の中で)迷ったら、新しいノードを増やすより既存ノードの update/); // 絞る前の「迷ったら」は残さない
     }));
 
   it.effect("議題の入れ子: 先に親の議題を立てる・気づかず直下に立てた 1 つ目だけ move・新しい議題の代わりではない", () =>
@@ -790,6 +788,82 @@ describe("system プロンプト: 議題の立て方・入れ子・目安・閉�
 
       for (const part of ["新しい議題に移ったばかりの応答では前の議題を閉じず", "判断の材料", "迷うときは閉じない"]) expect(section, part).toContain(part);
       expect(count(sys, "迷うときは閉じない")).toBe(1);
+    }));
+});
+
+describe("system プロンプト: 補足は子の要点に置き、本文の書き換えを絞る（#162）", () => {
+  it.effect("要点の語彙に、その中身を具体化する要点（具体例・数字・手順・経緯）を要点の下に置けることがある。紹介・体験談・おすすめは残る", () =>
+    Effect.gen(function* () {
+      const line = (yield* systemPrompt).split("\n").find((l) => l.startsWith("- 要点:"));
+
+      expect(line).toBeDefined();
+      for (const part of ["具体化する要点", "具体例", "数字", "手順", "経緯", "紹介", "体験談", "おすすめ"]) expect(line, part).toContain(part);
+    }));
+
+  it.effect("補足（具体例・数字・手順・経緯）は、親の要点を言い直さず、その要点の子の要点として add する", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(sys).toContain("親の要点を言い直さず");
+      expect(sys).toContain("その要点の子の要点として add");
+      // 補足を update で済ませる旧い指示は 2 か所とも残らない
+      expect(sys).not.toContain("ノードを作らず既存ノードに根拠を足す update");
+      expect(sys).not.toContain("新しい要点にせず、既存の要点に根拠を足す");
+      expect(sys).not.toContain("本文に収まるものだけ短く言い直す");
+    }));
+
+  it.effect("本文の規則は親の要点への追記・言い直しだけを禁じ、補足を子の要点にする指示と矛盾しない", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+      const line = sys.split("\n").find((l) => l.startsWith("- 本文は"));
+
+      expect(line).toBeDefined();
+      for (const part of ["40 字以内", "言い回しをそのまま写さない", "親の要点"]) expect(line, part).toContain(part);
+      expect(sys).not.toContain("例や経緯は本文に書かない");
+    }));
+
+  it.effect("update で本文を変えるのは、誤認識・読み違いの修正、質問に答えが出たとき、案の状態の切り替えの 3 つのときだけ。定義は 1 か所", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(count(sys, "の 3 つのときだけ")).toBe(1);
+      const at = sys.indexOf("の 3 つのときだけ");
+      const rule = sys.slice(Math.max(0, at - 120), at + 20);
+      for (const part of ["誤認識・読み違いの修正", "質問に答えが出たとき", "案の状態（検討中 / 却下）の切り替え"]) expect(rule, part).toContain(part);
+    }));
+
+  it.effect("それ以外の update は根拠を足すだけで、text を渡さない。本文を無条件に書き換える旧い指示は残らない", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(sys).toContain("text を渡さない");
+      for (const old of ["ノードの本文を書き換え、根拠を足す", "言い直した結果の全文", "より的確な短い言い方"]) expect(sys, old).not.toContain(old);
+    }));
+
+  it.effect("「迷ったら update」は、同じ主張の繰り返し・言い換えに根拠を足す意味に限る。広い「迷ったら」は残らない", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(sys).toContain("同じ主張の繰り返し・言い換えで迷ったら");
+      expect(sys).not.toContain("同じ話の中で迷ったら");
+      expect(sys).not.toMatch(/新しいノードを増やすより既存ノードの update を選ぶ/);
+    }));
+
+  it.effect("質問とその答えを 1 つの要点にまとめ、答えが出たら本文を update で置き換える指示は残る", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(sys).toContain("質問とその答えは 1 つの要点にまとめる");
+      expect(sys).toContain("その要点の本文を update で置き換える");
+    }));
+
+  it.effect("兄弟の上限の文面は #172 の 1 か所のまま重ねて書かず、会議の種類の判定やモードの語は入らない", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+
+      expect(count(sys, "話し中の兄弟は、種別によらず 5 つまで")).toBe(1);
+      expect(count(sys, "上限を守るための move はしない")).toBe(1);
+      for (const word of ["講演モード", "モードを", "会議の種類を判定", "講演形式の場合"]) expect(sys, word).not.toContain(word);
     }));
 });
 
