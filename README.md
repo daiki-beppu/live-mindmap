@@ -64,6 +64,7 @@ cli stop                                  # ヘルパーを止め、map.md・map
 cli status                                # 取り込みの状態（動いている／途切れている／止まった／セッションなし）・セッションのフォルダ・起動し直した回数・最後の途切れの時刻を出す
 cli resume                                # 止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける。動いているときに呼ぶとエラー
 cli export --format json                  # 終了後も、最新のセッションのマップを取り出せる（表示も最後のマップのまま残る）
+cli review [/Users/<名前>/.live-mindmap/sessions/<開始時刻>]  # 見返し用の map.html だけを、そのセッションの log.jsonl から作り直してパスを出す（省略すると log.jsonl を持つ最新のセッション。サーバーは要らない。進行中でもその時点までのログで作る）
 ```
 
 - `map.png`（`play` の終了時も同じ）は、サーバーが Playwright のヘッドレスブラウザで自分の表示ページを開いて撮る。ブラウザを開いていなくても撮れる。変わったノードの強調・仮のノード・右の列は写さない。画像はノードを囲む範囲だけを切り抜く。初回だけ `pnpm --filter @live-mindmap/server exec playwright install chromium` で Chromium を入れる。撮れなかったとき（Chromium が無い等）は、map.png だけ除いて終わり、理由を標準エラーに出す。

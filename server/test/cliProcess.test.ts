@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +45,7 @@ describe("CLI のプロセス入口", () => {
 
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("");
-    for (const command of ["play", "apps", "start", "stop", "status", "resume", "export", "restore", "eval"]) {
+    for (const command of ["play", "apps", "start", "stop", "status", "resume", "export", "restore", "review", "eval"]) {
       expect(result.stdout).toMatch(new RegExp(`\\b${command}\\b`));
     }
     for (const flag of ["help", "version", "wizard", "completions", "log-level"]) {
@@ -52,7 +53,7 @@ describe("CLI のプロセス入口", () => {
     }
   }).pipe(Effect.scoped));
 
-  it.live.each(["play", "apps", "start", "stop", "status", "resume", "export", "restore", "eval"])(
+  it.live.each(["play", "apps", "start", "stop", "status", "resume", "export", "restore", "review", "eval"])(
     "%s --help は処理本体を実行せず成功する",
     (command) => Effect.gen(function* () {
       const sessionsDir = yield* temporaryDirectory;
@@ -247,5 +248,31 @@ describe("CLI のプロセス入口", () => {
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(/^log\.jsonl の 3 行目が JSON として読めません: [^\n]+\n$/);
+  }).pipe(Effect.scoped));
+
+  it.live("review の log.jsonl なしは、パスに改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const missing = join(dir, "review\nmissing");
+    const result = yield* runProcess(["review", missing], dir);
+
+    expect(result).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `log.jsonl がありません: ${join(missing, "log.jsonl").replaceAll("\n", " ")}\n`,
+    });
+    expect(existsSync(missing)).toBe(false);
+  }).pipe(Effect.scoped));
+
+  it.live("review のセッションなしは、保存先に改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const sessionsDir = join(dir, "sessions\nroot");
+    const result = yield* runProcess(["review"], sessionsDir);
+
+    expect(result).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: `セッションがありません: ${sessionsDir.replaceAll("\n", " ")}\n`,
+    });
+    expect(existsSync(sessionsDir)).toBe(false);
   }).pipe(Effect.scoped));
 });
