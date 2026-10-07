@@ -23,7 +23,7 @@ describe("MapNode: ノードのクリック", () => {
     const buttons = findAll(call("n2", data({ onSelect })), "button");
     expect(buttons).toHaveLength(1);
     expect(buttons[0]!.props.type).toBe("button");
-    (buttons[0]!.props.onClick as () => void)();
+    (buttons[0]!.props.onClick as (e: unknown) => void)({ currentTarget: {}, clientX: 0, clientY: 0 });
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith("n2");
   });
@@ -66,5 +66,84 @@ describe("MapNode: 変わったノードの点滅", () => {
     expect(key(2)).not.toBe(key(3));
     expect(key(2)).toBe(key(2));
     expect(key(null)).not.toBe(key(2));
+  });
+});
+
+describe("MapNode: ノードの上で始めたドラッグでは、画面を動かさず根拠も出さない", () => {
+  const root = (d: MapNodeData) => call("n2", d) as unknown as { props: { className: string } };
+  type Handler = (e: unknown) => void;
+  const button = (onSelect: () => void) => findAll(call("n2", data({ onSelect })), "button")[0]!.props as { onPointerDown: Handler; onPointerMove: Handler; onClick: Handler };
+  const at = (target: object, x: number, y: number, pointerId = 7) => ({ target, currentTarget: target, clientX: x, clientY: y, pointerId });
+  const capturing = () => ({ setPointerCapture: vi.fn() });
+
+  it("一番外の要素に nopan が付く（React Flow の画面移動の対象から外れる）", () => {
+    expect(root(data()).props.className.split(" ")).toContain("nopan");
+  });
+
+  it("nowheel は付けない（ノードの上でもスクロールで動く）", () => {
+    expect(root(data()).props.className.split(" ")).not.toContain("nowheel");
+  });
+
+  it("押した位置から離れた位置での click では、onSelect を呼ばない", () => {
+    const onSelect = vi.fn();
+    const b = button(onSelect);
+    const target = capturing();
+    b.onPointerDown(at(target, 100, 100));
+    b.onClick(at(target, 160, 140));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("途中でしきい値を超えて動かし、押した位置の近くに戻して離しても、onSelect を呼ばない", () => {
+    const onSelect = vi.fn();
+    const b = button(onSelect);
+    const target = capturing();
+    b.onPointerDown(at(target, 100, 100));
+    b.onPointerMove(at(target, 160, 100));
+    b.onClick(at(target, 101, 100));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("押したとき、ポインタをボタンに固定する（ボタンの外へ出た移動も届く）", () => {
+    const b = button(vi.fn());
+    const target = capturing();
+    b.onPointerDown(at(target, 100, 100, 7));
+    expect(target.setPointerCapture).toHaveBeenCalledTimes(1);
+    expect(target.setPointerCapture).toHaveBeenCalledWith(7);
+  });
+
+  it("しきい値以内の移動だけなら、押した位置の近くでの click で onSelect を呼ぶ", () => {
+    const onSelect = vi.fn();
+    const b = button(onSelect);
+    const target = capturing();
+    b.onPointerDown(at(target, 100, 100));
+    b.onPointerMove(at(target, 103, 100));
+    b.onClick(at(target, 101, 100));
+    expect(onSelect).toHaveBeenCalledWith("n2");
+  });
+
+  it("同じ位置での click では、onSelect を呼ぶ（対照）", () => {
+    const onSelect = vi.fn();
+    const b = button(onSelect);
+    const target = capturing();
+    b.onPointerDown(at(target, 100, 100));
+    b.onClick(at(target, 100, 100));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith("n2");
+  });
+
+  it("押した記録がない click（キーボードでの操作）では、onSelect を呼ぶ", () => {
+    const onSelect = vi.fn();
+    button(onSelect).onClick(at({}, 0, 0));
+    expect(onSelect).toHaveBeenCalledWith("n2");
+  });
+
+  it("ドラッグの後の click で記録は使い切られ、次の click は通常どおり onSelect する", () => {
+    const onSelect = vi.fn();
+    const b = button(onSelect);
+    const target = capturing();
+    b.onPointerDown(at(target, 0, 0));
+    b.onClick(at(target, 90, 90));
+    b.onClick(at(target, 90, 90));
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });

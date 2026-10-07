@@ -75,3 +75,7 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
    transform: translate() の % は要素自身の幅が基準になり、.captions の幅を基準にできないため、
    同じ % が .map（直近の absolute 位置指定の親）を基準に解決される left の calc() で配置する（2026-10-05） */
 .intake-notice { position: absolute; left: calc(50% + min(80%, 720px) / 2 + 12px); bottom: 24px; font-size: 13px; color: #6b7280; pointer-events: none; z-index: 5; white-space: nowrap; }
+
+/* 人が動かして自動のカメラを止めている間の一言（Issue #311）: バッジ・影は重ねず、控えめな文字だけで左下に出す。
+   字幕（.captions は下端から 24px 以上を占める）と重ならないよう、下端から 4〜20px の帯に固定する（行の高さ 16px・折り返しなし） */
+.viewing-notice { position: absolute; left: 16px; bottom: 4px; margin: 0; font-size: 13px; line-height: 16px; white-space: nowrap; color: #6b7280; pointer-events: none; z-index: 5; }

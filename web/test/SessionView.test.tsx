@@ -11,7 +11,13 @@ import { SessionView } from "../src/SessionView.tsx";
 const useIntakeNotice = vi.hoisted(() => vi.fn());
 vi.mock("../src/useIntakeNotice.ts", () => ({ useIntakeNotice }));
 // React Flow はサーバー側の描画の対象外。マップそのものはこのテストの契約ではない
-vi.mock("../src/MapView.tsx", () => ({ MapView: () => <div className="map-view-stub" /> }));
+const mapViewProps = vi.hoisted(() => vi.fn());
+vi.mock("../src/MapView.tsx", () => ({
+  MapView: (props: unknown) => {
+    mapViewProps(props);
+    return <div className="map-view-stub" />;
+  },
+}));
 
 const snapshot: Snapshot = {
   nodes: [
@@ -26,6 +32,7 @@ const speaking: Speaking = { 相手: "次の質問です。", 自分: "" };
 
 beforeEach(() => {
   useIntakeNotice.mockReset();
+  mapViewProps.mockReset();
   useIntakeNotice.mockImplementation((status: IntakeStatus) => intakeNoticeText({ previous: null, current: status, msSinceChange: 0 }));
 });
 
@@ -77,5 +84,20 @@ describe("SessionView: 取り込みの状態の知らせは、渡したときだ
     const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} intake="running" />);
     expect(html).not.toContain("intake-notice");
     expect(useIntakeNotice).toHaveBeenCalledWith("running");
+  });
+});
+
+describe("SessionView: 見る状態（動かしている間の左下の文字）", () => {
+  it("初期状態は自動で、左下の文字は出ない", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
+    expect(html).not.toContain("viewing-notice");
+  });
+
+  it("マップに、見る状態・カメラへの指示・出来事の通知先を渡す（初期は自動）", () => {
+    renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
+    const props = mapViewProps.mock.calls[0]![0] as { viewing: unknown; onViewingEvent: unknown; camera: unknown };
+    expect(props.viewing).toEqual({ mode: "auto" });
+    expect(typeof props.onViewingEvent).toBe("function");
+    expect(props.camera).toBeDefined();
   });
 });
