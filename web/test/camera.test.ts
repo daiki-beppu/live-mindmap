@@ -8,7 +8,9 @@ import {
   USER_MIN_ZOOM,
   cameraFocus,
   clampUserZoom,
+  edgeDots,
   focusViewport,
+  nodeFocusViewport,
   nodeRect,
   overviewViewport,
   panViewport,
@@ -348,5 +350,120 @@ describe("scrollAlongAxis: 決まった軸だけを動かす", () => {
   it("量は deltaX・deltaY の大きい方を使う（Shift で deltaX に入れ替わった縦ホイールでも動く）", () => {
     expect(scrollAlongAxis(v, "y", { x: 40, y: 0 })).toEqual({ x: 100, y: 10, zoom: 1.3 });
     expect(scrollAlongAxis(v, "x", { x: 0, y: -40 })).toEqual({ x: 140, y: 50, zoom: 1.3 });
+  });
+});
+
+const IDENTITY = { x: 0, y: 0, zoom: 1 };
+const at = (x: number, y: number) => ({ n: { x, y } });
+const centerScreen = { x: size.width / 2, y: size.height / 2 };
+
+describe("edgeDots: 画面の外で変わったノードを、その方向の縁に点で出す", () => {
+  it("右・左・下・上の外にあるノードは、それぞれの縁の側に出る", () => {
+    const cases = [
+      ["right", at(3000, 500)],
+      ["left", at(-3000, 500)],
+      ["bottom", at(900, 3000)],
+      ["top", at(900, -3000)],
+    ] as const;
+    for (const [side, target] of cases) {
+      const dots = edgeDots(["n"], target, {}, IDENTITY, size);
+      expect(dots).toHaveLength(1);
+      expect(dots[0]!.side).toBe(side);
+      expect(dots[0]!.id).toBe("n");
+      expect(dots[0]!.ids).toEqual(["n"]);
+    }
+  });
+
+  it("点は縁の近く（画面の内側）にあり、画面の中心からノードの中心へ向かう線の上にある", () => {
+    const [dot] = edgeDots(["n"], at(3000, 500), {}, IDENTITY, size);
+    expect(dot!.x).toBeLessThanOrEqual(size.width);
+    expect(dot!.x).toBeGreaterThan(size.width - 40);
+    const nodeCenter = { x: 3000 + NODE_WIDTH / 2, y: 500 + 20 };
+    const slope = (nodeCenter.y - centerScreen.y) / (nodeCenter.x - centerScreen.x);
+    expect((dot!.y - centerScreen.y) / (dot!.x - centerScreen.x)).toBeCloseTo(slope, 5);
+
+    const [top] = edgeDots(["n"], at(900, -3000), {}, IDENTITY, size);
+    expect(top!.y).toBeGreaterThanOrEqual(0);
+    expect(top!.y).toBeLessThan(40);
+  });
+
+  it("画面と少しでも重なるノードには点を出さない。外へ動かすと出る（対照）", () => {
+    expect(edgeDots(["n"], at(100, 100), {}, IDENTITY, size)).toEqual([]);
+    // 右の端が 2000 で、画面の右端 1920 をまたぐ
+    expect(edgeDots(["n"], at(1800, 500), {}, IDENTITY, size)).toEqual([]);
+    expect(edgeDots(["n"], at(1930, 500), {}, IDENTITY, size)).toHaveLength(1);
+    // 中心は左の外（-50）だが、右の端 50 が見えている
+    expect(edgeDots(["n"], at(-150, 500), {}, IDENTITY, size)).toEqual([]);
+    expect(edgeDots(["n"], at(-250, 500), {}, IDENTITY, size)).toHaveLength(1);
+  });
+
+  it("ids が空なら点は無い", () => {
+    expect(edgeDots([], at(3000, 500), {}, IDENTITY, size)).toEqual([]);
+  });
+
+  it("近い 2 つのノードは 1 つの点にまとまり、ids に両方が入る。点の id は画面の中心に近い方", () => {
+    const target = { far: { x: 3010, y: 500 }, near: { x: 3000, y: 500 } };
+    const dots = edgeDots(["far", "near"], target, {}, IDENTITY, size);
+    expect(dots).toHaveLength(1);
+    expect([...dots[0]!.ids].sort()).toEqual(["far", "near"]);
+    expect(dots[0]!.id).toBe("near");
+  });
+
+  it("離れた 2 つのノードは 2 つの点になる（同じ縁でも、別の縁でも）", () => {
+    const sameSide = edgeDots(["a", "b"], { a: { x: 3000, y: 100 }, b: { x: 3000, y: 1000 } }, {}, IDENTITY, size);
+    expect(sameSide).toHaveLength(2);
+    expect(sameSide.every((d) => d.ids.length === 1)).toBe(true);
+    const otherSide = edgeDots(["a", "b"], { a: { x: 3000, y: 500 }, b: { x: -3000, y: 500 } }, {}, IDENTITY, size);
+    expect(otherSide.map((d) => d.side).sort()).toEqual(["left", "right"]);
+  });
+
+  it("同じ入力なら同じ結果で、ids の並びに依らない", () => {
+    const target = { a: { x: 3000, y: 100 }, b: { x: 3010, y: 100 }, c: { x: -3000, y: 100 } };
+    expect(edgeDots(["a", "b", "c"], target, {}, IDENTITY, size)).toEqual(edgeDots(["c", "b", "a"], target, {}, IDENTITY, size));
+  });
+
+  it("ビューポートだけを変えると、点の有無と位置が変わる", () => {
+    const target = at(3000, 500);
+    const base = edgeDots(["n"], target, {}, IDENTITY, size);
+    expect(base[0]!.side).toBe("right");
+    // 右へ動かすとノードが画面の中へ来る
+    expect(edgeDots(["n"], target, {}, { x: -2500, y: 0, zoom: 1 }, size)).toEqual([]);
+    // 縮小しても画面の中へ来る（3000 × 0.5 = 1500）
+    expect(edgeDots(["n"], target, {}, { x: 0, y: 0, zoom: 0.5 }, size)).toEqual([]);
+    // 上へ動かすと、点が上へ寄る
+    const up = edgeDots(["n"], target, {}, { x: 0, y: -400, zoom: 1 }, size);
+    expect(up[0]!.side).toBe("right");
+    expect(up[0]!.y).toBeLessThan(base[0]!.y);
+    // さらに右へ動かして左の外へ出すと、左の縁になる
+    expect(edgeDots(["n"], target, {}, { x: -5000, y: 0, zoom: 1 }, size)[0]!.side).toBe("left");
+  });
+
+  it("目標の大きさ（dims の高さ）で、画面の中かどうかが変わる", () => {
+    const target = at(900, -100);
+    expect(edgeDots(["n"], target, {}, IDENTITY, size)[0]!.side).toBe("top");
+    expect(edgeDots(["n"], target, { n: { height: 200 } }, IDENTITY, size)).toEqual([]);
+  });
+});
+
+describe("nodeFocusViewport: 点を押したノードへ、今の倍率のまま寄る（0.75 倍未満なら 0.75 倍）", () => {
+  const r = rect(1000, 500, NODE_WIDTH, 40);
+  const mid = { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+
+  it("0.75 倍以上なら今の倍率のまま、ノードの中心が画面の中央に来る", () => {
+    for (const zoom of [0.75, 1, 1.3, 2]) {
+      const v = nodeFocusViewport(r, zoom, size);
+      expect(v.zoom).toBe(zoom);
+      expect(centerOf(v).x).toBeCloseTo(mid.x, 6);
+      expect(centerOf(v).y).toBeCloseTo(mid.y, 6);
+    }
+  });
+
+  it("0.75 倍未満なら 0.75 倍にする。ノードの中心は画面の中央に来る", () => {
+    for (const zoom of [0.5, 0.3, 0.02]) {
+      const v = nodeFocusViewport(r, zoom, size);
+      expect(v.zoom).toBe(0.75);
+      expect(centerOf(v).x).toBeCloseTo(mid.x, 6);
+      expect(centerOf(v).y).toBeCloseTo(mid.y, 6);
+    }
   });
 });

@@ -32,6 +32,10 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 
 
+/* 人が止めている間、画面の外で変わったノードを縁の点で知らせる。反映の枠と同じ黄色の小さな丸。影は付けない */
+.edge-dots { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
+.edge-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; padding: 0; border: 0; border-radius: 50%; background: #facc15; cursor: pointer; pointer-events: auto; }
+
 /* Handle は描画に必要だが見せない */
 .react-flow__handle { opacity: 0; pointer-events: none; }
 

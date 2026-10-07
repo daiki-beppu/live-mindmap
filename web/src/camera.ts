@@ -11,6 +11,10 @@ export const USER_MAX_ZOOM = 2;
 export const OVERVIEW_MIN_ZOOM = 0.02;
 // 寄せ先の外接箱の周りの余白（px）
 const PADDING = 40;
+// 縁の点を、画面の縁から内側へ置く距離（px）。点の半径（5px）が画面の外へはみ出さない大きさ
+const EDGE_INSET = 12;
+// この距離（px）以内に並ぶ縁の点は 1 つにまとめる。点の直径（10px）の 2 倍強で、重ならず隣り合う間隔
+const MERGE_DISTANCE = 24;
 
 export type Rect = { x: number; y: number; width: number; height: number };
 export type Viewport = { x: number; y: number; zoom: number };
@@ -123,6 +127,56 @@ export function overviewViewport(
   );
   const zoom = Math.min(USER_MAX_ZOOM, Math.max(OVERVIEW_MIN_ZOOM, fitZoom));
   return { x: size.width / 2 - ((left + right) / 2) * zoom, y: size.height / 2 - ((top + bottom) / 2) * zoom, zoom };
+}
+
+export type EdgeDot = { id: string; ids: string[]; side: "top" | "right" | "bottom" | "left"; x: number; y: number };
+
+// ids のうち画面の外にあるノードを、画面の中心からノードの中心へ向かう線と、縁から EDGE_INSET だけ内側の四角との交点に置く。
+// 画面と一部でも重なるノードは含めない。近い点は 1 つにまとめる（id は画面の中心に一番近いノード、ids はまとめた全部）。
+// 位置は目標の位置と高さで測る。x・y は画面座標（map 要素の左上が原点）で点の中心
+export function edgeDots(
+  ids: string[],
+  target: Record<string, Position>,
+  dims: Record<string, { height: number }>,
+  viewport: Viewport,
+  size: Size,
+): EdgeDot[] {
+  const cx = size.width / 2;
+  const cy = size.height / 2;
+  const halfW = cx - EDGE_INSET;
+  const halfH = cy - EDGE_INSET;
+  const candidates: { id: string; dist: number; dot: Omit<EdgeDot, "id" | "ids"> }[] = [];
+  for (const id of ids) {
+    const r = nodeRect(id, target, dims);
+    const left = r.x * viewport.zoom + viewport.x;
+    const top = r.y * viewport.zoom + viewport.y;
+    const right = left + r.width * viewport.zoom;
+    const bottom = top + r.height * viewport.zoom;
+    if (right > 0 && left < size.width && bottom > 0 && top < size.height) continue;
+    const dx = (left + right) / 2 - cx;
+    const dy = (top + bottom) / 2 - cy;
+    const tx = dx === 0 ? Infinity : halfW / Math.abs(dx);
+    const ty = dy === 0 ? Infinity : halfH / Math.abs(dy);
+    const horizontal = tx <= ty;
+    const t = horizontal ? tx : ty;
+    const side = horizontal ? (dx > 0 ? "right" : "left") : dy > 0 ? "bottom" : "top";
+    candidates.push({ id, dist: Math.hypot(dx, dy), dot: { side, x: cx + dx * t, y: cy + dy * t } });
+  }
+  candidates.sort((a, b) => a.dist - b.dist || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  const dots: EdgeDot[] = [];
+  for (const c of candidates) {
+    const near = dots.find((d) => Math.hypot(d.x - c.dot.x, d.y - c.dot.y) <= MERGE_DISTANCE);
+    if (near) near.ids.push(c.id);
+    else dots.push({ id: c.id, ids: [c.id], ...c.dot });
+  }
+  return dots;
+}
+
+// 点を押したノードへ寄る。今の倍率のまま（MIN_ZOOM 未満なら MIN_ZOOM にして）、ノードの中心を画面の中央に置く
+export function nodeFocusViewport(rect: Rect, zoom: number, size: Size): Viewport {
+  const z = Math.max(MIN_ZOOM, zoom);
+  return { x: size.width / 2 - (rect.x + rect.width / 2) * z, y: size.height / 2 - (rect.y + rect.height / 2) * z, zoom: z };
 }
 
 // 今の round に変わったノードが無く、すでにこの round より前に寄せていれば動かさない。
