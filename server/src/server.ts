@@ -12,9 +12,9 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { NodeRuntime } from "@effect/platform-node";
-import { Cause, Effect, Exit, Runtime, Scope } from "effect";
+import { Cause, Effect, Exit, Result, Runtime, Scope } from "effect";
 import { HttpServer } from "effect/http";
-import type { MapCapture } from "./capture.ts";
+import type { PromiseMapCapture } from "./capture.ts";
 import type { SessionUpdater } from "./claude.ts";
 import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
 import {
@@ -43,7 +43,7 @@ export type ServerOptions = {
   port: number; // 0 なら空きポート
   sessionsDir: string;
   openUpdater: () => SessionUpdater; // セッションの開始ごとに 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
-  capture: MapCapture; // 終了時の map.png の撮影
+  capture: PromiseMapCapture; // 終了時の map.png の撮影
   helper: { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
   onListening?: (port: number) => void;
 };
@@ -645,7 +645,17 @@ const teardown: Runtime.Teardown = (exit, onExit) => {
 if (import.meta.main) {
   const helperPath = process.env.LIVE_MINDMAP_HELPER ?? join(import.meta.dirname, "../../helper/.build/debug/live-mindmap-helper");
   const { openClaudeUpdater } = await import("./claude.ts");
-  const { captureMap } = await import("./capture.ts");
+  const { MapCapture } = await import("./capture.ts");
+  // server.ts の本体はまだ Promise のままなので、入口で Service を Promise の口に変えて渡す
+  // （撮影の失敗は reject にして、呼び出し側の「画像だけ諦める」扱いを保つ）
+  const capture: PromiseMapCapture = (snapshot, path) =>
+    Effect.runPromise(
+      Effect.result(
+        Effect.flatMap(MapCapture, (service) => service.capture(snapshot, path)).pipe(Effect.provide(MapCapture.layer)),
+      ),
+    ).then((result) => {
+      if (Result.isFailure(result)) throw result.failure;
+    });
   // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
   // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
   NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
@@ -653,7 +663,7 @@ if (import.meta.main) {
       port: defaultPort(),
       sessionsDir: defaultSessionsDir(),
       openUpdater: () => openClaudeUpdater(),
-      capture: captureMap,
+      capture,
       helper: { command: helperPath, args: [] },
       onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
     });

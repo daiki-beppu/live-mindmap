@@ -41,14 +41,30 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 import { spawn } from "node:child_process";
+import { NodeServices } from "@effect/platform-node";
+import { ConfigProvider, Console, Effect, Layer, Result } from "effect";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
-import type { MapCapture } from "../src/capture.ts";
+import { MapCapture } from "../src/capture.ts";
 import { HELPER_STOP_TIMEOUT_MS, startServer } from "../src/server.ts";
 
+// server.ts は終了時の撮影を Promise の口で受け取る（CLI 側の Effect 経路とは別の 1 本）
+type PromiseCapture = (snapshot: Snapshot, path: string) => Promise<void>;
+
 // 通常のテストでは、テストごとに Chromium を起動しないよう、画像の撮影を偽物にする（空のファイルを書くだけ）。
-// 実物の撮影は、疎通のテスト（実物の captureMap）と capture.test.ts で確かめる。
-const fakeCapture: MapCapture = async (_snapshot, path) => writeFileSync(path, "");
+// 実物の撮影は、疎通のテスト（realCapture）と capture.test.ts で確かめる。
+const fakeCapture: PromiseCapture = async (_snapshot, path) => {
+  writeFileSync(path, "");
+};
+
+// 実物の撮影。server.ts の入口と同じく、MapCapture の Layer から Promise の口を 1 つ組む
+const realCapture: PromiseCapture = (snapshot, path) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const capture = yield* MapCapture;
+      yield* capture.capture(snapshot, path);
+    }).pipe(Effect.provide(MapCapture.layer)),
+  );
 
 // 疎通テスト: 偽のヘルパー（fixtures/fake-helper.ts）から発言を送り、CLI で開始・終了する。
 // サーバーは実物（HTTP + WebSocket + 子プロセスの起動）で、差分更新とヘルパーだけが偽物。
@@ -99,7 +115,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function setup(initial: Partial<Script> = {}, capture: MapCapture = fakeCapture) {
+async function setup(initial: Partial<Script> = {}, capture: PromiseCapture = fakeCapture) {
   const dir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
   const sessionsDir = join(dir, "sessions");
   const scriptPath = join(dir, "script.json");
@@ -141,11 +157,24 @@ async function setup(initial: Partial<Script> = {}, capture: MapCapture = fakeCa
   cleanups.push(() => server.close());
 
   const out: string[] = [];
-  const deps = { port: server.port, sessionsDir, stdout: (s: string) => out.push(s) };
-  // CLI を実行して、その標準出力を返す
+  const consoleService: Console.Console = {
+    ...console,
+    log: (...args: unknown[]) => { out.push(args.map(String).join(" ") + "\n"); },
+  };
+  // 旧 CliDeps の置き換え。接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す
+  const cliLayer = Layer.mergeAll(
+    NodeServices.layer,
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: String(server.port) })),
+    Layer.succeed(Console.Console, consoleService),
+    Layer.succeed(MapCapture, MapCapture.of({
+      capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
+    })),
+  );
+  // CLI を実行して、その標準出力を返す。中身の失敗は、入口の表を通す前のタグ付きの失敗のまま投げる
   const cli = async (...argv: string[]) => {
     out.length = 0;
-    await runCli(argv, deps);
+    const result = await Effect.runPromise(Effect.result(runCli(argv).pipe(Effect.provide(cliLayer))));
+    if (Result.isFailure(result)) throw result.failure;
     return out.join("");
   };
   const sessionDirs = async () => (existsSync(sessionsDir) ? (await readdir(sessionsDir)).sort().map((d) => join(sessionsDir, d)) : []);
@@ -246,7 +275,7 @@ describe("ライブのセッション", () => {
     "ブラウザ（WebSocket のクライアント）を 1 つも開いていなくても、stop で map.png が書き出される。実物の撮影で、4 つ目のパスとして出る",
     { timeout: 120_000 },
     async () => {
-      const { cli, calls, sessionDirs } = await setup({}, (await import("../src/capture.ts")).captureMap);
+      const { cli, calls, sessionDirs } = await setup({}, realCapture);
       await cli("start", "--app", "us.zoom.xos", "--title", "週次");
       await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
 
