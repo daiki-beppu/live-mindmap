@@ -12,6 +12,7 @@ import { HELPER_STOP_TIMEOUT_MS } from "../src/helpers.ts";
 import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
 import { startServer } from "../src/server.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -108,6 +109,7 @@ const setup = (initial: Partial<Script> = {}, capture: PromiseMapCapture = fakeC
     })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
     fakeAudioMix().layer,
+    fakeScreenJpeg().layer,
   );
   // CLI を実行して、その標準出力を返す。中身の失敗は、入口の表を通す前のタグ付きの失敗のまま失敗にする
   const runOnce = (argv: string[]) =>

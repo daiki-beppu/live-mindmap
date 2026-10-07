@@ -2,7 +2,7 @@
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v6 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
-import { children, DiffOutput, DiffUpdater, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { children, DiffOutput, DiffUpdater, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
 
@@ -98,7 +98,14 @@ ${NOOP_SCOPE}
 現在のマップで「（済み）」が付いた議題・論点は畳んである。配下の案・課題・要点は省いて見せている。そこへ話が戻ったら、見えている議題・論点の id に add・update する。同じ議題や論点を新しく作り直さない。
 
 # 会話の扱い
-この会話の最初のメッセージには、現在のマップの全体が載る。2 通目からは、マップの全体の代わりに前回からのマップの変更だけが載る。変更には、前回の操作を当てた結果（add で付いた id、update 後の本文、統合・移動・削除）が含まれる。最初のマップにこれまでの変更を順に当てたものが今のマップ。ノードは変更に書かれた id で指す`;
+この会話の最初のメッセージには、現在のマップの全体が載る。2 通目からは、マップの全体の代わりに前回からのマップの変更だけが載る。変更には、前回の操作を当てた結果（add で付いた id、update 後の本文、統合・移動・削除）が含まれる。最初のマップにこれまでの変更を順に当てたものが今のマップ。ノードは変更に書かれた id で指す
+
+# 共有画面
+メッセージの先頭に「## 共有画面 [mm:ss] から」の見出しと画像が付くことがある。発表者が画面共有で映したものを表す。見出しが「## 共有画面：なし（[mm:ss] から）」なら、その時刻から何も映っていない。
+- 添えた画面は、次の画面が添えられるまで映り続けている。
+- 時刻つきの画面が複数あるときは、発言の時刻に映っていたものを使う。
+- 画面は、「この図」「ここ」のように画面を指す発言の中身を読み解くためだけに使う。画面に映っただけの中身は、マップに書かない。根拠にするのは発言だけ。
+- 参加者の顔の一覧だけが映っているときは、共有画面は無いものとして扱う。`;
 
 
 const fmtTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -226,6 +233,20 @@ export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: Meetin
   ].join("\n");
 }
 
+type ContentBlockParam = Exclude<SDKUserMessage["message"]["content"], string>[number];
+
+// 入力に来た共有画面の列を、そのままの順で見出し（text）と画像のブロックにする。「なし」は見出しだけ。どれを添えるかは core が決める
+function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
+  return screens.flatMap((s): ContentBlockParam[] =>
+    s.image === null
+      ? [{ type: "text", text: `## 共有画面：なし（[${fmtTime(s.start)}] から）` }]
+      : [
+          { type: "text", text: `## 共有画面 [${fmtTime(s.start)}] から` },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(s.image.bytes).toString("base64") } },
+        ],
+  );
+}
+
 // 出力の JSON Schema は core の DiffOutput から、モジュールを読み込んだときに 1 回だけ作る。
 // 余分なキーは JSON Schema の上では禁止（additionalProperties: false）にし、decode では黙って落とす。文字列の長さなどの検査は足さない
 const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOutput, { onExcessProperty: "error" }).schema;
@@ -349,7 +370,10 @@ export const ClaudeDiffUpdater = {
           if (Option.isNone(c)) yield* Ref.set(current, Option.some(o));
           return yield* Effect.gen(function* () {
             o.calls++;
-            yield* Queue.offer(o.input, { type: "user", message: { role: "user", content: buildPrompt(input, o.sent) }, parent_tool_use_id: null });
+            const prompt = buildPrompt(input, o.sent);
+            // 添える画面が無い呼び出しは、今までどおり文字列のまま
+            const content = input.screens?.length ? [...screenBlocks(input.screens), { type: "text" as const, text: prompt }] : prompt;
+            yield* Queue.offer(o.input, { type: "user", message: { role: "user", content }, parent_tool_use_id: null });
             o.sent = input.map;
             return yield* awaitResult(o);
           }).pipe(

@@ -20,6 +20,7 @@ import {
 // play もライブのセッションも、作成直後と log のたびに書く。サーバーが動いていなくても export できる。
 export const EXPORT_FILE = "export.json";
 export const LOG_FILE = "log.jsonl";
+export const SCREENS_DIR = "screens"; // 共有画面の画像（JPEG）を置く、セッションのフォルダの下のフォルダ
 
 // テキストの 3 形式（map.md・map.json・map.drawnix）を書き、書いたパスを順に返す
 export function writeExportFiles(dir: string, snapshot: Snapshot): string[] {
@@ -119,6 +120,12 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
           if (event.type !== "diff") return;
           if (!event.error) yield* Effect.flatMap(session.snapshot, publish);
           if (onDiff) yield* onDiff;
+        }),
+      // 共有画面の画像は、受け取ったバイト列のまま screens/ に書く（最初の 1 枚で作る）
+      writeScreen: (file, bytes) =>
+        Effect.sync(() => {
+          mkdirSync(join(dir, SCREENS_DIR), { recursive: true });
+          writeFileSync(join(dir, SCREENS_DIR, file), bytes);
         }),
     }),
   );

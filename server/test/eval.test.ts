@@ -12,6 +12,7 @@ import { runCli } from "../src/cli.ts";
 import { type DiffInput, type Op, parseTruth, type Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 // play の updater と配信を差し替える。評価の対象は保存されたマップなので、配信は偽物でよい
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
@@ -44,6 +45,7 @@ function dependencies(sessionsDir: string) {
     })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
     fakeAudioMix().layer,
+    fakeScreenJpeg().layer,
   );
   return { layer, stdout };
 }

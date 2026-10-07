@@ -9,15 +9,23 @@ export type UpdateFailure = { readonly _tag: string; readonly message: string };
 export const updaterLayer = (update: (input: DiffInput) => Effect.Effect<DiffOutput, UpdateFailure>) =>
   Layer.succeed(DiffUpdater, DiffUpdater.of({ update }));
 
-export const logLayer = (write: (event: LogEvent) => Effect.Effect<void>) =>
-  Layer.succeed(SessionLog, SessionLog.of({ write }));
+// writeScreen は共有画面の画像を書く口。省略したテストでは何もしない
+export const logLayer = (
+  write: (event: LogEvent) => Effect.Effect<void>,
+  writeScreen: (file: string, bytes: Uint8Array) => Effect.Effect<void> = () => Effect.void,
+) => Layer.succeed(SessionLog, SessionLog.of({ write, writeScreen }));
 
-// 書かれたイベントを配列にためる
-export const collectLog = (events: LogEvent[]) =>
-  logLayer((event) =>
-    Effect.sync(() => {
-      events.push(event);
-    }),
+// 書かれたイベントを配列にためる。screens を渡すと、writeScreen の呼び出し（ファイル名とバイト列）もためる
+export const collectLog = (events: LogEvent[], screens?: { file: string; bytes: Uint8Array }[]) =>
+  logLayer(
+    (event) =>
+      Effect.sync(() => {
+        events.push(event);
+      }),
+    (file, bytes) =>
+      Effect.sync(() => {
+        screens?.push({ file, bytes });
+      }),
   );
 
 // 何も書かない（ログを見ないテスト・復元）
