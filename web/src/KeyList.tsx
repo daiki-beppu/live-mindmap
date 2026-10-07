@@ -27,10 +27,13 @@ export const REVIEW_KEY_LIST = [
   { group: "キー", keys: "Home / End", action: "最初・最後の時点へ" },
 ] as const;
 
+// 音声つきの見返しの一覧にだけ載せる行
+export const AUDIO_KEY_LIST = [{ group: "キー", keys: "M", action: "ミュート・戻す" }] as const;
+
 // マップの右上に重ねる、細い枠だけの一覧（影・バッジなし）
-export function KeyList({ review = false }: { review?: boolean }) {
+export function KeyList({ review = false, audio = false }: { review?: boolean; audio?: boolean }) {
   const keys = KEY_LIST.filter((row) => row.group === "キー");
-  const rows = review ? [...keys, ...REVIEW_KEY_LIST, ...KEY_LIST.filter((row) => row.group !== "キー")] : KEY_LIST;
+  const rows = review ? [...keys, ...REVIEW_KEY_LIST, ...(audio ? AUDIO_KEY_LIST : []), ...KEY_LIST.filter((row) => row.group !== "キー")] : KEY_LIST;
   return (
     <div className="key-list">
       {rows.map((row) => (

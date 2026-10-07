@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialPlayback, PLAYBACK_RATES, playbackReducer, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
+import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATE, PLAYBACK_RATES, playbackReducer, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
 
 // 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒だけを受け取る。
 const ctx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [10, 30, 60, 120] };
@@ -8,7 +8,7 @@ const start = initialPlayback(ctx.duration);
 
 describe("初めの状態", () => {
   it("会議の長さの時点で止まっていて、速さは 30 倍", () => {
-    expect(start).toEqual({ time: 100, playing: false, rate: 30 });
+    expect(start).toEqual({ time: 100, playing: false, rate: 30, muted: false, volume: 1 });
   });
 });
 
@@ -111,16 +111,16 @@ describe("速さの並びと既定", () => {
   it("音声なしの並びは 10・30・60・120 倍で、既定は 30 倍。既定は引数で変えられる", () => {
     expect([...PLAYBACK_RATES]).toEqual([10, 30, 60, 120]);
     expect(initialPlayback(100).rate).toBe(30);
-    expect(initialPlayback(100, 1)).toEqual({ time: 100, playing: false, rate: 1 });
+    expect(initialPlayback(100, 1)).toEqual({ time: 100, playing: false, rate: 1, muted: false, volume: 1 });
   });
 });
 
 describe("速さを選ぶ（setRate）", () => {
   it("並びの中の値を選ぶと速さだけが変わり、時刻と進めているかどうかは変わらない", () => {
     const stopped = run(start, { type: "seek", time: 25 });
-    expect(run(stopped, { type: "setRate", rate: 60 })).toEqual({ time: 25, playing: false, rate: 60 });
+    expect(run(stopped, { type: "setRate", rate: 60 })).toEqual({ time: 25, playing: false, rate: 60, muted: false, volume: 1 });
     const playing = run(start, { type: "seek", time: 25 }, { type: "toggle" });
-    expect(run(playing, { type: "setRate", rate: 10 })).toEqual({ time: 25, playing: true, rate: 10 });
+    expect(run(playing, { type: "setRate", rate: 10 })).toEqual({ time: 25, playing: true, rate: 10, muted: false, volume: 1 });
   });
 
   it("並びの外の値は選べず、状態は変わらない（並びの中の値なら変わる）", () => {
@@ -148,8 +148,8 @@ describe("速さの 1 段ずつの上げ下げ（slower / faster）", () => {
 
   it("上げ下げでも時刻と進めているかどうかは変わらない", () => {
     const s = run(start, { type: "seek", time: 33 }, { type: "toggle" });
-    expect(run(s, { type: "faster" })).toEqual({ time: 33, playing: true, rate: 60 });
-    expect(run(s, { type: "slower" })).toEqual({ time: 33, playing: true, rate: 10 });
+    expect(run(s, { type: "faster" })).toEqual({ time: 33, playing: true, rate: 60, muted: false, volume: 1 });
+    expect(run(s, { type: "slower" })).toEqual({ time: 33, playing: true, rate: 10, muted: false, volume: 1 });
   });
 });
 
@@ -180,9 +180,9 @@ describe("版ごとに渡す速さの並び", () => {
   });
 });
 
-// 音声つきの版。時刻の元は <audio> の currentTime だけで、通知（audioTime）が画面の時刻を決める。速さは 1 倍だけ（並び [1]）
+// 音声つきの版。時刻の元は <audio> の currentTime だけで、通知（audioTime）が画面の時刻を決める。速さは 0.5〜2 倍
 describe("音声の時刻の通知（audioTime）", () => {
-  const audioCtx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [1] };
+  const audioCtx = { duration: 100, reflectionTimes: [10, 40, 70], rates: AUDIO_RATES };
   const audioStart = initialPlayback(audioCtx.duration, 1);
   const step = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, audioCtx), state);
 
@@ -270,16 +270,95 @@ describe("音声の時刻の通知（audioTime）", () => {
   });
 });
 
-describe("音声つきの速さの並び [1]（0.5〜2 倍は後の段）", () => {
-  const audioCtx = { duration: 100, reflectionTimes: [] as number[], rates: [1] };
+describe("音声つきの速さの並び（0.5〜2 倍）", () => {
+  const audioCtx = { duration: 100, reflectionTimes: [] as number[], rates: AUDIO_RATES };
   const step = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, audioCtx), state);
+  const first = initialPlayback(100, AUDIO_RATE);
 
-  it("setRate・faster・slower では状態が変わらず、速さは 1 倍のまま", () => {
-    const playing = step(initialPlayback(100, 1), { type: "seek", time: 20 }, { type: "toggle" });
-    expect(playing.rate).toBe(1);
-    expect(step(playing, { type: "faster" })).toEqual(playing);
-    expect(step(playing, { type: "slower" })).toEqual(playing);
-    expect(step(playing, { type: "setRate", rate: 2 })).toEqual(playing);
+  it("並びは 0.5・0.75・1・1.25・1.5・1.75・2 の 7 段で、最初の速さは 1 倍（先頭の 0.5 ではない）", () => {
+    expect([...AUDIO_RATES]).toEqual([0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]);
+    expect(AUDIO_RATE).toBe(1);
+    expect(first.rate).toBe(1);
+  });
+
+  it("faster で 1 段ずつ上がり、4 回で 2 倍。端でもう一度押しても状態は変わらない", () => {
+    const rates = [1, 2, 3, 4].map((n) => step(first, ...Array.from({ length: n }, () => ({ type: "faster" }) as const)).rate);
+    expect(rates).toEqual([1.25, 1.5, 1.75, 2]);
+    const top = step(first, { type: "faster" }, { type: "faster" }, { type: "faster" }, { type: "faster" });
+    expect(step(top, { type: "faster" })).toEqual(top);
+  });
+
+  it("slower で 1 段ずつ下がり、2 回で 0.5 倍。端でもう一度押しても状態は変わらない", () => {
+    expect(step(first, { type: "slower" }).rate).toBe(0.75);
+    const bottom = step(first, { type: "slower" }, { type: "slower" });
+    expect(bottom.rate).toBe(0.5);
+    expect(step(bottom, { type: "slower" })).toEqual(bottom);
+  });
+
+  it("setRate は並びの中の値だけ選べる（音声なしの値は選べない）。進めている最中でも時刻と進行は変わらない", () => {
+    const playing = step(first, { type: "seek", time: 20 }, { type: "toggle" });
+    expect(step(playing, { type: "setRate", rate: 2 })).toEqual({ ...playing, rate: 2 });
+    expect(step(playing, { type: "setRate", rate: 0.5 })).toEqual({ ...playing, rate: 0.5 });
     expect(step(playing, { type: "setRate", rate: 30 })).toEqual(playing);
+    expect(step(playing, { type: "setRate", rate: 3 })).toEqual(playing);
+  });
+
+  it("音声なしの並びと既定は今のまま（10・30・60・120、既定 30）", () => {
+    expect([...PLAYBACK_RATES]).toEqual([10, 30, 60, 120]);
+    expect(PLAYBACK_RATE).toBe(30);
+    expect(initialPlayback(100).rate).toBe(30);
+  });
+});
+
+describe("ミュートと音量（toggleMute / setVolume）", () => {
+  const audioCtx = { duration: 100, reflectionTimes: [10, 40, 70], rates: AUDIO_RATES };
+  const step = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, audioCtx), state);
+  const first = initialPlayback(100, AUDIO_RATE);
+
+  it("初めはミュートしておらず、音量は最大", () => {
+    expect(first).toMatchObject({ muted: false, volume: 1 });
+  });
+
+  it("toggleMute でミュートになり、もう一度でミュート前の音量に戻る（音量を 0 にして表さない）", () => {
+    const set = step(first, { type: "setVolume", volume: 0.4 });
+    expect(set).toMatchObject({ muted: false, volume: 0.4 });
+    const muted = step(set, { type: "toggleMute" });
+    expect(muted).toMatchObject({ muted: true, volume: 0.4 });
+    expect(step(muted, { type: "toggleMute" })).toMatchObject({ muted: false, volume: 0.4 });
+  });
+
+  it("ミュート中に setVolume をすると、その音量でミュートが外れる", () => {
+    const muted = step(first, { type: "setVolume", volume: 0.4 }, { type: "toggleMute" });
+    expect(step(muted, { type: "setVolume", volume: 0.7 })).toMatchObject({ muted: false, volume: 0.7 });
+  });
+
+  it("setVolume は 0〜1 に収める", () => {
+    expect(step(first, { type: "setVolume", volume: -1 }).volume).toBe(0);
+    expect(step(first, { type: "setVolume", volume: 2 }).volume).toBe(1);
+    expect(step(first, { type: "setVolume", volume: 0.25 }).volume).toBe(0.25);
+  });
+
+  it("ミュート・音量・速さを変えても、時刻と進めているかどうかは変わらない（止まっていても進めていても）", () => {
+    const stopped = step(first, { type: "seek", time: 33 });
+    const playing = step(stopped, { type: "toggle" });
+    for (const base of [stopped, playing]) {
+      for (const event of [{ type: "toggleMute" }, { type: "setVolume", volume: 0.3 }, { type: "setRate", rate: 1.5 }, { type: "faster" }] as PlaybackEvent[]) {
+        expect(step(base, event)).toMatchObject({ time: 33, playing: base.playing });
+      }
+    }
+  });
+
+  it("ミュートや音量を変えても、速さは変わらず、経過・通知による時刻の進み方も変わらない", () => {
+    const playing = step(first, { type: "seek", time: 0 }, { type: "toggle" }, { type: "setRate", rate: 1.5 });
+    const changed = step(playing, { type: "toggleMute" }, { type: "setVolume", volume: 0.2 });
+    expect(changed.rate).toBe(1.5);
+    expect(step(changed, { type: "audioTime", time: 4 }).time).toBe(4);
+  });
+
+  it("入力の状態を書き換えない", () => {
+    const before = { ...first };
+    playbackReducer(first, { type: "toggleMute" }, audioCtx);
+    playbackReducer(first, { type: "setVolume", volume: 0.5 }, audioCtx);
+    expect(first).toEqual(before);
   });
 });

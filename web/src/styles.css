@@ -126,8 +126,17 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .review-bar__topic { min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 見返しの速さのメニュー: 操作の行の右端。濃い灰色の行に合わせ、影・バッジは付けない。行は画面の下端なので上に開く */
+/* 音量: ミュートのボタンにポインタを乗せている間（ドラッグ中・キーボードのフォーカス中も）だけ、横にスライダーが出る。幅 0 で隠すのでフォーカスは保てる */
+.review-volume { display: flex; align-items: center; flex: none; }
+.review-volume__slider { position: relative; width: 0; height: 32px; overflow: hidden; opacity: 0; cursor: pointer; touch-action: none; transition: width 0.15s; }
+.review-volume:hover .review-volume__slider, .review-volume:focus-within .review-volume__slider, .review-volume__slider[data-dragging] { width: 64px; margin: 0 4px; opacity: 1; }
+.review-volume__track { position: absolute; left: 0; right: 0; top: 14px; height: 4px; border-radius: 2px; background: #6b7280; pointer-events: none; }
+.review-volume__fill { height: 100%; width: var(--media-slider-fill, 0%); border-radius: 2px; background: #f9fafb; }
+.review-volume__thumb { position: absolute; top: 10px; left: var(--media-slider-fill, 0%); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #f9fafb; box-shadow: none; }
+.review-volume__thumb:focus-visible { outline: 2px solid #facc15; }
 .review-rate { position: relative; flex: none; }
 .review-tip { position: absolute; left: 0; bottom: 100%; z-index: 10; display: none; padding: 4px 8px; border-radius: 4px; background: #374151; color: #f9fafb; font-size: 13px; line-height: 16px; white-space: nowrap; box-shadow: none; pointer-events: none; }
+.review-volume .review-tip { left: 0; }
 .review-bar__end .review-tip { left: auto; right: 0; }
 .review-bar__button:hover > .review-tip { display: block; }
 .review-bar__button.review-rate__button { width: auto; gap: 4px; padding: 0 8px; }

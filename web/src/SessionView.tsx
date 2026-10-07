@@ -55,7 +55,7 @@ export function SessionView({
   snapshot: Snapshot;
   speaking: Speaking;
   intake?: IntakeStatus;
-  review?: { timeMoves: number; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
+  review?: { timeMoves: number; audio?: boolean; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
 }) {
   const scope: ViewingScope = review ? "review" : "live";
   const scopeRef = useRef(scope);
@@ -146,7 +146,7 @@ export function SessionView({
       <div className="map">
         <MapView snapshot={snapshot} selectedId={selectedId} onSelect={select} viewing={viewing} camera={camera} onViewingEvent={dispatch} onTree={onTree} />
         <ViewingNotice manual={viewing.mode === "manual"} overview={viewing.mode === "overview"} />
-        {viewing.keyList && <KeyList review={isReview} />}
+        {viewing.keyList && <KeyList review={isReview} audio={review?.audio} />}
       </div>
       {/* 字幕と取り込みの一言は .map の外（.layout 直下）に置く。列を出し入れしても窓の横幅の中央から動かさない */}
       {!viewing.captionsHidden && <Captions speaking={speaking} />}
