@@ -10,6 +10,7 @@ import { HttpServerError } from "effect/http";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
+import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
@@ -47,6 +48,7 @@ function dependencies(sessionsDir: string) {
         writeFileSync(path, "");
       }),
     })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
   );
   return { layer, stdout, stderr, captures };
 }
@@ -78,10 +80,10 @@ describe("CLI の Effect 境界", () => {
     expect(deps.captures).toHaveLength(1);
     expect(deps.captures[0]?.nodes.map((node) => node.text)).toEqual(["short"]);
     const paths = deps.stdout.join("").trimEnd().split("\n");
-    expect(paths).toHaveLength(4);
+    expect(paths).toHaveLength(5);
     const session = join(paths[0]!, "..");
     expect(session.startsWith(dir + "/")).toBe(true);
-    expect(paths).toEqual(["map.md", "map.json", "map.drawnix", "map.png"].map((name) => join(session, name)));
+    expect(paths).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"].map((name) => join(session, name)));
     expect(deps.stdout.join("")).toBe(paths.map((path) => path + "\n").join(""));
   }));
 
