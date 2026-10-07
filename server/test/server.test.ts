@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NodeServices } from "@effect/platform-node";
+import { NodeFileSystem, NodeServices } from "@effect/platform-node";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { ConfigProvider, Console, Effect, Layer } from "effect";
 import { MapCapture, type PromiseMapCapture } from "../src/capture.ts";
@@ -35,7 +35,7 @@ const fakeWriteReview: PromiseReviewPages = (dir, logPath, variants) =>
   Effect.runPromise(
     writeReviewPages(dir, logPath, variants).pipe(
       Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
-      Effect.provide(fakeAudioMix().layer),
+      Effect.provide(Layer.merge(fakeAudioMix().layer, NodeFileSystem.layer)),
     ),
   );
 
