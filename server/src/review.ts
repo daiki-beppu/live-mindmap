@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Context, Effect, Layer, Schema } from "effect";
 import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
-import { embedReviewLog } from "./core/index.ts";
+import { embedReviewLicenses, embedReviewLog } from "./core/index.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 
@@ -36,12 +36,15 @@ const buildReviewTemplate = Effect.fnUntraced(function* () {
         root: WEB_ROOT,
         configFile: join(WEB_ROOT, "vite.config.ts"),
         logLevel: "silent",
-        plugins: [viteSingleFile()],
-        build: { outDir: out, emptyOutDir: true },
+        // Why: インライン化した chunk を bundle から消すと、build.license が同梱モジュールを集められない。出力は一時フォルダで、index.html だけ読む
+        plugins: [viteSingleFile({ deleteInlinedFiles: false })],
+        build: { outDir: out, emptyOutDir: true, license: true },
       }),
     catch: failed,
   });
-  return yield* Effect.tryPromise({ try: () => readFile(join(out, "index.html"), "utf8"), catch: failed });
+  const html = yield* Effect.tryPromise({ try: () => readFile(join(out, "index.html"), "utf8"), catch: failed });
+  const licenses = yield* Effect.tryPromise({ try: () => readFile(join(out, ".vite/license.md"), "utf8"), catch: failed });
+  return yield* Effect.try({ try: () => embedReviewLicenses(html, licenses), catch: failed });
 }, Effect.scoped, Effect.uninterruptible);
 
 // 見返し用の HTML のテンプレート（ログを差し込む前）をビルドする

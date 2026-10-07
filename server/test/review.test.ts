@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
-import { REVIEW_LOG_ELEMENT_ID, createSession, embedReviewLog, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
+import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, createSession, embedReviewLicenses, embedReviewLog, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
 
 const TEMPLATE = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>";
@@ -19,6 +19,14 @@ function embeddedText(html: string): string {
   const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
   if (!match) throw new Error("埋め込みの要素がありません");
   return match[1]!;
+}
+
+// 埋め込んだ <template> 要素の中身を、ブラウザが textContent で返すのと同じ文字列に戻す（タグの間の文字列を、実体参照を解いて返す）
+function licensesTemplate(html: string): { raw: string; decoded: string } {
+  const match = new RegExp(`<template id="${REVIEW_LICENSES_ELEMENT_ID}">([\\s\\S]*?)</template>`).exec(html);
+  if (!match) throw new Error("ライセンスの要素がありません");
+  const raw = match[1]!;
+  return { raw, decoded: raw.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&") };
 }
 
 const fakeBuild = (build: () => Effect.Effect<string, ReviewPageFailed>) =>
@@ -67,6 +75,43 @@ describe("embedReviewLog", () => {
 
   it("テンプレートに </body> が無ければ throw する", () => {
     expect(() => embedReviewLog("<html><head></head></html>", [])).toThrow();
+  });
+});
+
+describe("embedReviewLicenses", () => {
+  const LICENSES = "# Licenses\n\n## evil - 1.0.0 (MIT)\n\nPermission --> granted </body> </script> <!-- & &amp; &lt;b&gt; <template></template>\n";
+  const SCRIPT_TEMPLATE = "<html><head><script type=\"module\">const s = \"</body>\";</script></head><body><div id=\"root\"></div></body></html>";
+
+  it("文言を <template> に入れる。中身に生の < > は無く、実体参照を解くと元の文言そのままに戻る", () => {
+    const html = embedReviewLicenses(SCRIPT_TEMPLATE, LICENSES);
+
+    const { raw, decoded } = licensesTemplate(html);
+    expect(raw).not.toMatch(/[<>]/);
+    expect(decoded).toBe(LICENSES);
+    expect(html.match(/<template/g)).toHaveLength(1);
+  });
+
+  it("文言の中の </body>・</script>・--> があっても、HTML の形を壊さず、続けて埋め込むログも最後の本物の </body> の直前に入る", () => {
+    const events = [{ type: "start", title: "t" }];
+    const withLicenses = embedReviewLicenses(SCRIPT_TEMPLATE, LICENSES);
+    const html = embedReviewLog(withLicenses, events);
+
+    expect(JSON.parse(embeddedText(html))).toEqual(events);
+    expect(licensesTemplate(html).decoded).toBe(LICENSES);
+    // 文言の要素はログの要素より前、本物の </body> の前
+    const templateAt = html.indexOf(`<template id="${REVIEW_LICENSES_ELEMENT_ID}">`);
+    expect(templateAt).toBeGreaterThan(html.indexOf("<div id=\"root\"></div>"));
+    expect(html.indexOf(`id="${REVIEW_LOG_ELEMENT_ID}"`)).toBeGreaterThan(html.indexOf("</template>"));
+    // テンプレートの JS の文字列は変わらず、</body> の数も増えない（文言の </body> は実体参照になっている）
+    expect(html).toContain("const s = \"</body>\";</script></head>");
+    expect(html.match(/<\/body>/g)).toHaveLength(2);
+    expect(html.match(/<\/script>/g)).toHaveLength(2);
+    expect(html.endsWith("</script></body></html>")).toBe(true);
+    expect(html).not.toContain("-->");
+  });
+
+  it("テンプレートに </body> が無ければ throw する", () => {
+    expect(() => embedReviewLicenses("<html><head></head></html>", LICENSES)).toThrow();
   });
 });
 
