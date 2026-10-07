@@ -9,7 +9,7 @@ import { Cause, Config, Console, Effect, Layer, Option, Predicate, Result, Schem
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { MapCapture } from "./capture.ts";
-import { LegacyClaudeDiffUpdater, UpdaterUnavailable } from "./diffUpdater.ts";
+import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
   formatIntakeStatus,
   formatTable,
@@ -284,7 +284,7 @@ const play = Command.make(
       + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す",
   ),
   // 差分更新は play だけが使う。Layer が取得と解放を持ち、最後の反映と最終撮影の後に 1 回だけ閉じる
-  Command.provide(LegacyClaudeDiffUpdater.layer),
+  Command.provide(claudeUpdaterLayer),
 );
 
 const apps = Command.make(

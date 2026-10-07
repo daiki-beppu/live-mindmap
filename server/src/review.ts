@@ -63,7 +63,7 @@ export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPat
     if (line.trim() === "") continue;
     events.push(
       yield* Effect.try({
-        try: () => JSON.parse(line) as unknown,
+        try: (): unknown => JSON.parse(line),
         catch: (e) => new ReviewPageFailed({ message: `${logPath} の ${index + 1} 行目が JSON として読めません: ${e instanceof Error ? e.message : String(e)}` }),
       }),
     );

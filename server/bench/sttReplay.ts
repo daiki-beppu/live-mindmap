@@ -7,7 +7,7 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
-import { LegacyClaudeDiffUpdater } from "../src/diffUpdater.ts";
+import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { describe, oneLine, readTruthFile } from "../src/truthFile.ts";
 import { BENCH_VERSION, readJsonFile, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
@@ -122,7 +122,7 @@ export const command = Command.make(
       + "end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ",
   ),
   // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
-  Command.provide(LegacyClaudeDiffUpdater.layer),
+  Command.provide(claudeUpdaterLayer),
 );
 
 if (import.meta.main) {
