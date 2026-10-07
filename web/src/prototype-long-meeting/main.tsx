@@ -85,7 +85,7 @@ function App() {
   const [minZoom, setMinZoom] = useState(Number(params.get("zmin") ?? "0.5"));
   const [cue, setCue] = useState<Cue>((params.get("cue") as Cue) ?? "text");
   const [offscreen, setOffscreen] = useState(params.get("off") !== "0");
-  const [ov, setOv] = useState<Ov>((params.get("ov") as Ov) ?? "topics"); // 全体を見る（F）の見せ方
+  const [ov, setOv] = useState<Ov>((params.get("ov") as Ov) ?? "fold"); // 全体を見る（F）の見せ方
   const overviewOpen = ov === "open";
   const [picked, setPicked] = useState<string | null>(null); // 議題だけの縮図から選んだ議題（自動のカメラへ戻るまで開いておく）
   const [mode, setMode] = useState<ViewMode>("follow");
