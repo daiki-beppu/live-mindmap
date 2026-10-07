@@ -1,5 +1,5 @@
 // 差分更新（Claude）。Sonnet 5.5 を Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
-// Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v3 の方針。
+// Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v6 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
 import { children, DiffOutput, DiffUpdater, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
@@ -14,13 +14,17 @@ export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の
 - 同じ内容の言い直し: 直前の発言やマップにすでにある内容を、新しい情報を足さずに繰り返す発言。
 これ以外（紹介、説明、体験談、おすすめ、質問と答え、脱線した話題など）は noop にせず、マップに残す。新しい発言に 4 つ以外の部分があれば、その部分を反映する。`;
 
+// 目安の数字。SYSTEM と議題の一覧の両方に出すので、ここに 1 つだけ置く
+const TOPIC_NODES = "15〜20";
+const SIBLINGS_MAX = 5;
+
 // system は毎回同じ文字列にして、前置きをキャッシュに乗せる
 const SYSTEM = `あなたは会議のマインドマップを継続的に組み立てる担当者です。
 会議の文字起こしが少しずつ届きます。毎回、現在のマップと新しい発言を読み、マップへの差分操作だけを返してください。マップを作り直してはいけません。
 
 # マップの語彙
 - マップは会議をルートとする木。ルートの id は「現在のマップ」の先頭に書いてあり、最初の議題はルートの子に add する。ノード同士の関係は親子だけ。
-- 議題: 会議で扱う話題のまとまり。答えを出す対象ではない。
+- 議題: 会議で扱う話題のまとまり。答えを出す対象ではない。議題の下にも議題を置ける（入れ子）。
 - 論点: 会議の中で答えを出すべき問い。決定を子に持つと「決定済み」、持たなければ「未決」。
 - 案: 論点への答えの候補、または議題の中で出た自由なアイデア。状態は 検討中 / 却下。
 - 決定: 論点に対して会議で出した答え。親は必ず論点。子を持たない。採用した案の内容は決定の本文に書く。
@@ -34,14 +38,14 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 - combine: 同じ種別のノード from を into にまとめる。from の根拠と子は into に移る。
 - move: ノードの親を変える。子孫も一緒に移る。
 - delete: 誤認識や読み違いで作った、子を持たないノードを消す。却下された案は削除せず update で 却下 にする。
-- close: 議題か論点を「済み」にする。会議の話が明らかに別へ移り、戻る気配がないときだけ使う。迷うときは閉じない。根拠は持たない。済みの議題・論点やその子孫に add・update・combine・move をすると、自動で話し中に戻る（開き直す操作は無い）。話が戻ってきたら、畳まれていても見えている id にそのまま add・update する。
+- close: 議題か論点を「済み」にする。使うときは方針の「閉じるの出し方」に従う。根拠は持たない。済みの議題・論点やその子孫に add・update・combine・move をすると、自動で話し中に戻る（開き直す操作は無い）。話が戻ってきたら、畳まれていても見えている id にそのまま add・update する。
 - noop: 新しい発言を見たうえで、マップを変えないと判断したことを表す。
 
 # 方針
 ## 粒度
-- マップは画面共有で参加者が読み、会議の後に見返す。60 分の会議で 50 ノード前後、root からの深さ 4 段（議題 → 論点 → 案・課題・決定・要点 → 補足）までを目安にする。毎回添える「マップの状態」を見て、目安を超えそうなら新しいノードを増やすより既存ノードの update や combine を選ぶ。
+- マップは画面共有で参加者が読み、会議の後に見返す。毎回添える「議題の一覧」を見て、話し中の議題の大きさを保つ。
 - 子ノードにするのは、親とは別の主張（別の理由・別の懸念・派生した案）のときだけ。具体例、経緯、同じ主張の補強は、ノードを作らず既存ノードに根拠を足す update にする。
-- 課題の子に課題を連ねない。課題や案が 1 つの親の下に 6 つを超えそうなら、何の問いに答えようとしているかで論点を立て、既存ノードを move で束ねる。
+- 課題の子に課題を連ねない。
 
 ## 本文
 - 本文は 40 字以内の日本語の名詞句か一文。発言の言い回しをそのまま写さない。例や経緯は本文に書かない。
@@ -56,12 +60,36 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 - 決定がなくても、話題が変わるたびに議題として立て、その下に要点を add する。紹介、体験談、おすすめ、質問とその答えは、それぞれ議題の下の要点として残す。
 - 質問とその答えは 1 つの要点にまとめる。答えが後から出たら、その要点の本文を update で置き換える。
 - 要点を分けるのは、紹介した物・体験・おすすめ・質問が別のときだけ。同じ紹介や体験談の補足、具体例、値段、手順、数字、経緯は、新しい要点にせず、既存の要点に根拠を足す update にする（本文に収まるものだけ短く言い直す）。
-- 1 つの議題の下の要点は 3 つまで。3 つある議題に紹介・体験談・おすすめ・質問が増えるときは、新しい要点を add せず、最も近い要点の本文を、両方を含む短い言い方の全文で update し、新しい発言を根拠に足す。
+
+## 議題の立て方
+- ルートは会議そのもの。会議の目的や会議全体で答えようとしている問い（例「どんな本を作るか」）は、議題にも論点にもしない。その下位の話題をそれぞれ議題として立てる。
+- 話の対象（扱う物・写真・発表・発表者）が変わったら、短い話でも新しい議題を立てる。紹介や発表が 1 つずつ続く場面では、1 つ（1 人）ごとに議題を立てる。
+- 1 つの発表・紹介の中の例・派生案・反応は、その議題の下に案や要点として置く。番号を振って議題を分けない。
+- 新しい問いが今の議題名に収まるなら論点、収まらないなら新しい議題にする。議題名は、名前だけで中身が分かるようにする。
+- 前の議題の話に戻ったら、その議題の id に add・update する。済みの議題は一覧に出ないので、現在のマップや変更に出てきた id を使う。
+
+## 議題の入れ子
+- 対象が 1 つずつ変わる流れでは、流れのまとまりを親の議題に、対象ごとの議題をその子に置く。深さの上限は無い。
+- まとまりが始まると分かったら、先に親の議題を立て、最初の対象から親の下に置く。気づかずに 1 つ目を会議の直下に立てていたら、2 つ目のときに親の議題を立て、1 つ目だけ move する。それ以外では動かし直さない。
+- 親の議題の下に置くのは、対象ごとの議題と、まとまり全体についての論点・要点。
+- 入れ子は新しい議題を立てる代わりではない。議題名に収まらない新しい問いは、入れ子にせず新しい議題として立てる。
+- 休憩を挟んで同じ種類の対象が出てきたら、同じ親の議題の下に足す。
+- 親の議題の済みも close で決める。
+
+## 目安
+- 会議全体のノード数に目安は設けない。
+- 1 つの議題の話し中の部分（済みの論点の下と、子の議題の下は数えない）は、${TOPIC_NODES} ノード。超えそうなら、答えが出た論点や話の移った論点を閉じるか、これからの話を新しい議題として立てる。すでにあるノードを別の議題へ動かし直さない。
+- 1 つの親の下の話し中の兄弟は、種別によらず ${SIBLINGS_MAX} つまで（ルート直下も含む。済みは数えない）。超えそうなら、新しいノードを最も近い兄弟の子にするか、新しい議題を立てるか、話の移ったものを閉じる。上限を守るための move はしない。
+
+## 閉じるの出し方
+- 毎回、「議題の一覧」の話し中の議題と、今の議題の中の論点を見直す。最後に触れてからしばらく経ち、話が明らかに別へ移って戻る気配がないものを close する。迷うときは閉じない。
+- 新しい議題に移ったばかりの応答では前の議題を閉じず、次の応答以降で閉じる。
+- 最後に触れた分は判断の材料であり、何分で閉じるという規則ではない。
 
 ## その他
 - 文字起こしには誤認識がある。意味が通るように読み替えてよいが、話されていない内容を足さない。
 - 根拠には「新しい発言」の id を使う。直前の発言は文脈を理解するためのもので、根拠に使ってよいのは新しい発言の続きとして必要な場合だけ。
-- 1 回の応答の操作は少なく保つ。迷ったら、新しいノードを増やすより既存ノードの update を選ぶ。
+- 1 回の応答の操作は少なく保つ。同じ話の中で迷ったら、新しいノードを増やすより既存ノードの update を選ぶ。
 
 # noop にする範囲
 ${NOOP_SCOPE}
@@ -143,16 +171,53 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
   return lines.length ? lines.join("\n") : "（変更なし）";
 }
 
-function mapStats(map: MeetingMap, now: number): string {
-  const ids = map.order.filter((id) => id !== ROOT_ID);
-  const depth = (id: string) => { let d = 0; for (let c = map.nodes[id]; c?.parent; c = map.nodes[c.parent]) d++; return d; };
-  return `経過 ${Math.round(now / 60)} 分・ノード ${ids.length}・最大の深さ ${Math.max(0, ...ids.map(depth))}（目安: 60 分で 50 前後、深さ 4 まで）`;
+// 議題 id の下をたどり、その議題の話し中の部分のノード数と、直下の議題（途中の論点・案などは飛ばして最初に当たる議題）を返す。
+// 議題に当たったらそれ自身は子の議題として返し、配下は数えない。済みの論点は 1 ノードとして数え、配下のノードは数えない。
+// ただし済みの論点の下の議題は探し続ける（外すのは済みの議題とその下だけ）
+function scanTopic(map: MeetingMap, id: string): { nodes: number; topics: string[] } {
+  let nodes = 0;
+  const topics: string[] = [];
+  const walk = (pid: string, counting: boolean) => {
+    for (const c of children(map, pid)) {
+      if (c.kind === "議題") { topics.push(c.id); continue; }
+      if (counting) nodes++;
+      walk(c.id, counting && !c.talkStatus);
+    }
+  };
+  walk(id, true);
+  return { nodes, topics };
+}
+
+// 話し中の議題を木のまま字下げした一覧。済みの議題と、済みの議題の下の議題は出さず、件数だけを見出しに出す。
+// 毎回、その時点のマップから作り直す（状態は持たない）
+function renderTopicList(map: MeetingMap): string {
+  const rows: string[] = [];
+  const walk = (id: string, depth: number) => {
+    const { nodes, topics } = scanTopic(map, id);
+    const open = topics.filter((t) => !map.nodes[t]!.talkStatus);
+    const touched = map.nodes[id]!.touchedAt;
+    const info = [
+      ...(topics.length ? [`まとまり・子の議題 話し中 ${open.length}・済み ${topics.length - open.length}・まとまり自体の話し中 ${nodes} ノード`] : [`話し中 ${nodes} ノード`]),
+      ...(touched === undefined ? [] : [`最後に触れた ${Math.floor(touched / 60)} 分`]),
+    ];
+    rows.push(`${"  ".repeat(depth)}- ${id} ${map.nodes[id]!.text}（${info.join("・")}）`);
+    for (const t of open) walk(t, depth + 1);
+  };
+  const top = scanTopic(map, ROOT_ID).topics.filter((t) => !map.nodes[t]!.talkStatus);
+  for (const t of top) walk(t, 0);
+  const closedCount = Object.values(map.nodes).filter((n) => n.kind === "議題" && n.talkStatus).length;
+  const shown = rows.length;
+  return [
+    `## 議題の一覧（話し中 ${shown}・済み ${closedCount}。済みと、済みの議題の下は省略）`,
+    ...(rows.length ? rows : ["（なし）"]),
+    `目安: 1 つの議題の話し中の部分は ${TOPIC_NODES} ノード。1 つの親の下の話し中の兄弟は種別によらず ${SIBLINGS_MAX} つまで（ルート直下も含む。済みは数えない）`,
+  ].join("\n");
 }
 
 // previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
 export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: MeetingMap): string {
   return [
-    "## マップの状態", mapStats(map, fresh.at(-1)!.end), "",
+    renderTopicList(map), "",
     ...(previous
       ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map)]
       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
