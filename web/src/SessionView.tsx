@@ -9,6 +9,7 @@ import type { IntakeStatus } from "./intake.ts";
 import { IntakeNotice } from "./IntakeNotice.tsx";
 import type { Speaking } from "./liveFeed.ts";
 import { MapView } from "./MapView.tsx";
+import { useImeKeyRedispatch } from "./useImeKeyRedispatch.ts";
 import { useIntakeNotice } from "./useIntakeNotice.ts";
 import { INITIAL_VIEWING, reduceViewing, type CameraCommand, type ViewingEvent, type ViewingState, type ViewKey, type VisibleTree } from "./viewing.ts";
 import { ViewingNotice } from "./ViewingNotice.tsx";
@@ -45,6 +46,7 @@ export function SessionView({ snapshot, speaking, intake }: { snapshot: Snapshot
     setViewing(out.state);
     setCamera((c) => ({ command: out.camera, seq: c.seq + 1 }));
   }, []);
+  useImeKeyRedispatch();
   useHotkey("Escape", (e) =>
     dispatch(
       { type: "escape", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey },
