@@ -66,6 +66,9 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 # noop にする範囲
 ${NOOP_SCOPE}
 
+# 済みの議題の見え方
+現在のマップで「（済み）」が付いた議題・論点は畳んである。配下の案・課題・要点は省いて見せている。そこへ話が戻ったら、見えている議題・論点の id に add・update する。同じ議題や論点を新しく作り直さない。
+
 # 会話の扱い
 この会話の最初のメッセージには、現在のマップの全体が載る。2 通目からは、マップの全体の代わりに前回からのマップの変更だけが載る。変更には、前回の操作を当てた結果（add で付いた id、update 後の本文、統合・移動・削除）が含まれる。最初のマップにこれまでの変更を順に当てたものが今のマップ。ノードは変更に書かれた id で指す`;
 
@@ -82,14 +85,24 @@ function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): str
   return `${n.id} ${n.kind}${status}: ${n.text}${todo}`;
 }
 
+// アウトラインの 1 行（字下げ・ID・種別・状態・本文・「（済み）」）。全体のアウトラインと、開き直した配下の出力で共有する
+function outlineLine(map: MeetingMap, id: string, depth: number): string {
+  return `${"  ".repeat(depth)}- ${nodeLabel(map, id)}${map.nodes[id]!.talkStatus ? "（済み）" : ""}`;
+}
+
+// 済みの議題・論点の配下は、案・課題・要点の行を省く（その下の論点・決定・TODO などはたどって出す）
+const FOLDED_KINDS = new Set(["案", "課題", "要点"]);
+
 // ID・種別・状態・本文だけを字下げした木で出す
 function renderOutline(map: MeetingMap): string {
   const lines: string[] = [];
-  const walk = (id: string, depth: number) => {
-    lines.push(`${"  ".repeat(depth)}- ${nodeLabel(map, id)}${map.nodes[id]!.talkStatus ? "（済み）" : ""}`);
-    for (const c of children(map, id)) walk(c.id, depth + 1);
+  const walk = (id: string, depth: number, folded: boolean) => {
+    // 省いた段も字下げに数える（元の木の深さを保つ）
+    if (!(folded && FOLDED_KINDS.has(map.nodes[id]!.kind))) lines.push(outlineLine(map, id, depth));
+    const nextFolded = folded || !!map.nodes[id]!.talkStatus;
+    for (const c of children(map, id)) walk(c.id, depth + 1, nextFolded);
   };
-  walk(ROOT_ID, 0);
+  walk(ROOT_ID, 0, false);
   return lines.join("\n");
 }
 
@@ -111,6 +124,21 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
       || (n.kind === "論点" && pointStatus(cur, id) !== pointStatus(prev, id));
     if (changed) lines.push(`- 更新 ${nodeLabel(cur, id, true)}`);
     if (n.parent !== old.parent) lines.push(`- 移動 ${id} → 親: ${n.parent}`);
+  }
+  for (const id of ids(cur)) {
+    const closedNow = !!cur.nodes[id]!.talkStatus;
+    const closedBefore = !!prev.nodes[id]?.talkStatus;
+    if (!closedBefore && closedNow) lines.push(`- ${id} 済みにした`);
+    if (closedBefore && !closedNow) {
+      lines.push(`- ${id} 話し中に戻った。畳んでいた中身:`);
+      const walk = (pid: string, depth: number) => {
+        for (const c of children(cur, pid)) {
+          lines.push(outlineLine(cur, c.id, depth));
+          walk(c.id, depth + 1);
+        }
+      };
+      walk(id, 1);
+    }
   }
   return lines.length ? lines.join("\n") : "（変更なし）";
 }
