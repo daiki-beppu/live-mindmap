@@ -27,6 +27,7 @@ const US_UNSHIFTED: Readonly<Record<string, string>> = {
   Comma: ",",
   Period: ".",
   Backquote: "`",
+  Space: " ",
 };
 
 // Shift ありで字が分からないとき、登録済みのキーに当たるものだけ作る。
@@ -34,6 +35,8 @@ const US_SHIFTED: Readonly<Record<string, string>> = {
   Slash: "?",
   Minus: "=",
   Equal: "=",
+  Comma: "<",
+  Period: ">",
 };
 
 function charOfCode(code: string, shiftKey: boolean): string | null {

@@ -1,15 +1,17 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from "react";
+import { useHotkey } from "@tanstack/react-hotkeys";
+import { useCallback, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { ReviewControls } from "./ReviewControls.tsx";
 import { initialPlayback, PLAYBACK_RATES, playbackReducer, type PlaybackEvent } from "./reviewPlayback.ts";
+import { REVIEW_HOTKEYS, reviewKeyEvent } from "./reviewKeys.ts";
 import { buildReviewTimeline, reviewChapters, reviewMarks, snapshotAt, speakingAt, topicNameOf } from "./reviewTimeline.ts";
-import { SessionView } from "./SessionView.tsx";
+import { SessionView, type ReviewOverlay } from "./SessionView.tsx";
 import { useAudioClock } from "./useAudioClock.ts";
 import { usePlaybackClock } from "./usePlaybackClock.ts";
 
 // 音声つきの版の速さは 1 倍だけ（並び [1]。0.5〜2 倍とミュートは後の段）
 const AUDIO_RATES: readonly number[] = [1];
 
-// 見返し（map.html・map-audio.html）。audioUrl があれば音声つき: 時刻の元は <audio> の currentTime だけで、usePlaybackClock は使わない。時刻を動かすと、その時点のマップ・カメラ・「変わったこと」・根拠・字幕を SessionView に渡す。
+// 見返し（map.html・map-audio.html）。audioUrl があれば音声つき: 時刻の元は <audio> の currentTime だけで、usePlaybackClock は使わない。時刻を動かすと、その時点のマップ・カメラ・「変わったこと」・根拠・字幕を SessionView に渡す。キー: Space・K・J・L・, . < > Home End（C・E・矢印などは SessionView の登録）。
 // 取り込みの状態は渡さない（見返しでは、取り込みの知らせは出さない）
 export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; audioUrl?: string }) {
   const timeline = useMemo(() => buildReviewTimeline(events), [events]);
@@ -37,12 +39,19 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
     dispatch(event);
     if (audio.current && next.time !== state.time) audio.current.currentTime = next.time;
   };
+  // REVIEW_HOTKEYS は定数で、hook を呼ぶ数と順序は変わらない。< > は時刻を動かさないので operate を通さない
+  for (const [hotkey, action] of REVIEW_HOTKEYS) {
+    useHotkey(hotkey, (e) => {
+      const key = reviewKeyEvent(action, { meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, state.time, timeline.duration);
+      if (key === null) return;
+      if (key.movesTime) operate(key.event);
+      else dispatch(key.event);
+    });
+  }
   const snapshot = snapshotAt(timeline, state.time);
-  return (
+  const frame = (session: ReactNode, overlay: ReviewOverlay) => (
     <div className="review">
-      <div className="review__session">
-        <SessionView snapshot={snapshot} speaking={speakingAt(timeline, state.time)} review={{ timeMoves }} />
-      </div>
+      <div className="review__session">{session}</div>
       <ReviewControls
         time={state.time}
         duration={timeline.duration}
@@ -57,8 +66,13 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
         onPrev={() => operate({ type: "prev" })}
         onNext={() => operate({ type: "next" })}
         onRate={(rate) => dispatch({ type: "setRate", rate })}
+        captionsHidden={overlay.captionsHidden}
+        sideHidden={overlay.sideHidden}
+        onCaptions={overlay.onCaptions}
+        onSide={overlay.onSide}
       />
       {audioUrl && <audio ref={audio} src={audioUrl} preload="auto" onEnded={() => dispatch({ type: "ended" })} />}
     </div>
   );
+  return <SessionView snapshot={snapshot} speaking={speakingAt(timeline, state.time)} review={{ timeMoves, frame }} />;
 }

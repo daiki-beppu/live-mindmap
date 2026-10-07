@@ -250,3 +250,107 @@ describe("SessionView: 選択は見る状態から描く（根拠の欄と、マ
     expect((mapViewProps.mock.calls.at(-1)![0] as { selectedId: unknown }).selectedId).toBe("n1");
   });
 });
+
+describe("SessionView: 見返しの外枠（review.frame）に、見る状態と出し入れの関数を渡す", () => {
+  type Overlay = { captionsHidden: boolean; sideHidden: boolean; onCaptions: () => void; onSide: () => void };
+  const renderReview = async (initial: Record<string, unknown> = {}) => {
+    // 静的描画ではキーを押せないため、初期状態だけをこのテストの中で差し替える
+    vi.resetModules();
+    vi.doMock("../src/viewing.ts", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../src/viewing.ts")>()),
+      INITIAL_VIEWING: { mode: "auto", ...initial },
+    }));
+    try {
+      const { SessionView: ReviewSessionView } = await import("../src/SessionView.tsx");
+      const overlays: Overlay[] = [];
+      const sessions: unknown[] = [];
+      const frame = vi.fn((session: unknown, overlay: Overlay) => {
+        sessions.push(session);
+        overlays.push(overlay);
+        return (
+          <div className="frame-stub">
+            {session as never}
+            <span className="frame-bar" />
+          </div>
+        );
+      });
+      const html = renderToStaticMarkup(<ReviewSessionView snapshot={snapshot} speaking={speaking} review={{ timeMoves: 0, frame }} />);
+      return { html, frame, overlays, sessions };
+    } finally {
+      vi.doUnmock("../src/viewing.ts");
+      vi.resetModules();
+    }
+  };
+
+  it("frame が返したものを描き、その中に今までの画面（layout）が入る", async () => {
+    const { html, frame } = await renderReview();
+    expect(frame).toHaveBeenCalled();
+    expect(html.startsWith('<div class="frame-stub">')).toBe(true);
+    expect(html).toContain('<div class="layout">');
+    expect(html).toContain("frame-bar");
+    expect(html).toContain("map-view-stub");
+    expect(html).toContain("次の質問です。");
+  });
+
+  it("初めは字幕・右の列とも隠れていない。出し入れの関数を 2 つ受け取る", async () => {
+    const { overlays } = await renderReview();
+    const overlay = overlays.at(-1)!;
+    expect(overlay.captionsHidden).toBe(false);
+    expect(overlay.sideHidden).toBe(false);
+    expect(typeof overlay.onCaptions).toBe("function");
+    expect(typeof overlay.onSide).toBe("function");
+  });
+
+  it("見る状態で字幕を隠していれば captionsHidden が true（状態は SessionView だけが持つ）", async () => {
+    const { overlays, html } = await renderReview({ captionsHidden: true });
+    expect(overlays.at(-1)).toMatchObject({ captionsHidden: true, sideHidden: false });
+    expect(html).not.toContain("次の質問です。");
+  });
+
+  it("見る状態で右の列を隠していれば sideHidden が true", async () => {
+    const { overlays, html } = await renderReview({ sideHidden: true });
+    expect(overlays.at(-1)).toMatchObject({ captionsHidden: false, sideHidden: true });
+    expect(html).not.toContain('class="side"');
+  });
+
+  it("両方隠していれば、両方 true", async () => {
+    const { overlays } = await renderReview({ captionsHidden: true, sideHidden: true });
+    expect(overlays.at(-1)).toMatchObject({ captionsHidden: true, sideHidden: true });
+  });
+
+  it("frame を渡さない見返し（timeMoves だけ）と、review なしのライブは、これまでどおり layout で始まる", () => {
+    const withoutFrame = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} review={{ timeMoves: 0 }} />);
+    const live = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
+    expect(withoutFrame.startsWith('<div class="layout">')).toBe(true);
+    expect(live.startsWith('<div class="layout">')).toBe(true);
+  });
+});
+
+describe("SessionView: ? のキー一覧は、見返しのときだけ見返しのキーを載せる", () => {
+  const renderOpened = async (review: boolean) => {
+    vi.resetModules();
+    vi.doMock("../src/viewing.ts", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../src/viewing.ts")>()),
+      INITIAL_VIEWING: { mode: "auto", keyList: true },
+    }));
+    try {
+      const { SessionView: OpenedSessionView } = await import("../src/SessionView.tsx");
+      return renderToStaticMarkup(<OpenedSessionView snapshot={snapshot} speaking={speaking} review={review ? { timeMoves: 0 } : undefined} />);
+    } finally {
+      vi.doUnmock("../src/viewing.ts");
+      vi.resetModules();
+    }
+  };
+
+  it("見返しでは、一覧に Space・K / J / L / Home / End などが載る", async () => {
+    const html = await renderOpened(true);
+    const list = html.slice(html.indexOf('class="key-list"'), html.indexOf('class="side"'));
+    for (const keys of ["Space・K", "J / L", ", / .", "&lt; / &gt;", "Home / End"]) expect(list).toContain(keys);
+  });
+
+  it("ライブでは、同じ一覧に見返しのキーは載らない", async () => {
+    const html = await renderOpened(false);
+    expect(html).toContain('class="key-list"');
+    for (const keys of ["Space・K", "J / L", "Home / End"]) expect(html).not.toContain(keys);
+  });
+});

@@ -39,6 +39,8 @@ describe("halfWidthKeyOf: key が Process のとき code から作る", () => {
     ["Slash", "?"],
     ["Minus", "="],
     ["Equal", "="],
+    ["Comma", "<"],
+    ["Period", ">"],
   ])("Shift あり %s → %s", (code, key) => {
     const out = halfWidthKeyOf(process(code, { shiftKey: true }));
     expect(out?.key).toBe(key);
@@ -51,15 +53,34 @@ describe("halfWidthKeyOf: key が Process のとき code から作る", () => {
     expect(halfWidthKeyOf(process("Digit0", { shiftKey: true }))).toBeNull();
   });
 
-  it("code が表にないとき（Space・IntlYen）は送り直さない", () => {
+  it("code が表にないとき（IntlYen）は送り直さない", () => {
     expect(halfWidthKeyOf(process("KeyF"))).not.toBeNull();
-    expect(halfWidthKeyOf(process("Space"))).toBeNull();
     expect(halfWidthKeyOf(process("IntlYen"))).toBeNull();
+  });
+
+  it("Space は半角の Space（\" \"）に直す。Shift なしのときだけ", () => {
+    const out = halfWidthKeyOf(process("Space"));
+    expect(out?.key).toBe(" ");
+    expect(out?.code).toBe("Space");
+    expect(out?.shiftKey).toBe(false);
+    expect(halfWidthKeyOf(process("Space", { shiftKey: true }))).toBeNull();
+  });
+
+  it("Shift なしの Comma・Period は、これまでどおり , . のまま", () => {
+    expect(halfWidthKeyOf(process("Comma"))?.key).toBe(",");
+    expect(halfWidthKeyOf(process("Period"))?.key).toBe(".");
+  });
+
+  it("Shift あり Comma・Period は < > にし、Shift は true のまま、code も保つ", () => {
+    expect(halfWidthKeyOf(process("Comma", { shiftKey: true }))).toMatchObject({ key: "<", code: "Comma", shiftKey: true });
+    expect(halfWidthKeyOf(process("Period", { shiftKey: true }))).toMatchObject({ key: ">", code: "Period", shiftKey: true });
   });
 
   it("key が Unidentified でも同じく code から作る", () => {
     expect(halfWidthKeyOf(input({ key: "Unidentified", code: "KeyF" }))?.key).toBe("f");
-    expect(halfWidthKeyOf(input({ key: "Unidentified", code: "Space" }))).toBeNull();
+    expect(halfWidthKeyOf(input({ key: "Unidentified", code: "Space" }))?.key).toBe(" ");
+    expect(halfWidthKeyOf(input({ key: "Unidentified", code: "Comma", shiftKey: true }))?.key).toBe("<");
+    expect(halfWidthKeyOf(input({ key: "Unidentified", code: "Period", shiftKey: true }))?.key).toBe(">");
   });
 
   it("code も返す", () => {
@@ -88,6 +109,12 @@ describe("halfWidthKeyOf: 全角の 1 文字は 0xFEE0 を引いて半角にす�
     expect(out?.shiftKey).toBe(true);
   });
 
+  it("全角の ＜ ＞ も < > にする（Shift 付きでも字そのものを変換する）", () => {
+    expect(halfWidthKeyOf(input({ key: "＜", code: "Comma", shiftKey: true }))?.key).toBe("<");
+    expect(halfWidthKeyOf(input({ key: "＞", code: "Period", shiftKey: true }))?.key).toBe(">");
+    expect(halfWidthKeyOf(input({ key: "＜", code: "Comma", shiftKey: true }))?.shiftKey).toBe(true);
+  });
+
   it("U+FF01〜FF5E の外（全角スペース・半角カナ）は全角変換しない", () => {
     expect(halfWidthKeyOf(input({ key: "　", code: "Space" }))).toBeNull();
     expect(halfWidthKeyOf(input({ key: "ｱ", code: "KeyA" }))).toBeNull();
@@ -102,7 +129,7 @@ describe("halfWidthKeyOf: 変換中の 1 文字", () => {
 
   it("かななど半角にならない字は code から作る", () => {
     expect(halfWidthKeyOf(input({ key: "あ", code: "KeyA", isComposing: true }))?.key).toBe("a");
-    expect(halfWidthKeyOf(input({ key: "あ", code: "Space", isComposing: true }))).toBeNull();
+    expect(halfWidthKeyOf(input({ key: "あ", code: "Space", isComposing: true }))?.key).toBe(" ");
   });
 });
 
@@ -133,6 +160,13 @@ describe("halfWidthKeyOf: 送り直さないキー", () => {
     expect(halfWidthKeyOf(input({ key: "f", code: "KeyF" }))).toBeNull();
     expect(halfWidthKeyOf(input({ key: "=", code: "Equal" }))).toBeNull();
     expect(halfWidthKeyOf(input({ key: "?", code: "Slash", shiftKey: true }))).toBeNull();
+    expect(halfWidthKeyOf(input({ key: "<", code: "Comma", shiftKey: true }))).toBeNull();
+    expect(halfWidthKeyOf(input({ key: ">", code: "Period", shiftKey: true }))).toBeNull();
+    expect(halfWidthKeyOf(input({ key: " ", code: "Space" }))).toBeNull();
+  });
+
+  it("全角スペース（変換中でない）は Space として扱わず、送り直さない", () => {
+    expect(halfWidthKeyOf(input({ key: "　", code: "Space" }))).toBeNull();
   });
 
   it("Escape・Enter・矢印は変換中でも送り直さない", () => {
@@ -154,6 +188,12 @@ describe("halfWidthKeyOf: 送り直したイベントをもう一度拾わない
     process("Equal"),
     process("Slash", { shiftKey: true }),
     process("Minus", { shiftKey: true }),
+    process("Comma", { shiftKey: true }),
+    process("Period", { shiftKey: true }),
+    process("Space"),
+    input({ key: "Unidentified", code: "Space" }),
+    input({ key: "＜", code: "Comma", shiftKey: true }),
+    input({ key: "あ", code: "Space", isComposing: true }),
     input({ key: "？", code: "Slash", shiftKey: true }),
     input({ key: "ｆ", code: "KeyF" }),
     input({ key: "＝", code: "Equal" }),

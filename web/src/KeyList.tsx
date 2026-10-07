@@ -18,11 +18,22 @@ export const KEY_LIST = [
   { group: "マウス・トラックパッド", keys: "縁の点", action: "そのノードへ寄る" },
 ] as const;
 
+// 見返しの一覧にだけ載せる行（C は KEY_LIST の行を使う）
+export const REVIEW_KEY_LIST = [
+  { group: "キー", keys: "Space・K", action: "進める・止める" },
+  { group: "キー", keys: "J / L", action: "10 秒戻る・進む" },
+  { group: "キー", keys: ", / .", action: "反映 1 つ戻る・進む" },
+  { group: "キー", keys: "< / >", action: "速さを 1 段下げる・上げる" },
+  { group: "キー", keys: "Home / End", action: "最初・最後の時点へ" },
+] as const;
+
 // マップの右上に重ねる、細い枠だけの一覧（影・バッジなし）
-export function KeyList() {
+export function KeyList({ review = false }: { review?: boolean }) {
+  const keys = KEY_LIST.filter((row) => row.group === "キー");
+  const rows = review ? [...keys, ...REVIEW_KEY_LIST, ...KEY_LIST.filter((row) => row.group !== "キー")] : KEY_LIST;
   return (
     <div className="key-list">
-      {KEY_LIST.map((row) => (
+      {rows.map((row) => (
         <p className="key-list__row" key={`${row.group}:${row.keys}`}>
           <span className="key-list__keys">{row.keys}</span> {row.action}
         </p>
