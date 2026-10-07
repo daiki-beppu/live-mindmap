@@ -37,6 +37,7 @@ import {
   openRecordedSession,
   reviewVariants,
   reviewWarning,
+  selfReviewVariants,
   writeExportFiles,
 } from "./sessionFiles.ts";
 import { describe, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
@@ -451,8 +452,12 @@ const review = Command.make(
       Argument.withDescription("見返し用の map.html（録音があれば map-audio.html も）を作り直すセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）"),
       Argument.optional,
     ),
+    selfOnly: Flag.Boolean("self-only").pipe(
+      Flag.withDescription("`自分` の声だけを埋め込んだ map-audio-自分.html だけを作る（map.html・map-audio.html は触らない。自分*.m4a が無ければ失敗する）"),
+      Flag.withDefault(false),
+    ),
   },
-  Effect.fn("review")(function* ({ session }) {
+  Effect.fn("review")(function* ({ session, selfOnly }) {
     const dir = Option.isSome(session)
       ? resolve(session.value)
       : yield* Effect.gen(function* () {
@@ -461,6 +466,19 @@ const review = Command.make(
         });
     const logPath = join(dir, LOG_FILE);
     if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+    if (selfOnly) {
+      const variants = yield* Effect.try({ try: () => selfReviewVariants(dir), catch: (e) => new CommandFailed({ message: describe(e) }) });
+      if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
+      const self = yield* writeReviewPages(dir, logPath, variants).pipe(
+        Effect.provideService(ReviewBuild, yield* ReviewBuild),
+        Effect.provideService(AudioMix, yield* AudioMix),
+        Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map-audio-自分.html", describe(e)) })),
+      );
+      // 見返し用に 自分 だけの版を頼まれているので、mix の失敗は警告で済ませず失敗にする
+      for (const { file, reason } of self.skipped) return yield* new CommandFailed({ message: reviewWarning(file, reason) });
+      yield* write(self.paths.map((path) => `${path}\n`).join(""));
+      return;
+    }
     const { paths, skipped } = yield* writeReviews(dir, yield* ReviewBuild, yield* AudioMix).pipe(
       Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map.html", describe(e)) })),
     );
@@ -470,7 +488,7 @@ const review = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "セッションの log.jsonl から、見返し用の map.html を作り直してパスを出す。フォルダに録音（相手*.m4a・自分*.m4a）があれば、その後に音声つきの map-audio.html も作る（mix が失敗したら map-audio.html だけ諦めて、理由を標準エラーに出す）。サーバーは要らない",
+    "セッションの log.jsonl から、見返し用の map.html を作り直してパスを出す。フォルダに録音（相手*.m4a・自分*.m4a）があれば、その後に音声つきの map-audio.html も作る。--self-only を付けると、自分*.m4a があるときだけ、自分の声だけを埋め込んだ map-audio-自分.html だけを作り（map.html・map-audio.html は触らない。上書きは確認しない。録音が無い・mix が失敗したら 0 以外で終わる）。--self-only なしでは、mix が失敗したら map-audio.html だけ諦めて、理由を標準エラーに出す。サーバーは要らない",
   ),
 );
 

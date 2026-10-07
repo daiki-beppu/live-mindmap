@@ -35,6 +35,13 @@ export const reviewWarning = (file: string, reason: string) => `${file} を書�
 
 // セッションのフォルダ直下の録音（相手*.m4a・自分*.m4a）の有無
 const RECORDING_PATTERN = /^(相手|自分).*\.m4a$/;
+const SELF_RECORDING_PATTERN = /^自分.*\.m4a$/;
+
+// `自分` の声だけを埋め込んだ版（--self-only）。フォルダ直下に 自分*.m4a があれば 1 つ、無ければ空
+export function selfReviewVariants(dir: string): readonly ReviewVariant[] {
+  const recorded = readdirSync(dir, { withFileTypes: true }).some((entry) => entry.isFile() && SELF_RECORDING_PATTERN.test(entry.name));
+  return recorded ? [{ file: "map-audio-自分.html", audio: true, track: "自分" }] : [];
+}
 
 // 見返し用の HTML の版。録音があれば map.html、map-audio.html の順、無ければ map.html だけ（理由は表示しない）。
 // play と --no-audio のセッションには録音が無い
