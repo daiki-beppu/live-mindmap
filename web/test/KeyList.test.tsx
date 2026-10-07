@@ -48,4 +48,14 @@ describe("KeyList: ? で開くキー一覧", () => {
     expect(row("Shift + 矢印")).toContain("1/3");
     expect(html).toContain("押したところを中心に拡大 / 縮小");
   });
+
+  it("矢印（Shift なし）の行が、ノードを選ぶ説明つきで載り、Shift + 矢印の行とは別になる", () => {
+    const arrows = KEY_LIST.find((r) => r.keys === "← → ↑ ↓");
+    expect(arrows).toBeDefined();
+    expect(arrows!.action).toContain("選ぶ");
+    expect(arrows!.action).toContain("Esc");
+    expect(html).toContain("← → ↑ ↓");
+    expect(KEY_LIST.filter((r) => r.keys.includes("矢印") || r.keys.includes("←"))).toHaveLength(2);
+    expect(KEY_LIST.find((r) => r.keys === "Shift + 矢印")?.action).toContain("1/3");
+  });
 });

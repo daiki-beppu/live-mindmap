@@ -4,6 +4,7 @@ export const KEY_LIST = [
   { group: "キー", keys: "F", action: "全体を見る・もう一度で戻る" },
   { group: "キー", keys: "= / -", action: "拡大・縮小（JIS 配列では ^ でも拡大）" },
   { group: "キー", keys: "0", action: "倍率 1.0 にする" },
+  { group: "キー", keys: "← → ↑ ↓", action: "ノードを選ぶ（← 親・→ 縦に近い子・↑↓ 同じ深さの上下。Esc で外す）" },
   { group: "キー", keys: "Shift + 矢印", action: "画面の 1/3 ずつ移動する" },
   { group: "キー", keys: "E", action: "右の列（変わったこと・根拠）を出す・隠す" },
   { group: "キー", keys: "C", action: "字幕を出す・隠す" },

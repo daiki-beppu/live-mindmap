@@ -24,6 +24,7 @@ import {
   nodeRect,
   overviewViewport,
   panViewport,
+  revealViewport,
   scrollAlongAxis,
   scrollAxis,
   shiftIntoView,
@@ -106,6 +107,8 @@ type ViewingProps = {
   viewing?: ViewingState;
   camera?: { command: CameraCommand; seq: number };
   onViewingEvent?: (event: ViewingEvent, tree: VisibleTree) => void;
+  // 見えている木が変わるたびに最新を知らせる（実寸の確定で目標の位置が変わっても、矢印が最新の位置で測れるように）
+  onTree?: (tree: VisibleTree) => void;
 };
 
 // 撮影では、既定の最小倍率（0.5）より小さくして、大きなマップも収める。この下限でも収まらない場合は onFitted(false) で知らせる
@@ -120,6 +123,7 @@ function MapCanvas({
   viewing,
   camera,
   onViewingEvent,
+  onTree,
 }: { snapshot: Snapshot } & SelectProps & StillProps & ViewingProps) {
   // React Flow が測った実寸。スナップショットが変わっても捨てない（測り直しは onNodesChange で上書きされる）。
   const [dims, setDims] = useState<Dims>({});
@@ -195,9 +199,12 @@ function MapCanvas({
   }, [shownNodes]);
 
   // 見えている木。出来事と一緒に reducer へ渡す
-  const tree = useMemo((): VisibleTree => ({ ids: shownNodes.map((n) => n.id), targets: target, currentTopic: snapshot.currentTopic }), [shownNodes, snapshot.currentTopic, target]);
+  const tree = useMemo((): VisibleTree => ({ ids: shownNodes.map((n) => n.id), targets: target, parents: Object.fromEntries(shownNodes.map((n) => [n.id, n.parent])), currentTopic: snapshot.currentTopic }), [shownNodes, snapshot.currentTopic, target]);
   const treeRef = useRef(tree);
   treeRef.current = tree;
+  useEffect(() => {
+    onTree?.(tree);
+  }, [tree, onTree]);
   const onViewingEventRef = useRef(onViewingEvent);
   onViewingEventRef.current = onViewingEvent;
 
@@ -261,6 +268,10 @@ function MapCanvas({
         break;
       case "focusNode":
         void setViewport(nodeFocusViewport(nodeRect(command.id, target, dims), current.zoom, size), { duration: 0 });
+        break;
+      case "revealNode":
+        // 全体を見ていて 0.5 未満の倍率から人の状態に移るときは、人の範囲に収めてから、はみ出した分だけ動かす
+        void setViewport(revealViewport(zoomAroundCenter(current, clampUserZoom(current.zoom), size), nodeRect(command.id, target, dims), size), { duration: 0 });
         break;
       case "restore": {
         const before = beforeOverview.current;
@@ -421,10 +432,10 @@ function MapCanvas({
   );
 }
 
-export function MapView({ snapshot, selectedId, onSelect, still, onFitted, viewing, camera, onViewingEvent }: { snapshot: Snapshot } & SelectProps & StillProps & ViewingProps) {
+export function MapView({ snapshot, selectedId, onSelect, still, onFitted, viewing, camera, onViewingEvent, onTree }: { snapshot: Snapshot } & SelectProps & StillProps & ViewingProps) {
   return (
     <ReactFlowProvider>
-      <MapCanvas snapshot={snapshot} selectedId={selectedId} onSelect={onSelect} still={still} onFitted={onFitted} viewing={viewing} camera={camera} onViewingEvent={onViewingEvent} />
+      <MapCanvas snapshot={snapshot} selectedId={selectedId} onSelect={onSelect} still={still} onFitted={onFitted} viewing={viewing} camera={camera} onViewingEvent={onViewingEvent} onTree={onTree} />
     </ReactFlowProvider>
   );
 }

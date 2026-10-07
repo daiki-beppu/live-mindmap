@@ -193,6 +193,24 @@ export function shiftIntoView(viewport: Viewport, rects: Rect[], size: Size): Vi
   return { ...viewport, x: viewport.x + dx };
 }
 
+// ノードが画面の外にはみ出していれば、倍率は変えず、はみ出した分だけ最小限ずらして入れる（中央へは寄せない・余白は足さない）。
+// 中にあれば動かさない。画面より大きい軸は左端・上端を 0 に合わせる。画面座標は 座標 × zoom + x
+export function revealViewport(viewport: Viewport, rect: Rect, size: Size): Viewport {
+  const shift = (start: number, length: number, extent: number) => {
+    const from = start;
+    const to = start + length;
+    if (length > extent || from < 0) return -from;
+    return to > extent ? extent - to : 0;
+  };
+  const left = rect.x * viewport.zoom + viewport.x;
+  const top = rect.y * viewport.zoom + viewport.y;
+  return {
+    ...viewport,
+    x: viewport.x + shift(left, rect.width * viewport.zoom, size.width),
+    y: viewport.y + shift(top, rect.height * viewport.zoom, size.height),
+  };
+}
+
 // 今の round に変わったノードが無く、すでにこの round より前に寄せていれば動かさない。
 // 同じ round の測り直し（実寸が届いた）では寄せ直す
 export function shouldMoveCamera(snapshot: Snapshot, placedRound: number | null): boolean {

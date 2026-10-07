@@ -78,3 +78,22 @@ describe("styles.css: キー一覧", () => {
     expect(r).not.toMatch(/box-shadow\s*:\s*(?!none)/);
   });
 });
+
+describe("styles.css: 選んだノード", () => {
+  it("塗りを薄い灰色にする（背景色の指定がある）", () => {
+    expect(rule(".map-node--selected")).toMatch(/background(?:-color)?\s*:\s*(?:#(?:[ef][0-9a-f]){3}|#[ef][0-9a-f]{2}|rgb)/i);
+  });
+
+  it("枠・点滅の outline・影には触れない（実寸が変わり、配置がずれるため）", () => {
+    const r = rule(".map-node--selected");
+    expect(r).not.toMatch(/border|outline|box-shadow|padding|margin|width|height/);
+  });
+
+  it("畳んだノードの塗りに負けないよう、.map-node--folded より後ろに置く", () => {
+    const selectedAt = css.search(/(?:^|\n)\.map-node--selected\s*\{/);
+    const foldedAt = css.search(/(?:^|\n)\.map-node--folded\s*\{/);
+    expect(selectedAt).toBeGreaterThanOrEqual(0);
+    expect(foldedAt).toBeGreaterThanOrEqual(0);
+    expect(selectedAt).toBeGreaterThan(foldedAt);
+  });
+});

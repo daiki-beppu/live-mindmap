@@ -1,4 +1,6 @@
-import type { NodeProps } from "@xyflow/react";
+import { ReactFlowProvider, type NodeProps } from "@xyflow/react";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { MapNode, type MapNodeData } from "../src/MapNode.tsx";
 import { findAll, textOf } from "./tree.ts";
@@ -242,5 +244,30 @@ describe("MapNode: 畳んだノード", () => {
     const d = data({ fold: { hint: "決定 1", hidden: 2 }, changedRound: 3 });
     expect(cls(d)).toContain("map-node--blink");
     expect(findAll(call("n2", d), "button")).toHaveLength(1);
+  });
+});
+
+describe("MapNode: 選んだノードの見た目", () => {
+  // 実際に HTML へ描画し、ルート要素の class 属性を読む（Handle が出す class とは混ぜない）。
+  const html = (d: MapNodeData) => renderToStaticMarkup(createElement(ReactFlowProvider, null, createElement(MapNode as never, { id: "n2", data: d })));
+  const cls = (d: MapNodeData) => /^<div[^>]*? class="([^"]*)"/.exec(html(d))![1]!.split(" ");
+
+  it("選んだノードにだけ map-node--selected が付く", () => {
+    expect(cls(data({ selected: true }))).toContain("map-node--selected");
+    expect(cls(data({ selected: false }))).not.toContain("map-node--selected");
+  });
+
+  it("選んだ印は、点滅や畳みの class と一緒に付いても消えない（互いに打ち消さない）", () => {
+    const c = cls(data({ selected: true, changedRound: 3 }));
+    expect(c).toContain("map-node--selected");
+    expect(c).toContain("map-node--blink");
+  });
+
+  it("選んでも影・バッジの class は足さず、ボタンは 1 つのまま（aria-pressed は残る）", () => {
+    const out = html(data({ selected: true }));
+    expect(out.match(/<button/g)).toHaveLength(1);
+    expect(out).toContain('aria-pressed="true"');
+    expect(html(data({ selected: false }))).toContain('aria-pressed="false"');
+    expect(cls(data({ selected: true })).filter((c) => /badge|shadow/.test(c))).toEqual([]);
   });
 });

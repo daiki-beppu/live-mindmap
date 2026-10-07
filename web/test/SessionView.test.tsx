@@ -197,3 +197,56 @@ describe("SessionView: E で右の列、C で字幕を隠した状態", () => {
     expect(html).toContain("map-view-stub");
   });
 });
+
+describe("SessionView: 選択は見る状態から描く（根拠の欄と、マップへ渡す選択）", () => {
+  const renderWith = async (initial: Record<string, unknown>) => {
+    // 静的描画ではキーを押せないため、初期状態だけをこのテストの中で選んだ状態にする
+    vi.resetModules();
+    vi.doMock("../src/viewing.ts", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../src/viewing.ts")>()),
+      INITIAL_VIEWING: { mode: "auto", ...initial },
+    }));
+    try {
+      const { SessionView: SelectedSessionView } = await import("../src/SessionView.tsx");
+      return renderToStaticMarkup(<SelectedSessionView snapshot={snapshot} speaking={speaking} />);
+    } finally {
+      vi.doUnmock("../src/viewing.ts");
+      vi.resetModules();
+    }
+  };
+  const sideOf = (html: string) => html.slice(html.indexOf('class="side"'));
+
+  it("選んでいなければ、マップへ渡す選択は無く、根拠の欄は案内を出す", () => {
+    renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
+    const props = mapViewProps.mock.calls[0]![0] as { selectedId: unknown };
+    expect(props.selectedId).toBeNull();
+  });
+
+  it("見る状態の選択（キーで選んだもの）が、根拠の欄とマップへ渡す選択の両方に出る", async () => {
+    const html = await renderWith({ selection: { id: "n1", byKey: true } });
+    expect(sideOf(html)).toContain("何回にしますか");
+    expect(sideOf(html)).not.toContain("ノードを選ぶと、根拠の発言が出ます");
+    const props = mapViewProps.mock.calls.at(-1)![0] as { selectedId: unknown };
+    expect(props.selectedId).toBe("n1");
+  });
+
+  it("クリックで選んだもの（byKey: false）も同じ選択として描かれる", async () => {
+    const html = await renderWith({ selection: { id: "n1", byKey: false } });
+    expect(sideOf(html)).toContain("何回にしますか");
+    expect((mapViewProps.mock.calls.at(-1)![0] as { selectedId: unknown }).selectedId).toBe("n1");
+  });
+
+  it("ルートを選んだときも、マップへ渡す選択になり、根拠の欄は案内ではなく選んだ状態で出て、変わったことは下に出たまま", async () => {
+    const html = await renderWith({ selection: { id: "root", byKey: true } });
+    expect((mapViewProps.mock.calls.at(-1)![0] as { selectedId: unknown }).selectedId).toBe("root");
+    expect(sideOf(html)).not.toContain("ノードを選ぶと、根拠の発言が出ます");
+    expect(sideOf(html)).toContain("変わったこと");
+  });
+
+  it("右の列を隠していれば、選択があっても列は出ない（選択が列を出さない）。マップへの選択は渡る", async () => {
+    const html = await renderWith({ sideHidden: true, selection: { id: "n1", byKey: true } });
+    expect(html).not.toContain('class="side"');
+    expect(html).not.toContain("何回にしますか");
+    expect((mapViewProps.mock.calls.at(-1)![0] as { selectedId: unknown }).selectedId).toBe("n1");
+  });
+});
