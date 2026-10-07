@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideIntakeRestart, MAX_CONSECUTIVE_FAILURES, RESTART_WINDOW_MS, STDERR_TAIL_LINES, tailLines } from "../src/core/intake.ts";
+import { decideIntakeRestart, formatIntakeStatus, MAX_CONSECUTIVE_FAILURES, RESTART_WINDOW_MS, STDERR_TAIL_LINES, tailLines } from "../src/core/intake.ts";
 
 // 起動し直しの上限の判断（Issue #161 の決定: 「60 秒以内に終わったら続けて失敗したと数え、3 回続いたら諦める。
 // 60 秒より長く動いてから終わったら数え直す。止まり方（コード／シグナル）で分岐しない」）。
@@ -63,5 +63,27 @@ describe("tailLines（標準エラーの末尾）", () => {
 
   it("空文字は空の配列になる", () => {
     expect(tailLines("", 5)).toEqual([]);
+  });
+});
+
+// cli status の標準出力（段 3 以前は server.test.ts が CLI 経由で固定していた文面。値の組み立ては Sessions.status が担い、文面はここで固定する）
+describe("formatIntakeStatus（cli status の標準出力）", () => {
+  it("セッションなしは状態の一言だけ", () => {
+    expect(formatIntakeStatus({ status: "none" })).toBe("セッションなし\n");
+  });
+
+  it("動いているときは、状態・セッションのフォルダ・起動し直した回数を出し、途切れの時刻は出さない", () => {
+    const out = formatIntakeStatus({ status: "running", dir: "/tmp/s", restarts: 0 });
+    expect(out).toContain("動いている");
+    expect(out).toContain("/tmp/s");
+    expect(out).toContain("起動し直した回数: 0");
+    expect(out).not.toContain("最後の途切れの時刻");
+  });
+
+  it("止まったときは、最後の途切れの時刻を値として出す", () => {
+    const out = formatIntakeStatus({ status: "stopped", dir: "/tmp/s", restarts: 0, lastInterruptedAt: "2026-01-02T03:04:05.678Z" });
+    expect(out).toContain("止まった");
+    expect(out).toContain("起動し直した回数: 0");
+    expect(out).toContain("最後の途切れの時刻: 2026-01-02T03:04:05.678Z");
   });
 });

@@ -6,14 +6,14 @@
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
 //   GET  /・/ws           ブラウザへの配信（同じポートで upgrade する）
-// セッションの操作は Sessions（port）から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
+// セッションの操作は sessions.ts の Sessions から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
 import { Cause, Context, Effect, Layer, Option, Schema, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
-import type { IntakeStatusReport } from "./core/index.ts";
 import type { SessionFailure } from "./sessionFailure.ts";
+import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 
 // /session/start の本文。app は空でない文字列、title は文字列か null か無し、audio は真偽値か null か無し。
@@ -24,28 +24,11 @@ const SessionStartBody = Schema.Struct({
   audio: Schema.optional(Schema.NullOr(Schema.Boolean)),
 });
 
-// セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
-export type SessionStart = { app: string; title: string | undefined; audio: boolean };
-
 const toSessionStart = (body: typeof SessionStartBody["Type"]): SessionStart => ({
   app: body.app,
   title: body.title ?? undefined,
   audio: body.audio ?? true,
 });
-
-// 古いセッションの操作へのつなぎ口。タグ付きの失敗だけを失敗として運び、
-// 予期しない失敗は defect（ここで 500 にする）として渡す
-export class Sessions extends Context.Service<Sessions, {
-  apps: Effect.Effect<unknown>;
-  start: (input: SessionStart) => Effect.Effect<{ dir: string }, SessionFailure>;
-  stop: Effect.Effect<{ paths: string[] }, SessionFailure>;
-  status: Effect.Effect<IntakeStatusReport>;
-  resume: Effect.Effect<void, SessionFailure>;
-}>()("live-mindmap/server/http/Sessions") {
-  // 実装は呼び出し側（server.ts）から受け取る。ここが実装を読み込むと循環依存になるので、
-  // layer は構築済みの実装を包むだけにする（資源は掴まないので finalizer も持たない）
-  static readonly layer = (sessions: Sessions["Service"]): Layer.Layer<Sessions> => Layer.succeed(Sessions)(sessions);
-}
 
 class ForbiddenOrigin extends Schema.TaggedError<ForbiddenOrigin>()("ForbiddenOrigin", {}) {
   override get message(): string {
@@ -84,6 +67,7 @@ const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   IntakeNotStopped: 409,
   Aborted: 503,
   RestartGaveUp: 503,
+  HelperExited: 500,
   HttpServerError: 500,
 };
 
@@ -191,7 +175,7 @@ export const portOf = (address: NetAddress.SocketAddress): number => {
 // raw socket を切断する。これは終了処理にとって実質無期限で、応答しない接続が 1 本でもあると
 // close() の所要時間がその接続に縛られる（ISSUE-2）。close ハンドシェイクは同一プロセス内の 1 往復
 // （数十 ms 未満）で終わるのが通常なので、ヘルパーの SIGTERM→SIGKILL の猶予
-// （server.ts の HELPER_STOP_TIMEOUT_MS=5,000ms）と同程度を上限にすれば、正常系を妨げずに
+// （helpers.ts の HELPER_STOP_TIMEOUT_MS=5,000ms）と同程度を上限にすれば、正常系を妨げずに
 // 応答しない接続を打ち切れる
 const WS_CLOSE_TIMEOUT_MS = 3_000;
 

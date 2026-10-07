@@ -5,10 +5,12 @@
 // 今の規則（hostTime は数字の文字列だけ・duplicate がなければ false）を表す（CT-RULES）ことを、
 // 実在するデータの実例・既存フィクスチャで decode して確かめる。
 //
-// 検証はまだ production 経路につながない（order.md:9、CT-NOWIRE）。このテストは Schema を直接
-// decode するだけで、live.ts の remarkFromHelper・partialFromHelper・originFromHelper、
-// evaluate.ts の parseTruth、session.ts の restoreSession は呼ばない。それらの既存の振る舞いは
-// server/test/live.test.ts・eval.test.ts・restore.test.ts が引き続き固定する（このファイルでは変更しない）。
+// 段 3（Issue #240）で、ヘルパーのイベントの Schema は decodeHelperEvent から production 経路
+// （Sessions の読み取りループ）へつながった（order.md:34, 47、CT-DECODE-WIRED）。このテストは
+// Schema を直接 decode するだけで、decodeHelperEvent・evaluate.ts の parseTruth・session.ts の
+// restoreSession は呼ばない。decodeHelperEvent の型の見分け・タグ付きの失敗の振る舞いは
+// server/test/live.test.ts が固定し、parseTruth・restoreSession は eval.test.ts・restore.test.ts
+// が引き続き固定する（このファイルでは変更しない）。
 //
 // 例外は「空の根拠を持つ操作のログ行」の確認（下の describe）だけで、session.ts の createSession を
 // 使って実際に push → flush させ、そこで生成される diff イベントを decode する。根拠の要素数制約を
