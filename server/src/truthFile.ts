@@ -1,8 +1,8 @@
-// 正解ファイル（--truth）の読み込み。cli の eval と bench の sttReplay が共有する。
+// 正解ファイル（--truth、--screen-truth）の読み込み。cli の eval と bench の sttReplay が共有する。
 // 失敗は InvalidTruthFile にし、表示（日本語の 1 行）は各入口が持つ。
 import { readFileSync } from "node:fs";
 import { Effect, Predicate, Schema, SchemaIssue } from "effect";
-import { Truth } from "./core/index.ts";
+import { ScreenTruth, Truth } from "./core/index.ts";
 
 class InvalidTruthFile extends Schema.TaggedError<InvalidTruthFile>()("InvalidTruthFile", {
   path: Schema.String,
@@ -34,13 +34,16 @@ const truthReason = (error: Schema.SchemaError): string =>
     ].join(" / "),
   );
 
-// 正解ファイルの検証は段 1 の Truth の Schema が 1 つだけ持つ
-export const readTruthFile = (path: string) =>
+// 正解ファイルの検証は core/evaluate.ts の Schema が 1 つだけ持つ（失敗のタグと理由の作り方はここで共有する）
+const readFileWith = <S extends Schema.Decoder<unknown>>(schema: S) => (path: string) =>
   readTextFile(path).pipe(
     Effect.mapError((reason) => new InvalidTruthFile({ path, reason })),
     Effect.flatMap((text) =>
-      Schema.decodeUnknownEffect(Schema.fromJsonString(Truth))(text).pipe(
+      Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(text).pipe(
         Effect.mapError((e) => new InvalidTruthFile({ path, reason: truthReason(e) })),
       ),
     ),
   );
+
+export const readTruthFile = readFileWith(Truth);
+export const readScreenTruthFile = readFileWith(ScreenTruth);

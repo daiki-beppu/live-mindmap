@@ -35,7 +35,7 @@ import {
   startRecordedSession,
   writeExportFiles,
 } from "./sessionFiles.ts";
-import { describe, formatIssues, InvalidTruthFile, oneLine, readTextFile, readTruthFile } from "./truthFile.ts";
+import { describe, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
 // セッションのファイル操作は sessionFiles.ts にある。既存の import 元（cli.ts）を保つために再公開する
@@ -473,14 +473,19 @@ const evaluate = Command.make(
       Flag.withDescription("正解ファイル（JSON）。形は core/evaluate.ts の Truth が正本"),
       Flag.optional,
     ),
+    screenTruth: Flag.File("screen-truth").pipe(
+      Flag.withDescription("共有画面の正解ファイル（JSON）。形は core/evaluate.ts の ScreenTruth が正本"),
+      Flag.optional,
+    ),
     sessions: Argument.String("session").pipe(
       Argument.withDescription("play で作ったセッションのフォルダ"),
       Argument.atLeast(1),
     ),
   },
-  Effect.fn("eval")(function* ({ sessions, truth }) {
+  Effect.fn("eval")(function* ({ sessions, truth, screenTruth }) {
     // 正解ファイルの検証は共有の readTruthFile（段 1 の Truth の Schema）が持つ（Flag 側では検証しない）
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
+    const screen = Option.isNone(screenTruth) ? undefined : yield* readScreenTruthFile(screenTruth.value);
     const runs: Run[] = [];
     for (const dir of sessions) {
       const path = join(dir, EXPORT_FILE);
@@ -491,11 +496,11 @@ const evaluate = Command.make(
       );
       runs.push({ name: basename(dir), title: exp.root.text, exp });
     }
-    yield* write(formatTable(runs, expected));
+    yield* write(formatTable(runs, expected, screen));
   }),
 ).pipe(
   Command.withDescription(
-    "play で作ったランの指標を 1 ラン 1 行の表で出す。--truth を渡すと決定・TODO の再現率も出す"
+    "play で作ったランの指標を 1 ラン 1 行の表で出す。--truth を渡すと決定・TODO の再現率も、--screen-truth を渡すと指す発言・うち記憶・話だけ・出てはいけないの列も出す"
       + "（当たる条件と 1 対 1 の数え方は core/evaluate.ts の matches・recall が持つ）",
   ),
 );
