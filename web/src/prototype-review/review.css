@@ -15,20 +15,27 @@
 .review-player__time { flex: none; font-variant-numeric: tabular-nums; color: #111827; }
 .review-player__speed { flex: none; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; padding: 3px 4px; }
 
-/* A: 時刻の軸 */
-.review-a__track { position: relative; flex: 1; height: 28px; cursor: pointer; touch-action: none; }
-.review-a__rail, .review-a__done { position: absolute; left: 0; top: 13px; height: 2px; background: #e5e7eb; }
-.review-a__rail { right: 0; }
-.review-a__done { background: #6b7280; }
-.review-a__topic { position: absolute; top: 9px; width: 1px; height: 10px; background: #9ca3af; }
-.review-a__key { position: absolute; top: 2px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; }
-.review-a__thumb { position: absolute; top: 8px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #111827; }
-.review-a__hover { position: absolute; bottom: 26px; transform: translateX(-50%); padding: 1px 5px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
+/* シークバー（Video.js 10 の Slider）。見た目を持たない部品なので、位置は --media-slider-fill・--media-slider-pointer（%）で描く */
+.review-slider { position: relative; flex: 1; min-width: 0; height: 32px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.review-slider__track { position: relative; width: 100%; height: 2px; background: #e5e7eb; }
+.review-slider__fill { position: absolute; left: 0; top: 0; height: 100%; width: var(--media-slider-fill); background: #6b7280; pointer-events: none; }
+.review-slider__thumb { position: absolute; left: var(--media-slider-fill); top: 50%; width: 12px; height: 12px; transform: translate(-50%, -50%); border-radius: 50%; background: #111827; outline: none; }
+.review-slider__thumb:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, #3b82f6 35%, white); }
+.review-slider__preview { bottom: 30px; padding: 1px 5px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fff; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; opacity: 0; }
+.review-slider[data-pointing] .review-slider__preview, .review-slider[data-dragging] .review-slider__preview { opacity: 1; }
+
+/* A: 時刻の軸。議題の始まりは細い線、決定・TODO は小さな点 */
+.review-a__topic { position: absolute; top: -4px; width: 1px; height: 10px; background: #9ca3af; pointer-events: none; }
+.review-a__key { position: absolute; top: -11px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; pointer-events: none; }
 
 /* B: 反映の目盛り。1 列が反映 1 回、下から差分操作を積む */
 .review-b__where { flex: none; width: 300px; display: flex; flex-direction: column; gap: 1px; overflow: hidden; }
 .review-b__op { font-size: 12px; color: #6b7280; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.review-b__track { flex: 1; height: 32px; display: flex; align-items: flex-end; gap: 1px; cursor: pointer; touch-action: none; }
+.review-player--b .review-slider { height: 40px; }
+.review-player--b .review-slider__track { height: 32px; background: none; }
+.review-player--b .review-slider__fill { display: none; }
+.review-player--b .review-slider__thumb, .review-player--c .review-slider__thumb { width: 2px; height: calc(100% + 6px); border-radius: 0; }
+.review-b__cols { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 1px; pointer-events: none; }
 .review-b__col { flex-basis: 0; min-width: 0; display: flex; flex-direction: column-reverse; gap: 1px; }
 .review-b__cell { display: block; height: 4px; background: #cbd5e1; opacity: 0.25; }
 .review-b__cell--done { opacity: 0.8; }
@@ -38,9 +45,10 @@
 .review-c__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .review-c__head { display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
 .review-c__title { overflow: hidden; text-overflow: ellipsis; color: #111827; }
-.review-c__track { position: relative; height: 20px; }
-.review-c__chapter { position: absolute; top: 0; height: 20px; box-sizing: border-box; padding: 0 4px; border: 0; border-left: 1px solid #fff; background: #eef2f7; color: #6b7280; font-size: 11px !important; text-align: left; white-space: nowrap; overflow: hidden; cursor: pointer; }
+.review-player--c .review-slider { height: 28px; }
+.review-player--c .review-slider__track { height: 20px; background: none; }
+.review-player--c .review-slider__fill { display: none; }
+.review-c__chapter { position: absolute; top: 0; height: 20px; box-sizing: border-box; padding: 0 4px; border-left: 1px solid #fff; background: #eef2f7; color: #6b7280; font-size: 11px; line-height: 20px; white-space: nowrap; overflow: hidden; pointer-events: none; }
 .review-c__chapter span { display: block; overflow: hidden; text-overflow: ellipsis; }
 .review-c__chapter--done { background: #dbe3ee; }
 .review-c__chapter--now { background: color-mix(in srgb, #3b82f6 22%, white); color: #111827; }
-.review-c__head-line { position: absolute; top: -3px; width: 2px; height: 26px; margin-left: -1px; background: #111827; pointer-events: none; }

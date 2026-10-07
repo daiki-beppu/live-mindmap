@@ -6,7 +6,8 @@
 //   B 反映の目盛り: 反映の回数の軸（1 回ずつの目盛りに差分操作を積む）・コマ送りは差分操作 1 件・▶ は一定の間隔
 //   C 議題の章立て: 議題ごとの帯を章として並べる（会議の時刻の軸）・押すとその議題の始まりへ・▶ は反映を一定の間隔
 // 開いた直後は最後の時点で止めておく。
-import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
+import { Slider } from "@videojs/react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { ChangeEntry, SnapshotNode } from "../../../server/src/core/index.ts";
 import { Captions } from "../Captions.tsx";
@@ -442,29 +443,32 @@ type PlayerProps = {
   atIndex: (i: number, ops?: number) => Pos;
 };
 
-// 押した・引いた位置を 0〜1 にする
-function useTrack(onRatio: (r: number) => void) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [hover, setHover] = useState<number | null>(null);
-  const ratio = (e: RPointerEvent) => {
-    const b = ref.current!.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (e.clientX - b.left) / b.width));
-  };
-  return {
-    ref,
-    hover,
-    handlers: {
-      onPointerDown: (e: RPointerEvent) => {
-        ref.current!.setPointerCapture(e.pointerId);
-        onRatio(ratio(e));
-      },
-      onPointerMove: (e: RPointerEvent) => {
-        setHover(ratio(e));
-        if (ref.current!.hasPointerCapture(e.pointerId)) onRatio(ratio(e));
-      },
-      onPointerLeave: () => setHover(null),
-    },
-  };
+// シークバー: Video.js 10 の汎用 Slider（プレイヤーにつながない。値は外から渡す）。
+// 目印・帯は Track の中に自前で置く（left は %）。ホバーの位置の値を Preview に出す。
+// 矢印・Home/End はつまみにフォーカスがあるときだけ効く。押して離したらフォーカスを外し、矢印をノードの選択に返す
+function ReviewSlider(p: { max: number; value: number; step: number; largeStep: number; onChange: (v: number) => void; valueText: (v: number) => string; preview: (v: number) => string; children?: ReactNode }) {
+  return (
+    <Slider.Root
+      className="review-slider"
+      label="見返しの時刻"
+      min={0}
+      max={p.max}
+      step={p.step}
+      largeStep={p.largeStep}
+      value={p.value}
+      onValueChange={p.onChange}
+      onPointerUp={() => (document.activeElement as HTMLElement | null)?.blur()}
+    >
+      <Slider.Track className="review-slider__track">
+        {p.children}
+        <Slider.Fill className="review-slider__fill" />
+      </Slider.Track>
+      <Slider.Thumb className="review-slider__thumb" aria-valuetext={p.valueText(p.value)} />
+      <Slider.Preview className="review-slider__preview">
+        <Slider.Value type="pointer" format={p.preview} />
+      </Slider.Preview>
+    </Slider.Root>
+  );
 }
 
 const Speed = ({ value, options, unit, onChange }: { value: number; options: number[]; unit: (n: number) => string; onChange: (n: number) => void }) => (
@@ -478,20 +482,23 @@ const Speed = ({ value, options, unit, onChange }: { value: number; options: num
 // A: 動画のように。会議の時刻の軸に、議題の始まり（細い線）と決定・TODO（小さな点）
 function PlayerA(p: PlayerProps & { speed: number; setSpeed: (n: number) => void }) {
   const { marks, pos } = p;
-  const track = useTrack((r) => p.seek(p.atTime(r * marks.end)));
   const x = (t: number) => `${(t / marks.end) * 100}%`;
   return (
     <div className="review-player review-player--a">
       <button type="button" className="review-player__play" onClick={p.togglePlay} aria-label={p.playing ? "止める" : "進める"}>{p.playing ? "❚❚" : "▶"}</button>
       <span className="review-player__time">{clock(pos.t)} / {clock(marks.end)}</span>
-      <div className="review-a__track" ref={track.ref} {...track.handlers}>
-        <div className="review-a__rail" />
-        <div className="review-a__done" style={{ width: x(pos.t) }} />
+      <ReviewSlider
+        max={marks.end}
+        value={pos.t}
+        step={5}
+        largeStep={60}
+        onChange={(v) => p.seek(p.atTime(v))}
+        valueText={(v) => `${clock(v)} / ${clock(marks.end)}`}
+        preview={(v) => `${clock(v)} ${marks.chapters[chapterIndexOf(marks, v)]?.text ?? ""}`}
+      >
         {marks.topicStarts.map((m, i) => <span key={i} className="review-a__topic" style={{ left: x(m.at) }} />)}
         {marks.keys.map((m, i) => <span key={i} className="review-a__key" style={{ left: x(m.at), background: KIND_COLOR[m.kind] }} />)}
-        <span className="review-a__thumb" style={{ left: x(pos.t) }} />
-        {track.hover !== null && <span className="review-a__hover" style={{ left: `${track.hover * 100}%` }}>{clock(track.hover * marks.end)}</span>}
-      </div>
+      </ReviewSlider>
       <Speed value={p.speed} options={[10, 30, 60, 120]} unit={(n) => `${n} 倍`} onChange={p.setSpeed} />
     </div>
   );
@@ -502,10 +509,6 @@ function PlayerB(p: PlayerProps & { ms: number; setMs: (n: number) => void }) {
   const { meeting, marks, pos, frame } = p;
   const n = meeting.diffEnds.length;
   const k = stepIndexOf(marks, pos);
-  const track = useTrack((r) => {
-    const s = marks.steps[Math.min(marks.steps.length - 1, Math.floor(r * marks.steps.length))]!;
-    p.seek(p.atIndex(s.index, s.ops));
-  });
   const columns = useMemo(() => {
     const cols: { index: number; cells: { k: number; kind: string }[] }[] = [];
     marks.steps.forEach((s, i) => {
@@ -524,19 +527,35 @@ function PlayerB(p: PlayerProps & { ms: number; setMs: (n: number) => void }) {
         <span className="review-player__time">{clock(pos.t)}・反映 {pos.index + 1}/{n}・{opNo}/{opsHere} 件目</span>
         <span className="review-b__op">{lastChange ? `${lastChange.change} ${lastChange.kind}「${lastChange.text}」` : "-"}</span>
       </div>
-      <div className="review-b__track" ref={track.ref} {...track.handlers}>
-        {columns.map((c) => (
-          <span key={c.index} className="review-b__col" style={{ flexGrow: c.cells.length || 1 }}>
-            {c.cells.map((cell) => (
-              <span
-                key={cell.k}
-                className={`review-b__cell${cell.k <= k ? " review-b__cell--done" : ""}${cell.k === k ? " review-b__cell--now" : ""}`}
-                style={{ background: cell.kind in KIND_COLOR ? KIND_COLOR[cell.kind as SnapshotNode["kind"]] : undefined }}
-              />
-            ))}
-          </span>
-        ))}
-      </div>
+      <ReviewSlider
+        max={marks.steps.length - 1}
+        value={k}
+        step={1}
+        largeStep={10}
+        onChange={(v) => {
+          const s = marks.steps[Math.round(v)]!;
+          p.seek(p.atIndex(s.index, s.ops));
+        }}
+        valueText={() => `反映 ${pos.index + 1} / ${n}、${opNo} / ${opsHere} 件目`}
+        preview={(v) => {
+          const s = marks.steps[Math.round(v)]!;
+          return `${clock(meeting.diffAt[s.index]!)}・反映 ${s.index + 1}`;
+        }}
+      >
+        <div className="review-b__cols">
+          {columns.map((c) => (
+            <span key={c.index} className="review-b__col" style={{ flexGrow: c.cells.length || 1 }}>
+              {c.cells.map((cell) => (
+                <span
+                  key={cell.k}
+                  className={`review-b__cell${cell.k <= k ? " review-b__cell--done" : ""}${cell.k === k ? " review-b__cell--now" : ""}`}
+                  style={{ background: cell.kind in KIND_COLOR ? KIND_COLOR[cell.kind as SnapshotNode["kind"]] : undefined }}
+                />
+              ))}
+            </span>
+          ))}
+        </div>
+      </ReviewSlider>
       <Speed value={p.ms} options={[300, 600, 800, 1200]} unit={(n) => `1 件 ${n / 1000} 秒`} onChange={p.setMs} />
     </div>
   );
@@ -558,21 +577,25 @@ function PlayerC(p: PlayerProps & { ms: number; setMs: (n: number) => void }) {
           <span className="review-player__time">{clock(pos.t)}</span>
           <span className="review-c__title">{now?.text ?? "-"}</span>
         </div>
-        <div className="review-c__track">
+        <ReviewSlider
+          max={marks.end}
+          value={pos.t}
+          step={5}
+          largeStep={60}
+          onChange={(v) => p.seek(p.atTime(v))}
+          valueText={(v) => `${clock(v)}、${now?.text ?? ""}`}
+          preview={(v) => `${clock(v)} ${marks.chapters[chapterIndexOf(marks, v)]?.text ?? ""}`}
+        >
           {marks.chapters.map((ch, i) => (
-            <button
+            <span
               key={i}
-              type="button"
-              title={`${clock(ch.from)} ${ch.text}`}
               className={`review-c__chapter${i === c ? " review-c__chapter--now" : ""}${ch.to <= pos.t ? " review-c__chapter--done" : ""}`}
               style={{ left: x(ch.from), width: x(ch.to - ch.from) }}
-              onClick={(e) => (p.seek(chapterStart(meeting, ch.from, p.atIndex)), e.currentTarget.blur())}
             >
               {(ch.to - ch.from) / marks.end > 0.035 && <span>{ch.text}</span>}
-            </button>
+            </span>
           ))}
-          <span className="review-c__head-line" style={{ left: x(pos.t) }} />
-        </div>
+        </ReviewSlider>
       </div>
       <Speed value={p.ms} options={[300, 600, 800, 1200]} unit={(n) => `1 回 ${n / 1000} 秒`} onChange={p.setMs} />
     </div>
