@@ -27,6 +27,8 @@ export const MapNode = Schema.Struct({
   touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Number)),
   // 最後に根拠が足された反映の番号。根拠が足されたノード自身だけに付く
   evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Number)),
+  // 議題・論点が済みのときだけ付く。キーが無ければ話し中（作られたときも付けない）
+  talkStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literal("済み"))),
 });
 export type MapNode = typeof MapNode["Type"];
 
@@ -67,6 +69,7 @@ export const Op = Schema.Union([
   Schema.Struct({ op: Schema.Literal("move"), node: NodeRef, parent: NodeRef }),
   Schema.Struct({ op: Schema.Literal("delete"), node: NodeRef }),
   Schema.Struct({ op: Schema.Literal("noop"), reason: Schema.String }),
+  Schema.Struct({ op: Schema.Literal("close"), node: NodeRef }), // 議題か論点を済みにする。根拠は持たない
 ]);
 export type Op = typeof Op["Type"];
 
@@ -134,6 +137,12 @@ function touchUp(map: MeetingMap, id: string | null, at: number) {
   }
 }
 
+function reopenUp(map: MeetingMap, id: string) {
+  for (let cur = map.nodes[id]; cur; cur = cur.parent ? map.nodes[cur.parent] : undefined) {
+    delete cur.talkStatus;
+  }
+}
+
 function removeNode(map: MeetingMap, id: string) {
   delete map.nodes[id];
   map.order = map.order.filter((k) => k !== id);
@@ -143,6 +152,9 @@ function removeNode(map: MeetingMap, id: string) {
 // 成り立たない操作は捨てて理由を返し、残りは適用を続ける。
 // known は根拠に使える発言の ID。知らない発言を根拠に挙げた操作は捨てる。
 // stamp は、この反映の番号（round）と、渡した新しい発言の end の最大値（at）。触れたノードの touchedAt と、根拠が足されたノードの evidenceRound に使う。
+// close は議題か論点を済みにする。対象かその子孫に同じ応答か直前の反映（round - 1 以降）で根拠が足されていれば捨てる。
+// add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
+// close と開き直しは changeOrder・touchedAt に影響しない。
 // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
 export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
   const { round, at } = stamp;
@@ -178,6 +190,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         };
         map.order.push(id);
         refs.set(op.ref, id);
+        reopenUp(map, id);
         changeOrder.push(id);
         touchUp(map, id, at);
         break;
@@ -192,6 +205,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         const valueChanged = (!!op.text && op.text !== n.text)
           || (!!op.planStatus && op.planStatus !== n.planStatus)
           || evidenceAdded;
+        reopenUp(map, n.id);
         if (valueChanged) { changeOrder.push(n.id); touchUp(map, n.id, at); }
         if (evidenceAdded) n.evidenceRound = round;
         if (op.text) n.text = op.text;
@@ -211,6 +225,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
           n.parent = parentId;
           touchUp(map, n.id, at);
         }
+        reopenUp(map, n.id);
         break;
       }
       case "combine": {
@@ -227,6 +242,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         changeOrder.push(into.id);
         into.evidenceRound = round;
         touchUp(map, into.id, at);
+        reopenUp(map, into.id);
         break;
       }
       case "delete": {
@@ -235,6 +251,16 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         if (children(map, n.id).length) { drop(op, "子を持つノードは削除できない"); break; }
         touchUp(map, n.parent, at);
         removeNode(map, n.id);
+        break;
+      }
+      case "close": {
+        const n = map.nodes[resolve(op.node)];
+        if (!n || n.id === ROOT_ID) { drop(op, "対象が無い"); break; }
+        if (n.kind !== "議題" && n.kind !== "論点") { drop(op, "閉じられるのは議題・論点だけ"); break; }
+        if (n.talkStatus) { drop(op, "すでに済み"); break; }
+        const recentlyEvidenced = Object.values(map.nodes).some((m) => (m.evidenceRound ?? -Infinity) >= round - 1 && isDescendant(map, m.id, n.id));
+        if (recentlyEvidenced) { drop(op, "同じ応答か直前の差分更新で根拠が足されている"); break; }
+        n.talkStatus = "済み";
         break;
       }
     }

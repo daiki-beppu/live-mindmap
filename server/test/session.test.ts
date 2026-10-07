@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { hasContent, makeSession, QUIET_MS, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
+import { exportFiles, hasContent, makeSession, QUIET_MS, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 // セッションは Scope を要る Effect（makeSession）。差分更新・ログは偽物の Service を Layer で渡す。
@@ -1238,4 +1238,290 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
       expect(all).not.toContain("touchedAt");
       expect(all).not.toContain("evidenceRound");
     }));
+});
+
+// 議題・論点の「済み」（talkStatus）。閉じる（close）は applyOps が判定し、適用・復元の両方で同じ結果になる。
+// 手の n 番目が round n。根拠が足された反映の番号（evidenceRound）と今の round を比べて、閉じるを通すか捨てるかを決める。
+describe("議題・論点の済みと閉じる（close）", () => {
+  // 手ごとに発言を 2 つ流して反映を起こし、手ごとのスナップショットを返す
+  const replay = Effect.fn("replay")(function* (...script: (Op[] | ((ids: string[][]) => Op[]))[]) {
+    const pairs = script.map(() => [remark("発言"), remark("発言")] as const);
+    const ids = pairs.map((p) => p.map((u) => u.id));
+    const { session, events } = yield* setup(...script.map((s) => (typeof s === "function" ? s(ids) : s)));
+    const snaps = [];
+    for (const [a, b] of pairs) {
+      yield* session.push(a);
+      yield* session.push(b);
+      yield* session.idle;
+      snaps.push(yield* session.snapshot);
+    }
+    const dropped = events.flatMap((e) => (e.type === "diff" ? e.dropped : []));
+    return { session, events, snaps, snap: snaps.at(-1)!, dropped, ids };
+  });
+  const closedIds = (snap: { nodes: readonly { id: string; talkStatus?: string }[] }) =>
+    snap.nodes.filter((n) => n.talkStatus === "済み").map((n) => n.id).sort();
+  const noopHand: Op[] = [{ op: "noop", reason: "雑談" }];
+
+  // n1 採用 / n2 選考 / n3 面接は何回か / n4 3 回 / n5 日程 / n6 予算 / n7 上限 / n8 2 回
+  // n1 ⊃ n2 ⊃ n3 ⊃ n4、n1 ⊃ n5、n6 ⊃ n7 ⊃ n8
+  const tree = (ids: string[][]): Op[] => [
+    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t2", parent: "t1", kind: "議題", text: "選考", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t3", parent: "t2", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t4", parent: "t3", kind: "案", text: "3 回", evidence: [ids[0]![1]!] },
+    { op: "add", ref: "t5", parent: "t1", kind: "論点", text: "日程", evidence: [ids[0]![1]!] },
+    { op: "add", ref: "t6", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
+    { op: "add", ref: "t7", parent: "t6", kind: "論点", text: "上限", evidence: [ids[0]![1]!] },
+    { op: "add", ref: "t8", parent: "t7", kind: "案", text: "2 回", evidence: [ids[0]![1]!] },
+  ];
+  const closeAll: Op[] = ["n1", "n2", "n3", "n5", "n6", "n7"].map((node) => ({ op: "close" as const, node }));
+  const ALL = ["n1", "n2", "n3", "n5", "n6", "n7"];
+
+  describe("閉じる", () => {
+    it.effect("作ったばかりの議題・論点は話し中（talkStatus を持たない）で、閉じると議題・論点が済みになる。配下の論点・子の議題・兄弟は変わらない", () =>
+      Effect.gen(function* () {
+        const { snaps, dropped } = yield* replay(tree, noopHand, [{ op: "close", node: "n1" }]);
+        for (const n of snaps[0]!.nodes) expect(n).not.toHaveProperty("talkStatus");
+        expect(snaps[1]!.nodes.filter((n) => "talkStatus" in n)).toEqual([]);
+        expect(dropped).toEqual([]);
+        // 議題 n1 だけが済み。配下の議題 n2・論点 n3・n5 と兄弟の議題 n6 は話し中のまま
+        expect(closedIds(snaps[2]!)).toEqual(["n1"]);
+        for (const id of ["n2", "n3", "n5", "n6", "n7"]) expect(snaps[2]!.nodes.find((n) => n.id === id)).not.toHaveProperty("talkStatus");
+      }));
+
+    it.effect("論点も閉じて済みにできる", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(tree, noopHand, [{ op: "close", node: "n3" }]);
+        expect(dropped).toEqual([]);
+        expect(closedIds(snap)).toEqual(["n3"]);
+        expect(snap.nodes.find((n) => n.id === "n3")!.talkStatus).toBe("済み");
+      }));
+
+    it.effect("同じ応答の中で、add した仮 ID の議題を閉じることはできない（根拠が足されたばかり）。既存の議題は同じ応答で閉じられる", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(tree, noopHand, (ids) => [
+          { op: "add", ref: "x", parent: "root", kind: "議題", text: "新しい議題", evidence: [ids[2]![0]!] },
+          { op: "close", node: "x" },
+          { op: "close", node: "n6" },
+        ]);
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([["close", "x"]]);
+        expect(closedIds(snap)).toEqual(["n6"]);
+      }));
+  });
+
+  describe("無効な閉じるは理由つきで捨てる", () => {
+    it.effect("存在しない・ルート・議題でも論点でもない・すでに済み、の閉じるを捨て、状態は変えない", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(tree, noopHand, [
+          { op: "close", node: "n1" }, // 有効（すでに済みの前提を作る）
+          { op: "close", node: "n99" }, // 存在しない
+          { op: "close", node: "root" }, // ルート
+          { op: "close", node: "n4" }, // 案
+          { op: "close", node: "n1" }, // すでに済み
+        ]);
+        expect(closedIds(snap)).toEqual(["n1"]);
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([
+          ["close", "n99"],
+          ["close", "root"],
+          ["close", "n4"],
+          ["close", "n1"],
+        ]);
+        for (const d of dropped) expect(d.reason).not.toBe("");
+        expect(snap.nodes.find((n) => n.id === "n4")).not.toHaveProperty("talkStatus");
+        expect(snap.nodes.find((n) => n.id === "root")).not.toHaveProperty("talkStatus");
+      }));
+  });
+
+  describe("根拠が足された直後は閉じられない", () => {
+    it.effect("同じ応答で閉じるより前に子孫へ根拠を足すと、閉じるは捨てられる。無関係の議題は同じ応答で閉じられる", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(tree, noopHand, (ids) => [
+          { op: "update", node: "n4", evidence: [ids[2]![0]!] },
+          { op: "close", node: "n1" },
+          { op: "close", node: "n6" },
+        ]);
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([["close", "n1"]]);
+        expect(dropped[0]!.reason).not.toBe("");
+        expect(closedIds(snap)).toEqual(["n6"]);
+      }));
+
+    it.effect("同じ応答でも、閉じるの後に子孫へ根拠を足した場合は閉じるは通り、その更新で話し中に戻る", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(tree, noopHand, (ids) => [
+          { op: "close", node: "n1" },
+          { op: "update", node: "n4", evidence: [ids[2]![0]!] },
+        ]);
+        expect(dropped).toEqual([]);
+        expect(closedIds(snap)).toEqual([]);
+      }));
+
+    it.effect("直前の反映で子孫に根拠が足されていると閉じるは捨てられ、その次の反映（2 つ前）なら閉じられる", () =>
+      Effect.gen(function* () {
+        const { snaps, dropped } = yield* replay(
+          tree,
+          (ids) => [{ op: "update", node: "n4", evidence: [ids[1]![0]!] }], // round 2 で根拠を足す
+          [{ op: "close", node: "n1" }], // round 3: 直前なので捨てる
+          [{ op: "close", node: "n1" }], // round 4: 2 つ前なので通る
+        );
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([["close", "n1"]]);
+        expect(closedIds(snaps[2]!)).toEqual([]);
+        expect(closedIds(snaps[3]!)).toEqual(["n1"]);
+      }));
+
+    it.effect("対象自身に根拠が足された直前の反映でも閉じるは捨てられる。祖先に根拠が足されただけなら閉じられる", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(
+          tree,
+          (ids) => [
+            { op: "update", node: "n3", evidence: [ids[1]![0]!] }, // 対象自身
+            { op: "update", node: "n6", evidence: [ids[1]![0]!] }, // 子孫の祖先側
+          ],
+          [
+            { op: "close", node: "n3" }, // 自身に直前の根拠 → 捨てる
+            { op: "close", node: "n7" }, // 祖先 n6 にだけ直前の根拠 → 通る
+          ],
+        );
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([["close", "n3"]]);
+        expect(closedIds(snap)).toEqual(["n7"]);
+      }));
+
+    it.effect("根拠を足さない更新（本文だけ・既存の根拠）は閉じるを妨げない", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(
+          tree,
+          (ids) => [{ op: "update", node: "n4", text: "4 回", evidence: [ids[0]![1]!] }],
+          [{ op: "close", node: "n1" }],
+        );
+        expect(dropped).toEqual([]);
+        expect(closedIds(snap)).toEqual(["n1"]);
+      }));
+  });
+
+  describe("自動の開き直し", () => {
+    // 3 手目までに全部を済みにし、4 手目の操作でどこが話し中に戻るかを見る
+    const reopen = Effect.fn("reopen")(function* (hand: Op[] | ((ids: string[][]) => Op[])) {
+      const r = yield* replay(tree, noopHand, closeAll, hand);
+      expect(closedIds(r.snaps[2]!)).toEqual(ALL); // 前提: 全部が済み
+      expect(r.dropped).toEqual([]);
+      return r;
+    });
+
+    it.effect("追加: 済みの論点の下に追加すると、論点とその祖先の議題がすべて話し中に戻る。別の枝の済みは変わらない", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen((ids) => [{ op: "add", ref: "x", parent: "n3", kind: "案", text: "1 回", evidence: [ids[3]![0]!] }]);
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("更新（本文だけ・既存の根拠を再指定）でも、案の祖先の済みがすべて話し中に戻る。別の枝の済みは変わらない", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen((ids) => [{ op: "update", node: "n4", text: "4 回", evidence: [ids[0]![1]!] }]);
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("値が変わらない更新（本文なし・計画の状態なし・既存の根拠のみ）でも、案の祖先の済みがすべて話し中に戻る。別の枝の済みは変わらない", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen((ids) => [{ op: "update", node: "n4", evidence: [ids[0]![1]!] }]);
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("更新の対象自身が済みの論点なら、それ自身と祖先が話し中に戻る", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen((ids) => [{ op: "update", node: "n3", text: "面接の回数", evidence: [ids[0]![0]!] }]);
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("統合: 統合先の祖先がすべて話し中に戻る。統合元の元の祖先は済みのまま", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen([{ op: "combine", from: "n8", into: "n4" }]);
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+        expect(snap.nodes.find((n) => n.id === "n8")).toBeUndefined();
+      }));
+
+    it.effect("移動: 移したノードの新しい祖先がすべて話し中に戻る。移動元の祖先は済みのまま", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen([{ op: "move", node: "n8", parent: "n3" }]);
+        expect(snap.nodes.find((n) => n.id === "n8")!.parent).toBe("n3");
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("移動: 済みの論点そのものを別の議題の下へ移すと、それ自身と新しい祖先が話し中に戻る。移動元の議題は済みのまま", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen([{ op: "move", node: "n7", parent: "n1" }]);
+        expect(closedIds(snap)).toEqual(["n2", "n3", "n5", "n6"]);
+      }));
+
+    it.effect("移動: 同じ親への移動も、起点とその祖先を話し中に戻す", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen([{ op: "move", node: "n4", parent: "n3" }]);
+        expect(closedIds(snap)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("開き直すのは起点と祖先だけ。済みの議題が話し中に戻っても、配下の済みの論点・子の議題は済みのまま", () =>
+      Effect.gen(function* () {
+        // n5（n1 の下の済みの論点）は n1 の子孫だが、n5 の下に何かを足したとき n1 は戻り、n2・n3 は戻らない
+        const { snap } = yield* reopen((ids) => [{ op: "add", ref: "x", parent: "n5", kind: "案", text: "来週", evidence: [ids[3]![0]!] }]);
+        expect(closedIds(snap)).toEqual(["n2", "n3", "n6", "n7"]);
+      }));
+
+    it.effect("削除: 済みの論点の下の案を削除しても、元の祖先の済みは変わらない", () =>
+      Effect.gen(function* () {
+        const { snap } = yield* reopen([{ op: "delete", node: "n8" }]);
+        expect(snap.nodes.find((n) => n.id === "n8")).toBeUndefined();
+        expect(closedIds(snap)).toEqual(ALL);
+      }));
+
+    it.effect("捨てられた操作は開き直さない", () =>
+      Effect.gen(function* () {
+        const r = yield* replay(tree, noopHand, closeAll, [
+          { op: "add", ref: "x", parent: "n3", kind: "案", text: "1 回", evidence: ["r-unknown"] }, // 知らない発言で捨てる
+          { op: "update", node: "n4", text: "x", evidence: ["r-unknown"] }, // 捨てる
+          { op: "move", node: "n1", parent: "n3" }, // 自分の子孫の下へは移せないので捨てる
+        ]);
+        expect(r.dropped).toHaveLength(3);
+        expect(closedIds(r.snap)).toEqual(ALL);
+      }));
+  });
+
+  describe("変わったこと・エクスポート", () => {
+    it.effect("閉じるだけの反映は round が進むが、変わったことに何も足さない。開き直しを伴う追加は「追加」だけが出る", () =>
+      Effect.gen(function* () {
+        const { snaps } = yield* replay(
+          tree,
+          noopHand,
+          closeAll,
+          (ids) => [{ op: "add", ref: "x", parent: "n3", kind: "案", text: "1 回", evidence: [ids[3]![0]!] }],
+        );
+        expect(snaps[2]!.round).toBe(3);
+        expect(closedIds(snaps[2]!)).toEqual(ALL);
+        expect(snaps[2]!.changes).toEqual(snaps[1]!.changes);
+        expect(snaps[2]!.changes.filter((c) => c.round === 3)).toEqual([]);
+        // 閉じても今の議題は動かない
+        expect(snaps[2]!.currentTopic).toBe(snaps[1]!.currentTopic);
+        const added = snaps[3]!.changes.filter((c) => c.round === 4);
+        expect(added.map((c) => c.change)).toEqual(["追加"]);
+        expect(closedIds(snaps[3]!)).toEqual(["n5", "n6", "n7"]);
+      }));
+
+    it.effect("エクスポートは済みの議題の中身も含む全ノードを出し、済みの印は出ない。close だけを除いた同じ台本のエクスポートと一致する", () =>
+      Effect.gen(function* () {
+        const closed = yield* replay(tree, noopHand, closeAll);
+        const open = yield* replay(tree, noopHand, noopHand);
+        expect(closedIds(closed.snap)).toEqual(ALL);
+        const json = yield* closed.session.exportJson;
+        // 発言の id と時刻は別々のセッションで違うので、本文と話者だけを残してそろえる
+        const norm = <T extends { evidence: readonly { text: string; track: "自分" | "相手" }[]; children: T[] }>(n: T): T =>
+          ({ ...n, evidence: n.evidence.map((e) => ({ id: "r", start: 0, end: 0, text: e.text, track: e.track })), children: n.children.map(norm) });
+        const files = exportFiles({ root: norm(json.root) });
+        const openJson = yield* open.session.exportJson;
+        const openFiles = exportFiles({ root: norm(openJson.root) });
+        const keys = (nodes: readonly object[]): string[] => nodes.flatMap((n) => [...Object.keys(n), ...("children" in n ? keys(n.children as object[]) : [])]);
+        const all = keys([json.root]);
+        expect(all).not.toContain("talkStatus");
+        expect(JSON.stringify(json)).not.toContain("済み");
+        expect(JSON.stringify(json)).toContain("面接は何回か");
+        expect(JSON.stringify(json)).toContain("3 回");
+        expect(norm(json.root)).toEqual(norm(openJson.root));
+        expect(files).toEqual(openFiles);
+      }));
+  });
 });

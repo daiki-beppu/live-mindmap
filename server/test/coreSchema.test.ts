@@ -122,7 +122,7 @@ describe("正解ファイル（Truth）（CT-4DATA）", () => {
 });
 
 describe("ログの行（LogEvent）（CT-4DATA）", () => {
-  // claude.ts が DiffOutput から作る JSON Schema と同じ 6 操作の構成（add → update → combine → move → delete → noop）
+  // claude.ts が DiffOutput から作る JSON Schema と同じ 7 操作の構成（add → update → combine → move → delete → noop → close）
   const diffOps = [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
     { op: "update", node: "n1", text: "採用を進める", evidence: ["r1"], planStatus: "検討中" },
@@ -130,6 +130,7 @@ describe("ログの行（LogEvent）（CT-4DATA）", () => {
     { op: "move", node: "n4", parent: "n5" },
     { op: "delete", node: "n6" },
     { op: "noop", reason: "変化なし" },
+    { op: "close", node: "n7" },
   ];
   const examples: ReadonlyArray<{ title: string; event: unknown }> = [
     { title: "start", event: { type: "start", title: "定例" } },
@@ -169,7 +170,7 @@ describe("Claude の structured_output（DiffOutput）（CT-4DATA）", () => {
   it.effect("claude.test.ts の実例（{ ops: [{ op: noop, reason }] }）を decode できる", () =>
     expectDecodeSuccess(Schema.decodeUnknownEffect(DiffOutput)({ ops: [{ op: "noop", reason: "r" }] })));
 
-  it.effect("JSON Schema（claude.ts が DiffOutput から作る）と同じ 6 操作それぞれ 1 件を decode できる", () =>
+  it.effect("JSON Schema（claude.ts が DiffOutput から作る）と同じ 7 操作それぞれ 1 件を decode できる", () =>
     expectDecodeSuccess(
       Schema.decodeUnknownEffect(DiffOutput)({
         ops: [
@@ -179,6 +180,7 @@ describe("Claude の structured_output（DiffOutput）（CT-4DATA）", () => {
           { op: "move", node: "n4", parent: "n5" },
           { op: "delete", node: "n6" },
           { op: "noop", reason: "変化なし" },
+          { op: "close", node: "n7" },
         ],
       }),
     ));

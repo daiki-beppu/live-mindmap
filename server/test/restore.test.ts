@@ -356,6 +356,62 @@ describe("ログからの復元", () => {
 });
 
 // 段 6 の互換: 今の形式の log.jsonl（at・intake-*・noContent・error つきの diff・dropped つきの diff を含む合成のログ）を、そのまま復元できる
+describe("済み（close）を含むログからの復元", () => {
+  // 手の n 番目が round n。1: 追加 / 2: 何もしない / 3: 閉じる（有効 2 つ・無効 3 つ）/ 4: 済みの論点の下に追加して開き直す / 5: 別の議題を閉じる
+  const closedSession = Effect.fn("closedSession")(function* () {
+    const p = Array.from({ length: 5 }, () => [remark("発言"), remark("発言")] as const);
+    const id = (i: number, j: 0 | 1) => p[i]![j].id;
+    const { update } = scripted(
+      [
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [id(0, 0)] },
+        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [id(0, 0)] },
+        { op: "add", ref: "t3", parent: "root", kind: "議題", text: "予算", evidence: [id(0, 1)] },
+      ],
+      [{ op: "noop", reason: "雑談" }],
+      [
+        { op: "close", node: "n2" },
+        { op: "close", node: "n1" },
+        { op: "close", node: "n99" }, // 存在しない
+        { op: "close", node: "n2" }, // すでに済み
+        { op: "close", node: "root" }, // 議題・論点でない
+      ],
+      [{ op: "add", ref: "t4", parent: "n2", kind: "案", text: "3 回", evidence: [id(3, 0)] }],
+      [{ op: "close", node: "n3" }],
+    );
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
+    for (const pair of p) {
+      for (const r of pair) yield* session.push(r);
+      yield* session.idle;
+    }
+    return { session, events };
+  });
+
+  it.effect("閉じる・無効な閉じる・開き直しを含むログから復元したセッションが、スナップショットもエクスポートも元と一致する", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* closedSession();
+      const live = yield* session.snapshot;
+      // 前提: 済みのノードがあり、開き直しが起きており、無効な閉じるが dropped に残っている
+      expect(live.nodes.filter((n) => n.talkStatus === "済み").map((n) => n.id)).toEqual(["n3"]);
+      expect(live.nodes.find((n) => n.id === "n1")).not.toHaveProperty("talkStatus");
+      expect(live.nodes.find((n) => n.id === "n2")).not.toHaveProperty("talkStatus");
+      const dropped = events.flatMap((e) => (e.type === "diff" ? e.dropped : []));
+      expect(dropped.map((d) => d.op.op)).toEqual(["close", "close", "close"]);
+
+      const restored = yield* restore(viaJsonl(events));
+
+      expect(yield* restored.snapshot).toEqual(live);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+    }));
+
+  it.effect("ログに開き直しのための新しいイベントは足されない（イベントは start・remark・diff だけ）", () =>
+    Effect.gen(function* () {
+      const { events } = yield* closedSession();
+      expect([...new Set(events.map((e) => e.type))].sort()).toEqual(["diff", "remark", "start"]);
+      expect(events.filter((e) => e.type === "diff")).toHaveLength(5);
+    }));
+});
+
 describe("今の形式の log.jsonl（fixtures）からの復元", () => {
   const lines = readFileSync(new URL("./fixtures/session.log.jsonl", import.meta.url), "utf8")
     .split("\n")
