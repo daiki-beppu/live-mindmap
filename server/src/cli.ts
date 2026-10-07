@@ -3,7 +3,7 @@
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Cause, Config, Console, Effect, Layer, Option, Predicate, Queue, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
@@ -466,6 +466,32 @@ const restore = Command.make(
   }),
 ).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す"));
 
+const review = Command.make(
+  "review",
+  {
+    session: Argument.String("session").pipe(
+      Argument.withDescription("見返し用の map.html を作り直すセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）"),
+      Argument.optional,
+    ),
+  },
+  Effect.fn("review")(function* ({ session }) {
+    const dir = Option.isSome(session)
+      ? resolve(session.value)
+      : yield* Effect.gen(function* () {
+          const sessionsDir = yield* sessionsDirConfig;
+          return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
+        });
+    const logPath = join(dir, LOG_FILE);
+    if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+    const paths = yield* writeReviewPages(dir, logPath, REVIEW_VARIANTS).pipe(
+      Effect.mapError((e) => new CommandFailed({ message: reviewWarning(describe(e)) })),
+    );
+    yield* write(paths.map((path) => `${path}\n`).join(""));
+  }),
+).pipe(
+  Command.withDescription("セッションの log.jsonl から、見返し用の map.html だけを作り直してパスを出す（サーバーは要らない）"),
+);
+
 const evaluate = Command.make(
   "eval",
   {
@@ -502,7 +528,7 @@ const evaluate = Command.make(
 
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
-  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, evaluate]),
+  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
@@ -518,7 +544,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
   const failure = error.success;
   if (CliError.isCliError(failure)) return Effect.void;
-  return Console.error(isCliFailure(failure) ? failureLine(failure) : describe(failure));
+  return Console.error(isCliFailure(failure) ? oneLine(failureLine(failure)) : describe(failure));
 };
 
 if (import.meta.main) {

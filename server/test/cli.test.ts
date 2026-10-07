@@ -1,7 +1,7 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Predicate, Result } from "effect";
@@ -44,7 +44,7 @@ const temporaryDirectory = Effect.acquireRelease(
 );
 
 // 旧 CliDeps の置き換え。保存先とポートは ConfigProvider、標準出力は Console、撮影は MapCapture の Layer で渡す
-function dependencies(sessionsDir: string) {
+function dependencies(sessionsDir: string, port = "0") {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const captures: Snapshot[] = [];
@@ -57,7 +57,7 @@ function dependencies(sessionsDir: string) {
   };
   const layer = Layer.mergeAll(
     NodeServices.layer,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (snapshot: Snapshot, path: string) =>
@@ -417,6 +417,197 @@ describe("CLI", () => {
       // 「セッションがありません: <パス>」の 1 行は cliProcess.test.ts で観測する
       expect(deps.stdout).toEqual([]);
       expect(deps.stderr).toEqual([]);
+    }));
+  });
+
+  describe("review", () => {
+    const embedded = (html: string) => {
+      const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
+      return match === null ? null : (JSON.parse(match[1]!) as unknown[]);
+    };
+    const logOf = (session: string) =>
+      readFileSync(join(session, "log.jsonl"), "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as unknown);
+    // フォルダ直下のファイルの中身（map.html 以外）
+    const snapshotExceptHtml = (session: string) =>
+      Object.fromEntries(readdirSync(session).filter((f) => f !== "map.html").sort().map((f) => [f, readFileSync(join(session, f), "utf8")]));
+
+    it.effect("引数を省略すると、log.jsonl を持つ最新のセッションの map.html を確認なしで上書きし、そのパスだけを 1 行に出す", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      writeFileSync(join(session, "map.html"), "古い");
+
+      yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n`);
+      expect(deps.stderr).toEqual([]);
+      const html = readFileSync(join(session, "map.html"), "utf8");
+      expect(html).not.toBe("古い");
+      expect(embedded(html)).toEqual(logOf(session));
+    }));
+
+    it.effect("ログのない、より新しいフォルダがあっても、ログのある最新のセッションを対象にする", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      rmSync(join(session, "map.html"));
+      const empty = join(dir, "9999-12-31T00-00-00.000Z");
+      mkdirSync(empty);
+
+      yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n`);
+      expect(existsSync(join(session, "map.html"))).toBe(true);
+      expect(readdirSync(empty)).toEqual([]);
+    }));
+
+    it.effect("相対パスで渡したフォルダも受け、最新ではなくそのフォルダに書き、出力は絶対パスにする", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const first = yield* played(deps);
+      const oldDir = join(dir, "2000-01-01T00-00-00.000Z");
+      renameSync(first.session, oldDir);
+      const second = yield* played(deps);
+      expect(second.session).not.toBe(oldDir);
+      rmSync(join(oldDir, "map.html"));
+      rmSync(join(second.session, "map.html"));
+
+      yield* runCli(["review", relative(process.cwd(), oldDir)]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toBe(`${join(oldDir, "map.html")}\n`);
+      expect(existsSync(join(oldDir, "map.html"))).toBe(true);
+      expect(existsSync(join(second.session, "map.html"))).toBe(false);
+    }));
+
+    it.effect("絶対パスで渡したフォルダも受ける", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      rmSync(join(session, "map.html"));
+
+      yield* runCli(["review", session]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n`);
+      expect(existsSync(join(session, "map.html"))).toBe(true);
+    }));
+
+    it.effect("map.html 以外（md・json・drawnix・png・export.json・log.jsonl）は書き直さず、ファイルも増やさない。撮影もしない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      const capturesBefore = deps.captures.length;
+      const before = snapshotExceptHtml(session);
+      expect(Object.keys(before)).toEqual(expect.arrayContaining(["export.json", "log.jsonl", "map.md", "map.json", "map.drawnix", "map.png"]));
+
+      yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+      expect(snapshotExceptHtml(session)).toEqual(before);
+      expect(deps.captures).toHaveLength(capturesBefore);
+    }));
+
+    it.effect("サーバーにつながず、進行中のセッションでも、その時点の log.jsonl をそのまま読んで作る", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      appendFileSync(join(session, "log.jsonl"), JSON.stringify({ type: "進行中の行", at: "2026-10-01T00:00:00.000Z" }) + "\n");
+      external.openListener.mockClear();
+
+      yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+      expect(external.openListener).not.toHaveBeenCalled();
+      const events = embedded(readFileSync(join(session, "map.html"), "utf8"));
+      expect(events).toEqual(logOf(session));
+      expect(events).toContainEqual({ type: "進行中の行", at: "2026-10-01T00:00:00.000Z" });
+    }));
+
+    it.effect("ポートの設定を読まない。不正な LIVE_MINDMAP_PORT でも成功し、map.html を書いて絶対パスを出す", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const { session } = yield* played(dependencies(dir));
+      rmSync(join(session, "map.html"));
+      const deps = dependencies(dir, "ポートではない");
+
+      yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n`);
+      expect(embedded(readFileSync(join(session, "map.html"), "utf8"))).toEqual(logOf(session));
+    }));
+
+    it.effect("存在しないフォルダは、何も書かず、そのパスを含む CommandFailed で失敗する", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const missing = join(dir, "ない");
+
+      const result = yield* Effect.result(runCli(["review", missing]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+      expect((result.failure as { message: string }).message).toContain(missing);
+      expect(deps.stdout).toEqual([]);
+      expect(existsSync(missing)).toBe(false);
+    }));
+
+    it.effect("log.jsonl が無いフォルダは、何も書かず、そのパスを含む CommandFailed で失敗する", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      rmSync(join(session, "log.jsonl"));
+      rmSync(join(session, "map.html"));
+
+      const result = yield* Effect.result(runCli(["review", session]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+      expect((result.failure as { message: string }).message).toContain(session);
+      expect(deps.stdout).toEqual([]);
+      expect(existsSync(join(session, "map.html"))).toBe(false);
+    }));
+
+    it.effect("ビルドが失敗したら、map.html を書き出せませんでした: <理由> の CommandFailed で失敗し、何も書かない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      rmSync(join(session, "map.html"));
+      deps.reviewFailure.error = new ReviewPageFailed({ message: "ビルドに失敗" });
+
+      const result = yield* Effect.result(runCli(["review"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "CommandFailed", message: "map.html を書き出せませんでした: ビルドに失敗" });
+      expect(deps.stdout).toEqual([]);
+      expect(existsSync(join(session, "map.html"))).toBe(false);
+    }));
+
+    it.effect("ログに壊れた行があれば、map.html を書き出せませんでした: で始まる CommandFailed で失敗し、前の map.html を変えない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      writeFileSync(join(session, "map.html"), "前の内容");
+      appendFileSync(join(session, "log.jsonl"), "{壊れた行\n");
+
+      const result = yield* Effect.result(runCli(["review"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+      expect((result.failure as { message: string }).message).toMatch(/^map\.html を書き出せませんでした: /);
+      expect(deps.stdout).toEqual([]);
+      expect(readFileSync(join(session, "map.html"), "utf8")).toBe("前の内容");
+    }));
+
+    it.effect("引数を省略してセッションが 1 つも無ければ、何も書かず、タグ付きの失敗にする", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+
+      const result = yield* Effect.result(runCli(["review"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "NoSession" });
+      expect(deps.stdout).toEqual([]);
+      expect(readdirSync(dir)).toEqual([]);
     }));
   });
 
