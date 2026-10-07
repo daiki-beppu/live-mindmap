@@ -1,22 +1,19 @@
 #!/usr/bin/env node
 // 常駐サーバー（pnpm dev）。ADR 0003: ヘルパーはこのサーバーの子プロセスで、セッションの開始・終了は CLI から頼まれる。
-//   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
-//   POST /session/start   { app, title?, audio? } ヘルパーを `run --app <app> --port <空きポート> [--audio-dir <セッションのフォルダ>]` で起動し、発言を中核へ流す。
-//                         audio は既定で true（トラックごとの録音をセッションのフォルダに残す）。false なら録音しない
-//   POST /session/stop    ヘルパーを止め、map.md・map.json・map.drawnix・map.png を書き出す（撮影に失敗したら map.png だけ除く）
-//   GET  /session/status   取り込みの状態（動いている／途切れている／止まった／セッションなし）・フォルダ・起動し直した回数・最後の途切れの時刻
-//   POST /session/resume   止まった状態からヘルパーを起動し直し、同じセッションを続ける（失敗の数は 0 から）
-// スナップショットの WebSocket（ブラウザ向け）と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
+// 受け口（ルート・本文の検証・Origin の制限・失敗から応答への変換）は http.ts、ブラウザへの配信は viewers.ts。
+// このモジュールが持つのは、ヘルパーの寿命とセッションの状態、そして起動・終了の入口。
+// ブラウザへの WebSocket は HTTP と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 // 状態は idle → starting → live（取り込みは running ⇄ interrupted → stopped のいずれか）→ stopping → idle。
 //
 // Issue #161: ヘルパーが予期せず終わっても（stop・サーバーの終了によるものを除く）、同じセッション（同じマップ・ログ・
 // 差分更新）へヘルパーを起動し直す。差し替えるのはヘルパーごとのもの（子プロセス・WebSocket・listen・ポート・終了の監視）
 // だけで、ヘルパーに依らないもの（session・updater・speaking・settling・ID の採番）は引き継ぐ（live オブジェクトが保持する）。
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { WebSocket } from "ws";
+import { NodeRuntime } from "@effect/platform-node";
+import { Cause, Effect, Exit, Runtime, Scope } from "effect";
+import { HttpServer } from "effect/http";
 import type { MapCapture } from "./capture.ts";
 import type { SessionUpdater } from "./claude.ts";
 import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
@@ -27,15 +24,20 @@ import {
   remarkFromHelper,
   STDERR_TAIL_LINES,
   tailLines,
+  type IntakeFrame,
   type IntakeLogEvent,
   type IntakeStatusReport,
   type Session,
+  type Snapshot,
+  type SpeakingFrame,
   type Track,
 } from "./core/index.ts";
 import { openHelperSocket, type HelperSocket } from "./helperSocket.ts";
+import { openListener, portOf, serveSessions, Sessions, type SessionStart } from "./http.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
-import { isLocalOrigin, startSnapshotServer } from "./ws.ts";
+import { Aborted, IntakeNotStopped, isSessionFailure, NoSession, RestartGaveUp, SessionBusy, SessionTransition, type SessionFailure } from "./sessionFailure.ts";
+import { Viewers } from "./viewers.ts";
 
 export type ServerOptions = {
   port: number; // 0 なら空きポート
@@ -52,14 +54,20 @@ const RETRY_MS = 200;
 // SIGTERM を送ってから、SIGKILL に切り替えるまでの待ち時間
 export const HELPER_STOP_TIMEOUT_MS = 5_000;
 
-// 状態に合わない依頼や不正な依頼。HTTP のステータスつきで、wrapper が応答に変える
-class RequestError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+// ヘルパーの寿命・セッションの状態（まだ Effect へ移していない側）から、ブラウザへの配信へ渡す口。
+// Viewers の publish・speak・intake は Ref の更新と、溢れない PubSub への publish だけなので待つことがなく、
+// runSync で完了する。コールバックが戻る前に配信へ記録されるので、終了の直前に出た最後のフレームも落ちない
+type Emit = {
+  publish: (snapshot: Snapshot) => void;
+  speak: (frame: SpeakingFrame) => void;
+  intake: (frame: IntakeFrame) => void;
+};
+
+const emitTo = (viewers: Viewers["Service"]): Emit => ({
+  publish: (snapshot) => Effect.runSync(viewers.publish(snapshot)),
+  speak: (frame) => Effect.runSync(viewers.speak(frame)),
+  intake: (frame) => Effect.runSync(viewers.intake(frame)),
+});
 
 type ExitInfo = { code: number | null; signal: NodeJS.Signals | null };
 type Helper = { child: ChildProcess; stderr: () => string; exited: Promise<ExitInfo>; hasExited: () => boolean };
@@ -94,7 +102,7 @@ type RestartOutcome = { kind: "running" } | { kind: "stopped"; stderrTail: strin
 // connectToHelper がちょうど接続に成功した直後に abort されても（competing で起動し直しが先に繋がることがある）、
 // 届いていた発言を取りこぼさないため（runRestartLoop が wireListen してから後片付けする）
 type Intake =
-  | { kind: "running"; helper: Helper; ws: WebSocket; wsClosed: Promise<void> }
+  | { kind: "running"; helper: Helper; ws: HelperSocket["ws"]; wsClosed: Promise<void> }
   | { kind: "interrupted"; controller: { aborted: boolean }; settled: Promise<RestartOutcome> }
   | { kind: "stopped" }; // 続けて 3 回失敗して諦めた。cli stop で書き出せる、cli resume で続けられる
 
@@ -203,20 +211,6 @@ function runHelperList({ command, args }: ServerOptions["helper"]): Promise<unkn
   });
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  const text = Buffer.concat(chunks).toString();
-  if (text === "") return {};
-  try {
-    const body = JSON.parse(text);
-    if (typeof body === "object" && body !== null && !Array.isArray(body)) return body;
-  } catch {
-    // 下の例外にまとめる
-  }
-  throw new RequestError(400, "リクエストの本文が JSON のオブジェクトではありません");
-}
-
 // run の argv（ヘルパーに依らない部分は同じ形。audio・origin は未定義なら渡さない）
 function helperRunArgs(port: number, app: string, audio: { dir: string; index: number } | undefined, origin: string | undefined): string[] {
   return [
@@ -239,7 +233,17 @@ function audioFileNames(attempt: number): string[] {
   return TRACKS.map((track) => (attempt > 1 ? `${track}-${attempt}.m4a` : `${track}.m4a`));
 }
 
-export async function startServer(options: ServerOptions): Promise<Server> {
+// セッションの操作と、ヘルパーの後片付け。状態は 1 つで、HTTP の受け口からは Sessions 経由で呼ばれる
+type SessionMachine = {
+  apps: () => Promise<unknown>;
+  start: (input: SessionStart) => Promise<{ dir: string }>;
+  stop: () => Promise<{ paths: string[] }>;
+  status: () => IntakeStatusReport;
+  resume: () => Promise<void>;
+  close: () => Promise<void>;
+};
+
+function makeSessionMachine(options: ServerOptions, emit: Emit): SessionMachine {
   const { sessionsDir, openUpdater, capture, helper: helperCommand } = options;
   let state: State = { kind: "idle" };
   let current: Helper | undefined; // 直近に起動したヘルパーの子プロセス。終了時・中断時に止める対象
@@ -251,10 +255,10 @@ export async function startServer(options: ServerOptions): Promise<Server> {
   async function launchAttempt(
     buildArgs: (port: number) => string[],
     isAborted: () => boolean = () => false,
-  ): Promise<{ helper: Helper; ws: WebSocket; listen: HelperSocket["listen"]; wsClosed: Promise<void> }> {
+  ): Promise<{ helper: Helper; ws: HelperSocket["ws"]; listen: HelperSocket["listen"]; wsClosed: Promise<void> }> {
     const port = await freePort();
     // freePort の待機中に close() や abort が始まっていたら、ヘルパーを起動しない（子プロセスを残さない）
-    if (closing || isAborted()) throw new RequestError(503, "中断されました");
+    if (closing || isAborted()) throw new Aborted();
     const helper = launchHelper(helperCommand.command, [...helperCommand.args, ...buildArgs(port)]);
     current = helper;
     let socket: HelperSocket;
@@ -263,7 +267,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     } catch (e) {
       throw new LaunchFailure(helper, e);
     }
-    const wsClosed = new Promise<void>((resolve) => (socket.ws.readyState === WebSocket.CLOSED ? resolve() : socket.ws.once("close", () => resolve())));
+    const wsClosed = new Promise<void>((resolve) => (socket.ws.readyState === socket.ws.CLOSED ? resolve() : socket.ws.once("close", () => resolve())));
     return { helper, ws: socket.ws, listen: socket.listen, wsClosed };
   }
 
@@ -334,7 +338,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         if (action === "giveup") {
           if (state.kind === "live" && state.live === live) {
             state = { kind: "live", live, intake: { kind: "stopped" } };
-            snapshotServer.intake({ type: "intake", status: "stopped" });
+            emit.intake({ type: "intake", status: "stopped" });
           }
           return { kind: "stopped", stderrTail };
         }
@@ -355,7 +359,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       process.stderr.write("ヘルパーを起動し直しました\n");
       if (state.kind === "live" && state.live === live) {
         state = { kind: "live", live, intake: { kind: "running", helper: launched.helper, ws: launched.ws, wsClosed: launched.wsClosed } };
-        snapshotServer.intake({ type: "intake", status: "running" });
+        emit.intake({ type: "intake", status: "running" });
         wireListen(live, launched.listen);
         watchForUnexpectedEnd(live, launched.helper);
         return { kind: "running" };
@@ -389,19 +393,19 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       if (!stillOwns(running)) return;
       if (action === "giveup") {
         state = { kind: "live", live, intake: { kind: "stopped" } };
-        snapshotServer.intake({ type: "intake", status: "stopped" });
+        emit.intake({ type: "intake", status: "stopped" });
         return;
       }
       const controller = { aborted: false };
       const settled = runRestartLoop(live, controller, "auto");
       state = { kind: "live", live, intake: { kind: "interrupted", controller, settled } };
-      snapshotServer.intake({ type: "intake", status: "interrupted" });
+      emit.intake({ type: "intake", status: "interrupted" });
     });
   }
 
   async function start(app: string, title: string | undefined, audio: boolean): Promise<{ dir: string }> {
     if (state.kind !== "idle") {
-      throw new RequestError(409, state.kind === "live" ? "セッションが進行中です（先に stop）" : "セッションの開始・終了の処理中です");
+      throw state.kind === "live" ? new SessionBusy() : new SessionTransition();
     }
     const starting: State & { kind: "starting" } = { kind: "starting" };
     state = starting;
@@ -425,11 +429,11 @@ export async function startServer(options: ServerOptions): Promise<Server> {
         dir,
         title,
         updater: updater.update,
-        publish: (snapshot) => snapshotServer.publish(snapshot),
+        publish: (snapshot) => emit.publish(snapshot),
         sleep,
         onDiff: () => speaking?.flushAll(),
       });
-      const relay = (speaking = createSpeakingRelay({ unreflected: () => session.unreflectedRemarks(), send: (frame) => snapshotServer.speak(frame) }));
+      const relay = (speaking = createSpeakingRelay({ unreflected: () => session.unreflectedRemarks(), send: (frame) => emit.speak(frame) }));
       let count = 0;
       // 発言は、確定結果と、1 秒更新されなかった途中結果のどちらからも、ここを通って差分更新・ログ・speaking へ届く（ID は push の直前に振る）。
       // このクロージャ（ID の採番）はセッションにつき 1 回だけ作り、起動し直しでは作り直さない（要件 #7・#9）
@@ -472,7 +476,7 @@ export async function startServer(options: ServerOptions): Promise<Server> {
 
   async function stop(): Promise<{ paths: string[] }> {
     if (state.kind !== "live") {
-      throw new RequestError(409, state.kind === "idle" ? "進行中のセッションがありません" : "セッションの開始・終了の処理中です");
+      throw state.kind === "idle" ? new NoSession() : new SessionTransition();
     }
     const { live, intake } = state;
     state = { kind: "stopping" };
@@ -507,9 +511,9 @@ export async function startServer(options: ServerOptions): Promise<Server> {
       // 途切れ・止まったの一言を消すフレームを送る（接続を保ったクライアントに古い状態が残り続けない）。
       // status は "running" ではなく "none"（セッションが無い）にする。"running" だと、直前が interrupted/stopped
       // だったクライアントの useIntakeNotice が「再開した」と解釈し、終わったセッションに「再開しました」が出てしまう。
-      // 新しく接続したクライアントへは、ws.ts が保持したこの none が届く。none は途切れ・止まったの文を
+      // 新しく接続したクライアントへは、Viewers が保持したこの none が届く。none は途切れ・止まったの文を
       // 出さない値なので一言は出ない（CT-NOTICE-CLEAR）
-      snapshotServer.intake({ type: "intake", status: "none" });
+      emit.intake({ type: "intake", status: "none" });
     }
   }
 
@@ -517,17 +521,17 @@ export async function startServer(options: ServerOptions): Promise<Server> {
   // state・ログ・フレームへ反映した後の結果を、ここでも基準に使う（複数失敗を集約する境界。resume() 独自の
   // 優先順位で running／stopped／aborted を読み替えない）。
   async function resume(): Promise<void> {
-    if (state.kind !== "live") throw new RequestError(409, "進行中のセッションがありません");
-    if (state.intake.kind !== "stopped") throw new RequestError(409, "取り込みは止まっていません（動いているか、起動し直しの最中です）");
+    if (state.kind !== "live") throw new NoSession();
+    if (state.intake.kind !== "stopped") throw new IntakeNotStopped();
     const { live } = state;
     live.failures = 0; // 失敗の数を 0 から数え直す（要件 #17）
     const controller = { aborted: false };
     const settled = runRestartLoop(live, controller, "resume");
     state = { kind: "live", live, intake: { kind: "interrupted", controller, settled } };
-    snapshotServer.intake({ type: "intake", status: "interrupted" });
+    emit.intake({ type: "intake", status: "interrupted" });
     const outcome = await settled;
-    if (outcome.kind === "stopped") throw new RequestError(503, `起動し直しに失敗しました: ${outcome.stderrTail.join("\n")}`);
-    if (outcome.kind === "aborted") throw new RequestError(503, "中断されました");
+    if (outcome.kind === "stopped") throw new RestartGaveUp({ stderrTail: outcome.stderrTail });
+    if (outcome.kind === "aborted") throw new Aborted();
   }
 
   function status(): IntakeStatusReport {
@@ -536,52 +540,12 @@ export async function startServer(options: ServerOptions): Promise<Server> {
     return { status: intake.kind, dir: live.dir, restarts: live.restarts, lastInterruptedAt: live.lastInterruptedAt };
   }
 
-  async function dispatch(req: IncomingMessage): Promise<unknown> {
-    const route = `${req.method} ${new URL(req.url ?? "/", "http://127.0.0.1").pathname}`;
-    switch (route) {
-      case "GET /apps":
-        return runHelperList(helperCommand);
-      case "POST /session/start": {
-        const body = await readJson(req);
-        if (typeof body.app !== "string" || body.app === "") throw new RequestError(400, "app（会議アプリの bundle id）が必要です");
-        if (body.title !== undefined && body.title !== null && typeof body.title !== "string") throw new RequestError(400, "title は文字列にします");
-        if (body.audio !== undefined && body.audio !== null && typeof body.audio !== "boolean") throw new RequestError(400, "audio は真偽値にします");
-        return start(body.app, body.title ?? undefined, body.audio ?? true);
-      }
-      case "POST /session/stop":
-        return stop();
-      case "GET /session/status":
-        return status();
-      case "POST /session/resume":
-        await resume();
-        return {};
-      default:
-        throw new RequestError(404, `未対応のリクエスト: ${route}`);
-    }
-  }
-
-  // HTTP の例外は、ここ 1 か所で応答に変える（競合は 409、Origin の拒否は 403、それ以外は 500）
-  function onRequest(req: IncomingMessage, res: ServerResponse): void {
-    void (async () => {
-      let status = 200;
-      let payload: unknown;
-      try {
-        // ブラウザ上の任意の Web ページから、セッションを操作させない（ws.ts の Origin の制限と同じ）
-        if (req.headers.origin !== undefined && !isLocalOrigin(req.headers.origin)) throw new RequestError(403, "許可されていない Origin です");
-        payload = await dispatch(req);
-      } catch (e) {
-        status = e instanceof RequestError ? e.status : 500;
-        payload = { error: e instanceof Error ? e.message : String(e) };
-      }
-      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(payload));
-    })();
-  }
-
-  const snapshotServer = await startSnapshotServer({ port: options.port, onRequest });
-  options.onListening?.(snapshotServer.port);
-
   return {
-    port: snapshotServer.port,
+    apps: () => runHelperList(helperCommand),
+    start: (input) => start(input.app, input.title, input.audio),
+    stop,
+    status,
+    resume,
     // 起動したヘルパーの子プロセスを残さない。セッションの書き出しはしない（export.json は反映のたびに書いてある）
     // closing は同期的に代入するので、開始中の start()・起動し直し中の runRestartLoop が（freePort の後で）検知して spawn しない。
     close() {
@@ -596,34 +560,103 @@ export async function startServer(options: ServerOptions): Promise<Server> {
           state.live.settling.stop();
           state.live.updater.close();
         }
-        await snapshotServer.close();
       })();
       return closing;
     },
   };
 }
 
+// 古いセッションの操作を Effect で包む。状態に合わない依頼はタグ付きの失敗として fail に、それ以外（updater が
+// 開けない等の予期しない失敗）は catch 内で投げ直して defect にする（HTTP の側で 500 の文面にする）
+const sessionCall = <A>(run: () => Promise<A>): Effect.Effect<A, SessionFailure> =>
+  Effect.tryPromise({
+    try: run,
+    catch: (error) => {
+      if (isSessionFailure(error)) return error;
+      throw error; // 予期しない失敗は投げ直す（catch が throw した値がそのまま die(error) になる）
+    },
+  });
+
+const sessionsOf = (machine: SessionMachine): Sessions["Service"] =>
+  Sessions.of({
+    // ヘルパーの list の失敗は予期しない失敗（500）。catch は常に投げ直すので E は never のまま
+    apps: Effect.tryPromise({
+      try: () => machine.apps(),
+      catch: (error) => {
+        throw error;
+      },
+    }),
+    start: (input) => sessionCall(() => machine.start(input)),
+    stop: sessionCall(() => machine.stop()),
+    status: Effect.sync(() => machine.status()),
+    resume: sessionCall(() => machine.resume()),
+  });
+
+// サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
+// Scope を閉じると、要求の処理を止め、ヘルパーと配信を後片付けし、待受けを閉じる（この順に finalizer が走る）
+const startup = (options: ServerOptions) =>
+  Effect.gen(function* () {
+    const { viewers, httpServer } = yield* openListener(options.port);
+    const machine = makeSessionMachine(options, emitTo(viewers)); // 作るだけでは何も掴まない（起動は start から）
+    yield* serveSessions.pipe(
+      Effect.provideService(Viewers, viewers),
+      Effect.provideService(HttpServer.HttpServer, httpServer),
+      Effect.provide(Sessions.layer(sessionsOf(machine))),
+    );
+    // Scope を閉じたときの終了。最後に登録するので最初に走る: ヘルパーを止めて最後のフレームを出し、
+    // それを接続中のクライアントへ渡し切る。その後に、待受けの停止・接続の Fiber の終了・待受けを閉じる finalizer が続く。
+    // machine.close() の失敗は予期しない失敗。catch は常に投げ直すので E は never のまま（addFinalizer の制約）
+    yield* Effect.addFinalizer(() =>
+      Effect.andThen(
+        Effect.tryPromise({
+          try: () => machine.close(),
+          catch: (error) => {
+            throw error;
+          },
+        }),
+        viewers.drained,
+      ),
+    );
+    const port = portOf(httpServer.address);
+    options.onListening?.(port);
+    return port;
+  });
+
+// 既存の呼び出し側（CLI の疎通テスト・ライブのテスト）が使う入口。Scope を 1 つ持ち、close() でそれを閉じる
+export async function startServer(options: ServerOptions): Promise<Server> {
+  const scope = Effect.runSync(Scope.make());
+  let closed: Promise<void> | undefined;
+  const close = () => (closed ??= Effect.runPromise(Scope.close(scope, Exit.void)));
+  try {
+    return { port: await Effect.runPromise(Scope.provide(startup(options), scope)), close };
+  } catch (e) {
+    await close();
+    throw e;
+  }
+}
+
+// SIGINT・SIGTERM で終わったときの終了コードは 0 にする（頼まれた終了であって、失敗ではない）。
+// 既定の teardown は中断だけの Exit を 130 にするが、待受けの失敗などの本当の失敗は既定の規則に任せる
+const teardown: Runtime.Teardown = (exit, onExit) => {
+  if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return onExit(0);
+  Runtime.defaultTeardown(exit, onExit);
+};
+
 if (import.meta.main) {
   const helperPath = process.env.LIVE_MINDMAP_HELPER ?? join(import.meta.dirname, "../../helper/.build/debug/live-mindmap-helper");
   const { openClaudeUpdater } = await import("./claude.ts");
   const { captureMap } = await import("./capture.ts");
-  const server = await startServer({
-    port: defaultPort(),
-    sessionsDir: defaultSessionsDir(),
-    openUpdater: () => openClaudeUpdater(),
-    capture: captureMap,
-    helper: { command: helperPath, args: [] },
-    onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
-  });
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.on(signal, () => {
-      server.close().then(
-        () => process.exit(0),
-        (e: unknown) => {
-          console.error(e instanceof Error ? e.message : e);
-          process.exit(1);
-        },
-      );
+  // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
+  // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
+  NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
+    yield* startup({
+      port: defaultPort(),
+      sessionsDir: defaultSessionsDir(),
+      openUpdater: () => openClaudeUpdater(),
+      capture: captureMap,
+      helper: { command: helperPath, args: [] },
+      onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
     });
-  }
+    return yield* Effect.never;
+  })), { teardown });
 }

@@ -23,9 +23,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
+import { Effect } from "effect";
+import { HttpServer } from "effect/http";
 import type { MapCapture } from "./capture.ts";
 import { createSession, exportFiles, formatIntakeStatus, formatTable, fromTranscript, parseTruth, playback, restoreSession, toJsonExport, toMarkdown, type DiffUpdater, type IntakeLogEvent, type JsonExport, type LogEvent, type Run, type Session, type Snapshot, type Truth } from "./core/index.ts";
-import { startSnapshotServer } from "./ws.ts";
+import { openListener, portOf, serveFeed } from "./http.ts";
+import { Viewers } from "./viewers.ts";
 
 export type CliDeps = {
   updater?: DiffUpdater;
@@ -156,26 +159,42 @@ export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> 
       const owned = deps.updater ? undefined : (await import("./claude.ts")).openClaudeUpdater(); // 自分で開いたものだけ閉じる
       const updater = deps.updater ?? owned!.update;
       let paths: string[];
-      let server: Awaited<ReturnType<typeof startSnapshotServer>> | undefined;
       try {
         const capture = deps.capture ?? (await import("./capture.ts")).captureMap;
-        server = await startSnapshotServer({ port: deps.port ?? defaultPort() });
-        deps.onListening?.(server.port);
         // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
         const sleep = values.realtime ? (deps.sleep ?? realSleep) : undefined;
-        const dir = createSessionDir(sessionsDir);
-        const { session } = startRecordedSession({
-          dir,
-          title: basename(file).replace(/\.transcript\.json$/, ""),
-          updater,
-          publish: server.publish,
-          sleep,
-        });
-        await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))), sleep ? { sleep } : {});
-        paths = await writeSessionExports(dir, session.snapshot(), capture);
+        // 配信は Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
+        paths = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+          const { viewers, httpServer } = yield* openListener(deps.port ?? defaultPort());
+          yield* serveFeed.pipe(
+            Effect.provideService(Viewers, viewers),
+            Effect.provideService(HttpServer.HttpServer, httpServer),
+          );
+          deps.onListening?.(portOf(httpServer.address));
+          // 待受けを閉じる前に、最後のスナップショットを接続中のクライアントへ渡し切る
+          yield* Effect.addFinalizer(() => viewers.drained);
+          // 再生中の失敗（ファイルが読めない等）は予期しない失敗。catch は常に投げ直すので E は never のまま、
+          // cause も元の Error のまま runPromise の reject に渡る
+          return yield* Effect.tryPromise({
+            try: async () => {
+              const dir = createSessionDir(sessionsDir);
+              const { session } = startRecordedSession({
+                dir,
+                title: basename(file).replace(/\.transcript\.json$/, ""),
+                updater,
+                publish: (snapshot) => Effect.runSync(viewers.publish(snapshot)),
+                sleep,
+              });
+              await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))), sleep ? { sleep } : {});
+              return writeSessionExports(dir, session.snapshot(), capture);
+            },
+            catch: (error) => {
+              throw error;
+            },
+          });
+        })));
       } finally {
         owned?.close();
-        await server?.close();
       }
       stdout(paths.map((p) => `${p}\n`).join(""));
       return;
