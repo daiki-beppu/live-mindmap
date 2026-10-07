@@ -371,8 +371,10 @@ export const ClaudeDiffUpdater = {
           return yield* Effect.gen(function* () {
             o.calls++;
             const prompt = buildPrompt(input, o.sent);
-            // 添える画面が無い呼び出しは、今までどおり文字列のまま
-            const content = input.screens?.length ? [...screenBlocks(input.screens), { type: "text" as const, text: prompt }] : prompt;
+            // 開き直した query の最初のメッセージ（o.sent が未設定）にだけ、core が載せた送り直す画面を、新しく添える画面の前に付ける。
+            // 画面のブロックが無い呼び出しは、今までどおり文字列のまま
+            const blocks = [...(o.sent === undefined ? screenBlocks(input.previousScreens ?? []) : []), ...screenBlocks(input.screens ?? [])];
+            const content = blocks.length ? [...blocks, { type: "text" as const, text: prompt }] : prompt;
             yield* Queue.offer(o.input, { type: "user", message: { role: "user", content }, parent_tool_use_id: null });
             o.sent = input.map;
             return yield* awaitResult(o);

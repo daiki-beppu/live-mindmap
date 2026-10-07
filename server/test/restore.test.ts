@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
-import { InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
-import { collectLog, forbiddenUpdater, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
+import { Deferred, Effect, Layer } from "effect";
+import { InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange } from "../src/core/index.ts";
+import { collectLog, forbiddenUpdater, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 let seq = 0;
 const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
@@ -539,5 +539,214 @@ describe("開始のイベント", () => {
       const events: LogEvent[] = [];
       yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(scripted().update), collectLog(events))));
       expect(events).toEqual([{ type: "start", title: "定例" }]);
+    }));
+});
+
+describe("共有画面の復元（restoreSession の第 2 引数が screens/ から画像を読む）", () => {
+  const bytesOf = (s: string) => new TextEncoder().encode(s);
+  const shot = (start: number, id: string): ScreenChange => ({ start, image: { id, bytes: bytesOf(`bytes:${id}`) } });
+  const gone = (start: number): ScreenChange => ({ start, image: null });
+  // 比べるのは映り始めた時刻とバイト列だけ（復元した画像の id はファイル名で、元の id とは違う）
+  const view = (list: readonly ScreenChange[] | undefined) => list?.map((s) => ({ start: s.start, bytes: s.image === null ? null : Array.from(s.image.bytes) }));
+  const spoken = (id: string, end: number): Remark => ({ id, track: "相手", start: end - 1, end, text: `発言${id}` });
+
+  type Screens = { file: string; bytes: Uint8Array }[];
+  // screens/ から読む手段の偽物。読んだファイル名を記録する
+  const reader = (stored: Screens) => {
+    const reads: string[] = [];
+    const read = (file: string): Effect.Effect<Uint8Array, { readonly _tag: "ScreenMissing"; readonly file: string }> => {
+      reads.push(file);
+      const found = stored.find((s) => s.file === file);
+      return found ? Effect.succeed(found.bytes) : Effect.fail({ _tag: "ScreenMissing", file });
+    };
+    return { reads, read };
+  };
+
+  // 元のセッション: 2 回目の呼び出しは失敗。最後の呼び出しの後に、まだ添えていない変化が 3 件残る（F は最後の diff の区切りより前の時刻だが、行は diff より後）
+  //   call 1 (cutoff 11): A@1, B@2 / call 2 (cutoff 21, 失敗): C@15 → 最後に添えた 2 件は B, C
+  //   diff より後に受けた: F@18（区切り 21 以下）, D@100, E(なし)@120
+  const original = Effect.gen(function* () {
+    const events: LogEvent[] = [];
+    const screens: Screens = [];
+    const live = scripted([], { _tag: "UpdateFailed", message: "失敗" }, []);
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(live.update), collectLog(events, screens))));
+    yield* session.pushScreen(shot(1, "A"));
+    yield* session.pushScreen(shot(2, "B"));
+    yield* session.push(spoken("a1", 10));
+    yield* session.push(spoken("a2", 11));
+    yield* session.idle;
+    yield* session.pushScreen(shot(15, "C"));
+    yield* session.push(spoken("a3", 20));
+    yield* session.push(spoken("a4", 21));
+    yield* session.idle;
+    yield* session.pushScreen(shot(18, "F"));
+    yield* session.pushScreen(shot(100, "D"));
+    yield* session.pushScreen(gone(120));
+    return { session, live, events, screens };
+  });
+
+  it.effect("続きの呼び出しに添える画面（まだ添えていなかった変化）と、送り直す 2 件が、元のセッションと一致する", () =>
+    Effect.gen(function* () {
+      const { session, live, events: logged, screens } = yield* original;
+      const events = [...logged]; // 続きを入れる前までのログ
+      const next = [spoken("a5", 200), spoken("a6", 201)];
+      for (const r of next) yield* session.push(r);
+      yield* session.idle;
+      const expected = live.calls[2]!;
+      // 元のセッションの続きで、3 件添える（F・D・E）と、2 件送り直す（B・C）ことが前提
+      expect(view(expected.screens)!.map((s) => s.start)).toEqual([18, 100, 120]);
+      expect(view(expected.previousScreens)!.map((s) => s.start)).toEqual([2, 15]);
+
+      const cont = scripted([]);
+      const { read } = reader(screens);
+      const restored = yield* restoreSession(viaJsonl(events), read).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+      for (const r of next) yield* restored.push(r);
+      yield* restored.idle;
+
+      expect(cont.calls).toHaveLength(1);
+      expect(view(cont.calls[0]!.screens)).toEqual(view(expected.screens));
+      expect(view(cont.calls[0]!.previousScreens)).toEqual(view(expected.previousScreens));
+      // 画面以外の入力も元と同じ
+      expect(cont.calls[0]!.fresh).toEqual(expected.fresh);
+    }));
+
+  it.effect("読むのは、まだ添えていない変化と最後に添えた 2 件の画像だけ（「なし」と古い画面は読まない）", () =>
+    Effect.gen(function* () {
+      const { events, screens } = yield* original;
+      const { read, reads } = reader(screens);
+      yield* restoreSession(viaJsonl(events), read).pipe(Effect.provide(Layer.merge(forbiddenUpdater, silentLog)));
+      expect([...reads].sort()).toEqual(["0002.0.jpg", "0015.0.jpg", "0018.0.jpg", "0100.0.jpg"]);
+    }));
+
+  it.effect("復元した後に同じ時刻の画面を受けても、前の画像を上書きしない（ファイル名は -2 から番号が付く）", () =>
+    Effect.gen(function* () {
+      const { events, screens } = yield* original;
+      const written: Screens = [];
+      const lines: LogEvent[] = [];
+      const { read } = reader(screens);
+      const restored = yield* restoreSession(viaJsonl(events), read).pipe(Effect.provide(Layer.merge(forbiddenUpdater, collectLog(lines, written))));
+      yield* restored.pushScreen(shot(2, "again")); // B と同じ秒
+      yield* restored.pushScreen(shot(18, "again2")); // 添えていない F と同じ秒
+      yield* restored.pushScreen(shot(1, "old")); // 最後に添えた 2 件には入らない A と同じ秒
+      expect(written.map((w) => w.file)).toEqual(["0002.0-2.jpg", "0018.0-2.jpg", "0001.0-2.jpg"]);
+      expect(lines.filter((l) => l.type === "screen")).toEqual([
+        { type: "screen", start: 2, image: "0002.0-2.jpg" },
+        { type: "screen", start: 18, image: "0018.0-2.jpg" },
+        { type: "screen", start: 1, image: "0001.0-2.jpg" },
+      ]);
+    }));
+
+  // 応答待ちの間に受けた画面は、呼び出しが成功でも失敗でも、続きに添える画面として残る（選んだ時点までに受けた数が diff の行に残る）
+  const duringCall: [string, ChangeKind][] = [["成功", "success"], ["失敗", "failure"]];
+  type ChangeKind = "success" | "failure";
+  for (const [label, kind] of duringCall) {
+    for (const [imageLabel, lateImage] of [["画像あり", shot(18, "F")], ["「なし」", gone(18)]] as const) {
+      it.effect(`応答待ちの間に受けた画面（${imageLabel}）は、呼び出しが${label}でも復元後の続きに残り、元のセッションと一致する`, () =>
+        Effect.gen(function* () {
+          const events: LogEvent[] = [];
+          const screens: Screens = [];
+          const gate = yield* Deferred.make<void>();
+          const calls: DiffInput[] = [];
+          const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> => {
+            calls.push(input);
+            if (calls.length > 1) return Effect.succeed({ ops: [] });
+            const result: Effect.Effect<DiffOutput, UpdateFailure> = kind === "success" ? Effect.succeed({ ops: [] }) : Effect.fail({ _tag: "UpdateFailed", message: "失敗" });
+            return Deferred.await(gate).pipe(Effect.andThen(result));
+          };
+          const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events, screens))));
+          yield* session.pushScreen(shot(1, "A"));
+          yield* session.pushScreen(shot(2, "B"));
+          yield* session.push(spoken("a1", 10));
+          yield* session.push(spoken("a2", 20));
+          yield* settleUntil(() => calls.length === 1); // 1 回目が応答待ちになるまで
+          expect(calls).toHaveLength(1);
+          yield* session.pushScreen(lateImage);
+          yield* session.pushScreen(gone(19));
+          yield* Deferred.succeed(gate, undefined);
+          yield* session.idle;
+
+          const logged = [...events];
+          const next = [spoken("a3", 200), spoken("a4", 201)];
+          for (const r of next) yield* session.push(r);
+          yield* session.idle;
+          expect(calls).toHaveLength(2);
+          const expected = calls[1]!;
+          expect(view(expected.screens)!.map((x) => x.start)).toEqual([18, 19]);
+          expect(view(expected.previousScreens)!.map((x) => x.start)).toEqual([1, 2]);
+
+          const cont = scripted([]);
+          const restored = yield* restoreSession(viaJsonl(logged), reader(screens).read).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+          for (const r of next) yield* restored.push(r);
+          yield* restored.idle;
+          expect(cont.calls).toHaveLength(1);
+          expect(view(cont.calls[0]!.screens)).toEqual(view(expected.screens));
+          expect(view(cont.calls[0]!.previousScreens)).toEqual(view(expected.previousScreens));
+          expect(cont.calls[0]!.fresh).toEqual(expected.fresh);
+        }));
+    }
+  }
+
+  it.effect("diff の screenCount が、そこまでに読んだ screen の行の数より大きいログは、その diff の位置の InvalidLogEvent で失敗する", () =>
+    Effect.gen(function* () {
+      const events = [
+        { type: "start", title: "定例" },
+        { type: "screen", start: 1, image: null },
+        { type: "remark", remark: spoken("r1", 10) },
+        { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0, screenCount: 2 }, ops: [], dropped: [] },
+      ];
+      const error = yield* Effect.flip(restore(events));
+      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 3 });
+    }));
+
+  it.effect("1 回の呼び出しで 3 件添えていたログは、その中の新しい 2 件を送り直す", () =>
+    Effect.gen(function* () {
+      const files = ["0001.0.jpg", "0002.0.jpg", "0004.0.jpg"];
+      const stored: Screens = files.map((file) => ({ file, bytes: bytesOf(`bytes:${file}`) }));
+      const events: unknown[] = [
+        { type: "start", title: "定例" },
+        { type: "screen", start: 1, image: files[0] },
+        { type: "screen", start: 2, image: files[1] },
+        { type: "screen", start: 3, image: null },
+        { type: "screen", start: 4, image: files[2] },
+        { type: "remark", remark: spoken("r1", 10) },
+        { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0, screenCount: 4, screens: [{ start: 2, image: files[1] }, { start: 3, image: null }, { start: 4, image: files[2] }] }, ops: [], dropped: [] },
+      ];
+      const cont = scripted([]);
+      const restored = yield* restoreSession(events, reader(stored).read).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+      yield* restored.push(spoken("r2", 20));
+      yield* restored.push(spoken("r3", 21));
+      yield* restored.idle;
+      // 区切りは 10: 映り始めが 1〜4 の変化はすべて添え済み
+      expect("screens" in cont.calls[0]!).toBe(false);
+      expect(view(cont.calls[0]!.previousScreens)).toEqual([{ start: 3, bytes: null }, { start: 4, bytes: Array.from(bytesOf("bytes:0004.0.jpg")) }]);
+    }));
+
+  it.effect("画像を読めなかったら、読み手の失敗でそのまま失敗する", () =>
+    Effect.gen(function* () {
+      const events = [{ type: "start", title: "定例" }, { type: "screen", start: 1, image: "0001.0.jpg" }];
+      const error = yield* Effect.flip(restoreSession(events, reader([]).read).pipe(Effect.provide(Layer.merge(forbiddenUpdater, silentLog))));
+      expect(error).toEqual({ _tag: "ScreenMissing", file: "0001.0.jpg" });
+    }));
+
+  it.effect("壊れた screen の行は、その行の位置の InvalidLogEvent で失敗する", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(restore([{ type: "start", title: "定例" }, { type: "screen", start: "x", image: null }]));
+      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 1 });
+    }));
+
+  it.effect("共有画面の無いログは今までどおり。画像の読み手を渡さなくても復元でき、続きの入力に画面のキーは付かない", () =>
+    Effect.gen(function* () {
+      const p = [remark("一"), remark("二"), remark("三")];
+      const events: LogEvent[] = [];
+      const live = scripted([]);
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(live.update), collectLog(events))));
+      yield* session.push(p[0]!);
+      yield* session.push(p[1]!);
+      yield* session.idle;
+      const cont = scripted([]);
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+      yield* restored.push(p[2]!);
+      yield* restored.flush;
+      expect(Object.keys(cont.calls[0]!).sort()).toEqual(["fresh", "map", "recent"]);
     }));
 });
