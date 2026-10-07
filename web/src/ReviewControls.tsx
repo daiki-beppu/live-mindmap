@@ -1,5 +1,5 @@
 import { Slider } from "@videojs/react";
-import { CheckIcon, PauseIcon, PlayIcon, SpeedIcon } from "@videojs/react/icons";
+import { CaptionsOffIcon, CaptionsOnIcon, CheckIcon, PauseIcon, PlayIcon, SpeedIcon } from "@videojs/react/icons";
 import { useEffect, useRef, useState } from "react";
 import { KIND_COLOR } from "./kinds.ts";
 import { chapterNameAt, formatHms, type Chapter, type Mark } from "./reviewTimeline.ts";
@@ -19,7 +19,11 @@ type Props = {
   onToggle: () => void;
   onPrev: () => void;
   onNext: () => void;
+  captionsHidden: boolean;
+  sideHidden: boolean;
   onRate: (rate: number) => void;
+  onCaptions: () => void;
+  onSide: () => void;
 };
 
 // 押して離したら（クリックでもドラッグでも）、シークバーからフォーカスを外す（矢印キーなどの操作がシークバーに奪われたままにならないように）
@@ -33,6 +37,24 @@ const StepIcon = ({ direction }: { direction: "prev" | "next" }) => (
     {direction === "prev" ? <path d="M3 3h2v10H3zM13 3v10L6 8z" /> : <path d="M11 3h2v10h-2zM3 3l7 5-7 5z" />}
   </svg>
 );
+
+// 右の列（変わったこと・根拠）のアイコン。隠しているときは右の列を塗らない
+const SideIcon = ({ hidden }: { hidden: boolean }) => (
+  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    {hidden ? <path d="M10 3v10" /> : <path d="M10 3v10h3.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5z" fill="currentColor" />}
+  </svg>
+);
+
+// ポインタを乗せたときに出す、名前とキー（読み上げには aria-label があるので隠す）
+const Tip = ({ text }: { text: string }) => (
+  <span className="review-tip" aria-hidden="true">
+    {text}
+  </span>
+);
+
+// シークバーのつまみが自分で処理するキー。押したとき、document の登録（矢印・Home・End）へ届かせない
+const THUMB_KEYS: readonly string[] = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"];
 
 // メニューの項目の文言。例: 「60 倍（161 分を 2.7 分で）」
 export const rateOptionLabel = (rate: number, duration: number) => `${rate} 倍（${Math.round(duration / 60)} 分を ${(Math.round((duration / rate / 60) * 10) / 10).toFixed(1)} 分で）`;
@@ -63,6 +85,7 @@ function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "r
       <button type="button" className="review-bar__button review-rate__button" aria-label="再生の速さ" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         <SpeedIcon />
         <span>{rate}×</span>
+        <Tip text="速さ（< >）" />
       </button>
       {open && (
         <div className="review-rate__menu" role="menu" aria-label="再生の速さ">
@@ -89,11 +112,17 @@ function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "r
   );
 }
 
-export function ReviewControls({ time, duration, playing, rate, rates, topicName, chapters, marks, onSeek, onToggle, onPrev, onNext, onRate }: Props) {
+export function ReviewControls({ time, duration, playing, rate, rates, topicName, chapters, marks, onSeek, onToggle, onPrev, onNext, onRate, captionsHidden, sideHidden, onCaptions, onSide }: Props) {
   // 章が無い、または会議の長さが 0 のときは、区切らずに全幅の 1 本で描く（0 での割り算を避ける）
   const segments: readonly Chapter[] = chapters.length > 0 && duration > 0 ? chapters : [{ topic: "", name: "", start: 0, end: duration }];
   return (
-    <div className="review-controls">
+    // Space で押されたことになるのは keyup の既定の動き。keydown の登録が 1 回だけ切り替えるので、keyup では止める
+    <div
+      className="review-controls"
+      onKeyUp={(e) => {
+        if (e.key === " ") e.preventDefault();
+      }}
+    >
       <Slider.Root className="review-seek" min={0} max={duration} value={time} onValueChange={onSeek} onDragEnd={releaseFocus} onPointerUp={releaseFocus} label="時刻">
         <Slider.Track className="review-seek__track">
           {segments.map((c) => {
@@ -108,7 +137,12 @@ export function ReviewControls({ time, duration, playing, rate, rates, topicName
           })}
           {duration > 0 && marks.map((m, i) => <span key={i} className="review-seek__mark" style={{ left: `${(m.at / duration) * 100}%`, background: KIND_COLOR[m.kind] }} />)}
         </Slider.Track>
-        <Slider.Thumb className="review-seek__thumb" />
+        <Slider.Thumb
+          className="review-seek__thumb"
+          onKeyDown={(e) => {
+            if (THUMB_KEYS.includes(e.key)) e.stopPropagation();
+          }}
+        />
         <Slider.Preview className="review-seek__preview">
           <Slider.Value type="pointer" className="review-seek__preview-chapter" format={(v) => chapterNameAt(chapters, v)} />
           <Slider.Value type="pointer" className="review-seek__preview-time" format={formatHms} />
@@ -117,18 +151,49 @@ export function ReviewControls({ time, duration, playing, rate, rates, topicName
       <div className="review-bar">
         <button type="button" className="review-bar__button" aria-label="反映 1 つ戻る" onClick={onPrev}>
           <StepIcon direction="prev" />
+          <Tip text="反映 1 つ戻る（,）" />
         </button>
         <button type="button" className="review-bar__button" aria-label={playing ? "止める" : "再生"} onClick={onToggle}>
           {playing ? <PauseIcon /> : <PlayIcon />}
+          <Tip text={playing ? "止める（Space・K）" : "再生（Space・K）"} />
         </button>
         <button type="button" className="review-bar__button" aria-label="反映 1 つ進む" onClick={onNext}>
           <StepIcon direction="next" />
+          <Tip text="反映 1 つ進む（.）" />
         </button>
         <span className="review-bar__time">
           {formatHms(time)} / {formatHms(duration)}
         </span>
         <span className="review-bar__topic">{topicName}</span>
-        {rates.length > 1 && <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} />}
+        <div className="review-bar__end">
+          <button
+            type="button"
+            className="review-bar__button"
+            aria-label="字幕"
+            aria-pressed={!captionsHidden}
+            onClick={() => {
+              onCaptions();
+              releaseFocus();
+            }}
+          >
+            {captionsHidden ? <CaptionsOffIcon /> : <CaptionsOnIcon />}
+            <Tip text="字幕（C）" />
+          </button>
+          {rates.length > 1 && <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} />}
+          <button
+            type="button"
+            className="review-bar__button"
+            aria-label="右の列"
+            aria-pressed={!sideHidden}
+            onClick={() => {
+              onSide();
+              releaseFocus();
+            }}
+          >
+            <SideIcon hidden={sideHidden} />
+            <Tip text="右の列（E）" />
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { KEY_LIST, KeyList } from "../src/KeyList.tsx";
+import { KEY_LIST, KeyList, REVIEW_KEY_LIST } from "../src/KeyList.tsx";
 
 describe("KeyList: ? で開くキー一覧", () => {
   const html = renderToStaticMarkup(<KeyList />);
@@ -57,5 +57,55 @@ describe("KeyList: ? で開くキー一覧", () => {
     expect(html).toContain("← → ↑ ↓");
     expect(KEY_LIST.filter((r) => r.keys.includes("矢印") || r.keys.includes("←"))).toHaveLength(2);
     expect(KEY_LIST.find((r) => r.keys === "Shift + 矢印")?.action).toContain("1/3");
+  });
+});
+
+describe("KeyList: 見返しのキーは見返しの一覧にだけ載る", () => {
+  const live = renderToStaticMarkup(<KeyList />);
+  const review = renderToStaticMarkup(<KeyList review />);
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  it("見返しの行は Space・K / J / L / , . / < > / Home End の 5 行", () => {
+    expect(REVIEW_KEY_LIST.map((r) => r.keys)).toEqual(["Space・K", "J / L", ", / .", "< / >", "Home / End"]);
+    expect(REVIEW_KEY_LIST.find((r) => r.keys === "Space・K")?.action).toContain("止める");
+    expect(REVIEW_KEY_LIST.find((r) => r.keys === "J / L")?.action).toContain("10 秒");
+    expect(REVIEW_KEY_LIST.find((r) => r.keys === ", / .")?.action).toContain("反映");
+    expect(REVIEW_KEY_LIST.find((r) => r.keys === "< / >")?.action).toContain("速さ");
+    expect(REVIEW_KEY_LIST.find((r) => r.keys === "Home / End")?.action).toContain("最初");
+  });
+
+  it("見返しの一覧には、見返しの 5 行が載る", () => {
+    for (const row of REVIEW_KEY_LIST) {
+      expect(review).toContain(esc(row.keys));
+      expect(review).toContain(esc(row.action));
+    }
+  });
+
+  it("見返しの一覧には、ライブの全ての行も載ったままになる", () => {
+    for (const row of KEY_LIST) expect(review).toContain(esc(row.keys));
+  });
+
+  it("C（字幕）の行は 1 回だけ（二重に載せない）", () => {
+    expect(review.match(/>C<\/span>/g)).toHaveLength(1);
+    expect(live.match(/>C<\/span>/g)).toHaveLength(1);
+    expect(REVIEW_KEY_LIST.some((r: { keys: string }) => r.keys === "C")).toBe(false);
+  });
+
+  it("ライブの一覧（引数なし・review: false）には見返しのキーは載らない", () => {
+    for (const html of [live, renderToStaticMarkup(<KeyList review={false} />)]) {
+      for (const row of REVIEW_KEY_LIST) expect(html).not.toContain(esc(row.keys));
+      expect(html).not.toContain("Home / End");
+    }
+  });
+
+  it("KEY_LIST そのものには見返しの行を足さない", () => {
+    expect(KEY_LIST.some((r: { keys: string }) => r.keys === "J / L" || r.keys === "Home / End" || r.keys === "Space・K")).toBe(false);
+  });
+
+  it("見返しの行は『キー』の行の後、マウスの行の前に挟む", () => {
+    const at = (t: string) => review.indexOf(t);
+    expect(at("Home / End")).toBeGreaterThan(at(">?</span>"));
+    expect(at("Space・K")).toBeLessThan(at("スクロール"));
+    expect(at("Home / End")).toBeLessThan(at("スクロール"));
   });
 });

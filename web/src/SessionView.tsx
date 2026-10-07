@@ -1,5 +1,5 @@
 import { useHotkey } from "@tanstack/react-hotkeys";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { Captions } from "./Captions.tsx";
 import { ChangeList } from "./ChangeList.tsx";
@@ -40,9 +40,12 @@ const ARROW_HOTKEYS = [
   ["ArrowDown", "down"],
 ] as const satisfies readonly (readonly [string, ArrowDir])[];
 
+// 見返しの外枠に渡す、見る状態（字幕・右の列の出し入れ）と、C・E と同じ出来事を送る関数
+export type ReviewOverlay = { captionsHidden: boolean; sideHidden: boolean; onCaptions: () => void; onSide: () => void };
+
 // 渡されたスナップショット・字幕の内容・取り込みの状態から、マップ・字幕・右の列を組み立てる（接続は持たない）。
 // 取り込みの状態を渡さなければ、知らせは出ない。
-// review を渡すと見返し。timeMoves は、時刻を動かすたびに増える数。省略するとライブ。
+// review を渡すと見返し。timeMoves は、時刻を動かすたびに増える数。frame は、画面全体（session）を操作の行などで包む関数。省略するとライブ。
 export function SessionView({
   snapshot,
   speaking,
@@ -52,7 +55,7 @@ export function SessionView({
   snapshot: Snapshot;
   speaking: Speaking;
   intake?: IntakeStatus;
-  review?: { timeMoves: number };
+  review?: { timeMoves: number; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
 }) {
   const scope: ViewingScope = review ? "review" : "live";
   const scopeRef = useRef(scope);
@@ -132,12 +135,18 @@ export function SessionView({
   useHotkey("C", (e) => {
     dispatch({ type: "captions", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
   });
-  return (
+  const overlay: ReviewOverlay = {
+    captionsHidden: viewing.captionsHidden === true,
+    sideHidden: viewing.sideHidden === true,
+    onCaptions: () => dispatch({ type: "captions", meta: false, ctrl: false, alt: false }, treeNow()),
+    onSide: () => dispatch({ type: "side", meta: false, ctrl: false, alt: false }, treeNow()),
+  };
+  const layout = (
     <div className="layout">
       <div className="map">
         <MapView snapshot={snapshot} selectedId={selectedId} onSelect={select} viewing={viewing} camera={camera} onViewingEvent={dispatch} onTree={onTree} />
         <ViewingNotice manual={viewing.mode === "manual"} overview={viewing.mode === "overview"} />
-        {viewing.keyList && <KeyList />}
+        {viewing.keyList && <KeyList review={isReview} />}
       </div>
       {/* 字幕と取り込みの一言は .map の外（.layout 直下）に置く。列を出し入れしても窓の横幅の中央から動かさない */}
       {!viewing.captionsHidden && <Captions speaking={speaking} />}
@@ -150,6 +159,7 @@ export function SessionView({
       )}
     </div>
   );
+  return review?.frame ? review.frame(layout, overlay) : layout;
 }
 
 // hook は条件付きで呼べないため、状態を渡されたときだけ描く子の部品に閉じ込める。
