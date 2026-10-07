@@ -26,10 +26,10 @@ const workspace = Effect.fnUntraced(function* (script: object = {}) {
   return { dir, helper, records, out: join(dir, "out.m4a") };
 });
 
-const mixWith = (helper: HelperCommand, session: string, out: string) =>
+const mixWith = (helper: HelperCommand, session: string, out: string, track?: "自分") =>
   Effect.gen(function* () {
     const audioMix = yield* AudioMix;
-    return yield* audioMix.mix(session, out);
+    return yield* audioMix.mix(session, out, track);
   }).pipe(Effect.provide(AudioMix.layer(helper).pipe(Layer.provide(NodeServices.layer))));
 
 describe("AudioMix の実物の Layer", () => {
@@ -41,6 +41,15 @@ describe("AudioMix の実物の Layer", () => {
 
       expect(records()).toEqual([{ type: "mix", argv: ["mix", "--session", "/some/session", "--out", out] }]);
       expect((yield* Effect.tryPromise(() => readFile(out, "utf8")))).toBe("fake-mix-output");
+    }).pipe(Effect.scoped));
+
+  it.live("track に `自分` を渡すと、ヘルパーの argv の末尾に `--track 自分` が付く", () =>
+    Effect.gen(function* () {
+      const { helper, records, out } = yield* workspace();
+
+      yield* mixWith(helper, "/some/session", out, "自分");
+
+      expect(records()).toEqual([{ type: "mix", argv: ["mix", "--session", "/some/session", "--out", out, "--track", "自分"] }]);
     }).pipe(Effect.scoped));
 
   it.live("ヘルパーが 0 以外で終わったら AudioMixFailed（defect ではない）で失敗し、message に標準エラーの末尾が入る", () =>

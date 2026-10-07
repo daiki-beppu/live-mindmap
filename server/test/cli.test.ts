@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
@@ -642,6 +642,7 @@ describe("CLI", () => {
         expect(deps.stderr).toEqual([]);
         expect(deps.mix.calls).toHaveLength(1);
         expect(deps.mix.calls[0]!.session).toBe(session);
+        expect(deps.mix.calls[0]!.track).toBeUndefined(); // --self-only なしでは `自分` だけの指定を渡さない
         expect(dirname(deps.mix.calls[0]!.out)).not.toBe(session); // 既にある出力は上書きされないので、出力はセッションのフォルダに書かない
         const audioHtml = readFileSync(join(session, "map-audio.html"), "utf8");
         expect(embeddedAudio(audioHtml)).toEqual(FAKE_MIX_BYTES);
@@ -738,6 +739,136 @@ describe("CLI", () => {
         expect(deps.stdout).toEqual([]);
         expect(existsSync(join(session, "map.html"))).toBe(false);
         expect(existsSync(join(session, "map-audio.html"))).toBe(false);
+      }));
+    });
+
+    describe("--self-only", () => {
+      const SELF_FILE = "map-audio-自分.html";
+      const withRecordings = (session: string, ...names: string[]) => {
+        for (const name of names) writeFileSync(join(session, name), "録音");
+      };
+      // map-audio-自分.html 以外の全ファイルの中身と更新日時
+      const snapshot = (session: string) =>
+        Object.fromEntries(
+          readdirSync(session, { withFileTypes: true })
+            .filter((e) => e.isFile() && e.name !== SELF_FILE)
+            .map((e) => [e.name, `${statSync(join(session, e.name)).mtimeMs}:${readFileSync(join(session, e.name)).toString("base64")}`]),
+        );
+
+      it.effect("map-audio-自分.html だけを書いてそのパスを 1 行出し、mix には `自分` だけの指定を渡す。他のファイル（map.html・map-audio.html を含む）は中身も更新日時も変えない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a", "自分.m4a");
+        writeFileSync(join(session, "map.html"), "既存の map");
+        writeFileSync(join(session, "map-audio.html"), "既存の map-audio");
+        const before = snapshot(session);
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20))); // 更新日時が進むだけの間を置く
+
+        yield* runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, SELF_FILE)}\n`);
+        expect(deps.stderr).toEqual([]);
+        expect(deps.mix.calls).toHaveLength(1);
+        expect(deps.mix.calls[0]!.session).toBe(session);
+        expect(deps.mix.calls[0]!.track).toBe("自分");
+        const html = readFileSync(join(session, SELF_FILE), "utf8");
+        expect(embeddedAudio(html)).toEqual(FAKE_MIX_BYTES);
+        expect(embedded(html)).toEqual(logOf(session)); // 字幕・マップ用のログ（相手の発言を含む）は埋め込まれたまま
+        expect(readFileSync(join(session, "map.html"), "utf8")).toBe("既存の map");
+        expect(readFileSync(join(session, "map-audio.html"), "utf8")).toBe("既存の map-audio");
+        expect(snapshot(session)).toEqual(before);
+      }));
+
+      it.effect("録音が無ければ「自分の録音がありません」の CommandFailed で失敗し、mix を呼ばず、何も書かない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        const before = snapshot(session);
+
+        const result = yield* Effect.result(runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer)));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) return;
+        expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+        expect((result.failure as { message: string }).message).toContain("自分の録音がありません");
+        expect(deps.mix.calls).toEqual([]);
+        expect(deps.stdout).toEqual([]);
+        expect(existsSync(join(session, SELF_FILE))).toBe(false);
+        expect(snapshot(session)).toEqual(before);
+      }));
+
+      it.effect("相手の録音だけ（自分*.m4a が無い）でも失敗し、mix を呼ばず、何も書かない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a", "相手-2.m4a");
+
+        const result = yield* Effect.result(runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer)));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) return;
+        expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+        expect((result.failure as { message: string }).message).toContain("自分の録音がありません");
+        expect(deps.mix.calls).toEqual([]);
+        expect(deps.stdout).toEqual([]);
+        expect(existsSync(join(session, SELF_FILE))).toBe(false);
+      }));
+
+      it.effect("`自分-2.m4a` だけでも書く", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "自分-2.m4a");
+
+        yield* runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, SELF_FILE)}\n`);
+        expect(deps.mix.calls.map((c) => c.track)).toEqual(["自分"]);
+      }));
+
+      it.effect("mix が失敗したら CommandFailed で失敗し、何も出さず、前回の map-audio-自分.html も変えない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a", "自分.m4a");
+        writeFileSync(join(session, SELF_FILE), "前回");
+        const before = snapshot(session);
+        deps.mix.failure.reason = "録音を混ぜられない";
+
+        const result = yield* Effect.result(runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer)));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) return;
+        expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+        expect((result.failure as { message: string }).message).toContain("録音を混ぜられない");
+        expect(deps.stdout).toEqual([]);
+        expect(readFileSync(join(session, SELF_FILE), "utf8")).toBe("前回");
+        expect(snapshot(session)).toEqual(before);
+      }));
+
+      it.effect("既にある map-audio-自分.html は確認せずに上書きする", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "自分.m4a");
+        writeFileSync(join(session, SELF_FILE), "古い");
+
+        yield* runCli(["review", "--self-only"]).pipe(Effect.provide(deps.layer));
+
+        expect(embeddedAudio(readFileSync(join(session, SELF_FILE), "utf8"))).toEqual(FAKE_MIX_BYTES);
+      }));
+
+      it.effect("位置引数のフォルダと一緒に渡すと、そのフォルダを対象にする", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "自分.m4a");
+
+        yield* runCli(["review", session, "--self-only"]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, SELF_FILE)}\n`);
+        expect(deps.mix.calls[0]!.session).toBe(session);
       }));
     });
 

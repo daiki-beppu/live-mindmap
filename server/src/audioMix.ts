@@ -12,7 +12,8 @@ export class AudioMixFailed extends Schema.TaggedError<AudioMixFailed>()("AudioM
 
 export class AudioMix extends Context.Service<AudioMix, {
   // session のフォルダの録音を混ぜて、out（まだ無いファイル。親のフォルダは有る）に書く
-  readonly mix: (session: string, out: string) => Effect.Effect<void, AudioMixFailed>;
+  // track を渡すと、その 1 本（`自分`）だけを混ぜる。省略すると全トラックを混ぜる
+  readonly mix: (session: string, out: string, track?: "自分") => Effect.Effect<void, AudioMixFailed>;
 }>()("live-mindmap/server/AudioMix") {
   static readonly layer = (helper: HelperCommand): Layer.Layer<AudioMix, never, ChildProcessSpawner.ChildProcessSpawner> =>
     Layer.effect(AudioMix)(make(helper));
@@ -27,11 +28,11 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
 
   const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
 
-  const mix = (session: string, out: string): Effect.Effect<void, AudioMixFailed> =>
+  const mix = (session: string, out: string, track?: "自分"): Effect.Effect<void, AudioMixFailed> =>
     Effect.scoped(
       Effect.gen(function* () {
         const handle = yield* spawner.spawn(
-          ChildProcess.make(helper.command, [...helper.args, "mix", "--session", session, "--out", out], { stdin: "ignore", stdout: "ignore" }),
+          ChildProcess.make(helper.command, [...helper.args, "mix", "--session", session, "--out", out, ...(track === undefined ? [] : ["--track", track])], { stdin: "ignore", stdout: "ignore" }),
         );
         const [stderr, code] = yield* Effect.all([readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
         if (code === 0) return;

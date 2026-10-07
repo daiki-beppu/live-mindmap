@@ -8,7 +8,7 @@ export const FAKE_MIX_BYTES = Buffer.from(Array.from({ length: 256 }, (_, i) => 
 
 export type FakeMix = {
   layer: Layer.Layer<AudioMix>;
-  calls: { session: string; out: string }[];
+  calls: { session: string; out: string; track?: "自分" }[];
   // 設定すると、次からの mix はこの理由で AudioMixFailed になる（出力先には何も書かない）
   failure: { reason: string | null };
 };
@@ -18,8 +18,8 @@ export function fakeAudioMix(): FakeMix {
   const calls: FakeMix["calls"] = [];
   const failure: FakeMix["failure"] = { reason: null };
   const layer = Layer.succeed(AudioMix, AudioMix.of({
-    mix: (session, out) => {
-      calls.push({ session, out });
+    mix: (session, out, track) => {
+      calls.push({ session, out, track });
       if (failure.reason !== null) return Effect.fail(new AudioMixFailed({ message: failure.reason }));
       return Effect.tryPromise({
         try: () => writeFile(out, FAKE_MIX_BYTES),

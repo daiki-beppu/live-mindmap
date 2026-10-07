@@ -16,8 +16,8 @@ export class ReviewPageFailed extends Schema.TaggedError<ReviewPageFailed>()("Re
 
 const failed = (e: unknown) => new ReviewPageFailed({ message: e instanceof Error ? e.message : String(e) });
 
-// 書き出す版。audio が true なら、録音を mix して埋め込む（後で `自分` だけの版を足す）
-export type ReviewVariant = { readonly file: string; readonly audio: boolean };
+// 書き出す版。audio が true なら、録音を mix して埋め込む。track が `自分` なら、その声だけを混ぜる（省略すると全トラック）
+export type ReviewVariant = { readonly file: string; readonly audio: boolean; readonly track?: "自分" };
 
 // 書き出さなかった版と、その理由
 export type SkippedReviewVariant = { readonly file: string; readonly reason: string };
@@ -63,7 +63,7 @@ export class ReviewBuild extends Context.Service<ReviewBuild, {
 
 // mix の出力を一時フォルダに書き、base64 にして返す。mix は既にある出力を上書きしないので、出力先は新しい一時フォルダで、acquireRelease が必ず消す。
 // 失敗は mix の理由（AudioMixFailed の message）を文字列で返す（版を諦めるだけで、全体の失敗にはしない）
-const mixedAudio = Effect.fnUntraced(function* (dir: string) {
+const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
   const { mix } = yield* AudioMix;
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -72,7 +72,7 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string) {
         (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
       );
       const out = join(tmp, "mix.m4a");
-      yield* mix(dir, out).pipe(Effect.mapError((e) => e.message));
+      yield* mix(dir, out, track).pipe(Effect.mapError((e) => e.message));
       const bytes = yield* Effect.tryPromise({ try: () => readFile(out), catch: (e) => e instanceof Error ? e.message : String(e) });
       return bytes.toString("base64");
     }),
@@ -104,7 +104,7 @@ export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPat
       pages.push({ path: join(dir, variant.file), html });
       continue;
     }
-    const audio = yield* Effect.result(mixedAudio(dir));
+    const audio = yield* Effect.result(mixedAudio(dir, variant.track));
     if (Result.isFailure(audio)) {
       skipped.push({ file: variant.file, reason: audio.failure });
       continue;
