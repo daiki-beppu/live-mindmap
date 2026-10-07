@@ -69,7 +69,7 @@ cli export --format json                  # 終了後も、最新のセッショ
 - `map.png`（`play` の終了時も同じ）は、サーバーが Playwright のヘッドレスブラウザで自分の表示ページを開いて撮る。ブラウザを開いていなくても撮れる。変わったノードの強調・仮のノード・右の列は写さない。画像はノードを囲む範囲だけを切り抜く。初回だけ `pnpm --filter @live-mindmap/server exec playwright install chromium` で Chromium を入れる。撮れなかったとき（Chromium が無い等）は、map.png だけ除いて終わり、理由を標準エラーに出す。
 - 録音は、セッションのフォルダの `相手.m4a`・`自分.m4a`（AAC・モノラル）。録音の 0 秒は発言の時刻（`map.json` の start / end）の 0 秒と同じなので、発言の時刻から音声を聞き返せる。`stop` は、ヘルパーが録音を閉じるのを待ってから書き出す。ヘルパーが 5 秒以内に終わらず強制終了したときは、録音の書き終わりを確認できなかったことを標準エラーに出す（録音が不完全なことがある）。`stop` が出すパスは 4 つのまま（録音のパスは出さない）。
 - ヘルパーの WebSocket にはサーバーだけがつなぐ。ポートはサーバーが空きを選んで渡す。
-- ヘルパーの実行ファイルは `helper/.build/debug/live-mindmap-helper`。`LIVE_MINDMAP_HELPER` で差し替えられる。
+- ヘルパーの実行ファイルは、最適化ありのビルドの `helper/.build/release/live-mindmap-helper`（`pnpm dev` が `swift build -c release` でビルドする）。最適化なし（debug）のビルドは CPU を 5 倍ほど使い、負荷の高い Mac では入力の滞留で数分おきに止まるので、会議では使わない。`LIVE_MINDMAP_HELPER` で差し替えられる。既定の実行ファイルが無いままサーバーを起動すると、ビルドのコマンドを示して終わる。
 - `pnpm dev` の実行中は 4319 をサーバーが使うので、`play` を同時に動かすときは `LIVE_MINDMAP_PORT` を変える（表示の proxy 先も同じ値を使う）。
 
 ### 取り込みの途切れ（ヘルパーが予期せず終わったとき）
