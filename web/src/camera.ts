@@ -179,6 +179,20 @@ export function nodeFocusViewport(rect: Rect, zoom: number, size: Size): Viewpor
   return { x: size.width / 2 - (rect.x + rect.width / 2) * z, y: size.height / 2 - (rect.y + rect.height / 2) * z, zoom: z };
 }
 
+// 列を出したあと（size は出した後の画面の大きさ）、rects の外接箱が画面の左右で切れているときだけ、切れた分を横にずらす。
+// 倍率・縦の位置は変えない。反対側を新たに切るほどはずらさない（右が切れていれば左端が 0 に来るまで、左が切れていれば右端が幅に来るまで）。
+// 両端とも切れている、または rects が空なら、そのまま返す。画面座標は 座標 × zoom + x
+export function shiftIntoView(viewport: Viewport, rects: Rect[], size: Size): Viewport {
+  if (rects.length === 0) return { ...viewport };
+  const left = Math.min(...rects.map((r) => r.x)) * viewport.zoom + viewport.x;
+  const right = Math.max(...rects.map((r) => r.x + r.width)) * viewport.zoom + viewport.x;
+  const cutRight = right > size.width;
+  const cutLeft = left < 0;
+  if (cutRight === cutLeft) return { ...viewport };
+  const dx = cutRight ? -Math.min(right - size.width, left) : Math.min(-left, size.width - right);
+  return { ...viewport, x: viewport.x + dx };
+}
+
 // 今の round に変わったノードが無く、すでにこの round より前に寄せていれば動かさない。
 // 同じ round の測り直し（実寸が届いた）では寄せ直す
 export function shouldMoveCamera(snapshot: Snapshot, placedRound: number | null): boolean {

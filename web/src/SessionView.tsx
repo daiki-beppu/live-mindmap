@@ -61,11 +61,14 @@ export function SessionView({
   // マップから最後に届いた見えている木。Esc の判断に使う
   const lastTree = useRef<VisibleTree | null>(null);
   const viewingRef = useRef(viewing);
+  // 見返しの 10 秒の計り直しの基準。E・C（右の列・字幕の出し入れ）以外の出来事の後にだけ更新する
+  const [cameraStamp, setCameraStamp] = useState<ViewingState>(INITIAL_VIEWING);
   const dispatch = useCallback((event: ViewingEvent, tree: VisibleTree) => {
     lastTree.current = tree;
     const out = reduceViewing(viewingRef.current, event, tree, scopeRef.current);
     viewingRef.current = out.state;
     setViewing(out.state);
+    if (event.type !== "side" && event.type !== "captions") setCameraStamp(out.state);
     const next = nextCameraOrder(cameraRef.current, out.camera, shownSeq.current);
     cameraRef.current = next;
     setCamera(next);
@@ -74,13 +77,13 @@ export function SessionView({
   const treeNowRef = useRef(treeNow);
   treeNowRef.current = treeNow;
   // 見返しで止めている間だけ、最後の人の操作から 10 秒を計る。
-  // 人の操作は新しい manual のオブジェクトを返し、それ以外の出来事は同じオブジェクトを返すので、viewing を依存に入れると人の操作でだけ計り直しになる
+  // E・C 以外の出来事の後の状態を cameraStamp に持ち、依存に入れる。E・C では変わらないので、計り直さない
   const isReview = review !== undefined;
   useEffect(() => {
-    if (!isReview || viewing.mode !== "manual") return;
+    if (!isReview || cameraStamp.mode !== "manual") return;
     const timer = setTimeout(() => dispatch({ type: "idle" }, treeNowRef.current()), REVIEW_IDLE_MS);
     return () => clearTimeout(timer);
-  }, [isReview, viewing, dispatch]);
+  }, [isReview, cameraStamp, dispatch]);
   // 時刻を動かしたら送る。最初の描画では送らない
   const timeMoves = review?.timeMoves;
   const prevTimeMoves = useRef(timeMoves);
@@ -104,19 +107,28 @@ export function SessionView({
   useHotkey("?", (e) => {
     dispatch({ type: "keyList", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
   });
+  useHotkey("E", (e) => {
+    dispatch({ type: "side", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
+  });
+  useHotkey("C", (e) => {
+    dispatch({ type: "captions", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
+  });
   return (
     <div className="layout">
       <div className="map">
         <MapView snapshot={snapshot} selectedId={selectedId} onSelect={setSelectedId} viewing={viewing} camera={camera} onViewingEvent={dispatch} />
         <ViewingNotice manual={viewing.mode === "manual"} overview={viewing.mode === "overview"} />
         {viewing.keyList && <KeyList />}
-        <Captions speaking={speaking} />
-        {intake !== undefined && <IntakeNoticeOf status={intake} />}
       </div>
-      <div className="side">
-        <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId)} />
-        <ChangeList changes={snapshot.changes} onSelect={setSelectedId} />
-      </div>
+      {/* 字幕と取り込みの一言は .map の外（.layout 直下）に置く。列を出し入れしても窓の横幅の中央から動かさない */}
+      {!viewing.captionsHidden && <Captions speaking={speaking} />}
+      {intake !== undefined && <IntakeNoticeOf status={intake} />}
+      {!viewing.sideHidden && (
+        <div className="side">
+          <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId)} />
+          <ChangeList changes={snapshot.changes} onSelect={setSelectedId} />
+        </div>
+      )}
     </div>
   );
 }

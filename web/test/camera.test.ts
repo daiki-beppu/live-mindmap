@@ -16,6 +16,7 @@ import {
   panViewport,
   scrollAlongAxis,
   scrollAxis,
+  shiftIntoView,
   shouldMoveCamera,
   zoomAroundCenter,
   zoomAtPoint,
@@ -465,5 +466,69 @@ describe("nodeFocusViewport: 点を押したノードへ、今の倍率のまま
       expect(centerOf(v).x).toBeCloseTo(mid.x, 6);
       expect(centerOf(v).y).toBeCloseTo(mid.y, 6);
     }
+  });
+});
+
+describe("shiftIntoView: 列を出して今の議題が端で切れるときだけ、その分を横にずらす", () => {
+  const screen = { width: 1000, height: 600 };
+  const v = (x: number, y: number, zoom: number) => ({ x, y, zoom });
+
+  it("切れていなければずらさない（同じ位置・倍率）", () => {
+    expect(shiftIntoView(v(0, 0, 1), [rect(100, 50, 200, 40)], screen)).toEqual(v(0, 0, 1));
+    expect(shiftIntoView(v(0, 0, 1), [rect(800, 50, 200, 40)], screen)).toEqual(v(0, 0, 1)); // ちょうど右端に接する
+    expect(shiftIntoView(v(0, 0, 1), [rect(0, 50, 200, 40)], screen)).toEqual(v(0, 0, 1)); // ちょうど左端に接する
+  });
+
+  it("右が切れていれば、切れた分だけ左へずらす", () => {
+    // 右端が 1100。画面は 1000 幅なので 100 切れている
+    expect(shiftIntoView(v(0, 0, 1), [rect(900, 50, 200, 40)], screen)).toEqual(v(-100, 0, 1));
+  });
+
+  it("左が切れていれば、切れた分だけ右へずらす", () => {
+    expect(shiftIntoView(v(0, 0, 1), [rect(-50, 50, 200, 40)], screen)).toEqual(v(50, 0, 1));
+  });
+
+  it("倍率と現在の位置を考慮した画面の座標で測る（倍率は変えない）", () => {
+    // zoom 2・x=-300: 箱 400〜600 は画面で 500〜900 → 切れない
+    expect(shiftIntoView(v(-300, 10, 2), [rect(400, 0, 200, 40)], screen)).toEqual(v(-300, 10, 2));
+    // zoom 2・x=-100: 画面で 700〜1100 → 100 切れる
+    expect(shiftIntoView(v(-100, 10, 2), [rect(400, 0, 200, 40)], screen)).toEqual(v(-200, 10, 2));
+    // zoom 0.5・x=50: 左端が画面で 50 + 0.5 × -300 = -100 → 100 切れる
+    expect(shiftIntoView(v(50, 10, 0.5), [rect(-300, 0, 200, 40)], screen)).toEqual(v(150, 10, 0.5));
+  });
+
+  it("縦（y）と倍率は変えない", () => {
+    for (const rects of [[rect(900, 700, 200, 40)], [rect(-50, -90, 200, 40)], [rect(100, 100, 200, 40)]]) {
+      const out = shiftIntoView(v(12, 34, 1.5), rects, screen);
+      expect(out.y).toBe(34);
+      expect(out.zoom).toBe(1.5);
+    }
+  });
+
+  it("複数の箱は外接箱で測る。片端だけ切れていれば、その分ずらす", () => {
+    const rects = [rect(100, 0, 200, 40), rect(850, 200, 200, 40)]; // 外接箱は 100〜1050（右が 50 切れる）
+    expect(shiftIntoView(v(0, 0, 1), rects, screen)).toEqual(v(-50, 0, 1));
+  });
+
+  it("ずらしで反対側を新たに切らない: 右が切れ、動かせるのが左の余白までのとき、その分だけずらす", () => {
+    // 外接箱 100〜1300（画面より広い）。左端が 0 に来るまでの 100 だけずらす
+    expect(shiftIntoView(v(0, 0, 1), [rect(100, 0, 1200, 40)], screen)).toEqual(v(-100, 0, 1));
+    // 左が切れ、右の余白が 100 のとき（-100〜900 を、右へ 100 まで）
+    expect(shiftIntoView(v(0, 0, 1), [rect(-100, 0, 1000, 40)], screen)).toEqual(v(100, 0, 1));
+  });
+
+  it("両端とも切れている（画面より広い）ときは、ずらさない", () => {
+    expect(shiftIntoView(v(0, 0, 1), [rect(-50, 0, 1200, 40)], screen)).toEqual(v(0, 0, 1));
+  });
+
+  it("箱がなければ何もしない", () => {
+    expect(shiftIntoView(v(5, 6, 1.2), [], screen)).toEqual(v(5, 6, 1.2));
+  });
+
+  it("入力の位置を書き換えない", () => {
+    const viewport = Object.freeze(v(0, 0, 1));
+    const out = shiftIntoView(viewport, [rect(900, 50, 200, 40)], screen);
+    expect(out).not.toBe(viewport);
+    expect(viewport).toEqual(v(0, 0, 1));
   });
 });

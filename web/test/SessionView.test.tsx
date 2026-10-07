@@ -19,6 +19,16 @@ vi.mock("../src/MapView.tsx", () => ({
   },
 }));
 
+// start から始まる div の開きタグから、対応する閉じタグまでを切り出す
+function balancedDiv(html: string, start: number): string {
+  let depth = 0;
+  for (const m of html.slice(start).matchAll(/<div\b|<\/div>/g)) {
+    depth += m[0] === "</div>" ? -1 : 1;
+    if (depth === 0) return html.slice(start, start + m.index! + m[0].length);
+  }
+  throw new Error("div が閉じていない");
+}
+
 const snapshot: Snapshot = {
   nodes: [
     { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
@@ -47,11 +57,16 @@ describe("SessionView: スナップショット・字幕の内容・取り込み
     expect(html).toContain("面接は何回か");
   });
 
-  it("class 名の入れ子は layout > (map, side) を保つ", () => {
+  it("class 名の入れ子は layout > (map, side) を保ち、字幕は map の外（layout の直下）に出る", () => {
     const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
-    expect(html).toMatch(/^<div class="layout"><div class="map">[\s\S]*<\/div><div class="side">[\s\S]*<\/div><\/div>$/);
-    const mapPart = html.slice(html.indexOf('class="map"'), html.indexOf('class="side"'));
-    expect(mapPart).toContain("captions");
+    expect(html.startsWith('<div class="layout">')).toBe(true);
+    const mapStart = html.indexOf('<div class="map">');
+    const mapPart = balancedDiv(html, mapStart);
+    expect(mapPart).toContain("map-view-stub");
+    expect(mapPart).not.toContain("captions");
+    const outside = html.slice(0, mapStart) + html.slice(mapStart + mapPart.length);
+    expect(outside).toContain("captions");
+    expect(outside).toContain('class="side"');
     expect(html.slice(html.indexOf('class="side"'))).toContain("evidence");
   });
 
@@ -123,5 +138,62 @@ describe("SessionView: 見る状態（動かしている間の左下の文字）
     expect(props.viewing).toEqual({ mode: "auto" });
     expect(typeof props.onViewingEvent).toBe("function");
     expect(props.camera).toBeDefined();
+  });
+});
+
+describe("SessionView: E で右の列、C で字幕を隠した状態", () => {
+  const renderWith = async (initial: Record<string, unknown>, intake?: IntakeStatus) => {
+    // 静的描画ではキーを押せないため、初期状態だけをこのテストの中で隠した状態にする
+    vi.resetModules();
+    vi.doMock("../src/viewing.ts", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../src/viewing.ts")>()),
+      INITIAL_VIEWING: { mode: "auto", ...initial },
+    }));
+    try {
+      const { SessionView: HiddenSessionView } = await import("../src/SessionView.tsx");
+      return renderToStaticMarkup(<HiddenSessionView snapshot={snapshot} speaking={speaking} intake={intake} />);
+    } finally {
+      vi.doUnmock("../src/viewing.ts");
+      vi.resetModules();
+    }
+  };
+
+  it("初めは右の列と字幕の両方が出ている", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
+    expect(html).toContain('class="side"');
+    expect(html).toContain("captions");
+  });
+
+  it("右の列を隠すと、列を描かない（根拠・変わったことが出ない）。マップと字幕は残る", async () => {
+    const html = await renderWith({ sideHidden: true });
+    expect(html).not.toContain('class="side"');
+    expect(html).not.toContain("ノードを選ぶと、根拠の発言が出ます");
+    expect(html).not.toContain("変わったこと");
+    expect(html).toContain("map-view-stub");
+    expect(html).toContain("次の質問です。");
+  });
+
+  it("字幕を隠すと、字幕が出ない。右の列とマップは残る", async () => {
+    const html = await renderWith({ captionsHidden: true });
+    expect(html).not.toContain("次の質問です。");
+    expect(html).not.toContain("captions");
+    expect(html).toContain('class="side"');
+    expect(html).toContain("map-view-stub");
+  });
+
+  it("字幕を隠しても、取り込みの一言と左下の文字（見る状態）は隠れない", async () => {
+    const html = await renderWith({ captionsHidden: true, mode: "manual", topic: undefined }, "interrupted");
+    expect(html).not.toContain("次の質問です。");
+    expect(html).toContain("intake-notice");
+    expect(html).toContain("音声の取り込みが途切れました。再開しています");
+    expect(html).toContain("viewing-notice");
+  });
+
+  it("両方隠しても、右の列と字幕だけが消え、マップと取り込みの一言は描かれる", async () => {
+    const html = await renderWith({ sideHidden: true, captionsHidden: true }, "stopped");
+    expect(html).not.toContain('class="side"');
+    expect(html).not.toContain("captions");
+    expect(html).toContain("intake-notice");
+    expect(html).toContain("map-view-stub");
   });
 });

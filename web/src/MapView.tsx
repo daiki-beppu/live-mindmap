@@ -26,6 +26,7 @@ import {
   panViewport,
   scrollAlongAxis,
   scrollAxis,
+  shiftIntoView,
   shouldMoveCamera,
   CLICK_ZOOM_FACTOR,
   OVERVIEW_MIN_ZOOM,
@@ -82,6 +83,17 @@ function EdgeDots({
 }
 
 type Dims = Record<string, { width: number; height: number }>;
+
+// キーの集合と各キーの x・y が一致すれば同じ位置とみなす
+function samePositions(a: Record<string, Position>, b: Record<string, Position>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((k) => {
+    const p = a[k];
+    const q = b[k];
+    return p !== undefined && q !== undefined && p.x === q.x && p.y === q.y;
+  });
+}
 
 type SelectProps = { selectedId: string | null; onSelect: (nodeId: string) => void };
 
@@ -145,6 +157,9 @@ function MapCanvas({
   }, [shownNodes, dims]);
   const animated = useAnimatedPositions(shownNodes, target);
   const positions = still ? target : animated;
+  // 補間位置は描画のたびに新しい参照になる。値が変わったときだけ参照を替え、自動のカメラの再実行条件に使う
+  const framePositions = useRef(positions);
+  if (!samePositions(framePositions.current, positions)) framePositions.current = positions;
 
   // 点滅させるノード（見せるノードで今回変わったものと、中が変わった畳んだノード・まとめのノード）。点滅と縁の点の両方がこの集合から出る（次の反映で入れ替わる）
   const changed = view?.blink ?? NO_CHANGES;
@@ -169,6 +184,9 @@ function MapCanvas({
     }));
     return formal;
   }, [shownNodes, view, snapshot.round, changed, positions, dims, selectedId, onSelect, still]);
+  // 撮影の収まり判定が、再実行の依存に入れずに最新の nodes を読むための ref
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
 
   const edges = useMemo((): Edge[] => {
     return shownNodes.flatMap((n) =>
@@ -194,6 +212,9 @@ function MapCanvas({
     lastSeq.current = camera.seq;
     if (camera.command.type === "refocus") placedRound.current = null;
   }
+  // 寄せ直し・収め直しのきっかけ番号。列で切れる分だけずらす指示（shiftIntoView）では進めない（E で寄せ直しも収め直しも走らせない）
+  const refitSeq = useRef(camera?.seq);
+  if (camera && camera.command.type !== "shiftIntoView") refitSeq.current = camera.seq;
   // 自動のカメラを止めている間（人が動かしている・全体を見ている）
   const paused = !still && viewing !== undefined && viewing.mode !== "auto";
   const overview = !still && viewing?.mode === "overview";
@@ -206,6 +227,19 @@ function MapCanvas({
     wasOverview.current = overview;
   }, [overview, camera, getViewport]);
 
+  // 寄せ先（今の議題の外接箱と、収まらないときの中心）。見せないノードは、それを隠している畳んだノード・まとめのノードに置き換えて測る
+  // （位置の無い ID は原点で測られる）。補間中の位置ではなく目標の位置で測る。自動のカメラと、列で切れる分のずらしの両方が使う
+  const focusBoxes = (focus: { ids: string[]; center: string }) => {
+    const shownId = (id: string) => view?.shownAs[id] ?? id;
+    return {
+      rects: [...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims)),
+      center: nodeRect(shownId(focus.center), target, dims),
+    };
+  };
+
+  // 列で切れる分のずらしの保留。shiftIntoView の指示で立て、React Flow の width が .map の幅に追いついた後に適用して消す
+  const pendingShift = useRef(false);
+
   // キーの指示。setViewport の動き（event が null）は userMoved にならない
   useEffect(() => {
     const command = camera?.command;
@@ -213,6 +247,7 @@ function MapCanvas({
     const { width, height } = storeApi.getState();
     const size = { width, height };
     const current = getViewport();
+    pendingShift.current = command.type === "shiftIntoView";
     switch (command.type) {
       case "zoomBy":
         void setViewport(zoomAroundCenter(current, clampUserZoom(current.zoom * command.factor), size), { duration: 0 });
@@ -246,7 +281,7 @@ function MapCanvas({
       if (v) void setViewport(v, { duration: 0 });
     });
     return () => cancelAnimationFrame(frame);
-  }, [overview, tree, target, dims, camera?.seq, storeApi, setViewport]);
+  }, [overview, tree, target, dims, refitSeq.current, storeApi, setViewport]);
 
   // 人が動かしたとき（event がある）だけ知らせる。setViewport や fitView の動き（event が null）は数えない
   const onUserMove = (event: unknown) => {
@@ -261,7 +296,11 @@ function MapCanvas({
     }
   };
 
-  // 反映のたびに（位置・寸法が変わるたびに）、撮影では全体を、ふだんは今の議題を画面に収める。今の議題が無いときも全体を収める
+  // 反映のたびに（目標の位置・寸法が変わるたびに）、撮影では全体を、ふだんは今の議題を画面に収める。今の議題が無いときも全体を収める。
+  // 補間の描画用 nodes の参照更新では再実行しない（E で列を出し入れしただけでは寄せ直さない）。
+  // 今の議題が無い間だけ、補間後の最終配置へ収めるため補間位置の値の変化で再実行する
+  const followsFrames = !still && cameraFocus(snapshot) === null;
+  const followedPositions = followsFrames ? framePositions.current : null;
   useEffect(() => {
     if (paused) return;
     const focus = still ? null : cameraFocus(snapshot);
@@ -270,11 +309,9 @@ function MapCanvas({
       if (!shouldMoveCamera(snapshot, placedRound.current)) return;
       const frame = requestAnimationFrame(() => {
         const { width, height } = storeApi.getState();
-        // 見せないノードは、それを隠している畳んだノード・まとめのノードに置き換えて測る（位置の無い ID は原点で測られる）
-        const shownId = (id: string) => view?.shownAs[id] ?? id;
-        const rects = [...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims));
+        const boxes = focusBoxes(focus);
         placedRound.current = snapshot.round;
-        void setViewport(focusViewport(rects, nodeRect(shownId(focus.center), target, dims), { width, height }), { duration: 0 });
+        void setViewport(focusViewport(boxes.rects, boxes.center, { width, height }), { duration: 0 });
       });
       return () => cancelAnimationFrame(frame);
     }
@@ -286,7 +323,7 @@ function MapCanvas({
       void fitView({ duration: 0, padding: 0.1, ...(still ? { minZoom: STILL_MIN_ZOOM } : {}) }).then(() => {
         if (!still || !measured || cancelled) return;
         // fitView は下限の倍率で止まっても成功を返すので、実際に全体が画面に収まったかを自分で確かめる
-        const b = getNodesBounds(nodes);
+        const b = getNodesBounds(nodesRef.current);
         const { x, y, zoom } = getViewport();
         const { width, height } = storeApi.getState();
         onFitted?.(
@@ -298,7 +335,7 @@ function MapCanvas({
       cancelled = true;
       cancelAnimationFrame(frame);
     };
-  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, view, target, dims, onFitted, paused, camera?.seq]);
+  }, [followedPositions, fitView, getViewport, setViewport, storeApi, still, snapshot, view, target, dims, onFitted, paused, refitSeq.current]);
 
   // ⌘/Ctrl＋クリック: 押した点を中心に 1.5 倍に拡大（Option を加えると縮小）。ノードの上でも根拠を出さない。
   // setViewport の動き（event が null）は userMoved にならないので、人の操作として自分で知らせる
@@ -331,6 +368,21 @@ function MapCanvas({
     wrapper.addEventListener("wheel", onWheel, { capture: true, passive: false });
     return () => wrapper.removeEventListener("wheel", onWheel, { capture: true });
   }, [still, getViewport, setViewport]);
+
+  // 列の出し入れで .map の幅が変わった後、今の議題が端で切れるときだけ、切れた分を横にずらす（倍率は変えない）。
+  // store の width が DOM の幅に追いついてから測る（ResizeObserver が指示の effect の前後どちらで走っても成立する）
+  const storeWidth = useStore((s) => s.width);
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!pendingShift.current || !wrapper || storeWidth !== wrapper.offsetWidth) return;
+    pendingShift.current = false;
+    // 列を隠したとき（マップが広がったとき）は、見る位置を変えない。ずらすのは列を出したときだけ
+    if (viewing?.sideHidden) return;
+    const focus = still ? null : cameraFocus(snapshot);
+    if (!focus) return;
+    const { height } = storeApi.getState();
+    void setViewport(shiftIntoView(getViewport(), focusBoxes(focus).rects, { width: storeWidth, height }), { duration: 0 });
+  }, [storeWidth, camera?.seq]);
 
   return (
     <div ref={wrapperRef} style={{ width: "100%", height: "100%" }} onClickCapture={still ? undefined : onClickCapture}>
