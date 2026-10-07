@@ -8,8 +8,9 @@ import { NodeChildProcessSpawner, NodeFileSystem, NodePath, NodeRuntime } from "
 import { Cause, Context, Effect, Exit, Layer, Result, Runtime, Scope } from "effect";
 import { HttpServer } from "effect/http";
 import type { PromiseMapCapture } from "./capture.ts";
-import type { SessionUpdater } from "./claude.ts";
 import { defaultPort, defaultSessionsDir } from "./cli.ts";
+import type { DiffUpdater } from "./core/index.ts";
+import { LegacyClaudeDiffUpdater, type UpdaterUnavailable } from "./diffUpdater.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import type { PromiseReviewPages } from "./review.ts";
@@ -25,7 +26,7 @@ export type ListenOptions = {
 };
 
 export type ServerOptions = ListenOptions & {
-  openUpdater: () => SessionUpdater; // セッションの開始ごとに 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
+  updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>; // セッションごとに updater を 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
   capture: PromiseMapCapture; // 終了時の map.png の撮影
   writeReview: PromiseReviewPages; // 終了時の map.html の書き出し
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
@@ -44,7 +45,7 @@ const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provid
 
 const realLayers = (options: ServerOptions): ServerLayers => ({
   helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-  sessionSinks: SessionSinks.layer({ openUpdater: options.openUpdater, capture: options.capture, writeReview: options.writeReview }),
+  sessionSinks: SessionSinks.layer({ updaterLayer: options.updaterLayer, capture: options.capture, writeReview: options.writeReview }),
 });
 
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
@@ -101,7 +102,6 @@ if (import.meta.main) {
     process.exit(1);
   }
   const helperPath = helper.path;
-  const { openClaudeUpdater } = await import("./claude.ts");
   const { MapCapture } = await import("./capture.ts");
   // 終了時の書き出し（sessionFiles.ts の writeSessionExports）はまだ Promise のままなので、入口で Service を Promise の口に変えて渡す
   // （撮影の失敗は reject にして、呼び出し側の「画像だけ諦める」扱いを保つ）
@@ -125,7 +125,7 @@ if (import.meta.main) {
   const options: ServerOptions = {
     port: defaultPort(),
     sessionsDir: defaultSessionsDir(),
-    openUpdater: () => openClaudeUpdater(),
+    updaterLayer: LegacyClaudeDiffUpdater.layer,
     capture,
     writeReview,
     helper: { command: helperPath, args: [] },

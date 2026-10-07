@@ -1,5 +1,6 @@
 // 見返し用の HTML（map.html）の、Node に依存しない部分。サーバー（書き出し）とブラウザ（表示）の両方が読む。
-import { restoreSession, type Snapshot } from "./session.ts";
+import { Effect } from "effect";
+import { restoreState, snapshotOf, type Snapshot } from "./session.ts";
 
 // ログ（log.jsonl の出来事）を埋め込む <script type="application/json"> の id
 export const REVIEW_LOG_ELEMENT_ID = "live-mindmap-review-log";
@@ -32,12 +33,8 @@ export function embedReviewLicenses(html: string, licenses: string): string {
   return html.slice(0, at) + element + html.slice(at);
 }
 
-// ログの出来事から、最後の時点のスナップショットを組み立てる。差分更新は呼ばない
+// ログの出来事から、最後の時点のスナップショットを組み立てる。差分更新は呼ばない。
+// web の入口が同期で呼ぶので Effect にしない（Service も待ちも要らない）。壊れたログでは例外を投げる
 export function reviewSnapshot(events: readonly unknown[]): Snapshot {
-  return restoreSession(events, {
-    updater: async () => {
-      throw new Error("見返しでは差分更新を呼べません");
-    },
-    log: () => {},
-  }).snapshot();
+  return Effect.runSync(Effect.map(restoreState(events), snapshotOf));
 }

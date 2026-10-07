@@ -1,6 +1,6 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
-// WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。ログの書き先は外から渡す。
-import { Schema } from "effect";
+// WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
+import { Cause, Context, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, type Scope } from "effect";
 import { diffMaps, type Change } from "./changes.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
@@ -26,29 +26,47 @@ export type DiffInput = {
   recent: Remark[]; // 直前に処理済みの発言（文脈用）
   fresh: Remark[]; // 新しい発言
 };
-export type DiffUpdater = (input: DiffInput) => Promise<DiffOutput>;
+// 差分更新の失敗の形。core は具体の失敗の型を知らず、タグと文面だけを見る（ログの error 欄に使う）
+export type DiffUpdateError = { readonly _tag: string; readonly message: string };
 
-// ログの行の形。段 6 でここから読み込みを検証する。
-// cli.ts が `{ at, ...event }` で書くので、余分なキーは厳格にしない（保存済みのログを読めなくしない）
-export const LogEvent = Schema.Union([
-  // セッションの始まり。ルートの本文（タイトル）を残す
-  Schema.Struct({ type: Schema.Literal("start"), title: Schema.String }),
-  // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
-  Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) }),
-  Schema.Struct({
-    type: Schema.Literal("diff"),
-    // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）
-    input: Schema.Struct({
-      recent: Schema.mutable(Schema.Array(Schema.String)),
-      fresh: Schema.mutable(Schema.Array(Schema.String)),
-      nodeCount: Schema.Number,
-    }),
-    ops: Schema.mutable(Schema.Array(Op)),
-    dropped: Schema.mutable(Schema.Array(Dropped)),
-    error: Schema.optionalKey(Schema.String),
+// 差分更新を出す役。セッションごとの Service（SessionSinks.open がセッションごとに Layer を作る）。
+// core は Claude 側を import できないので static layer は持たない。Layer は src 側が作る
+export class DiffUpdater extends Context.Service<DiffUpdater, {
+  readonly update: (input: DiffInput) => Effect.Effect<DiffOutput, DiffUpdateError>;
+}>()("live-mindmap/core/DiffUpdater") {}
+
+// ログの行の形。ログに書く側（cli・sessionSinks の配線）も読む側（restoreSession）も同じ Schema を使う。
+// 配線側が `{ at, ...event }` で書くので、余分なキーは厳格にしない（保存済みのログを読めなくしない）
+// セッションの始まり。ルートの本文（タイトル）を残す
+export const StartEvent = Schema.Struct({ type: Schema.Literal("start"), title: Schema.String });
+// noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
+export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) });
+export const DiffEvent = Schema.Struct({
+  type: Schema.Literal("diff"),
+  // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）
+  input: Schema.Struct({
+    recent: Schema.mutable(Schema.Array(Schema.String)),
+    fresh: Schema.mutable(Schema.Array(Schema.String)),
+    nodeCount: Schema.Number,
   }),
-]);
+  ops: Schema.mutable(Schema.Array(Op)),
+  dropped: Schema.mutable(Schema.Array(Dropped)),
+  error: Schema.optionalKey(Schema.String),
+});
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, DiffEvent]);
 export type LogEvent = typeof LogEvent["Type"];
+
+// ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。
+// export.json の書き直し・publish などの副作用は、この Service を提供する配線側が持つ
+export class SessionLog extends Context.Service<SessionLog, {
+  readonly write: (event: LogEvent) => Effect.Effect<void>;
+}>()("live-mindmap/core/SessionLog") {}
+
+// ログの行が読めない（見分けた type で項目が壊れている・start や発言が足りない）。index は events の 0 始まりの位置
+export class InvalidLogEvent extends Schema.TaggedError<InvalidLogEvent>()("InvalidLogEvent", {
+  index: Schema.Number,
+  reason: Schema.String,
+}) {}
 
 // 論点の状態は保存していないので、スナップショットを作るときに導いて載せる
 export type SnapshotNode = MapNode & { pointStatus?: PointStatus };
@@ -64,15 +82,6 @@ export type Snapshot = {
   currentTopic?: string;
   lastChanged?: string; // 今の round で最後に変わったノードの ID（変わったノードが無ければキーごと付けない）
   now?: number;
-};
-
-export type SessionOptions = {
-  title: string;
-  updater: DiffUpdater;
-  log: (event: LogEvent) => void;
-  // 待ち方。渡すと、最後の発言から QUIET_MS 新しい発言が来ないとき、1 つだけたまっていてもその 1 つで差分更新を呼ぶ。
-  // 渡さなければ待たない（playback の sleep と同じ形。中核は実行環境のタイマーを使わない）
-  sleep?: (ms: number) => Promise<void>;
 };
 
 const BATCH = 2;
@@ -92,187 +101,278 @@ export function hasContent(text: string): boolean {
   return words.some((w) => !FILLERS.has(w));
 }
 
-type SessionState = {
-  map: MeetingMap;
-  pending: Remark[]; // 差分更新にまだ渡していない発言
-  processed: Remark[]; // 差分更新に渡した、中身のある発言
-  remarks: Remark[]; // 受け取ったすべての発言（重複の印つきも含む）
-  known: Set<string>; // 差分更新に渡した発言の ID
-  round: number; // 成功した反映の通し番号
-  changes: ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
-  currentTopic: string | undefined; // 今の議題の ID。変わったノードのある反映で更新する
-  lastChanged: string | undefined; // 直近の反映で最後に変わったノードの ID。変わったノードが無ければ undefined
+
+// ログから戻せる状態（実行中の Fiber などは含まない）
+export type SessionState = {
+  readonly map: MeetingMap;
+  readonly pending: readonly Remark[]; // 差分更新にまだ渡していない発言
+  readonly processed: readonly Remark[]; // 差分更新に渡した、中身のある発言
+  readonly remarks: readonly Remark[]; // 受け取ったすべての発言（重複の印つきも含む）
+  readonly known: ReadonlySet<string>; // 差分更新に渡した発言の ID
+  readonly round: number; // 成功した反映の通し番号
+  readonly changes: readonly ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
+  readonly currentTopic: string | undefined; // 今の議題の ID。変わったノードのある反映で更新する
+  readonly lastChanged: string | undefined; // 直近の反映で最後に変わったノードの ID。変わったノードが無ければ undefined
 };
 
-// 成功した反映を 1 回記録する。変化がなくても round は進める（前回の赤い枠を消すため）。
-// ライブ（callUpdater）と復元（restoreSession）が同じ関数を通す。
-function recordRound(state: Pick<SessionState, "round" | "changes" | "currentTopic" | "lastChanged">, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, fresh: Remark[]) {
-  state.round += 1;
+type History = Pick<SessionState, "round" | "changes" | "currentTopic" | "lastChanged">;
+
+// 成功した反映を 1 回記録して、新しい履歴を返す。変化がなくても round は進める（前回の赤い枠を消すため）。
+// ライブ（callUpdater）と復元（restoreState）が同じ関数を通す。
+function recordRound(history: History, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, fresh: readonly Remark[]): History {
+  const round = history.round + 1;
   const at = Math.max(...fresh.map((r) => r.end));
-  const changes = diffMaps(before, applied.map);
-  for (const c of changes) state.changes.push({ ...c, round: state.round, at });
+  const added = diffMaps(before, applied.map).map((c): ChangeEntry => ({ ...c, round, at }));
   // 最後に変わったノードは一度だけ選び、今の議題と lastChanged の両方をそこから作る
   const lastChanged = lastChangedNode(applied.map, applied.changeOrder);
-  state.lastChanged = lastChanged;
-  state.currentTopic = nextCurrentTopic(applied.map, lastChanged, state.currentTopic);
+  return {
+    round,
+    changes: [...history.changes, ...added],
+    lastChanged,
+    currentTopic: nextCurrentTopic(applied.map, lastChanged, history.currentTopic),
+  };
 }
 
-export function createSession({ title, updater, log, sleep }: SessionOptions) {
-  log({ type: "start", title });
-  return openSession(
-    { map: emptyMap(title), pending: [], processed: [], remarks: [], known: new Set(), round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
-    { updater, log, sleep },
-  );
-}
+const typeOf = (event: unknown): unknown => (Predicate.isObject(event) && "type" in event ? event.type : undefined);
 
-// ログのイベントを順に適用関数へ流して、セッションを元の状態に戻す。
-// 差分更新は呼ばず、イベントも log し直さない。知らない種類のイベントは読み飛ばす。
-export function restoreSession(events: Iterable<unknown>, options: Omit<SessionOptions, "title">): Session {
+const decodeStart = Schema.decodeUnknownEffect(StartEvent);
+const decodeRemark = Schema.decodeUnknownEffect(RemarkEvent);
+const decodeDiff = Schema.decodeUnknownEffect(DiffEvent);
+
+// ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
+// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・diff 以外（intake-*・知らない type）は読み飛ばす。
+export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState, InvalidLogEvent> {
   let map: MeetingMap | undefined;
   const remarks: Remark[] = [];
   const processed: Remark[] = [];
   const known = new Set<string>();
-  const history = { round: 0, changes: [] as ChangeEntry[], currentTopic: undefined as string | undefined, lastChanged: undefined as string | undefined };
+  let history: History = { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined };
+  let index = -1;
   for (const event of events) {
-    const e = event as LogEvent;
-    switch (e.type) {
-      case "start":
-        map = emptyMap(e.title);
-        break;
-      case "remark":
-        remarks.push(e.remark);
-        break;
-      case "diff": {
-        if (!map) throw new Error("ログの diff より前に start がありません");
-        const fresh: Remark[] = [];
-        for (const id of e.input.fresh) {
-          const r = remarks.find((x) => x.id === id);
-          if (!r) throw new Error(`ログに発言がありません: ${id}`);
-          known.add(id);
-          if (hasContent(r.text)) processed.push(r); // 旧形式のログの中身のない発言は、続きの差分更新の直前の発言にしない
-          fresh.push(r);
-        }
-        const applied = applyOps(map, e.ops, known);
-        if (e.error === undefined) recordRound(history, map, applied, fresh);
-        map = applied.map;
-        break;
+    index++;
+    const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
+    const type = typeOf(event);
+    if (type === "start") {
+      const e = yield* decodeStart(event).pipe(Effect.mapError((error) => invalid(error.message)));
+      map = emptyMap(e.title);
+    } else if (type === "remark") {
+      const e = yield* decodeRemark(event).pipe(Effect.mapError((error) => invalid(error.message)));
+      remarks.push(e.remark);
+    } else if (type === "diff") {
+      const e = yield* decodeDiff(event).pipe(Effect.mapError((error) => invalid(error.message)));
+      if (!map) return yield* invalid("ログの diff より前に start がありません");
+      const fresh: Remark[] = [];
+      for (const id of e.input.fresh) {
+        const r = remarks.find((x) => x.id === id);
+        if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
+        known.add(id);
+        if (hasContent(r.text)) processed.push(r); // 旧形式のログの中身のない発言は、続きの差分更新の直前の発言にしない
+        fresh.push(r);
       }
+      const applied = applyOps(map, e.ops, known);
+      if (e.error === undefined) history = recordRound(history, map, applied, fresh);
+      map = applied.map;
     }
   }
-  if (!map) throw new Error("ログに start がありません");
+  if (!map) return yield* new InvalidLogEvent({ index: 0, reason: "ログに start がありません" });
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return openSession({ map, pending, processed, remarks, known, ...history }, options);
-}
+  return { map, pending, processed, remarks, known, ...history };
+});
 
-function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionOptions, "title">) {
-  let { map, pending, processed } = state;
-  const { remarks, known } = state;
-  let inFlight: Promise<void> | null = null;
-  let gen = 0; // 新しい発言を受け取るたびに進める。古い待ちの解決を無視するための世代
-  let quiet = false; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
-  let reflecting: Remark[] = []; // 差分更新の結果待ちの発言。結果を log する直前に外す
-
-  // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
-  // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
-  function startDiffIfReady(min = BATCH) {
-    if (inFlight || pending.length < min) return;
-    const fresh = pending;
-    pending = [];
-    inFlight = callUpdater(fresh).finally(() => {
-      inFlight = null;
-      startDiffIfReady(quiet ? 1 : BATCH);
-    });
-  }
-
-  // 最後の発言から QUIET_MS 新しい発言が来なければ、たまった分で差分更新を呼ぶ。
-  // sleep は取り消せないので、世代が変わっていたら（その後に発言が来ていたら）何もしない。
-  function waitForQuiet() {
-    if (!sleep) return;
-    const g = gen;
-    void sleep(QUIET_MS).then(() => {
-      if (g !== gen) return;
-      quiet = true;
-      startDiffIfReady(1);
-    });
-  }
-
-  async function callUpdater(fresh: Remark[]) {
-    const recent = processed.slice(-RECENT);
-    for (const u of fresh) known.add(u.id);
-    const input = { recent: recent.map((u) => u.id), fresh: fresh.map((u) => u.id), nodeCount: map.order.length - 1 };
-    processed = [...processed, ...fresh];
-    reflecting = fresh;
-    let ops: Op[];
-    try {
-      ({ ops } = await updater({ map, recent, fresh }));
-    } catch (e) {
-      // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
-      reflecting = [];
-      log({ type: "diff", input, ops: [], dropped: [], error: String(e) });
-      return;
-    }
-    const applied = applyOps(map, ops, known);
-    // 送信（log）より先に記録する。log の中で届くスナップショットに今回分が載る
-    recordRound(state, map, applied, fresh);
-    map = applied.map;
-    reflecting = [];
-    log({ type: "diff", input, ops, dropped: applied.dropped });
-  }
-
-  function snapshot(): Snapshot {
-    const nodes = map.order.map((id): SnapshotNode => {
-      const n = cloneNode(map.nodes[id]!);
-      return n.kind === "論点" ? { ...n, pointStatus: pointStatus(map, id) } : n;
-    });
-    const cited = new Set(nodes.flatMap((n) => n.evidence));
-    const last = remarks.at(-1);
-    return {
-      nodes,
-      round: state.round,
-      changes: state.changes.map((c) => ({ ...c })),
-      remarks: remarks.filter((r) => cited.has(r.id)).map((r) => ({ ...r })),
-      ...(state.currentTopic !== undefined ? { currentTopic: state.currentTopic } : {}),
-      ...(state.lastChanged !== undefined ? { lastChanged: state.lastChanged } : {}),
-      ...(last ? { now: last.end } : {}),
-    };
-  }
-
+// 状態からスナップショットを作る（純粋）
+export function snapshotOf(state: SessionState): Snapshot {
+  const { map } = state;
+  const nodes = map.order.map((id): SnapshotNode => {
+    const n = cloneNode(map.nodes[id]!);
+    return n.kind === "論点" ? { ...n, pointStatus: pointStatus(map, id) } : n;
+  });
+  const cited = new Set(nodes.flatMap((n) => n.evidence));
+  const last = state.remarks.at(-1);
   return {
-    push(r: Remark) {
-      remarks.push(r);
-      if (!r.duplicate && !hasContent(r.text)) {
-        // 中身のない発言: ログには残すが、差分更新・未反映の発言・待ち時間には関わらせない
-        log({ type: "remark", remark: r, noContent: true });
-        return;
-      }
-      log({ type: "remark", remark: r });
-      if (r.duplicate) return;
-      pending.push(r);
-      gen += 1;
-      quiet = false;
-      startDiffIfReady();
-      if (pending.length > 0) waitForQuiet();
-    },
-    // 呼び出し中のものと、それに続けて起きた呼び出しがすべて終わるまで待つ
-    async idle() {
-      while (inFlight) await inFlight;
-    },
-    // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
-    async flush() {
-      await this.idle();
-      startDiffIfReady(1);
-      await this.idle();
-    },
-    snapshot,
-    // まだマップに反映していない発言（差分更新の結果待ち + 渡していないもの）。仮のノードの文字に使う。重複の印つき・中身のない発言は含まない
-    unreflectedRemarks(): Remark[] {
-      return [...reflecting, ...pending].map((r) => ({ ...r }));
-    },
-    // その時点のマップのエクスポート（JSON）
-    exportJson(): JsonExport {
-      return toJsonExport(snapshot(), remarks);
-    },
+    nodes,
+    round: state.round,
+    changes: state.changes.map((c) => ({ ...c })),
+    remarks: state.remarks.filter((r) => cited.has(r.id)).map((r) => ({ ...r })),
+    ...(state.currentTopic !== undefined ? { currentTopic: state.currentTopic } : {}),
+    ...(state.lastChanged !== undefined ? { lastChanged: state.lastChanged } : {}),
+    ...(last ? { now: last.end } : {}),
   };
 }
 
-export type Session = ReturnType<typeof openSession>;
+export type Session = {
+  readonly push: (remark: Remark) => Effect.Effect<void>;
+  // 呼び出し中のものと、それに続けて起きた呼び出しがすべて終わるまで待つ
+  readonly idle: Effect.Effect<void>;
+  // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
+  readonly flush: Effect.Effect<void>;
+  readonly snapshot: Effect.Effect<Snapshot>;
+  // まだマップに反映していない発言（差分更新の結果待ち + 渡していないもの）。仮のノードの文字に使う。重複の印つき・中身のない発言は含まない
+  readonly unreflectedRemarks: Effect.Effect<Remark[]>;
+  // その時点のマップのエクスポート（JSON）
+  readonly exportJson: Effect.Effect<JsonExport>;
+};
+
+// 差分更新の呼び出し中を表す。Fiber を作る前は予約の印だけを置く（fork から戻る前に終わった呼び出しを、終わった Fiber で上書きしないため）
+type Reservation = { readonly kind: "reserved" };
+type InFlight = Reservation | { readonly kind: "running"; readonly fiber: Fiber.Fiber<void> };
+
+type Runtime = {
+  readonly inFlight: InFlight | undefined;
+  readonly waiter: Fiber.Fiber<void> | undefined; // QUIET_MS の待ち
+  readonly quiet: boolean; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
+  readonly reflecting: readonly Remark[]; // 差分更新の結果待ちの発言。結果を log する直前に外す
+};
+
+// 失敗した差分更新の error 欄。タグ付きの失敗は "<_tag>: <message>"、defect は "defect: <内容>"
+const describeFailure = (cause: Cause.Cause<DiffUpdateError>): string => {
+  const failure = Cause.findError(cause);
+  return Result.isSuccess(failure) ? `${failure.success._tag}: ${failure.success.message}` : `defect: ${String(Cause.squash(cause))}`;
+};
+
+function openSession(initial: SessionState): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+  return Effect.gen(function* () {
+    const scope = yield* Effect.scope;
+    const updater = yield* DiffUpdater;
+    const log = yield* SessionLog;
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, inFlight: undefined, waiter: undefined, quiet: false, reflecting: [] });
+
+    // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
+    // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
+    // 取り出しから fork までの間に中断されて発言を取りこぼさないよう、中断させない
+    function startDiffIfReady(min: number): Effect.Effect<void> {
+      return Effect.uninterruptible(
+        Effect.gen(function* () {
+          const reservation: Reservation = { kind: "reserved" };
+          const fresh = yield* Ref.modify(ref, (s): [readonly Remark[] | undefined, SessionState & Runtime] =>
+            s.inFlight || s.pending.length < min ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
+          );
+          if (!fresh) return;
+          const fiber = yield* Effect.forkIn(Effect.interruptible(runCall(fresh)), scope, { startImmediately: true });
+          // fork から戻る前に呼び出しが終わっていたら（印が自分のものでなければ）置き換えない
+          yield* Ref.update(ref, (s) => (s.inFlight === reservation ? { ...s, inFlight: { kind: "running" as const, fiber } } : s));
+        }),
+      );
+    }
+
+    // 呼び出しが終わったら印を外し、続きがあれば次を呼ぶ。中断で終わったときは続けない
+    function runCall(fresh: readonly Remark[]): Effect.Effect<void> {
+      return callUpdater(fresh).pipe(
+        Effect.onExit((exit) =>
+          Effect.gen(function* () {
+            const quiet = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] => [s.quiet, { ...s, inFlight: undefined }]);
+            if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
+            yield* startDiffIfReady(quiet ? 1 : BATCH);
+          }),
+        ),
+      );
+    }
+
+    // update だけを中断可能にする。状態の反映から SessionLog.write までは中断させない
+    function callUpdater(fresh: readonly Remark[]): Effect.Effect<void> {
+      return Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const { map, recent, input } = yield* Ref.modify(ref, (s) => {
+            const recent = s.processed.slice(-RECENT);
+            const input = { recent: recent.map((u) => u.id), fresh: fresh.map((u) => u.id), nodeCount: s.map.order.length - 1 };
+            return [
+              { map: s.map, recent, input },
+              { ...s, known: new Set([...s.known, ...fresh.map((u) => u.id)]), processed: [...s.processed, ...fresh], reflecting: fresh },
+            ];
+          });
+          // 失敗は中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
+          const outcome = yield* restore(updater.update({ map, recent: [...recent], fresh: [...fresh] })).pipe(
+            Effect.map(({ ops }) => ({ ok: true as const, ops })),
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed({ ok: false as const, error: describeFailure(cause) }),
+            ),
+          );
+          if (!outcome.ok) {
+            // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
+            yield* Ref.update(ref, (s) => ({ ...s, reflecting: [] }));
+            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
+            return;
+          }
+          // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
+          const dropped = yield* Ref.modify(ref, (s) => {
+            const applied = applyOps(s.map, outcome.ops, s.known);
+            return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, fresh), map: applied.map, reflecting: [] }];
+          });
+          yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped });
+        }),
+      );
+    }
+
+    const cancelWaiter = Effect.gen(function* () {
+      const waiter = yield* Ref.modify(ref, (s): [Fiber.Fiber<void> | undefined, SessionState & Runtime] => [s.waiter, { ...s, waiter: undefined }]);
+      if (waiter) yield* Fiber.interrupt(waiter);
+    });
+
+    // 最後の発言から QUIET_MS 新しい発言が来なければ、たまった分で差分更新を呼ぶ。新しい発言が来たら中断して取り消す。
+    // 待ちが切れた後の処理は中断させない（取り出した発言を取りこぼさない）
+    const waitForQuiet = Effect.gen(function* () {
+      const fiber = yield* Effect.forkIn(
+        Effect.sleep(QUIET_MS).pipe(
+          Effect.andThen(Effect.uninterruptible(Effect.andThen(Ref.update(ref, (s) => ({ ...s, quiet: true })), startDiffIfReady(1)))),
+        ),
+        scope,
+        { startImmediately: true },
+      );
+      yield* Ref.update(ref, (s) => ({ ...s, waiter: fiber }));
+    });
+
+    const idle: Effect.Effect<void> = Effect.gen(function* () {
+      for (;;) {
+        const { inFlight } = yield* Ref.get(ref);
+        if (!inFlight) return;
+        // 予約の印だけの間は、Fiber が置かれる（または終わる）まで順番を譲る
+        if (inFlight.kind === "reserved") yield* Effect.yieldNow;
+        else yield* Fiber.join(inFlight.fiber);
+      }
+    });
+
+    return {
+      push: (r) =>
+        Effect.gen(function* () {
+          yield* Ref.update(ref, (s) => ({ ...s, remarks: [...s.remarks, r] }));
+          if (!r.duplicate && !hasContent(r.text)) {
+            // 中身のない発言: ログには残すが、差分更新・未反映の発言・待ち時間には関わらせない
+            yield* log.write({ type: "remark", remark: r, noContent: true });
+            return;
+          }
+          yield* log.write({ type: "remark", remark: r });
+          if (r.duplicate) return;
+          yield* cancelWaiter;
+          yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], quiet: false }));
+          yield* startDiffIfReady(BATCH);
+          if ((yield* Ref.get(ref)).pending.length > 0) yield* waitForQuiet;
+        }),
+      idle,
+      flush: Effect.andThen(idle, Effect.andThen(startDiffIfReady(1), idle)),
+      snapshot: Effect.map(Ref.get(ref), snapshotOf),
+      unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),
+      exportJson: Effect.map(Ref.get(ref), (s) => toJsonExport(snapshotOf(s), [...s.remarks])),
+    } satisfies Session;
+  });
+}
+
+// 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しと待ちはこの Scope の Fiber で、Scope を閉じると中断される
+export const makeSession = ({ title }: { readonly title: string }): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> =>
+  Effect.gen(function* () {
+    const log = yield* SessionLog;
+    yield* log.write({ type: "start", title });
+    return yield* openSession({
+      map: emptyMap(title),
+      pending: [],
+      processed: [],
+      remarks: [],
+      known: new Set(),
+      round: 0,
+      changes: [],
+      currentTopic: undefined,
+      lastChanged: undefined,
+    });
+  });
+
+// ログのイベントから、セッションを元の状態に戻す。差分更新は呼ばず、イベントも log し直さない。
+export const restoreSession = (events: Iterable<unknown>): Effect.Effect<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> =>
+  Effect.flatMap(restoreState(events), openSession);

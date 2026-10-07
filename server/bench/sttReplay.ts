@@ -7,7 +7,7 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
-import { DiffUpdater } from "../src/diffUpdater.ts";
+import { LegacyClaudeDiffUpdater } from "../src/diffUpdater.ts";
 import { describe, oneLine, readTruthFile } from "../src/truthFile.ts";
 import { BENCH_VERSION, readJsonFile, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
@@ -20,19 +20,20 @@ export const ReplayItem = Remark.mapFields((fields) => ({
 }));
 export type ReplayItem = typeof ReplayItem["Type"];
 
-export type ReplayOptions = { sleep: (ms: number) => Promise<void> };
+export type ReplayOptions = { sleep?: (ms: number) => Effect.Effect<void> }; // 既定は Effect.sleep
 
 // 本番の playback と同じ流し方（等速）。待ち時間だけが、発言の end の差ではなく at の差になる
-export async function replayByArrival(session: Session, items: readonly ReplayItem[], { sleep }: ReplayOptions): Promise<void> {
-  let prevAt = 0;
-  for (const item of items) {
-    await sleep((item.at - prevAt) * 1000);
-    prevAt = item.at;
-    const { id, track, start, end, text } = item;
-    session.push({ id, track, start, end, text });
-  }
-  await session.flush();
-}
+export const replayByArrival = (session: Session, items: readonly ReplayItem[], { sleep = (ms) => Effect.sleep(ms) }: ReplayOptions = {}): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    let prevAt = 0;
+    for (const item of items) {
+      yield* sleep((item.at - prevAt) * 1000);
+      prevAt = item.at;
+      const { id, track, start, end, text } = item;
+      yield* session.push({ id, track, start, end, text });
+    }
+    yield* session.flush;
+  });
 
 type LoggedOp = { op: string; evidence?: string[] };
 export type DiffLogEntry = { ops: LoggedOp[]; dropped?: { op: LoggedOp }[]; error?: string };
@@ -85,27 +86,19 @@ export const command = Command.make(
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const spokenLines = Option.isNone(lines) ? undefined : yield* readJsonFile(lines.value, Schema.Array(SpokenLine));
 
-    const { update } = yield* DiffUpdater;
     // cli.ts は vite と playwright を読み込むので、再生を始めるときだけ読む
-    const { createSessionDir, startRecordedSession } = yield* Effect.tryPromise({ try: () => import("../src/cli.ts"), catch: describe });
+    const { createSessionDir, openRecordedSession } = yield* Effect.tryPromise({ try: () => import("../src/cli.ts"), catch: describe });
     // セッションのフォルダは一時領域に作る
     const dir = yield* Effect.try({ try: () => createSessionDir(mkdtempSync(join(tmpdir(), "stt-replay-"))), catch: describe });
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
     const diffEndsMs: number[] = [];
-    const { session } = yield* Effect.try({
-      try: () =>
-        startRecordedSession({
-          dir,
-          title,
-          updater: update,
-          publish: () => {},
-          sleep,
-          onDiff: () => diffEndsMs.push(performance.now()),
-        }),
-      catch: describe,
+    const { session } = yield* openRecordedSession({
+      dir,
+      title,
+      publish: () => Effect.void,
+      onDiff: Effect.sync(() => diffEndsMs.push(performance.now())),
     });
     const t0 = performance.now();
-    yield* Effect.tryPromise({ try: () => replayByArrival(session, items, { sleep }), catch: describe });
+    yield* replayByArrival(session, items);
     // 差分更新ごとの終わりの時刻と、その呼び出しに渡した発言を、ログから引く
     const log = yield* Effect.try({ try: () => readFileSync(join(dir, "log.jsonl"), "utf8"), catch: describe });
     const events = yield* Effect.forEach(log.trim().split("\n"), (line) => decodeLogEvent(line)).pipe(
@@ -118,18 +111,18 @@ export const command = Command.make(
     yield* write(`話し終わり → ノード p50 ${percentile(delays, 0.5).toFixed(1)} 秒 / p90 ${percentile(delays, 0.9).toFixed(1)} 秒（${delays.length} 件）\n`);
     // 正解があれば、eval --truth と同じ数え方（core の recall）で再現率を 1 行にして出す。表は runCli eval で見られる
     if (expected) {
-      const r = recall(session.exportJson(), expected);
+      const r = recall(yield* session.exportJson, expected);
       yield* write(`再現率 決定 ${r["決定"].hit}/${r["決定"].total} TODO ${r["TODO"].hit}/${r["TODO"].total}\n`);
     }
     yield* write(`セッション: ${dir}\n`);
-  }),
+  }, Effect.scoped),
 ).pipe(
   Command.withDescription(
     "発言を、認識結果が届いた時刻（at）で本番のセッションに流し、遅れ（差分更新が返った時刻 − 流し始め − 発言の end）と再現率を出す（Issue #97）。"
       + "end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ",
   ),
   // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
-  Command.provide(DiffUpdater.layer),
+  Command.provide(LegacyClaudeDiffUpdater.layer),
 );
 
 if (import.meta.main) {

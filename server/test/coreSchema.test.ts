@@ -12,15 +12,16 @@
 // server/test/live.test.ts が固定し、parseTruth・restoreSession は eval.test.ts・restore.test.ts
 // が引き続き固定する（このファイルでは変更しない）。
 //
-// 例外は「空の根拠を持つ操作のログ行」の確認（下の describe）だけで、session.ts の createSession を
+// 例外は「空の根拠を持つ操作のログ行」の確認（下の describe）だけで、session.ts の makeSession を
 // 使って実際に push → flush させ、そこで生成される diff イベントを decode する。根拠の要素数制約を
 // Evidence（Claude への出力契約）から外し、ログの保存形式（Op・Dropped・LogEvent）には要求しないという
 // FIX-1 の変更を、その生成経路ごと確認するため（restoreSession・live.ts・evaluate.ts は対象外のまま）。
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Result, Schema } from "effect";
-import { createSession, DiffOutput, HelperEvent, LogEvent, Truth } from "../src/core/index.ts";
+import { Effect, Layer, Result, Schema } from "effect";
+import { DiffOutput, HelperEvent, LogEvent, makeSession, Truth } from "../src/core/index.ts";
+import { collectLog, updaterLayer } from "./fixtures/sessionLayers.ts";
 
 // decode の成功を主張し、decode した値を返す。失敗していれば SchemaError の message を示して落ちる
 function expectDecodeSuccess<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
@@ -203,27 +204,25 @@ describe("Claude の structured_output（DiffOutput）（CT-4DATA）", () => {
 // 2 つの契約（Claude への出力契約「根拠は 1 件以上」と、ログの保存形式「捨てた操作を元の形のまま残す」）
 // に同居していた。制約は DiffOutput（Claude 側）だけに残し、Op・Dropped・LogEvent（ログ側）からは外した。
 describe("空の根拠を持つ操作のログ行（FIX-1 / AC1-AC3）", () => {
-  // T1（成立例）: createSession を実際に push → flush させ、生成された diff イベントの
+  // T1（成立例）: makeSession を実際に push → flush させ、生成された diff イベントの
   // ops（R1 の add・R2 の update）と dropped[].op（R3 の add・update）をそれぞれ観測したうえで、
   // イベント全体を LogEvent で decode して成功することを確認する
   it.effect("ops に含まれる空の根拠の add / update と、dropped[].op に含まれる空の根拠の add / update を、それぞれ観測したうえでイベント全体を LogEvent で decode できる", () =>
     Effect.gen(function* () {
       const events: LogEvent[] = [];
-      const session = createSession({
-        title: "定例",
-        log: (event) => { events.push(event); },
-        updater: async () => ({
+      const update = () =>
+        Effect.succeed({
           ops: [
-            { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+            { op: "add" as const, ref: "t1", parent: "root", kind: "議題" as const, text: "採用", evidence: ["r1"] },
             // R1: ops に残る空の根拠の add（「根拠が無い」で却下される）
-            { op: "add", ref: "t2", parent: "root", kind: "議題", text: "採用", evidence: [] },
+            { op: "add" as const, ref: "t2", parent: "root", kind: "議題" as const, text: "採用", evidence: [] },
             // R2: ops に残る空の根拠の update（先行の add が登録した仮 ID t1 を対象にする）
-            { op: "update", node: "t1", text: "採用を進める", evidence: [] },
+            { op: "update" as const, node: "t1", text: "採用を進める", evidence: [] },
           ],
-        }),
-      });
-      session.push({ id: "r1", track: "相手", start: 0, end: 1, text: "こんにちは" });
-      yield* Effect.promise(() => session.flush());
+        });
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
+      yield* session.push({ id: "r1", track: "相手", start: 0, end: 1, text: "こんにちは" });
+      yield* session.flush;
 
       const diffEvent = events.find((e) => e.type === "diff");
       if (!diffEvent || diffEvent.type !== "diff") {

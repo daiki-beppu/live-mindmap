@@ -1,7 +1,7 @@
 // 差分更新（Claude）。Sonnet 5.5 を Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v3 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { children, KINDS, PLAN_STATUSES, pointStatus, ROOT_ID, type DiffInput, type DiffUpdater, type MeetingMap, type Op, type Remark } from "./core/index.ts";
+import { children, KINDS, PLAN_STATUSES, pointStatus, ROOT_ID, type DiffInput, type DiffOutput, type MeetingMap, type Op, type Remark } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
 
@@ -164,7 +164,9 @@ export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: Meetin
 // 14 は、計測（#75）で品質を確かめた最長の回数
 export const QUERY_RENEW_CALLS = 14;
 
-export type SessionUpdater = { update: DiffUpdater; close: () => void };
+// 古い Promise の差分更新の型。core の Service DiffUpdater は LegacyClaudeDiffUpdater.layer（diffUpdater.ts）がこれを包む
+export type DiffUpdateFn = (input: DiffInput) => Promise<DiffOutput>;
+export type SessionUpdater = { update: DiffUpdateFn; close: () => void };
 
 type UserMessage = SDKUserMessage;
 
@@ -241,7 +243,7 @@ export function openClaudeUpdater(run: typeof query = query): SessionUpdater {
     q.abort();
   };
 
-  const update: DiffUpdater = async (input) => {
+  const update: DiffUpdateFn = async (input) => {
     if (closed) throw new Error("差分更新の updater は閉じています");
     if (current && current.calls >= QUERY_RENEW_CALLS) discard(current);
     const q = (current ??= open());

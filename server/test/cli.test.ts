@@ -375,6 +375,26 @@ describe("CLI", () => {
       expect(deps.stderr).toEqual([]);
     }));
 
+    // JSON としては読めるが、type が remark の項目が壊れた行（InvalidLogEvent）は、空行を除く前の行番号の BrokenLogLine にする
+    it.effect("JSON としては正しいが Schema として壊れた行は、空行を含む元の行番号の BrokenLogLine にする。差分更新は開かない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* playInto(deps, adoptionScript);
+      const lines = readFileSync(join(session, "log.jsonl"), "utf8").split("\n");
+      lines.splice(1, 0, "", "", JSON.stringify({ type: "remark", at: "2026-10-01T00:00:00.000Z" })); // 空行 2 つの後の 4 行目
+      writeFileSync(join(session, "log.jsonl"), lines.join("\n"));
+      external.openClaudeUpdater.mockReset();
+
+      const result = yield* Effect.result(runCli(["restore"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "BrokenLogLine", line: 4 });
+      expect(CliError.isCliError(result.failure)).toBe(false);
+      expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+      expect(deps.stdout).toEqual([]);
+    }));
+
     it.effect("セッションが複数あれば最新のものを復元し、export がその最新のマップを出す", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);

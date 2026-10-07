@@ -13,11 +13,13 @@ import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { startServer, startServerWithLayers, type ServerOptions } from "../src/server.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import { DiffUpdater } from "../src/core/index.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
+import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
-const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOptions, "openUpdater" | "capture" | "writeReview">>) {
+const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOptions, "updaterLayer" | "capture" | "writeReview">>) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-"))),
     (path) => promiseOrDie(() => rm(path, { recursive: true, force: true })),
@@ -31,7 +33,7 @@ const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOption
     Effect.tryPromise(() => startServer({
       port: 0, sessionsDir,
       helper: { command: process.execPath, args: [fakeHelper, script, record] },
-      openUpdater: () => ({ update: async () => ({ ops: [] }), close: () => {} }),
+      updaterLayer: updaterLayer(() => Effect.succeed({ ops: [] })),
       capture: async (_snapshot, path) => writeFile(path, ""),
       writeReview: async (dir) => [`${dir}/map.html`],
       ...options,
@@ -105,7 +107,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const sessionsDir = join(dir, "sessions");
   const fakeHelpers = makeFakeHelpers(attempts);
   const sessionSinksLayer = SessionSinks.layer({
-    openUpdater: () => ({ update: async () => ({ ops: [] }), close: () => {} }),
+    updaterLayer: updaterLayer(() => Effect.succeed({ ops: [] })),
     capture: async (_snapshot, path) => writeFile(path, ""),
     writeReview: async (dir) => [`${dir}/map.html`],
   });
@@ -256,7 +258,7 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
   for (const failure of [new Error("updaterの取得失敗"), "タグのない失敗"]) {
     it.live(`予期しない失敗の文面を伏せず500のerror JSONで返す: ${String(failure)}`, () =>
       Effect.gen(function* () {
-        const r = yield* resource({ openUpdater: () => { throw failure; } });
+        const r = yield* resource({ updaterLayer: Layer.effect(DiffUpdater, Effect.die(failure)) });
         const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
         expect(response.status).toBe(500);
         expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: failure instanceof Error ? failure.message : failure });

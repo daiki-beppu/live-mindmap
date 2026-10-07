@@ -12,6 +12,7 @@ import { HELPER_STOP_TIMEOUT_MS } from "../src/helpers.ts";
 import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
 import { startServer } from "../src/server.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
+import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 // Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約 6 本だけに絞る
 // （order.md:40-46、CT-TEST-SPLIT）。偽の Layer・TestClock で確かめられる振る舞い（起動し直しの回数・
@@ -69,17 +70,18 @@ const setup = (initial: Partial<Script> = {}, capture: PromiseMapCapture = fakeC
   // 1 回目の呼び出しだけ、受け取った発言を根拠にノードを 1 つ足す（反映がマップへ届くことを観測できるようにする）。
   // 2 回目以降は noop（このファイルの契約は反映の内容そのものではなく、反映が届く・録音が書かれる・
   // ヘルパーの終わり方が読み取れることを確かめるためのもの）
-  const updater = async (input: DiffInput) => {
-    calls.push(input);
-    const ops: Op[] = calls.length === 1 ? [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: input.fresh.map((u) => u.id) }] : [];
-    return { ops };
-  };
+  const updater = (input: DiffInput) =>
+    Effect.sync(() => {
+      calls.push(input);
+      const ops: Op[] = calls.length === 1 ? [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: input.fresh.map((u) => u.id) }] : [];
+      return { ops };
+    });
   const server = yield* Effect.acquireRelease(
     promiseOrDie(() =>
       startServer({
         port: 0,
         sessionsDir,
-        openUpdater: () => ({ update: updater, close: () => {} }),
+        updaterLayer: updaterLayer(updater),
         helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
         capture,
         writeReview,
