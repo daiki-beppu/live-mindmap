@@ -35,7 +35,7 @@ export function logMetrics(events: readonly LogEvent[]): LogMetrics {
     } else if (event.type === "remark") {
       remarks++;
       byId.set(event.remark.id, event.remark);
-    } else {
+    } else if (event.type === "diff") {
       if (!map) throw new Error("ログの diff より前に start がありません");
       const fresh: Remark[] = [];
       for (const id of event.input.fresh) {

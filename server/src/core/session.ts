@@ -20,11 +20,19 @@ export const Remark = Schema.Struct({
 });
 export type Remark = typeof Remark["Type"];
 
+// 共有画面の変化: start（映り始めた会議の秒）から、image の画面が映る。null は何も映らない。
+// image の id は画像の識別、bytes は送る JPEG（core は Node に依存しないので Uint8Array）
+export type ScreenChange = {
+  readonly start: number;
+  readonly image: { readonly id: string; readonly bytes: Uint8Array } | null;
+};
+
 // ルートの ID はいつも ROOT_ID
 export type DiffInput = {
   map: MeetingMap;
   recent: Remark[]; // 直前に処理済みの発言（文脈用）
   fresh: Remark[]; // 新しい発言
+  screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
 };
 // 差分更新の失敗の形。core は具体の失敗の型を知らず、タグと文面だけを見る（ログの error 欄に使う）
 export type DiffUpdateError = { readonly _tag: string; readonly message: string };
@@ -41,6 +49,9 @@ export class DiffUpdater extends Context.Service<DiffUpdater, {
 export const StartEvent = Schema.Struct({ type: Schema.Literal("start"), title: Schema.String });
 // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
 export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) });
+// ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない
+const ScreenRef = Schema.Struct({ start: Schema.Number, image: Schema.NullOr(Schema.String) });
+export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Number, image: Schema.NullOr(Schema.String) });
 export const DiffEvent = Schema.Struct({
   type: Schema.Literal("diff"),
   // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）
@@ -48,18 +59,21 @@ export const DiffEvent = Schema.Struct({
     recent: Schema.mutable(Schema.Array(Schema.String)),
     fresh: Schema.mutable(Schema.Array(Schema.String)),
     nodeCount: Schema.Number,
+    screens: Schema.optionalKey(Schema.mutable(Schema.Array(ScreenRef))), // 添えた共有画面。添えた画面が無い呼び出しには付かない
   }),
   ops: Schema.mutable(Schema.Array(Op)),
   dropped: Schema.mutable(Schema.Array(Dropped)),
   error: Schema.optionalKey(Schema.String),
 });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, DiffEvent]);
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, DiffEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 // ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。
 // export.json の書き直し・publish などの副作用は、この Service を提供する配線側が持つ
 export class SessionLog extends Context.Service<SessionLog, {
   readonly write: (event: LogEvent) => Effect.Effect<void>;
+  // 共有画面の画像（file はセッションのフォルダの screens/ に置く名前）。バイト列はそのまま書く。ファイルへ書くのは配線側（ADR 0003）
+  readonly writeScreen: (file: string, bytes: Uint8Array) => Effect.Effect<void>;
 }>()("live-mindmap/core/SessionLog") {}
 
 // ログの行が読めない（見分けた type で項目が壊れている・start や発言が足りない）。index は events の 0 始まりの位置
@@ -206,6 +220,9 @@ export type Session = {
   readonly push: (remark: Remark) => Effect.Effect<void>;
   // 呼び出し中のものと、それに続けて起きた呼び出しがすべて終わるまで待つ
   readonly idle: Effect.Effect<void>;
+  // 共有画面の変化を受ける。差分更新は呼ばない。画像は writeScreen に渡し、変化ごとに screen の行を書く。
+  // 差分更新に添える画面は、次の呼び出しの中で選ぶ
+  readonly pushScreen: (change: ScreenChange) => Effect.Effect<void>;
   // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
   readonly flush: Effect.Effect<void>;
   readonly snapshot: Effect.Effect<Snapshot>;
@@ -224,7 +241,21 @@ type Runtime = {
   readonly waiter: Fiber.Fiber<void> | undefined; // QUIET_MS の待ち
   readonly quiet: boolean; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
   readonly reflecting: readonly Remark[]; // 差分更新の結果待ちの発言。結果を log する直前に外す
+  readonly unsentScreens: readonly HeldScreen[]; // まだ差分更新に添えていない共有画面の変化（受け取った順）
+  readonly screenFiles: ReadonlySet<string>; // 画像に付けたファイル名
 };
+
+type HeldScreen = { readonly change: ScreenChange; readonly file: string | null };
+
+const SCREENS_MAX = 3; // 1 回の呼び出しに添える共有画面の上限（新しいものから）
+
+// 映り始めた時刻から付ける画像のファイル名（整数部 4 桁・小数 1 桁。例 0754.2.jpg）。重なったら 2 件目から -n を足す
+function screenFileName(start: number, used: ReadonlySet<string>): string {
+  const base = start.toFixed(1).padStart(6, "0");
+  let name = `${base}.jpg`;
+  for (let n = 2; used.has(name); n++) name = `${base}-${n}.jpg`;
+  return name;
+}
 
 // 失敗した差分更新の error 欄。タグ付きの失敗は "<_tag>: <message>"、defect は "defect: <内容>"
 const describeFailure = (cause: Cause.Cause<DiffUpdateError>): string => {
@@ -237,7 +268,7 @@ function openSession(initial: SessionState): Effect.Effect<Session, never, Scope
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
     const log = yield* SessionLog;
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, inFlight: undefined, waiter: undefined, quiet: false, reflecting: [] });
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, inFlight: undefined, waiter: undefined, quiet: false, reflecting: [], unsentScreens: [], screenFiles: new Set() });
 
     // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
     // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
@@ -274,16 +305,32 @@ function openSession(initial: SessionState): Effect.Effect<Session, never, Scope
     function callUpdater(fresh: readonly Remark[]): Effect.Effect<void> {
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const { map, recent, input } = yield* Ref.modify(ref, (s) => {
+          const { map, recent, input, screens } = yield* Ref.modify(ref, (s) => {
             const recent = s.processed.slice(-RECENT);
-            const input = { recent: recent.map((u) => u.id), fresh: fresh.map((u) => u.id), nodeCount: s.map.order.length - 1 };
+            // 添える共有画面: 新しい発言の end の最大値以下に映り始めた、まだ添えていない変化を時刻順に並べ、新しい SCREENS_MAX 件。
+            // 候補はすべて処理済みにする（添えなかった古い変化を後から送ると、映り続ける画面と食い違う）。後に映り始めた変化は次へ回す
+            const cutoff = Math.max(...fresh.map((u) => u.end));
+            const candidates = s.unsentScreens.filter((h) => h.change.start <= cutoff).sort((a, b) => a.change.start - b.change.start);
+            const attached = candidates.slice(-SCREENS_MAX);
+            const input = {
+              recent: recent.map((u) => u.id),
+              fresh: fresh.map((u) => u.id),
+              nodeCount: s.map.order.length - 1,
+              ...(attached.length ? { screens: attached.map((h) => ({ start: h.change.start, image: h.file })) } : {}),
+            };
             return [
-              { map: s.map, recent, input },
-              { ...s, known: new Set([...s.known, ...fresh.map((u) => u.id)]), processed: [...s.processed, ...fresh], reflecting: fresh },
+              { map: s.map, recent, input, screens: attached.map((h) => h.change) },
+              {
+                ...s,
+                known: new Set([...s.known, ...fresh.map((u) => u.id)]),
+                processed: [...s.processed, ...fresh],
+                reflecting: fresh,
+                unsentScreens: s.unsentScreens.filter((h) => h.change.start > cutoff),
+              },
             ];
           });
           // 失敗は中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
-          const outcome = yield* restore(updater.update({ map, recent: [...recent], fresh: [...fresh] })).pipe(
+          const outcome = yield* restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}) })).pipe(
             Effect.map(({ ops }) => ({ ok: true as const, ops })),
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed({ ok: false as const, error: describeFailure(cause) }),
@@ -351,6 +398,15 @@ function openSession(initial: SessionState): Effect.Effect<Session, never, Scope
           if ((yield* Ref.get(ref)).pending.length > 0) yield* waitForQuiet;
         }),
       idle,
+      pushScreen: (change) =>
+        Effect.gen(function* () {
+          const file = yield* Ref.modify(ref, (s): [string | null, SessionState & Runtime] => {
+            const file = change.image ? screenFileName(change.start, s.screenFiles) : null;
+            return [file, { ...s, unsentScreens: [...s.unsentScreens, { change, file }], screenFiles: file ? new Set([...s.screenFiles, file]) : s.screenFiles }];
+          });
+          if (change.image && file) yield* log.writeScreen(file, change.image.bytes);
+          yield* log.write({ type: "screen", start: change.start, image: file });
+        }),
       flush: Effect.andThen(idle, Effect.andThen(startDiffIfReady(1), idle)),
       snapshot: Effect.map(Ref.get(ref), snapshotOf),
       unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),

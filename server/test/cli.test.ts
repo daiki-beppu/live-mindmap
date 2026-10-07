@@ -14,6 +14,7 @@ import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
 import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
 // 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
@@ -74,6 +75,7 @@ function dependencies(sessionsDir: string, port = "0") {
       build: () => reviewFailure.error ? Effect.fail(reviewFailure.error) : Effect.succeed("<!doctype html><html><body></body></html>"),
     })),
     mix.layer,
+    fakeScreenJpeg().layer,
   );
   return { layer, stdout, stderr, captures, captureFailure, reviewFailure, mix };
 }

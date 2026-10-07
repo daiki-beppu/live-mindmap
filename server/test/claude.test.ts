@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { AgentSdk, buildPrompt, ClaudeDiffUpdater, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
 import { applyOps, DiffUpdater } from "../src/core/index.ts";
-import { emptyMap, type DiffInput, type MeetingMap, type Op } from "../src/core/index.ts";
+import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
 
 // 偽の query()。prompt（AsyncIterable）から user メッセージを 1 つ読むたびに、behave の指示どおり 1 回分の応答を返す。
 //   ok: success の result（structured_output つき） / fail: success 以外の result / throw: iterator が例外 / end: result を出さずにストリームが終わる
@@ -1308,5 +1308,75 @@ describe("query の options の env（5 分 TTL のキャッシュ）", () => {
         expect(options.env?.PATH).toBe(process.env.PATH);
         expect(options.env?.LIVE_MINDMAP_TEST_ENV).toBe("引き継がれる");
       }
+    }));
+});
+
+describe("共有画面（DiffInput.screens）の描画", () => {
+  type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
+  const screenBytes = (n: number) => new Uint8Array([0xff, 0xd8, n, 0, 255]);
+  const shot = (start: number, n: number): ScreenChange => ({ start, image: { id: `s${n}`, bytes: screenBytes(n) } });
+  const withScreens = (n: number, screens: ScreenChange[]): DiffInput => ({ ...input(n), screens });
+  const blocksOf = (c: Created, i = 0) => c.messages[i]!.message?.content as Block[];
+
+  it.effect("screens があると content は配列: 画面ごとの見出し（text）と画像のブロックを時刻順に並べ、最後に buildPrompt の文字列を text として続ける", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      const given = withScreens(1, [shot(754.2, 1), { start: 800, image: null }, shot(65, 2)]);
+      yield* updater.update(given);
+
+      const blocks = blocksOf(created[0]!);
+      expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text", "text", "image", "text"]);
+      expect(blocks[0]!.text!.trim()).toBe("## 共有画面 [12:34] から"); // 754.2 秒 = 12:34
+      expect(blocks[1]).toEqual({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(screenBytes(1)).toString("base64") } });
+      expect(blocks[2]!.text!.trim()).toBe("## 共有画面：なし（[13:20] から）");
+      expect(blocks[3]!.text!.trim()).toBe("## 共有画面 [01:05] から");
+      expect(Buffer.from(blocks[4]!.source!.data, "base64")).toEqual(Buffer.from(screenBytes(2)));
+      // 最後に buildPrompt の文字列（マップ・発言）。buildPrompt の中身は共有画面で変わらない
+      expect(blocks[5]).toEqual({ type: "text", text: buildPrompt(given) });
+    }));
+
+  it.effect("渡された順にそのまま描く（並べ替えや選び直しは core の仕事。updater は入力に来た列を描くだけ）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(withScreens(1, [shot(30, 1), shot(10, 2)]));
+      const headings = blocksOf(created[0]!).filter((b) => b.type === "text").map((b) => b.text!.trim());
+      expect(headings.slice(0, 2)).toEqual(["## 共有画面 [00:30] から", "## 共有画面 [00:10] から"]);
+    }));
+
+  it.effect("screens が無い呼び出しの content は、今までどおり文字列のまま（同じ query の前の呼び出しが配列でも）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(withScreens(1, [shot(5, 1)]));
+      yield* updater.update(input(2));
+
+      expect(created).toHaveLength(1); // 同じ query を使い続ける（query の開閉・回数は共有画面で変わらない）
+      expect(Array.isArray(created[0]!.messages[0]!.message?.content)).toBe(true);
+      expect(typeof created[0]!.messages[1]!.message?.content).toBe("string");
+    }));
+
+  it.effect("2 通目以降も画面を添えられ、マップは前回からの変更の形のまま（buildPrompt の text が続く）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(input(1));
+      const second = withScreens(2, [shot(70, 1)]);
+      yield* updater.update(second);
+
+      const blocks = blocksOf(created[0]!, 1);
+      expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text"]);
+      expect(blocks[2]!.text).toContain("## 前回からのマップの変更");
+      expect(blocks[2]!.text).not.toContain("## 現在のマップ");
+    }));
+
+  it.effect("system に「# 共有画面」の節があり、既存の節（# 会話の扱い）も残る。毎回同じ文字列（query ごとに変わらない）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((q) => (q === 0 ? "fail" : "ok"));
+      yield* Effect.flip(updater.update(input(1)));
+      yield* updater.update(input(2));
+
+      expect(created).toHaveLength(2);
+      const system = created[0]!.options.systemPrompt;
+      expect(system).toContain("# 共有画面");
+      expect(system).toContain("# 会話の扱い");
+      expect(created[1]!.options.systemPrompt).toBe(system);
     }));
 });

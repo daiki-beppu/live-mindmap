@@ -22,11 +22,12 @@ export {
   RemarkEvent,
   restoreSession,
   restoreState,
+  ScreenEvent,
   SessionLog,
   StartEvent,
   Track,
 } from "./session.ts";
-export type { ChangeEntry, DiffInput, DiffUpdateError, Session, Snapshot, SnapshotNode } from "./session.ts";
+export type { ChangeEntry, DiffInput, DiffUpdateError, ScreenChange, Session, Snapshot, SnapshotNode } from "./session.ts";
 export * from "./settle.ts";
 export * from "./speaking.ts";
 export * from "./topic.ts";

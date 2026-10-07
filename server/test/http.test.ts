@@ -15,6 +15,7 @@ import { startServer, startServerWithLayers, type ServerOptions } from "../src/s
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { DiffUpdater } from "../src/core/index.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -379,6 +380,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
           Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("") })),
           fakeAudioMix().layer,
+          fakeScreenJpeg().layer,
         );
         return runCli(["status"]).pipe(Effect.provide(cliLayer), Effect.map(() => out.join("")));
       });

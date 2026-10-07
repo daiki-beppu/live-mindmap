@@ -3,9 +3,9 @@
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Config, Console, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
+import { Cause, Config, Console, Effect, FileSystem, Layer, Option, Predicate, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
@@ -31,6 +31,8 @@ import {
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
+import { ScreenJpeg } from "./screenJpeg.ts";
+import { parseSlides, slideChanges } from "./screenSlides.ts";
 import {
   captureWarning,
   createSessionDir,
@@ -248,6 +250,24 @@ const requestServer = <A>(
  * サブコマンド
  * -------------------------------------------------------------------------- */
 
+// slides.tsv を読み、行ごとの画像を JPEG にして play の Scope の一時フォルダへ 1 件ずつ書く。
+// 変化の列は、再生が入れる直前にその一時ファイルを読む形で返す（全画像のバイト列を再生の終わりまで持たない）
+const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
+  const text = yield* readTextFile(tsv).pipe(Effect.mapError((reason) => new CommandFailed({ message: `${tsv} が読めません: ${reason}` })));
+  const rows = yield* Effect.fromResult(parseSlides(text)).pipe(Effect.mapError((reason) => new CommandFailed({ message: `${tsv} が不正です: ${reason}` })));
+  const converter = yield* ScreenJpeg;
+  const fs = yield* FileSystem.FileSystem;
+  const jpegFailed = (path: string, reason: string) => new CommandFailed({ message: `${path} を JPEG にできません: ${reason}` });
+  const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "live-mindmap-screens-" }).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
+  const jpegPath = (index: number) => join(tmp, `${index}.jpg`);
+  for (const [i, row] of rows.entries()) {
+    const path = resolve(dirname(tsv), row.image);
+    const bytes = yield* converter.toJpeg(path).pipe(Effect.mapError((e) => jpegFailed(path, e.message)));
+    yield* fs.writeFile(jpegPath(i), bytes).pipe(Effect.mapError((e) => jpegFailed(path, e.message)));
+  }
+  return slideChanges(rows, (i) => fs.readFile(jpegPath(i)).pipe(Effect.mapError((e) => new CommandFailed({ message: `${jpegPath(i)} が読めません: ${e.message}` }))));
+});
+
 const play = Command.make(
   "play",
   {
@@ -256,14 +276,23 @@ const play = Command.make(
       Flag.withDescription("発言の時刻どおりに等速で再生する（既定は待ち時間なし）"),
       Flag.withDefault(false),
     ),
+    screen: Flag.File("screen", { mustExist: true }).pipe(
+      Flag.withDescription(
+        "共有画面の一覧 slides.tsv（1 行目は見出し、列は start end slide image。start・end は会議の秒、image は tsv のあるフォルダからの PNG の相対パス）。"
+          + "画面が変わった時刻の画像（隙間と最後の行の後は「なし」）を、発言より前に Claude へのメッセージへ添え、セッションのフォルダの screens/ とログに残す",
+      ),
+      Flag.optional,
+    ),
   },
   Effect.fn("play")(
-    function* ({ realtime, transcript }) {
+    function* ({ realtime, screen, transcript }) {
       const sessionsDir = yield* sessionsDirConfig;
       const port = yield* portConfig;
       const capture = yield* MapCapture;
       const review = yield* ReviewBuild;
       const audioMix = yield* AudioMix;
+      // 共有画面は再生を始める前にすべて読み、JPEG にする。読めなければ何も始めずに失敗する
+      const screens = Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
       const { viewers, httpServer } = yield* openListener(port).pipe(
         Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
@@ -287,7 +316,7 @@ const play = Command.make(
         Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
       );
       // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちは、同じ Clock に乗る
-      yield* playback(session, fromTranscript(file), realtime ? { sleep: (ms) => Effect.sleep(ms) } : {});
+      yield* playback(session, fromTranscript(file), { ...(realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens });
       const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, capture, review, audioMix);
       yield* write(paths.map((path) => `${path}\n`).join(""));
     },
@@ -437,7 +466,7 @@ const restore = Command.make(
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(DiffUpdater)(DiffUpdater.of({ update: () => Effect.die("restore では差分更新を呼べません") })),
-          Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void })),
+          Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void })),
         ),
       ),
       // 壊れた行は、空行を除く前の行番号の BrokenLogLine にする
@@ -579,12 +608,13 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
 if (import.meta.main) {
   // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）
   const helper = resolveHelperPath(process.env);
+  const screenJpegLayer = ScreenJpeg.layer.pipe(Layer.provide(NodeServices.layer));
   const audioMixLayer = "error" in helper
     ? AudioMix.unavailable(helper.error)
     : AudioMix.layer({ command: helper.path, args: [] }).pipe(Layer.provide(NodeServices.layer));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer, audioMixLayer)),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer, audioMixLayer, screenJpegLayer)),
     NodeRuntime.runMain({ disableErrorReporting: true }),
   );
 }
