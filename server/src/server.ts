@@ -14,6 +14,7 @@ import { NodeRuntime } from "@effect/platform-node";
 import { Cause, Effect, Exit, Result, Runtime, Scope } from "effect";
 import { HttpServer } from "effect/http";
 import type { PromiseMapCapture } from "./capture.ts";
+import type { PromiseReviewPages } from "./review.ts";
 import type { SessionUpdater } from "./claude.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
@@ -44,6 +45,7 @@ export type ServerOptions = {
   sessionsDir: string;
   openUpdater: () => SessionUpdater; // セッションの開始ごとに 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
   capture: PromiseMapCapture; // 終了時の map.png の撮影
+  writeReview: PromiseReviewPages; // 終了時の map.html の書き出し
   helper: { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
   onListening?: (port: number) => void;
 };
@@ -244,7 +246,7 @@ type SessionMachine = {
 };
 
 function makeSessionMachine(options: ServerOptions, emit: Emit): SessionMachine {
-  const { sessionsDir, openUpdater, capture, helper: helperCommand } = options;
+  const { sessionsDir, openUpdater, capture, writeReview, helper: helperCommand } = options;
   let state: State = { kind: "idle" };
   let current: Helper | undefined; // 直近に起動したヘルパーの子プロセス。終了時・中断時に止める対象
   let closing: Promise<void> | undefined;
@@ -500,7 +502,7 @@ function makeSessionMachine(options: ServerOptions, emit: Emit): SessionMachine 
       }
       // intake.kind === "stopped" のときは、待つものが何もない（ヘルパーの終了を待たずに進む。要件 #15）
       await live.session.flush();
-      return { paths: await writeSessionExports(live.dir, live.session.snapshot(), capture) };
+      return { paths: await writeSessionExports(live.dir, live.session.snapshot(), capture, writeReview) };
     } finally {
       state = { kind: "idle" };
       live.updater.close(); // session.flush() で最後の差分更新が終わっているので、ここで閉じる
@@ -661,6 +663,15 @@ if (import.meta.main) {
     ).then((result) => {
       if (Result.isFailure(result)) throw result.failure;
     });
+  // 見返し用の HTML も同じく、入口で Layer を渡して Promise の口にする（失敗は reject にして、HTML だけ諦める扱いを保つ）
+  const { ReviewBuild, writeReviewPages } = await import("./review.ts");
+  const writeReview: PromiseReviewPages = (dir, logPath, variants) =>
+    Effect.runPromise(
+      Effect.result(writeReviewPages(dir, logPath, variants).pipe(Effect.provide(ReviewBuild.layer))),
+    ).then((result) => {
+      if (Result.isFailure(result)) throw result.failure;
+      return result.success;
+    });
   // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
   // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
   NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
@@ -669,6 +680,7 @@ if (import.meta.main) {
       sessionsDir: defaultSessionsDir(),
       openUpdater: () => openClaudeUpdater(),
       capture,
+      writeReview,
       helper: { command: helperPath, args: [] },
       onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
     });

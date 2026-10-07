@@ -11,7 +11,7 @@ import { startServer, type ServerOptions } from "../src/server.ts";
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 type Attempt = { unexpectedExit?: { afterMs: number; code: number }; failRun?: { stderr: string; code: number }; listenDelayMs?: number };
-const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOptions, "openUpdater" | "capture">>) {
+const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOptions, "openUpdater" | "capture" | "writeReview">>) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -27,6 +27,7 @@ const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOption
       helper: { command: process.execPath, args: [fakeHelper, script, record] },
       openUpdater: () => ({ update: async () => ({ ops: [] }), close: () => {} }),
       capture: async (_snapshot, path) => writeFile(path, ""),
+      writeReview: async (dir) => [`${dir}/map.html`],
       ...options,
     })),
     (s) => Effect.promise(() => s.close()),

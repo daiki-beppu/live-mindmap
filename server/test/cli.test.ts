@@ -9,6 +9,8 @@ import { CliError } from "effect/cli";
 import { afterEach, beforeEach, vi } from "vitest";
 import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
+import { REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
+import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
 import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 
@@ -47,6 +49,7 @@ function dependencies(sessionsDir: string) {
   const stderr: string[] = [];
   const captures: Snapshot[] = [];
   const captureFailure = { error: null as CaptureFailed | null };
+  const reviewFailure = { error: null as ReviewPageFailed | null };
   const consoleService: Console.Console = {
     ...console,
     log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
@@ -65,8 +68,11 @@ function dependencies(sessionsDir: string) {
             writeFileSync(path, "");
           }),
     })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({
+      build: () => reviewFailure.error ? Effect.fail(reviewFailure.error) : Effect.succeed("<!doctype html><html><body></body></html>"),
+    })),
   );
-  return { layer, stdout, stderr, captures, captureFailure };
+  return { layer, stdout, stderr, captures, captureFailure, reviewFailure };
 }
 
 // 既定の updater。script を順に返す
@@ -136,19 +142,49 @@ describe("CLI", () => {
     });
   }));
 
-  it.effect("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを順に出力する", () => Effect.gen(function* () {
+  it.effect("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを順に出力する", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const deps = dependencies(dir);
     const { paths, session } = yield* played(deps);
 
-    expect(paths).toEqual([join(session, "map.md"), join(session, "map.json"), join(session, "map.drawnix"), join(session, "map.png")]);
+    expect(paths).toEqual([join(session, "map.md"), join(session, "map.json"), join(session, "map.drawnix"), join(session, "map.png"), join(session, "map.html")]);
     const files = yield* Effect.tryPromise(() => readdir(session));
-    expect(files.sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix", "map.png"]));
+    expect(files.sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix", "map.png", "map.html"]));
     const md = yield* Effect.tryPromise(() => readFile(join(session, "map.md"), "utf8"));
     expect(md).toContain("# short");
     expect(md).toContain("面接は何回か → 2 回にする");
     const drawnix = JSON.parse(yield* Effect.tryPromise(() => readFile(join(session, "map.drawnix"), "utf8")));
     expect(drawnix).toMatchObject({ type: "drawnix", elements: [{ type: "mindmap" }] });
+  }));
+
+  it.effect("map.html には log.jsonl の出来事がそのまま埋め込まれる（偽のビルドのテンプレートに差し込む）", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const { session } = yield* played(deps);
+
+    const log = (yield* Effect.tryPromise(() => readFile(join(session, "log.jsonl"), "utf8")))
+      .split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+    const html = yield* Effect.tryPromise(() => readFile(join(session, "map.html"), "utf8"));
+    const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
+    expect(match).not.toBeNull();
+    expect(match![1]).not.toContain("<");
+    expect(JSON.parse(match![1]!)).toEqual(log);
+    expect(log.length).toBeGreaterThan(0);
+  }));
+
+  it.effect("再生で map.html のビルドが失敗しても、ほかの 4 つを書き、そのパスを出す。理由は標準エラーに残し、map.html は作らない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    deps.reviewFailure.error = new ReviewPageFailed({ message: "ビルドに失敗" });
+
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+
+    expect(deps.stderr.join("")).toContain("map.html を書き出せませんでした: ビルドに失敗");
+    const [session] = yield* Effect.tryPromise(() => readdir(dir));
+    const files = yield* Effect.tryPromise(() => readdir(join(dir, session!)));
+    expect(files).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix", "map.png"]));
+    expect(files).not.toContain("map.html");
+    expect(deps.stdout.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
   }));
 
   it.effect("再生の map.png は、書き出した map.md・map.json と同じ、再生の最後のマップを撮る（1 回だけ取ったスナップショットを渡す）", () => Effect.gen(function* () {
@@ -159,10 +195,10 @@ describe("CLI", () => {
     expect(deps.captures).toHaveLength(1);
     expect(deps.captures[0]!.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
     expect(deps.captures[0]!.round).toBe(2);
-    expect(paths).toHaveLength(4);
+    expect(paths).toHaveLength(5);
   }));
 
-  it.effect("再生で map.png の撮影が失敗しても、画像だけ諦めて 3 つのテキストファイルを書き、そのパスを出す。理由は標準エラーに残す", () => Effect.gen(function* () {
+  it.effect("再生で map.png の撮影が失敗しても、画像だけ諦めて、map.html を含む 4 つを書き、そのパスを出す。理由は標準エラーに残す", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const deps = dependencies(dir);
     deps.captureFailure.error = new CaptureFailed({ message: "撮影に失敗" });
@@ -172,9 +208,9 @@ describe("CLI", () => {
     expect(deps.stderr.join("")).toContain("map.png を書き出せませんでした: 撮影に失敗");
     const [session] = yield* Effect.tryPromise(() => readdir(dir));
     const files = yield* Effect.tryPromise(() => readdir(join(dir, session!)));
-    expect(files).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix"]));
+    expect(files).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix", "map.html"]));
     expect(files).not.toContain("map.png");
-    expect(deps.stdout.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix"]);
+    expect(deps.stdout.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
   }));
 
   it.effect("map.json は、直後の export --format json の出力と同じ内容", () => Effect.gen(function* () {
@@ -441,7 +477,7 @@ describe("CLI", () => {
       expect(r1).toMatchObject({ start: 0.5, end: 9.8, text: "今日は採用の進め方を決めます" });
       expect(["自分", "相手"]).toContain(r1.track);
       for (const node of last.nodes) for (const id of node.evidence) expect(last.remarks.some((r) => r.id === id)).toBe(true);
-      expect(deps.stdout.join("")).toMatch(/^([^\n]+\n){4}$/); // 書き出した 4 ファイルのパスだけ
+      expect(deps.stdout.join("")).toMatch(/^([^\n]+\n){5}$/); // 書き出した 5 ファイルのパスだけ
     }));
 
     it.effect("失敗した反映（マップが変わらない）ではスナップショットを送らない", () => Effect.gen(function* () {

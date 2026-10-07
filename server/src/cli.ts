@@ -31,6 +31,7 @@ import {
   type Snapshot,
 } from "./core/index.ts";
 import { openListener, serveFeed } from "./http.ts";
+import { ReviewBuild, writeReviewPages, type PromiseReviewPages, type ReviewVariant } from "./review.ts";
 import { describe, formatIssues, InvalidTruthFile, oneLine, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
@@ -171,32 +172,55 @@ function writeExportFiles(dir: string, snapshot: Snapshot): string[] {
 }
 
 const captureWarning = (reason: string) => `map.png を書き出せませんでした: ${reason}`;
+const reviewWarning = (reason: string) => `map.html を書き出せませんでした: ${reason}`;
 
-// セッション終了時の書き出し。スナップショットは 1 回だけ取り、4 形式（md・json・drawnix・png）に同じものを渡す。
+// 見返し用の HTML の版。今は map.html だけ
+const REVIEW_VARIANTS: readonly ReviewVariant[] = [{ file: "map.html" }];
+
+// セッション終了時の書き出し。スナップショットは 1 回だけ取り、5 形式（md・json・drawnix・png・html）を書く。
 // ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
-// テキストの 3 形式を先に書く。撮影が失敗したら（Chromium が無い等）、画像だけ諦めて標準エラーに理由を残し、3 つのパスを返す。
-export async function writeSessionExports(dir: string, snapshot: Snapshot, capture: PromiseMapCapture): Promise<string[]> {
+// テキストの 3 形式を先に書く。撮影・HTML の書き出しは互いに独立で、失敗したもの（Chromium が無い等）だけ諦めて、
+// 標準エラーに理由を残し、書けたもののパスを返す。
+export async function writeSessionExports(
+  dir: string,
+  snapshot: Snapshot,
+  capture: PromiseMapCapture,
+  writeReview: PromiseReviewPages,
+): Promise<string[]> {
   const paths = writeExportFiles(dir, snapshot);
   const png = join(dir, "map.png");
   try {
     await capture(snapshot, png);
+    paths.push(png);
   } catch (e) {
     process.stderr.write(captureWarning(e instanceof Error ? e.message : String(e)) + "\n");
-    return paths;
   }
-  return [...paths, png];
+  try {
+    paths.push(...(await writeReview(dir, join(dir, LOG_FILE), REVIEW_VARIANTS)));
+  } catch (e) {
+    process.stderr.write(reviewWarning(e instanceof Error ? e.message : String(e)) + "\n");
+  }
+  return paths;
 }
 
 // CLI 側の書き出し。警告は Console（差し替え可能）へ出す以外、writeSessionExports と同じ順・同じ結果
-const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, capture: MapCapture["Service"]) {
+const writeExportsAndCapture = Effect.fnUntraced(function* (
+  dir: string,
+  snapshot: Snapshot,
+  capture: MapCapture["Service"],
+  review: ReviewBuild["Service"],
+) {
   const paths = yield* Effect.try({ try: () => writeExportFiles(dir, snapshot), catch: (e) => new CommandFailed({ message: describe(e) }) });
   const png = join(dir, "map.png");
   const captured = yield* Effect.result(capture.capture(snapshot, png));
-  if (Result.isFailure(captured)) {
-    yield* Console.error(captureWarning(describe(captured.failure)));
-    return paths;
-  }
-  return [...paths, png];
+  if (Result.isFailure(captured)) yield* Console.error(captureWarning(describe(captured.failure)));
+  else paths.push(png);
+  const reviewed = yield* Effect.result(
+    writeReviewPages(dir, join(dir, LOG_FILE), REVIEW_VARIANTS).pipe(Effect.provideService(ReviewBuild, review)),
+  );
+  if (Result.isFailure(reviewed)) yield* Console.error(reviewWarning(describe(reviewed.failure)));
+  else paths.push(...reviewed.success);
+  return paths;
 });
 
 // セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
@@ -335,6 +359,7 @@ const play = Command.make(
       const port = yield* portConfig;
       const updater = yield* DiffUpdater;
       const capture = yield* MapCapture;
+      const review = yield* ReviewBuild;
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
       const { viewers, httpServer } = yield* openListener(port).pipe(
         Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
@@ -369,7 +394,7 @@ const play = Command.make(
         try: () => playback(session, fromTranscript(file), sleep ? { sleep } : {}),
         catch: (e) => new CommandFailed({ message: describe(e) }),
       });
-      const paths = yield* writeExportsAndCapture(dir, session.snapshot(), capture);
+      const paths = yield* writeExportsAndCapture(dir, session.snapshot(), capture, review);
       yield* write(paths.map((path) => `${path}\n`).join(""));
     },
     Effect.scoped,
@@ -378,7 +403,7 @@ const play = Command.make(
   Command.withDescription(
     "録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
       + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
-      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを出す",
+      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す",
   ),
   // 差分更新は play だけが使う。Layer が取得と解放を持ち、最後の反映と最終撮影の後に 1 回だけ閉じる
   Command.provide(DiffUpdater.layer),
@@ -430,7 +455,7 @@ const stop = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す",
+    "ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png・map.html を書き出して、そのパスを出す",
   ),
 );
 
@@ -585,7 +610,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
 if (import.meta.main) {
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer)),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer)),
     NodeRuntime.runMain({ disableErrorReporting: true }),
   );
 }

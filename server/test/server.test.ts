@@ -44,8 +44,9 @@ import { spawn } from "node:child_process";
 import { NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Effect, Layer, Result } from "effect";
 import { runCli } from "../src/cli.ts";
-import { QUIET_MS, type DiffInput, type Op, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
+import { QUIET_MS, REVIEW_LOG_ELEMENT_ID, type DiffInput, type Op, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
 import { MapCapture } from "../src/capture.ts";
+import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
 import { HELPER_STOP_TIMEOUT_MS, startServer } from "../src/server.ts";
 
 // server.ts は終了時の撮影を Promise の口で受け取る（CLI 側の Effect 経路とは別の 1 本）
@@ -64,6 +65,16 @@ const realCapture: PromiseCapture = (snapshot, path) =>
       const capture = yield* MapCapture;
       yield* capture.capture(snapshot, path);
     }).pipe(Effect.provide(MapCapture.layer)),
+  );
+
+// 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする。
+// server.ts の入口と同じく、writeReviewPages から Promise の口を 1 つ組む
+const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
+const fakeWriteReview: PromiseReviewPages = (dir, logPath, variants) =>
+  Effect.runPromise(
+    writeReviewPages(dir, logPath, variants).pipe(
+      Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+    ),
   );
 
 // 疎通テスト: 偽のヘルパー（fixtures/fake-helper.ts）から発言を送り、CLI で開始・終了する。
@@ -115,7 +126,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-async function setup(initial: Partial<Script> = {}, capture: PromiseCapture = fakeCapture) {
+async function setup(initial: Partial<Script> = {}, capture: PromiseCapture = fakeCapture, writeReview: PromiseReviewPages = fakeWriteReview) {
   const dir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
   const sessionsDir = join(dir, "sessions");
   const scriptPath = join(dir, "script.json");
@@ -153,6 +164,7 @@ async function setup(initial: Partial<Script> = {}, capture: PromiseCapture = fa
     },
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
     capture,
+    writeReview,
   });
   cleanups.push(() => server.close());
 
@@ -169,6 +181,7 @@ async function setup(initial: Partial<Script> = {}, capture: PromiseCapture = fa
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
     })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
   );
   // CLI を実行して、その標準出力を返す。中身の失敗は、入口の表を通す前のタグ付きの失敗のまま投げる
   const cli = async (...argv: string[]) => {
@@ -240,10 +253,10 @@ describe("ライブのセッション", () => {
     expect(Date.now() - stopStartedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS);
     expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(false);
 
-    // 終了で、セッションのフォルダに 4 つのファイルが書かれ、そのパスが出る
+    // 終了で、セッションのフォルダに 5 つのファイルが書かれ、そのパスが出る
     const [dir] = await sessionDirs();
     expect(dir).toBeDefined();
-    const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png")];
+    const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png"), join(dir!, "map.html")];
     expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
     for (const path of paths) expect(existsSync(path)).toBe(true);
 
@@ -283,7 +296,7 @@ describe("ライブのセッション", () => {
 
       const [dir] = await sessionDirs();
       const paths = stdout.split("\n").filter((l) => l !== "");
-      expect(paths).toHaveLength(4);
+      expect(paths).toHaveLength(5);
       expect(paths[3]).toBe(join(dir!, "map.png"));
       const png = readFileSync(paths[3]!);
       expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -307,7 +320,42 @@ describe("ライブのセッション", () => {
     expect(readFileSync(join(dir!, "map.json"), "utf8")).toContain("2 回にする");
   });
 
-  it("map.png の撮影が失敗しても stop は成功し、3 つのテキストファイルのパスを出す。理由は標準エラーに残し、セッションは idle に戻る", async () => {
+  it("stop で書く map.html には、そのセッションの log.jsonl の出来事がそのまま埋め込まれる", async () => {
+    const { cli, calls, sessionDirs } = await setup();
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
+    await cli("stop");
+
+    const [dir] = await sessionDirs();
+    const log = readFileSync(join(dir!, "log.jsonl"), "utf8").split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+    const html = readFileSync(join(dir!, "map.html"), "utf8");
+    const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
+    expect(match).not.toBeNull();
+    expect(JSON.parse(match![1]!)).toEqual(log);
+    expect(log.length).toBeGreaterThan(0);
+  });
+
+  it("map.html の書き出しが失敗しても stop は成功し、ほかの 4 つのパスを出す。理由は標準エラーに残し、セッションは idle に戻る", async () => {
+    const stderr = vi.spyOn(process.stderr, "write");
+    cleanups.push(async () => stderr.mockRestore());
+    const { cli, calls, sessionDirs } = await setup({}, fakeCapture, async () => {
+      throw new Error("ビルドに失敗");
+    });
+    await cli("start", "--app", "us.zoom.xos", "--title", "週次");
+    await vi.waitFor(() => expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"]]));
+
+    const stdout = await cli("stop");
+
+    const [dir] = await sessionDirs();
+    const paths = ["map.md", "map.json", "map.drawnix", "map.png"].map((file) => join(dir!, file));
+    expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
+    for (const path of paths) expect(existsSync(path)).toBe(true);
+    expect(existsSync(join(dir!, "map.html"))).toBe(false);
+    expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("map.html を書き出せませんでした: ビルドに失敗"))).toBe(true);
+    await expect(cli("stop")).rejects.toThrow("進行中のセッションがありません");
+  });
+
+  it("map.png の撮影が失敗しても stop は成功し、map.html を含む 4 つのパスを出す。理由は標準エラーに残し、セッションは idle に戻る", async () => {
     const stderr = vi.spyOn(process.stderr, "write");
     cleanups.push(async () => stderr.mockRestore());
     const { cli, calls, sessionDirs } = await setup({}, async () => {
@@ -319,7 +367,7 @@ describe("ライブのセッション", () => {
     const stdout = await cli("stop");
 
     const [dir] = await sessionDirs();
-    const paths = ["map.md", "map.json", "map.drawnix"].map((file) => join(dir!, file));
+    const paths = ["map.md", "map.json", "map.drawnix", "map.html"].map((file) => join(dir!, file));
     expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
     for (const path of paths) expect(existsSync(path)).toBe(true);
     expect(existsSync(join(dir!, "map.png"))).toBe(false);
@@ -680,7 +728,7 @@ describe("ライブのセッション", () => {
 
       expect(elapsed).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
       const [dir] = await sessionDirs();
-      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png")];
+      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png"), join(dir!, "map.html")];
       expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
       for (const path of paths) expect(existsSync(path)).toBe(true);
       // 届いていた発言（r1〜r3）で確定している
@@ -840,7 +888,7 @@ describe("ライブのセッション", () => {
 
       const stdout = await cli("stop");
 
-      expect(stdout.split("\n").filter((l) => l !== "").map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
+      expect(stdout.split("\n").filter((l) => l !== "").map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
     });
   });
 });
@@ -1132,7 +1180,7 @@ describe("ヘルパーが予期せず終わったときの、起動し直し・�
       const startedAt = Date.now();
       const stdout = await cli("stop");
       expect(Date.now() - startedAt).toBeLessThan(1_000);
-      expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(4);
+      expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(5);
 
       await server.close();
     },
@@ -1227,7 +1275,7 @@ describe("ヘルパーが予期せず終わったときの、起動し直し・�
 
       const stdout = await cli("stop");
 
-      expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(4);
+      expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(5);
       await vi.waitFor(() => expect(() => process.kill(second.pid, 0)).toThrow());
       await server.close();
     });

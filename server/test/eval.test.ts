@@ -7,6 +7,7 @@ import { NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Effect, Layer, Predicate, Result } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
+import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
 import { type DiffInput, type Op, parseTruth, type Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
@@ -40,6 +41,7 @@ function dependencies(sessionsDir: string) {
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
     })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
   );
   return { layer, stdout };
 }
