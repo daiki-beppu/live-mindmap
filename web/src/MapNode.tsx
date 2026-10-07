@@ -6,6 +6,7 @@ export type MapNodeData = {
   color: string;
   mark: string | null;
   rejected: boolean;
+  fold: { hint: string | null; hidden: number } | null; // 畳んだノード（まとめのノードを含む）の手がかりの文字と隠れた数。畳んでいなければ null
   changedRound: number | null; // 今回の反映で変わったなら、その反映の round（点滅の強調）
   selected: boolean; // 右の列に根拠を出している
   onSelect: (nodeId: string) => void;
@@ -47,14 +48,16 @@ export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
     // 反映ごとに key を変えて要素を作り直し、点滅のアニメーションを頭からやり直す
     <div
       key={data.changedRound ?? "steady"}
-      className={["map-node", data.rejected && "map-node--rejected", data.changedRound !== null && "map-node--blink", "nopan"].filter(Boolean).join(" ")}
+      className={["map-node", data.rejected && "map-node--rejected", data.fold && "map-node--folded", data.changedRound !== null && "map-node--blink", "nopan"].filter(Boolean).join(" ")}
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />
       <button type="button" className="map-node__button" aria-pressed={data.selected} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onClick={(e) => onClick(e, () => data.onSelect(id))}>
         {data.mark && <span className="map-node__mark">{data.mark}</span>}
         <span className="map-node__text">{data.text}</span>
+        {data.fold?.hint && <span className="map-node__hint">{data.fold.hint}</span>}
       </button>
+      {data.fold && <span className="map-node__count">{data.fold.hidden}</span>}
       <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
