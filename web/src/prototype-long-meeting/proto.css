@@ -35,10 +35,9 @@
 .proto-help div { display: flex; gap: 12px; }
 .proto-help dt { min-width: 150px; color: #111827; font-weight: 600; }
 .proto-help dd { margin: 0; }
-/* 試作: 右の列はマップに重ねて出す（出し入れでマップの幅・字幕の位置を変えない）。E で隠す。字幕は操作バーの上に出す */
-.layout { position: relative; }
-.layout > .side { position: absolute; top: 0; right: 0; bottom: 0; z-index: 7; background: #fff; }
+/* 試作: 右の列はマップを狭めて出す（重ねない）。E で隠す。
+   字幕はウィンドウの中央に固定し、列の出し入れで動かさない。列（300px）にかからない幅に抑える。操作バーの上に出す */
 .side[hidden] { display: none; }
-.map .captions { bottom: 120px; }
+.map .captions { position: fixed; bottom: 120px; width: min(720px, calc(100vw - 2 * 316px)); }
 /* 議題だけの縮図: マップの上に白く重ねる */
 .proto-topics { position: absolute; inset: 0; z-index: 4; background: #fff; }

@@ -30,7 +30,8 @@ export type View = {
   minZoom: number; // 人が縮められる下限
   offscreen: boolean; // 画面の外で変わったノードの印を縁に出す
   onUserMove: () => void;
-  inset: number; // 右の列がマップに重なる幅。カメラはこれを除いた部分に収める
+  inset: number; // マップの右に重なるものの幅。カメラはこれを除いた部分に収める（今は 0）
+  side: boolean; // 右の列を出しているか。出し入れでマップの幅が変わる
   command: Command | null; // キーからの見る操作（seq が変わったら一度だけ動かす）
 };
 export type Command = { seq: number; type: "in" | "out" | "one" | "pan" | "node"; dx?: number; dy?: number; ids?: string[] };
@@ -173,14 +174,14 @@ function Canvas(p: CanvasProps) {
   // カメラ。配置は補間中も目標（target）で狙う
   const glanceUntil = useRef(0);
   const lastTopic = useRef(p.topicKey);
-  const lastInset = useRef(p.view?.inset ?? 0);
+  const lastSide = useRef(p.view?.side ?? true);
   useEffect(() => {
     const mode = p.view?.mode ?? "follow";
-    // 右の列の出し入れだけでは寄り直さない。列を出して今の議題が隠れるときだけ、その分を横にずらす
-    const insetChanged = lastInset.current !== (p.view?.inset ?? 0);
-    lastInset.current = p.view?.inset ?? 0;
+    // 右の列の出し入れだけでは寄り直さない。列を出して今の議題が切れるときだけ、その分を横にずらす
+    const sideChanged = lastSide.current !== (p.view?.side ?? true);
+    lastSide.current = p.view?.side ?? true;
     if (mode === "manual") return;
-    if (insetChanged && mode === "overview") return;
+    if (sideChanged && mode === "overview") return;
     const aim = () => {
       const { height } = store.getState();
       const width = store.getState().width - (p.view?.inset ?? 0);
@@ -213,7 +214,7 @@ function Canvas(p: CanvasProps) {
       };
       const b = box(p.focusIds);
       if (!b) return;
-      if (insetChanged) {
+      if (sideChanged) {
         const [tx, ty, z] = store.getState().transform;
         const over = tx + b.x1 * z - (width - 16);
         if (over > 0) void setViewport({ x: tx - over, y: ty, zoom: z }, { duration: 300 });
@@ -236,10 +237,15 @@ function Canvas(p: CanvasProps) {
       return () => clearTimeout(t);
     }
     lastTopic.current = p.topicKey;
+    if (sideChanged) {
+      // マップの幅が変わってから測る
+      const t = setTimeout(aim, 120);
+      return () => clearTimeout(t);
+    }
     const f = requestAnimationFrame(aim);
     return () => cancelAnimationFrame(f);
     // 寸法が測れたら狙い直す（dims）。位置の補間（positions）では狙い直さない
-  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes, p.view?.inset]);
+  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes, p.view?.inset, p.view?.side]);
 
   // キーからの見る操作。in/out/one は画面の中心で、pan は画面の幅・高さの割合で、node は選んだノードと子孫が収まるまで
   const command = p.view?.command;
