@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useHotkey } from "@tanstack/react-hotkeys";
+import { useCallback, useRef, useState } from "react";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { Captions } from "./Captions.tsx";
 import { ChangeList } from "./ChangeList.tsx";
@@ -9,16 +10,38 @@ import { IntakeNotice } from "./IntakeNotice.tsx";
 import type { Speaking } from "./liveFeed.ts";
 import { MapView } from "./MapView.tsx";
 import { useIntakeNotice } from "./useIntakeNotice.ts";
+import { INITIAL_VIEWING, reduceViewing, type CameraCommand, type ViewingEvent, type ViewingState, type VisibleTree } from "./viewing.ts";
+import { ViewingNotice } from "./ViewingNotice.tsx";
 
 // 渡されたスナップショット・字幕の内容・取り込みの状態から、マップ・字幕・右の列を組み立てる（接続は持たない）。
 // 取り込みの状態を渡さなければ、知らせは出ない。
 export function SessionView({ snapshot, speaking, intake }: { snapshot: Snapshot; speaking: Speaking; intake?: IntakeStatus }) {
   // 選んだノードの ID だけを持つ。表示内容は描画のたびに最新のスナップショットから導く
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 見る状態とカメラへの指示。ライブも見返しも、この1つのインスタンスが持つ
+  const [viewing, setViewing] = useState<ViewingState>(INITIAL_VIEWING);
+  const [camera, setCamera] = useState<{ command: CameraCommand; seq: number }>({ command: "follow", seq: 0 });
+  // マップから最後に届いた見えている木。Esc の判断に使う
+  const lastTree = useRef<VisibleTree | null>(null);
+  const viewingRef = useRef(viewing);
+  const dispatch = useCallback((event: ViewingEvent, tree: VisibleTree) => {
+    lastTree.current = tree;
+    const out = reduceViewing(viewingRef.current, event, tree);
+    viewingRef.current = out.state;
+    setViewing(out.state);
+    setCamera((c) => ({ command: out.camera, seq: c.seq + 1 }));
+  }, []);
+  useHotkey("Escape", (e) =>
+    dispatch(
+      { type: "escape", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey },
+      lastTree.current ?? { ids: [], targets: {}, currentTopic: snapshot.currentTopic },
+    ),
+  );
   return (
     <div className="layout">
       <div className="map">
-        <MapView snapshot={snapshot} selectedId={selectedId} onSelect={setSelectedId} />
+        <MapView snapshot={snapshot} selectedId={selectedId} onSelect={setSelectedId} viewing={viewing} camera={camera} onViewingEvent={dispatch} />
+        <ViewingNotice manual={viewing.mode === "manual"} />
         <Captions speaking={speaking} />
         {intake !== undefined && <IntakeNoticeOf status={intake} />}
       </div>

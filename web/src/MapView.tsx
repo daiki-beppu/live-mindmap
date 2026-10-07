@@ -1,5 +1,6 @@
 import {
   getNodesBounds,
+  PanOnScrollMode,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
@@ -18,6 +19,7 @@ import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH } from "./layout.ts";
 import { MapNode, type MapNodeData } from "./MapNode.tsx";
 import { useAnimatedPositions } from "./useAnimatedPositions.ts";
+import type { CameraCommand, ViewingEvent, ViewingState, VisibleTree } from "./viewing.ts";
 
 const nodeTypes = { map: MapNode };
 
@@ -29,10 +31,29 @@ type SelectProps = { selectedId: string | null; onSelect: (nodeId: string) => vo
 // onFitted は still のとき、全ノードが測られ、全体を収めようとした後に呼ぶ。引数は、全ノードが画面に収まったか（撮る合図の判断材料）。
 type StillProps = { still?: boolean; onFitted?: (fitsAll: boolean) => void };
 
+// 見る状態（人が動かすと自動のカメラが止まる）。still では使わず、省略すると自動として振る舞い、出来事を出さない
+type ViewingProps = {
+  viewing?: ViewingState;
+  camera?: { command: CameraCommand; seq: number };
+  onViewingEvent?: (event: ViewingEvent, tree: VisibleTree) => void;
+};
+
 // 撮影では、既定の最小倍率（0.5）より小さくして、大きなマップも収める。この下限でも収まらない場合は onFitted(false) で知らせる
 const STILL_MIN_ZOOM = 0.02;
+// 人が操作するときの倍率の範囲（自動のカメラの範囲は camera.ts）
+const USER_MIN_ZOOM = 0.5;
+const USER_MAX_ZOOM = 2;
 
-function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: { snapshot: Snapshot } & SelectProps & StillProps) {
+function MapCanvas({
+  snapshot,
+  selectedId,
+  onSelect,
+  still = false,
+  onFitted,
+  viewing,
+  camera,
+  onViewingEvent,
+}: { snapshot: Snapshot } & SelectProps & StillProps & ViewingProps) {
   // React Flow が測った実寸。スナップショットが変わっても捨てない（測り直しは onNodesChange で上書きされる）。
   const [dims, setDims] = useState<Dims>({});
   const { fitView, getViewport, setViewport } = useReactFlow();
@@ -91,8 +112,34 @@ function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: 
     );
   }, [snapshot.nodes]);
 
+  // 見えている木。出来事と一緒に reducer へ渡す
+  const tree = useMemo((): VisibleTree => ({ ids: snapshot.nodes.map((n) => n.id), targets: target, currentTopic: snapshot.currentTopic }), [snapshot, target]);
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+  const onViewingEventRef = useRef(onViewingEvent);
+  onViewingEventRef.current = onViewingEvent;
+
+  // 反映（round の変化）を見る状態へ知らせる。最初の描画も反映として数える
+  useEffect(() => {
+    onViewingEventRef.current?.({ type: "reflect" }, treeRef.current);
+  }, [snapshot.round]);
+
+  // 戻ったときは、同じ round でも今の議題へ寄せ直す
+  const lastSeq = useRef(camera?.seq);
+  if (camera && camera.seq !== lastSeq.current) {
+    lastSeq.current = camera.seq;
+    if (camera.command === "refocus") placedRound.current = null;
+  }
+  const manual = !still && viewing?.mode === "manual";
+
+  // 人が動かしたとき（event がある）だけ知らせる。setViewport や fitView の動き（event が null）は数えない
+  const onUserMove = (event: unknown) => {
+    if (event) onViewingEvent?.({ type: "userMoved" }, tree);
+  };
+
   // 反映のたびに（位置・寸法が変わるたびに）、撮影では全体を、ふだんは今の議題を画面に収める。今の議題が無いときも全体を収める
   useEffect(() => {
+    if (manual) return;
     const focus = still ? null : cameraFocus(snapshot);
     if (focus) {
       // 補間中の位置ではなく目標の位置で測る
@@ -125,7 +172,7 @@ function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: 
       cancelled = true;
       cancelAnimationFrame(frame);
     };
-  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted]);
+  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted, manual, camera?.seq]);
 
   return (
     <ReactFlow
@@ -137,20 +184,33 @@ function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: 
       nodesConnectable={false}
       nodesFocusable={false}
       elementsSelectable={false}
-      panOnDrag={false}
+      deleteKeyCode={null}
+      selectionKeyCode={null}
+      multiSelectionKeyCode={null}
+      panActivationKeyCode={null}
       zoomOnScroll={false}
-      zoomOnPinch={false}
       zoomOnDoubleClick={false}
-      {...(still ? { minZoom: STILL_MIN_ZOOM } : {})}
+      {...(still
+        ? { panOnDrag: false, zoomOnPinch: false, minZoom: STILL_MIN_ZOOM }
+        : {
+            panOnDrag: true,
+            panOnScroll: true,
+            panOnScrollMode: PanOnScrollMode.Free,
+            zoomOnPinch: true,
+            minZoom: USER_MIN_ZOOM,
+            maxZoom: USER_MAX_ZOOM,
+            onMoveStart: onUserMove,
+            onMove: onUserMove,
+          })}
       proOptions={{ hideAttribution: true }}
     />
   );
 }
 
-export function MapView({ snapshot, selectedId, onSelect, still, onFitted }: { snapshot: Snapshot } & SelectProps & StillProps) {
+export function MapView({ snapshot, selectedId, onSelect, still, onFitted, viewing, camera, onViewingEvent }: { snapshot: Snapshot } & SelectProps & StillProps & ViewingProps) {
   return (
     <ReactFlowProvider>
-      <MapCanvas snapshot={snapshot} selectedId={selectedId} onSelect={onSelect} still={still} onFitted={onFitted} />
+      <MapCanvas snapshot={snapshot} selectedId={selectedId} onSelect={onSelect} still={still} onFitted={onFitted} viewing={viewing} camera={camera} onViewingEvent={onViewingEvent} />
     </ReactFlowProvider>
   );
 }
