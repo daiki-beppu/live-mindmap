@@ -1,4 +1,4 @@
-// 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒だけを受け取る。
+// 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒（elapsed）か、音声の時刻の通知（audioTime）だけを受け取る。
 
 // 画面の経過 1 秒あたりに進む会議の秒数
 // 音声なしの既定の速さ
@@ -18,6 +18,7 @@ export type PlaybackEvent =
   | { type: "slower" }
   | { type: "faster" }
   | { type: "elapsed"; seconds: number }
+  | { type: "audioTime"; time: number } // 音声つき: <audio> の今の currentTime（秒）。音声つきでは時刻はこの通知だけで決まる
   | { type: "ended" };
 
 export type PlaybackContext = { duration: number; reflectionTimes: readonly number[]; rates: readonly number[] };
@@ -55,6 +56,11 @@ export function playbackReducer(state: PlaybackState, event: PlaybackEvent, { du
       if (!state.playing) return state;
       const time = state.time + event.seconds * state.rate;
       return time >= duration ? { ...state, time: duration, playing: false } : { ...state, time };
+    }
+    case "audioTime": {
+      // 止めている間は無視する（止めた直後に届いた通知で、止めた時刻やシーク先から戻らないように）。録音が会議より長くても、会議の長さで止める
+      if (!state.playing) return state;
+      return event.time >= duration ? { ...state, time: duration, playing: false } : { ...state, time: Math.max(event.time, 0) };
     }
     case "ended":
       return { ...state, time: duration, playing: false };

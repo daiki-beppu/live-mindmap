@@ -14,6 +14,7 @@ import { ReviewBuild } from "../src/review.ts";
 import { startServer, startServerWithLayers, type ServerOptions } from "../src/server.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { DiffUpdater } from "../src/core/index.ts";
+import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -35,7 +36,7 @@ const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOption
       helper: { command: process.execPath, args: [fakeHelper, script, record] },
       updaterLayer: updaterLayer(() => Effect.succeed({ ops: [] })),
       capture: async (_snapshot, path) => writeFile(path, ""),
-      writeReview: async (dir) => [`${dir}/map.html`],
+      writeReview: async (dir) => ({ paths: [`${dir}/map.html`], skipped: [] }),
       ...options,
     })),
     (s) => promiseOrDie(() => s.close()),
@@ -109,7 +110,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const sessionSinksLayer = SessionSinks.layer({
     updaterLayer: updaterLayer(() => Effect.succeed({ ops: [] })),
     capture: async (_snapshot, path) => writeFile(path, ""),
-    writeReview: async (dir) => [`${dir}/map.html`],
+    writeReview: async (dir) => ({ paths: [`${dir}/map.html`], skipped: [] }),
   });
   const server = yield* Effect.acquireRelease(
     Effect.tryPromise(() => startServerWithLayers(
@@ -377,6 +378,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           Layer.succeed(Console.Console, consoleService),
           Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
           Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("") })),
+          fakeAudioMix().layer,
         );
         return runCli(["status"]).pipe(Effect.provide(cliLayer), Effect.map(() => out.join("")));
       });

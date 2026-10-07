@@ -28,7 +28,7 @@ export type ListenOptions = {
 export type ServerOptions = ListenOptions & {
   updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>; // セッションごとに updater を 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
   capture: PromiseMapCapture; // 終了時の map.png の撮影
-  writeReview: PromiseReviewPages; // 終了時の map.html の書き出し
+  writeReview: PromiseReviewPages; // 終了時の map.html（録音があれば map-audio.html も）の書き出し
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 
@@ -115,9 +115,12 @@ if (import.meta.main) {
     });
   // 見返し用の HTML も同じく、入口で Layer を渡して Promise の口にする（失敗は reject にして、HTML だけ諦める扱いを保つ）
   const { ReviewBuild, writeReviewPages } = await import("./review.ts");
+  const { AudioMix } = await import("./audioMix.ts");
+  const helperCommand = { command: helperPath, args: [] };
+  const audioMixLayer = AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner));
   const writeReview: PromiseReviewPages = (dir, logPath, variants) =>
     Effect.runPromise(
-      Effect.result(writeReviewPages(dir, logPath, variants).pipe(Effect.provide(ReviewBuild.layer))),
+      Effect.result(writeReviewPages(dir, logPath, variants).pipe(Effect.provide(Layer.mergeAll(ReviewBuild.layer, audioMixLayer)))),
     ).then((result) => {
       if (Result.isFailure(result)) throw result.failure;
       return result.success;
@@ -128,7 +131,7 @@ if (import.meta.main) {
     updaterLayer: claudeUpdaterLayer,
     capture,
     writeReview,
-    helper: { command: helperPath, args: [] },
+    helper: helperCommand,
     onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
   };
   // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・

@@ -13,6 +13,7 @@ import { REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
 import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
+import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
 // 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
@@ -50,6 +51,7 @@ function dependencies(sessionsDir: string, port = "0") {
   const captures: Snapshot[] = [];
   const captureFailure = { error: null as CaptureFailed | null };
   const reviewFailure = { error: null as ReviewPageFailed | null };
+  const mix = fakeAudioMix();
   const consoleService: Console.Console = {
     ...console,
     log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
@@ -71,8 +73,9 @@ function dependencies(sessionsDir: string, port = "0") {
     Layer.succeed(ReviewBuild, ReviewBuild.of({
       build: () => reviewFailure.error ? Effect.fail(reviewFailure.error) : Effect.succeed("<!doctype html><html><body></body></html>"),
     })),
+    mix.layer,
   );
-  return { layer, stdout, stderr, captures, captureFailure, reviewFailure };
+  return { layer, stdout, stderr, captures, captureFailure, reviewFailure, mix };
 }
 
 // 既定の updater。script を順に返す
@@ -155,6 +158,10 @@ describe("CLI", () => {
     expect(md).toContain("面接は何回か → 2 回にする");
     const drawnix = JSON.parse(yield* Effect.tryPromise(() => readFile(join(session, "map.drawnix"), "utf8")));
     expect(drawnix).toMatchObject({ type: "drawnix", elements: [{ type: "mindmap" }] });
+    // play のセッションには録音が無い。map-audio.html は作らず、mix も呼ばない
+    expect(files).not.toContain("map-audio.html");
+    expect(deps.mix.calls).toEqual([]);
+    expect(deps.stderr.join("")).not.toContain("map-audio");
   }));
 
   it.effect("map.html には log.jsonl の出来事がそのまま埋め込まれる（偽のビルドのテンプレートに差し込む）", () => Effect.gen(function* () {
@@ -616,6 +623,144 @@ describe("CLI", () => {
       expect(deps.stdout).toEqual([]);
       expect(readFileSync(join(session, "map.html"), "utf8")).toBe("前の内容");
     }));
+
+    describe("録音があるセッション", () => {
+      // played のセッションに、録音（中身は何でもよい）を置く
+      const withRecordings = (session: string, ...names: string[]) => {
+        for (const name of names) writeFileSync(join(session, name), "録音");
+      };
+
+      it.effect("map.html、map-audio.html の順に書いてそのパスを出し、mix は セッションのフォルダを読んで一時の出力先に書く。map-audio.html には mix の出力が埋め込まれる", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a", "自分.m4a");
+
+        yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n${join(session, "map-audio.html")}\n`);
+        expect(deps.stderr).toEqual([]);
+        expect(deps.mix.calls).toHaveLength(1);
+        expect(deps.mix.calls[0]!.session).toBe(session);
+        expect(dirname(deps.mix.calls[0]!.out)).not.toBe(session); // 既にある出力は上書きされないので、出力はセッションのフォルダに書かない
+        const audioHtml = readFileSync(join(session, "map-audio.html"), "utf8");
+        expect(embeddedAudio(audioHtml)).toEqual(FAKE_MIX_BYTES);
+        expect(embedded(audioHtml)).toEqual(logOf(session)); // ログも同じように埋め込まれている
+        const plainHtml = readFileSync(join(session, "map.html"), "utf8");
+        expect(embeddedAudio(plainHtml)).toBeNull(); // map.html には音声を入れない
+        expect(embedded(plainHtml)).toEqual(logOf(session));
+      }));
+
+      it.effect("`自分` だけの録音（自分-2.m4a）でも map-audio.html を書く", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "自分-2.m4a");
+
+        yield* runCli(["review", session]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n${join(session, "map-audio.html")}\n`);
+        expect(deps.mix.calls).toHaveLength(1);
+      }));
+
+      it.effect("前回の map-audio.html があっても上書きして書き直す（mix の出力先はセッションのフォルダではないので、既にあるファイルで失敗しない）", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a");
+        writeFileSync(join(session, "map-audio.html"), "古い");
+
+        yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+        expect(embeddedAudio(readFileSync(join(session, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
+        expect(deps.stderr).toEqual([]);
+      }));
+
+      it.effect("mix が失敗しても review は成功（終了コード 0）し、map.html だけを書いてそのパスだけを出す。理由は標準エラーに残し、map-audio.html は作らない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a", "自分.m4a");
+        deps.mix.failure.reason = "録音を混ぜられない";
+
+        yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n`);
+        expect(deps.stderr.join("")).toContain("map-audio.html を書き出せませんでした: 録音を混ぜられない");
+        expect(existsSync(join(session, "map-audio.html"))).toBe(false);
+        expect(embedded(readFileSync(join(session, "map.html"), "utf8"))).toEqual(logOf(session));
+      }));
+
+      it.effect("mix が失敗した review は、前回の map-audio.html を消さず、書き直しもしない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        withRecordings(session, "相手.m4a");
+        writeFileSync(join(session, "map-audio.html"), "前回");
+        deps.mix.failure.reason = "失敗";
+
+        yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+        expect(readFileSync(join(session, "map-audio.html"), "utf8")).toBe("前回");
+      }));
+
+      it.effect("ビルドが失敗したら、録音があっても何も書かず、map.html を書き出せませんでした: <理由> の CommandFailed で失敗する（map-audio.html も無い）", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        rmSync(join(session, "map.html"));
+        withRecordings(session, "相手.m4a");
+        deps.reviewFailure.error = new ReviewPageFailed({ message: "ビルドに失敗" });
+
+        const result = yield* Effect.result(runCli(["review"]).pipe(Effect.provide(deps.layer)));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) return;
+        expect(result.failure).toMatchObject({ _tag: "CommandFailed", message: "map.html を書き出せませんでした: ビルドに失敗" });
+        expect(deps.stdout).toEqual([]);
+        expect(existsSync(join(session, "map.html"))).toBe(false);
+        expect(existsSync(join(session, "map-audio.html"))).toBe(false);
+      }));
+
+      it.effect("ログに壊れた行があれば、録音があっても失敗し、mix を呼ばず、何も書かない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        rmSync(join(session, "map.html"));
+        withRecordings(session, "相手.m4a");
+        appendFileSync(join(session, "log.jsonl"), "{壊れた行\n");
+
+        const result = yield* Effect.result(runCli(["review"]).pipe(Effect.provide(deps.layer)));
+
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) return;
+        expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+        expect(deps.stdout).toEqual([]);
+        expect(existsSync(join(session, "map.html"))).toBe(false);
+        expect(existsSync(join(session, "map-audio.html"))).toBe(false);
+      }));
+    });
+
+    describe("録音が無いセッション", () => {
+      it.effect("map.html だけを書き、mix を呼ばず、標準エラーに map-audio の理由を出さない。録音ではない名前のファイル・サブフォルダの中の m4a は録音と数えない", () => Effect.gen(function* () {
+        const dir = yield* temporaryDirectory;
+        const deps = dependencies(dir);
+        const { session } = yield* played(deps);
+        rmSync(join(session, "map.html"));
+        writeFileSync(join(session, "メモ.m4a"), "録音ではない名前");
+        writeFileSync(join(session, "相手.txt"), "拡張子が違う");
+        mkdirSync(join(session, "相手"));
+        writeFileSync(join(session, "相手", "x.m4a"), "サブフォルダの中");
+        deps.mix.failure.reason = "呼ばれたら理由が出る"; // 呼ばれていれば標準エラーに出る
+
+        yield* runCli(["review"]).pipe(Effect.provide(deps.layer));
+
+        expect(deps.stdout.join("")).toBe(`${join(session, "map.html")}\n`);
+        expect(deps.mix.calls).toEqual([]);
+        expect(deps.stderr).toEqual([]);
+        expect(existsSync(join(session, "map-audio.html"))).toBe(false);
+      }));
+    });
 
     it.effect("引数を省略してセッションが 1 つも無ければ、何も書かず、タグ付きの失敗にする", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;

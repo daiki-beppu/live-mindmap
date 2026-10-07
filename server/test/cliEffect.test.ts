@@ -14,6 +14,7 @@ import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
 import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
+import { fakeAudioMix } from "./fixtures/audioMix.ts";
 
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
 vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
@@ -49,6 +50,7 @@ function dependencies(sessionsDir: string) {
       }),
     })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
+    fakeAudioMix().layer,
   );
   return { layer, stdout, stderr, captures };
 }
