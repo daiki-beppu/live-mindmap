@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Config, Console, Effect, Layer, Option, Predicate, Queue, Result, Schema, SchemaIssue } from "effect";
+import { Cause, Config, Console, Effect, Layer, Option, Predicate, Queue, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { MapCapture, type PromiseMapCapture } from "./capture.ts";
@@ -22,7 +22,6 @@ import {
   toJsonExport,
   toMarkdown,
   TranscriptFile,
-  Truth,
   type DiffUpdater as UpdateFn,
   type IntakeLogEvent,
   type IntakeStatusReport,
@@ -32,6 +31,7 @@ import {
   type Snapshot,
 } from "./core/index.ts";
 import { openListener, serveFeed } from "./http.ts";
+import { describe, formatIssues, InvalidTruthFile, oneLine, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
@@ -50,10 +50,6 @@ class ServerUnreachable extends Schema.TaggedError<ServerUnreachable>()("ServerU
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", { message: Schema.String }) {}
 class NoSession extends Schema.TaggedError<NoSession>()("NoSession", { sessionsDir: Schema.String }) {}
 class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
-class InvalidTruthFile extends Schema.TaggedError<InvalidTruthFile>()("InvalidTruthFile", {
-  path: Schema.String,
-  reason: Schema.String,
-}) {}
 class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()("InvalidTranscriptFile", {
   path: Schema.String,
   reason: Schema.String,
@@ -114,28 +110,6 @@ const CLI_FAILURE_TAGS: ReadonlySet<string> = new Set<CliFailure["_tag"]>([
 const isCliFailure = (failure: unknown): failure is CliFailure =>
   Predicate.hasProperty(failure, "_tag") && Predicate.isString(failure._tag) && CLI_FAILURE_TAGS.has(failure._tag);
 
-// 入口の 1 行は 1 行に保つ（stderr を読む側は 1 行だけを期待する）
-const oneLine = (text: string): string => text.replaceAll(/\r?\n/g, " ");
-const describe = (e: unknown): string => oneLine(e instanceof Error ? e.message : String(e));
-
-const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1();
-
-// 正解ファイルの decode の失敗を 1 行の理由にする。文面は core/evaluate.ts の Truth が正本で、ここは場所だけを足す
-// （path は [種別] か [種別, 件目, ...]。どこを直すかは種別と件目で足りるので、field 名は添えない）。
-// union や配列の要素は 1 つの誤りから複数の issue になるため、同じ行になったものは 1 つにまとめる
-const truthReason = (error: Schema.SchemaError): string =>
-  oneLine(
-    [
-      ...new Set(
-        formatIssues(error.issue).issues.map(({ message, path }) => {
-          const [kind, index] = (path ?? []).map((segment) => (Predicate.isObject(segment) ? segment.key : segment));
-          if (!Predicate.isString(kind)) return message;
-          return Predicate.isNumber(index) ? `「${kind}」の ${index + 1} 件目: ${message}` : `「${kind}」${message}`;
-        }),
-      ),
-    ].join(" / "),
-  );
-
 // decode の失敗を 1 行の理由にする。stop の paths のように [配列の名前, 件目, ...] の形で場所が分かるときは
 // 「<名前>」の <n> 件目 を先頭に置く（人が直す場所を日本語で示す）
 const decodeReason = (error: Schema.SchemaError): string =>
@@ -170,8 +144,6 @@ const portConfig = Config.Int("LIVE_MINDMAP_PORT").pipe(Config.withDefault(DEFAU
 // 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
 // （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）
 const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
-
-const readTextFile = (path: string) => Effect.try({ try: () => readFileSync(path, "utf8"), catch: describe });
 
 // セッションのフォルダ（名前は開始時刻）のうち、file を持つ最新のもの
 const latestSession = (sessionsDir: string, file: string) =>
@@ -568,17 +540,8 @@ const evaluate = Command.make(
     ),
   },
   Effect.fn("eval")(function* ({ sessions, truth }) {
-    // 正解ファイルの検証は段 1 の Truth の Schema が 1 つだけ持つ（Flag 側では検証しない）
-    const expected = Option.isNone(truth)
-      ? undefined
-      : yield* readTextFile(truth.value).pipe(
-          Effect.mapError((reason) => new InvalidTruthFile({ path: truth.value, reason })),
-          Effect.flatMap((text) =>
-            Schema.decodeUnknownEffect(Schema.fromJsonString(Truth))(text).pipe(
-              Effect.mapError((e) => new InvalidTruthFile({ path: truth.value, reason: truthReason(e) })),
-            ),
-          ),
-        );
+    // 正解ファイルの検証は共有の readTruthFile（段 1 の Truth の Schema）が持つ（Flag 側では検証しない）
+    const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const runs: Run[] = [];
     for (const dir of sessions) {
       const path = join(dir, EXPORT_FILE);

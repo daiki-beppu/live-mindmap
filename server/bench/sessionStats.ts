@@ -1,10 +1,15 @@
 // 保存したセッションを、発言の本文を読まずに数だけで調べる（Issue #186）。
 // 第三者の会議のログは中身を表示しない決まりなので、出すのは件数・長さ・割合・音量だけにする。
-// 使い方: node bench/sessionStats.ts <セッションのフォルダ、またはそれを並べたフォルダ>...
+// 使い方は各 Command・Flag の withDescription が正本で、`node bench/sessionStats.ts --help` で読む。
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Track } from "../src/core/index.ts";
+import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { Effect, Schema } from "effect";
+import { Argument, Command, Flag } from "effect/cli";
+import { Track } from "../src/core/index.ts";
+import { describe } from "../src/truthFile.ts";
+import { BENCH_VERSION, MissingSessionDir, readInputText, reportFailure, write } from "./entry.ts";
 
 const TRACKS: readonly Track[] = ["相手", "自分"];
 
@@ -25,18 +30,24 @@ export type SessionStats = {
 
 type Interval = { start: number; end: number };
 
-// ログの 1 行 1 イベントを読む。壊れた行（書きかけの末尾など）は飛ばす
-export function parseLog(text: string): Record<string, unknown>[] {
-  const events: Record<string, unknown>[] = [];
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    try {
-      events.push(JSON.parse(line) as Record<string, unknown>);
-    } catch {
-      // 飛ばす
-    }
-  }
-  return events;
+// ログの 1 行。数える欄だけを任意で持つ緩い形（古いログ・intake-* の行・input の無い diff の行も数える）。
+// 段 1 の LogEvent は start・remark・diff の 3 種で必須欄が厳しいので、ここでは使わない
+const LogLine = Schema.Struct({
+  type: Schema.String,
+  remark: Schema.optionalKey(Schema.Struct({ track: Track, start: Schema.Finite, end: Schema.Finite })),
+  ops: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  error: Schema.optionalKey(Schema.Unknown),
+});
+export type LogLine = typeof LogLine["Type"];
+
+const decodeLogLine = Schema.decodeEffect(Schema.fromJsonString(LogLine));
+
+// ログの 1 行 1 イベントを読む。壊れた行（書きかけの末尾など）と形が合わない行は飛ばす
+export function parseLog(text: string) {
+  return Effect.forEach(
+    text.split("\n").filter((line) => line.trim() !== ""),
+    (line) => decodeLogLine(line).pipe(Effect.map((event) => [event]), Effect.catch(() => Effect.succeed([] as LogLine[]))),
+  ).pipe(Effect.map((lines) => lines.flat()));
 }
 
 // 2 つ以上の発言が重なっている時間 / 1 つ以上の発言がある時間
@@ -57,7 +68,7 @@ export function overlapRatio(intervals: readonly Interval[]): number {
   return covered === 0 ? 0 : doubled / covered;
 }
 
-export function sessionStats(events: readonly Record<string, unknown>[]): SessionStats {
+export function sessionStats(events: readonly LogLine[]): SessionStats {
   const intervals: Record<Track, Interval[]> = { 相手: [], 自分: [] };
   const stats: SessionStats = {
     tracks: { 相手: { remarks: 0, duration: 0, overlap: 0 }, 自分: { remarks: 0, duration: 0, overlap: 0 } },
@@ -69,9 +80,9 @@ export function sessionStats(events: readonly Record<string, unknown>[]): Sessio
   };
   for (const e of events) {
     if (e.type === "remark") {
-      const r = e.remark as { track: Track; start: number; end: number };
+      const r = e.remark;
+      if (!r) continue;
       const t = stats.tracks[r.track];
-      if (!t) continue;
       t.remarks += 1;
       t.duration += Math.max(0, r.end - r.start);
       intervals[r.track].push(r);
@@ -79,7 +90,7 @@ export function sessionStats(events: readonly Record<string, unknown>[]): Sessio
     } else if (e.type === "diff") {
       stats.diffs += 1;
       if (e.error) stats.diffErrors += 1;
-      stats.ops += Array.isArray(e.ops) ? e.ops.length : 0;
+      stats.ops += e.ops?.length ?? 0;
     } else if (e.type === "intake-stopped") stats.intake.stopped += 1;
     else if (e.type === "intake-restarted") stats.intake.restarted += 1;
     else if (e.type === "intake-gave-up") stats.intake.gaveUp += 1;
@@ -137,14 +148,39 @@ export function formatRow(name: string, s: SessionStats, audio: Record<Track, Au
   return [head, ...rows];
 }
 
+export const command = Command.make(
+  "sessionStats",
+  {
+    paths: Argument.String("session").pipe(
+      Argument.withDescription("セッションのフォルダ、またはそれを並べたフォルダ（log.jsonl があるフォルダを全部数える）"),
+      Argument.atLeast(1),
+    ),
+    noAudio: Flag.Boolean("no-audio").pipe(
+      Flag.withDescription("録音（ffmpeg）を読まず、ログだけで数える"),
+      Flag.withDefault(false),
+    ),
+  },
+  Effect.fn("sessionStats")(function* ({ noAudio, paths }) {
+    // 出力の前に全てのパスを解決する（途中のパスが無ければ、何も出さずに失敗する）
+    const dirs = (yield* Effect.forEach(paths, (path) =>
+      Effect.try({ try: () => sessionDirs(path), catch: (e) => new MissingSessionDir({ path, reason: describe(e) }) }),
+    )).flat();
+    for (const dir of dirs) {
+      const stats = sessionStats(yield* parseLog(yield* readInputText(join(dir, "log.jsonl"))));
+      const audio = noAudio ? null : yield* Effect.sync(() => ({ 相手: trackAudio(dir, "相手"), 自分: trackAudio(dir, "自分") }));
+      yield* write(formatRow(basename(dir), stats, audio).join("\n") + "\n");
+    }
+  }),
+).pipe(
+  Command.withDescription(
+    "保存したセッションを、発言の本文を読まずに数だけで調べる（件数・長さ・割合・音量だけを出す。第三者の会議のログは中身を表示しない決まり。Issue #186）",
+  ),
+);
+
 if (import.meta.main) {
-  const args = process.argv.slice(2);
-  const noAudio = args.includes("--no-audio");
-  const paths = args.filter((a) => a !== "--no-audio");
-  if (paths.length === 0) throw new Error("usage: sessionStats.ts <セッションのフォルダ、またはそれを並べたフォルダ>... [--no-audio]");
-  for (const dir of paths.flatMap(sessionDirs)) {
-    const stats = sessionStats(parseLog(readFileSync(join(dir, "log.jsonl"), "utf8")));
-    const audio = noAudio ? null : { 相手: trackAudio(dir, "相手"), 自分: trackAudio(dir, "自分") };
-    process.stdout.write(formatRow(basename(dir), stats, audio).join("\n") + "\n");
-  }
+  Command.run(command, { version: BENCH_VERSION }).pipe(
+    Effect.tapCause(reportFailure),
+    Effect.provide(NodeServices.layer),
+    NodeRuntime.runMain({ disableErrorReporting: true }),
+  );
 }

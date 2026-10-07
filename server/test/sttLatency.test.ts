@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 import { createSession, type DiffInput } from "../src/core/index.ts";
 import {
   finalDelays,
@@ -24,18 +25,27 @@ const final = (arrival: number, start: number, end: number, text: string, track:
 const T = 2; // 途中結果がこの秒数変わらなければ、確定したものとして扱う（しきい値の具体値は設計判断。テストでは固定して使う）
 
 describe("計測結果の読み込みと集計", () => {
-  it("JSONL を 1 行 1 結果として読み、空行は無視する", () => {
+  it.effect("JSONL を 1 行 1 結果として読み、空行は無視する", () => Effect.gen(function* () {
     const text = [
       JSON.stringify(partial(12.34, 10.1, 12.2, "明日の")),
       "",
       JSON.stringify(final(13.5, 10.1, 12.2, "明日の会議。", "自分")),
       "",
     ].join("\n");
-    expect(parseResults(text)).toEqual([
+    expect(yield* parseResults(text)).toEqual([
       { track: "相手", arrival: 12.34, isFinal: false, start: 10.1, end: 12.2, text: "明日の" },
       { track: "自分", arrival: 13.5, isFinal: true, start: 10.1, end: 12.2, text: "明日の会議。" },
     ]);
-  });
+  }));
+
+  it.effect.each([
+    { name: "JSON として読めない行", text: `${JSON.stringify(partial(1, 0, 1, "あ"))}\n{"track":` },
+    { name: "形が違う行（isFinal が無い）", text: JSON.stringify({ track: "相手", arrival: 1, start: 0, end: 1, text: "あ" }) },
+    { name: "形が違う行（track が相手・自分でない）", text: JSON.stringify({ ...partial(1, 0, 1, "あ"), track: "第三者" }) },
+  ])("結果の行が壊れていれば（$name）、飛ばさずに失敗する", ({ text }) => Effect.gen(function* () {
+    const failure = yield* Effect.flip(parseResults(text));
+    expect(failure).toBeDefined();
+  }));
 
   it("確定までの遅れは、確定結果だけを数え、届いた時刻 − 発言の end で測る", () => {
     const results = [

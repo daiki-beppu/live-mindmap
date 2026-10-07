@@ -86,7 +86,7 @@ function parseKeywords(raw: unknown, at: string): Keyword[] {
 // JSON.parse した正解を検証して Truth にする。形が違えば Error（呼び出し側がファイルのパスを添える）。
 // 正解の形（{ "決定": [{ text?, from, to, keywords }], "TODO": [...] }、from / to は会議の中の秒、
 // keywords は 1 件以上で要素は文字列か言い換えの文字列の配列）は、上の TruthItem・Keyword が正本。
-// cli eval は Truth の Schema で読む（段 4）。この手書きの検証は bench 用に残す（bench の移行は段 5）
+// cli eval と bench は共有の readTruthFile で Truth の Schema から読む。この手書きの検証は既存のテストが使うので残す
 export function parseTruth(raw: unknown): Truth {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("正解はオブジェクトで書く");
   const obj = raw as Record<string, unknown>;
