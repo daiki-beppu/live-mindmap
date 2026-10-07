@@ -11,7 +11,7 @@ describe("KeyList: ? で開くキー一覧", () => {
 
   it("行は配列の定数にまとまり、全ての行が描かれる", () => {
     expect(Array.isArray(KEY_LIST)).toBe(true);
-    expect(KEY_LIST.length).toBeGreaterThanOrEqual(13);
+    expect(KEY_LIST.length).toBeGreaterThanOrEqual(15);
     for (const row of KEY_LIST) {
       expect(row.keys.length).toBeGreaterThan(0);
       expect(html).toContain(row.keys.replace(/&/g, "&amp;"));
@@ -21,6 +21,14 @@ describe("KeyList: ? で開くキー一覧", () => {
   it("キー: Esc F = - ^ 0 Shift ? が載る", () => {
     for (const k of ["Esc", "F", "=", "-", "^", "0", "Shift", "?"]) expect(html).toContain(k);
     expect(html).toContain("JIS");
+  });
+
+  it("E（右の列）と C（字幕）の行が、出す・隠すの説明つきで載る", () => {
+    const row = (k: string) => KEY_LIST.find((r) => r.keys === k);
+    expect(row("E")?.action).toContain("右の列");
+    expect(row("C")?.action).toContain("字幕");
+    expect(html).toContain("右の列");
+    expect(html).toContain("字幕");
   });
 
   it("マウス・トラックパッド: スクロール・ドラッグ・ピンチ・クリック・縁の点が載る", () => {

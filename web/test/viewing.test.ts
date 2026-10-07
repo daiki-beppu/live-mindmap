@@ -620,3 +620,148 @@ describe("nextCameraOrder: 同じ更新内で、まだ描画されていない r
     expect(out.order.command).toEqual({ type: "hold" });
   });
 });
+
+describe("reduceViewing: E で右の列、C で字幕を出し入れする（カメラの状態とは独立）", () => {
+  const toggle = (type: "side" | "captions", over: Partial<{ meta: boolean; ctrl: boolean; alt: boolean }> = {}): ViewingEvent => ({ type, meta: false, ctrl: false, alt: false, ...over });
+  const manual: ViewingState = { mode: "manual", topic: "n1" };
+  const overview: ViewingState = { mode: "overview", topic: "n1", before: { mode: "manual", topic: "n1" } };
+  const cameras = [
+    ["自動", INITIAL_VIEWING],
+    ["manual", manual],
+    ["overview", overview],
+  ] as const;
+  const FLAG = { side: "sideHidden", captions: "captionsHidden" } as const;
+  const hidden = (s: ViewingState, type: "side" | "captions"): ViewingState => ({ ...s, [FLAG[type]]: true });
+
+  it("初めは両方とも出している（隠す印を持たない）", () => {
+    expect("sideHidden" in INITIAL_VIEWING).toBe(false);
+    expect("captionsHidden" in INITIAL_VIEWING).toBe(false);
+  });
+
+  for (const type of ["side", "captions"] as const) {
+    it.each(cameras)(`${type}: %s のとき、押すと隠れ、もう一度で出て元の状態に戻る（印が残らない）`, (_name, from) => {
+      const hide = reduceViewing(from, toggle(type), tree("n1"));
+      expect(hide.state).toEqual(hidden(from, type));
+      const show = reduceViewing(hide.state, toggle(type), tree("n1"));
+      expect(show.state).toEqual(from);
+      expect(FLAG[type] in show.state).toBe(false);
+    });
+
+    it.each(["meta", "ctrl", "alt"] as const)(`${type}: %s 付きでは、出ていても隠れていても状態を変えない`, (mod) => {
+      for (const [, from] of cameras) {
+        expect(reduceViewing(from, toggle(type, { [mod]: true }), tree("n1")).state).toEqual(from);
+        const h = hidden(from, type);
+        expect(reduceViewing(h, toggle(type, { [mod]: true }), tree("n1")).state).toEqual(h);
+      }
+    });
+  }
+
+  it("E と C は互いの出し入れに触らない", () => {
+    const sideHidden = reduceViewing(manual, toggle("side"), tree("n1")).state;
+    const both = reduceViewing(sideHidden, toggle("captions"), tree("n1")).state;
+    expect(both).toEqual({ ...manual, sideHidden: true, captionsHidden: true });
+    expect(reduceViewing(both, toggle("side"), tree("n1")).state).toEqual({ ...manual, captionsHidden: true });
+    expect(reduceViewing(both, toggle("captions"), tree("n1")).state).toEqual({ ...manual, sideHidden: true });
+  });
+
+  it("キー一覧を開いたままでも、開閉は変えずに出し入れできる", () => {
+    const opened: ViewingState = { ...manual, keyList: true };
+    expect(reduceViewing(opened, toggle("side"), tree("n1")).state).toEqual({ ...opened, sideHidden: true });
+    expect(reduceViewing(opened, toggle("captions"), tree("n1")).state).toEqual({ ...opened, captionsHidden: true });
+  });
+
+  it("キー一覧の開閉と Esc は、隠している印を変えない", () => {
+    const h: ViewingState = { ...manual, sideHidden: true, captionsHidden: true };
+    const help: ViewingEvent = { type: "keyList", meta: false, ctrl: false, alt: false };
+    const opened = reduceViewing(h, help, tree("n1")).state;
+    expect(opened).toEqual({ ...h, keyList: true });
+    expect(reduceViewing(opened, help, tree("n1")).state).toEqual(h);
+    expect(reduceViewing(opened, plainEscape, tree("n1")).state).toEqual(h);
+  });
+
+  it("Esc（manual なら自動へ戻る Esc も、修飾付きも）では出し入れが変わらない", () => {
+    for (const [, from] of cameras) {
+      const h: ViewingState = { ...from, sideHidden: true, captionsHidden: true };
+      const out = reduceViewing(h, plainEscape, tree("n1"));
+      expect(out.state.sideHidden).toBe(true);
+      expect(out.state.captionsHidden).toBe(true);
+      const mod = reduceViewing(h, { ...plainEscape, meta: true }, tree("n1"));
+      expect(mod.state).toEqual(h);
+    }
+    expect(reduceViewing({ ...manual, sideHidden: true }, plainEscape, tree("n1")).state).toEqual({ mode: "auto", sideHidden: true });
+  });
+
+  it("カメラの状態を変える出来事（人の操作・反映・縁の点・キー・見返しの idle / timeMoved）でも出し入れは変わらない", () => {
+    const h = (s: ViewingState): ViewingState => ({ ...s, sideHidden: true, captionsHidden: true });
+    const keep = (state: ViewingState, event: ViewingEvent, t: VisibleTree, scope: "live" | "review" = "live") => {
+      const out = reduceViewing(state, event, t, scope).state;
+      expect(out.sideHidden).toBe(true);
+      expect(out.captionsHidden).toBe(true);
+      return out;
+    };
+    keep(h(INITIAL_VIEWING), moved, tree("n1"));
+    keep(h(INITIAL_VIEWING), reflect, tree("n1"));
+    keep(h(manual), reflect, tree("n2")); // 議題が変わって自動へ戻る
+    keep(h(manual), { type: "edgeDot", id: "n2" }, tree("n1"));
+    keep(h(INITIAL_VIEWING), { type: "key", key: "=", meta: false, ctrl: false, alt: false }, tree("n1"));
+    keep(h(manual), { type: "idle" }, tree("n1"), "review");
+    keep(h(manual), { type: "timeMoved" }, tree("n1"), "review");
+    keep(h(overview), { type: "timeMoved" }, tree("n1"), "review");
+  });
+
+  it("隠したまま F → F で戻っても隠したまま。全体を見る前の状態（before）に印は入らず、戻った後に古い印が復活しない", () => {
+    const f: ViewingEvent = { type: "key", key: "F", meta: false, ctrl: false, alt: false };
+    const start: ViewingState = { ...manual, sideHidden: true };
+    const toOverview = reduceViewing(start, f, tree("n1")).state;
+    expect(toOverview).toEqual({ mode: "overview", topic: "n1", before: { mode: "manual", topic: "n1" }, sideHidden: true });
+    expect(reduceViewing(toOverview, f, tree("n1")).state).toEqual(start);
+    // 全体を見ている間に出し直してから戻ると、出た状態で戻る
+    const shownAgain = reduceViewing(toOverview, toggle("side"), tree("n1")).state;
+    expect(reduceViewing(shownAgain, f, tree("n1")).state).toEqual(manual);
+  });
+
+  it.each(cameras)("E / C はカメラの状態（%s）を変えない", (_name, from) => {
+    for (const type of ["side", "captions"] as const) {
+      const out = reduceViewing(from, toggle(type), tree("n1")).state;
+      const { sideHidden: _s, captionsHidden: _c, ...camera } = out;
+      expect(camera).toEqual(from);
+    }
+  });
+
+  it.each(cameras)("E は %s のとき、寄せ直す指示（follow・refocus・fitAll）を出さず、列で切れる分だけずらす指示（shiftIntoView）を出す。出す・隠すの両方で同じ", (_name, from) => {
+    const hide = reduceViewing(from, toggle("side"), tree("n1"));
+    expect(hide.camera).toEqual({ type: "shiftIntoView" });
+    const show = reduceViewing(hide.state, toggle("side"), tree("n1"));
+    expect(show.camera).toEqual({ type: "shiftIntoView" });
+    for (const c of [hide.camera, show.camera]) expect(["follow", "refocus", "fitAll"]).not.toContain(c.type);
+  });
+
+  it.each([
+    ["自動", INITIAL_VIEWING, "follow"],
+    ["manual", manual, "hold"],
+    ["overview", overview, "hold"],
+  ] as const)("C は %s のとき、マップの大きさが変わらないので何もしない指示（%s の既定）。寄せ直す指示は出さない", (_name, from, cmd) => {
+    const out = reduceViewing(from, toggle("captions"), tree("n1"));
+    expect(out.camera).toEqual({ type: cmd });
+    expect(["refocus", "fitAll", "shiftIntoView"]).not.toContain(out.camera.type);
+  });
+
+  it.each(["meta", "ctrl", "alt"] as const)("%s 付きの E は列を動かさないので、ずらす指示も寄せ直す指示も出さない", (mod) => {
+    for (const [, from] of cameras) {
+      const out = reduceViewing(from, toggle("side", { [mod]: true }), tree("n1"));
+      expect(["follow", "hold"]).toContain(out.camera.type);
+    }
+  });
+
+  it("入力の状態を書き換えない", () => {
+    for (const type of ["side", "captions"] as const) {
+      const state: ViewingState = Object.freeze({ mode: "manual", topic: "n1" });
+      const out = reduceViewing(state, toggle(type), tree("n1"));
+      expect(state).toEqual({ mode: "manual", topic: "n1" });
+      expect(out.state).toEqual(hidden(manual, type));
+      const frozenHidden: ViewingState = Object.freeze({ mode: "manual", topic: "n1", [FLAG[type]]: true });
+      expect(reduceViewing(frozenHidden, toggle(type), tree("n1")).state).toEqual(manual);
+      expect(frozenHidden).toEqual(hidden(manual, type));
+    }
+  });
+});

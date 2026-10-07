@@ -7,8 +7,11 @@ type CameraViewing =
   | { mode: "manual"; topic: string | undefined }
   | { mode: "overview"; topic: string | undefined; before: { mode: "auto" } | { mode: "manual"; topic: string | undefined } };
 
-// キー一覧が開いているときだけ keyList: true を持つ（閉じているときはフィールドを置かない）
-export type ViewingState = CameraViewing & { keyList?: true };
+// カメラの状態に重ねる、独立した出し入れの状態。開いている・隠しているときだけ true を持つ（そうでなければフィールドを置かない）。
+// keyList: キー一覧が開いている / sideHidden: 右の列を隠している / captionsHidden: 字幕を隠している
+type Overlay = { keyList?: true; sideHidden?: true; captionsHidden?: true };
+const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
+export type ViewingState = CameraViewing & Overlay;
 
 // キーボードで倍率・位置を変えるキー。Shift なしの矢印は、ノードの選択に空けておく
 export type ViewKey = "=" | "-" | "0" | "F" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
@@ -18,6 +21,9 @@ export type ViewingEvent =
   | { type: "reflect" }
   | { type: "edgeDot"; id: string }
   | { type: "keyList"; meta: boolean; ctrl: boolean; alt: boolean }
+  // E（右の列）と C（字幕）。key ではなく keyList と同じ形の別の出来事で、カメラの状態は変えない
+  | { type: "side"; meta: boolean; ctrl: boolean; alt: boolean }
+  | { type: "captions"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "escape"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean }
   // 触らずに 10 秒たった（見返しの manual のときだけ効く）
@@ -31,6 +37,7 @@ export type ViewingScope = "live" | "review";
 // 見えている木: 見せるノード・目標の位置・今の議題
 export type VisibleTree = { ids: string[]; targets: Record<string, Position>; currentTopic: string | undefined };
 
+// shiftIntoView: 倍率は変えず、今の議題が列で切れる分だけ横にずらす（寄せ直しも収め直しもしない）
 // follow: 今までどおり自動で寄せる / refocus: 今の議題へ寄せ直す / hold: 動かさない
 // zoomBy: 画面の中心を保って倍率を掛ける / zoomTo: 画面の中心を保って倍率にする
 // focusNode: 今の倍率のまま、そのノードへ寄る
@@ -44,7 +51,8 @@ export type CameraCommand =
   | { type: "pan"; dx: number; dy: number }
   | { type: "fitAll" }
   | { type: "focusNode"; id: string }
-  | { type: "restore" };
+  | { type: "restore" }
+  | { type: "shiftIntoView" };
 
 export const INITIAL_VIEWING: ViewingState = { mode: "auto" };
 
@@ -65,6 +73,7 @@ const FOLLOW: CameraCommand = { type: "follow" };
 const REFOCUS: CameraCommand = { type: "refocus" };
 const HOLD: CameraCommand = { type: "hold" };
 const FIT_ALL: CameraCommand = { type: "fitAll" };
+const SHIFT_INTO_VIEW: CameraCommand = { type: "shiftIntoView" };
 
 function commandOf(key: Exclude<ViewKey, "F">): CameraCommand {
   switch (key) {
@@ -89,13 +98,32 @@ function idle(state: ViewingState): CameraCommand {
   return state.mode === "auto" ? FOLLOW : HOLD;
 }
 
-function withoutKeyList(state: ViewingState): CameraViewing {
-  const { keyList: _keyList, ...rest } = state;
+function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number]): ViewingState {
+  const { [key]: _removed, ...rest } = state;
   return rest;
 }
 
-// キー一覧の開閉はカメラの状態と独立。? と、開いている間の修飾なしの Esc だけが開閉を変える。
-// それ以外の出来事は、開閉を外した状態で reduceCamera に渡し、結果に開閉を戻す
+// 重ねる状態をすべて外した、カメラの状態だけ
+function cameraPart(state: ViewingState): CameraViewing {
+  const { keyList: _k, sideHidden: _s, captionsHidden: _c, ...rest } = state;
+  return rest;
+}
+
+// camera に、from に存在していた重ねる状態だけを戻す（undefined のフィールドは置かない）
+function withOverlayOf(from: ViewingState, camera: CameraViewing): ViewingState {
+  const out: ViewingState = { ...camera };
+  for (const key of OVERLAY_KEYS) if (from[key]) out[key] = true;
+  return out;
+}
+
+// 重ねる状態の出し入れ: 該当するフラグを反転する（隠した状態から戻すときはフィールドごと外す）
+function toggled(state: ViewingState, key: "sideHidden" | "captionsHidden"): ViewingState {
+  return state[key] ? without(state, key) : { ...state, [key]: true };
+}
+
+// キー一覧の開閉・右の列と字幕の出し入れはカメラの状態と独立。? と、開いている間の修飾なしの Esc がキー一覧を、
+// 修飾なしの E・C が列・字幕を変える。それ以外の出来事は、重ねる状態を外した状態で reduceCamera に渡し、結果に元の重ねる状態を戻す。
+// E は列の幅だけマップが変わるので、どのモードでも shiftIntoView を出す（follow・refocus・fitAll は出さない）
 export function reduceViewing(
   state: ViewingState,
   event: ViewingEvent,
@@ -105,18 +133,26 @@ export function reduceViewing(
   const modified = (e: { meta: boolean; ctrl: boolean; alt: boolean }) => e.meta || e.ctrl || e.alt;
   if (event.type === "keyList") {
     if (modified(event)) return { state, camera: idle(state) };
-    return { state: state.keyList ? withoutKeyList(state) : { ...state, keyList: true }, camera: idle(state) };
+    return { state: state.keyList ? without(state, "keyList") : { ...state, keyList: true }, camera: idle(state) };
   }
-  if (event.type === "escape" && !modified(event) && state.keyList) return { state: withoutKeyList(state), camera: idle(state) };
-  const out = reduceCamera(withoutKeyList(state), event, tree, scope);
-  return state.keyList ? { state: { ...out.state, keyList: true }, camera: out.camera } : out;
+  if (event.type === "side") {
+    if (modified(event)) return { state, camera: idle(state) };
+    return { state: toggled(state, "sideHidden"), camera: SHIFT_INTO_VIEW };
+  }
+  if (event.type === "captions") {
+    if (modified(event)) return { state, camera: idle(state) };
+    return { state: toggled(state, "captionsHidden"), camera: idle(state) };
+  }
+  if (event.type === "escape" && !modified(event) && state.keyList) return { state: without(state, "keyList"), camera: idle(state) };
+  const out = reduceCamera(cameraPart(state), event, tree, scope);
+  return { state: withOverlayOf(state, out.state), camera: out.camera };
 }
 
 // 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
 // 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体を見ているとき時刻を動かすと戻る。
 function reduceCamera(
   state: CameraViewing,
-  event: Exclude<ViewingEvent, { type: "keyList" }>,
+  event: Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" }>,
   tree: VisibleTree,
   scope: ViewingScope,
 ): { state: CameraViewing; camera: CameraCommand } {
