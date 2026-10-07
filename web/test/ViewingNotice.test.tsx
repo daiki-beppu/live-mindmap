@@ -30,4 +30,10 @@ describe("ViewingNotice: 動かしている間だけ左下に出る文字", () =
     expect(html).not.toMatch(/\d+\s*秒/);
     expect(html).not.toContain("badge");
   });
+
+  it("manual と overview の両方に「? でキー一覧」が出る。自動では出ない", () => {
+    expect(renderToStaticMarkup(<ViewingNotice manual={true} />)).toContain("? でキー一覧");
+    expect(renderToStaticMarkup(<ViewingNotice manual={false} overview={true} />)).toContain("? でキー一覧");
+    expect(renderToStaticMarkup(<ViewingNotice manual={false} />)).not.toContain("キー一覧");
+  });
 });

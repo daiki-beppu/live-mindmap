@@ -84,6 +84,11 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
    字幕（.captions は下端から 24px 以上を占める）と重ならないよう、下端から 4〜20px の帯に固定する（行の高さ 16px・折り返しなし） */
 .viewing-notice { position: absolute; left: 16px; bottom: 4px; margin: 0; font-size: 13px; line-height: 16px; white-space: nowrap; color: #6b7280; pointer-events: none; z-index: 5; }
 
+/* キー一覧（?）: マップの右上に重ねる細い枠だけの一覧。影・バッジは付けず、ドラッグや縁の点の邪魔をしない */
+.key-list { position: absolute; top: 12px; right: 12px; z-index: 5; border: 1px solid #e5e7eb; background: #fff; padding: 8px 12px; font-size: 13px; color: #111827; pointer-events: none; }
+.key-list__row { margin: 0; line-height: 20px; }
+.key-list__keys { font-weight: 600; }
+
 /* 見返し（map.html）: セッションの領域の下に、全幅のシークバーと操作の行を縦に置く。影は付けない */
 .review { display: flex; flex-direction: column; width: 100%; height: 100%; }
 .review__session { flex: 1; min-height: 0; }
