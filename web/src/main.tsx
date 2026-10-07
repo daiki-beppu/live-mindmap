@@ -1,10 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { CAPTURE_SNAPSHOT_GLOBAL } from "../../server/src/core/capture.ts";
-import { REVIEW_LOG_ELEMENT_ID, reviewSnapshot, type Snapshot } from "../../server/src/core/index.ts";
+import { REVIEW_LOG_ELEMENT_ID, type Snapshot } from "../../server/src/core/index.ts";
 import { App } from "./App.tsx";
 import { CaptureView } from "./CaptureView.tsx";
-import { SessionView } from "./SessionView.tsx";
+import { ReviewView } from "./ReviewView.tsx";
 import "./styles.css";
 
 // map.png の撮影では、サーバーがスナップショットをグローバル変数に入れてからこのページを開く
@@ -14,8 +14,7 @@ const reviewLog = document.getElementById(REVIEW_LOG_ELEMENT_ID)?.textContent;
 
 function view() {
   if (captured) return <CaptureView snapshot={captured} />;
-  // 取り込みの状態は渡さない（見返しでは、取り込みの知らせは出さない）
-  if (reviewLog != null) return <SessionView snapshot={reviewSnapshot(JSON.parse(reviewLog))} speaking={{ 相手: "", 自分: "" }} />;
+  if (reviewLog != null) return <ReviewView events={JSON.parse(reviewLog)} />;
   return <App />;
 }
 
