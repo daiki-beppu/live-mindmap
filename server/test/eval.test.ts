@@ -1,11 +1,52 @@
 // 回帰評価（eval コマンド）。fixture は合成データで、実際の録音サンプルは使わない。
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { copyFile, mkdtemp, readdir, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { NodeServices } from "@effect/platform-node";
+import { ConfigProvider, Console, Effect, Layer, Predicate, Result } from "effect";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
-import { type DiffInput, type Op, parseTruth } from "../src/core/index.ts";
+import { type DiffInput, type Op, parseTruth, type Snapshot } from "../src/core/index.ts";
+import { fakeListener } from "./fakeListener.ts";
+
+// play の updater と配信を差し替える。評価の対象は保存されたマップなので、配信は偽物でよい
+const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
+vi.mock("../src/claude.ts", () => ({ openClaudeUpdater: external.openClaudeUpdater }));
+// 配信の待受け（openListener）だけを偽物にする。serveFeed・portOf は本物のまま
+vi.mock("../src/http.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/http.ts")>(),
+  openListener: external.openListener,
+}));
+
+beforeEach(() => {
+  external.openClaudeUpdater.mockReset();
+  external.openListener.mockReset();
+  external.openListener.mockImplementation(fakeListener().open);
+});
+
+// 旧 CliDeps の置き換え。保存先は ConfigProvider、標準出力は Console、撮影は MapCapture の Layer
+function dependencies(sessionsDir: string) {
+  const stdout: string[] = [];
+  const consoleService: Console.Console = {
+    ...console,
+    log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
+  };
+  const layer = Layer.mergeAll(
+    NodeServices.layer,
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
+    Layer.succeed(Console.Console, consoleService),
+    Layer.succeed(MapCapture, MapCapture.of({
+      capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
+    })),
+  );
+  return { layer, stdout };
+}
+
+// タグ付きの失敗から、タグと自身のフィールドを取り出す（フィールド名に依存しない観測のため）
+const carries = (values: Record<string, unknown>, text: string) =>
+  Object.values(values).some((v) => typeof v === "string" && v.includes(text));
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 // short.transcript.json の発言: r1 [0.5, 9.8] / r2 [9.8, 19.2] / r3 [19.2, 28.0]。差分更新の呼び出しは [r1, r2] と [r3] の 2 回。
@@ -35,16 +76,31 @@ const scriptB: Op[][] = [
 async function play(script: Op[][], file = fixture): Promise<string> {
   const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-run-"));
   let n = 0;
-  const updater = async (_input: DiffInput) => ({ ops: script[n++] ?? [] });
-  const out: string[] = [];
-  await runCli(["play", file], { updater, sessionsDir, stdout: (s) => out.push(s) });
-  return dirname(out[0]!.split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
+  external.openClaudeUpdater.mockReturnValue({
+    update: async (_input: DiffInput) => ({ ops: script[n++] ?? [] }),
+    close: () => {},
+  });
+  const { layer, stdout } = dependencies(sessionsDir);
+  await Effect.runPromise(runCli(["play", file]).pipe(Effect.provide(layer)));
+  return dirname(stdout.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
 }
 
 async function evalCli(args: string[]): Promise<string> {
-  const out: string[] = [];
-  await runCli(["eval", ...args], { stdout: (s) => out.push(s) });
-  return out.join("");
+  const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-eval-"));
+  const { layer, stdout } = dependencies(sessionsDir);
+  await Effect.runPromise(runCli(["eval", ...args]).pipe(Effect.provide(layer)));
+  return stdout.join("");
+}
+
+// eval の失敗を、表示ではなくタグ付きの失敗値として観測する（日本語 1 行は cliProcess.test.ts が入口で観測する）
+async function evalFailure(args: string[]): Promise<{ tag: unknown; values: Record<string, unknown> }> {
+  const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-eval-"));
+  const { layer, stdout } = dependencies(sessionsDir);
+  const result = await Effect.runPromise(Effect.result(runCli(["eval", ...args]).pipe(Effect.provide(layer))));
+  if (Result.isSuccess(result)) throw new Error(`失敗しなかった: ${stdout.join("")}`);
+  const failure: unknown = result.failure;
+  if (!Predicate.hasProperty(failure, "_tag")) throw new Error("タグ付きの失敗ではない");
+  return { tag: failure._tag, values: Object.fromEntries(Object.entries(failure)) };
 }
 
 // Markdown の表を、見出しをキーにした行の配列にする
@@ -143,9 +199,11 @@ describe("eval: ノード数・深さ・種別ごとの数", () => {
     expect(rows[0]).toMatchObject({ ノード: "0", 深さ: "0", 議題: "0", 論点: "0", 案: "0", 決定: "0", 課題: "0", TODO: "0" });
   });
 
-  it("エクスポートの無いフォルダは、フォルダ名を含むエラーで止まる", async () => {
+  it("エクスポートの無いフォルダは、フォルダ名を含むタグ付きの失敗で止まる", async () => {
     const empty = await mkdtemp(join(tmpdir(), "live-mindmap-empty-"));
-    await expect(evalCli([empty])).rejects.toThrow(empty);
+    const failure = await evalFailure([empty]);
+    expect(failure.tag).toBe("MissingRunExport");
+    expect(carries(failure.values, empty)).toBe(true);
   });
 });
 
@@ -325,16 +383,20 @@ describe("eval: 正解ファイルの検証", () => {
     ["keywords の要素が空白だけ", { 決定: [{ ...item, keywords: [" \u3000"] }], TODO: [] }],
   ];
 
-  it.each(invalid)("%s正解は、ファイルのパスを含むエラーで止まる", async (_name, bad) => {
+  it.each(invalid)("%s正解は、ファイルのパスを含む InvalidTruthFile で止まる", async (_name, bad) => {
     const dir = await play(scriptA);
     const path = await writeTruth(bad);
-    await expect(evalCli(["--truth", path, dir])).rejects.toThrow(path);
+    const failure = await evalFailure(["--truth", path, dir]);
+    expect(failure.tag).toBe("InvalidTruthFile");
+    expect(carries(failure.values, path)).toBe(true);
   });
 
-  it("エラーは、どの種別の何件目かを含む", async () => {
+  it("失敗の理由は、どの種別の何件目かを含む", async () => {
     const dir = await play(scriptA);
     const path = await writeTruth({ 決定: [], TODO: [item, { text: "y", from: 1, to: 2 }] });
-    await expect(evalCli(["--truth", path, dir])).rejects.toThrow("「TODO」の 2 件目");
+    const failure = await evalFailure(["--truth", path, dir]);
+    expect(failure.tag).toBe("InvalidTruthFile");
+    expect(carries(failure.values, "「TODO」の 2 件目")).toBe(true);
   });
 });
 

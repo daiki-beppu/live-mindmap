@@ -1,9 +1,21 @@
 // 録音サンプルの文字起こしファイル（kanary transcribe の JSON）を発言の流れに変える
+import { Schema } from "effect";
 import type { Remark, Track } from "./session.ts";
 
-type TranscriptFile = {
-  transcript: { segments: { track: string; start_seconds: number; end_seconds: number; text: string }[] };
-};
+// 読み込む側（cli play）がこの Schema で decode する。使うのは segments の 4 項目だけで、ほかのキーは見ない
+export const TranscriptFile = Schema.Struct({
+  transcript: Schema.Struct({
+    segments: Schema.Array(
+      Schema.Struct({
+        track: Schema.String,
+        start_seconds: Schema.Number,
+        end_seconds: Schema.Number,
+        text: Schema.String,
+      }),
+    ),
+  }),
+});
+export type TranscriptFile = typeof TranscriptFile["Type"];
 
 // 録音サンプルは会議アプリの音を 1 本に混ぜたものなので、マイク以外は `相手` とする
 const toTrack = (track: string): Track => (track === "microphone" ? "自分" : "相手");

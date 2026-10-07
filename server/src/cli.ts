@@ -1,84 +1,231 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
-//   play <文字起こしファイル> [--realtime]
-//                                 録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。
-//                                 再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。
-//                                 終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを出す
-//   apps                          会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む
-//   start --app <bundle id> [--title <名前>] [--no-audio]
-//                                 ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ。
-//                                 既定では、トラックごとの録音（相手.m4a・自分.m4a）をセッションのフォルダに残す。--no-audio で録音しない
-//   stop                          ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す
-//   status                         取り込みの状態（動いている／途切れている／止まった／セッションなし）・セッションのフォルダ・
-//                                 起動し直した回数・最後の途切れの時刻を出す
-//   resume                         止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける
-//   export [--format md|json]     最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）
-//   restore                       最新のセッションのログから、差分更新を呼ばずにマップを戻す
-//   eval [--truth <正解ファイル>] <セッションのフォルダ>...
-//                                 play で作ったランの指標を 1 ラン 1 行の表で出す。正解（{ "決定": [{ text, from, to, keywords }], "TODO": [...] }、
-//                                 from / to は会議の中の秒、keywords は 1 件以上で要素は文字列か言い換えの文字列の配列）を渡すと決定・TODO の再現率も出す。
-//                                 当たる条件: 同じ種別で、根拠の発言が区間と重なり、keywords の要素すべて（配列はどれか 1 つ）がノードの本文に含まれる
-//                                 （NFKC で正規化し空白を除いて比べる）。ノードと正解は 1 対 1 で、当たる件数が最大になる割り当てで数える
+// 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { parseArgs } from "node:util";
-import { Effect } from "effect";
+import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { Cause, Config, Console, Effect, Layer, Option, Predicate, Queue, Result, Schema, SchemaIssue } from "effect";
+import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
-import type { MapCapture } from "./capture.ts";
-import { createSession, exportFiles, formatIntakeStatus, formatTable, fromTranscript, parseTruth, playback, restoreSession, toJsonExport, toMarkdown, type DiffUpdater, type IntakeLogEvent, type JsonExport, type LogEvent, type Run, type Session, type Snapshot, type Truth } from "./core/index.ts";
-import { openListener, portOf, serveFeed } from "./http.ts";
+import { MapCapture, type PromiseMapCapture } from "./capture.ts";
+import { DiffUpdater, UpdaterUnavailable } from "./diffUpdater.ts";
+import {
+  createSession,
+  exportFiles,
+  formatIntakeStatus,
+  formatTable,
+  fromTranscript,
+  JsonExport,
+  playback,
+  restoreSession,
+  toJsonExport,
+  toMarkdown,
+  TranscriptFile,
+  Truth,
+  type DiffUpdater as UpdateFn,
+  type IntakeLogEvent,
+  type IntakeStatusReport,
+  type LogEvent,
+  type Run,
+  type Session,
+  type Snapshot,
+} from "./core/index.ts";
+import { openListener, serveFeed } from "./http.ts";
 import { Viewers } from "./viewers.ts";
 
-export type CliDeps = {
-  updater?: DiffUpdater;
-  capture?: MapCapture; // map.png の撮影。省略したときは、Playwright で実際に撮る
-  sessionsDir?: string;
-  stdout?: (s: string) => void;
-  port?: number; // スナップショットを配信する WebSocket のポート。0 なら空きポート
-  sleep?: (ms: number) => Promise<void>; // --realtime のときの待ち方
-  onListening?: (port: number) => void;
-};
+// server/package.json は private で version を持たないので、--version の正本はここに置く
+const VERSION = "0.1.0";
 
 // セッションのフォルダに置く、その時点のエクスポート。別のプロセスの export がこれを読む。
 // play もライブのセッションも、作成直後と log のたびに書く。サーバーが動いていなくても export できる。
 const EXPORT_FILE = "export.json";
+const LOG_FILE = "log.jsonl";
 
-// セッション終了時の書き出し。スナップショットは 1 回だけ取り、4 形式（md・json・drawnix・png）に同じものを渡す。
-// ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
-// テキストの 3 形式を先に書く。撮影が失敗したら（Chromium が無い等）、画像だけ諦めて標準エラーに理由を残し、3 つのパスを返す。
-export async function writeSessionExports(dir: string, snapshot: Snapshot, capture: MapCapture): Promise<string[]> {
-  const paths = Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks))).map(([name, content]) => {
+/* ----------------------------------------------------------------------------
+ * 失敗: サブコマンドの中身の失敗はタグ付きにし、入口の表 1 つで日本語の 1 行に変える
+ * -------------------------------------------------------------------------- */
+
+class ServerUnreachable extends Schema.TaggedError<ServerUnreachable>()("ServerUnreachable", {}) {}
+class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", { message: Schema.String }) {}
+class NoSession extends Schema.TaggedError<NoSession>()("NoSession", { sessionsDir: Schema.String }) {}
+class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
+class InvalidTruthFile extends Schema.TaggedError<InvalidTruthFile>()("InvalidTruthFile", {
+  path: Schema.String,
+  reason: Schema.String,
+}) {}
+class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()("InvalidTranscriptFile", {
+  path: Schema.String,
+  reason: Schema.String,
+}) {}
+class BrokenLogLine extends Schema.TaggedError<BrokenLogLine>()("BrokenLogLine", {
+  line: Schema.Number,
+  reason: Schema.String,
+}) {}
+// 下位のモジュール（配信・再生・ファイルの読み書き）の失敗。message はそのまま入口の 1 行になる
+class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", { message: Schema.String }) {}
+
+type CliFailure =
+  | ServerUnreachable
+  | ServerFailed
+  | NoSession
+  | MissingRunExport
+  | InvalidTruthFile
+  | InvalidTranscriptFile
+  | BrokenLogLine
+  | CommandFailed
+  | UpdaterUnavailable;
+
+// 入口の表。タグ付きの失敗を、今までと同じ日本語の 1 行にする（表示はここだけが持つ）
+const failureLine = (failure: CliFailure): string => {
+  switch (failure._tag) {
+    case "ServerUnreachable":
+      return "サーバーにつながりません（pnpm dev で起動）";
+    case "ServerFailed":
+      return failure.message;
+    case "NoSession":
+      return `セッションがありません: ${failure.sessionsDir}`;
+    case "MissingRunExport":
+      return `セッションのマップがありません: ${failure.path}`;
+    case "InvalidTruthFile":
+      return `正解ファイルが不正です: ${failure.path}（${failure.reason}）`;
+    case "InvalidTranscriptFile":
+      return `文字起こしファイルが不正です: ${failure.path}（${failure.reason}）`;
+    case "BrokenLogLine":
+      return `${LOG_FILE} の ${failure.line} 行目が JSON として読めません: ${failure.reason}`;
+    case "CommandFailed":
+    case "UpdaterUnavailable":
+      return failure.message;
+  }
+};
+
+const CLI_FAILURE_TAGS: ReadonlySet<string> = new Set<CliFailure["_tag"]>([
+  "ServerUnreachable",
+  "ServerFailed",
+  "NoSession",
+  "MissingRunExport",
+  "InvalidTruthFile",
+  "InvalidTranscriptFile",
+  "BrokenLogLine",
+  "CommandFailed",
+  "UpdaterUnavailable",
+]);
+
+const isCliFailure = (failure: unknown): failure is CliFailure =>
+  Predicate.hasProperty(failure, "_tag") && Predicate.isString(failure._tag) && CLI_FAILURE_TAGS.has(failure._tag);
+
+// 入口の 1 行は 1 行に保つ（stderr を読む側は 1 行だけを期待する）
+const oneLine = (text: string): string => text.replaceAll(/\r?\n/g, " ");
+const describe = (e: unknown): string => oneLine(e instanceof Error ? e.message : String(e));
+
+const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1();
+
+// 正解ファイルの decode の失敗を 1 行の理由にする。文面は core/evaluate.ts の Truth が正本で、ここは場所だけを足す
+// （path は [種別] か [種別, 件目, ...]。どこを直すかは種別と件目で足りるので、field 名は添えない）。
+// union や配列の要素は 1 つの誤りから複数の issue になるため、同じ行になったものは 1 つにまとめる
+const truthReason = (error: Schema.SchemaError): string =>
+  oneLine(
+    [
+      ...new Set(
+        formatIssues(error.issue).issues.map(({ message, path }) => {
+          const [kind, index] = (path ?? []).map((segment) => (Predicate.isObject(segment) ? segment.key : segment));
+          if (!Predicate.isString(kind)) return message;
+          return Predicate.isNumber(index) ? `「${kind}」の ${index + 1} 件目: ${message}` : `「${kind}」${message}`;
+        }),
+      ),
+    ].join(" / "),
+  );
+
+// decode の失敗を 1 行の理由にする。stop の paths のように [配列の名前, 件目, ...] の形で場所が分かるときは
+// 「<名前>」の <n> 件目 を先頭に置く（人が直す場所を日本語で示す）
+const decodeReason = (error: Schema.SchemaError): string =>
+  oneLine(
+    formatIssues(error.issue)
+      .issues.map(({ message, path }) => {
+        const keys = (path ?? []).map((segment) => (Predicate.isObject(segment) ? segment.key : segment));
+        const [kind, index, ...rest] = keys;
+        const item = Predicate.isString(kind) && Predicate.isNumber(index) ? `「${kind}」の ${index + 1} 件目` : undefined;
+        const where = (item === undefined ? keys : rest).map(String).join(".");
+        const at = [item, where === "" ? undefined : where].filter((part) => part !== undefined).join(" ");
+        return at === "" ? message : `${at}: ${message}`;
+      })
+      .join(" / "),
+  );
+
+/* ----------------------------------------------------------------------------
+ * 境界: 設定・標準出力・ファイル読み込み
+ * -------------------------------------------------------------------------- */
+
+const DEFAULT_PORT = 4319;
+export const defaultPort = () => Number(process.env.LIVE_MINDMAP_PORT ?? DEFAULT_PORT);
+export const defaultSessionsDir = () => process.env.LIVE_MINDMAP_SESSIONS ?? join(homedir(), ".live-mindmap", "sessions");
+
+// 設定は handler の先頭で 1 回だけ解決する（下位の処理は process.env を読み直さない）。
+// ポートは Config.Int（Config.Port は 1 以上しか受けず、空きポートを選ばせる 0 を拒む）
+const sessionsDirConfig = Config.String("LIVE_MINDMAP_SESSIONS").pipe(
+  Config.withDefault(join(homedir(), ".live-mindmap", "sessions")),
+);
+const portConfig = Config.Int("LIVE_MINDMAP_PORT").pipe(Config.withDefault(DEFAULT_PORT));
+
+// 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
+// （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）
+const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
+
+const readTextFile = (path: string) => Effect.try({ try: () => readFileSync(path, "utf8"), catch: describe });
+
+// セッションのフォルダ（名前は開始時刻）のうち、file を持つ最新のもの
+const latestSession = (sessionsDir: string, file: string) =>
+  Effect.suspend(() => {
+    const latest = existsSync(sessionsDir)
+      ? readdirSync(sessionsDir)
+          .filter((d) => existsSync(join(sessionsDir, d, file)))
+          .sort()
+          .at(-1)
+      : undefined;
+    return latest === undefined ? new NoSession({ sessionsDir }) : Effect.succeed(latest);
+  });
+
+/* ----------------------------------------------------------------------------
+ * セッションの保存・公開（ライブのセッションとも共有する）
+ * -------------------------------------------------------------------------- */
+
+// テキストの 3 形式（map.md・map.json・map.drawnix）を書き、書いたパスを順に返す
+function writeExportFiles(dir: string, snapshot: Snapshot): string[] {
+  return Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks))).map(([name, content]) => {
     const path = join(dir, name);
     writeFileSync(path, content.endsWith("\n") ? content : content + "\n");
     return path;
   });
+}
+
+const captureWarning = (reason: string) => `map.png を書き出せませんでした: ${reason}`;
+
+// セッション終了時の書き出し。スナップショットは 1 回だけ取り、4 形式（md・json・drawnix・png）に同じものを渡す。
+// ライブのセッションの終了処理からも、この関数を呼ぶ。書いたファイルのパスを順に返す。
+// テキストの 3 形式を先に書く。撮影が失敗したら（Chromium が無い等）、画像だけ諦めて標準エラーに理由を残し、3 つのパスを返す。
+export async function writeSessionExports(dir: string, snapshot: Snapshot, capture: PromiseMapCapture): Promise<string[]> {
+  const paths = writeExportFiles(dir, snapshot);
   const png = join(dir, "map.png");
   try {
     await capture(snapshot, png);
   } catch (e) {
-    process.stderr.write(`map.png を書き出せませんでした: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(captureWarning(e instanceof Error ? e.message : String(e)) + "\n");
     return paths;
   }
   return [...paths, png];
 }
 
-const LOG_FILE = "log.jsonl";
-
-// セッションのフォルダ（名前は開始時刻）のうち、file を持つ最新のもの
-function latestSession(sessionsDir: string, file: string): string {
-  const latest = existsSync(sessionsDir)
-    ? readdirSync(sessionsDir).filter((d) => existsSync(join(sessionsDir, d, file))).sort().at(-1)
-    : undefined;
-  if (!latest) throw new Error(`セッションがありません: ${sessionsDir}`);
-  return latest;
-}
-
-const DEFAULT_PORT = 4319;
-export const defaultPort = () => Number(process.env.LIVE_MINDMAP_PORT ?? DEFAULT_PORT);
-const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-export const defaultSessionsDir = () => process.env.LIVE_MINDMAP_SESSIONS ?? join(homedir(), ".live-mindmap", "sessions");
+// CLI 側の書き出し。警告は Console（差し替え可能）へ出す以外、writeSessionExports と同じ順・同じ結果
+const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, capture: MapCapture["Service"]) {
+  const paths = yield* Effect.try({ try: () => writeExportFiles(dir, snapshot), catch: (e) => new CommandFailed({ message: describe(e) }) });
+  const png = join(dir, "map.png");
+  const captured = yield* Effect.result(capture.capture(snapshot, png));
+  if (Result.isFailure(captured)) {
+    yield* Console.error(captureWarning(describe(captured.failure)));
+    return paths;
+  }
+  return [...paths, png];
+});
 
 // セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
 export function createSessionDir(sessionsDir: string): string {
@@ -90,7 +237,7 @@ export function createSessionDir(sessionsDir: string): string {
 export type RecordedSessionOptions = {
   dir: string; // createSessionDir で作ったセッションのフォルダ
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
-  updater: DiffUpdater;
+  updater: UpdateFn;
   publish: (snapshot: Snapshot) => void;
   sleep?: (ms: number) => Promise<void>; // 渡すと、最後の発言から一定時間たまった発言を 1 つでも差分更新に渡す
   onDiff?: () => void; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
@@ -126,157 +273,356 @@ export function startRecordedSession({ dir, title, updater, publish, sleep, onDi
   return { session, appendLog: writeLogLine };
 }
 
-// 常駐サーバーへ依頼を送る。2xx 以外は、応答の { error } をメッセージにして例外にする
-async function requestServer(port: number, method: "GET" | "POST", path: string, body?: object): Promise<any> {
-  let response: Response;
-  try {
-    response = await fetch(`http://127.0.0.1:${port}${path}`, {
-      method,
-      ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+/* ----------------------------------------------------------------------------
+ * 常駐サーバーへの依頼（HTTP の境界）
+ * -------------------------------------------------------------------------- */
+
+const ServerErrorBody = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
+const StartedSession = Schema.Struct({ dir: Schema.String });
+const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String) });
+const IntakeStatus = Schema.Struct({
+  status: Schema.Literals(["none", "running", "interrupted", "stopped"]),
+  dir: Schema.optionalKey(Schema.String),
+  restarts: Schema.optionalKey(Schema.Number),
+  lastInterruptedAt: Schema.optionalKey(Schema.String),
+});
+
+// 常駐サーバーへ依頼を送り、応答を decode する。2xx 以外は、応答の { error } をそのまま入口の 1 行にする
+const requestServer = <A>(
+  port: number,
+  method: "GET" | "POST",
+  path: string,
+  decode: (input: unknown) => Effect.Effect<A, Schema.SchemaError>,
+  body?: object,
+) =>
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+        }),
+      catch: () => new ServerUnreachable(),
     });
-  } catch {
-    throw new Error("サーバーにつながりません（pnpm dev で起動）");
-  }
-  const data: any = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error ?? `サーバーがエラーを返しました: ${response.status}`);
-  return data;
-}
-
-export async function runCli(argv: string[], deps: CliDeps = {}): Promise<void> {
-  const sessionsDir = deps.sessionsDir ?? defaultSessionsDir();
-  const stdout = deps.stdout ?? ((s: string) => process.stdout.write(s));
-  const { positionals, values } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: { format: { type: "string", default: "md" }, realtime: { type: "boolean" }, truth: { type: "string" }, app: { type: "string" }, title: { type: "string" }, "no-audio": { type: "boolean" } },
+    // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする（今と同じ）
+    const raw = yield* Effect.tryPromise((): Promise<unknown> => response.json()).pipe(
+      Effect.catch(() => Effect.succeed<unknown>({})),
+    );
+    if (!response.ok) {
+      const reported = yield* Schema.decodeUnknownEffect(ServerErrorBody)(raw).pipe(
+        Effect.catch(() => Effect.succeed<{ readonly error?: string }>({})),
+      );
+      return yield* new ServerFailed({ message: reported.error ?? `サーバーがエラーを返しました: ${response.status}` });
+    }
+    return yield* decode(raw).pipe(Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })));
   });
-  const [command, ...rest] = positionals;
 
-  switch (command) {
-    case "play": {
-      const file = rest[0];
-      if (!file) throw new Error("usage: play <文字起こしファイル> [--realtime]");
-      const owned = deps.updater ? undefined : (await import("./claude.ts")).openClaudeUpdater(); // 自分で開いたものだけ閉じる
-      const updater = deps.updater ?? owned!.update;
-      let paths: string[];
-      try {
-        const capture = deps.capture ?? (await import("./capture.ts")).captureMap;
-        // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
-        const sleep = values.realtime ? (deps.sleep ?? realSleep) : undefined;
-        // 配信は Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
-        paths = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-          const { viewers, httpServer } = yield* openListener(deps.port ?? defaultPort());
-          yield* serveFeed.pipe(
-            Effect.provideService(Viewers, viewers),
-            Effect.provideService(HttpServer.HttpServer, httpServer),
-          );
-          deps.onListening?.(portOf(httpServer.address));
-          // 待受けを閉じる前に、最後のスナップショットを接続中のクライアントへ渡し切る
-          yield* Effect.addFinalizer(() => viewers.drained);
-          // 再生中の失敗（ファイルが読めない等）は予期しない失敗。catch は常に投げ直すので E は never のまま、
-          // cause も元の Error のまま runPromise の reject に渡る
-          return yield* Effect.tryPromise({
-            try: async () => {
-              const dir = createSessionDir(sessionsDir);
-              const { session } = startRecordedSession({
-                dir,
-                title: basename(file).replace(/\.transcript\.json$/, ""),
-                updater,
-                publish: (snapshot) => Effect.runSync(viewers.publish(snapshot)),
-                sleep,
-              });
-              await playback(session, fromTranscript(JSON.parse(readFileSync(file, "utf8"))), sleep ? { sleep } : {});
-              return writeSessionExports(dir, session.snapshot(), capture);
-            },
-            catch: (error) => {
-              throw error;
-            },
-          });
-        })));
-      } finally {
-        owned?.close();
-      }
-      stdout(paths.map((p) => `${p}\n`).join(""));
-      return;
-    }
-    case "apps": {
-      const apps = await requestServer(deps.port ?? defaultPort(), "GET", "/apps");
-      stdout(JSON.stringify(apps, null, 2) + "\n");
-      return;
-    }
-    case "start": {
-      if (!values.app) throw new Error("usage: start --app <bundle id> [--title <名前>] [--no-audio]");
-      const { dir } = await requestServer(deps.port ?? defaultPort(), "POST", "/session/start", { app: values.app, title: values.title, audio: !values["no-audio"] });
-      stdout(`${dir}\n`);
-      return;
-    }
-    case "stop": {
-      const { paths } = await requestServer(deps.port ?? defaultPort(), "POST", "/session/stop");
-      stdout((paths as string[]).map((p) => `${p}\n`).join(""));
-      return;
-    }
-    case "resume": {
-      await requestServer(deps.port ?? defaultPort(), "POST", "/session/resume");
-      return;
-    }
-    case "status": {
-      const report = await requestServer(deps.port ?? defaultPort(), "GET", "/session/status");
-      stdout(formatIntakeStatus(report));
-      return;
-    }
-    case "export": {
-      if (values.format !== "md" && values.format !== "json") {
-        throw new Error(`未対応の形式: ${values.format}（md か json）`);
-      }
-      const latest = latestSession(sessionsDir, EXPORT_FILE);
-      const exported: JsonExport = JSON.parse(readFileSync(join(sessionsDir, latest, EXPORT_FILE), "utf8"));
-      stdout(values.format === "md" ? toMarkdown(exported) : JSON.stringify(exported, null, 2) + "\n");
-      return;
-    }
-    case "restore": {
-      const dir = join(sessionsDir, latestSession(sessionsDir, LOG_FILE));
-      const lines = readFileSync(join(dir, LOG_FILE), "utf8").split("\n").map((text, i) => ({ text, no: i + 1 })).filter((l) => l.text.trim() !== "");
-      const events = lines.map(({ text, no }) => {
-        try {
-          return JSON.parse(text) as unknown;
-        } catch (e) {
-          throw new Error(`${LOG_FILE} の ${no} 行目が JSON として読めません: ${String(e)}`);
-        }
+/* ----------------------------------------------------------------------------
+ * --realtime の待ち: Promise を待つ playback・session へ、Effect の時計に乗る sleep を渡す
+ * -------------------------------------------------------------------------- */
+
+// 要求を Queue で受け、要求ごとに子 fiber で Effect.sleep する。再生の間隔待ちと QUIET_MS の静穏待ちは
+// 同時に進むので、要求を直列に処理しない。scope が閉じれば待っている要求ごと止まる（古い待ちで Session を進めない）
+const effectSleep = Effect.gen(function* () {
+  const requests = yield* Queue.make<{ readonly ms: number; readonly resolve: () => void }>();
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.flatMap(Queue.take(requests), ({ ms, resolve }) =>
+        Effect.forkChild(
+          Effect.gen(function* () {
+            yield* Effect.sleep(ms);
+            resolve();
+          }),
+          { startImmediately: true },
+        ),
+      ),
+    ),
+  );
+  return (ms: number) =>
+    new Promise<void>((resolve) => {
+      Queue.offerUnsafe(requests, { ms, resolve });
+    });
+});
+
+/* ----------------------------------------------------------------------------
+ * サブコマンド
+ * -------------------------------------------------------------------------- */
+
+const play = Command.make(
+  "play",
+  {
+    transcript: Argument.String("transcript").pipe(Argument.withDescription("再生する文字起こしファイル（kanary transcribe の JSON）")),
+    realtime: Flag.Boolean("realtime").pipe(
+      Flag.withDescription("発言の時刻どおりに等速で再生する（既定は待ち時間なし）"),
+      Flag.withDefault(false),
+    ),
+  },
+  Effect.fn("play")(
+    function* ({ realtime, transcript }) {
+      const sessionsDir = yield* sessionsDirConfig;
+      const port = yield* portConfig;
+      const updater = yield* DiffUpdater;
+      const capture = yield* MapCapture;
+      // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
+      const { viewers, httpServer } = yield* openListener(port).pipe(
+        Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
+      );
+      yield* serveFeed.pipe(
+        Effect.provideService(Viewers, viewers),
+        Effect.provideService(HttpServer.HttpServer, httpServer),
+      );
+      // 待受けを閉じる前に、最後のスナップショットを接続中のクライアントへ渡し切る
+      yield* Effect.addFinalizer(() => viewers.drained);
+      // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
+      const sleep = realtime ? yield* effectSleep : undefined;
+      const dir = yield* Effect.try({ try: () => createSessionDir(sessionsDir), catch: (e) => new CommandFailed({ message: describe(e) }) });
+      const { session } = yield* Effect.try({
+        try: () =>
+          startRecordedSession({
+            dir,
+            title: basename(transcript).replace(/\.transcript\.json$/, ""),
+            updater: updater.update,
+            publish: (snapshot) => Effect.runSync(viewers.publish(snapshot)),
+            sleep,
+          }),
+        catch: (e) => new CommandFailed({ message: describe(e) }),
       });
-      // 復元では差分更新を呼ばない。呼ばれたら失敗する
-      const updater = deps.updater ?? (async () => { throw new Error("restore では差分更新を呼べません"); });
-      const session = restoreSession(events, { updater, log: () => {} });
-      writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-      stdout(`${dir}\n`);
-      return;
-    }
-    case "eval": {
-      if (rest.length === 0) throw new Error("usage: eval [--truth <正解ファイル>] <セッションのフォルダ>...");
-      let truth: Truth | undefined;
-      if (values.truth) {
-        try {
-          truth = parseTruth(JSON.parse(readFileSync(values.truth, "utf8")));
-        } catch (e) {
-          throw new Error(`正解ファイルが不正です: ${values.truth}（${e instanceof Error ? e.message : e}）`);
-        }
-      }
-      const runs: Run[] = rest.map((dir) => {
-        const file = join(dir, EXPORT_FILE);
-        if (!existsSync(file)) throw new Error(`セッションのマップがありません: ${file}`);
-        const exp = JSON.parse(readFileSync(file, "utf8"));
-        return { name: basename(dir), title: exp.root.text, exp };
+      const text = yield* readTextFile(transcript).pipe(
+        Effect.mapError((reason) => new InvalidTranscriptFile({ path: transcript, reason })),
+      );
+      const file = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
+        Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
+      );
+      yield* Effect.tryPromise({
+        try: () => playback(session, fromTranscript(file), sleep ? { sleep } : {}),
+        catch: (e) => new CommandFailed({ message: describe(e) }),
       });
-      stdout(formatTable(runs, truth));
+      const paths = yield* writeExportsAndCapture(dir, session.snapshot(), capture);
+      yield* write(paths.map((path) => `${path}\n`).join(""));
+    },
+    Effect.scoped,
+  ),
+).pipe(
+  Command.withDescription(
+    "録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
+      + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
+      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを出す",
+  ),
+  // 差分更新は play だけが使う。Layer が取得と解放を持ち、最後の反映と最終撮影の後に 1 回だけ閉じる
+  Command.provide(DiffUpdater.layer),
+);
+
+const apps = Command.make(
+  "apps",
+  {},
+  Effect.fn("apps")(function* () {
+    const port = yield* portConfig;
+    // 一覧の中身は CLI が使わないので、形を決めずにそのまま出す
+    const list = yield* requestServer(port, "GET", "/apps", Schema.decodeUnknownEffect(Schema.Unknown));
+    yield* write(JSON.stringify(list, null, 2) + "\n");
+  }),
+).pipe(Command.withDescription("会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む"));
+
+const start = Command.make(
+  "start",
+  {
+    app: Flag.String("app").pipe(Flag.withDescription("会議アプリの bundle id（例 us.zoom.xos）")),
+    title: Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとセッションの開始時刻）"), Flag.optional),
+    noAudio: Flag.Boolean("no-audio").pipe(
+      Flag.withDescription("トラックごとの録音（相手.m4a・自分.m4a）をセッションのフォルダに残さない（既定は残す）"),
+      Flag.withDefault(false),
+    ),
+  },
+  Effect.fn("start")(function* ({ app, noAudio, title }) {
+    const port = yield* portConfig;
+    const { dir } = yield* requestServer(port, "POST", "/session/start", Schema.decodeUnknownEffect(StartedSession), {
+      app,
+      title: Option.getOrUndefined(title),
+      audio: !noAudio,
+    });
+    yield* write(`${dir}\n`);
+  }),
+).pipe(
+  Command.withDescription(
+    "ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ",
+  ),
+);
+
+const stop = Command.make(
+  "stop",
+  {},
+  Effect.fn("stop")(function* () {
+    const port = yield* portConfig;
+    const { paths } = yield* requestServer(port, "POST", "/session/stop", Schema.decodeUnknownEffect(StoppedSession));
+    yield* write(paths.map((path) => `${path}\n`).join(""));
+  }),
+).pipe(
+  Command.withDescription(
+    "ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png を書き出して、そのパスを出す",
+  ),
+);
+
+const status = Command.make(
+  "status",
+  {},
+  Effect.fn("status")(function* () {
+    const port = yield* portConfig;
+    const report: IntakeStatusReport = yield* requestServer(port, "GET", "/session/status", Schema.decodeUnknownEffect(IntakeStatus));
+    yield* write(formatIntakeStatus(report));
+  }),
+).pipe(
+  Command.withDescription(
+    "取り込みの状態（動いている／途切れている／止まった／セッションなし）・セッションのフォルダ・"
+      + "起動し直した回数・最後の途切れの時刻を出す",
+  ),
+);
+
+const resume = Command.make(
+  "resume",
+  {},
+  Effect.fn("resume")(function* () {
+    const port = yield* portConfig;
+    yield* requestServer(port, "POST", "/session/resume", Schema.decodeUnknownEffect(Schema.Unknown));
+  }),
+).pipe(
+  Command.withDescription("止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける"),
+);
+
+const exportCommand = Command.make(
+  "export",
+  {
+    format: Flag.Literals("format", ["md", "json"]).pipe(
+      Flag.withDescription("出す形式（md は Markdown、json は map.json と同じ内容）"),
+      Flag.withDefault("md"),
+    ),
+  },
+  Effect.fn("export")(function* ({ format }) {
+    const sessionsDir = yield* sessionsDirConfig;
+    const latest = yield* latestSession(sessionsDir, EXPORT_FILE);
+    const path = join(sessionsDir, latest, EXPORT_FILE);
+    const text = yield* readTextFile(path).pipe(Effect.mapError((message) => new CommandFailed({ message })));
+    if (format === "json") {
+      // json はマップの形を使わないので、保存した値をそのまま出す（宣言していないキーも落とさない）
+      const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+        Effect.mapError((e) => new CommandFailed({ message: `${path} が JSON として読めません: ${decodeReason(e)}` })),
+      );
+      yield* write(JSON.stringify(raw, null, 2) + "\n");
       return;
     }
-    default:
-      throw new Error("usage: live-mindmap <play|apps|start|stop|export|restore|eval> ...");
-  }
-}
+    const exported = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonExport))(text).pipe(
+      Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
+    );
+    yield* write(toMarkdown(exported));
+  }),
+).pipe(Command.withDescription("最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）"));
+
+const restore = Command.make(
+  "restore",
+  {},
+  Effect.fn("restore")(function* () {
+    const sessionsDir = yield* sessionsDirConfig;
+    const dir = join(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
+    const text = yield* readTextFile(join(dir, LOG_FILE)).pipe(Effect.mapError((message) => new CommandFailed({ message })));
+    // 行番号は空行を除く前に採る（人がログを開いたときの行と合わせる）
+    const lines = text
+      .split("\n")
+      .map((line, i) => ({ text: line, no: i + 1 }))
+      .filter((line) => line.text.trim() !== "");
+    const events: unknown[] = [];
+    for (const line of lines) {
+      events.push(
+        yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(line.text).pipe(
+          Effect.mapError((e) => new BrokenLogLine({ line: line.no, reason: decodeReason(e) })),
+        ),
+      );
+    }
+    const session = yield* Effect.try({
+      try: () =>
+        restoreSession(events, {
+          // 復元では差分更新を呼ばない。呼ばれたら失敗する
+          updater: async () => {
+            throw new Error("restore では差分更新を呼べません");
+          },
+          log: () => {},
+        }),
+      catch: (e) => new CommandFailed({ message: describe(e) }),
+    });
+    yield* Effect.try({
+      try: () => writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson())),
+      catch: (e) => new CommandFailed({ message: describe(e) }),
+    });
+    yield* write(`${dir}\n`);
+  }),
+).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す"));
+
+const evaluate = Command.make(
+  "eval",
+  {
+    truth: Flag.File("truth").pipe(
+      Flag.withDescription("正解ファイル（JSON）。形は core/evaluate.ts の Truth が正本"),
+      Flag.optional,
+    ),
+    sessions: Argument.String("session").pipe(
+      Argument.withDescription("play で作ったセッションのフォルダ"),
+      Argument.atLeast(1),
+    ),
+  },
+  Effect.fn("eval")(function* ({ sessions, truth }) {
+    // 正解ファイルの検証は段 1 の Truth の Schema が 1 つだけ持つ（Flag 側では検証しない）
+    const expected = Option.isNone(truth)
+      ? undefined
+      : yield* readTextFile(truth.value).pipe(
+          Effect.mapError((reason) => new InvalidTruthFile({ path: truth.value, reason })),
+          Effect.flatMap((text) =>
+            Schema.decodeUnknownEffect(Schema.fromJsonString(Truth))(text).pipe(
+              Effect.mapError((e) => new InvalidTruthFile({ path: truth.value, reason: truthReason(e) })),
+            ),
+          ),
+        );
+    const runs: Run[] = [];
+    for (const dir of sessions) {
+      const path = join(dir, EXPORT_FILE);
+      if (!existsSync(path)) return yield* new MissingRunExport({ path });
+      const text = yield* readTextFile(path).pipe(Effect.mapError((message) => new CommandFailed({ message })));
+      const exp = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonExport))(text).pipe(
+        Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
+      );
+      runs.push({ name: basename(dir), title: exp.root.text, exp });
+    }
+    yield* write(formatTable(runs, expected));
+  }),
+).pipe(
+  Command.withDescription(
+    "play で作ったランの指標を 1 ラン 1 行の表で出す。--truth を渡すと決定・TODO の再現率も出す"
+      + "（当たる条件と 1 対 1 の数え方は core/evaluate.ts の matches・recall が持つ）",
+  ),
+);
+
+const root = Command.make("live-mindmap").pipe(
+  Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
+  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, evaluate]),
+);
+
+// argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
+export const runCli = Command.runWith(root, { version: VERSION });
+
+/* ----------------------------------------------------------------------------
+ * 入口
+ * -------------------------------------------------------------------------- */
+
+// 失敗の表示はここだけ。CliError（help・引数の誤り）は effect/cli が出力済みなので二重に出さない
+const reportFailure = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.findError(cause);
+  if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
+  const failure = error.success;
+  if (CliError.isCliError(failure)) return Effect.void;
+  return Console.error(isCliFailure(failure) ? failureLine(failure) : describe(failure));
+};
 
 if (import.meta.main) {
-  runCli(process.argv.slice(2)).catch((e: unknown) => {
-    console.error(e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+  runCli(process.argv.slice(2)).pipe(
+    Effect.tapCause(reportFailure),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer)),
+    NodeRuntime.runMain({ disableErrorReporting: true }),
+  );
 }

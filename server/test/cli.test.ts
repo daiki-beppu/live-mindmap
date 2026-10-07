@@ -1,45 +1,116 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-
-// play の既定の updater（claude.ts を動的 import して開く）を、SDK を呼ばない偽物に差し替える
-const claude = vi.hoisted(() => ({ openClaudeUpdater: vi.fn() }));
-vi.mock("../src/claude.ts", () => claude);
-import type { MapCapture } from "../src/capture.ts";
+import { NodeServices } from "@effect/platform-node";
+import { describe, expect, it } from "@effect/vitest";
+import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Predicate, Result } from "effect";
+import { CliError } from "effect/cli";
+import { afterEach, beforeEach, vi } from "vitest";
+import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
-import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
+import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
+import { fakeListener } from "./fakeListener.ts";
+
+// play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
+// 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
+const external = vi.hoisted(() => ({
+  openClaudeUpdater: vi.fn(),
+  openListener: vi.fn(),
+  realHttp: { current: null as null | typeof import("../src/http.ts") },
+}));
+vi.mock("../src/claude.ts", () => ({ openClaudeUpdater: external.openClaudeUpdater }));
+vi.mock("../src/http.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/http.ts")>();
+  external.realHttp.current = actual;
+  return { ...actual, openListener: external.openListener };
+});
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 
-// テストごとに Chromium を起動しないよう、画像の撮影は偽物にする（空のファイルを書くだけ）。実物は capture.test.ts と server.test.ts で確かめる
-const fakeCapture: MapCapture = async (_snapshot, path) => writeFileSync(path, "");
+const script: Op[][] = [
+  [
+    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+    { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
+  ],
+  [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
+];
+
+const temporaryDirectory = Effect.acquireRelease(
+  Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-"))),
+  (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+);
+
+// 旧 CliDeps の置き換え。保存先とポートは ConfigProvider、標準出力は Console、撮影は MapCapture の Layer で渡す
+function dependencies(sessionsDir: string) {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const captures: Snapshot[] = [];
+  const captureFailure = { error: null as CaptureFailed | null };
+  const consoleService: Console.Console = {
+    ...console,
+    log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
+    error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); },
+  };
+  const layer = Layer.mergeAll(
+    NodeServices.layer,
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
+    Layer.succeed(Console.Console, consoleService),
+    Layer.succeed(MapCapture, MapCapture.of({
+      capture: (snapshot: Snapshot, path: string) =>
+        captureFailure.error
+          ? Effect.fail(captureFailure.error)
+          : Effect.sync(() => {
+            captures.push(snapshot);
+            writeFileSync(path, "");
+          }),
+    })),
+  );
+  return { layer, stdout, stderr, captures, captureFailure };
+}
+
+// 既定の updater。script を順に返す
+function scripted(ops: Op[][] = script) {
+  const calls: DiffInput[] = [];
+  const close = vi.fn();
+  external.openClaudeUpdater.mockReturnValue({
+    update: async (input: DiffInput) => {
+      calls.push(input);
+      return { ops: ops[calls.length - 1] ?? [] };
+    },
+    close,
+  });
+  return { calls, close };
+}
+
+beforeEach(() => {
+  external.openClaudeUpdater.mockReset();
+  external.openListener.mockReset();
+  scripted();
+  external.openListener.mockImplementation(fakeListener().open);
+});
+afterEach(() => vi.restoreAllMocks());
+
+// play を 1 回流し、セッションのフォルダと出力したパスを返す
+const played = (deps: ReturnType<typeof dependencies>) => Effect.gen(function* () {
+  yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+  const paths = deps.stdout.join("").trim().split("\n");
+  deps.stdout.length = 0;
+  return { paths, session: dirname(paths[0]!) };
+});
 
 describe("CLI", () => {
-  it("文字起こしを再生すると、export --format json がその時点のマップを標準出力に出す", async () => {
-    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-    const calls: DiffInput[] = [];
-    const script: Op[][] = [
-      [
-        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-      ],
-      [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
-    ];
-    const updater = async (input: DiffInput) => {
-      calls.push(input);
-      return { ops: script[calls.length - 1] ?? [] };
-    };
-    const out: string[] = [];
-    const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
+  it.effect("文字起こしを再生すると、export --format json がその時点のマップを標準出力に出す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const { calls } = scripted();
 
-    await runCli(["play", fixture], deps);
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
     expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"], ["r3"]]);
 
-    out.length = 0;
-    await runCli(["export", "--format", "json"], deps);
-    const exported = JSON.parse(out.join(""));
+    deps.stdout.length = 0;
+    yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+    const exported = JSON.parse(deps.stdout.join(""));
     expect(exported.root).toMatchObject({
       kind: "会議",
       children: [
@@ -63,337 +134,296 @@ describe("CLI", () => {
         },
       ],
     });
-  });
+  }));
 
-  const script: Op[][] = [
-    [
-      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-      { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-    ],
-    [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
-  ];
-  async function played() {
-    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-    let n = 0;
-    const updater = async () => ({ ops: script[n++] ?? [] });
-    const out: string[] = [];
-    const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
-    await runCli(["play", fixture], deps);
-    const [session] = await readdir(sessionsDir);
-    const dir = join(sessionsDir, session!);
-    const paths = out.join("").trim().split("\n");
-    out.length = 0;
-    return { deps, out, dir, paths, sessionsDir };
-  }
+  it.effect("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを順に出力する", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const { paths, session } = yield* played(deps);
 
-  it("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix・map.png を書き出し、そのパスを順に出力する", async () => {
-    const { dir, paths } = await played();
-    expect(paths).toEqual([join(dir, "map.md"), join(dir, "map.json"), join(dir, "map.drawnix"), join(dir, "map.png")]);
-    expect((await readdir(dir)).sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix", "map.png"]));
-    const md = await readFile(join(dir, "map.md"), "utf8");
+    expect(paths).toEqual([join(session, "map.md"), join(session, "map.json"), join(session, "map.drawnix"), join(session, "map.png")]);
+    const files = yield* Effect.tryPromise(() => readdir(session));
+    expect(files.sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix", "map.png"]));
+    const md = yield* Effect.tryPromise(() => readFile(join(session, "map.md"), "utf8"));
     expect(md).toContain("# short");
     expect(md).toContain("面接は何回か → 2 回にする");
-    const drawnix = JSON.parse(await readFile(join(dir, "map.drawnix"), "utf8"));
+    const drawnix = JSON.parse(yield* Effect.tryPromise(() => readFile(join(session, "map.drawnix"), "utf8")));
     expect(drawnix).toMatchObject({ type: "drawnix", elements: [{ type: "mindmap" }] });
-  });
+  }));
 
-  it("再生の map.png は、書き出した map.md・map.json と同じ、再生の最後のマップを撮る（1 回だけ取ったスナップショットを渡す）", async () => {
-    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-    let n = 0;
-    const captured: Snapshot[] = [];
-    const capture: MapCapture = async (snapshot, path) => {
-      captured.push(snapshot);
-      writeFileSync(path, "");
-    };
-    const out: string[] = [];
-    await runCli(["play", fixture], { updater: async () => ({ ops: script[n++] ?? [] }), sessionsDir, port: 0, capture, stdout: (s) => out.push(s) });
+  it.effect("再生の map.png は、書き出した map.md・map.json と同じ、再生の最後のマップを撮る（1 回だけ取ったスナップショットを渡す）", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const { paths } = yield* played(deps);
 
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
-    expect(captured[0]!.round).toBe(2);
-    expect(out.join("").trim().split("\n")).toHaveLength(4);
-  });
+    expect(deps.captures).toHaveLength(1);
+    expect(deps.captures[0]!.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
+    expect(deps.captures[0]!.round).toBe(2);
+    expect(paths).toHaveLength(4);
+  }));
 
-  it("再生で map.png の撮影が失敗しても、画像だけ諦めて 3 つのテキストファイルを書き、そのパスを出す。理由は標準エラーに残す", async () => {
-    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    let n = 0;
-    const out: string[] = [];
-    const capture: MapCapture = async () => {
-      throw new Error("撮影に失敗");
-    };
-    try {
-      await runCli(["play", fixture], { updater: async () => ({ ops: script[n++] ?? [] }), sessionsDir, port: 0, capture, stdout: (s) => out.push(s) });
-      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("map.png を書き出せませんでした: 撮影に失敗"))).toBe(true);
-    } finally {
-      stderr.mockRestore();
-    }
-    const [session] = await readdir(sessionsDir);
-    const files = await readdir(join(sessionsDir, session!));
+  it.effect("再生で map.png の撮影が失敗しても、画像だけ諦めて 3 つのテキストファイルを書き、そのパスを出す。理由は標準エラーに残す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    deps.captureFailure.error = new CaptureFailed({ message: "撮影に失敗" });
+
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+
+    expect(deps.stderr.join("")).toContain("map.png を書き出せませんでした: 撮影に失敗");
+    const [session] = yield* Effect.tryPromise(() => readdir(dir));
+    const files = yield* Effect.tryPromise(() => readdir(join(dir, session!)));
     expect(files).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix"]));
     expect(files).not.toContain("map.png");
-    expect(out.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix"]);
-  });
+    expect(deps.stdout.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix"]);
+  }));
 
-  it("map.json は、直後の export --format json の出力と同じ内容", async () => {
-    const { deps, out, dir } = await played();
-    await runCli(["export", "--format", "json"], deps);
-    expect(await readFile(join(dir, "map.json"), "utf8")).toBe(out.join(""));
-  });
+  it.effect("map.json は、直後の export --format json の出力と同じ内容", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const { session } = yield* played(deps);
 
-  it("形式を指定しない export は Markdown を標準出力に出し、ファイルは作らない", async () => {
-    const { deps, out, dir } = await played();
-    const before = (await readdir(dir)).sort();
-    await runCli(["export"], deps);
-    const md = out.join("");
+    yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+    expect(yield* Effect.tryPromise(() => readFile(join(session, "map.json"), "utf8"))).toBe(deps.stdout.join(""));
+  }));
+
+  it.effect("形式を指定しない export は Markdown を標準出力に出し、ファイルは作らない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const { session } = yield* played(deps);
+    const before = (yield* Effect.tryPromise(() => readdir(session))).sort();
+
+    yield* runCli(["export"]).pipe(Effect.provide(deps.layer));
+    const md = deps.stdout.join("");
     expect(md.startsWith("# short")).toBe(true);
     expect(md).toContain("面接は何回か → 2 回にする");
-    expect((await readdir(dir)).sort()).toEqual(before);
-    expect(md).toBe(await readFile(join(dir, "map.md"), "utf8"));
-  });
+    expect((yield* Effect.tryPromise(() => readdir(session))).sort()).toEqual(before);
+    expect(md).toBe(yield* Effect.tryPromise(() => readFile(join(session, "map.md"), "utf8")));
+  }));
 
-  it("再生の途中でも、export はその時点のマップを標準出力に出し、ファイルは作らない", async () => {
-    const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+  it.effect("再生の途中でも、export はその時点のマップを標準出力に出し、ファイルは作らない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    const reachedSecond = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
     let calls = 0;
-    let reachedSecond!: () => void;
-    const secondCallReached = new Promise<void>((resolve) => (reachedSecond = resolve));
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => (release = resolve));
-    const updater = async () => {
-      const ops = script[calls++] ?? [];
-      if (calls === 2) {
-        reachedSecond();
-        await released; // 2 回目の更新が終わらない、進行中の状態で止める
-      }
-      return { ops };
-    };
-    const playOut: string[] = [];
-    const out: string[] = [];
-    const playing = runCli(["play", fixture], { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s) => playOut.push(s) });
-    await secondCallReached;
+    external.openClaudeUpdater.mockReturnValue({
+      update: async () => {
+        const ops = script[calls++] ?? [];
+        if (calls === 2) {
+          Deferred.doneUnsafe(reachedSecond, Effect.void);
+          await Effect.runPromise(Deferred.await(release)); // 2 回目の更新が終わらない、進行中の状態で止める
+        }
+        return { ops };
+      },
+      close: () => {},
+    });
 
-    const [session] = await readdir(sessionsDir);
-    const dir = join(sessionsDir, session!);
-    const before = (await readdir(dir)).sort();
+    const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
+    yield* Deferred.await(reachedSecond);
+
+    const [session] = yield* Effect.tryPromise(() => readdir(dir));
+    const sessionDir = join(dir, session!);
+    const before = (yield* Effect.tryPromise(() => readdir(sessionDir))).sort();
     expect(before).toEqual(["export.json", "log.jsonl"]);
 
-    const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
-    await runCli(["export"], deps);
-    const md = out.join("");
+    yield* runCli(["export"]).pipe(Effect.provide(deps.layer));
+    const md = deps.stdout.join("");
     expect(md.startsWith("# short")).toBe(true);
     expect(md).toContain("面接は何回か（未決）");
     expect(md).not.toContain("→ 決定");
 
-    out.length = 0;
-    await runCli(["export", "--format", "json"], deps);
-    const exported = JSON.parse(out.join(""));
+    deps.stdout.length = 0;
+    yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+    const exported = JSON.parse(deps.stdout.join(""));
     expect(exported.root.children[0].children[0]).toMatchObject({ kind: "論点", text: "面接は何回か", pointStatus: "未決", children: [] });
-    expect((await readdir(dir)).sort()).toEqual(before);
+    expect((yield* Effect.tryPromise(() => readdir(sessionDir))).sort()).toEqual(before);
 
-    release();
-    await playing;
-  });
+    Deferred.doneUnsafe(release, Effect.void);
+    yield* Fiber.join(playing);
+  }));
 
-  it("未対応の形式はエラーにする", async () => {
-    const { deps } = await played();
-    await expect(runCli(["export", "--format", "xml"], deps)).rejects.toThrow("xml");
-  });
+  it.effect("--realtime を付けない再生は、仮想時計を進めなくても終わる（待ち時間なし）", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    // it.effect は TestClock なので、再生が待てばこの Effect は終わらない
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+    expect(deps.captures).toHaveLength(1);
+  }));
 
-  describe("play の既定の差分更新（claude.ts）", () => {
-    const opened = () => {
-      const state = { calls: 0, closed: 0, callsAfterClose: 0 };
-      let closed = false;
-      claude.openClaudeUpdater.mockReset();
-      claude.openClaudeUpdater.mockImplementation(() => ({
-        update: async () => {
-          state.calls++;
-          if (closed) state.callsAfterClose++;
-          return { ops: [] as Op[] };
-        },
-        close: () => {
-          closed = true;
-          state.closed++;
-        },
-      }));
-      return state;
-    };
+  describe("play の差分更新（claude.ts）", () => {
+    it.effect("再生のために 1 つ開き、1 回の再生の全発言を同じ updater に渡し、再生が終わったら閉じる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { calls, close } = scripted();
 
-    it("updater を渡さないとき、再生のために 1 つ開き、1 回の再生の全発言を同じ updater に渡し、再生が終わったら閉じる", async () => {
-      const state = opened();
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+      yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-      await runCli(["play", fixture], { sessionsDir, port: 0, capture: fakeCapture, stdout: () => {} });
+      expect(external.openClaudeUpdater).toHaveBeenCalledTimes(1);
+      expect(calls).toHaveLength(2);
+      expect(close).toHaveBeenCalledTimes(1);
+    }));
 
-      expect(claude.openClaudeUpdater).toHaveBeenCalledTimes(1);
-      expect(state).toEqual({ calls: 2, closed: 1, callsAfterClose: 0 });
-    });
+    it.effect("再生が失敗しても、開いた updater は閉じる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { close } = scripted();
 
-    it("再生が失敗しても、開いた updater は閉じる", async () => {
-      const state = opened();
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
+      const result = yield* Effect.result(
+        runCli(["play", join(dir, "無い.transcript.json")]).pipe(Effect.provide(deps.layer)),
+      );
 
-      await expect(runCli(["play", join(sessionsDir, "無い.transcript.json")], { sessionsDir, port: 0, capture: fakeCapture, stdout: () => {} })).rejects.toThrow("ENOENT");
-
-      expect(state.closed).toBe(1);
-    });
-
-    it("updater を渡したときは、claude.ts を開かない（渡した側が持ち主なので閉じない）", async () => {
-      opened();
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-
-      await runCli(["play", fixture], { updater: async () => ({ ops: [] as Op[] }), sessionsDir, port: 0, capture: fakeCapture, stdout: () => {} });
-
-      expect(claude.openClaudeUpdater).not.toHaveBeenCalled();
-    });
+      expect(Result.isFailure(result)).toBe(true);
+      expect(close).toHaveBeenCalledTimes(1);
+    }));
   });
 
   describe("restore", () => {
-    // 再生したセッションと、その export の出力を用意する
-    const adoptionScript: Op[][] = [
-      [
-        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-      ],
-      [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
-    ];
+    const adoptionScript: Op[][] = script;
 
     // sessionsDir に script で 1 セッション再生し、そのフォルダと export の出力を返す
-    async function playInto(sessionsDir: string, script: Op[][]) {
-      let n = 0;
-      const updater = async (_: DiffInput) => ({ ops: script[n++] ?? [] });
-      const out: string[] = [];
-      const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
-      await runCli(["play", fixture], deps);
-      const dir = dirname(out.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
-      out.length = 0;
-      await runCli(["export", "--format", "json"], deps);
-      return { dir, before: out.join(""), out };
-    }
+    const playInto = (deps: ReturnType<typeof dependencies>, ops: Op[][]) => Effect.gen(function* () {
+      scripted(ops);
+      yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+      const session = dirname(deps.stdout.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
+      deps.stdout.length = 0;
+      yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+      const before = deps.stdout.join("");
+      deps.stdout.length = 0;
+      return { session, before };
+    });
 
-    async function played() {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      return { sessionsDir, ...(await playInto(sessionsDir, adoptionScript)) };
-    }
-
-    const noUpdater = async (_: DiffInput): Promise<{ ops: Op[] }> => ({ ops: [] });
-
-    it("落ちた後に、ログから差分更新を呼ばずに元と同じマップへ戻し、export で読める", async () => {
-      const { sessionsDir, dir, before, out } = await played();
+    it.effect("落ちた後に、ログから差分更新を呼ばずに元と同じマップへ戻し、export で読める", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session, before } = yield* playInto(deps, adoptionScript);
       // 落ちた状態: エクスポートは残っておらず、ログには知らない種類の行がある
-      rmSync(join(dir, "export.json"));
-      appendFileSync(join(dir, "log.jsonl"), JSON.stringify({ type: "jev", at: "2026-10-01T00:00:00.000Z" }) + "\n");
-      let called = 0;
-      const updater = async (_: DiffInput): Promise<{ ops: Op[] }> => {
-        called++;
-        throw new Error("復元で差分更新が呼ばれた");
-      };
-      const deps = { updater, sessionsDir, port: 0, capture: fakeCapture, stdout: (s: string) => out.push(s) };
+      rmSync(join(session, "export.json"));
+      appendFileSync(join(session, "log.jsonl"), JSON.stringify({ type: "jev", at: "2026-10-01T00:00:00.000Z" }) + "\n");
+      external.openClaudeUpdater.mockReset();
 
-      out.length = 0;
-      await runCli(["restore"], deps);
-      expect(out.join("").trim()).toBe(dir);
-      expect(called).toBe(0);
+      yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("").trim()).toBe(session);
+      expect(external.openClaudeUpdater).not.toHaveBeenCalled();
 
-      out.length = 0;
-      await runCli(["export", "--format", "json"], deps);
-      expect(out.join("")).toBe(before);
-    });
+      deps.stdout.length = 0;
+      yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("")).toBe(before);
+    }));
 
-    it("復元してもログを書き足さない", async () => {
-      const { sessionsDir, dir } = await played();
-      const logBefore = readFileSync(join(dir, "log.jsonl"), "utf8");
-      const updater = async (_: DiffInput): Promise<{ ops: Op[] }> => ({ ops: [] });
-      await runCli(["restore"], { updater, sessionsDir, stdout: () => {} });
-      expect(readFileSync(join(dir, "log.jsonl"), "utf8")).toBe(logBefore);
-    });
+    it.effect("復元してもログを書き足さない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* playInto(deps, adoptionScript);
+      const logBefore = readFileSync(join(session, "log.jsonl"), "utf8");
 
-    it("ログの行が JSON として壊れていれば、行番号を付けたエラーにする", async () => {
-      const { sessionsDir, dir } = await played();
-      const lines = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n");
+      yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+      expect(readFileSync(join(session, "log.jsonl"), "utf8")).toBe(logBefore);
+    }));
+
+    it.effect("ログの行が JSON として壊れていれば、タグ付きの失敗にする", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* playInto(deps, adoptionScript);
+      const lines = readFileSync(join(session, "log.jsonl"), "utf8").split("\n");
       lines.splice(1, 0, "{壊れた行");
-      writeFileSync(join(dir, "log.jsonl"), lines.join("\n"));
-      const updater = async (_: DiffInput): Promise<{ ops: Op[] }> => ({ ops: [] });
-      await expect(runCli(["restore"], { updater, sessionsDir, stdout: () => {} })).rejects.toThrow(/2/);
-    });
+      writeFileSync(join(session, "log.jsonl"), lines.join("\n"));
 
-    it("セッションが複数あれば最新のものを復元し、export がその最新のマップを出す", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      const first = await playInto(sessionsDir, adoptionScript);
-      const oldDir = join(sessionsDir, "2000-01-01T00-00-00.000Z");
-      renameSync(first.dir, oldDir);
-      const second = await playInto(sessionsDir, [
-        [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "予算", evidence: ["r1"] }],
-      ]);
-      expect(second.dir).not.toBe(oldDir);
+      const result = yield* Effect.result(runCli(["restore"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
+      expect(CliError.isCliError(result.failure)).toBe(false);
+      // 行番号付きの日本語 1 行は、入口の表を通す cliProcess.test.ts で観測する
+      expect(deps.stdout).toEqual([]);
+      expect(deps.stderr).toEqual([]);
+    }));
+
+    it.effect("セッションが複数あれば最新のものを復元し、export がその最新のマップを出す", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const first = yield* playInto(deps, adoptionScript);
+      const oldDir = join(dir, "2000-01-01T00-00-00.000Z");
+      renameSync(first.session, oldDir);
+      const second = yield* playInto(deps, [[{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "予算", evidence: ["r1"] }]]);
+      expect(second.session).not.toBe(oldDir);
       expect(first.before).not.toBe(second.before);
-      rmSync(join(second.dir, "export.json"));
+      rmSync(join(second.session, "export.json"));
 
-      const out: string[] = [];
-      const deps = { updater: noUpdater, sessionsDir, stdout: (s: string) => out.push(s) };
-      await runCli(["restore"], deps);
-      expect(out.join("").trim()).toBe(second.dir);
+      yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("").trim()).toBe(second.session);
 
-      out.length = 0;
-      await runCli(["export", "--format", "json"], deps);
-      expect(out.join("")).toBe(second.before);
-    });
+      deps.stdout.length = 0;
+      yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("")).toBe(second.before);
+    }));
 
-    it("ログのない、より新しいフォルダがあっても、ログのある最新のセッションを復元する", async () => {
-      const { sessionsDir, dir } = await played();
-      mkdirSync(join(sessionsDir, "9999-12-31T00-00-00.000Z"));
-      const out: string[] = [];
-      await runCli(["restore"], { updater: noUpdater, sessionsDir, stdout: (s: string) => out.push(s) });
-      expect(out.join("").trim()).toBe(dir);
-    });
+    it.effect("ログのない、より新しいフォルダがあっても、ログのある最新のセッションを復元する", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* playInto(deps, adoptionScript);
+      mkdirSync(join(dir, "9999-12-31T00-00-00.000Z"));
 
-    it("セッションがなければエラーにする", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      await expect(runCli(["restore"], { sessionsDir, stdout: () => {} })).rejects.toThrow("セッションがありません");
-    });
+      yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("").trim()).toBe(session);
+    }));
+
+    it.effect("セッションがなければタグ付きの失敗にする", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+
+      const result = yield* Effect.result(runCli(["restore"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
+      expect(CliError.isCliError(result.failure)).toBe(false);
+      // 「セッションがありません: <パス>」の 1 行は cliProcess.test.ts で観測する
+      expect(deps.stdout).toEqual([]);
+      expect(deps.stderr).toEqual([]);
+    }));
   });
 
-  describe("ブラウザへの配信と再生の速さ", () => {
-    const script: Op[][] = [
-      [
-        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-      ],
-      [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
-    ];
+  describe("ブラウザへの配信", () => {
+    // 本物の WebSocket 越しに観測するのは、このファイルで 1 本だけ（正本 22 行）。
+    // 「失敗した反映では送らない」「終わると閉じる」は、偽の待受け（fakeListener）で同じ契約を観測する
+    it.live("反映のたびに、マップ全体のスナップショットが WebSocket で届く（初期のルート＋反映ごとに 1 つ）。標準出力は変わらない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const listening = yield* Deferred.make<number>();
+      const http = external.realHttp.current!;
+      external.openListener.mockImplementation((port: number) =>
+        Effect.tap(http.openListener(port), ({ httpServer }) => Deferred.succeed(listening, http.portOf(httpServer.address))));
 
-    // play の WebSocket につなぎ、届いたスナップショットを貯める。つながって最初のものが届くまで updater を待たせる。
-    function listener() {
       const received: Snapshot[] = [];
       let firstReceived: () => void = () => {};
-      const first = new Promise<void>((r) => (firstReceived = r));
-      const onListening = (port: number) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-        ws.addEventListener("message", (e) => {
-          received.push(JSON.parse(String(e.data)));
-          firstReceived();
-        });
-      };
-      return { received, first, onListening };
-    }
-
-    it("反映のたびに、マップ全体のスナップショットが WebSocket で届く（初期のルート＋反映ごとに 1 つ）。標準出力は変わらない", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      const { received, first, onListening } = listener();
+      const first = new Promise<void>((resolve) => (firstReceived = resolve));
       let n = 0;
-      const updater = async () => {
-        await first; // 接続して最初のスナップショットが届くまで、反映を待たせる
-        return { ops: script[n++] ?? [] };
-      };
-      const out: string[] = [];
-      await runCli(["play", fixture], { updater, sessionsDir, port: 0, capture: fakeCapture, onListening, stdout: (s) => out.push(s) });
-      await new Promise((r) => setTimeout(r, 100)); // close 前に送られたものが届くのを待つ
+      external.openClaudeUpdater.mockReturnValue({
+        update: async () => {
+          await first; // 接続して最初のスナップショットが届くまで、反映を待たせる
+          return { ops: script[n++] ?? [] };
+        },
+        close: () => {},
+      });
+
+      const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
+      const port = yield* Deferred.await(listening);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.addEventListener("message", (e) => {
+        received.push(JSON.parse(String(e.data)));
+        firstReceived();
+      });
+      yield* Fiber.join(playing);
+      yield* Effect.sleep(100); // close 前に送られたものが届くのを待つ
+      ws.close();
 
       expect(received.map((s) => s.nodes.length)).toEqual([1, 3, 4]);
       expect(received[0]!.nodes.map((x) => x.kind)).toEqual(["会議"]);
       const last = received.at(-1)!;
       expect(last.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
       expect(last.nodes.find((x) => x.kind === "論点")).toMatchObject({ pointStatus: "決定済み" });
-      // 変わったこと: 反映ごとに round が進み、その反映の新しい発言の end の最大値を時刻として、記録が積み上がって届く
+      // 反映ごとに round が進み、その反映の新しい発言の end の最大値を時刻として、記録が積み上がって届く
       expect(received.map((s) => s.round)).toEqual([0, 1, 2]);
       expect(received[0]!.changes).toEqual([]);
       expect(received[1]!.changes).toEqual([
@@ -411,104 +441,40 @@ describe("CLI", () => {
       expect(r1).toMatchObject({ start: 0.5, end: 9.8, text: "今日は採用の進め方を決めます" });
       expect(["自分", "相手"]).toContain(r1.track);
       for (const node of last.nodes) for (const id of node.evidence) expect(last.remarks.some((r) => r.id === id)).toBe(true);
-      expect(out.join("")).toMatch(/^([^\n]+\n){4}$/); // 書き出した 4 ファイルのパスだけ
-    });
+      expect(deps.stdout.join("")).toMatch(/^([^\n]+\n){4}$/); // 書き出した 4 ファイルのパスだけ
+    }));
 
-    it("失敗した反映（マップが変わらない）ではスナップショットを送らない", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      const { received, first, onListening } = listener();
+    it.effect("失敗した反映（マップが変わらない）ではスナップショットを送らない", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const fake = fakeListener();
+      external.openListener.mockImplementation(fake.open);
       let n = 0;
-      const updater = async () => {
-        await first;
-        if (n++ === 0) throw new Error("失敗");
-        return { ops: [] as Op[] };
-      };
-      await runCli(["play", fixture], { updater, sessionsDir, port: 0, capture: fakeCapture, onListening, stdout: () => {} });
-      await new Promise((r) => setTimeout(r, 100));
-      expect(received.map((s) => s.nodes.length)).toEqual([1, 1]); // 初期のルート＋成功した 1 回（変更なし）だけ
-    });
-
-    it("--realtime のときだけ、発言の end の差だけ待つ", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      const slept: number[] = [];
-      const deps = {
-        updater: async () => ({ ops: [] as Op[] }),
-        sessionsDir,
-        port: 0, capture: fakeCapture,
-        sleep: async (ms: number) => {
-          slept.push(Math.round(ms));
+      external.openClaudeUpdater.mockReturnValue({
+        update: async () => {
+          if (n++ === 0) throw new Error("失敗");
+          return { ops: [] as Op[] };
         },
-        stdout: () => {},
-      };
-      await runCli(["play", fixture], deps);
-      expect(slept).toEqual([]); // 指定しなければ待たない（待ち時間なし）
+        close: () => {},
+      });
 
-      await runCli(["play", fixture, "--realtime"], deps);
-      // 再生の待ち。セッションが差分更新を呼ぶまでの待ち（QUIET_MS）も同じ sleep を通るので、それを除いて見る
-      expect(slept.filter((ms) => ms !== QUIET_MS)).toEqual([9800, 9400, 8800]);
-    });
+      yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-    it("--realtime では、1 つ目の発言が QUIET_MS 経っても 2 つ目が来なければ、2 つ目を待たずにその 1 つで差分更新を呼ぶ", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      // 待ちはすべてテストの側から解決する（再生の待ちも、セッションの待ちも）
-      const timers: { ms: number; fired: boolean; fire: () => void }[] = [];
-      const sleep = (ms: number) =>
-        new Promise<void>((resolve) => timers.push({ ms: Math.round(ms), fired: false, fire: resolve }));
-      const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-      const calls: string[][] = [];
-      const updater = async (input: DiffInput) => {
-        calls.push(input.fresh.map((u) => u.id));
-        return { ops: [] as Op[] };
-      };
-      let finished = false;
-      const playing = runCli(["play", fixture, "--realtime"], { updater, sessionsDir, port: 0, capture: fakeCapture, sleep, stdout: () => {} }).then(
-        () => (finished = true),
-      );
+      expect(n).toBe(2); // 2 回とも更新へ到達したうえで
+      expect(fake.published.map((s) => s.nodes.length)).toEqual([1, 1]); // 初期のルート＋成功した 1 回（変更なし）だけ
+    }));
 
-      // 1 つ目の発言までの再生の待ちを解決する。r1 が流れ、続く再生の待ち（r2 まで）と、r1 の QUIET_MS の待ちが仕掛かる
-      await vi.waitFor(() => expect(timers.length).toBeGreaterThan(0));
-      expect(timers[0]!.ms).toBe(9800);
-      timers[0]!.fired = true;
-      timers[0]!.fire();
-      await vi.waitFor(() => expect(timers.some((t) => t.ms === QUIET_MS)).toBe(true));
-      expect(calls).toEqual([]); // 待ちが切れる前は呼ばない
+    it.effect("再生が終わると配信を閉じる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const fake = fakeListener();
+      external.openListener.mockImplementation(fake.open);
 
-      // r2 はまだ来ていない（再生の待ちは解決していない）。QUIET_MS が切れた時点で r1 だけで呼ぶ
-      const quiet = timers.find((t) => t.ms === QUIET_MS)!;
-      quiet.fired = true;
-      quiet.fire();
-      await vi.waitFor(() => expect(calls).toEqual([["r1"]]));
+      yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-      // 残りを流して再生を終わらせる
-      while (!finished) {
-        for (const t of timers) {
-          if (t.fired) continue;
-          t.fired = true;
-          t.fire();
-        }
-        await settle();
-      }
-      await playing;
-    });
-
-    it("再生が終わると WebSocket サーバーを閉じる（同じポートで続けて起動できる）", async () => {
-      const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-"));
-      let port = 0;
-      const deps = {
-        updater: async () => ({ ops: [] as Op[] }),
-        sessionsDir,
-        port: 0, capture: fakeCapture,
-        onListening: (p: number) => (port = p),
-        stdout: () => {},
-      };
-      await runCli(["play", fixture], deps);
-      await expect(
-        new Promise<void>((resolve, reject) => {
-          const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-          ws.addEventListener("open", () => resolve());
-          ws.addEventListener("error", () => reject(new Error("閉じている")));
-        }),
-      ).rejects.toThrow("閉じている");
-    });
+      expect(fake.published.length).toBeGreaterThan(0); // 配信へ到達したうえで
+      // 待受けを 1 回だけ閉じ、その前に最後のスナップショットまで渡し切る
+      expect(fake.events).toEqual(["drained", "closed"]);
+    }));
   });
 });
