@@ -8,6 +8,7 @@ import { evidenceOf } from "./evidence.ts";
 import type { IntakeStatus } from "./intake.ts";
 import { IntakeNotice } from "./IntakeNotice.tsx";
 import type { Speaking } from "./liveFeed.ts";
+import { KeyList } from "./KeyList.tsx";
 import { MapView } from "./MapView.tsx";
 import { useImeKeyRedispatch } from "./useImeKeyRedispatch.ts";
 import { useIntakeNotice } from "./useIntakeNotice.ts";
@@ -60,11 +61,15 @@ export function SessionView({ snapshot, speaking, intake }: { snapshot: Snapshot
       dispatch({ type: "key", key, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, keyTree());
     });
   }
+  useHotkey("?", (e) => {
+    dispatch({ type: "keyList", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, keyTree());
+  });
   return (
     <div className="layout">
       <div className="map">
         <MapView snapshot={snapshot} selectedId={selectedId} onSelect={setSelectedId} viewing={viewing} camera={camera} onViewingEvent={dispatch} />
         <ViewingNotice manual={viewing.mode === "manual"} overview={viewing.mode === "overview"} />
+        {viewing.keyList && <KeyList />}
         <Captions speaking={speaking} />
         {intake !== undefined && <IntakeNoticeOf status={intake} />}
       </div>

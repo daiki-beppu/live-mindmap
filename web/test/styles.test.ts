@@ -50,3 +50,15 @@ describe("styles.css: 字幕", () => {
     expect(rule(".captions__block")).not.toContain("--kind-color");
   });
 });
+
+describe("styles.css: キー一覧", () => {
+  it("マップの右上に重ね、細い枠だけで、操作を邪魔しない。影は付けない", () => {
+    const r = rule(".key-list");
+    expect(r).toMatch(/position\s*:\s*absolute/);
+    expect(r).toMatch(/top\s*:/);
+    expect(r).toMatch(/right\s*:/);
+    expect(r).toMatch(/border\s*:\s*1px solid/);
+    expect(r).toMatch(/pointer-events\s*:\s*none/);
+    expect(r).not.toMatch(/box-shadow\s*:\s*(?!none)/);
+  });
+});

@@ -2,10 +2,13 @@ import type { Position } from "./layout.ts";
 
 // 見る状態: 自動のカメラに任せているか（auto）、人が動かして止めているか（manual）、全体を見ているか（overview）。
 // manual は止めた時点の今の議題を覚える。overview は F を押した時点の今の議題と、F で戻る先（before）を覚える。
-export type ViewingState =
+type CameraViewing =
   | { mode: "auto" }
   | { mode: "manual"; topic: string | undefined }
   | { mode: "overview"; topic: string | undefined; before: { mode: "auto" } | { mode: "manual"; topic: string | undefined } };
+
+// キー一覧が開いているときだけ keyList: true を持つ（閉じているときはフィールドを置かない）
+export type ViewingState = CameraViewing & { keyList?: true };
 
 // キーボードで倍率・位置を変えるキー。Shift なしの矢印は、ノードの選択に空けておく
 export type ViewKey = "=" | "-" | "0" | "F" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
@@ -14,6 +17,7 @@ export type ViewingEvent =
   | { type: "userMoved" }
   | { type: "reflect" }
   | { type: "edgeDot"; id: string }
+  | { type: "keyList"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "escape"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean };
 
@@ -64,8 +68,30 @@ function commandOf(key: Exclude<ViewKey, "F">): CameraCommand {
   }
 }
 
-// 純粋な関数。時間では自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
+function idle(state: ViewingState): CameraCommand {
+  return state.mode === "auto" ? FOLLOW : HOLD;
+}
+
+function withoutKeyList(state: ViewingState): CameraViewing {
+  const { keyList: _keyList, ...rest } = state;
+  return rest;
+}
+
+// キー一覧の開閉はカメラの状態と独立。? と、開いている間の修飾なしの Esc だけが開閉を変える。
+// それ以外の出来事は、開閉を外した状態で reduceCamera に渡し、結果に開閉を戻す
 export function reduceViewing(state: ViewingState, event: ViewingEvent, tree: VisibleTree): { state: ViewingState; camera: CameraCommand } {
+  const modified = (e: { meta: boolean; ctrl: boolean; alt: boolean }) => e.meta || e.ctrl || e.alt;
+  if (event.type === "keyList") {
+    if (modified(event)) return { state, camera: idle(state) };
+    return { state: state.keyList ? withoutKeyList(state) : { ...state, keyList: true }, camera: idle(state) };
+  }
+  if (event.type === "escape" && !modified(event) && state.keyList) return { state: withoutKeyList(state), camera: idle(state) };
+  const out = reduceCamera(withoutKeyList(state), event, tree);
+  return state.keyList ? { state: { ...out.state, keyList: true }, camera: out.camera } : out;
+}
+
+// 純粋な関数。時間では自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
+function reduceCamera(state: CameraViewing, event: Exclude<ViewingEvent, { type: "keyList" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
   switch (event.type) {
     case "userMoved":
       return { state: { mode: "manual", topic: tree.currentTopic }, camera: HOLD };

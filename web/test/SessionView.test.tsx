@@ -93,6 +93,30 @@ describe("SessionView: 見る状態（動かしている間の左下の文字）
     expect(html).not.toContain("viewing-notice");
   });
 
+  it("初期状態では、キー一覧は出ない（常には出さない）", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
+    expect(html).not.toContain("key-list");
+  });
+
+  it("キー一覧を開いた状態では、一覧はマップの区画に出て、右の列には出ない", async () => {
+    // 静的描画ではキーを押せないため、初期状態だけをこのテストの中で開いた状態にする
+    vi.resetModules();
+    vi.doMock("../src/viewing.ts", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../src/viewing.ts")>()),
+      INITIAL_VIEWING: { mode: "auto", keyList: true },
+    }));
+    try {
+      const { SessionView: OpenedSessionView } = await import("../src/SessionView.tsx");
+      const html = renderToStaticMarkup(<OpenedSessionView snapshot={snapshot} speaking={speaking} />);
+      const mapPart = html.slice(html.indexOf('class="map"'), html.indexOf('class="side"'));
+      expect(mapPart).toContain('class="key-list"');
+      expect(html.slice(html.indexOf('class="side"'))).not.toContain("key-list");
+    } finally {
+      vi.doUnmock("../src/viewing.ts");
+      vi.resetModules();
+    }
+  });
+
   it("マップに、見る状態・カメラへの指示・出来事の通知先を渡す（初期は自動）", () => {
     renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);
     const props = mapViewProps.mock.calls[0]![0] as { viewing: unknown; onViewingEvent: unknown; camera: unknown };
