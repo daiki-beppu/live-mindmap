@@ -1,5 +1,6 @@
 import { Slider } from "@videojs/react";
-import { PauseIcon, PlayIcon } from "@videojs/react/icons";
+import { CheckIcon, PauseIcon, PlayIcon, SpeedIcon } from "@videojs/react/icons";
+import { useEffect, useRef, useState } from "react";
 import { formatHms } from "./reviewTimeline.ts";
 
 // 見返しのシークバーと操作の行。状態は持たず、渡された時刻と出来事の送り先だけで描く。
@@ -8,11 +9,14 @@ type Props = {
   time: number;
   duration: number;
   playing: boolean;
+  rate: number;
+  rates: readonly number[];
   topicName: string;
   onSeek: (time: number) => void;
   onToggle: () => void;
   onPrev: () => void;
   onNext: () => void;
+  onRate: (rate: number) => void;
 };
 
 // 押して離したら（クリックでもドラッグでも）、シークバーからフォーカスを外す（矢印キーなどの操作がシークバーに奪われたままにならないように）
@@ -27,7 +31,62 @@ const StepIcon = ({ direction }: { direction: "prev" | "next" }) => (
   </svg>
 );
 
-export function ReviewControls({ time, duration, playing, topicName, onSeek, onToggle, onPrev, onNext }: Props) {
+// メニューの項目の文言。例: 「60 倍（161 分を 2.7 分で）」
+export const rateOptionLabel = (rate: number, duration: number) => `${rate} 倍（${Math.round(duration / 60)} 分を ${(Math.round((duration / rate / 60) * 10) / 10).toFixed(1)} 分で）`;
+
+// 速さのボタンとメニュー。開閉だけを局所で持つ。開いている間の Esc は、SessionView の Esc より先に（capture 段階で）受けて閉じる
+function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "rate" | "rates" | "onRate">) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpen(false);
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (!(e.target instanceof Node) || !root.current?.contains(e.target)) setOpen(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [open]);
+  return (
+    <div className="review-rate" ref={root}>
+      <button type="button" className="review-bar__button review-rate__button" aria-label="再生の速さ" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <SpeedIcon />
+        <span>{rate}×</span>
+      </button>
+      {open && (
+        <div className="review-rate__menu" role="menu" aria-label="再生の速さ">
+          {rates.map((r) => (
+            <button
+              key={r}
+              type="button"
+              role="menuitemradio"
+              aria-checked={r === rate}
+              className="review-rate__item"
+              onClick={() => {
+                onRate(r);
+                setOpen(false);
+                releaseFocus();
+              }}
+            >
+              <span className="review-rate__check">{r === rate && <CheckIcon />}</span>
+              {rateOptionLabel(r, duration)}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ReviewControls({ time, duration, playing, rate, rates, topicName, onSeek, onToggle, onPrev, onNext, onRate }: Props) {
   return (
     <div className="review-controls">
       <Slider.Root className="review-seek" min={0} max={duration} value={time} onValueChange={onSeek} onDragEnd={releaseFocus} onPointerUp={releaseFocus} label="時刻">
@@ -50,6 +109,7 @@ export function ReviewControls({ time, duration, playing, topicName, onSeek, onT
           {formatHms(time)} / {formatHms(duration)}
         </span>
         <span className="review-bar__topic">{topicName}</span>
+        <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} />
       </div>
     </div>
   );

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { initialPlayback, playbackReducer, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
+import { initialPlayback, PLAYBACK_RATES, playbackReducer, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
 
 // 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒だけを受け取る。
-const ctx = { duration: 100, reflectionTimes: [10, 40, 70] };
+const ctx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [10, 30, 60, 120] };
 const run = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, ctx), state);
 const start = initialPlayback(ctx.duration);
 
@@ -83,7 +83,7 @@ describe("反映 1 つ戻る・進む（prev / next）", () => {
   });
 
   it("反映の時刻が 1 つも無ければ、動かない", () => {
-    const empty = { duration: 100, reflectionTimes: [] as number[] };
+    const empty = { duration: 100, reflectionTimes: [] as number[], rates: [10, 30, 60, 120] };
     const s = playbackReducer(start, { type: "prev" }, empty);
     expect(s).toEqual(start);
     expect(playbackReducer(start, { type: "next" }, empty)).toEqual(start);
@@ -104,5 +104,78 @@ describe("入力の状態を書き換えない", () => {
     const before = { ...start };
     playbackReducer(start, { type: "toggle" }, ctx);
     expect(start).toEqual(before);
+  });
+});
+
+describe("速さの並びと既定", () => {
+  it("音声なしの並びは 10・30・60・120 倍で、既定は 30 倍。既定は引数で変えられる", () => {
+    expect([...PLAYBACK_RATES]).toEqual([10, 30, 60, 120]);
+    expect(initialPlayback(100).rate).toBe(30);
+    expect(initialPlayback(100, 1)).toEqual({ time: 100, playing: false, rate: 1 });
+  });
+});
+
+describe("速さを選ぶ（setRate）", () => {
+  it("並びの中の値を選ぶと速さだけが変わり、時刻と進めているかどうかは変わらない", () => {
+    const stopped = run(start, { type: "seek", time: 25 });
+    expect(run(stopped, { type: "setRate", rate: 60 })).toEqual({ time: 25, playing: false, rate: 60 });
+    const playing = run(start, { type: "seek", time: 25 }, { type: "toggle" });
+    expect(run(playing, { type: "setRate", rate: 10 })).toEqual({ time: 25, playing: true, rate: 10 });
+  });
+
+  it("並びの外の値は選べず、状態は変わらない（並びの中の値なら変わる）", () => {
+    const s = run(start, { type: "seek", time: 25 });
+    expect(run(s, { type: "setRate", rate: 120 }).rate).toBe(120);
+    expect(run(s, { type: "setRate", rate: 45 })).toEqual(s);
+  });
+});
+
+describe("速さの 1 段ずつの上げ下げ（slower / faster）", () => {
+  it("1 段上げると次の値、1 段下げると前の値になる", () => {
+    expect(run(start, { type: "faster" }).rate).toBe(60);
+    expect(run(start, { type: "faster" }, { type: "faster" }).rate).toBe(120);
+    expect(run(start, { type: "slower" }).rate).toBe(10);
+  });
+
+  it("端では止まり、回り込まない（状態も変わらない）", () => {
+    const top = run(start, { type: "faster" }, { type: "faster" });
+    expect(top.rate).toBe(120);
+    expect(run(top, { type: "faster" })).toEqual(top);
+    const bottom = run(start, { type: "slower" });
+    expect(bottom.rate).toBe(10);
+    expect(run(bottom, { type: "slower" })).toEqual(bottom);
+  });
+
+  it("上げ下げでも時刻と進めているかどうかは変わらない", () => {
+    const s = run(start, { type: "seek", time: 33 }, { type: "toggle" });
+    expect(run(s, { type: "faster" })).toEqual({ time: 33, playing: true, rate: 60 });
+    expect(run(s, { type: "slower" })).toEqual({ time: 33, playing: true, rate: 10 });
+  });
+});
+
+describe("選んだ速さでの経過（elapsed）", () => {
+  it("同じ状態のまま速さを変えると、その後の経過の進み方が変わる", () => {
+    const playing = run(start, { type: "seek", time: 0 }, { type: "toggle" });
+    expect(run(playing, { type: "elapsed", seconds: 1 }).time).toBe(30);
+    expect(run(playing, { type: "setRate", rate: 60 }, { type: "elapsed", seconds: 1 }).time).toBe(60);
+    expect(run(playing, { type: "setRate", rate: 10 }, { type: "elapsed", seconds: 1 }).time).toBe(10);
+    expect(run(playing, { type: "faster" }, { type: "elapsed", seconds: 0.5 }).time).toBe(30);
+  });
+
+  it("進めている最中に速さを変えると、それまでの時刻から新しい速さで進む", () => {
+    const s = run(start, { type: "seek", time: 0 }, { type: "toggle" }, { type: "elapsed", seconds: 1 }, { type: "setRate", rate: 10 });
+    expect(s.time).toBe(30);
+    expect(run(s, { type: "elapsed", seconds: 1 }).time).toBe(40);
+  });
+});
+
+describe("版ごとに渡す速さの並び", () => {
+  it("別の並びの context では、その並びで上げ下げと経過が働く", () => {
+    const audio = { duration: 100, reflectionTimes: [] as number[], rates: [0.5, 1, 1.5, 2] };
+    const step = (s: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((x, e) => playbackReducer(x, e, audio), s);
+    const s = step(initialPlayback(100, 1), { type: "seek", time: 0 }, { type: "toggle" }, { type: "faster" });
+    expect(s.rate).toBe(1.5);
+    expect(step(s, { type: "elapsed", seconds: 2 }).time).toBe(3);
+    expect(step(s, { type: "setRate", rate: 30 })).toEqual(s); // 音声なしの並びの値は、この並びに無い
   });
 });
