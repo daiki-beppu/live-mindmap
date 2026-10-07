@@ -95,6 +95,43 @@ describe("ログからの復元", () => {
     expect(restored.snapshot().round).toBe(session.snapshot().round);
   });
 
+  it("復元したセッションの今の議題と今の時刻が元と一致する（議題の無い課題だけの反映は前の値のまま）", async () => {
+    const { session, events } = await original();
+    const { updater } = forbidden();
+    const restored = restoreSession(viaJsonl(events), { updater, log: () => {} });
+
+    expect(session.snapshot().currentTopic).toBe("n1");
+    expect(restored.snapshot().currentTopic).toBe(session.snapshot().currentTopic);
+    expect(session.snapshot().now).toBeDefined();
+    expect(restored.snapshot().now).toBe(session.snapshot().now);
+  });
+
+  it("作成順と逆の順に更新した反映でも、復元後の今の議題・最後に変わったノードが元と一致する", async () => {
+    const [a, b, c, d] = [remark("発言"), remark("発言"), remark("発言"), remark("発言")];
+    const { updater } = scripted(
+      [
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a!.id] },
+        { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [b!.id] },
+      ],
+      [
+        { op: "update", node: "n2", text: "予算2", evidence: [c!.id] },
+        { op: "update", node: "n1", text: "採用2", evidence: [d!.id] },
+      ],
+    );
+    const events: LogEvent[] = [];
+    const session = createSession({ title: "定例", updater, log: (e) => events.push(e) });
+    for (const r of [a!, b!]) session.push(r);
+    await session.idle();
+    for (const r of [c!, d!]) session.push(r);
+    await session.idle();
+
+    const restored = restoreSession(viaJsonl(events), { updater: forbidden().updater, log: () => {} });
+    expect(session.snapshot().currentTopic).toBe("n1");
+    expect(restored.snapshot().currentTopic).toBe("n1");
+    expect(restored.snapshot().lastChanged).toBe("n1");
+    expect(restored.snapshot()).toEqual(session.snapshot());
+  });
+
   it("元のマップにこの経路の全種類の変化が出ている（テストの前提）", async () => {
     const { session, events } = await original();
     const snap = session.snapshot();

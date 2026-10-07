@@ -4,6 +4,7 @@ import { Schema } from "effect";
 import { diffMaps, type Change } from "./changes.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
+import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
 
 export const Track = Schema.Literals(["自分", "相手"]);
 export type Track = typeof Track["Type"];
@@ -54,7 +55,16 @@ export type SnapshotNode = MapNode & { pointStatus?: PointStatus };
 // 変わったこと（反映の履歴）。round は成功した反映の通し番号、at は反映に渡した新しい発言の end の最大値（会議の中の秒）。
 export type ChangeEntry = Change & { round: number; at: number };
 // remarks は、いまのノードの根拠に挙がっている発言だけ（受け取った順・重複なし）。evidence の ID から引く。
-export type Snapshot = { nodes: SnapshotNode[]; round: number; changes: ChangeEntry[]; remarks: Remark[] };
+// currentTopic は今の議題の ID（まだ無ければキーごと付けない）。now は会議の今の時刻（最後に受け取った発言の end。発言が無ければキーごと付けない）。
+export type Snapshot = {
+  nodes: SnapshotNode[];
+  round: number;
+  changes: ChangeEntry[];
+  remarks: Remark[];
+  currentTopic?: string;
+  lastChanged?: string; // 今の round で最後に変わったノードの ID（変わったノードが無ければキーごと付けない）
+  now?: number;
+};
 
 export type SessionOptions = {
   title: string;
@@ -90,20 +100,27 @@ type SessionState = {
   known: Set<string>; // 差分更新に渡した発言の ID
   round: number; // 成功した反映の通し番号
   changes: ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
+  currentTopic: string | undefined; // 今の議題の ID。変わったノードのある反映で更新する
+  lastChanged: string | undefined; // 直近の反映で最後に変わったノードの ID。変わったノードが無ければ undefined
 };
 
 // 成功した反映を 1 回記録する。変化がなくても round は進める（前回の赤い枠を消すため）。
 // ライブ（callUpdater）と復元（restoreSession）が同じ関数を通す。
-function recordRound(state: Pick<SessionState, "round" | "changes">, before: MeetingMap, after: MeetingMap, fresh: Remark[]) {
+function recordRound(state: Pick<SessionState, "round" | "changes" | "currentTopic" | "lastChanged">, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, fresh: Remark[]) {
   state.round += 1;
   const at = Math.max(...fresh.map((r) => r.end));
-  for (const c of diffMaps(before, after)) state.changes.push({ ...c, round: state.round, at });
+  const changes = diffMaps(before, applied.map);
+  for (const c of changes) state.changes.push({ ...c, round: state.round, at });
+  // 最後に変わったノードは一度だけ選び、今の議題と lastChanged の両方をそこから作る
+  const lastChanged = lastChangedNode(applied.map, applied.changeOrder);
+  state.lastChanged = lastChanged;
+  state.currentTopic = nextCurrentTopic(applied.map, lastChanged, state.currentTopic);
 }
 
 export function createSession({ title, updater, log, sleep }: SessionOptions) {
   log({ type: "start", title });
   return openSession(
-    { map: emptyMap(title), pending: [], processed: [], remarks: [], known: new Set(), round: 0, changes: [] },
+    { map: emptyMap(title), pending: [], processed: [], remarks: [], known: new Set(), round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
     { updater, log, sleep },
   );
 }
@@ -115,7 +132,7 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
   const remarks: Remark[] = [];
   const processed: Remark[] = [];
   const known = new Set<string>();
-  const history = { round: 0, changes: [] as ChangeEntry[] };
+  const history = { round: 0, changes: [] as ChangeEntry[], currentTopic: undefined as string | undefined, lastChanged: undefined as string | undefined };
   for (const event of events) {
     const e = event as LogEvent;
     switch (e.type) {
@@ -135,9 +152,9 @@ export function restoreSession(events: Iterable<unknown>, options: Omit<SessionO
           if (hasContent(r.text)) processed.push(r); // 旧形式のログの中身のない発言は、続きの差分更新の直前の発言にしない
           fresh.push(r);
         }
-        const next = applyOps(map, e.ops, known).map;
-        if (e.error === undefined) recordRound(history, map, next, fresh);
-        map = next;
+        const applied = applyOps(map, e.ops, known);
+        if (e.error === undefined) recordRound(history, map, applied, fresh);
+        map = applied.map;
         break;
       }
     }
@@ -196,7 +213,7 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
     }
     const applied = applyOps(map, ops, known);
     // 送信（log）より先に記録する。log の中で届くスナップショットに今回分が載る
-    recordRound(state, map, applied.map, fresh);
+    recordRound(state, map, applied, fresh);
     map = applied.map;
     reflecting = [];
     log({ type: "diff", input, ops, dropped: applied.dropped });
@@ -208,11 +225,15 @@ function openSession(state: SessionState, { updater, log, sleep }: Omit<SessionO
       return n.kind === "論点" ? { ...n, pointStatus: pointStatus(map, id) } : n;
     });
     const cited = new Set(nodes.flatMap((n) => n.evidence));
+    const last = remarks.at(-1);
     return {
       nodes,
       round: state.round,
       changes: state.changes.map((c) => ({ ...c })),
       remarks: remarks.filter((r) => cited.has(r.id)).map((r) => ({ ...r })),
+      ...(state.currentTopic !== undefined ? { currentTopic: state.currentTopic } : {}),
+      ...(state.lastChanged !== undefined ? { lastChanged: state.lastChanged } : {}),
+      ...(last ? { now: last.end } : {}),
     };
   }
 

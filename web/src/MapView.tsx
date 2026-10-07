@@ -10,8 +10,9 @@ import {
   type NodeDimensionChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "../../server/src/core/index.ts";
+import { cameraFocus, focusViewport, nodeRect, shouldMoveCamera } from "./camera.ts";
 import { changedNodeIds } from "./changes.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH } from "./layout.ts";
@@ -34,8 +35,10 @@ const STILL_MIN_ZOOM = 0.02;
 function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: { snapshot: Snapshot } & SelectProps & StillProps) {
   // React Flow が測った実寸。スナップショットが変わっても捨てない（測り直しは onNodesChange で上書きされる）。
   const [dims, setDims] = useState<Dims>({});
-  const { fitView, getViewport } = useReactFlow();
+  const { fitView, getViewport, setViewport } = useReactFlow();
   const storeApi = useStoreApi();
+  // 最後に今の議題へ寄せた反映の round。変更の無い反映では寄せ直さない
+  const placedRound = useRef<number | null>(null);
 
   const onNodesChange = (changes: NodeChange[]) => {
     const measured = changes.filter((c): c is NodeDimensionChange => c.type === "dimensions" && !!c.dimensions);
@@ -88,8 +91,21 @@ function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: 
     );
   }, [snapshot.nodes]);
 
-  // 反映のたびに（位置・寸法が変わるたびに）全体を画面に収める
+  // 反映のたびに（位置・寸法が変わるたびに）、撮影では全体を、ふだんは今の議題を画面に収める。今の議題が無いときも全体を収める
   useEffect(() => {
+    const focus = still ? null : cameraFocus(snapshot);
+    if (focus) {
+      // 補間中の位置ではなく目標の位置で測る
+      if (!shouldMoveCamera(snapshot, placedRound.current)) return;
+      const frame = requestAnimationFrame(() => {
+        const { width, height } = storeApi.getState();
+        const rects = focus.ids.map((id) => nodeRect(id, target, dims));
+        placedRound.current = snapshot.round;
+        void setViewport(focusViewport(rects, nodeRect(focus.center, target, dims), { width, height }), { duration: 0 });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    placedRound.current = null;
     // 撮影では、すべての正式なノードが測られた後の配置を収めようとしてから、収まったかを知らせる
     const measured = snapshot.nodes.every((n) => dims[n.id]);
     let cancelled = false;
@@ -109,7 +125,7 @@ function MapCanvas({ snapshot, selectedId, onSelect, still = false, onFitted }: 
       cancelled = true;
       cancelAnimationFrame(frame);
     };
-  }, [nodes, fitView, getViewport, storeApi, still, snapshot.nodes, dims, onFitted]);
+  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted]);
 
   return (
     <ReactFlow
