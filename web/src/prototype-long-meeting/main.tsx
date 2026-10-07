@@ -95,6 +95,7 @@ function App() {
   const [showSide, setShowSide] = useState(true);
   const [showCaptions, setShowCaptions] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
+  const [lastKey, setLastKey] = useState("-"); // 試作: 最後に届いたキー（効かないときの確かめ用）
   const selectedRef = useRef<string | null>(null);
   const [now, setNow] = useState(0);
   const onUserMove = useCallback(() => {
@@ -149,6 +150,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      setLastKey(`${e.key} / ${e.code}${e.shiftKey ? " +Shift" : ""}${e.isComposing ? " 入力中" : ""}${e.target instanceof HTMLElement && e.target !== document.body ? ` (${e.target.tagName})` : ""}`);
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return; // ブラウザ・会議アプリのキーには触れない
       const key = keyOf(e);
@@ -351,6 +353,7 @@ function App() {
             <option key={o} value={o}>{OV_NAME[o]}</option>
           ))}
         </select>
+        <span className="proto-bar__info">キー: {lastKey}</span>
         <span className="proto-bar__info">[{mode === "follow" ? "自動" : mode === "overview" ? "全体" : "手動"}]</span>
         <span className="proto-bar__sep" />
         <select value={camera} onChange={(e) => (setCamera(e.target.value as Camera), setParam("camera", e.target.value))}>
