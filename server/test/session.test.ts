@@ -62,7 +62,8 @@ const play = Effect.fn("play")(function* (...script: (Op[] | ((ids: string[][]) 
   const snap = yield* session.snapshot;
   const byText = (text: string) => snap.nodes.find((n) => n.text === text);
   const dropped = events.flatMap((e) => (e.type === "diff" ? e.dropped : []));
-  return { session, calls, events, snap, byText, dropped, ids };
+  const ends = pairs.map(([a, b]) => Math.max(a.end, b.end)); // 手ごとの新しい発言の終了時刻の最大値
+  return { session, calls, events, snap, byText, dropped, ids, ends };
 });
 
 describe("差分操作の検証と適用", () => {
@@ -1054,5 +1055,187 @@ describe("今の議題（currentTopic）と会議の今の時刻（now）", () =
       const dup = remark("重複", { duplicate: true });
       yield* session.push(dup);
       expect((yield* session.snapshot).now).toBe(dup.end);
+    }));
+});
+
+// 触れたノードの touchedAt（その反映の新しい発言の end の最大値）と evidenceRound（根拠が足された反映の番号）
+describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠が足された反映の番号（evidenceRound）", () => {
+  const base = (ids: string[][]): Op[] => [
+    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [ids[0]![1]!] },
+    { op: "add", ref: "t4", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
+  ];
+  // base の ID: n1 採用 / n2 面接は何回か / n3 3 回 / n4 予算
+
+  it.effect("議題の下の論点に案を追加すると、案・論点・議題の touchedAt がその反映の最大値になり、兄弟の議題とルートは変わらない", () =>
+    Effect.gen(function* () {
+      const { byText, snap, ends } = yield* play(base, (ids) => [
+        { op: "add", ref: "t5", parent: "n2", kind: "案", text: "2 回", evidence: [ids[1]![0]!] },
+      ]);
+      const [first, second] = ends as [number, number];
+      expect(first).not.toBe(second);
+      expect(byText("2 回")!.touchedAt).toBe(second);
+      expect(byText("面接は何回か")!.touchedAt).toBe(second);
+      expect(byText("採用")!.touchedAt).toBe(second);
+      // 触れていないノードは前の反映の値のまま（先に値があることも確かめる）
+      expect(byText("予算")!.touchedAt).toBe(first);
+      expect(byText("3 回")!.touchedAt).toBe(first);
+      const root = snap.nodes.find((n) => n.parent === null)!;
+      expect(root).not.toHaveProperty("touchedAt");
+      expect(root).not.toHaveProperty("evidenceRound");
+    }));
+
+  it.effect("追加したノードの evidenceRound はその反映の番号。祖先の evidenceRound は変わらない", () =>
+    Effect.gen(function* () {
+      const { byText, snap } = yield* play(base, (ids) => [
+        { op: "add", ref: "t5", parent: "n2", kind: "案", text: "2 回", evidence: [ids[1]![0]!] },
+      ]);
+      expect(snap.round).toBe(2);
+      expect(byText("2 回")!.evidenceRound).toBe(2);
+      expect(byText("面接は何回か")!.evidenceRound).toBe(1);
+      expect(byText("採用")!.evidenceRound).toBe(1);
+      expect(byText("3 回")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("新しい根拠を足す更新は、ノードと祖先の touchedAt を進め、そのノードだけ evidenceRound を進める", () =>
+    Effect.gen(function* () {
+      const { byText, ends } = yield* play(base, (ids) => [
+        { op: "update", node: "n3", text: "3 回にする", evidence: [ids[1]![0]!] },
+      ]);
+      const [first, second] = ends as [number, number];
+      for (const t of ["3 回にする", "面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("予算")!.touchedAt).toBe(first);
+      expect(byText("3 回にする")!.evidenceRound).toBe(2);
+      expect(byText("面接は何回か")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("案の状態だけの更新（既存の根拠）は touchedAt を進めるが、evidenceRound は進めない", () =>
+    Effect.gen(function* () {
+      const { byText, ends } = yield* play(base, (ids) => [
+        { op: "update", node: "n3", planStatus: "却下", evidence: [ids[0]![1]!] },
+      ]);
+      const [first, second] = ends as [number, number];
+      expect(byText("3 回")!.planStatus).toBe("却下");
+      for (const t of ["3 回", "面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("予算")!.touchedAt).toBe(first);
+      expect(byText("3 回")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("本文だけの更新（既存の根拠を再指定）は touchedAt を進めるが、evidenceRound は進めない", () =>
+    Effect.gen(function* () {
+      const { byText, ends } = yield* play(base, (ids) => [
+        { op: "update", node: "n3", text: "2 回", evidence: [ids[0]![1]!] },
+      ]);
+      const [first, second] = ends as [number, number];
+      expect(first).not.toBe(second);
+      for (const t of ["2 回", "面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("予算")!.touchedAt).toBe(first);
+      expect(byText("2 回")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("根拠だけの更新（本文・状態は変えない）は touchedAt を進め、そのノードだけ evidenceRound を進める", () =>
+    Effect.gen(function* () {
+      const { byText, ends } = yield* play(base, (ids) => [
+        { op: "update", node: "n3", evidence: [ids[1]![0]!] },
+      ]);
+      const [first, second] = ends as [number, number];
+      expect(first).not.toBe(second);
+      for (const t of ["3 回", "面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("予算")!.touchedAt).toBe(first);
+      expect(byText("3 回")!.evidenceRound).toBe(2);
+      expect(byText("面接は何回か")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("移動は、元の親側と新しい親側の祖先の touchedAt を進める。根拠は足されないので evidenceRound は変わらない", () =>
+    Effect.gen(function* () {
+      // n1 採用 > n2 面接 > n3 案 を、別の議題 n4 予算 の下の論点 n5 へ移す。n6 は無関係の議題
+      const { byText, ends } = yield* play(
+        (ids) => [
+          ...base(ids),
+          { op: "add", ref: "t5", parent: "t4", kind: "論点", text: "上限", evidence: [ids[0]![1]!] },
+          { op: "add", ref: "t6", parent: "root", kind: "議題", text: "備品", evidence: [ids[0]![1]!] },
+        ],
+        [{ op: "move", node: "n3", parent: "n5" }],
+      );
+      const [first, second] = ends as [number, number];
+      for (const t of ["3 回", "上限", "予算", "面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("備品")!.touchedAt).toBe(first);
+      expect(byText("3 回")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("統合は、統合先と祖先・統合元の元の親側の祖先の touchedAt を進め、統合先の evidenceRound をその反映の番号にする", () =>
+    Effect.gen(function* () {
+      // n1 採用 > n2 論点（統合元）、n3 予算 > n4 論点（統合先）、n5 備品（無関係）
+      const { byText, ends } = yield* play(
+        (ids) => [
+          { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+          { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
+          { op: "add", ref: "t3", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
+          { op: "add", ref: "t4", parent: "t3", kind: "論点", text: "上限はいくらか", evidence: [ids[0]![1]!] },
+          { op: "add", ref: "t5", parent: "root", kind: "議題", text: "備品", evidence: [ids[0]![1]!] },
+        ],
+        [{ op: "combine", from: "n2", into: "n4" }],
+      );
+      const [first, second] = ends as [number, number];
+      expect(byText("面接は何回か")).toBeUndefined();
+      for (const t of ["上限はいくらか", "予算", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("備品")!.touchedAt).toBe(first);
+      expect(byText("上限はいくらか")!.evidenceRound).toBe(2);
+      expect(byText("予算")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("削除は、元の親側の祖先の touchedAt を進め、無関係の議題は進めない", () =>
+    Effect.gen(function* () {
+      const { byText, ends } = yield* play(base, [{ op: "delete", node: "n3" }]);
+      const [first, second] = ends as [number, number];
+      expect(byText("3 回")).toBeUndefined();
+      for (const t of ["面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
+      expect(byText("予算")!.touchedAt).toBe(first);
+    }));
+
+  it.effect("捨てた操作は touchedAt・evidenceRound を変えない", () =>
+    Effect.gen(function* () {
+      const { byText, ends, dropped } = yield* play(base, [
+        { op: "update", node: "n3", text: "変える", evidence: ["r-unknown"] },
+        { op: "delete", node: "n1" }, // 子を持つので捨てられる
+      ]);
+      const [first] = ends as [number, number];
+      expect(dropped).toHaveLength(2);
+      for (const t of ["3 回", "面接は何回か", "採用"]) expect(byText(t)!.touchedAt).toBe(first);
+      expect(byText("3 回")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("差分更新が失敗した反映は、ノードの値を変えない", () =>
+    Effect.gen(function* () {
+      const ps = [remark("発言"), remark("発言")];
+      const later = [remark("発言"), remark("発言")];
+      let n = 0;
+      const update = (): Effect.Effect<DiffOutput, UpdateFailure> =>
+        n++ === 0
+          ? Effect.succeed({ ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ps[0]!.id] }] })
+          : Effect.fail({ _tag: "UpdateFailed", message: "timeout" });
+      const session = yield* open(update);
+      for (const r of ps) yield* session.push(r);
+      yield* session.idle;
+      const before = (yield* session.snapshot).nodes.find((x) => x.text === "採用")!;
+      expect(before.touchedAt).toBe(ps[1]!.end);
+      expect(before.evidenceRound).toBe(1);
+      for (const r of later) yield* session.push(r);
+      yield* session.idle;
+      expect(n).toBe(2);
+      expect((yield* session.snapshot).nodes.find((x) => x.text === "採用")).toEqual(before);
+    }));
+
+  it.effect("エクスポートの JSON のノードに touchedAt・evidenceRound は出ない", () =>
+    Effect.gen(function* () {
+      const { session, snap } = yield* play(base);
+      expect(snap.nodes.filter((n) => n.touchedAt !== undefined && n.evidenceRound !== undefined)).toHaveLength(4);
+      const json = yield* session.exportJson;
+      const keys = (nodes: readonly object[]): string[] => nodes.flatMap((n) => [...Object.keys(n), ...("children" in n ? keys(n.children as object[]) : [])]);
+      const all = keys([json.root]);
+      expect(all).toContain("text");
+      expect(all).not.toContain("touchedAt");
+      expect(all).not.toContain("evidenceRound");
     }));
 });

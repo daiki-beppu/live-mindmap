@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyOps, diffMaps, emptyMap, type Change, type MeetingMap, type Op } from "../src/core/index.ts";
 
 const known = new Set(["r1", "r2", "r3", "r4", "r5"]);
-const step = (map: MeetingMap, ops: Op[]): MeetingMap => applyOps(map, ops, known).map;
+const step = (map: MeetingMap, ops: Op[]): MeetingMap => applyOps(map, ops, known, { round: 1, at: 0 }).map;
 
 // 前のマップ:
 //   n1 議題 採用
@@ -219,7 +219,7 @@ describe("種別「要点」を applyOps が受け入れる", () => {
       { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ふりかえり", evidence: ["r1"] },
       { op: "add", ref: "t2", parent: "t1", kind: "要点", text: "毎週 15 分で回す", evidence: ["r2"] },
       { op: "add", ref: "t3", parent: "t2", kind: "要点", text: "司会は持ち回り", evidence: ["r3"] },
-    ], known);
+    ], known, { round: 1, at: 0 });
 
     expect(result.map.order.map((id) => result.map.nodes[id]!.kind)).toEqual(["会議", "議題", "要点", "要点"]);
     expect(result.map.nodes[result.map.order[3]!]!.parent).toBe(result.map.order[2]);

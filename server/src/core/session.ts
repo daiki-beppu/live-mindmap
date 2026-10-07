@@ -119,9 +119,11 @@ type History = Pick<SessionState, "round" | "changes" | "currentTopic" | "lastCh
 
 // 成功した反映を 1 回記録して、新しい履歴を返す。変化がなくても round は進める（前回の赤い枠を消すため）。
 // ライブ（callUpdater）と復元（restoreState）が同じ関数を通す。
-function recordRound(history: History, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, fresh: readonly Remark[]): History {
-  const round = history.round + 1;
-  const at = Math.max(...fresh.map((r) => r.end));
+// 反映の番号（増やす前の round + 1）と時刻（渡した新しい発言の end の最大値）。applyOps と recordRound に同じ値を渡す。
+const stampOf = (history: History, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
+
+function recordRound(history: History, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, stamp: { round: number; at: number }): History {
+  const { round, at } = stamp;
   const added = diffMaps(before, applied.map).map((c): ChangeEntry => ({ ...c, round, at }));
   // 最後に変わったノードは一度だけ選び、今の議題と lastChanged の両方をそこから作る
   const lastChanged = lastChangedNode(applied.map, applied.changeOrder);
@@ -169,8 +171,9 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
         if (hasContent(r.text)) processed.push(r); // 旧形式のログの中身のない発言は、続きの差分更新の直前の発言にしない
         fresh.push(r);
       }
-      const applied = applyOps(map, e.ops, known);
-      if (e.error === undefined) history = recordRound(history, map, applied, fresh);
+      const stamp = stampOf(history, fresh);
+      const applied = applyOps(map, e.ops, known, stamp);
+      if (e.error === undefined) history = recordRound(history, map, applied, stamp);
       map = applied.map;
     }
   }
@@ -294,8 +297,9 @@ function openSession(initial: SessionState): Effect.Effect<Session, never, Scope
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
           const dropped = yield* Ref.modify(ref, (s) => {
-            const applied = applyOps(s.map, outcome.ops, s.known);
-            return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, fresh), map: applied.map, reflecting: [] }];
+            const stamp = stampOf(s, fresh);
+            const applied = applyOps(s.map, outcome.ops, s.known, stamp);
+            return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [] }];
           });
           yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped });
         }),

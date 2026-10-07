@@ -66,7 +66,7 @@ const texts = (c: Created) => contents(c) as string[];
 
 // 発言 id r1〜r40 を、根拠に使える既知の発言として applyOps に渡す
 const KNOWN = new Set(Array.from({ length: 40 }, (_, i) => `r${i + 1}`));
-const evolve = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, KNOWN);
+const evolve = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, KNOWN, { round: 1, at: 0 });
 const inputOf = (map: MeetingMap, n: number): DiffInput => ({
   map,
   recent: n > 1 ? [{ id: `r${n - 1}`, track: "相手", start: n - 1, end: n, text: `前の発言${n - 1}` }] : [],
@@ -732,6 +732,7 @@ describe("種別「要点」の経路", () => {
         { op: "add", ref: "b", parent: "a", kind: "要点", text: "毎週 15 分で回している", evidence: ["r2"] },
       ],
       known,
+      { round: 1, at: 0 },
     );
 
     const prompt = buildPrompt({ map, recent: [], fresh: [{ id: "r3", track: "相手", start: 3, end: 4, text: "x" }] });
