@@ -86,10 +86,10 @@ jobs:
       matrix:
         include:
           - name: capture
-            args: test/capture.test.ts
+            args: test/capture.test.ts test/reviewBuild.test.ts
             chromium: true
           - name: rest
-            args: --exclude test/server.test.ts --exclude test/capture.test.ts
+            args: --exclude test/server.test.ts --exclude test/capture.test.ts --exclude test/reviewBuild.test.ts
             chromium: false
     name: server (${{ matrix.name }})
     steps:
