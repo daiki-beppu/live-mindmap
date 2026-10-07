@@ -122,7 +122,7 @@ describe("正解ファイル（Truth）（CT-4DATA）", () => {
 });
 
 describe("ログの行（LogEvent）（CT-4DATA）", () => {
-  // claude.ts:86-91 と同じ 6 操作の構成（add → update → combine → move → delete → noop）
+  // claude.ts が DiffOutput から作る JSON Schema と同じ 6 操作の構成（add → update → combine → move → delete → noop）
   const diffOps = [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
     { op: "update", node: "n1", text: "採用を進める", evidence: ["r1"], planStatus: "検討中" },
@@ -169,7 +169,7 @@ describe("Claude の structured_output（DiffOutput）（CT-4DATA）", () => {
   it.effect("claude.test.ts の実例（{ ops: [{ op: noop, reason }] }）を decode できる", () =>
     expectDecodeSuccess(Schema.decodeUnknownEffect(DiffOutput)({ ops: [{ op: "noop", reason: "r" }] })));
 
-  it.effect("claude.ts:86-91 の 6 操作それぞれ 1 件を decode できる", () =>
+  it.effect("JSON Schema（claude.ts が DiffOutput から作る）と同じ 6 操作それぞれ 1 件を decode できる", () =>
     expectDecodeSuccess(
       Schema.decodeUnknownEffect(DiffOutput)({
         ops: [
@@ -184,7 +184,7 @@ describe("Claude の structured_output（DiffOutput）（CT-4DATA）", () => {
     ));
 
   // T2（FIX-1 / AC4）: 既存の正例（evidence: ["r1"]、上の add・update）と対になる負例。
-  // evidence だけを [] に変える。Claude への出力契約は claude.ts:70（minItems: 1）と同じ拒否を保つ
+  // evidence だけを [] に変える。Claude への出力契約は その JSON Schema の minItems: 1 と同じ拒否を保つ
   it.effect("evidence を [] に変えた add は decode に失敗する", () =>
     expectDecodeFailure(
       Schema.decodeUnknownEffect(DiffOutput)({

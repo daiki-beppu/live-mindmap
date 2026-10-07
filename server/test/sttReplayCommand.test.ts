@@ -10,7 +10,7 @@ import type { DiffInput } from "../src/core/index.ts";
 import { consoleCapture, runCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn() }));
-vi.mock("../src/claude.ts", () => ({ openClaudeUpdater: external.openClaudeUpdater }));
+vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
 
 const calls: string[][] = [];
 const close = vi.fn();

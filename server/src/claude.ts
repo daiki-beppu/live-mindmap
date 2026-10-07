@@ -1,7 +1,8 @@
 // 差分更新（Claude）。Sonnet 5.5 を Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v3 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { children, KINDS, PLAN_STATUSES, pointStatus, ROOT_ID, type DiffInput, type DiffOutput, type MeetingMap, type Op, type Remark } from "./core/index.ts";
+import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
+import { children, DiffOutput, DiffUpdater, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
 
@@ -67,35 +68,6 @@ ${NOOP_SCOPE}
 # 会話の扱い
 この会話の最初のメッセージには、現在のマップの全体が載る。2 通目からは、マップの全体の代わりに前回からのマップの変更だけが載る。変更には、前回の操作を当てた結果（add で付いた id、update 後の本文、統合・移動・削除）が含まれる。最初のマップにこれまでの変更を順に当てたものが今のマップ。ノードは変更に書かれた id で指す`;
 
-const evidence = { type: "array", items: { type: "string" }, minItems: 1, description: "根拠の発言 id（例 r12）" };
-const nodeRef = { type: "string", description: "既存ノードの id（例 n3）か、同じ応答で add した ref" };
-const opSchema = (op: string, props: Record<string, unknown>, required: string[]) => ({
-  type: "object",
-  properties: { op: { const: op }, ...props },
-  required: ["op", ...required],
-  additionalProperties: false,
-});
-
-const SCHEMA = {
-  type: "object",
-  properties: {
-    ops: {
-      type: "array",
-      items: {
-        anyOf: [
-          opSchema("add", { ref: { type: "string" }, parent: nodeRef, kind: { enum: [...KINDS] }, text: { type: "string" }, evidence, assignee: { type: "string" }, due: { type: "string" } }, ["ref", "parent", "kind", "text", "evidence"]),
-          opSchema("update", { node: nodeRef, text: { type: "string" }, evidence, planStatus: { enum: [...PLAN_STATUSES] } }, ["node", "evidence"]),
-          opSchema("combine", { from: nodeRef, into: nodeRef }, ["from", "into"]),
-          opSchema("move", { node: nodeRef, parent: nodeRef }, ["node", "parent"]),
-          opSchema("delete", { node: nodeRef }, ["node"]),
-          opSchema("noop", { reason: { type: "string" } }, ["reason"]),
-        ],
-      },
-    },
-  },
-  required: ["ops"],
-  additionalProperties: false,
-};
 
 const fmtTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const fmtRemark = (r: Remark) => `${r.id} [${fmtTime(r.start)}] ${r.text}`;
@@ -160,115 +132,139 @@ export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: Meetin
   ].join("\n");
 }
 
+// 出力の JSON Schema は core の DiffOutput から、モジュールを読み込んだときに 1 回だけ作る。
+// 余分なキーは JSON Schema の上では禁止（additionalProperties: false）にし、decode では黙って落とす。文字列の長さなどの検査は足さない
+const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOutput, { onExcessProperty: "error" }).schema;
+
 // 1 つの query を開いたまま使い回す回数。会話の履歴がたまり続けないよう、この回数ごとに開き直す。
 // 14 は、計測（#75）で品質を確かめた最長の回数
 export const QUERY_RENEW_CALLS = 14;
 
-// 古い Promise の差分更新の型。core の Service DiffUpdater は LegacyClaudeDiffUpdater.layer（diffUpdater.ts）がこれを包む
-export type DiffUpdateFn = (input: DiffInput) => Promise<DiffOutput>;
-export type SessionUpdater = { update: DiffUpdateFn; close: () => void };
-
-type UserMessage = SDKUserMessage;
-
-// push で受け取ったメッセージを、query の prompt として順に流す。end で終わる
-function inputQueue() {
-  const pending: UserMessage[] = [];
-  let wake: (() => void) | undefined;
-  let ended = false;
-  const iterable: AsyncIterable<UserMessage> = {
-    async *[Symbol.asyncIterator]() {
-      for (;;) {
-        const next = pending.shift();
-        if (next) {
-          yield next;
-          continue;
-        }
-        if (ended) return;
-        await new Promise<void>((resolve) => (wake = resolve));
-      }
-    },
-  };
-  return {
-    iterable,
-    push(message: UserMessage) {
-      pending.push(message);
-      wake?.();
-    },
-    end() {
-      ended = true;
-      wake?.();
-    },
-  };
+// Agent SDK の query。テストでは偽物の Layer に替える
+export class AgentSdk extends Context.Service<AgentSdk, {
+  readonly query: typeof query;
+}>()("live-mindmap/server/AgentSdk") {
+  static readonly layer = Layer.succeed(AgentSdk, AgentSdk.of({ query }));
 }
 
+// SDK が例外を投げた、または result の前にストリームが終わった
+export class ClaudeQueryFailed extends Schema.TaggedError<ClaudeQueryFailed>()("ClaudeQueryFailed", {
+  message: Schema.String,
+  cause: Schema.Defect(),
+}) {}
+
+// result の subtype が success ではない
+export class ClaudeResultFailed extends Schema.TaggedError<ClaudeResultFailed>()("ClaudeResultFailed", {
+  message: Schema.String,
+  subtype: Schema.String,
+}) {}
+
+// structured_output が無い、または DiffOutput の形に合わない
+export class DiffOutputInvalid extends Schema.TaggedError<DiffOutputInvalid>()("DiffOutputInvalid", {
+  message: Schema.String,
+  issue: Schema.Defect(),
+}) {}
+
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// 開いている query。子の Scope を閉じると、入力の Queue を終えて query.close() を呼ぶ
 type Open = {
-  input: ReturnType<typeof inputQueue>;
+  scope: Scope.Closeable;
+  input: Queue.Queue<SDKUserMessage, Cause.Done>;
   query: Query;
   output: AsyncIterator<SDKMessage>;
   calls: number;
   sent?: MeetingMap; // この query に前回送ったマップ。開き直しで Open ごと捨てられ、次の最初のメッセージで再び全体を送る
-  aborted: Promise<never>; // close されたら reject する。待っている next() が終わらなくても、呼び出しを止める
-  abort: () => void;
 };
 
 // 1 つのセッション（会議）で、開いたままの query を使い回す差分更新。
-// 最初の呼び出しで開き、回数・失敗・ストリームの終わりで開き直し、close() で閉じる。
+// 最初の呼び出しで開き、回数・失敗・ストリームの終わりで開き直し、セッションの Scope を閉じると閉じる。
 // 呼び出しは同時に 1 つしか走らない前提（core の session が直列に呼ぶ）。
-export function openClaudeUpdater(run: typeof query = query): SessionUpdater {
-  let current: Open | undefined;
-  let closed = false;
+export const ClaudeDiffUpdater = {
+  layer: Layer.effect(
+    DiffUpdater,
+    Effect.gen(function* () {
+      const sdk = yield* AgentSdk;
+      const sessionScope = yield* Scope.Scope;
+      const current = yield* Ref.make(Option.none<Open>());
+      let closed = false;
+      yield* Effect.addFinalizer(() => Effect.sync(() => void (closed = true)));
 
-  const open = (): Open => {
-    const input = inputQueue();
-    const query = run({
-      prompt: input.iterable,
-      options: {
-        model: MODEL, systemPrompt: SYSTEM,
-        tools: [], settingSources: [], persistSession: false, maxTurns: 4,
-        mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
-        outputFormat: { type: "json_schema", schema: SCHEMA },
-        env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1" }, // env は subprocess の環境を置き換えるので process.env を引き継ぐ
-      },
-    });
-    let abort!: () => void;
-    const aborted = new Promise<never>((_, reject) => (abort = () => reject(new Error("差分更新の query を閉じました"))));
-    aborted.catch(() => {}); // 待つ呼び出しが無くても未処理の拒否にしない
-    return { input, query, output: query[Symbol.asyncIterator](), calls: 0, aborted, abort };
-  };
+      const open = Effect.gen(function* () {
+        const scope = yield* Scope.fork(sessionScope, "sequential");
+        return yield* Effect.acquireRelease(
+          Effect.gen(function* () {
+            const input = yield* Queue.unbounded<SDKUserMessage, Cause.Done>();
+            const q = yield* Effect.try({
+              try: () => sdk.query({
+                prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
+                options: {
+                  model: MODEL, systemPrompt: SYSTEM,
+                  tools: [], settingSources: [], persistSession: false, maxTurns: 4,
+                  mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
+                  outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },
+                  env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1" }, // env は subprocess の環境を置き換えるので process.env を引き継ぐ
+                },
+              }),
+              catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
+            }).pipe(Effect.tapError(() => Queue.end(input)));
+            const opened: Open = { scope, input, query: q, output: q[Symbol.asyncIterator](), calls: 0 };
+            return opened;
+          }),
+          (o) => Queue.end(o.input).pipe(Effect.andThen(Effect.sync(() => o.query.close()))),
+        ).pipe(
+          Scope.provide(scope),
+          Effect.tapError(() => Scope.close(scope, Exit.void)),
+        );
+      });
 
-  const discard = (q: Open) => {
-    if (current === q) current = undefined;
-    q.input.end();
-    q.query.close();
-    q.abort();
-  };
+      // 使っている query を捨てる。Ref を空にしてから子の Scope を閉じる
+      const discard = (o: Open) =>
+        Ref.update(current, (c) => (Option.isSome(c) && c.value === o ? Option.none() : c)).pipe(
+          Effect.andThen(Scope.close(o.scope, Exit.void)),
+        );
 
-  const update: DiffUpdateFn = async (input) => {
-    if (closed) throw new Error("差分更新の updater は閉じています");
-    if (current && current.calls >= QUERY_RENEW_CALLS) discard(current);
-    const q = (current ??= open());
-    q.calls++;
-    q.input.push({ type: "user", message: { role: "user", content: buildPrompt(input, q.sent) }, parent_tool_use_id: null });
-    q.sent = input.map;
-    try {
-      for (;;) {
-        const { value: m, done } = await Promise.race([q.output.next(), q.aborted]);
-        if (done) throw new Error("差分更新の結果が無い");
-        if (m.type !== "result") continue;
-        if (m.subtype === "success" && m.structured_output) return { ops: (m.structured_output as { ops: Op[] }).ops };
-        throw new Error(`差分更新に失敗: ${m.subtype}`);
-      }
-    } catch (e) {
-      discard(q); // 失敗した query は使い続けず、次の呼び出しで開き直す
-      throw e;
-    }
-  };
+      const next = (o: Open) =>
+        Effect.tryPromise({
+          try: () => o.output.next(),
+          catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
+        });
 
-  return {
-    update,
-    close() {
-      closed = true;
-      if (current) discard(current);
-    },
-  };
-}
+      const awaitResult = (o: Open): Effect.Effect<DiffOutput, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> =>
+        Effect.gen(function* () {
+          for (;;) {
+            const { value: m, done } = yield* next(o);
+            if (done) return yield* new ClaudeQueryFailed({ message: "差分更新の結果が無い", cause: "stream ended before result" });
+            if (m.type !== "result") continue;
+            if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `差分更新に失敗: ${m.subtype}`, subtype: m.subtype });
+            return yield* Schema.decodeUnknownEffect(DiffOutput)(m.structured_output).pipe(
+              Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
+            );
+          }
+        });
+
+      const update = (input: DiffInput) =>
+        Effect.gen(function* () {
+          if (closed) return yield* Effect.die(new Error("差分更新の updater は閉じています"));
+          let c = yield* Ref.get(current);
+          if (Option.isSome(c) && c.value.calls >= QUERY_RENEW_CALLS) {
+            yield* discard(c.value);
+            c = Option.none();
+          }
+          const o = Option.isSome(c) ? c.value : yield* open;
+          if (Option.isNone(c)) yield* Ref.set(current, Option.some(o));
+          return yield* Effect.gen(function* () {
+            o.calls++;
+            yield* Queue.offer(o.input, { type: "user", message: { role: "user", content: buildPrompt(input, o.sent) }, parent_tool_use_id: null });
+            o.sent = input.map;
+            return yield* awaitResult(o);
+          }).pipe(
+            // 失敗・defect・中断のどれでも、その query は使い続けず、次の呼び出しで開き直す
+            Effect.onError(() => discard(o)),
+          );
+        });
+
+      return DiffUpdater.of({ update });
+    }),
+  ),
+};

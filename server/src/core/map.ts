@@ -34,7 +34,7 @@ export const MeetingMap = Schema.Struct({
 });
 export type MeetingMap = typeof MeetingMap["Type"];
 
-// 根拠とノード参照の説明はドメインの説明なので Schema の注釈に置く（段 7 でここから Claude に渡す JSON Schema を作る）。
+// 根拠とノード参照の説明はドメインの説明なので Schema の注釈に置く（claude.ts がここから Claude に渡す JSON Schema を作る）。
 // 要素数は検査しない: ログの保存形式（Op・Dropped・LogEvent）は、根拠が空のまま捨てた add / update も
 // 元の形で残す（session.ts の log）。根拠 1 件以上という制約は Claude への出力契約（DiffOutput）だけが持つ。
 const Evidence = Schema.mutable(Schema.Array(Schema.String)).annotate({ description: "根拠の発言 id（例 r12）" });
@@ -69,8 +69,8 @@ export type Op = typeof Op["Type"];
 export const Dropped = Schema.Struct({ op: Op, reason: Schema.String });
 export type Dropped = typeof Dropped["Type"];
 
-// Claude の structured_output の形。段 7 でここから JSON Schema を作り、受け取った値を検証する。
-// add / update の根拠だけ、Op の構造定義を再利用したまま 1 件以上を要求する（claude.ts:70 の minItems: 1 と同じ制約）。
+// Claude の structured_output の形。claude.ts がここから Claude に渡す JSON Schema を作り、受け取った値を検証する。
+// add / update の根拠だけ、Op の構造定義を再利用したまま 1 件以上を要求する（Claude に渡す JSON Schema では minItems: 1 になる）。
 const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
   add.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),

@@ -21,7 +21,7 @@ const external = vi.hoisted(() => ({
   openListener: vi.fn(),
   realHttp: { current: null as null | typeof import("../src/http.ts") },
 }));
-vi.mock("../src/claude.ts", () => ({ openClaudeUpdater: external.openClaudeUpdater }));
+vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
 vi.mock("../src/http.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/http.ts")>();
   external.realHttp.current = actual;

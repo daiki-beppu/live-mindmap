@@ -14,7 +14,7 @@ import { fakeListener } from "./fakeListener.ts";
 
 // play の updater と配信を差し替える。評価の対象は保存されたマップなので、配信は偽物でよい
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
-vi.mock("../src/claude.ts", () => ({ openClaudeUpdater: external.openClaudeUpdater }));
+vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
 // 配信の待受け（openListener）だけを偽物にする。serveFeed・portOf は本物のまま
 vi.mock("../src/http.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../src/http.ts")>(),

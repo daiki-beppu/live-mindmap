@@ -10,7 +10,7 @@ import { HttpServer } from "effect/http";
 import type { PromiseMapCapture } from "./capture.ts";
 import { defaultPort, defaultSessionsDir } from "./cli.ts";
 import type { DiffUpdater } from "./core/index.ts";
-import { LegacyClaudeDiffUpdater, type UpdaterUnavailable } from "./diffUpdater.ts";
+import { claudeUpdaterLayer, type UpdaterUnavailable } from "./diffUpdater.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import type { PromiseReviewPages } from "./review.ts";
@@ -125,7 +125,7 @@ if (import.meta.main) {
   const options: ServerOptions = {
     port: defaultPort(),
     sessionsDir: defaultSessionsDir(),
-    updaterLayer: LegacyClaudeDiffUpdater.layer,
+    updaterLayer: claudeUpdaterLayer,
     capture,
     writeReview,
     helper: { command: helperPath, args: [] },
