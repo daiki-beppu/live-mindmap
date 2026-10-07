@@ -36,7 +36,7 @@ import {
   type ScrollAxisLock,
   type Viewport,
 } from "./camera.ts";
-import { changedNodeIds } from "./changes.ts";
+import { foldView } from "./folding.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "./layout.ts";
 import { MapNode, type MapNodeData } from "./MapNode.tsx";
@@ -44,6 +44,11 @@ import { useAnimatedPositions } from "./useAnimatedPositions.ts";
 import type { CameraCommand, ViewingEvent, ViewingState, VisibleTree } from "./viewing.ts";
 
 const nodeTypes = { map: MapNode };
+
+// 開く上書きの集合。人の開閉は後続の issue で作るので、今は常に空
+const NO_OPEN: ReadonlySet<string> = new Set();
+const NO_CHANGES: ReadonlySet<string> = new Set();
+const noop = () => {};
 
 // 画面の外で変わったノードを、その方向の縁に点で出す。ビューポートの変化のたびに描き直す（購読はここに閉じる）
 function EdgeDots({
@@ -129,19 +134,23 @@ function MapCanvas({
     });
   };
 
+  // 見せ方。撮影（still）は畳まず、全ノードを描く
+  const view = useMemo(() => (still ? null : foldView(snapshot, NO_OPEN)), [snapshot, still]);
+  const shownNodes = view?.nodes ?? snapshot.nodes;
+
   // 目標の位置。表示する位置は、ここへ向けて補間する
   const target = useMemo(() => {
     const heights = Object.fromEntries(Object.entries(dims).map(([id, d]) => [id, d.height]));
-    return layout(snapshot.nodes, heights);
-  }, [snapshot.nodes, dims]);
-  const animated = useAnimatedPositions(snapshot.nodes, target);
+    return layout(shownNodes, heights);
+  }, [shownNodes, dims]);
+  const animated = useAnimatedPositions(shownNodes, target);
   const positions = still ? target : animated;
 
-  // 今回の反映で変わったノード。点滅と縁の点の両方がこの集合から出る（次の反映で入れ替わる）
-  const changed = useMemo(() => changedNodeIds(snapshot), [snapshot]);
+  // 点滅させるノード（見せるノードで今回変わったものと、中が変わった畳んだノード・まとめのノード）。点滅と縁の点の両方がこの集合から出る（次の反映で入れ替わる）
+  const changed = view?.blink ?? NO_CHANGES;
 
   const nodes = useMemo((): Node[] => {
-    const formal = snapshot.nodes.map((n): Node<MapNodeData, "map"> => ({
+    const formal = shownNodes.map((n): Node<MapNodeData, "map"> => ({
       id: n.id,
       type: "map",
       position: positions[n.id] ?? { x: 0, y: 0 },
@@ -152,22 +161,23 @@ function MapCanvas({
         color: KIND_COLOR[n.kind],
         mark: markOf(n),
         rejected: n.kind === "案" && n.planStatus === "却下",
+        fold: view?.folds[n.id] ?? null,
         changedRound: !still && changed.has(n.id) ? snapshot.round : null,
         selected: n.id === selectedId,
-        onSelect,
+        onSelect: view?.summaries.has(n.id) ? noop : onSelect,
       },
     }));
     return formal;
-  }, [snapshot, changed, positions, dims, selectedId, onSelect, still]);
+  }, [shownNodes, view, snapshot.round, changed, positions, dims, selectedId, onSelect, still]);
 
   const edges = useMemo((): Edge[] => {
-    return snapshot.nodes.flatMap((n) =>
+    return shownNodes.flatMap((n) =>
       n.parent ? [{ id: `${n.parent}->${n.id}`, source: n.parent, target: n.id, style: { stroke: KIND_COLOR[n.kind], strokeWidth: 2 } }] : [],
     );
-  }, [snapshot.nodes]);
+  }, [shownNodes]);
 
   // 見えている木。出来事と一緒に reducer へ渡す
-  const tree = useMemo((): VisibleTree => ({ ids: snapshot.nodes.map((n) => n.id), targets: target, currentTopic: snapshot.currentTopic }), [snapshot, target]);
+  const tree = useMemo((): VisibleTree => ({ ids: shownNodes.map((n) => n.id), targets: target, currentTopic: snapshot.currentTopic }), [shownNodes, snapshot.currentTopic, target]);
   const treeRef = useRef(tree);
   treeRef.current = tree;
   const onViewingEventRef = useRef(onViewingEvent);
@@ -260,9 +270,11 @@ function MapCanvas({
       if (!shouldMoveCamera(snapshot, placedRound.current)) return;
       const frame = requestAnimationFrame(() => {
         const { width, height } = storeApi.getState();
-        const rects = focus.ids.map((id) => nodeRect(id, target, dims));
+        // 見せないノードは、それを隠している畳んだノード・まとめのノードに置き換えて測る（位置の無い ID は原点で測られる）
+        const shownId = (id: string) => view?.shownAs[id] ?? id;
+        const rects = [...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims));
         placedRound.current = snapshot.round;
-        void setViewport(focusViewport(rects, nodeRect(focus.center, target, dims), { width, height }), { duration: 0 });
+        void setViewport(focusViewport(rects, nodeRect(shownId(focus.center), target, dims), { width, height }), { duration: 0 });
       });
       return () => cancelAnimationFrame(frame);
     }
@@ -286,7 +298,7 @@ function MapCanvas({
       cancelled = true;
       cancelAnimationFrame(frame);
     };
-  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted, paused, camera?.seq]);
+  }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, view, target, dims, onFitted, paused, camera?.seq]);
 
   // ⌘/Ctrl＋クリック: 押した点を中心に 1.5 倍に拡大（Option を加えると縮小）。ノードの上でも根拠を出さない。
   // setViewport の動き（event が null）は userMoved にならないので、人の操作として自分で知らせる

@@ -9,6 +9,7 @@ const data = (extra: Partial<MapNodeData> = {}): MapNodeData => ({
   mark: "?",
   rejected: false,
   changedRound: null,
+  fold: null,
   selected: false,
   onSelect: () => {},
   ...extra,
@@ -195,5 +196,51 @@ describe("MapNode: ノードの上で始めたドラッグでは、画面を動�
       b.onClick(at(target, 90, 90));
       expect(onSelect).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe("MapNode: 畳んだノード", () => {
+  const folded = (hint: string | null, hidden: number) => data({ fold: { hint, hidden } });
+  const cls = (d: MapNodeData) => (call("n2", d) as unknown as { props: { className: string } }).props.className.split(" ");
+  const spans = (d: MapNodeData, name: string) => findAll(call("n2", d), "span").filter((s) => s.props.className === name);
+
+  it("map-node--folded が付く。畳んでいないノードには付かない", () => {
+    expect(cls(folded("決定 2・TODO 1", 5))).toContain("map-node--folded");
+    expect(cls(data())).not.toContain("map-node--folded");
+  });
+
+  it("手がかりの文字を、ボタンの中に本文の後で描く", () => {
+    const d = folded("決定 2・TODO 1", 5);
+    const text = textOf(findAll(call("n2", d), "button")[0]);
+    expect(text).toContain("決定 2・TODO 1");
+    expect(text.indexOf("面接は何回か")).toBeLessThan(text.indexOf("決定 2・TODO 1"));
+    expect(spans(d, "map-node__hint")).toHaveLength(1);
+  });
+
+  it("隠れた数の丸を、ボタンの外に描く", () => {
+    const d = folded("決定 2", 5);
+    const count = spans(d, "map-node__count");
+    expect(count).toHaveLength(1);
+    expect(textOf(count[0])).toBe("5");
+    expect(textOf(findAll(call("n2", d), "button")[0])).not.toContain("5");
+  });
+
+  it("隠れた数が 0 でも丸を描く", () => {
+    expect(textOf(spans(folded(null, 0), "map-node__count")[0])).toBe("0");
+  });
+
+  it("hint が null なら手がかりの span は描かない", () => {
+    expect(spans(folded(null, 3), "map-node__hint")).toHaveLength(0);
+  });
+
+  it("fold が null なら、手がかりも丸も描かない", () => {
+    expect(spans(data(), "map-node__hint")).toHaveLength(0);
+    expect(spans(data(), "map-node__count")).toHaveLength(0);
+  });
+
+  it("畳んだノードでも点滅し、ボタンは 1 つのまま", () => {
+    const d = data({ fold: { hint: "決定 1", hidden: 2 }, changedRound: 3 });
+    expect(cls(d)).toContain("map-node--blink");
+    expect(findAll(call("n2", d), "button")).toHaveLength(1);
   });
 });
