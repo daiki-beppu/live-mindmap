@@ -173,9 +173,14 @@ function Canvas(p: CanvasProps) {
   // カメラ。配置は補間中も目標（target）で狙う
   const glanceUntil = useRef(0);
   const lastTopic = useRef(p.topicKey);
+  const lastInset = useRef(p.view?.inset ?? 0);
   useEffect(() => {
     const mode = p.view?.mode ?? "follow";
+    // 右の列の出し入れだけでは寄り直さない。列を出して今の議題が隠れるときだけ、その分を横にずらす
+    const insetChanged = lastInset.current !== (p.view?.inset ?? 0);
+    lastInset.current = p.view?.inset ?? 0;
     if (mode === "manual") return;
+    if (insetChanged && mode === "overview") return;
     const aim = () => {
       const { height } = store.getState();
       const width = store.getState().width - (p.view?.inset ?? 0);
@@ -208,6 +213,12 @@ function Canvas(p: CanvasProps) {
       };
       const b = box(p.focusIds);
       if (!b) return;
+      if (insetChanged) {
+        const [tx, ty, z] = store.getState().transform;
+        const over = tx + b.x1 * z - (width - 16);
+        if (over > 0) void setViewport({ x: tx - over, y: ty, zoom: z }, { duration: 300 });
+        return;
+      }
       const pad = 48;
       const zoom = Math.min(MAX_ZOOM, Math.max(READABLE_MIN, Math.min((width - pad * 2) / (b.x1 - b.x0), (height - pad * 2) / (b.y1 - b.y0))));
       const fitsX = (b.x1 - b.x0) * zoom <= width - pad * 2;
