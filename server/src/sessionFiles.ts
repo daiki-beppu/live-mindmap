@@ -1,6 +1,6 @@
 // セッションのフォルダに対するファイル操作（作成・ログと export.json の追記・終了時の書き出し）。
 // play（cli.ts）とライブのセッション（sessionSinks.ts）が共有する。HTTP には依存しない
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { Effect, Layer, Ref } from "effect";
 import type { PromiseMapCapture } from "./capture.ts";
@@ -31,12 +31,21 @@ export function writeExportFiles(dir: string, snapshot: Snapshot): string[] {
 }
 
 export const captureWarning = (reason: string) => `map.png を書き出せませんでした: ${reason}`;
-export const reviewWarning = (reason: string) => `map.html を書き出せませんでした: ${reason}`;
+export const reviewWarning = (file: string, reason: string) => `${file} を書き出せませんでした: ${reason}`;
 
-// 見返し用の HTML の版。今は map.html だけ
-export const REVIEW_VARIANTS: readonly ReviewVariant[] = [{ file: "map.html" }];
+// セッションのフォルダ直下の録音（相手*.m4a・自分*.m4a）の有無
+const RECORDING_PATTERN = /^(相手|自分).*\.m4a$/;
 
-// セッション終了時の書き出し。スナップショットは 1 回だけ取り、5 形式（md・json・drawnix・png・html）を書く。
+// 見返し用の HTML の版。録音があれば map.html、map-audio.html の順、無ければ map.html だけ（理由は表示しない）。
+// play と --no-audio のセッションには録音が無い
+export function reviewVariants(dir: string): readonly ReviewVariant[] {
+  const recorded = readdirSync(dir, { withFileTypes: true }).some((entry) => entry.isFile() && RECORDING_PATTERN.test(entry.name));
+  return recorded
+    ? [{ file: "map.html", audio: false }, { file: "map-audio.html", audio: true }]
+    : [{ file: "map.html", audio: false }];
+}
+
+// セッション終了時の書き出し。スナップショットは 1 回だけ取り、5 形式（md・json・drawnix・png・html。録音があれば map-audio.html も）を書く。
 // ライブのセッションの終了処理（sessionSinks.ts）から、この関数を呼ぶ。書いたファイルのパスを順に返す。
 // テキストの 3 形式を先に書く。撮影・HTML の書き出しは互いに独立で、失敗したもの（Chromium が無い等）だけ諦めて、
 // 標準エラーに理由を残し、書けたもののパスを返す。
@@ -55,9 +64,11 @@ export async function writeSessionExports(
     process.stderr.write(captureWarning(e instanceof Error ? e.message : String(e)) + "\n");
   }
   try {
-    paths.push(...(await writeReview(dir, join(dir, LOG_FILE), REVIEW_VARIANTS)));
+    const reviewed = await writeReview(dir, join(dir, LOG_FILE), reviewVariants(dir));
+    paths.push(...reviewed.paths);
+    for (const { file, reason } of reviewed.skipped) process.stderr.write(reviewWarning(file, reason) + "\n");
   } catch (e) {
-    process.stderr.write(reviewWarning(e instanceof Error ? e.message : String(e)) + "\n");
+    process.stderr.write(reviewWarning("map.html", e instanceof Error ? e.message : String(e)) + "\n");
   }
   return paths;
 }

@@ -128,7 +128,7 @@ export function ReviewControls({ time, duration, playing, rate, rates, topicName
           {formatHms(time)} / {formatHms(duration)}
         </span>
         <span className="review-bar__topic">{topicName}</span>
-        <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} />
+        {rates.length > 1 && <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} />}
       </div>
     </div>
   );

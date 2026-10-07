@@ -179,3 +179,107 @@ describe("版ごとに渡す速さの並び", () => {
     expect(step(s, { type: "setRate", rate: 30 })).toEqual(s); // 音声なしの並びの値は、この並びに無い
   });
 });
+
+// 音声つきの版。時刻の元は <audio> の currentTime だけで、通知（audioTime）が画面の時刻を決める。速さは 1 倍だけ（並び [1]）
+describe("音声の時刻の通知（audioTime）", () => {
+  const audioCtx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [1] };
+  const audioStart = initialPlayback(audioCtx.duration, 1);
+  const step = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, audioCtx), state);
+
+  it("進めている間は、通知された currentTime がそのまま画面の時刻になる（前の時刻や速さからは計算しない）", () => {
+    const playing = step(audioStart, { type: "seek", time: 5 }, { type: "toggle" });
+    expect(step(playing, { type: "audioTime", time: 5.25 })).toMatchObject({ time: 5.25, playing: true });
+    // 前の通知から飛んだ値でも、その値になる（足し算ではない）
+    expect(step(playing, { type: "audioTime", time: 5.25 }, { type: "audioTime", time: 42 }).time).toBe(42);
+    expect(step(playing, { type: "audioTime", time: 3 }).time).toBe(3);
+  });
+
+  it("止まっている間の通知では、時刻も状態も変わらない", () => {
+    const paused = step(audioStart, { type: "seek", time: 20 });
+    expect(step(paused, { type: "audioTime", time: 50 })).toEqual(paused);
+    // 止めた直後に届いた通知で、止めた時刻から戻らない
+    const stopped = step(paused, { type: "toggle" }, { type: "audioTime", time: 21 }, { type: "toggle" });
+    expect(step(stopped, { type: "audioTime", time: 20.5 })).toEqual(stopped);
+  });
+
+  it("会議の長さ以上の通知（録音が会議より長いとき）では、会議の長さで止まる。最後の時点を超えない", () => {
+    const playing = step(audioStart, { type: "seek", time: 90 }, { type: "toggle" });
+    expect(step(playing, { type: "audioTime", time: 100 })).toMatchObject({ time: 100, playing: false });
+    expect(step(playing, { type: "audioTime", time: 130 })).toMatchObject({ time: 100, playing: false });
+    expect(step(playing, { type: "audioTime", time: 99.9 })).toMatchObject({ time: 99.9, playing: true });
+  });
+
+  it("負の通知は 0 に収める", () => {
+    const playing = step(audioStart, { type: "seek", time: 10 }, { type: "toggle" });
+    expect(step(playing, { type: "audioTime", time: -1 }).time).toBe(0);
+  });
+
+  it("速さは使わない。同じ通知なら、どの速さの状態でも同じ時刻になる", () => {
+    const playing = step(audioStart, { type: "seek", time: 0 }, { type: "toggle" });
+    expect(step({ ...playing, rate: 30 }, { type: "audioTime", time: 2 }).time).toBe(2);
+    expect(step(playing, { type: "audioTime", time: 2 }).time).toBe(2);
+  });
+
+  it("同じ状態の上で、▶ → 通知 → シーク → 通知 → 反映を進める → 通知 → 止める → 通知、と続けても、時刻は常に直近の操作か通知に従う", () => {
+    let state = step(audioStart, { type: "seek", time: 0 });
+    state = step(state, { type: "toggle" });
+    expect(state).toMatchObject({ time: 0, playing: true });
+    state = step(state, { type: "audioTime", time: 3 });
+    expect(state.time).toBe(3);
+    state = step(state, { type: "seek", time: 60 }); // シークは行き先の時刻になり、進めたまま
+    expect(state).toMatchObject({ time: 60, playing: true });
+    state = step(state, { type: "audioTime", time: 60.5 }); // 音声が新しい時刻から鳴り、通知が続く
+    expect(state.time).toBe(60.5);
+    state = step(state, { type: "next" }); // 反映 1 つ進む: 今の通知の時刻の次の反映（70）が行き先
+    expect(state).toMatchObject({ time: 70, playing: true });
+    state = step(state, { type: "audioTime", time: 70.25 });
+    expect(state.time).toBe(70.25);
+    state = step(state, { type: "prev" }); // 戻る: 70.25 より小さい反映の最大（70）
+    expect(state.time).toBe(70);
+    state = step(state, { type: "toggle" }, { type: "audioTime", time: 71 });
+    expect(state).toMatchObject({ time: 70, playing: false });
+  });
+
+  it("最後の時点で ▶ を押すと 0 秒に戻ってから進め、その後の通知で進む。通知が最後に届いたら止まり、もう一度 ▶ で 0 から", () => {
+    let state = step(audioStart, { type: "toggle" });
+    expect(state).toMatchObject({ time: 0, playing: true });
+    state = step(state, { type: "audioTime", time: 0.5 });
+    expect(state.time).toBe(0.5);
+    state = step(state, { type: "audioTime", time: 100 });
+    expect(state).toMatchObject({ time: 100, playing: false });
+    expect(step(state, { type: "toggle" })).toMatchObject({ time: 0, playing: true });
+  });
+
+  it("音声つきで進めているとき、最後まで行った（ended）で会議の長さに止まる", () => {
+    const state = step(audioStart, { type: "seek", time: 50 }, { type: "toggle" }, { type: "audioTime", time: 99 }, { type: "ended" });
+    expect(state).toMatchObject({ time: 100, playing: false });
+  });
+
+  it("止まっている間のシーク・反映の移動は、通知を待たずに行き先の時刻になる（音声はその時刻へ書き込まれる）", () => {
+    const paused = step(audioStart, { type: "seek", time: 55 });
+    expect(paused).toMatchObject({ time: 55, playing: false });
+    expect(step(paused, { type: "prev" }).time).toBe(40);
+    expect(step(paused, { type: "next" }).time).toBe(70);
+  });
+
+  it("入力の状態を書き換えない", () => {
+    const playing = step(audioStart, { type: "seek", time: 5 }, { type: "toggle" });
+    const before = { ...playing };
+    playbackReducer(playing, { type: "audioTime", time: 9 }, audioCtx);
+    expect(playing).toEqual(before);
+  });
+});
+
+describe("音声つきの速さの並び [1]（0.5〜2 倍は後の段）", () => {
+  const audioCtx = { duration: 100, reflectionTimes: [] as number[], rates: [1] };
+  const step = (state: PlaybackState, ...events: PlaybackEvent[]) => events.reduce((s, e) => playbackReducer(s, e, audioCtx), state);
+
+  it("setRate・faster・slower では状態が変わらず、速さは 1 倍のまま", () => {
+    const playing = step(initialPlayback(100, 1), { type: "seek", time: 20 }, { type: "toggle" });
+    expect(playing.rate).toBe(1);
+    expect(step(playing, { type: "faster" })).toEqual(playing);
+    expect(step(playing, { type: "slower" })).toEqual(playing);
+    expect(step(playing, { type: "setRate", rate: 2 })).toEqual(playing);
+    expect(step(playing, { type: "setRate", rate: 30 })).toEqual(playing);
+  });
+});

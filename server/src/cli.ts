@@ -8,6 +8,7 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Cause, Config, Console, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
+import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
@@ -26,14 +27,15 @@ import {
   type Snapshot,
 } from "./core/index.ts";
 import { openListener, serveFeed } from "./http.ts";
+import { resolveHelperPath } from "./helperPath.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
 import {
   captureWarning,
   createSessionDir,
   EXPORT_FILE,
   LOG_FILE,
-  REVIEW_VARIANTS,
   openRecordedSession,
+  reviewVariants,
   reviewWarning,
   writeExportFiles,
 } from "./sessionFiles.ts";
@@ -165,23 +167,33 @@ const latestSession = (sessionsDir: string, file: string) =>
  * セッションの保存・公開（ライブのセッションとも共有する）
  * -------------------------------------------------------------------------- */
 
+// 見返し用の HTML を書く。版の一覧は録音の有無で決める（reviewVariants）。mix だけの失敗は結果の skipped に入り、ここでは失敗にしない
+const writeReviews = (dir: string, review: ReviewBuild["Service"], audioMix: AudioMix["Service"]) =>
+  Effect.try({ try: () => reviewVariants(dir), catch: (e) => new CommandFailed({ message: describe(e) }) }).pipe(
+    Effect.flatMap((variants) => writeReviewPages(dir, join(dir, LOG_FILE), variants)),
+    Effect.provideService(ReviewBuild, review),
+    Effect.provideService(AudioMix, audioMix),
+  );
+
 // CLI 側の書き出し。警告は Console（差し替え可能）へ出す以外、writeSessionExports と同じ順・同じ結果
 const writeExportsAndCapture = Effect.fnUntraced(function* (
   dir: string,
   snapshot: Snapshot,
   capture: MapCapture["Service"],
   review: ReviewBuild["Service"],
+  audioMix: AudioMix["Service"],
 ) {
   const paths = yield* Effect.try({ try: () => writeExportFiles(dir, snapshot), catch: (e) => new CommandFailed({ message: describe(e) }) });
   const png = join(dir, "map.png");
   const captured = yield* Effect.result(capture.capture(snapshot, png));
   if (Result.isFailure(captured)) yield* Console.error(captureWarning(describe(captured.failure)));
   else paths.push(png);
-  const reviewed = yield* Effect.result(
-    writeReviewPages(dir, join(dir, LOG_FILE), REVIEW_VARIANTS).pipe(Effect.provideService(ReviewBuild, review)),
-  );
-  if (Result.isFailure(reviewed)) yield* Console.error(reviewWarning(describe(reviewed.failure)));
-  else paths.push(...reviewed.success);
+  const reviewed = yield* Effect.result(writeReviews(dir, review, audioMix));
+  if (Result.isFailure(reviewed)) yield* Console.error(reviewWarning("map.html", describe(reviewed.failure)));
+  else {
+    paths.push(...reviewed.success.paths);
+    for (const { file, reason } of reviewed.success.skipped) yield* Console.error(reviewWarning(file, reason));
+  }
   return paths;
 });
 
@@ -248,6 +260,7 @@ const play = Command.make(
       const port = yield* portConfig;
       const capture = yield* MapCapture;
       const review = yield* ReviewBuild;
+      const audioMix = yield* AudioMix;
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
       const { viewers, httpServer } = yield* openListener(port).pipe(
         Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
@@ -272,7 +285,7 @@ const play = Command.make(
       );
       // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちは、同じ Clock に乗る
       yield* playback(session, fromTranscript(file), realtime ? { sleep: (ms) => Effect.sleep(ms) } : {});
-      const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, capture, review);
+      const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, capture, review, audioMix);
       yield* write(paths.map((path) => `${path}\n`).join(""));
     },
     Effect.scoped,
@@ -281,7 +294,7 @@ const play = Command.make(
   Command.withDescription(
     "録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
       + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
-      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す",
+      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す（play のセッションには録音が無いので map-audio.html は作らない）",
   ),
   // 差分更新は play だけが使う。Layer が取得と解放を持ち、最後の反映と最終撮影の後に 1 回だけ閉じる
   Command.provide(claudeUpdaterLayer),
@@ -333,7 +346,7 @@ const stop = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png・map.html を書き出して、そのパスを出す",
+    "ライブのセッションを終了し、map.md・map.json・map.drawnix・map.png・map.html（録音があれば、その後に音声つきの map-audio.html も）を書き出して、そのパスを出す",
   ),
 );
 
@@ -435,7 +448,7 @@ const review = Command.make(
   "review",
   {
     session: Argument.String("session").pipe(
-      Argument.withDescription("見返し用の map.html を作り直すセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）"),
+      Argument.withDescription("見返し用の map.html（録音があれば map-audio.html も）を作り直すセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）"),
       Argument.optional,
     ),
   },
@@ -448,13 +461,17 @@ const review = Command.make(
         });
     const logPath = join(dir, LOG_FILE);
     if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
-    const paths = yield* writeReviewPages(dir, logPath, REVIEW_VARIANTS).pipe(
-      Effect.mapError((e) => new CommandFailed({ message: reviewWarning(describe(e)) })),
+    const { paths, skipped } = yield* writeReviews(dir, yield* ReviewBuild, yield* AudioMix).pipe(
+      Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map.html", describe(e)) })),
     );
+    // mix だけの失敗は、map.html を書いて成功のまま終える。書けなかった理由は標準エラーに出す
+    for (const { file, reason } of skipped) yield* Console.error(reviewWarning(file, reason));
     yield* write(paths.map((path) => `${path}\n`).join(""));
   }),
 ).pipe(
-  Command.withDescription("セッションの log.jsonl から、見返し用の map.html だけを作り直してパスを出す（サーバーは要らない）"),
+  Command.withDescription(
+    "セッションの log.jsonl から、見返し用の map.html を作り直してパスを出す。フォルダに録音（相手*.m4a・自分*.m4a）があれば、その後に音声つきの map-audio.html も作る（mix が失敗したら map-audio.html だけ諦めて、理由を標準エラーに出す）。サーバーは要らない",
+  ),
 );
 
 const evaluate = Command.make(
@@ -518,9 +535,14 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
 };
 
 if (import.meta.main) {
+  // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）
+  const helper = resolveHelperPath(process.env);
+  const audioMixLayer = "error" in helper
+    ? AudioMix.unavailable(helper.error)
+    : AudioMix.layer({ command: helper.path, args: [] }).pipe(Layer.provide(NodeServices.layer));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer)),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer, audioMixLayer)),
     NodeRuntime.runMain({ disableErrorReporting: true }),
   );
 }

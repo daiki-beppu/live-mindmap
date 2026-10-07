@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { chromium } from "playwright";
 import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { ReviewBuild, writeReviewPages } from "../src/review.ts";
+import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 
 // 実物の Vite（single-file）と Chromium で、書き出した map.html を file:// で開く。時間がかかる。
 // 事前に `pnpm --filter @live-mindmap/server exec playwright install chromium` が要る。
@@ -45,9 +46,21 @@ describe("map.html の本物のビルド", () => {
       const logPath = join(dir, "log.jsonl");
       writeFileSync(logPath, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
-      const [path] = yield* writeReviewPages(dir, logPath, [{ file: "map.html" }]).pipe(Effect.provide(ReviewBuild.layer));
+      // 本物のビルドは 1 回だけ。音声つきの版には、偽の mix の出力（小さなバイト列）を埋め込む
+      const { paths: [path, audioPath], skipped } = yield* writeReviewPages(dir, logPath, [{ file: "map.html", audio: false }, { file: "map-audio.html", audio: true }]).pipe(
+        Effect.provide(ReviewBuild.layer),
+        Effect.provide(fakeAudioMix().layer),
+      );
 
+      expect(skipped).toEqual([]);
       expect(path).toBe(join(dir, "map.html"));
+      expect(audioPath).toBe(join(dir, "map-audio.html"));
+      // 本物のビルドのテンプレートに埋め込んだ音声を、元のバイト列に読み戻せる。ログも同じ HTML から読み戻せ、map.html には音声が入らない
+      const audioHtml = yield* Effect.tryPromise(() => readFile(audioPath!, "utf8"));
+      expect(embeddedAudio(audioHtml)).toEqual(FAKE_MIX_BYTES);
+      const audioLog = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(audioHtml);
+      expect(JSON.parse(audioLog![1]!)).toEqual(events);
+      expect(embeddedAudio(yield* Effect.tryPromise(() => readFile(path!, "utf8")))).toBeNull();
       const html = yield* Effect.tryPromise(() => readFile(path!, "utf8"));
       // インライン化した JS・CSS の中身にタグに見える文字列があっても、外部参照とは数えない
       const markup = html.replace(/(<(script|style)\b[^>]*>)[\s\S]*?<\/\2>/g, "$1</$2>");

@@ -18,6 +18,17 @@ export function embedReviewLog(html: string, events: readonly unknown[]): string
   return html.slice(0, at) + element + html.slice(at);
 }
 
+// 音声（mix の出力を base64 にしたもの）を入れる <script type="text/plain"> の id。実行されず、base64 の文字は HTML の構文を壊さない
+export const REVIEW_AUDIO_ELEMENT_ID = "live-mindmap-review-audio";
+
+// テンプレート HTML の最後の </body> の直前に、base64 の音声を要素として差し込む（理由は embedReviewLog と同じ）
+export function embedReviewAudio(html: string, base64: string): string {
+  const at = html.lastIndexOf(BODY_END);
+  if (at < 0) throw new Error("テンプレートに </body> がありません");
+  const element = `<script type="text/plain" id="${REVIEW_AUDIO_ELEMENT_ID}">${base64}</script>`;
+  return html.slice(0, at) + element + html.slice(at);
+}
+
 // 同梱したライブラリのライセンスの文言を入れる <template>（描画されない）の id
 export const REVIEW_LICENSES_ELEMENT_ID = "live-mindmap-review-licenses";
 

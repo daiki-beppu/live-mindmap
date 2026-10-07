@@ -3,10 +3,11 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Result, Schema } from "effect";
 import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
-import { embedReviewLicenses, embedReviewLog } from "./core/index.ts";
+import { AudioMix } from "./audioMix.ts";
+import { embedReviewAudio, embedReviewLicenses, embedReviewLog } from "./core/index.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 
@@ -15,12 +16,18 @@ export class ReviewPageFailed extends Schema.TaggedError<ReviewPageFailed>()("Re
 
 const failed = (e: unknown) => new ReviewPageFailed({ message: e instanceof Error ? e.message : String(e) });
 
-// 書き出す版。今は map.html だけ（後で音声つきと `自分` だけの版を足す）
-export type ReviewVariant = { readonly file: string };
+// 書き出す版。audio が true なら、録音を mix して埋め込む（後で `自分` だけの版を足す）
+export type ReviewVariant = { readonly file: string; readonly audio: boolean };
+
+// 書き出さなかった版と、その理由
+export type SkippedReviewVariant = { readonly file: string; readonly reason: string };
+
+// 書き出した結果。paths は書けた版のパス（版の順）、skipped は諦めた版（呼び出し側が理由を標準エラーに出す）
+export type ReviewPagesResult = { readonly paths: string[]; readonly skipped: SkippedReviewVariant[] };
 
 // 書き出しの口を Promise で受け取る側（まだ Effect にしていない server.ts の終了処理）のための形。
 // server.ts の入口が writeReviewPages に Layer を渡して、この形を 1 つ組んで渡す
-export type PromiseReviewPages = (dir: string, logPath: string, variants: readonly ReviewVariant[]) => Promise<string[]>;
+export type PromiseReviewPages = (dir: string, logPath: string, variants: readonly ReviewVariant[]) => Promise<ReviewPagesResult>;
 
 // web を single-file の HTML 1 つにビルドして、その文字列を返す。出力は一時フォルダに書き、acquireRelease が必ず消す。
 // Why: Vite の build は中断できず、中断されたファイバーは完了を待たない。中断可能のままだと、ビルドが使っている outDir を先に消してしまうため、
@@ -54,8 +61,27 @@ export class ReviewBuild extends Context.Service<ReviewBuild, {
   static readonly layer = Layer.succeed(ReviewBuild, ReviewBuild.of({ build: buildReviewTemplate }));
 }
 
+// mix の出力を一時フォルダに書き、base64 にして返す。mix は既にある出力を上書きしないので、出力先は新しい一時フォルダで、acquireRelease が必ず消す。
+// 失敗は mix の理由（AudioMixFailed の message）を文字列で返す（版を諦めるだけで、全体の失敗にはしない）
+const mixedAudio = Effect.fnUntraced(function* (dir: string) {
+  const { mix } = yield* AudioMix;
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.tryPromise({ try: () => mkdtemp(join(tmpdir(), "live-mindmap-audio-")), catch: (e) => e instanceof Error ? e.message : String(e) }),
+        (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+      );
+      const out = join(tmp, "mix.m4a");
+      yield* mix(dir, out).pipe(Effect.mapError((e) => e.message));
+      const bytes = yield* Effect.tryPromise({ try: () => readFile(out), catch: (e) => e instanceof Error ? e.message : String(e) });
+      return bytes.toString("base64");
+    }),
+  );
+});
+
 // log.jsonl の出来事を、版ごとに 1 つの HTML へ埋め込んで dir に書き、書いたパスを版の順に返す。ビルドは 1 回だけ。
-// どこかで失敗したら、何も書かずに ReviewPageFailed で終わる
+// ログが読めない・ビルドに失敗したら、何も書かずに ReviewPageFailed で終わる。
+// 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は書く）。音声は版のファイルを書く前に取る
 export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPath: string, variants: readonly ReviewVariant[]) {
   const text = yield* Effect.tryPromise({ try: () => readFile(logPath, "utf8"), catch: failed });
   const events: unknown[] = [];
@@ -70,10 +96,22 @@ export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPat
   }
   const { build } = yield* ReviewBuild;
   const template = yield* build();
-  const pages = yield* Effect.try({
-    try: () => variants.map((variant) => ({ path: join(dir, variant.file), html: embedReviewLog(template, events) })),
-    catch: failed,
-  });
+  const pages: { path: string; html: string }[] = [];
+  const skipped: SkippedReviewVariant[] = [];
+  for (const variant of variants) {
+    const html = yield* Effect.try({ try: () => embedReviewLog(template, events), catch: failed });
+    if (!variant.audio) {
+      pages.push({ path: join(dir, variant.file), html });
+      continue;
+    }
+    const audio = yield* Effect.result(mixedAudio(dir));
+    if (Result.isFailure(audio)) {
+      skipped.push({ file: variant.file, reason: audio.failure });
+      continue;
+    }
+    const withAudio = yield* Effect.try({ try: () => embedReviewAudio(html, audio.success), catch: failed });
+    pages.push({ path: join(dir, variant.file), html: withAudio });
+  }
   for (const page of pages) yield* Effect.tryPromise({ try: () => writeFile(page.path, page.html), catch: failed });
-  return pages.map((page) => page.path);
+  return { paths: pages.map((page) => page.path), skipped } satisfies ReviewPagesResult;
 });

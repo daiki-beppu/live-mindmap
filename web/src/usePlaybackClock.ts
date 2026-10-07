@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-// 音声つきの見返しでは、時刻の元はこの hook ごと <audio> の currentTime に差し替える。
+// 音声なしの見返しの時刻の元。音声つきの見返しでは使わず、時刻の元は <audio> の currentTime（useAudioClock）になる。
 export function usePlaybackClock(playing: boolean, onElapsed: (seconds: number) => void) {
   const latest = useRef(onElapsed);
   latest.current = onElapsed;

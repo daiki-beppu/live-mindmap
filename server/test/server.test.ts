@@ -11,6 +11,7 @@ import type { DiffInput, Op, Snapshot, SpeakingFrame } from "../src/core/index.t
 import { HELPER_STOP_TIMEOUT_MS } from "../src/helpers.ts";
 import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
 import { startServer } from "../src/server.ts";
+import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -28,10 +29,12 @@ const fakeCapture: PromiseMapCapture = async (_snapshot, path) => {
 // 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする。
 // server.ts の入口と同じく、writeReviewPages から Promise の口を 1 つ組む
 const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
+// mix（ヘルパー）も偽物にする。出力先に小さなバイト列を書く
 const fakeWriteReview: PromiseReviewPages = (dir, logPath, variants) =>
   Effect.runPromise(
     writeReviewPages(dir, logPath, variants).pipe(
       Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+      Effect.provide(fakeAudioMix().layer),
     ),
   );
 
@@ -104,6 +107,7 @@ const setup = (initial: Partial<Script> = {}, capture: PromiseMapCapture = fakeC
       capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
     })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+    fakeAudioMix().layer,
   );
   // CLI を実行して、その標準出力を返す。中身の失敗は、入口の表を通す前のタグ付きの失敗のまま失敗にする
   const runOnce = (argv: string[]) =>
@@ -167,9 +171,12 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       const stdout = yield* cli("stop");
 
       const [dir] = yield* sessionDirs();
-      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png"), join(dir!, "map.html")];
+      // 偽のヘルパーが stop で録音（相手.m4a・自分.m4a）を書くので、map.html の後に map-audio.html も出る
+      const paths = [join(dir!, "map.md"), join(dir!, "map.json"), join(dir!, "map.drawnix"), join(dir!, "map.png"), join(dir!, "map.html"), join(dir!, "map-audio.html")];
       expect(stdout.split("\n").filter((l) => l !== "")).toEqual(paths);
       for (const path of paths) expect(existsSync(path)).toBe(true);
+      expect(embeddedAudio(readFileSync(paths[5]!, "utf8"))).toEqual(FAKE_MIX_BYTES);
+      expect(embeddedAudio(readFileSync(paths[4]!, "utf8"))).toBeNull();
       yield* waitFor(() => expect(before.received.map((s) => s.nodes.length).at(-1)).toBeGreaterThan(1));
       expect(JSON.parse(yield* cli("export", "--format", "json"))).toEqual(JSON.parse(readFileSync(paths[1]!, "utf8")));
     }));

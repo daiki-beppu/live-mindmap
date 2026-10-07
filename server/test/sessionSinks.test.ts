@@ -9,6 +9,7 @@ import { DiffUpdater, QUIET_MS, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type Dif
 import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
+import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES, type FakeMix } from "./fixtures/audioMix.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 
@@ -59,12 +60,15 @@ const failingCapture = async () => {
 // 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする。
 // server.ts の入口と同じく、writeReviewPages から Promise の口を 1 つ組む
 const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
-const fakeWriteReview: PromiseReviewPages = (dir, logPath, variants) =>
+// mix（ヘルパー）は偽物。出力先に小さなバイト列を書く、または失敗する
+const writeReviewWith = (mix: FakeMix): PromiseReviewPages => (dir, logPath, variants) =>
   Effect.runPromise(
     writeReviewPages(dir, logPath, variants).pipe(
       Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+      Effect.provide(mix.layer),
     ),
   );
+const fakeWriteReview: PromiseReviewPages = writeReviewWith(fakeAudioMix());
 const failingWriteReview: PromiseReviewPages = async () => {
   throw new Error("ビルドに失敗");
 };
@@ -142,6 +146,80 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
       for (const path of paths) expect(existsSync(path)).toBe(true);
     })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+
+  it.effect("録音（相手.m4a・自分.m4a）があるセッションの exports は 6 パスを返し、map.html の後に map-audio.html が並ぶ。map-audio.html には mix の出力が入る", () => {
+    const mix = fakeAudioMix();
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+      yield* sink.flush;
+      writeFileSync(join(dir, "相手.m4a"), "録音");
+      writeFileSync(join(dir, "自分.m4a"), "録音");
+
+      const paths = yield* sink.exports;
+
+      expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html", "map-audio.html"]);
+      expect(mix.calls.map((c) => c.session)).toEqual([dir]);
+      expect(embeddedAudio(readFileSync(join(dir, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
+      expect(embeddedAudio(readFileSync(join(dir, "map.html"), "utf8"))).toBeNull();
+    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: writeReviewWith(mix) })));
+  });
+
+  it.effect("録音が無いセッションの exports は 5 パスだけで、mix を呼ばず、標準エラーに map-audio の理由を出さない", () => {
+    const mix = fakeAudioMix();
+    return Effect.scoped(Effect.gen(function* () {
+      const stderr: string[] = [];
+      const original = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
+      try {
+        const sessionsDir = yield* withTmpSessionsDir();
+        const sinks = yield* SessionSinks;
+        const dir = yield* sinks.createDir(sessionsDir);
+        const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+        yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+        yield* sink.flush;
+
+        const paths = yield* sink.exports;
+
+        expect(paths).toHaveLength(5);
+        expect(mix.calls).toEqual([]);
+        expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
+        expect(stderr.join("")).not.toContain("map-audio");
+      } finally {
+        process.stderr.write = original;
+      }
+    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: writeReviewWith(mix) })));
+  });
+
+  it.effect("mix が失敗しても exports は map.html までの 5 パスを返し、標準エラーに「map-audio.html を書き出せませんでした: <理由>」を残す", () => {
+    const mix = fakeAudioMix();
+    return Effect.scoped(Effect.gen(function* () {
+      const stderr: string[] = [];
+      const original = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
+      try {
+        const sessionsDir = yield* withTmpSessionsDir();
+        const sinks = yield* SessionSinks;
+        const dir = yield* sinks.createDir(sessionsDir);
+        const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+        yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+        yield* sink.flush;
+        writeFileSync(join(dir, "相手.m4a"), "録音");
+        mix.failure.reason = "録音を混ぜられない";
+
+        const paths = yield* sink.exports;
+
+        expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
+        expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
+        expect(stderr.some((s) => s.includes("map-audio.html を書き出せませんでした: 録音を混ぜられない"))).toBe(true);
+      } finally {
+        process.stderr.write = original;
+      }
+    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: writeReviewWith(mix) })));
+  });
 
   it.effect("撮影が失敗しても exports は map.html を含む 4 パスを返し、標準エラーに理由を残す", () =>
     Effect.scoped(Effect.gen(function* () {
