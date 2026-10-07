@@ -782,6 +782,187 @@ describe("議題・論点の「済み」（close）の経路", () => {
     }));
 });
 
+describe("済みの議題・論点を AI へ畳んで渡す", () => {
+  const ev = ["r1"];
+  // root > n1 議題 > (n2 論点 > (n3 案 > n4 論点 > n5 決定, n8 TODO), n6 課題, n7 要点, n9 議題 > n10 要点)、root > n11 議題 > n12 案
+  const opened = (() => {
+    const { map, dropped } = evolve(emptyMap("定例"), [
+      { op: "add", ref: "a", parent: "root", kind: "議題", text: "採用", evidence: ev },
+      { op: "add", ref: "b", parent: "a", kind: "論点", text: "面接は何回か", evidence: ev },
+      { op: "add", ref: "c", parent: "b", kind: "案", text: "二回", evidence: ev },
+      { op: "add", ref: "d", parent: "c", kind: "論点", text: "誰が面接官か", evidence: ev },
+      { op: "add", ref: "e", parent: "d", kind: "決定", text: "部長と人事", evidence: ev },
+      { op: "add", ref: "f", parent: "a", kind: "課題", text: "日程が合わない", evidence: ev },
+      { op: "add", ref: "g", parent: "a", kind: "要点", text: "去年は三回だった", evidence: ev },
+      { op: "add", ref: "h", parent: "b", kind: "TODO", text: "候補日を出す", evidence: ev },
+      { op: "add", ref: "i", parent: "a", kind: "議題", text: "社内報", evidence: ev },
+      { op: "add", ref: "j", parent: "i", kind: "要点", text: "月次で出す", evidence: ev },
+      { op: "add", ref: "k", parent: "root", kind: "議題", text: "予算", evidence: ev },
+      { op: "add", ref: "l", parent: "k", kind: "案", text: "増額", evidence: ev },
+    ]);
+    expect(dropped).toEqual([]);
+    return map;
+  })();
+  // 根拠が足された反映の 2 つ後（round 3）で閉じ、その次（round 4）で ops を当てる
+  const closeAt = (map: MeetingMap, nodes: string[]) => {
+    const r = applyOps(map, nodes.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 0 });
+    expect(r.dropped).toEqual([]);
+    return r.map;
+  };
+  const apply = (map: MeetingMap, ops: Op[]) => {
+    const r = applyOps(map, ops, KNOWN, { round: 4, at: 0 });
+    expect(r.dropped).toEqual([]);
+    return r.map;
+  };
+  // maps を順に 1 つの query へ送り、届いたメッセージを返す
+  const sendAll = (maps: MeetingMap[]) =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      for (const [i, map] of maps.entries()) yield* updater.update(inputOf(map, i + 1));
+      return texts(created[0]!);
+    });
+  const promptOf = (map: MeetingMap) => buildPrompt(inputOf(map, 1));
+  const line = (message: string, id: string) => message.split("\n").filter((l) => new RegExp(`\\b${id}\\b`).test(l));
+  const shown = (prompt: string, id: string) => new RegExp(`^ *- ${id} `, "m").test(prompt);
+
+  it("全体のアウトライン: 済みの議題の配下は、論点・決定・TODO・子の議題の行だけを ID つき・元の木の深さの字下げで残し、案・課題・要点は省く（案の下の論点はたどる）", () => {
+    const prompt = promptOf(closeAt(opened, ["n1"]));
+
+    expect(prompt).toMatch(/^ {2}- n1 議題: 採用（済み）$/m);
+    expect(prompt).toMatch(/^ {4}- n2 論点\(未決\): 面接は何回か$/m);
+    expect(prompt).toMatch(/^ {6}- n8 TODO: 候補日を出す$/m);
+    expect(prompt).toMatch(/^ {8}- n4 論点\(決定済み\): 誰が面接官か$/m); // 省いた案（n3）の段も字下げに数える
+    expect(prompt).toMatch(/^ {10}- n5 決定: 部長と人事$/m);
+    expect(prompt).toMatch(/^ {4}- n9 議題: 社内報$/m);
+    for (const id of ["n3", "n6", "n7", "n10"]) expect(shown(prompt, id)).toBe(false);
+    for (const body of ["二回", "日程が合わない", "去年は三回だった", "月次で出す"]) expect(prompt).not.toContain(body);
+    expect(count(prompt, "（済み）")).toBe(1);
+  });
+
+  it("全体のアウトライン: 話し中の兄弟の議題の配下は畳まない", () => {
+    const prompt = promptOf(closeAt(opened, ["n1"]));
+
+    expect(prompt).toMatch(/^ {2}- n11 議題: 予算$/m);
+    expect(prompt).toMatch(/^ {4}- n12 案: 増額$/m);
+  });
+
+  it("全体のアウトライン: 済みの論点だけを閉じたとき、畳むのはその配下だけで、兄弟や親は畳まない", () => {
+    const prompt = promptOf(closeAt(opened, ["n2"]));
+
+    expect(prompt).toMatch(/^ {4}- n2 論点\(未決\): 面接は何回か（済み）$/m);
+    expect(prompt).toMatch(/^ {6}- n8 TODO: 候補日を出す$/m);
+    expect(prompt).toMatch(/^ {8}- n4 論点\(決定済み\): 誰が面接官か$/m);
+    expect(shown(prompt, "n3")).toBe(false);
+    expect(prompt).not.toContain("二回");
+    expect(prompt).toMatch(/^ {4}- n6 課題: 日程が合わない$/m);
+    expect(prompt).toMatch(/^ {4}- n7 要点: 去年は三回だった$/m);
+    expect(prompt).toMatch(/^ {6}- n10 要点: 月次で出す$/m);
+    expect(count(prompt, "（済み）")).toBe(1);
+  });
+
+  it.effect("閉じた反映の次のメッセージに「済みにした」が載り、「（変更なし）」は載らない。その次の回で変わらなければ載らない", () =>
+    Effect.gen(function* () {
+      const closed = closeAt(opened, ["n1"]);
+      const [, secondMessage, thirdMessage] = yield* sendAll([opened, closed, closed]);
+
+      expect(line(secondMessage!, "n1")).toEqual(["- n1 済みにした"]);
+      expect(secondMessage).not.toContain("（変更なし）");
+      expect(thirdMessage).toContain("（変更なし）");
+      expect(thirdMessage).not.toContain("済みにした");
+    }));
+
+  it.effect("1 回の反映で議題と論点を両方閉じると、両方に「済みにした」が載る。閉じていないノードには載らない", () =>
+    Effect.gen(function* () {
+      const [, message] = yield* sendAll([opened, closeAt(opened, ["n1", "n2"])]);
+
+      expect(line(message!, "n1")).toEqual(["- n1 済みにした"]);
+      expect(line(message!, "n2")).toEqual(["- n2 済みにした"]);
+      expect(count(message!, "済みにした")).toBe(2);
+    }));
+
+  it.effect("開き直した反映の次のメッセージに「話し中に戻った。畳んでいた中身:」と、畳んでいた配下が全部（案・課題・要点も）載る。議題と論点が両方戻れば両方載る", () =>
+    Effect.gen(function* () {
+      const closed = closeAt(opened, ["n1", "n2"]);
+      const reopened = apply(closed, [{ op: "add", ref: "x", parent: "n3", kind: "課題", text: "面接官が足りない", evidence: ["r2"] }]);
+      expect(reopened.nodes.n1!.talkStatus).toBeUndefined();
+      expect(reopened.nodes.n2!.talkStatus).toBeUndefined();
+
+      const [first, message] = yield* sendAll([closed, reopened]);
+
+      expect(first).not.toContain("二回"); // 1 通目は畳んだ形
+      expect(line(message!, "n1")).toContain("- n1 話し中に戻った。畳んでいた中身:");
+      expect(line(message!, "n2")).toContain("- n2 話し中に戻った。畳んでいた中身:");
+      expect(message).not.toContain("済みにした");
+      expect(message).not.toContain("（変更なし）");
+      // 畳んでいた案・課題・要点が、字下げされた行で載る
+      expect(message).toMatch(/^ +- n6 課題: 日程が合わない$/m);
+      expect(message).toMatch(/^ +- n7 要点: 去年は三回だった$/m);
+      expect(message).toMatch(/^ +- n10 要点: 月次で出す$/m);
+      expect(message).toMatch(/^ +- n4 論点\(決定済み\): 誰が面接官か$/m);
+      expect(message).toMatch(/^ +- n5 決定: 部長と人事$/m);
+      // 論点（n2）の配下の案は、議題（n1）の中身と論点の中身の両方に出る
+      expect(message!.split("\n").filter((l) => /^ +- n3 案: 二回$/.test(l))).toHaveLength(2);
+      // 同じ反映で足したノードは、追加の行にも載る
+      expect(line(message!, "n13").some((l) => l.includes("追加") && l.includes("面接官が足りない"))).toBe(true);
+      // 開き直した議題・論点それぞれの展開部分にも、同じ反映で足した n13 が字下げされた行で載る
+      const lines = message!.split("\n");
+      const n1Head = lines.findIndex((l) => l.startsWith("- n1 話し中に戻った"));
+      const n2Head = lines.findIndex((l) => l.startsWith("- n2 話し中に戻った"));
+      expect(n1Head).toBeGreaterThanOrEqual(0);
+      expect(n2Head).toBeGreaterThan(n1Head);
+      const sectionEnd = lines.findIndex((l, i) => i > n2Head && /^\S/.test(l));
+      const n1Section = lines.slice(n1Head + 1, n2Head);
+      const n2Section = lines.slice(n2Head + 1, sectionEnd === -1 ? lines.length : sectionEnd);
+      expect(n1Section.some((l) => /^ +- n13 課題: 面接官が足りない$/.test(l))).toBe(true);
+      expect(n2Section.some((l) => /^ +- n13 課題: 面接官が足りない$/.test(l))).toBe(true);
+    }));
+
+  it.effect("畳んでいた中身は、開き直した議題の配下だけ。論点が戻らない議題の戻りでは、論点の中身は載らない", () =>
+    Effect.gen(function* () {
+      const closed = closeAt(opened, ["n1"]);
+      const reopened = apply(closed, [{ op: "add", ref: "x", parent: "n6", kind: "課題", text: "調整役がいない", evidence: ["r2"] }]);
+      expect(reopened.nodes.n1!.talkStatus).toBeUndefined();
+
+      const [, message] = yield* sendAll([closed, reopened]);
+
+      expect(line(message!, "n1")).toContain("- n1 話し中に戻った。畳んでいた中身:");
+      expect(message).not.toMatch(/話し中に戻った[^\n]*n2|n2[^\n]*話し中に戻った/);
+      expect(message).toMatch(/^ +- n3 案: 二回$/m);
+    }));
+
+  it.effect("済みの議題の下のノードを削除した反映の次のメッセージに、その削除が載る。削除では開き直さないので、「話し中に戻った」は載らない", () =>
+    Effect.gen(function* () {
+      const closed = closeAt(opened, ["n1"]);
+      const deleted = apply(closed, [{ op: "delete", node: "n10" }, { op: "delete", node: "n7" }]);
+      expect(deleted.nodes.n1!.talkStatus).toBe("済み");
+
+      const [, message] = yield* sendAll([closed, deleted]);
+
+      for (const id of ["n10", "n7"]) {
+        const l = line(message!, id);
+        expect(l).toHaveLength(1);
+        expect(l[0]).toContain("削除（統合された場合は統合先に子と根拠が移った）");
+      }
+      expect(message).not.toContain("話し中に戻った");
+      expect(message).not.toContain("済みにした");
+      expect(message).not.toContain("（変更なし）");
+    }));
+
+  it.effect("system プロンプトに「# 済みの議題の見え方」が 1 回だけあり、畳んである・見えている id に add・update する・作り直さない、と書いてある", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+      const section = "# 済みの議題の見え方";
+      const body = "現在のマップで「（済み）」が付いた議題・論点は畳んである。配下の案・課題・要点は省いて見せている。そこへ話が戻ったら、見えている議題・論点の id に add・update する。同じ議題や論点を新しく作り直さない。";
+
+      expect(count(sys, section)).toBe(1);
+      expect(count(sys, body)).toBe(1);
+      expect(sys.indexOf(body)).toBeGreaterThan(sys.indexOf(section));
+      expect(sys.indexOf(section)).toBeGreaterThan(sys.indexOf(NOOP_SCOPE));
+      expect(sys.indexOf(section)).toBeLessThan(sys.indexOf("# 会話の扱い"));
+      expect(sys).toContain("話が戻ってきたら、畳まれていても見えている id にそのまま add・update する"); // 差分操作の close の行は残る
+    }));
+});
+
 describe("system プロンプト: 会話の扱い", () => {
   const CONVERSATION =
     "この会話の最初のメッセージには、現在のマップの全体が載る。2 通目からは、マップの全体の代わりに前回からのマップの変更だけが載る。変更には、前回の操作を当てた結果（add で付いた id、update 後の本文、統合・移動・削除）が含まれる。最初のマップにこれまでの変更を順に当てたものが今のマップ。ノードは変更に書かれた id で指す";
