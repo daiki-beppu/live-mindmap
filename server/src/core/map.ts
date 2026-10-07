@@ -131,9 +131,11 @@ function removeNode(map: MeetingMap, id: string) {
 // マップの変更はすべてここを通す。操作は適用する時点のマップに対して検証し、
 // 成り立たない操作は捨てて理由を返し、残りは適用を続ける。
 // known は根拠に使える発言の ID。知らない発言を根拠に挙げた操作は捨てる。
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>): { map: MeetingMap; dropped: Dropped[] } {
+// changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
   const map = cloneMap(input);
   const dropped: Dropped[] = [];
+  const changeOrder: string[] = [];
   const refs = new Map<string, string>();
   const resolve = (id: string) => refs.get(id) ?? id;
   const drop = (op: Op, reason: string) => dropped.push({ op, reason });
@@ -162,6 +164,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         };
         map.order.push(id);
         refs.set(op.ref, id);
+        changeOrder.push(id);
         break;
       }
       case "update": {
@@ -170,6 +173,10 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         if (op.planStatus && n.kind !== "案") { drop(op, "状態を持つのは案だけ"); break; }
         const err = evidenceError(op.evidence);
         if (err) { drop(op, err); break; }
+        const valueChanged = (!!op.text && op.text !== n.text)
+          || (!!op.planStatus && op.planStatus !== n.planStatus)
+          || op.evidence.some((u) => !n.evidence.includes(u));
+        if (valueChanged) changeOrder.push(n.id);
         if (op.text) n.text = op.text;
         if (op.planStatus) n.planStatus = op.planStatus;
         for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
@@ -181,6 +188,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         if (isDescendant(map, parentId, n.id)) { drop(op, "自分の子孫の下へは移せない"); break; }
         const err = parentError(map.nodes[parentId], n.kind);
         if (err) { drop(op, err); break; }
+        if (n.parent !== parentId) changeOrder.push(n.id);
         n.parent = parentId;
         break;
       }
@@ -194,6 +202,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         for (const k of kids) k.parent = into.id;
         for (const u of from.evidence) if (!into.evidence.includes(u)) into.evidence.push(u);
         removeNode(map, from.id);
+        changeOrder.push(into.id);
         break;
       }
       case "delete": {
@@ -205,5 +214,5 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
       }
     }
   }
-  return { map, dropped };
+  return { map, dropped, changeOrder };
 }

@@ -750,3 +750,155 @@ describe("unreflectedRemarks（反映前の発言）", () => {
     expect(a.text).toBe("元の本文");
   });
 });
+
+describe("今の議題（currentTopic）と会議の今の時刻（now）", () => {
+  const nested = (ids: string[][]): Op[] => [
+    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
+    { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [ids[0]![1]!] },
+  ];
+
+  it("議題の下のノードが変わると、その最も近い祖先の議題になる", async () => {
+    const { snap, byText } = await play(nested);
+    expect(snap.currentTopic).toBe(byText("採用")!.id);
+  });
+
+  it("議題の下の議題では、最も近い議題になる", async () => {
+    const { snap, byText } = await play((ids) => [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t2", parent: "t1", kind: "議題", text: "面接", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t3", parent: "t2", kind: "論点", text: "何回か", evidence: [ids[0]![1]!] },
+    ]);
+    expect(snap.currentTopic).toBe(byText("面接")!.id);
+  });
+
+  it("変わったノード自身が議題なら、その議題自身になる", async () => {
+    const { snap, byText } = await play(nested, (ids) => [
+      { op: "add", ref: "t4", parent: "root", kind: "議題", text: "予算", evidence: [ids[1]![0]!] },
+    ]);
+    expect(snap.currentTopic).toBe(byText("予算")!.id);
+  });
+
+  it("1 回の反映で複数のノードが変わると、最後に変わったノードの議題になる", async () => {
+    const { snap, byText } = await play((ids) => [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t3", parent: "t1", kind: "課題", text: "面接官が足りない", evidence: [ids[0]![1]!] },
+    ]);
+    expect(snap.currentTopic).toBe(byText("採用")!.id);
+  });
+
+  describe("最後に変わったノードは、作成順ではなく操作の適用順で選ぶ", () => {
+    const first = (ids: string[][]): Op[] => [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
+    ];
+    const second = (ids: string[][], extra: Op[] = []): Op[] => [
+      { op: "update", node: "n2", text: "予算2", evidence: [ids[1]![0]!] },
+      { op: "update", node: "n1", text: "採用2", evidence: [ids[1]![1]!] },
+      ...extra,
+    ];
+
+    it("作成順と逆の順（n2 → n1）に更新すると、n1 が今の議題・最後に変わったノードになる", async () => {
+      const { snap } = await play(first, (ids) => second(ids));
+      expect(snap.currentTopic).toBe("n1");
+      expect(snap.lastChanged).toBe("n1");
+      // 変わったことの記録の並びは作成順のまま
+      expect(snap.changes.filter((c) => c.round === 2).map((c) => c.node)).toEqual(["n1", "n2"]);
+    });
+
+    it("値を変えない操作や、捨てられる操作を最後に置いても、数えない", async () => {
+      const unchanged = await play(first, (ids) => second(ids, [{ op: "update", node: "n2", evidence: [ids[0]![1]!] }]));
+      expect(unchanged.snap.currentTopic).toBe("n1");
+      expect(unchanged.snap.lastChanged).toBe("n1");
+      const droppedOp = await play(first, (ids) => second(ids, [{ op: "update", node: "n2", text: "x", evidence: ["r999"] }]));
+      expect(droppedOp.dropped).toHaveLength(1);
+      expect(droppedOp.snap.currentTopic).toBe("n1");
+      expect(droppedOp.snap.lastChanged).toBe("n1");
+    });
+
+    it("最後に値を変える操作が n2 なら、n2 になる", async () => {
+      const { snap } = await play(first, (ids) => second(ids, [{ op: "update", node: "n2", text: "予算3", evidence: [ids[0]![1]!] }]));
+      expect(snap.currentTopic).toBe("n2");
+      expect(snap.lastChanged).toBe("n2");
+    });
+
+    it("変更履歴に載らない変化（案の状態だけを却下から検討中に戻す）でも、その案の議題が今の議題・最後に変わったノードになる", async () => {
+      const { snap, session } = await play(
+        (ids) => [
+          { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+          { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
+          { op: "add", ref: "t3", parent: "t2", kind: "案", text: "3 回", evidence: [ids[0]![1]!] },
+        ],
+        (ids) => [{ op: "update", node: "n3", planStatus: "却下", evidence: [ids[0]![1]!] }],
+        (ids) => [{ op: "add", ref: "t4", parent: "root", kind: "議題", text: "予算", evidence: [ids[2]![0]!] }],
+        (ids) => [{ op: "update", node: "n3", planStatus: "検討中", evidence: [ids[0]![1]!] }],
+      );
+      expect(snap.changes.filter((c) => c.round === 4)).toEqual([]); // 変更履歴には載らない
+      expect(snap.currentTopic).toBe("n1");
+      expect(snap.lastChanged).toBe("n3");
+      expect(session.snapshot().lastChanged).toBe("n3");
+    });
+
+    it("変わったノードが無い反映では lastChanged のキーを付けず、currentTopic は前の値のまま", async () => {
+      const { snap } = await play(first, [{ op: "noop", reason: "変化なし" }]);
+      expect("lastChanged" in snap).toBe(false);
+      expect(snap.currentTopic).toBe("n2");
+    });
+  });
+
+  it("後の反映で別の議題の下が変わると、今の議題が移る", async () => {
+    const { snap, byText } = await play(
+      (ids) => [
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+        { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
+      ],
+      (ids) => [{ op: "add", ref: "t3", parent: "n1", kind: "課題", text: "面接官が足りない", evidence: [ids[1]![0]!] }],
+    );
+    expect(snap.currentTopic).toBe(byText("採用")!.id);
+  });
+
+  it("何も変わらなかった反映（noop・捨てられる操作だけ）では、前の値のまま", async () => {
+    const { snap, byText } = await play(
+      nested,
+      [{ op: "noop", reason: "変化なし" }],
+      [{ op: "delete", node: "n99" }],
+    );
+    expect(snap.round).toBe(3);
+    expect(snap.currentTopic).toBe(byText("採用")!.id);
+  });
+
+  it("差分更新が失敗した反映でも、前の値のまま", async () => {
+    const calls: number[] = [];
+    const updater = async (input: DiffInput) => {
+      calls.push(1);
+      if (calls.length === 2) throw new Error("timeout");
+      return { ops: nested([[input.fresh[0]!.id, input.fresh[1]!.id]]) };
+    };
+    const session = createSession({ title: "定例", updater, log: () => {} });
+    for (let i = 0; i < 2; i++) {
+      session.push(remark("発言"));
+      session.push(remark("発言"));
+      await session.idle();
+    }
+    const snap = session.snapshot();
+    expect(snap.round).toBe(1);
+    expect(snap.currentTopic).toBe("n1");
+  });
+
+  it("議題がまだ無いうちは、currentTopic のキーを付けない（議題以外だけのノードでも）", async () => {
+    const empty = await play([{ op: "noop", reason: "まだ" }]);
+    expect("currentTopic" in empty.snap).toBe(false);
+    const noTopic = await play((ids) => [{ op: "add", ref: "t1", parent: "root", kind: "課題", text: "面接官が足りない", evidence: [ids[0]![0]!] }]);
+    expect("currentTopic" in noTopic.snap).toBe(false);
+  });
+
+  it("now は最後に受け取った発言の end（重複の印つきの発言を含む）。発言が無ければキーを付けない", async () => {
+    expect("now" in createSession({ title: "定例", updater: scripted().updater, log: () => {} }).snapshot()).toBe(false);
+    const { session, snap } = await play(nested);
+    expect(snap.now).toBe(seq * 10 + 9);
+    const dup = remark("重複", { duplicate: true });
+    session.push(dup);
+    expect(session.snapshot().now).toBe(dup.end);
+  });
+});

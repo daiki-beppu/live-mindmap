@@ -10,4 +10,5 @@ export * from "./playback.ts";
 export * from "./session.ts";
 export * from "./settle.ts";
 export * from "./speaking.ts";
+export * from "./topic.ts";
 export * from "./transcript.ts";
