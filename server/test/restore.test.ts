@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
 import { InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange } from "../src/core/index.ts";
-import { collectLog, forbiddenUpdater, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
+import { collectLog, forbiddenUpdater, logLayer, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 let seq = 0;
 const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
@@ -542,7 +542,7 @@ describe("開始のイベント", () => {
     }));
 });
 
-describe("共有画面の復元（restoreSession の第 2 引数が screens/ から画像を読む）", () => {
+describe("共有画面の復元（復元はファイル名だけを戻し、画像は続きの呼び出しで SessionLog.readScreen が screens/ から読む）", () => {
   const bytesOf = (s: string) => new TextEncoder().encode(s);
   const shot = (start: number, id: string): ScreenChange => ({ start, image: { id, bytes: bytesOf(`bytes:${id}`) } });
   const gone = (start: number): ScreenChange => ({ start, image: null });
@@ -551,15 +551,21 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
   const spoken = (id: string, end: number): Remark => ({ id, track: "相手", start: end - 1, end, text: `発言${id}` });
 
   type Screens = { file: string; bytes: Uint8Array }[];
-  // screens/ から読む手段の偽物。読んだファイル名を記録する
-  const reader = (stored: Screens) => {
+  // screens/ から読む SessionLog の偽物。読んだファイル名を記録する。無いファイルは defect（読み戻しの失敗）。
+  // lines・written を渡すと、書いた行と画像もためる
+  const reader = (stored: Screens, lines?: LogEvent[], written?: Screens) => {
     const reads: string[] = [];
-    const read = (file: string): Effect.Effect<Uint8Array, { readonly _tag: "ScreenMissing"; readonly file: string }> => {
-      reads.push(file);
-      const found = stored.find((s) => s.file === file);
-      return found ? Effect.succeed(found.bytes) : Effect.fail({ _tag: "ScreenMissing", file });
-    };
-    return { reads, read };
+    const log = logLayer(
+      (event) => Effect.sync(() => void lines?.push(event)),
+      (file, bytes) => Effect.sync(() => void written?.push({ file, bytes })),
+      (file) =>
+        Effect.suspend(() => {
+          reads.push(file);
+          const found = stored.find((s) => s.file === file);
+          return found ? Effect.succeed(found.bytes) : Effect.die(`ScreenMissing: ${file}`);
+        }),
+    );
+    return { reads, log };
   };
 
   // 元のセッション: 2 回目の呼び出しは失敗。最後の呼び出しの後に、まだ添えていない変化が 3 件残る（F は最後の diff の区切りより前の時刻だが、行は diff より後）
@@ -598,8 +604,8 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
       expect(view(expected.previousScreens)!.map((s) => s.start)).toEqual([2, 15]);
 
       const cont = scripted([]);
-      const { read } = reader(screens);
-      const restored = yield* restoreSession(viaJsonl(events), read).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+      const { log } = reader(screens);
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), log)));
       for (const r of next) yield* restored.push(r);
       yield* restored.idle;
 
@@ -610,11 +616,16 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
       expect(cont.calls[0]!.fresh).toEqual(expected.fresh);
     }));
 
-  it.effect("読むのは、まだ添えていない変化と最後に添えた 2 件の画像だけ（「なし」と古い画面は読まない）", () =>
+  it.effect("復元では画像を読まない。続きの呼び出しで読むのは、添える変化と送り直す 2 件の画像だけ（「なし」と古い画面は読まない）", () =>
     Effect.gen(function* () {
       const { events, screens } = yield* original;
-      const { read, reads } = reader(screens);
-      yield* restoreSession(viaJsonl(events), read).pipe(Effect.provide(Layer.merge(forbiddenUpdater, silentLog)));
+      const { log, reads } = reader(screens);
+      const cont = scripted([]);
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), log)));
+      expect(reads).toEqual([]);
+      yield* restored.push(spoken("a5", 200));
+      yield* restored.push(spoken("a6", 201));
+      yield* restored.idle;
       expect([...reads].sort()).toEqual(["0002.0.jpg", "0015.0.jpg", "0018.0.jpg", "0100.0.jpg"]);
     }));
 
@@ -623,8 +634,8 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
       const { events, screens } = yield* original;
       const written: Screens = [];
       const lines: LogEvent[] = [];
-      const { read } = reader(screens);
-      const restored = yield* restoreSession(viaJsonl(events), read).pipe(Effect.provide(Layer.merge(forbiddenUpdater, collectLog(lines, written))));
+      const { log } = reader(screens, lines, written);
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(forbiddenUpdater, log)));
       yield* restored.pushScreen(shot(2, "again")); // B と同じ秒
       yield* restored.pushScreen(shot(18, "again2")); // 添えていない F と同じ秒
       yield* restored.pushScreen(shot(1, "old")); // 最後に添えた 2 件には入らない A と同じ秒
@@ -675,7 +686,7 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
           expect(view(expected.previousScreens)!.map((x) => x.start)).toEqual([1, 2]);
 
           const cont = scripted([]);
-          const restored = yield* restoreSession(viaJsonl(logged), reader(screens).read).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+          const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
           for (const r of next) yield* restored.push(r);
           yield* restored.idle;
           expect(cont.calls).toHaveLength(1);
@@ -712,7 +723,7 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
         { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0, screenCount: 4, screens: [{ start: 2, image: files[1] }, { start: 3, image: null }, { start: 4, image: files[2] }] }, ops: [], dropped: [] },
       ];
       const cont = scripted([]);
-      const restored = yield* restoreSession(events, reader(stored).read).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+      const restored = yield* restoreSession(events).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(stored).log)));
       yield* restored.push(spoken("r2", 20));
       yield* restored.push(spoken("r3", 21));
       yield* restored.idle;
@@ -721,11 +732,18 @@ describe("共有画面の復元（restoreSession の第 2 引数が screens/ か
       expect(view(cont.calls[0]!.previousScreens)).toEqual([{ start: 3, bytes: null }, { start: 4, bytes: Array.from(bytesOf("bytes:0004.0.jpg")) }]);
     }));
 
-  it.effect("画像を読めなかったら、読み手の失敗でそのまま失敗する", () =>
+  it.effect("画像を読めなくても復元はでき、続きの呼び出しは差分更新を呼ばずに失敗として diff の行に残る", () =>
     Effect.gen(function* () {
       const events = [{ type: "start", title: "定例" }, { type: "screen", start: 1, image: "0001.0.jpg" }];
-      const error = yield* Effect.flip(restoreSession(events, reader([]).read).pipe(Effect.provide(Layer.merge(forbiddenUpdater, silentLog))));
-      expect(error).toEqual({ _tag: "ScreenMissing", file: "0001.0.jpg" });
+      const lines: LogEvent[] = [];
+      const cont = scripted([]);
+      const restored = yield* restoreSession(events).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader([], lines).log)));
+      yield* restored.push(spoken("r1", 10));
+      yield* restored.flush;
+      expect(cont.calls).toHaveLength(0);
+      const diff = lines.find((l) => l.type === "diff");
+      expect(diff).toMatchObject({ type: "diff", input: { fresh: ["r1"], screens: [{ start: 1, image: "0001.0.jpg" }], screenCount: 1 }, ops: [] });
+      expect(diff && "error" in diff ? diff.error : undefined).toContain("0001.0.jpg");
     }));
 
   it.effect("壊れた screen の行は、その行の位置の InvalidLogEvent で失敗する", () =>

@@ -8,6 +8,7 @@ import { NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { WebSocket } from "ws";
 import { MapCapture } from "../src/capture.ts";
+import { AgentSdk, ClaudeDiffUpdater } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
@@ -63,6 +64,7 @@ type AttemptScript = {
   stderrTail?: string[];
   unexpectedExit?: { afterMs: number; exit: HelperExitInfo }; // 自発的な予期せぬ終了
   exitAfterStop?: HelperExitInfo; // stop が呼ばれたときの終わり方（既定 SIGTERM）
+  events?: unknown[]; // 接続した直後にヘルパーが流すイベント（JSON にして events の Stream に載せる）
 };
 
 const makeFakeHelpers = (attempts: AttemptScript[]) => {
@@ -78,6 +80,7 @@ const makeFakeHelpers = (attempts: AttemptScript[]) => {
         return yield* new HelperLaunchFailure({ stderrTail: [], exit: { code: null, signal: "SIGTERM" } });
       }
       const queue = yield* Queue.make<unknown, Cause.Done>();
+      for (const event of script.events ?? []) Queue.offerUnsafe(queue, JSON.stringify(event));
       const exitDeferred = yield* Deferred.make<HelperExitInfo>();
       const stoppedRef = yield* Ref.make(false);
       if (script.unexpectedExit) {
@@ -101,7 +104,7 @@ const makeFakeHelpers = (attempts: AttemptScript[]) => {
   return { helpers: Helpers.of({ apps: Effect.succeed(apps), launch }), calls };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[]) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: ServerOptions["updaterLayer"] } = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => promiseOrDie(() => rm(path, { recursive: true, force: true })),
@@ -109,7 +112,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const sessionsDir = join(dir, "sessions");
   const fakeHelpers = makeFakeHelpers(attempts);
   const sessionSinksLayer = SessionSinks.layer({
-    updaterLayer: updaterLayer(() => Effect.succeed({ ops: [] })),
+    updaterLayer: options.updaterLayer ?? updaterLayer(() => Effect.succeed({ ops: [] })),
     capture: async (_snapshot, path) => writeFile(path, ""),
     writeReview: async (dir) => ({ paths: [`${dir}/map.html`], skipped: [] }),
   });
@@ -515,4 +518,64 @@ describe("セッションの開始・終了の処理中の保護（要件8・tes
       expect((yield* Effect.tryPromise(() => stopping)).status).toBe(200);
     }).pipe(Effect.ensuring(Effect.sync(() => releaseCapture!()))); // assert が失敗しても stop を解放する
   });
+});
+
+// 共有画面（Issue #278）。偽のヘルパーが流した screen が、ログ・screens/・Claude へのメッセージまで届く。
+// 差分更新は本物の ClaudeDiffUpdater を残し、AgentSdk の query だけを偽物にする（server/test/playScreen.test.ts と同じ）
+type SentBlock = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
+type SentMessage = { type: string; message: { role: string; content: string | SentBlock[] } };
+
+describe("ライブのセッションの共有画面（偽のヘルパー + 偽の query）", () => {
+  const fakeQuery = (sent: SentMessage[]) =>
+    ((params: { prompt: AsyncIterable<SentMessage> }) => {
+      const gen = (async function* () {
+        for await (const message of params.prompt) {
+          sent.push(message);
+          yield { type: "assistant" };
+          yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "テスト" }] } };
+        }
+      })();
+      return Object.assign(gen, { close: () => {} });
+    }) as unknown as AgentSdk["Service"]["query"];
+
+  it.live("ヘルパーが流した screen が log.jsonl と screens/ に残り、Claude へのメッセージに見出しと画像のブロックとして載る", () =>
+    Effect.gen(function* () {
+      const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
+      const sent: SentMessage[] = [];
+      const claude = ClaudeDiffUpdater.layer.pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(sent) }))));
+      const r = yield* resourceWithFakeHelpers([{
+        events: [
+          { type: "screen", start: 1, image: Buffer.from(jpeg).toString("base64") },
+          { type: "remark", track: "相手", start: 0, end: 5, text: "今日は採用の進め方を決めます" },
+          { type: "remark", track: "相手", start: 5, end: 9, text: "面接を何回にするかですね" },
+        ],
+      }], { updaterLayer: claude });
+
+      const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+      expect(started.status).toBe(200);
+      const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
+
+      // ログ: screen の行（画像は screens/ のファイル名）
+      const lines = (yield* Effect.tryPromise(() => readFile(join(dir, "log.jsonl"), "utf8")))
+        .trim().split("\n").map((line) => JSON.parse(line) as { type: string; start?: number; image?: string | null });
+      expect(lines.filter((l) => l.type === "screen").map(({ type, start, image }) => ({ type, start, image }))).toEqual([
+        { type: "screen", start: 1, image: "0001.0.jpg" },
+      ]);
+
+      // screens/: ヘルパーが流したバイト列のまま
+      expect(yield* Effect.tryPromise(() => readdir(join(dir, "screens")))).toEqual(["0001.0.jpg"]);
+      const saved = yield* Effect.tryPromise(() => readFile(join(dir, "screens", "0001.0.jpg")));
+      expect([...saved]).toEqual([...jpeg]);
+
+      // Claude へのメッセージ: 見出し（text）と画像（base64 を戻すと同じバイト列）が、マップと発言の本文より前に載る
+      const withScreen = sent.map((m) => m.message.content).filter((c): c is SentBlock[] => Array.isArray(c));
+      expect(withScreen).toHaveLength(1);
+      const blocks = withScreen[0]!;
+      expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text"]);
+      expect(blocks[0]!.text?.trim()).toBe("## 共有画面 [00:01] から");
+      expect(blocks[1]!.source).toMatchObject({ type: "base64", media_type: "image/jpeg" });
+      expect([...Buffer.from(blocks[1]!.source!.data, "base64")]).toEqual([...jpeg]);
+      expect(blocks[2]!.text).toContain("今日は採用の進め方を決めます");
+    }));
 });

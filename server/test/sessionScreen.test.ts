@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { DiffEvent, makeSession, ROOT_ID, restoreState, type DiffInput, type DiffOutput, type LogEvent, type Remark, type ScreenChange } from "../src/core/index.ts";
-import { collectLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
+import { collectLog, logLayer, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 // 共有画面の変化を受ける口（Session.pushScreen）と、差分更新の呼び出しに添える画面の選び方（core の規則）。
 // ファイルには書かない（ADR 0003）: 画像は SessionLog.writeScreen にバイト列で渡し、ログには { start, image: ファイル名 | null } を書く。
@@ -22,12 +22,13 @@ const setup = Effect.fn("setup")(function* (options: { fail?: (callIndex: number
   const calls: DiffInput[] = [];
   const events: LogEvent[] = [];
   const written: Written[] = [];
+  const reads: string[] = [];
   const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
     Effect.suspend(() => {
       calls.push(input);
       return options.fail?.(calls.length - 1) ? Effect.fail({ _tag: "UpdateFailed", message: "失敗" }) : Effect.succeed({ ops: [] });
     });
-  const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events, written))));
+  const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events, written, reads))));
   // 発言を 2 つ流して、差分更新を 1 回起こす（end の最大は後ろの発言）
   const call = Effect.fn("call")(function* (...ends: [number, number]) {
     yield* session.push(remark(ends[0]));
@@ -36,7 +37,7 @@ const setup = Effect.fn("setup")(function* (options: { fail?: (callIndex: number
   });
   const diffs = () => events.filter((e): e is Extract<LogEvent, { type: "diff" }> => e.type === "diff");
   const screenLines = () => events.filter((e): e is Extract<LogEvent, { type: "screen" }> => e.type === "screen");
-  return { session, calls, events, written, call, diffs, screenLines };
+  return { session, calls, events, written, reads, call, diffs, screenLines };
 });
 
 const startsOf = (input: DiffInput) => input.screens?.map((s) => s.start);
@@ -83,6 +84,41 @@ describe("Session.pushScreen", () => {
       expect(written.map((w) => w.file)).toEqual([lineA!.image, lineB!.image]);
       expect(written[0]!.bytes).toEqual(a.image!.bytes);
       expect(written[1]!.bytes).toEqual(b.image!.bytes);
+    }));
+});
+
+describe("画像のバイト列の保持", () => {
+  it.effect("発言のないまま画面の変化が続いても、画像は読み戻さない（バイト列を持ち続けない）。添えるときに、選んだ 3 件だけ読む", () =>
+    Effect.gen(function* () {
+      const { session, calls, reads, written, call } = yield* setup();
+      for (const t of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) yield* session.pushScreen(shot(t));
+      expect(reads).toEqual([]);
+      expect(written).toHaveLength(10);
+      yield* call(10, 11);
+      expect(reads).toEqual(["0008.0.jpg", "0009.0.jpg", "0010.0.jpg"]);
+      expect(calls[0]!.screens).toEqual([8, 9, 10].map((t) => ({ start: t, image: { id: `s${t}`, bytes: bytes(`bytes:s${t}`) } })));
+    }));
+
+  it.effect("同じ時刻の画像 2 件は別のファイル名で保存され、添付時もその名前で読み戻される", () =>
+    Effect.gen(function* () {
+      const { session, calls, reads, written, call } = yield* setup();
+      yield* session.pushScreen(shot(10, "a"));
+      yield* session.pushScreen(shot(10, "b"));
+      yield* call(10, 11);
+      expect(written.map((w) => w.file)).toEqual(["0010.0.jpg", "0010.0-2.jpg"]);
+      expect(reads).toEqual(["0010.0.jpg", "0010.0-2.jpg"]);
+      expect(calls[0]!.screens!.map((s) => s.image && new TextDecoder().decode(s.image.bytes))).toEqual(["bytes:a", "bytes:b"]);
+    }));
+
+  it.effect("既に使った名前の画像を、別の画像として読み戻さない（0010.0.jpg への書き込みは 1 回だけ）", () =>
+    Effect.gen(function* () {
+      const { session, calls, written, call } = yield* setup();
+      yield* session.pushScreen(shot(10, "a"));
+      yield* session.pushScreen(shot(10, "b"));
+      yield* call(10, 11);
+      expect(written.filter((w) => w.file === "0010.0.jpg")).toHaveLength(1);
+      const [a, b] = calls[0]!.screens!;
+      expect(b!.image!.bytes).not.toEqual(a!.image!.bytes);
     }));
 });
 
@@ -185,6 +221,49 @@ describe("差分更新に添える画面の選び方", () => {
       expect(diffs()[0]!.error).toBeDefined();
       expect(diffs()[0]!.input.screens).toEqual([{ start: 1, image: "0001.0.jpg" }]);
       expect("screens" in calls[1]!).toBe(false);
+    }));
+
+  it.effect("添える画像の読み戻しが defect になっても、update の失敗と同じく処理済みにして次の呼び出しへ進む", () =>
+    Effect.gen(function* () {
+      const calls: DiffInput[] = [];
+      const events: LogEvent[] = [];
+      const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
+        Effect.sync(() => {
+          calls.push(input);
+          return { ops: [] };
+        });
+      const layer = Layer.merge(
+        updaterLayer(update),
+        logLayer(
+          (event) => Effect.sync(() => void events.push(event)),
+          () => Effect.void,
+          () => Effect.die(new Error("読めない")),
+        ),
+      );
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(layer));
+      const r1 = remark(8);
+      const r2 = remark(9);
+      yield* session.pushScreen(shot(1));
+      yield* session.push(r1);
+      yield* session.push(r2);
+      yield* session.idle;
+      const diffs = () => events.filter((e): e is Extract<LogEvent, { type: "diff" }> => e.type === "diff");
+      expect(diffs()).toHaveLength(1);
+      expect(diffs()[0]!.error).toMatch(/^defect: /);
+      expect(diffs()[0]!.input.fresh).toEqual([r1.id, r2.id]);
+      expect(diffs()[0]!.input.screens).toEqual([{ start: 1, image: "0001.0.jpg" }]);
+      expect(yield* session.unreflectedRemarks).toEqual([]);
+      expect(calls).toHaveLength(0);
+
+      yield* session.push(remark(18));
+      yield* session.push(remark(19));
+      yield* session.idle;
+      expect(calls).toHaveLength(1);
+      expect("screens" in calls[0]!).toBe(false);
+      // 読めなかった画面は「最後に添えた」に数えるが、送り直しからは外し、続きの呼び出しを失敗させない
+      expect("previousScreens" in calls[0]!).toBe(false);
+      expect(diffs()).toHaveLength(2);
+      expect(diffs()[1]!.error).toBeUndefined();
     }));
 
   it.effect("画面はノードの根拠にならない（マップの形は変わらず、差分更新へ渡す map は今までどおり）", () =>

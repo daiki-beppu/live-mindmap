@@ -61,8 +61,8 @@ describe("ヘルパーのイベントの規則（CT-RULES）", () => {
           const decoded = yield* expectDecodeSuccess(
             Schema.decodeUnknownEffect(HelperEvent)({ type, track: "相手", start: 0, end: 1, text: "あ" }),
           );
-          if (decoded.type === "origin") {
-            assert.fail("origin ではないはず");
+          if (decoded.type !== "remark" && decoded.type !== "partial") {
+            assert.fail("remark か partial のはず");
             return;
           }
           assert.strictEqual(decoded.duplicate, false);
@@ -73,8 +73,8 @@ describe("ヘルパーのイベントの規則（CT-RULES）", () => {
           const decoded = yield* expectDecodeSuccess(
             Schema.decodeUnknownEffect(HelperEvent)({ type, track: "相手", start: 0, end: 1, text: "あ", duplicate: true }),
           );
-          if (decoded.type === "origin") {
-            assert.fail("origin ではないはず");
+          if (decoded.type !== "remark" && decoded.type !== "partial") {
+            assert.fail("remark か partial のはず");
             return;
           }
           assert.strictEqual(decoded.duplicate, true);

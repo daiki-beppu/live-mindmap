@@ -97,6 +97,8 @@ describe("再生", () => {
           if (e.type === "remark") order.push(`push:${e.remark.id}`);
           if (e.type === "screen") order.push(`screen:${e.start}`);
         }),
+        () => Effect.void,
+        () => Effect.succeed(new Uint8Array()), // 差分更新に添える画像の読み戻し（中身はこのテストの対象ではない）
       );
       return yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
     });
@@ -146,10 +148,16 @@ describe("再生", () => {
           });
         // 3 つ目の発言をログに書く（push する）時点で、最初の呼び出しの門を開く。r3 の前に変化 9.9 を入れるときに
         // 呼び出しの終わりを待つと、r3 まで進めず門が開かないので、ここで止まる
-        const log = logLayer((e) => (e.type === "remark" && e.remark.id === "r3" ? Deferred.succeed(gate, undefined).pipe(Effect.asVoid) : Effect.void));
+        const log = logLayer(
+          (e) => (e.type === "remark" && e.remark.id === "r3" ? Deferred.succeed(gate, undefined).pipe(Effect.asVoid) : Effect.void),
+          () => Effect.void,
+          () => Effect.succeed(new Uint8Array()), // 後続の差分更新に添える画像の読み戻し
+        );
         const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
         yield* playback(session, remarks, { sleep: () => Effect.void, screens: [shot(9.9)] });
         expect(calls[0]).toEqual(["r1", "r2"]);
+        // 後続の r3 の差分更新も、画像の読み戻しで止まらずに updater へ届く
+        expect(calls[1]).toEqual(["r3"]);
       }), 3000);
 
     it.effect("screens を渡さない再生は今までと同じ（変化の口を呼ばない）", () =>

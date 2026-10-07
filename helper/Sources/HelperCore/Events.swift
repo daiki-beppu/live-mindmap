@@ -29,6 +29,9 @@ public enum HelperEvent: Sendable, Equatable {
     case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
     /// 2 トラック共通の時刻の基準（`AudioGetCurrentHostTime()` の値）の通知。ヘルパー起動につき 1 回だけ流す（Issue #161）。
     case origin(hostTime: UInt64)
+    /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
+    /// `image` は JPEG の base64。映していたウィンドウが無くなったときは nil で、JSON では `null` を明示する。
+    case screen(start: Double, image: String?)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -45,7 +48,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, hostTime
+        case type, track, start, end, text, duplicate, hostTime, image
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -69,6 +72,15 @@ extension HelperEvent: Encodable {
             try container.encode("origin", forKey: .type)
             // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
             try container.encode(String(hostTime), forKey: .hostTime)
+        case let .screen(start, image):
+            try container.encode("screen", forKey: .type)
+            try container.encode(start, forKey: .start)
+            // nil でもキーを省かず、JSON の null として出す（`encodeIfPresent` は使わない）。
+            if let image {
+                try container.encode(image, forKey: .image)
+            } else {
+                try container.encodeNil(forKey: .image)
+            }
         }
     }
 }

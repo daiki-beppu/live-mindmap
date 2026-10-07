@@ -461,12 +461,12 @@ const restore = Command.make(
     const sessionsDir = yield* sessionsDirConfig;
     const dir = join(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
     const { lines, events } = yield* readLogLines(join(dir, LOG_FILE));
-    // 復元では差分更新を呼ばない。呼ばれたら defect にする。ログは書き直さない。画像は使わないので読まない（空のバイト列）
-    const session = yield* restoreSession(events, () => Effect.succeed(new Uint8Array(0))).pipe(
+    // 復元では差分更新を呼ばない。呼ばれたら defect にする。ログは書き直さない。画像は差分更新に添えるときにだけ読むので、ここでは読まない
+    const session = yield* restoreSession(events).pipe(
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(DiffUpdater)(DiffUpdater.of({ update: () => Effect.die("restore では差分更新を呼べません") })),
-          Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void })),
+          Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void, readScreen: () => Effect.die("restore は共有画面を読まない") })),
         ),
       ),
       // 壊れた行は、空行を除く前の行番号の BrokenLogLine にする

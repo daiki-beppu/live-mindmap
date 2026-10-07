@@ -1,6 +1,6 @@
 // セッションのフォルダに対するファイル操作（作成・ログと export.json の追記・終了時の書き出し）。
 // play（cli.ts）とライブのセッション（sessionSinks.ts）が共有する。HTTP には依存しない
-import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { Effect, Layer, Ref } from "effect";
 import type { PromiseMapCapture } from "./capture.ts";
@@ -127,6 +127,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
           mkdirSync(join(dir, SCREENS_DIR), { recursive: true });
           writeFileSync(join(dir, SCREENS_DIR, file), bytes);
         }),
+      readScreen: (file) => Effect.sync(() => new Uint8Array(readFileSync(join(dir, SCREENS_DIR, file)))),
     }),
   );
   const session = yield* makeSession({ title: title ?? basename(dir) }).pipe(Effect.provide(log));

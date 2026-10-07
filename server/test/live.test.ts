@@ -99,6 +99,42 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
+  // 共有画面の変化（Issue #278）。image は JPEG の base64。decode でバイト列にし、ウィンドウが無くなったら null。
+  describe("screen（共有画面の変化）", () => {
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
+    const base64 = Buffer.from(jpeg).toString("base64");
+
+    it.effect("image は base64 を元のバイト列に戻し、start を保つ", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 1.5, image: base64 })));
+        if (decoded.kind !== "known" || decoded.event.type !== "screen") return assert.fail("screen のはず");
+        assert.strictEqual(decoded.event.start, 1.5);
+        if (decoded.event.image === null) return assert.fail("image はバイト列のはず");
+        assert.deepStrictEqual([...decoded.event.image], [...jpeg]);
+      }));
+
+    it.effect("image が null（ウィンドウが無くなった）なら null のまま decode される", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 3, image: null })));
+        assert.deepStrictEqual(decoded, { kind: "known", event: { type: "screen", start: 3, image: null } });
+      }));
+
+    it.effect.each([
+      ["image のキーが無い", { type: "screen", start: 1 }],
+      ["image が数値", { type: "screen", start: 1, image: 1 }],
+      ["image が base64 として不正", { type: "screen", start: 1, image: "%%%" }],
+      ["start が文字列", { type: "screen", start: "1", image: base64 }],
+      ["start のキーが無い", { type: "screen", image: base64 }],
+    ])("壊れた screen は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        // it.effect.each は表の 1 行を配列のまま 1 引数で渡す（vitest の each のように展開しない）
+        const [, data] = row;
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(data)));
+        if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた screen のはずが通った）");
+        assert.strictEqual(result.failure._tag, "SchemaError");
+      }));
+  });
+
   describe("知らない type・壊れた入力", () => {
     it.effect("知らない type は失敗にならず、「知らないイベント」として返る", () =>
       Effect.gen(function* () {

@@ -46,6 +46,11 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
 
     let tap = ProcessTap(targets: targets)
     let microphone = MicrophoneCapture()
+    // 時刻の基準。音声取得を始める直前に 1 回だけ取る。録音の 0 秒も、共有画面の時刻もこれにそろえる。
+    // サーバーがヘルパーを再起動したときは `--origin` で元の基準を渡し、時刻を 0 から振り直さない（Issue #161）。
+    let origin = explicitOrigin ?? AudioGetCurrentHostTime()
+    // 共有画面の取り込み（Issue #278）。失敗しても throw しない（標準エラーに 1 行出して終わる）ので、音声の `failure` には関わらない。
+    let screen = ScreenCapture(bundleID: bundleID, origin: origin)
     // SIGINT / SIGTERM は、タップとマイクを止めて音声の流れを終わらせる。以降は通常の終了経路で片付ける。
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
         signal(signalNumber, SIG_IGN)
@@ -53,6 +58,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         source.setEventHandler {
             tap.stop()
             microphone.stop()
+            screen.stop()
         }
         source.resume()
         return source
@@ -61,13 +67,21 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
 
     // 録音を閉じる Task。tap とマイクを止めて音声が終わった後に、終了前に待つ（録音ファイルを閉じてから終わる）。
     var recordings: [Task<Void, Error>] = []
+    var screenTasks: [Task<Void, Never>] = []
     var failure: Error?
     do {
-        // 2 トラック共通の時刻の基準。音声取得を始める直前に 1 回だけ取る。録音の 0 秒もこれにそろえる。
-        // サーバーがヘルパーを再起動したときは `--origin` で元の基準を渡し、時刻を 0 から振り直さない（Issue #161）。
-        let origin = explicitOrigin ?? AudioGetCurrentHostTime()
         // 原点は接続より前に決まることが多く、通常の broadcast だとクライアント不在時に失われるので、保持して流す。
-        try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString())
+        try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString(), key: "origin")
+        // 共有画面。接続前に出た分も、最新の 1 件を覚えて、つながったら送る。events は 1 つの Task が順に読むので、順序が保たれる。
+        screenTasks = [
+            Task { await screen.run() },
+            Task {
+                for await event in screen.events {
+                    guard let json = try? event.jsonString() else { continue }
+                    await server.broadcastRetained(json, key: "screen")
+                }
+            },
+        ]
         let recorders = try audioDir.map { directory -> (their: TrackRecorder, my: TrackRecorder) in
             let base = URL(fileURLWithPath: directory, isDirectory: true)
             return (
@@ -102,10 +116,13 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     }
     tap.stop()
     microphone.stop()
+    screen.stop()
     // 録音は全部閉じてから終わる。基準のエラーは、do 節のエラー、なければ 相手 → 自分 の順で最初の録音の失敗。
     for recording in recordings {
         if case .failure(let error) = await recording.result, failure == nil { failure = error }
     }
+    // 共有画面の取り込みが終わり、最後のイベントを流し切ってから、サーバーを閉じる。
+    for task in screenTasks { await task.value }
     await server.stop()
     if let failure { throw failure }
 }

@@ -148,6 +148,61 @@ struct WebSocketServerTests {
         #expect(try await receiveText(task) == json)
     }
 
+    // Issue #278: 共有画面の `screen` も原点と同じく、接続前に出た分を覚えて、後から接続したクライアントに送る。
+    // 覚えるのは種類ごとに最新の 1 件（画像を何枚も溜めない）。接続した直後は、最初に覚えた種類の順（origin → screen）に届く
+    @Test("種類ごとに最新の 1 件だけを覚え、後から接続したクライアントには origin → 最後の screen の順で届く（古い screen は届かない）")
+    func retainedKeepsLatestPerKindForLateJoiningClient() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let origin = try HelperEvent.origin(hostTime: 42).jsonString()
+        let older = try HelperEvent.screen(start: 1, image: "b2xkZXI=").jsonString()
+        let latest = try HelperEvent.screen(start: 2, image: "bGF0ZXN0").jsonString()
+        await server.broadcastRetained(origin, key: "origin")
+        await server.broadcastRetained(older, key: "screen")
+        await server.broadcastRetained(latest, key: "screen") // まだ誰も接続していない
+
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        #expect(try await receiveText(task) == origin)
+        #expect(try await receiveText(task) == latest)
+
+        // 古い screen が後ろに残っていないこと: 次に届くのは、その後に broadcast した内容
+        let marker = try HelperEvent.partial(track: .相手, start: 3, end: 4, text: "次", duplicate: false).jsonString()
+        await server.broadcast(marker)
+        #expect(try await receiveText(task) == marker)
+    }
+
+    @Test("screen を覚えても、origin は上書きされず、origin だけ覚えていても screen は届かない")
+    func retainedKindsDoNotOverwriteEachOther() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let origin = try HelperEvent.origin(hostTime: 7).jsonString()
+        await server.broadcastRetained(origin, key: "origin")
+
+        let first = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        first.resume()
+        defer { first.cancel(with: .goingAway, reason: nil) }
+        #expect(try await receiveText(first) == origin)
+        try await waitForClients(server, count: 1)
+
+        // 接続した後に覚えさせた screen は、つながっているクライアントにも届き、origin はそのまま残る
+        let screen = try HelperEvent.screen(start: 5, image: "c2NyZWVu").jsonString()
+        await server.broadcastRetained(screen, key: "screen")
+        #expect(try await receiveText(first) == screen)
+
+        let second = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        second.resume()
+        defer { second.cancel(with: .goingAway, reason: nil) }
+        #expect(try await receiveText(second) == origin)
+        #expect(try await receiveText(second) == screen)
+    }
+
     @Test("接続中のクライアントがいる状態で stop すると、接続が閉じて clientCount が 0 になる")
     func stopClosesConnectedClients() async throws {
         let server = WebSocketServer(port: 0)
