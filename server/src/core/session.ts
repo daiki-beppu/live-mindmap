@@ -120,7 +120,7 @@ type History = Pick<SessionState, "round" | "changes" | "currentTopic" | "lastCh
 // 成功した反映を 1 回記録して、新しい履歴を返す。変化がなくても round は進める（前回の赤い枠を消すため）。
 // ライブ（callUpdater）と復元（restoreState）が同じ関数を通す。
 // 反映の番号（増やす前の round + 1）と時刻（渡した新しい発言の end の最大値）。applyOps と recordRound に同じ値を渡す。
-const stampOf = (history: History, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
+export const stampOf = (history: { round: number }, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
 
 function recordRound(history: History, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, stamp: { round: number; at: number }): History {
   const { round, at } = stamp;

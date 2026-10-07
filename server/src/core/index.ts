@@ -4,6 +4,7 @@ export * from "./evaluate.ts";
 export * from "./export.ts";
 export * from "./intake.ts";
 export * from "./live.ts";
+export * from "./logMetrics.ts";
 export * from "./map.ts";
 export * from "./markdown.ts";
 export * from "./playback.ts";
@@ -20,6 +21,7 @@ export {
   Remark,
   RemarkEvent,
   restoreSession,
+  restoreState,
   SessionLog,
   StartEvent,
   Track,

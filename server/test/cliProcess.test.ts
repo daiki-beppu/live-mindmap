@@ -216,9 +216,9 @@ describe("CLI のプロセス入口", () => {
     expect(result).toEqual({
       code: 0,
       stderr: "",
-      stdout: "| ラン | 会議 | ノード | 深さ | 議題 | 論点 | 案 | 決定 | 課題 | TODO | 要点 | 決定の再現率 | TODO の再現率 |\n"
-        + "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-        + "| run | 定例 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0/0 | 0/0 |\n",
+      stdout: "| ラン | 会議 | ノード | 深さ | 議題 | 論点 | 案 | 決定 | 課題 | TODO | 要点 | 書き換え/発言 | 1 ノードの書き換えの最多 | 話し中の兄弟の最多 | 決定の再現率 | TODO の再現率 |\n"
+        + "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        + "| run | 定例 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - | - | - | 0/0 | 0/0 |\n",
     });
   }).pipe(Effect.scoped));
 
@@ -248,6 +248,26 @@ describe("CLI のプロセス入口", () => {
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(/^log\.jsonl の 3 行目が JSON として読めません: [^\n]+\n$/);
+  }).pipe(Effect.scoped));
+
+  it.live.each([
+    { name: "JSON として不正な行", log: '{"type":"start","title":"定例"}\n\n{ not json\n', reason: "が JSON として読めません: " },
+    { name: "既知の type で項目が不正な行", log: '{"type":"start","title":"定例"}\n\n{"type":"remark"}\n', reason: "が読めません: " },
+  ])("eval の不正ログ（$name）は、パスと空行を除く前の行番号を含む 1 行と exit 1", ({ log, reason }) => Effect.gen(function* () {
+    const sessionsDir = yield* temporaryDirectory;
+    const run = join(sessionsDir, "run");
+    const logPath = join(run, "log.jsonl");
+    yield* Effect.tryPromise(async () => {
+      await mkdir(run);
+      await writeFile(join(run, "export.json"), JSON.stringify(emptyExport));
+      await writeFile(logPath, log);
+    });
+    const result = yield* runProcess(["eval", run], sessionsDir);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
+    expect(result.stderr.startsWith(`${logPath} の 3 行目${reason}`)).toBe(true);
   }).pipe(Effect.scoped));
 
   it.live("review の log.jsonl なしは、パスに改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
