@@ -1,11 +1,14 @@
 // 音声認識の確定の遅れの集計と、「途中結果が T 秒変わらなければ確定として扱う」案の計算（Issue #97）。
 // 入力は `stt-bench run` の出力（1 行 1 結果の JSONL）。
-import { readFileSync } from "node:fs";
-import { parseArgs } from "node:util";
-import type { Track } from "../src/core/index.ts";
+import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { Effect, Option, Schema } from "effect";
+import { Argument, Command, Flag } from "effect/cli";
+import { Track } from "../src/core/index.ts";
+import { BENCH_VERSION, inputFileError, readInputText, readJsonFile, reportFailure, write } from "./entry.ts";
 
 // arrival は流し始めを 0 とする壁時計の秒、start / end は音声ファイルの秒
-export type SttResult = { track: Track; arrival: number; isFinal: boolean; start: number; end: number; text: string };
+export const SttResult = Schema.Struct({ track: Track, arrival: Schema.Finite, isFinal: Schema.Boolean, start: Schema.Finite, end: Schema.Finite, text: Schema.String });
+export type SttResult = typeof SttResult["Type"];
 
 export type RemarkSource = "stable" | "final" | "correction";
 export type SettledRemark = { id: string; track: Track; start: number; end: number; text: string; at: number; source: RemarkSource };
@@ -15,11 +18,12 @@ export type SettledRemark = { id: string; track: Track; start: number; end: numb
 export type LateFinal = "discard" | "correct";
 export type SettleOptions = { quietSeconds: number; lateFinal: LateFinal };
 
-export function parseResults(text: string): SttResult[] {
-  return text
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as SttResult);
+// 1 行 1 結果。壊れた行・形が違う行は飛ばさず、SchemaError で失敗する
+export function parseResults(text: string) {
+  return Effect.forEach(
+    text.split("\n").filter((line) => line.trim() !== ""),
+    (line) => Schema.decodeEffect(Schema.fromJsonString(SttResult))(line),
+  );
 }
 
 // 確定までの遅れ: 確定結果が届いた時刻 − 発言の end
@@ -121,7 +125,8 @@ export function finalRemarks(results: SttResult[]): SettledRemark[] {
 
 // 話し終わり → 届く: 合成した各行について、行の区間の中央を覆う発言（出した時刻 at）のうち最初のものが届くまでの時間 − 行の end。
 // 確定結果が複数の文をまとめて 1 件にするので、確定結果の end ではなく、各文の話し終わりから数える。覆う発言がない行は数えない
-export type SpokenLine = { start: number; end: number };
+export const SpokenLine = Schema.Struct({ start: Schema.Finite, end: Schema.Finite });
+export type SpokenLine = typeof SpokenLine["Type"];
 export type Arrival = { start: number; end: number; at: number };
 export function lineDelays(lines: readonly SpokenLine[], arrivals: readonly Arrival[]): number[] {
   const delays: number[] = [];
@@ -145,8 +150,6 @@ export function indexRemarks<T extends { id: string }>(remarks: readonly T[]): M
 
 const fmt = (x: number) => (Number.isNaN(x) ? "" : x.toFixed(1));
 
-// 使い方: node bench/sttLatency.ts <結果.jsonl> [--quiet T] [--lines <行の時刻.json>]（確定の遅れと、途中結果から出した場合の遅れ・上書き件数を表で出す）
-// --emit <規則> を付けると、その規則の発言（replay 用）を JSON で出す
 // lines を渡すと、確定結果の end ではなく、各文の話し終わりから数えた遅れ（lineDelays）を出す
 export function summarize(results: SttResult[], quietSeconds: number, lines?: readonly SpokenLine[]): string {
   const rows: string[][] = [["方式", "件数", "遅れ p50 (秒)", "遅れ p90 (秒)", "上書き"]];
@@ -162,17 +165,42 @@ export function summarize(results: SttResult[], quietSeconds: number, lines?: re
   return rows.map((r) => `| ${r.join(" | ")} |`).join("\n") + "\n";
 }
 
+// 使い方は各 Command・Flag の withDescription が正本で、`node bench/sttLatency.ts --help` で読む
+export const command = Command.make(
+  "sttLatency",
+  {
+    file: Argument.String("results").pipe(Argument.withDescription("stt-bench run の出力（1 行 1 結果の JSONL）")),
+    quiet: Flag.Finite("quiet").pipe(
+      Flag.withDescription("途中結果が変わらなければ確定として扱う秒数"),
+      Flag.withDefault(2),
+    ),
+    emit: Flag.Literals("emit", ["final", "discard", "correct"]).pipe(
+      Flag.withDescription("表の代わりに、その規則の発言（sttReplay.ts 用の JSON）を出す。final は確定結果だけ"),
+      Flag.optional,
+    ),
+    lines: Flag.File("lines").pipe(
+      Flag.withDescription("行の時刻の JSON。渡すと、確定結果の end ではなく各文の話し終わりから数えた遅れを出す"),
+      Flag.optional,
+    ),
+  },
+  Effect.fn("sttLatency")(function* ({ emit, file, lines, quiet }) {
+    const results = yield* parseResults(yield* readInputText(file)).pipe(Effect.mapError(inputFileError(file)));
+    if (Option.isSome(emit)) {
+      const remarks = emit.value === "final" ? finalRemarks(results) : settleVolatile(results, { quietSeconds: quiet, lateFinal: emit.value }).remarks;
+      yield* write(JSON.stringify(remarks) + "\n");
+      return;
+    }
+    const spoken = Option.isNone(lines) ? undefined : yield* readJsonFile(lines.value, Schema.Array(SpokenLine));
+    yield* write(summarize(results, quiet, spoken));
+  }),
+).pipe(
+  Command.withDescription("音声認識の確定の遅れを集計し、確定結果と「途中結果が T 秒変わらなければ確定」の案の遅れ・上書き件数を表で出す"),
+);
+
 if (import.meta.main) {
-  const { positionals, values } = parseArgs({ allowPositionals: true, options: { quiet: { type: "string", default: "2" }, emit: { type: "string" }, lines: { type: "string" } } });
-  const file = positionals[0];
-  if (!file) throw new Error("usage: sttLatency.ts <結果.jsonl> [--quiet <秒>] [--lines <行の時刻.json>] [--emit final|discard|correct]");
-  const results = parseResults(readFileSync(file, "utf8"));
-  const quietSeconds = Number(values.quiet);
-  if (values.emit) {
-    if (values.emit !== "final" && values.emit !== "discard" && values.emit !== "correct") throw new Error("--emit は final か discard か correct");
-    const remarks = values.emit === "final" ? finalRemarks(results) : settleVolatile(results, { quietSeconds, lateFinal: values.emit }).remarks;
-    process.stdout.write(JSON.stringify(remarks) + "\n");
-  } else {
-    process.stdout.write(summarize(results, quietSeconds, values.lines ? (JSON.parse(readFileSync(values.lines, "utf8")) as SpokenLine[]) : undefined));
-  }
+  Command.run(command, { version: BENCH_VERSION }).pipe(
+    Effect.tapCause(reportFailure),
+    Effect.provide(NodeServices.layer),
+    NodeRuntime.runMain({ disableErrorReporting: true }),
+  );
 }
