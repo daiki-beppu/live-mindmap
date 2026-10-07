@@ -12,6 +12,7 @@
   "dependencies": {
     "@tanstack/hotkeys": "0.11.0",
     "@tanstack/react-hotkeys": "0.13.0",
+    "@videojs/react": "10.0.1",
     "@xyflow/react": "^12.12.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
