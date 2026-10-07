@@ -30,7 +30,9 @@ export type View = {
   minZoom: number; // 人が縮められる下限
   offscreen: boolean; // 画面の外で変わったノードの印を縁に出す
   onUserMove: () => void;
+  command: Command | null; // キーからの見る操作（seq が変わったら一度だけ動かす）
 };
+export type Command = { seq: number; type: "in" | "out" | "one" | "pan" | "node"; dx?: number; dy?: number };
 
 type ProtoData = {
   text: string;
@@ -225,6 +227,44 @@ function Canvas(p: CanvasProps) {
     return () => cancelAnimationFrame(f);
     // 寸法が測れたら狙い直す（dims）。位置の補間（positions）では狙い直さない
   }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes]);
+
+  // キーからの見る操作。in/out/one は画面の中心で、pan は画面の幅・高さの割合で、node は選んだノードと子孫が収まるまで
+  const command = p.view?.command;
+  useEffect(() => {
+    if (!command) return;
+    const { width, height } = store.getState();
+    const v = getViewport();
+    const lo = minZoomRef.current;
+    const at = (zoom: number) => {
+      const z = Math.min(2, Math.max(lo, zoom));
+      const fx = (width / 2 - v.x) / v.zoom;
+      const fy = (height / 2 - v.y) / v.zoom;
+      void setViewport({ x: width / 2 - fx * z, y: height / 2 - fy * z, zoom: z }, { duration: 200 });
+    };
+    if (command.type === "in") at(v.zoom * 1.25);
+    if (command.type === "out") at(v.zoom / 1.25);
+    if (command.type === "one") at(1);
+    if (command.type === "pan") void setViewport({ ...v, x: v.x - (command.dx ?? 0) * width, y: v.y - (command.dy ?? 0) * height }, { duration: 200 });
+    if (command.type === "node" && p.selectedId) {
+      const ids = new Set([p.selectedId]);
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const n of p.nodes) if (n.parent && ids.has(n.parent) && !ids.has(n.id)) (ids.add(n.id), (grew = true));
+      }
+      const ps = [...ids].flatMap((id) => (target[id] ? [{ ...target[id], h: dims[id]?.height ?? 40 }] : []));
+      if (ps.length > 0) {
+        const x0 = Math.min(...ps.map((q) => q.x));
+        const y0 = Math.min(...ps.map((q) => q.y));
+        const x1 = Math.max(...ps.map((q) => q.x + NODE_WIDTH));
+        const y1 = Math.max(...ps.map((q) => q.y + q.h));
+        const pad = 48;
+        const z = Math.min(MAX_ZOOM, Math.max(lo, Math.min((width - pad * 2) / (x1 - x0), (height - pad * 2) / (y1 - y0))));
+        void setViewport({ x: width / 2 - ((x0 + x1) / 2) * z, y: height / 2 - ((y0 + y1) / 2) * z, zoom: z }, { duration: 400 });
+      }
+    }
+    // seq が変わったときだけ動かす
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command?.seq]);
 
   // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方だけに動かす。向きは動かし始め（250ms 空いたら測り直す）の大きい方で決める
   const wrap = useRef<HTMLDivElement>(null);

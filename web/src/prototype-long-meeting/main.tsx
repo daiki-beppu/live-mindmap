@@ -4,6 +4,8 @@
 // 試作の出力のログを再生し、各反映の時点のマップを、今の画面（右の列つき）の中で 3 案に描き分ける。
 // PROTOTYPE（issue #285）: 人が動かした後に自動のカメラへ戻る条件の 3 案を ?ret= で切り替える（← → でも）。
 //   http://localhost:5173/prototype-long-meeting.html?ret=idle&sample=parnassus&min=90
+//   キー: Esc 今の議題へ（選択も外す）／F 全体／= - 拡大・縮小／0 倍率 1.0／Z 選んだノードへ寄る／Shift＋矢印 移動／E 右の列／C 字幕／? キー一覧
+//   試作の操作: Space 再生／[ ] 1 回分戻る・進む
 //   移動: 縦横のスクロール・ドラッグ（⌘・Ctrl＋Shift＋スクロールで縦か横だけ）／ズーム: ⌘・Ctrl＋スクロール、ピンチ、⌘・Ctrl＋クリック（＋Option で縮小）／Esc: 今の議題へ戻る／F: 全体を見る
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -12,7 +14,8 @@ import { EvidencePanel } from "../EvidencePanel.tsx";
 import { evidenceOf } from "../evidence.ts";
 import "../styles.css";
 import { clock, foldedIds, frameAt, loadMeeting, topicOf, type Meeting } from "./data.ts";
-import type { Camera, Hint, View, ViewMode } from "./ProtoCanvas.tsx";
+import { Captions } from "../Captions.tsx";
+import type { Camera, Command, Hint, View, ViewMode } from "./ProtoCanvas.tsx";
 import "./proto.css";
 import { VARIANTS, type VariantKey } from "./variants.tsx";
 
@@ -28,6 +31,21 @@ const HINT_NAME: Record<Hint, string> = { text: "中身の手がかり（文字�
 type Ret = "idle" | "topic" | "key";
 const RETS: Ret[] = ["idle", "topic", "key"];
 const RET_NAME: Record<Ret, string> = { idle: "触らなければ N 秒で戻る", topic: "今の議題が変わったら戻る", key: "Esc を押すまで戻らない" };
+const HELP: [string, string][] = [
+  ["Esc", "今の議題へ戻る・選択を外す"],
+  ["F", "全体を見る（もう一度で戻る）"],
+  ["= / -", "拡大・縮小"],
+  ["0", "倍率を 1.0 に"],
+  ["Z", "選んだノードへ寄る"],
+  ["Shift＋矢印", "移動"],
+  ["E", "右の列を出す・隠す"],
+  ["C", "字幕を出す・隠す"],
+  ["?", "キー一覧"],
+  ["スクロール・ドラッグ", "移動"],
+  ["⌘＋Shift＋スクロール", "縦か横だけに移動"],
+  ["⌘＋スクロール・ピンチ", "拡大・縮小"],
+  ["⌘＋クリック", "押したところを拡大（Option で縮小）"],
+];
 type Cue = "none" | "text" | "count";
 const CUE_NAME: Record<Cue, string> = { none: "止まっていることを出さない", text: "隅に控えめな文字", count: "隅に文字＋残り秒" };
 
@@ -54,6 +72,11 @@ function App() {
   const [mode, setMode] = useState<ViewMode>("follow");
   const [openAll, setOpenAll] = useState(false); // 全体を見て開いたまま（自動のカメラへ戻るまで）
   const lastMove = useRef(0);
+  const [command, setCommand] = useState<Command | null>(null);
+  const [showSide, setShowSide] = useState(true);
+  const [showCaptions, setShowCaptions] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
+  const selectedRef = useRef<string | null>(null);
   const [now, setNow] = useState(0);
   const onUserMove = useCallback(() => {
     lastMove.current = performance.now();
@@ -107,36 +130,74 @@ function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
-      if (e.key === "Escape") follow();
-      if (e.key === "f" || e.key === "F") {
-        // もう一度押すと今の議題へ戻る
-        setMode((m) => {
-          if (m === "overview") {
-            setOpenAll(false);
-            return "follow";
-          }
-          setOpenAll(true);
-          return "overview";
-        });
-      }
-      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-        const d = e.key === "ArrowRight" ? 1 : -1;
-        if (e.shiftKey) setIndex((i) => Math.max(0, Math.min((meeting?.diffEnds.length ?? 1) - 1, i + d)));
-        else
-          setRet((v) => {
-            const n = RETS[(RETS.indexOf(v) + d + RETS.length) % RETS.length]!;
-            setParam("ret", n);
-            return n;
-          });
-      }
-      if (e.key === " ") {
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // ブラウザ・会議アプリのキーには触れない
+      const move = (c: Omit<Command, "seq">) => {
+        lastMove.current = performance.now();
+        setMode("manual");
+        setCommand((prev) => ({ ...c, seq: (prev?.seq ?? 0) + 1 }));
+      };
+      const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      if (e.key in arrows) {
+        if (!e.shiftKey) return; // 矢印だけはノードの選択に空けておく
         e.preventDefault();
-        setPlaying((p) => !p);
+        const [x, y] = arrows[e.key]!;
+        move({ type: "pan", dx: x / 3, dy: y / 3 });
+        return;
+      }
+      switch (e.key) {
+        case "Escape":
+          if (showHelpRef.current) return setShowHelp(false);
+          setSelectedId(null);
+          follow();
+          return;
+        case "f":
+        case "F":
+          // もう一度押すと今の議題へ戻る
+          setMode((m) => {
+            if (m === "overview") {
+              setOpenAll(false);
+              return "follow";
+            }
+            setOpenAll(true);
+            return "overview";
+          });
+          return;
+        case "=":
+        case "+":
+          return move({ type: "in" });
+        case "-":
+          return move({ type: "out" });
+        case "0":
+          return move({ type: "one" });
+        case "z":
+        case "Z":
+          if (selectedRef.current) move({ type: "node" });
+          return;
+        case "e":
+        case "E":
+          return setShowSide((v) => !v);
+        case "c":
+        case "C":
+          return setShowCaptions((v) => !v);
+        case "?":
+          return setShowHelp((v) => !v);
+        case "[":
+        case "]": {
+          const d = e.key === "]" ? 1 : -1;
+          return setIndex((i) => Math.max(0, Math.min((meeting?.diffEnds.length ?? 1) - 1, i + d)));
+        }
+        case " ":
+          e.preventDefault();
+          return setPlaying((p) => !p);
       }
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, [meeting, follow]);
+
+  const showHelpRef = useRef(showHelp);
+  showHelpRef.current = showHelp;
+  selectedRef.current = selectedId;
 
   const byId = useMemo(() => new Map(frame?.snapshot.nodes.map((n) => [n.id, n]) ?? []), [frame]);
   const onSelect = useCallback(
@@ -154,7 +215,14 @@ function App() {
   const opened = new Set<string>();
   for (const start of [pinned, frame.current]) for (let cur: string | null | undefined = start; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
   const folded = openAll && overviewOpen ? new Set<string>() : foldedIds(frame, opened, stale);
-  const view: View = { mode, minZoom, offscreen, onUserMove };
+  const view: View = { mode, minZoom, offscreen, onUserMove, command };
+  // 字幕: 試作では、今の反映の時点までの直近の発言 2 つを「相手」の字幕として出す
+  const recent = meeting.events
+    .slice(0, meeting.diffEnds[index])
+    .filter((e: any) => e.type === "remark")
+    .slice(-2)
+    .map((e: any) => e.remark.text as string)
+    .join("");
   const left = Math.max(0, Math.ceil(idleSec - (now - lastMove.current) / 1000));
   const cueText =
     mode === "follow" || cue === "none"
@@ -191,8 +259,19 @@ function App() {
             view={view}
           />
           {cueText && <p className="proto-cue">{cueText}</p>}
+          {showCaptions && <Captions speaking={{ 相手: recent, 自分: "" }} />}
+          {showHelp && (
+            <dl className="proto-help">
+              {HELP.map(([k, d]) => (
+                <div key={k}>
+                  <dt>{k}</dt>
+                  <dd>{d}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </div>
-        <div className="side">
+        <div className="side" hidden={!showSide}>
           <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(frame.snapshot, selectedId)} />
           <ChangeList changes={frame.snapshot.changes.slice(-200)} onSelect={onSelect} />
         </div>
