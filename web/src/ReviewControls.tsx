@@ -1,11 +1,14 @@
 import { Slider } from "@videojs/react";
-import { CaptionsOffIcon, CaptionsOnIcon, CheckIcon, PauseIcon, PlayIcon, SpeedIcon } from "@videojs/react/icons";
+import { CaptionsOffIcon, CaptionsOnIcon, CheckIcon, PauseIcon, PlayIcon, SpeedIcon, VolumeHighIcon, VolumeLowIcon, VolumeOffIcon } from "@videojs/react/icons";
 import { useEffect, useRef, useState } from "react";
 import { KIND_COLOR } from "./kinds.ts";
 import { chapterNameAt, formatHms, type Chapter, type Mark } from "./reviewTimeline.ts";
 
 // 見返しのシークバーと操作の行。状態は持たず、渡された時刻と出来事の送り先だけで描く。
 // シークバーは会議の時刻の軸で全幅に置き、操作の行はその下に置く（マップには重ねない）。
+// 音声つきのときだけ渡す。ミュートの状態と音量（0〜1）、送り先
+type AudioProps = { muted: boolean; volume: number; onMute: () => void; onVolume: (volume: number) => void };
+
 type Props = {
   time: number;
   duration: number;
@@ -24,6 +27,7 @@ type Props = {
   onRate: (rate: number) => void;
   onCaptions: () => void;
   onSide: () => void;
+  audio?: AudioProps;
 };
 
 // 押して離したら（クリックでもドラッグでも）、シークバーからフォーカスを外す（矢印キーなどの操作がシークバーに奪われたままにならないように）
@@ -59,8 +63,43 @@ const THUMB_KEYS: readonly string[] = ["ArrowLeft", "ArrowRight", "ArrowUp", "Ar
 // メニューの項目の文言。例: 「60 倍（161 分を 2.7 分で）」
 export const rateOptionLabel = (rate: number, duration: number) => `${rate} 倍（${Math.round(duration / 60)} 分を ${(Math.round((duration / rate / 60) * 10) / 10).toFixed(1)} 分で）`;
 
+function VolumeControl({ muted, volume, onMute, onVolume }: AudioProps) {
+  const label = muted ? "ミュートを戻す" : "ミュート";
+  const Icon = muted || volume === 0 ? VolumeOffIcon : volume < 0.5 ? VolumeLowIcon : VolumeHighIcon;
+  return (
+    <div className="review-volume">
+      <button
+        type="button"
+        className="review-bar__button"
+        aria-label={label}
+        onClick={() => {
+          onMute();
+          releaseFocus();
+        }}
+      >
+        <Icon />
+        <Tip text={`${label}（M）`} />
+      </button>
+      <Slider.Root className="review-volume__slider" min={0} max={1} step={0.05} value={muted ? 0 : volume} onValueChange={onVolume} onDragEnd={releaseFocus} onPointerUp={releaseFocus} label="音量">
+        <Slider.Track className="review-volume__track">
+          <div className="review-volume__fill" />
+        </Slider.Track>
+        <Slider.Thumb
+          className="review-volume__thumb"
+          onKeyDown={(e) => {
+            if (THUMB_KEYS.includes(e.key)) e.stopPropagation();
+          }}
+        />
+      </Slider.Root>
+    </div>
+  );
+}
+
+// 音声つきは倍率だけにする（2026-10-08 オペレーターが決定。所要時間は音声なしの版だけ）
+export const rateItemLabel = (rate: number, duration: number, timesOnly: boolean) => (timesOnly ? `${rate} 倍` : rateOptionLabel(rate, duration));
+
 // 速さのボタンとメニュー。開閉だけを局所で持つ。開いている間の Esc は、SessionView の Esc より先に（capture 段階で）受けて閉じる
-function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "rate" | "rates" | "onRate">) {
+function RateMenu({ duration, rate, rates, onRate, timesOnly }: Pick<Props, "duration" | "rate" | "rates" | "onRate"> & { timesOnly: boolean }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -103,7 +142,7 @@ function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "r
               }}
             >
               <span className="review-rate__check">{r === rate && <CheckIcon />}</span>
-              {rateOptionLabel(r, duration)}
+              {rateItemLabel(r, duration, timesOnly)}
             </button>
           ))}
         </div>
@@ -112,7 +151,7 @@ function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "r
   );
 }
 
-export function ReviewControls({ time, duration, playing, rate, rates, topicName, chapters, marks, onSeek, onToggle, onPrev, onNext, onRate, captionsHidden, sideHidden, onCaptions, onSide }: Props) {
+export function ReviewControls({ time, duration, playing, rate, rates, topicName, chapters, marks, onSeek, onToggle, onPrev, onNext, onRate, captionsHidden, sideHidden, onCaptions, onSide, audio }: Props) {
   // 章が無い、または会議の長さが 0 のときは、区切らずに全幅の 1 本で描く（0 での割り算を避ける）
   const segments: readonly Chapter[] = chapters.length > 0 && duration > 0 ? chapters : [{ topic: "", name: "", start: 0, end: duration }];
   return (
@@ -161,6 +200,7 @@ export function ReviewControls({ time, duration, playing, rate, rates, topicName
           <StepIcon direction="next" />
           <Tip text="反映 1 つ進む（.）" />
         </button>
+        {audio && <VolumeControl {...audio} />}
         <span className="review-bar__time">
           {formatHms(time)} / {formatHms(duration)}
         </span>
@@ -179,7 +219,7 @@ export function ReviewControls({ time, duration, playing, rate, rates, topicName
             {captionsHidden ? <CaptionsOffIcon /> : <CaptionsOnIcon />}
             <Tip text="字幕（C）" />
           </button>
-          {rates.length > 1 && <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} />}
+          {rates.length > 1 && <RateMenu duration={duration} rate={rate} rates={rates} onRate={onRate} timesOnly={audio !== undefined} />}
           <button
             type="button"
             className="review-bar__button"

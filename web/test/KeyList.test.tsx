@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { KEY_LIST, KeyList, REVIEW_KEY_LIST } from "../src/KeyList.tsx";
+import { AUDIO_KEY_LIST, KEY_LIST, KeyList, REVIEW_KEY_LIST } from "../src/KeyList.tsx";
 
 describe("KeyList: ? で開くキー一覧", () => {
   const html = renderToStaticMarkup(<KeyList />);
@@ -107,5 +107,51 @@ describe("KeyList: 見返しのキーは見返しの一覧にだけ載る", () =
     expect(at("Home / End")).toBeGreaterThan(at(">?</span>"));
     expect(at("Space・K")).toBeLessThan(at("スクロール"));
     expect(at("Home / End")).toBeLessThan(at("スクロール"));
+  });
+});
+
+describe("KeyList: M（ミュート）の行は音声つきの見返しの一覧にだけ載る", () => {
+  const audio = renderToStaticMarkup(<KeyList review audio />);
+  const review = renderToStaticMarkup(<KeyList review />);
+  const live = renderToStaticMarkup(<KeyList />);
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  it("M の行は『ミュート・戻す』で、1 行だけ", () => {
+    expect(AUDIO_KEY_LIST).toEqual([{ group: "キー", keys: "M", action: "ミュート・戻す" }]);
+  });
+
+  it("音声つきの見返しの一覧には M の行が載る", () => {
+    expect(audio).toContain(">M</span>");
+    expect(audio).toContain("ミュート・戻す");
+  });
+
+  it("音声つきの一覧にも、見返しの行とライブの全ての行は載ったまま（C は 1 回だけ）", () => {
+    for (const row of [...KEY_LIST, ...REVIEW_KEY_LIST]) expect(audio).toContain(esc(row.keys));
+    expect(audio.match(/>C<\/span>/g)).toHaveLength(1);
+  });
+
+  it("M の行は見返しの行の後、マウスの行の前に挟む", () => {
+    const at = (t: string) => audio.indexOf(t);
+    expect(at(">M</span>")).toBeGreaterThan(at("Home / End"));
+    expect(at(">M</span>")).toBeLessThan(at("スクロール"));
+  });
+
+  it("音声なしの見返しの一覧には載らない（音声つきでは載る）", () => {
+    expect(audio).toContain(">M</span>");
+    expect(review).not.toContain(">M</span>");
+    expect(review).not.toContain("ミュート");
+    expect(renderToStaticMarkup(<KeyList review audio={false} />)).not.toContain(">M</span>");
+  });
+
+  it("ライブの一覧には載らない。audio だけを渡しても、見返しでなければ載らない", () => {
+    expect(audio).toContain("ミュート・戻す");
+    expect(live).not.toContain(">M</span>");
+    expect(live).not.toContain("ミュート");
+    expect(renderToStaticMarkup(<KeyList audio />)).not.toContain("ミュート");
+  });
+
+  it("KEY_LIST・REVIEW_KEY_LIST そのものには M の行を足さない", () => {
+    expect(KEY_LIST.some((r: { keys: string }) => r.keys === "M")).toBe(false);
+    expect(REVIEW_KEY_LIST.some((r: { keys: string }) => r.keys === "M")).toBe(false);
   });
 });

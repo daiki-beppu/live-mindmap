@@ -5,7 +5,7 @@ import type { PlaybackEvent } from "./reviewPlayback.ts";
 // J・L で動かす秒数
 export const SKIP_SECONDS = 10;
 
-export type ReviewKeyAction = "toggle" | "back" | "forward" | "prev" | "next" | "slower" | "faster" | "start" | "end";
+export type ReviewKeyAction = "toggle" | "back" | "forward" | "prev" | "next" | "slower" | "faster" | "start" | "end" | "mute";
 
 // 定数で、hook を呼ぶ数と順序は変わらない
 export const REVIEW_HOTKEYS = [
@@ -20,6 +20,9 @@ export const REVIEW_HOTKEYS = [
   ["Home", "start"],
   ["End", "end"],
 ] as const satisfies readonly (readonly [string, ReviewKeyAction])[];
+
+// M（ミュート）は音声つきの見返しだけ。REVIEW_HOTKEYS に混ぜず、ReviewView が常に登録して音声なしでは enabled で切る
+export const AUDIO_HOTKEYS = [["M", "mute"]] as const satisfies readonly (readonly [string, ReviewKeyAction])[];
 
 type Modifiers = { meta: boolean; ctrl: boolean; alt: boolean };
 
@@ -40,6 +43,8 @@ export function reviewKeyEvent(action: ReviewKeyAction, { meta, ctrl, alt }: Mod
       return { event: { type: "seek", time: 0 }, movesTime: true };
     case "end":
       return { event: { type: "seek", time: duration }, movesTime: true };
+    case "mute":
+      return { event: { type: "toggleMute" }, movesTime: false };
     case "slower":
     case "faster":
       return { event: { type: action }, movesTime: false };

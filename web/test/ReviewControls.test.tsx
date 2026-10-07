@@ -1,12 +1,18 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ReviewControls } from "../src/ReviewControls.tsx";
+import { rateItemLabel, ReviewControls } from "../src/ReviewControls.tsx";
 
 // シークバー（Video.js）とアイコンはこのテストの契約ではない。サーバー側の描画で確実に出るよう、
 // 中身のない代役にする。アイコンは名前を data-icon に出して、どれが描かれたかを区別する。
 vi.mock("@videojs/react", () => {
   const Part = ({ children }: { children?: unknown }) => <div>{children as never}</div>;
-  return { Slider: { Root: Part, Track: Part, Thumb: Part, Preview: Part, Value: Part } };
+  // Root は class・label・value を markup に出して、どのスライダーか・どの値かを区別する
+  const Root = ({ children, className, label, value }: { children?: unknown; className?: string; label?: string; value?: number }) => (
+    <div className={className} aria-label={label} data-value={value}>
+      {children as never}
+    </div>
+  );
+  return { Slider: { Root, Track: Part, Thumb: Part, Preview: Part, Value: Part } };
 });
 vi.mock("@videojs/react/icons", () => {
   const icon = (name: string) => () => <svg data-icon={name} />;
@@ -17,6 +23,9 @@ vi.mock("@videojs/react/icons", () => {
     PauseIcon: icon("PauseIcon"),
     PlayIcon: icon("PlayIcon"),
     SpeedIcon: icon("SpeedIcon"),
+    VolumeHighIcon: icon("VolumeHighIcon"),
+    VolumeLowIcon: icon("VolumeLowIcon"),
+    VolumeOffIcon: icon("VolumeOffIcon"),
   };
 });
 
@@ -154,5 +163,98 @@ describe("ReviewControls: ポインタを乗せると名前とキーを出す", 
     expect(buttonOf(html, "字幕")).toMatch(/<span class="review-tip" aria-hidden="true">/);
     expect(html).toContain('aria-label="反映 1 つ戻る"');
     expect(html).toContain('aria-label="反映 1 つ進む"');
+  });
+});
+
+// 音声つきの版: 渡した audio があるときだけ、ミュートのボタンと音量のスライダーが出る
+describe("ReviewControls: 音声つきのミュートと音量", () => {
+  const audioBase = { muted: false, volume: 1, onMute: noop, onVolume: noop };
+  const audioRates = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as readonly number[];
+  const withAudio = (audio: Partial<typeof audioBase> = {}, over: Partial<typeof base> = {}) =>
+    renderToStaticMarkup(<ReviewControls {...base} rate={1} rates={audioRates} {...over} audio={{ ...audioBase, ...audio }} />);
+  const sliderOf = (html: string) => /<div class="review-volume__slider"[^>]*>/.exec(html)?.[0];
+
+  it("反映 1 つ進む → ミュートのボタン → 音量のスライダー → 時刻 の順に並ぶ", () => {
+    const bar = barOf(withAudio());
+    const next = bar.indexOf('aria-label="反映 1 つ進む"');
+    const mute = bar.indexOf('aria-label="ミュート"');
+    const slider = bar.indexOf("review-volume__slider");
+    const time = bar.indexOf("review-bar__time");
+    expect(next).toBeGreaterThan(-1);
+    expect(mute).toBeGreaterThan(next);
+    expect(slider).toBeGreaterThan(mute);
+    expect(time).toBeGreaterThan(slider);
+  });
+
+  it("ミュートのボタンは button 要素で、吹き出しは『ミュート（M）』。ミュート中は『ミュートを戻す（M）』", () => {
+    const off = withAudio({ muted: false });
+    expect(buttonOf(off, "ミュート")).toMatch(/^<button type="button"/);
+    expect(tipOf(buttonOf(off, "ミュート"))).toBe("ミュート（M）");
+    expect(off).not.toContain("ミュートを戻す");
+    const on = withAudio({ muted: true });
+    expect(tipOf(buttonOf(on, "ミュートを戻す"))).toBe("ミュートを戻す（M）");
+    expect(on).not.toContain('aria-label="ミュート"');
+  });
+
+  it("アイコンは、音量が半分以上で VolumeHighIcon、半分未満で VolumeLowIcon", () => {
+    expect(buttonOf(withAudio({ volume: 1 }), "ミュート")).toContain('data-icon="VolumeHighIcon"');
+    expect(buttonOf(withAudio({ volume: 0.5 }), "ミュート")).toContain('data-icon="VolumeHighIcon"');
+    expect(buttonOf(withAudio({ volume: 0.3 }), "ミュート")).toContain('data-icon="VolumeLowIcon"');
+    expect(buttonOf(withAudio({ volume: 0.3 }), "ミュート")).not.toContain("VolumeHighIcon");
+  });
+
+  it("ミュート中と音量 0 は、同じ VolumeOffIcon で見せる（音量が大きくてもミュート中なら Off）", () => {
+    expect(buttonOf(withAudio({ muted: true, volume: 1 }), "ミュートを戻す")).toContain('data-icon="VolumeOffIcon"');
+    expect(buttonOf(withAudio({ muted: false, volume: 0 }), "ミュート")).toContain('data-icon="VolumeOffIcon"');
+    expect(buttonOf(withAudio({ muted: false, volume: 0 }), "ミュート")).not.toContain("VolumeHighIcon");
+    expect(buttonOf(withAudio({ muted: false, volume: 0.01 }), "ミュート")).not.toContain("VolumeOffIcon");
+  });
+
+  it("音量のスライダーの値は、ミュート中は 0、そうでなければ音量。説明は『音量』", () => {
+    expect(sliderOf(withAudio({ muted: false, volume: 0.4 }))).toContain('data-value="0.4"');
+    expect(sliderOf(withAudio({ muted: true, volume: 0.4 }))).toContain('data-value="0"');
+    expect(sliderOf(withAudio())).toContain('aria-label="音量"');
+  });
+
+  it("ミュートのボタンと音量のスライダーは review-volume のまとまりの中にある", () => {
+    const html = withAudio();
+    const group = html.indexOf('class="review-volume"');
+    expect(group).toBeGreaterThan(-1);
+    expect(html.indexOf('aria-label="ミュート"')).toBeGreaterThan(group);
+    expect(html.indexOf("review-volume__slider")).toBeGreaterThan(group);
+  });
+
+  it("操作の行のボタンは全て名前とキーを持つ（ミュートが増えて 7 つ）", () => {
+    const buttons = barOf(withAudio()).match(/<button\b[^>]*review-bar__button[^>]*>[\s\S]*?<\/button>/g) ?? [];
+    expect(buttons).toHaveLength(7);
+    for (const b of buttons) expect(tipOf(b), b).toMatch(/（.+）$/);
+  });
+
+  it("速さの並びが 7 段なら、速さのボタンが出る（現在の倍率つき）。字幕 → 速さ → 右の列の順は音声つきでも同じ", () => {
+    const bar = barOf(withAudio({}, { rate: 1.5 }));
+    expect(buttonOf(bar, "再生の速さ")).toContain("1.5×");
+    const caption = bar.indexOf('aria-label="字幕"');
+    const rate = bar.indexOf('aria-label="再生の速さ"');
+    const side = bar.indexOf('aria-label="右の列"');
+    expect(rate).toBeGreaterThan(caption);
+    expect(side).toBeGreaterThan(rate);
+  });
+
+  it("audio を渡さない（音声なし）と、ミュートのボタンも音量のスライダーも出ない（渡すと出る）", () => {
+    expect(withAudio()).toContain("review-volume__slider");
+    expect(withAudio()).toContain('aria-label="ミュート"');
+    const html = render();
+    for (const word of ["ミュート", "review-volume", "音量", "Volume"]) expect(html).not.toContain(word);
+  });
+});
+
+describe("rateItemLabel: 速さのメニュー項目の文言", () => {
+  it("音声つきは倍率だけ。所要時間（分を）は付けない", () => {
+    expect(rateItemLabel(0.5, 9660, true)).toBe("0.5 倍");
+    expect(rateItemLabel(2, 9660, true)).not.toContain("分を");
+  });
+
+  it("音声なしは所要時間つきのまま", () => {
+    expect(rateItemLabel(60, 9660, false)).toBe("60 倍（161 分を 2.7 分で）");
   });
 });

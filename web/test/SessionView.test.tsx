@@ -327,7 +327,7 @@ describe("SessionView: 見返しの外枠（review.frame）に、見る状態と
 });
 
 describe("SessionView: ? のキー一覧は、見返しのときだけ見返しのキーを載せる", () => {
-  const renderOpened = async (review: boolean) => {
+  const renderOpened = async (review: boolean | { audio: boolean }) => {
     vi.resetModules();
     vi.doMock("../src/viewing.ts", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../src/viewing.ts")>()),
@@ -335,7 +335,7 @@ describe("SessionView: ? のキー一覧は、見返しのときだけ見返し�
     }));
     try {
       const { SessionView: OpenedSessionView } = await import("../src/SessionView.tsx");
-      return renderToStaticMarkup(<OpenedSessionView snapshot={snapshot} speaking={speaking} review={review ? { timeMoves: 0 } : undefined} />);
+      return renderToStaticMarkup(<OpenedSessionView snapshot={snapshot} speaking={speaking} review={review === false ? undefined : { timeMoves: 0, ...(review === true ? {} : review) }} />);
     } finally {
       vi.doUnmock("../src/viewing.ts");
       vi.resetModules();
@@ -352,5 +352,15 @@ describe("SessionView: ? のキー一覧は、見返しのときだけ見返し�
     const html = await renderOpened(false);
     expect(html).toContain('class="key-list"');
     for (const keys of ["Space・K", "J / L", "Home / End"]) expect(html).not.toContain(keys);
+  });
+
+  it("音声つきの見返し（review.audio が true）のときだけ、M の行（ミュート・戻す）が載る", async () => {
+    const audio = await renderOpened({ audio: true });
+    expect(audio).toContain(">M</span>");
+    expect(audio).toContain("ミュート・戻す");
+    for (const other of [await renderOpened(true), await renderOpened({ audio: false }), await renderOpened(false)]) {
+      expect(other).toContain('class="key-list"');
+      expect(other).not.toContain("ミュート・戻す");
+    }
   });
 });

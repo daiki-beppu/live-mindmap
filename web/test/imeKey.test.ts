@@ -26,6 +26,7 @@ describe("halfWidthKeyOf: key が Process のとき code から作る", () => {
     ["KeyF", "f"],
     ["KeyA", "a"],
     ["KeyZ", "z"],
+    ["KeyM", "m"],
     ["Digit0", "0"],
     ["Digit9", "9"],
     ["Minus", "-"],
@@ -92,6 +93,7 @@ describe("halfWidthKeyOf: 全角の 1 文字は 0xFEE0 を引いて半角にす�
   it.each([
     ["？", "?"],
     ["ｆ", "f"],
+    ["ｍ", "m"],
     ["Ｆ", "F"],
     ["＝", "="],
     ["－", "-"],
@@ -183,6 +185,8 @@ describe("halfWidthKeyOf: 送り直さないキー", () => {
 describe("halfWidthKeyOf: 送り直したイベントをもう一度拾わない", () => {
   it.each([
     process("KeyF"),
+    process("KeyM"),
+    input({ key: "ｍ", code: "KeyM", isComposing: true }),
     process("Digit0"),
     process("Minus"),
     process("Equal"),
