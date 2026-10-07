@@ -293,3 +293,50 @@ describe("reduceViewing: キーでも入力を書き換えない", () => {
     expect(JSON.stringify(t)).toBe(snapshot);
   });
 });
+
+const dot = (id: string): ViewingEvent => ({ type: "edgeDot", id });
+
+describe("reduceViewing: 縁の点を押すと、そのノードへ寄り、人の状態のままになる", () => {
+  it("止めているとき、そのノードへ寄る指示（focusNode）が出て、止めたまま（議題は今の議題）", () => {
+    const out = reduceViewing({ mode: "manual", topic: "n1" }, dot("n2"), tree("n1"));
+    expect(out.camera).toEqual({ type: "focusNode", id: "n2" });
+    expect(out.state).toEqual({ mode: "manual", topic: "n1" });
+  });
+
+  it("全体を見ているときに押しても、止めた状態になり、そのノードへ寄る", () => {
+    const overview = run([[key("F"), tree("n1")]]).state;
+    expect(overview.mode).toBe("overview");
+    const out = reduceViewing(overview, dot("n2"), tree("n1"));
+    expect(out.camera).toEqual({ type: "focusNode", id: "n2" });
+    expect(out.state).toEqual({ mode: "manual", topic: "n1" });
+  });
+
+  it("寄った後、議題が同じ反映が届いても止めたまま動かさない（hold）。議題が変われば自動に戻る（対照）", () => {
+    const { state, commands } = run([[dot("n2"), tree("n1")], [reflect, tree("n1")], [reflect, tree("n1")]], { mode: "manual", topic: "n1" });
+    expect(state).toEqual({ mode: "manual", topic: "n1" });
+    expect(commands).toEqual([{ type: "focusNode", id: "n2" }, { type: "hold" }, { type: "hold" }]);
+    const changed = run([[dot("n2"), tree("n1")], [reflect, tree("n2")]], { mode: "manual", topic: "n1" });
+    expect(changed.state).toEqual({ mode: "auto" });
+    expect(changed.commands[1]).toEqual({ type: "refocus" });
+  });
+
+  it("見えていないノードの点は、状態を変えず動かさない（hold）。見えているノードなら寄る（対照）", () => {
+    const manual: ViewingState = { mode: "manual", topic: "n1" };
+    const gone = reduceViewing(manual, dot("gone"), tree("n1"));
+    expect(gone.state).toEqual(manual);
+    expect(gone.camera).toEqual({ type: "hold" });
+    expect(reduceViewing(manual, dot("n2"), tree("n1")).camera).toEqual({ type: "focusNode", id: "n2" });
+  });
+
+  it("入力の状態と木を書き換えず、同じ入力なら同じ出力", () => {
+    const state: ViewingState = Object.freeze({ mode: "manual", topic: "n1" });
+    const t = tree("n1");
+    const snapshot = JSON.stringify(t);
+    const out = reduceViewing(state, dot("n2"), t);
+    expect(out.state).toEqual({ mode: "manual", topic: "n1" });
+    expect(out.camera).toEqual({ type: "focusNode", id: "n2" });
+    expect(state).toEqual({ mode: "manual", topic: "n1" });
+    expect(JSON.stringify(t)).toBe(snapshot);
+    expect(reduceViewing(state, dot("n2"), t)).toEqual(out);
+  });
+});

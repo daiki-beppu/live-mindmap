@@ -4,7 +4,9 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStore,
   useStoreApi,
+  useViewport,
   type Edge,
   type Node,
   type NodeChange,
@@ -16,7 +18,9 @@ import type { Snapshot } from "../../server/src/core/index.ts";
 import {
   cameraFocus,
   clampUserZoom,
+  edgeDots,
   focusViewport,
+  nodeFocusViewport,
   nodeRect,
   overviewViewport,
   panViewport,
@@ -34,12 +38,43 @@ import {
 } from "./camera.ts";
 import { changedNodeIds } from "./changes.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
-import { layout, NODE_WIDTH } from "./layout.ts";
+import { layout, NODE_WIDTH, type Position } from "./layout.ts";
 import { MapNode, type MapNodeData } from "./MapNode.tsx";
 import { useAnimatedPositions } from "./useAnimatedPositions.ts";
 import type { CameraCommand, ViewingEvent, ViewingState, VisibleTree } from "./viewing.ts";
 
 const nodeTypes = { map: MapNode };
+
+// 画面の外で変わったノードを、その方向の縁に点で出す。ビューポートの変化のたびに描き直す（購読はここに閉じる）
+function EdgeDots({
+  ids,
+  target,
+  dims,
+  onPress,
+}: {
+  ids: string[];
+  target: Record<string, Position>;
+  dims: Dims;
+  onPress: (id: string) => void;
+}) {
+  const viewport = useViewport();
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
+  return (
+    <div className="edge-dots">
+      {edgeDots(ids, target, dims, viewport, { width, height }).map((d) => (
+        <button
+          key={d.id}
+          type="button"
+          className="edge-dot nopan nowheel"
+          style={{ left: d.x, top: d.y }}
+          aria-label={`画面の外で変わったノードへ寄る（${d.ids.length} 件）`}
+          onClick={() => onPress(d.id)}
+        />
+      ))}
+    </div>
+  );
+}
 
 type Dims = Record<string, { width: number; height: number }>;
 
@@ -102,8 +137,10 @@ function MapCanvas({
   const animated = useAnimatedPositions(snapshot.nodes, target);
   const positions = still ? target : animated;
 
+  // 今回の反映で変わったノード。点滅と縁の点の両方がこの集合から出る（次の反映で入れ替わる）
+  const changed = useMemo(() => changedNodeIds(snapshot), [snapshot]);
+
   const nodes = useMemo((): Node[] => {
-    const changed = changedNodeIds(snapshot);
     const formal = snapshot.nodes.map((n): Node<MapNodeData, "map"> => ({
       id: n.id,
       type: "map",
@@ -121,7 +158,7 @@ function MapCanvas({
       },
     }));
     return formal;
-  }, [snapshot, positions, dims, selectedId, onSelect, still]);
+  }, [snapshot, changed, positions, dims, selectedId, onSelect, still]);
 
   const edges = useMemo((): Edge[] => {
     return snapshot.nodes.flatMap((n) =>
@@ -176,6 +213,9 @@ function MapCanvas({
       case "pan":
         // 全体を見ていて 0.5 未満の倍率から人の状態に移るときは、人の範囲に収めてから動かす
         void setViewport(panViewport(zoomAroundCenter(current, clampUserZoom(current.zoom), size), command, size), { duration: 0 });
+        break;
+      case "focusNode":
+        void setViewport(nodeFocusViewport(nodeRect(command.id, target, dims), current.zoom, size), { duration: 0 });
         break;
       case "restore": {
         const before = beforeOverview.current;
@@ -310,7 +350,9 @@ function MapCanvas({
             onMove: onUserMove,
           })}
       proOptions={{ hideAttribution: true }}
-    />
+    >
+      {paused && <EdgeDots ids={tree.ids.filter((id) => changed.has(id))} target={target} dims={dims} onPress={(id) => onViewingEvent?.({ type: "edgeDot", id }, tree)} />}
+    </ReactFlow>
     </div>
   );
 }

@@ -13,6 +13,7 @@ export type ViewKey = "=" | "-" | "0" | "F" | "Shift+ArrowLeft" | "Shift+ArrowRi
 export type ViewingEvent =
   | { type: "userMoved" }
   | { type: "reflect" }
+  | { type: "edgeDot"; id: string }
   | { type: "escape"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean };
 
@@ -21,6 +22,7 @@ export type VisibleTree = { ids: string[]; targets: Record<string, Position>; cu
 
 // follow: 今までどおり自動で寄せる / refocus: 今の議題へ寄せ直す / hold: 動かさない
 // zoomBy: 画面の中心を保って倍率を掛ける / zoomTo: 画面の中心を保って倍率にする
+// focusNode: 今の倍率のまま、そのノードへ寄る
 // pan: 画面の 1/3 ずつ動かす（dx・dy は見えてくる側の向き） / fitAll: 全体を収める / restore: 全体を見る前の倍率・位置へ戻す
 export type CameraCommand =
   | { type: "follow" }
@@ -30,6 +32,7 @@ export type CameraCommand =
   | { type: "zoomTo"; zoom: number }
   | { type: "pan"; dx: number; dy: number }
   | { type: "fitAll" }
+  | { type: "focusNode"; id: string }
   | { type: "restore" };
 
 export const INITIAL_VIEWING: ViewingState = { mode: "auto" };
@@ -70,6 +73,10 @@ export function reduceViewing(state: ViewingState, event: ViewingEvent, tree: Vi
       if (state.mode === "auto") return { state: AUTO, camera: FOLLOW };
       if (tree.currentTopic !== state.topic) return { state: AUTO, camera: REFOCUS };
       return { state, camera: state.mode === "overview" ? FIT_ALL : HOLD };
+    case "edgeDot":
+      // 点を描いてから押すまでにノードが消えていたら、何もしない
+      if (!tree.ids.includes(event.id)) return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
+      return { state: { mode: "manual", topic: tree.currentTopic }, camera: { type: "focusNode", id: event.id } };
     case "escape":
       if (event.meta || event.ctrl || event.alt) return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
       return state.mode === "auto" ? { state, camera: FOLLOW } : { state: AUTO, camera: REFOCUS };
