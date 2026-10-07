@@ -781,6 +781,17 @@ describe("system プロンプト: 議題の立て方・入れ子・目安・閉�
       expect(section).not.toMatch(/深さ.{0,6}(まで|以内|目安)/);
     }));
 
+  it.effect("目安: 上限を超えそうなときは新しい要点を最も近い兄弟の子として add する。要点は close できない。議題の一覧に上限に近い親が出る（#167）", () =>
+    Effect.gen(function* () {
+      const sys = yield* systemPrompt;
+      const section = sectionOf(sys, "## 目安");
+
+      for (const part of ["新しい要点", "最も近い兄弟", "add", "要点は close できない", "議題の一覧"]) expect(section, part).toContain(part);
+      // 「最も近い兄弟の子」と add が同じ文の中にある
+      expect(section.split(/[。\n]/).some((s) => s.includes("最も近い兄弟") && s.includes("子") && s.includes("add"))).toBe(true);
+      expect(count(sys, "要点は close できない")).toBe(1);
+    }));
+
   it.effect("閉じるの出し方: 毎回見直す・移ったばかりの応答では前の議題を閉じない・時刻は判断の材料・迷うときは閉じないは 1 か所だけ", () =>
     Effect.gen(function* () {
       const sys = yield* systemPrompt;
@@ -1033,6 +1044,117 @@ describe("毎回のメッセージの議題の一覧", () => {
     expect(listOf(closed).join("\n")).toContain("- n7 写真の振り返り（まとまり・子の議題 話し中 2・済み 1");
     const extract = (p: string) => p.slice(p.indexOf("## 議題の一覧"), p.indexOf("\n\n", p.indexOf("## 議題の一覧")));
     expect(extract(second)).toBe(extract(first));
+  });
+
+  // 話し中の子が上限に近い・超えた親の名指し（#167）。「話し中の子 N」の数だけを確かめ、ほかの書式は決めない。親の id を含む行を一覧から探して、本文と数を確かめる
+  describe("話し中の子が上限に近い・超えた親の名指し", () => {
+    const build = (specs: Array<{ ref: string; parent: string; kind: "議題" | "論点" | "要点"; text: string }>) => {
+      const r = applyOps(emptyMap("講演"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 });
+      expect(r.dropped).toEqual([]);
+      return r.map;
+    };
+    const rowOf = (map: MeetingMap, id: string) => listOf(map).find((l) => new RegExp(`(?<![\\w])${id}(?![\\w])`).test(l));
+    // 「話し中の子 N」の N を取り出す（状態の文言「上限 5 に達した」の数字と混同しない）。無ければ NaN
+    const openKidsOf = (line: string) => Number(line.match(/話し中の子 (\d+)/)?.[1]);
+
+    // root > n1 議題「講演」 > (n2 要点「紹介甲」> 話し中の要点 n3〜n7 の 5 つ, n8 要点「紹介乙」> 話し中の要点 n9〜n14 の 6 つ, n15 要点「紹介丙」> 話し中の要点 n16〜n18 の 3 つ)
+    const crowded = (() => {
+      const kids = (parent: string, prefix: string, n: number) => Array.from({ length: n }, (_, i) => ({ ref: `${prefix}${i}`, parent, kind: "要点" as const, text: `${prefix}の補足${"あいうえおかきくけこ"[i]}` }));
+      return build([
+        { ref: "t", parent: "root", kind: "議題", text: "講演" },
+        { ref: "x", parent: "t", kind: "要点", text: "紹介甲" }, ...kids("x", "甲", 5),
+        { ref: "y", parent: "t", kind: "要点", text: "紹介乙" }, ...kids("y", "乙", 6),
+        { ref: "z", parent: "t", kind: "要点", text: "紹介丙" }, ...kids("z", "丙", 3),
+      ]);
+    })();
+
+    it("前提: 組んだマップの id が想定どおり（n2・n8・n15 が要点で、話し中の子が 5・6・3 つ）", () => {
+      const openKids = (id: string) => Object.values(crowded.nodes).filter((n) => n.parent === id && !n.talkStatus).length;
+
+      expect(["n2", "n8", "n15"].map((id) => [crowded.nodes[id]!.kind, crowded.nodes[id]!.text])).toEqual([["要点", "紹介甲"], ["要点", "紹介乙"], ["要点", "紹介丙"]]);
+      expect(["n2", "n8", "n15"].map(openKids)).toEqual([5, 6, 3]);
+    });
+
+    it("要点の下に話し中の子が上限ちょうどの 5 つある親は、id・本文・話し中の子の数 5 とともに一覧に出る", () => {
+      const row = rowOf(crowded, "n2");
+
+      expect(row).toBeDefined();
+      expect(row).toContain("紹介甲");
+      expect(openKidsOf(row!)).toBe(5);
+    });
+
+    it("要点の下に話し中の子が 6 つある（上限を超えた）親は、id・本文・話し中の子の数 6 とともに一覧に出る", () => {
+      const row = rowOf(crowded, "n8");
+
+      expect(row).toBeDefined();
+      expect(row).toContain("紹介乙");
+      expect(openKidsOf(row!)).toBe(6);
+    });
+
+    it("上限 5 より十分少ない（3 つ）親は出ない。子の要点自身も出ない。一覧に出る親の数は 2", () => {
+      const list = listOf(crowded);
+
+      expect(rowOf(crowded, "n15")).toBeUndefined();
+      expect(list.join("\n")).not.toContain("紹介丙");
+      for (const id of ["n3", "n9", "n16"]) expect(rowOf(crowded, id), id).toBeUndefined();
+      expect(["n2", "n8"].every((id) => rowOf(crowded, id) !== undefined)).toBe(true);
+    });
+
+    it("済みの子は数えない: 話し中 4 つ・済み 2 つの親は出ず、話し中 5 つ・済み 2 つの親は話し中の数 5 で出る（済みを入れた 7 にならない）", () => {
+      const spec = (parent: string, prefix: string, open: number) => [
+        { ref: parent, parent: "t", kind: "論点" as const, text: `${prefix}の論点` },
+        ...Array.from({ length: open }, (_, i) => ({ ref: `${prefix}o${i}`, parent, kind: "要点" as const, text: `${prefix}の話し中${"あいうえお"[i]}` })),
+        { ref: `${prefix}c0`, parent, kind: "論点" as const, text: `${prefix}の済み一` },
+        { ref: `${prefix}c1`, parent, kind: "論点" as const, text: `${prefix}の済み二` },
+      ];
+      const added = build([{ ref: "t", parent: "root", kind: "議題", text: "会議" }, ...spec("pa", "甲", 4), ...spec("pb", "乙", 5)]);
+      // n1 議題, n2 甲の論点(話し中の子 4・済み 2), n3〜n6 要点, n7・n8 済みにする論点, n9 乙の論点(話し中の子 5・済み 2), n10〜n14 要点, n15・n16 済みにする論点
+      expect(["n2", "n9"].map((id) => added.nodes[id]!.text)).toEqual(["甲の論点", "乙の論点"]);
+      const r = applyOps(added, ["n7", "n8", "n15", "n16"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 });
+      expect(r.dropped).toEqual([]);
+      expect(["n7", "n8", "n15", "n16"].every((id) => r.map.nodes[id]!.talkStatus === "済み")).toBe(true);
+
+      expect(rowOf(r.map, "n2")).toBeUndefined();
+      const row = rowOf(r.map, "n9");
+      expect(row).toBeDefined();
+      expect(row).toContain("乙の論点");
+      expect(openKidsOf(row!)).toBe(5);
+      expect(openKidsOf(row!)).not.toBe(7);
+    });
+
+    it("親がルートでも名指しされる: ルート直下に話し中の議題が 5 つあると root が id とともに出る。4 つなら出ない", () => {
+      const tops = (n: number) => build(Array.from({ length: n }, (_, i) => ({ ref: `g${i}`, parent: "root", kind: "議題" as const, text: `話題${"あいうえお"[i]}` })));
+      const row = rowOf(tops(5), "root");
+
+      expect(row).toBeDefined();
+      expect(openKidsOf(row!)).toBe(5);
+      expect(rowOf(tops(4), "root")).toBeUndefined();
+    });
+
+    it("議題が親でも名指しされる: 話し中の要点が 6 つの議題は、議題の行とは別に、話し中の子の数 6 の行にも出る", () => {
+      const map = build([
+        { ref: "t", parent: "root", kind: "議題", text: "混んだ議題" },
+        ...Array.from({ length: 6 }, (_, i) => ({ ref: `k${i}`, parent: "t", kind: "要点" as const, text: `補足${"あいうえおか"[i]}` })),
+        { ref: "g", parent: "k0", kind: "要点", text: "孫の補足" }, // 議題の行のノード数は 7、直下の子は 6
+      ]);
+      const rows = listOf(map).filter((l) => /(?<![\w])n1(?![\w])/.test(l));
+      const topicRow = rows.find((l) => /話し中 \d+ ノード/.test(l));
+
+      expect(topicRow).toBeDefined();
+      expect(rows.filter((l) => l !== topicRow).some((l) => openKidsOf(l) === 6)).toBe(true);
+    });
+
+    it("1 通目でも変更だけの回でも、同じ名指しが一覧に載る。マップに該当が無ければ名指しの行は足されない", () => {
+      const extract = (p: string) => p.slice(p.indexOf("## 議題の一覧"), p.indexOf("\n\n", p.indexOf("## 議題の一覧")));
+      const first = buildPrompt(inputOf(crowded, 1));
+      const second = buildPrompt(inputOf(crowded, 1), built);
+
+      expect(extract(first)).toContain("紹介乙");
+      expect(extract(second)).toBe(extract(first));
+      // 話し中の子が最も多い親でも 3 つの既存のマップでは、見出し・議題の 4 行・目安の 1 行のほかに行は足されない
+      // listOf は一覧の後ろの空行も含むので、空行を除いて数える
+      expect(listOf(closed).filter((l) => l !== "")).toHaveLength(1 + 4 + 1);
+    });
   });
 });
 

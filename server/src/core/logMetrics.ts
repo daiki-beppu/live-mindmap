@@ -10,14 +10,19 @@ export type LogMetrics = {
   maxOpenSiblings: number; // 話し中の兄弟の最多数（すべての親・すべての反映後のマップ。済みは数えない）
 };
 
-// 1 つの親の下の話し中の子の数の最大（ルートの子も含む）
-function openSiblings(map: MeetingMap): number {
+// 親ごとの話し中の子の数（ルートの子も含む）。指標と、Claude に渡す議題の一覧が同じ数え方を使うので、ここに 1 つだけ置く
+export function openChildCounts(map: MeetingMap): Map<string, number> {
   const counts = new Map<string, number>();
   for (const node of Object.values(map.nodes)) {
     if (node.parent === null || node.talkStatus === "済み") continue;
     counts.set(node.parent, (counts.get(node.parent) ?? 0) + 1);
   }
-  return Math.max(0, ...counts.values());
+  return counts;
+}
+
+// 1 つの親の下の話し中の子の数の最大
+function openSiblings(map: MeetingMap): number {
+  return Math.max(0, ...openChildCounts(map).values());
 }
 
 export function logMetrics(events: readonly LogEvent[]): LogMetrics {
