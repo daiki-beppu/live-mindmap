@@ -2,7 +2,7 @@
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v6 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
-import { children, DiffOutput, DiffUpdater, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
+import { children, DiffOutput, DiffUpdater, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
 
@@ -17,6 +17,8 @@ export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の
 // 目安の数字。SYSTEM と議題の一覧の両方に出すので、ここに 1 つだけ置く
 const TOPIC_NODES = "15〜20";
 const SIBLINGS_MAX = 5;
+// 議題の一覧で名指しする親の境目。上限を超えてからでは遅く、上限ちょうどの親が評価の 1 再生に 9〜12 個あったので、上限ちょうどから出す
+const SIBLINGS_NEAR = SIBLINGS_MAX;
 
 // system は毎回同じ文字列にして、前置きをキャッシュに乗せる
 const SYSTEM = `あなたは会議のマインドマップを継続的に組み立てる担当者です。
@@ -79,7 +81,8 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 ## 目安
 - 会議全体のノード数に目安は設けない。
 - 1 つの議題の話し中の部分（済みの論点の下と、子の議題の下は数えない）は、${TOPIC_NODES} ノード。超えそうなら、答えが出た論点や話の移った論点を閉じるか、これからの話を新しい議題として立てる。すでにあるノードを別の議題へ動かし直さない。
-- 1 つの親の下の話し中の兄弟は、種別によらず ${SIBLINGS_MAX} つまで（ルート直下も含む。済みは数えない）。超えそうなら、新しいノードを最も近い兄弟の子にするか、新しい議題を立てるか、話の移ったものを閉じる。上限を守るための move はしない。
+- 1 つの親の下の話し中の兄弟は、種別によらず ${SIBLINGS_MAX} つまで（ルート直下も含む。済みは数えない）。上限に近い親と超えた親は、毎回の「議題の一覧」に id・本文・話し中の子の数つきで名指しで出る。
+- 名指しされた親の下に足したくなったら、新しいノードを最も近い兄弟の子として add する。親が要点のときは、要点は close できない（close できるのは議題と論点だけ）ので、新しい要点を最も近い兄弟の要点の子として add する。親が議題や論点なら、新しい議題を立てるか、話の移ったものを閉じてもよい。上限を守るための move はしない。
 
 ## 閉じるの出し方
 - 毎回、「議題の一覧」の話し中の議題と、今の議題の中の論点を見直す。最後に触れてからしばらく経ち、話が明らかに別へ移って戻る気配がないものを close する。迷うときは閉じない。
@@ -195,6 +198,18 @@ function scanTopic(map: MeetingMap, id: string): { nodes: number; topics: string
   return { nodes, topics };
 }
 
+// 話し中の子が境目以上の親を、種別によらず 1 行ずつ出す。行頭を「- n12 」にしない（議題の行と区別するため）
+function renderCrowdedParents(map: MeetingMap): string[] {
+  const counts = openChildCounts(map);
+  return map.order
+    .filter((id) => map.nodes[id] && (counts.get(id) ?? 0) >= SIBLINGS_NEAR)
+    .map((id) => {
+      const n = counts.get(id)!;
+      const state = n > SIBLINGS_MAX ? `上限 ${SIBLINGS_MAX} を超えた` : `上限 ${SIBLINGS_MAX} に達した`;
+      return `- 親 ${id} ${map.nodes[id]!.kind}「${map.nodes[id]!.text}」: 話し中の子 ${n}（${state}）`;
+    });
+}
+
 // 話し中の議題を木のまま字下げした一覧。済みの議題と、済みの議題の下の議題は出さず、件数だけを見出しに出す。
 // 毎回、その時点のマップから作り直す（状態は持たない）
 function renderTopicList(map: MeetingMap): string {
@@ -217,6 +232,7 @@ function renderTopicList(map: MeetingMap): string {
   return [
     `## 議題の一覧（話し中 ${shown}・済み ${closedCount}。済みと、済みの議題の下は省略）`,
     ...(rows.length ? rows : ["（なし）"]),
+    ...renderCrowdedParents(map),
     `目安: 1 つの議題の話し中の部分は ${TOPIC_NODES} ノード。1 つの親の下の話し中の兄弟は種別によらず ${SIBLINGS_MAX} つまで（ルート直下も含む。済みは数えない）`,
   ].join("\n");
 }
