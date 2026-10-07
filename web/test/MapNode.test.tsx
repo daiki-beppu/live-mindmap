@@ -72,7 +72,7 @@ describe("MapNode: 変わったノードの点滅", () => {
 describe("MapNode: ノードの上で始めたドラッグでは、画面を動かさず根拠も出さない", () => {
   const root = (d: MapNodeData) => call("n2", d) as unknown as { props: { className: string } };
   type Handler = (e: unknown) => void;
-  const button = (onSelect: () => void) => findAll(call("n2", data({ onSelect })), "button")[0]!.props as { onPointerDown: Handler; onPointerMove: Handler; onClick: Handler };
+  const button = (onSelect: () => void) => findAll(call("n2", data({ onSelect })), "button")[0]!.props as { onPointerDown: Handler; onPointerMove: Handler; onPointerUp: Handler; onClick: Handler };
   const at = (target: object, x: number, y: number, pointerId = 7) => ({ target, currentTarget: target, clientX: x, clientY: y, pointerId });
   const capturing = () => ({ setPointerCapture: vi.fn() });
 
@@ -145,5 +145,55 @@ describe("MapNode: ノードの上で始めたドラッグでは、画面を動�
     b.onClick(at(target, 90, 90));
     b.onClick(at(target, 90, 90));
     expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("⌘/Ctrl 付きで押して 4px 超動かし、修飾キーなしで離して click しても、onSelect を呼ばない", () => {
+    for (const key of ["metaKey", "ctrlKey"]) {
+      const onSelect = vi.fn();
+      const b = button(onSelect);
+      const target = capturing();
+      b.onPointerDown({ ...at(target, 100, 100), [key]: true });
+      b.onPointerMove(at(target, 110, 100));
+      b.onPointerUp(at(target, 110, 100));
+      b.onClick(at(target, 110, 100));
+      expect(onSelect).not.toHaveBeenCalled();
+    }
+  });
+
+  it("⌘/Ctrl 付きで押して 4px 超動かし、押した位置の近くへ戻して修飾キーなしで離しても、onSelect を呼ばない", () => {
+    for (const key of ["metaKey", "ctrlKey"]) {
+      const onSelect = vi.fn();
+      const b = button(onSelect);
+      const target = capturing();
+      b.onPointerDown({ ...at(target, 100, 100), [key]: true });
+      b.onPointerMove(at(target, 160, 100));
+      b.onPointerUp(at(target, 101, 100));
+      b.onClick(at(target, 101, 100));
+      expect(onSelect).not.toHaveBeenCalled();
+    }
+  });
+
+  it("⌘/Ctrl 付きで押して ⌘/Ctrl 付きで離したあとの、キーボードの click では onSelect を呼ぶ", () => {
+    for (const key of ["metaKey", "ctrlKey"]) {
+      const onSelect = vi.fn();
+      const b = button(onSelect);
+      const target = capturing();
+      b.onPointerDown({ ...at(target, 0, 0), [key]: true });
+      b.onPointerUp({ ...at(target, 0, 0), [key]: true });
+      b.onClick(at(target, 90, 90));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("修飾キーなしで押し、⌘/Ctrl を足して離したときも記録を残さない（続く click はマップが止める）。後のキーボードの click では onSelect を呼ぶ", () => {
+    for (const key of ["metaKey", "ctrlKey"]) {
+      const onSelect = vi.fn();
+      const b = button(onSelect);
+      const target = capturing();
+      b.onPointerDown(at(target, 0, 0));
+      b.onPointerUp({ ...at(target, 0, 0), [key]: true });
+      b.onClick(at(target, 90, 90));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+    }
   });
 });

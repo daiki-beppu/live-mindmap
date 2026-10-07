@@ -82,6 +82,33 @@ export function panViewport(viewport: Viewport, dir: { dx: number; dy: number },
   return { x: viewport.x - (dir.dx * size.width) / 3, y: viewport.y - (dir.dy * size.height) / 3, zoom: viewport.zoom };
 }
 
+// ⌘/Ctrl＋クリックで変える倍率（縮小は逆数）
+export const CLICK_ZOOM_FACTOR = 1.5;
+// 前回の入力からこれだけ空いたら、スクロールで動かす軸を決め直す（ms）
+export const SCROLL_AXIS_RESET_MS = 250;
+
+// 画面上の point に映っているワールド座標を保ったまま、倍率を factor 倍する（結果は 0.5〜2 倍に収める）。point は map 要素の左上が原点
+export function zoomAtPoint(viewport: Viewport, point: { x: number; y: number }, factor: number): Viewport {
+  const zoom = clampUserZoom(viewport.zoom * factor);
+  const wx = (point.x - viewport.x) / viewport.zoom;
+  const wy = (point.y - viewport.y) / viewport.zoom;
+  return { x: point.x - wx * zoom, y: point.y - wy * zoom, zoom };
+}
+
+export type ScrollAxisLock = { axis: "x" | "y"; at: number };
+
+// スクロールで動かす軸。前回から SCROLL_AXIS_RESET_MS 未満なら前回の軸を保ち、それ以外は大きい方の軸（同じ大きさなら y）で決める。at は入力の時刻（ms）
+export function scrollAxis(prev: ScrollAxisLock | null, at: number, delta: { x: number; y: number }): ScrollAxisLock {
+  if (prev && at - prev.at < SCROLL_AXIS_RESET_MS) return { axis: prev.axis, at };
+  return { axis: Math.abs(delta.x) > Math.abs(delta.y) ? "x" : "y", at };
+}
+
+// 決まった軸だけを動かす。量は delta.x・delta.y の大きい方。正の量で右側・下側が見えてくる。倍率は変えない
+export function scrollAlongAxis(viewport: Viewport, axis: "x" | "y", delta: { x: number; y: number }): Viewport {
+  const amount = Math.abs(delta.x) >= Math.abs(delta.y) ? delta.x : delta.y;
+  return axis === "x" ? { ...viewport, x: viewport.x - amount } : { ...viewport, y: viewport.y - amount };
+}
+
 // ids のノードを、目標の位置で測った外接箱で、画面の中央に一度で収める（OVERVIEW_MIN_ZOOM〜USER_MAX_ZOOM）。ids が空なら null
 export function overviewViewport(
   ids: string[],

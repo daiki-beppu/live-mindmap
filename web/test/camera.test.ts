@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import {
+  CLICK_ZOOM_FACTOR,
   OVERVIEW_MIN_ZOOM,
+  SCROLL_AXIS_RESET_MS,
   USER_MAX_ZOOM,
   USER_MIN_ZOOM,
   cameraFocus,
@@ -10,8 +12,11 @@ import {
   nodeRect,
   overviewViewport,
   panViewport,
+  scrollAlongAxis,
+  scrollAxis,
   shouldMoveCamera,
   zoomAroundCenter,
+  zoomAtPoint,
 } from "../src/camera.ts";
 import { NODE_WIDTH } from "../src/layout.ts";
 
@@ -236,5 +241,112 @@ describe("overviewViewport: 全体を目標の位置で収める", () => {
 
   it("見せるノードがなければ null", () => {
     expect(overviewViewport([], {}, {}, size)).toBeNull();
+  });
+});
+
+// 画面上の点が指すワールド座標
+const worldAt = (v: { x: number; y: number; zoom: number }, p: { x: number; y: number }) => ({ x: (p.x - v.x) / v.zoom, y: (p.y - v.y) / v.zoom });
+
+describe("zoomAtPoint: 押した点を中心に倍率を変える", () => {
+  const point = { x: 640, y: 210 };
+
+  it("クリックの倍率は 1.5 倍", () => {
+    expect(CLICK_ZOOM_FACTOR).toBe(1.5);
+  });
+
+  it("拡大でも縮小でも、押した点のワールド座標は画面上の同じ位置に残り、倍率は factor 倍になる", () => {
+    const before = { x: -300, y: 120, zoom: 0.8 };
+    for (const factor of [CLICK_ZOOM_FACTOR, 1 / CLICK_ZOOM_FACTOR]) {
+      const after = zoomAtPoint(before, point, factor);
+      expect(after.zoom).toBeCloseTo(0.8 * factor);
+      expect(worldAt(after, point).x).toBeCloseTo(worldAt(before, point).x);
+      expect(worldAt(after, point).y).toBeCloseTo(worldAt(before, point).y);
+    }
+  });
+
+  it("上限を超える拡大は 2 倍に収め、そのときも押した点は動かない", () => {
+    const before = { x: 50, y: -40, zoom: 1.5 };
+    const after = zoomAtPoint(before, point, 1.5);
+    expect(after.zoom).toBe(USER_MAX_ZOOM);
+    expect(worldAt(after, point).x).toBeCloseTo(worldAt(before, point).x);
+    expect(worldAt(after, point).y).toBeCloseTo(worldAt(before, point).y);
+  });
+
+  it("下限を超える縮小は 0.5 倍に収め、そのときも押した点は動かない", () => {
+    const before = { x: 50, y: -40, zoom: 0.6 };
+    const after = zoomAtPoint(before, point, 1 / 1.5);
+    expect(after.zoom).toBe(USER_MIN_ZOOM);
+    expect(worldAt(after, point).x).toBeCloseTo(worldAt(before, point).x);
+    expect(worldAt(after, point).y).toBeCloseTo(worldAt(before, point).y);
+  });
+
+  it("すでに端の倍率なら、さらに拡大・縮小しても全体が動かない", () => {
+    const max = { x: 10, y: 20, zoom: USER_MAX_ZOOM };
+    expect(zoomAtPoint(max, point, 1.5)).toEqual(max);
+    const min = { x: 10, y: 20, zoom: USER_MIN_ZOOM };
+    expect(zoomAtPoint(min, point, 1 / 1.5)).toEqual(min);
+  });
+
+  it("全体を見ている倍率（0.5 未満）からの拡大は、0.5 倍以上に収まり、押した点は動かない", () => {
+    const before = { x: 5, y: 5, zoom: 0.1 };
+    const after = zoomAtPoint(before, point, 1.5);
+    expect(after.zoom).toBe(USER_MIN_ZOOM);
+    expect(worldAt(after, point).x).toBeCloseTo(worldAt(before, point).x);
+  });
+});
+
+describe("scrollAxis: スクロールで動かす軸は、動かし始めの大きい方で決める", () => {
+  it("最初は、大きい方の軸になる", () => {
+    expect(scrollAxis(null, 1000, { x: 30, y: 5 }).axis).toBe("x");
+    expect(scrollAxis(null, 1000, { x: 5, y: -30 }).axis).toBe("y");
+    expect(scrollAxis(null, 1000, { x: -30, y: 5 }).axis).toBe("x");
+  });
+
+  it("前回から 250ms 未満なら、反対の軸の量が大きくなっても軸を保つ。250ms 以上空くと決め直す", () => {
+    expect(SCROLL_AXIS_RESET_MS).toBe(250);
+    let lock = scrollAxis(null, 1000, { x: 2, y: 20 });
+    expect(lock.axis).toBe("y");
+    lock = scrollAxis(lock, 1100, { x: 50, y: 1 });
+    expect(lock.axis).toBe("y");
+    lock = scrollAxis(lock, 1100 + SCROLL_AXIS_RESET_MS - 1, { x: 50, y: 1 });
+    expect(lock.axis).toBe("y");
+    lock = scrollAxis(lock, 1100 + 2 * SCROLL_AXIS_RESET_MS - 1 + 1, { x: 50, y: 1 });
+    expect(lock.axis).toBe("x");
+  });
+
+  it("間隔は、最初の入力ではなく前回の入力から測る（続けて動かしている間は決め直さない）", () => {
+    let lock = scrollAxis(null, 0, { x: 0, y: 10 });
+    for (const at of [200, 400, 600, 800]) lock = scrollAxis(lock, at, { x: 40, y: 0 });
+    expect(lock.axis).toBe("y");
+    expect(lock.at).toBe(800);
+  });
+
+  it("ちょうど 250ms 空いたら決め直す。249ms なら保つ", () => {
+    const lock = scrollAxis(null, 0, { x: 0, y: 10 });
+    expect(scrollAxis(lock, 249, { x: 40, y: 0 }).axis).toBe("y");
+    expect(scrollAxis(lock, 250, { x: 40, y: 0 }).axis).toBe("x");
+  });
+
+  it("決め直しでは、そのときの大きい方の軸になる（x から y へも）", () => {
+    const lock = scrollAxis(null, 0, { x: 10, y: 0 });
+    expect(scrollAxis(lock, 500, { x: 1, y: 40 }).axis).toBe("y");
+  });
+});
+
+describe("scrollAlongAxis: 決まった軸だけを動かす", () => {
+  const v = { x: 100, y: 50, zoom: 1.3 };
+
+  it("x 軸なら x だけが動き、y と zoom は変わらない（正の量で右側が見えてくる）", () => {
+    expect(scrollAlongAxis(v, "x", { x: 30, y: 4 })).toEqual({ x: 70, y: 50, zoom: 1.3 });
+  });
+
+  it("y 軸なら y だけが動き、x と zoom は変わらない（正の量で下側が見えてくる）", () => {
+    expect(scrollAlongAxis(v, "y", { x: 4, y: 30 })).toEqual({ x: 100, y: 20, zoom: 1.3 });
+    expect(scrollAlongAxis(v, "y", { x: 4, y: -30 })).toEqual({ x: 100, y: 80, zoom: 1.3 });
+  });
+
+  it("量は deltaX・deltaY の大きい方を使う（Shift で deltaX に入れ替わった縦ホイールでも動く）", () => {
+    expect(scrollAlongAxis(v, "y", { x: 40, y: 0 })).toEqual({ x: 100, y: 10, zoom: 1.3 });
+    expect(scrollAlongAxis(v, "x", { x: 0, y: -40 })).toEqual({ x: 140, y: 50, zoom: 1.3 });
   });
 });
