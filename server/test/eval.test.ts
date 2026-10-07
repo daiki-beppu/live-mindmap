@@ -408,3 +408,236 @@ describe("eval: bench の正解ファイル", () => {
     expect(() => parseTruth(JSON.parse(readFileSync(join(meetings, `${name}.truth.json`), "utf8")))).not.toThrow();
   });
 });
+
+describe("eval --screen-truth: 共有画面の正解の列", () => {
+  // scriptA のノード（根拠）: 議題「採用」r1 [0.5, 9.8] / 論点「面接は何回か」r2 / 案「1 回で足りる」r2 / TODO「求人票を直す」r2 [9.8, 19.2] / 決定「2 回にする」r1・r3 [19.2, 28.0]
+  const SCREEN_HEADERS = ["指す発言", "うち記憶", "話だけ", "出てはいけない"];
+  const point = (keywords: unknown, from = 1, to = 5, extra: Record<string, unknown> = {}) => ({ text: "x", from, to, keywords, ...extra });
+  const screenTruth = (parts: { 指す発言?: unknown[]; 話だけ?: unknown[]; 出てはいけない?: unknown[] }) => ({
+    指す発言: [],
+    話だけ: [],
+    出てはいけない: [],
+    ...parts,
+  });
+  const screenRow = async (truth: unknown, script: Op[][] = scriptA) => {
+    const { rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(truth), await play(script)]));
+    return rows[0]!;
+  };
+  const columns = (row: Record<string, string>) => SCREEN_HEADERS.map((h) => row[h]);
+
+  describe("表の形", () => {
+    it("--screen-truth だけを付けると、今の列の後ろに 4 列が決まった順で足され、再現率の列は出ない", async () => {
+      const { header, rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(screenTruth({ 指す発言: [point(["採用"])] })), await play(scriptA)]));
+      expect(header.slice(0, 4)).toEqual(["ラン", "会議", "ノード", "深さ"]);
+      expect(header.slice(-4)).toEqual(SCREEN_HEADERS);
+      expect(header).toHaveLength(4 + 7 + 4);
+      expect(header.some((h) => h.includes("再現率"))).toBe(false);
+      expect(rows[0]).toMatchObject({ ノード: "5", 深さ: "3" });
+    });
+
+    it("--truth と一緒に付けると、再現率の列の後ろに 4 列が続き、6 列それぞれに正しい値が入る", async () => {
+      const truth = await writeTruth({
+        決定: [
+          { text: "x", from: 20, to: 25, keywords: ["2回"] },
+          { text: "y", from: 28.1, to: 40, keywords: ["2回"] },
+        ],
+        TODO: [{ text: "z", from: 10, to: 15, keywords: ["求人票"] }],
+      });
+      const screen = await writeTruth(screenTruth({
+        指す発言: [point(["採用"], 1, 5, { memory: true }), point(["面接"], 10, 15), point(["存在しない"])],
+        話だけ: [point(["求人票"], 10, 15), point(["採用"], 20, 25)],
+        出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["存在しない"] }, { keywords: ["2回"] }, { keywords: ["存在しない2"] }],
+      }));
+      const { header, rows } = parseTable(await evalCli(["--truth", truth, "--screen-truth", screen, await play(scriptA)]));
+      const last6 = header.slice(-6);
+      expect(last6).toEqual(["決定の再現率", "TODO の再現率", ...SCREEN_HEADERS]);
+      expect(last6.map((h) => rows[0]![h])).toEqual(["1/2 (50%)", "1/1 (100%)", "2/3", "1/1", "1/2", "2/4"]);
+    });
+
+    it("--screen-truth を付けないときは、4 列のどれも出ない", async () => {
+      const dir = await play(scriptA);
+      for (const args of [[dir], ["--truth", await writeTruth({ 決定: [], TODO: [] }), dir]]) {
+        const { header } = parseTable(await evalCli(args));
+        for (const h of SCREEN_HEADERS) expect(header).not.toContain(h);
+      }
+    });
+
+    it("セルは「取れた数/項目数」で、割合は付けない。0 件でも 0/0", async () => {
+      expect(columns(await screenRow(screenTruth({})))).toEqual(["0/0", "0/0", "0/0", "0/0"]);
+      expect(columns(await screenRow(screenTruth({ 指す発言: [point(["採用"])] })))).toEqual(["1/1", "0/0", "0/0", "0/0"]);
+    });
+
+    it("同じ正解を複数のランに当てて、ランごとに数える", async () => {
+      const dirA = await play(scriptA);
+      const dirEmpty = await play([[], []]);
+      const truth = screenTruth({ 指す発言: [point(["採用"])], 出てはいけない: [{ keywords: ["求人票"] }] });
+      const { rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(truth), dirA, dirEmpty]));
+      expect(rows.map((r) => r["指す発言"])).toEqual(["1/1", "0/1"]);
+      expect(rows.map((r) => r["出てはいけない"])).toEqual(["1/1", "0/1"]);
+    });
+  });
+
+  describe("指す発言・話だけ（時刻・キーワード・種別・一対一）", () => {
+    it("種別では絞らない（議題・TODO・決定のどれのノードにも当たる）", async () => {
+      const row = await screenRow(screenTruth({
+        指す発言: [point(["採用"]), point(["求人票"], 10, 15), point(["2回"], 20, 25)],
+      }));
+      expect(row["指す発言"]).toBe("3/3");
+    });
+
+    it("根拠の発言の時刻が範囲に重ならなければ取れない", async () => {
+      expect((await screenRow(screenTruth({ 指す発言: [point(["採用"], 20, 25)] })))["指す発言"]).toBe("0/1");
+      expect((await screenRow(screenTruth({ 指す発言: [point(["採用"], 9.8, 12)] })))["指す発言"]).toBe("1/1");
+    });
+
+    it("キーワードがすべて入っていなければ取れない（言い換えの配列はどれか 1 つ）", async () => {
+      const row = await screenRow(screenTruth({
+        指す発言: [point(["2回", "存在しない"], 20, 25), point([["存在しない", "2回"]], 20, 25)],
+      }));
+      expect(row["指す発言"]).toBe("1/2");
+    });
+
+    it("1 つのノードに当たる正解が 2 件あっても、取れるのは 1 件（一対一）", async () => {
+      expect((await screenRow(screenTruth({ 指す発言: [point(["採用"]), point(["採用"], 2, 3)] })))["指す発言"]).toBe("1/2");
+    });
+
+    it("一対一の割り当ては、取れる数が最大になるように組む（先の正解がノードを譲る）", async () => {
+      // 先の正解は「面接は何回か」「1 回で足りる」のどちらにも当たり、後の正解は「面接は何回か」だけに当たる
+      const row = await screenRow(screenTruth({ 指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15)] }));
+      expect(row["指す発言"]).toBe("2/2");
+    });
+
+    it("話だけも同じ照合で数える", async () => {
+      const row = await screenRow(screenTruth({ 話だけ: [point(["求人票"], 10, 15), point(["求人票"], 10, 15), point(["採用"], 20, 25)] }));
+      expect(row["話だけ"]).toBe("1/3");
+      expect(row["指す発言"]).toBe("0/0");
+    });
+
+    it("指す発言と話だけは別々に数える（同じノードに当たっても両方が取れる）", async () => {
+      const row = await screenRow(screenTruth({ 指す発言: [point(["採用"])], 話だけ: [point(["採用"])] }));
+      expect(columns(row)).toEqual(["1/1", "0/0", "1/1", "0/0"]);
+    });
+
+    it("全角・半角と空白の違いは吸収して照合する", async () => {
+      const row = await screenRow(screenTruth({ 指す発言: [point(["２ 回 に する"], 20, 25)] }));
+      expect(row["指す発言"]).toBe("1/1");
+    });
+
+    it("ノードが無ければ 0 件になる", async () => {
+      const row = await screenRow(screenTruth({ 指す発言: [point(["採用"])], 話だけ: [point(["採用"])] }), [[], []]);
+      expect(columns(row)).toEqual(["0/1", "0/0", "0/1", "0/0"]);
+    });
+  });
+
+  describe("うち記憶（memory: true の指す発言のうち取れた数）", () => {
+    it("memory が true の項目だけが分母になる（false・省略は数えない）。指す発言には全項目が入る", async () => {
+      const row = await screenRow(screenTruth({
+        指す発言: [
+          point(["採用"], 1, 5, { memory: true }),
+          point(["求人票"], 10, 15, { memory: false }),
+          point(["面接"], 10, 15),
+        ],
+      }));
+      expect(row["指す発言"]).toBe("3/3");
+      expect(row["うち記憶"]).toBe("1/1");
+    });
+
+    it("memory が true でも取れなければ、うち記憶は取れた数に入らない", async () => {
+      const row = await screenRow(screenTruth({
+        指す発言: [point(["採用"], 20, 25, { memory: true }), point(["採用"], 1, 5)],
+      }));
+      expect(row["指す発言"]).toBe("1/2");
+      expect(row["うち記憶"]).toBe("0/1");
+    });
+
+    it("話だけの memory は数えない", async () => {
+      const row = await screenRow(screenTruth({ 話だけ: [point(["採用"], 1, 5, { memory: true })] }));
+      expect(row["うち記憶"]).toBe("0/0");
+    });
+
+    it("memory の項目が、他の項目とノードを取り合っても、取れた数は食い違わない", async () => {
+      // 後ろの memory 項目は「面接は何回か」にしか当たらず、前の memory でない項目と競合する
+      const row = await screenRow(screenTruth({
+        指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15, { memory: true })],
+      }));
+      expect(row["指す発言"]).toBe("2/2");
+      expect(row["うち記憶"]).toBe("1/1");
+    });
+  });
+
+  describe("出てはいけない（時刻を問わず、キーワードを含むノードがあれば漏れ）", () => {
+    it("時刻を持たない項目でも、どの時刻のノードに含まれても漏れに数える", async () => {
+      // 「求人票」は r2、「2回」は r1・r3 の根拠のノード。項目に時刻は無い
+      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["2回"] }] }));
+      expect(row["出てはいけない"]).toBe("2/2");
+    });
+
+    it("どのノードにも無いキーワードは漏れではない", async () => {
+      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["存在しない"] }, { keywords: ["求人票"] }] }));
+      expect(row["出てはいけない"]).toBe("1/2");
+    });
+
+    it("keywords の要素のどれか 1 つでも含まれれば漏れ（指す発言と違い、すべては要らない）", async () => {
+      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["存在しない", "採用"] }] }));
+      expect(row["出てはいけない"]).toBe("1/1");
+    });
+
+    it("言い換えの配列のどれか 1 つでも含まれれば漏れ", async () => {
+      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: [["存在しない", "採用"]] }, { keywords: [["存在しない", "ない"]] }] }));
+      expect(row["出てはいけない"]).toBe("1/2");
+    });
+
+    it("全角・半角と空白の違いは吸収して漏れに数える", async () => {
+      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["２ 回 に する"] }] }));
+      expect(row["出てはいけない"]).toBe("1/1");
+    });
+
+    it("同じノードを指す項目が複数あれば、項目ごとに漏れに数える（一対一にしない）", async () => {
+      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["採用"] }, { keywords: ["採用"] }, { text: "y", slide: "s", keywords: ["採用"] }] }));
+      expect(row["出てはいけない"]).toBe("3/3");
+    });
+
+    it("ノードが無ければ漏れは 0", async () => {
+      expect((await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["採用"] }] }), [[], []]))["出てはいけない"]).toBe("0/1");
+    });
+  });
+
+  describe("壊れた正解は、理由つきで読み込みに失敗する", () => {
+    const ok = point(["採用"]);
+    const invalid: [string, unknown, string][] = [
+      ["指す発言が配列でない", screenTruth({ 指す発言: {} as never }), "「指す発言」は配列で書く"],
+      ["話だけが配列でない", { ...screenTruth({}), 話だけ: "x" }, "「話だけ」は配列で書く"],
+      ["出てはいけないのキーが無い", { 指す発言: [], 話だけ: [] }, "「出てはいけない」は配列で書く"],
+      ["出てはいけないのキーワードが空", screenTruth({ 出てはいけない: [{ keywords: [] }] }), "「出てはいけない」の 1 件目: keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）"],
+      ["出てはいけないにキーワードが無い", screenTruth({ 出てはいけない: [{ text: "x" }] }), "「出てはいけない」の 1 件目: keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）"],
+      ["指す発言のキーワードが空文字", screenTruth({ 指す発言: [ok, point([""])] }), "「指す発言」の 2 件目: keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）"],
+      ["話だけの from が to より大きい", screenTruth({ 話だけ: [point(["x"], 5, 2)] }), "「話だけ」の 1 件目: from が to より大きい"],
+      ["指す発言に from が無い", screenTruth({ 指す発言: [{ keywords: ["x"] }] }), "「指す発言」の 1 件目: from / to は秒の数値で書く"],
+    ];
+
+    it.each(invalid)("%s", async (_name, bad, reason) => {
+      const dir = await play(scriptA);
+      const path = await writeTruth(bad);
+      const failure = await evalFailure(["--screen-truth", path, dir]);
+      expect(failure.tag).toBe("InvalidTruthFile");
+      expect(carries(failure.values, path)).toBe(true);
+      expect(failure.values["reason"]).toBe(reason);
+    });
+
+    it("--truth と一緒でも、壊れた共有画面の正解は InvalidTruthFile で止まる", async () => {
+      const dir = await play(scriptA);
+      const path = await writeTruth(screenTruth({ 出てはいけない: [{ keywords: [] }] }));
+      const failure = await evalFailure(["--truth", await writeTruth({ 決定: [], TODO: [] }), "--screen-truth", path, dir]);
+      expect(failure.tag).toBe("InvalidTruthFile");
+      expect(carries(failure.values, path)).toBe(true);
+    });
+
+    it("読み込めない共有画面の正解（無いファイル）は InvalidTruthFile で止まる", async () => {
+      const dir = await play(scriptA);
+      const path = join(await mkdtemp(join(tmpdir(), "live-mindmap-truth-")), "missing.screen.truth.json");
+      const failure = await evalFailure(["--screen-truth", path, dir]);
+      expect(failure.tag).toBe("InvalidTruthFile");
+      expect(carries(failure.values, path)).toBe(true);
+    });
+  });
+});

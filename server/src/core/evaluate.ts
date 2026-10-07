@@ -14,7 +14,7 @@ const isWord = (v: unknown): v is string => typeof v === "string" && normalize(v
 // 検査の失敗の文面はここが正本。cli.ts が decode の失敗をそのまま日本語の 1 行に使うので、既定の英語の文面に落とさない
 // （cli.ts は場所だけを path から付ける）。filter は文字列を返し、型と欠落は message / messageMissingKey で同じ文面にする
 const TRUTH_OBJECT_RULE = "正解はオブジェクトで書く";
-// 主語を持たないのは、この文面が出る位置が種別のキー（決定・TODO）だけで、必ず cli.ts の「<種別>」の後に続くため
+// 主語を持たないのは、この文面が出る位置が種別のキー（決定・TODO、指す発言・話だけ・出てはいけない）だけで、必ず cli.ts の「<種別>」の後に続くため
 const KIND_LIST_RULE = "は配列で書く";
 const TIME_RULE = "from / to は秒の数値で書く";
 const TIME_ORDER_RULE = "from が to より大きい";
@@ -41,19 +41,20 @@ const itemTimeOrder = Schema.Unknown.check(
   ),
 );
 
+// 照合に使う項目の部分。決定・TODO の正解と、共有画面の正解の指す発言・話だけが共有する
+const keywordsField = Schema.mutable(Schema.Array(Keyword)).annotate({ message: KEYWORDS_RULE }).check(atLeastOne).annotateKey({
+  messageMissingKey: KEYWORDS_RULE,
+});
+const matchFields = {
+  text: Schema.optionalKey(Schema.String), // 省略できる（parseTruth も省略を空文字で受ける）
+  from: seconds,
+  to: seconds,
+  keywords: keywordsField,
+};
+
+// 1 件がオブジェクトでなければ from / to が読めない。parseTruth もその場合は from / to の文面で止める
 export const TruthItem = itemTimeOrder.pipe(
-  Schema.decodeTo(
-    Schema.Struct({
-      text: Schema.optionalKey(Schema.String), // 省略できる（parseTruth も省略を空文字で受ける）
-      from: seconds,
-      to: seconds,
-      keywords: Schema.mutable(Schema.Array(Keyword)).annotate({ message: KEYWORDS_RULE }).check(atLeastOne).annotateKey({
-        messageMissingKey: KEYWORDS_RULE,
-      }),
-    })
-      // 1 件がオブジェクトでなければ from / to が読めない。parseTruth もその場合は from / to の文面で止める
-      .annotate({ message: TIME_RULE }),
-  ),
+  Schema.decodeTo(Schema.Struct(matchFields).annotate({ message: TIME_RULE })),
 );
 export type TruthItem = typeof TruthItem["Type"];
 
@@ -68,6 +69,41 @@ export const Truth = Schema.Record(
   }),
 ).annotate({ message: TRUTH_OBJECT_RULE });
 export type Truth = typeof Truth["Type"];
+
+// 共有画面の正解（--screen-truth）。指す発言・話だけは TruthItem の照合の部分に、人が読むための項目と memory を足す
+// （すべて省略できる。memory は省略すると false）。出てはいけないは時刻を持たず、keywords のどれかを含むノードがあれば漏れ
+export const ScreenTruthItem = itemTimeOrder.pipe(
+  Schema.decodeTo(
+    Schema.Struct({
+      ...matchFields,
+      speaker: Schema.optionalKey(Schema.String),
+      remark: Schema.optionalKey(Schema.String),
+      shown: Schema.optionalKey(Schema.String),
+      slide: Schema.optionalKey(Schema.String),
+      memory: Schema.optionalKey(Schema.Boolean),
+    }).annotate({ message: TIME_RULE }),
+  ),
+);
+export type ScreenTruthItem = typeof ScreenTruthItem["Type"];
+
+export const ForbiddenItem = Schema.Struct({
+  text: Schema.optionalKey(Schema.String),
+  slide: Schema.optionalKey(Schema.String),
+  keywords: keywordsField,
+}).annotate({ message: KEYWORDS_RULE });
+export type ForbiddenItem = typeof ForbiddenItem["Type"];
+
+const screenList = <S extends Schema.Top>(item: S) =>
+  Schema.mutableKey(Schema.mutable(Schema.Array(item)).annotate({ message: KIND_LIST_RULE })).annotateKey({
+    messageMissingKey: KIND_LIST_RULE,
+  });
+
+export const ScreenTruth = Schema.Struct({
+  指す発言: screenList(ScreenTruthItem),
+  話だけ: screenList(ScreenTruthItem),
+  出てはいけない: screenList(ForbiddenItem),
+}).annotate({ message: TRUTH_OBJECT_RULE });
+export type ScreenTruth = typeof ScreenTruth["Type"];
 
 export type Metrics = { nodes: number; depth: number; byKind: Record<Kind, number> };
 export type Recall = { hit: number; total: number };
@@ -127,12 +163,13 @@ export function measure(exp: JsonExport): Metrics {
 
 // ノードが正解に当たる条件（すべて満たす）: 種別が同じ（呼び出し側で絞る）、根拠の発言のどれか 1 つが区間と重なる（端が接するのも重なり）、
 // keywords の要素すべてが本文に含まれる（配列の要素はどれか 1 つ）。本文もキーワードも NFKC で正規化し空白を除いて比べる
-const matches = (node: ExportNode, { from, to, keywords }: TruthItem) => {
+// keyword は文字列なら 1 語、配列なら言い換えの候補（どれか 1 つ）。本文は正規化済みで渡す
+const containsKeyword = (body: string, keyword: Keyword) =>
+  (Array.isArray(keyword) ? keyword : [keyword]).some((alt) => body.includes(normalize(alt)));
+
+const matches = (node: ExportNode, { from, to, keywords }: Pick<TruthItem, "from" | "to" | "keywords">) => {
   const body = normalize(node.text);
-  return (
-    node.evidence.some((r) => r.start <= to && r.end >= from) &&
-    keywords.every((k) => (Array.isArray(k) ? k : [k]).some((alt) => body.includes(normalize(alt))))
-  );
+  return node.evidence.some((r) => r.start <= to && r.end >= from) && keywords.every((k) => containsKeyword(body, k));
 };
 
 // 当たる件数が最大になる割り当ての件数（二部グラフの最大マッチング、増加路法）。candidates[i] は正解 i に当たるノードの番号
@@ -150,10 +187,15 @@ function maxMatching(candidates: number[][], nodeCount: number): number {
   return candidates.filter((_, t) => assign(t, Array.from({ length: nodeCount }, () => false))).length;
 }
 
-// 同じ種別のノードと正解を 1 対 1 で対応させ、当たる件数が最大になる割り当ての件数を再現できた数とする（当たる条件は matches）
-export function recall(exp: JsonExport, truth: Truth): Record<TruthKind, Recall> {
+const allNodes = (exp: JsonExport): ExportNode[] => {
   const nodes: ExportNode[] = [];
   walk(exp.root, 0, (n) => nodes.push(n));
+  return nodes;
+};
+
+// 同じ種別のノードと正解を 1 対 1 で対応させ、当たる件数が最大になる割り当ての件数を再現できた数とする（当たる条件は matches）
+export function recall(exp: JsonExport, truth: Truth): Record<TruthKind, Recall> {
+  const nodes = allNodes(exp);
   return Object.fromEntries(
     TRUTH_KINDS.map((kind) => {
       const sameKind = nodes.filter((n) => n.kind === kind);
@@ -162,6 +204,38 @@ export function recall(exp: JsonExport, truth: Truth): Record<TruthKind, Recall>
     }),
   ) as Record<TruthKind, Recall>;
 }
+
+export type ScreenScore = {
+  pointing: Recall; // 指す発言
+  memory: Recall; // うち記憶（memory が true の指す発言のうち取れた数）
+  talkOnly: Recall; // 話だけ
+  leaked: Recall; // 出てはいけない（hit は漏れた項目の数）
+};
+
+// 共有画面の正解の採点。ノードは種別で絞らず、指す発言・話だけはそれぞれ matches と 1 対 1 の割り当て（maxMatching）で別々に数える。
+// うち記憶は memory が true の項目だけで先に割り当てる。増加路法は割り当て済みの正解を外さないので、指す発言の数と食い違わない。
+// 出てはいけないは時刻を見ず、keywords のどれか 1 つ（言い換えならそのどれか）を含むノードが 1 つでもあれば漏れ
+export function screenScore(exp: JsonExport, screen: ScreenTruth): ScreenScore {
+  const nodes = allNodes(exp);
+  const candidatesOf = (items: readonly ScreenTruthItem[]) =>
+    items.map((item) => nodes.flatMap((n, i) => (matches(n, item) ? [i] : [])));
+  const pointing = candidatesOf(screen.指す発言);
+  const memoryCandidates = pointing.filter((_, i) => screen.指す発言[i]?.memory === true);
+  const talkOnly = candidatesOf(screen.話だけ);
+  const bodies = nodes.map((n) => normalize(n.text));
+  const leaked = screen.出てはいけない.filter(({ keywords }) =>
+    bodies.some((body) => keywords.some((k) => containsKeyword(body, k)))
+  ).length;
+  return {
+    pointing: { hit: maxMatching(pointing, nodes.length), total: pointing.length },
+    memory: { hit: maxMatching(memoryCandidates, nodes.length), total: memoryCandidates.length },
+    talkOnly: { hit: maxMatching(talkOnly, nodes.length), total: talkOnly.length },
+    leaked: { hit: leaked, total: screen.出てはいけない.length },
+  };
+}
+
+const SCREEN_HEADERS = ["指す発言", "うち記憶", "話だけ", "出てはいけない"];
+const formatCount = ({ hit, total }: Recall) => `${hit}/${total}`;
 
 const RECALL_HEADERS: Record<TruthKind, string> = { 決定: "決定の再現率", TODO: "TODO の再現率" };
 
@@ -172,12 +246,18 @@ const escapeCell = (cell: string) => cell.replace(/[\\|]/g, "\\$&").replace(/\r\
 
 // 1 ラン 1 行の Markdown の表（cli eval の標準出力）。truth があるときだけ、決定・TODO の再現率の列を足す。
 // 再現率の分子は recall が数える「当たった件数」で、当たる条件は matches、1 対 1 の割り当ては maxMatching が持つ
-export function formatTable(runs: Run[], truth?: Truth): string {
-  const header = ["ラン", "会議", "ノード", "深さ", ...KINDS, ...(truth ? TRUTH_KINDS.map((k) => RECALL_HEADERS[k]) : [])];
+// screen があるときは、その後ろに共有画面の 4 列（取れた数/項目数。出てはいけないは漏れた項目の数/項目数）を足す
+export function formatTable(runs: Run[], truth?: Truth, screen?: ScreenTruth): string {
+  const header = [
+    "ラン", "会議", "ノード", "深さ", ...KINDS,
+    ...(truth ? TRUTH_KINDS.map((k) => RECALL_HEADERS[k]) : []),
+    ...(screen ? SCREEN_HEADERS : []),
+  ];
   const rows = runs.map(({ name, title, exp }) => {
     const m = measure(exp);
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
-    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...recalls].map(String);
+    const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
+    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...recalls, ...scores].map(String);
   });
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";
