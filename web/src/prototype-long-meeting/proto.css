@@ -40,3 +40,5 @@
 .layout > .side { position: absolute; top: 0; right: 0; bottom: 0; z-index: 7; background: #fff; }
 .side[hidden] { display: none; }
 .map .captions { bottom: 120px; }
+/* 議題だけの縮図: マップの上に白く重ねる */
+.proto-topics { position: absolute; inset: 0; z-index: 4; background: #fff; }

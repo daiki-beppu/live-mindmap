@@ -17,7 +17,7 @@ import { clock, foldedIds, frameAt, loadMeeting, topicOf, type Meeting } from ".
 import { Captions } from "../Captions.tsx";
 import type { Camera, Command, Hint, View, ViewMode } from "./ProtoCanvas.tsx";
 import "./proto.css";
-import { VARIANTS, type VariantKey } from "./variants.tsx";
+import { TopicMap, VARIANTS, type VariantKey } from "./variants.tsx";
 
 const params = new URLSearchParams(location.search);
 const setParam = (k: string, v: string) => {
@@ -47,6 +47,8 @@ const HELP: [string, string][] = [
   ["⌘＋スクロール・ピンチ", "拡大・縮小"],
   ["⌘＋クリック", "押したところを拡大（Option で縮小）"],
 ];
+type Ov = "topics" | "fold" | "open";
+const OV_NAME: Record<Ov, string> = { topics: "全体（F）: 議題だけの縮図", fold: "全体（F）: 畳んだまま", open: "全体（F）: 畳んだ議題も開く" };
 type Cue = "none" | "text" | "count";
 const CUE_NAME: Record<Cue, string> = { none: "止まっていることを出さない", text: "隅に控えめな文字", count: "隅に文字＋残り秒" };
 
@@ -69,7 +71,9 @@ function App() {
   const [minZoom, setMinZoom] = useState(Number(params.get("zmin") ?? "0.5"));
   const [cue, setCue] = useState<Cue>((params.get("cue") as Cue) ?? "text");
   const [offscreen, setOffscreen] = useState(params.get("off") !== "0");
-  const [overviewOpen, setOverviewOpen] = useState(params.get("ovopen") === "1"); // 全体を見るとき、畳んだ議題も開く
+  const [ov, setOv] = useState<Ov>((params.get("ov") as Ov) ?? "topics"); // 全体を見る（F）の見せ方
+  const overviewOpen = ov === "open";
+  const [picked, setPicked] = useState<string | null>(null); // 議題だけの縮図から選んだ議題（自動のカメラへ戻るまで開いておく）
   const [mode, setMode] = useState<ViewMode>("follow");
   const [openAll, setOpenAll] = useState(false); // 全体を見て開いたまま（自動のカメラへ戻るまで）
   const lastMove = useRef(0);
@@ -86,6 +90,7 @@ function App() {
   const follow = useCallback(() => {
     setMode("follow");
     setOpenAll(false);
+    setPicked(null);
   }, []);
 
   useEffect(() => {
@@ -214,9 +219,22 @@ function App() {
   const focusTopic = pinned ?? frame.current;
   // 選択で見ている議題と、その祖先を開く
   const opened = new Set<string>();
-  for (const start of [pinned, frame.current]) for (let cur: string | null | undefined = start; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
+  for (const start of [pinned, picked, frame.current]) for (let cur: string | null | undefined = start; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
   const folded = openAll && overviewOpen ? new Set<string>() : foldedIds(frame, opened, stale);
-  const view: View = { mode, minZoom, offscreen, onUserMove, command, inset: showSide ? SIDE_WIDTH : 0 };
+  const inset = showSide ? SIDE_WIDTH : 0;
+  const topicsOverview = mode === "overview" && ov === "topics";
+  // 議題だけの縮図を出している間、下のマップは止めておく（manual 扱い）
+  const view: View = { mode: topicsOverview ? "manual" : mode, minZoom, offscreen, onUserMove, command, inset };
+  const topicView: View = { mode: "overview", minZoom: 0.02, offscreen: false, onUserMove: () => {}, command: null, inset };
+  const pickTopic = (id: string) => {
+    // 縮図で押した議題へ寄る。人の操作として扱い、自動のカメラへ戻るまで開いておく
+    const ids = frame.snapshot.nodes.filter((n) => topicOf(byId, n.id) === id || n.id === id).map((n) => n.id);
+    setPicked(id);
+    setOpenAll(false);
+    lastMove.current = performance.now();
+    setMode("manual");
+    setCommand((prev) => ({ type: "node", ids, seq: (prev?.seq ?? 0) + 1 }));
+  };
   // 字幕: 試作では、今の反映の時点までの直近の発言 2 つを「相手」の字幕として出す
   const recent = meeting.events
     .slice(0, meeting.diffEnds[index])
@@ -229,7 +247,9 @@ function App() {
     mode === "follow" || cue === "none"
       ? null
       : mode === "overview"
-        ? "全体を見ています・F か Esc で今の議題へ"
+        ? ov === "topics"
+          ? "議題の一覧・押すとその議題へ、F か Esc で今の議題へ"
+          : "全体を見ています・F か Esc で今の議題へ"
         : ret === "idle" && cue === "count"
         ? `${left} 秒で今の議題へ戻ります（Esc ですぐ）`
         : ret === "idle"
@@ -259,6 +279,11 @@ function App() {
             runs={runs}
             view={view}
           />
+          {topicsOverview && (
+            <div className="proto-topics">
+              <TopicMap frame={frame} inset={inset} onPick={pickTopic} view={topicView} />
+            </div>
+          )}
           {cueText && <p className="proto-cue">{cueText}</p>}
           {showCaptions && <Captions speaking={{ 相手: recent, 自分: "" }} />}
           {showHelp && (
@@ -306,10 +331,11 @@ function App() {
           <input type="checkbox" checked={offscreen} onChange={(e) => (setOffscreen(e.target.checked), setParam("off", e.target.checked ? "1" : "0"))} />
           画面の外の変化を縁に
         </label>
-        <label>
-          <input type="checkbox" checked={overviewOpen} onChange={(e) => (setOverviewOpen(e.target.checked), setParam("ovopen", e.target.checked ? "1" : "0"))} />
-          全体（F）で畳んだ議題も開く
-        </label>
+        <select value={ov} onChange={(e) => (setOv(e.target.value as Ov), setParam("ov", e.target.value))}>
+          {(Object.keys(OV_NAME) as Ov[]).map((o) => (
+            <option key={o} value={o}>{OV_NAME[o]}</option>
+          ))}
+        </select>
         <span className="proto-bar__info">[{mode === "follow" ? "自動" : mode === "overview" ? "全体" : "手動"}]</span>
         <span className="proto-bar__sep" />
         <select value={camera} onChange={(e) => (setCamera(e.target.value as Camera), setParam("camera", e.target.value))}>

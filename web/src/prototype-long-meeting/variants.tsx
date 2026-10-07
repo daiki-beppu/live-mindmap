@@ -254,3 +254,79 @@ export const VARIANTS = {
   C: { name: "議題の格子", C: VariantC },
 } as const;
 export type VariantKey = keyof typeof VARIANTS;
+
+// PROTOTYPE（issue #285）: 全体を見る（F）の「議題だけの縮図」。議題を作られた順に縦の段へ詰め、画面の縦横比に合う段の高さを選ぶ。
+// 押すとその議題へ寄る（onPick）。入れ子の議題は少し右に寄せる
+export function TopicMap(p: { frame: Frame; inset: number; onPick: (id: string) => void; view: View }) {
+  const { snapshot } = p.frame;
+  const byId = useMemo(() => new Map(snapshot.nodes.map((n) => [n.id, n])), [snapshot]);
+  const topics = useMemo(
+    () => snapshot.nodes.filter((n) => n.kind === "議題").map((n): SnapshotNode => ({ ...n, parent: null })),
+    [snapshot],
+  );
+  const depth = useCallback(
+    (id: string) => {
+      let d = 0;
+      for (let cur = byId.get(id)?.parent; cur && cur !== "root"; cur = byId.get(cur)?.parent) if (byId.get(cur)?.kind === "議題") d++;
+      return d;
+    },
+    [byId],
+  );
+  const lay = useCallback(
+    (heights: Record<string, number>) => {
+      const W = innerWidth - p.inset - 48;
+      const H = innerHeight - 48 - 140; // 字幕と試作の操作バーの分をあける
+      const hs = topics.map((t) => heights[t.id] ?? 40);
+      const pack = (colH: number) => {
+        const pos: Record<string, Position> = {};
+        let col = 0;
+        let y = 0;
+        topics.forEach((t, i) => {
+          if (y > 0 && y + hs[i]! > colH) (col++, (y = 0));
+          pos[t.id] = { x: col * (NODE_WIDTH + GAP_X) + depth(t.id) * 16, y };
+          y += hs[i]! + GAP_Y;
+        });
+        const w = (col + 1) * (NODE_WIDTH + GAP_X);
+        const h = Math.max(...topics.map((t, i) => pos[t.id]!.y + hs[i]!));
+        return { pos, zoom: Math.min(W / w, H / h) };
+      };
+      let best = pack(400);
+      for (let colH = 500; colH <= 6000; colH += 100) {
+        const r = pack(colH);
+        if (r.zoom > best.zoom) best = r;
+      }
+      return best.pos;
+    },
+    [topics, depth, p.inset],
+  );
+  const folded = useMemo(() => new Set(topics.filter((t) => p.frame.closed.has(t.id)).map((t) => t.id)), [topics, p.frame.closed]);
+  const changed = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of snapshot.changes) if (c.round === snapshot.round) {
+      const t = topicOf(byId, c.node);
+      if (t) set.add(t);
+    }
+    return set;
+  }, [snapshot, byId]);
+  return (
+    <ProtoCanvas
+      view={p.view}
+      nodes={topics}
+      layout={lay}
+      edges={false}
+      round={snapshot.round}
+      changed={changed}
+      folded={folded}
+      hints={{}}
+      hint="none"
+      current={p.frame.current}
+      selectedId={null}
+      onSelect={p.onPick}
+      camera="fit"
+      focusIds={[]}
+      anchorIds={[]}
+      aimKey={String(snapshot.round)}
+      topicKey="overview"
+    />
+  );
+}

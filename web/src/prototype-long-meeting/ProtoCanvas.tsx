@@ -33,7 +33,7 @@ export type View = {
   inset: number; // 右の列がマップに重なる幅。カメラはこれを除いた部分に収める
   command: Command | null; // キーからの見る操作（seq が変わったら一度だけ動かす）
 };
-export type Command = { seq: number; type: "in" | "out" | "one" | "pan" | "node"; dx?: number; dy?: number };
+export type Command = { seq: number; type: "in" | "out" | "one" | "pan" | "node"; dx?: number; dy?: number; ids?: string[] };
 
 type ProtoData = {
   text: string;
@@ -259,8 +259,8 @@ function Canvas(p: CanvasProps) {
     if (command.type === "out") at(v.zoom / 1.25);
     if (command.type === "one") at(1);
     if (command.type === "pan") void setViewport({ ...v, x: v.x - (command.dx ?? 0) * width, y: v.y - (command.dy ?? 0) * height }, { duration: 200 });
-    if (command.type === "node" && p.selectedId) {
-      const ids = new Set([p.selectedId]);
+    if (command.type === "node" && (command.ids || p.selectedId)) {
+      const ids = new Set(command.ids ?? [p.selectedId!]);
       for (let grew = true; grew; ) {
         grew = false;
         for (const n of p.nodes) if (n.parent && ids.has(n.parent) && !ids.has(n.id)) (ids.add(n.id), (grew = true));
