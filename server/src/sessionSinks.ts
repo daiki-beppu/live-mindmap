@@ -16,6 +16,9 @@ export type SessionSink = {
   partial: (p: HelperPartial) => Effect.Effect<void>;
   // ヘルパーの確定結果。発言は、確定結果と 1 秒更新されなかった途中結果のどちらからも差分更新・ログ・speaking へ届く
   final: (r: SettledRemark) => Effect.Effect<void>;
+  // 共有画面の変化（start は発言と同じ原点からの秒、image は JPEG のバイト列。ウィンドウが無くなったときは null）。
+  // セッションの pushScreen へ渡す。log.jsonl の記録・screens/ への書き出し・Claude へのメッセージはセッションが行う
+  screen: (change: { start: number; image: Uint8Array | null }) => Effect.Effect<void>;
   // 確定結果に覆われなかった最後の発話を発言にする
   drain: Effect.Effect<void>;
   // いま話している文字を空にする（以後も送れる。取り込みの途切れの瞬間に使う）
@@ -95,6 +98,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 return Effect.andThen(session.push({ ...settled, id: `r${count}` }), relay.remark(settled.track));
               }),
           });
+          // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
+          let screenCount = 0;
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop(), settling.stop()));
 
@@ -102,6 +107,12 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             dir,
             partial: (p) => Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)),
             final: (r) => settling.final(r),
+            screen: ({ start, image }) =>
+              Effect.suspend(() => {
+                if (image === null) return session.pushScreen({ start, image: null });
+                screenCount++;
+                return session.pushScreen({ start, image: { id: `s${screenCount}`, bytes: image } });
+              }),
             drain: settling.drain(),
             clearSpeaking: relay.clear(),
             stopRelays: Effect.andThen(relay.stop(), settling.stop()),

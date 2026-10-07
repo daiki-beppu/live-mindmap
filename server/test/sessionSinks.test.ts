@@ -132,6 +132,44 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(remarkIds).toEqual(["r1", "r2"]);
     })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
 
+  // 実物の SessionSink.screen が、画像ありと「なし」（image: null）のどちらも Session.pushScreen へ渡し、
+  // log.jsonl の screen の行と差分更新の入力（screens）に同じ start・null が届く
+  it.effect("screen は画像ありも image: null も pushScreen へ渡り、log.jsonl と差分更新の入力に start・null のまま届く", () => {
+    const inputs: DiffInput[] = [];
+    const updaterLayer = Layer.succeed(
+      DiffUpdater,
+      DiffUpdater.of({
+        update: (input) =>
+          Effect.sync(() => {
+            inputs.push(input);
+            return { ops: [] };
+          }),
+      }),
+    );
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+
+      yield* sink.screen({ start: 1, image: new Uint8Array([0xff, 0xd8, 0xff, 0x00]) });
+      yield* sink.screen({ start: 2.5, image: null });
+      yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
+      yield* sink.flush;
+
+      const log = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
+      const screens = log.filter((e) => e.type === "screen");
+      expect(screens).toHaveLength(2);
+      expect(screens[0]).toMatchObject({ start: 1 });
+      expect(typeof screens[0].image).toBe("string");
+      expect(screens[1]).toMatchObject({ type: "screen", start: 2.5, image: null });
+      expect(inputs.flatMap((input) => input.screens ?? []).map((c) => [c.start, c.image === null ? null : [...c.image.bytes]])).toEqual([
+        [1, [0xff, 0xd8, 0xff, 0x00]],
+        [2.5, null],
+      ]);
+    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+  });
+
   it.effect("exports は書き出した 5 パスを返す（4 つ目が map.png、5 つ目が map.html）", () =>
     Effect.scoped(Effect.gen(function* () {
       const sessionsDir = yield* withTmpSessionsDir();

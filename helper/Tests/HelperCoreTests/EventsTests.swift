@@ -90,4 +90,31 @@ struct EventsTests {
         #expect(HelperEvent.origin(hostTime: 42) == HelperEvent.origin(hostTime: 42))
         #expect(HelperEvent.origin(hostTime: 1) != HelperEvent.origin(hostTime: 2))
     }
+
+    // Issue #278: 共有画面の変化。start は origin と同じ原点からの秒、image は JPEG の base64（ウィンドウが無くなったら null）
+    @Test("screen は type・start・image を持ち、image は JPEG の base64 文字列のまま積む")
+    func screenCarriesStartAndImage() throws {
+        let json = try decode(.screen(start: 12.5, image: "/9j/4AAQSkZJRg=="))
+        #expect(Set(json.keys) == ["type", "start", "image"])
+        #expect(json["type"] as? String == "screen")
+        #expect(json["start"] as? Double == 12.5)
+        #expect(json["image"] as? String == "/9j/4AAQSkZJRg==")
+    }
+
+    @Test("ウィンドウが無くなった screen は image を JSON の null として明示する（キーを省かない）")
+    func screenWithoutImageWritesExplicitNull() throws {
+        let json = try decode(.screen(start: 3, image: nil))
+        #expect(Set(json.keys) == ["type", "start", "image"])
+        #expect(json["type"] as? String == "screen")
+        #expect(json["start"] as? Double == 3)
+        #expect(json["image"] is NSNull)
+        #expect(try HelperEvent.screen(start: 3, image: nil).jsonString().contains("\"image\":null"))
+    }
+
+    @Test("screen の値が等しければイベントも等しい")
+    func screenEquality() {
+        #expect(HelperEvent.screen(start: 1, image: "AA==") == HelperEvent.screen(start: 1, image: "AA=="))
+        #expect(HelperEvent.screen(start: 1, image: "AA==") != HelperEvent.screen(start: 2, image: "AA=="))
+        #expect(HelperEvent.screen(start: 1, image: "AA==") != HelperEvent.screen(start: 1, image: nil))
+    }
 }

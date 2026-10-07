@@ -21,8 +21,8 @@ public actor WebSocketServer {
     private var stopped = false
     private let queue = DispatchQueue(label: "live-mindmap.websocket")
     /// `broadcastRetained` で最後に送った内容。後から接続したクライアントにも送る（Issue #161）。
-    /// このヘルパーの 1 回の実行につき 1 度しか使わない（`origin` イベント）ので、1 件だけ覚える。
-    private var retained: String?
+    /// 種類（`key`）ごとに最新の 1 件だけ覚える（`origin` と、共有画面の `screen`）。順序は、その種類を最初に覚えた順。
+    private var retained: [(key: String, text: String)] = []
 
     /// `port` が 0 のときは空きポートを使う。
     public init(port: UInt16) {
@@ -79,8 +79,13 @@ public actor WebSocketServer {
 
     /// `broadcast` と同じく今つながっているクライアント全員に送り、かつ内容を覚えておく。
     /// 後から接続したクライアントにも、接続した直後に同じ内容を送る（`register` から呼ぶ）。
-    public func broadcastRetained(_ text: String) {
-        retained = text
+    /// 同じ `key` で覚えさせると、前の内容を置き換える（別の `key` の内容は消えない）。
+    public func broadcastRetained(_ text: String, key: String = "origin") {
+        if let index = retained.firstIndex(where: { $0.key == key }) {
+            retained[index].text = text
+        } else {
+            retained.append((key: key, text: text))
+        }
         broadcast(text)
     }
 
@@ -123,7 +128,7 @@ public actor WebSocketServer {
     private func register(_ connection: NWConnection) {
         guard !stopped else { return connection.cancel() }
         clients[ObjectIdentifier(connection)] = connection
-        if let retained { send(retained, to: connection) }
+        for entry in retained { send(entry.text, to: connection) }
         receiveLoop(connection)
     }
 

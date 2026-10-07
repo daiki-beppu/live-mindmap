@@ -112,6 +112,7 @@ type FakeSinksHandle = {
   readonly opened: { count: number; closed: number };
   readonly finals: { id: string; track: Track; text: string }[];
   readonly partials: { track: Track; text: string }[];
+  readonly screens: { start: number; image: Uint8Array | null }[];
   readonly relayStats: { drained: number; cleared: number; stopped: number };
   readonly appended: IntakeLogEvent[];
   readonly order: string[]; // flush・exports・close が起きた順
@@ -125,6 +126,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const opened = { count: 0, closed: 0 };
     const finals: { id: string; track: Track; text: string }[] = [];
     const partials: { track: Track; text: string }[] = [];
+    const screens: { start: number; image: Uint8Array | null }[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
     const appended: IntakeLogEvent[] = [];
     const order: string[] = [];
@@ -138,6 +140,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); }),
           final: (r: SettledRemark) => Effect.sync(() => { count++; finals.push({ id: `r${count}`, track: r.track, text: r.text }); }),
+          screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
@@ -150,7 +153,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
       });
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, createDir }), opened, finals, partials, relayStats, appended, order, control };
+    return { sinks: SessionSinks.of({ open, createDir }), opened, finals, partials, screens, relayStats, appended, order, control };
   });
 }
 
@@ -305,6 +308,76 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           process.stderr.write = original;
         }
       }));
+  });
+
+  // 共有画面の変化（Issue #278）。screen は sink.screen（Session.pushScreen への口）へ届く。原点・取り込みの状態・ログには触れない
+  describe("共有画面の配線", () => {
+    const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const stderr: string[] = [];
+        const original = process.stderr.write.bind(process.stderr);
+        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
+        try {
+          return yield* body(stderr);
+        } finally {
+          process.stderr.write = original;
+        }
+      });
+
+    it.effect("screen は start とバイト列のまま sink.screen へ届く。image が null でも届く", () =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers([{}]);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        yield* sessions.start(start());
+        const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
+
+        fakeHelpers.send(0, { type: "screen", start: 1.5, image: Buffer.from(jpeg).toString("base64") });
+        fakeHelpers.send(0, { type: "screen", start: 4, image: null });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.screens).toHaveLength(2);
+        expect(fakeSinks.screens[0]!.start).toBe(1.5);
+        expect([...fakeSinks.screens[0]!.image!]).toEqual([...jpeg]);
+        expect(fakeSinks.screens[1]).toEqual({ start: 4, image: null });
+      }));
+
+    it.effect("screen は取り込みの記録（appendLog）を書かず、発言や途中結果にも流れず、セッションは running のまま", () =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers([{}]);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, { type: "screen", start: 1, image: "/9j/2Q==" });
+        fakeHelpers.send(0, { type: "screen", start: 2, image: null });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.screens).toHaveLength(2); // 届いたうえで
+        expect(fakeSinks.appended).toEqual([]);
+        expect(fakeSinks.finals).toEqual([]);
+        expect(fakeSinks.partials).toEqual([]);
+        expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    it.effect("壊れた screen は今の文面で stderr に 1 行出して読み飛ばし、sink.screen には届かず、続く発言は届く", () =>
+      withStderr((stderr) =>
+        Effect.gen(function* () {
+          const fakeHelpers = yield* makeFakeHelpers([{}]);
+          const fakeSinks = yield* makeFakeSessionSinks();
+          const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+          yield* sessions.start(start());
+
+          fakeHelpers.send(0, { type: "screen", start: 1, image: "%%%" }); // base64 として不正
+          fakeHelpers.send(0, { type: "screen", start: 2 }); // image のキーが無い
+          fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
+          yield* TestClock.adjust(1);
+
+          expect(stderr.filter((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toHaveLength(2);
+          expect(fakeSinks.screens).toEqual([]);
+          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
+          expect((yield* sessions.status).status).toBe("running");
+        })));
   });
 
   describe("stop は印を立てるだけで中断しない（CT-STOP-MARK）", () => {

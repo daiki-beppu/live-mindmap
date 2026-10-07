@@ -19,6 +19,8 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("remark"), ...helperRemarkFields }),
   Schema.Struct({ type: Schema.Literal("partial"), ...helperRemarkFields }),
   Schema.Struct({ type: Schema.Literal("origin"), hostTime: Schema.String.check(Schema.isPattern(/^\d+$/)) }),
+  // 共有画面の変化。image は JPEG の base64（バイト列に戻す。base64 として不正なら SchemaError）で、ウィンドウが無くなったときは null
+  Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Number, image: Schema.NullOr(Schema.Uint8ArrayFromBase64) }),
 ]);
 export type HelperEvent = typeof HelperEvent["Type"];
 
@@ -28,7 +30,7 @@ export type HelperPartial = typeof HelperPartial["Type"];
 // decodeHelperEvent の結果。知らない type は失敗にせず「知らないイベント」として返し、呼び出し側が読み飛ばす
 export type DecodedHelperEvent = { kind: "known"; event: HelperEvent } | { kind: "unknown" };
 
-const KNOWN_TYPES: ReadonlySet<string> = new Set(["remark", "partial", "origin"]);
+const KNOWN_TYPES: ReadonlySet<string> = new Set(["remark", "partial", "origin", "screen"]);
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeType = Schema.decodeUnknownEffect(Schema.Struct({ type: Schema.String }));
