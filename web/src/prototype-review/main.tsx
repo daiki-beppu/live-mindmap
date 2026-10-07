@@ -5,8 +5,11 @@
 //   A 動画のように: 会議の時刻の軸・▶ は会議の時刻に比例（倍速）・コマ送りは反映 1 回・目印は議題の始まりと決定・TODO
 //   B 反映の目盛り: 反映の回数の軸（1 回ずつの目盛りに差分操作を積む）・コマ送りは差分操作 1 件・▶ は一定の間隔
 //   C 議題の章立て: 議題ごとの帯を章として並べる（会議の時刻の軸）・押すとその議題の始まりへ・▶ は反映を一定の間隔
+//   D YouTube 風（A を元に）: 全幅のシークバーを議題ごとに区切り、下に ▶・1 つ戻る進む・時刻・今の議題、右に字幕・速さ・右の列
+//     キーも YouTube に寄せる: Space・K ▶／J・L 10 秒／, . 反映 1 つ／< > 速さ／C 字幕
 // 開いた直後は最後の時点で止めておく。
 import { Slider } from "@videojs/react";
+import { CaptionsOffIcon, CaptionsOnIcon, CheckIcon, PauseIcon, PlayIcon, SpeedIcon } from "@videojs/react/icons";
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { ChangeEntry, SnapshotNode } from "../../../server/src/core/index.ts";
@@ -28,13 +31,14 @@ const setParam = (k: string, v: string) => {
   history.replaceState(null, "", `?${params}`);
 };
 
-type VariantKey = "A" | "B" | "C";
-const VARIANTS: Record<VariantKey, string> = { A: "動画のように（時刻の軸・倍速）", B: "反映の目盛り（差分操作 1 件ずつ）", C: "議題の章立て" };
+type VariantKey = "D" | "A" | "B" | "C";
+const VARIANTS: Record<VariantKey, string> = { D: "YouTube 風（A を元に）", A: "動画のように（時刻の軸・倍速）", B: "反映の目盛り（差分操作 1 件ずつ）", C: "議題の章立て" };
 const KEYS = Object.keys(VARIANTS) as VariantKey[];
 // 見返し中に人が画面を動かしたあと、自動のカメラへ戻る条件
 type Ret = "idle" | "time" | "both";
 const RET_NAME: Record<Ret, string> = { idle: "触らなければ 10 秒で戻る（ライブと同じ）", time: "時刻を動かしたら戻る", both: "どちらか早い方" };
 const IDLE_SEC = 10;
+const SPEEDS = [10, 30, 60, 120]; // ▶ の速さ（会議の時刻の何倍）
 const STALE_MIN = 15;
 
 // 時刻の位置。index は反映（diff）の番号、ops はその反映の先頭の何件の差分操作までか（undefined は全部）、t は会議の中の秒
@@ -85,6 +89,10 @@ function marksOf(m: Meeting, final: Frame): Marks {
 }
 
 const HELP: [string, string][] = [
+  ["Space・K", "D: ▶ 進める・止める"],
+  ["J / L", "D: 10 秒戻る・進む"],
+  [", / .", "D: 反映 1 つ戻る・進む"],
+  ["< / >", "D: 速さを下げる・上げる"],
   ["Space", "▶ 見返しを進める・止める"],
   ["[ ]", "1 つ戻る・進む（A・C は反映 1 回、B は差分操作 1 件）"],
   ["Shift＋[ ]", "大きく戻る・進む（A は 1 分、B は反映 1 回、C は議題 1 つ）"],
@@ -100,12 +108,12 @@ const HELP: [string, string][] = [
   ["?", "キー一覧"],
 ];
 // 日本語入力がオンでも効くように、全角の記号・入力中（Process）のキーを半角のキーに直す
-const WIDE: Record<string, string> = { "？": "?", "＝": "=", "＋": "+", "－": "-", "ー": "-", "０": "0", "［": "[", "］": "]", "「": "[", "」": "]", "『": "[", "』": "]", "{": "[", "}": "]", "｛": "[", "｝": "]", "　": " " };
+const WIDE: Record<string, string> = { "、": ",", "。": ".", "，": ",", "．": ".", "＜": "<", "＞": ">",  "？": "?", "＝": "=", "＋": "+", "－": "-", "ー": "-", "０": "0", "［": "[", "］": "]", "「": "[", "」": "]", "『": "[", "』": "]", "{": "[", "}": "]", "｛": "[", "｝": "]", "　": " " };
 function keyOf(e: KeyboardEvent): string {
   if (e.key === "Process" || e.key === "Unidentified" || e.isComposing) {
     if (e.code.startsWith("Key")) return e.code.slice(3).toLowerCase();
     if (e.code.startsWith("Digit")) return e.code.slice(5);
-    const byCode: Record<string, string> = { Slash: e.shiftKey ? "?" : "/", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Space: " " };
+    const byCode: Record<string, string> = { Slash: e.shiftKey ? "?" : "/", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Space: " ", Comma: e.shiftKey ? "<" : ",", Period: e.shiftKey ? ">" : "." };
     return byCode[e.code] ?? e.key;
   }
   if (WIDE[e.key]) return WIDE[e.key]!;
@@ -115,8 +123,9 @@ function keyOf(e: KeyboardEvent): string {
 
 function App() {
   const [sample, setSample] = useState(params.get("sample") ?? "parnassus");
-  const [variant, setVariant] = useState<VariantKey>(KEYS.includes(params.get("variant") as VariantKey) ? (params.get("variant") as VariantKey) : "A");
+  const [variant, setVariant] = useState<VariantKey>(KEYS.includes(params.get("variant") as VariantKey) ? (params.get("variant") as VariantKey) : "D");
   const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const timeAxis = variant === "A" || variant === "D"; // 会議の時刻の軸で、▶ は時刻に比例
   const [marks, setMarks] = useState<Marks | null>(null);
   const [pos, setPos] = useState<Pos>({ index: 0, t: 0 });
   const [playing, setPlaying] = useState(false);
@@ -193,7 +202,7 @@ function App() {
   // ▶: A は会議の時刻に比例して t を進める。B は差分操作、C は反映を一定の間隔で進める
   useEffect(() => {
     if (!playing || !meeting || !marks) return;
-    if (variant === "A") {
+    if (timeAxis) {
       let prev = performance.now();
       const id = setInterval(() => {
         const n = performance.now();
@@ -225,7 +234,7 @@ function App() {
   const togglePlay = useCallback(() => {
     setPlaying((p) => {
       // 最後で ▶ を押したら最初から
-      if (!p && meeting && marks && pos.index >= last && pos.ops === undefined) setPos(variant === "A" ? atTime(0) : atIndex(0, variant === "B" ? marks.steps[0]?.ops : undefined));
+      if (!p && meeting && marks && pos.index >= last && pos.ops === undefined) setPos(timeAxis ? atTime(0) : atIndex(0, variant === "B" ? marks.steps[0]?.ops : undefined));
       return !p;
     });
     if (retRef.current !== "idle") follow();
@@ -236,7 +245,7 @@ function App() {
     (dir: 1 | -1, big: boolean) => {
       if (!meeting || !marks) return;
       setPlaying(false);
-      if (variant === "A") {
+      if (timeAxis) {
         if (big) return seek(atTime(pos.t + dir * 60));
         // 反映 1 回。途中の時刻にいるときは、戻るはその反映の時点へ
         if (dir === -1 && pos.t > meeting.diffAt[pos.index]! + 0.01) return seek(atIndex(pos.index));
@@ -270,15 +279,24 @@ function App() {
   showHelpRef.current = showHelp;
   const selectedRef = useRef(selectedId);
   selectedRef.current = selectedId;
-  const actions = useRef({ step, togglePlay, seekEnd: (end: boolean) => {} });
+  const actions = useRef({ step, togglePlay, seekEnd: (end: boolean) => {}, jump: (sec: number) => {}, speed: (dir: 1 | -1) => {} });
   actions.current = {
     step,
     togglePlay,
+    jump: (sec) => {
+      if (!timeAxis) return;
+      seek(atTime(pos.t + sec));
+    },
+    speed: (dir) => {
+      const i = Math.max(0, Math.min(SPEEDS.length - 1, SPEEDS.indexOf(speedA) + dir));
+      setSpeedA(SPEEDS[i]!);
+      setParam("x", String(SPEEDS[i]));
+    },
     seekEnd: (end) => {
       if (!meeting || !marks) return;
       setPlaying(false);
-      if (end) seek(variant === "A" ? atTime(marks.end) : atIndex(last));
-      else seek(variant === "A" ? atTime(0) : atIndex(0, variant === "B" ? marks.steps[0]?.ops : undefined));
+      if (end) seek(timeAxis ? atTime(marks.end) : atIndex(last));
+      else seek(timeAxis ? atTime(0) : atIndex(0, variant === "B" ? marks.steps[0]?.ops : undefined));
     },
   };
 
@@ -332,8 +350,21 @@ function App() {
           e.preventDefault();
           return actions.current.step(key === "]" ? 1 : -1, e.shiftKey);
         case " ":
+        case "k":
+        case "K":
           e.preventDefault();
           return actions.current.togglePlay();
+        case "j":
+        case "J":
+        case "l":
+        case "L":
+          return actions.current.jump(key.toLowerCase() === "l" ? 10 : -10);
+        case ",":
+        case ".":
+          return actions.current.step(key === "." ? 1 : -1, false);
+        case "<":
+        case ">":
+          return actions.current.speed(key === ">" ? 1 : -1);
         case "Home":
         case "End":
           e.preventDefault();
@@ -390,6 +421,17 @@ function App() {
               </dl>
             )}
           </div>
+          {variant === "D" && (
+            <PlayerD
+              {...player}
+              speed={speedA}
+              setSpeed={(x) => (setSpeedA(x), setParam("x", String(x)))}
+              captions={showCaptions}
+              toggleCaptions={() => setShowCaptions((v) => !v)}
+              side={showSide}
+              toggleSide={() => setShowSide((v) => !v)}
+            />
+          )}
           {variant === "A" && <PlayerA {...player} speed={speedA} setSpeed={(x) => (setSpeedA(x), setParam("x", String(x)))} />}
           {variant === "B" && <PlayerB {...player} ms={stepMs} setMs={(x) => (setStepMs(x), setParam("ms", String(x)))} />}
           {variant === "C" && <PlayerC {...player} ms={stepMs} setMs={(x) => (setStepMs(x), setParam("ms", String(x)))} />}
@@ -478,6 +520,110 @@ const Speed = ({ value, options, unit, onChange }: { value: number; options: num
     ))}
   </select>
 );
+
+// D: YouTube 風（A を元に）。全幅のシークバーを議題（章）ごとに区切り、その下に操作を 1 行に並べる
+const hms = (sec: number) => {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = String(Math.floor(sec % 60)).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+};
+const StepIcon = ({ dir }: { dir: 1 | -1 }) => (
+  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style={dir === -1 ? { transform: "scaleX(-1)" } : undefined}>
+    <path d="M6 6.5v11l8.5-5.5z" fill="currentColor" />
+    <rect x="16" y="6.5" width="2" height="11" fill="currentColor" />
+  </svg>
+);
+const SideIcon = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6">
+    <rect x="3.5" y="5" width="17" height="14" rx="1.5" />
+    <path d="M14.5 5v14" />
+  </svg>
+);
+
+function PlayerD(p: PlayerProps & { speed: number; setSpeed: (n: number) => void; captions: boolean; toggleCaptions: () => void; side: boolean; toggleSide: () => void }) {
+  const { marks, pos } = p;
+  const [menu, setMenu] = useState(false);
+  // 速さのメニューは外を押すか Esc で閉じる
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !(e.target as Element).closest(".yt__menu-wrap")) setMenu(false);
+    };
+    addEventListener("pointerdown", close);
+    addEventListener("keydown", close);
+    return () => (removeEventListener("pointerdown", close), removeEventListener("keydown", close));
+  }, [menu]);
+  // 下の行に出す議題名は、マップと同じ「今の議題」
+  const current = p.frame.snapshot.nodes.find((n) => n.id === p.frame.current)?.text ?? "";
+  const x = (t: number) => (t / marks.end) * 100;
+  const c = chapterIndexOf(marks, pos.t);
+  const chapterAt = (v: number) => marks.chapters[chapterIndexOf(marks, v)]?.text ?? "";
+  const btn = (label: string, onClick: () => void, icon: ReactNode, extra?: string) => (
+    <button type="button" className={`yt__btn${extra ? ` ${extra}` : ""}`} aria-label={label} data-tip={label} onClick={(e) => (onClick(), e.currentTarget.blur())}>
+      {icon}
+    </button>
+  );
+  return (
+    <div className="yt">
+      <Slider.Root
+        className="yt__seek"
+        label="見返しの時刻"
+        min={0}
+        max={marks.end}
+        step={5}
+        largeStep={60}
+        value={pos.t}
+        onValueChange={(v) => p.seek(p.atTime(v))}
+        onPointerUp={() => (document.activeElement as HTMLElement | null)?.blur()}
+      >
+        <Slider.Track className="yt__track">
+          {marks.chapters.map((ch, i) => (
+            <span key={i} className={`yt__seg${i === c ? " yt__seg--now" : ""}`} style={{ left: `${x(ch.from)}%`, width: `calc(${x(ch.to - ch.from)}% - 2px)` }}>
+              <span className="yt__seg-fill" style={{ width: `${Math.max(0, Math.min(1, (pos.t - ch.from) / (ch.to - ch.from))) * 100}%` }} />
+            </span>
+          ))}
+          {marks.keys.map((m, i) => <span key={i} className="yt__key" style={{ left: `${x(m.at)}%`, background: KIND_COLOR[m.kind] }} />)}
+        </Slider.Track>
+        <Slider.Thumb className="yt__thumb" aria-valuetext={`${hms(pos.t)} / ${hms(marks.end)}、${current}`} />
+        <Slider.Preview className="yt__preview">
+          <Slider.Value className="yt__preview-chapter" type="pointer" format={chapterAt} />
+          <Slider.Value className="yt__preview-time" type="pointer" format={hms} />
+        </Slider.Preview>
+      </Slider.Root>
+      <div className="yt__bar">
+        {btn("反映 1 つ戻る（,）", () => p.step(-1, false), <StepIcon dir={-1} />)}
+        {btn(p.playing ? "止める（K）" : "進める（K）", p.togglePlay, p.playing ? <PauseIcon width={24} height={24} /> : <PlayIcon width={24} height={24} />, "yt__btn--play")}
+        {btn("反映 1 つ進む（.）", () => p.step(1, false), <StepIcon dir={1} />)}
+        <span className="yt__time">
+          {hms(pos.t)} / {hms(marks.end)}
+        </span>
+        <span className="yt__chapter">・{current}</span>
+        <span className="yt__spacer" />
+        {btn(p.captions ? "字幕を隠す（C）" : "字幕を出す（C）", p.toggleCaptions, p.captions ? <CaptionsOnIcon width={22} height={22} /> : <CaptionsOffIcon width={22} height={22} />)}
+        <div className="yt__menu-wrap">
+          <button type="button" className="yt__btn yt__btn--speed" aria-label="速さ" aria-expanded={menu} data-tip={menu ? undefined : "速さ（< >）"} onClick={(e) => (setMenu((v) => !v), e.currentTarget.blur())}>
+            <SpeedIcon width={22} height={22} />
+            <span>{p.speed}×</span>
+          </button>
+          {menu && (
+            <ul className="yt__menu" role="menu">
+              {SPEEDS.map((n) => (
+                <li key={n}>
+                  <button type="button" role="menuitemradio" aria-checked={n === p.speed} onClick={() => (p.setSpeed(n), setMenu(false))}>
+                    <span className="yt__check">{n === p.speed && <CheckIcon width={16} height={16} />}</span>
+                    {n} 倍（161 分を {Math.round((marks.end / n / 60) * 10) / 10} 分で）
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {btn(p.side ? "右の列を隠す（E）" : "右の列を出す（E）", p.toggleSide, <SideIcon />, p.side ? undefined : "yt__btn--off")}
+      </div>
+    </div>
+  );
+}
 
 // A: 動画のように。会議の時刻の軸に、議題の始まり（細い線）と決定・TODO（小さな点）
 function PlayerA(p: PlayerProps & { speed: number; setSpeed: (n: number) => void }) {

@@ -52,3 +52,35 @@
 .review-c__chapter span { display: block; overflow: hidden; text-overflow: ellipsis; }
 .review-c__chapter--done { background: #dbe3ee; }
 .review-c__chapter--now { background: color-mix(in srgb, #3b82f6 22%, white); color: #111827; }
+
+/* D: YouTube 風。全幅のシークバー（議題ごとに 2px のすき間で区切る）と、その下の操作の 1 行。白地に灰色、影は付けない */
+.yt { flex: none; padding: 2px 12px 4px; border-top: 1px solid #e5e7eb; background: #fff; font: 13px system-ui, sans-serif; color: #1f2937; user-select: none; }
+.yt__seek { position: relative; height: 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.yt__track { position: relative; width: 100%; height: 3px; transition: height 0.1s; }
+.yt__seek[data-pointing] .yt__track, .yt__seek[data-dragging] .yt__track { height: 5px; }
+.yt__seg { position: absolute; top: 0; height: 100%; background: #e5e7eb; overflow: hidden; pointer-events: none; }
+.yt__seg-fill { display: block; height: 100%; background: #374151; }
+.yt__key { position: absolute; top: -7px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; pointer-events: none; }
+.yt__thumb { position: absolute; left: var(--media-slider-fill); top: 50%; width: 13px; height: 13px; transform: translate(-50%, -50%) scale(0); border-radius: 50%; background: #111827; outline: none; transition: transform 0.1s; }
+.yt__seek[data-pointing] .yt__thumb, .yt__seek[data-dragging] .yt__thumb, .yt__thumb:focus-visible { transform: translate(-50%, -50%) scale(1); }
+.yt__thumb:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, #3b82f6 35%, white); }
+.yt__preview { bottom: 18px; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 3px 7px; border-radius: 4px; background: rgb(17 24 39 / 0.88); color: #fff; font-size: 12px; opacity: 0; max-width: 320px; }
+.yt__seek[data-pointing] .yt__preview, .yt__seek[data-dragging] .yt__preview { opacity: 1; }
+.yt__preview-chapter { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yt__preview-time { font-variant-numeric: tabular-nums; color: #d1d5db; }
+.yt__bar { display: flex; align-items: center; gap: 2px; height: 40px; }
+.yt__btn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 36px; height: 36px; padding: 0 6px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; cursor: pointer; }
+.yt__btn:hover { background: #f3f4f6; }
+.yt__btn--off { color: #9ca3af; }
+.yt__btn[data-tip]:hover::after { content: attr(data-tip); position: absolute; bottom: 42px; left: 50%; transform: translateX(-50%); padding: 3px 7px; border-radius: 4px; background: rgb(17 24 39 / 0.88); color: #fff; font-size: 12px; white-space: nowrap; pointer-events: none; z-index: 10; }
+.yt__btn--speed span { font-size: 12px; font-variant-numeric: tabular-nums; }
+.yt__time { margin-left: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.yt__chapter { margin-left: 6px; color: #4b5563; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.yt__spacer { flex: 1; }
+.yt__menu-wrap { position: relative; }
+.yt__menu { position: absolute; right: 0; bottom: 42px; z-index: 10; margin: 0; padding: 4px; list-style: none; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; white-space: nowrap; }
+.yt__menu button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px 6px 6px; border: 0; border-radius: 4px; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.yt__menu button:hover { background: #f3f4f6; }
+.yt__check { display: inline-flex; width: 16px; }
+/* D は操作の行がマップの下に 58px ほど。字幕はその上に */
+.review-col:has(.yt) .map .captions { bottom: 84px; }
