@@ -30,6 +30,7 @@ export type View = {
   minZoom: number; // 人が縮められる下限
   offscreen: boolean; // 画面の外で変わったノードの印を縁に出す
   onUserMove: () => void;
+  inset: number; // 右の列がマップに重なる幅。カメラはこれを除いた部分に収める
   command: Command | null; // キーからの見る操作（seq が変わったら一度だけ動かす）
 };
 export type Command = { seq: number; type: "in" | "out" | "one" | "pan" | "node"; dx?: number; dy?: number };
@@ -176,7 +177,8 @@ function Canvas(p: CanvasProps) {
     const mode = p.view?.mode ?? "follow";
     if (mode === "manual") return;
     const aim = () => {
-      const { width, height } = store.getState();
+      const { height } = store.getState();
+      const width = store.getState().width - (p.view?.inset ?? 0);
       if (!width || !height) return;
       // 全体を見る: 補間中の位置ではなく目標（target）で全体の箱を測り、一度で収める
       if (mode === "overview") {
@@ -226,13 +228,14 @@ function Canvas(p: CanvasProps) {
     const f = requestAnimationFrame(aim);
     return () => cancelAnimationFrame(f);
     // 寸法が測れたら狙い直す（dims）。位置の補間（positions）では狙い直さない
-  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes]);
+  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes, p.view?.inset]);
 
   // キーからの見る操作。in/out/one は画面の中心で、pan は画面の幅・高さの割合で、node は選んだノードと子孫が収まるまで
   const command = p.view?.command;
   useEffect(() => {
     if (!command) return;
-    const { width, height } = store.getState();
+    const { height } = store.getState();
+      const width = store.getState().width - (p.view?.inset ?? 0);
     const v = getViewport();
     const lo = minZoomRef.current;
     const at = (zoom: number) => {
@@ -339,18 +342,18 @@ function Canvas(p: CanvasProps) {
       onMove={(e) => e && p.view?.onUserMove()}
       proOptions={{ hideAttribution: true }}
     >
-      {p.view?.offscreen && p.view.mode !== "follow" && <Offscreen ids={[...p.changed]} target={target} dims={dims} round={p.round} />}
+      {p.view?.offscreen && p.view.mode !== "follow" && <Offscreen ids={[...p.changed]} target={target} dims={dims} round={p.round} inset={p.view.inset} />}
     </ReactFlow>
     </div>
   );
 }
 
 // 画面の外で変わったノードを、その方向の縁に小さな点と議題の文字で知らせる。押すとそのノードへ移す（人の操作のまま）
-function Offscreen({ ids, target, dims, round }: { ids: string[]; target: Record<string, Pos>; dims: Record<string, { width: number; height: number }>; round: number }) {
+function Offscreen({ ids, target, dims, round, inset }: { ids: string[]; target: Record<string, Pos>; dims: Record<string, { width: number; height: number }>; round: number; inset: number }) {
   const [tx, ty, zoom] = useStore((s) => s.transform);
-  const width = useStore((s) => s.width);
+  const width = useStore((s) => s.width) - inset;
   const height = useStore((s) => s.height);
-  const { setCenter } = useReactFlow();
+  const { setViewport } = useReactFlow();
   const m = 14;
   const marks = ids.flatMap((id) => {
     const q = target[id];
@@ -373,7 +376,10 @@ function Offscreen({ ids, target, dims, round }: { ids: string[]; target: Record
           className="proto-offscreen"
           style={{ left: k.x, top: k.y }}
           title="画面の外で変わったノード"
-          onClick={() => void setCenter(k.cx, k.cy, { zoom: Math.max(zoom, 0.75), duration: 400 })}
+          onClick={() => {
+            const z = Math.max(zoom, 0.75);
+            void setViewport({ x: width / 2 - k.cx * z, y: height / 2 - k.cy * z, zoom: z }, { duration: 400 });
+          }}
         />
       ))}
     </>

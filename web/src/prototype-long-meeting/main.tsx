@@ -31,6 +31,7 @@ const HINT_NAME: Record<Hint, string> = { text: "中身の手がかり（文字�
 type Ret = "idle" | "topic" | "key";
 const RETS: Ret[] = ["idle", "topic", "key"];
 const RET_NAME: Record<Ret, string> = { idle: "触らなければ N 秒で戻る", topic: "今の議題が変わったら戻る", key: "Esc を押すまで戻らない" };
+const SIDE_WIDTH = 300; // 右の列の幅（styles.css の .side と同じ）
 const HELP: [string, string][] = [
   ["Esc", "今の議題へ戻る・選択を外す"],
   ["F", "全体を見る（もう一度で戻る）"],
@@ -215,7 +216,7 @@ function App() {
   const opened = new Set<string>();
   for (const start of [pinned, frame.current]) for (let cur: string | null | undefined = start; cur && cur !== "root"; cur = byId.get(cur)?.parent) opened.add(cur);
   const folded = openAll && overviewOpen ? new Set<string>() : foldedIds(frame, opened, stale);
-  const view: View = { mode, minZoom, offscreen, onUserMove, command };
+  const view: View = { mode, minZoom, offscreen, onUserMove, command, inset: showSide ? SIDE_WIDTH : 0 };
   // 字幕: 試作では、今の反映の時点までの直近の発言 2 つを「相手」の字幕として出す
   const recent = meeting.events
     .slice(0, meeting.diffEnds[index])
@@ -261,7 +262,7 @@ function App() {
           {cueText && <p className="proto-cue">{cueText}</p>}
           {showCaptions && <Captions speaking={{ 相手: recent, 自分: "" }} />}
           {showHelp && (
-            <dl className="proto-help">
+            <dl className="proto-help" style={{ right: (showSide ? SIDE_WIDTH : 0) + 12 }}>
               {HELP.map(([k, d]) => (
                 <div key={k}>
                   <dt>{k}</dt>

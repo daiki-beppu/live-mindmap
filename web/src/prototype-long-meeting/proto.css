@@ -35,6 +35,8 @@
 .proto-help div { display: flex; gap: 12px; }
 .proto-help dt { min-width: 150px; color: #111827; font-weight: 600; }
 .proto-help dd { margin: 0; }
-/* 試作: E で隠す右の列。字幕は操作バーの上に出す */
+/* 試作: 右の列はマップに重ねて出す（出し入れでマップの幅・字幕の位置を変えない）。E で隠す。字幕は操作バーの上に出す */
+.layout { position: relative; }
+.layout > .side { position: absolute; top: 0; right: 0; bottom: 0; z-index: 7; background: #fff; }
 .side[hidden] { display: none; }
 .map .captions { bottom: 120px; }
