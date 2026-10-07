@@ -22,6 +22,11 @@ const onPointerDown = (e: PointerEvent<HTMLButtonElement>) => {
   pressedAt.set(e.currentTarget, { x: e.clientX, y: e.clientY, dragged: false });
 };
 
+// 離したときに ⌘/Ctrl が付いていれば、続く click はマップの拡大・縮小に使われ onClick へ届かない。記録を残すと後のキーボードの click がドラッグ扱いになる。押した時の修飾キーでは決まらないので、押した時は常に記録する
+const onPointerUp = (e: PointerEvent<HTMLButtonElement>) => {
+  if (e.metaKey || e.ctrlKey) pressedAt.delete(e.currentTarget);
+};
+
 // 途中でしきい値を超えたら、離した位置が押した位置の近くでもドラッグとして扱う（ボタンの外へ出た移動もキャプチャで届く）
 const onPointerMove = (e: PointerEvent<HTMLButtonElement>) => {
   const from = pressedAt.get(e.currentTarget);
@@ -46,7 +51,7 @@ export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />
-      <button type="button" className="map-node__button" aria-pressed={data.selected} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onClick={(e) => onClick(e, () => data.onSelect(id))}>
+      <button type="button" className="map-node__button" aria-pressed={data.selected} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onClick={(e) => onClick(e, () => data.onSelect(id))}>
         {data.mark && <span className="map-node__mark">{data.mark}</span>}
         <span className="map-node__text">{data.text}</span>
       </button>

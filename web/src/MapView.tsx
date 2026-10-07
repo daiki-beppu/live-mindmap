@@ -11,7 +11,7 @@ import {
   type NodeDimensionChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import {
   cameraFocus,
@@ -20,11 +20,16 @@ import {
   nodeRect,
   overviewViewport,
   panViewport,
+  scrollAlongAxis,
+  scrollAxis,
   shouldMoveCamera,
+  CLICK_ZOOM_FACTOR,
   OVERVIEW_MIN_ZOOM,
   USER_MAX_ZOOM,
   USER_MIN_ZOOM,
   zoomAroundCenter,
+  zoomAtPoint,
+  type ScrollAxisLock,
   type Viewport,
 } from "./camera.ts";
 import { changedNodeIds } from "./changes.ts";
@@ -243,7 +248,40 @@ function MapCanvas({
     };
   }, [nodes, fitView, getViewport, setViewport, storeApi, still, snapshot, target, dims, onFitted, paused, camera?.seq]);
 
+  // ⌘/Ctrl＋クリック: 押した点を中心に 1.5 倍に拡大（Option を加えると縮小）。ノードの上でも根拠を出さない。
+  // setViewport の動き（event が null）は userMoved にならないので、人の操作として自分で知らせる
+  const onClickCapture = (e: MouseEvent<HTMLDivElement>) => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    onViewingEvent?.({ type: "userMoved" }, tree);
+    void setViewport(zoomAtPoint(getViewport(), point, e.altKey ? 1 / CLICK_ZOOM_FACTOR : CLICK_ZOOM_FACTOR), { duration: 0 });
+  };
+
+  // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方の軸だけに移動する（拡大・縮小しない）。
+  // preventDefault を効かせるため、passive でない native の listener を capture で付け、React Flow へ渡さない
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const axisLock = useRef<ScrollAxisLock | null>(null);
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (still || !wrapper) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!((e.metaKey || e.ctrlKey) && e.shiftKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const delta = { x: e.deltaX, y: e.deltaY };
+      const lock = scrollAxis(axisLock.current, e.timeStamp, delta);
+      axisLock.current = lock;
+      onViewingEventRef.current?.({ type: "userMoved" }, treeRef.current);
+      void setViewport(scrollAlongAxis(getViewport(), lock.axis, delta), { duration: 0 });
+    };
+    wrapper.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => wrapper.removeEventListener("wheel", onWheel, { capture: true });
+  }, [still, getViewport, setViewport]);
+
   return (
+    <div ref={wrapperRef} style={{ width: "100%", height: "100%" }} onClickCapture={still ? undefined : onClickCapture}>
     <ReactFlow
       nodes={nodes}
       edges={edges}
@@ -273,6 +311,7 @@ function MapCanvas({
           })}
       proOptions={{ hideAttribution: true }}
     />
+    </div>
   );
 }
 
