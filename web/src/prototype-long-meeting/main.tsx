@@ -83,7 +83,7 @@ function App() {
 
   // 戻る条件: 触らなければ N 秒
   useEffect(() => {
-    if (mode === "follow" || ret !== "idle") return;
+    if (mode !== "manual" || ret !== "idle") return; // 全体を見ている間は時間では戻らない
     const t = setInterval(() => {
       const n = performance.now();
       setNow(n);
@@ -109,9 +109,15 @@ function App() {
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
       if (e.key === "Escape") follow();
       if (e.key === "f" || e.key === "F") {
-        lastMove.current = performance.now();
-        setMode("overview");
-        setOpenAll(true);
+        // もう一度押すと今の議題へ戻る
+        setMode((m) => {
+          if (m === "overview") {
+            setOpenAll(false);
+            return "follow";
+          }
+          setOpenAll(true);
+          return "overview";
+        });
       }
       if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
         const d = e.key === "ArrowRight" ? 1 : -1;
@@ -153,7 +159,9 @@ function App() {
   const cueText =
     mode === "follow" || cue === "none"
       ? null
-      : ret === "idle" && cue === "count"
+      : mode === "overview"
+        ? "全体を見ています・F か Esc で今の議題へ"
+        : ret === "idle" && cue === "count"
         ? `${left} 秒で今の議題へ戻ります（Esc ですぐ）`
         : ret === "idle"
           ? "動かしています・触らなければ今の議題へ戻ります"

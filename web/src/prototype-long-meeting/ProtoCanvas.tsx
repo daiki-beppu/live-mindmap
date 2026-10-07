@@ -173,13 +173,22 @@ function Canvas(p: CanvasProps) {
   useEffect(() => {
     const mode = p.view?.mode ?? "follow";
     if (mode === "manual") return;
-    if (mode === "overview") {
-      const f = requestAnimationFrame(() => void fitView({ duration: 600, padding: 0.05, minZoom: 0.02, maxZoom: MAX_ZOOM }));
-      return () => cancelAnimationFrame(f);
-    }
     const aim = () => {
       const { width, height } = store.getState();
       if (!width || !height) return;
+      // 全体を見る: 補間中の位置ではなく目標（target）で全体の箱を測り、一度で収める
+      if (mode === "overview") {
+        const ids = p.nodes.map((n) => n.id).filter((id) => target[id]);
+        if (ids.length === 0) return;
+        const x0 = Math.min(...ids.map((id) => target[id]!.x));
+        const y0 = Math.min(...ids.map((id) => target[id]!.y));
+        const x1 = Math.max(...ids.map((id) => target[id]!.x + NODE_WIDTH));
+        const y1 = Math.max(...ids.map((id) => target[id]!.y + (dims[id]?.height ?? 40)));
+        const pad = 24;
+        const zoom = Math.min(MAX_ZOOM, Math.max(0.02, Math.min((width - pad * 2) / (x1 - x0), (height - pad * 2) / (y1 - y0))));
+        void setViewport({ x: width / 2 - ((x0 + x1) / 2) * zoom, y: height / 2 - ((y0 + y1) / 2) * zoom, zoom }, { duration: 600 });
+        return;
+      }
       if (p.camera === "fit" || performance.now() < glanceUntil.current) {
         void fitView({ duration: 600, padding: 0.05, minZoom: 0.02, maxZoom: MAX_ZOOM });
         return;
@@ -215,7 +224,7 @@ function Canvas(p: CanvasProps) {
     const f = requestAnimationFrame(aim);
     return () => cancelAnimationFrame(f);
     // 寸法が測れたら狙い直す（dims）。位置の補間（positions）では狙い直さない
-  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode]);
+  }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes]);
 
   return (
     <ReactFlow
