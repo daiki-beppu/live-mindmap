@@ -102,7 +102,7 @@ const MAX_ZOOM = 1.1;
 
 function Canvas(p: CanvasProps) {
   const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({});
-  const { setViewport, fitView } = useReactFlow();
+  const { setViewport, fitView, getViewport } = useReactFlow();
   const store = useStoreApi();
 
   const onNodesChange = (changes: NodeChange[]) => {
@@ -226,7 +226,33 @@ function Canvas(p: CanvasProps) {
     // 寸法が測れたら狙い直す（dims）。位置の補間（positions）では狙い直さない
   }, [p.aimKey, p.topicKey, p.camera, target, dims, store, setViewport, fitView, p.view?.mode, p.nodes]);
 
+  // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方だけに動かす。向きは動かし始め（250ms 空いたら測り直す）の大きい方で決める
+  const wrap = useRef<HTMLDivElement>(null);
+  const onUserMove = p.view?.onUserMove;
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el || !onUserMove) return;
+    let axis: "x" | "y" = "y";
+    let last = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.shiftKey && (e.metaKey || e.ctrlKey))) return;
+      e.preventDefault();
+      e.stopPropagation(); // React Flow のズームに渡さない
+      const now = performance.now();
+      if (now - last > 250) axis = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? "x" : "y";
+      last = now;
+      const v = getViewport();
+      // 縦のホイールしか無いマウスでは、Shift で横の量に入れ替わることがあるので、どちらの量も使う
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      void setViewport(axis === "x" ? { ...v, x: v.x - d } : { ...v, y: v.y - d });
+      onUserMove();
+    };
+    el.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, [onUserMove, getViewport, setViewport]);
+
   return (
+    <div ref={wrap} style={{ width: "100%", height: "100%" }}>
     <ReactFlow
       nodes={nodes}
       edges={edges}
@@ -254,6 +280,7 @@ function Canvas(p: CanvasProps) {
     >
       {p.view?.offscreen && p.view.mode !== "follow" && <Offscreen ids={[...p.changed]} target={target} dims={dims} round={p.round} />}
     </ReactFlow>
+    </div>
   );
 }
 

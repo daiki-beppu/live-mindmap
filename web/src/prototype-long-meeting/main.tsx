@@ -4,7 +4,7 @@
 // 試作の出力のログを再生し、各反映の時点のマップを、今の画面（右の列つき）の中で 3 案に描き分ける。
 // PROTOTYPE（issue #285）: 人が動かした後に自動のカメラへ戻る条件の 3 案を ?ret= で切り替える（← → でも）。
 //   http://localhost:5173/prototype-long-meeting.html?ret=idle&sample=parnassus&min=90
-//   移動: 縦横のスクロール・ドラッグ／ズーム: ⌘・Ctrl＋スクロール、ピンチ／Esc: 今の議題へ戻る／F: 全体を見る
+//   移動: 縦横のスクロール・ドラッグ（⌘・Ctrl＋Shift＋スクロールで縦か横だけ）／ズーム: ⌘・Ctrl＋スクロール、ピンチ／Esc: 今の議題へ戻る／F: 全体を見る
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChangeList } from "../ChangeList.tsx";
