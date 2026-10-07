@@ -229,6 +229,8 @@ function Canvas(p: CanvasProps) {
   // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方だけに動かす。向きは動かし始め（250ms 空いたら測り直す）の大きい方で決める
   const wrap = useRef<HTMLDivElement>(null);
   const onUserMove = p.view?.onUserMove;
+  const minZoomRef = useRef(0.02);
+  minZoomRef.current = p.view?.mode === "overview" ? 0.02 : (p.view?.minZoom ?? 0.02);
   useEffect(() => {
     const el = wrap.current;
     if (!el || !onUserMove) return;
@@ -247,8 +249,27 @@ function Canvas(p: CanvasProps) {
       void setViewport(axis === "x" ? { ...v, x: v.x - d } : { ...v, y: v.y - d });
       onUserMove();
     };
+    // ⌘/Ctrl＋クリック: 押したところを中心に拡大。Option/Alt も押すと縮小。ノードの上でも根拠は出さない
+    const onClick = (e: MouseEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = el.getBoundingClientRect();
+      const v = getViewport();
+      const sx = e.clientX - r.left;
+      const sy = e.clientY - r.top;
+      const fx = (sx - v.x) / v.zoom;
+      const fy = (sy - v.y) / v.zoom;
+      const zoom = Math.min(2, Math.max(minZoomRef.current, v.zoom * (e.altKey ? 1 / 1.5 : 1.5)));
+      void setViewport({ x: sx - fx * zoom, y: sy - fy * zoom, zoom }, { duration: 200 });
+      onUserMove();
+    };
     el.addEventListener("wheel", onWheel, { capture: true, passive: false });
-    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+    el.addEventListener("click", onClick, { capture: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel, { capture: true });
+      el.removeEventListener("click", onClick, { capture: true });
+    };
   }, [onUserMove, getViewport, setViewport]);
 
   return (
