@@ -1,4 +1,4 @@
-import { reviewSnapshot, type LogEvent, type Remark, type Snapshot } from "../../server/src/core/index.ts";
+import { reviewSnapshot, topicOf, type LogEvent, type Remark, type Snapshot } from "../../server/src/core/index.ts";
 import type { Speaking } from "./liveFeed.ts";
 
 // 見返しの時間軸（純粋なモジュール）。ログの出来事の配列から、時刻 t のスナップショット・字幕・反映の時刻を導く。
@@ -81,4 +81,53 @@ export function formatHms(sec: number): string {
   const mm = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
   const ss = String(total % 60).padStart(2, "0");
   return `${h}:${mm}:${ss}`;
+}
+
+// 章の最短の長さ（秒）。これより短い章は直前の章に含める
+export const MIN_CHAPTER_SECONDS = 45;
+
+// 議題ごとの章。topic は議題ノードの ID、name は最後の時点のその議題の text
+export type Chapter = { topic: string; name: string; start: number; end: number };
+
+// 最後の時点のスナップショットの changes から、議題が切り替わるところで区切る。
+// 議題は変わったノード自身を含めて parent をたどった最初の議題（topicOf と同じ規則）。見つからない変化は飛ばす。
+// 区切った後、45 秒未満の章と、直前の章と同じ議題の章は、直前の章に含める（直前の章の終わりを伸ばす）
+export function reviewChapters(timeline: ReviewTimeline): Chapter[] {
+  const { duration } = timeline;
+  const snapshot = snapshotAt(timeline, duration);
+  const map = { nodes: Object.fromEntries(snapshot.nodes.map((n) => [n.id, n])), order: snapshot.nodes.map((n) => n.id), nextId: 0 };
+  const split: { topic: string; start: number; end: number }[] = [];
+  for (const change of snapshot.changes) {
+    const topic = topicOf(map, change.node);
+    if (topic === undefined) continue;
+    const current = split[split.length - 1];
+    if (current?.topic === topic) continue;
+    if (current) current.end = change.at;
+    split.push({ topic, start: split.length === 0 ? 0 : change.at, end: duration });
+  }
+  const merged: { topic: string; start: number; end: number }[] = [];
+  for (const chapter of split) {
+    const previous = merged[merged.length - 1];
+    if (previous && (chapter.end - chapter.start < MIN_CHAPTER_SECONDS || previous.topic === chapter.topic)) previous.end = chapter.end;
+    else merged.push({ ...chapter });
+  }
+  return merged.map((c) => ({ ...c, name: map.nodes[c.topic]!.text }));
+}
+
+// ポインタの位置 t の章の名前。start ≤ t < end の章。t が会議の長さちょうどなら最後の章。章が無ければ空文字
+export function chapterNameAt(chapters: readonly Chapter[], t: number): string {
+  const found = chapters.find((c) => c.start <= t && t < c.end) ?? (t >= (chapters[chapters.length - 1]?.end ?? Number.POSITIVE_INFINITY) ? chapters[chapters.length - 1] : undefined);
+  return found?.name ?? "";
+}
+
+// シークバーに置く目印。kind は点の色の引き先（決定済み化は決定の色）
+export type Mark = { at: number; kind: "決定" | "TODO" };
+
+// 決定・TODO の追加と、決定済み化だけを目印にする。時刻は反映の時刻（at）
+export function reviewMarks(timeline: ReviewTimeline): Mark[] {
+  return snapshotAt(timeline, timeline.duration).changes.flatMap((c): Mark[] => {
+    if (c.change === "決定済み化") return [{ at: c.at, kind: "決定" }];
+    if (c.change === "追加" && (c.kind === "決定" || c.kind === "TODO")) return [{ at: c.at, kind: c.kind }];
+    return [];
+  });
 }

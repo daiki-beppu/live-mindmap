@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { reviewSnapshot } from "../../server/src/core/index.ts";
-import { buildReviewTimeline, formatHms, snapshotAt, speakingAt, topicNameOf } from "../src/reviewTimeline.ts";
+import { buildReviewTimeline, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, speakingAt, topicNameOf } from "../src/reviewTimeline.ts";
 
 // 見返しの時間軸（純粋なモジュール）。ログ（log.jsonl の行）の配列だけを入れて確かめる。
 // 時刻の軸は発言の end（会議の中の秒）で、ログの at は使わない（at はわざと逆順・無関係な値にしてある）。
@@ -220,5 +220,211 @@ describe("formatHms", () => {
     expect(formatHms(0)).toBe("0:00:00");
     expect(formatHms(65)).toBe("0:01:05");
     expect(formatHms(3725.9)).toBe("1:02:05");
+  });
+});
+
+// 章と目印。反映ごとに「end が at の発言 1 つ + diff 1 つ」を並べる。ノード ID は追加の順に n1, n2, …。
+// tail は、反映していない最後の発言の end（会議の長さを反映の時刻より後ろに伸ばす）
+type Round = { at: number; ops: Record<string, unknown>[] };
+const addNode = (ref: string, parent: string, kind: string, text: string) => ({ op: "add", ref, parent, kind, text });
+const updateNode = (node: string, fields: Record<string, unknown>) => ({ op: "update", node, ...fields });
+const meeting = (rounds: Round[], tail?: number) => {
+  const log: unknown[] = [{ at: "a", type: "start", title: "定例" }];
+  rounds.forEach((round, i) => {
+    const id = `r${i + 1}`;
+    log.push(remark(id, "相手", i === 0 ? 0 : rounds[i - 1]!.at, round.at, "発言。"));
+    log.push(diff([id], round.ops.map((o) => (o.op === "add" || o.op === "update" ? { ...o, evidence: [id] } : o))));
+  });
+  if (tail !== undefined) log.push(remark("tail", "自分", rounds.at(-1)?.at ?? 0, tail, "最後の発言。"));
+  return buildReviewTimeline(log);
+};
+const brief = (tl: ReturnType<typeof buildReviewTimeline>) => reviewChapters(tl).map(({ name, start, end }) => ({ name, start, end }));
+
+describe("reviewChapters（議題ごとの章）", () => {
+  it("変わったノードの議題が切り替わるところで区切る。最初の章は 0 秒から、最後の章は会議の長さまで。子の変化は親の議題に数える", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] }, // n1
+        { at: 100, ops: [addNode("b", "root", "議題", "B")] }, // n2
+        { at: 200, ops: [addNode("c", "n1", "要点", "Aの要点")] }, // n3: 親は A
+      ],
+      260,
+    );
+    expect(brief(tl)).toEqual([
+      { name: "A", start: 0, end: 100 },
+      { name: "B", start: 100, end: 200 },
+      { name: "A", start: 200, end: 260 },
+    ]);
+  });
+
+  it("同じ議題が続けば章を分けない", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("c", "n1", "要点", "Aの要点")] },
+        { at: 160, ops: [addNode("d", "n1", "論点", "Aの論点")] },
+      ],
+      200,
+    );
+    expect(brief(tl)).toEqual([{ name: "A", start: 0, end: 200 }]);
+  });
+
+  it("45 秒未満の章は前の章に含める。その後に同じ議題が隣り合えばつなぐ", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("b", "root", "議題", "B")] },
+        { at: 130, ops: [addNode("c", "n1", "要点", "Aの要点")] }, // B は 100–130（30 秒）
+      ],
+      300,
+    );
+    expect(brief(tl)).toEqual([{ name: "A", start: 0, end: 300 }]);
+  });
+
+  it("45 秒未満の章を含めると、前の章の終わりだけが伸びて、次の別の議題の章はそのまま残る", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("b", "root", "議題", "B")] },
+        { at: 130, ops: [addNode("c", "root", "議題", "C")] }, // B は 30 秒
+      ],
+      300,
+    );
+    expect(brief(tl)).toEqual([
+      { name: "A", start: 0, end: 130 },
+      { name: "C", start: 130, end: 300 },
+    ]);
+  });
+
+  it("45 秒ちょうどの章は残す", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("b", "root", "議題", "B")] },
+        { at: 145, ops: [addNode("c", "n1", "要点", "Aの要点")] }, // B は 45 秒ちょうど
+      ],
+      300,
+    );
+    expect(brief(tl)).toEqual([
+      { name: "A", start: 0, end: 100 },
+      { name: "B", start: 100, end: 145 },
+      { name: "A", start: 145, end: 300 },
+    ]);
+  });
+
+  it("45 秒未満の章が続けば、どちらも前の章に含める（統合した後の章を前として見る）", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+        { at: 100, ops: [addNode("b", "root", "議題", "B")] },
+        { at: 120, ops: [addNode("c", "root", "議題", "C")] }, // B は 20 秒
+        { at: 140, ops: [addNode("d", "root", "議題", "D")] }, // C は 20 秒
+      ],
+      300,
+    );
+    expect(brief(tl)).toEqual([
+      { name: "A", start: 0, end: 140 },
+      { name: "D", start: 140, end: 300 },
+    ]);
+  });
+
+  it("議題が見つからない変化（議題の外のノード・最後の時点に無いノード）は区切りを作らない", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A")] }, // n1
+        { at: 100, ops: [addNode("x", "root", "要点", "議題の外")] }, // n2: 議題が無い
+        { at: 150, ops: [addNode("b", "root", "議題", "B")] }, // n3
+        { at: 220, ops: [{ op: "delete", node: "n3" }] }, // B は最後の時点に無い
+      ],
+      300,
+    );
+    expect(brief(tl)).toEqual([{ name: "A", start: 0, end: 300 }]);
+  });
+
+  it("章の名前は、最後の時点の議題ノードの text", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "採用")] },
+        { at: 50, ops: [updateNode("n1", { text: "採用面接" })] },
+      ],
+      100,
+    );
+    expect(brief(tl)).toEqual([{ name: "採用面接", start: 0, end: 100 }]);
+  });
+
+  it("議題が 1 つも無ければ章は無い", () => {
+    expect(reviewChapters(meeting([{ at: 10, ops: [addNode("x", "root", "要点", "議題の外")] }], 60))).toEqual([]);
+    expect(reviewChapters(meeting([], 60))).toEqual([]);
+  });
+});
+
+describe("chapterNameAt（時刻の位置の章の名前）", () => {
+  const tl = meeting(
+    [
+      { at: 10, ops: [addNode("a", "root", "議題", "A")] },
+      { at: 100, ops: [addNode("b", "root", "議題", "B")] },
+    ],
+    200,
+  );
+
+  it("start ≤ t < end の章の名前。章の境目ちょうどは後ろの章。会議の長さちょうどは最後の章", () => {
+    const chapters = reviewChapters(tl);
+    expect(chapterNameAt(chapters, 0)).toBe("A");
+    expect(chapterNameAt(chapters, 99.9)).toBe("A");
+    expect(chapterNameAt(chapters, 100)).toBe("B");
+    expect(chapterNameAt(chapters, 200)).toBe("B");
+  });
+
+  it("章が無ければ空文字", () => {
+    expect(chapterNameAt([], 50)).toBe("");
+  });
+});
+
+describe("reviewMarks（決定・TODO の目印）", () => {
+  it("決定と TODO の追加、論点が決定済みになった変化を、反映の時刻で出す。決定済み化は決定の目印", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("p", "n1", "論点", "どうするか")] }, // n1, n2
+        { at: 40, ops: [addNode("t", "n1", "TODO", "資料を送る")] }, // n3
+        { at: 70, ops: [addNode("d", "n2", "決定", "これで行く")] }, // n4: 論点 n2 が決定済みになる
+      ],
+      100,
+    );
+    const marks = reviewMarks(tl);
+    expect([...marks].sort((x, y) => x.at - y.at)).toEqual([
+      { at: 40, kind: "TODO" },
+      { at: 70, kind: "決定" }, // 決定の追加
+      { at: 70, kind: "決定" }, // 決定済み化
+    ]);
+  });
+
+  it("議題・論点・要点・案の追加と、更新・移動・却下は目印にならない", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("b", "root", "議題", "B")] }, // n1, n2
+        { at: 20, ops: [addNode("p", "n1", "論点", "論点"), addNode("k", "n1", "要点", "要点"), addNode("s", "n1", "案", "案")] }, // n3, n4, n5
+        { at: 30, ops: [updateNode("n4", { text: "要点を直す" })] },
+        { at: 40, ops: [{ op: "move", node: "n4", parent: "n2" }] },
+        { at: 50, ops: [updateNode("n5", { planStatus: "却下" })] },
+      ],
+      100,
+    );
+    expect(reviewMarks(tl)).toEqual([]);
+  });
+
+  it("決定・TODO の更新や移動は目印にならない（追加の時刻の目印だけが残る）", () => {
+    const tl = meeting(
+      [
+        { at: 10, ops: [addNode("a", "root", "議題", "A"), addNode("b", "root", "議題", "B"), addNode("t", "n1", "TODO", "送る")] }, // n1, n2, n3
+        { at: 30, ops: [updateNode("n3", { text: "すぐ送る" })] },
+        { at: 50, ops: [{ op: "move", node: "n3", parent: "n2" }] },
+      ],
+      100,
+    );
+    expect(reviewMarks(tl)).toEqual([{ at: 10, kind: "TODO" }]);
+  });
+
+  it("変わったことが無ければ目印は無い", () => {
+    expect(reviewMarks(meeting([], 60))).toEqual([]);
   });
 });

@@ -84,11 +84,22 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .review { display: flex; flex-direction: column; width: 100%; height: 100%; }
 .review__session { flex: 1; min-height: 0; }
 .review-controls { flex: none; background: #374151; color: #f9fafb; box-shadow: none; }
+/* シークバー: 章ごとに区切って置く。トラックの背景は透明にし、章のすき間（2px）に操作の行の色（#374151）が見えるようにする。影・バッジは付けない */
 .review-seek { position: relative; display: block; width: 100%; height: 16px; cursor: pointer; touch-action: none; }
-.review-seek__track { position: absolute; left: 0; right: 0; top: 6px; height: 4px; background: #6b7280; }
-.review-seek__fill { height: 100%; width: var(--media-slider-fill, 0%); background: #f9fafb; }
-.review-seek__thumb { position: absolute; top: 2px; left: var(--media-slider-fill, 0%); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #f9fafb; box-shadow: none; }
+.review-seek__track { position: absolute; left: 0; right: 0; top: 6px; height: 3px; background: transparent; }
+.review-seek[data-pointing] .review-seek__track, .review-seek[data-dragging] .review-seek__track { top: 5px; height: 5px; }
+/* 章・塗り・目印はポインタの操作を奪わない（シークは Slider.Root が受ける） */
+.review-seek__chapter { position: absolute; top: 0; height: 100%; background: #6b7280; pointer-events: none; }
+.review-seek__progress { height: 100%; background: #f9fafb; pointer-events: none; }
+.review-seek__mark { position: absolute; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; pointer-events: none; z-index: 1; }
+/* つまみはふだん見せない。display: none や visibility: hidden は Tab でフォーカスできなくなるので opacity で隠す */
+.review-seek__thumb { position: absolute; top: 2px; left: var(--media-slider-fill, 0%); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #f9fafb; box-shadow: none; opacity: 0; }
+.review-seek[data-pointing] .review-seek__thumb, .review-seek[data-dragging] .review-seek__thumb, .review-seek__thumb:focus-visible { opacity: 1; }
 .review-seek__thumb:focus-visible { outline: 2px solid #facc15; }
+/* 吹き出し: ポインタの位置の章の名前と時刻。左右の位置は Slider.Preview が決める。マップの上に出すので z-index を付ける */
+.review-seek__preview { bottom: 100%; z-index: 10; display: none; flex-direction: column; align-items: center; padding: 4px 8px; border-radius: 4px; background: #374151; color: #f9fafb; font-size: 13px; line-height: 16px; white-space: nowrap; box-shadow: none; }
+.review-seek[data-pointing] .review-seek__preview, .review-seek[data-dragging] .review-seek__preview { display: flex; }
+.review-seek__preview-time { font-variant-numeric: tabular-nums; }
 .review-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px 8px; font-size: 14px; }
 .review-bar__button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: none; color: inherit; cursor: pointer; }
 .review-bar__button svg { width: 18px; height: 18px; }

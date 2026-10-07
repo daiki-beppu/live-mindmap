@@ -1,7 +1,8 @@
 import { Slider } from "@videojs/react";
 import { CheckIcon, PauseIcon, PlayIcon, SpeedIcon } from "@videojs/react/icons";
 import { useEffect, useRef, useState } from "react";
-import { formatHms } from "./reviewTimeline.ts";
+import { KIND_COLOR } from "./kinds.ts";
+import { chapterNameAt, formatHms, type Chapter, type Mark } from "./reviewTimeline.ts";
 
 // 見返しのシークバーと操作の行。状態は持たず、渡された時刻と出来事の送り先だけで描く。
 // シークバーは会議の時刻の軸で全幅に置き、操作の行はその下に置く（マップには重ねない）。
@@ -12,6 +13,8 @@ type Props = {
   rate: number;
   rates: readonly number[];
   topicName: string;
+  chapters: readonly Chapter[];
+  marks: readonly Mark[];
   onSeek: (time: number) => void;
   onToggle: () => void;
   onPrev: () => void;
@@ -86,14 +89,30 @@ function RateMenu({ duration, rate, rates, onRate }: Pick<Props, "duration" | "r
   );
 }
 
-export function ReviewControls({ time, duration, playing, rate, rates, topicName, onSeek, onToggle, onPrev, onNext, onRate }: Props) {
+export function ReviewControls({ time, duration, playing, rate, rates, topicName, chapters, marks, onSeek, onToggle, onPrev, onNext, onRate }: Props) {
+  // 章が無い、または会議の長さが 0 のときは、区切らずに全幅の 1 本で描く（0 での割り算を避ける）
+  const segments: readonly Chapter[] = chapters.length > 0 && duration > 0 ? chapters : [{ topic: "", name: "", start: 0, end: duration }];
   return (
     <div className="review-controls">
       <Slider.Root className="review-seek" min={0} max={duration} value={time} onValueChange={onSeek} onDragEnd={releaseFocus} onPointerUp={releaseFocus} label="時刻">
         <Slider.Track className="review-seek__track">
-          <Slider.Fill className="review-seek__fill" />
+          {segments.map((c) => {
+            const len = c.end - c.start;
+            const whole = chapters.length === 0 || duration <= 0;
+            const filled = whole ? (duration > 0 ? Math.min(1, time / duration) : 0) : len > 0 ? Math.min(1, Math.max(0, (time - c.start) / len)) : 0;
+            return (
+              <div key={c.start} className="review-seek__chapter" style={whole ? { left: 0, width: "100%" } : { left: `${(c.start / duration) * 100}%`, width: `calc(${(len / duration) * 100}% - 2px)` }}>
+                <div className="review-seek__progress" style={{ width: `${filled * 100}%` }} />
+              </div>
+            );
+          })}
+          {duration > 0 && marks.map((m, i) => <span key={i} className="review-seek__mark" style={{ left: `${(m.at / duration) * 100}%`, background: KIND_COLOR[m.kind] }} />)}
         </Slider.Track>
         <Slider.Thumb className="review-seek__thumb" />
+        <Slider.Preview className="review-seek__preview">
+          <Slider.Value type="pointer" className="review-seek__preview-chapter" format={(v) => chapterNameAt(chapters, v)} />
+          <Slider.Value type="pointer" className="review-seek__preview-time" format={formatHms} />
+        </Slider.Preview>
       </Slider.Root>
       <div className="review-bar">
         <button type="button" className="review-bar__button" aria-label="反映 1 つ戻る" onClick={onPrev}>
