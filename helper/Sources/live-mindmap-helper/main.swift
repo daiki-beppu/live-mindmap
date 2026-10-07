@@ -14,6 +14,7 @@ private let usage = """
 usage:
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>]
+  live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
 """
 
 private func listApps() throws {
@@ -123,6 +124,15 @@ private func main() async -> Int32 {
                 return 2
             case .success(let args):
                 try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex)
+            }
+        case "mix":
+            switch parseMixArguments(Array(arguments.dropFirst())) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
+                return 2
+            case .success(let args):
+                let inputs = try mixInputs(inSession: URL(fileURLWithPath: args.session, isDirectory: true), track: args.track)
+                try await mixRecordings(inputs, to: URL(fileURLWithPath: args.out))
             }
         default:
             printError(usage)
