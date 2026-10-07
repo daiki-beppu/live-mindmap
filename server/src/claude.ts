@@ -65,7 +65,7 @@ const SYSTEM = `あなたは会議のマインドマップを継続的に組み�
 ${NOOP_SCOPE}
 
 # 会話の扱い
-毎回のメッセージは独立した依頼です。前のメッセージのマップは古いので、そのメッセージの現在のマップだけを使ってください。`;
+この会話の最初のメッセージには、現在のマップの全体が載る。2 通目からは、マップの全体の代わりに前回からのマップの変更だけが載る。変更には、前回の操作を当てた結果（add で付いた id、update 後の本文、統合・移動・削除）が含まれる。最初のマップにこれまでの変更を順に当てたものが今のマップ。ノードは変更に書かれた id で指す`;
 
 const evidence = { type: "array", items: { type: "string" }, minItems: 1, description: "根拠の発言 id（例 r12）" };
 const nodeRef = { type: "string", description: "既存ノードの id（例 n3）か、同じ応答で add した ref" };
@@ -100,18 +100,46 @@ const SCHEMA = {
 const fmtTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const fmtRemark = (r: Remark) => `${r.id} [${fmtTime(r.start)}] ${r.text}`;
 
-// 根拠は渡さず、ID・種別・状態・本文だけを字下げした木で出す
+// 1 ノードの書式（ID・種別・状態・本文・TODO の担当と期限）。アウトラインと変更で共有する。根拠は渡さない
+function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): string {
+  const n = map.nodes[id]!;
+  const status = n.kind === "論点" ? `(${pointStatus(map, id)})`
+    : n.kind === "案" && (n.planStatus === "却下" || explicitPlanStatus) ? `(${n.planStatus === "却下" ? "却下" : "検討中"})` : n.planStatus === "却下" ? "(却下)" : "";
+  const todo = n.kind === "TODO" && (n.assignee || n.due) ? ` [${[n.assignee, n.due].filter(Boolean).join(" / ")}]` : "";
+  return `${n.id} ${n.kind}${status}: ${n.text}${todo}`;
+}
+
+// ID・種別・状態・本文だけを字下げした木で出す
 function renderOutline(map: MeetingMap): string {
   const lines: string[] = [];
   const walk = (id: string, depth: number) => {
-    const n = map.nodes[id]!;
-    const status = n.kind === "論点" ? `(${pointStatus(map, id)})` : n.planStatus === "却下" ? "(却下)" : "";
-    const todo = n.kind === "TODO" && (n.assignee || n.due) ? ` [${[n.assignee, n.due].filter(Boolean).join(" / ")}]` : "";
-    lines.push(`${"  ".repeat(depth)}- ${n.id} ${n.kind}${status}: ${n.text}${todo}`);
+    lines.push(`${"  ".repeat(depth)}- ${nodeLabel(map, id)}`);
     for (const c of children(map, id)) walk(c.id, depth + 1);
   };
   walk(ROOT_ID, 0);
   return lines.join("\n");
+}
+
+// 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
+function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
+  const lines: string[] = [];
+  const ids = (m: MeetingMap) => m.order.filter((id) => id !== ROOT_ID && m.nodes[id]);
+  for (const id of ids(prev)) {
+    if (!cur.nodes[id]) lines.push(`- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
+  }
+  for (const id of ids(cur)) {
+    const n = cur.nodes[id]!;
+    const old = prev.nodes[id];
+    if (!old) {
+      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）`);
+      continue;
+    }
+    const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.due !== old.due
+      || (n.kind === "論点" && pointStatus(cur, id) !== pointStatus(prev, id));
+    if (changed) lines.push(`- 更新 ${nodeLabel(cur, id, true)}`);
+    if (n.parent !== old.parent) lines.push(`- 移動 ${id} → 親: ${n.parent}`);
+  }
+  return lines.length ? lines.join("\n") : "（変更なし）";
 }
 
 function mapStats(map: MeetingMap, now: number): string {
@@ -120,10 +148,13 @@ function mapStats(map: MeetingMap, now: number): string {
   return `経過 ${Math.round(now / 60)} 分・ノード ${ids.length}・最大の深さ ${Math.max(0, ...ids.map(depth))}（目安: 60 分で 50 前後、深さ 4 まで）`;
 }
 
-export function buildPrompt({ map, recent, fresh }: DiffInput): string {
+// previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
+export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: MeetingMap): string {
   return [
     "## マップの状態", mapStats(map, fresh.at(-1)!.end), "",
-    `## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map), "",
+    ...(previous
+      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map)]
+      : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
     "## 新しい発言", fresh.map(fmtRemark).join("\n"),
   ].join("\n");
@@ -173,6 +204,7 @@ type Open = {
   query: Query;
   output: AsyncIterator<SDKMessage>;
   calls: number;
+  sent?: MeetingMap; // この query に前回送ったマップ。開き直しで Open ごと捨てられ、次の最初のメッセージで再び全体を送る
   aborted: Promise<never>; // close されたら reject する。待っている next() が終わらなくても、呼び出しを止める
   abort: () => void;
 };
@@ -193,6 +225,7 @@ export function openClaudeUpdater(run: typeof query = query): SessionUpdater {
         tools: [], settingSources: [], persistSession: false, maxTurns: 4,
         mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
         outputFormat: { type: "json_schema", schema: SCHEMA },
+        env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1" }, // env は subprocess の環境を置き換えるので process.env を引き継ぐ
       },
     });
     let abort!: () => void;
@@ -213,7 +246,8 @@ export function openClaudeUpdater(run: typeof query = query): SessionUpdater {
     if (current && current.calls >= QUERY_RENEW_CALLS) discard(current);
     const q = (current ??= open());
     q.calls++;
-    q.input.push({ type: "user", message: { role: "user", content: buildPrompt(input) }, parent_tool_use_id: null });
+    q.input.push({ type: "user", message: { role: "user", content: buildPrompt(input, q.sent) }, parent_tool_use_id: null });
+    q.sent = input.map;
     try {
       for (;;) {
         const { value: m, done } = await Promise.race([q.output.next(), q.aborted]);
