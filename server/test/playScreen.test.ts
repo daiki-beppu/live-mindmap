@@ -25,6 +25,9 @@ type Created = { messages: SentMessage[]; options: { systemPrompt: string } };
 const external = vi.hoisted(() => ({
   created: [] as Created[],
   openListener: vi.fn(),
+  // 全 query を通した何通目（0 から）の user メッセージを、どう終わらせるか。既定は成功
+  calls: 0,
+  behave: ((_n: number): "ok" | "fail" | "end" => "ok") as (n: number) => "ok" | "fail" | "end",
 }));
 
 vi.mock("../src/claude.ts", async (importOriginal) => {
@@ -37,8 +40,11 @@ vi.mock("../src/claude.ts", async (importOriginal) => {
     const gen = (async function* () {
       for await (const message of params.prompt) {
         record.messages.push(message);
+        const behavior = external.behave(external.calls++);
+        if (behavior === "end") return; // result を出さずにストリームが終わる
         yield { type: "assistant" };
-        yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "テスト" }] } };
+        if (behavior === "fail") yield { type: "result", subtype: "error_during_execution" };
+        else yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "テスト" }] } };
       }
     })();
     return Object.assign(gen, { close: () => {} });
@@ -52,6 +58,8 @@ vi.mock("../src/http.ts", async (importOriginal) => {
 
 beforeEach(() => {
   external.created.length = 0;
+  external.calls = 0;
+  external.behave = () => "ok";
   external.openListener.mockReset();
   external.openListener.mockImplementation(fakeListener().open);
 });
@@ -329,5 +337,127 @@ describe("play --screen", () => {
       const result = yield* Effect.result(runCli(["play", transcriptPath, "--screen", tsvPath]).pipe(Effect.provide(deps.layer)));
       expect(result._tag).toBe("Failure");
       if (result._tag === "Failure") expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+    }));
+
+  // 開き直した query の最初のメッセージへの、共有画面の送り直し。
+  // 発言 30 個（2 個ずつ 15 回の呼び出し。呼び出し k の区切りは 20k-1 秒）。QUERY_RENEW_CALLS = 14 なので 15 回目は開き直した query の最初のメッセージ。
+  // 変化は、映り始めがその呼び出しの 2 つ目の発言の start 以下なら、その呼び出しに添わる（20k-15 秒は呼び出し k）
+  const THIRTY_REMARKS = segments(Array.from({ length: 30 }, (_, i): [number, number, string] => [i * 10, i * 10 + 9, `発言${i}`]));
+  const textHeadings = (blocks: Block[]) => blocks.filter((b) => b.type === "text").map((b) => b.text!.trim());
+  const imagesOf = (blocks: Block[]) => blocks.filter((b) => b.type === "image").map((b) => imageBytes(b));
+  const jpeg = (slide: string) => Buffer.from(fakeJpegBytes(`png:slides/${slide}.png`));
+
+  it.effect("14 回ごとに開き直した query の最初のメッセージに、最後に添えた画面とその前の 1 件が、時刻つきで載る", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      // s1 は呼び出し 1、s2 は呼び出し 2、s3 は呼び出し 3 に添わる。その後は 15 回目まで新しい変化が無い
+      const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [
+        [5, 25, "s1", "slides/s1.png"],
+        [25, 45, "s2", "slides/s2.png"],
+        [45, 1000, "s3", "slides/s3.png"],
+      ]);
+      const deps = dependencies(join(root, "sessions"));
+      const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
+
+      expect(external.created).toHaveLength(2);
+      expect(external.created[0]!.messages).toHaveLength(14);
+      expect(external.created[1]!.messages).toHaveLength(1);
+      const reopened = blocksOf(external.created[1]!.messages[0]!);
+      expect(reopened.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text"]);
+      expect(textHeadings(reopened).slice(0, 2)).toEqual(["## 共有画面 [00:25] から", "## 共有画面 [00:45] から"]);
+      expect(imagesOf(reopened)).toEqual([jpeg("s2"), jpeg("s3")]);
+      // 最後は buildPrompt の text。開き直しなのでマップは全体
+      expect(reopened[4]!.text).toContain("## 現在のマップ");
+      // 開き直さなかった 2 通目以降には送り直しが付かない（呼び出し 4〜14 は新しい変化も無いので文字列）
+      expect(external.created[0]!.messages.slice(3).map((m) => typeof m.message.content)).toEqual(Array(11).fill("string"));
+
+      // 送り直しはログに残らない: 15 回目の diff に screens は無い
+      const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { input: Record<string, unknown> }[];
+      expect(diffs).toHaveLength(15);
+      expect("screens" in diffs[14]!.input).toBe(false);
+      expect(diffs.some((d) => "previousScreens" in d.input)).toBe(false);
+    }));
+
+  it.effect("最後に添えたのが「なし」なら、「なし」とその前の画面が載る。新しく添える画面は別に続き、画像は最大 5 枚", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      // s1 は呼び出し 1、s2 は呼び出し 2、45 秒の「なし」は呼び出し 3。15 回目（区切り 299 秒、14 回目は 279 秒）には s4・s5・s6 が新しく添わる
+      const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [
+        [5, 25, "s1", "slides/s1.png"],
+        [25, 45, "s2", "slides/s2.png"],
+        [280, 285, "s4", "slides/s4.png"],
+        [285, 290, "s5", "slides/s5.png"],
+        [290, 400, "s6", "slides/s6.png"],
+      ]);
+      const deps = dependencies(join(root, "sessions"));
+      const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
+
+      expect(external.created).toHaveLength(2);
+      const reopened = blocksOf(external.created[1]!.messages[0]!);
+      expect(textHeadings(reopened).slice(0, -1)).toEqual([
+        // 送り直し（その呼び出しより前に最後に添えた 2 件）
+        "## 共有画面 [00:25] から",
+        "## 共有画面：なし（[00:45] から）",
+        // その呼び出しで新しく添える画面
+        "## 共有画面 [04:40] から",
+        "## 共有画面 [04:45] から",
+        "## 共有画面 [04:50] から",
+      ]);
+      expect(imagesOf(reopened)).toEqual([jpeg("s2"), jpeg("s4"), jpeg("s5"), jpeg("s6")]);
+      expect(reopened[reopened.length - 1]!.text).toContain("## 現在のマップ");
+
+      // ログの screens は、その呼び出しで新しく添えた 3 件だけ
+      const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { input: { screens?: unknown } }[];
+      expect(diffs[14]!.input.screens).toEqual([
+        { start: 280, image: "0280.0.jpg" },
+        { start: 285, image: "0285.0.jpg" },
+        { start: 290, image: "0290.0.jpg" },
+      ]);
+    }));
+
+  for (const mode of ["fail", "end"] as const) {
+    it.effect(`${mode === "fail" ? "失敗" : "ストリームの終わり"}の後に開いた query の最初のメッセージにも、最後に添えた 2 件が載る（失敗した呼び出しで選んだ画面も数える）`, () =>
+      Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        // 呼び出し 3（0 から数えて 2 通目）が失敗: そこで選んだ「なし」（45 秒）も添えたものに数える。呼び出し 4 が新しい query の最初のメッセージ
+        external.behave = (n) => (n === 2 ? mode : "ok");
+        const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [
+          [5, 25, "s1", "slides/s1.png"],
+          [25, 45, "s2", "slides/s2.png"],
+        ]);
+        const deps = dependencies(join(root, "sessions"));
+        const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
+
+        expect(external.created).toHaveLength(2);
+        expect(external.created[0]!.messages).toHaveLength(3);
+        expect(external.created[1]!.messages).toHaveLength(12);
+        const reopened = blocksOf(external.created[1]!.messages[0]!);
+        expect(reopened.map((b) => b.type)).toEqual(["text", "image", "text", "text"]);
+        expect(textHeadings(reopened).slice(0, 2)).toEqual(["## 共有画面 [00:25] から", "## 共有画面：なし（[00:45] から）"]);
+        expect(imagesOf(reopened)).toEqual([jpeg("s2")]);
+        // 同じ query の 2 通目以降には付かない
+        expect(typeof external.created[1]!.messages[1]!.message.content).toBe("string");
+
+        // 失敗した回の diff には error が付き、続きも流れる。ログに送り直しは残らない
+        const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { error?: string; input: Record<string, unknown> }[];
+        expect(diffs).toHaveLength(15);
+        expect(diffs[2]!.error).toBeDefined();
+        expect(diffs[2]!.input.screens).toEqual([{ start: 45, image: null }]);
+        expect("screens" in diffs[3]!.input).toBe(false);
+      }));
+  }
+
+  it.effect("送り直すものも新しく添える画面も無い開き直しの最初のメッセージは、content が文字列のまま（共有画面を一度も添えていないとき）", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      external.behave = (n) => (n === 0 ? "fail" : "ok");
+      // 画面の変化は 15 回目より後（最後の呼び出しの区切り 299 秒より後）にだけある
+      const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [[500, 600, "s1", "slides/s1.png"]]);
+      const deps = dependencies(join(root, "sessions"));
+      yield* played(deps, [transcriptPath, "--screen", tsvPath]);
+
+      expect(external.created).toHaveLength(2);
+      expect(typeof external.created[1]!.messages[0]!.message.content).toBe("string");
+      expect(external.created.flatMap((c) => c.messages).every((m) => typeof m.message.content === "string")).toBe(true);
     }));
 });

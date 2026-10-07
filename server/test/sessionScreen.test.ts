@@ -198,6 +198,80 @@ describe("差分更新に添える画面の選び方", () => {
     }));
 });
 
+describe("開き直しのために送り直す、最後に添えた 2 件（DiffInput.previousScreens）", () => {
+  const previousStarts = (input: DiffInput) => input.previousScreens?.map((s) => s.start);
+
+  it.effect("最初の呼び出しには付かない（キーごと無い）。次の呼び出しには、前の呼び出しで添えた画面が、バイト列つきで載る", () =>
+    Effect.gen(function* () {
+      const { session, calls, call } = yield* setup();
+      const a = shot(1, "a");
+      yield* session.pushScreen(a);
+      yield* call(8, 9);
+      yield* call(18, 19);
+      expect("previousScreens" in calls[0]!).toBe(false);
+      expect(calls[1]!.previousScreens).toEqual([a]);
+      expect("screens" in calls[1]!).toBe(false); // 新しく添える画面とは別のキー
+    }));
+
+  it.effect("最後に添えた 2 件を、呼び出しをまたいで数える（古い方から押し出す）。添える画面が無い呼び出しにも載る", () =>
+    Effect.gen(function* () {
+      const { session, calls, call } = yield* setup();
+      yield* session.pushScreen(shot(1));
+      yield* call(8, 9);
+      yield* session.pushScreen(none(10));
+      yield* call(18, 19);
+      yield* call(28, 29); // 添える画面なし
+      yield* session.pushScreen(shot(30));
+      yield* call(38, 39);
+      yield* call(48, 49);
+      expect(calls.map(previousStarts)).toEqual([undefined, [1], [1, 10], [1, 10], [10, 30]]);
+      expect(calls[1]!.previousScreens![0]!.image!.bytes).toEqual(bytes("bytes:s1"));
+    }));
+
+  it.effect("1 回の呼び出しで 3 件添えたら、次の送り直しはその中の新しい 2 件。「なし」も 1 件に数える", () =>
+    Effect.gen(function* () {
+      const { session, calls, call } = yield* setup();
+      yield* session.pushScreen(shot(1));
+      yield* session.pushScreen(shot(2));
+      yield* session.pushScreen(none(3));
+      yield* call(8, 9);
+      yield* call(18, 19);
+      expect(previousStarts(calls[1]!)).toEqual([2, 3]);
+      expect(calls[1]!.previousScreens![1]!.image).toBeNull();
+    }));
+
+  it.effect("失敗した呼び出しで選んだ画面も「添えた」ものに数える", () =>
+    Effect.gen(function* () {
+      const { session, calls, call } = yield* setup({ fail: (i) => i === 1 });
+      yield* session.pushScreen(shot(1));
+      yield* call(8, 9);
+      yield* session.pushScreen(shot(10));
+      yield* call(18, 19); // 失敗
+      yield* call(28, 29);
+      expect(previousStarts(calls[2]!)).toEqual([1, 10]);
+    }));
+
+  it.effect("送り直す画面はログに書かない: diff の input に previousScreens は無く、screens は新しく添えた画面だけ", () =>
+    Effect.gen(function* () {
+      const { session, call, diffs } = yield* setup();
+      yield* session.pushScreen(shot(1));
+      yield* call(8, 9);
+      yield* session.pushScreen(shot(10));
+      yield* call(18, 19);
+      yield* call(28, 29);
+      expect(diffs().map((d) => d.input.screens)).toEqual([[{ start: 1, image: "0001.0.jpg" }], [{ start: 10, image: "0010.0.jpg" }], undefined]);
+      expect(diffs().some((d) => "previousScreens" in d.input)).toBe(false);
+    }));
+
+  it.effect("共有画面が一度も無いセッションの入力に previousScreens は付かない", () =>
+    Effect.gen(function* () {
+      const { calls, call } = yield* setup();
+      yield* call(8, 9);
+      yield* call(18, 19);
+      expect(calls.some((c) => "previousScreens" in c)).toBe(false);
+    }));
+});
+
 describe("ログの読み戻し（共有画面のないログは今までどおり読める）", () => {
   const start = { type: "start", title: "定例" };
   const r1 = { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "決めます" } };
@@ -215,7 +289,7 @@ describe("ログの読み戻し（共有画面のないログは今までどお�
       expect(withShots.known).toEqual(without.known);
     }));
 
-  it.effect("screen の行は読み飛ばされ、状態を変えない", () =>
+  it.effect("screen の行を読んでも、round・発言・マップは変わらない", () =>
     Effect.gen(function* () {
       const diff = { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [], dropped: [] };
       const plain = yield* restoreState([start, r1, diff]);

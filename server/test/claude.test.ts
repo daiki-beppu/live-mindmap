@@ -1380,3 +1380,117 @@ describe("共有画面（DiffInput.screens）の描画", () => {
       expect(created[1]!.options.systemPrompt).toBe(system);
     }));
 });
+
+describe("開き直しで送り直す共有画面（DiffInput.previousScreens）の描画", () => {
+  type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
+  const screenBytes = (n: number) => new Uint8Array([0xff, 0xd8, n, 0, 255]);
+  const shot = (start: number, n: number): ScreenChange => ({ start, image: { id: `s${n}`, bytes: screenBytes(n) } });
+  const gone = (start: number): ScreenChange => ({ start, image: null });
+  const withPrevious = (n: number, previousScreens: ScreenChange[], screens?: ScreenChange[]): DiffInput => ({
+    ...input(n),
+    previousScreens,
+    ...(screens ? { screens } : {}),
+  });
+  const blocksOf = (c: Created, i = 0) => c.messages[i]!.message?.content as Block[];
+  const headingsOf = (blocks: Block[]) => blocks.filter((b) => b.type === "text").map((b) => b.text!.trim());
+
+  it.effect("query の最初のメッセージに、送り直す画面を見出しと画像のブロックで時刻つきに並べ、最後に buildPrompt の text を続ける", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      const given = withPrevious(1, [shot(65, 1), shot(754.2, 2)]);
+      yield* updater.update(given);
+
+      const blocks = blocksOf(created[0]!);
+      expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text"]);
+      expect(blocks[0]!.text!.trim()).toBe("## 共有画面 [01:05] から");
+      expect(Buffer.from(blocks[1]!.source!.data, "base64")).toEqual(Buffer.from(screenBytes(1)));
+      expect(blocks[2]!.text!.trim()).toBe("## 共有画面 [12:34] から");
+      expect(blocks[3]).toEqual({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(screenBytes(2)).toString("base64") } });
+      expect(blocks[4]).toEqual({ type: "text", text: buildPrompt(given) });
+    }));
+
+  it.effect("「なし」は見出しだけ（画像のブロックは付かない）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(withPrevious(1, [shot(65, 1), gone(100)]));
+      const blocks = blocksOf(created[0]!);
+      expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text", "text"]);
+      expect(blocks[2]!.text!.trim()).toBe("## 共有画面：なし（[01:40] から）");
+    }));
+
+  it.effect("新しく添える画面とは別に付く: 送り直しが先、新しい画面が後、最後に buildPrompt の text", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      const given = withPrevious(1, [shot(10, 1), gone(20)], [shot(30, 2), shot(40, 3), gone(50)]);
+      yield* updater.update(given);
+
+      const blocks = blocksOf(created[0]!);
+      expect(headingsOf(blocks).slice(0, -1)).toEqual([
+        "## 共有画面 [00:10] から",
+        "## 共有画面：なし（[00:20] から）",
+        "## 共有画面 [00:30] から",
+        "## 共有画面 [00:40] から",
+        "## 共有画面：なし（[00:50] から）",
+      ]);
+      expect(blocks.filter((b) => b.type === "image")).toHaveLength(3);
+      expect(blocks[blocks.length - 1]).toEqual({ type: "text", text: buildPrompt(given) });
+    }));
+
+  it.effect("送り直しは、その query の最初のメッセージだけ。同じ query の 2 通目以降は、previousScreens があっても付けず、文字列のまま", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(withPrevious(1, [shot(10, 1)]));
+      yield* updater.update(withPrevious(2, [shot(10, 1), shot(20, 2)]));
+      yield* updater.update(withPrevious(3, [shot(20, 2), shot(30, 3)], [shot(40, 4)]));
+
+      expect(created).toHaveLength(1);
+      expect(Array.isArray(created[0]!.messages[0]!.message?.content)).toBe(true);
+      expect(typeof created[0]!.messages[1]!.message?.content).toBe("string");
+      // 2 通目以降でも、新しく添える画面は今までどおり付く。送り直しの画面は混ざらない
+      const third = blocksOf(created[0]!, 2);
+      expect(headingsOf(third).slice(0, -1)).toEqual(["## 共有画面 [00:40] から"]);
+      expect(third.filter((b) => b.type === "image")).toHaveLength(1);
+    }));
+
+  it.effect("失敗の後に開き直した query の最初のメッセージに付く（失敗した query の 2 通目以降には付かない）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((q, m) => (q === 0 && m === 1 ? "fail" : "ok"));
+      yield* updater.update(input(1));
+      yield* Effect.flip(updater.update(input(2)));
+      yield* updater.update(withPrevious(3, [shot(10, 1), gone(20)]));
+      yield* updater.update(withPrevious(4, [shot(10, 1), gone(20)]));
+
+      expect(created).toHaveLength(2);
+      expect(created[1]!.messages).toHaveLength(2);
+      expect(headingsOf(blocksOf(created[1]!, 0)).slice(0, -1)).toEqual(["## 共有画面 [00:10] から", "## 共有画面：なし（[00:20] から）"]);
+      expect(typeof created[1]!.messages[1]!.message?.content).toBe("string");
+    }));
+
+  it.effect("ストリームが終わった後に開き直した query の最初のメッセージにも付く", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((q) => (q === 0 ? "end" : "ok"));
+      yield* Effect.flip(updater.update(input(1)));
+      yield* updater.update(withPrevious(2, [shot(10, 1)]));
+      expect(created).toHaveLength(2);
+      expect(headingsOf(blocksOf(created[1]!)).slice(0, -1)).toEqual(["## 共有画面 [00:10] から"]);
+    }));
+
+  it.effect("QUERY_RENEW_CALLS 回の後に開き直した query の最初のメッセージに付く", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      for (let n = 1; n <= QUERY_RENEW_CALLS; n++) yield* updater.update(input(n));
+      yield* updater.update(withPrevious(QUERY_RENEW_CALLS + 1, [shot(10, 1), shot(20, 2)]));
+      expect(created).toHaveLength(2);
+      expect(created[1]!.messages).toHaveLength(1);
+      expect(headingsOf(blocksOf(created[1]!)).slice(0, -1)).toEqual(["## 共有画面 [00:10] から", "## 共有画面 [00:20] から"]);
+    }));
+
+  it.effect("送り直すものも新しく添える画面も無い呼び出しは、開き直した query の最初のメッセージでも文字列のまま。previousScreens が空の配列でも同じ", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((q) => (q === 0 ? "fail" : "ok"));
+      yield* Effect.flip(updater.update(input(1)));
+      yield* updater.update({ ...input(2), previousScreens: [] });
+      expect(created).toHaveLength(2);
+      expect(created[1]!.messages[0]!.message?.content).toBe(buildPrompt({ ...input(2), previousScreens: [] }));
+    }));
+});
