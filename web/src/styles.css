@@ -93,4 +93,13 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .review-bar__button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: none; color: inherit; cursor: pointer; }
 .review-bar__button svg { width: 18px; height: 18px; }
 .review-bar__time { font-variant-numeric: tabular-nums; }
-.review-bar__topic { margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-bar__topic { min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 見返しの速さのメニュー: 操作の行の右端。濃い灰色の行に合わせ、影・バッジは付けない。行は画面の下端なので上に開く */
+.review-rate { position: relative; margin-left: auto; flex: none; }
+.review-bar__button.review-rate__button { width: auto; gap: 4px; padding: 0 8px; }
+.review-rate__menu { position: absolute; right: 0; bottom: 100%; z-index: 10; display: flex; flex-direction: column; min-width: 220px; padding: 4px; border-radius: 6px; background: #374151; color: #f9fafb; box-shadow: none; }
+.review-rate__item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
+.review-rate__item:hover, .review-rate__item:focus-visible { background: #4b5563; }
+.review-rate__check { display: inline-flex; width: 16px; height: 16px; }
+.review-rate__check svg { width: 16px; height: 16px; }
