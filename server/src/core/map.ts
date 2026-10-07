@@ -23,6 +23,10 @@ export const MapNode = Schema.Struct({
   due: Schema.optionalKey(Schema.String), // TODO だけ
   // 発言の ID。ルート以外は 1 つ以上（ルートは emptyMap が空で作るので、要素数は検査しない）
   evidence: Schema.mutable(Schema.Array(Schema.String)),
+  // 最後に触れた時刻（その反映に渡した新しい発言の end の最大値）。触れたノードとルートを除く祖先に付く
+  touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Number)),
+  // 最後に根拠が足された反映の番号。根拠が足されたノード自身だけに付く
+  evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Number)),
 });
 export type MapNode = typeof MapNode["Type"];
 
@@ -123,6 +127,13 @@ function parentError(parent: MapNode | undefined, kind: MapNode["kind"]): string
   return null;
 }
 
+// id のノードから親をたどり、ルートを除く各ノードに触れた時刻を書く。id が null・存在しないときは何もしない。
+function touchUp(map: MeetingMap, id: string | null, at: number) {
+  for (let cur = id ? map.nodes[id] : undefined; cur && cur.id !== ROOT_ID; cur = cur.parent ? map.nodes[cur.parent] : undefined) {
+    cur.touchedAt = at;
+  }
+}
+
 function removeNode(map: MeetingMap, id: string) {
   delete map.nodes[id];
   map.order = map.order.filter((k) => k !== id);
@@ -131,8 +142,10 @@ function removeNode(map: MeetingMap, id: string) {
 // マップの変更はすべてここを通す。操作は適用する時点のマップに対して検証し、
 // 成り立たない操作は捨てて理由を返し、残りは適用を続ける。
 // known は根拠に使える発言の ID。知らない発言を根拠に挙げた操作は捨てる。
+// stamp は、この反映の番号（round）と、渡した新しい発言の end の最大値（at）。触れたノードの touchedAt と、根拠が足されたノードの evidenceRound に使う。
 // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
+  const { round, at } = stamp;
   const map = cloneMap(input);
   const dropped: Dropped[] = [];
   const changeOrder: string[] = [];
@@ -158,6 +171,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         const id = `n${map.nextId++}`;
         map.nodes[id] = {
           id, parent: parentId, kind: op.kind, text: op.text, evidence: [...op.evidence],
+          evidenceRound: round,
           ...(op.kind === "案" ? { planStatus: "検討中" as const } : {}),
           ...(op.kind === "TODO" && op.assignee ? { assignee: op.assignee } : {}),
           ...(op.kind === "TODO" && op.due ? { due: op.due } : {}),
@@ -165,6 +179,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         map.order.push(id);
         refs.set(op.ref, id);
         changeOrder.push(id);
+        touchUp(map, id, at);
         break;
       }
       case "update": {
@@ -173,10 +188,12 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         if (op.planStatus && n.kind !== "案") { drop(op, "状態を持つのは案だけ"); break; }
         const err = evidenceError(op.evidence);
         if (err) { drop(op, err); break; }
+        const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
         const valueChanged = (!!op.text && op.text !== n.text)
           || (!!op.planStatus && op.planStatus !== n.planStatus)
-          || op.evidence.some((u) => !n.evidence.includes(u));
-        if (valueChanged) changeOrder.push(n.id);
+          || evidenceAdded;
+        if (valueChanged) { changeOrder.push(n.id); touchUp(map, n.id, at); }
+        if (evidenceAdded) n.evidenceRound = round;
         if (op.text) n.text = op.text;
         if (op.planStatus) n.planStatus = op.planStatus;
         for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
@@ -188,8 +205,12 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         if (isDescendant(map, parentId, n.id)) { drop(op, "自分の子孫の下へは移せない"); break; }
         const err = parentError(map.nodes[parentId], n.kind);
         if (err) { drop(op, err); break; }
-        if (n.parent !== parentId) changeOrder.push(n.id);
-        n.parent = parentId;
+        if (n.parent !== parentId) {
+          changeOrder.push(n.id);
+          touchUp(map, n.parent, at);
+          n.parent = parentId;
+          touchUp(map, n.id, at);
+        }
         break;
       }
       case "combine": {
@@ -199,16 +220,20 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         if (isDescendant(map, into.id, from.id)) { drop(op, "子孫へは統合できない"); break; }
         const kids = children(map, from.id);
         if (kids.length && isLeafKind(into.kind)) { drop(op, `${into.kind} は子を持てない`); break; }
+        touchUp(map, from.parent, at);
         for (const k of kids) k.parent = into.id;
         for (const u of from.evidence) if (!into.evidence.includes(u)) into.evidence.push(u);
         removeNode(map, from.id);
         changeOrder.push(into.id);
+        into.evidenceRound = round;
+        touchUp(map, into.id, at);
         break;
       }
       case "delete": {
         const n = map.nodes[resolve(op.node)];
         if (!n || n.id === ROOT_ID) { drop(op, "対象が無い"); break; }
         if (children(map, n.id).length) { drop(op, "子を持つノードは削除できない"); break; }
+        touchUp(map, n.parent, at);
         removeNode(map, n.id);
         break;
       }

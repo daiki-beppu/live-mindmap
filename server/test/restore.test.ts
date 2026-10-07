@@ -100,6 +100,23 @@ describe("ログからの復元", () => {
       expect((yield* restored.snapshot).round).toBe((yield* session.snapshot).round);
     }));
 
+  it.effect("復元したスナップショットの touchedAt・evidenceRound が元と一致し、ルート以外のノードに付いている", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* original();
+      const restored = yield* restore(viaJsonl(events));
+      const live = (yield* session.snapshot).nodes;
+      const back = (yield* restored.snapshot).nodes;
+
+      const others = live.filter((n) => n.parent !== null);
+      expect(others.length).toBeGreaterThan(0);
+      for (const n of others) expect(typeof n.touchedAt).toBe("number");
+      expect(others.some((n) => n.evidenceRound !== undefined && n.evidenceRound > 1)).toBe(true);
+      expect(back.map((n) => [n.id, n.touchedAt, n.evidenceRound])).toEqual(live.map((n) => [n.id, n.touchedAt, n.evidenceRound]));
+      const root = back.find((n) => n.parent === null)!;
+      expect(root).not.toHaveProperty("touchedAt");
+      expect(root).not.toHaveProperty("evidenceRound");
+    }));
+
   it.effect("復元したセッションの今の議題と今の時刻が元と一致する（議題の無い課題だけの反映は前の値のまま）", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
