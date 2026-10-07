@@ -47,6 +47,20 @@ const HELP: [string, string][] = [
   ["⌘＋スクロール・ピンチ", "拡大・縮小"],
   ["⌘＋クリック", "押したところを拡大（Option で縮小）"],
 ];
+// 日本語入力がオンでも効くように、全角の記号・入力中（Process）のキーを半角のキーに直す
+const WIDE: Record<string, string> = { "？": "?", "＝": "=", "＋": "+", "－": "-", "ー": "-", "０": "0", "［": "[", "］": "]", "「": "[", "」": "]", "　": " " };
+function keyOf(e: KeyboardEvent): string {
+  if (e.key === "Process" || e.key === "Unidentified" || e.isComposing) {
+    if (e.code.startsWith("Key")) return e.code.slice(3).toLowerCase();
+    if (e.code.startsWith("Digit")) return e.code.slice(5);
+    const byCode: Record<string, string> = { Slash: e.shiftKey ? "?" : "/", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Space: " " };
+    return byCode[e.code] ?? e.key;
+  }
+  if (WIDE[e.key]) return WIDE[e.key]!;
+  // 全角の英字（ｆ・Ｆ など）
+  if (/^[ａ-ｚＡ-Ｚ]$/.test(e.key)) return String.fromCharCode(e.key.charCodeAt(0) - 0xfee0);
+  return e.key;
+}
 type Ov = "topics" | "fold" | "open";
 const OV_NAME: Record<Ov, string> = { topics: "全体（F）: 議題だけの縮図", fold: "全体（F）: 畳んだまま", open: "全体（F）: 畳んだ議題も開く" };
 type Cue = "none" | "text" | "count";
@@ -137,20 +151,21 @@ function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLSelectElement || e.target instanceof HTMLInputElement) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return; // ブラウザ・会議アプリのキーには触れない
+      const key = keyOf(e);
       const move = (c: Omit<Command, "seq">) => {
         lastMove.current = performance.now();
         setMode("manual");
         setCommand((prev) => ({ ...c, seq: (prev?.seq ?? 0) + 1 }));
       };
       const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-      if (e.key in arrows) {
+      if (key in arrows) {
         if (!e.shiftKey) return; // 矢印だけはノードの選択に空けておく
         e.preventDefault();
-        const [x, y] = arrows[e.key]!;
+        const [x, y] = arrows[key]!;
         move({ type: "pan", dx: x / 3, dy: y / 3 });
         return;
       }
-      switch (e.key) {
+      switch (key) {
         case "Escape":
           if (showHelpRef.current) return setShowHelp(false);
           setSelectedId(null);
@@ -189,7 +204,7 @@ function App() {
           return setShowHelp((v) => !v);
         case "[":
         case "]": {
-          const d = e.key === "]" ? 1 : -1;
+          const d = key === "]" ? 1 : -1;
           return setIndex((i) => Math.max(0, Math.min((meeting?.diffEnds.length ?? 1) - 1, i + d)));
         }
         case " ":
@@ -302,7 +317,7 @@ function App() {
           <ChangeList changes={frame.snapshot.changes.slice(-200)} onSelect={onSelect} />
         </div>
       </div>
-      <div className="proto-bar">
+      <div className="proto-bar" onChange={(e) => (e.target as HTMLElement).blur()} onMouseUp={(e) => e.target instanceof HTMLButtonElement && e.target.blur()}>
         <select value={sample} onChange={(e) => (setSample(e.target.value), setParam("sample", e.target.value))}>
           <option value="parnassus">parnassus 161 分</option>
           <option value="silly">silly 76 分</option>
