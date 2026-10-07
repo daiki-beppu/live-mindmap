@@ -120,7 +120,7 @@ if (import.meta.main) {
   const audioMixLayer = AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner));
   const writeReview: PromiseReviewPages = (dir, logPath, variants) =>
     Effect.runPromise(
-      Effect.result(writeReviewPages(dir, logPath, variants).pipe(Effect.provide(Layer.mergeAll(ReviewBuild.layer, audioMixLayer)))),
+      Effect.result(writeReviewPages(dir, logPath, variants).pipe(Effect.provide(Layer.mergeAll(ReviewBuild.layer, audioMixLayer).pipe(Layer.provideMerge(NodeFileSystem.layer))))),
     ).then((result) => {
       if (Result.isFailure(result)) throw result.failure;
       return result.success;

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { TestClock } from "effect/testing";
@@ -65,7 +66,7 @@ const writeReviewWith = (mix: FakeMix): PromiseReviewPages => (dir, logPath, var
   Effect.runPromise(
     writeReviewPages(dir, logPath, variants).pipe(
       Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
-      Effect.provide(mix.layer),
+      Effect.provide(Layer.merge(mix.layer, NodeFileSystem.layer)),
     ),
   );
 const fakeWriteReview: PromiseReviewPages = writeReviewWith(fakeAudioMix());

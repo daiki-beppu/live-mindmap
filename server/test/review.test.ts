@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
 import { REVIEW_AUDIO_ELEMENT_ID, REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, embedReviewAudio, embedReviewLicenses, embedReviewLog, makeSession, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
@@ -32,8 +33,10 @@ function licensesTemplate(html: string): { raw: string; decoded: string } {
   return { raw, decoded: raw.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&") };
 }
 
+// 書き出し（ログの読み込み・HTML の書き込み・mix の一時フォルダ）は本物の FileSystem で、ビルドだけ偽物にする
 const fakeBuild = (build: () => Effect.Effect<string, ReviewPageFailed>) =>
-  Effect.provideService(ReviewBuild, ReviewBuild.of({ build }));
+  <A, E, R>(self: Effect.Effect<A, E, R>) =>
+    self.pipe(Effect.provideService(ReviewBuild, ReviewBuild.of({ build })), Effect.provide(NodeFileSystem.layer));
 
 const PLAIN = { file: "map.html", audio: false } as const;
 const WITH_AUDIO = { file: "map-audio.html", audio: true } as const;

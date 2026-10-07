@@ -3,8 +3,9 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { chromium } from "playwright";
 import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { ReviewBuild, writeReviewPages } from "../src/review.ts";
@@ -48,8 +49,7 @@ describe("map.html の本物のビルド", () => {
 
       // 本物のビルドは 1 回だけ。音声つきの版には、偽の mix の出力（小さなバイト列）を埋め込む
       const { paths: [path, audioPath], skipped } = yield* writeReviewPages(dir, logPath, [{ file: "map.html", audio: false }, { file: "map-audio.html", audio: true }]).pipe(
-        Effect.provide(ReviewBuild.layer),
-        Effect.provide(fakeAudioMix().layer),
+        Effect.provide(Layer.mergeAll(ReviewBuild.layer, fakeAudioMix().layer).pipe(Layer.provideMerge(NodeFileSystem.layer))),
       );
 
       expect(skipped).toEqual([]);
