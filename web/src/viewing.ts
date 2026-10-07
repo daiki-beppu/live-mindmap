@@ -19,7 +19,14 @@ export type ViewingEvent =
   | { type: "edgeDot"; id: string }
   | { type: "keyList"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "escape"; meta: boolean; ctrl: boolean; alt: boolean }
-  | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean };
+  | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean }
+  // 触らずに 10 秒たった（見返しの manual のときだけ効く）
+  | { type: "idle" }
+  // 見返しで時刻を動かした（▶・シーク・反映の前後。見返しの manual・overview で効く）
+  | { type: "timeMoved" };
+
+// ライブか見返しか。ライブでは時間でも時刻でも自動に戻らない
+export type ViewingScope = "live" | "review";
 
 // 見えている木: 見せるノード・目標の位置・今の議題
 export type VisibleTree = { ids: string[]; targets: Record<string, Position>; currentTopic: string | undefined };
@@ -40,6 +47,16 @@ export type CameraCommand =
   | { type: "restore" };
 
 export const INITIAL_VIEWING: ViewingState = { mode: "auto" };
+
+// カメラへの指示と、その通し番号。番号が変わるたびに、マップは指示を受け取り直す
+export type CameraOrder = { command: CameraCommand; seq: number };
+
+// 次の指示を決める。まだ描画されていない refocus（current.seq が shownSeq と異なる）は、
+// 同じ更新内で続く follow で上書きしない（上書きするとマップに refocus が届かない）。それ以外は常に新しい番号の指示にする
+export function nextCameraOrder(current: CameraOrder, command: CameraCommand, shownSeq: number): CameraOrder {
+  if (command.type === "follow" && current.command.type === "refocus" && current.seq !== shownSeq) return current;
+  return { command, seq: current.seq + 1 };
+}
 
 const ZOOM_STEP = 1.25;
 
@@ -79,20 +96,37 @@ function withoutKeyList(state: ViewingState): CameraViewing {
 
 // キー一覧の開閉はカメラの状態と独立。? と、開いている間の修飾なしの Esc だけが開閉を変える。
 // それ以外の出来事は、開閉を外した状態で reduceCamera に渡し、結果に開閉を戻す
-export function reduceViewing(state: ViewingState, event: ViewingEvent, tree: VisibleTree): { state: ViewingState; camera: CameraCommand } {
+export function reduceViewing(
+  state: ViewingState,
+  event: ViewingEvent,
+  tree: VisibleTree,
+  scope: ViewingScope = "live",
+): { state: ViewingState; camera: CameraCommand } {
   const modified = (e: { meta: boolean; ctrl: boolean; alt: boolean }) => e.meta || e.ctrl || e.alt;
   if (event.type === "keyList") {
     if (modified(event)) return { state, camera: idle(state) };
     return { state: state.keyList ? withoutKeyList(state) : { ...state, keyList: true }, camera: idle(state) };
   }
   if (event.type === "escape" && !modified(event) && state.keyList) return { state: withoutKeyList(state), camera: idle(state) };
-  const out = reduceCamera(withoutKeyList(state), event, tree);
+  const out = reduceCamera(withoutKeyList(state), event, tree, scope);
   return state.keyList ? { state: { ...out.state, keyList: true }, camera: out.camera } : out;
 }
 
-// 純粋な関数。時間では自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
-function reduceCamera(state: CameraViewing, event: Exclude<ViewingEvent, { type: "keyList" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
+// 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
+// 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体を見ているとき時刻を動かすと戻る。
+function reduceCamera(
+  state: CameraViewing,
+  event: Exclude<ViewingEvent, { type: "keyList" }>,
+  tree: VisibleTree,
+  scope: ViewingScope,
+): { state: CameraViewing; camera: CameraCommand } {
   switch (event.type) {
+    case "idle":
+      if (scope === "review" && state.mode === "manual") return { state: AUTO, camera: REFOCUS };
+      return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
+    case "timeMoved":
+      if (scope === "review" && state.mode !== "auto") return { state: AUTO, camera: REFOCUS };
+      return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
     case "userMoved":
       return { state: { mode: "manual", topic: tree.currentTopic }, camera: HOLD };
     case "reflect":

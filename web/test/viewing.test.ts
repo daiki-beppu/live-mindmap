@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INITIAL_VIEWING, reduceViewing, type CameraCommand, type ViewingEvent, type ViewingState, type VisibleTree } from "../src/viewing.ts";
+import { INITIAL_VIEWING, nextCameraOrder, reduceViewing, type CameraCommand, type CameraOrder, type ViewingEvent, type ViewingState, type VisibleTree } from "../src/viewing.ts";
 
 const tree = (currentTopic: string | undefined): VisibleTree => ({
   ids: ["root", "n1", "n2"],
@@ -439,5 +439,184 @@ describe("reduceViewing: ? のキー一覧の開閉", () => {
     const frozenOpen: ViewingState = Object.freeze({ mode: "manual", topic: "n1", keyList: true });
     expect(reduceViewing(frozenOpen, plainEscape, tree("n1")).state).toEqual(manual);
     expect(frozenOpen).toEqual(open(manual));
+  });
+});
+
+const idle: ViewingEvent = { type: "idle" };
+const timeMoved: ViewingEvent = { type: "timeMoved" };
+const bothEvents: [string, ViewingEvent][] = [["触らずに 10 秒たった", idle], ["時刻を動かした", timeMoved]];
+
+// 見返し（"review"）かライブかを渡して、出来事の列を同じ状態につなぐ。
+const runIn = (scope: "live" | "review", events: [ViewingEvent, VisibleTree][], from: ViewingState = INITIAL_VIEWING) => {
+  let state = from;
+  const commands: CameraCommand[] = [];
+  for (const [event, t] of events) {
+    const out = reduceViewing(state, event, t, scope);
+    state = out.state;
+    commands.push(out.camera);
+  }
+  return { state, commands };
+};
+
+const manualN1: ViewingState = { mode: "manual", topic: "n1" };
+const overviewFrom = (from: ViewingState) => run([[key("F"), tree("n1")]], from).state;
+
+describe("reduceViewing: 見返しでは、触らずに 10 秒たつか時刻を動かすと自動に戻る", () => {
+  for (const [name, event] of bothEvents) {
+    it(`見返しで止めているとき、${name}と自動に戻り、寄せ直す（refocus）`, () => {
+      const out = reduceViewing(manualN1, event, tree("n1"), "review");
+      expect(out.state).toEqual({ mode: "auto" });
+      expect(out.camera).toEqual({ type: "refocus" });
+    });
+  }
+
+  it("見返しで全体を見ているとき、時刻を動かすと自動に戻り、寄せ直す。前が自動でも人でも同じ", () => {
+    for (const from of [INITIAL_VIEWING, manualN1]) {
+      const overview = overviewFrom(from);
+      expect(overview.mode).toBe("overview");
+      const out = reduceViewing(overview, timeMoved, tree("n1"), "review");
+      expect(out.state).toEqual({ mode: "auto" });
+      expect(out.camera).toEqual({ type: "refocus" });
+    }
+  });
+
+  it("見返しで全体を見ているとき、触らずに 10 秒たっても何も変えない（hold）。対照として時刻なら戻る", () => {
+    const overview = overviewFrom(INITIAL_VIEWING);
+    const out = reduceViewing(overview, idle, tree("n1"), "review");
+    expect(out.state).toEqual(overview);
+    expect(out.camera).toEqual({ type: "hold" });
+    expect(reduceViewing(overview, timeMoved, tree("n1"), "review").state).toEqual({ mode: "auto" });
+  });
+
+  it("止まる → 触らず戻る → また止まる → 時刻で戻る（戻りは1回きりではない）", () => {
+    const { state, commands } = runIn("review", [[moved, tree("n1")], [idle, tree("n1")], [moved, tree("n1")], [timeMoved, tree("n1")]]);
+    expect(state).toEqual({ mode: "auto" });
+    expect(commands).toEqual([{ type: "hold" }, { type: "refocus" }, { type: "hold" }, { type: "refocus" }]);
+  });
+
+  it("戻った後に人が動かすと、また止まる", () => {
+    const { state } = runIn("review", [[moved, tree("n1")], [timeMoved, tree("n1")], [moved, tree("n1")]]);
+    expect(state).toEqual({ mode: "manual", topic: "n1" });
+  });
+});
+
+describe("reduceViewing: ライブでは時間でも時刻でも戻らない", () => {
+  const states: [string, ViewingState][] = [
+    ["止めている", manualN1],
+    ["全体を見ている", overviewFrom(INITIAL_VIEWING)],
+  ];
+  for (const [eventName, event] of bothEvents) {
+    for (const [stateName, from] of states) {
+      it(`${stateName}とき、${eventName}でも変えず hold（scope 省略・"live" 明示とも）。見返しなら戻る（対照）`, () => {
+        const omitted = reduceViewing(from, event, tree("n1"));
+        const explicit = reduceViewing(from, event, tree("n1"), "live");
+        for (const out of [omitted, explicit]) {
+          expect(out.state).toEqual(from);
+          expect(out.camera).toEqual({ type: "hold" });
+        }
+        if (!(stateName === "全体を見ている" && event.type === "idle")) {
+          expect(reduceViewing(from, event, tree("n1"), "review").state).toEqual({ mode: "auto" });
+        }
+      });
+    }
+  }
+});
+
+describe("reduceViewing: 自動のときは、2 つの出来事で何も変わらない", () => {
+  for (const scope of ["live", "review"] as const) {
+    for (const [name, event] of bothEvents) {
+      it(`${scope}: ${name}でも自動のまま、自動で寄せる（follow）`, () => {
+        const out = reduceViewing(INITIAL_VIEWING, event, tree("n1"), scope);
+        expect(out.state).toEqual({ mode: "auto" });
+        expect(out.camera).toEqual({ type: "follow" });
+      });
+    }
+  }
+});
+
+describe("reduceViewing: 新しい出来事でも入力を書き換えない", () => {
+  it("止めている状態に適用しても、入力の状態と木は変わらず、同じ入力なら同じ出力", () => {
+    for (const [, event] of bothEvents) {
+      const state: ViewingState = Object.freeze({ mode: "manual", topic: "n1" });
+      const t = tree("n1");
+      const snapshot = JSON.stringify(t);
+      const out = reduceViewing(state, event, t, "review");
+      expect(state).toEqual({ mode: "manual", topic: "n1" });
+      expect(JSON.stringify(t)).toBe(snapshot);
+      expect(reduceViewing(state, event, t, "review")).toEqual(out);
+    }
+  });
+});
+
+// SessionView.dispatch と同じく、出来事の列を reduceViewing に通し、指示を nextCameraOrder で積む。
+// shownSeqAfter が true の出来事の後は、描画された（shownSeq が今の番号になる）ものとして扱う
+const stackOrders = (
+  events: { event: ViewingEvent; tree: VisibleTree; renderedAfter?: boolean }[],
+  from: ViewingState,
+  scope: "live" | "review" = "review",
+) => {
+  let state = from;
+  let order: CameraOrder = { command: { type: "follow" }, seq: 0 };
+  let shownSeq = 0;
+  for (const { event, tree: t, renderedAfter } of events) {
+    const out = reduceViewing(state, event, t, scope);
+    state = out.state;
+    order = nextCameraOrder(order, out.camera, shownSeq);
+    if (renderedAfter) shownSeq = order.seq;
+  }
+  return { state, order };
+};
+
+describe("nextCameraOrder: 同じ更新内で、まだ描画されていない refocus を follow で上書きしない", () => {
+  const refocusThenTimeMoved = (from: ViewingState, renderedBetween: boolean) =>
+    stackOrders(
+      [
+        { event: reflect, tree: tree("n2"), renderedAfter: renderedBetween },
+        { event: timeMoved, tree: tree("n2") },
+      ],
+      from,
+    );
+  const timeMovedThenReflect = (from: ViewingState, renderedBetween: boolean) =>
+    stackOrders(
+      [
+        { event: timeMoved, tree: tree("n2"), renderedAfter: renderedBetween },
+        { event: reflect, tree: tree("n2") },
+      ],
+      from,
+    );
+
+  for (const [name, from] of [["manual", manualN1], ["overview", overviewFrom(manualN1)]] as const) {
+    it(`見返しの ${name} で議題が変わる反映の後に時刻が動いても、refocus が保たれる`, () => {
+      const out = refocusThenTimeMoved(from, false);
+      expect(out.state).toEqual({ mode: "auto" });
+      expect(out.order).toEqual({ command: { type: "refocus" }, seq: 1 });
+    });
+
+    it(`見返しの ${name} で時刻が動いた後に議題が変わる反映が来ても、refocus が保たれる`, () => {
+      const out = timeMovedThenReflect(from, false);
+      expect(out.order.command).toEqual({ type: "refocus" });
+    });
+
+    it(`間に描画をはさむと、後の follow が通常どおり置き換える（${name}）`, () => {
+      expect(refocusThenTimeMoved(from, true).order).toEqual({ command: { type: "follow" }, seq: 2 });
+    });
+  }
+
+  it("反映を伴わない時刻操作は、止めているとき refocus、自動のとき follow になる", () => {
+    expect(stackOrders([{ event: timeMoved, tree: tree("n1") }], manualN1).order).toEqual({ command: { type: "refocus" }, seq: 1 });
+    expect(stackOrders([{ event: timeMoved, tree: tree("n1") }], INITIAL_VIEWING).order).toEqual({ command: { type: "follow" }, seq: 1 });
+  });
+
+  it("描画前の refocus の後でも、follow 以外（人が動かす）は置き換える。timeMoved は refocus を保つ", () => {
+    const moved1 = stackOrders([{ event: reflect, tree: tree("n2") }, { event: moved, tree: tree("n2") }], manualN1);
+    expect(moved1.order).toEqual({ command: { type: "hold" }, seq: 2 });
+    const kept = stackOrders([{ event: reflect, tree: tree("n2") }, { event: timeMoved, tree: tree("n2") }], manualN1);
+    expect(kept.order).toEqual({ command: { type: "refocus" }, seq: 1 });
+  });
+
+  it("ライブでは、議題が変わらない限り時刻の出来事で指示が増えても状態は変わらない", () => {
+    const out = stackOrders([{ event: timeMoved, tree: tree("n1") }], manualN1, "live");
+    expect(out.state).toEqual(manualN1);
+    expect(out.order.command).toEqual({ type: "hold" });
   });
 });
