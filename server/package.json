@@ -7,7 +7,7 @@
     "live-mindmap": "./src/cli.ts"
   },
   "scripts": {
-    "dev": "swift build --package-path ../helper && node src/server.ts",
+    "dev": "swift build -c release --package-path ../helper && node src/server.ts",
     "cli": "node src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && effect-tsgo diagnostics --project tsconfig.json"

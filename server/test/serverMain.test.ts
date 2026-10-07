@@ -18,7 +18,8 @@ const processResource = Effect.fnUntraced(function* (port: number) {
   );
   const child = yield* Effect.acquireRelease(
     Effect.sync(() => spawn(process.execPath, [main], {
-      env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: sessionsDir },
+      // セッションを始めないのでヘルパーは起動しない。既定の release の実行ファイルの有無で落ちないよう、使われない値を渡す
+      env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_HELPER: "/nonexistent/live-mindmap-helper" },
       stdio: ["ignore", "ignore", "pipe"],
     })),
     (p) => Effect.promise(() => new Promise<void>((resolve) => {

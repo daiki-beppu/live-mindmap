@@ -10,12 +10,12 @@
 // だけで、ヘルパーに依らないもの（session・updater・speaking・settling・ID の採番）は引き継ぐ（live オブジェクトが保持する）。
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { join } from "node:path";
 import { NodeRuntime } from "@effect/platform-node";
 import { Cause, Effect, Exit, Result, Runtime, Scope } from "effect";
 import { HttpServer } from "effect/http";
 import type { PromiseMapCapture } from "./capture.ts";
 import type { SessionUpdater } from "./claude.ts";
+import { resolveHelperPath } from "./helperPath.ts";
 import { createSessionDir, defaultPort, defaultSessionsDir, startRecordedSession, writeSessionExports } from "./cli.ts";
 import {
   decideIntakeRestart,
@@ -643,7 +643,12 @@ const teardown: Runtime.Teardown = (exit, onExit) => {
 };
 
 if (import.meta.main) {
-  const helperPath = process.env.LIVE_MINDMAP_HELPER ?? join(import.meta.dirname, "../../helper/.build/debug/live-mindmap-helper");
+  const helper = resolveHelperPath(process.env);
+  if ("error" in helper) {
+    console.error(helper.error);
+    process.exit(1);
+  }
+  const helperPath = helper.path;
   const { openClaudeUpdater } = await import("./claude.ts");
   const { MapCapture } = await import("./capture.ts");
   // server.ts の本体はまだ Promise のままなので、入口で Service を Promise の口に変えて渡す
