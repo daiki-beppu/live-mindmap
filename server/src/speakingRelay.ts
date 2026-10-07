@@ -7,7 +7,7 @@ export const SPEAKING_INTERVAL_MS = 300; // トラックごとに、この時間
 const TRACKS: Track[] = ["相手", "自分"];
 
 export type SpeakingRelayOptions = {
-  unreflected: () => Remark[]; // 送る時点の、マップに反映前の発言
+  unreflected: Effect.Effect<Remark[]>; // 送る時点の、マップに反映前の発言
   send: (frame: SpeakingFrame) => Effect.Effect<void>;
 };
 
@@ -39,7 +39,7 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
     const now = yield* Clock.currentTimeMillis;
     yield* update(track, (s) => ({ ...s, lastSent: now }));
     const { partial } = (yield* Ref.get(state))[track];
-    yield* send({ type: "speaking", track, text: speakingText(unreflected(), track, partial) });
+    yield* send({ type: "speaking", track, text: speakingText(yield* unreflected, track, partial) });
   });
 
   // 予約の本体。予約が起きた時点で、自分を予約から外してから送る（自分自身を取り消さない）

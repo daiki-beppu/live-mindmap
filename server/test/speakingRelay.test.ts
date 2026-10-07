@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { createSessionDir, startRecordedSession } from "../src/cli.ts";
-import type { DiffInput, DiffOutput, Op, Remark, Session, SpeakingFrame, Track } from "../src/core/index.ts";
+import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type SpeakingFrame, type Track } from "../src/core/index.ts";
+import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
+import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 // いま話している文字（SpeakingFrame）をブラウザへ送る層。段 3（Issue #240）で、setTimeout/clearTimeout・
 // Date.now() 直読みを Effect の Clock と Effect.sleep のファイバーに置き換える（order.md:62）。
@@ -22,7 +23,7 @@ describe("途中結果の間引き（トラックごとに SPEAKING_INTERVAL_MS 
   const setup = Effect.fn("setup")(function* (initial: Remark[] = []) {
     const frames: SpeakingFrame[] = [];
     let unreflected = initial;
-    const relay = yield* createSpeakingRelay({ unreflected: () => unreflected, send: (f) => Effect.sync(() => frames.push(f)) });
+    const relay = yield* createSpeakingRelay({ unreflected: Effect.sync(() => unreflected), send: (f) => Effect.sync(() => frames.push(f)) });
     return { relay, frames, setUnreflected: (r: Remark[]) => (unreflected = r) };
   });
 
@@ -104,15 +105,20 @@ describe("途中結果の間引き（トラックごとに SPEAKING_INTERVAL_MS 
     }));
 });
 
-// 同じ Session・同じ relay・同じ CLI の配線（startRecordedSession の onDiff）の上で、変化の前後を続けて観測する
+// 同じ Session・同じ relay・同じ記録つきセッションの配線（openRecordedSession の onDiff）の上で、変化の前後を続けて観測する
 describe("仮の文字（未反映の発言 + 途中結果）が、反映で消える範囲", () => {
   type Call = { input: DiffInput; resolve: (ops: Op[]) => void; reject: (e: Error) => void };
 
   const setup = Effect.fn("setup")(function* () {
     const calls: Call[] = [];
-    const updater = (input: DiffInput) =>
-      new Promise<DiffOutput>((resolve, reject) => {
-        calls.push({ input, resolve: (ops) => resolve({ ops }), reject });
+    // 差分更新の応答をテストの側から返せる偽物。reject は DiffUpdater の失敗（タグ付き）になる
+    const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
+      Effect.callback<DiffOutput, UpdateFailure>((resume) => {
+        calls.push({
+          input,
+          resolve: (ops) => resume(Effect.succeed({ ops })),
+          reject: (e) => resume(Effect.fail({ _tag: "UpdateFailed", message: e.message })),
+        });
       });
     const frames: SpeakingFrame[] = [];
     const unreflectedAtPublish: string[][] = []; // publish が呼ばれた時点で、Session が未反映とみなしていた発言の ID
@@ -120,21 +126,21 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     let relay: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
     const sessionsDir = yield* promiseOrDie(() => mktempSessionsDir());
     const dir = createSessionDir(sessionsDir);
-    const started = startRecordedSession({
+    const started = yield* openRecordedSession({
       dir,
       title: "定例",
-      updater,
-      publish: () => {
-        if (session) unreflectedAtPublish.push(session.unreflectedRemarks().map((r) => r.id));
-      },
-      onDiff: () => Effect.runSync(relay!.flushAll()),
-    });
+      publish: () =>
+        Effect.gen(function* () {
+          if (session) unreflectedAtPublish.push((yield* session.unreflectedRemarks).map((r) => r.id));
+        }),
+      onDiff: Effect.suspend(() => relay!.flushAll()),
+    }).pipe(Effect.provide(updaterLayer(update)));
     session = started.session;
-    relay = yield* createSpeakingRelay({ unreflected: () => session!.unreflectedRemarks(), send: (f) => Effect.sync(() => frames.push(f)) });
+    relay = yield* createSpeakingRelay({ unreflected: session.unreflectedRemarks, send: (f) => Effect.sync(() => frames.push(f)) });
     // server/src/sessions.ts の読み取りループと同じ順: 発言は push してから relay に知らせる
     const say = (r: Remark) =>
       Effect.gen(function* () {
-        session!.push(r);
+        yield* session!.push(r);
         yield* relay!.remark(r.track);
       });
     const partial = (track: Track, text: string, duplicate = false) =>
@@ -143,7 +149,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
         yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       });
     const add = (evidence: string[], text = "採用"): Op[] => [{ op: "add", ref: "t1", parent: "root", kind: "議題", text, evidence }];
-    const idle = () => promiseOrDie(() => session!.idle());
+    const idle = () => session!.idle;
     return { session, relay, say, partial, calls, frames, unreflectedAtPublish, dir, add, idle };
   });
 
@@ -235,14 +241,14 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
 
       // 観測単位（ノード・根拠の発言・変わったこと・ログのイベント）ごとに、途中結果が入っていないことを検査する
       const partialText = "ZZ-途中結果";
-      const snapshot = session!.snapshot();
+      const snapshot = yield* session!.snapshot;
       expect(snapshot.nodes.map((n) => n.text)).toEqual(["定例", "採用"]); // 未反映の発言ウもノードにならない
       expect(snapshot.remarks.map((r) => r.id)).toEqual(["r1", "r2"]); // 根拠に挙がった発言だけ
       for (const text of [...snapshot.nodes.map((n) => n.text), ...snapshot.remarks.map((r) => r.text), ...snapshot.changes.map((c) => JSON.stringify(c))]) {
         expect(text).not.toContain(partialText);
       }
-      expect(JSON.stringify(session!.exportJson())).not.toContain(partialText);
-      expect(JSON.parse(readFileSync(join(dir, "export.json"), "utf8"))).toEqual(session!.exportJson());
+      expect(JSON.stringify(yield* session!.exportJson)).not.toContain(partialText);
+      expect(JSON.parse(readFileSync(join(dir, "export.json"), "utf8"))).toEqual(yield* session!.exportJson);
 
       const events = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
       expect(events.map((e) => e.type).every((t) => t === "start" || t === "remark" || t === "diff")).toBe(true); // partial・speaking のイベントはない

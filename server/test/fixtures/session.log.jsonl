@@ -1,0 +1,16 @@
+{"at": "2026-10-01T00:00:00.000Z", "type": "start", "title": "定例"}
+{"at": "2026-10-01T00:00:01.000Z", "type": "remark", "remark": {"id": "r1", "track": "相手", "start": 0, "end": 9, "text": "今日は採用の進め方を決めます"}}
+{"at": "2026-10-01T00:00:02.000Z", "type": "remark", "remark": {"id": "r2", "track": "相手", "start": 10, "end": 19, "text": "面接を何回にするかが論点です"}}
+{"at": "2026-10-01T00:00:03.000Z", "type": "intake-restarted", "trigger": "auto"}
+{"at": "2026-10-01T00:00:04.000Z", "type": "diff", "input": {"recent": [], "fresh": ["r1", "r2"], "nodeCount": 0}, "ops": [{"op": "add", "ref": "t1", "parent": "root", "kind": "議題", "text": "採用", "evidence": ["r1"]}, {"op": "add", "ref": "t2", "parent": "t1", "kind": "論点", "text": "面接は何回か", "evidence": ["r2"]}], "dropped": []}
+{"at": "2026-10-01T00:00:05.000Z", "type": "remark", "remark": {"id": "r3", "track": "自分", "start": 20, "end": 21, "text": "あ"}, "noContent": true}
+{"at": "2026-10-01T00:00:06.000Z", "type": "remark", "remark": {"id": "r4", "track": "相手", "start": 30, "end": 40, "text": "2 回にしましょう"}}
+{"at": "2026-10-01T00:00:07.000Z", "type": "remark", "remark": {"id": "r5", "track": "自分", "start": 41, "end": 49, "text": "賛成です"}}
+{"at": "2026-10-01T00:00:08.000Z", "type": "diff", "input": {"recent": ["r1", "r2"], "fresh": ["r4", "r5"], "nodeCount": 2}, "ops": [{"op": "add", "ref": "d1", "parent": "n2", "kind": "決定", "text": "2 回にする", "evidence": ["r4"]}, {"op": "delete", "node": "n99"}], "dropped": [{"op": {"op": "delete", "node": "n99"}, "reason": "対象が無い"}]}
+{"at": "2026-10-01T00:00:09.000Z", "type": "remark", "remark": {"id": "r6", "track": "自分", "start": 50, "end": 59, "text": "2 回にしましょう", "duplicate": true}}
+{"at": "2026-10-01T00:00:10.000Z", "type": "intake-stopped", "code": 1, "signal": null, "stderrTail": ["error: boom"]}
+{"at": "2026-10-01T00:00:11.000Z", "type": "remark", "remark": {"id": "r7", "track": "相手", "start": 60, "end": 69, "text": "求人票を直すのは来週までです"}}
+{"at": "2026-10-01T00:00:12.000Z", "type": "remark", "remark": {"id": "r8", "track": "相手", "start": 70, "end": 79, "text": "担当は佐藤さんです"}}
+{"at": "2026-10-01T00:00:13.000Z", "type": "diff", "input": {"recent": ["r2", "r4", "r5"], "fresh": ["r7", "r8"], "nodeCount": 3}, "ops": [], "dropped": [], "error": "Error: timeout"}
+{"at": "2026-10-01T00:00:14.000Z", "type": "future-event", "payload": {"note": "知らない種類"}}
+{"at": "2026-10-01T00:00:15.000Z", "type": "remark", "remark": {"id": "r9", "track": "相手", "start": 80, "end": 90, "text": "最後の発言はまだ反映していません"}}

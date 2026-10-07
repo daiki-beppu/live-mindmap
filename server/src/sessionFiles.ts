@@ -2,13 +2,14 @@
 // play（cli.ts）とライブのセッション（sessionSinks.ts）が共有する。HTTP には依存しない
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { Effect, Layer, Ref } from "effect";
 import type { PromiseMapCapture } from "./capture.ts";
 import type { PromiseReviewPages, ReviewVariant } from "./review.ts";
 import {
-  createSession,
   exportFiles,
+  makeSession,
+  SessionLog,
   toJsonExport,
-  type DiffUpdater,
   type IntakeLogEvent,
   type LogEvent,
   type Session,
@@ -71,39 +72,42 @@ export function createSessionDir(sessionsDir: string): string {
 export type RecordedSessionOptions = {
   dir: string; // createSessionDir で作ったセッションのフォルダ
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
-  updater: DiffUpdater;
-  publish: (snapshot: Snapshot) => void;
-  sleep?: (ms: number) => Promise<void>; // 渡すと、最後の発言から一定時間たまった発言を 1 つでも差分更新に渡す
-  onDiff?: () => void; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
+  publish: (snapshot: Snapshot) => Effect.Effect<void>;
+  onDiff?: Effect.Effect<void>; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
 };
 
 // 作成済みのセッションのフォルダに、ログと export.json を書きながら、マップが変わるたびに publish する。
-// play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。
+// play もライブのセッションも、この 1 つの配線で動かす（出どころだけが違う）。差分更新（DiffUpdater）は呼び出し側が提供する。
 // appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
 // session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
-export function startRecordedSession({ dir, title, updater, publish, sleep, onDiff }: RecordedSessionOptions): { session: Session; appendLog: (event: IntakeLogEvent) => void } {
-  // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する
-  const writeLogLine = (event: LogEvent | IntakeLogEvent) => {
-    appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
-  };
-  // 開始のイベントは createSession の中で log されるので、session の代入前は export.json を書けない
-  let session: Session | undefined;
-  session = createSession({
-    title: title ?? basename(dir),
-    updater,
-    sleep,
-    log: (event) => {
-      writeLogLine(event);
-      if (!session) return;
-      writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-      if (event.type !== "diff") return;
-      if (!event.error) publish(session.snapshot());
-      onDiff?.();
-    },
-  });
+// ログが書けないとき（appendFileSync が投げる）は、そのまま defect にする。
+export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, publish, onDiff }: RecordedSessionOptions) {
+  // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。
+  // at は Clock ではなく実時刻（TestClock の下でも log.jsonl は実際の時刻で書く）
+  const writeLogLine = (event: LogEvent | IntakeLogEvent) =>
+    Effect.sync(() => appendFileSync(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n"));
+  const writeExport = (session: Session) =>
+    Effect.flatMap(session.exportJson, (json) => Effect.sync(() => writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(json))));
+  // 開始のイベントは makeSession の中で書かれるので、makeSession が返す前は export.json を書けない（publish もしない）
+  const current = yield* Ref.make<Session | undefined>(undefined);
+  const log = Layer.succeed(SessionLog)(
+    SessionLog.of({
+      write: (event) =>
+        Effect.gen(function* () {
+          yield* writeLogLine(event);
+          const session = yield* Ref.get(current);
+          if (!session) return;
+          yield* writeExport(session);
+          if (event.type !== "diff") return;
+          if (!event.error) yield* Effect.flatMap(session.snapshot, publish);
+          if (onDiff) yield* onDiff;
+        }),
+    }),
+  );
+  const session = yield* makeSession({ title: title ?? basename(dir) }).pipe(Effect.provide(log));
+  yield* Ref.set(current, session);
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く
-  writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson()));
-  publish(session.snapshot()); // 最初のルート
+  yield* writeExport(session);
+  yield* Effect.flatMap(session.snapshot, publish); // 最初のルート
   return { session, appendLog: writeLogLine };
-}
-
+});

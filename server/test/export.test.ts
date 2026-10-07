@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Layer } from "effect";
 import {
   KINDS,
-  createSession,
   exportFiles,
+  makeSession,
   toDrawnix,
   toMarkdown,
   type ExportNode,
@@ -11,6 +12,7 @@ import {
   type Remark,
 } from "../src/core/index.ts";
 import { KIND_COLORS } from "../src/core/drawnix.ts";
+import { silentLog, updaterLayer } from "./fixtures/sessionLayers.ts";
 
 const remark = (id: string, start: number, text = "発言"): Remark => ({ id, track: "相手", start, end: start + 5, text });
 
@@ -171,26 +173,29 @@ describe("exportFiles と map.json", () => {
     expect(JSON.parse(files["map.drawnix"])).toEqual(JSON.parse(JSON.stringify(toDrawnix(exp))));
   });
 
-  it("map.json はノードの木と根拠の発言（本文・トラック・時刻）を持ち、決定や TODO の一覧は持たない", async () => {
-    const r1 = remark("r1", 3, "採用の話をします");
-    const r2 = remark("r2", 7, "面接は何回にしますか");
-    const ops: Op[] = [
-      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-      { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-    ];
-    const session = createSession({ title: "定例", updater: async () => ({ ops }), log: () => {} });
-    session.push(r1);
-    session.push(r2);
-    await session.idle();
-    const json = JSON.parse(exportFiles(session.exportJson())["map.json"]);
-    expect(Object.keys(json)).toEqual(["root"]);
-    expect(json.root.children[0]).toMatchObject({
-      kind: "議題",
-      text: "採用",
-      evidence: [{ id: "r1", track: "相手", start: 3, end: 8, text: "採用の話をします" }],
-      children: [{ kind: "論点", pointStatus: "未決", evidence: [{ id: "r2", start: 7, text: "面接は何回にしますか" }] }],
-    });
-  });
+  it.effect("map.json はノードの木と根拠の発言（本文・トラック・時刻）を持ち、決定や TODO の一覧は持たない", () =>
+    Effect.gen(function* () {
+      const r1 = remark("r1", 3, "採用の話をします");
+      const r2 = remark("r2", 7, "面接は何回にしますか");
+      const ops: Op[] = [
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
+        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
+      ];
+      const session = yield* makeSession({ title: "定例" }).pipe(
+        Effect.provide(Layer.merge(updaterLayer(() => Effect.succeed({ ops })), silentLog)),
+      );
+      yield* session.push(r1);
+      yield* session.push(r2);
+      yield* session.idle;
+      const json = JSON.parse(exportFiles(yield* session.exportJson)["map.json"]);
+      expect(Object.keys(json)).toEqual(["root"]);
+      expect(json.root.children[0]).toMatchObject({
+        kind: "議題",
+        text: "採用",
+        evidence: [{ id: "r1", track: "相手", start: 3, end: 8, text: "採用の話をします" }],
+        children: [{ kind: "論点", pointStatus: "未決", evidence: [{ id: "r2", start: 7, text: "面接は何回にしますか" }] }],
+      });
+    }));
 });
 
 describe("種別「要点」の書き出し", () => {

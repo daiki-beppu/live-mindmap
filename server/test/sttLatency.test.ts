@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
-import { createSession, type DiffInput } from "../src/core/index.ts";
+import { Effect, Layer } from "effect";
+import { makeSession, type DiffInput } from "../src/core/index.ts";
 import {
   finalDelays,
   finalRemarks,
@@ -13,6 +13,7 @@ import {
   type SttResult,
 } from "../bench/sttLatency.ts";
 import { reflectedArrivals, replayByArrival } from "../bench/sttReplay.ts";
+import { logLayer, updaterLayer } from "./fixtures/sessionLayers.ts";
 
 // 計測結果（stt-bench run の出力）の 1 行。arrival は流し始めを 0 とする壁時計、start / end は音声ファイルの秒。
 const partial = (arrival: number, start: number, end: number, text: string, track: SttResult["track"] = "相手"): SttResult => ({
@@ -290,44 +291,58 @@ describe("届いた時刻で本番のセッションに流す", () => {
     { id: "r3", track: "自分" as const, start: 3.0, end: 4.0, text: "c", at: 14.0 },
   ];
 
-  function setup(events: string[]) {
-    return createSession({
-      title: "定例",
-      updater: async (input: DiffInput) => {
-        events.push(`diff:${input.fresh.map((u) => u.id).join("+")}`);
-        return { ops: [] };
-      },
-      log: (e) => {
-        if (e.type === "remark") events.push(`push:${e.remark.id}`);
-      },
-    });
-  }
+  const setup = (events: string[]) =>
+    makeSession({ title: "定例" }).pipe(
+      Effect.provide(
+        Layer.merge(
+          updaterLayer((input: DiffInput) =>
+            Effect.sync(() => {
+              events.push(`diff:${input.fresh.map((u) => u.id).join("+")}`);
+              return { ops: [] };
+            }),
+          ),
+          logLayer((e) =>
+            Effect.sync(() => {
+              if (e.type === "remark") events.push(`push:${e.remark.id}`);
+            }),
+          ),
+        ),
+      ),
+    );
 
-  it("発言の end ではなく届いた時刻（at）の差だけ待ってから流す（最初は 0 からの差）", async () => {
-    const events: string[] = [];
-    const sleeps: number[] = [];
-    await replayByArrival(setup(events), items, { sleep: async (ms) => void sleeps.push(Math.round(ms)) });
-    expect(sleeps).toEqual([10_000, 500, 3_500]);
-  });
+  it.effect("発言の end ではなく届いた時刻（at）の差だけ待ってから流す（最初は 0 からの差）", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const sleeps: number[] = [];
+      yield* replayByArrival(yield* setup(events), items, { sleep: (ms) => Effect.sync(() => void sleeps.push(Math.round(ms))) });
+      expect(sleeps).toEqual([10_000, 500, 3_500]);
+    }));
 
-  it("待ってから流す順で、流した発言は最後に取りこぼさず差分更新に渡る", async () => {
-    const events: string[] = [];
-    await replayByArrival(setup(events), items, { sleep: async () => {} });
-    expect(events.filter((s) => s.startsWith("push:"))).toEqual(["push:r1", "push:r2", "push:r3"]);
-    const diffed = events.filter((s) => s.startsWith("diff:")).join("+").replaceAll("diff:", "").split("+");
-    expect(diffed.sort()).toEqual(["r1", "r2", "r3"]);
-  });
+  it.effect("待ってから流す順で、流した発言は最後に取りこぼさず差分更新に渡る", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      yield* replayByArrival(yield* setup(events), items, { sleep: () => Effect.void });
+      expect(events.filter((s) => s.startsWith("push:"))).toEqual(["push:r1", "push:r2", "push:r3"]);
+      const diffed = events.filter((s) => s.startsWith("diff:")).join("+").replaceAll("diff:", "").split("+");
+      expect(diffed.sort()).toEqual(["r1", "r2", "r3"]);
+    }));
 
-  it("セッションに渡す発言は、Remark の項目だけ（計測用の at や source を混ぜない）", async () => {
-    const pushed: unknown[] = [];
-    const session = createSession({
-      title: "定例",
-      updater: async () => ({ ops: [] }),
-      log: (e) => {
-        if (e.type === "remark") pushed.push(e.remark);
-      },
-    });
-    await replayByArrival(session, [{ ...items[0]!, source: "stable" }], { sleep: async () => {} });
-    expect(pushed).toEqual([{ id: "r1", track: "相手", start: 0.5, end: 2.0, text: "a" }]);
-  });
+  it.effect("セッションに渡す発言は、Remark の項目だけ（計測用の at や source を混ぜない）", () =>
+    Effect.gen(function* () {
+      const pushed: unknown[] = [];
+      const session = yield* makeSession({ title: "定例" }).pipe(
+        Effect.provide(
+          Layer.merge(
+            updaterLayer(() => Effect.succeed({ ops: [] })),
+            logLayer((e) =>
+              Effect.sync(() => {
+                if (e.type === "remark") pushed.push(e.remark);
+              }),
+            ),
+          ),
+        ),
+      );
+      yield* replayByArrival(session, [{ ...items[0]!, source: "stable" }], { sleep: () => Effect.void });
+      expect(pushed).toEqual([{ id: "r1", track: "相手", start: 0.5, end: 2.0, text: "a" }]);
+    }));
 });

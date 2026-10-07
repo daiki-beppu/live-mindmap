@@ -5,16 +5,18 @@ import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Config, Console, Effect, Layer, Option, Predicate, Queue, Result, Schema } from "effect";
+import { Cause, Config, Console, Effect, Layer, Option, Predicate, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { MapCapture } from "./capture.ts";
-import { DiffUpdater, UpdaterUnavailable } from "./diffUpdater.ts";
+import { LegacyClaudeDiffUpdater, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
   formatIntakeStatus,
   formatTable,
+  DiffUpdater,
   fromTranscript,
   JsonExport,
+  SessionLog,
   playback,
   restoreSession,
   toMarkdown,
@@ -31,15 +33,15 @@ import {
   EXPORT_FILE,
   LOG_FILE,
   REVIEW_VARIANTS,
+  openRecordedSession,
   reviewWarning,
-  startRecordedSession,
   writeExportFiles,
 } from "./sessionFiles.ts";
 import { describe, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
 // セッションのファイル操作は sessionFiles.ts にある。既存の import 元（cli.ts）を保つために再公開する
-export { createSessionDir, startRecordedSession, writeSessionExports, type RecordedSessionOptions } from "./sessionFiles.ts";
+export { createSessionDir, openRecordedSession, writeSessionExports, type RecordedSessionOptions } from "./sessionFiles.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
@@ -228,33 +230,6 @@ const requestServer = <A>(
   });
 
 /* ----------------------------------------------------------------------------
- * --realtime の待ち: Promise を待つ playback・session へ、Effect の時計に乗る sleep を渡す
- * -------------------------------------------------------------------------- */
-
-// 要求を Queue で受け、要求ごとに子 fiber で Effect.sleep する。再生の間隔待ちと QUIET_MS の静穏待ちは
-// 同時に進むので、要求を直列に処理しない。scope が閉じれば待っている要求ごと止まる（古い待ちで Session を進めない）
-const effectSleep = Effect.gen(function* () {
-  const requests = yield* Queue.make<{ readonly ms: number; readonly resolve: () => void }>();
-  yield* Effect.forkScoped(
-    Effect.forever(
-      Effect.flatMap(Queue.take(requests), ({ ms, resolve }) =>
-        Effect.forkChild(
-          Effect.gen(function* () {
-            yield* Effect.sleep(ms);
-            resolve();
-          }),
-          { startImmediately: true },
-        ),
-      ),
-    ),
-  );
-  return (ms: number) =>
-    new Promise<void>((resolve) => {
-      Queue.offerUnsafe(requests, { ms, resolve });
-    });
-});
-
-/* ----------------------------------------------------------------------------
  * サブコマンド
  * -------------------------------------------------------------------------- */
 
@@ -271,7 +246,6 @@ const play = Command.make(
     function* ({ realtime, transcript }) {
       const sessionsDir = yield* sessionsDirConfig;
       const port = yield* portConfig;
-      const updater = yield* DiffUpdater;
       const capture = yield* MapCapture;
       const review = yield* ReviewBuild;
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
@@ -284,19 +258,11 @@ const play = Command.make(
       );
       // 待受けを閉じる前に、最後のスナップショットを接続中のクライアントへ渡し切る
       yield* Effect.addFinalizer(() => viewers.drained);
-      // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちで同じ sleep を使う
-      const sleep = realtime ? yield* effectSleep : undefined;
       const dir = yield* Effect.try({ try: () => createSessionDir(sessionsDir), catch: (e) => new CommandFailed({ message: describe(e) }) });
-      const { session } = yield* Effect.try({
-        try: () =>
-          startRecordedSession({
-            dir,
-            title: basename(transcript).replace(/\.transcript\.json$/, ""),
-            updater: updater.update,
-            publish: (snapshot) => Effect.runSync(viewers.publish(snapshot)),
-            sleep,
-          }),
-        catch: (e) => new CommandFailed({ message: describe(e) }),
+      const { session } = yield* openRecordedSession({
+        dir,
+        title: basename(transcript).replace(/\.transcript\.json$/, ""),
+        publish: viewers.publish,
       });
       const text = yield* readTextFile(transcript).pipe(
         Effect.mapError((reason) => new InvalidTranscriptFile({ path: transcript, reason })),
@@ -304,11 +270,9 @@ const play = Command.make(
       const file = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
         Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
       );
-      yield* Effect.tryPromise({
-        try: () => playback(session, fromTranscript(file), sleep ? { sleep } : {}),
-        catch: (e) => new CommandFailed({ message: describe(e) }),
-      });
-      const paths = yield* writeExportsAndCapture(dir, session.snapshot(), capture, review);
+      // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちは、同じ Clock に乗る
+      yield* playback(session, fromTranscript(file), realtime ? { sleep: (ms) => Effect.sleep(ms) } : {});
+      const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, capture, review);
       yield* write(paths.map((path) => `${path}\n`).join(""));
     },
     Effect.scoped,
@@ -320,7 +284,7 @@ const play = Command.make(
       + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す",
   ),
   // 差分更新は play だけが使う。Layer が取得と解放を持ち、最後の反映と最終撮影の後に 1 回だけ閉じる
-  Command.provide(DiffUpdater.layer),
+  Command.provide(LegacyClaudeDiffUpdater.layer),
 );
 
 const apps = Command.make(
@@ -447,23 +411,24 @@ const restore = Command.make(
         ),
       );
     }
-    const session = yield* Effect.try({
-      try: () =>
-        restoreSession(events, {
-          // 復元では差分更新を呼ばない。呼ばれたら失敗する
-          updater: async () => {
-            throw new Error("restore では差分更新を呼べません");
-          },
-          log: () => {},
-        }),
-      catch: (e) => new CommandFailed({ message: describe(e) }),
-    });
+    // 復元では差分更新を呼ばない。呼ばれたら defect にする。ログは書き直さない
+    const session = yield* restoreSession(events).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(DiffUpdater)(DiffUpdater.of({ update: () => Effect.die("restore では差分更新を呼べません") })),
+          Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void })),
+        ),
+      ),
+      // 壊れた行は、空行を除く前の行番号の BrokenLogLine にする
+      Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new BrokenLogLine({ line: lines[e.index]?.no ?? 1, reason: e.reason }))),
+    );
+    const exported = yield* session.exportJson;
     yield* Effect.try({
-      try: () => writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(session.exportJson())),
+      try: () => writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(exported)),
       catch: (e) => new CommandFailed({ message: describe(e) }),
     });
     yield* write(`${dir}\n`);
-  }),
+  }, Effect.scoped),
 ).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す"));
 
 const review = Command.make(

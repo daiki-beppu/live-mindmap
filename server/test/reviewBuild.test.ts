@@ -27,7 +27,7 @@ const events = [
   {
     at: "2026-10-07T00:00:02.000Z",
     type: "diff",
-    input: { fresh: ["r1"], processed: [], map: null },
+    input: { recent: [], fresh: ["r1"], nodeCount: 0 },
     ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
     dropped: [],
   },

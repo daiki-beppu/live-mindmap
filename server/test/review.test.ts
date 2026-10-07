@@ -3,9 +3,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
-import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, createSession, embedReviewLicenses, embedReviewLog, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
+import { Effect, Layer, Result } from "effect";
+import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, embedReviewLicenses, embedReviewLog, makeSession, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
+import { collectLog, updaterLayer } from "./fixtures/sessionLayers.ts";
 
 const TEMPLATE = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>";
 
@@ -35,18 +36,20 @@ const fakeBuild = (build: () => Effect.Effect<string, ReviewPageFailed>) =>
 const remark = (id: string, text: string, extra: Partial<Remark> = {}): Remark => ({ id, track: "相手", start: 0, end: 5, text, ...extra });
 
 // 発言と差分更新を通した本物のログ（at 付き JSONL 1 行ぶんの形）
-async function realisticEvents() {
+const realisticEvents = Effect.fn("realisticEvents")(function* () {
   const ops: Op[] = [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
     { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
   ];
   const events: LogEvent[] = [];
-  const session = createSession({ title: "定例", updater: async () => ({ ops }), log: (e) => events.push(e) });
-  session.push(remark("r1", "採用の話をします"));
-  session.push(remark("r2", "面接は何回にしますか"));
-  await session.idle();
+  const session = yield* makeSession({ title: "定例" }).pipe(
+    Effect.provide(Layer.merge(updaterLayer(() => Effect.succeed({ ops })), collectLog(events))),
+  );
+  yield* session.push(remark("r1", "採用の話をします"));
+  yield* session.push(remark("r2", "面接は何回にしますか"));
+  yield* session.idle;
   return { session, events: events.map((e, i) => JSON.parse(JSON.stringify({ at: `2026-10-07T00:00:0${i}.000Z`, ...e }))) as unknown[] };
-}
+});
 
 describe("embedReviewLog", () => {
   it("出来事を <script type=\"application/json\"> に入れる。中身に生の < は 1 つも無く、JSON.parse すると元の出来事に戻る", () => {
@@ -116,21 +119,29 @@ describe("embedReviewLicenses", () => {
 });
 
 describe("reviewSnapshot", () => {
-  it("ログの出来事から、元のセッションの最後の時点と同じマップ・「変わったこと」・根拠を組み立てる", async () => {
-    const { session, events } = await realisticEvents();
-    const snapshot = reviewSnapshot(events);
+  // web の入口（main.tsx）が同期で呼ぶので、reviewSnapshot は Effect にせず同期の関数のまま保つ
+  it.effect("ログの出来事から、元のセッションの最後の時点と同じマップ・「変わったこと」・根拠を同期で組み立てる", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* realisticEvents();
+      const snapshot = reviewSnapshot(events);
 
-    expect(snapshot).toEqual(session.snapshot());
-    expect(snapshot.nodes.map((n) => n.text)).toEqual(["定例", "採用", "面接は何回か"]);
-    expect(snapshot.changes.length).toBeGreaterThan(0);
-    expect(snapshot.remarks.map((r) => r.id)).toEqual(["r1", "r2"]);
-  });
+      expect(snapshot).toEqual(yield* session.snapshot);
+      expect(snapshot.nodes.map((n) => n.text)).toEqual(["定例", "採用", "面接は何回か"]);
+      expect(snapshot.changes.length).toBeGreaterThan(0);
+      expect(snapshot.remarks.map((r) => r.id)).toEqual(["r1", "r2"]);
+    }));
 
-  it("取り込みの記録（知らない type）の行があっても、マップは変わらない", async () => {
-    const { session, events } = await realisticEvents();
-    const withIntake = [...events.slice(0, 2), { at: "2026-10-07T00:00:09.000Z", type: "intake", note: "x" }, ...events.slice(2)];
+  it.effect("取り込みの記録（知らない type）の行があっても、マップは変わらない", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* realisticEvents();
+      const withIntake = [...events.slice(0, 2), { at: "2026-10-07T00:00:09.000Z", type: "intake", note: "x" }, ...events.slice(2)];
 
-    expect(reviewSnapshot(withIntake)).toEqual(session.snapshot());
+      expect(reviewSnapshot(withIntake)).toEqual(yield* session.snapshot);
+    }));
+
+  it("壊れたログ（start が無い・項目が壊れた行）では、今と同じく例外を投げる", () => {
+    expect(() => reviewSnapshot([])).toThrow();
+    expect(() => reviewSnapshot([{ type: "start", title: "定例" }, { type: "remark" }])).toThrow();
   });
 });
 
