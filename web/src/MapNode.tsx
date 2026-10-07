@@ -48,7 +48,7 @@ export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
     // 反映ごとに key を変えて要素を作り直し、点滅のアニメーションを頭からやり直す
     <div
       key={data.changedRound ?? "steady"}
-      className={["map-node", data.rejected && "map-node--rejected", data.fold && "map-node--folded", data.changedRound !== null && "map-node--blink", "nopan"].filter(Boolean).join(" ")}
+      className={["map-node", data.rejected && "map-node--rejected", data.fold && "map-node--folded", data.selected && "map-node--selected", data.changedRound !== null && "map-node--blink", "nopan"].filter(Boolean).join(" ")}
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />

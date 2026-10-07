@@ -32,6 +32,8 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 /* 畳んだノード: 塗りを薄く、文字を灰色にし、手がかりの文字と、右端に隠れたノード数の小さな丸を出す。影・バッジは付けない */
 .map-node--folded { color: #6b7280; background: color-mix(in srgb, var(--kind-color) 6%, white); }
+/* 選んだノード: 種別の色の塗りを薄い灰色に置き換える。枠・点滅の outline・影・バッジは変えない（枠を変えると実寸が変わり配置がずれる） */
+.map-node--selected { background: #f3f4f6; }
 .map-node__hint { flex-basis: 100%; font-size: 12px; color: #6b7280; }
 .map-node--folded .map-node__button { flex-wrap: wrap; padding-right: 32px; }
 .map-node__count { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: #e5e7eb; color: #4b5563; font-size: 11px; line-height: 18px; text-align: center; pointer-events: none; }

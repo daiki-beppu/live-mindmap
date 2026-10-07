@@ -9,7 +9,8 @@ type CameraViewing =
 
 // カメラの状態に重ねる、独立した出し入れの状態。開いている・隠しているときだけ true を持つ（そうでなければフィールドを置かない）。
 // keyList: キー一覧が開いている / sideHidden: 右の列を隠している / captionsHidden: 字幕を隠している
-type Overlay = { keyList?: true; sideHidden?: true; captionsHidden?: true };
+// selection: 選んだノード（byKey: キーで選んだか）。選んでいないときはフィールドを置かない。Esc でだけ外れる
+type Overlay = { keyList?: true; sideHidden?: true; captionsHidden?: true; selection?: { id: string; byKey: boolean } };
 const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
 export type ViewingState = CameraViewing & Overlay;
 
@@ -26,21 +27,29 @@ export type ViewingEvent =
   | { type: "captions"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "escape"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean }
+  // ノードをクリックで選んだ（カメラの状態は変えない）
+  | { type: "select"; id: string }
+  // Shift なしの矢印でノードを選ぶ
+  | { type: "arrow"; dir: ArrowDir; meta: boolean; ctrl: boolean; alt: boolean }
   // 触らずに 10 秒たった（見返しの manual のときだけ効く）
   | { type: "idle" }
   // 見返しで時刻を動かした（▶・シーク・反映の前後。見返しの manual・overview で効く）
   | { type: "timeMoved" };
 
+export type ArrowDir = "left" | "right" | "up" | "down";
+
 // ライブか見返しか。ライブでは時間でも時刻でも自動に戻らない
 export type ViewingScope = "live" | "review";
 
 // 見えている木: 見せるノード・目標の位置・今の議題
-export type VisibleTree = { ids: string[]; targets: Record<string, Position>; currentTopic: string | undefined };
+// parents: 見せるノードそれぞれの親（ルートは null）
+export type VisibleTree = { ids: string[]; targets: Record<string, Position>; parents: Record<string, string | null>; currentTopic: string | undefined };
 
 // shiftIntoView: 倍率は変えず、今の議題が列で切れる分だけ横にずらす（寄せ直しも収め直しもしない）
 // follow: 今までどおり自動で寄せる / refocus: 今の議題へ寄せ直す / hold: 動かさない
 // zoomBy: 画面の中心を保って倍率を掛ける / zoomTo: 画面の中心を保って倍率にする
 // focusNode: 今の倍率のまま、そのノードへ寄る
+// revealNode: 人の倍率の範囲に収めてから、そのノードが画面の外なら最小限ずらして入れる（中なら動かさない）
 // pan: 画面の 1/3 ずつ動かす（dx・dy は見えてくる側の向き） / fitAll: 全体を収める / restore: 全体を見る前の倍率・位置へ戻す
 export type CameraCommand =
   | { type: "follow" }
@@ -51,6 +60,7 @@ export type CameraCommand =
   | { type: "pan"; dx: number; dy: number }
   | { type: "fitAll" }
   | { type: "focusNode"; id: string }
+  | { type: "revealNode"; id: string }
   | { type: "restore" }
   | { type: "shiftIntoView" };
 
@@ -98,14 +108,14 @@ function idle(state: ViewingState): CameraCommand {
   return state.mode === "auto" ? FOLLOW : HOLD;
 }
 
-function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number]): ViewingState {
+function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number] | "selection"): ViewingState {
   const { [key]: _removed, ...rest } = state;
   return rest;
 }
 
 // 重ねる状態をすべて外した、カメラの状態だけ
 function cameraPart(state: ViewingState): CameraViewing {
-  const { keyList: _k, sideHidden: _s, captionsHidden: _c, ...rest } = state;
+  const { keyList: _k, sideHidden: _s, captionsHidden: _c, selection: _sel, ...rest } = state;
   return rest;
 }
 
@@ -113,7 +123,55 @@ function cameraPart(state: ViewingState): CameraViewing {
 function withOverlayOf(from: ViewingState, camera: CameraViewing): ViewingState {
   const out: ViewingState = { ...camera };
   for (const key of OVERLAY_KEYS) if (from[key]) out[key] = true;
+  if (from.selection) out.selection = from.selection;
   return out;
+}
+
+// 見せるノードの中で、矢印の移り先を決める。目標の位置で測る。端や行き先が無いときは同じノードのまま。
+// 始点が無い・見せるノードに無いときは、向きに動かず今の議題（無ければルート）を選ぶ
+function nextSelection(tree: VisibleTree, from: string | undefined, dir: ArrowDir): string | undefined {
+  const shown = new Set(tree.ids);
+  if (from === undefined || !shown.has(from)) {
+    if (tree.currentTopic !== undefined && shown.has(tree.currentTopic)) return tree.currentTopic;
+    return tree.ids.find((id) => {
+      const parent = tree.parents[id];
+      return parent == null || !shown.has(parent);
+    });
+  }
+  const y = (id: string) => tree.targets[id]?.y ?? 0;
+  const parentOf = (id: string) => {
+    const parent = tree.parents[id];
+    return parent != null && shown.has(parent) ? parent : null;
+  };
+  switch (dir) {
+    case "left":
+      return parentOf(from) ?? from;
+    case "right": {
+      let best = from;
+      let bestGap = Infinity;
+      for (const id of tree.ids) {
+        if (parentOf(id) !== from) continue;
+        const gap = Math.abs(y(id) - y(from));
+        if (gap < bestGap) {
+          best = id;
+          bestGap = gap;
+        }
+      }
+      return best;
+    }
+    case "up":
+    case "down": {
+      const depthOf = (id: string) => {
+        let depth = 0;
+        for (let p = parentOf(id); p !== null; p = parentOf(p)) depth++;
+        return depth;
+      };
+      const depth = depthOf(from);
+      const row = tree.ids.filter((id) => depthOf(id) === depth).sort((a, b) => y(a) - y(b));
+      const at = row.indexOf(from);
+      return row[dir === "up" ? Math.max(0, at - 1) : Math.min(row.length - 1, at + 1)];
+    }
+  }
 }
 
 // 重ねる状態の出し入れ: 該当するフラグを反転する（隠した状態から戻すときはフィールドごと外す）
@@ -144,15 +202,25 @@ export function reduceViewing(
     return { state: toggled(state, "captionsHidden"), camera: idle(state) };
   }
   if (event.type === "escape" && !modified(event) && state.keyList) return { state: without(state, "keyList"), camera: idle(state) };
+  if (event.type === "select") return { state: { ...state, selection: { id: event.id, byKey: false } }, camera: idle(state) };
+  if (event.type === "arrow") {
+    if (modified(event)) return { state, camera: idle(state) };
+    const id = nextSelection(tree, state.selection?.id, event.dir);
+    if (id === undefined) return { state, camera: idle(state) };
+    const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
+    return { state: { ...moved, selection: { id, byKey: true } }, camera: { type: "revealNode", id } };
+  }
   const out = reduceCamera(cameraPart(state), event, tree, scope);
-  return { state: withOverlayOf(state, out.state), camera: out.camera };
+  const next = withOverlayOf(state, out.state);
+  // 選択を外すのは、キー一覧が閉じているときの修飾なしの Esc だけ（自動のときも外す）
+  return { state: event.type === "escape" && !modified(event) ? without(next, "selection") : next, camera: out.camera };
 }
 
 // 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
 // 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体を見ているとき時刻を動かすと戻る。
 function reduceCamera(
   state: CameraViewing,
-  event: Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" }>,
+  event: Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" }>,
   tree: VisibleTree,
   scope: ViewingScope,
 ): { state: CameraViewing; camera: CameraCommand } {

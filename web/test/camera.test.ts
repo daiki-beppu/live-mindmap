@@ -14,6 +14,7 @@ import {
   nodeRect,
   overviewViewport,
   panViewport,
+  revealViewport,
   scrollAlongAxis,
   scrollAxis,
   shiftIntoView,
@@ -529,6 +530,77 @@ describe("shiftIntoView: 列を出して今の議題が端で切れるときだ�
     const viewport = Object.freeze(v(0, 0, 1));
     const out = shiftIntoView(viewport, [rect(900, 50, 200, 40)], screen);
     expect(out).not.toBe(viewport);
+    expect(viewport).toEqual(v(0, 0, 1));
+  });
+});
+
+describe("revealViewport: 画面の外のノードを、倍率を変えず最小限ずらして入れる", () => {
+  const screen = { width: 1000, height: 600 };
+  const v = (x: number, y: number, zoom: number) => ({ x, y, zoom });
+
+  it("画面の中にあるときは動かさない（端に接していても同じ）", () => {
+    expect(revealViewport(v(0, 0, 1), rect(100, 50, 200, 40), screen)).toEqual(v(0, 0, 1));
+    expect(revealViewport(v(0, 0, 1), rect(800, 560, 200, 40), screen)).toEqual(v(0, 0, 1)); // 右下の端にちょうど接する
+    expect(revealViewport(v(0, 0, 1), rect(0, 0, 200, 40), screen)).toEqual(v(0, 0, 1)); // 左上の端にちょうど接する
+  });
+
+  it("右にはみ出していれば、はみ出した分だけ左へ（余白は足さない）", () => {
+    expect(revealViewport(v(0, 0, 1), rect(900, 50, 200, 40), screen)).toEqual(v(-100, 0, 1));
+  });
+
+  it("左にはみ出していれば、はみ出した分だけ右へ", () => {
+    expect(revealViewport(v(0, 0, 1), rect(-50, 50, 200, 40), screen)).toEqual(v(50, 0, 1));
+  });
+
+  it("下にはみ出していれば上へ、上にはみ出していれば下へ、はみ出した分だけ", () => {
+    expect(revealViewport(v(0, 0, 1), rect(100, 580, 200, 40), screen)).toEqual(v(0, -20, 1));
+    expect(revealViewport(v(0, 0, 1), rect(100, -30, 200, 40), screen)).toEqual(v(0, 30, 1));
+  });
+
+  it("縦と横の両方がはみ出していれば、両方をずらす", () => {
+    expect(revealViewport(v(0, 0, 1), rect(900, 580, 200, 40), screen)).toEqual(v(-100, -20, 1));
+    expect(revealViewport(v(0, 0, 1), rect(-50, -30, 200, 40), screen)).toEqual(v(50, 30, 1));
+  });
+
+  it("縦だけはみ出しているとき、横の位置は変えない（逆も同じ）", () => {
+    expect(revealViewport(v(7, 0, 1), rect(100, 700, 200, 40), screen).x).toBe(7);
+    expect(revealViewport(v(0, 9, 1), rect(1500, 100, 200, 40), screen).y).toBe(9);
+  });
+
+  it("倍率と現在の位置を考慮した画面の座標で測り、倍率は変えない", () => {
+    // zoom 2・x=-300: 箱 400〜600 は画面で 500〜900 → 中
+    expect(revealViewport(v(-300, 10, 2), rect(400, 0, 200, 40), screen)).toEqual(v(-300, 10, 2));
+    // zoom 2・x=-100: 画面で 700〜1100 → 100 はみ出す
+    expect(revealViewport(v(-100, 10, 2), rect(400, 0, 200, 40), screen)).toEqual(v(-200, 10, 2));
+    // zoom 0.5・x=50: 左端が 50 + 0.5 × -300 = -100 → 100 はみ出す
+    expect(revealViewport(v(50, 10, 0.5), rect(-300, 0, 200, 40), screen)).toEqual(v(150, 10, 0.5));
+    // zoom 2・y=0: 高さ 40 は画面で 80。箱 y=290〜330 は画面で 580〜660 → 60 はみ出す
+    expect(revealViewport(v(0, 0, 2), rect(0, 290, 200, 40), screen)).toEqual(v(0, -60, 2));
+  });
+
+  it("どのはみ出し方でも倍率は変わらず、ずらした後は箱が画面に収まる", () => {
+    for (const r of [rect(900, 50, 200, 40), rect(-500, 50, 200, 40), rect(100, 900, 200, 40), rect(100, -400, 200, 40), rect(2000, 2000, 200, 40)]) {
+      const out = revealViewport(v(12, 34, 1.5), r, screen);
+      expect(out.zoom).toBe(1.5);
+      const left = r.x * out.zoom + out.x;
+      const top = r.y * out.zoom + out.y;
+      expect(left).toBeGreaterThanOrEqual(-1e-9);
+      expect(left + r.width * out.zoom).toBeLessThanOrEqual(screen.width + 1e-9);
+      expect(top).toBeGreaterThanOrEqual(-1e-9);
+      expect(top + r.height * out.zoom).toBeLessThanOrEqual(screen.height + 1e-9);
+    }
+  });
+
+  it("画面より大きい軸では、左端（上端）を画面の端に合わせる", () => {
+    expect(revealViewport(v(0, 0, 1), rect(100, 0, 1200, 40), screen)).toEqual(v(-100, 0, 1));
+    expect(revealViewport(v(0, 0, 1), rect(-100, 0, 1200, 40), screen)).toEqual(v(100, 0, 1));
+    expect(revealViewport(v(0, 0, 1), rect(0, 100, 200, 800), screen)).toEqual(v(0, -100, 1));
+  });
+
+  it("入力の位置と箱を書き換えない", () => {
+    const viewport = Object.freeze(v(0, 0, 1));
+    const r = Object.freeze(rect(900, 50, 200, 40));
+    revealViewport(viewport, r, screen);
     expect(viewport).toEqual(v(0, 0, 1));
   });
 });
