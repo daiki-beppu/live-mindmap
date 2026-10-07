@@ -1,233 +1,188 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { WebSocket as WsClient } from "ws";
-import type { Snapshot } from "../src/core/index.ts";
-import { startSnapshotServer } from "../src/ws.ts";
+import { describe, expect, it } from "@effect/vitest";
+import { Deferred, Effect, Fiber, Queue } from "effect";
+import { Socket } from "effect/socket";
+import { TestClock } from "effect/testing";
+import type { IntakeFrame, Snapshot, SpeakingFrame } from "../src/core/index.ts";
+import { Viewers } from "../src/viewers.ts";
 
 const snap = (...texts: string[]): Snapshot => ({
   nodes: [
     { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
     ...texts.map((text, i) => ({ id: `n${i + 1}`, parent: "root", kind: "議題" as const, text, evidence: ["r1"] })),
   ],
-  round: 0,
-  changes: [],
-  remarks: [],
+  round: 0, changes: [], remarks: [],
 });
+const speaking = (track: "相手" | "自分", text: string): SpeakingFrame => ({ type: "speaking", track, text });
+const intake = (status: IntakeFrame["status"]): IntakeFrame => ({ type: "intake", status });
 
-// つないだクライアント。届いたスナップショットを順に貯める。
-async function connect(port: number) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-  const received: Snapshot[] = [];
-  const waiting: { n: number; resolve: () => void }[] = [];
-  ws.addEventListener("message", (e) => {
-    received.push(JSON.parse(String(e.data)));
-    for (const w of waiting.filter((w) => received.length >= w.n)) w.resolve();
+// Socket の契約に合わせ、切断は reader の失敗、送信は writer の完了で表す。
+const client = Effect.fnUntraced(function* (beforeWrite: Effect.Effect<void>) {
+  const frames = yield* Queue.make<unknown>();
+  const closed = yield* Deferred.make<never, Socket.SocketError>();
+  const writerReleased = yield* Deferred.make<void>();
+  const write: Socket.Writer["write"] = (chunk) => Effect.gen(function* () {
+    if (Socket.isCloseEvent(chunk)) return;
+    yield* beforeWrite;
+    const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    yield* Queue.offer(frames, JSON.parse(text));
   });
-  await new Promise<void>((resolve, reject) => {
-    ws.addEventListener("open", () => resolve());
-    ws.addEventListener("error", () => reject(new Error("接続できない")));
+  const socket = Socket.Socket.of({
+    [Socket.TypeId]: Socket.TypeId,
+    reader: Effect.succeed({
+      // ブラウザ向けの配信は送信だけなので、pull は切断まで値を出さない（Socket はクリーンな close も失敗で表す）
+      pull: Deferred.await(closed),
+      upgrade: Socket.SocketUpgradeError.unsupported,
+    }),
+    writer: Effect.acquireRelease(
+      Effect.succeed({ write, writeAll: (chunks) => Effect.forEach(chunks, write, { discard: true }) }),
+      () => Deferred.succeed(writerReleased, undefined),
+    ),
   });
   return {
-    received,
-    // n 個届くまで待つ
-    until: (n: number) =>
-      received.length >= n
-        ? Promise.resolve()
-        : new Promise<void>((resolve) => waiting.push({ n, resolve })),
-    close: () => new Promise<void>((resolve) => {
-      ws.addEventListener("close", () => resolve());
-      ws.close();
-    }),
+    socket, frames, writerReleased,
+    disconnect: Deferred.fail(closed, new Socket.SocketError({ reason: new Socket.SocketCloseError({ code: 1000 }) })),
   };
-}
+});
 
-// 届かないことを確かめるための短い待ち
-const settle = () => new Promise((r) => setTimeout(r, 50));
+describe("Viewers の配信と保持（要件14〜18・25）", () => {
+  it.effect("初回の最新全体、接続中の更新、再接続の最新全体が届く", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const first = yield* client(Effect.void);
+      yield* viewers.publish(snap("採用"));
+      const fiber = yield* Effect.forkChild(viewers.connect(first.socket));
+      expect(yield* Queue.take(first.frames)).toEqual(snap("採用"));
+      yield* viewers.publish(snap("採用", "予算"));
+      expect(yield* Queue.take(first.frames)).toEqual(snap("採用", "予算"));
+      yield* first.disconnect;
+      yield* Effect.exit(Fiber.join(fiber));
+      yield* viewers.publish(snap("採用", "予算", "日程"));
+      const second = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(second.socket));
+      expect(yield* Queue.take(second.frames)).toEqual(snap("採用", "予算", "日程"));
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.size(second.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
 
-describe("スナップショットサーバー（WebSocket）", () => {
-  let server: Awaited<ReturnType<typeof startSnapshotServer>> | undefined;
-  afterEach(async () => {
-    await server?.close();
-    server = undefined;
-  });
+  it.effect("接続中のすべてのクライアントへ同じ更新が届く", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      yield* viewers.publish(snap());
+      const clients = [yield* client(Effect.void), yield* client(Effect.void)];
+      for (const c of clients) {
+        yield* Effect.forkChild(viewers.connect(c.socket));
+        expect(yield* Queue.take(c.frames)).toEqual(snap());
+      }
+      yield* viewers.publish(snap("採用"));
+      for (const c of clients) expect(yield* Queue.take(c.frames)).toEqual(snap("採用"));
+    }).pipe(Effect.provide(Viewers.layer)));
 
-  it("つないだクライアントが最新のスナップショットを受け取り、反映のたびに全体が届く。つなぎ直すと最新のものが届く", async () => {
-    server = await startSnapshotServer({ port: 0 });
-    const s1 = snap("採用");
-    const s2 = snap("採用", "予算");
-    const s3 = snap("採用", "予算", "日程");
+  it.effect("未公開なら何も送らず、その後の最初の公開は届く", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const c = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(c.socket));
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.size(c.frames)).toBe(0);
+      yield* viewers.publish(snap("採用"));
+      expect(yield* Queue.take(c.frames)).toEqual(snap("採用"));
+    }).pipe(Effect.provide(Viewers.layer)));
 
-    server.publish(s1);
-    const first = await connect(server.port);
-    await first.until(1);
-    expect(first.received).toEqual([s1]); // つないだ時点の最新が、publish より後でも届く
+  it.effect("snapshot、トラックごとの最後の非空speaking、最後のintakeの順に送る", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      yield* viewers.publish(snap("採用"));
+      yield* viewers.speak(speaking("相手", "あ"));
+      yield* viewers.speak(speaking("相手", "あ い"));
+      yield* viewers.speak(speaking("自分", "はい"));
+      yield* viewers.intake(intake("interrupted"));
+      yield* viewers.intake(intake("stopped"));
+      const c = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(c.socket));
+      expect(yield* Queue.takeN(c.frames, 4)).toEqual([
+        snap("採用"), speaking("相手", "あ い"), speaking("自分", "はい"), intake("stopped"),
+      ]);
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.size(c.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
 
-    server.publish(s2);
-    await first.until(2);
-    expect(first.received).toEqual([s1, s2]); // つないでいる間の反映は、差分でなく全体で届く
+  it.effect("空speakingは接続中に送り、保持から除く。他トラックは残る", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      yield* viewers.speak(speaking("相手", "あ"));
+      yield* viewers.speak(speaking("自分", "はい"));
+      const first = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(first.socket));
+      expect(yield* Queue.takeN(first.frames, 2)).toEqual([speaking("相手", "あ"), speaking("自分", "はい")]);
+      yield* viewers.speak(speaking("相手", ""));
+      expect(yield* Queue.take(first.frames)).toEqual(speaking("相手", ""));
+      const second = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(second.socket));
+      expect(yield* Queue.take(second.frames)).toEqual(speaking("自分", "はい"));
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.size(second.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
 
-    await first.close();
-    server.publish(s3); // 切れている間の反映
+  for (const status of ["running", "interrupted", "stopped", "none"] as const) {
+    it.effect(`intake ${status} は後から接続しても届く`, () =>
+      Effect.gen(function* () {
+        const viewers = yield* Viewers;
+        yield* viewers.intake(intake(status));
+        const c = yield* client(Effect.void);
+        yield* Effect.forkChild(viewers.connect(c.socket));
+        expect(yield* Queue.take(c.frames)).toEqual(intake(status));
+        yield* TestClock.adjust(1);
+        expect(yield* Queue.size(c.frames)).toBe(0);
+      }).pipe(Effect.provide(Viewers.layer)));
+  }
 
-    const second = await connect(server.port);
-    await second.until(1);
-    expect(second.received).toEqual([s3]); // つなぎ直すと、切れている間のものを含む最新だけが届く
-    await settle();
-    expect(second.received).toEqual([s3]);
-    await second.close();
-  });
+  it.effect("runningからnoneへの変更は同じ接続へ届き、後から接続するとnoneだけが届く", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      yield* viewers.intake(intake("running"));
+      const first = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(first.socket));
+      expect(yield* Queue.take(first.frames)).toEqual(intake("running"));
+      yield* viewers.intake(intake("none"));
+      expect(yield* Queue.take(first.frames)).toEqual(intake("none"));
+      const second = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(second.socket));
+      expect(yield* Queue.take(second.frames)).toEqual(intake("none"));
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.size(second.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
 
-  it("接続中のクライアントすべてに同じスナップショットが届く", async () => {
-    server = await startSnapshotServer({ port: 0 });
-    const a = await connect(server.port);
-    const b = await connect(server.port);
-    server.publish(snap("採用"));
-    await a.until(1);
-    await b.until(1);
-    expect(a.received).toEqual([snap("採用")]);
-    expect(b.received).toEqual([snap("採用")]);
-    await a.close();
-    await b.close();
-  });
+  it.effect("初回送信中の更新を、保持値送信後に取りこぼさず届ける（要件16）", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const sending = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const c = yield* client(Deferred.succeed(sending, undefined).pipe(Effect.andThen(Deferred.await(release))));
+      yield* viewers.publish(snap("初回"));
+      yield* Effect.forkChild(viewers.connect(c.socket));
+      yield* Deferred.await(sending);
+      yield* viewers.publish(snap("更新1"));
+      yield* viewers.publish(snap("更新2"));
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Queue.take(c.frames)).toEqual(snap("初回"));
+      expect(yield* Queue.takeN(c.frames, 2)).toEqual([snap("更新1"), snap("更新2")]);
+    }).pipe(Effect.provide(Viewers.layer)));
 
-  it("スナップショットを一度も publish していなければ、つないでも何も届かない", async () => {
-    server = await startSnapshotServer({ port: 0 });
-    const c = await connect(server.port);
-    await settle();
-    expect(c.received).toEqual([]);
-    await c.close();
-  });
-
-  // origin を指定してつなぐ。受理されれば最初に届いた 1 件、拒否されれば null を返す。
-  const tryOrigin = (port: number, origin: string | undefined) =>
-    new Promise<Snapshot | null>((resolve) => {
-      const ws = new WsClient(`ws://127.0.0.1:${port}`, origin === undefined ? {} : { origin });
-      ws.on("message", (data) => {
-        resolve(JSON.parse(String(data)));
-        ws.close();
-      });
-      ws.on("error", () => resolve(null));
-      ws.on("unexpected-response", () => resolve(null));
-    });
-
-  it.each(["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"])(
-    "ローカルの Origin（%s）からの接続には最新が届く",
-    async (origin) => {
-      server = await startSnapshotServer({ port: 0 });
-      server.publish(snap("採用"));
-      expect(await tryOrigin(server.port, origin)).toEqual(snap("採用"));
-    },
-  );
-
-  it("Origin ヘッダーのない接続には最新が届く", async () => {
-    server = await startSnapshotServer({ port: 0 });
-    server.publish(snap("採用"));
-    expect(await tryOrigin(server.port, undefined)).toEqual(snap("採用"));
-  });
-
-  it.each(["https://evil.example", "null", "http://localhost.evil.example"])(
-    "許可していない Origin（%s）の接続は拒否し、何も送らない",
-    async (origin) => {
-      server = await startSnapshotServer({ port: 0 });
-      server.publish(snap("採用"));
-      expect(await tryOrigin(server.port, origin)).toBeNull();
-    },
-  );
-
-  describe("つないだ直後の speaking", () => {
-    const frame = (track: "相手" | "自分", text: string) => ({ type: "speaking" as const, track, text });
-    // 接続して、スナップショットと speaking frame が出そろうまで受け取る
-    async function connectAndCollect(port: number, n: number) {
-      const c = await connect(port);
-      await c.until(n);
-      await settle();
-      const received = c.received as unknown[];
-      await c.close();
-      return received;
-    }
-
-    it("反映待ちの文字があるときにつないだクライアントへ、スナップショットの後に送り直す", async () => {
-      server = await startSnapshotServer({ port: 0 });
-      server.publish(snap("採用"));
-      server.speak(frame("相手", "あ い"));
-      expect(await connectAndCollect(server.port, 2)).toEqual([snap("採用"), frame("相手", "あ い")]);
-    });
-
-    it("トラックごとに 1 件まで送り、空のトラックは送らない", async () => {
-      server = await startSnapshotServer({ port: 0 });
-      server.speak(frame("相手", "あ"));
-      server.speak(frame("自分", ""));
-      expect(await connectAndCollect(server.port, 1)).toEqual([frame("相手", "あ")]);
-    });
-
-    it("同じトラックへ続けて送った場合は、最後の値だけを送り直す", async () => {
-      server = await startSnapshotServer({ port: 0 });
-      server.speak(frame("相手", "あ"));
-      server.speak(frame("相手", "あ い"));
-      expect(await connectAndCollect(server.port, 1)).toEqual([frame("相手", "あ い")]);
-    });
-
-    it("最後に空を送ったトラックは、つないでも何も届かない", async () => {
-      server = await startSnapshotServer({ port: 0 });
-      server.speak(frame("相手", "あ"));
-      server.speak(frame("相手", ""));
-      const c = await connect(server.port);
-      await settle();
-      expect(c.received).toEqual([]);
-      await c.close();
-    });
-  });
-
-  // Issue #161 U-A: 取り込みの状態（途切れている／止まった／動いている／セッションなし）の保持・再送。
-  // connect() はスナップショットとして型付けしているが、実際には受け取った JSON をそのまま積むだけなので、
-  // intake frame（{ type: "intake", status }）もそのまま届く（ws.ts の契約だけを確かめる。振り分け自体は web 側の liveFeed.test.ts）
-  describe("つないだ直後の intake（取り込みの状態）", () => {
-    const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => ({ type: "intake" as const, status });
-
-    it.each(["running", "interrupted", "stopped", "none"] as const)(
-      "status: %s は保持して、後から接続したクライアントにも届く",
-      async (status) => {
-        server = await startSnapshotServer({ port: 0 });
-        server.intake(intakeFrame(status));
-        const c = await connect(server.port);
-        await c.until(1);
-        await settle();
-        expect(c.received).toEqual([intakeFrame(status)]);
-        await c.close();
-      },
-    );
-
-    it("続けて送った場合は、最後の値だけを保持して送り直す", async () => {
-      server = await startSnapshotServer({ port: 0 });
-      server.intake(intakeFrame("interrupted"));
-      server.intake(intakeFrame("stopped"));
-      const c = await connect(server.port);
-      await c.until(1);
-      await settle();
-      expect(c.received).toEqual([intakeFrame("stopped")]);
-      await c.close();
-    });
-
-    // Issue #161 U-G: none も保持対象に含める。切断中にセッションが終わった（running → none）場合でも、
-    // 再接続したクライアントへ最後の状態（none）だけが 1 件届き、古い running は送り返さない。
-    it("続けて送った場合、保持するのは最後の 1 件だけ（running → none の順でも none だけが届く）", async () => {
-      server = await startSnapshotServer({ port: 0 });
-      server.intake(intakeFrame("running"));
-      server.intake(intakeFrame("none"));
-      const c = await connect(server.port);
-      await c.until(1);
-      await settle();
-      expect(c.received).toEqual([intakeFrame("none")]);
-      await c.close();
-    });
-  });
-
-  it("close の後は、つないだままのクライアントがいても終了でき、新しい接続を受け付けない", async () => {
-    server = await startSnapshotServer({ port: 0 });
-    const { port } = server;
-    const c = await connect(port);
-    await server.close();
-    server = undefined;
-    await expect(connect(port)).rejects.toThrow();
-    expect(c.received).toEqual([]);
-  });
+  it.effect("切断で配信Fiberとwriterを終了し、残った接続へは更新が届く（要件17）", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      yield* viewers.publish(snap("前"));
+      const a = yield* client(Effect.void);
+      const b = yield* client(Effect.void);
+      const fiber = yield* Effect.forkChild(viewers.connect(a.socket));
+      yield* Effect.forkChild(viewers.connect(b.socket));
+      expect(yield* Queue.take(a.frames)).toEqual(snap("前"));
+      expect(yield* Queue.take(b.frames)).toEqual(snap("前"));
+      yield* a.disconnect;
+      yield* Effect.exit(Fiber.join(fiber));
+      yield* Deferred.await(a.writerReleased);
+      yield* viewers.publish(snap("後"));
+      expect(yield* Queue.take(b.frames)).toEqual(snap("後"));
+      expect(yield* Queue.size(a.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
 });
