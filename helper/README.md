@@ -117,7 +117,7 @@ swift run -c release stt-bench echo /tmp/aec118/meeting.wav /tmp/aec118/self.wav
 pnpm --filter @live-mindmap/helper test
 ```
 
-Command Line Tools だけの環境では XCTest がないため、swift-testing のマクロ用に `-plugin-path` を付ける（`package.json` の test script）。
+Command Line Tools だけの環境では XCTest がないため、swift-testing のマクロ用に `-plugin-path` を付ける（`package.json` の typecheck script のビルドで渡す。test script はそれを通る）。
 
 ## 実機での確認手順（人が行う）
 
