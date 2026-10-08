@@ -348,7 +348,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "none" });
     }));
 
-  // base の server.test.ts「開始に失敗しても、接続中のクライアントにも新しく接続したクライアントにも、空のマップは届かず…」の移動先。
+  // base の server.heavy.test.ts「開始に失敗しても、接続中のクライアントにも新しく接続したクライアントにも、空のマップは届かず…」の移動先。
   // 実物の SessionSinks・Viewers・/ws を通す。sessions.ts が sinks.open を helpers.launch より前に動かす、
   // または失敗時に viewers.publish を呼ぶと、before/after が「失敗」のマップを受け取りこのテストは落ちる。
   // base の値（4 ノード・子の文面）は実物 fake-helper の台本と updater から決まっていた。偽 Helpers はイベントを
@@ -382,7 +382,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       expect(snapshots(after.frames).map((s) => s.nodes[0]!.text)).toEqual(["前", "次"]);
     }));
 
-  // base の server.test.ts「cli status が…」の配線部分（cli.ts の status → GET /session/status → formatIntakeStatus → 標準出力）の移動先
+  // base の server.heavy.test.ts「cli status が…」の配線部分（cli.ts の status → GET /session/status → formatIntakeStatus → 標準出力）の移動先
   it.live("cli status が、セッションなし・動いている・stop 後の状態を、サーバーの応答から標準出力へ値として出す", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}]);
@@ -550,7 +550,7 @@ describe("セッションの開始・終了の処理中の保護（要件8・tes
 });
 
 // 共有画面（Issue #278）。偽のヘルパーが流した screen が、ログ・screens/・Claude へのメッセージまで届く。
-// 差分更新は本物の layerClaude を残し、AgentSdk の query だけを偽物にする（server/test/playScreen.test.ts と同じ）
+// 差分更新は本物の layerClaude を残し、AgentSdk の query だけを偽物にする（server/test/playScreen.it.test.ts と同じ）
 type SentBlock = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
 type SentMessage = { type: string; message: { role: string; content: string | SentBlock[] } };
 

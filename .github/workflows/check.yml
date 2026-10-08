@@ -46,8 +46,9 @@ jobs:
       # ルートの pnpm typecheck は helper の swift build まで走るので、TS の 2 パッケージに絞る
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web typecheck
       - run: pnpm --filter @live-mindmap/web test
+      - run: pnpm --filter @live-mindmap/web test:it:all
 
-  # server.test.ts は 1 ファイルで server テスト全体の時間を決める（--shard はファイル単位で、ファイルの中は割れない）。
+  # server.heavy.test.ts は 1 ファイルで server テスト全体の時間を決める（--shard はファイル単位で、ファイルの中は割れない）。
   # vitest list でテストの一覧を取り、行番号で絞って（file:line）テスト単位で均等に割る。
   # 新しく足したテストも自動でどれかのシャードに入る
   server-split:
@@ -58,7 +59,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
-    name: server.test.ts (${{ matrix.shard }}/4)
+    name: server.heavy.test.ts (${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v3
@@ -72,8 +73,8 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          targets=$(pnpm exec vitest list test/server.test.ts --json \
-            | jq -r --argjson n 4 --argjson i "$SHARD" 'sort_by(.location.line) | to_entries[] | select(.key % $n == $i) | "test/server.test.ts:\(.value.location.line)"')
+          targets=$(pnpm exec vitest list test/server.heavy.test.ts --json \
+            | jq -r --argjson n 4 --argjson i "$SHARD" 'sort_by(.location.line) | to_entries[] | select(.key % $n == $i) | "test/server.heavy.test.ts:\(.value.location.line)"')
           echo "$targets"
           pnpm exec vitest run $targets
 
@@ -86,10 +87,10 @@ jobs:
       matrix:
         include:
           - name: capture
-            args: test/capture.test.ts test/reviewBuild.test.ts
+            args: test/capture.heavy.test.ts test/reviewBuild.heavy.test.ts
             chromium: true
           - name: rest
-            args: --exclude test/server.test.ts --exclude test/capture.test.ts --exclude test/reviewBuild.test.ts
+            args: --exclude test/server.heavy.test.ts --exclude test/capture.heavy.test.ts --exclude test/reviewBuild.heavy.test.ts
             chromium: false
     name: server (${{ matrix.name }})
     steps:

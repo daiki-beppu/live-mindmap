@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "pnpm -r --parallel run dev",
     "test": "pnpm -r test",
+    "test:it": "pnpm -r run test:it",
+    "test:it:heavy": "pnpm -r run test:it:heavy",
+    "test:it:all": "pnpm -r run test:it:all",
     "typecheck": "pnpm -r typecheck"
   }
 }

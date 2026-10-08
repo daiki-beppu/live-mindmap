@@ -423,7 +423,7 @@ describe("CLI", () => {
       if (Result.isSuccess(result)) return;
       expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
       expect(CliError.isCliError(result.failure)).toBe(false);
-      // 行番号付きの日本語 1 行は、入口の表を通す cliProcess.test.ts で観測する
+      // 行番号付きの日本語 1 行は、入口の表を通す cliProcess.heavy.test.ts で観測する
       expect(deps.stdout).toEqual([]);
       expect(deps.stderr).toEqual([]);
     }));
@@ -487,7 +487,7 @@ describe("CLI", () => {
       if (Result.isSuccess(result)) return;
       expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
       expect(CliError.isCliError(result.failure)).toBe(false);
-      // 「セッションがありません: <パス>」の 1 行は cliProcess.test.ts で観測する
+      // 「セッションがありません: <パス>」の 1 行は cliProcess.heavy.test.ts で観測する
       expect(deps.stdout).toEqual([]);
       expect(deps.stderr).toEqual([]);
     }));

@@ -7,7 +7,7 @@ server を Effect 4 へ置き換える（[#193](https://github.com/daiki-beppu/l
 - **正解ファイルは `Flag.FileSchema` で読み**、Schema での検証を引数の定義に入れる
 - **引数の誤りの出力は、既定の `Formatter` のまま**にする。help（英語の見出し）が stdout、`ERROR ...` が stderr に出て exit 1。`--help`・`--version`・`--wizard`・`--completions`・`--log-level` も増える。正しく呼んだときの stdout は変えない
 - **サブコマンドの中身の失敗は、タグ付きの失敗**にし、入口の表 1 つで今と同じ日本語の 1 行に変えて stderr に出し、exit 1 にする。`CliError` は effect/cli が出力済みなので二重に出さない
-- 差し替えるもの（差分更新・撮影）は Service と Layer、セッションのフォルダとポートの環境変数は `Config` で受ける。`cli.test.ts` は argv を入れて stdout と失敗を見る形を保つ
+- 差し替えるもの（差分更新・撮影）は Service と Layer、セッションのフォルダとポートの環境変数は `Config` で受ける。`cli.it.test.ts` は argv を入れて stdout と失敗を見る形を保つ
 
 ## Considered Options
 

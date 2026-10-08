@@ -11,8 +11,8 @@ import { Viewers } from "../src/viewers.ts";
 
 // Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と起動し直しのループを、
 // 偽の Helpers・SessionSinks の Layer と TestClock で確かめる（order.md:39）。本物の子プロセスは使わない。
-// 本物の子プロセスのテストは server/test/server.test.ts の契約 6 本、SessionSinks 自身の実物 Layer の契約は
-// server/test/sessionSinks.test.ts が確かめる（このファイルでは SessionSinks も偽物）。
+// 本物の子プロセスのテストは server/test/server.heavy.test.ts の契約 6 本、SessionSinks 自身の実物 Layer の契約は
+// server/test/sessionSinks.it.test.ts が確かめる（このファイルでは SessionSinks も偽物）。
 //
 // 想定する契約（このファイルが要求する Helpers・SessionSinks の形。段 3 の実装はこれを満たす）:
 // - `Helpers.launch(args)` は 1 回分の起動を表す `HelperAttempt`（events の Stream・stop・exit・stderrTail）を
@@ -1496,8 +1496,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       }));
   });
 
-  // base の server.test.ts の移動先のうち、偽の Helpers・SessionSinks と TestClock で観測できる残りの条件
-  describe("セッションの中身の寿命・起動し直しをまたぐ連続性・ログ（base server.test.ts の移動先）", () => {
+  // base の server.heavy.test.ts の移動先のうち、偽の Helpers・SessionSinks と TestClock で観測できる残りの条件
+  describe("セッションの中身の寿命・起動し直しをまたぐ連続性・ログ（base server.heavy.test.ts の移動先）", () => {
     it.effect("stop は、最後の差分更新（flush）が終わってから updater（Scope）を閉じ、閉じた後には何も呼ばない（base:581）", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{}]);

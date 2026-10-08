@@ -9,7 +9,10 @@
   "scripts": {
     "dev": "swift build -c release --package-path ../helper && node src/server.ts",
     "cli": "node src/cli.ts",
-    "test": "vitest run",
+    "test": "vitest run --project unit",
+    "test:it": "vitest run --project it",
+    "test:it:heavy": "vitest run --project heavy",
+    "test:it:all": "vitest run --project it --project heavy",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && effect-tsgo diagnostics --project tsconfig.json"
   },
   "dependencies": {

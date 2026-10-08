@@ -79,4 +79,4 @@ node bench/sttAccuracy.ts bench/meetings/lecture.timeline.tsv bench/meetings/lec
 ## eval ではないもの
 
 - `sessionStats.ts` は数えるだけで、eval ではない。
-- `server/test/eval.test.ts` はモデルを呼ばない決定的なテストで、普通のテストとして層に入る。
+- `server/test/eval.it.test.ts` はモデルを呼ばない決定的なテストで、普通のテストとして層に入る。
