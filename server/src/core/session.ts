@@ -483,29 +483,27 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
 }
 
 // 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しと待ちはこの Scope の Fiber で、Scope を閉じると中断される
-export const makeSession = ({ title }: { readonly title: string }): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> =>
-  Effect.gen(function* () {
-    const log = yield* SessionLog;
-    yield* log.write({ type: "start", title });
-    return yield* openSession({
-      map: emptyMap(title),
-      pending: [],
-      processed: [],
-      remarks: [],
-      known: new Set(),
-      round: 0,
-      changes: [],
-      currentTopic: undefined,
-      lastChanged: undefined,
-    }, noScreens);
-  });
+export const makeSession = Effect.fnUntraced(function* ({ title }: { readonly title: string }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+  const log = yield* SessionLog;
+  yield* log.write({ type: "start", title });
+  return yield* openSession({
+    map: emptyMap(title),
+    pending: [],
+    processed: [],
+    remarks: [],
+    known: new Set(),
+    round: 0,
+    changes: [],
+    currentTopic: undefined,
+    lastChanged: undefined,
+  }, noScreens);
+});
 
 // ログのイベントから、セッションを元の状態に戻す。差分更新は呼ばず、イベントも log し直さない。
 // 共有画面は、まだ添えていない変化と最後に添えた 2 件を、screens/ のファイル名だけで戻す（復元した画像の id はファイル名）。
 // 画像のバイト列は、ライブと同じく、続きの呼び出しで添える・送り直すときに SessionLog.readScreen で読み戻す（core はファイルを読まない）
-export const restoreSession = (events: Iterable<unknown>): Effect.Effect<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> =>
-  Effect.gen(function* () {
-    const { screens, ...state } = yield* restoreState(events);
-    const hold = (ref: ScreenRefs): HeldScreen => ({ start: ref.start, image: ref.image === null ? null : { id: ref.image, file: ref.image } });
-    return yield* openSession(state, { unsent: screens.unsent.map(hold), last: screens.last.map(hold), files: screens.files, received: screens.received });
-  });
+export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
+  const { screens, ...state } = yield* restoreState(events);
+  const hold = (ref: ScreenRefs): HeldScreen => ({ start: ref.start, image: ref.image === null ? null : { id: ref.image, file: ref.image } });
+  return yield* openSession(state, { unsent: screens.unsent.map(hold), last: screens.last.map(hold), files: screens.files, received: screens.received });
+});

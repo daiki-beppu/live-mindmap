@@ -183,34 +183,33 @@ const IntakeStatus = Schema.Struct({
 });
 
 // 常駐サーバーへ依頼を送り、応答を decode する。2xx 以外は、応答の { error } をそのまま入口の 1 行にする
-const requestServer = <A>(
+const requestServer = Effect.fnUntraced(function* <A>(
   port: number,
   method: "GET" | "POST",
   path: string,
   decode: (input: unknown) => Effect.Effect<A, Schema.SchemaError>,
   body?: object,
-) =>
-  Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        fetch(`http://127.0.0.1:${port}${path}`, {
-          method,
-          ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
-        }),
-      catch: () => new ServerUnreachable(),
-    });
-    // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする（今と同じ）
-    const raw = yield* Effect.tryPromise((): Promise<unknown> => response.json()).pipe(
-      Effect.orElseSucceed((): unknown => ({})),
-    );
-    if (!response.ok) {
-      const reported = yield* Schema.decodeUnknownEffect(ServerErrorBody)(raw).pipe(
-        Effect.orElseSucceed((): { readonly error?: string } => ({})),
-      );
-      return yield* new ServerFailed({ message: reported.error ?? `サーバーがエラーを返しました: ${response.status}` });
-    }
-    return yield* decode(raw).pipe(Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })));
+) {
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method,
+        ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
+      }),
+    catch: () => new ServerUnreachable(),
   });
+  // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする（今と同じ）
+  const raw = yield* Effect.tryPromise((): Promise<unknown> => response.json()).pipe(
+    Effect.orElseSucceed((): unknown => ({})),
+  );
+  if (!response.ok) {
+    const reported = yield* Schema.decodeUnknownEffect(ServerErrorBody)(raw).pipe(
+      Effect.orElseSucceed((): { readonly error?: string } => ({})),
+    );
+    return yield* new ServerFailed({ message: reported.error ?? `サーバーがエラーを返しました: ${response.status}` });
+  }
+  return yield* decode(raw).pipe(Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })));
+});
 
 /* ----------------------------------------------------------------------------
  * サブコマンド

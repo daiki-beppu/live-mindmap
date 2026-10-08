@@ -51,26 +51,25 @@ export const realLayers = (options: ServerOptions, exportServices: ExportService
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
 // セッションの Scope はこの Scope の子で、Scope を閉じると、進行中のセッションのヘルパー・updater が後始末される。
 // その後に配信を渡し切り（drained）、待受けの停止・接続の Fiber の終了・待受けを閉じる finalizer が続く
-export const startup = (options: ListenOptions, layers: ServerLayers) =>
-  Effect.gen(function* () {
-    const { viewers, httpServer } = yield* openListener(options.port);
-    const context = yield* Layer.build(
-      Sessions.layer.pipe(
-        Layer.provide(Layer.mergeAll(layers.helpers, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir), Layer.succeed(Viewers)(viewers))),
-      ),
-    );
-    yield* serveSessions.pipe(
-      Effect.provideService(Viewers, viewers),
-      Effect.provideService(HttpServer.HttpServer, httpServer),
-      Effect.provideService(Sessions, Context.get(context, Sessions)),
-    );
-    // 最後に登録するので、セッションの Scope（開始のたびに作る子）の後始末に続いて走る:
-    // ヘルパーを止めて最後のフレームを出した後、それを接続中のクライアントへ渡し切る
-    yield* Effect.addFinalizer(() => viewers.drained);
-    const port = yield* portOf(httpServer.address);
-    options.onListening?.(port);
-    return port;
-  });
+export const startup = Effect.fnUntraced(function* (options: ListenOptions, layers: ServerLayers) {
+  const { viewers, httpServer } = yield* openListener(options.port);
+  const context = yield* Layer.build(
+    Sessions.layer.pipe(
+      Layer.provide(Layer.mergeAll(layers.helpers, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir), Layer.succeed(Viewers)(viewers))),
+    ),
+  );
+  yield* serveSessions.pipe(
+    Effect.provideService(Viewers, viewers),
+    Effect.provideService(HttpServer.HttpServer, httpServer),
+    Effect.provideService(Sessions, Context.get(context, Sessions)),
+  );
+  // 最後に登録するので、セッションの Scope（開始のたびに作る子）の後始末に続いて走る:
+  // ヘルパーを止めて最後のフレームを出した後、それを接続中のクライアントへ渡し切る
+  yield* Effect.addFinalizer(() => viewers.drained);
+  const port = yield* portOf(httpServer.address);
+  options.onListening?.(port);
+  return port;
+});
 
 // SIGINT・SIGTERM で終わったときの終了コードは 0 にする（頼まれた終了であって、失敗ではない）。
 // 既定の teardown は中断だけの Exit を 130 にするが、待受けの失敗などの本当の失敗は既定の規則に任せる
