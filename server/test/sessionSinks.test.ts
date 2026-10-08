@@ -1,16 +1,18 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Fiber, Layer, Scope } from "effect";
+import { Cause, Console, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { TestClock } from "effect/testing";
+import { MapCapture } from "../src/capture.ts";
 import { DiffUpdater, QUIET_MS, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type DiffInput, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
-import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
-import { SessionSinks } from "../src/sessionSinks.ts";
+import { ReviewBuild } from "../src/review.ts";
+import { SessionSinks, type SessionSinksDeps } from "../src/sessionSinks.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
-import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES, type FakeMix } from "./fixtures/audioMix.ts";
+import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
+import { collectingConsole, failingBuild, failingCapture, FAKE_TEMPLATE, fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 
@@ -20,7 +22,7 @@ import { settleUntil } from "./fixtures/sessionLayers.ts";
 // 1 秒の途中結果（SETTLE_QUIET_MS）と QUIET_MS の待ちは TestClock で進める（本物の時間では待たない）。
 //
 // 想定する契約（server/src/sessionSinks.ts）:
-// - `SessionSinks.layer({ updaterLayer, capture, writeReview })` が実物の Layer を作る（server.ts の ServerOptions と同じ依存）。
+// - `SessionSinks.layer({ updaterLayer })` が実物の Layer を作る。撮影・見返し用の HTML のビルド・mix・FileSystem は Layer の文脈から受け取る（テストの sinksLayer が偽物を渡す）。
 //   updaterLayer は core の Service DiffUpdater を作る Layer で、セッションごとに Layer.build(Layer.fresh(...)) して使う
 // - `createDir(sessionsDir)` がセッションのフォルダを作る（失敗すれば以後 open を呼ばない。要件3の前提）
 // - `open({ dir, title, publish, speak })` がセッションの Scope の中で 1 回呼ばれ、updater をそのセッションの Scope で開き、
@@ -53,26 +55,10 @@ function makeFakeUpdater() {
   return { updaterLayer, state };
 }
 
-const fakeCapture = async (_snapshot: Snapshot, path: string) => writeFileSync(path, "");
-const failingCapture = async () => {
-  throw new Error("撮影に失敗");
-};
-
-// 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする。
-// server.ts の入口と同じく、writeReviewPages から Promise の口を 1 つ組む
-const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
-// mix（ヘルパー）は偽物。出力先に小さなバイト列を書く、または失敗する
-const writeReviewWith = (mix: FakeMix): PromiseReviewPages => (dir, logPath, variants) =>
-  Effect.runPromise(
-    writeReviewPages(dir, logPath, variants).pipe(
-      Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
-      Effect.provide(Layer.merge(mix.layer, NodeFileSystem.layer)),
-    ),
-  );
-const fakeWriteReview: PromiseReviewPages = writeReviewWith(fakeAudioMix());
-const failingWriteReview: PromiseReviewPages = async () => {
-  throw new Error("ビルドに失敗");
-};
+// 終了時の書き出しが文脈から受け取る Service（撮影・見返し用の HTML のビルド・mix）は偽物の Layer で渡す。
+// 撮影は空のファイルを書くだけ、HTML は書き出し（ログの読み込み・埋め込み・書き込み）が本物でビルドだけ偽物
+const sinksLayer = ({ updaterLayer, ...services }: Pick<SessionSinksDeps, "updaterLayer"> & ExportServicesOptions) =>
+  SessionSinks.layer({ updaterLayer }).pipe(Layer.provide(fakeExportServices(services)));
 
 const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
   return yield* Effect.acquireRelease(
@@ -99,7 +85,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       yield* Scope.close(scope, Exit.void);
       expect(state).toMatchObject({ opened: 1, closed: 1 });
-    }).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("フォルダを作れないと createDir が失敗し、open を呼ばなければ updater も開かない", () => {
@@ -114,7 +100,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       expect(result._tag).toBe("Failure");
       expect(state).toMatchObject({ opened: 0, closed: 0 });
-    }).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("発言の ID はセッションにつき 1 つのクロージャで、r1 から順に増える（要件125）", () =>
@@ -131,7 +117,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const log = yield* Effect.sync(() => readFileSync(join(dir, "log.jsonl"), "utf8"));
       const remarkIds = log.split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).filter((e) => e.type === "remark").map((e) => e.remark.id);
       expect(remarkIds).toEqual(["r1", "r2"]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
   // 実物の SessionSink.screen が、画像ありと「なし」（image: null）のどちらも Session.pushScreen へ渡し、
   // log.jsonl の screen の行と差分更新の入力（screens）に同じ start・null が届く
@@ -168,7 +154,7 @@ describe("SessionSinks（実物 Layer）", () => {
         [1, [0xff, 0xd8, 0xff, 0x00]],
         [2.5, null],
       ]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   // Issue #280: 実物の SessionSink.screenOff は Session.pushScreenOff へ渡り、受け取った start・reason のまま log.jsonl に 1 行ずつ書く。
@@ -199,7 +185,7 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(log.map((e) => e.type).filter((t) => t === "start" || t === "screen-off" || t === "remark")).toEqual(["start", "screen-off", "remark", "screen-off", "remark"]);
       expect(inputs.length).toBeGreaterThan(0);
       for (const input of inputs) expect(input.screens ?? []).toEqual([]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("exports は書き出した 5 パスを返す（4 つ目が map.png、5 つ目が map.html）", () =>
@@ -215,7 +201,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
       for (const path of paths) expect(existsSync(path)).toBe(true);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
   it.effect("録音（相手.m4a・自分.m4a）があるセッションの exports は 6 パスを返し、map.html の後に map-audio.html が並ぶ。map-audio.html には mix の出力が入る", () => {
     const mix = fakeAudioMix();
@@ -235,107 +221,205 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(mix.calls.map((c) => c.session)).toEqual([dir]);
       expect(embeddedAudio(readFileSync(join(dir, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
       expect(embeddedAudio(readFileSync(join(dir, "map.html"), "utf8"))).toBeNull();
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: writeReviewWith(mix) })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, mix })));
   });
 
   it.effect("録音が無いセッションの exports は 5 パスだけで、mix を呼ばず、標準エラーに map-audio の理由を出さない", () => {
     const mix = fakeAudioMix();
     return Effect.scoped(Effect.gen(function* () {
-      const stderr: string[] = [];
-      const original = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-      try {
-        const sessionsDir = yield* withTmpSessionsDir();
-        const sinks = yield* SessionSinks;
-        const dir = yield* sinks.createDir(sessionsDir);
-        const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
-        yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
-        yield* sink.flush;
+      const warnings = collectingConsole();
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+      yield* sink.flush;
 
-        const paths = yield* sink.exports;
+      const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
 
-        expect(paths).toHaveLength(5);
-        expect(mix.calls).toEqual([]);
-        expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
-        expect(stderr.join("")).not.toContain("map-audio");
-      } finally {
-        process.stderr.write = original;
-      }
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: writeReviewWith(mix) })));
+      expect(paths).toHaveLength(5);
+      expect(mix.calls).toEqual([]);
+      expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
+      expect(warnings.errors.join("")).not.toContain("map-audio");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, mix })));
   });
 
   it.effect("mix が失敗しても exports は map.html までの 5 パスを返し、標準エラーに「map-audio.html を書き出せませんでした: <理由>」を残す", () => {
     const mix = fakeAudioMix();
     return Effect.scoped(Effect.gen(function* () {
-      const stderr: string[] = [];
-      const original = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-      try {
-        const sessionsDir = yield* withTmpSessionsDir();
-        const sinks = yield* SessionSinks;
-        const dir = yield* sinks.createDir(sessionsDir);
-        const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
-        yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
-        yield* sink.flush;
-        writeFileSync(join(dir, "相手.m4a"), "録音");
-        mix.failure.reason = "録音を混ぜられない";
+      const warnings = collectingConsole();
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+      yield* sink.flush;
+      writeFileSync(join(dir, "相手.m4a"), "録音");
+      mix.failure.reason = "録音を混ぜられない";
 
-        const paths = yield* sink.exports;
+      const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
 
-        expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
-        expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
-        expect(stderr.some((s) => s.includes("map-audio.html を書き出せませんでした: 録音を混ぜられない"))).toBe(true);
-      } finally {
-        process.stderr.write = original;
-      }
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: writeReviewWith(mix) })));
+      expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"]);
+      expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
+      expect(warnings.errors.some((s) => s.includes("map-audio.html を書き出せませんでした: 録音を混ぜられない"))).toBe(true);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, mix })));
   });
 
   it.effect("撮影が失敗しても exports は map.html を含む 4 パスを返し、標準エラーに理由を残す", () =>
     Effect.scoped(Effect.gen(function* () {
-      const stderr: string[] = [];
-      const original = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-      try {
-        const sessionsDir = yield* withTmpSessionsDir();
-        const sinks = yield* SessionSinks;
-        const dir = yield* sinks.createDir(sessionsDir);
-        const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
-        yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
-        yield* sink.flush;
+      const warnings = collectingConsole();
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+      yield* sink.flush;
 
-        const paths = yield* sink.exports;
+      const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
 
-        expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
-        expect(existsSync(join(dir, "map.png"))).toBe(false);
-        expect(stderr.some((s) => s.includes("map.png を書き出せませんでした: 撮影に失敗"))).toBe(true);
-      } finally {
-        process.stderr.write = original;
-      }
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: failingCapture, writeReview: fakeWriteReview }))));
+      expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
+      expect(existsSync(join(dir, "map.png"))).toBe(false);
+      expect(warnings.errors.some((s) => s.includes("map.png を書き出せませんでした: 撮影に失敗"))).toBe(true);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: failingCapture() }))));
 
   it.effect("map.html の書き出しが失敗しても exports はほかの 4 パスを返し、標準エラーに理由を残す", () =>
     Effect.scoped(Effect.gen(function* () {
-      const stderr: string[] = [];
-      const original = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-      try {
-        const sessionsDir = yield* withTmpSessionsDir();
-        const sinks = yield* SessionSinks;
-        const dir = yield* sinks.createDir(sessionsDir);
-        const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
-        yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
-        yield* sink.flush;
+      const warnings = collectingConsole();
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+      yield* sink.flush;
 
-        const paths = yield* sink.exports;
+      const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
 
-        expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
-        expect(existsSync(join(dir, "map.html"))).toBe(false);
-        expect(stderr.some((s) => s.includes("map.html を書き出せませんでした: ビルドに失敗"))).toBe(true);
-      } finally {
-        process.stderr.write = original;
-      }
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: failingWriteReview }))));
+      expect(paths.map((p) => p.split("/").pop())).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
+      expect(existsSync(join(dir, "map.html"))).toBe(false);
+      expect(warnings.errors.some((s) => s.includes("map.html を書き出せませんでした: ビルドに失敗"))).toBe(true);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: failingBuild() }))));
+
+  const openWithRemark = Effect.gen(function* () {
+    const sessionsDir = yield* withTmpSessionsDir();
+    const sinks = yield* SessionSinks;
+    const dir = yield* sinks.createDir(sessionsDir);
+    const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+    yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
+    yield* sink.flush;
+    return { dir, sink };
+  });
+  const fileNames = (paths: readonly string[]) => paths.map((p) => p.split("/").pop());
+
+  it.effect("撮影の後始末が defect で失敗しても、exports は map.html を含む 4 パスを返し、標準エラーに理由を残す", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const { sink } = yield* openWithRemark;
+
+      const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
+
+      expect(fileNames(paths)).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
+      expect(warnings.errors).toEqual(["map.png を書き出せませんでした: 後始末に失敗"]);
+    })).pipe(
+      Effect.provide(
+        sinksLayer({
+          updaterLayer: makeFakeUpdater().updaterLayer,
+          capture: () => Effect.scoped(Effect.acquireRelease(Effect.void, () => Effect.die(new Error("後始末に失敗")))),
+        }),
+      ),
+    ));
+
+  it.effect("map.html のビルドが defect で失敗しても、exports はほかの 4 パスを返し、標準エラーに理由を残す", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const { dir, sink } = yield* openWithRemark;
+
+      const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
+
+      expect(fileNames(paths)).toEqual(["map.md", "map.json", "map.drawnix", "map.png"]);
+      expect(existsSync(join(dir, "map.html"))).toBe(false);
+      expect(warnings.errors).toEqual(["map.html を書き出せませんでした: ビルドが落ちた"]);
+    })).pipe(
+      Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: () => Effect.die(new Error("ビルドが落ちた")) })),
+    ));
+
+  it.effect("撮影が中断されたときは、警告にせず中断のまま伝える", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const { sink } = yield* openWithRemark;
+
+      const exit = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
+
+      expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
+      expect(warnings.errors).toEqual([]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: () => Effect.interrupt }))));
+
+  it.effect("サーバーの警告は、撮影の失敗の理由の改行を残す", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const { sink } = yield* openWithRemark;
+
+      yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
+
+      expect(warnings.errors).toContain("map.png を書き出せませんでした: 撮影に失敗\n詳細");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: failingCapture("撮影に失敗\n詳細") }))));
+
+  it.effect("サーバーの警告は、map.html の失敗の理由の改行を残す", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const { sink } = yield* openWithRemark;
+
+      yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
+
+      expect(warnings.errors).toContain("map.html を書き出せませんでした: ビルドに失敗\n詳細");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: failingBuild("ビルドに失敗\n詳細") }))));
+
+  it.effect("撮影・HTML のビルド・mix の Service は Layer を作るときに 1 回だけ受け取り、exports のたびに作り直さない", () => {
+    const state = { captureBuilt: 0, captured: 0 };
+    const countingCapture = Layer.effect(MapCapture)(
+      Effect.sync(() => {
+        state.captureBuilt++;
+        return MapCapture.of({
+          capture: (_snapshot, path) =>
+            Effect.sync(() => {
+              state.captured++;
+              writeFileSync(path, "");
+            }),
+        });
+      }),
+    );
+    const services = Layer.mergeAll(
+      countingCapture,
+      Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+      fakeAudioMix().layer,
+    ).pipe(Layer.provideMerge(NodeFileSystem.layer));
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      expect(state).toEqual({ captureBuilt: 1, captured: 0 }); // 開いた時点で受け取り済み
+
+      yield* sink.exports;
+      yield* sink.exports;
+
+      expect(state).toEqual({ captureBuilt: 1, captured: 2 });
+    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer }).pipe(Layer.provide(services))));
+  });
+
+  it.effect("テキストの 3 形式を書けないときは、失敗の値ではなく defect になる（撮影・HTML の失敗のように諦めない）", () =>
+    Effect.scoped(Effect.gen(function* () {
+      const warnings = collectingConsole();
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      rmSync(dir, { recursive: true, force: true }); // 書き先のフォルダが無くなる
+
+      const exit = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
+
+      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause) && !Cause.hasFails(exit.cause)).toBe(true);
+      expect(warnings.errors).toEqual([]); // 諦めた警告ではない
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
   it.effect("exports で書く map.html には、そのセッションの log.jsonl の出来事がそのまま埋め込まれる", () =>
     Effect.scoped(Effect.gen(function* () {
@@ -354,7 +438,7 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(match).not.toBeNull();
       expect(JSON.parse(match![1]!)).toEqual(log);
       expect(log.length).toBeGreaterThan(0);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
   // Layer はメモ化されるので、サーバーで 1 回だけ作ると 2 つのセッションが 1 つの updater（query）を使い回してしまう。
   // セッションごとに Layer.build(Layer.fresh(updaterLayer)) するので、同じ SessionSinks の上で続けて開いたセッションは別の updater を持つ
@@ -383,7 +467,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       expect(state).toMatchObject({ opened: 2, closed: 2 });
       expect(state.callIds).toEqual([1, 2]); // それぞれのセッションの差分更新は、そのセッションの updater（別の実体）が受けた
-    }).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   describe("録音ファイルの番号（audioFileNames。要件117,127）", () => {
@@ -397,7 +481,7 @@ describe("SessionSinks（実物 Layer）", () => {
         expect(sink.audioFileNames(1)).toEqual(["相手.m4a", "自分.m4a"]);
         expect(sink.audioFileNames(2)).toEqual(["相手-2.m4a", "自分-2.m4a"]);
         expect(sink.audioFileNames(3)).toEqual(["相手-3.m4a", "自分-3.m4a"]);
-      })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
   });
 });
 
@@ -464,7 +548,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* sink.flush;
       expect(calls.flatMap((c) => c.fresh)).toHaveLength(1); // 終了処理で増えない
       expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あしたの会議は"]]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("出した後に届いた確定結果は捨てる。発言は増えず、次の発言の ID は r2 で番号が飛ばない", () => {
@@ -484,7 +568,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       expect(fresh.map((u) => u.id)).toEqual(["r1", "r2"]);
       expect(fresh.some((u) => u.text.includes("十時です"))).toBe(false);
       expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あしたの会議"], ["r2", "べつの確定結果"]]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("drain は、まだ出ていない発話を落とさない。途中結果の最後の本文が差分更新に渡る", () => {
@@ -497,7 +581,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* sink.flush;
 
       expect(calls.flatMap((c) => c.fresh).map((u) => [u.id, u.text])).toEqual([["r1", "とちゅうでとめた"]]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("自分の途中結果は、1 秒を超えても発言にならない（相手の同じ入力は発言になる）。自分の発言は確定結果だけから作られる", () => {
@@ -519,7 +603,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       expect(fresh).toHaveLength(2);
       expect(fresh.some((u) => u.text === "じぶんのとちゅう")).toBe(false);
       expect(logEvents(dir).filter((e) => e.type === "remark")).toHaveLength(2);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("発言が 1 件だけ届き QUIET_MS 新しい発言が来ないとき、flush を待たずにその 1 件で差分更新が呼ばれ、反映後のマップが公開される", () => {
@@ -536,7 +620,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
       yield* settleUntil(() => published.length >= 2);
       expect(published.map((s) => s.round)).toEqual([0, 1]);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("途中結果は speaking として届く。重複の印の付いた自分の途中結果は出ず、印のないものは出る。stopRelays で両トラックとも空になり、以後は送らない", () =>
@@ -558,7 +642,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS + 100);
       yield* settle;
       expect(speaks).toHaveLength(sent);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 
   it.effect("clearSpeaking は両トラックを空にするが、以後も途中結果を送れる", () =>
     Effect.scoped(Effect.gen(function* () {
@@ -574,7 +658,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* settleUntil(() => speaks.some((f) => f.text === "ふたつめ"));
       expect(speaks.some((f) => f.text === "ふたつめ")).toBe(true);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 
   it.effect("発言が 1 件も来ないセッションでも、exports はそのセッションのマップ（空の会議ノード）を書き出す", () =>
     Effect.scoped(Effect.gen(function* () {
@@ -584,14 +668,15 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
 
       expect(paths).toHaveLength(5);
       expect(JSON.parse(readFileSync(join(dir, "map.json"), "utf8")).root).toMatchObject({ kind: "会議", text: "週次", children: [] });
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 
   it.effect("撮影に渡すスナップショットは 1 回だけで、書き出した map.png が 4 つ目のパスになる", () => {
     const captured: Snapshot[] = [];
-    const capture = async (snapshot: Snapshot, path: string) => {
-      captured.push(snapshot);
-      writeFileSync(path, "png");
-    };
+    const capture = (snapshot: Snapshot, path: string) =>
+      Effect.sync(() => {
+        captured.push(snapshot);
+        writeFileSync(path, "png");
+      });
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
       yield* sink.final(finalRemark("相手", 1, 2, "採用"));
@@ -602,7 +687,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       expect(captured).toHaveLength(1);
       expect(paths[3]).toBe(join(dir, "map.png"));
       expect(readFileSync(join(dir, "map.png"), "utf8")).toBe("png");
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture, writeReview: fakeWriteReview })));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture })));
   });
 
   // base の server.test.ts の移動先
@@ -650,7 +735,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* settle;
 
       expect(state).toMatchObject({ closed: 1, callsAfterClose: 0 });
-    }).pipe(Effect.provide(SessionSinks.layer({ updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview })));
+    }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("反映前の確定した発言は、自分の speaking にも出る（emit が relay.remark へつながる。base:301）", () =>
@@ -662,7 +747,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* settleUntil(() => speaks.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか")));
       expect(speaks.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか"))).toBe(true);
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 
   // フォルダ名は開始時刻（実時間のミリ秒）なので、このテストだけ実時間の短い待ち（5 ms）を使う
   it.live("同じ sessionsDir の 2 つ目のセッションは、発言が 1 件も無くても、作成直後の export.json がそのセッションのマップ（前のセッションではない。base:510）", () =>
@@ -683,5 +768,5 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       const exported = JSON.parse(readFileSync(join(secondDir, "export.json"), "utf8"));
       expect(JSON.stringify(exported)).toContain("今");
       expect(JSON.stringify(exported)).not.toContain("前の発言");
-    })).pipe(Effect.provide(SessionSinks.layer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture: fakeCapture, writeReview: fakeWriteReview }))));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 });

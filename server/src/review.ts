@@ -23,10 +23,6 @@ export type SkippedReviewVariant = { readonly file: string; readonly reason: str
 // 書き出した結果。paths は書けた版のパス（版の順）、skipped は諦めた版（呼び出し側が理由を標準エラーに出す）
 export type ReviewPagesResult = { readonly paths: string[]; readonly skipped: SkippedReviewVariant[] };
 
-// 書き出しの口を Promise で受け取る側（まだ Effect にしていない server.ts の終了処理）のための形。
-// server.ts の入口が writeReviewPages に Layer を渡して、この形を 1 つ組んで渡す
-export type PromiseReviewPages = (dir: string, logPath: string, variants: readonly ReviewVariant[]) => Promise<ReviewPagesResult>;
-
 // web を single-file の HTML 1 つにビルドして、その文字列を返す。出力は一時フォルダに書き、Scope を閉じると必ず消える。
 // Why: Vite の build は中断できず、中断されたファイバーは完了を待たない。中断可能のままだと、ビルドが使っている outDir を先に消してしまうため、
 // 一時フォルダを使う処理（ビルドと読み取り）が終わるまで中断を遅らせる

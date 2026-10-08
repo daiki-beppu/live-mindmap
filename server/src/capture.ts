@@ -7,10 +7,6 @@ import { chromium, type Page } from "playwright";
 import { CAPTURE_OVERFLOW_ATTRIBUTE, CAPTURE_READY_ATTRIBUTE, CAPTURE_SNAPSHOT_GLOBAL } from "./core/capture.ts";
 import type { Snapshot } from "./core/index.ts";
 
-// 撮影の口を Promise で受け取る側（まだ Effect にしていない server.ts の終了処理）のための形。
-// server.ts の入口が MapCapture の Layer からこの形を 1 つ組んで渡す
-export type PromiseMapCapture = (snapshot: Snapshot, path: string) => Promise<void>;
-
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 const VIEWPORT = { width: 1600, height: 1000 };
 const READY_TIMEOUT_MS = 30_000;

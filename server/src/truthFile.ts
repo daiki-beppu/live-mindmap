@@ -12,7 +12,8 @@ export { InvalidTruthFile };
 
 // 入口の 1 行は 1 行に保つ（stderr を読む側は 1 行だけを期待する）
 export const oneLine = (text: string): string => text.replaceAll(/\r?\n/g, " ");
-export const describe = (e: unknown): string => oneLine(e instanceof Error ? e.message : String(e));
+export const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+export const describe = (e: unknown): string => oneLine(errorMessage(e));
 
 export const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1();
 
