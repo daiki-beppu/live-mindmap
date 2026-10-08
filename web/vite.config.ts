@@ -11,7 +11,7 @@ const HEAVY = "**/*.heavy.test.?(c|m)[jt]s?(x)";
 
 export default defineConfig({
   plugins: [react()],
-  // 層はファイル名の接尾辞で決める: foo.test.ts = unit、foo.it.test.ts = 軽い IT、foo.heavy.test.ts = 重い IT（web に該当ファイルは今は無く、script も置かない）
+  // 層はファイル名の接尾辞で決める: foo.test.ts = unit、foo.it.test.ts = 軽い IT、foo.heavy.test.ts = 重い IT（web の typecheck が server/scripts/check-test-layers.ts で、unit が本物の資源を直接 import していないか点検する）
   test: {
     projects: [
       { extends: true, test: { name: "unit", exclude: [...configDefaults.exclude, IT, HEAVY] } },
