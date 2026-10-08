@@ -2,7 +2,8 @@ import Foundation
 
 // 使い方:
 //   stt-bench synth <台本.json> <出力フォルダ> [--only <名前>] [--gap <秒>]
-//   stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>]   （結果を 1 行 1 結果の JSONL で標準出力へ）
+//   stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>]   （結果を 1 行 1 結果の JSONL で標準出力へ）
+//     --vocab は 1 行 1 語。語彙を使う候補（vocab・vocab-init・dictation-vocab）のときだけ contextualStrings に渡す。--vocab-at を付けると、その秒まで流してから渡す
 //   stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]
 //     AEC3 が開始直後に話者の声を削るかを測る（結果は 1 行 1 結果の JSONL）。候補: baseline、production、bypass-<秒>
 //   stt-bench variants
@@ -49,8 +50,17 @@ do {
         guard let name = option("--variant", in: &args) else { fail("--variant が要る（stt-bench variants で一覧）") }
         guard let variant = variants.first(where: { $0.name == name }) else { fail("候補 \(name) はない（stt-bench variants で一覧）") }
         let load = option("--load", in: &args).map { URL(fileURLWithPath: $0) }
-        guard args.count == 1 else { fail("usage: stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>]") }
-        try await runBench(variant: variant, audio: URL(fileURLWithPath: args[0]), load: load)
+        let vocabAt = option("--vocab-at", in: &args).map { value -> Double in
+            guard let seconds = Double(value), seconds.isFinite, seconds >= 0 else { fail("--vocab-at は 0 以上の秒") }
+            return seconds
+        } ?? 0
+        let vocabulary = try option("--vocab", in: &args).map { path in
+            let words = try String(contentsOfFile: path, encoding: .utf8).split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            return Vocabulary(strings: words, at: vocabAt)
+        }
+        if variant.usesVocabulary, vocabulary == nil { fail("候補 \(name) には --vocab が要る") }
+        guard args.count == 1 else { fail("usage: stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>]") }
+        try await runBench(variant: variant, audio: URL(fileURLWithPath: args[0]), load: load, vocabulary: vocabulary)
     case "echo":
         let usage = "usage: stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]"
         guard let selfLines = option("--self-lines", in: &args) else { fail("--self-lines が要る\n\(usage)") }

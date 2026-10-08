@@ -17,6 +17,18 @@ struct Variant {
     var finalizeAfterQuiet: Double?
     var priority: TaskPriority?
     var ignoresResourceLimits = false
+    /// `--vocab` の語彙を `AnalysisContext.contextualStrings` に渡す
+    var usesVocabulary = false
+    /// 語彙を `setContext` ではなく、`SpeechAnalyzer` の init の `analysisContext` で渡す
+    var contextAtInit = false
+    /// `SpeechTranscriber` の代わりに `DictationTranscriber`（progressiveLongDictation）を使う
+    var dictation = false
+}
+
+/// `contextualStrings` に渡す語彙と、渡す時刻（流し始めからの音声の秒。0 なら流し始める前）。
+struct Vocabulary {
+    var strings: [String]
+    var at: Double
 }
 
 let variants: [Variant] = [
@@ -34,32 +46,45 @@ let variants: [Variant] = [
     Variant(name: "finalize-3s", detail: "3 秒更新がなければ finalize(through:)", finalizeAfterQuiet: 3),
     Variant(name: "priority", detail: "Options(priority: .userInitiated, modelRetention: .processLifetime)", priority: .userInitiated),
     Variant(name: "ignore-limits", detail: "ignoresResourceLimits（macOS 27 以降）", priority: .userInitiated, ignoresResourceLimits: true),
+    Variant(name: "vocab", detail: "本番の設定 + --vocab の語彙を contextualStrings（.general）に渡す", usesVocabulary: true),
+    Variant(name: "vocab-init", detail: "vocab と同じ。語彙は SpeechAnalyzer の init の analysisContext で渡す", usesVocabulary: true, contextAtInit: true),
+    Variant(name: "dictation", detail: "DictationTranscriber（progressiveLongDictation）", dictation: true),
+    Variant(name: "dictation-vocab", detail: "dictation + --vocab の語彙を contextualStrings（.general）に渡す", usesVocabulary: true, dictation: true),
 ]
 
-func makeTranscriber(_ variant: Variant) -> any Transcriber {
-    variant.name == "baseline" ? SpeechAnalyzerTranscriber() : BenchTranscriber(variant)
+func makeTranscriber(_ variant: Variant, vocabulary: Vocabulary? = nil) -> any Transcriber {
+    variant.name == "baseline" ? SpeechAnalyzerTranscriber() : BenchTranscriber(variant, vocabulary: vocabulary)
 }
 
 /// baseline 以外の候補を試す `Transcriber`。入力の変換は本番の `SpeechAnalyzerTranscriber.convert` を使う。
 final class BenchTranscriber: Transcriber, @unchecked Sendable {
     private let variant: Variant
     private let locale = Locale(identifier: "ja-JP")
-    private let transcriber: SpeechTranscriber
+    private let transcriber: SpeechTranscriber?
+    private let dictation: DictationTranscriber?
     private let detector: SpeechDetector?
+    private let vocabulary: Vocabulary?
     private var analyzerFormat: AVAudioFormat?
 
-    init(_ variant: Variant) {
+    init(_ variant: Variant, vocabulary: Vocabulary? = nil) {
         self.variant = variant
-        if let preset = variant.preset {
+        self.vocabulary = variant.usesVocabulary ? vocabulary : nil
+        if variant.dictation {
+            transcriber = nil
+            dictation = DictationTranscriber(locale: locale, preset: .progressiveLongDictation)
+        } else if let preset = variant.preset {
+            dictation = nil
             transcriber = SpeechTranscriber(locale: locale, preset: preset)
         } else {
+            dictation = nil
             transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: variant.reporting, attributeOptions: variant.attributes)
         }
         detector = variant.detector.map { SpeechDetector(detectionOptions: .init(sensitivityLevel: $0), reportResults: false) }
     }
 
     private var modules: [any SpeechModule] {
-        detector.map { [transcriber, $0] } ?? [transcriber]
+        let main: any SpeechModule = transcriber ?? dictation!
+        return detector.map { [main, $0] } ?? [main]
     }
 
     private var options: SpeechAnalyzer.Options? {
@@ -76,7 +101,7 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
         guard await SpeechTranscriber.supportedLocale(equivalentTo: locale) != nil else {
             throw TranscriberError.unsupportedLocale(locale.identifier)
         }
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+        if let request = try await AssetInventory.assetInstallationRequest(supporting: modules) {
             try await request.downloadAndInstall()
         }
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
@@ -87,19 +112,42 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
 
     func transcribe(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
         guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
-        let analyzer = SpeechAnalyzer(modules: modules, options: options)
         let (inputs, inputBuilder) = AsyncStream.makeStream(of: AnalyzerInput.self)
-        try await analyzer.start(inputSequence: inputs)
+        let context = vocabulary.map { vocabulary in
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = vocabulary.strings
+            return (context, at: vocabulary.at)
+        }
+        let analyzer: SpeechAnalyzer
+        if variant.contextAtInit, let context, context.at <= 0 {
+            analyzer = SpeechAnalyzer(inputSequence: inputs, modules: modules, options: options, analysisContext: context.0)
+        } else {
+            analyzer = SpeechAnalyzer(modules: modules, options: options)
+            if let context, context.at <= 0 { try await analyzer.setContext(context.0) }
+            try await analyzer.start(inputSequence: inputs)
+        }
+        if context != nil {
+            logToStderr("context: \(await analyzer.context.contextualStrings[.general]?.count ?? 0) 語")
+        }
 
-        let transcriber = self.transcriber
+        let results = resultStream()
         let quiet = variant.finalizeAfterQuiet
         let progress = ResultProgress()
         return AsyncThrowingStream { continuation in
             let feeder = Task {
                 var converter: AVAudioConverter?
+                var fed = 0.0
+                var pendingContext = context.flatMap { $0.at > 0 ? $0 : nil }
                 do {
                     for try await captured in audio {
                         let buffer = captured.buffer
+                        // 候補: セッションの途中で語彙を差し替える
+                        if let pending = pendingContext, fed >= pending.at {
+                            try await analyzer.setContext(pending.0)
+                            logToStderr("setContext at \(fed)s")
+                            pendingContext = nil
+                        }
+                        fed += Double(buffer.frameLength) / buffer.format.sampleRate
                         if converter == nil { converter = AVAudioConverter(from: buffer.format, to: format) }
                         guard let converter else { throw TranscriberError.conversionFailed("\(buffer.format) → \(format)") }
                         inputBuilder.yield(AnalyzerInput(buffer: try SpeechAnalyzerTranscriber.convert(buffer, with: converter, to: format)))
@@ -114,16 +162,9 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
             }
             let collector = Task {
                 do {
-                    for try await result in transcriber.results {
-                        let range = result.range
-                        let end = range.end.isNumeric ? range.end.seconds : 0
-                        if !result.isFinal { progress.record(volatileEnd: end) } else { progress.recordFinal(through: end) }
-                        continuation.yield(TranscriptionResult(
-                            text: String(result.text.characters),
-                            isFinal: result.isFinal,
-                            start: range.start.isNumeric ? range.start.seconds : 0,
-                            end: end
-                        ))
+                    for try await result in results {
+                        if !result.isFinal { progress.record(volatileEnd: result.end) } else { progress.recordFinal(through: result.end) }
+                        continuation.yield(result)
                     }
                     continuation.finish()
                 } catch {
@@ -140,8 +181,8 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
                         }
                         switch outcome {
                         case .idle: break
-                        case let .finalized(end): logFinalize("finalize(through: \(end)) ok")
-                        case let .failed(end, message): logFinalize("finalize(through: \(end)) failed: \(message)")
+                        case let .finalized(end): logToStderr("finalize(through: \(end)) ok")
+                        case let .failed(end, message): logToStderr("finalize(through: \(end)) failed: \(message)")
                         }
                     }
                 }
@@ -155,8 +196,39 @@ final class BenchTranscriber: Transcriber, @unchecked Sendable {
     }
 }
 
-/// finalize の成否を stderr に 1 行書く（stdout は JSONL 専用）。
-private func logFinalize(_ line: String) {
+extension BenchTranscriber {
+    /// 使っている transcriber の結果を `TranscriptionResult` の流れにする。
+    fileprivate func resultStream() -> AsyncThrowingStream<TranscriptionResult, Error> {
+        func convert(text: AttributedString, isFinal: Bool, range: CMTimeRange) -> TranscriptionResult {
+            TranscriptionResult(
+                text: String(text.characters),
+                isFinal: isFinal,
+                start: range.start.isNumeric ? range.start.seconds : 0,
+                end: range.end.isNumeric ? range.end.seconds : 0
+            )
+        }
+        let transcriber = self.transcriber
+        let dictation = self.dictation
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    if let transcriber {
+                        for try await r in transcriber.results { continuation.yield(convert(text: r.text, isFinal: r.isFinal, range: r.range)) }
+                    } else if let dictation {
+                        for try await r in dictation.results { continuation.yield(convert(text: r.text, isFinal: r.isFinal, range: r.range)) }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// finalize の成否や語彙を渡したことを stderr に 1 行書く（stdout は JSONL 専用）。
+private func logToStderr(_ line: String) {
     FileHandle.standardError.write(Data((line + "\n").utf8))
 }
 

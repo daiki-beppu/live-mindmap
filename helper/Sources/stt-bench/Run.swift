@@ -78,12 +78,12 @@ func printLine(_ line: ResultLine) {
 
 /// 計測の 1 回分。`load` があれば、2 本目を並行して認識に流す（2 本同時の負荷。2 本目の結果は出さない）。
 /// モデルの準備は計測に含めない。どちらも準備が済んでから、同時に流し始める。
-func runBench(variant: Variant, audio: URL, load: URL?) async throws {
-    let main = makeTranscriber(variant)
+func runBench(variant: Variant, audio: URL, load: URL?, vocabulary: Vocabulary? = nil) async throws {
+    let main = makeTranscriber(variant, vocabulary: vocabulary)
     try await main.prepare()
     var background: (any Transcriber)?
     if load != nil {
-        let t = makeTranscriber(variant)
+        let t = makeTranscriber(variant, vocabulary: vocabulary)
         try await t.prepare()
         background = t
     }
