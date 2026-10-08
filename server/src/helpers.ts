@@ -17,7 +17,7 @@ export type HelperExitInfo = { code: number | null; signal: string | null };
 // 起動（接続まで）が成り立たなかった。ヘルパーが終わっていれば exit に終わり方が入る
 export class HelperLaunchFailure extends Schema.TaggedError<HelperLaunchFailure>()("HelperLaunchFailure", {
   stderrTail: Schema.Array(Schema.String),
-  exit: Schema.optional(Schema.Struct({ code: Schema.NullOr(Schema.Number), signal: Schema.NullOr(Schema.String) })),
+  exit: Schema.optional(Schema.Struct({ code: Schema.NullOr(Schema.Finite), signal: Schema.NullOr(Schema.String) })),
 }) {
   override get message(): string {
     return `ヘルパーを起動できません: ${this.stderrTail.join("\n")}`;

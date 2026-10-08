@@ -7,8 +7,8 @@ import { Track } from "./session.ts";
 // duplicate の項目がないイベントは、重複ではないものとして扱う（helper/README.md「イベントの形」）
 const helperRemarkFields = {
   track: Track,
-  start: Schema.Number,
-  end: Schema.Number,
+  start: Schema.Finite,
+  end: Schema.Finite,
   text: Schema.String,
   duplicate: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 };
@@ -20,9 +20,9 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("partial"), ...helperRemarkFields }),
   Schema.Struct({ type: Schema.Literal("origin"), hostTime: Schema.String.check(Schema.isPattern(/^\d+$/)) }),
   // 共有画面の変化。image は JPEG の base64（バイト列に戻す。base64 として不正なら SchemaError）で、ウィンドウが無くなったときは null
-  Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Number, image: Schema.NullOr(Schema.Uint8ArrayFromBase64) }),
+  Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.Uint8ArrayFromBase64) }),
   // 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。ヘルパーが流す reason は許可なしだけ（指定はサーバーが書く）
-  Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Number, reason: Schema.Literal("許可なし") }),
+  Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literal("許可なし") }),
 ]);
 export type HelperEvent = typeof HelperEvent["Type"];
 

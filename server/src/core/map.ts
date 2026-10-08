@@ -24,9 +24,9 @@ export const MapNode = Schema.Struct({
   // 発言の ID。ルート以外は 1 つ以上（ルートは emptyMap が空で作るので、要素数は検査しない）
   evidence: Schema.mutable(Schema.Array(Schema.String)),
   // 最後に触れた時刻（その反映に渡した新しい発言の end の最大値）。触れたノードとルートを除く祖先に付く
-  touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Number)),
+  touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
   // 最後に根拠が足された反映の番号。根拠が足されたノード自身だけに付く
-  evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Number)),
+  evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
   // 議題・論点が済みのときだけ付く。キーが無ければ話し中（作られたときも付けない）
   talkStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literal("済み"))),
 });
@@ -36,7 +36,7 @@ export type MapNode = typeof MapNode["Type"];
 export const MeetingMap = Schema.Struct({
   nodes: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(MapNode))),
   order: Schema.mutableKey(Schema.mutable(Schema.Array(Schema.String))),
-  nextId: Schema.mutableKey(Schema.Number),
+  nextId: Schema.mutableKey(Schema.Finite),
 });
 export type MeetingMap = typeof MeetingMap["Type"];
 
