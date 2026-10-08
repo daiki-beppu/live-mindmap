@@ -29,6 +29,7 @@ public func requestMicrophonePermission() async throws {
 /// 未消費のバッファが上限を超えたら、音声を捨てずに `MicrophoneError.backlogExceeded` で流れを終わらせる。
 /// 取得中にエンジンの構成が変わったら（入力の機器の切り替えなど。`AVAudioEngineConfigurationChange`）、
 /// エンジンは止まるので、`MicrophoneError.configurationChanged` で流れを終わらせる。作り直しは呼び出し側（ヘルパーの起動し直し）に任せる。
+/// このエラーで `run` が終わるときの終了コード（75）は `exitCode(for:)`（ExitCode.swift）が決め、`main` が返す。
 /// `stop()` の後に届いた構成の変化は扱わない（流れは正常に終わったまま）。
 /// Apple の音声処理（エコーキャンセル）は有効にしない。有効にすると同じプロセスのプロセスタップが止まる。
 public final class MicrophoneCapture {

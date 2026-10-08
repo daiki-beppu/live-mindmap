@@ -11,7 +11,17 @@
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
 import { Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
-import { decideIntakeRestart, decodeHelperEvent, SCREEN_NOTICE_MS, SCREEN_NOTICE_TEXT, type HelperEvent, type IntakeStatusReport } from "./core/index.ts";
+import {
+  CONFIGURATION_CHANGE_WINDOW_MS,
+  decideIntakeRestart,
+  decodeHelperEvent,
+  MAX_CONFIGURATION_CHANGES,
+  SCREEN_NOTICE_MS,
+  SCREEN_NOTICE_TEXT,
+  type HelperEvent,
+  type IntakeGiveUpReason,
+  type IntakeStatusReport,
+} from "./core/index.ts";
 import { Helpers, HELPER_STOP_TIMEOUT_MS, type HelperAttempt, type HelperExitInfo } from "./helpers.ts";
 import {
   Aborted,
@@ -60,7 +70,8 @@ type Live = {
   origin: Ref.Ref<string | undefined>; // 最初のヘルパーから受け取った原点。一度決まったら上書きしない
   attempt: Ref.Ref<number>; // 直近に起動した回数（1 始まり。--audio-index にそのまま使う）
   attemptStartedAt: Ref.Ref<number>; // 直近の起動を始めた時刻（Clock）。60 秒の判断の基準
-  failures: Ref.Ref<number>; // 続けて失敗した回数（decideIntakeRestart が進める）
+  failures: Ref.Ref<number>; // 続けて失敗した回数（decideIntakeRestart が進める。構成の変化による終了は数えない）
+  configurationChanges: Ref.Ref<ReadonlyArray<number>>; // 構成の変化（終了コード 75）で終わった時刻（Clock）。窓の外は decideIntakeRestart が除く
   restarts: Ref.Ref<number>; // 成功した起動し直しの回数（cli status の「起動し直した回数」）
   lastInterruptedAt: Ref.Ref<string | undefined>; // 最後に途切れた時刻（ISO）
 };
@@ -96,17 +107,33 @@ export class Sessions extends Context.Service<Sessions, {
         ...(origin !== undefined ? ["--origin", origin] : []),
       ];
 
+      // 諦めたときの標準エラーの 1 行。理由は decideIntakeRestart の判断から作る（ログと同じ理由）
+      const gaveUpNote = (reason: IntakeGiveUpReason) =>
+        note(
+          reason === "configuration-changes"
+            ? `マイクの入力の構成の変化が ${CONFIGURATION_CHANGE_WINDOW_MS / 1000} 秒に ${MAX_CONFIGURATION_CHANGES} 回を超えて続いたため、起動し直しを諦めました。取り込みは止まった状態です\n`
+            : "起動し直しを諦めました。取り込みは止まった状態です\n",
+        );
+
       // 1 回の起動（起動し直しを含む）の終わりを、記録 → 判断の順で扱う。ログ・標準エラーは必ず書く。
+      // 終わり方（終了コード・シグナル）は decideIntakeRestart に渡し、構成の変化による終了は failures に数えず別の窓で数える。
       // 続けるか諦めるか（action）を返し、状態の更新は呼び出し側が行う
       const finishAttempt = Effect.fnUntraced(function* (live: Live, info: HelperExitInfo, stderrTail: ReadonlyArray<string>) {
         yield* live.sink.appendLog({ type: "intake-stopped", code: info.code, signal: info.signal, stderrTail: [...stderrTail] });
         yield* note(`取り込みが止まった（${info.code ?? info.signal ?? "不明"}）\n`);
-        const ranMs = (yield* Clock.currentTimeMillis) - (yield* Ref.get(live.attemptStartedAt));
-        const decision = decideIntakeRestart({ failures: yield* Ref.get(live.failures), ranMs });
+        const now = yield* Clock.currentTimeMillis;
+        const decision = decideIntakeRestart({
+          failures: yield* Ref.get(live.failures),
+          configurationChanges: yield* Ref.get(live.configurationChanges),
+          ranMs: now - (yield* Ref.get(live.attemptStartedAt)),
+          exit: info,
+          now,
+        });
         yield* Ref.set(live.failures, decision.failures);
+        yield* Ref.set(live.configurationChanges, decision.configurationChanges);
         if (decision.action === "giveup") {
-          yield* live.sink.appendLog({ type: "intake-gave-up" });
-          yield* note("起動し直しを諦めました。取り込みは止まった状態です\n");
+          yield* live.sink.appendLog({ type: "intake-gave-up", reason: decision.reason });
+          yield* gaveUpNote(decision.reason);
         }
         return decision.action;
       });
@@ -273,6 +300,7 @@ export class Sessions extends Context.Service<Sessions, {
             attempt: yield* Ref.make(1),
             attemptStartedAt: yield* Ref.make(startedAt),
             failures: yield* Ref.make(0),
+            configurationChanges: yield* Ref.make<ReadonlyArray<number>>([]),
             restarts: yield* Ref.make(0),
             lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
           };
@@ -353,6 +381,7 @@ export class Sessions extends Context.Service<Sessions, {
         const taken = yield* Ref.modify(live.intake, (kind): [boolean, IntakeKind] => (kind === "stopped" ? [true, "interrupted"] : [false, kind]));
         if (!taken) return yield* new IntakeNotStopped();
         yield* Ref.set(live.failures, 0); // 失敗の数を 0 から数え直す
+        yield* Ref.set(live.configurationChanges, []); // 構成の変化の数も空から数え直す
         const outcome = yield* Deferred.make<RestartOutcome>();
         const fiber = yield* Effect.forkIn(chain(live, undefined, "resume", outcome), live.scope);
         yield* Ref.set(live.chain, fiber);
