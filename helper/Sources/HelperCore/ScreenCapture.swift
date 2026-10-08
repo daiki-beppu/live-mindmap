@@ -17,11 +17,13 @@ private func printScreenError(_ message: String) {
 /// `run()` が終わるまで、変化した画面を `events` に流す。`origin` は発言と同じ時刻の原点（host time）。
 public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     public var events: AsyncStream<HelperEvent> { emitter.events }
-    private let emitter = ScreenEventEmitter()
+    private let emitter: ScreenEventEmitter
     private let bundleID: String
     private let origin: UInt64
     private let queue = DispatchQueue(label: "live-mindmap.screen-capture")
     private let imageContext = CIContext()
+    /// 最後に判定へ入れた輝度と画像。`queue` の上でだけ触る（idle のフレームで、輝度の画像を作り直さずに使う）。
+    private var lastRendered: (luma: [UInt8], image: CGImage)?
 
     private let lock = NSLock()
     private var windowID: UInt32 = 0
@@ -32,6 +34,7 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
     public init(bundleID: String, origin: UInt64) {
         self.bundleID = bundleID
         self.origin = origin
+        self.emitter = ScreenEventEmitter(bundleID: bundleID)
     }
 
     /// 取り込みを始め、`stop()` か取り込みの終わりまで待つ。失敗は標準エラーに 1 行出すだけで、throw しない。
@@ -45,6 +48,9 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
             printScreenError("共有画面を取り込めない（音声だけで続ける）: \(error)")
             return
         }
+        // タブの切り替えに追従するため、ブラウザのときだけ取り込みの間タイトルを読み直す。
+        let titleRefresh = screenBrowserBundleIDs.contains(bundleID) ? Task { await self.refreshWindowTitle() } : nil
+        defer { titleRefresh?.cancel() }
         await withCheckedContinuation { (waiting: CheckedContinuation<Void, Never>) in
             let alreadyEnded = lock.withLock { () -> Bool in
                 if !ended { waiter = waiting }
@@ -67,6 +73,21 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
         lock.unlock()
         waiting?.resume()
         emitter.close()
+    }
+
+    /// `screenTitleRefreshSeconds` ごとに、撮っているウィンドウのタイトルを公開 API で読み直す。
+    /// 読み直しに失敗したときや、ウィンドウが見つからないときは、前のタイトルを保つ（ウィンドウが無くなったことは別の経路が扱う）。
+    private func refreshWindowTitle() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: UInt64(screenTitleRefreshSeconds * 1_000_000_000))
+            if Task.isCancelled { return }
+            let id = lock.withLock { windowID }
+            guard
+                let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true),
+                let window = content.windows.first(where: { $0.windowID == id })
+            else { continue }
+            lock.withLock { windowTitle = window.title }
+        }
     }
 
     private func makeStream() async throws -> SCStream {
@@ -117,16 +138,19 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid else { return }
-        // 画像の無いフレーム（idle など）は飛ばす。
         guard
             let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-            let rawStatus = attachments.first?[.status] as? Int,
-            SCFrameStatus(rawValue: rawStatus) == .complete,
-            let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+            let rawStatus = attachments.first?[.status] as? Int
         else { return }
-
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-        guard let cgImage = imageContext.createCGImage(image, from: image.extent), let luma = lumaGrid(of: cgImage) else { return }
+        // OS のフレームの状態は、輝度の画像を作り直す手間を省くためだけに使う（判定の根拠にしない）。idle でも時刻は判定器へ進める。
+        let content: ScreenFrameContent
+        switch SCFrameStatus(rawValue: rawStatus) {
+        case .complete: content = .updated
+        case .idle: content = .unchanged
+        default: content = .unusable
+        }
+        guard let rendered = screenFrameToJudge(content, previous: lastRendered, render: { renderFrame(sampleBuffer) }) else { return }
+        lastRendered = rendered
 
         // サンプルの時刻は host time の時計。発言と同じ原点からの秒にする。
         let hostTime = CMClockConvertHostTimeToSystemUnits(sampleBuffer.presentationTimeStamp)
@@ -134,13 +158,21 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
 
         // 判定・JPEG 生成・送出は emitter が 1 回の排他区間で行う（間に「ウィンドウが無くなった」が入り込まないように）。
         let title = lock.withLock { windowTitle }
-        emitter.emit(ScreenFrame(luma: luma, time: time, title: title)) {
-            guard let jpeg = jpegData(of: cgImage) else {
+        emitter.emit(ScreenFrame(luma: rendered.luma, time: time, title: title)) {
+            guard let jpeg = jpegData(of: rendered.image) else {
                 printScreenError("JPEG を作れなかったので、この画面は送らない")
                 return nil
             }
             return jpeg.base64EncodedString()
         }
+    }
+
+    /// サンプルの画像から、輝度の画像と送る画像（CGImage）を作る。画像が無い、または作れなければ nil。
+    private func renderFrame(_ sampleBuffer: CMSampleBuffer) -> (luma: [UInt8], image: CGImage)? {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        guard let cgImage = imageContext.createCGImage(image, from: image.extent), let luma = lumaGrid(of: cgImage) else { return nil }
+        return (luma: luma, image: cgImage)
     }
 
     // MARK: SCStreamDelegate
