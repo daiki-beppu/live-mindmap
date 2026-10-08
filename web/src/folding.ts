@@ -20,17 +20,27 @@ export type FoldView = {
   shownAs: Record<string, string>;
 };
 
-// 見せ方を決める。純粋な関数: snapshot を変えず、opened（開く上書き）に入れたノードは畳まない
-export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>): FoldView {
+// 開く上書きの集合。人の開閉は後続の issue で作るので、今は常に空
+export const NO_OPEN: ReadonlySet<string> = new Set();
+
+// 見せ方を決める。純粋な関数: snapshot を変えず、opened（開く上書き）に入れたノードは畳まない。
+// 選んだノード（selectedId）の祖先は畳まない（選んだノード自身は、畳む条件に当たれば畳む）。選んだ畳んだ議題は「議題 N 件」にまとめない。選んだまとめ（run:X）は X から始まるまとめとして残し、X の祖先も畳まない
+export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, selectedId: string | null): FoldView {
   const { nodes, now, currentTopic } = snapshot;
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const children = new Map<string, SnapshotNode[]>();
   for (const n of nodes) if (n.parent) children.set(n.parent, [...(children.get(n.parent) ?? []), n]);
 
-  // 今の議題とその祖先は畳まない
+  // 今の議題とその祖先、選んだノードの祖先は畳まない
   const kept = new Set<string>();
   if (currentTopic !== undefined) {
     for (let cur = byId.get(currentTopic); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) kept.add(cur.id);
+  }
+  // 選んだまとめ（run:X）は X として扱い、X の祖先を畳まない（まとめはスナップショットに無いので、ID のままでは引けない）
+  const selectedRunStart = selectedId?.startsWith("run:") ? selectedId.slice("run:".length) : null;
+  const selected = selectedId === null ? undefined : byId.get(selectedRunStart ?? selectedId);
+  if (selected?.parent) {
+    for (let cur = byId.get(selected.parent); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) kept.add(cur.id);
   }
 
   const isFolded = (n: SnapshotNode): boolean => {
@@ -73,7 +83,9 @@ export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>): FoldV
       run = [];
     };
     for (const kid of children.get(parent) ?? []) {
-      if (folded.has(kid.id) && kid.kind === "議題") run.push(kid);
+      // 選んだまとめ（run:X）は、X から始まるまとめとして切り直す（選んだ前後の分かれ目が消えても、同じ ID のまとめが残る）
+      if (kid.id === selectedRunStart) close();
+      if (folded.has(kid.id) && kid.kind === "議題" && kid.id !== selectedId) run.push(kid);
       else close();
     }
     close();

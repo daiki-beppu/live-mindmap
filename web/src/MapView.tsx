@@ -29,6 +29,7 @@ import {
   scrollAxis,
   shiftIntoView,
   shouldMoveCamera,
+  subtreeViewport,
   CLICK_ZOOM_FACTOR,
   OVERVIEW_MIN_ZOOM,
   USER_MAX_ZOOM,
@@ -38,17 +39,16 @@ import {
   type ScrollAxisLock,
   type Viewport,
 } from "./camera.ts";
-import { foldView } from "./folding.ts";
+import { foldView, NO_OPEN } from "./folding.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "./layout.ts";
+import { relocations, type ViewState } from "./relocation.ts";
 import { MapNode, type MapNodeData } from "./MapNode.tsx";
 import { useAnimatedPositions } from "./useAnimatedPositions.ts";
 import type { CameraCommand, ViewingEvent, ViewingState, VisibleTree } from "./viewing.ts";
 
 const nodeTypes = { map: MapNode };
 
-// 開く上書きの集合。人の開閉は後続の issue で作るので、今は常に空
-const NO_OPEN: ReadonlySet<string> = new Set();
 const NO_CHANGES: ReadonlySet<string> = new Set();
 const noop = () => {};
 
@@ -151,7 +151,7 @@ function MapCanvas({
   };
 
   // 見せ方。撮影（still）は畳まず、全ノードを描く
-  const view = useMemo(() => (still ? null : foldView(snapshot, NO_OPEN)), [snapshot, still]);
+  const view = useMemo(() => (still ? null : foldView(snapshot, NO_OPEN, selectedId)), [snapshot, still, selectedId]);
   const shownNodes = view?.nodes ?? snapshot.nodes;
 
   // 目標の位置。表示する位置は、ここへ向けて補間する
@@ -208,10 +208,17 @@ function MapCanvas({
   const onViewingEventRef = useRef(onViewingEvent);
   onViewingEventRef.current = onViewingEvent;
 
+  // 前の commit の見えている木とスナップショット。反映で選んだノードが消えたとき、移り先を前の木から求める
+  const previous = useRef<ViewState | null>(null);
   // 反映（round の変化）を見る状態へ知らせる。最初の描画も反映として数える
   useEffect(() => {
-    onViewingEventRef.current?.({ type: "reflect" }, treeRef.current);
+    const replaced = previous.current ? relocations(previous.current, { tree: treeRef.current, snapshot }) : {};
+    onViewingEventRef.current?.({ type: "reflect", replaced }, treeRef.current);
   }, [snapshot.round]);
+  // 反映の effect の後ろで更新する（反映の effect が前の commit の値を読めるように、宣言順を保つ）
+  useEffect(() => {
+    previous.current = { tree, snapshot };
+  }, [tree, snapshot]);
 
   // 戻ったときは、同じ round でも今の議題へ寄せ直す
   const lastSeq = useRef(camera?.seq);
@@ -272,6 +279,9 @@ function MapCanvas({
       case "revealNode":
         // 全体を見ていて 0.5 未満の倍率から人の状態に移るときは、人の範囲に収めてから、はみ出した分だけ動かす
         void setViewport(revealViewport(zoomAroundCenter(current, clampUserZoom(current.zoom), size), nodeRect(command.id, target, dims), size), { duration: 0 });
+        break;
+      case "fitSubtree":
+        void setViewport(subtreeViewport(command.id, treeRef.current, target, dims, size), { duration: 0 });
         break;
       case "restore": {
         const before = beforeOverview.current;

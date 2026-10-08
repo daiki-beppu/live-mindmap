@@ -55,3 +55,54 @@ describe("evidenceOf: 選んだノードの表示内容", () => {
     expect(e.remarks.map((r) => r.id)).toEqual(["r2", "r9"]);
   });
 });
+
+describe("evidenceOf: 「議題 N 件」（まとめのノード）", () => {
+  const done = { talkStatus: "済み" } as const;
+  const folded: Snapshot = {
+    nodes: [
+      { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
+      { id: "A", parent: "root", kind: "議題", text: "A", evidence: ["r1"], ...done },
+      { id: "B", parent: "root", kind: "議題", text: "B", evidence: ["r1"], ...done },
+      { id: "C", parent: "root", kind: "議題", text: "C", evidence: ["r1"] },
+    ],
+    round: 1,
+    changes: [],
+    remarks: [remark("r1", 10, "一")],
+    currentTopic: "C",
+    now: 10,
+  };
+
+  it("畳んで並んだ議題のまとめの ID（run:最初の議題）は、その文「議題 2 件」を根拠の発言なしで返す", () => {
+    const e = evidenceOf(folded, "run:A")!;
+    expect(e).not.toBeNull();
+    expect(e.node).toMatchObject({ id: "run:A", kind: "議題", text: "議題 2 件" });
+    expect(e.remarks).toEqual([]);
+  });
+
+  it("まとめが無い ID の run: は null（1 件だけ畳んだときは、まとめにならない）", () => {
+    expect(evidenceOf(folded, "run:B")).toBeNull();
+    expect(evidenceOf(folded, "run:zzz")).toBeNull();
+    const single: Snapshot = { ...folded, nodes: folded.nodes.map((n) => { if (n.id !== "B") return n; const { talkStatus: _t, ...rest } = n; return rest; }) };
+    expect(evidenceOf(single, "run:A")).toBeNull();
+  });
+
+  it("選択によって分かれた後のまとめ（run:E）も、マップと同じ折り畳みから引いて返す", () => {
+    const five: Snapshot = {
+      ...folded,
+      nodes: [
+        folded.nodes[0]!,
+        ...["A", "B", "C", "E", "F"].map((id) => ({ id, parent: "root", kind: "議題" as const, text: id, evidence: [], ...done })),
+        { id: "G", parent: "root", kind: "議題", text: "G", evidence: [] },
+      ],
+      currentTopic: "G",
+    };
+    const e = evidenceOf(five, "run:E")!;
+    expect(e).not.toBeNull();
+    expect(e.node).toMatchObject({ id: "run:E", kind: "議題", text: "議題 2 件" });
+    expect(e.remarks).toEqual([]);
+  });
+
+  it("中身の議題 A は今までどおり返す", () => {
+    expect(evidenceOf(folded, "A")!.node.id).toBe("A");
+  });
+});

@@ -15,11 +15,12 @@ const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisf
 export type ViewingState = CameraViewing & Overlay;
 
 // キーボードで倍率・位置を変えるキー。Shift なしの矢印は、ノードの選択に空けておく
-export type ViewKey = "=" | "-" | "0" | "F" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
+export type ViewKey = "=" | "-" | "0" | "F" | "Z" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
 
 export type ViewingEvent =
   | { type: "userMoved" }
-  | { type: "reflect" }
+  // replaced: 前の見えている木から消えたノード → 選択の移り先（relocations の結果。最初の反映は {}）
+  | { type: "reflect"; replaced: Readonly<Record<string, string>> }
   | { type: "edgeDot"; id: string }
   | { type: "keyList"; meta: boolean; ctrl: boolean; alt: boolean }
   // E（右の列）と C（字幕）。key ではなく keyList と同じ形の別の出来事で、カメラの状態は変えない
@@ -50,6 +51,7 @@ export type VisibleTree = { ids: string[]; targets: Record<string, Position>; pa
 // zoomBy: 画面の中心を保って倍率を掛ける / zoomTo: 画面の中心を保って倍率にする
 // focusNode: 今の倍率のまま、そのノードへ寄る
 // revealNode: 人の倍率の範囲に収めてから、そのノードが画面の外なら最小限ずらして入れる（中なら動かさない）
+// fitSubtree: そのノードと、見せるノードのうちその子孫が収まるまで寄る
 // pan: 画面の 1/3 ずつ動かす（dx・dy は見えてくる側の向き） / fitAll: 全体を収める / restore: 全体を見る前の倍率・位置へ戻す
 export type CameraCommand =
   | { type: "follow" }
@@ -61,6 +63,7 @@ export type CameraCommand =
   | { type: "fitAll" }
   | { type: "focusNode"; id: string }
   | { type: "revealNode"; id: string }
+  | { type: "fitSubtree"; id: string }
   | { type: "restore" }
   | { type: "shiftIntoView" };
 
@@ -85,7 +88,7 @@ const HOLD: CameraCommand = { type: "hold" };
 const FIT_ALL: CameraCommand = { type: "fitAll" };
 const SHIFT_INTO_VIEW: CameraCommand = { type: "shiftIntoView" };
 
-function commandOf(key: Exclude<ViewKey, "F">): CameraCommand {
+function commandOf(key: Exclude<ViewKey, "F" | "Z">): CameraCommand {
   switch (key) {
     case "=":
       return { type: "zoomBy", factor: ZOOM_STEP };
@@ -210,17 +213,33 @@ export function reduceViewing(
     const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
     return { state: { ...moved, selection: { id, byKey: true } }, camera: { type: "revealNode", id } };
   }
-  const out = reduceCamera(cameraPart(state), event, tree, scope);
+  if (event.type === "key" && event.key === "Z") {
+    const id = state.selection?.id;
+    if (modified(event) || id === undefined || !tree.ids.includes(id)) return { state, camera: idle(state) };
+    const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
+    return { state: moved, camera: { type: "fitSubtree", id } };
+  }
+  const out = reduceCamera(cameraPart(state), event as CameraEvent, tree, scope);
   const next = withOverlayOf(state, out.state);
+  // 選んだノードが統合・削除・時刻の戻しで消えたら、選択の id だけを移り先へ替える
+  if (event.type === "reflect") {
+    const to = next.selection ? event.replaced[next.selection.id] : undefined;
+    if (next.selection && to !== undefined) return { state: { ...next, selection: { ...next.selection, id: to } }, camera: out.camera };
+  }
   // 選択を外すのは、キー一覧が閉じているときの修飾なしの Esc だけ（自動のときも外す）
   return { state: event.type === "escape" && !modified(event) ? without(next, "selection") : next, camera: out.camera };
 }
+
+// reduceCamera が受ける出来事。Z（選んだノードへ寄る）は重ねる状態の選択に依るので、reduceViewing が先に処理して渡さない
+type CameraEvent =
+  | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" | "key" }>
+  | { type: "key"; key: Exclude<ViewKey, "Z">; meta: boolean; ctrl: boolean; alt: boolean };
 
 // 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
 // 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体を見ているとき時刻を動かすと戻る。
 function reduceCamera(
   state: CameraViewing,
-  event: Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" }>,
+  event: CameraEvent,
   tree: VisibleTree,
   scope: ViewingScope,
 ): { state: CameraViewing; camera: CameraCommand } {

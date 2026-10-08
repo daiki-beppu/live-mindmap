@@ -27,6 +27,7 @@ const VIEW_HOTKEYS = [
   ["-", "-"],
   ["0", "0"],
   ["F", "F"],
+  ["Z", "Z"],
   ["Shift+ArrowLeft", "Shift+ArrowLeft"],
   ["Shift+ArrowRight", "Shift+ArrowRight"],
   ["Shift+ArrowUp", "Shift+ArrowUp"],

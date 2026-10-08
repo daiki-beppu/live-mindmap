@@ -179,6 +179,29 @@ export function nodeFocusViewport(rect: Rect, zoom: number, size: Size): Viewpor
   return { x: size.width / 2 - (rect.x + rect.width / 2) * z, y: size.height / 2 - (rect.y + rect.height / 2) * z, zoom: z };
 }
 
+// 選んだノード id と、見せるノードのうちその子孫が収まるまで寄る（倍率は 0.5〜2 倍）。目標の位置で測った外接箱の中心を画面の中央に置く。
+// 0.5 倍でも収まらないときは、0.5 倍で選んだノードの中心を画面の中央に置く。id は見せるノードであること（呼び出し側が確かめる）
+export function subtreeViewport(
+  id: string,
+  tree: { ids: string[]; parents: Record<string, string | null> },
+  target: Record<string, Position>,
+  dims: Record<string, { height: number }>,
+  size: Size,
+): Viewport {
+  const under = (n: string) => {
+    for (let cur: string | null | undefined = n; cur != null; cur = tree.parents[cur]) if (cur === id) return true;
+    return false;
+  };
+  const { left, top, right, bottom, fitZoom } = fitBox(
+    tree.ids.filter(under).map((n) => nodeRect(n, target, dims)),
+    size,
+  );
+  const self = nodeRect(id, target, dims);
+  const zoom = clampUserZoom(fitZoom);
+  const [cx, cy] = fitZoom >= USER_MIN_ZOOM ? [(left + right) / 2, (top + bottom) / 2] : [self.x + self.width / 2, self.y + self.height / 2];
+  return { x: size.width / 2 - cx * zoom, y: size.height / 2 - cy * zoom, zoom };
+}
+
 // 列を出したあと（size は出した後の画面の大きさ）、rects の外接箱が画面の左右で切れているときだけ、切れた分を横にずらす。
 // 倍率・縦の位置は変えない。反対側を新たに切るほどはずらさない（右が切れていれば左端が 0 に来るまで、左が切れていれば右端が幅に来るまで）。
 // 両端とも切れている、または rects が空なら、そのまま返す。画面座標は 座標 × zoom + x
