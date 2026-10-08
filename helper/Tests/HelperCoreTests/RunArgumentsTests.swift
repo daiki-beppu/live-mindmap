@@ -77,4 +77,26 @@ struct RunArgumentsTests {
             #expect(throws: RunArgumentsError.self) { try result.get() }
         }
     }
+
+    // Issue #280: --no-screen は値を取らないフラグ。付けると共有画面の取り込みも許可の確認もしない。
+    @Test("--no-screen を付けないときは noScreen=false（既定は共有画面を使う）")
+    func noScreenDefaultsToFalse() throws {
+        let args = try parseRunArguments(["--app", "x"]).get()
+        #expect(args.noScreen == false)
+    }
+
+    @Test("--no-screen を付けると noScreen=true になる")
+    func noScreenFlag() throws {
+        let args = try parseRunArguments(["--app", "x", "--no-screen"]).get()
+        #expect(args.noScreen == true)
+    }
+
+    @Test("--no-screen は値を取らない（次のフラグを食わず、他の引数はそのまま読める）")
+    func noScreenTakesNoValue() throws {
+        let args = try parseRunArguments(["--no-screen", "--app", "x", "--port", "12345", "--audio-index", "2"]).get()
+        #expect(args.noScreen == true)
+        #expect(args.app == "x")
+        #expect(args.port == 12345)
+        #expect(args.audioIndex == 2)
+    }
 }

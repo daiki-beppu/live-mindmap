@@ -135,6 +135,28 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       }));
   });
 
+  describe("screen-off（画面収録の許可が無く、共有画面を使えない）", () => {
+    it.effect("正しい形は known として decode され、start と reason を保つ", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen-off", start: 2.5, reason: "許可なし" })));
+        assert.deepStrictEqual(decoded, { kind: "known", event: { type: "screen-off", start: 2.5, reason: "許可なし" } });
+      }));
+
+    it.effect.each([
+      ["reason が 指定（指定はサーバーが書く。ヘルパーは流さない）", { type: "screen-off", start: 0, reason: "指定" }],
+      ["reason が知らない文字列", { type: "screen-off", start: 0, reason: "other" }],
+      ["reason のキーが無い", { type: "screen-off", start: 0 }],
+      ["start のキーが無い", { type: "screen-off", reason: "許可なし" }],
+      ["start が文字列", { type: "screen-off", start: "0", reason: "許可なし" }],
+    ])("壊れた screen-off は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        const [, data] = row;
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(data)));
+        if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた screen-off のはずが通った）");
+        assert.strictEqual(result.failure._tag, "SchemaError");
+      }));
+  });
+
   describe("知らない type・壊れた入力", () => {
     it.effect("知らない type は失敗にならず、「知らないイベント」として返る", () =>
       Effect.gen(function* () {

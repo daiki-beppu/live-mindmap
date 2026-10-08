@@ -26,6 +26,7 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
         }),
         speak: () => Effect.void,
         intake: () => Effect.void,
+        screenNotice: () => Effect.void,
         connect: () => Effect.void,
         drained: Effect.sync(() => { events.push("drained"); }),
       });

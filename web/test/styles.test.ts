@@ -67,6 +67,29 @@ describe("styles.css: 字幕", () => {
   });
 });
 
+describe("styles.css: 共有画面を使っていない一文（Issue #280）", () => {
+  it("layout の直下に重ねる（absolute、fixed にしない）ので、字幕とマップの位置を動かさない", () => {
+    const r = rule(".screen-notice");
+    expect(r).not.toBe(""); // 規則があること（否定のテストの前提）
+    expect(r).toMatch(/position\s*:\s*absolute/);
+    expect(r).not.toMatch(/position\s*:\s*fixed/);
+    expect(rule(".layout")).toMatch(/position\s*:\s*relative/);
+  });
+
+  it("字幕（下端）と取り込みの一言（字幕の右、下端）と重ならないよう、下端基準ではなく上端基準で置く", () => {
+    const r = rule(".screen-notice");
+    expect(r).toMatch(/top\s*:/);
+    expect(r).not.toMatch(/bottom\s*:/);
+    expect(rule(".intake-notice")).toMatch(/bottom\s*:/);
+  });
+
+  it("操作を邪魔せず、影を付けない", () => {
+    const r = rule(".screen-notice");
+    expect(r).toMatch(/pointer-events\s*:\s*none/);
+    expect(r).not.toMatch(/box-shadow\s*:\s*(?!\s*none)/);
+  });
+});
+
 describe("styles.css: キー一覧", () => {
   it("マップの右上に重ね、細い枠だけで、操作を邪魔しない。影は付けない", () => {
     const r = rule(".key-list");

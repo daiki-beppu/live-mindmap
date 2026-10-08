@@ -229,6 +229,32 @@ describe("HTTP 本文の検証（要件8・12）", () => {
         expect(start.title).toBe(title === undefined ? result.dir.split("/").at(-1) : title);
       }));
   }
+
+  // Issue #280: body.screen。省略と null は true（共有画面を使う）。false なら --no-screen を渡し、ログに screen-off（指定）を 1 件残す
+  const screenCases = [
+    { name: "省略", body: { app: "us.zoom.xos" }, noScreen: false },
+    { name: "null", body: { app: "us.zoom.xos", screen: null }, noScreen: false },
+    { name: "true", body: { app: "us.zoom.xos", screen: true }, noScreen: false },
+    { name: "false", body: { app: "us.zoom.xos", screen: false }, noScreen: true },
+    { name: "falseと録音なし", body: { app: "us.zoom.xos", screen: false, audio: false }, noScreen: true },
+  ];
+  for (const { name, body, noScreen } of screenCases) {
+    it.live(`screen が${name}のとき、ヘルパーの --no-screen は${noScreen ? "付き" : "付かず"}、ログの screen-off（指定）は${noScreen ? "1 件" : "残らない"}`, () =>
+      Effect.gen(function* () {
+        const r = yield* resource({});
+        const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify(body), undefined));
+        expect(response.status).toBe(200);
+        const result = yield* Effect.tryPromise(() => response.json() as Promise<{ dir: string }>);
+        const runs = (yield* Effect.tryPromise(r.records)).filter((entry) => entry.type === "run");
+        expect(runs).toHaveLength(1);
+        expect(runs[0]!.argv.includes("--no-screen")).toBe(noScreen);
+        const log = yield* Effect.tryPromise(() => readFile(join(result.dir, "log.jsonl"), "utf8"));
+        const lines = log.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+        const offs = lines.filter((entry) => entry.type === "screen-off");
+        expect(offs.map(({ type, start, reason }) => ({ type, start, reason }))).toEqual(noScreen ? [{ type: "screen-off", start: 0, reason: "指定" }] : []);
+        if (noScreen) expect(lines.findIndex((entry) => entry.type === "start")).toBeLessThan(lines.findIndex((entry) => entry.type === "screen-off")); // start の行の後
+      }));
+  }
 });
 
 describe("HTTP の失敗応答（要件8〜11）", () => {
@@ -399,6 +425,16 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       // 通常の stop の後は none に戻る。「止まった」（諦めた状態）の文面は intake.test.ts、状態の値は sessions.test.ts が観測する
       expect(yield* status()).toBe("セッションなし\n");
     }));
+
+  for (const screen of ["no", 0, "false"]) {
+    it.live(`body.screen が ${JSON.stringify(screen)}（boolean でも null でもない）なら400で拒否し、ヘルパーを起動しない`, () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify({ app: "us.zoom.xos", screen }), undefined));
+        expect(response.status).toBe(400);
+        expect(r.calls).toHaveLength(0);
+      }));
+  }
 
   for (const audio of ["no", 0, "false"]) {
     it.live(`body.audio が ${JSON.stringify(audio)}（boolean 以外）なら400で拒否し、ヘルパーを起動せず、セッションのフォルダも作らない`, () =>

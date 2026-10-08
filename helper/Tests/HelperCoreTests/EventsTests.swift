@@ -117,4 +117,26 @@ struct EventsTests {
         #expect(HelperEvent.screen(start: 1, image: "AA==") != HelperEvent.screen(start: 2, image: "AA=="))
         #expect(HelperEvent.screen(start: 1, image: "AA==") != HelperEvent.screen(start: 1, image: nil))
     }
+
+    // Issue #280: 画面収録の許可が無いときの screen-off。start は origin と同じ原点からの秒
+    @Test("screen-off は type・start・reason を持ち、reason は「許可なし」")
+    func screenOffCarriesStartAndReason() throws {
+        let json = try decode(.screenOff(start: 4.5, reason: .許可なし))
+        #expect(Set(json.keys) == ["type", "start", "reason"])
+        #expect(json["type"] as? String == "screen-off")
+        #expect(json["start"] as? Double == 4.5)
+        #expect(json["reason"] as? String == "許可なし")
+    }
+
+    @Test("screen-off の JSON 文字列は固定のキー順で、同じイベントは常に同じ文字列になる")
+    func screenOffJSONString() throws {
+        #expect(try HelperEvent.screenOff(start: 0, reason: .許可なし).jsonString() == "{\"reason\":\"許可なし\",\"start\":0,\"type\":\"screen-off\"}")
+    }
+
+    @Test("screen-off の値が等しければイベントも等しい。screen とは区別される")
+    func screenOffEquality() {
+        #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) == HelperEvent.screenOff(start: 1, reason: .許可なし))
+        #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) != HelperEvent.screenOff(start: 2, reason: .許可なし))
+        #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) != HelperEvent.screen(start: 1, image: nil))
+    }
 }

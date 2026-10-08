@@ -101,8 +101,20 @@ describe("CLI の Effect 境界", () => {
     const [url, init] = fetch.mock.calls[0]!;
     expect(String(url)).toBe("http://127.0.0.1:12345/session/start");
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toEqual({ app: "us.zoom.xos", audio: true });
+    expect(JSON.parse(String(init?.body))).toEqual({ app: "us.zoom.xos", audio: true, screen: true });
     expect(deps.stdout.join("")).toBe(join(dir, "run") + "\n");
+  }));
+
+  it.effect("--no-screen を付けると開始の本文は screen: false になり、録音の指定とは独立している", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const deps = dependencies(dir);
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ dir: join(dir, "run") }));
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-screen"]).pipe(Effect.provide(deps.layer));
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-screen", "--no-audio"]).pipe(Effect.provide(deps.layer));
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toEqual({ app: "us.zoom.xos", audio: true, screen: false });
+    expect(JSON.parse(String(fetch.mock.calls[1]![1]?.body))).toEqual({ app: "us.zoom.xos", audio: false, screen: false });
   }));
 
   it.effect("Console と ConfigProvider を提供した export は余分なデータも改行も保持する", () => Effect.gen(function* () {

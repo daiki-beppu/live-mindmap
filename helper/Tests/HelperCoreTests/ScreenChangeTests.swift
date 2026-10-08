@@ -392,4 +392,89 @@ struct ScreenEventEmitterTests {
         #expect(events.isEmpty)
         #expect(encodeCount == 0)
     }
+
+    // Issue #280: 取り込みが途中で止まった（ウィンドウはまだある）。画像を送っていれば null の screen を先に、その後に screen-off を 1 回だけ送る。
+    @Test("画像を送った後に取り込みが止まると、null の screen → screen-off（許可なし）の順に出る")
+    func captureStoppedAfterImageSendsNullThenScreenOff() async {
+        let emitter = ScreenEventEmitter()
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emitCaptureStopped(at: 6)
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 6, image: nil), .screenOff(start: 6, reason: .許可なし)])
+    }
+
+    @Test("画像を一度も送っていないときに止まると、screen-off だけが出る（null の screen は出さない）")
+    func captureStoppedBeforeAnyImageSendsOnlyScreenOff() async {
+        let emitter = ScreenEventEmitter()
+        emitter.emitCaptureStopped(at: 2)
+        let events = await collect(emitter)
+        #expect(events == [.screenOff(start: 2, reason: .許可なし)])
+    }
+
+    @Test("ウィンドウが消えた後に止まっても、null の screen は重ねず screen-off だけが続く")
+    func captureStoppedAfterWindowGoneDoesNotRepeatNull() async {
+        let emitter = ScreenEventEmitter()
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emitWindowGone(at: 3)
+        emitter.emitCaptureStopped(at: 4)
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil), .screenOff(start: 4, reason: .許可なし)])
+    }
+
+    @Test("ウィンドウが消えただけでは screen-off を出さない（許可の問題ではない）")
+    func windowGoneAloneDoesNotSendScreenOff() async {
+        let emitter = ScreenEventEmitter()
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emitWindowGone(at: 3)
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil)])
+        #expect(!events.contains { if case .screenOff = $0 { return true } else { return false } })
+    }
+
+    @Test("取り込みが止まったことの通知は 1 回だけ。2 回目以降は何も送らない")
+    func captureStoppedOnlyOnce() async {
+        let emitter = ScreenEventEmitter()
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emitCaptureStopped(at: 6)
+        emitter.emitCaptureStopped(at: 7)
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 6, image: nil), .screenOff(start: 6, reason: .許可なし)])
+    }
+
+    @Test("終了後に取り込みが止まっても何も送らない")
+    func captureStoppedAfterCloseSendsNothing() async {
+        let emitter = ScreenEventEmitter()
+        emitter.close()
+        emitter.emitCaptureStopped(at: 1)
+        let events = await collect(emitter)
+        #expect(events.isEmpty)
+    }
+}
+
+// Issue #280: 取り込みを始めるかどうかを、許可の結果から決める純粋な部分。許可の API はここでは呼ばない（CI に画面収録の許可が無い）。
+@Suite("共有画面の取り込み方針（screenCapturePlan）")
+struct ScreenCapturePlanTests {
+    @Test("--no-screen なら許可の確認を呼ばず、取り込まない")
+    func noScreenNeverChecksAccess() {
+        var checks = 0
+        let plan = screenCapturePlan(noScreen: true) { checks += 1; return true }
+        #expect(plan == .off)
+        #expect(checks == 0)
+    }
+
+    @Test("許可があれば取り込む（確認は 1 回だけ）")
+    func grantedCaptures() {
+        var checks = 0
+        let plan = screenCapturePlan(noScreen: false) { checks += 1; return true }
+        #expect(plan == .capture)
+        #expect(checks == 1)
+    }
+
+    @Test("許可が無い・断られたなら取り込みを始めない")
+    func deniedDoesNotCapture() {
+        var checks = 0
+        let plan = screenCapturePlan(noScreen: false) { checks += 1; return false }
+        #expect(plan == .denied)
+        #expect(checks == 1)
+    }
 }

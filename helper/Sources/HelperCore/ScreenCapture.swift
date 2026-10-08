@@ -169,6 +169,7 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
         let windowStillThere = content?.windows.contains { $0.windowID == id } ?? true
         if windowStillThere {
             printScreenError("共有画面の取り込みが止まった（音声だけで続ける）: \(error)")
+            emitter.emitCaptureStopped(at: offsetSeconds(from: origin, to: AudioGetCurrentHostTime()))
         } else {
             printScreenError("共有していたウィンドウが無くなった（音声だけで続ける）")
             reportWindowGone()

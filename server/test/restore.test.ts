@@ -100,6 +100,24 @@ describe("ログからの復元", () => {
       expect((yield* restored.snapshot).round).toBe((yield* session.snapshot).round);
     }));
 
+  it.effect("screen-off（指定・許可なし）の行を挟んだログも restoreSession で戻せ、挟まないログと同じ状態になる（壊れた行にならない）", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* original();
+      const withOff: LogEvent[] = [
+        events[0]!,
+        { type: "screen-off", start: 0, reason: "指定" },
+        ...events.slice(1, 4),
+        { type: "screen-off", start: 12.5, reason: "許可なし" },
+        ...events.slice(4),
+        { type: "screen-off", start: 99, reason: "許可なし" },
+      ];
+      expect(withOff.filter((e) => e.type === "screen-off")).toHaveLength(3);
+      const restored = yield* restore(viaJsonl(withOff));
+      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+      expect(yield* restored.unreflectedRemarks).toEqual(yield* session.unreflectedRemarks);
+    }));
+
   it.effect("復元したスナップショットの touchedAt・evidenceRound が元と一致し、ルート以外のノードに付いている", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
