@@ -82,3 +82,44 @@ describe("EvidencePanel: 右の列の根拠", () => {
     expect(html).not.toContain("面接は何回か");
   });
 });
+
+describe("EvidencePanel: 「議題 N 件」を選んだとき", () => {
+  const folded: Snapshot = {
+    nodes: [
+      { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
+      { id: "A", parent: "root", kind: "議題", text: "A", evidence: ["r1"], talkStatus: "済み" },
+      { id: "B", parent: "root", kind: "議題", text: "B", evidence: ["r1"], talkStatus: "済み" },
+      { id: "C", parent: "root", kind: "議題", text: "C", evidence: ["r1"] },
+    ],
+    round: 1,
+    changes: [],
+    remarks: [{ id: "r1", track: "自分", start: 1, end: 2, text: "一言" }],
+    currentTopic: "C",
+    now: 10,
+  };
+
+  it("その文「議題 2 件」と「根拠の発言はありません」を出す（「今のマップにありません」は出さない。ルートと同じ扱い）", () => {
+    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:A" evidence={evidenceOf(folded, "run:A")} />);
+    expect(html).toContain("議題 2 件");
+    expect(html).toContain("根拠の発言はありません");
+    expect(html).not.toContain("今のマップにありません");
+    expect(html).not.toContain("<li");
+    expect(html).not.toContain("一言");
+  });
+
+  it("選択で分かれた後のまとめ run:E でも、「議題 2 件」と「根拠の発言はありません」を出す", () => {
+    const five: Snapshot = {
+      ...folded,
+      nodes: [
+        folded.nodes[0]!,
+        ...["A", "B", "C", "E", "F"].map((id) => ({ id, parent: "root", kind: "議題" as const, text: id, evidence: [], talkStatus: "済み" as const })),
+        { id: "G", parent: "root", kind: "議題", text: "G", evidence: [] },
+      ],
+      currentTopic: "G",
+    };
+    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:E" evidence={evidenceOf(five, "run:E")} />);
+    expect(html).toContain("議題 2 件");
+    expect(html).toContain("根拠の発言はありません");
+    expect(html).not.toContain("今のマップにありません");
+  });
+});

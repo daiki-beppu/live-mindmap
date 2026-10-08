@@ -60,6 +60,20 @@ describe("KeyList: ? で開くキー一覧", () => {
   });
 });
 
+describe("KeyList: Z（選んだノードへ寄る）", () => {
+  it("Z の行が、選んだノードと子孫が収まるまで寄る説明つきで載る", () => {
+    const row = KEY_LIST.find((r) => r.keys === "Z");
+    expect(row).toBeDefined();
+    expect(row!.action).toContain("選んだノード");
+    expect(row!.action).toContain("寄");
+    expect(renderToStaticMarkup(<KeyList />)).toContain(row!.action);
+  });
+
+  it("見返しの一覧にも同じ行が載る（ライブ・見返しの両方で使うキー）", () => {
+    expect(renderToStaticMarkup(<KeyList review />)).toContain(KEY_LIST.find((r) => r.keys === "Z")!.action);
+  });
+});
+
 describe("KeyList: 見返しのキーは見返しの一覧にだけ載る", () => {
   const live = renderToStaticMarkup(<KeyList />);
   const review = renderToStaticMarkup(<KeyList review />);

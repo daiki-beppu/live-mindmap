@@ -19,6 +19,7 @@ import {
   scrollAxis,
   shiftIntoView,
   shouldMoveCamera,
+  subtreeViewport,
   zoomAroundCenter,
   zoomAtPoint,
 } from "../src/camera.ts";
@@ -602,5 +603,65 @@ describe("revealViewport: 画面の外のノードを、倍率を変えず最小
     const r = Object.freeze(rect(900, 50, 200, 40));
     revealViewport(viewport, r, screen);
     expect(viewport).toEqual(v(0, 0, 1));
+  });
+});
+
+describe("subtreeViewport: 選んだノードと、見せるノードのうちその子孫が収まるまで寄る", () => {
+  // A(200,80) の子 A1(400,0)・A2(400,100)。B は子孫ではなく、遠くにある。高さは仮の 40
+  const target = { root: { x: 0, y: 150 }, A: { x: 200, y: 80 }, A1: { x: 400, y: 0 }, A2: { x: 400, y: 100 }, B: { x: 200, y: 5000 } };
+  const treeOf = (ids: string[]) => ({ ids, parents: { root: null, A: "root", A1: "A", A2: "A", B: "root" } as Record<string, string | null> });
+  const all = treeOf(["root", "A", "B", "A1", "A2"]);
+
+  it("収まる枝は、箱（余白込み）が収まる倍率で、箱の中心を画面の中央に置く", () => {
+    // 箱: x 200〜600・y 0〜140。余白 40 込みで 480×220。画面 400×300 → min(400/480, 300/220)
+    const out = subtreeViewport("A", all, target, {}, { width: 400, height: 300 });
+    const zoom = 400 / 480;
+    expect(out.zoom).toBeCloseTo(zoom, 10);
+    expect(out.x).toBeCloseTo(200 - 400 * zoom, 10);
+    expect(out.y).toBeCloseTo(150 - 70 * zoom, 10);
+  });
+
+  it("小さい枝は 2 倍で頭打ち（人の上限）。箱の中心が画面の中央", () => {
+    const out = subtreeViewport("A", all, target, {}, { width: 1000, height: 800 });
+    expect(out.zoom).toBe(USER_MAX_ZOOM);
+    expect(out).toEqual({ x: 500 - 400 * 2, y: 400 - 70 * 2, zoom: 2 });
+  });
+
+  it("葉だけを選ぶと、そのノードだけが収まる", () => {
+    const out = subtreeViewport("A1", all, target, {}, { width: 1000, height: 800 });
+    expect(out).toEqual({ x: 500 - 500 * 2, y: 400 - 20 * 2, zoom: 2 });
+  });
+
+  it("0.5 倍でも収まらない枝は、0.5 倍で選んだノードの中心を画面の中央に置く（箱の中心ではない）", () => {
+    // 画面 200×200: 480/… の fit は 200/480 ≈ 0.417 < 0.5
+    const out = subtreeViewport("A", all, target, {}, { width: 200, height: 200 });
+    expect(out.zoom).toBe(USER_MIN_ZOOM);
+    expect(out).toEqual({ x: 100 - 300 * 0.5, y: 100 - 100 * 0.5, zoom: 0.5 });
+  });
+
+  it("ちょうど 0.5 倍で収まる枝は、箱の中心に置く（下限の境目）", () => {
+    // 幅 480 を 0.5 倍で収める画面幅は 240
+    const out = subtreeViewport("A", all, target, {}, { width: 240, height: 400 });
+    expect(out.zoom).toBeCloseTo(0.5, 10);
+    expect(out.x).toBeCloseTo(120 - 400 * 0.5, 10);
+    expect(out.y).toBeCloseTo(200 - 70 * 0.5, 10);
+  });
+
+  it("見せるノードに無い子孫（畳んだ中）は箱に数えない。子孫でないノードも数えない", () => {
+    const hidden = subtreeViewport("A", treeOf(["root", "A", "B", "A1"]), target, {}, { width: 1000, height: 800 });
+    // 箱: x 200〜600・y 0〜120（A2 が無い）
+    expect(hidden).toEqual({ x: 500 - 400 * 2, y: 400 - 60 * 2, zoom: 2 });
+  });
+
+  it("測った高さ（dims）で箱が決まる", () => {
+    const out = subtreeViewport("A1", all, target, { A1: { height: 100 } }, { width: 1000, height: 800 });
+    expect(out).toEqual({ x: 500 - 500 * 2, y: 400 - 50 * 2, zoom: 2 });
+  });
+
+  it("入力を書き換えない", () => {
+    const t = treeOf(["root", "A", "A1"]);
+    const before = JSON.stringify([t, target]);
+    subtreeViewport("A", t, target, {}, { width: 400, height: 300 });
+    expect(JSON.stringify([t, target])).toBe(before);
   });
 });
