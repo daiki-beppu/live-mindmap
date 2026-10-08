@@ -67,7 +67,7 @@ export const startup = (options: ListenOptions, layers: ServerLayers) =>
     // 最後に登録するので、セッションの Scope（開始のたびに作る子）の後始末に続いて走る:
     // ヘルパーを止めて最後のフレームを出した後、それを接続中のクライアントへ渡し切る
     yield* Effect.addFinalizer(() => viewers.drained);
-    const port = portOf(httpServer.address);
+    const port = yield* portOf(httpServer.address);
     options.onListening?.(port);
     return port;
   });

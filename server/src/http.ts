@@ -168,10 +168,8 @@ const respond = <R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse
       }),
   );
 
-export const portOf = (address: NetAddress.SocketAddress): number => {
-  if (address._tag === "UnixPathAddress") throw new Error("TCP のポートで待ち受けていない");
-  return address.port;
-};
+export const portOf = (address: NetAddress.SocketAddress): Effect.Effect<number> =>
+  address._tag === "UnixPathAddress" ? Effect.die(new Error("TCP のポートで待ち受けていない")) : Effect.succeed(address.port);
 
 // close フレームを送った接続が応答しない場合、ws の既定（CLOSE_TIMEOUT）は 30,000ms 待ってから
 // raw socket を切断する。これは終了処理にとって実質無期限で、応答しない接続が 1 本でもあると

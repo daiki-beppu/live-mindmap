@@ -19,9 +19,15 @@ export class MissingSessionDir extends Schema.TaggedError<MissingSessionDir>()("
   reason: Schema.String,
 }) {}
 
-type BenchFailure = InvalidInputFile | InvalidTruthFile | MissingSessionDir;
+// 再生用のセッションを作れない、またはそのログを読めない
+export class ReplaySessionFailed extends Schema.TaggedError<ReplaySessionFailed>()("ReplaySessionFailed", {
+  path: Schema.String,
+  reason: Schema.String,
+}) {}
 
-const BENCH_FAILURE_TAGS: ReadonlySet<string> = new Set<BenchFailure["_tag"]>(["InvalidInputFile", "InvalidTruthFile", "MissingSessionDir"]);
+type BenchFailure = InvalidInputFile | InvalidTruthFile | MissingSessionDir | ReplaySessionFailed;
+
+const BENCH_FAILURE_TAGS: ReadonlySet<string> = new Set<BenchFailure["_tag"]>(["InvalidInputFile", "InvalidTruthFile", "MissingSessionDir", "ReplaySessionFailed"]);
 
 const isBenchFailure = (failure: unknown): failure is BenchFailure =>
   Predicate.hasProperty(failure, "_tag") && Predicate.isString(failure._tag) && BENCH_FAILURE_TAGS.has(failure._tag);
@@ -35,6 +41,8 @@ const failureLine = (failure: BenchFailure): string => {
       return `${failure.path}: セッションのフォルダが無いか、読めません（${failure.reason}）`;
     case "InvalidTruthFile":
       return `${failure.path}: 正解ファイルが不正です（${failure.reason}）`;
+    case "ReplaySessionFailed":
+      return `${failure.path}: 再生のセッションを作れないか、そのログを読めません（${failure.reason}）`;
   }
 };
 

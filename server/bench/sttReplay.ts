@@ -1,6 +1,6 @@
 // 発言を、認識結果が届いた時刻（at）で本番のセッションに流す（Issue #97）。
 // end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ。
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
@@ -8,8 +8,8 @@ import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
-import { describe, oneLine, readTruthFile } from "../src/truthFile.ts";
-import { BENCH_VERSION, readJsonFile, reportFailure, write } from "./entry.ts";
+import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../src/truthFile.ts";
+import { BENCH_VERSION, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
 
 // at / source は計測用の項目で、セッションには渡さない
@@ -86,11 +86,17 @@ export const command = Command.make(
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const spokenLines = Option.isNone(lines) ? undefined : yield* readJsonFile(lines.value, Schema.Array(SpokenLine));
 
-    // cli.ts は vite と playwright を読み込むので、再生を始めるときだけ読む
-    const { createSessionDir, openRecordedSession } = yield* Effect.tryPromise({ try: () => import("../src/cli.ts"), catch: describe });
+    // sessionFiles.ts は capture.ts・review.ts（vite と playwright）を読み込むので、再生を始めるときだけ読む
+    const { createSessionDir, openRecordedSession } = yield* Effect.tryPromise({
+      try: () => import("../src/sessionFiles.ts"),
+      catch: (e) => new ReplaySessionFailed({ path: join(import.meta.dirname, "../src/sessionFiles.ts"), reason: describe(e) }),
+    });
     // セッションのフォルダは一時領域に作る
-    const tmp = yield* Effect.try({ try: () => mkdtempSync(join(tmpdir(), "stt-replay-")), catch: describe });
-    const dir = yield* createSessionDir(tmp).pipe(Effect.mapError(describe));
+    const tmp = yield* Effect.try({
+      try: () => mkdtempSync(join(tmpdir(), "stt-replay-")),
+      catch: (e) => new ReplaySessionFailed({ path: tmpdir(), reason: describe(e) }),
+    });
+    const dir = yield* createSessionDir(tmp).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: tmp, reason: fileReason(e) })));
     const diffEndsMs: number[] = [];
     const { session } = yield* openRecordedSession({
       dir,
@@ -101,9 +107,10 @@ export const command = Command.make(
     const t0 = performance.now();
     yield* replayByArrival(session, items);
     // 差分更新ごとの終わりの時刻と、その呼び出しに渡した発言を、ログから引く
-    const log = yield* Effect.try({ try: () => readFileSync(join(dir, "log.jsonl"), "utf8"), catch: describe });
+    const logPath = join(dir, "log.jsonl");
+    const log = yield* readTextFile(logPath).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: logPath, reason: fileReason(e) })));
     const events = yield* Effect.forEach(log.trim().split("\n"), (line) => decodeLogEvent(line)).pipe(
-      Effect.mapError((e) => oneLine(e.message)),
+      Effect.mapError((e) => new ReplaySessionFailed({ path: logPath, reason: oneLine(e.message) })),
     );
     const diffs = events.filter((e): e is DiffEvent => e.type === "diff");
     const arrivals = reflectedArrivals(diffs, diffEndsMs.map((ms) => (ms - t0) / 1000), items);

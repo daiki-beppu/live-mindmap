@@ -51,9 +51,6 @@ import {
 import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
-// セッションのファイル操作は sessionFiles.ts にある。既存の import 元（cli.ts）を保つために再公開する
-export { createSessionDir, openRecordedSession, type RecordedSessionOptions } from "./sessionFiles.ts";
-
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
 

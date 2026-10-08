@@ -1,12 +1,12 @@
 // 保存したセッションを、発言の本文を読まずに数だけで調べる（Issue #186）。
 // 第三者の会議のログは中身を表示しない決まりなので、出すのは件数・長さ・割合・音量だけにする。
 // 使い方は各 Command・Flag の withDescription が正本で、`node bench/sessionStats.ts --help` で読む。
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, Stream, type PlatformError } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Track } from "../src/core/index.ts";
 import { describe } from "../src/truthFile.ts";
 import { BENCH_VERSION, MissingSessionDir, readInputText, reportFailure, write } from "./entry.ts";
@@ -110,29 +110,37 @@ export function sessionDirs(path: string): string[] {
 
 // 録音（相手.m4a・相手-2.m4a …）の長さの最大と、平均音量。読めないファイル（強制終了で閉じていない録音）は飛ばす
 type Audio = { files: number; seconds: number; meanDb: number | null };
-function trackAudio(dir: string, track: Track): Audio {
+const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
   const files = readdirSync(dir).filter((f) => f === `${track}.m4a` || (f.startsWith(`${track}-`) && f.endsWith(".m4a")));
   let seconds = 0;
   let meanDb: number | null = null;
   for (const f of files) {
-    const log = runFfmpeg(join(dir, f));
+    const log = yield* runFfmpeg(join(dir, f));
     const dur = /Duration: (\d+):(\d+):([\d.]+)/.exec(log);
     const mean = /mean_volume: (-?[\d.]+) dB/.exec(log);
     if (!dur || !mean) continue;
     seconds = Math.max(seconds, Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]));
     if (f === `${track}.m4a` || meanDb === null) meanDb = Number(mean[1]);
   }
-  return { files: files.length, seconds, meanDb };
-}
+  return { files: files.length, seconds, meanDb } satisfies Audio;
+});
 
-// ffmpeg は長さと音量を stderr に出すので、sh で stdout にまとめて受け取る
-function runFfmpeg(file: string): string {
-  try {
-    return execFileSync("sh", ["-c", 'ffmpeg -nostats -i "$1" -af volumedetect -f null - 2>&1', "sh", file], { encoding: "utf8" });
-  } catch (err) {
-    return String((err as { stdout?: string }).stdout ?? "");
-  }
-}
+// ffmpeg は長さと音量を stderr に出すので、stdout と stderr をまとめて受け取る。
+// ffmpeg が無い・失敗したときは空の出力として扱う（呼び出し側が、読めない録音として飛ばす）
+const runFfmpeg = (file: string) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* spawner.spawn(
+          ChildProcess.make("ffmpeg", ["-nostats", "-i", file, "-af", "volumedetect", "-f", "null", "-"], { stdin: "ignore" }),
+        );
+        const [stdout, stderr] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
+        return stdout + stderr;
+      }),
+    );
+  }).pipe(Effect.catchTag("PlatformError", () => Effect.succeed("")));
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
@@ -167,7 +175,7 @@ export const command = Command.make(
     )).flat();
     for (const dir of dirs) {
       const stats = sessionStats(yield* parseLog(yield* readInputText(join(dir, "log.jsonl"))));
-      const audio = noAudio ? null : yield* Effect.sync(() => ({ 相手: trackAudio(dir, "相手"), 自分: trackAudio(dir, "自分") }));
+      const audio = noAudio ? null : { 相手: yield* trackAudio(dir, "相手"), 自分: yield* trackAudio(dir, "自分") };
       yield* write(formatRow(basename(dir), stats, audio).join("\n") + "\n");
     }
   }),
