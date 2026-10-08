@@ -29,6 +29,9 @@ let minScore = option("--min").flatMap(Double.init) ?? (mode == "llm" ? 0.6 : 0.
 let top = option("--top").flatMap(Int.init) ?? 3
 // --strict: 区間の端がひらがなだけの語（助詞・送り仮名）なら候補にしない。読みが 5 字以下の語は読みの完全一致だけ
 let strict = args.contains("--strict"); args.removeAll { $0 == "--strict" }
+let stopPath = option("--stop")
+let stopScope = option("--stop-scope") ?? "all" // all | kanji（カタカナ・英字を含む区間には守りをかけない）
+let stopWords: Set<String> = stopPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }.map { Set($0.split(separator: "\n").map(String.init)) } ?? []
 let outPath = option("--out")
 let logPath = option("--log")
 guard args.count == 1 else { fail("確定結果の JSONL を 1 つ渡す") }
@@ -153,12 +156,15 @@ func retrieve(_ text: String) -> [Occurrence] {
             let surface = (text as NSString).substring(with: range)
             let isHiragana = { (c: Character) in c.unicodeScalars.allSatisfy { ("\u{3041}"..."\u{309F}").contains($0) } }
             if strict, surface.count < 2 || isHiragana(surface.first!) || isHiragana(surface.last!) { continue }
+            let guarded = stopWords.contains(surface) && stopScope == "latin"
+            if stopWords.contains(surface), stopScope != "latin", stopScope == "all" || !surface.contains(where: { $0.isASCII || ("\u{30A0}"..."\u{30FF}").contains($0) }) { continue }
             var cands: [(Term, Double)] = []
             for term in terms {
                 let ratio = Double(k.count) / Double(term.key.count)
                 guard ratio > 0.6, ratio < 1.6 else { continue }
                 let s = similarity(k, term.key)
                 if strict, term.key.count <= 5, s < 1 { continue }
+                if guarded, !isLatinOnly(term.surface) { continue } // ふつうの語の区間は、英字の語への書き換えだけ通す
                 if s >= minScore { cands.append((term, s)) }
             }
             // 既に正しい表記なら直さない
