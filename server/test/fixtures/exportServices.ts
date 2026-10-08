@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Console, Effect, Layer } from "effect";
+import { Console, Effect, FileSystem, Layer } from "effect";
 import { CaptureFailed, MapCapture } from "../../src/capture.ts";
 import type { Snapshot } from "../../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed } from "../../src/review.ts";
@@ -15,14 +15,15 @@ export type ExportServicesOptions = {
   capture?: (snapshot: Snapshot, path: string) => Effect.Effect<void, CaptureFailed>;
   build?: () => Effect.Effect<string, ReviewPageFailed>;
   mix?: FakeMix;
+  fileSystem?: Layer.Layer<FileSystem.FileSystem>; // 省略時は実物（NodeFileSystem）
 };
 
-export const fakeExportServices = ({ capture, build, mix = fakeAudioMix() }: ExportServicesOptions = {}) =>
+export const fakeExportServices = ({ capture, build, mix = fakeAudioMix(), fileSystem = NodeFileSystem.layer }: ExportServicesOptions = {}) =>
   Layer.mergeAll(
     Layer.succeed(MapCapture, MapCapture.of({ capture: capture ?? ((_snapshot, path) => Effect.sync(() => writeFileSync(path, ""))) })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: build ?? (() => Effect.succeed(FAKE_TEMPLATE)) })),
     mix.layer,
-  ).pipe(Layer.provideMerge(NodeFileSystem.layer));
+  ).pipe(Layer.provideMerge(fileSystem));
 
 // 失敗の文面は、警告の「…を書き出せませんでした: <理由>」にそのまま出る
 export const failingCapture = (message = "撮影に失敗") => () => Effect.fail(new CaptureFailed({ message }));

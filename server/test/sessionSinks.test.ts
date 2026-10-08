@@ -14,7 +14,7 @@ import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { collectingConsole, failingBuild, failingCapture, FAKE_TEMPLATE, fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
-import { settleUntil } from "./fixtures/sessionLayers.ts";
+import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
 // Issue #240 段 3（ADR 0008）→ Issue #243 段 6: SessionSinks の実物 Layer を、実 tmpdir + 偽の DiffUpdater／capture で確かめる。
 // updater・ログ・いま話している文字・書き出しを開く契約（CT-SINK-SCOPE）と、録音ファイル名の採番（要件117,127）
@@ -57,8 +57,12 @@ function makeFakeUpdater() {
 
 // 終了時の書き出しが文脈から受け取る Service（撮影・見返し用の HTML のビルド・mix）は偽物の Layer で渡す。
 // 撮影は空のファイルを書くだけ、HTML は書き出し（ログの読み込み・埋め込み・書き込み）が本物でビルドだけ偽物
+// ログ・export.json は実物の FileSystem で書くので、書き込みの完了は Effect のスケジューラの外にある。
+// 時間を進める前後の待ち（settle・settleUntil）は、実行中のファイル操作が終わるまで実時間で待つ（trackedFileSystem）
+const fileIo = trackedFileSystem();
+const { settle, settleUntil } = fileIo;
 const sinksLayer = ({ updaterLayer, ...services }: Pick<SessionSinksDeps, "updaterLayer"> & ExportServicesOptions) =>
-  SessionSinks.layer({ updaterLayer }).pipe(Layer.provide(fakeExportServices(services)));
+  SessionSinks.layer({ updaterLayer }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer, ...services })));
 
 const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
   return yield* Effect.acquireRelease(
@@ -544,8 +548,6 @@ const makeRecordingUpdater = () => {
 const logEvents = (dir: string) =>
   readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
 
-// 時間を進めた後に、起こるはずの更新が走り切るまで譲る。「まだ起きない」ことの確認の前にも使う
-const settle = Effect.forEach(Array.from({ length: 30 }), () => Effect.yieldNow, { discard: true });
 
 const finalRemark = (track: "相手" | "自分", start: number, end: number, text: string) => ({ track, start, end, text });
 
