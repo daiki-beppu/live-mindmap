@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { selectionOf, testIds } from "./swiftTestSelection.ts";
 
 // Issue #549: helper の typecheck と test は、同じ引数の `swift build --build-tests` を先に呼び、テストは `swift test --skip-build` で回す。
 // 引数が違うと別のビルド設定になり、`pnpm typecheck` と `cd helper && pnpm test` を交互に回すたびに 5〜10 秒の作り直しが起きる。
@@ -26,15 +27,6 @@ const swiftTest = (name: string): string[] => swiftCommands(name).filter((c) => 
 // どの層も typecheck のビルドを 1 回だけ使い、swift test は 1 回で --skip-build 付きにする
 const testScripts = ["test", "test:it", "test:it:heavy", "test:it:all"];
 
-// テスト ID は `<ターゲット>.<型名>/<関数名>()`。層は型名の接尾辞で決まる
-const testIds = {
-  unit: ["HelperCoreTests.StreamSplitTests/split()", "SttBenchTests.SynthTimelineTests/build()"],
-  it: ["HelperCoreTests.RelayITTests/relay()", "SttBenchTests.BuildMicrophoneITTests/build()"],
-  heavy: [
-    "HelperCoreTests.EchoCancellerHeavyTests/cancel()",
-    "HelperCoreTests.SpeechAnalyzerTranscriberHeavyTests/transcribe()",
-  ],
-};
 const layers: Record<string, string[]> = {
   test: ["unit"],
   "test:it": ["it"],
@@ -42,16 +34,7 @@ const layers: Record<string, string[]> = {
   "test:it:all": ["it", "heavy"],
 };
 
-// swift test の --skip / --filter を 1 つだけ取り出し、テスト ID が実行されるかを返す述語にする
-const selection = (name: string): ((id: string) => boolean) => {
-  const options = [...swiftTest(name)[0]!.matchAll(/--(skip|filter)\s+(?:'([^']*)'|"([^"]*)"|(\S+))/g)];
-  if (options.length !== 1) {
-    throw new Error(`${name}: --skip / --filter はちょうど 1 回必要だが ${options.length} 回ある`);
-  }
-  const [, kind, single, double, bare] = options[0]!;
-  const pattern = new RegExp(single ?? double ?? bare!);
-  return kind === "skip" ? (id) => !pattern.test(id) : (id) => pattern.test(id);
-};
+const selection = (name: string): ((id: string) => boolean) => selectionOf(swiftTest(name)[0]!);
 
 describe("helper の typecheck と test のビルド", () => {
   it("typecheck は swift build --build-tests でテストターゲットまでビルドする", () => {

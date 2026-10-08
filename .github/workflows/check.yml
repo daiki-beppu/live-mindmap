@@ -141,8 +141,16 @@ jobs:
       - run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
         working-directory: helper
       # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
-      # ランナーには Xcode があるので swift test をそのまま使う
-      - run: swift test --skip-build
+      # ランナーには Xcode があるので swift test をそのまま使う。
+      # 層の選び方は helper/package.json の test・test:it・test:it:heavy と同じ
+      - name: unit
+        run: swift test --skip-build --skip 'ITTests/|HeavyTests/'
+        working-directory: helper
+      - name: IT
+        run: swift test --skip-build --filter 'ITTests/'
+        working-directory: helper
+      - name: heavy IT
+        run: swift test --skip-build --filter 'HeavyTests/'
         working-directory: helper
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
