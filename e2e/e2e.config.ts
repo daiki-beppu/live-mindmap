@@ -3,7 +3,7 @@ import type { E2EConfig } from "e2e";
 import { web } from "@e2e-dev/web";
 import { chatgpt } from "e2e/oauth/chatgpt";
 
-// target は 2 つ。web は smoke（台本の先頭 3 件）、web-full は台本の全件。同じ会議中のテストが両方で動く。
+// target は 2 つ。web は smoke（台本の先頭 3 件）、web-full は台本の全件。同じ会議中のテストと見返しのテストが両方で動く。
 const fullCount = (JSON.parse(readFileSync(new URL("fixtures/meeting.json", import.meta.url), "utf8")) as { events: unknown[] }).events.length;
 
 const target = (name: string, events: number, log: string) => ({

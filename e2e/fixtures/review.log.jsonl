@@ -1,0 +1,10 @@
+{"at": "2026-10-01T00:00:00.000Z", "type": "start", "title": "見返しの確認"}
+{"at": "2026-10-01T00:00:01.000Z", "type": "remark", "remark": {"id": "r1", "track": "相手", "start": 1, "end": 10, "text": "今日は資料の整え方を話します"}}
+{"at": "2026-10-01T00:00:02.000Z", "type": "remark", "remark": {"id": "r2", "track": "自分", "start": 11, "end": 20, "text": "構成は三章にします"}}
+{"at": "2026-10-01T00:00:03.000Z", "type": "diff", "input": {"recent": [], "fresh": ["r1", "r2"], "nodeCount": 0}, "ops": [{"op": "add", "ref": "p1", "parent": "root", "kind": "要点", "text": "要点1", "evidence": ["r2"]}], "dropped": []}
+{"at": "2026-10-01T00:00:06.000Z", "type": "remark", "remark": {"id": "r3", "track": "相手", "start": 21, "end": 30, "text": "図は最小限にします"}}
+{"at": "2026-10-01T00:00:07.000Z", "type": "remark", "remark": {"id": "r4", "track": "自分", "start": 31, "end": 40, "text": "事例は一つに絞ります"}}
+{"at": "2026-10-01T00:00:08.000Z", "type": "diff", "input": {"recent": ["r1", "r2"], "fresh": ["r3", "r4"], "nodeCount": 1}, "ops": [{"op": "add", "ref": "p2", "parent": "root", "kind": "要点", "text": "要点2", "evidence": ["r4"]}], "dropped": []}
+{"at": "2026-10-01T00:00:12.000Z", "type": "remark", "remark": {"id": "r5", "track": "相手", "start": 41, "end": 50, "text": "公開は来週です"}}
+{"at": "2026-10-01T00:00:13.000Z", "type": "remark", "remark": {"id": "r6", "track": "自分", "start": 51, "end": 60, "text": "担当は田中さんです"}}
+{"at": "2026-10-01T00:00:13.000Z", "type": "diff", "input": {"recent": ["r3", "r4"], "fresh": ["r5", "r6"], "nodeCount": 2}, "ops": [{"op": "add", "ref": "p3", "parent": "root", "kind": "要点", "text": "要点3", "evidence": ["r6"]}], "dropped": []}
