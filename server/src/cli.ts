@@ -36,7 +36,6 @@ import { ReviewBuild, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
 import {
-  captureWarning,
   createSessionDir,
   EXPORT_FILE,
   LOG_FILE,
@@ -45,13 +44,14 @@ import {
   reviewVariants,
   reviewWarning,
   selfReviewVariants,
-  writeExportFiles,
+  writeExportsAndCapture,
+  writeReviews,
 } from "./sessionFiles.ts";
 import { describe, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
 // セッションのファイル操作は sessionFiles.ts にある。既存の import 元（cli.ts）を保つために再公開する
-export { createSessionDir, openRecordedSession, writeSessionExports, type RecordedSessionOptions } from "./sessionFiles.ts";
+export { createSessionDir, openRecordedSession, type RecordedSessionOptions } from "./sessionFiles.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
@@ -174,36 +174,6 @@ const latestSession = (sessionsDir: string, file: string) =>
 /* ----------------------------------------------------------------------------
  * セッションの保存・公開（ライブのセッションとも共有する）
  * -------------------------------------------------------------------------- */
-
-// 見返し用の HTML を書く。版の一覧は録音の有無で決める（reviewVariants）。mix だけの失敗は結果の skipped に入り、ここでは失敗にしない
-const writeReviews = (dir: string, review: ReviewBuild["Service"], audioMix: AudioMix["Service"]) =>
-  Effect.try({ try: () => reviewVariants(dir), catch: (e) => new CommandFailed({ message: describe(e) }) }).pipe(
-    Effect.flatMap((variants) => writeReviewPages(dir, join(dir, LOG_FILE), variants)),
-    Effect.provideService(ReviewBuild, review),
-    Effect.provideService(AudioMix, audioMix),
-  );
-
-// CLI 側の書き出し。警告は Console（差し替え可能）へ出す以外、writeSessionExports と同じ順・同じ結果
-const writeExportsAndCapture = Effect.fnUntraced(function* (
-  dir: string,
-  snapshot: Snapshot,
-  capture: MapCapture["Service"],
-  review: ReviewBuild["Service"],
-  audioMix: AudioMix["Service"],
-) {
-  const paths = yield* Effect.try({ try: () => writeExportFiles(dir, snapshot), catch: (e) => new CommandFailed({ message: describe(e) }) });
-  const png = join(dir, "map.png");
-  const captured = yield* Effect.result(capture.capture(snapshot, png));
-  if (Result.isFailure(captured)) yield* Console.error(captureWarning(describe(captured.failure)));
-  else paths.push(png);
-  const reviewed = yield* Effect.result(writeReviews(dir, review, audioMix));
-  if (Result.isFailure(reviewed)) yield* Console.error(reviewWarning("map.html", describe(reviewed.failure)));
-  else {
-    paths.push(...reviewed.success.paths);
-    for (const { file, reason } of reviewed.success.skipped) yield* Console.error(reviewWarning(file, reason));
-  }
-  return paths;
-});
 
 /* ----------------------------------------------------------------------------
  * 常駐サーバーへの依頼（HTTP の境界）
@@ -364,9 +334,6 @@ const play = Command.make(
     function* ({ realtime, screen, transcript }) {
       const sessionsDir = yield* sessionsDirConfig;
       const port = yield* portConfig;
-      const capture = yield* MapCapture;
-      const review = yield* ReviewBuild;
-      const audioMix = yield* AudioMix;
       const folder = isDirectory(transcript);
       if (folder && Option.isSome(screen)) {
         return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
@@ -396,7 +363,9 @@ const play = Command.make(
       const remarks = recorded ? recorded.remarks : yield* readTranscriptRemarks(transcript);
       // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちは、同じ Clock に乗る
       yield* playback(session, remarks, { ...(realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens });
-      const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, capture, review, audioMix);
+      const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe).pipe(
+        Effect.mapError((e) => new CommandFailed({ message: e.message })),
+      );
       yield* write(paths.map((path) => `${path}\n`).join(""));
     },
     Effect.scoped,
@@ -591,8 +560,6 @@ const review = Command.make(
       const variants = yield* Effect.try({ try: () => selfReviewVariants(dir), catch: (e) => new CommandFailed({ message: describe(e) }) });
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
       const self = yield* writeReviewPages(dir, logPath, variants).pipe(
-        Effect.provideService(ReviewBuild, yield* ReviewBuild),
-        Effect.provideService(AudioMix, yield* AudioMix),
         Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map-audio-自分.html", describe(e)) })),
       );
       // 見返し用に 自分 だけの版を頼まれているので、mix の失敗は警告で済ませず失敗にする
@@ -600,7 +567,7 @@ const review = Command.make(
       yield* write(self.paths.map((path) => `${path}\n`).join(""));
       return;
     }
-    const { paths, skipped } = yield* writeReviews(dir, yield* ReviewBuild, yield* AudioMix).pipe(
+    const { paths, skipped } = yield* writeReviews(dir).pipe(
       Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map.html", describe(e)) })),
     );
     // mix だけの失敗は、map.html を書いて成功のまま終える。書けなかった理由は標準エラーに出す

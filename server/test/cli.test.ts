@@ -222,6 +222,48 @@ describe("CLI", () => {
     expect(deps.stdout.join("").trim().split("\n").map((l) => basename(l))).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
   }));
 
+  it.effect("再生の撮影の失敗の理由に改行があっても、標準エラーの警告は 1 行にする", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    deps.captureFailure.error = new CaptureFailed({ message: "撮影に失敗\n詳細" });
+
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+
+    expect(deps.stderr).toContain("map.png を書き出せませんでした: 撮影に失敗 詳細\n");
+  }));
+
+  it.effect("再生の map.html のビルドの失敗の理由に改行があっても、標準エラーの警告は 1 行にする", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    deps.reviewFailure.error = new ReviewPageFailed({ message: "ビルドに失敗\n詳細" });
+
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+
+    expect(deps.stderr).toContain("map.html を書き出せませんでした: ビルドに失敗 詳細\n");
+  }));
+
+  it.effect("再生の最後にテキストの 3 形式を書けないときは、CommandFailed で失敗し、理由を 1 行で伝える。パスは出さない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const deps = dependencies(dir);
+    external.openClaudeUpdater.mockReturnValue({
+      update: async () => {
+        const [session] = readdirSync(dir);
+        mkdirSync(join(dir, session!, "map.md")); // 書き先と同名のフォルダがあり、map.md を書けない
+        return { ops: [] };
+      },
+      close: vi.fn(),
+    });
+
+    const result = yield* Effect.result(runCli(["play", fixture]).pipe(Effect.provide(deps.layer)));
+
+    expect(Result.isFailure(result)).toBe(true);
+    const failure = Result.isFailure(result) ? (result.failure as { _tag: string; message: string }) : undefined;
+    expect(failure?._tag).toBe("CommandFailed");
+    expect(failure?.message).toContain("map.md");
+    expect(failure?.message).not.toContain("\n");
+    expect(deps.stdout).toEqual([]);
+  }));
+
   it.effect("map.json は、直後の export --format json の出力と同じ内容", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const deps = dependencies(dir);

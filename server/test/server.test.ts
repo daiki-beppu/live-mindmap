@@ -2,17 +2,19 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NodeFileSystem, NodeServices } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { ConfigProvider, Console, Effect, Layer } from "effect";
-import { MapCapture, type PromiseMapCapture } from "../src/capture.ts";
+import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import type { DiffInput, Op, Snapshot, SpeakingFrame } from "../src/core/index.ts";
 import { HELPER_STOP_TIMEOUT_MS } from "../src/helpers.ts";
-import { ReviewBuild, writeReviewPages, type PromiseReviewPages } from "../src/review.ts";
-import { startServer } from "../src/server.ts";
+import { ReviewBuild } from "../src/review.ts";
+import { realLayers } from "../src/server.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
+import { fakeExportServices, FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
+import { startedServer } from "./fixtures/startedServer.ts";
 import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -21,23 +23,6 @@ import { updaterLayer } from "./fixtures/sessionLayers.ts";
 // resume・argv・stop/close の重なり・updater の開閉・speaking・状態のフレーム・cli status 等）は
 // server/test/sessions.test.ts・sessionSinks.test.ts・http.test.ts に移した。このファイルに残るのは、
 // 実物の子プロセス・実物の HTTP・実物の WebSocket を通さないと確かめられない契約だけ。
-
-// 通常のテストでは、テストごとに Chromium を起動しないよう、画像の撮影を偽物にする（空のファイルを書くだけ）。
-const fakeCapture: PromiseMapCapture = async (_snapshot, path) => {
-  writeFileSync(path, "");
-};
-
-// 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする。
-// server.ts の入口と同じく、writeReviewPages から Promise の口を 1 つ組む
-const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
-// mix（ヘルパー）も偽物にする。出力先に小さなバイト列を書く
-const fakeWriteReview: PromiseReviewPages = (dir, logPath, variants) =>
-  Effect.runPromise(
-    writeReviewPages(dir, logPath, variants).pipe(
-      Effect.provideService(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
-      Effect.provide(Layer.merge(fakeAudioMix().layer, NodeFileSystem.layer)),
-    ),
-  );
 
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
@@ -57,7 +42,7 @@ type HelperRecord =
   | { type: "signal"; signal: string }
   | { type: "unexpectedExit"; code?: number; signal?: string };
 
-const setup = (initial: Partial<Script> = {}, capture: PromiseMapCapture = fakeCapture, writeReview: PromiseReviewPages = fakeWriteReview) =>
+const setup = (initial: Partial<Script> = {}) =>
   Effect.gen(function* () {
   const dir = yield* promiseOrDie(() => mkdtemp(join(tmpdir(), "live-mindmap-")));
   const sessionsDir = join(dir, "sessions");
@@ -80,19 +65,14 @@ const setup = (initial: Partial<Script> = {}, capture: PromiseMapCapture = fakeC
       const ops: Op[] = calls.length === 1 ? [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: input.fresh.map((u) => u.id) }] : [];
       return { ops };
     });
-  const server = yield* Effect.acquireRelease(
-    promiseOrDie(() =>
-      startServer({
-        port: 0,
-        sessionsDir,
-        updaterLayer: updaterLayer(updater),
-        helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
-        capture,
-        writeReview,
-      }),
-    ),
-    (s) => promiseOrDie(() => s.close()),
-  );
+  // 通常のテストでは、テストごとに Chromium を起動しないよう、撮影・見返し用の HTML のビルド・mix は偽物の Layer にする
+  const options = {
+    port: 0,
+    sessionsDir,
+    updaterLayer: updaterLayer(updater),
+    helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
+  };
+  const server = yield* startedServer(options, realLayers(options, fakeExportServices()));
 
   const out: string[] = [];
   const consoleService: Console.Console = {
@@ -217,7 +197,7 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
         if (run2?.type !== "run") throw new Error("ヘルパーが起動していない");
         const closeStartedAt = Date.now();
 
-        yield* promiseOrDie(() => server2.close());
+        yield* server2.close;
 
         expect(Date.now() - closeStartedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
         expect(() => process.kill(run2.pid, 0)).toThrow();
@@ -233,7 +213,7 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       if (run?.type !== "run") throw new Error("ヘルパーが起動していない");
       expect(() => process.kill(run.pid, 0)).not.toThrow(); // 生きている
 
-      yield* promiseOrDie(() => server.close());
+      yield* server.close;
 
       yield* waitFor(() => expect(() => process.kill(run.pid, 0)).toThrow());
       // detached: true で起動したヘルパーは自分のプロセスグループの leader（pgid === pid）になる。

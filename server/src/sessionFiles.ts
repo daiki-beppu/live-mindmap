@@ -2,9 +2,9 @@
 // play（cli.ts）とライブのセッション（sessionSinks.ts）が共有する。HTTP には依存しない
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { Effect, Layer, Ref } from "effect";
-import type { PromiseMapCapture } from "./capture.ts";
-import type { PromiseReviewPages, ReviewVariant } from "./review.ts";
+import { Cause, Console, Effect, Layer, Ref, Schema } from "effect";
+import { MapCapture } from "./capture.ts";
+import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
   exportFiles,
   makeSession,
@@ -15,6 +15,7 @@ import {
   type Session,
   type Snapshot,
 } from "./core/index.ts";
+import { errorMessage } from "./truthFile.ts";
 
 // セッションのフォルダに置く、その時点のエクスポート。別のプロセスの export がこれを読む。
 // play もライブのセッションも、作成直後と log のたびに書く。サーバーが動いていなくても export できる。
@@ -53,33 +54,43 @@ export function reviewVariants(dir: string): readonly ReviewVariant[] {
     : [{ file: "map.html", audio: false }];
 }
 
+// テキストの 3 形式（map.md・map.json・map.drawnix）を書けなかった。message は書き込みの失敗の理由。
+// cli は CommandFailed に、サーバーは defect にする（撮影・HTML と違って、これだけは諦めずに失敗にする）
+export class ExportFilesFailed extends Schema.TaggedError<ExportFilesFailed>()("ExportFilesFailed", { message: Schema.String }) {}
+
+// 見返し用の HTML を書く。版の一覧は録音の有無で決める（reviewVariants）。mix だけの失敗は結果の skipped に入り、ここでは失敗にしない
+export const writeReviews = (dir: string) =>
+  Effect.try({ try: () => reviewVariants(dir), catch: (e) => new ReviewPageFailed({ message: errorMessage(e) }) }).pipe(
+    Effect.flatMap((variants) => writeReviewPages(dir, join(dir, LOG_FILE), variants)),
+  );
+
 // セッション終了時の書き出し。スナップショットは 1 回だけ取り、5 形式（md・json・drawnix・png・html。録音があれば map-audio.html も）を書く。
-// ライブのセッションの終了処理（sessionSinks.ts）から、この関数を呼ぶ。書いたファイルのパスを順に返す。
-// テキストの 3 形式を先に書く。撮影・HTML の書き出しは互いに独立で、失敗したもの（Chromium が無い等）だけ諦めて、
-// 標準エラーに理由を残し、書けたもののパスを返す。
-export async function writeSessionExports(
-  dir: string,
-  snapshot: Snapshot,
-  capture: PromiseMapCapture,
-  writeReview: PromiseReviewPages,
-): Promise<string[]> {
-  const paths = writeExportFiles(dir, snapshot);
+// play（cli.ts）とライブのセッションの終了処理（sessionSinks.ts）が、この関数を呼ぶ。書いたファイルのパスを順に返す。
+// 撮影・HTML・mix と FileSystem は文脈から受け取る。テキストの 3 形式を先に書く。撮影・HTML の書き出しは互いに独立で、
+// 失敗したもの（Chromium が無い等。型付きの失敗も、中断以外の defect も）だけ諦めて、標準エラー（Console）に理由を残し、書けたもののパスを返す。
+// 中断は警告にせず伝える。理由の整形（formatReason）は入口が決める（cli は 1 行にし、サーバーは元の理由のまま）
+export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, formatReason: (e: unknown) => string) {
+  const paths = yield* Effect.try({ try: () => writeExportFiles(dir, snapshot), catch: (e) => new ExportFilesFailed({ message: formatReason(e) }) });
+  // 中断以外の失敗（型付きの失敗も defect も）は、警告にして undefined を返す
+  const orWarn = <A, E, R>(effect: Effect.Effect<A, E, R>, warning: (reason: string) => string) =>
+    Effect.catchCauseIf(
+      effect,
+      (cause) => !Cause.hasInterrupts(cause),
+      (cause) => Effect.as(Console.error(warning(formatReason(Cause.squash(cause)))), undefined),
+    );
   const png = join(dir, "map.png");
-  try {
-    await capture(snapshot, png);
-    paths.push(png);
-  } catch (e) {
-    process.stderr.write(captureWarning(e instanceof Error ? e.message : String(e)) + "\n");
-  }
-  try {
-    const reviewed = await writeReview(dir, join(dir, LOG_FILE), reviewVariants(dir));
+  const captured = yield* orWarn(
+    Effect.as(Effect.flatMap(MapCapture, (service) => service.capture(snapshot, png)), true),
+    captureWarning,
+  );
+  if (captured) paths.push(png);
+  const reviewed = yield* orWarn(writeReviews(dir), (reason) => reviewWarning("map.html", reason));
+  if (reviewed) {
     paths.push(...reviewed.paths);
-    for (const { file, reason } of reviewed.skipped) process.stderr.write(reviewWarning(file, reason) + "\n");
-  } catch (e) {
-    process.stderr.write(reviewWarning("map.html", e instanceof Error ? e.message : String(e)) + "\n");
+    for (const { file, reason } of reviewed.skipped) yield* Console.error(reviewWarning(file, reason));
   }
   return paths;
-}
+});
 
 // セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
 export function createSessionDir(sessionsDir: string): string {
