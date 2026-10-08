@@ -157,6 +157,30 @@ describe("SessionSinks（実物 Layer）", () => {
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
+  // Issue #438: 画像の ID は s1 から順に増え、image: null は数えない（null を挟んでも次の画像は s2）
+  it.effect("画像の ID は s1 から順に増え、image: null は数えない", () => {
+    const inputs: DiffInput[] = [];
+    const updaterLayer = Layer.succeed(
+      DiffUpdater,
+      DiffUpdater.of({ update: (input) => Effect.sync(() => { inputs.push(input); return { ops: [] }; }) }),
+    );
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+
+      yield* sink.screen({ start: 1, image: new Uint8Array([0xff, 0xd8, 0xff, 0x01]) });
+      yield* sink.screen({ start: 2, image: null });
+      yield* sink.screen({ start: 3, image: new Uint8Array([0xff, 0xd8, 0xff, 0x02]) });
+      yield* sink.final({ track: "相手", start: 4, end: 5, text: "採用" });
+      yield* sink.flush;
+
+      const ids = inputs.flatMap((input) => input.screens ?? []).map((c) => c.image?.id ?? null);
+      expect(ids).toEqual(["s1", null, "s2"]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
   // Issue #280: 実物の SessionSink.screenOff は Session.pushScreenOff へ渡り、受け取った start・reason のまま log.jsonl に 1 行ずつ書く。
   // 差分更新の入力には screen-off が載らない
   it.effect("screenOff は start と reason のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
@@ -748,6 +772,28 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* settleUntil(() => speaks.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか")));
       expect(speaks.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか"))).toBe(true);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
+
+  it.effect("差分更新で反映された発言は、相手の最後の speaking から消える（onDiff が relay.flushAll につながる）。反映前は本文が出ている", () => {
+    const { calls, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, speaks } = yield* openRecordingSink();
+      const lastText = (track: "相手" | "自分") => speaks.filter((f) => f.track === track).at(-1)?.text;
+
+      yield* sink.partial({ track: "自分", start: 5, end: 6, text: "じぶんのとちゅう", duplicate: false });
+      yield* sink.final(finalRemark("相手", 1, 5, "採用の面接について"));
+      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+      yield* settleUntil(() => lastText("相手") === "採用の面接について");
+      expect(lastText("相手")).toBe("採用の面接について"); // 反映前: 確定した発言の本文が出ている
+      expect(calls).toHaveLength(0);
+
+      yield* TestClock.adjust(QUIET_MS);
+      yield* settleUntil(() => calls.length > 0);
+      yield* settleUntil(() => lastText("相手") === "");
+      expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
+      expect(lastText("相手")).toBe(""); // 反映後: 処理済みの発言が消えている
+      expect(lastText("自分")).toBe("じぶんのとちゅう"); // 反映に渡していない途中結果は残る
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
 
   // フォルダ名は開始時刻（実時間のミリ秒）なので、このテストだけ実時間の短い待ち（5 ms）を使う
   it.live("同じ sessionsDir の 2 つ目のセッションは、発言が 1 件も無くても、作成直後の export.json がそのセッションのマップ（前のセッションではない。base:510）", () =>
