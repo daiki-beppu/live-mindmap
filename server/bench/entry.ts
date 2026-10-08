@@ -1,6 +1,6 @@
 // bench の 3 本のスクリプトが共有する入口の部品。runMain は各スクリプトの入口だけが呼ぶ（ここでは呼ばない）。
 // 引数の誤りは effect/cli の既定の Formatter が出力し、中身の失敗はタグ付きにして、入口で日本語の説明付きの 1 行（<パス>: <説明>（<理由>））にする。
-import { Cause, Console, Effect, Predicate, Result, Schema } from "effect";
+import { Cause, Console, Effect, Result, Schema } from "effect";
 import { CliError } from "effect/cli";
 import { describe, fileReason, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
 
@@ -25,12 +25,11 @@ export class ReplaySessionFailed extends Schema.TaggedError<ReplaySessionFailed>
   reason: Schema.String,
 }) {}
 
-type BenchFailure = InvalidInputFile | InvalidTruthFile | MissingSessionDir | ReplaySessionFailed;
+// 入口で 1 行にする失敗の class
+const BENCH_FAILURES = [InvalidInputFile, InvalidTruthFile, MissingSessionDir, ReplaySessionFailed] as const;
+type BenchFailure = InstanceType<(typeof BENCH_FAILURES)[number]>;
 
-const BENCH_FAILURE_TAGS: ReadonlySet<string> = new Set<BenchFailure["_tag"]>(["InvalidInputFile", "InvalidTruthFile", "MissingSessionDir", "ReplaySessionFailed"]);
-
-const isBenchFailure = (failure: unknown): failure is BenchFailure =>
-  Predicate.hasProperty(failure, "_tag") && Predicate.isString(failure._tag) && BENCH_FAILURE_TAGS.has(failure._tag);
+const isBenchFailure = (failure: unknown): failure is BenchFailure => BENCH_FAILURES.some((C) => failure instanceof C);
 
 // 入口の表。タグ付きの失敗を「<パス>: <日本語の説明>（<詳細な理由>）」の 1 行にする（表示はここだけが持つ）
 const failureLine = (failure: BenchFailure): string => {

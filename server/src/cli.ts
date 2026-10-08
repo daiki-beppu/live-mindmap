@@ -14,10 +14,15 @@ import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
   formatIntakeStatus,
   formatTable,
+  DiffEvent,
   DiffUpdater,
   fromTranscript,
   JsonExport,
   LogEvent,
+  RemarkEvent,
+  ScreenEvent,
+  ScreenOffEvent,
+  StartEvent,
   SessionLog,
   playback,
   type PlaybackScreen,
@@ -69,16 +74,26 @@ class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()(
 // 下位のモジュール（配信・再生・ファイルの読み書き）の失敗。message はそのまま入口の 1 行になる
 class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", { message: Schema.String }) {}
 
-type CliFailure =
-  | ServerUnreachable
-  | ServerFailed
-  | NoSession
-  | MissingRunExport
-  | InvalidTruthFile
-  | InvalidTranscriptFile
-  | BrokenLogLine
-  | CommandFailed
-  | UpdaterUnavailable;
+// ログの行を type で選ぶ集合（decode は LogEvent のまま）
+const typesOf = (events: readonly { readonly fields: { readonly type: { readonly literal: string } } }[]): ReadonlySet<string> => new Set(events.map((event) => event.fields.type.literal));
+// 録音済みセッションを読むとき（題名・発言・画面）
+const RECORDED_TYPES = typesOf([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent]);
+// evaluate が読むとき（題名・発言・差分）
+const EVAL_TYPES = typesOf([StartEvent, RemarkEvent, DiffEvent]);
+
+// 入口で 1 行にする失敗の class
+const CLI_FAILURES = [
+  ServerUnreachable,
+  ServerFailed,
+  NoSession,
+  MissingRunExport,
+  InvalidTruthFile,
+  InvalidTranscriptFile,
+  BrokenLogLine,
+  CommandFailed,
+  UpdaterUnavailable,
+] as const;
+type CliFailure = InstanceType<(typeof CLI_FAILURES)[number]>;
 
 // 入口の表。タグ付きの失敗を、今までと同じ日本語の 1 行にする（表示はここだけが持つ）
 const failureLine = (failure: CliFailure): string => {
@@ -103,20 +118,7 @@ const failureLine = (failure: CliFailure): string => {
   }
 };
 
-const CLI_FAILURE_TAGS: ReadonlySet<string> = new Set<CliFailure["_tag"]>([
-  "ServerUnreachable",
-  "ServerFailed",
-  "NoSession",
-  "MissingRunExport",
-  "InvalidTruthFile",
-  "InvalidTranscriptFile",
-  "BrokenLogLine",
-  "CommandFailed",
-  "UpdaterUnavailable",
-]);
-
-const isCliFailure = (failure: unknown): failure is CliFailure =>
-  Predicate.hasProperty(failure, "_tag") && Predicate.isString(failure._tag) && CLI_FAILURE_TAGS.has(failure._tag);
+const isCliFailure = (failure: unknown): failure is CliFailure => CLI_FAILURES.some((C) => failure instanceof C);
 
 // decode の失敗を 1 行の理由にする。stop の paths のように [配列の名前, 件目, ...] の形で場所が分かるときは
 // 「<名前>」の <n> 件目 を先頭に置く（人が直す場所を日本語で示す）
@@ -246,7 +248,7 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
   const screens: PlaybackScreen<CommandFailed>[] = [];
   for (const [i, event] of events.entries()) {
     if (!Predicate.isObject(event) || !("type" in event)) continue;
-    if (!(event.type === "start" || event.type === "remark" || event.type === "screen" || event.type === "screen-off")) continue;
+    if (!Predicate.isString(event.type) || !RECORDED_TYPES.has(event.type)) continue;
     const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(
       Effect.mapError((e) => new BrokenLogLine({ line: lines[i]?.no ?? 1, reason: decodeReason(e) })),
     );
@@ -601,7 +603,7 @@ const evaluate = Command.make(
       );
       const log: LogEvent[] = [];
       for (const event of events) {
-        if (!Predicate.isObject(event) || !("type" in event) || !(event.type === "start" || event.type === "remark" || event.type === "diff")) continue;
+        if (!Predicate.isObject(event) || !("type" in event) || !Predicate.isString(event.type) || !EVAL_TYPES.has(event.type)) continue;
         log.push(yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(Effect.orDie));
       }
       runs.push({ name: basename(dir), title: exp.root.text, exp, log });

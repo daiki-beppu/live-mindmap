@@ -191,17 +191,17 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     index++;
     const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
     const type = typeOf(event);
-    if (type === "start") {
+    if (type === StartEvent.fields.type.literal) {
       const e = yield* decodeStart(event).pipe(Effect.mapError((error) => invalid(error.message)));
       map = emptyMap(e.title);
-    } else if (type === "remark") {
+    } else if (type === RemarkEvent.fields.type.literal) {
       const e = yield* decodeRemark(event).pipe(Effect.mapError((error) => invalid(error.message)));
       remarks.push(e.remark);
-    } else if (type === "screen") {
+    } else if (type === ScreenEvent.fields.type.literal) {
       const e = yield* decodeScreen(event).pipe(Effect.mapError((error) => invalid(error.message)));
       unsent.push({ start: e.start, image: e.image, seq: received++ });
       if (e.image !== null) files.add(e.image);
-    } else if (type === "diff") {
+    } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(Effect.mapError((error) => invalid(error.message)));
       if (!map) return yield* invalid("ログの diff より前に start がありません");
       const fresh: Remark[] = [];
