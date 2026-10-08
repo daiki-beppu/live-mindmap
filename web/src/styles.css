@@ -154,3 +154,43 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .review-rate__item:hover, .review-rate__item:focus-visible { background: #4b5563; }
 .review-rate__check { display: inline-flex; width: 16px; height: 16px; }
 .review-rate__check svg { width: 16px; height: 16px; }
+
+/* PROTOTYPE（issue #372、使い捨て）: 字幕の話者ラベルの見比べ */
+.proto-label--pending { opacity: 1; }
+.proto-label--provisional { opacity: 0.55; }
+.proto-label--confirmed { opacity: 1; }
+.proto-label--none { opacity: 1; }
+.proto-a__block { flex-direction: column; gap: 0; }
+.proto-a__row { display: flex; gap: 10px; align-items: baseline; }
+.proto-a__label { width: 3.6em; transition: opacity 200ms; }
+.proto-b__mark { display: inline-block; margin: 0 4px 0 6px; font-size: 11px; color: #9ca3af; transition: opacity 200ms; }
+.proto-b__mark:first-child { margin-left: 0; }
+.proto-c__label { width: 3.6em; }
+.proto-c__current { display: inline-block; width: 1em; transition: opacity 200ms, color 200ms; }
+.proto-c__word { transition: color 300ms, opacity 300ms; }
+.proto-c__word--provisional { opacity: 0.6; }
+.proto-bar { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 50; display: flex; gap: 8px; align-items: center; padding: 6px 12px; font-size: 13px; color: #fff; background: #111827; border-radius: 999px; white-space: nowrap; }
+.proto-bar button, .proto-bar select, .proto-bar input[type=number] { font: inherit; }
+.proto-bar input[type=number] { width: 4em; }
+.proto-bar input[type=range] { width: 200px; }
+.proto-bar__num { width: 3.5em; font-variant-numeric: tabular-nums; }
+.proto-bar__sep { width: 1px; height: 16px; background: #4b5563; }
+.proto-state { position: fixed; left: 8px; top: 56px; z-index: 50; max-height: 60vh; overflow: auto; padding: 6px 8px; font: 11px/1.4 ui-monospace, monospace; color: #374151; background: rgb(255 255 255 / 0.92); border: 1px dashed #9ca3af; }
+.proto-d { gap: 6px; }
+.proto-d__row { display: flex; flex-direction: column; max-width: 78%; }
+.proto-d__row--them { align-self: flex-start; align-items: flex-start; }
+.proto-d__row--me { align-self: flex-end; align-items: flex-end; }
+.proto-d__label { font-size: 11px; line-height: 1.3; color: #9ca3af; padding: 0 6px; transition: opacity 200ms; }
+.proto-d__bubble { margin: 0; padding: 5px 12px; font-size: 16px; line-height: 1.5; color: #374151; background: rgb(255 255 255 / 0.92); border: 1px solid #e5e7eb; border-radius: 12px; overflow-wrap: anywhere; }
+.proto-d__row--them .proto-d__bubble { border-bottom-left-radius: 4px; }
+.proto-d__row--me .proto-d__bubble { border-bottom-right-radius: 4px; background: rgb(243 244 246 / 0.95); }
+.proto-e { gap: 4px; }
+.proto-e__row { display: flex; align-items: baseline; gap: 8px; width: 82%; }
+.proto-e__row--them { align-self: flex-start; }
+.proto-e__row--me { align-self: flex-end; justify-content: flex-end; }
+.proto-e__label { flex: none; width: 3.6em; font-size: 12px; text-align: right; transition: opacity 200ms, color 200ms; color: #9ca3af; }
+.proto-e__bubble { flex: 1; margin: 0; padding: 5px 12px; font-size: 16px; line-height: 1.5; color: #374151; background: rgb(255 255 255 / 0.92); border: 1px solid #e5e7eb; border-radius: 12px; overflow-wrap: anywhere; }
+.proto-e__row--them .proto-e__bubble { border-bottom-left-radius: 4px; }
+.proto-e__row--me .proto-e__bubble { border-bottom-right-radius: 4px; background: rgb(243 244 246 / 0.95); }
+.proto-e__row--me .proto-e__label { text-align: left; }
+.proto-e--alt .proto-e__row--me .proto-e__bubble { background: rgb(255 255 255 / 0.92); }
