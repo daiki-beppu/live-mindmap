@@ -87,6 +87,71 @@ describe("Session.pushScreen", () => {
     }));
 });
 
+describe("Session.pushScreenOff", () => {
+  it.effect("受け取った start と reason をそのままログに 1 行書く。指定も許可なしも同じ口を通る", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* setup();
+      yield* session.pushScreenOff({ start: 0, reason: "指定" });
+      yield* session.pushScreenOff({ start: 7.5, reason: "許可なし" });
+      expect(events.filter((e) => e.type === "screen-off")).toEqual([
+        { type: "screen-off", start: 0, reason: "指定" },
+        { type: "screen-off", start: 7.5, reason: "許可なし" },
+      ]);
+    }));
+
+  it.effect("ログの行は他の行と同じく受け取った順に書く（screen・発言と入り交じっても順序が保たれる）", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* setup();
+      yield* session.pushScreen(none(1));
+      yield* session.pushScreenOff({ start: 2, reason: "許可なし" });
+      yield* session.push(remark(5));
+      yield* session.pushScreenOff({ start: 3, reason: "許可なし" });
+      expect(events.map((e) => e.type)).toEqual(["start", "screen", "screen-off", "remark", "screen-off"]);
+    }));
+
+  it.effect("差分更新を呼ばず、画像を書かず、読み戻さない", () =>
+    Effect.gen(function* () {
+      const { session, calls, written, reads, diffs } = yield* setup();
+      yield* session.pushScreenOff({ start: 1, reason: "許可なし" });
+      yield* session.idle;
+      yield* session.flush;
+      expect(calls).toEqual([]);
+      expect(diffs()).toEqual([]);
+      expect(written).toEqual([]);
+      expect(reads).toEqual([]);
+    }));
+
+  it.effect("差分更新の入力は screen-off を使わない口と同じ。添える画面（screens）も screenCount も増えない", () =>
+    Effect.gen(function* () {
+      const plain = yield* setup();
+      yield* plain.call(8, 9);
+      const withOff = yield* setup();
+      yield* withOff.session.pushScreenOff({ start: 0, reason: "指定" });
+      yield* withOff.session.pushScreenOff({ start: 4, reason: "許可なし" });
+      yield* withOff.call(8, 9);
+      expect(withOff.calls).toHaveLength(1);
+      // 発言の id はテストの採番が進むので、id を除いて比べる
+      const withoutIds = (input: DiffInput) => ({ ...input, fresh: input.fresh.map(({ id: _id, ...rest }) => rest), recent: input.recent });
+      expect(withoutIds(withOff.calls[0]!)).toEqual(withoutIds(plain.calls[0]!));
+      expect("screens" in withOff.calls[0]!).toBe(false);
+      // ログの diff の input も、screens・screenCount が付かず、同じ項目を持つ（発言の id は採番が進むので値は比べない）
+      expect(Object.keys(withOff.diffs()[0]!.input).sort()).toEqual(Object.keys(plain.diffs()[0]!.input).sort());
+      expect("screenCount" in withOff.diffs()[0]!.input).toBe(false);
+    }));
+
+  it.effect("前に添えた画面（previousScreens）の送り直しの対象に混ざらない", () =>
+    Effect.gen(function* () {
+      const { session, calls, call } = yield* setup();
+      yield* session.pushScreen(shot(1));
+      yield* call(8, 9);
+      yield* session.pushScreenOff({ start: 10, reason: "許可なし" });
+      yield* call(18, 19);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]!.previousScreens?.map((s) => s.start)).toEqual([1]);
+      expect(startsOf(calls[1]!) ?? []).toEqual([]);
+    }));
+});
+
 describe("画像のバイト列の保持", () => {
   it.effect("発言のないまま画面の変化が続いても、画像は読み戻さない（バイト列を持ち続けない）。添えるときに、選んだ 3 件だけ読む", () =>
     Effect.gen(function* () {
@@ -382,5 +447,29 @@ describe("ログの読み戻し（共有画面のないログは今までどお�
       expect(withScreenLines.round).toBe(plain.round);
       expect(withScreenLines.remarks).toEqual(plain.remarks);
       expect(withScreenLines.map).toEqual(plain.map);
+    }));
+
+  it.effect("screen-off の行を挟んでも、復元した状態は挟まないログと変わらず、restoreSession できる", () =>
+    Effect.gen(function* () {
+      const diff = { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [], dropped: [] };
+      const off = (reason: string, at: number) => ({ type: "screen-off", start: at, reason });
+      const plain = yield* restoreState([start, r1, diff]);
+      const withOff = yield* restoreState([start, off("指定", 0), r1, off("許可なし", 3), diff]);
+      expect(withOff.round).toBe(plain.round);
+      expect(withOff.remarks).toEqual(plain.remarks);
+      expect(withOff.map).toEqual(plain.map);
+      expect(withOff.known).toEqual(plain.known);
+    }));
+
+  it.effect("pushScreenOff で書いた行を含むログを restoreState で戻しても、壊れた行にならない", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* setup();
+      yield* session.pushScreenOff({ start: 0, reason: "指定" });
+      yield* session.push(remark(5));
+      yield* session.pushScreenOff({ start: 2, reason: "許可なし" });
+      yield* session.idle;
+      const lines = [{ type: "start", title: "定例" }, ...events];
+      const restored = yield* restoreState(lines);
+      expect(restored.remarks).toHaveLength(1);
     }));
 });

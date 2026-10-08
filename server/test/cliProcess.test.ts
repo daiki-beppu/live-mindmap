@@ -66,6 +66,15 @@ describe("CLI のプロセス入口", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("start --help は --no-screen とその説明（共有画面を AI に渡さない（取り込まない））を表示する", () => Effect.gen(function* () {
+    const sessionsDir = yield* temporaryDirectory;
+    const result = yield* runProcess(["start", "--help"], sessionsDir);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("--no-screen");
+    expect(result.stdout).toContain("共有画面を AI に渡さない（取り込まない）");
+  }).pipe(Effect.scoped));
+
   it.live("--version は成功して標準出力にバージョンを表示する", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const result = yield* runProcess(["--version"], sessionsDir);

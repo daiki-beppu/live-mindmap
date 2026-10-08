@@ -113,6 +113,8 @@ type FakeSinksHandle = {
   readonly finals: { id: string; track: Track; text: string }[];
   readonly partials: { track: Track; text: string }[];
   readonly screens: { start: number; image: Uint8Array | null }[];
+  readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
+  readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { drained: number; cleared: number; stopped: number };
   readonly appended: IntakeLogEvent[];
   readonly order: string[]; // flush・exports・close が起きた順
@@ -127,6 +129,8 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const finals: { id: string; track: Track; text: string }[] = [];
     const partials: { track: Track; text: string }[] = [];
     const screens: { start: number; image: Uint8Array | null }[] = [];
+    const screenOffs: { start: number; reason: "指定" | "許可なし" }[] = [];
+    const sequence: string[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
     const appended: IntakeLogEvent[] = [];
     const order: string[] = [];
@@ -139,8 +143,9 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
         const sink: SessionSink = {
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); }),
-          final: (r: SettledRemark) => Effect.sync(() => { count++; finals.push({ id: `r${count}`, track: r.track, text: r.text }); }),
+          final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); }),
           screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image }); }),
+          screenOff: (e) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
@@ -153,7 +158,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
       });
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, createDir }), opened, finals, partials, screens, relayStats, appended, order, control };
+    return { sinks: SessionSinks.of({ open, createDir }), opened, finals, partials, screens, screenOffs, sequence, relayStats, appended, order, control };
   });
 }
 
@@ -192,10 +197,17 @@ const viewerClient = Effect.fnUntraced(function* () {
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "intake"; status: string } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "intake").map((f) => f.status);
   });
-  return { socket, intakeStatuses };
+  // 届いたフレームのうち、type が screen-notice のものの text を、届いた順に返す
+  const screenNotices = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    const received: unknown[] = [];
+    while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
+    return received.filter((f): f is { type: "screen-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "screen-notice").map((f) => f.text);
+  });
+  return { socket, intakeStatuses, screenNotices };
 });
 
-const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, ...input });
+const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, ...input });
 
 describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   it.effect("apps は Helpers の一覧をそのまま返す（CT-SESSIONS-ONE）", () =>
@@ -376,6 +388,233 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           expect(stderr.filter((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toHaveLength(2);
           expect(fakeSinks.screens).toEqual([]);
           expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
+          expect((yield* sessions.status).status).toBe("running");
+        })));
+  });
+
+  describe("共有画面を使わない（screen-off・--no-screen。Issue #280）", () => {
+    const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const stderr: string[] = [];
+        const original = process.stderr.write.bind(process.stderr);
+        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
+        try {
+          return yield* body(stderr);
+        } finally {
+          process.stderr.write = original;
+        }
+      });
+    const NOTICE_MS = 10_000; // 「届いてから約 10 秒」
+    const boot = (attempts: AttemptScript[]) =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers(attempts);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const booted = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        return { fakeHelpers, fakeSinks, ...booted };
+      });
+
+    it.effect("screen:false は初回・自動の起動し直し・resume のすべての argv に --no-screen を付ける", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([
+          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } }, // 初回。すぐ終わる
+          { connect: false, stderrTail: ["失敗2"] }, // 自動の起動し直し
+          { connect: false, stderrTail: ["失敗3"] }, // 自動の起動し直し。ここで諦める
+          {}, // resume
+        ]);
+        yield* sessions.start(start({ screen: false }));
+        yield* TestClock.adjust(10);
+        expect((yield* sessions.status).status).toBe("stopped");
+        yield* sessions.resume;
+
+        expect(fakeHelpers.calls).toHaveLength(4);
+        for (const argv of fakeHelpers.calls) expect(argv).toContain("--no-screen");
+      }));
+
+    it.effect("screen:true では、初回も起動し直しも resume も --no-screen を付けない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([
+          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } },
+          { connect: false, stderrTail: ["失敗2"] },
+          { connect: false, stderrTail: ["失敗3"] },
+          {},
+        ]);
+        yield* sessions.start(start({ screen: true }));
+        yield* TestClock.adjust(10);
+        yield* sessions.resume;
+
+        expect(fakeHelpers.calls).toHaveLength(4);
+        for (const argv of fakeHelpers.calls) expect(argv).not.toContain("--no-screen");
+      }));
+
+    it.effect("--no-screen は値を取らない: 次の引数（--audio-dir など）を食わず、--no-audio とも独立している", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{}, {}]);
+        yield* sessions.start(start({ screen: false, audio: true }));
+        const argv = fakeHelpers.calls[0]!;
+        expect(argv).toContain("--audio-dir");
+        expect(argv[argv.indexOf("--no-screen") + 1]?.startsWith("--") ?? true).toBe(true);
+
+        yield* sessions.stop;
+        yield* sessions.start(start({ screen: false, audio: false }));
+        expect(fakeHelpers.calls[1]).toContain("--no-screen");
+        expect(fakeHelpers.calls[1]).not.toContain("--audio-dir");
+      }));
+
+    it.effect("screen:false のセッションは、開いた直後に screen-off（指定、start は 0）を 1 件だけ sink へ入れる。最初の発言より前で、知らせは出ない。起動し直し・resume では足さない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([
+          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } },
+          { connect: false, stderrTail: ["失敗2"] },
+          { connect: false, stderrTail: ["失敗3"] },
+          {},
+        ]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start({ screen: false }));
+        fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "はじめ" });
+        yield* TestClock.adjust(1);
+        expect(fakeSinks.screenOffs).toEqual([{ start: 0, reason: "指定" }]);
+        expect(fakeSinks.sequence).toEqual(["screenOff:指定", "final"]);
+
+        yield* TestClock.adjust(10);
+        yield* sessions.resume;
+        expect(fakeHelpers.calls).toHaveLength(4); // 起動し直しと resume が起きたうえで
+        expect(fakeSinks.screenOffs).toEqual([{ start: 0, reason: "指定" }]);
+        yield* TestClock.adjust(NOTICE_MS * 2);
+        expect(yield* watcher.screenNotices).toEqual([]); // 指定では知らせを出さない
+      }));
+
+    it.effect("screen:true（既定）のセッションは screen-off を残さない", () =>
+      Effect.gen(function* () {
+        const { fakeSinks, sessions } = yield* boot([{}]);
+        yield* sessions.start(start({ screen: true }));
+        yield* TestClock.adjust(1);
+        expect(fakeSinks.screenOffs).toEqual([]);
+      }));
+
+    it.effect("ヘルパーの screen-off（許可なし）は start と reason のまま sink へ届き、取り込みの記録・状態には触れず、発言は流れ続ける", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, { type: "screen-off", start: 2.5, reason: "許可なし" });
+        fakeHelpers.send(0, { type: "remark", track: "相手", start: 3, end: 4, text: "つづく" });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.screenOffs).toEqual([{ start: 2.5, reason: "許可なし" }]);
+        expect(fakeSinks.appended).toEqual([]);
+        expect(fakeSinks.screens).toEqual([]);
+        expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" });
+        expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    it.effect("許可なしの知らせは、同じセッションで起動し直しの後に screen-off がまた届いても 1 回だけ。ログ（sink）には届くたびに残る。取り込みの途切れにはならない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([
+          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
+          {},
+        ]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "許可なし" });
+        yield* TestClock.adjust(1);
+        const first = yield* watcher.screenNotices;
+        expect(first).toHaveLength(1);
+        expect(first[0]).toContain("共有画面は使っていません");
+        expect(fakeSinks.screenOffs).toHaveLength(1);
+
+        yield* TestClock.adjust(500); // 予期しない終了
+        yield* TestClock.adjust(10); // 起動し直し
+        expect(fakeHelpers.calls).toHaveLength(2);
+        fakeHelpers.send(1, { type: "screen-off", start: 0.5, reason: "許可なし" });
+        fakeHelpers.send(1, { type: "remark", track: "相手", start: 0, end: 1, text: "再開後" });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.screenOffs).toEqual([{ start: 1, reason: "許可なし" }, { start: 0.5, reason: "許可なし" }]);
+        expect(yield* watcher.screenNotices).toEqual([]); // 一文は出し直さない
+        expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "再開後" }); // 発言は流れ続ける
+        expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    it.effect("知らせは届いてから約 10 秒で消すフレーム（text: null）が届き、その後につないだブラウザには出ない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        const early = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(early.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "許可なし" });
+        yield* TestClock.adjust(1);
+        expect((yield* early.screenNotices).map((t) => t !== null)).toEqual([true]);
+
+        yield* TestClock.adjust(NOTICE_MS - 2_000);
+        const within = yield* viewerClient(); // 10 秒以内につないだブラウザには送り直す
+        yield* Effect.forkChild(viewers.connect(within.socket));
+        const seen = yield* within.screenNotices;
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toContain("共有画面は使っていません");
+
+        yield* TestClock.adjust(2_000 + 1);
+        expect(yield* early.screenNotices).toEqual([null]); // 消すフレーム
+        expect(yield* within.screenNotices).toEqual([null]);
+
+        const late = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(late.socket));
+        expect(yield* late.screenNotices).toEqual([]); // 期限後は再び出さない
+      }));
+
+    it.effect("10 秒たった後に起動し直しで screen-off がまた届いても、一文は出し直さない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([
+          { unexpectedExit: { afterMs: NOTICE_MS + 1_000, exit: { code: 1, signal: null } } },
+          {},
+        ]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "許可なし" });
+        yield* TestClock.adjust(NOTICE_MS + 1);
+        expect((yield* watcher.screenNotices).map((t) => t === null)).toEqual([false, true]);
+
+        yield* TestClock.adjust(1_000);
+        yield* TestClock.adjust(10);
+        expect(fakeHelpers.calls).toHaveLength(2);
+        fakeHelpers.send(1, { type: "screen-off", start: 0, reason: "許可なし" });
+        yield* TestClock.adjust(NOTICE_MS * 2);
+        expect(yield* watcher.screenNotices).toEqual([]);
+      }));
+
+    it.effect("stop で知らせの保持も消える（stop 後につないだブラウザには出ない）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "許可なし" });
+        yield* TestClock.adjust(1);
+        yield* sessions.stop;
+
+        const after = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(after.socket));
+        expect(yield* after.screenNotices).toEqual([]);
+      }));
+
+    it.effect("壊れた screen-off は stderr に 1 行出して読み飛ばし、sink にも知らせにも届かず、続く発言は届く", () =>
+      withStderr((stderr) =>
+        Effect.gen(function* () {
+          const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+          const watcher = yield* viewerClient();
+          yield* Effect.forkChild(viewers.connect(watcher.socket));
+          yield* sessions.start(start());
+
+          fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "指定" }); // reason はヘルパーが流さない値
+          fakeHelpers.send(0, { type: "screen-off", reason: "許可なし" }); // start が無い
+          fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
+          yield* TestClock.adjust(1);
+
+          expect(stderr.filter((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toHaveLength(2);
+          expect(fakeSinks.screenOffs).toEqual([]);
+          expect(yield* watcher.screenNotices).toEqual([]);
+          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" });
           expect((yield* sessions.status).status).toBe("running");
         })));
   });

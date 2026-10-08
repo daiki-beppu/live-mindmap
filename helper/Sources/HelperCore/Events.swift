@@ -24,6 +24,11 @@ public struct TranscriptionResult: Sendable, Equatable {
 
 /// WebSocket に流すイベント。確定結果は `remark`、途中結果は別の `partial`。どちらも `duplicate` を持つ。
 /// `id` はサーバーが採番するので、ここでは持たない。
+/// `screen-off` の理由。ヘルパーが流すのは `許可なし` だけ（`指定` はサーバーが書く）。
+public enum ScreenOffReason: String, Sendable, Equatable {
+    case 許可なし
+}
+
 public enum HelperEvent: Sendable, Equatable {
     case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
     case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
@@ -32,6 +37,8 @@ public enum HelperEvent: Sendable, Equatable {
     /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
     /// `image` は JPEG の base64。映していたウィンドウが無くなったときは nil で、JSON では `null` を明示する。
     case screen(start: Double, image: String?)
+    /// 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。音声は続ける。`start` は `origin` と同じ原点からの秒。
+    case screenOff(start: Double, reason: ScreenOffReason)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -48,7 +55,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, hostTime, image
+        case type, track, start, end, text, duplicate, hostTime, image, reason
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -81,6 +88,10 @@ extension HelperEvent: Encodable {
             } else {
                 try container.encodeNil(forKey: .image)
             }
+        case let .screenOff(start, reason):
+            try container.encode("screen-off", forKey: .type)
+            try container.encode(start, forKey: .start)
+            try container.encode(reason.rawValue, forKey: .reason)
         }
     }
 }

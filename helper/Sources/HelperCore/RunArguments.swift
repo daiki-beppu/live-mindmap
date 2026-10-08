@@ -10,13 +10,16 @@ public struct RunArguments: Equatable {
     public var audioDir: String?
     public var origin: UInt64?
     public var audioIndex: Int
+    /// 共有画面を取り込まない（`--no-screen`。値は取らない）。既定は取り込む。
+    public var noScreen: Bool
 
-    public init(app: String, port: UInt16 = 8765, audioDir: String? = nil, origin: UInt64? = nil, audioIndex: Int = 1) {
+    public init(app: String, port: UInt16 = 8765, audioDir: String? = nil, origin: UInt64? = nil, audioIndex: Int = 1, noScreen: Bool = false) {
         self.app = app
         self.port = port
         self.audioDir = audioDir
         self.origin = origin
         self.audioIndex = audioIndex
+        self.noScreen = noScreen
     }
 }
 
@@ -34,6 +37,7 @@ public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, Run
     var audioDir: String?
     var origin: UInt64?
     var audioIndex = 1
+    var noScreen = false
     var index = 0
     while index < arguments.count {
         switch arguments[index] {
@@ -61,6 +65,9 @@ public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, Run
             }
             audioIndex = value
             index += 2
+        case "--no-screen":
+            noScreen = true
+            index += 1
         default:
             return .failure(RunArgumentsError("不明な引数: \(arguments[index])"))
         }
@@ -68,5 +75,5 @@ public func parseRunArguments(_ arguments: [String]) -> Result<RunArguments, Run
     guard let app else {
         return .failure(RunArgumentsError("--app が必要"))
     }
-    return .success(RunArguments(app: app, port: port, audioDir: audioDir, origin: origin, audioIndex: audioIndex))
+    return .success(RunArguments(app: app, port: port, audioDir: audioDir, origin: origin, audioIndex: audioIndex, noScreen: noScreen))
 }

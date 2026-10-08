@@ -19,7 +19,7 @@
 ```sh
 cd helper
 swift run live-mindmap-helper list                         # 音を出している会議アプリを JSON で出す
-swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>]   # 既定のポートは 8765
+swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]   # 既定のポートは 8765
 swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分]   # セッションの録音を 0 秒から重ねて 1 本の 16 kbps モノラル m4a にする
 ```
 
@@ -30,7 +30,11 @@ swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分] 
 
 `mix` は、`--session <dir>` 直下の `相手.m4a`・`相手-N.m4a`・`自分.m4a`・`自分-N.m4a`（それ以外のファイルは無視）を 0 秒の位置から重ね、`--out <path>` に 16 kbps・モノラルの m4a（moov は先頭）として書く。長さは一番長い入力と同じで、途切れは無音で埋めない。`--track 自分` なら `自分` のファイルだけを混ぜる。出力のファイルが既にあるとき、録音が無いとき、読めない入力があるときは、上書きせずに標準エラーへ理由を出して 1 で終わる（引数の誤りは usage と 2）。AVFoundation だけで作り、ffmpeg は使わない。
 
-`run` は、選んだアプリの共有画面も取り込む（ADR 0011）。ScreenCaptureKit で、`--app` の bundle id と `SCWindow.owningApplication` の bundle id が完全に一致する、画面に出ているウィンドウのうち面積が最大のものを、システムのウィンドウピッカーを使わずに直接撮る（非公開 API は使わない）。1 秒に 4 フレーム取り、最後に送った画面と 128×72 の輝度でマスごとに比べて、輝度差が 10 を超えたマスが全体の 0.5% を超えたときだけ `screen` を流す。画像は縦横の比を保って 1280×720 に収まるように縮めた JPEG（小さければ拡大しない）。画面収録の許可が無いときや、取り込みを始められないとき・途中で取れなくなったときは、標準エラーに理由を 1 行出して画面だけ送らず、音声の取り込みは続ける（ヘルパーは終わらない）。
+`run` は、選んだアプリの共有画面も取り込む（ADR 0011）。ScreenCaptureKit で、`--app` の bundle id と `SCWindow.owningApplication` の bundle id が完全に一致する、画面に出ているウィンドウのうち面積が最大のものを、システムのウィンドウピッカーを使わずに直接撮る（非公開 API は使わない）。1 秒に 4 フレーム取り、最後に送った画面と 128×72 の輝度でマスごとに比べて、輝度差が 10 を超えたマスが全体の 0.5% を超えたときだけ `screen` を流す。画像は縦横の比を保って 1280×720 に収まるように縮めた JPEG（小さければ拡大しない）。取り込みを始められないとき（会議アプリのウィンドウが見つからないなど）は、標準エラーに理由を 1 行出して画面だけ送らず、音声の取り込みは続ける（ヘルパーは終わらない。`screen-off` は流さない）。
+
+画面収録の許可は、`run` の開始時に公開 API（CoreGraphics の `CGPreflightScreenCaptureAccess`・`CGRequestScreenCaptureAccess`）で 1 回だけ確かめる。まだ聞いていなければ OS のダイアログが出る（会議の途中では確認を出さない）。許可が無い・断られたときは、取り込みを始めず、標準エラーに理由を 1 行出して `screen-off`（`許可なし`）を 1 回流し、音声の取り込みは続ける（エラーで終わらない）。取り込みの途中で止まったとき（`stream(_:didStopWithError:)` で、撮っていたウィンドウがまだあるとき）も同じ。それまでに画像を送っていれば、`screen-off` の前に `image` が `null` の `screen` を送る。撮っていたウィンドウが無くなったときは `screen-off` にせず、`image` が `null` の `screen` だけを流す。
+
+`--no-screen`（値は取らない）を付けると、共有画面を取り込まない。`ScreenCapture` を作らず、画面収録の許可も確かめず、ScreenCaptureKit も呼ばず、`screen-off` も流さない。付けなければ共有画面を使う。
 
 `--origin <host time>` は、`run` の時刻の基準（`AudioGetCurrentHostTime()`）を上書きする。サーバーが予期せず落ちたヘルパーを再起動するときに使い、再起動後のヘルパーの発言・録音の時刻を 0 に戻さず、元の起動の続きにする。`--audio-index <n>`（既定は 1）は、録音ファイルの名前の番号を選ぶ。1 なら `相手.m4a`・`自分.m4a`（今まで通り）、2 以上なら `相手-N.m4a`・`自分-N.m4a` になる。再起動したヘルパーが前回の録音を上書き（`AVAudioFile(forWriting:)` は既存ファイルを黙って切り詰める/置き換える）しないようにするため。
 
@@ -45,12 +49,14 @@ swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分] 
 {"type":"origin","hostTime":"123456789"}
 {"type":"screen","start":12.5,"image":"/9j/4AAQSkZJRg=="}
 {"type":"screen","start":80,"image":null}
+{"type":"screen-off","start":0.5,"reason":"許可なし"}
 ```
 
 - `partial`: 途中結果（トラック・開始・終了・本文・重複の印）。同じトラックで `start` が同じ途中結果の列は、同じ発話の更新（本文が変わっても同じ発話）。サーバーは、1 秒更新されない発話を最後の本文・区間で発言にする（`自分` の途中結果は発言にしない）。`duplicate` は、出力先がスピーカーのとき、`自分` の途中結果のうち、前後 8 秒の `相手` の確定結果と `相手` の最新の途中結果をつないだ文字列との文字 3-gram の被覆率が 0.6 以上のものが true（正規化後に 3 文字未満は false、`相手` の途中結果は常に false）。印の付いた途中結果も捨てずに流し、サーバーは字幕に出さない
 - `remark`: 確定結果（トラック・開始・終了・本文・重複の印）。`duplicate` は、出力先がスピーカーのとき、`自分` の発言のうち前後 8 秒の `相手` の発言と文字 3-gram の被覆率が 0.6 以上のものが true（`相手` の発言は常に false）。印の付いた発言も捨てずに流す。サーバーは印の付いた発言を差分更新に使わず、ログには残す
 - `origin`: ヘルパーのプロセスにつき 1 回だけ、時刻の基準が決まった直後（`partial` / `remark` より前）に送る。`AudioGetCurrentHostTime()` の値（`--origin` を渡したときはその値）を `hostTime` に積む。64 bit の値は JSON の number では桁が落ちるので、文字列にする。サーバーは、ライブセッションの間、最初のヘルパーの `origin` の値を覚えておき、再起動したヘルパーに `--origin` として渡すことで、発言の時刻が再起動のたびに 0 へ戻らず、元の開始からの続きになるようにする。`origin` は broadcast した時点でサーバー側のクライアントの接続が間に合わないことが多いため、ヘルパーは値を保持し、broadcast より後に接続したクライアントにも送る
 - `screen`: 共有画面の変化。`start` は `origin` と同じ原点（`--origin` を渡したときはその値）からの秒で、送ると決めたフレームの時刻。`image` は JPEG の base64。映していたウィンドウが無くなったときは `image` が JSON の `null`（キーは省かない）。`screen` も `origin` と同じく、サーバーがつながる前に出た分は最新の 1 件だけを保持し、つながったら送る（`origin` の次に届く）
+- `screen-off`: 共有画面を取り込めない（画面収録の許可が無い・断られた・取り込みの途中で止まった）。`start` は `screen` と同じく `origin` と同じ原点からの秒。`reason` はヘルパーが流す限り `許可なし` だけ（`指定` はサーバーが書く）。`origin`・`screen` と同じく、`screen` とは別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。音声の取り込みは止まらない
 
 ### エコーキャンセル（スピーカーのとき）
 

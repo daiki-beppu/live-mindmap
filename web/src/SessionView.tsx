@@ -7,6 +7,7 @@ import { EvidencePanel } from "./EvidencePanel.tsx";
 import { evidenceOf } from "./evidence.ts";
 import type { IntakeStatus } from "./intake.ts";
 import { IntakeNotice } from "./IntakeNotice.tsx";
+import { ScreenNotice } from "./ScreenNotice.tsx";
 import type { Speaking } from "./liveFeed.ts";
 import { KeyList } from "./KeyList.tsx";
 import { MapView } from "./MapView.tsx";
@@ -44,17 +45,19 @@ const ARROW_HOTKEYS = [
 export type ReviewOverlay = { captionsHidden: boolean; sideHidden: boolean; onCaptions: () => void; onSide: () => void };
 
 // 渡されたスナップショット・字幕の内容・取り込みの状態から、マップ・字幕・右の列を組み立てる（接続は持たない）。
-// 取り込みの状態を渡さなければ、知らせは出ない。
+// 取り込みの状態を渡さなければ、知らせは出ない。共有画面を使っていない一文（screenNotice）も、渡したときだけ出す。
 // review を渡すと見返し。timeMoves は、時刻を動かすたびに増える数。frame は、画面全体（session）を操作の行などで包む関数。省略するとライブ。
 export function SessionView({
   snapshot,
   speaking,
   intake,
+  screenNotice,
   review,
 }: {
   snapshot: Snapshot;
   speaking: Speaking;
   intake?: IntakeStatus;
+  screenNotice?: string | null;
   review?: { timeMoves: number; audio?: boolean; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
 }) {
   const scope: ViewingScope = review ? "review" : "live";
@@ -151,6 +154,7 @@ export function SessionView({
       {/* 字幕と取り込みの一言は .map の外（.layout 直下）に置く。列を出し入れしても窓の横幅の中央から動かさない */}
       {!viewing.captionsHidden && <Captions speaking={speaking} />}
       {intake !== undefined && <IntakeNoticeOf status={intake} />}
+      {screenNotice !== undefined && <ScreenNotice text={screenNotice} />}
       {!viewing.sideHidden && (
         <div className="side">
           <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId)} />

@@ -102,6 +102,37 @@ describe("SessionView: 取り込みの状態の知らせは、渡したときだ
   });
 });
 
+describe("SessionView: 共有画面を使っていない一文（Issue #280）。渡したときだけ、layout の直下に出る", () => {
+  const notice = "共有画面は使っていません（画面収録の許可がありません）";
+
+  it("渡さなければ（省略・null）出ない", () => {
+    expect(renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />)).not.toContain("screen-notice");
+    expect(renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} screenNotice={null} />)).not.toContain("screen-notice");
+  });
+
+  it("文を渡すと、その文が map の外（layout の直下）に出て、マップ・字幕・右の列の構造は変わらない", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} screenNotice={notice} />);
+    expect(html).toContain("screen-notice");
+    expect(html).toContain(notice);
+    expect(html.startsWith('<div class="layout">')).toBe(true);
+    const mapStart = html.indexOf('<div class="map">');
+    const mapPart = balancedDiv(html, mapStart);
+    expect(mapPart).not.toContain("screen-notice");
+    const outside = html.slice(0, mapStart) + html.slice(mapStart + mapPart.length);
+    expect(outside).toContain("screen-notice");
+    expect(outside).toContain("captions");
+    expect(outside).toContain('class="side"');
+  });
+
+  it("取り込みの途切れの一言と同時に出ても、別の要素として両方出る", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} intake="interrupted" screenNotice={notice} />);
+    expect(html).toContain("intake-notice");
+    expect(html).toContain("音声の取り込みが途切れました。再開しています");
+    expect(html).toContain("screen-notice");
+    expect(html).toContain(notice);
+  });
+});
+
 describe("SessionView: 見る状態（動かしている間の左下の文字）", () => {
   it("初期状態は自動で、左下の文字は出ない", () => {
     const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />);

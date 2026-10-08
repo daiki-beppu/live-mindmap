@@ -15,7 +15,7 @@ public struct CapturedAudio: @unchecked Sendable {
 }
 
 /// 基準時刻 `origin` から `hostTime` までの秒数。`hostTime` が基準より前なら 0。
-func offsetSeconds(from origin: UInt64, to hostTime: UInt64) -> Double {
+public func offsetSeconds(from origin: UInt64, to hostTime: UInt64) -> Double {
     guard hostTime > origin else { return 0 }
     return Double(AudioConvertHostTimeToNanos(hostTime - origin)) / 1_000_000_000
 }

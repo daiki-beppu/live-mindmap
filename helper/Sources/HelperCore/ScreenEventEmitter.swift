@@ -10,6 +10,7 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     private let lock = NSLock()
     private var detector = ScreenChangeDetector()
     private var closed = false
+    private var captureStopped = false
 
     public init() {
         (events, continuation) = AsyncStream<HelperEvent>.makeStream()
@@ -32,6 +33,19 @@ public final class ScreenEventEmitter: @unchecked Sendable {
             if let event = detector.screenEvent(windowGoneAt: time) {
                 continuation.yield(event)
             }
+        }
+    }
+
+    /// 取り込みが途中で止まった（ウィンドウは残っている）。画像を送った後なら `image: null` を送り、続けて `screen-off`（許可なし）を 1 回だけ送出する。
+    /// 同じ排他区間で送るので、順序が保たれる。2 回目以降と終了後は何もしない。
+    public func emitCaptureStopped(at time: Double) {
+        lock.withLock {
+            if closed || captureStopped { return }
+            captureStopped = true
+            if let event = detector.screenEvent(windowGoneAt: time) {
+                continuation.yield(event)
+            }
+            continuation.yield(.screenOff(start: time, reason: .許可なし))
         }
     }
 

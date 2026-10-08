@@ -89,6 +89,10 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
    C で字幕を隠しても、この一言は隠さず今の位置に残す */
 .intake-notice { position: absolute; left: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; font-size: 13px; color: #6b7280; pointer-events: none; z-index: 5; white-space: nowrap; }
 
+/* 共有画面を使っていないことの一文（Issue #280）: .layout の上端中央に重ねる。レイアウトは動かさない（absolute）。
+   字幕と取り込みの一言（どちらも下端）とは重ならない。幅は字幕と同じ式で、長い文は折り返す。バッジ・影は付けない */
+.screen-notice { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: min(720px, calc(100vw - 2 * 316px)); text-align: center; font-size: 13px; line-height: 1.5; color: #6b7280; pointer-events: none; z-index: 5; }
+
 /* 人が動かして自動のカメラを止めている間の一言（Issue #311）: バッジ・影は重ねず、控えめな文字だけで左下に出す。
    字幕（.captions は下端から 24px 以上を占める）と重ならないよう、下端から 4〜20px の帯に固定する（行の高さ 16px・折り返しなし） */
 .viewing-notice { position: absolute; left: 16px; bottom: 4px; margin: 0; font-size: 13px; line-height: 16px; white-space: nowrap; color: #6b7280; pointer-events: none; z-index: 5; }

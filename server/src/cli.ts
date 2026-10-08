@@ -352,13 +352,18 @@ const start = Command.make(
       Flag.withDescription("トラックごとの録音（相手.m4a・自分.m4a）をセッションのフォルダに残さない（既定は残す）"),
       Flag.withDefault(false),
     ),
+    noScreen: Flag.Boolean("no-screen").pipe(
+      Flag.withDescription("共有画面を AI に渡さない（取り込まない）"),
+      Flag.withDefault(false),
+    ),
   },
-  Effect.fn("start")(function* ({ app, noAudio, title }) {
+  Effect.fn("start")(function* ({ app, noAudio, noScreen, title }) {
     const port = yield* portConfig;
     const { dir } = yield* requestServer(port, "POST", "/session/start", Schema.decodeUnknownEffect(StartedSession), {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
+      screen: !noScreen,
     });
     yield* write(`${dir}\n`);
   }),

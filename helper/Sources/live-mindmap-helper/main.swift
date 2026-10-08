@@ -1,4 +1,5 @@
 import CoreAudio
+import CoreGraphics
 import Dispatch
 import Foundation
 import HelperCore
@@ -13,7 +14,7 @@ private func printError(_ message: String) {
 private let usage = """
 usage:
   live-mindmap-helper list
-  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>]
+  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
 """
 
@@ -24,7 +25,7 @@ private func listApps() throws {
     print(String(decoding: try encoder.encode(apps), as: UTF8.self))
 }
 
-private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int) async throws {
+private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
@@ -39,6 +40,11 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     try await theirTranscriber.prepare()
     try await myTranscriber.prepare()
     try await requestMicrophonePermission()
+    // 画面収録の許可は開始時に 1 回だけ確かめる（会議の途中で確認を出さない）。`--no-screen` なら確かめない。
+    // まだ聞いていなければ OS のダイアログが出る。許可が無くても throw せず、音声だけで続ける。
+    let screenPlan = screenCapturePlan(noScreen: noScreen) {
+        CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+    }
 
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
@@ -50,7 +56,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     // サーバーがヘルパーを再起動したときは `--origin` で元の基準を渡し、時刻を 0 から振り直さない（Issue #161）。
     let origin = explicitOrigin ?? AudioGetCurrentHostTime()
     // 共有画面の取り込み（Issue #278）。失敗しても throw しない（標準エラーに 1 行出して終わる）ので、音声の `failure` には関わらない。
-    let screen = ScreenCapture(bundleID: bundleID, origin: origin)
+    // `--no-screen` と許可なしのときは作らない（ScreenCaptureKit を呼ばない）。
+    let screen: ScreenCapture? = screenPlan == .capture ? ScreenCapture(bundleID: bundleID, origin: origin) : nil
     // SIGINT / SIGTERM は、タップとマイクを止めて音声の流れを終わらせる。以降は通常の終了経路で片付ける。
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
         signal(signalNumber, SIG_IGN)
@@ -58,7 +65,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         source.setEventHandler {
             tap.stop()
             microphone.stop()
-            screen.stop()
+            screen?.stop()
         }
         source.resume()
         return source
@@ -73,15 +80,30 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         // 原点は接続より前に決まることが多く、通常の broadcast だとクライアント不在時に失われるので、保持して流す。
         try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString(), key: "origin")
         // 共有画面。接続前に出た分も、最新の 1 件を覚えて、つながったら送る。events は 1 つの Task が順に読むので、順序が保たれる。
-        screenTasks = [
-            Task { await screen.run() },
-            Task {
-                for await event in screen.events {
-                    guard let json = try? event.jsonString() else { continue }
-                    await server.broadcastRetained(json, key: "screen")
-                }
-            },
-        ]
+        if let screen {
+            screenTasks = [
+                Task { await screen.run() },
+                Task {
+                    for await event in screen.events {
+                        guard let json = try? event.jsonString() else { continue }
+                        // `screen-off` は `screen` の最新の 1 件を置き換えないよう、別の key で保持する。
+                        if case .screenOff = event {
+                            await server.broadcastRetained(json, key: "screen-off")
+                        } else {
+                            await server.broadcastRetained(json, key: "screen")
+                        }
+                    }
+                },
+            ]
+        }
+        if screenPlan == .denied {
+            // 許可が無い・断られた。取り込みを始めず、`screen-off` を 1 回流して音声だけで続ける。サーバーがつながる前に出るので保持する。
+            printError("screen: 画面収録の許可が無い（音声だけで続ける。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）")
+            let time = offsetSeconds(from: origin, to: AudioGetCurrentHostTime())
+            if let json = try? HelperEvent.screenOff(start: time, reason: .許可なし).jsonString() {
+                await server.broadcastRetained(json, key: "screen-off")
+            }
+        }
         let recorders = try audioDir.map { directory -> (their: TrackRecorder, my: TrackRecorder) in
             let base = URL(fileURLWithPath: directory, isDirectory: true)
             return (
@@ -116,7 +138,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     }
     tap.stop()
     microphone.stop()
-    screen.stop()
+    screen?.stop()
     // 録音は全部閉じてから終わる。基準のエラーは、do 節のエラー、なければ 相手 → 自分 の順で最初の録音の失敗。
     for recording in recordings {
         if case .failure(let error) = await recording.result, failure == nil { failure = error }
@@ -140,7 +162,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex)
+                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen)
             }
         case "mix":
             switch parseMixArguments(Array(arguments.dropFirst())) {

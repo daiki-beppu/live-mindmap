@@ -11,7 +11,7 @@
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
 import { Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
-import { decideIntakeRestart, decodeHelperEvent, type HelperEvent, type IntakeStatusReport } from "./core/index.ts";
+import { decideIntakeRestart, decodeHelperEvent, SCREEN_NOTICE_MS, SCREEN_NOTICE_TEXT, type HelperEvent, type IntakeStatusReport } from "./core/index.ts";
 import { Helpers, HELPER_STOP_TIMEOUT_MS, type HelperAttempt, type HelperExitInfo } from "./helpers.ts";
 import {
   Aborted,
@@ -27,7 +27,7 @@ import { SessionSinks, type SessionSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
-export type SessionStart = { app: string; title: string | undefined; audio: boolean };
+export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -50,6 +50,8 @@ type Live = {
   app: string;
   dir: string;
   audio: boolean;
+  screen: boolean; // false なら共有画面を取り込まない（ヘルパーに --no-screen を渡す。起動し直し・resume でも引き継ぐ）
+  noticeShown: Ref.Ref<boolean>; // 許可なしの一文を出したか。セッションにつき 1 回だけ（起動し直しをまたぐ）
   sink: SessionSink;
   scope: Scope.Closeable; // セッションの Scope。サーバーの Scope の子
   stopRequested: Deferred.Deferred<void>; // 「止めて」の印
@@ -84,12 +86,13 @@ export class Sessions extends Context.Service<Sessions, {
       const note = (text: string) => Effect.sync(() => process.stderr.write(text));
       const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => viewers.intake({ type: "intake", status });
 
-      // run の argv（port は Helpers が足す。audio・origin は未定義なら渡さない）
-      const runArgs = (live: Pick<Live, "app" | "dir" | "audio">, attempt: number, origin: string | undefined): string[] => [
+      // run の argv（port は Helpers が足す。audio・origin は未定義なら渡さない。screen が false なら --no-screen）
+      const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined): string[] => [
         "run",
         "--app",
         live.app,
         ...(live.audio ? ["--audio-dir", live.dir, "--audio-index", String(attempt)] : []),
+        ...(live.screen ? [] : ["--no-screen"]),
         ...(origin !== undefined ? ["--origin", origin] : []),
       ];
 
@@ -128,8 +131,25 @@ export class Sessions extends Context.Service<Sessions, {
           case "screen":
             // 画面が取れないことは取り込みの途切れではないので、取り込みの記録（appendLog）や状態には触れない
             return live.sink.screen({ start: event.start, image: event.image });
+          case "screen-off":
+            // 共有画面だけが取れないことは取り込みの途切れではないので、appendLog・intake・起動し直しには触れない。
+            // ログには届くたびに残し、画面の一文はセッションにつき 1 回だけ出す
+            return Effect.andThen(live.sink.screenOff({ start: event.start, reason: event.reason }), showScreenNotice(live));
         }
       };
+
+      // 許可なしの一文を、まだ出していなければ出す。届いてから SCREEN_NOTICE_MS 後に消すフレームを送る（保持も消える）。
+      // 消す役はセッションの Scope の Fiber で、stop で Scope が閉じても消すフレームは送られる
+      const showScreenNotice = (live: Live) =>
+        Effect.gen(function* () {
+          const first = yield* Ref.modify(live.noticeShown, (shown): [boolean, boolean] => [!shown, true]);
+          if (!first) return;
+          yield* viewers.screenNotice({ type: "screen-notice", text: SCREEN_NOTICE_TEXT });
+          yield* Effect.forkIn(
+            Effect.sleep(SCREEN_NOTICE_MS).pipe(Effect.ensuring(viewers.screenNotice({ type: "screen-notice", text: null }))),
+            live.scope,
+          );
+        });
 
       const handleEvent = (live: Live) => (data: string) =>
         decodeHelperEvent(data).pipe(
@@ -226,7 +246,7 @@ export class Sessions extends Context.Service<Sessions, {
           const stopRequested = yield* Deferred.make<void>();
           const attemptScope = yield* Scope.fork(scope, "sequential");
           const attempt = yield* helpers
-            .launch(runArgs({ app: input.app, dir, audio: input.audio }, 1, undefined), stopRequested)
+            .launch(runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, 1, undefined), stopRequested)
             .pipe(
               Scope.provide(attemptScope),
               Effect.catchTag("HelperLaunchFailure", (failure) =>
@@ -236,10 +256,14 @@ export class Sessions extends Context.Service<Sessions, {
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
           const sink = yield* sinks.open({ dir, title: input.title, publish: viewers.publish, speak: viewers.speak }).pipe(Scope.provide(scope));
+          // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
+          if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
           const live: Live = {
             app: input.app,
             dir,
             audio: input.audio,
+            screen: input.screen,
+            noticeShown: yield* Ref.make(false),
             sink,
             scope,
             stopRequested,

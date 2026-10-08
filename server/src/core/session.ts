@@ -53,6 +53,8 @@ export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remar
 // ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない
 const ScreenRef = Schema.Struct({ start: Schema.Number, image: Schema.NullOr(Schema.String) });
 export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Number, image: Schema.NullOr(Schema.String) });
+// 共有画面を見ていない印。reason は 指定（--no-screen）か 許可なし（画面収録の許可が無い）。画像の送受信とは別の行で、差分更新・Claude へのメッセージには載らない
+export const ScreenOffEvent = Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Number, reason: Schema.Literals(["指定", "許可なし"]) });
 export const DiffEvent = Schema.Struct({
   type: Schema.Literal("diff"),
   // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）。
@@ -68,7 +70,7 @@ export const DiffEvent = Schema.Struct({
   dropped: Schema.mutable(Schema.Array(Dropped)),
   error: Schema.optionalKey(Schema.String),
 });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, DiffEvent]);
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, DiffEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 // ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。
@@ -171,7 +173,7 @@ const decodeDiff = Schema.decodeUnknownEffect(DiffEvent);
 const decodeScreen = Schema.decodeUnknownEffect(ScreenEvent);
 
 // ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
-// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff 以外（intake-*・知らない type）は読み飛ばす。
+// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff 以外（screen-off・intake-*・知らない type）は読み飛ばす。
 // まだ添えていない変化は、screen の行を受け取り順に積み、後ろの diff で、その diff の screenCount より前に受け取った画面のうち、
 // 区切り（渡した新しい発言の end の最大値）以下に映り始めたものを外して求める（選んだ後に受け取った画面は、時刻が区切り以下でも残す）。
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
@@ -255,6 +257,9 @@ export type Session = {
   // 共有画面の変化を受ける。差分更新は呼ばない。画像は writeScreen に渡し、変化ごとに screen の行を書く。
   // 差分更新に添える画面は、次の呼び出しの中で選ぶ
   readonly pushScreen: (change: ScreenChange) => Effect.Effect<void>;
+  // 共有画面を見ていない印を受ける。受け取った start・reason のまま screen-off の行を 1 行書くだけで、
+  // 差分更新・添える画面・受け取った画面の数は変えない（Claude へのメッセージに載らない）
+  readonly pushScreenOff: (off: Pick<typeof ScreenOffEvent["Type"], "start" | "reason">) => Effect.Effect<void>;
   // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
   readonly flush: Effect.Effect<void>;
   readonly snapshot: Effect.Effect<Snapshot>;
@@ -468,6 +473,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
           yield* Ref.update(ref, (s) => ({ ...s, receivedScreens: s.receivedScreens + 1, unsentScreens: [...s.unsentScreens, held] }));
           yield* log.write({ type: "screen", start: change.start, image: file });
         }),
+      pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),
       flush: Effect.andThen(idle, Effect.andThen(startDiffIfReady(1), idle)),
       snapshot: Effect.map(Ref.get(ref), snapshotOf),
       unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),

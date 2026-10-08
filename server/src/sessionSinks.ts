@@ -19,6 +19,9 @@ export type SessionSink = {
   // 共有画面の変化（start は発言と同じ原点からの秒、image は JPEG のバイト列。ウィンドウが無くなったときは null）。
   // セッションの pushScreen へ渡す。log.jsonl の記録・screens/ への書き出し・Claude へのメッセージはセッションが行う
   screen: (change: { start: number; image: Uint8Array | null }) => Effect.Effect<void>;
+  // 共有画面を見ていない印（start は発言と同じ原点からの秒。指定はサーバーが開始時に、許可なしはヘルパーが流す）。
+  // セッションの pushScreenOff へ渡す。log.jsonl に 1 行書くだけで、差分更新・Claude へのメッセージには載らない
+  screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
   // 確定結果に覆われなかった最後の発話を発言にする
   drain: Effect.Effect<void>;
   // いま話している文字を空にする（以後も送れる。取り込みの途切れの瞬間に使う）
@@ -113,6 +116,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 screenCount++;
                 return session.pushScreen({ start, image: { id: `s${screenCount}`, bytes: image } });
               }),
+            screenOff: (off) => session.pushScreenOff(off),
             drain: settling.drain(),
             clearSpeaking: relay.clear(),
             stopRelays: Effect.andThen(relay.stop(), settling.stop()),

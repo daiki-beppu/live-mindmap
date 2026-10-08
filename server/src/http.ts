@@ -1,7 +1,7 @@
 // ブラウザと CLI からの受け口（ADR 0009）。ルート・本文の Schema・Origin の制限・
 // タグ付きの失敗からステータスへの対応表・失敗から応答への変換を、この 1 か所に置く。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
-//   POST /session/start   { app, title?, audio? } でセッションを開始する
+//   POST /session/start   { app, title?, audio?, screen? } でセッションを開始する
 //   POST /session/stop    セッションを終了し、書き出したパスを返す
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
@@ -16,18 +16,20 @@ import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 
-// /session/start の本文。app は空でない文字列、title は文字列か null か無し、audio は真偽値か null か無し。
+// /session/start の本文。app は空でない文字列、title は文字列か null か無し、audio・screen は真偽値か null か無し（screen の省略と null は true）。
 // trim・形式・長さの制限は足さない（空白だけの app も、今まで通り受理する）
 const SessionStartBody = Schema.Struct({
   app: Schema.NonEmptyString,
   title: Schema.optional(Schema.NullOr(Schema.String)),
   audio: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  screen: Schema.optional(Schema.NullOr(Schema.Boolean)),
 });
 
 const toSessionStart = (body: typeof SessionStartBody["Type"]): SessionStart => ({
   app: body.app,
   title: body.title ?? undefined,
   audio: body.audio ?? true,
+  screen: body.screen ?? true,
 });
 
 class ForbiddenOrigin extends Schema.TaggedError<ForbiddenOrigin>()("ForbiddenOrigin", {}) {
