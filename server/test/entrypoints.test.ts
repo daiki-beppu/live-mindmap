@@ -59,3 +59,20 @@ describe("server.ts の入口は process.exit を呼ばない", () => {
     expect(code).not.toMatch(/\bonExit\s*\(/);
   });
 });
+
+// Issue #561: bench の各入口も cli・server と同じく、失敗で process.exit を呼ばず exitNaturally で自然に終わる。
+// 終了コードは process.exitCode に入れる（既定の teardown は失敗で process.exit(1) を呼ぶ）
+describe.each(BENCH_SCRIPTS)("%s の入口は process.exit を呼ばず exitNaturally で終わる", (file) => {
+  const code = readFileSync(join(root, file), "utf8")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("//"))
+    .join("\n");
+
+  it("process.exit を呼ばない", () => {
+    expect(code).not.toMatch(/process\.exit\s*\(/);
+  });
+
+  it("runMain に teardown: exitNaturally を渡している", () => {
+    expect(code).toMatch(/\.runMain\s*\(\s*\{[^}]*\bteardown:\s*exitNaturally\b[^}]*\}\s*\)/);
+  });
+});

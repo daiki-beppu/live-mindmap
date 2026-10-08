@@ -1,4 +1,4 @@
-// bench の 3 本のスクリプトが共有する入口の部品。runMain は各スクリプトの入口だけが呼ぶ（ここでは呼ばない）。
+// bench の 4 本のスクリプトが共有する入口の部品。runMain は各スクリプトの入口だけが呼ぶ（ここでは呼ばない）。
 // 引数の誤りは effect/cli の既定の Formatter が出力し、中身の失敗はタグ付きにして、入口で日本語の説明付きの 1 行（<パス>: <説明>（<理由>））にする。
 import { Cause, Console, Effect, Result, Schema } from "effect";
 import { CliError } from "effect/cli";

@@ -5,6 +5,7 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { TranscriptFile } from "../src/core/index.ts";
+import { exitNaturally } from "../src/exitNaturally.ts";
 import { BENCH_VERSION, inputFileError, readInputText, reportFailure, write } from "./entry.ts";
 import { parseResults } from "./sttLatency.ts";
 
@@ -224,6 +225,6 @@ if (import.meta.main) {
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain({ disableErrorReporting: true }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }
