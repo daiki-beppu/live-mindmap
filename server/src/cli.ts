@@ -3,7 +3,7 @@
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema } from "effect";
+import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Runtime, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
@@ -637,6 +637,14 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   return Console.error(isCliFailure(failure) ? oneLine(failureLine(failure)) : describe(failure));
 };
 
+// 終了コードは process.exitCode に置き、イベントループが空になって自然に終わるのを待つ（runMain の既定は失敗で process.exit を呼ぶ）。
+// Why: 起動直後に process.exit すると、V8 の裏のコンパイルが GC を待ったまま Node の終了処理がそのスレッドの join で止まり、
+// プロセスが終わらないことがある（負荷の高い CI で eval の失敗が 10 秒を超えて残った）。成功時の runMain と同じ終わり方にそろえる
+const exitNaturally: Runtime.Teardown = (exit) =>
+  Runtime.defaultTeardown(exit, (code) => {
+    process.exitCode = code;
+  });
+
 if (import.meta.main) {
   // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）
   const helper = resolveHelperPath(process.env);
@@ -647,6 +655,6 @@ if (import.meta.main) {
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer)),
-    NodeRuntime.runMain({ disableErrorReporting: true }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }
