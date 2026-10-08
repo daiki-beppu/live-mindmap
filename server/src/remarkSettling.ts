@@ -57,7 +57,7 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
         }),
       ),
     // 停止時。まだ出ていない発話を T を待たずにすべて出す
-    drain: () =>
+    drain:
       unlessStopped(
         Effect.gen(function* () {
           for (const remark of settler.drain()) yield* emit(remark);
@@ -65,7 +65,7 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
         }),
       ),
     // 予約を取り消す。以後の入力は無視する
-    stop: () =>
+    stop:
       Effect.gen(function* () {
         yield* Ref.set(stopped, true);
         yield* cancel;

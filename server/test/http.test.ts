@@ -8,7 +8,7 @@ import { NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { WebSocket } from "ws";
 import { MapCapture } from "../src/capture.ts";
-import { AgentSdk, ClaudeDiffUpdater } from "../src/claude.ts";
+import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
@@ -549,7 +549,7 @@ describe("セッションの開始・終了の処理中の保護（要件8・tes
 });
 
 // 共有画面（Issue #278）。偽のヘルパーが流した screen が、ログ・screens/・Claude へのメッセージまで届く。
-// 差分更新は本物の ClaudeDiffUpdater を残し、AgentSdk の query だけを偽物にする（server/test/playScreen.test.ts と同じ）
+// 差分更新は本物の layerClaude を残し、AgentSdk の query だけを偽物にする（server/test/playScreen.test.ts と同じ）
 type SentBlock = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
 type SentMessage = { type: string; message: { role: string; content: string | SentBlock[] } };
 
@@ -570,7 +570,7 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
     Effect.gen(function* () {
       const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
       const sent: SentMessage[] = [];
-      const claude = ClaudeDiffUpdater.layer.pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(sent) }))));
+      const claude = layerClaude.pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(sent) }))));
       const r = yield* resourceWithFakeHelpers([{
         events: [
           { type: "screen", start: 1, image: Buffer.from(jpeg).toString("base64") },

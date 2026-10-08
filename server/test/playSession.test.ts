@@ -15,7 +15,7 @@ import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 // play <セッションのフォルダ> を、CLI の入口から偽の Agent SDK の query まで通して確かめる（試すシームは CLI の play + 偽の query）。
-// 組み方は playScreen.test.ts と同じ: 本物の ClaudeDiffUpdater を残し、AgentSdk.layer だけを偽物に替える。
+// 組み方は playScreen.test.ts と同じ: 本物の layerClaude を残し、AgentSdk.layer だけを偽物に替える。
 // 共有画面の画像の変換（PNG → JPEG）は Service ScreenJpeg の偽物。
 
 type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
-import { AgentSdk, buildPrompt, ClaudeDiffUpdater, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
+import { AgentSdk, buildPrompt, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
 import { applyOps, DiffUpdater } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
 
@@ -40,7 +40,7 @@ const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex
     return Object.assign(gen, { close: () => void record.closeCalls++ });
   }) as unknown as AgentSdk["Service"]["query"];
 
-// 偽の AgentSdk を ClaudeDiffUpdater.layer に渡し、手で作った Scope（セッションの Scope の代わり）の中で build する。
+// 偽の AgentSdk を layerClaude に渡し、手で作った Scope（セッションの Scope の代わり）の中で build する。
 // close は Scope を閉じる操作（旧 updater.close() の代わり）。何度呼んでもよい
 function setup(behave: (queryIndex: number, messageIndex: number) => Behavior = () => "ok") {
   return Effect.gen(function* () {
@@ -48,7 +48,7 @@ function setup(behave: (queryIndex: number, messageIndex: number) => Behavior = 
     const scope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
     const sdk = Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(created, behave) }));
-    const context = yield* Layer.buildWithScope(ClaudeDiffUpdater.layer.pipe(Layer.provide(sdk)), scope);
+    const context = yield* Layer.buildWithScope(layerClaude.pipe(Layer.provide(sdk)), scope);
     const updater = Context.get(context, DiffUpdater);
     return { created, updater, scope, close: Scope.close(scope, Exit.void) };
   });
