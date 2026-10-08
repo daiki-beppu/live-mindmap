@@ -1164,7 +1164,7 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
       expect(byText("3 回")!.evidenceRound).toBe(1);
     }));
 
-  it.effect("統合は、統合先と祖先・統合元の元の親側の祖先の touchedAt を進め、統合先の evidenceRound をその反映の番号にする", () =>
+  it.effect("統合は、統合先と祖先・統合元の元の親側の祖先の touchedAt を進め、統合先の evidenceRound は統合元・統合先の大きい方を引き継ぐ（進めない）", () =>
     Effect.gen(function* () {
       // n1 採用 > n2 論点（統合元）、n3 予算 > n4 論点（統合先）、n5 備品（無関係）
       const { byText, ends } = yield* play(
@@ -1181,6 +1181,24 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
       expect(byText("面接は何回か")).toBeUndefined();
       for (const t of ["上限はいくらか", "予算", "採用"]) expect(byText(t)!.touchedAt).toBe(second);
       expect(byText("備品")!.touchedAt).toBe(first);
+      expect(byText("上限はいくらか")!.evidenceRound).toBe(1);
+      expect(byText("予算")!.evidenceRound).toBe(1);
+    }));
+
+  it.effect("統合元のほうが新しい evidenceRound を持つとき、統合先は統合元の番号を引き継ぐ（統合した反映の番号にはしない）", () =>
+    Effect.gen(function* () {
+      // 1 回目: n1 採用 > n2 論点（統合元）、n3 予算 > n4 論点（統合先）。2 回目: n2 に根拠を足す。3 回目: n2 を n4 へ統合
+      const { byText } = yield* play(
+        (ids) => [
+          { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ids[0]![0]!] },
+          { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [ids[0]![0]!] },
+          { op: "add", ref: "t3", parent: "root", kind: "議題", text: "予算", evidence: [ids[0]![1]!] },
+          { op: "add", ref: "t4", parent: "t3", kind: "論点", text: "上限はいくらか", evidence: [ids[0]![1]!] },
+        ],
+        (ids) => [{ op: "update", node: "n2", evidence: [ids[1]![0]!] }],
+        [{ op: "combine", from: "n2", into: "n4" }],
+      );
+      expect(byText("面接は何回か")).toBeUndefined();
       expect(byText("上限はいくらか")!.evidenceRound).toBe(2);
       expect(byText("予算")!.evidenceRound).toBe(1);
     }));
@@ -1394,6 +1412,74 @@ describe("議題・論点の済みと閉じる（close）", () => {
         );
         expect(dropped).toEqual([]);
         expect(closedIds(snap)).toEqual(["n1"]);
+      }));
+  });
+
+  describe("統合だけでは根拠が足された扱いにならない", () => {
+    // n1 議題 A > n2 論点 a、n3 議題 B > n4 論点 b（根拠はどちらも 1 回目の発言）
+    const two = (ids: string[][]): Op[] => [
+      { op: "add", ref: "t1", parent: "root", kind: "議題", text: "A", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "a", evidence: [ids[0]![0]!] },
+      { op: "add", ref: "t3", parent: "root", kind: "議題", text: "B", evidence: [ids[0]![1]!] },
+      { op: "add", ref: "t4", parent: "t3", kind: "論点", text: "b", evidence: [ids[0]![1]!] },
+    ];
+
+    it.effect("統合と同じ応答の中で、統合先の議題・論点を閉じられる", () =>
+      Effect.gen(function* () {
+        const { snap, dropped } = yield* replay(two, noopHand, [
+          { op: "combine", from: "n2", into: "n4" },
+          { op: "close", node: "n4" },
+          { op: "close", node: "n3" },
+        ]);
+        expect(dropped).toEqual([]);
+        expect(closedIds(snap)).toEqual(["n3", "n4"]);
+      }));
+
+    it.effect("統合の次の反映で、統合先の議題・論点を閉じられる", () =>
+      Effect.gen(function* () {
+        const { snaps, dropped } = yield* replay(
+          two,
+          [{ op: "combine", from: "n2", into: "n4" }], // round 2: 統合
+          [{ op: "close", node: "n3" }, { op: "close", node: "n4" }], // round 3
+        );
+        expect(dropped).toEqual([]);
+        expect(closedIds(snaps[1]!)).toEqual([]);
+        expect(closedIds(snaps[2]!)).toEqual(["n3", "n4"]);
+      }));
+
+    it.effect("統合元に直前の反映で根拠が足されていれば、統合と同じ応答で統合先とその祖先を閉じるのは捨てられ、次の反映なら通る", () =>
+      Effect.gen(function* () {
+        const { snaps, dropped } = yield* replay(
+          two,
+          (ids) => [{ op: "update", node: "n2", evidence: [ids[1]![0]!] }], // round 2: 統合元に根拠
+          [{ op: "combine", from: "n2", into: "n4" }, { op: "close", node: "n4" }, { op: "close", node: "n3" }], // round 3: 統合元の根拠が移っているので捨てる
+          [{ op: "close", node: "n3" }], // round 4: 通る
+        );
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([
+          ["close", "n4"],
+          ["close", "n3"],
+        ]);
+        expect(closedIds(snaps[2]!)).toEqual([]);
+        expect(closedIds(snaps[3]!)).toEqual(["n3"]);
+      }));
+
+    it.effect("統合元に直前の反映で根拠が足されていれば、統合の次の反映で統合先とその祖先を閉じるのは捨てられ、その次の反映なら通る", () =>
+      Effect.gen(function* () {
+        const { snaps, dropped } = yield* replay(
+          two,
+          (ids) => [
+            { op: "update", node: "n2", evidence: [ids[1]![0]!] },
+            { op: "combine", from: "n2", into: "n4" },
+          ], // round 2: 統合元に根拠を足して統合
+          [{ op: "close", node: "n4" }, { op: "close", node: "n3" }], // round 3: 捨てる
+          [{ op: "close", node: "n3" }], // round 4: 通る
+        );
+        expect(dropped.map((d) => [d.op.op, "node" in d.op ? d.op.node : undefined])).toEqual([
+          ["close", "n4"],
+          ["close", "n3"],
+        ]);
+        expect(closedIds(snaps[2]!)).toEqual([]);
+        expect(closedIds(snaps[3]!)).toEqual(["n3"]);
       }));
   });
 

@@ -152,6 +152,7 @@ function removeNode(map: MeetingMap, id: string) {
 // 成り立たない操作は捨てて理由を返し、残りは適用を続ける。
 // known は根拠に使える発言の ID。知らない発言を根拠に挙げた操作は捨てる。
 // stamp は、この反映の番号（round）と、渡した新しい発言の end の最大値（at）。触れたノードの touchedAt と、根拠が足されたノードの evidenceRound に使う。
+// combine の統合先は evidenceRound を進めず、統合元と統合先の大きい方を引き継ぐ（片方が無ければもう片方）。
 // close は議題か論点を済みにする。対象かその子孫に同じ応答か直前の反映（round - 1 以降）で根拠が足されていれば捨てる。
 // add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
 // close と開き直しは changeOrder・touchedAt に影響しない。
@@ -238,9 +239,13 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
         touchUp(map, from.parent, at);
         for (const k of kids) k.parent = into.id;
         for (const u of from.evidence) if (!into.evidence.includes(u)) into.evidence.push(u);
+        const fromRound = from.evidenceRound;
         removeNode(map, from.id);
         changeOrder.push(into.id);
-        into.evidenceRound = round;
+        const mergedRound = fromRound === undefined || into.evidenceRound === undefined
+          ? (fromRound ?? into.evidenceRound)
+          : Math.max(fromRound, into.evidenceRound);
+        if (mergedRound !== undefined) into.evidenceRound = mergedRound;
         touchUp(map, into.id, at);
         reopenUp(map, into.id);
         break;
