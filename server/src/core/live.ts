@@ -32,7 +32,7 @@ export type HelperPartial = typeof HelperPartial["Type"];
 // decodeHelperEvent の結果。知らない type は失敗にせず「知らないイベント」として返し、呼び出し側が読み飛ばす
 export type DecodedHelperEvent = { kind: "known"; event: HelperEvent } | { kind: "unknown" };
 
-const KNOWN_TYPES: ReadonlySet<string> = new Set(["remark", "partial", "origin", "screen", "screen-off"]);
+const KNOWN_TYPES: ReadonlySet<string> = new Set(HelperEvent.members.map((member) => member.fields.type.literal));
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeType = Schema.decodeUnknownEffect(Schema.Struct({ type: Schema.String }));
