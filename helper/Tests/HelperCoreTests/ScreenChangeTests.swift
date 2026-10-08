@@ -828,6 +828,83 @@ struct ScreenWindowSelectionTests {
     }
 }
 
+@Suite("共有画面のウィンドウの探し直し")
+struct ScreenWindowSearchTests {
+    private func candidate(_ id: UInt32, _ bundleID: String?, onScreen: Bool = true, _ width: Double, _ height: Double) -> ScreenWindowCandidate {
+        ScreenWindowCandidate(id: id, bundleID: bundleID, isOnScreen: onScreen, width: width, height: height)
+    }
+
+    private let zoom = "us.zoom.xos"
+
+    @Test("探し直す間隔は名前の付いた値で 2 秒")
+    func namedRetryInterval() {
+        #expect(screenWindowRetryInterval == 2.0)
+    }
+
+    @Test("未開始で候補が無い（空・別のアプリだけ・画面に出ていないものだけ）と、間隔を置いて探し直す")
+    func notStartedWithoutCandidateRetries() {
+        let cases: [[ScreenWindowCandidate]] = [
+            [],
+            [candidate(1, "com.apple.Safari", 800, 600)],
+            [candidate(2, "us.zoom.xos", onScreen: false, 800, 600)],
+            [candidate(3, nil, 800, 600)],
+        ]
+        for windows in cases {
+            #expect(nextScreenWindowAction(bundleID: zoom, state: .notStarted, among: windows) == .retry(after: screenWindowRetryInterval))
+        }
+    }
+
+    @Test("未開始で候補があれば、同じアプリの画面に出ているもののうち面積が最大のもので取り込みを始める")
+    func notStartedStartsWithLargestOnScreenWindow() {
+        let windows = [
+            candidate(1, zoom, 1000, 100), // 面積 100,000
+            candidate(2, zoom, 400, 400), // 面積 160,000
+            candidate(3, zoom, onScreen: false, 3000, 2000), // 画面に出ていない
+            candidate(4, "com.google.Chrome", 3000, 2000), // 別のアプリ
+        ]
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .notStarted, among: windows) == .startCapture(windowID: 2))
+    }
+
+    @Test("撮っているウィンドウが候補に残っていれば、何もしない（ほかに大きいウィンドウがあっても乗り換えない）")
+    func capturingWithWindowPresentDoesNothing() {
+        let windows = [candidate(5, zoom, 400, 300), candidate(6, zoom, 2000, 1500)]
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .capturing(windowID: 5), among: windows) == .nothing)
+    }
+
+    @Test("撮っているウィンドウが候補に残っていれば、画面に出ていなくても何もしない（止まった経路は別の担当）")
+    func capturingWithWindowPresentButOffScreenDoesNothing() {
+        let windows = [candidate(5, zoom, onScreen: false, 400, 300)]
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .capturing(windowID: 5), among: windows) == .nothing)
+    }
+
+    @Test("撮っているウィンドウが無くなり、ほかの候補も無ければ、間隔を置いて探し直す")
+    func capturingWindowGoneWithoutCandidateRetries() {
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .capturing(windowID: 5), among: []) == .retry(after: screenWindowRetryInterval))
+        let others = [candidate(9, "com.apple.Safari", 800, 600)]
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .capturing(windowID: 5), among: others) == .retry(after: screenWindowRetryInterval))
+    }
+
+    @Test("撮っているウィンドウが無くなり、別の id の候補があれば、その id で取り込みを始める")
+    func capturingWindowGoneStartsWithDifferentWindow() {
+        let windows = [candidate(7, zoom, 300, 300), candidate(8, zoom, 600, 400)]
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .capturing(windowID: 5), among: windows) == .startCapture(windowID: 8))
+    }
+
+    @Test("無くなった状態で候補が無ければ探し直し、候補があれば前と違う id でも取り込みを始める")
+    func windowGoneStateRetriesThenStarts() {
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .windowGone, among: []) == .retry(after: screenWindowRetryInterval))
+        let windows = [candidate(42, zoom, 800, 600)]
+        #expect(nextScreenWindowAction(bundleID: zoom, state: .windowGone, among: windows) == .startCapture(windowID: 42))
+    }
+
+    @Test("探し直しの結果は何度呼んでも同じ（回数で諦めない）")
+    func retryHasNoLimit() {
+        for _ in 0..<1000 {
+            #expect(nextScreenWindowAction(bundleID: zoom, state: .notStarted, among: []) == .retry(after: screenWindowRetryInterval))
+        }
+    }
+}
+
 @Suite("送る画像の大きさ")
 struct ScreenFitSizeTests {
     @Test("1280×720 に収まるように、縦横の比を保って縮める")
@@ -1004,6 +1081,28 @@ struct ScreenEventEmitterTests {
         emitter.emitCaptureStopped(at: 2)
         let events = await collect(emitter)
         #expect(events == [.screen(start: 0, image: "A"), .screen(start: 1, image: nil), .screenOff(start: 2, reason: .許可なし)])
+    }
+
+    // Issue #421: 撮っていたウィンドウが無くなっても終わらずに探し直し、見つけ直したウィンドウの最初の画面を送る。
+    @Test("ウィンドウが消えて見つけ直すと、画像 → null（重なった通知でも 1 回）→ 見つけ直した最初の画像（前と同じ画像でも）の順で、screen-off は出ない")
+    func windowGoneThenRediscoveredSendsNullOnceThenFirstFrame() async {
+        let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emitWindowGone(at: 3) // streamDidBecomeInactive
+        emitter.emitWindowGone(at: 3.25) // handleStop（重なった通知）
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 8, title: nil)) { "A2" } // 見つけ直したウィンドウの最初のフレーム（輝度は前と同じ）
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil), .screen(start: 8, image: "A2")])
+        #expect(!events.contains { if case .screenOff = $0 { return true } else { return false } })
+    }
+
+    @Test("開始時に見つからず何も送っていない emitter でも、後から見つかった最初のフレームは送る")
+    func firstFrameAfterLateDiscoverySends() async {
+        let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
+        emitter.emitWindowGone(at: 1)
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 6, title: nil)) { "A" }
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 6, image: "A")])
     }
 
     @Test("終了後は何も送らず、画像も作らない")

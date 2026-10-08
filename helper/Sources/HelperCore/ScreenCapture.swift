@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 
 // 共有画面の取り込み（Issue #278, ADR 0011）。ScreenCaptureKit で、`--app` の bundle id のウィンドウを直接撮る。
 // システムのウィンドウピッカーも非公開 API も使わない。変化の判定は ScreenChange.swift の純粋な部分に任せる。
-// 画面が取れなくても、ここからは throw しない。標準エラーに 1 行出して終わるだけで、音声の取り込みには影響させない。
+// 画面が取れなくても、ここからは throw しない。標準エラーに 1 行出すだけで、音声の取り込みには影響させない。
+// 会議アプリのウィンドウが無い間は探し直し、見つかったら取り込みを始める（Issue #421）。
 
 private func printScreenError(_ message: String) {
     FileHandle.standardError.write(Data(("screen: " + message + "\n").utf8))
@@ -29,6 +30,10 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
     private var windowID: UInt32 = 0
     private var windowTitle: String?
     private var ended = false
+    /// 撮っているウィンドウが無くなった（`handleStop` が立て、取り込みを始めるたびに下ろす）。
+    private var lost = false
+    /// 時限付きの待ちの世代。古い待ちのタイマーが、後の待ちを起こさないようにする。
+    private var waitGeneration = 0
     private var waiter: CheckedContinuation<Void, Never>?
 
     public init(bundleID: String, origin: UInt64) {
@@ -37,28 +42,44 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
         self.emitter = ScreenEventEmitter(bundleID: bundleID)
     }
 
-    /// 取り込みを始め、`stop()` か取り込みの終わりまで待つ。失敗は標準エラーに 1 行出すだけで、throw しない。
+    /// 取り込みを始め、`stop()` まで待つ。会議アプリのウィンドウが見つからない間と、撮っていたウィンドウが無くなった後は、
+    /// `screenWindowRetryInterval` ごとに探し直し、見つかったら取り込みを始める（上限なし、`screen-off` は流さない）。
+    /// 失敗は標準エラーに 1 行出すだけで、throw しない。
     public func run() async {
         defer { emitter.close() }
-        let stream: SCStream
-        do {
-            stream = try await makeStream()
-            try await stream.startCapture()
-        } catch {
-            printScreenError("共有画面を取り込めない（音声だけで続ける）: \(error)")
-            return
-        }
-        // タブの切り替えに追従するため、ブラウザのときだけ取り込みの間タイトルを読み直す。
-        let titleRefresh = screenBrowserBundleIDs.contains(bundleID) ? Task { await self.refreshWindowTitle() } : nil
-        defer { titleRefresh?.cancel() }
-        await withCheckedContinuation { (waiting: CheckedContinuation<Void, Never>) in
-            let alreadyEnded = lock.withLock { () -> Bool in
-                if !ended { waiter = waiting }
-                return ended
+        var state = ScreenWindowSearchState.notStarted
+        var announcedRetry = false
+        while !lock.withLock({ ended }) {
+            let content: SCShareableContent
+            do {
+                content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            } catch {
+                printScreenError("共有画面を取り込めない（音声だけで続ける）: \(error)")
+                return
             }
-            if alreadyEnded { waiting.resume() }
+            switch nextScreenWindowAction(bundleID: bundleID, state: state, among: windowCandidates(in: content)) {
+            case .nothing:
+                return // 未開始と無くなった状態では返らない
+            case .retry(let seconds):
+                if !announcedRetry {
+                    printScreenError("画面に出ている \(bundleID) のウィンドウが見つからない（見つかるまで \(Int(seconds)) 秒ごとに探し直す）")
+                    announcedRetry = true
+                }
+                await wait(timeout: seconds, wakeOnLost: false)
+            case .startCapture(let id):
+                guard let window = content.windows.first(where: { $0.windowID == id }) else { continue }
+                guard let stream = await startCapture(of: window) else { return }
+                state = .capturing(windowID: id)
+                // タブの切り替えに追従するため、ブラウザのときだけ取り込みの間タイトルを読み直す。
+                let titleRefresh = screenBrowserBundleIDs.contains(bundleID) ? Task { await self.refreshWindowTitle() } : nil
+                await wait(timeout: nil, wakeOnLost: true)
+                titleRefresh?.cancel()
+                try? await stream.stopCapture()
+                // 無くなった旨の 1 行は `handleStop` が出し済み。
+                state = .windowGone
+                announcedRetry = true
+            }
         }
-        try? await stream.stopCapture()
     }
 
     public func stop() {
@@ -75,6 +96,54 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
         emitter.close()
     }
 
+    /// 撮っていたウィンドウが無くなった。待ちを起こして、`run()` に探し直させる。
+    private func markWindowLost() {
+        lock.lock()
+        lost = true
+        let waiting = waiter
+        waiter = nil
+        lock.unlock()
+        waiting?.resume()
+    }
+
+    /// `timeout` 秒たつか、`stop()` か、（`wakeOnLost` のとき）ウィンドウが無くなるまで待つ。
+    /// 待ちの再開は、lock の中で `waiter` を取り出した側だけが行う（2 回再開しない）。
+    private func wait(timeout: Double?, wakeOnLost: Bool) async {
+        let generation = lock.withLock { () -> Int in
+            waitGeneration += 1
+            return waitGeneration
+        }
+        var timer: Task<Void, Never>?
+        await withCheckedContinuation { (waiting: CheckedContinuation<Void, Never>) in
+            let wakeNow = lock.withLock { () -> Bool in
+                let done = ended || (wakeOnLost && lost)
+                if !done { waiter = waiting }
+                return done
+            }
+            if wakeNow {
+                waiting.resume()
+            } else if let seconds = timeout {
+                // 登録の後に起動する（登録前に期限が来て取りこぼすのを防ぐ）。
+                timer = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                    if Task.isCancelled { return }
+                    self.wakeWaiter(generation: generation)
+                }
+            }
+        }
+        timer?.cancel()
+    }
+
+    private func wakeWaiter(generation: Int) {
+        let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            guard waitGeneration == generation else { return nil }
+            let current = waiter
+            waiter = nil
+            return current
+        }
+        waiting?.resume()
+    }
+
     /// `screenTitleRefreshSeconds` ごとに、撮っているウィンドウのタイトルを公開 API で読み直す。
     /// 読み直しに失敗したときや、ウィンドウが見つからないときは、前のタイトルを保つ（ウィンドウが無くなったことは別の経路が扱う）。
     private func refreshWindowTitle() async {
@@ -86,20 +155,33 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
                 let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true),
                 let window = content.windows.first(where: { $0.windowID == id })
             else { continue }
-            lock.withLock { windowTitle = window.title }
+            // 取り消された後や、取り込み直して撮るウィンドウが変わった後に、古い読み取りの結果で上書きしない。
+            lock.withLock {
+                if !Task.isCancelled && windowID == id { windowTitle = window.title }
+            }
         }
     }
 
-    private func makeStream() async throws -> SCStream {
-        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        guard let window = pickWindow(in: content) else {
-            throw ScreenCaptureError.windowNotFound(bundleID)
-        }
+    /// 選んだウィンドウのストリームを作って取り込みを始める。失敗したら標準エラーに 1 行出して nil。
+    private func startCapture(of window: SCWindow) async -> SCStream? {
         lock.withLock {
             windowID = window.windowID
             windowTitle = window.title
+            lost = false
         }
+        // 前のウィンドウの輝度と画像を、idle のフレームで使い回さない。
+        queue.sync { lastRendered = nil }
+        do {
+            let stream = try makeStream(for: window)
+            try await stream.startCapture()
+            return stream
+        } catch {
+            printScreenError("共有画面を取り込めない（音声だけで続ける）: \(error)")
+            return nil
+        }
+    }
 
+    private func makeStream(for window: SCWindow) throws -> SCStream {
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let info = SCShareableContent.info(for: filter)
         let scale = Double(info.pointPixelScale)
@@ -120,8 +202,8 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
         return stream
     }
 
-    private func pickWindow(in content: SCShareableContent) -> SCWindow? {
-        let candidates = content.windows.map {
+    private func windowCandidates(in content: SCShareableContent) -> [ScreenWindowCandidate] {
+        content.windows.map {
             ScreenWindowCandidate(
                 id: $0.windowID,
                 bundleID: $0.owningApplication?.bundleIdentifier,
@@ -130,8 +212,6 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
                 height: $0.frame.height
             )
         }
-        guard let chosen = selectScreenWindow(bundleID: bundleID, among: candidates) else { return nil }
-        return content.windows.first { $0.windowID == chosen.id }
     }
 
     // MARK: SCStreamOutput
@@ -198,24 +278,18 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
     private func handleStop(error: Error) async {
         let id = lock.withLock { windowID }
         let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        let windowStillThere = content?.windows.contains { $0.windowID == id } ?? true
-        if windowStillThere {
+        // 読めないときは、ウィンドウはまだあるものとして扱う。
+        let action = content.map {
+            nextScreenWindowAction(bundleID: bundleID, state: .capturing(windowID: id), among: windowCandidates(in: $0))
+        } ?? .nothing
+        if action == .nothing {
             printScreenError("共有画面の取り込みが止まった（音声だけで続ける）: \(error)")
             emitter.emitCaptureStopped(at: offsetSeconds(from: origin, to: AudioGetCurrentHostTime()))
+            finish()
         } else {
-            printScreenError("共有していたウィンドウが無くなった（音声だけで続ける）")
+            printScreenError("共有していたウィンドウが無くなった（見つかるまで \(Int(screenWindowRetryInterval)) 秒ごとに探し直す）")
             reportWindowGone()
-        }
-        finish()
-    }
-}
-
-private enum ScreenCaptureError: Error, CustomStringConvertible {
-    case windowNotFound(String)
-
-    var description: String {
-        switch self {
-        case .windowNotFound(let bundleID): return "画面に出ている \(bundleID) のウィンドウが見つからない"
+            markWindowLost()
         }
     }
 }
