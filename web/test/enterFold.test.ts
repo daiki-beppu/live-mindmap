@@ -27,3 +27,15 @@ describe("enterFoldsSelection: Enter を選んだノードの開閉に使うか"
     expect(enterFoldsSelection(focusedIn(), true)).toBe(true);
   });
 });
+
+// 開閉の丸の button（ノード本体の外にある button）の代役。祖先に button はあるが、ノード本体のボタンではない
+describe("enterFoldsSelection: 開閉の丸の button にフォーカスがあるとき", () => {
+  const dotButton = (cls: string) => ({
+    closest: (selector: string) => (selector === "button, a[href]" || selector === `.${cls}` ? {} : null),
+  });
+
+  it.each(["map-node__count--pressable", "map-node__fold-dot"])("%s では、選択の有無に関わらず使わない（丸の開閉と選んだノードの開閉が二重に起きない）", (cls) => {
+    expect(enterFoldsSelection(dotButton(cls), true)).toBe(false);
+    expect(enterFoldsSelection(dotButton(cls), false)).toBe(false);
+  });
+});

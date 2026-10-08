@@ -126,4 +126,68 @@ describe("styles.css: 人が開いたノードの小さな丸", () => {
     expect(rule(".map-node__fold-dot")).toMatch(/position\s*:\s*absolute/);
     expect(css).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
   });
+
+  it("display: none で隠さない（Tab で届くよう opacity: 0 で描く）。普段は透明で、ホバーと :focus-visible のときだけ opacity: 1", () => {
+    const r = rule(".map-node__fold-dot");
+    expect(r).not.toMatch(/display\s*:\s*none/);
+    expect(r).not.toMatch(/visibility\s*:\s*hidden/);
+    expect(r).toMatch(/opacity\s*:\s*0\s*(;|$)/);
+    const shown = css.match(/[^{}]*\.map-node__fold-dot[^{}]*\{[^}]*opacity\s*:\s*1[^}]*\}/g) ?? [];
+    expect(shown.some((b) => /\.map-node:hover\s+\.map-node__fold-dot/.test(b))).toBe(true);
+    expect(shown.some((b) => /\.map-node__fold-dot:focus-visible/.test(b))).toBe(true);
+  });
+
+  it("ノードを選んだだけ・マウスで押した（:focus）だけでは出たままにしない", () => {
+    for (const m of css.matchAll(/([^{}]*\.map-node__fold-dot[^{}]*)\{([^}]*)\}/g)) {
+      if (/opacity\s*:\s*1/.test(m[2]!)) {
+        expect(m[1]).not.toMatch(/map-node--selected|:focus-within/);
+        expect(m[1]).not.toMatch(/:focus(?!-visible)/);
+      }
+    }
+  });
+
+  it("ボタンの既定の枠・余白を打ち消し、寸法と位置は今のまま", () => {
+    const r = rule(".map-node__fold-dot");
+    expect(r).toMatch(/padding\s*:\s*0\s*(;|$)/);
+    expect(r).toMatch(/margin\s*:\s*0\s*(;|$)/);
+    expect(r).toMatch(/width\s*:\s*12px/);
+    expect(r).toMatch(/height\s*:\s*12px/);
+    expect(r).toMatch(/top\s*:\s*50%/);
+    expect(r).toMatch(/right\s*:\s*6px/);
+  });
+
+  it("フォーカスの輪は :focus-visible のときだけ、既存のフォーカスと同じ outline: 2px solid #facc15。影は足さない", () => {
+    expect(rule(".map-node__fold-dot:focus-visible")).toMatch(/outline\s*:\s*2px solid #facc15/i);
+    expect(rule(".map-node__fold-dot:focus-visible")).not.toMatch(/box-shadow/);
+    expect(rule(".map-node__fold-dot:focus")).toBe("");
+  });
+});
+
+describe("styles.css: 畳んだノードの隠れた数の丸（押せるもの）", () => {
+  it("ボタンの既定の枠・余白を打ち消す（border: 0・margin: 0・font-family: inherit）。font の一括指定で大きさを変えない", () => {
+    const r = rule(".map-node__count--pressable");
+    expect(r).toMatch(/border\s*:\s*0\s*(;|$)/);
+    expect(r).toMatch(/margin\s*:\s*0\s*(;|$)/);
+    expect(r).toMatch(/font-family\s*:\s*inherit/);
+    expect(r).not.toMatch(/(?<![-\w])font\s*:/);
+  });
+
+  it("寸法・位置・普段の見た目は今のまま（.map-node__count の規則）", () => {
+    const r = rule(".map-node__count");
+    expect(r).toMatch(/position\s*:\s*absolute/);
+    expect(r).toMatch(/top\s*:\s*50%/);
+    expect(r).toMatch(/right\s*:\s*6px/);
+    expect(r).toMatch(/min-width\s*:\s*18px/);
+    expect(r).toMatch(/height\s*:\s*18px/);
+    expect(r).toMatch(/padding\s*:\s*0 4px/);
+    expect(r).toMatch(/background\s*:\s*#e5e7eb/);
+    expect(r).toMatch(/font-size\s*:\s*11px/);
+    expect(r).toMatch(/line-height\s*:\s*18px/);
+  });
+
+  it("フォーカスの輪は :focus-visible のときだけ、outline: 2px solid #facc15。影は足さない", () => {
+    expect(rule(".map-node__count--pressable:focus-visible")).toMatch(/outline\s*:\s*2px solid #facc15/i);
+    expect(rule(".map-node__count--pressable:focus-visible")).not.toMatch(/box-shadow/);
+    expect(rule(".map-node__count--pressable:focus")).toBe("");
+  });
 });

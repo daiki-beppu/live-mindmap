@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
-import { MAP_NODE_BUTTON_CLASS } from "./enterFold.ts";
+import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "./enterFold.ts";
 
 export type MapNodeData = {
   text: string;
@@ -62,14 +62,14 @@ export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
       </button>
       {data.fold &&
         (data.onFoldDot ? (
-          <span className="map-node__count map-node__count--pressable" role="button" aria-label="開く" onClick={() => data.onFoldDot?.(id)}>
+          <button type="button" className={`map-node__count ${FOLD_DOT_CLASSES[0]}`} aria-label="開く" onClick={() => data.onFoldDot?.(id)}>
             {data.fold.hidden}
-          </span>
+          </button>
         ) : (
           <span className="map-node__count">{data.fold.hidden}</span>
         ))}
       {!data.fold && data.humanOpened && data.onFoldDot && (
-        <span className="map-node__fold-dot" role="button" aria-label="畳む" onClick={() => data.onFoldDot?.(id)} />
+        <button type="button" className={FOLD_DOT_CLASSES[1]} aria-label="畳む" onClick={() => data.onFoldDot?.(id)} />
       )}
       <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>

@@ -1,7 +1,10 @@
 // ノード本体のボタンの class 名。MapNode が付け、Enter の判定が参照する
 export const MAP_NODE_BUTTON_CLASS = "map-node__button";
 
-type Focused = { closest(selector: string): unknown } | null;
+// 押せる丸（隠れた数の丸・畳む丸）の class 名。MapNode が付け、見返しの Space の判定が参照する
+export const FOLD_DOT_CLASSES = ["map-node__count--pressable", "map-node__fold-dot"] as const;
+
+export type Focused = { closest(selector: string): unknown } | null;
 
 // Enter を「選んだノードの開閉」に使うか。
 // - ノード本体のボタンの中: 選択があるときだけ（選択が無ければ、ボタンの click で選ぶ）
