@@ -8,15 +8,16 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     public let events: AsyncStream<HelperEvent>
     private let continuation: AsyncStream<HelperEvent>.Continuation
     private let lock = NSLock()
-    private var detector = ScreenChangeDetector()
+    private var detector: ScreenChangeDetector
     private var closed = false
     private var captureStopped = false
 
-    public init() {
+    public init(bundleID: String) {
+        detector = ScreenChangeDetector(bundleID: bundleID)
         (events, continuation) = AsyncStream<HelperEvent>.makeStream()
     }
 
-    /// フレームを判定し、送るときだけ `encode` で画像（base64）を作って送出する。終了後は何もしない（`encode` も呼ばない）。
+    /// フレームを判定し、送るときだけ `encode` で画像（base64）を作って送出する。ブラウザが会議以外のタブになったときは `image: null` を 1 回送出する。終了後は何もしない（`encode` も呼ばない）。
     public func emit(_ frame: ScreenFrame, encode: () -> String?) {
         lock.withLock {
             if closed { return }
