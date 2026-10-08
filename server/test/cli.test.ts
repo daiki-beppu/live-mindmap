@@ -951,6 +951,72 @@ describe("CLI", () => {
     }));
   });
 
+  describe("保存先に通常ファイルがあるとき", () => {
+    it.effect("セッションと通常ファイルが混在しても、restore は最新の有効なセッションを処理する", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      const { session } = yield* played(deps);
+      writeFileSync(join(dir, "9999-12-31T00-00-00.000Z"), "");
+
+      yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toContain(session);
+    }));
+
+    it.effect("保存先の直下が通常ファイルだけなら、export は NoSession になる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const deps = dependencies(dir);
+      writeFileSync(join(dir, "9999-12-31T00-00-00.000Z"), "");
+
+      const result = yield* Effect.result(runCli(["export"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "NoSession" });
+      expect(deps.stdout).toEqual([]);
+    }));
+
+    it.effect("保存先そのものが通常ファイルなら、export は defect ではなく CommandFailed になる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const file = join(dir, "sessions-file");
+      writeFileSync(file, "");
+      const deps = dependencies(file);
+
+      const result = yield* Effect.result(runCli(["export"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+      expect(deps.stdout).toEqual([]);
+    }));
+
+    it.effect("review に通常ファイルを渡すと、log.jsonl がありません の CommandFailed になる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const file = join(dir, "plain-file");
+      writeFileSync(file, "");
+      const deps = dependencies(dir);
+
+      const result = yield* Effect.result(runCli(["review", file]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "CommandFailed", message: `log.jsonl がありません: ${join(file, "log.jsonl")}` });
+    }));
+
+    it.effect("eval に通常ファイルを渡すと、MissingRunExport になる", () => Effect.gen(function* () {
+      const dir = yield* temporaryDirectory;
+      const file = join(dir, "plain-file");
+      writeFileSync(file, "");
+      const deps = dependencies(dir);
+
+      const result = yield* Effect.result(runCli(["eval", file]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toMatchObject({ _tag: "MissingRunExport" });
+    }));
+  });
+
   describe("ブラウザへの配信", () => {
     // 本物の WebSocket 越しに観測するのは、このファイルで 1 本だけ（正本 22 行）。
     // 「失敗した反映では送らない」「終わると閉じる」は、偽の待受け（fakeListener）で同じ契約を観測する

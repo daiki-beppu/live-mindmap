@@ -1,9 +1,26 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { InvalidTruthFile, readScreenTruthFile, readTruthFile } from "../src/truthFile.ts";
+import { InvalidTruthFile, readScreenTruthFile, readTextFile, readTruthFile } from "../src/truthFile.ts";
 import { temporaryDirectory } from "./benchRun.ts";
+
+// 読み込みの下地。失敗は文字列ではなく PlatformError で表し、呼び出し側が自分のタグ付きの失敗に包む
+describe("readTextFile", () => {
+  it.effect("読めたら中身の文字列を返す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const path = join(dir, "a.txt");
+    writeFileSync(path, "中身\n");
+    expect(yield* readTextFile(path)).toBe("中身\n");
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
+
+  it.effect("読めないファイル（無い）は PlatformError で失敗する", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const failure = yield* Effect.flip(readTextFile(join(dir, "missing.txt")));
+    expect(failure._tag).toBe("PlatformError");
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
+});
 
 // cli の eval --truth と bench の sttReplay --truth が共有する、正解ファイルの読み込み
 describe("正解ファイルを読む（cli と bench の共有）", () => {
@@ -13,7 +30,7 @@ describe("正解ファイルを読む（cli と bench の共有）", () => {
     const truth = { 決定: [], TODO: [{ from: 1, to: 2, keywords: [["求人", "採用"]] }] };
     writeFileSync(path, JSON.stringify(truth));
     expect(yield* readTruthFile(path)).toEqual(truth);
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect.each([
     { name: "JSON 構文", content: "{ not json" },
@@ -29,7 +46,7 @@ describe("正解ファイルを読む（cli と bench の共有）", () => {
     expect(failure.path).toBe(path);
     expect(failure.reason).not.toBe("");
     expect(failure.reason).not.toMatch(/\n/);
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect("形の誤りの理由は、人が直せる日本語（種別と件目つき）。cli の出力と同じ文面", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
@@ -37,7 +54,7 @@ describe("正解ファイルを読む（cli と bench の共有）", () => {
     writeFileSync(path, JSON.stringify({ 決定: [{ text: "x", from: 5, to: 2, keywords: ["x"] }], TODO: [] }));
     const failure = yield* Effect.flip(readTruthFile(path));
     expect(failure.reason).toBe("「決定」の 1 件目: from が to より大きい");
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect("読めないファイル（無い）も InvalidTruthFile で、理由に読めなかった原因が入る", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
@@ -46,7 +63,7 @@ describe("正解ファイルを読む（cli と bench の共有）", () => {
     expect(failure._tag).toBe("InvalidTruthFile");
     expect(failure.path).toBe(path);
     expect(failure.reason).toContain("ENOENT");
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 });
 
 // cli の eval --screen-truth が使う、共有画面の正解ファイルの読み込み
@@ -63,7 +80,7 @@ describe("共有画面の正解ファイルを読む", () => {
     };
     writeFileSync(path, JSON.stringify(truth));
     expect(yield* readScreenTruthFile(path)).toEqual(truth);
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect.each([
     { name: "JSON 構文", content: "{ not json" },
@@ -81,7 +98,7 @@ describe("共有画面の正解ファイルを読む", () => {
     expect(failure.path).toBe(path);
     expect(failure.reason).not.toBe("");
     expect(failure.reason).not.toMatch(/\n/);
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect.each([
     { name: "話だけが配列でない", truth: { 指す発言: [], 話だけ: "x", 出てはいけない: [] }, reason: "「話だけ」は配列で書く" },
@@ -94,7 +111,7 @@ describe("共有画面の正解ファイルを読む", () => {
     writeFileSync(path, JSON.stringify(truth));
     const failure = yield* Effect.flip(readScreenTruthFile(path));
     expect(failure.reason).toBe(reason);
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect("読めないファイル（無い）も InvalidTruthFile で、理由に読めなかった原因が入る", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
@@ -103,5 +120,5 @@ describe("共有画面の正解ファイルを読む", () => {
     expect(failure._tag).toBe("InvalidTruthFile");
     expect(failure.path).toBe(path);
     expect(failure.reason).toContain("ENOENT");
-  }).pipe(Effect.scoped));
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 });

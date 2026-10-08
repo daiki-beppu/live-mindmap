@@ -2,7 +2,7 @@
 // 引数の誤りは effect/cli の既定の Formatter が出力し、中身の失敗はタグ付きにして、入口で日本語の説明付きの 1 行（<パス>: <説明>（<理由>））にする。
 import { Cause, Console, Effect, Predicate, Result, Schema } from "effect";
 import { CliError } from "effect/cli";
-import { describe, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
+import { describe, fileReason, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
 
 // server/package.json は private で version を持たない。--version の正本はここ
 export const BENCH_VERSION = "0.1.0";
@@ -52,7 +52,7 @@ export const reportFailure = (cause: Cause.Cause<unknown>) => {
 export const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
 
 export const readInputText = (path: string) =>
-  readTextFile(path).pipe(Effect.mapError((reason) => new InvalidInputFile({ path, reason })));
+  readTextFile(path).pipe(Effect.mapError((e) => new InvalidInputFile({ path, reason: fileReason(e) })));
 
 export const inputFileError = (path: string) => (error: Schema.SchemaError) =>
   new InvalidInputFile({ path, reason: oneLine(error.message) });
