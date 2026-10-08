@@ -58,7 +58,7 @@ private func twoChannelInterleavedAudio(
     return CapturedAudio(buffer: buffer, hostTime: hostTime)
 }
 
-/// 音声を全部読み切ってから、仕込んだ結果を返す偽の Transcriber（`RecognizeTests.FakeTranscriber` と同じ形）。
+/// 音声を全部読み切ってから、仕込んだ結果を返す偽の Transcriber（`RecognizeITTests.FakeTranscriber` と同じ形）。
 /// 読み切ってから返すので、判定する時点で音量の記録が揃い、競合しない。
 private final class FakeTranscriber: Transcriber, @unchecked Sendable {
     private let results: [TranscriptionResult]

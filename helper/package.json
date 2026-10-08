@@ -4,7 +4,10 @@
   "license": "MIT",
   "scripts": {
     "build-apm": "test -f .deps/webrtc-apm/lib/libwebrtc-audio-processing-2.a || bash scripts/build-webrtc-apm.sh",
-    "test": "pnpm typecheck && swift test --skip-build",
+    "test": "pnpm typecheck && swift test --skip-build --skip 'ITTests/|HeavyTests/'",
+    "test:it": "pnpm typecheck && swift test --skip-build --filter 'ITTests/'",
+    "test:it:heavy": "pnpm typecheck && swift test --skip-build --filter 'HeavyTests/'",
+    "test:it:all": "pnpm typecheck && swift test --skip-build --filter 'ITTests/|HeavyTests/'",
     "typecheck": "pnpm build-apm && swift build --build-tests -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
   }
 }

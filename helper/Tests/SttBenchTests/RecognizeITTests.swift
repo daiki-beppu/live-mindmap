@@ -53,7 +53,7 @@ private final class Collector: @unchecked Sendable {
 }
 
 @Suite("認識結果から出力の 1 行まで")
-struct RecognizeTests {
+struct RecognizeITTests {
     @Test("結果の本文・区間・確定フラグはそのまま、到着時刻は流し始めからの秒で、届いた順に出る")
     func resultsBecomeLines() async throws {
         let url = try writeSilence(seconds: 0.35)

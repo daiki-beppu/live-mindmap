@@ -38,7 +38,7 @@ private func duration(of url: URL) throws -> Double {
 }
 
 @Suite("録音")
-struct RecordingTests {
+struct RecordingITTests {
     @Test("2 チャンネル・1 チャンネルのどちらの入力でも、AAC・モノラルのファイルになる")
     func writesMonoAAC() throws {
         let directory = try temporaryDirectory()
@@ -154,7 +154,7 @@ struct RecordingTests {
 
 // Issue #161: 起動し直すたびに録音ファイルの番号を増やす（CT-AUDIO-NAME）。1 回目の名前は変えない（order.md:68）。
 @Suite("録音ファイルの名前（起動し直しの番号）")
-struct RecordingFileNameTests {
+struct RecordingFileNameITTests {
     @Test("1 回目（attempt == 1）は番号を付けない")
     func firstAttemptHasNoSuffix() {
         #expect(recordingFileName(track: .相手, attempt: 1) == "相手.m4a")
@@ -175,7 +175,7 @@ struct RecordingFileNameTests {
 }
 
 @Suite("録音のラッパー")
-struct RecordingStreamTests {
+struct RecordingStreamITTests {
     private func makeRecorder(in directory: URL, origin: UInt64) throws -> (TrackRecorder, URL) {
         let url = directory.appendingPathComponent("相手.m4a")
         return (try TrackRecorder(url: url, origin: origin), url)

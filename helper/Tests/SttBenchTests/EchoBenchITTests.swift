@@ -49,7 +49,7 @@ private final class DelayingCanceller: EchoCanceller, @unchecked Sendable {
 }
 
 @Suite("エコー計測: マイク信号の組み立て")
-struct BuildMicrophoneTests {
+struct BuildMicrophoneITTests {
     @Test("漏れは mic[i] = gain * ref[i - d]、i < d では 0。発話が無い区間のマイクは漏れだけになる")
     func leakIsDelayedAndAttenuated() {
         let reference = (0..<1_000).map { Float($0 + 1) }
@@ -91,7 +91,7 @@ struct BuildMicrophoneTests {
 }
 
 @Suite("エコー計測: 1 インスタンスでの連続処理")
-struct RunCancellerTests {
+struct RunCancellerITTests {
     @Test("reverse → capture を 480 サンプルずつ、全区間で交互に同じインスタンスへ渡し、渡す内容は入力そのもの")
     func feedsFramesInOrderToOneInstance() {
         let reference = (0..<(frame * 4)).map { Float($0) }
@@ -141,7 +141,7 @@ struct RunCancellerTests {
 }
 
 @Suite("エコー計測: 候補と wav")
-struct EchoCandidateTests {
+struct EchoCandidateITTests {
     @Test("候補名は baseline、production、bypass-<有限な 0 以上の秒> だけ")
     func parsesCandidates() {
         #expect(EchoCandidate("baseline") == .baseline)
@@ -193,7 +193,7 @@ struct EchoCandidateTests {
 }
 
 @Suite("エコー計測: 出力の遅れと残り方の数字")
-struct WindowResultsTests {
+struct WindowResultsITTests {
     private let seconds = 4
     private var count: Int { rate * seconds }
 

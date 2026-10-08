@@ -97,7 +97,7 @@ private struct Session {
 }
 
 @Suite("録音の混合")
-struct MixTests {
+struct MixITTests {
     @Test("全トラックの全ファイルを 0 秒から重ね、一番長い入力の長さの AAC・モノラルが 1 本できる")
     func mixesAllTracksToLongest() async throws {
         let session = try Session.make()

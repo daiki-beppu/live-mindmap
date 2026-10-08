@@ -91,7 +91,7 @@ private func projectionEnergy(_ signal: [Float], onto basis: [Float], range: Ran
 private func decibels(_ ratio: Double) -> Double { 10 * log10(ratio) }
 
 @Suite("エコーキャンセル（実際の WebRTC AEC3）", .timeLimit(.minutes(2)))
-struct EchoCancellerTests {
+struct EchoCancellerHeavyTests {
     @Test("40 ms 遅れて −6 dB に減衰した参照の成分が 15 dB 以上減り、参照と無関係な信号は 10 dB 以上は減らない")
     func removesDelayedReferenceAndKeepsUnrelatedSignal() throws {
         let count = sampleRate * seconds
@@ -147,7 +147,7 @@ private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [In
 }
 
 @Suite("エコーキャンセルの開始直後（実際の WebRTC AEC3）", .timeLimit(.minutes(2)))
-struct EchoCancellerStartupTests {
+struct EchoCancellerStartupHeavyTests {
     @Test("漏れの無い条件で、発話が開始 1・2・3・5 秒に始まっても、その 1 秒の残り方が定常（15 秒）との差 3 dB 未満")
     func startupRetentionMatchesSteadyState() throws {
         for from in [1, 2, 3, 5] {

@@ -7,7 +7,7 @@ import HelperCore
 // 1 つの条件（遅れ・漏れの減衰・候補）につき canceller を 1 つだけ作り、
 // 会議の音を参照にして、遅れと減衰をかけた漏れ + 既知の発話（開始 5 / 30 / 60 秒など）を 1 本の連続した流れで通す。
 // 発話の残り方は、出力を入力の遅れだけ進めたうえで、元の発話と同じ向きの成分のエネルギーで比べる
-// （手法は Tests/HelperCoreTests/EchoCancellerTests.swift と同じ）。
+// （手法は Tests/HelperCoreTests/EchoCancellerHeavyTests.swift と同じ）。
 
 /// 合成したマイクの信号。`leak` と `utterances` は、`microphone` に足した成分そのもの（全長）。
 struct EchoMicrophone {
