@@ -1,4 +1,4 @@
-// 差分更新の Layer。Service DiffUpdater は core にあり、実装は claude.ts の ClaudeDiffUpdater.layer。
+// 差分更新の Layer。Service DiffUpdater は core にあり、実装は claude.ts の layerClaude。
 // claude.ts は Claude Agent SDK を読み込むので、使うコマンドの handler が動くときだけ開く（import も遅らせる）。
 import { Effect, Layer, Schema } from "effect";
 
@@ -11,5 +11,5 @@ export const claudeUpdaterLayer = Layer.unwrap(
   Effect.tryPromise({
     try: () => import("./claude.ts"),
     catch: (e) => new UpdaterUnavailable({ message: e instanceof Error ? e.message : String(e) }),
-  }).pipe(Effect.map(({ ClaudeDiffUpdater, AgentSdk }) => ClaudeDiffUpdater.layer.pipe(Layer.provide(AgentSdk.layer)))),
+  }).pipe(Effect.map(({ layerClaude, AgentSdk }) => layerClaude.pipe(Layer.provide(AgentSdk.layer)))),
 );

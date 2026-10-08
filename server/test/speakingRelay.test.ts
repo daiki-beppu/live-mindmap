@@ -92,7 +92,7 @@ describe("途中結果の間引き（トラックごとに SPEAKING_INTERVAL_MS 
       yield* relay.partial("相手", "あい", false); // 予約中
       frames.length = 0;
 
-      yield* relay.stop();
+      yield* relay.stop;
 
       expect(textsOf(frames, "相手")).toEqual([""]);
       expect(textsOf(frames, "自分")).toEqual([""]);
@@ -100,7 +100,7 @@ describe("途中結果の間引き（トラックごとに SPEAKING_INTERVAL_MS 
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS * 5);
       yield* relay.partial("相手", "う", false);
       yield* relay.remark("相手");
-      yield* relay.flushAll();
+      yield* relay.flushAll;
       expect(frames).toEqual([]);
     }));
 });
@@ -133,7 +133,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
         Effect.gen(function* () {
           if (session) unreflectedAtPublish.push((yield* session.unreflectedRemarks).map((r) => r.id));
         }),
-      onDiff: Effect.suspend(() => relay!.flushAll()),
+      onDiff: Effect.suspend(() => relay!.flushAll),
     }).pipe(Effect.provide(Layer.mergeAll(updaterLayer(update), NodeFileSystem.layer)));
     session = started.session;
     relay = yield* createSpeakingRelay({ unreflected: session.unreflectedRemarks, send: (f) => Effect.sync(() => frames.push(f)) });

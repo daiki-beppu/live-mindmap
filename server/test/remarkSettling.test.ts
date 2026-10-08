@@ -118,7 +118,7 @@ describe("停止", () => {
       yield* settling.partial(partial("相手", 10, 11, "あ"));
       yield* settling.partial(partial("相手", 20, 21, "い"));
 
-      yield* settling.drain();
+      yield* settling.drain;
 
       expect(texts(emitted)).toEqual(["あ", "い"]);
       yield* TestClock.adjust(T * 5);
@@ -131,7 +131,7 @@ describe("停止", () => {
       yield* settling.partial(partial("相手", 10, 11, "あ")); // 予約中
       expect(yield* settling.scheduled).toBe(true);
 
-      yield* settling.stop();
+      yield* settling.stop;
 
       expect(yield* settling.scheduled).toBe(false);
       yield* TestClock.adjust(T * 5);
@@ -139,7 +139,7 @@ describe("停止", () => {
 
       yield* settling.partial(partial("相手", 20, 21, "い"));
       yield* settling.final(final("相手", 30, 31, "う。"));
-      yield* settling.drain();
+      yield* settling.drain;
       expect(yield* settling.scheduled).toBe(false);
       yield* TestClock.adjust(T * 5);
       expect(emitted).toEqual([]);

@@ -93,7 +93,7 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
         }),
       ),
     // 反映が終わったなど、未反映の発言が変わったとき、両トラックをすぐ送る
-    flushAll: () =>
+    flushAll:
       unlessStopped(
         Effect.gen(function* () {
           for (const track of TRACKS) yield* flush(track);
@@ -101,9 +101,9 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
       ),
     // 予約をすべて取り消し、両トラックの空の frame を送る。stop との違いは、以後も送れる状態を保つこと
     // （取り込みの途切れの瞬間に使う。永久停止すると、起動し直し後の字幕が届かなくなる。CT-SPEAKING-CLEAR）
-    clear: () => unlessStopped(emptyFrames()),
+    clear: unlessStopped(emptyFrames()),
     // 予約をすべて取り消し、両トラックの空の frame を送る。以後は何も送らない
-    stop: () =>
+    stop:
       unlessStopped(
         Effect.gen(function* () {
           yield* Ref.set(stopped, true);

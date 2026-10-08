@@ -85,7 +85,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             dir,
             title,
             publish,
-            onDiff: relay.flushAll(),
+            onDiff: relay.flushAll,
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
           const count = yield* Ref.make(0);
@@ -100,7 +100,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
           const screenCount = yield* Ref.make(0);
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
-          yield* Effect.addFinalizer(() => Effect.andThen(relay.stop(), settling.stop()));
+          yield* Effect.addFinalizer(() => Effect.andThen(relay.stop, settling.stop));
 
           return {
             dir,
@@ -113,9 +113,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 return yield* session.pushScreen({ start, image: { id: `s${n}`, bytes: image } });
               }),
             screenOff: (off) => session.pushScreenOff(off),
-            drain: settling.drain(),
-            clearSpeaking: relay.clear(),
-            stopRelays: Effect.andThen(relay.stop(), settling.stop()),
+            drain: settling.drain,
+            clearSpeaking: relay.clear,
+            stopRelays: Effect.andThen(relay.stop, settling.stop),
             appendLog,
             flush: session.flush,
             // テキストの 3 形式を書けないのは予期しない失敗なので defect にする（撮影・HTML の失敗は writeExportsAndCapture の中で警告にする）

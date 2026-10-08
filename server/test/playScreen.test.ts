@@ -15,7 +15,7 @@ import { fakeJpegBytes, fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 // play --screen を、CLI の入口から偽の Agent SDK の query まで通して確かめる（試すシームは CLI の play + 偽の query）。
 // cli.test.ts は claude.ts ごと偽の DiffUpdater に替えるので、メッセージの中身を見るこのファイルは別にして、
-// 本物の ClaudeDiffUpdater を残したまま AgentSdk.layer だけを偽物に替える。
+// 本物の layerClaude を残したまま AgentSdk.layer だけを偽物に替える。
 // 共有画面の画像の変換（PNG → JPEG）は Service ScreenJpeg の偽物（CI の ubuntu では sips を使えない）。
 
 type Block = { type: string; text?: string; source?: { type: string; media_type: string; data: string } };
