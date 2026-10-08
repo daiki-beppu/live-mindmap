@@ -29,6 +29,8 @@ jobs:
           code=$(printf '%s\n' "$files" | grep -Ev '^(docs/|LICENSE$)|\.md$' || true)
           ts=false; swift=false
           if printf '%s\n' "$code" | grep -Ev '^helper/' | grep -q .; then ts=true; fi
+          # helper/package.json は server のテスト（server/test/helperScripts.it.test.ts）が読むので、helper/ の中でもこれだけは ts も走らせる
+          if printf '%s\n' "$code" | grep -Fqx 'helper/package.json'; then ts=true; fi
           if printf '%s\n' "$code" | grep -Eq '^(helper/|\.github/workflows/)'; then swift=true; fi
           echo "ts=$ts" >> "$GITHUB_OUTPUT"; echo "swift=$swift" >> "$GITHUB_OUTPUT"
 
