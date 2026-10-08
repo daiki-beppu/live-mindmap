@@ -9,6 +9,7 @@ import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Track } from "../src/core/index.ts";
 import { describe } from "../src/truthFile.ts";
+import { exitNaturally } from "../src/exitNaturally.ts";
 import { BENCH_VERSION, MissingSessionDir, readInputText, reportFailure, write } from "./entry.ts";
 
 const TRACKS: readonly Track[] = ["相手", "自分"];
@@ -188,6 +189,6 @@ if (import.meta.main) {
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain({ disableErrorReporting: true }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

@@ -4,6 +4,7 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { Track } from "../src/core/index.ts";
+import { exitNaturally } from "../src/exitNaturally.ts";
 import { BENCH_VERSION, inputFileError, readInputText, readJsonFile, reportFailure, write } from "./entry.ts";
 
 // arrival は流し始めを 0 とする壁時計の秒、start / end は音声ファイルの秒
@@ -201,6 +202,6 @@ if (import.meta.main) {
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain({ disableErrorReporting: true }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

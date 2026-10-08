@@ -8,6 +8,7 @@ import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
+import { exitNaturally } from "../src/exitNaturally.ts";
 import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../src/truthFile.ts";
 import { BENCH_VERSION, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
@@ -140,6 +141,6 @@ if (import.meta.main) {
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(NodeServices.layer),
-    NodeRuntime.runMain({ disableErrorReporting: true }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }
