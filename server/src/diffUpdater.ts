@@ -7,7 +7,12 @@ export class UpdaterUnavailable extends Schema.TaggedError<UpdaterUnavailable>()
   message: Schema.String,
 }) {}
 
-export const claudeUpdaterLayer = Layer.unwrap(
+export const claudeUpdaterLayer = process.env.LOCAL_LLM_URL ? Layer.unwrap(
+  Effect.tryPromise({
+    try: () => import("./openaiCompat.ts"),
+    catch: (e) => new UpdaterUnavailable({ message: e instanceof Error ? e.message : String(e) }),
+  }).pipe(Effect.map(({ OpenAiCompatDiffUpdater }) => OpenAiCompatDiffUpdater.layer)),
+) : Layer.unwrap(
   Effect.tryPromise({
     try: () => import("./claude.ts"),
     catch: (e) => new UpdaterUnavailable({ message: e instanceof Error ? e.message : String(e) }),
