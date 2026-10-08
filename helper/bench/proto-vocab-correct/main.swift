@@ -7,6 +7,9 @@
 //   index: 読みの近さだけで決める（--min 以上で一番近い語に置き換える）
 //   llm:   読みで --min 以上の候補を出現ごとに --top 件まで絞り、FoundationModels に「候補の番号か NONE」を選ばせる
 //   --timeline を渡すと、置き換えた語が台本の同じ時間帯に出ているか（正しく直したか、誤って直したか）を数える
+//
+// 結論（#393）: 読みの索引で決定的に置き換える形（index --strict --min 0.8）を採る。LLM の判定（llm）は正しい置き換えを捨て、
+// ノイズの語を選ぶこともあったので採らない。誤りは語彙にふつうの語が混ざったときに出るので、語彙の側で防ぐ。
 import Foundation
 import FoundationModels
 
@@ -236,10 +239,11 @@ for raw in try String(contentsOfFile: args[0], encoding: .utf8).split(separator:
     var picks: [Int?] = occs.map { _ in 0 }
     if mode == "llm", !occs.isEmpty {
         let t0 = Date()
-        do { picks = try await decideLLM(text, occs) } catch {
+        var attempt = 0
+        while true { do { picks = try await decideLLM(text, occs); break } catch { attempt += 1; if attempt < 4 { try await Task.sleep(for: .seconds(3)); continue }
             failures += 1; err("判定に失敗（直さずに出す）: \(error.localizedDescription) \(String(describing: error).prefix(300))")
             picks = occs.map { _ in nil }
-        }
+        } }
         calls.append(Date().timeIntervalSince(t0))
     }
     var fixed = text as NSString
