@@ -2,17 +2,17 @@
 // - server: 本体の startup / realLayers をそのまま使い、helper を fake-helper に、差分更新を偽の updater に差し替える。
 //   ポートは空きポート、セッションのフォルダは一時フォルダ。本体にテスト用の口は足さない。
 // - web: Vite の開発サーバー。/ws は LIVE_MINDMAP_PORT（この server のポート）へ proxy される（web/vite.config.ts）。
-// - ファイル配信: セッションのフォルダの下を text/plain で返す、読み取り専用の小さな HTTP サーバー。書き出しのファイルを、テストが画面（locator）で判定するための口。
+// - ファイル配信（別ポートと、web の /session-files/）: セッションのフォルダの下を返す、読み取り専用の小さな HTTP サーバー。.html だけ text/html、ほかは text/plain。書き出しのファイルと見返しの map.html を、テストが画面（locator）で判定するための口。
 // - run-info（.run/<web のポート>.json）: テストが CLI を呼ぶための server のポートとセッションのフォルダ、ファイル配信のポート。target ごとに別ファイル（並行する起動が上書きし合わない）。
 // 使い方: node scripts/serve.ts --web-port <n> --events <台本の先頭から流す発言の件数>
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, normalize, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { NodeChildProcessSpawner, NodeFileSystem, NodePath, NodeRuntime } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
-import { createServer } from "vite";
+import { createServer, type ViteDevServer } from "vite";
 import { AudioMix } from "../../server/src/audioMix.ts";
 import { MapCapture } from "../../server/src/capture.ts";
 import type { DiffInput, Op } from "../../server/src/core/index.ts";
@@ -65,20 +65,21 @@ const program = Effect.gen(function* () {
   const port = yield* startup(options, realLayers(options, exportServices));
 
   // sessionsDir の外は読ませない。無いファイルは本文なしの 404 にする（ブラウザの本文に <pre> が出ない）
+  const serveFile = (urlPath: string, res: ServerResponse) => {
+    const path = normalize(join(sessionsDir, decodeURIComponent(urlPath)));
+    try {
+      if (!path.startsWith(sessionsDir + sep)) throw new Error("outside");
+      const body = readFileSync(path);
+      res.writeHead(200, { "content-type": path.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8" }).end(body);
+    } catch {
+      res.writeHead(404).end();
+    }
+  };
   const files = yield* Effect.acquireRelease(
     Effect.promise(
       () =>
         new Promise<ReturnType<typeof createHttpServer>>((resolve) => {
-          const http = createHttpServer((req, res) => {
-            const path = normalize(join(sessionsDir, decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname)));
-            try {
-              if (!path.startsWith(sessionsDir + sep)) throw new Error("outside");
-              const body = readFileSync(path);
-              res.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(body);
-            } catch {
-              res.writeHead(404).end();
-            }
-          });
+          const http = createHttpServer((req, res) => serveFile(new URL(req.url ?? "/", "http://x").pathname, res));
           http.listen(0, "127.0.0.1", () => resolve(http));
         }),
     ),
@@ -93,7 +94,9 @@ const program = Effect.gen(function* () {
   process.env.LIVE_MINDMAP_PORT = String(port);
   yield* Effect.acquireRelease(
     Effect.promise(async () => {
-      const vite = await createServer({ root: webDir, server: { host: "127.0.0.1", port: webPort, strictPort: true } });
+      // /session-files/ は同じ配信を web と同じ origin（ポート）でも返す。replay cache は origin 込みで画面を照合するため、ポートが毎回変わるファイル配信の origin では agent.act の記録が再生できない
+      const sessionFiles = { name: "session-files", configureServer: (server: ViteDevServer) => void server.middlewares.use("/session-files", (req, res) => serveFile(new URL(req.url ?? "/", "http://x").pathname, res)) };
+      const vite = await createServer({ root: webDir, plugins: [sessionFiles], server: { host: "127.0.0.1", port: webPort, strictPort: true } });
       await vite.listen();
       return vite;
     }),

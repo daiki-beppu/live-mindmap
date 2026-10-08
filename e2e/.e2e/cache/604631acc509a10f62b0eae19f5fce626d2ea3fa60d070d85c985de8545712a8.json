@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "trace-1",
+  "createdAt": "2026-10-08T17:05:11.559Z",
+  "payload": {
+    "actions": [
+      {
+        "name": "tap",
+        "summary": "tap slider \"時刻\"",
+        "target": {
+          "role": "slider",
+          "name": "時刻"
+        }
+      },
+      {
+        "name": "press",
+        "summary": "press \"Home\" on slider \"時刻\"",
+        "target": {
+          "role": "slider",
+          "name": "時刻"
+        },
+        "key": "Home"
+      }
+    ],
+    "executor": {
+      "name": "e2e-default-agent",
+      "version": "2"
+    },
+    "recordedFor": {
+      "testId": "tests/review/review.e2e.ts::%E8%A6%8B%E8%BF%94%E3%81%97%3A%20%E6%99%82%E5%88%BB%E3%82%92%E5%85%88%E9%A0%AD%E3%81%B8%E5%8B%95%E3%81%8B%E3%81%99%E3%81%A8%E3%80%81%E7%B5%82%E3%82%8F%E3%82%8A%E3%81%A7%E6%8F%83%E3%81%A3%E3%81%A6%E3%81%84%E3%81%9F%E3%83%8E%E3%83%BC%E3%83%89%E3%81%8C%E3%83%AB%E3%83%BC%E3%…",
+      "targetId": "web-full",
+      "instructionDigest": "fb74c4bae2ddf2f4fc9a8fe476d6dc6ca941bf0efea080957b2fc1f86c56bc12",
+      "paramsDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "callIndex": 0,
+      "agent": "default"
+    },
+    "summary": "「時刻」スライダーをクリックしてフォーカスし、Home キーを押しました。表示時刻が 0:00:00 / 0:01:00 になったことを確認しました。「反映 1 つ戻る」ボタンは使用していません。",
+    "startPath": "/session-files/review/map.html",
+    "endPath": "/session-files/review/map.html",
+    "endAnchors": [
+      {
+        "text": "0:00:00 / 0:01:00"
+      }
+    ],
+    "goneAnchors": [
+      {
+        "text": "要点1"
+      },
+      {
+        "text": "要点2"
+      },
+      {
+        "text": "要点3"
+      },
+      {
+        "text": "自分"
+      },
+      {
+        "text": "担当は田中さんです"
+      },
+      {
+        "text": "追加"
+      },
+      {
+        "text": "要点"
+      },
+      {
+        "testId": "rf__node-n1"
+      }
+    ],
+    "endWaitMs": 11983
+  }
+}
