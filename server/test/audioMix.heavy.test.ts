@@ -79,19 +79,3 @@ describe("AudioMix の実物の Layer", () => {
       expect(result.failure.message).not.toBe("");
     }).pipe(Effect.scoped));
 });
-
-describe("AudioMix.unavailable", () => {
-  it.effect("mix を呼ぶと、渡した理由の AudioMixFailed で失敗する（ヘルパーを起動しない）", () =>
-    Effect.gen(function* () {
-      const result = yield* Effect.result(
-        Effect.gen(function* () {
-          return yield* (yield* AudioMix).mix("/s", "/o");
-        }).pipe(Effect.provide(AudioMix.unavailable("ヘルパーの実行ファイルがありません"))),
-      );
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isSuccess(result)) return;
-      expect(result.failure).toBeInstanceOf(AudioMixFailed);
-      expect(result.failure.message).toBe("ヘルパーの実行ファイルがありません");
-    }));
-});

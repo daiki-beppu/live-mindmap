@@ -9,7 +9,7 @@ import { decodeHelperEvent } from "../src/core/index.ts";
 // 知らない type は失敗ではなく { kind: "unknown" }、壊れた入力（不正な JSON を含む）はタグ付きの失敗になる。
 
 // decode の成功を主張し、decode した値を返す。失敗していれば SchemaError の message を示して落ちる
-// （coreSchema.it.test.ts の expectDecodeSuccess と同じ idiom）
+// （fixtures/coreSchema.ts の expectDecodeSuccess と同じ idiom）
 function expectDecodeSuccess<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
   return Effect.gen(function* () {
     const result = yield* Effect.result(effect);
