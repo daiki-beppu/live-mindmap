@@ -7,9 +7,9 @@
 //
 // 段 3（Issue #240）で、ヘルパーのイベントの Schema は decodeHelperEvent から production 経路
 // （Sessions の読み取りループ）へつながった（order.md:34, 47、CT-DECODE-WIRED）。このテストは
-// Schema を直接 decode するだけで、decodeHelperEvent・evaluate.ts の parseTruth・session.ts の
+// Schema を直接 decode するだけで、decodeHelperEvent・session.ts の
 // restoreSession は呼ばない。decodeHelperEvent の型の見分け・タグ付きの失敗の振る舞いは
-// server/test/live.test.ts が固定し、parseTruth・restoreSession は eval.test.ts・restore.test.ts
+// server/test/live.test.ts が固定し、正解ファイルの検証（readTruthFile）・restoreSession は eval.test.ts・restore.test.ts
 // が引き続き固定する（このファイルでは変更しない）。
 //
 // 例外は「空の根拠を持つ操作のログ行」の確認（下の describe）だけで、session.ts の makeSession を
