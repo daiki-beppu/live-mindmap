@@ -6,6 +6,7 @@ import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import { AudioMix } from "./audioMix.ts";
 import { embedReviewAudio, embedReviewLicenses, embedReviewLog } from "./core/index.ts";
+import { readLogLines } from "./logLines.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 
@@ -78,17 +79,13 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
 // 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は書く）。音声は版のファイルを書く前に取る
 export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPath: string, variants: readonly ReviewVariant[]) {
   const fs = yield* FileSystem.FileSystem;
-  const text = yield* fs.readFileString(logPath).pipe(Effect.mapError(failed));
-  const events: unknown[] = [];
-  for (const [index, line] of text.split("\n").entries()) {
-    if (line.trim() === "") continue;
-    events.push(
-      yield* Effect.try({
-        try: (): unknown => JSON.parse(line),
-        catch: (e) => new ReviewPageFailed({ message: `${logPath} の ${index + 1} 行目が JSON として読めません: ${e instanceof Error ? e.message : String(e)}` }),
-      }),
-    );
-  }
+  const { events } = yield* readLogLines(logPath).pipe(
+    Effect.mapError((e) =>
+      e._tag === "BrokenLogLine"
+        ? new ReviewPageFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` })
+        : failed(e),
+    ),
+  );
   const { build } = yield* ReviewBuild;
   const template = yield* build();
   const pages: { path: string; html: string }[] = [];

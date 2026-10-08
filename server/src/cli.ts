@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
-import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Console, Effect, FileSystem, Layer, Option, Predicate, Result, Schema } from "effect";
+import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
@@ -33,6 +32,7 @@ import {
 } from "./core/index.ts";
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
+import { BrokenLogLine, readLogLines } from "./logLines.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
@@ -48,7 +48,7 @@ import {
   writeExportsAndCapture,
   writeReviews,
 } from "./sessionFiles.ts";
-import { describe, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
+import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 
 // セッションのファイル操作は sessionFiles.ts にある。既存の import 元（cli.ts）を保つために再公開する
@@ -67,10 +67,6 @@ class NoSession extends Schema.TaggedError<NoSession>()("NoSession", { sessionsD
 class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
 class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()("InvalidTranscriptFile", {
   path: Schema.String,
-  reason: Schema.String,
-}) {}
-class BrokenLogLine extends Schema.TaggedError<BrokenLogLine>()("BrokenLogLine", {
-  line: Schema.Number,
   reason: Schema.String,
 }) {}
 // 下位のモジュール（配信・再生・ファイルの読み書き）の失敗。message はそのまま入口の 1 行になる
@@ -148,17 +144,28 @@ const decodeReason = (error: Schema.SchemaError): string =>
 // 標準出力。Console.log が末尾に改行を足すので、改行の規則（withoutFinalNewline）で末尾の 1 つを外して渡す
 const write = (text: string) => Console.log(withoutFinalNewline(text));
 
+// ファイル操作の失敗（PlatformError）を入口の 1 行にする。理由は OS のエラー（ENOENT など）の文面
+const fileFailed = (e: PlatformError.PlatformError) => new CommandFailed({ message: fileReason(e) });
+const orFileFailed = <A, E, R>(effect: Effect.Effect<A, E | PlatformError.PlatformError, R>) =>
+  effect.pipe(Effect.catchIf(PlatformError.isPlatformError, (e) => Effect.fail(fileFailed(e))));
+
+// パスの存在判定。親が通常ファイル（ENOTDIR）のときは「存在しない」。それ以外の失敗は PlatformError のまま返す
+const pathExists = (fs: FileSystem.FileSystem, path: string) =>
+  fs.exists(path).pipe(
+    Effect.catchIf(
+      (e) => PlatformError.isPlatformError(e) && Predicate.hasProperty(e.cause, "code") && e.cause.code === "ENOTDIR",
+      () => Effect.succeed(false),
+    ),
+  );
+
 // セッションのフォルダ（名前は開始時刻）のうち、file を持つ最新のもの
-const latestSession = (sessionsDir: string, file: string) =>
-  Effect.suspend(() => {
-    const latest = existsSync(sessionsDir)
-      ? readdirSync(sessionsDir)
-          .filter((d) => existsSync(join(sessionsDir, d, file)))
-          .sort()
-          .at(-1)
-      : undefined;
-    return latest === undefined ? new NoSession({ sessionsDir }) : Effect.succeed(latest);
-  });
+const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string, file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const latest = (yield* pathExists(fs, sessionsDir))
+    ? (yield* Effect.filter(yield* fs.readDirectory(sessionsDir), (d) => pathExists(fs, join(sessionsDir, d, file)))).sort().at(-1)
+    : undefined;
+  return latest === undefined ? yield* new NoSession({ sessionsDir }) : latest;
+}, orFileFailed);
 
 /* ----------------------------------------------------------------------------
  * セッションの保存・公開（ライブのセッションとも共有する）
@@ -215,7 +222,7 @@ const requestServer = <A>(
 // slides.tsv を読み、行ごとの画像を JPEG にして play の Scope の一時フォルダへ 1 件ずつ書く。
 // 変化の列は、再生が入れる直前にその一時ファイルを読む形で返す（全画像のバイト列を再生の終わりまで持たない）
 const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
-  const text = yield* readTextFile(tsv).pipe(Effect.mapError((reason) => new CommandFailed({ message: `${tsv} が読めません: ${reason}` })));
+  const text = yield* readTextFile(tsv).pipe(Effect.mapError((e) => new CommandFailed({ message: `${tsv} が読めません: ${fileReason(e)}` })));
   const rows = yield* Effect.fromResult(parseSlides(text)).pipe(Effect.mapError((reason) => new CommandFailed({ message: `${tsv} が不正です: ${reason}` })));
   const converter = yield* ScreenJpeg;
   const fs = yield* FileSystem.FileSystem;
@@ -235,9 +242,9 @@ const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
 // 画像は元のフォルダの screens/ から、入れる直前に読む。変化の時刻はログの start をそのまま使う
 const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: string) {
   const logPath = join(dir, LOG_FILE);
-  if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
   const fs = yield* FileSystem.FileSystem;
-  const { lines, events } = yield* readLogLines(logPath);
+  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+  const { lines, events } = yield* readLogLines(logPath).pipe(orFileFailed);
   let title: string | undefined;
   const remarks: Remark[] = [];
   const screens: PlaybackScreen<CommandFailed>[] = [];
@@ -288,14 +295,18 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
 });
 
 const readTranscriptRemarks = Effect.fn("readTranscriptRemarks")(function* (transcript: string) {
-  const text = yield* readTextFile(transcript).pipe(Effect.mapError((reason) => new InvalidTranscriptFile({ path: transcript, reason })));
+  const text = yield* readTextFile(transcript).pipe(Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: fileReason(e) })));
   const file = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
     Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
   );
   return [...fromTranscript(file)];
 });
 
-const isDirectory = (path: string): boolean => statSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
+// 無いパスは false（ファイルを渡す play の入口でも失敗にしない）
+const isDirectory = Effect.fn("isDirectory")(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return (yield* fs.exists(path)) && (yield* fs.stat(path)).type === "Directory";
+}, orFileFailed);
 
 const play = Command.make(
   "play",
@@ -323,7 +334,7 @@ const play = Command.make(
     function* ({ realtime, screen, transcript }) {
       const sessionsDir = yield* sessionsDirConfig;
       const port = yield* portConfig;
-      const folder = isDirectory(transcript);
+      const folder = yield* isDirectory(transcript);
       if (folder && Option.isSome(screen)) {
         return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
       }
@@ -463,7 +474,7 @@ const exportCommand = Command.make(
     const sessionsDir = yield* sessionsDirConfig;
     const latest = yield* latestSession(sessionsDir, EXPORT_FILE);
     const path = join(sessionsDir, latest, EXPORT_FILE);
-    const text = yield* readTextFile(path).pipe(Effect.mapError((message) => new CommandFailed({ message })));
+    const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
     if (format === "json") {
       // json はマップの形を使わないので、保存した値をそのまま出す（宣言していないキーも落とさない）
       const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
@@ -479,31 +490,13 @@ const exportCommand = Command.make(
   }),
 ).pipe(Command.withDescription("最新のセッションのマップを標準出力に出す（既定は md。ファイルは作らない）"));
 
-// log.jsonl を 1 行ずつ JSON として読む。行番号は空行を除く前に採る（人がログを開いたときの行と合わせる）。restore と eval で共有する
-const readLogLines = Effect.fn("readLogLines")(function* (path: string) {
-  const text = yield* readTextFile(path).pipe(Effect.mapError((message) => new CommandFailed({ message })));
-  const lines = text
-    .split("\n")
-    .map((line, i) => ({ text: line, no: i + 1 }))
-    .filter((line) => line.text.trim() !== "");
-  const events: unknown[] = [];
-  for (const line of lines) {
-    events.push(
-      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(line.text).pipe(
-        Effect.mapError((e) => new BrokenLogLine({ line: line.no, reason: decodeReason(e) })),
-      ),
-    );
-  }
-  return { lines, events };
-});
-
 const restore = Command.make(
   "restore",
   {},
   Effect.fn("restore")(function* () {
     const sessionsDir = yield* sessionsDirConfig;
     const dir = join(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
-    const { lines, events } = yield* readLogLines(join(dir, LOG_FILE));
+    const { lines, events } = yield* readLogLines(join(dir, LOG_FILE)).pipe(orFileFailed);
     // 復元では差分更新を呼ばない。呼ばれたら defect にする。ログは書き直さない。画像は差分更新に添えるときにだけ読むので、ここでは読まない
     const session = yield* restoreSession(events).pipe(
       Effect.provide(
@@ -516,10 +509,8 @@ const restore = Command.make(
       Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new BrokenLogLine({ line: lines[e.index]?.no ?? 1, reason: e.reason }))),
     );
     const exported = yield* session.exportJson;
-    yield* Effect.try({
-      try: () => writeFileSync(join(dir, EXPORT_FILE), JSON.stringify(exported)),
-      catch: (e) => new CommandFailed({ message: describe(e) }),
-    });
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(exported)).pipe(orFileFailed);
     yield* write(`${dir}\n`);
   }, Effect.scoped),
 ).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す"));
@@ -544,7 +535,8 @@ const review = Command.make(
           return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
         });
     const logPath = join(dir, LOG_FILE);
-    if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
     if (selfOnly) {
       const variants = yield* selfReviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
@@ -589,21 +581,23 @@ const evaluate = Command.make(
     // 正解ファイルの検証は共有の readTruthFile（段 1 の Truth の Schema）が持つ（Flag 側では検証しない）
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const screen = Option.isNone(screenTruth) ? undefined : yield* readScreenTruthFile(screenTruth.value);
+    const fs = yield* FileSystem.FileSystem;
     const runs: Run[] = [];
     for (const dir of sessions) {
       const path = join(dir, EXPORT_FILE);
-      if (!existsSync(path)) return yield* new MissingRunExport({ path });
-      const text = yield* readTextFile(path).pipe(Effect.mapError((message) => new CommandFailed({ message })));
+      if (!(yield* pathExists(fs, path).pipe(orFileFailed))) return yield* new MissingRunExport({ path });
+      const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
       const exp = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonExport))(text).pipe(
         Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
       );
       const logPath = join(dir, LOG_FILE);
-      if (!existsSync(logPath)) {
+      if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) {
         runs.push({ name: basename(dir), title: exp.root.text, exp });
         continue;
       }
       // 検証は restore と同じ restoreState で行う。壊れた行は、どのランか分かるようにパスと行番号を添えて失敗にする
       const { lines, events } = yield* readLogLines(logPath).pipe(
+        orFileFailed,
         Effect.catchTag("BrokenLogLine", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` }))),
       );
       yield* restoreState(events).pipe(

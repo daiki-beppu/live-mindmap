@@ -222,7 +222,7 @@ describe("writeReviewPages", () => {
     expect(existsSync(join(dir, "map.html"))).toBe(false);
   }));
 
-  it.effect("読めない行があれば ReviewPageFailed にし、理由に行番号（空行を数える）を含める。HTML は書かない", () => Effect.gen(function* () {
+  it.effect("読めない行があれば ReviewPageFailed にし、「<path> の <n> 行目が JSON として読めません: <1 行の理由>」とする。行番号は空行を除く前に数える。HTML は書かない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const logPath = join(dir, "log.jsonl");
     writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n\n{broken\n`);
@@ -232,7 +232,9 @@ describe("writeReviewPages", () => {
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) {
       expect(result.failure).toBeInstanceOf(ReviewPageFailed);
-      expect(result.failure.message).toContain("3");
+      const prefix = `${logPath} の 3 行目が JSON として読めません: `;
+      expect(result.failure.message.startsWith(prefix)).toBe(true);
+      expect(result.failure.message.slice(prefix.length)).toMatch(/^[^\n]+$/);
     }
     expect(existsSync(join(dir, "map.html"))).toBe(false);
   }));
