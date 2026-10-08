@@ -85,7 +85,8 @@ private let maximumOutputDelaySamples = 960  // 20 ms
 
 /// 参照を無音にして雑音だけをマイクに通し、出力が入力より何サンプル遅れるかを測る（相関が最大になる遅れ）。
 /// AEC3 の出力は帯域分割などの内部の遅れで入力より遅れる。そのまま比べると、無関係な信号まで消えて見える。
-func measureOutputDelay(makeCanceller: () throws -> any EchoCanceller) throws -> Int {
+/// `correlationSamples` は相関を取る区間の長さ。本番は既定の 1 秒を使う。
+func measureOutputDelay(correlationSamples: Int = echoSampleRate, makeCanceller: () throws -> any EchoCanceller) throws -> Int {
     let count = 2 * echoSampleRate
     var noise = DeterministicNoise(state: 9)
     var high: Float = 0
@@ -104,7 +105,7 @@ func measureOutputDelay(makeCanceller: () throws -> any EchoCanceller) throws ->
     var best = (delay: 0, energy: 0.0)
     for delay in 0...maximumOutputDelaySamples {
         var dot = 0.0
-        for i in (echoSampleRate / 2)..<(echoSampleRate + echoSampleRate / 2) { dot += Double(output[i + delay]) * Double(input[i]) }
+        for i in (echoSampleRate / 2)..<(echoSampleRate / 2 + correlationSamples) { dot += Double(output[i + delay]) * Double(input[i]) }
         if abs(dot) > best.energy { best = (delay, abs(dot)) }
     }
     return best.delay

@@ -195,8 +195,11 @@ struct WindowResultsTests {
 
     @Test("出力の遅れの測定: 参照を無音にして雑音を通し、相関が最大になる遅れを返す")
     func measuresOutputDelay() throws {
-        #expect(try measureOutputDelay(makeCanceller: { DelayingCanceller(delaySamples: 0) }) == 0)
-        #expect(try measureOutputDelay(makeCanceller: { DelayingCanceller(delaySamples: 137) }) == 137)
+        // 相関を取る区間は 100 ms に縮める（本番は 1 秒）。探す遅れの範囲（0〜960）は同じで、区間は雑音の相関の幅より十分長いので、
+        // 正しい遅れの内積（区間内の入力のエネルギー）がほかの遅れの内積を上回る。向きの逆転・1 サンプルのずれ・範囲不足は元と同じく捕まえる。
+        let correlationSamples = rate / 10
+        #expect(try measureOutputDelay(correlationSamples: correlationSamples, makeCanceller: { DelayingCanceller(delaySamples: 0) }) == 0)
+        #expect(try measureOutputDelay(correlationSamples: correlationSamples, makeCanceller: { DelayingCanceller(delaySamples: 137) }) == 137)
     }
 
     @Test("何も消さない canceller なら、発話の残り方は 0 dB、漏れの低下量は 0 dB")
