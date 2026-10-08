@@ -1,6 +1,6 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
-import { Cause, Context, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, type Scope } from "effect";
+import { Cause, Context, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, type Scope } from "effect";
 import { diffMaps, type Change } from "./changes.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
@@ -275,7 +275,6 @@ type InFlight = Reservation | { readonly kind: "running"; readonly fiber: Fiber.
 
 type Runtime = {
   readonly inFlight: InFlight | undefined;
-  readonly waiter: Fiber.Fiber<void> | undefined; // QUIET_MS の待ち
   readonly quiet: boolean; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
   readonly reflecting: readonly Remark[]; // 差分更新の結果待ちの発言。結果を log する直前に外す
   readonly unsentScreens: readonly HeldScreen[]; // まだ差分更新に添えていない共有画面の変化（受け取った順）
@@ -312,7 +311,9 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
     const log = yield* SessionLog;
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, inFlight: undefined, waiter: undefined, quiet: false, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received });
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, inFlight: undefined, quiet: false, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received });
+    // QUIET_MS の待ち。Scope を閉じると中断される
+    const quietWaiter = yield* FiberHandle.make<void, never>();
 
     // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
     // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
@@ -415,23 +416,18 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
       );
     }
 
-    const cancelWaiter = Effect.gen(function* () {
-      const waiter = yield* Ref.modify(ref, (s): [Fiber.Fiber<void> | undefined, SessionState & Runtime] => [s.waiter, { ...s, waiter: undefined }]);
-      if (waiter) yield* Fiber.interrupt(waiter);
-    });
+    const cancelWaiter = FiberHandle.clear(quietWaiter);
 
     // 最後の発言から QUIET_MS 新しい発言が来なければ、たまった分で差分更新を呼ぶ。新しい発言が来たら中断して取り消す。
     // 待ちが切れた後の処理は中断させない（取り出した発言を取りこぼさない）
-    const waitForQuiet = Effect.gen(function* () {
-      const fiber = yield* Effect.forkIn(
+    const waitForQuiet = Effect.asVoid(
+      FiberHandle.run(
+        quietWaiter,
         Effect.sleep(QUIET_MS).pipe(
           Effect.andThen(Effect.uninterruptible(Effect.andThen(Ref.update(ref, (s) => ({ ...s, quiet: true })), startDiffIfReady(1)))),
         ),
-        scope,
-        { startImmediately: true },
-      );
-      yield* Ref.update(ref, (s) => ({ ...s, waiter: fiber }));
-    });
+      ),
+    );
 
     const idle: Effect.Effect<void> = Effect.gen(function* () {
       for (;;) {
