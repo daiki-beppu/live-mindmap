@@ -120,3 +120,10 @@ describe("styles.css: 選んだノード", () => {
     expect(selectedAt).toBeGreaterThan(foldedAt);
   });
 });
+
+describe("styles.css: 人が開いたノードの小さな丸", () => {
+  it("ノードの実寸を変えないよう絶対位置で置き、ホバーしたときだけ出す", () => {
+    expect(rule(".map-node__fold-dot")).toMatch(/position\s*:\s*absolute/);
+    expect(css).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
+  });
+});

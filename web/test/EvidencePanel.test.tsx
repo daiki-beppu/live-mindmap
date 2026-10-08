@@ -4,6 +4,8 @@ import type { Snapshot } from "../../server/src/core/index.ts";
 import { EvidencePanel } from "../src/EvidencePanel.tsx";
 import { evidenceOf } from "../src/evidence.ts";
 
+const NONE: ReadonlySet<string> = new Set();
+
 const snapshot: Snapshot = {
   nodes: [
     { id: "root", parent: null, kind: "会議", text: "定例", evidence: [] },
@@ -19,7 +21,7 @@ const snapshot: Snapshot = {
   ],
 };
 
-const render = (selectedId: string | null) => renderToStaticMarkup(<EvidencePanel selectedId={selectedId} evidence={selectedId ? evidenceOf(snapshot, selectedId) : null} />);
+const render = (selectedId: string | null) => renderToStaticMarkup(<EvidencePanel selectedId={selectedId} evidence={selectedId ? evidenceOf(snapshot, selectedId, NONE, NONE) : null} />);
 
 describe("EvidencePanel: 右の列の根拠", () => {
   it("未選択では、見出し「根拠」とノードを選ぶ案内を出し、発言は出さない", () => {
@@ -99,7 +101,7 @@ describe("EvidencePanel: 「議題 N 件」を選んだとき", () => {
   };
 
   it("その文「議題 2 件」と「根拠の発言はありません」を出す（「今のマップにありません」は出さない。ルートと同じ扱い）", () => {
-    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:A" evidence={evidenceOf(folded, "run:A")} />);
+    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:A" evidence={evidenceOf(folded, "run:A", NONE, NONE)} />);
     expect(html).toContain("議題 2 件");
     expect(html).toContain("根拠の発言はありません");
     expect(html).not.toContain("今のマップにありません");
@@ -117,7 +119,7 @@ describe("EvidencePanel: 「議題 N 件」を選んだとき", () => {
       ],
       currentTopic: "G",
     };
-    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:E" evidence={evidenceOf(five, "run:E")} />);
+    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:E" evidence={evidenceOf(five, "run:E", NONE, NONE)} />);
     expect(html).toContain("議題 2 件");
     expect(html).toContain("根拠の発言はありません");
     expect(html).not.toContain("今のマップにありません");

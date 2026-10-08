@@ -37,6 +37,11 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .map-node__hint { flex-basis: 100%; font-size: 12px; color: #6b7280; }
 .map-node--folded .map-node__button { flex-wrap: wrap; padding-right: 32px; }
 .map-node__count { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: #e5e7eb; color: #4b5563; font-size: 11px; line-height: 18px; text-align: center; pointer-events: none; }
+/* 開閉できる丸（onFoldDot がある畳んだノード）だけ押せる */
+.map-node__count--pressable { pointer-events: all; cursor: pointer; }
+/* 人が開いたノードの、畳む小さな丸: ホバーしたときだけ出す。絶対配置で、ノードの実寸は変えない */
+.map-node__fold-dot { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 12px; height: 12px; border-radius: 50%; background: #e5e7eb; border: 1px solid #9ca3af; box-sizing: border-box; display: none; cursor: pointer; pointer-events: all; }
+.map-node:hover .map-node__fold-dot { display: block; }
 
 
 /* 人が止めている間、画面の外で変わったノードを縁の点で知らせる。反映の枠と同じ黄色の小さな丸。影は付けない */

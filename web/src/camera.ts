@@ -234,6 +234,16 @@ export function revealViewport(viewport: Viewport, rect: Rect, size: Size): View
   };
 }
 
+// 座標 position が今の viewport で映る画面座標（map 要素の左上が原点）
+export function screenPoint(viewport: Viewport, position: Position): { x: number; y: number } {
+  return { x: position.x * viewport.zoom + viewport.x, y: position.y * viewport.zoom + viewport.y };
+}
+
+// 座標 position のノードが、画面座標 anchor に映るように位置を合わせる。倍率は変えない
+export function anchoredViewport(viewport: Viewport, position: Position, anchor: { x: number; y: number }): Viewport {
+  return { x: anchor.x - position.x * viewport.zoom, y: anchor.y - position.y * viewport.zoom, zoom: viewport.zoom };
+}
+
 // 今の round に変わったノードが無く、すでにこの round より前に寄せていれば動かさない。
 // 同じ round の測り直し（実寸が届いた）では寄せ直す
 export function shouldMoveCamera(snapshot: Snapshot, placedRound: number | null): boolean {

@@ -6,6 +6,7 @@ import {
   SCROLL_AXIS_RESET_MS,
   USER_MAX_ZOOM,
   USER_MIN_ZOOM,
+  anchoredViewport,
   cameraFocus,
   clampUserZoom,
   edgeDots,
@@ -16,6 +17,7 @@ import {
   panViewport,
   revealViewport,
   scrollAlongAxis,
+  screenPoint,
   scrollAxis,
   shiftIntoView,
   shouldMoveCamera,
@@ -663,5 +665,36 @@ describe("subtreeViewport: 選んだノードと、見せるノードのうち�
     const before = JSON.stringify([t, target]);
     subtreeViewport("A", t, target, {}, { width: 400, height: 300 });
     expect(JSON.stringify([t, target])).toBe(before);
+  });
+});
+
+describe("screenPoint・anchoredViewport: 開閉したノードの画面上の位置を保つ", () => {
+  const viewport = { x: 30, y: -20, zoom: 0.8 };
+
+  it("screenPoint は 座標 × zoom + x（y）の画面座標を返す", () => {
+    expect(screenPoint(viewport, { x: 100, y: 50 })).toEqual({ x: 100 * 0.8 + 30, y: 50 * 0.8 - 20 });
+  });
+
+  it("anchoredViewport は、ノードが新しい位置へ動いても、同じ画面座標に映る位置を返す。倍率は変えない", () => {
+    const anchor = screenPoint(viewport, { x: 100, y: 50 });
+    const next = anchoredViewport(viewport, { x: 260, y: 410 }, anchor);
+    expect(next.zoom).toBe(0.8);
+    const after = screenPoint(next, { x: 260, y: 410 });
+    expect(after.x).toBeCloseTo(anchor.x, 10);
+    expect(after.y).toBeCloseTo(anchor.y, 10);
+    expect(next).not.toEqual(viewport);
+  });
+
+  it("ノードが動いていなければ、元の位置のまま", () => {
+    const p = { x: 100, y: 50 };
+    expect(anchoredViewport(viewport, p, screenPoint(viewport, p))).toEqual(viewport);
+  });
+
+  it("入力を書き換えない", () => {
+    const v = Object.freeze({ ...viewport });
+    const p = Object.freeze({ x: 1, y: 2 });
+    const a = Object.freeze({ x: 3, y: 4 });
+    expect(anchoredViewport(v, p, a)).toEqual({ x: 3 - 0.8, y: 4 - 1.6, zoom: 0.8 });
+    expect(v).toEqual(viewport);
   });
 });

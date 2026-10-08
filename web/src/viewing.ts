@@ -10,8 +10,24 @@ type CameraViewing =
 // カメラの状態に重ねる、独立した出し入れの状態。開いている・隠しているときだけ true を持つ（そうでなければフィールドを置かない）。
 // keyList: キー一覧が開いている / sideHidden: 右の列を隠している / captionsHidden: 字幕を隠している
 // selection: 選んだノード（byKey: キーで選んだか）。選んでいないときはフィールドを置かない。Esc でだけ外れる
-type Overlay = { keyList?: true; sideHidden?: true; captionsHidden?: true; selection?: { id: string; byKey: boolean } };
+// humanOpened・humanFolded: 人が開いた・畳んだ議題・論点（空ならフィールドを置かない。同じ ID が両方に入ることはない）。Esc でだけ全部解け、
+// 人が畳んだ議題が今の議題になると、その議題の畳みだけ解ける
+type Overlay = {
+  keyList?: true;
+  sideHidden?: true;
+  captionsHidden?: true;
+  selection?: { id: string; byKey: boolean };
+  humanOpened?: ReadonlySet<string>;
+  humanFolded?: ReadonlySet<string>;
+};
 const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
+const HUMAN_KEYS = ["humanOpened", "humanFolded"] as const satisfies readonly (keyof Overlay)[];
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
+// 人が開いた・畳んだ集合（無ければ空）。畳む見せ方（foldView）に渡す
+export function humanSetsOf(state: ViewingState): { opened: ReadonlySet<string>; folded: ReadonlySet<string> } {
+  return { opened: state.humanOpened ?? EMPTY_SET, folded: state.humanFolded ?? EMPTY_SET };
+}
 export type ViewingState = CameraViewing & Overlay;
 
 // キーボードで倍率・位置を変えるキー。Shift なしの矢印は、ノードの選択に空けておく
@@ -32,6 +48,10 @@ export type ViewingEvent =
   | { type: "select"; id: string }
   // Shift なしの矢印でノードを選ぶ
   | { type: "arrow"; dir: ArrowDir; meta: boolean; ctrl: boolean; alt: boolean }
+  // Enter: 選んだ議題・論点を開く・畳む
+  | { type: "enter"; meta: boolean; ctrl: boolean; alt: boolean }
+  // 丸（隠れた数の丸・ホバーで出る小さな丸）を押した: 押したノードを開く・畳む
+  | { type: "foldDot"; id: string }
   // 触らずに 10 秒たった（見返しの manual のときだけ効く）
   | { type: "idle" }
   // 見返しで時刻を動かした（▶・シーク・反映の前後。見返しの manual・overview で効く）
@@ -44,11 +64,31 @@ export type ViewingScope = "live" | "review";
 
 // 見えている木: 見せるノード・目標の位置・今の議題
 // parents: 見せるノードそれぞれの親（ルートは null）
-export type VisibleTree = { ids: string[]; targets: Record<string, Position>; parents: Record<string, string | null>; currentTopic: string | undefined };
+// foldState: 見せる議題・論点（まとめのノードを除く）が畳まれているか開いているか
+export type VisibleTree = {
+  ids: string[];
+  targets: Record<string, Position>;
+  parents: Record<string, string | null>;
+  foldState: Record<string, "folded" | "open">;
+  currentTopic: string | undefined;
+};
+
+// 開閉の向き。畳まれているノードは開き（open）、開いているノードは畳む（fold）。今の議題とその祖先、見えていないノード、
+// 議題・論点でないノード、まとめのノードは null（効かない）。reducer と丸の表示が同じ判定を使う
+export function foldToggle(tree: VisibleTree, id: string): "open" | "fold" | null {
+  const state = tree.foldState[id];
+  if (state === undefined || !tree.ids.includes(id)) return null;
+  if (tree.currentTopic !== undefined) {
+    // 今の議題の系列（今の議題とその祖先）には効かない
+    for (let cur: string | null | undefined = tree.currentTopic; cur != null; cur = tree.parents[cur]) if (cur === id) return null;
+  }
+  return state === "folded" ? "open" : "fold";
+}
 
 // shiftIntoView: 倍率は変えず、今の議題が列で切れる分だけ横にずらす（寄せ直しも収め直しもしない）
 // follow: 今までどおり自動で寄せる / refocus: 今の議題へ寄せ直す / hold: 動かさない
 // zoomBy: 画面の中心を保って倍率を掛ける / zoomTo: 画面の中心を保って倍率にする
+// keepNode: 倍率は変えず、そのノードが画面上の同じ位置に映り続けるように合わせる（人の開閉の後）
 // focusNode: 今の倍率のまま、そのノードへ寄る
 // revealNode: 人の倍率の範囲に収めてから、そのノードが画面の外なら最小限ずらして入れる（中なら動かさない）
 // fitSubtree: そのノードと、見せるノードのうちその子孫が収まるまで寄る
@@ -62,6 +102,7 @@ export type CameraCommand =
   | { type: "pan"; dx: number; dy: number }
   | { type: "fitAll" }
   | { type: "focusNode"; id: string }
+  | { type: "keepNode"; id: string }
   | { type: "revealNode"; id: string }
   | { type: "fitSubtree"; id: string }
   | { type: "restore" }
@@ -116,10 +157,34 @@ function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number] | "sele
   return rest;
 }
 
+// 人が開いた・畳んだ集合を両方外す
+function withoutHuman(state: ViewingState): ViewingState {
+  const { humanOpened: _o, humanFolded: _f, ...rest } = state;
+  return rest;
+}
+
 // 重ねる状態をすべて外した、カメラの状態だけ
 function cameraPart(state: ViewingState): CameraViewing {
-  const { keyList: _k, sideHidden: _s, captionsHidden: _c, selection: _sel, ...rest } = state;
+  const { keyList: _k, sideHidden: _s, captionsHidden: _c, selection: _sel, humanOpened: _o, humanFolded: _f, ...rest } = state;
   return rest;
+}
+
+// 人が畳んだ集合から id を外す（空になればフィールドごと外す）
+function releaseFolded(state: ViewingState, id: string | undefined): ViewingState {
+  if (id === undefined || !state.humanFolded?.has(id)) return state;
+  const rest = new Set(state.humanFolded);
+  rest.delete(id);
+  const { humanFolded: _f, ...others } = state;
+  return rest.size === 0 ? others : { ...others, humanFolded: rest };
+}
+
+// 人が開いた・畳んだ集合に id を入れ、もう一方の集合から外す（空になればフィールドごと外す）
+function withHuman(state: ViewingState, id: string, to: "humanOpened" | "humanFolded"): ViewingState {
+  const from = to === "humanOpened" ? "humanFolded" : "humanOpened";
+  const { [from]: removed, ...others } = state;
+  const left = new Set(removed);
+  left.delete(id);
+  return { ...others, ...(left.size > 0 ? { [from]: left } : {}), [to]: new Set([...(state[to] ?? []), id]) };
 }
 
 // camera に、from に存在していた重ねる状態だけを戻す（undefined のフィールドは置かない）
@@ -127,6 +192,7 @@ function withOverlayOf(from: ViewingState, camera: CameraViewing): ViewingState 
   const out: ViewingState = { ...camera };
   for (const key of OVERLAY_KEYS) if (from[key]) out[key] = true;
   if (from.selection) out.selection = from.selection;
+  for (const key of HUMAN_KEYS) if (from[key]) out[key] = from[key];
   return out;
 }
 
@@ -213,6 +279,16 @@ export function reduceViewing(
     const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
     return { state: { ...moved, selection: { id, byKey: true } }, camera: { type: "revealNode", id } };
   }
+  if (event.type === "enter" || event.type === "foldDot") {
+    const id = event.type === "enter" ? state.selection?.id : event.id;
+    const toggle = id === undefined || (event.type === "enter" && modified(event)) ? null : foldToggle(tree, id);
+    if (id === undefined || toggle === null) return { state, camera: idle(state) };
+    // 開閉はカメラのモードを変えない。自動は今の議題へ寄り直し、止めているか全体を見ているときは、そのノードの画面上の位置を保つ
+    return {
+      state: withHuman(state, id, toggle === "open" ? "humanOpened" : "humanFolded"),
+      camera: state.mode === "auto" ? REFOCUS : { type: "keepNode", id },
+    };
+  }
   if (event.type === "key" && event.key === "Z") {
     const id = state.selection?.id;
     if (modified(event) || id === undefined || !tree.ids.includes(id)) return { state, camera: idle(state) };
@@ -220,19 +296,21 @@ export function reduceViewing(
     return { state: moved, camera: { type: "fitSubtree", id } };
   }
   const out = reduceCamera(cameraPart(state), event as CameraEvent, tree, scope);
-  const next = withOverlayOf(state, out.state);
+  const withSets = withOverlayOf(state, out.state);
+  // 人が畳んだ議題に変化が当たって今の議題になったら、その議題の人の畳みは解ける
+  const next = event.type === "reflect" ? releaseFolded(withSets, tree.currentTopic) : withSets;
   // 選んだノードが統合・削除・時刻の戻しで消えたら、選択の id だけを移り先へ替える
   if (event.type === "reflect") {
     const to = next.selection ? event.replaced[next.selection.id] : undefined;
     if (next.selection && to !== undefined) return { state: { ...next, selection: { ...next.selection, id: to } }, camera: out.camera };
   }
-  // 選択を外すのは、キー一覧が閉じているときの修飾なしの Esc だけ（自動のときも外す）
-  return { state: event.type === "escape" && !modified(event) ? without(next, "selection") : next, camera: out.camera };
+  // 選択と人の開閉を外すのは、キー一覧が閉じているときの修飾なしの Esc だけ（自動のときも外す）
+  return { state: event.type === "escape" && !modified(event) ? withoutHuman(without(next, "selection")) : next, camera: out.camera };
 }
 
-// reduceCamera が受ける出来事。Z（選んだノードへ寄る）は重ねる状態の選択に依るので、reduceViewing が先に処理して渡さない
+// reduceCamera が受ける出来事。Z（選んだノードへ寄る）と Enter・丸（開閉）は重ねる状態に依るので、reduceViewing が先に処理して渡さない
 type CameraEvent =
-  | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" | "key" }>
+  | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" | "enter" | "foldDot" | "key" }>
   | { type: "key"; key: Exclude<ViewKey, "Z">; meta: boolean; ctrl: boolean; alt: boolean };
 
 // 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。

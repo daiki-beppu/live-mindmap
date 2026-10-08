@@ -24,14 +24,15 @@ const NONE: ReadonlySet<string> = new Set();
 
 // 本番と同じく、畳む見せ方の結果から見えている木を組み立てる（位置は使わない）
 const stateOf = (snapshot: Snapshot, selectedId: string | null = null) => {
-  const shown = foldView(snapshot, NONE, selectedId).nodes;
+  const shown = foldView(snapshot, NONE, selectedId, NONE).nodes;
   const tree: VisibleTree = {
     ids: shown.map((n) => n.id),
     targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
+    foldState: {},
     currentTopic: snapshot.currentTopic,
   };
-  return { tree, snapshot };
+  return { tree, snapshot, selectedId };
 };
 
 describe("relocations: 見えている木から消えたノードの移り先", () => {
@@ -123,6 +124,23 @@ describe("relocations: 見えている木から消えたノードの移り先", 
     const later = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("P3", "A", "論点", ["r3"]), node("Y", "P3", "案", ["r3"])], 5, "A");
     const earlier = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r3"])], 3, "A");
     expect(relocations(stateOf(later), stateOf(earlier))).toEqual({ P3: "A", Y: "A" });
+  });
+
+  it("前の木から人の畳みで隠れていた選択ノードも、消えたら移る。選択が無ければ移らない", () => {
+    const folded: ReadonlySet<string> = new Set(["A"]);
+    const b = snap([...before().nodes, node("B", "root", "議題", ["r3"])], 4, "B");
+    const shown = foldView(b, NONE, "P2", folded).nodes;
+    const hiddenTree: VisibleTree = {
+      ids: shown.map((n) => n.id),
+      targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
+      parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
+      foldState: {},
+      currentTopic: b.currentTopic,
+    };
+    expect(hiddenTree.ids).not.toContain("P2");
+    const after = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("B", "root", "議題", ["r3"])], 5, "B");
+    expect(relocations({ tree: hiddenTree, snapshot: b, selectedId: "P2" }, stateOf(after))).toEqual({ P2: "A" });
+    expect(relocations({ tree: hiddenTree, snapshot: b, selectedId: null }, stateOf(after))).toEqual({});
   });
 
   it("入力のスナップショットと木を書き換えない", () => {

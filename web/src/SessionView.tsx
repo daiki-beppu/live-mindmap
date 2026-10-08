@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { Captions } from "./Captions.tsx";
 import { ChangeList } from "./ChangeList.tsx";
+import { enterFoldsSelection } from "./enterFold.ts";
 import { EvidencePanel } from "./EvidencePanel.tsx";
 import { evidenceOf } from "./evidence.ts";
 import type { IntakeStatus } from "./intake.ts";
@@ -13,7 +14,7 @@ import { KeyList } from "./KeyList.tsx";
 import { MapView } from "./MapView.tsx";
 import { useImeKeyRedispatch } from "./useImeKeyRedispatch.ts";
 import { useIntakeNotice } from "./useIntakeNotice.ts";
-import { INITIAL_VIEWING, nextCameraOrder, reduceViewing, type CameraOrder, type ArrowDir, type ViewingEvent, type ViewingScope, type ViewingState, type ViewKey, type VisibleTree } from "./viewing.ts";
+import { INITIAL_VIEWING, humanSetsOf, nextCameraOrder, reduceViewing, type CameraOrder, type ArrowDir, type ViewingEvent, type ViewingScope, type ViewingState, type ViewKey, type VisibleTree } from "./viewing.ts";
 import { ViewingNotice } from "./ViewingNotice.tsx";
 
 // 見返しで、人が動かした後、触らずにこの時間がたつと自動のカメラに戻る
@@ -89,9 +90,10 @@ export function SessionView({
     cameraRef.current = next;
     setCamera(next);
   }, []);
-  const treeNow = () => lastTree.current ?? { ids: [], targets: {}, parents: {}, currentTopic: snapshot.currentTopic };
+  const treeNow = () => lastTree.current ?? { ids: [], targets: {}, parents: {}, foldState: {}, currentTopic: snapshot.currentTopic };
   // 選んだノードの ID だけを見る状態から取る。表示内容は描画のたびに最新のスナップショットから導く
   const selectedId = viewing.selection?.id ?? null;
+  const { opened: humanOpened, folded: humanFolded } = humanSetsOf(viewing);
   const select = (id: string) => dispatch({ type: "select", id }, treeNow());
   const treeNowRef = useRef(treeNow);
   treeNowRef.current = treeNow;
@@ -114,7 +116,7 @@ export function SessionView({
   useHotkey("Escape", (e) =>
     dispatch(
       { type: "escape", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey },
-      lastTree.current ?? { ids: [], targets: {}, parents: {}, currentTopic: snapshot.currentTopic },
+      lastTree.current ?? { ids: [], targets: {}, parents: {}, foldState: {}, currentTopic: snapshot.currentTopic },
     ),
   );
   // VIEW_HOTKEYS は定数で、hook を呼ぶ数と順序は変わらない
@@ -130,6 +132,17 @@ export function SessionView({
       dispatch({ type: "arrow", dir, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
     });
   }
+  // 既定動作の取り消しはライブラリが先に行うので登録では切り、開閉に使うときだけここで取り消す（ほかのボタンの Enter は押せるまま）
+  useHotkey(
+    "Enter",
+    (e) => {
+      const target = e.target;
+      if (!enterFoldsSelection(target instanceof Element ? target : null, viewingRef.current.selection !== undefined)) return;
+      e.preventDefault();
+      dispatch({ type: "enter", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
+    },
+    { preventDefault: false },
+  );
   useHotkey("?", (e) => {
     dispatch({ type: "keyList", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, treeNow());
   });
@@ -158,7 +171,7 @@ export function SessionView({
       {screenNotice !== undefined && <ScreenNotice text={screenNotice} />}
       {!viewing.sideHidden && (
         <div className="side">
-          <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId)} />
+          <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId, humanOpened, humanFolded)} />
           <ChangeList changes={snapshot.changes} onSelect={select} />
         </div>
       )}
