@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
@@ -20,6 +20,8 @@ import {
   LogEvent,
   SessionLog,
   playback,
+  type PlaybackScreen,
+  type Remark,
   restoreSession,
   restoreState,
   toMarkdown,
@@ -39,6 +41,7 @@ import {
   EXPORT_FILE,
   LOG_FILE,
   openRecordedSession,
+  SCREENS_DIR,
   reviewVariants,
   reviewWarning,
   selfReviewVariants,
@@ -268,18 +271,91 @@ const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
   return slideChanges(rows, (i) => fs.readFile(jpegPath(i)).pipe(Effect.mapError((e) => new CommandFailed({ message: `${jpegPath(i)} が読めません: ${e.message}` }))));
 });
 
+// セッションのフォルダ（log.jsonl を持つフォルダ）のログから、再生に渡す題名・発言・共有画面の変化を読む。
+// 流すのは start（題名）・remark・screen・screen-off だけで、ほかの行（intake-*・diff など）は読み飛ばす。
+// 画像は元のフォルダの screens/ から、入れる直前に読む。変化の時刻はログの start をそのまま使う
+const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: string) {
+  const logPath = join(dir, LOG_FILE);
+  if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+  const fs = yield* FileSystem.FileSystem;
+  const { lines, events } = yield* readLogLines(logPath);
+  let title: string | undefined;
+  const remarks: Remark[] = [];
+  const screens: PlaybackScreen<CommandFailed>[] = [];
+  for (const [i, event] of events.entries()) {
+    if (!Predicate.isObject(event) || !("type" in event)) continue;
+    if (!(event.type === "start" || event.type === "remark" || event.type === "screen" || event.type === "screen-off")) continue;
+    const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(
+      Effect.mapError((e) => new BrokenLogLine({ line: lines[i]?.no ?? 1, reason: decodeReason(e) })),
+    );
+    switch (decoded.type) {
+      case "start":
+        title ??= decoded.title;
+        break;
+      case "remark":
+        remarks.push(decoded.remark);
+        break;
+      case "screen": {
+        const { start, image } = decoded;
+        if (image === null) {
+          screens.push({ start, image: null });
+          break;
+        }
+        // ログ由来の image は、screens/ 直下の単一のファイル名だけを認める（外のファイルを読まない）
+        const screensDir = resolve(dir, SCREENS_DIR);
+        const path = resolve(screensDir, image);
+        // basename 比較で区切り文字を含む値（絶対パス・../・./）を、dirname 比較で ""・.・.. を拒否する
+        if (basename(image) !== image || dirname(path) !== screensDir) {
+          return yield* new CommandFailed({ message: `${LOG_FILE} ${lines[i]?.no ?? 1} 行目の image が screens/ 直下のファイル名ではありません: ${image}` });
+        }
+        screens.push({
+          start,
+          image: {
+            id: image,
+            load: fs.readFile(path).pipe(Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${e.message}` }))),
+          },
+        });
+        break;
+      }
+      case "screen-off":
+        screens.push({ start: decoded.start, reason: decoded.reason });
+        break;
+      case "diff":
+        break;
+    }
+  }
+  if (title === undefined) return yield* new CommandFailed({ message: `${LOG_FILE} に start の行がありません: ${logPath}` });
+  return { title, remarks, screens };
+});
+
+const readTranscriptRemarks = Effect.fn("readTranscriptRemarks")(function* (transcript: string) {
+  const text = yield* readTextFile(transcript).pipe(Effect.mapError((reason) => new InvalidTranscriptFile({ path: transcript, reason })));
+  const file = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
+    Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
+  );
+  return [...fromTranscript(file)];
+});
+
+const isDirectory = (path: string): boolean => statSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
+
 const play = Command.make(
   "play",
   {
-    transcript: Argument.String("transcript").pipe(Argument.withDescription("再生する文字起こしファイル（kanary transcribe の JSON）")),
+    transcript: Argument.String("source").pipe(
+      Argument.withDescription(
+        "再生する文字起こしファイル（kanary transcribe の JSON）、または過去のセッションのフォルダ（log.jsonl を持つフォルダ）。"
+          + "フォルダのときは、ログの発言と共有画面の変化（screen・screen-off）を元の時刻のまま流し、画像は元のフォルダの screens/ から読む。題名は元の start の行から取る",
+      ),
+    ),
     realtime: Flag.Boolean("realtime").pipe(
-      Flag.withDescription("発言の時刻どおりに等速で再生する（既定は待ち時間なし）"),
+      Flag.withDescription("発言と共有画面の変化の時刻どおりに等速で再生する（既定は待ち時間なし）"),
       Flag.withDefault(false),
     ),
     screen: Flag.File("screen", { mustExist: true }).pipe(
       Flag.withDescription(
         "共有画面の一覧 slides.tsv（1 行目は見出し、列は start end slide image。start・end は会議の秒、image は tsv のあるフォルダからの PNG の相対パス）。"
-          + "画面が変わった時刻の画像（隙間と最後の行の後は「なし」）を、発言より前に Claude へのメッセージへ添え、セッションのフォルダの screens/ とログに残す",
+          + "画面が変わった時刻の画像（隙間と最後の行の後は「なし」）を、発言より前に Claude へのメッセージへ添え、セッションのフォルダの screens/ とログに残す。"
+          + "セッションのフォルダを渡したときは一緒に使えない",
       ),
       Flag.optional,
     ),
@@ -291,8 +367,16 @@ const play = Command.make(
       const capture = yield* MapCapture;
       const review = yield* ReviewBuild;
       const audioMix = yield* AudioMix;
+      const folder = isDirectory(transcript);
+      if (folder && Option.isSome(screen)) {
+        return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
+      }
+      // セッションのフォルダはログを再生の前にすべて読む。壊れていれば何も始めずに失敗する（画像は入れる直前に読む）
+      const recorded = folder ? yield* loadRecordedSession(resolve(transcript)) : undefined;
       // 共有画面は再生を始める前にすべて読み、JPEG にする。読めなければ何も始めずに失敗する
-      const screens = Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
+      const screens: Iterable<PlaybackScreen<CommandFailed>> = recorded
+        ? recorded.screens
+        : Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
       const { viewers, httpServer } = yield* openListener(port).pipe(
         Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
@@ -306,17 +390,12 @@ const play = Command.make(
       const dir = yield* Effect.try({ try: () => createSessionDir(sessionsDir), catch: (e) => new CommandFailed({ message: describe(e) }) });
       const { session } = yield* openRecordedSession({
         dir,
-        title: basename(transcript).replace(/\.transcript\.json$/, ""),
+        title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
         publish: viewers.publish,
       });
-      const text = yield* readTextFile(transcript).pipe(
-        Effect.mapError((reason) => new InvalidTranscriptFile({ path: transcript, reason })),
-      );
-      const file = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
-        Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
-      );
+      const remarks = recorded ? recorded.remarks : yield* readTranscriptRemarks(transcript);
       // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちは、同じ Clock に乗る
-      yield* playback(session, fromTranscript(file), { ...(realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens });
+      yield* playback(session, remarks, { ...(realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens });
       const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, capture, review, audioMix);
       yield* write(paths.map((path) => `${path}\n`).join(""));
     },
@@ -324,7 +403,8 @@ const play = Command.make(
   ),
 ).pipe(
   Command.withDescription(
-    "録音サンプルの文字起こしを再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
+    "録音サンプルの文字起こし、または過去のセッションのフォルダ（log.jsonl を持つフォルダ）を再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
+      + "フォルダのときは、ログの発言と共有画面の変化を元の時刻のまま流し、新しいセッションのフォルダにライブと同じ形でログと screens/ を書く。"
       + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
       + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す（play のセッションには録音が無いので map-audio.html は作らない）",
   ),

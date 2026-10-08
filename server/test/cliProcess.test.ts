@@ -304,4 +304,33 @@ describe("CLI のプロセス入口", () => {
     });
     expect(existsSync(sessionsDir)).toBe(false);
   }).pipe(Effect.scoped));
+
+  it.live("play --help は、文字起こしのほかにセッションのフォルダ（log.jsonl を持つフォルダ）も受けられることと、--screen と一緒に使えないことを説明する", () => Effect.gen(function* () {
+    const sessionsDir = yield* temporaryDirectory;
+    const result = yield* runProcess(["play", "--help"], sessionsDir);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("セッションのフォルダ");
+    expect(result.stdout).toContain("log.jsonl");
+    expect(result.stdout).toContain("一緒に使えない");
+  }).pipe(Effect.scoped));
+
+  it.live("play にセッションのフォルダと --screen を一緒に渡すと、理由の標準エラー 1 行と 0 以外の終了で、セッションのフォルダを作らない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const folder = join(dir, "original");
+    const tsv = join(dir, "slides.tsv");
+    const sessionsDir = join(dir, "sessions");
+    yield* Effect.tryPromise(async () => {
+      await mkdir(folder);
+      await writeFile(join(folder, "log.jsonl"), '{"type":"start","title":"定例"}\n');
+      await writeFile(tsv, "start\tend\tslide\timage\n");
+    });
+    const result = yield* runProcess(["play", folder, "--screen", tsv], sessionsDir);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
+    expect(result.stderr).toContain("--screen");
+    expect(existsSync(sessionsDir)).toBe(false);
+  }).pipe(Effect.scoped));
 });
