@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Effect, Layer, Predicate, Result, Schema } from "effect";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
+import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
@@ -79,35 +80,38 @@ const scriptB: Op[][] = [
 ];
 
 // play を 1 回流し、ランのフォルダを返す。ランごとにセッションの置き場を分けて、開始時刻の衝突を避ける。
-async function play(script: Op[][], file = fixture): Promise<string> {
-  const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-run-"));
-  let n = 0;
-  external.openClaudeUpdater.mockReturnValue({
-    update: async (_input: DiffInput) => ({ ops: script[n++] ?? [] }),
-    close: () => {},
+const play = (script: Op[][], file = fixture) =>
+  Effect.gen(function* () {
+    const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-run-")));
+    let n = 0;
+    external.openClaudeUpdater.mockReturnValue({
+      update: (_input: DiffInput) => Effect.sync(() => ({ ops: script[n++] ?? [] })),
+      close: () => {},
+    });
+    const { layer, stdout } = dependencies(sessionsDir);
+    yield* runCli(["play", file]).pipe(Effect.provide(layer));
+    return dirname(stdout.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
   });
-  const { layer, stdout } = dependencies(sessionsDir);
-  await Effect.runPromise(runCli(["play", file]).pipe(Effect.provide(layer)));
-  return dirname(stdout.join("").split("\n")[0]!); // play は書き出したファイルのパスを出す（#41）
-}
 
-async function evalCli(args: string[]): Promise<string> {
-  const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-eval-"));
-  const { layer, stdout } = dependencies(sessionsDir);
-  await Effect.runPromise(runCli(["eval", ...args]).pipe(Effect.provide(layer)));
-  return stdout.join("");
-}
+const evalCli = (args: string[]) =>
+  Effect.gen(function* () {
+    const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-")));
+    const { layer, stdout } = dependencies(sessionsDir);
+    yield* runCli(["eval", ...args]).pipe(Effect.provide(layer));
+    return stdout.join("");
+  });
 
 // eval の失敗を、表示ではなくタグ付きの失敗値として観測する（日本語 1 行は cliProcess.test.ts が入口で観測する）
-async function evalFailure(args: string[]): Promise<{ tag: unknown; values: Record<string, unknown> }> {
-  const sessionsDir = await mkdtemp(join(tmpdir(), "live-mindmap-eval-"));
-  const { layer, stdout } = dependencies(sessionsDir);
-  const result = await Effect.runPromise(Effect.result(runCli(["eval", ...args]).pipe(Effect.provide(layer))));
-  if (Result.isSuccess(result)) throw new Error(`失敗しなかった: ${stdout.join("")}`);
-  const failure: unknown = result.failure;
-  if (!Predicate.hasProperty(failure, "_tag")) throw new Error("タグ付きの失敗ではない");
-  return { tag: failure._tag, values: Object.fromEntries(Object.entries(failure)) };
-}
+const evalFailure = (args: string[]) =>
+  Effect.gen(function* () {
+    const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-")));
+    const { layer, stdout } = dependencies(sessionsDir);
+    const result = yield* Effect.result(runCli(["eval", ...args]).pipe(Effect.provide(layer)));
+    if (Result.isSuccess(result)) return yield* Effect.die(new Error(`失敗しなかった: ${stdout.join("")}`));
+    const failure: unknown = result.failure;
+    if (!Predicate.hasProperty(failure, "_tag")) return yield* Effect.die(new Error("タグ付きの失敗ではない"));
+    return { tag: failure._tag, values: Object.fromEntries(Object.entries(failure)) };
+  });
 
 // Markdown の表を、見出しをキーにした行の配列にする
 function parseTable(text: string): { header: string[]; rows: Record<string, string>[] } {
@@ -144,16 +148,17 @@ function parseTable(text: string): { header: string[]; rows: Record<string, stri
   };
 }
 
-async function writeTruth(truth: unknown): Promise<string> {
-  const path = join(await mkdtemp(join(tmpdir(), "live-mindmap-truth-")), "short.truth.json");
-  await writeFile(path, typeof truth === "string" ? truth : JSON.stringify(truth));
-  return path;
-}
+const writeTruth = (truth: unknown) =>
+  Effect.gen(function* () {
+    const path = join(yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-truth-"))), "short.truth.json");
+    yield* Effect.promise(() => writeFile(path, typeof truth === "string" ? truth : JSON.stringify(truth)));
+    return path;
+  });
 
 describe("eval: ノード数・深さ・種別ごとの数", () => {
-  it("ルートを除くノード数、ルートの子を 1 とする深さ、6 種別ごとの数（0 件は 0）を 1 行に出す", async () => {
-    const dir = await play(scriptA);
-    const { header, rows } = parseTable(await evalCli([dir]));
+  it.effect("ルートを除くノード数、ルートの子を 1 とする深さ、6 種別ごとの数（0 件は 0）を 1 行に出す", () => Effect.gen(function* () {
+    const dir = yield* play(scriptA);
+    const { header, rows } = parseTable(yield* evalCli([dir]));
 
     expect(header.slice(0, 4)).toEqual(["ラン", "会議", "ノード", "深さ"]);
     expect(rows).toHaveLength(1);
@@ -170,9 +175,9 @@ describe("eval: ノード数・深さ・種別ごとの数", () => {
       TODO: "1",
       要点: "0",
     });
-  });
+  }));
 
-  it("種別ごとの数の列に「要点」があり、要点のノードを数える", async () => {
+  it.effect("種別ごとの数の列に「要点」があり、要点のノードを数える", () => Effect.gen(function* () {
     const scriptPoints: Op[][] = [
       [
         { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ツールの共有", evidence: ["r1"] },
@@ -181,66 +186,66 @@ describe("eval: ノード数・深さ・種別ごとの数", () => {
       ],
       [{ op: "add", ref: "t4", parent: "n3", kind: "要点", text: "作り方は手作業で十分", evidence: ["r3"] }],
     ];
-    const { header, rows } = parseTable(await evalCli([await play(scriptPoints)]));
+    const { header, rows } = parseTable(yield* evalCli([yield* play(scriptPoints)]));
 
     expect(header).toContain("要点");
     expect(rows[0]).toMatchObject({ ノード: "4", 議題: "1", 要点: "3", 決定: "0", TODO: "0" });
-  });
+  }));
 
-  it("--truth を付けないときは再現率の列を出さない", async () => {
-    const { header } = parseTable(await evalCli([await play(scriptA)]));
+  it.effect("--truth を付けないときは再現率の列を出さない", () => Effect.gen(function* () {
+    const { header } = parseTable(yield* evalCli([yield* play(scriptA)]));
     expect(header.some((h) => h.includes("再現率"))).toBe(false);
-  });
+  }));
 
-  it("結果をフォルダに書き足さない（標準出力だけに書く）", async () => {
-    const dir = await play(scriptA);
-    const before = (await readdir(dir)).sort();
-    await evalCli([dir]);
-    expect((await readdir(dir)).sort()).toEqual(before);
-  });
+  it.effect("結果をフォルダに書き足さない（標準出力だけに書く）", () => Effect.gen(function* () {
+    const dir = yield* play(scriptA);
+    const before = (yield* Effect.promise(() => readdir(dir))).sort();
+    yield* evalCli([dir]);
+    expect((yield* Effect.promise(() => readdir(dir))).sort()).toEqual(before);
+  }));
 
-  it("ノードが無いランは、ノード数 0・深さ 0 になる", async () => {
-    const dir = await play([[], []]);
-    const { rows } = parseTable(await evalCli([dir]));
+  it.effect("ノードが無いランは、ノード数 0・深さ 0 になる", () => Effect.gen(function* () {
+    const dir = yield* play([[], []]);
+    const { rows } = parseTable(yield* evalCli([dir]));
     expect(rows[0]).toMatchObject({ ノード: "0", 深さ: "0", 議題: "0", 論点: "0", 案: "0", 決定: "0", 課題: "0", TODO: "0" });
-  });
+  }));
 
-  it("エクスポートの無いフォルダは、フォルダ名を含むタグ付きの失敗で止まる", async () => {
-    const empty = await mkdtemp(join(tmpdir(), "live-mindmap-empty-"));
-    const failure = await evalFailure([empty]);
+  it.effect("エクスポートの無いフォルダは、フォルダ名を含むタグ付きの失敗で止まる", () => Effect.gen(function* () {
+    const empty = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-empty-")));
+    const failure = yield* evalFailure([empty]);
     expect(failure.tag).toBe("MissingRunExport");
     expect(carries(failure.values, empty)).toBe(true);
-  });
+  }));
 });
 
 describe("eval: 複数のランを並べる", () => {
-  it("渡した順に 1 ラン 1 行で並び、行ごとにランの名前・会議の名前・指標が違う", async () => {
-    const other = join(await mkdtemp(join(tmpdir(), "live-mindmap-sample-")), "other.transcript.json");
-    await copyFile(fixture, other);
-    const dirA = await play(scriptA);
-    const dirB = await play(scriptB, other);
+  it.effect("渡した順に 1 ラン 1 行で並び、行ごとにランの名前・会議の名前・指標が違う", () => Effect.gen(function* () {
+    const other = join(yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-sample-"))), "other.transcript.json");
+    yield* Effect.promise(() => copyFile(fixture, other));
+    const dirA = yield* play(scriptA);
+    const dirB = yield* play(scriptB, other);
 
-    const { rows } = parseTable(await evalCli([dirB, dirA]));
+    const { rows } = parseTable(yield* evalCli([dirB, dirA]));
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ ラン: basename(dirB), 会議: "other", ノード: "3", 深さ: "2", 議題: "2", 課題: "1", 決定: "0", TODO: "0" });
     expect(rows[1]).toMatchObject({ ラン: basename(dirA), 会議: "short", ノード: "5", 深さ: "3", 議題: "1", 課題: "0", 決定: "1", TODO: "1" });
-  });
+  }));
 
-  it("ランの名前・会議の名前に `|`・`\\`・改行があっても、1 ラン 1 行でセルがずれない", async () => {
-    const odd = join(await mkdtemp(join(tmpdir(), "live-mindmap-sample-")), "会議|A\\B\nC.transcript.json");
-    await copyFile(fixture, odd);
-    const played = await play(scriptA, odd);
+  it.effect("ランの名前・会議の名前に `|`・`\\`・改行があっても、1 ラン 1 行でセルがずれない", () => Effect.gen(function* () {
+    const odd = join(yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-sample-"))), "会議|A\\B\nC.transcript.json");
+    yield* Effect.promise(() => copyFile(fixture, odd));
+    const played = yield* play(scriptA, odd);
     const dirOdd = join(dirname(played), "run|x\\");
-    await rename(played, dirOdd);
-    const dirB = await play(scriptB);
+    yield* Effect.promise(() => rename(played, dirOdd));
+    const dirB = yield* play(scriptB);
 
-    const text = await evalCli([dirOdd, dirB]);
+    const text = yield* evalCli([dirOdd, dirB]);
     expect(text.split("\n").filter((l) => l.trim() !== "")).toHaveLength(4);
     const { rows } = parseTable(text);
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ ラン: basename(dirOdd), 会議: "会議|A\\B C", ノード: "5", 深さ: "3" });
     expect(rows[1]).toMatchObject({ ラン: basename(dirB), 会議: "short", ノード: "3", 深さ: "2" });
-  });
+  }));
 });
 
 describe("eval: log.jsonl から数える 3 指標", () => {
@@ -256,49 +261,49 @@ describe("eval: log.jsonl から数える 3 指標", () => {
   // 2 回目は根拠を足すだけ（text を渡さない）
   const scriptEvidenceOnly: Op[][] = [scriptRewrite[0]!, [{ op: "update", node: "n2", evidence: ["r3"] }]];
 
-  it("3 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", async () => {
-    const truth = await writeTruth({ 決定: [], TODO: [] });
-    const { header, rows } = parseTable(await evalCli(["--truth", truth, await play(scriptRewrite)]));
+  it.effect("3 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", () => Effect.gen(function* () {
+    const truth = yield* writeTruth({ 決定: [], TODO: [] });
+    const { header, rows } = parseTable(yield* evalCli(["--truth", truth, yield* play(scriptRewrite)]));
 
     expect(header.slice(-5)).toEqual([...LOG_HEADERS, "決定の再現率", "TODO の再現率"]);
     expect(header.indexOf(LOG_HEADERS[0]!)).toBe(header.indexOf("要点") + 1);
     expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
-  });
+  }));
 
-  it("--truth を付けなくても 3 列は出る", async () => {
-    const { header, rows } = parseTable(await evalCli([await play(scriptRewrite)]));
+  it.effect("--truth を付けなくても 3 列は出る", () => Effect.gen(function* () {
+    const { header, rows } = parseTable(yield* evalCli([yield* play(scriptRewrite)]));
 
     expect(header.slice(-3)).toEqual(LOG_HEADERS);
     expect(rows[0]!["書き換え/発言"]).toBe("1/3 (0.33)");
-  });
+  }));
 
-  it("根拠だけの update は書き換えに数えない", async () => {
-    const { rows } = parseTable(await evalCli([await play(scriptEvidenceOnly)]));
+  it.effect("根拠だけの update は書き換えに数えない", () => Effect.gen(function* () {
+    const { rows } = parseTable(yield* evalCli([yield* play(scriptEvidenceOnly)]));
 
     expect(rows[0]).toMatchObject({ "書き換え/発言": "0/3 (0.00)", "1 ノードの書き換えの最多": "0" });
-  });
+  }));
 
-  it("話し中の兄弟の最多は、ルート直下を含む全ての親から取る（scriptA は議題の下に論点と TODO の 2 つ）", async () => {
-    const { rows } = parseTable(await evalCli([await play(scriptA)]));
+  it.effect("話し中の兄弟の最多は、ルート直下を含む全ての親から取る（scriptA は議題の下に論点と TODO の 2 つ）", () => Effect.gen(function* () {
+    const { rows } = parseTable(yield* evalCli([yield* play(scriptA)]));
 
     expect(rows[0]).toMatchObject({ "書き換え/発言": "0/3 (0.00)", "話し中の兄弟の最多": "2" });
-  });
+  }));
 
-  it("type が文字列でない行（配列 [\"diff\"]）は restore と同じく読み飛ばし、表の値は変わらない", async () => {
-    const dir = await play(scriptRewrite);
-    await appendFile(join(dir, "log.jsonl"), '\n{"type":["diff"]}\n');
-    const { rows } = parseTable(await evalCli([dir]));
+  it.effect("type が文字列でない行（配列 [\"diff\"]）は restore と同じく読み飛ばし、表の値は変わらない", () => Effect.gen(function* () {
+    const dir = yield* play(scriptRewrite);
+    yield* Effect.promise(() => appendFile(join(dir, "log.jsonl"), '\n{"type":["diff"]}\n'));
+    const { rows } = parseTable(yield* evalCli([dir]));
 
     expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
-  });
+  }));
 
-  it("log.jsonl が無いラン（export.json だけ）は 3 列とも - で、eval は失敗しない", async () => {
-    const dir = await play(scriptRewrite);
-    await rm(join(dir, "log.jsonl"));
-    const { rows } = parseTable(await evalCli([dir]));
+  it.effect("log.jsonl が無いラン（export.json だけ）は 3 列とも - で、eval は失敗しない", () => Effect.gen(function* () {
+    const dir = yield* play(scriptRewrite);
+    yield* Effect.promise(() => rm(join(dir, "log.jsonl")));
+    const { rows } = parseTable(yield* evalCli([dir]));
 
     expect(LOG_HEADERS.map((h) => rows[0]![h])).toEqual(["-", "-", "-"]);
-  });
+  }));
 });
 
 describe("eval: 正解との再現率（時刻の重なり）", () => {
@@ -317,40 +322,42 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
     ["決定の根拠とだけ重なる（種別が違う）", "TODO", 20, 25, decision, "0/1 (0%)"],
   ];
 
-  it.each(overlap)("%s", async (_name, kind, from, to, keywords, expected) => {
-    const dir = await play(scriptA);
-    const truth = { 決定: [], TODO: [], [kind]: [{ text: "x", from, to, keywords }] };
-    const { header, rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), dir]));
+  for (const [name, kind, from, to, keywords, expected] of overlap) {
+    it.effect(name, () => Effect.gen(function* () {
+      const dir = yield* play(scriptA);
+      const truth = { 決定: [], TODO: [], [kind]: [{ text: "x", from, to, keywords }] };
+      const { header, rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), dir]));
 
-    expect(header.slice(-2)).toEqual(["決定の再現率", "TODO の再現率"]);
-    expect(rows[0]![kind === "決定" ? "決定の再現率" : "TODO の再現率"]).toBe(expected);
-  });
+      expect(header.slice(-2)).toEqual(["決定の再現率", "TODO の再現率"]);
+      expect(rows[0]![kind === "決定" ? "決定の再現率" : "TODO の再現率"]).toBe(expected);
+    }));
+  }
 
-  it("正解が 0 件の種別は 0/0 とし、割合は付けない", async () => {
-    const dir = await play(scriptA);
+  it.effect("正解が 0 件の種別は 0/0 とし、割合は付けない", () => Effect.gen(function* () {
+    const dir = yield* play(scriptA);
     const truth = { 決定: [{ text: "x", from: 20, to: 25, keywords: decision }], TODO: [] };
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), dir]));
+    const { rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), dir]));
     expect(rows[0]).toMatchObject({ 決定の再現率: "1/1 (100%)", "TODO の再現率": "0/0" });
-  });
+  }));
 
   const both = {
     決定: [{ text: "x", from: 20, to: 25, keywords: decision }],
     TODO: [{ text: "y", from: 10, to: 15, keywords: todo }],
   };
 
-  it("AI のノードが無ければ 0 件の再現になる", async () => {
-    const dir = await play([[], []]);
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(both), dir]));
+  it.effect("AI のノードが無ければ 0 件の再現になる", () => Effect.gen(function* () {
+    const dir = yield* play([[], []]);
+    const { rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(both), dir]));
     expect(rows[0]).toMatchObject({ 決定の再現率: "0/1 (0%)", "TODO の再現率": "0/1 (0%)" });
-  });
+  }));
 
-  it("同じ正解を複数のランに当てて、ランごとの再現率を並べる", async () => {
-    const dirA = await play(scriptA);
-    const dirEmpty = await play([[], []]);
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(both), dirA, dirEmpty]));
+  it.effect("同じ正解を複数のランに当てて、ランごとの再現率を並べる", () => Effect.gen(function* () {
+    const dirA = yield* play(scriptA);
+    const dirEmpty = yield* play([[], []]);
+    const { rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(both), dirA, dirEmpty]));
     expect(rows.map((r) => r["決定の再現率"])).toEqual(["1/1 (100%)", "0/1 (0%)"]);
     expect(rows.map((r) => r["TODO の再現率"])).toEqual(["1/1 (100%)", "0/1 (0%)"]);
-  });
+  }));
 });
 
 describe("eval: 正解との再現率（キーワード）", () => {
@@ -365,34 +372,34 @@ describe("eval: 正解との再現率（キーワード）", () => {
   ];
   const decisionNode = (text: string, evidence?: string[]) => decisionNodes({ text, evidence });
   // 決定の再現率の列だけを返す
-  const decisionRecall = async (script: Op[][], items: { from: number; to: number; keywords: unknown }[]) => {
+  const decisionRecall = (script: Op[][], items: { from: number; to: number; keywords: unknown }[]) => Effect.gen(function* () {
     const truth = { 決定: items.map((i) => ({ text: "x", ...i })), TODO: [] };
-    const { rows } = parseTable(await evalCli(["--truth", await writeTruth(truth), await play(script)]));
+    const { rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), yield* play(script)]));
     return rows[0]!["決定の再現率"];
-  };
-
-  it("時刻が重なっても、キーワードを含まないノードは正解として数えない（含む正解は当たる）", async () => {
-    const script = decisionNode("面接は 2 回にする");
-    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["2回"] }])).toBe("1/1 (100%)");
-    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["3回"] }])).toBe("0/1 (0%)");
   });
 
-  it("keywords の要素すべてが本文に含まれて初めて当たる（1 つ欠ければ外れる）", async () => {
+  it.effect("時刻が重なっても、キーワードを含まないノードは正解として数えない（含む正解は当たる）", () => Effect.gen(function* () {
     const script = decisionNode("面接は 2 回にする");
-    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["面接", "2回"] }])).toBe("1/1 (100%)");
-    expect(await decisionRecall(script, [{ from: 1, to: 5, keywords: ["面接", "3回"] }])).toBe("0/1 (0%)");
-  });
+    expect(yield* decisionRecall(script, [{ from: 1, to: 5, keywords: ["2回"] }])).toBe("1/1 (100%)");
+    expect(yield* decisionRecall(script, [{ from: 1, to: 5, keywords: ["3回"] }])).toBe("0/1 (0%)");
+  }));
 
-  it("1 つのノードは、区間が重なる 2 件の正解のうち 1 件にしか当たらない", async () => {
+  it.effect("keywords の要素すべてが本文に含まれて初めて当たる（1 つ欠ければ外れる）", () => Effect.gen(function* () {
+    const script = decisionNode("面接は 2 回にする");
+    expect(yield* decisionRecall(script, [{ from: 1, to: 5, keywords: ["面接", "2回"] }])).toBe("1/1 (100%)");
+    expect(yield* decisionRecall(script, [{ from: 1, to: 5, keywords: ["面接", "3回"] }])).toBe("0/1 (0%)");
+  }));
+
+  it.effect("1 つのノードは、区間が重なる 2 件の正解のうち 1 件にしか当たらない", () => Effect.gen(function* () {
     const script = decisionNode("予算の上限を決める", ["r1", "r3"]);
     const items = [
       { from: 1, to: 5, keywords: ["予算"] },
       { from: 20, to: 25, keywords: ["上限"] },
     ];
-    expect(await decisionRecall(script, items)).toBe("1/2 (50%)");
-  });
+    expect(yield* decisionRecall(script, items)).toBe("1/2 (50%)");
+  }));
 
-  it("当てられる組み合わせが複数あるときは、当たる件数が最大になる割り当てを選ぶ（先頭から貪欲に当てると 1 件になる例）", async () => {
+  it.effect("当てられる組み合わせが複数あるときは、当たる件数が最大になる割り当てを選ぶ（先頭から貪欲に当てると 1 件になる例）", () => Effect.gen(function* () {
     // N1「予算」「上限」を含む / N2「予算」だけ。T1「予算」は N1・N2 に、T2「上限」は N1 にだけ当たる。
     // T1 を先に N1 へ当てると T2 が余る。T1→N2、T2→N1 なら 2 件。
     const script = decisionNodes({ text: "予算の上限を決める" }, { text: "予算は据え置く" });
@@ -400,30 +407,30 @@ describe("eval: 正解との再現率（キーワード）", () => {
       { from: 1, to: 5, keywords: ["予算"] },
       { from: 1, to: 5, keywords: ["上限"] },
     ];
-    expect(await decisionRecall(script, items)).toBe("2/2 (100%)");
-  });
+    expect(yield* decisionRecall(script, items)).toBe("2/2 (100%)");
+  }));
 
-  it("言い換えの候補（配列の要素）のどれか 1 つで当たる", async () => {
+  it.effect("言い換えの候補（配列の要素）のどれか 1 つで当たる", () => Effect.gen(function* () {
     const keywords = ["切り替え", ["二月末", "2月末"]];
-    expect(await decisionRecall(decisionNode("切り替えは2月末にする"), [{ from: 1, to: 5, keywords }])).toBe("1/1 (100%)");
-    expect(await decisionRecall(decisionNode("切り替えは二月末にする"), [{ from: 1, to: 5, keywords }])).toBe("1/1 (100%)");
-  });
+    expect(yield* decisionRecall(decisionNode("切り替えは2月末にする"), [{ from: 1, to: 5, keywords }])).toBe("1/1 (100%)");
+    expect(yield* decisionRecall(decisionNode("切り替えは二月末にする"), [{ from: 1, to: 5, keywords }])).toBe("1/1 (100%)");
+  }));
 
-  it("どの候補も含まれなければ外れる", async () => {
+  it.effect("どの候補も含まれなければ外れる", () => Effect.gen(function* () {
     const keywords = ["切り替え", ["三月末", "3月末"]];
-    expect(await decisionRecall(decisionNode("切り替えは2月末にする"), [{ from: 1, to: 5, keywords }])).toBe("0/1 (0%)");
-  });
+    expect(yield* decisionRecall(decisionNode("切り替えは2月末にする"), [{ from: 1, to: 5, keywords }])).toBe("0/1 (0%)");
+  }));
 
-  it("全角・半角と空白の違いで外れない（本文の側でもキーワードの側でも）", async () => {
-    expect(await decisionRecall(decisionNode("切り替えは ２ 月末"), [{ from: 1, to: 5, keywords: ["切り替え", "2月末"] }])).toBe("1/1 (100%)");
-    expect(await decisionRecall(decisionNode("切り替えは2月末"), [{ from: 1, to: 5, keywords: ["切り 替え", "２月末"] }])).toBe("1/1 (100%)");
-    expect(await decisionRecall(decisionNode("製品はＡ社にする"), [{ from: 1, to: 5, keywords: ["A社"] }])).toBe("1/1 (100%)");
-    expect(await decisionRecall(decisionNode("製品はA社にする"), [{ from: 1, to: 5, keywords: ["Ａ　社"] }])).toBe("1/1 (100%)");
-  });
+  it.effect("全角・半角と空白の違いで外れない（本文の側でもキーワードの側でも）", () => Effect.gen(function* () {
+    expect(yield* decisionRecall(decisionNode("切り替えは ２ 月末"), [{ from: 1, to: 5, keywords: ["切り替え", "2月末"] }])).toBe("1/1 (100%)");
+    expect(yield* decisionRecall(decisionNode("切り替えは2月末"), [{ from: 1, to: 5, keywords: ["切り 替え", "２月末"] }])).toBe("1/1 (100%)");
+    expect(yield* decisionRecall(decisionNode("製品はＡ社にする"), [{ from: 1, to: 5, keywords: ["A社"] }])).toBe("1/1 (100%)");
+    expect(yield* decisionRecall(decisionNode("製品はA社にする"), [{ from: 1, to: 5, keywords: ["Ａ　社"] }])).toBe("1/1 (100%)");
+  }));
 
-  it("漢数字と算用数字は読み替えない", async () => {
-    expect(await decisionRecall(decisionNode("切り替えは二月末にする"), [{ from: 1, to: 5, keywords: ["2月末"] }])).toBe("0/1 (0%)");
-  });
+  it.effect("漢数字と算用数字は読み替えない", () => Effect.gen(function* () {
+    expect(yield* decisionRecall(decisionNode("切り替えは二月末にする"), [{ from: 1, to: 5, keywords: ["2月末"] }])).toBe("0/1 (0%)");
+  }));
 });
 
 describe("eval: 正解ファイルの検証", () => {
@@ -447,21 +454,23 @@ describe("eval: 正解ファイルの検証", () => {
     ["keywords の要素が空白だけ", { 決定: [{ ...item, keywords: [" \u3000"] }], TODO: [] }],
   ];
 
-  it.each(invalid)("%s正解は、ファイルのパスを含む InvalidTruthFile で止まる", async (_name, bad) => {
-    const dir = await play(scriptA);
-    const path = await writeTruth(bad);
-    const failure = await evalFailure(["--truth", path, dir]);
-    expect(failure.tag).toBe("InvalidTruthFile");
-    expect(carries(failure.values, path)).toBe(true);
-  });
+  for (const [name, bad] of invalid) {
+    it.effect(`${name}正解は、ファイルのパスを含む InvalidTruthFile で止まる`, () => Effect.gen(function* () {
+      const dir = yield* play(scriptA);
+      const path = yield* writeTruth(bad);
+      const failure = yield* evalFailure(["--truth", path, dir]);
+      expect(failure.tag).toBe("InvalidTruthFile");
+      expect(carries(failure.values, path)).toBe(true);
+    }));
+  }
 
-  it("失敗の理由は、どの種別の何件目かを含む", async () => {
-    const dir = await play(scriptA);
-    const path = await writeTruth({ 決定: [], TODO: [item, { text: "y", from: 1, to: 2 }] });
-    const failure = await evalFailure(["--truth", path, dir]);
+  it.effect("失敗の理由は、どの種別の何件目かを含む", () => Effect.gen(function* () {
+    const dir = yield* play(scriptA);
+    const path = yield* writeTruth({ 決定: [], TODO: [item, { text: "y", from: 1, to: 2 }] });
+    const failure = yield* evalFailure(["--truth", path, dir]);
     expect(failure.tag).toBe("InvalidTruthFile");
     expect(carries(failure.values, "「TODO」の 2 件目")).toBe(true);
-  });
+  }));
 });
 
 describe("eval: bench の正解ファイル", () => {
@@ -482,119 +491,119 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
     出てはいけない: [],
     ...parts,
   });
-  const screenRow = async (truth: unknown, script: Op[][] = scriptA) => {
-    const { rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(truth), await play(script)]));
+  const screenRow = (truth: unknown, script: Op[][] = scriptA) => Effect.gen(function* () {
+    const { rows } = parseTable(yield* evalCli(["--screen-truth", yield* writeTruth(truth), yield* play(script)]));
     return rows[0]!;
-  };
+  });
   const columns = (row: Record<string, string>) => SCREEN_HEADERS.map((h) => row[h]);
 
   describe("表の形", () => {
-    it("--screen-truth だけを付けると、今の列の後ろに 4 列が決まった順で足され、再現率の列は出ない", async () => {
-      const { header, rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(screenTruth({ 指す発言: [point(["採用"])] })), await play(scriptA)]));
+    it.effect("--screen-truth だけを付けると、今の列の後ろに 4 列が決まった順で足され、再現率の列は出ない", () => Effect.gen(function* () {
+      const { header, rows } = parseTable(yield* evalCli(["--screen-truth", yield* writeTruth(screenTruth({ 指す発言: [point(["採用"])] })), yield* play(scriptA)]));
       expect(header.slice(0, 4)).toEqual(["ラン", "会議", "ノード", "深さ"]);
       expect(header.slice(-4)).toEqual(SCREEN_HEADERS);
       expect(header).toHaveLength(4 + 7 + 3 + 4);
       expect(header.some((h) => h.includes("再現率"))).toBe(false);
       expect(rows[0]).toMatchObject({ ノード: "5", 深さ: "3" });
-    });
+    }));
 
-    it("--truth と一緒に付けると、再現率の列の後ろに 4 列が続き、6 列それぞれに正しい値が入る", async () => {
-      const truth = await writeTruth({
+    it.effect("--truth と一緒に付けると、再現率の列の後ろに 4 列が続き、6 列それぞれに正しい値が入る", () => Effect.gen(function* () {
+      const truth = yield* writeTruth({
         決定: [
           { text: "x", from: 20, to: 25, keywords: ["2回"] },
           { text: "y", from: 28.1, to: 40, keywords: ["2回"] },
         ],
         TODO: [{ text: "z", from: 10, to: 15, keywords: ["求人票"] }],
       });
-      const screen = await writeTruth(screenTruth({
+      const screen = yield* writeTruth(screenTruth({
         指す発言: [point(["採用"], 1, 5, { memory: true }), point(["面接"], 10, 15), point(["存在しない"])],
         話だけ: [point(["求人票"], 10, 15), point(["採用"], 20, 25)],
         出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["存在しない"] }, { keywords: ["2回"] }, { keywords: ["存在しない2"] }],
       }));
-      const { header, rows } = parseTable(await evalCli(["--truth", truth, "--screen-truth", screen, await play(scriptA)]));
+      const { header, rows } = parseTable(yield* evalCli(["--truth", truth, "--screen-truth", screen, yield* play(scriptA)]));
       const last6 = header.slice(-6);
       expect(last6).toEqual(["決定の再現率", "TODO の再現率", ...SCREEN_HEADERS]);
       expect(last6.map((h) => rows[0]![h])).toEqual(["1/2 (50%)", "1/1 (100%)", "2/3", "1/1", "1/2", "2/4"]);
-    });
+    }));
 
-    it("--screen-truth を付けないときは、4 列のどれも出ない", async () => {
-      const dir = await play(scriptA);
-      for (const args of [[dir], ["--truth", await writeTruth({ 決定: [], TODO: [] }), dir]]) {
-        const { header } = parseTable(await evalCli(args));
+    it.effect("--screen-truth を付けないときは、4 列のどれも出ない", () => Effect.gen(function* () {
+      const dir = yield* play(scriptA);
+      for (const args of [[dir], ["--truth", yield* writeTruth({ 決定: [], TODO: [] }), dir]]) {
+        const { header } = parseTable(yield* evalCli(args));
         for (const h of SCREEN_HEADERS) expect(header).not.toContain(h);
       }
-    });
+    }));
 
-    it("セルは「取れた数/項目数」で、割合は付けない。0 件でも 0/0", async () => {
-      expect(columns(await screenRow(screenTruth({})))).toEqual(["0/0", "0/0", "0/0", "0/0"]);
-      expect(columns(await screenRow(screenTruth({ 指す発言: [point(["採用"])] })))).toEqual(["1/1", "0/0", "0/0", "0/0"]);
-    });
+    it.effect("セルは「取れた数/項目数」で、割合は付けない。0 件でも 0/0", () => Effect.gen(function* () {
+      expect(columns(yield* screenRow(screenTruth({})))).toEqual(["0/0", "0/0", "0/0", "0/0"]);
+      expect(columns(yield* screenRow(screenTruth({ 指す発言: [point(["採用"])] })))).toEqual(["1/1", "0/0", "0/0", "0/0"]);
+    }));
 
-    it("同じ正解を複数のランに当てて、ランごとに数える", async () => {
-      const dirA = await play(scriptA);
-      const dirEmpty = await play([[], []]);
+    it.effect("同じ正解を複数のランに当てて、ランごとに数える", () => Effect.gen(function* () {
+      const dirA = yield* play(scriptA);
+      const dirEmpty = yield* play([[], []]);
       const truth = screenTruth({ 指す発言: [point(["採用"])], 出てはいけない: [{ keywords: ["求人票"] }] });
-      const { rows } = parseTable(await evalCli(["--screen-truth", await writeTruth(truth), dirA, dirEmpty]));
+      const { rows } = parseTable(yield* evalCli(["--screen-truth", yield* writeTruth(truth), dirA, dirEmpty]));
       expect(rows.map((r) => r["指す発言"])).toEqual(["1/1", "0/1"]);
       expect(rows.map((r) => r["出てはいけない"])).toEqual(["1/1", "0/1"]);
-    });
+    }));
   });
 
   describe("指す発言・話だけ（時刻・キーワード・種別・一対一）", () => {
-    it("種別では絞らない（議題・TODO・決定のどれのノードにも当たる）", async () => {
-      const row = await screenRow(screenTruth({
+    it.effect("種別では絞らない（議題・TODO・決定のどれのノードにも当たる）", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({
         指す発言: [point(["採用"]), point(["求人票"], 10, 15), point(["2回"], 20, 25)],
       }));
       expect(row["指す発言"]).toBe("3/3");
-    });
+    }));
 
-    it("根拠の発言の時刻が範囲に重ならなければ取れない", async () => {
-      expect((await screenRow(screenTruth({ 指す発言: [point(["採用"], 20, 25)] })))["指す発言"]).toBe("0/1");
-      expect((await screenRow(screenTruth({ 指す発言: [point(["採用"], 9.8, 12)] })))["指す発言"]).toBe("1/1");
-    });
+    it.effect("根拠の発言の時刻が範囲に重ならなければ取れない", () => Effect.gen(function* () {
+      expect((yield* screenRow(screenTruth({ 指す発言: [point(["採用"], 20, 25)] })))["指す発言"]).toBe("0/1");
+      expect((yield* screenRow(screenTruth({ 指す発言: [point(["採用"], 9.8, 12)] })))["指す発言"]).toBe("1/1");
+    }));
 
-    it("キーワードがすべて入っていなければ取れない（言い換えの配列はどれか 1 つ）", async () => {
-      const row = await screenRow(screenTruth({
+    it.effect("キーワードがすべて入っていなければ取れない（言い換えの配列はどれか 1 つ）", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({
         指す発言: [point(["2回", "存在しない"], 20, 25), point([["存在しない", "2回"]], 20, 25)],
       }));
       expect(row["指す発言"]).toBe("1/2");
-    });
+    }));
 
-    it("1 つのノードに当たる正解が 2 件あっても、取れるのは 1 件（一対一）", async () => {
-      expect((await screenRow(screenTruth({ 指す発言: [point(["採用"]), point(["採用"], 2, 3)] })))["指す発言"]).toBe("1/2");
-    });
+    it.effect("1 つのノードに当たる正解が 2 件あっても、取れるのは 1 件（一対一）", () => Effect.gen(function* () {
+      expect((yield* screenRow(screenTruth({ 指す発言: [point(["採用"]), point(["採用"], 2, 3)] })))["指す発言"]).toBe("1/2");
+    }));
 
-    it("一対一の割り当ては、取れる数が最大になるように組む（先の正解がノードを譲る）", async () => {
+    it.effect("一対一の割り当ては、取れる数が最大になるように組む（先の正解がノードを譲る）", () => Effect.gen(function* () {
       // 先の正解は「面接は何回か」「1 回で足りる」のどちらにも当たり、後の正解は「面接は何回か」だけに当たる
-      const row = await screenRow(screenTruth({ 指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15)] }));
+      const row = yield* screenRow(screenTruth({ 指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15)] }));
       expect(row["指す発言"]).toBe("2/2");
-    });
+    }));
 
-    it("話だけも同じ照合で数える", async () => {
-      const row = await screenRow(screenTruth({ 話だけ: [point(["求人票"], 10, 15), point(["求人票"], 10, 15), point(["採用"], 20, 25)] }));
+    it.effect("話だけも同じ照合で数える", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 話だけ: [point(["求人票"], 10, 15), point(["求人票"], 10, 15), point(["採用"], 20, 25)] }));
       expect(row["話だけ"]).toBe("1/3");
       expect(row["指す発言"]).toBe("0/0");
-    });
+    }));
 
-    it("指す発言と話だけは別々に数える（同じノードに当たっても両方が取れる）", async () => {
-      const row = await screenRow(screenTruth({ 指す発言: [point(["採用"])], 話だけ: [point(["採用"])] }));
+    it.effect("指す発言と話だけは別々に数える（同じノードに当たっても両方が取れる）", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 指す発言: [point(["採用"])], 話だけ: [point(["採用"])] }));
       expect(columns(row)).toEqual(["1/1", "0/0", "1/1", "0/0"]);
-    });
+    }));
 
-    it("全角・半角と空白の違いは吸収して照合する", async () => {
-      const row = await screenRow(screenTruth({ 指す発言: [point(["２ 回 に する"], 20, 25)] }));
+    it.effect("全角・半角と空白の違いは吸収して照合する", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 指す発言: [point(["２ 回 に する"], 20, 25)] }));
       expect(row["指す発言"]).toBe("1/1");
-    });
+    }));
 
-    it("ノードが無ければ 0 件になる", async () => {
-      const row = await screenRow(screenTruth({ 指す発言: [point(["採用"])], 話だけ: [point(["採用"])] }), [[], []]);
+    it.effect("ノードが無ければ 0 件になる", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 指す発言: [point(["採用"])], 話だけ: [point(["採用"])] }), [[], []]);
       expect(columns(row)).toEqual(["0/1", "0/0", "0/1", "0/0"]);
-    });
+    }));
   });
 
   describe("うち記憶（memory: true の指す発言のうち取れた数）", () => {
-    it("memory が true の項目だけが分母になる（false・省略は数えない）。指す発言には全項目が入る", async () => {
-      const row = await screenRow(screenTruth({
+    it.effect("memory が true の項目だけが分母になる（false・省略は数えない）。指す発言には全項目が入る", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({
         指す発言: [
           point(["採用"], 1, 5, { memory: true }),
           point(["求人票"], 10, 15, { memory: false }),
@@ -603,66 +612,66 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
       }));
       expect(row["指す発言"]).toBe("3/3");
       expect(row["うち記憶"]).toBe("1/1");
-    });
+    }));
 
-    it("memory が true でも取れなければ、うち記憶は取れた数に入らない", async () => {
-      const row = await screenRow(screenTruth({
+    it.effect("memory が true でも取れなければ、うち記憶は取れた数に入らない", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({
         指す発言: [point(["採用"], 20, 25, { memory: true }), point(["採用"], 1, 5)],
       }));
       expect(row["指す発言"]).toBe("1/2");
       expect(row["うち記憶"]).toBe("0/1");
-    });
+    }));
 
-    it("話だけの memory は数えない", async () => {
-      const row = await screenRow(screenTruth({ 話だけ: [point(["採用"], 1, 5, { memory: true })] }));
+    it.effect("話だけの memory は数えない", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 話だけ: [point(["採用"], 1, 5, { memory: true })] }));
       expect(row["うち記憶"]).toBe("0/0");
-    });
+    }));
 
-    it("memory の項目が、他の項目とノードを取り合っても、取れた数は食い違わない", async () => {
+    it.effect("memory の項目が、他の項目とノードを取り合っても、取れた数は食い違わない", () => Effect.gen(function* () {
       // 後ろの memory 項目は「面接は何回か」にしか当たらず、前の memory でない項目と競合する
-      const row = await screenRow(screenTruth({
+      const row = yield* screenRow(screenTruth({
         指す発言: [point(["回"], 10, 15), point(["面接"], 10, 15, { memory: true })],
       }));
       expect(row["指す発言"]).toBe("2/2");
       expect(row["うち記憶"]).toBe("1/1");
-    });
+    }));
   });
 
   describe("出てはいけない（時刻を問わず、キーワードを含むノードがあれば漏れ）", () => {
-    it("時刻を持たない項目でも、どの時刻のノードに含まれても漏れに数える", async () => {
+    it.effect("時刻を持たない項目でも、どの時刻のノードに含まれても漏れに数える", () => Effect.gen(function* () {
       // 「求人票」は r2、「2回」は r1・r3 の根拠のノード。項目に時刻は無い
-      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["2回"] }] }));
+      const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["2回"] }] }));
       expect(row["出てはいけない"]).toBe("2/2");
-    });
+    }));
 
-    it("どのノードにも無いキーワードは漏れではない", async () => {
-      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["存在しない"] }, { keywords: ["求人票"] }] }));
+    it.effect("どのノードにも無いキーワードは漏れではない", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["存在しない"] }, { keywords: ["求人票"] }] }));
       expect(row["出てはいけない"]).toBe("1/2");
-    });
+    }));
 
-    it("keywords の要素のどれか 1 つでも含まれれば漏れ（指す発言と違い、すべては要らない）", async () => {
-      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["存在しない", "採用"] }] }));
+    it.effect("keywords の要素のどれか 1 つでも含まれれば漏れ（指す発言と違い、すべては要らない）", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["存在しない", "採用"] }] }));
       expect(row["出てはいけない"]).toBe("1/1");
-    });
+    }));
 
-    it("言い換えの配列のどれか 1 つでも含まれれば漏れ", async () => {
-      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: [["存在しない", "採用"]] }, { keywords: [["存在しない", "ない"]] }] }));
+    it.effect("言い換えの配列のどれか 1 つでも含まれれば漏れ", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: [["存在しない", "採用"]] }, { keywords: [["存在しない", "ない"]] }] }));
       expect(row["出てはいけない"]).toBe("1/2");
-    });
+    }));
 
-    it("全角・半角と空白の違いは吸収して漏れに数える", async () => {
-      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["２ 回 に する"] }] }));
+    it.effect("全角・半角と空白の違いは吸収して漏れに数える", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["２ 回 に する"] }] }));
       expect(row["出てはいけない"]).toBe("1/1");
-    });
+    }));
 
-    it("同じノードを指す項目が複数あれば、項目ごとに漏れに数える（一対一にしない）", async () => {
-      const row = await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["採用"] }, { keywords: ["採用"] }, { text: "y", slide: "s", keywords: ["採用"] }] }));
+    it.effect("同じノードを指す項目が複数あれば、項目ごとに漏れに数える（一対一にしない）", () => Effect.gen(function* () {
+      const row = yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["採用"] }, { keywords: ["採用"] }, { text: "y", slide: "s", keywords: ["採用"] }] }));
       expect(row["出てはいけない"]).toBe("3/3");
-    });
+    }));
 
-    it("ノードが無ければ漏れは 0", async () => {
-      expect((await screenRow(screenTruth({ 出てはいけない: [{ keywords: ["採用"] }] }), [[], []]))["出てはいけない"]).toBe("0/1");
-    });
+    it.effect("ノードが無ければ漏れは 0", () => Effect.gen(function* () {
+      expect((yield* screenRow(screenTruth({ 出てはいけない: [{ keywords: ["採用"] }] }), [[], []]))["出てはいけない"]).toBe("0/1");
+    }));
   });
 
   describe("壊れた正解は、理由つきで読み込みに失敗する", () => {
@@ -678,29 +687,31 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
       ["指す発言に from が無い", screenTruth({ 指す発言: [{ keywords: ["x"] }] }), "「指す発言」の 1 件目: from / to は秒の数値で書く"],
     ];
 
-    it.each(invalid)("%s", async (_name, bad, reason) => {
-      const dir = await play(scriptA);
-      const path = await writeTruth(bad);
-      const failure = await evalFailure(["--screen-truth", path, dir]);
-      expect(failure.tag).toBe("InvalidTruthFile");
-      expect(carries(failure.values, path)).toBe(true);
-      expect(failure.values["reason"]).toBe(reason);
-    });
+    for (const [name, bad, reason] of invalid) {
+      it.effect(name, () => Effect.gen(function* () {
+        const dir = yield* play(scriptA);
+        const path = yield* writeTruth(bad);
+        const failure = yield* evalFailure(["--screen-truth", path, dir]);
+        expect(failure.tag).toBe("InvalidTruthFile");
+        expect(carries(failure.values, path)).toBe(true);
+        expect(failure.values["reason"]).toBe(reason);
+      }));
+    }
 
-    it("--truth と一緒でも、壊れた共有画面の正解は InvalidTruthFile で止まる", async () => {
-      const dir = await play(scriptA);
-      const path = await writeTruth(screenTruth({ 出てはいけない: [{ keywords: [] }] }));
-      const failure = await evalFailure(["--truth", await writeTruth({ 決定: [], TODO: [] }), "--screen-truth", path, dir]);
+    it.effect("--truth と一緒でも、壊れた共有画面の正解は InvalidTruthFile で止まる", () => Effect.gen(function* () {
+      const dir = yield* play(scriptA);
+      const path = yield* writeTruth(screenTruth({ 出てはいけない: [{ keywords: [] }] }));
+      const failure = yield* evalFailure(["--truth", yield* writeTruth({ 決定: [], TODO: [] }), "--screen-truth", path, dir]);
       expect(failure.tag).toBe("InvalidTruthFile");
       expect(carries(failure.values, path)).toBe(true);
-    });
+    }));
 
-    it("読み込めない共有画面の正解（無いファイル）は InvalidTruthFile で止まる", async () => {
-      const dir = await play(scriptA);
-      const path = join(await mkdtemp(join(tmpdir(), "live-mindmap-truth-")), "missing.screen.truth.json");
-      const failure = await evalFailure(["--screen-truth", path, dir]);
+    it.effect("読み込めない共有画面の正解（無いファイル）は InvalidTruthFile で止まる", () => Effect.gen(function* () {
+      const dir = yield* play(scriptA);
+      const path = join(yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-truth-"))), "missing.screen.truth.json");
+      const failure = yield* evalFailure(["--screen-truth", path, dir]);
       expect(failure.tag).toBe("InvalidTruthFile");
       expect(carries(failure.values, path)).toBe(true);
-    });
+    }));
   });
 });

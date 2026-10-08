@@ -22,11 +22,11 @@ beforeEach(() => {
   close.mockReset();
   external.openClaudeUpdater.mockReset();
   external.openClaudeUpdater.mockImplementation(() => ({
-    update: async (input: DiffInput) => {
+    update: (input: DiffInput) => Effect.sync(() => {
       calls.push(input.fresh.map((u) => u.id));
       counter += 1;
       return { ops: [{ op: "add", ref: `t${counter}`, parent: "root", kind: "TODO", text: "採用", evidence: input.fresh.map((u) => u.id) }] };
-    },
+    }),
     close,
   }));
 });

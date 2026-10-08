@@ -4,11 +4,10 @@ import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { TestClock } from "effect/testing";
 import { Helpers } from "../src/helpers.ts";
-import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 
 // 接続の再試行は Schedule.spaced("200 millis")（CT-RESTART-DECISION）。
 // 子プロセスだけを偽物にし、ヘルパーが待ち受けるはずのポートに「接続を数えて切る」サーバーを置いて、再試行の間隔を TestClock で観測する
-const realDelay = (ms: number) => promiseOrDie(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+const realDelay = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 const countingSpawner = (counter: { connections: number; spawned?: ChildProcess.StandardCommand[]; kills?: unknown[] }) =>
   Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
@@ -18,7 +17,7 @@ const countingSpawner = (counter: { connections: number; spawned?: ChildProcess.
         counter.spawned?.push(command as ChildProcess.StandardCommand);
         const port = Number(args[args.indexOf("--port") + 1]);
         const server = yield* Effect.acquireRelease(
-          promiseOrDie(
+          Effect.promise(
             () =>
               new Promise<Server>((resolve) => {
                 const s = createServer((socket) => {

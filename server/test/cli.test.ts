@@ -85,10 +85,10 @@ function scripted(ops: Op[][] = script) {
   const calls: DiffInput[] = [];
   const close = vi.fn();
   external.openClaudeUpdater.mockReturnValue({
-    update: async (input: DiffInput) => {
+    update: (input: DiffInput) => Effect.sync(() => {
       calls.push(input);
       return { ops: ops[calls.length - 1] ?? [] };
-    },
+    }),
     close,
   });
   return { calls, close };
@@ -246,11 +246,11 @@ describe("CLI", () => {
     const dir = yield* temporaryDirectory;
     const deps = dependencies(dir);
     external.openClaudeUpdater.mockReturnValue({
-      update: async () => {
+      update: () => Effect.sync(() => {
         const [session] = readdirSync(dir);
         mkdirSync(join(dir, session!, "map.md")); // 書き先と同名のフォルダがあり、map.md を書けない
         return { ops: [] };
-      },
+      }),
       close: vi.fn(),
     });
 
@@ -294,14 +294,14 @@ describe("CLI", () => {
     const release = yield* Deferred.make<void>();
     let calls = 0;
     external.openClaudeUpdater.mockReturnValue({
-      update: async () => {
+      update: () => Effect.suspend(() => {
         const ops = script[calls++] ?? [];
         if (calls === 2) {
           Deferred.doneUnsafe(reachedSecond, Effect.void);
-          await Effect.runPromise(Deferred.await(release)); // 2 回目の更新が終わらない、進行中の状態で止める
+          return Deferred.await(release).pipe(Effect.as({ ops })); // 2 回目の更新が終わらない、進行中の状態で止める
         }
-        return { ops };
-      },
+        return Effect.succeed({ ops });
+      }),
       close: () => {},
     });
 
@@ -1033,10 +1033,10 @@ describe("CLI", () => {
       const first = new Promise<void>((resolve) => (firstReceived = resolve));
       let n = 0;
       external.openClaudeUpdater.mockReturnValue({
-        update: async () => {
-          await first; // 接続して最初のスナップショットが届くまで、反映を待たせる
-          return { ops: script[n++] ?? [] };
-        },
+        update: () =>
+          Effect.promise(() => first).pipe( // 接続して最初のスナップショットが届くまで、反映を待たせる
+            Effect.map(() => ({ ops: script[n++] ?? [] })),
+          ),
         close: () => {},
       });
 
@@ -1084,10 +1084,8 @@ describe("CLI", () => {
       external.openListener.mockImplementation(fake.open);
       let n = 0;
       external.openClaudeUpdater.mockReturnValue({
-        update: async () => {
-          if (n++ === 0) throw new Error("失敗");
-          return { ops: [] as Op[] };
-        },
+        update: () => Effect.suspend(() =>
+          n++ === 0 ? Effect.fail({ _tag: "FakeUpdateFailed", message: "失敗" }) : Effect.succeed({ ops: [] as Op[] })),
         close: () => {},
       });
 

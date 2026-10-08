@@ -13,7 +13,6 @@ import { SessionSinks, type SessionSinksDeps } from "../src/sessionSinks.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { collectingConsole, failingBuild, failingCapture, FAKE_TEMPLATE, fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
-import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
 // Issue #240 段 3（ADR 0008）→ Issue #243 段 6: SessionSinks の実物 Layer を、実 tmpdir + 偽の DiffUpdater／capture で確かめる。
@@ -66,8 +65,8 @@ const sinksLayer = ({ updaterLayer, ...services }: Pick<SessionSinksDeps, "updat
 
 const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
   return yield* Effect.acquireRelease(
-    promiseOrDie(() => mkdtemp(join(tmpdir(), "live-mindmap-sinks-"))),
-    (dir) => promiseOrDie(() => rm(dir, { recursive: true, force: true })),
+    Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-sinks-"))),
+    (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
   );
 });
 
@@ -485,7 +484,7 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* Scope.close(firstScope, Exit.void);
       expect(state).toMatchObject({ opened: 1, closed: 1 });
 
-      yield* promiseOrDie(() => new Promise<void>((resolve) => setTimeout(resolve, 5))); // フォルダ名は開始時刻（実時間のミリ秒）
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5))); // フォルダ名は開始時刻（実時間のミリ秒）
       const secondScope = yield* Scope.make();
       const second = yield* Scope.provide(sinks.open({ dir: yield* sinks.createDir(sessionsDir), title: "二つ目", ...noop }), secondScope);
       expect(state).toMatchObject({ opened: 2, closed: 1 }); // 2 つ目は 1 つ目を使い回さず、新しく開く
@@ -808,7 +807,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* first.final(finalRemark("相手", 1, 2, "前の発言"));
       yield* first.flush;
       yield* first.exports;
-      yield* promiseOrDie(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
       const secondDir = yield* sinks.createDir(sessionsDir);
       yield* sinks.open({ dir: secondDir, title: "今", ...noop });
 

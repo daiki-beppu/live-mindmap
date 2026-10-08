@@ -15,7 +15,6 @@ import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix
 import { fakeExportServices, FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
-import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 // Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約 6 本だけに絞る
@@ -44,7 +43,7 @@ type HelperRecord =
 
 const setup = (initial: Partial<Script> = {}) =>
   Effect.gen(function* () {
-  const dir = yield* promiseOrDie(() => mkdtemp(join(tmpdir(), "live-mindmap-")));
+  const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-")));
   const sessionsDir = join(dir, "sessions");
   const scriptPath = join(dir, "script.json");
   const recordPath = join(dir, "record.jsonl");
@@ -109,7 +108,7 @@ const setup = (initial: Partial<Script> = {}) =>
       Effect.map((e) => (e instanceof Error ? e.message : String(e))),
     );
   const sessionDirs = () =>
-    promiseOrDie(async () => (existsSync(sessionsDir) ? (await readdir(sessionsDir)).sort().map((d) => join(sessionsDir, d)) : []));
+    Effect.promise(async () => (existsSync(sessionsDir) ? (await readdir(sessionsDir)).sort().map((d) => join(sessionsDir, d)) : []));
   return { server, cli, cliFailure, calls, writeScript, records, sessionDirs, sessionsDir, stderr };
   });
 
@@ -124,7 +123,7 @@ const connect = (port: number) =>
     else if (!("type" in frame)) received.push(frame);
   });
   yield* Effect.acquireRelease(Effect.void, () => Effect.sync(() => ws.close()));
-  yield* promiseOrDie(
+  yield* Effect.promise(
     () =>
       new Promise<void>((resolve, reject) => {
         ws.addEventListener("open", () => resolve());
@@ -135,9 +134,9 @@ const connect = (port: number) =>
   });
 
 const logEvents = (dir: string) =>
-  promiseOrDie(async () => (await readFile(join(dir, "log.jsonl"), "utf8")).split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)));
+  Effect.promise(async () => (await readFile(join(dir, "log.jsonl"), "utf8")).split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)));
 
-const waitFor = (fn: () => void, options?: { timeout: number }) => promiseOrDie(() => vi.waitFor(fn, options));
+const waitFor = (fn: () => void, options?: { timeout: number }) => Effect.promise(() => vi.waitFor(fn, options));
 
 describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・WebSocket。CT-TEST-SPLIT）", () => {
   it.live("疎通: cli apps → start → 発言 → stop → export（HTTP・/ws・子プロセスを本物で）", () =>

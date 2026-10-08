@@ -4,12 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type SpeakingFrame, type Track } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
-import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 // いま話している文字（SpeakingFrame）をブラウザへ送る層。段 3（Issue #240）で、setTimeout/clearTimeout・
@@ -125,7 +124,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     const unreflectedAtPublish: string[][] = []; // publish が呼ばれた時点で、Session が未反映とみなしていた発言の ID
     let session: Session | undefined;
     let relay: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
-    const sessionsDir = yield* promiseOrDie(() => mktempSessionsDir());
+    const sessionsDir = yield* Effect.promise(() => mktempSessionsDir());
     const dir = yield* createSessionDir(sessionsDir).pipe(Effect.provide(NodeFileSystem.layer));
     const started = yield* openRecordedSession({
       dir,
@@ -135,7 +134,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
           if (session) unreflectedAtPublish.push((yield* session.unreflectedRemarks).map((r) => r.id));
         }),
       onDiff: Effect.suspend(() => relay!.flushAll()),
-    }).pipe(Effect.provide(updaterLayer(update)), Effect.provide(NodeFileSystem.layer));
+    }).pipe(Effect.provide(Layer.mergeAll(updaterLayer(update), NodeFileSystem.layer)));
     session = started.session;
     relay = yield* createSpeakingRelay({ unreflected: session.unreflectedRemarks, send: (f) => Effect.sync(() => frames.push(f)) });
     // server/src/sessions.ts の読み取りループと同じ順: 発言は push してから relay に知らせる

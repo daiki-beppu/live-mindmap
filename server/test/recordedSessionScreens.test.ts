@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import type { DiffInput, Remark, ScreenChange } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -28,8 +28,7 @@ const open = Effect.fn("open")(function* () {
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
   const { session } = yield* openRecordedSession({ dir, title: "定例", publish: () => Effect.void }).pipe(
-    Effect.provide(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] })))),
-    Effect.provide(NodeFileSystem.layer),
+    Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   return { dir, session, inputs, lines };
