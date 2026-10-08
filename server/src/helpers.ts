@@ -68,11 +68,19 @@ const decodeJsonText = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.U
 const freePort = Effect.callback<number, HelperLaunchFailure>((resume) => {
   const fail = (reason: string) => resume(Effect.fail(new HelperLaunchFailure({ stderrTail: [reason] })));
   const probe = createServer();
+  let closed = false;
   probe.once("error", (error) => fail(error.message));
   probe.listen(0, "127.0.0.1", () => {
+    // 中断で閉じた後に割り当てが届いた場合、待受けを残さない
+    if (closed) return probe.close();
     const address = probe.address();
     if (!address || typeof address === "string") return fail("空きポートを取得できません");
     probe.close(() => resume(Effect.succeed(address.port)));
+  });
+  // 中断されたら探索用の待受けを閉じる
+  return Effect.sync(() => {
+    closed = true;
+    probe.close();
   });
 });
 

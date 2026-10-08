@@ -1026,7 +1026,7 @@ describe("CLI", () => {
       const listening = yield* Deferred.make<number>();
       const http = external.realHttp.current!;
       external.openListener.mockImplementation((port: number) =>
-        Effect.tap(http.openListener(port), ({ httpServer }) => Deferred.succeed(listening, http.portOf(httpServer.address))));
+        Effect.tap(http.openListener(port), ({ httpServer }) => Effect.flatMap(http.portOf(httpServer.address), (p) => Deferred.succeed(listening, p))));
 
       const received: Snapshot[] = [];
       let firstReceived: () => void = () => {};

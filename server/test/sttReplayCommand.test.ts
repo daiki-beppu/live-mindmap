@@ -108,6 +108,27 @@ describe("sttReplay の Command", () => {
     expect(close).toHaveBeenCalledTimes(1); // 開いた差分更新は失敗でも閉じる
   }).pipe(Effect.scoped));
 
+  it.effect("セッションのフォルダを一時領域に作れないときは、文字列ではなく ReplaySessionFailed（パス入り）で失敗し、何も出さず差分更新も呼ばない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const file = writeInputs(dir);
+    vi.stubEnv("TMPDIR", join(dir, "no-such-tmp"));
+    const { result, stdout } = yield* runCommand(command, [file]).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+    const failure = taggedFailure(result);
+    expect(failure?._tag).toBe("ReplaySessionFailed");
+    expect(String(failure?.path)).not.toBe("");
+    expect(String(failure?.reason)).not.toBe("");
+    expect(stdout).toBe("");
+    expect(calls).toEqual([]);
+    // 入口は stderr に「<パス>: 再生のセッションを作れないか、そのログを読めません（<理由>）」の 1 行を出す
+    const reported = consoleCapture();
+    yield* reportFailure(Cause.fail(failure)).pipe(Effect.provide(reported.layer));
+    expect(reported.stdout).toEqual([]);
+    expect(reported.stderr).toHaveLength(1);
+    expect(reported.stderr[0]!.startsWith(`${failure?.path}: 再生のセッションを作れないか、そのログを読めません（`)).toBe(true);
+    expect(reported.stderr[0]!).toContain(String(failure?.reason));
+    expect(reported.stderr[0]!.endsWith("）\n")).toBe(true);
+  }).pipe(Effect.scoped));
+
   it.effect("正解ファイルが無いとき、入口は「<パス>: 正解ファイルが不正です（<理由>）」の 1 行を stderr に出す", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const truth = join(dir, "missing.truth.json");
