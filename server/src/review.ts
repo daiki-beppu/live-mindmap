@@ -48,12 +48,12 @@ const buildReviewTemplate = Effect.fnUntraced(function* (fs: FileSystem.FileSyst
 
 // 見返し用の HTML のテンプレート（ログを差し込む前）をビルドする
 export class ReviewBuild extends Context.Service<ReviewBuild, {
-  readonly build: () => Effect.Effect<string, ReviewPageFailed>;
+  readonly build: Effect.Effect<string, ReviewPageFailed>;
 }>()("live-mindmap/server/ReviewBuild") {
   static readonly layer: Layer.Layer<ReviewBuild, never, FileSystem.FileSystem> = Layer.effect(ReviewBuild)(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      return ReviewBuild.of({ build: () => buildReviewTemplate(fs) });
+      return ReviewBuild.of({ build: buildReviewTemplate(fs) });
     }),
   );
 }
@@ -87,7 +87,7 @@ export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPat
     ),
   );
   const { build } = yield* ReviewBuild;
-  const template = yield* build();
+  const template = yield* build;
   const pages: { path: string; html: string }[] = [];
   const skipped: SkippedReviewVariant[] = [];
   for (const variant of variants) {

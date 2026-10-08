@@ -399,7 +399,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),
           Layer.succeed(Console.Console, consoleService),
           Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
-          Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("") })),
+          Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("") })),
           fakeAudioMix().layer,
           fakeScreenJpeg().layer,
         );

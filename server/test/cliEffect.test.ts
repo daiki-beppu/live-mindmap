@@ -79,7 +79,7 @@ function dependencies(sessionsDir: string) {
         writeFileSync(path, "");
       }),
     })),
-    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("<!doctype html><html><body></body></html>") })),
     fakeAudioMix().layer,
     fakeScreenJpeg().layer,
   );

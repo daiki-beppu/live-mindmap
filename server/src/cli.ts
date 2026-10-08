@@ -201,11 +201,11 @@ const requestServer = <A>(
     });
     // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする（今と同じ）
     const raw = yield* Effect.tryPromise((): Promise<unknown> => response.json()).pipe(
-      Effect.catch(() => Effect.succeed<unknown>({})),
+      Effect.orElseSucceed((): unknown => ({})),
     );
     if (!response.ok) {
       const reported = yield* Schema.decodeUnknownEffect(ServerErrorBody)(raw).pipe(
-        Effect.catch(() => Effect.succeed<{ readonly error?: string }>({})),
+        Effect.orElseSucceed((): { readonly error?: string } => ({})),
       );
       return yield* new ServerFailed({ message: reported.error ?? `サーバーがエラーを返しました: ${response.status}` });
     }
@@ -293,7 +293,7 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
 
 const readTranscriptRemarks = Effect.fn("readTranscriptRemarks")(function* (transcript: string) {
   const text = yield* readTextFile(transcript).pipe(Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: fileReason(e) })));
-  const file = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
+  const file = yield* Schema.decodeEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(
     Effect.mapError((e) => new InvalidTranscriptFile({ path: transcript, reason: decodeReason(e) })),
   );
   return [...fromTranscript(file)];
@@ -474,13 +474,13 @@ const exportCommand = Command.make(
     const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
     if (format === "json") {
       // json はマップの形を使わないので、保存した値をそのまま出す（宣言していないキーも落とさない）
-      const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+      const raw = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
         Effect.mapError((e) => new CommandFailed({ message: `${path} が JSON として読めません: ${decodeReason(e)}` })),
       );
       yield* write(JSON.stringify(raw, null, 2) + "\n");
       return;
     }
-    const exported = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonExport))(text).pipe(
+    const exported = yield* Schema.decodeEffect(Schema.fromJsonString(JsonExport))(text).pipe(
       Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
     );
     yield* write(toMarkdown(exported));
@@ -584,7 +584,7 @@ const evaluate = Command.make(
       const path = join(dir, EXPORT_FILE);
       if (!(yield* pathExists(fs, path).pipe(orFileFailed))) return yield* new MissingRunExport({ path });
       const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
-      const exp = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonExport))(text).pipe(
+      const exp = yield* Schema.decodeEffect(Schema.fromJsonString(JsonExport))(text).pipe(
         Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
       );
       const logPath = join(dir, LOG_FILE);
