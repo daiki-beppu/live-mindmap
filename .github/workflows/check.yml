@@ -34,10 +34,12 @@ jobs:
           if printf '%s\n' "$code" | grep -Eq '^(helper/|\.github/workflows/)'; then swift=true; fi
           echo "ts=$ts" >> "$GITHUB_OUTPUT"; echo "swift=$swift" >> "$GITHUB_OUTPUT"
 
-  typecheck:
+  # typecheck・unit・軽い IT を server と web の両方で 1 ジョブにまとめる。Chromium は要らない
+  ts:
     needs: changes
     if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-24.04
+    name: ts (typecheck・unit・IT)
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v3
@@ -45,15 +47,15 @@ jobs:
           runtime: node@24
           install: false
       - run: pnpm install --frozen-lockfile
-      # ルートの pnpm typecheck は helper の swift build まで走るので、TS の 2 パッケージに絞る
+      # ルートの pnpm typecheck は helper の swift build まで走るので、TS の 2 パッケージに絞る（server の typecheck は点検 script も走らせる）
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web typecheck
-      - run: pnpm --filter @live-mindmap/web test
-      - run: pnpm --filter @live-mindmap/web test:it:all
+      - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test
+      - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test:it
 
-  # server.heavy.test.ts は 1 ファイルで server テスト全体の時間を決める（--shard はファイル単位で、ファイルの中は割れない）。
-  # vitest list でテストの一覧を取り、行番号で絞って（file:line）テスト単位で均等に割る。
-  # 新しく足したテストも自動でどれかのシャードに入る
-  server-split:
+  # 重い IT（--project heavy）全体を 4 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
+  # vitest list で一覧を取り、file:line ごとにまとめて配る（each やループの同じ行のテストは 1 つの runner に入り、重複して走らない）。
+  # 新しく足した重い IT も、設定を書き換えずにどれかの runner に入る。Chromium を入れるのはこのジョブだけ
+  heavy:
     needs: changes
     if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-24.04
@@ -61,7 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3]
-    name: server.heavy.test.ts (${{ matrix.shard }}/4)
+    name: heavy IT (${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v3
@@ -69,43 +71,25 @@ jobs:
           runtime: node@24
           install: false
       - run: pnpm install --frozen-lockfile
-      # 実物の撮影を確かめるテストが 1 件ある
+      # 実物の撮影を確かめるテストがある
       - run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
       - working-directory: server
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          targets=$(pnpm exec vitest list test/server.heavy.test.ts --json \
-            | jq -r --argjson n 4 --argjson i "$SHARD" 'sort_by(.location.line) | to_entries[] | select(.key % $n == $i) | "test/server.heavy.test.ts:\(.value.location.line)"')
+          tests=$(pnpm exec vitest list --project heavy --json \
+            | jq -r --arg root "$PWD/" '.[] | "\(.file | ltrimstr($root)):\(.location.line // error("location.line が無いテスト: \(.file) \(.name)"))"')
+          total=$(printf '%s\n' "$tests" | grep -c . || true)
+          mine=$(printf '%s\n' "$tests" | jq -R -s -r --argjson n 4 --argjson i "$SHARD" 'split("\n") | map(select(. != "")) | group_by(.) | to_entries[] | select(.key % $n == $i) | .value[]')
+          count=$(printf '%s\n' "$mine" | grep -c . || true)
+          echo "runner $SHARD: $count of $total tests"
+          targets=$(printf '%s\n' "$mine" | sort -u | grep . || true)
+          if [ -z "$targets" ]; then
+            echo "runner $SHARD: 受け持ちが無いので vitest run を呼ばない"
+            exit 0
+          fi
           echo "$targets"
-          pnpm exec vitest run $targets
-
-  server:
-    needs: changes
-    if: needs.changes.outputs.ts == 'true'
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: capture
-            args: test/capture.heavy.test.ts test/reviewBuild.heavy.test.ts
-            chromium: true
-          - name: rest
-            args: --exclude test/server.heavy.test.ts --exclude test/capture.heavy.test.ts --exclude test/reviewBuild.heavy.test.ts
-            chromium: false
-    name: server (${{ matrix.name }})
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/setup@v3
-        with:
-          runtime: node@24
-          install: false
-      - run: pnpm install --frozen-lockfile
-      - if: matrix.chromium
-        run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
-      - run: pnpm exec vitest run ${{ matrix.args }}
-        working-directory: server
+          pnpm exec vitest run --project heavy $targets
 
   helper:
     needs: changes
@@ -152,7 +136,7 @@ jobs:
   # always() が無いと、依存が落ちたときに skipped（= Success 扱い）になって落ちた PR がマージできてしまう
   check:
     if: always()
-    needs: [changes, typecheck, server-split, server, helper]
+    needs: [changes, ts, heavy, helper]
     runs-on: ubuntu-slim
     steps:
       # success か skipped 以外（failure・cancelled・runner を取れずに終わったときの値・空など）が 1 つでもあれば落とす
