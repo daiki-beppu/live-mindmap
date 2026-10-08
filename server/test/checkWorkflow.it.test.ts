@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -10,17 +11,19 @@ const workflow = readFileSync(join(root, ".github/workflows/check.yml"), "utf8")
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
 
-const checkJobLines = (): string[] => {
+const jobLines = (job: string): string[] => {
   const lines = workflow.split("\n");
-  const start = lines.findIndex((l) => l === "  check:");
+  const start = lines.findIndex((l) => l === `  ${job}:`);
   expect(start).toBeGreaterThanOrEqual(0);
   const rest = lines.slice(start + 1);
   const end = rest.findIndex((l) => l.trim() !== "" && indentOf(l) <= 2);
   return end === -1 ? rest : rest.slice(0, end);
 };
 
-const runScript = (): string => {
-  const lines = checkJobLines();
+const checkJobLines = (): string[] => jobLines("check");
+
+const runScriptOf = (job: string): string => {
+  const lines = jobLines(job);
   const at = lines.findIndex((l) => /^\s+run: \|\s*$/.test(l));
   expect(at).toBeGreaterThanOrEqual(0);
   const base = indentOf(lines[at]!);
@@ -32,6 +35,8 @@ const runScript = (): string => {
   const strip = Math.min(...body.filter((l) => l.trim() !== "").map(indentOf));
   return body.map((l) => l.slice(strip)).join("\n");
 };
+
+const runScript = (): string => runScriptOf("check");
 
 const needsJson = (results: Record<string, string>): string =>
   JSON.stringify(
@@ -106,5 +111,75 @@ describe("check ジョブの判定", () => {
   it("JSON が読めないときも落ちる", () => {
     const r = runStep("not json");
     expect(r.status).not.toBe(0);
+  });
+});
+
+// Issue #599: server のテスト（helperScripts.it.test.ts）は helper/package.json を読む。
+// helper/ の下だけの変更で ts のジョブを飛ばす振り分けでは、その変更でテストが落ちても CI が気付かない。
+// changes ジョブの run を取り出し、`gh api` を変更ファイルの一覧を返す偽物に差し替えて、ts と swift の出力を確かめる
+const filterOutputs = (files: string[], event = "pull_request"): Record<string, string> => {
+  const dir = mkdtempSync(join(tmpdir(), "changes-filter-"));
+  try {
+    const gh = join(dir, "gh");
+    writeFileSync(gh, '#!/bin/sh\nprintf \'%s\\n\' "$FAKE_FILES"\n');
+    chmodSync(gh, 0o755);
+    const outputFile = join(dir, "output");
+    writeFileSync(outputFile, "");
+    const r = spawnSync("bash", ["-e", "-o", "pipefail", "-c", runScriptOf("changes")], {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        FAKE_FILES: files.join("\n"),
+        GITHUB_EVENT_NAME: event,
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_REPOSITORY: "o/r",
+        GH_TOKEN: "x",
+        PR: "1",
+      },
+      encoding: "utf8",
+    });
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+    return Object.fromEntries(
+      readFileSync(outputFile, "utf8")
+        .split("\n")
+        .filter((l) => l.includes("="))
+        .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+describe("changes ジョブの振り分け", () => {
+  it("helper/package.json だけの変更は ts のジョブを走らせる（swift も走る）", () => {
+    expect(filterOutputs(["helper/package.json"])).toEqual({ ts: "true", swift: "true" });
+  });
+
+  it("helper/Sources の下だけの変更は ts を飛ばし、swift だけ走らせる", () => {
+    expect(filterOutputs(["helper/Sources/Foo.swift"])).toEqual({ ts: "false", swift: "true" });
+  });
+
+  it("helper/ の package.json 以外のファイルだけの変更は ts を飛ばす", () => {
+    expect(filterOutputs(["helper/scripts/checkTestLayers.ts", "helper/Package.swift"])).toEqual({ ts: "false", swift: "true" });
+  });
+
+  it("入れ子の package.json（helper/Sources/x/package.json）は例外にしない", () => {
+    expect(filterOutputs(["helper/Sources/x/package.json"]).ts).toBe("false");
+  });
+
+  it("docs だけの変更は ts も swift も飛ばす", () => {
+    expect(filterOutputs(["docs/a.md", "README.md", "LICENSE"])).toEqual({ ts: "false", swift: "false" });
+  });
+
+  it("docs と helper/package.json の変更なら ts が走る", () => {
+    expect(filterOutputs(["docs/a.md", "helper/package.json"]).ts).toBe("true");
+  });
+
+  it("server の変更は ts を走らせる", () => {
+    expect(filterOutputs(["server/src/a.ts"])).toEqual({ ts: "true", swift: "false" });
+  });
+
+  it("main への push は両方走らせる", () => {
+    expect(filterOutputs([], "push")).toEqual({ ts: "true", swift: "true" });
   });
 });
