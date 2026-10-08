@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
@@ -125,7 +126,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     let session: Session | undefined;
     let relay: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
     const sessionsDir = yield* promiseOrDie(() => mktempSessionsDir());
-    const dir = createSessionDir(sessionsDir);
+    const dir = yield* createSessionDir(sessionsDir).pipe(Effect.provide(NodeFileSystem.layer));
     const started = yield* openRecordedSession({
       dir,
       title: "定例",
@@ -134,7 +135,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
           if (session) unreflectedAtPublish.push((yield* session.unreflectedRemarks).map((r) => r.id));
         }),
       onDiff: Effect.suspend(() => relay!.flushAll()),
-    }).pipe(Effect.provide(updaterLayer(update)));
+    }).pipe(Effect.provide(updaterLayer(update)), Effect.provide(NodeFileSystem.layer));
     session = started.session;
     relay = yield* createSpeakingRelay({ unreflected: session.unreflectedRemarks, send: (f) => Effect.sync(() => frames.push(f)) });
     // server/src/sessions.ts の読み取りループと同じ順: 発言は push してから relay に知らせる

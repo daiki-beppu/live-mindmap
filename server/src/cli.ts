@@ -10,6 +10,7 @@ import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
+import { withoutFinalNewline } from "./consoleText.ts";
 import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
   formatIntakeStatus,
@@ -144,9 +145,8 @@ const decodeReason = (error: Schema.SchemaError): string =>
  * 境界: 設定・標準出力・ファイル読み込み
  * -------------------------------------------------------------------------- */
 
-// 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
-// （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）
-const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
+// 標準出力。Console.log が末尾に改行を足すので、改行の規則（withoutFinalNewline）で末尾の 1 つを外して渡す
+const write = (text: string) => Console.log(withoutFinalNewline(text));
 
 // セッションのフォルダ（名前は開始時刻）のうち、file を持つ最新のもの
 const latestSession = (sessionsDir: string, file: string) =>
@@ -343,7 +343,7 @@ const play = Command.make(
       );
       // 待受けを閉じる前に、最後のスナップショットを接続中のクライアントへ渡し切る
       yield* Effect.addFinalizer(() => viewers.drained);
-      const dir = yield* Effect.try({ try: () => createSessionDir(sessionsDir), catch: (e) => new CommandFailed({ message: describe(e) }) });
+      const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       const { session } = yield* openRecordedSession({
         dir,
         title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
@@ -546,7 +546,7 @@ const review = Command.make(
     const logPath = join(dir, LOG_FILE);
     if (!existsSync(logPath)) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
     if (selfOnly) {
-      const variants = yield* Effect.try({ try: () => selfReviewVariants(dir), catch: (e) => new CommandFailed({ message: describe(e) }) });
+      const variants = yield* selfReviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
       const self = yield* writeReviewPages(dir, logPath, variants).pipe(
         Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map-audio-自分.html", describe(e)) })),

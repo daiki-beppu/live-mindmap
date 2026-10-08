@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
 import { REVIEW_AUDIO_ELEMENT_ID, REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, embedReviewAudio, embedReviewLicenses, embedReviewLog, makeSession, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
-import { reviewVariants } from "../src/sessionFiles.ts";
+import { reviewVariants, selfReviewVariants } from "../src/sessionFiles.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { collectLog, updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -342,17 +342,54 @@ describe("reviewVariants（録音の有無で版の一覧を決める）", () =>
   });
 
   it.effect("相手*.m4a・自分*.m4a があれば、map.html、map-audio.html の順。音声を混ぜるのは map-audio.html だけ", () => Effect.gen(function* () {
-    expect(reviewVariants(yield* folder("log.jsonl", "相手.m4a"))).toEqual([PLAIN, WITH_AUDIO]);
-    expect(reviewVariants(yield* folder("自分-2.m4a"))).toEqual([PLAIN, WITH_AUDIO]);
-    expect(reviewVariants(yield* folder("相手-3.m4a", "自分.m4a"))).toEqual([PLAIN, WITH_AUDIO]);
-  }));
+    expect(yield* reviewVariants(yield* folder("log.jsonl", "相手.m4a"))).toEqual([PLAIN, WITH_AUDIO]);
+    expect(yield* reviewVariants(yield* folder("自分-2.m4a"))).toEqual([PLAIN, WITH_AUDIO]);
+    expect(yield* reviewVariants(yield* folder("相手-3.m4a", "自分.m4a"))).toEqual([PLAIN, WITH_AUDIO]);
+  }).pipe(Effect.provide(NodeFileSystem.layer)));
 
   it.effect("録音が無ければ map.html だけ。録音ではない名前（map-audio.html・map.png など）・拡張子違い・サブフォルダの中の m4a は録音と数えない", () => Effect.gen(function* () {
     const dir = yield* folder("log.jsonl", "map.html", "map-audio.html", "map.png", "export.json", "メモ.m4a", "相手.txt");
     mkdirSync(join(dir, "相手"));
     writeFileSync(join(dir, "相手", "x.m4a"), "x");
+    mkdirSync(join(dir, "自分.m4a")); // 名前が録音の形でも、フォルダは録音ではない
 
-    expect(reviewVariants(dir)).toEqual([PLAIN]);
-    expect(reviewVariants(yield* folder())).toEqual([PLAIN]);
-  }));
+    expect(yield* reviewVariants(dir)).toEqual([PLAIN]);
+    expect(yield* reviewVariants(yield* folder())).toEqual([PLAIN]);
+  }).pipe(Effect.provide(NodeFileSystem.layer)));
+
+  it.effect("シンボリックリンクは録音と数えない（通常ファイルへのリンクも、リンク先が無いリンクも。失敗しない）", () => Effect.gen(function* () {
+    const toFile = yield* folder("実体.txt");
+    symlinkSync(join(toFile, "実体.txt"), join(toFile, "自分.m4a"));
+    expect(yield* reviewVariants(toFile)).toEqual([PLAIN]);
+    const dangling = yield* folder();
+    symlinkSync(join(dangling, "無い.m4a"), join(dangling, "相手.m4a"));
+    expect(yield* reviewVariants(dangling)).toEqual([PLAIN]);
+  }).pipe(Effect.provide(NodeFileSystem.layer)));
+});
+
+describe("selfReviewVariants（自分の声だけの版）", () => {
+  const SELF = { file: "map-audio-自分.html", audio: true, track: "自分" };
+  const folder = (...files: string[]) => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    for (const name of files) writeFileSync(join(dir, name), "x");
+    return dir;
+  });
+
+  it.effect("自分*.m4a があれば 1 つ。無ければ空（相手だけの録音・フォルダ・拡張子違いは数えない）", () => Effect.gen(function* () {
+    expect(yield* selfReviewVariants(yield* folder("自分.m4a", "相手.m4a"))).toEqual([SELF]);
+    expect(yield* selfReviewVariants(yield* folder("自分-2.m4a"))).toEqual([SELF]);
+    expect(yield* selfReviewVariants(yield* folder("相手.m4a", "自分.txt"))).toEqual([]);
+    const dir = yield* folder();
+    mkdirSync(join(dir, "自分.m4a"));
+    expect(yield* selfReviewVariants(dir)).toEqual([]);
+  }).pipe(Effect.provide(NodeFileSystem.layer)));
+
+  it.effect("シンボリックリンクは録音と数えない（通常ファイルへのリンクも、リンク先が無いリンクも。失敗しない）", () => Effect.gen(function* () {
+    const toFile = yield* folder("実体.txt");
+    symlinkSync(join(toFile, "実体.txt"), join(toFile, "自分.m4a"));
+    expect(yield* selfReviewVariants(toFile)).toEqual([]);
+    const dangling = yield* folder();
+    symlinkSync(join(dangling, "無い.m4a"), join(dangling, "自分.m4a"));
+    expect(yield* selfReviewVariants(dangling)).toEqual([]);
+  }).pipe(Effect.provide(NodeFileSystem.layer)));
 });

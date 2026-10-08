@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
+import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
 import type { HelperPartial, IntakeLogEvent, SettledRemark, Track } from "../src/core/index.ts";
@@ -208,19 +208,27 @@ const viewerClient = Effect.fnUntraced(function* () {
   return { socket, intakeStatuses, screenNotices };
 });
 
-// run の間に process.stderr へ書かれた文字列を集める（サーバーの標準エラーへの記録を観測する）
+// Console.error に渡された行を、Node の console と同じ形（引数を空白で連ねて末尾に改行 1 つ）で集める Console。
+// note は Console.error を呼ぶので、標準エラーに出るバイト列（改行の数）をここで確かめられる
+const collectingStderr = () => {
+  const stderr: string[] = [];
+  const service: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
+  return { stderr, service };
+};
+
+// run の間に Console.error へ渡された文字列を集める（サーバーの標準エラーへの記録を観測する）。
+// start を呼ぶ fiber の context を、ヘルパーを読むループが受け継ぐので、start を含む Effect 全体を渡す
 const captureStderr = <A, E, R>(run: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
-    const stderr: string[] = [];
-    const original = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-    try {
-      yield* run;
-    } finally {
-      process.stderr.write = original;
-    }
+    const { stderr, service } = collectingStderr();
+    yield* Effect.provideService(run, Console.Console, service);
     return stderr;
   });
+
+const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>) => {
+  const { stderr, service } = collectingStderr();
+  return Effect.provideService(Effect.suspend(() => body(stderr)), Console.Console, service);
+};
 
 const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, ...input });
 
@@ -299,10 +307,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const fakeHelpers = yield* makeFakeHelpers([{}]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start());
           fakeHelpers.send(0, { type: "heartbeat" });
           fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
@@ -310,9 +316,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
           expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" });
           expect(stderr).toEqual([]);
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("知っている type で項目が壊れていれば、今の文面で stderr に 1 行出して読み続ける", () =>
@@ -320,10 +324,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const fakeHelpers = yield* makeFakeHelpers([{}]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start());
           fakeHelpers.send(0, { type: "remark", track: "司会", start: 0, end: 1, text: "あ" }); // 不正な track
           fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
@@ -331,25 +333,12 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
           expect(stderr.some((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toBe(true);
           expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
   });
 
   // 共有画面の変化（Issue #278）。screen は sink.screen（Session.pushScreen への口）へ届く。原点・取り込みの状態・ログには触れない
   describe("共有画面の配線", () => {
-    const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
-          return yield* body(stderr);
-        } finally {
-          process.stderr.write = original;
-        }
-      });
 
     it.effect("screen は start とバイト列のまま sink.screen へ届く。image が null でも届く", () =>
       Effect.gen(function* () {
@@ -408,17 +397,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   });
 
   describe("共有画面を使わない（screen-off・--no-screen。Issue #280）", () => {
-    const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
-          return yield* body(stderr);
-        } finally {
-          process.stderr.write = original;
-        }
-      });
     const NOTICE_MS = 10_000; // 「届いてから約 10 秒」
     const boot = (attempts: AttemptScript[]) =>
       Effect.gen(function* () {
@@ -1099,10 +1077,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const fakeHelpers = yield* makeFakeHelpers([{ stopExit: { code: null, signal: "SIGKILL" } }]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
 
           yield* sessions.stop;
@@ -1112,9 +1088,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           expect(warning).toBeDefined();
           expect(warning).toContain("相手.m4a");
           expect(warning).toContain("自分.m4a");
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("--no-audio では、SIGKILL で止めますは出るが、録音の警告は出ない", () =>
@@ -1122,19 +1096,15 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const fakeHelpers = yield* makeFakeHelpers([{ stopExit: { code: null, signal: "SIGKILL" } }]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: false }));
 
           yield* sessions.stop;
 
           expect(stderr.some((s) => s.includes("SIGKILL で止めます"))).toBe(true);
           expect(stderr.some((s) => s.includes("録音の書き終わり"))).toBe(false);
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("SIGTERM で終わったときは、どちらの行も出ない", () =>
@@ -1142,19 +1112,15 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const fakeHelpers = yield* makeFakeHelpers([{ stopExit: { code: null, signal: "SIGTERM" } }]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
 
           yield* sessions.stop;
 
           expect(stderr.some((s) => s.includes("SIGKILL で止めます"))).toBe(false);
           expect(stderr.some((s) => s.includes("録音の書き終わり"))).toBe(false);
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("警告の起動回（attempt）は、起動し直した後の録音ファイル名を示す", () =>
@@ -1165,10 +1131,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
@@ -1179,9 +1143,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           expect(warning).toContain("相手-2.m4a");
           expect(warning).toContain("自分-2.m4a");
           expect(warning).not.toContain("相手.m4a");
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("起動し直しの接続待ちの最中に stop し、SIGKILL で終わったとき、録音が有効なら両方の警告が出る（相手-2.m4a）", () =>
@@ -1192,10 +1154,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
@@ -1209,9 +1169,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           const warning = stderr.find((s) => s.includes("録音の書き終わりを確認できない"));
           expect(warning).toContain("相手-2.m4a");
           expect(warning).toContain("自分-2.m4a");
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("起動し直しの接続待ちの最中に stop し、SIGKILL で終わったとき、--no-audio なら SIGKILL の行だけが出る", () =>
@@ -1222,10 +1180,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: false }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
@@ -1236,9 +1192,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
           expect(stderr.some((s) => s.includes("SIGKILL で止めます"))).toBe(true);
           expect(stderr.some((s) => s.includes("録音の書き終わり"))).toBe(false);
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("起動し直しの接続待ちの最中に stop し、SIGTERM で終わったときは、どちらの行も出ない", () =>
@@ -1249,10 +1203,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
@@ -1263,9 +1215,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
           expect(stderr.some((s) => s.includes("SIGKILL で止めます"))).toBe(false);
           expect(stderr.some((s) => s.includes("録音の書き終わり"))).toBe(false);
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
 
     it.effect("resume の接続待ちの最中に stop し、SIGKILL で終わったとき、警告は resume の起動回（相手-4.m4a）を示す。resume は Aborted で終わる", () =>
@@ -1278,10 +1228,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr: string[] = [];
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk: unknown) => (stderr.push(String(chunk)), true)) as typeof process.stderr.write;
-        try {
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
           yield* TestClock.adjust(5);
           yield* TestClock.adjust(10);
@@ -1300,9 +1248,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           expect(stderr.some((s) => s.includes("SIGKILL で止めます"))).toBe(true);
           const warning = stderr.find((s) => s.includes("録音の書き終わりを確認できない"));
           expect(warning).toContain("相手-4.m4a");
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
   });
 
@@ -1373,9 +1319,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const original = process.stderr.write.bind(process.stderr);
-        process.stderr.write = (() => true) as typeof process.stderr.write;
-        try {
+        const { service } = collectingStderr();
+        yield* Effect.gen(function* () {
           yield* sessions.start(start());
           fakeHelpers.send(0, { type: "origin", hostTime: 123 }); // 壊れた形（number）
           yield* TestClock.adjust(1);
@@ -1384,9 +1329,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* TestClock.adjust(10);
 
           expect(fakeHelpers.calls[1]).not.toContain("--origin");
-        } finally {
-          process.stderr.write = original;
-        }
+        }).pipe(Effect.provideService(Console.Console, service));
       }));
   });
 
@@ -1618,6 +1561,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(stderr.join("")).toMatch(/諦め|止まっ/);
         expect(fakeSinks.appended.filter((e) => e.type === "intake-gave-up")).toEqual([{ type: "intake-gave-up", reason: "failures" }]);
         expect(stderr.join("")).toContain("起動し直しを諦めました。取り込みは止まった状態です");
+        // 出力のバイト列は今のまま: 1 行ごとに改行がちょうど 1 つ（note が渡す末尾の改行と Console.error が足す改行が重ならない）
+        expect(stderr).toContain("取り込みが止まった（1）\n");
+        expect(stderr).toContain("起動し直しを諦めました。取り込みは止まった状態です\n");
+        expect(stderr.every((line) => line.endsWith("\n") && !line.endsWith("\n\n"))).toBe(true);
         expect(stderr.join("")).not.toContain("構成の変化");
         expect(fakeSinks.appended.some((e) => e.type === "intake-stopped" && e.stderrTail.includes("失敗3"))).toBe(true);
 

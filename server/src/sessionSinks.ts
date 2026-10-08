@@ -72,7 +72,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           yield* Effect.context<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>(),
         );
         return SessionSinks.of({
-        createDir: (sessionsDir) => Effect.sync(() => createSessionDir(sessionsDir)),
+        createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
         open: Effect.fnUntraced(function* ({ dir, title, publish, speak }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
@@ -86,7 +86,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             title,
             publish,
             onDiff: relay.flushAll(),
-          }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)));
+          }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
           const count = yield* Ref.make(0);
           const settling = yield* createRemarkSettling({

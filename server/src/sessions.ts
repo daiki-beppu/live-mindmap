@@ -10,7 +10,7 @@
 // ヘルパーを止め、ヘルパーが終われば読み取りがほどける。stop は起動し直しのループの終わりを Fiber.join で待ってから書き出す。
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
-import { Clock, Context, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
+import { Clock, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
 import {
   CONFIGURATION_CHANGE_WINDOW_MS,
   decideIntakeRestart,
@@ -22,6 +22,7 @@ import {
   type IntakeGiveUpReason,
   type IntakeStatusReport,
 } from "./core/index.ts";
+import { withoutFinalNewline } from "./consoleText.ts";
 import { Helpers, HELPER_STOP_TIMEOUT_MS, type HelperAttempt, type HelperExitInfo } from "./helpers.ts";
 import {
   Aborted,
@@ -94,7 +95,8 @@ export class Sessions extends Context.Service<Sessions, {
       const serverScope = yield* Effect.scope;
       const state = yield* Ref.make<State>({ kind: "idle" });
 
-      const note = (text: string) => Effect.sync(() => process.stderr.write(text));
+      // 標準エラー。Console.error が末尾に改行を足すので、渡された文字列の末尾の改行は 1 つ外す（出力のバイト列は変えない）
+      const note = (text: string) => Console.error(withoutFinalNewline(text));
       const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => viewers.intake({ type: "intake", status });
 
       // run の argv（port は Helpers が足す。audio・origin は未定義なら渡さない。screen が false なら --no-screen）

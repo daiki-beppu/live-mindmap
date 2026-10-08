@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
+import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import type { DiffInput, Remark, ScreenChange } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
@@ -24,10 +25,11 @@ const remark = (id: string, end: number): Remark => ({ id, track: "相手", star
 
 const open = Effect.fn("open")(function* () {
   const root = yield* sessionsDir;
-  const dir = createSessionDir(root);
+  const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
   const { session } = yield* openRecordedSession({ dir, title: "定例", publish: () => Effect.void }).pipe(
     Effect.provide(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] })))),
+    Effect.provide(NodeFileSystem.layer),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   return { dir, session, inputs, lines };
