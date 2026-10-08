@@ -41,7 +41,7 @@ import {
   type ScrollAxisLock,
   type Viewport,
 } from "./camera.ts";
-import { foldView } from "./folding.ts";
+import { foldView, keepTargetOf } from "./folding.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "./layout.ts";
 import { relocations, type PreviousView } from "./relocation.ts";
@@ -154,8 +154,8 @@ function MapCanvas({
 
   // 見せ方。撮影（still）は畳まず、全ノードを描く
   // 人が開いた・畳んだ集合を入れる（still では viewing を使わない）
-  const { opened: humanOpened, folded: humanFolded } = humanSetsOf(viewing ?? { mode: "auto" });
-  const view = useMemo(() => (still ? null : foldView(snapshot, humanOpened, selectedId, humanFolded)), [snapshot, still, selectedId, humanOpened, humanFolded]);
+  const { opened: humanOpened, folded: humanFolded, unbundled: humanUnbundled } = humanSetsOf(viewing ?? { mode: "auto" });
+  const view = useMemo(() => (still ? null : foldView(snapshot, humanOpened, selectedId, humanFolded, humanUnbundled)), [snapshot, still, selectedId, humanOpened, humanFolded, humanUnbundled]);
   const shownNodes = view?.nodes ?? snapshot.nodes;
 
   // 目標の位置。表示する位置は、ここへ向けて補間する
@@ -181,6 +181,7 @@ function MapCanvas({
       foldState: view
         ? Object.fromEntries(shownNodes.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"]))
         : {},
+      runs: view?.runs ?? {},
       currentTopic: snapshot.currentTopic,
     }),
     [shownNodes, view, snapshot.currentTopic, target],
@@ -205,7 +206,7 @@ function MapCanvas({
         selected: n.id === selectedId,
         onSelect: view?.summaries.has(n.id) ? noop : onSelect,
         humanOpened: humanOpened.has(n.id),
-        // 開閉できるノード（今の議題とその祖先・まとめのノードを除く）にだけ、丸を押したときの開閉を渡す
+        // 開閉できるノード（今の議題とその祖先を除く。まとめのノードは解く）にだけ、丸を押したときの開閉を渡す
         onFoldDot: foldToggle(tree, n.id) === null ? null : (nodeId: string) => onViewingEvent?.({ type: "foldDot", id: nodeId }, tree),
       },
     }));
@@ -310,7 +311,8 @@ function MapCanvas({
         // 基準の画面座標は、開閉の前の表示位置から作る（畳んで「議題 N 件」に集約されたノードは、今の positions に無い）。
         // 以後は、いま見えている側（集約先のまとめのノード）を基準の位置に合わせ続ける
         const at = lastPositions.current[command.id] ?? positions[command.id];
-        const shownId = view?.shownAs[command.id] ?? command.id;
+        // 解いた「議題 N 件」（run:X）はもう見せるノードに無いので、最初の議題 X に合わせる
+        const shownId = keepTargetOf(view, command.id);
         if (at) keepAnchor.current = { id: shownId, point: screenPoint(current, at) };
         break;
       }

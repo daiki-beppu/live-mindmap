@@ -21,7 +21,7 @@ const snapshot: Snapshot = {
   ],
 };
 
-const render = (selectedId: string | null) => renderToStaticMarkup(<EvidencePanel selectedId={selectedId} evidence={selectedId ? evidenceOf(snapshot, selectedId, NONE, NONE) : null} />);
+const render = (selectedId: string | null) => renderToStaticMarkup(<EvidencePanel selectedId={selectedId} evidence={selectedId ? evidenceOf(snapshot, selectedId, NONE, NONE, NONE) : null} />);
 
 describe("EvidencePanel: 右の列の根拠", () => {
   it("未選択では、見出し「根拠」とノードを選ぶ案内を出し、発言は出さない", () => {
@@ -101,7 +101,7 @@ describe("EvidencePanel: 「議題 N 件」を選んだとき", () => {
   };
 
   it("その文「議題 2 件」と「根拠の発言はありません」を出す（「今のマップにありません」は出さない。ルートと同じ扱い）", () => {
-    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:A" evidence={evidenceOf(folded, "run:A", NONE, NONE)} />);
+    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:A" evidence={evidenceOf(folded, "run:A", NONE, NONE, NONE)} />);
     expect(html).toContain("議題 2 件");
     expect(html).toContain("根拠の発言はありません");
     expect(html).not.toContain("今のマップにありません");
@@ -119,7 +119,7 @@ describe("EvidencePanel: 「議題 N 件」を選んだとき", () => {
       ],
       currentTopic: "G",
     };
-    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:E" evidence={evidenceOf(five, "run:E", NONE, NONE)} />);
+    const html = renderToStaticMarkup(<EvidencePanel selectedId="run:E" evidence={evidenceOf(five, "run:E", NONE, NONE, NONE)} />);
     expect(html).toContain("議題 2 件");
     expect(html).toContain("根拠の発言はありません");
     expect(html).not.toContain("今のマップにありません");
