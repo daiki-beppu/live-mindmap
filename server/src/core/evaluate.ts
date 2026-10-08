@@ -34,7 +34,7 @@ const seconds = Schema.Number.annotate({ message: TIME_RULE }).annotateKey({ mes
 
 // 時刻の前後だけを、下の Struct より前に見る段。struct の check は全プロパティが通ったときにだけ走るので
 // （effect 4.0.1 の interpreter）、ここを struct の check にすると同じ項目の keywords の失敗が先に出てしまい、
-// parseTruth の順（from / to の型 → from <= to → keywords）と理由が入れ替わる。
+// 失敗の理由の順（from / to の型 → from <= to → keywords）が入れ替わる。
 // from / to が数でない間はここを通し、型の文面は下の Struct（seconds）に任せる
 const itemTimeOrder = Schema.Unknown.check(
   Schema.makeFilter((item) =>
@@ -48,13 +48,13 @@ const keywordsField = Schema.mutable(Schema.Array(Keyword)).annotate({ message: 
   messageMissingKey: KEYWORDS_RULE,
 });
 const matchFields = {
-  text: Schema.optionalKey(Schema.String), // 省略できる（parseTruth も省略を空文字で受ける）
+  text: Schema.optionalKey(Schema.String), // 省略できる（照合には使わない）
   from: seconds,
   to: seconds,
   keywords: keywordsField,
 };
 
-// 1 件がオブジェクトでなければ from / to が読めない。parseTruth もその場合は from / to の文面で止める
+// 1 件がオブジェクトでなければ from / to が読めないので、その場合も from / to の文面（TIME_RULE）で止める
 export const TruthItem = itemTimeOrder.pipe(
   Schema.decodeTo(Schema.Struct(matchFields).annotate({ message: TIME_RULE })),
 );
@@ -110,38 +110,6 @@ export type ScreenTruth = typeof ScreenTruth["Type"];
 export type Metrics = { nodes: number; depth: number; byKind: Record<Kind, number> };
 export type Recall = { hit: number; total: number };
 export type Run = { name: string; title: string; exp: JsonExport; log?: readonly LogEvent[] }; // log は log.jsonl の行（無いランは省く）
-
-function parseKeywords(raw: unknown, at: string): Keyword[] {
-  const fail = () => new Error(`${at}: keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）`);
-  if (!Array.isArray(raw) || raw.length === 0) throw fail();
-  return raw.map((k: unknown) => {
-    if (isWord(k)) return k;
-    if (Array.isArray(k) && k.length > 0 && k.every(isWord)) return [...k] as string[];
-    throw fail();
-  });
-}
-
-// JSON.parse した正解を検証して Truth にする。形が違えば Error（呼び出し側がファイルのパスを添える）。
-// 正解の形（{ "決定": [{ text?, from, to, keywords }], "TODO": [...] }、from / to は会議の中の秒、
-// keywords は 1 件以上で要素は文字列か言い換えの文字列の配列）は、上の TruthItem・Keyword が正本。
-// cli eval と bench は共有の readTruthFile で Truth の Schema から読む。この手書きの検証は既存のテストが使うので残す
-export function parseTruth(raw: unknown): Truth {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("正解はオブジェクトで書く");
-  const obj = raw as Record<string, unknown>;
-  const truth = {} as Truth;
-  for (const kind of TRUTH_KINDS) {
-    const list = obj[kind];
-    if (!Array.isArray(list)) throw new Error(`「${kind}」は配列で書く`);
-    truth[kind] = list.map((item, i) => {
-      const { text, from, to, keywords } = (item ?? {}) as Record<string, unknown>;
-      const at = `「${kind}」の ${i + 1} 件目`;
-      if (typeof from !== "number" || typeof to !== "number") throw new Error(`${at}: from / to は秒の数値で書く`);
-      if (from > to) throw new Error(`${at}: from が to より大きい`);
-      return { text: typeof text === "string" ? text : "", from, to, keywords: parseKeywords(keywords, at) };
-    });
-  }
-  return truth;
-}
 
 const walk = (node: ExportNode, depth: number, visit: (n: ExportNode, depth: number) => void) => {
   for (const c of node.children) {

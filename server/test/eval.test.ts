@@ -4,12 +4,12 @@ import { appendFile, copyFile, mkdtemp, readdir, rename, rm, writeFile } from "n
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { ConfigProvider, Console, Effect, Layer, Predicate, Result } from "effect";
+import { ConfigProvider, Console, Effect, Layer, Predicate, Result, Schema } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
-import { type DiffInput, type Op, parseTruth, type Snapshot } from "../src/core/index.ts";
+import { type DiffInput, type Op, type Snapshot, Truth } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -466,8 +466,9 @@ describe("eval: 正解ファイルの検証", () => {
 
 describe("eval: bench の正解ファイル", () => {
   const meetings = join(import.meta.dirname, "../bench/meetings");
-  it.each(["deciding", "lecture", "long", "sharing"])("%s.truth.json は、全件に keywords があり parseTruth を通る", (name) => {
-    expect(() => parseTruth(JSON.parse(readFileSync(join(meetings, `${name}.truth.json`), "utf8")))).not.toThrow();
+  it.each(["deciding", "lecture", "long", "sharing"])("%s.truth.json は、全件に keywords があり Truth の Schema で decode できる", (name) => {
+    const decode = Schema.decodeUnknownSync(Schema.fromJsonString(Truth));
+    expect(() => decode(readFileSync(join(meetings, `${name}.truth.json`), "utf8"))).not.toThrow();
   });
 });
 
