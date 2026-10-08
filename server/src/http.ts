@@ -191,12 +191,13 @@ const websocketOptions = { closeTimeout: WS_CLOSE_TIMEOUT_MS } as NodeHttpServer
 const layerNodeServer = (port: number) =>
   NodeHttpServer.layer(createServer, { port, host: "127.0.0.1", disablePreemptiveShutdown: true, websocket: websocketOptions });
 
-// 配信と待受けを、いまの Scope に結び付けて作る。Scope を閉じると待受けが閉じる。
-// serveFeed・serveSessions へ渡すための 2 つのサービスを返す（port は httpServer.address から portOf で読む）
-export const openListener = Effect.fnUntraced(function* (port: number) {
-  const context = yield* Layer.build(Layer.mergeAll(Viewers.layer, layerNodeServer(port)));
-  return { viewers: Context.get(context, Viewers), httpServer: Context.get(context, HttpServer.HttpServer) };
-});
+// 配信（Viewers）と待受け（HttpServer）の Layer。Scope を閉じると待受けが閉じる
+export const layerListener = (port: number): Layer.Layer<Viewers | HttpServer.HttpServer, HttpServerError.ServeError> =>
+  Layer.mergeAll(Viewers.layer, layerNodeServer(port));
+
+// layerListener を、いまの Scope に結び付けて作る。serveFeed・serveSessions へ渡す Viewers と HttpServer の Context を返す
+// （port は HttpServer の address から portOf で読む）
+export const openListener = (port: number) => Layer.build(layerListener(port));
 
 // ブラウザへの配信だけを受ける（CLI の再生）。待ち受けているポートは HttpServer の address から読む
 export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewers | Scope.Scope> = Effect.flatMap(

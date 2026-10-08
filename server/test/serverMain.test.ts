@@ -1,25 +1,30 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { WebSocket } from "ws";
+import { DEFAULT_HELPER_PATH } from "../src/helperPath.ts";
 
 const main = join(import.meta.dirname, "../src/server.ts");
 // main を実物の子プロセスとして起動するので、1 件ごとに Node の起動と TypeScript の変換が入る。
 // vitest は test ファイルを並列に走らせる（CI の server (rest) は他の 18 ファイルと同時）ため、
 // 既定の 20 秒では混み合ったときに足りない。capture.test.ts が実物の Vite・Chromium に 90 秒を取るのと同じ理由
 const TIMEOUT = 60_000;
-const processResource = Effect.fnUntraced(function* (port: number | string) {
+const processResource = Effect.fnUntraced(function* (
+  port: number | string,
+  options: { readonly env?: Readonly<Record<string, string>>; readonly execArgv?: readonly string[] } = {},
+) {
   const sessionsDir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-main-"))),
     (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
   );
   const child = yield* Effect.acquireRelease(
-    Effect.sync(() => spawn(process.execPath, [main], {
+    Effect.sync(() => spawn(process.execPath, [...(options.execArgv ?? []), main], {
       // セッションを始めないのでヘルパーは起動しない。既定の release の実行ファイルの有無で落ちないよう、使われない値を渡す
-      env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_HELPER: "/nonexistent/live-mindmap-helper" },
+      env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_HELPER: "/nonexistent/live-mindmap-helper", ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     })),
     (p) => Effect.promise(() => new Promise<void>((resolve) => {
@@ -96,6 +101,36 @@ describe("server main の終了（要件6・7）", () => {
       const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${started.port}/session/status`));
       expect(response.status).toBe(200);
       expect(yield* Effect.tryPromise(() => response.json())).toEqual({ status: "none" });
+    }), TIMEOUT);
+
+  // ヘルパーが見つからないときの終了。helper のビルドの有無に左右されないよう、preload で既定の場所の existsSync だけを false にする
+  it.live("ヘルパーが見つからないと、理由を標準エラーに出し、待ち受けずに終了コード 1 で自分で終わる", () =>
+    Effect.gen(function* () {
+      const preloadDir = yield* Effect.acquireRelease(
+        Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-preload-"))),
+        (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+      );
+      const preload = join(preloadDir, "hideDefaultHelper.mjs");
+      yield* Effect.tryPromise(() => writeFile(preload, [
+        `import fs from "node:fs";`,
+        `import { syncBuiltinESMExports } from "node:module";`,
+        `const hidden = ${JSON.stringify(DEFAULT_HELPER_PATH)};`,
+        `const original = fs.existsSync;`,
+        `fs.existsSync = (path, ...rest) => (path === hidden ? false : original(path, ...rest));`,
+        `syncBuiltinESMExports();`,
+        ``,
+      ].join("\n")));
+      const p = yield* processResource(0, {
+        env: { LIVE_MINDMAP_HELPER: "" },
+        execArgv: ["--import", pathToFileURL(preload).href],
+      });
+      const exit = yield* Effect.tryPromise(() => p.exited);
+      const started = yield* Effect.tryPromise(() => p.started);
+      expect(started).toHaveProperty("error");
+      expect(exit.signal).toBeNull();
+      expect(exit.code).toBe(1);
+      expect(p.output.stderr).toContain(DEFAULT_HELPER_PATH);
+      expect(p.output.stderr).not.toContain("live-mindmap サーバーを起動しました");
     }), TIMEOUT);
 
   // 空文字は「未設定」ではなく整数でない値として拒否する（未設定なら既定のポートを使う）

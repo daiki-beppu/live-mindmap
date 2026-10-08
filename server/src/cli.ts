@@ -3,14 +3,14 @@
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Runtime, Schema } from "effect";
+import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
-import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
+import { exitNaturally } from "./exitNaturally.ts";
 import {
   formatIntakeStatus,
   formatTable,
@@ -343,15 +343,16 @@ const play = Command.make(
         ? recorded.screens
         : Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
-      const { viewers, httpServer } = yield* openListener(port).pipe(
+      const listener = yield* openListener(port).pipe(
         Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
       );
-      yield* serveFeed.pipe(
-        Effect.provideService(Viewers, viewers),
-        Effect.provideService(HttpServer.HttpServer, httpServer),
-      );
-      // 待受けを閉じる前に、最後のスナップショットを接続中のクライアントへ渡し切る
-      yield* Effect.addFinalizer(() => viewers.drained);
+      // 配信の開始と、待受けを閉じる前に最後のスナップショットを接続中のクライアントへ渡し切る登録を、受け取った Context への 1 回の provide で行う
+      const viewers = yield* Effect.gen(function* () {
+        yield* serveFeed;
+        const viewers = yield* Viewers;
+        yield* Effect.addFinalizer(() => viewers.drained);
+        return viewers;
+      }).pipe(Effect.provide(listener));
       const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       const { session } = yield* openRecordedSession({
         dir,
@@ -637,14 +638,6 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   if (CliError.isCliError(failure)) return Effect.void;
   return Console.error(isCliFailure(failure) ? oneLine(failureLine(failure)) : describe(failure));
 };
-
-// 終了コードは process.exitCode に置き、イベントループが空になって自然に終わるのを待つ（runMain の既定は失敗で process.exit を呼ぶ）。
-// Why: 起動直後に process.exit すると、V8 の裏のコンパイルが GC を待ったまま Node の終了処理がそのスレッドの join で止まり、
-// プロセスが終わらないことがある（負荷の高い CI で eval の失敗が 10 秒を超えて残った）。成功時の runMain と同じ終わり方にそろえる
-const exitNaturally: Runtime.Teardown = (exit) =>
-  Runtime.defaultTeardown(exit, (code) => {
-    process.exitCode = code;
-  });
 
 if (import.meta.main) {
   // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）

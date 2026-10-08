@@ -1,6 +1,6 @@
-// play の配信（http.ts の openListener）の偽物。待ち受けずに、受け取ったポート・公開したスナップショット・
+// play の配信（http.ts の openListener。Viewers と HttpServer の Context を返す）の偽物。待ち受けずに、受け取ったポート・公開したスナップショット・
 // 渡し切り（drained）と待受けを閉じた順番を記録する。本物の WebSocket 越しに観測するテストは actualListener を使う
-import { Effect } from "effect";
+import { Context, Effect } from "effect";
 import { HttpServer } from "effect/http";
 import { NetAddress } from "effect/net";
 import type { Snapshot } from "../src/core/index.ts";
@@ -34,7 +34,7 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
         serve: () => Effect.void,
         address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", port),
       });
-      return { viewers, httpServer };
+      return Context.make(Viewers, viewers).pipe(Context.add(HttpServer.HttpServer, httpServer));
     });
   return { open: open satisfies OpenListener, ports, published, events };
 }
