@@ -1,0 +1,90 @@
+{
+  "apps": [
+    {
+      "bundleID": "us.zoom.xos",
+      "name": "zoom.us"
+    }
+  ],
+  "events": [
+    {
+      "type": "remark",
+      "track": "相手",
+      "start": 0,
+      "end": 4,
+      "text": "来月の新機能の進め方を相談したいです",
+      "duplicate": false
+    },
+    {
+      "type": "remark",
+      "track": "自分",
+      "start": 4,
+      "end": 7,
+      "text": "まず優先順位を決めましょう",
+      "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "自分",
+      "start": 7,
+      "end": 9,
+      "text": "担当を分け",
+      "duplicate": false
+    },
+    {
+      "type": "remark",
+      "track": "自分",
+      "start": 9,
+      "end": 12,
+      "text": "担当を分けて進めましょう",
+      "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "相手",
+      "start": 12,
+      "end": 14,
+      "text": "検索の改善を先にやりた",
+      "duplicate": false
+    },
+    {
+      "type": "remark",
+      "track": "相手",
+      "start": 14,
+      "end": 18,
+      "text": "検索の改善を先にやりたいです",
+      "duplicate": false
+    },
+    {
+      "type": "remark",
+      "track": "自分",
+      "start": 18,
+      "end": 21,
+      "text": "画面の確認は来週で大丈夫です",
+      "duplicate": false
+    },
+    {
+      "type": "remark",
+      "track": "相手",
+      "start": 21,
+      "end": 25,
+      "text": "テストの準備は私が引き受けます",
+      "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "相手",
+      "start": 25,
+      "end": 27,
+      "text": "期限は金曜",
+      "duplicate": false
+    },
+    {
+      "type": "remark",
+      "track": "相手",
+      "start": 27,
+      "end": 30,
+      "text": "期限は金曜日にしましょう",
+      "duplicate": false
+    }
+  ]
+}

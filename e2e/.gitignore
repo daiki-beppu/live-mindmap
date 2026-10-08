@@ -1,0 +1,5 @@
+# e2e の出力は無視し、replay cache だけをコミットする
+.e2e/*
+!.e2e/cache/
+# 起動スクリプトが書く run-info（server のポートとセッションのフォルダ）
+.run/

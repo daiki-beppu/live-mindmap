@@ -2,3 +2,4 @@ packages:
   - web
   - server
   - helper
+  - e2e

@@ -1,0 +1,23 @@
+{
+  "name": "@live-mindmap/e2e",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test:e2e:smoke": "e2e run tests/smoke --strict-cache",
+    "test:e2e": "e2e run --strict-cache"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.0",
+    "@e2e-dev/web": "^0.13.0",
+    "@effect/platform-node": "4.0.1",
+    "ai": "^7.0.0",
+    "e2e": "0.18.0",
+    "effect": "4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}
