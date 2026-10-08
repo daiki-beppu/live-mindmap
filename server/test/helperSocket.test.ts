@@ -4,7 +4,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { openHelperSocket } from "../src/helperSocket.ts";
-import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 
 // ハンドシェイクの応答と、続くテキストフレームを 1 回の write で返すサーバー。
 // 遅い環境で、ヘルパーが接続直後に送ったイベントが応答と同じ塊で届く状況を、毎回起こす
@@ -32,7 +31,7 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
   it.effect("ハンドシェイクと同じ塊で届いたメッセージも、Stream から届いた順に読める（early バッファ無しで取りこぼさない）", () =>
     Effect.gen(function* () {
       const server = yield* Effect.acquireRelease(
-        promiseOrDie(() => coalescingServer(['{"n":1}', '{"n":2}'])),
+        Effect.promise(() => coalescingServer(['{"n":1}', '{"n":2}'])),
         (s) => Effect.sync(() => s.close()),
       );
       const port = (server.address() as AddressInfo).port;
@@ -54,8 +53,8 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
         Effect.sync(() => createServer()),
         (s) => Effect.sync(() => s.close()),
       );
-      const port = yield* promiseOrDie(() => new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port))));
-      yield* promiseOrDie(() => new Promise<void>((resolve) => server.close(() => resolve()))); // listen した直後に閉じ、何も待ち受けていないポートにする
+      const port = yield* Effect.promise(() => new Promise<number>((resolve) => server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port))));
+      yield* Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))); // listen した直後に閉じ、何も待ち受けていないポートにする
 
       const exit = yield* Effect.exit(openHelperSocket(`ws://127.0.0.1:${port}`));
 
@@ -65,13 +64,13 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
   it.effect("つなげなかった後でも、同じ関数呼び出しを再試行すればつながる", () =>
     Effect.gen(function* () {
       const closedServer = createServer();
-      const port = yield* promiseOrDie(() => new Promise<number>((resolve) => closedServer.listen(0, "127.0.0.1", () => resolve((closedServer.address() as AddressInfo).port))));
-      yield* promiseOrDie(() => new Promise<void>((resolve) => closedServer.close(() => resolve())));
+      const port = yield* Effect.promise(() => new Promise<number>((resolve) => closedServer.listen(0, "127.0.0.1", () => resolve((closedServer.address() as AddressInfo).port))));
+      yield* Effect.promise(() => new Promise<void>((resolve) => closedServer.close(() => resolve())));
       const failed = yield* Effect.exit(openHelperSocket(`ws://127.0.0.1:${port}`));
       expect(failed._tag).toBe("Failure");
 
       const server = yield* Effect.acquireRelease(
-        promiseOrDie(() => coalescingServer([])),
+        Effect.promise(() => coalescingServer([])),
         (s) => Effect.sync(() => s.close()),
       );
       const reopenedPort = (server.address() as AddressInfo).port;

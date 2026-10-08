@@ -19,7 +19,6 @@ import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
-import { promiseOrDie } from "./fixtures/promiseOrDie.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
@@ -27,7 +26,7 @@ const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOptions, "updaterLayer">> & Pick<ExportServicesOptions, "capture"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-"))),
-    (path) => promiseOrDie(() => rm(path, { recursive: true, force: true })),
+    (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
   );
   const script = join(dir, "script.json");
   const record = join(dir, "record.jsonl");
@@ -104,7 +103,7 @@ const makeFakeHelpers = (attempts: AttemptScript[]) => {
 const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: ServerOptions["updaterLayer"] } = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
-    (path) => promiseOrDie(() => rm(path, { recursive: true, force: true })),
+    (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
   );
   const sessionsDir = join(dir, "sessions");
   const fakeHelpers = makeFakeHelpers(attempts);

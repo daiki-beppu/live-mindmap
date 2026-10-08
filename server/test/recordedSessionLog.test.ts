@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
 import type { DiffInput, IntakeLogEvent, Remark } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -29,8 +29,7 @@ const open = Effect.fn("open")(function* () {
   const inputs: DiffInput[] = [];
   const published: number[] = [];
   const opened = yield* openRecordedSession({ dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot.nodes.length)) }).pipe(
-    Effect.provide(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] })))),
-    Effect.provide(NodeFileSystem.layer),
+    Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   const exported = () => JSON.parse(readFileSync(join(dir, "export.json"), "utf8")) as unknown;

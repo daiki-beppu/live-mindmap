@@ -89,7 +89,7 @@ function dependencies(sessionsDir: string) {
 beforeEach(() => {
   external.openClaudeUpdater.mockReset();
   external.openListener.mockReset();
-  external.openClaudeUpdater.mockReturnValue({ update: async () => ({ ops: [] }), close: () => {} });
+  external.openClaudeUpdater.mockReturnValue({ update: () => Effect.succeed({ ops: [] }), close: () => {} });
   external.openListener.mockImplementation(fakeListener().open);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -100,10 +100,10 @@ describe("CLI の Effect 境界", () => {
     const deps = dependencies(dir);
     const calls: string[][] = [];
     external.openClaudeUpdater.mockReturnValue({
-      update: async (input: DiffInput) => {
+      update: (input: DiffInput) => Effect.sync(() => {
         calls.push(input.fresh.map((remark) => remark.id));
         return { ops: [] };
-      },
+      }),
       close: () => {},
     });
     yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
@@ -200,7 +200,7 @@ describe("CLI の Effect 境界", () => {
     const dir = yield* directory;
     const deps = dependencies(dir);
     const close = vi.fn();
-    external.openClaudeUpdater.mockReturnValue({ update: async () => ({ ops: [] }), close });
+    external.openClaudeUpdater.mockReturnValue({ update: () => Effect.succeed({ ops: [] }), close });
     external.openListener.mockReturnValue(Effect.fail(new HttpServerError.ServeError({ cause: new Error("配信開始に失敗") })));
     const result = yield* Effect.result(runCli(["play", fixture]).pipe(Effect.provide(deps.layer)));
 
@@ -215,11 +215,12 @@ describe("CLI の Effect 境界", () => {
     const dir = yield* directory;
     const deps = dependencies(dir);
     const close = vi.fn(() => { expect(deps.captures).toHaveLength(1); });
-    const update = vi.fn(async () => {
+    const update = vi.fn((_input: DiffInput) => Effect.suspend(() => {
       expect(close).not.toHaveBeenCalled();
-      if (update.mock.calls.length === 1) throw new Error("更新に失敗");
-      return { ops: [] as Op[] };
-    });
+      return update.mock.calls.length === 1
+        ? Effect.fail({ _tag: "FakeUpdateFailed", message: "更新に失敗" })
+        : Effect.succeed({ ops: [] as Op[] });
+    }));
     external.openClaudeUpdater.mockReturnValue({ update, close });
     const { open, published } = fakeListener();
     external.openListener.mockImplementation(open);
@@ -243,11 +244,11 @@ describe("CLI の Effect 境界", () => {
       if (snapshot.round === 0) Deferred.doneUnsafe(root, Effect.void);
     }).open);
     external.openClaudeUpdater.mockReturnValue({
-      update: async (input: DiffInput) => {
+      update: (input: DiffInput) => Effect.sync(() => {
         calls.push(input.fresh.map((remark) => remark.id));
         Deferred.doneUnsafe(reflected, Effect.void);
         return { ops: [] };
-      },
+      }),
       close: () => {},
     });
     const pending: number[] = [];
