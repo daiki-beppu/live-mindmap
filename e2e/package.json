@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test:e2e:smoke": "e2e run tests/smoke --target web --strict-cache",
-    "test:e2e": "e2e run --strict-cache"
+    "test:e2e": "e2e run --strict-cache --retries 0"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.0",

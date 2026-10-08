@@ -61,7 +61,7 @@ const allJobs = (): string[] => {
 
 const otherJobs = (): string[] => allJobs().filter((j) => j !== "check");
 
-const allSuccess = { changes: "success", ts: "success", heavy: "success", helper: "success" };
+const allSuccess = { changes: "success", ts: "success", heavy: "success", e2e: "success", helper: "success" };
 
 describe("check ジョブの構造", () => {
   it("判定のステップは条件なしで毎回走る（スキップされたステップは成功扱いになる）", () => {
@@ -88,11 +88,78 @@ describe("check ジョブの構造", () => {
     expect([...needs].sort()).toEqual(otherJobs().sort());
   });
 
-  it("Chromium を入れるのは heavy ジョブだけ", () => {
+  it("Chromium を入れるのは heavy と e2e ジョブだけ", () => {
     for (const job of allJobs()) {
       const installs = jobLines(job).some((l) => l.includes("playwright install"));
-      expect(installs, job).toBe(job === "heavy");
+      expect(installs, job).toBe(job === "heavy" || job === "e2e");
     }
+  });
+});
+
+// Issue #568: ts の変更がある PR で test:e2e の全件を 1 ジョブで回す。replay cache は --strict-cache で再生だけ、リトライ 0、資格情報なし
+describe("e2e ジョブ", () => {
+  const e2eRunLines = (): string[] =>
+    jobLines("e2e")
+      .map((l) => l.trim())
+      .filter((l) => /^(- )?run:/.test(l))
+      .map((l) => l.replace(/^(- )?run:\s*/, ""))
+      .filter((l) => l.includes("e2e"));
+
+  it("check の needs に入っている", () => {
+    const needsLine = checkJobLines().find((l) => /^\s+needs:/.test(l));
+    const needs = needsLine!
+      .replace(/^\s+needs:\s*/, "")
+      .replace(/[[\]]/g, "")
+      .split(",")
+      .map((j) => j.trim());
+    expect(needs).toContain("e2e");
+  });
+
+  it("changes の ts 出力で振り分けられる", () => {
+    const lines = jobLines("e2e").filter((l) => indentOf(l) === 4);
+    expect(lines.map((l) => l.trim())).toContain("needs: changes");
+    expect(lines.map((l) => l.trim())).toContain("if: needs.changes.outputs.ts == 'true'");
+  });
+
+  it("swift の出力では振り分けない（helper だけの変更では回さない）", () => {
+    expect(jobLines("e2e").join("\n")).not.toContain("outputs.swift");
+  });
+
+  it("ジョブに E2E_TELEMETRY_DISABLED=1 を設定する", () => {
+    expect(jobLines("e2e").map((l) => l.trim())).toContain('E2E_TELEMETRY_DISABLED: "1"');
+  });
+
+  it("test:e2e を全件で回す（パス・target を絞らず、引数で上書きもしない）", () => {
+    expect(e2eRunLines()).toContain("pnpm --filter @live-mindmap/e2e test:e2e");
+    const script = (JSON.parse(readFileSync(join(root, "e2e/package.json"), "utf8")) as { scripts: Record<string, string> })
+      .scripts["test:e2e"]!;
+    expect(script).toMatch(/^e2e run( --[\w-]+( \d+)?)*$/);
+    expect(script).not.toMatch(/--target/);
+  });
+
+  it("--strict-cache かつリトライ 0 で回る", () => {
+    const script = (JSON.parse(readFileSync(join(root, "e2e/package.json"), "utf8")) as { scripts: Record<string, string> })
+      .scripts["test:e2e"]!;
+    expect(script).toContain("--strict-cache");
+    expect(script).toMatch(/--retries 0(\s|$)/);
+    const text = jobLines("e2e").join("\n");
+    expect(text).not.toMatch(/--retries\s+[1-9]/);
+    expect(text).not.toContain("--no-strict-cache");
+  });
+
+  it("Chromium を入れてから test:e2e を回す", () => {
+    const lines = jobLines("e2e");
+    const install = lines.findIndex((l) => l.includes("playwright install"));
+    const run = lines.findIndex((l) => l.includes("test:e2e"));
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(run).toBeGreaterThan(install);
+  });
+
+  it("資格情報（E2E_OAUTH_CREDENTIALS・*_API_KEY・secrets.）を渡さない", () => {
+    const text = jobLines("e2e").join("\n");
+    expect(text).not.toContain("E2E_OAUTH_CREDENTIALS");
+    expect(text).not.toMatch(/_API_KEY/);
+    expect(text).not.toContain("secrets.");
   });
 });
 
@@ -104,7 +171,7 @@ describe("check ジョブの判定", () => {
 
   it("docs だけの PR（テストのジョブが skipped）なら通る", () => {
     const r = runStep(
-      needsJson({ changes: "success", ts: "skipped", heavy: "skipped", helper: "skipped" }),
+      needsJson({ changes: "success", ts: "skipped", heavy: "skipped", e2e: "skipped", helper: "skipped" }),
     );
     expect(r.status).toBe(0);
   });

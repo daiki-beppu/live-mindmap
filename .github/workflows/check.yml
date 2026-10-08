@@ -54,7 +54,7 @@ jobs:
 
   # 重い IT（--project heavy）全体を 4 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
   # vitest list で一覧を取り、file:line ごとにまとめて配る（each やループの同じ行のテストは 1 つの runner に入り、重複して走らない）。
-  # 新しく足した重い IT も、設定を書き換えずにどれかの runner に入る。Chromium を入れるのはこのジョブだけ
+  # 新しく足した重い IT も、設定を書き換えずにどれかの runner に入る。Chromium を入れるのはこのジョブと e2e ジョブだけ
   heavy:
     needs: changes
     if: needs.changes.outputs.ts == 'true'
@@ -90,6 +90,24 @@ jobs:
           fi
           echo "$targets"
           pnpm exec vitest run --project heavy $targets
+
+  # E2E（e2e/ の test:e2e、全 target）。コミットした replay cache を --strict-cache で再生するだけで、モデルも資格情報も使わない。
+  # 再生できないステップは REPLAY_STALE で落ちる。リトライは 0（e2e/package.json）。helper は fake-helper を使うので、helper だけの変更では回さない
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      E2E_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          install: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - run: pnpm --filter @live-mindmap/e2e test:e2e
 
   helper:
     needs: changes
@@ -136,7 +154,7 @@ jobs:
   # always() が無いと、依存が落ちたときに skipped（= Success 扱い）になって落ちた PR がマージできてしまう
   check:
     if: always()
-    needs: [changes, ts, heavy, helper]
+    needs: [changes, ts, heavy, e2e, helper]
     runs-on: ubuntu-slim
     steps:
       # success か skipped 以外（failure・cancelled・runner を取れずに終わったときの値・空など）が 1 つでもあれば落とす
