@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Effect, Exit, Fiber, Layer, Scope } from "effect";
@@ -90,6 +90,30 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* Scope.close(scope, Exit.void);
       expect(state).toMatchObject({ opened: 1, closed: 1 });
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
+  // TestClock の時刻は 1970 年。Clock に従う書き方に替えると、フォルダ名と at が 1970 年になって落ちる
+  it.effect("フォルダ名の時刻と log.jsonl の at は、TestClock の下でも実時刻（Clock に従わない）", () => {
+    const { updaterLayer } = makeFakeUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const before = Date.now();
+      const dir = yield* sinks.createDir(sessionsDir);
+      const folderTime = Date.parse(basename(dir).replace(/T(\d\d)-(\d\d)-(\d\d)/, "T$1:$2:$3"));
+      expect(folderTime).toBeGreaterThanOrEqual(before);
+      expect(folderTime).toBeLessThanOrEqual(Date.now());
+
+      const sink = yield* sinks.open({ dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      const beforeLog = Date.now();
+      yield* sink.appendLog({ type: "intake-restarted", trigger: "auto" });
+      yield* sink.flush;
+      yield* settleUntil(() => existsSync(join(dir, "log.jsonl")) && readFileSync(join(dir, "log.jsonl"), "utf8").includes("intake-restarted"));
+      const entry = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).find((e) => e.type === "intake-restarted");
+      const at = Date.parse(entry.at);
+      expect(at).toBeGreaterThanOrEqual(beforeLog);
+      expect(at).toBeLessThanOrEqual(Date.now());
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
   it.effect("フォルダを作れないと createDir が失敗し、open を呼ばなければ updater も開かない", () => {

@@ -119,7 +119,7 @@ type FakeSinksHandle = {
   readonly relayStats: { drained: number; cleared: number; stopped: number };
   readonly appended: IntakeLogEvent[];
   readonly order: string[]; // flush・exports・close が起きた順
-  readonly control: { createDirFails: boolean };
+  readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
 };
 
 // 偽の SessionSinks。ID の採番だけ本物の規則（セッションにつき 1 回のクロージャ、r1 から）を真似る。
@@ -135,7 +135,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
     const appended: IntakeLogEvent[] = [];
     const order: string[] = [];
-    const control = { createDirFails: false };
+    const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
     const open = (args: { dir: string }): Effect.Effect<SessionSink, never, Scope.Scope> =>
       Effect.gen(function* () {
         opened.count++;
@@ -144,7 +144,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
         const sink: SessionSink = {
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); }),
-          final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); }),
+          final: (r: SettledRemark) => Effect.suspend(() => r.text === control.finalDiesOn ? Effect.die(new Error("ログに書けません")) : Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); })),
           screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image }); }),
           screenOff: (e) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
@@ -333,6 +333,42 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
           expect(stderr.some((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toBe(true);
           expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
+        }).pipe(Effect.provideService(Console.Console, service));
+      }));
+
+    it.effect("受け渡しの途中で defect になれば、読み飛ばしとは別の文面で stderr に 1 行出して読み続ける", () =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers([{}]);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        fakeSinks.control.finalDiesOn = "こわれる";
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
+          yield* sessions.start(start());
+          fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "こわれる" }); // 形は正しいが、sink.final が defect になる
+          fakeHelpers.send(0, { type: "remark", track: "相手", start: 1, end: 2, text: "つづく" });
+          yield* TestClock.adjust(1);
+
+          expect(stderr.filter((s) => s.includes("ヘルパーのイベントの処理に失敗しました"))).toHaveLength(1);
+          expect(stderr.filter((s) => s.includes("ログに書けません"))).toHaveLength(1); // 理由が付く
+          expect(stderr.some((s) => s.includes("読み飛ばしました"))).toBe(false); // decode の失敗の文面は出ない
+          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
+        }).pipe(Effect.provideService(Console.Console, service));
+      }));
+
+    it.effect("形が読めない失敗には「処理に失敗しました」の文面を使わない", () =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers([{}]);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        const { stderr, service } = collectingStderr();
+        yield* Effect.gen(function* () {
+          yield* sessions.start(start());
+          fakeHelpers.send(0, { type: "remark", track: "司会", start: 0, end: 1, text: "あ" });
+          yield* TestClock.adjust(1);
+
+          expect(stderr.filter((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toHaveLength(1);
+          expect(stderr.some((s) => s.includes("処理に失敗しました"))).toBe(false);
         }).pipe(Effect.provideService(Console.Console, service));
       }));
   });
@@ -1357,7 +1393,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1);
         const interrupted = yield* sessions.status;
         expect(interrupted.status).toBe("interrupted");
-        expect(interrupted.lastInterruptedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+        expect(interrupted.lastInterruptedAt).toMatch(/^1970-01-01T00:00:00\.50[01]Z$/); // Clock（TestClock）の時刻を ISO 形式で書く
 
         yield* TestClock.adjust(10);
         const stopped = yield* sessions.status;

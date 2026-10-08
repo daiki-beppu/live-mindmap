@@ -10,7 +10,7 @@
 // ヘルパーを止め、ヘルパーが終われば読み取りがほどける。stop は起動し直しのループの終わりを Fiber.join で待ってから書き出す。
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
-import { Clock, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
+import { Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
 import {
   CONFIGURATION_CHANGE_WINDOW_MS,
   decideIntakeRestart,
@@ -140,10 +140,12 @@ export class Sessions extends Context.Service<Sessions, {
         return decision.action;
       });
 
+      const defectReason = (defect: unknown) => (defect instanceof Error ? defect.message : String(defect));
       const skipped = (reason: string) => note(`ヘルパーのイベントを読み飛ばしました: ${reason}\n`);
+      const applyFailed = (reason: string) => note(`ヘルパーのイベントの処理に失敗しました: ${reason}\n`);
 
       // ヘルパーからのイベントを、ヘルパーに依らないもの（SessionSink・原点）へつなぐ。
-      // 知らない type は何も出さずに読み飛ばし、壊れたイベントは 1 行出して読み続ける（セッションは止めない）
+      // 知らない type は何も出さずに読み飛ばし、壊れたイベントと処理の失敗は文面を分けて 1 行出して読み続ける（セッションは止めない）
       const applyEvent = (live: Live, event: HelperEvent): Effect.Effect<void> => {
         switch (event.type) {
           case "origin":
@@ -181,9 +183,12 @@ export class Sessions extends Context.Service<Sessions, {
 
       const handleEvent = (live: Live) => (data: string) =>
         decodeHelperEvent(data).pipe(
-          Effect.flatMap((decoded) => (decoded.kind === "unknown" ? Effect.void : applyEvent(live, decoded.event))),
-          Effect.catchTag("SchemaError", (error) => skipped(error.message)),
-          Effect.catchDefect((defect) => skipped(defect instanceof Error ? defect.message : String(defect))),
+          Effect.map((decoded) => (decoded.kind === "unknown" ? undefined : decoded.event)),
+          Effect.catchTag("SchemaError", (error) => Effect.as(skipped(error.message), undefined)),
+          Effect.catchDefect((defect) => Effect.as(skipped(defectReason(defect)), undefined)),
+          Effect.flatMap((event) =>
+            event === undefined ? Effect.void : applyEvent(live, event).pipe(Effect.catchDefect((defect) => applyFailed(defectReason(defect)))),
+          ),
         );
 
       // 接続済みのヘルパー 1 回分を、終わるまで読む。ヘルパーが終われば接続が閉じて読み取りが終わり、
@@ -251,7 +256,7 @@ export class Sessions extends Context.Service<Sessions, {
           }
           yield* live.sink.drain; // 確定結果に覆われなかった最後の発話を発言にする
           yield* live.sink.clearSpeaking; // いま話している文字を空にする（永久停止はしない）
-          yield* Ref.set(live.lastInterruptedAt, new Date(yield* Clock.currentTimeMillis).toISOString());
+          yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
           const action = yield* finishAttempt(live, exit, stderrTail);
           if (action === "giveup") {
             yield* markStopped(live);
