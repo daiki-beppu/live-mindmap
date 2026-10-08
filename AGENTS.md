@@ -22,10 +22,16 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 
 Run before a PR: `bash helper/scripts/build-webrtc-apm.sh` (builds the WebRTC AEC3 static library into `helper/.deps/webrtc-apm/`; needs `uv`; a no-op once built; required before the helper's `swift build`/`swift test`, which `pnpm typecheck` and `cd helper && pnpm test` run), `pnpm typecheck`, `pnpm --filter @live-mindmap/server test`, `pnpm --filter @live-mindmap/web test`, `cd helper && pnpm test`. The helper's Swift tests run with Command Line Tools alone (no Xcode); its `test` script passes the testing plugin path. CI (`.github/workflows/check.yml`) runs the same checks split into parallel jobs, chosen by the PR's changed paths: docs-only PRs skip every test job (the `changes` job and the required `check` job still run), `helper/` changes add the Swift job, and `server/test/server.test.ts` is split per test across 4 jobs. Before merging, also follow `CODING_STANDARDS.md`. `main` requires the `check` job to pass (ruleset); it is the final job that fails if any other job failed or was cancelled, so keep every new job in its `needs`. Merge with `gh pr merge --squash --auto` instead of waiting on CI; if the PR then shows `DIRTY`, rebase onto `origin/main` and push, or it stays unmerged.
 
+### Evals
+
+Evals measure real model and speech-recognition output by hand. They are not part of Checks and give no pass/fail. Run the one that matches what you changed:
+
+- `cli eval`: the diff-update prompt, model, or flow.
+- `sttAccuracy`: the recognition engine, language, or vocabulary hints.
+- `sttLatency`: how finals are handled, or how the helper feeds recognition.
+
+CI does not enforce them; agents may run them too. Record the result in the PR body as a before/after table taken on the same samples. There is no baseline value. Procedures and input/output shapes are in `server/bench/README.md`. The samples (synthetic meetings: audio, transcript, truth, how to make new ones) live outside the repo; start from `~/live-mindmap-samples/README.md`.
+
 ### Recorded sessions
 
 Inspect a saved session (or a folder of them) by counts only, never the remark text: `cd server && node bench/sessionStats.ts <dir>...` prints remarks, duration, overlap and recording loudness per track. Counting `log.jsonl` with `sort | uniq -c` merges `相手` and `自分` under a UTF-8 locale; prefix `LC_ALL=C` when counting by hand.
-
-### Evaluation samples
-
-Synthetic meetings for regression evals and measurements (audio, transcript, truth, how to make new ones) live outside the repo; start from `~/live-mindmap-samples/README.md`.
