@@ -5,17 +5,18 @@
 // このモジュールが持つのは、それらの Layer を組み立てて待受けにつなぐ、起動・終了の入口。
 // ブラウザへの WebSocket は HTTP と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 import { NodeChildProcessSpawner, NodeFileSystem, NodePath, NodeRuntime } from "@effect/platform-node";
-import { Cause, ConfigProvider, Context, Effect, Exit, type FileSystem, Layer, Logger, Runtime } from "effect";
+import { Cause, ConfigProvider, Effect, Exit, type FileSystem, Layer, Logger, Runtime } from "effect";
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import type { DiffUpdater } from "./core/index.ts";
 import { claudeUpdaterLayer, type UpdaterUnavailable } from "./diffUpdater.ts";
+import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import { ReviewBuild } from "./review.ts";
-import { openListener, portOf, serveSessions } from "./http.ts";
+import { layerListener, portOf, serveSessions } from "./http.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
 import { SessionSinks } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
@@ -49,69 +50,72 @@ export const realLayers = (options: ServerOptions, exportServices: ExportService
 });
 
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
-// セッションの Scope はこの Scope の子で、Scope を閉じると、進行中のセッションのヘルパー・updater が後始末される。
-// その後に配信を渡し切り（drained）、待受けの停止・接続の Fiber の終了・待受けを閉じる finalizer が続く
+// 止める順（登録の逆）: 配信を渡し切る（drained）→ 配信の停止・接続の Fiber の終了 → Sessions
+// （進行中のセッションのヘルパー・updater の後始末）→ 待受けを閉じる
 export const startup = Effect.fnUntraced(function* (options: ListenOptions, layers: ServerLayers) {
-  const { viewers, httpServer } = yield* openListener(options.port);
+  // 待受け・Viewers・Sessions を 1 つの Layer に組む（依存を先に build するので、止めるときは Sessions が待受けより先）
   const context = yield* Layer.build(
     Sessions.layer.pipe(
-      Layer.provide(Layer.mergeAll(layers.helpers, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir), Layer.succeed(Viewers)(viewers))),
+      Layer.provide(Layer.mergeAll(layers.helpers, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
+      Layer.provideMerge(layerListener(options.port)),
     ),
   );
-  yield* serveSessions.pipe(
-    Effect.provideService(Viewers, viewers),
-    Effect.provideService(HttpServer.HttpServer, httpServer),
-    Effect.provideService(Sessions, Context.get(context, Sessions)),
-  );
-  // 最後に登録するので、セッションの Scope（開始のたびに作る子）の後始末に続いて走る:
-  // ヘルパーを止めて最後のフレームを出した後、それを接続中のクライアントへ渡し切る
-  yield* Effect.addFinalizer(() => viewers.drained);
-  const port = yield* portOf(httpServer.address);
-  options.onListening?.(port);
-  return port;
+  return yield* Effect.gen(function* () {
+    yield* serveSessions;
+    // 最後に登録するので、配信の停止・Sessions・待受けを閉じるより先に走る: 最後のフレームを接続中のクライアントへ渡し切る
+    const viewers = yield* Viewers;
+    yield* Effect.addFinalizer(() => viewers.drained);
+    const port = yield* portOf((yield* HttpServer.HttpServer).address);
+    options.onListening?.(port);
+    return port;
+  }).pipe(Effect.provide(context));
 });
 
 // SIGINT・SIGTERM で終わったときの終了コードは 0 にする（頼まれた終了であって、失敗ではない）。
 // 既定の teardown は中断だけの Exit を 130 にするが、待受けの失敗などの本当の失敗は既定の規則に任せる
 const teardown: Runtime.Teardown = (exit, onExit) => {
-  if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return onExit(0);
-  Runtime.defaultTeardown(exit, onExit);
+  if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+    process.exitCode = 0;
+    return;
+  }
+  exitNaturally(exit, onExit);
 };
 
 if (import.meta.main) {
   const helper = resolveHelperPath(process.env);
   if ("error" in helper) {
     console.error(helper.error);
-    process.exit(1);
+    process.exitCode = 1;
+  } else {
+    const helperPath = helper.path;
+    const helperCommand = { command: helperPath, args: [] };
+    // 終了時の書き出しの Service は、ここで 1 回だけ組む（書き出しのたびに Layer を作り直さない）
+    const exportServices = Layer.mergeAll(MapCapture.layer, ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
+      Layer.provideMerge(NodeFileSystem.layer),
+    );
+    // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
+    // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
+    // 設定（ポートとフォルダ）の解決に失敗したときだけ、理由を標準エラーに出す。Effect の既定のロガーは標準出力に書くので、
+    // ここだけ LogToStderr を立てる。待受けの失敗などほかの失敗は、runMain の自動報告（既定のロガー）のまま変えない。
+    // 出した失敗には errorReported=false を付け、runMain が同じ失敗を標準出力へもう一度報告しないようにする
+    // 既定の ConfigProvider は空文字を未設定として扱い、LIVE_MINDMAP_PORT="" が既定のポートに化けるので、空文字を保つ provider を指定する
+    // （空文字は整数でない値として拒否する。キーが無いときだけ既定のポートを使う）
+    const settings = Effect.all({ port: portConfig, sessionsDir: sessionsDirConfig }).pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
+      Effect.tapCause((cause) => Effect.logError(cause).pipe(Effect.provideService(Logger.LogToStderr, true))),
+      Effect.mapError((error) => Object.assign(error, { [Runtime.errorReported]: false as const })),
+    );
+    NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
+      const { port, sessionsDir } = yield* settings;
+      const options: ServerOptions = {
+        port,
+        sessionsDir,
+        updaterLayer: claudeUpdaterLayer,
+        helper: helperCommand,
+        onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
+      };
+      yield* startup(options, realLayers(options, exportServices));
+      return yield* Effect.never;
+    })), { teardown });
   }
-  const helperPath = helper.path;
-  const helperCommand = { command: helperPath, args: [] };
-  // 終了時の書き出しの Service は、ここで 1 回だけ組む（書き出しのたびに Layer を作り直さない）
-  const exportServices = Layer.mergeAll(MapCapture.layer, ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
-    Layer.provideMerge(NodeFileSystem.layer),
-  );
-  // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
-  // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
-  // 設定（ポートとフォルダ）の解決に失敗したときだけ、理由を標準エラーに出す。Effect の既定のロガーは標準出力に書くので、
-  // ここだけ LogToStderr を立てる。待受けの失敗などほかの失敗は、runMain の自動報告（既定のロガー）のまま変えない。
-  // 出した失敗には errorReported=false を付け、runMain が同じ失敗を標準出力へもう一度報告しないようにする
-  // 既定の ConfigProvider は空文字を未設定として扱い、LIVE_MINDMAP_PORT="" が既定のポートに化けるので、空文字を保つ provider を指定する
-  // （空文字は整数でない値として拒否する。キーが無いときだけ既定のポートを使う）
-  const settings = Effect.all({ port: portConfig, sessionsDir: sessionsDirConfig }).pipe(
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
-    Effect.tapCause((cause) => Effect.logError(cause).pipe(Effect.provideService(Logger.LogToStderr, true))),
-    Effect.mapError((error) => Object.assign(error, { [Runtime.errorReported]: false as const })),
-  );
-  NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
-    const { port, sessionsDir } = yield* settings;
-    const options: ServerOptions = {
-      port,
-      sessionsDir,
-      updaterLayer: claudeUpdaterLayer,
-      helper: helperCommand,
-      onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
-    };
-    yield* startup(options, realLayers(options, exportServices));
-    return yield* Effect.never;
-  })), { teardown });
 }

@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Predicate, Result } from "effect";
+import { ConfigProvider, Console, Context, Deferred, Effect, Fiber, Layer, Predicate, Result } from "effect";
 import { CliError } from "effect/cli";
+import { HttpServer } from "effect/http";
 import { afterEach, beforeEach, vi } from "vitest";
 import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
@@ -1026,7 +1027,7 @@ describe("CLI", () => {
       const listening = yield* Deferred.make<number>();
       const http = external.realHttp.current!;
       external.openListener.mockImplementation((port: number) =>
-        Effect.tap(http.openListener(port), ({ httpServer }) => Effect.flatMap(http.portOf(httpServer.address), (p) => Deferred.succeed(listening, p))));
+        Effect.tap(http.openListener(port), (context) => Effect.flatMap(http.portOf(Context.get(context, HttpServer.HttpServer).address), (p) => Deferred.succeed(listening, p))));
 
       const received: Snapshot[] = [];
       let firstReceived: () => void = () => {};
