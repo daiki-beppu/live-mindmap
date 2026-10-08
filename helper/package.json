@@ -9,6 +9,6 @@
     "test:it": "pnpm typecheck && swift test --skip-build --filter 'ITTests/'",
     "test:it:heavy": "pnpm typecheck && swift test --skip-build --filter 'HeavyTests/'",
     "test:it:all": "pnpm typecheck && swift test --skip-build --filter 'ITTests/|HeavyTests/'",
-    "typecheck": "node scripts/checkTestLayers.ts && pnpm build-apm && swift build --build-tests -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+    "typecheck": "pnpm build-apm && node scripts/checkTestLayers.ts && swift build --build-tests -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
   }
 }
