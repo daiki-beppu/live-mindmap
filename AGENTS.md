@@ -32,6 +32,8 @@ Evals measure real model and speech-recognition output by hand. They are not par
 
 CI does not enforce them; agents may run them too. Record the result in the PR body as a before/after table taken on the same samples. There is no baseline value. Procedures and input/output shapes are in `server/bench/README.md`. The samples (synthetic meetings: audio, transcript, truth, how to make new ones) live outside the repo; start from `~/live-mindmap-samples/README.md`.
 
+E2E (`e2e/`, not part of `pnpm test`/`pnpm typecheck`): when you change a seam the meeting smoke crosses (server routes, the CLI, the web screen, the helper protocol, the export), run `pnpm --filter @live-mindmap/e2e test:e2e:smoke`. It replays the committed cache with `--strict-cache`; steps whose record matches call no model. A step that can no longer be replayed stops with `REPLAY_STALE`, and a step whose test name, target name, `agent.act` instruction or params changed calls the model even under `--strict-cache` (no `REPLAY_STALE`). In either case, and when you change those names or instructions, re-record on the spot as `e2e/README.md` describes and include the updated `e2e/.e2e/cache/` in the same commit.
+
 ### Recorded sessions
 
 Inspect a saved session (or a folder of them) by counts only, never the remark text: `cd server && node bench/sessionStats.ts <dir>...` prints remarks, duration, overlap and recording loudness per track. Counting `log.jsonl` with `sort | uniq -c` merges `相手` and `自分` under a UTF-8 locale; prefix `LC_ALL=C` when counting by hand.
