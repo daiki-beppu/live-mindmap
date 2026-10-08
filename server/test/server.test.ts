@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NodeServices } from "@effect/platform-node";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { ConfigProvider, Console, Effect, Layer } from "effect";
 import { MapCapture } from "../src/capture.ts";
@@ -85,6 +85,7 @@ const setup = (initial: Partial<Script> = {}) =>
   // 接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す
   const cliLayer = Layer.mergeAll(
     NodeServices.layer,
+    NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: String(server.port) })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({

@@ -2,8 +2,9 @@
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { basename, dirname, join, resolve } from "node:path";
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
@@ -189,28 +190,29 @@ const requestServer = Effect.fnUntraced(function* <A>(
   port: number,
   method: "GET" | "POST",
   path: string,
-  decode: (input: unknown) => Effect.Effect<A, Schema.SchemaError>,
+  schema: Schema.Decoder<A>,
   body?: object,
 ) {
-  const response = yield* Effect.tryPromise({
-    try: () =>
-      fetch(`http://127.0.0.1:${port}${path}`, {
-        method,
-        ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}),
-      }),
-    catch: () => new ServerUnreachable(),
-  });
-  // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする（今と同じ）
-  const raw = yield* Effect.tryPromise((): Promise<unknown> => response.json()).pipe(
-    Effect.orElseSucceed((): unknown => ({})),
-  );
-  if (!response.ok) {
+  const client = yield* HttpClient.HttpClient;
+  const base = HttpClientRequest.make(method)(`http://127.0.0.1:${port}${path}`);
+  const request = body ? HttpClientRequest.bodyJsonUnsafe(base, body) : base;
+  const response = yield* client.execute(request).pipe(Effect.mapError(() => new ServerUnreachable()));
+  if (response.status < 200 || response.status >= 300) {
+    // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする
+    const raw = yield* response.json.pipe(Effect.orElseSucceed((): unknown => ({})));
     const reported = yield* Schema.decodeUnknownEffect(ServerErrorBody)(raw).pipe(
       Effect.orElseSucceed((): { readonly error?: string } => ({})),
     );
     return yield* new ServerFailed({ message: reported.error ?? `サーバーがエラーを返しました: ${response.status}` });
   }
-  return yield* decode(raw).pipe(Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })));
+  // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
+  const parsed = yield* response.text.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
+    Effect.orElseSucceed((): unknown => ({})),
+  );
+  return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
+    Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })),
+  );
 });
 
 /* ----------------------------------------------------------------------------
@@ -386,7 +388,7 @@ const apps = Command.make(
   Effect.fn("apps")(function* () {
     const port = yield* portConfig;
     // 一覧の中身は CLI が使わないので、形を決めずにそのまま出す
-    const list = yield* requestServer(port, "GET", "/apps", Schema.decodeUnknownEffect(Schema.Unknown));
+    const list = yield* requestServer(port, "GET", "/apps", Schema.Unknown);
     yield* write(JSON.stringify(list, null, 2) + "\n");
   }),
 ).pipe(Command.withDescription("会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む"));
@@ -407,7 +409,7 @@ const start = Command.make(
   },
   Effect.fn("start")(function* ({ app, noAudio, noScreen, title }) {
     const port = yield* portConfig;
-    const { dir } = yield* requestServer(port, "POST", "/session/start", Schema.decodeUnknownEffect(StartedSession), {
+    const { dir } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
@@ -426,7 +428,7 @@ const stop = Command.make(
   {},
   Effect.fn("stop")(function* () {
     const port = yield* portConfig;
-    const { paths } = yield* requestServer(port, "POST", "/session/stop", Schema.decodeUnknownEffect(StoppedSession));
+    const { paths } = yield* requestServer(port, "POST", "/session/stop", StoppedSession);
     yield* write(paths.map((path) => `${path}\n`).join(""));
   }),
 ).pipe(
@@ -440,7 +442,7 @@ const status = Command.make(
   {},
   Effect.fn("status")(function* () {
     const port = yield* portConfig;
-    const report: IntakeStatusReport = yield* requestServer(port, "GET", "/session/status", Schema.decodeUnknownEffect(IntakeStatus));
+    const report: IntakeStatusReport = yield* requestServer(port, "GET", "/session/status", IntakeStatus);
     yield* write(formatIntakeStatus(report));
   }),
 ).pipe(
@@ -455,7 +457,7 @@ const resume = Command.make(
   {},
   Effect.fn("resume")(function* () {
     const port = yield* portConfig;
-    yield* requestServer(port, "POST", "/session/resume", Schema.decodeUnknownEffect(Schema.Unknown));
+    yield* requestServer(port, "POST", "/session/resume", Schema.Unknown);
   }),
 ).pipe(
   Command.withDescription("止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける"),
@@ -648,7 +650,7 @@ if (import.meta.main) {
     : AudioMix.layer({ command: helper.path, args: [] }).pipe(Layer.provide(NodeServices.layer));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer)),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici)),
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }
