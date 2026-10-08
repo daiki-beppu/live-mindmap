@@ -32,6 +32,8 @@ public let screenSpeakerFrameMaxChangedRatio = 0.1
 public let screenSentHistoryCount = 30
 /// ブラウザのウィンドウのタイトルを読み直す間隔（秒）。
 public let screenTitleRefreshSeconds = 1.0
+/// 撮るウィンドウが見つからないとき、探し直す間隔（秒）。
+public let screenWindowRetryInterval = 2.0
 /// ブラウザとして扱うアプリの bundle id（Chrome・Edge・Safari・Arc・Brave・Firefox）。
 public let screenBrowserBundleIDs = [
     "com.google.Chrome", "com.microsoft.edgemac", "com.apple.Safari",
@@ -319,6 +321,41 @@ public func selectScreenWindow(bundleID: String, among candidates: [ScreenWindow
     candidates
         .filter { $0.isOnScreen && $0.bundleID == bundleID }
         .max { $0.width * $0.height < $1.width * $1.height }
+}
+
+/// 取り込みの対象のウィンドウを探している状態。
+public enum ScreenWindowSearchState: Sendable, Equatable {
+    /// まだ取り込みを始めていない。
+    case notStarted
+    /// `windowID` のウィンドウを撮っている。
+    case capturing(windowID: UInt32)
+    /// 撮っていたウィンドウが無くなり、探し直している。
+    case windowGone
+}
+
+public enum ScreenWindowSearchAction: Sendable, Equatable {
+    /// このウィンドウで取り込みを始める。
+    case startCapture(windowID: UInt32)
+    /// 合うウィンドウが無い。`after` 秒おいて探し直す。
+    case retry(after: Double)
+    /// 何もしない（撮っているウィンドウが残っている）。
+    case nothing
+}
+
+/// ウィンドウの探し直しの判断。探し直しの回数に上限は無い。
+/// 撮っている状態では、そのウィンドウが候補に残っているかだけを見る（画面に出ているかや持ち主は見ない）。
+public func nextScreenWindowAction(
+    bundleID: String,
+    state: ScreenWindowSearchState,
+    among candidates: [ScreenWindowCandidate]
+) -> ScreenWindowSearchAction {
+    if case .capturing(let id) = state, candidates.contains(where: { $0.id == id }) {
+        return .nothing
+    }
+    guard let chosen = selectScreenWindow(bundleID: bundleID, among: candidates) else {
+        return .retry(after: screenWindowRetryInterval)
+    }
+    return .startCapture(windowID: chosen.id)
 }
 
 /// 縦横の比を保って 1280×720 に収まる大きさ。小さい画像は拡大しない。端数は切り捨て、最小は 1。
