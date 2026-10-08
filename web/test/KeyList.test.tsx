@@ -169,3 +169,40 @@ describe("KeyList: M（ミュート）の行は音声つきの見返しの一覧
     expect(REVIEW_KEY_LIST.some((r: { keys: string }) => r.keys === "M")).toBe(false);
   });
 });
+
+describe("KeyList: Enter と丸の操作（人による議題の開閉）", () => {
+  const live = renderToStaticMarkup(<KeyList />);
+  const review = renderToStaticMarkup(<KeyList review />);
+
+  it("キーの行に Enter があり、選んだ議題・論点を開く・畳むと、Esc で戻ることを説明する", () => {
+    const row = KEY_LIST.find((r) => r.keys === "Enter");
+    expect(row).toBeDefined();
+    expect(row!.group).toBe("キー");
+    expect(row!.action).toContain("開");
+    expect(row!.action).toContain("畳");
+    expect(row!.action).toContain("Esc");
+    expect(live).toContain(row!.action);
+  });
+
+  it("マウス・トラックパッドの行に丸の操作があり、押して開く・畳む（ホバーで出る）ことを説明する", () => {
+    const row = KEY_LIST.find((r) => r.group === "マウス・トラックパッド" && r.keys.includes("丸"));
+    expect(row).toBeDefined();
+    expect(row!.action).toContain("開");
+    expect(row!.action).toContain("畳");
+    expect(row!.action).toContain("ホバー");
+    expect(live).toContain(row!.keys);
+  });
+
+  it("見返しの一覧にも同じ 2 行が載る（ライブ・見返しの両方で使う操作）", () => {
+    for (const row of KEY_LIST.filter((r) => r.keys === "Enter" || r.keys.includes("丸"))) expect(review).toContain(row.action);
+  });
+
+  it("Enter の行は矢印の行として数えない（矢印の行は 2 行のまま）", () => {
+    expect(KEY_LIST.filter((r) => r.keys.includes("矢印") || r.keys.includes("←"))).toHaveLength(2);
+  });
+
+  it("Enter の行は 1 回だけ載る", () => {
+    expect(KEY_LIST.filter((r) => r.keys === "Enter")).toHaveLength(1);
+    expect(REVIEW_KEY_LIST.some((r: { keys: string }) => r.keys === "Enter")).toBe(false);
+  });
+});

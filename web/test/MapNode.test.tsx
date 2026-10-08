@@ -1,5 +1,5 @@
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react";
-import { createElement } from "react";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { MapNode, type MapNodeData } from "../src/MapNode.tsx";
@@ -13,6 +13,8 @@ const data = (extra: Partial<MapNodeData> = {}): MapNodeData => ({
   changedRound: null,
   fold: null,
   selected: false,
+  humanOpened: false,
+  onFoldDot: null,
   onSelect: () => {},
   ...extra,
 });
@@ -269,5 +271,82 @@ describe("MapNode: 選んだノードの見た目", () => {
     expect(out).toContain('aria-pressed="true"');
     expect(html(data({ selected: false }))).toContain('aria-pressed="false"');
     expect(cls(data({ selected: true })).filter((c) => /badge|shadow/.test(c))).toEqual([]);
+  });
+});
+
+// 要素の種類（タグ）を問わず、class に cls を持つ要素を集める
+function withClass(node: ReactNode, cls: string): ReactElement<Record<string, unknown>>[] {
+  if (Array.isArray(node)) return node.flatMap((n) => withClass(n, cls));
+  if (!isValidElement<Record<string, unknown>>(node)) return [];
+  const own = String(node.props.className ?? "").split(" ").includes(cls) ? [node] : [];
+  return [...own, ...withClass(node.props.children as ReactNode, cls)];
+}
+const press = (el: ReactElement<Record<string, unknown>>) =>
+  (el.props.onClick as (e: unknown) => void)({ currentTarget: {}, clientX: 0, clientY: 0, stopPropagation: () => {}, preventDefault: () => {} });
+
+describe("MapNode: 畳んだノードの隠れた数の丸を押すと開く", () => {
+  const folded = (extra: Partial<MapNodeData> = {}) => data({ fold: { hint: null, hidden: 5 }, ...extra });
+
+  it("onFoldDot があれば、丸を押すと自分の ID で onFoldDot を 1 度呼ぶ。ノードの onSelect は呼ばない", () => {
+    const onFoldDot = vi.fn();
+    const onSelect = vi.fn();
+    const count = withClass(call("n2", folded({ onFoldDot, onSelect })), "map-node__count");
+    expect(count).toHaveLength(1);
+    press(count[0]!);
+    expect(onFoldDot).toHaveBeenCalledTimes(1);
+    expect(onFoldDot).toHaveBeenCalledWith("n2");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("押せる丸は role=button と名前（aria-label）を持つ", () => {
+    const count = withClass(call("n2", folded({ onFoldDot: () => {} })), "map-node__count")[0]!;
+    expect(count.props.role).toBe("button");
+    expect(String(count.props["aria-label"] ?? "")).not.toBe("");
+  });
+
+  it("onFoldDot が null（今の議題の祖先・まとめ）なら、丸は押せない（クリックの処理も role も無い）", () => {
+    const count = withClass(call("n2", folded({ onFoldDot: null })), "map-node__count")[0]!;
+    expect(count.props.onClick).toBeUndefined();
+    expect(count.props.role).toBeUndefined();
+  });
+
+  it("ノードのボタンのクリックは、onFoldDot を呼ばず onSelect だけを呼ぶ（クリックは根拠を出すだけ）", () => {
+    const onFoldDot = vi.fn();
+    const onSelect = vi.fn();
+    const button = findAll(call("n2", folded({ onFoldDot, onSelect })), "button")[0]!;
+    (button.props.onClick as (e: unknown) => void)({ currentTarget: {}, clientX: 0, clientY: 0 });
+    expect(onSelect).toHaveBeenCalledWith("n2");
+    expect(onFoldDot).not.toHaveBeenCalled();
+  });
+});
+
+describe("MapNode: 人が開いたノードには、ホバーしたときだけ出す小さな丸があり、押すと畳む", () => {
+  const dot = (d: MapNodeData) => withClass(call("n2", d), "map-node__fold-dot");
+
+  it("人が開いたノード（畳まれていない）に小さな丸を 1 つ描き、押すと自分の ID で onFoldDot を呼ぶ。onSelect は呼ばない", () => {
+    const onFoldDot = vi.fn();
+    const onSelect = vi.fn();
+    const found = dot(data({ humanOpened: true, onFoldDot, onSelect }));
+    expect(found).toHaveLength(1);
+    expect(String(found[0]!.props["aria-label"] ?? "")).not.toBe("");
+    press(found[0]!);
+    expect(onFoldDot).toHaveBeenCalledTimes(1);
+    expect(onFoldDot).toHaveBeenCalledWith("n2");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("人が開いていないノードには描かない（対照: 人が開いたノードには描く）", () => {
+    expect(dot(data({ humanOpened: true, onFoldDot: () => {} }))).toHaveLength(1);
+    expect(dot(data({ humanOpened: false, onFoldDot: () => {} }))).toHaveLength(0);
+  });
+
+  it("onFoldDot が null（今の議題とその祖先）なら描かない", () => {
+    expect(dot(data({ humanOpened: true, onFoldDot: null }))).toHaveLength(0);
+  });
+
+  it("畳まれているノードには、小さな丸ではなく隠れた数の丸だけを描く", () => {
+    const d = data({ humanOpened: true, onFoldDot: () => {}, fold: { hint: null, hidden: 2 } });
+    expect(dot(d)).toHaveLength(0);
+    expect(withClass(call("n2", d), "map-node__count")).toHaveLength(1);
   });
 });

@@ -20,32 +20,36 @@ export type FoldView = {
   shownAs: Record<string, string>;
 };
 
-// 開く上書きの集合。人の開閉は後続の issue で作るので、今は常に空
-export const NO_OPEN: ReadonlySet<string> = new Set();
-
-// 見せ方を決める。純粋な関数: snapshot を変えず、opened（開く上書き）に入れたノードは畳まない。
+// 見せ方を決める。純粋な関数: snapshot を変えず、opened（人が開いたもの）に入れたノードは畳まず、humanFolded（人が畳んだもの）に入れた議題・論点は畳む。
+// 畳む集合 =（済みの議題・論点 ∪ 15 分触れていない話し中の議題 ∪ 人が畳んだもの）−（人が開いたもの ∪ 今の議題と祖先 ∪ 選んだノードの祖先）。
+// ただし人が畳んだものは、選んだノードの祖先でも畳む（今の議題と祖先は、人が畳んでも畳まない）。
 // 選んだノード（selectedId）の祖先は畳まない（選んだノード自身は、畳む条件に当たれば畳む）。選んだ畳んだ議題は「議題 N 件」にまとめない。選んだまとめ（run:X）は X から始まるまとめとして残し、X の祖先も畳まない
-export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, selectedId: string | null): FoldView {
+export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, selectedId: string | null, humanFolded: ReadonlySet<string>): FoldView {
   const { nodes, now, currentTopic } = snapshot;
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const children = new Map<string, SnapshotNode[]>();
   for (const n of nodes) if (n.parent) children.set(n.parent, [...(children.get(n.parent) ?? []), n]);
 
-  // 今の議題とその祖先、選んだノードの祖先は畳まない
-  const kept = new Set<string>();
+  // 今の議題とその祖先は、何があっても畳まない
+  const currentChain = new Set<string>();
   if (currentTopic !== undefined) {
-    for (let cur = byId.get(currentTopic); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) kept.add(cur.id);
+    for (let cur = byId.get(currentTopic); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) currentChain.add(cur.id);
   }
+  // 選んだノードの祖先は、人が畳んでいなければ畳まない
   // 選んだまとめ（run:X）は X として扱い、X の祖先を畳まない（まとめはスナップショットに無いので、ID のままでは引けない）
+  const selectionAncestors = new Set<string>();
   const selectedRunStart = selectedId?.startsWith("run:") ? selectedId.slice("run:".length) : null;
   const selected = selectedId === null ? undefined : byId.get(selectedRunStart ?? selectedId);
   if (selected?.parent) {
-    for (let cur = byId.get(selected.parent); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) kept.add(cur.id);
+    for (let cur = byId.get(selected.parent); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) selectionAncestors.add(cur.id);
   }
 
   const isFolded = (n: SnapshotNode): boolean => {
-    if (kept.has(n.id) || opened.has(n.id)) return false;
+    if (currentChain.has(n.id)) return false;
     if (n.kind !== "議題" && n.kind !== "論点") return false;
+    if (opened.has(n.id)) return false;
+    if (humanFolded.has(n.id)) return true;
+    if (selectionAncestors.has(n.id)) return false;
     if (n.talkStatus === "済み") return true;
     return n.kind === "議題" && now !== undefined && n.touchedAt !== undefined && now - n.touchedAt >= STALE_SECONDS;
   };

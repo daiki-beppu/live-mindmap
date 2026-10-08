@@ -23,8 +23,10 @@ import {
   nodeFocusViewport,
   nodeRect,
   overviewViewport,
+  anchoredViewport,
   panViewport,
   revealViewport,
+  screenPoint,
   scrollAlongAxis,
   scrollAxis,
   shiftIntoView,
@@ -39,13 +41,13 @@ import {
   type ScrollAxisLock,
   type Viewport,
 } from "./camera.ts";
-import { foldView, NO_OPEN } from "./folding.ts";
+import { foldView } from "./folding.ts";
 import { KIND_COLOR, markOf } from "./kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "./layout.ts";
-import { relocations, type ViewState } from "./relocation.ts";
+import { relocations, type PreviousView } from "./relocation.ts";
 import { MapNode, type MapNodeData } from "./MapNode.tsx";
 import { useAnimatedPositions } from "./useAnimatedPositions.ts";
-import type { CameraCommand, ViewingEvent, ViewingState, VisibleTree } from "./viewing.ts";
+import { foldToggle, humanSetsOf, type CameraCommand, type ViewingEvent, type ViewingState, type VisibleTree } from "./viewing.ts";
 
 const nodeTypes = { map: MapNode };
 
@@ -151,7 +153,9 @@ function MapCanvas({
   };
 
   // 見せ方。撮影（still）は畳まず、全ノードを描く
-  const view = useMemo(() => (still ? null : foldView(snapshot, NO_OPEN, selectedId)), [snapshot, still, selectedId]);
+  // 人が開いた・畳んだ集合を入れる（still では viewing を使わない）
+  const { opened: humanOpened, folded: humanFolded } = humanSetsOf(viewing ?? { mode: "auto" });
+  const view = useMemo(() => (still ? null : foldView(snapshot, humanOpened, selectedId, humanFolded)), [snapshot, still, selectedId, humanOpened, humanFolded]);
   const shownNodes = view?.nodes ?? snapshot.nodes;
 
   // 目標の位置。表示する位置は、ここへ向けて補間する
@@ -167,6 +171,22 @@ function MapCanvas({
 
   // 点滅させるノード（見せるノードで今回変わったものと、中が変わった畳んだノード・まとめのノード）。点滅と縁の点の両方がこの集合から出る（次の反映で入れ替わる）
   const changed = view?.blink ?? NO_CHANGES;
+
+  // 見えている木。出来事と一緒に reducer へ渡す。foldState は見せる議題・論点（まとめのノードを除く）の畳まれ方
+  const tree = useMemo(
+    (): VisibleTree => ({
+      ids: shownNodes.map((n) => n.id),
+      targets: target,
+      parents: Object.fromEntries(shownNodes.map((n) => [n.id, n.parent])),
+      foldState: view
+        ? Object.fromEntries(shownNodes.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"]))
+        : {},
+      currentTopic: snapshot.currentTopic,
+    }),
+    [shownNodes, view, snapshot.currentTopic, target],
+  );
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
 
   const nodes = useMemo((): Node[] => {
     const formal = shownNodes.map((n): Node<MapNodeData, "map"> => ({
@@ -184,10 +204,13 @@ function MapCanvas({
         changedRound: !still && changed.has(n.id) ? snapshot.round : null,
         selected: n.id === selectedId,
         onSelect: view?.summaries.has(n.id) ? noop : onSelect,
+        humanOpened: humanOpened.has(n.id),
+        // 開閉できるノード（今の議題とその祖先・まとめのノードを除く）にだけ、丸を押したときの開閉を渡す
+        onFoldDot: foldToggle(tree, n.id) === null ? null : (nodeId: string) => onViewingEvent?.({ type: "foldDot", id: nodeId }, tree),
       },
     }));
     return formal;
-  }, [shownNodes, view, snapshot.round, changed, positions, dims, selectedId, onSelect, still]);
+  }, [shownNodes, view, snapshot.round, changed, positions, dims, selectedId, onSelect, still, humanOpened, tree, onViewingEvent]);
   // 撮影の収まり判定が、再実行の依存に入れずに最新の nodes を読むための ref
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
@@ -198,10 +221,6 @@ function MapCanvas({
     );
   }, [shownNodes]);
 
-  // 見えている木。出来事と一緒に reducer へ渡す
-  const tree = useMemo((): VisibleTree => ({ ids: shownNodes.map((n) => n.id), targets: target, parents: Object.fromEntries(shownNodes.map((n) => [n.id, n.parent])), currentTopic: snapshot.currentTopic }), [shownNodes, snapshot.currentTopic, target]);
-  const treeRef = useRef(tree);
-  treeRef.current = tree;
   useEffect(() => {
     onTree?.(tree);
   }, [tree, onTree]);
@@ -209,7 +228,7 @@ function MapCanvas({
   onViewingEventRef.current = onViewingEvent;
 
   // 前の commit の見えている木とスナップショット。反映で選んだノードが消えたとき、移り先を前の木から求める
-  const previous = useRef<ViewState | null>(null);
+  const previous = useRef<PreviousView | null>(null);
   // 反映（round の変化）を見る状態へ知らせる。最初の描画も反映として数える
   useEffect(() => {
     const replaced = previous.current ? relocations(previous.current, { tree: treeRef.current, snapshot }) : {};
@@ -217,8 +236,8 @@ function MapCanvas({
   }, [snapshot.round]);
   // 反映の effect の後ろで更新する（反映の effect が前の commit の値を読めるように、宣言順を保つ）
   useEffect(() => {
-    previous.current = { tree, snapshot };
-  }, [tree, snapshot]);
+    previous.current = { tree, snapshot, selectedId };
+  }, [tree, snapshot, selectedId]);
 
   // 戻ったときは、同じ round でも今の議題へ寄せ直す
   const lastSeq = useRef(camera?.seq);
@@ -228,7 +247,7 @@ function MapCanvas({
   }
   // 寄せ直し・収め直しのきっかけ番号。列で切れる分だけずらす指示（shiftIntoView）では進めない（E で寄せ直しも収め直しも走らせない）
   const refitSeq = useRef(camera?.seq);
-  if (camera && camera.command.type !== "shiftIntoView") refitSeq.current = camera.seq;
+  if (camera && camera.command.type !== "shiftIntoView" && camera.command.type !== "keepNode") refitSeq.current = camera.seq;
   // 自動のカメラを止めている間（人が動かしている・全体を見ている）
   const paused = !still && viewing !== undefined && viewing.mode !== "auto";
   const overview = !still && viewing?.mode === "overview";
@@ -251,6 +270,9 @@ function MapCanvas({
     };
   };
 
+  // 人の開閉の後、そのノードの画面上の位置を保つ基準（keepNode の指示で立てる）。次の指示か人の操作で捨てる
+  const keepAnchor = useRef<{ id: string; point: { x: number; y: number } } | null>(null);
+
   // 列で切れる分のずらしの保留。shiftIntoView の指示で立て、React Flow の width が .map の幅に追いついた後に適用して消す
   const pendingShift = useRef(false);
 
@@ -262,6 +284,7 @@ function MapCanvas({
     const size = { width, height };
     const current = getViewport();
     pendingShift.current = command.type === "shiftIntoView";
+    keepAnchor.current = null;
     switch (command.type) {
       case "zoomBy":
         void setViewport(zoomAroundCenter(current, clampUserZoom(current.zoom * command.factor), size), { duration: 0 });
@@ -283,6 +306,14 @@ function MapCanvas({
       case "fitSubtree":
         void setViewport(subtreeViewport(command.id, treeRef.current, target, dims, size), { duration: 0 });
         break;
+      case "keepNode": {
+        // 基準の画面座標は、開閉の前の表示位置から作る（畳んで「議題 N 件」に集約されたノードは、今の positions に無い）。
+        // 以後は、いま見えている側（集約先のまとめのノード）を基準の位置に合わせ続ける
+        const at = lastPositions.current[command.id] ?? positions[command.id];
+        const shownId = view?.shownAs[command.id] ?? command.id;
+        if (at) keepAnchor.current = { id: shownId, point: screenPoint(current, at) };
+        break;
+      }
       case "restore": {
         const before = beforeOverview.current;
         beforeOverview.current = null;
@@ -293,9 +324,24 @@ function MapCanvas({
     // 指示は seq が変わったときだけ実行する
   }, [camera?.seq]);
 
-  // 全体を見ている間は、目標の位置で測った全体の箱に一度で収める。ノードの増加・実寸の確定・指示のたびに収め直す
+  // 前の commit の表示位置。指示の effect より後に更新するので、指示の effect からは開閉の前の位置が読める
+  const lastPositions = useRef(positions);
   useEffect(() => {
-    if (!overview) return;
+    lastPositions.current = positions;
+  });
+
+  // 位置を保つ基準があるあいだ、補間位置（実寸の確定後の再配置を含む）が変わるたびに、そのノードが基準の画面座標に映るよう合わせ直す
+  const keepPosition = keepAnchor.current ? framePositions.current[keepAnchor.current.id] : undefined;
+  useEffect(() => {
+    const anchor = keepAnchor.current;
+    const at = anchor ? framePositions.current[anchor.id] : undefined;
+    if (!anchor || !at) return;
+    void setViewport(anchoredViewport(getViewport(), at, anchor.point), { duration: 0 });
+  }, [keepPosition?.x, keepPosition?.y, camera?.seq, getViewport, setViewport]);
+
+  // 全体を見ている間は、目標の位置で測った全体の箱に一度で収める。ノードの増加・実寸の確定・指示のたびに収め直す。位置を保つ基準があるあいだは収め直さない
+  useEffect(() => {
+    if (!overview || keepAnchor.current) return;
     const frame = requestAnimationFrame(() => {
       const { width, height } = storeApi.getState();
       const v = overviewViewport(tree.ids, target, dims, { width, height });
@@ -307,6 +353,7 @@ function MapCanvas({
   // 人が動かしたとき（event がある）だけ知らせる。setViewport や fitView の動き（event が null）は数えない
   const onUserMove = (event: unknown) => {
     if (!event) return;
+    keepAnchor.current = null;
     onViewingEvent?.({ type: "userMoved" }, tree);
     // 全体を見ている間の 0.5 未満の倍率から人の操作に移るときは、人の範囲に収める（minZoom の切り替えは今の倍率を変えない）
     const current = getViewport();
@@ -365,6 +412,7 @@ function MapCanvas({
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
     const point = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    keepAnchor.current = null;
     onViewingEvent?.({ type: "userMoved" }, tree);
     void setViewport(zoomAtPoint(getViewport(), point, e.altKey ? 1 / CLICK_ZOOM_FACTOR : CLICK_ZOOM_FACTOR), { duration: 0 });
   };
@@ -383,6 +431,7 @@ function MapCanvas({
       const delta = { x: e.deltaX, y: e.deltaY };
       const lock = scrollAxis(axisLock.current, e.timeStamp, delta);
       axisLock.current = lock;
+      keepAnchor.current = null;
       onViewingEventRef.current?.({ type: "userMoved" }, treeRef.current);
       void setViewport(scrollAlongAxis(getViewport(), lock.axis, delta), { duration: 0 });
     };

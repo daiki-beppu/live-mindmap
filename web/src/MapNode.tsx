@@ -1,5 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
+import { MAP_NODE_BUTTON_CLASS } from "./enterFold.ts";
 
 export type MapNodeData = {
   text: string;
@@ -10,6 +11,8 @@ export type MapNodeData = {
   changedRound: number | null; // 今回の反映で変わったなら、その反映の round（点滅の強調）
   selected: boolean; // 右の列に根拠を出している
   onSelect: (nodeId: string) => void;
+  humanOpened: boolean; // 人が開いたノード（畳まれていなければ、ホバーで畳む小さな丸を出す）
+  onFoldDot: ((nodeId: string) => void) | null; // 丸を押したときの開閉。開閉できないノード（今の議題とその祖先・まとめ）は null
 };
 
 // ドラッグでない click とみなす、押した位置からの最大の移動量（px）
@@ -42,7 +45,7 @@ function onClick(e: MouseEvent<HTMLButtonElement>, select: () => void) {
   select();
 }
 
-// 受け取った値を描き、クリックは onSelect で通知するだけ（表示専用）。
+// 受け取った値を描き、ノードのクリックは onSelect で通知するだけ（開閉しない）。丸の click だけが onFoldDot で開閉を通知する。
 export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
   return (
     // 反映ごとに key を変えて要素を作り直し、点滅のアニメーションを頭からやり直す
@@ -52,12 +55,22 @@ export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />
-      <button type="button" className="map-node__button" aria-pressed={data.selected} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onClick={(e) => onClick(e, () => data.onSelect(id))}>
+      <button type="button" className={MAP_NODE_BUTTON_CLASS} aria-pressed={data.selected} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onClick={(e) => onClick(e, () => data.onSelect(id))}>
         {data.mark && <span className="map-node__mark">{data.mark}</span>}
         <span className="map-node__text">{data.text}</span>
         {data.fold?.hint && <span className="map-node__hint">{data.fold.hint}</span>}
       </button>
-      {data.fold && <span className="map-node__count">{data.fold.hidden}</span>}
+      {data.fold &&
+        (data.onFoldDot ? (
+          <span className="map-node__count map-node__count--pressable" role="button" aria-label="開く" onClick={() => data.onFoldDot?.(id)}>
+            {data.fold.hidden}
+          </span>
+        ) : (
+          <span className="map-node__count">{data.fold.hidden}</span>
+        ))}
+      {!data.fold && data.humanOpened && data.onFoldDot && (
+        <span className="map-node__fold-dot" role="button" aria-label="畳む" onClick={() => data.onFoldDot?.(id)} />
+      )}
       <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );

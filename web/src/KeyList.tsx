@@ -5,6 +5,7 @@ export const KEY_LIST = [
   { group: "キー", keys: "= / -", action: "拡大・縮小（JIS 配列では ^ でも拡大）" },
   { group: "キー", keys: "0", action: "倍率 1.0 にする" },
   { group: "キー", keys: "← → ↑ ↓", action: "ノードを選ぶ（← 親・→ 縦に近い子・↑↓ 同じ深さの上下。Esc で外す）" },
+  { group: "キー", keys: "Enter", action: "選んだ議題・論点を開く・畳む（今の議題とその祖先には効かない。Esc で元に戻る）" },
   { group: "キー", keys: "Z", action: "選んだノードと子孫が収まるまで寄る（選んでいないときは何もしない）" },
   { group: "キー", keys: "Shift + 矢印", action: "画面の 1/3 ずつ移動する" },
   { group: "キー", keys: "E", action: "右の列（変わったこと・根拠）を出す・隠す" },
@@ -16,6 +17,7 @@ export const KEY_LIST = [
   { group: "マウス・トラックパッド", keys: "⌘/Ctrl + Shift + スクロール", action: "縦か横の一方だけに移動する" },
   { group: "マウス・トラックパッド", keys: "⌘/Ctrl + クリック / + Option", action: "押したところを中心に拡大 / 縮小する" },
   { group: "マウス・トラックパッド", keys: "ノードのクリック", action: "根拠を出す" },
+  { group: "マウス・トラックパッド", keys: "隠れた数の丸・開いたノードの小さな丸", action: "押すと開く・畳む（小さな丸は、人が開いたノードにホバーしたときだけ出る）" },
   { group: "マウス・トラックパッド", keys: "縁の点", action: "そのノードへ寄る" },
 ] as const;
 
