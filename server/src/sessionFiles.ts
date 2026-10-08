@@ -1,7 +1,7 @@
 // セッションのフォルダに対するファイル操作（作成・ログと export.json の追記・終了時の書き出し）。FileSystem 経由。
 // play（cli.ts）とライブのセッション（sessionSinks.ts）が共有する。HTTP には依存しない
 import { basename, join } from "node:path";
-import { Cause, Console, Effect, FileSystem, Layer, Ref, Schema, Semaphore } from "effect";
+import { Cause, Console, DateTime, Effect, FileSystem, Layer, Ref, Schema, Semaphore } from "effect";
 import { MapCapture } from "./capture.ts";
 import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
@@ -113,7 +113,7 @@ export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, 
 // セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
 export const createSessionDir = Effect.fnUntraced(function* (sessionsDir: string) {
   const fs = yield* FileSystem.FileSystem;
-  const dir = join(sessionsDir, new Date().toISOString().replaceAll(":", "-"));
+  const dir = join(sessionsDir, DateTime.formatIso(DateTime.nowUnsafe()).replaceAll(":", "-"));
   yield* fs.makeDirectory(dir, { recursive: true });
   return dir;
 });
@@ -137,7 +137,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
   // at は Clock ではなく実時刻（TestClock の下でも log.jsonl は実際の時刻で書く）。Effect を実行した時点で決める
   const writeLogLine = (event: LogEvent | IntakeLogEvent) =>
     Effect.suspend(() =>
-      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n", { flag: "a" }),
+      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: DateTime.formatIso(DateTime.nowUnsafe()), ...event }) + "\n", { flag: "a" }),
     ).pipe(Effect.orDie);
   const writeExport = (session: Session) =>
     Effect.flatMap(session.exportJson, (json) => fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(json))).pipe(Effect.orDie);
