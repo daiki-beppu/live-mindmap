@@ -76,8 +76,8 @@ describe("Helpers の接続の再試行（Schedule.spaced 200ms）", () => {
     }));
 });
 
-// base の server.test.ts の移動先（子プロセスだけを偽物にして、Helpers 実物の起動の引数・停止・中断を観測する）
-describe("Helpers の起動の引数・停止・中断（base server.test.ts の移動先）", () => {
+// base の server.heavy.test.ts の移動先（子プロセスだけを偽物にして、Helpers 実物の起動の引数・停止・中断を観測する）
+describe("Helpers の起動の引数・停止・中断（base server.heavy.test.ts の移動先）", () => {
   const boot = (counter: { connections: number; spawned: ChildProcess.StandardCommand[]; kills: unknown[] }) =>
     Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: ["helper-arg"] }).pipe(Layer.provide(countingSpawner(counter)))));
 

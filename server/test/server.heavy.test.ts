@@ -20,7 +20,7 @@ import { updaterLayer } from "./fixtures/sessionLayers.ts";
 // Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約 6 本だけに絞る
 // （order.md:40-46、CT-TEST-SPLIT）。偽の Layer・TestClock で確かめられる振る舞い（起動し直しの回数・
 // resume・argv・stop/close の重なり・updater の開閉・speaking・状態のフレーム・cli status 等）は
-// server/test/sessions.test.ts・sessionSinks.test.ts・http.test.ts に移した。このファイルに残るのは、
+// server/test/sessions.test.ts・sessionSinks.it.test.ts・http.heavy.test.ts に移した。このファイルに残るのは、
 // 実物の子プロセス・実物の HTTP・実物の WebSocket を通さないと確かめられない契約だけ。
 
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");

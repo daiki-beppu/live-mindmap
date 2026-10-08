@@ -102,7 +102,7 @@ const evalCli = (args: string[]) =>
     return stdout.join("");
   });
 
-// eval の失敗を、表示ではなくタグ付きの失敗値として観測する（日本語 1 行は cliProcess.test.ts が入口で観測する）
+// eval の失敗を、表示ではなくタグ付きの失敗値として観測する（日本語 1 行は cliProcess.heavy.test.ts が入口で観測する）
 const evalFailure = (args: string[]) =>
   Effect.gen(function* () {
     const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-")));

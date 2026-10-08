@@ -1,5 +1,5 @@
 // bench の sttLatency・sessionStats を effect/cli の Command として走らせたときの契約
-// （引数の読み取り・stdout の中身と改行・タグ付きの失敗）。sttReplay は claude.ts の差し替えが要るので sttReplayCommand.test.ts
+// （引数の読み取り・stdout の中身と改行・タグ付きの失敗）。sttReplay は claude.ts の差し替えが要るので sttReplayCommand.it.test.ts
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";

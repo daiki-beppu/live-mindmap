@@ -228,7 +228,7 @@ describe("tailLines（標準エラーの末尾）", () => {
   });
 });
 
-// cli status の標準出力（段 3 以前は server.test.ts が CLI 経由で固定していた文面。値の組み立ては Sessions.status が担い、文面はここで固定する）
+// cli status の標準出力（段 3 以前は server.heavy.test.ts が CLI 経由で固定していた文面。値の組み立ては Sessions.status が担い、文面はここで固定する）
 describe("formatIntakeStatus（cli status の標準出力）", () => {
   it("セッションなしは状態の一言だけ", () => {
     expect(formatIntakeStatus({ status: "none" })).toBe("セッションなし\n");

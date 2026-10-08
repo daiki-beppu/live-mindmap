@@ -11,7 +11,7 @@ import { DEFAULT_HELPER_PATH } from "../src/helperPath.ts";
 const main = join(import.meta.dirname, "../src/server.ts");
 // main を実物の子プロセスとして起動するので、1 件ごとに Node の起動と TypeScript の変換が入る。
 // vitest は test ファイルを並列に走らせる（CI の server (rest) は他の 18 ファイルと同時）ため、
-// 既定の 20 秒では混み合ったときに足りない。capture.test.ts が実物の Vite・Chromium に 90 秒を取るのと同じ理由
+// 既定の 20 秒では混み合ったときに足りない。capture.heavy.test.ts が実物の Vite・Chromium に 90 秒を取るのと同じ理由
 const TIMEOUT = 60_000;
 const processResource = Effect.fnUntraced(function* (
   port: number | string,

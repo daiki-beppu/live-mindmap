@@ -44,7 +44,7 @@ describe("runMain・runPromise・runSync は入口にだけある", () => {
 });
 
 // Issue #449: サーバーの入口は process.exit を直接呼ばない（teardown の既定の onExit 経由も含む）。
-// 終了コードは process.exitCode に入れ、イベントループが空になって自然に終わる（SIGINT・SIGTERM の 0 は serverMain.test.ts が実プロセスで確かめる）
+// 終了コードは process.exitCode に入れ、イベントループが空になって自然に終わる（SIGINT・SIGTERM の 0 は serverMain.heavy.test.ts が実プロセスで確かめる）
 describe("server.ts の入口は process.exit を呼ばない", () => {
   const code = readFileSync(join(root, "src/server.ts"), "utf8")
     .split("\n")

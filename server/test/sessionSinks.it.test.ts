@@ -739,7 +739,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture })));
   });
 
-  // base の server.test.ts の移動先
+  // base の server.heavy.test.ts の移動先
   it.effect("flush は最後の差分更新（r3 を含む）が終わるまで待ち、その後に Scope を閉じて updater を閉じる。閉じた後には呼ばれない（base:581）", () => {
     const state = { calls: [] as string[][], closed: 0, callsAfterClose: 0 };
     const updaterLayer = Layer.effect(
