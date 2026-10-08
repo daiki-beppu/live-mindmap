@@ -30,7 +30,8 @@ export const Keyword = Schema.Union([
 ]).annotate({ message: KEYWORDS_RULE });
 export type Keyword = typeof Keyword["Type"];
 
-const seconds = Schema.Number.annotate({ message: TIME_RULE }).annotateKey({ messageMissingKey: TIME_RULE });
+// Finite は check を持つので annotate が check に付き、型の不一致（InvalidType）の文面にならない。Union で包んで型の不一致にも TIME_RULE を付ける
+const seconds = Schema.Union([Schema.Finite]).annotate({ message: TIME_RULE }).annotateKey({ messageMissingKey: TIME_RULE });
 
 // 時刻の前後だけを、下の Struct より前に見る段。struct の check は全プロパティが通ったときにだけ走るので
 // （effect 4.0.1 の interpreter）、ここを struct の check にすると同じ項目の keywords の失敗が先に出てしまい、

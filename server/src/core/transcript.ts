@@ -8,8 +8,8 @@ export const TranscriptFile = Schema.Struct({
     segments: Schema.Array(
       Schema.Struct({
         track: Schema.String,
-        start_seconds: Schema.Number,
-        end_seconds: Schema.Number,
+        start_seconds: Schema.Finite,
+        end_seconds: Schema.Finite,
         text: Schema.String,
       }),
     ),

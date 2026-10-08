@@ -4,7 +4,7 @@ import { Effect, FileSystem, Schema } from "effect";
 import { formatIssues, oneLine } from "./truthFile.ts";
 
 export class BrokenLogLine extends Schema.TaggedError<BrokenLogLine>()("BrokenLogLine", {
-  line: Schema.Number,
+  line: Schema.Finite,
   reason: Schema.String,
 }) {}
 

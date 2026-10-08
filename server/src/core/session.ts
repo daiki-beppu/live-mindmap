@@ -13,8 +13,8 @@ export type Track = typeof Track["Type"];
 export const Remark = Schema.Struct({
   id: Schema.String,
   track: Track,
-  start: Schema.Number, // 会議の中の秒
-  end: Schema.Number,
+  start: Schema.Finite, // 会議の中の秒
+  end: Schema.Finite,
   text: Schema.mutableKey(Schema.String),
   duplicate: Schema.optionalKey(Schema.Boolean), // 重複の印。付いた発言は差分更新に使わない
 });
@@ -51,10 +51,10 @@ export const StartEvent = Schema.Struct({ type: Schema.Literal("start"), title: 
 // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
 export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) });
 // ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない
-const ScreenRef = Schema.Struct({ start: Schema.Number, image: Schema.NullOr(Schema.String) });
-export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Number, image: Schema.NullOr(Schema.String) });
+const ScreenRef = Schema.Struct({ start: Schema.Finite, image: Schema.NullOr(Schema.String) });
+export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.String) });
 // 共有画面を見ていない印。reason は 指定（--no-screen）か 許可なし（画面収録の許可が無い）。画像の送受信とは別の行で、差分更新・Claude へのメッセージには載らない
-export const ScreenOffEvent = Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Number, reason: Schema.Literals(["指定", "許可なし"]) });
+export const ScreenOffEvent = Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literals(["指定", "許可なし"]) });
 export const DiffEvent = Schema.Struct({
   type: Schema.Literal("diff"),
   // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）。
@@ -62,9 +62,9 @@ export const DiffEvent = Schema.Struct({
   input: Schema.Struct({
     recent: Schema.mutable(Schema.Array(Schema.String)),
     fresh: Schema.mutable(Schema.Array(Schema.String)),
-    nodeCount: Schema.Number,
+    nodeCount: Schema.Finite,
     screens: Schema.optionalKey(Schema.mutable(Schema.Array(ScreenRef))), // 添えた共有画面。添えた画面が無い呼び出しには付かない
-    screenCount: Schema.optionalKey(Schema.Number), // 選んだ時点までに受け取った共有画面の数。0 のときは付かない
+    screenCount: Schema.optionalKey(Schema.Finite), // 選んだ時点までに受け取った共有画面の数。0 のときは付かない
   }),
   ops: Schema.mutable(Schema.Array(Op)),
   dropped: Schema.mutable(Schema.Array(Dropped)),
@@ -85,7 +85,7 @@ export class SessionLog extends Context.Service<SessionLog, {
 
 // ログの行が読めない（見分けた type で項目が壊れている・start や発言が足りない）。index は events の 0 始まりの位置
 export class InvalidLogEvent extends Schema.TaggedError<InvalidLogEvent>()("InvalidLogEvent", {
-  index: Schema.Number,
+  index: Schema.Finite,
   reason: Schema.String,
 }) {}
 

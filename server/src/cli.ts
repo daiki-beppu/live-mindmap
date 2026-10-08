@@ -178,7 +178,7 @@ const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String) });
 const IntakeStatus = Schema.Struct({
   status: Schema.Literals(["none", "running", "interrupted", "stopped"]),
   dir: Schema.optionalKey(Schema.String),
-  restarts: Schema.optionalKey(Schema.Number),
+  restarts: Schema.optionalKey(Schema.Finite),
   lastInterruptedAt: Schema.optionalKey(Schema.String),
 });
 

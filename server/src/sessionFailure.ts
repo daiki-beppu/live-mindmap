@@ -45,7 +45,7 @@ export class RestartGaveUp extends Schema.TaggedError<RestartGaveUp>()("RestartG
 // セッションの開始で、ヘルパーが接続する前に終わった。code・signal は終わり方（どちらも無ければ null）、
 // stderrTail は標準エラーの末尾
 export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExited", {
-  code: Schema.NullOr(Schema.Number),
+  code: Schema.NullOr(Schema.Finite),
   signal: Schema.NullOr(Schema.String),
   stderrTail: Schema.Array(Schema.String),
 }) {
