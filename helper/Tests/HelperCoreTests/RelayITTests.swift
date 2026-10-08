@@ -3,7 +3,7 @@ import Testing
 import HelperCore
 
 @Suite("結果の転送", .timeLimit(.minutes(1)))
-struct RelayTests {
+struct RelayITTests {
     @Test("途中結果と確定結果が、イベントとして接続先に届く")
     func resultsReachClient() async throws {
         let server = WebSocketServer(port: 0)
@@ -70,7 +70,7 @@ private func finishedStream(_ results: [TranscriptionResult]) -> AsyncThrowingSt
 }
 
 @Suite("複数トラックの転送", .timeLimit(.minutes(1)))
-struct MultiTrackRelayTests {
+struct MultiTrackRelayITTests {
     @Test("自分と相手の結果が、トラック違いの同じ形のイベントとして 1 つの接続先に届く")
     func bothTracksReachSameClient() async throws {
         let server = WebSocketServer(port: 0)

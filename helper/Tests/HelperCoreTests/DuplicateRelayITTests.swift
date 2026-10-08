@@ -143,7 +143,7 @@ private func relayRemarkReleasedBeforeTheirFinal(
 }
 
 @Suite("重複の印を付ける転送", .timeLimit(.minutes(1)))
-struct DuplicateRelayTests {
+struct DuplicateRelayITTests {
     @Test("同じ時間帯の相手と重なる自分の確定結果に印が付き、相手の確定結果には付かない")
     func marksOverlappingRemark() async throws {
         let server = WebSocketServer(port: 0)

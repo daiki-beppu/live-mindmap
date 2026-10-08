@@ -21,7 +21,7 @@ private func receiveText(_ task: URLSessionWebSocketTask) async throws -> String
 private enum WebSocketTestError: Error { case binaryFrame }
 
 @Suite("localhost の WebSocket", .timeLimit(.minutes(1)))
-struct WebSocketServerTests {
+struct WebSocketServerITTests {
     @Test("接続したクライアントが broadcast したテキストをテキストフレームで受け取る")
     func clientReceivesBroadcast() async throws {
         let server = WebSocketServer(port: 0)
