@@ -133,15 +133,28 @@ const FOLDED_KINDS = new Set(["案", "課題", "要点"]);
 
 // ID・種別・状態・本文だけを字下げした木で出す
 function renderOutline(map: MeetingMap): string {
+  return foldedOutlineLines(map, ROOT_ID, 0).join("\n");
+}
+
+// id 自身を畳まない状態の起点として、その下を済みの畳み方でたどった行を返す。全体のアウトラインと、畳んだ中から出たノードの中身で共有する
+function foldedOutlineLines(map: MeetingMap, id: string, depth: number): string[] {
   const lines: string[] = [];
-  const walk = (id: string, depth: number, folded: boolean) => {
+  const walk = (nid: string, d: number, folded: boolean) => {
     // 省いた段も字下げに数える（元の木の深さを保つ）
-    if (!(folded && FOLDED_KINDS.has(map.nodes[id]!.kind))) lines.push(outlineLine(map, id, depth));
-    const nextFolded = folded || !!map.nodes[id]!.talkStatus;
-    for (const c of children(map, id)) walk(c.id, depth + 1, nextFolded);
+    if (!(folded && FOLDED_KINDS.has(map.nodes[nid]!.kind))) lines.push(outlineLine(map, nid, d));
+    const nextFolded = folded || !!map.nodes[nid]!.talkStatus;
+    for (const c of children(map, nid)) walk(c.id, d + 1, nextFolded);
   };
-  walk(ROOT_ID, 0, false);
-  return lines.join("\n");
+  walk(id, depth, false);
+  return lines;
+}
+
+// 自分を除く祖先に、済みのものがあるか
+function underClosed(map: MeetingMap, id: string): boolean {
+  for (let p = map.nodes[id]!.parent; p !== null; p = map.nodes[p]!.parent) {
+    if (map.nodes[p]!.talkStatus) return true;
+  }
+  return false;
 }
 
 // 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
@@ -151,6 +164,17 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
   for (const id of ids(prev)) {
     if (!cur.nodes[id]) lines.push(`- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
   }
+  // 前回は済みの下で畳まれていて、今回は畳まれない場所へ親が変わったノード。AI はまだ中身を知らない
+  // cur で済みの下に留まった移動は、まだ畳まれているので含めない
+  const surfaced = new Set(ids(cur).filter((id) => {
+    const old = prev.nodes[id];
+    return !!old && cur.nodes[id]!.parent !== old.parent && underClosed(prev, id) && !underClosed(cur, id);
+  }));
+  // 祖先が出るなら、子孫はその中身に含まれる
+  const hasSurfacedAncestor = (id: string) => {
+    for (let p = cur.nodes[id]!.parent; p !== null; p = cur.nodes[p]!.parent) if (surfaced.has(p)) return true;
+    return false;
+  };
   for (const id of ids(cur)) {
     const n = cur.nodes[id]!;
     const old = prev.nodes[id];
@@ -162,6 +186,10 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
       || (n.kind === "論点" && pointStatus(cur, id) !== pointStatus(prev, id));
     if (changed) lines.push(`- 更新 ${nodeLabel(cur, id, true)}`);
     if (n.parent !== old.parent) lines.push(`- 移動 ${id} → 親: ${n.parent}`);
+    if (surfaced.has(id) && !hasSurfacedAncestor(id)) {
+      lines.push(`- ${id} 畳んだ中から出た。中身:`);
+      lines.push(...foldedOutlineLines(cur, id, 1));
+    }
   }
   for (const id of ids(cur)) {
     const closedNow = !!cur.nodes[id]!.talkStatus;
