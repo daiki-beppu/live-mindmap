@@ -3,7 +3,7 @@
 //   ポートは空きポート、セッションのフォルダは一時フォルダ。本体にテスト用の口は足さない。
 // - web: Vite の開発サーバー。/ws は LIVE_MINDMAP_PORT（この server のポート）へ proxy される（web/vite.config.ts）。
 // - ファイル配信: セッションのフォルダの下を text/plain で返す、読み取り専用の小さな HTTP サーバー。書き出しのファイルを、テストが画面（locator）で判定するための口。
-// - run-info（.run/server.json）: テストが CLI を呼ぶための server のポートとセッションのフォルダ、ファイル配信のポート。
+// - run-info（.run/<web のポート>.json）: テストが CLI を呼ぶための server のポートとセッションのフォルダ、ファイル配信のポート。target ごとに別ファイル（並行する起動が上書きし合わない）。
 // 使い方: node scripts/serve.ts --web-port <n> --events <台本の先頭から流す発言の件数>
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
@@ -23,7 +23,6 @@ import { updaterLayer } from "../../server/test/fixtures/sessionLayers.ts";
 const e2eDir = join(import.meta.dirname, "..");
 const webDir = join(e2eDir, "../web");
 const fakeHelper = join(e2eDir, "../server/test/fixtures/fake-helper.ts");
-const runInfoPath = join(e2eDir, ".run/server.json");
 
 const { values } = parseArgs({ options: { "web-port": { type: "string" }, events: { type: "string" } } });
 const webPort = Number(values["web-port"]);
@@ -31,6 +30,7 @@ const eventCount = Number(values.events);
 if (!Number.isInteger(webPort) || webPort <= 0 || !Number.isInteger(eventCount) || eventCount <= 0) {
   throw new Error("usage: serve.ts --web-port <n> --events <n>");
 }
+const runInfoPath = join(e2eDir, ".run", `${webPort}.json`);
 
 // 新しく来た発言 1 件ごとに、ルート直下へノードを 1 つ足す。文言は発言そのまま
 const update = (input: DiffInput) =>

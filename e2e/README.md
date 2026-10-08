@@ -1,17 +1,17 @@
 # e2e
 
-会議中の流れ（`start` → 発言 → 字幕とノード → `stop` → 書き出し）を、実物の server・CLI・web で通す smoke。
+会議中の流れ（`start` → 発言 → 字幕とノード → `stop` → 書き出し）を、実物の server・CLI・web で通す。台本の先頭 3 件だけの smoke と、全件の流れの 2 本立て。
 [e2e](https://e2e.tester.army/docs)（`e2e` パッケージ）で動かす。vitest の `projects` には入れない。本体（server・CLI・web）にテスト用の口は足さない。
 
 ## 構成
 
 | ファイル | 役割 |
 | --- | --- |
-| `e2e.config.ts` | target は web 1 つ。`app.command` が `scripts/serve.ts` を起動する（web のポートは runner が空きポートを選んで `{port}` に入れる） |
+| `e2e.config.ts` | target は 2 つ。`web`（smoke。台本の先頭 3 件）と `web-full`（台本の全件。件数は `fixtures/meeting.json` の `events.length`）。どちらも `app.command` が `scripts/serve.ts` を起動する（web のポートは runner が空きポートを選んで `{port}` に入れる） |
 | `scripts/serve.ts` | 起動スクリプト。server の `startup` / `realLayers` を使い、helper を `server/test/fixtures/fake-helper.ts`、差分更新を偽の `updaterLayer`（新しい発言 1 件ごとにノードを 1 つ作り、文言は発言そのまま）に差し替える。終了時の書き出し（`ExportServices`）は `server.ts` の `import.meta.main` と同じ組み方で自前に組み、`AudioMix` には fake-helper を渡す。同じプロセスで web の Vite 開発サーバーも立てる |
-| `fixtures/meeting.json` | 手書きの台本。架空の発言 10 件（`相手`・`自分`・`partial` を含む）。smoke は先頭 3 件だけ流す（3 件目は `自分` の partial。確定せず、字幕に残り続ける）（`e2e.config.ts` の `--events 3`） |
-| `.run/server.json` | run-info。起動スクリプトが書く server のポート・セッションのフォルダ（一時）・書き出し配信のポート・流す件数。テストが CLI を呼ぶために読む（gitignore 済み） |
-| `tests/smoke/meeting.e2e.ts` | smoke。CLI は子プロセスで呼ぶ（`LIVE_MINDMAP_PORT`・`LIVE_MINDMAP_SESSIONS` を渡す） |
+| `fixtures/meeting.json` | 手書きの台本。架空の発言 10 件（`相手`・`自分`・`partial` を含む）。smoke（target `web`）は先頭 3 件だけ流し（3 件目は `自分` の partial。確定せず、字幕に残り続ける）、`web-full` は 10 件すべてを流す（`e2e.config.ts` の `--events`） |
+| `.run/<web のポート>.json` | run-info。起動スクリプトが target ごと（web のポートごと）に書く server のポート・セッションのフォルダ（一時）・書き出し配信のポート・流す件数。テストが開いた画面のポートから自分の target のものを読み、CLI を呼ぶ（gitignore 済み） |
+| `tests/smoke/meeting.e2e.ts` | 会議中の流れ（両方の target で同じ本文が動く）。CLI は子プロセスで呼ぶ（`LIVE_MINDMAP_PORT`・`LIVE_MINDMAP_SESSIONS` を渡す） |
 | `.e2e/cache/` | replay cache。コミットする（`.gitignore` で、ほかの `.e2e/` の出力だけ無視する） |
 
 server のポートとセッションのフォルダは一時的なもの（空きポートと一時フォルダ）。開発中の server（4319）や `~/.live-mindmap` には触れない。
@@ -20,8 +20,8 @@ server のポートとセッションのフォルダは一時的なもの（空�
 
 ```sh
 pnpm install
-pnpm --filter @live-mindmap/e2e test:e2e:smoke   # コミットした cache を --strict-cache で再生する。記録が一致するステップはモデルを呼ばない
-pnpm --filter @live-mindmap/e2e test:e2e         # 今は smoke だけ
+pnpm --filter @live-mindmap/e2e test:e2e:smoke   # target web（先頭 3 件）だけ。コミットした cache を --strict-cache で再生する。記録が一致するステップはモデルを呼ばない
+pnpm --filter @live-mindmap/e2e test:e2e         # 全 target（web と web-full の全件）を --strict-cache で再生する
 ```
 
 `pnpm --filter e2e …` でも同じ package に当たる。ルートの `pnpm test`・`pnpm typecheck` には入らない。
@@ -40,7 +40,7 @@ pnpm --filter @live-mindmap/e2e test:e2e         # 今は smoke だけ
 
 ```sh
 pnpm --filter @live-mindmap/e2e exec e2e login openai   # 初回だけ。ブラウザで ChatGPT にサインインする
-pnpm --filter @live-mindmap/e2e exec e2e run tests/smoke   # --strict-cache なし。照合できないステップだけモデルを呼んで記録し直す
+pnpm --filter @live-mindmap/e2e exec e2e run   # 全 target。--strict-cache なし。照合できないステップだけモデルを呼んで記録し直す
 pnpm --filter @live-mindmap/e2e test:e2e:smoke             # 再生だけで通ることを確かめる（Cache の再生数が出て、モデル呼び出しがない）
 git add e2e/.e2e/cache                                   # 記録し直した cache を、同じコミットに含める
 ```
