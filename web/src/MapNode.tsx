@@ -12,7 +12,7 @@ export type MapNodeData = {
   selected: boolean; // 右の列に根拠を出している
   onSelect: (nodeId: string) => void;
   humanOpened: boolean; // 人が開いたノード（畳まれていなければ、ホバーで畳む小さな丸を出す）
-  onFoldDot: ((nodeId: string) => void) | null; // 丸を押したときの開閉。開閉できないノード（今の議題とその祖先・まとめ）は null
+  onFoldDot: ((nodeId: string) => void) | null; // 丸を押したときの開閉。開閉できないノード（今の議題とその祖先）は null。まとめは解く
 };
 
 // ドラッグでない click とみなす、押した位置からの最大の移動量（px）

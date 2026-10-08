@@ -6,6 +6,7 @@ import { ChangeList } from "./ChangeList.tsx";
 import { enterFoldsSelection } from "./enterFold.ts";
 import { EvidencePanel } from "./EvidencePanel.tsx";
 import { evidenceOf } from "./evidence.ts";
+import { pointedNode } from "./folding.ts";
 import type { IntakeStatus } from "./intake.ts";
 import { IntakeNotice } from "./IntakeNotice.tsx";
 import { ScreenNotice } from "./ScreenNotice.tsx";
@@ -90,11 +91,17 @@ export function SessionView({
     cameraRef.current = next;
     setCamera(next);
   }, []);
-  const treeNow = () => lastTree.current ?? { ids: [], targets: {}, parents: {}, foldState: {}, currentTopic: snapshot.currentTopic };
+  const treeNow = () => lastTree.current ?? { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, currentTopic: snapshot.currentTopic };
   // 選んだノードの ID だけを見る状態から取る。表示内容は描画のたびに最新のスナップショットから導く
   const selectedId = viewing.selection?.id ?? null;
-  const { opened: humanOpened, folded: humanFolded } = humanSetsOf(viewing);
+  const { opened: humanOpened, folded: humanFolded, unbundled: humanUnbundled } = humanSetsOf(viewing);
   const select = (id: string) => dispatch({ type: "select", id }, treeNow());
+  // 「変わったこと」の項目から指す: 祖先と開くかは畳む見せ方から求めて出来事に入れる。スナップショットに無いノードは、今までどおり選ぶだけ
+  const point = (id: string) => {
+    const found = pointedNode(snapshot, id, humanOpened, humanFolded, humanUnbundled);
+    if (found === null) select(id);
+    else dispatch({ type: "pointChange", id, ...found }, treeNow());
+  };
   const treeNowRef = useRef(treeNow);
   treeNowRef.current = treeNow;
   // 見返しで止めている間だけ、最後の人の操作から 10 秒を計る。
@@ -116,7 +123,7 @@ export function SessionView({
   useHotkey("Escape", (e) =>
     dispatch(
       { type: "escape", meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey },
-      lastTree.current ?? { ids: [], targets: {}, parents: {}, foldState: {}, currentTopic: snapshot.currentTopic },
+      lastTree.current ?? { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, currentTopic: snapshot.currentTopic },
     ),
   );
   // VIEW_HOTKEYS は定数で、hook を呼ぶ数と順序は変わらない
@@ -171,8 +178,8 @@ export function SessionView({
       {screenNotice !== undefined && <ScreenNotice text={screenNotice} />}
       {!viewing.sideHidden && (
         <div className="side">
-          <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId, humanOpened, humanFolded)} />
-          <ChangeList changes={snapshot.changes} onSelect={select} />
+          <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId, humanOpened, humanFolded, humanUnbundled)} />
+          <ChangeList changes={snapshot.changes} onSelect={point} />
         </div>
       )}
     </div>

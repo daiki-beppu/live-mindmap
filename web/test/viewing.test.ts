@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { INITIAL_VIEWING, foldToggle, nextCameraOrder, reduceViewing, type CameraCommand, type CameraOrder, type ViewingEvent, type ViewingState, type VisibleTree } from "../src/viewing.ts";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { foldView } from "../src/folding.ts";
+import { foldView, pointedNode } from "../src/folding.ts";
 import { relocations } from "../src/relocation.ts";
 import { evidenceOf } from "../src/evidence.ts";
 
@@ -10,6 +10,7 @@ const tree = (currentTopic: string | undefined): VisibleTree => ({
   targets: { root: { x: 0, y: 0 }, n1: { x: 200, y: 0 }, n2: { x: 200, y: 80 } },
   parents: { root: null, n1: "root", n2: "root" },
   foldState: {},
+  runs: {},
   currentTopic,
 });
 const plainEscape: ViewingEvent = { type: "escape", meta: false, ctrl: false, alt: false };
@@ -786,6 +787,7 @@ const arrowTree = (currentTopic: string | undefined, over: Partial<VisibleTree> 
   },
   parents: { root: null, A: "root", B: "root", A1: "A", A2: "A", B1: "B" },
   foldState: {},
+  runs: {},
   currentTopic,
   ...over,
 });
@@ -885,7 +887,7 @@ describe("reduceViewing: 選んでいないとき、または選んだノード�
   });
 
   it("選べるノードが何もないときは、何も変えない", () => {
-    const empty: VisibleTree = { ids: [], targets: {}, parents: {}, foldState: {}, currentTopic: undefined };
+    const empty: VisibleTree = { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, currentTopic: undefined };
     const out = reduceViewing(INITIAL_VIEWING, arrow("down"), empty);
     expect(out.state).toEqual({ mode: "auto" });
     expect(out.camera).toEqual({ type: "follow" });
@@ -1149,8 +1151,14 @@ const finished = { talkStatus: "済み" } as const;
 const froot = fnode("root", null, "会議", []);
 
 // 本番と同じく、畳む見せ方の結果から見えている木を組み立てる
-const visibleOf = (snapshot: Snapshot, selectedId: string | null, opened: ReadonlySet<string> = NO_OPEN, humanFolded: ReadonlySet<string> = NO_OPEN): VisibleTree => {
-  const view = foldView(snapshot, opened, selectedId, humanFolded);
+const visibleOf = (
+  snapshot: Snapshot,
+  selectedId: string | null,
+  opened: ReadonlySet<string> = NO_OPEN,
+  humanFolded: ReadonlySet<string> = NO_OPEN,
+  unbundled: ReadonlySet<string> = NO_OPEN,
+): VisibleTree => {
+  const view = foldView(snapshot, opened, selectedId, humanFolded, unbundled);
   const shown = view.nodes;
   return {
     ids: shown.map((n) => n.id),
@@ -1158,6 +1166,7 @@ const visibleOf = (snapshot: Snapshot, selectedId: string | null, opened: Readon
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
     // 見せる議題・論点（まとめのノードを除く）が、畳まれているか開いているか
     foldState: Object.fromEntries(shown.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"])),
+    runs: view.runs,
     currentTopic: snapshot.currentTopic,
   };
 };
@@ -1168,15 +1177,15 @@ describe("reduceViewing: Esc で選択を外した直後は、普段どおりに
   const sel = selected("A1", true, { mode: "manual", topic: "B" });
 
   it("選んでいる間は祖先 A が開いて A1 が見え、Esc の出力の selection（無い）を渡すと A1 は畳まれて見えない", () => {
-    expect(foldView(snapshot, NO_OPEN, sel.selection?.id ?? null, NO_OPEN).nodes.map((n) => n.id)).toEqual(["root", "A", "A1", "B"]);
+    expect(foldView(snapshot, NO_OPEN, sel.selection?.id ?? null, NO_OPEN, NO_OPEN).nodes.map((n) => n.id)).toEqual(["root", "A", "A1", "B"]);
     const out = reduceViewing(sel, plainEscape, visibleOf(snapshot, "A1"));
     expect(out.state.selection).toBeUndefined();
-    expect(foldView(snapshot, NO_OPEN, out.state.selection?.id ?? null, NO_OPEN).nodes.map((n) => n.id)).toEqual(["root", "A", "B"]);
+    expect(foldView(snapshot, NO_OPEN, out.state.selection?.id ?? null, NO_OPEN, NO_OPEN).nodes.map((n) => n.id)).toEqual(["root", "A", "B"]);
   });
 
   it("修飾つきの Esc では選択が残るので、畳み方も変わらない", () => {
     const out = reduceViewing(sel, { ...plainEscape, meta: true } as ViewingEvent, visibleOf(snapshot, "A1"));
-    expect(foldView(snapshot, NO_OPEN, out.state.selection?.id ?? null, NO_OPEN).nodes.map((n) => n.id)).toEqual(["root", "A", "A1", "B"]);
+    expect(foldView(snapshot, NO_OPEN, out.state.selection?.id ?? null, NO_OPEN, NO_OPEN).nodes.map((n) => n.id)).toEqual(["root", "A", "A1", "B"]);
   });
 });
 
@@ -1249,7 +1258,7 @@ describe("reduceViewing: 選んだノードが統合・削除・時刻の巻き�
     expect(prevTree.ids).not.toContain("P2");
     const replaced = relocations({ tree: prevTree, snapshot: b, selectedId: "P2" }, { tree: visibleOf(a, "P2", NO_OPEN, folded), snapshot: a });
     const out = reduceViewing(state, { type: "reflect", replaced }, visibleOf(a, "P2", NO_OPEN, folded));
-    return { out, evidence: evidenceOf(a, out.state.selection?.id ?? "", NO_OPEN, folded) };
+    return { out, evidence: evidenceOf(a, out.state.selection?.id ?? "", NO_OPEN, folded, NO_OPEN) };
   };
   const hiddenBefore = withB(before.nodes, 4);
 
@@ -1416,15 +1425,16 @@ const enter = (mods: Partial<{ meta: boolean; ctrl: boolean; alt: boolean }> = {
 const foldDot = (id: string): ViewingEvent => ({ type: "foldDot", id }) as ViewingEvent;
 const openedOf = (s: ViewingState): ReadonlySet<string> => s.humanOpened ?? NO_OPEN;
 const foldedOf = (s: ViewingState): ReadonlySet<string> => s.humanFolded ?? NO_OPEN;
-const shownIds = (snapshot: Snapshot, state: ViewingState) => foldView(snapshot, openedOf(state), state.selection?.id ?? null, foldedOf(state)).nodes.map((n) => n.id);
+const unbundledOf = (s: ViewingState): ReadonlySet<string> => s.humanUnbundled ?? NO_OPEN;
+const shownIds = (snapshot: Snapshot, state: ViewingState) => foldView(snapshot, openedOf(state), state.selection?.id ?? null, foldedOf(state), unbundledOf(state)).nodes.map((n) => n.id);
 // 状態から、人の開閉の集合を除いたもの（カメラの状態・他の重ねる状態・選択だけ）
 const noHuman = (s: ViewingState): ViewingState => {
-  const { humanOpened: _o, humanFolded: _f, ...rest } = s;
+  const { humanOpened: _o, humanFolded: _f, humanUnbundled: _u, ...rest } = s;
   return rest;
 };
 // 選択つきの状態で、今の描画の見えている木を渡して出来事を処理する
 const press = (state: ViewingState, event: ViewingEvent, snapshot: Snapshot, scope: "live" | "review" = "live") =>
-  reduceViewing(state, event, visibleOf(snapshot, state.selection?.id ?? null, openedOf(state), foldedOf(state)), scope);
+  reduceViewing(state, event, visibleOf(snapshot, state.selection?.id ?? null, openedOf(state), foldedOf(state), unbundledOf(state)), scope);
 
 describe("foldToggle: 開く・畳むの向きと、効かないノード", () => {
   const t = visibleOf(curB, null);
@@ -1538,13 +1548,6 @@ describe("reduceViewing: Enter・丸が効かないとき", () => {
     expect(reduceViewing(hidden, enter(), visibleOf(curB, null), "live")).toEqual({ state: hidden, camera: { type: "follow" } });
     unchanged(INITIAL_VIEWING, foldDot("gone"), curB);
     expect([...foldedOf(press(selected("C1", true), enter(), curB).state)]).toEqual(["C1"]);
-  });
-
-  it("「議題 N 件」（run:X）を選んだ Enter・丸は何もしない（開くのは別の仕事）", () => {
-    const runs = fsnap([froot, fnode("A", "root", "議題", ["r1"], finished), fnode("A1", "A", "論点", ["r1"]), fnode("D", "root", "議題", ["r1"], finished), fnode("B", "root", "議題", ["r1"])], 4, "B");
-    expect(visibleOf(runs, "run:A").ids).toEqual(["root", "run:A", "B"]);
-    unchanged(selected("run:A", true), enter(), runs);
-    unchanged(INITIAL_VIEWING, foldDot("run:A"), runs);
   });
 
   it("決定・TODO などの議題・論点でないノードの Enter・丸は何もしない", () => {
@@ -1781,5 +1784,379 @@ describe("reduceViewing: 人の開閉でも入力を書き換えない", () => {
     expect([...folded]).toEqual(["C"]);
     expect(state.selection).toEqual({ id: "A1", byKey: true });
     expect(JSON.stringify(t)).toBe(before);
+  });
+});
+
+// ---- #321: 「議題 N 件」の開き方と、選択と開閉の重なり ----
+
+// root ─ A（済み）─ A1 / D（済み）/ B（話し中）。A・D は並んで畳まれ、run:A にまとまる
+const rnodes = [froot, fnode("A", "root", "議題", ["r1"], finished), fnode("A1", "A", "論点", ["r1"]), fnode("D", "root", "議題", ["r1"], finished), fnode("B", "root", "議題", ["r1"])];
+const runsSnap = fsnap(rnodes, 4, "B");
+// 反映で E・F も畳まれた（解いた A・D に続いて並ぶ）
+const runsLater = fsnap([...rnodes.slice(0, 4), fnode("E", "root", "議題", ["r1"], finished), fnode("F", "root", "議題", ["r1"], finished), rnodes[4]!], 5, "B");
+const unbundledSet = (...xs: string[]): ReadonlySet<string> => new Set(xs);
+
+describe("foldToggle: 「議題 N 件」は解く向き（unbundle）", () => {
+  const t = visibleOf(runsSnap, null);
+
+  it("見えている木のまとめ run:A は unbundle。その中身の議題は見えていないので null。木の runs に入っている議題の並びが入る", () => {
+    expect(t.ids).toEqual(["root", "run:A", "B"]);
+    expect(t.runs).toEqual({ "run:A": ["A", "D"] });
+    expect(foldToggle(t, "run:A")).toBe("unbundle");
+    expect(foldToggle(t, "A")).toBeNull();
+    expect(foldToggle(t, "D")).toBeNull();
+  });
+
+  it("今の議題 B・会議 root は今までどおり null。木に無い run: も null", () => {
+    expect(foldToggle(t, "B")).toBeNull();
+    expect(foldToggle(t, "root")).toBeNull();
+    expect(foldToggle(t, "run:zzz")).toBeNull();
+  });
+
+  it("対照: 解いた後の木では、A・D が畳まれた議題として開ける（open）。run:A はもう無く null", () => {
+    const after = visibleOf(runsSnap, null, NO_OPEN, NO_OPEN, unbundledSet("A", "D"));
+    expect(after.ids).toEqual(["root", "A", "D", "B"]);
+    expect(foldToggle(after, "A")).toBe("open");
+    expect(foldToggle(after, "D")).toBe("open");
+    expect(foldToggle(after, "run:A")).toBeNull();
+  });
+});
+
+describe("reduceViewing: 「議題 N 件」を Enter か丸で解く", () => {
+  it("選んだ run:A を Enter で解くと、入っていた議題 A・D の集合が解いた集合に入り、選択は最初の議題 A へ移る（キーで選んだ形のまま）。人が開いた集合には入らない", () => {
+    const out = press(selected("run:A", true), enter(), runsSnap);
+    expect([...unbundledOf(out.state)]).toEqual(["A", "D"]);
+    expect(out.state.selection).toEqual({ id: "A", byKey: true });
+    expect("humanOpened" in out.state).toBe(false);
+    expect("humanFolded" in out.state).toBe(false);
+  });
+
+  it("run: の ID は状態に残らない", () => {
+    const out = press(selected("run:A", true), enter(), runsSnap);
+    expect(JSON.stringify(out.state)).not.toContain("run:");
+    expect(JSON.stringify([...unbundledOf(out.state)])).not.toContain("run:");
+  });
+
+  it("解いた次の描画では、まとめが A・D の個々の畳んだ議題に解け、中身（A1）は畳んだまま", () => {
+    expect(shownIds(runsSnap, selected("run:A", true))).toEqual(["root", "run:A", "B"]);
+    const out = press(selected("run:A", true), enter(), runsSnap);
+    expect(shownIds(runsSnap, out.state)).toEqual(["root", "A", "D", "B"]);
+    const t = visibleOf(runsSnap, "A", NO_OPEN, NO_OPEN, unbundledOf(out.state));
+    expect(t.foldState).toMatchObject({ A: "folded", D: "folded" });
+  });
+
+  it("数の丸（foldDot run:A）でも同じ。選んでいなければ選択は A になり、選んでいる別のノードがあっても A へ移る", () => {
+    const fromNone = press(INITIAL_VIEWING, foldDot("run:A"), runsSnap);
+    expect([...unbundledOf(fromNone.state)]).toEqual(["A", "D"]);
+    expect(fromNone.state.selection?.id).toBe("A");
+    expect(shownIds(runsSnap, fromNone.state)).toEqual(["root", "A", "D", "B"]);
+    const fromOther = press(selected("B", true), foldDot("run:A"), runsSnap);
+    expect([...unbundledOf(fromOther.state)]).toEqual(["A", "D"]);
+    expect(fromOther.state.selection?.id).toBe("A");
+  });
+
+  it("カメラは開閉と同じ: 自動なら今の議題へ寄り直し（refocus）、止めているか全体を見ているときはまとめの位置を保つ（keepNode run:A）。モードは変わらない", () => {
+    expect(press(selected("run:A", true), enter(), runsSnap).camera).toEqual({ type: "refocus" });
+    const manual = press(selected("run:A", true, { mode: "manual", topic: "B" }), enter(), runsSnap);
+    expect(manual.camera).toEqual({ type: "keepNode", id: "run:A" });
+    expect(manual.state.mode).toBe("manual");
+    const overview = press(selected("run:A", true, { mode: "overview", topic: "B", before: { mode: "auto" } }), foldDot("run:A"), runsSnap);
+    expect(overview.camera).toEqual({ type: "keepNode", id: "run:A" });
+    expect(overview.state).toMatchObject({ mode: "overview", topic: "B", before: { mode: "auto" } });
+  });
+
+  it("⌘・Ctrl・Option 付きの Enter は何もしない（対照: 修飾なしなら解ける）", () => {
+    const from = selected("run:A", true);
+    for (const mods of [{ meta: true }, { ctrl: true }, { alt: true }]) {
+      const out = press(from, enter(mods), runsSnap);
+      expect(out.state).toEqual(from);
+      expect(out.camera).toEqual({ type: "follow" });
+    }
+    expect([...unbundledOf(press(from, enter(), runsSnap).state)]).toEqual(["A", "D"]);
+  });
+
+  it("まとめが木に無いときの Enter・丸は何もしない（選択が run:zzz、押した丸が見えていない run:）", () => {
+    const from = selected("run:zzz", true);
+    expect(press(from, enter(), runsSnap).state).toEqual(from);
+    expect(press(INITIAL_VIEWING, foldDot("run:zzz"), runsSnap).state).toEqual(INITIAL_VIEWING);
+  });
+
+  it("解いた後の A・D は普通の畳んだ議題として開ける。開いても、解いた集合は残る", () => {
+    const unbundled = press(selected("run:A", true), enter(), runsSnap).state;
+    const opened = press(unbundled, enter(), runsSnap);
+    expect([...openedOf(opened.state)]).toEqual(["A"]);
+    expect([...unbundledOf(opened.state)]).toEqual(["A", "D"]);
+    expect(shownIds(runsSnap, opened.state)).toEqual(["root", "A", "A1", "D", "B"]);
+  });
+});
+
+describe("reduceViewing: 解いた「議題 N 件」は反映をまたいで残り、Esc で戻る", () => {
+  const unbundled = press(selected("run:A", true, { mode: "manual", topic: "B" }), enter(), runsSnap).state;
+
+  it("反映（議題が変わらない・変わる）を何度挟んでも、解いた集合とモードの扱いは普段どおりで、解いた集合は残る", () => {
+    const sameTopic = reduceViewing(unbundled, reflect, visibleOf(runsLater, "A", NO_OPEN, NO_OPEN, unbundledOf(unbundled)));
+    expect([...unbundledOf(sameTopic.state)]).toEqual(["A", "D"]);
+    expect(sameTopic.state.mode).toBe("manual");
+    const topicChanged = reduceViewing(unbundled, reflect, visibleOf(fsnap(rnodes, 6, "A1"), "A", NO_OPEN, NO_OPEN, unbundledOf(unbundled)));
+    expect(topicChanged.state.mode).toBe("auto");
+    expect([...unbundledOf(topicChanged.state)]).toEqual(["A", "D"]);
+  });
+
+  it("反映で A・D に続く E・F が畳まれても、解いた A・D は個々のまま、E・F は新しく run:E にまとまる", () => {
+    const out = reduceViewing(unbundled, reflect, visibleOf(runsLater, "A", NO_OPEN, NO_OPEN, unbundledOf(unbundled)));
+    expect(shownIds(runsLater, out.state)).toEqual(["root", "A", "D", "run:E", "B"]);
+  });
+
+  it("触らず 10 秒・動かす・倍率キー・F → F・列と字幕・キー一覧・クリック・矢印・端の点を重ねても、解いた集合は残る", () => {
+    const t = visibleOf(runsSnap, "A", NO_OPEN, NO_OPEN, unbundledOf(unbundled));
+    const events: ViewingEvent[] = [
+      { type: "idle" },
+      moved,
+      { type: "key", key: "=", meta: false, ctrl: false, alt: false },
+      { type: "key", key: "F", meta: false, ctrl: false, alt: false },
+      { type: "key", key: "F", meta: false, ctrl: false, alt: false },
+      { type: "side", meta: false, ctrl: false, alt: false },
+      { type: "captions", meta: false, ctrl: false, alt: false },
+      { type: "keyList", meta: false, ctrl: false, alt: false },
+      { type: "keyList", meta: false, ctrl: false, alt: false },
+      click("B"),
+      arrow("down"),
+      { type: "edgeDot", id: "B" },
+      reflect,
+    ];
+    const { state } = run(events.map((e): [ViewingEvent, VisibleTree] => [e, t]), unbundled);
+    expect([...unbundledOf(state)]).toEqual(["A", "D"]);
+  });
+
+  it("全体を見る（F）ときの before には、解いた集合を入れない", () => {
+    const ov = reduceViewing(unbundled, { type: "key", key: "F", meta: false, ctrl: false, alt: false }, visibleOf(runsSnap, "A", NO_OPEN, NO_OPEN, unbundledOf(unbundled)));
+    expect(ov.state).toMatchObject({ mode: "overview", before: { mode: "manual", topic: "B" } });
+    expect(JSON.stringify((ov.state as { before: unknown }).before)).not.toContain("humanUnbundled");
+    expect([...unbundledOf(ov.state)]).toEqual(["A", "D"]);
+  });
+
+  it("修飾なしの Esc で、解いた集合も選択・人の開閉と一緒に外れる。次の描画でまとめに戻る", () => {
+    const withAll: ViewingState = { ...unbundled, humanOpened: set("A") };
+    const out = press(withAll, plainEscape, runsSnap);
+    expect(out.state).toEqual({ mode: "auto" });
+    expect("humanUnbundled" in out.state).toBe(false);
+    expect(shownIds(runsSnap, out.state)).toEqual(["root", "run:A", "B"]);
+  });
+
+  it("⌘・Ctrl・Option 付きの Esc、キー一覧が開いているときの Esc では、解いた集合は残る（キー一覧は閉じる）", () => {
+    for (const mods of [{ meta: true }, { ctrl: true }, { alt: true }]) {
+      expect([...unbundledOf(press(unbundled, { ...plainEscape, ...mods } as ViewingEvent, runsSnap).state)]).toEqual(["A", "D"]);
+    }
+    const out = press({ ...unbundled, keyList: true }, plainEscape, runsSnap);
+    expect(out.state).toEqual(unbundled);
+  });
+
+  it("自動のままの Esc でも解ける", () => {
+    const out = press({ mode: "auto", humanUnbundled: unbundledSet("A", "D") }, plainEscape, runsSnap);
+    expect(out.state).toEqual({ mode: "auto" });
+  });
+
+  it("入力の状態・木・集合を書き換えない", () => {
+    const set0 = unbundledSet("A", "D");
+    const state: ViewingState = Object.freeze({ mode: "manual", topic: "B", humanUnbundled: set0, selection: Object.freeze({ id: "run:A", byKey: true }) }) as ViewingState;
+    const t = visibleOf(runsSnap, "run:A");
+    const before = JSON.stringify(t);
+    for (const event of [enter(), foldDot("run:A"), plainEscape, reflect]) reduceViewing(state, event, t);
+    expect([...set0]).toEqual(["A", "D"]);
+    expect(state.selection).toEqual({ id: "run:A", byKey: true });
+    expect(JSON.stringify(t)).toBe(before);
+  });
+});
+
+describe("reduceViewing: 子孫に選択があるノードを畳むと、選択がそのノードへ移る", () => {
+  // root ─ A（済み）/ B（話し中）─ B1 / C（話し中）─ C1 ─ D1（決定）
+  const deep = fsnap([...hnodes, fnode("D1", "C1", "決定", ["r1"])], 6, "B");
+
+  it("C1 を選んで丸で C を畳むと、選択が C へ移る（キーで選んだ形のまま）。人が畳んだ集合に C が入る", () => {
+    const out = press(selected("C1", true), foldDot("C"), deep);
+    expect(out.state.selection).toEqual({ id: "C", byKey: true });
+    expect([...foldedOf(out.state)]).toEqual(["C"]);
+  });
+
+  it("移った後の描画では、畳んだ C が見えて中は見えない（選択が隠れない）", () => {
+    const out = press(selected("D1", false), foldDot("C"), deep);
+    expect(out.state.selection).toEqual({ id: "C", byKey: false });
+    expect(shownIds(deep, out.state)).toEqual(["root", "A", "B", "B1", "C"]);
+  });
+
+  it("孫の決定 D1 を選んでいても、畳んだ C1 へ移る（直接の子でなくてよい）。C1 の祖先 C は畳まない", () => {
+    const out = press(selected("D1", true), foldDot("C1"), deep);
+    expect(out.state.selection).toEqual({ id: "C1", byKey: true });
+    expect([...foldedOf(out.state)]).toEqual(["C1"]);
+  });
+
+  it("Enter で選んだノード自身を畳むときは、選択は動かない", () => {
+    const out = press(selected("C1", true), enter(), deep);
+    expect(out.state.selection).toEqual({ id: "C1", byKey: true });
+    expect([...foldedOf(out.state)]).toEqual(["C1"]);
+  });
+
+  it("カメラは開閉と同じで畳んだノードの位置を保つ（止めているとき keepNode C）。自動なら refocus", () => {
+    expect(press(selected("C1", true, { mode: "manual", topic: "B" }), foldDot("C"), deep).camera).toEqual({ type: "keepNode", id: "C" });
+    expect(press(selected("C1", true), foldDot("C"), deep).camera).toEqual({ type: "refocus" });
+  });
+
+  it("対照: 子孫でないノードを選んでいるとき（B1 を選んで C を畳む）、選択は動かない", () => {
+    const out = press(selected("B1", true), foldDot("C"), deep);
+    expect(out.state.selection).toEqual({ id: "B1", byKey: true });
+    expect([...foldedOf(out.state)]).toEqual(["C"]);
+  });
+
+  it("対照: 祖先 root や、同じ階層の C を選んでいるときに C1 を畳んでも、選択は動かない。選んでいなければ選択は付かない", () => {
+    expect(press(selected("C", true), foldDot("C1"), deep).state.selection).toEqual({ id: "C", byKey: true });
+    expect(press(selected("root", true), foldDot("C"), deep).state.selection).toEqual({ id: "root", byKey: true });
+    expect(press(INITIAL_VIEWING, foldDot("C"), deep).state.selection).toBeUndefined();
+  });
+
+  it("対照: 開く向きの丸は、選択を動かさない（B1 を選んだまま A を開く）", () => {
+    const out = press(selected("B1", true), foldDot("A"), deep);
+    expect(out.state.selection).toEqual({ id: "B1", byKey: true });
+    expect([...openedOf(out.state)]).toEqual(["A"]);
+  });
+});
+
+describe("reduceViewing: 「変わったこと」から指す（pointChange）", () => {
+  const nodesP = [
+    froot,
+    fnode("A", "root", "議題", ["r1"], finished),
+    fnode("A1", "A", "論点", ["r1"], finished),
+    fnode("A1a", "A1", "決定", ["r1"]),
+    fnode("B", "root", "議題", ["r1"]),
+    fnode("B1", "B", "論点", ["r1"]),
+    fnode("C", "root", "議題", ["r1"]),
+  ];
+  const snapP = fsnap(nodesP, 4, "B");
+  const snapNext = fsnap(nodesP, 5, "B");
+  const snapOther = fsnap(nodesP, 6, "C");
+  // 指す操作: 本番と同じく、畳む見せ方の関数で祖先と開くかを求めて出来事に入れる
+  const point = (state: ViewingState, snapshot: Snapshot, id: string) => {
+    const found = pointedNode(snapshot, id, openedOf(state), foldedOf(state), unbundledOf(state));
+    expect(found).not.toBeNull();
+    const event = { type: "pointChange", id, ...found! } as ViewingEvent;
+    return { event, ...press(state, event, snapshot) };
+  };
+
+  it("畳んだ議題 A を指すと、A が選ばれ（キー以外の選び方）、人が開いた集合に入り、カメラは人の状態（止めて、今の議題 B）になって A へ寄る。A の中が見える", () => {
+    expect(shownIds(snapP, INITIAL_VIEWING)).not.toContain("A1");
+    const out = point(INITIAL_VIEWING, snapP, "A");
+    expect(out.state).toEqual({ mode: "manual", topic: "B", selection: { id: "A", byKey: false }, humanOpened: set("A") });
+    expect(out.camera).toEqual({ type: "focusNode", id: "A" });
+    expect(shownIds(snapP, out.state)).toEqual(["root", "A", "A1", "B", "B1", "C"]);
+  });
+
+  it("次の反映（議題が変わらない・変わる）でも開いたままで、Esc で畳まれ、選択・人の状態も外れる（同じ状態の続き）", () => {
+    const first = point(INITIAL_VIEWING, snapP, "A").state;
+    const reflected = reduceViewing(first, reflect, visibleOf(snapNext, "A", set("A")));
+    expect(reflected.state).toMatchObject({ mode: "manual", topic: "B", selection: { id: "A", byKey: false }, humanOpened: set("A") });
+    expect(shownIds(snapNext, reflected.state)).toContain("A1");
+    const topicChanged = reduceViewing(reflected.state, reflect, visibleOf(snapOther, "A", set("A")));
+    expect(topicChanged.state.mode).toBe("auto");
+    expect(shownIds(snapOther, topicChanged.state)).toContain("A1");
+    const escaped = reduceViewing(topicChanged.state, plainEscape, visibleOf(snapOther, "A", set("A")));
+    expect(escaped.state).toEqual({ mode: "auto" });
+    expect(shownIds(snapOther, escaped.state)).not.toContain("A1");
+  });
+
+  it("畳んだ議題の中に隠れた決定 A1a を指すと、A1a が選ばれ、祖先 A・A1 は選択の保護で開いて見える。決定は畳む条件に当たらないので人が開いた集合には入らない", () => {
+    const out = point(INITIAL_VIEWING, snapP, "A1a");
+    expect(out.state).toEqual({ mode: "manual", topic: "B", selection: { id: "A1a", byKey: false } });
+    expect(out.camera).toEqual({ type: "focusNode", id: "A1a" });
+    expect(shownIds(snapP, out.state)).toEqual(["root", "A", "A1", "A1a", "B", "B1", "C"]);
+  });
+
+  it("隠れた論点 A1 が畳む条件に当たるときは、A1 も人が開いた集合に入る（祖先 A は入らない）。決定 A1a まで見える", () => {
+    const out = point(INITIAL_VIEWING, snapP, "A1");
+    expect(out.state.selection).toEqual({ id: "A1", byKey: false });
+    expect([...openedOf(out.state)]).toEqual(["A1"]);
+    expect(shownIds(snapP, out.state)).toEqual(["root", "A", "A1", "A1a", "B", "B1", "C"]);
+    // 反映のあとも A1 は開いたまま、Esc で A ごと畳まれる
+    const reflected = reduceViewing(out.state, reflect, visibleOf(snapNext, "A1", set("A1")));
+    expect(shownIds(snapNext, reflected.state)).toContain("A1a");
+    expect(shownIds(snapNext, reduceViewing(reflected.state, plainEscape, visibleOf(snapNext, "A1", set("A1"))).state)).toEqual(["root", "A", "B", "B1", "C"]);
+  });
+
+  it("祖先 A を人が畳んでいたら、A を人が畳んだ集合から外して見せる（ほかの人の畳みは残る）。外して空になればフィールドごと外れる", () => {
+    const some: ViewingState = { mode: "auto", humanFolded: set("A", "C") };
+    const out = point(some, snapP, "A1a");
+    expect([...foldedOf(out.state)]).toEqual(["C"]);
+    expect(shownIds(snapP, out.state)).toContain("A1a");
+    const only = point({ mode: "auto", humanFolded: set("A") }, snapP, "A1");
+    expect("humanFolded" in only.state).toBe(false);
+    expect(shownIds(snapP, only.state)).toContain("A1");
+  });
+
+  it("指したノード自身を人が畳んでいたら、人が畳んだ集合から人が開いた集合へ移る", () => {
+    const out = point({ mode: "auto", humanFolded: set("A") }, snapP, "A");
+    expect([...openedOf(out.state)]).toEqual(["A"]);
+    expect("humanFolded" in out.state).toBe(false);
+  });
+
+  it("すでに開いている話し中の議題 C を指すと、選ぶだけで開閉の集合は増えない（カメラはそこへ寄る）", () => {
+    const out = point(INITIAL_VIEWING, snapP, "C");
+    expect(out.state).toEqual({ mode: "manual", topic: "B", selection: { id: "C", byKey: false } });
+    expect(out.camera).toEqual({ type: "focusNode", id: "C" });
+  });
+
+  it("もともと人が開いていたものは残り、足される（A を開いた状態で A1 を指すと、A も A1 も開いたまま）", () => {
+    const out = point({ mode: "auto", humanOpened: set("A") }, snapP, "A1");
+    expect([...openedOf(out.state)].sort()).toEqual(["A", "A1"]);
+  });
+
+  it("カメラのモードは、自動でも止めていても全体を見ていても、人の状態（止めて、今の議題）になる。ほかの重ねる状態は残る", () => {
+    for (const from of [
+      { mode: "auto", sideHidden: true },
+      { mode: "manual", topic: "zzz", sideHidden: true },
+      { mode: "overview", topic: "zzz", before: { mode: "auto" }, sideHidden: true },
+    ] as ViewingState[]) {
+      const out = point(from, snapP, "A");
+      expect(out.state).toMatchObject({ mode: "manual", topic: "B", sideHidden: true });
+      expect("before" in out.state).toBe(false);
+    }
+  });
+
+  it("別のノードを選んでいても、指したノードへ選択が移る。解いた集合・開閉は残る", () => {
+    const from: ViewingState = { mode: "auto", selection: { id: "B1", byKey: true }, humanUnbundled: unbundledSet("X"), humanFolded: set("C") };
+    const out = point(from, snapP, "A");
+    expect(out.state.selection).toEqual({ id: "A", byKey: false });
+    expect([...unbundledOf(out.state)]).toEqual(["X"]);
+    expect([...foldedOf(out.state)]).toEqual(["C"]);
+  });
+
+  it("「議題 N 件」の中の畳んだ議題 D を指すと、D が選ばれて開き、まとめは D を外して切り直される", () => {
+    expect(shownIds(runsSnap, INITIAL_VIEWING)).toEqual(["root", "run:A", "B"]);
+    const out = point(INITIAL_VIEWING, runsSnap, "D");
+    expect(out.state.selection).toEqual({ id: "D", byKey: false });
+    expect([...openedOf(out.state)]).toEqual(["D"]);
+    expect(shownIds(runsSnap, out.state)).toEqual(["root", "A", "D", "B"]);
+  });
+
+  it("入力の状態・木・集合・出来事を書き換えない", () => {
+    const opened = set("B");
+    const folded = set("A");
+    const state: ViewingState = Object.freeze({ mode: "manual", topic: "B", humanOpened: opened, humanFolded: folded }) as ViewingState;
+    const found = pointedNode(snapP, "A1a", opened, folded, NO_OPEN)!;
+    const event = Object.freeze({ type: "pointChange", id: "A1a", ancestors: Object.freeze([...found.ancestors]), open: found.open }) as unknown as ViewingEvent;
+    const t = visibleOf(snapP, null, opened, folded);
+    const before = JSON.stringify(t);
+    reduceViewing(state, event, t);
+    expect([...opened]).toEqual(["B"]);
+    expect([...folded]).toEqual(["A"]);
+    expect(JSON.stringify(t)).toBe(before);
+  });
+});
+
+describe("reduceViewing: select（マップのクリック）は今までどおり、カメラの状態も開閉も変えない", () => {
+  it("止めているとき・自動のとき、クリックは選ぶだけ（開閉の集合は増えず、モードも変わらない）", () => {
+    const manual = reduceViewing({ mode: "manual", topic: "B" }, click("A"), visibleOf(runsSnap, null));
+    expect(manual.state).toEqual({ mode: "manual", topic: "B", selection: { id: "A", byKey: false } });
+    expect(manual.camera).toEqual({ type: "hold" });
+    const auto = reduceViewing(INITIAL_VIEWING, click("A"), visibleOf(runsSnap, null));
+    expect(auto.state).toEqual({ mode: "auto", selection: { id: "A", byKey: false } });
+    expect(auto.camera).toEqual({ type: "follow" });
   });
 });

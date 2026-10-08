@@ -24,12 +24,13 @@ const NONE: ReadonlySet<string> = new Set();
 
 // 本番と同じく、畳む見せ方の結果から見えている木を組み立てる（位置は使わない）
 const stateOf = (snapshot: Snapshot, selectedId: string | null = null) => {
-  const shown = foldView(snapshot, NONE, selectedId, NONE).nodes;
+  const shown = foldView(snapshot, NONE, selectedId, NONE, NONE).nodes;
   const tree: VisibleTree = {
     ids: shown.map((n) => n.id),
     targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
     foldState: {},
+    runs: {},
     currentTopic: snapshot.currentTopic,
   };
   return { tree, snapshot, selectedId };
@@ -129,12 +130,13 @@ describe("relocations: 見えている木から消えたノードの移り先", 
   it("前の木から人の畳みで隠れていた選択ノードも、消えたら移る。選択が無ければ移らない", () => {
     const folded: ReadonlySet<string> = new Set(["A"]);
     const b = snap([...before().nodes, node("B", "root", "議題", ["r3"])], 4, "B");
-    const shown = foldView(b, NONE, "P2", folded).nodes;
+    const shown = foldView(b, NONE, "P2", folded, NONE).nodes;
     const hiddenTree: VisibleTree = {
       ids: shown.map((n) => n.id),
       targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
       parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
       foldState: {},
+      runs: {},
       currentTopic: b.currentTopic,
     };
     expect(hiddenTree.ids).not.toContain("P2");

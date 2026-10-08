@@ -18,13 +18,27 @@ export type FoldView = {
   blink: ReadonlySet<string>;
   // 見せないノード → それを隠している見せるノード（畳んだノードかまとめのノード）
   shownAs: Record<string, string>;
+  // まとめのノードの ID → まとめに入っている議題の ID（並び順）
+  runs: Record<string, readonly string[]>;
 };
+
+// まとめのノード（run:X）の最初の議題の ID。まとめでなければ null
+export function runStartOf(id: string): string | null {
+  return id.startsWith("run:") ? id.slice("run:".length) : null;
+}
 
 // 見せ方を決める。純粋な関数: snapshot を変えず、opened（人が開いたもの）に入れたノードは畳まず、humanFolded（人が畳んだもの）に入れた議題・論点は畳む。
 // 畳む集合 =（済みの議題・論点 ∪ 15 分触れていない話し中の議題 ∪ 人が畳んだもの）−（人が開いたもの ∪ 今の議題と祖先 ∪ 選んだノードの祖先）。
 // ただし人が畳んだものは、選んだノードの祖先でも畳む（今の議題と祖先は、人が畳んでも畳まない）。
-// 選んだノード（selectedId）の祖先は畳まない（選んだノード自身は、畳む条件に当たれば畳む）。選んだ畳んだ議題は「議題 N 件」にまとめない。選んだまとめ（run:X）は X から始まるまとめとして残し、X の祖先も畳まない
-export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, selectedId: string | null, humanFolded: ReadonlySet<string>): FoldView {
+// 選んだノード（selectedId）の祖先は畳まない（選んだノード自身は、畳む条件に当たれば畳む）。選んだ畳んだ議題は「議題 N 件」にまとめない。選んだまとめ（run:X）は X から始まるまとめとして残し、X の祖先も畳まない。
+// unbundled（人が解いた「議題 N 件」に入っていた議題）に入れた議題は、畳んだまま「議題 N 件」にまとめない
+export function foldView(
+  snapshot: Snapshot,
+  opened: ReadonlySet<string>,
+  selectedId: string | null,
+  humanFolded: ReadonlySet<string>,
+  unbundled: ReadonlySet<string>,
+): FoldView {
   const { nodes, now, currentTopic } = snapshot;
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const children = new Map<string, SnapshotNode[]>();
@@ -38,7 +52,7 @@ export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, select
   // 選んだノードの祖先は、人が畳んでいなければ畳まない
   // 選んだまとめ（run:X）は X として扱い、X の祖先を畳まない（まとめはスナップショットに無いので、ID のままでは引けない）
   const selectionAncestors = new Set<string>();
-  const selectedRunStart = selectedId?.startsWith("run:") ? selectedId.slice("run:".length) : null;
+  const selectedRunStart = selectedId === null ? null : runStartOf(selectedId);
   const selected = selectedId === null ? undefined : byId.get(selectedRunStart ?? selectedId);
   if (selected?.parent) {
     for (let cur = byId.get(selected.parent); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) selectionAncestors.add(cur.id);
@@ -71,6 +85,7 @@ export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, select
   const runOf = new Map<string, string>(); // まとめた議題 → まとめのノードの ID
   const summaryNodes = new Map<string, SnapshotNode>(); // 最初の議題の ID → まとめのノード
   const folds: Record<string, Fold> = {};
+  const runs: Record<string, readonly string[]> = {};
   const parents = new Set(nodes.flatMap((n) => (n.parent ? [n.parent] : [])));
   for (const parent of parents) {
     if (hidden.has(parent) || folded.has(parent)) continue;
@@ -82,6 +97,7 @@ export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, select
         const id = `run:${first.id}`;
         for (const m of run) runOf.set(m.id, id);
         summaryNodes.set(first.id, { id, parent, kind: "議題", text: `議題 ${run.length} 件`, evidence: [] });
+        runs[id] = run.map((m) => m.id);
         folds[id] = { hint: `${first.text} 〜 ${last.text}`, hidden: run.reduce((sum, m) => sum + 1 + descendants(m.id).length, 0) };
       }
       run = [];
@@ -89,7 +105,7 @@ export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, select
     for (const kid of children.get(parent) ?? []) {
       // 選んだまとめ（run:X）は、X から始まるまとめとして切り直す（選んだ前後の分かれ目が消えても、同じ ID のまとめが残る）
       if (kid.id === selectedRunStart) close();
-      if (folded.has(kid.id) && kid.kind === "議題" && kid.id !== selectedId) run.push(kid);
+      if (folded.has(kid.id) && kid.kind === "議題" && kid.id !== selectedId && !unbundled.has(kid.id)) run.push(kid);
       else close();
     }
     close();
@@ -129,7 +145,33 @@ export function foldView(snapshot: Snapshot, opened: ReadonlySet<string>, select
     else if (shownAs[id]) blink.add(shownAs[id]);
   }
 
-  return { nodes: shown, folds, summaries: new Set([...summaryNodes.values()].map((s) => s.id)), blink, shownAs };
+  return { nodes: shown, folds, summaries: new Set([...summaryNodes.values()].map((s) => s.id)), blink, shownAs, runs };
+}
+
+// 位置を保つ基準にするノード: 見せないノードは隠している見せるノードに、解いて無くなったまとめ（run:X）は最初の議題 X に置き換える
+export function keepTargetOf(view: Pick<FoldView, "nodes" | "shownAs"> | null, id: string): string {
+  if (view === null) return id;
+  return view.shownAs[id] ?? (view.nodes.some((n) => n.id === id) ? id : (runStartOf(id) ?? id));
+}
+
+// 「変わったこと」から指したノードの、見せるために解く祖先と、人が開いた集合に足すか。
+// 指したノードの祖先は選択の保護で開くが、人が畳んだ祖先は保護より強いので、ancestors を人が畳んだ集合から外して見せる。
+// open: その状態で指したノード自身が畳まれているか（畳む条件は foldView に任せる）。スナップショットに無い ID は null
+export function pointedNode(
+  snapshot: Snapshot,
+  id: string,
+  opened: ReadonlySet<string>,
+  humanFolded: ReadonlySet<string>,
+  unbundled: ReadonlySet<string>,
+): { ancestors: string[]; open: boolean } | null {
+  const byId = new Map(snapshot.nodes.map((n) => [n.id, n]));
+  const target = byId.get(id);
+  if (!target) return null;
+  const ancestors: string[] = [];
+  for (let cur = target.parent ? byId.get(target.parent) : undefined; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) ancestors.push(cur.id);
+  const folded = new Set(humanFolded);
+  for (const a of ancestors) folded.delete(a);
+  return { ancestors, open: id in foldView(snapshot, opened, id, folded, unbundled).folds };
 }
 
 // 手がかりの文字。0 の項目は書かず、3 つとも 0 なら null
