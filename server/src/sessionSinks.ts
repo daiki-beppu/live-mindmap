@@ -1,10 +1,10 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, Effect, FileSystem, Layer, type Scope } from "effect";
+import { Context, Effect, FileSystem, Layer, Ref, type Scope } from "effect";
 import { MapCapture } from "./capture.ts";
 import type { UpdaterUnavailable } from "./diffUpdater.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
+import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
 import { AudioMix } from "./audioMix.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
@@ -77,28 +77,28 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
-          // 記録つきセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す。
-          // relay は session の後に作るので、後から参照する
-          let speaking: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
+          // relay を先に作る。unreflected は session ができた後（onDiff が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
+          // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
+          const relay = yield* createSpeakingRelay({ unreflected: Effect.suspend((): Effect.Effect<Remark[]> => session.unreflectedRemarks), send: speak });
+          // 記録つきセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
           const { session, appendLog } = yield* openRecordedSession({
             dir,
             title,
             publish,
-            onDiff: Effect.suspend(() => (speaking ? speaking.flushAll() : Effect.void)),
+            onDiff: relay.flushAll(),
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)));
-          const relay = yield* createSpeakingRelay({ unreflected: session.unreflectedRemarks, send: speak });
-          speaking = relay;
-          // ID の採番はセッションにつき 1 回だけ作るクロージャ。起動し直しでは作り直さない
-          let count = 0;
+          // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
+          const count = yield* Ref.make(0);
           const settling = yield* createRemarkSettling({
             emit: (settled) =>
-              Effect.suspend(() => {
-                count++;
-                return Effect.andThen(session.push({ ...settled, id: `r${count}` }), relay.remark(settled.track));
+              Effect.gen(function* () {
+                const n = yield* Ref.updateAndGet(count, (c) => c + 1);
+                yield* session.push({ ...settled, id: `r${n}` });
+                yield* relay.remark(settled.track);
               }),
           });
           // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
-          let screenCount = 0;
+          const screenCount = yield* Ref.make(0);
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop(), settling.stop()));
 
@@ -107,10 +107,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             partial: (p) => Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)),
             final: (r) => settling.final(r),
             screen: ({ start, image }) =>
-              Effect.suspend(() => {
-                if (image === null) return session.pushScreen({ start, image: null });
-                screenCount++;
-                return session.pushScreen({ start, image: { id: `s${screenCount}`, bytes: image } });
+              Effect.gen(function* () {
+                if (image === null) return yield* session.pushScreen({ start, image: null });
+                const n = yield* Ref.updateAndGet(screenCount, (c) => c + 1);
+                return yield* session.pushScreen({ start, image: { id: `s${n}`, bytes: image } });
               }),
             screenOff: (off) => session.pushScreenOff(off),
             drain: settling.drain(),

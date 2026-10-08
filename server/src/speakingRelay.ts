@@ -27,9 +27,12 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
 
   // 予約を取り消す（予約が無ければ何もしない）
   const cancel = Effect.fnUntraced(function* (track: Track) {
-    const fiber = (yield* Ref.get(state))[track].timer;
+    // timer を読む処理と外す処理を 1 回の Ref 操作にする
+    const fiber = yield* Ref.modify(state, (current): [Fiber.Fiber<void> | undefined, Record<Track, TrackState>] => [
+      current[track].timer,
+      { ...current, [track]: { ...current[track], timer: undefined } },
+    ]);
     if (fiber === undefined) return;
-    yield* update(track, (s) => ({ ...s, timer: undefined }));
     yield* Fiber.interrupt(fiber);
   });
 
