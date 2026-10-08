@@ -1,0 +1,28 @@
+/* PROTOTYPE（issue #383）。main には入れない */
+.proto-root { position: relative; width: 100%; height: 100%; }
+
+/* A: 「動かしています」と同じ下端 4〜20px の帯の、マップの右端（右の列の手前）に置く */
+.proto-a { position: absolute; right: 316px; bottom: 4px; margin: 0; font-size: 13px; line-height: 16px; white-space: nowrap; color: #6b7280; pointer-events: none; z-index: 5; }
+.proto-root--A:not(:has(.side)) .proto-a { right: 16px; }
+
+/* B: 右の列の最上段に 1 行。列を隠すと一緒に消える */
+.proto-root--B:has(.proto-b) .side { padding-top: 28px; box-sizing: border-box; }
+.proto-b { position: absolute; top: 0; right: 0; width: 300px; box-sizing: border-box; margin: 0; padding: 6px 12px; font-size: 12px; line-height: 16px; color: #6b7280; border-bottom: 1px solid #e5e7eb; border-left: 1px solid #e5e7eb; pointer-events: none; z-index: 5; }
+.proto-root--B:not(:has(.side)) .proto-b { display: none; }
+
+/* C: 窓の上端の 2px の線と、左上の小さな文字 */
+.proto-c-line { position: absolute; top: 0; left: 0; right: 0; height: 2px; z-index: 6; pointer-events: none; }
+.proto-c-line--ok { background: #0f766e; }
+.proto-c-line--restarting { background: #d97706; }
+.proto-c-line--stopped { background: #9ca3af; }
+.proto-c-text { position: absolute; top: 8px; left: 16px; margin: 0; font-size: 12px; line-height: 16px; color: #0f766e; pointer-events: none; z-index: 5; }
+
+/* 異常の一文（B・D）: 字幕の横の、取り込みの一言と同じ場所 */
+.proto-trouble { color: #b45309; }
+
+/* 案を切り替えるバー（試作の道具。デザインの評価の対象ではない） */
+.proto-switcher { position: fixed; left: 16px; top: 40px; z-index: 100; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; max-width: 360px; padding: 8px 12px; background: #111827; color: #f9fafb; border-radius: 10px; font-size: 12px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.3); }
+.proto-switcher__row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.proto-switcher button { border: 1px solid #4b5563; background: #1f2937; color: #f9fafb; border-radius: 6px; padding: 2px 8px; font: inherit; cursor: pointer; }
+.proto-switcher button.is-on { background: #f9fafb; color: #111827; }
+.proto-switcher__hint { color: #9ca3af; }
