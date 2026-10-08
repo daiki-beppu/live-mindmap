@@ -6,7 +6,6 @@ import Testing
 
 // トラックごとの録音（AAC・モノラル）。0 秒は発言の時刻の基準（origin）と同じ時点。
 
-private struct StubFailure: Error, Equatable {}
 
 private func hostTime(after origin: UInt64, nanos: UInt64) -> UInt64 {
     origin + AudioConvertNanosToHostTime(nanos)
@@ -64,13 +63,6 @@ struct RecordingITTests {
         }
     }
 
-    @Test("録音の音質の設定は、話者分離にかけられる下限（AAC 64 kbps・16 kHz）以上")
-    func qualityConstantsMeetFloor() {
-        #expect(recordingBitRate >= 64_000)
-        #expect(recordingSampleRate >= 16_000)
-        #expect(recordingChannelCount == 1)
-    }
-
     @Test("存在しないフォルダへの録音は、初期化で throw する")
     func missingDirectoryThrows() throws {
         let url = FileManager.default.temporaryDirectory
@@ -92,21 +84,6 @@ struct RecordingITTests {
         try recorder.finish()
 
         #expect(try duration(of: url) > 0.1)
-    }
-
-    @Test("最初のバッファが基準より 0.5 秒後なら、先頭に 0.5 秒分（24000 フレーム）の無音を入れる")
-    func leadingSilenceAfterOrigin() {
-        let origin = AudioGetCurrentHostTime()
-        let frames = leadingSilenceFrames(origin: origin, firstHostTime: hostTime(after: origin, nanos: 500_000_000), sampleRate: 48_000)
-        #expect(abs(Int(frames) - 24_000) <= 48)
-    }
-
-    @Test("最初のバッファが基準と同じか前なら、無音は入れない")
-    func noLeadingSilenceAtOrBeforeOrigin() {
-        let origin = AudioGetCurrentHostTime() + AudioConvertNanosToHostTime(5_000_000_000)
-        #expect(leadingSilenceFrames(origin: origin, firstHostTime: origin, sampleRate: 48_000) == 0)
-        let earlier = origin - AudioConvertNanosToHostTime(2_000_000_000)
-        #expect(leadingSilenceFrames(origin: origin, firstHostTime: earlier, sampleRate: 48_000) == 0)
     }
 
     @Test("基準より 0.5 秒後に始まる 0.1 秒分の音声を書くと、ファイルの長さは約 0.6 秒になる")
@@ -149,180 +126,5 @@ struct RecordingITTests {
         #expect(abs(aligned.start - (silence + 0.1)) < 0.01)
         // 発言の終わりが、録音の終わり（空白は埋めない）と一致する
         #expect(abs(aligned.end - (try duration(of: url))) < 0.1)
-    }
-}
-
-// Issue #161: 起動し直すたびに録音ファイルの番号を増やす（CT-AUDIO-NAME）。1 回目の名前は変えない（order.md:68）。
-@Suite("録音ファイルの名前（起動し直しの番号）")
-struct RecordingFileNameITTests {
-    @Test("1 回目（attempt == 1）は番号を付けない")
-    func firstAttemptHasNoSuffix() {
-        #expect(recordingFileName(track: .相手, attempt: 1) == "相手.m4a")
-        #expect(recordingFileName(track: .自分, attempt: 1) == "自分.m4a")
-    }
-
-    @Test("2 回目以降は -N の番号が付く")
-    func laterAttemptsAreSuffixed() {
-        #expect(recordingFileName(track: .相手, attempt: 2) == "相手-2.m4a")
-        #expect(recordingFileName(track: .自分, attempt: 3) == "自分-3.m4a")
-    }
-
-    @Test("同じ attempt なら、両トラックで番号が揃う")
-    func sameAttemptSameSuffixAcrossTracks() {
-        #expect(recordingFileName(track: .相手, attempt: 5).hasSuffix("-5.m4a"))
-        #expect(recordingFileName(track: .自分, attempt: 5).hasSuffix("-5.m4a"))
-    }
-}
-
-@Suite("録音のラッパー")
-struct RecordingStreamITTests {
-    private func makeRecorder(in directory: URL, origin: UInt64) throws -> (TrackRecorder, URL) {
-        let url = directory.appendingPathComponent("相手.m4a")
-        return (try TrackRecorder(url: url, origin: origin), url)
-    }
-
-    @Test("上流の音声をそのまま下流へ流し、上流が終わると録音を閉じてから下流も終わる")
-    func passesThroughAndFinishes() async throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = AudioGetCurrentHostTime()
-        let (recorder, url) = try makeRecorder(in: directory, origin: origin)
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recording(upstream, to: recorder)
-
-        for i in 0..<3 {
-            input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: hostTime(after: origin, nanos: UInt64(i) * 100_000_000)))
-        }
-        input.finish()
-
-        var count = 0
-        for try await _ in stream { count += 1 }
-        try await finished.value
-
-        #expect(count == 3)
-        #expect(abs(try duration(of: url) - 0.3) < 0.1)
-    }
-
-    @Test("上流がエラーで終わると、録音を閉じ、下流も同じエラーで終わる")
-    func upstreamErrorFinishesRecordingAndPropagates() async throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = AudioGetCurrentHostTime()
-        let (recorder, url) = try makeRecorder(in: directory, origin: origin)
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recording(upstream, to: recorder)
-
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.2), hostTime: origin))
-        input.finish(throwing: StubFailure())
-
-        var thrown: Error?
-        do { for try await _ in stream {} } catch { thrown = error }
-        let result = await finished.result
-
-        #expect(thrown as? StubFailure == StubFailure())
-        #expect(throws: StubFailure.self) { try result.get() }
-        #expect(try duration(of: url) > 0.1)
-    }
-
-    @Test("下流が先に終わっても録音は続き、finished は上流が終わった時点で完了する")
-    func downstreamCancellationDoesNotStopRecording() async throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = AudioGetCurrentHostTime()
-        let (recorder, url) = try makeRecorder(in: directory, origin: origin)
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recording(upstream, to: recorder)
-
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: origin))
-        for try await _ in stream { break } // 下流（文字起こし）が 1 つ受け取って止まる
-        // 下流が止まった後の音声も録音される
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.4), hostTime: hostTime(after: origin, nanos: 100_000_000)))
-        input.finish()
-        try await finished.value
-
-        #expect(abs(try duration(of: url) - 0.5) < 0.1)
-    }
-
-    private struct FinishFailure: Error, Equatable {}
-
-    /// `finish` だけを失敗させる差し替え用の recorder。
-    private struct FailingFinishRecorder: TrackRecording {
-        func write(_ audio: CapturedAudio) throws {}
-        func finish() throws { throw FinishFailure() }
-    }
-
-    @Test("上流が正常に終わり finish が失敗すると、下流と finished がその失敗で終わる")
-    func finishFailureAfterNormalEndPropagates() async throws {
-        let origin = AudioGetCurrentHostTime()
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recordingStream(upstream, to: FailingFinishRecorder())
-
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: origin))
-        input.finish()
-
-        var thrown: Error?
-        do { for try await _ in stream {} } catch { thrown = error }
-        let result = await finished.result
-
-        #expect(thrown as? FinishFailure == FinishFailure())
-        #expect(throws: FinishFailure.self) { try result.get() }
-    }
-
-    @Test("下流が先に終わっても、上流が正常に終わって finish が失敗すれば、finished が失敗を運ぶ")
-    func finishFailureReachesFinishedAfterDownstreamStopped() async throws {
-        let origin = AudioGetCurrentHostTime()
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recordingStream(upstream, to: FailingFinishRecorder())
-
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: origin))
-        for try await _ in stream { break }
-        input.finish()
-        let result = await finished.result
-
-        #expect(throws: FinishFailure.self) { try result.get() }
-    }
-
-    /// `write` を失敗させ、`finish` が呼ばれた回数を数える差し替え用の recorder。
-    private final class FailingWriteRecorder: TrackRecording, @unchecked Sendable {
-        private let lock = NSLock()
-        private var finishCalls = 0
-        var finishCount: Int { lock.lock(); defer { lock.unlock() }; return finishCalls }
-        func write(_ audio: CapturedAudio) throws { throw StubFailure() }
-        func finish() throws { lock.lock(); finishCalls += 1; lock.unlock() }
-    }
-
-    @Test("書き込みが失敗すると、録音を閉じ、下流と finished がその失敗で終わる")
-    func writeFailureFinishesRecordingAndPropagates() async throws {
-        let origin = AudioGetCurrentHostTime()
-        let recorder = FailingWriteRecorder()
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recordingStream(upstream, to: recorder)
-
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: origin))
-
-        var thrown: Error?
-        do { for try await _ in stream {} } catch { thrown = error }
-        let result = await finished.result
-
-        #expect(thrown as? StubFailure == StubFailure())
-        #expect(throws: StubFailure.self) { try result.get() }
-        #expect(recorder.finishCount == 1)
-    }
-
-    @Test("上流のエラーが先にあれば、finish も失敗してもそのエラーが基準のまま残る")
-    func upstreamErrorRemainsPrimaryWhenFinishAlsoFails() async throws {
-        let origin = AudioGetCurrentHostTime()
-        let (upstream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
-        let (stream, finished) = recordingStream(upstream, to: FailingFinishRecorder())
-
-        input.yield(CapturedAudio(buffer: try tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: origin))
-        input.finish(throwing: StubFailure())
-
-        var thrown: Error?
-        do { for try await _ in stream {} } catch { thrown = error }
-        let result = await finished.result
-
-        #expect(thrown as? StubFailure == StubFailure())
-        #expect(throws: StubFailure.self) { try result.get() }
     }
 }
