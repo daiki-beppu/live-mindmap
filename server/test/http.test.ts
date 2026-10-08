@@ -4,7 +4,7 @@ import { connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
-import { NodeServices } from "@effect/platform-node";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { WebSocket } from "ws";
 import { MapCapture } from "../src/capture.ts";
@@ -395,6 +395,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         };
         const cliLayer = Layer.mergeAll(
           NodeServices.layer,
+          NodeHttpClient.layerUndici,
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),
           Layer.succeed(Console.Console, consoleService),
           Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),

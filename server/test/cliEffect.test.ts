@@ -1,8 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NodeServices } from "@effect/platform-node";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Clock, ConfigProvider, Console, Deferred, Duration, Effect, Fiber, Layer, Predicate, Result } from "effect";
 import { CliError } from "effect/cli";
@@ -60,7 +62,32 @@ const sleepsRegistered = (pending: readonly number[], expected: readonly number[
   return yield* Effect.die(new Error(`待ちが登録されなかった: 期待 [${expected.join(", ")}]、実際 [${pending.join(", ")}]`));
 });
 
-function dependencies(sessionsDir: string) {
+// 受けた依頼（メソッド・パス・本文）を記録し、決めた応答を返す偽の HTTP サーバー。ポートは 0 で待ち受けて実際の番号を返す
+interface FakeResponse { readonly status: number; readonly contentType: string; readonly body: string }
+const fakeServer = (respond: FakeResponse) => Effect.acquireRelease(
+  Effect.callback<{ readonly port: number; readonly requests: { method: string; url: string; body: string }[]; close: () => Promise<void> }>((resume) => {
+    const requests: { method: string; url: string; body: string }[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        requests.push({ method: req.method ?? "", url: req.url ?? "", body: Buffer.concat(chunks).toString("utf8") });
+        res.writeHead(respond.status, { "content-type": respond.contentType });
+        res.end(respond.body);
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      resume(Effect.succeed({
+        port: (server.address() as AddressInfo).port,
+        requests,
+        close: () => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); }),
+      }));
+    });
+  }),
+  (server) => Effect.promise(() => server.close()),
+);
+
+function dependencies(sessionsDir: string, port = "12345") {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const captures: Snapshot[] = [];
@@ -71,7 +98,8 @@ function dependencies(sessionsDir: string) {
   };
   const layer = Layer.mergeAll(
     NodeServices.layer,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "12345" })),
+    NodeHttpClient.layerUndici,
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (snapshot: Snapshot, path: string) => Effect.sync(() => {
@@ -122,28 +150,83 @@ describe("CLI の Effect 境界", () => {
 
   it.effect("ConfigProvider のポートへ start を送り、no-audio の省略は録音ありになる", () => Effect.gen(function* () {
     const dir = yield* directory;
-    const deps = dependencies(dir);
-    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ dir: join(dir, "run") }));
+    const server = yield* fakeServer({ status: 200, contentType: "application/json", body: JSON.stringify({ dir: join(dir, "run") }) });
+    const deps = dependencies(dir, String(server.port));
     yield* runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(deps.layer));
 
-    expect(fetch).toHaveBeenCalledTimes(1);
-    const [url, init] = fetch.mock.calls[0]!;
-    expect(String(url)).toBe("http://127.0.0.1:12345/session/start");
-    expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toEqual({ app: "us.zoom.xos", audio: true, screen: true });
+    expect(server.requests).toHaveLength(1);
+    const [request] = server.requests;
+    expect(`http://127.0.0.1:${server.port}${request!.url}`).toBe(`http://127.0.0.1:${server.port}/session/start`);
+    expect(request!.method).toBe("POST");
+    expect(JSON.parse(request!.body)).toEqual({ app: "us.zoom.xos", audio: true, screen: true });
     expect(deps.stdout.join("")).toBe(join(dir, "run") + "\n");
   }));
 
   it.effect("--no-screen を付けると開始の本文は screen: false になり、録音の指定とは独立している", () => Effect.gen(function* () {
     const dir = yield* directory;
-    const deps = dependencies(dir);
-    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ dir: join(dir, "run") }));
+    const server = yield* fakeServer({ status: 200, contentType: "application/json", body: JSON.stringify({ dir: join(dir, "run") }) });
+    const deps = dependencies(dir, String(server.port));
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-screen"]).pipe(Effect.provide(deps.layer));
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-screen", "--no-audio"]).pipe(Effect.provide(deps.layer));
 
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toEqual({ app: "us.zoom.xos", audio: true, screen: false });
-    expect(JSON.parse(String(fetch.mock.calls[1]![1]?.body))).toEqual({ app: "us.zoom.xos", audio: false, screen: false });
+    expect(server.requests).toHaveLength(2);
+    expect(JSON.parse(server.requests[0]!.body)).toEqual({ app: "us.zoom.xos", audio: true, screen: false });
+    expect(JSON.parse(server.requests[1]!.body)).toEqual({ app: "us.zoom.xos", audio: false, screen: false });
+  }));
+
+  it.effect("2xx 以外の応答は、本文の error をそのまま ServerFailed の 1 行にする", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const server = yield* fakeServer({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "すでに録音中です" }) });
+    const deps = dependencies(dir, String(server.port));
+    const failure = yield* runCli(["stop"]).pipe(Effect.provide(deps.layer), Effect.flip);
+
+    expect(failure).toMatchObject({ _tag: "ServerFailed", message: "すでに録音中です" });
+    expect(server.requests.map((request) => `${request.method} ${request.url}`)).toEqual(["POST /session/stop"]);
+  }));
+
+  it.effect("2xx 以外で本文が JSON でなくても、状態コードから ServerFailed の 1 行を作る", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const server = yield* fakeServer({ status: 500, contentType: "text/plain", body: "boom" });
+    const deps = dependencies(dir, String(server.port));
+    const failure = yield* runCli(["stop"]).pipe(Effect.provide(deps.layer), Effect.flip);
+
+    expect(failure).toMatchObject({ _tag: "ServerFailed", message: "サーバーがエラーを返しました: 500" });
+  }));
+
+  it.effect("2xx 以外で error の無い JSON でも、状態コードから ServerFailed の 1 行を作る", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const server = yield* fakeServer({ status: 503, contentType: "application/json", body: "{}" });
+    const deps = dependencies(dir, String(server.port));
+    const failure = yield* runCli(["status"]).pipe(Effect.provide(deps.layer), Effect.flip);
+
+    expect(failure).toMatchObject({ _tag: "ServerFailed", message: "サーバーがエラーを返しました: 503" });
+  }));
+
+  for (const [label, body, expected] of [
+    ["JSON でない本文", "not json", "{}\n"],
+    ["空本文", "", "{}\n"],
+    ["JSON の null", "null", "null\n"],
+  ] as const) {
+    it.effect(`2xx で ${label} のとき、apps は {} 相当（null は null のまま）を出して成功する`, () => Effect.gen(function* () {
+      const dir = yield* directory;
+      const server = yield* fakeServer({ status: 200, contentType: "text/plain", body });
+      const deps = dependencies(dir, String(server.port));
+      yield* runCli(["apps"]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("")).toBe(expected);
+    }));
+  }
+
+  it.effect("2xx で JSON でない本文の start は、{} のときと同じ文面の ServerFailed になる", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const notJson = yield* fakeServer({ status: 200, contentType: "text/plain", body: "not json" });
+    const empty = yield* fakeServer({ status: 200, contentType: "application/json", body: "{}" });
+    const first = yield* runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(dependencies(dir, String(notJson.port)).layer), Effect.flip);
+    const second = yield* runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(dependencies(dir, String(empty.port)).layer), Effect.flip);
+
+    expect(first).toMatchObject({ _tag: "ServerFailed" });
+    expect((first as { message: string }).message.startsWith("サーバーの応答が読めません: ")).toBe(true);
+    expect(first).toEqual(second);
   }));
 
   it.effect("Console と ConfigProvider を提供した export は余分なデータも改行も保持する", () => Effect.gen(function* () {

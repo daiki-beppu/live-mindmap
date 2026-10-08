@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { appendFile, copyFile, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { NodeServices } from "@effect/platform-node";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { ConfigProvider, Console, Effect, Layer, Predicate, Result, Schema } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 import { beforeEach, vi } from "vitest";
@@ -39,6 +39,7 @@ function dependencies(sessionsDir: string) {
   };
   const layer = Layer.mergeAll(
     NodeServices.layer,
+    NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({
