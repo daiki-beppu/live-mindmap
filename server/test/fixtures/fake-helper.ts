@@ -21,7 +21,7 @@
 //
 // Issue #240 段 3（ADR 0008、CT-FAKE-TRIM）: 起動し直し・stop/close の重なりの台本（attempts・
 // listenDelayMs・delayedEvents・originHostTime）は、偽の Helpers の Layer（server/test/sessions.test.ts・
-// http.heavy.test.ts）に移した。本物の子プロセスで残す契約 6 本が使う項目だけに絞る。
+// http.it.test.ts）に移した。本物の子プロセスで残す契約 6 本が使う項目だけに絞る。
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
