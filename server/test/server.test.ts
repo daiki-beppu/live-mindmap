@@ -72,7 +72,11 @@ const setup = (initial: Partial<Script> = {}) =>
     updaterLayer: updaterLayer(updater),
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
   };
-  const server = yield* startedServer(options, realLayers(options, fakeExportServices()));
+  // サーバーの標準エラー（Console.error）は、差し替えた Console に集める。ヘルパーを読むループは、start を受ける HTTP の fiber の
+  // context を受け継ぐので、サーバーを起こす Effect に渡す
+  const stderr: string[] = [];
+  const stderrConsole: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
+  const server = yield* startedServer(options, realLayers(options, fakeExportServices())).pipe(Effect.provideService(Console.Console, stderrConsole));
 
   const out: string[] = [];
   const consoleService: Console.Console = {
@@ -106,7 +110,7 @@ const setup = (initial: Partial<Script> = {}) =>
     );
   const sessionDirs = () =>
     promiseOrDie(async () => (existsSync(sessionsDir) ? (await readdir(sessionsDir)).sort().map((d) => join(sessionsDir, d)) : []));
-  return { server, cli, cliFailure, calls, writeScript, records, sessionDirs, sessionsDir };
+  return { server, cli, cliFailure, calls, writeScript, records, sessionDirs, sessionsDir, stderr };
   });
 
 const connect = (port: number) =>
@@ -169,11 +173,7 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
     "SIGTERM を無視するヘルパーを、stop でも close でも 5 秒後に SIGKILL で止める",
     () =>
       Effect.gen(function* () {
-        const stderr = yield* Effect.acquireRelease(
-          Effect.sync(() => vi.spyOn(process.stderr, "write")),
-          (spy) => Effect.sync(() => spy.mockRestore()),
-        );
-        const { cli, calls, records } = yield* setup({ ignoreSigterm: true });
+        const { cli, calls, records, stderr } = yield* setup({ ignoreSigterm: true });
         yield* cli("start", "--app", "us.zoom.xos", "--title", "週次");
         yield* waitFor(() => expect(calls.flatMap((c) => c.fresh)).toHaveLength(1));
         const run = records().find((r) => r.type === "run");
@@ -184,12 +184,11 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
         expect(Date.now() - startedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
         expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(5);
         expect(() => process.kill(run.pid, 0)).toThrow(); // SIGKILL で止まっている
-        expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("SIGKILL"))).toBe(true);
+        expect(stderr.some((line) => line.includes("SIGKILL"))).toBe(true);
         // 録音していたので、録音の書き終わりを確認できなかったことも標準エラーに残す
-        expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("録音の書き終わりを確認できない"))).toBe(true);
+        expect(stderr.some((line) => line.includes("録音の書き終わりを確認できない"))).toBe(true);
 
         // close の経路も同じ時間内に戻り、子プロセスを残さない
-        stderr.mockClear();
         const { server: server2, cli: cli2, records: records2 } = yield* setup({ ignoreSigterm: true });
         yield* cli2("start", "--app", "us.zoom.xos");
         yield* waitFor(() => expect(records2().filter((r) => r.type === "connection")).toHaveLength(1));
@@ -263,17 +262,13 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
 
   it.live("stop が戻った時点で、2 つの録音が最後まで書かれている", () =>
     Effect.gen(function* () {
-      const stderr = yield* Effect.acquireRelease(
-        Effect.sync(() => vi.spyOn(process.stderr, "write")),
-        (spy) => Effect.sync(() => spy.mockRestore()),
-      );
-      const { cli, sessionDirs } = yield* setup();
+      const { cli, sessionDirs, stderr } = yield* setup();
       yield* cli("start", "--app", "us.zoom.xos");
 
       yield* cli("stop");
 
       // 強制終了していないので、録音の警告は出ない
-      expect(stderr.mock.calls.some(([chunk]) => String(chunk).includes("録音の書き終わり"))).toBe(false);
+      expect(stderr.some((line) => line.includes("録音の書き終わり"))).toBe(false);
       const [dir] = yield* sessionDirs();
       for (const name of ["相手.m4a", "自分.m4a"]) {
         expect(readFileSync(join(dir!, name), "utf8")).toBe("complete");

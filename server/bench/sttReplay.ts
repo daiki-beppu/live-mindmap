@@ -89,7 +89,8 @@ export const command = Command.make(
     // cli.ts は vite と playwright を読み込むので、再生を始めるときだけ読む
     const { createSessionDir, openRecordedSession } = yield* Effect.tryPromise({ try: () => import("../src/cli.ts"), catch: describe });
     // セッションのフォルダは一時領域に作る
-    const dir = yield* Effect.try({ try: () => createSessionDir(mkdtempSync(join(tmpdir(), "stt-replay-"))), catch: describe });
+    const tmp = yield* Effect.try({ try: () => mkdtempSync(join(tmpdir(), "stt-replay-")), catch: describe });
+    const dir = yield* createSessionDir(tmp).pipe(Effect.mapError(describe));
     const diffEndsMs: number[] = [];
     const { session } = yield* openRecordedSession({
       dir,

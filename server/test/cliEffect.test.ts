@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Predicate, Result } from "effect";
+import { Clock, ConfigProvider, Console, Deferred, Duration, Effect, Fiber, Layer, Predicate, Result } from "effect";
 import { CliError } from "effect/cli";
 import { HttpServerError } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -30,6 +30,35 @@ const directory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-effect-cli-"))),
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
+
+// 登録済みの待ち（sleep）の長さ（ミリ秒）。TestClock に委譲しつつ、目覚めるか中断されるまで一覧に残す。
+// TestClock を進める前に、依存する待ち（静穏待ち・次の再生待ち）が登録済みであることを状態で確かめるために使う
+const trackedClock = (clock: Clock.Clock, pending: number[]): Clock.Clock => ({
+  currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+  currentTimeMillis: clock.currentTimeMillis,
+  currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+  currentTimeNanos: clock.currentTimeNanos,
+  monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+  monotonicTimeNanos: clock.monotonicTimeNanos,
+  sleep: (duration) => Effect.suspend(() => {
+    const millis = Math.round(Duration.toMillis(duration));
+    pending.push(millis);
+    return clock.sleep(duration).pipe(Effect.ensuring(Effect.sync(() => {
+      const index = pending.indexOf(millis);
+      if (index >= 0) pending.splice(index, 1);
+    })));
+  }),
+});
+
+// 登録済みの待ちが expected（順不同）と一致するまで、実時間で確かめ直す。上限に達したらテストを失敗させる
+const sleepsRegistered = (pending: readonly number[], expected: readonly number[]) => Effect.gen(function* () {
+  const key = (values: readonly number[]) => [...values].sort((x, y) => x - y).join(",");
+  for (let i = 0; i < 500; i++) {
+    if (key(pending) === key(expected)) return;
+    yield* TestClock.withLive(Effect.sleep(10));
+  }
+  return yield* Effect.die(new Error(`待ちが登録されなかった: 期待 [${expected.join(", ")}]、実際 [${pending.join(", ")}]`));
+});
 
 function dependencies(sessionsDir: string) {
   const stdout: string[] = [];
@@ -221,15 +250,21 @@ describe("CLI の Effect 境界", () => {
       },
       close: () => {},
     });
-    const fiber = yield* runCli(["play", fixture, "--realtime"]).pipe(Effect.provide(deps.layer), Effect.forkChild);
+    const pending: number[] = [];
+    const tracked = yield* TestClock.testClockWith((testClock) => Effect.succeed(trackedClock(testClock, pending)));
+    const fiber = yield* runCli(["play", fixture, "--realtime"]).pipe(Effect.provide(deps.layer), Effect.provideService(Clock.Clock, tracked), Effect.forkChild);
     yield* Deferred.await(root);
+    yield* sleepsRegistered(pending, [9800]);
     yield* TestClock.adjust(9800);
+    yield* sleepsRegistered(pending, [QUIET_MS, 9400]);
     yield* TestClock.adjust(QUIET_MS - 1);
     expect(calls).toEqual([]);
     yield* TestClock.adjust(1);
     yield* Deferred.await(reflected);
     expect(calls).toEqual([["r1"]]);
+    yield* sleepsRegistered(pending, [9400]);
     yield* TestClock.adjust(9400 - QUIET_MS);
+    yield* sleepsRegistered(pending, [QUIET_MS, 8800]);
     yield* TestClock.adjust(8800);
     yield* Fiber.join(fiber);
     expect(calls).toEqual([["r1"], ["r2"], ["r3"]]);
