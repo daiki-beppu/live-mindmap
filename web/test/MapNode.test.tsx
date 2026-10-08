@@ -2,6 +2,7 @@ import { ReactFlowProvider, type NodeProps } from "@xyflow/react";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { MAP_NODE_BUTTON_CLASS } from "../src/enterFold.ts";
 import { MapNode, type MapNodeData } from "../src/MapNode.tsx";
 import { findAll, textOf } from "./tree.ts";
 
@@ -298,16 +299,40 @@ describe("MapNode: 畳んだノードの隠れた数の丸を押すと開く", (
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("押せる丸は role=button と名前（aria-label）を持つ", () => {
+  it("押せる丸は本物の <button type=\"button\"> で、名前（aria-label）「開く」を持ち、role も tabIndex も付けない（Tab の順に自然に入る）", () => {
     const count = withClass(call("n2", folded({ onFoldDot: () => {} })), "map-node__count")[0]!;
-    expect(count.props.role).toBe("button");
-    expect(String(count.props["aria-label"] ?? "")).not.toBe("");
+    expect(count.type).toBe("button");
+    expect(count.props.type).toBe("button");
+    expect(count.props["aria-label"]).toBe("開く");
+    expect(count.props.role).toBeUndefined();
+    expect(count.props.tabIndex).toBeUndefined();
   });
 
-  it("onFoldDot が null（今の議題の祖先・まとめ）なら、丸は押せない（クリックの処理も role も無い）", () => {
+  it("描いた HTML でも、押せる丸は button で tabindex 属性と role 属性が無い", () => {
+    const html = renderToStaticMarkup(
+      createElement(ReactFlowProvider, null, createElement(MapNode, { id: "n2", data: folded({ onFoldDot: () => {} }) } as unknown as NodeProps<never>)),
+    );
+    const tag = html.match(/<[a-z]+[^>]*map-node__count[^>]*>/)?.[0] ?? "";
+    expect(tag).toMatch(/^<button\b/);
+    expect(tag).toContain('type="button"');
+    expect(tag).toContain('aria-label="開く"');
+    expect(tag).not.toMatch(/tabindex/i);
+    expect(tag).not.toMatch(/role=/);
+  });
+
+  it("onFoldDot が null（今の議題の祖先・まとめ）なら、丸は押せない span のまま（クリックの処理も role も tabIndex も無い）", () => {
     const count = withClass(call("n2", folded({ onFoldDot: null })), "map-node__count")[0]!;
+    expect(count.type).toBe("span");
     expect(count.props.onClick).toBeUndefined();
     expect(count.props.role).toBeUndefined();
+    expect(count.props.tabIndex).toBeUndefined();
+  });
+
+  it("押せる丸があっても、要素の木の最初の button はノード本体のボタンで、丸はその後ろに来る", () => {
+    const buttons = findAll(call("n2", folded({ onFoldDot: () => {} })), "button");
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.props.className).toBe(MAP_NODE_BUTTON_CLASS);
+    expect(String(buttons[1]!.props.className)).toContain("map-node__count");
   });
 
   it("ノードのボタンのクリックは、onFoldDot を呼ばず onSelect だけを呼ぶ（クリックは根拠を出すだけ）", () => {
@@ -328,11 +353,22 @@ describe("MapNode: 人が開いたノードには、ホバーしたときだけ�
     const onSelect = vi.fn();
     const found = dot(data({ humanOpened: true, onFoldDot, onSelect }));
     expect(found).toHaveLength(1);
-    expect(String(found[0]!.props["aria-label"] ?? "")).not.toBe("");
+    expect(found[0]!.type).toBe("button");
+    expect(found[0]!.props.type).toBe("button");
+    expect(found[0]!.props["aria-label"]).toBe("畳む");
+    expect(found[0]!.props.role).toBeUndefined();
+    expect(found[0]!.props.tabIndex).toBeUndefined();
     press(found[0]!);
     expect(onFoldDot).toHaveBeenCalledTimes(1);
     expect(onFoldDot).toHaveBeenCalledWith("n2");
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("人が開いたノードでも、要素の木の最初の button はノード本体のボタンで、小さな丸はその後ろに来る", () => {
+    const buttons = findAll(call("n2", data({ humanOpened: true, onFoldDot: () => {} })), "button");
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.props.className).toBe(MAP_NODE_BUTTON_CLASS);
+    expect(String(buttons[1]!.props.className)).toContain("map-node__fold-dot");
   });
 
   it("人が開いていないノードには描かない（対照: 人が開いたノードには描く）", () => {

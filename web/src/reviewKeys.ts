@@ -1,3 +1,4 @@
+import { FOLD_DOT_CLASSES, type Focused } from "./enterFold.ts";
 import type { PlaybackEvent } from "./reviewPlayback.ts";
 
 // 見返しのキーから再生の出来事への対応（DOM なし）。C（字幕）は SessionView の登録を使うので、ここには含めない。
@@ -49,4 +50,10 @@ export function reviewKeyEvent(action: ReviewKeyAction, { meta, ctrl, alt }: Mod
     case "faster":
       return { event: { type: action }, movesTime: false };
   }
+}
+
+// 見返しの hotkey を、フォーカス中の開閉の丸のボタンに譲るか。Space で丸の中なら true（再生を切り替えず、ボタン既定の click に任せる）。それ以外は false
+export function reviewHotkeyYieldsToFocus(hotkey: string, focused: Focused): boolean {
+  if (hotkey !== "Space" || focused === null) return false;
+  return !!focused.closest(FOLD_DOT_CLASSES.map((c) => `.${c}`).join(", "));
 }

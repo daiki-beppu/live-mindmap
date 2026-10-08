@@ -2,11 +2,13 @@ import { useHotkey } from "@tanstack/react-hotkeys";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { ReviewControls } from "./ReviewControls.tsx";
 import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATES, playbackReducer, type PlaybackEvent } from "./reviewPlayback.ts";
-import { AUDIO_HOTKEYS, REVIEW_HOTKEYS, reviewKeyEvent } from "./reviewKeys.ts";
+import { AUDIO_HOTKEYS, REVIEW_HOTKEYS, reviewHotkeyYieldsToFocus, reviewKeyEvent } from "./reviewKeys.ts";
 import { buildReviewTimeline, reviewChapters, reviewMarks, snapshotAt, speakingAt, topicNameOf } from "./reviewTimeline.ts";
 import { SessionView, type ReviewOverlay } from "./SessionView.tsx";
 import { useAudioClock } from "./useAudioClock.ts";
 import { usePlaybackClock } from "./usePlaybackClock.ts";
+
+const hasClosest = (target: EventTarget | null): target is Element => !!target && typeof (target as Element).closest === "function";
 
 // 見返し（map.html・map-audio.html）。audioUrl があれば音声つき: 時刻の元は <audio> の currentTime だけで、usePlaybackClock は使わない。時刻を動かすと、その時点のマップ・カメラ・「変わったこと」・根拠・字幕を SessionView に渡す。キー: Space・K・J・L・, . < > Home End、音声つきは M（ミュート）も（C・E・矢印などは SessionView の登録）。
 // 取り込みの状態は渡さない（見返しでは、取り込みの知らせは出さない）
@@ -38,12 +40,22 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
   };
   // REVIEW_HOTKEYS は定数で、hook を呼ぶ数と順序は変わらない。< > は時刻を動かさないので operate を通さない
   for (const [hotkey, action] of REVIEW_HOTKEYS) {
-    useHotkey(hotkey, (e) => {
-      const key = reviewKeyEvent(action, { meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, state.time, timeline.duration);
-      if (key === null) return;
-      if (key.movesTime) operate(key.event);
-      else dispatch(key.event);
-    });
+    // Space は、既定動作の取り消しをライブラリに任せず、開閉の丸の中では譲る（ボタンの click を残す）。丸以外では自分で取り消す
+    useHotkey(
+      hotkey,
+      (e) => {
+        if (hotkey === "Space") {
+          const target = e.target;
+          if (reviewHotkeyYieldsToFocus(hotkey, hasClosest(target) ? target : null)) return;
+          e.preventDefault();
+        }
+        const key = reviewKeyEvent(action, { meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey }, state.time, timeline.duration);
+        if (key === null) return;
+        if (key.movesTime) operate(key.event);
+        else dispatch(key.event);
+      },
+      hotkey === "Space" ? { preventDefault: false } : undefined,
+    );
   }
   // M（ミュート）は音声つきだけ。hook を呼ぶ数と順序を変えないよう、常に登録して音声なしでは enabled で切る。時刻を動かさないので operate を通さない
   for (const [hotkey, action] of AUDIO_HOTKEYS) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUDIO_HOTKEYS, REVIEW_HOTKEYS, reviewKeyEvent, SKIP_SECONDS, type ReviewKeyAction } from "../src/reviewKeys.ts";
+import { AUDIO_HOTKEYS, REVIEW_HOTKEYS, reviewHotkeyYieldsToFocus, reviewKeyEvent, SKIP_SECONDS, type ReviewKeyAction } from "../src/reviewKeys.ts";
 import { initialPlayback, playbackReducer, type PlaybackEvent } from "../src/reviewPlayback.ts";
 
 // 見返しのキーから再生の出来事への対応（DOM なし）。
@@ -144,5 +144,34 @@ describe("M（ミュート）: 音声つきの見返しだけの登録", () => {
     const muted = playbackReducer(base, ev("mute")!.event, ctx);
     expect(muted).toMatchObject({ muted: true, volume: 1, time: 20, playing: true, rate: base.rate });
     expect(playbackReducer(muted, ev("mute")!.event, ctx)).toEqual(base);
+  });
+});
+
+
+describe("reviewHotkeyYieldsToFocus: Space を開閉の丸のボタンに譲るか", () => {
+  // closest に渡るセレクタに、押せる丸のクラスが含まれていれば祖先に見つかる代役
+  const within = (...classes: string[]) => ({ closest: (selector: string) => (classes.some((c) => selector.includes(c)) ? {} : null) });
+  const COUNT = within("map-node__count--pressable");
+  const FOLD_DOT = within("map-node__fold-dot");
+
+  it("Space で、押せる隠れた数の丸・畳む丸の中にフォーカスがあれば譲る（再生の切り替えを起こさず、ボタンの click に任せる）", () => {
+    expect(reviewHotkeyYieldsToFocus("Space", COUNT)).toBe(true);
+    expect(reviewHotkeyYieldsToFocus("Space", FOLD_DOT)).toBe(true);
+  });
+
+  it("ノード本体のボタン・ほかのボタン・フォーカスなしでは譲らない（今のまま再生を切り替える）", () => {
+    expect(reviewHotkeyYieldsToFocus("Space", within("map-node__button"))).toBe(false);
+    expect(reviewHotkeyYieldsToFocus("Space", within("button"))).toBe(false);
+    expect(reviewHotkeyYieldsToFocus("Space", within())).toBe(false);
+    expect(reviewHotkeyYieldsToFocus("Space", null)).toBe(false);
+  });
+
+  it("Space 以外のキーは、丸の中でも譲らない", () => {
+    for (const [hotkey] of REVIEW_HOTKEYS) {
+      if (hotkey !== "Space") {
+        expect(reviewHotkeyYieldsToFocus(hotkey, COUNT)).toBe(false);
+        expect(reviewHotkeyYieldsToFocus(hotkey, FOLD_DOT)).toBe(false);
+      }
+    }
   });
 });
