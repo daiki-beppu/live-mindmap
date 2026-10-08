@@ -127,20 +127,19 @@ const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
 
 // ffmpeg は長さと音量を stderr に出すので、stdout と stderr をまとめて受け取る。
 // ffmpeg が無い・失敗したときは空の出力として扱う（呼び出し側が、読めない録音として飛ばす）
-const runFfmpeg = (file: string) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
-    return yield* Effect.scoped(
-      Effect.gen(function* () {
-        const handle = yield* spawner.spawn(
-          ChildProcess.make("ffmpeg", ["-nostats", "-i", file, "-af", "volumedetect", "-f", "null", "-"], { stdin: "ignore" }),
-        );
-        const [stdout, stderr] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
-        return stdout + stderr;
-      }),
-    );
-  }).pipe(Effect.catchTag("PlatformError", () => Effect.succeed("")));
+const runFfmpeg = Effect.fnUntraced(function* (file: string) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const handle = yield* spawner.spawn(
+        ChildProcess.make("ffmpeg", ["-nostats", "-i", file, "-af", "volumedetect", "-f", "null", "-"], { stdin: "ignore" }),
+      );
+      const [stdout, stderr] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
+      return stdout + stderr;
+    }),
+  );
+}, Effect.catchTag("PlatformError", () => Effect.succeed("")));
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 

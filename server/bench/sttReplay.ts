@@ -23,17 +23,20 @@ export type ReplayItem = typeof ReplayItem["Type"];
 export type ReplayOptions = { sleep?: (ms: number) => Effect.Effect<void> }; // 既定は Effect.sleep
 
 // 本番の playback と同じ流し方（等速）。待ち時間だけが、発言の end の差ではなく at の差になる
-export const replayByArrival = (session: Session, items: readonly ReplayItem[], { sleep = (ms) => Effect.sleep(ms) }: ReplayOptions = {}): Effect.Effect<void> =>
-  Effect.gen(function* () {
-    let prevAt = 0;
-    for (const item of items) {
-      yield* sleep((item.at - prevAt) * 1000);
-      prevAt = item.at;
-      const { id, track, start, end, text } = item;
-      yield* session.push({ id, track, start, end, text });
-    }
-    yield* session.flush;
-  });
+export const replayByArrival = Effect.fnUntraced(function* (
+  session: Session,
+  items: readonly ReplayItem[],
+  { sleep = (ms) => Effect.sleep(ms) }: ReplayOptions = {},
+): Effect.fn.Return<void> {
+  let prevAt = 0;
+  for (const item of items) {
+    yield* sleep((item.at - prevAt) * 1000);
+    prevAt = item.at;
+    const { id, track, start, end, text } = item;
+    yield* session.push({ id, track, start, end, text });
+  }
+  yield* session.flush;
+});
 
 type LoggedOp = { op: string; evidence?: string[] };
 export type DiffLogEntry = { ops: LoggedOp[]; dropped?: { op: LoggedOp }[]; error?: string };

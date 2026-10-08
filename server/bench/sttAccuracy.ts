@@ -194,16 +194,15 @@ export function summarize(s: AccuracyScore, confusions = 15): string {
 }
 
 // 発言のファイル。.json なら kanary transcribe の出力、それ以外は stt-bench run の JSONL の確定結果
-const readRemarks = (path: string) =>
-  Effect.gen(function* () {
-    const text = yield* readInputText(path);
-    if (path.endsWith(".json")) {
-      const file = yield* Schema.decodeEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(Effect.mapError(inputFileError(path)));
-      return file.transcript.segments.map((s) => ({ start: s.start_seconds, end: s.end_seconds, text: s.text }));
-    }
-    const results = yield* parseResults(text).pipe(Effect.mapError(inputFileError(path)));
-    return results.filter((r) => r.isFinal).map(({ start, end, text }) => ({ start, end, text }));
-  });
+const readRemarks = Effect.fnUntraced(function* (path: string) {
+  const text = yield* readInputText(path);
+  if (path.endsWith(".json")) {
+    const file = yield* Schema.decodeEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(Effect.mapError(inputFileError(path)));
+    return file.transcript.segments.map((s) => ({ start: s.start_seconds, end: s.end_seconds, text: s.text }));
+  }
+  const results = yield* parseResults(text).pipe(Effect.mapError(inputFileError(path)));
+  return results.filter((r) => r.isFinal).map(({ start, end, text }) => ({ start, end, text }));
+});
 
 export const command = Command.make(
   "sttAccuracy",

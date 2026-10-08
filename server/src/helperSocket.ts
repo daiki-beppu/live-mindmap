@@ -16,32 +16,33 @@ export class HelperSocketError extends Schema.TaggedError<HelperSocketError>()("
 
 // つないだら、届いたメッセージ（テキスト）を届いた順に流す Stream を返す。Scope を閉じると切断する。
 // ヘルパー側が閉じると（または接続が切れると）Stream が終わる
-export const openHelperSocket = (url: string): Effect.Effect<Stream.Stream<string>, HelperSocketError, Scope.Scope> =>
-  Effect.gen(function* () {
-    const queue = yield* Queue.make<string, Cause.Done>();
-    yield* Effect.acquireRelease(
-      Effect.callback<WebSocket, HelperSocketError>((resume) => {
-        const ws = new WebSocket(url);
-        ws.on("message", (data) => Queue.offerUnsafe(queue, String(data)));
-        let opened = false;
-        ws.once("open", () => {
-          opened = true;
-          resume(Effect.succeed(ws));
-        });
-        // 開いた後の error は close が続くだけなので、Queue を終えて読む側へ伝える（未処理の error にしない）
-        ws.on("error", (error) => {
-          if (opened) Queue.endUnsafe(queue);
-          else resume(Effect.fail(new HelperSocketError({ reason: error.message })));
-        });
-        ws.on("close", () => Queue.endUnsafe(queue));
-        // つなぐ途中で中断されたら、つなぎかけの接続を捨てる
-        return Effect.sync(() => ws.terminate());
+export const openHelperSocket = Effect.fnUntraced(function* (
+  url: string,
+): Effect.fn.Return<Stream.Stream<string>, HelperSocketError, Scope.Scope> {
+  const queue = yield* Queue.make<string, Cause.Done>();
+  yield* Effect.acquireRelease(
+    Effect.callback<WebSocket, HelperSocketError>((resume) => {
+      const ws = new WebSocket(url);
+      ws.on("message", (data) => Queue.offerUnsafe(queue, String(data)));
+      let opened = false;
+      ws.once("open", () => {
+        opened = true;
+        resume(Effect.succeed(ws));
+      });
+      // 開いた後の error は close が続くだけなので、Queue を終えて読む側へ伝える（未処理の error にしない）
+      ws.on("error", (error) => {
+        if (opened) Queue.endUnsafe(queue);
+        else resume(Effect.fail(new HelperSocketError({ reason: error.message })));
+      });
+      ws.on("close", () => Queue.endUnsafe(queue));
+      // つなぐ途中で中断されたら、つなぎかけの接続を捨てる
+      return Effect.sync(() => ws.terminate());
+    }),
+    (ws) =>
+      Effect.sync(() => {
+        ws.terminate();
+        Queue.endUnsafe(queue);
       }),
-      (ws) =>
-        Effect.sync(() => {
-          ws.terminate();
-          Queue.endUnsafe(queue);
-        }),
-    );
-    return Stream.fromQueue(queue);
-  });
+  );
+  return Stream.fromQueue(queue);
+});

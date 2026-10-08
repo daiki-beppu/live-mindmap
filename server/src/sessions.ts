@@ -169,16 +169,15 @@ export class Sessions extends Context.Service<Sessions, {
 
       // 許可なしの一文を、まだ出していなければ出す。届いてから SCREEN_NOTICE_MS 後に消すフレームを送る（保持も消える）。
       // 消す役はセッションの Scope の Fiber で、stop で Scope が閉じても消すフレームは送られる
-      const showScreenNotice = (live: Live) =>
-        Effect.gen(function* () {
-          const first = yield* Ref.modify(live.noticeShown, (shown): [boolean, boolean] => [!shown, true]);
-          if (!first) return;
-          yield* viewers.screenNotice({ type: "screen-notice", text: SCREEN_NOTICE_TEXT });
-          yield* Effect.forkIn(
-            Effect.sleep(SCREEN_NOTICE_MS).pipe(Effect.ensuring(viewers.screenNotice({ type: "screen-notice", text: null }))),
-            live.scope,
-          );
-        });
+      const showScreenNotice = Effect.fnUntraced(function* (live: Live) {
+        const first = yield* Ref.modify(live.noticeShown, (shown): [boolean, boolean] => [!shown, true]);
+        if (!first) return;
+        yield* viewers.screenNotice({ type: "screen-notice", text: SCREEN_NOTICE_TEXT });
+        yield* Effect.forkIn(
+          Effect.sleep(SCREEN_NOTICE_MS).pipe(Effect.ensuring(viewers.screenNotice({ type: "screen-notice", text: null }))),
+          live.scope,
+        );
+      });
 
       const handleEvent = (live: Live) => (data: string) =>
         decodeHelperEvent(data).pipe(
@@ -204,65 +203,64 @@ export class Sessions extends Context.Service<Sessions, {
       // 起動し直しの連鎖。成功するまで（または諦めるまで）、decideIntakeRestart の判断に従って繰り返す。
       // initial があれば最初の 1 回は起動済みのもの（start の初回起動）。trigger は、最初の起動し直しの成功をログに残す
       // 「自動か resume か」の区別（以後の途切れは自動）。outcome は、最初の成功か諦めか中断で解決する（resume の応答の基準）
-      const chain = (live: Live, initial: Launched | undefined, trigger: "auto" | "resume", outcome: Deferred.Deferred<RestartOutcome>) =>
-        Effect.gen(function* () {
-          let current = initial;
-          let reason = trigger;
-          for (;;) {
-            if (current === undefined) {
-              if (yield* Deferred.isDone(live.stopRequested)) return { exit: undefined };
-              const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
-              yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
-              const scope = yield* Scope.fork(live.scope, "sequential");
-              const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin)), live.stopRequested).pipe(
-                Scope.provide(scope),
-                Effect.result,
-              );
-              if (Result.isFailure(result)) {
-                yield* Scope.close(scope, Exit.void);
-                if (yield* Deferred.isDone(live.stopRequested)) return { exit: result.failure.exit }; // 中断。stop が後片付けを引き継ぐ（止めたヘルパーの終わり方を stop へ渡す）
-                const failure = result.failure;
-                const action = yield* finishAttempt(live, failure.exit ?? { code: null, signal: null }, failure.stderrTail);
-                if (action === "giveup") {
-                  yield* markStopped(live);
-                  yield* Deferred.succeed(outcome, { kind: "stopped", stderrTail: failure.stderrTail });
-                  return { exit: undefined };
-                }
-                continue; // 続けて起動し直す
+      const chain = Effect.fnUntraced(function* (live: Live, initial: Launched | undefined, trigger: "auto" | "resume", outcome: Deferred.Deferred<RestartOutcome>) {
+        let current = initial;
+        let reason = trigger;
+        for (;;) {
+          if (current === undefined) {
+            if (yield* Deferred.isDone(live.stopRequested)) return { exit: undefined };
+            const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
+            yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
+            const scope = yield* Scope.fork(live.scope, "sequential");
+            const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin)), live.stopRequested).pipe(
+              Scope.provide(scope),
+              Effect.result,
+            );
+            if (Result.isFailure(result)) {
+              yield* Scope.close(scope, Exit.void);
+              if (yield* Deferred.isDone(live.stopRequested)) return { exit: result.failure.exit }; // 中断。stop が後片付けを引き継ぐ（止めたヘルパーの終わり方を stop へ渡す）
+              const failure = result.failure;
+              const action = yield* finishAttempt(live, failure.exit ?? { code: null, signal: null }, failure.stderrTail);
+              if (action === "giveup") {
+                yield* markStopped(live);
+                yield* Deferred.succeed(outcome, { kind: "stopped", stderrTail: failure.stderrTail });
+                return { exit: undefined };
               }
-              // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
-              // 読み終えてから止まる
-              if (!(yield* Deferred.isDone(live.stopRequested))) {
-                yield* Ref.update(live.restarts, (n) => n + 1);
-                yield* live.sink.appendLog({ type: "intake-restarted", trigger: reason });
-                yield* note("ヘルパーを起動し直しました\n");
-                yield* Ref.set(live.intake, "running");
-                yield* intakeFrame("running");
-                yield* Deferred.succeed(outcome, { kind: "running" });
-                reason = "auto";
-              }
-              current = { attempt: result.success, scope };
+              continue; // 続けて起動し直す
             }
-            const launched = current;
-            current = undefined;
-            const { exit, stderrTail } = yield* serve(live, launched);
-            // stop・サーバーの終了による意図した終了。届いていた最後の発話を落とさず、起動し直さない
-            if (yield* Deferred.isDone(live.stopRequested)) {
-              yield* live.sink.drain;
-              return { exit };
+            // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
+            // 読み終えてから止まる
+            if (!(yield* Deferred.isDone(live.stopRequested))) {
+              yield* Ref.update(live.restarts, (n) => n + 1);
+              yield* live.sink.appendLog({ type: "intake-restarted", trigger: reason });
+              yield* note("ヘルパーを起動し直しました\n");
+              yield* Ref.set(live.intake, "running");
+              yield* intakeFrame("running");
+              yield* Deferred.succeed(outcome, { kind: "running" });
+              reason = "auto";
             }
-            yield* live.sink.drain; // 確定結果に覆われなかった最後の発話を発言にする
-            yield* live.sink.clearSpeaking; // いま話している文字を空にする（永久停止はしない）
-            yield* Ref.set(live.lastInterruptedAt, new Date(yield* Clock.currentTimeMillis).toISOString());
-            const action = yield* finishAttempt(live, exit, stderrTail);
-            if (action === "giveup") {
-              yield* markStopped(live);
-              return { exit: undefined };
-            }
-            yield* Ref.set(live.intake, "interrupted");
-            yield* intakeFrame("interrupted");
+            current = { attempt: result.success, scope };
           }
-        }).pipe(Effect.ensuring(Deferred.succeed(outcome, { kind: "aborted" })));
+          const launched = current;
+          current = undefined;
+          const { exit, stderrTail } = yield* serve(live, launched);
+          // stop・サーバーの終了による意図した終了。届いていた最後の発話を落とさず、起動し直さない
+          if (yield* Deferred.isDone(live.stopRequested)) {
+            yield* live.sink.drain;
+            return { exit };
+          }
+          yield* live.sink.drain; // 確定結果に覆われなかった最後の発話を発言にする
+          yield* live.sink.clearSpeaking; // いま話している文字を空にする（永久停止はしない）
+          yield* Ref.set(live.lastInterruptedAt, new Date(yield* Clock.currentTimeMillis).toISOString());
+          const action = yield* finishAttempt(live, exit, stderrTail);
+          if (action === "giveup") {
+            yield* markStopped(live);
+            return { exit: undefined };
+          }
+          yield* Ref.set(live.intake, "interrupted");
+          yield* intakeFrame("interrupted");
+        }
+      }, (effect, _live, _initial, _trigger, outcome) => effect.pipe(Effect.ensuring(Deferred.succeed(outcome, { kind: "aborted" }))));
 
       const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string }, SessionFailure> {
         const scope = yield* Scope.fork(serverScope, "sequential");
@@ -314,18 +312,17 @@ export class Sessions extends Context.Service<Sessions, {
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
 
-      const start = (input: SessionStart): Effect.Effect<{ dir: string }, SessionFailure> =>
-        Effect.gen(function* () {
-          const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
-            current.kind === "idle"
-              ? [Option.none(), { kind: "starting" }]
-              : [Option.some(current.kind === "live" ? new SessionBusy() : new SessionTransition()), current],
-          );
-          if (Option.isSome(refusal)) return yield* refusal.value;
-          return yield* begin(input).pipe(
-            Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle" }) : Effect.void)),
-          );
-        });
+      const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string }, SessionFailure> {
+        const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
+          current.kind === "idle"
+            ? [Option.none(), { kind: "starting" }]
+            : [Option.some(current.kind === "live" ? new SessionBusy() : new SessionTransition()), current],
+        );
+        if (Option.isSome(refusal)) return yield* refusal.value;
+        return yield* begin(input).pipe(
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle" }) : Effect.void)),
+        );
+      });
 
       // 止めて書き出す。順番の要る停止（ヘルパーを止める → 読み終える → 書き出す）は本体に書き、
       // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
@@ -393,7 +390,7 @@ export class Sessions extends Context.Service<Sessions, {
         if (result.kind === "aborted") return yield* new Aborted();
       });
 
-      const status = Effect.gen(function* (): Effect.fn.Return<IntakeStatusReport> {
+      const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         if (current.kind !== "live") return { status: "none" };
         const { live } = current;

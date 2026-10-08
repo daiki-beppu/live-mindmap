@@ -25,40 +25,39 @@ export type PlaybackOptions<E> = {
 //   呼び出しが重ならないライブと同じになる。そのため「呼び出し中にたまった発言をまとめる」経路は
 //   再生では通らない（セッションのテストで確かめる）。
 // 等速（sleep あり）: 呼び出しの終わりは待たず、ライブと同じ呼び出し方で流す。
-export const playback = <E = never>(
+export const playback = Effect.fnUntraced(function* <E = never>(
   session: Session,
   remarks: Iterable<Remark>,
   { sleep, screens }: PlaybackOptions<E> = {},
-): Effect.Effect<void, E> =>
-  Effect.gen(function* () {
-    // 等速の「今の時刻」。発言と変化で共有する
-    let now = 0;
-    // 時刻 t まで待つ。すでに過ぎた時刻は待たず、時計も戻さない
-    const waitUntil = Effect.fnUntraced(function* (t: number) {
-      if (sleep && t > now) {
-        yield* sleep((t - now) * 1000);
-        now = t;
-      }
-    });
-    const waiting = [...(screens ?? [])].sort((a, b) => a.start - b.start);
-    let next = 0;
-    // 入れる直前に画像を作る。作ったバイト列は pushScreen に渡したら持たない
-    const pushNext = Effect.gen(function* () {
-      const change = waiting[next++]!;
-      yield* waitUntil(change.start);
-      if ("reason" in change) {
-        yield* session.pushScreenOff({ start: change.start, reason: change.reason });
-        return;
-      }
-      const { start, image } = change;
-      yield* session.pushScreen({ start, image: image === null ? null : { id: image.id, bytes: yield* image.load } });
-    });
-    for (const r of remarks) {
-      while (next < waiting.length && waiting[next]!.start <= r.start) yield* pushNext;
-      yield* waitUntil(r.end);
-      yield* session.push(r);
-      if (!sleep) yield* session.idle;
+): Effect.fn.Return<void, E> {
+  // 等速の「今の時刻」。発言と変化で共有する
+  let now = 0;
+  // 時刻 t まで待つ。すでに過ぎた時刻は待たず、時計も戻さない
+  const waitUntil = Effect.fnUntraced(function* (t: number) {
+    if (sleep && t > now) {
+      yield* sleep((t - now) * 1000);
+      now = t;
     }
-    while (next < waiting.length) yield* pushNext;
-    yield* session.flush;
   });
+  const waiting = [...(screens ?? [])].sort((a, b) => a.start - b.start);
+  let next = 0;
+  // 入れる直前に画像を作る。作ったバイト列は pushScreen に渡したら持たない
+  const pushNext = Effect.gen(function* () {
+    const change = waiting[next++]!;
+    yield* waitUntil(change.start);
+    if ("reason" in change) {
+      yield* session.pushScreenOff({ start: change.start, reason: change.reason });
+      return;
+    }
+    const { start, image } = change;
+    yield* session.pushScreen({ start, image: image === null ? null : { id: image.id, bytes: yield* image.load } });
+  });
+  for (const r of remarks) {
+    while (next < waiting.length && waiting[next]!.start <= r.start) yield* pushNext;
+    yield* waitUntil(r.end);
+    yield* session.push(r);
+    if (!sleep) yield* session.idle;
+  }
+  while (next < waiting.length) yield* pushNext;
+  yield* session.flush;
+});
