@@ -21,7 +21,7 @@ const SIBLINGS_MAX = 5;
 const SIBLINGS_NEAR = SIBLINGS_MAX;
 
 // system は毎回同じ文字列にして、前置きをキャッシュに乗せる
-const SYSTEM = `あなたは会議のマインドマップを継続的に組み立てる担当者です。
+export const SYSTEM = `あなたは会議のマインドマップを継続的に組み立てる担当者です。
 会議の文字起こしが少しずつ届きます。毎回、現在のマップと新しい発言を読み、マップへの差分操作だけを返してください。マップを作り直してはいけません。
 
 # マップの語彙
@@ -265,7 +265,7 @@ function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
 
 // 出力の JSON Schema は core の DiffOutput から、モジュールを読み込んだときに 1 回だけ作る。
 // 余分なキーは JSON Schema の上では禁止（additionalProperties: false）にし、decode では黙って落とす。文字列の長さなどの検査は足さない
-const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOutput, { onExcessProperty: "error" }).schema;
+export const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOutput, { onExcessProperty: "error" }).schema;
 
 // 1 つの query を開いたまま使い回す回数。会話の履歴がたまり続けないよう、この回数ごとに開き直す。
 // 14 は、計測（#75）で品質を確かめた最長の回数
