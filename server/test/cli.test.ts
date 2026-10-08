@@ -72,7 +72,7 @@ function dependencies(sessionsDir: string, port = "0") {
           }),
     })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({
-      build: () => reviewFailure.error ? Effect.fail(reviewFailure.error) : Effect.succeed("<!doctype html><html><body></body></html>"),
+      build: Effect.suspend(() => reviewFailure.error ? Effect.fail(reviewFailure.error) : Effect.succeed("<!doctype html><html><body></body></html>")),
     })),
     mix.layer,
     fakeScreenJpeg().layer,

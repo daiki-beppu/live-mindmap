@@ -117,7 +117,7 @@ function dependencies(sessionsDir: string) {
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({ capture: (_s, path) => Effect.sync(() => writeFileSync(path, "")) })),
-    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("<!doctype html><html><body></body></html>") })),
     fakeAudioMix().layer,
     convert.layer,
   );

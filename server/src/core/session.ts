@@ -384,7 +384,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
           // （添えた回に読めず失敗した画面も「最後に添えた」に数えるため、失敗させると以後の呼び出しがすべて失敗する）
           const readPrevious = Effect.map(
             Effect.forEach(previous, (h) =>
-              readBack(h).pipe(Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(undefined)))),
+              readBack(h).pipe(Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.void))),
             ),
             (list) => list.filter((c): c is ScreenChange => c !== undefined),
           );

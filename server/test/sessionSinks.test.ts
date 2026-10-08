@@ -367,7 +367,7 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(existsSync(join(dir, "map.html"))).toBe(false);
       expect(warnings.errors).toEqual(["map.html を書き出せませんでした: ビルドが落ちた"]);
     })).pipe(
-      Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: () => Effect.die(new Error("ビルドが落ちた")) })),
+      Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, build: Effect.die(new Error("ビルドが落ちた")) })),
     ));
 
   it.effect("撮影が中断されたときは、警告にせず中断のまま伝える", () =>
@@ -417,7 +417,7 @@ describe("SessionSinks（実物 Layer）", () => {
     );
     const services = Layer.mergeAll(
       countingCapture,
-      Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+      Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
       fakeAudioMix().layer,
     ).pipe(Layer.provideMerge(NodeFileSystem.layer));
     return Effect.scoped(Effect.gen(function* () {

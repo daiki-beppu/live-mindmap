@@ -46,7 +46,7 @@ const decodeLogLine = Schema.decodeEffect(Schema.fromJsonString(LogLine));
 export function parseLog(text: string) {
   return Effect.forEach(
     text.split("\n").filter((line) => line.trim() !== ""),
-    (line) => decodeLogLine(line).pipe(Effect.map((event) => [event]), Effect.catch(() => Effect.succeed([] as LogLine[]))),
+    (line) => decodeLogLine(line).pipe(Effect.map((event) => [event]), Effect.orElseSucceed(() => [] as LogLine[])),
   ).pipe(Effect.map((lines) => lines.flat()));
 }
 

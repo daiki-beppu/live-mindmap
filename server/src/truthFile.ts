@@ -44,7 +44,7 @@ const readFileWith = <S extends Schema.Decoder<unknown>>(schema: S) => (path: st
   readTextFile(path).pipe(
     Effect.mapError((e) => new InvalidTruthFile({ path, reason: fileReason(e) })),
     Effect.flatMap((text) =>
-      Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(text).pipe(
+      Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(
         Effect.mapError((e) => new InvalidTruthFile({ path, reason: truthReason(e) })),
       ),
     ),

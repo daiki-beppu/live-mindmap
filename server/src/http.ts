@@ -87,14 +87,13 @@ const routeOf = (request: HttpServerRequest.HttpServerRequest): string =>
 const OriginRestriction = HttpRouter.middleware((httpEffect) =>
   Effect.gen(function* () {
     const { origin } = (yield* HttpServerRequest.HttpServerRequest).headers;
-    if (origin !== undefined && !isLocalOrigin(origin)) return yield* Effect.fail(new ForbiddenOrigin());
+    if (origin !== undefined && !isLocalOrigin(origin)) return yield* new ForbiddenOrigin();
     return yield* httpEffect;
   }), { global: true });
 
 const startSession = Effect.gen(function* () {
-  const body = yield* Effect.catch(
-    HttpServerRequest.schemaBodyJson(SessionStartBody),
-    (failure) => Effect.fail(new InvalidBody({ detail: failure.message })),
+  const body = yield* HttpServerRequest.schemaBodyJson(SessionStartBody).pipe(
+    Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
   );
   const sessions = yield* Sessions;
   return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body)));
@@ -105,12 +104,11 @@ const startSession = Effect.gen(function* () {
 const feed = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const viewers = yield* Viewers;
-  const socket = yield* Effect.catch(
-    request.upgrade,
-    () => Effect.fail(new UnsupportedRequest({ route: routeOf(request) })),
+  const socket = yield* request.upgrade.pipe(
+    Effect.mapError(() => new UnsupportedRequest({ route: routeOf(request) })),
   );
   // 切断は配信の終わりで、応答に変える失敗ではない（upgrade 済みなので HTTP の本文は書かれない）
-  yield* Effect.catch(viewers.connect(socket), () => Effect.void);
+  yield* viewers.connect(socket).pipe(Effect.ignore);
   return HttpServerResponse.empty();
 });
 
@@ -144,7 +142,7 @@ const FeedRoutes = HttpRouter.addAll([
 const UnsupportedRoute = HttpRouter.addAll([
   HttpRouter.route("*", "*", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    return yield* Effect.fail(new UnsupportedRequest({ route: routeOf(request) }));
+    return yield* new UnsupportedRequest({ route: routeOf(request) });
   })),
 ]);
 

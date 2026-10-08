@@ -91,7 +91,7 @@ const setup = (initial: Partial<Script> = {}) =>
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
     })),
-    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed(FAKE_TEMPLATE) })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
     fakeAudioMix().layer,
     fakeScreenJpeg().layer,
   );

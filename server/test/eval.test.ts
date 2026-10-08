@@ -43,7 +43,7 @@ function dependencies(sessionsDir: string) {
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (_snapshot: Snapshot, path: string) => Effect.sync(() => writeFileSync(path, "")),
     })),
-    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: () => Effect.succeed("<!doctype html><html><body></body></html>") })),
+    Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("<!doctype html><html><body></body></html>") })),
     fakeAudioMix().layer,
     fakeScreenJpeg().layer,
   );
