@@ -2,14 +2,14 @@
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Config, Console, Effect, FileSystem, Layer, Option, Predicate, Result, Schema } from "effect";
+import { Cause, Console, Effect, FileSystem, Layer, Option, Predicate, Result, Schema } from "effect";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
+import { portConfig, sessionsDirConfig } from "./config.ts";
 import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import {
   formatIntakeStatus,
@@ -143,17 +143,6 @@ const decodeReason = (error: Schema.SchemaError): string =>
 /* ----------------------------------------------------------------------------
  * 境界: 設定・標準出力・ファイル読み込み
  * -------------------------------------------------------------------------- */
-
-const DEFAULT_PORT = 4319;
-export const defaultPort = () => Number(process.env.LIVE_MINDMAP_PORT ?? DEFAULT_PORT);
-export const defaultSessionsDir = () => process.env.LIVE_MINDMAP_SESSIONS ?? join(homedir(), ".live-mindmap", "sessions");
-
-// 設定は handler の先頭で 1 回だけ解決する（下位の処理は process.env を読み直さない）。
-// ポートは Config.Int（Config.Port は 1 以上しか受けず、空きポートを選ばせる 0 を拒む）
-const sessionsDirConfig = Config.String("LIVE_MINDMAP_SESSIONS").pipe(
-  Config.withDefault(join(homedir(), ".live-mindmap", "sessions")),
-);
-const portConfig = Config.Int("LIVE_MINDMAP_PORT").pipe(Config.withDefault(DEFAULT_PORT));
 
 // 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
 // （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）

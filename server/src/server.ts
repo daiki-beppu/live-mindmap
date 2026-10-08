@@ -5,11 +5,11 @@
 // このモジュールが持つのは、それらの Layer を組み立てて待受けにつなぐ、起動・終了の入口。
 // ブラウザへの WebSocket は HTTP と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 import { NodeChildProcessSpawner, NodeFileSystem, NodePath, NodeRuntime } from "@effect/platform-node";
-import { Cause, Context, Effect, Exit, type FileSystem, Layer, Runtime } from "effect";
+import { Cause, ConfigProvider, Context, Effect, Exit, type FileSystem, Layer, Logger, Runtime } from "effect";
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
-import { defaultPort, defaultSessionsDir } from "./cli.ts";
+import { portConfig, sessionsDirConfig } from "./config.ts";
 import type { DiffUpdater } from "./core/index.ts";
 import { claudeUpdaterLayer, type UpdaterUnavailable } from "./diffUpdater.ts";
 import { resolveHelperPath } from "./helperPath.ts";
@@ -91,16 +91,27 @@ if (import.meta.main) {
   const exportServices = Layer.mergeAll(MapCapture.layer, ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
     Layer.provideMerge(NodeFileSystem.layer),
   );
-  const options: ServerOptions = {
-    port: defaultPort(),
-    sessionsDir: defaultSessionsDir(),
-    updaterLayer: claudeUpdaterLayer,
-    helper: helperCommand,
-    onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
-  };
   // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
   // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
+  // 設定（ポートとフォルダ）の解決に失敗したときだけ、理由を標準エラーに出す。Effect の既定のロガーは標準出力に書くので、
+  // ここだけ LogToStderr を立てる。待受けの失敗などほかの失敗は、runMain の自動報告（既定のロガー）のまま変えない。
+  // 出した失敗には errorReported=false を付け、runMain が同じ失敗を標準出力へもう一度報告しないようにする
+  // 既定の ConfigProvider は空文字を未設定として扱い、LIVE_MINDMAP_PORT="" が既定のポートに化けるので、空文字を保つ provider を指定する
+  // （空文字は整数でない値として拒否する。キーが無いときだけ既定のポートを使う）
+  const settings = Effect.all({ port: portConfig, sessionsDir: sessionsDirConfig }).pipe(
+    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
+    Effect.tapCause((cause) => Effect.logError(cause).pipe(Effect.provideService(Logger.LogToStderr, true))),
+    Effect.mapError((error) => Object.assign(error, { [Runtime.errorReported]: false as const })),
+  );
   NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
+    const { port, sessionsDir } = yield* settings;
+    const options: ServerOptions = {
+      port,
+      sessionsDir,
+      updaterLayer: claudeUpdaterLayer,
+      helper: helperCommand,
+      onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
+    };
     yield* startup(options, realLayers(options, exportServices));
     return yield* Effect.never;
   })), { teardown });
