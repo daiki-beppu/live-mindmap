@@ -4,10 +4,11 @@
 // LOCAL_LLM_SHAPE=stateless で diffUpdater.ts がこちらを使う。宛先は LOCAL_LLM_URL（OpenAI 互換）。
 import { appendFileSync } from "node:fs";
 import { Effect, Layer, Schema } from "effect";
+import { callResponses } from "../bench/chatgpt.ts";
 import { children, DiffUpdater, ROOT_ID, type DiffInput, type DiffOutput, type MeetingMap, type Op, type Remark } from "./core/index.ts";
 
 const env = process.env;
-const URL_ = env.LOCAL_LLM_URL!;
+const URL_ = env.LOCAL_LLM_URL ?? "";
 const MODEL = env.LOCAL_LLM_MODEL ?? "local";
 const METRICS = env.LOCAL_LLM_METRICS;
 const EXTRA = JSON.parse(env.LOCAL_LLM_EXTRA_BODY ?? "{}");
@@ -350,18 +351,33 @@ export const StatelessDiffUpdater = {
           const t0 = performance.now();
           const id = ++seq;
           if (env.LOCAL_LLM_DUMP) appendFileSync(`${env.LOCAL_LLM_DUMP}/${id}.json`, JSON.stringify(body));
+          let json: any, ms: number, text: string, extra: object = {};
+          if (env.LOCAL_LLM_ROUTE === "chatgpt") {
+            // ChatGPT のプラン利用（issue #635）。system は instructions に、response_format は text.format に移す
+            const r = await callResponses({
+              model: MODEL, instructions: body.messages[0]!.content, input: [body.messages[1]],
+              text: { format: { type: "json_schema", name: "diff", strict: true, schema: body.response_format.json_schema.schema } },
+              ...EXTRA,
+            }, TIMEOUT_MS);
+            ms = r.ms;
+            extra = { firstByteMs: r.firstByteMs, headers: r.headers, requestId: r.requestId };
+            if (r.error !== undefined) { record({ id, ms, error: "http", status: r.status, detail: r.error, ...extra }); throw new Error(`HTTP ${r.status}`); }
+            json = { usage: r.usage };
+            text = r.text ?? "";
+          } else {
           const res = await fetch(`${URL_}/chat/completions`, {
             method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
             signal: AbortSignal.timeout(TIMEOUT_MS),
           });
-          const json: any = await res.json();
-          const ms = Math.round(performance.now() - t0);
+          json = await res.json();
+          ms = Math.round(performance.now() - t0);
           if (!res.ok) { record({ id, ms, error: "http", status: res.status, detail: JSON.stringify(json).slice(0, 300) }); throw new Error(`HTTP ${res.status}`); }
-          const text: string = json.choices?.[0]?.message?.content ?? "";
+          text = json.choices?.[0]?.message?.content ?? "";
+          }
           let parsed: any;
           try { parsed = JSON.parse(text); } catch { record({ id, ms, error: "json", usage: json.usage }); throw new Error("JSON が読めない"); }
           const ops = VARIANT === "v1" ? toOpsV1(parsed.ops ?? []) : VARIANT === "v3" ? toOpsV3(parsed, map, freshIds) : VARIANT === "v4" ? toOpsV4(parsed, map, freshIds) : VARIANT === "v5" ? toOpsV5(parsed, map, sentences) : toOpsV2(parsed, map, freshIds);
-          record({ id, ms, ops: ops.length, kinds: VARIANT === "v1" ? (parsed.ops ?? []).map((o: any) => o.op === "add" ? o.kind : o.op) : [parsed.議題?.id === "新しい議題" ? "新議題" : "同議題", ...(parsed.発言 ?? []).map((x: any) => x.種類), ...(parsed.文 ?? []).map((x: any) => x.種類), ...(VARIANT === "v4" ? [...ungate(parsed.作業の引き受け).map(() => "作業"), ...ungate(parsed.合意).map(() => "合意"), ...ungate(parsed.中身).map((x: any) => x.種類)] : [...(parsed.作業の引き受け ?? []).map(() => "作業"), ...(parsed.合意 ?? []).map(() => "合意"), ...(parsed.中身 ?? []).map((x: any) => x.種類)]), ...(parsed.済み && parsed.済み !== "なし" ? ["済み"] : [])], usage: json.usage, timings: json.timings });
+          record({ id, ms, ops: ops.length, kinds: VARIANT === "v1" ? (parsed.ops ?? []).map((o: any) => o.op === "add" ? o.kind : o.op) : [parsed.議題?.id === "新しい議題" ? "新議題" : "同議題", ...(parsed.発言 ?? []).map((x: any) => x.種類), ...(parsed.文 ?? []).map((x: any) => x.種類), ...(VARIANT === "v4" ? [...ungate(parsed.作業の引き受け).map(() => "作業"), ...ungate(parsed.合意).map(() => "合意"), ...ungate(parsed.中身).map((x: any) => x.種類)] : [...(parsed.作業の引き受け ?? []).map(() => "作業"), ...(parsed.合意 ?? []).map(() => "合意"), ...(parsed.中身 ?? []).map((x: any) => x.種類)]), ...(parsed.済み && parsed.済み !== "なし" ? ["済み"] : [])], usage: json.usage, timings: json.timings, ...extra });
           return { ops };
         },
         catch: (e) => new LocalLlmFailed({ message: e instanceof Error ? e.message : String(e) }),
