@@ -149,6 +149,14 @@ const fileFailed = (e: PlatformError.PlatformError) => new CommandFailed({ messa
 const orFileFailed = <A, E, R>(effect: Effect.Effect<A, E | PlatformError.PlatformError, R>) =>
   effect.pipe(Effect.catchIf(PlatformError.isPlatformError, (e) => Effect.fail(fileFailed(e))));
 
+// 待ち受けの失敗（ServeError は message を持たないので cause から作る）を入口の 1 行にする
+const listenFailed = (port: number, e: { readonly cause: unknown }) =>
+  new CommandFailed({
+    message: Predicate.hasProperty(e.cause, "code") && e.cause.code === "EADDRINUSE"
+      ? `ポート ${port} は別のプロセスが使っています（LIVE_MINDMAP_PORT で変えられます）`
+      : `ポート ${port} で待ち受けられません: ${describe(e.cause)}`,
+  });
+
 // パスの存在判定。親が通常ファイル（ENOTDIR）のときは「存在しない」。それ以外の失敗は PlatformError のまま返す
 const pathExists = (fs: FileSystem.FileSystem, path: string) =>
   fs.exists(path).pipe(
@@ -346,7 +354,7 @@ const play = Command.make(
         : Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
       // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
       const listener = yield* openListener(port).pipe(
-        Effect.mapError((e) => new CommandFailed({ message: describe(e) })),
+        Effect.mapError((e) => listenFailed(port, e)),
       );
       // 配信の開始と、待受けを閉じる前に最後のスナップショットを接続中のクライアントへ渡し切る登録を、受け取った Context への 1 回の provide で行う
       const viewers = yield* Effect.gen(function* () {
