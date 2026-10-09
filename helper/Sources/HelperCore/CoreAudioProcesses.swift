@@ -61,3 +61,5 @@ public func currentRunningApps() -> [RunningApp] {
         return RunningApp(bundleID: bundleID, name: app.localizedName ?? bundleID)
     }
 }
+
+// 検証用（マージしない）: helper だけの変更で CI のジョブの振り分けを確かめる
