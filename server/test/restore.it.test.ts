@@ -13,6 +13,12 @@ describe("今の形式の log.jsonl（fixtures）からの復元", () => {
     .filter((l) => l !== "")
     .map((l): unknown => JSON.parse(l));
 
+  it("fixture の diff の行は、usage を持つ行と持たない行が混ざっている（新旧の形を同じログで読むための前提）", () => {
+    const diffs = lines.filter((l) => (l as { type: string }).type === "diff");
+    expect(diffs.some((l) => (l as { usage?: unknown }).usage !== undefined)).toBe(true);
+    expect(diffs.some((l) => (l as { usage?: unknown }).usage === undefined)).toBe(true);
+  });
+
   it("fixture は、行ごとに at を持つ今の形式で、intake-*・知らない type・noContent・error・dropped を含む（テストの前提）", () => {
     const types = lines.map((l) => (l as { type: string }).type);
     expect(new Set(types)).toEqual(new Set(["start", "remark", "diff", "intake-restarted", "intake-stopped", "future-event"]));

@@ -149,6 +149,16 @@ describe("reviewSnapshot", () => {
       expect(reviewSnapshot(withIntake)).toEqual(yield* session.snapshot);
     }));
 
+  it.effect("diff の行に usage があっても、usage の無い行と同じマップが組み立てられる", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* realisticEvents();
+      const usage = { input: 10, cacheWrite: 20, cacheRead: 30, output: 40, model: "claude-haiku-5-5" };
+      const withUsage = events.map((e) => ((e as { type: string }).type === "diff" ? { ...(e as object), usage } : e));
+
+      expect(withUsage.some((e) => (e as { usage?: unknown }).usage !== undefined)).toBe(true);
+      expect(reviewSnapshot(withUsage)).toEqual(yield* session.snapshot);
+    }));
+
   it("壊れたログ（start が無い・項目が壊れた行）では、今と同じく例外を投げる", () => {
     expect(() => reviewSnapshot([])).toThrow();
     expect(() => reviewSnapshot([{ type: "start", title: "定例" }, { type: "remark" }])).toThrow();

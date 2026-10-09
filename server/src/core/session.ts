@@ -38,10 +38,23 @@ export type DiffInput = {
 // 差分更新の失敗の形。core は具体の失敗の型を知らず、タグと文面だけを見る（ログの error 欄に使う）
 export type DiffUpdateError = { readonly _tag: string; readonly message: string };
 
+// 差分更新 1 回の呼び出しで使ったトークン数。cacheWrite / cacheRead は prompt cache の書き込み・読み出し。
+// 金額は持たない（単価は変わるので、費用は公式の単価を掛けて出す）
+export const DiffUsage = Schema.Struct({
+  input: Schema.Int,
+  cacheWrite: Schema.Int,
+  cacheRead: Schema.Int,
+  output: Schema.Int,
+  model: Schema.String,
+});
+export type DiffUsage = typeof DiffUsage["Type"];
+// 差分更新の結果。トークン数を数えられない実装は usage を返さない（Claude へ渡す出力の Schema は DiffOutput のまま）
+export type DiffResult = DiffOutput & { readonly usage?: DiffUsage };
+
 // 差分更新を出す役。セッションごとの Service（SessionSinks.open がセッションごとに Layer を作る）。
 // core は Claude 側を import できないので static layer は持たない。Layer は src 側が作る
 export class DiffUpdater extends Context.Service<DiffUpdater, {
-  readonly update: (input: DiffInput) => Effect.Effect<DiffOutput, DiffUpdateError>;
+  readonly update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>;
 }>()("live-mindmap/core/DiffUpdater") {}
 
 // ログの行の形。ログに書く側（cli・sessionSinks の配線）も読む側（restoreSession）も同じ Schema を使う。
@@ -69,6 +82,7 @@ export const DiffEvent = Schema.Struct({
   ops: Schema.mutable(Schema.Array(Op)),
   dropped: Schema.mutable(Schema.Array(Dropped)),
   error: Schema.optionalKey(Schema.String),
+  usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
 });
 export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, DiffEvent]);
 export type LogEvent = typeof LogEvent["Type"];
@@ -394,7 +408,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
             Effect.flatMap(([screens, previousScreens]) =>
               restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
             ),
-            Effect.map(({ ops }) => ({ ok: true as const, ops })),
+            Effect.map(({ ops, usage }) => ({ ok: true as const, ops, usage })),
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed({ ok: false as const, error: describeFailure(cause) }),
             ),
@@ -411,7 +425,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
             const applied = applyOps(s.map, outcome.ops, s.known, stamp);
             return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [] }];
           });
-          yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped });
+          yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped, ...(outcome.usage ? { usage: outcome.usage } : {}) });
         }),
       );
     }

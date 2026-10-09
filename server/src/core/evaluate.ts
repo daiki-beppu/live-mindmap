@@ -221,6 +221,16 @@ function formatLogMetrics(log: readonly LogEvent[] | undefined): string[] {
 
 const formatRecall = ({ hit, total }: Recall) => (total === 0 ? "0/0" : `${hit}/${total} (${Math.round((hit / total) * 100)}%)`);
 
+// 差分更新のトークン数の合計の列（diff の行の usage を列ごとに足す）。金額は出さない（単価は変わるので、コードに持たない）
+const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
+// usage が 1 行も無いラン（log.jsonl が無いランを含む）は 0 ではなく - にする
+function formatUsage(log: readonly LogEvent[] | undefined): string[] {
+  const usages = (log ?? []).flatMap((e) => (e.type === "diff" && e.usage ? [e.usage] : []));
+  if (usages.length === 0) return USAGE_HEADERS.map(() => "-");
+  const sum = (pick: (u: (typeof usages)[number]) => number) => String(usages.reduce((a, u) => a + pick(u), 0));
+  return [sum((u) => u.input), sum((u) => u.cacheWrite), sum((u) => u.cacheRead), sum((u) => u.output)];
+}
+
 // 表のセルに入れる文字列。区切りの `|` と、その直前の `\` をエスケープし、改行は空白 1 つにして 1 行に保つ
 const escapeCell = (cell: string) => cell.replace(/[\\|]/g, "\\$&").replace(/\r\n|\r|\n/g, " ");
 
@@ -229,7 +239,7 @@ const escapeCell = (cell: string) => cell.replace(/[\\|]/g, "\\$&").replace(/\r\
 // screen があるときは、その後ろに共有画面の 4 列（取れた数/項目数。出てはいけないは漏れた項目の数/項目数）を足す
 export function formatTable(runs: Run[], truth?: Truth, screen?: ScreenTruth): string {
   const header = [
-    "ラン", "会議", "ノード", "深さ", ...KINDS, ...LOG_HEADERS,
+    "ラン", "会議", "ノード", "深さ", ...KINDS, ...LOG_HEADERS, ...USAGE_HEADERS,
     ...(truth ? TRUTH_KINDS.map((k) => RECALL_HEADERS[k]) : []),
     ...(screen ? SCREEN_HEADERS : []),
   ];
@@ -237,7 +247,7 @@ export function formatTable(runs: Run[], truth?: Truth, screen?: ScreenTruth): s
     const m = measure(exp);
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
     const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
-    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...formatLogMetrics(log), ...recalls, ...scores].map(String);
+    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...formatLogMetrics(log), ...formatUsage(log), ...recalls, ...scores].map(String);
   });
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";

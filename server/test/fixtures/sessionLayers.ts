@@ -1,12 +1,12 @@
 import { Effect, Layer } from "effect";
-import { DiffUpdater, SessionLog, type DiffInput, type DiffOutput, type LogEvent } from "../../src/core/index.ts";
+import { DiffUpdater, SessionLog, type DiffInput, type DiffResult, type LogEvent } from "../../src/core/index.ts";
 
 // core の Service（DiffUpdater・SessionLog）の偽物を Layer にする。偽物は Service.of で作り、Layer.succeed で渡す。
 
 // DiffUpdater.update の失敗の型（core は構造型で受ける）
 export type UpdateFailure = { readonly _tag: string; readonly message: string };
 
-export const updaterLayer = (update: (input: DiffInput) => Effect.Effect<DiffOutput, UpdateFailure>) =>
+export const updaterLayer = (update: (input: DiffInput) => Effect.Effect<DiffResult, UpdateFailure>) =>
   Layer.succeed(DiffUpdater, DiffUpdater.of({ update }));
 
 // writeScreen は共有画面の画像を書く口、readScreen は書いた画像を読み戻す口。省略したテストでは、書かず・読まない（読まれたら defect）

@@ -42,7 +42,7 @@ vi.mock("../src/claude.ts", async (importOriginal) => {
         record.messages.push(message);
         const behavior = external.behave(external.calls++);
         if (behavior === "end") return; // result を出さずにストリームが終わる
-        yield { type: "assistant" };
+        yield { type: "assistant", message: { model: "fake-model", usage: { input_tokens: 0, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 0 } } };
         if (behavior === "fail") yield { type: "result", subtype: "error_during_execution" };
         else yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "テスト" }] } };
       }

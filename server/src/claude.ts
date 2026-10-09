@@ -2,7 +2,7 @@
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。プロンプトは試作 v6 の方針。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
-import { children, DiffOutput, DiffUpdater, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
+import { children, DiffOutput, DiffUpdater, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type DiffResult, type DiffUsage, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
 
 const MODEL = "claude-sonnet-5-5";
 
@@ -396,15 +396,30 @@ export const layerClaude = Layer.effect(
         catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
       });
 
-    const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffOutput, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
+    // result までに届いた assistant の message.usage を足す（再試行で要求が複数でも全部数える）。
+    // result の usage は最後の 1 回分しか持たず、modelUsage・total_cost_usd は使わない（金額は単価が変わるので持たない）
+    const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffResult, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
+      let usage: DiffUsage | undefined;
       for (;;) {
         const { value: m, done } = yield* next(o);
         if (done) return yield* new ClaudeQueryFailed({ message: "差分更新の結果が無い", cause: "stream ended before result" });
+        if (m.type === "assistant") {
+          const u = m.message.usage;
+          usage = {
+            input: (usage?.input ?? 0) + u.input_tokens,
+            cacheWrite: (usage?.cacheWrite ?? 0) + (u.cache_creation_input_tokens ?? 0),
+            cacheRead: (usage?.cacheRead ?? 0) + (u.cache_read_input_tokens ?? 0),
+            output: (usage?.output ?? 0) + u.output_tokens,
+            model: m.message.model,
+          };
+          continue;
+        }
         if (m.type !== "result") continue;
         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `差分更新に失敗: ${m.subtype}`, subtype: m.subtype });
-        return yield* Schema.decodeUnknownEffect(DiffOutput)(m.structured_output).pipe(
+        const decoded = yield* Schema.decodeUnknownEffect(DiffOutput)(m.structured_output).pipe(
           Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
         );
+        return { ...decoded, ...(usage ? { usage } : {}) };
       }
     });
 
