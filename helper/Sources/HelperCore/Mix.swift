@@ -51,7 +51,16 @@ private func isRecordingName(_ name: String, track: Track) -> Bool {
 
 /// `inputs` をすべて 0 秒の位置から重ね、`output` に 16 kbps・モノラルの m4a として書く（moov は先頭）。
 /// `output` が既にあるときは上書きせず失敗する。出力先のフォルダも作らない。
-public func mixRecordings(_ inputs: [URL], to output: URL) async throws {
+/// 音声が入っていない録音（トラックが無い、または長さが 0）は飛ばし、ファイル名を 1 ファイル 1 行で `reportSkipped` に渡す
+/// （helper が起動し直すと中身の無い録音が残ることがあり、それで全体を失敗させないため）。全部が空なら失敗する。
+/// 中身があるのに読めない録音は飛ばさず失敗する。
+public func mixRecordings(
+    _ inputs: [URL],
+    to output: URL,
+    reportSkipped: (String) -> Void = { message in
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+) async throws {
     guard !inputs.isEmpty else { throw MixError("混ぜる録音が無い") }
     guard !FileManager.default.fileExists(atPath: output.path) else {
         throw MixError("出力のファイルが既にある: \(output.path)")
@@ -62,7 +71,7 @@ public func mixRecordings(_ inputs: [URL], to output: URL) async throws {
         throw MixError("出力先のフォルダが無い: \(parent.path)")
     }
 
-    let composition = try await overlaidComposition(of: inputs)
+    let composition = try await overlaidComposition(of: inputs, reportSkipped: reportSkipped)
     let audioTracks = try await composition.loadTracks(withMediaType: .audio)
     let duration = try await composition.load(.duration)
 
@@ -123,8 +132,10 @@ public func mixRecordings(_ inputs: [URL], to output: URL) async throws {
 }
 
 /// 入力ごとの音声トラックを、すべて 0 秒の位置に挿入した composition。長さは一番長いトラックの長さ。
-private func overlaidComposition(of inputs: [URL]) async throws -> AVMutableComposition {
+/// 読み込みに成功したうえで音声が空の入力は、飛ばして `reportSkipped` に伝える。読み込みの失敗は飛ばさない。
+private func overlaidComposition(of inputs: [URL], reportSkipped: (String) -> Void) async throws -> AVMutableComposition {
     let composition = AVMutableComposition()
+    var inserted = 0
     for url in inputs {
         let asset = AVURLAsset(url: url)
         let tracks: [AVAssetTrack]
@@ -135,7 +146,10 @@ private func overlaidComposition(of inputs: [URL]) async throws -> AVMutableComp
         } catch {
             throw MixError("録音を読めない: \(url.lastPathComponent) (\(error.localizedDescription))")
         }
-        guard let source = tracks.first else { throw MixError("音声が入っていない: \(url.lastPathComponent)") }
+        guard let source = tracks.first, duration.isNumeric, duration > .zero else {
+            reportSkipped("空の録音を飛ばす: \(url.lastPathComponent)")
+            continue
+        }
         guard let target = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             throw MixError("トラックを足せない: \(url.lastPathComponent)")
         }
@@ -144,7 +158,9 @@ private func overlaidComposition(of inputs: [URL]) async throws -> AVMutableComp
         } catch {
             throw MixError("録音を重ねられない: \(url.lastPathComponent) (\(error.localizedDescription))")
         }
+        inserted += 1
     }
+    guard inserted > 0 else { throw MixError("混ぜる録音が無い") }
     return composition
 }
 
