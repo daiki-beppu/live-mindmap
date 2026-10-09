@@ -20,7 +20,7 @@ while let line = readLine(strippingNewline: true) {
   do {
     let req = try JSONDecoder().decode(Req.self, from: line.data(using: .utf8)!)
     if req.reset || session == nil { session = LanguageModelSession(model: model, instructions: req.system) }
-    let res = try await session!.respond(to: req.prompt, schema: req.schema, options: GenerationOptions(temperature: 0.2))
+    let res = try await session!.respond(to: req.prompt, schema: req.schema, options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 600))
     emit(["content": res.content.jsonString, "input": res.usage.input.totalTokenCount, "cached": res.usage.input.cachedTokenCount, "output": res.usage.output.totalTokenCount])
   } catch {
     session = nil
