@@ -37,7 +37,7 @@ vi.mock("../src/claude.ts", async (importOriginal) => {
     const gen = (async function* () {
       for await (const message of params.prompt) {
         record.messages.push(message);
-        yield { type: "assistant" };
+        yield { type: "assistant", message: { model: "fake-model", usage: { input_tokens: 0, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 0 } } };
         yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "テスト" }] } };
       }
     })();
@@ -319,6 +319,22 @@ describe("play <セッションのフォルダ>", () => {
           remarkLine("r1", 0, 5),
           { type: "future-event", payload: 1 },
           remarkLine("r2", 6, 9),
+        ]);
+        const replay = yield* played(dependencies(join(root, "sessions")), [original]);
+        expect(logLines(replay).filter((l) => l.type === "remark")).toHaveLength(2);
+      }));
+
+    it.effect("usage つきの diff の行（今の形式）と usage の無い diff の行（古い形式）が混ざったフォルダも、同じように再生できる", () =>
+      Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const diff = { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [], dropped: [] };
+        const usage = { input: 1, cacheWrite: 2, cacheRead: 3, output: 4, model: "claude-haiku-5-5" };
+        const original = sessionFolder(root, [
+          { type: "start", title: "t" },
+          remarkLine("r1", 0, 5),
+          { ...diff, usage },
+          remarkLine("r2", 6, 9),
+          diff,
         ]);
         const replay = yield* played(dependencies(join(root, "sessions")), [original]);
         expect(logLines(replay).filter((l) => l.type === "remark")).toHaveLength(2);

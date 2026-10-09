@@ -13,6 +13,7 @@ export * from "./review.ts";
 export {
   DiffEvent,
   DiffUpdater,
+  DiffUsage,
   FILLERS,
   hasContent,
   InvalidLogEvent,
@@ -29,7 +30,7 @@ export {
   StartEvent,
   Track,
 } from "./session.ts";
-export type { ChangeEntry, DiffInput, DiffUpdateError, ScreenChange, Session, Snapshot, SnapshotNode } from "./session.ts";
+export type { ChangeEntry, DiffInput, DiffResult, DiffUpdateError, ScreenChange, Session, Snapshot, SnapshotNode } from "./session.ts";
 export * from "./settle.ts";
 export * from "./speaking.ts";
 export * from "./topic.ts";

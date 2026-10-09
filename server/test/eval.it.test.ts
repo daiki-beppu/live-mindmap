@@ -10,7 +10,7 @@ import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
-import { type DiffInput, type Op, type Snapshot, Truth } from "../src/core/index.ts";
+import { type DiffInput, type DiffUsage, type Op, type Snapshot, Truth } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -81,12 +81,17 @@ const scriptB: Op[][] = [
 ];
 
 // play を 1 回流し、ランのフォルダを返す。ランごとにセッションの置き場を分けて、開始時刻の衝突を避ける。
-const play = (script: Op[][], file = fixture) =>
+// usages を渡すと、n 回目の差分更新がその n 番目のトークン数を結果と一緒に返す（渡さない・足りない回は返さない）
+const play = (script: Op[][], file = fixture, usages: DiffUsage[] = []) =>
   Effect.gen(function* () {
     const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-run-")));
     let n = 0;
     external.openClaudeUpdater.mockReturnValue({
-      update: (_input: DiffInput) => Effect.sync(() => ({ ops: script[n++] ?? [] })),
+      update: (_input: DiffInput) =>
+        Effect.sync(() => {
+          const usage = usages[n];
+          return { ops: script[n++] ?? [], ...(usage ? { usage } : {}) };
+        }),
       close: () => {},
     });
     const { layer, stdout } = dependencies(sessionsDir);
@@ -251,6 +256,7 @@ describe("eval: 複数のランを並べる", () => {
 
 describe("eval: log.jsonl から数える 3 指標", () => {
   const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
+  const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
   // 1 回目の呼び出し [r1, r2] で議題と要点を立て、2 回目の [r3] で要点の本文を変える（書き換え 1 回）。発言は 3 件
   const scriptRewrite: Op[][] = [
     [
@@ -262,19 +268,19 @@ describe("eval: log.jsonl から数える 3 指標", () => {
   // 2 回目は根拠を足すだけ（text を渡さない）
   const scriptEvidenceOnly: Op[][] = [scriptRewrite[0]!, [{ op: "update", node: "n2", evidence: ["r3"] }]];
 
-  it.effect("3 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", () => Effect.gen(function* () {
+  it.effect("3 列と、続くトークン数の 4 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", () => Effect.gen(function* () {
     const truth = yield* writeTruth({ 決定: [], TODO: [] });
     const { header, rows } = parseTable(yield* evalCli(["--truth", truth, yield* play(scriptRewrite)]));
 
-    expect(header.slice(-5)).toEqual([...LOG_HEADERS, "決定の再現率", "TODO の再現率"]);
+    expect(header.slice(-9)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS, "決定の再現率", "TODO の再現率"]);
     expect(header.indexOf(LOG_HEADERS[0]!)).toBe(header.indexOf("要点") + 1);
     expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
   }));
 
-  it.effect("--truth を付けなくても 3 列は出る", () => Effect.gen(function* () {
+  it.effect("--truth を付けなくても 3 列とトークン数の 4 列は出る", () => Effect.gen(function* () {
     const { header, rows } = parseTable(yield* evalCli([yield* play(scriptRewrite)]));
 
-    expect(header.slice(-3)).toEqual(LOG_HEADERS);
+    expect(header.slice(-7)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS]);
     expect(rows[0]!["書き換え/発言"]).toBe("1/3 (0.33)");
   }));
 
@@ -482,6 +488,57 @@ describe("eval: bench の正解ファイル", () => {
   });
 });
 
+describe("eval: 差分更新のトークン数の合計", () => {
+  const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
+  const usageCells = (row: Record<string, string>) => USAGE_HEADERS.map((h) => row[h]);
+  const first: DiffUsage = { input: 100, cacheWrite: 20, cacheRead: 3000, output: 50, model: "claude-haiku-5-5" };
+  const second: DiffUsage = { input: 11, cacheWrite: 0, cacheRead: 4000, output: 7, model: "claude-haiku-5-5" };
+
+  it.effect("diff の行ごとの usage を列ごとに足した合計が出る。金額の列は出ない", () => Effect.gen(function* () {
+    const { header, rows } = parseTable(yield* evalCli([yield* play(scriptA, fixture, [first, second])]));
+
+    expect(usageCells(rows[0]!)).toEqual(["111", "20", "7000", "57"]);
+    expect(header.some((h) => /円|\$|費用|コスト|金額|cost/i.test(h))).toBe(false);
+  }));
+
+  it.effect("usage を返さなかった回の diff の行は足さず、返した回の分だけが合計になる", () => Effect.gen(function* () {
+    const { rows } = parseTable(yield* evalCli([yield* play(scriptA, fixture, [first])]));
+
+    expect(usageCells(rows[0]!)).toEqual(["100", "20", "3000", "50"]);
+  }));
+
+  it.effect("usage が 1 行も無いランは 4 列とも - になる（0 ではない）", () => Effect.gen(function* () {
+    const { rows } = parseTable(yield* evalCli([yield* play(scriptA)]));
+
+    expect(usageCells(rows[0]!)).toEqual(["-", "-", "-", "-"]);
+  }));
+
+  it.effect("0 トークンの usage を返したランは - ではなく 0 になる", () => Effect.gen(function* () {
+    const zero: DiffUsage = { input: 0, cacheWrite: 0, cacheRead: 0, output: 0, model: "m" };
+    const { rows } = parseTable(yield* evalCli([yield* play(scriptA, fixture, [zero])]));
+
+    expect(usageCells(rows[0]!)).toEqual(["0", "0", "0", "0"]);
+  }));
+
+  it.effect("log.jsonl が無いランは - になる", () => Effect.gen(function* () {
+    const dir = yield* play(scriptA, fixture, [first, second]);
+    yield* Effect.promise(() => rm(join(dir, "log.jsonl")));
+    const { rows } = parseTable(yield* evalCli([dir]));
+
+    expect(usageCells(rows[0]!)).toEqual(["-", "-", "-", "-"]);
+  }));
+
+  it.effect("ランごとに合計され、usage のあるランと無いランが同じ表に並ぶ", () => Effect.gen(function* () {
+    const withUsage = yield* play(scriptA, fixture, [first, second]);
+    const without = yield* play(scriptB);
+    const { rows } = parseTable(yield* evalCli([withUsage, without]));
+
+    const byRun = (dir: string) => rows.find((r) => r["ラン"] === basename(dir))!;
+    expect(usageCells(byRun(withUsage))).toEqual(["111", "20", "7000", "57"]);
+    expect(usageCells(byRun(without))).toEqual(["-", "-", "-", "-"]);
+  }));
+});
+
 describe("eval --screen-truth: 共有画面の正解の列", () => {
   // scriptA のノード（根拠）: 議題「採用」r1 [0.5, 9.8] / 論点「面接は何回か」r2 / 案「1 回で足りる」r2 / TODO「求人票を直す」r2 [9.8, 19.2] / 決定「2 回にする」r1・r3 [19.2, 28.0]
   const SCREEN_HEADERS = ["指す発言", "うち記憶", "話だけ", "出てはいけない"];
@@ -503,7 +560,7 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
       const { header, rows } = parseTable(yield* evalCli(["--screen-truth", yield* writeTruth(screenTruth({ 指す発言: [point(["採用"])] })), yield* play(scriptA)]));
       expect(header.slice(0, 4)).toEqual(["ラン", "会議", "ノード", "深さ"]);
       expect(header.slice(-4)).toEqual(SCREEN_HEADERS);
-      expect(header).toHaveLength(4 + 7 + 3 + 4);
+      expect(header).toHaveLength(4 + 7 + 3 + 4 + 4);
       expect(header.some((h) => h.includes("再現率"))).toBe(false);
       expect(rows[0]).toMatchObject({ ノード: "5", 深さ: "3" });
     }));

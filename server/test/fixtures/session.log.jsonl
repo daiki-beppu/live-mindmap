@@ -2,7 +2,7 @@
 {"at": "2026-10-01T00:00:01.000Z", "type": "remark", "remark": {"id": "r1", "track": "相手", "start": 0, "end": 9, "text": "今日は採用の進め方を決めます"}}
 {"at": "2026-10-01T00:00:02.000Z", "type": "remark", "remark": {"id": "r2", "track": "相手", "start": 10, "end": 19, "text": "面接を何回にするかが論点です"}}
 {"at": "2026-10-01T00:00:03.000Z", "type": "intake-restarted", "trigger": "auto"}
-{"at": "2026-10-01T00:00:04.000Z", "type": "diff", "input": {"recent": [], "fresh": ["r1", "r2"], "nodeCount": 0}, "ops": [{"op": "add", "ref": "t1", "parent": "root", "kind": "議題", "text": "採用", "evidence": ["r1"]}, {"op": "add", "ref": "t2", "parent": "t1", "kind": "論点", "text": "面接は何回か", "evidence": ["r2"]}], "dropped": []}
+{"at": "2026-10-01T00:00:04.000Z", "type": "diff", "input": {"recent": [], "fresh": ["r1", "r2"], "nodeCount": 0}, "ops": [{"op": "add", "ref": "t1", "parent": "root", "kind": "議題", "text": "採用", "evidence": ["r1"]}, {"op": "add", "ref": "t2", "parent": "t1", "kind": "論点", "text": "面接は何回か", "evidence": ["r2"]}], "dropped": [], "usage": {"input": 1200, "cacheWrite": 300, "cacheRead": 45000, "output": 210, "model": "claude-haiku-5-5"}}
 {"at": "2026-10-01T00:00:05.000Z", "type": "remark", "remark": {"id": "r3", "track": "自分", "start": 20, "end": 21, "text": "あ"}, "noContent": true}
 {"at": "2026-10-01T00:00:06.000Z", "type": "remark", "remark": {"id": "r4", "track": "相手", "start": 30, "end": 40, "text": "2 回にしましょう"}}
 {"at": "2026-10-01T00:00:07.000Z", "type": "remark", "remark": {"id": "r5", "track": "自分", "start": 41, "end": 49, "text": "賛成です"}}

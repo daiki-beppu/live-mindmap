@@ -24,6 +24,7 @@ node src/cli.ts eval [--truth <正解.json>] [--screen-truth <画面の正解.js
 - 正解ファイルの形の正本は `server/src/core/evaluate.ts` の `Truth`（キーは `決定`・`TODO`）と `ScreenTruth`（キーは `指す発言`・`話だけ`・`出てはいけない`）。
 - `eval` の出力: 1 ラン 1 行の Markdown の表。
   - 基本の列: ラン・会議・ノード・深さ・種別ごとの数・ログの指標（`log.jsonl` が無いランは `-`）。
+  - 差分更新のトークン数の合計の列（入力・キャッシュ書き込み・キャッシュ読み出し・出力。`log.jsonl` の `diff` の行の `usage` を足す。`usage` が 1 行も無いランは `-`）。金額は出さないので、費用は公式の単価を掛けて出す。
   - `--truth` を渡すと、決定・TODO の再現率の列が加わる。
   - `--screen-truth` を渡すと、共有画面の列（指す発言・話だけ・出てはいけないなど）が加わる。
 

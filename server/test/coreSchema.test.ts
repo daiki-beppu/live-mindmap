@@ -126,6 +126,16 @@ describe("ログの行（LogEvent）（CT-4DATA）", () => {
       },
     },
     {
+      title: "diff（usage つき）",
+      event: {
+        type: "diff",
+        input: { recent: [], fresh: ["r1"], nodeCount: 0 },
+        ops: [{ op: "noop", reason: "変化なし" }],
+        dropped: [],
+        usage: { input: 10, cacheWrite: 20, cacheRead: 30, output: 40, model: "claude-sonnet-5-5" },
+      },
+    },
+    {
       title: "diff（失敗）",
       event: { type: "diff", input: { recent: [], fresh: [], nodeCount: 0 }, ops: [], dropped: [], error: "timeout" },
     },
@@ -140,6 +150,26 @@ describe("ログの行（LogEvent）（CT-4DATA）", () => {
       expectDecodeSuccess(
         Schema.decodeUnknownEffect(LogEvent)({ at: "2026-10-06T00:00:00.000Z", ...(event as Record<string, unknown>) }),
       ));
+  }
+});
+
+describe("diff の行の usage", () => {
+  const diff = (usage: unknown) => ({ type: "diff", input: { recent: [], fresh: [], nodeCount: 0 }, ops: [], dropped: [], usage });
+  const valid = { input: 10, cacheWrite: 0, cacheRead: 30, output: 40, model: "claude-sonnet-5-5" };
+
+  it.effect("正しい usage の行は decode でき、usage の値はそのまま残る", () =>
+    Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(diff(valid));
+      assert.deepStrictEqual(decoded.type === "diff" ? decoded.usage : undefined, valid);
+    }));
+
+  for (const [title, usage] of [
+    ["小数のトークン数", { ...valid, output: 1.5 }],
+    ["文字列のトークン数", { ...valid, input: "10" }],
+    ["model が無い", { input: 1, cacheWrite: 1, cacheRead: 1, output: 1 }],
+    ["cacheRead が無い", { input: 1, cacheWrite: 1, output: 1, model: "m" }],
+  ] as const) {
+    it.effect(`${title}の usage は decode に失敗する`, () => expectDecodeFailure(Schema.decodeUnknownEffect(LogEvent)(diff(usage))));
   }
 });
 

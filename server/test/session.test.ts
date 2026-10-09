@@ -220,6 +220,40 @@ describe("ログ", () => {
       });
     }));
 
+  it.effect("差分更新がトークン数を返すと、diff の行の usage にそのまま入り、返さない回の行には usage のキー自体が付かない", () =>
+    Effect.gen(function* () {
+      const usage = { input: 120, cacheWrite: 30, cacheRead: 4000, output: 55, model: "claude-haiku-5-5" };
+      let n = 0;
+      const events: LogEvent[] = [];
+      const session = yield* open(
+        () => Effect.sync(() => (n++ === 0 ? { ops: [], usage } : { ops: [] })),
+        events,
+      );
+      for (const text of ["一つ目", "二つ目"]) {
+        yield* session.push(remark(text));
+        yield* session.push(remark(text));
+        yield* session.idle;
+      }
+
+      const diffs = events.flatMap((e) => (e.type === "diff" ? [e] : []));
+      expect(diffs).toHaveLength(2);
+      expect(diffs[0]!.usage).toEqual(usage);
+      expect(diffs[1]).not.toHaveProperty("usage");
+    }));
+
+  it.effect("失敗した回の diff の行には usage を付けず、error の形は変わらない", () =>
+    Effect.gen(function* () {
+      const events: LogEvent[] = [];
+      const session = yield* open(() => Effect.fail({ _tag: "ClaudeResultFailed", message: "timeout" }), events);
+      yield* session.push(remark("発言"));
+      yield* session.push(remark("発言"));
+      yield* session.idle;
+
+      const diff = events.find((e) => e.type === "diff");
+      expect(diff).toMatchObject({ type: "diff", error: expect.stringContaining("timeout") });
+      expect(diff).not.toHaveProperty("usage");
+    }));
+
   it.effect("makeSession は最初のイベントとして、タイトルを持つ開始のイベントを SessionLog に書く", () =>
     Effect.gen(function* () {
       const { events } = yield* setup();

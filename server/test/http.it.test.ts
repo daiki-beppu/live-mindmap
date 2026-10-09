@@ -264,7 +264,7 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
       const gen = (async function* () {
         for await (const message of params.prompt) {
           sent.push(message);
-          yield { type: "assistant" };
+          yield { type: "assistant", message: { model: "fake-model", usage: { input_tokens: 0, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 0 } } };
           yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "テスト" }] } };
         }
       })();
