@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createServer } from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +9,12 @@ import { Effect } from "effect";
 
 const cli = join(import.meta.dirname, "../src/cli.ts");
 
-function runProcess(argv: string[], sessionsDir: string) {
+function runProcess(argv: string[], sessionsDir: string, env: Record<string, string> = {}) {
   return Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
     execFile(process.execPath, [cli, ...argv], {
       encoding: "utf8",
       timeout: 10_000,
-      env: { ...process.env, LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1" },
+      env: { ...process.env, LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1", ...env },
     }, (error, stdout, stderr) => {
       if (error) {
         if (error.killed || typeof error.code !== "number") {
@@ -31,6 +32,23 @@ function runProcess(argv: string[], sessionsDir: string) {
 const temporaryDirectory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-cli-"))),
   (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+);
+
+// 127.0.0.1 で待ち受けて塞いだポートを返す（play も 127.0.0.1 で待ち受けるので、同じアドレスでないと衝突しない）
+const occupiedPort = Effect.acquireRelease(
+  Effect.tryPromise(() => new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        reject(new Error("ポートを取得できない"));
+        return;
+      }
+      resolve({ port: address.port, close: () => new Promise<void>((done) => server.close(() => done())) });
+    });
+  })),
+  (held) => Effect.promise(() => held.close()),
 );
 
 const emptyExport = { root: { id: "root", kind: "会議", text: "定例", evidence: [], children: [] } };
@@ -331,6 +349,32 @@ describe("CLI のプロセス入口", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
     expect(result.stderr).toContain("--screen");
+    expect(existsSync(sessionsDir)).toBe(false);
+  }).pipe(Effect.scoped));
+
+  it.live("play は待ち受けるポートが使用中なら、ポート番号と LIVE_MINDMAP_PORT を含む標準エラー 1 行と 0 以外の終了で、セッションのフォルダを作らない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const held = yield* occupiedPort;
+    const transcript = join(dir, "small.transcript.json");
+    const sessionsDir = join(dir, "sessions");
+    yield* Effect.tryPromise(() => writeFile(transcript, JSON.stringify({
+      schema_version: 1,
+      duration: 10,
+      source_path: "small.m4a",
+      transcript: {
+        tracks: ["speaker"],
+        diagnostics: {},
+        segments: [{ track: "speaker", start_seconds: 0.5, end_seconds: 9.5, text: "ポートが使用中の確認です", confidence: 0.9 }],
+      },
+    })));
+    const result = yield* runProcess(["play", transcript], sessionsDir, { LIVE_MINDMAP_PORT: String(held.port) });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
+    expect(result.stderr).toContain(String(held.port));
+    expect(result.stderr).toContain("別のプロセス");
+    expect(result.stderr).toContain("LIVE_MINDMAP_PORT");
     expect(existsSync(sessionsDir)).toBe(false);
   }).pipe(Effect.scoped));
 });
