@@ -80,6 +80,48 @@ private func amplitude(of url: URL, at frequency: Double, from start: Double, to
     return 2 * (re * re + im * im).squareRoot() / Double(to - from)
 }
 
+/// 音声の入っていない m4a（ヘッダーだけ）を作る。AAC のファイルを開いて、1 サンプルも書かずに閉じる。
+/// 作った後で、AVURLAsset が「読めるが、音声のトラックが無い、または長さが 0」と返すことを確かめる。
+private func writeEmptyRecording(_ url: URL) async throws {
+    do {
+        _ = try AVAudioFile(forWriting: url, settings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 48_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 64_000,
+        ])
+    }
+    let size = try #require(try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int)
+    #expect(size > 0)
+    let asset = AVURLAsset(url: url)
+    let tracks = try await asset.loadTracks(withMediaType: .audio)
+    let duration = try await asset.load(.duration)
+    #expect(tracks.isEmpty || !duration.isNumeric || duration <= .zero)
+}
+
+/// 音声のトラックが 1 本も無い m4a を作る。ftyp と、trak を持たない moov（mvhd だけ）を直接書く。
+/// 作った後で、AVURLAsset が読めて、音声トラックが 0 本であることを確かめる。
+private func writeTracklessRecording(_ url: URL) async throws {
+    func be32(_ v: UInt32) -> [UInt8] { [UInt8(v >> 24), UInt8((v >> 16) & 0xFF), UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)] }
+    func box(_ type: String, _ payload: [UInt8]) -> [UInt8] { be32(UInt32(8 + payload.count)) + Array(type.utf8) + payload }
+    let identity: [UInt8] = be32(0x0001_0000) + [UInt8](repeating: 0, count: 12) + be32(0x0001_0000) + [UInt8](repeating: 0, count: 12) + be32(0x4000_0000)
+    let mvhd = [UInt8](repeating: 0, count: 4) + [UInt8](repeating: 0, count: 8) + be32(1000) + be32(0)
+        + be32(0x0001_0000) + [0x01, 0x00] + [UInt8](repeating: 0, count: 10) + identity
+        + [UInt8](repeating: 0, count: 24) + be32(2)
+    let ftyp = box("ftyp", Array("M4A ".utf8) + be32(0) + Array("M4A mp42isom".utf8))
+    try Data(ftyp + box("moov", box("mvhd", mvhd))).write(to: url)
+    let tracks = try await AVURLAsset(url: url).loadTracks(withMediaType: .audio)
+    #expect(tracks.isEmpty)
+}
+
+/// 飛ばしたファイル名の行を集める（Sendable なクロージャから書くので、ロックで守る）。
+private final class SkippedLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+    var lines: [String] { lock.lock(); defer { lock.unlock() }; return storage }
+    func append(_ line: String) { lock.lock(); storage.append(line); lock.unlock() }
+}
+
 private struct Session {
     let directory: URL
     var output: URL { directory.appendingPathComponent("out").appendingPathComponent("mix.m4a") }
@@ -320,5 +362,114 @@ struct MixITTests {
         await #expect(throws: (any Error).self) {
             try await mixRecordings(mixInputs(inSession: session.directory, track: nil), to: session.output)
         }
+    }
+
+    // MARK: 空の録音
+
+    @Test("空の録音（音声なし）は飛ばして残りを重ね、飛ばしたファイル名を 1 ファイル 1 行で報告する")
+    func skipsEmptyRecordings() async throws {
+        let session = try Session.make()
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        try await writeEmptyRecording(session.directory.appendingPathComponent("相手-5.m4a"))
+        try await writeEmptyRecording(session.directory.appendingPathComponent("自分-6.m4a"))
+        let skipped = SkippedLines()
+
+        let inputs = try mixInputs(inSession: session.directory, track: nil)
+        #expect(inputs.count == 6)
+        try await mixRecordings(inputs, to: session.output, reportSkipped: { skipped.append($0) })
+
+        #expect(abs(try duration(of: session.output) - 3.0) < 0.1)
+        for frequency in [440.0, 880, 1320, 1760] {
+            #expect(try amplitude(of: session.output, at: frequency, from: 0.1, to: 0.4) > 0.05)
+        }
+        let lines = skipped.lines
+        #expect(lines.count == 2)
+        #expect(lines.filter { $0.contains("相手-5.m4a") }.count == 1)
+        #expect(lines.filter { $0.contains("自分-6.m4a") }.count == 1)
+        for kept in ["相手.m4a", "相手-2.m4a", "自分.m4a", "自分-3.m4a"] {
+            #expect(!lines.contains { $0.contains(kept) })
+        }
+    }
+
+    @Test("音声のトラックが 1 本も無い m4a も飛ばし、残りを混ぜて、ファイル名を報告する")
+    func skipsTracklessRecording() async throws {
+        let session = try Session.make()
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        try await writeTracklessRecording(session.directory.appendingPathComponent("相手-5.m4a"))
+        let skipped = SkippedLines()
+
+        let inputs = try mixInputs(inSession: session.directory, track: nil)
+        try await mixRecordings(inputs, to: session.output, reportSkipped: { skipped.append($0) })
+
+        #expect(abs(try duration(of: session.output) - 3.0) < 0.1)
+        for frequency in [440.0, 880, 1320, 1760] {
+            #expect(try amplitude(of: session.output, at: frequency, from: 0.1, to: 0.4) > 0.05)
+        }
+        #expect(skipped.lines.count == 1)
+        #expect(skipped.lines.filter { $0.contains("相手-5.m4a") }.count == 1)
+    }
+
+    @Test("既定の報告先は標準エラーで、飛ばしたファイル名が 1 ファイル 1 行で届く")
+    func defaultReportGoesToStandardError() async throws {
+        let session = try Session.make()
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        try await writeEmptyRecording(session.directory.appendingPathComponent("相手-5.m4a"))
+        try await writeEmptyRecording(session.directory.appendingPathComponent("自分-6.m4a"))
+        let capture = session.directory.appendingPathComponent("stderr.txt")
+        let inputs = try mixInputs(inSession: session.directory, track: nil)
+
+        // 標準エラー（fd 2）を一時ファイルへ向けて、既定のクロージャの出力を受ける。
+        let saved = dup(2)
+        let fd = open(capture.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        #expect(saved >= 0 && fd >= 0)
+        dup2(fd, 2)
+        close(fd)
+        do {
+            try await mixRecordings(inputs, to: session.output)
+        } catch {
+            dup2(saved, 2)
+            close(saved)
+            throw error
+        }
+        dup2(saved, 2)
+        close(saved)
+
+        let lines = try String(contentsOf: capture, encoding: .utf8).split(separator: "\n").map(String.init)
+        #expect(lines.filter { $0.contains("相手-5.m4a") }.count == 1)
+        #expect(lines.filter { $0.contains("自分-6.m4a") }.count == 1)
+        #expect(!lines.contains { $0.contains("相手-5.m4a") && $0.contains("自分-6.m4a") })
+    }
+
+    @Test("全部が空なら MixError で失敗し、出力は作られず、終了コードは 0 以外")
+    func allEmptyThrows() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await writeEmptyRecording(directory.appendingPathComponent("相手.m4a"))
+        try await writeEmptyRecording(directory.appendingPathComponent("自分.m4a"))
+        let output = directory.appendingPathComponent("mix.m4a")
+
+        do {
+            try await mixRecordings(mixInputs(inSession: directory, track: nil), to: output, reportSkipped: { _ in })
+            Issue.record("全部が空なのに成功した")
+        } catch {
+            #expect(error is MixError)
+            #expect(exitCode(for: error) != 0)
+        }
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+    }
+
+    @Test("壊れた入力は、空の録音が一緒にあっても失敗し、空として報告しない")
+    func unreadableInputIsNotSkippedAsEmpty() async throws {
+        let session = try Session.make()
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        try await writeEmptyRecording(session.directory.appendingPathComponent("相手-5.m4a"))
+        try Data("not audio".utf8).write(to: session.directory.appendingPathComponent("自分-4.m4a"))
+        let skipped = SkippedLines()
+
+        await #expect(throws: (any Error).self) {
+            try await mixRecordings(mixInputs(inSession: session.directory, track: nil), to: session.output, reportSkipped: { skipped.append($0) })
+        }
+        #expect(!skipped.lines.contains { $0.contains("自分-4.m4a") })
+        #expect(!FileManager.default.fileExists(atPath: session.output.path))
     }
 }
