@@ -1,0 +1,40 @@
+diff --git a/server/src/claude.ts b/server/src/claude.ts
+index bf94821..de8bcc5 100644
+--- a/server/src/claude.ts
++++ b/server/src/claude.ts
+@@ -4,7 +4,9 @@ import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthro
+ import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
+ import { children, DiffOutput, DiffUpdater, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
+ 
+-const MODEL = "claude-sonnet-5-5";
++const MODEL = process.env.LM_EVAL_MODEL ?? "claude-sonnet-5-5"; // EVAL-ONLY（#614）
++import { appendFileSync as __append } from "node:fs"; // EVAL-ONLY
++const __metrics = (rec: object) => { if (process.env.LM_EVAL_METRICS) __append(process.env.LM_EVAL_METRICS, JSON.stringify({ t: Date.now(), model: MODEL, ...rec }) + "\n"); }; // EVAL-ONLY
+ 
+ // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
+ export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
+@@ -357,7 +359,7 @@ export const layerClaude = Layer.effect(
+             try: () => sdk.query({
+               prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
+               options: {
+-                model: MODEL, systemPrompt: SYSTEM,
++                model: MODEL, systemPrompt: SYSTEM, ...(process.env.LM_EVAL_EFFORT ? { effort: process.env.LM_EVAL_EFFORT as "medium" } : {}), // EVAL-ONLY
+                 tools: [], settingSources: [], persistSession: false, maxTurns: 4,
+                 mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
+                 outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },
+@@ -393,10 +395,14 @@ export const layerClaude = Layer.effect(
+       });
+ 
+     const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffOutput, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
++      const reqs = new Map<string, unknown>(); // EVAL-ONLY
++      const t0 = Date.now(); // EVAL-ONLY
+       for (;;) {
+         const { value: m, done } = yield* next(o);
+-        if (done) return yield* new ClaudeQueryFailed({ message: "差分更新の結果が無い", cause: "stream ended before result" });
++        if (done) { __metrics({ calls: o.calls, kind: "ended", ms: Date.now() - t0 }); return yield* new ClaudeQueryFailed({ message: "差分更新の結果が無い", cause: "stream ended before result" }); }
++        if (m.type === "assistant") reqs.set(m.message.id, m.message.usage); // EVAL-ONLY
+         if (m.type !== "result") continue;
++        __metrics({ calls: o.calls, kind: m.subtype, ms: Date.now() - t0, duration_ms: m.duration_ms, duration_api_ms: m.duration_api_ms, num_turns: m.num_turns, usage: m.usage, requests: [...reqs.values()], total_cost_usd: m.total_cost_usd, modelUsage: m.modelUsage, valid: m.subtype === "success" ? Schema.is(DiffOutput)(m.structured_output) : undefined }); // EVAL-ONLY
+         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `差分更新に失敗: ${m.subtype}`, subtype: m.subtype });
+         return yield* Schema.decodeUnknownEffect(DiffOutput)(m.structured_output).pipe(
+           Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
