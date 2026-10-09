@@ -1,0 +1,180 @@
+diff --git a/server/src/claude.ts b/server/src/claude.ts
+index 601d758..0f460b1 100644
+--- a/server/src/claude.ts
++++ b/server/src/claude.ts
+@@ -4,7 +4,9 @@ import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthro
+ import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
+ import { children, DiffOutput, DiffUpdater, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type DiffResult, type DiffUsage, type MeetingMap, type Remark, type ScreenChange } from "./core/index.ts";
+ 
+-const MODEL = "claude-sonnet-5-5";
++const MODEL = process.env.LM_EVAL_MODEL ?? "claude-sonnet-5-5"; // EVAL-ONLY（#655）
++import { appendFileSync as __append, readFileSync as __read } from "node:fs"; // EVAL-ONLY
++const __metrics = (rec: object) => { if (process.env.LM_EVAL_METRICS) __append(process.env.LM_EVAL_METRICS, JSON.stringify({ t: Date.now(), model: MODEL, ...rec }) + "\n"); }; // EVAL-ONLY
+ 
+ // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
+ export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
+@@ -162,8 +164,10 @@ function underClosed(map: MeetingMap, id: string): boolean {
+ }
+ 
+ // 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
+-function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
++const EVAL_IDS = process.env.LM_EVAL_IDS ?? ""; // EVAL-ONLY（#686）: "refs" | "drops" | "both"
++function renderChanges(prev: MeetingMap, cur: MeetingMap, last?: DiffInput["lastApplied"]): string {
+   const lines: string[] = [];
++  const refOf = new Map((EVAL_IDS === "refs" || EVAL_IDS === "both" ? last?.refs ?? [] : []).map(([r, id]) => [id, r])); // EVAL-ONLY
+   const ids = (m: MeetingMap) => m.order.filter((id) => id !== ROOT_ID && m.nodes[id]);
+   for (const id of ids(prev)) {
+     if (!cur.nodes[id]) lines.push(`- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
+@@ -183,7 +187,7 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
+     const n = cur.nodes[id]!;
+     const old = prev.nodes[id];
+     if (!old) {
+-      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）`);
++      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）${refOf.has(id) ? `（前回の応答の仮 id ${refOf.get(id)}）` : ""}`); // 仮 id は EVAL-ONLY
+       continue;
+     }
+     const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.due !== old.due
+@@ -210,7 +214,11 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
+       walk(id, 1);
+     }
+   }
+-  return lines.length ? lines.join("\n") : "（変更なし）";
++  // EVAL-ONLY: 前回の応答で捨てた操作
++  const dropped = EVAL_IDS === "drops" || EVAL_IDS === "both" ? last?.dropped ?? [] : [];
++  const droppedLines = dropped.map(({ op, reason }) => `- ${JSON.stringify(op)} → ${reason}`);
++  const tail = droppedLines.length ? ["", "### 前回の応答で捨てた操作（適用されていない。捨てた add の仮 id のノードは無い）", ...droppedLines] : [];
++  return (lines.length ? lines.join("\n") : "（変更なし）") + (tail.length ? "\n" + tail.join("\n") : "");
+ }
+ 
+ // 議題 id の下をたどり、その議題の話し中の部分のノード数と、直下の議題（途中の論点・案などは飛ばして最初に当たる議題）を返す。
+@@ -270,11 +278,11 @@ function renderTopicList(map: MeetingMap): string {
+ }
+ 
+ // previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
+-export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: MeetingMap): string {
++export function buildPrompt({ map, recent, fresh, lastApplied }: DiffInput, previous?: MeetingMap): string {
+   return [
+     renderTopicList(map), "",
+     ...(previous
+-      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map)]
++      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map, lastApplied)]
+       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
+     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
+     "## 新しい発言", fresh.map(fmtRemark).join("\n"),
+@@ -361,7 +369,7 @@ export const layerClaude = Layer.effect(
+             try: () => sdk.query({
+               prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
+               options: {
+-                model: MODEL, systemPrompt: SYSTEM,
++                model: MODEL, systemPrompt: SYSTEM + (process.env.LM_EVAL_SYSTEM_APPEND ? "\n\n" + __read(process.env.LM_EVAL_SYSTEM_APPEND, "utf8").trim() : ""), ...(process.env.LM_EVAL_EFFORT ? { effort: process.env.LM_EVAL_EFFORT as "medium" } : {}), // EVAL-ONLY
+                 tools: [], settingSources: [], persistSession: false, maxTurns: 4,
+                 mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
+                 outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },
+@@ -400,10 +408,14 @@ export const layerClaude = Layer.effect(
+     // result の usage は最後の 1 回分しか持たず、modelUsage・total_cost_usd は使わない（金額は単価が変わるので持たない）
+     const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffResult, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
+       let usage: DiffUsage | undefined;
++      const reqs = new Map<string, unknown>(); // EVAL-ONLY
++      const t0 = Date.now(); // EVAL-ONLY
+       for (;;) {
+         const { value: m, done } = yield* next(o);
++        if (done) __metrics({ calls: o.calls, kind: "ended", ms: Date.now() - t0 }); // EVAL-ONLY
+         if (done) return yield* new ClaudeQueryFailed({ message: "差分更新の結果が無い", cause: "stream ended before result" });
+         if (m.type === "assistant") {
++          reqs.set(m.message.id, m.message.usage); // EVAL-ONLY
+           const u = m.message.usage;
+           usage = {
+             input: (usage?.input ?? 0) + u.input_tokens,
+@@ -415,6 +427,7 @@ export const layerClaude = Layer.effect(
+           continue;
+         }
+         if (m.type !== "result") continue;
++        __metrics({ calls: o.calls, kind: m.subtype, ms: Date.now() - t0, duration_ms: m.duration_ms, duration_api_ms: m.duration_api_ms, num_turns: m.num_turns, usage: m.usage, requests: [...reqs.values()], total_cost_usd: m.total_cost_usd, modelUsage: m.modelUsage, valid: m.subtype === "success" ? Schema.is(DiffOutput)(m.structured_output) : undefined }); // EVAL-ONLY
+         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `差分更新に失敗: ${m.subtype}`, subtype: m.subtype });
+         const decoded = yield* Schema.decodeUnknownEffect(DiffOutput)(m.structured_output).pipe(
+           Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
+diff --git a/server/src/core/map.ts b/server/src/core/map.ts
+index 91f0e5a..c102335 100644
+--- a/server/src/core/map.ts
++++ b/server/src/core/map.ts
+@@ -157,7 +157,7 @@ function removeNode(map: MeetingMap, id: string) {
+ // add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
+ // close と開き直しは changeOrder・touchedAt に影響しない。
+ // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
+-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
++export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: [string, string][] } { // refs は EVAL-ONLY（#686）
+   const { round, at } = stamp;
+   const map = cloneMap(input);
+   const dropped: Dropped[] = [];
+@@ -270,5 +270,5 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
+       }
+     }
+   }
+-  return { map, dropped, changeOrder };
++  return { map, dropped, changeOrder, refs: [...refs] }; // refs は EVAL-ONLY
+ }
+diff --git a/server/src/core/session.ts b/server/src/core/session.ts
+index dbff4d8..5c7c918 100644
+--- a/server/src/core/session.ts
++++ b/server/src/core/session.ts
+@@ -33,6 +33,7 @@ export type DiffInput = {
+   recent: Remark[]; // 直前に処理済みの発言（文脈用）
+   fresh: Remark[]; // 新しい発言
+   screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
++  lastApplied?: { readonly dropped: readonly Dropped[]; readonly refs: readonly [string, string][] }; // EVAL-ONLY（#686）: 前回の応答で捨てた操作と、仮 id → n の id
+   previousScreens?: readonly ScreenChange[]; // この呼び出しより前に最後に添えた共有画面（古い順・最大 2 件）。query を開き直したときの最初のメッセージに送り直す。無ければキーごと付けない
+ };
+ // 差分更新の失敗の形。core は具体の失敗の型を知らず、タグと文面だけを見る（ログの error 欄に使う）
+@@ -294,6 +295,7 @@ type Runtime = {
+   readonly unsentScreens: readonly HeldScreen[]; // まだ差分更新に添えていない共有画面の変化（受け取った順）
+   readonly screenFiles: ReadonlySet<string>; // 画像に付けたファイル名
+   readonly lastScreens: readonly HeldScreen[]; // 最後に添えた共有画面（古い順・最大 LAST_SCREENS 件）。失敗した回に選んだ画面も数える。画像はファイル名だけで、送るときに読み戻す
++  readonly lastApplied?: DiffInput["lastApplied"]; // EVAL-ONLY
+   readonly receivedScreens: number; // 受け取った共有画面の総数。diff の行の screenCount に使う
+ };
+ 
+@@ -364,7 +366,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
+     function callUpdater(fresh: readonly Remark[]): Effect.Effect<void> {
+       return Effect.uninterruptibleMask((restore) =>
+         Effect.gen(function* () {
+-          const { map, recent, input, attached, previous } = yield* Ref.modify(ref, (s) => {
++          const { map, recent, input, attached, previous, lastApplied } = yield* Ref.modify(ref, (s) => {
+             const recent = s.processed.slice(-RECENT);
+             // 添える共有画面: 新しい発言の end の最大値以下に映り始めた、まだ添えていない変化を時刻順に並べ、新しい SCREENS_MAX 件。
+             // 候補はすべて処理済みにする（添えなかった古い変化を後から送ると、映り続ける画面と食い違う）。後に映り始めた変化は次へ回す
+@@ -379,7 +381,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
+               ...(s.receivedScreens > 0 ? { screenCount: s.receivedScreens } : {}),
+             };
+             return [
+-              { map: s.map, recent, input, attached, previous: s.lastScreens },
++              { map: s.map, recent, input, attached, previous: s.lastScreens, lastApplied: s.lastApplied },
+               {
+                 ...s,
+                 known: new Set([...s.known, ...fresh.map((u) => u.id)]),
+@@ -406,7 +408,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
+           // 失敗は、添える画像の読み戻しと update の、中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
+           const outcome = yield* Effect.all([Effect.forEach(attached, readBack), readPrevious]).pipe(
+             Effect.flatMap(([screens, previousScreens]) =>
+-              restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
++              restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(lastApplied ? { lastApplied } : {}), ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
+             ),
+             Effect.map(({ ops, usage }) => ({ ok: true as const, ops, usage })),
+             Effect.catchCause((cause) =>
+@@ -415,7 +417,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
+           );
+           if (!outcome.ok) {
+             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
+-            yield* Ref.update(ref, (s) => ({ ...s, reflecting: [] }));
++            yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], lastApplied: undefined }));
+             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
+             return;
+           }
+@@ -423,7 +425,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
+           const dropped = yield* Ref.modify(ref, (s) => {
+             const stamp = stampOf(s, fresh);
+             const applied = applyOps(s.map, outcome.ops, s.known, stamp);
+-            return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [] }];
++            return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [], lastApplied: { dropped: applied.dropped, refs: applied.refs } }];
+           });
+           yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped, ...(outcome.usage ? { usage: outcome.usage } : {}) });
+         }),
