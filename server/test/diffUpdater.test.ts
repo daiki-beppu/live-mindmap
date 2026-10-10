@@ -34,7 +34,7 @@ const localPreparation = (status: number) => {
   const requests: string[] = [];
   const apple = Layer.succeed(AppleIntelligence, AppleIntelligence.of({
     availability: Effect.succeed({ osVersion: "27.0", availability: { status: "available" } }),
-    launch: Effect.succeed({ url: "http://127.0.0.1:8766/v1", pid: 4242 }),
+    launch: Effect.succeed({ url: "http://127.0.0.1:8766/v1", pid: 4242, exited: Effect.never }),
   }));
   const client = HttpClient.make((request) => Effect.sync(() => {
     requests.push(request.url);

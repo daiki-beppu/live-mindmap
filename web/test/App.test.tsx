@@ -32,8 +32,15 @@ describe("App: 共有画面を使っていない一文は、useLiveFeed の値�
     useLiveFeed.mockReturnValue({ ...feed(null), local: true });
     const shown = renderToStaticMarkup(<App />);
     expect(shown).toContain("ローカルモード・Apple Intelligence");
-    expect(shown).toContain("local-mode-line");
     useLiveFeed.mockReturnValue(feed(null));
-    expect(renderToStaticMarkup(<App />)).not.toContain("local-mode-line");
+    expect(renderToStaticMarkup(<App />)).not.toContain("ローカルモード・Apple Intelligence");
+  });
+
+  it.each([
+    ["restarting", "ローカルモード・Apple Intelligence・マップの更新を再開しています"],
+    ["stopped", "ローカルモード・Apple Intelligence・マップの更新が止まっています"],
+  ] as const)("feed の %s が SessionView を経てローカルモードの文言へ届く", (status, text) => {
+    useLiveFeed.mockReturnValue({ ...feed(null), local: true, diffUpdate: { status } });
+    expect(renderToStaticMarkup(<App />)).toContain(text);
   });
 });
