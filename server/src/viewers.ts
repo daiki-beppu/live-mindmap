@@ -4,7 +4,7 @@
 // 先に購読してから保持している値を送る（逆にすると、保持値を送っている間に来た値を取りこぼす）。切れたら Fiber ごと終わる。
 import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref } from "effect";
 import { Socket } from "effect/socket";
-import type { IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame, Track } from "./core/index.ts";
+import type { DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame, Track } from "./core/index.ts";
 
 // 配信の終わり。これを受け取った接続は、先に届いていたフレームを書いてから終わる（drained が使う）
 const FEED_END = Symbol("live-mindmap/server/Viewers/end");
@@ -12,6 +12,7 @@ type Feed = string | typeof FEED_END;
 
 // 保持している最後の値。送る形（JSON 文字列）のまま持ち、接続ごとに組み立て直さない
 type Retained = {
+  readonly diffUpdate: string | undefined;
   readonly snapshot: string | undefined;
   // いま話している文字は、トラックごとに最後に送った値だけを持ち、空でなければ、つないだ直後に送り直す
   // （スナップショットには入れない）。Map の並びは最初に送った順で、送り直す順もこれに従う
@@ -29,13 +30,14 @@ type Retained = {
   readonly screenNotice: string | undefined;
 };
 
-const NOTHING_RETAINED: Retained = { snapshot: undefined, speaking: new Map(), intake: undefined, screenNotice: undefined };
+const NOTHING_RETAINED: Retained = { snapshot: undefined, speaking: new Map(), intake: undefined, screenNotice: undefined, diffUpdate: undefined };
 
 const retainedFrames = (retained: Retained): string[] => [
   ...(retained.snapshot === undefined ? [] : [retained.snapshot]),
   ...retained.speaking.values(),
   ...(retained.intake === undefined ? [] : [retained.intake]),
   ...(retained.screenNotice === undefined ? [] : [retained.screenNotice]),
+  ...(retained.diffUpdate === undefined ? [] : [retained.diffUpdate]),
 ];
 
 export class Viewers extends Context.Service<Viewers, {
@@ -43,6 +45,7 @@ export class Viewers extends Context.Service<Viewers, {
   // いま話している文字を、つないでいるクライアントへ送る。空の文字は送るが保持しない（つなぎ直したときに送り返さない）
   speak: (frame: SpeakingFrame) => Effect.Effect<void>;
   intake: (frame: IntakeFrame) => Effect.Effect<void>;
+  diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   // 共有画面を使っていないことの一文を送る。text が null なら一文を消し、保持も消す（消した後につないだクライアントには送らない）
   screenNotice: (frame: ScreenNoticeFrame) => Effect.Effect<void>;
   // 1 つのクライアントへ配信し続ける。切れるか、配信が終わるまで終わらない
@@ -82,6 +85,10 @@ export class Viewers extends Context.Service<Viewers, {
       const data = JSON.stringify(frame);
       return send(data, (current) => ({ ...current, intake: data }));
     };
+    const diffUpdate = (frame: DiffUpdateFrame) => {
+      const data = JSON.stringify(frame);
+      return send(data, (current) => ({ ...current, diffUpdate: data }));
+    };
 
     const screenNotice = (frame: ScreenNoticeFrame) => {
       const data = JSON.stringify(frame);
@@ -112,6 +119,6 @@ export class Viewers extends Context.Service<Viewers, {
 
     const drained = Effect.andThen(PubSub.end(updates, FEED_END), FiberSet.awaitEmpty(connections));
 
-    return Viewers.of({ publish, speak, intake, screenNotice, connect, drained });
+    return Viewers.of({ publish, speak, intake, diffUpdate, screenNotice, connect, drained });
   }));
 }

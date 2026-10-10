@@ -1,6 +1,7 @@
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Snapshot } from "../../server/src/core/index.ts";
+import type { DiffUpdateState, Snapshot } from "../../server/src/core/index.ts";
+import { DiffUpdateNotice } from "./DiffUpdateNotice.tsx";
 import { Captions } from "./Captions.tsx";
 import { ChangeList } from "./ChangeList.tsx";
 import { enterFoldsSelection } from "./enterFold.ts";
@@ -55,12 +56,14 @@ export function SessionView({
   speaking,
   intake,
   screenNotice,
+  diffUpdate,
   review,
 }: {
   snapshot: Snapshot;
   speaking: Speaking;
   intake?: IntakeStatus;
   screenNotice?: string | null;
+  diffUpdate?: DiffUpdateState | null;
   review?: { timeMoves: number; audio?: boolean; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
 }) {
   const scope: ViewingScope = review ? "review" : "live";
@@ -176,6 +179,7 @@ export function SessionView({
       {!viewing.captionsHidden && <Captions speaking={speaking} />}
       {intake !== undefined && <IntakeNoticeOf status={intake} />}
       {screenNotice !== undefined && <ScreenNotice text={screenNotice} />}
+      {diffUpdate !== undefined && <DiffUpdateNotice state={diffUpdate} />}
       {!viewing.sideHidden && (
         <div className="side">
           <EvidencePanel selectedId={selectedId} evidence={selectedId === null ? null : evidenceOf(snapshot, selectedId, humanOpened, humanFolded, humanUnbundled)} />

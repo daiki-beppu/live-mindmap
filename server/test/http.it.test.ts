@@ -1,12 +1,13 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
-import type { DiffUpdater } from "../src/core/index.ts";
+import { DiffUpdatePaused, type DiffUpdateFrame, type DiffUpdater } from "../src/core/index.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
-import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Ref, Stream, type Cause } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Exit, Layer, Queue, Ref, Scope, Stream, type Cause } from "effect";
+import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
@@ -98,6 +99,35 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
 });
 
 describe("HTTP の失敗応答（要件8〜11）", () => {
+  it.effect("同じライブセッションの一時停止・再開・終了が接続中と再接続の画面へ届く", () => Effect.gen(function* () {
+    let calls = 0;
+    const r = yield* resourceWithFakeHelpers([{ events: [
+      { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" },
+      { type: "remark", track: "相手", start: 1, end: 2, text: "次の発言" },
+    ] }], { updaterLayer: () => updaterLayer(() => Effect.suspend(() => {
+      calls++;
+      return calls === 1 ? Effect.fail(new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "合成の利用上限" })) : Effect.succeed({ ops: [] });
+    })) });
+    const firstScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void));
+    const first = yield* connect(r.server.port, "/ws", undefined).pipe(Scope.provide(firstScope));
+    const frames = (all: unknown[]) => all.filter((f): f is DiffUpdateFrame => typeof f === "object" && f !== null && "type" in f && f.type === "diff-update");
+    const wait = (all: unknown[], state: DiffUpdateFrame["state"]) => Effect.tryPromise(() => vi.waitFor(() => expect(frames(all).at(-1)?.state).toEqual(state)));
+    expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+    const paused = { status: "paused", reason: "ChatGPT の利用上限" } as const;
+    yield* wait(first.frames, paused);
+    expect(frames(first.frames).map((f) => f.state)).toEqual([{ status: "running" }, paused]);
+    yield* Scope.close(firstScope, Exit.void);
+    const reconnected = yield* connect(r.server.port, "/ws", undefined);
+    yield* wait(reconnected.frames, paused);
+    yield* TestClock.adjust(300_000);
+    yield* wait(reconnected.frames, { status: "running" });
+    expect(calls).toBe(2);
+    expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
+    yield* wait(reconnected.frames, null);
+    const after = yield* connect(r.server.port, "/ws", undefined);
+    yield* wait(after.frames, null);
+    expect(frames(after.frames)).toEqual([{ type: "diff-update", state: null }]);
+  }));
   // 偽の Helpers の Layer（新しい入口、CT-ENTRY-LAYERS）を使う。fake-helper.ts から attempts・listenDelayMs を
   // 削った後（CT-FAKE-TRIM）は、この 2 本を実物の子プロセスで再現できない（要件92）。期待値は変えない。
   // 1 回目（start の初回起動）は接続してから予期せず終わる（続けて失敗した回に数える）。2・3 回目の失敗で諦める

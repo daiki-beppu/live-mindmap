@@ -3,7 +3,7 @@
 import { Context, Effect } from "effect";
 import { HttpServer } from "effect/http";
 import { NetAddress } from "effect/net";
-import type { Snapshot } from "../src/core/index.ts";
+import type { DiffUpdateFrame, Snapshot } from "../src/core/index.ts";
 import type { openListener } from "../src/http.ts";
 import { Viewers } from "../src/viewers.ts";
 
@@ -12,6 +12,7 @@ export type OpenListener = typeof openListener;
 export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {}) {
   const ports: number[] = [];
   const published: Snapshot[] = [];
+  const diffUpdates: DiffUpdateFrame[] = [];
   // 「drained」「closed」を起きた順に積む。渡し切ってから閉じることを順番で観測する
   const events: Array<"drained" | "closed"> = [];
   const open = (port: number) =>
@@ -26,6 +27,7 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
         }),
         speak: () => Effect.void,
         intake: () => Effect.void,
+        diffUpdate: (frame) => Effect.sync(() => { diffUpdates.push(frame); }),
         screenNotice: () => Effect.void,
         connect: () => Effect.void,
         drained: Effect.sync(() => { events.push("drained"); }),
@@ -36,5 +38,5 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
       });
       return Context.make(Viewers, viewers).pipe(Context.add(HttpServer.HttpServer, httpServer));
     });
-  return { open: open satisfies OpenListener, ports, published, events };
+  return { open: open satisfies OpenListener, ports, published, diffUpdates, events };
 }

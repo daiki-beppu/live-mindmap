@@ -43,6 +43,7 @@ import {
   type IntakeStatusReport,
   type Run,
   type Snapshot,
+  type DiffUpdateFrame,
 } from "./core/index.ts";
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
@@ -346,10 +347,11 @@ const recordPlayback = Effect.fn("recordPlayback")(function* (
   input: { title: string; remarks: Iterable<Remark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean },
   model: ExecutableModel,
   publish: (snapshot: Snapshot) => Effect.Effect<void>,
+  diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>,
 ) {
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-  const { session } = yield* openRecordedSession({ dir, title: input.title, publish, model });
+  const { session } = yield* openRecordedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
   yield* playback(session, input.remarks, { ...(input.realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens: input.screens });
   const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe).pipe(
     Effect.mapError((e) => new CommandFailed({ message: e.message })),
@@ -412,7 +414,7 @@ const play = Command.make(
         const { paths } = yield* recordPlayback({
           title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
           remarks, screens, realtime,
-        }, selected, viewers.publish);
+        }, selected, viewers.publish, viewers.diffUpdate);
         yield* write(paths.map((path) => `${path}\n`).join(""));
       }).pipe(Effect.provide(updaterLayer));
     },

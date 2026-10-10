@@ -2,6 +2,7 @@
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
 import { Cause, Context, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, type Scope } from "effect";
 import { diffMaps, type Change } from "./changes.ts";
+import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, type DiffUpdateState } from "./diffUpdate.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
@@ -92,7 +93,7 @@ export const DiffEvent = Schema.Struct({
   processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
 });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent]);
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 // ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。
@@ -290,6 +291,7 @@ export type Session = {
   // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
   readonly flush: Effect.Effect<void>;
   readonly snapshot: Effect.Effect<Snapshot>;
+  readonly diffUpdate: Effect.Effect<DiffUpdateState>;
   // まだマップに反映していない発言（差分更新の結果待ち + 渡していないもの）。仮のノードの文字に使う。重複の印つき・中身のない発言は含まない
   readonly unreflectedRemarks: Effect.Effect<Remark[]>;
   // その時点のマップのエクスポート（JSON）
@@ -301,6 +303,8 @@ type Reservation = { readonly kind: "reserved" };
 type InFlight = Reservation | { readonly kind: "running"; readonly fiber: Fiber.Fiber<void> };
 
 type Runtime = {
+  readonly retryEnabled: boolean; // 終了のflushが始まったら、書き出し中も再試行を起動しない
+  readonly diffUpdate: DiffUpdateState;
   readonly inFlight: InFlight | undefined;
   readonly quiet: boolean; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
   readonly reflecting: readonly Remark[]; // 差分更新の結果待ちの発言。結果を log する直前に外す
@@ -325,9 +329,13 @@ function screenFileName(start: number, used: ReadonlySet<string>): string {
 }
 
 // 失敗した差分更新の error 欄。タグ付きの失敗は "<_tag>: <message>"、defect は "defect: <内容>"
-const describeFailure = (cause: Cause.Cause<DiffUpdateError>): string => {
+const classifyFailure = (cause: Cause.Cause<DiffUpdateError>) => {
   const failure = Cause.findError(cause);
-  return Result.isSuccess(failure) ? `${failure.success._tag}: ${failure.success.message}` : `defect: ${String(Cause.squash(cause))}`;
+  return {
+    ok: false as const,
+    error: Result.isSuccess(failure) ? `${failure.success._tag}: ${failure.success.message}` : `defect: ${String(Cause.squash(cause))}`,
+    paused: Result.isSuccess(failure) && failure.success._tag === "DiffUpdatePaused",
+  };
 };
 
 type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly last: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number };
@@ -338,19 +346,19 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
     const log = yield* SessionLog;
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, inFlight: undefined, quiet: false, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received });
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, diffUpdate: { status: "running" }, inFlight: undefined, quiet: false, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received });
     // QUIET_MS の待ち。Scope を閉じると中断される
     const quietWaiter = yield* FiberHandle.make<void, never>();
 
     // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
     // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
     // 取り出しから fork までの間に中断されて発言を取りこぼさないよう、中断させない
-    function startDiffIfReady(min: number): Effect.Effect<void> {
+    function startDiffIfReady(min: number, retry = false): Effect.Effect<void> {
       return Effect.uninterruptible(
         Effect.gen(function* () {
           const reservation: Reservation = { kind: "reserved" };
           const fresh = yield* Ref.modify(ref, (s): [readonly Remark[] | undefined, SessionState & Runtime] =>
-            s.inFlight || s.pending.length < min ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
+            s.inFlight || s.pending.length < min || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status !== "running") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
           );
           if (!fresh) return;
           const fiber = yield* Effect.forkIn(Effect.interruptible(runCall(fresh)), scope, { startImmediately: true });
@@ -367,6 +375,11 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           Effect.gen(function* () {
             const quiet = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] => [s.quiet, { ...s, inFlight: undefined }]);
             if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
+            const state = yield* Ref.get(ref);
+            if (state.diffUpdate.status === "paused") {
+              if (state.retryEnabled) yield* Effect.forkIn(Effect.sleep(DIFF_UPDATE_RETRY_MS).pipe(Effect.andThen(startDiffIfReady(1, true))), scope);
+              return;
+            }
             yield* startDiffIfReady(quiet || (Exit.isSuccess(exit) && exit.value) ? 1 : BATCH);
           }),
         ),
@@ -378,6 +391,8 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     function callUpdater(fresh: readonly Remark[]): Effect.Effect<boolean> {
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
+          const state = (yield* Ref.get(ref)).diffUpdate;
+          if (state.status === "paused") yield* log.write({ type: "diff-update-retry", reason: state.reason });
           const { map, recent, input, attached, previous } = yield* Ref.modify(ref, (s) => {
             const recent = s.processed.slice(-RECENT);
             // 添える共有画面: 新しい発言の end の最大値以下に映り始めた、まだ添えていない変化を時刻順に並べ、新しい SCREENS_MAX 件。
@@ -427,12 +442,17 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
                 : Effect.succeed({ ok: true as const, ops, usage, processedRemarks, count });
             }),
             Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed({ ok: false as const, error: describeFailure(cause) }),
+              Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)),
             ),
           );
           if (!outcome.ok) {
+            if (outcome.paused) {
+              yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], diffUpdate: { status: "paused" as const, reason: "ChatGPT の利用上限" as const } }));
+              yield* log.write({ type: "diff-update-paused", reason: "ChatGPT の利用上限" });
+              return false;
+            }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
-            yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
+            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: { status: "running" as const }, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
             return false;
           }
@@ -443,13 +463,14 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const stamp = stampOf(s, consumed);
             const applied = applyOps(s.map, outcome.ops, known, stamp);
             return [applied.dropped, {
-              ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [],
+              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: { status: "running" as const }, map: applied.map, reflecting: [],
               known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
           yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped,
             ...(outcome.processedRemarks !== undefined ? { processedRemarks: outcome.processedRemarks } : {}),
             ...(outcome.usage ? { usage: outcome.usage } : {}) });
+          if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
           return outcome.count < fresh.length;
         }),
       );
@@ -510,13 +531,17 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         }),
       pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),
       flush: Effect.gen(function* () {
+        // Scopeは書き出し後に閉じる。再試行の予約を先に止め、予約済みの更新はidleで待ち切る。
+        yield* Ref.update(ref, (s) => ({ ...s, retryEnabled: false }));
         for (;;) {
           yield* idle;
-          if ((yield* Ref.get(ref)).pending.length === 0) return;
+          const state = yield* Ref.get(ref);
+          if (state.pending.length === 0 || state.diffUpdate.status !== "running") return;
           yield* startDiffIfReady(1);
         }
       }),
       snapshot: Effect.map(Ref.get(ref), snapshotOf),
+      diffUpdate: Effect.map(Ref.get(ref), (s) => s.diffUpdate),
       unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),
       exportJson: Effect.map(Ref.get(ref), (s) => toJsonExport(snapshotOf(s), [...s.remarks])),
     } satisfies Session;

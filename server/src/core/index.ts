@@ -1,4 +1,5 @@
 export * from "./changes.ts";
+export * from "./diffUpdate.ts";
 export * from "./drawnix.ts";
 export * from "./evaluate.ts";
 export * from "./export.ts";

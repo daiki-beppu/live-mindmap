@@ -12,7 +12,7 @@ vi.mock("../src/useIntakeNotice.ts", () => ({ useIntakeNotice: () => null }));
 vi.mock("../src/MapView.tsx", () => ({ MapView: () => <div className="map-view-stub" /> }));
 
 const snapshot: Snapshot = { nodes: [], round: 0, changes: [], remarks: [] };
-const feed = (screenNotice: string | null): FeedState => ({ snapshot, speaking: { 相手: "", 自分: "" }, intake: "running", screenNotice });
+const feed = (screenNotice: string | null): FeedState => ({ snapshot, speaking: { 相手: "", 自分: "" }, intake: "running", screenNotice, diffUpdate: null });
 
 describe("App: 共有画面を使っていない一文は、useLiveFeed の値から表示・消去まで届く", () => {
   beforeEach(() => useLiveFeed.mockReset());

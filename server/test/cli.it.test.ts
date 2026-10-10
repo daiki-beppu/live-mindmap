@@ -16,7 +16,7 @@ import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
-import { CHATGPT_MODEL, chatgptAuthPath, chatgptCredentials } from "./fixtures/chatgpt.ts";
+import { CHATGPT_MODEL, chatgptAuthPath, chatgptCredentials, classification, completedSse, fakeChatgptHttp, jsonRequestBody } from "./fixtures/chatgpt.ts";
 import { fakeChatgptOAuth, type InvalidOAuth } from "./fixtures/chatgptOAuth.ts";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
@@ -125,6 +125,30 @@ const chatgptRun = (argv: string[], deps: ReturnType<typeof dependencies>, oauth
 );
 
 describe("ChatGPT の CLI（Issue #669）", () => {
+  it.effect("playの指定429は画面へ一時停止を通知し、終了で解除する。同じモデルを選択したまま発言を保存する", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const config = join(root, "models.json");
+    const deps = dependencies(root, "0", { LIVE_MINDMAP_CONFIG: config });
+    writeFileSync(config, JSON.stringify({ default: CHATGPT_MODEL.name, models: { [CHATGPT_MODEL.name]: { route: "chatgpt", model: CHATGPT_MODEL.model } } }));
+    const path = chatgptAuthPath(join(root, "home"));
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(chatgptCredentials(3_600_000)));
+    const http = fakeChatgptHttp((_request, call) => call === 1
+      ? new Response(completedSse(classification([{ 種類: "なし" }])))
+      : new Response(JSON.stringify({ error: { code: "subscription_sharing_usage_limit_exceeded" } }), { status: 429 }));
+    const listener = fakeListener();
+    external.openListener.mockImplementation(listener.open);
+    yield* runCli(["play", fixture]).pipe(
+      Effect.provideService(HttpClient.HttpClient, http.client), Effect.provide(deps.layer),
+    );
+    expect(listener.diffUpdates.map((f) => f.state)).toEqual([{ status: "running" }, { status: "paused", reason: "ChatGPT の利用上限" }, null]);
+    expect(http.requests).toHaveLength(2);
+    expect(http.requests.map((r) => jsonRequestBody(r).model)).toEqual([CHATGPT_MODEL.model, CHATGPT_MODEL.model]);
+    expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+    const log = readFileSync(join(dirname(deps.stdout.join("").trim().split("\n")[0]!), "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { type: string });
+    expect(log.filter((e) => e.type === "remark")).toHaveLength(3);
+    expect(log.filter((e) => e.type === "diff")).toEqual([]);
+  }));
   it.live("C01: login は動的登録・PKCE・署名付き ID トークンで保存し、logout はトークンを削除する", () => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
     const sessions = join(root, "sessions");
@@ -1377,8 +1401,11 @@ describe("CLI", () => {
       const port = yield* Deferred.await(listening);
       const ws = new WebSocket(`ws://127.0.0.1:${port}`);
       ws.addEventListener("message", (e) => {
-        received.push(JSON.parse(String(e.data)));
-        firstReceived();
+        const frame = JSON.parse(String(e.data)) as Snapshot | { type: string };
+        if (!("type" in frame)) {
+          received.push(frame);
+          firstReceived();
+        }
       });
       yield* Fiber.join(playing);
       yield* Effect.sleep(100); // close 前に送られたものが届くのを待つ

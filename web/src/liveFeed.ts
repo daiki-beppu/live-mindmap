@@ -1,4 +1,4 @@
-import type { IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame, Track } from "../../server/src/core/index.ts";
+import type { DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame, Track } from "../../server/src/core/index.ts";
 import type { IntakeStatus } from "./intake.ts";
 
 // /ws から届く frame（Issue #161）の分類と、それによる状態の更新を担う、React を使わない純粋なモジュール。
@@ -12,21 +12,22 @@ const NO_SPEAKING: Speaking = { 相手: "", 自分: "" };
 const DEFAULT_INTAKE: IntakeStatus = "running";
 
 // screenNotice は、共有画面を使っていないことの一文（Issue #280）。出している間だけ文が入る。寿命はサーバーが持つ
-export type FeedState = { snapshot: Snapshot | null; speaking: Speaking; intake: IntakeStatus; screenNotice: string | null };
+export type FeedState = { snapshot: Snapshot | null; speaking: Speaking; intake: IntakeStatus; screenNotice: string | null; diffUpdate: DiffUpdateState | null };
 
 export function createFeedState(): FeedState {
-  return { snapshot: null, speaking: NO_SPEAKING, intake: DEFAULT_INTAKE, screenNotice: null };
+  return { snapshot: null, speaking: NO_SPEAKING, intake: DEFAULT_INTAKE, screenNotice: null, diffUpdate: null };
 }
 
 // 受け取った 1 件の frame で状態を更新する。type を持たないものはスナップショット、"speaking" はトラックごとの
 // 「いま話している文字」、"intake" は取り込みの状態（途切れている／止まった／動いている）。
 // それ以外の知らない type は無視する（将来の拡張用）。1 種類の frame は、その種類が持つ値だけを変える
 // （例えば intake frame はスナップショット・字幕を変えない）。
-export function applyFrame(state: FeedState, frame: Snapshot | SpeakingFrame | IntakeFrame | ScreenNoticeFrame): FeedState {
+export function applyFrame(state: FeedState, frame: Snapshot | SpeakingFrame | IntakeFrame | ScreenNoticeFrame | DiffUpdateFrame): FeedState {
   if (!("type" in frame)) return { ...state, snapshot: frame };
   if (frame.type === "speaking") return { ...state, speaking: { ...state.speaking, [frame.track]: frame.text } };
   if (frame.type === "intake") return { ...state, intake: frame.status };
   if (frame.type === "screen-notice") return { ...state, screenNotice: frame.text };
+  if (frame.type === "diff-update") return { ...state, diffUpdate: frame.state };
   return state;
 }
 
