@@ -25,6 +25,7 @@ export {
   restoreSession,
   restoreState,
   ScreenEvent,
+  ScreenInputSkippedEvent,
   ScreenOffEvent,
   SessionLog,
   StartEvent,

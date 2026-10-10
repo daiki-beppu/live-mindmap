@@ -71,6 +71,10 @@ const ScreenRef = Schema.Struct({ start: Schema.Finite, image: Schema.NullOr(Sch
 export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.String) });
 // 共有画面を見ていない印。reason は 指定（--no-screen）か 許可なし（画面収録の許可が無い）。画像の送受信とは別の行で、差分更新・Claude へのメッセージには載らない
 export const ScreenOffEvent = Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literals(["指定", "許可なし"]) });
+export const ScreenInputSkippedEvent = Schema.Struct({
+  type: Schema.Literal("screen-input-skipped"),
+  reason: Schema.Literal("差分更新には渡さない（モデルが画像を読まない）"),
+});
 export const DiffEvent = Schema.Struct({
   type: Schema.Literal("diff"),
   // input は入力の要約: 渡した発言の ID と、呼び出した時点のノード数（ルートを除く）。
@@ -88,7 +92,7 @@ export const DiffEvent = Schema.Struct({
   processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
 });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, DiffEvent]);
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 // ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。
@@ -191,7 +195,7 @@ const decodeDiff = Schema.decodeUnknownEffect(DiffEvent);
 const decodeScreen = Schema.decodeUnknownEffect(ScreenEvent);
 
 // ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
-// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff 以外（screen-off・intake-*・知らない type）は読み飛ばす。
+// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff 以外（screen-off・screen-input-skipped・intake-*・知らない type）は読み飛ばす。
 // まだ添えていない変化は、screen の行を受け取り順に積み、後ろの diff で、その diff の screenCount より前に受け取った画面のうち、
 // 区切り（渡した新しい発言の end の最大値）以下に映り始めたものを外して求める（選んだ後に受け取った画面は、時刻が区切り以下でも残す）。
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
@@ -329,7 +333,7 @@ const describeFailure = (cause: Cause.Cause<DiffUpdateError>): string => {
 type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly last: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number };
 const noScreens: InitialScreens = { unsent: [], last: [], files: new Set(), received: 0 };
 
-function openSession(initial: SessionState, screens: InitialScreens): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+function openSession(initial: SessionState, screens: InitialScreens, images: boolean): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   return Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
@@ -380,7 +384,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
             // 候補はすべて処理済みにする（添えなかった古い変化を後から送ると、映り続ける画面と食い違う）。後に映り始めた変化は次へ回す
             const cutoff = Math.max(...fresh.map((u) => u.end));
             const candidates = s.unsentScreens.filter((h) => h.start <= cutoff).sort((a, b) => a.start - b.start);
-            const attached = candidates.slice(-SCREENS_MAX);
+            const attached = images ? candidates.slice(-SCREENS_MAX) : [];
             const input = {
               recent: recent.map((u) => u.id),
               fresh: fresh.map((u) => u.id),
@@ -389,7 +393,7 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
               ...(s.receivedScreens > 0 ? { screenCount: s.receivedScreens } : {}),
             };
             return [
-              { map: s.map, recent, input, attached, previous: s.lastScreens },
+              { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [] },
               {
                 ...s,
                 reflecting: fresh,
@@ -520,9 +524,13 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
 }
 
 // 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しと待ちはこの Scope の Fiber で、Scope を閉じると中断される
-export const makeSession = Effect.fnUntraced(function* ({ title }: { readonly title: string }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+export const makeSession = Effect.fnUntraced(function* ({ title, images = true }: { readonly title: string; readonly images?: boolean }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   const log = yield* SessionLog;
   yield* log.write({ type: "start", title });
+  if (!images) yield* log.write({
+    type: ScreenInputSkippedEvent.fields.type.literal,
+    reason: ScreenInputSkippedEvent.fields.reason.literal,
+  });
   return yield* openSession({
     map: emptyMap(title),
     pending: [],
@@ -533,7 +541,7 @@ export const makeSession = Effect.fnUntraced(function* ({ title }: { readonly ti
     changes: [],
     currentTopic: undefined,
     lastChanged: undefined,
-  }, noScreens);
+  }, noScreens, images);
 });
 
 // ログのイベントから、セッションを元の状態に戻す。差分更新は呼ばず、イベントも log し直さない。
@@ -542,5 +550,5 @@ export const makeSession = Effect.fnUntraced(function* ({ title }: { readonly ti
 export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
   const { screens, ...state } = yield* restoreState(events);
   const hold = (ref: ScreenRefs): HeldScreen => ({ start: ref.start, image: ref.image === null ? null : { id: ref.image, file: ref.image } });
-  return yield* openSession(state, { unsent: screens.unsent.map(hold), last: screens.last.map(hold), files: screens.files, received: screens.received });
+  return yield* openSession(state, { unsent: screens.unsent.map(hold), last: screens.last.map(hold), files: screens.files, received: screens.received }, true);
 });
