@@ -8,8 +8,8 @@ import { resolveNpm, type NpmCommand } from "./npmCommand.ts";
 
 export type DepItem = {
   readonly name: "chromium";
-  readonly need: "optional";
-  readonly state: "ready" | "missing" | "outdated";
+  readonly need: "required" | "optional";
+  readonly state: "ready" | "missing" | "outdated" | "absent";
 };
 export type DepEvent = { readonly type: "progress"; readonly message: string } | { readonly type: "result"; readonly items: ReadonlyArray<DepItem> };
 export class ManagedDepsFailed extends Schema.TaggedError<ManagedDepsFailed>()("ManagedDepsFailed", { message: Schema.String }) {}
