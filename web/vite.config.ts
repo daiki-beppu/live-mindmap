@@ -5,6 +5,7 @@ import { configDefaults } from "vitest/config";
 
 // ブラウザは /ws につなぐ。play が開く WebSocket（既定 4319）へ proxy するので、ブラウザ側はポートを持たない。
 const port = process.env.LIVE_MINDMAP_PORT ?? "4319";
+const headers = { "Content-Security-Policy": "connect-src 'self'" };
 
 const IT = "**/*.it.test.?(c|m)[jt]s?(x)";
 const HEAVY = "**/*.heavy.test.?(c|m)[jt]s?(x)";
@@ -19,5 +20,6 @@ export default defineConfig({
       { extends: true, test: { name: "heavy", include: [HEAVY] } },
     ],
   },
-  server: { proxy: { "/ws": { target: `ws://127.0.0.1:${port}`, ws: true, rewrite: () => "/" } } },
+  server: { headers, proxy: { "/ws": { target: `ws://127.0.0.1:${port}`, ws: true, rewrite: () => "/" } } },
+  preview: { headers },
 });

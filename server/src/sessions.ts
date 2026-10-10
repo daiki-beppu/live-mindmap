@@ -314,6 +314,8 @@ export class Sessions extends Context.Service<Sessions, {
           const fiber = yield* Effect.forkIn(chain(live, { attempt, scope: attemptScope }, "auto", outcome), scope);
           yield* Ref.set(live.chain, fiber);
           yield* Ref.set(state, { kind: "live", live });
+          yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
+          yield* viewers.sessionMode({ type: "session-mode", local: input.model.local });
           return { dir };
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });

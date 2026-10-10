@@ -411,10 +411,11 @@ const play = Command.make(
           return viewers;
         }).pipe(Effect.provide(listener));
         const remarks = recorded ? recorded.remarks : yield* readTranscriptRemarks(transcript);
+        yield* viewers.sessionMode({ type: "session-mode", local: selected.local });
         const { paths } = yield* recordPlayback({
           title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
           remarks, screens, realtime,
-        }, selected, viewers.publish, viewers.diffUpdate);
+        }, selected, viewers.publish, viewers.diffUpdate).pipe(Effect.ensuring(viewers.sessionMode({ type: "session-mode", local: false })));
         yield* write(paths.map((path) => `${path}\n`).join(""));
       }).pipe(Effect.provide(updaterLayer));
     },

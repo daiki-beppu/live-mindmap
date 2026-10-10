@@ -11,6 +11,7 @@ import { pointedNode } from "./folding.ts";
 import type { IntakeStatus } from "./intake.ts";
 import { IntakeNotice } from "./IntakeNotice.tsx";
 import { ScreenNotice } from "./ScreenNotice.tsx";
+import { LocalModeNotice } from "./LocalModeNotice.tsx";
 import type { Speaking } from "./liveFeed.ts";
 import { KeyList } from "./KeyList.tsx";
 import { MapView } from "./MapView.tsx";
@@ -57,6 +58,7 @@ export function SessionView({
   intake,
   screenNotice,
   diffUpdate,
+  local,
   review,
 }: {
   snapshot: Snapshot;
@@ -64,6 +66,7 @@ export function SessionView({
   intake?: IntakeStatus;
   screenNotice?: string | null;
   diffUpdate?: DiffUpdateState | null;
+  local?: boolean;
   review?: { timeMoves: number; audio?: boolean; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
 }) {
   const scope: ViewingScope = review ? "review" : "live";
@@ -169,7 +172,8 @@ export function SessionView({
     onSide: () => dispatch({ type: "side", meta: false, ctrl: false, alt: false }, treeNow()),
   };
   const layout = (
-    <div className="layout">
+    <div className={local ? "layout layout--local" : "layout"}>
+      <LocalModeNotice local={local === true} />
       <div className="map">
         <MapView snapshot={snapshot} selectedId={selectedId} onSelect={select} viewing={viewing} camera={camera} onViewingEvent={dispatch} onTree={onTree} />
         <ViewingNotice manual={viewing.mode === "manual"} overview={viewing.mode === "overview"} />

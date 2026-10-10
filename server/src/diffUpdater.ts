@@ -1,10 +1,10 @@
 // 差分更新の準備。経路ごとの設定と接続検査は core の外で解決する。
 // claude.ts は Claude Agent SDK を読み込むので、使うコマンドの handler が動くときだけ開く（import も遅らせる）。
-import { Effect, Layer } from "effect";
+import { Console, Effect, Layer } from "effect";
 import { AppleIntelligence } from "./appleIntelligence.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
-import { localUpdaterLayer, type Classify } from "./localDiffUpdater.ts";
+import { localUpdaterLayer } from "./localDiffUpdater.ts";
 import { prepareChatgpt } from "./chatgptResponses.ts";
 import { prepareCompatible } from "./openaiCompatible.ts";
 import { appleRefusal } from "./modelSelection.ts";
@@ -22,14 +22,12 @@ export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: Executabl
     const state = yield* (yield* AppleIntelligence).availability;
     const refusal = appleRefusal(state);
     if (refusal !== undefined) return yield* new UpdaterUnavailable({ message: refusal.join("\n") });
+    const apple = yield* (yield* AppleIntelligence).launch;
+    const classify = yield* prepareCompatible({ name: model.name, route: "openai-compatible", model: "apple", local: false, url: apple.url });
+    yield* Console.error(`ローカルモード: Apple Intelligence（子プロセス PID ${apple.pid}、宛先 ${apple.url}）`);
+    yield* Console.error("Apple Intelligence は試験的で、決定・TODO を拾いすぎ・取りこぼしがあります");
+    return localUpdaterLayer(classify);
   }
-  const preparation: Effect.Effect<Classify, { readonly message: string }, import("effect").FileSystem.FileSystem | import("effect/http").HttpClient.HttpClient> = model.route === "chatgpt"
-    ? prepareChatgpt(model)
-    : prepareCompatible(model.route === "apple"
-      ? { name: model.name, route: "openai-compatible" as const, model: "apple", local: false as const, ...(yield* (yield* AppleIntelligence).launch) }
-      : model);
-  const classify = yield* preparation.pipe(
-    Effect.mapError((failure) => new UpdaterUnavailable({ message: failure.message })),
-  );
+  const classify = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
   return localUpdaterLayer(classify);
-});
+}, Effect.mapError((failure) => new UpdaterUnavailable({ message: failure.message })));

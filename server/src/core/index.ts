@@ -5,6 +5,7 @@ export * from "./evaluate.ts";
 export * from "./export.ts";
 export * from "./intake.ts";
 export * from "./screenNotice.ts";
+export * from "./sessionMode.ts";
 export * from "./live.ts";
 export * from "./logMetrics.ts";
 export * from "./map.ts";
