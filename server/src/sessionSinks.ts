@@ -5,7 +5,7 @@ import { MapCapture } from "./capture.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
+import { DiffUpdater, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
 import { AudioMix } from "./audioMix.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
@@ -52,6 +52,7 @@ export type OpenSessionSink = {
   title: string | undefined; // 省略したときは、セッションのフォルダ名（開始時刻）
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   speak: (frame: SpeakingFrame) => Effect.Effect<void>;
+  diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
 };
 
 const TRACKS: Track[] = ["相手", "自分"];
@@ -82,7 +83,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           return yield* prepareUpdater(model).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
         }),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, model, updaterLayer }) {
+        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
@@ -95,6 +96,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             title,
             model,
             publish,
+            diffUpdate,
             onDiff: relay.flushAll,
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない

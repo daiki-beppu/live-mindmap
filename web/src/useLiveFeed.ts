@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame } from "../../server/src/core/index.ts";
+import type { DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame } from "../../server/src/core/index.ts";
 import { applyClose, applyFrame, applyOpen, createFeedState, type FeedState } from "./liveFeed.ts";
 
 const RECONNECT_MS = 1000;
@@ -20,7 +20,7 @@ export function useLiveFeed(): FeedState {
       ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.onopen = () => setState(applyOpen);
       ws.onmessage = (e) => {
-        const frame = JSON.parse(String(e.data)) as Snapshot | SpeakingFrame | IntakeFrame | ScreenNoticeFrame;
+        const frame = JSON.parse(String(e.data)) as Snapshot | SpeakingFrame | IntakeFrame | ScreenNoticeFrame | DiffUpdateFrame;
         setState((prev) => applyFrame(prev, frame));
       };
       ws.onclose = () => {

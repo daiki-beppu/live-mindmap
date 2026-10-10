@@ -10,6 +10,7 @@ import {
   SessionLog,
   toJsonExport,
   type IntakeLogEvent,
+  type DiffUpdateFrame,
   type LogEvent,
   type Session,
   type Snapshot,
@@ -125,6 +126,7 @@ export type RecordedSessionOptions = {
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   onDiff?: Effect.Effect<void>; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
+  diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>;
 };
 
 // 作成済みのセッションのフォルダに、ログと export.json を書きながら、マップが変わるたびに publish する。
@@ -132,7 +134,7 @@ export type RecordedSessionOptions = {
 // appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
 // session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
 // ログが書けないとき（FileSystem の失敗）は、そのまま defect にする。
-export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, publish, onDiff, model }: RecordedSessionOptions) {
+export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, publish, onDiff, diffUpdate, model }: RecordedSessionOptions) {
   // SessionLog のメソッドの R は空なので、FileSystem はここで 1 回だけ受け取ってクロージャで使う
   const fs = yield* FileSystem.FileSystem;
   // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。
@@ -161,7 +163,11 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
               return session;
             }),
           );
-          if (!session || event.type !== "diff") return;
+          if (!session) return;
+          if (diffUpdate && (event.type === "diff" || event.type === "diff-update-paused")) {
+            yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });
+          }
+          if (event.type !== "diff") return;
           if (!event.error) yield* Effect.flatMap(session.snapshot, publish);
           if (onDiff) yield* onDiff;
         }),
@@ -175,8 +181,12 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
     }),
   );
   const images = model.route !== "apple" && model.images !== false;
+  if (diffUpdate) yield* Effect.addFinalizer(() => diffUpdate({ type: "diff-update", state: null }));
   const session = yield* makeSession({ title: title ?? basename(dir), images }).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
+  if (diffUpdate) {
+    yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });
+  }
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く
   yield* serialized(writeExport(session));
   yield* Effect.flatMap(session.snapshot, publish); // 最初のルート

@@ -1,6 +1,6 @@
 import { Effect, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { emptyMap } from "./core/index.ts";
+import { DiffUpdatePaused, emptyMap } from "./core/index.ts";
 import { accessToken, ChatgptEndpoints } from "./chatgptAuth.ts";
 import { authPath, chatgptRefusal, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { classificationRequest, SYSTEM } from "./localPrompt.ts";
@@ -9,6 +9,7 @@ import type { ExecutableModel } from "./modelSelection.ts";
 
 const Event = Schema.Struct({ type: Schema.String, delta: Schema.optionalKey(Schema.String),
   response: Schema.optionalKey(Schema.Struct({ status: Schema.optionalKey(Schema.String) })) });
+const UsageLimit = Schema.Struct({ error: Schema.Struct({ code: Schema.Literal("subscription_sharing_usage_limit_exceeded") }) });
 
 const readSse = Effect.fnUntraced(function* (stream: Stream.Stream<Uint8Array, import("effect/http").HttpClientError.HttpClientError>) {
   let text = "", data: string[] = [];
@@ -57,10 +58,17 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
     );
     if (response.status === 401) return yield* chatgptRefusal("ChatGPT のトークンが期限切れか、利用できません");
     if (response.status === 403) return yield* chatgptRefusal("ChatGPT の対象プラン（Plus・Pro）ではないか、プラン利用が許可されていません");
+    if (response.status === 429) {
+      const limit = yield* response.text.pipe(
+        Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(UsageLimit))),
+        Effect.result,
+      );
+      if (limit._tag === "Success") return yield* new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "ChatGPT の利用上限" });
+    }
     if (response.status < 200 || response.status >= 300) return yield* chatgptRefusal(`ChatGPT が HTTP ${response.status} を返しました`);
     const text = yield* readSse(response.stream);
     return yield* Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(text);
-  }, Effect.scoped, Effect.timeout("5 minutes"), Effect.mapError((error) => error instanceof ChatgptUnavailable ? error : chatgptRefusal("ChatGPT の応答を取得・検証できません")));
+  }, Effect.scoped, Effect.timeout("5 minutes"), Effect.mapError((error) => error instanceof ChatgptUnavailable || error instanceof DiffUpdatePaused ? error : chatgptRefusal("ChatGPT の応答を取得・検証できません")));
   yield* request(classificationRequest(emptyMap("接続確認"), [], [{ remark: "probe", text: "接続を確認します。" }]));
   const classify: Classify = request;
   return classify;
