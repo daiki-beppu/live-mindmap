@@ -4,7 +4,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
-import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema, Stream } from "effect";
+import { Cause, Console, Effect, Exit, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema, Stream, type Runtime } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
@@ -65,7 +65,7 @@ import {
 } from "./sessionFiles.ts";
 import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
-import { InstallEvent } from "./managedDepsProtocol.ts";
+import { CheckReport, InstallEvent } from "./managedDepsProtocol.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
@@ -76,6 +76,7 @@ const VERSION = "0.1.0";
 
 class ServerUnreachable extends Schema.TaggedError<ServerUnreachable>()("ServerUnreachable", {}) {}
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", { message: Schema.String }) {}
+class RequiredDepsMissing extends Schema.TaggedError<RequiredDepsMissing>()("RequiredDepsMissing", {}) {}
 class NoSession extends Schema.TaggedError<NoSession>()("NoSession", { sessionsDir: Schema.String }) {}
 class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
 class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()("InvalidTranscriptFile", {
@@ -699,6 +700,17 @@ const evaluate = Command.make(
   ),
 );
 
+const checkCommand = Command.make(
+  "check",
+  {},
+  Effect.fn("check")(function* () {
+    const port = yield* portConfig;
+    const report = yield* requestServer(port, "GET", "/check", CheckReport);
+    yield* write(JSON.stringify(report));
+    if (!report.ready) return yield* new RequiredDepsMissing();
+  }),
+).pipe(Command.withDescription("セッションを開始せず、常駐サーバーに管理依存の確認を依頼して JSON を出す"));
+
 const installCommand = Command.make(
   "install",
   { names: Argument.String("name").pipe(Argument.atLeast(1)) },
@@ -737,7 +749,7 @@ const logout = Command.make("logout").pipe(Command.withSubcommands([
 
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
-  Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, installCommand]),
+  Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
@@ -752,9 +764,21 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   const error = Cause.findError(cause);
   if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
   const failure = error.success;
+  if (failure instanceof RequiredDepsMissing) return Effect.void;
   if (CliError.isCliError(failure)) return Effect.void;
   if (failure instanceof ModelRefused) return Console.error(failure.message);
   return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
+};
+
+const teardown: Runtime.Teardown = (exit, onExit) => {
+  if (Exit.isFailure(exit) && exit.cause.reasons.length === 1) {
+    const error = Cause.findError(exit.cause);
+    if (Result.isSuccess(error) && error.success instanceof RequiredDepsMissing) {
+      process.exitCode = 3;
+      return;
+    }
+  }
+  exitNaturally(exit, onExit);
 };
 
 if (import.meta.main) {
@@ -767,6 +791,6 @@ if (import.meta.main) {
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer)))),
-    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown }),
   );
 }

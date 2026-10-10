@@ -9,6 +9,10 @@ const Item = Schema.Struct({
   size: Schema.optionalKey(Schema.Finite),
   install: Schema.optionalKey(Schema.String),
 });
+export const CheckReport = Schema.Struct({
+  ready: Schema.Boolean,
+  items: Schema.Array(Item),
+});
 export const InstallEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("progress"), message: Schema.String }),
   Schema.Struct({ type: Schema.Literal("result"), items: Schema.Array(Item) }),
