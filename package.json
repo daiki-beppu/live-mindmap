@@ -5,6 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@12.11.2",
   "scripts": {
+    "cli": "pnpm --silent --filter @live-mindmap/server cli",
     "dev": "pnpm -r --parallel run dev",
     "test": "pnpm -r test",
     "test:it": "pnpm -r run test:it",

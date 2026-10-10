@@ -11,6 +11,7 @@ import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -84,7 +85,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   }).pipe(Layer.provide(fakeExportServices()));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
-    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer },
+    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: forbiddenManagedDeps },
   );
   return {
     server, calls: fakeHelpers.calls, sessionsDir,

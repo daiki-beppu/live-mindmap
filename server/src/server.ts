@@ -10,7 +10,8 @@ import { HttpServer, type HttpClient } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
-import { portConfig, sessionsDirConfig } from "./config.ts";
+import { depsDirConfig, portConfig, sessionsDirConfig } from "./config.ts";
+import { ManagedDeps } from "./managedDeps.ts";
 import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
@@ -29,12 +30,14 @@ export type ListenOptions = {
 };
 
 export type ServerOptions = ListenOptions & {
+  depsDir: string;
   prepareUpdater: SessionSinksDeps<HttpClient.HttpClient>["prepareUpdater"];
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 
 // 外の世界（子プロセス・空きポート・ヘルパーへの WebSocket）とセッションの中身の Layer。テストは偽物を渡す
 export type ServerLayers = {
+  managedDeps: Layer.Layer<ManagedDeps>;
   helpers: Layer.Layer<Helpers>;
   sessionSinks: Layer.Layer<SessionSinks>;
 };
@@ -46,6 +49,7 @@ const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provid
 export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>;
 
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => ({
+  managedDeps: ManagedDeps.layer({ root: options.depsDir }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner))),
   helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
   sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.merge(exportServices, NodeHttpClient.layerUndici))),
 });
@@ -60,6 +64,7 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
     Sessions.layer.pipe(
       Layer.provide(Layer.mergeAll(layers.helpers, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
       Layer.provideMerge(layerListener(options.port)),
+      Layer.provideMerge(layers.managedDeps),
     ),
   );
   return yield* Effect.gen(function* () {
@@ -103,16 +108,17 @@ if (import.meta.main) {
     // 出した失敗には errorReported=false を付け、runMain が同じ失敗を標準出力へもう一度報告しないようにする
     // 既定の ConfigProvider は空文字を未設定として扱い、LIVE_MINDMAP_PORT="" が既定のポートに化けるので、空文字を保つ provider を指定する
     // （空文字は整数でない値として拒否する。キーが無いときだけ既定のポートを使う）
-    const settings = Effect.all({ port: portConfig, sessionsDir: sessionsDirConfig }).pipe(
+    const settings = Effect.all({ port: portConfig, sessionsDir: sessionsDirConfig, depsDir: depsDirConfig }).pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ preserveEmptyStrings: true })),
       Effect.tapCause((cause) => Effect.logError(cause).pipe(Effect.provideService(Logger.LogToStderr, true))),
       Effect.mapError((error) => Object.assign(error, { [Runtime.errorReported]: false as const })),
     );
     NodeRuntime.runMain(Effect.scoped(Effect.gen(function* () {
-      const { port, sessionsDir } = yield* settings;
+      const { port, sessionsDir, depsDir } = yield* settings;
       const options: ServerOptions = {
         port,
         sessionsDir,
+        depsDir,
         prepareUpdater: prepareUpdaterLayer,
         helper: helperCommand,
         onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),

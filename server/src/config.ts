@@ -6,6 +6,10 @@ import { Config } from "effect";
 
 const DEFAULT_PORT = 4319;
 
+export const depsDirConfig = Config.String("LIVE_MINDMAP_DEPS").pipe(
+  Config.withDefault(join(homedir(), ".live-mindmap", "deps")),
+);
+
 export const sessionsDirConfig = Config.String("LIVE_MINDMAP_SESSIONS").pipe(
   Config.withDefault(join(homedir(), ".live-mindmap", "sessions")),
 );
