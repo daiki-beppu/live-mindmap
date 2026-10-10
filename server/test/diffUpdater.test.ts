@@ -2,7 +2,8 @@ import { defaultClaude } from "../src/modelSelection.ts";
 import { it as effectIt } from "@effect/vitest";
 import { Effect, Exit, Layer } from "effect";
 import { expect, vi } from "vitest";
-import { claudeUpdaterLayer, UpdaterUnavailable } from "../src/diffUpdater.ts";
+import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
+import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 
 // claude.ts（Agent SDK）を読み込めない環境を、factory が投げることで再現する
 vi.mock("../src/claude.ts", () => {

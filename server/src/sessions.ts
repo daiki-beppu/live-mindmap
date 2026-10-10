@@ -270,7 +270,7 @@ export class Sessions extends Context.Service<Sessions, {
       const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string }, SessionFailure> {
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
-          const updaterLayer = yield* sinks.prepare(input.model);
+          const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope));
           const dir = yield* sinks.createDir(sessionsDir);
           // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
           // 接続はマイクの許可待ち等で時間がかかることがあり、ここを接続成功後にすると、長く待ってから

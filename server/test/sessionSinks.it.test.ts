@@ -72,6 +72,26 @@ const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
 });
 
 describe("SessionSinks（実物 Layer）", () => {
+  it.effect("準備で取得する推論子はサービス構築時ではなく準備を呼ぶ Scope で閉じる", () => Effect.gen(function* () {
+    const state = { opened: 0, closed: 0 };
+    const sinks = yield* SessionSinks.pipe(Effect.provide(SessionSinks.layer({
+      prepareUpdater: () => Effect.acquireRelease(
+        Effect.sync(() => {
+          state.opened++;
+          return Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }));
+        }),
+        () => Effect.sync(() => { state.closed++; }),
+      ),
+    }).pipe(Layer.provide(fakeExportServices()))));
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const scope = yield* Effect.acquireRelease(Scope.make(), (made) => Scope.close(made, Exit.void));
+      yield* Scope.provide(sinks.prepare(defaultClaude), scope);
+      expect(state).toMatchObject({ opened: attempt, closed: attempt - 1 });
+      yield* Scope.close(scope, Exit.void);
+      expect(state).toMatchObject({ opened: attempt, closed: attempt });
+    }
+  }));
+
   it.effect("updater はセッションの Scope の資源で、Scope を閉じると閉じる（CT-SINK-SCOPE）", () => {
     const { updaterLayer, state } = makeFakeUpdater();
     return Effect.gen(function* () {

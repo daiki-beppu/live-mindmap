@@ -1,3 +1,4 @@
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 // 回帰評価（eval コマンド）。fixture は合成データで、実際の録音サンプルは使わない。
 import { readFileSync, writeFileSync } from "node:fs";
 import { appendFile, copyFile, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -38,7 +39,7 @@ function dependencies(sessionsDir: string) {
     log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
   };
   const layer = Layer.mergeAll(
-    NodeServices.layer,
+    NodeServices.layer, unusedApple,
     NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, consoleService),

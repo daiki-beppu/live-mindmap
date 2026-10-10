@@ -1,3 +1,4 @@
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import type { DiffUpdater } from "../src/core/index.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
@@ -205,7 +206,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           log: (...args: unknown[]) => { out.push(args.map(String).join(" ") + "\n"); },
         };
         const cliLayer = Layer.mergeAll(
-          NodeServices.layer,
+          NodeServices.layer, unusedApple,
           NodeHttpClient.layerUndici,
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),
           Layer.succeed(Console.Console, consoleService),

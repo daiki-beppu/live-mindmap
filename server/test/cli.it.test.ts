@@ -24,6 +24,7 @@ import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { AppleIntelligence } from "../src/appleIntelligence.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
 // 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
@@ -70,6 +71,10 @@ function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, 
   const layer = Layer.mergeAll(
     NodeServices.layer,
     NodeHttpClient.layerUndici,
+    Layer.succeed(AppleIntelligence, AppleIntelligence.of({
+      availability: Effect.succeed({ osVersion: "27.0", availability: { status: "unavailable", reason: "modelNotReady" } }),
+      launch: Effect.die("このテストでは推論子を起動できません"),
+    })),
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({
       HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"),
       LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port, ...modelEnv,
@@ -339,7 +344,7 @@ describe("CLI", () => {
       expect(Object.keys(entries).sort()).toEqual(["apple", "claude", "fast", "ollama", "subscription"]);
       expect(entries.claude).toEqual(["Claude", "-", expect.stringContaining("はい")]);
       expect(entries.fast).toEqual(["Claude", "-", expect.stringContaining("はい")]);
-      expect(entries.apple).toEqual(["子プロセス", "はい", expect.stringMatching(/いいえ.*まだ/)]);
+      expect(entries.apple).toEqual(["子プロセス", "はい", expect.stringMatching(/いいえ.*準備中/)]);
       expect(entries.ollama).toEqual(["OpenAI 互換", "-", expect.stringContaining("はい")]);
       expect(entries.subscription).toEqual(["ChatGPT", "-", expect.stringContaining("はい")]);
       expect(external.openClaudeUpdater).not.toHaveBeenCalled();
@@ -392,7 +397,7 @@ describe("CLI", () => {
       expect(deps.stdout.join("")).toContain("claude");
     }));
 
-    it.effect("start --local は HTTP 送信より前に拒み、Claude の開始は同じ入口から送信する", () => Effect.gen(function* () {
+    it.effect("準備中の Mac の start --local は HTTP 送信より前に拒み、Claude の開始は同じ入口から送信する", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const sessions = join(root, "sessions");
       const deps = dependencies(sessions);
@@ -406,7 +411,7 @@ describe("CLI", () => {
 
       const refused = yield* Effect.result(run(["start", "--app", "us.zoom.xos", "--local"]));
       expect(Result.isFailure(refused)).toBe(true);
-      if (Result.isFailure(refused)) expect(String(refused.failure)).toMatch(/まだ/);
+      if (Result.isFailure(refused)) expect(String(refused.failure)).toMatch(/準備中/);
       expect(requests).toEqual([]);
       expect(existsSync(sessions)).toBe(false);
       yield* run(["start", "--app", "us.zoom.xos", "--model", "claude"]);

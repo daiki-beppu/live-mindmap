@@ -22,6 +22,7 @@ import { Sessions, SessionsDir } from "./sessions.ts";
 import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 import { makeModelTransferToken, publishModelTransferToken } from "./modelTransferToken.ts";
+import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
 
 export type ListenOptions = {
   port: number; // 0 なら空きポート
@@ -31,7 +32,7 @@ export type ListenOptions = {
 
 export type ServerOptions = ListenOptions & {
   depsDir: string;
-  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem>["prepareUpdater"];
+  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence>["prepareUpdater"];
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 
@@ -51,7 +52,7 @@ export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | F
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => ({
   managedDeps: ManagedDeps.layer({ root: options.depsDir }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner))),
   helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-  sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.merge(exportServices, NodeHttpClient.layerUndici))),
+  sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(exportServices, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
 });
 
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。

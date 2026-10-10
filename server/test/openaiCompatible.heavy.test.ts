@@ -1,3 +1,4 @@
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -92,7 +93,7 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
     }) }));
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
       helpers,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.merge(fakeExportServices(), NodeHttpClient.layerUndici))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
       managedDeps: forbiddenManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({ SYNTHETIC_PROCESS_KEY: "synthetic-key" })));
     const config = join(root, "config.json");

@@ -1,3 +1,4 @@
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,7 +54,7 @@ function dependencies(root: string, env: Record<string, string>) {
   const sessions = join(root, "sessions");
   const stdout: string[] = [];
   const layer = Layer.mergeAll(
-    NodeServices.layer, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+    NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: sessions, LIVE_MINDMAP_PORT: "0", ...env })),
     Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
   );
@@ -123,7 +124,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
       body: JSON.stringify({ app: "us.zoom.xos", audio: false, model }),
     }));
     for (const model of [
-      { name: "apple", route: "apple", local: true },
+      { name: "apple", route: "claude", model: "claude-sonnet-5-5", local: false },
       { name: "compatible", route: "openai-compatible", model: "synthetic-model", url: "http://127.0.0.1:1/v1", local: true },
     ]) {
       const response = yield* post(model);

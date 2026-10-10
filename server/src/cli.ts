@@ -2,7 +2,8 @@
 // live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { basename, dirname, join, resolve } from "node:path";
-import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
+import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
 import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
@@ -13,7 +14,8 @@ import { portConfig, sessionsDirConfig } from "./config.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
-import { prepareUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
+import { prepareUpdaterLayer } from "./diffUpdater.ts";
+import { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import { configuredModels, ModelRefused, resolveModel } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { exitNaturally } from "./exitNaturally.ts";
@@ -655,9 +657,9 @@ const evaluate = Command.make(
         const recorded = yield* loadRecordedSession(resolve(source));
         const updaterLayer = yield* prepareUpdaterLayer(selected);
         return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
-          Effect.provide(updaterLayer), Effect.scoped,
+          Effect.provide(updaterLayer),
         )).dir;
-      });
+      }).pipe(Effect.scoped);
       const path = join(dir, EXPORT_FILE);
       if (!(yield* pathExists(fs, path).pipe(orFileFailed))) return yield* new MissingRunExport({ path });
       const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
@@ -761,7 +763,7 @@ if (import.meta.main) {
     : AudioMix.layer({ command: helper.path, args: [] }).pipe(Layer.provide(NodeServices.layer));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici)),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer)))),
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

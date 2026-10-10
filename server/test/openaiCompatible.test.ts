@@ -1,13 +1,17 @@
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import type { Scope } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Context, Effect, FileSystem, Layer, Result } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse, type HttpClientRequest } from "effect/http";
 import { applyOps, DiffUpdater, emptyMap, type DiffInput, type Op, type Remark } from "../src/core/index.ts";
-import { prepareUpdaterLayer as prepare, type UpdaterUnavailable } from "../src/diffUpdater.ts";
+import { prepareUpdaterLayer as prepare } from "../src/diffUpdater.ts";
+import type { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 
 const model = { name: "compatible", route: "openai-compatible" as const, model: "synthetic-model", url: "http://test.invalid/v1", local: false as const };
 type CompatibleModel = typeof model & { apiKeyEnv?: string; maxTokens?: number; extraBody?: Record<string, unknown> };
 // 計画の「選択済みモデル→開始前準備→実行Layer」を使う。関数名は後続実装の境界名に合わせられる。
-const prepareUpdaterLayer: (selected: CompatibleModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient> = (selected) => prepare(selected).pipe(Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
+const prepareUpdaterLayer: (selected: CompatibleModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | Scope.Scope> =
+  (selected) => prepare(selected).pipe(Effect.provide(unusedApple), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
 const remark = (text: string, id = "r1"): Remark => ({ id, track: "相手", start: 0, end: 10, text });
 const input = (text: string): DiffInput => ({ map: emptyMap("定例"), recent: [], fresh: [remark(text)] });
 type Classification = { 議題: { id: string; 題: string }; 文: readonly object[]; 済み: string };
