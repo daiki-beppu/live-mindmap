@@ -12,6 +12,7 @@ import { runCli } from "../src/cli.ts";
 import { JsonExport } from "../src/core/index.ts";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { EXPORT_FILE, LOG_FILE } from "../src/sessionFiles.ts";
@@ -117,7 +118,7 @@ describe("apple を使う開始・再生の配線", () => {
     const sinks = SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
       Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, process.layer)),
     );
-    const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, { helpers: helper.layer, sessionSinks: sinks });
+    const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, { helpers: helper.layer, sessionSinks: sinks, managedDeps: forbiddenManagedDeps });
     const start = () => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ app: "us.zoom.xos", audio: false, screen: false, model: { name: "apple", route: "apple", local: true } }),

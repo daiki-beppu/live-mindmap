@@ -1,3 +1,4 @@
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -67,7 +68,7 @@ describe("CLI install とサーバー", () => {
     const stderr: string[] = [];
     let ended = false;
     const consoleService: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); }, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
-    const deps = Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer, Layer.succeed(Console.Console, consoleService),
+    const deps = Layer.mergeAll(NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer, Layer.succeed(Console.Console, consoleService),
       ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_SESSIONS: dir })));
     const fiber = yield* runCli(["install", "chromium"]).pipe(Effect.provide(deps), Effect.tap(() => Effect.sync(() => { ended = true; })), Effect.forkChild);
     try {

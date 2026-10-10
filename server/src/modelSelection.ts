@@ -120,6 +120,6 @@ export const TransferredModel = Schema.Union([
 export const acceptTransferredModel = (model: typeof TransferredModel.Type): Refusal | { readonly ok: true; readonly model: ExecutableModel } => {
   if (model.route === "apple") return { ok: true, model: { name: "apple", route: "apple", local: true } };
   if (model.local && model.name !== "apple") return { ok: false, lines: [oneLine(`ローカルモードでは ${model.name} を選べません`), "--model claude を --local なしで指定してください"] };
-  if (model.name === "apple" || model.route === "apple") return { ok: false, lines: [oneLine(`${model.name} はまだ使えません`), "--model claude を指定してください"] };
+  if (model.name === "apple") return { ok: false, lines: [oneLine(`${model.name} はまだ使えません`), "--model claude を指定してください"] };
   return { ok: true, model: { ...model, local: false } };
 };
