@@ -185,6 +185,37 @@ describe("SessionSinks（実物 Layer）", () => {
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
+  it.effect("images:false のモデルを渡しても screen は保存され、発言だけが updater に届く（Issue #665）", () => {
+    const inputs: DiffInput[] = [];
+    const updaterLayer = Layer.succeed(DiffUpdater, DiffUpdater.of({
+      update: (input) => Effect.sync(() => { inputs.push(input); return { ops: [] }; }),
+    }));
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const model = { ...defaultClaude, images: false };
+      const sink = yield* sinks.open({ updaterLayer: yield* sinks.prepare(model), model, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00, 0x80]);
+
+      yield* sink.screen({ start: 1, image: bytes });
+      yield* sink.screen({ start: 2, image: null });
+      yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用について" });
+      yield* sink.flush;
+
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]!.fresh.map((r) => r.text)).toEqual(["採用について"]);
+      const log = readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      const screens = log.filter((e) => e.type === "screen");
+      expect(screens).toHaveLength(2);
+      expect(screens[0]).toMatchObject({ start: 1, image: expect.any(String) });
+      expect(new Uint8Array(readFileSync(join(dir, "screens", screens[0].image)))).toEqual(bytes);
+      expect(screens[1]).toMatchObject({ start: 2, image: null });
+      expect("screens" in inputs[0]!).toBe(false);
+      expect("previousScreens" in inputs[0]!).toBe(false);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
   // Issue #438: 画像の ID は s1 から順に増え、image: null は数えない（null を挟んでも次の画像は s2）
   it.effect("画像の ID は s1 から順に増え、image: null は数えない", () => {
     const inputs: DiffInput[] = [];
