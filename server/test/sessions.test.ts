@@ -9,6 +9,8 @@ import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "../src/sessionSinks.ts";
 import { Sessions, SessionsDir, type SessionStart } from "../src/sessions.ts";
 import { Viewers } from "../src/viewers.ts";
+import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
+import { settleUntil } from "./fixtures/sessionLayers.ts";
 
 // Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と起動し直しのループを、
 // 偽の Helpers・SessionSinks の Layer と TestClock で確かめる（order.md:39）。本物の子プロセスは使わない。
@@ -173,6 +175,125 @@ const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Laye
     const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
     return { sessions: Context.get(context, Sessions), viewers: Context.get(context, Viewers), closeServer: () => Scope.close(scope, Exit.void) };
   });
+
+describe("推論プロセスの準備をセッションが所有する", () => {
+  const preparation = Effect.fnUntraced(function* (fake: FakeSinksHandle) {
+    const ready = yield* Deferred.make<void, UpdaterUnavailable>();
+    const control = { ready };
+    const state = { opened: 0, closed: 0, createdDirs: 0, flushAlive: false, exportsAlive: false };
+    const original = fake.sinks;
+    const sinks = SessionSinks.of({
+      ...original,
+      createDir: (dir) => Effect.andThen(Effect.sync(() => { state.createdDirs++; }), original.createDir(dir)),
+      prepare: () => Effect.gen(function* () {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => { state.opened++; }),
+          () => Effect.sync(() => { state.closed++; }),
+        );
+        yield* Deferred.await(control.ready);
+        return Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }));
+      }),
+      open: (args) => original.open(args).pipe(Effect.map((sink) => ({
+        ...sink,
+        flush: Effect.andThen(Effect.sync(() => { state.flushAlive = state.opened > state.closed; }), sink.flush),
+        exports: Effect.andThen(Effect.sync(() => { state.exportsAlive = state.opened > state.closed; }), sink.exports),
+      }))),
+    });
+    return { ready, control, state, layer: Layer.succeed(SessionSinks, sinks) };
+  });
+
+  it.effect("準備完了まではフォルダと取り込みを始めず、最後の更新と書き出しの後に推論子を閉じる", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const prep = yield* preparation(fake);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined }));
+    yield* settleUntil(() => prep.state.opened === 1);
+    expect(prep.state).toMatchObject({ opened: 1, closed: 0 });
+    expect(helper.calls).toEqual([]);
+    expect(prep.state.createdDirs).toBe(0);
+    expect(fake.opened.count).toBe(0);
+    yield* Deferred.succeed(prep.ready, undefined);
+    yield* Fiber.join(starting);
+    expect(helper.calls).toHaveLength(1);
+    expect(prep.state.createdDirs).toBe(1);
+    expect(fake.opened.count).toBe(1);
+    expect(prep.state.closed).toBe(0);
+    yield* sessions.stop;
+    expect({ ...prep.state }).toEqual({ opened: 1, closed: 1, createdDirs: 1, flushAlive: true, exportsAlive: true });
+  }));
+
+  it.effect("準備を拒否したら取得済みの推論子を閉じ、同じサーバーで次の開始を行える", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const prep = yield* preparation(fake);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const input = { app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined };
+    const starting = yield* Effect.forkChild(Effect.exit(sessions.start(input)));
+    yield* settleUntil(() => prep.state.opened === 1);
+    expect(prep.state.opened).toBe(1);
+    yield* Deferred.fail(prep.ready, new UpdaterUnavailable({ message: "モデルの準備中です\nしばらく待ってください" }));
+    expect(Exit.isFailure(yield* Fiber.join(starting))).toBe(true);
+    expect(prep.state.closed).toBe(1);
+    expect(helper.calls).toEqual([]);
+    expect(prep.state.createdDirs).toBe(0);
+    expect(fake.opened.count).toBe(0);
+    // 新しい開始は別の準備を取得する。失敗したセッションの状態を持ち越さない。
+    prep.control.ready = yield* Deferred.make<void, UpdaterUnavailable>();
+    yield* Deferred.succeed(prep.control.ready, undefined);
+    yield* sessions.start(input);
+    yield* sessions.stop;
+    expect(helper.calls).toHaveLength(1);
+    expect(prep.state).toMatchObject({ opened: 2, closed: 2 });
+  }));
+
+  it.effect("準備完了後に音声ヘルパーの起動が失敗しても推論子を閉じる", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{ connect: false }]);
+    const fake = yield* makeFakeSessionSinks();
+    const prep = yield* preparation(fake);
+    yield* Deferred.succeed(prep.ready, undefined);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const result = yield* Effect.exit(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined }));
+    expect(Exit.isFailure(result)).toBe(true);
+    expect(helper.calls).toHaveLength(1);
+    expect(prep.state).toMatchObject({ opened: 1, closed: 1 });
+    expect(fake.opened.count).toBe(0);
+  }));
+
+  it.effect("取得済みの推論子の準備待ちを中断したら閉じ、会議を始めない", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const prep = yield* preparation(fake);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined }));
+    yield* settleUntil(() => prep.state.opened === 1);
+    expect(prep.state.opened).toBe(1);
+    yield* Fiber.interrupt(starting);
+    expect(prep.state.closed).toBe(1);
+    expect(helper.calls).toEqual([]);
+    expect(prep.state.createdDirs).toBe(0);
+    expect(fake.opened.count).toBe(0);
+  }));
+
+  it.effect("音声ヘルパーを起動し直しても同じ推論子を保ち、サーバー終了で閉じる", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } }, {}]);
+    const fake = yield* makeFakeSessionSinks();
+    const prep = yield* preparation(fake);
+    yield* Deferred.succeed(prep.ready, undefined);
+    const { sessions, closeServer } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    yield* sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined });
+    helper.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" });
+    yield* TestClock.adjust(500);
+    yield* TestClock.adjust(10);
+    expect(helper.calls).toHaveLength(2);
+    helper.send(1, { type: "remark", track: "相手", start: 2, end: 3, text: "次の発言" });
+    yield* TestClock.adjust(1);
+    expect(fake.finals.map((r) => r.text)).toEqual(["最初の発言", "次の発言"]);
+    expect(prep.state).toMatchObject({ opened: 1, closed: 0 });
+    yield* closeServer();
+    expect(prep.state.closed).toBe(1);
+  }));
+});
 
 
 // ブラウザ側のクライアントの代わり。Viewers.connect に渡す Socket で、届いたフレームを溜める（server/test/ws.test.ts の client と同じ作り）

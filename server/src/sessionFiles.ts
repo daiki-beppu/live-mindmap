@@ -174,7 +174,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
       readScreen: (file) => fs.readFile(join(dir, SCREENS_DIR, file)).pipe(Effect.orDie),
     }),
   );
-  const images = model.images !== false;
+  const images = model.route !== "apple" && model.images !== false;
   const session = yield* makeSession({ title: title ?? basename(dir), images }).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く

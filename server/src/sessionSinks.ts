@@ -1,8 +1,8 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, Effect, FileSystem, Layer, Ref, type Scope } from "effect";
+import { Context, Effect, FileSystem, Layer, Ref, Scope } from "effect";
 import { MapCapture } from "./capture.ts";
-import type { UpdaterUnavailable } from "./diffUpdater.ts";
+import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
 import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
@@ -42,7 +42,7 @@ export type SessionSink = {
 };
 
 export type SessionSinksDeps<R = never> = {
-  prepareUpdater: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, R>;
+  prepareUpdater: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, R | Scope.Scope>;
 };
 
 export type OpenSessionSink = {
@@ -77,7 +77,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           yield* Effect.context<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>(),
         );
         return SessionSinks.of({
-        prepare: (model) => prepareUpdater(model).pipe(Effect.provideContext(preparationServices)),
+        prepare: (model) => Effect.gen(function* () {
+          const scope = yield* Effect.scope;
+          return yield* prepareUpdater(model).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
+        }),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
         open: Effect.fnUntraced(function* ({ dir, title, publish, speak, model, updaterLayer }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。

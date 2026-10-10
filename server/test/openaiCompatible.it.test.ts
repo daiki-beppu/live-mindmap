@@ -1,3 +1,6 @@
+import type { AppleIntelligence } from "../src/appleIntelligence.ts";
+import type { Scope } from "effect";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { createServer, type Server } from "node:http";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -9,7 +12,8 @@ import { ConfigProvider, Console, Deferred, Effect, FileSystem, Layer, Queue, Re
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { JsonExport, type ExportNode } from "../src/core/index.ts";
-import { prepareUpdaterLayer as prepare, type UpdaterUnavailable } from "../src/diffUpdater.ts";
+import { prepareUpdaterLayer as prepare } from "../src/diffUpdater.ts";
+import type { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { DiffUpdater } from "../src/core/index.ts";
 import type { ExecutableModel } from "../src/modelSelection.ts";
 import { HttpClient } from "effect/http";
@@ -23,7 +27,7 @@ import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTrans
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const listener = vi.hoisted(() => ({ open: vi.fn() }));
-const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem> = prepare;
+const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | Scope.Scope> = prepare;
 vi.mock("../src/http.ts", async (original) => {
   const { fakeListener } = await import("./fakeListener.ts");
   const actual = await original<typeof import("../src/http.ts")>();
@@ -72,7 +76,7 @@ const loopback = Effect.fnUntraced(function* (afterRequest: (call: number) => vo
 });
 const dependencies = (root: string) => {
   const stdout: string[] = [];
-  const layer = Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  const layer = Layer.mergeAll(NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
   );
@@ -150,7 +154,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
       return ConfigProvider.fromEnvRecord({ SYNTHETIC_TRANSFER_KEY: "synthetic-key" }).load(path);
     });
     const sinks = SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
-      Layer.provide(Layer.merge(fakeExportServices(), NodeHttpClient.layerUndici)),
+      Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, unusedApple)),
     );
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
       helpers, sessionSinks: sinks, managedDeps: forbiddenManagedDeps,

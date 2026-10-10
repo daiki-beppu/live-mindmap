@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Config, Effect, FileSystem, Option, Schema } from "effect";
-import { configDiagnostic, listModels, selectModel, type ModelFlags } from "./modelSelection.ts";
+import { configDiagnostic, listModels, modelCandidate, selectModel, type ModelFlags } from "./modelSelection.ts";
 import { fileReason } from "./truthFile.ts";
+import { AppleIntelligence } from "./appleIntelligence.ts";
 
 export class ModelRefused extends Schema.TaggedError<ModelRefused>()("ModelRefused", { message: Schema.String }) {}
 const reject = (lines: readonly string[]) => new ModelRefused({ message: lines.join("\n") });
@@ -22,10 +23,19 @@ const loadModelConfig = Effect.fn("loadModelConfig")(function* () {
   return { config, configPath, envModel, macState: {} };
 });
 export const resolveModel = Effect.fn("resolveModel")(function* (flags: ModelFlags) {
-  const result = selectModel({ ...yield* loadModelConfig(), flags });
+  const input = { ...yield* loadModelConfig(), flags };
+  const candidate = modelCandidate(input);
+  if (!candidate.ok) return yield* reject(candidate.lines);
+  if (candidate.model.route !== "apple") return candidate.model;
+  const macState = yield* (yield* AppleIntelligence).availability.pipe(Effect.mapError((error) => new ModelRefused({ message: error.message })));
+  const result = selectModel({ ...input, macState });
   return result.ok ? result.model : yield* reject(result.lines);
 });
 export const configuredModels = Effect.fn("configuredModels")(function* () {
-  const result = listModels(yield* loadModelConfig());
+  const input = yield* loadModelConfig();
+  const definitions = listModels(input);
+  if (!definitions.ok) return yield* reject(definitions.lines);
+  const macState = yield* (yield* AppleIntelligence).availability.pipe(Effect.mapError((error) => new ModelRefused({ message: error.message })));
+  const result = listModels({ ...input, macState });
   return result.ok ? result.models : yield* reject(result.lines);
 });

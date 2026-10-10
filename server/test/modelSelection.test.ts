@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { acceptTransferredModel, defaultClaude, listModels, selectModel } from "../src/modelSelection.ts";
 
 const configPath = "/test/config.json";
+// 問い合わせ境界が渡す正規化済みの状態。文面ではなく利用可否と理由を選択に渡す。
+const availableMac = { osVersion: "27.0", availability: { status: "available" } };
 const models = {
   fast: { route: "claude", model: "claude-haiku-5-5" },
   careful: { route: "claude", model: "claude-opus-5-5" },
@@ -26,15 +28,15 @@ const refused = (result: ReturnType<typeof selectModel>) => {
 
 describe("モデル選択（Issue #663）", () => {
   it("一覧は選択と同じ定義・利用可否を使い、apple だけがローカル対象になる", () => {
-    const result = listModels({ config: { models }, configPath, macState: {} });
+    const result = listModels({ config: { models }, configPath, macState: availableMac });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("有効なモデル定義が拒否されました");
     expect(result.models.filter((model) => model.local).map((model) => model.name)).toEqual(["apple"]);
-    expect(result.models.filter((model) => model.reason === undefined).map((model) => model.name).sort()).toEqual(["careful", "claude", "fast", "ollama", "subscription"]);
+    expect(result.models.filter((model) => model.reason === undefined).map((model) => model.name).sort()).toEqual(["apple", "careful", "claude", "fast", "ollama", "subscription"]);
     expect(listModels({ config: { models: { apple: models.fast } }, configPath, macState: {} }).ok).toBe(false);
   });
 
-  it("転送した Claude・互換・ChatGPT モデルは実行できるが、local・apple は拒否する", () => {
+  it("転送した Claude・互換・ChatGPT モデルは実行できるが、他モデルの local・apple 上書きは拒否する", () => {
     expect(acceptTransferredModel(defaultClaude)).toEqual({ ok: true, model: defaultClaude });
     const compatible = { name: "ollama", ...models.ollama, route: "openai-compatible" as const, local: false };
     expect(acceptTransferredModel(compatible)).toEqual({ ok: true, model: compatible });
@@ -43,10 +45,15 @@ describe("モデル選択（Issue #663）", () => {
     for (const model of [
       { ...defaultClaude, local: true },
       { ...defaultClaude, name: "apple" },
-      { name: "apple" as const, route: "apple" as const, local: true },
       { ...compatible, local: true },
       { ...subscription, local: true },
     ]) expect(acceptTransferredModel(model).ok).toBe(false);
+  });
+
+  it.each([false, true])("転送した組み込み apple はローカルの推論先として受理する（local=%s）", (local) => {
+    expect(acceptTransferredModel({ name: "apple", route: "apple", local })).toEqual({
+      ok: true, model: { name: "apple", route: "apple", local: true },
+    });
   });
 
   it.each([null, [], { models: [] }, { default: 42 }])("設定の外形が不正なら既定 Claude に回さず拒否する (%j)", (config) => {
@@ -82,10 +89,27 @@ describe("モデル選択（Issue #663）", () => {
     { flags: {}, env: undefined, config: { default: "local", models } },
     { flags: { model: "apple" }, env: undefined, config: {} },
     { flags: { model: "apple", local: true }, env: undefined, config: {} },
-  ])("invNoSilentFallback: Apple / local は未対応として拒み Claude に回さない ($flags)", ({ flags, env, config }) => {
-    const lines = refused(select(flags, env, config));
-    expect(lines[0]).toMatch(/apple|Apple/);
-    expect(lines[0]).toContain("まだ");
+  ])("使える Mac では Apple / local を選び、--local が無くてもローカルになる ($flags)", ({ flags, env, config }) => {
+    expect(selectModel({ flags, envModel: env, config, configPath, macState: availableMac })).toEqual({
+      ok: true, model: { name: "apple", route: "apple", local: true }, local: true,
+    });
+  });
+
+  it.each([
+    { macState: { osVersion: "27.0", availability: { status: "unavailable", reason: "appleIntelligenceNotEnabled" } }, reason: /オフ/, action: /システム設定/ },
+    { macState: { osVersion: "27.0", availability: { status: "unavailable", reason: "deviceNotEligible" } }, reason: /機種/, action: /対応/ },
+    { macState: { osVersion: "26.4", availability: { status: "available" } }, reason: /macOS 27.*26\.4/, action: /更新|アップデート/ },
+    { macState: { osVersion: "27.0", availability: { status: "unavailable", reason: "modelNotReady" } }, reason: /準備中/, action: /待|しばらく/ },
+    { macState: { osVersion: "27.0", availability: { status: "unavailable", reason: "futureReason" } }, reason: /futureReason/, action: /確認|確かめ|やり直|再試行/ },
+  ])("使えない Mac の apple は理由と次の行動を二行で示し、一覧にも同じ理由を映す ($macState)", ({ macState, reason, action }) => {
+    const lines = refused(selectModel({ flags: { model: "apple" }, envModel: "claude", config: {}, configPath, macState }));
+    expect(lines[0]).toMatch(reason);
+    expect(lines[1]).toMatch(action);
+    const listed = listModels({ config: {}, configPath, macState });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error("有効な一覧を取得できません");
+    expect(listed.models.find((model) => model.name === "apple")).toMatchObject({ local: true, reason: lines[0] });
+    expect(selectModel({ flags: { model: "claude" }, envModel: undefined, config: {}, configPath, macState })).toMatchObject({ ok: true, model: defaultClaude });
   });
 
   it.each(["claude", "fast", "ollama", "subscription"])("invLocalWithOtherRefused: --local と %s の併用は拒む", (name) => {

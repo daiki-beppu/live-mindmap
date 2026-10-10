@@ -5,6 +5,7 @@ import { TestClock } from "effect/testing";
 import { applyOps, DiffUpdater, emptyMap, type DiffInput } from "../src/core/index.ts";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { classificationRequest, SYSTEM } from "../src/localPrompt.ts";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { CHATGPT_HOME, CHATGPT_MODEL, chatgptCredentials, classification, completedSse, encodedRequestBody, fakeChatgptFiles, fakeChatgptHttp, jsonRequestBody, sseEvent } from "./fixtures/chatgpt.ts";
 
 const input: DiffInput = { map: emptyMap("定例"), recent: [], fresh: [{ id: "r1", track: "相手", start: 0, end: 1, text: "面接官は3人です。求人票を直します！" }] };
@@ -15,7 +16,7 @@ const open = Effect.fnUntraced(function* (extraBody: Record<string, unknown>) {
 });
 const provide = <A, E, R>(effect: Effect.Effect<A, E, R>, files: ReturnType<typeof fakeChatgptFiles>, http: ReturnType<typeof fakeChatgptHttp>) => effect.pipe(
   Effect.provideService(FileSystem.FileSystem, files.fs), Effect.provideService(HttpClient.HttpClient, http.client),
-  Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))),
+  Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))), Effect.provide(unusedApple),
 );
 const response = (text: string) => new Response(text, { headers: { "content-type": "text/event-stream" } });
 
