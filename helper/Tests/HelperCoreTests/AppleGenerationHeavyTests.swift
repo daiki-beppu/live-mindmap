@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AppleIntelligenceCore
 
-@Suite("本物の Foundation Models で構造化生成", .timeLimit(.minutes(2)))
+@Suite("本物の Foundation Models で構造化生成", .timeLimit(.minutes(2)), .disabled(if: ProcessInfo.processInfo.environment["CI"] != nil, "CI のランナー（macos-26）には Apple Intelligence が無い"))
 struct AppleGenerationHeavyTests {
     @Test("分類の object・array・union・必須フィールドを満たす JSON を返す")
     func generatesClassification() async throws {
