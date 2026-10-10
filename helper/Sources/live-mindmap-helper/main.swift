@@ -13,6 +13,7 @@ private func printError(_ message: String) {
 
 private let usage = """
 usage:
+  live-mindmap-helper check
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
@@ -153,6 +154,9 @@ private func main() async -> Int32 {
     let arguments = Array(CommandLine.arguments.dropFirst())
     do {
         switch arguments.first {
+        case "check":
+            let status = try await systemCheck()
+            print(try status.jsonString())
         case "list":
             try listApps()
         case "run":
