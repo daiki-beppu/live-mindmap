@@ -96,7 +96,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const helpers = fakeHelpers([{ type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }]);
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
-      sessionSinks: SessionSinks.layer({ updaterLayer: claudeUpdaterLayer }).pipe(Layer.provide(fakeExportServices())),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { if (model.route !== "claude") throw new Error("このfixtureはClaude専用です"); return Effect.succeed(claudeUpdaterLayer(model)); } }).pipe(Layer.provide(fakeExportServices())),
     });
     const deps = dependencies(root, { LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_MODEL: "careful" });
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--model", "fast"]).pipe(Effect.provide(deps.layer));
@@ -113,15 +113,21 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const helpers = fakeHelpers([]);
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
-      sessionSinks: SessionSinks.layer({ updaterLayer: claudeUpdaterLayer }).pipe(Layer.provide(fakeExportServices())),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { if (model.route !== "claude") throw new Error("このfixtureはClaude専用です"); return Effect.succeed(claudeUpdaterLayer(model)); } }).pipe(Layer.provide(fakeExportServices())),
     });
     const post = (model: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ app: "us.zoom.xos", audio: false, model }),
     }));
-    const response = yield* post({ name: "ollama", route: "openai-compatible", model: "qwen", url: "http://localhost:11434/v1", local: false });
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect((yield* Effect.tryPromise(() => response.json()))).toMatchObject({ error: expect.stringMatching(/まだ/) });
+    for (const model of [
+      { name: "subscription", route: "chatgpt", model: "gpt-test", local: false },
+      { name: "apple", route: "apple", local: true },
+      { name: "compatible", route: "openai-compatible", model: "synthetic-model", url: "http://127.0.0.1:1/v1", local: true },
+    ]) {
+      const response = yield* post(model);
+      expect(response.status).toBe(400);
+      expect((yield* Effect.tryPromise(() => response.json()))).toMatchObject({ error: expect.stringMatching(model.local && model.name !== "apple" ? /ローカルモード/ : /まだ/) });
+    }
     expect(helpers.calls).toHaveLength(0);
     expect(existsSync(sessionsDir)).toBe(false);
     expect(sdk.created).toEqual([]);

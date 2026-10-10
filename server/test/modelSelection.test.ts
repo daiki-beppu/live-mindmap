@@ -30,17 +30,20 @@ describe("モデル選択（Issue #663）", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("有効なモデル定義が拒否されました");
     expect(result.models.filter((model) => model.local).map((model) => model.name)).toEqual(["apple"]);
-    expect(result.models.filter((model) => model.reason === undefined).map((model) => model.name).sort()).toEqual(["careful", "claude", "fast"]);
+    expect(result.models.filter((model) => model.reason === undefined).map((model) => model.name).sort()).toEqual(["careful", "claude", "fast", "ollama"]);
     expect(listModels({ config: { models: { apple: models.fast } }, configPath, macState: {} }).ok).toBe(false);
   });
 
-  it("転送した Claude は実行できるが、local・apple・未対応経路は実行前に拒否する", () => {
+  it("転送した Claude と互換モデルは実行できるが、local・apple・未対応経路は拒否する", () => {
     expect(acceptTransferredModel(defaultClaude)).toEqual({ ok: true, model: defaultClaude });
+    const compatible = { name: "ollama", ...models.ollama, route: "openai-compatible" as const, local: false };
+    expect(acceptTransferredModel(compatible)).toEqual({ ok: true, model: compatible });
     for (const model of [
       { ...defaultClaude, local: true },
       { ...defaultClaude, name: "apple" },
       { name: "apple" as const, route: "apple" as const, local: true },
-      { name: "ollama", ...models.ollama, route: "openai-compatible" as const, local: false },
+      { ...compatible, local: true },
+      { name: "subscription", ...models.subscription, route: "chatgpt" as const, local: false },
     ]) expect(acceptTransferredModel(model).ok).toBe(false);
   });
 
@@ -89,7 +92,7 @@ describe("モデル選択（Issue #663）", () => {
     expect(lines[1]).toContain("apple");
   });
 
-  it.each(["ollama", "subscription"])("selectionResult: %s は定義を受理するが実行は未対応", (name) => {
+  it.each(["subscription"])("selectionResult: %s は定義を受理するが実行は未対応", (name) => {
     const lines = refused(select({ model: name }, undefined, { models }));
     expect(lines[0]).toContain("まだ");
   });
@@ -100,7 +103,17 @@ describe("モデル選択（Issue #663）", () => {
       apiKeyEnv: "TEST_MODEL_KEY", images: false, maxTokens: 4096, extraBody: { temperature: 0 },
     } } };
     expect(select({ model: "claude" }, undefined, config)).toMatchObject({ ok: true });
-    expect(refused(select({ model: "compatible" }, undefined, config))[0]).toContain("まだ");
+    expect(select({ model: "compatible" }, undefined, config)).toEqual({ ok: true, model: { name: "compatible", ...config.models.compatible, local: false }, local: false });
+  });
+
+  it.each([
+    { flags: { model: "ollama" }, env: "fast", default: "careful" },
+    { flags: {}, env: "ollama", default: "fast" },
+    { flags: {}, env: undefined, default: "ollama" },
+  ])("C01: 互換経路も選択優先順位を保ちlocalhostをlocal扱いしない ($flags / $env / $default)", ({ flags, env, default: defaultName }) => {
+    expect(select(flags, env, { default: defaultName, models })).toEqual({
+      ok: true, model: { name: "ollama", ...models.ollama, local: false }, local: false,
+    });
   });
 
   it.each(["missing", "chatgpt"])("unknownModelDiagnostic: %s は候補と設定パスを含む 2 行", (name) => {

@@ -1,4 +1,5 @@
 import { defaultClaude } from "../src/modelSelection.ts";
+import type { DiffUpdater } from "../src/core/index.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,6 @@ import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
-import { type ServerOptions } from "../src/server.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -72,7 +72,7 @@ const makeFakeHelpers = (attempts: AttemptScript[]) => {
   return { helpers: Helpers.of({ apps: Effect.succeed(apps), launch }), calls };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: ServerOptions["updaterLayer"] } = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater> } = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -80,7 +80,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const sessionsDir = join(dir, "sessions");
   const fakeHelpers = makeFakeHelpers(attempts);
   const sessionSinksLayer = SessionSinks.layer({
-    updaterLayer: options.updaterLayer ?? (() => updaterLayer(() => Effect.succeed({ ops: [] }))),
+    prepareUpdater: (model) => Effect.succeed(options.updaterLayer ? options.updaterLayer(model) : updaterLayer(() => Effect.succeed({ ops: [] }))),
   }).pipe(Layer.provide(fakeExportServices()));
   const server = yield* startedServer(
     { port: 0, sessionsDir },

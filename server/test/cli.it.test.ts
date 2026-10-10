@@ -141,7 +141,7 @@ describe("CLI", () => {
       expect(entries.claude).toEqual(["Claude", "-", expect.stringContaining("はい")]);
       expect(entries.fast).toEqual(["Claude", "-", expect.stringContaining("はい")]);
       expect(entries.apple).toEqual(["子プロセス", "はい", expect.stringMatching(/いいえ.*まだ/)]);
-      expect(entries.ollama).toEqual(["OpenAI 互換", "-", expect.stringMatching(/いいえ.*まだ/)]);
+      expect(entries.ollama).toEqual(["OpenAI 互換", "-", expect.stringContaining("はい")]);
       expect(entries.subscription).toEqual(["ChatGPT", "-", expect.stringMatching(/いいえ.*まだ/)]);
       expect(external.openClaudeUpdater).not.toHaveBeenCalled();
       expect(external.openListener).not.toHaveBeenCalled();
@@ -219,10 +219,10 @@ describe("CLI", () => {
       const root = yield* temporaryDirectory;
       const sessions = join(root, "sessions");
       const config = join(root, "models.json");
-      writeFileSync(config, JSON.stringify({ models: { ollama: { route: "openai-compatible", model: "qwen", url: "http://localhost:11434/v1" } } }));
+      writeFileSync(config, JSON.stringify({ models: { subscription: { route: "chatgpt", model: "gpt-test" } } }));
       const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
 
-      const result = yield* Effect.result(runCli(["play", fixture, "--model", "ollama"]).pipe(Effect.provide(deps.layer)));
+      const result = yield* Effect.result(runCli(["play", fixture, "--model", "subscription"]).pipe(Effect.provide(deps.layer)));
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) expect(String(result.failure)).toMatch(/まだ/);
       expect(external.openListener).not.toHaveBeenCalled();

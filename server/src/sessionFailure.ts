@@ -1,6 +1,7 @@
 // 状態に合わない依頼や、起動し直しに失敗した結果の失敗。HTTP のステータスは持たない
 // （タグからステータスへの対応は http.ts の表 1 つが決める）。文面はこのモジュールが持つ。
 import { Schema } from "effect";
+import type { UpdaterUnavailable } from "./diffUpdater.ts";
 
 export class SessionBusy extends Schema.TaggedError<SessionBusy>()("SessionBusy", {}) {
   override get message(): string {
@@ -54,4 +55,4 @@ export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExit
   }
 }
 
-export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | Aborted | RestartGaveUp | HelperExited;
+export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable;

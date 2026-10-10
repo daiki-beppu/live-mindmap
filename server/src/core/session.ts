@@ -48,7 +48,7 @@ export const DiffUsage = Schema.Struct({
   model: Schema.String,
 });
 export type DiffUsage = typeof DiffUsage["Type"];
-// 差分更新の結果。トークン数を数えられない実装は usage を返さない（Claude へ渡す出力の Schema は DiffOutput のまま）
+// 差分更新の結果。トークン数を数えられない実装は usage を返さない。
 export type DiffResult = DiffOutput & { readonly usage?: DiffUsage };
 
 // 差分更新を出す役。セッションごとの Service（SessionSinks.open がセッションごとに Layer を作る）。
@@ -85,6 +85,7 @@ export const DiffEvent = Schema.Struct({
   ops: Schema.mutable(Schema.Array(Op)),
   dropped: Schema.mutable(Schema.Array(Dropped)),
   error: Schema.optionalKey(Schema.String),
+  processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
 });
 export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, DiffEvent]);
@@ -144,9 +145,9 @@ export function hasContent(text: string): boolean {
 export type SessionState = {
   readonly map: MeetingMap;
   readonly pending: readonly Remark[]; // 差分更新にまだ渡していない発言
-  readonly processed: readonly Remark[]; // 差分更新に渡した、中身のある発言
+  readonly processed: readonly Remark[]; // 反映済み、または通常失敗で消費した、中身のある発言
   readonly remarks: readonly Remark[]; // 受け取ったすべての発言（重複の印つきも含む）
-  readonly known: ReadonlySet<string>; // 差分更新に渡した発言の ID
+  readonly known: ReadonlySet<string>; // 反映済み、または通常失敗で消費した発言の ID
   readonly round: number; // 成功した反映の通し番号
   readonly changes: readonly ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
   readonly currentTopic: string | undefined; // 今の議題の ID。変わったノードのある反映で更新する
@@ -225,9 +226,14 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       for (const id of e.input.fresh) {
         const r = remarks.find((x) => x.id === id);
         if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
-        known.add(id);
-        if (hasContent(r.text)) processed.push(r); // 旧形式のログの中身のない発言は、続きの差分更新の直前の発言にしない
         fresh.push(r);
+      }
+      const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
+      if (count > fresh.length) return yield* invalid("diff の反映数が入力の発言数を超えています");
+      const consumed = fresh.slice(0, count);
+      for (const r of consumed) {
+        known.add(r.id);
+        if (hasContent(r.text)) processed.push(r);
       }
       const selectedBefore = e.input.screenCount ?? 0;
       if (selectedBefore > received) return yield* invalid(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${received} より大きい`);
@@ -236,7 +242,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
         unsent = unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff);
       }
       attached = [...attached, ...(e.input.screens ?? [])].slice(-LAST_SCREENS);
-      const stamp = stampOf(history, fresh);
+      const stamp = stampOf(history, consumed);
       const applied = applyOps(map, e.ops, known, stamp);
       if (e.error === undefined) history = recordRound(history, map, applied, stamp);
       map = applied.map;
@@ -357,14 +363,15 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
           Effect.gen(function* () {
             const quiet = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] => [s.quiet, { ...s, inFlight: undefined }]);
             if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
-            yield* startDiffIfReady(quiet ? 1 : BATCH);
+            yield* startDiffIfReady(quiet || (Exit.isSuccess(exit) && exit.value) ? 1 : BATCH);
           }),
         ),
+        Effect.asVoid,
       );
     }
 
     // update だけを中断可能にする。状態の反映から SessionLog.write までは中断させない
-    function callUpdater(fresh: readonly Remark[]): Effect.Effect<void> {
+    function callUpdater(fresh: readonly Remark[]): Effect.Effect<boolean> {
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const { map, recent, input, attached, previous } = yield* Ref.modify(ref, (s) => {
@@ -385,8 +392,6 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
               { map: s.map, recent, input, attached, previous: s.lastScreens },
               {
                 ...s,
-                known: new Set([...s.known, ...fresh.map((u) => u.id)]),
-                processed: [...s.processed, ...fresh],
                 reflecting: fresh,
                 unsentScreens: s.unsentScreens.filter((h) => h.start > cutoff),
                 lastScreens: [...s.lastScreens, ...attached].slice(-LAST_SCREENS),
@@ -411,24 +416,37 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
             Effect.flatMap(([screens, previousScreens]) =>
               restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
             ),
-            Effect.map(({ ops, usage }) => ({ ok: true as const, ops, usage })),
+            Effect.flatMap(({ ops, usage, processedRemarks }) => {
+              const count = processedRemarks ?? fresh.length;
+              return !Number.isInteger(count) || count <= 0 || count > fresh.length
+                ? Effect.fail({ _tag: "InvalidProcessedRemarks", message: "反映数が入力の発言数に対して不正です" })
+                : Effect.succeed({ ok: true as const, ops, usage, processedRemarks, count });
+            }),
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed({ ok: false as const, error: describeFailure(cause) }),
             ),
           );
           if (!outcome.ok) {
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
-            yield* Ref.update(ref, (s) => ({ ...s, reflecting: [] }));
+            yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
-            return;
+            return false;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
           const dropped = yield* Ref.modify(ref, (s) => {
-            const stamp = stampOf(s, fresh);
-            const applied = applyOps(s.map, outcome.ops, s.known, stamp);
-            return [applied.dropped, { ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [] }];
+            const consumed = fresh.slice(0, outcome.count);
+            const known = new Set([...s.known, ...consumed.map((r) => r.id)]);
+            const stamp = stampOf(s, consumed);
+            const applied = applyOps(s.map, outcome.ops, known, stamp);
+            return [applied.dropped, {
+              ...s, ...recordRound(s, s.map, applied, stamp), map: applied.map, reflecting: [],
+              known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
+            }];
           });
-          yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped, ...(outcome.usage ? { usage: outcome.usage } : {}) });
+          yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped,
+            ...(outcome.processedRemarks !== undefined ? { processedRemarks: outcome.processedRemarks } : {}),
+            ...(outcome.usage ? { usage: outcome.usage } : {}) });
+          return outcome.count < fresh.length;
         }),
       );
     }
@@ -487,7 +505,13 @@ function openSession(initial: SessionState, screens: InitialScreens): Effect.Eff
           yield* log.write({ type: "screen", start: change.start, image: file });
         }),
       pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),
-      flush: Effect.andThen(idle, Effect.andThen(startDiffIfReady(1), idle)),
+      flush: Effect.gen(function* () {
+        for (;;) {
+          yield* idle;
+          if ((yield* Ref.get(ref)).pending.length === 0) return;
+          yield* startDiffIfReady(1);
+        }
+      }),
       snapshot: Effect.map(Ref.get(ref), snapshotOf),
       unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),
       exportJson: Effect.map(Ref.get(ref), (s) => toJsonExport(snapshotOf(s), [...s.remarks])),

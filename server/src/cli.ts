@@ -10,10 +10,11 @@ import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
-import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
+import { prepareUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import { configuredModels, ModelRefused, resolveModel } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { exitNaturally } from "./exitNaturally.ts";
+import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
   formatIntakeStatus,
   formatTable,
@@ -202,9 +203,10 @@ const requestServer = Effect.fnUntraced(function* <A>(
   path: string,
   schema: Schema.Decoder<A>,
   body?: object,
+  headers?: Record<string, string>,
 ) {
   const client = yield* HttpClient.HttpClient;
-  const base = HttpClientRequest.make(method)(`http://127.0.0.1:${port}${path}`);
+  const base = HttpClientRequest.make(method)(`http://127.0.0.1:${port}${path}`, { headers });
   const request = body ? HttpClientRequest.bodyJsonUnsafe(base, body) : base;
   const response = yield* client.execute(request).pipe(Effect.mapError(() => new ServerUnreachable()));
   if (response.status < 200 || response.status >= 300) {
@@ -363,6 +365,7 @@ const play = Command.make(
   Effect.fn("play")(
     function* ({ realtime, screen, transcript, model, local }) {
       const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
+      const updaterLayer = yield* prepareUpdaterLayer(selected);
       return yield* Effect.gen(function* () {
         const port = yield* portConfig;
         const folder = yield* isDirectory(transcript);
@@ -392,7 +395,7 @@ const play = Command.make(
           remarks, screens, realtime,
         }, selected, viewers.publish);
         yield* write(paths.map((path) => `${path}\n`).join(""));
-      }).pipe(Effect.provide(claudeUpdaterLayer(selected)));
+      }).pipe(Effect.provide(updaterLayer));
     },
     Effect.scoped,
   ),
@@ -443,13 +446,22 @@ const start = Command.make(
   Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, local }) {
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
+    let headers: Record<string, string> | undefined;
+    if (selected.route === "openai-compatible") {
+      const sessionsDir = yield* sessionsDirConfig;
+      const token = yield* readModelTransferToken(sessionsDir, port).pipe(
+        Effect.mapError(() => new ServerFailed({ message: "互換モデルの転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
+      );
+      if (!token) return yield* new ServerFailed({ message: "互換モデルの転送用トークンが空です\nサーバーを起動し直してください" });
+      headers = { [MODEL_TRANSFER_HEADER]: token };
+    }
     const { dir } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
       screen: !noScreen,
       model: selected,
-    });
+    }, headers);
     yield* write(`${dir}\n`);
   }),
 ).pipe(
@@ -624,8 +636,9 @@ const evaluate = Command.make(
     for (const source of sessions) {
       const dir = selected === undefined ? source : yield* Effect.gen(function* () {
         const recorded = yield* loadRecordedSession(resolve(source));
+        const updaterLayer = yield* prepareUpdaterLayer(selected);
         return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
-          Effect.provide(claudeUpdaterLayer(selected)), Effect.scoped,
+          Effect.provide(updaterLayer), Effect.scoped,
         )).dir;
       });
       const path = join(dir, EXPORT_FILE);
@@ -683,7 +696,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   const failure = error.success;
   if (CliError.isCliError(failure)) return Effect.void;
   if (failure instanceof ModelRefused) return Console.error(failure.message);
-  return Console.error(isCliFailure(failure) ? oneLine(failureLine(failure)) : describe(failure));
+  return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
 };
 
 if (import.meta.main) {

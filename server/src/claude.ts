@@ -2,7 +2,7 @@
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
-import { DiffOutput, DiffUpdater, type DiffInput, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
+import { DiffOperations, DiffUpdater, type DiffInput, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
 
 import { buildPrompt, fmtTime, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
 
@@ -139,7 +139,7 @@ export const layerClaude = (model: string) => Layer.effect(
         }
         if (m.type !== "result") continue;
         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `差分更新に失敗: ${m.subtype}`, subtype: m.subtype });
-        const decoded = yield* Schema.decodeUnknownEffect(DiffOutput)(m.structured_output).pipe(
+        const decoded = yield* Schema.decodeUnknownEffect(DiffOperations)(m.structured_output).pipe(
           Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
         );
         return { ...decoded, ...(usage ? { usage } : {}) };
