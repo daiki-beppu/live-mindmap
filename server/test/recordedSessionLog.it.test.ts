@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ const open = Effect.fn("open")(function* () {
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
   const published: number[] = [];
-  const opened = yield* openRecordedSession({ dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot.nodes.length)) }).pipe(
+  const opened = yield* openRecordedSession({ model: defaultClaude, dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot.nodes.length)) }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -73,7 +74,7 @@ describe("openRecordedSession のログと export.json", () => {
 
       const [first] = lines();
       expect(first).toMatchObject({ type: "start", title: "定例" });
-      expect(Object.keys(first!)).toEqual(["at", "type", "title"]);
+      expect(Object.keys(first!)).toEqual(["at", "type", "title", "model"]);
       expect(new Date(first!.at as string).toISOString()).toBe(first!.at); // ISO 文字列
       expect(Date.parse(first!.at as string)).toBeGreaterThanOrEqual(before - 1);
       expect(Date.parse(first!.at as string)).toBeLessThanOrEqual(Date.now() + 1);

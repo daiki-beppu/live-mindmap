@@ -26,7 +26,7 @@ const WAIT = { timeout: 30_000 };
 // CLI を子プロセスで呼ぶ。ポートは一時的なものを環境変数で渡す
 async function cliRun(runInfo: RunInfo, ...args: string[]) {
   const { stdout } = await run(process.execPath, [cli, ...args], {
-    env: { ...process.env, LIVE_MINDMAP_PORT: String(runInfo.port), LIVE_MINDMAP_SESSIONS: runInfo.sessionsDir },
+    env: { ...process.env, LIVE_MINDMAP_CONFIG: join(runInfo.sessionsDir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_PORT: String(runInfo.port), LIVE_MINDMAP_SESSIONS: runInfo.sessionsDir },
   });
   return stdout.split("\n").filter(Boolean);
 }

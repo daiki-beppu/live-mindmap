@@ -38,7 +38,7 @@ import { SessionSinks, type SessionSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
-export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean };
+export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; model: import("./modelSelection.ts").ExecutableModel };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -287,7 +287,7 @@ export class Sessions extends Context.Service<Sessions, {
             );
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
-          const sink = yield* sinks.open({ dir, title: input.title, publish: viewers.publish, speak: viewers.speak }).pipe(Scope.provide(scope));
+          const sink = yield* sinks.open({ dir, title: input.title, model: input.model, publish: viewers.publish, speak: viewers.speak }).pipe(Scope.provide(scope));
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
           const live: Live = {

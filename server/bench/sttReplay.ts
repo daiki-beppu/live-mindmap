@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 // 発言を、認識結果が届いた時刻（at）で本番のセッションに流す（Issue #97）。
 // end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ。
 import { mkdtempSync } from "node:fs";
@@ -103,6 +104,7 @@ export const command = Command.make(
     const dir = yield* createSessionDir(tmp).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: tmp, reason: fileReason(e) })));
     const diffEndsMs: number[] = [];
     const { session } = yield* openRecordedSession({
+      model: defaultClaude,
       dir,
       title,
       publish: () => Effect.void,
@@ -134,7 +136,7 @@ export const command = Command.make(
       + "end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ",
   ),
   // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
-  Command.provide(claudeUpdaterLayer),
+  Command.provide(claudeUpdaterLayer(defaultClaude)),
 );
 
 if (import.meta.main) {

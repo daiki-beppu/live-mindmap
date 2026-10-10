@@ -14,7 +14,7 @@ function runProcess(argv: string[], sessionsDir: string, env: Record<string, str
     execFile(process.execPath, [cli, ...argv], {
       encoding: "utf8",
       timeout: 10_000,
-      env: { ...process.env, LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1", ...env },
+      env: { ...process.env, HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1", ...env },
     }, (error, stdout, stderr) => {
       if (error) {
         if (error.killed || typeof error.code !== "number") {

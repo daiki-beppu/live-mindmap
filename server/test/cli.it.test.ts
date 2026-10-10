@@ -47,7 +47,7 @@ const temporaryDirectory = Effect.acquireRelease(
 );
 
 // 旧 CliDeps の置き換え。保存先とポートは ConfigProvider、標準出力は Console、撮影は MapCapture の Layer で渡す
-function dependencies(sessionsDir: string, port = "0") {
+function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, string> = {}) {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const captures: Snapshot[] = [];
@@ -62,7 +62,10 @@ function dependencies(sessionsDir: string, port = "0") {
   const layer = Layer.mergeAll(
     NodeServices.layer,
     NodeHttpClient.layerUndici,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+      HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"),
+      LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port, ...modelEnv,
+    })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (snapshot: Snapshot, path: string) =>
@@ -113,6 +116,125 @@ const played = (deps: ReturnType<typeof dependencies>) => Effect.gen(function* (
 });
 
 describe("CLI", () => {
+  describe("モデルの設定と開始前の拒否（Issue #663）", () => {
+    it.effect("models は組み込みと設定名の経路・ローカル可否・現在の利用可否を表示する", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const config = join(root, "models.json");
+      writeFileSync(config, JSON.stringify({ models: {
+        fast: { route: "claude", model: "claude-haiku-5-5" },
+        ollama: { route: "openai-compatible", model: "qwen", url: "http://localhost:11434/v1" },
+        subscription: { route: "chatgpt", model: "gpt-test" },
+      } }));
+      const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
+
+      yield* runCli(["models"]).pipe(Effect.provide(deps.layer));
+
+      const rows = deps.stdout.join("").trim().split("\n");
+      expect(rows[0]!.trim().split(/\s+/)).toEqual(["名前", "経路", "ローカル", "使えるか"]);
+      const entries = Object.fromEntries(rows.slice(1).map((line) => {
+        const match = /^(\S+)\s+(Claude|子プロセス|OpenAI 互換|ChatGPT)\s+(\S+)\s+(.+)$/.exec(line.trim());
+        expect(match).not.toBeNull();
+        return [match![1], match!.slice(2)];
+      }));
+      expect(Object.keys(entries).sort()).toEqual(["apple", "claude", "fast", "ollama", "subscription"]);
+      expect(entries.claude).toEqual(["Claude", "-", expect.stringContaining("はい")]);
+      expect(entries.fast).toEqual(["Claude", "-", expect.stringContaining("はい")]);
+      expect(entries.apple).toEqual(["子プロセス", "はい", expect.stringMatching(/いいえ.*まだ/)]);
+      expect(entries.ollama).toEqual(["OpenAI 互換", "-", expect.stringMatching(/いいえ.*まだ/)]);
+      expect(entries.subscription).toEqual(["ChatGPT", "-", expect.stringMatching(/いいえ.*まだ/)]);
+      expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+      expect(external.openListener).not.toHaveBeenCalled();
+      expect(existsSync(sessions)).toBe(false);
+      yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+      expect(external.openClaudeUpdater).toHaveBeenCalledOnce();
+      expect(external.openListener).toHaveBeenCalledOnce();
+    }));
+
+    it.effect("LIVE_MINDMAP_CONFIG が無い場合は HOME の設定を読む", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const home = join(root, "home");
+      mkdirSync(join(home, ".live-mindmap"), { recursive: true });
+      writeFileSync(join(home, ".live-mindmap/config.json"), JSON.stringify({ models: { homeModel: { route: "claude", model: "claude-haiku-5-5" } } }));
+      const deps = dependencies(join(root, "sessions"), "0", { HOME: home });
+      // Default path is the contract here; omit the override rather than passing an empty path.
+      const provider = ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: home, LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" }));
+      yield* runCli(["models"]).pipe(Effect.provide(provider), Effect.provide(deps.layer));
+      expect(deps.stdout.join("").split("\n").some((line) => /^homeModel\s/.test(line))).toBe(true);
+    }));
+
+    it.effect("JSON として壊れた設定は Claude へ戻さず、設定パスを示して開始前に拒む", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const config = join(root, "config.json");
+      writeFileSync(config, "{ invalid json");
+      const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
+      const result = yield* Effect.result(runCli(["models"]).pipe(Effect.provide(deps.layer)));
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(String(result.failure)).toContain("設定ファイルが不正です");
+        expect(String(result.failure)).toContain(config);
+      }
+      expect(existsSync(sessions)).toBe(false);
+    }));
+
+    it.effect("設定パスがディレクトリなら読込失敗を拒み、ファイルに直せば同じ入口で読める", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const config = join(root, "config.json");
+      mkdirSync(config);
+      const deps = dependencies(join(root, "sessions"), "0", { LIVE_MINDMAP_CONFIG: config });
+      const result = yield* Effect.result(runCli(["models"]).pipe(Effect.provide(deps.layer)));
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(String(result.failure)).toContain(config);
+      expect(deps.stdout).toEqual([]);
+      yield* Effect.promise(() => rm(config, { recursive: true }));
+      writeFileSync(config, "{}");
+      yield* runCli(["models"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("")).toContain("claude");
+    }));
+
+    it.effect("start --local は HTTP 送信より前に拒み、Claude の開始は同じ入口から送信する", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const deps = dependencies(sessions);
+      const { HttpClient, HttpClientResponse } = yield* Effect.promise(() => import("effect/http"));
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => Effect.sync(() => {
+        requests.push(request.url);
+        return HttpClientResponse.fromWeb(request, new Response(JSON.stringify({ dir: "/fake/session" }), { headers: { "content-type": "application/json" } }));
+      }));
+      const run = (argv: string[]) => runCli(argv).pipe(Effect.provideService(HttpClient.HttpClient, client), Effect.provide(deps.layer));
+
+      const refused = yield* Effect.result(run(["start", "--app", "us.zoom.xos", "--local"]));
+      expect(Result.isFailure(refused)).toBe(true);
+      if (Result.isFailure(refused)) expect(String(refused.failure)).toMatch(/まだ/);
+      expect(requests).toEqual([]);
+      expect(existsSync(sessions)).toBe(false);
+      yield* run(["start", "--app", "us.zoom.xos", "--model", "claude"]);
+      expect(requests).toHaveLength(1);
+      expect(deps.stdout.join("")).toBe("/fake/session\n");
+    }));
+
+    it.effect("play の未対応モデルは待受け・updater・フォルダ生成より前に拒む", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const config = join(root, "models.json");
+      writeFileSync(config, JSON.stringify({ models: { ollama: { route: "openai-compatible", model: "qwen", url: "http://localhost:11434/v1" } } }));
+      const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
+
+      const result = yield* Effect.result(runCli(["play", fixture, "--model", "ollama"]).pipe(Effect.provide(deps.layer)));
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(String(result.failure)).toMatch(/まだ/);
+      expect(external.openListener).not.toHaveBeenCalled();
+      expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+      expect(existsSync(sessions)).toBe(false);
+      yield* runCli(["play", fixture, "--model", "claude"]).pipe(Effect.provide(deps.layer));
+      expect(external.openListener).toHaveBeenCalledOnce();
+      expect(external.openClaudeUpdater).toHaveBeenCalledOnce();
+      expect(readdirSync(sessions)).toHaveLength(1);
+    }));
+  });
+
   it.effect("文字起こしを再生すると、export --format json がその時点のマップを標準出力に出す", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const deps = dependencies(dir);

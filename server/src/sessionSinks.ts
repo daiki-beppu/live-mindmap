@@ -3,6 +3,7 @@
 import { Context, Effect, FileSystem, Layer, Ref, type Scope } from "effect";
 import { MapCapture } from "./capture.ts";
 import type { UpdaterUnavailable } from "./diffUpdater.ts";
+import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
 import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
 import { AudioMix } from "./audioMix.ts";
@@ -41,10 +42,11 @@ export type SessionSink = {
 };
 
 export type SessionSinksDeps = {
-  updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>; // セッションごとに Layer.build(Layer.fresh(...)) して、updater を 1 つ開く
+  updaterLayer: (model: ExecutableModel) => Layer.Layer<DiffUpdater, UpdaterUnavailable>;
 };
 
 export type OpenSessionSink = {
+  model: ExecutableModel;
   dir: string; // createDir で作ったセッションのフォルダ
   title: string | undefined; // 省略したときは、セッションのフォルダ名（開始時刻）
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
@@ -73,10 +75,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
         );
         return SessionSinks.of({
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, publish, speak }) {
+        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, model }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
-          const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
+          const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer(model))).pipe(Effect.orDie);
           // relay を先に作る。unreflected は session ができた後（onDiff が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
           // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
           const relay = yield* createSpeakingRelay({ unreflected: Effect.suspend((): Effect.Effect<Remark[]> => session.unreflectedRemarks), send: speak });
@@ -84,6 +86,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const { session, appendLog } = yield* openRecordedSession({
             dir,
             title,
+            model,
             publish,
             onDiff: relay.flushAll,
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));

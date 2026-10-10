@@ -1,4 +1,4 @@
-// 差分更新（Claude）。Sonnet 5.5 を Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
+// 差分更新（Claude）。開始時に選んだモデルを Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
@@ -7,8 +7,6 @@ import { DiffOutput, DiffUpdater, type DiffInput, type DiffResult, type DiffUsag
 import { buildPrompt, fmtTime, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
 
 export { buildPrompt, NOOP_SCOPE } from "./claudePrompt.ts";
-
-const MODEL = "claude-sonnet-5-5";
 
 type ContentBlockParam = Exclude<SDKUserMessage["message"]["content"], string>[number];
 
@@ -68,7 +66,7 @@ type Open = {
 // 1 つのセッション（会議）で、開いたままの query を使い回す差分更新。
 // 最初の呼び出しで開き、回数・失敗・ストリームの終わりで開き直し、セッションの Scope を閉じると閉じる。
 // 呼び出しは同時に 1 つしか走らない前提（core の session が直列に呼ぶ）。
-export const layerClaude = Layer.effect(
+export const layerClaude = (model: string) => Layer.effect(
   DiffUpdater,
   Effect.gen(function* () {
     const sdk = yield* AgentSdk;
@@ -86,7 +84,7 @@ export const layerClaude = Layer.effect(
             try: () => sdk.query({
               prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
               options: {
-                model: MODEL, systemPrompt: SYSTEM,
+                model, systemPrompt: SYSTEM,
                 tools: [], settingSources: [], persistSession: false, maxTurns: 4,
                 mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
                 outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },

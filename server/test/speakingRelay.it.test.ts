@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,7 +37,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     let relay: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
     const sessionsDir = yield* Effect.promise(() => mktempSessionsDir());
     const dir = yield* createSessionDir(sessionsDir).pipe(Effect.provide(NodeFileSystem.layer));
-    const started = yield* openRecordedSession({
+    const started = yield* openRecordedSession({ model: defaultClaude,
       dir,
       title: "定例",
       publish: () =>

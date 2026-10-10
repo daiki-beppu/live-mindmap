@@ -28,7 +28,7 @@ const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOption
   const serverOptions: ServerOptions = {
     port: 0, sessionsDir,
     helper: { command: process.execPath, args: [fakeHelper, script, record] },
-    updaterLayer: options.updaterLayer ?? updaterLayer(() => Effect.succeed({ ops: [] })),
+    updaterLayer: options.updaterLayer ?? (() => updaterLayer(() => Effect.succeed({ ops: [] }))),
   };
   const server = yield* startedServer(serverOptions, realLayers(serverOptions, fakeExportServices({ capture: options.capture })));
   return {
@@ -184,7 +184,7 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
   for (const failure of [new Error("updaterの取得失敗"), "タグのない失敗"]) {
     it.live(`予期しない失敗の文面を伏せず500のerror JSONで返す: ${String(failure)}`, () =>
       Effect.gen(function* () {
-        const r = yield* resource({ updaterLayer: Layer.effect(DiffUpdater, Effect.die(failure)) });
+        const r = yield* resource({ updaterLayer: () => Layer.effect(DiffUpdater, Effect.die(failure)) });
         const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
         expect(response.status).toBe(500);
         expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: failure instanceof Error ? failure.message : failure });

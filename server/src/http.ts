@@ -15,6 +15,7 @@ import type { NetAddress } from "effect/net";
 import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
+import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
 
 // /session/start の本文。app は空でない文字列、title は文字列か null か無し、audio・screen は真偽値か null か無し（screen の省略と null は true）。
 // trim・形式・長さの制限は足さない（空白だけの app も、今まで通り受理する）
@@ -23,13 +24,15 @@ const SessionStartBody = Schema.Struct({
   title: Schema.optional(Schema.NullOr(Schema.String)),
   audio: Schema.optional(Schema.NullOr(Schema.Boolean)),
   screen: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  model: Schema.optionalKey(TransferredModel),
 });
 
-const toSessionStart = (body: typeof SessionStartBody["Type"]): SessionStart => ({
+const toSessionStart = (body: typeof SessionStartBody["Type"], model: SessionStart["model"]): SessionStart => ({
   app: body.app,
   title: body.title ?? undefined,
   audio: body.audio ?? true,
   screen: body.screen ?? true,
+  model,
 });
 
 class ForbiddenOrigin extends Schema.TaggedError<ForbiddenOrigin>()("ForbiddenOrigin", {}) {
@@ -96,7 +99,9 @@ const startSession = Effect.gen(function* () {
     Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
   );
   const sessions = yield* Sessions;
-  return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body)));
+  const result = acceptTransferredModel(body.model ?? defaultClaude);
+  if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
+  return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body, result.model)));
 });
 
 // ブラウザへの配信。`/ws`（ブラウザ）と `/`（既存のテスト・Vite の proxy の書き換え先）を同じ Viewers で受ける。
