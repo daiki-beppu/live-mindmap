@@ -299,11 +299,14 @@ describe("推論プロセスの準備をセッションが所有する", () => {
 // ブラウザ側のクライアントの代わり。Viewers.connect に渡す Socket で、届いたフレームを溜める（server/test/ws.test.ts の client と同じ作り）
 const viewerClient = Effect.fnUntraced(function* () {
   const frames = yield* Queue.make<unknown>();
+  const modes = yield* Ref.make<ReadonlyArray<boolean>>([]);
   const closed = yield* Deferred.make<never, Socket.SocketError>();
   const write: Socket.Writer["write"] = (chunk) => Effect.gen(function* () {
     if (Socket.isCloseEvent(chunk)) return;
     const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
-    yield* Queue.offer(frames, JSON.parse(text));
+    const frame = JSON.parse(text);
+    yield* Queue.offer(frames, frame);
+    if (frame.type === "session-mode") yield* Ref.update(modes, (current) => [...current, frame.local]);
   });
   const socket = Socket.Socket.of({
     [Socket.TypeId]: Socket.TypeId,
@@ -327,7 +330,11 @@ const viewerClient = Effect.fnUntraced(function* () {
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "screen-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "screen-notice").map((f) => f.text);
   });
-  return { socket, intakeStatuses, screenNotices };
+  const sessionModes = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    return yield* Ref.get(modes);
+  });
+  return { socket, intakeStatuses, screenNotices, sessionModes };
 });
 
 // Console.error に渡された行を、Node の console と同じ形（引数を空白で連ねて末尾に改行 1 つ）で集める Console。
@@ -1564,14 +1571,16 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.calls).toHaveLength(2);
       }));
 
-    it.effect("stop が書き出しで失敗しても、updater は 1 回閉じ、予約は止まり、状態は none に戻って、次のセッションを開始できる（CT-SINK-SCOPE / 要件128,129）", () =>
+    it.effect("stop が書き出しで失敗しても、local 表示を解除し、updater は 1 回閉じ、予約は止まり、状態は none に戻って、次のセッションを開始できる（CT-SINK-SCOPE / 要件128,129）", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{}]);
         const fakeSinks = yield* makeFakeSessionSinks({ exportsFails: true });
         const { sessions, viewers } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
         const watcher = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(watcher.socket));
-        yield* sessions.start(start());
+        const local = start({ model: { name: "apple", route: "apple", local: true } });
+        yield* sessions.start(local);
+        expect(yield* watcher.sessionModes).toEqual([true]);
 
         const exit = yield* Effect.exit(sessions.stop);
 
@@ -1580,7 +1589,9 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.relayStats.stopped).toBe(1);
         expect((yield* sessions.status).status).toBe("none");
         expect((yield* watcher.intakeStatuses).at(-1)).toBe("none"); // 失敗しても、接続中のクライアントの一言は消える
-        yield* sessions.start(start());
+        expect(yield* watcher.sessionModes).toEqual([true, false]);
+        yield* sessions.start(local);
+        expect(yield* watcher.sessionModes).toEqual([true, false, true]);
         expect(fakeSinks.opened).toMatchObject({ count: 2, closed: 1 });
       }));
 

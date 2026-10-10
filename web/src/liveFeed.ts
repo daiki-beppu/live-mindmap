@@ -1,4 +1,4 @@
-import type { DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, Snapshot, SpeakingFrame, Track } from "../../server/src/core/index.ts";
+import type { DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SessionModeFrame, Snapshot, SpeakingFrame, Track } from "../../server/src/core/index.ts";
 import type { IntakeStatus } from "./intake.ts";
 
 // /ws から届く frame（Issue #161）の分類と、それによる状態の更新を担う、React を使わない純粋なモジュール。
@@ -12,22 +12,23 @@ const NO_SPEAKING: Speaking = { 相手: "", 自分: "" };
 const DEFAULT_INTAKE: IntakeStatus = "running";
 
 // screenNotice は、共有画面を使っていないことの一文（Issue #280）。出している間だけ文が入る。寿命はサーバーが持つ
-export type FeedState = { snapshot: Snapshot | null; speaking: Speaking; intake: IntakeStatus; screenNotice: string | null; diffUpdate: DiffUpdateState | null };
+export type FeedState = { snapshot: Snapshot | null; speaking: Speaking; intake: IntakeStatus; screenNotice: string | null; diffUpdate: DiffUpdateState | null; local: boolean };
 
 export function createFeedState(): FeedState {
-  return { snapshot: null, speaking: NO_SPEAKING, intake: DEFAULT_INTAKE, screenNotice: null, diffUpdate: null };
+  return { snapshot: null, speaking: NO_SPEAKING, intake: DEFAULT_INTAKE, screenNotice: null, diffUpdate: null, local: false };
 }
 
 // 受け取った 1 件の frame で状態を更新する。type を持たないものはスナップショット、"speaking" はトラックごとの
 // 「いま話している文字」、"intake" は取り込みの状態（途切れている／止まった／動いている）。
 // それ以外の知らない type は無視する（将来の拡張用）。1 種類の frame は、その種類が持つ値だけを変える
 // （例えば intake frame はスナップショット・字幕を変えない）。
-export function applyFrame(state: FeedState, frame: Snapshot | SpeakingFrame | IntakeFrame | ScreenNoticeFrame | DiffUpdateFrame): FeedState {
+export function applyFrame(state: FeedState, frame: Snapshot | SpeakingFrame | IntakeFrame | ScreenNoticeFrame | DiffUpdateFrame | SessionModeFrame): FeedState {
   if (!("type" in frame)) return { ...state, snapshot: frame };
   if (frame.type === "speaking") return { ...state, speaking: { ...state.speaking, [frame.track]: frame.text } };
   if (frame.type === "intake") return { ...state, intake: frame.status };
   if (frame.type === "screen-notice") return { ...state, screenNotice: frame.text };
   if (frame.type === "diff-update") return { ...state, diffUpdate: frame.state };
+  if (frame.type === "session-mode") return { ...state, local: frame.local };
   return state;
 }
 
@@ -35,14 +36,13 @@ export function applyFrame(state: FeedState, frame: Snapshot | SpeakingFrame | I
 // 字幕だけ空に戻す（切れている間に古いトラックの文字が残っていても、つなぎ直しで仮の文字を捨てる）。
 // 取り込みの状態は直前の値（interrupted・stopped 等）をそのまま保つ。サーバーが実際の intake frame を
 // 送るまで「動いている」を捏造しない（再接続直後に「再開しました」が誤って出ないようにする。Issue #161 U-A）。
-// 共有画面の一文は消す（切れている間に消すフレームを取りこぼしても古い一文が残らない）。期間内なら、サーバーが保持している分を送り直す
+// 共有画面の一文とモード表示は消す。現在値はサーバーからの再送で復元する。
 export function applyOpen(state: FeedState): FeedState {
-  return { ...state, speaking: NO_SPEAKING, screenNotice: null };
+  return { ...state, speaking: NO_SPEAKING, screenNotice: null, local: false };
 }
 
-// 接続が閉じた時点の状態。共有画面の一文だけ消す。寿命はサーバーが持ち、切れている間は消すフレームが届かないため、
-// 再接続しないままでも古い一文が残り続けないようにする。期間内に再接続すれば、サーバーが保持している分を送り直す。
+// 接続が閉じた時点の状態。共有画面の一文とモード表示は、終了の通知を受け取れない間に残さない。
 // スナップショット・字幕・取り込みの状態は変えない
 export function applyClose(state: FeedState): FeedState {
-  return { ...state, screenNotice: null };
+  return { ...state, screenNotice: null, local: false };
 }

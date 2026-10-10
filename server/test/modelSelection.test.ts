@@ -27,6 +27,18 @@ const refused = (result: ReturnType<typeof selectModel>) => {
 };
 
 describe("モデル選択（Issue #663）", () => {
+  it.each([
+    { flags: { local: true }, config: {} },
+    { flags: {}, config: { default: "local" } },
+    { flags: { model: "apple" }, config: {} },
+  ])("利用不可の Mac ではどのローカル指定も Claude に回さず拒否する ($flags / $config)", ({ flags, config }) => {
+    const result = selectModel({ flags, config, configPath, envModel: undefined,
+      macState: { osVersion: "27.0", availability: { status: "unavailable", reason: "modelNotReady" } },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("利用不可の Mac でセッションが選択されました");
+    expect(result.lines.some((line) => line.trim().length > 0)).toBe(true);
+  });
   it("一覧は選択と同じ定義・利用可否を使い、apple だけがローカル対象になる", () => {
     const result = listModels({ config: { models }, configPath, macState: availableMac });
     expect(result.ok).toBe(true);

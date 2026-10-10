@@ -19,10 +19,12 @@ import { EXPORT_FILE, LOG_FILE } from "../src/sessionFiles.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { fakeListener } from "./fakeListener.ts";
+
+const listener = fakeListener();
 
 vi.mock("../src/http.ts", async (original) => {
-  const { fakeListener } = await import("./fakeListener.ts");
-  return { ...await original<typeof import("../src/http.ts")>(), openListener: fakeListener().open };
+  return { ...await original<typeof import("../src/http.ts")>(), openListener: (port: number) => listener.open(port) };
 });
 
 const temporaryDirectory = Effect.acquireRelease(
@@ -69,7 +71,7 @@ const appleProcess = Effect.fnUntraced(function* () {
     launch: Effect.gen(function* () {
       if (!state.available) return yield* new UpdaterUnavailable({ message: "Apple Intelligence のモデルを準備中です\nしばらく待ってからやり直してください" });
       return yield* Effect.acquireRelease(
-        Effect.sync(() => { state.opened++; return { url }; }),
+        Effect.sync(() => { state.opened++; return { url, pid: 4242 }; }),
         () => Effect.sync(() => { state.closed++; }),
       );
     }),
@@ -102,6 +104,7 @@ describe("apple を使う開始・再生の配線", () => {
     const root = yield* temporaryDirectory;
     const process = yield* appleProcess();
     const stdout: string[] = [];
+    listener.modes.length = 0;
     const layer = Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer,
       environment(root, 0), Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ")); } }));
     yield* runCli(["play", join(import.meta.dirname, "fixtures/short.transcript.json"), "--model", "apple"]).pipe(Effect.provide(layer));
@@ -109,6 +112,7 @@ describe("apple を使う開始・再生の配線", () => {
     expect(process.state).toMatchObject({ opened: 1, closed: 1 });
     expect(process.requests.length).toBeGreaterThan(1);
     expect(process.requests.every((request) => request.url === "/v1/chat/completions" && request.alive)).toBe(true);
+    expect(listener.modes).toEqual([{ type: "session-mode", local: true }, { type: "session-mode", local: false }]);
   }));
 
   it.live("HTTP の Apple 開始は現在の利用可否を確かめ、拒否後の正常開始では終了の更新まで子を保つ", () => Effect.gen(function* () {

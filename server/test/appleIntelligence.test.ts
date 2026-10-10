@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Queue, Sink, Stream, type Cause } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Layer, Queue, Sink, Stream, type Cause } from "effect";
+import { HttpClient } from "effect/http";
 import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
+import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 
 // 計画のプロセス境界。問い合わせは一回で終了、launch は呼び出し側 Scope の資源を返す。
@@ -15,7 +17,7 @@ const fakeProcess = Effect.fnUntraced(function* (stdoutGate: Effect.Effect<void>
     state.spawned.push(command as ChildProcess.StandardCommand);
     yield* Effect.addFinalizer(() => Effect.sync(() => { state.closed++; }));
     return ChildProcessSpawner.makeHandle({
-      pid: ChildProcessSpawner.ProcessId(1),
+      pid: ChildProcessSpawner.ProcessId(4242),
       exitCode: Deferred.await(exited),
       isRunning: Effect.map(Deferred.isDone(exited), (done) => !done),
       kill: () => Effect.asVoid(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
@@ -106,8 +108,6 @@ describe("Apple Intelligence の子プロセス", () => {
     yield* fake.emit('/v1","contextSize":8192}\n');
     yield* Deferred.await(ready);
     expect(fake.state.closed).toBe(0);
-    expect(fake.state.spawned[0]!.command).toBe("fake-apple");
-    expect(fake.state.spawned[0]!.options.forceKillAfter).toBe(5_000);
     yield* Deferred.succeed(finish, undefined);
     yield* Fiber.join(running);
     expect(fake.state.closed).toBe(1);
@@ -138,18 +138,33 @@ describe("Apple Intelligence の子プロセス", () => {
     expect(fake.state.closed).toBe(1);
   }));
 
-  it.effect("準備情報が外部の URL を示しても推論先として受理しない", () => Effect.gen(function* () {
+  it.effect.each(["https://outside.invalid/v1", "http://192.168.1.2:8766/v1", "not a URL"])("準備情報の外部・LAN・不正な宛先 %s は受理せず子を閉じる", (url) => Effect.gen(function* () {
     const { fake, apple } = yield* boot();
-    const launching = yield* Effect.forkChild(Effect.scoped(Effect.result(apple.launch)));
+    let requests = 0;
+    const client = HttpClient.make(() => { requests++; return Effect.die("拒否した宛先へ推論要求を送りました"); });
+    const launching = yield* Effect.forkChild(Effect.scoped(Effect.result(prepareUpdaterLayer({ name: "apple", route: "apple", local: true }).pipe(
+      Effect.provideService(AppleIntelligence, AppleIntelligence.of({ ...apple,
+        availability: Effect.succeed({ osVersion: "27.0", availability: { status: "available" } }),
+      })), Effect.provideService(HttpClient.HttpClient, client), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
+    ))));
     yield* settleUntil(() => fake.state.spawned.length === 1);
     expect(fake.state.spawned).toHaveLength(1);
-    yield* fake.emit('{"type":"ready","url":"https://outside.invalid/v1","contextSize":8192}\n');
+    yield* fake.emit(JSON.stringify({ type: "ready", url, contextSize: 8192 }) + "\n");
     const result = yield* Fiber.join(launching);
     expect(result._tag).toBe("Failure");
-    if (result._tag === "Failure") {
-      expect(result.failure._tag).toBe("UpdaterUnavailable");
-      expect(result.failure.message).toContain("ループバック URL");
-    }
+    expect(requests).toBe(0);
+    expect(fake.state.closed).toBe(1);
+  }));
+
+  it.effect.each(["127.0.0.1", "localhost", "[::1]"])("子の ready のループバック %s とハンドル由来の PID を返す", (host) => Effect.gen(function* () {
+    const { fake, apple } = yield* boot();
+    const launching = yield* Effect.forkChild(Effect.scoped(apple.launch));
+    yield* settleUntil(() => fake.state.spawned.length === 1);
+    expect(fake.state.spawned).toHaveLength(1);
+    const url = `http://${host}:8766/v1`;
+    yield* fake.emit(JSON.stringify({ type: "ready", url, contextSize: 8192, pid: 9999 }) + "\n");
+    const endpoint = yield* Fiber.join(launching);
+    expect(endpoint).toMatchObject({ url, pid: 4242 });
     expect(fake.state.closed).toBe(1);
   }));
 

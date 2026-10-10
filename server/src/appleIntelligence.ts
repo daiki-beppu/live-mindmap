@@ -21,7 +21,7 @@ const decode = <S extends Schema.Top>(schema: S, text: string) =>
 
 export class AppleIntelligence extends Context.Service<AppleIntelligence, {
   availability: Effect.Effect<typeof MacState.Type, UpdaterUnavailable>;
-  launch: Effect.Effect<{ readonly url: string }, UpdaterUnavailable, Scope.Scope>;
+  launch: Effect.Effect<{ readonly url: string; readonly pid: number }, UpdaterUnavailable, Scope.Scope>;
 }>()("live-mindmap/server/AppleIntelligence") {
   static readonly layer = (command: HelperCommand): Layer.Layer<AppleIntelligence, never, ChildProcessSpawner.ChildProcessSpawner> =>
     Layer.effect(AppleIntelligence)(Effect.gen(function* () {
@@ -53,10 +53,10 @@ export class AppleIntelligence extends Context.Service<AppleIntelligence, {
           }));
         const endpoint = yield* ready;
         const url = yield* Effect.try({ try: () => new URL(endpoint.url), catch: () => failed("Apple の準備情報の URL が不正です") });
-        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || url.port === "" || url.username !== "" || url.password !== "" || url.pathname !== "/v1" || url.search !== "" || url.hash !== "") {
+        if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.port === "" || url.username !== "" || url.password !== "" || url.pathname !== "/v1" || url.search !== "" || url.hash !== "") {
           return yield* failed("Apple の推論先は子プロセスのループバック URL である必要があります");
         }
-        return { url: endpoint.url };
+        return { url: endpoint.url, pid: child.pid };
       });
       return AppleIntelligence.of({ availability, launch });
     }));

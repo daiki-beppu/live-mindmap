@@ -45,6 +45,26 @@ const client = Effect.fnUntraced(function* (beforeWrite: Effect.Effect<void>) {
 });
 
 describe("Viewers の配信と保持（要件14〜18・25）", () => {
+  it.effect("local の通知は接続中と途中接続へ届き、終了後の再接続へは解除を送る", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const mode = { type: "session-mode" as const, local: true };
+      yield* viewers.sessionMode(mode);
+      const first = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(first.socket));
+      expect(yield* Queue.take(first.frames)).toEqual(mode);
+      const late = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(late.socket));
+      expect(yield* Queue.take(late.frames)).toEqual(mode);
+      const ended = { type: "session-mode" as const, local: false };
+      yield* viewers.sessionMode(ended);
+      expect(yield* Queue.take(first.frames)).toEqual(ended);
+      expect(yield* Queue.take(late.frames)).toEqual(ended);
+      const reconnected = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(reconnected.socket));
+      expect(yield* Queue.take(reconnected.frames)).toEqual(ended);
+    }).pipe(Effect.provide(Viewers.layer)));
+
   it.effect("初回の最新全体、接続中の更新、再接続の最新全体が届く", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
