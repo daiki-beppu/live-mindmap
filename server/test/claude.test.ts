@@ -357,13 +357,13 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
       }
     }));
 
-  it.effect("開き直した query にも同じ JSON Schema が渡る（モジュールで 1 回作った値）", () =>
+  it.effect("開き直した query にも同じ内容の JSON Schema が渡る", () =>
     Effect.gen(function* () {
       const { created, updater } = yield* setup();
       for (let n = 1; n <= QUERY_RENEW_CALLS + 1; n++) yield* updater.update(input(n));
 
       expect(created).toHaveLength(2);
-      expect(created[1]!.options.outputFormat.schema).toBe(created[0]!.options.outputFormat.schema);
+      expect(created[1]!.options.outputFormat.schema).toEqual(created[0]!.options.outputFormat.schema);
     }));
 });
 
@@ -711,6 +711,24 @@ const capturedOptions = (calls = 1) =>
   });
 const systemPrompt = Effect.map(capturedOptions(), (seen) => seen[0]!.systemPrompt);
 const count = (text: string, part: string) => text.split(part).length - 1;
+
+// #662 は送信する文とスキーマを変えない抽出。期待値は抽出前の SDK 境界で取得し、抽出後に更新しない。
+describe("プロンプト抽出前の SDK 送信内容", () => {
+  it.effect("システム文・出力スキーマ・初回のマップ全体と継続時の変更をそのまま送る", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(growing(1));
+      yield* updater.update(growing(2));
+
+      expect(created).toHaveLength(1);
+      const sent = created[0]!;
+      expect({
+        systemPrompt: sent.options.systemPrompt,
+        outputFormat: sent.options.outputFormat,
+        messages: contents(sent),
+      }).toMatchSnapshot();
+    }));
+});
 
 describe("system プロンプト: noop にする範囲", () => {
   it.effect("範囲の定義 NOOP_SCOPE が、見出し「# noop にする範囲」の下に 1 回だけ現れる", () =>
