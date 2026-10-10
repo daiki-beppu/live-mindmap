@@ -47,13 +47,16 @@ export type ServerLayers = {
 const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)));
 
 // 終了時の書き出しが使う Service（撮影・見返し用の HTML のビルド・mix と、その FileSystem）
-export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>;
+export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem, never, ManagedDeps>;
 
-export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => ({
-  managedDeps: ManagedDeps.layer({ root: options.depsDir }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner))),
-  helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-  sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(exportServices, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
-});
+export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => {
+  const managedDeps = ManagedDeps.layer({ root: options.depsDir }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner)));
+  return {
+    managedDeps,
+    helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(exportServices.pipe(Layer.provide(managedDeps)), NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
+  };
+};
 
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
 // 止める順（登録の逆）: 配信を渡し切る（drained）→ 配信の停止・接続の Fiber の終了 → Sessions

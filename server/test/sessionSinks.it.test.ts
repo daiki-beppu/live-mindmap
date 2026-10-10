@@ -451,7 +451,9 @@ describe("SessionSinks（実物 Layer）", () => {
       const paths = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
 
       expect(fileNames(paths)).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
-      expect(warnings.errors).toEqual(["map.png を書き出せませんでした: 後始末に失敗"]);
+      expect(warnings.errors).toHaveLength(1);
+      expect(warnings.errors[0]).toContain("map.png を書き出せませんでした: 後始末に失敗");
+      expect(warnings.errors[0]).toContain("pnpm cli install chromium");
     })).pipe(
       Effect.provide(
         sinksLayer({
@@ -493,7 +495,9 @@ describe("SessionSinks（実物 Layer）", () => {
 
       yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service));
 
-      expect(warnings.errors).toContain("map.png を書き出せませんでした: 撮影に失敗\n詳細");
+      expect(warnings.errors).toHaveLength(1);
+      expect(warnings.errors[0]).toContain("map.png を書き出せませんでした: 撮影に失敗\n詳細");
+      expect(warnings.errors[0]).toContain("pnpm cli install chromium");
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: failingCapture("撮影に失敗\n詳細") }))));
 
   it.effect("サーバーの警告は、map.html の失敗の理由の改行を残す", () =>
@@ -652,7 +656,6 @@ const makeRecordingUpdater = () => {
 
 const logEvents = (dir: string) =>
   readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
-
 
 const finalRemark = (track: "相手" | "自分", start: number, end: number, text: string) => ({ track, start, end, text });
 

@@ -64,6 +64,8 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     name: heavy IT (${{ matrix.shard }}/4)
+    env:
+      LIVE_MINDMAP_DEPS: ${{ runner.temp }}/deps
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/setup@v3
@@ -71,8 +73,17 @@ jobs:
           runtime: node@24
           install: false
       - run: pnpm install --frozen-lockfile
-      # 実物の撮影を確かめるテストがある
-      - run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - id: chromium-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
+          key: managed-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/chromium/package-lock.json') }}
+      - run: pnpm --filter @live-mindmap/server deps:install chromium
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.chromium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
+          key: ${{ steps.chromium-cache.outputs.cache-primary-key }}
       - working-directory: server
         env:
           SHARD: ${{ matrix.shard }}
@@ -106,7 +117,10 @@ jobs:
           runtime: node@24
           install: false
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @live-mindmap/server exec playwright install chromium --only-shell
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: e2e-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm --filter @live-mindmap/e2e test:e2e
 
   helper:

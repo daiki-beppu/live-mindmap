@@ -58,6 +58,7 @@ describe("CLI install とサーバー", () => {
     const release = yield* Deferred.make<void>();
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
       install: (names: ReadonlyArray<string>) => Stream.concat(
         Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "ダウンロード" }; })),
@@ -89,6 +90,7 @@ describe("CLI install とサーバー", () => {
     const dir = yield* temporaryDeps;
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
       install: (names: ReadonlyArray<string>) => Stream.concat(
         Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "ダウンロード" }; })),
@@ -106,6 +108,7 @@ describe("CLI install とサーバー", () => {
     const dir = yield* temporaryDeps;
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
       install: (names: ReadonlyArray<string>) => Stream.concat(
         Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "ダウンロード" }; })),
@@ -133,6 +136,7 @@ describe("CLI install とサーバー", () => {
     const dir = yield* temporaryDeps;
     const calls: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      load: () => Effect.die("撮影は対象外"),
       check: (names: ReadonlyArray<string>) => Effect.sync(() => { calls.push(names); return [installed]; }),
       install: (names: ReadonlyArray<string>) => Stream.fromEffect(Effect.sync(() => { calls.push(names); return { type: "result" as const, items: [installed] }; })),
     }));

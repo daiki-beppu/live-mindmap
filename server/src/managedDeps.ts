@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
+import type * as PlaywrightModule from "playwright-core";
 import { Context, DateTime, Effect, FileSystem, Layer, Predicate, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import manifest from "../managed-deps/chromium/package.json" with { type: "json" };
@@ -17,6 +20,7 @@ export class ManagedDepsFailed extends Schema.TaggedError<ManagedDepsFailed>()("
 export class ManagedDeps extends Context.Service<ManagedDeps, {
   check: (names: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<DepItem>, ManagedDepsFailed>;
   install: (names: ReadonlyArray<string>) => Stream.Stream<DepEvent, ManagedDepsFailed>;
+  load: (name: "chromium") => Effect.Effect<typeof PlaywrightModule, ManagedDepsFailed>;
 }>()("live-mindmap/server/ManagedDeps") {
   static readonly layer = (options: { root: string; npm?: NpmCommand }) => Layer.effect(ManagedDeps)(make(options));
 }
@@ -141,6 +145,8 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const dir = resolve(options.root, "chromium");
   const browsers = join(dir, "browsers");
+  // #712 の掃除が、使用済みの実体を消さないための記録。current が交代しても残す。
+  const loadedEntities = new Set<string>();
   const readJson = <A>(path: string, schema: Schema.Decoder<A>) =>
     fs.readFileString(path).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(schema))));
   const isFile = (path: string) => fs.stat(path).pipe(
@@ -173,6 +179,35 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
   const check = Effect.fnUntraced(function* (names: ReadonlyArray<string>) {
     yield* validateNames(names);
     return [yield* checkChromium];
+  }, Effect.mapError(failed));
+
+  const load = Effect.fnUntraced(function* (name: "chromium") {
+    yield* validateNames([name]);
+    const entity = yield* fs.realPath(join(dir, CURRENT));
+    const require = createRequire(join(entity, "package.json"));
+    const resolved = yield* Effect.try({
+      try: () => ({ module: require.resolve("playwright-core"), package: require.resolve("playwright-core/package.json") }),
+      catch: failed,
+    });
+    const modulePath = yield* fs.realPath(resolved.module);
+    const packagePath = yield* fs.realPath(resolved.package);
+    for (const path of [modulePath, packagePath]) {
+      const within = relative(join(entity, "node_modules"), path);
+      if (isAbsolute(within) || within === ".." || within.startsWith(`..${sep}`)) {
+        return yield* new ManagedDepsFailed({ message: "playwright-core の解決先が管理実体の node_modules 外です" });
+      }
+    }
+    const pkg = yield* readJson(packagePath, PackageRecord);
+    if (pkg.version !== VERSION) return yield* new ManagedDepsFailed({ message: "読込版が固定版と一致しません" });
+    const module = yield* Effect.tryPromise({
+      try: () => {
+        process.env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+        return import(pathToFileURL(modulePath).href) as Promise<typeof PlaywrightModule>;
+      },
+      catch: failed,
+    });
+    loadedEntities.add(entity);
+    return module;
   }, Effect.mapError(failed));
 
   const run = Effect.fnUntraced(function* (lock: ReturnType<typeof acquireLock>, command: NpmCommand, args: string[], cwd: string) {
@@ -254,5 +289,5 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       ),
     );
   })).pipe(Stream.mapError(failed));
-  return ManagedDeps.of({ check, install });
+  return ManagedDeps.of({ check, install, load });
 });

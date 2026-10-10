@@ -586,7 +586,10 @@ describe("CLI", () => {
 
     yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-    expect(deps.stderr).toContain("map.png を書き出せませんでした: 撮影に失敗 詳細\n");
+    const warning = deps.stderr.find((line) => line.startsWith("map.png を書き出せませんでした:"));
+    expect(warning).toContain("撮影に失敗 詳細");
+    expect(warning).toContain("pnpm cli install chromium");
+    expect(warning).toMatch(/^[^\n]+\n$/);
   }));
 
   it.effect("再生の map.html のビルドの失敗の理由に改行があっても、標準エラーの警告は 1 行にする", () => Effect.gen(function* () {
