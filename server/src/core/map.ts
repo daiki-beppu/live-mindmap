@@ -83,7 +83,8 @@ const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   ...rest,
 ]);
-export const DiffOutput = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)) });
+export const DiffOperations = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)) });
+export const DiffOutput = Schema.Struct({ ...DiffOperations.fields, processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))) });
 export type DiffOutput = typeof DiffOutput["Type"];
 
 export function emptyMap(title: string): MeetingMap {

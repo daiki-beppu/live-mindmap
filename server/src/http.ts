@@ -16,6 +16,15 @@ import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
+import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
+
+class ModelTransferToken extends Context.Service<ModelTransferToken, string>()("live-mindmap/http/ModelTransferToken") {}
+
+class ForbiddenModelTransfer extends Schema.TaggedError<ForbiddenModelTransfer>()("ForbiddenModelTransfer", {}) {
+  override get message(): string {
+    return "互換モデルの転送を認可できません\n同じ保存先設定の CLI から start を実行してください";
+  }
+}
 
 // /session/start の本文。app は空でない文字列、title は文字列か null か無し、audio・screen は真偽値か null か無し（screen の省略と null は true）。
 // trim・形式・長さの制限は足さない（空白だけの app も、今まで通り受理する）
@@ -60,11 +69,12 @@ class InvalidBody extends Schema.TaggedError<InvalidBody>()("InvalidBody", {
 
 // タグ付きの失敗からステータスへの対応。タグが増えたら、ここに足すまで型エラーになる。
 // HttpServerError は、上のルート・本文の変換で拾いきれなかったサーバー側の失敗（応答の書き出し等）
-type HandledFailure = SessionFailure | ForbiddenOrigin | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
+type HandledFailure = SessionFailure | ForbiddenOrigin | ForbiddenModelTransfer | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
 
 const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   InvalidBody: 400,
   ForbiddenOrigin: 403,
+  ForbiddenModelTransfer: 403,
   UnsupportedRequest: 404,
   SessionBusy: 409,
   SessionTransition: 409,
@@ -73,6 +83,7 @@ const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   Aborted: 503,
   RestartGaveUp: 503,
   HelperExited: 500,
+  UpdaterUnavailable: 503,
   HttpServerError: 500,
 };
 
@@ -98,9 +109,14 @@ const startSession = Effect.gen(function* () {
   const body = yield* HttpServerRequest.schemaBodyJson(SessionStartBody).pipe(
     Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
   );
-  const sessions = yield* Sessions;
   const result = acceptTransferredModel(body.model ?? defaultClaude);
   if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
+  if (body.model?.route === "openai-compatible") {
+    const token = yield* ModelTransferToken;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    if (!matchesModelTransferToken(token, request.headers[MODEL_TRANSFER_HEADER])) return yield* new ForbiddenModelTransfer();
+  }
+  const sessions = yield* Sessions;
   return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body, result.model)));
 });
 
@@ -211,7 +227,7 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
 );
 
 // セッションの操作と配信を受ける（常駐サーバー）
-export const serveSessions: Effect.Effect<void, never, HttpServer.HttpServer | Sessions | Viewers | Scope.Scope> = Effect.flatMap(
+export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | Viewers | Scope.Scope> => Effect.flatMap(
   HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
-);
+).pipe(Effect.provideService(ModelTransferToken, token));

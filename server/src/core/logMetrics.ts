@@ -42,13 +42,14 @@ export function logMetrics(events: readonly LogEvent[]): LogMetrics {
       byId.set(event.remark.id, event.remark);
     } else if (event.type === "diff") {
       if (!map) throw new Error("ログの diff より前に start がありません");
-      const fresh: Remark[] = [];
-      for (const id of event.input.fresh) {
+      const input = event.input.fresh.map((id) => {
         const r = byId.get(id);
         if (!r) throw new Error(`ログに発言がありません: ${id}`);
-        known.add(id);
-        fresh.push(r);
-      }
+        return r;
+      });
+      const count = event.error !== undefined ? event.input.fresh.length : event.processedRemarks ?? event.input.fresh.length;
+      const fresh = input.slice(0, count);
+      for (const remark of fresh) known.add(remark.id);
       const stamp = stampOf({ round }, fresh);
       // 操作を前から 1 つずつ増やして当て、update の前後で本文が変わったノードを書き換えと数える（同じ応答の中の仮 ID も applyOps が解決する）
       let before = map;

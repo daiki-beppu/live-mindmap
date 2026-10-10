@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import type { HelperPartial, IntakeLogEvent, SettledRemark, Track } from "../src/core/index.ts";
+import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "../src/sessionSinks.ts";
@@ -160,7 +160,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
       });
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, createDir }), opened, finals, partials, screens, screenOffs, sequence, relayStats, appended, order, control };
+    return { sinks: SessionSinks.of({ open, createDir, prepare: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }))) }), opened, finals, partials, screens, screenOffs, sequence, relayStats, appended, order, control };
   });
 }
 

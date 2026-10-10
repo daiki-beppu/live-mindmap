@@ -4,14 +4,14 @@
 // ヘルパーの寿命とセッションの状態は sessions.ts（外の世界は helpers.ts、セッションの中身は sessionSinks.ts）が持つ。
 // このモジュールが持つのは、それらの Layer を組み立てて待受けにつなぐ、起動・終了の入口。
 // ブラウザへの WebSocket は HTTP と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
-import { NodeChildProcessSpawner, NodeFileSystem, NodePath, NodeRuntime } from "@effect/platform-node";
+import { NodeChildProcessSpawner, NodeFileSystem, NodeHttpClient, NodePath, NodeRuntime } from "@effect/platform-node";
 import { Cause, ConfigProvider, Effect, Exit, type FileSystem, Layer, Logger, Runtime } from "effect";
-import { HttpServer } from "effect/http";
+import { HttpServer, type HttpClient } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
-import { claudeUpdaterLayer } from "./diffUpdater.ts";
+import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
@@ -20,6 +20,7 @@ import { layerListener, portOf, serveSessions } from "./http.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
 import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
+import { makeModelTransferToken, publishModelTransferToken } from "./modelTransferToken.ts";
 
 export type ListenOptions = {
   port: number; // 0 なら空きポート
@@ -28,7 +29,7 @@ export type ListenOptions = {
 };
 
 export type ServerOptions = ListenOptions & {
-  updaterLayer: SessionSinksDeps["updaterLayer"];
+  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient>["prepareUpdater"];
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 
@@ -46,13 +47,14 @@ export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | F
 
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => ({
   helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-  sessionSinks: SessionSinks.layer({ updaterLayer: options.updaterLayer }).pipe(Layer.provide(exportServices)),
+  sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.merge(exportServices, NodeHttpClient.layerUndici))),
 });
 
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
 // 止める順（登録の逆）: 配信を渡し切る（drained）→ 配信の停止・接続の Fiber の終了 → Sessions
 // （進行中のセッションのヘルパー・updater の後始末）→ 待受けを閉じる
 export const startup = Effect.fnUntraced(function* (options: ListenOptions, layers: ServerLayers) {
+  const token = makeModelTransferToken();
   // 待受け・Viewers・Sessions を 1 つの Layer に組む（依存を先に build するので、止めるときは Sessions が待受けより先）
   const context = yield* Layer.build(
     Sessions.layer.pipe(
@@ -61,11 +63,12 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
     ),
   );
   return yield* Effect.gen(function* () {
-    yield* serveSessions;
-    // 最後に登録するので、配信の停止・Sessions・待受けを閉じるより先に走る: 最後のフレームを接続中のクライアントへ渡し切る
+    yield* serveSessions(token);
+    // 配信の停止・Sessions・待受けを閉じるより先に、最後のフレームを接続中のクライアントへ渡し切る
     const viewers = yield* Viewers;
     yield* Effect.addFinalizer(() => viewers.drained);
     const port = yield* portOf((yield* HttpServer.HttpServer).address);
+    yield* publishModelTransferToken(options.sessionsDir, port, token).pipe(Effect.provide(NodeFileSystem.layer));
     options.onListening?.(port);
     return port;
   }).pipe(Effect.provide(context));
@@ -110,7 +113,7 @@ if (import.meta.main) {
       const options: ServerOptions = {
         port,
         sessionsDir,
-        updaterLayer: claudeUpdaterLayer,
+        prepareUpdater: prepareUpdaterLayer,
         helper: helperCommand,
         onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
       };

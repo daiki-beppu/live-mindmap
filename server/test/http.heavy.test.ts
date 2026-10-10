@@ -15,7 +15,7 @@ import { connect } from "./fixtures/wsClient.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
-const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOptions, "updaterLayer">> & Pick<ExportServicesOptions, "capture"> = {}) {
+const resource = Effect.fnUntraced(function* (options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater> } & Pick<ExportServicesOptions, "capture"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -28,7 +28,7 @@ const resource = Effect.fnUntraced(function* (options: Partial<Pick<ServerOption
   const serverOptions: ServerOptions = {
     port: 0, sessionsDir,
     helper: { command: process.execPath, args: [fakeHelper, script, record] },
-    updaterLayer: options.updaterLayer ?? (() => updaterLayer(() => Effect.succeed({ ops: [] }))),
+    prepareUpdater: (model) => Effect.succeed(options.updaterLayer ? options.updaterLayer(model) : updaterLayer(() => Effect.succeed({ ops: [] }))),
   };
   const server = yield* startedServer(serverOptions, realLayers(serverOptions, fakeExportServices({ capture: options.capture })));
   return {

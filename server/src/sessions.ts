@@ -270,6 +270,7 @@ export class Sessions extends Context.Service<Sessions, {
       const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string }, SessionFailure> {
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
+          const updaterLayer = yield* sinks.prepare(input.model);
           const dir = yield* sinks.createDir(sessionsDir);
           // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
           // 接続はマイクの許可待ち等で時間がかかることがあり、ここを接続成功後にすると、長く待ってから
@@ -287,7 +288,7 @@ export class Sessions extends Context.Service<Sessions, {
             );
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
-          const sink = yield* sinks.open({ dir, title: input.title, model: input.model, publish: viewers.publish, speak: viewers.speak }).pipe(Scope.provide(scope));
+          const sink = yield* sinks.open({ dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak }).pipe(Scope.provide(scope));
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
           const live: Live = {

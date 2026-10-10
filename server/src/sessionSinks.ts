@@ -41,12 +41,13 @@ export type SessionSink = {
   audioFileNames: (attempt: number) => string[];
 };
 
-export type SessionSinksDeps = {
-  updaterLayer: (model: ExecutableModel) => Layer.Layer<DiffUpdater, UpdaterUnavailable>;
+export type SessionSinksDeps<R = never> = {
+  prepareUpdater: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, R>;
 };
 
 export type OpenSessionSink = {
   model: ExecutableModel;
+  updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>;
   dir: string; // createDir で作ったセッションのフォルダ
   title: string | undefined; // 省略したときは、セッションのフォルダ名（開始時刻）
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
@@ -61,24 +62,27 @@ const TRACKS: Track[] = ["相手", "自分"];
 const audioFileNames = (attempt: number): string[] => TRACKS.map((track) => (attempt > 1 ? `${track}-${attempt}.m4a` : `${track}.m4a`));
 
 export class SessionSinks extends Context.Service<SessionSinks, {
+  prepare: SessionSinksDeps["prepareUpdater"];
   // セッションのフォルダを作る。ヘルパーが録音を書き出す先として、起動の前に確定させる。失敗したら以後 open を呼ばない
   createDir: (sessionsDir: string) => Effect.Effect<string>;
   // セッションの Scope の中で 1 回開く。Scope を閉じると updater が閉じ、予約が止まる
   open: (args: OpenSessionSink) => Effect.Effect<SessionSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
   // 終了時の書き出しが使う撮影・見返し用の HTML のビルド・mix・FileSystem は、Layer を作るときに文脈から 1 回だけ受け取る
-  static readonly layer = ({ updaterLayer }: SessionSinksDeps): Layer.Layer<SessionSinks, never, MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem> =>
+  static readonly layer = <R>({ prepareUpdater }: SessionSinksDeps<R>): Layer.Layer<SessionSinks, never, R | MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem> =>
     Layer.effect(SessionSinks)(
       Effect.gen(function* () {
+        const preparationServices = yield* Effect.context<R>();
         const exportServices = Context.pick(MapCapture, ReviewBuild, AudioMix, FileSystem.FileSystem)(
           yield* Effect.context<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>(),
         );
         return SessionSinks.of({
+        prepare: (model) => prepareUpdater(model).pipe(Effect.provideContext(preparationServices)),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, model }) {
+        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, model, updaterLayer }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
-          const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer(model))).pipe(Effect.orDie);
+          const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
           // relay を先に作る。unreflected は session ができた後（onDiff が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
           // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
           const relay = yield* createSpeakingRelay({ unreflected: Effect.suspend((): Effect.Effect<Remark[]> => session.unreflectedRemarks), send: speak });

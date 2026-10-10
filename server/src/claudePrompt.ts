@@ -1,6 +1,6 @@
 // Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
-import { children, DiffOutput, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { children, DiffOperations, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
 
 // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
@@ -277,7 +277,6 @@ export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: Meetin
   ].join("\n");
 }
 
-// 出力の JSON Schema は core の DiffOutput から、モジュールを読み込んだときに 1 回だけ作る。
+// Claude の出力は操作だけで、core の反映数を生成させない。
 // 余分なキーは JSON Schema の上では禁止（additionalProperties: false）にし、decode では黙って落とす。文字列の長さなどの検査は足さない
-export const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOutput, { onExcessProperty: "error" }).schema;
-
+export const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOperations, { onExcessProperty: "error" }).schema;
