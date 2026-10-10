@@ -3,10 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Result } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { beforeEach, vi } from "vitest";
-import { MapCapture } from "../src/capture.ts";
+import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import type { Snapshot } from "../src/core/index.ts";
+import { Playwright } from "../src/playwright.ts";
 
 const resources = vi.hoisted(() => ({
   createServer: vi.fn(), launch: vi.fn(), listen: vi.fn(), closeVite: vi.fn(),
@@ -14,7 +15,8 @@ const resources = vi.hoisted(() => ({
   waitForSelector: vi.fn(), screenshot: vi.fn(),
 }));
 vi.mock("vite", () => ({ createServer: resources.createServer }));
-vi.mock("playwright", () => ({ chromium: { launch: resources.launch } }));
+
+const playwright = Layer.succeed(Playwright, Playwright.of({ launch: resources.launch }));
 
 const snapshot: Snapshot = {
   nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }],
@@ -57,7 +59,7 @@ beforeEach(() => {
 const capture = (path: string) => Effect.gen(function* () {
   const service = yield* MapCapture;
   yield* service.capture(snapshot, path);
-}).pipe(Effect.provide(MapCapture.layer));
+}).pipe(Effect.provide(MapCapture.layer.pipe(Layer.provide(playwright))));
 
 describe("撮影 scope の資源所有権", () => {
   it.effect("成功時は撮影の最後の利用後に browser、Vite の順で一度だけ閉じる", () => Effect.gen(function* () {
@@ -87,6 +89,9 @@ describe("撮影 scope の資源所有権", () => {
     resources.launch.mockRejectedValue(new Error("launch failed"));
     const result = yield* Effect.result(capture(join(dir, "map.png")));
     expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) return;
+    expect(result.failure).toBeInstanceOf(CaptureFailed);
+    expect(result.failure.message).toBe("Chromium を起動できません。pnpm --filter @live-mindmap/server exec playwright install chromium を実行してください（launch failed）");
     expect(resources.createServer).toHaveBeenCalledTimes(1);
     expect(resources.launch).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);

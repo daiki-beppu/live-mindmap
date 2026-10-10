@@ -9,6 +9,7 @@ import { Cause, ConfigProvider, Effect, Exit, type FileSystem, Layer, Logger, Ru
 import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
+import { Playwright } from "./playwright.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import type { DiffUpdater } from "./core/index.ts";
 import { claudeUpdaterLayer, type UpdaterUnavailable } from "./diffUpdater.ts";
@@ -90,7 +91,7 @@ if (import.meta.main) {
     const helperPath = helper.path;
     const helperCommand = { command: helperPath, args: [] };
     // 終了時の書き出しの Service は、ここで 1 回だけ組む（書き出しのたびに Layer を作り直さない）
-    const exportServices = Layer.mergeAll(MapCapture.layer, ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
+    const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
       Layer.provideMerge(NodeFileSystem.layer),
     );
     // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・

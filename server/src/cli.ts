@@ -8,6 +8,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
+import { Playwright } from "./playwright.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
@@ -658,7 +659,7 @@ if (import.meta.main) {
     : AudioMix.layer({ command: helper.path, args: [] }).pipe(Layer.provide(NodeServices.layer));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer, ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici)),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici)),
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }
