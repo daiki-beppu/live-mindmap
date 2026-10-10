@@ -11,6 +11,8 @@ import { MapCapture } from "./capture.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { claudeUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
+import { configuredModels, ModelRefused, resolveModel } from "./modelConfig.ts";
+import type { ExecutableModel } from "./modelSelection.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import {
   formatIntakeStatus,
@@ -316,9 +318,29 @@ const isDirectory = Effect.fn("isDirectory")(function* (path: string) {
   return (yield* fs.exists(path)) && (yield* fs.stat(path)).type === "Directory";
 }, orFileFailed);
 
+const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した差分更新モデルの名前（環境変数・設定の既定値より優先）"), Flag.optional);
+const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（apple のみ。この段階ではまだ使えない）"), Flag.withDefault(false));
+
+const recordPlayback = Effect.fn("recordPlayback")(function* (
+  input: { title: string; remarks: Iterable<Remark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean },
+  model: ExecutableModel,
+  publish: (snapshot: Snapshot) => Effect.Effect<void>,
+) {
+  const sessionsDir = yield* sessionsDirConfig;
+  const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
+  const { session } = yield* openRecordedSession({ dir, title: input.title, publish, model });
+  yield* playback(session, input.remarks, { ...(input.realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens: input.screens });
+  const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe).pipe(
+    Effect.mapError((e) => new CommandFailed({ message: e.message })),
+  );
+  return { dir, paths };
+});
+
 const play = Command.make(
   "play",
   {
+    model: modelFlag,
+    local: localFlag,
     transcript: Argument.String("source").pipe(
       Argument.withDescription(
         "再生する文字起こしファイル（kanary transcribe の JSON）、または過去のセッションのフォルダ（log.jsonl を持つフォルダ）。"
@@ -339,43 +361,38 @@ const play = Command.make(
     ),
   },
   Effect.fn("play")(
-    function* ({ realtime, screen, transcript }) {
-      const sessionsDir = yield* sessionsDirConfig;
-      const port = yield* portConfig;
-      const folder = yield* isDirectory(transcript);
-      if (folder && Option.isSome(screen)) {
-        return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
-      }
-      // セッションのフォルダはログを再生の前にすべて読む。壊れていれば何も始めずに失敗する（画像は入れる直前に読む）
-      const recorded = folder ? yield* loadRecordedSession(resolve(transcript)) : undefined;
-      // 共有画面は再生を始める前にすべて読み、JPEG にする。読めなければ何も始めずに失敗する
-      const screens: Iterable<PlaybackScreen<CommandFailed>> = recorded
-        ? recorded.screens
-        : Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
-      // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
-      const listener = yield* openListener(port).pipe(
-        Effect.mapError((e) => listenFailed(port, e)),
-      );
-      // 配信の開始と、待受けを閉じる前に最後のスナップショットを接続中のクライアントへ渡し切る登録を、受け取った Context への 1 回の provide で行う
-      const viewers = yield* Effect.gen(function* () {
-        yield* serveFeed;
-        const viewers = yield* Viewers;
-        yield* Effect.addFinalizer(() => viewers.drained);
-        return viewers;
-      }).pipe(Effect.provide(listener));
-      const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-      const { session } = yield* openRecordedSession({
-        dir,
-        title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
-        publish: viewers.publish,
-      });
-      const remarks = recorded ? recorded.remarks : yield* readTranscriptRemarks(transcript);
-      // --realtime のときだけ待つ。再生の待ちと、セッションの「最後の発言から一定時間」の待ちは、同じ Clock に乗る
-      yield* playback(session, remarks, { ...(realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens });
-      const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe).pipe(
-        Effect.mapError((e) => new CommandFailed({ message: e.message })),
-      );
-      yield* write(paths.map((path) => `${path}\n`).join(""));
+    function* ({ realtime, screen, transcript, model, local }) {
+      const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
+      return yield* Effect.gen(function* () {
+        const port = yield* portConfig;
+        const folder = yield* isDirectory(transcript);
+        if (folder && Option.isSome(screen)) {
+          return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
+        }
+        // セッションのフォルダはログを再生の前にすべて読む。壊れていれば何も始めずに失敗する（画像は入れる直前に読む）
+        const recorded = folder ? yield* loadRecordedSession(resolve(transcript)) : undefined;
+        // 共有画面は再生を始める前にすべて読み、JPEG にする。読めなければ何も始めずに失敗する
+        const screens: Iterable<PlaybackScreen<CommandFailed>> = recorded
+          ? recorded.screens
+          : Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
+        // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
+        const listener = yield* openListener(port).pipe(
+          Effect.mapError((e) => listenFailed(port, e)),
+        );
+        // 配信の開始と、待受けを閉じる前に最後のスナップショットを接続中のクライアントへ渡し切る登録を、受け取った Context への 1 回の provide で行う
+        const viewers = yield* Effect.gen(function* () {
+          yield* serveFeed;
+          const viewers = yield* Viewers;
+          yield* Effect.addFinalizer(() => viewers.drained);
+          return viewers;
+        }).pipe(Effect.provide(listener));
+        const remarks = recorded ? recorded.remarks : yield* readTranscriptRemarks(transcript);
+        const { paths } = yield* recordPlayback({
+          title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
+          remarks, screens, realtime,
+        }, selected, viewers.publish);
+        yield* write(paths.map((path) => `${path}\n`).join(""));
+      }).pipe(Effect.provide(claudeUpdaterLayer(selected)));
     },
     Effect.scoped,
   ),
@@ -386,9 +403,15 @@ const play = Command.make(
       + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
       + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す（play のセッションには録音が無いので map-audio.html は作らない）",
   ),
-  // 差分更新は play だけが使う。Layer が取得と解放を持ち、最後の反映と最終撮影の後に 1 回だけ閉じる
-  Command.provide(claudeUpdaterLayer),
 );
+
+const models = Command.make("models", {}, Effect.fn("models")(function* () {
+  const entries = yield* configuredModels();
+  const routes = { claude: "Claude", apple: "子プロセス", "openai-compatible": "OpenAI 互換", chatgpt: "ChatGPT" };
+  yield* write(["名前  経路  ローカル  使えるか", ...entries.map((model) =>
+    `${model.name}  ${routes[model.route]}  ${model.local ? "はい" : "-"}  ${model.reason === undefined ? "はい" : `いいえ: ${model.reason}`}`,
+  )].join("\n") + "\n");
+})).pipe(Command.withDescription("モデルの名前・経路・ローカル可否・現在の利用可否を一覧する"));
 
 const apps = Command.make(
   "apps",
@@ -404,6 +427,8 @@ const apps = Command.make(
 const start = Command.make(
   "start",
   {
+    model: modelFlag,
+    local: localFlag,
     app: Flag.String("app").pipe(Flag.withDescription("会議アプリの bundle id（例 us.zoom.xos）")),
     title: Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとセッションの開始時刻）"), Flag.optional),
     noAudio: Flag.Boolean("no-audio").pipe(
@@ -415,13 +440,15 @@ const start = Command.make(
       Flag.withDefault(false),
     ),
   },
-  Effect.fn("start")(function* ({ app, noAudio, noScreen, title }) {
+  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, local }) {
+    const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
     const { dir } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
       screen: !noScreen,
+      model: selected,
     });
     yield* write(`${dir}\n`);
   }),
@@ -573,6 +600,7 @@ const review = Command.make(
 const evaluate = Command.make(
   "eval",
   {
+    model: modelFlag,
     truth: Flag.File("truth").pipe(
       Flag.withDescription("正解ファイル（JSON）。形は core/evaluate.ts の Truth が正本"),
       Flag.optional,
@@ -586,13 +614,20 @@ const evaluate = Command.make(
       Argument.atLeast(1),
     ),
   },
-  Effect.fn("eval")(function* ({ sessions, truth, screenTruth }) {
+  Effect.fn("eval")(function* ({ sessions, truth, screenTruth, model }) {
+    const selected = Option.isSome(model) ? yield* resolveModel({ model: model.value }) : undefined;
     // 正解ファイルの検証は共有の readTruthFile（段 1 の Truth の Schema）が持つ（Flag 側では検証しない）
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const screen = Option.isNone(screenTruth) ? undefined : yield* readScreenTruthFile(screenTruth.value);
     const fs = yield* FileSystem.FileSystem;
     const runs: Run[] = [];
-    for (const dir of sessions) {
+    for (const source of sessions) {
+      const dir = selected === undefined ? source : yield* Effect.gen(function* () {
+        const recorded = yield* loadRecordedSession(resolve(source));
+        return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
+          Effect.provide(claudeUpdaterLayer(selected)), Effect.scoped,
+        )).dir;
+      });
       const path = join(dir, EXPORT_FILE);
       if (!(yield* pathExists(fs, path).pipe(orFileFailed))) return yield* new MissingRunExport({ path });
       const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
@@ -624,13 +659,14 @@ const evaluate = Command.make(
 ).pipe(
   Command.withDescription(
     "play で作ったランの指標を 1 ラン 1 行の表で出す。log.jsonl があれば、本文の書き換えの回数÷発言の数・1 ノードの書き換えの最多・話し中の兄弟の最多も出す（無ければ -）。--truth を渡すと決定・TODO の再現率も、--screen-truth を渡すと指す発言・うち記憶・話だけ・出てはいけないの列も出す"
-      + "（当たる条件と 1 対 1 の数え方は core/evaluate.ts の matches・recall が持つ）",
+      + "（当たる条件と 1 対 1 の数え方は core/evaluate.ts の matches・recall が持つ）。"
+      + "--model を明示したときだけ元ログを選んだモデルで再生し、新しいランを評価する。指定なしでは環境変数・設定の default に関係なく保存済み結果を集計する",
   ),
 );
 
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
-  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate]),
+  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
@@ -646,6 +682,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
   const failure = error.success;
   if (CliError.isCliError(failure)) return Effect.void;
+  if (failure instanceof ModelRefused) return Console.error(failure.message);
   return Console.error(isCliFailure(failure) ? oneLine(failureLine(failure)) : describe(failure));
 };
 

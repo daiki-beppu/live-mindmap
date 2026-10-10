@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
@@ -230,7 +231,7 @@ const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>)
   return Effect.provideService(Effect.suspend(() => body(stderr)), Console.Console, service);
 };
 
-const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, ...input });
+const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, model: defaultClaude, ...input });
 
 describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   it.effect("apps は Helpers の一覧をそのまま返す（CT-SESSIONS-ONE）", () =>

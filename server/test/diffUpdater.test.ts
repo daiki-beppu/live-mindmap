@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { it as effectIt } from "@effect/vitest";
 import { Effect, Exit, Layer } from "effect";
 import { expect, vi } from "vitest";
@@ -10,7 +11,7 @@ vi.mock("../src/claude.ts", () => {
 
 effectIt.effect("claude.ts を import できないと UpdaterUnavailable で失敗する", () =>
   Effect.gen(function* () {
-    const exit = yield* Effect.exit(Layer.build(claudeUpdaterLayer));
+    const exit = yield* Effect.exit(Layer.build(claudeUpdaterLayer(defaultClaude)));
     expect(Exit.isFailure(exit)).toBe(true);
     const err = Exit.isFailure(exit) ? JSON.stringify(exit.cause) : "";
     expect(err).toContain("UpdaterUnavailable");

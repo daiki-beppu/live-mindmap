@@ -10,15 +10,14 @@ import { HttpServer } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
-import type { DiffUpdater } from "./core/index.ts";
-import { claudeUpdaterLayer, type UpdaterUnavailable } from "./diffUpdater.ts";
+import { claudeUpdaterLayer } from "./diffUpdater.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import { ReviewBuild } from "./review.ts";
 import { layerListener, portOf, serveSessions } from "./http.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
-import { SessionSinks } from "./sessionSinks.ts";
+import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 
 export type ListenOptions = {
@@ -28,7 +27,7 @@ export type ListenOptions = {
 };
 
 export type ServerOptions = ListenOptions & {
-  updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>; // セッションごとに updater を 1 つ開く。stop・開始の失敗・サーバーの終了で閉じる
+  updaterLayer: SessionSinksDeps["updaterLayer"];
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 

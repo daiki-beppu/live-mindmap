@@ -56,7 +56,7 @@ const program = Effect.gen(function* () {
   writeFileSync(recordPath, "");
 
   const helper = { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };
-  const options: ServerOptions = { port: 0, sessionsDir, updaterLayer: updaterLayer(update), helper };
+  const options: ServerOptions = { port: 0, sessionsDir, updaterLayer: () => updaterLayer(update), helper };
   // server.ts の import.meta.main と同じ組み方。AudioMix は fake-helper の mix を呼ぶ
   const exportServices = Layer.mergeAll(MapCapture.layer, ReviewBuild.layer, AudioMix.layer(helper).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
     Layer.provideMerge(NodeFileSystem.layer),

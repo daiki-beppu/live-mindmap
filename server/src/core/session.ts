@@ -60,7 +60,10 @@ export class DiffUpdater extends Context.Service<DiffUpdater, {
 // ログの行の形。ログに書く側（cli・sessionSinks の配線）も読む側（restoreSession）も同じ Schema を使う。
 // 配線側が `{ at, ...event }` で書くので、余分なキーは厳格にしない（保存済みのログを読めなくしない）
 // セッションの始まり。ルートの本文（タイトル）を残す
-export const StartEvent = Schema.Struct({ type: Schema.Literal("start"), title: Schema.String });
+export const StartEvent = Schema.Struct({
+  type: Schema.Literal("start"), title: Schema.String,
+  model: Schema.optionalKey(Schema.Struct({ name: Schema.String, route: Schema.String, local: Schema.Boolean })),
+});
 // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
 export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) });
 // ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない

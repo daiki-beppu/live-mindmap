@@ -7,7 +7,7 @@ import { DiffUpdater, type DiffInput, type DiffResult, type DiffUpdateError } fr
 export type FakeOpenedUpdater = { update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>; close: () => void };
 
 export const fakeClaudeModule = (open: () => FakeOpenedUpdater) => ({
-  layerClaude: Layer.effect(
+  layerClaude: (_model: string) => Layer.effect(
     DiffUpdater,
     Effect.gen(function* () {
       const opened = yield* Effect.acquireRelease(

@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -99,7 +100,7 @@ function dependencies(sessionsDir: string, port = "12345") {
   const layer = Layer.mergeAll(
     NodeServices.layer,
     NodeHttpClient.layerUndici,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (snapshot: Snapshot, path: string) => Effect.sync(() => {
@@ -158,7 +159,7 @@ describe("CLI の Effect 境界", () => {
     const [request] = server.requests;
     expect(`http://127.0.0.1:${server.port}${request!.url}`).toBe(`http://127.0.0.1:${server.port}/session/start`);
     expect(request!.method).toBe("POST");
-    expect(JSON.parse(request!.body)).toEqual({ app: "us.zoom.xos", audio: true, screen: true });
+    expect(JSON.parse(request!.body)).toEqual({ app: "us.zoom.xos", audio: true, screen: true, model: defaultClaude });
     expect(deps.stdout.join("")).toBe(join(dir, "run") + "\n");
   }));
 
@@ -170,8 +171,8 @@ describe("CLI の Effect 境界", () => {
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-screen", "--no-audio"]).pipe(Effect.provide(deps.layer));
 
     expect(server.requests).toHaveLength(2);
-    expect(JSON.parse(server.requests[0]!.body)).toEqual({ app: "us.zoom.xos", audio: true, screen: false });
-    expect(JSON.parse(server.requests[1]!.body)).toEqual({ app: "us.zoom.xos", audio: false, screen: false });
+    expect(JSON.parse(server.requests[0]!.body)).toEqual({ app: "us.zoom.xos", audio: true, screen: false, model: defaultClaude });
+    expect(JSON.parse(server.requests[1]!.body)).toEqual({ app: "us.zoom.xos", audio: false, screen: false, model: defaultClaude });
   }));
 
   it.effect("2xx 以外の応答は、本文の error をそのまま ServerFailed の 1 行にする", () => Effect.gen(function* () {

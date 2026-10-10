@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,7 +80,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const sessionsDir = join(dir, "sessions");
   const fakeHelpers = makeFakeHelpers(attempts);
   const sessionSinksLayer = SessionSinks.layer({
-    updaterLayer: options.updaterLayer ?? updaterLayer(() => Effect.succeed({ ops: [] })),
+    updaterLayer: options.updaterLayer ?? (() => updaterLayer(() => Effect.succeed({ ops: [] }))),
   }).pipe(Layer.provide(fakeExportServices()));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
@@ -275,14 +276,14 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
     Effect.gen(function* () {
       const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9]);
       const sent: SentMessage[] = [];
-      const claude = layerClaude.pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(sent) }))));
+      const claude = layerClaude(defaultClaude.model).pipe(Layer.provide(Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(sent) }))));
       const r = yield* resourceWithFakeHelpers([{
         events: [
           { type: "screen", start: 1, image: Buffer.from(jpeg).toString("base64") },
           { type: "remark", track: "相手", start: 0, end: 5, text: "今日は採用の進め方を決めます" },
           { type: "remark", track: "相手", start: 5, end: 9, text: "面接を何回にするかですね" },
         ],
-      }], { updaterLayer: claude });
+      }], { updaterLayer: () => claude });
 
       const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
       expect(started.status).toBe(200);

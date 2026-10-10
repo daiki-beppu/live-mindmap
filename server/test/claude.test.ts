@@ -1,3 +1,4 @@
+import { defaultClaude } from "../src/modelSelection.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { AgentSdk, buildPrompt, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
@@ -19,7 +20,7 @@ const assistant = (model: string, usage: Record<string, number | null>) => ({ ty
 const ASSISTANT_USAGE = { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: 50 };
 type Created = { messages: Message[]; closeCalls: number; options: Options };
 // query() に渡された options（systemPrompt・出力スキーマ・env）
-type Options = { systemPrompt: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
+type Options = { model: string; systemPrompt: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
 
 const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
@@ -65,13 +66,13 @@ const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex
 
 // 偽の AgentSdk を layerClaude に渡し、手で作った Scope（セッションの Scope の代わり）の中で build する。
 // close は Scope を閉じる操作（旧 updater.close() の代わり）。何度呼んでもよい
-function setup(behave: (queryIndex: number, messageIndex: number) => Behavior = () => "ok") {
+function setup(behave: (queryIndex: number, messageIndex: number) => Behavior = () => "ok", model: string = defaultClaude.model) {
   return Effect.gen(function* () {
     const created: Created[] = [];
     const scope = yield* Scope.make();
     yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
     const sdk = Layer.succeed(AgentSdk, AgentSdk.of({ query: fakeQuery(created, behave) }));
-    const context = yield* Layer.buildWithScope(layerClaude.pipe(Layer.provide(sdk)), scope);
+    const context = yield* Layer.buildWithScope(layerClaude(model).pipe(Layer.provide(sdk)), scope);
     const updater = Context.get(context, DiffUpdater);
     return { created, updater, scope, close: Scope.close(scope, Exit.void) };
   });
@@ -140,7 +141,7 @@ describe("差分更新の query の使い回し", () => {
 
   it.effect("QUERY_RENEW_CALLS 回目までは同じ query を使い、次の 1 回で古い query を閉じて新しい query を開く。開き直したあとも、その回の入力のマップ全体を送る", () =>
     Effect.gen(function* () {
-      const { created, updater } = yield* setup();
+      const { created, updater } = yield* setup(() => "ok", "claude-haiku-5-5");
 
       for (let n = 1; n <= QUERY_RENEW_CALLS; n++) yield* updater.update(input(n));
       expect(created).toHaveLength(1);
@@ -151,6 +152,7 @@ describe("差分更新の query の使い回し", () => {
       const output = yield* updater.update(input(next));
 
       expect(created).toHaveLength(2);
+      expect(created.map((query) => query.options.model)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5"]);
       expect(created[0]!.closeCalls).toBeGreaterThanOrEqual(1);
       expect(created[0]!.messages).toHaveLength(QUERY_RENEW_CALLS); // 古い query には流し込まない
       expect(contents(created[1]!)).toEqual([buildPrompt(input(next))]);
