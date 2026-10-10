@@ -67,6 +67,7 @@ const setup = (initial: Partial<Script> = {}) =>
   // 通常のテストでは、テストごとに Chromium を起動しないよう、撮影・見返し用の HTML のビルド・mix は偽物の Layer にする
   const options = {
     port: 0,
+    depsDir: join(dir, "deps"),
     sessionsDir,
     prepareUpdater: () => Effect.succeed(updaterLayer(updater)),
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },

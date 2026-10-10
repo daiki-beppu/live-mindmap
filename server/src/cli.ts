@@ -3,7 +3,7 @@
 // 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema } from "effect";
+import { Cause, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
@@ -60,6 +60,7 @@ import {
 } from "./sessionFiles.ts";
 import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
+import { InstallEvent } from "./managedDepsProtocol.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
@@ -197,12 +198,10 @@ const IntakeStatus = Schema.Struct({
   lastInterruptedAt: Schema.optionalKey(Schema.String),
 });
 
-// 常駐サーバーへ依頼を送り、応答を decode する。2xx 以外は、応答の { error } をそのまま入口の 1 行にする
-const requestServer = Effect.fnUntraced(function* <A>(
+const executeServerRequest = Effect.fnUntraced(function* (
   port: number,
   method: "GET" | "POST",
   path: string,
-  schema: Schema.Decoder<A>,
   body?: object,
   headers?: Record<string, string>,
 ) {
@@ -218,6 +217,19 @@ const requestServer = Effect.fnUntraced(function* <A>(
     );
     return yield* new ServerFailed({ message: reported.error ?? `サーバーがエラーを返しました: ${response.status}` });
   }
+  return response;
+});
+
+// 常駐サーバーへ依頼を送り、成功応答を各コマンドの Schema で読む
+const requestServer = Effect.fnUntraced(function* <A>(
+  port: number,
+  method: "GET" | "POST",
+  path: string,
+  schema: Schema.Decoder<A>,
+  body?: object,
+  headers?: Record<string, string>,
+) {
+  const response = yield* executeServerRequest(port, method, path, body, headers);
   // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
   const parsed = yield* response.text.pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
@@ -678,9 +690,38 @@ const evaluate = Command.make(
   ),
 );
 
+const installCommand = Command.make(
+  "install",
+  { names: Argument.String("name").pipe(Argument.atLeast(1)) },
+  Effect.fn("install")(function* ({ names }) {
+    const port = yield* portConfig;
+    yield* Console.error("時間がかかるので run_in_background で呼んでよい");
+    const response = yield* executeServerRequest(port, "POST", "/deps/install", { names });
+    let result: Extract<typeof InstallEvent["Type"], { type: "result" }> | undefined;
+    yield* response.stream.pipe(
+      Stream.decodeText,
+      Stream.splitLines,
+      Stream.runForEach((line) => Effect.gen(function* () {
+        const event = yield* Schema.decodeEffect(Schema.fromJsonString(InstallEvent))(line).pipe(
+          Effect.mapError((error) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(error)}` })),
+        );
+        if (result !== undefined) return yield* new ServerFailed({ message: "完了後にイベントを受信しました" });
+        switch (event.type) {
+          case "progress": yield* Console.error(oneLine(event.message)); break;
+          case "error": return yield* new ServerFailed({ message: event.message });
+          case "result": result = event; break;
+        }
+      })),
+      Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerFailed({ message: String(error) }))),
+    );
+    if (result === undefined) return yield* new ServerFailed({ message: "導入結果を受信する前に接続が終了しました" });
+    yield* write(JSON.stringify(result.items));
+  }),
+).pipe(Command.withDescription("常駐サーバーに管理依存の導入を依頼し、進捗と導入した items を出す"));
+
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
-  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models]),
+  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, installCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）

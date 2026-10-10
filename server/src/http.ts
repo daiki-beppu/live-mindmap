@@ -9,13 +9,15 @@
 // セッションの操作は sessions.ts の Sessions から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
-import { Cause, Context, Effect, Layer, Option, Schema, type Scope } from "effect";
+import { Cause, Context, Effect, Layer, Option, Schema, Stream, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
 import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
+import { ManagedDeps } from "./managedDeps.ts";
+import { DepNames, InstallBody } from "./managedDepsProtocol.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
 class ModelTransferToken extends Context.Service<ModelTransferToken, string>()("live-mindmap/http/ModelTransferToken") {}
@@ -159,6 +161,31 @@ const FeedRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/", feed),
 ]);
 
+const DepRoutes = HttpRouter.addAll([
+  HttpRouter.route("GET", "/deps/check", Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const raw = new URL(request.url, "http://127.0.0.1").searchParams.get("names");
+    const names = yield* Schema.decodeUnknownEffect(DepNames)(raw === null ? [] : raw.split(",")).pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
+    );
+    const deps = yield* ManagedDeps;
+    return HttpServerResponse.jsonUnsafe(yield* deps.check(names).pipe(Effect.orDie));
+  })),
+  HttpRouter.route("POST", "/deps/install", Effect.gen(function* () {
+    const body = yield* HttpServerRequest.schemaBodyJson(InstallBody).pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
+    );
+    const deps = yield* ManagedDeps;
+    const events = deps.install(body.names).pipe(
+      Stream.catchCauseIf((cause) => !Cause.hasInterrupts(cause), (cause) =>
+        Stream.succeed({ type: "error" as const, message: failureMessage(Cause.squash(cause)) })),
+      Stream.map((event) => JSON.stringify(event) + "\n"),
+      Stream.encodeText,
+    );
+    return HttpServerResponse.stream(events, { contentType: "application/x-ndjson" });
+  })),
+]);
+
 // どのルートにも当たらなかったときの応答。ルートが無い場合の文面を 1 か所で持つ
 const UnsupportedRoute = HttpRouter.addAll([
   HttpRouter.route("*", "*", Effect.gen(function* () {
@@ -227,7 +254,7 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
 );
 
 // セッションの操作と配信を受ける（常駐サーバー）
-export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | Viewers | Scope.Scope> => Effect.flatMap(
-  HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
+export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ManagedDeps | Viewers | Scope.Scope> => Effect.flatMap(
+  HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));

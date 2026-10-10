@@ -26,7 +26,7 @@ const resource = Effect.fnUntraced(function* (options: { updaterLayer?: (model: 
   yield* Effect.tryPromise(() => writeFile(script, JSON.stringify({ apps, events: [] })));
   yield* Effect.tryPromise(() => writeFile(record, ""));
   const serverOptions: ServerOptions = {
-    port: 0, sessionsDir,
+    port: 0, sessionsDir, depsDir: join(dir, "deps"),
     helper: { command: process.execPath, args: [fakeHelper, script, record] },
     prepareUpdater: (model) => Effect.succeed(options.updaterLayer ? options.updaterLayer(model) : updaterLayer(() => Effect.succeed({ ops: [] }))),
   };

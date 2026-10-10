@@ -7,6 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
 import { beforeEach, vi } from "vitest";
 import { runCli } from "../src/cli.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import type { DiffOutput } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
@@ -96,6 +97,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const helpers = fakeHelpers([{ type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }]);
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
+      managedDeps: forbiddenManagedDeps,
       sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { if (model.route !== "claude") throw new Error("このfixtureはClaude専用です"); return Effect.succeed(claudeUpdaterLayer(model)); } }).pipe(Layer.provide(fakeExportServices())),
     });
     const deps = dependencies(root, { LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_MODEL: "careful" });
@@ -113,6 +115,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const helpers = fakeHelpers([]);
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
+      managedDeps: forbiddenManagedDeps,
       sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { if (model.route !== "claude") throw new Error("このfixtureはClaude専用です"); return Effect.succeed(claudeUpdaterLayer(model)); } }).pipe(Layer.provide(fakeExportServices())),
     });
     const post = (model: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
