@@ -10,10 +10,11 @@ public struct AppleGenerationRequest: Sendable {
 
 public struct AppleGenerationResult: Sendable {
     public let content: String
-    public let inputTokens: Int
-    public let cachedTokens: Int
-    public let outputTokens: Int
-    public init(content: String, inputTokens: Int, cachedTokens: Int, outputTokens: Int) {
+    // トークン数は SDK 27 の `Response.usage` から取る。古い SDK でビルドしたときは無い
+    public let inputTokens: Int?
+    public let cachedTokens: Int?
+    public let outputTokens: Int?
+    public init(content: String, inputTokens: Int?, cachedTokens: Int?, outputTokens: Int?) {
         self.content = content; self.inputTokens = inputTokens
         self.cachedTokens = cachedTokens; self.outputTokens = outputTokens
     }
@@ -69,15 +70,20 @@ public enum AppleGeneration {
         FileHandle.standardError.write(Data("Apple generation: respond start\n".utf8))
         let response = try await session.respond(to: prompt, schema: generationSchema, options: GenerationOptions(temperature: 0.2, maximumResponseTokens: maximumResponseTokens))
         FileHandle.standardError.write(Data("Apple generation: respond complete; validation start\n".utf8))
+        // `Response.usage` は SDK 27（Swift 6.4 の Xcode）から。CI の macos-26 の SDK には無いので、コンパイラの版で分ける
+        #if compiler(>=6.4)
+        let usage: (input: Int?, cached: Int?, output: Int?) = (response.usage.input.totalTokenCount, response.usage.input.cachedTokenCount, response.usage.output.totalTokenCount)
+        #else
+        let usage: (input: Int?, cached: Int?, output: Int?) = (nil, nil, nil)
+        #endif
         do {
             try validateAppleResponse(response.content.jsonString, schema: original)
         } catch AppleError.invalid(let reason) {
-            FileHandle.standardError.write(Data("Apple generation: validation failed: \(reason); outputTokens=\(response.usage.output.totalTokenCount), maximumResponseTokens=\(maximumResponseTokens)\n".utf8))
+            FileHandle.standardError.write(Data("Apple generation: validation failed: \(reason); outputTokens=\(usage.output.map(String.init) ?? "unknown"), maximumResponseTokens=\(maximumResponseTokens)\n".utf8))
             throw AppleError.invalid(reason)
         }
         FileHandle.standardError.write(Data("Apple generation: validation complete\n".utf8))
-        return AppleGenerationResult(content: response.content.jsonString, inputTokens: response.usage.input.totalTokenCount,
-            cachedTokens: response.usage.input.cachedTokenCount, outputTokens: response.usage.output.totalTokenCount)
+        return AppleGenerationResult(content: response.content.jsonString, inputTokens: usage.input, cachedTokens: usage.cached, outputTokens: usage.output)
     }
 }
 

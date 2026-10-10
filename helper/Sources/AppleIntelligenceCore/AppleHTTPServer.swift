@@ -55,11 +55,14 @@ public actor AppleHTTPServer {
                 let body = try await readRequest(connection)
                 let request = try decodeRequest(body)
                 let result = try await generate(request)
-                try await reply(connection, status: 200, object: [
+                var object: [String: Any] = [
                     "choices": [["message": ["role": "assistant", "content": result.content], "finish_reason": "stop"]],
-                    "usage": ["prompt_tokens": result.inputTokens, "completion_tokens": result.outputTokens,
-                        "prompt_tokens_details": ["cached_tokens": result.cachedTokens]],
-                ])
+                ]
+                if let input = result.inputTokens, let output = result.outputTokens {
+                    object["usage"] = ["prompt_tokens": input, "completion_tokens": output,
+                        "prompt_tokens_details": ["cached_tokens": result.cachedTokens ?? 0]]
+                }
+                try await reply(connection, status: 200, object: object)
             } catch {
                 do { try await reply(connection, status: 500, object: ["error": String(describing: error)]) }
                 catch { /* 切断済みの接続へは応答できない。以下で必ず解放する。 */ }
