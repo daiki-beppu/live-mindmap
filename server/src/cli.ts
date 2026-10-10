@@ -11,6 +11,8 @@ import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
 import { portConfig, sessionsDirConfig } from "./config.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
+import { loginChatgpt } from "./chatgptAuth.ts";
+import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { prepareUpdaterLayer, UpdaterUnavailable } from "./diffUpdater.ts";
 import { configuredModels, ModelRefused, resolveModel } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
@@ -98,6 +100,7 @@ const CLI_FAILURES = [
   BrokenLogLine,
   CommandFailed,
   UpdaterUnavailable,
+  ChatgptUnavailable,
 ] as const;
 type CliFailure = InstanceType<(typeof CLI_FAILURES)[number]>;
 
@@ -120,6 +123,7 @@ const failureLine = (failure: CliFailure): string => {
       return `${LOG_FILE} の ${failure.line} 行目が JSON として読めません: ${failure.reason}`;
     case "CommandFailed":
     case "UpdaterUnavailable":
+    case "ChatgptUnavailable":
       return failure.message;
   }
 };
@@ -460,7 +464,7 @@ const start = Command.make(
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
     let headers: Record<string, string> | undefined;
-    if (selected.route === "openai-compatible") {
+    if (selected.route === "openai-compatible" || selected.route === "chatgpt") {
       const sessionsDir = yield* sessionsDirConfig;
       const token = yield* readModelTransferToken(sessionsDir, port).pipe(
         Effect.mapError(() => new ServerFailed({ message: "互換モデルの転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
@@ -719,9 +723,16 @@ const installCommand = Command.make(
   }),
 ).pipe(Command.withDescription("常駐サーバーに管理依存の導入を依頼し、進捗と導入した items を出す"));
 
+const login = Command.make("login").pipe(Command.withSubcommands([
+  Command.make("chatgpt", {}, () => loginChatgpt).pipe(Command.withDescription("システムブラウザで ChatGPT にサインインする")),
+]));
+const logout = Command.make("logout").pipe(Command.withSubcommands([
+  Command.make("chatgpt", {}, () => logoutChatgpt).pipe(Command.withDescription("ChatGPT の保存済み資格情報を削除する")),
+]));
+
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
-  Command.withSubcommands([play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, installCommand]),
+  Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, installCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
@@ -738,7 +749,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   const failure = error.success;
   if (CliError.isCliError(failure)) return Effect.void;
   if (failure instanceof ModelRefused) return Console.error(failure.message);
-  return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
+  return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
 };
 
 if (import.meta.main) {

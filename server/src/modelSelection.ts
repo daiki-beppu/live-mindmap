@@ -17,7 +17,7 @@ const ModelConfig = Schema.Struct({
   models: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, ModelDefinition)),
 });
 
-export type ExecutableModel = (typeof ClaudeDefinition.Type | typeof CompatibleDefinition.Type) & { readonly name: string; readonly local: false };
+export type ExecutableModel = (typeof ClaudeDefinition.Type | typeof CompatibleDefinition.Type | typeof ChatGPTDefinition.Type) & { readonly name: string; readonly local: false };
 export const defaultClaude: Extract<ExecutableModel, { route: "claude" }> = { name: "claude", route: "claude", model: "claude-sonnet-5-5", local: false };
 type NamedModel = (typeof ModelDefinition.Type & { readonly name: string }) | { readonly name: "apple"; readonly route: "apple" };
 export type ModelFlags = { readonly model?: string; readonly local?: boolean };
@@ -57,7 +57,7 @@ const catalog = (config: unknown, configPath: string): Catalog | Refusal => {
   };
 };
 
-const unavailable = (model: NamedModel): string | undefined => model.route === "claude" || model.route === "openai-compatible" ? undefined : oneLine(`${model.name} はまだ使えません`);
+const unavailable = (model: NamedModel): string | undefined => model.route !== "apple" ? undefined : oneLine(`${model.name} はまだ使えません`);
 
 export const listModels = (input: Pick<ModelInput, "config" | "configPath" | "macState">) => {
   const result = catalog(input.config, input.configPath);
@@ -79,7 +79,7 @@ export const selectModel = (input: ModelInput): Refusal | { readonly ok: true; r
   const model = result.models.find((candidate) => candidate.name === chosenName);
   if (model === undefined) return { ok: false, lines: [oneLine(`モデル ${chosenName} が設定にありません。`), oneLine(`選べるのは ${result.models.map((m) => m.name).join("・")} です（${input.configPath}）`)] };
   const reason = unavailable(model);
-  if (model.route !== "claude" && model.route !== "openai-compatible") return { ok: false, lines: [reason!, "--model claude または設定した Claude 経路の名前を選んでください"] };
+  if (model.route === "apple") return { ok: false, lines: [reason!, "--model claude または設定した Claude 経路の名前を選んでください"] };
   return { ok: true, model: { ...model, local: false }, local: false };
 };
 
@@ -92,6 +92,6 @@ export const TransferredModel = Schema.Union([
 ]);
 export const acceptTransferredModel = (model: typeof TransferredModel.Type): Refusal | { readonly ok: true; readonly model: ExecutableModel } => {
   if (model.local && model.name !== "apple") return { ok: false, lines: [oneLine(`ローカルモードでは ${model.name} を選べません`), "--model claude を --local なしで指定してください"] };
-  if (model.name === "apple" || (model.route !== "claude" && model.route !== "openai-compatible")) return { ok: false, lines: [oneLine(`${model.name} はまだ使えません`), "--model claude を指定してください"] };
+  if (model.name === "apple" || model.route === "apple") return { ok: false, lines: [oneLine(`${model.name} はまだ使えません`), "--model claude を指定してください"] };
   return { ok: true, model: { ...model, local: false } };
 };

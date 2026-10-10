@@ -123,7 +123,6 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
       body: JSON.stringify({ app: "us.zoom.xos", audio: false, model }),
     }));
     for (const model of [
-      { name: "subscription", route: "chatgpt", model: "gpt-test", local: false },
       { name: "apple", route: "apple", local: true },
       { name: "compatible", route: "openai-compatible", model: "synthetic-model", url: "http://127.0.0.1:1/v1", local: true },
     ]) {
