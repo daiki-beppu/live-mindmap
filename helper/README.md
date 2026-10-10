@@ -19,6 +19,7 @@
 ```sh
 cd helper
 swift run live-mindmap-helper list                         # 音を出している会議アプリを JSON で出す
+swift run live-mindmap-helper check                        # モデル・マイク・画面収録の状態を JSON で出す
 swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]   # 既定のポートは 8765
 swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分]   # セッションの録音を 0 秒から重ねて 1 本の 16 kbps モノラル m4a にする
 ```
@@ -27,6 +28,16 @@ swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分] 
 同時にマイクも取り、`自分` のトラックとして、`相手` とは別の SpeechAnalyzer で文字起こしする（2 本が並行して動く）。Apple の音声処理（Voice Processing のエコーキャンセル）は有効にしない（有効にするとプロセスタップが止まる）。スピーカーのときは、下の「エコーキャンセル」で漏れを消す。入力の機器が変わる（`AVAudioEngineConfigurationChange`）と、標準エラーに理由を 1 行出して終了コード 75 で終わる。作り直しはサーバーの起動し直しに任せる。マイクが許可されていないときは、エラーで終わる。Ctrl-C（SIGINT / SIGTERM）で、タップ・マイク・WebSocket を片付けて終わる。
 
 `run` の終了コード: 0 は正常、1 はエラー、2 は使い方の誤り、75 はマイクの入力の構成の変化（sysexits.h の `EX_TEMPFAIL`。サーバーは失敗に数えずに起動し直す）。
+
+`check` は状態の照会だけを行い、ダイアログ、モデルのダウンロード・予約、音声・画面の取り込みを行わない。成功時は標準出力に次の形の JSON を出して終了コード 0 で終わる。失敗時は標準エラーに理由を出して終了コード 1 で終わる。
+
+```json
+{"microphone":"authorized","screenCapture":true,"speechJa":{"installedLocales":["ja_JP"],"status":"installed"}}
+```
+
+`speechJa.status` は ja-JP のモジュールに対する `AssetInventory.status(forModules:)` の結果で、`unsupported`・`supported`・`downloading`・`installed` を区別する。`installedLocales` は `SpeechTranscriber.installedLocales` が返す全 locale の識別子一覧（空の場合もある）で、モデル状態から推測せず、日本語だけに絞らない。`microphone` は `notDetermined`・`denied`・`authorized` の三分類（restricted は denied）。`screenCapture` は画面収録の preflight 結果の Bool。未知のモデル・マイク状態はエラーにする。
+
+権限は起動元に付き、モデルの予約は実行ファイルの識別子ごとなので、サーバーで使う状態を確かめるときはサーバーが起動したヘルパーで `check` を行う。
 
 `--audio-dir <dir>` を付けると、トラックごとの録音を、既存のフォルダ `<dir>` の `相手.m4a`・`自分.m4a`（AAC・48 kHz・モノラル）に書く。録音の 0 秒は、発言の `start` / `end` の 0 秒（音声取得を始める直前）と同じ。書き込みに失敗したときは、そのトラックをエラーで終わらせる。終了時は、タップとマイクを止めて録音ファイルを閉じてからプロセスが終わる（呼び出し側は、プロセスの終了で書き終わりを知る）。付けなければ録音しない。
 
