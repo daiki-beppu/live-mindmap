@@ -3,9 +3,10 @@
 import { join } from "node:path";
 import { Context, Effect, Layer, Schema } from "effect";
 import { createServer as createViteServer } from "vite";
-import { chromium, type Page } from "playwright";
+import type { Page } from "playwright";
 import { CAPTURE_OVERFLOW_ATTRIBUTE, CAPTURE_READY_ATTRIBUTE, CAPTURE_SNAPSHOT_GLOBAL } from "./core/capture.ts";
 import type { Snapshot } from "./core/index.ts";
+import { Playwright } from "./playwright.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 const VIEWPORT = { width: 1600, height: 1000 };
@@ -24,6 +25,7 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   snapshot: Snapshot,
   fn: (page: Page) => Effect.Effect<A, E, R>,
 ) {
+  const playwright = yield* Playwright;
   // 常に今のソースで描くため、web の Vite をここで起動する（ビルドの手順を持たない）。ポートは空きを割り当てる。
   // listen より前に解放を登録する（listen が失敗しても、起動した Vite を閉じる）
   const vite = yield* Effect.acquireRelease(
@@ -45,7 +47,7 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   if (!url) return yield* new CaptureFailed({ message: "撮影用の表示ページの URL を取得できません" });
   const browser = yield* Effect.acquireRelease(
     Effect.tryPromise({
-      try: () => chromium.launch(),
+      try: () => playwright.launch(),
       catch: (e) =>
         new CaptureFailed({
           message: `Chromium を起動できません。pnpm --filter @live-mindmap/server exec playwright install chromium を実行してください（${e instanceof Error ? e.message : e}）`,
@@ -79,7 +81,7 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
 }, Effect.scoped);
 
 // 画面全体ではなく、ノードを囲む範囲（と余白）だけを切り抜いて撮る。小さなマップでも余白だらけにならない
-const captureMap = (snapshot: Snapshot, path: string): Effect.Effect<void, CaptureFailed> =>
+const captureMap = (snapshot: Snapshot, path: string): Effect.Effect<void, CaptureFailed, Playwright> =>
   withCapturePage(snapshot, (page) =>
     Effect.tryPromise({
       try: async () => {
@@ -102,5 +104,12 @@ const captureMap = (snapshot: Snapshot, path: string): Effect.Effect<void, Captu
 export class MapCapture extends Context.Service<MapCapture, {
   readonly capture: (snapshot: Snapshot, path: string) => Effect.Effect<void, CaptureFailed>;
 }>()("live-mindmap/server/MapCapture") {
-  static readonly layer = Layer.succeed(MapCapture, MapCapture.of({ capture: captureMap }));
+  static readonly layer = Layer.effect(MapCapture)(
+    Effect.gen(function* () {
+      const playwright = yield* Playwright;
+      return MapCapture.of({
+        capture: (snapshot, path) => captureMap(snapshot, path).pipe(Effect.provideService(Playwright, playwright)),
+      });
+    }),
+  );
 }

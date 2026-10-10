@@ -15,6 +15,7 @@ import { Effect, Layer } from "effect";
 import { createServer, type ViteDevServer } from "vite";
 import { AudioMix } from "../../server/src/audioMix.ts";
 import { MapCapture } from "../../server/src/capture.ts";
+import { Playwright } from "../../server/src/playwright.ts";
 import type { DiffInput, Op } from "../../server/src/core/index.ts";
 import { ReviewBuild } from "../../server/src/review.ts";
 import { realLayers, startup, type ServerOptions } from "../../server/src/server.ts";
@@ -58,7 +59,7 @@ const program = Effect.gen(function* () {
   const helper = { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };
   const options: ServerOptions = { port: 0, sessionsDir, updaterLayer: () => updaterLayer(update), helper };
   // server.ts の import.meta.main と同じ組み方。AudioMix は fake-helper の mix を呼ぶ
-  const exportServices = Layer.mergeAll(MapCapture.layer, ReviewBuild.layer, AudioMix.layer(helper).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
+  const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helper).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
     Layer.provideMerge(NodeFileSystem.layer),
   );
   mkdirSync(sessionsDir, { recursive: true });
