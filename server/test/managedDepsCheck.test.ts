@@ -15,6 +15,7 @@ describe("管理依存の必須項目の充足", () => {
           { name: "chromium", need: "required", state },
         ]),
         install: () => Stream.die("確認は導入しない"),
+        load: () => Effect.die("確認は読み込まない"),
       })));
       expect(report.ready).toBe(ready);
     }));
