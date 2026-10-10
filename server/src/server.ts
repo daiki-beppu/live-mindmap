@@ -31,7 +31,7 @@ export type ListenOptions = {
 
 export type ServerOptions = ListenOptions & {
   depsDir: string;
-  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient>["prepareUpdater"];
+  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem>["prepareUpdater"];
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 

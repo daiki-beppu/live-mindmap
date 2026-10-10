@@ -30,20 +30,22 @@ describe("モデル選択（Issue #663）", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("有効なモデル定義が拒否されました");
     expect(result.models.filter((model) => model.local).map((model) => model.name)).toEqual(["apple"]);
-    expect(result.models.filter((model) => model.reason === undefined).map((model) => model.name).sort()).toEqual(["careful", "claude", "fast", "ollama"]);
+    expect(result.models.filter((model) => model.reason === undefined).map((model) => model.name).sort()).toEqual(["careful", "claude", "fast", "ollama", "subscription"]);
     expect(listModels({ config: { models: { apple: models.fast } }, configPath, macState: {} }).ok).toBe(false);
   });
 
-  it("転送した Claude と互換モデルは実行できるが、local・apple・未対応経路は拒否する", () => {
+  it("転送した Claude・互換・ChatGPT モデルは実行できるが、local・apple は拒否する", () => {
     expect(acceptTransferredModel(defaultClaude)).toEqual({ ok: true, model: defaultClaude });
     const compatible = { name: "ollama", ...models.ollama, route: "openai-compatible" as const, local: false };
     expect(acceptTransferredModel(compatible)).toEqual({ ok: true, model: compatible });
+    const subscription = { name: "subscription", ...models.subscription, route: "chatgpt" as const, local: false };
+    expect(acceptTransferredModel(subscription)).toEqual({ ok: true, model: subscription });
     for (const model of [
       { ...defaultClaude, local: true },
       { ...defaultClaude, name: "apple" },
       { name: "apple" as const, route: "apple" as const, local: true },
       { ...compatible, local: true },
-      { name: "subscription", ...models.subscription, route: "chatgpt" as const, local: false },
+      { ...subscription, local: true },
     ]) expect(acceptTransferredModel(model).ok).toBe(false);
   });
 
@@ -86,15 +88,32 @@ describe("モデル選択（Issue #663）", () => {
     expect(lines[0]).toContain("まだ");
   });
 
-  it.each(["claude", "fast", "ollama"])("invLocalWithOtherRefused: --local と %s の併用は拒む", (name) => {
+  it.each(["claude", "fast", "ollama", "subscription"])("invLocalWithOtherRefused: --local と %s の併用は拒む", (name) => {
     const lines = refused(select({ local: true, model: name }, undefined, { models }));
     expect(lines[0]).toContain(`ローカルモードでは ${name} を選べません`);
     expect(lines[1]).toContain("apple");
   });
 
-  it.each(["subscription"])("selectionResult: %s は定義を受理するが実行は未対応", (name) => {
-    const lines = refused(select({ model: name }, undefined, { models }));
-    expect(lines[0]).toContain("まだ");
+  it.each([
+    { flags: { model: "subscription" }, env: "fast", default: "careful" },
+    { flags: {}, env: "subscription", default: "fast" },
+    { flags: {}, env: undefined, default: "subscription" },
+  ])("C04: 設定名で ChatGPT を選べる ($flags / $env / $default)", ({ flags, env, default: defaultName }) => {
+    expect(select(flags, env, { default: defaultName, models })).toEqual({
+      ok: true, model: { name: "subscription", ...models.subscription, local: false }, local: false,
+    });
+  });
+
+  it.each([
+    { route: "chatgpt" },
+    { route: "chatgpt", model: "" },
+    { ...models.subscription, url: "https://test.invalid/v1" },
+    { ...models.subscription, apiKeyEnv: "SYNTHETIC_KEY" },
+  ])("C04: ChatGPT は model 必須、url・apiKeyEnv 禁止 (%j)", (definition) => {
+    const result = select({ model: "subscription" }, undefined, { models: { subscription: definition } });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("契約外の ChatGPT 設定が受理されました");
+    expect(result.lines).toHaveLength(1);
   });
 
   it("7 項目を持つ OpenAI 互換の定義は設定エラーにならない", () => {

@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Context, Deferred, Effect, Fiber, Layer, Predicate, Result } from "effect";
+import { ConfigProvider, Console, Context, Deferred, Duration, Effect, Fiber, Layer, Predicate, Queue, Result, Stream, type Cause } from "effect";
 import { CliError } from "effect/cli";
-import { HttpServer } from "effect/http";
+import { HttpClient, HttpServer } from "effect/http";
 import { afterEach, beforeEach, vi } from "vitest";
 import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
@@ -16,6 +16,14 @@ import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
+import { CHATGPT_MODEL, chatgptAuthPath, chatgptCredentials } from "./fixtures/chatgpt.ts";
+import { fakeChatgptOAuth, type InvalidOAuth } from "./fixtures/chatgptOAuth.ts";
+import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
+import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { SessionSinks } from "../src/sessionSinks.ts";
+import { startedServer } from "./fixtures/startedServer.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
 // 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
@@ -107,6 +115,197 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+const chatgptRun = (argv: string[], deps: ReturnType<typeof dependencies>, oauth: Effect.Success<ReturnType<typeof fakeChatgptOAuth>>) => runCli(argv).pipe(
+  Effect.provideService(HttpClient.HttpClient, oauth.client), Effect.provide(oauth.browser), Effect.provide(deps.layer),
+);
+
+describe("ChatGPT の CLI（Issue #669）", () => {
+  it.live("C01: login は動的登録・PKCE・署名付き ID トークンで保存し、logout はトークンを削除する", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessions = join(root, "sessions");
+    const deps = dependencies(sessions);
+    const oauth = yield* fakeChatgptOAuth({}).pipe(Effect.provide(NodeHttpClient.layerFetch));
+    const path = chatgptAuthPath(join(sessions, "home"));
+    yield* chatgptRun(["login", "chatgpt"], deps, oauth);
+    expect(oauth.authorizations).toHaveLength(1);
+    const query = oauth.authorizations[0]!.searchParams;
+    expect(query.get("client_id")).toBe("dynamic_agent_client");
+    expect(query.get("code_challenge_method")).toBe("S256");
+    expect(query.get("state")).toBeTruthy();
+    expect(query.get("nonce")).toBeTruthy();
+    expect(query.get("ext_agent_host_id")).toBeTruthy();
+    expect(query.get("scope")!.split(" ")).toEqual(expect.arrayContaining(["openid", "profile", "email", "offline_access", "resource.invoke", "chatgpt.tokens.use.direct"]));
+    expect(new URL(query.get("redirect_uri")!).hostname).toBe("127.0.0.1");
+    expect(oauth.browserCommands).toHaveLength(1);
+    expect(oauth.checks).toEqual([true]);
+    expect(existsSync(path)).toBe(true);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const saved = readFileSync(path, "utf8");
+    expect(saved).toContain("synthetic-access");
+    expect(saved).toContain("synthetic-refresh");
+    for (const line of [...deps.stdout, ...deps.stderr]) for (const secret of ["synthetic-code", "synthetic-access", "synthetic-refresh"]) expect(line).not.toContain(secret);
+    yield* chatgptRun(["logout", "chatgpt"], deps, oauth);
+    expect(existsSync(path)).toBe(false);
+    yield* chatgptRun(["login", "chatgpt"], deps, oauth);
+    expect(oauth.authorizations).toHaveLength(2);
+    expect(oauth.authorizations[1]!.searchParams.get("ext_agent_host_id")).toBe(query.get("ext_agent_host_id"));
+  }));
+
+  it.live.each<InvalidOAuth>(["state", "signature", "issuer", "audience", "nonce", "expired"])("C01: 不正な %s を保存しない", (invalid) => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessions = join(root, "sessions");
+    const deps = dependencies(sessions);
+    const oauth = yield* fakeChatgptOAuth({ invalid }).pipe(Effect.provide(NodeHttpClient.layerFetch));
+    const result = yield* Effect.result(chatgptRun(["login", "chatgpt"], deps, oauth));
+    expect(oauth.authorizations).toHaveLength(1);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("不正な OAuth 結果が受理されました");
+    expect(CliError.isCliError(result.failure)).toBe(false);
+    expect(oauth.exchanges).toHaveLength(invalid === "state" ? 0 : 1);
+    expect(existsSync(chatgptAuthPath(join(sessions, "home")))).toBe(false);
+    const callback = oauth.authorizations[0]!.searchParams.get("redirect_uri")!;
+    const closed = yield* Effect.result(Effect.tryPromise(() => fetch(callback, { signal: AbortSignal.timeout(1000) })));
+    expect(Result.isFailure(closed)).toBe(true);
+  }));
+
+  it.live("C01: サインイン待ちを中断するとループバックを閉じ、資格情報を保存しない", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessions = join(root, "sessions");
+    const deps = dependencies(sessions);
+    const oauth = yield* fakeChatgptOAuth({ holdCallback: true }).pipe(Effect.provide(NodeHttpClient.layerFetch));
+    const login = yield* chatgptRun(["login", "chatgpt"], deps, oauth).pipe(Effect.forkChild);
+    yield* Effect.promise(() => vi.waitFor(() => expect(oauth.authorizations).toHaveLength(1)));
+    yield* Fiber.interrupt(login);
+    expect(oauth.exchanges).toEqual([]);
+    expect(existsSync(chatgptAuthPath(join(sessions, "home")))).toBe(false);
+    const callback = oauth.authorizations[0]!.searchParams.get("redirect_uri")!;
+    const closed = yield* Effect.result(Effect.tryPromise(() => fetch(callback, { signal: AbortSignal.timeout(1000) })));
+    expect(Result.isFailure(closed)).toBe(true);
+  }));
+
+  it.live("C01: 認可結果の受信期限を過ぎたら待受けを閉じ、資格情報を保存しない", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessions = join(root, "sessions");
+    const deps = dependencies(sessions);
+    const oauth = yield* fakeChatgptOAuth({ holdCallback: true }).pipe(Effect.provide(NodeHttpClient.layerFetch));
+    const result = yield* Effect.result(chatgptRun(["login", "chatgpt"], deps, oauth).pipe(
+      Effect.provideService(ChatgptEndpoints, { ...ChatgptEndpoints.defaultValue(), loginTimeout: Duration.millis(20) }),
+    ));
+    expect(oauth.authorizations).toHaveLength(1);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(oauth.exchanges).toEqual([]);
+    expect(existsSync(chatgptAuthPath(join(sessions, "home")))).toBe(false);
+    const callback = oauth.authorizations[0]!.searchParams.get("redirect_uri")!;
+    expect(Result.isFailure(yield* Effect.result(Effect.tryPromise(() => fetch(callback, { signal: AbortSignal.timeout(1000) }))))).toBe(true);
+  }));
+
+  it.live("C01・C03・C04・invModelFixed: login → play がマップ・根拠・開始ログへ届き、同じ再生中の設定変更でモデルが変わらない", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessions = join(root, "sessions");
+    const config = join(root, "config.json");
+    writeFileSync(config, JSON.stringify({ models: { subscription: CHATGPT_MODEL_DEFINITION } }));
+    let changed = false;
+    const oauth = yield* fakeChatgptOAuth({ afterResponse: (call) => {
+      if (call !== 2) return;
+      writeFileSync(config, JSON.stringify({ models: { subscription: { route: "chatgpt", model: "replacement-model", images: false } } }));
+      changed = true;
+    } }).pipe(Effect.provide(NodeHttpClient.layerFetch));
+    const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
+    yield* chatgptRun(["login", "chatgpt"], deps, oauth);
+    deps.stdout.length = 0;
+    yield* chatgptRun(["play", fixture, "--model", "subscription"], deps, oauth);
+    const dir = dirname(deps.stdout.join("").trim().split("\n")[0]!);
+    const exported = JSON.parse(readFileSync(join(dir, "map.json"), "utf8")) as { root: { children: { kind: string; evidence: { id: string }[]; children: { evidence: { id: string }[] }[] }[] } };
+    expect(changed).toBe(true);
+    expect(oauth.responses.length).toBeGreaterThan(2);
+    expect(oauth.responses.map((r) => r.body.model)).toEqual(oauth.responses.map(() => CHATGPT_MODEL.model));
+    expect(oauth.responses.every((r) => r.authorization === "Bearer synthetic-access")).toBe(true);
+    expect(exported.root.children.length).toBeGreaterThan(0);
+    const evidence = exported.root.children.flatMap((n) => [...n.evidence, ...n.children.flatMap((c) => c.evidence)]);
+    expect([...new Set(evidence.map((r) => r.id))].sort()).toEqual(["r1", "r2", "r3"]);
+    const events = readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events[0]).toMatchObject({ type: "start", model: { name: "subscription", route: "chatgpt", local: false } });
+    const diffs = events.filter((event) => event.type === "diff");
+    expect(diffs.length).toBeGreaterThan(0);
+    expect(diffs.every((event) => event.error === undefined && event.dropped.length === 0)).toBe(true);
+    expect(readFileSync(join(dir, "map.md"), "utf8")).toContain("採用の進め方");
+    expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+  }));
+
+  it.live.each([
+    { condition: "未サインイン", reason: /サインイン.*(してい|ありません|必要)|未.*サインイン/ },
+    { condition: "更新不能の期限切れ", reason: /期限|トークン.*(切れ|更新)|再.*サインイン/ },
+    { condition: "対象外プラン", reason: /Plus|Pro|プラン|対象外|利用資格/ },
+  ])("invChatgptNeedsSignIn・invRefusedIsInert: start は $condition を2行で拒否し、認証後は同じ入口で開始する", ({ condition, reason }) => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessions = join(root, "sessions");
+    const home = join(root, "home");
+    const config = join(root, "config.json");
+    writeFileSync(config, JSON.stringify({ models: { subscription: CHATGPT_MODEL_DEFINITION } }));
+    const oauth = yield* fakeChatgptOAuth({}).pipe(Effect.provide(NodeHttpClient.layerFetch));
+    const authPath = chatgptAuthPath(home);
+    if (condition !== "未サインイン") {
+      mkdirSync(dirname(authPath), { recursive: true });
+      writeFileSync(authPath, JSON.stringify(chatgptCredentials(condition === "更新不能の期限切れ" ? 0 : Date.now() + 3_600_000)), { mode: 0o600 });
+    }
+    oauth.control.refreshExpired = condition === "更新不能の期限切れ";
+    oauth.control.ineligible = condition === "対象外プラン";
+    const launches: string[][] = [];
+    const helpers = Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+      launches.push([...args]);
+      const queue = yield* Queue.make<string, Cause.Done>();
+      const exited = yield* Deferred.make<HelperExitInfo>();
+      const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
+      yield* Effect.addFinalizer(() => stop);
+      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]) };
+    }) }));
+    const deps = dependencies(sessions, "0", { HOME: home, LIVE_MINDMAP_CONFIG: config });
+    const preparation = Layer.mergeAll(deps.layer, Layer.succeed(HttpClient.HttpClient, oauth.client));
+    const server = yield* startedServer({ port: 0, sessionsDir: sessions }, {
+      helpers, managedDeps: forbiddenManagedDeps,
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(preparation)),
+    });
+    const snapshots: Snapshot[] = [];
+    yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<WebSocket>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+      socket.addEventListener("message", (event) => { const frame = JSON.parse(String(event.data)); if (Array.isArray(frame.nodes)) snapshots.push(frame); });
+      socket.addEventListener("open", () => resolve(socket), { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    })), (socket) => Effect.sync(() => socket.close()));
+    const denied = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ app: "us.zoom.xos", audio: false, screen: false, model: CHATGPT_MODEL }),
+    }));
+    expect(denied.status).toBe(403);
+    expect(oauth.responses).toEqual([]);
+    const cliDeps = dependencies(sessions, String(server.port), { HOME: home, LIVE_MINDMAP_CONFIG: config });
+    const result = yield* Effect.result(chatgptRun(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--model", "subscription"], cliDeps, oauth));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("利用不能な ChatGPT で開始しました");
+    const lines = String(result.failure).split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(reason);
+    expect(lines[1]).toContain("live-mindmap login chatgpt");
+    expect(launches).toEqual([]);
+    expect(existsSync(sessions)).toBe(false);
+    expect(snapshots).toEqual([]);
+    expect(oauth.browserCommands).toEqual([]);
+    expect(cliDeps.stdout).toEqual([]);
+    if (condition === "更新不能の期限切れ") expect(oauth.exchanges).toHaveLength(1);
+    if (condition === "対象外プラン") expect(oauth.responses).toHaveLength(1);
+    oauth.control.refreshExpired = false;
+    oauth.control.ineligible = false;
+    yield* chatgptRun(["login", "chatgpt"], cliDeps, oauth);
+    yield* chatgptRun(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--model", "subscription"], cliDeps, oauth);
+    expect(launches).toHaveLength(1);
+    expect(readdirSync(sessions)).toEqual(expect.arrayContaining([expect.any(String)]));
+    yield* Effect.promise(() => vi.waitFor(() => expect(snapshots).toHaveLength(1)));
+    yield* chatgptRun(["stop"], cliDeps, oauth);
+    yield* server.close;
+  }));
+});
+
+const CHATGPT_MODEL_DEFINITION = { route: "chatgpt", model: CHATGPT_MODEL.model, images: false };
+
 // play を 1 回流し、セッションのフォルダと出力したパスを返す
 const played = (deps: ReturnType<typeof dependencies>) => Effect.gen(function* () {
   yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
@@ -142,7 +341,7 @@ describe("CLI", () => {
       expect(entries.fast).toEqual(["Claude", "-", expect.stringContaining("はい")]);
       expect(entries.apple).toEqual(["子プロセス", "はい", expect.stringMatching(/いいえ.*まだ/)]);
       expect(entries.ollama).toEqual(["OpenAI 互換", "-", expect.stringContaining("はい")]);
-      expect(entries.subscription).toEqual(["ChatGPT", "-", expect.stringMatching(/いいえ.*まだ/)]);
+      expect(entries.subscription).toEqual(["ChatGPT", "-", expect.stringContaining("はい")]);
       expect(external.openClaudeUpdater).not.toHaveBeenCalled();
       expect(external.openListener).not.toHaveBeenCalled();
       expect(existsSync(sessions)).toBe(false);
@@ -215,7 +414,7 @@ describe("CLI", () => {
       expect(deps.stdout.join("")).toBe("/fake/session\n");
     }));
 
-    it.effect("play の未対応モデルは待受け・updater・フォルダ生成より前に拒む", () => Effect.gen(function* () {
+    it.effect("play の未サインイン ChatGPT は待受け・updater・フォルダ生成より前に拒む", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const sessions = join(root, "sessions");
       const config = join(root, "models.json");
@@ -224,7 +423,12 @@ describe("CLI", () => {
 
       const result = yield* Effect.result(runCli(["play", fixture, "--model", "subscription"]).pipe(Effect.provide(deps.layer)));
       expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(String(result.failure)).toMatch(/まだ/);
+      if (Result.isFailure(result)) {
+        const lines = String(result.failure).split("\n");
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toMatch(/サインイン.*(してい|ありません|必要)|未.*サインイン/);
+        expect(lines[1]).toContain("live-mindmap login chatgpt");
+      }
       expect(external.openListener).not.toHaveBeenCalled();
       expect(external.openClaudeUpdater).not.toHaveBeenCalled();
       expect(existsSync(sessions)).toBe(false);

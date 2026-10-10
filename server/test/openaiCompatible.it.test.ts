@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Result, Schema, Stream, type Cause } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, FileSystem, Layer, Queue, Result, Schema, Stream, type Cause } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { JsonExport, type ExportNode } from "../src/core/index.ts";
@@ -23,7 +23,7 @@ import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTrans
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const listener = vi.hoisted(() => ({ open: vi.fn() }));
-const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient> = prepare;
+const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem> = prepare;
 vi.mock("../src/http.ts", async (original) => {
   const { fakeListener } = await import("./fakeListener.ts");
   const actual = await original<typeof import("../src/http.ts")>();

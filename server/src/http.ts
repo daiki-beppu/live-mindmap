@@ -113,7 +113,7 @@ const startSession = Effect.gen(function* () {
   );
   const result = acceptTransferredModel(body.model ?? defaultClaude);
   if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
-  if (body.model?.route === "openai-compatible") {
+  if (body.model?.route === "openai-compatible" || body.model?.route === "chatgpt") {
     const token = yield* ModelTransferToken;
     const request = yield* HttpServerRequest.HttpServerRequest;
     if (!matchesModelTransferToken(token, request.headers[MODEL_TRANSFER_HEADER])) return yield* new ForbiddenModelTransfer();
