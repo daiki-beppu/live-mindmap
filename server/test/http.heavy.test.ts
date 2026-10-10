@@ -204,9 +204,11 @@ describe("HTTP と両upgradeの共通Origin制限（要件2・13・24）", () =>
         expect(yield* Effect.tryPromise(() => response.json())).toEqual(apps);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', origin))).status).toBe(200);
         const clients = [yield* connect(r.server.port, "/", origin), yield* connect(r.server.port, "/ws", origin)];
+        // マップのほかに、差分更新の状態（type: "diff-update"）も接続時に届く。ここで確かめるのはマップだけ
+        const map = { nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }], round: 0, changes: [], remarks: [] };
         for (const c of clients) {
-          yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toHaveLength(1), { timeout: 10_000 }));
-          expect(c.frames[0]).toEqual({ nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }], round: 0, changes: [], remarks: [] });
+          yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual(map), { timeout: 10_000 }));
+          expect(c.frames.filter((frame) => !(typeof frame === "object" && frame !== null && "type" in frame))).toEqual([map]);
         }
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, origin))).status).toBe(200);
         for (const c of clients) yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "intake", status: "none" }), { timeout: 10_000 }));
@@ -219,7 +221,7 @@ describe("HTTP と両upgradeの共通Origin制限（要件2・13・24）", () =>
           const r = yield* resource();
           expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
           const withoutOrigin = yield* connect(r.server.port, path, undefined);
-          yield* Effect.tryPromise(() => vi.waitFor(() => expect(withoutOrigin.frames).toHaveLength(1), { timeout: 10_000 }));
+          yield* Effect.tryPromise(() => vi.waitFor(() => expect(withoutOrigin.frames).toContainEqual(expect.objectContaining({ round: 0 })), { timeout: 10_000 }));
           const response = yield* Effect.tryPromise(() => r.request("GET", "/apps", undefined, origin));
           expect(response.status).toBe(403);
           expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: "許可されていない Origin です" });
