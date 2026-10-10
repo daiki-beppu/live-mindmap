@@ -244,6 +244,12 @@ importers:
 
   web:
     dependencies:
+      '@effect/platform-browser':
+        specifier: 4.0.1
+        version: 4.0.1(effect@4.0.1)
+      '@foldkit/ui':
+        specifier: 0.167.0
+        version: 0.167.0(effect@4.0.1)(foldkit@0.167.0(@effect/platform-browser@4.0.1(effect@4.0.1))(effect@4.0.1))
       '@tanstack/hotkeys':
         specifier: 0.11.0
         version: 0.11.0
@@ -256,6 +262,12 @@ importers:
       '@xyflow/react':
         specifier: ^12.12.0
         version: 12.12.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      effect:
+        specifier: 4.0.1
+        version: 4.0.1
+      foldkit:
+        specifier: 0.167.0
+        version: 0.167.0(@effect/platform-browser@4.0.1(effect@4.0.1))(effect@4.0.1)
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -278,6 +290,9 @@ importers:
       vite:
         specifier: ^8.3.2
         version: 8.3.2(@types/node@26.6.4)
+      vite-plugin-singlefile:
+        specifier: ^2.3.3
+        version: 2.3.3(vite@8.3.2(@types/node@26.6.4))
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@types/node@26.6.4)(vite@8.3.2(@types/node@26.6.4))
@@ -390,6 +405,11 @@ packages:
     peerDependencies:
       e2e: '>=0.18.0 <1'
 
+  '@effect/platform-browser@4.0.1':
+    resolution: {integrity: sha512-RsnobWEnffdkRH/wZ3ARIAgMxtGLyfrD0R3iVS+dwQCdYrSbotlJHEoVHEgzcOn5RzMsHG6FHkfdgRMwvcM7kg==}
+    peerDependencies:
+      effect: ^4.0.1
+
   '@effect/platform-node-shared@4.0.1':
     resolution: {integrity: sha512-VanaejudEhKJ4mpmqnEzdncVUhN6sGSO9ZDND54mRxAlZxj+4dYAWjDTYAy9o4tJo9aALeP2U8cVcOFzEdSeLg==}
     engines: {node: '>=18.0.0'}
@@ -447,6 +467,22 @@ packages:
     peerDependencies:
       effect: ^4.0.1
       vitest: '>=5.0.0 <6.0.0'
+
+  '@floating-ui/core@1.8.0':
+    resolution: {integrity: sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==}
+
+  '@floating-ui/dom@1.8.0':
+    resolution: {integrity: sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg==}
+
+  '@floating-ui/utils@0.2.12':
+    resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@foldkit/ui@0.167.0':
+    resolution: {integrity: sha512-4u87Gahg1dHBNqh4bJmB2JEBg8mDd5FUb4JEH5odUc9LP2w15cWAXssbIpcBR8HwUTow+LdTLLe6FoITTeenxQ==}
+    engines: {node: '>=18.0.0'}
+    peerDependencies:
+      effect: 4.0.0
+      foldkit: '>=0.167.0'
 
   '@hono/node-server@2.1.3':
     resolution: {integrity: sha512-TA//nWMqPhbfdfneACk6t5a9eqbS9lABEPyKn0/xZTah3H3U2XaVg85rJFl0/Fyit0I552YDHgXGVSf3GwqbUw==}
@@ -1377,6 +1413,10 @@ packages:
     resolution: {integrity: sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==}
     engines: {node: '>= 0.8'}
 
+  entities@8.1.0:
+    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
+    engines: {node: '>=20.19.0'}
+
   es-define-property@1.0.1:
     resolution: {integrity: sha512-e3nRfgfUZ4rNGL232gUgX06QNyyez04KdjFrF+LTRoOXmrOgFKDg4BCdsjW8EnT69eqdYGmRpJwiPVYNrCaW3g==}
     engines: {node: '>= 0.4'}
@@ -1458,6 +1498,13 @@ packages:
   finalhandler@2.1.1:
     resolution: {integrity: sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==}
     engines: {node: '>= 18.0.0'}
+
+  foldkit@0.167.0:
+    resolution: {integrity: sha512-5F89USZZdUsdau0ecPDDfIIXS+LM0+rya03KSdXjNOJfmuoR/vtQbnMKR3XQJKvS3UV9X+1RoBrr2WdBu0PHjw==}
+    engines: {node: '>=20.19.0'}
+    peerDependencies:
+      '@effect/platform-browser': 4.0.0
+      effect: 4.0.0
 
   forwarded@0.2.0:
     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
@@ -1686,6 +1733,9 @@ packages:
   oxc-transform@0.152.0:
     resolution: {integrity: sha512-9rs8qImolzWswXGlhmye9Yz9Mce9hOe4Pivb7rSEhF/6VKn1Q122BUe9Mr1O9xQAoBX+SrF6xXfdgxKHeQf+uQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
+
+  parse5@8.0.1:
+    resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
 
   parseurl@1.3.3:
     resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
@@ -2144,6 +2194,10 @@ snapshots:
       e2e: 0.18.0(@ai-sdk/openai@4.0.86(zod@4.6.5))(ai@7.0.130(zod@4.6.5))
       playwright-core: 1.63.0
 
+  '@effect/platform-browser@4.0.1(effect@4.0.1)':
+    dependencies:
+      effect: 4.0.1
+
   '@effect/platform-node-shared@4.0.1(effect@4.0.1)':
     dependencies:
       '@types/ws': 8.18.2
@@ -2198,6 +2252,23 @@ snapshots:
     dependencies:
       effect: 4.0.1
       vitest: 5.0.3(@types/node@26.6.4)(vite@8.3.2(@types/node@26.6.4))
+
+  '@floating-ui/core@1.8.0':
+    dependencies:
+      '@floating-ui/utils': 0.2.12
+
+  '@floating-ui/dom@1.8.0':
+    dependencies:
+      '@floating-ui/core': 1.8.0
+      '@floating-ui/utils': 0.2.12
+
+  '@floating-ui/utils@0.2.12': {}
+
+  '@foldkit/ui@0.167.0(effect@4.0.1)(foldkit@0.167.0(@effect/platform-browser@4.0.1(effect@4.0.1))(effect@4.0.1))':
+    dependencies:
+      '@floating-ui/dom': 1.8.0
+      effect: 4.0.1
+      foldkit: 0.167.0(@effect/platform-browser@4.0.1(effect@4.0.1))(effect@4.0.1)
 
   '@hono/node-server@2.1.3(hono@4.13.12)':
     dependencies:
@@ -2838,6 +2909,8 @@ snapshots:
 
   encodeurl@2.0.0: {}
 
+  entities@8.1.0: {}
+
   es-define-property@1.0.1: {}
 
   es-errors@1.3.0: {}
@@ -2939,6 +3012,12 @@ snapshots:
       statuses: 2.0.2
     transitivePeerDependencies:
       - supports-color
+
+  foldkit@0.167.0(@effect/platform-browser@4.0.1(effect@4.0.1))(effect@4.0.1):
+    dependencies:
+      '@effect/platform-browser': 4.0.1(effect@4.0.1)
+      effect: 4.0.1
+      parse5: 8.0.1
 
   forwarded@0.2.0: {}
 
@@ -3155,6 +3234,10 @@ snapshots:
       '@oxc-transform/binding-win32-arm64-msvc': 0.152.0
       '@oxc-transform/binding-win32-ia32-msvc': 0.152.0
       '@oxc-transform/binding-win32-x64-msvc': 0.152.0
+
+  parse5@8.0.1:
+    dependencies:
+      entities: 8.1.0
 
   parseurl@1.3.3: {}
 

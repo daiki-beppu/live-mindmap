@@ -3,3 +3,10 @@ packages:
   - server
   - helper
   - e2e
+
+# 試作（prototype/foldkit-review）: Foldkit 0.167.0 の peer（effect・@effect/platform-browser 4.0.0 exact）を、server と同じ 4.0.1 で満たす
+peerDependencyRules:
+  allowedVersions:
+    foldkit>effect: 4.0.1
+    foldkit>@effect/platform-browser: 4.0.1
+    "@foldkit/ui>effect": 4.0.1
