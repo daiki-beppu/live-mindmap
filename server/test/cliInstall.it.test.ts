@@ -20,7 +20,7 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     helpers: Layer.succeed(Helpers, Helpers.of({ apps: Effect.die("apps は対象外"), launch: () => Effect.die("launch は対象外") })),
-    sessionSinks: SessionSinks.layer({ updaterLayer: () => updaterLayer(() => Effect.succeed({ ops: [] })) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });
 });
@@ -46,7 +46,7 @@ describe("CLI install とサーバー", () => {
       LIVE_MINDMAP_DEPS: configured, LIVE_MINDMAP_SESSIONS: join(dir, "sessions"),
     })));
     const options = { port: 0, sessionsDir: join(dir, "sessions"), depsDir, helper: { command: process.execPath, args: [] },
-      updaterLayer: () => updaterLayer(() => Effect.succeed({ ops: [] })) };
+      prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
     const server = yield* startedServer(options, realLayers(options, fakeExportServices()));
     const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=chromium`));
     expect(response.status).toBe(200);

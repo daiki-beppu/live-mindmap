@@ -227,8 +227,9 @@ const requestServer = Effect.fnUntraced(function* <A>(
   path: string,
   schema: Schema.Decoder<A>,
   body?: object,
+  headers?: Record<string, string>,
 ) {
-  const response = yield* executeServerRequest(port, method, path, body);
+  const response = yield* executeServerRequest(port, method, path, body, headers);
   // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
   const parsed = yield* response.text.pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),

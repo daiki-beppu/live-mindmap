@@ -20,6 +20,7 @@ import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTransferToken.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const listener = vi.hoisted(() => ({ open: vi.fn() }));
 const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient> = prepare;
@@ -152,7 +153,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
       Layer.provide(Layer.merge(fakeExportServices(), NodeHttpClient.layerUndici)),
     );
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
-      helpers, sessionSinks: sinks,
+      helpers, sessionSinks: sinks, managedDeps: forbiddenManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, provider));
     const token = readFileSync(modelTransferTokenPath(join(root, "sessions"), server.port), "utf8");
     const { WebSocket } = yield* Effect.promise(() => import("ws"));

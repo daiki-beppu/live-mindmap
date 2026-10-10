@@ -12,6 +12,7 @@ import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const directory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-compatible-process-"))),
@@ -92,6 +93,7 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
       helpers,
       sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.merge(fakeExportServices(), NodeHttpClient.layerUndici))),
+      managedDeps: forbiddenManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({ SYNTHETIC_PROCESS_KEY: "synthetic-key" })));
     const config = join(root, "config.json");
     writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "synthetic-model", url: `http://127.0.0.1:${port}/v1`, apiKeyEnv: "SYNTHETIC_PROCESS_KEY", maxTokens: 321, extraBody: { seed: 17 } } } }));

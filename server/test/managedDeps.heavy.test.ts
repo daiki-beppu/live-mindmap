@@ -13,7 +13,7 @@ describe("管理 Chromium の実導入", () => {
   it.live("本物の npm ci と Playwright で一時ルートに固定版と headless shell を入れて ready にする", () => Effect.gen(function* () {
     const root = yield* temporaryDeps;
     const options = { port: 0, sessionsDir: join(root, "sessions"), depsDir: root,
-      helper: { command: process.execPath, args: [] }, updaterLayer: () => updaterLayer(() => Effect.succeed({ ops: [] })) };
+      helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
     const server = yield* startedServer(options, realLayers(options, fakeExportServices()));
     const result = yield* Effect.tryPromise(() => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       execFile("pnpm", ["cli", "install", "chromium"], {
