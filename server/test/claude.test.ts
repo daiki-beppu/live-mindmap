@@ -849,32 +849,29 @@ describe("system プロンプト: 議題の立て方・入れ子・目安・閉�
       expect(section).toContain("議題にも論点にもしない");
     }));
 
-  it.effect("議題の入れ子: 先に親の議題を立てる・気づかず直下に立てた 1 つ目だけ move・新しい議題の代わりではない", () =>
+  it.effect("議題の入れ子: 先に親の議題を立てる・新しい議題の代わりではない。既存ノードの move は許可しない", () =>
     Effect.gen(function* () {
       const sys = yield* systemPrompt;
       const section = sectionOf(sys, "## 議題の入れ子");
 
-      for (const part of ["先に親の議題", "1 つ目だけ move", "新しい議題"]) expect(section, part).toContain(part);
+      for (const part of ["先に親の議題", "新しい議題"]) expect(section, part).toContain(part);
+      expect(section).not.toContain("move");
     }));
 
-  it.effect("目安: 1 つの議題の話し中の部分は 15〜20 ノード・兄弟は 5 つまで・上限を守るための move はしない。深さの目安は置かない", () =>
+  it.effect("目安: 兄弟の 5 は上限ではない。深さの目安は置かない", () =>
     Effect.gen(function* () {
       const sys = yield* systemPrompt;
       const section = sectionOf(sys, "## 目安");
 
-      for (const part of ["15〜20", "5 つまで", "上限を守るための move はしない"]) expect(section, part).toContain(part);
+      expect(section).not.toContain("5 つまで");
       expect(section).not.toMatch(/深さ.{0,6}(まで|以内|目安)/);
     }));
 
-  it.effect("目安: 上限を超えそうなときは新しい要点を最も近い兄弟の子として add する。要点は close できない。議題の一覧に上限に近い親が出る（#167）", () =>
+  it.effect("置き換えた旧い規則（右に伸ばす・最も近い兄弟の子として add・要点は close できない・上限を守るための move）は書かれていない", () =>
     Effect.gen(function* () {
       const sys = yield* systemPrompt;
-      const section = sectionOf(sys, "## 目安");
 
-      for (const part of ["新しい要点", "最も近い兄弟", "add", "要点は close できない", "議題の一覧"]) expect(section, part).toContain(part);
-      // 「最も近い兄弟の子」と add が同じ文の中にある
-      expect(section.split(/[。\n]/).some((s) => s.includes("最も近い兄弟") && s.includes("子") && s.includes("add"))).toBe(true);
-      expect(count(sys, "要点は close できない")).toBe(1);
+      for (const old of ["右に伸ば", "最も近い兄弟", "要点は close できない", "上限を守るための move", "話し中の兄弟は、種別によらず 5 つまで"]) expect(sys, old).not.toContain(old);
     }));
 
   it.effect("閉じるの出し方: 毎回見直す・移ったばかりの応答では前の議題を閉じない・時刻は判断の材料・迷うときは閉じないは 1 か所だけ", () =>
@@ -953,12 +950,10 @@ describe("system プロンプト: 補足は子の要点に置き、本文の書�
       expect(sys).toContain("その要点の本文を update で置き換える");
     }));
 
-  it.effect("兄弟の上限の文面は #172 の 1 か所のまま重ねて書かず、会議の種類の判定やモードの語は入らない", () =>
+  it.effect("会議の種類の判定やモードの語は入らない", () =>
     Effect.gen(function* () {
       const sys = yield* systemPrompt;
 
-      expect(count(sys, "話し中の兄弟は、種別によらず 5 つまで")).toBe(1);
-      expect(count(sys, "上限を守るための move はしない")).toBe(1);
       for (const word of ["講演モード", "モードを", "会議の種類を判定", "講演形式の場合"]) expect(sys, word).not.toContain(word);
     }));
 });
@@ -1104,11 +1099,12 @@ describe("毎回のメッセージの議題の一覧", () => {
     expect(list).toContain("  - n4 議題B（話し中 1 ノード・最後に触れた 10 分）");
   });
 
-  it("目安の数字が出る: 1 つの議題の話し中の部分は 15〜20 ノード・兄弟は種別によらず 5 つまで", () => {
+  it("目安の 1 行に 15〜20 と合図が出て、「上限」の語は一覧のどこにも出ない", () => {
     const list = listOf(closed).join("\n");
 
     expect(list).toContain("15〜20");
-    expect(list).toContain("5 つまで");
+    expect(list).toContain("合図");
+    expect(list).not.toContain("上限");
   });
 
   it("話し中の議題が無いマップでは、一覧は（なし）で、目安は出る", () => {
@@ -1239,6 +1235,281 @@ describe("毎回のメッセージの議題の一覧", () => {
       // 話し中の子が最も多い親でも 3 つの既存のマップでは、見出し・議題の 4 行・目安の 1 行のほかに行は足されない
       // listOf は一覧の後ろの空行も含むので、空行を除いて数える
       expect(listOf(closed).filter((l) => l !== "")).toHaveLength(1 + 4 + 1);
+    });
+  });
+
+  // 目安（20 ノード）を超えたものの名指し（#843）。数は #840 の数え方。名指しの行は、議題の木の行（「- n1 」始まり）以外で対象の id を含む行として探し、
+  // id・数（「N ノード」）・一番近い議題の id だけを確かめる。文面の一言一句は決めない
+  describe("目安を超えた議題・論点・案・課題・要点の名指し", () => {
+    type Spec = { ref: string; parent: string; kind: "議題" | "論点" | "案" | "課題" | "要点"; text: string };
+    const build = (specs: Spec[], closeTexts: string[] = []) => {
+      const added = applyOps(emptyMap("定例"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 });
+      expect(added.dropped).toEqual([]);
+      if (closeTexts.length === 0) return added.map;
+      const ids = closeTexts.map((t) => idOf(added.map, t));
+      const r = applyOps(added.map, ids.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 });
+      expect(r.dropped).toEqual([]);
+      expect(ids.every((id) => r.map.nodes[id]!.talkStatus === "済み")).toBe(true);
+      return r.map;
+    };
+    const idOf = (map: MeetingMap, text: string) => {
+      const hit = Object.values(map.nodes).filter((n) => n.text === text);
+      expect(hit, text).toHaveLength(1);
+      return hit[0]!.id;
+    };
+    const kids = (parent: string, kind: Spec["kind"], prefix: string, n: number): Spec[] =>
+      Array.from({ length: n }, (_, i) => ({ ref: `${prefix}${i}`, parent, kind, text: `${prefix}${i}` }));
+    const idIn = (line: string, id: string) => new RegExp(`(?<![\\w])${id}(?![\\w])`).test(line);
+    // 議題の木の行・見出し・目安の 1 行・（なし）を除いた、名指しの行
+    const namedRows = (map: MeetingMap) => listOf(map).filter((l) => l !== "" && !l.startsWith("##") && !l.startsWith("目安") && l !== "（なし）" && !/^ *- n\d+ /.test(l));
+    // 「N ノード」の行で id を含むもの（兄弟の合図の行は「話し中の子 N」で、ノード数を持たない）
+    const sizedRow = (map: MeetingMap, id: string) => namedRows(map).find((l) => idIn(l, id) && /\d+ ノード/.test(l));
+    const sizeOf = (line: string) => Number(line.match(/(\d+) ノード/)?.[1]);
+
+    describe("議題", () => {
+      it("話し中の部分が 21 ノードの議題は id と数 21 で名指しされ、20 ノードの議題は名指しされない", () => {
+        const map = build([
+          { ref: "big", parent: "root", kind: "議題", text: "大きい議題" }, ...kids("big", "要点", "b", 21),
+          { ref: "edge", parent: "root", kind: "議題", text: "ちょうどの議題" }, ...kids("edge", "要点", "e", 20),
+        ]);
+        const row = sizedRow(map, idOf(map, "大きい議題"));
+
+        expect(row).toBeDefined();
+        expect(sizeOf(row!)).toBe(21);
+        expect(sizedRow(map, idOf(map, "ちょうどの議題"))).toBeUndefined();
+      });
+
+      it("論点の配下と子の議題の下は数に入らない: 論点に 30 の案、子の議題に 30 の要点があっても、親の議題（直下は論点・要点 1 つ・子の議題）は名指しされない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "親の議題" },
+          { ref: "p", parent: "t", kind: "論点", text: "論点P" }, ...kids("p", "案", "a", 30),
+          { ref: "k", parent: "t", kind: "要点", text: "要点K" },
+          { ref: "c", parent: "t", kind: "議題", text: "子の議題" }, ...kids("c", "要点", "c", 30),
+        ]);
+
+        expect(sizedRow(map, idOf(map, "親の議題"))).toBeUndefined();
+      });
+
+      it("子の議題は自分の話し中の部分で数える: 子の議題だけが 21 ノードなら、子の議題が名指しされ、親の議題は名指しされない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "親の議題" },
+          { ref: "c", parent: "t", kind: "議題", text: "子の議題" }, ...kids("c", "要点", "c", 21),
+        ]);
+
+        expect(sizedRow(map, idOf(map, "親の議題"))).toBeUndefined();
+        const row = sizedRow(map, idOf(map, "子の議題"));
+        expect(row).toBeDefined();
+        expect(sizeOf(row!)).toBe(21);
+      });
+
+      it("済みの議題は名指しされない（一覧に出ない）", () => {
+        const map = build([{ ref: "t", parent: "root", kind: "議題", text: "済みの大きい議題" }, ...kids("t", "要点", "k", 25)], ["済みの大きい議題"]);
+
+        expect(namedRows(map).some((l) => idIn(l, idOf(map, "済みの大きい議題")) && /\d+ ノード/.test(l))).toBe(false);
+      });
+    });
+
+    describe("論点", () => {
+      it("話し中の部分が 21 の論点は id と数 21 で名指しされ、20 の論点は名指しされない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "big", parent: "t", kind: "論点", text: "大きい論点" }, ...kids("big", "案", "b", 21),
+          { ref: "edge", parent: "t", kind: "論点", text: "ちょうどの論点" }, ...kids("edge", "案", "e", 20),
+        ]);
+        const row = sizedRow(map, idOf(map, "大きい論点"));
+
+        expect(row).toBeDefined();
+        expect(sizeOf(row!)).toBe(21);
+        expect(sizedRow(map, idOf(map, "ちょうどの論点"))).toBeUndefined();
+      });
+
+      it("派生の論点の配下は親の論点に数えない: 案 19 と派生の論点 1 つ（その下に案 30）の論点は 20 で名指しされず、派生の論点が自分の 30 で名指しされる", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "p", parent: "t", kind: "論点", text: "元の論点" }, ...kids("p", "案", "a", 19),
+          { ref: "q", parent: "p", kind: "論点", text: "派生の論点" }, ...kids("q", "案", "d", 30),
+        ]);
+
+        expect(sizedRow(map, idOf(map, "元の論点"))).toBeUndefined();
+        const row = sizedRow(map, idOf(map, "派生の論点"));
+        expect(row).toBeDefined();
+        expect(sizeOf(row!)).toBe(30);
+      });
+
+      it("済みの論点の配下は親の論点に数えない: 案 19 と済みの子の論点 1 つ（その下に案 30）の論点は名指しされない。済みの論点自身も名指しされない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "p", parent: "t", kind: "論点", text: "元の論点" }, ...kids("p", "案", "a", 19),
+          { ref: "q", parent: "p", kind: "論点", text: "済みの子の論点" }, ...kids("q", "案", "d", 30),
+        ], ["済みの子の論点"]);
+
+        expect(sizedRow(map, idOf(map, "元の論点"))).toBeUndefined();
+        expect(sizedRow(map, idOf(map, "済みの子の論点"))).toBeUndefined();
+      });
+    });
+
+    describe("案・課題・要点", () => {
+      it("配下が 21 の要点は、id・数 21・一番近い議題の id とともに名指しされる。20 の要点は名指しされない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "big", parent: "t", kind: "要点", text: "大きい要点" }, ...kids("big", "要点", "b", 21),
+          { ref: "edge", parent: "t", kind: "要点", text: "ちょうどの要点" }, ...kids("edge", "要点", "e", 20),
+        ]);
+        const row = sizedRow(map, idOf(map, "大きい要点"));
+
+        expect(row).toBeDefined();
+        expect(sizeOf(row!)).toBe(21);
+        expect(idIn(row!, idOf(map, "議題T"))).toBe(true);
+        expect(sizedRow(map, idOf(map, "ちょうどの要点"))).toBeUndefined();
+      });
+
+      it("課題と案も同じ境目で名指しされる（それぞれ一番近い議題の id つき）", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "i", parent: "t", kind: "課題", text: "大きい課題" }, ...kids("i", "要点", "i", 21),
+          { ref: "p", parent: "t", kind: "論点", text: "論点P" },
+          { ref: "a", parent: "p", kind: "案", text: "大きい案" }, ...kids("a", "要点", "a", 21),
+        ]);
+
+        for (const text of ["大きい課題", "大きい案"]) {
+          const row = sizedRow(map, idOf(map, text));
+          expect(row, text).toBeDefined();
+          expect(sizeOf(row!), text).toBe(21);
+          expect(idIn(row!, idOf(map, "議題T")), text).toBe(true);
+        }
+      });
+
+      it("入れ子の山は超えたものすべてが出る: 親の要点（配下 42）と、その子の要点（配下 21）の両方が名指しされる", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "outer", parent: "t", kind: "要点", text: "外側の要点" }, ...kids("outer", "要点", "o", 21),
+          { ref: "inner", parent: "o0", kind: "要点", text: "内側の要点" }, ...kids("inner", "要点", "in", 21),
+        ]);
+        const outer = sizedRow(map, idOf(map, "外側の要点"));
+        const inner = sizedRow(map, idOf(map, "内側の要点"));
+
+        expect(outer).toBeDefined();
+        expect(sizeOf(outer!)).toBe(43);
+        expect(inner).toBeDefined();
+        expect(sizeOf(inner!)).toBe(21);
+        for (const row of [outer!, inner!]) expect(idIn(row, idOf(map, "議題T"))).toBe(true);
+      });
+
+      it("一番近い議題の id が付く: 子の議題の下の山には子の議題の id が付き、親の議題の id は付かない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "親の議題" },
+          { ref: "c", parent: "t", kind: "議題", text: "子の議題" },
+          { ref: "big", parent: "c", kind: "要点", text: "大きい要点" }, ...kids("big", "要点", "b", 21),
+        ]);
+        const row = sizedRow(map, idOf(map, "大きい要点"));
+
+        expect(row).toBeDefined();
+        expect(idIn(row!, idOf(map, "子の議題"))).toBe(true);
+        expect(idIn(row!, idOf(map, "親の議題"))).toBe(false);
+      });
+
+      it("論点は 1 と数えて下をたどらない: 要点の配下の論点に 30 の案があっても要点の数は 1 で、論点だけが名指しされる", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "k", parent: "t", kind: "要点", text: "要点K" },
+          { ref: "p", parent: "k", kind: "論点", text: "配下の論点" }, ...kids("p", "案", "a", 30),
+        ]);
+
+        expect(sizedRow(map, idOf(map, "要点K"))).toBeUndefined();
+        expect(sizedRow(map, idOf(map, "配下の論点"))).toBeDefined();
+      });
+
+      it("済みの議題の下の山は出ない。済みの論点の下の山も出ない", () => {
+        const closedTopic = build([
+          { ref: "t", parent: "root", kind: "議題", text: "済みの議題" },
+          { ref: "big", parent: "t", kind: "要点", text: "議題の下の山" }, ...kids("big", "要点", "b", 21),
+        ], ["済みの議題"]);
+        const closedPoint = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "p", parent: "t", kind: "論点", text: "済みの論点" },
+          { ref: "big", parent: "p", kind: "要点", text: "論点の下の山" }, ...kids("big", "要点", "b", 21),
+        ], ["済みの論点"]);
+
+        expect(sizedRow(closedTopic, idOf(closedTopic, "議題の下の山"))).toBeUndefined();
+        expect(sizedRow(closedPoint, idOf(closedPoint, "論点の下の山"))).toBeUndefined();
+      });
+    });
+
+    describe("兄弟の合図", () => {
+      it("話し中の子が 5 つの親は id と話し中の子の数 5 で名指しされ、一覧に「上限」の語が出ない。4 つの親は出ない", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "five", parent: "t", kind: "要点", text: "5 つの親" }, ...kids("five", "要点", "f", 5),
+          { ref: "four", parent: "t", kind: "要点", text: "4 つの親" }, ...kids("four", "要点", "g", 4),
+        ]);
+        const row = namedRows(map).find((l) => idIn(l, idOf(map, "5 つの親")));
+
+        expect(row).toBeDefined();
+        expect(Number(row!.match(/話し中の子 (\d+)/)?.[1])).toBe(5);
+        expect(namedRows(map).some((l) => idIn(l, idOf(map, "4 つの親")))).toBe(false);
+        expect(listOf(map).join("\n")).not.toContain("上限");
+      });
+
+      it("6 つを超えた親でも「上限」の語は出ず、合図の語で名指しされる", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "six", parent: "t", kind: "要点", text: "6 つの親" }, ...kids("six", "要点", "s", 6),
+        ]);
+        const text = listOf(map).join("\n");
+
+        expect(namedRows(map).some((l) => idIn(l, idOf(map, "6 つの親")) && l.includes("合図"))).toBe(true);
+        expect(text).not.toContain("上限");
+      });
+    });
+
+    describe("目安を超えないときと並び", () => {
+      it("どれも目安（議題・論点・山 20 ノード、兄弟 5）に届かないマップでは名指しの行が出ない: 見出し・議題の木・目安の 1 行だけ", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "p", parent: "t", kind: "論点", text: "論点P" }, ...kids("p", "案", "a", 4),
+          { ref: "k", parent: "t", kind: "要点", text: "要点K" }, ...kids("k", "要点", "k", 4),
+        ]);
+
+        expect(namedRows(map)).toEqual([]);
+        expect(listOf(map).filter((l) => l !== "")).toHaveLength(1 + 1 + 1);
+      });
+
+      it("名指しの並びは 議題の木 → 議題 → 論点 → 案・課題・要点 → 兄弟の合図 → 目安の 1 行", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "混んだ議題" },
+          { ref: "p", parent: "t", kind: "論点", text: "大きい論点" }, ...kids("p", "案", "a", 21),
+          { ref: "k", parent: "t", kind: "要点", text: "大きい要点" }, ...kids("k", "要点", "k", 21),
+          ...kids("t", "要点", "t", 5),
+        ]);
+        const lines = listOf(map).filter((l) => l !== "");
+        const at = (pred: (l: string) => boolean) => lines.findIndex(pred);
+        const sized = (text: string) => at((l) => !/^ *- n\d+ /.test(l) && idIn(l, idOf(map, text)) && /\d+ ノード/.test(l));
+        const order = [
+          at((l) => /^ *- n\d+ /.test(l)),
+          sized("混んだ議題"),
+          sized("大きい論点"),
+          sized("大きい要点"),
+          at((l) => idIn(l, idOf(map, "混んだ議題")) && /話し中の子 \d+/.test(l)),
+          at((l) => l.startsWith("目安")),
+        ];
+
+        expect(order.every((i) => i >= 0)).toBe(true);
+        expect(order).toEqual([...order].sort((x, y) => x - y));
+        expect(order[order.length - 1]).toBe(lines.length - 1);
+      });
+
+      it("1 通目でも変更だけの回でも、同じ名指しが載る", () => {
+        const map = build([
+          { ref: "t", parent: "root", kind: "議題", text: "議題T" },
+          { ref: "big", parent: "t", kind: "要点", text: "大きい要点" }, ...kids("big", "要点", "b", 21),
+        ]);
+        const extract = (p: string) => p.slice(p.indexOf("## 議題の一覧"), p.indexOf("\n\n", p.indexOf("## 議題の一覧")));
+        const first = buildPrompt(inputOf(map, 1));
+        const second = buildPrompt(inputOf(map, 1), built);
+
+        expect(sizedRow(map, idOf(map, "大きい要点"))).toBeDefined();
+        expect(extract(second)).toBe(extract(first));
+      });
     });
   });
 });
