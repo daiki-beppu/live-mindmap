@@ -1,6 +1,7 @@
 // マップの表示面（Issue #814・#815）が受ける Message。Mount と Subscription は DOM で起きた事実だけを届け、パンの量・軸・クリックかドラッグかの判定は update が行う
 import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
+import { Snapshot } from "../../../../server/src/core/index.ts";
 
 export const Message = defineMessageUnion({
   // --- 表示面の要素の Mount から ---
@@ -22,6 +23,12 @@ export const Message = defineMessageUnion({
     metaKey: Schema.Boolean,
     timeStamp: Schema.Finite,
   },
+  // --- 親から ---
+  // マップ（Snapshot）が新しくなった（差分更新の反映）。位置は補間で新しい目標へ移る
+  ChangedSnapshot: { snapshot: Snapshot },
+  // --- 補間中の animationFrame の Subscription から ---
+  // 前のフレームからの経過 ms
+  TickedAnimationFrame: { deltaMs: Schema.Finite },
   // --- ポインタを押している間の文書全体の Subscription から ---
   MovedPointer: { clientX: Schema.Finite, clientY: Schema.Finite, buttons: Schema.Finite },
   ReleasedPointer: { ctrlKey: Schema.Boolean, metaKey: Schema.Boolean },

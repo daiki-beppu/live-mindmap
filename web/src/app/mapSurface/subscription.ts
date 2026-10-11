@@ -6,6 +6,11 @@ import type { Model } from "./main.ts";
 import { Message } from "./message.ts";
 
 export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
+  // 位置を補間している間だけ、フレームごとに経過 ms を Message にする
+  animationFrame: Subscription.animationFrameEntry<Model, Message>({
+    isActive: (model) => Option.isSome(model.motion),
+    toMessage: (deltaMs) => Message.TickedAnimationFrame({ deltaMs }),
+  }),
   pointer: entry(
     { isPressing: Schema.Boolean },
     {

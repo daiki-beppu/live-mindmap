@@ -10,11 +10,14 @@ import { MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
 import { foldView, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
+import { interpolate, startPositions } from "../../motion.ts";
 import "./mapSurface.css";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
 
 // still は map.png の撮影用で、畳まず、大きなマップも全体を収める。live は会議中・見返しで、畳み、倍率を人の範囲に収める
+// 動きの状態（Issue #817）: motion は差分更新や高さの変化で目標の位置が変わったときの補間で、start は補間の始まりの位置（id → 位置）、elapsedMs は始めてからの経過 ms。補間していないときは None。
+// 表示する位置と目標の位置は Model に持たず、displayedPositions が motion と目標から毎回導く
 // パンの状態: pan はフィットした位置に足す画面上の平行移動（倍率に依らない）。pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
 export const Model = Schema.Struct({
   mode: Schema.Literals(["still", "live"]),
@@ -26,6 +29,7 @@ export const Model = Schema.Struct({
   pointer: Schema.Option(Schema.Union([Schema.TaggedStruct("PanningPane", { x: Schema.Finite, y: Schema.Finite, button: Schema.Finite }), Schema.TaggedStruct("HoldingNode", {})])),
   nodePress: Schema.Option(Schema.Struct({ nodeId: Schema.String, x: Schema.Finite, y: Schema.Finite, dragged: Schema.Boolean })),
   scrollAxisLock: Schema.Option(Schema.Struct({ axis: Schema.Literals(["x", "y"]), at: Schema.Finite })),
+  motion: Schema.Option(Schema.Struct({ start: Schema.HashMap(Schema.String, Schema.Struct({ x: Schema.Finite, y: Schema.Finite })), elapsedMs: Schema.Finite })),
 });
 export type Model = typeof Model.Type;
 
@@ -39,7 +43,46 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   pointer: Option.none(),
   nodePress: Option.none(),
   scrollAxisLock: Option.none(),
+  motion: Option.none(),
 });
+
+// 補間の長さ（ms）。web/src/useAnimatedPositions.ts の DURATION_MS と同じ（React 版の部品には触らないので、ここに別に置く）
+const MOTION_DURATION_MS = 500;
+
+const NO_IDS: ReadonlySet<string> = new Set();
+
+// 畳んだ後に見せるノード。still は畳まない
+const shownNodesOf = (model: Model): SnapshotNode[] => (model.mode === "live" ? foldView(model.snapshot, NO_IDS, null, NO_IDS, NO_IDS).nodes : model.snapshot.nodes);
+const heightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights));
+// 補間の行き先（目標の位置）
+const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), heightsOf(model));
+
+// 今見せている位置。補間中は始まりと目標の間（easeOutCubic）、そうでなければ目標
+export const displayedPositions = (model: Model): Record<string, Position> => {
+  const target = targetOf(model);
+  return Option.match(model.motion, {
+    onNone: () => target,
+    onSome: ({ start, elapsedMs }) => interpolate(Object.fromEntries(HashMap.toEntries(start)), target, elapsedMs / MOTION_DURATION_MS),
+  });
+};
+
+const samePositions = (a: Record<string, Position>, b: Record<string, Position>): boolean => {
+  const ids = Object.keys(a);
+  return ids.length === Object.keys(b).length && ids.every((id) => b[id] !== undefined && a[id]!.x === b[id].x && a[id]!.y === b[id].y);
+};
+
+// 更新で目標の位置が変わったら、その前に見せていた位置から補間を始める。still・目標が変わらないとき（大きさだけの測定など）は何もしない（補間中の経過も戻さない）
+// 何も測っていない間はノードを見せていないので、始まりの位置が無く、動かさない
+const followTarget = (before: Model, after: Model): Model => {
+  if (after.mode !== "live") return after;
+  const target = targetOf(after);
+  if (samePositions(targetOf(before), target)) return after;
+  const shown = HashMap.size(before.nodeHeights) === 0 ? {} : displayedPositions(before);
+  const start = startPositions(shownNodesOf(after), shown, target);
+  return modifyFields(after, {
+    motion: () => (samePositions(start, target) ? Option.none() : Option.some({ start: HashMap.fromIterable(Object.entries(start)), elapsedMs: 0 })),
+  });
+};
 
 type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
 
@@ -58,9 +101,18 @@ const panBy = (model: Model, x: number, y: number): Model => modifyFields(model,
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     MeasuredMapSurface: ({ width, height, nodeHeights }) => ({
+      model: followTarget(
+        model,
+        modifyFields(model, {
+          size: () => Option.some({ width, height }),
+          nodeHeights: (current) => HashMap.setMany(current, Object.entries(nodeHeights)),
+        }),
+      ),
+    }),
+    ChangedSnapshot: ({ snapshot }) => ({ model: followTarget(model, modifyFields(model, { snapshot: () => snapshot })) }),
+    TickedAnimationFrame: ({ deltaMs }) => ({
       model: modifyFields(model, {
-        size: () => Option.some({ width, height }),
-        nodeHeights: (current) => HashMap.setMany(current, Object.entries(nodeHeights)),
+        motion: Option.flatMap(({ start, elapsedMs }) => (elapsedMs + deltaMs >= MOTION_DURATION_MS ? Option.none() : Option.some({ start, elapsedMs: elapsedMs + deltaMs }))),
       }),
     }),
     PressedMapSurface: ({ clientX, clientY, button, ctrlKey, insideNoPan }) => ({
@@ -127,7 +179,6 @@ const bezier = (source: Position, target: Position): string => {
   return `M${source.x},${source.y} C${source.x + offset},${source.y} ${target.x - offset},${target.y} ${target.x},${target.y}`;
 };
 
-const NO_IDS: ReadonlySet<string> = new Set();
 const IDENTITY: Viewport = { x: 0, y: 0, zoom: 1 };
 
 const classes = (...names: ReadonlyArray<string | false>): string => names.filter(Boolean).join(" ");
@@ -155,8 +206,8 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null): Html {
 export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const view_ = model.mode === "live" ? foldView(model.snapshot, NO_IDS, null, NO_IDS, NO_IDS) : null;
   const shown = view_?.nodes ?? model.snapshot.nodes;
-  const heights = Object.fromEntries(HashMap.toEntries(model.nodeHeights));
-  const positions = layout(shown, heights);
+  const heights = heightsOf(model);
+  const positions = displayedPositions(model);
   // 測れたノードだけ見せる。エッジは両端が測れてから描き、全体を収める箱にも測れたノードだけを使う
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
   const rects = measured.map((n): Rect => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights[n.id]! }));

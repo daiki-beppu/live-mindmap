@@ -9,6 +9,7 @@ import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { foldView } from "../src/folding.ts";
 import { KIND_COLOR } from "../src/kinds.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
+import { interpolate, startPositions } from "../src/motion.ts";
 
 // マップの表示面（Issue #814）の Scene。描いた view から入り、Mount を resolve して、ノードとエッジが今の画面（React Flow）と同じ位置に出ることを見る。
 // 比べる相手は layout が返す位置・@xyflow の getBezierPath・getViewportForBounds（fitView の式）。位置を Model に持たないので、view が毎回導く値を外から確かめる
@@ -448,6 +449,57 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
       given(measuredModel("still")),
       Mount.resolve(ObserveMapSurface, wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })),
       tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("still", 0, 0))),
+    );
+  });
+});
+
+describe("mapSurface の Scene: 動き（補間中の位置でノードとエッジを描く）", () => {
+  const before = snap(nodes());
+  const after = snap([...nodes(), node("N", "A", "案", "新しい案")], { round: 4 });
+  const shownOf = (snapshot: Snapshot) => foldView(snapshot, new Set(), null, new Set(), new Set()).nodes;
+  const measuredLive: MapSurfaceModel = { ...modelOf(before, "live"), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) };
+  // 反映の直後（補間の経過 0）の Model。update を通して作る
+  const changedModel = (): MapSurfaceModel => update(measuredLive, Message.ChangedSnapshot({ snapshot: after })).model;
+  const tick = (deltaMs: number) => Message.TickedAnimationFrame({ deltaMs });
+  // Mount の結果は大きさだけの測定（目標は変わらず、補間の経過も戻らない）
+  const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...SIZE, nodeHeights: {} }));
+
+  it("反映の直後は今までの位置、フレームを進めると途中の位置、終わると目標の位置の transform とエッジになる", () => {
+    const from = layout(shownOf(before), HEIGHTS);
+    const to = layout(shownOf(after), HEIGHTS);
+    const start = startPositions(shownOf(after), from, to);
+    const mid = interpolate(start, to, 0.5);
+    expect(start["A"]).not.toEqual(to["A"]);
+    const parent = shownOf(after).find((n) => n.id === "A")!;
+    const child = shownOf(after).find((n) => n.id === "P")!;
+    const expectAt = (html: VNode, positions: ReturnType<typeof layout>) => {
+      for (const n of shownOf(after)) expectNumbers(nodeTranslate(html, n.id), [positions[n.id]!.x, positions[n.id]!.y]);
+      const edge = edges(html).find((e) => e.stroke === KIND_COLOR[child.kind])!;
+      expectNumbers(numbers(edge.d), numbers(edgePath(positions, HEIGHTS, parent, child)));
+    };
+    scene(
+      app,
+      given(changedModel()),
+      mounted,
+      tap((simulation) => expectAt(simulation.html, start)),
+      Subscription.emit(tick(250)),
+      tap((simulation) => expectAt(simulation.html, mid)),
+      Subscription.emit(tick(250)),
+      tap((simulation) => expectAt(simulation.html, to)),
+    );
+  });
+
+  it("still: 反映の直後から目標の位置で描く（補間しない）", () => {
+    const stillMeasured: MapSurfaceModel = { ...measuredLive, mode: "still" };
+    const changed = update(stillMeasured, Message.ChangedSnapshot({ snapshot: after })).model;
+    const to = layout(after.nodes, HEIGHTS);
+    scene(
+      app,
+      given(changed),
+      mounted,
+      tap((simulation) => {
+        for (const n of after.nodes) expectNumbers(nodeTranslate(simulation.html, n.id), [to[n.id]!.x, to[n.id]!.y]);
+      }),
     );
   });
 });
