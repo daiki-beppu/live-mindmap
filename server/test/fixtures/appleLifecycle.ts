@@ -65,9 +65,16 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
   };
 });
 
+// 状態が届くまで待つ。届かなければ黙って戻らず失敗する（CI の負荷では 200 回の yield で移り切らないことがあった）。
+// 実ファイルの書き込みを挟む IT もあるので、yield の後は実時間（TestClock に依らない setTimeout）で最大 5 秒待つ
 export const waitForDiffState = Effect.fnUntraced(function* (session: Session, status: DiffUpdateState["status"]) {
   for (let i = 0; i < 200; i++) {
     if ((yield* session.diffUpdate).status === status) return;
     yield* Effect.yieldNow;
   }
+  for (let i = 0; i < 1000; i++) {
+    if ((yield* session.diffUpdate).status === status) return;
+    yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+  }
+  return yield* Effect.die(new Error(`差分更新の状態が ${status} になりませんでした（今は ${(yield* session.diffUpdate).status}）`));
 });
