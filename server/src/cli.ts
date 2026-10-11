@@ -435,7 +435,8 @@ const play = Command.make(
     "録音サンプルの文字起こし、または過去のセッションのフォルダ（log.jsonl を持つフォルダ）を再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
       + "フォルダのときは、ログの発言と共有画面の変化を元の時刻のまま流し、新しいセッションのフォルダにライブと同じ形でログと screens/ を書く。"
       + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
-      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す（play のセッションには録音が無いので map-audio.html は作らない）",
+      + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す（play のセッションには録音が無いので map-audio.html は作らない）。"
+      + "管理依存は入れる前に利用者に確認する",
   ),
 );
 
@@ -498,7 +499,8 @@ const start = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ",
+    "ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ。"
+      + "管理依存は入れる前に利用者に確認する",
   ),
 );
 
@@ -540,7 +542,10 @@ const resume = Command.make(
     yield* writeWarnings(warnings ?? []);
   }),
 ).pipe(
-  Command.withDescription("止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける"),
+  Command.withDescription(
+    "止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける。"
+      + "管理依存は入れる前に利用者に確認する",
+  ),
 );
 
 const exportCommand = Command.make(
@@ -723,7 +728,10 @@ const checkCommand = Command.make(
     yield* write(JSON.stringify(report));
     if (report.items.some((item) => item.need === "required" && item.state !== "ready" && item.state !== "outdated")) return yield* new RequiredDepsMissing();
   }),
-).pipe(Command.withDescription("開始せず管理依存を JSON で確認する。--for start|resume|play（既定 start）。play はサーバーを使わず、resume は開始時モデルを使う"));
+).pipe(Command.withDescription(
+  "開始せず管理依存を JSON で確認する。--for start|resume|play（既定 start）。play はサーバーを使わず、resume は開始時モデルを使う。"
+    + "管理依存は入れる前に利用者に確認する",
+));
 
 const installFromServer = Effect.fnUntraced(function* (port: number, path: "/deps/install" | "/update", names: ReadonlyArray<string>) {
     yield* Console.error("時間がかかるので run_in_background で呼んでよい");
@@ -755,7 +763,10 @@ const installCommand = Command.make(
   Effect.fn("install")(function* ({ names }) {
     yield* installFromServer(yield* portConfig, "/deps/install", names);
   }),
-).pipe(Command.withDescription("常駐サーバーに管理依存の導入を依頼し、進捗と導入した items を出す"));
+).pipe(Command.withDescription(
+  "常駐サーバーに管理依存の導入を依頼し、進捗と導入した items を出す。"
+    + "管理依存は入れる前に利用者に確認する",
+));
 
 const updateCommand = Command.make(
   "update",
@@ -784,7 +795,10 @@ const logout = Command.make("logout").pipe(Command.withSubcommands([
 ]));
 
 const root = Command.make("live-mindmap").pipe(
-  Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
+  Command.withDescription(
+    "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
+      + "exit code 3 = 開始に要るものが未導入",
+  ),
   Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
 );
 
