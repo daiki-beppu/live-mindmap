@@ -27,7 +27,7 @@ import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTrans
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const listener = vi.hoisted(() => ({ open: vi.fn() }));
-const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | Scope.Scope> = prepare;
+const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | Scope.Scope> = (model) => prepare(model).pipe(Effect.provide(forbiddenManagedDeps));
 vi.mock("../src/http.ts", async (original) => {
   const { fakeListener } = await import("./fakeListener.ts");
   const actual = await original<typeof import("../src/http.ts")>();
@@ -76,7 +76,7 @@ const loopback = Effect.fnUntraced(function* (afterRequest: (call: number) => vo
 });
 const dependencies = (root: string) => {
   const stdout: string[] = [];
-  const layer = Layer.mergeAll(NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  const layer = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
   );

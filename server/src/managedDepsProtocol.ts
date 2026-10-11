@@ -1,9 +1,9 @@
 import { Schema } from "effect";
 
-export const DepNames = Schema.Array(Schema.Literal("chromium")).check(Schema.isMinLength(1));
+export const DepNames = Schema.Array(Schema.Literals(["chromium", "claude"])).check(Schema.isMinLength(1));
 export const InstallBody = Schema.Struct({ names: DepNames });
 const Item = Schema.Struct({
-  name: Schema.Literal("chromium"),
+  name: Schema.Literals(["chromium", "claude"]),
   need: Schema.Literals(["required", "optional"]),
   state: Schema.Literals(["ready", "missing", "outdated", "absent"]),
   size: Schema.optionalKey(Schema.Finite),

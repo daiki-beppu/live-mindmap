@@ -105,7 +105,7 @@ describe("apple を使う開始・再生の配線", () => {
     const process = yield* appleProcess();
     const stdout: string[] = [];
     listener.modes.length = 0;
-    const layer = Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer,
+    const layer = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer,
       environment(root, 0), Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ")); } }));
     yield* runCli(["play", join(import.meta.dirname, "fixtures/short.transcript.json"), "--model", "apple"]).pipe(Effect.provide(layer));
     verifyMap(dirname(stdout.join("\n").trim().split("\n")[0]!));
@@ -120,7 +120,7 @@ describe("apple を使う開始・再生の配線", () => {
     const process = yield* appleProcess();
     const helper = audioHelper();
     const sinks = SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
-      Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, process.layer)),
+      Layer.provide(Layer.mergeAll(forbiddenManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, process.layer)),
     );
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, { helpers: helper.layer, sessionSinks: sinks, managedDeps: forbiddenManagedDeps });
     const start = () => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
@@ -139,7 +139,7 @@ describe("apple を使う開始・再生の配線", () => {
     process.state.available = true;
     const stdout: string[] = [];
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--model", "apple"]).pipe(Effect.provide(
-      Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer, environment(root, server.port),
+      Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer, environment(root, server.port),
         Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ")); } })),
     ));
     expect(helper.launches).toHaveLength(1);
@@ -159,7 +159,7 @@ describe("apple を使う開始・再生の配線", () => {
     const root = yield* temporaryDirectory;
     const process = yield* appleProcess();
     const stdout: string[] = [];
-    const layer = Layer.mergeAll(NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer,
+    const layer = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, NodeHttpClient.layerUndici, process.layer, fakeExportServices(), fakeScreenJpeg().layer,
       environment(root, 0), Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ")); } }));
     yield* runCli(["play", join(import.meta.dirname, "fixtures/short.transcript.json"), "--model", "apple"]).pipe(Effect.provide(layer));
     const source = dirname(stdout.join("\n").trim().split("\n")[0]!);

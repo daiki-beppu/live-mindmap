@@ -1,4 +1,5 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -50,7 +51,10 @@ vi.mock("../src/claude.ts", async (importOriginal) => {
     })();
     return Object.assign(gen, { close: () => {} });
   }) as unknown as import("../src/claude.ts").AgentSdk["Service"]["query"];
-  return { ...actual, AgentSdk: { layer: L.succeed(actual.AgentSdk, actual.AgentSdk.of({ query })) } };
+  class AgentSdk extends actual.AgentSdk {
+    static override readonly layer = L.succeed(actual.AgentSdk, actual.AgentSdk.of({ query }));
+  }
+  return { ...actual, AgentSdk };
 });
 vi.mock("../src/http.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/http.ts")>();
@@ -114,7 +118,7 @@ function dependencies(sessionsDir: string) {
     error: () => {},
   };
   const layer = Layer.mergeAll(
-    NodeServices.layer, unusedApple,
+    NodeServices.layer, unusedApple, forbiddenManagedDeps,
     NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, consoleService),

@@ -93,7 +93,7 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
     }) }));
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
       helpers,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(forbiddenManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
       managedDeps: forbiddenManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({ SYNTHETIC_PROCESS_KEY: "synthetic-key" })));
     const config = join(root, "config.json");

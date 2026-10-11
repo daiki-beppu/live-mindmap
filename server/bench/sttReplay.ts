@@ -5,10 +5,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
+import { ManagedDeps } from "../src/managedDeps.ts";
+import { depsDirConfig } from "../src/config.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
 import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../src/truthFile.ts";
 import { BENCH_VERSION, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
@@ -136,7 +138,10 @@ export const command = Command.make(
       + "end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ",
   ),
   // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
-  Command.provide(claudeUpdaterLayer(defaultClaude)),
+  Command.provide(claudeUpdaterLayer(defaultClaude).pipe(Layer.provide(Layer.unwrap(Effect.gen(function* () {
+    const root = yield* depsDirConfig;
+    return ManagedDeps.layer({ root }).pipe(Layer.provide(NodeServices.layer));
+  }))))),
 );
 
 if (import.meta.main) {

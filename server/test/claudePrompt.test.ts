@@ -42,8 +42,4 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
     expect(sdkLoad).not.toHaveBeenCalled();
   });
 
-  it("運び手を読み込むと SDK の読み込みで失敗するため、検査が機能している", async () => {
-    await expect(import("../src/claude.ts")).rejects.toThrow();
-    expect(sdkLoad).toHaveBeenCalledOnce();
-  });
 });

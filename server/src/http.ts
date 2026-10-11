@@ -17,7 +17,7 @@ import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
 import { ManagedDeps } from "./managedDeps.ts";
-import { checkManagedDeps } from "./managedDepsCheck.ts";
+import { checkManagedDeps, ClaudeRequired } from "./managedDepsCheck.ts";
 import { DepNames, InstallBody } from "./managedDepsProtocol.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
@@ -163,10 +163,14 @@ const FeedRoutes = HttpRouter.addAll([
 ]);
 
 const DepRoutes = HttpRouter.addAll([
-  HttpRouter.route("GET", "/check", checkManagedDeps.pipe(
-    Effect.orDie,
-    Effect.map(HttpServerResponse.jsonUnsafe),
-  )),
+  HttpRouter.route("GET", "/check", Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const raw = new URL(request.url, "http://127.0.0.1").searchParams.get("claudeRequired");
+    const value = yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(raw ?? "true").pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
+    );
+    return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps.pipe(Effect.provideService(ClaudeRequired, value === "true"), Effect.orDie));
+  })),
   HttpRouter.route("GET", "/deps/check", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const raw = new URL(request.url, "http://127.0.0.1").searchParams.get("names");

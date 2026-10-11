@@ -1,3 +1,4 @@
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
@@ -85,7 +86,7 @@ const setup = (initial: Partial<Script> = {}) =>
     log: (...args: unknown[]) => { out.push(args.map(String).join(" ") + "\n"); },
   };
   // 接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す
-  const cliLayer = Layer.mergeAll(
+  const cliLayer = Layer.mergeAll(forbiddenManagedDeps,
     NodeServices.layer, unusedApple,
     NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: String(server.port) })),

@@ -3,3 +3,5 @@ packages:
   - server
   - helper
   - e2e
+ignoredOptionalDependencies:
+  - '@anthropic-ai/claude-agent-sdk-*'

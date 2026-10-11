@@ -13,9 +13,9 @@ describe("Playwright の管理依存", () => {
     const deps = ManagedDeps.of({
       check: () => Effect.die("check は呼ばない"),
       install: () => Stream.die("install は呼ばない"),
-      load: () => Effect.sync(() => ({
+      load: (() => Effect.sync(() => ({
         chromium: { launch: async () => browser },
-      } as typeof PlaywrightModule)),
+      } as typeof PlaywrightModule))) as ManagedDeps["Service"]["load"],
     });
     yield* Effect.gen(function* () {
       const service = yield* Playwright;
@@ -29,9 +29,9 @@ describe("Playwright の管理依存", () => {
     const deps = ManagedDeps.of({
       check: () => Effect.die("check は呼ばない"),
       install: () => Stream.die("install は呼ばない"),
-      load: () => Effect.succeed({
+      load: (() => Effect.succeed({
         chromium: { launch: async (): Promise<Browser> => { throw new Error("launch failed"); } },
-      } as typeof PlaywrightModule),
+      } as typeof PlaywrightModule)) as ManagedDeps["Service"]["load"],
     });
     yield* Effect.gen(function* () {
       const result = yield* Effect.result((yield* Playwright).launch());

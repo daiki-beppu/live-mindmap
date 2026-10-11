@@ -110,13 +110,14 @@ describe("check ジョブの構造", () => {
 
 });
 
-describe("heavy の管理 Chromium 導入", () => {
-  it("開発用の直接導入スクリプトを chromium 指定で呼ぶ", () => {
+describe("heavy の管理依存導入", () => {
+  it("開発用の直接導入スクリプトを chromium と claude 指定で呼ぶ", () => {
     const scripts = (JSON.parse(readFileSync(join(root, "server/package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
     const installer = Object.keys(scripts).find((name) => scripts[name]!.includes("scripts/install-managed-deps.ts"));
     expect(installer, "直接導入スクリプトの package script").toBeDefined();
     const calls = runInlineSteps("heavy");
     expect(calls).toContainEqual(["--filter", "@live-mindmap/server", installer, "chromium"]);
+    expect(calls.some((args) => args[0] === "--filter" && args[1] === "@live-mindmap/server" && args[2] === installer && args.includes("claude"))).toBe(true);
     expect(calls.filter((args) => args.includes("playwright") && args.includes("install"))).toEqual([]);
   });
 });

@@ -12,7 +12,7 @@ const dynamicImport = (spec: string) => `const m = await import("${spec}");\n`;
 
 describe("findTestLayerViolations", () => {
   describe("unit が本物の資源を import していると報告する", () => {
-    it.each(["node:child_process", "node:fs", "node:fs/promises", "node:net", "node:http", "ws", "playwright", "playwright-core"])(
+    it.each(["node:child_process", "node:fs", "node:fs/promises", "node:net", "node:http", "ws", "playwright", "playwright-core", "@anthropic-ai/claude-agent-sdk"])(
       "%s の import を、ファイルと行番号と指定子つきで報告する",
       (spec) => {
         const violations = findTestLayerViolations(file(UNIT, `const a = 1;\n${fromImport(spec)}`));
@@ -39,11 +39,13 @@ describe("findTestLayerViolations", () => {
       expect(violations[0]).toMatchObject({ path: UNIT, line: 1 });
     });
 
-    it.each([sideEffectImport, reExport, dynamicImport])("playwright-core の実行時の読み込みを報告する (%#)", (build) => {
-      const violations = findTestLayerViolations(file(UNIT, build("playwright-core")));
-      expect(violations).toHaveLength(1);
-      expect(violations[0]).toMatchObject({ path: UNIT, line: 1 });
-      expect(violations[0]?.message).toContain("playwright-core");
+    it.each([sideEffectImport, reExport, dynamicImport])("SDK・Playwright の実行時の読み込みを報告する (%#)", (build) => {
+      for (const spec of ["playwright-core", "@anthropic-ai/claude-agent-sdk"]) {
+        const violations = findTestLayerViolations(file(UNIT, build(spec)));
+        expect(violations).toHaveLength(1);
+        expect(violations[0]).toMatchObject({ path: UNIT, line: 1 });
+        expect(violations[0]?.message).toContain(spec);
+      }
     });
 
     it("export from を報告する", () => {
@@ -119,7 +121,7 @@ describe("findTestLayerViolations", () => {
       expect(findTestLayerViolations([])).toEqual([]);
     });
 
-    it.each(["node:net", "playwright-core"])("%s の型だけの import は実行時に消えるので違反にしない", (spec) => {
+    it.each(["node:net", "playwright-core", "@anthropic-ai/claude-agent-sdk"])("%s の型だけの import は実行時に消えるので違反にしない", (spec) => {
       const content = `import type { Server } from "${spec}";\nexport type { Socket } from "${spec}";\n`;
       expect(findTestLayerViolations(file(UNIT, content))).toEqual([]);
     });
@@ -140,7 +142,9 @@ describe("findTestLayerViolations", () => {
       (spec: string) => `const fs: typeof import("${spec}") = real;\n`,
       (spec: string) => `const fs = real as typeof import("${spec}");\n`,
     ])("型エイリアス・型注釈・as の typeof import は違反にしない (%#)", (build) => {
-      expect(findTestLayerViolations(file(UNIT, build("node:fs")))).toEqual([]);
+      for (const spec of ["node:fs", "@anthropic-ai/claude-agent-sdk"]) {
+        expect(findTestLayerViolations(file(UNIT, build(spec)))).toEqual([]);
+      }
     });
 
     it("パラメータの型注釈の typeof import は違反にしない", () => {

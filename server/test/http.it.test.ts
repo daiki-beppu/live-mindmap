@@ -235,7 +235,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
           ...console,
           log: (...args: unknown[]) => { out.push(args.map(String).join(" ") + "\n"); },
         };
-        const cliLayer = Layer.mergeAll(
+        const cliLayer = Layer.mergeAll(forbiddenManagedDeps,
           NodeServices.layer, unusedApple,
           NodeHttpClient.layerUndici,
           ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),

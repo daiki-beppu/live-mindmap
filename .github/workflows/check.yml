@@ -79,6 +79,17 @@ jobs:
           path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
           key: managed-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/chromium/package-lock.json') }}
       - run: pnpm --filter @live-mindmap/server deps:install chromium
+      - id: claude-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/claude
+          key: managed-claude-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/claude/package-lock.json') }}
+      - run: pnpm --filter @live-mindmap/server deps:install claude
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.claude-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/claude
+          key: ${{ steps.claude-cache.outputs.cache-primary-key }}
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.chromium-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -100,7 +111,8 @@ jobs:
             exit 0
           fi
           echo "$targets"
-          pnpm exec vitest run --project heavy $targets
+          mapfile -t target_array <<< "$targets"
+          pnpm exec vitest run --project heavy "${target_array[@]}"
 
   # E2E（e2e/ の test:e2e、全 target）。コミットした replay cache を --strict-cache で再生するだけで、モデルも資格情報も使わない。
   # 再生できないステップは REPLAY_STALE で落ちる。リトライは 0（e2e/package.json）。helper は fake-helper を使うので、helper だけの変更では回さない

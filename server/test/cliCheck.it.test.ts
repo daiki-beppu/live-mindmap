@@ -16,12 +16,13 @@ import { startedServer } from "./fixtures/startedServer.ts";
 type CheckItem = Extract<typeof InstallEvent.Type, { type: "result" }>["items"][number];
 const states = ["ready", "missing", "outdated", "absent"] as const;
 const chromium = (need: CheckItem["need"], state: CheckItem["state"]): CheckItem => ({ name: "chromium", need, state });
+const claudeMissing = { name: "claude", need: "required", state: "missing" } as const;
 const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...item, size: 211_000_000, install: "pnpm cli install chromium" }] });
 
 const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFailed>) => {
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
   const install = vi.fn((_names: ReadonlyArray<string>) => Stream.die("check は導入しない"));
-  const load = vi.fn((_name: "chromium") => Effect.die("check は読み込まない"));
+  const load = vi.fn((_name: string) => Effect.die("check は読み込まない"));
   return { service: ManagedDeps.of({ check, install, load }), check, install };
 };
 
@@ -35,11 +36,13 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   return { ...server, launch };
 });
 
-const cliProcess = (dir: string, port: number, rootScript: boolean) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+const cliProcess = (dir: string, port: number, rootScript: boolean, model: string | null = "claude") => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+  const env = { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: model ?? "", NO_COLOR: "1" };
+  if (model === null) delete (env as NodeJS.ProcessEnv).LIVE_MINDMAP_MODEL;
   execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "check"] : [join(import.meta.dirname, "../src/cli.ts"), "check"], {
     cwd: join(import.meta.dirname, "../.."),
     timeout: 15_000,
-    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
+    env,
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
     resolve({ code: error ? error.code as number : 0, stdout, stderr });
@@ -47,6 +50,62 @@ const cliProcess = (dir: string, port: number, rootScript: boolean) => Effect.tr
 }));
 
 describe("開始せずに確かめる CLI check", () => {
+  it.live("HTTP は不正な Claude 必須判定を状態確認前に拒否する", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const deps = fakeDeps(Effect.succeed([claudeMissing]));
+    const server = yield* serverWith(dir, deps.service);
+    const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?claudeRequired=invalid`));
+    expect(response.status).toBe(400);
+    expect(deps.check).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+  it.live("モデル判定を渡さない HTTP check は既定の Claude を必須として返す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const deps = fakeDeps(Effect.succeed([chromium("optional", "missing"), claudeMissing]));
+    const server = yield* serverWith(dir, deps.service);
+    const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check`));
+    expect(response.status).toBe(200);
+    expect(yield* Effect.tryPromise(() => response.json())).toEqual({ ready: false, items: [
+      { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
+      { name: "claude", need: "required", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
+    ] });
+  }).pipe(Effect.scoped));
+
+  it.live.each([
+    { selected: null, default: "apple", need: "optional", code: 0 },
+    { selected: "remote", default: "apple", need: "required", code: 3 },
+  ] as const)("設定 default=$default と環境モデル $selected を開始時と同じ優先順位で使う", ({ selected, default: defaultModel, need, code }) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    yield* Effect.tryPromise(() => writeFile(join(dir, "absent.config.json"), JSON.stringify({ default: defaultModel, models: { remote: { route: "claude", model: "synthetic-model" } } })));
+    const deps = fakeDeps(Effect.succeed([chromium("optional", "missing"), claudeMissing]));
+    const server = yield* serverWith(dir, deps.service);
+    const result = yield* cliProcess(dir, server.port, false, selected);
+    expect(result.code).toBe(code);
+    const report = JSON.parse(result.stdout);
+    expect(report.items.find((item: { name: string }) => item.name === "claude")).toMatchObject({ name: "claude", state: "missing", need });
+  }).pipe(Effect.scoped));
+
+  it.live.each([
+    { model: "remote", route: "claude", state: "missing", need: "required", ready: false, code: 3 },
+    { model: "remote", route: "claude", state: "ready", need: "required", ready: true, code: 0 },
+    { model: "claude", route: "openai-compatible", state: "missing", need: "optional", ready: true, code: 0 },
+    { model: "account", route: "chatgpt", state: "missing", need: "optional", ready: true, code: 0 },
+    { model: "apple", route: "apple", state: "missing", need: "optional", ready: true, code: 0 },
+  ] as const)("$model / $route の Claude $state は $need として exit $code を返す", ({ model, route, state, need, ready, code }) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const config = route === "apple" ? {} : { models: { [model]: { route, model: "synthetic-model", ...(route === "openai-compatible" ? { url: "http://127.0.0.1:1/v1" } : {}) } } };
+    yield* Effect.tryPromise(() => writeFile(join(dir, "absent.config.json"), JSON.stringify(config)));
+    const deps = fakeDeps(Effect.succeed([chromium("optional", "missing"), { ...claudeMissing, state }]));
+    const server = yield* serverWith(dir, deps.service);
+    const result = yield* cliProcess(dir, server.port, false, model);
+    expect(result.code).toBe(code);
+    expect(JSON.parse(result.stdout)).toEqual({ ready, items: [
+      { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
+      { name: "claude", need, state, size: 224_000_000, install: "pnpm cli install claude" },
+    ] });
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
+    expect(deps.install).not.toHaveBeenCalled();
+    expect(server.launch).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
   it.live.each(states)("HTTP は任意 chromium の %s と容量・導入コマンドを返す", (state) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const item = chromium("optional", state);
@@ -55,7 +114,7 @@ describe("開始せずに確かめる CLI check", () => {
     const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check`));
     expect(response.status).toBe(200);
     expect(yield* Effect.tryPromise(() => response.json())).toEqual(responseFor(true, item));
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium"]);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
   }).pipe(Effect.scoped));
 
   it.live.each([
@@ -75,7 +134,7 @@ describe("開始せずに確かめる CLI check", () => {
     const result = yield* cliProcess(dir, server.port, false);
     expect(result.code).toBe(code);
     expect(JSON.parse(result.stdout)).toEqual(responseFor(ready, item));
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium"]);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
     expect(result.stderr).toBe("");
   }).pipe(Effect.scoped));
 
@@ -87,7 +146,7 @@ describe("開始せずに確かめる CLI check", () => {
     const result = yield* cliProcess(dir, server.port, true);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual(responseFor(true, item));
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium"]);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
   }).pipe(Effect.scoped));
 
   it.live("ManagedDepsFailed は成功 JSON を出さず exit 1 になる", () => Effect.gen(function* () {
@@ -95,7 +154,7 @@ describe("開始せずに確かめる CLI check", () => {
     const deps = fakeDeps(Effect.fail(new ManagedDepsFailed({ message: "状態確認に失敗しました" })));
     const server = yield* serverWith(dir, deps.service);
     const result = yield* cliProcess(dir, server.port, false);
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium"]);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("状態確認に失敗しました\n");
@@ -128,7 +187,7 @@ describe("開始せずに確かめる CLI check", () => {
     const result = yield* cliProcess(dir, server.port, false);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual(responseFor(true, item));
-    expect(deps.check.mock.calls).toEqual([[["chromium"]], [["chromium"]]]);
+    expect(deps.check.mock.calls).toEqual([[["chromium", "claude"]], [["chromium", "claude"]]]);
     expect(deps.install).not.toHaveBeenCalled();
     expect(server.launch).not.toHaveBeenCalled();
     for (const file of files) expect(yield* Effect.tryPromise(() => readFile(file, "utf8"))).toBe("保存済みの内容");
@@ -143,9 +202,9 @@ describe("開始せずに確かめる CLI check", () => {
     const allowed = yield* Effect.tryPromise(() => fetch(url, { headers: { origin: "http://localhost" } }));
     expect(allowed.status).toBe(200);
     expect(yield* Effect.tryPromise(() => allowed.json())).toEqual(responseFor(true, item));
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium"]);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
     const forbidden = yield* Effect.tryPromise(() => fetch(url, { headers: { origin: "https://example.com" } }));
     expect(forbidden.status).toBe(403);
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium"]);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
   }).pipe(Effect.scoped));
 });

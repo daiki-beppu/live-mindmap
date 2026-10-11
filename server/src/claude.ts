@@ -1,10 +1,11 @@
 // 差分更新（Claude）。開始時に選んだモデルを Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。
-import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
 import { DiffOperations, DiffUpdater, type DiffInput, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
 
 import { buildPrompt, fmtTime, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
+import { ManagedDeps } from "./managedDeps.ts";
 
 export { buildPrompt, NOOP_SCOPE } from "./claudePrompt.ts";
 
@@ -28,9 +29,12 @@ export const QUERY_RENEW_CALLS = 14;
 
 // Agent SDK の query。テストでは偽物の Layer に替える
 export class AgentSdk extends Context.Service<AgentSdk, {
-  readonly query: typeof query;
+  readonly query: typeof import("@anthropic-ai/claude-agent-sdk")["query"];
 }>()("live-mindmap/server/AgentSdk") {
-  static readonly layer = Layer.succeed(AgentSdk, AgentSdk.of({ query }));
+  static readonly layer = Layer.effect(AgentSdk, Effect.gen(function* () {
+    const sdk = yield* (yield* ManagedDeps).load("claude");
+    return AgentSdk.of({ query: sdk.query });
+  }));
 }
 
 // SDK が例外を投げた、または result の前にストリームが終わった

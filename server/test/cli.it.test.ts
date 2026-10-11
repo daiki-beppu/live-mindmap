@@ -70,6 +70,7 @@ function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, 
   };
   const layer = Layer.mergeAll(
     NodeServices.layer,
+    forbiddenManagedDeps,
     NodeHttpClient.layerUndici,
     Layer.succeed(AppleIntelligence, AppleIntelligence.of({
       availability: Effect.succeed({ osVersion: "27.0", availability: { status: "unavailable", reason: "modelNotReady" } }),

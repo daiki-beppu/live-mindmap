@@ -32,7 +32,7 @@ export type ListenOptions = {
 
 export type ServerOptions = ListenOptions & {
   depsDir: string;
-  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence>["prepareUpdater"];
+  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | ManagedDeps>["prepareUpdater"];
   helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
 };
 
@@ -54,7 +54,7 @@ export const realLayers = (options: ServerOptions, exportServices: ExportService
   return {
     managedDeps,
     helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(exportServices.pipe(Layer.provide(managedDeps)), NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(managedDeps, exportServices.pipe(Layer.provide(managedDeps)), NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
   };
 };
 

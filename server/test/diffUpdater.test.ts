@@ -1,33 +1,58 @@
 import { defaultClaude } from "../src/modelSelection.ts";
 import { it as effectIt } from "@effect/vitest";
-import { Console, Effect, Exit, FileSystem, Layer } from "effect";
+import { Console, Effect, FileSystem, Layer, Stream } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect, vi } from "vitest";
 import { claudeUpdaterLayer, prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { DiffUpdater, emptyMap } from "../src/core/index.ts";
+import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
+import type { AgentSdk } from "../src/claude.ts";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 
-// SDK が利用できない環境でも Apple を使えることを確かめるため、読み込みを記録して失敗させる。
-const loaded = vi.hoisted(() => ({ claude: 0, sdk: 0 }));
-vi.mock("../src/claude.ts", async (original) => {
-  loaded.claude++;
-  return await original<typeof import("../src/claude.ts")>();
-});
-vi.mock("@anthropic-ai/claude-agent-sdk", () => {
-  loaded.sdk++;
-  throw new Error("ローカルモードで SDK を読み込みました");
-});
+// 置換前の通常依存経路でも、本物の Claude を呼ばない。
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
+const load = vi.fn((_name: string) => Effect.fail(new ManagedDepsFailed({ message: "管理 SDK がありません" })));
+const managedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+  check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"), load,
+}));
 
-effectIt.effect("claude.ts を import できないと UpdaterUnavailable で失敗する", () =>
+effectIt.effect("管理 SDK を読めないと UpdaterUnavailable で失敗する", () =>
   Effect.gen(function* () {
-    const exit = yield* Effect.exit(Layer.build(claudeUpdaterLayer(defaultClaude)));
-    expect(Exit.isFailure(exit)).toBe(true);
-    const err = Exit.isFailure(exit) ? JSON.stringify(exit.cause) : "";
-    expect(err).toContain("UpdaterUnavailable");
-    expect(loaded.claude).toBeGreaterThan(0);
-    expect(loaded.sdk).toBeGreaterThan(0);
+    const result = yield* Effect.result(Layer.build(claudeUpdaterLayer(defaultClaude).pipe(Layer.provide(managedDeps))));
+    expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "UpdaterUnavailable", message: "管理 SDK がありません" } });
   }).pipe(Effect.scoped),
 );
+
+effectIt.effect("Claude の準備で取得した SDK を再読込せず、更新の query を消費側 Scope で閉じる", () => Effect.gen(function* () {
+  const close = vi.fn();
+  const query = vi.fn(() => Object.assign((async function* () {
+    yield { type: "result", subtype: "success", structured_output: { ops: [{ op: "noop", reason: "管理 SDK の応答" }] } };
+  })(), { close })) as unknown as AgentSdk["Service"]["query"];
+  const loaded = vi.fn((_name: string) => Effect.succeed({ query }));
+  const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+    check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"),
+    load: loaded as unknown as ManagedDeps["Service"]["load"],
+  }));
+  const layer = yield* prepareUpdaterLayer(defaultClaude).pipe(Effect.provide(Layer.mergeAll(
+    deps, unusedApple,
+    Layer.succeed(HttpClient.HttpClient, HttpClient.make(() => Effect.die("Claude は HTTP 準備を使いません"))),
+    Layer.succeed(FileSystem.FileSystem, FileSystem.makeNoop({})),
+  )));
+  expect(loaded).toHaveBeenCalledExactlyOnceWith("claude");
+  expect(query).not.toHaveBeenCalled();
+  yield* Effect.gen(function* () {
+    const updater = yield* DiffUpdater;
+    const result = yield* updater.update({ map: emptyMap("定例"), recent: [],
+      fresh: [{ id: "r1", track: "相手", start: 0, end: 1, text: "合成の発言" }],
+    });
+    expect(result.ops).toEqual([{ op: "noop", reason: "管理 SDK の応答" }]);
+    expect(query).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+  }).pipe(Effect.provide(layer));
+  expect(loaded).toHaveBeenCalledTimes(1);
+  expect(close).toHaveBeenCalledOnce();
+}));
 
 const localModel = { name: "apple" as const, route: "apple" as const, local: true as const };
 const localPreparation = (status: number) => {
@@ -43,13 +68,13 @@ const localPreparation = (status: number) => {
     }) } }] }), { status, headers: { "content-type": "application/json" } }));
   }));
   const prepare = prepareUpdaterLayer(localModel).pipe(Effect.provide(apple),
-    Effect.provideService(HttpClient.HttpClient, client), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
+    Effect.provide(managedDeps), Effect.provideService(HttpClient.HttpClient, client), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
   return { prepare, requests };
 };
 
-effectIt.effect("Apple の準備と差分更新が成功しても Claude と Agent SDK を読み込まない", () => Effect.gen(function* () {
+effectIt.effect("Apple の準備と差分更新が成功しても管理 SDK を読み込まない", () => Effect.gen(function* () {
   const fake = localPreparation(200);
-  const before = { ...loaded };
+  const before = load.mock.calls.length;
   const layer = yield* fake.prepare;
   const updater = yield* DiffUpdater.pipe(Effect.provide(layer));
   const result = yield* updater.update({ map: emptyMap("定例"), recent: [],
@@ -57,7 +82,7 @@ effectIt.effect("Apple の準備と差分更新が成功しても Claude と Age
   });
   expect(result.ops).toContainEqual(expect.objectContaining({ op: "add", text: "面接官は3人" }));
   expect(fake.requests).toEqual(["http://127.0.0.1:8766/v1/chat/completions", "http://127.0.0.1:8766/v1/chat/completions"]);
-  expect(loaded).toEqual(before);
+  expect(load.mock.calls.length).toBe(before);
 }));
 
 effectIt.effect("Apple の準備成功時に子の PID・宛先と試験的の二行を標準エラーへ一度出す", () => Effect.gen(function* () {
