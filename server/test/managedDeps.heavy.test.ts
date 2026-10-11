@@ -12,6 +12,7 @@ import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { realLayers } from "../src/server.ts";
 import { temporaryDeps, installed, managedLayer } from "./fixtures/managedDeps.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 import { FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -45,7 +46,9 @@ describe("管理 Chromium の実導入", () => {
       Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
       fakeAudioMix().layer,
     ).pipe(Layer.provideMerge(NodeFileSystem.layer));
-    const server = yield* startedServer(options, realLayers(options, exportServices));
+    const layers = realLayers(options, exportServices);
+    // 差分更新は偽物なので、Claude SDK の確かめは ready に見せる（Chromium は実物）
+    const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });
     const result = yield* Effect.tryPromise(() => new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
       execFile("pnpm", ["cli", "install", "chromium"], {
         cwd: join(import.meta.dirname, "../.."), timeout: 150_000,

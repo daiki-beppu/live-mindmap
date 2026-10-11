@@ -12,6 +12,7 @@ import { fakeExportServices, type ExportServicesOptions } from "./fixtures/expor
 import { startedServer } from "./fixtures/startedServer.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { connect } from "./fixtures/wsClient.ts";
+import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
@@ -30,7 +31,9 @@ const resource = Effect.fnUntraced(function* (options: { updaterLayer?: (model: 
     helper: { command: process.execPath, args: [fakeHelper, script, record] },
     prepareUpdater: (model) => Effect.succeed(options.updaterLayer ? options.updaterLayer(model) : updaterLayer(() => Effect.succeed({ ops: [] }))),
   };
-  const server = yield* startedServer(serverOptions, realLayers(serverOptions, fakeExportServices({ capture: options.capture })));
+  const layers = realLayers(serverOptions, fakeExportServices({ capture: options.capture }));
+  // 差分更新は偽物なので、Claude SDK の確かめは ready に見せる（Chromium は実物）
+  const server = yield* startedServer(serverOptions, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });
   return {
     server, sessionsDir,
     records: async () => (await readFile(record, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; argv: string[] }),
@@ -85,7 +88,7 @@ describe("HTTP 本文の検証（要件8・12）", () => {
         }))).toEqual([]);
         const valid = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify({ app: "us.zoom.xos", audio: false }), undefined));
         expect(valid.status).toBe(200);
-        expect(yield* Effect.tryPromise(() => valid.json())).toEqual({ dir: expect.any(String) });
+        expect(yield* Effect.tryPromise(() => valid.json())).toEqual({ dir: expect.any(String), warnings: [expect.stringContaining("pnpm cli install chromium")] });
       }));
   }
 
@@ -113,7 +116,7 @@ describe("HTTP 本文の検証（要件8・12）", () => {
         const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify(body), undefined));
         expect(response.status).toBe(200);
         const result = yield* Effect.tryPromise(() => response.json() as Promise<{ dir: string }>);
-        expect(result).toEqual({ dir: expect.any(String) });
+        expect(result).toEqual({ dir: expect.any(String), warnings: [expect.stringContaining("pnpm cli install chromium")] });
         const runs = (yield* Effect.tryPromise(r.records)).filter((entry) => entry.type === "run");
         expect(runs).toHaveLength(1);
         const argv = runs[0]!.argv;
