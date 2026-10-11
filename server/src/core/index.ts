@@ -1,4 +1,5 @@
 export * from "./changes.ts";
+export * from "./correction.ts";
 export * from "./diffUpdate.ts";
 export * from "./drawnix.ts";
 export * from "./evaluate.ts";
@@ -33,6 +34,7 @@ export {
   SessionLog,
   StartEvent,
   Track,
+  VocabEvent,
 } from "./session.ts";
 export type { ChangeEntry, DiffInput, DiffResult, DiffUpdateError, ScreenChange, Session, Snapshot, SnapshotNode } from "./session.ts";
 export * from "./settle.ts";

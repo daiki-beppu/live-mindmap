@@ -8,6 +8,7 @@ import { NodeChildProcessSpawner, NodeFileSystem, NodeHttpClient, NodePath, Node
 import { Cause, ConfigProvider, Effect, Exit, type FileSystem, Layer, Logger, Runtime } from "effect";
 import { HttpServer, type HttpClient } from "effect/http";
 import { AudioMix } from "./audioMix.ts";
+import { Readings } from "./readings.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
 import { depsDirConfig, portConfig, sessionsDirConfig } from "./config.ts";
@@ -47,8 +48,8 @@ export type ServerLayers = {
 // 子プロセスの起動に、FileSystem と Path が要る
 const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)));
 
-// 終了時の書き出しが使う Service（撮影・見返し用の HTML のビルド・mix と、その FileSystem）
-export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem, never, ManagedDeps>;
+// 終了時の書き出しが使う Service（撮影・見返し用の HTML のビルド・mix と、その FileSystem）と、利用者が足した語の読みを作る Readings
+export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem, never, ManagedDeps>;
 
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => {
   const managedDeps = ManagedDeps.layer({ root: options.depsDir, cleanupOnStartup: true }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner)));
@@ -104,7 +105,7 @@ if (import.meta.main) {
     const helperPath = helper.path;
     const helperCommand = { command: helperPath, args: [] };
     // 終了時の書き出しの Service は、ここで 1 回だけ組む（書き出しのたびに Layer を作り直さない）
-    const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
+    const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner)), Readings.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
       Layer.provideMerge(NodeFileSystem.layer),
     );
     // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・

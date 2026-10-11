@@ -5,24 +5,27 @@ import { CaptureFailed, MapCapture } from "../../src/capture.ts";
 import type { Snapshot } from "../../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed } from "../../src/review.ts";
 import { fakeAudioMix, type FakeMix } from "./audioMix.ts";
+import { fakeReadings, type FakeReadings } from "./readings.ts";
 
 // 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする
 export const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
 
-// 終了時の書き出しが文脈から受け取る Service（MapCapture・ReviewBuild・AudioMix・FileSystem）の偽物の Layer。
+// 終了時の書き出しが文脈から受け取る Service（MapCapture・ReviewBuild・AudioMix・FileSystem）と、利用者が足した語の読みを作る Readings の偽物の Layer。
 // 通常のテストでは、テストごとに Chromium を起動しないよう、撮影は空のファイルを書くだけにする
 export type ExportServicesOptions = {
   capture?: (snapshot: Snapshot, path: string) => Effect.Effect<void, CaptureFailed>;
   build?: Effect.Effect<string, ReviewPageFailed>;
   mix?: FakeMix;
+  readings?: FakeReadings; // 省略時は、どの語も読みが返らない偽物
   fileSystem?: Layer.Layer<FileSystem.FileSystem>; // 省略時は実物（NodeFileSystem）
 };
 
-export const fakeExportServices = ({ capture, build, mix = fakeAudioMix(), fileSystem = NodeFileSystem.layer }: ExportServicesOptions = {}) =>
+export const fakeExportServices = ({ capture, build, mix = fakeAudioMix(), readings = fakeReadings(), fileSystem = NodeFileSystem.layer }: ExportServicesOptions = {}) =>
   Layer.mergeAll(
     Layer.succeed(MapCapture, MapCapture.of({ capture: capture ?? ((_snapshot, path) => Effect.sync(() => writeFileSync(path, ""))) })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: build ?? Effect.succeed(FAKE_TEMPLATE) })),
     mix.layer,
+    readings.layer,
   ).pipe(Layer.provideMerge(fileSystem));
 
 // 失敗の文面は、警告の「…を書き出せませんでした: <理由>」にそのまま出る

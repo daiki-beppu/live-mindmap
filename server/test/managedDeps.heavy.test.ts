@@ -9,6 +9,7 @@ import { MapCapture } from "../src/capture.ts";
 import { Playwright } from "../src/playwright.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { fakeReadings } from "./fixtures/readings.ts";
 import { realLayers } from "../src/server.ts";
 import { temporaryDeps, installed, managedLayer } from "./fixtures/managedDeps.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
@@ -45,6 +46,7 @@ describe("管理 Chromium の実導入", () => {
       MapCapture.layer.pipe(Layer.provide(Playwright.layer)),
       Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
       fakeAudioMix().layer,
+      fakeReadings().layer,
     ).pipe(Layer.provideMerge(NodeFileSystem.layer));
     const layers = realLayers(options, exportServices);
     // 差分更新は偽物なので、Claude SDK の確かめは ready に見せる（Chromium は実物）

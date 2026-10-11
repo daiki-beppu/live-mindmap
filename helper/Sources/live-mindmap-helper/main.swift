@@ -18,6 +18,7 @@ usage:
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
+  live-mindmap-helper readings <語>...
 """
 
 private func listApps() throws {
@@ -192,6 +193,16 @@ private func main() async -> Int32 {
             case .success(let args):
                 let inputs = try mixInputs(inSession: URL(fileURLWithPath: args.session, isDirectory: true), track: args.track)
                 try await mixRecordings(inputs, to: URL(fileURLWithPath: args.out))
+            }
+        case "readings":
+            switch parseReadingsArguments(Array(arguments.dropFirst())) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
+                return 2
+            case .success(let surfaces):
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                print(String(decoding: try encoder.encode(readings(of: surfaces)), as: UTF8.self))
             }
         default:
             printError(usage)

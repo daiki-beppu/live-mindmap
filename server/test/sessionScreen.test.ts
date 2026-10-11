@@ -547,6 +547,26 @@ describe("ログの読み戻し（共有画面のないログは今までどお�
       expect(withOff.known).toEqual(plain.known);
     }));
 
+  it.effect("vocab の行を挟んでも、復元した状態は挟まないログと変わらない。直した発言は raw があっても text のまま戻り、補正をかけ直さない", () =>
+    Effect.gen(function* () {
+      const diff = { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [], dropped: [] };
+      const vocab = { type: "vocab", words: [{ surface: "港南店", romaji: "kounanten", source: "user" }] };
+      const corrected = {
+        type: "remark",
+        remark: { id: "r1", track: "相手", start: 0, end: 5, text: "港南店に行きます" },
+        raw: "江南店に行きます",
+        words: [{ surface: "江南", romaji: "kounan", location: 0, length: 2 }],
+      };
+      yield* Schema.decodeUnknownEffect(LogEvent)(vocab);
+      const plain = yield* restoreState([start, corrected, diff]);
+      const withVocab = yield* restoreState([start, vocab, corrected, diff]);
+      expect(withVocab.remarks).toEqual(plain.remarks);
+      expect(withVocab.remarks[0]?.text).toBe("港南店に行きます");
+      expect(withVocab.round).toBe(plain.round);
+      expect(withVocab.map).toEqual(plain.map);
+      expect(withVocab.known).toEqual(plain.known);
+    }));
+
   it.effect("pushScreenOff で書いた行を含むログを restoreState で戻しても、壊れた行にならない", () =>
     Effect.gen(function* () {
       const { session, events } = yield* setup();
