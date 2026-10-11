@@ -6,6 +6,7 @@ import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
+import { CLICK_ZOOM_FACTOR, pinchZoomFactor, zoomAtPoint } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { KIND_COLOR } from "../src/kinds.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
@@ -375,7 +376,7 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
     return [fit.x + dx, fit.y + dy, fit.zoom];
   };
   const wheel = (over: Partial<typeof Message.WheeledMapSurface.Type> = {}) =>
-    Message.WheeledMapSurface({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0, ...over });
+    Message.WheeledMapSurface({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0, x: 0, y: 0, ...over });
   const press = (over: Partial<typeof Message.PressedMapSurface.Type> = {}) => Message.PressedMapSurface({ clientX: 100, clientY: 100, button: 0, ctrlKey: false, insideNoPan: false, ...over });
   const moved = (clientX: number, clientY: number) => Message.MovedPointer({ clientX, clientY, buttons: 1 });
 
@@ -450,6 +451,79 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
       Mount.resolve(ObserveMapSurface, wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })),
       tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("still", 0, 0))),
     );
+  });
+});
+
+describe("mapSurface の Scene: ズーム（ビューポートの transform が、今と同じ式で変わる）", () => {
+  // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は given の Model に入れ、ズームの Message を resolve する 1 回に使う
+  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => ({ ...modelOf(snap(nodes()), mode), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) });
+  const fitOf = (minZoom: number): { x: number; y: number; zoom: number } => {
+    const positions = layout(nodes(), HEIGHTS);
+    const rects = nodes().map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
+    return getViewportForBounds(fitBounds(rects), SIZE.width, SIZE.height, minZoom, 2, 0.1);
+  };
+  const POINT = { x: 300, y: 200 };
+  const transformOf = (v: { x: number; y: number; zoom: number }) => [v.x, v.y, v.zoom];
+  const zoomedLive = (factor: number) => transformOf(zoomAtPoint(fitOf(0.5), POINT, factor));
+  const wheel = (over: Partial<typeof Message.WheeledMapSurface.Type> = {}) =>
+    Message.WheeledMapSurface({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0, ...POINT, ...over });
+  const click = (over: Partial<typeof Message.ClickedMapSurfaceWithModifier.Type> = {}) =>
+    Message.ClickedMapSurfaceWithModifier({ ...POINT, ctrlKey: false, metaKey: false, altKey: false, ...over });
+
+  it("live: Ctrl＋ホイールで、ポインタの位置を中心に pinchZoomFactor の倍率だけ transform が変わる", () => {
+    const factor = pinchZoomFactor({ deltaY: -100, deltaMode: 0, ctrlKey: true }, false);
+    expect(factor).not.toBe(1);
+    scene(
+      app,
+      given(measuredModel("live")),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), transformOf(fitOf(0.5)))),
+      Mount.resolve(ObserveMapSurface, wheel({ ctrlKey: true, deltaY: -100 })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), zoomedLive(factor))),
+    );
+  });
+
+  it("live: ⌘＋クリックで 1.5 倍、Ctrl＋Alt＋クリックで 1/1.5 倍", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, click({ metaKey: true })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), zoomedLive(CLICK_ZOOM_FACTOR))),
+    );
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, click({ ctrlKey: true, altKey: true })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), zoomedLive(1 / CLICK_ZOOM_FACTOR))),
+    );
+  });
+
+  it("live: Safari の gesture の scale の変化で、点を中心にその比だけ transform が変わる", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, Message.ChangedMapSurfaceGesture({ scale: 1.25, ...POINT })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), zoomedLive(1.25))),
+    );
+  });
+
+  it("live: gesture の開始の Message 自体は transform を動かさない", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, Message.StartedMapSurfaceGesture()),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), transformOf(fitOf(0.5)))),
+    );
+  });
+
+  it("still: Ctrl＋ホイール・⌘＋クリック・gesture のどれでも transform は動かない", () => {
+    for (const message of [wheel({ ctrlKey: true, deltaY: -100 }), click({ metaKey: true }), Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })]) {
+      scene(
+        app,
+        given(measuredModel("still")),
+        Mount.resolve(ObserveMapSurface, message),
+        tap((simulation) => expectNumbers(viewportTransform(simulation.html), transformOf(fitOf(0.02)))),
+      );
+    }
   });
 });
 

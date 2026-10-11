@@ -1,4 +1,4 @@
-// マップの表示面（Issue #814・#815）が受ける Message。Mount と Subscription は DOM で起きた事実だけを届け、パンの量・軸・クリックかドラッグかの判定は update が行う
+// マップの表示面（Issue #814・#815・#816）が受ける Message。Mount と Subscription は DOM で起きた事実だけを届け、パンの量・軸・クリックかドラッグかの判定とズームの倍率・比の計算は update が行う
 import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
 import { Snapshot } from "../../../../server/src/core/index.ts";
@@ -17,8 +17,10 @@ export const Message = defineMessageUnion({
   ClickedFoldDot: { nodeId: Schema.String },
   // 縁の点を押した（寄せるカメラの動きは後の issue）
   ClickedEdgeDot: { nodeId: Schema.String },
-  // 表示面の上の wheel。timeStamp はイベントの時刻（ms）
+  // 表示面の上の wheel。timeStamp はイベントの時刻（ms）。x・y はポインタの位置（表示面の左上が原点）
   WheeledMapSurface: {
+    x: Schema.Finite,
+    y: Schema.Finite,
     deltaX: Schema.Finite,
     deltaY: Schema.Finite,
     deltaMode: Schema.Finite,
@@ -27,6 +29,12 @@ export const Message = defineMessageUnion({
     metaKey: Schema.Boolean,
     timeStamp: Schema.Finite,
   },
+  // 表示面で ⌘/Ctrl を押しながら click した（ノードの選択には届かない）。x・y は押した位置（表示面の左上が原点）
+  ClickedMapSurfaceWithModifier: { x: Schema.Finite, y: Schema.Finite, ctrlKey: Schema.Boolean, metaKey: Schema.Boolean, altKey: Schema.Boolean },
+  // Safari の gesture（トラックパッドのピンチ）が始まった
+  StartedMapSurfaceGesture: {},
+  // Safari の gesture が変わった。scale は始まりからの累積の倍率（前回との比は update が求める）。x・y は位置（表示面の左上が原点）
+  ChangedMapSurfaceGesture: { scale: Schema.Finite, x: Schema.Finite, y: Schema.Finite },
   // --- 親から ---
   // マップ（Snapshot）が新しくなった（差分更新の反映）。位置は補間で新しい目標へ移る
   ChangedSnapshot: { snapshot: Snapshot },
