@@ -7,7 +7,7 @@ import { init, Model, makeUpdate, snapshotOf } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { initialPlayback, PLAYBACK_RATES } from "../src/reviewPlayback.ts";
-import { snapshotAt } from "../src/reviewTimeline.ts";
+import { snapshotAt, topicNameOf } from "../src/reviewTimeline.ts";
 import * as MapSurface from "../src/app/mapSurface/main.ts";
 import { cameraFocus, fitViewport, screenPoint, USER_MAX_ZOOM } from "../src/camera.ts";
 import { NODE_WIDTH } from "../src/layout.ts";
@@ -259,6 +259,53 @@ describe("見返しの update: 表示面のカメラ", () => {
         expect(m.mapSurface.viewport).toEqual(base.mapSurface.viewport);
       }),
     );
+  });
+
+  // 時刻の変更で Snapshot が別のものになったら、表示面へ ChangedSnapshot を渡して補間を捨てた結果が viewport になる
+  const expectedAfter = (before: Model, to: number) =>
+    MapSurface.skipMotion(
+      MapSurface.update({ mode: "review", snapshot: snapshotAt(context.timeline, before.playback.time), ...before.mapSurface }, MapSurfaceMessage.ChangedSnapshot({ snapshot: snapshotAt(context.timeline, to) })).model,
+    );
+  const expectFollowed = (before: Model, after: Model, to: number) => {
+    const expected = expectedAfter(before, to);
+    expect(after.playback.time).toBe(to);
+    expect(after.mapSurface.viewport.x).toBeCloseTo(expected.viewport.x, 9);
+    expect(after.mapSurface.viewport.y).toBeCloseTo(expected.viewport.y, 9);
+    expect(after.mapSurface.viewport.zoom).toBeCloseTo(expected.viewport.zoom, 9);
+    expect(after.mapSurface.viewport).not.toEqual(before.mapSurface.viewport);
+  };
+
+  it("自動・測定済みで prev すると、viewport が移動先の Snapshot へ寄せ直される", () => {
+    const before = measured(at(30));
+    expect(topicNameOf(snapshotOf(context, before))).not.toBe(topicNameOf(snapshotAt(context.timeline, 10)));
+    story(update, given(before), message(Message.ClickedPrev()), model((m) => expectFollowed(before, m, 10)));
+  });
+
+  it("自動・測定済みで next すると、viewport が移動先の Snapshot へ寄せ直される", () => {
+    const before = measured(at(10));
+    story(update, given(before), message(Message.ClickedNext()), model((m) => expectFollowed(before, m, 30)));
+  });
+
+  it("自動・測定済みで再生が進んで Snapshot が変わると（TickedFrame）、viewport が寄せ直される", () => {
+    const start = measured(at(5));
+    const before = { ...start, playback: { ...start.playback, playing: true, rate: 1 } };
+    story(update, given(before), message(Message.TickedFrame({ ms: 5000 })), model((m) => expectFollowed(before, m, 10)));
+  });
+
+  it("自動・測定済みで曲が終わると（EndedAudio）、viewport が寄せ直される", () => {
+    const start = measured(at(10));
+    const before = { ...start, playback: { ...start.playback, playing: true, rate: 1 } };
+    story(update, given(before), message(Message.EndedAudio()), model((m) => expectFollowed(before, m, 30)));
+  });
+
+  it("Snapshot が変わらない時刻変更と、時刻を変えない操作では mapSurface を変えない", () => {
+    const before = measured(at(10));
+    const start = { ...before, playback: { ...before.playback, playing: true, rate: 1 } };
+    story(update, given(start), message(Message.TickedFrame({ ms: 19000 })), model((m) => {
+      expect(m.playback.time).toBe(29);
+      expect(m.mapSurface).toEqual(before.mapSurface);
+    }));
+    expect(update(before, Message.ClickedMute()).model.mapSurface).toEqual(before.mapSurface);
   });
 });
 

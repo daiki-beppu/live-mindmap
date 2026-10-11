@@ -93,15 +93,16 @@ const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode:
 type Return = Update.Return<Model, Message>;
 
 export const makeUpdate = (context: Context) => {
+  // 見返しには補間を進める Subscription が無く、補間を始めると始まりの位置で止まるので、motion は保存しない。
+  // 補間を捨てた最終配置にカメラを合わせてから保存する（view が描く位置とカメラの計算を一致させる）
+  const storeSurface = (model: Model, surface: MapSurface.Model): Model => {
+    const { mode: _mode, snapshot: _snapshot, ...next } = MapSurface.skipMotion(surface);
+    return modifyFields(model, { mapSurface: () => next });
+  };
   const foldMapSurface = Update.foldChild({
     update: MapSurface.update,
     read: (model: Model) => Option.some(surfaceOf(context, model)),
-    // 見返しには補間を進める Subscription が無く、補間を始めると始まりの位置で止まるので、motion は保存しない。
-    // 補間を捨てた最終配置にカメラを合わせてから保存する（view が描く位置とカメラの計算を一致させる）
-    write: (model: Model, surface: MapSurface.Model) => {
-      const { mode: _mode, snapshot: _snapshot, ...next } = MapSurface.skipMotion(surface);
-      return modifyFields(model, { mapSurface: () => next });
-    },
+    write: (model: Model, surface: MapSurface.Model) => storeSurface(model, surface),
     toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }),
     // 選択は表示面の viewing が持つので、ノードが選ばれたこと（SelectedNode）は見返しでは受け流す
     foldOutMessage: () => (model: Model) => ({ model }),
@@ -146,7 +147,15 @@ export const makeUpdate = (context: Context) => {
     foldOutMessage: () => () => (model: Model) => ({ model }),
   });
   // 時刻が変わったときだけ <audio> の currentTime に書く（書かないと、次の timeupdate で元の時刻へ戻る）
-  const reduce = (model: Model, event: PlaybackEvent): Model => modifyFields(model, { playback: (playback) => playbackReducer(playback, event, context.playback) });
+  // 時刻の変更で Snapshot が別のものになったときは、表示面へ ChangedSnapshot を渡してカメラを寄せ直す（自動で、大きさを測った後だけ。それ以外は playback だけを更新する）
+  const reduce = (model: Model, event: PlaybackEvent): Model => {
+    const playback = playbackReducer(model.playback, event, context.playback);
+    const replaced = modifyFields(model, { playback: () => playback });
+    const before = snapshotAt(context.timeline, model.playback.time);
+    const after = snapshotAt(context.timeline, playback.time);
+    if (before === after || model.mapSurface.viewing.mode !== "auto" || Option.isNone(model.mapSurface.size)) return replaced;
+    return storeSurface(replaced, MapSurface.changedSnapshot(surfaceOf(context, model), after));
+  };
   const hasAudio = Option.isSome(context.maybeAudioUrl);
   const moved = (model: Model, event: PlaybackEvent): Return => {
     const next = reduce(model, event);

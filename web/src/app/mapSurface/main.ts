@@ -336,6 +336,9 @@ export const skipMotion = (model: Model): Model =>
 // キー・時間の出来事を見る状態へ渡す（still は受けない）
 const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
 
+// 親（見返し）が、時刻の変更で Snapshot が別のものになったことを表示面へ伝える入口（子の Message を親が組み立てずに済む）
+export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => update(model, Message.ChangedSnapshot({ snapshot })).model;
+
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     MeasuredMapSurface: ({ width, height, nodeHeights }) => {
