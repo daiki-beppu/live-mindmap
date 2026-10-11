@@ -64,10 +64,10 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     name: heavy IT (${{ matrix.shard }}/4)
-    env:
-      LIVE_MINDMAP_DEPS: ${{ runner.temp }}/deps
     steps:
       - uses: actions/checkout@v7
+      # ジョブの env では runner.temp を使えないので、ステップで管理ディレクトリの置き場所を決める
+      - run: echo "LIVE_MINDMAP_DEPS=$RUNNER_TEMP/deps" >> "$GITHUB_ENV"
       - uses: pnpm/setup@v3
         with:
           runtime: node@24
