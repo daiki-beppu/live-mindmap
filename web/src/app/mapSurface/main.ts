@@ -5,12 +5,13 @@ import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
-import { fitViewport, OVERVIEW_MIN_ZOOM, scrollAlongAxis, scrollAxis, scrollPanDelta, USER_MAX_ZOOM, USER_MIN_ZOOM, type Rect, type Viewport } from "../../camera.ts";
-import { MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
+import { edgeDots, fitViewport, OVERVIEW_MIN_ZOOM, scrollAlongAxis, scrollAxis, scrollPanDelta, USER_MAX_ZOOM, USER_MIN_ZOOM, type Rect, type Viewport } from "../../camera.ts";
+import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
 import { foldView, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
+import { foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type VisibleTree } from "../../viewing.ts";
 import "./mapSurface.css";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -18,6 +19,7 @@ import { ObserveMapSurface } from "./mount.ts";
 // still は map.png の撮影用で、畳まず、大きなマップも全体を収める。live は会議中・見返しで、畳み、倍率を人の範囲に収める
 // 動きの状態（Issue #817）: motion は差分更新や高さの変化で目標の位置が変わったときの補間で、start は補間の始まりの位置（id → 位置）、elapsedMs は始めてからの経過 ms。補間していないときは None。
 // 表示する位置と目標の位置は Model に持たず、displayedPositions が motion と目標から毎回導く
+// 見る状態（Issue #818）: viewing は選んだノードと人が開いた・畳んだ・解いた集合（カメラの状態も持つが、カメラの動きは後の issue）。意味は reduceViewing が決め、update が Message から出来事を作って渡す
 // パンの状態: pan はフィットした位置に足す画面上の平行移動（倍率に依らない）。pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
 export const Model = Schema.Struct({
   mode: Schema.Literals(["still", "live"]),
@@ -30,6 +32,7 @@ export const Model = Schema.Struct({
   nodePress: Schema.Option(Schema.Struct({ nodeId: Schema.String, x: Schema.Finite, y: Schema.Finite, dragged: Schema.Boolean })),
   scrollAxisLock: Schema.Option(Schema.Struct({ axis: Schema.Literals(["x", "y"]), at: Schema.Finite })),
   motion: Schema.Option(Schema.Struct({ start: Schema.HashMap(Schema.String, Schema.Struct({ x: Schema.Finite, y: Schema.Finite })), elapsedMs: Schema.Finite })),
+  viewing: ViewingState,
 });
 export type Model = typeof Model.Type;
 
@@ -44,18 +47,38 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   nodePress: Option.none(),
   scrollAxisLock: Option.none(),
   motion: Option.none(),
+  viewing: INITIAL_VIEWING,
 });
 
 // 補間の長さ（ms）。web/src/useAnimatedPositions.ts の DURATION_MS と同じ（React 版の部品には触らないので、ここに別に置く）
 const MOTION_DURATION_MS = 500;
 
-const NO_IDS: ReadonlySet<string> = new Set();
-
-// 畳んだ後に見せるノード。still は畳まない
-const shownNodesOf = (model: Model): SnapshotNode[] => (model.mode === "live" ? foldView(model.snapshot, NO_IDS, null, NO_IDS, NO_IDS).nodes : model.snapshot.nodes);
+// 畳んだ見せ方。人が開いた・畳んだ・解いた集合と選んだノードを渡して導く。still は畳まない
+const foldViewOf = (model: Model): FoldView | null => {
+  if (model.mode !== "live") return null;
+  const { opened, folded, unbundled } = humanSetsOf(model.viewing);
+  return foldView(model.snapshot, opened, model.viewing.selection?.id ?? null, folded, unbundled);
+};
+// 畳んだ後に見せるノード
+const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
 const heightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights));
 // 補間の行き先（目標の位置）
 const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), heightsOf(model));
+
+// 見えている木。reduceViewing の入力で、丸を描くかの判定（foldToggle）にも同じものを使う。MapView.tsx の tree と同じ組み立て
+const treeOf = (model: Model, view: FoldView | null): VisibleTree => {
+  const shown = view?.nodes ?? model.snapshot.nodes;
+  return {
+    ids: shown.map((n) => n.id),
+    targets: layout(shown, heightsOf(model)),
+    parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
+    foldState: view
+      ? Object.fromEntries(shown.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"]))
+      : {},
+    runs: view?.runs ?? {},
+    currentTopic: model.snapshot.currentTopic,
+  };
+};
 
 // 今見せている位置。補間中は始まりと目標の間（easeOutCubic）、そうでなければ目標
 export const displayedPositions = (model: Model): Record<string, Position> => {
@@ -82,6 +105,12 @@ const followTarget = (before: Model, after: Model): Model => {
   return modifyFields(after, {
     motion: () => (samePositions(start, target) ? Option.none() : Option.some({ start: HashMap.fromIterable(Object.entries(start)), elapsedMs: 0 })),
   });
+};
+
+// 見る状態に出来事を渡す。Message を受ける前の Model から作った木で reduceViewing を呼ぶ（押した時点の木）。カメラの指示は後の issue まで使わない。開閉・選択で目標の位置が変わるので補間を始める
+const applyViewing = (model: Model, event: ViewingEvent): Model => {
+  const { state } = reduceViewing(model.viewing, event, treeOf(model, foldViewOf(model)));
+  return followTarget(model, modifyFields(model, { viewing: () => state }));
 };
 
 type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
@@ -144,14 +173,17 @@ export const update = (model: Model, message: Message): Return =>
       model: modifyFields(model, { pointer: () => Option.none(), nodePress: (press) => (ctrlKey || metaKey ? Option.none() : press) }),
     }),
     CanceledPointer: () => ({ model: modifyFields(model, { pointer: () => Option.none() }) }),
-    // 押した記録の無い click（キーボード）と、別のノードの click は選ぶ。押したノードの click は記録を使い切り、ドラッグ（途中で超えた・押した位置から離れて離した）なら選ばない
+    // 押した記録の無い click（キーボード）と、別のノードの click は選ぶ。押したノードの click は記録を使い切り、ドラッグ（途中で超えた・押した位置から離れて離した）なら選ばない。
+    // まとめのノード（run:）は選ばない（MapView.tsx のまとめの onSelect と同じ）
     ClickedNodeButton: ({ nodeId, clientX, clientY }) => {
       const press = Option.filter(model.nodePress, (p) => p.nodeId === nodeId);
-      if (Option.isNone(press)) return { model, outMessage: OutMessage.SelectedNode({ nodeId }) };
-      const consumed = modifyFields(model, { nodePress: () => Option.none() });
-      const isDrag = press.value.dragged || awayFrom(press.value, clientX, clientY);
-      return isDrag ? { model: consumed } : { model: consumed, outMessage: OutMessage.SelectedNode({ nodeId }) };
+      const consumed = Option.isNone(press) ? model : modifyFields(model, { nodePress: () => Option.none() });
+      const dragged = Option.isSome(press) && (press.value.dragged || awayFrom(press.value, clientX, clientY));
+      if (dragged || foldViewOf(model)?.summaries.has(nodeId) === true) return { model: consumed };
+      return { model: applyViewing(consumed, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
     },
+    ClickedFoldDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "foldDot", id: nodeId }) }),
+    ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
     WheeledMapSurface: ({ deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
       if (model.mode !== "live") return { model };
       // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方の軸だけを、生の量で動かす。軸は入力の時刻で決める
@@ -185,26 +217,37 @@ const classes = (...names: ReadonlyArray<string | false>): string => names.filte
 
 type H = HtmlBuilder<Message>;
 
-function nodeBody(h: H, node: SnapshotNode, view: FoldView | null): Html {
+// selected・toggle・opened は live のときだけ意味を持つ（still は選択も丸も描かない）。toggle は foldToggle の結果（null は開閉できない）
+function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, toggle: ReturnType<typeof foldToggle>, opened: boolean): Html {
   const fold = view?.folds[node.id] ?? null;
   const mark = markOf(node);
   return h.div(
     [
-      h.Class(classes("map-node", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", fold !== null && "map-node--folded", view?.blink.has(node.id) === true && "map-node--blink", "nopan")),
+      h.Class(
+        classes("map-node", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
+      ),
       h.Style({ "--kind-color": KIND_COLOR[node.kind] }),
     ],
     [
       h.button(
-        [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed("false")],
+        [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected))],
         [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
       ),
-      fold === null ? null : h.span([h.Class("map-node__count")], [String(fold.hidden)]),
+      fold === null
+        ? null
+        : toggle === null
+          ? h.span([h.Class("map-node__count")], [String(fold.hidden)])
+          : h.button([h.Type("button"), h.Class(`map-node__count ${FOLD_DOT_CLASSES[0]}`), h.AriaLabel("開く"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], [String(fold.hidden)]),
+      fold === null && opened && toggle !== null ? h.button([h.Type("button"), h.Class(FOLD_DOT_CLASSES[1]), h.AriaLabel("畳む"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], []) : null,
     ],
   );
 }
 
 export const view = Submodel.defineView<Model, Message>((model, h): Html => {
-  const view_ = model.mode === "live" ? foldView(model.snapshot, NO_IDS, null, NO_IDS, NO_IDS) : null;
+  const view_ = foldViewOf(model);
+  const tree = view_ === null ? null : treeOf(model, view_);
+  const selectedId = view_ === null ? null : (model.viewing.selection?.id ?? null);
+  const { opened } = humanSetsOf(model.viewing);
   const shown = view_?.nodes ?? model.snapshot.nodes;
   const heights = heightsOf(model);
   const positions = displayedPositions(model);
@@ -231,12 +274,40 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
         h.DataAttribute("node-id", node.id),
         h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
       ],
-      [nodeBody(h, node, view_)],
+      [nodeBody(h, node, view_, node.id === selectedId, tree === null ? null : foldToggle(tree, node.id), view_ !== null && opened.has(node.id))],
     ),
+  );
+
+  // 縁の点: 画面の外で変わったノードを、live で人が動かして止めているか全体を見ている間だけ描く。位置は目標の位置と高さで測る
+  const dots =
+    view_ === null || tree === null || model.viewing.mode === "auto"
+      ? []
+      : Option.match(model.size, {
+          onNone: () => [],
+          onSome: (size) =>
+            edgeDots(
+              tree.ids.filter((id) => view_.blink.has(id) && HashMap.has(model.nodeHeights, id)),
+              tree.targets,
+              Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, { height }])),
+              viewport,
+              size,
+            ),
+        });
+  const edgeDotButtons = dots.map((dot) =>
+    h.keyed("button")(dot.id, [
+      h.Type("button"),
+      h.Class("edge-dot nopan nowheel"),
+      h.Style({ left: `${dot.x}px`, top: `${dot.y}px` }),
+      h.AriaLabel(`画面の外で変わったノードへ寄る（${dot.ids.length} 件）`),
+      h.OnClick(Message.ClickedEdgeDot({ nodeId: dot.id })),
+    ]),
   );
 
   return h.div(
     [h.Class("map-surface"), h.OnMount(ObserveMapSurface())],
-    [h.div([h.Class("map-viewport"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges")], edges), h.div([h.Class("map-nodes")], nodes)])],
+    [
+      h.div([h.Class("map-viewport"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges")], edges), h.div([h.Class("map-nodes")], nodes)]),
+      ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots")], edgeDotButtons)]),
+    ],
   );
 });

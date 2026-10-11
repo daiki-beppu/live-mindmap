@@ -17,7 +17,7 @@ import { ObserveAudio } from "./mount.ts";
 
 export const Model = Schema.Struct({
   playback: PlaybackState,
-  // 表示面の状態のうち、見返しが導く mode・snapshot を除いたもの（実測・パン・補間の状態）
+  // 表示面の状態のうち、見返しが導く mode・snapshot を除いたもの（実測・パン・補間・見る状態）
   mapSurface: Schema.Struct({
     size: MapSurface.Model.fields.size,
     nodeHeights: MapSurface.Model.fields.nodeHeights,
@@ -27,6 +27,7 @@ export const Model = Schema.Struct({
     nodePress: MapSurface.Model.fields.nodePress,
     scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
     motion: MapSurface.Model.fields.motion,
+    viewing: MapSurface.Model.fields.viewing,
   }),
 });
 export type Model = typeof Model.Type;
@@ -49,7 +50,7 @@ export const makeUpdate = (context: Context) => {
     // 見返しには補間を進める Subscription が無く、補間を始めると始まりの位置で止まるので、motion は保存しない
     write: (model: Model, { mode: _mode, snapshot: _snapshot, ...next }: MapSurface.Model) => modifyFields(model, { mapSurface: () => modifyFields(next, { motion: () => Option.none() }) }),
     toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }),
-    // ノードが選ばれたこと（SelectedNode）は、選択を扱う issue（#818）まで見返しでは受け流す
+    // 選択は表示面の viewing が持つので、ノードが選ばれたこと（SelectedNode）は見返しでは受け流す
     foldOutMessage: () => (model: Model) => ({ model }),
   });
   // 時刻が変わったときだけ <audio> の currentTime に書く（書かないと、次の timeupdate で元の時刻へ戻る）

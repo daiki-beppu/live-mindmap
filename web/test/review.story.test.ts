@@ -175,3 +175,25 @@ describe("見返しの update: 表示面の実測", () => {
     );
   });
 });
+
+// 見る状態（Issue #818）は表示面の Model.viewing に持ち、見返しの Model.mapSurface に持ち越される（時刻を動かしても残る）
+describe("見返しの update: 表示面の見る状態", () => {
+  it("初期は自動のカメラ・選択なしで、本物の Model に通る", () => {
+    expect(init(context).mapSurface.viewing).toEqual({ mode: "auto" });
+    expect(Schema.is(Model)(init(context))).toBe(true);
+  });
+
+  it("表示面のノードを click して選ぶと mapSurface.viewing に入り、時刻を動かしても残る", () => {
+    story(
+      update,
+      given(at(30)),
+      message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "t2", clientX: 0, clientY: 0 }) })),
+      model((m) => expect(m.mapSurface.viewing).toEqual({ mode: "auto", selection: { id: "t2", byKey: false } })),
+      message(Message.ClickedPrev()),
+      model((m) => {
+        expect(m.playback.time).toBe(10);
+        expect(m.mapSurface.viewing).toEqual({ mode: "auto", selection: { id: "t2", byKey: false } });
+      }),
+    );
+  });
+});

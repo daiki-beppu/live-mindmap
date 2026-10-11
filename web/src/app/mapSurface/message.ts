@@ -13,6 +13,10 @@ export const Message = defineMessageUnion({
   PressedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },
   // ノードのボタンの click（キーボードの click も含む）
   ClickedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },
+  // 隠れた数の丸・畳む小さな丸を押した（開閉の意味は update が reduceViewing で決める）
+  ClickedFoldDot: { nodeId: Schema.String },
+  // 縁の点を押した（寄せるカメラの動きは後の issue）
+  ClickedEdgeDot: { nodeId: Schema.String },
   // 表示面の上の wheel。timeStamp はイベントの時刻（ms）
   WheeledMapSurface: {
     deltaX: Schema.Finite,

@@ -1,11 +1,12 @@
+import { Schema } from "effect";
 import type { Position } from "./layout.ts";
 
 // 見る状態: 自動のカメラに任せているか（auto）、人が動かして止めているか（manual）、全体を見ているか（overview）。
 // manual は止めた時点の今の議題を覚える。overview は F を押した時点の今の議題と、F で戻る先（before）を覚える。
-type CameraViewing =
-  | { mode: "auto" }
-  | { mode: "manual"; topic: string | undefined }
-  | { mode: "overview"; topic: string | undefined; before: { mode: "auto" } | { mode: "manual"; topic: string | undefined } };
+const AutoCamera = Schema.Struct({ mode: Schema.Literal("auto") });
+const ManualCamera = Schema.Struct({ mode: Schema.Literal("manual"), topic: Schema.UndefinedOr(Schema.String) });
+const OverviewCamera = Schema.Struct({ mode: Schema.Literal("overview"), topic: Schema.UndefinedOr(Schema.String), before: Schema.Union([AutoCamera, ManualCamera]) });
+type CameraViewing = typeof AutoCamera.Type | typeof ManualCamera.Type | typeof OverviewCamera.Type;
 
 // カメラの状態に重ねる、独立した出し入れの状態。開いている・隠しているときだけ true を持つ（そうでなければフィールドを置かない）。
 // keyList: キー一覧が開いている / sideHidden: 右の列を隠している / captionsHidden: 字幕を隠している
@@ -13,15 +14,21 @@ type CameraViewing =
 // humanOpened・humanFolded: 人が開いた・畳んだ議題・論点（空ならフィールドを置かない。同じ ID が両方に入ることはない）。Esc でだけ全部解け、
 // 人が畳んだ議題が今の議題になると、その議題の畳みだけ解ける
 // humanUnbundled: 人が「議題 N 件」を解いたときに、そこに入っていた議題の ID（run: の ID は持たない。空ならフィールドを置かない）。Esc でだけ解ける
-type Overlay = {
-  keyList?: true;
-  sideHidden?: true;
-  captionsHidden?: true;
-  selection?: { id: string; byKey: boolean };
-  humanOpened?: ReadonlySet<string>;
-  humanFolded?: ReadonlySet<string>;
-  humanUnbundled?: ReadonlySet<string>;
+const overlayFields = {
+  keyList: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
+  sideHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
+  captionsHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
+  selection: Schema.optionalKey(Schema.mutableKey(Schema.Struct({ id: Schema.String, byKey: Schema.Boolean }))),
+  humanOpened: Schema.optionalKey(Schema.mutableKey(Schema.ReadonlySet(Schema.String))),
+  humanFolded: Schema.optionalKey(Schema.mutableKey(Schema.ReadonlySet(Schema.String))),
+  humanUnbundled: Schema.optionalKey(Schema.mutableKey(Schema.ReadonlySet(Schema.String))),
 };
+type Overlay = Schema.Struct.Type<typeof overlayFields>;
+export const ViewingState = Schema.Union([
+  Schema.Struct({ ...AutoCamera.fields, ...overlayFields }),
+  Schema.Struct({ ...ManualCamera.fields, ...overlayFields }),
+  Schema.Struct({ ...OverviewCamera.fields, ...overlayFields }),
+]);
 const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
 const HUMAN_KEYS = ["humanOpened", "humanFolded", "humanUnbundled"] as const satisfies readonly (keyof Overlay)[];
 
@@ -30,7 +37,7 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 export function humanSetsOf(state: ViewingState): { opened: ReadonlySet<string>; folded: ReadonlySet<string>; unbundled: ReadonlySet<string> } {
   return { opened: state.humanOpened ?? EMPTY_SET, folded: state.humanFolded ?? EMPTY_SET, unbundled: state.humanUnbundled ?? EMPTY_SET };
 }
-export type ViewingState = CameraViewing & Overlay;
+export type ViewingState = typeof ViewingState.Type;
 
 // キーボードで倍率・位置を変えるキー。Shift なしの矢印は、ノードの選択に空けておく
 export type ViewKey = "=" | "-" | "0" | "F" | "Z" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
