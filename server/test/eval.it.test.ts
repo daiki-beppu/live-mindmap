@@ -1,17 +1,19 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
+import { evalManagedDeps } from "./fixtures/evalManagedDeps.ts";
 // 回帰評価（eval コマンド）。fixture は合成データで、実際の録音サンプルは使わない。
 import { readFileSync, writeFileSync } from "node:fs";
 import { appendFile, copyFile, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
-import { ConfigProvider, Console, Effect, Layer, Predicate, Result, Schema } from "effect";
+import { Cause, ConfigProvider, Console, Effect, Exit, Layer, Predicate, Result, Schema } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { describe, expect, it } from "@effect/vitest";
 import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
+import * as cliEntry from "../src/cli.ts";
 import { type DiffInput, type DiffUsage, type Op, type Snapshot, Truth } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
@@ -19,7 +21,10 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 // play の updater と配信を差し替える。評価の対象は保存されたマップなので、配信は偽物でよい
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
-vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
+vi.mock("../src/claude.ts", async (importOriginal) => ({
+  ...(await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()),
+  AgentSdk: (await importOriginal<typeof import("../src/claude.ts")>()).AgentSdk,
+}));
 // 配信の待受け（openListener）だけを偽物にする。serveFeed・portOf は本物のまま
 vi.mock("../src/http.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../src/http.ts")>(),
@@ -35,12 +40,14 @@ beforeEach(() => {
 // 旧 CliDeps の置き換え。保存先は ConfigProvider、標準出力は Console、撮影は MapCapture の Layer
 function dependencies(sessionsDir: string) {
   const stdout: string[] = [];
+  const stderr: string[] = [];
   const consoleService: Console.Console = {
     ...console,
     log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
+    error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); },
   };
   const layer = Layer.mergeAll(
-    NodeServices.layer, unusedApple, readyManagedDeps,
+    NodeServices.layer, unusedApple, evalManagedDeps("ready").layer,
     NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, consoleService),
@@ -51,7 +58,7 @@ function dependencies(sessionsDir: string) {
     fakeAudioMix().layer,
     fakeScreenJpeg().layer,
   );
-  return { layer, stdout };
+  return { layer, stdout, stderr };
 }
 
 // タグ付きの失敗から、タグと自身のフィールドを取り出す（フィールド名に依存しない観測のため）
@@ -162,6 +169,82 @@ const writeTruth = (truth: unknown) =>
     yield* Effect.promise(() => writeFile(path, typeof truth === "string" ? truth : JSON.stringify(truth)));
     return path;
   });
+
+describe("eval: 管理 SDK の不足（Issue #707）", () => {
+  it.effect("--model claude の読込失敗は stdout 空・指定の3行の stderr・exit 3 で終わる", () => Effect.gen(function* () {
+    const source = yield* play(scriptA);
+    const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-deps-")));
+    yield* Effect.addFinalizer(() => Effect.promise(() => rm(sessionsDir, { recursive: true, force: true })));
+    const deps = dependencies(sessionsDir);
+    const managed = evalManagedDeps("missing");
+    external.openClaudeUpdater.mockClear();
+    const exit = yield* Effect.exit(runCli(["eval", source, "--model", "claude"]).pipe(
+      Effect.provide(Layer.mergeAll(deps.layer, managed.layer)),
+    ));
+    expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) throw new Error("不足した SDK で評価が成功しました");
+    expect(Cause.findError(exit.cause)).toMatchObject({ _tag: "Success", success: { _tag: "StartupDepsMissing" } });
+    yield* cliEntry.reportFailure(exit.cause).pipe(Effect.provide(deps.layer));
+    const saved = process.exitCode;
+    try {
+      cliEntry.teardown(exit, () => { throw new Error("自然終了する必要があります"); });
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = saved;
+    }
+    expect(deps.stdout.join("")).toBe("");
+    expect(deps.stderr.join("")).toBe("開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n");
+    expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+    expect(managed.install).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
+  it.effect("--model なしは Claude 未導入でも保存済みのマップを集計し、SDK を確認・読み込みしない", () => Effect.gen(function* () {
+    const source = yield* play(scriptA);
+    const deps = dependencies(source);
+    const managed = evalManagedDeps("missing");
+    yield* runCli(["eval", source]).pipe(Effect.provide(Layer.mergeAll(deps.layer, managed.layer)));
+    const { rows } = parseTable(deps.stdout.join(""));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ラン: basename(source), ノード: "5", 深さ: "3" });
+    expect(deps.stderr).toEqual([]);
+    expect(managed.check).not.toHaveBeenCalled();
+    expect(managed.load).not.toHaveBeenCalled();
+  }));
+
+  it.effect("Claude 以外の準備失敗は SDK を読まず、一般の失敗として exit 1 で終わる", () => Effect.gen(function* () {
+    const source = yield* play(scriptA);
+    const deps = dependencies(source);
+    const managed = evalManagedDeps("missing");
+    yield* Effect.promise(() => writeFile(join(source, "absent.config.json"), JSON.stringify({ models: {
+      compatible: { route: "openai-compatible", model: "synthetic", url: "http://127.0.0.1:8766/v1" },
+    } })));
+    const requests: string[] = [];
+    const client = HttpClient.make((request) => Effect.sync(() => {
+      requests.push(request.url);
+      return HttpClientResponse.fromWeb(request, new Response("unavailable", { status: 503 }));
+    }));
+    const exit = yield* Effect.exit(runCli(["eval", source, "--model", "compatible"]).pipe(
+      Effect.provide(Layer.mergeAll(deps.layer, managed.layer, Layer.succeed(HttpClient.HttpClient, client))),
+    ));
+    expect(requests).toEqual(["http://127.0.0.1:8766/v1/chat/completions"]);
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) throw new Error("HTTP 503 で評価が成功しました");
+    expect(Cause.findError(exit.cause)).toMatchObject({ _tag: "Success", success: { _tag: "UpdaterUnavailable", message: expect.stringContaining("HTTP 503") } });
+    yield* cliEntry.reportFailure(exit.cause).pipe(Effect.provide(deps.layer));
+    const saved = process.exitCode;
+    try {
+      cliEntry.teardown(exit, () => { throw new Error("自然終了する必要があります"); });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = saved;
+    }
+    expect(deps.stderr.join("")).toContain("HTTP 503");
+    expect(managed.check).not.toHaveBeenCalled();
+    expect(managed.load).not.toHaveBeenCalled();
+    expect(deps.stdout).toEqual([]);
+  }));
+});
 
 describe("eval: ノード数・深さ・種別ごとの数", () => {
   it.effect("ルートを除くノード数、ルートの子を 1 とする深さ、6 種別ごとの数（0 件は 0）を 1 行に出す", () => Effect.gen(function* () {

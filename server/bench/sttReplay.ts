@@ -11,9 +11,9 @@ import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { depsDirConfig } from "../src/config.ts";
-import { exitNaturally } from "../src/exitNaturally.ts";
+import { startupPreparationFailure } from "../src/managedDepsCheck.ts";
 import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../src/truthFile.ts";
-import { BENCH_VERSION, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
+import { BENCH_VERSION, exitNaturally, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
 
 // at / source は計測用の項目で、セッションには渡さない
@@ -138,16 +138,19 @@ export const command = Command.make(
       + "end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ",
   ),
   // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
-  Command.provide(claudeUpdaterLayer(defaultClaude).pipe(Layer.provide(Layer.unwrap(Effect.gen(function* () {
-    const root = yield* depsDirConfig;
-    return ManagedDeps.layer({ root }).pipe(Layer.provide(NodeServices.layer));
-  }))))),
+  Command.provide(Layer.effectContext(Layer.build(claudeUpdaterLayer(defaultClaude)).pipe(
+    Effect.mapError(startupPreparationFailure),
+  ))),
 );
 
 if (import.meta.main) {
+  const managedDeps = Layer.unwrap(Effect.gen(function* () {
+    const root = yield* depsDirConfig;
+    return ManagedDeps.layer({ root }).pipe(Layer.provide(NodeServices.layer));
+  }));
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.mergeAll(managedDeps, NodeServices.layer)),
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

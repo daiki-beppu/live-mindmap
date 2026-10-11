@@ -227,9 +227,8 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
       Effect.provide(Layer.mergeAll(deps.layer, failedDeps)),
     ));
     expect(load).toHaveBeenCalledExactlyOnceWith("claude");
-    expect(result).toMatchObject({ _tag: "Failure", failure: command === "play"
-      ? { _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing" }] }
-      : { _tag: "UpdaterUnavailable", message: "管理 SDK がありません" } });
+    expect(result).toMatchObject({ _tag: "Failure", failure:
+      { _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing" }] } });
     expect(existsSync(deps.sessions) ? readdirSync(deps.sessions) : []).toEqual(before);
     expect(sdk.created).toEqual([]);
     expect(deps.stdout).toEqual([]);
