@@ -1,6 +1,6 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
-import { Cause, Context, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
+import { Cause, Context, DateTime, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
 import { Change, diffMaps } from "./changes.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
@@ -97,7 +97,12 @@ export const DiffEvent = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
   processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
+  // update を呼ぶ直前と、応答（または失敗）を受けた直後の実時刻（at と同じ書き方）。update に入らなかった回（添える画像の読み戻しの失敗）には付かない
+  call: Schema.optionalKey(Schema.Struct({ startedAt: Schema.String, endedAt: Schema.String })),
 });
+
+// log.jsonl の時刻の書き方。Clock ではなく実時刻（TestClock の下でも実際の時刻）。Effect を実行した時点で決める
+export const logTimestamp = (): string => DateTime.formatIso(DateTime.nowUnsafe());
 // 語彙に入った語（Issue #640）。romaji は読み（作れなかった語は null）、source は出どころ
 export const VocabEvent = Schema.Struct({
   type: Schema.Literal("vocab"),
@@ -464,19 +469,29 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             (list) => list.filter((c): c is ScreenChange => c !== undefined),
           );
           // 失敗は、添える画像の読み戻しと update の、中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
+          type CallTimes = { startedAt: string; endedAt: string };
+          const classifyUnlessInterrupt = (cause: Cause.Cause<DiffUpdateError>) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)));
           const outcome = yield* Effect.all([Effect.forEach(attached, readBack), readPrevious]).pipe(
             Effect.flatMap(([screens, previousScreens]) =>
-              restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
+              Effect.suspend(() => {
+                const startedAt = logTimestamp();
+                return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) }))).pipe(
+                  Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp() } as CallTimes })),
+                );
+              }),
             ),
-            Effect.flatMap(({ ops, usage, processedRemarks }) => {
-              const count = processedRemarks ?? fresh.length;
-              return !Number.isInteger(count) || count <= 0 || count > fresh.length
-                ? Effect.fail({ _tag: "InvalidProcessedRemarks", message: "反映数が入力の発言数に対して不正です" })
-                : Effect.succeed({ ok: true as const, ops, usage, processedRemarks, count });
-            }),
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)),
+            Effect.flatMap(({ exit, call }) =>
+              exit.pipe(
+                Effect.flatMap(({ ops, usage, processedRemarks }) => {
+                  const count = processedRemarks ?? fresh.length;
+                  return !Number.isInteger(count) || count <= 0 || count > fresh.length
+                    ? Effect.fail({ _tag: "InvalidProcessedRemarks", message: "反映数が入力の発言数に対して不正です" })
+                    : Effect.succeed({ ok: true as const, ops, usage, processedRemarks, count, call: call as CallTimes | undefined });
+                }),
+                Effect.catchCause((cause) => Effect.map(classifyUnlessInterrupt(cause), (failure) => ({ ...failure, call: call as CallTimes | undefined }))),
+              ),
             ),
+            Effect.catchCause((cause) => Effect.map(classifyUnlessInterrupt(cause), (failure) => ({ ...failure, call: undefined as CallTimes | undefined }))),
           );
           if (!outcome.ok) {
             if (outcome.stopped) {
@@ -491,7 +506,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
             yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
-            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
+            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...(outcome.call ? { call: outcome.call } : {}) });
             return false;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
@@ -507,7 +522,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           });
           yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped,
             ...(outcome.processedRemarks !== undefined ? { processedRemarks: outcome.processedRemarks } : {}),
-            ...(outcome.usage ? { usage: outcome.usage } : {}) });
+            ...(outcome.usage ? { usage: outcome.usage } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
           if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
           return outcome.count < fresh.length;
         }),

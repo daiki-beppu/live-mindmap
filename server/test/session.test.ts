@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { DateTime, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { exportFiles, hasContent, makeSession, QUIET_MS, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
+import { exportFiles, hasContent, makeSession, QUIET_MS, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 // セッションは Scope を要る Effect（makeSession）。差分更新・ログは偽物の Service を Layer で渡す。
@@ -217,6 +217,7 @@ describe("ログ", () => {
         input: { recent: ids[0], fresh: ids[1], nodeCount: 1 },
         ops: [bad],
         dropped: [{ op: bad, reason: "対象が無い" }],
+        call: { startedAt: expect.any(String), endedAt: expect.any(String) },
       });
     }));
 
@@ -252,6 +253,117 @@ describe("ログ", () => {
       const diff = events.find((e) => e.type === "diff");
       expect(diff).toMatchObject({ type: "diff", error: expect.stringContaining("timeout") });
       expect(diff).not.toHaveProperty("usage");
+    }));
+
+  // 差分更新の呼び出しの開始・終了の時刻（Issue #862）。at と同じ実時刻の ISO 文字列
+  const isIso = (s: string) => DateTime.formatIso(DateTime.makeUnsafe(s)) === s;
+  const ms = (s: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(s));
+
+  // 実時刻が直前の値より進むまで回ってから、その時刻を返す（sleep ではない。ISO はミリ秒まで持つので、段階の間を厳密な不等号で区別できる）
+  const nowMs = () => DateTime.toEpochMillis(DateTime.nowUnsafe());
+  const advanced = () => {
+    const before = nowMs();
+    let t = nowMs();
+    while (t <= before) t = nowMs();
+    return t;
+  };
+  type Call = { startedAt: string; endedAt: string };
+
+  it.effect("成功した回の diff の行に、update に入った時刻以前の開始と、応答した時刻以後の終了を ISO 形式で残す", () =>
+    Effect.gen(function* () {
+      let entered = 0, replied = 0;
+      const events: LogEvent[] = [];
+      const session = yield* open(
+        () => Effect.sync(() => { entered = advanced(); }).pipe(
+          Effect.andThen(Effect.sync(() => { replied = advanced(); return { ops: [] }; })),
+        ),
+        events,
+      );
+      yield* session.push(remark("発言"));
+      yield* session.push(remark("発言"));
+      yield* session.idle;
+
+      const call = (events.find((e) => e.type === "diff") as { call?: Call } | undefined)?.call;
+      expect(call).toBeDefined();
+      expect(isIso(call!.startedAt)).toBe(true);
+      expect(isIso(call!.endedAt)).toBe(true);
+      expect(ms(call!.startedAt)).toBeLessThanOrEqual(entered);
+      expect(entered).toBeLessThan(replied);
+      expect(replied).toBeLessThanOrEqual(ms(call!.endedAt));
+      expect(ms(call!.startedAt)).toBeLessThan(ms(call!.endedAt));
+    }));
+
+  it.effect("失敗した回（型付きの失敗・defect）の diff の行にも、update に入った時刻以前の開始と、失敗した時刻以後の終了を残す", () =>
+    Effect.gen(function* () {
+      for (const make of [
+        () => Effect.fail({ _tag: "ClaudeResultFailed", message: "timeout" }),
+        () => Effect.die("壊れた"),
+      ] as const) {
+        let entered = 0, failedAt = 0;
+        const events: LogEvent[] = [];
+        const session = yield* open(
+          () => Effect.sync(() => { entered = advanced(); }).pipe(
+            Effect.andThen(Effect.sync(() => { failedAt = advanced(); }).pipe(Effect.andThen(make()))),
+          ),
+          events,
+        );
+        yield* session.push(remark("発言"));
+        yield* session.push(remark("発言"));
+        yield* session.idle;
+
+        const diff = events.find((e) => e.type === "diff") as { error?: string; call?: Call } | undefined;
+        expect(diff?.error).toBeDefined();
+        expect(diff?.call).toBeDefined();
+        expect(isIso(diff!.call!.startedAt)).toBe(true);
+        expect(isIso(diff!.call!.endedAt)).toBe(true);
+        expect(ms(diff!.call!.startedAt)).toBeLessThanOrEqual(entered);
+        expect(failedAt).toBeLessThanOrEqual(ms(diff!.call!.endedAt));
+        expect(ms(diff!.call!.startedAt)).toBeLessThan(ms(diff!.call!.endedAt));
+      }
+    }));
+
+  it.effect("画像を添えた回の開始の時刻は、画像の読み戻しを終えた時刻以後になる", () =>
+    Effect.gen(function* () {
+      let readEntered = 0, readDone = 0;
+      const files = new Map<string, Uint8Array>();
+      const events: LogEvent[] = [];
+      const layer = Layer.merge(
+        updaterLayer(() => Effect.succeed({ ops: [] })),
+        logLayer(
+          (event) => Effect.sync(() => { events.push(event); }),
+          (file, bytes) => Effect.sync(() => { files.set(file, bytes); }),
+          (file) => Effect.sync(() => {
+            readEntered = advanced();
+            readDone = advanced();
+            return files.get(file)!;
+          }),
+        ),
+      );
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(layer));
+      yield* session.pushScreen({ start: 1, image: { id: "s1", bytes: new TextEncoder().encode("bytes:s1") } });
+      yield* session.push(remark("発言"));
+      yield* session.push(remark("発言"));
+      yield* session.idle;
+
+      const diff = events.find((e) => e.type === "diff") as { input: { screens?: unknown[] }; call?: Call } | undefined;
+      expect(diff?.input.screens).toBeDefined();
+      expect(diff?.call).toBeDefined();
+      expect(readEntered).toBeLessThan(readDone);
+      expect(readDone).toBeLessThanOrEqual(ms(diff!.call!.startedAt));
+    }));
+
+  it.effect("call の付いた diff の行を JSON で往復しても restoreSession が読める", () =>
+    Effect.gen(function* () {
+      const events: LogEvent[] = [];
+      const session = yield* open(() => Effect.succeed({ ops: [] }), events);
+      yield* session.push(remark("発言"));
+      yield* session.push(remark("発言"));
+      yield* session.idle;
+      expect(events.some((e) => e.type === "diff" && e.call !== undefined)).toBe(true);
+
+      const roundTripped = events.map((e): unknown => JSON.parse(JSON.stringify(e)));
+      const restored = yield* restoreSession(roundTripped).pipe(Effect.provide(Layer.merge(updaterLayer(() => Effect.succeed({ ops: [] })), collectLog([]))));
+      expect((yield* restored.snapshot).nodes.length).toBe(1);
     }));
 
   it.effect("makeSession は最初のイベントとして、タイトルを持つ開始のイベントを SessionLog に書く", () =>

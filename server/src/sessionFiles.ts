@@ -6,6 +6,7 @@ import { MapCapture } from "./capture.ts";
 import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
   exportFiles,
+  logTimestamp,
   makeSession,
   SessionLog,
   toJsonExport,
@@ -141,7 +142,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
   // at は Clock ではなく実時刻（TestClock の下でも log.jsonl は実際の時刻で書く）。Effect を実行した時点で決める
   const writeLogLine = (event: LogEvent | IntakeLogEvent) =>
     Effect.suspend(() =>
-      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: DateTime.formatIso(DateTime.nowUnsafe()), ...event }) + "\n", { flag: "a" }),
+      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: logTimestamp(), ...event }) + "\n", { flag: "a" }),
     ).pipe(Effect.orDie);
   const writeExport = (session: Session) =>
     Effect.flatMap(session.exportJson, (json) => fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(json))).pipe(Effect.orDie);
