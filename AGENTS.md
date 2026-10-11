@@ -33,6 +33,7 @@ When you add a test, read the Tests section of `CODING_STANDARDS.md`.
 Evals measure real model and speech-recognition output by hand. They are not part of Checks and give no pass/fail. Run the one that matches what you changed:
 
 - `cli eval`: the diff-update prompt, model, or flow.
+- 差分更新のプロンプトを変えたら形の物差しも回す。親子の意味は `edgeJudge` で測る。合成会議限定の手順と、マージ後に人が行うClaude実測は `server/bench/README.md` を参照（TAKTとテストでは偽判定器だけを使う）。
 - `sttAccuracy`: the recognition engine, language, or vocabulary hints.
 - `sttLatency`: how finals are handled, or how the helper feeds recognition.
 
