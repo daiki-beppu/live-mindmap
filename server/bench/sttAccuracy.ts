@@ -5,9 +5,10 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { TranscriptFile } from "../src/core/index.ts";
+import { createRemarkSettler } from "../src/core/settle.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
-import { BENCH_VERSION, inputFileError, readInputText, reportFailure, write } from "./entry.ts";
-import { parseResults } from "./sttLatency.ts";
+import { BENCH_VERSION, InvalidInputFile, inputFileError, readInputText, reportFailure, write } from "./entry.ts";
+import { parseResults, type SttResult } from "./sttLatency.ts";
 
 // 台本の 1 行（話者・開始秒・終了秒・文）。発言は区間と本文だけを見る
 export type TimedText = { start: number; end: number; text: string };
@@ -194,14 +195,34 @@ export function summarize(s: AccuracyScore, confusions = 15): string {
   return out.join("\n") + "\n";
 }
 
-// 発言のファイル。.json なら kanary transcribe の出力、それ以外は stt-bench run の JSONL の確定結果
-const readRemarks = Effect.fnUntraced(function* (path: string) {
+// 途中結果と確定結果を、本番の createRemarkSettler（関所つき）へ到着の時刻どおりに通して出た発言。
+// 手順は bench の drops.ts と同じ（到着のたびに、期限の来た発話を出してから、確定結果は final、途中結果は partial へ渡し、最後に drain）
+export function settleResults(results: readonly SttResult[]): TimedText[] {
+  const settler = createRemarkSettler();
+  const out: TimedText[] = [];
+  const keep = (rs: readonly TimedText[]) => out.push(...rs.map(({ start, end, text }) => ({ start, end, text })));
+  // Array.prototype.sort は安定。同じ到着の時刻はファイルの行の順を保つ
+  for (const r of [...results].sort((a, b) => a.arrival - b.arrival)) {
+    const now = r.arrival * 1000;
+    for (let due = settler.nextDue(); due !== undefined && due <= now; due = settler.nextDue()) keep(settler.due(due));
+    if (r.isFinal) keep(settler.final({ track: r.track, start: r.start, end: r.end, text: r.text }, now));
+    else settler.partial({ track: r.track, start: r.start, end: r.end, text: r.text, duplicate: false }, now);
+  }
+  keep(settler.drain());
+  return out;
+}
+
+// 発言のファイル。.json なら kanary transcribe の出力、それ以外は stt-bench run の JSONL（settle なら settleResults、なければ確定結果だけ）
+const readRemarks = Effect.fnUntraced(function* (path: string, settle: boolean) {
   const text = yield* readInputText(path);
   if (path.endsWith(".json")) {
+    // 途中結果も到着の時刻もない入力で、黙って確定結果だけの採点に戻ると、数字の意味を取り違える
+    if (settle) return yield* Effect.fail(new InvalidInputFile({ path, reason: "--settle は stt-bench run の JSONL にだけ使えます" }));
     const file = yield* Schema.decodeEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(Effect.mapError(inputFileError(path)));
     return file.transcript.segments.map((s) => ({ start: s.start_seconds, end: s.end_seconds, text: s.text }));
   }
   const results = yield* parseResults(text).pipe(Effect.mapError(inputFileError(path)));
+  if (settle) return settleResults(results);
   return results.filter((r) => r.isFinal).map(({ start, end, text }) => ({ start, end, text }));
 });
 
@@ -211,11 +232,12 @@ export const command = Command.make(
     timeline: Argument.String("timeline").pipe(Argument.withDescription("合成会議の timeline.tsv（台本の行と時刻。正解）")),
     remarks: Argument.String("remarks").pipe(Argument.withDescription("stt-bench run の出力（JSONL）か、kanary transcribe の JSON")),
     terms: Flag.File("terms").pipe(Flag.withDescription("固有名詞・略語の正しい表記を 1 行 1 語で並べたファイル"), Flag.optional),
+    settle: Flag.Boolean("settle").pipe(Flag.withDescription("JSONL の途中結果と確定結果を、本番と同じ settle（関所つき）に通して出た発言で採点する"), Flag.withDefault(false)),
     window: Flag.Finite("window").pipe(Flag.withDescription("突き合わせる区切りの最短の秒数"), Flag.withDefault(30)),
   },
-  Effect.fn("sttAccuracy")(function* ({ remarks, terms, timeline, window }) {
+  Effect.fn("sttAccuracy")(function* ({ remarks, settle, terms, timeline, window }) {
     const lines = parseTimeline(yield* readInputText(timeline));
-    const said = yield* readRemarks(remarks);
+    const said = yield* readRemarks(remarks, settle);
     const words = Option.isNone(terms) ? [] : (yield* readInputText(terms.value)).split("\n").map((l) => l.trim()).filter(Boolean);
     yield* write(summarize(score(lines, said, words, window)));
   }),

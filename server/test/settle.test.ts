@@ -201,6 +201,70 @@ describe("出した発言と重なる発言", () => {
     expect(brief(s.due(T + 1 + T))).toEqual([["相手", 12, 15, "えお"]]);
   });
 
+  // SpeechAnalyzer は区間の始まりから全文を送り直す。関所が覚えるのは出した残りではなく届いた全文でなければ、
+  // 3 回目の全文が残りと重ならず、出した本文がもう一度出る（Issue #458）
+  it("同じ始まりで全文を送り直す途中結果が 3 回続いても、出した本文を二度と出さない", () => {
+    const s = createRemarkSettler();
+    s.partial(partial("相手", 10, 12, "あいう"), 0);
+    expect(brief(s.due(T))).toEqual([["相手", 10, 12, "あいう"]]);
+
+    s.partial(partial("相手", 10, 15, "あいうえお"), T + 1);
+    expect(brief(s.due(T + 1 + T))).toEqual([["相手", 12, 15, "えお"]]);
+
+    s.partial(partial("相手", 10, 18, "あいうえおかき"), 2 * T + 2);
+    expect(brief(s.due(2 * T + 2 + T))).toEqual([["相手", 15, 18, "かき"]]);
+  });
+
+  it("前の部分が書き換わった全文は、延びた分だけが、書き換えずに出る", () => {
+    const s = createRemarkSettler();
+    s.partial(partial("相手", 10, 12, "今日はシ子ど"), 0);
+    expect(brief(s.due(T))).toEqual([["相手", 10, 12, "今日はシ子ど"]]);
+
+    s.partial(partial("相手", 10, 15, "今日はシ子度です"), T + 1);
+
+    expect(brief(s.due(T + 1 + T))).toEqual([["相手", 12, 15, "です"]]);
+  });
+
+  it("書き換えの後にさらに同じ始まりで延びても、出した本文を二度と出さない", () => {
+    const s = createRemarkSettler();
+    s.partial(partial("相手", 10, 12, "今日はシ子ど"), 0);
+    expect(brief(s.due(T))).toEqual([["相手", 10, 12, "今日はシ子ど"]]);
+    s.partial(partial("相手", 10, 15, "今日はシ子度です"), T + 1);
+    expect(brief(s.due(T + 1 + T))).toEqual([["相手", 12, 15, "です"]]);
+
+    s.partial(partial("相手", 10, 18, "今日はシ子度ですね明日"), 2 * T + 2);
+
+    expect(brief(s.due(2 * T + 2 + T))).toEqual([["相手", 15, 18, "ね明日"]]);
+  });
+
+  // 短い完全一致（末尾と頭が一致）があっても、その先に書き換えを含む長い重なりがあれば、既出の部分を出さない
+  it.each([
+    { name: "ABC", first: "ABC案はABC", second: "ABCS案はABC続き", expected: "続き", unchangedSecond: "ABC案はABC続き" },
+    { name: "今日", first: "今日の予定は今日", second: "今日の予定は明日です", expected: "です", unchangedSecond: undefined },
+    { name: "そうですね", first: "そうですね今日は晴れそう", second: "そうですね今日も晴れそうです", expected: "です", unchangedSecond: undefined },
+  ])("短い完全一致と書き換えが同時に起きても、延びた分だけが出る: $name", ({ first, second, expected, unchangedSecond }) => {
+    for (const next of unchangedSecond === undefined ? [second] : [second, unchangedSecond]) {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 12, first), 0);
+      expect(brief(s.due(T))).toEqual([["相手", 10, 12, first]]);
+      s.partial(partial("相手", 10, 15, next), T + 1);
+      expect(brief(s.due(T + 1 + T))).toEqual([["相手", 12, 15, expected]]);
+    }
+  });
+
+  it("書き換わっただけで延びていない全文は出さず、「直前に出した発言」も更新しない", () => {
+    const s = createRemarkSettler();
+    s.partial(partial("相手", 10, 12, "今日はシ子ど"), 0);
+    expect(brief(s.due(T))).toEqual([["相手", 10, 12, "今日はシ子ど"]]);
+
+    s.partial(partial("相手", 10, 14, "今日はシ子度"), T + 1);
+    expect(s.due(T + 1 + T)).toEqual([]);
+
+    s.partial(partial("相手", 10, 16, "今日はシ子度です"), 2 * T + 2);
+    // 直前は end 12 のまま。抑制した発言の end 14 から始まらない
+    expect(brief(s.due(2 * T + 2 + T))).toEqual([["相手", 12, 16, "です"]]);
+  });
+
   // 補助平面の文字（"𠮷" など）は 1 文字が UTF-16 の 2 コード単位になる。切り出し位置を文字数で数えると、
   // 出した本文をもう一度出したり、出していない文字を落としたりする
   it("補助平面の文字を含む本文でも、直前に出した本文の分を除いた残りが出る", () => {
