@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "skills": {
+    "audit-program": {
+      "source": "foldkit/foldkit",
+      "ref": "foldkit@0.167.0",
+      "sourceType": "github",
+      "skillPath": "skills/audit-program/SKILL.md",
+      "computedHash": "2fd4779a3b8bd80ccb0f0c63a3f2ad1471a1b04c95729368e291ce2ee374bd0d"
+    },
+    "foldkit": {
+      "source": "foldkit/foldkit",
+      "ref": "foldkit@0.167.0",
+      "sourceType": "github",
+      "skillPath": "skills/foldkit/SKILL.md",
+      "computedHash": "c3de20f4aa79c073896eb54b2e1235d8844f30bbb428cbc3043006fc2af9fd9b"
+    },
+    "generate-program": {
+      "source": "foldkit/foldkit",
+      "ref": "foldkit@0.167.0",
+      "sourceType": "github",
+      "skillPath": "skills/generate-program/SKILL.md",
+      "computedHash": "3b8bf9977713d428e9978390fe9296ca80a8165863a52e1c0d3242a92989d1ec"
+    }
+  }
+}

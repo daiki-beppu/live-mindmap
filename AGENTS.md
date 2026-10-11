@@ -18,6 +18,8 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 
 `server` builds on Effect 4. Read `server/node_modules/effect/AGENTS.md` before writing Effect code: the v4 API names differ from v3 (`Effect.catch`, not `Effect.catchAll`), and that file is the installed version's own reference. `server`'s `typecheck` runs `effect-tsgo diagnostics --project tsconfig.json` after the two `tsc` passes; its `outdatedApi` rule is set to `error` in `server/tsconfig.json`, so v3 APIs fail the check. `unstableApiUsage` is `off` there because `effect/process`, `effect/http`, `effect/socket` and `effect/cli` are `@stability unstable` and we use them on purpose (ADR 0008, 0009, 0010); `effect` and `@effect/*` are therefore exact-pinned, and upgrading them means checking those modules for changes.
 
+`web` builds on Effect 4 through Foldkit; read `web/AGENTS.md` before writing Foldkit code.
+
 ### Checks
 
 SDK または `playwright-core` の固定版を更新するときは、[Claude の更新手順](server/managed-deps/claude/README.md) または [Chromium の更新手順](server/managed-deps/chromium/README.md) を読む。
