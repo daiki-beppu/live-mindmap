@@ -9,6 +9,7 @@ export * from "./sessionMode.ts";
 export * from "./live.ts";
 export * from "./logMetrics.ts";
 export * from "./map.ts";
+export * from "./groupSize.ts";
 export * from "./markdown.ts";
 export * from "./playback.ts";
 export * from "./review.ts";

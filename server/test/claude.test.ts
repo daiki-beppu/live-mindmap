@@ -2,6 +2,7 @@ import { defaultClaude } from "../src/modelSelection.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { AgentSdk, buildPrompt, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
+import { OUTPUT_SCHEMA, SYSTEM } from "../src/claudePrompt.ts";
 import { applyOps, DiffUpdater } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
 
@@ -714,8 +715,7 @@ const capturedOptions = (calls = 1) =>
 const systemPrompt = Effect.map(capturedOptions(), (seen) => seen[0]!.systemPrompt);
 const count = (text: string, part: string) => text.split(part).length - 1;
 
-// #662 は送信する文とスキーマを変えない抽出。期待値は抽出前の SDK 境界で取得し、抽出後に更新しない。
-describe("プロンプト抽出前の SDK 送信内容", () => {
+describe("現在のプロンプト定義の SDK への受け渡し", () => {
   it.effect("システム文・出力スキーマ・初回のマップ全体と継続時の変更をそのまま送る", () =>
     Effect.gen(function* () {
       const { created, updater } = yield* setup();
@@ -724,11 +724,12 @@ describe("プロンプト抽出前の SDK 送信内容", () => {
 
       expect(created).toHaveLength(1);
       const sent = created[0]!;
-      expect({
-        systemPrompt: sent.options.systemPrompt,
-        outputFormat: sent.options.outputFormat,
-        messages: contents(sent),
-      }).toMatchSnapshot();
+      expect(sent.options.systemPrompt).toBe(SYSTEM);
+      expect(sent.options.outputFormat).toEqual({ type: "json_schema", schema: OUTPUT_SCHEMA });
+      expect(contents(sent)).toEqual([
+        buildPrompt(growing(1)),
+        buildPrompt(growing(2), growing(1).map),
+      ]);
     }));
 });
 
@@ -1046,10 +1047,10 @@ describe("毎回のメッセージの議題の一覧", () => {
   it("各行は id・議題名・話し中の部分のノード数・最後に触れた分。子の議題の下と済みの論点の下は数えない（済みの論点自身は数える）", () => {
     const list = listOf(closed);
 
-    // n1: n2・n3・n4（済みの論点自身）・n6 = 4。n5 は済みの論点の下なので数えない
-    expect(list).toContain("- n1 本の届け先（話し中 4 ノード・最後に触れた 38 分）");
-    // n8: n9・n10・n11 = 3
-    expect(list).toContain("  - n8 写真: 船（話し中 3 ノード・最後に触れた 40 分）");
+    // n1: n2（論点自身）・n6 = 2。n2 の配下は数えない
+    expect(list).toContain("- n1 本の届け先（話し中 2 ノード・最後に触れた 38 分）");
+    // n8: n9（論点自身）・n11 = 2
+    expect(list).toContain("  - n8 写真: 船（話し中 2 ノード・最後に触れた 40 分）");
     // n16: n17 = 1
     expect(list).toContain("  - n16 並び順の候補（話し中 1 ノード・最後に触れた 41 分）");
   });
@@ -1057,8 +1058,8 @@ describe("毎回のメッセージの議題の一覧", () => {
   it("子の議題を持つ議題の行に「まとまり・子の議題 話し中 N・済み M・まとまり自体の話し中 K ノード」。K は子の議題（話し中・済み）の下を数えない", () => {
     const list = listOf(closed);
 
-    // n7 の子の議題: 話し中 n8・n16、済み n12。まとまり自体: n14・n15 = 2（n8・n12・n16 とその配下は数えない）
-    expect(list).toContain("- n7 写真の振り返り（まとまり・子の議題 話し中 2・済み 1・まとまり自体の話し中 2 ノード・最後に触れた 41 分）");
+    // n7 の子の議題: 話し中 n8・n16、済み n12。まとまり自体は論点 n14 の 1 ノード
+    expect(list).toContain("- n7 写真の振り返り（まとまり・子の議題 話し中 2・済み 1・まとまり自体の話し中 1 ノード・最後に触れた 41 分）");
   });
 
   it("済みの議題と、その下の議題（データ上は話し中のまま）は行に出ず、済みの件数にだけ数える。話し中の件数にも済みの件数にも、済みの親の下の議題は入らない", () => {
@@ -1095,8 +1096,8 @@ describe("毎回のメッセージの議題の一覧", () => {
     expect(closedP.map.nodes.n2!.talkStatus).toBe("済み");
     expect(closedP.map.nodes.n4!.talkStatus).toBeUndefined();
 
-    // 済みにする前: A のまとまり自体は P・案 の 2 ノード
-    expect(listOf(added.map)).toContain("- n1 議題A（まとまり・子の議題 話し中 1・済み 0・まとまり自体の話し中 2 ノード・最後に触れた 10 分）");
+    // 済みにする前も、A のまとまり自体は論点 P の 1 ノード
+    expect(listOf(added.map)).toContain("- n1 議題A（まとまり・子の議題 話し中 1・済み 0・まとまり自体の話し中 1 ノード・最後に触れた 10 分）");
     const list = listOf(closedP.map);
     expect(list[0]).toBe("## 議題の一覧（話し中 2・済み 0。済みと、済みの議題の下は省略）");
     expect(list).toContain("- n1 議題A（まとまり・子の議題 話し中 1・済み 0・まとまり自体の話し中 1 ノード・最後に触れた 10 分）");
