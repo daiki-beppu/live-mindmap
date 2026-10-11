@@ -15,13 +15,22 @@ import { Message } from "./message.ts";
 
 export const Model = Schema.Struct({
   playback: PlaybackState,
-  mapSurface: Schema.Struct({ size: MapSurface.Model.fields.size, nodeHeights: MapSurface.Model.fields.nodeHeights }),
+  // 表示面の状態のうち、見返しが導く mode・snapshot を除いたもの（実測とパンの状態）
+  mapSurface: Schema.Struct({
+    size: MapSurface.Model.fields.size,
+    nodeHeights: MapSurface.Model.fields.nodeHeights,
+    isMac: MapSurface.Model.fields.isMac,
+    pan: MapSurface.Model.fields.pan,
+    pointer: MapSurface.Model.fields.pointer,
+    nodePress: MapSurface.Model.fields.nodePress,
+    scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
+  }),
 });
 export type Model = typeof Model.Type;
 
 export const init = (context: Context): Model => {
-  const surface = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "live");
-  return { playback: initialPlayback(context.playback.duration), mapSurface: { size: surface.size, nodeHeights: surface.nodeHeights } };
+  const { mode: _mode, snapshot: _snapshot, ...mapSurface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "live", context.isMac);
+  return { playback: initialPlayback(context.playback.duration), mapSurface };
 };
 
 export const snapshotOf = (context: Context, model: Model): Snapshot => snapshotAt(context.timeline, model.playback.time);
@@ -34,8 +43,10 @@ export const makeUpdate = (context: Context) => {
   const foldMapSurface = Update.foldChild({
     update: MapSurface.update,
     read: (model: Model) => Option.some(surfaceOf(context, model)),
-    write: (model: Model, next: MapSurface.Model) => modifyFields(model, { mapSurface: () => ({ size: next.size, nodeHeights: next.nodeHeights }) }),
+    write: (model: Model, { mode: _mode, snapshot: _snapshot, ...next }: MapSurface.Model) => modifyFields(model, { mapSurface: () => next }),
     toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }),
+    // ノードが選ばれたこと（SelectedNode）は、選択を扱う issue（#818）まで見返しでは受け流す
+    foldOutMessage: () => (model: Model) => ({ model }),
   });
   return (model: Model, message: Message): Return =>
     Message.match<Return>(message, {

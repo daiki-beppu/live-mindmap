@@ -60,7 +60,8 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
 
   it("表示面の Model は時刻の Snapshot を持たない（Model の欄に Snapshot が無い）", () => {
     const m = init(context);
-    expect(Object.keys(m.mapSurface).sort()).toEqual(["nodeHeights", "size"]);
+    // 表示面の状態のうち、実測（size・nodeHeights）とパンの状態（#815）だけを持ち、導く mode・snapshot は持たない
+    expect(Object.keys(m.mapSurface).sort()).toEqual(["isMac", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size"]);
     expect(Option.isNone(m.mapSurface.size)).toBe(true);
     expect(HashMap.size(m.mapSurface.nodeHeights)).toBe(0);
   });

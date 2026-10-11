@@ -3,9 +3,10 @@
 import { PLAYBACK_RATES, type PlaybackContext } from "../../reviewPlayback.ts";
 import { buildReviewTimeline, type ReviewTimeline } from "../../reviewTimeline.ts";
 
-export type Context = { timeline: ReviewTimeline; playback: PlaybackContext };
+// isMac は表示面のパン（Shift＋縦スクロールの向き）とズームの修飾キーに要る、起動時に決まる値
+export type Context = { timeline: ReviewTimeline; playback: PlaybackContext; isMac: boolean };
 
-export const makeContext = (events: readonly unknown[]): Context => {
+export const makeContext = (events: readonly unknown[], isMac = false): Context => {
   const timeline = buildReviewTimeline(events);
-  return { timeline, playback: { duration: timeline.duration, reflectionTimes: timeline.reflectionTimes, rates: PLAYBACK_RATES } };
+  return { timeline, playback: { duration: timeline.duration, reflectionTimes: timeline.reflectionTimes, rates: PLAYBACK_RATES }, isMac };
 };
