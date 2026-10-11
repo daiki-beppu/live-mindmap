@@ -36,10 +36,12 @@ private func mineEvent(_ decision: MineDecision) -> HelperEvent {
     let result = decision.result
     if result.isFinal {
         return .remark(
-            track: .自分, start: result.start, end: result.end, text: result.text, duplicate: decision.duplicate)
+            track: .自分, start: result.start, end: result.end, text: result.text, duplicate: decision.duplicate,
+            words: transcriptWords(result.text))
     }
     return .partial(
-        track: .自分, start: result.start, end: result.end, text: result.text, duplicate: decision.duplicate)
+        track: .自分, start: result.start, end: result.end, text: result.text, duplicate: decision.duplicate,
+        words: transcriptWords(result.text))
 }
 
 /// `自分` の途中結果は、区間が重なる `相手` の文字が届くか保留の上限（1 秒）に達するまで保留し、その時点の文脈で判定して印を付けて流す

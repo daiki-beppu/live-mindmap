@@ -83,6 +83,52 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       expectDecodeFailure(decodeHelperEvent(JSON.stringify(data))));
   });
 
+  // Issue #639: 語ごとの読み。remark / partial に words（surface・romaji・location・length。位置は UTF-16）が載る。
+  // words の無い旧形式のイベントも、これまでどおり受け付ける
+  describe("words（発言の語ごとの読み）", () => {
+    const words = [
+      { surface: "今日", romaji: "kyō", location: 0, length: 2 },
+      { surface: "は", romaji: "wa", location: 2, length: 1 },
+      { surface: "xyz", romaji: "", location: 3, length: 3 },
+    ];
+
+    it.effect.each(["remark", "partial"] as const)("%s は words をそのまま保って decode される", (type) =>
+      Effect.gen(function* () {
+        const base = { type, track: "相手", start: 1, end: 2, text: "今日はxyz", duplicate: false } as const;
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ ...base, words })));
+        assert.deepStrictEqual(decoded, { kind: "known", event: { ...base, words } });
+      }));
+
+    it.effect.each(["remark", "partial"] as const)("%s は words の無いイベントも受け付け、words のキーを足さない", (type) =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type, track: "相手", start: 1, end: 2, text: "あ" })));
+        if (decoded.kind !== "known" || (decoded.event.type !== "remark" && decoded.event.type !== "partial")) return assert.fail("remark / partial のはず");
+        assert.isFalse("words" in decoded.event);
+      }));
+
+    it.effect.each(["remark", "partial"] as const)("%s は空の words を受け付ける", (type) =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type, track: "相手", start: 1, end: 2, text: "", words: [] })));
+        if (decoded.kind !== "known" || (decoded.event.type !== "remark" && decoded.event.type !== "partial")) return assert.fail("remark / partial のはず");
+        assert.deepStrictEqual(decoded.event.words, []);
+      }));
+
+    const brokenWords: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ["words が配列でない", { words: "x" }],
+      ["surface の欠落", { words: [{ romaji: "a", location: 0, length: 1 }] }],
+      ["romaji の型違い", { words: [{ surface: "あ", romaji: 1, location: 0, length: 1 }] }],
+      ["location が負", { words: [{ surface: "あ", romaji: "a", location: -1, length: 1 }] }],
+      ["length が小数", { words: [{ surface: "あ", romaji: "a", location: 0, length: 1.5 }] }],
+      ["location の欠落", { words: [{ surface: "あ", romaji: "a", length: 1 }] }],
+    ];
+    it.effect.each(brokenWords)("words の形が壊れていたら、読み飛ばさずにタグ付きの失敗になる（%s）", ([_name, extra]) =>
+      Effect.gen(function* () {
+        for (const type of ["remark", "partial"]) {
+          yield* expectDecodeFailure(decodeHelperEvent(JSON.stringify({ type, track: "相手", start: 0, end: 1, text: "あ", ...extra })));
+        }
+      }));
+  });
+
   // 原点（host time）の通知イベント。64 bit の値は JSON の number では桁が落ちるので、文字列のまま運ぶ（order.md:60、要件 #22）。
   describe("origin（ヘルパーが決めた時刻の原点）", () => {
     it.effect("渡された hostTime を文字列のまま保つ（2^53 を超える値でも桁が落ちない）", () =>

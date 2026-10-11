@@ -30,8 +30,8 @@ public enum ScreenOffReason: String, Sendable, Equatable {
 }
 
 public enum HelperEvent: Sendable, Equatable {
-    case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
-    case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool)
+    case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word])
+    case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word])
     /// 2 トラック共通の時刻の基準（`AudioGetCurrentHostTime()` の値）の通知。ヘルパー起動につき 1 回だけ流す（Issue #161）。
     case origin(hostTime: UInt64)
     /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
@@ -55,26 +55,28 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, hostTime, image, reason
+        case type, track, start, end, text, duplicate, words, hostTime, image, reason
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .remark(track, start, end, text, duplicate):
+        case let .remark(track, start, end, text, duplicate, words):
             try container.encode("remark", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
             try container.encode(text, forKey: .text)
             try container.encode(duplicate, forKey: .duplicate)
-        case let .partial(track, start, end, text, duplicate):
+            try container.encode(words, forKey: .words)
+        case let .partial(track, start, end, text, duplicate, words):
             try container.encode("partial", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
             try container.encode(end, forKey: .end)
             try container.encode(text, forKey: .text)
             try container.encode(duplicate, forKey: .duplicate)
+            try container.encode(words, forKey: .words)
         case let .origin(hostTime):
             try container.encode("origin", forKey: .type)
             // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
@@ -97,9 +99,12 @@ extension HelperEvent: Encodable {
 }
 
 /// STT の結果をイベントにする。`duplicate` は常に false。重複の判定は `DuplicateMarker` が行い、呼び出し側（`relay`）が印を付ける。
-public func event(from result: TranscriptionResult, track: Track) -> HelperEvent {
+/// `words` は本文を語に区切る関数（既定は CFStringTokenizer。unit テストは固定の関数を渡す）。語は確定結果にも途中結果にも載る。
+public func event(
+    from result: TranscriptionResult, track: Track, words: (String) -> [Word] = transcriptWords
+) -> HelperEvent {
     if result.isFinal {
-        return .remark(track: track, start: result.start, end: result.end, text: result.text, duplicate: false)
+        return .remark(track: track, start: result.start, end: result.end, text: result.text, duplicate: false, words: words(result.text))
     }
-    return .partial(track: track, start: result.start, end: result.end, text: result.text, duplicate: false)
+    return .partial(track: track, start: result.start, end: result.end, text: result.text, duplicate: false, words: words(result.text))
 }

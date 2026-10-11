@@ -10,57 +10,110 @@ private func decode(_ event: HelperEvent) throws -> [String: Any] {
     return try #require(object as? [String: Any])
 }
 
+// 固定の語。実際のトークナイザは通さない（純粋な運搬と JSON の形だけを確かめる。トークナイザは WordsITTests）
+private let fixedWords = [
+    Word(surface: "こんにちは", romaji: "konnichiwa", location: 0, length: 5),
+    Word(surface: "𠮷", romaji: "", location: 5, length: 2),
+]
+private let fixedWordsJSON: [[String: Any]] = [
+    ["surface": "こんにちは", "romaji": "konnichiwa", "location": 0, "length": 5],
+    ["surface": "𠮷", "romaji": "", "location": 5, "length": 2],
+]
+private func wordsOf(_ json: [String: Any]) throws -> [[String: Any]] {
+    try #require(json["words"] as? [[String: Any]])
+}
+
 @Suite("イベントの形")
 struct EventsTests {
     @Test("確定結果は発言イベントになり、トラック・開始・終了・本文・重複の印を持つ")
     func finalResultBecomesRemark() throws {
         let result = TranscriptionResult(text: "こんにちは", isFinal: true, start: 1.5, end: 3.25)
-        let event = event(from: result, track: .相手)
-        #expect(event == .remark(track: .相手, start: 1.5, end: 3.25, text: "こんにちは", duplicate: false))
+        let event = event(from: result, track: .相手, words: { _ in fixedWords })
+        #expect(event == .remark(track: .相手, start: 1.5, end: 3.25, text: "こんにちは", duplicate: false, words: fixedWords))
 
         let json = try decode(event)
-        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate"])
+        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate", "words"])
         #expect(json["type"] as? String == "remark")
         #expect(json["track"] as? String == "相手")
         #expect(json["start"] as? Double == 1.5)
         #expect(json["end"] as? Double == 3.25)
         #expect(json["text"] as? String == "こんにちは")
         #expect(json["duplicate"] as? Bool == false)
+        #expect(NSArray(array: try wordsOf(json)).isEqual(to: fixedWordsJSON))
     }
 
     @Test("途中結果は発言とは別のイベントになり、トラック・開始・終了・本文・重複の印を持つ（event(from:) の印は false）")
     func volatileResultBecomesPartial() throws {
         let result = TranscriptionResult(text: "こんに", isFinal: false, start: 1.5, end: 2.0)
-        let event = event(from: result, track: .相手)
-        #expect(event == .partial(track: .相手, start: 1.5, end: 2.0, text: "こんに", duplicate: false))
+        let event = event(from: result, track: .相手, words: { _ in fixedWords })
+        #expect(event == .partial(track: .相手, start: 1.5, end: 2.0, text: "こんに", duplicate: false, words: fixedWords))
 
         let json = try decode(event)
-        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate"])
+        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate", "words"])
         #expect(json["type"] as? String == "partial")
         #expect(json["track"] as? String == "相手")
         #expect(json["start"] as? Double == 1.5)
         #expect(json["end"] as? Double == 2.0)
         #expect(json["text"] as? String == "こんに")
         #expect(json["duplicate"] as? Bool == false)
+        #expect(NSArray(array: try wordsOf(json)).isEqual(to: fixedWordsJSON))
     }
 
     @Test("途中結果の重複の印は true も JSON に載る")
     func partialDuplicateTrue() throws {
-        let json = try decode(.partial(track: .自分, start: 1, end: 2, text: "こんに", duplicate: true))
-        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate"])
+        let json = try decode(.partial(track: .自分, start: 1, end: 2, text: "こんに", duplicate: true, words: []))
+        #expect(Set(json.keys) == ["type", "track", "start", "end", "text", "duplicate", "words"])
         #expect(json["type"] as? String == "partial")
         #expect(json["duplicate"] as? Bool == true)
     }
 
     @Test("自分のトラックも同じ形で表せる")
     func selfTrackUsesSameShape() throws {
-        let remark = try decode(event(from: TranscriptionResult(text: "はい", isFinal: true, start: 0, end: 1), track: .自分))
-        #expect(Set(remark.keys) == ["type", "track", "start", "end", "text", "duplicate"])
+        let remark = try decode(event(from: TranscriptionResult(text: "はい", isFinal: true, start: 0, end: 1), track: .自分, words: { _ in [] }))
+        #expect(Set(remark.keys) == ["type", "track", "start", "end", "text", "duplicate", "words"])
         #expect(remark["track"] as? String == "自分")
 
-        let partial = try decode(event(from: TranscriptionResult(text: "は", isFinal: false, start: 0, end: 1), track: .自分))
-        #expect(Set(partial.keys) == ["type", "track", "start", "end", "text", "duplicate"])
+        let partial = try decode(event(from: TranscriptionResult(text: "は", isFinal: false, start: 0, end: 1), track: .自分, words: { _ in [] }))
+        #expect(Set(partial.keys) == ["type", "track", "start", "end", "text", "duplicate", "words"])
         #expect(partial["track"] as? String == "自分")
+    }
+
+    @Test("event(from:) は本文を語を作る関数に渡し、その結果を words に載せる（確定結果も途中結果も、両トラックで）")
+    func eventCarriesWordsFromTheGivenFunction() throws {
+        for track in [Track.相手, Track.自分] {
+            for isFinal in [true, false] {
+                let e = event(from: TranscriptionResult(text: "本文", isFinal: isFinal, start: 0, end: 1), track: track, words: { text in
+                    [Word(surface: text, romaji: "honbun", location: 0, length: 2)]
+                })
+                let json = try decode(e)
+                #expect(json["type"] as? String == (isFinal ? "remark" : "partial"))
+                #expect(NSArray(array: try wordsOf(json)).isEqual(to: [["surface": "本文", "romaji": "honbun", "location": 0, "length": 2]]))
+            }
+        }
+    }
+
+    @Test("語が無い本文は、words を空の配列として載せる（キーを省かない）")
+    func emptyWordsIsExplicitEmptyArray() throws {
+        let json = try decode(event(from: TranscriptionResult(text: "", isFinal: true, start: 0, end: 1), track: .相手, words: { _ in [] }))
+        #expect(try wordsOf(json).isEmpty)
+        #expect(try HelperEvent.remark(track: .相手, start: 0, end: 1, text: "", duplicate: false, words: []).jsonString().contains("\"words\":[]"))
+    }
+
+    @Test("words の JSON 要素は surface・romaji・location・length だけを持ち、位置と長さは数値")
+    func wordJSONShape() throws {
+        let json = try decode(.remark(track: .相手, start: 0, end: 1, text: "x", duplicate: false, words: [Word(surface: "x", romaji: "", location: 3, length: 1)]))
+        let word = try #require(try wordsOf(json).first)
+        #expect(Set(word.keys) == ["surface", "romaji", "location", "length"])
+        #expect(word["location"] as? Int == 3)
+        #expect(word["length"] as? Int == 1)
+        #expect(word["romaji"] as? String == "")
+    }
+
+    @Test("words が違えばイベントも違う")
+    func wordsParticipateInEquality() {
+        let a = HelperEvent.remark(track: .相手, start: 0, end: 1, text: "a", duplicate: false, words: [])
+        let b = HelperEvent.remark(track: .相手, start: 0, end: 1, text: "a", duplicate: false, words: fixedWords)
+        #expect(a != b)
     }
 
     @Test("トラックの値はサーバーの Track と同じ文字列")
@@ -71,7 +124,7 @@ struct EventsTests {
 
     @Test("発言イベントはヘルパーで id を振らない")
     func remarkHasNoId() throws {
-        let json = try decode(.remark(track: .相手, start: 0, end: 1, text: "a", duplicate: false))
+        let json = try decode(.remark(track: .相手, start: 0, end: 1, text: "a", duplicate: false, words: []))
         #expect(json["id"] == nil)
     }
 

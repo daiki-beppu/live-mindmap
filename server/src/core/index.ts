@@ -39,3 +39,4 @@ export * from "./settle.ts";
 export * from "./speaking.ts";
 export * from "./topic.ts";
 export * from "./transcript.ts";
+export * from "./words.ts";

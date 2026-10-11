@@ -28,10 +28,17 @@ struct RelayITTests {
             received.append(text)
         }
         let expected = [
-            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false).jsonString(),
-            try HelperEvent.remark(track: .相手, start: 0, end: 2, text: "こんにちは", duplicate: false).jsonString(),
+            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに")).jsonString(),
+            try HelperEvent.remark(track: .相手, start: 0, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは")).jsonString(),
         ]
         #expect(received == expected)
+        // 実際のトークナイザの語が、確定結果にも途中結果にも載る（空の words を期待値と取り違えない）
+        for text in received {
+            let object = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            let words = try #require(object["words"] as? [[String: Any]])
+            #expect(!words.isEmpty)
+            #expect(Set(words[0].keys) == ["surface", "romaji", "location", "length"])
+        }
     }
 }
 
@@ -91,12 +98,12 @@ struct MultiTrackRelayITTests {
 
         let received = try await receiveTexts(task, count: 4)
         let expectedMine = [
-            try HelperEvent.partial(track: .自分, start: 0, end: 1, text: "は", duplicate: false).jsonString(),
-            try HelperEvent.remark(track: .自分, start: 0.5, end: 1.5, text: "はい", duplicate: false).jsonString(),
+            try HelperEvent.partial(track: .自分, start: 0, end: 1, text: "は", duplicate: false, words: transcriptWords("は")).jsonString(),
+            try HelperEvent.remark(track: .自分, start: 0.5, end: 1.5, text: "はい", duplicate: false, words: transcriptWords("はい")).jsonString(),
         ]
         let expectedTheirs = [
-            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false).jsonString(),
-            try HelperEvent.remark(track: .相手, start: 0.25, end: 2, text: "こんにちは", duplicate: false).jsonString(),
+            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに")).jsonString(),
+            try HelperEvent.remark(track: .相手, start: 0.25, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは")).jsonString(),
         ]
         // トラック間の到着順は決まっていない。同じトラックの中の順序だけが保たれる。
         #expect(Set(received) == Set(expectedMine + expectedTheirs))
@@ -123,7 +130,7 @@ struct MultiTrackRelayITTests {
         try await relay(tracks: [(.自分, finishedEarly), (.相手, late)], to: server, duplicates: nil)
 
         let received = try await receiveTexts(task, count: 1)
-        #expect(received == [try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "あとから", duplicate: false).jsonString()])
+        #expect(received == [try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "あとから", duplicate: false, words: transcriptWords("あとから")).jsonString()])
     }
 
     @Test("一方のトラックがエラーで終わったら、そのエラーを返し、終わらないもう一方の流れも終わる")

@@ -542,3 +542,257 @@ describe("停止時（drain）", () => {
     expect(s.drain()).toEqual([]);
   });
 });
+
+// Issue #639: 語ごとの読み（words）を発言まで運ぶ。位置と長さは UTF-16 コード単位。
+// 出す発言の本文と words は同じ切り位置から作り、残った words の位置は切った後の本文に合う。
+// words を持たない入力からは、words のキーを持つ発言を作らない
+type TestWord = { surface: string; romaji: string; location: number; length: number };
+const w = (surface: string, location: number): TestWord => ({ surface, romaji: `r:${surface}`, location, length: surface.length });
+// 本文を表記の列に区切って words にする（位置は UTF-16 の連続した位置）
+const wordsOf = (...surfaces: string[]): TestWord[] => {
+  let at = 0;
+  return surfaces.map((surface) => {
+    const word = w(surface, at);
+    at += surface.length;
+    return word;
+  });
+};
+const partialW = (track: HelperPartial["track"], start: number, end: number, text: string, words?: TestWord[]): HelperPartial => ({
+  ...partial(track, start, end, text),
+  ...(words === undefined ? {} : { words }),
+});
+const finalW = (track: SettledRemark["track"], start: number, end: number, text: string, words?: TestWord[]) =>
+  final(track, start, end, text, words === undefined ? {} : ({ words } as Partial<SettledRemark>));
+const wordsOfRemark = (r: SettledRemark | undefined) => (r as { words?: TestWord[] } | undefined)?.words;
+// 残った words は、切った後の本文の上で、位置と長さが表記と一致する
+const expectWordsFitText = (r: SettledRemark | undefined) => {
+  expect(r).toBeDefined();
+  const words = wordsOfRemark(r);
+  expect(words).toBeDefined();
+  for (const word of words!) expect(r!.text.slice(word.location, word.location + word.length)).toBe(word.surface);
+};
+
+describe("words の運搬（Issue #639）", () => {
+  describe("途中結果から作る発言に words が付く", () => {
+    it("due: 最後の途中結果の words が付く。更新のたびに words は置き換わり、古い words は残らない", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 11, "あ", wordsOf("あ")), 0);
+      s.partial(partialW("相手", 10, 13, "あいう", wordsOf("あい", "う")), 400);
+      s.partial(partialW("相手", 10, 15, "あいうえお", wordsOf("あい", "うえ", "お")), 900);
+
+      const out = s.due(900 + T);
+      expect(brief(out)).toEqual([["相手", 10, 15, "あいうえお"]]);
+      expect(wordsOfRemark(out[0])).toEqual(wordsOf("あい", "うえ", "お"));
+    });
+
+    it("words の無い途中結果で更新したら、先の words は残らない（text と words は同じ更新）", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 11, "あ", wordsOf("あ")), 0);
+      s.partial(partialW("相手", 10, 13, "あいう"), 400);
+
+      const out = s.due(400 + T);
+      expect(brief(out)).toEqual([["相手", 10, 13, "あいう"]]);
+      expect(out[0]).not.toHaveProperty("words");
+    });
+
+    it("words の無い途中結果だけから作る発言には words のキーが無い", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 11, "あ"), 0);
+
+      expect(s.due(T)[0]).not.toHaveProperty("words");
+    });
+
+    it("更新の間隔が T を超えて別の発話になったとき、それぞれの発話は自分の words を持つ", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 11, "あ", wordsOf("あ")), 0);
+      s.partial(partialW("相手", 20, 21, "かき", wordsOf("か", "き")), 100);
+
+      const out = s.due(100 + T);
+      expect(out.map((r) => [r.text, wordsOfRemark(r)])).toEqual([
+        ["あ", wordsOf("あ")],
+        ["かき", wordsOf("か", "き")],
+      ]);
+    });
+
+    it("final（途中結果が出た後に届いた確定結果の分岐）: 出す未出の発話に、その途中結果の words が付く", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 12, "あいう", wordsOf("あい", "う")), 0);
+      // 途中結果が T を超えて止まっている状態で確定結果が来る: 確定結果は捨て、途中結果からの発言を出す
+      const out = s.final(finalW("相手", 10, 12, "別の確定", wordsOf("別", "の", "確定")), T + 1);
+
+      expect(brief(out)).toEqual([["相手", 10, 12, "あいう"]]);
+      expect(wordsOfRemark(out[0])).toEqual(wordsOf("あい", "う"));
+    });
+
+    it("drain: まだ出ていない発話に、最後の途中結果の words が付く", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 11, "あ", wordsOf("あ")), 0);
+      s.partial(partialW("相手", 10, 13, "あいう", wordsOf("あい", "う")), 100);
+
+      const out = s.drain();
+      expect(brief(out)).toEqual([["相手", 10, 13, "あいう"]]);
+      expect(wordsOfRemark(out[0])).toEqual(wordsOf("あい", "う"));
+    });
+  });
+
+  describe("確定結果の words", () => {
+    it("途中結果が無いとき、確定結果の words はそのまま出る", () => {
+      const s = createRemarkSettler();
+      const words = wordsOf("こんにちは");
+      const out = s.final(finalW("相手", 10, 12, "こんにちは", words), 0);
+
+      expect(brief(out)).toEqual([["相手", 10, 12, "こんにちは"]]);
+      expect(wordsOfRemark(out[0])).toEqual(words);
+    });
+
+    it("words の無い確定結果には words のキーが付かない", () => {
+      const s = createRemarkSettler();
+
+      expect(s.final(finalW("相手", 10, 12, "こんにちは"), 0)[0]).not.toHaveProperty("words");
+    });
+
+    it("自分の確定結果は関所を通らず、words もそのまま出る", () => {
+      const s = createRemarkSettler();
+      const words = wordsOf("はい");
+      const first = s.final(finalW("自分", 0, 2, "はい", words), 0);
+      const second = s.final(finalW("自分", 1, 3, "はい", words), 0);
+
+      expect(wordsOfRemark(first[0])).toEqual(words);
+      expect(wordsOfRemark(second[0])).toEqual(words);
+    });
+  });
+
+  // 関所が頭を切るとき、本文と words は同じ位置で切る。完全に残る語だけを残して位置をずらし、途中で切れた語は落とす。
+  // 組み立て方は上の「前の部分が書き換わった全文」のテストに倣う（同じ始まりから全文を送り直す途中結果）
+  describe("関所が頭を切った発言の words", () => {
+    // 先に first を出し（end 12）、続けて second を同じ始まりの全文として送って、2 件目の発言を返す
+    const secondRemark = (first: string, second: string, secondWords: TestWord[] | undefined) => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 12, first, wordsOf(first)), 0);
+      expect(brief(s.due(T))).toEqual([["相手", 10, 12, first]]);
+      s.partial(partialW("相手", 10, 15, second, secondWords), T + 1);
+      const out = s.due(T + 1 + T);
+      expect(out).toHaveLength(1);
+      return out[0]!;
+    };
+
+    it("完全一致の重なりで切る: 切った後に残る語だけが、切った後の本文の位置で残る", () => {
+      const r = secondRemark("あいう", "あいうえお", wordsOf("あい", "う", "え", "お"));
+
+      expect(r.text).toBe("えお");
+      expect(wordsOfRemark(r)).toEqual([w("え", 0), w("お", 1)]);
+      expectWordsFitText(r);
+    });
+
+    it("書き換えを含む重なり（編集距離を許す）で切る: 最終的な切り位置で words も切る", () => {
+      const r = secondRemark("今日はシ子ど", "今日はシ子度です", wordsOf("今日", "は", "シ子度", "です"));
+
+      expect(r.text).toBe("です");
+      expect(wordsOfRemark(r)).toEqual([w("です", 0)]);
+      expectWordsFitText(r);
+    });
+
+    it("語の途中で切れたとき、その語は落とし、読みを残った本文に流用しない", () => {
+      // 切る位置は 3。"うえ"（位置 2〜4）は途中で切れるので落ちる。"お"（位置 4）は残る
+      const r = secondRemark("あいう", "あいうえお", wordsOf("あい", "うえ", "お"));
+
+      expect(r.text).toBe("えお");
+      expect(wordsOfRemark(r)).toEqual([w("お", 1)]);
+      expectWordsFitText(r);
+    });
+
+    it("書き換えを含む重なりで、切る位置をまたぐ語は落ちる", () => {
+      // 切る位置は 6。"シ子度で"（位置 3〜7）は途中で切れるので落ちる。"す"（位置 7）は残る
+      const r = secondRemark("今日はシ子ど", "今日はシ子度です", wordsOf("今日は", "シ子度で", "す"));
+
+      expect(r.text).toBe("です");
+      expect(wordsOfRemark(r)).toEqual([w("す", 1)]);
+      expectWordsFitText(r);
+    });
+
+    it("切る位置の手前の句読点は残りに入らない: 句読点の語は落ち、残る語は句読点の後の本文に合う", () => {
+      const r = secondRemark("今日は晴れ", "今日は晴れ、明日は雨", wordsOf("今日は", "晴れ", "、", "明日", "は", "雨"));
+
+      expect(r.text).toBe("明日は雨");
+      expect(wordsOfRemark(r)).toEqual([w("明日", 0), w("は", 2), w("雨", 3)]);
+      expectWordsFitText(r);
+    });
+
+    it("補助平面の文字（UTF-16 で 2 コード単位）の後で切っても、位置は UTF-16 で合う", () => {
+      const r = secondRemark("𠮷", "𠮷野家", wordsOf("𠮷", "野", "家"));
+
+      expect(r.text).toBe("野家");
+      expect(wordsOfRemark(r)).toEqual([w("野", 0), w("家", 1)]);
+      expectWordsFitText(r);
+    });
+
+    it("補助平面の文字が切った後の本文にあるとき、後ろの語の位置もずれずに合う", () => {
+      const r = secondRemark("あい", "あい𠮷野家", wordsOf("あい", "𠮷", "野", "家"));
+
+      expect(r.text).toBe("𠮷野家");
+      expect(wordsOfRemark(r)).toEqual([w("𠮷", 0), w("野", 2), w("家", 3)]);
+      expectWordsFitText(r);
+    });
+
+    it("全部の語が切る位置より前なら、words は空の配列で出る（words のキーは残る）", () => {
+      const r = secondRemark("あいう", "あいうえお", wordsOf("あいう"));
+
+      expect(r.text).toBe("えお");
+      expect(wordsOfRemark(r)).toEqual([]);
+    });
+
+    it("words の無い発言は、切っても words のキーを持たない", () => {
+      const r = secondRemark("あいう", "あいうえお", undefined);
+
+      expect(r.text).toBe("えお");
+      expect(r).not.toHaveProperty("words");
+    });
+
+    it("切らない発言（重ならない）は words を変えない", () => {
+      const s = createRemarkSettler();
+      const firstWords = wordsOf("あい", "う");
+      const secondWords = wordsOf("かき", "く");
+      expect(wordsOfRemark(s.final(finalW("相手", 10, 12, "あいう", firstWords), 0)[0])).toEqual(firstWords);
+
+      const out = s.final(finalW("相手", 12, 14, "かきく", secondWords), 0); // 時刻が重ならない
+
+      expect(wordsOfRemark(out[0])).toEqual(secondWords);
+    });
+
+    it("時刻は重なるが本文が重ならない発言（切る長さ 0）は、本文も words も変わらない", () => {
+      const s = createRemarkSettler();
+      s.final(finalW("相手", 10, 12, "あいう", wordsOf("あいう")), 0);
+      const secondWords = wordsOf("かき", "く");
+
+      const out = s.final(finalW("相手", 11, 14, "かきく", secondWords), 0);
+
+      expect(brief(out)).toEqual([["相手", 12, 14, "かきく"]]);
+      expect(wordsOfRemark(out[0])).toEqual(secondWords);
+    });
+
+    it("確定結果の頭を切るときも、words は同じ位置で切る", () => {
+      const s = createRemarkSettler();
+      s.final(finalW("相手", 10, 12, "あいう", wordsOf("あいう")), 0);
+
+      const out = s.final(finalW("相手", 11, 15, "あいうえお", wordsOf("あい", "う", "え", "お")), 0);
+
+      expect(brief(out)).toEqual([["相手", 12, 15, "えお"]]);
+      expect(wordsOfRemark(out[0])).toEqual([w("え", 0), w("お", 1)]);
+    });
+
+    it("3 回続けて全文を送り直しても、各回の words は切る前の全文の words から作る（前回切った words を引き継がない）", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 12, "あいう", wordsOf("あい", "う")), 0);
+      expect(brief(s.due(T))).toEqual([["相手", 10, 12, "あいう"]]);
+      s.partial(partialW("相手", 10, 15, "あいうえお", wordsOf("あい", "う", "え", "お")), T + 1);
+      expect(wordsOfRemark(s.due(T + 1 + T)[0])).toEqual([w("え", 0), w("お", 1)]);
+
+      s.partial(partialW("相手", 10, 18, "あいうえおかき", wordsOf("あい", "う", "え", "お", "かき")), 2 * T + 2);
+      const out = s.due(2 * T + 2 + T);
+
+      expect(brief(out)).toEqual([["相手", 15, 18, "かき"]]);
+      expect(wordsOfRemark(out[0])).toEqual([w("かき", 0)]);
+      expectWordsFitText(out[0]);
+    });
+  });
+});
