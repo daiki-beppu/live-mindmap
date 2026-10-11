@@ -8,9 +8,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
 import { beforeEach, vi } from "vitest";
 import { runCli } from "../src/cli.ts";
-import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import type { DiffOutput } from "../src/core/index.ts";
-import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
+import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { EXPORT_FILE } from "../src/sessionFiles.ts";
@@ -22,8 +22,9 @@ type Message = { message: { content: unknown } };
 type QueryRecord = { model: string; messages: Message[]; closed: number };
 const sdk = vi.hoisted(() => ({ created: [] as QueryRecord[], responses: [] as DiffOutput[], afterMessage: () => {} }));
 
-// Keep selection, the updater, recording and eval real; replace only the external SDK call.
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+// 実装前の通常依存経路でも、本物のモデルを呼ばない。
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
+const managedSdk = {
   query: (params: { prompt: AsyncIterable<Message>; options: { model: string } }) => {
     const record: QueryRecord = { model: params.options.model, messages: [], closed: 0 };
     sdk.created.push(record);
@@ -37,6 +38,13 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
     })();
     return Object.assign(gen, { close: () => { record.closed++; } });
   },
+};
+const managedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+  check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"),
+  load: ((name: string) => {
+    expect(name).toBe("claude");
+    return Effect.succeed(managedSdk);
+  }) as unknown as ManagedDeps["Service"]["load"],
 }));
 vi.mock("../src/http.ts", async (importOriginal) => {
   const { fakeListener } = await import("./fakeListener.ts");
@@ -54,7 +62,7 @@ function dependencies(root: string, env: Record<string, string>) {
   const sessions = join(root, "sessions");
   const stdout: string[] = [];
   const layer = Layer.mergeAll(
-    NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+    NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer, managedDeps,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: sessions, LIVE_MINDMAP_PORT: "0", ...env })),
     Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
   );
@@ -91,6 +99,50 @@ function fakeHelpers(events: unknown[]) {
 }
 
 describe("選択したモデルの実行と記録（Issue #663）", () => {
+  it.live.each([
+    "管理 SDK がありません",
+    "読込版が固定版と一致しません",
+    "@anthropic-ai/claude-agent-sdk の解決先が管理実体の node_modules 外です",
+    "current の実体が管理ディレクトリ外です",
+  ])("Claude SDK の準備失敗は副作用前に503で理由を返し、再試行できる: %s", (message) => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const sessionsDir = join(root, "sessions");
+    const helpers = fakeHelpers([]);
+    let unavailable = true;
+    const load = vi.fn((_name: string) => unavailable
+      ? Effect.fail(new ManagedDepsFailed({ message }))
+      : Effect.succeed(managedSdk));
+    const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+      check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"),
+      load: load as unknown as ManagedDeps["Service"]["load"],
+    }));
+    const server = yield* startedServer({ port: 0, sessionsDir }, {
+      helpers: helpers.layer, managedDeps: deps,
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
+        Layer.provide(Layer.mergeAll(fakeExportServices(), deps, unusedApple, NodeHttpClient.layerUndici))),
+    });
+    const post = () => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ app: "us.zoom.xos", audio: false,
+        model: { name: "claude", route: "claude", model: "claude-sonnet-5-5", local: false } }),
+    }));
+    const rejected = yield* post();
+    expect(load).toHaveBeenCalledExactlyOnceWith("claude");
+    expect({ status: rejected.status, folderCreated: existsSync(sessionsDir), launches: helpers.calls.length })
+      .toEqual({ status: 503, folderCreated: false, launches: 0 });
+    expect(yield* Effect.tryPromise(() => rejected.json())).toEqual({ error: message });
+    expect(existsSync(sessionsDir)).toBe(false);
+    expect(helpers.calls).toHaveLength(0);
+    expect(sdk.created).toEqual([]);
+    unavailable = false;
+    const accepted = yield* post();
+    expect(accepted.status).toBe(200);
+    expect(readdirSync(sessionsDir)).toHaveLength(1);
+    expect(helpers.calls).toHaveLength(1);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(sdk.created).toEqual([]);
+  }));
+
   it.live("start --model は HTTP とライブの記録境界を通って SDK と開始ログへ届く", () => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
     writeConfig(root);
@@ -98,8 +150,8 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const helpers = fakeHelpers([{ type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }]);
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
-      managedDeps: forbiddenManagedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { if (model.route !== "claude") throw new Error("このfixtureはClaude専用です"); return Effect.succeed(claudeUpdaterLayer(model)); } }).pipe(Layer.provide(fakeExportServices())),
+      managedDeps,
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const deps = dependencies(root, { LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_MODEL: "careful" });
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--model", "fast"]).pipe(Effect.provide(deps.layer));
@@ -107,6 +159,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     yield* runCli(["stop"]).pipe(Effect.provide(deps.layer));
     expect(sdk.created.map((query) => query.model)).toEqual(["claude-haiku-5-5"]);
     expect(sdk.created[0]!.messages).toHaveLength(1);
+    expect(sdk.created[0]!.closed).toBe(1);
     expect(starts(session)).toEqual([expect.objectContaining({ model: { name: "fast", route: "claude", local: false } })]);
   }));
 
@@ -116,8 +169,8 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const helpers = fakeHelpers([]);
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
-      managedDeps: forbiddenManagedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { if (model.route !== "claude") throw new Error("このfixtureはClaude専用です"); return Effect.succeed(claudeUpdaterLayer(model)); } }).pipe(Layer.provide(fakeExportServices())),
+      managedDeps,
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const post = (model: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -152,6 +205,32 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const session = dirname(deps.stdout.join("").trim().split("\n")[0]!);
     expect(starts(session)).toEqual([expect.objectContaining({ type: "start", model: { name: "fast", route: "claude", local: false } })]);
     expect(sdk.created.map((query) => query.closed)).toEqual([1]);
+  }));
+
+  it.effect.each(["play", "eval"] as const)("%s --model は SDK の準備失敗後に記録再生へ進まない", (command) => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    writeConfig(root);
+    const deps = dependencies(root, {});
+    let source = fixture;
+    if (command === "eval") {
+      yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+      source = dirname(deps.stdout.join("").trim().split("\n")[0]!);
+    }
+    const before = existsSync(deps.sessions) ? readdirSync(deps.sessions) : [];
+    sdk.created.length = 0;
+    deps.stdout.length = 0;
+    const load = vi.fn((_name: string) => Effect.fail(new ManagedDepsFailed({ message: "管理 SDK がありません" })));
+    const failedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+      check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"), load,
+    }));
+    const result = yield* Effect.result(runCli([command, source, "--model", "fast"]).pipe(
+      Effect.provide(Layer.mergeAll(deps.layer, failedDeps)),
+    ));
+    expect(load).toHaveBeenCalledExactlyOnceWith("claude");
+    expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "UpdaterUnavailable", message: "管理 SDK がありません" } });
+    expect(existsSync(deps.sessions) ? readdirSync(deps.sessions) : []).toEqual(before);
+    expect(sdk.created).toEqual([]);
+    expect(deps.stdout).toEqual([]);
   }));
 
   it.effect("設定なし・指定なしの play は従来の Claude を実行し記録する", () => Effect.gen(function* () {

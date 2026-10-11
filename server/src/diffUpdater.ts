@@ -10,15 +10,21 @@ import { prepareChatgpt } from "./chatgptResponses.ts";
 import { prepareCompatible } from "./openaiCompatible.ts";
 import { appleRefusal } from "./modelSelection.ts";
 
-export const claudeUpdaterLayer = (model: Extract<ExecutableModel, { route: "claude" }>) => Layer.unwrap(
-  Effect.tryPromise({
+const prepareClaude = Effect.fnUntraced(function* (model: Extract<ExecutableModel, { route: "claude" }>) {
+  const { layerClaude, AgentSdk } = yield* Effect.tryPromise({
     try: () => import("./claude.ts"),
     catch: (e) => new UpdaterUnavailable({ message: e instanceof Error ? e.message : String(e) }),
-  }).pipe(Effect.map(({ layerClaude, AgentSdk }) => layerClaude(model.model).pipe(Layer.provide(AgentSdk.layer)))),
-);
+  });
+  const sdk = yield* AgentSdk.pipe(Effect.provide(AgentSdk.layer));
+  return layerClaude(model.model).pipe(Layer.provide(Layer.succeed(AgentSdk, sdk)));
+}, Effect.mapError((error) => new UpdaterUnavailable({ message: error.message })));
+
+export const claudeUpdaterLayer = (model: Extract<ExecutableModel, { route: "claude" }>) => Layer.unwrap(prepareClaude(model));
 
 export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: ExecutableModel) {
-  if (model.route === "claude") return claudeUpdaterLayer(model);
+  if (model.route === "claude") {
+    return yield* prepareClaude(model);
+  }
   if (model.route === "apple") {
     const state = yield* (yield* AppleIntelligence).availability;
     const refusal = appleRefusal(state);

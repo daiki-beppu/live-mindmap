@@ -4,6 +4,7 @@ import { HttpClient } from "effect/http";
 import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 
 // 計画のプロセス境界。問い合わせは一回で終了、launch は呼び出し側 Scope の資源を返す。
@@ -143,6 +144,7 @@ describe("Apple Intelligence の子プロセス", () => {
     let requests = 0;
     const client = HttpClient.make(() => { requests++; return Effect.die("拒否した宛先へ推論要求を送りました"); });
     const launching = yield* Effect.forkChild(Effect.scoped(Effect.result(prepareUpdaterLayer({ name: "apple", route: "apple", local: true }).pipe(
+      Effect.provide(forbiddenManagedDeps),
       Effect.provideService(AppleIntelligence, AppleIntelligence.of({ ...apple,
         availability: Effect.succeed({ osVersion: "27.0", availability: { status: "available" } }),
       })), Effect.provideService(HttpClient.HttpClient, client), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),

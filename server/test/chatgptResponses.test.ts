@@ -1,3 +1,4 @@
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Clock, ConfigProvider, Context, Effect, FileSystem, Result } from "effect";
 import { HttpClient } from "effect/http";
@@ -16,7 +17,7 @@ const open = Effect.fnUntraced(function* (extraBody: Record<string, unknown>) {
 });
 const provide = <A, E, R>(effect: Effect.Effect<A, E, R>, files: ReturnType<typeof fakeChatgptFiles>, http: ReturnType<typeof fakeChatgptHttp>) => effect.pipe(
   Effect.provideService(FileSystem.FileSystem, files.fs), Effect.provideService(HttpClient.HttpClient, http.client),
-  Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))), Effect.provide(unusedApple),
+  Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))), Effect.provide(unusedApple), Effect.provide(forbiddenManagedDeps),
 );
 const response = (text: string) => new Response(text, { headers: { "content-type": "text/event-stream" } });
 

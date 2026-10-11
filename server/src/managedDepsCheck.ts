@@ -1,13 +1,17 @@
-import { Effect } from "effect";
+import { Context, Effect } from "effect";
 import { ManagedDeps } from "./managedDeps.ts";
+
+export const ClaudeRequired = Context.Reference("live-mindmap/server/ClaudeRequired", { defaultValue: () => true });
 
 export const checkManagedDeps = Effect.gen(function* () {
   const deps = yield* ManagedDeps;
-  const items = (yield* deps.check(["chromium"])).map((item) => ({
+  const claudeRequired = yield* ClaudeRequired;
+  const items = (yield* deps.check(["chromium", "claude"])).map((item) => ({
     ...item,
-    // 容量の目安は約211MB。JSON の size はバイト数。
-    size: 211_000_000,
-    install: "pnpm cli install chromium",
+    need: item.name === "claude" ? (claudeRequired ? "required" as const : "optional" as const) : item.need,
+    // JSON の size は導入容量の目安（バイト数）。
+    size: item.name === "claude" ? 224_000_000 : 211_000_000,
+    install: `pnpm cli install ${item.name}`,
   }));
   return {
     ready: items.every((item) => item.need === "optional" || item.state === "ready"),

@@ -1,4 +1,5 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import type { Scope } from "effect";
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Context, Effect, FileSystem, Layer, Result } from "effect";
@@ -11,7 +12,7 @@ const model = { name: "compatible", route: "openai-compatible" as const, model: 
 type CompatibleModel = typeof model & { apiKeyEnv?: string; maxTokens?: number; extraBody?: Record<string, unknown> };
 // 計画の「選択済みモデル→開始前準備→実行Layer」を使う。関数名は後続実装の境界名に合わせられる。
 const prepareUpdaterLayer: (selected: CompatibleModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | Scope.Scope> =
-  (selected) => prepare(selected).pipe(Effect.provide(unusedApple), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
+  (selected) => prepare(selected).pipe(Effect.provide(forbiddenManagedDeps), Effect.provide(unusedApple), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
 const remark = (text: string, id = "r1"): Remark => ({ id, track: "相手", start: 0, end: 10, text });
 const input = (text: string): DiffInput => ({ map: emptyMap("定例"), recent: [], fresh: [remark(text)] });
 type Classification = { 議題: { id: string; 題: string }; 文: readonly object[]; 済み: string };

@@ -17,7 +17,7 @@ import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
-import { configuredModels, ModelRefused, resolveModel } from "./modelConfig.ts";
+import { configuredModels, ModelRefused, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
@@ -706,7 +706,8 @@ const checkCommand = Command.make(
   {},
   Effect.fn("check")(function* () {
     const port = yield* portConfig;
-    const report = yield* requestServer(port, "GET", "/check", CheckReport);
+    const model = yield* resolveModelCandidate({});
+    const report = yield* requestServer(port, "GET", `/check?claudeRequired=${model.route === "claude"}`, CheckReport);
     yield* write(JSON.stringify(report));
     if (!report.ready) return yield* new RequiredDepsMissing();
   }),
@@ -795,7 +796,7 @@ if (import.meta.main) {
   }));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer.pipe(Layer.provide(managedDeps)))), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer)))),
+    Effect.provide(Layer.mergeAll(managedDeps, NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer.pipe(Layer.provide(managedDeps)))), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer)))),
     NodeRuntime.runMain({ disableErrorReporting: true, teardown }),
   );
 }

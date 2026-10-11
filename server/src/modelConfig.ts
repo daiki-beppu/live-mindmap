@@ -22,10 +22,17 @@ const loadModelConfig = Effect.fn("loadModelConfig")(function* () {
   );
   return { config, configPath, envModel, macState: {} };
 });
-export const resolveModel = Effect.fn("resolveModel")(function* (flags: ModelFlags) {
+const resolveCandidate = Effect.fn("resolveCandidate")(function* (flags: ModelFlags) {
   const input = { ...yield* loadModelConfig(), flags };
   const candidate = modelCandidate(input);
   if (!candidate.ok) return yield* reject(candidate.lines);
+  return { input, candidate };
+});
+export const resolveModelCandidate = Effect.fn("resolveModelCandidate")(function* (flags: ModelFlags) {
+  return (yield* resolveCandidate(flags)).candidate.model;
+});
+export const resolveModel = Effect.fn("resolveModel")(function* (flags: ModelFlags) {
+  const { input, candidate } = yield* resolveCandidate(flags);
   if (candidate.model.route !== "apple") return candidate.model;
   const macState = yield* (yield* AppleIntelligence).availability.pipe(Effect.mapError((error) => new ModelRefused({ message: error.message })));
   const result = selectModel({ ...input, macState });
