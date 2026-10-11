@@ -7,8 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Effect, Layer, Result, Stream } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
-import { ManagedDeps } from "../src/managedDeps.ts";
-import type { CheckReport } from "../src/managedDepsProtocol.ts";
+import { ManagedDeps, type DepItem } from "../src/managedDeps.ts";
 import type { AgentSdk } from "../src/claude.ts";
 import manifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -18,7 +17,7 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 const refusal = "開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n";
-type Item = typeof CheckReport.Type.items[number];
+type Item = DepItem;
 
 const localCli = (root: string, args: string[]) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
   execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...args], {

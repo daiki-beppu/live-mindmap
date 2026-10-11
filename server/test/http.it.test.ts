@@ -39,8 +39,17 @@ type AttemptScript = {
   events?: unknown[]; // 接続した直後にヘルパーが流すイベント（JSON にして events の Stream に載せる）
 };
 
-const makeFakeHelpers = (attempts: AttemptScript[]) => {
+const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } = { microphone: "authorized", screenCapture: true }) => {
   const calls: string[][] = [];
+  const checks: boolean[] = [];
+  const check = Effect.sync(() => {
+    checks.push(true);
+    return { ...permission, speechJa: { status: "supported" as const, installedLocales: [] } };
+  });
+  const checkNoScreen = Effect.sync(() => {
+    checks.push(false);
+    return { microphone: permission.microphone, speechJa: { status: "supported" as const, installedLocales: [] } };
+  });
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) =>
     Effect.gen(function* () {
       const index = calls.length;
@@ -73,16 +82,17 @@ const makeFakeHelpers = (attempts: AttemptScript[]) => {
       yield* Effect.addFinalizer(() => Effect.ignore(stop));
       return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []) };
     });
-  return { helpers: Helpers.of({ apps: Effect.succeed(apps), launch }), calls };
+  const service = { apps: Effect.succeed(apps), check, checkNoScreen, launch };
+  return { helpers: Helpers.of(service), calls, checks };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater> } = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } } = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
   );
   const sessionsDir = join(dir, "sessions");
-  const fakeHelpers = makeFakeHelpers(attempts);
+  const fakeHelpers = makeFakeHelpers(attempts, options.permission);
   const sessionSinksLayer = SessionSinks.layer({
     prepareUpdater: (model) => Effect.succeed(options.updaterLayer ? options.updaterLayer(model) : updaterLayer(() => Effect.succeed({ ops: [] }))),
   }).pipe(Layer.provide(fakeExportServices()));
@@ -91,7 +101,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: readyManagedDeps },
   );
   return {
-    server, calls: fakeHelpers.calls, sessionsDir,
+    server, calls: fakeHelpers.calls, checks: fakeHelpers.checks, sessionsDir,
     request: (method: string, path: string, body: string | undefined, origin: string | undefined) => fetch(
       `http://127.0.0.1:${server.port}${path}`,
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
@@ -173,6 +183,64 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
 });
 
 describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサーバー。CT-ENTRY-LAYERS）", () => {
+  it.live.each([
+    { microphone: "authorized", screenCapture: true, warnings: [] },
+    { microphone: "denied", screenCapture: false, warnings: ["マイクの許可がありません。自分の声が入りません", "画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] },
+    { microphone: "notDetermined", screenCapture: true, warnings: ["マイクの許可が未決定です。開始時に許可のダイアログが出ます"] },
+  ] as const)("C2: $microphone / screen=$screenCapture でも警告して開始する", ({ microphone, screenCapture, warnings }) => Effect.gen(function* () {
+    const r = yield* resourceWithFakeHelpers([{}], { permission: { microphone, screenCapture } });
+    const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+    expect(response.status).toBe(200);
+    const body = yield* Effect.tryPromise(() => response.json());
+    expect(body.warnings ?? []).toEqual(warnings);
+    expect(r.checks).toEqual([true]);
+    expect(r.calls).toHaveLength(1);
+    const status = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
+    expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir: body.dir });
+  }));
+
+  it.live("C4: screen=false は画面の確認と警告を省き、マイクの警告だけで開始する", () => Effect.gen(function* () {
+    const r = yield* resourceWithFakeHelpers([{}], { permission: { microphone: "denied", screenCapture: false } });
+    const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false,"screen":false}', undefined));
+    expect(response.status).toBe(200);
+    expect((yield* Effect.tryPromise(() => response.json())).warnings).toEqual(["マイクの許可がありません。自分の声が入りません"]);
+    expect(r.checks).toEqual([false]);
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0]).toContain("--no-screen");
+  }));
+
+  it.live.each([false, true])("C2・C4: resume と check resume は保存済み screen=%s で許可を確認する", (screen) => Effect.gen(function* () {
+    const permission = { microphone: "authorized" as "authorized" | "denied", screenCapture: false };
+    const r = yield* resourceWithFakeHelpers([
+      { unexpectedExit: { afterMs: 50, exit: { code: 1, signal: null } } },
+      { connect: false }, { connect: false }, {},
+    ], { permission });
+    const start = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify({ app: "us.zoom.xos", audio: false, screen }), undefined));
+    expect(start.status).toBe(200);
+    const { dir } = yield* Effect.tryPromise(() => start.json());
+    yield* Effect.tryPromise(() => vi.waitFor(async () => {
+      expect(await (await r.request("GET", "/session/status", undefined, undefined)).json()).toMatchObject({ status: "stopped" });
+    }, { timeout: 10_000 }));
+    permission.microphone = "denied";
+    const checked = yield* Effect.tryPromise(() => r.request("GET", "/check?for=resume", undefined, undefined));
+    expect(checked.status).toBe(200);
+    const report = yield* Effect.tryPromise(() => checked.json());
+    expect(report.ready).toBe(true);
+    expect(report.items.filter((item: { name: string }) => ["microphone", "screen-capture"].includes(item.name))).toEqual([
+      { name: "microphone", need: "optional", state: "absent" },
+      ...(screen ? [{ name: "screen-capture", need: "optional", state: "absent" }] : []),
+    ]);
+    const resumed = yield* Effect.tryPromise(() => r.request("POST", "/session/resume", undefined, undefined));
+    expect(resumed.status).toBe(200);
+    expect((yield* Effect.tryPromise(() => resumed.json())).warnings).toEqual([
+      "マイクの許可がありません。自分の声が入りません",
+      ...(screen ? ["画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] : []),
+    ]);
+    expect(r.checks).toEqual([screen, screen, screen]);
+    const status = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
+    expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir, restarts: 1 });
+  }));
+
   it.live("非ローカル Origin の start は403で拒否され、ヘルパーを起動しない", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}]);

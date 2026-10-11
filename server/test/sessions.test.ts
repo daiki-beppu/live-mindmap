@@ -1,4 +1,5 @@
 import { defaultClaude } from "../src/modelSelection.ts";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
@@ -108,7 +109,7 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
       if (!queue) throw new Error(`起動回 ${attemptIndex} はまだ接続していない`);
       Queue.offerUnsafe(queue, JSON.stringify(event));
     };
-    return { helpers: Helpers.of({ apps: Effect.succeed(APPS), launch }), calls, send, stops };
+    return { helpers: Helpers.of({ ...readyHelperChecks, apps: Effect.succeed(APPS), launch }), calls, send, stops };
   });
 }
 

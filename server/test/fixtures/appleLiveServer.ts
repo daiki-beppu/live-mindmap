@@ -8,6 +8,7 @@ import type { SpeakingFrame } from "../../src/core/index.ts";
 import { appleModel, fakeAppleLifecycle } from "./appleLifecycle.ts";
 import { fakeExportServices } from "./exportServices.ts";
 import { readyManagedDeps } from "./readyManagedDeps.ts";
+import { readyHelperChecks } from "./helperCheck.ts";
 import { startedServer } from "./startedServer.ts";
 
 export const appleLiveServer = Effect.fnUntraced(function* () {
@@ -15,7 +16,7 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
     (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })));
   const fake = yield* fakeAppleLifecycle([{}, { holdReady: true }]);
   const events = yield* Queue.make<string, Cause.Done>();
-  const helpers = Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
+  const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
     const ended = yield* Deferred.make<HelperExitInfo>();
     const stop = Effect.asVoid(Effect.andThen(Queue.end(events), Deferred.succeed(ended, { code: null, signal: "SIGTERM" })));
     yield* Effect.addFinalizer(() => stop);

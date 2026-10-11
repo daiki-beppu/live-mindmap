@@ -4,6 +4,17 @@ import { CheckReport, InstallBody, InstallEvent, StartupRefusal } from "../src/m
 import { ManagedDepsFailed } from "../src/managedDeps.ts";
 
 describe("管理依存の転送契約", () => {
+  it.effect("C3・C6: ビルドと許可は確認結果で転送できるが導入対象にはならない", () => Effect.gen(function* () {
+    const report = { ready: true, items: [
+      { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },
+      { name: "microphone", need: "optional", state: "absent" },
+      { name: "screen-capture", need: "optional", state: "ready" },
+    ] };
+    expect(yield* Schema.decodeUnknownEffect(CheckReport)(report)).toEqual(report);
+    for (const name of ["helper", "microphone", "screen-capture", "speech-ja"]) {
+      expect(Result.isFailure(yield* Effect.result(Schema.decodeUnknownEffect(InstallBody)({ names: [name] })))).toBe(true);
+    }
+  }));
   it.effect("開始拒否の不足項目を転送し、空の不足項目は拒否する", () => Effect.gen(function* () {
     const refusal = { _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing" }] };
     expect(yield* Schema.decodeUnknownEffect(StartupRefusal)(refusal)).toEqual(refusal);

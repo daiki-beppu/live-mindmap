@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -80,7 +81,7 @@ const appleProcess = Effect.fnUntraced(function* () {
 });
 const audioHelper = () => {
   const launches: string[][] = [];
-  const layer = Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+  const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
     launches.push([...args]);
     const queue = yield* Queue.make<string, Cause.Done>();
     Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "面接官は3人です。" }));

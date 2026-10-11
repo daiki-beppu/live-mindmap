@@ -1,4 +1,5 @@
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import type { AppleIntelligence } from "../src/appleIntelligence.ts";
 import type { Scope } from "effect";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -139,7 +140,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     const root = yield* temporaryDirectory;
     const http = yield* loopback(() => {});
     const launches: string[][] = [];
-    const helpers = Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
       launches.push([...args]);
       const queue = yield* Queue.make<string, Cause.Done>();
       Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));

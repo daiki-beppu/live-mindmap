@@ -3,7 +3,7 @@ import { Schema } from "effect";
 export const DepNames = Schema.Array(Schema.Literals(["chromium", "claude"])).check(Schema.isMinLength(1));
 export const InstallBody = Schema.Struct({ names: DepNames });
 export const Item = Schema.Struct({
-  name: Schema.Literals(["chromium", "claude"]),
+  name: Schema.Literals(["chromium", "claude", "helper", "microphone", "screen-capture"]),
   need: Schema.Literals(["required", "optional"]),
   state: Schema.Literals(["ready", "missing", "outdated", "absent"]),
   size: Schema.optionalKey(Schema.Finite),

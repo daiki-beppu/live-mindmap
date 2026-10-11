@@ -66,7 +66,8 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
   // 待受け・Viewers・Sessions を 1 つの Layer に組む（依存を先に build するので、止めるときは Sessions が待受けより先）
   const context = yield* Layer.build(
     Sessions.layer.pipe(
-      Layer.provide(Layer.mergeAll(layers.helpers, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
+      Layer.provide(Layer.mergeAll(layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
+      Layer.provideMerge(layers.helpers),
       Layer.provideMerge(layerListener(options.port)),
       Layer.provideMerge(layers.managedDeps),
     ),

@@ -1,4 +1,5 @@
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -84,7 +85,7 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
         res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "採用の進め方" }], 済み: "なし" }) } }] }));
       });
     });
-    const helpers = Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
       const queue = yield* Queue.make<string, Cause.Done>();
       Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));
       const exited = yield* Deferred.make<HelperExitInfo>();
