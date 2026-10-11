@@ -1,6 +1,6 @@
 // Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
-import { children, DiffOperations, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { children, DiffOperations, groupSize, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
 
 // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
@@ -76,7 +76,7 @@ export const SYSTEM = `あなたは会議のマインドマップを継続的に
 
 ## 目安
 - 会議全体のノード数に目安は設けない。
-- 1 つの議題の話し中の部分（済みの論点の下と、子の議題の下は数えない）は、${TOPIC_NODES} ノード。超えそうなら、答えが出た論点や話の移った論点を閉じるか、これからの話を新しい議題として立てる。すでにあるノードを別の議題へ動かし直さない。
+- 1 つの議題の話し中の部分（論点は 1 と数え、その配下と子の議題自身・配下は数えない）は、${TOPIC_NODES} ノード。超えそうなら、答えが出た論点や話の移った論点を閉じるか、これからの話を新しい議題として立てる。すでにあるノードを別の議題へ動かし直さない。
 - 1 つの親の下の話し中の兄弟は、種別によらず ${SIBLINGS_MAX} つまで（ルート直下も含む。済みは数えない）。上限に近い親と超えた親は、毎回の「議題の一覧」に id・本文・話し中の子の数つきで名指しで出る。
 - 名指しされた親の下に足したくなったら、新しいノードを最も近い兄弟の子として add する。親が要点のときは、要点は close できない（close できるのは議題と論点だけ）ので、新しい要点を最も近い兄弟の要点の子として add する。親が議題や論点なら、新しい議題を立てるか、話の移ったものを閉じてもよい。上限を守るための move はしない。
 
@@ -209,21 +209,17 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
   return lines.length ? lines.join("\n") : "（変更なし）";
 }
 
-// 議題 id の下をたどり、その議題の話し中の部分のノード数と、直下の議題（途中の論点・案などは飛ばして最初に当たる議題）を返す。
-// 議題に当たったらそれ自身は子の議題として返し、配下は数えない。済みの論点は 1 ノードとして数え、配下のノードは数えない。
-// ただし済みの論点の下の議題は探し続ける（外すのは済みの議題とその下だけ）
-function scanTopic(map: MeetingMap, id: string): { nodes: number; topics: string[] } {
-  let nodes = 0;
+// 計測では除く論点の配下でも、子の議題の表示は残すので探索を分ける。
+function childTopics(map: MeetingMap, id: string): string[] {
   const topics: string[] = [];
-  const walk = (pid: string, counting: boolean) => {
+  const walk = (pid: string) => {
     for (const c of children(map, pid)) {
       if (c.kind === "議題") { topics.push(c.id); continue; }
-      if (counting) nodes++;
-      walk(c.id, counting && !c.talkStatus);
+      walk(c.id);
     }
   };
-  walk(id, true);
-  return { nodes, topics };
+  walk(id);
+  return topics;
 }
 
 // 話し中の子が境目以上の親を、種別によらず 1 行ずつ出す。行頭を「- n12 」にしない（議題の行と区別するため）
@@ -242,8 +238,10 @@ function renderCrowdedParents(map: MeetingMap): string[] {
 // 毎回、その時点のマップから作り直す（状態は持たない）
 function renderTopicList(map: MeetingMap): string {
   const rows: string[] = [];
+  const groupNodes = Object.values(map.nodes);
   const walk = (id: string, depth: number) => {
-    const { nodes, topics } = scanTopic(map, id);
+    const topics = childTopics(map, id);
+    const nodes = groupSize(groupNodes, id).size;
     const open = topics.filter((t) => !map.nodes[t]!.talkStatus);
     const touched = map.nodes[id]!.touchedAt;
     const info = [
@@ -253,7 +251,7 @@ function renderTopicList(map: MeetingMap): string {
     rows.push(`${"  ".repeat(depth)}- ${id} ${map.nodes[id]!.text}（${info.join("・")}）`);
     for (const t of open) walk(t, depth + 1);
   };
-  const top = scanTopic(map, ROOT_ID).topics.filter((t) => !map.nodes[t]!.talkStatus);
+  const top = childTopics(map, ROOT_ID).filter((t) => !map.nodes[t]!.talkStatus);
   for (const t of top) walk(t, 0);
   const closedCount = Object.values(map.nodes).filter((n) => n.kind === "議題" && n.talkStatus).length;
   const shown = rows.length;
