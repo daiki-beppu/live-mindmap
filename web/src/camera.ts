@@ -113,6 +113,22 @@ export function scrollAlongAxis(viewport: Viewport, axis: "x" | "y", delta: { x:
   return axis === "x" ? { ...viewport, x: viewport.x - amount } : { ...viewport, y: viewport.y - amount };
 }
 
+// 二本指スクロール（@xyflow の createPanOnScrollHandler と同じ式）。画面上の移動量は delta × 0.5 で、倍率に依らない
+const PAN_ON_SCROLL_SPEED = 0.5;
+// 行単位の wheel（Firefox の deltaMode 1）は 20 倍する
+const LINE_DELTA_FACTOR = 20;
+
+export type WheelDelta = { deltaX: number; deltaY: number; deltaMode: number; shiftKey: boolean };
+
+// 二本指スクロールで画面（ビューポートの平行移動）が動く量。delta と逆向き。Mac でない環境の Shift 付きは、縦の量を横に使う（Mac はブラウザが入れ替えて渡す）
+export function scrollPanDelta(wheel: WheelDelta, isMac: boolean): { x: number; y: number } {
+  const factor = wheel.deltaMode === 1 ? LINE_DELTA_FACTOR : 1;
+  const swap = !isMac && wheel.shiftKey;
+  const deltaX = (swap ? wheel.deltaY : wheel.deltaX) * factor;
+  const deltaY = swap ? 0 : wheel.deltaY * factor;
+  return { x: -deltaX * PAN_ON_SCROLL_SPEED, y: -deltaY * PAN_ON_SCROLL_SPEED };
+}
+
 // ids のノードを、目標の位置で測った外接箱で、画面の中央に一度で収める（OVERVIEW_MIN_ZOOM〜USER_MAX_ZOOM）。ids が空なら null
 export function overviewViewport(
   ids: string[],

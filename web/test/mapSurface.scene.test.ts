@@ -1,9 +1,9 @@
 import { getBezierPath, getViewportForBounds, Position } from "@xyflow/react";
 import { HashMap, Option } from "effect";
-import { attr, expect as expectScene, findAll, given, Mount, scene, selector, tap, textContent } from "foldkit/scene";
+import { attr, expect as expectScene, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { Model, update, view } from "../src/app/mapSurface/main.ts";
+import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { foldView } from "../src/folding.ts";
@@ -37,7 +37,7 @@ const nodes = (): SnapshotNode[] => [
 const HEIGHTS = { root: 40, A: 64, P: 88, D: 52 };
 const SIZE = { width: 800, height: 600 };
 
-const modelOf = (snapshot: Snapshot, mode: MapSurfaceModel["mode"]): MapSurfaceModel => ({ mode, snapshot, size: Option.none(), nodeHeights: HashMap.empty() });
+const modelOf = (snapshot: Snapshot, mode: MapSurfaceModel["mode"]): MapSurfaceModel => init(snapshot, mode, false);
 const measured = (nodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...size, nodeHeights }));
 
 // エッジの端点。出る側は親の右端から 2.5px 外、入る側は子の左端から 2.5px 外（@xyflow の .react-flow__handle の位置）
@@ -358,5 +358,96 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
       expectScene(mapNodeOf("A")).not.toHaveClass("map-node--blink"),
     );
     scene(app, given(modelOf(changed, "still")), measured(HEIGHTS), expectScene(mapNodeOf("P")).not.toHaveClass("map-node--blink"));
+  });
+});
+
+describe("mapSurface の Scene: パン（ビューポートの transform が、全体を収める位置から画面上で動いた分だけずれる）", () => {
+  // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は given の Model に入れ、パンの Message を resolve する 1 回に使う
+  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => ({ ...modelOf(snap(nodes()), mode), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) });
+  const fitOf = (mode: MapSurfaceModel["mode"]) => {
+    const positions = layout(nodes(), HEIGHTS);
+    const rects = nodes().map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
+    return getViewportForBounds(fitBounds(rects), SIZE.width, SIZE.height, mode === "still" ? 0.02 : 0.5, 2, 0.1);
+  };
+  const at = (mode: MapSurfaceModel["mode"], dx: number, dy: number) => {
+    const fit = fitOf(mode);
+    return [fit.x + dx, fit.y + dy, fit.zoom];
+  };
+  const wheel = (over: Partial<typeof Message.WheeledMapSurface.Type> = {}) =>
+    Message.WheeledMapSurface({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0, ...over });
+  const press = (over: Partial<typeof Message.PressedMapSurface.Type> = {}) => Message.PressedMapSurface({ clientX: 100, clientY: 100, button: 0, ctrlKey: false, insideNoPan: false, ...over });
+  const moved = (clientX: number, clientY: number) => Message.MovedPointer({ clientX, clientY, buttons: 1 });
+
+  it("全体を収める倍率は 1 でない（パンが倍率に左右されないことを、この倍率で見る）", () => {
+    expect(fitOf("live").zoom).not.toBe(1);
+  });
+
+  it("live: スクロールで、transform の x・y が delta × 0.5 だけ逆向きに動く。倍率は変わらない", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 0, 0))),
+      Mount.resolve(ObserveMapSurface, wheel({ deltaX: 40, deltaY: 100 })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", -20, -50))),
+    );
+  });
+
+  it("live: ⌘＋Shift＋スクロールで、大きい方の軸だけが raw の量で動く", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", -30, 0))),
+    );
+  });
+
+  it("live: 空いたところを押して動かすと、動いた分だけ transform がずれ、離した後の移動では動かない", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, press({ clientX: 100, clientY: 100 })),
+      Subscription.emit(moved(130, 90)),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 30, -10))),
+      Subscription.emit(moved(140, 95)),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 40, -5))),
+      Subscription.emit(Message.ReleasedPointer({ ctrlKey: false, metaKey: false })),
+      Subscription.emit(moved(300, 300)),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 40, -5))),
+    );
+  });
+
+  it("live: ノード（.nopan）の上で始めたドラッグでは、transform は動かない", () => {
+    scene(
+      app,
+      given(measuredModel("live")),
+      Mount.resolve(ObserveMapSurface, press({ insideNoPan: true })),
+      Subscription.emit(moved(130, 90)),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 0, 0))),
+    );
+  });
+
+  it("still: ドラッグしても transform は動かない", () => {
+    scene(
+      app,
+      given(measuredModel("still")),
+      Mount.resolve(ObserveMapSurface, press()),
+      Subscription.emit(moved(130, 90)),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("still", 0, 0))),
+    );
+  });
+
+  it("still: スクロールしても、軸固定でも、transform は動かない", () => {
+    scene(
+      app,
+      given(measuredModel("still")),
+      Mount.resolve(ObserveMapSurface, wheel({ deltaX: 40, deltaY: 100 })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("still", 0, 0))),
+    );
+    scene(
+      app,
+      given(measuredModel("still")),
+      Mount.resolve(ObserveMapSurface, wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("still", 0, 0))),
+    );
   });
 });
