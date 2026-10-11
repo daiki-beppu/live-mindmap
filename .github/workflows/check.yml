@@ -52,7 +52,7 @@ jobs:
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test:it
 
-  # 重い IT（--project heavy）全体を 4 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
+  # 重い IT（--project heavy）全体を、server と web のそれぞれ 4 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
   # vitest list で一覧を取り、file:line ごとにまとめて配る（each やループの同じ行のテストは 1 つの runner に入り、重複して走らない）。
   # 新しく足した重い IT も、設定を書き換えずにどれかの runner に入る。Chromium を入れるのはこのジョブと e2e ジョブだけ
   heavy:
@@ -62,8 +62,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        package: [server, web]
         shard: [0, 1, 2, 3]
-    name: heavy IT (${{ matrix.shard }}/4)
+    name: heavy IT (${{ matrix.package }} ${{ matrix.shard }}/4)
     steps:
       - uses: actions/checkout@v7
       # ジョブの env では runner.temp を使えないので、ステップで管理ディレクトリの置き場所を決める
@@ -95,7 +96,7 @@ jobs:
         with:
           path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
           key: ${{ steps.chromium-cache.outputs.cache-primary-key }}
-      - working-directory: server
+      - working-directory: ${{ matrix.package }}
         env:
           SHARD: ${{ matrix.shard }}
         run: |
