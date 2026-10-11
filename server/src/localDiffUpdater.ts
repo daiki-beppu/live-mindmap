@@ -1,10 +1,12 @@
 import { Effect, Layer } from "effect";
-import { DiffUpdater, ROOT_ID, type DiffInput, type DiffOutput, type DiffUpdateError, type Op } from "./core/index.ts";
+import { DiffUpdater, ROOT_ID, type DiffInput, type DiffOutput, type DiffUpdateError, type KatakanaAsk, type Op } from "./core/index.ts";
 import { classificationRequest, splitSentences, type Classification, type Sentence } from "./localPrompt.ts";
 
 // 40字の要約3文と合意・作業の追加欄を600トークンで返す初期上限。
 const SENTENCE_LIMIT = 3;
 export type Classify = (request: ReturnType<typeof classificationRequest>) => Effect.Effect<Classification, DiffUpdateError>;
+// ローカルのモデルへの口。分類（差分更新）と、英字の語のカタカナの読み（Issue #642）
+export type LocalModel = { readonly classify: Classify; readonly katakana: KatakanaAsk };
 const blank = (text: string) => text.trim() === "" || /^(なし|無し|未定|不明|-|―|N\/A)$/i.test(text.trim());
 
 function toOps(raw: Classification, sentences: readonly Sentence[], nextRef: () => string): Op[] {
@@ -40,7 +42,7 @@ function toOps(raw: Classification, sentences: readonly Sentence[], nextRef: () 
   return ops;
 }
 
-export const localUpdaterLayer = (classify: Classify) => Layer.succeed(DiffUpdater, DiffUpdater.of({
+export const localUpdaterLayer = ({ classify, katakana }: LocalModel) => Layer.succeed(DiffUpdater, DiffUpdater.of({
   update: Effect.fnUntraced(function* ({ map, recent, fresh }: DiffInput): Effect.fn.Return<DiffOutput, DiffUpdateError> {
     let processedRemarks = 0;
     const selected: Sentence[] = [];
@@ -60,4 +62,5 @@ export const localUpdaterLayer = (classify: Classify) => Layer.succeed(DiffUpdat
     }
     return { ops, processedRemarks };
   }),
+  katakana,
 }));

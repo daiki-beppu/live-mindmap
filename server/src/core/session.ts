@@ -3,6 +3,7 @@
 import { Cause, Context, DateTime, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
 import { Change, diffMaps } from "./changes.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
+import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, MapNode, Op, PointStatus, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
@@ -55,8 +56,13 @@ export type DiffResult = DiffOutput & { readonly usage?: DiffUsage };
 
 // 差分更新を出す役。セッションごとの Service（SessionSinks.open がセッションごとに Layer を作る）。
 // core は Claude 側を import できないので static layer は持たない。Layer は src 側が作る
+// 英字の語のカタカナの読みを聞く口（Issue #642）。差分の会話（update）とは別の 1 回きりの呼び出しで、語は 1 度にまとめて渡す
+export type KatakanaAsk = (words: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<KatakanaAnswer>, DiffUpdateError>;
+
 export class DiffUpdater extends Context.Service<DiffUpdater, {
   readonly update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>;
+  // 無い updater では、英字の語は読みを返さない語として扱う
+  readonly katakana?: KatakanaAsk;
   readonly lifecycle?: Stream.Stream<DiffUpdateLifecycle>;
 }>()("live-mindmap/core/DiffUpdater") {}
 

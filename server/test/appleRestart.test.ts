@@ -76,6 +76,41 @@ describe("Apple の会議中の再起動", () => {
     expect(fake.requests.at(-1)!.url).toBe(`${fake.processes[1]!.url}/chat/completions`);
   }));
 
+  // Issue #642: 英字の語のカタカナの読み（katakana）も、差分更新（update）と同じ状態の確認を通る
+  it.effect("再起動中の katakana は HTTP を送らず通常失敗する（空の答えにしない）。ready 後はまた同じ updater で聞ける", () => Effect.gen(function* () {
+    const fake = yield* fakeAppleLifecycle([{}, { holdReady: true }]);
+    const layer = yield* fake.prepare;
+    const updater = yield* DiffUpdater.pipe(Effect.provide(layer));
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(layer, silentLog)));
+    expect((yield* updater.update(input)).ops.length).toBeGreaterThan(0);
+    yield* fake.crash(0);
+    yield* settleUntil(() => fake.processes.length === 2);
+    yield* waitForDiffState(session, "restarting");
+    const before = fake.requests.length;
+    const result = yield* Effect.result(updater.katakana!(["Notion"]));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).not.toBe("DiffUpdatePaused");
+      expect(result.failure._tag).not.toBe("DiffUpdateStopped");
+    }
+    expect(fake.requests).toHaveLength(before);
+    yield* fake.releaseReady(1);
+    yield* waitForDiffState(session, "running");
+    expect(yield* updater.katakana!(["Notion"])).toEqual([{ surface: "Notion", katakana: "ノーション" }]);
+    expect(fake.requests.at(-1)!.url).toBe(`${fake.processes[1]!.url}/chat/completions`);
+  }));
+
+  it.effect("止まった後の katakana は DiffUpdateStopped で失敗する", () => Effect.gen(function* () {
+    const fake = yield* fakeAppleLifecycle([{}, { invalidReady: true }, { invalidReady: true }, { invalidReady: true }]);
+    const updater = yield* DiffUpdater.pipe(Effect.provide(yield* fake.prepare));
+    expect((yield* updater.update(input)).ops.length).toBeGreaterThan(0);
+    yield* fake.crash(0);
+    yield* settleUntil(() => fake.processes.length >= 4 && fake.processes[3]!.closed);
+    const result = yield* Effect.result(updater.katakana!(["Notion"]));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) expect(result.failure._tag).toBe("DiffUpdateStopped");
+  }));
+
   it.effect("失敗した再起動も3回の上限へ数え、取得した子をすべて閉じる", () => Effect.gen(function* () {
     const fake = yield* fakeAppleLifecycle([{}, { invalidReady: true }, { invalidReady: true }, { invalidReady: true }]);
     const updater = yield* DiffUpdater.pipe(Effect.provide(yield* fake.prepare));

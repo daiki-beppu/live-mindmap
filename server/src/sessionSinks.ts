@@ -6,7 +6,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, DiffUpdater, screenCandidates, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { correctRemark, DiffUpdater, screenCandidates, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
@@ -32,7 +32,8 @@ export type SessionSink = {
   drain: Effect.Effect<void>;
   // 利用者が足した語（cli start --vocab）を語彙に入れる。開始のときにだけ呼ぶ。
   // 読みは返った後に非同期で作る（開始を待たせない）。読みができた後に締めた発言から、その語で直る（すでに出した発言は直し直さない）。
-  // 読みが作れなかった語・読みの取得に失敗した語は補正に使わない（セッションは止めない）。足した語は読みの有無によらず vocab の行に残す
+  // 英字の語（略語でないもの）はモデルにカタカナの読みを聞いてから読みを作る。
+  // 読みが作れなかった語・読みの取得（モデルを含む）に失敗した語は補正に使わない（セッションは止めない）。足した語は読みの有無によらず vocab の行に残す
   addUserVocabulary: (words: ReadonlyArray<string>) => Effect.Effect<void>;
   // いま話している文字を空にする（以後も送れる。取り込みの途切れの瞬間に使う）
   clearSpeaking: Effect.Effect<void>;
@@ -135,20 +136,35 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop, settling.stop));
 
           // 足した語の読みを作り、vocab の行を書いてから語彙に足す（直した発言の行が、必ず vocab の行より後ろに並ぶ）。
-          // 読み取得の待ちだけが中断できる。停止（Scope の閉鎖）で読み取得が中断されても、足した語の記録は失いたくないので、
+          // 英字の語（略語でないもの）は、まとめて 1 度だけ updater.katakana にカタカナの読みを聞き、返ったカタカナを読みのサブコマンドでローマ字にする。
+          // 英字でない語と略語は、そのまま読みのサブコマンドへ渡す。モデルが失敗した語・読みを返さない語は読みなし（直接読んで補わない）。
+          // 読み取得の待ち（モデル・読みのサブコマンド）だけが中断できる。停止（Scope の閉鎖）で中断されても、足した語の記録は失いたくないので、
           // 中断のときは読みなし（全語 romaji: null）で vocab の行を 1 行書く。読み取得が返った後の処理は中断されない
+          const updater = Context.get(updaterContext, DiffUpdater);
           const addVocabulary = (surfaces: ReadonlyArray<string>, source: "user" | "screen") =>
             Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
                 const noReadings = surfaces.map((surface) => ({ surface, romaji: null, source }));
+                const asked = wordsForKatakana(surfaces);
+                const askedSet = new Set(asked);
                 const found = yield* restore(
-                  readings.readings(surfaces).pipe(
-                    Effect.catchTag("ReadingsFailed", () => Effect.succeed([])),
-                    Effect.onInterrupt(() => appendRecordedLog({ type: "vocab", words: noReadings })),
-                  ),
+                  Effect.gen(function* () {
+                    const answered = asked.length > 0 && updater.katakana !== undefined
+                      ? yield* updater.katakana(asked).pipe(Effect.catch(() => Effect.succeed([])))
+                      : [];
+                    const katakana = katakanaTable(asked, answered);
+                    const toRead = [...new Set([...surfaces.filter((surface) => !askedSet.has(surface)), ...katakana.values()])];
+                    const read = toRead.length === 0
+                      ? []
+                      : yield* readings.readings(toRead).pipe(Effect.catchTag("ReadingsFailed", () => Effect.succeed([])));
+                    const romajiOf = new Map(read.map((r) => [r.surface, r.romaji] as const));
+                    return new Map(surfaces.map((surface) => {
+                      const key = askedSet.has(surface) ? katakana.get(surface) : surface;
+                      return [surface, key === undefined ? undefined : romajiOf.get(key)] as const;
+                    }));
+                  }).pipe(Effect.onInterrupt(() => appendRecordedLog({ type: "vocab", words: noReadings }))),
                 );
-                const table = new Map(found.map((r) => [r.surface, r.romaji] as const));
-                const added = surfaces.map((surface) => ({ surface, romaji: table.get(surface) || null, source }));
+                const added = surfaces.map((surface) => ({ surface, romaji: found.get(surface) || null, source }));
                 yield* appendRecordedLog({ type: "vocab", words: added });
                 const usable = added.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji }]));
                 yield* Ref.update(vocabulary, (current) => [...current, ...usable.filter((u) => !current.some((c) => c.surface === u.surface))]);

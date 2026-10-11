@@ -13,7 +13,8 @@ import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange }
 //   hang: 何も返さない（Scope を閉じても待ち続ける偽物。呼び出し側が中断で離れられることを確かめる）
 //   retried: success。assistant が 2 つ（構造化出力のやり直しで要求が 2 回）流れ、result の usage・modelUsage・total_cost_usd は最後の要求の分しか持たない
 //   nullcache: success。assistant の cache_creation_input_tokens・cache_read_input_tokens が null（SDK の型では number | null）
-type Behavior = "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "hang" | "retried" | "nullcache";
+//   readings: success で、英字の語のカタカナの読み（Issue #642）の structured_output を返す
+type Behavior = "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "hang" | "retried" | "nullcache";
 type Message = { type: string; message?: { role?: string; content?: unknown }; parent_tool_use_id?: unknown };
 
 // assistant メッセージ 1 つ分（要求ごとに 1 つ）。SDK では message が BetaMessage で、usage と model を持つ
@@ -56,6 +57,7 @@ const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex
         }
         yield assistant("claude-haiku-5-5", ASSISTANT_USAGE);
         if (behavior === "fail") yield { ...result, subtype: "error_during_execution" };
+        else if (behavior === "readings") yield { ...result, subtype: "success", structured_output: { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] } };
         else if (behavior === "missing") yield { ...result, subtype: "success" };
         else if (behavior === "invalid") yield { ...result, subtype: "success", structured_output: { ops: [{ op: "add", evidence: [] }] } };
         else if (behavior === "extra") yield { ...result, subtype: "success", structured_output: { ops: [{ op: "noop", reason: "extra", unknown: 1 }], note: "x" } };
@@ -2079,5 +2081,84 @@ describe("開き直しで送り直す共有画面（DiffInput.previousScreens）
       yield* updater.update({ ...input(2), previousScreens: [] });
       expect(created).toHaveLength(2);
       expect(created[1]!.messages[0]!.message?.content).toBe(buildPrompt({ ...input(2), previousScreens: [] }));
+    }));
+});
+
+// Issue #642: 英字の語のカタカナの読みを聞く katakana は、差分更新（update）の query とは別の、1 回きりの query を開く。
+// 差分の query の使い回し（current）・開き直しの回数（QUERY_RENEW_CALLS）に影響させない
+describe("英字の語のカタカナの読み（katakana。Issue #642）", () => {
+  // 1 つ目の query（差分の update）は ok、読みを聞く query は readings を返す
+  const diffThenReadings = (queryIndex: number) => (queryIndex === 0 ? "ok" : "readings") as Behavior;
+
+  it.effect("update とは別の query を 1 本開いて結果を返し、その query を閉じる。語は 1 通のメッセージにまとめて載り、system と出力の schema は差分とは別のものになる", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup(diffThenReadings);
+      yield* updater.update(input(1));
+
+      const answer = yield* updater.katakana!(["Notion", "Figma"]);
+
+      expect(answer).toEqual([{ surface: "Notion", katakana: "ノーション" }, { surface: "Figma", katakana: "フィグマ" }]);
+      expect(created).toHaveLength(2);
+      expect(created[1]!.messages).toHaveLength(1);
+      const prompt = texts(created[1]!)[0]!;
+      expect(prompt).toContain("Notion");
+      expect(prompt).toContain("Figma");
+      expect(created[1]!.closeCalls).toBe(1); // 1 回きりなので、答えを受け取ったら閉じる
+      expect(created[1]!.options.systemPrompt).not.toBe(SYSTEM);
+      expect(created[1]!.options.outputFormat).toMatchObject({ type: "json_schema" });
+      expect(created[1]!.options.outputFormat.schema).not.toEqual(created[0]!.options.outputFormat.schema);
+      expect(created[1]!.options.model).toBe(created[0]!.options.model);
+    }));
+
+  it.effect("その後の update は、前の差分の query を使い続ける（読みの query に載らず、新しい query も開かない）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup(diffThenReadings);
+      yield* updater.update(input(1));
+      yield* updater.katakana!(["Notion"]);
+      yield* updater.update(input(2));
+
+      expect(created).toHaveLength(2);
+      expect(created[0]!.messages).toHaveLength(2);
+      expect(created[0]!.closeCalls).toBe(0);
+      expect(created[1]!.messages).toHaveLength(1);
+    }));
+
+  it.effect("読みを聞く回数は、差分の query の開き直しまでの回数に数えない。QUERY_RENEW_CALLS 回の update の間に読みを何度聞いても、差分の query は開き直されない", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup(() => "ok");
+      yield* updater.update(growing(1));
+      for (let n = 2; n <= QUERY_RENEW_CALLS; n++) {
+        yield* updater.update(growing(n));
+        yield* updater.katakana!(["Notion"]).pipe(Effect.ignore);
+      }
+
+      expect(created[0]!.messages).toHaveLength(QUERY_RENEW_CALLS);
+      expect(created[0]!.closeCalls).toBe(0);
+    }));
+
+  it.effect("読みを聞く query が失敗しても、失敗として返り（空の答えにはしない）、差分の query は使い続けられる", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((queryIndex) => (queryIndex === 0 ? "ok" : "fail"));
+      yield* updater.update(input(1));
+
+      const failure = yield* Effect.flip(updater.katakana!(["Notion"]));
+      expect(failure._tag).toBe("ClaudeResultFailed");
+      expect(created[1]!.closeCalls).toBe(1); // 失敗しても閉じる
+
+      yield* updater.update(input(2));
+      expect(created).toHaveLength(2);
+      expect(created[0]!.messages).toHaveLength(2);
+    }));
+
+  it.effect("差分の update より前に読みを聞いても動く。読みの query は差分の query にならず、最初の update が新しく差分の query を開く", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((queryIndex) => (queryIndex === 0 ? "readings" : "ok"));
+      yield* updater.katakana!(["Notion", "Figma"]);
+      yield* updater.update(input(1));
+
+      expect(created).toHaveLength(2);
+      expect(created[0]!.closeCalls).toBe(1);
+      expect(created[1]!.closeCalls).toBe(0);
+      expect(created[1]!.messages).toHaveLength(1);
     }));
 });

@@ -21,7 +21,7 @@ const responseFailure = Effect.fnUntraced(function* (status: number, body: strin
   const http = fakeChatgptHttp((_request, call) => call === 1
     ? new Response(completedSse(classification([{ 種類: "なし" }])))
     : new Response(body, { status, headers: { "content-type": "application/json" } }));
-  const classify = yield* prepareChatgpt(CHATGPT_MODEL).pipe(
+  const { classify } = yield* prepareChatgpt(CHATGPT_MODEL).pipe(
     Effect.provideService(FileSystem.FileSystem, files.fs), Effect.provideService(HttpClient.HttpClient, http.client),
     Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))),
     Effect.orDie,
@@ -101,13 +101,13 @@ describe("同じSessionでの一時停止と再開", () => {
     const failure = yield* rateLimitFailure;
     const requests: string[][] = [];
     const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
-      localUpdaterLayer((request) => Effect.suspend(() => {
+      localUpdaterLayer({ katakana: () => Effect.succeed([]), classify: (request) => Effect.suspend(() => {
         const sentences = [...request.prompt.matchAll(/^\d+\. \[(r\d+)\] (.+)$/gm)];
         requests.push(sentences.map((s) => s[1]!));
         return requests.length <= 2 ? Effect.fail(failure) : Effect.succeed({
           議題: { id: "新しい議題", 題: "採用" }, 文: sentences.map((s) => ({ 種類: "説明" as const, text: s[2]! })), 済み: "なし",
         });
-      })), silentLog,
+      }) }), silentLog,
     )));
     yield* session.push(remark(1));
     yield* session.push(remark(2));

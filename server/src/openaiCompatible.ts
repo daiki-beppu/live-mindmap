@@ -3,7 +3,8 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { emptyMap } from "./core/index.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { classificationRequest, SYSTEM } from "./localPrompt.ts";
-import type { Classify } from "./localDiffUpdater.ts";
+import type { Classify, LocalModel } from "./localDiffUpdater.ts";
+import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 
 class CompatibleFailed extends Schema.TaggedError<CompatibleFailed>()("CompatibleFailed", { message: Schema.String }) {}
 class CompatibleUnavailable extends Schema.TaggedError<CompatibleUnavailable>()("CompatibleUnavailable", { message: Schema.String }) {}
@@ -26,12 +27,13 @@ export const prepareCompatible = Effect.fnUntraced(function* (model: Extract<Exe
   const client = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
   const url = `${model.url.replace(/\/$/, "")}/chat/completions`;
   const maxTokens = model.maxTokens ?? 600;
-  const request = Effect.fnUntraced(function* (input: ReturnType<typeof classificationRequest>) {
+  // 1 回きりの要求を送り、応答の本文（JSON の文字列）を返す。system・prompt・JSON Schema だけが用途ごとに変わる
+  const exchange = Effect.fnUntraced(function* (system: string, prompt: string, jsonSchema: object) {
     const body = {
       temperature: 0.2, ...model.extraBody,
       model: model.model, max_tokens: maxTokens,
-      messages: [{ role: "system", content: SYSTEM }, { role: "user", content: input.prompt }],
-      response_format: { type: "json_schema", json_schema: { name: "diff", strict: true, schema: input.jsonSchema } },
+      messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      response_format: { type: "json_schema", json_schema: { name: "diff", strict: true, schema: jsonSchema } },
     };
     const response = yield* HttpClientRequest.post(url).pipe(
       HttpClientRequest.bodyJson(body),
@@ -48,12 +50,19 @@ export const prepareCompatible = Effect.fnUntraced(function* (model: Extract<Exe
     const completion = yield* HttpClientResponse.schemaBodyJson(Completion)(response).pipe(
       Effect.mapError(() => new CompatibleFailed({ message: "互換モデルの応答が不正です" })),
     );
-    return yield* Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(completion.choices[0]!.message.content).pipe(
-      Effect.mapError(() => new CompatibleFailed({ message: "互換モデルの文分類が不正です" })),
-    );
+    return completion.choices[0]!.message.content;
   }, Effect.scoped);
-  // 開始検査も本番と同じ通信口・分類形式を使い、会議の状態には適用しない。
-  yield* request(classificationRequest(emptyMap("接続確認"), [], [{ remark: "probe", text: "接続を確認します。" }]));
-  const classify: Classify = request;
-  return classify;
+  const classify: Classify = (input) => exchange(SYSTEM, input.prompt, input.jsonSchema).pipe(
+    Effect.flatMap((content) => Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(content).pipe(
+      Effect.mapError(() => new CompatibleFailed({ message: "互換モデルの文分類が不正です" })),
+    )),
+  );
+  // 開始検査も本番と同じ通信口・分類形式を使い、会議の状態には適用しない。読みの要求は足さない（開始時の通信の回数を変えない）。
+  yield* classify(classificationRequest(emptyMap("接続確認"), [], [{ remark: "probe", text: "接続を確認します。" }]));
+  const katakana: LocalModel["katakana"] = (words) => exchange(KATAKANA_SYSTEM, katakanaPrompt(words), KATAKANA_JSON_SCHEMA).pipe(
+    Effect.flatMap((content) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(content)),
+    Effect.map(toAnswers),
+    Effect.mapError((error) => error instanceof CompatibleUnavailable ? error : new CompatibleFailed({ message: "互換モデルの読みの応答が不正です" })),
+  );
+  return { classify, katakana } satisfies LocalModel;
 });

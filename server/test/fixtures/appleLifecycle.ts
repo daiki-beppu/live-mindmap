@@ -20,10 +20,13 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
   const control: { holdResponse?: Deferred.Deferred<void>; status: number } = { status: 200 };
   const http = fakeChatgptHttp((request) => Effect.gen(function* () {
     if (control.holdResponse) yield* Deferred.await(control.holdResponse);
-    const body = jsonRequestBody(request) as { response_format: { json_schema: { schema: { properties: { 文: { maxItems: number } } } } } };
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(classification(
-      Array.from({ length: body.response_format.json_schema.schema.properties.文.maxItems }, () => ({ 種類: "説明", text: "面接官は3人" })),
-    )) } }] }), { status: control.status, headers: { "content-type": "application/json" } });
+    const body = jsonRequestBody(request) as { response_format: { json_schema: { schema: { properties: { 文?: { maxItems: number }; readings?: unknown } } } } };
+    const properties = body.response_format.json_schema.schema.properties;
+    // 英字の語のカタカナの読み（Issue #642）の要求には、読みの形で答える
+    const content = properties.文 === undefined
+      ? { readings: [{ word: "Notion", katakana: "ノーション" }] }
+      : classification(Array.from({ length: properties.文.maxItems }, () => ({ 種類: "説明", text: "面接官は3人" })));
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }), { status: control.status, headers: { "content-type": "application/json" } });
   }));
   const spawner = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make((command) => Effect.gen(function* () {
     const mode = (command as ChildProcess.StandardCommand).args.at(-1);

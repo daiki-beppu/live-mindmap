@@ -214,6 +214,67 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
   }));
 });
 
+// 外形が不正な応答（200 で choices が空）と、分類 Schema の decode 失敗は別の文言で返る
+describe("分類の失敗の文言", () => {
+  const rawClient = (bodyAt: (call: number) => unknown) => {
+    let calls = 0;
+    return HttpClient.make((request) => Effect.sync(() => HttpClientResponse.fromWeb(request, new Response(JSON.stringify(bodyAt(++calls)), {
+      status: 200, headers: { "content-type": "application/json" },
+    }))));
+  };
+  const completion = (content: unknown) => ({ choices: [{ message: { role: "assistant", content: JSON.stringify(content) } }] });
+  const badShape = { choices: [] };
+  const badClassification = completion(classified([]));
+
+  it.effect("開始時: 外形が不正なら「応答が不正です」、分類の decode 失敗なら「文分類が不正です」", () => Effect.gen(function* () {
+    const shape = yield* Effect.flip(prepareUpdaterLayer(model).pipe(Effect.provideService(HttpClient.HttpClient, rawClient(() => badShape))));
+    expect(shape).toMatchObject({ message: "互換モデルの応答が不正です" });
+    const decode = yield* Effect.flip(prepareUpdaterLayer(model).pipe(Effect.provideService(HttpClient.HttpClient, rawClient(() => badClassification))));
+    expect(decode).toMatchObject({ message: "互換モデルの文分類が不正です" });
+  }));
+
+  it.effect("会議中: 外形が不正なら「応答が不正です」、分類の decode 失敗なら「文分類が不正です」", () => Effect.gen(function* () {
+    const probe = completion(none);
+    const shapeUpdater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, rawClient((call) => call === 1 ? probe : badShape)));
+    expect(yield* Effect.flip(shapeUpdater.update(input("分類する一文。")))).toMatchObject({ _tag: "CompatibleFailed", message: "互換モデルの応答が不正です" });
+    const decodeUpdater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, rawClient((call) => call === 1 ? probe : badClassification)));
+    expect(yield* Effect.flip(decodeUpdater.update(input("分類する一文。")))).toMatchObject({ _tag: "CompatibleFailed", message: "互換モデルの文分類が不正です" });
+  }));
+});
+
+// Issue #642: 英字の語のカタカナの読み（katakana）は、分類とは別の system・schema で 1 回きりの要求を送る
+describe("英字の語のカタカナの読み（Issue #642）", () => {
+  const readingsAnswer = { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] };
+  const answerBy = (body: Body, call: number) => (call === 1 || body.response_format.json_schema.schema.properties?.readings === undefined ? none : readingsAnswer);
+
+  it.effect("語を 1 回の要求にまとめ、読みの system・schema で送り、語ごとのカタカナを返す。分類の要求とは別の system と schema", () => Effect.gen(function* () {
+    const fake = fakeClient(answerBy);
+    const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
+    const answer = yield* updater.katakana!(["Notion", "Figma"]);
+    expect(answer).toEqual([{ surface: "Notion", katakana: "ノーション" }, { surface: "Figma", katakana: "フィグマ" }]);
+    expect(fake.requests).toHaveLength(2); // 開始時の接続確認 1 回 + 読みの要求 1 回（語ごとには送らない）
+    const probe = fake.requests[0]!.body;
+    const { request, body } = fake.requests[1]!;
+    expect([request.method, request.url]).toEqual(["POST", "http://test.invalid/v1/chat/completions"]);
+    expect(body).toMatchObject({ model: "synthetic-model", response_format: { type: "json_schema", json_schema: { strict: true } } });
+    expect(body.messages.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(body.messages[0]!.content).not.toBe(probe.messages[0]!.content);
+    expect(body.messages[1]!.content).toContain("Notion");
+    expect(body.messages[1]!.content).toContain("Figma");
+    expect(body.response_format.json_schema.schema.properties!.readings).toBeDefined();
+  }));
+
+  it.effect("読みの要求が失敗（500）したら失敗として返り、その後の update は履歴を引き継がず普通に動く", () => Effect.gen(function* () {
+    const fake = fakeClient((_body, call) => call === 2 ? { error: "boom" } : none, (call) => (call === 2 ? 500 : 200));
+    const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
+    const failure = yield* Effect.flip(updater.katakana!(["Notion"]));
+    expect(failure.message).not.toBe("");
+    const result = yield* updater.update(input("面接官は3人です。"));
+    expect(result).toMatchObject({ processedRemarks: 1 });
+    expect(fake.requests.at(-1)!.body.messages.map((m) => m.role)).toEqual(["system", "user"]);
+  }));
+});
+
 describe("開始前の2行拒否（C06・C07・C08）", () => {
   it.effect("接続不能を理由と次の操作の2行で返す", () => Effect.gen(function* () {
     let attempts = 0;
