@@ -1,3 +1,4 @@
+import { useProto764 } from "./_proto764.tsx";
 import {
   getNodesBounds,
   PanOnScrollMode,
@@ -189,6 +190,21 @@ function MapCanvas({
   const treeRef = useRef(tree);
   treeRef.current = tree;
 
+  // PROTOTYPE #764: 光らせる議題（畳まれていれば、隠している見せるノード）と、その下にあるノード
+  const proto = useProto764();
+  const protoTopic = proto && proto.topic && proto.variant !== "off" && proto.variant !== "caption" ? (view?.shownAs[proto.topic] ?? proto.topic) : null;
+  const protoUnder = useMemo(() => {
+    if (!protoTopic) return null;
+    const parent = new Map(snapshot.nodes.map((n) => [n.id, n.parent]));
+    const under = (id: string) => { for (let c: string | null | undefined = id; c; c = parent.get(c)) if (c === protoTopic) return true; return false; };
+    return under;
+  }, [protoTopic, snapshot.nodes]);
+  const protoMark = (id: string): MapNodeData["proto764"] => {
+    if (!protoTopic || !proto) return null;
+    if (proto.variant === "dim") return protoUnder?.(id) ? null : "dim";
+    return id === protoTopic ? proto.variant as "outline" | "dot" : null;
+  };
+
   const nodes = useMemo((): Node[] => {
     const formal = shownNodes.map((n): Node<MapNodeData, "map"> => ({
       id: n.id,
@@ -204,6 +220,7 @@ function MapCanvas({
         fold: view?.folds[n.id] ?? null,
         changedRound: !still && changed.has(n.id) ? snapshot.round : null,
         selected: n.id === selectedId,
+        proto764: protoMark(n.id),
         onSelect: view?.summaries.has(n.id) ? noop : onSelect,
         humanOpened: humanOpened.has(n.id),
         // 開閉できるノード（今の議題とその祖先を除く。まとめのノードは解く）にだけ、丸を押したときの開閉を渡す
@@ -211,7 +228,8 @@ function MapCanvas({
       },
     }));
     return formal;
-  }, [shownNodes, view, snapshot.round, changed, positions, dims, selectedId, onSelect, still, humanOpened, tree, onViewingEvent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownNodes, view, snapshot.round, changed, positions, dims, selectedId, onSelect, still, humanOpened, tree, onViewingEvent, protoTopic, proto?.variant, protoUnder]);
   // 撮影の収まり判定が、再実行の依存に入れずに最新の nodes を読むための ref
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;

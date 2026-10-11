@@ -10,6 +10,7 @@ export type MapNodeData = {
   fold: { hint: string | null; hidden: number } | null; // 畳んだノード（まとめのノードを含む）の手がかりの文字と隠れた数。畳んでいなければ null
   changedRound: number | null; // 今回の反映で変わったなら、その反映の round（点滅の強調）
   selected: boolean; // 右の列に根拠を出している
+  proto764?: "outline" | "dot" | "dim" | null; // PROTOTYPE #764
   onSelect: (nodeId: string) => void;
   humanOpened: boolean; // 人が開いたノード（畳まれていなければ、ホバーで畳む小さな丸を出す）
   onFoldDot: ((nodeId: string) => void) | null; // 丸を押したときの開閉。開閉できないノード（今の議題とその祖先）は null。まとめは解く
@@ -51,7 +52,7 @@ export function MapNode({ id, data }: NodeProps<Node<MapNodeData, "map">>) {
     // 反映ごとに key を変えて要素を作り直し、点滅のアニメーションを頭からやり直す
     <div
       key={data.changedRound ?? "steady"}
-      className={["map-node", data.rejected && "map-node--rejected", data.fold && "map-node--folded", data.selected && "map-node--selected", data.changedRound !== null && "map-node--blink", "nopan"].filter(Boolean).join(" ")}
+      className={["map-node", data.rejected && "map-node--rejected", data.fold && "map-node--folded", data.selected && "map-node--selected", data.changedRound !== null && "map-node--blink", data.proto764 && `map-node--p764-${data.proto764}`, "nopan"].filter(Boolean).join(" ")}
       style={{ "--kind-color": data.color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} />

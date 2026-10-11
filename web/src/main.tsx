@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { CAPTURE_SNAPSHOT_GLOBAL } from "../../server/src/core/capture.ts";
 import { REVIEW_AUDIO_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, type Snapshot } from "../../server/src/core/index.ts";
+import { Proto764Page } from "./_proto764.tsx";
 import { App } from "./App.tsx";
 import { CaptureView } from "./CaptureView.tsx";
 import { ReviewView } from "./ReviewView.tsx";
@@ -19,6 +20,7 @@ const audioUrl = reviewAudio == null ? undefined : URL.createObjectURL(new Blob(
 
 function view() {
   if (captured) return <CaptureView snapshot={captured} />;
+  if (new URLSearchParams(location.search).has("proto764")) return <Proto764Page />;
   if (reviewLog != null) return <ReviewView events={JSON.parse(reviewLog)} audioUrl={audioUrl} />;
   return <App />;
 }

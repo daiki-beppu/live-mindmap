@@ -1,3 +1,4 @@
+import { useProto764 } from "./_proto764.tsx";
 import { captionsOf } from "./captions.ts";
 import type { Speaking } from "./liveFeed.ts";
 
@@ -5,6 +6,8 @@ import type { Speaking } from "./liveFeed.ts";
 // 文ごとに行を分け、新しい文は次の行に出す。古い文は行ごと消える。
 export function Captions({ speaking }: { speaking: Speaking }) {
   const captions = captionsOf(speaking);
+  const proto = useProto764(); // PROTOTYPE #764
+  const topic = proto?.variant === "caption" ? proto.topicText : null;
   if (captions.length === 0) return null;
   return (
     <div className="captions" aria-live="polite">
@@ -12,6 +15,7 @@ export function Captions({ speaking }: { speaking: Speaking }) {
         <div key={c.track} className="captions__block">
           <span className="captions__track">{c.track}</span>
           <div className="captions__lines">
+            {topic && <p className="captions__p764-topic">{topic}</p>}
             {c.lines.map((line, i) => (
               <p key={i} className="captions__line">
                 {line}

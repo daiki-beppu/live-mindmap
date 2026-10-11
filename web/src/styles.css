@@ -164,3 +164,16 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .review-rate__item:hover, .review-rate__item:focus-visible { background: #4b5563; }
 .review-rate__check { display: inline-flex; width: 16px; height: 16px; }
 .review-rate__check svg { width: 16px; height: 16px; }
+
+/* PROTOTYPE #764（使い捨て）: いま話している議題の仮表示 */
+.map-node--p764-outline { outline: 2px solid color-mix(in srgb, var(--kind-color) 70%, white); outline-offset: 3px; transition: outline-color 0.4s; }
+.map-node--p764-dot { position: relative; overflow: visible; }
+.map-node--p764-dot::before { content: ""; position: absolute; left: -14px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%; background: var(--kind-color); opacity: 0.85; }
+.map-node--p764-dim { opacity: 0.4; transition: opacity 0.4s; }
+.captions__p764-topic { font-size: 0.75em; opacity: 0.7; margin: 0 0 2px; }
+.captions__p764-topic::before { content: "▸ "; }
+.proto764-switcher { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; gap: 4px; align-items: center; padding: 4px 6px; background: rgba(255,255,255,0.95); border: 1px solid #d4d4d8; border-radius: 6px; font-size: 12px; }
+.proto764-switcher button { padding: 2px 8px; border: 1px solid transparent; border-radius: 4px; background: none; cursor: pointer; }
+.proto764-switcher button.is-current { border-color: #71717a; background: #f4f4f5; }
+.proto764-switcher__label { color: #a1a1aa; margin-right: 4px; }
+.proto764-switcher__hit { min-width: 3em; color: #71717a; }

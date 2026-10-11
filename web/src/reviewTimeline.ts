@@ -30,7 +30,8 @@ export function buildReviewTimeline(events: readonly unknown[]): ReviewTimeline 
       byId.set(e.remark.id, e.remark);
     } else if (e.type === "diff" && e.error === undefined) {
       const ends = e.input.fresh.map((id) => byId.get(id)?.end ?? Number.NEGATIVE_INFINITY);
-      reflections.push({ round: reflections.length + 1, at: Math.max(...ends), index });
+      // PROTOTYPE #764: 実測の反映時刻があればそれを使う
+      reflections.push({ round: reflections.length + 1, at: (e as { proto764At?: number }).proto764At ?? Math.max(...ends), index });
     }
   });
   const reflectionTimes = [...new Set(reflections.map((r) => r.at))].sort((a, b) => a - b);

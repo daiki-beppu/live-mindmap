@@ -1,5 +1,6 @@
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { highlightAt, interimSpeakingAt, Proto764, Proto764Switcher, useVariant, type ProtoData } from "./_proto764.tsx";
 import { ReviewControls } from "./ReviewControls.tsx";
 import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATES, playbackReducer, type PlaybackEvent } from "./reviewPlayback.ts";
 import { AUDIO_HOTKEYS, REVIEW_HOTKEYS, reviewHotkeyYieldsToFocus, reviewKeyEvent } from "./reviewKeys.ts";
@@ -12,7 +13,8 @@ const hasClosest = (target: EventTarget | null): target is Element => !!target &
 
 // 見返し（map.html・map-audio.html）。audioUrl があれば音声つき: 時刻の元は <audio> の currentTime だけで、usePlaybackClock は使わない。時刻を動かすと、その時点のマップ・カメラ・「変わったこと」・根拠・字幕を SessionView に渡す。キー: Space・K・J・L・, . < > Home End、音声つきは M（ミュート）も（C・E・矢印などは SessionView の登録）。
 // 取り込みの状態は渡さない（見返しでは、取り込みの知らせは出さない）
-export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; audioUrl?: string }) {
+export function ReviewView({ events, audioUrl, proto }: { events: readonly unknown[]; audioUrl?: string; proto?: ProtoData }) {
+  const variant = useVariant();
   const timeline = useMemo(() => buildReviewTimeline(events), [events]);
   const chapters = useMemo(() => reviewChapters(timeline), [timeline]);
   const marks = useMemo(() => reviewMarks(timeline), [timeline]);
@@ -105,5 +107,14 @@ export function ReviewView({ events, audioUrl }: { events: readonly unknown[]; a
       {audioUrl && <audio ref={audio} src={audioUrl} preload="auto" onEnded={() => dispatch({ type: "ended" })} />}
     </div>
   );
-  return <SessionView snapshot={snapshot} speaking={speakingAt(timeline, state.time)} review={{ timeMoves, frame, audio: !!audioUrl }} />;
+  if (!proto) return <SessionView snapshot={snapshot} speaking={speakingAt(timeline, state.time)} review={{ timeMoves, frame, audio: !!audioUrl }} />;
+  // PROTOTYPE #764: 字幕は途中結果、光らせる議題は Jev の答え
+  const h = highlightAt(proto, state.time);
+  const topicText = h?.topic ? (snapshot.nodes.find((n) => n.id === h.topic)?.text ?? null) : null;
+  return (
+    <Proto764.Provider value={{ variant, topic: h?.topic ?? null, hit: h?.hit ?? null, topicText }}>
+      <SessionView snapshot={snapshot} speaking={interimSpeakingAt(proto, state.time)} review={{ timeMoves, frame, audio: !!audioUrl }} />
+      <Proto764Switcher current={variant} hit={variant === "off" ? null : (h?.hit ?? null)} />
+    </Proto764.Provider>
+  );
 }
