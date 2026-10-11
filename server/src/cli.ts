@@ -477,8 +477,16 @@ const start = Command.make(
       Flag.withDescription("共有画面を AI に渡さない（取り込まない）"),
       Flag.withDefault(false),
     ),
+    vocab: Flag.File("vocab", { mustExist: true }).pipe(
+      Flag.withDescription("利用者が足す語のファイル（1 行に 1 語、空行は無視）。この語で発言を直す。足せるのは開始時だけ（resume では受け取らない）"),
+      Flag.optional,
+    ),
   },
-  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, local }) {
+  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, local, vocab }) {
+    const vocabulary = Option.isSome(vocab)
+      ? (yield* readTextFile(vocab.value).pipe(Effect.mapError((e) => new CommandFailed({ message: `${vocab.value} が読めません: ${fileReason(e)}` }))))
+          .split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "")
+      : [];
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
     let headers: Record<string, string> | undefined;
@@ -495,6 +503,7 @@ const start = Command.make(
       title: Option.getOrUndefined(title),
       audio: !noAudio,
       screen: !noScreen,
+      ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
       model: selected,
     }, headers);
     yield* writeWarnings(warnings ?? []);

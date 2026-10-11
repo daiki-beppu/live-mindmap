@@ -62,7 +62,7 @@ cli check                                 # 開始せず依存の状態を JSON 
 cli install <名前>                        # 常駐サーバーに chromium・claude・speech-ja の導入を依頼し、進捗と結果を出す
 cli update [<名前>]                       # 版違いの管理依存だけを固定版へそろえる（省略時は Chromium・Claude SDK。speech-ja は OS が更新するので不要）
 cli apps                                  # 会議アプリの一覧（JSON）。bundle id を調べる
-cli start --app us.zoom.xos [--title 週次] [--no-audio] [--no-screen]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す。既定では、トラックごとの録音を、そのフォルダに残す（--no-audio で録音しない）。共有画面は既定で取り込む（--no-screen で取り込まない。ログには screen-off（指定）を 1 件残す。画面収録の許可が無いときは、音声だけで続けて screen-off（許可なし）を残し、画面に一文を 1 回出す）
+cli start --app us.zoom.xos [--title 週次] [--no-audio] [--no-screen] [--vocab <file>]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す。既定では、トラックごとの録音を、そのフォルダに残す（--no-audio で録音しない）。共有画面は既定で取り込む（--no-screen で取り込まない。ログには screen-off（指定）を 1 件残す。画面収録の許可が無いときは、音声だけで続けて screen-off（許可なし）を残し、画面に一文を 1 回出す）。--vocab は語のファイル（1 行に 1 語、空行は無視）で、足した語の読みをヘルパーの readings で作り、崩れた発言を直った表記にする（字幕・マップ・ログの remark の text。直す前の本文は raw に残る）。足した語は log.jsonl の vocab の行に残る。足せるのは開始時だけ（resume では受け取らない）
 cli stop                                  # ヘルパーを止め、map.md・map.json・map.drawnix・map.png・map.html を書き出して、そのパスを出す（録音が残っていれば、その後に音声つきの map-audio.html も）
 cli status                                # 取り込みの状態（動いている／途切れている／止まった／セッションなし）・セッションのフォルダ・起動し直した回数・最後の途切れの時刻と、閲覧の共有の状態（共有中／切れた／無し）・URL・許可の範囲を出す
 cli share --anyone                        # 閲覧の共有を開き、URL・許可の範囲・稼働の保証が無い旨を出す（範囲が空なら開かずに失敗する。管理依存の cloudflared が要る）。セッションの終了でも閉じる

@@ -42,7 +42,8 @@ import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from 
 import type { CheckReport } from "./managedDepsProtocol.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
-export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; model: import("./modelSelection.ts").ExecutableModel };
+// vocab は利用者が足した語（cli start --vocab。1 語ずつ。足さなければ空）。開始のときにだけ受け取る
+export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -322,6 +323,7 @@ export class Sessions extends Context.Service<Sessions, {
           const sink = yield* sinks.open({ dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
+          if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
           const live: Live = {
             model: input.model,
             app: input.app,

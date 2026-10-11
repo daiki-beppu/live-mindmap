@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Console, Effect, Exit, Fiber, Layer, Scope } from "effect";
+import { Cause, Console, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
 import { DiffUpdatePaused, DiffUpdater, QUIET_MS, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type DiffInput, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
@@ -13,6 +13,7 @@ import { ReviewBuild } from "../src/review.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
+import { fakeReadings } from "./fixtures/readings.ts";
 import { collectingConsole, failingBuild, failingCapture, FAKE_TEMPLATE, fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
@@ -528,6 +529,7 @@ describe("SessionSinks（実物 Layer）", () => {
       countingCapture,
       Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
       fakeAudioMix().layer,
+      fakeReadings().layer,
     ).pipe(Layer.provideMerge(NodeFileSystem.layer));
     return Effect.scoped(Effect.gen(function* () {
       const sessionsDir = yield* withTmpSessionsDir();
@@ -1032,5 +1034,295 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの読み（Issue #6
       yield* sink.exports;
       expect(readFileSync(join(dir, "export.json"), "utf8")).not.toContain("\"words\"");
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+});
+
+// Issue #640: 利用者が足した語で発言を直す。
+// SessionSink の addUserVocabulary(words) が、語を Readings（読みのサブコマンド）にまとめて 1 回渡して読みを作り、
+// log.jsonl に vocab の行（表記・読み・出どころ user。読みが無い語は romaji: null）を書いてから、語彙に読みのある語を足す。
+// 開始を待たせないため、読みは addUserVocabulary が返った後に非同期で作られる。
+// 関所を通った後の本文を補正して発言にする（確定結果・1 秒更新されなかった途中結果・drain のどの出口でも）。途中結果（speaking）は直さない。
+// 読みの語は実際のトークナイザの出力。remark の行の text は直した本文、raw は直す前の本文、words は直す前の本文の位置のまま
+describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を直す（Issue #640）", () => {
+  type Token = readonly [surface: string, romaji: string];
+  const utterance = (...tokens: Token[]) => {
+    let location = 0;
+    const words = tokens.map(([surface, romaji]) => {
+      const word = { surface, romaji, location, length: surface.length };
+      location += surface.length;
+      return word;
+    });
+    return { text: tokens.map(([surface]) => surface).join(""), words };
+  };
+  // 江南店に行きます（港南店の崩れ）
+  const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
+  // 全デスクを使う（Zendesk の崩れ）
+  const garbledZendesk = utterance(["全", "zen"], ["デスク", "desuku"], ["を", "wo"], ["使う", "tsukau"]);
+  const READINGS = { 港南店: "kounanten", Zendesk: "zendesuku" };
+  const vocabLines = (dir: string) => logEvents(dir).filter((e) => e.type === "vocab");
+  const remarkLines = (dir: string) => logEvents(dir).filter((e) => e.type === "remark");
+
+  // 語を足し、vocab の行が書かれる（読みができる）まで待つ
+  const openWithVocabulary = Effect.fn("openWithVocabulary")(function* (words: ReadonlyArray<string> = ["港南店", "Zendesk"]) {
+    const opened = yield* openRecordingSink();
+    yield* opened.sink.addUserVocabulary(words);
+    yield* settleUntil(() => vocabLines(opened.dir).length === 1);
+    return opened;
+  });
+
+  it.effect("足した語は、まとめて 1 回だけ読みを作り、時刻つきの vocab の行に表記・読み・出どころ user で残る。読みが返らない語は romaji: null で残る", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir } = yield* openWithVocabulary(["港南店", "Zendesk", "読めない語", "港南店"]);
+
+      expect(readings.calls).toEqual([["港南店", "Zendesk", "読めない語"]]); // 重複は 1 語にして、全語を 1 回の呼び出しで読む
+      const lines = vocabLines(dir);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveProperty("at");
+      expect(lines[0].words).toEqual([
+        { surface: "港南店", romaji: "kounanten", source: "user" },
+        { surface: "Zendesk", romaji: "zendesuku", source: "user" },
+        { surface: "読めない語", romaji: null, source: "user" },
+      ]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("足した語には候補を取る規則をかけない。小文字だけの英字の語・1 文字の語も、そのまま vocab の行に入る", () => {
+    const readings = fakeReadings({ notion: "nooshon", a: "a" });
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir } = yield* openWithVocabulary(["notion", "a"]);
+
+      expect(readings.calls).toEqual([["notion", "a"]]);
+      expect(vocabLines(dir)[0].words).toEqual([
+        { surface: "notion", romaji: "nooshon", source: "user" },
+        { surface: "a", romaji: "a", source: "user" },
+      ]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("崩れた確定結果は直った本文が発言になる。remark の行は text が直した本文で、raw が直す前の本文、words は直す前の本文の位置のまま。差分更新・字幕にも直った表記が渡る", () => {
+    const readings = fakeReadings(READINGS);
+    const { calls, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir, speaks } = yield* openWithVocabulary();
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      yield* TestClock.adjust(QUIET_MS);
+      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+      yield* settleUntil(() => speaks.some((f) => f.text === "港南店に行きます"));
+      yield* sink.drain;
+      yield* sink.flush;
+
+      const lines = remarkLines(dir);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].remark).toMatchObject({ id: "r1", track: "相手", start: 1, end: 3, text: "港南店に行きます" });
+      expect(lines[0].raw).toBe("江南店に行きます");
+      expect(lines[0].words).toEqual(garbled.words);
+      // 発言の行は、語彙に入った時点（vocab の行）より後ろに並ぶ
+      const types = logEvents(dir).map((e) => e.type);
+      expect(types.indexOf("remark")).toBeGreaterThan(types.indexOf("vocab"));
+      expect(calls.flatMap((c) => c.fresh)[0]).toEqual({ id: "r1", track: "相手", start: 1, end: 3, text: "港南店に行きます" });
+      expect(speaks.some((f) => f.text === "港南店に行きます")).toBe(true);
+      expect(speaks.some((f) => f.text.includes("江南店"))).toBe(false); // 字幕に直す前の本文は出ない。印も付かない
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("1 秒更新されなかった途中結果から作った発言と、drain で出す発言も直る", () => {
+    const readings = fakeReadings(READINGS);
+    const { calls, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openWithVocabulary();
+      yield* sink.partial({ track: "相手", start: 5, end: 6, text: garbled.text, words: garbled.words, duplicate: false });
+      yield* TestClock.adjust(SETTLE_QUIET_MS + QUIET_MS);
+      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+      yield* TestClock.adjust(QUIET_MS); // 発言を出した後の QUIET_MS の待ちは、出した時刻から数え直される
+      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+      expect(calls.flatMap((c) => c.fresh)[0]).toMatchObject({ id: "r1", text: "港南店に行きます" });
+
+      yield* sink.partial({ track: "相手", start: 20, end: 21, text: garbledZendesk.text, words: garbledZendesk.words, duplicate: false });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      expect(remarkLines(dir).map((e) => [e.remark.id, e.remark.text, e.raw])).toEqual([
+        ["r1", "港南店に行きます", "江南店に行きます"],
+        ["r2", "Zendeskを使う", "全デスクを使う"],
+      ]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("自分の確定結果も直る", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openWithVocabulary();
+      yield* sink.final({ track: "自分", start: 0, end: 1, text: garbled.text, words: garbled.words });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      expect(remarkLines(dir)[0]).toMatchObject({ remark: { track: "自分", text: "港南店に行きます" }, raw: "江南店に行きます" });
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("途中結果（いま話している文字）は直らない。語彙があっても、字幕には届いた本文がそのまま出る", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, speaks } = yield* openWithVocabulary();
+      yield* sink.partial({ track: "相手", start: 5, end: 6, text: garbled.text, words: garbled.words, duplicate: false });
+      yield* settleUntil(() => speaks.some((f) => f.text === garbled.text));
+
+      expect(speaks.some((f) => f.text === "江南店に行きます")).toBe(true);
+      expect(speaks.some((f) => f.text.includes("港南店"))).toBe(false);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("語彙に無い崩れや、直す語が無い発言は直さない。raw と text は同じ", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openWithVocabulary();
+      const plain = utterance(["今日", "kyou"], ["は", "ha"], ["会議", "kaigi"], ["です", "desu"]);
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: plain.text, words: plain.words });
+      yield* sink.final({ track: "相手", start: 10, end: 12, text: "wordsなし" }); // words の無いイベントは直さない
+      yield* sink.drain;
+      yield* sink.flush;
+
+      const lines = remarkLines(dir);
+      expect(lines.map((e) => e.remark.text)).toEqual(["今日は会議です", "wordsなし"]);
+      expect(lines[0].raw).toBe("今日は会議です");
+      expect(lines[1]).not.toHaveProperty("raw");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("足した語が無ければ、vocab の行は書かず、Readings も呼ばない（発言は今までどおり）", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      expect(readings.calls).toEqual([]);
+      expect(vocabLines(dir)).toEqual([]);
+      expect(remarkLines(dir)[0].remark.text).toBe("江南店に行きます");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("読みが返らなかった語では直さない。読みが返った語は直る", () => {
+    const readings = fakeReadings({ Zendesk: "zendesuku" }); // 港南店の読みは返らない
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openWithVocabulary();
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      yield* sink.final({ track: "相手", start: 10, end: 12, text: garbledZendesk.text, words: garbledZendesk.words });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      expect(vocabLines(dir)[0].words).toEqual([
+        { surface: "港南店", romaji: null, source: "user" },
+        { surface: "Zendesk", romaji: "zendesuku", source: "user" },
+      ]);
+      expect(remarkLines(dir).map((e) => e.remark.text)).toEqual(["江南店に行きます", "Zendeskを使う"]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("読みの呼び出しが失敗しても、セッションは止まらない。全語が読みなし（romaji: null）で残り、発言は直さずに出る", () => {
+    const readings = fakeReadings(READINGS);
+    readings.failure.reason = "ヘルパーが 0 以外で終わった";
+    const { calls, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openWithVocabulary();
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      yield* TestClock.adjust(QUIET_MS);
+      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+      yield* sink.drain;
+      yield* sink.flush;
+
+      expect(vocabLines(dir)[0].words).toEqual([
+        { surface: "港南店", romaji: null, source: "user" },
+        { surface: "Zendesk", romaji: null, source: "user" },
+      ]);
+      expect(remarkLines(dir).map((e) => [e.remark.text, e.raw])).toEqual([["江南店に行きます", "江南店に行きます"]]);
+      expect(calls.flatMap((c) => c.fresh)[0]?.text).toBe("江南店に行きます");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("語の読みができる前に締めた発言は直し直さない。読みができた後の発言は直り、先の発言の行は変わらない", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      readings.gate.current = yield* Deferred.make<void>();
+      const { sink, dir } = yield* openRecordingSink();
+      yield* sink.addUserVocabulary(["港南店", "Zendesk"]); // 読みが返るまで待たずに返る
+      yield* settle;
+      expect(vocabLines(dir)).toEqual([]); // まだ読みができていない
+
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      yield* sink.drain;
+      yield* sink.flush;
+      expect(remarkLines(dir).map((e) => e.remark.text)).toEqual(["江南店に行きます"]);
+
+      yield* Deferred.succeed(readings.gate.current, undefined);
+      yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* sink.final({ track: "相手", start: 10, end: 12, text: garbled.text, words: garbled.words });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      // 先の発言は直し直されず、後の発言だけが直る。先の発言の行は vocab の行より前にある
+      expect(remarkLines(dir).map((e) => [e.remark.id, e.remark.text, e.raw])).toEqual([
+        ["r1", "江南店に行きます", "江南店に行きます"],
+        ["r2", "港南店に行きます", "江南店に行きます"],
+      ]);
+      const types = logEvents(dir).map((e) => (e.type === "remark" ? `remark:${e.remark.id}` : e.type));
+      expect(types.indexOf("remark:r1")).toBeLessThan(types.indexOf("vocab"));
+      expect(types.indexOf("vocab")).toBeLessThan(types.indexOf("remark:r2"));
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  // 読み取得の途中で止める（Scope を閉じる）。tmpdir の削除は外側の Scope に残し、閉じた後に log.jsonl を読む
+  const openThenCloseSink = Effect.fn("openThenCloseSink")(function* (afterVocabulary: (dir: string) => Effect.Effect<void>) {
+    const sessionsDir = yield* withTmpSessionsDir();
+    const sinks = yield* SessionSinks;
+    const dir = yield* sinks.createDir(sessionsDir);
+    const inner = yield* Scope.make();
+    const sink = yield* Scope.provide(
+      sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void }),
+      inner,
+    );
+    yield* sink.addUserVocabulary(["港南店", "Zendesk"]);
+    yield* afterVocabulary(dir);
+    yield* Scope.close(inner, Exit.void);
+    return dir;
+  });
+
+  it.effect("読みを作っている途中で止めても、vocab の行はちょうど 1 行残る。全語が出どころ user で、読みなし（romaji: null）", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      readings.gate.current = yield* Deferred.make<void>(); // 完了させない
+      const dir = yield* openThenCloseSink(() => settle);
+
+      expect(vocabLines(dir)).toHaveLength(1);
+      expect(vocabLines(dir)[0].words).toEqual([
+        { surface: "港南店", romaji: null, source: "user" },
+        { surface: "Zendesk", romaji: null, source: "user" },
+      ]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
+  it.effect("読みができた後に止めても、vocab の行は 1 行のまま（読みつき）で、重複しない", () => {
+    const readings = fakeReadings(READINGS);
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const dir = yield* openThenCloseSink((d) => settleUntil(() => vocabLines(d).length === 1));
+
+      expect(vocabLines(dir)).toHaveLength(1);
+      expect(vocabLines(dir)[0].words).toEqual([
+        { surface: "港南店", romaji: "kounanten", source: "user" },
+        { surface: "Zendesk", romaji: "zendesuku", source: "user" },
+      ]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 });

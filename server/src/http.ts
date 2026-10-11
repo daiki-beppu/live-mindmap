@@ -48,6 +48,7 @@ const SessionStartBody = Schema.Struct({
   title: Schema.optional(Schema.NullOr(Schema.String)),
   audio: Schema.optional(Schema.NullOr(Schema.Boolean)),
   screen: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  vocab: Schema.optionalKey(Schema.Array(Schema.String)), // 利用者が足した語（cli start --vocab）。1 語ずつ
   model: Schema.optionalKey(TransferredModel),
 });
 
@@ -56,6 +57,7 @@ const toSessionStart = (body: typeof SessionStartBody["Type"], model: SessionSta
   title: body.title ?? undefined,
   audio: body.audio ?? true,
   screen: body.screen ?? true,
+  vocab: body.vocab ?? [],
   model,
 });
 

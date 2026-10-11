@@ -29,6 +29,7 @@ import chromiumManifest from "../managed-deps/chromium/package.json" with { type
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
+import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 
@@ -299,7 +300,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     const preparation = Layer.mergeAll(deps.layer, Layer.succeed(HttpClient.HttpClient, oauth.client));
     const server = yield* startedServer({ port: 0, sessionsDir: sessions }, {
       helpers, managedDeps: readyManagedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(preparation)),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(preparation, fakeReadings().layer))),
     });
     const snapshots: Snapshot[] = [];
     yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<WebSocket>((resolve, reject) => {
@@ -343,7 +344,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
 const CHATGPT_MODEL_DEFINITION = { route: "chatgpt", model: CHATGPT_MODEL.model, images: false };
 
 describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
-  const resource = Effect.fnUntraced(function* (microphone: "authorized" | "denied" | "notDetermined", screenCapture: boolean, managedDeps = readyManagedDeps) {
+  const resource = Effect.fnUntraced(function* (microphone: "authorized" | "denied" | "notDetermined", screenCapture: boolean, managedDeps = readyManagedDeps, readings: FakeReadings = fakeReadings()) {
     const root = yield* temporaryDirectory;
     const sessionsDir = join(root, "sessions");
     const checks: boolean[] = [];
@@ -365,7 +366,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: Layer.succeed(Helpers, Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") })),
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices({ readings }))),
     });
     const deps = dependencies(sessionsDir, String(server.port));
     return { checks, launches, deps, sessionsDir };
@@ -438,6 +439,52 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     expect(existsSync(join(r.deps.stdout.join("").trim(), "log.jsonl"))).toBe(true);
   }).pipe(Effect.scoped));
 
+  // Issue #640: cli start --vocab <file>（1 行に 1 語、空行は無視）。cli resume は新しい語を受け取らない
+  const vocabLinesOf = (sessionDir: string) =>
+    readFileSync(join(sessionDir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).filter((e) => e.type === "vocab");
+
+  it.live("640: start --vocab は 1 行 1 語で読み（空行は無視）、足した語として vocab の行に残す。読みは全語を 1 回のまとめた呼び出しで作る", () => Effect.gen(function* () {
+    const readings = fakeReadings({ 港南店: "kounanten", Zendesk: "zendesuku" });
+    const r = yield* resource("authorized", false, readyManagedDeps, readings);
+    const file = join(dirname(r.sessionsDir), "vocab.txt");
+    writeFileSync(file, "港南店\n\nZendesk\n\n読めない語\n");
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--vocab", file]).pipe(Effect.provide(r.deps.layer));
+    const sessionDir = r.deps.stdout.join("").trim();
+
+    yield* Effect.promise(() => vi.waitFor(() => expect(vocabLinesOf(sessionDir)).toHaveLength(1)));
+    expect(vocabLinesOf(sessionDir)[0].words).toEqual([
+      { surface: "港南店", romaji: "kounanten", source: "user" },
+      { surface: "Zendesk", romaji: "zendesuku", source: "user" },
+      { surface: "読めない語", romaji: null, source: "user" },
+    ]);
+    expect(readings.calls).toEqual([["港南店", "Zendesk", "読めない語"]]);
+  }).pipe(Effect.scoped));
+
+  it.live("640: --vocab を付けない start は、語を足さない（vocab の行も読みの呼び出しも無い）", () => Effect.gen(function* () {
+    const readings = fakeReadings({ 港南店: "kounanten" });
+    const r = yield* resource("authorized", false, readyManagedDeps, readings);
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]).pipe(Effect.provide(r.deps.layer));
+
+    expect(vocabLinesOf(r.deps.stdout.join("").trim())).toEqual([]);
+    expect(readings.calls).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.live("640: 存在しないファイルを --vocab に渡した start は、セッションを始めずに失敗する", () => Effect.gen(function* () {
+    const r = yield* resource("authorized", false);
+    const result = yield* Effect.result(runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--vocab", join(dirname(r.sessionsDir), "absent.txt")]).pipe(Effect.provide(r.deps.layer)));
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(r.launches).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.live("640: resume は --vocab を受け取らない", () => Effect.gen(function* () {
+    const r = yield* resource("authorized", false);
+    const file = join(dirname(r.sessionsDir), "vocab.txt");
+    writeFileSync(file, "港南店\n");
+    const result = yield* Effect.result(runCli(["resume", "--vocab", file]).pipe(Effect.provide(r.deps.layer)));
+
+    expect(Result.isFailure(result)).toBe(true);
+  }).pipe(Effect.scoped));
 });
 
 // play を 1 回流し、セッションのフォルダと出力したパスを返す

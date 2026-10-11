@@ -11,6 +11,7 @@ import { Playwright } from "../src/playwright.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { realLayers } from "../src/server.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { fakeReadings } from "./fixtures/readings.ts";
 import { collectingConsole, FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -39,6 +40,7 @@ describe("未導入の管理 Chromium と stop", () => {
         MapCapture.layer.pipe(Layer.provide(Playwright.layer)),
         Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
         fakeAudioMix().layer,
+        fakeReadings().layer,
       ).pipe(Layer.provideMerge(NodeFileSystem.layer));
       const layers = realLayers(options, exports);
       const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });

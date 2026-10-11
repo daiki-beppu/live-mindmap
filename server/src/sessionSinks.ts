@@ -5,8 +5,9 @@ import { MapCapture } from "./capture.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { DiffUpdater, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track } from "./core/index.ts";
+import { correctRemark, DiffUpdater, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
 import { AudioMix } from "./audioMix.ts";
+import { Readings } from "./readings.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
@@ -27,6 +28,10 @@ export type SessionSink = {
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
   // 確定結果に覆われなかった最後の発話を発言にする
   drain: Effect.Effect<void>;
+  // 利用者が足した語（cli start --vocab）を語彙に入れる。開始のときにだけ呼ぶ。
+  // 読みは返った後に非同期で作る（開始を待たせない）。読みができた後に締めた発言から、その語で直る（すでに出した発言は直し直さない）。
+  // 読みが作れなかった語・読みの取得に失敗した語は補正に使わない（セッションは止めない）。足した語は読みの有無によらず vocab の行に残す
+  addUserVocabulary: (words: ReadonlyArray<string>) => Effect.Effect<void>;
   // いま話している文字を空にする（以後も送れる。取り込みの途切れの瞬間に使う）
   clearSpeaking: Effect.Effect<void>;
   // 予約を取り消し、いま話している文字を空にして、以後は何も送らない
@@ -69,14 +74,15 @@ export class SessionSinks extends Context.Service<SessionSinks, {
   // セッションの Scope の中で 1 回開く。Scope を閉じると updater が閉じ、予約が止まる
   open: (args: OpenSessionSink) => Effect.Effect<SessionSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
-  // 終了時の書き出しが使う撮影・見返し用の HTML のビルド・mix・FileSystem は、Layer を作るときに文脈から 1 回だけ受け取る
-  static readonly layer = <R>({ prepareUpdater }: SessionSinksDeps<R>): Layer.Layer<SessionSinks, never, R | MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem> =>
+  // 終了時の書き出しが使う撮影・見返し用の HTML のビルド・mix・FileSystem と、足した語の読みを作る Readings は、Layer を作るときに文脈から 1 回だけ受け取る
+  static readonly layer = <R>({ prepareUpdater }: SessionSinksDeps<R>): Layer.Layer<SessionSinks, never, R | MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem> =>
     Layer.effect(SessionSinks)(
       Effect.gen(function* () {
         const preparationServices = yield* Effect.context<R>();
         const exportServices = Context.pick(MapCapture, ReviewBuild, AudioMix, FileSystem.FileSystem)(
           yield* Effect.context<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>(),
         );
+        const readings = yield* Readings;
         return SessionSinks.of({
         prepare: (model) => Effect.gen(function* () {
           const scope = yield* Effect.scope;
@@ -84,6 +90,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
         }),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
         open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer }) {
+          const scope = yield* Effect.scope;
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
@@ -91,7 +98,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
           const relay = yield* createSpeakingRelay({ unreflected: Effect.suspend((): Effect.Effect<Remark[]> => session.unreflectedRemarks), send: speak });
           // 記録つきセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
-          const { session, appendLog } = yield* openRecordedSession({
+          const { session, appendLog: appendRecordedLog } = yield* openRecordedSession({
             dir,
             title,
             model,
@@ -101,13 +108,17 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
           const count = yield* Ref.make(0);
+          // 語彙（読みのある語だけ）。セッションの中では減らさない。出口は発言を締めるたびにその時点の語彙を読む
+          const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>([]);
           const settling = yield* createRemarkSettling({
             emit: (settled) =>
               Effect.gen(function* () {
                 const n = yield* Ref.updateAndGet(count, (c) => c + 1);
-                // words は Remark に入れず、ログの行にだけ残す
+                // words は Remark に入れず、ログの行にだけ残す。関所を通った後の本文を語彙で直し、直した本文を発言の本文にする
+                // （ログの raw には直す前の本文、words には直す前の位置のままを残す）。words が無い発言は直さない
                 const { words, ...rest } = settled;
-                yield* session.push({ ...rest, id: `r${n}` }, words);
+                const text = words === undefined ? rest.text : correctRemark(yield* Ref.get(vocabulary), rest.text, words).text;
+                yield* session.push({ ...rest, text, id: `r${n}` }, words === undefined ? undefined : { raw: rest.text, words });
                 yield* relay.remark(settled.track);
               }),
           });
@@ -115,6 +126,27 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const screenCount = yield* Ref.make(0);
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop, settling.stop));
+
+          // 足した語の読みを作り、vocab の行を書いてから語彙に足す（直した発言の行が、必ず vocab の行より後ろに並ぶ）。
+          // 読み取得の待ちだけが中断できる。停止（Scope の閉鎖）で読み取得が中断されても、足した語の記録は失いたくないので、
+          // 中断のときは読みなし（全語 romaji: null）で vocab の行を 1 行書く。読み取得が返った後の処理は中断されない
+          const addVocabulary = (surfaces: ReadonlyArray<string>) =>
+            Effect.uninterruptibleMask((restore) =>
+              Effect.gen(function* () {
+                const noReadings = surfaces.map((surface) => ({ surface, romaji: null, source: "user" as const }));
+                const found = yield* restore(
+                  readings.readings(surfaces).pipe(
+                    Effect.catchTag("ReadingsFailed", () => Effect.succeed([])),
+                    Effect.onInterrupt(() => appendRecordedLog({ type: "vocab", words: noReadings })),
+                  ),
+                );
+                const table = new Map(found.map((r) => [r.surface, r.romaji] as const));
+                const added = surfaces.map((surface) => ({ surface, romaji: table.get(surface) || null, source: "user" as const }));
+                yield* appendRecordedLog({ type: "vocab", words: added });
+                const usable = added.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji }]));
+                yield* Ref.update(vocabulary, (current) => [...current, ...usable.filter((u) => !current.some((c) => c.surface === u.surface))]);
+              }),
+            );
 
           return {
             dir,
@@ -127,10 +159,14 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 return yield* session.pushScreen({ start, image: { id: `s${n}`, bytes: image } });
               }),
             screenOff: (off) => session.pushScreenOff(off),
+            addUserVocabulary: (words) => {
+              const surfaces = [...new Set(words.filter((w) => w !== ""))];
+              return surfaces.length === 0 ? Effect.void : Effect.asVoid(Effect.forkIn(addVocabulary(surfaces), scope, { startImmediately: true }));
+            },
             drain: settling.drain,
             clearSpeaking: relay.clear,
             stopRelays: Effect.andThen(relay.stop, settling.stop),
-            appendLog,
+            appendLog: appendRecordedLog,
             flush: session.flush,
             // テキストの 3 形式を書けないのは予期しない失敗なので defect にする（撮影・HTML の失敗は writeExportsAndCapture の中で警告にする）
             exports: Effect.flatMap(session.snapshot, (snapshot) => writeExportsAndCapture(dir, snapshot, errorMessage)).pipe(

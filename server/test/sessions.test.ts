@@ -124,6 +124,7 @@ type FakeSinksHandle = {
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { drained: number; cleared: number; stopped: number };
   readonly appended: IntakeLogEvent[];
+  readonly vocabAdded: string[][]; // addUserVocabulary へ届いた語（呼び出しごと）
   readonly order: string[]; // flush・exports・close が起きた順
   readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
 };
@@ -141,6 +142,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const sequence: string[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
     const appended: IntakeLogEvent[] = [];
+    const vocabAdded: string[][] = [];
     const order: string[] = [];
     const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
     const open = (args: { dir: string }): Effect.Effect<SessionSink, never, Scope.Scope> =>
@@ -153,6 +155,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.suspend(() => r.text === control.finalDiesOn ? Effect.die(new Error("ログに書けません")) : Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); })),
           screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image }); }),
+          addUserVocabulary: (words) => Effect.sync(() => { vocabAdded.push([...words]); }),
           screenOff: (e) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
@@ -166,7 +169,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
       });
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, createDir, prepare: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }))) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, order, control };
+    return { sinks: SessionSinks.of({ open, createDir, prepare: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }))) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, vocabAdded, order, control };
   });
 }
 
@@ -211,7 +214,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
-    const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined }));
+    const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined, vocab: [] }));
     yield* settleUntil(() => prep.state.opened === 1);
     expect(prep.state).toMatchObject({ opened: 1, closed: 0 });
     expect(helper.calls).toEqual([]);
@@ -232,7 +235,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
-    const input = { app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined };
+    const input = { app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined, vocab: [] };
     const starting = yield* Effect.forkChild(Effect.exit(sessions.start(input)));
     yield* settleUntil(() => prep.state.opened === 1);
     expect(prep.state.opened).toBe(1);
@@ -257,7 +260,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const prep = yield* preparation(fake);
     yield* Deferred.succeed(prep.ready, undefined);
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
-    const result = yield* Effect.exit(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined }));
+    const result = yield* Effect.exit(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined, vocab: [] }));
     expect(Exit.isFailure(result)).toBe(true);
     expect(helper.calls).toHaveLength(1);
     expect(prep.state).toMatchObject({ opened: 1, closed: 1 });
@@ -269,7 +272,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
-    const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined }));
+    const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined, vocab: [] }));
     yield* settleUntil(() => prep.state.opened === 1);
     expect(prep.state.opened).toBe(1);
     yield* Fiber.interrupt(starting);
@@ -279,13 +282,34 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     expect(fake.opened.count).toBe(0);
   }));
 
+  // Issue #640: 開始の要求の vocab は、セッションを開いた直後に 1 回だけ sink へ渡す。無ければ渡さない
+  it.effect("開始の要求の vocab は sink の addUserVocabulary へ 1 回で渡す。空なら渡さない", () => Effect.gen(function* () {
+    const withVocab = yield* makeFakeSessionSinks();
+    const prepWith = yield* preparation(withVocab);
+    yield* Deferred.succeed(prepWith.ready, undefined);
+    const helperWith = yield* makeFakeHelpers([{}]);
+    const booted = yield* bootSessions(Layer.succeed(Helpers, helperWith.helpers), prepWith.layer);
+    yield* booted.sessions.start(start({ audio: false, screen: false, vocab: ["港南店", "Zendesk"] }));
+    expect(withVocab.vocabAdded).toEqual([["港南店", "Zendesk"]]);
+    yield* booted.closeServer();
+
+    const without = yield* makeFakeSessionSinks();
+    const prepWithout = yield* preparation(without);
+    yield* Deferred.succeed(prepWithout.ready, undefined);
+    const helperWithout = yield* makeFakeHelpers([{}]);
+    const bootedWithout = yield* bootSessions(Layer.succeed(Helpers, helperWithout.helpers), prepWithout.layer);
+    yield* bootedWithout.sessions.start(start({ audio: false, screen: false }));
+    expect(without.vocabAdded).toEqual([]);
+    yield* bootedWithout.closeServer();
+  }));
+
   it.effect("音声ヘルパーを起動し直しても同じ推論子を保ち、サーバー終了で閉じる", () => Effect.gen(function* () {
     const helper = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } }, {}]);
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
     yield* Deferred.succeed(prep.ready, undefined);
     const { sessions, closeServer } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
-    yield* sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined });
+    yield* sessions.start({ app: "us.zoom.xos", model: defaultClaude, audio: false, screen: false, title: undefined, vocab: [] });
     helper.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" });
     yield* TestClock.adjust(500);
     yield* TestClock.adjust(10);
@@ -370,7 +394,7 @@ const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>)
   return Effect.provideService(Effect.suspend(() => body(stderr)), Console.Console, service);
 };
 
-const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, model: defaultClaude, ...input });
+const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, vocab: [], model: defaultClaude, ...input });
 
 describe("依存導入の予約", () => {
   it.effect("複数の導入の全予約が解放されるまで開始せず、会議中は予約を拒否する", () => Effect.gen(function* () {
