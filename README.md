@@ -58,6 +58,9 @@ pnpm dev   # ヘルパーをビルドし、サーバー（127.0.0.1:4319、LIVE_
 別のターミナルから、CLI でセッションを操作する（`pnpm --filter @live-mindmap/server cli ...`）。同時に扱うセッションは 1 つ。
 
 ```sh
+cli check                                 # 開始せず依存の状態を JSON で確認する（--for start|resume|play、既定 start。play の確認はサーバー不要）
+cli install <名前>                        # 常駐サーバーに chromium・claude・speech-ja の導入を依頼し、進捗と結果を出す
+cli update [<名前>]                       # 版違いの管理依存だけを固定版へそろえる（省略時は Chromium・Claude SDK。speech-ja は OS が更新するので不要）
 cli apps                                  # 会議アプリの一覧（JSON）。bundle id を調べる
 cli start --app us.zoom.xos [--title 週次] [--no-audio] [--no-screen]  # サーバーがヘルパーを子プロセスで起動する。セッションのフォルダを出す。既定では、トラックごとの録音を、そのフォルダに残す（--no-audio で録音しない）。共有画面は既定で取り込む（--no-screen で取り込まない。ログには screen-off（指定）を 1 件残す。画面収録の許可が無いときは、音声だけで続けて screen-off（許可なし）を残し、画面に一文を 1 回出す）
 cli stop                                  # ヘルパーを止め、map.md・map.json・map.drawnix・map.png・map.html を書き出して、そのパスを出す（録音が残っていれば、その後に音声つきの map-audio.html も）
@@ -75,6 +78,31 @@ cli review [/Users/<名前>/.live-mindmap/sessions/<開始時刻>] [--self-only]
 - ヘルパーの WebSocket にはサーバーだけがつなぐ。ポートはサーバーが空きを選んで渡す。
 - ヘルパーの実行ファイルは、最適化ありのビルドの `helper/.build/release/live-mindmap-helper`（`pnpm dev` が `swift build -c release` でビルドする）。最適化なし（debug）のビルドは CPU を 5 倍ほど使い、負荷の高い Mac では入力の滞留で数分おきに止まるので、会議では使わない。`LIVE_MINDMAP_HELPER` で差し替えられる。既定の実行ファイルが無いままサーバーを起動すると、ビルドのコマンドを示して終わる。
 - `pnpm dev` の実行中は 4319 をサーバーが使うので、`play` を同時に動かすときは `LIVE_MINDMAP_PORT` を変える（表示の proxy 先も同じ値を使う）。
+
+### 初回の準備
+
+CLI で導入する対象は次の 3 つです。容量は CLI が表示する目安です。
+
+| 名前 | 導入するもの | 容量の目安 |
+|------|--------------|------------|
+| `chromium` | map.png の撮影に使う Chromium headless shell | 約211MB |
+| `claude` | Claude Agent SDK | 約224MB |
+| `speech-ja` | 日本語の音声認識モデル | OS が管理し、CLI は容量の目安を表示しない |
+
+Chromium と Claude SDK は、既定では `~/.live-mindmap/deps/` に入ります。`LIVE_MINDMAP_DEPS` で管理ディレクトリを変更できます。変更するときは、サーバーと CLI に同じ値を設定してください。消したいときは、この管理ディレクトリを削除します。OS が管理する `speech-ja` は、この削除の対象に含まれません。
+
+導入には常駐サーバーが必要です。まず `pnpm dev` を起動し、別のターミナルから必要な対象を導入します。`play` だけ使う人も、導入時にはサーバーを起動してください。
+
+```sh
+pnpm cli check                            # ライブの開始に必要なものを確認する
+pnpm cli install chromium
+pnpm cli install claude                   # Claude を使う場合
+pnpm cli install speech-ja                # ライブの日本語音声認識を使う場合
+```
+
+開始時に必須の依存が足りないときは、CLI は不足内容と導入コマンドを表示し、終了コード3（exit 3）で止まります。エージェントはこの案内を受けたら利用者に確認し、同意を得てから導入してください。Chromium は任意の依存なので、未導入でも開始でき、撮影時には上記のとおり map.png だけが省略されます。
+
+導入時には、パッケージ取得のために npm のレジストリへ、Chromium の取得のために Playwright の CDN へ通信します。`speech-ja` の取得先は Apple です。
 
 ### 取り込みの途切れ（ヘルパーが予期せず終わったとき）
 
@@ -204,4 +232,4 @@ Apple Intelligence は **試験的**です。決定・TODO の拾いすぎや取
 
 ## ライセンス
 
-[MIT](LICENSE)。依存先の `@anthropic-ai/claude-agent-sdk` は Anthropic の規約に従います。
+[MIT](LICENSE)。`cli install claude` で入れる `@anthropic-ai/claude-agent-sdk` は Anthropic の規約に従います。
