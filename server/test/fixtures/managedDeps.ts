@@ -37,12 +37,21 @@ fs.writeFileSync(path.join(pkg, 'cli.js'), \`
 const fs = require('node:fs');
 const path = require('node:path');
 const control = \${JSON.stringify(control)};
-fs.appendFileSync(path.join(control, 'calls.jsonl'), JSON.stringify({kind: 'browser', args: process.argv.slice(2), cwd: process.cwd(), browsers: process.env.PLAYWRIGHT_BROWSERS_PATH}) + '\\\\n');
+const observationFile = path.join(control, 'observe-browser.json');
+const observation = fs.existsSync(observationFile) ? JSON.parse(fs.readFileSync(observationFile, 'utf8')) : undefined;
+const current = observation === undefined ? undefined : fs.realpathSync(observation.current);
+fs.appendFileSync(path.join(control, 'calls.jsonl'), JSON.stringify({kind: 'browser', args: process.argv.slice(2), cwd: process.cwd(), browsers: process.env.PLAYWRIGHT_BROWSERS_PATH, skipGc: process.env.PLAYWRIGHT_SKIP_BROWSER_GC ?? null, cli: __filename, current, oldExists: observation === undefined ? undefined : fs.existsSync(observation.old)}) + '\\\\n');
+const browserCall = fs.readFileSync(path.join(control, 'calls.jsonl'), 'utf8').trim().split('\\\\n').map(line => JSON.parse(line)).filter(call => call.kind === 'browser').length;
 fs.writeFileSync(path.join(control, 'browser-started'), 'started');
 fs.writeFileSync(path.join(control, 'browser-pid'), String(process.pid));
 (async () => {
   while (fs.existsSync(path.join(control, 'hold-browser'))) await new Promise(resolve => setTimeout(resolve, 10));
   if (fs.existsSync(path.join(control, 'fail-browser'))) { console.error('browser failed'); process.exit(19); }
+  if (browserCall === 2 && fs.existsSync(path.join(control, 'fail-browser-second'))) {
+    fs.writeFileSync(path.join(control, 'browser-second-failed'), current);
+    console.error('browser GC failed');
+    process.exit(23);
+  }
   const dir = path.join(process.env.PLAYWRIGHT_BROWSERS_PATH, 'chromium_headless_shell-999');
   const binaries = ['chrome-headless-shell-mac-arm64/chrome-headless-shell', 'chrome-headless-shell-mac-x64/chrome-headless-shell', 'chrome-headless-shell-linux64/chrome-headless-shell'];
   for (const binary of binaries) {
@@ -50,6 +59,7 @@ fs.writeFileSync(path.join(control, 'browser-pid'), String(process.pid));
     fs.writeFileSync(path.join(dir, binary), 'fake headless shell', {mode: 0o755});
   }
   if (!fs.existsSync(path.join(control, 'omit-marker'))) fs.writeFileSync(path.join(dir, 'INSTALLATION_COMPLETE'), '');
+  fs.appendFileSync(path.join(control, 'browser-completed.jsonl'), JSON.stringify({cli: __filename}) + '\\\\n');
 })();
 \`);
 `));

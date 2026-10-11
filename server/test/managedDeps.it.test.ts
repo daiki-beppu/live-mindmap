@@ -46,6 +46,81 @@ const stopInstaller = async (worker: ReturnType<typeof processInstaller>) => {
 };
 
 describe("管理 Chromium の導入", () => {
+  it.live.each([undefined, "1"])("713: 親の GC 無効設定=%s でも差し替えと旧実体削除の後に公開 CLI で GC し、完了後に result を返す", (skipGc) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const base = join(root, "chromium");
+    const oldName = "0.0.0-11111111-1111-4111-8111-111111111111";
+    const old = join(base, oldName);
+    const current = join(base, "current");
+    const npm = yield* fakeNpm(dir);
+    yield* Effect.tryPromise(async () => {
+      await mkdir(old, { recursive: true });
+      await writeFile(join(old, ".ready.json"), JSON.stringify({ version: "0.0.0", installedAt: "2026-01-01T00:00:00Z", hashes: {} }));
+      await symlink(oldName, current);
+      await writeFile(join(dir, "observe-browser.json"), JSON.stringify({ current, old }));
+    });
+    const oldPath = yield* Effect.tryPromise(() => realpath(old));
+    vi.stubEnv("PLAYWRIGHT_SKIP_BROWSER_GC", skipGc);
+    try {
+      yield* Effect.gen(function* () {
+        const deps = yield* ManagedDeps;
+        expect(yield* deps.check(["chromium"])).toMatchObject([{ state: "outdated" }]);
+        expect(yield* Effect.tryPromise(() => realpath(current))).toBe(oldPath);
+        const events = yield* Stream.runCollect(deps.update(["chromium"]).pipe(Stream.tap((event) => event.type === "result"
+          ? Effect.tryPromise(async () => {
+            const completed = (await readFile(join(dir, "browser-completed.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+            expect(completed).toHaveLength(2);
+            expect(completed[1].cli).toBe(join(await realpath(current), "node_modules/playwright-core/cli.js"));
+          }) : Effect.void)));
+        const published = yield* Effect.tryPromise(() => realpath(current));
+        expect(published).not.toBe(oldPath);
+        const recorded = yield* Effect.tryPromise(() => calls(dir));
+        expect(recorded.map((call) => [call.kind, call.args])).toEqual([
+          ["npm", ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"]],
+          ["browser", ["install", "--only-shell", "chromium"]],
+          ["browser", ["install", "--only-shell", "chromium"]],
+        ]);
+        expect(recorded[1]).toMatchObject({ skipGc: "1", current: oldPath, oldExists: true, browsers: join(base, "browsers") });
+        expect(recorded[2]).toMatchObject({ skipGc: null, current: published, oldExists: false, browsers: join(base, "browsers") });
+        expect(recorded[2].cli).toBe(join(published, "node_modules/playwright-core/cli.js"));
+        expect(events.at(-1)).toEqual({ type: "result", items: [installed] });
+        expect(yield* deps.check(["chromium"])).toEqual([installed]);
+        expect(process.env.PLAYWRIGHT_SKIP_BROWSER_GC).toBe(skipGc);
+      }).pipe(Effect.provide(managedLayer(root, npm)));
+    } finally { vi.unstubAllEnvs(); }
+  }).pipe(Effect.scoped));
+
+  it.live("713: 2 回目の CLI の失敗は result 前に警告し、同じサービスと公開済み current を ready のまま保持する", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const current = yield* Effect.tryPromise(() => oldCurrent(root));
+    const old = yield* Effect.tryPromise(() => realpath(current));
+    const npm = yield* fakeNpm(dir);
+    yield* Effect.tryPromise(async () => {
+      await writeFile(join(dir, "observe-browser.json"), JSON.stringify({ current, old }));
+      await writeFile(join(dir, "fail-browser-second"), "fail");
+    });
+    yield* Effect.gen(function* () {
+      const deps = yield* ManagedDeps;
+      expect(yield* deps.check(["chromium"])).toMatchObject([{ state: "outdated" }]);
+      const events = yield* Stream.runCollect(deps.update(["chromium"]));
+      const recorded = (yield* Effect.tryPromise(() => calls(dir))).filter((call) => call.kind === "browser");
+      expect(recorded).toHaveLength(2);
+      const failedCurrent = yield* Effect.tryPromise(() => readFile(join(dir, "browser-second-failed"), "utf8"));
+      expect(failedCurrent).not.toBe(old);
+      expect(recorded[1]).toMatchObject({ current: failedCurrent, skipGc: null });
+      expect(yield* Effect.tryPromise(() => realpath(current))).toBe(failedCurrent);
+      expect((yield* Effect.tryPromise(() => stat(join(failedCurrent, ".ready.json")))).isFile()).toBe(true);
+      expect((yield* Effect.tryPromise(() => stat(join(root, "chromium/browsers/chromium_headless_shell-999/INSTALLATION_COMPLETE")))).isFile()).toBe(true);
+      const warningIndex = events.findIndex((event) => event.type === "progress" && /警告/.test(event.message) && event.message.includes("browser GC failed"));
+      expect(warningIndex).toBeGreaterThanOrEqual(0);
+      expect(warningIndex).toBeLessThan(events.findIndex((event) => event.type === "result"));
+      expect(events.at(-1)).toEqual({ type: "result", items: [installed] });
+      expect(yield* deps.check(["chromium"])).toEqual([installed]);
+    }).pipe(Effect.provide(managedLayer(root, npm)));
+  }).pipe(Effect.scoped));
+
   it.live.each(["ready", "missing"] as const)("711-4: 同じ ManagedDeps で outdated を更新し、%s の依存には触らない", (state) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const root = join(dir, "deps");
@@ -165,7 +240,7 @@ describe("管理 Chromium の導入", () => {
         const recovered = processInstaller(dir, "recovered", "none");
         workers.push(recovered);
         expect(await finished(dir, "recovered", recovered, 0)).toContain(point === "execution-before" ? '"items":[]' : '"state":"ready"');
-        expect((await calls(dir)).map((call) => call.kind)).toEqual(["npm", "browser"]);
+        expect((await calls(dir)).map((call) => call.kind)).toEqual(["npm", "browser", "browser"]);
         expect((await stat(join(dir, "deps/chromium/current/.ready.json"))).isFile()).toBe(true);
       } finally {
         await resume(dir, "first");
@@ -303,6 +378,7 @@ describe("管理 Chromium の導入", () => {
     const recorded = yield* Effect.tryPromise(() => calls(dir));
     expect(recorded.map((call) => [call.kind, call.args])).toEqual([
       ["npm", ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"]],
+      ["browser", ["install", "--only-shell", "chromium"]],
       ["browser", ["install", "--only-shell", "chromium"]],
     ]);
     expect(basename(recorded[0].cwd)).toMatch(/^\.work-/);
