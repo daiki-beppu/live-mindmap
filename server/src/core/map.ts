@@ -9,7 +9,8 @@ const KindSchema = Schema.Literals(KINDS);
 export const PLAN_STATUSES = ["検討中", "却下"] as const;
 export type PlanStatus = (typeof PLAN_STATUSES)[number]; // 案の状態
 const PlanStatusSchema = Schema.Literals(PLAN_STATUSES);
-export type PointStatus = "未決" | "決定済み"; // 論点の状態（保存せず導く）
+export const PointStatus = Schema.Literals(["未決", "決定済み"]); // 論点の状態（保存せず導く）
+export type PointStatus = typeof PointStatus["Type"];
 
 export const ROOT_ID = "root";
 

@@ -1,11 +1,19 @@
 // 変わったこと: 反映の前後のマップを比べて、今回変わったノードと変化の種類を導く。
 // 差分操作（ops）ではなくマップの比較から導く。Node の実行環境に依存しない（ADR 0003）。
-import { children, pointStatus, ROOT_ID, type Kind, type MapNode, type MeetingMap } from "./map.ts";
+import { Schema } from "effect";
+import { children, MapNode, pointStatus, ROOT_ID, type MeetingMap } from "./map.ts";
 
-export type ChangeType = "追加" | "更新" | "決定済み化" | "却下" | "移動" | "統合";
+export const ChangeType = Schema.Literals(["追加", "更新", "決定済み化", "却下", "移動", "統合"]);
+export type ChangeType = typeof ChangeType["Type"];
 
 // kind と text は反映後の値（統合では統合先の値）
-export type Change = { change: ChangeType; node: string; kind: Kind | "会議"; text: string };
+export const Change = Schema.Struct({
+  change: Schema.mutableKey(ChangeType),
+  node: Schema.mutableKey(Schema.String),
+  kind: Schema.mutableKey(MapNode.fields.kind),
+  text: Schema.mutableKey(Schema.String),
+});
+export type Change = typeof Change["Type"];
 
 const hasNew = (before: readonly string[], after: readonly string[]) => after.some((u) => !before.includes(u));
 
