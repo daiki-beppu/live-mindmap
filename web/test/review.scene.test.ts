@@ -6,6 +6,8 @@ import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { makeContext } from "../src/app/review/context.ts";
 import { init, type Model, makeUpdate, makeView, snapshotOf } from "../src/app/review/main.ts";
 import { foldView } from "../src/folding.ts";
+import { layout } from "../src/layout.ts";
+import { Message as ReviewMessage } from "../src/app/review/message.ts";
 
 // 見返しの Foldkit プログラム（Issue #823）の Scene。描いた view から入り、その時刻の Snapshot のノードが表示面に出ることを見る。
 // 比べる相手は、既存の純粋な関数 foldView が、その時刻の Snapshot から返すノード（live の表示面と同じ畳み方）
@@ -61,8 +63,36 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
   it("表示面の Model は時刻の Snapshot を持たない（Model の欄に Snapshot が無い）", () => {
     const m = init(context);
     // 表示面の状態のうち、実測（size・nodeHeights）とパンの状態（#815）だけを持ち、導く mode・snapshot は持たない
-    expect(Object.keys(m.mapSurface).sort()).toEqual(["isMac", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size"]);
+    expect(Object.keys(m.mapSurface).sort()).toEqual(["isMac", "motion", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size"]);
     expect(Option.isNone(m.mapSurface.size)).toBe(true);
     expect(HashMap.size(m.mapSurface.nodeHeights)).toBe(0);
+  });
+
+  it("測定済みの後に目標の位置が変わる高さを再測定しても、補間は始まらず、描く位置は新しい高さの layout になる", () => {
+    const ids = expectedIds(30);
+    const nodes = foldView(snapshotOf(context, at(30)), new Set(), null, new Set(), new Set()).nodes;
+    const base = Object.fromEntries(ids.map((id) => [id, 40]));
+    const changed = { ...base, [ids[1]!]: 160 };
+    const before = layout(nodes, base);
+    const after = layout(nodes, changed);
+    expect(ids.some((id) => before[id]!.y !== after[id]!.y)).toBe(true);
+    const measure = (m: Model, nodeHeights: Record<string, number>): Model =>
+      app.update(m, ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights }) })).model;
+    const remeasured = measure(measure(at(30), base), changed);
+    expect(Option.isNone(remeasured.mapSurface.motion)).toBe(true);
+    type V = { data?: { attrs?: Record<string, unknown>; style?: Record<string, string> }; children?: Array<V | string> };
+    const wrappers = (v: V): V[] => [...(typeof v.data?.attrs?.["data-node-id"] === "string" ? [v] : []), ...(v.children ?? []).flatMap((c) => (typeof c === "string" ? [] : wrappers(c)))];
+    scene(
+      app,
+      given(remeasured),
+      Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: changed })),
+      tap((simulation) => {
+        for (const w of wrappers(simulation.html as V)) {
+          const id = w.data!.attrs!["data-node-id"] as string;
+          const [x, y] = (w.data?.style?.transform ?? "").match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+          expect([x, y]).toEqual([after[id]!.x, after[id]!.y]);
+        }
+      }),
+    );
   });
 });

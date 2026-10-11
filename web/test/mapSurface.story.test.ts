@@ -2,8 +2,11 @@ import { HashMap, Option, Schema } from "effect";
 import { expectNoOutMessage, expectOutMessage, given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { init, Model, update } from "../src/app/mapSurface/main.ts";
+import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message, OutMessage } from "../src/app/mapSurface/message.ts";
+import { foldView } from "../src/folding.ts";
+import { layout } from "../src/layout.ts";
+import { interpolate, startPositions } from "../src/motion.ts";
 
 // マップの表示面（Issue #814）の update。Mount が出す Message 1 つで、画面の大きさとノードの実測を受ける。
 // Model に持つのは見せ方（mode）・Snapshot・画面の大きさ・ノードの実測と、パンの状態（isMac・pan・pointer・nodePress・scrollAxisLock）だけで、配置・畳んだ後の木・viewport は持たない（view が毎回導く）
@@ -14,7 +17,7 @@ const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "�
 const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "root"), node("P", "A", "論点")], round: 1, changes: [], remarks: [] };
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);
-const MODEL_FIELDS = ["isMac", "mode", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size", "snapshot"];
+const MODEL_FIELDS = ["isMac", "mode", "motion", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size", "snapshot"];
 const heightsOf = (m: MapSurfaceModel) => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
 
 describe("mapSurface の update: Mount の Message を受ける", () => {
@@ -73,7 +76,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     );
   });
 
-  it("update の後も Model の欄は決まった 9 つだけ（配置・畳んだ後の木・viewport を足さない）", () => {
+  it("update の後も Model の欄は決まった 10 個だけ（配置・畳んだ後の木・viewport を足さない）", () => {
     story(
       update,
       given(initial()),
@@ -86,7 +89,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
 });
 
 describe("mapSurface の Model: 本物の Schema", () => {
-  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pan・pointer・nodePress・scrollAxisLock の 9 つだけ", () => {
+  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pan・pointer・nodePress・scrollAxisLock と、補間の motion の 10 個だけ", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(MODEL_FIELDS);
   });
 
@@ -526,5 +529,224 @@ describe("mapSurface の update: クリックとドラッグの見分け（MapNo
 
   it("Message を受けるだけでは OutMessage は出ない（押した・動いた・離した）", () => {
     story(update, given(initial("live")), pressNode("A", 50, 50), expectNoOutMessage(), message(movePointer(53, 50)), expectNoOutMessage(), message(release()), expectNoOutMessage());
+  });
+});
+
+// マップの動き（Issue #817）: 差分更新の反映で、表示位置が今の位置から新しい目標へ 500ms で補間される。
+// Model に持つのは補間の始まりの位置（start）と経過 ms（elapsedMs）だけ。表示する位置は displayedPositions が毎回導く
+describe("mapSurface の update: 差分更新の反映で位置が補間される", () => {
+  const HEIGHTS = { root: 40, A: 64, P: 88 };
+  const next: Snapshot = { ...snapshot, round: 2, nodes: [...snapshot.nodes, node("D", "A", "案")] };
+  const NO_IDS: ReadonlySet<string> = new Set();
+  const shownOf = (m: MapSurfaceModel): SnapshotNode[] => (m.mode === "live" ? foldView(m.snapshot, NO_IDS, null, NO_IDS, NO_IDS).nodes : m.snapshot.nodes);
+  const heightsRecord = (m: MapSurfaceModel) => heightsOf(m);
+  const targetOf = (m: MapSurfaceModel) => layout(shownOf(m), heightsRecord(m));
+  const measure = (nodeHeights: Record<string, number>) => Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights });
+  const tick = (deltaMs: number) => Message.TickedAnimationFrame({ deltaMs });
+  const startOf = (m: MapSurfaceModel) => (Option.isSome(m.motion) ? Object.fromEntries(HashMap.toEntries(m.motion.value.start)) : {});
+  const expectPositions = (actual: Record<string, { x: number; y: number }>, expected: Record<string, { x: number; y: number }>) => {
+    expect(Object.keys(actual).sort()).toEqual(Object.keys(expected).sort());
+    for (const [id, p] of Object.entries(expected)) {
+      expect(actual[id]!.x).toBeCloseTo(p.x, 6);
+      expect(actual[id]!.y).toBeCloseTo(p.y, 6);
+    }
+  };
+
+  it("初期は motion が None（null や空のオブジェクトで表さない）", () => {
+    expect(Option.isNone(initial("live").motion)).toBe(true);
+  });
+
+  it("live: 測った後に ChangedSnapshot を受けると、直後は今までの位置（新しいノードは祖先の位置）、250ms で interpolate の 0.5、500ms で目標になる", () => {
+    story(
+      update,
+      given(initial("live")),
+      message(measure(HEIGHTS)),
+      model((m) => {
+        // 最初の測定では補間を始めない
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+      message(Message.ChangedSnapshot({ snapshot: next })),
+      model((m) => {
+        const before = layout(shownOf(initial("live")), HEIGHTS);
+        const target = targetOf(m);
+        expect(Object.keys(target).sort()).toEqual(["A", "D", "P", "root"]);
+        const expectedStart = startPositions(shownOf(m), before, target);
+        // この入力は、既存ノードも動き、新しいノードも出るものでなければ検証にならない
+        expect(expectedStart["root"]).not.toEqual(target["root"]);
+        expect(expectedStart["D"]).toEqual(before["A"]);
+        expect(Option.isSome(m.motion)).toBe(true);
+        expect(m.snapshot).toEqual(next);
+        expectPositions(startOf(m), expectedStart);
+        expectPositions(displayedPositions(m), expectedStart);
+      }),
+      message(tick(100)),
+      message(tick(150)),
+      model((m) => {
+        const target = targetOf(m);
+        const expectedStart = startPositions(shownOf(m), layout(shownOf(initial("live")), HEIGHTS), target);
+        expectPositions(displayedPositions(m), interpolate(expectedStart, target, 0.5));
+        // 各座標は 始まり + (目標 − 始まり) × 0.875
+        expect(displayedPositions(m)["root"]!.y).toBeCloseTo(expectedStart["root"]!.y + (target["root"]!.y - expectedStart["root"]!.y) * 0.875, 6);
+      }),
+      message(tick(250)),
+      model((m) => {
+        expectPositions(displayedPositions(m), targetOf(m));
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+    );
+  });
+
+  it("500ms を超えて進めても目標で止まる。補間が終わった後の tick は Model を変えない", () => {
+    story(
+      update,
+      given(initial("live")),
+      message(measure(HEIGHTS)),
+      message(Message.ChangedSnapshot({ snapshot: next })),
+      message(tick(900)),
+      model((m) => {
+        expectPositions(displayedPositions(m), targetOf(m));
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+      message(tick(16)),
+      model((m) => {
+        expect(Option.isNone(m.motion)).toBe(true);
+        expectPositions(displayedPositions(m), targetOf(m));
+      }),
+    );
+  });
+
+  it("補間の途中で次の ChangedSnapshot が来たら、そのとき見せていた位置から始め直す（経過は 0）", () => {
+    const third: Snapshot = { ...next, round: 3, nodes: [...next.nodes, node("E", "A", "案")] };
+    let shownMid: Record<string, { x: number; y: number }> = {};
+    story(
+      update,
+      given(initial("live")),
+      message(measure(HEIGHTS)),
+      message(Message.ChangedSnapshot({ snapshot: next })),
+      message(tick(100)),
+      model((m) => {
+        shownMid = displayedPositions(m);
+        expect(Option.isSome(m.motion) && m.motion.value.elapsedMs).toBe(100);
+      }),
+      message(Message.ChangedSnapshot({ snapshot: third })),
+      model((m) => {
+        expect(Option.isSome(m.motion) && m.motion.value.elapsedMs).toBe(0);
+        const expectedStart = startPositions(shownOf(m), shownMid, targetOf(m));
+        expectPositions(startOf(m), expectedStart);
+        expectPositions(displayedPositions(m), expectedStart);
+        // 途中の位置は始まり（前の始まり）とも目標とも違う
+        expect(shownMid["root"]).not.toEqual(layout(shownOf(initial("live")), HEIGHTS)["root"]);
+      }),
+      message(tick(500)),
+      model((m) => {
+        expectPositions(displayedPositions(m), targetOf(m));
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+    );
+  });
+
+  it("まだ何も測っていない live の ChangedSnapshot では補間しない", () => {
+    story(
+      update,
+      given(initial("live")),
+      message(Message.ChangedSnapshot({ snapshot: next })),
+      model((m) => {
+        expect(m.snapshot).toEqual(next);
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+    );
+  });
+
+  it("still: ChangedSnapshot の直後から目標の位置で、motion は None のまま", () => {
+    story(
+      update,
+      given(initial("still")),
+      message(measure(HEIGHTS)),
+      message(Message.ChangedSnapshot({ snapshot: next })),
+      model((m) => {
+        expect(Option.isNone(m.motion)).toBe(true);
+        expectPositions(displayedPositions(m), targetOf(m));
+      }),
+    );
+  });
+
+  it("live: 測り済みのノードの高さが変わって目標が動いたときも補間する。今の位置から始まる", () => {
+    story(
+      update,
+      given(initial("live")),
+      message(measure(HEIGHTS)),
+      message(measure({ P: 140 })),
+      model((m) => {
+        const before = layout(shownOf(initial("live")), HEIGHTS);
+        const target = targetOf(m);
+        expect(JSON.stringify(target)).not.toEqual(JSON.stringify(before));
+        expect(Option.isSome(m.motion)).toBe(true);
+        expectPositions(startOf(m), startPositions(shownOf(m), before, target));
+        expectPositions(displayedPositions(m), before);
+      }),
+      message(tick(500)),
+      model((m) => {
+        expectPositions(displayedPositions(m), targetOf(m));
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+    );
+  });
+
+  it("目標が変わらない測定（同じ高さ）・大きさだけの測定では補間を始めない", () => {
+    story(
+      update,
+      given(initial("live")),
+      message(measure(HEIGHTS)),
+      message(measure({ P: 88 })),
+      model((m) => {
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+      message(measure({})),
+      model((m) => {
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+    );
+  });
+
+  it("補間中に大きさだけの測定が来ても、経過を戻さず、始まりも変えない", () => {
+    let startBefore: Record<string, { x: number; y: number }> = {};
+    story(
+      update,
+      given(initial("live")),
+      message(measure(HEIGHTS)),
+      message(Message.ChangedSnapshot({ snapshot: next })),
+      message(tick(120)),
+      model((m) => {
+        startBefore = startOf(m);
+      }),
+      message(measure({})),
+      model((m) => {
+        expect(Option.isSome(m.motion) && m.motion.value.elapsedMs).toBe(120);
+        expectPositions(startOf(m), startBefore);
+      }),
+    );
+  });
+
+  it("補間中でないとき TickedAnimationFrame を受けても motion は None のまま", () => {
+    story(
+      update,
+      given(initial("live")),
+      message(tick(16)),
+      model((m) => {
+        expect(Option.isNone(m.motion)).toBe(true);
+      }),
+    );
+  });
+});
+
+describe("mapSurface の Model: motion の欄", () => {
+  const is = Schema.is(Model);
+  const motion = (over: object = {}) => Option.some({ start: HashMap.make(["A", { x: 1, y: 2 }]), elapsedMs: 10, ...over });
+
+  it("補間中の Model は通り、「無い」を null で書いたもの・start がただのオブジェクトのもの・経過が有限でないものは通らない", () => {
+    expect(is({ ...initial("live"), motion: motion() })).toBe(true);
+    expect(is({ ...initial("live"), motion: null })).toBe(false);
+    expect(is({ ...initial("live"), motion: Option.some({ start: { A: { x: 1, y: 2 } }, elapsedMs: 10 }) })).toBe(false);
+    expect(is({ ...initial("live"), motion: motion({ elapsedMs: Number.POSITIVE_INFINITY }) })).toBe(false);
   });
 });
