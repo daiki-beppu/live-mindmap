@@ -1,10 +1,10 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
 import { Cause, Context, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
-import { diffMaps, type Change } from "./changes.ts";
+import { Change, diffMaps } from "./changes.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
-import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
+import { applyOps, cloneNode, Dropped, emptyMap, MapNode, Op, PointStatus, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
 import { Word } from "./words.ts";
 
@@ -117,20 +117,31 @@ export class InvalidLogEvent extends Schema.TaggedError<InvalidLogEvent>()("Inva
 }) {}
 
 // 論点の状態は保存していないので、スナップショットを作るときに導いて載せる
-export type SnapshotNode = MapNode & { pointStatus?: PointStatus };
+export const SnapshotNode = Schema.Struct({
+  ...MapNode.fields,
+  pointStatus: Schema.optionalKey(Schema.mutableKey(PointStatus)),
+});
+export type SnapshotNode = typeof SnapshotNode["Type"];
 // 変わったこと（反映の履歴）。round は成功した反映の通し番号、at は反映に渡した新しい発言の end の最大値（会議の中の秒）。
-export type ChangeEntry = Change & { round: number; at: number };
+export const ChangeEntry = Schema.Struct({
+  ...Change.fields,
+  round: Schema.mutableKey(Schema.Finite),
+  at: Schema.mutableKey(Schema.Finite),
+});
+export type ChangeEntry = typeof ChangeEntry["Type"];
 // remarks は、いまのノードの根拠に挙がっている発言だけ（受け取った順・重複なし）。evidence の ID から引く。
 // currentTopic は今の議題の ID（まだ無ければキーごと付けない）。now は会議の今の時刻（最後に受け取った発言の end。発言が無ければキーごと付けない）。
-export type Snapshot = {
-  nodes: SnapshotNode[];
-  round: number;
-  changes: ChangeEntry[];
-  remarks: Remark[];
-  currentTopic?: string;
-  lastChanged?: string; // 今の round で最後に変わったノードの ID（変わったノードが無ければキーごと付けない）
-  now?: number;
-};
+// lastChanged は今の round で最後に変わったノードの ID（変わったノードが無ければキーごと付けない）。
+export const Snapshot = Schema.Struct({
+  nodes: Schema.mutableKey(Schema.mutable(Schema.Array(SnapshotNode))),
+  round: Schema.mutableKey(Schema.Finite),
+  changes: Schema.mutableKey(Schema.mutable(Schema.Array(ChangeEntry))),
+  remarks: Schema.mutableKey(Schema.mutable(Schema.Array(Remark))),
+  currentTopic: Schema.optionalKey(Schema.mutableKey(Schema.String)),
+  lastChanged: Schema.optionalKey(Schema.mutableKey(Schema.String)),
+  now: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
+});
+export type Snapshot = typeof Snapshot["Type"];
 
 const BATCH = 2;
 export const QUIET_MS = 1500; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ

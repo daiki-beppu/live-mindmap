@@ -14,6 +14,7 @@ export * from "./markdown.ts";
 export * from "./playback.ts";
 export * from "./review.ts";
 export {
+  ChangeEntry,
   DiffEvent,
   DiffUpdater,
   DiffUsage,
@@ -31,10 +32,12 @@ export {
   ScreenInputSkippedEvent,
   ScreenOffEvent,
   SessionLog,
+  Snapshot,
+  SnapshotNode,
   StartEvent,
   Track,
 } from "./session.ts";
-export type { ChangeEntry, DiffInput, DiffResult, DiffUpdateError, ScreenChange, Session, Snapshot, SnapshotNode } from "./session.ts";
+export type { DiffInput, DiffResult, DiffUpdateError, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
 export * from "./speaking.ts";
 export * from "./topic.ts";
