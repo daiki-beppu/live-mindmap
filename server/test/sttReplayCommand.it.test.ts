@@ -2,21 +2,28 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect } from "effect";
-import { afterEach, beforeEach, vi } from "vitest";
+import { Cause, Effect, Exit } from "effect";
+import { beforeEach, vi } from "vitest";
 import { reportFailure } from "../bench/entry.ts";
+import * as benchEntry from "../bench/entry.ts";
 import { command } from "../bench/sttReplay.ts";
 import type { DiffInput } from "../src/core/index.ts";
-import { consoleCapture, runCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
+import { evalManagedDeps } from "./fixtures/evalManagedDeps.ts";
+import { consoleCapture, runCommand as runBenchCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn() }));
-vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
+vi.mock("../src/claude.ts", async (importOriginal) => ({
+  ...(await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()),
+  AgentSdk: (await importOriginal<typeof import("../src/claude.ts")>()).AgentSdk,
+}));
 
 const calls: string[][] = [];
 const close = vi.fn();
 let counter = 0;
+let managed: ReturnType<typeof evalManagedDeps>;
 
 beforeEach(() => {
+  managed = evalManagedDeps("ready");
   calls.length = 0;
   counter = 0;
   close.mockReset();
@@ -30,7 +37,6 @@ beforeEach(() => {
     close,
   }));
 });
-afterEach(() => vi.restoreAllMocks());
 
 const items = [{ id: "r1", track: "相手", start: 0, end: 1, text: "採用", at: 0 }];
 
@@ -40,10 +46,36 @@ const writeInputs = (dir: string) => {
   return file;
 };
 
+const runCommand = (args: string[]) =>
+  runBenchCommand(command, args).pipe(Effect.provide(managed.layer));
+
 describe("sttReplay の Command", () => {
+  it.effect("管理 SDK の読込失敗は stdout 空・指定の3行の stderr・exit 3 で終わる", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    managed = evalManagedDeps("missing");
+    const { result, stdout, stderr } = yield* runCommand([writeInputs(dir)]);
+    expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
+    const failure = taggedFailure(result);
+    expect(failure?._tag).toBe("StartupDepsMissing");
+    const cause = Cause.fail(failure);
+    const reported = consoleCapture();
+    yield* reportFailure(cause).pipe(Effect.provide(reported.layer));
+    const saved = process.exitCode;
+    try {
+      benchEntry.exitNaturally(Exit.failCause(cause), () => { throw new Error("自然終了する必要があります"); });
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = saved;
+    }
+    expect(stdout + reported.stdout.join("")).toBe("");
+    expect(stderr + reported.stderr.join("")).toBe("開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n");
+    expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+    expect(managed.install).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
   it.effect("発言だけを渡すと、遅れの 1 行とセッションのパスの 1 行を stdout に出し、再生した発言が差分更新に渡る", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    const { result, stdout, stderr } = yield* runCommand(command, [writeInputs(dir)]);
+    const { result, stdout, stderr } = yield* runCommand([writeInputs(dir)]);
     expect(result._tag).toBe("Success");
     const lines = stdout.split("\n");
     expect(lines).toHaveLength(3); // 末尾の改行で最後が空
@@ -52,6 +84,7 @@ describe("sttReplay の Command", () => {
     expect(lines[2]).toBe("");
     expect(stderr).toBe("");
     expect(calls.flat()).toEqual(["r1"]);
+    expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
     // 出したパスは実在するセッションのフォルダで、再生のログが書かれている
     const sessionDir = lines[1]!.slice("セッション: ".length);
     expect(existsSync(join(sessionDir, "log.jsonl"))).toBe(true);
@@ -65,8 +98,8 @@ describe("sttReplay の Command", () => {
       const start = readFileSync(join(sessionDir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as { type?: string; title?: string }).find((e) => e.type === "start");
       return start?.title;
     };
-    expect(startTitle((yield* runCommand(command, [file])).stdout)).toBe("bench");
-    expect(startTitle((yield* runCommand(command, [file, "--title", "定例"])).stdout)).toBe("定例");
+    expect(startTitle((yield* runCommand([file])).stdout)).toBe("bench");
+    expect(startTitle((yield* runCommand([file, "--title", "定例"])).stdout)).toBe("定例");
   }).pipe(Effect.scoped));
 
   it.effect("--truth の再現率を、遅れの行とセッションの行の間に出す（--lines も読む）", () => Effect.gen(function* () {
@@ -76,7 +109,7 @@ describe("sttReplay の Command", () => {
     const lines = join(dir, "lines.json");
     writeFileSync(truth, JSON.stringify({ 決定: [], TODO: [{ from: 0, to: 9, keywords: ["採用"] }] }));
     writeFileSync(lines, JSON.stringify([{ start: 0, end: 1 }, { start: 100, end: 101 }]));
-    const { result, stdout } = yield* runCommand(command, [file, "--truth", truth, "--lines", lines]);
+    const { result, stdout } = yield* runCommand([file, "--truth", truth, "--lines", lines]);
     expect(result._tag).toBe("Success");
     const out = stdout.split("\n");
     expect(out[0]).toMatch(/（1 件）$/); // 覆う発言のない行（100〜101 秒）は数えない
@@ -86,7 +119,7 @@ describe("sttReplay の Command", () => {
 
   it.effect("差分更新は再生が終わったら閉じる（成功しても失敗しても 1 回だけ）", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    yield* runCommand(command, [writeInputs(dir)]);
+    yield* runCommand([writeInputs(dir)]);
     expect(close).toHaveBeenCalledTimes(1);
   }).pipe(Effect.scoped));
 
@@ -98,7 +131,7 @@ describe("sttReplay の Command", () => {
     const dir = yield* temporaryDirectory;
     const truth = join(dir, "bad.truth.json");
     writeFileSync(truth, content);
-    const { result, stdout } = yield* runCommand(command, [writeInputs(dir), "--truth", truth]);
+    const { result, stdout } = yield* runCommand([writeInputs(dir), "--truth", truth]);
     const failure = taggedFailure(result);
     expect(failure?._tag).toBe("InvalidTruthFile");
     expect(failure?.path).toBe(truth);
@@ -112,7 +145,7 @@ describe("sttReplay の Command", () => {
     const dir = yield* temporaryDirectory;
     const file = writeInputs(dir);
     vi.stubEnv("TMPDIR", join(dir, "no-such-tmp"));
-    const { result, stdout } = yield* runCommand(command, [file]).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+    const { result, stdout } = yield* runCommand([file]).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
     const failure = taggedFailure(result);
     expect(failure?._tag).toBe("ReplaySessionFailed");
     expect(String(failure?.path)).not.toBe("");
@@ -129,14 +162,21 @@ describe("sttReplay の Command", () => {
     expect(reported.stderr[0]!.endsWith("）\n")).toBe(true);
   }).pipe(Effect.scoped));
 
-  it.effect("正解ファイルが無いとき、入口は「<パス>: 正解ファイルが不正です（<理由>）」の 1 行を stderr に出す", () => Effect.gen(function* () {
+  it.effect("正解ファイルが無いとき、入口は「<パス>: 正解ファイルが不正です（<理由>）」の 1 行を stderr に出し、exit 1 で終わる", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const truth = join(dir, "missing.truth.json");
-    const { result } = yield* runCommand(command, [writeInputs(dir), "--truth", truth]);
+    const { result } = yield* runCommand([writeInputs(dir), "--truth", truth]);
     const failure = taggedFailure(result);
     expect(failure?._tag).toBe("InvalidTruthFile");
     const reported = consoleCapture();
     yield* reportFailure(Cause.fail(failure)).pipe(Effect.provide(reported.layer));
+    const saved = process.exitCode;
+    try {
+      benchEntry.exitNaturally(Exit.fail(failure), () => { throw new Error("自然終了する必要があります"); });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = saved;
+    }
     expect(reported.stdout).toEqual([]);
     expect(reported.stderr).toHaveLength(1);
     expect(reported.stderr[0]!.startsWith(`${truth}: 正解ファイルが不正です（`)).toBe(true);
@@ -151,7 +191,7 @@ describe("sttReplay の Command", () => {
     const dir = yield* temporaryDirectory;
     const file = join(dir, "items.json");
     writeFileSync(file, content);
-    const { result, stdout } = yield* runCommand(command, [file]);
+    const { result, stdout } = yield* runCommand([file]);
     const failure = taggedFailure(result);
     expect(failure?._tag).toBe("InvalidInputFile");
     expect(failure?.path).toBe(file);
@@ -163,7 +203,7 @@ describe("sttReplay の Command", () => {
     const dir = yield* temporaryDirectory;
     const lines = join(dir, "lines.json");
     writeFileSync(lines, JSON.stringify([{ start: "0", end: 1 }]));
-    const { result, stdout } = yield* runCommand(command, [writeInputs(dir), "--lines", lines]);
+    const { result, stdout } = yield* runCommand([writeInputs(dir), "--lines", lines]);
     const failure = taggedFailure(result);
     expect(failure?._tag).toBe("InvalidInputFile");
     expect(failure?.path).toBe(lines);
@@ -174,7 +214,7 @@ describe("sttReplay の Command", () => {
     const dir = yield* temporaryDirectory;
     const file = join(dir, "items.json");
     writeFileSync(file, JSON.stringify([{ ...items[0], source: "stable" }]));
-    const { result } = yield* runCommand(command, [file]);
+    const { result } = yield* runCommand([file]);
     expect(result._tag).toBe("Success");
   }).pipe(Effect.scoped));
 });

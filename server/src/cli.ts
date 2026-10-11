@@ -669,7 +669,7 @@ const evaluate = Command.make(
     for (const source of sessions) {
       const dir = selected === undefined ? source : yield* Effect.gen(function* () {
         const recorded = yield* loadRecordedSession(resolve(source));
-        const updaterLayer = yield* prepareUpdaterLayer(selected);
+        const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
         return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
           Effect.provide(updaterLayer),
         )).dir;
@@ -774,7 +774,7 @@ export const runCli = Command.runWith(root, { version: VERSION });
  * -------------------------------------------------------------------------- */
 
 // 失敗の表示はここだけ。CliError（help・引数の誤り）は effect/cli が出力済みなので二重に出さない
-const reportFailure = (cause: Cause.Cause<unknown>) => {
+export const reportFailure = (cause: Cause.Cause<unknown>) => {
   const error = Cause.findError(cause);
   if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
   const failure = error.success;
@@ -785,7 +785,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
 };
 
-const teardown: Runtime.Teardown = (exit, onExit) => {
+export const teardown: Runtime.Teardown = (exit, onExit) => {
   if (Exit.isFailure(exit) && exit.cause.reasons.length === 1) {
     const error = Cause.findError(exit.cause);
     if (Result.isSuccess(error) && (error.success instanceof RequiredDepsMissing || error.success instanceof StartupDepsMissing)) {
