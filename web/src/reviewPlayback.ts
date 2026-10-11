@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 // 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒（elapsed）か、音声の時刻の通知（audioTime）だけを受け取る。
 
 // 画面の経過 1 秒あたりに進む会議の秒数
@@ -12,7 +14,8 @@ export const AUDIO_RATE = 1;
 export const AUDIO_RATES: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 // muted と volume は音声つきだけが使う。ミュートは volume を 0 にせず別に持つので、戻すとミュート前の音量に戻る
-export type PlaybackState = { time: number; playing: boolean; rate: number; muted: boolean; volume: number };
+export const PlaybackState = Schema.Struct({ time: Schema.Finite, playing: Schema.Boolean, rate: Schema.Finite, muted: Schema.Boolean, volume: Schema.Finite });
+export type PlaybackState = typeof PlaybackState.Type;
 
 export type PlaybackEvent =
   | { type: "toggle" }
