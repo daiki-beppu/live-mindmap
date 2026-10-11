@@ -4,7 +4,8 @@ import { DiffUpdatePaused, emptyMap } from "./core/index.ts";
 import { accessToken, ChatgptEndpoints } from "./chatgptAuth.ts";
 import { authPath, chatgptRefusal, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { classificationRequest, SYSTEM } from "./localPrompt.ts";
-import type { Classify } from "./localDiffUpdater.ts";
+import type { Classify, LocalModel } from "./localDiffUpdater.ts";
+import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 
 const Event = Schema.Struct({ type: Schema.String, delta: Schema.optionalKey(Schema.String),
@@ -47,13 +48,14 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
   const endpoints = yield* ChatgptEndpoints;
   const services = yield* Effect.context<import("effect").FileSystem.FileSystem | HttpClient.HttpClient>();
   const client = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
-  const request = Effect.fnUntraced(function* (input: ReturnType<typeof classificationRequest>) {
+  // 1 回きりの要求を送り、応答の本文（JSON の文字列）を返す。instructions・prompt・JSON Schema だけが用途ごとに変わる
+  const exchange = Effect.fnUntraced(function* (instructions: string, prompt: string, jsonSchema: object) {
     const token = yield* accessToken(path).pipe(Effect.provideContext(services), Effect.provideService(ChatgptEndpoints, endpoints));
     const response = yield* HttpClientRequest.post(endpoints.responses).pipe(
       HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
-      HttpClientRequest.bodyJson({ model: model.model, instructions: SYSTEM,
-        input: [{ role: "user", content: input.prompt }], store: false, stream: true,
-        text: { format: { type: "json_schema", name: "diff", strict: true, schema: input.jsonSchema } },
+      HttpClientRequest.bodyJson({ model: model.model, instructions,
+        input: [{ role: "user", content: prompt }], store: false, stream: true,
+        text: { format: { type: "json_schema", name: "diff", strict: true, schema: jsonSchema } },
       }), Effect.flatMap(client.execute),
     );
     if (response.status === 401) return yield* chatgptRefusal("ChatGPT のトークンが期限切れか、利用できません");
@@ -66,10 +68,19 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
       if (limit._tag === "Success") return yield* new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "ChatGPT の利用上限" });
     }
     if (response.status < 200 || response.status >= 300) return yield* chatgptRefusal(`ChatGPT が HTTP ${response.status} を返しました`);
-    const text = yield* readSse(response.stream);
-    return yield* Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(text);
-  }, Effect.scoped, Effect.timeout("5 minutes"), Effect.mapError((error) => error instanceof ChatgptUnavailable || error instanceof DiffUpdatePaused ? error : chatgptRefusal("ChatGPT の応答を取得・検証できません")));
-  yield* request(classificationRequest(emptyMap("接続確認"), [], [{ remark: "probe", text: "接続を確認します。" }]));
-  const classify: Classify = request;
-  return classify;
+    return yield* readSse(response.stream);
+  }, Effect.scoped, Effect.timeout("5 minutes"));
+  const refuse = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(
+    Effect.mapError((error) => error instanceof ChatgptUnavailable || error instanceof DiffUpdatePaused ? error : chatgptRefusal("ChatGPT の応答を取得・検証できません")),
+  );
+  const classify: Classify = (input) => refuse(exchange(SYSTEM, input.prompt, input.jsonSchema).pipe(
+    Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(text)),
+  ));
+  // 開始検査は分類だけ。読みの要求は足さない（開始時の通信の回数を変えない）
+  yield* classify(classificationRequest(emptyMap("接続確認"), [], [{ remark: "probe", text: "接続を確認します。" }]));
+  const katakana: LocalModel["katakana"] = (words) => refuse(exchange(KATAKANA_SYSTEM, katakanaPrompt(words), KATAKANA_JSON_SCHEMA).pipe(
+    Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(text)),
+    Effect.map(toAnswers),
+  ));
+  return { classify, katakana } satisfies LocalModel;
 }, Effect.mapError((error) => error instanceof ChatgptUnavailable ? error : chatgptRefusal("ChatGPT の資格情報を読み込めません")));

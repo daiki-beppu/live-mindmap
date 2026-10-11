@@ -2,9 +2,10 @@
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
-import { DiffOperations, DiffUpdater, type DiffInput, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
+import { DiffOperations, DiffUpdater, type DiffInput, type KatakanaAnswer, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
 
 import { buildPrompt, fmtTime, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
+import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 
 export { buildPrompt, NOOP_SCOPE } from "./claudePrompt.ts";
@@ -79,29 +80,32 @@ export const layerClaude = (model: string) => Layer.effect(
     const closed = yield* Ref.make(false);
     yield* Effect.addFinalizer(() => Ref.set(closed, true));
 
+    // query を 1 本開く。system と出力の schema だけが用途（差分更新・読み）で変わる。閉じるのは呼び出し側（Scope）
+    const acquireQuery = (systemPrompt: string, schema: Record<string, unknown>) => Effect.acquireRelease(
+      Effect.gen(function* () {
+        const input = yield* Queue.unbounded<SDKUserMessage, Cause.Done>();
+        const q = yield* Effect.try({
+          try: () => sdk.query({
+            prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
+            options: {
+              model, systemPrompt,
+              tools: [], settingSources: [], persistSession: false, maxTurns: 4,
+              mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
+              outputFormat: { type: "json_schema", schema },
+              env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1" }, // env は subprocess の環境を置き換えるので process.env を引き継ぐ
+            },
+          }),
+          catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
+        }).pipe(Effect.tapError(() => Queue.end(input)));
+        return { input, query: q, output: q[Symbol.asyncIterator]() };
+      }),
+      (o) => Queue.end(o.input).pipe(Effect.andThen(Effect.sync(() => o.query.close()))),
+    );
+
     const open = Effect.gen(function* () {
       const scope = yield* Scope.fork(sessionScope, "sequential");
-      return yield* Effect.acquireRelease(
-        Effect.gen(function* () {
-          const input = yield* Queue.unbounded<SDKUserMessage, Cause.Done>();
-          const q = yield* Effect.try({
-            try: () => sdk.query({
-              prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
-              options: {
-                model, systemPrompt: SYSTEM,
-                tools: [], settingSources: [], persistSession: false, maxTurns: 4,
-                mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
-                outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },
-                env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1" }, // env は subprocess の環境を置き換えるので process.env を引き継ぐ
-              },
-            }),
-            catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
-          }).pipe(Effect.tapError(() => Queue.end(input)));
-          const opened: Open = { scope, input, query: q, output: q[Symbol.asyncIterator](), calls: 0 };
-          return opened;
-        }),
-        (o) => Queue.end(o.input).pipe(Effect.andThen(Effect.sync(() => o.query.close()))),
-      ).pipe(
+      return yield* acquireQuery(SYSTEM, OUTPUT_SCHEMA).pipe(
+        Effect.map((q): Open => ({ scope, ...q, calls: 0 })),
         Scope.provide(scope),
         Effect.tapError(() => Scope.close(scope, Exit.void)),
       );
@@ -117,7 +121,7 @@ export const layerClaude = (model: string) => Layer.effect(
     const advance = (o: Open, f: (x: Open) => Open) =>
       Ref.update(current, (c) => (Option.isSome(c) && c.value.scope === o.scope ? Option.some(f(c.value)) : c));
 
-    const next = (o: Open) =>
+    const next = (o: { readonly output: AsyncIterator<SDKMessage> }) =>
       Effect.tryPromise({
         try: () => o.output.next(),
         catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
@@ -125,11 +129,11 @@ export const layerClaude = (model: string) => Layer.effect(
 
     // result までに届いた assistant の message.usage を足す（再試行で要求が複数でも全部数える）。
     // result の usage は最後の 1 回分しか持たず、modelUsage・total_cost_usd は使わない（金額は単価が変わるので持たない）
-    const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffResult, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
+    const awaitStructured = Effect.fnUntraced(function* (o: { readonly output: AsyncIterator<SDKMessage> }, label: string): Effect.fn.Return<{ structured: unknown; usage: DiffUsage | undefined }, ClaudeQueryFailed | ClaudeResultFailed> {
       let usage: DiffUsage | undefined;
       for (;;) {
         const { value: m, done } = yield* next(o);
-        if (done) return yield* new ClaudeQueryFailed({ message: "差分更新の結果が無い", cause: "stream ended before result" });
+        if (done) return yield* new ClaudeQueryFailed({ message: `${label}の結果が無い`, cause: "stream ended before result" });
         if (m.type === "assistant") {
           const u = m.message.usage;
           usage = {
@@ -142,12 +146,17 @@ export const layerClaude = (model: string) => Layer.effect(
           continue;
         }
         if (m.type !== "result") continue;
-        if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `差分更新に失敗: ${m.subtype}`, subtype: m.subtype });
-        const decoded = yield* Schema.decodeUnknownEffect(DiffOperations)(m.structured_output).pipe(
-          Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
-        );
-        return { ...decoded, ...(usage ? { usage } : {}) };
+        if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `${label}に失敗: ${m.subtype}`, subtype: m.subtype });
+        return { structured: m.structured_output, usage };
       }
+    });
+
+    const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffResult, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
+      const { structured, usage } = yield* awaitStructured(o, "差分更新");
+      const decoded = yield* Schema.decodeUnknownEffect(DiffOperations)(structured).pipe(
+        Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
+      );
+      return { ...decoded, ...(usage ? { usage } : {}) };
     });
 
     const update = Effect.fn("DiffUpdater.update")(function* (input: DiffInput) {
@@ -175,6 +184,22 @@ export const layerClaude = (model: string) => Layer.effect(
       );
     });
 
-    return DiffUpdater.of({ update });
+    // 英字の語のカタカナの読み（Issue #642）。差分の会話（current・calls・sent）とは別の、1 回きりの query を開いて閉じる。
+    // 差分の query の使い回しにも開き直しの回数にも影響しない
+    const katakana = Effect.fn("DiffUpdater.katakana")(function* (words: ReadonlyArray<string>) {
+      if (yield* Ref.get(closed)) return yield* Effect.die(new Error("差分更新の updater は閉じています"));
+      return yield* Effect.scoped(Effect.gen(function* () {
+        const o = yield* acquireQuery(KATAKANA_SYSTEM, KATAKANA_JSON_SCHEMA);
+        yield* Queue.offer(o.input, { type: "user", message: { role: "user", content: katakanaPrompt(words) }, parent_tool_use_id: null });
+        const { structured } = yield* awaitStructured(o, "読みの取得");
+        const decoded = yield* Schema.decodeUnknownEffect(KatakanaOutput)(structured).pipe(
+          Effect.mapError((e) => new DiffOutputInvalid({ message: `読みの出力が不正: ${e.message}`, issue: e.issue })),
+        );
+        const answers: KatakanaAnswer[] = toAnswers(decoded);
+        return answers;
+      }));
+    });
+
+    return DiffUpdater.of({ update, katakana });
   }),
 );

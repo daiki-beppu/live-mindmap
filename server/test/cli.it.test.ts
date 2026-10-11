@@ -10,7 +10,7 @@ import { HttpClient, HttpServer } from "effect/http";
 import { afterEach, beforeEach, vi } from "vitest";
 import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
-import { REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
+import { DiffUpdater, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
 import type { DiffInput, Op, Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
@@ -30,7 +30,6 @@ import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
-import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
@@ -366,7 +365,11 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: Layer.succeed(Helpers, Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") })),
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices({ readings }))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({
+        update: () => Effect.succeed({ ops: [] }),
+        // 英字の語のカタカナの読み（Issue #642）。Zendesk だけ答える
+        katakana: (words) => Effect.succeed(words.filter((w) => w === "Zendesk").map((surface) => ({ surface, katakana: "ゼンデスク" }))),
+      }))) }).pipe(Layer.provide(fakeExportServices({ readings }))),
     });
     const deps = dependencies(sessionsDir, String(server.port));
     return { checks, launches, deps, sessionsDir };
@@ -444,7 +447,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     readFileSync(join(sessionDir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).filter((e) => e.type === "vocab");
 
   it.live("640: start --vocab は 1 行 1 語で読み（空行は無視）、足した語として vocab の行に残す。読みは全語を 1 回のまとめた呼び出しで作る", () => Effect.gen(function* () {
-    const readings = fakeReadings({ 港南店: "kounanten", Zendesk: "zendesuku" });
+    const readings = fakeReadings({ 港南店: "kounanten", ゼンデスク: "zendesuku" });
     const r = yield* resource("authorized", false, readyManagedDeps, readings);
     const file = join(dirname(r.sessionsDir), "vocab.txt");
     writeFileSync(file, "港南店\n\nZendesk\n\n読めない語\n");
@@ -457,7 +460,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
       { surface: "Zendesk", romaji: "zendesuku", source: "user" },
       { surface: "読めない語", romaji: null, source: "user" },
     ]);
-    expect(readings.calls).toEqual([["港南店", "Zendesk", "読めない語"]]);
+    expect(readings.calls).toEqual([["港南店", "読めない語", "ゼンデスク"]]); // 英字の語はモデルのカタカナの読みを渡す。読みは全語を 1 回のまとめた呼び出しで作る
   }).pipe(Effect.scoped));
 
   it.live("640: --vocab を付けない start は、語を足さない（vocab の行も読みの呼び出しも無い）", () => Effect.gen(function* () {

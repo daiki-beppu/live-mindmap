@@ -31,6 +31,6 @@ export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: Executabl
     if (refusal !== undefined) return yield* new UpdaterUnavailable({ message: refusal.join("\n") });
     return yield* prepareAppleUpdater(model);
   }
-  const classify = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
-  return localUpdaterLayer(classify);
+  const local = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
+  return localUpdaterLayer(local);
 }, Effect.mapError((failure) => failure instanceof UpdaterUnavailable ? failure : new UpdaterUnavailable({ message: failure.message })));

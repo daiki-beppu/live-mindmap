@@ -55,6 +55,35 @@ describe("ChatGPT Responses（C03）", () => {
     }), files, http);
   }));
 
+  // Issue #642: 英字の語のカタカナの読み（katakana）は、分類とは別の instructions・schema で 1 回きりの要求を送る
+  it.effect("katakana は語を 1 回の要求にまとめ、読みの instructions・schema で送り、語ごとのカタカナを返す。分類の要求とは別の instructions と schema", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const http = fakeChatgptHttp((_request, call) => response(completedSse(call === 1 ? probe
+      : { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] })));
+    yield* provide(Effect.gen(function* () {
+      const updater = yield* open({});
+      const answer = yield* updater.katakana!(["Notion", "Figma"]);
+      expect(answer).toEqual([{ surface: "Notion", katakana: "ノーション" }, { surface: "Figma", katakana: "フィグマ" }]);
+      expect(http.requests).toHaveLength(2); // 開始時の接続確認 1 回 + 読みの要求 1 回
+      const body = jsonRequestBody(http.requests[1]!);
+      expect(body).toMatchObject({ model: CHATGPT_MODEL.model, store: false, stream: true, text: { format: { type: "json_schema", strict: true } } });
+      expect(body.instructions).not.toBe(SYSTEM);
+      expect(JSON.stringify(body.input)).toContain("Notion");
+      expect(JSON.stringify(body.input)).toContain("Figma");
+      expect(JSON.stringify((body.text as { format: { schema: unknown } }).format.schema)).toContain("readings");
+    }), files, http);
+  }));
+
+  it.effect("katakana の要求が失敗（切断）したら失敗として返り、空の答えにはならない", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const http = fakeChatgptHttp((_request, call) => response(call === 1 ? completedSse(probe)
+      : sseEvent({ type: "response.output_text.delta", delta: JSON.stringify({ readings: [{ word: "Notion", katakana: "ノーション" }] }) })));
+    yield* provide(Effect.gen(function* () {
+      const updater = yield* open({});
+      expect(Result.isFailure(yield* Effect.result(updater.katakana!(["Notion"])))).toBe(true);
+    }), files, http);
+  }));
+
   it.effect.each([
     { name: "failed", terminal: sseEvent({ type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded" } } }) },
     { name: "incomplete", terminal: sseEvent({ type: "response.incomplete", response: { incomplete_details: { reason: "max_output_tokens" } } }) },

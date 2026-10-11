@@ -23,7 +23,7 @@ describe("一時停止の保存ログ", () => {
     const http = fakeChatgptHttp((_request, call) => call === 1
       ? new Response(completedSse(classification([{ 種類: "なし" }])))
       : new Response(JSON.stringify({ error: { code: "subscription_sharing_usage_limit_exceeded" } }), { status: 429 }));
-    const classify = yield* prepareChatgpt(CHATGPT_MODEL).pipe(
+    const { classify } = yield* prepareChatgpt(CHATGPT_MODEL).pipe(
       Effect.provideService(FileSystem.FileSystem, files.fs), Effect.provideService(HttpClient.HttpClient, http.client),
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))), Effect.orDie,
     );

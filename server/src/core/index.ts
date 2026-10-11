@@ -5,6 +5,7 @@ export * from "./drawnix.ts";
 export * from "./evaluate.ts";
 export * from "./export.ts";
 export * from "./intake.ts";
+export * from "./latinWords.ts";
 export * from "./screenNotice.ts";
 export * from "./screenVocabulary.ts";
 export * from "./tapNotice.ts";
@@ -42,7 +43,7 @@ export {
   Track,
   VocabEvent,
 } from "./session.ts";
-export type { DiffInput, DiffResult, DiffUpdateError, ScreenChange, Session } from "./session.ts";
+export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
 export * from "./speaking.ts";
 export * from "./topic.ts";
