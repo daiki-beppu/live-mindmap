@@ -125,7 +125,7 @@ describe("ライブの開始前の確かめ", () => {
     expect(yield* r.status).toMatchObject({ status: "running" });
     expect(r.helpers.calls).toHaveLength(1);
   }).pipe(Effect.scoped));
-  it.live("710-2: speech-ja 不足の resume は同じセッションの停止状態・ログを保持し、導入後に回復する", () => Effect.gen(function* () {
+  it.live("710-2: speech-ja 不足の resume は同じセッションの停止状態・ログを保持し、不足解消後に回復する", () => Effect.gen(function* () {
     const r = yield* resource(false);
     const started = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude");
     expect(started.code).toBe(0);
@@ -144,7 +144,12 @@ describe("ライブの開始前の確かめ", () => {
     expect(yield* r.status).toEqual(before);
     expect(r.helpers.calls).toHaveLength(launches);
     expect(yield* Effect.tryPromise(() => readFile(join(dir, "log.jsonl"), "utf8"))).toBe(logBefore);
-    expect((yield* cli(r.root, r.server.port, ["install", "speech-ja"], "claude")).code).toBe(0);
+    const installation = yield* cli(r.root, r.server.port, ["install", "speech-ja"], "claude");
+    expect(installation.code).toBe(1);
+    expect(installation.stdout).toBe("");
+    expect(r.helpers.control.speechStatus).toBe("supported");
+    expect(yield* r.status).toEqual(before);
+    r.helpers.control.speechStatus = "installed";
     r.helpers.control.failRestarts = false;
     expect((yield* cli(r.root, r.server.port, ["resume"], "claude")).code).toBe(0);
     expect(yield* r.status).toMatchObject({ status: "running", dir, restarts: 1 });

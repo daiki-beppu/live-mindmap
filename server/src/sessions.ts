@@ -81,7 +81,7 @@ type Live = {
   lastInterruptedAt: Ref.Ref<string | undefined>; // 最後に途切れた時刻（ISO）
 };
 
-type State = { kind: "idle" } | { kind: "starting" } | { kind: "live"; live: Live } | { kind: "stopping" };
+type State = { kind: "idle"; installations: number } | { kind: "starting" } | { kind: "live"; live: Live } | { kind: "stopping" };
 
 export class Sessions extends Context.Service<Sessions, {
   apps: Effect.Effect<unknown>;
@@ -90,6 +90,7 @@ export class Sessions extends Context.Service<Sessions, {
   status: Effect.Effect<IntakeStatusReport>;
   resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
   checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
+  reserveDeps: Effect.Effect<void, SessionFailure, Scope.Scope>;
 }>()("live-mindmap/server/Sessions") {
   static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
     Effect.gen(function* () {
@@ -99,7 +100,17 @@ export class Sessions extends Context.Service<Sessions, {
       const sessionsDir = yield* SessionsDir;
       const deps = yield* ManagedDeps;
       const serverScope = yield* Effect.scope;
-      const state = yield* Ref.make<State>({ kind: "idle" });
+      const state = yield* Ref.make<State>({ kind: "idle", installations: 0 });
+      const reserveDeps = Effect.acquireRelease(
+        Effect.gen(function* () {
+          const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
+            current.kind === "idle"
+              ? [Option.none(), { kind: "idle", installations: current.installations + 1 }]
+              : [Option.some(current.kind === "live" ? new SessionBusy() : new SessionTransition()), current]);
+          if (Option.isSome(refusal)) return yield* refusal.value;
+        }),
+        () => Ref.update(state, (current): State => current.kind === "idle" ? { kind: "idle", installations: current.installations - 1 } : current),
+      );
 
       // 標準エラー。Console.error が末尾に改行を足すので、渡された文字列の末尾の改行は 1 つ外す（出力のバイト列は変えない）
       const note = (text: string) => Console.error(withoutFinalNewline(text));
@@ -330,13 +341,13 @@ export class Sessions extends Context.Service<Sessions, {
 
       const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
         const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
-          current.kind === "idle"
+          current.kind === "idle" && current.installations === 0
             ? [Option.none(), { kind: "starting" }]
             : [Option.some(current.kind === "live" ? new SessionBusy() : new SessionTransition()), current],
         );
         if (Option.isSome(refusal)) return yield* refusal.value;
         return yield* begin(input).pipe(
-          Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle" }) : Effect.void)),
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void)),
         );
       });
 
@@ -379,7 +390,7 @@ export class Sessions extends Context.Service<Sessions, {
                 // "none"（セッションが無い）にする。"running" だと、直前が interrupted/stopped だったクライアントが
                 // 「再開した」と解釈し、終わったセッションに「再開しました」が出てしまう（CT-NOTICE-CLEAR）
                 yield* intakeFrame("none");
-              }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle" }))),
+              }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 }))),
             ),
           );
           const running = yield* Effect.forkIn(Effect.interruptible(body), serverScope);
@@ -429,7 +440,7 @@ export class Sessions extends Context.Service<Sessions, {
         };
       });
 
-      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume });
+      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps });
     }),
   );
 }

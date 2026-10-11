@@ -51,7 +51,7 @@ const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provid
 export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem, never, ManagedDeps>;
 
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => {
-  const managedDeps = ManagedDeps.layer({ root: options.depsDir }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner)));
+  const managedDeps = ManagedDeps.layer({ root: options.depsDir, cleanupOnStartup: true }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner)));
   return {
     managedDeps,
     helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
