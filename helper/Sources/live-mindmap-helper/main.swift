@@ -37,22 +37,29 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     // 2 トラックは別の SpeechAnalyzer で処理する（1 つの transcriber は 1 回の transcribe にだけ使える）。
     // 区間がほぼ無音の認識結果は、両トラックとも SilenceFilteringTranscriber が捨てる（Issue #144）。
     let tap = ProcessTap(targets: targets)
+    // 接続の前に出る `tap-silent` も保持して流せるよう、判定より前に作る（init はポートを覚えるだけ）。
+    let server = WebSocketServer(port: port)
     let microphone = MicrophoneCapture()
     let silentJudgement = TapSilentJudgement(
         sleep: { try await Task.sleep(for: $0) },
         hasReceivedFrames: { tap.hasReceivedFrames },
         currentLine: { currentTapDevices(targets: targets, aggregateMainUID: tap.aggregateMainSubDeviceUID) },
-        emit: { printError($0) }
+        emit: { printError($0) },
+        now: { AudioGetCurrentHostTime() },
+        emitEvent: { event in
+            guard let json = try? event.jsonString() else { return }
+            Task { await server.broadcastRetained(json, key: "tap-silent") }
+        }
     )
     let audio = RunAudio(
         requestMicrophonePermission: { try await requestMicrophonePermission() },
         makeTranscriber: { _ in SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber()) },
-        startAudio: { track in
+        startAudio: { track, origin in
             guard track == .相手 else { return try microphone.start() }
             let stream = try tap.start()
-            // 無音の原因を絞るため、開始直後と、10 秒間フレームが届かなかったときに、機器の状態を 1 行ずつ出す（読めなくても止めない）。
+            // 無音の原因を絞るため、開始直後と、10 秒間フレームが届かなかったときに、機器の状態を 1 行ずつ出し、`tap-silent` を流す（読めなくても止めない）。
             printError(currentTapDevices(targets: targets, aggregateMainUID: tap.aggregateMainSubDeviceUID))
-            silentJudgement.start()
+            silentJudgement.start(origin: origin)
             return stream
         },
         stopAudio: { track in
@@ -87,7 +94,6 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
     }
 
-    let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes, output: \(outputRoute))")
 

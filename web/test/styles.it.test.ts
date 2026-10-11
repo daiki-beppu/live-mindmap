@@ -191,3 +191,29 @@ describe("styles.css: 畳んだノードの隠れた数の丸（押せるもの�
     expect(rule(".map-node__count--pressable:focus")).toBe("");
   });
 });
+
+describe("styles.css: 相手の音声が届かない一文（Issue #863）", () => {
+  it("字幕の横の控えめな表示。absolute で下端基準、操作を邪魔せず、バッジ・影・枠を付けない", () => {
+    const r = rule(".tap-notice");
+    expect(r).not.toBe("");
+    expect(r).toMatch(/position\s*:\s*absolute/);
+    expect(r).not.toMatch(/position\s*:\s*fixed/);
+    expect(r).toMatch(/bottom\s*:/);
+    expect(r).toMatch(/pointer-events\s*:\s*none/);
+    expect(r).not.toMatch(/box-shadow\s*:\s*(?!none)/);
+    expect(r).not.toMatch(/border\s*:|background(-color)?\s*:/);
+  });
+
+  it("10 秒で消えるアニメーションを持たない（次の origin かセッションの終わりまで出し続ける）", () => {
+    expect(rule(".tap-notice")).not.toBe("");
+    expect(rule(".tap-notice")).not.toMatch(/animation/);
+  });
+
+  it("取り込みの一言（intake-notice）の位置と重ならない側に置く", () => {
+    const tap = rule(".tap-notice");
+    const intake = rule(".intake-notice");
+    const side = (r: string) => (/(^|[\s;])right\s*:/.test(r) ? "right" : /(^|[\s;])left\s*:/.test(r) ? "left" : "none");
+    expect(side(tap)).not.toBe("none");
+    expect(side(tap)).not.toBe(side(intake));
+  });
+});

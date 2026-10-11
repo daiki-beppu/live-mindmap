@@ -14,6 +14,7 @@ private enum AudioObservation: Equatable {
     case permission, created(Track), prepared(Track), started(Track), stopped(Track)
     case split, echo, recorded(Track, Float), heard(Track, Float), origin(Track, UInt64)
     case recordingOrigin(Track, UInt64)
+    case startedOrigin(Track, UInt64)
     case forwarded(Track, TranscriptionResult), duplicates(Bool), finished(Track)
 }
 
@@ -91,8 +92,9 @@ private final class RunAudioFixture {
                     prepareFailure: self.prepareFailure, recognitionFailure: self.recognitionFailure
                 )
             },
-            startAudio: { track in
+            startAudio: { track, origin in
                 self.observations.append(.started(track))
+                self.observations.append(.startedOrigin(track, origin))
                 self.started.continuation.yield(track)
                 if let error = self.captureFailure, track == .自分 { throw error }
                 if let held = self.heldAudio, track == .相手 { return held.stream }
@@ -172,6 +174,7 @@ struct RunAudioTests {
         #expect(events.contains(.recorded(.相手, 1)))
         #expect(events.contains(.origin(.相手, 123)))
         #expect(events.contains(.recordingOrigin(.相手, 123)))
+        #expect(events.contains(.startedOrigin(.相手, 123)))
         #expect(events.contains(.forwarded(.相手, runResult(.相手))))
         #expect(events.contains(.stopped(.相手)))
         #expect(events.contains(.finished(.相手)))

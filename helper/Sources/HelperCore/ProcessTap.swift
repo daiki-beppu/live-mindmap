@@ -1,6 +1,11 @@
 import AVFoundation
 import CoreAudio
 
+/// フレームの到着の判定。サンプルの値（ゼロかどうか）は見ない。
+func bufferHasFrames(_ buffer: AVAudioPCMBuffer) -> Bool {
+    buffer.frameLength > 0
+}
+
 public enum ProcessTapError: Error, CustomStringConvertible {
     case backlogExceeded(limit: Int)
 
@@ -121,7 +126,7 @@ public final class ProcessTap {
 
         status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [weak self] _, input, inputTime, _, _ in
             guard let copy = Self.copyBuffer(input, format: format) else { return }
-            if copy.frameLength > 0 { self?.markFramesReceived() }
+            if bufferHasFrames(copy) { self?.markFramesReceived() }
             let hostTime = inputTime.pointee.mFlags.contains(.hostTimeValid) ? inputTime.pointee.mHostTime : AudioGetCurrentHostTime()
             let captured = CapturedAudio(buffer: copy, hostTime: hostTime)
             // 満杯で入らなかったバッファは捨てずに、エラーで流れを終わらせる（時刻の意味を保つため）。

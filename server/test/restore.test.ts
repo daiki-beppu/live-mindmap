@@ -231,6 +231,18 @@ describe("ログからの復元", () => {
       expect(JSON.stringify(yield* restored.exportJson)).not.toContain("boom");
     }));
 
+  // Issue #863: 相手の音声が届かないときに残る tap-silent の行があっても、復元は同じマップに戻る
+  it.effect("tap-silent のログを含んでいても、復元は同じマップに戻る", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* original();
+      const lines = viaJsonl(events);
+      const withTapSilent = [lines[0], { type: "tap-silent", start: 10.5 }, ...lines.slice(1, 3), { type: "tap-silent", start: 42 }, ...lines.slice(3)];
+      const restored = yield* restore(withTapSilent);
+
+      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+    }));
+
   it.effect("復元したセッションは続きの発言を受け取り、元のセッションと同じ入力・同じマップになる", () =>
     Effect.gen(function* () {
       const { events, lone } = yield* original();

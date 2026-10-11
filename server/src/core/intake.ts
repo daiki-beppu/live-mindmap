@@ -11,12 +11,14 @@ export type IntakeStatus = "running" | "interrupted" | "stopped";
 // 再開したと誤って表示してしまう（CT-NOTICE-CLEAR）。"none" はその転換を起こさない
 export type IntakeFrame = { type: "intake"; status: SessionIntakeStatus };
 
-// log.jsonl に残す記録（order.md「ログに残す」）。すべて intake- で始まる種類。知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
+// log.jsonl に残すサーバー独自の記録（order.md「ログに残す」）。intake- で始まる種類と tap-silent。いずれも知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
 // signal は Node のシグナル名の文字列（"SIGKILL" 等）。NodeJS.Signals は使わない（core は Node の実行環境に依存しない。ADR 0003）
 export type IntakeLogEvent =
   | { type: "intake-stopped"; code: number | null; signal: string | null; stderrTail: string[] }
   | { type: "intake-restarted"; trigger: "auto" | "resume" }
-  | { type: "intake-gave-up"; reason: IntakeGiveUpReason };
+  | { type: "intake-gave-up"; reason: IntakeGiveUpReason }
+  // 相手のタップが 10 秒、フレーム数 1 以上のバッファを受け取らなかった。start は origin と同じ原点からの秒
+  | { type: "tap-silent"; start: number };
 
 // 諦めた理由。failures: 壊れて続けて落ちた（RESTART_WINDOW_MS 以内の終了が MAX_CONSECUTIVE_FAILURES 回続いた）。
 // configuration-changes: 構成の変化による終了が CONFIGURATION_CHANGE_WINDOW_MS の間に MAX_CONFIGURATION_CHANGES 回を超えた

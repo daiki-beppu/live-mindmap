@@ -39,6 +39,8 @@ public enum HelperEvent: Sendable, Equatable {
     case screen(start: Double, image: String?)
     /// 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。音声は続ける。`start` は `origin` と同じ原点からの秒。
     case screenOff(start: Double, reason: ScreenOffReason)
+    /// 相手のタップから、フレーム数 1 以上のバッファが 10 秒届かなかった。`start` は `origin` と同じ原点からの秒。1 回だけ流す。
+    case tapSilent(start: Double)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -92,6 +94,9 @@ extension HelperEvent: Encodable {
             try container.encode("screen-off", forKey: .type)
             try container.encode(start, forKey: .start)
             try container.encode(reason.rawValue, forKey: .reason)
+        case let .tapSilent(start):
+            try container.encode("tap-silent", forKey: .type)
+            try container.encode(start, forKey: .start)
         }
     }
 }

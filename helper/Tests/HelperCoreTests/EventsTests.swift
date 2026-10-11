@@ -133,6 +133,20 @@ struct EventsTests {
         #expect(try HelperEvent.screenOff(start: 0, reason: .許可なし).jsonString() == "{\"reason\":\"許可なし\",\"start\":0,\"type\":\"screen-off\"}")
     }
 
+    // Issue #863: タップに音声が届かないときの tap-silent。start は origin と同じ原点からの秒
+    @Test("tap-silent は type と start だけを持つ")
+    func tapSilentCarriesStart() throws {
+        let json = try decode(.tapSilent(start: 10.5))
+        #expect(Set(json.keys) == ["type", "start"])
+        #expect(json["type"] as? String == "tap-silent")
+        #expect(json["start"] as? Double == 10.5)
+    }
+
+    @Test("tap-silent の JSON 文字列は固定のキー順")
+    func tapSilentJSONString() throws {
+        #expect(try HelperEvent.tapSilent(start: 10.5).jsonString() == "{\"start\":10.5,\"type\":\"tap-silent\"}")
+    }
+
     @Test("screen-off の値が等しければイベントも等しい。screen とは区別される")
     func screenOffEquality() {
         #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) == HelperEvent.screenOff(start: 1, reason: .許可なし))

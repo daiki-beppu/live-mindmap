@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import { DiffUpdater, type HelperPartial, type IntakeLogEvent, type SettledRemark, type Track } from "../src/core/index.ts";
+import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type IntakeLogEvent, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "../src/sessionSinks.ts";
@@ -332,11 +332,18 @@ const viewerClient = Effect.fnUntraced(function* () {
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "screen-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "screen-notice").map((f) => f.text);
   });
+  // 届いたフレームのうち、type が tap-notice のものの text を、届いた順に返す
+  const tapNotices = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    const received: unknown[] = [];
+    while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
+    return received.filter((f): f is { type: "tap-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "tap-notice").map((f) => f.text);
+  });
   const sessionModes = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     return yield* Ref.get(modes);
   });
-  return { socket, intakeStatuses, screenNotices, sessionModes };
+  return { socket, intakeStatuses, screenNotices, tapNotices, sessionModes };
 });
 
 // Console.error に渡された行を、Node の console と同じ形（引数を空白で連ねて末尾に改行 1 つ）で集める Console。
@@ -608,6 +615,136 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           expect(fakeSinks.screens).toEqual([]);
           expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
           expect((yield* sessions.status).status).toBe("running");
+        })));
+  });
+
+  describe("相手の音声が届かない知らせ（tap-silent。Issue #863）", () => {
+    const boot = (attempts: AttemptScript[]) =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers(attempts);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const booted = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        return { fakeHelpers, fakeSinks, ...booted };
+      });
+
+    it.effect("tap-silent は start のまま log（sink）へ 1 行残り、画面へ固定の一文のフレームが届く。セッションは running のまま", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "tap-silent", start: 10.5 });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.appended).toEqual([{ type: "tap-silent", start: 10.5 }]);
+        expect(yield* watcher.tapNotices).toEqual([TAP_NOTICE_TEXT]);
+        expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    it.effect("一文は 10 秒では消えない（時計を進めても null は届かず、後からつないだブラウザにも出る）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        const early = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(early.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "tap-silent", start: 10 });
+        yield* TestClock.adjust(1);
+        expect(yield* early.tapNotices).toEqual([TAP_NOTICE_TEXT]);
+
+        yield* TestClock.adjust(60_000);
+        expect(yield* early.tapNotices).toEqual([]);
+
+        const late = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(late.socket));
+        expect(yield* late.tapNotices).toEqual([TAP_NOTICE_TEXT]);
+      }));
+
+    it.effect("同じセッションで、tap-silent の後に新しい origin が届くと、一文を消すフレーム（null）が届き、その後につないだブラウザには出ない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "tap-silent", start: 10 });
+        yield* TestClock.adjust(1);
+        expect(yield* watcher.tapNotices).toEqual([TAP_NOTICE_TEXT]);
+
+        fakeHelpers.send(0, { type: "origin", hostTime: "1" });
+        yield* TestClock.adjust(1);
+        expect(yield* watcher.tapNotices).toEqual([null]);
+
+        const late = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(late.socket));
+        expect(yield* late.tapNotices).toEqual([]);
+      }));
+
+    it.effect("起動し直した回でも tap-silent がまた届けば、一文を出し直し、ログにも届くたびに残る", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([
+          { unexpectedExit: { afterMs: 20_000, exit: { code: 1, signal: null } } },
+          {},
+        ]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "tap-silent", start: 10 });
+        yield* TestClock.adjust(1);
+        expect(yield* watcher.tapNotices).toEqual([TAP_NOTICE_TEXT]);
+
+        yield* TestClock.adjust(20_000);
+        yield* TestClock.adjust(1_000);
+        yield* TestClock.adjust(10);
+        expect(fakeHelpers.calls).toHaveLength(2);
+        fakeHelpers.send(1, { type: "origin", hostTime: "2" });
+        fakeHelpers.send(1, { type: "tap-silent", start: 10 });
+        yield* TestClock.adjust(1);
+
+        expect(yield* watcher.tapNotices).toEqual([null, TAP_NOTICE_TEXT]);
+        expect(fakeSinks.appended.filter((e) => e.type === "tap-silent")).toHaveLength(2);
+      }));
+
+    it.effect("stop で一文の保持も消える（stop 後につないだブラウザには出ない）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "tap-silent", start: 10 });
+        yield* TestClock.adjust(1);
+        expect(yield* watcher.tapNotices).toEqual([TAP_NOTICE_TEXT]);
+
+        yield* sessions.stop;
+        expect(yield* watcher.tapNotices).toEqual([null]);
+
+        const after = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(after.socket));
+        expect(yield* after.tapNotices).toEqual([]);
+      }));
+
+    it.effect("tap-silent は共有画面の知らせ（screen-notice）のフレームを出さず、screen-off のログ・状態にも触れない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "tap-silent", start: 10 });
+        yield* TestClock.adjust(1);
+        expect(fakeSinks.screenOffs).toEqual([]);
+        const frames = yield* watcher.screenNotices;
+        expect(frames).toEqual([]);
+      }));
+
+    it.effect("start が数でない壊れた tap-silent は sink にも画面にも届かない", () =>
+      withStderr(() =>
+        Effect.gen(function* () {
+          const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+          const watcher = yield* viewerClient();
+          yield* Effect.forkChild(viewers.connect(watcher.socket));
+          yield* sessions.start(start());
+          fakeHelpers.send(0, { type: "tap-silent", start: "10" });
+          yield* TestClock.adjust(1);
+          expect(fakeSinks.appended).toEqual([]);
+          expect(yield* watcher.tapNotices).toEqual([]);
         })));
   });
 

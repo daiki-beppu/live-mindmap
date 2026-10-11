@@ -51,4 +51,30 @@ describe("セッションの数だけの集計", () => {
     const s = sessionStats(yield* parseLog(remark("r1", "相手", 0, 2)));
     expect(formatRow("s", s, null).join("\n")).not.toContain("本文");
   }));
+
+  // Issue #863: helper が相手のタップに音声が届かないと流した回数（log.jsonl の tap-silent の行）
+  it.effect("tap-silent の行を数える。無ければ 0、他の intake の数・発言には混ざらない", () => Effect.gen(function* () {
+    const lines = [
+      JSON.stringify({ type: "tap-silent", start: 10.5 }),
+      remark("r1", "相手", 0, 2),
+      JSON.stringify({ type: "intake-restarted", trigger: "auto" }),
+      JSON.stringify({ type: "tap-silent", start: 12 }),
+    ];
+    const s = sessionStats(yield* parseLog(lines.join("\n")));
+    expect(s.tapSilent).toBe(2);
+    expect(s.intake).toMatchObject({ stopped: 0, restarted: 1, gaveUp: 0 });
+    expect(s.tracks.相手.remarks).toBe(1);
+    const none = sessionStats(yield* parseLog(remark("r1", "相手", 0, 2)));
+    expect(none.tapSilent).toBe(0);
+  }));
+
+  it.effect("formatRow の先頭の行に tap-silent の回数が出る。回数が違えば出力も違う", () => Effect.gen(function* () {
+    const two = sessionStats(yield* parseLog([JSON.stringify({ type: "tap-silent", start: 1 }), JSON.stringify({ type: "tap-silent", start: 2 })].join("\n")));
+    const zero = sessionStats(yield* parseLog(""));
+    const headTwo = formatRow("s", two, null)[0]!;
+    const headZero = formatRow("s", zero, null)[0]!;
+    expect(headTwo).toMatch(/無音\D*2/);
+    expect(headZero).toMatch(/無音\D*0/);
+    expect(headTwo).not.toBe(headZero);
+  }));
 });
