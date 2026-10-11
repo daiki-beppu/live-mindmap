@@ -764,7 +764,7 @@ const installCommand = Command.make(
     yield* installFromServer(yield* portConfig, "/deps/install", names);
   }),
 ).pipe(Command.withDescription(
-  "常駐サーバーに管理依存の導入を依頼し、進捗と導入した items を出す。"
+  "常駐サーバーに chromium・claude・cloudflared・speech-ja の導入を依頼し、進捗と導入した items を出す。"
     + "管理依存は入れる前に利用者に確認する",
 ));
 

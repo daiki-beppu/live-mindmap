@@ -34,6 +34,7 @@ const resource = Effect.fnUntraced(function* () {
     })),
   ).pipe(Stream.ensuring(Effect.sync(() => { state.closed++; })));
   const deps = ManagedDeps.of({
+    executable: () => Effect.die("実行ファイル取得は対象外"),
     check: (names) => Effect.sync(() => names.map((name): DepItem => {
       if (name !== "claude" && name !== "chromium") throw new Error("speech-ja は ManagedDeps の対象ではありません");
       return { name, need: "optional", state: "ready" };

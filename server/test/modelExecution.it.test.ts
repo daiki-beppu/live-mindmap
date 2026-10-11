@@ -41,6 +41,7 @@ const managedSdk = {
   },
 };
 const managedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+  executable: () => Effect.die("実行ファイル取得は対象外"),
   check: (names) => Effect.succeed(names.map((name) => ({ name: name as "claude" | "chromium", need: "optional" as const, state: "ready" as const }))), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"),
   load: ((name: string) => {
     expect(name).toBe("claude");
@@ -115,6 +116,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
       ? Effect.fail(new ManagedDepsFailed({ message }))
       : Effect.succeed(managedSdk));
     const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: (names) => Effect.succeed(names.map((name) => ({ name: name as "claude" | "chromium", need: "optional" as const, state: "ready" as const }))), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"),
       load: load as unknown as ManagedDeps["Service"]["load"],
     }));
@@ -223,6 +225,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     deps.stdout.length = 0;
     const load = vi.fn((_name: string) => Effect.fail(new ManagedDepsFailed({ message: "管理 SDK がありません" })));
     const failedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: (names) => Effect.succeed(names.map((name) => ({ name: name as "claude" | "chromium", need: "optional" as const, state: "ready" as const }))), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"), load,
     }));
     const result = yield* Effect.result(runCli([command, source, "--model", "fast"]).pipe(

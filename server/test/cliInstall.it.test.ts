@@ -2,11 +2,11 @@ import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
-import { readdir } from "node:fs/promises";
+import { chmod, copyFile, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Stream } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
@@ -19,6 +19,7 @@ import { realLayers } from "../src/server.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
+import { archive, CONTENT } from "./fixtures/cloudflared.ts";
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
@@ -28,8 +29,8 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   });
 });
 
-const cliProcess = (dir: string, port: number, rootScript: boolean) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "install", "chromium"] : [join(import.meta.dirname, "../src/cli.ts"), "install", "chromium"], {
+const cliProcess = (dir: string, port: number, rootScript: boolean, name: string) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+  execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "install", name] : [join(import.meta.dirname, "../src/cli.ts"), "install", name], {
     cwd: join(import.meta.dirname, "../.."),
     timeout: 15_000,
     env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
@@ -40,6 +41,85 @@ const cliProcess = (dir: string, port: number, rootScript: boolean) => Effect.tr
 }));
 
 describe("CLI install とサーバー", () => {
+  it.live.each(["missing binary", "non-executable binary", "hash mismatch"] as const)("ARCH-001: %s を不足として返し、同じサービスで CLI 再導入できる", (condition) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const fixture = yield* archive(dir);
+    let downloads = 0;
+    yield* Effect.gen(function* () {
+      const deps = yield* ManagedDeps;
+      const item = { name: "cloudflared", need: "optional", state: "ready" } as const;
+      const server = yield* serverWith(dir, deps);
+      const first = yield* cliProcess(dir, server.port, false, "cloudflared");
+      expect(first.code, first.stderr).toBe(0);
+      expect(JSON.parse(first.stdout)).toEqual([item]);
+      expect(downloads).toBe(1);
+      expect(yield* deps.check(["cloudflared"])).toEqual([item]);
+      const binary = yield* deps.executable("cloudflared");
+      expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe(CONTENT);
+      const current = join(root, "cloudflared/current");
+      const target = yield* Effect.tryPromise(() => readlink(current));
+      const ready = yield* Effect.tryPromise(() => readFile(join(current, ".ready.json"), "utf8"));
+      expect(JSON.parse(ready).version).toBe("2026.9.2");
+      const unchanged = yield* cliProcess(dir, server.port, false, "cloudflared");
+      expect(unchanged.code, unchanged.stderr).toBe(0);
+      expect(JSON.parse(unchanged.stdout)).toEqual([]);
+      expect(downloads).toBe(1);
+      yield* Effect.tryPromise(async () => {
+        if (condition === "missing binary") await rm(binary);
+        else if (condition === "non-executable binary") await chmod(binary, 0o644);
+        else await writeFile(binary, "#!/bin/sh\nexit 17\n");
+      });
+      expect(yield* Effect.tryPromise(() => readlink(current))).toBe(target);
+      expect(yield* Effect.tryPromise(() => readFile(join(current, ".ready.json"), "utf8"))).toBe(ready);
+      const rejected = yield* Effect.result(deps.executable("cloudflared"));
+      expect(Result.isFailure(rejected)).toBe(true);
+      if (Result.isFailure(rejected)) expect(rejected.failure).toBeInstanceOf(ManagedDepsFailed);
+      const missing = [{ ...item, state: "missing" }];
+      expect(yield* deps.check(["cloudflared"])).toEqual(missing);
+      const checked = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=cloudflared`));
+      expect(checked.status).toBe(200);
+      expect(yield* Effect.tryPromise(() => checked.json())).toEqual(missing);
+      const repaired = yield* cliProcess(dir, server.port, false, "cloudflared");
+      expect(repaired.code, repaired.stderr).toBe(0);
+      expect(JSON.parse(repaired.stdout)).toEqual([item]);
+      expect(downloads).toBe(2);
+      expect(yield* deps.check(["cloudflared"])).toEqual([item]);
+      const restored = yield* deps.executable("cloudflared");
+      expect(yield* Effect.tryPromise(() => readFile(restored, "utf8"))).toBe(CONTENT);
+      expect((yield* Effect.tryPromise(() => stat(restored))).mode & 0o777).toBe(0o755);
+    }).pipe(Effect.provide(ManagedDeps.layer({ root, cloudflared: {
+      resolve: Effect.succeed(fixture.artifact),
+      download: (_url: string, destination: string) => Effect.tryPromise(async () => {
+        downloads++;
+        await copyFile(fixture.path, destination);
+      }),
+    } }).pipe(Layer.provide(NodeServices.layer))));
+  }).pipe(Effect.scoped));
+  it.live("831 C1: cloudflared の明示的導入が実 HTTP 経由で結果 JSON と exit 0 を返す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const requests: ReadonlyArray<string>[] = [];
+    const item = { name: "cloudflared", need: "optional", state: "ready" } as const;
+    const service = {
+      executable: () => Effect.die("実行ファイル取得は対象外"),
+      load: () => Effect.die("導入は SDK を読み込まない"),
+      check: () => Effect.succeed([item]),
+      update: () => Stream.die("更新は対象外"),
+      install: (names: ReadonlyArray<string>) => Stream.concat(
+        Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "cloudflared 取得中" }; })),
+        Stream.succeed({ type: "result" as const, items: [item] }),
+      ),
+    };
+    const server = yield* serverWith(dir, ManagedDeps.of(service));
+    const result = yield* cliProcess(dir, server.port, true, "cloudflared");
+    expect(requests, result.stderr).toEqual([["cloudflared"]]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([item]);
+    expect(result.stderr).toContain("cloudflared 取得中\n");
+    const checked = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=cloudflared`));
+    expect(checked.status).toBe(200);
+    expect(yield* Effect.tryPromise(() => checked.json())).toEqual([item]);
+  }).pipe(Effect.scoped));
   it.live("環境設定から realLayers に渡した管理ルートを状態確認 API が使う", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const configured = join(dir, "configured-deps");
@@ -60,6 +140,7 @@ describe("CLI install とサーバー", () => {
     const release = yield* Deferred.make<void>();
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
       update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.concat(
@@ -92,6 +173,7 @@ describe("CLI install とサーバー", () => {
     const dir = yield* temporaryDeps;
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
       update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.concat(
@@ -99,7 +181,7 @@ describe("CLI install とサーバー", () => {
         Stream.succeed({ type: "result" as const, items: [installed] }),
       ),
     }));
-    const result = yield* cliProcess(dir, server.port, rootScript);
+    const result = yield* cliProcess(dir, server.port, rootScript, "chromium");
     expect(result.code).toBe(0);
     expect(requests).toEqual([["chromium"]]);
     expect(JSON.parse(result.stdout)).toEqual([installed]);
@@ -110,6 +192,7 @@ describe("CLI install とサーバー", () => {
     const dir = yield* temporaryDeps;
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
       update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.concat(
@@ -117,7 +200,7 @@ describe("CLI install とサーバー", () => {
         Stream.fail(new ManagedDepsFailed({ message: "導入に失敗しました: 最終行" })),
       ),
     }));
-    const result = yield* cliProcess(dir, server.port, false);
+    const result = yield* cliProcess(dir, server.port, false, "chromium");
     expect(requests).toEqual([["chromium"]]);
     expect(result.stderr).toContain("ダウンロード\n");
     expect(result.stderr).toContain("導入に失敗しました: 最終行\n");
@@ -127,7 +210,7 @@ describe("CLI install とサーバー", () => {
 
   it.live("サーバー接続不能では指定文面と exit 1 を返し、管理導入へフォールバックしない", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const result = yield* cliProcess(dir, 0, false);
+    const result = yield* cliProcess(dir, 0, false, "chromium");
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
@@ -138,6 +221,7 @@ describe("CLI install とサーバー", () => {
     const dir = yield* temporaryDeps;
     const calls: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       load: () => Effect.die("撮影は対象外"),
       check: (names: ReadonlyArray<string>) => Effect.sync(() => { calls.push(names); return [installed]; }),
       update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.fromEffect(Effect.sync(() => { calls.push(names); return { type: "result" as const, items: [installed] }; })),

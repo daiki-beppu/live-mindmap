@@ -2,6 +2,7 @@ import { Effect, Layer, Stream } from "effect";
 import { ManagedDeps } from "../../src/managedDeps.ts";
 
 export const readyManagedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+  executable: () => Effect.die("実行ファイル取得は対象外"),
   check: (names) => Effect.succeed(names.map((name) => {
     if (name !== "claude" && name !== "chromium") throw new Error(`対象外の依存: ${name}`);
     return { name, need: "optional" as const, state: "ready" as const };

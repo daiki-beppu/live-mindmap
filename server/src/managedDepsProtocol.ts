@@ -1,11 +1,12 @@
 import { Schema } from "effect";
 
 export const ManagedDepNames = Schema.Array(Schema.Literals(["chromium", "claude"])).check(Schema.isMinLength(1));
-export const DepNames = Schema.Array(Schema.Literals(["chromium", "claude", "speech-ja"])).check(Schema.isMinLength(1));
+export const CheckDepNames = Schema.Array(Schema.Literals(["chromium", "claude", "cloudflared"])).check(Schema.isMinLength(1));
+export const DepNames = Schema.Array(Schema.Literals(["chromium", "claude", "cloudflared", "speech-ja"])).check(Schema.isMinLength(1));
 export const InstallBody = Schema.Struct({ names: DepNames });
 export const UpdateBody = Schema.Struct({ names: ManagedDepNames });
 export const Item = Schema.Struct({
-  name: Schema.Literals(["chromium", "claude", "speech-ja", "helper", "microphone", "screen-capture"]),
+  name: Schema.Literals(["chromium", "claude", "cloudflared", "speech-ja", "helper", "microphone", "screen-capture"]),
   need: Schema.Literals(["required", "optional"]),
   state: Schema.Literals(["ready", "missing", "outdated", "absent"]),
   size: Schema.optionalKey(Schema.Finite),

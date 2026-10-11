@@ -46,6 +46,7 @@ const fakeDeps = (items: ReadonlyArray<DepItem>, events: Stream.Stream<DepEvent,
   const check = vi.fn((names: ReadonlyArray<string>) => Effect.succeed(items.filter((item) => names.includes(item.name))));
   const update = vi.fn((_names: ReadonlyArray<string>) => events);
   const service = {
+    executable: () => Effect.die("実行ファイル取得は対象外"),
     check, update,
     install: () => Stream.die("update は install の入口を使わない"),
     load: () => Effect.die("update は読込を行わない"),

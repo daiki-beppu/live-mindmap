@@ -109,6 +109,7 @@ const sessionServer = Effect.fnUntraced(function* (dir: string, deps: ManagedDep
   });
 });
 const fakeDeps = (source: Stream.Stream<DepEvent, ManagedDepsFailed>, calls: string[]) => ManagedDeps.of({
+  executable: () => Effect.die("実行ファイル取得は対象外"),
   check: () => Effect.succeed([{ name: "claude", need: "optional", state: "ready" }]),
   load: () => Effect.die("偽 updater は SDK を読まない"),
   install: () => Stream.concat(Stream.fromEffect(Effect.sync(() => { calls.push("install"); return { type: "progress" as const, message: "started" }; })), source),

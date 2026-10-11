@@ -39,7 +39,7 @@ const dependencies = (root: string, items: Item[]) => {
   const check = vi.fn((names: ReadonlyArray<string>) => Effect.succeed(items.filter((item) => names.includes(item.name))));
   const load = vi.fn((_name: string) => Effect.succeed({ query }));
   const install = vi.fn(() => Stream.die("再生の確かめでは導入しません"));
-  const managed = Layer.succeed(ManagedDeps, ManagedDeps.of({ check, install, update: () => Stream.die("更新は対象外"), load: load as unknown as ManagedDeps["Service"]["load"] }));
+  const managed = Layer.succeed(ManagedDeps, ManagedDeps.of({ executable: () => Effect.die("実行ファイル取得は対象外"), check, install, update: () => Stream.die("更新は対象外"), load: load as unknown as ManagedDeps["Service"]["load"] }));
   const layer = Layer.mergeAll(
     managed, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"),
