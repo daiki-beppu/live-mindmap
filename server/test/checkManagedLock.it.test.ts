@@ -54,9 +54,12 @@ describe("管理依存の固定版チェック", () => {
       expect(result.error).toBeUndefined();
       if (condition === "matching") expect(result.status, result.stderr).toBe(0);
       else {
-        expect(result.status).not.toBe(0);
+        expect(result.status).toBe(1);
         const line = content.split("\n").findIndex((text) => text.includes(`"${name}"`)) + 1;
         expect(result.stderr).toContain(`package.json:${line}:`);
+        expect(result.stderr).toContain(`${name} は同梱 lock の固定版 ${expected} と一致させてください`);
+        const dependency = name === "playwright-core" ? "chromium" : "claude";
+        expect(result.stderr).toContain(`server/managed-deps/${dependency}/README.md`);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

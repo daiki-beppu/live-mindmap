@@ -11,7 +11,7 @@ for (const [dependency, name] of [["chromium", "playwright-core"], ["claude", "@
   const fixed = lock.packages[`node_modules/${name}`]?.version;
   if (fixed === undefined || pkg.devDependencies[name] !== fixed) {
     const line = content.split("\n").findIndex((text) => text.includes(`"${name}"`)) + 1;
-    console.error(`package.json:${Math.max(1, line)}: ${name} は同梱 lock の固定版 ${fixed} と一致させてください`);
+    console.error(`package.json:${Math.max(1, line)}: ${name} は同梱 lock の固定版 ${fixed} と一致させてください（更新手順: server/managed-deps/${dependency}/README.md）`);
     process.exitCode = 1;
   }
 }
