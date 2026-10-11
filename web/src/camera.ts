@@ -250,3 +250,32 @@ export function shouldMoveCamera(snapshot: Snapshot, placedRound: number | null)
   if (placedRound === null || placedRound === snapshot.round) return true;
   return snapshot.lastChanged !== undefined || snapshot.changes.some((c) => c.round === snapshot.round);
 }
+
+// 全体を収めるときの余白の割合（@xyflow の fitView({ padding: 0.1 }) と同じ）
+const FIT_PADDING = 0.1;
+
+// 余白（px）。@xyflow の parsePadding と同じく、画面の辺から (辺 − 辺 / (1 + padding)) の半分を切り捨てる
+const fitPadding = (side: number): number => Math.floor((side - side / (1 + FIT_PADDING)) * 0.5);
+
+// rects の外接箱を、余白 0.1 で画面に収める。@xyflow の fitView（getViewportForBounds）と同じ式:
+// 倍率は minZoom〜maxZoom に収め、箱の中心を画面の中央に置く。切り捨てた余白の分だけ、辺ごとに足りない余白を位置で補う。
+// 箱が 1 つも無いときは null
+export function fitViewport(rects: readonly Rect[], size: Size, minZoom: number, maxZoom: number): Viewport | null {
+  if (rects.length === 0) return null;
+  const left = Math.min(...rects.map((r) => r.x));
+  const top = Math.min(...rects.map((r) => r.y));
+  const right = Math.max(...rects.map((r) => r.x + r.width));
+  const bottom = Math.max(...rects.map((r) => r.y + r.height));
+  const padX = fitPadding(size.width);
+  const padY = fitPadding(size.height);
+  const fitZoom = Math.min((size.width - padX * 2) / (right - left), (size.height - padY * 2) / (bottom - top));
+  const zoom = Math.min(maxZoom, Math.max(minZoom, fitZoom));
+  const x = size.width / 2 - ((left + right) / 2) * zoom;
+  const y = size.height / 2 - ((top + bottom) / 2) * zoom;
+  // 今の位置で実際に残る余白（箱の各辺と画面の各辺の間。切り捨て）が、必要な余白に足りない分
+  const shortLeft = Math.min(Math.floor(left * zoom + x) - padX, 0);
+  const shortTop = Math.min(Math.floor(top * zoom + y) - padY, 0);
+  const shortRight = Math.min(Math.floor(size.width - (right * zoom + x)) - padX, 0);
+  const shortBottom = Math.min(Math.floor(size.height - (bottom * zoom + y)) - padY, 0);
+  return { x: x - shortLeft + shortRight, y: y - shortTop + shortBottom, zoom };
+}
