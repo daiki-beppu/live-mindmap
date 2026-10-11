@@ -18,7 +18,7 @@ const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "�
 const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "root"), node("P", "A", "論点")], round: 1, changes: [], remarks: [] };
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);
-const MODEL_FIELDS = ["gestureScale", "isMac", "mode", "motion", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size", "snapshot", "viewing", "zoomScale"];
+const MODEL_FIELDS = ["camera", "gestureScale", "isMac", "mode", "motion", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size", "snapshot", "viewing", "zoomScale"];
 const heightsOf = (m: MapSurfaceModel) => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
 
 describe("mapSurface の update: Mount の Message を受ける", () => {
@@ -77,7 +77,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     );
   });
 
-  it("update の後も Model の欄は決まった 13 個だけ（配置・畳んだ後の木・viewport・camera を足さない）", () => {
+  it("update の後も Model の欄は決まった 14 個だけ（配置・畳んだ後の木・viewport を足さない。camera は見る状態が返したカメラへの指示）", () => {
     story(
       update,
       given(initial()),
@@ -90,7 +90,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
 });
 
 describe("mapSurface の Model: 本物の Schema", () => {
-  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pan・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの zoomScale・gestureScale の 13 個だけ", () => {
+  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pan・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、その出来事が返したカメラへの指示 camera と、ズームの zoomScale・gestureScale の 14 個だけ", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(MODEL_FIELDS);
   });
 

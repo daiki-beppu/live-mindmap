@@ -35,6 +35,11 @@ export const Message = defineMessageUnion({
   StartedMapSurfaceGesture: {},
   // Safari の gesture が変わった。scale は始まりからの累積の倍率（前回との比は update が求める）。x・y は位置（表示面の左上が原点）
   ChangedMapSurfaceGesture: { scale: Schema.Finite, x: Schema.Finite, y: Schema.Finite },
+  // --- 右の列から ---
+  // 「変わったこと」の項目を押した（そのノードへ移る。祖先と開くかは update が畳む見せ方から求める）
+  ClickedChangeItem: { nodeId: Schema.String },
+  // 右の列の Disclosure が出し入れを求めた（isOpen: 出す向きか）
+  ToggledSide: { isOpen: Schema.Boolean },
   // --- 親から ---
   // マップ（Snapshot）が新しくなった（差分更新の反映）。位置は補間で新しい目標へ移る
   ChangedSnapshot: { snapshot: Snapshot },

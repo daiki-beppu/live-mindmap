@@ -17,7 +17,7 @@ type VNode = Parameters<typeof textContent>[0];
 type Sim = SceneSimulation<ReturnType<typeof init>, Message>;
 
 // 表示面（#814）と右の列（後の issue）の中身は、この部品の外。差し込み口に仮の要素を渡す
-const slots = (h: HtmlBuilder<Message>) => ({ map: h.div([h.Class("map-surface")], []), side: h.div([h.Class("evidence-panel")], []) });
+const slots = (h: HtmlBuilder<Message>) => ({ map: h.div([h.Class("map-surface")], []), side: h.div([h.Class("side")], [h.div([h.Class("evidence-panel")], [])]) });
 const app = { update, view: (model: ReturnType<typeof init>, h: HtmlBuilder<Message>) => view(model, h, slots(h)) };
 
 const INTERRUPTED = "音声の取り込みが途切れました。再開しています";
@@ -504,6 +504,17 @@ describe("sessionLayout の Scene: 並び順（今の SessionView の .layout �
       tap((s) => {
         expect(mapOutline(s.html)).toEqual(["div.map-surface"]);
         expect(elements(Option.getOrThrow(find(".side")(s.html))).map(named)).toEqual(["div.evidence-panel"]);
+      }),
+    );
+  });
+
+  it("右の列の差し込み口が null（右の列を隠している）のときは、.side の包みを描かず、.layout の直下は .map だけ", () => {
+    scene(
+      { update, view: (model: ReturnType<typeof init>, h: HtmlBuilder<Message>) => view(model, h, { map: h.div([h.Class("map-surface")], []), side: null }) },
+      given(init()),
+      tap((s) => {
+        expect(outline(s.html)).toEqual(["div.map"]);
+        expect(find(".side")(s.html)).toEqual(Option.none());
       }),
     );
   });

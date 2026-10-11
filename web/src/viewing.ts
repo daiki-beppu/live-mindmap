@@ -109,20 +109,22 @@ export function foldToggle(tree: VisibleTree, id: string): "open" | "fold" | "un
 // revealNode: 人の倍率の範囲に収めてから、そのノードが画面の外なら最小限ずらして入れる（中なら動かさない）
 // fitSubtree: そのノードと、見せるノードのうちその子孫が収まるまで寄る
 // pan: 画面の 1/3 ずつ動かす（dx・dy は見えてくる側の向き） / fitAll: 全体を収める / restore: 全体を見る前の倍率・位置へ戻す
-export type CameraCommand =
-  | { type: "follow" }
-  | { type: "refocus" }
-  | { type: "hold" }
-  | { type: "zoomBy"; factor: number }
-  | { type: "zoomTo"; zoom: number }
-  | { type: "pan"; dx: number; dy: number }
-  | { type: "fitAll" }
-  | { type: "focusNode"; id: string }
-  | { type: "keepNode"; id: string }
-  | { type: "revealNode"; id: string }
-  | { type: "fitSubtree"; id: string }
-  | { type: "restore" }
-  | { type: "shiftIntoView" };
+export const CameraCommand = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("follow") }),
+  Schema.Struct({ type: Schema.Literal("refocus") }),
+  Schema.Struct({ type: Schema.Literal("hold") }),
+  Schema.Struct({ type: Schema.Literal("zoomBy"), factor: Schema.Finite }),
+  Schema.Struct({ type: Schema.Literal("zoomTo"), zoom: Schema.Finite }),
+  Schema.Struct({ type: Schema.Literal("pan"), dx: Schema.Finite, dy: Schema.Finite }),
+  Schema.Struct({ type: Schema.Literal("fitAll") }),
+  Schema.Struct({ type: Schema.Literal("focusNode"), id: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("keepNode"), id: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("revealNode"), id: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("fitSubtree"), id: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("restore") }),
+  Schema.Struct({ type: Schema.Literal("shiftIntoView") }),
+]);
+export type CameraCommand = typeof CameraCommand.Type;
 
 export const INITIAL_VIEWING: ViewingState = { mode: "auto" };
 
