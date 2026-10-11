@@ -53,9 +53,14 @@ export class HelperCheckFailure extends Schema.TaggedError<HelperCheckFailure>()
   message: Schema.String,
 }) {}
 
+export class HelperInstallFailure extends Schema.TaggedError<HelperInstallFailure>()("HelperInstallFailure", {
+  message: Schema.String,
+}) {}
+
 export class Helpers extends Context.Service<Helpers, {
   check: Effect.Effect<HelperCheck, HelperCheckFailure>;
   checkNoScreen: Effect.Effect<HelperCheck, HelperCheckFailure>;
+  installSpeechJa: Stream.Stream<string, HelperInstallFailure>;
   // 会議アプリの一覧（ヘルパーの `list` の結果）。失敗は予期しない失敗（defect）
   apps: Effect.Effect<unknown>;
   // ヘルパーを 1 回起動して接続する。args は `run` から始まるヘルパーの引数（--port は付けなくてよい）。
@@ -128,6 +133,25 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(noScreen ? HelperCheckNoScreenSchema : HelperCheckSchema))(stdout);
   }, Effect.scoped, Effect.mapError((error) => new HelperCheckFailure({ message: error.message })));
 
+  const installSpeechJa = Stream.unwrap(Effect.gen(function* () {
+    const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, "install-speech-ja"], {
+      stdin: "ignore", stdout: "ignore", forceKillAfter: HELPER_STOP_TIMEOUT_MS,
+    }));
+    const scope = yield* Effect.scope;
+    const exited = yield* Effect.forkIn(handle.exitCode, scope);
+    let stderrTail: ReadonlyArray<string> = [];
+    const progress = handle.stderr.pipe(
+      Stream.decodeText,
+      Stream.splitLines,
+      Stream.tap((line) => Effect.sync(() => { stderrTail = [...stderrTail, line].slice(-STDERR_TAIL_LINES); })),
+    );
+    const completed = Effect.gen(function* () {
+      const code = yield* Fiber.join(exited);
+      if (code !== 0) return yield* new HelperInstallFailure({ message: `日本語モデルの導入が失敗しました: ${stderrTail.join("\n") || `終了コード ${code}`}` });
+    });
+    return Stream.concat(progress, Stream.drain(Stream.fromEffect(completed)));
+  })).pipe(Stream.mapError((error) => new HelperInstallFailure({ message: error.message })));
+
   const launch = Effect.fnUntraced(function* (
     args: ReadonlyArray<string>,
     stopRequested: Deferred.Deferred<void>,
@@ -193,5 +217,5 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     return { events, stop, exit: Deferred.await(exited), stderrTail };
   });
 
-  return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true) });
+  return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true), installSpeechJa });
 });

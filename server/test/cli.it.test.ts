@@ -345,7 +345,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const sessionsDir = join(root, "sessions");
     const checks: boolean[] = [];
     const launches: string[][] = [];
-    const speechJa = { status: "supported" as const, installedLocales: [] };
+    const speechJa = { status: "installed" as const, installedLocales: ["ja-JP"] };
     const service = {
       apps: Effect.succeed([]),
       check: Effect.sync(() => { checks.push(true); return { microphone, screenCapture, speechJa }; }),
@@ -360,7 +360,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
       }),
     };
     const server = yield* startedServer({ port: 0, sessionsDir }, {
-      helpers: Layer.succeed(Helpers, Helpers.of(service)),
+      helpers: Layer.succeed(Helpers, Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") })),
       managedDeps: readyManagedDeps,
       sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
     });
@@ -382,6 +382,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
       { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },
       { name: "microphone", need: "optional", state },
       { name: "screen-capture", need: "optional", state: screenCapture ? "ready" : "absent" },
+      { name: "speech-ja", need: "required", state: "ready", install: "pnpm cli install speech-ja" },
     ] });
     expect(r.checks).toEqual([true]);
     expect(r.launches).toEqual([]);
@@ -394,7 +395,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     yield* runCli(["check", "--no-screen"]).pipe(Effect.provide(r.deps.layer));
     const report = JSON.parse(r.deps.stdout.join(""));
     expect(report.ready).toBe(true);
-    expect(report.items.map((item: { name: string }) => item.name)).toEqual(["chromium", "claude", "helper", "microphone"]);
+    expect(report.items.map((item: { name: string }) => item.name)).toEqual(["chromium", "claude", "helper", "microphone", "speech-ja"]);
     expect(report.items.find((item: { name: string }) => item.name === "microphone")).toEqual({ name: "microphone", need: "optional", state: "ready" });
     expect(r.checks).toEqual([false]);
     expect(r.launches).toEqual([]);

@@ -12,6 +12,7 @@ import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
 import { depsDirConfig, portConfig, sessionsDirConfig } from "./config.ts";
 import { ManagedDeps } from "./managedDeps.ts";
+import { InstallDeps } from "./installDeps.ts";
 import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
@@ -65,7 +66,7 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
   const token = makeModelTransferToken();
   // 待受け・Viewers・Sessions を 1 つの Layer に組む（依存を先に build するので、止めるときは Sessions が待受けより先）
   const context = yield* Layer.build(
-    Sessions.layer.pipe(
+    Layer.merge(Sessions.layer, InstallDeps.layer).pipe(
       Layer.provide(Layer.mergeAll(layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
       Layer.provideMerge(layers.helpers),
       Layer.provideMerge(layerListener(options.port)),

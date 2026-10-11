@@ -147,6 +147,9 @@ describe("CLI install とサーバー", () => {
     expect(checked.status).toBe(200);
     expect(yield* Effect.tryPromise(() => checked.json())).toEqual([installed]);
     expect(calls).toEqual([["chromium"]]);
+    const speechCheck = yield* Effect.tryPromise(() => fetch(`${url}/deps/check?names=speech-ja`));
+    expect(speechCheck.status).toBe(400);
+    expect(calls).toEqual([["chromium"]]);
     const forbidden = yield* Effect.tryPromise(() => fetch(`${url}/deps/check?names=chromium`, { headers: { origin: "https://example.com" } }));
     expect(forbidden.status).toBe(403);
     expect(calls).toEqual([["chromium"]]);
