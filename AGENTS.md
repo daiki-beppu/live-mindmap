@@ -33,7 +33,7 @@ When you add a test, read the Tests section of `CODING_STANDARDS.md`.
 Evals measure real model and speech-recognition output by hand. They are not part of Checks and give no pass/fail. Run the one that matches what you changed:
 
 - `cli eval`: the diff-update prompt, model, or flow.
-- `mapShape`: 差分更新のプロンプトを変えたら形の物差しも回す。`pnpm --filter @live-mindmap/server exec node bench/mapShape.ts <セッションフォルダ>...` で同じ素材の前後を比較する（本文は出さない）。列と数え方は `server/bench/README.md` を参照。親子の意味は `edgeJudge` で測る。合成会議限定の手順と、マージ後に人が行うClaude実測も `server/bench/README.md` を参照（TAKTとテストでは偽判定器だけを使う）。
+- `mapShape`: 差分更新のプロンプトを変えたら形の物差しも回す。`pnpm --filter @live-mindmap/server exec node bench/mapShape.ts <セッションフォルダ>...` で同じ素材の前後を比較する（本文は出さない）。列と数え方は `server/bench/README.md` を参照。親子の意味は `edgeJudge`、兄弟の意味は `siblingJudge` で測る（差分更新のプロンプトを変えたら、形と意味の物差し `mapShape`・`edgeJudge`・`siblingJudge` も回す）。`edgeJudge` は合成会議だけに使い、`siblingJudge` は合成会議と実会議の再生に使える（どちらも本文は出さない）。手順と、マージ後に人が行うClaude実測も `server/bench/README.md` を参照（TAKTとテストでは偽判定器だけを使う）。
 - `sttAccuracy`: the recognition engine, language, or vocabulary hints.
 - `sttLatency`: how finals are handled, or how the helper feeds recognition.
 
