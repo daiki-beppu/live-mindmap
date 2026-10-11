@@ -62,7 +62,7 @@ describe("CLI install とサーバー", () => {
     const server = yield* serverWith(dir, ManagedDeps.of({
       load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
-      install: (names: ReadonlyArray<string>) => Stream.concat(
+      update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.concat(
         Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "ダウンロード" }; })),
         Stream.fromEffect(Deferred.await(release).pipe(Effect.as({ type: "result" as const, items: [installed] }))),
       ),
@@ -94,7 +94,7 @@ describe("CLI install とサーバー", () => {
     const server = yield* serverWith(dir, ManagedDeps.of({
       load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
-      install: (names: ReadonlyArray<string>) => Stream.concat(
+      update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.concat(
         Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "ダウンロード" }; })),
         Stream.succeed({ type: "result" as const, items: [installed] }),
       ),
@@ -112,7 +112,7 @@ describe("CLI install とサーバー", () => {
     const server = yield* serverWith(dir, ManagedDeps.of({
       load: () => Effect.die("撮影は対象外"),
       check: () => Effect.succeed([installed]),
-      install: (names: ReadonlyArray<string>) => Stream.concat(
+      update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.concat(
         Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "ダウンロード" }; })),
         Stream.fail(new ManagedDepsFailed({ message: "導入に失敗しました: 最終行" })),
       ),
@@ -140,7 +140,7 @@ describe("CLI install とサーバー", () => {
     const server = yield* serverWith(dir, ManagedDeps.of({
       load: () => Effect.die("撮影は対象外"),
       check: (names: ReadonlyArray<string>) => Effect.sync(() => { calls.push(names); return [installed]; }),
-      install: (names: ReadonlyArray<string>) => Stream.fromEffect(Effect.sync(() => { calls.push(names); return { type: "result" as const, items: [installed] }; })),
+      update: () => Stream.die("更新は対象外"), install: (names: ReadonlyArray<string>) => Stream.fromEffect(Effect.sync(() => { calls.push(names); return { type: "result" as const, items: [installed] }; })),
     }));
     const url = `http://127.0.0.1:${server.port}`;
     const checked = yield* Effect.tryPromise(() => fetch(`${url}/deps/check?names=chromium`));

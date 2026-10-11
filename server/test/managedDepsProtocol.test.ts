@@ -1,9 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
-import { CheckReport, InstallBody, InstallEvent, StartupRefusal } from "../src/managedDepsProtocol.ts";
+import { CheckReport, InstallBody, InstallEvent, StartupRefusal, UpdateBody } from "../src/managedDepsProtocol.ts";
 import { ManagedDepsFailed } from "../src/managedDeps.ts";
 
 describe("管理依存の転送契約", () => {
+  it.effect("711-1・711-4: 更新要求は管理依存だけを受け取り、確認結果は導入版を保持する", () => Effect.gen(function* () {
+    const body = { names: ["chromium", "claude"] };
+    expect(yield* Schema.decodeUnknownEffect(UpdateBody)(body)).toEqual(body);
+    for (const names of [[], ["speech-ja"], ["unknown"]]) {
+      expect(Result.isFailure(yield* Effect.result(Schema.decodeUnknownEffect(UpdateBody)({ names })))).toBe(true);
+    }
+    const report = { ready: false, items: [{ name: "claude", need: "required", state: "outdated", version: "0.0.0" }] };
+    expect(yield* Schema.decodeUnknownEffect(CheckReport)(report)).toEqual(report);
+  }));
   it.effect("C3・C6: ビルドと許可は確認結果で転送できるが導入対象にはならない", () => Effect.gen(function* () {
     const report = { ready: true, items: [
       { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },

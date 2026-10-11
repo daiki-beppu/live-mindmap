@@ -7,18 +7,35 @@ import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from 
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { HelperCheckFailure } from "../src/helpers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
+import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 
 const deps = (state: "ready" | "missing" | "outdated" | "absent") => ManagedDeps.of({
   check: () => Effect.succeed([
     { name: "chromium", need: "required", state: "missing" },
     { name: "claude", need: "optional", state },
   ]),
-  install: () => Stream.die("確認は導入しない"), load: () => Effect.die("確認は読み込まない"),
+  update: () => Stream.die("更新は対象外"), install: () => Stream.die("確認は導入しない"), load: () => Effect.die("確認は読み込まない"),
 });
 
 const liveCheck = { screen: true, check: readyHelperChecks.check };
 
 describe("入口とモデル経路による管理依存の必要度", () => {
+  it.effect.each([
+    { entry: "resume", route: "claude" },
+    { entry: "play", route: "claude" },
+    { entry: "start", route: "apple" },
+  ] as const)("711-2: $entry / $route は SDK の版違いを不足扱いせず版付きの警告を返す", ({ entry, route }) => Effect.gen(function* () {
+    const service = {
+      ...deps("outdated"),
+      check: () => Effect.succeed([
+        { name: "chromium" as const, need: "optional" as const, state: "ready" as const },
+        { name: "claude" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.0" },
+      ]),
+    };
+    const warnings = yield* (entry === "play" ? requireStartupDeps(entry, route) : requireStartupDeps(entry, route, liveCheck))
+      .pipe(Effect.provideService(ManagedDeps, ManagedDeps.of(service)));
+    expect(warnings).toEqual([`警告: claude（Claude Agent SDK、約 224MB） が版違いです（入っている版 0.0.0、固定版 ${claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"]}）。そろえるには: pnpm cli update claude`]);
+  }));
   it.effect.each([
     { status: "installed", locales: [], state: "ready" },
     { status: "supported", locales: [], state: "missing" },
@@ -74,7 +91,7 @@ describe("入口とモデル経路による管理依存の必要度", () => {
       expect(report.items.filter((item) => item.name === "claude" || item.name === "chromium").every((item) => item.need === "optional")).toBe(true);
       expect(report.items.filter((item) => item.name === "helper")).toEqual([readyHelperItems[0]]);
     }));
-  it.effect.each(["missing", "outdated", "absent"] as const)("Claude の %s では警告を返さず必須不足になる", (state) =>
+  it.effect.each(["missing", "absent"] as const)("Claude の %s では警告を返さず必須不足になる", (state) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(requireStartupDeps("play", "claude").pipe(Effect.provideService(ManagedDeps, deps(state))));
       expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "StartupDepsMissing", items: [{ name: "claude", state }] } });

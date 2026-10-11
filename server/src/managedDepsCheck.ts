@@ -5,6 +5,8 @@ import { ManagedDeps, type DepItem } from "./managedDeps.ts";
 import type { Item, ModelRoute } from "./managedDepsProtocol.ts";
 import { describeDep, StartupDepsMissing } from "./startupDepsMissing.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
+import chromiumManifest from "../managed-deps/chromium/package.json" with { type: "json" };
+import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 
 const requiredByRoute = {
   claude: ["claude"],
@@ -35,8 +37,10 @@ export const speechJaItem = (status: HelperCheck["speechJa"]): typeof Item.Type 
 const checkDependencies = Effect.fnUntraced(function* (...[entry, route, live]: CheckArgs) {
   const deps = yield* ManagedDeps;
   const items: Array<typeof Item.Type> = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
-  const warnings = items.filter((item) => item.need === "optional" && item.state !== "ready")
-    .map((item) => `警告: ${describeDep(item)} がありません。入れるには: ${item.install}`);
+  const warnings = items.filter((item) => item.state === "outdated" || (item.need === "optional" && item.state !== "ready"))
+    .map((item) => item.state === "outdated"
+      ? `警告: ${describeDep(item)} が版違いです（入っている版 ${item.version}、固定版 ${item.name === "claude" ? claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"] : chromiumManifest.dependencies["playwright-core"]}）。そろえるには: pnpm cli update ${item.name}`
+      : `警告: ${describeDep(item)} がありません。入れるには: ${item.install}`);
   if (entry !== "play") {
     const result = yield* Effect.result(live.check);
     items.push({ name: "helper", need: "required", state: Result.isSuccess(result) ? "ready" : "missing", install: HELPER_BUILD_COMMAND });
@@ -61,7 +65,8 @@ export const checkManagedDeps = Effect.fnUntraced(function* (...args: CheckArgs)
 
 export const requireStartupDeps = Effect.fnUntraced(function* (...args: CheckArgs) {
   const { report, warnings } = yield* checkDependencies(...args);
-  if (!report.ready) return yield* new StartupDepsMissing({ items: report.items.filter((item) => item.need === "required" && item.state !== "ready") });
+  const missing = report.items.filter((item) => item.need === "required" && item.state !== "ready" && item.state !== "outdated");
+  if (missing.length > 0) return yield* new StartupDepsMissing({ items: missing });
   return warnings;
 });
 

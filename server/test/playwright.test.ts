@@ -12,7 +12,7 @@ describe("Playwright の管理依存", () => {
     let browser = first;
     const deps = ManagedDeps.of({
       check: () => Effect.die("check は呼ばない"),
-      install: () => Stream.die("install は呼ばない"),
+      update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: (() => Effect.sync(() => ({
         chromium: { launch: async () => browser },
       } as typeof PlaywrightModule))) as ManagedDeps["Service"]["load"],
@@ -28,7 +28,7 @@ describe("Playwright の管理依存", () => {
   it.effect("Chromium の起動例外を ManagedDepsFailed として返す", () => Effect.gen(function* () {
     const deps = ManagedDeps.of({
       check: () => Effect.die("check は呼ばない"),
-      install: () => Stream.die("install は呼ばない"),
+      update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: (() => Effect.succeed({
         chromium: { launch: async (): Promise<Browser> => { throw new Error("launch failed"); } },
       } as typeof PlaywrightModule)) as ManagedDeps["Service"]["load"],
@@ -47,7 +47,7 @@ describe("Playwright の管理依存", () => {
     const error = new ManagedDepsFailed({ message: "未導入" });
     const deps = ManagedDeps.of({
       check: () => Effect.die("check は呼ばない"),
-      install: () => Stream.die("install は呼ばない"),
+      update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: () => Effect.fail(error),
     });
     yield* Effect.gen(function* () {

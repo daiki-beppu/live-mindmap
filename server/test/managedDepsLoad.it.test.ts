@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
@@ -15,6 +15,7 @@ const entity = async (root: string, name: string, version: string) => {
   const dir = join(root, "chromium", name);
   const pkg = join(dir, "node_modules/playwright-core");
   await mkdir(pkg, { recursive: true });
+  await writeFile(join(dir, ".ready.json"), JSON.stringify({ version, installedAt: "2026-01-01T00:00:00Z", hashes: {} }));
   await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
   await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "playwright-core", version, type: "module", main: "index.js" }));
   await writeFile(join(pkg, "index.js"), `
@@ -35,6 +36,20 @@ const publish = async (root: string, name: string) => {
 };
 
 describe("管理 Chromium の読み込み", () => {
+  it.live("711-2: 記録と実物が一致する旧版 Chromium を起動できる", () => Effect.gen(function* () {
+    const root = yield* temporaryDeps;
+    yield* Effect.tryPromise(async () => {
+      await entity(root, "old", "0.0.0");
+      await publish(root, "old");
+    });
+    yield* Effect.gen(function* () {
+      const deps = yield* ManagedDeps;
+      expect(yield* deps.check(["chromium"])).toMatchObject([{ state: "outdated" }]);
+      const module = yield* deps.load("chromium");
+      const browser = yield* Effect.acquireRelease(Effect.tryPromise(() => module.chromium.launch()), (browser) => Effect.promise(() => browser.close()));
+      expect(JSON.parse(browser.version())).toEqual({ entity: "old", browsers: join(root, "chromium/browsers") });
+    }).pipe(Effect.provide(managedLayer(root)));
+  }).pipe(Effect.scoped));
   it.live("固定版の管理モジュールを読み、import 前に管理ブラウザの場所を渡す", () => Effect.gen(function* () {
     const root = yield* temporaryDeps;
     vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", "unmanaged-browser-path");
@@ -70,7 +85,7 @@ describe("管理 Chromium の読み込み", () => {
     }).pipe(Effect.provide(Playwright.layer.pipe(Layer.provideMerge(managedLayer(root)))));
   }).pipe(Effect.scoped));
 
-  it.live.each(["missing", "wrong-version", "outside-node-modules", "outside-symlink", "broken-module"] as const)(
+  it.live.each(["missing", "wrong-version", "missing-record", "invalid-record", "outside-node-modules", "outside-symlink", "broken-module"] as const)(
     "%s は通常依存へ戻らず ManagedDepsFailed を返す",
     (condition) => Effect.gen(function* () {
       const root = yield* temporaryDeps;
@@ -86,6 +101,9 @@ describe("管理 Chromium の読み込み", () => {
           await writeFile(join(dir, "node_modules/playwright-core/package.json"), JSON.stringify({ name: "playwright-core", version: manifest.dependencies["playwright-core"], main: condition === "outside-symlink" ? "linked.js" : "../../node_modules-other/index.js" }));
         }
         if (condition === "broken-module") await writeFile(join(dir, "node_modules/playwright-core/index.js"), "throw new Error('module evaluation failed');");
+        if (condition === "wrong-version") await writeFile(join(dir, ".ready.json"), JSON.stringify({ version: manifest.dependencies["playwright-core"], installedAt: "2026-01-01T00:00:00Z", hashes: {} }));
+        if (condition === "missing-record") await rm(join(dir, ".ready.json"));
+        if (condition === "invalid-record") await writeFile(join(dir, ".ready.json"), "{}");
         await publish(root, "a");
       });
       const result = yield* Effect.gen(function* () {

@@ -16,6 +16,7 @@ export type DepItem = {
   readonly name: DepName;
   readonly need: "required" | "optional";
   readonly state: "ready" | "missing" | "outdated" | "absent";
+  readonly version?: string;
 };
 export type DepEvent = { readonly type: "progress"; readonly message: string } | { readonly type: "result"; readonly items: ReadonlyArray<DepItem> };
 export class ManagedDepsFailed extends Schema.TaggedError<ManagedDepsFailed>()("ManagedDepsFailed", { message: Schema.String }) {}
@@ -23,6 +24,7 @@ export class ManagedDepsFailed extends Schema.TaggedError<ManagedDepsFailed>()("
 export class ManagedDeps extends Context.Service<ManagedDeps, {
   check: (names: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<DepItem>, ManagedDepsFailed>;
   install: (names: ReadonlyArray<string>) => Stream.Stream<DepEvent, ManagedDepsFailed>;
+  update: (names: ReadonlyArray<string>) => Stream.Stream<DepEvent, ManagedDepsFailed>;
   load: <N extends DepName>(name: N) => Effect.Effect<DepModules[N], ManagedDepsFailed>;
 }>()("live-mindmap/server/ManagedDeps") {
   static readonly layer = (options: { root: string; npm?: NpmCommand }) => Layer.effect(ManagedDeps)(make(options));
@@ -179,10 +181,10 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       if (!(yield* isFile(join(current, READY)))) return missing;
       const ready = yield* readJson(join(current, READY), ReadyRecord).pipe(Effect.catchTag("SchemaError", () => Effect.void));
       if (ready === undefined) return missing;
-      if (ready.version !== version) return { ...missing, state: "outdated" as const };
+      if (ready.version !== version) return { ...missing, state: "outdated" as const, version: ready.version };
       if (!(yield* isFile(join(current, "node_modules", packageName, "package.json")))) return missing;
       const pkg = yield* readJson(join(current, "node_modules", packageName, "package.json"), PackageRecord);
-      if (pkg.version !== version) return { ...missing, state: "outdated" as const };
+      if (pkg.version !== version) return { ...missing, state: "outdated" as const, version: pkg.version };
       if (name === "claude") return { ...missing, state: (yield* isFile(claudeBinary(current))) ? "ready" as const : "missing" as const };
       if (!(yield* isFile(join(current, "node_modules/playwright-core/browsers.json")))) return missing;
       const shell = yield* shellInfo(current);
@@ -210,7 +212,8 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
         }
       }
       const pkg = yield* readJson(packagePath, PackageRecord);
-      if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "読込版が固定版と一致しません" });
+      const ready = yield* readJson(join(entity, READY), ReadyRecord);
+      if (pkg.version !== ready.version) return yield* new ManagedDepsFailed({ message: "読込版が導入記録と一致しません" });
       const module = yield* Effect.tryPromise({
         try: () => {
           if (name === "chromium") process.env.PLAYWRIGHT_BROWSERS_PATH = browsers;
@@ -268,13 +271,15 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
     });
     const cleanup = <E>(effect: Effect.Effect<void, E>) => effect.pipe(Effect.catch((error) => Effect.logWarning(`管理依存の後片付けに失敗しました: ${String(error)}`)));
 
-    const install: Stream.Stream<DepEvent, ManagedDepsFailed> = Stream.unwrap(Effect.gen(function* () {
+    const install = (operation: "install" | "update"): Stream.Stream<DepEvent, ManagedDepsFailed> => Stream.unwrap(Effect.gen(function* () {
+      if (operation === "update" && (yield* checkDependency).state !== "outdated") return Stream.succeed<DepEvent>({ type: "result", items: [] });
       yield* fs.makeDirectory(dir, { recursive: true });
       const lock = yield* Effect.acquireRelease(Effect.try({ try: () => acquireLock(join(dir, LOCK)), catch: failed }), (lock) => cleanup(Effect.try({ try: lock.release, catch: failed })));
       for (const name of yield* fs.readDirectory(dir)) {
         if (name.startsWith(".work-")) yield* fs.remove(join(dir, name), { recursive: true, force: true });
       }
-      if ((yield* checkDependency).state === "ready") return Stream.succeed<DepEvent>({ type: "result", items: [] });
+      const state = (yield* checkDependency).state;
+      if (state === "ready" || (operation === "update" && state !== "outdated")) return Stream.succeed<DepEvent>({ type: "result", items: [] });
       const npm = options.npm ?? (yield* resolveNpm({ execPath: process.execPath, env: process.env }));
       const uuid = randomUUID();
       const work = join(dir, `.work-${uuid}`);
@@ -317,11 +322,11 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
   const load: ManagedDeps["Service"]["load"] = <N extends DepName>(name: N) => validateNames([name]).pipe(
     Effect.flatMap(() => dependency(name).load),
   ) as Effect.Effect<DepModules[N], ManagedDepsFailed>;
-  const install = (names: ReadonlyArray<string>): Stream.Stream<DepEvent, ManagedDepsFailed> => Stream.unwrap(Effect.gen(function* () {
+  const install = (names: ReadonlyArray<string>, operation: "install" | "update"): Stream.Stream<DepEvent, ManagedDepsFailed> => Stream.unwrap(Effect.gen(function* () {
     const validated = yield* validateNames(names);
     const items: DepItem[] = [];
     const installs = Stream.fromIterable(validated).pipe(
-      Stream.flatMap((name) => dependency(name).install),
+      Stream.flatMap((name) => dependency(name).install(operation)),
       Stream.filter((event) => {
         if (event.type === "progress") return true;
         items.push(...event.items);
@@ -330,5 +335,5 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
     );
     return Stream.concat(installs, Stream.fromEffect(Effect.sync((): DepEvent => ({ type: "result", items }))));
   }));
-  return ManagedDeps.of({ check, install, load });
+  return ManagedDeps.of({ check, install: (names) => install(names, "install"), update: (names) => install(names, "update"), load });
 });

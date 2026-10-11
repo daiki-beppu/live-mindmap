@@ -7,7 +7,7 @@ export const readyManagedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
     return { name, need: "optional" as const, state: "ready" as const };
   })),
   load: () => Effect.die("管理依存の読み込みは対象外"),
-  install: () => Stream.die("管理依存の導入は対象外"),
+  update: () => Stream.die("更新は対象外"), install: () => Stream.die("管理依存の導入は対象外"),
 }));
 
 // 偽 updater を使うサーバーでは Claude SDK は偽物。Chromium の確認・読込・導入は実物に委譲する。

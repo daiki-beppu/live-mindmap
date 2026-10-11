@@ -20,7 +20,7 @@ import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
 import { Helpers } from "./helpers.ts";
-import { CheckFor, ModelRoute, ManagedDepNames, InstallBody } from "./managedDepsProtocol.ts";
+import { CheckFor, ModelRoute, ManagedDepNames, InstallBody, UpdateBody, type InstallEvent } from "./managedDepsProtocol.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
 class ModelTransferToken extends Context.Service<ModelTransferToken, string>()("live-mindmap/http/ModelTransferToken") {}
@@ -165,6 +165,13 @@ const FeedRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/", feed),
 ]);
 
+const depResponse = <E>(source: Stream.Stream<typeof InstallEvent.Type, E>) => HttpServerResponse.stream(source.pipe(
+  Stream.catchCauseIf((cause) => !Cause.hasInterrupts(cause), (cause) =>
+    Stream.succeed({ type: "error" as const, message: failureMessage(Cause.squash(cause)) })),
+  Stream.map((event) => JSON.stringify(event) + "\n"),
+  Stream.encodeText,
+), { contentType: "application/x-ndjson" });
+
 const DepRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/check", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -197,13 +204,14 @@ const DepRoutes = HttpRouter.addAll([
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const deps = yield* InstallDeps;
-    const events = deps.install(body.names).pipe(
-      Stream.catchCauseIf((cause) => !Cause.hasInterrupts(cause), (cause) =>
-        Stream.succeed({ type: "error" as const, message: failureMessage(Cause.squash(cause)) })),
-      Stream.map((event) => JSON.stringify(event) + "\n"),
-      Stream.encodeText,
+    return depResponse(deps.install(body.names));
+  })),
+  HttpRouter.route("POST", "/update", Effect.gen(function* () {
+    const body = yield* HttpServerRequest.schemaBodyJson(UpdateBody).pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    return HttpServerResponse.stream(events, { contentType: "application/x-ndjson" });
+    const deps = yield* ManagedDeps;
+    return depResponse(deps.update(body.names));
   })),
 ]);
 

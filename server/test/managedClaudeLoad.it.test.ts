@@ -11,6 +11,7 @@ const entity = async (root: string, version: string, outside: boolean) => {
   const dir = join(root, "claude", "entity");
   const pkg = join(dir, "node_modules/@anthropic-ai/claude-agent-sdk");
   await mkdir(pkg, { recursive: true });
+  await writeFile(join(dir, ".ready.json"), JSON.stringify({ version, installedAt: "2026-01-01T00:00:00Z", hashes: {} }));
   await writeFile(join(dir, "package.json"), JSON.stringify({ private: true, type: "module" }));
   await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@anthropic-ai/claude-agent-sdk", version, type: "module", exports: { ".": "./sdk.mjs" } }));
   const module = outside ? join(root, "outside.mjs") : join(pkg, "sdk.mjs");
@@ -25,6 +26,16 @@ export const query = () => { throw new Error('読込確認は query を呼ばな
 };
 
 describe("管理 Claude SDK の読み込み", () => {
+  it.live("711-2: 記録と実物が一致する旧版 SDK も読み込める", () => Effect.gen(function* () {
+    const root = yield* temporaryDeps;
+    yield* Effect.tryPromise(() => entity(root, "0.0.0", false));
+    yield* Effect.gen(function* () {
+      const deps = yield* ManagedDeps;
+      expect(yield* deps.check(["claude"])).toMatchObject([{ state: "outdated" }]);
+      expect((yield* deps.load("claude")).query).toBeTypeOf("function");
+      expect(existsSync(join(root, "imported"))).toBe(true);
+    }).pipe(Effect.provide(managedLayer(root)));
+  }).pipe(Effect.scoped));
   it.live("固定版を管理実体から読み込み、query を利用可能にする", () => Effect.gen(function* () {
     const root = yield* temporaryDeps;
     const path = yield* Effect.tryPromise(() => entity(root, sdkVersion, false));
@@ -36,10 +47,13 @@ describe("管理 Claude SDK の読み込み", () => {
     expect(existsSync(join(root, "imported"))).toBe(true);
   }).pipe(Effect.scoped));
 
-  it.live.each(["missing", "wrong-version", "outside-symlink", "outside-current"] as const)(
+  it.live.each(["missing", "wrong-version", "missing-record", "invalid-record", "outside-symlink", "outside-current"] as const)(
     "%s は管理モジュールを評価せず、通常依存へ戻らずに失敗する", (condition) => Effect.gen(function* () {
       const root = yield* temporaryDeps;
       if (condition !== "missing") yield* Effect.tryPromise(() => entity(root, condition === "wrong-version" ? "0.0.0" : sdkVersion, condition === "outside-symlink"));
+      if (condition === "wrong-version") yield* Effect.tryPromise(() => writeFile(join(root, "claude/entity/.ready.json"), JSON.stringify({ version: sdkVersion, installedAt: "2026-01-01T00:00:00Z", hashes: {} })));
+      if (condition === "missing-record") yield* Effect.tryPromise(() => rm(join(root, "claude/entity/.ready.json")));
+      if (condition === "invalid-record") yield* Effect.tryPromise(() => writeFile(join(root, "claude/entity/.ready.json"), "{}"));
       if (condition === "outside-current") yield* Effect.tryPromise(async () => {
         await rename(join(root, "claude/entity"), join(root, "outside-entity"));
         await rm(join(root, "claude/current"));
