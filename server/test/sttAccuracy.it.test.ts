@@ -39,4 +39,70 @@ describe("sttAccuracy の Command", () => {
     const { result } = yield* runCommand(command, [timeline, broken]);
     expect(taggedFailure(result)).toMatchObject({ _tag: "InvalidInputFile", path: broken });
   }).pipe(Effect.scoped));
+
+  it.effect("--settle は途中結果と確定結果を settle に通した発言で採点し、全文の送り直しが重ならない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const timeline = join(dir, "timeline.tsv");
+    const jsonl = join(dir, "results.jsonl");
+    writeFileSync(timeline, "真壁\t0.00\t5.00\tあいうえお\n");
+    // 同じ start で全文を送り直す途中結果。到着の間は 1 秒以上あり、それぞれが発言として出る
+    writeFileSync(jsonl, [
+      { track: "相手", arrival: 0, isFinal: false, start: 0, end: 2, text: "あい" },
+      { track: "相手", arrival: 2, isFinal: false, start: 0, end: 4, text: "あいうえ" },
+      { track: "相手", arrival: 4, isFinal: false, start: 0, end: 5, text: "あいうえお" },
+      { track: "相手", arrival: 10, isFinal: true, start: 0, end: 5, text: "あいうえお" },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+    const finalOnly = yield* runCommand(command, [timeline, jsonl]);
+    expect(finalOnly.stdout).toContain("| 5 | 0.0% | 0 | 0 | 0 |");
+
+    const settled = yield* runCommand(command, [timeline, jsonl, "--settle"]);
+    expect(settled.result._tag).toBe("Success");
+    expect(settled.stdout).toContain("| 5 | 0.0% | 0 | 0 | 0 |");
+  }).pipe(Effect.scoped));
+
+  it.effect("--settle は確定結果の到着が 1 秒の期限の前か後かで採点が変わる（到着は秒で、ミリ秒に直して通す）", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const timeline = join(dir, "timeline.tsv");
+    writeFileSync(timeline, "真壁\t0.00\t3.00\tあいう\n");
+    const run = (finalArrival: number) => {
+      const jsonl = join(dir, `results-${finalArrival}.jsonl`);
+      writeFileSync(jsonl, [
+        { track: "相手", arrival: 0, isFinal: false, start: 0, end: 2, text: "あい" },
+        { track: "相手", arrival: finalArrival, isFinal: true, start: 0, end: 3, text: "あいう" },
+      ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+      return runCommand(command, [timeline, jsonl, "--settle"]);
+    };
+
+    const before = yield* run(0.5);
+    expect(before.stdout).toContain("| 3 | 0.0% | 0 | 0 | 0 |");
+    const after = yield* run(2);
+    expect(after.stdout).toContain("| 3 | 33.3% | 0 | 1 | 0 |");
+  }).pipe(Effect.scoped));
+
+  it.effect("--settle は確定結果が来ない途中結果からも発言を作って採点する（付けなければ脱落になる）", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const timeline = join(dir, "timeline.tsv");
+    const jsonl = join(dir, "results.jsonl");
+    writeFileSync(timeline, "真壁\t0.00\t3.00\tあいう\n真壁\t4.00\t7.00\tえおか\n");
+    writeFileSync(jsonl, [
+      { track: "相手", arrival: 3, isFinal: true, start: 0, end: 3, text: "あいう" },
+      { track: "相手", arrival: 5, isFinal: false, start: 4, end: 7, text: "えおか" },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+    const finalOnly = yield* runCommand(command, [timeline, jsonl]);
+    expect(finalOnly.stdout).toContain("| 6 | 50.0% | 0 | 3 | 0 |");
+    const settled = yield* runCommand(command, [timeline, jsonl, "--settle"]);
+    expect(settled.stdout).toContain("| 6 | 0.0% | 0 | 0 | 0 |");
+  }).pipe(Effect.scoped));
+
+  it.effect("kanary の JSON に --settle を付けると、パス付きのタグ付きの失敗にする", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const timeline = join(dir, "timeline.tsv");
+    const kanary = join(dir, "meeting.transcript.json");
+    writeFileSync(timeline, "真壁\t0.00\t3.00\tOJT です。\n");
+    writeFileSync(kanary, JSON.stringify({ transcript: { segments: [{ track: "speaker", start_seconds: 0, end_seconds: 3, text: "OTです" }] } }));
+    const { result } = yield* runCommand(command, [timeline, kanary, "--settle"]);
+    expect(taggedFailure(result)).toMatchObject({ _tag: "InvalidInputFile", path: kanary });
+  }).pipe(Effect.scoped));
 });

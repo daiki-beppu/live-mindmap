@@ -32,6 +32,36 @@ function dropOverlap(text: string, overlap: number): string {
   return text.slice(i);
 }
 
+// 前の部分が書き換わった全文（「シ子ど」→「シ子度で」）を重なりとして扱うときの、許す食い違いの比率。
+// 重なりの長さ j のうち、編集距離 D が floor(j × 比率) 以下のものだけを採る。1/4 は、j が 4 以上で 1 文字、8 以上で 2 文字の書き換えを許す
+// （order.md の素材 jargon の「シ子ど」→「シ子度で」は j=6、D=1）。これより緩いと別の発言の偶然の一致を重なりと見誤る
+const OVERLAP_TOLERANCE = 1 / 4;
+
+// 直前の本文 prev の末尾（始まりは自由）と、新しい本文 next の頭 next[0..j) を、食い違いを許して突き合わせ、
+// 重ねる長さ j（コードポイント数）を返す。j − 2·D が最大の j を選ぶ。採れる j が無ければ 0
+function fuzzyOverlap(prev: readonly string[], next: readonly string[]): number {
+  const w = prev.length + 1;
+  const d = new Uint32Array((next.length + 1) * w); // d[i * w + c]: next[0..i) と、prev の c 文字目で終わる任意の始まりからの部分の編集距離
+  for (let i = 1; i <= next.length; i++) {
+    d[i * w] = i;
+    for (let c = 1; c <= prev.length; c++) {
+      const diag = d[(i - 1) * w + c - 1]! + (next[i - 1] === prev[c - 1] ? 0 : 1);
+      d[i * w + c] = Math.min(diag, d[(i - 1) * w + c]! + 1, d[i * w + c - 1]! + 1);
+    }
+  }
+  let best = 0;
+  let bestScore = 0;
+  for (let j = 1; j <= next.length; j++) {
+    const distance = d[j * w + prev.length]!;
+    const score = j - 2 * distance;
+    if (distance <= Math.floor(j * OVERLAP_TOLERANCE) && score > bestScore) {
+      best = j;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 export function createRemarkGate() {
   // トラックごとの「直前に出した発言」。関所で落とした発言では更新しない
   const last = new Map<GatedRemark["track"], { end: number; text: string }>();
@@ -59,15 +89,22 @@ export function createRemarkGate() {
           break;
         }
       }
-      // 不対サロゲートとの比較では k がペアの途中を指し、切り出し結果が空になることがある。
+      // 重なりの候補は 2 つ持つ。完全一致（UTF-16 単位）と、書き換わった前の部分を許す重なり（コードポイント単位）。
+      // 完全一致が短くても、その先に書き換えを含む長い重なりがあれば既出の部分が混ざるので、長い方を採る。
+      // 完全一致だけが持つ候補を残すのは、不対サロゲートとの比較で k がペアの途中を指す場合の、切り出し結果が空になる既存の扱いのため。
       // 抑制した発言で「直前」を更新しないため、切り出し後の本文を状態更新前に検証する。
+      // 切る位置は、重ねたコードポイントの UTF-16 の長さ
+      const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
+      const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
+      k = Math.max(k, fuzzy);
       const text = k === 0 ? r.text : dropOverlap(r.text, k);
       if (compact(text) === "") return undefined;
       const start = prev.end;
       if (r.end <= start) return undefined;
 
       const emitted: GatedRemark = { ...r, start, text };
-      last.set(r.track, { end: emitted.end, text: emitted.text });
+      // 覚える本文は切る前の r.text。同じ始まりから全文を送り直す途中結果の頭と、前の全文が重なる
+      last.set(r.track, { end: emitted.end, text: r.text });
       return emitted;
     },
   };
