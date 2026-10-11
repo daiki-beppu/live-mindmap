@@ -8,7 +8,8 @@ export const DiffUpdateState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("stopped") }),
 ]);
 export type DiffUpdateState = typeof DiffUpdateState["Type"];
-export type DiffUpdateFrame = { type: "diff-update"; state: DiffUpdateState | null };
+export const DiffUpdateFrame = Schema.Struct({ type: Schema.Literal("diff-update"), state: Schema.NullOr(DiffUpdateState) });
+export type DiffUpdateFrame = typeof DiffUpdateFrame["Type"];
 
 export class DiffUpdatePaused extends Schema.TaggedError<DiffUpdatePaused>()("DiffUpdatePaused", {
   reason: DiffUpdateReason,

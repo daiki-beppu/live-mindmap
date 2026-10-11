@@ -1,15 +1,22 @@
+import { Schema } from "effect";
+
 // 取り込みの途切れ（CONTEXT.md）の状態・ブラウザへのフレーム・ログの形・起動し直しの上限の判断。
 // Node の実行環境に依存しない（ADR 0003）。タイマーは持たない（60 秒・3 回、構成の変化の 60 秒・10 回の判断は、実時間を受け取って純粋に決める）。
 
 // ヘルパーごとの取り込みの状態。running: 動いている。interrupted: 途切れて起動し直している。stopped: 諦めて止まった
 export type IntakeStatus = "running" | "interrupted" | "stopped";
 
+// cli status が出す状態の語彙（order.md「知らせ方」。CLI は「セッションなし」も扱うので、サーバーの IntakeStatus を拡張する）
+export const SessionIntakeStatus = Schema.Literals(["none", "running", "interrupted", "stopped"]);
+export type SessionIntakeStatus = typeof SessionIntakeStatus["Type"];
+
 // ブラウザへ送る、取り込みの状態のフレーム。スナップショット（type なし）・speaking（type: "speaking"）とは type で見分ける。
 // status は cli status と同じ語彙（SessionIntakeStatus）を使う。"none" は、セッションが終わったことを伝える専用の値で、
 // "running" とは区別する。接続を保ったクライアントは、直前が interrupted/stopped だった状態から "running" へ変わると
 // 「再開しました」と解釈する（intakeNoticeText）ため、セッションが終わっただけのときに "running" を送ると、終わったのに
 // 再開したと誤って表示してしまう（CT-NOTICE-CLEAR）。"none" はその転換を起こさない
-export type IntakeFrame = { type: "intake"; status: SessionIntakeStatus };
+export const IntakeFrame = Schema.Struct({ type: Schema.Literal("intake"), status: SessionIntakeStatus });
+export type IntakeFrame = typeof IntakeFrame["Type"];
 
 // log.jsonl に残すサーバー独自の記録（order.md「ログに残す」）。intake- で始まる種類と tap-silent。いずれも知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
 // signal は Node のシグナル名の文字列（"SIGKILL" 等）。NodeJS.Signals は使わない（core は Node の実行環境に依存しない。ADR 0003）
@@ -84,9 +91,6 @@ export function tailLines(text: string, n: number): string[] {
   if (lines.at(-1) === "") lines.pop();
   return lines.slice(-n);
 }
-
-// cli status が出す状態の語彙（order.md「知らせ方」。CLI は「セッションなし」も扱うので、サーバーの IntakeStatus を拡張する）
-export type SessionIntakeStatus = "none" | IntakeStatus;
 
 export type IntakeStatusReport = {
   status: SessionIntakeStatus;
