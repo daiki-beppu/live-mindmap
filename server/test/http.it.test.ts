@@ -20,6 +20,7 @@ import type { ServerLayers } from "../src/server.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { allowedMails } from "./fixtures/allowedMail.ts";
@@ -264,6 +265,35 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
     expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir, restarts: 1 });
   }));
 
+  // Issue #645: 語彙の溜まりは、始めたセッションの数を持つ。数えるのは開始（start）で、resume は同じセッションを続けるので増やさない
+  it.live("resume で続けたセッションは 1 セッションと数え、溜まりの始めたセッションの数が増えない。新しく start すると増える", () => Effect.gen(function* () {
+    const r = yield* resourceWithFakeHelpers([
+      { unexpectedExit: { afterMs: 50, exit: { code: 1, signal: null } } },
+      { connect: false }, { connect: false }, {}, // start の初回起動が落ち、2・3 回目の失敗で諦めて止まる。resume の起動し直しは成功する
+      {}, // 新しい start
+    ]);
+    const poolSessions = () => Effect.tryPromise(async () => JSON.parse(await readFile(vocabularyPoolPath(r.sessionsDir), "utf8")).sessions as number);
+    const post = (path: string, body?: string) => Effect.tryPromise(() => r.request("POST", path, body, undefined));
+    const statusIs = (status: string) => Effect.tryPromise(() => vi.waitFor(async () => {
+      expect(await (await r.request("GET", "/session/status", undefined, undefined)).json()).toMatchObject({ status });
+    }, { timeout: 10_000 }));
+
+    expect((yield* post("/session/start", '{"app":"us.zoom.xos","audio":false}')).status).toBe(200);
+    expect(yield* poolSessions()).toBe(1);
+    yield* statusIs("stopped");
+    expect(yield* poolSessions()).toBe(1); // resume の前に、すでに 1（このテストが数えた後の状態に届いている）
+
+    expect((yield* post("/session/resume")).status).toBe(200);
+    yield* statusIs("running");
+    expect(yield* poolSessions()).toBe(1);
+    expect((yield* post("/session/stop")).status).toBe(200);
+    expect(yield* poolSessions()).toBe(1);
+
+    expect((yield* post("/session/start", '{"app":"us.zoom.xos","audio":false}')).status).toBe(200);
+    expect(yield* poolSessions()).toBe(2);
+    expect((yield* post("/session/stop")).status).toBe(200);
+  }));
+
   it.live("非ローカル Origin の start は403で拒否され、ヘルパーを起動しない", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}]);
@@ -341,7 +371,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       });
       expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', undefined))).status).toBe(200);
-      const [dir] = yield* Effect.tryPromise(() => readdir(r.sessionsDir));
+      const [dir] = (yield* Effect.tryPromise(() => readdir(r.sessionsDir, { withFileTypes: true }))).filter((entry) => entry.isDirectory()).map((entry) => entry.name); // 語彙の溜まりのファイルは除く
       const running = yield* status();
       expect(running).toContain("動いている");
       expect(running).toContain(dir!);

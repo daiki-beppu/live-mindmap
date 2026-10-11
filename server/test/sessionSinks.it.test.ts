@@ -11,6 +11,8 @@ import { MapCapture } from "../src/capture.ts";
 import { DiffUpdatePaused, DiffUpdater, QUIET_MS, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type DiffInput, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import { POOL_DROP_AFTER_SESSIONS } from "../src/core/vocabularyPool.ts";
+import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { fakeReadings } from "./fixtures/readings.ts";
@@ -1878,5 +1880,264 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
         { surface: "港南店", romaji: null, source: "user" },
       ]);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+});
+
+// Issue #645: 過去のセッションの語彙を引き継ぐ。
+// セッションの置き場（LIVE_MINDMAP_SESSIONS = createDir に渡す sessionsDir）の中に、全セッションをまたぐ溜まりのファイルを 1 つ置く。
+// 開始（open）で溜まりの語を読みごと vocab の行（出どころ carried）として語彙に入れ（読みは作り直さない）、
+// 終了（exports）で、直した後の発言に出た語と利用者が足した語を溜まりへ入れ、共有画面に映っただけの語は入れない。
+// 最後に話されてから POOL_DROP_AFTER_SESSIONS セッション話されなかった語（足した語を除く）は落ちる。
+describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を引き継ぐ（Issue #645）", () => {
+  type Token = readonly [surface: string, romaji: string];
+  const utterance = (...tokens: Token[]) => {
+    let location = 0;
+    const words = tokens.map(([surface, romaji]) => {
+      const word = { surface, romaji, location, length: surface.length };
+      location += surface.length;
+      return word;
+    });
+    return { text: tokens.map(([surface]) => surface).join(""), words };
+  };
+  // 江南店に行きます（港南店の崩れ）／港南店に行きます（正しい表記）
+  const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
+  const correct = utterance(["港南店", "kounanten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
+  const READINGS = { 港南店: "kounanten", Zendesk: "zendesuku", 葛西: "kasai" };
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
+  const vocabLines = (dir: string) => logEvents(dir).filter((e) => e.type === "vocab");
+  const remarkLines = (dir: string) => logEvents(dir).filter((e) => e.type === "remark");
+  const readPool = (sessionsDir: string) => JSON.parse(readFileSync(vocabularyPoolPath(sessionsDir), "utf8"));
+  const poolWords = (sessionsDir: string): string[] => readPool(sessionsDir).words.map((w: { surface: string }) => w.surface).sort();
+  type Sink = Effect.Success<ReturnType<typeof openRecordingSink>>["sink"];
+  type Context = { sink: Sink; dir: string };
+
+  // セッションを 1 つ流す: 開く → script → 発言を締める → 書き出し（終了の処理）→ 閉じる。同じ sessionsDir で続けて呼ぶと、前のセッションの溜まりを引き継ぐ。
+  // exports: false は、終了の処理を通らなかったセッション（書き出しを呼ばずに閉じる）
+  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void>, options: { exports?: boolean } = {}) {
+    // セッションのフォルダ名は開始時刻（ミリ秒）。続けて開いても重ならないよう実時間で少し待つ
+    yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 3)));
+    return yield* Effect.scoped(Effect.gen(function* () {
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* script({ sink, dir });
+      yield* sink.drain;
+      yield* sink.flush;
+      yield* settle;
+      if (options.exports !== false) yield* sink.exports;
+      return dir;
+    }));
+  });
+
+  const showScreen = (sink: Sink, start: number, lines: ReadonlyArray<string>) => sink.screen({ start, image: jpeg, lines });
+  // 画面に映った語が語彙に入る（vocab の行が n 行になる）まで待つ
+  const awaitVocabLines = (dir: string, n: number) => settleUntil(() => existsSync(join(dir, "log.jsonl")) && vocabLines(dir).length === n);
+
+  // 港南店と Zendesk が画面に映り、港南店だけが話される（Zendesk は映っただけ）
+  const spokeOnlyKounan = ({ sink, dir }: Context) =>
+    Effect.gen(function* () {
+      yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
+      yield* awaitVocabLines(dir, 1);
+      yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
+    });
+  const idle = (_context: Context) => Effect.void;
+  const layerWith = (readings = fakeReadings(READINGS)) => ({ readings, layer: sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer, readings }) });
+
+  it.effect("1 回目に話された語は、2 回目の開始時に読みごと vocab の行（出どころ carried）で語彙に入り、読みは作り直さず、2 回目の崩れた発言が直る。ログには各セッションの番号が残る", () => {
+    const { readings, layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const first = yield* runSession(sessionsDir, spokeOnlyKounan);
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 }] });
+      expect(logEvents(first).filter((e) => e.type === "vocab-pool")).toEqual([expect.objectContaining({ session: 1 })]);
+      const callsAfterFirst = readings.calls.length;
+      expect(callsAfterFirst).toBe(1);
+
+      let second = "";
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        second = dir;
+        yield* awaitVocabLines(dir, 1);
+        expect(vocabLines(dir)[0]).toHaveProperty("at");
+        expect(vocabLines(dir)[0].words).toEqual([{ surface: "港南店", romaji: "kounanten", source: "carried" }]);
+        expect(readings.calls.length).toBe(callsAfterFirst); // 読みのサブコマンドは呼ばない
+        yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      }));
+
+      const lines = remarkLines(second);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].remark.text).toBe("港南店に行きます");
+      expect(lines[0].raw).toBe("江南店に行きます");
+      const types = logEvents(second).map((e) => e.type);
+      expect(types.indexOf("vocab")).toBeLessThan(types.indexOf("remark")); // 発言の行は vocab の行より後ろ
+      expect(logEvents(second).filter((e) => e.type === "vocab-pool")).toEqual([expect.objectContaining({ session: 2 })]);
+      expect(readings.calls.length).toBe(callsAfterFirst); // 最後まで、読みは作り直されない
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("1 回目に画面に映っただけで話されなかった語（Zendesk）は、溜まりに入らず、2 回目の語彙（carried）にも入らない", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, spokeOnlyKounan);
+      expect(poolWords(sessionsDir)).toEqual(["港南店"]);
+      const second = yield* runSession(sessionsDir, ({ dir }) => awaitVocabLines(dir, 1));
+      const carried = vocabLines(second).flatMap((e) => e.words);
+      expect(carried.map((w: { surface: string }) => w.surface)).toEqual(["港南店"]);
+      expect(poolWords(sessionsDir)).toEqual(["港南店"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("語彙で直して出た語（画面の語を崩れて話し、直った発言）も、溜まりに入る。映っただけの語は入らない", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
+        yield* awaitVocabLines(dir, 1);
+        yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
+      }));
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 }] });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("語彙に無い崩れた発言は直らないので、その語は話された語にならず、溜まりに入らない", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, ({ sink }) => sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words }));
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [] });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("利用者が足した語は、話されなくても溜まりへ残り、次のセッションの語彙に carried で入る。読みは作り直さない", () => {
+    const { readings, layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* sink.addUserVocabulary(["葛西"]);
+        yield* awaitVocabLines(dir, 1);
+      }));
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 }] });
+      const callsAfterFirst = readings.calls.length;
+
+      const second = yield* runSession(sessionsDir, ({ dir }) => awaitVocabLines(dir, 1));
+      expect(vocabLines(second)[0].words).toEqual([{ surface: "葛西", romaji: "kasai", source: "carried" }]);
+      expect(readings.calls.length).toBe(callsAfterFirst);
+      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [{ surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 }] });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("読みが作れなかった足した語も、溜まりに user・読みなし（romaji: null）で残り、次の開始時に carried・読みなしの vocab の行になる。読みは作り直さず、補正には使わない", () => {
+    const { readings, layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* sink.addUserVocabulary(["読めない語"]); // READINGS に無い語は読みが返らない
+        yield* awaitVocabLines(dir, 1);
+      }));
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "読めない語", romaji: null, source: "user", lastSpoken: 0 }] });
+      const callsAfterFirst = readings.calls.length;
+
+      const second = yield* runSession(sessionsDir, ({ dir }) => awaitVocabLines(dir, 1));
+      expect(vocabLines(second)[0].words).toEqual([{ surface: "読めない語", romaji: null, source: "carried" }]);
+      expect(readings.calls.length).toBe(callsAfterFirst);
+      expect(readPool(sessionsDir).words).toEqual([{ surface: "読めない語", romaji: null, source: "user", lastSpoken: 0 }]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("読み取得の途中で停止（exports）しても、読み取得が終わって vocab の行を書き終えてから溜まりを更新する。溜まりに spoken の語を足した語にすると user になる", () => {
+    const { readings, layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, spokeOnlyKounan);
+      expect(readPool(sessionsDir).words[0]).toMatchObject({ surface: "港南店", source: "spoken" });
+
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* awaitVocabLines(dir, 1);
+        readings.gate.current = yield* Deferred.make<void>(); // 読みの取得を保留する
+        yield* sink.addUserVocabulary(["港南店"]);
+        yield* sink.drain;
+        yield* sink.flush;
+        const stopping = yield* Effect.forkChild(sink.exports);
+        yield* settle;
+        expect(vocabLines(dir)).toHaveLength(1); // 足した語の記録はまだ無い
+        expect(readPool(sessionsDir).words[0]).toMatchObject({ source: "spoken" }); // 溜まりは記録を待っている
+        yield* Deferred.succeed(readings.gate.current, undefined);
+        yield* Fiber.join(stopping);
+        expect(vocabLines(dir).flatMap((e) => e.words)).toContainEqual({ surface: "港南店", romaji: "kounanten", source: "user" });
+      }), { exports: false });
+
+      expect(readPool(sessionsDir).words).toEqual([{ surface: "港南店", romaji: "kounanten", source: "user", lastSpoken: 1 }]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("読み取得の途中で停止（exports）しても、正しい表記で話された画面の語は、読み取得が終わるのを待って溜まりに spoken で入る", () => {
+    const { readings, layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        readings.gate.current = yield* Deferred.make<void>(); // 読みの取得を保留する
+        yield* showScreen(sink, 1, ["港南店"]);
+        yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+        const stopping = yield* Effect.forkChild(sink.exports);
+        yield* settle;
+        expect(vocabLines(dir)).toHaveLength(0);
+        expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [] });
+        yield* Deferred.succeed(readings.gate.current, undefined);
+        yield* Fiber.join(stopping);
+      }), { exports: false });
+
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 }] });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("話された語は、その後 POOL_DROP_AFTER_SESSIONS セッション話されないと溜まりから落ちる。足した語は同じだけ過ぎても落ちない（carried で入るだけでは話されたことにならない）", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, (context) => Effect.gen(function* () {
+        yield* context.sink.addUserVocabulary(["Zendesk"]);
+        yield* spokeOnlyKounan(context);
+        yield* awaitVocabLines(context.dir, 2);
+      }));
+      expect(poolWords(sessionsDir)).toEqual(["Zendesk", "港南店"]);
+
+      for (let n = 2; n <= POOL_DROP_AFTER_SESSIONS; n++) yield* runSession(sessionsDir, idle);
+      // セッション 20 の終了後: 最後に話されてから 19 セッションなので、まだ残る
+      expect(readPool(sessionsDir).sessions).toBe(POOL_DROP_AFTER_SESSIONS);
+      expect(poolWords(sessionsDir)).toEqual(["Zendesk", "港南店"]);
+
+      yield* runSession(sessionsDir, idle); // セッション 21: 最後に話されてから 20 セッション
+      expect(readPool(sessionsDir).sessions).toBe(POOL_DROP_AFTER_SESSIONS + 1);
+      expect(poolWords(sessionsDir)).toEqual(["Zendesk"]); // 話された語だけが落ち、足した語は残る
+      expect(readPool(sessionsDir).words[0]).toMatchObject({ surface: "Zendesk", source: "user" });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("終了の処理を通らなかったセッションは、始めたセッションの数だけが増え、話された語は溜まりに入らない（cli restore が組み直す前提）", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const dir = yield* runSession(sessionsDir, spokeOnlyKounan, { exports: false });
+      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [] });
+      expect(logEvents(dir).filter((e) => e.type === "vocab-pool")).toEqual([expect.objectContaining({ session: 1 })]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("溜まりのファイルが壊れていても、セッションは止まらず（発言は残り、書き出しも通る）、警告を 1 行以上出し、語彙には何も入れない", () => {
+    const { layer } = layerWith();
+    const warned = collectingConsole();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      writeFileSync(vocabularyPoolPath(sessionsDir), "{壊れた");
+      const dir = yield* runSession(sessionsDir, ({ sink }) => sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words }));
+      expect(remarkLines(dir).map((e) => e.remark.text)).toEqual(["江南店に行きます"]);
+      expect(vocabLines(dir)).toEqual([]);
+      expect(existsSync(join(dir, "export.json"))).toBe(true);
+      expect(warned.errors.length).toBeGreaterThan(0);
+    }).pipe(Effect.provideService(Console.Console, warned.service), Effect.provide(layer));
   });
 });

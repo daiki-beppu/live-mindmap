@@ -21,6 +21,9 @@ import { startedServer } from "./fixtures/startedServer.ts";
 
 type Message = { message: { content: unknown } };
 type QueryRecord = { model: string; messages: Message[]; closed: number };
+// ライブ開始後の sessionsDir には、セッションのフォルダのほかに、全セッション共通の語彙の溜まりのファイルがある。セッションのフォルダだけを数える
+const sessionFolders = (sessionsDir: string) => readdirSync(sessionsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+
 const sdk = vi.hoisted(() => ({ created: [] as QueryRecord[], responses: [] as DiffOutput[], afterMessage: () => {} }));
 
 // 実装前の通常依存経路でも、本物のモデルを呼ばない。
@@ -141,7 +144,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     unavailable = false;
     const accepted = yield* post();
     expect(accepted.status).toBe(200);
-    expect(readdirSync(sessionsDir)).toHaveLength(1);
+    expect(sessionFolders(sessionsDir)).toHaveLength(1);
     expect(helpers.calls).toHaveLength(1);
     expect(load).toHaveBeenCalledTimes(2);
     expect(sdk.created).toEqual([]);
@@ -194,7 +197,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const allowed = yield* post({ name: "claude", route: "claude", model: "claude-sonnet-5-5", local: false });
     expect(allowed.status).toBe(200);
     expect(helpers.calls).toHaveLength(1);
-    expect(readdirSync(sessionsDir)).toHaveLength(1);
+    expect(sessionFolders(sessionsDir)).toHaveLength(1);
   }));
 
   it.effect("play --model の選択が SDK と新しい開始ログへ届く", () => Effect.gen(function* () {

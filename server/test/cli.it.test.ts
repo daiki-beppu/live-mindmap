@@ -22,6 +22,7 @@ import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
@@ -989,6 +990,104 @@ describe("CLI", () => {
       yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
       expect(deps.stdout.join("").trim()).toBe(session);
     }));
+
+    // Issue #645: 終了の処理を通らなかったセッションも、restore で組み直したときに語彙の溜まりの更新に含める。
+    // 溜まりの更新は、ログの vocab-pool の行（そのセッションの番号）と vocab・remark の行から導く。ログは書き足さない
+    describe("語彙の溜まり（Issue #645）", () => {
+      const SESSION_NAME = "2026-10-01T00-00-00.000Z";
+      const crashedLog = [
+        { type: "start", title: "定例" },
+        { type: "vocab-pool", session: 3 },
+        { type: "vocab", words: [
+          { surface: "港南店", romaji: "kounanten", source: "screen" },
+          { surface: "Zendesk", romaji: "zendesuku", source: "screen" },
+          { surface: "葛西", romaji: "kasai", source: "user" },
+        ] },
+        // 港南店は直して出た語（直す前は江南店）。Zendesk は映っただけで話されない
+        { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "港南店に行きます" }, raw: "江南店に行きます" },
+      ];
+      const writeLog = (root: string, lines: Record<string, unknown>[]) => {
+        const session = join(root, SESSION_NAME);
+        mkdirSync(session, { recursive: true });
+        writeFileSync(join(session, "log.jsonl"), lines.map((line, i) => JSON.stringify({ at: `2026-10-01T00:00:${String(i).padStart(2, "0")}.000Z`, ...line })).join("\n") + "\n");
+        return session;
+      };
+      const writePool = (root: string, pool: unknown) => writeFileSync(vocabularyPoolPath(root), JSON.stringify(pool));
+      const bySurface = <T extends { surface: string }>(pool: { words: T[] }) => [...pool.words].sort((a, b) => a.surface.localeCompare(b.surface, "ja"));
+
+      it.effect("組み直したセッションの、話された語（直して出た語を含む）と足した語が溜まりに入り、映っただけの語は入らない。ログは書き足さない", () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const session = writeLog(root, crashedLog);
+        writePool(root, { sessions: 3, words: [] }); // 開始時に溜まりが数えたところまで
+        const logBefore = readFileSync(join(session, "log.jsonl"), "utf8");
+        const deps = dependencies(root);
+
+        yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+
+        const pool = JSON.parse(readFileSync(vocabularyPoolPath(root), "utf8"));
+        expect(pool.sessions).toBe(3);
+        expect(bySurface(pool)).toEqual(bySurface({ words: [
+          { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 3 },
+          { surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 },
+        ] }));
+        expect(readFileSync(join(session, "log.jsonl"), "utf8")).toBe(logBefore);
+        expect(existsSync(join(session, "export.json"))).toBe(true); // 今までどおりマップも戻す
+      }));
+
+      it.effect("同じセッションを 2 回 restore しても、溜まりは同じ（始めたセッションの数も増えない）", () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        writeLog(root, crashedLog);
+        writePool(root, { sessions: 3, words: [] });
+        const deps = dependencies(root);
+
+        yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+        const once = readFileSync(vocabularyPoolPath(root), "utf8");
+        expect(JSON.parse(once).words).toHaveLength(2); // 1 回目で入っている
+        yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+
+        expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(once);
+      }));
+
+      it.effect("溜まりに無かった語は、読みもログの vocab の行から入る（溜まりのファイルが無くても、ログの番号を始めたセッションの数にする）", () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        writeLog(root, crashedLog);
+
+        yield* runCli(["restore"]).pipe(Effect.provide(dependencies(root).layer));
+
+        const pool = JSON.parse(readFileSync(vocabularyPoolPath(root), "utf8"));
+        expect(pool.sessions).toBe(3);
+        expect(Object.fromEntries(pool.words.map((w: { surface: string; romaji: string }) => [w.surface, w.romaji]))).toEqual({ 港南店: "kounanten", 葛西: "kasai" });
+      }));
+
+      it.effect("vocab-pool の行が無いログ（play のフォルダ・古いログ）を restore しても、溜まりを作らず、あるファイルも変えない", () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const deps = dependencies(root);
+        const { session } = yield* playInto(deps, adoptionScript);
+        expect(readFileSync(join(session, "log.jsonl"), "utf8")).not.toContain("vocab-pool");
+
+        yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+        expect(existsSync(vocabularyPoolPath(root))).toBe(false);
+
+        const pool = JSON.stringify({ sessions: 5, words: [{ surface: "古い", romaji: "furui", source: "spoken", lastSpoken: 4 }] });
+        writeFileSync(vocabularyPoolPath(root), pool);
+        yield* runCli(["restore"]).pipe(Effect.provide(deps.layer));
+        expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(pool);
+      }));
+
+      it.effect("play は溜まりを読まず、書き換えない（play で作ったセッションに vocab-pool の行も carried の行も無い）", () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const pool = JSON.stringify({ sessions: 5, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 4 }] });
+        writePool(root, JSON.parse(pool));
+        const deps = dependencies(root);
+
+        const { session } = yield* playInto(deps, adoptionScript);
+
+        expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(pool);
+        const log = readFileSync(join(session, "log.jsonl"), "utf8");
+        expect(log).not.toContain("carried");
+        expect(log).not.toContain("港南店");
+      }));
+    });
 
     it.effect("セッションがなければタグ付きの失敗にする", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;

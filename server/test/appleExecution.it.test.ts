@@ -147,7 +147,8 @@ describe("apple を使う開始・再生の配線", () => {
     expect(process.state).toMatchObject({ opened: 1, closed: 0 });
     const stop = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/stop`, { method: "POST" }));
     expect(stop.status).toBe(200);
-    const directories = readdirSync(join(root, "sessions"));
+    // ライブ開始後の置き場には、全セッション共通の語彙の溜まりのファイルもある。セッションのフォルダだけを数える
+    const directories = readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     expect(directories).toHaveLength(1);
     expect(stdout.join("\n").trim()).toBe(join(root, "sessions", directories[0]!));
     verifyMap(join(root, "sessions", directories[0]!));

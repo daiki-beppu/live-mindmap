@@ -1,12 +1,14 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, Effect, FileSystem, Layer, Ref, Scope } from "effect";
+import { Context, Effect, FiberSet, FileSystem, Layer, Ref, Scope } from "effect";
+import { dirname } from "node:path";
 import { MapCapture } from "./capture.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
 import { correctRemark, DiffUpdater, screenCandidates, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
@@ -95,7 +97,6 @@ export class SessionSinks extends Context.Service<SessionSinks, {
         }),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
         open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer }) {
-          const scope = yield* Effect.scope;
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
@@ -111,6 +112,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             diffUpdate,
             onDiff: relay.flushAll,
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
+          // 語彙追加（読み取得つき）の処理の集まり。ログを開いた後に作るので、後始末（登録の逆順）ではログを閉じる前に中断される。
+          // exports が溜まりを更新する前に、書き終わるのを待つために使う
+          const vocabularyAdds = yield* FiberSet.make();
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
           const count = yield* Ref.make(0);
           // 語彙（読みのある語だけ）。セッションの中では減らさない。出口は発言を締めるたびにその時点の語彙を読む
@@ -132,6 +136,20 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const screenVocabulary = yield* Ref.make<{ seen: ReadonlyMap<string, number>; requested: ReadonlySet<string> }>({ seen: new Map(), requested: new Set() });
           // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
           const screenCount = yield* Ref.make(0);
+
+          // 開始時に、全セッションをまたぐ溜まり（セッションの置き場の直下）の語を読みごと語彙に入れる（Issue #645）。読みは作り直さない。
+          // 番号の行（終了時と cli restore がこのセッションの番号を知る）→ carried の vocab の行の順に書き、open が返る前に語彙へ足す
+          // （最初の発言から効く。直した発言の行は必ず vocab の行より後ろに並ぶ）。溜まりが使えないときは警告だけ出して何もしない
+          const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
+          if (started !== undefined) {
+            yield* appendRecordedLog({ type: "vocab-pool", session: started.session });
+            if (started.words.length > 0) {
+              const carried = started.words.map((w) => ({ surface: w.surface, romaji: w.romaji, source: "carried" as const }));
+              yield* appendRecordedLog({ type: "vocab", words: carried });
+              yield* Ref.set(vocabulary, started.words.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji }])));
+              yield* Ref.update(screenVocabulary, (state) => ({ ...state, requested: new Set([...state.requested, ...started.words.map((w) => w.surface)]) }));
+            }
+          }
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop, settling.stop));
 
@@ -190,7 +208,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                   const fresh = out.candidates.filter((c) => !state.requested.has(c));
                   return [fresh, { seen: out.seen, requested: new Set([...state.requested, ...fresh]) }];
                 });
-                if (news.length > 0) yield* Effect.forkIn(addVocabulary(news, "screen"), scope, { startImmediately: true });
+                if (news.length > 0) yield* FiberSet.run(vocabularyAdds, addVocabulary(news, "screen"), { startImmediately: true });
               }),
             screenOff: (off) => session.pushScreenOff(off),
             addUserVocabulary: (words) => {
@@ -198,7 +216,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               if (surfaces.length === 0) return Effect.void;
               return Effect.andThen(
                 Ref.update(screenVocabulary, (state) => ({ ...state, requested: new Set([...state.requested, ...surfaces]) })),
-                Effect.asVoid(Effect.forkIn(addVocabulary(surfaces, "user"), scope, { startImmediately: true })),
+                Effect.asVoid(FiberSet.run(vocabularyAdds, addVocabulary(surfaces, "user"), { startImmediately: true })),
               );
             },
             drain: settling.drain,
@@ -207,7 +225,12 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             appendLog: appendRecordedLog,
             flush: session.flush,
             // テキストの 3 形式を書けないのは予期しない失敗なので defect にする（撮影・HTML の失敗は writeExportsAndCapture の中で警告にする）
-            exports: Effect.flatMap(session.snapshot, (snapshot) => writeExportsAndCapture(dir, snapshot, errorMessage)).pipe(
+            // 先に溜まりを更新する（ログから導くので、log.jsonl・export.json は書き換えない）。
+            // 読み取得中の語彙追加は vocab の行を書き終えてから溜まりに入れる（待たないと、足した語・画面の語が溜まりに入らない）
+            exports: Effect.andThen(
+              Effect.andThen(FiberSet.awaitEmpty(vocabularyAdds), updatePoolFromSession(dir, dirname(dir))),
+              Effect.flatMap(session.snapshot, (snapshot) => writeExportsAndCapture(dir, snapshot, errorMessage)),
+            ).pipe(
               Effect.provideContext(exportServices),
               Effect.orDie,
             ),

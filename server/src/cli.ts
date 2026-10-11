@@ -59,6 +59,7 @@ import { withReplayCorrection } from "./replayCorrection.ts";
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { BrokenLogLine, readLogLines } from "./logLines.ts";
+import { updatePoolFromLog } from "./vocabularyPool.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
@@ -684,9 +685,11 @@ const restore = Command.make(
     const exported = yield* session.exportJson;
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(exported)).pipe(orFileFailed);
+    // 終了の処理を通らなかったセッションも、組み直した語を語彙の溜まりの更新に含める（ログの番号の行が無いセッションは何もしない）
+    yield* updatePoolFromLog(sessionsDir, events);
     yield* write(`${dir}\n`);
   }, Effect.scoped),
-).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す"));
+).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す。終了の処理を通らなかったセッションの語は、語彙の溜まりにも入れる"));
 
 const review = Command.make(
   "review",

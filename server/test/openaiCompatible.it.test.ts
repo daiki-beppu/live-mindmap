@@ -133,7 +133,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     writeConfig("synthetic-model");
     yield* runCli(["play", fixture, "--model", "compatible"]).pipe(Effect.provide(deps.layer));
     expect(listener.open).toHaveBeenCalledOnce();
-    expect(readdirSync(join(root, "sessions"))).toHaveLength(1);
+    expect(readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory())).toHaveLength(1); // 語彙の溜まりのファイルは数えない
   }));
 
   it.live.each([undefined, "SYNTHETIC_TRANSFER_KEY"])("ライブ開始は未認可の読取・通信を防ぎ、認可後のモデル拒否と正常開始を保持する（apiKeyEnv=%s）", (apiKeyEnv) => Effect.gen(function* () {
@@ -204,7 +204,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     const allowed = yield* post("synthetic-model", authorized);
     expect(allowed.status).toBe(200);
     expect(launches).toHaveLength(1);
-    expect(readdirSync(join(root, "sessions"))).toHaveLength(1);
+    expect(readdirSync(join(root, "sessions"), { withFileTypes: true }).filter((entry) => entry.isDirectory())).toHaveLength(1); // 語彙の溜まりのファイルは数えない
     yield* Effect.promise(() => new Promise<void>((resolve, reject) => {
       if (snapshots.length) return resolve();
       const timeout = setTimeout(() => reject(new Error("正常開始の初期マップが届きません")), 2000);

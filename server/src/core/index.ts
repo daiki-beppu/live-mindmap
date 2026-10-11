@@ -42,6 +42,7 @@ export {
   StartEvent,
   Track,
   VocabEvent,
+  VocabPoolEvent,
 } from "./session.ts";
 export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
@@ -49,4 +50,5 @@ export * from "./speaking.ts";
 export * from "./topic.ts";
 export * from "./transcript.ts";
 export * from "./viewingShare.ts";
+export * from "./vocabularyPool.ts";
 export * from "./words.ts";

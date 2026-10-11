@@ -33,21 +33,26 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
   const readingOf = new Map<string, string>();
   for (const w of words) if (w.romaji !== null && !readingOf.has(w.surface)) readingOf.set(w.surface, w.romaji);
 
-  const userSurfaces = [...new Set(words.filter((w) => w.source === "user").map((w) => w.surface))];
+  // 最初の語彙は、記録した利用者の語と引き継いだ語（Issue #645）。画面の語は screen の lines から取り直す
+  const sourceSurfaces = (source: "user" | "carried") => [...new Set(words.filter((w) => w.source === source).map((w) => w.surface))];
+  const userSurfaces = sourceSurfaces("user");
+  const carriedSurfaces = sourceSurfaces("carried");
+  const initialSurfaces = [...new Set([...carriedSurfaces, ...userSurfaces])];
   const usable = (surfaces: ReadonlyArray<string>): VocabularyWord[] =>
     surfaces.flatMap((surface) => {
       const romaji = readingOf.get(surface);
       return romaji === undefined ? [] : [{ surface, romaji }];
     });
 
-  const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>(usable(userSurfaces));
+  const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>(usable(initialSurfaces));
   const screenState = yield* Ref.make<{ seen: ReadonlyMap<string, number>; requested: ReadonlySet<string> }>({
     seen: new Map(),
-    requested: new Set(userSurfaces),
+    requested: new Set(initialSurfaces),
   });
 
-  const record = (surfaces: ReadonlyArray<string>, source: "user" | "screen") =>
+  const record = (surfaces: ReadonlyArray<string>, source: "user" | "screen" | "carried") =>
     appendLog({ type: "vocab", words: surfaces.map((surface) => ({ surface, romaji: readingOf.get(surface) ?? null, source })) });
+  if (carriedSurfaces.length > 0) yield* record(carriedSurfaces, "carried");
   if (userSurfaces.length > 0) yield* record(userSurfaces, "user");
 
   return {
