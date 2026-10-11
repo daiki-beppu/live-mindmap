@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { foldkit } from "@foldkit/vite-plugin";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { configDefaults } from "vitest/config";
@@ -10,8 +11,9 @@ const headers = { "Content-Security-Policy": "connect-src 'self'" };
 const IT = "**/*.it.test.?(c|m)[jt]s?(x)";
 const HEAVY = "**/*.heavy.test.?(c|m)[jt]s?(x)";
 
-export default defineConfig({
-  plugins: [react()],
+// foldkit() の view-identity 変換は全モジュールの関数の返り値を包み import を足すので、vi.hoisted を使う unit テストが壊れる。vitest の mode（"test"）では外す
+export default defineConfig(({ mode }) => ({
+  plugins: [react(), ...(mode === "test" ? [] : [foldkit()])],
   // 層はファイル名の接尾辞で決める: foo.test.ts = unit、foo.it.test.ts = 軽い IT、foo.heavy.test.ts = 重い IT（web の typecheck が server/scripts/check-test-layers.ts で、unit が本物の資源を直接 import していないか点検する）
   test: {
     projects: [
@@ -22,4 +24,4 @@ export default defineConfig({
   },
   server: { headers, proxy: { "/ws": { target: `ws://127.0.0.1:${port}`, ws: true, rewrite: () => "/" } } },
   preview: { headers },
-});
+}));
