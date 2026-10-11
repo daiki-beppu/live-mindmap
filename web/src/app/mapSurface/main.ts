@@ -1,11 +1,11 @@
-// マップの表示面（Issue #814）: Foldkit のプログラム。ノード（絶対配置の div）・エッジ（SVG のベジェ）・ビューポート（transform）を素で描く。
+// マップの表示面（Issue #814・#816）: Foldkit のプログラム。ノード（絶対配置の div）・エッジ（SVG のベジェ）・ビューポート（transform）を素で描く。
 // 配置（layout）・畳み（foldView）・全体を収める（fitViewport）は既存の純粋な関数で、view が毎回、Model の値から導く（Model には持たない）
 import { HashMap, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
-import { edgeDots, fitViewport, OVERVIEW_MIN_ZOOM, scrollAlongAxis, scrollAxis, scrollPanDelta, USER_MAX_ZOOM, USER_MIN_ZOOM, type Rect, type Viewport } from "../../camera.ts";
+import { CLICK_ZOOM_FACTOR, edgeDots, fitViewport, OVERVIEW_MIN_ZOOM, pinchZoomFactor, scrollAlongAxis, scrollAxis, scrollPanDelta, USER_MAX_ZOOM, USER_MIN_ZOOM, zoomAtPoint, type Rect, type Viewport } from "../../camera.ts";
 import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
 import { foldView, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
@@ -21,6 +21,7 @@ import { ObserveMapSurface } from "./mount.ts";
 // 表示する位置と目標の位置は Model に持たず、displayedPositions が motion と目標から毎回導く
 // 見る状態（Issue #818）: viewing は選んだノードと人が開いた・畳んだ・解いた集合（カメラの状態も持つが、カメラの動きは後の issue）。意味は reduceViewing が決め、update が Message から出来事を作って渡す
 // パンの状態: pan はフィットした位置に足す画面上の平行移動（倍率に依らない）。pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
+// ズームの状態（Issue #816）: zoomScale は全体を収めた倍率に掛ける倍率（初期 1）、gestureScale は Safari の gesture の前回の累積 scale（update が前回との比を求めるのに使う。始まりの前・外れたら None）。ビューポートは viewportOf が毎回導く
 export const Model = Schema.Struct({
   mode: Schema.Literals(["still", "live"]),
   snapshot: Snapshot,
@@ -33,6 +34,8 @@ export const Model = Schema.Struct({
   scrollAxisLock: Schema.Option(Schema.Struct({ axis: Schema.Literals(["x", "y"]), at: Schema.Finite })),
   motion: Schema.Option(Schema.Struct({ start: Schema.HashMap(Schema.String, Schema.Struct({ x: Schema.Finite, y: Schema.Finite })), elapsedMs: Schema.Finite })),
   viewing: ViewingState,
+  zoomScale: Schema.Finite,
+  gestureScale: Schema.Option(Schema.Finite),
 });
 export type Model = typeof Model.Type;
 
@@ -48,6 +51,8 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   scrollAxisLock: Option.none(),
   motion: Option.none(),
   viewing: INITIAL_VIEWING,
+  zoomScale: 1,
+  gestureScale: Option.none(),
 });
 
 // 補間の長さ（ms）。web/src/useAnimatedPositions.ts の DURATION_MS と同じ（React 版の部品には触らないので、ここに別に置く）
@@ -122,10 +127,38 @@ const awayFrom = (press: { x: number; y: number }, x: number, y: number): boolea
 const startsPan = (button: number, ctrlKey: boolean): boolean => button <= 1 && !ctrlKey;
 // MouseEvent.buttons のビットは主=1・右=2・中=4 で、button の番号（主=0・中=1）とは並びが違う。押したボタンに対応するビットを返す
 const buttonsBit = (button: number): number => (button === 1 ? 4 : 1);
-// ズームの経路の wheel（Ctrl 付きのピンチ、Mac の ⌘ だけ）。この issue ではパンしない
-const isZoomWheel = (ctrlKey: boolean, metaKey: boolean, isMac: boolean): boolean => ctrlKey || (isMac && metaKey);
 
 const panBy = (model: Model, x: number, y: number): Model => modifyFields(model, { pan: (pan) => ({ x: pan.x + x, y: pan.y + y }) });
+
+// 全体を収めた位置（パンもズームも足す前）。測れたノードだけで収める
+const fittedOf = (model: Model): Viewport => {
+  const shown = shownNodesOf(model);
+  const heights = heightsOf(model);
+  const positions = displayedPositions(model);
+  const rects = shown.filter((n) => HashMap.has(model.nodeHeights, n.id)).map((n): Rect => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights[n.id]! }));
+  return Option.match(model.size, { onNone: () => null, onSome: (size) => fitViewport(rects, size, minZoomOf(model), USER_MAX_ZOOM) }) ?? IDENTITY;
+};
+
+// 倍率の下限。still は全体を見るので OVERVIEW_MIN_ZOOM、live は USER_MIN_ZOOM
+const minZoomOf = (model: Model): number => (model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM);
+
+// 見せるビューポート。全体を収めた位置に zoomScale を掛け、パン（画面上の平行移動）を足す。view も update のズームも同じ値を使う。
+// zoomScale は操作した時点のフィット倍率との比なので、フィット倍率が変わると倍率が範囲外に出うる。実効倍率を範囲に収め、位置もその実効倍率から導く
+export const viewportOf = (model: Model): Viewport => {
+  const fitted = fittedOf(model);
+  const zoom = Math.min(USER_MAX_ZOOM, Math.max(minZoomOf(model), fitted.zoom * model.zoomScale));
+  const scale = zoom / fitted.zoom;
+  return { x: fitted.x * scale + model.pan.x, y: fitted.y * scale + model.pan.y, zoom };
+};
+
+// 画面上の point（表示面の左上が原点）を中心に倍率を factor 倍する。結果は zoomAtPoint（0.5〜2 に収める）で、見せるビューポートがそれと一致するよう zoomScale と pan に書き戻す。still はズームしない
+const zoomBy = (model: Model, point: { x: number; y: number }, factor: number): Model => {
+  if (model.mode !== "live") return model;
+  const fitted = fittedOf(model);
+  const next = zoomAtPoint(viewportOf(model), point, factor);
+  const zoomScale = next.zoom / fitted.zoom;
+  return modifyFields(model, { zoomScale: () => zoomScale, pan: () => ({ x: next.x - fitted.x * zoomScale, y: next.y - fitted.y * zoomScale }) });
+};
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
@@ -184,7 +217,7 @@ export const update = (model: Model, message: Message): Return =>
     },
     ClickedFoldDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "foldDot", id: nodeId }) }),
     ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
-    WheeledMapSurface: ({ deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
+    WheeledMapSurface: ({ x, y, deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
       if (model.mode !== "live") return { model };
       // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方の軸だけを、生の量で動かす。軸は入力の時刻で決める
       if ((metaKey || ctrlKey) && shiftKey) {
@@ -193,9 +226,20 @@ export const update = (model: Model, message: Message): Return =>
         const moved = scrollAlongAxis(IDENTITY, lock.axis, { x: deltaX, y: deltaY });
         return { model: modifyFields(panBy(model, moved.x, moved.y), { scrollAxisLock: () => Option.some(lock) }) };
       }
-      if (isZoomWheel(ctrlKey, metaKey, model.isMac)) return { model };
+      // Ctrl 付き（トラックパッドのピンチ）はポインタの位置を中心にズームする。Mac の ⌘ だけはパンもズームもしない
+      if (ctrlKey) return { model: zoomBy(model, { x, y }, pinchZoomFactor({ deltaY, deltaMode, ctrlKey }, model.isMac)) };
+      if (model.isMac && metaKey) return { model };
       const moved = scrollPanDelta({ deltaX, deltaY, deltaMode, shiftKey }, model.isMac);
       return { model: panBy(model, moved.x, moved.y) };
+    },
+    // ⌘/Ctrl＋click: 押した点を中心に拡大する（Alt 付きは縮小）。ノードの選択には届かない（Mount が capture で止める）
+    ClickedMapSurfaceWithModifier: ({ x, y, altKey }) => ({ model: zoomBy(model, { x, y }, altKey ? 1 / CLICK_ZOOM_FACTOR : CLICK_ZOOM_FACTOR) }),
+    StartedMapSurfaceGesture: () => ({ model: modifyFields(model, { gestureScale: () => Option.none() }) }),
+    // 累積の scale を前回との比にして掛ける。始まりが無ければ前回を 1 とみなす
+    ChangedMapSurfaceGesture: ({ scale, x, y }) => {
+      if (model.mode !== "live") return { model };
+      const factor = scale / Option.getOrElse(model.gestureScale, () => 1);
+      return { model: modifyFields(zoomBy(model, { x, y }, factor), { gestureScale: () => Option.some(scale) }) };
     },
   });
 
@@ -251,13 +295,9 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const shown = view_?.nodes ?? model.snapshot.nodes;
   const heights = heightsOf(model);
   const positions = displayedPositions(model);
-  // 測れたノードだけ見せる。エッジは両端が測れてから描き、全体を収める箱にも測れたノードだけを使う
+  // 測れたノードだけ見せる。エッジは両端が測れてから描く
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
-  const rects = measured.map((n): Rect => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights[n.id]! }));
-  const minZoom = model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM;
-  const fitted = Option.match(model.size, { onNone: () => null, onSome: (size) => fitViewport(rects, size, minZoom, USER_MAX_ZOOM) }) ?? IDENTITY;
-  // パンは画面上の平行移動で、フィットした位置に足す（倍率は変えない）
-  const viewport: Viewport = { ...fitted, x: fitted.x + model.pan.x, y: fitted.y + model.pan.y };
+  const viewport = viewportOf(model);
 
   const edges = measured.flatMap((child) => {
     const parent = child.parent === null ? undefined : measured.find((n) => n.id === child.parent);

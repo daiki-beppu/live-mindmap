@@ -28,6 +28,8 @@ export const Model = Schema.Struct({
     scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
     motion: MapSurface.Model.fields.motion,
     viewing: MapSurface.Model.fields.viewing,
+    zoomScale: MapSurface.Model.fields.zoomScale,
+    gestureScale: MapSurface.Model.fields.gestureScale,
   }),
 });
 export type Model = typeof Model.Type;

@@ -99,6 +99,15 @@ export function zoomAtPoint(viewport: Viewport, point: { x: number; y: number },
   return { x: point.x - wx * zoom, y: point.y - wy * zoom, zoom };
 }
 
+// ピンチ（Ctrl 付きの wheel）の倍率（@xyflow の wheelDelta と同じ式）。今の倍率に 2^(-deltaY × 係数 × Mac の Ctrl なら 10) を掛ける。係数は deltaMode が行（1）なら 0.05、ページ（2）なら 1、ピクセル（0）なら 0.002
+const PINCH_DELTA_FACTOR = { line: 0.05, page: 1, pixel: 0.002 };
+const PINCH_MAC_CTRL_MULTIPLIER = 10;
+
+export function pinchZoomFactor(wheel: { deltaY: number; deltaMode: number; ctrlKey: boolean }, isMac: boolean): number {
+  const perDelta = wheel.deltaMode === 1 ? PINCH_DELTA_FACTOR.line : wheel.deltaMode ? PINCH_DELTA_FACTOR.page : PINCH_DELTA_FACTOR.pixel;
+  return 2 ** (-wheel.deltaY * perDelta * (isMac && wheel.ctrlKey ? PINCH_MAC_CTRL_MULTIPLIER : 1));
+}
+
 export type ScrollAxisLock = { axis: "x" | "y"; at: number };
 
 // スクロールで動かす軸。前回から SCROLL_AXIS_RESET_MS 未満なら前回の軸を保ち、それ以外は大きい方の軸（同じ大きさなら y）で決める。at は入力の時刻（ms）

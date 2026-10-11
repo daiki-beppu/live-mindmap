@@ -17,6 +17,7 @@ import {
   nodeRect,
   overviewViewport,
   panViewport,
+  pinchZoomFactor,
   revealViewport,
   scrollAlongAxis,
   screenPoint,
@@ -802,5 +803,40 @@ describe("fitViewport: @xyflow の fitView（padding 0.1）と同じ式で全体
     const size = Object.freeze({ width: 800, height: 600 });
     expect(() => fitViewport(rects, size, 0.5, 2)).not.toThrow();
     expect(rects).toEqual(column);
+  });
+});
+
+describe("pinchZoomFactor: Ctrl＋ホイール（ピンチ）の倍率（@xyflow の wheelDelta と同じ式）", () => {
+  // 2 ** (-deltaY × (deltaMode 1 なら 0.05、他の非 0 なら 1、0 なら 0.002) × (Mac で Ctrl 付きなら 10))。deltaY が負（指を広げる）で拡大
+  const pinch = (over: Partial<{ deltaY: number; deltaMode: number; ctrlKey: boolean }> = {}) => ({ deltaY: 0, deltaMode: 0, ctrlKey: true, ...over });
+
+  it("pixel 単位（deltaMode 0）は 0.002 倍。deltaY -100 で 2 の 0.2 乗、+100 で 2 の -0.2 乗", () => {
+    expect(pinchZoomFactor(pinch({ deltaY: -100 }), false)).toBeCloseTo(2 ** 0.2, 9);
+    expect(pinchZoomFactor(pinch({ deltaY: 100 }), false)).toBeCloseTo(2 ** -0.2, 9);
+  });
+
+  it("deltaY が 0 なら倍率は 1", () => {
+    expect(pinchZoomFactor(pinch(), false)).toBe(1);
+  });
+
+  it("行単位（deltaMode 1）は 0.05 倍。deltaY -4 で 2 の 0.2 乗", () => {
+    expect(pinchZoomFactor(pinch({ deltaY: -4, deltaMode: 1 }), false)).toBeCloseTo(2 ** 0.2, 9);
+  });
+
+  it("ページ単位（deltaMode 2）は 1 倍。deltaY -0.5 で 2 の 0.5 乗", () => {
+    expect(pinchZoomFactor(pinch({ deltaY: -0.5, deltaMode: 2 }), false)).toBeCloseTo(2 ** 0.5, 9);
+  });
+
+  it("Mac で Ctrl 付きなら 10 倍。deltaY -10 で 2 の 0.2 乗。Mac でなければ 10 倍しない", () => {
+    expect(pinchZoomFactor(pinch({ deltaY: -10 }), true)).toBeCloseTo(2 ** 0.2, 9);
+    expect(pinchZoomFactor(pinch({ deltaY: -10 }), false)).toBeCloseTo(2 ** 0.02, 9);
+  });
+
+  it("Mac でも Ctrl が付いていなければ 10 倍しない", () => {
+    expect(pinchZoomFactor(pinch({ deltaY: -10, ctrlKey: false }), true)).toBeCloseTo(2 ** 0.02, 9);
+  });
+
+  it("行単位でも Mac の Ctrl 付きは 10 倍が重なる。deltaY -0.4・deltaMode 1 で 2 の 0.2 乗", () => {
+    expect(pinchZoomFactor(pinch({ deltaY: -0.4, deltaMode: 1 }), true)).toBeCloseTo(2 ** 0.2, 9);
   });
 });
