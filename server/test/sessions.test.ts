@@ -363,6 +363,54 @@ const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>)
 
 const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, model: defaultClaude, ...input });
 
+describe("依存導入の予約", () => {
+  it.effect("複数の導入の全予約が解放されるまで開始せず、会議中は予約を拒否する", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), Layer.succeed(SessionSinks, fake.sinks));
+    const scopes = [yield* Scope.make(), yield* Scope.make()];
+    for (const scope of scopes) yield* sessions.reserveDeps.pipe(Scope.provide(scope));
+    expect(Exit.isFailure(yield* Effect.exit(sessions.start(start())))).toBe(true);
+    expect(helper.calls).toHaveLength(0);
+    yield* Scope.close(scopes[0]!, Exit.void);
+    expect(Exit.isFailure(yield* Effect.exit(sessions.start(start())))).toBe(true);
+    yield* Scope.close(scopes[1]!, Exit.void);
+    yield* sessions.start(start());
+    expect(helper.calls).toHaveLength(1);
+    const refused = yield* Effect.scoped(Effect.exit(sessions.reserveDeps));
+    expect(Exit.isFailure(refused)).toBe(true);
+    yield* sessions.stop;
+    yield* Effect.scoped(sessions.reserveDeps);
+  }).pipe(Effect.scoped));
+
+  it.effect("導入の中断時も後片付け中は開始を拒否し、後片付け後に予約を解放する", () => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), Layer.succeed(SessionSinks, fake.sinks));
+    const entered = yield* Deferred.make<void>();
+    const cleaning = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const interrupting = yield* Effect.gen(function* () {
+      const installation = yield* Effect.scoped(Effect.gen(function* () {
+        yield* sessions.reserveDeps;
+        yield* Effect.addFinalizer(() => Effect.andThen(Deferred.succeed(cleaning, undefined), Deferred.await(release)));
+        yield* Deferred.succeed(entered, undefined);
+        return yield* Effect.never;
+      })).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const interrupting = yield* Fiber.interrupt(installation).pipe(Effect.forkChild);
+      yield* Deferred.await(cleaning);
+      expect(Exit.isFailure(yield* Effect.exit(sessions.start(start())))).toBe(true);
+      expect(helper.calls).toHaveLength(0);
+      return interrupting;
+    }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+    yield* Fiber.join(interrupting);
+    yield* sessions.start(start());
+    expect(helper.calls).toHaveLength(1);
+    yield* sessions.stop;
+  }).pipe(Effect.scoped));
+});
+
 describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   it.effect("apps は Helpers の一覧をそのまま返す（CT-SESSIONS-ONE）", () =>
     Effect.gen(function* () {

@@ -165,12 +165,18 @@ const FeedRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/", feed),
 ]);
 
-const depResponse = <E>(source: Stream.Stream<typeof InstallEvent.Type, E>) => HttpServerResponse.stream(source.pipe(
-  Stream.catchCauseIf((cause) => !Cause.hasInterrupts(cause), (cause) =>
-    Stream.succeed({ type: "error" as const, message: failureMessage(Cause.squash(cause)) })),
-  Stream.map((event) => JSON.stringify(event) + "\n"),
-  Stream.encodeText,
-), { contentType: "application/x-ndjson" });
+const depResponse = Effect.fnUntraced(function* <E>(source: Stream.Stream<typeof InstallEvent.Type, E>) {
+  const sessions = yield* Sessions;
+  return HttpServerResponse.stream(Stream.unwrap(Effect.gen(function* () {
+    yield* sessions.reserveDeps;
+    return source;
+  })).pipe(
+    Stream.catchCauseIf((cause) => !Cause.hasInterrupts(cause), (cause) =>
+      Stream.succeed({ type: "error" as const, message: failureMessage(Cause.squash(cause)) })),
+    Stream.map((event) => JSON.stringify(event) + "\n"),
+    Stream.encodeText,
+  ), { contentType: "application/x-ndjson" });
+});
 
 const DepRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/check", Effect.gen(function* () {
@@ -204,14 +210,14 @@ const DepRoutes = HttpRouter.addAll([
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const deps = yield* InstallDeps;
-    return depResponse(deps.install(body.names));
+    return yield* depResponse(deps.install(body.names));
   })),
   HttpRouter.route("POST", "/update", Effect.gen(function* () {
     const body = yield* HttpServerRequest.schemaBodyJson(UpdateBody).pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const deps = yield* ManagedDeps;
-    return depResponse(deps.update(body.names));
+    return yield* depResponse(deps.update(body.names));
   })),
 ]);
 

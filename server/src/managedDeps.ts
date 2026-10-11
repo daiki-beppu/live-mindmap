@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { lstat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as PlaywrightModule from "playwright-core";
-import { Context, DateTime, Effect, FileSystem, Layer, Predicate, Schema, Stream } from "effect";
+import { Console, Context, DateTime, Effect, FileSystem, Layer, PlatformError, Predicate, Schema, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import manifest from "../managed-deps/chromium/package.json" with { type: "json" };
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
@@ -27,7 +28,7 @@ export class ManagedDeps extends Context.Service<ManagedDeps, {
   update: (names: ReadonlyArray<string>) => Stream.Stream<DepEvent, ManagedDepsFailed>;
   load: <N extends DepName>(name: N) => Effect.Effect<DepModules[N], ManagedDepsFailed>;
 }>()("live-mindmap/server/ManagedDeps") {
-  static readonly layer = (options: { root: string; npm?: NpmCommand }) => Layer.effect(ManagedDeps)(make(options));
+  static readonly layer = (options: { root: string; npm?: NpmCommand; cleanupOnStartup?: boolean }) => Layer.effect(ManagedDeps)(make(options));
 }
 
 const VERSION = manifest.dependencies["playwright-core"];
@@ -145,11 +146,27 @@ const acquireLock = (path: string) => {
 const validateNames = (names: ReadonlyArray<string>): Effect.Effect<DepName[], ManagedDepsFailed> => names.length > 0 && names.every((name) => name === "chromium" || name === "claude")
   ? Effect.succeed([...new Set(names)] as DepName[]) : Effect.fail(new ManagedDepsFailed({ message: "導入名は chromium または claude を指定してください" }));
 
-const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmCommand }) {
+const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmCommand; cleanupOnStartup?: boolean }) {
   const fs = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  // #712 の掃除が、使用済みの実体を消さないための記録。current が交代しても残す。
+  // 動的 import の遅延読込先も、サーバーの終了までは保持する。
   const loadedEntities = new Set<string>();
+  const entityAccess = yield* Semaphore.make(1);
+  const metadata = (path: string) => Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (error) => PlatformError.systemError({
+      _tag: codeIs(error, "ENOENT") ? "NotFound" : "Unknown",
+      module: "FileSystem", method: "lstat", pathOrDescriptor: path, description: failed(error).message,
+    }),
+  });
+  const sizeOf = Effect.fnUntraced(function* (path: string): Effect.fn.Return<number, PlatformError.PlatformError> {
+    const stat = yield* metadata(path);
+    if (!stat.isDirectory()) return stat.isSymbolicLink() ? 0 : stat.size;
+    let size = 0;
+    for (const name of yield* fs.readDirectory(path)) size += yield* sizeOf(join(path, name));
+    return size;
+  });
+  const warning = (error: unknown) => `警告: 古い版の削除に失敗しました: ${failed(error).message}`;
   const readJson = <A>(path: string, schema: Schema.Decoder<A>) =>
     fs.readFileString(path).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(schema))));
   const isFile = (path: string) => fs.stat(path).pipe(
@@ -159,6 +176,28 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
   const dependency = (name: DepName) => {
     const dir = resolve(options.root, name);
     const browsers = join(dir, "browsers");
+    const removeOldEntities = Stream.unwrap(Effect.gen(function* () {
+      const current = join(dir, CURRENT);
+      const protectedEntities = new Set<string>();
+      // 壊れた current は未導入と区別し、保持先が解決できない場合は削除を始めない。
+      const currentExists = yield* metadata(current).pipe(Effect.as(true), Effect.catch((error) => {
+        if (error.reason._tag === "NotFound") return Effect.succeed(false);
+        return Effect.fail(error);
+      }));
+      if (currentExists) protectedEntities.add(yield* fs.realPath(current));
+      for (const entity of loadedEntities) protectedEntities.add(yield* fs.realPath(entity));
+      const candidates = yield* fs.readDirectory(dir);
+      return Stream.fromIterable(candidates).pipe(Stream.flatMap((candidate) => Stream.unwrap(Effect.gen(function* () {
+        const match = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.exec(candidate);
+        if (match === null) return Stream.empty;
+        const path = join(dir, candidate);
+        if (!(yield* metadata(path)).isDirectory()) return Stream.empty;
+        if (protectedEntities.has(yield* fs.realPath(path))) return Stream.empty;
+        const size = yield* sizeOf(path);
+        yield* fs.remove(path, { recursive: true });
+        return Stream.succeed({ type: "progress" as const, message: `古い版を消しました: ${match[1]}（約 ${Math.round(size / 1_000_000)} MB）` });
+      }).pipe(Effect.catch((error) => Effect.succeed(Stream.succeed({ type: "progress" as const, message: warning(error) })))))));
+    }).pipe(Effect.catch((error) => Effect.succeed(Stream.succeed({ type: "progress" as const, message: warning(error) })))));
     const version = name === "chromium" ? VERSION : CLAUDE_VERSION;
     const packageName = name === "chromium" ? "playwright-core" : "@anthropic-ai/claude-agent-sdk";
     const packageDir = join(import.meta.dirname, "../managed-deps", name);
@@ -223,7 +262,7 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       });
       loadedEntities.add(entity);
       return module;
-    }).pipe(Effect.mapError(failed));
+    }).pipe(entityAccess.withPermit, Effect.mapError(failed));
 
     const run = Effect.fnUntraced(function* (lock: ReturnType<typeof acquireLock>, command: NpmCommand, args: string[], cwd: string) {
       const completed = yield* Effect.scoped(Effect.gen(function* () {
@@ -302,18 +341,25 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
         Stream.concat(progress(`ダウンロード: ${packageName}`), step(run(lock, npm, ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"], work))),
         Stream.concat(
           name === "chromium" ? Stream.concat(progress("展開: Chromium headless shell"), step(run(lock, { command: process.execPath, args: [join(work, "node_modules/playwright-core/cli.js")] }, ["install", "--only-shell", "chromium"], work))) : Stream.empty,
-          Stream.concat(progress("確認: 版・完了 marker・ハッシュ"), Stream.fromEffect(Effect.gen(function* (): Effect.fn.Return<DepEvent, unknown> {
+          Stream.concat(progress("確認: 版・完了 marker・ハッシュ"), Stream.unwrap(Effect.gen(function* () {
             yield* verify(work, entity);
+            yield* Effect.acquireRelease(entityAccess.take(1), () => entityAccess.release(1));
             yield* fs.rename(work, entity).pipe(Effect.uninterruptible);
             yield* fs.symlink(basename(entity), link);
             // 公開の確定点と published の更新を中断で分離しない。
             yield* fs.rename(link, join(dir, CURRENT)).pipe(Effect.andThen(Effect.sync(() => { published = true; })), Effect.uninterruptible);
-            return { type: "result", items: [{ name, need: "optional", state: "ready" }] };
-          }))),
+            return Stream.concat(removeOldEntities, Stream.succeed<DepEvent>({ type: "result", items: [{ name, need: "optional", state: "ready" }] }));
+          })).pipe(Stream.scoped)),
         ),
       );
     })).pipe(Stream.mapError(failed));
-    return { check: checkDependency, load, install };
+    const cleanupOnStartup = Effect.scoped(Effect.gen(function* () {
+      if (!(yield* fs.exists(dir))) return;
+      yield* Effect.acquireRelease(Effect.try({ try: () => acquireLock(join(dir, LOCK)), catch: failed }), (lock) =>
+        Effect.try({ try: lock.release, catch: failed }).pipe(Effect.catch((error) => Console.error(warning(error)))));
+      yield* Stream.runForEach(removeOldEntities, (event) => Console.error(event.message)).pipe(entityAccess.withPermit);
+    })).pipe(Effect.catch((error) => Console.error(warning(error))));
+    return { check: checkDependency, load, install, cleanupOnStartup };
   };
   const check = Effect.fnUntraced(function* (names: ReadonlyArray<string>) {
     const validated = yield* validateNames(names);
@@ -335,5 +381,8 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
     );
     return Stream.concat(installs, Stream.fromEffect(Effect.sync((): DepEvent => ({ type: "result", items }))));
   }));
+  if (options.cleanupOnStartup) {
+    for (const name of ["chromium", "claude"] as const) yield* dependency(name).cleanupOnStartup;
+  }
   return ManagedDeps.of({ check, install: (names) => install(names, "install"), update: (names) => install(names, "update"), load });
 });
