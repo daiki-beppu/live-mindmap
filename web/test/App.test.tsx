@@ -12,7 +12,7 @@ vi.mock("../src/useIntakeNotice.ts", () => ({ useIntakeNotice: () => null }));
 vi.mock("../src/MapView.tsx", () => ({ MapView: () => <div className="map-view-stub" /> }));
 
 const snapshot: Snapshot = { nodes: [], round: 0, changes: [], remarks: [] };
-const feed = (screenNotice: string | null): FeedState => ({ snapshot, speaking: { 相手: "", 自分: "" }, intake: "running", screenNotice, diffUpdate: null, local: false });
+const feed = (screenNotice: string | null): FeedState => ({ snapshot, speaking: { 相手: "", 自分: "" }, intake: "running", screenNotice, tapNotice: null, diffUpdate: null, local: false });
 
 describe("App: 共有画面を使っていない一文は、useLiveFeed の値から表示・消去まで届く", () => {
   beforeEach(() => useLiveFeed.mockReset());
@@ -26,6 +26,17 @@ describe("App: 共有画面を使っていない一文は、useLiveFeed の値�
 
     useLiveFeed.mockReturnValue(feed(null));
     expect(renderToStaticMarkup(<App />)).not.toContain("screen-notice");
+  });
+
+  it("tapNotice の文があれば画面に出て、null なら出ない", () => {
+    const text = "相手の音声を取得できていません";
+    useLiveFeed.mockReturnValue({ ...feed(null), tapNotice: text });
+    const shown = renderToStaticMarkup(<App />);
+    expect(shown).toContain("tap-notice");
+    expect(shown).toContain(text);
+
+    useLiveFeed.mockReturnValue(feed(null));
+    expect(renderToStaticMarkup(<App />)).not.toContain("tap-notice");
   });
 
   it("feed の local が SessionView の線と文字の表示へ届く", () => {

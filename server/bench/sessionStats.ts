@@ -27,11 +27,12 @@ export type SessionStats = {
   diffErrors: number;
   ops: number;
   intake: { stopped: number; restarted: number; gaveUp: number };
+  tapSilent: number; // helper が、相手のタップに音声が届かないと流した回数（tap-silent の行。Issue #863）
 };
 
 type Interval = { start: number; end: number };
 
-// ログの 1 行。数える欄だけを任意で持つ緩い形（古いログ・intake-* の行・input の無い diff の行も数える）。
+// ログの 1 行。数える欄だけを任意で持つ緩い形（古いログ・intake-*・tap-silent の行・input の無い diff の行も数える）。
 // 段 1 の LogEvent は start・remark・diff の 3 種で必須欄が厳しいので、ここでは使わない
 const LogLine = Schema.Struct({
   type: Schema.String,
@@ -78,6 +79,7 @@ export function sessionStats(events: readonly LogLine[]): SessionStats {
     diffErrors: 0,
     ops: 0,
     intake: { stopped: 0, restarted: 0, gaveUp: 0 },
+    tapSilent: 0,
   };
   for (const e of events) {
     if (e.type === "remark") {
@@ -95,6 +97,7 @@ export function sessionStats(events: readonly LogLine[]): SessionStats {
     } else if (e.type === "intake-stopped") stats.intake.stopped += 1;
     else if (e.type === "intake-restarted") stats.intake.restarted += 1;
     else if (e.type === "intake-gave-up") stats.intake.gaveUp += 1;
+    else if (e.type === "tap-silent") stats.tapSilent += 1;
   }
   for (const track of TRACKS) stats.tracks[track].overlap = overlapRatio(intervals[track]);
   return stats;
@@ -146,7 +149,7 @@ const pct = (x: number) => `${Math.round(x * 100)}%`;
 
 export function formatRow(name: string, s: SessionStats, audio: Record<Track, Audio> | null): string[] {
   const length = Math.max(s.lastEnd, audio ? Math.max(audio.相手.seconds, audio.自分.seconds) : 0);
-  const head = `${name}\t長さ ${Math.round(length)}s\t差分更新 ${s.diffs}（失敗 ${s.diffErrors}）\t操作 ${s.ops}\t途切れ ${s.intake.stopped}・再開 ${s.intake.restarted}・断念 ${s.intake.gaveUp}`;
+  const head = `${name}\t長さ ${Math.round(length)}s\t差分更新 ${s.diffs}（失敗 ${s.diffErrors}）\t操作 ${s.ops}\t途切れ ${s.intake.stopped}・再開 ${s.intake.restarted}・断念 ${s.intake.gaveUp}\t無音 ${s.tapSilent}`;
   const rows = TRACKS.map((track) => {
     const t = s.tracks[track];
     const a = audio?.[track];

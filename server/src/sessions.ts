@@ -18,6 +18,7 @@ import {
   MAX_CONFIGURATION_CHANGES,
   SCREEN_NOTICE_MS,
   SCREEN_NOTICE_TEXT,
+  TAP_NOTICE_TEXT,
   type HelperEvent,
   type IntakeGiveUpReason,
   type IntakeStatusReport,
@@ -167,7 +168,11 @@ export class Sessions extends Context.Service<Sessions, {
         switch (event.type) {
           case "origin":
             // 原点は最初のヘルパーからの値だけ採用する
-            return Ref.update(live.origin, (origin) => origin ?? event.hostTime);
+            // 新しい origin は起動し直したヘルパーのもので、前の回の「届いていません」は消す（保持が無ければ何も変わらない）
+            return Effect.andThen(
+              Ref.update(live.origin, (origin) => origin ?? event.hostTime),
+              viewers.tapNotice({ type: "tap-notice", text: null }),
+            );
           case "remark": {
             const { type: _type, ...settled } = event;
             return live.sink.final(settled);
@@ -183,7 +188,13 @@ export class Sessions extends Context.Service<Sessions, {
             // 共有画面だけが取れないことは取り込みの途切れではないので、appendLog・intake・起動し直しには触れない。
             // ログには届くたびに残し、画面の一文はセッションにつき 1 回だけ出す
             return Effect.andThen(live.sink.screenOff({ start: event.start, reason: event.reason }), showScreenNotice(live));
-        }
+          case "tap-silent":
+            // 音声が届かないことは取り込みの途切れではないので、intake・起動し直しには触れない。
+            // ログには届くたびに残し、一文は届くたびに出す（起動し直した回でも出し直す）。消すのは新しい origin かセッションの終わり
+            return Effect.andThen(
+              live.sink.appendLog({ type: "tap-silent", start: event.start }),
+              viewers.tapNotice({ type: "tap-notice", text: TAP_NOTICE_TEXT }),
+            );        }
       };
 
       // 許可なしの一文を、まだ出していなければ出す。届いてから SCREEN_NOTICE_MS 後に消すフレームを送る（保持も消える）。
@@ -390,6 +401,8 @@ export class Sessions extends Context.Service<Sessions, {
                 // "none"（セッションが無い）にする。"running" だと、直前が interrupted/stopped だったクライアントが
                 // 「再開した」と解釈し、終わったセッションに「再開しました」が出てしまう（CT-NOTICE-CLEAR）
                 yield* intakeFrame("none");
+                // 相手の音声が届いていないことの一文も、セッションの終わりで消す
+                yield* viewers.tapNotice({ type: "tap-notice", text: null });
               }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 }))),
             ),
           );

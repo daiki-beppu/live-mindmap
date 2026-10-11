@@ -5,7 +5,7 @@ public final class RunAudio {
 
     private let requestMicrophonePermission: () async throws -> Void
     private let makeTranscriber: (Track) -> Transcriber
-    private let startAudio: (Track) throws -> AudioStream
+    private let startAudio: (Track, UInt64) throws -> AudioStream
     private let stopAudio: (Track) -> Void
     private let recording: Recording?
     private let splitAudio: (AudioStream) -> (AudioStream, AudioStream)
@@ -17,7 +17,7 @@ public final class RunAudio {
     public init(
         requestMicrophonePermission: @escaping () async throws -> Void,
         makeTranscriber: @escaping (Track) -> Transcriber,
-        startAudio: @escaping (Track) throws -> AudioStream,
+        startAudio: @escaping (Track, UInt64) throws -> AudioStream,
         stopAudio: @escaping (Track) -> Void,
         recording: Recording?,
         splitAudio: @escaping (AudioStream) -> (AudioStream, AudioStream),
@@ -51,10 +51,10 @@ public final class RunAudio {
         relay: ([(Track, ResultStream)], Bool) async throws -> Void
     ) async throws {
         guard let theirTranscriber else { preconditionFailure("prepare must complete before run") }
-        var theirAudio = try startAudio(.相手)
+        var theirAudio = try startAudio(.相手, origin)
         var myAudio: AudioStream?
         if myTranscriber != nil {
-            myAudio = try startAudio(.自分)
+            myAudio = try startAudio(.自分, origin)
             if marksDuplicates, let microphone = myAudio {
                 let (theirs, reference) = splitAudio(theirAudio)
                 theirAudio = theirs

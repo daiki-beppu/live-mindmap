@@ -395,3 +395,34 @@ describe("SessionView: ? のキー一覧は、見返しのときだけ見返し�
     }
   });
 });
+
+describe("SessionView: 相手の音声が届かない一文（Issue #863）。渡したときだけ、layout の直下に出る", () => {
+  const notice = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります）";
+
+  it("渡さなければ（省略・null）出ない", () => {
+    expect(renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} />)).not.toContain("tap-notice");
+    expect(renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} tapNotice={null} />)).not.toContain("tap-notice");
+  });
+
+  it("文を渡すと、その文が map の外に出て、マップ・字幕・右の列の構造は変わらない", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} tapNotice={notice} />);
+    expect(html).toContain("tap-notice");
+    expect(html).toContain(notice);
+    expect(html.startsWith('<div class="layout">')).toBe(true);
+    const mapStart = html.indexOf('<div class="map">');
+    const mapPart = balancedDiv(html, mapStart);
+    expect(mapPart).not.toContain("tap-notice");
+    const outside = html.slice(0, mapStart) + html.slice(mapStart + mapPart.length);
+    expect(outside).toContain("tap-notice");
+    expect(outside).toContain("captions");
+    expect(outside).toContain('class="side"');
+  });
+
+  it("取り込みの途切れの一言・共有画面の一文と同時に出ても、別の要素として全部出る", () => {
+    const html = renderToStaticMarkup(<SessionView snapshot={snapshot} speaking={speaking} intake="interrupted" screenNotice="共有画面は使っていません" tapNotice={notice} />);
+    expect(html).toContain("intake-notice");
+    expect(html).toContain("screen-notice");
+    expect(html).toContain("tap-notice");
+    expect(html).toContain(notice);
+  });
+});

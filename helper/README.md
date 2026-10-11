@@ -63,6 +63,7 @@ swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分] 
 {"type":"screen","start":12.5,"image":"/9j/4AAQSkZJRg=="}
 {"type":"screen","start":80,"image":null}
 {"type":"screen-off","start":0.5,"reason":"許可なし"}
+{"type":"tap-silent","start":10.5}
 ```
 
 - `words`（`partial` と `remark` の両方、両トラック）: 本文を CFStringTokenizer（`ja`、語の境界）で区切った語の配列。要素は `surface`（表記）・`romaji`（`kCFStringTokenizerAttributeLatinTranscription` のローマ字の読み。無ければ空文字）・`location` / `length`（本文の中の位置と長さ。UTF-16 コード単位で、`start` / `end` の秒とは別）。語が無い本文は空の配列。サーバーは `words` の無いイベントも受け付ける
@@ -71,6 +72,7 @@ swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分] 
 - `origin`: ヘルパーのプロセスにつき 1 回だけ、時刻の基準が決まった直後（`partial` / `remark` より前）に送る。`AudioGetCurrentHostTime()` の値（`--origin` を渡したときはその値）を `hostTime` に積む。64 bit の値は JSON の number では桁が落ちるので、文字列にする。サーバーは、ライブセッションの間、最初のヘルパーの `origin` の値を覚えておき、再起動したヘルパーに `--origin` として渡すことで、発言の時刻が再起動のたびに 0 へ戻らず、元の開始からの続きになるようにする。`origin` は broadcast した時点でサーバー側のクライアントの接続が間に合わないことが多いため、ヘルパーは値を保持し、broadcast より後に接続したクライアントにも送る
 - `screen`: 共有画面の変化。`start` は `origin` と同じ原点（`--origin` を渡したときはその値）からの秒。画像付きの `start` は、違うマスが今の値になった時刻の中央値を、前に送ると決めた時刻で下限補正した値（最初の画像だけは、そのフレームの時刻）。`image` が `null` のときの `start` は、ウィンドウが消えた時刻、または会議以外のタブと判定した時刻。`image` は JPEG の base64。映していたウィンドウが無くなったときは `image` が JSON の `null`（キーは省かない）。`screen` も `origin` と同じく、サーバーがつながる前に出た分は最新の 1 件だけを保持し、つながったら送る（`origin` の次に届く）
 - `screen-off`: 共有画面を取り込めない（画面収録の許可が無い・断られた・取り込みの途中で止まった）。`start` は `screen` と同じく `origin` と同じ原点からの秒。`reason` はヘルパーが流す限り `許可なし` だけ（`指定` はサーバーが書く）。`origin`・`screen` と同じく、`screen` とは別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。音声の取り込みは止まらない
+- `tap-silent`: `相手` のタップを始めてから 10 秒（`tapSilentJudgementDelay`）、フレーム数 1 以上のバッファを 1 つも受け取らなかった。サンプルの値（ゼロかどうか）は見ない。`start` は `origin` と同じ原点からの秒（判定した時刻）。ヘルパーのプロセスにつき最大 1 回だけ流し、別の key で保持して、後からつながったクライアントにも送る。判定の時点で、機器の状態の 1 行を標準エラーにも出す
 
 ### エコーキャンセル（スピーカーのとき）
 

@@ -11,6 +11,7 @@ import { pointedNode } from "./folding.ts";
 import type { IntakeStatus } from "./intake.ts";
 import { IntakeNotice } from "./IntakeNotice.tsx";
 import { ScreenNotice } from "./ScreenNotice.tsx";
+import { TapNotice } from "./TapNotice.tsx";
 import { LocalModeNotice } from "./LocalModeNotice.tsx";
 import type { Speaking } from "./liveFeed.ts";
 import { KeyList } from "./KeyList.tsx";
@@ -57,6 +58,7 @@ export function SessionView({
   speaking,
   intake,
   screenNotice,
+  tapNotice,
   diffUpdate,
   local,
   review,
@@ -65,6 +67,8 @@ export function SessionView({
   speaking: Speaking;
   intake?: IntakeStatus;
   screenNotice?: string | null;
+  // 相手の音声が届いていないことの一文。渡したときだけ出す（見返しの画面からは渡さない）
+  tapNotice?: string | null;
   diffUpdate?: DiffUpdateState | null;
   local?: boolean;
   review?: { timeMoves: number; audio?: boolean; frame?: (session: ReactNode, overlay: ReviewOverlay) => ReactNode };
@@ -183,6 +187,7 @@ export function SessionView({
       {!viewing.captionsHidden && <Captions speaking={speaking} />}
       {intake !== undefined && <IntakeNoticeOf status={intake} />}
       {screenNotice !== undefined && <ScreenNotice text={screenNotice} />}
+      {tapNotice !== undefined && <TapNotice text={tapNotice} />}
       {diffUpdate !== undefined && <DiffUpdateNotice state={diffUpdate} />}
       {!viewing.sideHidden && (
         <div className="side">
