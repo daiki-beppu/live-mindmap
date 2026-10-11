@@ -23,6 +23,9 @@ import { exitNaturally } from "./exitNaturally.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
   formatIntakeStatus,
+  formatShareOpened,
+  formatShareStatus,
+  ShareStatus,
   formatTable,
   DiffEvent,
   DiffUpdater,
@@ -524,12 +527,42 @@ const status = Command.make(
   Effect.fn("status")(function* () {
     const port = yield* portConfig;
     const report: IntakeStatusReport = yield* requestServer(port, "GET", "/session/status", IntakeStatus);
-    yield* write(formatIntakeStatus(report));
+    const share = yield* requestServer(port, "GET", "/share/status", ShareStatus);
+    yield* write(formatIntakeStatus(report) + formatShareStatus(share));
   }),
 ).pipe(
   Command.withDescription(
     "取り込みの状態（動いている／途切れている／止まった／セッションなし）・セッションのフォルダ・"
-      + "起動し直した回数・最後の途切れの時刻を出す",
+      + "起動し直した回数・最後の途切れの時刻と、閲覧の共有の状態（共有中／切れた／無し）・URL・許可の範囲を出す",
+  ),
+);
+
+const share = Command.make(
+  "share",
+  {
+    anyone: Flag.Boolean("anyone").pipe(
+      Flag.withDescription("URL を知っていれば誰でも見られる閲覧の共有を開く"),
+      Flag.withDefault(false),
+    ),
+    stop: Flag.Boolean("stop").pipe(
+      Flag.withDescription("閲覧の共有を閉じる（共有していなくても成功する）"),
+      Flag.withDefault(false),
+    ),
+  },
+  Effect.fn("share")(function* ({ anyone, stop }) {
+    if (stop && anyone) return yield* new CommandFailed({ message: "--stop と --anyone は一緒に指定できません" });
+    if (!stop && !anyone) return yield* new CommandFailed({ message: "閲覧の共有の許可の範囲を指定してください（--anyone）。閉じるときは --stop" });
+    const port = yield* portConfig;
+    if (stop) {
+      yield* requestServer(port, "POST", "/share/close", ShareStatus);
+      return;
+    }
+    const opened = yield* requestServer(port, "POST", "/share/open", Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: Schema.Literal("anyone") }), { anyone: true });
+    yield* write(formatShareOpened(opened));
+  }),
+).pipe(
+  Command.withDescription(
+    "閲覧の共有を開き、URL・許可の範囲・稼働の保証が無い旨を出す（--anyone）。--stop で閉じる。セッションの終了でも閉じる",
   ),
 );
 
@@ -799,7 +832,7 @@ const root = Command.make("live-mindmap").pipe(
     "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
       + "exit code 3 = 開始に要るものが未導入",
   ),
-  Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
+  Command.withSubcommands([login, logout, play, apps, start, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）

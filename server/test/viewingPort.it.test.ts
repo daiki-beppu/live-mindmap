@@ -21,17 +21,20 @@ const modeFrame = { type: "session-mode", local: false } as const;
 
 // 操作の口（serveFeed）と閲覧の口を、同じ Viewers で立てる。閲覧の口だけを閉じられる Scope を別に持つ
 // pingIntervalMs を渡すと、両方の口の ping の間隔をその値にする。渡さなければ本番の既定値
-const ports = Effect.fnUntraced(function* (pingIntervalMs?: number) {
+// openViewingPort は待受けのポートと allow（許す Origin のホスト名を後から 1 つ決める）を返す。
+// allowHost を false にすると、ホスト名を決めないまま返す（tunnel のホスト名が出る前の状態）
+const ports = Effect.fnUntraced(function* (pingIntervalMs?: number, allowHost = true) {
   const ctx = yield* openListener(0, pingIntervalMs);
   const viewers = Context.get(ctx, Viewers);
   const operationPort = yield* portOf(Context.get(ctx, HttpServer.HttpServer).address);
   yield* Effect.provide(serveFeed, ctx);
   const viewingScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void));
-  const viewingPort = yield* openViewingPort(HOST, pingIntervalMs).pipe(
+  const opened = yield* openViewingPort(pingIntervalMs).pipe(
     Effect.provide(Layer.merge(Layer.succeed(Viewers, viewers), fakeBuild)),
     Scope.provide(viewingScope),
   );
-  return { viewers, operationPort, viewingPort, viewingScope };
+  if (allowHost) yield* opened.allow(HOST);
+  return { viewers, operationPort, viewingPort: opened.port, allow: opened.allow, viewingScope };
 });
 
 const get = (port: number, path: string, origin?: string, method = "GET") =>
@@ -89,6 +92,22 @@ describe("閲覧の口（Issue #832）", () => {
       expect([origin, yield* upgradeStatus(p.viewingPort, "/ws", origin)]).toEqual([origin, 403]);
     }
     expect(yield* upgradeStatus(p.viewingPort, "/ws", undefined)).toBe(403);
+  }));
+
+  it.live("ホスト名が決まる前は、Origin 付きの GET / も /ws の upgrade もすべて 403。決まった後は同じ待受けでそのホスト名だけが通る", () => Effect.gen(function* () {
+    const p = yield* ports(undefined, false);
+    // 決まる前: 守っている状態に到達していることを、Origin の無い GET / が通ることで先に示す
+    expect((yield* Effect.tryPromise(() => get(p.viewingPort, "/", undefined))).status).toBe(200);
+    for (const origin of [ALLOWED, "https://evil.example"]) {
+      expect([origin, (yield* Effect.tryPromise(() => get(p.viewingPort, "/", origin))).status]).toEqual([origin, 403]);
+      expect([origin, yield* upgradeStatus(p.viewingPort, "/ws", origin)]).toEqual([origin, 403]);
+    }
+    expect(yield* upgradeStatus(p.viewingPort, "/ws", undefined)).toBe(403);
+    // 決まった後
+    yield* p.allow(HOST);
+    expect(yield* upgradeStatus(p.viewingPort, "/ws", ALLOWED)).toBe(101);
+    expect((yield* Effect.tryPromise(() => get(p.viewingPort, "/", ALLOWED))).status).toBe(200);
+    expect(yield* upgradeStatus(p.viewingPort, "/ws", "https://evil.example")).toBe(403);
   }));
 
   it.live("つないだら保持している値が先に届き、その後の publish は操作の口と閲覧の口の両方へ届く（同じ Viewers）", () => Effect.gen(function* () {

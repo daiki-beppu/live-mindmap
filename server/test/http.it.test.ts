@@ -9,18 +9,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
-import { ConfigProvider, Console, Deferred, Effect, Exit, Layer, Queue, Ref, Scope, Stream, type Cause } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream, type Cause } from "effect";
 import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { runCli } from "../src/cli.ts";
+import type { ServerLayers } from "../src/server.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { fakeTunnel, FAKE_TUNNEL_HOST } from "./fixtures/tunnel.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { connect } from "./fixtures/wsClient.ts";
@@ -88,7 +90,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } } = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -100,7 +102,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   }).pipe(Layer.provide(fakeExportServices()));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
-    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps },
+    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
   );
   return {
     server, calls: fakeHelpers.calls, checks: fakeHelpers.checks, sessionsDir,
@@ -335,7 +337,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         );
         return runCli(["status"]).pipe(Effect.provide(cliLayer), Effect.map(() => out.join("")));
       });
-      expect(yield* status()).toBe("セッションなし\n");
+      expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', undefined))).status).toBe(200);
       const [dir] = yield* Effect.tryPromise(() => readdir(r.sessionsDir));
       const running = yield* status();
@@ -345,7 +347,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       expect(running).not.toContain("最後の途切れの時刻");
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
       // 通常の stop の後は none に戻る。「止まった」（諦めた状態）の文面は intake.test.ts、状態の値は sessions.test.ts が観測する
-      expect(yield* status()).toBe("セッションなし\n");
+      expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
     }));
 
   for (const screen of ["no", 0, "false"]) {
@@ -432,4 +434,267 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
       expect([...Buffer.from(blocks[1]!.source!.data, "base64")]).toEqual([...jpeg]);
       expect(blocks[2]!.text).toContain("今日は採用の進め方を決めます");
     }));
+});
+
+
+// 閲覧の共有（Issue #834）。Tunnel は偽の Layer（cloudflared を起動しない。公開の tunnel は開かない）。
+// 常駐サーバーと同じセッションの上で 開く → 状態 → 閉じる → 開き直す を続けて観測する。
+describe("閲覧の共有（Issue #834）", () => {
+  const ORIGIN = `https://${FAKE_TUNNEL_HOST}`;
+  const START = '{"app":"us.zoom.xos","title":"週次","audio":false}';
+
+  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean }) {
+    const tunnel = fakeTunnel(tunnelOptions);
+    const r = yield* resourceWithFakeHelpers([{}], { viewing: tunnel.viewing });
+    const call = (method: string, path: string, body?: string, origin?: string) =>
+      Effect.tryPromise(() => r.request(method, path, body, origin));
+    const json = (response: Response) => Effect.tryPromise(() => response.json());
+    const open = () => call("POST", "/share/open", '{"anyone":true}');
+    const startSession = call("POST", "/session/start", START).pipe(Effect.tap((res) => Effect.sync(() => expect(res.status).toBe(200))));
+    // cli を、このサーバーに向けて実行する。標準出力の行と、終了が失敗かを返す
+    const cli = (args: ReadonlyArray<string>) => Effect.suspend(() => {
+      const out: string[] = [];
+      const consoleService: Console.Console = {
+        ...console,
+        log: (...a: unknown[]) => { out.push(a.map(String).join(" ") + "\n"); },
+      };
+      const cliLayer = Layer.mergeAll(forbiddenManagedDeps,
+        NodeServices.layer, unusedApple,
+        NodeHttpClient.layerUndici,
+        ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),
+        Layer.succeed(Console.Console, consoleService),
+        Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
+        Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("") })),
+        fakeAudioMix().layer,
+        fakeScreenJpeg().layer,
+      );
+      return runCli([...args]).pipe(Effect.provide(cliLayer), Effect.exit, Effect.map((exit) => ({ out: out.join(""), failed: Exit.isFailure(exit) })));
+    });
+    return { r, tunnel, call, json, open, startSession, cli };
+  });
+
+  const refused = (port: number) => Effect.tryPromise(() => expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow());
+  const viewingPortOf = (tunnel: { opened: number[] }) => tunnel.opened.at(-1)!;
+
+  it.live("開くと、閲覧の口が待ち受けて Tunnel に そのポートが渡り、url と許可の範囲が返る。状態も同じ値になる", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    expect(s.tunnel.opened).toEqual([]);
+    const opened = yield* s.open();
+    expect(opened.status).toBe(200);
+    expect(yield* s.json(opened)).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    expect(s.tunnel.opened).toHaveLength(1);
+    const port = viewingPortOf(s.tunnel);
+    expect(port).not.toBe(s.r.server.port);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    // 閲覧の口は、与えられたホスト名の Origin の /ws だけを通し、操作の口のルートは断る
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+    expect((yield* connect(port, "/ws", ORIGIN)).isOpen()).toBe(true);
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/session/status`))).status).toBe(404);
+    expect(s.tunnel.closed()).toBe(0);
+  }));
+
+  it.live("閉じると、Tunnel の後始末が 1 回走り、閲覧の口は待受けをやめ、状態は off になる。同じサーバー・セッションで開き直せる", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    yield* s.open();
+    const firstPort = viewingPortOf(s.tunnel);
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${firstPort}/`))).status).toBe(200);
+    const closed = yield* s.call("POST", "/share/close");
+    expect(closed.status).toBe(200);
+    expect(s.tunnel.closed()).toBe(1);
+    yield* refused(firstPort);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    // セッションは続いている
+    expect((yield* s.json(yield* s.call("GET", "/session/status")))).toMatchObject({ status: "running" });
+    // 開き直す
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(2);
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${viewingPortOf(s.tunnel)}/`))).status).toBe(200);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+  }));
+
+  it.live("共有していないときの close は何も壊さず成功し、Tunnel の後始末も走らない", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    expect((yield* s.call("POST", "/share/close")).status).toBe(200);
+    expect(s.tunnel.closed()).toBe(0);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+  }));
+
+  it.live("すでに開いているときの open は、新しい Tunnel も待受けも作らず、今の状態を返す", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    const first = yield* s.json(yield* s.open());
+    const second = yield* s.open();
+    expect(second.status).toBe(200);
+    expect(yield* s.json(second)).toEqual(first);
+    expect(s.tunnel.opened).toHaveLength(1);
+    expect(s.tunnel.closed()).toBe(0);
+  }));
+
+  it.live("セッションの終了（/session/stop）で閉じる: Tunnel の後始末が 1 回、閲覧の口は待受けをやめ、状態は off", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    yield* s.open();
+    const port = viewingPortOf(s.tunnel);
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+    expect((yield* s.call("POST", "/session/stop")).status).toBe(200);
+    expect(s.tunnel.closed()).toBe(1);
+    yield* refused(port);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    // 次のセッションは、閲覧の共有を引き継がず、改めて開ける
+    yield* s.startSession;
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(2);
+  }));
+
+  it.live("server の終了で閉じる: Tunnel の後始末が 1 回走り、閲覧の口は待受けをやめる", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    yield* s.open();
+    const port = viewingPortOf(s.tunnel);
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+    yield* s.r.server.close;
+    expect(s.tunnel.closed()).toBe(1);
+    yield* refused(port);
+  }));
+
+  it.live("open の本文は {anyone:true} だけを受ける。それ以外は 400 で、Tunnel を開かない", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    for (const body of ['{}', '{"anyone":false}', '{"anyone":"yes"}', '{"mails":["a@example.com"]}', '{"anyone":true,"mails":["a@example.com"]}', "{not json", undefined]) {
+      const response = yield* s.call("POST", "/share/open", body);
+      expect([body, response.status]).toEqual([body, 400]);
+    }
+    expect(s.tunnel.opened).toEqual([]);
+    // 守っている状態に到達していることを、正しい本文なら開くことで示す
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(1);
+  }));
+
+  it.live("共有のルートにも操作の口の Origin の制限が掛かる（ローカル以外の Origin は 403 で、開きも閉じもしない）", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    const foreign = "https://evil.example";
+    expect((yield* s.call("POST", "/share/open", '{"anyone":true}', foreign)).status).toBe(403);
+    expect(s.tunnel.opened).toEqual([]);
+    yield* s.open();
+    expect((yield* s.call("POST", "/share/close", undefined, foreign)).status).toBe(403);
+    expect((yield* s.call("GET", "/share/status", undefined, foreign)).status).toBe(403);
+    expect(s.tunnel.closed()).toBe(0);
+    expect(yield* s.json(yield* s.call("GET", "/share/status", undefined, "http://localhost:5173"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+  }));
+
+  it.live("ホスト名を待つ間にセッションが終わると、開始要求は 500 で終わり、閲覧の口は待受けをやめ、状態は off。ロックは解放され、次のセッションで開ける", () => Effect.gen(function* () {
+    const s = yield* shareResource({ holdFirstOpen: true });
+    yield* s.startSession;
+    const pending = yield* Effect.forkChild(s.open());
+    const port = yield* s.tunnel.reached;
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+    expect((yield* s.call("POST", "/session/stop")).status).toBe(200);
+    const response = yield* Fiber.join(pending);
+    expect(response.status).toBe(500);
+    yield* refused(port);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    expect(s.tunnel.closed()).toBe(1);
+    expect((yield* s.call("POST", "/share/close")).status).toBe(200);
+    yield* s.startSession;
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(2);
+  }));
+
+  it.live("閲覧の口を開いた後に Tunnel の起動が失敗すると、開始要求は 500 で終わり、閲覧の口は待受けをやめ、状態は off で、Tunnel の後始末が走る", () => Effect.gen(function* () {
+    const s = yield* shareResource({ holdFirstOpen: true });
+    yield* s.startSession;
+    const pending = yield* Effect.forkChild(s.open());
+    const port = yield* s.tunnel.reached;
+    expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+    yield* s.tunnel.failHeld;
+    const response = yield* Fiber.join(pending);
+    expect(response.status).toBe(500);
+    yield* refused(port);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    expect(s.tunnel.closed()).toBe(1);
+  }));
+
+  it.live("後始末の途中（共有の Scope が Closed で状態の消去は未実行）にホスト名が届いても、open を公開せず 500 で終わり、状態は off。後始末の完了後に閲覧の口は待受けをやめ、次のセッションで開ける", () => Effect.gen(function* () {
+    const s = yield* shareResource({ holdFirstOpen: true, holdFirstCleanup: true });
+    yield* s.startSession;
+    const pending = yield* Effect.forkChild(s.open());
+    const port = yield* s.tunnel.reached;
+    const stopping = yield* Effect.forkChild(s.call("POST", "/session/stop"));
+    yield* s.tunnel.cleanupReached;
+    expect(s.tunnel.closed()).toBe(0);
+    yield* s.tunnel.succeedHeld;
+    const response = yield* Fiber.join(pending);
+    expect(response.status).toBe(500);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    yield* s.tunnel.releaseCleanup;
+    expect((yield* Fiber.join(stopping)).status).toBe(200);
+    yield* refused(port);
+    expect(s.tunnel.closed()).toBe(1);
+    expect((yield* s.call("POST", "/share/close")).status).toBe(200);
+    yield* s.startSession;
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(2);
+  }));
+
+  describe("cli", () => {
+    it.live("share --anyone は URL・許可の範囲・稼働の保証が無い旨を標準出力に出し、閲覧の口を開く", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      const { out, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(false);
+      const lines = out.trimEnd().split("\n");
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toContain(ORIGIN);
+      expect(lines[1]).toContain("誰でも");
+      expect(lines[2]).toContain("保証");
+      expect(s.tunnel.opened).toHaveLength(1);
+      expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${viewingPortOf(s.tunnel)}/`))).status).toBe(200);
+    }));
+
+    it.live("範囲が空の share（--anyone が無い）は、サーバーに頼まずに失敗し、URL を出さない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      const { out, failed } = yield* s.cli(["share"]);
+      expect(failed).toBe(true);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+      // 守っている状態に到達していることを、--anyone を付ければ開くことで示す
+      expect((yield* s.cli(["share", "--anyone"])).failed).toBe(false);
+      expect(s.tunnel.opened).toHaveLength(1);
+    }));
+
+    it.live("--stop と --anyone を一緒に渡したら失敗し、開きも閉じもしない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      expect((yield* s.cli(["share", "--stop", "--anyone"])).failed).toBe(true);
+      expect(s.tunnel.opened).toEqual([]);
+      yield* s.open();
+      expect((yield* s.cli(["share", "--stop", "--anyone"])).failed).toBe(true);
+      expect(s.tunnel.closed()).toBe(0);
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toMatchObject({ status: "open" });
+    }));
+
+    it.live("share --stop で閉じ、status の閲覧の共有が 共有中 から 無し に変わる。status の URL・許可の範囲は取り込みの行の後ろに出る", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.cli(["share", "--anyone"]);
+      const sharing = (yield* s.cli(["status"])).out;
+      expect(sharing).toContain("動いている");
+      expect(sharing.trimEnd().split("\n").slice(-3)).toEqual(["閲覧の共有: 共有中", `URL: ${ORIGIN}`, "許可の範囲: 誰でも"]);
+      expect(sharing.indexOf("動いている")).toBeLessThan(sharing.indexOf("閲覧の共有"));
+      const stopped = yield* s.cli(["share", "--stop"]);
+      expect(stopped.failed).toBe(false);
+      expect(s.tunnel.closed()).toBe(1);
+      const after = (yield* s.cli(["status"])).out;
+      expect(after.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
+      expect(after).not.toContain(ORIGIN);
+      yield* refused(viewingPortOf(s.tunnel));
+    }));
+  });
 });

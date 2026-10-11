@@ -18,10 +18,12 @@ import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import { ReviewBuild } from "./review.ts";
-import { layerListener, portOf, serveSessions } from "./http.ts";
+import { layerListener, openViewingPort, portOf, serveSessions } from "./http.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
 import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
+import { Tunnel } from "./tunnel.ts";
 import { Viewers } from "./viewers.ts";
+import { ViewingShare } from "./viewingShare.ts";
 import { makeModelTransferToken, publishModelTransferToken } from "./modelTransferToken.ts";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
 
@@ -42,6 +44,7 @@ export type ServerLayers = {
   managedDeps: Layer.Layer<ManagedDeps>;
   helpers: Layer.Layer<Helpers>;
   sessionSinks: Layer.Layer<SessionSinks>;
+  viewing: Layer.Layer<Tunnel | ReviewBuild>; // 閲覧の共有の外の世界（cloudflared の tunnel と、閲覧の口の画面のビルド）
 };
 
 // 子プロセスの起動に、FileSystem と Path が要る
@@ -52,10 +55,12 @@ export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | F
 
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => {
   const managedDeps = ManagedDeps.layer({ root: options.depsDir, cleanupOnStartup: true }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, layerChildProcessSpawner)));
+  const exported = exportServices.pipe(Layer.provide(managedDeps));
   return {
     managedDeps,
+    viewing: Layer.merge(Tunnel.layer.pipe(Layer.provide(Layer.mergeAll(managedDeps, layerChildProcessSpawner))), exported),
     helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(managedDeps, exportServices.pipe(Layer.provide(managedDeps)), NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(managedDeps, exported, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
   };
 };
 
@@ -71,6 +76,8 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
       Layer.provideMerge(layers.helpers),
       Layer.provideMerge(layerListener(options.port)),
       Layer.provideMerge(layers.managedDeps),
+      // 閲覧の共有は、Sessions（セッションの Scope）・Viewers の上に載せる。止めるときは Sessions より先
+      (base) => ViewingShare.layer(openViewingPort()).pipe(Layer.provide(layers.viewing), Layer.provideMerge(base)),
     ),
   );
   return yield* Effect.gen(function* () {

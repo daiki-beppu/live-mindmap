@@ -5,21 +5,25 @@
 //   POST /session/stop    セッションを終了し、書き出したパスを返す
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
+//   POST /share/open      { anyone: true } で閲覧の共有を開く（すでに開いていれば今の状態を返す）
+//   POST /share/close     閲覧の共有を閉じる（開いていなくても成功する）
+//   GET  /share/status    閲覧の共有の状態（無し・共有中・切れた）を返す
 //   GET  /・/ws           ブラウザへの配信（同じポートで upgrade する）
 // 閲覧の口（openViewingPort）は、操作の口とは別の 127.0.0.1 の待受けで、GET /（ログを埋め込まない single-file の画面）と
-// /ws の配信だけを受ける。Origin は与えたホスト名の https:// だけを通し、/session/* などの操作は受けない。
+// /ws の配信だけを受ける。Origin は allow で決めたホスト名の https:// だけを通し、/session/* などの操作は受けない。
 // /ws の配信には、server から WebSocket の制御フレームの ping を一定の間隔で送る（Issue #833）。tunnel が無通信の接続を切ることへの備えで、
 // アプリの JSON フレームは増やさない。間隔の既定は 30 秒で、テストは短い間隔を渡して縮める。
 // セッションの操作は sessions.ts の Sessions から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
 import { WebSocket } from "ws";
-import { Cause, Context, Effect, Layer, Option, Schema, Stream, type Scope } from "effect";
+import { Cause, Context, Effect, Layer, Option, Ref, Schema, Stream, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
 import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
+import { ViewingShare, ShareOpenFailed, type ViewingPort } from "./viewingShare.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
@@ -80,7 +84,7 @@ class InvalidBody extends Schema.TaggedError<InvalidBody>()("InvalidBody", {
 
 // タグ付きの失敗からステータスへの対応。タグが増えたら、ここに足すまで型エラーになる。
 // HttpServerError は、上のルート・本文の変換で拾いきれなかったサーバー側の失敗（応答の書き出し等）
-type HandledFailure = SessionFailure | ForbiddenOrigin | ForbiddenModelTransfer | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
+type HandledFailure = SessionFailure | ShareOpenFailed | ForbiddenOrigin | ForbiddenModelTransfer | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
 
 const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   InvalidBody: 400,
@@ -97,6 +101,7 @@ const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   UpdaterUnavailable: 503,
   StartupDepsMissing: 503,
   ManagedDepsFailed: 500,
+  ShareOpenFailed: 500,
   HttpServerError: 500,
 };
 
@@ -146,6 +151,9 @@ const feed = Effect.gen(function* () {
   return HttpServerResponse.empty();
 });
 
+// /share/open の本文。範囲は { anyone: true } だけ（メール・ドメインの指定は #836）
+const ShareOpenBody = Schema.Struct({ anyone: Schema.Literal(true) });
+
 const SessionRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/apps", Effect.gen(function* () {
     const sessions = yield* Sessions;
@@ -163,6 +171,22 @@ const SessionRoutes = HttpRouter.addAll([
   HttpRouter.route("POST", "/session/resume", Effect.gen(function* () {
     const sessions = yield* Sessions;
     return HttpServerResponse.jsonUnsafe(yield* sessions.resume);
+  })),
+  HttpRouter.route("POST", "/share/open", Effect.gen(function* () {
+    yield* HttpServerRequest.schemaBodyJson(ShareOpenBody, { onExcessProperty: "error" }).pipe(
+      Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
+    );
+    const share = yield* ViewingShare;
+    return HttpServerResponse.jsonUnsafe(yield* share.open);
+  })),
+  HttpRouter.route("POST", "/share/close", Effect.gen(function* () {
+    const share = yield* ViewingShare;
+    yield* share.close;
+    return HttpServerResponse.jsonUnsafe(yield* share.status);
+  })),
+  HttpRouter.route("GET", "/share/status", Effect.gen(function* () {
+    const share = yield* ViewingShare;
+    return HttpServerResponse.jsonUnsafe(yield* share.status);
   })),
 ]);
 
@@ -317,30 +341,31 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
 );
 
 // セッションの操作と配信を受ける（常駐サーバー）
-export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
+export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ViewingShare | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
   HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));
 
 // 閲覧の口。操作の口とは別の 127.0.0.1 の待受け（port 0 で空きポート）で、GET /（ログを埋め込まない single-file の画面）と
 // /ws の配信だけを受ける。配信は呼び出し側の Viewers を使う（保持値と PubSub を複製しない）。待受けは呼び出し側の Scope で閉じる。
-// Origin は `https://<hostname>` との完全一致だけを通す。Origin の無い GET / は通し、/ws は Origin が無くても断る。
+// Origin は allow で決めた `https://<hostname>` との完全一致だけを通す。決まる前は、Origin のある要求と /ws をすべて断る。
+// Origin の無い GET / は通し、/ws は Origin が無くても断る。
 // 画面のビルドは開くときに 1 回だけ行う（Vite の開発用サーバーは使わない）
-export const openViewingPort = (hostname: string, pingIntervalMs: number = FEED_PING_INTERVAL_MS): Effect.Effect<number, HttpServerError.ServeError | ReviewPageFailed, Viewers | ReviewBuild | Scope.Scope> =>
+export const openViewingPort = (pingIntervalMs: number = FEED_PING_INTERVAL_MS): Effect.Effect<ViewingPort, HttpServerError.ServeError | ReviewPageFailed, Viewers | ReviewBuild | Scope.Scope> =>
   Effect.gen(function* () {
     const { build } = yield* ReviewBuild;
     const page = yield* build;
-    const allowed = `https://${hostname}`;
+    const allowed = yield* Ref.make<string | undefined>(undefined);
     const OriginCheck = HttpRouter.middleware((httpEffect) =>
       Effect.gen(function* () {
         const { origin } = (yield* HttpServerRequest.HttpServerRequest).headers;
-        if (origin !== undefined && origin !== allowed) return yield* new ForbiddenOrigin();
+        if (origin !== undefined && origin !== (yield* Ref.get(allowed))) return yield* new ForbiddenOrigin();
         return yield* httpEffect;
       }), { global: true });
     const routes = HttpRouter.addAll([
       HttpRouter.route("GET", "/ws", Effect.gen(function* () {
         const { origin } = (yield* HttpServerRequest.HttpServerRequest).headers;
-        if (origin !== allowed) return yield* new ForbiddenOrigin();
+        if (origin === undefined || origin !== (yield* Ref.get(allowed))) return yield* new ForbiddenOrigin();
         return yield* feed;
       })),
       HttpRouter.route("GET", "/", Effect.succeed(HttpServerResponse.text(page, { contentType: "text/html; charset=utf-8" }))),
@@ -348,5 +373,6 @@ export const openViewingPort = (hostname: string, pingIntervalMs: number = FEED_
     const context = yield* Layer.build(layerNodeServer(0, pingIntervalMs));
     const handler = yield* HttpRouter.toHttpEffect(Layer.mergeAll(routes, UnsupportedRoute, OriginCheck));
     yield* HttpServer.serveEffect(respond(handler)).pipe(Effect.provide(context));
-    return yield* portOf(Context.get(context, HttpServer.HttpServer).address);
+    const port = yield* portOf(Context.get(context, HttpServer.HttpServer).address);
+    return { port, allow: (hostname: string) => Ref.set(allowed, `https://${hostname}`) };
   });
