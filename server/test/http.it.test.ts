@@ -1,3 +1,5 @@
+import { ManagedDeps } from "../src/managedDeps.ts";
+import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
@@ -86,7 +88,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } } = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } } = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -98,7 +100,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   }).pipe(Layer.provide(fakeExportServices()));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
-    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: readyManagedDeps },
+    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps },
   );
   return {
     server, calls: fakeHelpers.calls, checks: fakeHelpers.checks, sessionsDir,
@@ -183,6 +185,22 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
 });
 
 describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサーバー。CT-ENTRY-LAYERS）", () => {
+  it.live("711-2: HTTP start は版違いの必須 SDK を警告して開始する", () => Effect.gen(function* () {
+    const service = {
+      check: () => Effect.succeed([{ name: "claude" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.0" }]),
+      load: () => Effect.die("偽 updater は SDK を読まない"),
+      install: () => Stream.die("開始は導入しない"), update: () => Stream.die("開始は更新しない"),
+    };
+    const r = yield* resourceWithFakeHelpers([{}], { managedDeps: Layer.succeed(ManagedDeps, ManagedDeps.of(service)) });
+    const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+    expect(response.status).toBe(200);
+    const body = yield* Effect.tryPromise(() => response.json());
+    expect(body.warnings).toEqual([`警告: claude（Claude Agent SDK、約 224MB） が版違いです（入っている版 0.0.0、固定版 ${claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"]}）。そろえるには: pnpm cli update claude`]);
+    expect(r.calls).toHaveLength(1);
+    const status = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
+    expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir: body.dir });
+  }));
+
   it.live.each([
     { microphone: "authorized", screenCapture: true, warnings: [] },
     { microphone: "denied", screenCapture: false, warnings: ["マイクの許可がありません。自分の声が入りません", "画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] },

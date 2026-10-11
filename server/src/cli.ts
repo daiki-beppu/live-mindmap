@@ -66,7 +66,7 @@ import {
 } from "./sessionFiles.ts";
 import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
-import { CheckReport, InstallEvent, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
+import { CheckReport, InstallEvent, Item, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
 
@@ -721,17 +721,13 @@ const checkCommand = Command.make(
       return yield* requestServer(yield* portConfig, "GET", `/check?for=${entry}&route=${model.route}&screen=${!noScreen}`, CheckReport);
     });
     yield* write(JSON.stringify(report));
-    if (!report.ready) return yield* new RequiredDepsMissing();
+    if (report.items.some((item) => item.need === "required" && item.state !== "ready" && item.state !== "outdated")) return yield* new RequiredDepsMissing();
   }),
 ).pipe(Command.withDescription("開始せず管理依存を JSON で確認する。--for start|resume|play（既定 start）。play はサーバーを使わず、resume は開始時モデルを使う"));
 
-const installCommand = Command.make(
-  "install",
-  { names: Argument.String("name").pipe(Argument.atLeast(1)) },
-  Effect.fn("install")(function* ({ names }) {
-    const port = yield* portConfig;
+const installFromServer = Effect.fnUntraced(function* (port: number, path: "/deps/install" | "/update", names: ReadonlyArray<string>) {
     yield* Console.error("時間がかかるので run_in_background で呼んでよい");
-    const response = yield* executeServerRequest(port, "POST", "/deps/install", { names });
+    const response = yield* executeServerRequest(port, "POST", path, { names });
     let result: Extract<typeof InstallEvent["Type"], { type: "result" }> | undefined;
     yield* response.stream.pipe(
       Stream.decodeText,
@@ -751,8 +747,34 @@ const installCommand = Command.make(
     );
     if (result === undefined) return yield* new ServerFailed({ message: "導入結果を受信する前に接続が終了しました" });
     yield* write(JSON.stringify(result.items));
+});
+
+const installCommand = Command.make(
+  "install",
+  { names: Argument.String("name").pipe(Argument.atLeast(1)) },
+  Effect.fn("install")(function* ({ names }) {
+    yield* installFromServer(yield* portConfig, "/deps/install", names);
   }),
 ).pipe(Command.withDescription("常駐サーバーに管理依存の導入を依頼し、進捗と導入した items を出す"));
+
+const updateCommand = Command.make(
+  "update",
+  { names: Argument.Literals("name", ["chromium", "claude", "speech-ja"]).pipe(Argument.variadic()) },
+  Effect.fn("update")(function* ({ names }) {
+    const speech = names.includes("speech-ja");
+    const managed = names.length === 0 ? ["chromium", "claude"] : names.filter((name) => name !== "speech-ja");
+    if (managed.length > 0) {
+      const port = yield* portConfig;
+      const items = yield* requestServer(port, "GET", `/deps/check?names=${managed.join(",")}`, Schema.Array(Item));
+      const missing = names.length === 0 ? [] : items.filter((item) => item.state === "missing");
+      if (missing.length > 0) return yield* new CommandFailed({ message: missing.map((item) => `未導入です。cli install ${item.name} で入れる`).join("\n") });
+      const outdated = items.filter((item) => item.state === "outdated").map((item) => item.name);
+      if (outdated.length > 0) yield* installFromServer(port, "/update", outdated);
+      else yield* write("[]");
+    }
+    if (speech) yield* Console.error("OS が更新するので不要");
+  }),
+).pipe(Command.withDescription("常駐サーバーに版違いの管理依存だけの更新を依頼する。名前を省くと全対象。speech-ja は OS が更新するので不要"));
 
 const login = Command.make("login").pipe(Command.withSubcommands([
   Command.make("chatgpt", {}, () => loginChatgpt).pipe(Command.withDescription("システムブラウザで ChatGPT にサインインする")),
@@ -763,7 +785,7 @@ const logout = Command.make("logout").pipe(Command.withSubcommands([
 
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription("会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）"),
-  Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand]),
+  Command.withSubcommands([login, logout, play, apps, start, stop, status, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）

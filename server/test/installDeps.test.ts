@@ -9,6 +9,7 @@ const service = (installSpeechJa: Helpers["Service"]["installSpeechJa"]) => Inst
   Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, installSpeechJa, apps: Effect.die("対象外"), launch: () => Effect.die("対象外") })),
   Layer.succeed(ManagedDeps, ManagedDeps.of({
     check: () => Effect.die("導入は管理依存を確認しない"), load: () => Effect.die("導入はSDKを読み込まない"),
+    update: () => Stream.die("更新は対象外"),
     install: (names) => {
       expect(names).toEqual(["claude"]);
       return Stream.fromIterable([

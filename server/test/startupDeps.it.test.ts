@@ -35,7 +35,7 @@ const controlledDeps = () => {
     ? Effect.fail(new ManagedDepsFailed({ message: "合成 SDK の読込失敗" }))
     : Effect.succeed({ query: () => { throw new Error("このテストはモデルを呼びません"); } })));
   const install = vi.fn(() => Stream.die("開始前の確かめは導入しません"));
-  const layer = Layer.succeed(ManagedDeps, ManagedDeps.of({ check, install, load: load as unknown as ManagedDeps["Service"]["load"] }));
+  const layer = Layer.succeed(ManagedDeps, ManagedDeps.of({ check, install, update: () => Stream.die("更新は対象外"), load: load as unknown as ManagedDeps["Service"]["load"] }));
   return { state, check, load, install, layer };
 };
 

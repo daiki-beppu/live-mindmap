@@ -6,6 +6,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber, FileSystem, Layer, Result, Stream } from "effect";
 import { NodeServices } from "@effect/platform-node";
 import { vi } from "vitest";
+import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { temporaryDeps, fakeNpm, managedLayer, install, installed } from "./fixtures/managedDeps.ts";
 
@@ -45,6 +46,56 @@ const stopInstaller = async (worker: ReturnType<typeof processInstaller>) => {
 };
 
 describe("管理 Chromium の導入", () => {
+  it.live.each(["ready", "missing"] as const)("711-4: 同じ ManagedDeps で outdated を更新し、%s の依存には触らない", (state) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const npm = yield* fakeNpm(dir);
+    yield* Effect.gen(function* () {
+      const deps = yield* ManagedDeps;
+      yield* Effect.tryPromise(() => oldCurrent(root));
+      if (state === "ready") yield* Effect.tryPromise(async () => {
+        const current = join(root, "claude/current");
+        const version = claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"];
+        const sdk = join(current, "node_modules/@anthropic-ai/claude-agent-sdk");
+        const binary = join(current, `node_modules/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`);
+        await mkdir(sdk, { recursive: true });
+        await mkdir(binary, { recursive: true });
+        await writeFile(join(current, ".ready.json"), JSON.stringify({ version, installedAt: "2026-01-01T00:00:00Z", hashes: {} }));
+        await writeFile(join(sdk, "package.json"), JSON.stringify({ version }));
+        await writeFile(join(binary, process.platform === "win32" ? "claude.exe" : "claude"), "ready SDK");
+      });
+      const before = yield* deps.check(["chromium", "claude"]);
+      expect(before).toMatchObject([{ state: "outdated" }, { name: "claude", state }]);
+      const events = yield* Stream.runCollect(deps.update(["chromium", "claude"]));
+      expect(events.filter((event) => event.type === "result")).toMatchObject([{ type: "result", items: [installed] }]);
+      expect(yield* deps.check(["chromium", "claude"])).toMatchObject([installed, { name: "claude", state }]);
+      expect((yield* Effect.tryPromise(() => calls(dir))).filter((call) => call.kind === "npm")).toHaveLength(1);
+      expect((yield* Effect.tryPromise(() => readdir(root))).sort()).toEqual(state === "ready" ? ["chromium", "claude"] : ["chromium"]);
+      const again = yield* Stream.runCollect(deps.update(["chromium"]));
+      expect(again.at(-1)).toMatchObject({ type: "result", items: [] });
+      expect((yield* Effect.tryPromise(() => calls(dir))).filter((call) => call.kind === "npm")).toHaveLength(1);
+    }).pipe(Effect.provide(managedLayer(root, npm)));
+  }).pipe(Effect.scoped));
+
+  it.live("711-4: update 失敗後は旧 current を保持し、同じサービスで再更新できる", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const current = yield* Effect.tryPromise(() => oldCurrent(root));
+    const npm = yield* fakeNpm(dir);
+    yield* Effect.tryPromise(() => writeFile(join(dir, "fail-npm"), "fail"));
+    yield* Effect.gen(function* () {
+      const deps = yield* ManagedDeps;
+      const result = yield* Effect.result(Stream.runCollect(deps.update(["chromium"])));
+      expect(Result.isFailure(result)).toBe(true);
+      expect((yield* Effect.tryPromise(() => calls(dir)))[0].kind).toBe("npm");
+      expect(yield* Effect.tryPromise(() => readlink(current))).toBe("0.0.0-old");
+      expect((yield* Effect.tryPromise(() => readdir(join(root, "chromium")))).filter((name) => name.startsWith(".work-") || name.startsWith("install.lock"))).toEqual([]);
+      expect(yield* deps.check(["chromium"])).toMatchObject([{ state: "outdated" }]);
+      yield* Effect.tryPromise(() => rm(join(dir, "fail-npm")));
+      expect((yield* Stream.runCollect(deps.update(["chromium"]))).at(-1)).toMatchObject({ type: "result", items: [installed] });
+      expect(yield* deps.check(["chromium"])).toMatchObject([installed]);
+    }).pipe(Effect.provide(managedLayer(root, npm)));
+  }).pipe(Effect.scoped));
   it.live.each(["npm", "browser", "leader"])("親だけ死亡した %s の生存中は拒否し、終了後に同じルートで回復する", (stage) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     yield* fakeNpm(dir);
@@ -288,7 +339,19 @@ describe("管理 Chromium の導入", () => {
     const dir = yield* temporaryDeps;
     const root = join(dir, "deps");
     yield* Effect.tryPromise(() => oldCurrent(root));
-    expect(yield* check.pipe(Effect.provide(managedLayer(root)))).toMatchObject([{ state: "outdated" }]);
+    expect(yield* check.pipe(Effect.provide(managedLayer(root)))).toMatchObject([{ state: "outdated", version: "0.0.0" }]);
+  }).pipe(Effect.scoped));
+
+  it.live("記録が固定版でも実パッケージが異なれば outdated とその版を返す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const npm = yield* fakeNpm(dir);
+    yield* Effect.gen(function* () {
+      yield* install();
+      expect(yield* check).toMatchObject([installed]);
+      yield* Effect.tryPromise(() => writeFile(join(root, "chromium/current/node_modules/playwright-core/package.json"), JSON.stringify({ version: "0.0.0" })));
+      expect(yield* check).toMatchObject([{ state: "outdated", version: "0.0.0" }]);
+    }).pipe(Effect.provide(managedLayer(root, npm)));
   }).pipe(Effect.scoped));
 
   it.live.each(["fail-npm", "fail-browser", "omit-marker"])("%s で失敗しても current を保持し、次の導入で回復できる", (failure) => Effect.gen(function* () {

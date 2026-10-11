@@ -23,7 +23,7 @@ const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFai
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
   const install = vi.fn((_names: ReadonlyArray<string>) => Stream.die("check は導入しない"));
   const load = vi.fn((_name: string) => Effect.die("check は読み込まない"));
-  return { service: ManagedDeps.of({ check, install, load }), check, install };
+  return { service: ManagedDeps.of({ check, install, update: () => Stream.die("更新は対象外"), load }), check, install };
 };
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
@@ -126,11 +126,11 @@ describe("開始せずに確かめる CLI check", () => {
     { need: "optional", state: "absent", ready: true, code: 0 },
     { need: "required", state: "ready", ready: true, code: 0 },
     { need: "required", state: "missing", ready: false, code: 3 },
-    { need: "required", state: "outdated", ready: false, code: 3 },
+    { need: "required", state: "outdated", ready: false, code: 0 },
     { need: "required", state: "absent", ready: false, code: 3 },
   ] as const)("CLI は $need / $state の JSON を出して exit $code を返す", ({ need, state, ready, code }) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const item: CheckItem = { name: need === "required" ? "claude" : "chromium", need, state };
+    const item = { name: need === "required" ? "claude" as const : "chromium" as const, need, state, ...(state === "outdated" ? { version: "0.0.0" } : {}) };
     const deps = fakeDeps(Effect.succeed([item]));
     const server = yield* serverWith(dir, deps.service);
     const result = yield* cliProcess(dir, server.port, false);

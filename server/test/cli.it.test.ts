@@ -23,6 +23,9 @@ import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { ManagedDeps } from "../src/managedDeps.ts";
+import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
+import chromiumManifest from "../managed-deps/chromium/package.json" with { type: "json" };
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -340,7 +343,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
 const CHATGPT_MODEL_DEFINITION = { route: "chatgpt", model: CHATGPT_MODEL.model, images: false };
 
 describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
-  const resource = Effect.fnUntraced(function* (microphone: "authorized" | "denied" | "notDetermined", screenCapture: boolean) {
+  const resource = Effect.fnUntraced(function* (microphone: "authorized" | "denied" | "notDetermined", screenCapture: boolean, managedDeps = readyManagedDeps) {
     const root = yield* temporaryDirectory;
     const sessionsDir = join(root, "sessions");
     const checks: boolean[] = [];
@@ -361,12 +364,32 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     };
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: Layer.succeed(Helpers, Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") })),
-      managedDeps: readyManagedDeps,
+      managedDeps,
       sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
     });
     const deps = dependencies(sessionsDir, String(server.port));
     return { checks, launches, deps, sessionsDir };
   });
+
+  it.live("711-2: 必須 Claude と任意 Chromium の版違いを stderr に警告して開始する", () => Effect.gen(function* () {
+    const service = {
+      check: () => Effect.succeed([
+        { name: "chromium" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.0" },
+        { name: "claude" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.1" },
+      ]),
+      load: () => Effect.die("偽 updater は SDK を読まない"),
+      install: () => Stream.die("開始は導入しない"),
+      update: () => Stream.die("開始は更新しない"),
+    };
+    const r = yield* resource("authorized", true, Layer.succeed(ManagedDeps, ManagedDeps.of(service)));
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio"]).pipe(Effect.provide(r.deps.layer));
+    expect(r.deps.stderr.join("").trim().split("\n").sort()).toEqual([
+      `警告: chromium（Chromium、約 211MB） が版違いです（入っている版 0.0.0、固定版 ${chromiumManifest.dependencies["playwright-core"]}）。そろえるには: pnpm cli update chromium`,
+      `警告: claude（Claude Agent SDK、約 224MB） が版違いです（入っている版 0.0.1、固定版 ${claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"]}）。そろえるには: pnpm cli update claude`,
+    ].sort());
+    expect(r.launches).toHaveLength(1);
+    expect(existsSync(join(r.deps.stdout.join("").trim(), "log.jsonl"))).toBe(true);
+  }).pipe(Effect.scoped));
 
   it.live.each([
     { argv: ["check"], microphone: "authorized", screenCapture: true, state: "ready" },

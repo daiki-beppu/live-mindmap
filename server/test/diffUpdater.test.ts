@@ -14,7 +14,7 @@ import { unusedApple } from "./fixtures/appleIntelligence.ts";
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: () => { throw new Error("通常依存の SDK を呼びました"); } }));
 const load = vi.fn((_name: string) => Effect.fail(new ManagedDepsFailed({ message: "管理 SDK がありません" })));
 const managedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
-  check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"), load,
+  check: () => Effect.die("状態確認は対象外"), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"), load,
 }));
 
 effectIt.effect("管理 SDK を読めないと UpdaterUnavailable で失敗する", () =>
@@ -31,7 +31,7 @@ effectIt.effect("Claude の準備で取得した SDK を再読込せず、更新
   })(), { close })) as unknown as AgentSdk["Service"]["query"];
   const loaded = vi.fn((_name: string) => Effect.succeed({ query }));
   const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
-    check: () => Effect.die("状態確認は対象外"), install: () => Stream.die("導入は対象外"),
+    check: () => Effect.die("状態確認は対象外"), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"),
     load: loaded as unknown as ManagedDeps["Service"]["load"],
   }));
   const layer = yield* prepareUpdaterLayer(defaultClaude).pipe(Effect.provide(Layer.mergeAll(

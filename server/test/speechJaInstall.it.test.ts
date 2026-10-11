@@ -39,6 +39,7 @@ const resource = Effect.fnUntraced(function* () {
       return { name, need: "optional", state: "ready" };
     })),
     load: () => Effect.die("導入テストは SDK を読み込まない"),
+    update: () => Stream.die("更新は対象外"),
     install: (names: ReadonlyArray<string>) => Stream.fromEffect(Effect.sync(() => {
       managedRequests.push(names);
       return { type: "result" as const, items: names.map((name): DepItem => {
