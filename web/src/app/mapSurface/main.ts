@@ -1,7 +1,7 @@
 // マップの表示面（Issue #814）: Foldkit のプログラム。ノード（絶対配置の div）・エッジ（SVG のベジェ）・ビューポート（transform）を素で描く。
 // 配置（layout）・畳み（foldView）・全体を収める（fitViewport）は既存の純粋な関数で、view が毎回、Model の値から導く（Model には持たない）
 import { HashMap, Option, Schema } from "effect";
-import type { Update } from "foldkit";
+import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
@@ -74,7 +74,7 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null): Html {
   );
 }
 
-export const view = (model: Model, h: H): Html => {
+export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const view_ = model.mode === "live" ? foldView(model.snapshot, NO_IDS, null, NO_IDS, NO_IDS) : null;
   const shown = view_?.nodes ?? model.snapshot.nodes;
   const heights = Object.fromEntries(HashMap.toEntries(model.nodeHeights));
@@ -108,4 +108,4 @@ export const view = (model: Model, h: H): Html => {
     [h.Class("map-surface"), h.OnMount(ObserveMapSurface())],
     [h.div([h.Class("map-viewport"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges")], edges), h.div([h.Class("map-nodes")], nodes)])],
   );
-};
+});
