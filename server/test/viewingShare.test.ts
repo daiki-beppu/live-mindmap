@@ -2,7 +2,7 @@
 // 状態の型は 無し・共有中・切れた の 3 つ（切れたへの遷移は #837）。
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { formatShareOpened, formatShareStatus, quickTunnelHostname, ShareStatus } from "../src/core/index.ts";
+import { formatShareAlreadyOpen, formatShareOpened, formatShareStatus, quickTunnelHostname, ShareStatus } from "../src/core/index.ts";
 
 describe("quickTunnelHostname", () => {
   it("quick tunnel の URL を含む行から、ハイフンを含むラベルのホスト名を取る", () => {
@@ -59,5 +59,16 @@ describe("cli の表示", () => {
     expect(lines[0]).toContain("https://a-b.trycloudflare.com");
     expect(lines[1]).toContain("誰でも");
     expect(lines[2]).toContain("保証");
+  });
+});
+
+describe("formatShareAlreadyOpen（すでに共有中のときの share の標準エラー）", () => {
+  it("1 行で、すでに開いていること・新しくは開かないこと・今の URL と許可の範囲を含む", () => {
+    const text = formatShareAlreadyOpen({ status: "open", url: "https://a-b.trycloudflare.com", allow: "anyone" });
+    expect(text.trimEnd().split("\n")).toHaveLength(1);
+    expect(text).toContain("すでに");
+    expect(text).toContain("新しくは開きません");
+    expect(text).toContain("https://a-b.trycloudflare.com");
+    expect(text).toContain("誰でも");
   });
 });

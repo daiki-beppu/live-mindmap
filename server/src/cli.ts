@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
 import { Cause, Console, Effect, Exit, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema, Stream, type Runtime } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/http";
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
@@ -23,8 +23,11 @@ import { exitNaturally } from "./exitNaturally.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
   formatIntakeStatus,
+  formatShareAlreadyOpen,
   formatShareOpened,
   formatShareStatus,
+  SHARE_OPEN_OUTCOME_HEADER,
+  ShareOpenOutcome,
   ShareStatus,
   formatTable,
   DiffEvent,
@@ -237,6 +240,18 @@ const executeServerRequest = Effect.fnUntraced(function* (
   return response;
 });
 
+// 成功応答の本文を各コマンドの Schema で読む
+const decodeServerBody = Effect.fnUntraced(function* <A>(response: HttpClientResponse.HttpClientResponse, schema: Schema.Decoder<A>) {
+  // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
+  const parsed = yield* response.text.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
+    Effect.orElseSucceed((): unknown => ({})),
+  );
+  return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
+    Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })),
+  );
+});
+
 // 常駐サーバーへ依頼を送り、成功応答を各コマンドの Schema で読む
 const requestServer = Effect.fnUntraced(function* <A>(
   port: number,
@@ -247,14 +262,7 @@ const requestServer = Effect.fnUntraced(function* <A>(
   headers?: Record<string, string>,
 ) {
   const response = yield* executeServerRequest(port, method, path, body, headers);
-  // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
-  const parsed = yield* response.text.pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
-    Effect.orElseSucceed((): unknown => ({})),
-  );
-  return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
-    Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })),
-  );
+  return yield* decodeServerBody(response, schema);
 });
 
 /* ----------------------------------------------------------------------------
@@ -551,14 +559,20 @@ const share = Command.make(
   },
   Effect.fn("share")(function* ({ anyone, stop }) {
     if (stop && anyone) return yield* new CommandFailed({ message: "--stop と --anyone は一緒に指定できません" });
-    if (!stop && !anyone) return yield* new CommandFailed({ message: "閲覧の共有の許可の範囲を指定してください（--anyone）。閉じるときは --stop" });
     const port = yield* portConfig;
     if (stop) {
       yield* requestServer(port, "POST", "/share/close", ShareStatus);
       return;
     }
-    const opened = yield* requestServer(port, "POST", "/share/open", Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: Schema.Literal("anyone") }), { anyone: true });
-    yield* write(formatShareOpened(opened));
+    // 拒否の判定順（共有中・セッション無し・ローカル・cloudflared 無し・範囲が空）はサーバーが持つ。
+    // 新しく開いたか既存を返したかは、サーバーがロックの中で決めてヘッダーで返す
+    const response = yield* executeServerRequest(port, "POST", "/share/open", anyone ? { anyone: true } : {});
+    const outcome = yield* Schema.decodeUnknownEffect(ShareOpenOutcome)(response.headers[SHARE_OPEN_OUTCOME_HEADER]).pipe(
+      Effect.mapError(() => new ServerFailed({ message: "サーバーの応答が読めません: 共有の結果を示すヘッダーがありません" })),
+    );
+    const status = yield* decodeServerBody(response, Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: Schema.Literal("anyone") }));
+    if (outcome === "already-open") return yield* new CommandFailed({ message: formatShareAlreadyOpen(status).trimEnd() });
+    yield* write(formatShareOpened(status));
   }),
 ).pipe(
   Command.withDescription(

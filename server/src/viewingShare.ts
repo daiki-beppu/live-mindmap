@@ -3,15 +3,23 @@
 // どれも、この Scope の後始末（Tunnel の子プロセスを止める・閲覧の口の待受けを閉じる・状態を無しに戻す）に合流する。
 // http.ts を import しない（循環を避ける）。閲覧の口を開く関数は Layer の引数で受ける。
 import { Context, Deferred, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from "effect";
-import type { ShareStatus } from "./core/index.ts";
+import type { ShareOpenOutcome, ShareStatus } from "./core/index.ts";
 import { ReviewBuild } from "./review.ts";
 import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions } from "./sessions.ts";
-import { Tunnel } from "./tunnel.ts";
+import { CloudflaredMissing, Tunnel } from "./tunnel.ts";
 import { Viewers } from "./viewers.ts";
 
 // 閲覧の共有を開けなかった（画面のビルド・待受け・Tunnel のどれかの失敗）。message は原因の文面
 export class ShareOpenFailed extends Schema.TaggedError<ShareOpenFailed>()("ShareOpenFailed", { message: Schema.String }) {}
+
+// ローカルモードのセッションでは、閲覧の共有を開かない（会議の中身を Mac の外に出さない）
+export class ShareRefusedLocalMode extends Schema.TaggedError<ShareRefusedLocalMode>()("ShareRefusedLocalMode", {
+  message: Schema.String,
+}) {}
+
+// 許可の範囲が空（--anyone が無い）。共有中・セッション無し・ローカル・cloudflared 無しの判定のあとで拒否する
+export class ShareScopeEmpty extends Schema.TaggedError<ShareScopeEmpty>()("ShareScopeEmpty", { message: Schema.String }) {}
 
 // 閲覧の口を開いた結果。port は待ち受けているポート。allow は許す Origin のホスト名を 1 つ決める（tunnel のホスト名が出てから呼ぶ）
 export type ViewingPort = { readonly port: number; readonly allow: (hostname: string) => Effect.Effect<void> };
@@ -24,8 +32,9 @@ type Current =
   | { readonly phase: "open"; readonly id: object; readonly scope: Scope.Closeable; readonly status: Extract<ShareStatus, { status: "open" }> };
 
 export class ViewingShare extends Context.Service<ViewingShare, {
-  // 閲覧の共有を開く。すでに開いていれば今の状態を返し、新しくは開かない
-  open: Effect.Effect<Extract<ShareStatus, { status: "open" }>, ShareOpenFailed | SessionFailure>;
+  // 閲覧の共有を開く。すでに開いていれば今の状態を返し、新しくは開かない。
+  // 新しく開いたか既存を返したかは、ロックの中で決めた outcome で伝える
+  open: (scope: { readonly anyone: boolean }) => Effect.Effect<{ readonly outcome: ShareOpenOutcome; readonly status: Extract<ShareStatus, { status: "open" }> }, ShareOpenFailed | ShareRefusedLocalMode | ShareScopeEmpty | CloudflaredMissing | SessionFailure>;
   // 閉じる。開いていなくても成功する
   close: Effect.Effect<void>;
   status: Effect.Effect<ShareStatus>;
@@ -40,10 +49,18 @@ export class ViewingShare extends Context.Service<ViewingShare, {
       // 開く・閉じるは 1 つずつ。二重に開かず、開く途中で閉じる操作と交わらない
       const lock = yield* Semaphore.make(1);
 
-      const open = lock.withPermit(Effect.gen(function* () {
+      const open = (requested: { readonly anyone: boolean }) => lock.withPermit(Effect.gen(function* () {
         const existing = yield* Ref.get(current);
-        if (existing?.phase === "open") return existing.status;
-        const sessionScope = yield* sessions.sessionScope;
+        if (existing?.phase === "open") return { outcome: "already-open", status: existing.status } as const;
+        const { scope: sessionScope, local } = yield* sessions.liveSession;
+        if (local) {
+          return yield* new ShareRefusedLocalMode({ message: "ローカルモードのセッションでは閲覧の共有を開けません。会議の中身を Mac の外に出さないためです" });
+        }
+        // 閲覧の口やビルドを作る前に、cloudflared が使えるかを確かめる
+        yield* tunnel.check.pipe(Effect.catchTag("TunnelFailed", (error) => Effect.fail(new ShareOpenFailed({ message: error.message }))));
+        if (!requested.anyone) {
+          return yield* new ShareScopeEmpty({ message: "閲覧の共有の許可の範囲を指定してください（--anyone）。閉じるときは --stop" });
+        }
         const id = {};
         // 共有の Scope の用意。fork・状態の登録・後始末の登録は途中で割り込まれない。
         // 状態の登録を後始末の登録より先に置く（閉じた Scope では後始末がその場で走り、登録した状態を消す）
@@ -69,7 +86,7 @@ export class ViewingShare extends Context.Service<ViewingShare, {
           const published = yield* Ref.modify(current, (now): readonly [boolean, Current | undefined] =>
             now?.phase === "opening" && now.id === id && scope.state._tag !== "Closed" ? [true, { phase: "open", id, scope, status }] : [false, now]);
           if (!published) return yield* failed("閲覧の共有は開始の途中で閉じられました");
-          return status;
+          return { outcome: "opened", status } as const;
         }).pipe(Effect.mapError((error) => failed(error.message)));
         // 開始の途中で共有の Scope が閉じたら、待ちを打ち切って失敗にする
         const closedDuringOpen = Effect.andThen(Deferred.await(ended), Effect.fail(failed("閲覧の共有は開始の途中で閉じられました")));

@@ -9,12 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
+import { HttpClient, type HttpClientRequest } from "effect/http";
 import { ConfigProvider, Console, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream, type Cause } from "effect";
 import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
-import { runCli } from "../src/cli.ts";
+import { reportFailure, runCli } from "../src/cli.ts";
 import type { ServerLayers } from "../src/server.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
@@ -443,7 +444,7 @@ describe("閲覧の共有（Issue #834）", () => {
   const ORIGIN = `https://${FAKE_TUNNEL_HOST}`;
   const START = '{"app":"us.zoom.xos","title":"週次","audio":false}';
 
-  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean }) {
+  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean }) {
     const tunnel = fakeTunnel(tunnelOptions);
     const r = yield* resourceWithFakeHelpers([{}], { viewing: tunnel.viewing });
     const call = (method: string, path: string, body?: string, origin?: string) =>
@@ -451,16 +452,24 @@ describe("閲覧の共有（Issue #834）", () => {
     const json = (response: Response) => Effect.tryPromise(() => response.json());
     const open = () => call("POST", "/share/open", '{"anyone":true}');
     const startSession = call("POST", "/session/start", START).pipe(Effect.tap((res) => Effect.sync(() => expect(res.status).toBe(200))));
-    // cli を、このサーバーに向けて実行する。標準出力の行と、終了が失敗かを返す
-    const cli = (args: ReadonlyArray<string>) => Effect.suspend(() => {
+    // ローカルモード（Apple Intelligence）のセッションを開始する
+    const startLocalSession = call("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false,"model":{"name":"apple","route":"apple","local":true}}').pipe(Effect.tap((res) => Effect.sync(() => expect(res.status).toBe(200))));
+    // cli を、このサーバーに向けて実行する。標準出力・標準エラーの行と、終了が失敗かを返す
+    // onRequest は、cli が送る HTTP 要求を送る直前に観測する（決まった順序の再現に使う）
+    const cli = (args: ReadonlyArray<string>, onRequest?: (request: HttpClientRequest.HttpClientRequest) => Effect.Effect<void>) => Effect.suspend(() => {
       const out: string[] = [];
+      const err: string[] = [];
       const consoleService: Console.Console = {
         ...console,
         log: (...a: unknown[]) => { out.push(a.map(String).join(" ") + "\n"); },
+        error: (...a: unknown[]) => { err.push(a.map(String).join(" ") + "\n"); },
       };
+      const observedClient = onRequest === undefined
+        ? NodeHttpClient.layerUndici
+        : Layer.effect(HttpClient.HttpClient)(Effect.map(HttpClient.HttpClient, (client) => HttpClient.tapRequest(client, onRequest))).pipe(Layer.provide(NodeHttpClient.layerUndici));
       const cliLayer = Layer.mergeAll(forbiddenManagedDeps,
         NodeServices.layer, unusedApple,
-        NodeHttpClient.layerUndici,
+        observedClient,
         ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),
         Layer.succeed(Console.Console, consoleService),
         Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
@@ -468,9 +477,10 @@ describe("閲覧の共有（Issue #834）", () => {
         fakeAudioMix().layer,
         fakeScreenJpeg().layer,
       );
-      return runCli([...args]).pipe(Effect.provide(cliLayer), Effect.exit, Effect.map((exit) => ({ out: out.join(""), failed: Exit.isFailure(exit) })));
+      // 失敗の表示は入口の reportFailure が持つので、実際の入口と同じく失敗の原因をそこへ渡す
+      return runCli([...args]).pipe(Effect.tapCause(reportFailure), Effect.provide(cliLayer), Effect.exit, Effect.map((exit) => ({ out: out.join(""), err: err.join(""), failed: Exit.isFailure(exit) })));
     });
-    return { r, tunnel, call, json, open, startSession, cli };
+    return { r, tunnel, call, json, open, startSession, startLocalSession, cli };
   });
 
   const refused = (port: number) => Effect.tryPromise(() => expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow());
@@ -562,10 +572,10 @@ describe("閲覧の共有（Issue #834）", () => {
     yield* refused(port);
   }));
 
-  it.live("open の本文は {anyone:true} だけを受ける。それ以外は 400 で、Tunnel を開かない", () => Effect.gen(function* () {
+  it.live("open の本文は {anyone:true} か {} だけを受ける。それ以外は 400 で、Tunnel を開かない", () => Effect.gen(function* () {
     const s = yield* shareResource();
     yield* s.startSession;
-    for (const body of ['{}', '{"anyone":false}', '{"anyone":"yes"}', '{"mails":["a@example.com"]}', '{"anyone":true,"mails":["a@example.com"]}', "{not json", undefined]) {
+    for (const body of ['{"anyone":false}', '{"anyone":"yes"}', '{"mails":["a@example.com"]}', '{"anyone":true,"mails":["a@example.com"]}', "{not json", undefined]) {
       const response = yield* s.call("POST", "/share/open", body);
       expect([body, response.status]).toEqual([body, 400]);
     }
@@ -642,6 +652,70 @@ describe("閲覧の共有（Issue #834）", () => {
     expect(s.tunnel.opened).toHaveLength(2);
   }));
 
+  // 開けないときに理由を示して止まる 4 つの場合（Issue #835）。拒む判定は、閲覧の口・画面のビルド・Tunnel の起動より前に走る
+  const NO_SESSION = "進行中のセッションがありません";
+  const LOCAL_REASON = "ローカルモード";
+  const INSTALL_HOW = "pnpm cli install cloudflared";
+
+  it.live("セッションが無いときの open は 409 で理由を返し、Tunnel を開かず、状態は off のまま。セッションを始めれば開ける", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    const response = yield* s.open();
+    expect(response.status).toBe(409);
+    expect(((yield* s.json(response)) as { error: string }).error).toContain(NO_SESSION);
+    expect(s.tunnel.opened).toEqual([]);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    yield* s.startSession;
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(1);
+  }));
+
+  it.live("ローカルモードのセッションでの open は 409 で理由を返し、閲覧の口も Tunnel も開かず、状態は off のまま", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startLocalSession;
+    const response = yield* s.open();
+    expect(response.status).toBe(409);
+    expect(((yield* s.json(response)) as { error: string }).error).toContain(LOCAL_REASON);
+    expect(s.tunnel.opened).toEqual([]);
+    expect(s.tunnel.closed()).toBe(0);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+    // 何度打っても開かない
+    expect((yield* s.open()).status).toBe(409);
+    expect(s.tunnel.opened).toEqual([]);
+  }));
+
+  it.live("ローカルモードを終えた次の通常のセッションでは、同じサーバーで開ける（拒みはセッションの種類に結ぶ）", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startLocalSession;
+    expect((yield* s.open()).status).toBe(409);
+    expect((yield* s.call("POST", "/session/stop")).status).toBe(200);
+    yield* s.startSession;
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.opened).toHaveLength(1);
+  }));
+
+  it.live("cloudflared が無いときの open は 503 で入れ方を返し、Tunnel を開かず、状態は off のまま", () => Effect.gen(function* () {
+    const s = yield* shareResource({ missing: true });
+    yield* s.startSession;
+    const response = yield* s.open();
+    expect(response.status).toBe(503);
+    expect(((yield* s.json(response)) as { error: string }).error).toContain(INSTALL_HOW);
+    expect(s.tunnel.checked()).toBeGreaterThan(0);
+    expect(s.tunnel.opened).toEqual([]);
+    expect(s.tunnel.closed()).toBe(0);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+  }));
+
+  it.live("すでに開いているときの open は、URL も許可の範囲も変えず、状態の URL も同じまま", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    yield* s.open();
+    const before = yield* s.json(yield* s.call("GET", "/share/status"));
+    expect((yield* s.open()).status).toBe(200);
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual(before);
+    expect(before).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    expect(s.tunnel.opened).toHaveLength(1);
+  }));
+
   describe("cli", () => {
     it.live("share --anyone は URL・許可の範囲・稼働の保証が無い旨を標準出力に出し、閲覧の口を開く", () => Effect.gen(function* () {
       const s = yield* shareResource();
@@ -657,16 +731,51 @@ describe("閲覧の共有（Issue #834）", () => {
       expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${viewingPortOf(s.tunnel)}/`))).status).toBe(200);
     }));
 
-    it.live("範囲が空の share（--anyone が無い）は、サーバーに頼まずに失敗し、URL を出さない", () => Effect.gen(function* () {
+    it.live("範囲が空の share（--anyone が無い）は失敗し、URL を出さない", () => Effect.gen(function* () {
       const s = yield* shareResource();
       yield* s.startSession;
-      const { out, failed } = yield* s.cli(["share"]);
+      const { out, err, failed } = yield* s.cli(["share"]);
       expect(failed).toBe(true);
+      expect(err).toContain("許可の範囲を指定");
+      expect(err).not.toContain(NO_SESSION);
+      expect(err).not.toContain(LOCAL_REASON);
+      expect(err).not.toContain(INSTALL_HOW);
       expect(out).not.toContain("https://");
       expect(s.tunnel.opened).toEqual([]);
       // 守っている状態に到達していることを、--anyone を付ければ開くことで示す
       expect((yield* s.cli(["share", "--anyone"])).failed).toBe(false);
       expect(s.tunnel.opened).toHaveLength(1);
+    }));
+
+    it.live("セッションが無いときの引数なしの share は、セッションが無い理由で失敗し、Tunnel を開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      const { out, err, failed } = yield* s.cli(["share"]);
+      expect(failed).toBe(true);
+      expect(err).toContain(NO_SESSION);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+    }));
+
+    it.live("ローカルモードのセッションでの引数なしの share は、ローカルモードの理由で失敗し、Tunnel を開かない。status は 無し のまま", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startLocalSession;
+      const { out, err, failed } = yield* s.cli(["share"]);
+      expect(failed).toBe(true);
+      expect(err).toContain(LOCAL_REASON);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+      expect((yield* s.cli(["status"])).out.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
+    }));
+
+    it.live("cloudflared が無いときの引数なしの share は、入れ方を出して失敗し、Tunnel を開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource({ missing: true });
+      yield* s.startSession;
+      const { out, err, failed } = yield* s.cli(["share"]);
+      expect(failed).toBe(true);
+      expect(err).toContain(INSTALL_HOW);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+      expect((yield* s.cli(["status"])).out.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
     }));
 
     it.live("--stop と --anyone を一緒に渡したら失敗し、開きも閉じもしない", () => Effect.gen(function* () {
@@ -695,6 +804,103 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(after.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
       expect(after).not.toContain(ORIGIN);
       yield* refused(viewingPortOf(s.tunnel));
+    }));
+
+    it.live("セッションが無いときの share --anyone は失敗し、標準エラーに理由が出て、URL は出さず、Tunnel を開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      const { out, err, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(true);
+      expect(err).toContain(NO_SESSION);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+    }));
+
+    it.live("ローカルモードのセッションでの share --anyone は失敗し、標準エラーに理由が出て、URL は出さず、閲覧の口も Tunnel も開かない。status は 無し のまま", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startLocalSession;
+      const { out, err, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(true);
+      expect(err).toContain(LOCAL_REASON);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+      expect((yield* s.cli(["status"])).out.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
+    }));
+
+    it.live("cloudflared が無いときの share --anyone は失敗し、標準エラーに入れ方が出て、URL は出さず、Tunnel を開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource({ missing: true });
+      yield* s.startSession;
+      const { out, err, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(true);
+      expect(err).toContain(INSTALL_HOW);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+      expect((yield* s.cli(["status"])).out.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
+    }));
+
+    it.live("すでに共有中の share --anyone は失敗し、標準エラーに「すでに」と今の URL と許可の範囲が出る。標準出力に「開きました」は出ず、新しくは開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      expect((yield* s.cli(["share", "--anyone"])).failed).toBe(false);
+      const { out, err, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(true);
+      expect(err).toContain("すでに");
+      expect(err).toContain(ORIGIN);
+      expect(err).toContain("誰でも");
+      expect(out).not.toContain("開きました");
+      expect(s.tunnel.opened).toHaveLength(1);
+      expect(s.tunnel.closed()).toBe(0);
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    }));
+
+    it.live("開始の途中の共有と交差した share --anyone は、すでに共有中として失敗し、新しくは開かず、「開きました」を出さない", () => Effect.gen(function* () {
+      const s = yield* shareResource({ holdFirstOpen: true });
+      yield* s.startSession;
+      const first = yield* Effect.forkChild(s.open());
+      yield* s.tunnel.reached;
+      // 事前の確認が済んだ後（POST を送る直前）まで、開始の途中を止めておく
+      const posting = yield* Deferred.make<void>();
+      const second = yield* Effect.forkChild(s.cli(["share", "--anyone"], (request) =>
+        request.method === "POST" && request.url.endsWith("/share/open") ? Deferred.succeed(posting, undefined).pipe(Effect.asVoid) : Effect.void));
+      yield* Deferred.await(posting);
+      yield* s.tunnel.succeedHeld;
+      expect((yield* Fiber.join(first)).status).toBe(200);
+      const { out, err, failed } = yield* Fiber.join(second);
+      expect(failed).toBe(true);
+      expect(err).toContain("すでに");
+      expect(err).toContain(ORIGIN);
+      expect(err).toContain("誰でも");
+      expect(out).not.toContain("開きました");
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toHaveLength(1);
+      expect(s.tunnel.closed()).toBe(0);
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    }));
+
+    it.live("共有中の範囲が空の share は、すでに共有中として失敗し、新しくは開かず、URL と「開きました」を標準出力に出さない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      expect((yield* s.cli(["share", "--anyone"])).failed).toBe(false);
+      const { out, err, failed } = yield* s.cli(["share"]);
+      expect(failed).toBe(true);
+      expect(err).toContain("すでに");
+      expect(err).toContain(ORIGIN);
+      expect(err).toContain("誰でも");
+      expect(out).not.toContain("https://");
+      expect(out).not.toContain("開きました");
+      expect(s.tunnel.opened).toHaveLength(1);
+      expect(s.tunnel.closed()).toBe(0);
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    }));
+
+    it.live("閉じた後の share --anyone は、拒まれずに開き直せる", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.cli(["share", "--anyone"]);
+      expect((yield* s.cli(["share", "--stop"])).failed).toBe(false);
+      const again = yield* s.cli(["share", "--anyone"]);
+      expect(again.failed).toBe(false);
+      expect(again.err).toBe("");
+      expect(s.tunnel.opened).toHaveLength(2);
     }));
   });
 });

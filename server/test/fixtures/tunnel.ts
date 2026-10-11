@@ -1,6 +1,6 @@
 import { Deferred, Effect, Layer } from "effect";
 import { ReviewBuild } from "../../src/review.ts";
-import { Tunnel, TunnelFailed } from "../../src/tunnel.ts";
+import { CloudflaredMissing, Tunnel, TunnelFailed } from "../../src/tunnel.ts";
 import { TEMPLATE } from "./review.ts";
 
 // 偽の Tunnel。cloudflared を起動せず、渡されたポートを記録して固定のホスト名を返す。
@@ -11,8 +11,10 @@ export const FAKE_TUNNEL_HOST = "fake-tunnel.trycloudflare.com";
 // reached は待ちに到達したときのポートで完了し、failHeld は待ちを TunnelFailed で終わらせ、succeedHeld は待ちをホスト名の返却で終わらせる。2 回目以降は常に成功する。
 // holdFirstCleanup: true のとき、最初の open の後始末は cleanupStarted を完了してから releaseCleanup を待ち、そのあとで closed() を加算する。
 // cleanupReached は後始末の開始で完了する。
-export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean } = {}) => {
+// missing: true のとき、check は CloudflaredMissing で失敗する（cloudflared が管理ディレクトリに無い状態）。checked() は check が呼ばれた回数。
+export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean } = {}) => {
   const opened: number[] = [];
+  let checkedCount = 0;
   let closedCount = 0;
   const reached = Deferred.makeUnsafe<number>();
   const held = Deferred.makeUnsafe<void, TunnelFailed>();
@@ -21,6 +23,12 @@ export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly
   let holdNext = options.holdFirstOpen === true;
   let holdCleanup = options.holdFirstCleanup === true;
   const tunnel = Layer.succeed(Tunnel, Tunnel.of({
+    check: Effect.suspend(() => {
+      checkedCount += 1;
+      return options.missing === true
+        ? Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。pnpm cli install cloudflared で入れてから、もう一度 share を打ってください" }))
+        : Effect.void;
+    }),
     open: (port) => Effect.gen(function* () {
       opened.push(port);
       const hold = holdCleanup;
@@ -41,11 +49,11 @@ export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly
   const succeedHeld = Deferred.succeed(held, undefined);
   const cleanupReached = Deferred.await(cleanupStarted);
   const releaseCleanup = Deferred.succeed(cleanupGate, undefined);
-  return { viewing: Layer.merge(tunnel, build), opened, closed: () => closedCount, reached: Deferred.await(reached), failHeld, succeedHeld, cleanupReached, releaseCleanup };
+  return { viewing: Layer.merge(tunnel, build), opened, closed: () => closedCount, checked: () => checkedCount, reached: Deferred.await(reached), failHeld, succeedHeld, cleanupReached, releaseCleanup };
 };
 
 // 閲覧の共有を使わないテスト用。使われたら die する
 export const unusedViewing = Layer.merge(
-  Layer.succeed(Tunnel, Tunnel.of({ open: () => Effect.die("このテストでは tunnel を開きません") })),
+  Layer.succeed(Tunnel, Tunnel.of({ check: Effect.die("このテストでは tunnel を確かめません"), open: () => Effect.die("このテストでは tunnel を開きません") })),
   Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.die("このテストでは画面をビルドしません") })),
 );

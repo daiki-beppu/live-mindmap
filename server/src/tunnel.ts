@@ -12,6 +12,9 @@ const TUNNEL_STOP_TIMEOUT_MS = 5_000;
 
 export class TunnelFailed extends Schema.TaggedError<TunnelFailed>()("TunnelFailed", { message: Schema.String }) {}
 
+// cloudflared が管理ディレクトリに無い。message は入れ方を含む
+export class CloudflaredMissing extends Schema.TaggedError<CloudflaredMissing>()("CloudflaredMissing", { message: Schema.String }) {}
+
 export type OpenedTunnel = {
   // https:// を含まない公開のホスト名
   hostname: string;
@@ -20,6 +23,8 @@ export type OpenedTunnel = {
 };
 
 export class Tunnel extends Context.Service<Tunnel, {
+  // cloudflared が使える状態かを確かめる。起動はしない。無ければ CloudflaredMissing
+  check: Effect.Effect<void, CloudflaredMissing | TunnelFailed>;
   // port の 127.0.0.1 を公開する tunnel を開く。ホスト名が出るまで待つ。子プロセスは呼び出し側の Scope で止まる
   open: (port: number) => Effect.Effect<OpenedTunnel, TunnelFailed, Scope.Scope>;
 }>()("live-mindmap/server/Tunnel") {
@@ -58,7 +63,13 @@ export class Tunnel extends Context.Service<Tunnel, {
         const hostname = yield* Deferred.await(found);
         return { hostname, dropped: Deferred.await(ended) };
       });
-      return Tunnel.of({ open });
+      const check = deps.check(["cloudflared"]).pipe(
+        Effect.mapError((error) => new TunnelFailed({ message: error.message })),
+        Effect.flatMap(([item]) => item?.state === "ready"
+          ? Effect.void
+          : Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。pnpm cli install cloudflared で入れてから、もう一度 share を打ってください" }))),
+      );
+      return Tunnel.of({ check, open });
     }),
   );
 }
