@@ -158,8 +158,10 @@ function underClosed(map: MeetingMap, id: string): boolean {
 }
 
 // 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
-function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
+// PROTOTYPE（#765、eval-only.patch #686 の移植）: last は前回の応答の仮 id 対応と捨てた操作
+function renderChanges(prev: MeetingMap, cur: MeetingMap, last?: DiffInput["lastApplied"]): string {
   const lines: string[] = [];
+  const refOf = new Map((last?.refs ?? []).map(([r, id]) => [id, r]));
   const ids = (m: MeetingMap) => m.order.filter((id) => id !== ROOT_ID && m.nodes[id]);
   for (const id of ids(prev)) {
     if (!cur.nodes[id]) lines.push(`- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
@@ -179,7 +181,7 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
     const n = cur.nodes[id]!;
     const old = prev.nodes[id];
     if (!old) {
-      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）`);
+      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）${refOf.has(id) ? `（前回の応答の仮 id ${refOf.get(id)}）` : ""}`);
       continue;
     }
     const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.due !== old.due
@@ -206,7 +208,9 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
       walk(id, 1);
     }
   }
-  return lines.length ? lines.join("\n") : "（変更なし）";
+  const droppedLines = (last?.dropped ?? []).map(({ op, reason }) => `- ${JSON.stringify(op)} → ${reason}`);
+  const tail = droppedLines.length ? ["", "### 前回の応答で捨てた操作（適用されていない。捨てた add の仮 id のノードは無い）", ...droppedLines] : [];
+  return (lines.length ? lines.join("\n") : "（変更なし）") + (tail.length ? "\n" + tail.join("\n") : "");
 }
 
 // 計測では除く論点の配下でも、子の議題の表示は残すので探索を分ける。
@@ -264,11 +268,11 @@ function renderTopicList(map: MeetingMap): string {
 }
 
 // previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
-export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: MeetingMap): string {
+export function buildPrompt({ map, recent, fresh, lastApplied }: DiffInput, previous?: MeetingMap): string {
   return [
     renderTopicList(map), "",
     ...(previous
-      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map)]
+      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map, lastApplied)]
       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
     "## 新しい発言", fresh.map(fmtRemark).join("\n"),

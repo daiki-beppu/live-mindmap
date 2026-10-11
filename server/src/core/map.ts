@@ -158,7 +158,7 @@ function removeNode(map: MeetingMap, id: string) {
 // add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
 // close と開き直しは changeOrder・touchedAt に影響しない。
 // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: [string, string][] } { // refs は PROTOTYPE（#765）
   const { round, at } = stamp;
   const map = cloneMap(input);
   const dropped: Dropped[] = [];
@@ -271,5 +271,5 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
       }
     }
   }
-  return { map, dropped, changeOrder };
+  return { map, dropped, changeOrder, refs: [...refs] };
 }

@@ -27,6 +27,12 @@ function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
 // 14 は、計測（#75）で品質を確かめた最長の回数
 export const QUERY_RENEW_CALLS = 14;
 
+// PROTOTYPE（#765）: research/haiku-ids の append-decision.md
+const HAIKU_APPEND = `# 念押し（必ず守る）
+## 決定を TODO で置き換えない
+- 合意した内容（「〜してもらう」「〜を絞る」「〜にする」）は、論点の子の決定にする。合意に担当者の作業が付いていても、決定を TODO で済ませない。
+- その作業は、決定とは別に TODO として add する。決定と TODO の両方を残す。`;
+
 // Agent SDK の query。テストでは偽物の Layer に替える
 export class AgentSdk extends Context.Service<AgentSdk, {
   readonly query: typeof import("@anthropic-ai/claude-agent-sdk")["query"];
@@ -88,7 +94,8 @@ export const layerClaude = (model: string) => Layer.effect(
             try: () => sdk.query({
               prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
               options: {
-                model, systemPrompt: SYSTEM,
+                // PROTOTYPE（#765）: #656 のチューニング。Haiku 5.5 は low と決定の追記、それ以外は medium
+                model, systemPrompt: SYSTEM + (model === "claude-haiku-5-5" ? "\n\n" + HAIKU_APPEND : ""), effort: model === "claude-haiku-5-5" ? "low" : "medium",
                 tools: [], settingSources: [], persistSession: false, maxTurns: 4,
                 mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
                 outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },

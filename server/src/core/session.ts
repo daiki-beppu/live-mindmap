@@ -34,6 +34,7 @@ export type DiffInput = {
   recent: Remark[]; // 直前に処理済みの発言（文脈用）
   fresh: Remark[]; // 新しい発言
   screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
+  lastApplied?: { readonly dropped: readonly Dropped[]; readonly refs: readonly [string, string][] }; // PROTOTYPE（#765）: 前回の応答で捨てた操作と、仮 id → n の id
   previousScreens?: readonly ScreenChange[]; // この呼び出しより前に最後に添えた共有画面（古い順・最大 2 件）。query を開き直したときの最初のメッセージに送り直す。無ければキーごと付けない
 };
 // 差分更新の失敗の形。core は具体の失敗の型を知らず、タグと文面だけを見る（ログの error 欄に使う）
@@ -313,6 +314,7 @@ type Runtime = {
   readonly screenFiles: ReadonlySet<string>; // 画像に付けたファイル名
   readonly lastScreens: readonly HeldScreen[]; // 最後に添えた共有画面（古い順・最大 LAST_SCREENS 件）。失敗した回に選んだ画面も数える。画像はファイル名だけで、送るときに読み戻す
   readonly receivedScreens: number; // 受け取った共有画面の総数。diff の行の screenCount に使う
+  readonly lastApplied?: DiffInput["lastApplied"]; // PROTOTYPE（#765）
 };
 
 // 差分更新に添えるまで持つのは、画像のバイト列ではなく、書いたファイル名（file）だけ
@@ -405,7 +407,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         Effect.gen(function* () {
           const state = (yield* Ref.get(ref)).diffUpdate;
           if (state.status === "paused") yield* log.write({ type: "diff-update-retry", reason: state.reason });
-          const { map, recent, input, attached, previous } = yield* Ref.modify(ref, (s) => {
+          const { map, recent, input, attached, previous, lastApplied } = yield* Ref.modify(ref, (s) => {
             const recent = s.processed.slice(-RECENT);
             // 添える共有画面: 新しい発言の end の最大値以下に映り始めた、まだ添えていない変化を時刻順に並べ、新しい SCREENS_MAX 件。
             // 候補はすべて処理済みにする（添えなかった古い変化を後から送ると、映り続ける画面と食い違う）。後に映り始めた変化は次へ回す
@@ -420,7 +422,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
               ...(s.receivedScreens > 0 ? { screenCount: s.receivedScreens } : {}),
             };
             return [
-              { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [] },
+              { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [], lastApplied: s.lastApplied },
               {
                 ...s,
                 reflecting: fresh,
@@ -445,7 +447,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           // 失敗は、添える画像の読み戻しと update の、中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
           const outcome = yield* Effect.all([Effect.forEach(attached, readBack), readPrevious]).pipe(
             Effect.flatMap(([screens, previousScreens]) =>
-              restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
+              restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(lastApplied ? { lastApplied } : {}), ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) })),
             ),
             Effect.flatMap(({ ops, usage, processedRemarks }) => {
               const count = processedRemarks ?? fresh.length;
@@ -469,7 +471,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
               return false;
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
-            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
+            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh], lastApplied: undefined }));
             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
             return false;
           }
@@ -480,7 +482,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const stamp = stampOf(s, consumed);
             const applied = applyOps(s.map, outcome.ops, known, stamp);
             return [applied.dropped, {
-              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, map: applied.map, reflecting: [],
+              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, map: applied.map, reflecting: [], lastApplied: { dropped: applied.dropped, refs: applied.refs },
               known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
