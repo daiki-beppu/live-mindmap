@@ -40,10 +40,11 @@ import {
   ScreenEvent,
   ScreenOffEvent,
   StartEvent,
+  VocabEvent,
   SessionLog,
   playback,
+  type PlaybackRemark,
   type PlaybackScreen,
-  type Remark,
   restoreSession,
   restoreState,
   toMarkdown,
@@ -53,6 +54,8 @@ import {
   type Snapshot,
   type DiffUpdateFrame,
 } from "./core/index.ts";
+import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
+import { withReplayCorrection } from "./replayCorrection.ts";
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { BrokenLogLine, readLogLines } from "./logLines.ts";
@@ -99,7 +102,7 @@ class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed",
 // ログの行を type で選ぶ集合（decode は LogEvent のまま）
 const typesOf = (events: readonly { readonly fields: { readonly type: { readonly literal: string } } }[]): ReadonlySet<string> => new Set(events.map((event) => event.fields.type.literal));
 // 録音済みセッションを読むとき（題名・発言・画面）
-const RECORDED_TYPES = typesOf([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent]);
+const RECORDED_TYPES = typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]);
 // evaluate が読むとき（題名・発言・差分）
 const EVAL_TYPES = typesOf([StartEvent, RemarkEvent, DiffEvent]);
 
@@ -297,7 +300,8 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
   if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
   const { lines, events } = yield* readLogLines(logPath).pipe(orFileFailed);
   let title: string | undefined;
-  const remarks: Remark[] = [];
+  const remarks: PlaybackRemark[] = [];
+  const vocabulary: (typeof VocabEvent)["Type"][] = [];
   const screens: PlaybackScreen<CommandFailed>[] = [];
   for (const [i, event] of events.entries()) {
     if (!Predicate.isObject(event) || !("type" in event)) continue;
@@ -310,12 +314,17 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
         title ??= decoded.title;
         break;
       case "remark":
-        remarks.push(decoded.remark);
+        // raw と words が両方そろう行だけ、直し直す元として運ぶ（無い古い行は直さずに流す）
+        remarks.push(decoded.raw !== undefined && decoded.words !== undefined ? { ...decoded.remark, raw: decoded.raw, words: decoded.words } : decoded.remark);
+        break;
+      case "vocab":
+        vocabulary.push(decoded);
         break;
       case "screen": {
         const { start, image } = decoded;
+        const recordedLines = decoded.lines === undefined ? {} : { lines: decoded.lines };
         if (image === null) {
-          screens.push({ start, image: null });
+          screens.push({ start, image: null, ...recordedLines });
           break;
         }
         // ログ由来の image は、screens/ 直下の単一のファイル名だけを認める（外のファイルを読まない）
@@ -327,6 +336,7 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
         }
         screens.push({
           start,
+          ...recordedLines,
           image: {
             id: image,
             load: fs.readFile(path).pipe(Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${e.message}` }))),
@@ -342,7 +352,7 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
     }
   }
   if (title === undefined) return yield* new CommandFailed({ message: `${LOG_FILE} に start の行がありません: ${logPath}` });
-  return { title, remarks, screens };
+  return { title, remarks, screens, vocabulary };
 });
 
 const readTranscriptRemarks = Effect.fn("readTranscriptRemarks")(function* (transcript: string) {
@@ -363,15 +373,23 @@ const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した�
 const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（Apple Intelligence の子プロセスだけを使い、会議の中身を Mac の外に出さない。--model は apple だけ組み合わせられる）"), Flag.withDefault(false));
 
 const recordPlayback = Effect.fn("recordPlayback")(function* (
-  input: { title: string; remarks: Iterable<Remark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean },
+  input: { title: string; remarks: Iterable<PlaybackRemark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean; vocabulary?: ReadonlyArray<(typeof VocabEvent)["Type"]> },
   model: ExecutableModel,
   publish: (snapshot: Snapshot) => Effect.Effect<void>,
   diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>,
 ) {
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-  const { session } = yield* openRecordedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
-  yield* playback(session, input.remarks, { ...(input.realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens: input.screens });
+  const { session, appendLog } = yield* openRecordedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
+  // 記録したセッションのフォルダを再生するときだけ、今の規則で直し直す（読みのサブコマンドもモデルも呼ばない）
+  const replaying = input.vocabulary === undefined
+    ? session
+    : yield* withReplayCorrection(session, {
+        vocab: input.vocabulary,
+        commonWords: yield* loadCommonWords(COMMON_WORDS_PATH).pipe(Effect.orDie),
+        appendLog,
+      });
+  yield* playback(replaying, input.remarks, { ...(input.realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens: input.screens });
   const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe).pipe(
     Effect.mapError((e) => new CommandFailed({ message: e.message })),
   );
@@ -386,7 +404,8 @@ const play = Command.make(
     transcript: Argument.String("source").pipe(
       Argument.withDescription(
         "再生する文字起こしファイル（kanary transcribe の JSON）、または過去のセッションのフォルダ（log.jsonl を持つフォルダ）。"
-          + "フォルダのときは、ログの発言と共有画面の変化（screen・screen-off）を元の時刻のまま流し、画像は元のフォルダの screens/ から読む。題名は元の start の行から取る",
+          + "フォルダのときは、ログの発言と共有画面の変化（screen・screen-off）を元の時刻のまま流し、画像は元のフォルダの screens/ から読む。題名は元の start の行から取る。"
+          + "発言は、ログの vocab の行（読み）・screen の lines・発言の raw と words から今の補正の規則で直し直す（読みのサブコマンドもモデルも呼ばない。raw と words の無い古い発言は直さない）",
       ),
     ),
     realtime: Flag.Boolean("realtime").pipe(
@@ -435,7 +454,7 @@ const play = Command.make(
         yield* viewers.sessionMode({ type: "session-mode", local: selected.local });
         const { paths } = yield* recordPlayback({
           title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
-          remarks, screens, realtime,
+          remarks, screens, realtime, ...(recorded ? { vocabulary: recorded.vocabulary } : {}),
         }, selected, viewers.publish, viewers.diffUpdate).pipe(Effect.ensuring(viewers.sessionMode({ type: "session-mode", local: false })));
         yield* write(paths.map((path) => `${path}\n`).join(""));
       }).pipe(Effect.provide(updaterLayer));
@@ -445,7 +464,7 @@ const play = Command.make(
 ).pipe(
   Command.withDescription(
     "録音サンプルの文字起こし、または過去のセッションのフォルダ（log.jsonl を持つフォルダ）を再生し、マップを組み立てる（既定は待ち時間なし、--realtime で等速）。"
-      + "フォルダのときは、ログの発言と共有画面の変化を元の時刻のまま流し、新しいセッションのフォルダにライブと同じ形でログと screens/ を書く。"
+      + "フォルダのときは、ログの発言と共有画面の変化を元の時刻のまま流し、新しいセッションのフォルダにライブと同じ形でログと screens/ を書く（発言は今の補正の規則で直し直す）。"
       + "再生中は WebSocket で、反映のたびにマップ全体をブラウザへ送る。"
       + "終わると、セッションのフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを出す（play のセッションには録音が無いので map-audio.html は作らない）。"
       + "管理依存は入れる前に利用者に確認する",

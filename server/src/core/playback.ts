@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import type { Remark, ScreenOffEvent, Session } from "./session.ts";
+import type { Word } from "./words.ts";
 
 // 共有画面の変化。image は、画像のバイト列を入れる直前に作るもの（再生が終わるまで全画像のバイト列を持たないための形）。
 // reason を持つものは screen-off（共有画面を見ていない印）で、元の start・reason のまま入れる
@@ -7,8 +8,13 @@ export type PlaybackScreen<E> =
   | {
       readonly start: number;
       readonly image: { readonly id: string; readonly load: Effect.Effect<Uint8Array, E> } | null;
+      // 記録したログの screen の行の lines。あれば pushScreen へ渡す
+      readonly lines?: ReadonlyArray<string>;
     }
   | { readonly start: number; readonly reason: (typeof ScreenOffEvent)["Type"]["reason"] };
+
+// 記録したログの remark の行の raw・words（直す前の本文と語）を持てる発言。両方そろえば push の original として渡す
+export type PlaybackRemark = Remark & { readonly raw?: string; readonly words?: readonly Word[] };
 
 export type PlaybackOptions<E> = {
   // 渡すと等速: 発言の end まで待ってから流す（最初は 0 からの差）。待ち方は呼び出し側が決める。
@@ -27,7 +33,7 @@ export type PlaybackOptions<E> = {
 // 等速（sleep あり）: 呼び出しの終わりは待たず、ライブと同じ呼び出し方で流す。
 export const playback = Effect.fnUntraced(function* <E = never>(
   session: Session,
-  remarks: Iterable<Remark>,
+  remarks: Iterable<PlaybackRemark>,
   { sleep, screens }: PlaybackOptions<E> = {},
 ): Effect.fn.Return<void, E> {
   // 等速の「今の時刻」。発言と変化で共有する
@@ -49,13 +55,14 @@ export const playback = Effect.fnUntraced(function* <E = never>(
       yield* session.pushScreenOff({ start: change.start, reason: change.reason });
       return;
     }
-    const { start, image } = change;
-    yield* session.pushScreen({ start, image: image === null ? null : { id: image.id, bytes: yield* image.load } });
+    const { start, image, lines } = change;
+    yield* session.pushScreen({ start, image: image === null ? null : { id: image.id, bytes: yield* image.load } }, lines);
   });
-  for (const r of remarks) {
+  for (const item of remarks) {
+    const { raw, words, ...r } = item;
     while (next < waiting.length && waiting[next]!.start <= r.start) yield* pushNext;
     yield* waitUntil(r.end);
-    yield* session.push(r);
+    yield* (raw !== undefined && words !== undefined ? session.push(r, { raw, words }) : session.push(r));
     if (!sleep) yield* session.idle;
   }
   while (next < waiting.length) yield* pushNext;
