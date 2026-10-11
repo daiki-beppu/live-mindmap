@@ -17,8 +17,8 @@ public final class ScreenEventEmitter: @unchecked Sendable {
         (events, continuation) = AsyncStream<HelperEvent>.makeStream()
     }
 
-    /// フレームを判定し、送るときだけ `encode` で画像（base64）を作って送出する。ブラウザが会議以外のタブになったときは `image: null` を 1 回送出する。終了後は何もしない（`encode` も呼ばない）。
-    public func emit(_ frame: ScreenFrame, encode: () -> String?) {
+    /// フレームを判定し、送るときだけ `encode` で画像（base64）と OCR の行を作って送出する。ブラウザが会議以外のタブになったときは `image: null` を 1 回送出する。終了後は何もしない（`encode` も呼ばない）。
+    public func emit(_ frame: ScreenFrame, encode: () -> ScreenShot?) {
         lock.withLock {
             if closed { return }
             if let event = detector.screenEvent(for: frame, encode: encode) {

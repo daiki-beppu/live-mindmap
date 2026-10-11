@@ -119,7 +119,7 @@ type FakeSinksHandle = {
   readonly finals: { id: string; track: Track; text: string }[];
   readonly partials: { track: Track; text: string }[];
   readonly words: { final: unknown[]; partial: unknown[] }; // sink へ届いた発言・途中結果の words（Issue #639。無ければ undefined）
-  readonly screens: { start: number; image: Uint8Array | null }[];
+  readonly screens: { start: number; image: Uint8Array | null; lines?: readonly string[] }[];
   readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { drained: number; cleared: number; stopped: number };
@@ -137,7 +137,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const finals: { id: string; track: Track; text: string }[] = [];
     const partials: { track: Track; text: string }[] = [];
     const words: { final: unknown[]; partial: unknown[] } = { final: [], partial: [] };
-    const screens: { start: number; image: Uint8Array | null }[] = [];
+    const screens: { start: number; image: Uint8Array | null; lines?: readonly string[] }[] = [];
     const screenOffs: { start: number; reason: "指定" | "許可なし" }[] = [];
     const sequence: string[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
@@ -154,7 +154,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.suspend(() => r.text === control.finalDiesOn ? Effect.die(new Error("ログに書けません")) : Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); })),
-          screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image }); }),
+          screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
           addUserVocabulary: (words) => Effect.sync(() => { vocabAdded.push([...words]); }),
           screenOff: (e) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
@@ -625,6 +625,25 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.screens[0]!.start).toBe(1.5);
         expect([...fakeSinks.screens[0]!.image!]).toEqual([...jpeg]);
         expect(fakeSinks.screens[1]).toEqual({ start: 4, image: null });
+      }));
+
+    // Issue #643: helper の screen の lines は、読み取った文字列のまま sink.screen へ届く。古い helper（lines なし）は lines を付けずに届く
+    it.effect("screen の lines は sink.screen へそのまま届く。空の配列は空のまま、lines が無い screen は lines なしで届く", () =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers([{}]);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, { type: "screen", start: 1, image: "/9j/2Q==", lines: ["港南店", "Zendesk"] });
+        fakeHelpers.send(0, { type: "screen", start: 2, image: "/9j/2Q==", lines: [] });
+        fakeHelpers.send(0, { type: "screen", start: 3, image: "/9j/2Q==" });
+        fakeHelpers.send(0, { type: "screen", start: 4, image: null });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.screens.map((s) => s.lines)).toEqual([["港南店", "Zendesk"], [], undefined, undefined]);
+        expect("lines" in fakeSinks.screens[2]!).toBe(false);
+        expect((yield* sessions.status).status).toBe("running");
       }));
 
     it.effect("screen は取り込みの記録（appendLog）を書かず、発言や途中結果にも流れず、セッションは running のまま", () =>

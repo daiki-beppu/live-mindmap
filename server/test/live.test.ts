@@ -165,6 +165,34 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
         assert.deepStrictEqual(decoded, { kind: "known", event: { type: "screen", start: 3, image: null } });
       }));
 
+    // Issue #643: lines は省ける項目。古い helper（lines なし）も読める
+    it.effect("lines つきの screen は lines を文字列の配列のまま保つ。空の配列も空のまま保つ", () =>
+      Effect.gen(function* () {
+        const withLines = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 1.5, image: base64, lines: ["港南店", "Zendesk"] })));
+        if (withLines.kind !== "known" || withLines.event.type !== "screen") return assert.fail("screen のはず");
+        assert.deepStrictEqual(withLines.event.lines, ["港南店", "Zendesk"]);
+        assert.strictEqual(withLines.event.start, 1.5);
+        const empty = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 2, image: base64, lines: [] })));
+        if (empty.kind !== "known" || empty.event.type !== "screen") return assert.fail("screen のはず");
+        assert.deepStrictEqual(empty.event.lines, []);
+      }));
+
+    it.effect("lines の無い screen（古い helper）は lines のキーを持たずに読める", () =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 1, image: base64 })));
+        if (decoded.kind !== "known" || decoded.event.type !== "screen") return assert.fail("screen のはず");
+        assert.isFalse("lines" in decoded.event);
+      }));
+
+    it.effect.each([
+      ["lines が文字列", { type: "screen", start: 1, image: base64, lines: "港南店" }],
+      ["lines の要素が数値", { type: "screen", start: 1, image: base64, lines: [1] }],
+    ])("壊れた lines は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(row[1])));
+        assert.isTrue(Result.isFailure(result), "decode が成功してしまった");
+      }));
+
     it.effect.each([
       ["image のキーが無い", { type: "screen", start: 1 }],
       ["image が数値", { type: "screen", start: 1, image: 1 }],

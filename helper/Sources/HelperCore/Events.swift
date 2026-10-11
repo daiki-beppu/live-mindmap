@@ -36,7 +36,8 @@ public enum HelperEvent: Sendable, Equatable {
     case origin(hostTime: UInt64)
     /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
     /// `image` は JPEG の base64。映していたウィンドウが無くなったときは nil で、JSON では `null` を明示する。
-    case screen(start: Double, image: String?)
+    /// `lines` は Vision で読んだ文字の行（Issue #643）。OCR に失敗したときは空の配列。画像が nil のときは nil で、キーを付けない。
+    case screen(start: Double, image: String?, lines: [String]?)
     /// 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。音声は続ける。`start` は `origin` と同じ原点からの秒。
     case screenOff(start: Double, reason: ScreenOffReason)
     /// 相手のタップから、フレーム数 1 以上のバッファが 10 秒届かなかった。`start` は `origin` と同じ原点からの秒。1 回だけ流す。
@@ -57,7 +58,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, hostTime, image, reason
+        case type, track, start, end, text, duplicate, words, hostTime, image, lines, reason
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -83,7 +84,7 @@ extension HelperEvent: Encodable {
             try container.encode("origin", forKey: .type)
             // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
             try container.encode(String(hostTime), forKey: .hostTime)
-        case let .screen(start, image):
+        case let .screen(start, image, lines):
             try container.encode("screen", forKey: .type)
             try container.encode(start, forKey: .start)
             // nil でもキーを省かず、JSON の null として出す（`encodeIfPresent` は使わない）。
@@ -91,6 +92,9 @@ extension HelperEvent: Encodable {
                 try container.encode(image, forKey: .image)
             } else {
                 try container.encodeNil(forKey: .image)
+            }
+            if let lines {
+                try container.encode(lines, forKey: .lines)
             }
         case let .screenOff(start, reason):
             try container.encode("screen-off", forKey: .type)

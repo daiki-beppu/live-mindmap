@@ -243,7 +243,12 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
                 printScreenError("JPEG を作れなかったので、この画面は送らない")
                 return nil
             }
-            return jpeg.base64EncodedString()
+            // OCR は送ると決めた画面だけ。失敗しても画像は送り、lines は空にする。
+            let lines = recognizeScreenText(rendered.image)
+            if lines == nil {
+                printScreenError("画面の文字を読めなかったので、lines は空で送る")
+            }
+            return ScreenShot(jpeg: jpeg, recognizedLines: lines)
         }
     }
 
