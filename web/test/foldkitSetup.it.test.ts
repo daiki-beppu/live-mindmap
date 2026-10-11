@@ -20,6 +20,7 @@ describe("web の Foldkit 依存（exact 固定）", () => {
     ["foldkit", "0.167.0"],
     ["@foldkit/ui", "0.167.0"],
     ["@foldkit/vite-plugin", "0.27.0"],
+    ["@foldkit/oxlint-plugin", "0.15.3"],
   ])("%s を %s で入れる", (name, version) => {
     expect(all[name]).toBe(version);
     expect(all[name]).toMatch(EXACT_VERSION);
