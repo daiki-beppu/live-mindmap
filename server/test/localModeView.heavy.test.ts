@@ -79,7 +79,7 @@ describe("開始したセッションのローカルモード表示", () => {
     }), (vite) => Effect.promise(() => vite.close()));
     const address = web.httpServer!.address();
     if (!address || typeof address === "string") throw new Error("web のポートを取得できません");
-    const browser = yield* Effect.acquireRelease(Effect.tryPromise(() => chromium.launch()), (browser) => Effect.promise(() => browser.close()));
+    const browser = yield* Effect.acquireRelease((yield* Playwright).launch(), (running) => Effect.promise(() => running.close()));
     const page = yield* Effect.tryPromise(() => browser.newPage());
     yield* Effect.tryPromise(() => page.route("**/src/main.tsx", (route) => route.fulfill({ contentType: "text/javascript", body: 'import "/src/styles.css";' })));
     yield* Effect.tryPromise(() => page.goto(`http://127.0.0.1:${address.port}/`));
@@ -102,7 +102,7 @@ describe("開始したセッションのローカルモード表示", () => {
         expect(color).not.toBe("rgb(22, 101, 52)");
       }
     }
-  }), TIMEOUT);
+  }).pipe(Effect.provide(managedPlaywright)), TIMEOUT);
 
   it.live.each([1200, 480])("同じ画面の再起動・復帰・停止で線の色と文字を替え、既存のマップと字幕の位置を保つ（幅 %s）", (width) => Effect.gen(function* () {
     const server = yield* appleLiveServer();
@@ -115,7 +115,7 @@ describe("開始したセッションのローカルモード表示", () => {
     }), (vite) => Effect.promise(() => vite.close()));
     const address = web.httpServer!.address();
     if (!address || typeof address === "string") throw new Error("web のポートを取得できません");
-    const browser = yield* Effect.acquireRelease(Effect.tryPromise(() => chromium.launch()), (browser) => Effect.promise(() => browser.close()));
+    const browser = yield* Effect.acquireRelease((yield* Playwright).launch(), (running) => Effect.promise(() => running.close()));
     const page = yield* Effect.tryPromise(() => browser.newPage({ viewport: { width, height: 800 } }));
     yield* Effect.tryPromise(() => page.goto(`http://127.0.0.1:${address.port}/`));
     expect((yield* server.start).status).toBe(200);
@@ -171,7 +171,7 @@ describe("開始したセッションのローカルモード表示", () => {
     yield* Effect.tryPromise(() => page.getByText("停止した後も字幕は続きます。", { exact: true }).waitFor({ state: "attached" }));
     if (width === 1200) yield* Effect.tryPromise(() => page.getByText("停止した後も字幕は続きます。", { exact: true }).waitFor());
     expect((yield* server.stop).status).toBe(200);
-  }), TIMEOUT);
+  }).pipe(Effect.provide(managedPlaywright)), TIMEOUT);
 
   it.live.each([1200, 480])("同じ画面で通常→local→終了→通常が反映され、線と文字の出し入れで字幕・マップを動かさない（幅 %s）", (width) => Effect.gen(function* () {
     const dir = yield* Effect.acquireRelease(Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-local-view-"))),
