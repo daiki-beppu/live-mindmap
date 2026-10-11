@@ -65,16 +65,20 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
   };
 });
 
-// 状態が届くまで待つ。届かなければ黙って戻らず失敗する（CI の負荷では 200 回の yield で移り切らないことがあった）。
-// 実ファイルの書き込みを挟む IT もあるので、yield の後は実時間（TestClock に依らない setTimeout）で最大 5 秒待つ
-export const waitForDiffState = Effect.fnUntraced(function* (session: Session, status: DiffUpdateState["status"]) {
+// 条件がそろうまで待つ。そろわなければ黙って戻らず失敗する（CI の負荷では 200 回の yield で状態や配信が届き切らないことがあった）。
+// 実ファイルの書き込みや配信を挟む IT もあるので、yield の後は実時間（TestClock に依らない setTimeout）で最大 5 秒待つ
+export const waitUntil = Effect.fnUntraced(function* (condition: () => boolean | Effect.Effect<boolean>, label: string) {
+  const check = () => { const result = condition(); return typeof result === "boolean" ? Effect.succeed(result) : result; };
   for (let i = 0; i < 200; i++) {
-    if ((yield* session.diffUpdate).status === status) return;
+    if (yield* check()) return;
     yield* Effect.yieldNow;
   }
   for (let i = 0; i < 1000; i++) {
-    if ((yield* session.diffUpdate).status === status) return;
+    if (yield* check()) return;
     yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
   }
-  return yield* Effect.die(new Error(`差分更新の状態が ${status} になりませんでした（今は ${(yield* session.diffUpdate).status}）`));
+  return yield* Effect.die(new Error(`待っていた状態になりませんでした: ${label}`));
 });
+
+export const waitForDiffState = (session: Session, status: DiffUpdateState["status"]) =>
+  waitUntil(() => Effect.map(session.diffUpdate, (state) => state.status === status), `差分更新の状態が ${status}`);

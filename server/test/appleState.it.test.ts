@@ -6,8 +6,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Layer, Schema, Scope } from "effect";
 import { LogEvent, restoreState, type DiffUpdateFrame } from "../src/core/index.ts";
 import { EXPORT_FILE, LOG_FILE, openRecordedSession } from "../src/sessionFiles.ts";
-import { appleModel, fakeAppleLifecycle, waitForDiffState } from "./fixtures/appleLifecycle.ts";
-import { settleUntil } from "./fixtures/sessionLayers.ts";
+import { appleModel, fakeAppleLifecycle, waitForDiffState, waitUntil } from "./fixtures/appleLifecycle.ts";
 
 describe("Apple の状態遷移と保存ログ", () => {
   it.effect("同じ録音セッションの再起動・復帰・停止をJSONLと配信へ流し、読み直して処理済みと未反映を区別する", () => Effect.gen(function* () {
@@ -34,7 +33,7 @@ describe("Apple の状態遷移と保存ログ", () => {
     yield* fake.crash(0);
     yield* waitForDiffState(session, "restarting");
     expect(yield* session.diffUpdate).toEqual({ status: "restarting" });
-    yield* settleUntil(() => frames.at(-1)?.state?.status === "restarting");
+    yield* waitUntil(() => frames.at(-1)?.state?.status === "restarting", "restarting の配信");
     expect(frames.at(-1)?.state).toEqual({ status: "restarting" });
     const restartingLines = (yield* readLines).slice(baseline);
     expect(restartingLines.some((line) => JSON.stringify(line).includes("restarting"))).toBe(true);
@@ -50,14 +49,14 @@ describe("Apple の状態遷移と保存ログ", () => {
     expect(yield* session.diffUpdate).toEqual({ status: "running" });
     for (let i = 1; i < 3; i++) {
       yield* fake.crash(i);
-      yield* settleUntil(() => fake.processes.length === i + 2 && fake.requests.some((r) => r.url === `${fake.processes[i + 1]!.url}/chat/completions`));
+      yield* waitUntil(() => fake.processes.length === i + 2 && fake.requests.some((r) => r.url === `${fake.processes[i + 1]!.url}/chat/completions`), `立ち上げ直し ${i} 回目の呼び出し`);
       expect(fake.processes).toHaveLength(i + 2);
       yield* waitForDiffState(session, "running");
     }
     yield* fake.crash(3);
     yield* waitForDiffState(session, "stopped");
     expect(yield* session.diffUpdate).toEqual({ status: "stopped" });
-    yield* settleUntil(() => frames.at(-1)?.state?.status === "stopped");
+    yield* waitUntil(() => frames.at(-1)?.state?.status === "stopped", "stopped の配信");
     expect(frames.at(-1)?.state).toEqual({ status: "stopped" });
     yield* push(5);
     yield* session.flush;
