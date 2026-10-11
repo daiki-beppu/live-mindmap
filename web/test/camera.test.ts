@@ -21,6 +21,7 @@ import {
   scrollAlongAxis,
   screenPoint,
   scrollAxis,
+  scrollPanDelta,
   shiftIntoView,
   shouldMoveCamera,
   subtreeViewport,
@@ -363,6 +364,40 @@ describe("scrollAlongAxis: 決まった軸だけを動かす", () => {
 const IDENTITY = { x: 0, y: 0, zoom: 1 };
 const at = (x: number, y: number) => ({ n: { x, y } });
 const centerScreen = { x: size.width / 2, y: size.height / 2 };
+
+describe("scrollPanDelta: 二本指スクロールで画面が動く量（@xyflow の createPanOnScrollHandler と同じ式）", () => {
+  // 返すのは画面（ビューポートの平行移動）が動く量。delta の符号と逆で、倍率に依らず delta × 0.5（-0 と 0 は区別しない）
+  const wheel = (over: Partial<{ deltaX: number; deltaY: number; deltaMode: number; shiftKey: boolean }> = {}) => ({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ...over });
+  const expectMove = (actual: { x: number; y: number }, x: number, y: number) => {
+    expect(actual.x).toBeCloseTo(x, 9);
+    expect(actual.y).toBeCloseTo(y, 9);
+  };
+
+  it("pixel 単位（deltaMode 0）は、符号を逆にして 0.5 倍。deltaX 40・deltaY 100 で (-20, -50)", () => {
+    expectMove(scrollPanDelta(wheel({ deltaX: 40, deltaY: 100 }), false), -20, -50);
+    expectMove(scrollPanDelta(wheel({ deltaX: -40, deltaY: -100 }), false), 20, 50);
+  });
+
+  it("行単位（deltaMode 1、Firefox）は、量を 20 倍してから 0.5 倍する", () => {
+    expectMove(scrollPanDelta(wheel({ deltaX: 3, deltaY: 2, deltaMode: 1 }), false), -30, -20);
+  });
+
+  it("Mac でない Shift 付きは、縦の量を横に使い、縦は動かさない（deltaX は使わない）", () => {
+    expectMove(scrollPanDelta(wheel({ deltaX: 40, deltaY: 100, shiftKey: true }), false), -50, 0);
+  });
+
+  it("Mac の Shift 付きは、入れ替えない（ブラウザが deltaX に入れ替えて渡す）", () => {
+    expectMove(scrollPanDelta(wheel({ deltaX: 40, deltaY: 100, shiftKey: true }), true), -20, -50);
+  });
+
+  it("Mac でない Shift 付きでも、行単位なら 20 倍が効く", () => {
+    expectMove(scrollPanDelta(wheel({ deltaX: 1, deltaY: 5, deltaMode: 1, shiftKey: true }), false), -50, 0);
+  });
+
+  it("Shift が無ければ、Mac かどうかで量は変わらない", () => {
+    expect(scrollPanDelta(wheel({ deltaX: 12, deltaY: -8 }), true)).toEqual(scrollPanDelta(wheel({ deltaX: 12, deltaY: -8 }), false));
+  });
+});
 
 describe("edgeDots: 画面の外で変わったノードを、その方向の縁に点で出す", () => {
   it("右・左・下・上の外にあるノードは、それぞれの縁の側に出る", () => {
