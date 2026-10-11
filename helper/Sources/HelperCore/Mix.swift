@@ -1,14 +1,14 @@
 import AVFoundation
 import Foundation
 
-// セッションの録音（相手・自分の全ファイル）を、0 秒の位置から重ねて 1 本の 16 kbps モノラル m4a にする。
+// セッションの録音（相手・自分の全ファイル）を、0 秒の位置から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする。
 // AVFoundation の公開 API だけで作る（ffmpeg などの外部コマンドは使わない）。
 // 録音は取得の空白を無音で埋めない規則なので、ここでも埋めない。出力の長さは、一番長い入力の長さになる。
 
 // 出力の音質。話者分離や再生の用途ではなく、後から聞き返す用途の小さい音声。
-// 16 kbps の AAC を受け付けるサンプルレートとして 16 kHz を使う（mixRecordings のテストで実際の出力を確かめる）。
-private let mixSampleRate = 16_000.0
-private let mixBitRate = 16_000
+// 32 kbps の AAC を受け付けるサンプルレートとして 24 kHz を使う（mixRecordings のテストで実際の出力を確かめる）。
+private let mixSampleRate = 24_000.0
+private let mixBitRate = 32_000
 private let mixChannelCount = 1
 
 public struct MixError: Error, Equatable, CustomStringConvertible {
@@ -49,7 +49,7 @@ private func isRecordingName(_ name: String, track: Track) -> Bool {
     return name == recordingFileName(track: track, attempt: attempt)
 }
 
-/// `inputs` をすべて 0 秒の位置から重ね、`output` に 16 kbps・モノラルの m4a として書く（moov は先頭）。
+/// `inputs` をすべて 0 秒の位置から重ね、`output` に 32 kbps・24 kHz・モノラルの m4a として書く（moov は先頭）。
 /// `output` が既にあるときは上書きせず失敗する。出力先のフォルダも作らない。
 /// 音声が入っていない録音（トラックが無い、または長さが 0）は飛ばし、ファイル名を 1 ファイル 1 行で `reportSkipped` に渡す
 /// （helper が起動し直すと中身の無い録音が残ることがあり、それで全体を失敗させないため）。全部が空なら失敗する。
@@ -98,7 +98,7 @@ public func mixRecordings(
     ]
     let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
     guard writer.canApply(outputSettings: outputSettings, forMediaType: .audio), writer.canAdd(input) else {
-        throw MixError("16 kbps・モノラルの AAC で書けない")
+        throw MixError("32 kbps・24 kHz・モノラルの AAC で書けない")
     }
     writer.add(input)
     // moov を mdat の前（ファイルの先頭）に置く。
