@@ -264,10 +264,10 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       return module;
     }).pipe(entityAccess.withPermit, Effect.mapError(failed));
 
-    const run = Effect.fnUntraced(function* (lock: ReturnType<typeof acquireLock>, command: NpmCommand, args: string[], cwd: string) {
+    const run = Effect.fnUntraced(function* (lock: ReturnType<typeof acquireLock>, command: NpmCommand, args: string[], cwd: string, browserGc: boolean) {
       const completed = yield* Effect.scoped(Effect.gen(function* () {
         const handle = yield* spawner.spawn(ChildProcess.make(process.execPath, [join(import.meta.dirname, "managedDepsRunner.ts"), lock.owner, command.command, ...command.args, ...args], {
-          cwd, env: name === "chromium" ? { PLAYWRIGHT_BROWSERS_PATH: browsers, PLAYWRIGHT_SKIP_BROWSER_GC: "1" } : {}, extendEnv: true,
+          cwd, env: name === "chromium" ? { PLAYWRIGHT_BROWSERS_PATH: browsers, PLAYWRIGHT_SKIP_BROWSER_GC: browserGc ? undefined : "1" } : {}, extendEnv: true,
           stdin: "ignore", forceKillAfter: 5_000,
         }));
         // 大きい出力を溜めず、失敗表示に必要な末尾だけを保持する。
@@ -338,9 +338,9 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       const progress = (message: string) => Stream.succeed<DepEvent>({ type: "progress", message });
       const step = (effect: Effect.Effect<void, unknown>) => Stream.drain(Stream.fromEffect(effect));
       return Stream.concat(
-        Stream.concat(progress(`ダウンロード: ${packageName}`), step(run(lock, npm, ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"], work))),
+        Stream.concat(progress(`ダウンロード: ${packageName}`), step(run(lock, npm, ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"], work, false))),
         Stream.concat(
-          name === "chromium" ? Stream.concat(progress("展開: Chromium headless shell"), step(run(lock, { command: process.execPath, args: [join(work, "node_modules/playwright-core/cli.js")] }, ["install", "--only-shell", "chromium"], work))) : Stream.empty,
+          name === "chromium" ? Stream.concat(progress("展開: Chromium headless shell"), step(run(lock, { command: process.execPath, args: [join(work, "node_modules/playwright-core/cli.js")] }, ["install", "--only-shell", "chromium"], work, false))) : Stream.empty,
           Stream.concat(progress("確認: 版・完了 marker・ハッシュ"), Stream.unwrap(Effect.gen(function* () {
             yield* verify(work, entity);
             yield* Effect.acquireRelease(entityAccess.take(1), () => entityAccess.release(1));
@@ -348,7 +348,11 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
             yield* fs.symlink(basename(entity), link);
             // 公開の確定点と published の更新を中断で分離しない。
             yield* fs.rename(link, join(dir, CURRENT)).pipe(Effect.andThen(Effect.sync(() => { published = true; })), Effect.uninterruptible);
-            return Stream.concat(removeOldEntities, Stream.succeed<DepEvent>({ type: "result", items: [{ name, need: "optional", state: "ready" }] }));
+            const browserCleanup = name === "chromium" ? step(run(lock,
+              { command: process.execPath, args: [join(dir, CURRENT, "node_modules/playwright-core/cli.js")] },
+              ["install", "--only-shell", "chromium"], join(dir, CURRENT), true,
+            )).pipe(Stream.catch((error) => progress(`警告: ブラウザの掃除に失敗しました: ${failed(error).message}`))) : Stream.empty;
+            return Stream.concat(removeOldEntities, Stream.concat(browserCleanup, Stream.succeed<DepEvent>({ type: "result", items: [{ name, need: "optional", state: "ready" }] })));
           })).pipe(Stream.scoped)),
         ),
       );
