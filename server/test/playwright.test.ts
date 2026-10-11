@@ -11,6 +11,7 @@ describe("Playwright の管理依存", () => {
     const second = { version: () => "b" } as Browser;
     let browser = first;
     const deps = ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.die("check は呼ばない"),
       update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: (() => Effect.sync(() => ({
@@ -27,6 +28,7 @@ describe("Playwright の管理依存", () => {
 
   it.effect("Chromium の起動例外を ManagedDepsFailed として返す", () => Effect.gen(function* () {
     const deps = ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.die("check は呼ばない"),
       update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: (() => Effect.succeed({
@@ -46,6 +48,7 @@ describe("Playwright の管理依存", () => {
   it.effect("未導入でも構築でき、起動時に管理依存の失敗を返す", () => Effect.gen(function* () {
     const error = new ManagedDepsFailed({ message: "未導入" });
     const deps = ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.die("check は呼ばない"),
       update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: () => Effect.fail(error),

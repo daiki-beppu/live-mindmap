@@ -373,6 +373,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
 
   it.live("711-2: 必須 Claude と任意 Chromium の版違いを stderr に警告して開始する", () => Effect.gen(function* () {
     const service = {
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.succeed([
         { name: "chromium" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.0" },
         { name: "claude" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.1" },

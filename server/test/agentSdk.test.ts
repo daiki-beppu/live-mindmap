@@ -18,6 +18,7 @@ describe("管理 SDK を使う AgentSdk", () => {
       return Effect.succeed({ query });
     });
     const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.die("状態確認は対象外"), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"),
       load: load as unknown as ManagedDeps["Service"]["load"],
     }));
@@ -32,6 +33,7 @@ describe("管理 SDK を使う AgentSdk", () => {
   it.effect("管理 SDK の読込失敗を成功した AgentSdk に置き換えない", () => Effect.gen(function* () {
     const failure = new ManagedDepsFailed({ message: "管理 SDK がありません" });
     const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.die("状態確認は対象外"), update: () => Stream.die("更新は対象外"), install: () => Stream.die("導入は対象外"),
       load: () => Effect.fail(failure),
     }));

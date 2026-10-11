@@ -20,7 +20,7 @@ import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
 import { Helpers } from "./helpers.ts";
-import { CheckFor, ModelRoute, ManagedDepNames, InstallBody, UpdateBody, type InstallEvent } from "./managedDepsProtocol.ts";
+import { CheckFor, ModelRoute, CheckDepNames, InstallBody, UpdateBody, type InstallEvent } from "./managedDepsProtocol.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
 class ModelTransferToken extends Context.Service<ModelTransferToken, string>()("live-mindmap/http/ModelTransferToken") {}
@@ -199,7 +199,7 @@ const DepRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/deps/check", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const raw = new URL(request.url, "http://127.0.0.1").searchParams.get("names");
-    const names = yield* Schema.decodeUnknownEffect(ManagedDepNames)(raw === null ? [] : raw.split(",")).pipe(
+    const names = yield* Schema.decodeUnknownEffect(CheckDepNames)(raw === null ? [] : raw.split(",")).pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const deps = yield* ManagedDeps;

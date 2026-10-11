@@ -7,7 +7,7 @@ describe("管理依存の転送契約", () => {
   it.effect("711-1・711-4: 更新要求は管理依存だけを受け取り、確認結果は導入版を保持する", () => Effect.gen(function* () {
     const body = { names: ["chromium", "claude"] };
     expect(yield* Schema.decodeUnknownEffect(UpdateBody)(body)).toEqual(body);
-    for (const names of [[], ["speech-ja"], ["unknown"]]) {
+    for (const names of [[], ["speech-ja"], ["cloudflared"], ["unknown"]]) {
       expect(Result.isFailure(yield* Effect.result(Schema.decodeUnknownEffect(UpdateBody)({ names })))).toBe(true);
     }
     const report = { ready: false, items: [{ name: "claude", need: "required", state: "outdated", version: "0.0.0" }] };

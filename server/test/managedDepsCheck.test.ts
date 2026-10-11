@@ -10,6 +10,7 @@ import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 
 const deps = (state: "ready" | "missing" | "outdated" | "absent") => ManagedDeps.of({
+  executable: () => Effect.die("実行ファイル取得は対象外"),
   check: () => Effect.succeed([
     { name: "chromium", need: "required", state: "missing" },
     { name: "claude", need: "optional", state },
@@ -20,6 +21,23 @@ const deps = (state: "ready" | "missing" | "outdated" | "absent") => ManagedDeps
 const liveCheck = { screen: true, check: readyHelperChecks.check };
 
 describe("入口とモデル経路による管理依存の必要度", () => {
+  it.effect("831 C6: start は cloudflared を確認も導入もせず既存依存だけで開始できる", () => Effect.gen(function* () {
+    const checked: ReadonlyArray<string>[] = [];
+    const service = ManagedDeps.of({
+      ...deps("ready"),
+      check: (names) => Effect.sync(() => {
+        checked.push(names);
+        return names.map((name) => {
+          if (name !== "chromium" && name !== "claude") throw new Error(`開始前の対象外依存: ${name}`);
+          return { name, need: "optional" as const, state: "ready" as const };
+        });
+      }),
+    });
+    const warnings = yield* requireStartupDeps("start", "claude", liveCheck)
+      .pipe(Effect.provideService(ManagedDeps, service));
+    expect(checked).toEqual([["chromium", "claude"]]);
+    expect(warnings).toEqual([]);
+  }));
   it.effect.each([
     { entry: "resume", route: "claude" },
     { entry: "play", route: "claude" },

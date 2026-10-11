@@ -14,6 +14,7 @@ export const evalManagedDeps = (state: "ready" | "missing") => {
   });
   const install = vi.fn(() => Stream.die("評価は依存を導入しません"));
   const layer = Layer.succeed(ManagedDeps, ManagedDeps.of({
+    executable: () => Effect.die("実行ファイル取得は対象外"),
     check, install, update: () => Stream.die("更新は対象外"), load: load as unknown as ManagedDeps["Service"]["load"],
   }));
   return { layer, check, load, install };

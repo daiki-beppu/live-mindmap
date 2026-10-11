@@ -8,6 +8,7 @@ import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 const service = (installSpeechJa: Helpers["Service"]["installSpeechJa"]) => InstallDeps.pipe(Effect.provide(InstallDeps.layer.pipe(Layer.provide(Layer.mergeAll(
   Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, installSpeechJa, apps: Effect.die("対象外"), launch: () => Effect.die("対象外") })),
   Layer.succeed(ManagedDeps, ManagedDeps.of({
+    executable: () => Effect.die("実行ファイル取得は対象外"),
     check: () => Effect.die("導入は管理依存を確認しない"), load: () => Effect.die("導入はSDKを読み込まない"),
     update: () => Stream.die("更新は対象外"),
     install: (names) => {

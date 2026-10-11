@@ -10,9 +10,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import manifest from "../managed-deps/chromium/package.json" with { type: "json" };
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { resolveNpm, type NpmCommand } from "./npmCommand.ts";
+import { CLOUDFLARED_VERSION, resolveCloudflaredArtifact, type CloudflaredSource } from "./cloudflaredArtifact.ts";
 
 type DepModules = { chromium: typeof PlaywrightModule; claude: typeof import("@anthropic-ai/claude-agent-sdk") };
-type DepName = keyof DepModules;
+type ModuleName = keyof DepModules;
+type DepName = ModuleName | "cloudflared";
+type ManagedDepsOptions = { root: string; npm?: NpmCommand; cleanupOnStartup?: boolean; cloudflared?: CloudflaredSource };
 export type DepItem = {
   readonly name: DepName;
   readonly need: "required" | "optional";
@@ -21,14 +24,16 @@ export type DepItem = {
 };
 export type DepEvent = { readonly type: "progress"; readonly message: string } | { readonly type: "result"; readonly items: ReadonlyArray<DepItem> };
 export class ManagedDepsFailed extends Schema.TaggedError<ManagedDepsFailed>()("ManagedDepsFailed", { message: Schema.String }) {}
+class CloudflaredUnavailable extends Schema.TaggedError<CloudflaredUnavailable>()("CloudflaredUnavailable", { message: Schema.String }) {}
 
 export class ManagedDeps extends Context.Service<ManagedDeps, {
   check: (names: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<DepItem>, ManagedDepsFailed>;
   install: (names: ReadonlyArray<string>) => Stream.Stream<DepEvent, ManagedDepsFailed>;
   update: (names: ReadonlyArray<string>) => Stream.Stream<DepEvent, ManagedDepsFailed>;
-  load: <N extends DepName>(name: N) => Effect.Effect<DepModules[N], ManagedDepsFailed>;
+  load: <N extends ModuleName>(name: N) => Effect.Effect<DepModules[N], ManagedDepsFailed>;
+  executable: (name: "cloudflared") => Effect.Effect<string, ManagedDepsFailed>;
 }>()("live-mindmap/server/ManagedDeps") {
-  static readonly layer = (options: { root: string; npm?: NpmCommand; cleanupOnStartup?: boolean }) => Layer.effect(ManagedDeps)(make(options));
+  static readonly layer = (options: ManagedDepsOptions) => Layer.effect(ManagedDeps)(make(options));
 }
 
 const VERSION = manifest.dependencies["playwright-core"];
@@ -37,6 +42,7 @@ const CURRENT = "current";
 const LOCK = "install.lock";
 const READY = ".ready.json";
 const MARKER = "INSTALLATION_COMPLETE";
+const CLOUDFLARED_BINARY = "cloudflared";
 const ReadyRecord = Schema.Struct({
   version: Schema.String,
   installedAt: Schema.String,
@@ -143,10 +149,10 @@ const acquireLock = (path: string) => {
   }
 };
 
-const validateNames = (names: ReadonlyArray<string>): Effect.Effect<DepName[], ManagedDepsFailed> => names.length > 0 && names.every((name) => name === "chromium" || name === "claude")
-  ? Effect.succeed([...new Set(names)] as DepName[]) : Effect.fail(new ManagedDepsFailed({ message: "導入名は chromium または claude を指定してください" }));
+const validateNames = (names: ReadonlyArray<string>): Effect.Effect<DepName[], ManagedDepsFailed> => names.length > 0 && names.every((name) => name === "chromium" || name === "claude" || name === "cloudflared")
+  ? Effect.succeed([...new Set(names)] as DepName[]) : Effect.fail(new ManagedDepsFailed({ message: "導入名は chromium、claude または cloudflared を指定してください" }));
 
-const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmCommand; cleanupOnStartup?: boolean }) {
+const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
   const fs = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   // 動的 import の遅延読込先も、サーバーの終了までは保持する。
@@ -198,7 +204,7 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
         return Stream.succeed({ type: "progress" as const, message: `古い版を消しました: ${match[1]}（約 ${Math.round(size / 1_000_000)} MB）` });
       }).pipe(Effect.catch((error) => Effect.succeed(Stream.succeed({ type: "progress" as const, message: warning(error) })))))));
     }).pipe(Effect.catch((error) => Effect.succeed(Stream.succeed({ type: "progress" as const, message: warning(error) })))));
-    const version = name === "chromium" ? VERSION : CLAUDE_VERSION;
+    const version = name === "cloudflared" ? CLOUDFLARED_VERSION : name === "chromium" ? VERSION : CLAUDE_VERSION;
     const packageName = name === "chromium" ? "playwright-core" : "@anthropic-ai/claude-agent-sdk";
     const packageDir = join(import.meta.dirname, "../managed-deps", name);
     const report = process.platform === "linux" ? process.report.getReport() : undefined;
@@ -221,6 +227,13 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       const ready = yield* readJson(join(current, READY), ReadyRecord).pipe(Effect.catchTag("SchemaError", () => Effect.void));
       if (ready === undefined) return missing;
       if (ready.version !== version) return { ...missing, state: "outdated" as const, version: ready.version };
+      if (name === "cloudflared") {
+        const usable = yield* validateExecutable.pipe(
+          Effect.as(true),
+          Effect.catchTag("CloudflaredUnavailable", () => Effect.succeed(false)),
+        );
+        return { ...missing, state: usable ? "ready" as const : "missing" as const };
+      }
       if (!(yield* isFile(join(current, "node_modules", packageName, "package.json")))) return missing;
       const pkg = yield* readJson(join(current, "node_modules", packageName, "package.json"), PackageRecord);
       if (pkg.version !== version) return { ...missing, state: "outdated" as const, version: pkg.version };
@@ -256,7 +269,7 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       const module = yield* Effect.tryPromise({
         try: () => {
           if (name === "chromium") process.env.PLAYWRIGHT_BROWSERS_PATH = browsers;
-          return import(pathToFileURL(modulePath).href) as Promise<DepModules[DepName]>;
+          return import(pathToFileURL(modulePath).href) as Promise<DepModules[ModuleName]>;
         },
         catch: failed,
       });
@@ -285,7 +298,42 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       yield* Stream.runForEach(fs.stream(path), (bytes) => Effect.sync(() => { digest.update(bytes); }));
       return digest.digest("hex");
     });
+    const binaryNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound"
+      ? new CloudflaredUnavailable({ message: "cloudflared の実行ファイルがありません" }) : error;
+    const validateExecutable = Effect.gen(function* () {
+      const entity = yield* fs.realPath(join(dir, CURRENT));
+      const managedDir = yield* fs.realPath(dir);
+      const entityPath = relative(managedDir, entity);
+      if (entityPath === "" || isAbsolute(entityPath) || entityPath === ".." || entityPath.startsWith(`..${sep}`) || basename(entity).startsWith(".work-")) {
+        return yield* new ManagedDepsFailed({ message: "current の実体が完成済み管理ディレクトリ内ではありません" });
+      }
+      const binary = yield* fs.realPath(join(entity, CLOUDFLARED_BINARY)).pipe(Effect.mapError(binaryNotFound));
+      if (binary !== join(entity, CLOUDFLARED_BINARY)) return yield* new ManagedDepsFailed({ message: "cloudflared の実行ファイルが管理実体外です" });
+      const stat = yield* metadata(binary).pipe(Effect.mapError(binaryNotFound));
+      if (!stat.isFile()) return yield* new ManagedDepsFailed({ message: "cloudflared の実行ファイルがありません" });
+      if ((stat.mode & 0o111) === 0) return yield* new CloudflaredUnavailable({ message: "cloudflared の実行ファイルがありません" });
+      const ready = yield* readJson(join(entity, READY), ReadyRecord);
+      const records = yield* Effect.forEach(Object.entries(ready.hashes), ([path, digest]) =>
+        fs.realPath(path).pipe(Effect.map((resolved) => ({ path: resolved, digest }))));
+      const expected = records.find((record) => record.path === binary);
+      if (expected === undefined) return yield* new ManagedDepsFailed({ message: "cloudflared のハッシュが導入記録と一致しません" });
+      if ((yield* hash(binary)) !== expected.digest) {
+        return yield* new CloudflaredUnavailable({ message: "cloudflared のハッシュが導入記録と一致しません" });
+      }
+      return binary;
+    });
+    const executable = validateExecutable.pipe(Effect.mapError(failed));
     const verify = Effect.fnUntraced(function* (work: string, entity: string) {
+      if (name === "cloudflared") {
+        const binary = join(work, CLOUDFLARED_BINARY);
+        const stat = yield* metadata(binary);
+        if (!stat.isFile() || (stat.mode & 0o111) === 0) return yield* new ManagedDepsFailed({ message: "cloudflared の実行ファイルがありません" });
+        const now = yield* DateTime.now;
+        yield* fs.writeFileString(join(work, READY), JSON.stringify({
+          version, installedAt: DateTime.formatIso(now), hashes: { [join(entity, CLOUDFLARED_BINARY)]: yield* hash(binary) },
+        }));
+        return;
+      }
       const pkg = yield* readJson(join(work, "node_modules", packageName, "package.json"), PackageRecord);
       if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "導入版が固定版と一致しません" });
       let binary: string;
@@ -311,6 +359,7 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
     const cleanup = <E>(effect: Effect.Effect<void, E>) => effect.pipe(Effect.catch((error) => Effect.logWarning(`管理依存の後片付けに失敗しました: ${String(error)}`)));
 
     const install = (operation: "install" | "update"): Stream.Stream<DepEvent, ManagedDepsFailed> => Stream.unwrap(Effect.gen(function* () {
+      const artifact = name === "cloudflared" ? yield* (options.cloudflared?.resolve ?? resolveCloudflaredArtifact(process.platform, process.arch)) : undefined;
       if (operation === "update" && (yield* checkDependency).state !== "outdated") return Stream.succeed<DepEvent>({ type: "result", items: [] });
       yield* fs.makeDirectory(dir, { recursive: true });
       const lock = yield* Effect.acquireRelease(Effect.try({ try: () => acquireLock(join(dir, LOCK)), catch: failed }), (lock) => cleanup(Effect.try({ try: lock.release, catch: failed })));
@@ -319,7 +368,6 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
       }
       const state = (yield* checkDependency).state;
       if (state === "ready" || (operation === "update" && state !== "outdated")) return Stream.succeed<DepEvent>({ type: "result", items: [] });
-      const npm = options.npm ?? (yield* resolveNpm({ execPath: process.execPath, env: process.env }));
       const uuid = randomUUID();
       const work = join(dir, `.work-${uuid}`);
       const entity = join(dir, `${version}-${uuid}`);
@@ -334,11 +382,25 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
           if (!published) yield* fs.remove(entity, { recursive: true, force: true });
         })),
       );
-      for (const file of ["package.json", "package-lock.json"]) yield* fs.copyFile(join(packageDir, file), join(work, file));
       const progress = (message: string) => Stream.succeed<DepEvent>({ type: "progress", message });
       const step = (effect: Effect.Effect<void, unknown>) => Stream.drain(Stream.fromEffect(effect));
+      const acquireArtifact = Effect.gen(function* () {
+        if (artifact !== undefined) {
+          const archive = join(work, "cloudflared.tgz");
+          yield* options.cloudflared !== undefined
+            ? options.cloudflared.download(artifact.url, archive)
+            : run(lock, { command: "/usr/bin/curl", args: [] }, ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--output", archive, artifact.url], work, false);
+          if ((yield* hash(archive)) !== artifact.sha256) return yield* new ManagedDepsFailed({ message: "cloudflared の SHA256 が固定値と一致しません" });
+          yield* run(lock, { command: "/usr/bin/tar", args: [] }, ["-xzf", archive, "-C", work, CLOUDFLARED_BINARY], work, false);
+          yield* fs.remove(archive);
+        } else {
+          const npm = options.npm ?? (yield* resolveNpm({ execPath: process.execPath, env: process.env }));
+          for (const file of ["package.json", "package-lock.json"]) yield* fs.copyFile(join(packageDir, file), join(work, file));
+          yield* run(lock, npm, ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"], work, false);
+        }
+      });
       return Stream.concat(
-        Stream.concat(progress(`ダウンロード: ${packageName}`), step(run(lock, npm, ["ci", "--omit=dev", "--omit=peer", "--ignore-scripts"], work, false))),
+        Stream.concat(progress(`ダウンロード: ${name === "cloudflared" ? CLOUDFLARED_BINARY : packageName}`), step(acquireArtifact)),
         Stream.concat(
           name === "chromium" ? Stream.concat(progress("展開: Chromium headless shell"), step(run(lock, { command: process.execPath, args: [join(work, "node_modules/playwright-core/cli.js")] }, ["install", "--only-shell", "chromium"], work, false))) : Stream.empty,
           Stream.concat(progress("確認: 版・完了 marker・ハッシュ"), Stream.unwrap(Effect.gen(function* () {
@@ -363,17 +425,18 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
         Effect.try({ try: lock.release, catch: failed }).pipe(Effect.catch((error) => Console.error(warning(error)))));
       yield* Stream.runForEach(removeOldEntities, (event) => Console.error(event.message)).pipe(entityAccess.withPermit);
     })).pipe(Effect.catch((error) => Console.error(warning(error))));
-    return { check: checkDependency, load, install, cleanupOnStartup };
+    return { check: checkDependency, load, executable, install, cleanupOnStartup };
   };
   const check = Effect.fnUntraced(function* (names: ReadonlyArray<string>) {
     const validated = yield* validateNames(names);
     return yield* Effect.forEach(validated, (name) => dependency(name).check);
   }, Effect.mapError(failed));
-  const load: ManagedDeps["Service"]["load"] = <N extends DepName>(name: N) => validateNames([name]).pipe(
+  const load: ManagedDeps["Service"]["load"] = <N extends ModuleName>(name: N) => validateNames([name]).pipe(
     Effect.flatMap(() => dependency(name).load),
   ) as Effect.Effect<DepModules[N], ManagedDepsFailed>;
   const install = (names: ReadonlyArray<string>, operation: "install" | "update"): Stream.Stream<DepEvent, ManagedDepsFailed> => Stream.unwrap(Effect.gen(function* () {
     const validated = yield* validateNames(names);
+    if (operation === "update" && validated.includes("cloudflared")) return yield* new ManagedDepsFailed({ message: "更新名は chromium または claude を指定してください" });
     const items: DepItem[] = [];
     const installs = Stream.fromIterable(validated).pipe(
       Stream.flatMap((name) => dependency(name).install(operation)),
@@ -386,7 +449,11 @@ const make = Effect.fnUntraced(function* (options: { root: string; npm?: NpmComm
     return Stream.concat(installs, Stream.fromEffect(Effect.sync((): DepEvent => ({ type: "result", items }))));
   }));
   if (options.cleanupOnStartup) {
-    for (const name of ["chromium", "claude"] as const) yield* dependency(name).cleanupOnStartup;
+    for (const name of ["chromium", "claude", "cloudflared"] as const) yield* dependency(name).cleanupOnStartup;
   }
-  return ManagedDeps.of({ check, install: (names) => install(names, "install"), update: (names) => install(names, "update"), load });
+  return ManagedDeps.of({ check, install: (names) => install(names, "install"), update: (names) => install(names, "update"), load,
+    executable: (name) => dependency(name).executable.pipe(
+      Effect.tap((binary) => Effect.sync(() => { loadedEntities.add(resolve(binary, "..")); })),
+      entityAccess.withPermit,
+    ) });
 });

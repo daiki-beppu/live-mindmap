@@ -187,6 +187,7 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
 describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサーバー。CT-ENTRY-LAYERS）", () => {
   it.live("711-2: HTTP start は版違いの必須 SDK を警告して開始する", () => Effect.gen(function* () {
     const service = {
+      executable: () => Effect.die("実行ファイル取得は対象外"),
       check: () => Effect.succeed([{ name: "claude" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.0" }]),
       load: () => Effect.die("偽 updater は SDK を読まない"),
       install: () => Stream.die("開始は導入しない"), update: () => Stream.die("開始は更新しない"),

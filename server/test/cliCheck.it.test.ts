@@ -23,7 +23,7 @@ const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFai
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
   const install = vi.fn((_names: ReadonlyArray<string>) => Stream.die("check は導入しない"));
   const load = vi.fn((_name: string) => Effect.die("check は読み込まない"));
-  return { service: ManagedDeps.of({ check, install, update: () => Stream.die("更新は対象外"), load }), check, install };
+  return { service: ManagedDeps.of({ executable: () => Effect.die("実行ファイル取得は対象外"), check, install, update: () => Stream.die("更新は対象外"), load }), check, install };
 };
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
