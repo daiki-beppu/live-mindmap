@@ -8,7 +8,8 @@
     "build": "vite build",
     "test": "vitest run --project unit",
     "test:it": "vitest run --project it",
-    "test:it:all": "vitest run --project it",
+    "test:it:heavy": "vitest run --project heavy",
+    "test:it:all": "vitest run --project it --project heavy",
     "typecheck": "tsc --noEmit && oxlint --no-error-on-unmatched-pattern src/app && node ../server/scripts/check-test-layers.ts"
   },
   "dependencies": {
