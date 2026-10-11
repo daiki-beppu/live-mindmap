@@ -5,7 +5,9 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .waiting { margin: 0; padding: 2rem; color: #6b7280; }
 .diff-update-notice { position: absolute; top: 8px; left: 12px; font-size: 12px; color: #6b7280; z-index: 5; pointer-events: none; }
 
-.layout--local { --local-mode-color: #166534; }
+.local-mode-line, .local-mode-notice { --local-mode-color: #166534; }
+.local-mode-line[data-status="restarting"], .local-mode-notice[data-status="restarting"] { --local-mode-color: #c2410c; }
+.local-mode-line[data-status="stopped"], .local-mode-notice[data-status="stopped"] { --local-mode-color: #6b7280; }
 .local-mode-line { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--local-mode-color); pointer-events: none; z-index: 6; }
 .local-mode-notice { position: absolute; top: 8px; left: 12px; font-size: 12px; line-height: 18px; color: var(--local-mode-color); pointer-events: none; z-index: 6; }
 .layout--local > .screen-notice { top: 36px; width: min(720px, calc(100% - 24px)); }

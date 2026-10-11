@@ -173,7 +173,7 @@ export function SessionView({
   };
   const layout = (
     <div className={local ? "layout layout--local" : "layout"}>
-      <LocalModeNotice local={local === true} />
+      <LocalModeNotice local={local === true} diffUpdate={diffUpdate} />
       <div className="map">
         <MapView snapshot={snapshot} selectedId={selectedId} onSelect={select} viewing={viewing} camera={camera} onViewingEvent={dispatch} onTree={onTree} />
         <ViewingNotice manual={viewing.mode === "manual"} overview={viewing.mode === "overview"} />

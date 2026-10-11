@@ -1,8 +1,8 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
-import { Cause, Context, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, type Scope } from "effect";
+import { Cause, Context, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
 import { diffMaps, type Change } from "./changes.ts";
-import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, type DiffUpdateState } from "./diffUpdate.ts";
+import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
@@ -56,6 +56,7 @@ export type DiffResult = DiffOutput & { readonly usage?: DiffUsage };
 // core は Claude 側を import できないので static layer は持たない。Layer は src 側が作る
 export class DiffUpdater extends Context.Service<DiffUpdater, {
   readonly update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>;
+  readonly lifecycle?: Stream.Stream<DiffUpdateLifecycle>;
 }>()("live-mindmap/core/DiffUpdater") {}
 
 // ログの行の形。ログに書く側（cli・sessionSinks の配線）も読む側（restoreSession）も同じ Schema を使う。
@@ -93,7 +94,7 @@ export const DiffEvent = Schema.Struct({
   processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
 });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent]);
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 // ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。
@@ -335,6 +336,7 @@ const classifyFailure = (cause: Cause.Cause<DiffUpdateError>) => {
     ok: false as const,
     error: Result.isSuccess(failure) ? `${failure.success._tag}: ${failure.success.message}` : `defect: ${String(Cause.squash(cause))}`,
     paused: Result.isSuccess(failure) && failure.success._tag === "DiffUpdatePaused",
+    stopped: Result.isSuccess(failure) && failure.success._tag === "DiffUpdateStopped",
   };
 };
 
@@ -350,6 +352,16 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     // QUIET_MS の待ち。Scope を閉じると中断される
     const quietWaiter = yield* FiberHandle.make<void, never>();
 
+    const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
+      const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
+        s.diffUpdate.status === "stopped" || s.diffUpdate.status === state.status
+          ? [false, s] : [true, { ...s, diffUpdate: state }]);
+      if (changed) yield* log.write({ type: "diff-update-state", state });
+    });
+    if (updater.lifecycle) yield* Effect.forkIn(Stream.runForEach(updater.lifecycle, (notification) =>
+      setLifecycleState("status" in notification ? notification : { status: "stopped" }).pipe(Effect.uninterruptible),
+    ), scope, { startImmediately: true });
+
     // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
     // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
     // 取り出しから fork までの間に中断されて発言を取りこぼさないよう、中断させない
@@ -358,7 +370,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         Effect.gen(function* () {
           const reservation: Reservation = { kind: "reserved" };
           const fresh = yield* Ref.modify(ref, (s): [readonly Remark[] | undefined, SessionState & Runtime] =>
-            s.inFlight || s.pending.length < min || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status !== "running") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
+            s.inFlight || s.pending.length < min || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
           );
           if (!fresh) return;
           const fiber = yield* Effect.forkIn(Effect.interruptible(runCall(fresh)), scope, { startImmediately: true });
@@ -446,13 +458,18 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             ),
           );
           if (!outcome.ok) {
+            if (outcome.stopped) {
+              yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending] }));
+              yield* setLifecycleState({ status: "stopped" });
+              return false;
+            }
             if (outcome.paused) {
               yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], diffUpdate: { status: "paused" as const, reason: "ChatGPT の利用上限" as const } }));
               yield* log.write({ type: "diff-update-paused", reason: "ChatGPT の利用上限" });
               return false;
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
-            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: { status: "running" as const }, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
+            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error });
             return false;
           }
@@ -463,7 +480,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const stamp = stampOf(s, consumed);
             const applied = applyOps(s.map, outcome.ops, known, stamp);
             return [applied.dropped, {
-              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: { status: "running" as const }, map: applied.map, reflecting: [],
+              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, map: applied.map, reflecting: [],
               known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
@@ -536,7 +553,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         for (;;) {
           yield* idle;
           const state = yield* Ref.get(ref);
-          if (state.pending.length === 0 || state.diffUpdate.status !== "running") return;
+          if (state.pending.length === 0 || state.diffUpdate.status === "paused" || state.diffUpdate.status === "stopped") return;
           yield* startDiffIfReady(1);
         }
       }),

@@ -71,7 +71,7 @@ const appleProcess = Effect.fnUntraced(function* () {
     launch: Effect.gen(function* () {
       if (!state.available) return yield* new UpdaterUnavailable({ message: "Apple Intelligence のモデルを準備中です\nしばらく待ってからやり直してください" });
       return yield* Effect.acquireRelease(
-        Effect.sync(() => { state.opened++; return { url, pid: 4242 }; }),
+        Effect.sync(() => { state.opened++; return { url, pid: 4242, exited: Effect.never }; }),
         () => Effect.sync(() => { state.closed++; }),
       );
     }),

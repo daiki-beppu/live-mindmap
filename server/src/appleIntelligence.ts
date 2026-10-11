@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { Context, Effect, Layer, Option, Schema, Stream, type Scope } from "effect";
+import { Cause, Context, Effect, Layer, Option, Schema, Stream, type Scope } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { HelperCommand } from "./helpers.ts";
@@ -21,7 +21,7 @@ const decode = <S extends Schema.Top>(schema: S, text: string) =>
 
 export class AppleIntelligence extends Context.Service<AppleIntelligence, {
   availability: Effect.Effect<typeof MacState.Type, UpdaterUnavailable>;
-  launch: Effect.Effect<{ readonly url: string; readonly pid: number }, UpdaterUnavailable, Scope.Scope>;
+  launch: Effect.Effect<{ readonly url: string; readonly pid: number; readonly exited: Effect.Effect<void> }, UpdaterUnavailable, Scope.Scope>;
 }>()("live-mindmap/server/AppleIntelligence") {
   static readonly layer = (command: HelperCommand): Layer.Layer<AppleIntelligence, never, ChildProcessSpawner.ChildProcessSpawner> =>
     Layer.effect(AppleIntelligence)(Effect.gen(function* () {
@@ -56,7 +56,10 @@ export class AppleIntelligence extends Context.Service<AppleIntelligence, {
         if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.port === "" || url.username !== "" || url.password !== "" || url.pathname !== "/v1" || url.search !== "" || url.hash !== "") {
           return yield* failed("Apple の推論先は子プロセスのループバック URL である必要があります");
         }
-        return { url: endpoint.url, pid: child.pid };
+        return { url: endpoint.url, pid: child.pid, exited: child.exitCode.pipe(
+          Effect.catchCause((cause) => Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void),
+          Effect.asVoid,
+        ) };
       });
       return AppleIntelligence.of({ availability, launch });
     }));

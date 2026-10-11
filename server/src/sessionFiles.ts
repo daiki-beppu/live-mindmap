@@ -164,7 +164,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
             }),
           );
           if (!session) return;
-          if (diffUpdate && (event.type === "diff" || event.type === "diff-update-paused")) {
+          if (diffUpdate && (event.type === "diff" || event.type === "diff-update-paused" || event.type === "diff-update-state")) {
             yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });
           }
           if (event.type !== "diff") return;

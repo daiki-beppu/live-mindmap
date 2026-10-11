@@ -15,6 +15,13 @@ export class DiffUpdatePaused extends Schema.TaggedError<DiffUpdatePaused>()("Di
   message: Schema.String,
 }) {}
 
+export class DiffUpdateStopped extends Schema.TaggedError<DiffUpdateStopped>()("DiffUpdateStopped", {
+  message: Schema.String,
+}) {}
+
+export type DiffUpdateLifecycle = { readonly status: "running" | "restarting" } | DiffUpdateStopped;
+export const DiffUpdateStateEvent = Schema.Struct({ type: Schema.Literal("diff-update-state"), state: DiffUpdateState });
+
 export const DiffUpdatePausedEvent = Schema.Struct({ type: Schema.Literal("diff-update-paused"), reason: DiffUpdateReason });
 export const DiffUpdateRetryEvent = Schema.Struct({ type: Schema.Literal("diff-update-retry"), reason: DiffUpdateReason });
 export const DiffUpdateResumedEvent = Schema.Struct({ type: Schema.Literal("diff-update-resumed") });
