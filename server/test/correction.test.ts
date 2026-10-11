@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { correctRemark, type VocabularyWord, type Word } from "../src/core/index.ts";
 
 // Issue #640: 発言の補正の部品（I/O なし）。語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
-// 照合のキー・区間・近さ・守りは #633「照合と置き換え」のとおり。ふつうの語の一覧の守りは別のチケット（#641）なので、ここでは扱わない。
+// 照合のキー・区間・近さ・守りは #633「照合と置き換え」のとおり。ふつうの語の一覧の守りは Issue #641（末尾の describe）。一覧は小さな Set で渡し、同梱の 5 万語のファイルは読まない。
 // 語の読み（romaji）は、実際の CFStringTokenizer（ja）が返した値（macOS で確認）を使う。
 // 「(合成)」と書いた行だけは、トークナイザの出力ではなく守りを当てるために組んだ読み。
 
@@ -21,9 +21,12 @@ const utterance = (...tokens: Token[]): { text: string; words: Word[] } => {
 
 const vocab = (surface: string, romaji: string): VocabularyWord => ({ surface, romaji });
 
-const correct = (vocabulary: VocabularyWord[], ...tokens: Token[]) => {
+// ふつうの語の一覧が空のとき（#641 より前の挙動）
+const correct = (vocabulary: VocabularyWord[], ...tokens: Token[]) => correctWith([], vocabulary, ...tokens);
+
+const correctWith = (commonWords: readonly string[], vocabulary: VocabularyWord[], ...tokens: Token[]) => {
   const { text, words } = utterance(...tokens);
-  return correctRemark(vocabulary, text, words);
+  return correctRemark(vocabulary, text, words, new Set(commonWords));
 };
 
 const PUNCT: Token = ["。", "｡"];
@@ -234,7 +237,7 @@ describe("correctRemark: 直さない（守り）", () => {
       { surface: "江南", romaji: "kounan", location: 0, length: 2 },
       { surface: "店", romaji: "ten", location: 3, length: 1 },
     ];
-    expect(correctRemark([vocab("港南店", "kounanten")], "江南 店", words)).toEqual({ text: "江南 店", replacements: [] });
+    expect(correctRemark([vocab("港南店", "kounanten")], "江南 店", words, new Set())).toEqual({ text: "江南 店", replacements: [] });
   });
 
   it("読みが空の語（読みが無い語）を含む区間は作らない", () => {
@@ -243,7 +246,7 @@ describe("correctRemark: 直さない（守り）", () => {
   });
 
   it("words が空なら、本文をそのまま返す", () => {
-    expect(correctRemark([vocab("港南店", "kounanten")], "江南店", [])).toEqual({ text: "江南店", replacements: [] });
+    expect(correctRemark([vocab("港南店", "kounanten")], "江南店", [], new Set())).toEqual({ text: "江南店", replacements: [] });
   });
 });
 
@@ -267,6 +270,64 @@ describe("correctRemark: 重なる区間の選び方", () => {
   // 港南炭（konantan）も近さ 0.875 で候補だが、港南店（完全一致）の方が近い。語彙の並びの順には依らない
   it("同じ区間に複数の語が近いときは、一番近い語に置き換える", () => {
     const result = correct([vocab("港南炭", "kounantan"), vocab("港南店", "kounanten")], ["江南", "kounan"], ["店", "ten"]);
+    expect(result.text).toBe("港南店");
+  });
+});
+
+// Issue #641: 区間の表記がふつうの語の一覧に載っていれば、語彙に読みの近い語があっても直さない。
+// ただし英字の語（NFKC で英字だけ）への書き換えは通す。一覧に載らない区間は今までどおり直す。語彙の側は絞らない。
+// 読みは実際のトークナイザの出力の形。「(合成)」は守りを当てるために組んだ読み。
+describe("correctRemark: ふつうの語の一覧の守り（Issue #641）", () => {
+  const cases: Array<{ name: string; vocabulary: VocabularyWord[]; tokens: Token[]; kept: string }> = [
+    { name: "開発（kaihatsu）を 改札（kaisatsu）にしない", vocabulary: [vocab("改札", "kaisatsu")], tokens: [["開発", "kaihatsu"]], kept: "開発" },
+    { name: "相談（soudan）を 商談（shoudan）にしない", vocabulary: [vocab("商談", "shoudan")], tokens: [["相談", "soudan"]], kept: "相談" },
+    { name: "時間（jikan）を 実感（jikkan）にしない", vocabulary: [vocab("実感", "jikkan")], tokens: [["時間", "jikan"]], kept: "時間" },
+  ];
+
+  it.each(cases)("一覧に載る区間は直さない: $name", ({ vocabulary, tokens, kept }) => {
+    expect(correctWith(["開発", "相談", "時間"], vocabulary, ...tokens)).toEqual({ text: kept, replacements: [] });
+  });
+
+  it.each(cases)("同じ入力で一覧が空なら直る（守りが一覧で効いている）: $name", ({ vocabulary, tokens, kept }) => {
+    const result = correctWith([], vocabulary, ...tokens);
+    expect(result.text).not.toBe(kept);
+    expect(result.replacements).toHaveLength(1);
+  });
+
+  it("一覧に載る区間でも、英字の語への書き換えは通す（ズーム→Zoom、エクセル→Excel）", () => {
+    const common = ["ズーム", "エクセル"];
+    const zoom = correctWith(common, [vocab("Zoom", "zūmu")], ["ズーム", "zūmu"]);
+    expect(zoom.text).toBe("Zoom");
+    expect(zoom.replacements).toEqual([{ location: 0, length: 3, span: "ズーム", surface: "Zoom", score: 1 }]);
+    const excel = correctWith(common, [vocab("Excel", "ekuseru")], ["エクセル", "ekuseru"]);
+    expect(excel.text).toBe("Excel");
+    expect(excel.replacements).toEqual([{ location: 0, length: 4, span: "エクセル", surface: "Excel", score: 1 }]);
+  });
+
+  // (合成) 英字でない語（先に並べる）と英字の語が同じ近さ。英字でない語は一覧の守りで候補から外れ、英字の語に直る
+  it("一覧に載る区間で英字の語と英字でない語がどちらも近いときは、英字の語に直る", () => {
+    const result = correctWith(["ズーム"], [vocab("図務", "zūmu"), vocab("Zoom", "zūmu")], ["ズーム", "zūmu"]);
+    expect(result.text).toBe("Zoom");
+  });
+
+  it("全角の英字だけの語（ＺＯＯＭ）も英字の語として通す（NFKC）", () => {
+    expect(correctWith(["ズーム"], [vocab("ＺＯＯＭ", "zūmu")], ["ズーム", "zūmu"]).text).toBe("ＺＯＯＭ");
+  });
+
+  it("英字と数字が混じる語（Web3）は英字の語ではないので、一覧に載る区間は直さない", () => {
+    const result = correctWith(["ウェブ"], [vocab("Web3", "uebu")], ["ウェブ", "uebu"]);
+    expect(result).toEqual({ text: "ウェブ", replacements: [] });
+  });
+
+  it("一覧に載らない区間は、一覧に別の語があっても今までどおり直る（江南店→港南店）", () => {
+    const result = correctWith(["江南", "開発"], [vocab("港南店", "kounanten")], ["江南", "kounan"], ["店", "ten"]);
+    expect(result.text).toBe("港南店");
+    expect(result.replacements).toEqual([{ location: 0, length: 3, span: "江南店", surface: "港南店", score: 1 }]);
+  });
+
+  it("一覧は区間の表記と丸ごと同じものだけに効く。区間を含むだけの語・区間の一部だけの語は守りにならない", () => {
+    // 一覧の 江南店舗 は区間 江南店 を含むだけ、江南 は区間の一部だけ
+    const result = correctWith(["江南店舗", "江南"], [vocab("港南店", "kounanten")], ["江南", "kounan"], ["店", "ten"]);
     expect(result.text).toBe("港南店");
   });
 });

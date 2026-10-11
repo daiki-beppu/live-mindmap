@@ -1128,6 +1128,27 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
+  // Issue #641: 同梱のふつうの語の一覧（開発 を含む）が補正に渡る。語彙の 改札 と読みが近くても、ふつうの語の 開発 は直さない
+  it.effect("同梱のふつうの語の一覧が補正に渡る。語彙に読みの近い語があっても、一覧に載る語の発言は直さず、log と字幕に届いた本文のまま出る", () => {
+    const readings = fakeReadings({ 改札: "kaisatsu" });
+    const { updaterLayer } = makeRecordingUpdater();
+    const common = utterance(["開発", "kaihatsu"]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir, speaks } = yield* openWithVocabulary(["改札"]);
+      yield* sink.final({ track: "相手", start: 1, end: 2, text: common.text, words: common.words });
+      yield* TestClock.adjust(QUIET_MS);
+      yield* sink.drain;
+      yield* sink.flush;
+
+      const lines = remarkLines(dir);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].remark.text).toBe("開発");
+      expect(lines[0].raw).toBe("開発");
+      expect(speaks.some((f) => f.text === "開発")).toBe(true);
+      expect(speaks.some((f) => f.text.includes("改札"))).toBe(false);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
+  });
+
   it.effect("1 秒更新されなかった途中結果から作った発言と、drain で出す発言も直る", () => {
     const readings = fakeReadings(READINGS);
     const { calls, updaterLayer } = makeRecordingUpdater();
