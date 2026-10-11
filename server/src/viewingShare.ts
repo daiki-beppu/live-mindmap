@@ -29,7 +29,9 @@ export type OpenViewingPort = Effect.Effect<ViewingPort, { readonly message: str
 // 開始の途中（opening）は共有の Scope だけを持つ。status を返すのは open になってから
 type Current =
   | { readonly phase: "opening"; readonly id: object; readonly scope: Scope.Closeable }
-  | { readonly phase: "open"; readonly id: object; readonly scope: Scope.Closeable; readonly status: Extract<ShareStatus, { status: "open" }> };
+  | { readonly phase: "open"; readonly id: object; readonly scope: Scope.Closeable; readonly status: Extract<ShareStatus, { status: "open" }> }
+  // tunnel が切れた。閲覧の口と Tunnel は止めたが、共有の Scope は残す（close・セッションの終了・server の終了で状態を無しに戻す）。自動では開き直さない
+  | { readonly phase: "broken"; readonly id: object; readonly scope: Scope.Closeable; readonly status: Extract<ShareStatus, { status: "broken" }> };
 
 export class ViewingShare extends Context.Service<ViewingShare, {
   // 閲覧の共有を開く。すでに開いていれば今の状態を返し、新しくは開かない。
@@ -61,10 +63,12 @@ export class ViewingShare extends Context.Service<ViewingShare, {
         if (allow === undefined) {
           return yield* new ShareScopeEmpty({ message: "閲覧の共有の許可の範囲を指定してください（メール・ドメインを引数で渡すか、LIVE_MINDMAP_SHARE_ALLOW に書くか、誰でも見られてよいなら --anyone）。閉じるときは --stop" });
         }
+        // 切れた共有は、拒否の判定を通ってから片付ける（拒まれたときは broken のまま）
+        if (existing?.phase === "broken") yield* Scope.close(existing.scope, Exit.void);
         const id = {};
         // 共有の Scope の用意。fork・状態の登録・後始末の登録は途中で割り込まれない。
         // 状態の登録を後始末の登録より先に置く（閉じた Scope では後始末がその場で走り、登録した状態を消す）
-        const { scope, ended } = yield* Effect.uninterruptible(Effect.gen(function* () {
+        const { scope, connection, ended } = yield* Effect.uninterruptible(Effect.gen(function* () {
           const scope = yield* Scope.fork(sessionScope, "sequential");
           yield* Ref.set(current, { phase: "opening", id, scope });
           const ended = yield* Deferred.make<void>();
@@ -73,12 +77,14 @@ export class ViewingShare extends Context.Service<ViewingShare, {
             Ref.update(current, (now) => now?.id === id ? undefined : now),
             Deferred.succeed(ended, undefined),
           ));
-          return { scope, ended };
+          // 閲覧の口と Tunnel の Scope。共有の Scope の子で、切れたときはこれだけを閉じる
+          const connection = yield* Scope.fork(scope, "sequential");
+          return { scope, connection, ended };
         }));
         const failed = (message: string) => new ShareOpenFailed({ message });
         const body = Effect.gen(function* () {
-          const view = yield* openViewingPort.pipe(Scope.provide(scope), Effect.provideService(Viewers, viewers), Effect.provideService(ReviewBuild, build));
-          const opened = yield* tunnel.open(view.port, allow).pipe(Scope.provide(scope));
+          const view = yield* openViewingPort.pipe(Scope.provide(connection), Effect.provideService(Viewers, viewers), Effect.provideService(ReviewBuild, build));
+          const opened = yield* tunnel.open(view.port, allow).pipe(Scope.provide(connection));
           yield* view.allow(opened.hostname);
           const status = { status: "open", url: `https://${opened.hostname}`, allow } as const;
           // 開始の途中で閉じられていたら、open を公開しない。閉じ始めると Scope は先に Closed になり、
@@ -86,6 +92,13 @@ export class ViewingShare extends Context.Service<ViewingShare, {
           const published = yield* Ref.modify(current, (now): readonly [boolean, Current | undefined] =>
             now?.phase === "opening" && now.id === id && scope.state._tag !== "Closed" ? [true, { phase: "open", id, scope, status }] : [false, now]);
           if (!published) return yield* failed("閲覧の共有は開始の途中で閉じられました");
+          // 切れたら broken にして、閲覧の口と Tunnel を止める。この Fiber は共有の Scope に置く（接続の Scope に置くと自分自身を閉じる）。
+          // 共有の Scope が閉じるときは先に中断されるので、正常に閉じて broken に移ることはない
+          yield* Effect.forkIn(Effect.andThen(opened.dropped, lock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+            const swapped = yield* Ref.modify(current, (now): readonly [boolean, Current | undefined] =>
+              now?.phase === "open" && now.id === id ? [true, { phase: "broken", id, scope, status: { status: "broken", allow } }] : [false, now]);
+            if (swapped) yield* Scope.close(connection, Exit.void);
+          })))), scope);
           return { outcome: "opened", status } as const;
         }).pipe(Effect.mapError((error) => failed(error.message)));
         // 開始の途中で共有の Scope が閉じたら、待ちを打ち切って失敗にする
@@ -100,7 +113,7 @@ export class ViewingShare extends Context.Service<ViewingShare, {
         if (existing !== undefined) yield* Scope.close(existing.scope, Exit.void);
       }));
 
-      const status = Effect.map(Ref.get(current), (now): ShareStatus => now?.phase === "open" ? now.status : { status: "off" });
+      const status = Effect.map(Ref.get(current), (now): ShareStatus => now?.phase === "open" || now?.phase === "broken" ? now.status : { status: "off" });
 
       return ViewingShare.of({ open, close, status });
     }));
