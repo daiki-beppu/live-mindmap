@@ -2,7 +2,11 @@ import { Slider } from "@videojs/react";
 import { CaptionsOffIcon, CaptionsOnIcon, CheckIcon, PauseIcon, PlayIcon, SpeedIcon, VolumeHighIcon, VolumeLowIcon, VolumeOffIcon } from "@videojs/react/icons";
 import { useEffect, useRef, useState } from "react";
 import { KIND_COLOR } from "./kinds.ts";
+import { rateItemLabel } from "./reviewPlayback.ts";
 import { chapterNameAt, formatHms, type Chapter, type Mark } from "./reviewTimeline.ts";
+
+// 速さの項目の文言の関数は reviewPlayback.ts にある（Foldkit 版が .tsx を import せずに使うため）。React 版の既存の import 先を保つ再エクスポート
+export { rateItemLabel, rateOptionLabel } from "./reviewPlayback.ts";
 
 // 見返しのシークバーと操作の行。状態は持たず、渡された時刻と出来事の送り先だけで描く。
 // シークバーは会議の時刻の軸で全幅に置き、操作の行はその下に置く（マップには重ねない）。
@@ -60,9 +64,6 @@ const Tip = ({ text }: { text: string }) => (
 // シークバーのつまみが自分で処理するキー。押したとき、document の登録（矢印・Home・End）へ届かせない
 const THUMB_KEYS: readonly string[] = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"];
 
-// メニューの項目の文言。例: 「60 倍（161 分を 2.7 分で）」
-export const rateOptionLabel = (rate: number, duration: number) => `${rate} 倍（${Math.round(duration / 60)} 分を ${(Math.round((duration / rate / 60) * 10) / 10).toFixed(1)} 分で）`;
-
 function VolumeControl({ muted, volume, onMute, onVolume }: AudioProps) {
   const label = muted ? "ミュートを戻す" : "ミュート";
   const Icon = muted || volume === 0 ? VolumeOffIcon : volume < 0.5 ? VolumeLowIcon : VolumeHighIcon;
@@ -94,9 +95,6 @@ function VolumeControl({ muted, volume, onMute, onVolume }: AudioProps) {
     </div>
   );
 }
-
-// 音声つきは倍率だけにする（2026-10-08 オペレーターが決定。所要時間は音声なしの版だけ）
-export const rateItemLabel = (rate: number, duration: number, timesOnly: boolean) => (timesOnly ? `${rate} 倍` : rateOptionLabel(rate, duration));
 
 // 速さのボタンとメニュー。開閉だけを局所で持つ。開いている間の Esc は、SessionView の Esc より先に（capture 段階で）受けて閉じる
 function RateMenu({ duration, rate, rates, onRate, timesOnly }: Pick<Props, "duration" | "rate" | "rates" | "onRate"> & { timesOnly: boolean }) {

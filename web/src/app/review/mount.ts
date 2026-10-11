@@ -50,3 +50,33 @@ export const ObserveAudio = Mount.defineStream("ObserveAudio", {
       ).pipe(Effect.andThen(Effect.never)),
     ),
 });
+
+// シークバーの上のポインタの位置（Issue #825）。属性のハンドラ（OnPointerMove）は client の座標を渡さないので、要素の Mount で受ける。
+// 起きた事実だけを Message にする: 要素の左端から右端までを 0〜1 にした割合（幅が 0 なら 0）。位置から章名と時刻を導くのは view
+const fractionAt = (element: HTMLElement, clientX: number): number => {
+  const { left, width } = element.getBoundingClientRect();
+  return width > 0 ? Math.min(Math.max((clientX - left) / width, 0), 1) : 0;
+};
+
+type Pointed = typeof Message.MovedSeekPointer.Type | typeof Message.LeftSeekPointer.Type;
+
+export const ObserveSeekPointer = Mount.defineStream("ObserveSeekPointer", {
+  messages: [Message.MovedSeekPointer, Message.LeftSeekPointer],
+  execute: ({ element }) =>
+    Stream.callback<Pointed>((queue) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const seek = element as HTMLElement;
+          const onMove = (event: PointerEvent) => Queue.offerUnsafe(queue, Message.MovedSeekPointer({ fraction: fractionAt(seek, event.clientX) }));
+          const onLeave = () => Queue.offerUnsafe(queue, Message.LeftSeekPointer());
+          seek.addEventListener("pointermove", onMove);
+          seek.addEventListener("pointerleave", onLeave);
+          return () => {
+            seek.removeEventListener("pointermove", onMove);
+            seek.removeEventListener("pointerleave", onLeave);
+          };
+        }),
+        (release) => Effect.sync(release),
+      ).pipe(Effect.andThen(Effect.never)),
+    ),
+});

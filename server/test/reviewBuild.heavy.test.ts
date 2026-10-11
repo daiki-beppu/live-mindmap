@@ -24,6 +24,9 @@ const BUNDLED_LICENSES = ["react", "@xyflow/react"].map((name) => ({
   text: readFileSync(join(import.meta.dirname, "../../web/node_modules", name, "LICENSE"), "utf8").trim(),
 }));
 
+// 見返しの操作の行（#825）が写した video.js のアイコンの出どころとライセンス。ビルドが license.md の後ろに足す（web/src/app/review/icons.NOTICE.md）
+const ICONS_NOTICE = readFileSync(join(import.meta.dirname, "../../web/src/app/review/icons.NOTICE.md"), "utf8").trim();
+
 const events = [
   { at: "2026-10-07T00:00:00.000Z", type: "start", title: "定例</script>" },
   { at: "2026-10-07T00:00:01.000Z", type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "採用の話をします" } },
@@ -106,6 +109,9 @@ describe("map.html の本物のビルド", () => {
         // 画面に出ていない（上で HTML の中にあると確かめた文言の、先頭の行が本文に無い）
         expect(seen.bodyText, name).not.toContain(text.split("\n")[0]!.trim());
       }
+      // 写したアイコンの出どころとライセンスの表示も、同じ表示されない要素に残り、画面には出ない
+      expect(seen.licenses, "icons.NOTICE.md").toContain(ICONS_NOTICE);
+      expect(seen.bodyText, "icons.NOTICE.md").not.toContain(ICONS_NOTICE.split("\n")[0]!.trim());
       expect(seen.nodes.join("\n")).toContain("採用");
       expect(seen.intake).toBe(0);
       expect(seen.changes).toHaveLength(1);
