@@ -10,6 +10,7 @@ import { ConfigProvider, Console, Effect, Layer } from "effect";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import type { DiffInput, Op, Snapshot, SpeakingFrame } from "../src/core/index.ts";
+import { HELPER_RUN_STDERR_TAIL_LINES } from "../src/core/index.ts";
 import { HELPER_STOP_TIMEOUT_MS } from "../src/helpers.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { realLayers } from "../src/server.ts";
@@ -234,7 +235,7 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
 
   it.live("予期せぬ終了の 2 つの終わり方（code で終わる・signal で落ちる）を、code・signal・stderrTail の値として読み取れる", () =>
     Effect.gen(function* () {
-      const codeLines = ["l1", "l2", "l3", "l4", "l5", "l6"]; // STDERR_TAIL_LINES（5）を超える行数で、末尾だけが残ることも確かめる
+      const codeLines = Array.from({ length: HELPER_RUN_STDERR_TAIL_LINES + 1 }, (_, i) => `l${i + 1}`); // HELPER_RUN_STDERR_TAIL_LINES を 1 行超える行数で、末尾だけが残ることも確かめる
       const signalLines = ["s1", "s2", "s3"];
       const { cli, sessionDirs } = yield* setup({
         events: [],
@@ -246,7 +247,7 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       yield* waitFor(() => expect(readFileSync(join(dir!, "log.jsonl"), "utf8")).toContain("intake-stopped"), { timeout: 10_000 });
 
       const codeEvents = (yield* logEvents(dir!)).filter((e) => e.type === "intake-stopped");
-      expect(codeEvents[0]).toMatchObject({ code: 1, signal: null, stderrTail: codeLines.slice(-5) });
+      expect(codeEvents[0]).toMatchObject({ code: 1, signal: null, stderrTail: codeLines.slice(-HELPER_RUN_STDERR_TAIL_LINES) });
 
       yield* cli("stop");
 

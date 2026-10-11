@@ -28,9 +28,33 @@ public final class ProcessTap {
     private var deviceStarted = false
     private var continuation: AsyncThrowingStream<CapturedAudio, Error>.Continuation?
     private let queue = DispatchQueue(label: "live-mindmap.process-tap")
+    // IOProc のキューと他のタスクから読み書きするので、`lock` とは別に守る（`stop()` は `lock` を持ったまま AudioDeviceStop を呼ぶ）。
+    private let stateLock = NSLock()
+    private var receivedFrames = false
+    private var mainSubDeviceUID: String?
 
     public init(targets: [AudioProcess]) {
         self.targets = targets
+    }
+
+    /// 集約デバイスの主のサブデバイスに使った UID。集約デバイスを作る前は nil。
+    public var aggregateMainSubDeviceUID: String? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return mainSubDeviceUID
+    }
+
+    /// `frameLength > 0` のバッファが 1 つでも届いたか。
+    public var hasReceivedFrames: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return receivedFrames
+    }
+
+    private func markFramesReceived() {
+        stateLock.lock()
+        receivedFrames = true
+        stateLock.unlock()
     }
 
     /// タップを開始する。途中で失敗したら、そこまでに作った資源を破棄してから throw する。
@@ -70,6 +94,10 @@ public final class ProcessTap {
             default: AudioObjectID(kAudioObjectUnknown))
         let outputUID = try audioProperty(outputDevice, kAudioDevicePropertyDeviceUID, default: "" as CFString) as String
 
+        stateLock.lock()
+        mainSubDeviceUID = outputUID
+        stateLock.unlock()
+
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "live-mindmap-helper tap",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
@@ -91,8 +119,9 @@ public final class ProcessTap {
             of: CapturedAudio.self, throwing: Error.self, bufferingPolicy: .bufferingOldest(limit))
         self.continuation = continuation
 
-        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { _, input, inputTime, _, _ in
+        status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [weak self] _, input, inputTime, _, _ in
             guard let copy = Self.copyBuffer(input, format: format) else { return }
+            if copy.frameLength > 0 { self?.markFramesReceived() }
             let hostTime = inputTime.pointee.mFlags.contains(.hostTimeValid) ? inputTime.pointee.mHostTime : AudioGetCurrentHostTime()
             let captured = CapturedAudio(buffer: copy, hostTime: hostTime)
             // 満杯で入らなかったバッファは捨てずに、エラーで流れを終わらせる（時刻の意味を保つため）。

@@ -4,6 +4,7 @@ import {
   decideIntakeRestart,
   formatIntakeStatus,
   HELPER_EXIT_CONFIGURATION_CHANGED,
+  HELPER_RUN_STDERR_TAIL_LINES,
   MAX_CONFIGURATION_CHANGES,
   MAX_CONSECUTIVE_FAILURES,
   RESTART_WINDOW_MS,
@@ -206,6 +207,10 @@ describe("decideIntakeRestart（75 以外の終了は構成の変化に数えな
 describe("tailLines（標準エラーの末尾）", () => {
   it("定数として末尾の行数が決まっている", () => {
     expect(STDERR_TAIL_LINES).toBeGreaterThan(0);
+  });
+
+  it("helper の起動中の stderr は、タップの機器の 2 行が残るよう、共有の STDERR_TAIL_LINES より多く残す", () => {
+    expect(HELPER_RUN_STDERR_TAIL_LINES).toBeGreaterThan(STDERR_TAIL_LINES);
   });
 
   it("行数が STDERR_TAIL_LINES 以下なら、全部をそのまま返す", () => {
