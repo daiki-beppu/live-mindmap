@@ -22,6 +22,7 @@ import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
+import { allowedMails } from "./fixtures/allowedMail.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { fakeTunnel, FAKE_TUNNEL_HOST } from "./fixtures/tunnel.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -444,7 +445,8 @@ describe("閲覧の共有（Issue #834）", () => {
   const ORIGIN = `https://${FAKE_TUNNEL_HOST}`;
   const START = '{"app":"us.zoom.xos","title":"週次","audio":false}';
 
-  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean }) {
+  // env は cli の環境変数（既定の許可 LIVE_MINDMAP_SHARE_ALLOW など）
+  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean }, env: Readonly<Record<string, string>> = {}) {
     const tunnel = fakeTunnel(tunnelOptions);
     const r = yield* resourceWithFakeHelpers([{}], { viewing: tunnel.viewing });
     const call = (method: string, path: string, body?: string, origin?: string) =>
@@ -470,7 +472,7 @@ describe("閲覧の共有（Issue #834）", () => {
       const cliLayer = Layer.mergeAll(forbiddenManagedDeps,
         NodeServices.layer, unusedApple,
         observedClient,
-        ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port) })),
+        ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: r.sessionsDir, LIVE_MINDMAP_PORT: String(r.server.port), ...env })),
         Layer.succeed(Console.Console, consoleService),
         Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
         Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("") })),
@@ -572,10 +574,12 @@ describe("閲覧の共有（Issue #834）", () => {
     yield* refused(port);
   }));
 
-  it.live("open の本文は {anyone:true} か {} だけを受ける。それ以外は 400 で、Tunnel を開かない", () => Effect.gen(function* () {
+  it.live("open の本文は {anyone:true}・{mails:[1 件以上のメール]}・{} だけを受ける。それ以外は 400 で、Tunnel を開かない", () => Effect.gen(function* () {
     const s = yield* shareResource();
     yield* s.startSession;
-    for (const body of ['{"anyone":false}', '{"anyone":"yes"}', '{"mails":["a@example.com"]}', '{"anyone":true,"mails":["a@example.com"]}', "{not json", undefined]) {
+    const bad = ['{"anyone":false}', '{"anyone":"yes"}', '{"mails":[]}', '{"mails":[""]}', '{"mails":["no-at"]}', '{"mails":["a b@x.com"]}', '{"mails":"a@example.com"}',
+      '{"anyone":true,"mails":["a@example.com"]}', "{not json", undefined];
+    for (const body of bad) {
       const response = yield* s.call("POST", "/share/open", body);
       expect([body, response.status]).toEqual([body, 400]);
     }
@@ -583,6 +587,20 @@ describe("閲覧の共有（Issue #834）", () => {
     // 守っている状態に到達していることを、正しい本文なら開くことで示す
     expect((yield* s.open()).status).toBe(200);
     expect(s.tunnel.opened).toHaveLength(1);
+  }));
+
+  it.live("open の本文 {mails:[...]} は 200 で開き、Tunnel に --allowed-mail が渡り、状態の許可の範囲はメール・ドメインの一覧になる。--anyone では --allowed-mail を渡さない", () => Effect.gen(function* () {
+    const s = yield* shareResource();
+    yield* s.startSession;
+    const response = yield* s.call("POST", "/share/open", '{"mails":["a@example.com","*@example.co.jp"]}');
+    expect(response.status).toBe(200);
+    expect(yield* s.json(response)).toEqual({ status: "open", url: ORIGIN, allow: { mails: ["a@example.com", "*@example.co.jp"] } });
+    expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: { mails: ["a@example.com", "*@example.co.jp"] } });
+    expect(allowedMails(s.tunnel.args.at(-1)!)).toEqual(["*@example.co.jp", "a@example.com"]);
+    // --anyone で開き直すと、--allowed-mail は付かない
+    yield* s.call("POST", "/share/close");
+    expect((yield* s.open()).status).toBe(200);
+    expect(s.tunnel.args.at(-1)).not.toContain("--allowed-mail");
   }));
 
   it.live("共有のルートにも操作の口の Origin の制限が掛かる（ローカル以外の Origin は 403 で、開きも閉じもしない）", () => Effect.gen(function* () {
@@ -890,6 +908,99 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(s.tunnel.opened).toHaveLength(1);
       expect(s.tunnel.closed()).toBe(0);
       expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    }));
+
+    it.live("share <メール・ドメイン...> は --allowed-mail で渡して開き、出力・status に許可の範囲が出る。--anyone ではない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      const { out, failed } = yield* s.cli(["share", "a@x.com", "*@example.co.jp"]);
+      expect(failed).toBe(false);
+      const lines = out.trimEnd().split("\n");
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toContain(ORIGIN);
+      expect(lines[1]).toContain("a@x.com");
+      expect(lines[1]).toContain("*@example.co.jp");
+      expect(lines[1]).not.toContain("誰でも");
+      expect(lines[2]).toContain("保証");
+      expect(allowedMails(s.tunnel.args.at(-1)!)).toEqual(["*@example.co.jp", "a@x.com"]);
+      const status = (yield* s.cli(["status"])).out.trimEnd().split("\n");
+      expect(status.slice(-3)).toEqual(["閲覧の共有: 共有中", `URL: ${ORIGIN}`, "許可の範囲: a@x.com, *@example.co.jp"]);
+    }));
+
+    it.live("既定の許可（LIVE_MINDMAP_SHARE_ALLOW）に引数を足した範囲で開く。出力・status・--allowed-mail に両方が出る", () => Effect.gen(function* () {
+      const s = yield* shareResource(undefined, { LIVE_MINDMAP_SHARE_ALLOW: "d@x.com, *@corp.example" });
+      yield* s.startSession;
+      const { out, failed } = yield* s.cli(["share", "a@x.com"]);
+      expect(failed).toBe(false);
+      for (const value of ["d@x.com", "*@corp.example", "a@x.com"]) {
+        expect(out).toContain(value);
+      }
+      expect(allowedMails(s.tunnel.args.at(-1)!)).toEqual(["*@corp.example", "a@x.com", "d@x.com"]);
+      const status = (yield* s.cli(["status"])).out;
+      for (const value of ["d@x.com", "*@corp.example", "a@x.com"]) expect(status).toContain(value);
+      expect(status).not.toContain("誰でも");
+    }));
+
+    it.live("既定の許可だけでも、引数なしの share は開く。範囲は既定の許可で、「誰でも」にはならない", () => Effect.gen(function* () {
+      const s = yield* shareResource(undefined, { LIVE_MINDMAP_SHARE_ALLOW: "d1@x.com,d2@x.com" });
+      yield* s.startSession;
+      const { out, err, failed } = yield* s.cli(["share"]);
+      expect(failed).toBe(false);
+      expect(err).toBe("");
+      expect(out).toContain("d1@x.com");
+      expect(out).toContain("d2@x.com");
+      expect(out).not.toContain("誰でも");
+      expect(allowedMails(s.tunnel.args.at(-1)!)).toEqual(["d1@x.com", "d2@x.com"]);
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: { mails: ["d1@x.com", "d2@x.com"] } });
+    }));
+
+    it.live("既定の許可があっても --anyone なら「誰でも」で開き、--allowed-mail は付かない", () => Effect.gen(function* () {
+      const s = yield* shareResource(undefined, { LIVE_MINDMAP_SHARE_ALLOW: "d@x.com" });
+      yield* s.startSession;
+      const { out, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(false);
+      expect(out).toContain("誰でも");
+      expect(s.tunnel.args.at(-1)).not.toContain("--allowed-mail");
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
+    }));
+
+    it.live("範囲が空（環境変数が空・空要素だけ）で --anyone も無い share は、許可の範囲を指定するよう案内して止まり、Tunnel を開かない", () => Effect.gen(function* () {
+      for (const env of [{ LIVE_MINDMAP_SHARE_ALLOW: "" }, { LIVE_MINDMAP_SHARE_ALLOW: " , " }]) {
+        const s = yield* shareResource(undefined, env);
+        yield* s.startSession;
+        const { out, err, failed } = yield* s.cli(["share"]);
+        expect([env, failed]).toEqual([env, true]);
+        expect(err).toContain("許可の範囲を指定");
+        expect(out).not.toContain("https://");
+        expect(s.tunnel.opened).toEqual([]);
+        expect((yield* s.cli(["status"])).out.trimEnd().split("\n").at(-1)).toBe("閲覧の共有: 無し");
+      }
+    }));
+
+    it.live("--anyone とメール・ドメインは同時に渡せない。既定の許可があっても失敗し、開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource(undefined, { LIVE_MINDMAP_SHARE_ALLOW: "d@x.com" });
+      yield* s.startSession;
+      const { out, failed } = yield* s.cli(["share", "--anyone", "a@x.com"]);
+      expect(failed).toBe(true);
+      expect(out).not.toContain("https://");
+      expect(s.tunnel.opened).toEqual([]);
+      expect(yield* s.json(yield* s.call("GET", "/share/status"))).toEqual({ status: "off" });
+      // 守っている状態に到達していることを、片方だけなら開くことで示す
+      expect((yield* s.cli(["share", "a@x.com"])).failed).toBe(false);
+      expect(s.tunnel.opened).toHaveLength(1);
+    }));
+
+    it.live("すでに共有中の share <メール> は失敗し、標準エラーに今の URL と今の許可の範囲（メール・ドメイン）が出る。新しくは開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      expect((yield* s.cli(["share", "a@x.com"])).failed).toBe(false);
+      const { err, failed } = yield* s.cli(["share", "b@x.com"]);
+      expect(failed).toBe(true);
+      expect(err).toContain("すでに");
+      expect(err).toContain(ORIGIN);
+      expect(err).toContain("a@x.com");
+      expect(err).not.toContain("b@x.com");
+      expect(s.tunnel.opened).toHaveLength(1);
     }));
 
     it.live("閉じた後の share --anyone は、拒まれずに開き直せる", () => Effect.gen(function* () {

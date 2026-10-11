@@ -1,5 +1,6 @@
 import { Deferred, Effect, Layer } from "effect";
 import { ReviewBuild } from "../../src/review.ts";
+import { quickTunnelArgs } from "../../src/core/index.ts";
 import { CloudflaredMissing, Tunnel, TunnelFailed } from "../../src/tunnel.ts";
 import { TEMPLATE } from "./review.ts";
 
@@ -14,6 +15,8 @@ export const FAKE_TUNNEL_HOST = "fake-tunnel.trycloudflare.com";
 // missing: true のとき、check は CloudflaredMissing で失敗する（cloudflared が管理ディレクトリに無い状態）。checked() は check が呼ばれた回数。
 export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean } = {}) => {
   const opened: number[] = [];
+  // open ごとに、cloudflared へ渡す引数（--allowed-mail を含む）。本物の Tunnel と同じ quickTunnelArgs で作る
+  const args: (readonly string[])[] = [];
   let checkedCount = 0;
   let closedCount = 0;
   const reached = Deferred.makeUnsafe<number>();
@@ -29,8 +32,9 @@ export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly
         ? Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。pnpm cli install cloudflared で入れてから、もう一度 share を打ってください" }))
         : Effect.void;
     }),
-    open: (port) => Effect.gen(function* () {
+    open: (port, allow) => Effect.gen(function* () {
       opened.push(port);
+      args.push(quickTunnelArgs(port, allow));
       const hold = holdCleanup;
       holdCleanup = false;
       yield* Effect.addFinalizer(() => hold
@@ -49,7 +53,7 @@ export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly
   const succeedHeld = Deferred.succeed(held, undefined);
   const cleanupReached = Deferred.await(cleanupStarted);
   const releaseCleanup = Deferred.succeed(cleanupGate, undefined);
-  return { viewing: Layer.merge(tunnel, build), opened, closed: () => closedCount, checked: () => checkedCount, reached: Deferred.await(reached), failHeld, succeedHeld, cleanupReached, releaseCleanup };
+  return { viewing: Layer.merge(tunnel, build), opened, args, closed: () => closedCount, checked: () => checkedCount, reached: Deferred.await(reached), failHeld, succeedHeld, cleanupReached, releaseCleanup };
 };
 
 // 閲覧の共有を使わないテスト用。使われたら die する
