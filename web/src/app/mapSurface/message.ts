@@ -46,10 +46,14 @@ export const Message = defineMessageUnion({
   // --- 親から ---
   // マップ（Snapshot）が新しくなった（差分更新の反映）。位置は補間で新しい目標へ移る
   ChangedSnapshot: { snapshot: Snapshot },
+  // 見返しのキーで時刻を動かした（manual・overview なら自動のカメラへ戻る。時刻が変わらない操作でも戻る）
+  MovedTime: {},
   // キー。意味（どの倍率・位置になるか）は update が reduceViewing で決める。修飾キーは押されていたかだけを届ける
   PressedViewKey: { key: ViewKey, metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
   PressedArrowKey: { dir: Schema.Literals(["left", "right", "up", "down"]), metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
   PressedEscapeKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
+  // Enter（選んだ議題・論点を開く・畳む）。選択があるかと、フォーカスがボタンの中かの判断は、キーの Subscription が済ませている
+  PressedEnterKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
   // E（右の列の出し入れ）。列の幅だけマップの大きさが変わるので、update は大きさの Message を待ってずらす
   PressedSideKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
   // --- 見返しの 10 秒のタイマーの Subscription から ---

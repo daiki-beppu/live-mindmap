@@ -1,18 +1,22 @@
-// 見返しの Foldkit プログラム（Issue #823・#825）: Model・update・view の根。
+// 見返しの Foldkit プログラム（Issue #822・#823・#825）: Model・update・view の根。
 // Model に持つのは再生の状態（PlaybackState）、表示面の実測（size・nodeHeights）、操作の行の状態（Slider・Menu・Tooltip の子の Model、ポインタの位置、押している最中か、字幕と右の列を隠しているか）。
 // 時間軸・章・印と、その時刻のマップ（Snapshot）は導いた値なので Model の外に置く（時間軸・章・印は Context、Snapshot は playback.time から毎回導く）
-import { Menu, Slider, Tooltip } from "@foldkit/ui";
+import { Menu, Popover, Slider, Tooltip } from "@foldkit/ui";
 import { Option, Schema } from "effect";
 import { Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
+import type { ArrowDir, ViewKey } from "../../viewing.ts";
 import { AUDIO_RATE, initialPlayback, PlaybackState, playbackReducer, type PlaybackEvent } from "../../reviewPlayback.ts";
+import { reviewKeyEvent, type ReviewKeyAction } from "../../reviewKeys.ts";
 import { snapshotAt, topicNameOf } from "../../reviewTimeline.ts";
+import { initKeyList, keyListView } from "../keys/keyList.ts";
+import type { KeyId } from "../keys/table.ts";
 import * as MapSurface from "../mapSurface/main.ts";
 import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
 import { PauseAudio, PlayAudio, ReleaseFocus, ReleaseFocusAfterMenuClose, REVIEW_AUDIO_ID, SeekAudio, WriteAudioSettings } from "./command.ts";
-import type { Context } from "./context.ts";
+import { reviewScreenOf, type Context } from "./context.ts";
 import { controlsView, RATE_MENU_ID, RateMenu, SEEK_SLIDER_ID, tooltipId, VOLUME_SLIDER_ID } from "./controls.ts";
 import { Message, type TooltipKey } from "./message.ts";
 import { ObserveAudio } from "./mount.ts";
@@ -40,6 +44,8 @@ export const Model = Schema.Struct({
   seekSlider: Slider.Model,
   volumeSlider: Slider.Model,
   rateMenu: Menu.Model,
+  // キーの一覧（#822）。開いているかの正本はこの Popover の Model（見る状態の keyList は使わない）
+  keyList: Popover.Model,
   // ボタンごとの Tooltip（欄名は TooltipKey）
   tooltips: Schema.Struct({
     prev: Tooltip.Model,
@@ -78,6 +84,7 @@ export const init = (context: Context): Model => {
     seekSlider: seekSliderInit(context),
     volumeSlider: volumeSliderInit(),
     rateMenu: Menu.init({ id: RATE_MENU_ID }),
+    keyList: initKeyList(),
     tooltips: { prev: tooltip("prev"), toggle: tooltip("toggle"), next: tooltip("next"), mute: tooltip("mute"), captions: tooltip("captions"), rate: tooltip("rate"), side: tooltip("side") },
     maybeSeekPointer: Option.none(),
     isPressingSlider: false,
@@ -99,14 +106,19 @@ export const makeUpdate = (context: Context) => {
     const { mode: _mode, snapshot: _snapshot, ...next } = MapSurface.skipMotion(surface);
     return modifyFields(model, { mapSurface: () => next });
   };
-  const foldMapSurface = Update.foldChild({
-    update: MapSurface.update,
+  const mapSurfaceFold = {
     read: (model: Model) => Option.some(surfaceOf(context, model)),
     write: (model: Model, surface: MapSurface.Model) => storeSurface(model, surface),
     toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }),
     // 選択は表示面の viewing が持つので、ノードが選ばれたこと（SelectedNode）は見返しでは受け流す
     foldOutMessage: () => (model: Model) => ({ model }),
-  });
+  };
+  const foldMapSurface = Update.foldChild({ update: MapSurface.update, ...mapSurfaceFold });
+  // キーの事実は、表示面の入口（pressViewKey など）で渡す
+  const foldViewKey = Update.foldChild({ update: MapSurface.pressViewKey, ...mapSurfaceFold });
+  const foldArrowKey = Update.foldChild({ update: MapSurface.pressArrowKey, ...mapSurfaceFold });
+  const foldEscapeKey = Update.foldChild({ update: MapSurface.pressEscapeKey, ...mapSurfaceFold });
+  const foldEnterKey = Update.foldChild({ update: MapSurface.pressEnterKey, ...mapSurfaceFold });
   // 子（Slider・Menu・Tooltip）は foldChild で組み込み、結果は OutMessage（ChangedValue・Selected）だけを variant の名前で受ける。子の内部の Message は見ない
   const foldSeekSlider = Update.foldChild({
     update: Slider.update,
@@ -145,6 +157,24 @@ export const makeUpdate = (context: Context) => {
     toParentMessage: (key: TooltipKey, message: Tooltip.Message) => Message.GotTooltipMessage({ tooltipId: key, message }),
     // 吹き出しが出た・隠れた（Shown・Hidden）ことは、見返しでは受け流す
     foldOutMessage: () => () => (model: Model) => ({ model }),
+  });
+  // キーの一覧（Popover）。開閉の結果（Opened・Closed）は見返しでは受け流す（開いているかは Popover の Model が持つ）
+  const keyListFold = {
+    read: (model: Model) => Option.some(model.keyList),
+    write: (model: Model, keyList: Popover.Model) => modifyFields(model, { keyList: () => keyList }),
+    toParentMessage: (message: Popover.Message) => Message.GotKeyListMessage({ message }),
+    foldOutMessage: () => (model: Model) => ({ model }),
+  };
+  const foldKeyList = Update.foldChild({ update: Popover.update, ...keyListFold });
+  const foldKeyListOpen = Update.foldChildStep({ update: Popover.open, ...keyListFold });
+  const foldKeyListClose = Update.foldChildStep({ update: Popover.close, ...keyListFold });
+  // 速さのメニューを外から閉じる（Esc）。選ばれたことの OutMessage は出ない
+  const foldRateMenuClose = Update.foldChildStep({
+    update: RateMenu.close,
+    read: (model: Model) => Option.some(model.rateMenu),
+    write: (model: Model, rateMenu: Menu.Model) => modifyFields(model, { rateMenu: () => rateMenu }),
+    toParentMessage: (message: Menu.Message) => Message.GotRateMenuMessage({ message }),
+    foldOutMessage: () => (model: Model) => ({ model }),
   });
   // 時刻が変わったときだけ <audio> の currentTime に書く（書かないと、次の timeupdate で元の時刻へ戻る）
   // 時刻の変更で Snapshot が別のものになったときは、表示面へ ChangedSnapshot を渡してカメラを寄せ直す（自動で、大きさを測った後だけ。それ以外は playback だけを更新する）
@@ -189,6 +219,64 @@ export const makeUpdate = (context: Context) => {
   };
   // 押したあと、フォーカスを外す
   const released = (model: Model): Return => ({ model, commands: [ReleaseFocus()] });
+  // 右の列・字幕の出し入れ。ボタンと E・C のキーで同じ Model の変化にする（フォーカスを外すのはボタンだけ）
+  const toggledSide = (model: Model): Model => modifyFields(model, { sideHidden: (hidden) => !hidden });
+  const toggledCaptions = (model: Model): Model => modifyFields(model, { captionsHidden: (hidden) => !hidden });
+
+  // --- キー（#822）。Subscription は「このキーが押された」だけを届け、意味はここで決める ---
+  type Modifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
+  type KeyHandler = (model: Model, modifiers: Modifiers) => Return;
+  const viewKey = (key: ViewKey): KeyHandler => (model, modifiers) => foldViewKey(model, { key, ...modifiers });
+  const arrowKey = (dir: ArrowDir): KeyHandler => (model, modifiers) => foldArrowKey(model, { dir, ...modifiers });
+  const isPlain = ({ metaKey, ctrlKey, altKey }: Modifiers): boolean => !metaKey && !ctrlKey && !altKey;
+  // ⌘・Ctrl・Option と一緒なら何もしない
+  const plainKey = (handler: (model: Model) => Return): KeyHandler => (model, modifiers) => (isPlain(modifiers) ? handler(model) : { model });
+  // Esc: 速さのメニューが開いていれば、それを閉じるだけ。キーの一覧が開いていれば、それを閉じるだけ。どちらも閉じていれば見る状態に渡す
+  const escapeKey: KeyHandler = (model, modifiers) =>
+    model.rateMenu.isOpen
+      ? foldRateMenuClose(model)
+      : model.keyList.isOpen
+        ? foldKeyListClose(model)
+        : foldEscapeKey(model, modifiers);
+  // 見返しのキーは、再生の出来事にしてから、ボタンと同じ Model の変化と Command にする（⌘・Ctrl・Option と一緒なら出来事にならない）
+  const reviewKey = (action: ReviewKeyAction): KeyHandler => (model, { metaKey, ctrlKey, altKey }) => {
+    const keyEvent = reviewKeyEvent(action, { meta: metaKey, ctrl: ctrlKey, alt: altKey }, model.playback.time, context.playback.duration);
+    if (keyEvent === null) return { model };
+    if (!keyEvent.movesTime) return changedSettings(model, keyEvent.event);
+    const result = keyEvent.event.type === "toggle" ? toggled(model) : moved(model, keyEvent.event);
+    return { ...result, model: storeSurface(result.model, MapSurface.movedTime(surfaceOf(context, result.model))) };
+  };
+  const KEY_HANDLERS: Record<KeyId, KeyHandler> = {
+    Escape: escapeKey,
+    F: viewKey("F"),
+    "=": viewKey("="),
+    "-": viewKey("-"),
+    "0": viewKey("0"),
+    Z: viewKey("Z"),
+    "Shift+ArrowLeft": viewKey("Shift+ArrowLeft"),
+    "Shift+ArrowRight": viewKey("Shift+ArrowRight"),
+    "Shift+ArrowUp": viewKey("Shift+ArrowUp"),
+    "Shift+ArrowDown": viewKey("Shift+ArrowDown"),
+    ArrowLeft: arrowKey("left"),
+    ArrowRight: arrowKey("right"),
+    ArrowUp: arrowKey("up"),
+    ArrowDown: arrowKey("down"),
+    Enter: foldEnterKey,
+    E: plainKey((model) => ({ model: toggledSide(model) })),
+    C: plainKey((model) => ({ model: toggledCaptions(model) })),
+    "?": plainKey((model) => (model.keyList.isOpen ? foldKeyListClose(model) : foldKeyListOpen(model))),
+    Space: reviewKey("toggle"),
+    K: reviewKey("toggle"),
+    J: reviewKey("back"),
+    L: reviewKey("forward"),
+    ",": reviewKey("prev"),
+    ".": reviewKey("next"),
+    "<": reviewKey("slower"),
+    ">": reviewKey("faster"),
+    Home: reviewKey("start"),
+    End: reviewKey("end"),
+    M: reviewKey("mute"),
+  };
   return (model: Model, message: Message): Return =>
     Message.match<Return>(message, {
       ClickedPrev: () => moved(model, { type: "prev" }),
@@ -206,10 +294,12 @@ export const makeUpdate = (context: Context) => {
       GotSeekSliderMessage: ({ message }) => foldSeekSlider(model, message),
       GotVolumeSliderMessage: ({ message }) => foldVolumeSlider(model, message),
       GotRateMenuMessage: ({ message }) => foldRateMenu(model, message),
+      GotKeyListMessage: ({ message }) => foldKeyList(model, message),
+      PressedKey: ({ key, metaKey, ctrlKey, altKey }) => KEY_HANDLERS[key](model, { metaKey, ctrlKey, altKey }),
       GotTooltipMessage: ({ tooltipId, message }) => foldTooltip(model, tooltipId, message),
       ClickedMute: () => changedSettings(model, { type: "toggleMute" }, [ReleaseFocus()]),
       ToggledCaptions: ({ isOpen }) => released(modifyFields(model, { captionsHidden: () => !isOpen })),
-      ClickedSide: () => released(modifyFields(model, { sideHidden: (hidden) => !hidden })),
+      ClickedSide: () => released(toggledSide(model)),
       MovedSeekPointer: ({ fraction }) => ({ model: modifyFields(model, { maybeSeekPointer: () => Option.some(fraction) }) }),
       LeftSeekPointer: () => ({ model: modifyFields(model, { maybeSeekPointer: () => Option.none() }) }),
       PressedSliderPointer: () => ({ model: modifyFields(model, { isPressingSlider: () => true }) }),
@@ -234,7 +324,11 @@ export const makeView = (context: Context) => (model: Model, h: HtmlBuilder<Mess
     [
       h.div(
         [h.Class("review__session")],
-        [h.submodel({ slotId: "map-surface", view: MapSurface.view, model: surfaceOf(context, model), toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }) })],
+        [
+          h.submodel({ slotId: "map-surface", view: MapSurface.view, model: surfaceOf(context, model), toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }) }),
+          // キーの一覧はマップの区画の中に出す（見返しはまだ .map を描かないので、マップを入れているこの区画に置く）
+          keyListView(h, model.keyList, reviewScreenOf(context), (message) => Message.GotKeyListMessage({ message })),
+        ],
       ),
       controlsView(context, model, topicNameOf(snapshotOf(context, model)), h),
       ...Option.match(context.maybeAudioUrl, {

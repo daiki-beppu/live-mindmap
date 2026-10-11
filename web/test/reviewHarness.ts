@@ -1,5 +1,6 @@
 // 見返しの操作の行（Issue #825）の Story・Scene が共有する道具。テストではなく、題材の会議・Context・保留中の Command と Mount を解く step・描いた木を読む関数だけを置く。
 import * as Menu from "@foldkit/ui/menu";
+import * as Popover from "@foldkit/ui/popover";
 import * as Tooltip from "@foldkit/ui/tooltip";
 import { Option, Schema } from "effect";
 import type { MountDefinition } from "foldkit/mount";
@@ -97,6 +98,8 @@ const mountSteps: Record<string, Step> = {
   AnchorTooltip: resolveMount(Tooltip.AnchorTooltip, Tooltip.Message.CompletedAnchorTooltip()),
   AnchorMenu: resolveMount(Menu.AnchorMenu, Menu.Message.CompletedAnchorMenu()),
   PortalMenuBackdrop: resolveMount(Menu.PortalMenuBackdrop, Menu.Message.CompletedPortalMenuBackdrop()),
+  // キーの一覧（#822）の Popover のパネル。開いている間だけ描かれる
+  AnchorPopover: resolveMount(Popover.AnchorPopover, Popover.Message.CompletedAnchorPopover()),
 };
 
 export const settle = <Model, Message, OutMessage>(simulation: SceneSimulation<Model, Message, OutMessage>): SceneSimulation<Model, Message, OutMessage> => {

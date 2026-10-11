@@ -41,7 +41,7 @@ import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
-import { type CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type VisibleTree } from "../../viewing.ts";
+import { type ArrowDir, type CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
 import "./mapSurface.css";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -336,8 +336,18 @@ export const skipMotion = (model: Model): Model =>
 // キー・時間の出来事を見る状態へ渡す（still は受けない）
 const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
 
+// 親（見返し）が、キーが押された事実を表示面へ伝える入口（子の Message を親が組み立てずに済む）。意味は update が reduceViewing で決める
+type KeyModifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
+export const pressViewKey = (model: Model, input: KeyModifiers & { key: ViewKey }): Return => update(model, Message.PressedViewKey(input));
+export const pressArrowKey = (model: Model, input: KeyModifiers & { dir: ArrowDir }): Return => update(model, Message.PressedArrowKey(input));
+export const pressEscapeKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEscapeKey(input));
+export const pressEnterKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEnterKey(input));
+
 // 親（見返し）が、時刻の変更で Snapshot が別のものになったことを表示面へ伝える入口（子の Message を親が組み立てずに済む）
 export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => update(model, Message.ChangedSnapshot({ snapshot })).model;
+
+// 親（見返し）が、キーで時刻を動かしたことを表示面へ伝える入口（自動のカメラへ戻る）
+export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
@@ -361,9 +371,11 @@ export const update = (model: Model, message: Message): Return =>
       const reflection = reflectionOf(model, replaced);
       return { model: reflection === null ? reanchor(autoCamera(followTarget(model, replaced))) : applyViewing(replaced, reflection, model) };
     },
+    MovedTime: () => (model.viewing.mode === "auto" ? { model } : pressed(model, { type: "timeMoved" })),
     PressedViewKey: ({ key, metaKey, ctrlKey, altKey }) => pressed(model, { type: "key", key, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     PressedArrowKey: ({ dir, metaKey, ctrlKey, altKey }) => pressed(model, { type: "arrow", dir, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     PressedEscapeKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "escape", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
+    PressedEnterKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "enter", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     PressedSideKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "side", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     ElapsedIdleTime: () => pressed(model, { type: "idle" }),
     TickedAnimationFrame: ({ deltaMs }) => {

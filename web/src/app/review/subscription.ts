@@ -1,4 +1,4 @@
-// 見返しの Subscription（Issue #824・#825・#819）: 録音なしの時計、スライダーのドラッグ、スライダーを押している間の文書の pointerup、触らずに 10 秒で自動に戻るタイマー。
+// 見返しの Subscription（Issue #824・#825・#819・#822）: キー（document の keydown）、録音なしの時計、スライダーのドラッグ、スライダーを押している間の文書の pointerup、触らずに 10 秒で自動に戻るタイマー。
 // 録音なしの時計は、進めている間だけ rAF を開き、フレームの ms を Message にする（update は ms を経過秒にして reducer へ渡す）。
 // Slider（シーク・音量）のドラッグは Slider 自身の Subscription を、親の Message に包んで足す。
 // スライダーを押して離したことは、Slider の中の Message ではなく、押した事実（PressedSliderPointer）の後に文書の pointerup を受けて知る。
@@ -6,8 +6,9 @@
 import { Option, Schema, Stream } from "effect";
 import { Slider } from "@foldkit/ui";
 import { Dom, Subscription } from "foldkit";
+import { keyPressStream } from "../keys/subscription.ts";
 import { idleElapsedStream } from "../mapSurface/subscription.ts";
-import type { Context } from "./context.ts";
+import { reviewScreenOf, type Context } from "./context.ts";
 import type { Model } from "./main.ts";
 import { Message } from "./message.ts";
 
@@ -40,6 +41,14 @@ export const makeSubscriptions = (context: Context) => {
       {
         modelToDependencies: (model) => ({ isWaiting: model.mapSurface.viewing.mode === "manual", stamp: model.mapSurface.idleStamp }),
         dependenciesToStream: ({ isWaiting }) => Stream.map(idleElapsedStream({ isWaiting, afterMs: REVIEW_IDLE_MS }), (message) => Message.GotMapSurfaceMessage({ message })),
+      },
+    ),
+    // キー。画面は Context の録音の有無で決まり、依存は選択の有無だけ（Enter を開閉に使うかの判断に要る）。意味は update が決める
+    keys: entry(
+      { hasSelection: Schema.Boolean },
+      {
+        modelToDependencies: (model) => ({ hasSelection: model.mapSurface.viewing.selection !== undefined }),
+        dependenciesToStream: ({ hasSelection }) => keyPressStream({ screen: reviewScreenOf(context), hasSelection }),
       },
     ),
   }));
