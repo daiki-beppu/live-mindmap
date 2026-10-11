@@ -446,7 +446,7 @@ describe("閲覧の共有（Issue #834）", () => {
   const START = '{"app":"us.zoom.xos","title":"週次","audio":false}';
 
   // env は cli の環境変数（既定の許可 LIVE_MINDMAP_SHARE_ALLOW など）
-  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean }, env: Readonly<Record<string, string>> = {}) {
+  const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean; readonly distinctHosts?: boolean }, env: Readonly<Record<string, string>> = {}) {
     const tunnel = fakeTunnel(tunnelOptions);
     const r = yield* resourceWithFakeHelpers([{}], { viewing: tunnel.viewing });
     const call = (method: string, path: string, body?: string, origin?: string) =>
@@ -1012,6 +1012,183 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(again.failed).toBe(false);
       expect(again.err).toBe("");
       expect(s.tunnel.opened).toHaveLength(2);
+    }));
+  });
+
+  // 閲覧の共有が切れた（Issue #837）。偽の Tunnel の drop() で cloudflared が切れたことを再現する。
+  // 切れたことを反映するのは別の Fiber なので、状態が変わるまで回数の上限つきで取り直す（固定時間の sleep では待たない）
+  describe("切れたとき（Issue #837）", () => {
+    const BROKEN_ANYONE = { status: "broken", allow: "anyone" };
+    const awaitStatus = (s: { call: (method: string, path: string) => Effect.Effect<Response, unknown>; json: (response: Response) => Effect.Effect<unknown, unknown> }, expected: string) =>
+      Effect.gen(function* () {
+        let last: unknown;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          last = yield* s.json(yield* s.call("GET", "/share/status"));
+          if ((last as { status: string }).status === expected) return last;
+          yield* Effect.sleep("10 millis");
+        }
+        return last;
+      });
+    const shareStatus = (s: { call: (method: string, path: string) => Effect.Effect<Response, unknown>; json: (response: Response) => Effect.Effect<unknown, unknown> }) =>
+      Effect.flatMap(s.call("GET", "/share/status"), s.json);
+
+    it.live("切れると状態は broken（許可の範囲つき）になり、閲覧の口は待受けをやめ、Tunnel の後始末が 1 回走る。自動では開き直さず、セッションは続く", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.open();
+      const port = viewingPortOf(s.tunnel);
+      expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+      yield* s.tunnel.drop;
+      expect(yield* awaitStatus(s, "broken")).toEqual(BROKEN_ANYONE);
+      yield* refused(port);
+      expect(s.tunnel.closed()).toBe(1);
+      // 立て直さない: 新しい Tunnel は開かれず、状態に URL は出ない
+      expect(s.tunnel.opened).toHaveLength(1);
+      expect(yield* shareStatus(s)).toEqual(BROKEN_ANYONE);
+      expect((yield* s.json(yield* s.call("GET", "/session/status")))).toMatchObject({ status: "running" });
+    }));
+
+    it.live("メールで開いた共有が切れると、broken の許可の範囲はそのメール・ドメインの一覧のまま", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.call("POST", "/share/open", '{"mails":["a@example.com","*@example.co.jp"]}');
+      yield* s.tunnel.drop;
+      expect(yield* awaitStatus(s, "broken")).toEqual({ status: "broken", allow: { mails: ["a@example.com", "*@example.co.jp"] } });
+    }));
+
+    it.live("broken のとき cli status は「切れた」と許可の範囲を出し、URL は出さない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.cli(["share", "--anyone"]);
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      const out = (yield* s.cli(["status"])).out;
+      expect(out.trimEnd().split("\n").slice(-2)).toEqual(["閲覧の共有: 切れた", "許可の範囲: 誰でも"]);
+      expect(out).not.toContain(ORIGIN);
+    }));
+
+    it.live("broken から share を打ち直すと、新しい Tunnel・新しい閲覧の口・新しい URL で開く。前の URL は使わない", () => Effect.gen(function* () {
+      const s = yield* shareResource({ distinctHosts: true });
+      yield* s.startSession;
+      const first = yield* s.json(yield* s.open());
+      const firstPort = viewingPortOf(s.tunnel);
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      // 切れたら閲覧の口は待受けをやめる。新しい待受けができる前に確かめる
+      yield* refused(firstPort);
+      const again = yield* s.open();
+      expect(again.status).toBe(200);
+      expect(again.headers.get("x-share-open-outcome")).toBe("opened");
+      const second = (yield* s.json(again)) as { status: string; url: string; allow: unknown };
+      expect(second).toEqual({ status: "open", url: "https://fake-tunnel-2.trycloudflare.com", allow: "anyone" });
+      expect(second.url).not.toBe((first as { url: string }).url);
+      expect(s.tunnel.opened).toHaveLength(2);
+      expect(s.tunnel.hosts).toEqual(["fake-tunnel-1.trycloudflare.com", "fake-tunnel-2.trycloudflare.com"]);
+      const port = viewingPortOf(s.tunnel);
+      expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${port}/`))).status).toBe(200);
+      expect((yield* connect(port, "/ws", second.url)).isOpen()).toBe(true);
+      expect(yield* shareStatus(s)).toEqual(second);
+      // 前の共有の後始末は、切れたときの 1 回だけ。打ち直しで二重に走らない
+      expect(s.tunnel.closed()).toBe(1);
+    }));
+
+    it.live("打ち直した共有がまた切れても broken になり、もう一度打ち直せる", () => Effect.gen(function* () {
+      const s = yield* shareResource({ distinctHosts: true });
+      yield* s.startSession;
+      yield* s.open();
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      expect((yield* s.open()).status).toBe(200);
+      yield* s.tunnel.drop;
+      expect(yield* awaitStatus(s, "broken")).toEqual(BROKEN_ANYONE);
+      expect(s.tunnel.closed()).toBe(2);
+      const third = yield* s.open();
+      expect(third.headers.get("x-share-open-outcome")).toBe("opened");
+      expect(yield* s.json(third)).toMatchObject({ status: "open", url: "https://fake-tunnel-3.trycloudflare.com" });
+    }));
+
+    it.live("cli share --anyone は broken から成功し、標準エラーは空で、新しい URL を出す", () => Effect.gen(function* () {
+      const s = yield* shareResource({ distinctHosts: true });
+      yield* s.startSession;
+      yield* s.cli(["share", "--anyone"]);
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      const { out, err, failed } = yield* s.cli(["share", "--anyone"]);
+      expect(failed).toBe(false);
+      expect(err).toBe("");
+      expect(out).toContain("https://fake-tunnel-2.trycloudflare.com");
+      expect(out).not.toContain("https://fake-tunnel-1.trycloudflare.com");
+      expect(s.tunnel.opened).toHaveLength(2);
+      expect((yield* s.cli(["status"])).out.trimEnd().split("\n").slice(-3)).toEqual(["閲覧の共有: 共有中", "URL: https://fake-tunnel-2.trycloudflare.com", "許可の範囲: 誰でも"]);
+    }));
+
+    it.live("broken からの share が拒まれた（範囲が空）ときは broken のまま変わらず、Tunnel は開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.open();
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      const rejected = yield* s.call("POST", "/share/open", "{}");
+      expect(rejected.status).toBe(400);
+      expect(yield* shareStatus(s)).toEqual(BROKEN_ANYONE);
+      expect(s.tunnel.opened).toHaveLength(1);
+      expect(s.tunnel.closed()).toBe(1);
+      const viaCli = yield* s.cli(["share"]);
+      expect(viaCli.failed).toBe(true);
+      expect(yield* shareStatus(s)).toEqual(BROKEN_ANYONE);
+    }));
+
+    it.live("broken から share --stop（/share/close）で off に戻り、後始末は二重に走らない。そのあと開き直せる", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.open();
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      const closed = yield* s.call("POST", "/share/close");
+      expect(closed.status).toBe(200);
+      expect(yield* s.json(closed)).toEqual({ status: "off" });
+      expect(yield* shareStatus(s)).toEqual({ status: "off" });
+      expect(s.tunnel.closed()).toBe(1);
+      const reopened = yield* s.open();
+      expect(reopened.headers.get("x-share-open-outcome")).toBe("opened");
+      expect(s.tunnel.opened).toHaveLength(2);
+    }));
+
+    it.live("broken のままセッションが終わる（/session/stop）と off に戻り、次のセッションで開ける", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.open();
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      expect((yield* s.call("POST", "/session/stop")).status).toBe(200);
+      expect(yield* shareStatus(s)).toEqual({ status: "off" });
+      expect(s.tunnel.closed()).toBe(1);
+      yield* s.startSession;
+      expect(yield* shareStatus(s)).toEqual({ status: "off" });
+      expect((yield* s.open()).headers.get("x-share-open-outcome")).toBe("opened");
+      expect(s.tunnel.opened).toHaveLength(2);
+    }));
+
+    it.live("broken のまま server が終わっても失敗せず閉じ、Tunnel の後始末は二重に走らない", () => Effect.gen(function* () {
+      const s = yield* shareResource();
+      yield* s.startSession;
+      yield* s.open();
+      const port = viewingPortOf(s.tunnel);
+      yield* s.tunnel.drop;
+      yield* awaitStatus(s, "broken");
+      yield* s.r.server.close;
+      expect(s.tunnel.closed()).toBe(1);
+      yield* refused(port);
+    }));
+
+    it.live("共有中（切れていない）の open は、drop が無い限り今までどおり already-open で新しくは開かない", () => Effect.gen(function* () {
+      const s = yield* shareResource({ distinctHosts: true });
+      yield* s.startSession;
+      const first = yield* s.json(yield* s.open());
+      const second = yield* s.open();
+      expect(second.headers.get("x-share-open-outcome")).toBe("already-open");
+      expect(yield* s.json(second)).toEqual(first);
+      expect(s.tunnel.opened).toHaveLength(1);
     }));
   });
 });

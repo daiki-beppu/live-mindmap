@@ -18,7 +18,7 @@ export class CloudflaredMissing extends Schema.TaggedError<CloudflaredMissing>()
 export type OpenedTunnel = {
   // https:// を含まない公開のホスト名
   hostname: string;
-  // tunnel が切れたときに完了する（切れたことを知らせる口。状態の遷移は #837）
+  // tunnel が切れたときに完了する（切れたことを知らせる口。ViewingShare が待って、状態を切れたにする）
   dropped: Effect.Effect<void>;
 };
 

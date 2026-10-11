@@ -1,5 +1,5 @@
 // 閲覧の共有の純粋な部分（Issue #834）。cloudflared の出力からのホスト名の取り出しと、cli の表示。
-// 状態の型は 無し・共有中・切れた の 3 つ（切れたへの遷移は #837）。
+// 状態の型は 無し・共有中・切れた の 3 つ（切れたへの遷移は ViewingShare が行う）。
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { formatShareAlreadyOpen, formatShareOpened, formatShareStatus, quickTunnelArgs, quickTunnelHostname, ShareStatus } from "../src/core/index.ts";
