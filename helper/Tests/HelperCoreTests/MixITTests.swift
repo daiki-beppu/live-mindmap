@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import HelperCore
 
-// セッションの録音（相手・自分の全ファイル）を、0 秒の位置から重ねて 1 本の 16 kbps モノラル m4a にする。
+// セッションの録音（相手・自分の全ファイル）を、0 秒の位置から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする。
 // 入力は、テストの中で作った短い m4a。
 
 private func temporaryDirectory() throws -> URL {
@@ -151,6 +151,7 @@ struct MixITTests {
         let file = try AVAudioFile(forReading: session.output)
         #expect(file.fileFormat.settings[AVFormatIDKey] as? UInt32 == kAudioFormatMPEG4AAC)
         #expect(file.fileFormat.channelCount == 1)
+        #expect(file.fileFormat.sampleRate == 24_000)
         // 一番長い入力（相手 3 秒）の長さ。足し算（3 + 1 + 2 + 0.5）や、一番短い入力の長さにはならない
         #expect(abs(try duration(of: session.output) - 3.0) < 0.1)
     }
@@ -219,8 +220,8 @@ struct MixITTests {
         #expect(moov < mdat)
     }
 
-    @Test("出力のビットレートは約 16 kbps（入力の 64 kbps ではない）")
-    func bitRateIsAbout16kbps() async throws {
+    @Test("出力のビットレートは 40 kbps 未満（入力の 64 kbps ではない）")
+    func bitRateIsAtMost40kbps() async throws {
         let session = try Session.make()
         defer { try? FileManager.default.removeItem(at: session.directory) }
 
@@ -228,13 +229,13 @@ struct MixITTests {
 
         let mdat = try #require(try topLevelBoxes(of: session.output).first { $0.type == "mdat" })
         let bitsPerSecond = Double((mdat.size - 8) * 8) / (try duration(of: session.output))
-        // 目標は 16 kbps。入力が純音だと、エンコーダは目標より少ないビットで足りるので、下限は緩める（入力の 64 kbps の形式では出ない上限が効く）
+        // 目標は 32 kbps。入力が純音だと、エンコーダは目標より少ないビットで足りるので、下限は緩める（入力の 64 kbps の形式では出ない上限が効く）
         #expect(bitsPerSecond > 8_000)
-        #expect(bitsPerSecond < 20_000)
+        #expect(bitsPerSecond < 40_000)
     }
 
-    @Test("雑音の入力でも出力のビットレートは 12〜20 kbps（16 kbps の指定が効いている）")
-    func bitRateIsAbout16kbpsForNoise() async throws {
+    @Test("雑音の入力でも出力のビットレートは 24〜40 kbps（32 kbps の指定が効いている）")
+    func bitRateIsAbout32kbpsForNoise() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -245,8 +246,8 @@ struct MixITTests {
 
         let mdat = try #require(try topLevelBoxes(of: output).first { $0.type == "mdat" })
         let bitsPerSecond = Double((mdat.size - 8) * 8) / (try duration(of: output))
-        #expect(bitsPerSecond > 12_000)
-        #expect(bitsPerSecond < 20_000)
+        #expect(bitsPerSecond > 24_000)
+        #expect(bitsPerSecond < 40_000)
     }
 
     @Test("混ぜた結果に音が入っている（無音のファイルではない）")
