@@ -21,6 +21,25 @@ const jobLines = (job: string): string[] => {
   return end === -1 ? rest : rest.slice(0, end);
 };
 
+const runInlineSteps = (job: string): string[][] => {
+  const dir = mkdtempSync(join(tmpdir(), "workflow-managed-deps-"));
+  try {
+    const log = join(dir, "calls");
+    const pnpm = join(dir, "pnpm");
+    writeFileSync(pnpm, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\n');
+    chmodSync(pnpm, 0o755);
+    const commands = jobLines(job).flatMap((line) => {
+      const match = /^\s+(?:- )?run:\s*(pnpm .*)$/.exec(line);
+      return match ? [match[1]!] : [];
+    });
+    const result = spawnSync("bash", ["-e", "-c", commands.join("\n")], {
+      cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALL_LOG: log },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    return readFileSync(log, "utf8").trim().split("\n").map((line) => line.split(/\s+/));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+};
+
 const checkJobLines = (): string[] => jobLines("check");
 
 const runScriptOf = (job: string): string => {
@@ -89,11 +108,16 @@ describe("check ジョブの構造", () => {
     expect([...needs].sort()).toEqual(otherJobs().sort());
   });
 
-  it("Chromium を入れるのは heavy と e2e ジョブだけ", () => {
-    for (const job of allJobs()) {
-      const installs = jobLines(job).some((l) => l.includes("playwright install"));
-      expect(installs, job).toBe(job === "heavy" || job === "e2e");
-    }
+});
+
+describe("heavy の管理 Chromium 導入", () => {
+  it("開発用の直接導入スクリプトを chromium 指定で呼ぶ", () => {
+    const scripts = (JSON.parse(readFileSync(join(root, "server/package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
+    const installer = Object.keys(scripts).find((name) => scripts[name]!.includes("scripts/install-managed-deps.ts"));
+    expect(installer, "直接導入スクリプトの package script").toBeDefined();
+    const calls = runInlineSteps("heavy");
+    expect(calls).toContainEqual(["--filter", "@live-mindmap/server", installer, "chromium"]);
+    expect(calls.filter((args) => args.includes("playwright") && args.includes("install"))).toEqual([]);
   });
 });
 
@@ -148,12 +172,10 @@ describe("e2e ジョブ", () => {
     expect(text).not.toContain("--no-strict-cache");
   });
 
-  it("Chromium を入れてから test:e2e を回す", () => {
-    const lines = jobLines("e2e");
-    const install = lines.findIndex((l) => l.includes("playwright install"));
-    const run = lines.findIndex((l) => l.includes("test:e2e"));
-    expect(install).toBeGreaterThanOrEqual(0);
-    expect(run).toBeGreaterThan(install);
+  it("server の Playwright 導入を呼ばず、E2E 自身の入口を実行する", () => {
+    const calls = runInlineSteps("e2e");
+    expect(calls).toContainEqual(["--filter", "@live-mindmap/e2e", "test:e2e"]);
+    expect(calls.filter((args) => args.includes("@live-mindmap/server") && args.includes("playwright") && args.includes("install"))).toEqual([]);
   });
 
   it("資格情報（E2E_OAUTH_CREDENTIALS・*_API_KEY・secrets.）を渡さない", () => {

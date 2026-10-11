@@ -6,12 +6,12 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result, Schema } from "effect";
 import { MapCapture, withCapturePage } from "../src/capture.ts";
 import type { Snapshot, SnapshotNode } from "../src/core/index.ts";
-import { Playwright } from "../src/playwright.ts";
+import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
 
 class FnFailed extends Schema.TaggedError<FnFailed>()("FnFailed", { message: Schema.String }) {}
 
 // 実物の Playwright（Chromium）と Vite で、サーバー自身の表示ページを撮る。ブラウザの起動があるので時間がかかる。
-// 事前に `pnpm --filter @live-mindmap/server exec playwright install chromium` が要る。
+// 事前に `pnpm cli install chromium` が要る。
 const TIMEOUT = 90_000;
 
 // 議題 6 つ × 論点 6 つ（ルートを入れて 43 ノード）。既定の画面に収まらない大きさにして、「全体を収める」ことを確かめる。
@@ -42,7 +42,7 @@ const capture = (snapshot: Snapshot, path: string) =>
   Effect.gen(function* () {
     const service = yield* MapCapture;
     yield* service.capture(snapshot, path);
-  }).pipe(Effect.provide(MapCapture.layer.pipe(Layer.provide(Playwright.layer))));
+  }).pipe(Effect.provide(MapCapture.layer.pipe(Layer.provide(managedPlaywright))));
 
 // 失敗の理由を、タグ名やフィールド名に依存せずに読む
 const failureText = (failure: unknown): string => {
@@ -79,7 +79,7 @@ describe("map.png の撮影", () => {
             waiting: await page.locator(".waiting").count(),
           };
         }),
-      ).pipe(Effect.provide(Playwright.layer));
+      ).pipe(Effect.provide(managedPlaywright));
 
       expect(seen.boxes).toHaveLength(snapshot.nodes.length);
       // 全体を収める: どのノードも、撮る画面（ビューポート）からはみ出さない
@@ -102,7 +102,7 @@ describe("map.png の撮影", () => {
     () => Effect.gen(function* () {
       const texts = yield* withCapturePage(bigSnapshot(), (page) =>
         Effect.tryPromise(() => page.locator(".map-node__text").allTextContents()),
-      ).pipe(Effect.provide(Playwright.layer));
+      ).pipe(Effect.provide(managedPlaywright));
       expect(texts.sort()).toEqual(bigSnapshot().nodes.map((n) => n.text).sort());
     }),
     TIMEOUT,
@@ -159,7 +159,7 @@ describe("map.png の撮影", () => {
 
   it.live("撮影の処理（fn）が失敗しても、そのエラーをそのまま伝える（握りつぶさない）", () => Effect.gen(function* () {
     // fn の失敗の型は withCapturePage が決めないので、撮影自身の CaptureFailed とは別のタグで確かめる
-    const result = yield* Effect.result(withCapturePage(bigSnapshot(), () => new FnFailed({ message: "fn の失敗" })).pipe(Effect.provide(Playwright.layer)));
+    const result = yield* Effect.result(withCapturePage(bigSnapshot(), () => new FnFailed({ message: "fn の失敗" })).pipe(Effect.provide(managedPlaywright)));
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;

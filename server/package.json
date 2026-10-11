@@ -13,7 +13,8 @@
     "test:it": "vitest run --project it",
     "test:it:heavy": "vitest run --project heavy",
     "test:it:all": "vitest run --project it --project heavy",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && effect-tsgo diagnostics --project tsconfig.json && node scripts/check-entrypoints.ts && node scripts/check-test-layers.ts"
+    "deps:install": "node scripts/install-managed-deps.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && effect-tsgo diagnostics --project tsconfig.json && node scripts/check-entrypoints.ts && node scripts/check-test-layers.ts && node scripts/check-managed-lock.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.288",
@@ -27,7 +28,7 @@
     "@effect/vitest": "4.0.1",
     "@types/node": "^26.6.4",
     "@types/ws": "^8.18.2",
-    "playwright": "^1.63.0",
+    "playwright-core": "1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.2",
     "vite-plugin-singlefile": "^2.3.3",

@@ -6,13 +6,14 @@ import { pathToFileURL } from "node:url";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
-import { chromium } from "playwright";
+import { Playwright } from "../src/playwright.ts";
+import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
 import { REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { ReviewBuild, writeReviewPages } from "../src/review.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 
 // 実物の Vite（single-file）と Chromium で、書き出した map.html を file:// で開く。時間がかかる。
-// 事前に `pnpm --filter @live-mindmap/server exec playwright install chromium` が要る。
+// 事前に `pnpm cli install chromium` が要る。
 const TIMEOUT = 90_000;
 
 const WEB_DIST = join(import.meta.dirname, "../../web/dist");
@@ -73,7 +74,7 @@ describe("map.html の本物のビルド", () => {
       for (const { name } of BUNDLED_LICENSES) expect(html).toContain(`## ${name} - `);
 
       const seen = yield* Effect.acquireUseRelease(
-        Effect.tryPromise(() => chromium.launch()),
+        (yield* Playwright).launch(),
         (browser) => Effect.tryPromise(async () => {
           const page = await browser.newPage();
           await page.goto(pathToFileURL(path!).href);
@@ -114,7 +115,7 @@ describe("map.html の本物のビルド", () => {
 
       const distAfter = existsSync(WEB_DIST) ? yield* Effect.tryPromise(() => readdir(WEB_DIST)) : null;
       expect(distAfter).toEqual(distBefore);
-    }).pipe(Effect.scoped),
+    }).pipe(Effect.provide(managedPlaywright), Effect.scoped),
     TIMEOUT,
   );
 });

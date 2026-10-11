@@ -12,7 +12,7 @@ const dynamicImport = (spec: string) => `const m = await import("${spec}");\n`;
 
 describe("findTestLayerViolations", () => {
   describe("unit が本物の資源を import していると報告する", () => {
-    it.each(["node:child_process", "node:fs", "node:fs/promises", "node:net", "node:http", "ws", "playwright"])(
+    it.each(["node:child_process", "node:fs", "node:fs/promises", "node:net", "node:http", "ws", "playwright", "playwright-core"])(
       "%s の import を、ファイルと行番号と指定子つきで報告する",
       (spec) => {
         const violations = findTestLayerViolations(file(UNIT, `const a = 1;\n${fromImport(spec)}`));
@@ -37,6 +37,13 @@ describe("findTestLayerViolations", () => {
       const violations = findTestLayerViolations(file(UNIT, sideEffectImport("ws")));
       expect(violations).toHaveLength(1);
       expect(violations[0]).toMatchObject({ path: UNIT, line: 1 });
+    });
+
+    it.each([sideEffectImport, reExport, dynamicImport])("playwright-core の実行時の読み込みを報告する (%#)", (build) => {
+      const violations = findTestLayerViolations(file(UNIT, build("playwright-core")));
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatchObject({ path: UNIT, line: 1 });
+      expect(violations[0]?.message).toContain("playwright-core");
     });
 
     it("export from を報告する", () => {
@@ -112,8 +119,7 @@ describe("findTestLayerViolations", () => {
       expect(findTestLayerViolations([])).toEqual([]);
     });
 
-    it("型だけの import は実行時に消えるので違反にしない", () => {
-      const spec = "node:net";
+    it.each(["node:net", "playwright-core"])("%s の型だけの import は実行時に消えるので違反にしない", (spec) => {
       const content = `import type { Server } from "${spec}";\nexport type { Socket } from "${spec}";\n`;
       expect(findTestLayerViolations(file(UNIT, content))).toEqual([]);
     });

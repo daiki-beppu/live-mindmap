@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import { Context, Effect, Layer, Schema } from "effect";
 import { createServer as createViteServer } from "vite";
-import type { Page } from "playwright";
+import type { Page } from "playwright-core";
 import { CAPTURE_OVERFLOW_ATTRIBUTE, CAPTURE_READY_ATTRIBUTE, CAPTURE_SNAPSHOT_GLOBAL } from "./core/capture.ts";
 import type { Snapshot } from "./core/index.ts";
 import { Playwright } from "./playwright.ts";
@@ -46,13 +46,13 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   const url = vite.resolvedUrls?.local[0];
   if (!url) return yield* new CaptureFailed({ message: "撮影用の表示ページの URL を取得できません" });
   const browser = yield* Effect.acquireRelease(
-    Effect.tryPromise({
-      try: () => playwright.launch(),
-      catch: (e) =>
+    playwright.launch().pipe(
+      Effect.mapError((e) =>
         new CaptureFailed({
-          message: `Chromium を起動できません。pnpm --filter @live-mindmap/server exec playwright install chromium を実行してください（${e instanceof Error ? e.message : e}）`,
+          message: `Chromium を起動できません。pnpm cli install chromium で入る（${e.message}）`,
         }),
-    }),
+      ),
+    ),
     (browser) => Effect.promise(() => browser.close()),
   );
   const page = yield* Effect.tryPromise({ try: () => browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 2 }), catch: failed });

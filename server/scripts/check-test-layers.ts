@@ -9,7 +9,7 @@ export type SourceFile = { path: string; content: string };
 export type Violation = { path: string; line: number; message: string };
 
 // node: の付く書き方も付かない書き方も、同じ資源として扱う
-const REAL_RESOURCES = new Set(["child_process", "fs", "fs/promises", "http", "net", "ws", "playwright"]);
+const REAL_RESOURCES = new Set(["child_process", "fs", "fs/promises", "http", "net", "ws", "playwright", "playwright-core"]);
 
 const isUnit = (path: string): boolean =>
   /\.test\.tsx?$/.test(path) && !path.includes(".it.test.") && !path.includes(".heavy.test.");

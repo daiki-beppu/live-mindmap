@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { beforeEach, vi } from "vitest";
+import type { Browser } from "playwright-core";
 import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import type { Snapshot } from "../src/core/index.ts";
 import { Playwright } from "../src/playwright.ts";
+import { ManagedDepsFailed } from "../src/managedDeps.ts";
 
 const resources = vi.hoisted(() => ({
   createServer: vi.fn(), launch: vi.fn(), listen: vi.fn(), closeVite: vi.fn(),
@@ -16,7 +18,9 @@ const resources = vi.hoisted(() => ({
 }));
 vi.mock("vite", () => ({ createServer: resources.createServer }));
 
-const playwright = Layer.succeed(Playwright, Playwright.of({ launch: resources.launch }));
+const playwright = Layer.succeed(Playwright, Playwright.of({
+  launch: () => Effect.tryPromise({ try: () => resources.launch() as Promise<Browser>, catch: (error) => new ManagedDepsFailed({ message: String(error) }) }),
+}));
 
 const snapshot: Snapshot = {
   nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }],
@@ -91,7 +95,8 @@ describe("撮影 scope の資源所有権", () => {
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
     expect(result.failure).toBeInstanceOf(CaptureFailed);
-    expect(result.failure.message).toBe("Chromium を起動できません。pnpm --filter @live-mindmap/server exec playwright install chromium を実行してください（launch failed）");
+    expect(result.failure.message).toContain("pnpm cli install chromium");
+    expect(result.failure.message).toContain("launch failed");
     expect(resources.createServer).toHaveBeenCalledTimes(1);
     expect(resources.launch).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
@@ -120,7 +125,7 @@ describe("撮影 scope の資源所有権", () => {
       await pending;
     });
     const fiber = yield* capture(join(dir, "map.png")).pipe(Effect.forkChild);
-    yield* Deferred.await(entered);
+    yield* Deferred.await(entered).pipe(Effect.raceFirst(Fiber.join(fiber)));
     expect(resources.launch).toHaveBeenCalledTimes(1);
     expect(resources.closeBrowser).not.toHaveBeenCalled();
     expect(resources.closeVite).not.toHaveBeenCalled();

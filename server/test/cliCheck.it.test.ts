@@ -21,7 +21,8 @@ const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...
 const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFailed>) => {
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
   const install = vi.fn((_names: ReadonlyArray<string>) => Stream.die("check は導入しない"));
-  return { service: ManagedDeps.of({ check, install }), check, install };
+  const load = vi.fn((_name: "chromium") => Effect.die("check は読み込まない"));
+  return { service: ManagedDeps.of({ check, install, load }), check, install };
 };
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {

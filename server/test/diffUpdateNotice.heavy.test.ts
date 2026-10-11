@@ -1,9 +1,11 @@
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { chromium, type WebSocketRoute } from "playwright";
+import type { WebSocketRoute } from "playwright-core";
 import { createServer } from "vite";
 import type { DiffUpdateFrame, Snapshot } from "../src/core/index.ts";
+import { Playwright } from "../src/playwright.ts";
+import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
 
 describe("一時停止通知の実画面", () => {
   it.live("同じ画面で通知を出し入れしてもマップ・字幕を動かさず、左上の小さな文字だけを表示する", () => Effect.gen(function* () {
@@ -13,7 +15,7 @@ describe("一時停止通知の実画面", () => {
       (vite) => Effect.promise(() => vite.close()),
     );
     yield* Effect.tryPromise(() => vite.listen());
-    const browser = yield* Effect.acquireRelease(Effect.tryPromise(() => chromium.launch()), (b) => Effect.promise(() => b.close()));
+    const browser = yield* Effect.acquireRelease((yield* Playwright).launch(), (b) => Effect.promise(() => b.close()));
     yield* Effect.tryPromise(async () => {
       const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
       let socket: WebSocketRoute | undefined;
@@ -53,5 +55,5 @@ describe("一時停止通知の実画面", () => {
         expect(await page.locator(".map-node").count()).toBe(1);
       }
     });
-  }), 60_000);
+  }).pipe(Effect.provide(managedPlaywright)), 60_000);
 });

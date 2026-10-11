@@ -10,7 +10,8 @@ import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
-import { portConfig, sessionsDirConfig } from "./config.ts";
+import { depsDirConfig, portConfig, sessionsDirConfig } from "./config.ts";
+import { ManagedDeps } from "./managedDeps.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
@@ -788,9 +789,13 @@ if (import.meta.main) {
   const audioMixLayer = "error" in helper
     ? AudioMix.unavailable(helper.error)
     : AudioMix.layer({ command: helper.path, args: [] }).pipe(Layer.provide(NodeServices.layer));
+  const managedDeps = Layer.unwrap(Effect.gen(function* () {
+    const root = yield* depsDirConfig;
+    return ManagedDeps.layer({ root }).pipe(Layer.provide(NodeServices.layer));
+  }));
   runCli(process.argv.slice(2)).pipe(
     Effect.tapCause(reportFailure),
-    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer)))),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, MapCapture.layer.pipe(Layer.provide(Playwright.layer.pipe(Layer.provide(managedDeps)))), ReviewBuild.layer.pipe(Layer.provide(NodeServices.layer)), audioMixLayer, screenJpegLayer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer)))),
     NodeRuntime.runMain({ disableErrorReporting: true, teardown }),
   );
 }

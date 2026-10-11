@@ -3,15 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
-import { chromium, type Page } from "playwright";
+import type { Page } from "playwright-core";
 import { createServer } from "vite";
 import { vi } from "vitest";
 import { DiffUpdater } from "../src/core/index.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
+import { Playwright } from "../src/playwright.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
+import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 
 const LABEL = "ローカルモード・Apple Intelligence";
@@ -68,7 +70,7 @@ describe("開始したセッションのローカルモード表示", () => {
     }), (vite) => Effect.promise(() => vite.close()));
     const address = web.httpServer!.address();
     if (!address || typeof address === "string") throw new Error("web のポートを取得できません");
-    const browser = yield* Effect.acquireRelease(Effect.tryPromise(() => chromium.launch()), (running) => Effect.promise(() => running.close()));
+    const browser = yield* Effect.acquireRelease((yield* Playwright).launch(), (running) => Effect.promise(() => running.close()));
     const request = (path: string, body?: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}${path}`, {
       method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
     }));
@@ -149,5 +151,5 @@ describe("開始したセッションのローカルモード表示", () => {
     expect(yield* Effect.tryPromise(() => page.getByText(LABEL, { exact: true }).count())).toBe(0);
     expect(yield* Effect.tryPromise(() => bounds(page))).toEqual(before);
     expect((yield* request("/session/stop")).status).toBe(200);
-  }), TIMEOUT);
+  }).pipe(Effect.provide(managedPlaywright)), TIMEOUT);
 });
