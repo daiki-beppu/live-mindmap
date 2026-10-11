@@ -95,9 +95,26 @@ cli review [/Users/<名前>/.live-mindmap/sessions/<開始時刻>] [--self-only]
 6. セッションのフォルダに `相手.m4a` と `自分.m4a` の 2 本が残っていることを確かめる。`map.json` の発言の start（秒）の位置から再生し、その発言が聞こえること（`相手` の発言は `相手.m4a`、`自分` の発言は `自分.m4a`）を確かめる
 7. もう一度 `cli start --app <bundle id> --no-audio` で開始して `cli stop` し、そのセッションのフォルダに `相手.m4a`・`自分.m4a` ができないことを確かめる
 
-## Claude の認証
+## 差分更新のモデルを選ぶ
 
-差分更新は Claude（Agent SDK 経由）を呼びます。自分の Anthropic API キーを環境変数で渡してください。費用は API キーの持ち主に請求されます。
+コマンドとフラグの正本は `pnpm cli --help` と各コマンドの `--help` です。
+
+```sh
+pnpm cli models
+pnpm cli start --app us.zoom.xos --model claude
+pnpm cli start --app us.zoom.xos --local
+pnpm cli play <文字起こし.transcript.json> --model apple --realtime
+```
+
+`start` と `play` の通常時の選択順は、`--model <名前>` → 環境変数 `LIVE_MINDMAP_MODEL` → 設定ファイルの `default` → 組み込みの `claude` です。`--local` は `apple` を選び、別モデルの `--model` との併用を拒否します。`--model apple` でもローカルモードになります。組み込みは `claude` と `apple`。それ以外は設定に付けた名前で選びます。
+
+設定は `~/.live-mindmap/config.json` の JSON で、`LIVE_MINDMAP_CONFIG` でファイルの場所を変更できます。`LIVE_MINDMAP_MODEL` はモデル名の選択用で、設定ファイルの場所とは別です。`models` は組み込みと設定したモデルの名前・経路・ローカル可否・現在の利用可否を表示します。Apple の可用性は調べますが、ほかの経路の認証や宛先への接続成功を保証する一覧ではありません。
+
+`eval` は別の入口です。`--model <名前>` を明示したときだけ元ログをそのモデルで再生し、新しいランを評価します。指定なしなら、環境変数や `default` に関係なく保存済み結果を集計します。`eval` に `--local` はありません。評価の手順は [bench README](server/bench/README.md) を参照してください。
+
+### Claude の認証
+
+`claude` を選ぶと Claude（Agent SDK 経由）を呼びます。自分の Anthropic API キーを環境変数で渡してください。費用は API キーの持ち主に請求されます。
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -105,6 +122,85 @@ pnpm dev
 ```
 
 Claude のサブスク（Free / Pro / Max）の認証での利用は案内していません。Anthropic の規約で、第三者のアプリがサブスクの認証で要求を送ることが認められていないためです（[ADR 0004](docs/adr/0004-mit-license-no-monetization.md)）。
+
+### ChatGPT のサブスク認証
+
+ChatGPT は Sign in with ChatGPT で Plus / Pro のサブスクを使います。Claude の API キーとは別の認証です。
+
+```sh
+pnpm cli login chatgpt
+```
+
+ブラウザで認可すると、資格情報を `~/.live-mindmap/auth/chatgpt.json` に保存します。次は `config.json` の例です。`my-chatgpt` は利用者が付ける名前で、組み込みのモデル名ではありません。
+
+```json
+{
+  "default": "my-chatgpt",
+  "models": {
+    "my-chatgpt": {
+      "route": "chatgpt",
+      "model": "gpt-6-luna",
+      "images": false
+    }
+  }
+}
+```
+
+```sh
+pnpm cli start --app us.zoom.xos --model my-chatgpt
+```
+
+Plus の 5 時間ごとの利用上限は、プランを使う他のアプリと共有されます。上限に当たると、差分更新を一時停止します。残りの枠は ChatGPT の設定で確認してください。この設定例の品質は保証しません。短い合成会議区間での成功は、会議全体の品質や等速再生の遅れを保証するものではありません。経路の選定と実測範囲は [ADR 0019](docs/adr/0019-chatgpt-subscription-direct-responses-api.md) に記録しています。
+
+### 外部ランタイムの OpenAI 互換設定
+
+Ollama・LM Studio・llama.cpp などは、OpenAI 互換の口を設定して通常のモードで使えます。localhost で動かしてもローカルモードの対象にはなりません。接続できることと差分更新の品質は別で、品質は保証しません。
+
+次は、用意したモデルを `my-runtime` という名前で選ぶ例です。`model` をランタイムにあるモデル名へ置き換えてください。URL は `/v1` までとし、アプリが `/chat/completions` を付けます。
+
+```json
+{
+  "models": {
+    "my-runtime": {
+      "route": "openai-compatible",
+      "url": "http://127.0.0.1:11434/v1",
+      "model": "your-installed-model",
+      "images": false,
+      "extraBody": {
+        "chat_template_kwargs": { "enable_thinking": false }
+      }
+    }
+  }
+}
+```
+
+```sh
+pnpm cli play <文字起こし.transcript.json> --model my-runtime
+```
+
+ランタイム側の文脈長は **8192** を目安に設定します。live-mindmap の設定キーではありません。例の追加 body は、`chat_template_kwargs.enable_thinking` に対応するランタイムで thinking を切るためのものです。アプリは追加 body を転送しますが、Ollama を含むすべてのランタイムで同じ項目が受理され、thinking が切れるとは限りません。ランタイムとモデルの対応項目に合わせて変更し、無効化を確認してください。認証が必要な宛先は `apiKeyEnv` にキーを入れる環境変数名を指定します。
+
+モデルを導入する前に空き容量を確認してください。モデル本体の大きさに加え、実行中のメモリ不足によるスワップ分も見込みます。必要量はモデル・量子化・文脈長・同時に動かすアプリで変わるため、モデルファイル分だけの空き容量では足りないことがあります。
+
+## ローカルモード
+
+`--local` / `--model apple` が約束するのは、会議の中身（音声・発言・マップ・共有画面と、その派生物）を Mac の外へ送らないことです。差分更新は live-mindmap が起動する Apple Intelligence の子プロセスだけを使います（[ADR 0014](docs/adr/0014-local-mode-only-own-child-processes.md)）。保存した録音・ログ・画像・書き出しファイルの管理や共有は利用者に委ねます。同期フォルダへ移す、外へアップロードするなど、保存後の扱いも利用者が決めてください。
+
+会議の中身を含まない通信はこの約束に含みません。たとえば **SpeechAnalyzer の日本語モデルの初回取得**です。Chromium の初回導入や依存パッケージの取得も、会議の中身を送る通信とは別です。ローカルモードはすべてのネットワーク通信がゼロになるという約束ではありません。
+
+Apple Intelligence は **試験的**です。決定・TODO の拾いすぎや取りこぼしがあり、合成会議1本で差分更新7回のうち4回が出力上限（600トークン）などで失敗した実測があります（#795で見直し中）。初版では共有画面の画像をモデルへ渡しません（`images: false` と同じ）。試験的を外す評価条件は [bench README](server/bench/README.md#apple-intelligence-の試験的を外す条件) にあります。
+
+利用できないときは、Apple Intelligence がオフ・非対応の機種・macOS 27 未満・モデル準備中の理由と次の操作を表示して開始を拒否します。それ以外の理由はそのまま表示します。管理者による無効化は公開 API で見分けられず、独立した拒否理由にはしていません。
+
+### helper も含めて通信を確かめる
+
+1. `pnpm dev` を起動します。別のターミナルで `pnpm cli apps` から会議アプリの bundle id を確認します。
+2. `pnpm cli start --local --app us.zoom.xos` のように実会議を開始します。
+3. `pgrep -fl live-mindmap` と `ps -axo pid,ppid,command` で、この起動に属するサーバー（Node）・`live-mindmap-apple`・`live-mindmap-helper` の PID と親子関係を確認します。Node が一覧に出なければ `pgrep -fl 'node.*src/server.ts'` でも調べます。別セッションや別worktreeのプロセスを混ぜないよう、コマンドと親 PID を確認します。
+4. 対象 PID ごとに別のターミナルで `nettop -p <PID>` を開き、話している間の接続先を観測します。`lsof -i -a -p <PID>` も補助的に使います。子プロセスが再起動したら PID を取り直します。会議の中身を扱う接続と、上記の対象外通信を区別して記録します。
+5. `pnpm cli stop` で終了します。
+
+#667 の実測では macOS 27 上の `play --local --realtime` 中に、Node と Apple 子プロセスを `nettop`（約1秒間隔）と `lsof`（約0.2秒間隔）で観測し、観測された接続はすべてループバック（127.0.0.1）でした。`play` は音声取り込みの helper を起動しないため、この実測に helper は含まれません。上の手順は `start --local` で helper も確認するためのもので、実施済みという意味ではありません。
 
 ## ライセンス
 

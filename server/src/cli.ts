@@ -343,7 +343,7 @@ const isDirectory = Effect.fn("isDirectory")(function* (path: string) {
 }, orFileFailed);
 
 const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した差分更新モデルの名前（環境変数・設定の既定値より優先）"), Flag.optional);
-const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（apple のみ。この段階ではまだ使えない）"), Flag.withDefault(false));
+const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（Apple Intelligence の子プロセスだけを使い、会議の中身を Mac の外に出さない。--model は apple だけ組み合わせられる）"), Flag.withDefault(false));
 
 const recordPlayback = Effect.fn("recordPlayback")(function* (
   input: { title: string; remarks: Iterable<Remark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean },

@@ -12,21 +12,56 @@ eval は、本物のモデル・音声認識の出力を数字で測るもので
 
 ```sh
 cd server
-node src/cli.ts play <文字起こし.transcript.json> [--realtime] [--screen <slides.tsv>]   # pnpm cli play ... でも同じ
-node src/cli.ts eval [--truth <正解.json>] [--screen-truth <画面の正解.json>] <セッションのフォルダ>...
+node src/cli.ts play <文字起こし.transcript.json> [--model <設定名>] [--local] [--realtime] [--screen <slides.tsv>]   # pnpm cli play ... でも同じ
+node src/cli.ts eval [--model <設定名>] [--truth <正解.json>] [--screen-truth <画面の正解.json>] <セッションのフォルダ>...
 ```
 
 - 素材は `*.transcript.json`（kanary transcribe の JSON）と、`*.truth.json`（`server/bench/meetings/` に例がある）。
-- `play` は Claude の認証が要る。セッションは `LIVE_MINDMAP_SESSIONS` の下に作られる（既定 `~/.live-mindmap/sessions`）。待受けのポートは `LIVE_MINDMAP_PORT`（既定 4319）。
+- `play` の認証・準備は選んだ経路による。ClaudeはAPIキー、ChatGPTは `login chatgpt`、AppleはこのMacの可用性、互換モデルは外部ランタイムの準備が要る。[README](../../README.md#差分更新のモデルを選ぶ) の設定・選択順を参照。`--local` はAppleを選ぶ（ほかの `--model` と併用しない）。セッションは `LIVE_MINDMAP_SESSIONS` の下に作られる（既定 `~/.live-mindmap/sessions`）。待受けのポートは `LIVE_MINDMAP_PORT`（既定 4319）。
 - `play` は終わると、`map.md`・`map.json`・`map.drawnix`・`map.png`・`map.html` のパスを 1 行ずつ出す。
 - `--screen` は共有画面の `slides.tsv`（1 行目は見出し、列は `start end slide image`）。
 - `eval` の入力: セッションのフォルダを 1 つ以上。各フォルダの `export.json` は必須、`log.jsonl` は任意。
+- `eval` は `--model` なしでは、環境変数や設定のdefaultに関係なく保存済み結果を集計するだけで、モデルを呼ばない。`--model` を明示すると、元の `log.jsonl`（共有画面があれば `screens/` も）をそのモデルで待ち時間なしに再生し、新しいランを作って評価する。`eval --model apple` は使えるが `eval --local` は無い。この再評価は等速再生の遅れの測定には使わない。
 - 正解ファイルの形の正本は `server/src/core/evaluate.ts` の `Truth`（キーは `決定`・`TODO`）と `ScreenTruth`（キーは `指す発言`・`話だけ`・`出てはいけない`）。
 - `eval` の出力: 1 ラン 1 行の Markdown の表。
   - 基本の列: ラン・会議・ノード・深さ・種別ごとの数・ログの指標（`log.jsonl` が無いランは `-`）。
   - 差分更新のトークン数の合計の列（入力・キャッシュ書き込み・キャッシュ読み出し・出力。`log.jsonl` の `diff` の行の `usage` を足す。`usage` が 1 行も無いランは `-`）。金額は出さないので、費用は公式の単価を掛けて出す。
   - `--truth` を渡すと、決定・TODO の再現率の列が加わる。
   - `--screen-truth` を渡すと、共有画面の列（指す発言・話だけ・出てはいけないなど）が加わる。
+
+### Apple Intelligence の「試験的」を外す条件
+
+合成会議 **2〜3本**で、同じ素材・同じ正解をClaudeとAppleに使い、次をすべて確認する。eval自体は合否を出さないので、結果を手で比較して記録する。
+
+| 観測対象 | 下限・上限 |
+|----------|-------------|
+| 正解の決定の再現 | Claudeの3/4以上 |
+| 正解のTODOの再現 | Claudeの3/4以上（決定と合算しない） |
+| 生成数 | 正解の2倍以内。決定・TODOの種別ごとの数を正解と比較する |
+| 等速再生での遅れ | `play --realtime` のp90が45秒以内 |
+
+素材は `~/live-mindmap-samples/README.md` を入口に、合成会議の `*.transcript.json` と対応する `*.truth.json` を2〜3組選ぶ。リポジトリの `server/bench/meetings/` には文字起こし・正解JSONの例があり、合成用台本は `helper/bench/scenarios/` にある。画面を含む素材には同じ `slides.tsv` を両方の再生へ渡すが、Apple初版は画像をモデルへ入力しない。実会議の素材へ置き換えない。
+
+リポジトリルートから、各素材について次を実行する。`pnpm dev` が同時に動く場合は、再生側の `LIVE_MINDMAP_PORT` を空いている別の値にする。
+
+```sh
+pnpm cli play <合成会議.transcript.json> --model claude --realtime
+pnpm cli play <同じ合成会議.transcript.json> --model apple --realtime
+pnpm cli eval --truth <対応する正解.truth.json> <Claudeのラン> <Appleのラン>
+```
+
+`play` の出力パスからそれぞれのランのフォルダを控え、`eval` の決定・TODO再現率と種別ごとの数を比較する。素材ごとの結果と、同じ2〜3本での集計を残す。正解・入力・モデル名・失敗数を併記し、未測定の会議へ品質を保証しない。
+
+**遅れは別途集計する。** 現在の `cli eval` に遅れp90の列は無い。等速再生で作った各ランの `log.jsonl` の実時刻 `at` を使い、発言を受け渡した `remark` 行から、その発言を成功して反映した `diff` 行までの秒数を測る。会議内の秒である `remark.start` / `end` や、モデル1回の応答時間、`sttLatency` の遅れで代用しない。
+
+集計は次の手順で行う（遅れを現行ログから測る方法であり、別の受入条件を追加するものではない）。
+
+1. 各 `remark` 行の `remark.id` と実時刻 `at` を対応付ける。`duplicate` / `noContent` の発言は差分更新対象と分けて数える。
+2. `error` の無い成功 `diff` 行の `input.fresh` を読む。`processedRemarks` があればその先頭件数だけ、無ければ全件がその回で処理された発言。各IDの受け渡し時刻と、この `diff.at` の差を秒へ換算する。操作が空でも正常な「なし」の分類は成功として数える。
+3. 成功反映された発言の遅れを昇順に並べ、件数をNとして `ceil(0.9 × N)` 番目（1始まり）をp90とする。ランごとの件数とp90、2〜3本を合わせた件数とp90を記録する。Nが0なら測定不能であり、45秒以内と判定しない。
+4. `diff.error`、一時停止・停止、最後まで未反映だった対象発言の件数を別に記録する。失敗した回の時刻を成功反映時刻にしたり、未反映を遅れ0秒にしたりしない。`diff` の記録時刻はサーバーでの反映の観測点であり、ブラウザでの描画完了時間を測ったものではない。
+
+現状のAppleは合成会議1本・更新7回中4回が出力上限などで失敗した実測があり、上の条件を達成したとは扱わない。新たな評価結果は、同じ素材でのClaude/Appleの再現率・生成数・等速再生の遅れp90・失敗/未反映数を比較表にして残す。
 
 ## stt-bench（sttAccuracy・sttLatency 共通の素材づくり）
 
