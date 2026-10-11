@@ -9,7 +9,7 @@ import { join } from "node:path";
 export type SourceFile = { path: string; content: string };
 export type Violation = { path: string; line?: number; message: string };
 
-const BENCH_SCRIPTS = ["bench/sessionStats.ts", "bench/mapShape.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/edgeJudge.ts"];
+const BENCH_SCRIPTS = ["bench/sessionStats.ts", "bench/mapShape.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/edgeJudge.ts", "bench/siblingJudge.ts"];
 const RUN_MAIN_ALLOWED = ["src/server.ts", "src/cli.ts", ...BENCH_SCRIPTS];
 const RUN_PROMISE_ALLOWED: string[] = [];
 // reviewSnapshot（web/src/reviewTimeline.ts から同期で呼ぶ。R = never・非同期なしなので必ず同期で終わる）

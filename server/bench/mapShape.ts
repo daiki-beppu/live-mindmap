@@ -23,6 +23,17 @@ export type MapShape = {
   childDistribution: number[];
 };
 
+// 最大のまとまり（#840 の数え方。議題・論点・案・課題・要点が対象）。同じ大きさなら snapshot で先のノード。
+export function largestGroup(nodes: readonly SnapshotNode[]): { id: string; size: number } | undefined {
+  let best: { id: string; size: number } | undefined;
+  for (const n of nodes) {
+    if (n.kind !== "議題" && n.kind !== "論点" && n.kind !== "案" && n.kind !== "課題" && n.kind !== "要点") continue;
+    const size = groupSize(nodes, n.id).size;
+    if (best === undefined || size > best.size) best = { id: n.id, size };
+  }
+  return best;
+}
+
 export function mapShape(events: readonly unknown[]): MapShape {
   const nodes = reviewSnapshot(events).nodes;
   let end = 0;
@@ -38,7 +49,8 @@ export function mapShape(events: readonly unknown[]): MapShape {
     if (siblings) siblings.push(n);
     else kids.set(n.parent, [n]);
   }
-  let topics = 0, nested = 0, derived = 0, maxTopic = 0, maxGroup = 0;
+  let topics = 0, nested = 0, derived = 0, maxTopic = 0;
+  const maxGroup = largestGroup(nodes)?.size ?? 0;
   let oneChild = 0, longestChain = 0, longestSameKindChain = 0, maxDepth = 0;
   const childDistribution = [0, 0, 0, 0, 0, 0, 0];
   for (const n of nodes) {
@@ -48,11 +60,7 @@ export function mapShape(events: readonly unknown[]): MapShape {
       if (parent?.kind === "議題") nested++;
     }
     if (n.kind === "論点" && parent?.kind === "論点") derived++;
-    if (n.kind === "議題" || n.kind === "論点" || n.kind === "案" || n.kind === "課題" || n.kind === "要点") {
-      const size = groupSize(nodes, n.id).size;
-      if (n.kind === "議題") maxTopic = Math.max(maxTopic, size);
-      maxGroup = Math.max(maxGroup, size);
-    }
+    if (n.kind === "議題") maxTopic = Math.max(maxTopic, groupSize(nodes, n.id).size);
     const count = kids.get(n.id)?.length ?? 0;
     childDistribution[Math.min(6, count)]!++;
     if (count === 1) oneChild++;

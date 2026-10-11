@@ -1,6 +1,6 @@
 # bench: eval の道具
 
-eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`mapShape`・`sttAccuracy`・`sttLatency` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
+eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
 
 実会議の録音・文字起こしなどの素材はリポジトリの外にある。置き場所と中身は `~/live-mindmap-samples/README.md` を参照。リポジトリ内には `server/bench/meetings/`（正解・文字起こしの JSON と `lecture.timeline.tsv`）がある。
 
@@ -65,7 +65,7 @@ pnpm cli eval --truth <対応する正解.truth.json> <Claudeのラン> <Apple�
 
 ## edgeJudge（親子の意味のつながり）
 
-差分更新のプロンプトを変えたら、形の物差しも回し、親子の意味が崩れていないか同じ合成素材の変更前後で比較する。辺の意味は `edgeJudge` の「なし」の件数・割合で測る。形の数は下の `mapShape` で数える。兄弟判定は別チケットで追加するため、ここでは辺判定の手順を示す。
+差分更新のプロンプトを変えたら、形の物差しも回し、親子の意味が崩れていないか同じ合成素材の変更前後で比較する。辺の意味は `edgeJudge` の「なし」の件数・割合で測る。形の数は下の `mapShape` で数え、兄弟の意味は下の `siblingJudge` で測る。ここでは辺判定の手順を示す。
 
 **合成会議だけに使う。** 保存済みの `log.jsonl` から最終マップを復元し、親子の本文をモデルへ渡す。実会議の録音・文字起こし・ログには使わない。合成素材の入口は `~/live-mindmap-samples/README.md`。
 
@@ -91,7 +91,45 @@ pnpm --filter @live-mindmap/server exec node bench/edgeJudge.ts --help
 
 目標は親子の関係を一言で言えることであり、「なし」の増減を同じ素材で比較する。数値の合格閾値は設けない。テストとTAKTでは偽判定器だけを使い、実モデルの判断品質は証明しない。マージ後に人が合成セッション1つをClaudeで判定し、出力が数だけであることを確認して、数をPRに記録する。
 
-兄弟判定も、`Judge<E, R> = (prompt: string) => Effect.Effect<string, E, R>` を引数で受け取り、ラベルの検証・集計は判定処理側が所有する形に合わせる。辺判定の `judgeEdges(events, judge)` は `edges`（id・parent・label）、`total`、`counts`、`none`、`noneRatio`（0〜1）を返す。`createEdgeJudgeCommand(judge)` はCLIへの注入入口であり、既定判定器は実行入口で渡す。
+辺判定の `judgeEdges(events, judge)` は `edges`（id・parent・label）、`total`、`counts`、`none`、`noneRatio`（0〜1）を返す。`createEdgeJudgeCommand(judge)` はCLIへの注入入口であり、既定判定器は実行入口で渡す。判定器の型は `Judge<E, R> = (prompt: string) => Effect.Effect<string, E, R>`（`claudeJudge.ts`）で、ラベルの検証・集計は判定処理側が所有する。
+
+## siblingJudge（兄弟の意味）
+
+差分更新のプロンプトを変えたら、形と意味の物差し（`mapShape`・`edgeJudge`・`siblingJudge`）も回し、同じ素材（合成会議・実会議の再生）の変更前後で比べる。ただし `edgeJudge` は合成会議だけに使う。兄弟の意味は、同じ親の下に並んだ子が「同じ親についての別々の中身」かで測る。
+
+**合成会議・実会議の再生のどちらにも使える。** 保存済みの `log.jsonl` から最終マップを復元し、親子の本文をモデルへ渡す。本文と生の応答はファイル・標準出力・エラーに出さず、id・ラベル・数だけを出す。
+
+```sh
+pnpm --filter @live-mindmap/server exec node bench/siblingJudge.ts [--parent <ノード id>] <セッションのフォルダ>...
+pnpm --filter @live-mindmap/server exec node bench/siblingJudge.ts --help
+```
+
+既定判定器は `edgeJudge` と同じ（`claude -p --model claude-sonnet-5-5`、`ANTHROPIC_API_KEY` は継承しない）。プロンプトとラベルは指定の外部スクリプト `siblingJudge.ts` と同じ。
+
+- 全体: ルートでない親のうち、直下の子（済みを含む）が5以上のものごとに、各子を1つずつ判定する。ルートの子は判定しない。
+- `--parent`: 指定した親の直下を、子が5未満でも別に判定する。全体の件数・割合には加えない。全体の対象にも入る親は、全体のラベルを使い回す。ルートや存在しない id はエラー。
+
+| ラベル | 意味 |
+| --- | --- |
+| 別 | 親について、ほかの兄弟とは別の中身を述べている |
+| 具体化 | ほかの兄弟のどれかを具体化している |
+| 重なり | ほかの兄弟のどれかとほぼ同じ中身の言い換え・繰り返し |
+| 外れ | 親についての中身ではない |
+
+「別でない」は 具体化・重なり・外れ の合計で、割合の分母は判定した子の数（対象0件なら割合は0）。
+
+**合否の補助。** 最大のまとまり（`mapShape` の「最大のまとまり」と同じ数え方。議題・論点・案・課題・要点が対象）が40を超えた回だけ、その直下の全子（5未満でも）を5回独立に判定し、各回の「別でない」の件数の中央値（昇順の3番目）を求める。40以下なら5回の判定はしない（合否は「不要」）。
+
+```
+中央値 ≤ 全体の割合 × 直下の子の数 + 1       （等号は通す）
+全体の判定対象が0件のときは  中央値 ≤ 1
+```
+
+コードは浮動小数の誤差を避け、整数（`中央値 × 全体の判定数 ≤ 別でない × 直下の子の数 + 全体の判定数`）で比べる。
+
+標準出力は、セッションごとのMarkdown表の1行（子が5以上の親の数・判定した子・4ラベルの件数・「別でない」の件数と割合・指定した親・最大のまとまりの id と大きさ・5回の件数・中央値と閾値・合否）。各フォルダの全判定が成功した後に `siblingJudge.json` を書く。形は `parents`（`[{ parent, children: [{ id, label }] }]`）・`total`・`counts`・`notSeparate`・`notSeparateRatio`・`target`・`maxGroup`（`parent`・`size`・`check`）で、id・ラベル・数だけを持ち、本文・生応答は保存しない。不正な応答は同じ親を最大5回判定し、それでも合わなければ失敗する。失敗時は結果を保存せず、本文も表示しない。
+
+テストとTAKTでは偽判定器だけを使い、実モデルの判断品質は証明しない。マージ後に人が実験のセッション1つをClaudeで判定し、出力が数だけであることを確認して、数をPRに記録する。
 
 ## stt-bench（sttAccuracy・sttLatency 共通の素材づくり）
 
@@ -144,7 +182,7 @@ node bench/sttAccuracy.ts bench/meetings/lecture.timeline.tsv bench/meetings/lec
 
 ## mapShape（マップの形の物差し）
 
-差分更新のプロンプトを変えたら、同じ素材の変更前後のセッションで形も比べる。合否は出さず、最大のまとまりなどの数を判断材料にする。兄弟や辺の意味を判定する道具は、この CLI には含まれない。
+差分更新のプロンプトを変えたら、同じ素材の変更前後のセッションで形も比べる。合否は出さず、最大のまとまりなどの数を判断材料にする。兄弟や辺の意味を判定する道具（`siblingJudge`・`edgeJudge`）は、この CLI には含まれない。
 
 リポジトリルートで実行する。モデル認証や常駐サーバーは不要。
 
