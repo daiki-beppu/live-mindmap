@@ -1,7 +1,10 @@
-// マップの表示面（Issue #814・#815・#816）が受ける Message。Mount と Subscription は DOM で起きた事実だけを届け、パンの量・軸・クリックかドラッグかの判定とズームの倍率・比の計算は update が行う
+// マップの表示面（Issue #814・#815・#816・#819）が受ける Message。Mount と Subscription は DOM で起きた事実だけを届け、パンの量・軸・クリックかドラッグかの判定とズームの倍率・比の計算は update が行う
 import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
 import { Snapshot } from "../../../../server/src/core/index.ts";
+
+// 倍率・位置を変えるキー（viewing.ts の ViewKey と同じ）
+const ViewKey = Schema.Literals(["=", "-", "0", "F", "Z", "Shift+ArrowLeft", "Shift+ArrowRight", "Shift+ArrowUp", "Shift+ArrowDown"]);
 
 export const Message = defineMessageUnion({
   // --- 表示面の要素の Mount から ---
@@ -15,7 +18,7 @@ export const Message = defineMessageUnion({
   ClickedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },
   // 隠れた数の丸・畳む小さな丸を押した（開閉の意味は update が reduceViewing で決める）
   ClickedFoldDot: { nodeId: Schema.String },
-  // 縁の点を押した（寄せるカメラの動きは後の issue）
+  // 縁の点を押した（そのノードへ寄る。意味は update が reduceViewing で決める）
   ClickedEdgeDot: { nodeId: Schema.String },
   // 表示面の上の wheel。timeStamp はイベントの時刻（ms）。x・y はポインタの位置（表示面の左上が原点）
   WheeledMapSurface: {
@@ -43,6 +46,15 @@ export const Message = defineMessageUnion({
   // --- 親から ---
   // マップ（Snapshot）が新しくなった（差分更新の反映）。位置は補間で新しい目標へ移る
   ChangedSnapshot: { snapshot: Snapshot },
+  // キー。意味（どの倍率・位置になるか）は update が reduceViewing で決める。修飾キーは押されていたかだけを届ける
+  PressedViewKey: { key: ViewKey, metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
+  PressedArrowKey: { dir: Schema.Literals(["left", "right", "up", "down"]), metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
+  PressedEscapeKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
+  // E（右の列の出し入れ）。列の幅だけマップの大きさが変わるので、update は大きさの Message を待ってずらす
+  PressedSideKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
+  // --- 見返しの 10 秒のタイマーの Subscription から ---
+  // 触らずに 10 秒たった（見返しの manual のときだけ効く。時刻は update が読まず、Subscription が計る）
+  ElapsedIdleTime: {},
   // --- 補間中の animationFrame の Subscription から ---
   // 前のフレームからの経過 ms
   TickedAnimationFrame: { deltaMs: Schema.Finite },

@@ -1,45 +1,83 @@
-// マップの表示面（Issue #814・#816）: Foldkit のプログラム。ノード（絶対配置の div）・エッジ（SVG のベジェ）・ビューポート（transform）を素で描く。
-// 配置（layout）・畳み（foldView）・全体を収める（fitViewport）は既存の純粋な関数で、view が毎回、Model の値から導く（Model には持たない）
+// マップの表示面（Issue #814・#816・#819）: Foldkit のプログラム。ノード（絶対配置の div）・エッジ（SVG のベジェ）・ビューポート（transform）を素で描く。
+// 配置（layout）・畳み（foldView）は既存の純粋な関数で、view が毎回、Model の値から導く（Model には持たない）。
+// カメラ（寄せる・全体を収める・ずらす・位置を保つ）の目標も、元の値から純粋な関数（camera.ts）で毎回計算し、Model には置かない
 import { HashMap, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
-import { CLICK_ZOOM_FACTOR, edgeDots, fitViewport, OVERVIEW_MIN_ZOOM, pinchZoomFactor, scrollAlongAxis, scrollAxis, scrollPanDelta, USER_MAX_ZOOM, USER_MIN_ZOOM, zoomAtPoint, type Rect, type Viewport } from "../../camera.ts";
+import {
+  anchoredViewport,
+  cameraFocus,
+  clampUserZoom,
+  CLICK_ZOOM_FACTOR,
+  edgeDots,
+  fitViewport,
+  focusViewport,
+  nodeFocusViewport,
+  nodeRect,
+  OVERVIEW_MIN_ZOOM,
+  overviewViewport,
+  panViewport,
+  pinchZoomFactor,
+  revealViewport,
+  screenPoint,
+  scrollAlongAxis,
+  scrollAxis,
+  scrollPanDelta,
+  shiftIntoView,
+  shouldMoveCamera,
+  subtreeViewport,
+  USER_MAX_ZOOM,
+  USER_MIN_ZOOM,
+  zoomAroundCenter,
+  zoomAtPoint,
+  type Rect,
+  type Viewport,
+} from "../../camera.ts";
 import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
-import { foldView, pointedNode, type FoldView } from "../../folding.ts";
+import { foldView, keepTargetOf, pointedNode, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
-import { CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type VisibleTree } from "../../viewing.ts";
+import { relocations } from "../../relocation.ts";
+import { type CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type VisibleTree } from "../../viewing.ts";
 import "./mapSurface.css";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
 
-// still は map.png の撮影用で、畳まず、大きなマップも全体を収める。live は会議中・見返しで、畳み、倍率を人の範囲に収める
+// still は map.png の撮影用で、畳まず、大きなマップも全体を収める。live は会議中、review は見返しで、どちらも畳み、倍率を人の範囲に収める（review だけ、止めて 10 秒で自動に戻る）
 // 動きの状態（Issue #817）: motion は差分更新や高さの変化で目標の位置が変わったときの補間で、start は補間の始まりの位置（id → 位置）、elapsedMs は始めてからの経過 ms。補間していないときは None。
 // 表示する位置と目標の位置は Model に持たず、displayedPositions が motion と目標から毎回導く
-// 見る状態（Issue #818）: viewing は選んだノードと人が開いた・畳んだ・解いた集合（カメラの状態も持つが、カメラの動きは後の issue）。意味は reduceViewing が決め、update が Message から出来事を作って渡す
-// カメラへの指示（Issue #821）: camera は直近の出来事で reduceViewing が返した指示。ビューポートへ当てるのは後の issue（#819）
-// パンの状態: pan はフィットした位置に足す画面上の平行移動（倍率に依らない）。pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
-// ズームの状態（Issue #816）: zoomScale は全体を収めた倍率に掛ける倍率（初期 1）、gestureScale は Safari の gesture の前回の累積 scale（update が前回との比を求めるのに使う。始まりの前・外れたら None）。ビューポートは viewportOf が毎回導く
+// 見る状態（Issue #818）: viewing は選んだノードと人が開いた・畳んだ・解いた集合とカメラの状態（自動・止めている・全体を見ている）。意味は reduceViewing が決め、update が Message から出来事を作って渡す
+// パンの状態: pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
+// ズームの状態（Issue #816）: gestureScale は Safari の gesture の前回の累積 scale（update が前回との比を求めるのに使う。始まりの前・外れたら None）
+// カメラの状態（Issue #819）: viewport は今見せているビューポート（人が置いた位置は入力の履歴で決まり、他の欄から導けないので持つ）。
+// 以下は出来事の履歴で決まる事実: placedRound は今の議題へ寄せた round（変化の無い反映で寄せ直さないため）、beforeOverview は全体を見に行く前の viewport（F で戻る）、
+// keepAnchor は人の開閉の後も同じ画面座標に映し続けるノード、pendingShift は列を出したあと画面の幅が変わるのを待っているずらし。
+// idleStamp は見る状態を動かす出来事（E・C・選択を除く）のたびに進む通し番号で、見返しの 10 秒を計り直す依存になる
 export const Model = Schema.Struct({
-  mode: Schema.Literals(["still", "live"]),
+  mode: Schema.Literals(["still", "live", "review"]),
   snapshot: Snapshot,
   size: Schema.Option(Schema.Struct({ width: Schema.Finite, height: Schema.Finite })),
   nodeHeights: Schema.HashMap(Schema.String, Schema.Finite),
   isMac: Schema.Boolean,
-  pan: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }),
   pointer: Schema.Option(Schema.Union([Schema.TaggedStruct("PanningPane", { x: Schema.Finite, y: Schema.Finite, button: Schema.Finite }), Schema.TaggedStruct("HoldingNode", {})])),
   nodePress: Schema.Option(Schema.Struct({ nodeId: Schema.String, x: Schema.Finite, y: Schema.Finite, dragged: Schema.Boolean })),
   scrollAxisLock: Schema.Option(Schema.Struct({ axis: Schema.Literals(["x", "y"]), at: Schema.Finite })),
   motion: Schema.Option(Schema.Struct({ start: Schema.HashMap(Schema.String, Schema.Struct({ x: Schema.Finite, y: Schema.Finite })), elapsedMs: Schema.Finite })),
   viewing: ViewingState,
-  zoomScale: Schema.Finite,
   gestureScale: Schema.Option(Schema.Finite),
-  camera: CameraCommand,
+  viewport: Schema.Struct({ x: Schema.Finite, y: Schema.Finite, zoom: Schema.Finite }),
+  placedRound: Schema.Option(Schema.Finite),
+  beforeOverview: Schema.Option(Schema.Struct({ x: Schema.Finite, y: Schema.Finite, zoom: Schema.Finite })),
+  keepAnchor: Schema.Option(Schema.Struct({ id: Schema.String, point: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }) })),
+  pendingShift: Schema.Boolean,
+  idleStamp: Schema.Finite,
 });
 export type Model = typeof Model.Type;
+
+const IDENTITY: Viewport = { x: 0, y: 0, zoom: 1 };
 
 export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): Model => ({
   mode,
@@ -47,15 +85,18 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   size: Option.none(),
   nodeHeights: HashMap.empty(),
   isMac,
-  pan: { x: 0, y: 0 },
   pointer: Option.none(),
   nodePress: Option.none(),
   scrollAxisLock: Option.none(),
   motion: Option.none(),
   viewing: INITIAL_VIEWING,
-  zoomScale: 1,
   gestureScale: Option.none(),
-  camera: { type: "follow" },
+  viewport: IDENTITY,
+  placedRound: Option.none(),
+  beforeOverview: Option.none(),
+  keepAnchor: Option.none(),
+  pendingShift: false,
+  idleStamp: 0,
 });
 
 // 補間の長さ（ms）。web/src/useAnimatedPositions.ts の DURATION_MS と同じ（React 版の部品には触らないので、ここに別に置く）
@@ -63,18 +104,20 @@ const MOTION_DURATION_MS = 500;
 
 // 畳んだ見せ方。人が開いた・畳んだ・解いた集合と選んだノードを渡して導く。still は畳まない
 const foldViewOf = (model: Model): FoldView | null => {
-  if (model.mode !== "live") return null;
+  if (model.mode === "still") return null;
   const { opened, folded, unbundled } = humanSetsOf(model.viewing);
   return foldView(model.snapshot, opened, model.viewing.selection?.id ?? null, folded, unbundled);
 };
 // 畳んだ後に見せるノード
 const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
 const heightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights));
+// camera.ts の nodeRect などに渡す、ノードの id → { height }
+const dimsOf = (model: Model): Record<string, { height: number }> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, { height }]));
 // 補間の行き先（目標の位置）
 const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), heightsOf(model));
 
 // 見えている木。reduceViewing の入力で、丸を描くかの判定（foldToggle）にも同じものを使う。MapView.tsx の tree と同じ組み立て
-const treeOf = (model: Model, view: FoldView | null): VisibleTree => {
+const treeOf = (model: Model, view: FoldView | null = foldViewOf(model)): VisibleTree => {
   const shown = view?.nodes ?? model.snapshot.nodes;
   return {
     ids: shown.map((n) => n.id),
@@ -105,7 +148,7 @@ const samePositions = (a: Record<string, Position>, b: Record<string, Position>)
 // 更新で目標の位置が変わったら、その前に見せていた位置から補間を始める。still・目標が変わらないとき（大きさだけの測定など）は何もしない（補間中の経過も戻さない）
 // 何も測っていない間はノードを見せていないので、始まりの位置が無く、動かさない
 const followTarget = (before: Model, after: Model): Model => {
-  if (after.mode !== "live") return after;
+  if (after.mode === "still") return after;
   const target = targetOf(after);
   if (samePositions(targetOf(before), target)) return after;
   const shown = HashMap.size(before.nodeHeights) === 0 ? {} : displayedPositions(before);
@@ -115,10 +158,145 @@ const followTarget = (before: Model, after: Model): Model => {
   });
 };
 
-// 見る状態に出来事を渡す。Message を受ける前の Model から作った木で reduceViewing を呼ぶ（押した時点の木）。カメラの指示は Model に持つ（ビューポートへ当てるのは後の issue）。開閉・選択で目標の位置が変わるので補間を始める
-const applyViewing = (model: Model, event: ViewingEvent): Model => {
-  const { state, camera } = reduceViewing(model.viewing, event, treeOf(model, foldViewOf(model)));
-  return followTarget(model, modifyFields(model, { viewing: () => state, camera: () => camera }));
+// --- カメラ（Issue #819）。update の中で、反映 → 寄せる → 位置を保つ → ずらす の順に、次の関数を呼ぶ ---
+
+type Size = { width: number; height: number };
+
+const setViewport = (model: Model, viewport: Viewport): Model => modifyFields(model, { viewport: () => viewport });
+
+// 倍率の下限。still は全体を見るので OVERVIEW_MIN_ZOOM、それ以外は USER_MIN_ZOOM
+const minZoomOf = (model: Model): number => (model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM);
+
+// 全体を収めた位置。測れたノードだけを、今見せている（補間中の）位置で収める。測れたノードが無ければ原点・倍率 1
+const fittedOf = (model: Model, size: Size): Viewport => {
+  const heights = heightsOf(model);
+  const positions = displayedPositions(model);
+  const rects = shownNodesOf(model)
+    .filter((n) => HashMap.has(model.nodeHeights, n.id))
+    .map((n): Rect => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights[n.id]! }));
+  return fitViewport(rects, size, minZoomOf(model), USER_MAX_ZOOM) ?? IDENTITY;
+};
+
+// 寄せ先の箱（今の議題の外接箱と、収まらないときの中心）。見せないノードは、それを隠している畳んだノード・まとめのノードに置き換えて測る（位置の無い ID は原点で測られる）。
+// 補間中の位置ではなく目標の位置で測る。自動のカメラと、列で切れる分のずらしの両方が使う
+const focusBoxesOf = (model: Model, focus: { ids: string[]; center: string }): { rects: Rect[]; center: Rect } => {
+  const shownAs = foldViewOf(model)?.shownAs ?? {};
+  const shownId = (id: string) => shownAs[id] ?? id;
+  const target = targetOf(model);
+  const dims = dimsOf(model);
+  return { rects: [...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims)), center: nodeRect(shownId(focus.center), target, dims) };
+};
+
+// 自動のカメラ。止めている間は動かさず、全体を見ている間は全体を、自動のときは今の議題（無ければ全体）を収める。still は常に全体
+const autoCamera = (model: Model): Model => {
+  if (Option.isNone(model.size)) return model;
+  const size = model.size.value;
+  if (model.mode === "still") return setViewport(model, fittedOf(model, size));
+  if (model.viewing.mode === "manual") return model;
+  if (model.viewing.mode === "overview") {
+    // 位置を保っている間は収め直さない
+    if (Option.isSome(model.keepAnchor)) return model;
+    const viewport = overviewViewport(treeOf(model).ids, targetOf(model), dimsOf(model), size);
+    return viewport === null ? model : setViewport(model, viewport);
+  }
+  const focus = cameraFocus(model.snapshot);
+  if (focus === null) return setViewport(modifyFields(model, { placedRound: () => Option.none() }), fittedOf(model, size));
+  if (!shouldMoveCamera(model.snapshot, Option.getOrNull(model.placedRound))) return model;
+  const boxes = focusBoxesOf(model, focus);
+  return setViewport(modifyFields(model, { placedRound: () => Option.some(model.snapshot.round) }), focusViewport(boxes.rects, boxes.center, size));
+};
+
+// 位置を保つ基準があるあいだ、そのノードが基準の画面座標に映るよう合わせる（補間中も、実寸の確定後の再配置も）
+const reanchor = (model: Model): Model =>
+  Option.match(model.keepAnchor, {
+    onNone: () => model,
+    onSome: ({ id, point }) => {
+      const at = displayedPositions(model)[id];
+      return at === undefined ? model : setViewport(model, anchoredViewport(model.viewport, at, point));
+    },
+  });
+
+// 列を出したあと、画面の幅が変わったときに一度だけ、今の議題が切れる分だけずらす。列を隠したとき・今の議題が無いときはずらさない。幅が変わるまでは保留のまま
+const applyPendingShift = (before: Model, after: Model): Model => {
+  if (!after.pendingShift || Option.isNone(after.size)) return after;
+  const size = after.size.value;
+  if (Option.isSome(before.size) && before.size.value.width === size.width) return after;
+  const settled = modifyFields(after, { pendingShift: () => false });
+  const focus = after.mode === "still" || after.viewing.sideHidden ? null : cameraFocus(after.snapshot);
+  return focus === null ? settled : setViewport(settled, shiftIntoView(after.viewport, focusBoxesOf(after, focus).rects, size));
+};
+
+// カメラへの指示の適用先。size は画面の大きさ、previous は Message を受ける前の Model（開閉の前の表示位置を読む）
+type CommandContext = { size: Size; previous: Model };
+type CommandHandlers = { [K in CameraCommand["type"]]: (model: Model, command: Extract<CameraCommand, { type: K }>, context: CommandContext) => Model };
+
+// 人の倍率の範囲に収めた viewport（全体を見ていて 0.5 未満の倍率から人の状態に移るとき）
+const clampedViewport = (viewport: Viewport, size: Size): Viewport => zoomAroundCenter(viewport, clampUserZoom(viewport.zoom), size);
+
+const commandHandlers: CommandHandlers = {
+  follow: (model) => model,
+  hold: (model) => model,
+  fitAll: (model) => model,
+  shiftIntoView: (model) => model,
+  refocus: (model) => modifyFields(model, { placedRound: () => Option.none() }),
+  zoomBy: (model, { factor }, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(model.viewport.zoom * factor), size)),
+  zoomTo: (model, { zoom }, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(zoom), size)),
+  pan: (model, { dx, dy }, { size }) => setViewport(model, panViewport(clampedViewport(model.viewport, size), { dx, dy }, size)),
+  focusNode: (model, { id }, { size }) => setViewport(model, nodeFocusViewport(nodeRect(id, targetOf(model), dimsOf(model)), model.viewport.zoom, size)),
+  revealNode: (model, { id }, { size }) => setViewport(model, revealViewport(clampedViewport(model.viewport, size), nodeRect(id, targetOf(model), dimsOf(model)), size)),
+  fitSubtree: (model, { id }, { size }) => setViewport(model, subtreeViewport(id, treeOf(model), targetOf(model), dimsOf(model), size)),
+  keepNode: (model, { id }, { previous }) => {
+    // 基準の画面座標は、開閉の前の表示位置から作る（畳んで「議題 N 件」に集約されたノードは、今の位置に無い）。
+    // 以後は、いま見えている側（集約先のまとめのノード・解いた run:X は最初の議題）を基準の位置に合わせ続ける
+    const at = displayedPositions(previous)[id] ?? displayedPositions(model)[id];
+    return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: keepTargetOf(foldViewOf(model), id), point: screenPoint(model.viewport, at) }) });
+  },
+  restore: (model) => {
+    const before = model.beforeOverview;
+    const cleared = modifyFields(model, { beforeOverview: () => Option.none() });
+    return Option.match(before, { onNone: () => cleared, onSome: (viewport) => setViewport(cleared, viewport) });
+  },
+};
+
+// 指示をその場で適用する。指示のたびに、ずらしの保留（shiftIntoView のときだけ立てる）と位置を保つ基準を捨てる。画面の大きさが無いうちは viewport を動かさない
+const applyCommand = (model: Model, command: CameraCommand, previous: Model): Model => {
+  const reset = modifyFields(model, { pendingShift: () => command.type === "shiftIntoView", keepAnchor: () => Option.none() });
+  if (Option.isNone(model.size)) return reset;
+  // command.type から handler と引数の対応が決まる（handlers の型が保証する）ので、union の型を handler の引数に合わせるために広げる
+  const handle = commandHandlers[command.type] as (model: Model, command: CameraCommand, context: CommandContext) => Model;
+  return handle(reset, command, { size: model.size.value, previous });
+};
+
+// 全体を見る前の位置を、全体を見に行く前に覚える。戻る（restore）以外で全体を見る状態を抜けたら捨てる
+const rememberBeforeOverview = (before: Model, after: Model, command: CameraCommand): Model => {
+  const wasOverview = before.viewing.mode === "overview";
+  const isOverview = after.viewing.mode === "overview";
+  if (isOverview && !wasOverview) return modifyFields(after, { beforeOverview: () => Option.some(before.viewport) });
+  if (wasOverview && !isOverview && command.type !== "restore") return modifyFields(after, { beforeOverview: () => Option.none() });
+  return after;
+};
+
+// 10 秒を計り直さない出来事（右の列・字幕の出し入れと、クリックでの選択）
+const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select";
+
+// 見る状態に出来事を渡し、返ってきたカメラの指示をその場で適用する。reduceViewing へ渡す木は Message を受ける前の Model（押した時点の木。反映だけは反映の後の Model）から作る。
+// previous は、目標の位置が変わったとき補間を始める元の表示位置を持つ Model（反映では Snapshot を差し替える前）
+// 呼び順: 見る状態 → 補間 → 全体を見る前の位置 → 指示 → 自動のカメラ → 位置を保つ。列で切れる分だけずらす指示（shiftIntoView）と位置を保つ指示（keepNode）は寄せ直しも収め直しもしない
+const applyViewing = (model: Model, event: ViewingEvent, previous: Model = model): Model => {
+  const { state, camera } = reduceViewing(model.viewing, event, treeOf(model), model.mode === "review" ? "review" : "live");
+  const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (keepsIdleTimer(event) ? stamp : stamp + 1) });
+  // still は見る状態（選択・開閉）だけを受け、カメラは常に全体を収めるので指示を適用しない
+  if (model.mode === "still") return reduced;
+  const followed = rememberBeforeOverview(model, followTarget(previous, reduced), camera);
+  const commanded = applyCommand(followed, camera, previous);
+  return reanchor(camera.type === "shiftIntoView" || camera.type === "keepNode" ? commanded : autoCamera(commanded));
+};
+
+// 反映（round の変化）を見る状態へ渡す出来事。選んだノードが消えたときの移り先は、反映の前後の木から求める。still・round が変わらないとき・最初の反映は渡さない
+const reflectionOf = (before: Model, after: Model): ViewingEvent | null => {
+  if (after.mode === "still" || before.snapshot.round === after.snapshot.round) return null;
+  const replaced = relocations({ tree: treeOf(before), snapshot: before.snapshot, selectedId: before.viewing.selection?.id ?? null }, { tree: treeOf(after), snapshot: after.snapshot });
+  return { type: "reflect", replaced };
 };
 
 type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
@@ -131,58 +309,69 @@ const startsPan = (button: number, ctrlKey: boolean): boolean => button <= 1 && 
 // MouseEvent.buttons のビットは主=1・右=2・中=4 で、button の番号（主=0・中=1）とは並びが違う。押したボタンに対応するビットを返す
 const buttonsBit = (button: number): number => (button === 1 ? 4 : 1);
 
-const panBy = (model: Model, x: number, y: number): Model => modifyFields(model, { pan: (pan) => ({ x: pan.x + x, y: pan.y + y }) });
-
-// 全体を収めた位置（パンもズームも足す前）。測れたノードだけで収める
-const fittedOf = (model: Model): Viewport => {
-  const shown = shownNodesOf(model);
-  const heights = heightsOf(model);
-  const positions = displayedPositions(model);
-  const rects = shown.filter((n) => HashMap.has(model.nodeHeights, n.id)).map((n): Rect => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights[n.id]! }));
-  return Option.match(model.size, { onNone: () => null, onSome: (size) => fitViewport(rects, size, minZoomOf(model), USER_MAX_ZOOM) }) ?? IDENTITY;
+// 人が viewport を動かした。位置を保つ基準を捨て、見る状態へ userMoved を渡す（自動のカメラを止める）。
+// 全体を見ている間の 0.5 未満の倍率から人の操作に移るときは、人の倍率の範囲に収める。still は人の操作を受けない
+const movedByUser = (model: Model, viewport: Viewport): Model => {
+  if (model.mode === "still") return model;
+  const moved = applyViewing(modifyFields(setViewport(model, viewport), { keepAnchor: () => Option.none() }), { type: "userMoved" });
+  return Option.match(moved.size, { onNone: () => moved, onSome: (size) => setViewport(moved, clampedViewport(moved.viewport, size)) });
 };
 
-// 倍率の下限。still は全体を見るので OVERVIEW_MIN_ZOOM、live は USER_MIN_ZOOM
-const minZoomOf = (model: Model): number => (model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM);
+const panBy = (model: Model, x: number, y: number): Model => movedByUser(model, { x: model.viewport.x + x, y: model.viewport.y + y, zoom: model.viewport.zoom });
 
-// 見せるビューポート。全体を収めた位置に zoomScale を掛け、パン（画面上の平行移動）を足す。view も update のズームも同じ値を使う。
-// zoomScale は操作した時点のフィット倍率との比なので、フィット倍率が変わると倍率が範囲外に出うる。実効倍率を範囲に収め、位置もその実効倍率から導く
-export const viewportOf = (model: Model): Viewport => {
-  const fitted = fittedOf(model);
-  const zoom = Math.min(USER_MAX_ZOOM, Math.max(minZoomOf(model), fitted.zoom * model.zoomScale));
-  const scale = zoom / fitted.zoom;
-  return { x: fitted.x * scale + model.pan.x, y: fitted.y * scale + model.pan.y, zoom };
+// 画面上の point（表示面の左上が原点）を中心に倍率を factor 倍する。結果は zoomAtPoint（0.5〜2 に収める）
+const zoomBy = (model: Model, point: { x: number; y: number }, factor: number): Model => movedByUser(model, zoomAtPoint(model.viewport, point, factor));
+
+// 補間の位置が変わった後に、カメラを今見せている位置へ合わせる。位置を保つ基準を合わせ直し、今の議題が無い自動のときだけ補間後の配置へ全体を収め直す
+const followDisplayed = (model: Model): Model => {
+  const follows = model.mode !== "still" && model.viewing.mode === "auto" && cameraFocus(model.snapshot) === null;
+  const anchored = reanchor(model);
+  return follows ? autoCamera(anchored) : anchored;
 };
 
-// 画面上の point（表示面の左上が原点）を中心に倍率を factor 倍する。結果は zoomAtPoint（0.5〜2 に収める）で、見せるビューポートがそれと一致するよう zoomScale と pan に書き戻す。still はズームしない
-const zoomBy = (model: Model, point: { x: number; y: number }, factor: number): Model => {
-  if (model.mode !== "live") return model;
-  const fitted = fittedOf(model);
-  const next = zoomAtPoint(viewportOf(model), point, factor);
-  const zoomScale = next.zoom / fitted.zoom;
-  return modifyFields(model, { zoomScale: () => zoomScale, pan: () => ({ x: next.x - fitted.x * zoomScale, y: next.y - fitted.y * zoomScale }) });
-};
+// 補間を捨てて目標の位置にし、カメラを合わせ直す（補間を進める Tick が無い見返しが、保存の前に通す）。補間が無ければ何もしない
+export const skipMotion = (model: Model): Model =>
+  Option.isNone(model.motion) ? model : followDisplayed(modifyFields(model, { motion: () => Option.none() }));
+
+// キー・時間の出来事を見る状態へ渡す（still は受けない）
+const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
-    MeasuredMapSurface: ({ width, height, nodeHeights }) => ({
-      model: followTarget(
-        model,
-        modifyFields(model, {
-          size: () => Option.some({ width, height }),
-          nodeHeights: (current) => HashMap.setMany(current, Object.entries(nodeHeights)),
-        }),
-      ),
-    }),
-    ChangedSnapshot: ({ snapshot }) => ({ model: followTarget(model, modifyFields(model, { snapshot: () => snapshot })) }),
-    TickedAnimationFrame: ({ deltaMs }) => ({
-      model: modifyFields(model, {
+    MeasuredMapSurface: ({ width, height, nodeHeights }) => {
+      const measured = modifyFields(model, {
+        size: () => Option.some({ width, height }),
+        nodeHeights: (current) => HashMap.setMany(current, Object.entries(nodeHeights)),
+      });
+      // 初めての大きさ・ノードの高さ・画面の大きさが変わったときだけ、寄せ直し・収め直しをする
+      // ただしずらしの保留を使い切る測定（幅が変わった）では、画面の大きさの変化で収め直さない（列の出し入れ後の viewport は applyPendingShift だけが決める）
+      const settlesShift = model.pendingShift && Option.isSome(model.size) && model.size.value.width !== width;
+      const changed =
+        Option.isNone(model.size) ||
+        (!settlesShift && (model.size.value.width !== width || model.size.value.height !== height)) ||
+        Object.entries(nodeHeights).some(([id, nodeHeight]) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeight);
+      const followed = followTarget(model, measured);
+      return { model: applyPendingShift(model, reanchor(changed ? autoCamera(followed) : followed)) };
+    },
+    ChangedSnapshot: ({ snapshot }) => {
+      const replaced = modifyFields(model, { snapshot: () => snapshot });
+      const reflection = reflectionOf(model, replaced);
+      return { model: reflection === null ? reanchor(autoCamera(followTarget(model, replaced))) : applyViewing(replaced, reflection, model) };
+    },
+    PressedViewKey: ({ key, metaKey, ctrlKey, altKey }) => pressed(model, { type: "key", key, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
+    PressedArrowKey: ({ dir, metaKey, ctrlKey, altKey }) => pressed(model, { type: "arrow", dir, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
+    PressedEscapeKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "escape", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
+    PressedSideKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "side", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
+    ElapsedIdleTime: () => pressed(model, { type: "idle" }),
+    TickedAnimationFrame: ({ deltaMs }) => {
+      const ticked = modifyFields(model, {
         motion: Option.flatMap(({ start, elapsedMs }) => (elapsedMs + deltaMs >= MOTION_DURATION_MS ? Option.none() : Option.some({ start, elapsedMs: elapsedMs + deltaMs }))),
-      }),
-    }),
+      });
+      return { model: followDisplayed(ticked) };
+    },
     PressedMapSurface: ({ clientX, clientY, button, ctrlKey, insideNoPan }) => ({
       model:
-        model.mode === "live" && !insideNoPan && startsPan(button, ctrlKey)
+        model.mode !== "still" && !insideNoPan && startsPan(button, ctrlKey)
           ? modifyFields(model, { pointer: () => Option.some({ _tag: "PanningPane" as const, x: clientX, y: clientY, button }) })
           : model,
     }),
@@ -229,7 +418,7 @@ export const update = (model: Model, message: Message): Return =>
     // 右の列の Disclosure: 今の状態と同じ向きなら何もしない。違えば E と同じ出来事を渡し、sideHidden は reduceViewing だけが決める
     ToggledSide: ({ isOpen }) => (isOpen === (model.viewing.sideHidden !== true) ? { model } : { model: applyViewing(model, { type: "side", meta: false, ctrl: false, alt: false }) }),
     WheeledMapSurface: ({ x, y, deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
-      if (model.mode !== "live") return { model };
+      if (model.mode === "still") return { model };
       // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方の軸だけを、生の量で動かす。軸は入力の時刻で決める
       if ((metaKey || ctrlKey) && shiftKey) {
         const lock = scrollAxis(Option.getOrNull(model.scrollAxisLock), timeStamp, { x: deltaX, y: deltaY });
@@ -248,11 +437,12 @@ export const update = (model: Model, message: Message): Return =>
     StartedMapSurfaceGesture: () => ({ model: modifyFields(model, { gestureScale: () => Option.none() }) }),
     // 累積の scale を前回との比にして掛ける。始まりが無ければ前回を 1 とみなす
     ChangedMapSurfaceGesture: ({ scale, x, y }) => {
-      if (model.mode !== "live") return { model };
+      if (model.mode === "still") return { model };
       const factor = scale / Option.getOrElse(model.gestureScale, () => 1);
       return { model: modifyFields(zoomBy(model, { x, y }, factor), { gestureScale: () => Option.some(scale) }) };
     },
   });
+
 
 // エッジの端点。@xyflow の .react-flow__handle は content-box で幅 6px + 枠 1px × 2 = 8px で、.map-node の padding box
 // （枠 1.5px の内側）を基準に ±50% ずらして置かれるので、ノードの左右の端から 2.5px 外に出る（出る側は右端 +2.5、入る側は左端 −2.5）
@@ -265,8 +455,6 @@ const bezier = (source: Position, target: Position): string => {
   const offset = controlOffset(target.x - source.x);
   return `M${source.x},${source.y} C${source.x + offset},${source.y} ${target.x - offset},${target.y} ${target.x},${target.y}`;
 };
-
-const IDENTITY: Viewport = { x: 0, y: 0, zoom: 1 };
 
 const classes = (...names: ReadonlyArray<string | false>): string => names.filter(Boolean).join(" ");
 
@@ -308,7 +496,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const positions = displayedPositions(model);
   // 測れたノードだけ見せる。エッジは両端が測れてから描く
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
-  const viewport = viewportOf(model);
+  const viewport = model.viewport;
 
   const edges = measured.flatMap((child) => {
     const parent = child.parent === null ? undefined : measured.find((n) => n.id === child.parent);
@@ -329,7 +517,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
     ),
   );
 
-  // 縁の点: 画面の外で変わったノードを、live で人が動かして止めているか全体を見ている間だけ描く。位置は目標の位置と高さで測る
+  // 縁の点: 画面の外で変わったノードを、still 以外で人が動かして止めているか全体を見ている間だけ描く。位置は目標の位置と高さで測る
   const dots =
     view_ === null || tree === null || model.viewing.mode === "auto"
       ? []
@@ -339,7 +527,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
             edgeDots(
               tree.ids.filter((id) => view_.blink.has(id) && HashMap.has(model.nodeHeights, id)),
               tree.targets,
-              Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, { height }])),
+              dimsOf(model),
               viewport,
               size,
             ),

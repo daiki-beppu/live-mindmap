@@ -8,6 +8,9 @@ import { Message } from "../src/app/review/message.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { initialPlayback, PLAYBACK_RATES } from "../src/reviewPlayback.ts";
 import { snapshotAt } from "../src/reviewTimeline.ts";
+import * as MapSurface from "../src/app/mapSurface/main.ts";
+import { cameraFocus, fitViewport, screenPoint, USER_MAX_ZOOM } from "../src/camera.ts";
+import { NODE_WIDTH } from "../src/layout.ts";
 
 // 見返しの Foldkit プログラム（Issue #823）の update。Model に持つのは再生の状態と表示面の実測だけ。
 // 時刻 → その時刻のマップ（Snapshot）は、時間軸（Model の外の Context）から毎回導く。反映の時刻への移動（prev・next）は playbackReducer の規則
@@ -198,5 +201,189 @@ describe("見返しの update: 表示面の見る状態", () => {
         expect(m.mapSurface.viewing).toEqual({ mode: "auto", selection: { id: "t2", byKey: false } });
       }),
     );
+  });
+});
+
+// カメラ（Issue #819）。見返しの表示面は mode が review で、人が動かして止めた後、触らずに 10 秒たつ（ElapsedIdleTime）と自動に戻る。
+// 表示面の新しい欄（viewport・idleStamp など）は、見返しの Model.mapSurface に持ち越される（時刻を動かしても残る）
+describe("見返しの update: 表示面のカメラ", () => {
+  const surface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
+  const measured = (m: Model): Model => update(m, surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
+  const scrolled = (m: Model): Model =>
+    update(m, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
+
+  it("人が動かすと見る状態が manual になり、viewport と idleStamp が mapSurface に残る。時刻を動かしても残る", () => {
+    const base = measured(at(30));
+    story(
+      update,
+      given(base),
+      message(surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))),
+      model((m) => {
+        expect(m.mapSurface.viewing.mode).toBe("manual");
+        expect(m.mapSurface.viewport.x).toBeCloseTo(base.mapSurface.viewport.x - 20, 9);
+        expect(m.mapSurface.viewport.y).toBeCloseTo(base.mapSurface.viewport.y - 50, 9);
+        expect(m.mapSurface.idleStamp).not.toBe(base.mapSurface.idleStamp);
+      }),
+      message(Message.ClickedPrev()),
+      model((m) => {
+        expect(m.playback.time).toBe(10);
+        expect(m.mapSurface.viewing.mode).toBe("manual");
+        expect(m.mapSurface.viewport).toEqual(scrolled(base).mapSurface.viewport);
+        expect(m.mapSurface.idleStamp).toBe(scrolled(base).mapSurface.idleStamp);
+      }),
+    );
+  });
+
+  it("止めている間に 10 秒が過ぎる（ElapsedIdleTime）と、自動に戻り、viewport は寄せ直される", () => {
+    const moved = scrolled(measured(at(30)));
+    expect(moved.mapSurface.viewing.mode).toBe("manual");
+    story(
+      update,
+      given(moved),
+      message(surface(MapSurfaceMessage.ElapsedIdleTime())),
+      model((m) => {
+        expect(m.mapSurface.viewing).toEqual({ mode: "auto" });
+        expect(m.mapSurface.viewport).not.toEqual(moved.mapSurface.viewport);
+      }),
+    );
+  });
+
+  it("自動のままなら、ElapsedIdleTime は何も変えない", () => {
+    const base = measured(at(30));
+    story(
+      update,
+      given(base),
+      message(surface(MapSurfaceMessage.ElapsedIdleTime())),
+      model((m) => {
+        expect(m.mapSurface.viewing).toEqual({ mode: "auto" });
+        expect(m.mapSurface.viewport).toEqual(base.mapSurface.viewport);
+      }),
+    );
+  });
+});
+
+// 見返しは補間を進める Tick を持たないので、子の update が補間（motion）を始めても、保存する Model は最終配置になる。
+// カメラの計算と view の描画が同じ最終配置を使うことを、保存された Model から view と同じ式（displayedPositions → screenPoint）で描く位置を求めて確かめる。
+// 時間軸はこの describe の中だけで使う: 議題 t1（論点 q1・q2）の後に、今の議題 t2 が来る（t1 は今の議題でないので、丸で開閉できる）
+describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
+  const ctx = makeContext([
+    { at: "a", type: "start", title: "定例" },
+    remark("r1", 10, "採用の話をします。"),
+    diff(["r1"], [add("t1", "root", "議題", "採用", ["r1"]), add("q1", "t1", "論点", "一つ目", ["r1"]), add("q2", "t1", "論点", "二つ目", ["r1"])]),
+    remark("r2", 30, "予算です。"),
+    diff(["r2"], [add("t2", "root", "議題", "予算", ["r2"]), add("p1", "t2", "論点", "上限をどうするか", ["r2"])]),
+  ]);
+  const upd = makeUpdate(ctx);
+  const surfaceOf = (m: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(ctx, m), ...m.mapSurface });
+  const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
+  const idOf = (text: string): string => snapshotAt(ctx.timeline, 30).nodes.find((n) => n.text === text)!.id;
+  const T1 = idOf("採用");
+  const HEIGHTS = { root: 40, [T1]: 40, [idOf("一つ目")]: 40, [idOf("二つ目")]: 200, [idOf("予算")]: 40, [idOf("上限をどうするか")]: 40 };
+  const measureMsg = (nodeHeights: Record<string, number> = HEIGHTS) => got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights }));
+  const keyMsg = (k: "F") => got(MapSurfaceMessage.PressedViewKey({ key: k, metaKey: false, ctrlKey: false, altKey: false }));
+  const wheelMsg = got(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }));
+  const clickDot = (nodeId: string) => got(MapSurfaceMessage.ClickedFoldDot({ nodeId }));
+  const run = (start: Model, ...messages: Message[]): Model => messages.reduce((m, next) => upd(m, next).model, start);
+  const initial = (): Model => {
+    const start = init(ctx);
+    return { ...start, playback: { ...start.playback, time: 30 } };
+  };
+  // view と同じ式で描く、ノードの画面座標
+  const drawnAt = (m: Model, id: string) => {
+    const surface = surfaceOf(m);
+    return screenPoint(surface.viewport, MapSurface.displayedPositions(surface)[id]!);
+  };
+  const expectDrawnAt = (m: Model, id: string, point: { x: number; y: number }) => {
+    const at = drawnAt(m, id);
+    expect(at.x).toBeCloseTo(point.x, 6);
+    expect(at.y).toBeCloseTo(point.y, 6);
+  };
+  // 前提: 子の update は補間を始め、t1 のいずれかのノードの始まりの位置と目標の位置が違う（保存の前の結果）
+  const expectChildStartsMotion = (m: Model, message: Message) => {
+    if (message._tag !== "GotMapSurfaceMessage") throw new Error("GotMapSurfaceMessage を渡す");
+    const child = MapSurface.update(surfaceOf(m), message.message).model;
+    expect(Option.isSome(child.motion)).toBe(true);
+    const target = MapSurface.displayedPositions({ ...child, motion: Option.none() });
+    const shown = MapSurface.displayedPositions(child);
+    expect(Object.keys(target).some((id) => Math.abs(target[id]!.x - shown[id]!.x) + Math.abs(target[id]!.y - shown[id]!.y) > 1e-3)).toBe(true);
+  };
+
+  it("止めている間（manual）に丸を押すと、押したノードの画面座標は押す前と同じ。位置を保っている間に高さが変わっても同じ。motion は保存しない", () => {
+    const start = run(initial(), measureMsg(), wheelMsg);
+    expect(start.mapSurface.viewing.mode).toBe("manual");
+    const point = drawnAt(start, T1);
+    expectChildStartsMotion(start, clickDot(T1));
+    story(
+      upd,
+      given(start),
+      message(clickDot(T1)),
+      model((m) => {
+        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expect(m.mapSurface.viewport.zoom).toBe(start.mapSurface.viewport.zoom);
+        expectDrawnAt(m, T1, point);
+      }),
+      message(measureMsg({ ...HEIGHTS, [T1]: 120 })),
+      model((m) => {
+        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expectDrawnAt(m, T1, point);
+      }),
+    );
+    // 前提: 高さを測り直す Message も、子の update では補間を始める
+    expectChildStartsMotion(run(start, clickDot(T1)), measureMsg({ ...HEIGHTS, [T1]: 120 }));
+  });
+
+  it("全体を見ている間（overview）の開閉も、押したノードの画面座標は押す前と同じ", () => {
+    const start = run(initial(), measureMsg(), keyMsg("F"));
+    expect(start.mapSurface.viewing.mode).toBe("overview");
+    const point = drawnAt(start, T1);
+    expectChildStartsMotion(start, clickDot(T1));
+    story(
+      upd,
+      given(start),
+      message(clickDot(T1)),
+      model((m) => {
+        expect(m.mapSurface.viewing.mode).toBe("overview");
+        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expect(m.mapSurface.viewport.zoom).toBe(start.mapSurface.viewport.zoom);
+        expectDrawnAt(m, T1, point);
+      }),
+    );
+  });
+});
+
+// 今の議題が無い時刻（議題の外のノードだけがある）の自動のカメラは、全体を収める。高さの測り直しで目標の位置が動いても、描く最終配置に収める
+describe("見返しの update: 今の議題が無い自動のカメラ", () => {
+  const ctx = makeContext([
+    { at: "a", type: "start", title: "定例" },
+    remark("r1", 10, "雑談です。"),
+    diff(["r1"], [add("x1", "root", "論点", "天気", ["r1"]), add("x2", "root", "論点", "移動", ["r1"])]),
+  ]);
+  const upd = makeUpdate(ctx);
+  const surfaceOf = (m: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(ctx, m), ...m.mapSurface });
+  const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
+  const start = init(ctx);
+  const ids = snapshotAt(ctx.timeline, start.playback.time).nodes.map((n) => n.id);
+
+  it("測り直しで目標の位置が動いても、viewport は motion を捨てた最終配置で収めた位置と一致する", () => {
+    const heights = (h: number) => Object.fromEntries(ids.map((id) => [id, id === "root" ? 40 : h]));
+    const first = upd(start, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(40) }))).model;
+    const message = got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(300) }));
+    // 前提: 今の議題が無く、子の update では補間が始まって収め直しが始まりの位置で行われる
+    expect(cameraFocus(snapshotOf(ctx, first))).toBeNull();
+    expect(first.mapSurface.viewing.mode).toBe("auto");
+    const child = MapSurface.update(surfaceOf(first), (message as { message: MapSurfaceMessage }).message).model;
+    expect(Option.isSome(child.motion)).toBe(true);
+    const next = upd(first, message).model;
+    expect(Option.isNone(next.mapSurface.motion)).toBe(true);
+    const surface = surfaceOf(next);
+    const positions = MapSurface.displayedPositions(surface);
+    const rects = surface.snapshot.nodes.map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: heights(300)[n.id]! }));
+    const expected = fitViewport(rects, { width: 800, height: 600 }, 0.5, USER_MAX_ZOOM)!;
+    expect(next.mapSurface.viewport.x).toBeCloseTo(expected.x, 6);
+    expect(next.mapSurface.viewport.y).toBeCloseTo(expected.y, 6);
+    expect(next.mapSurface.viewport.zoom).toBeCloseTo(expected.zoom, 6);
+    // 前提: 補間中の位置で収めた viewport とは別の値になる入力である
+    const childFit = MapSurface.update({ ...surfaceOf(first) }, (message as { message: MapSurfaceMessage }).message).model.viewport;
+    expect(Math.abs(childFit.x - expected.x) + Math.abs(childFit.y - expected.y) + Math.abs(childFit.zoom - expected.zoom)).toBeGreaterThan(1e-3);
   });
 });

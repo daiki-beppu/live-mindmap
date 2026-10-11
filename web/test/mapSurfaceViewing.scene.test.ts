@@ -5,7 +5,7 @@ import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
-import { edgeDots } from "../src/camera.ts";
+import { edgeDots, nodeFocusViewport, nodeRect } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
@@ -286,7 +286,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   const changed = (): Snapshot => single({ changes: [{ change: "追加", node: "A1", kind: "論点", text: "A1", round: 3, at: 0 } as Snapshot["changes"][number]] });
   const panned = (viewing: ViewingState, mode: MapSurfaceModel["mode"] = "live", size = true): MapSurfaceModel => ({
     ...measuredModel(changed(), mode, viewing),
-    pan: { x: -3000, y: 0 },
+    viewport: { x: -3000, y: 0, zoom: 1 },
     ...(size ? {} : { size: Option.none<{ width: number; height: number }>() }),
   });
   const MANUAL: ViewingState = { mode: "manual", topic: "B" };
@@ -343,7 +343,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   it("画面に映っているノードの点は出ない（パンしていなければ、変わった A は画面の中）", () => {
     scene(
       app,
-      given({ ...panned(MANUAL), pan: { x: 0, y: 0 } }),
+      given({ ...panned(MANUAL), viewport: { x: 0, y: 0, zoom: 1 } }),
       tap((simulation) => expect(dotsOf(simulation.html)).toHaveLength(0)),
       mounted,
     );
@@ -367,7 +367,10 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
     );
   });
 
-  it("点を押しても、カメラは動かさない（viewport の transform が変わらない）。また畳んだ A を開くこともない（丸とは別の操作）", () => {
+  it("点を押すと、そのノードへ寄る（今の倍率のまま、ノードの中心が画面の中央に来る viewport の transform になる）。畳んだ A を開くことはない（丸とは別の操作）", () => {
+    // 寄せ先は、目標の位置と高さで測った A。倍率は押す前のまま（1）
+    const shown = foldView(changed(), NONE, null, NONE, NONE);
+    const expected = nodeFocusViewport(nodeRect("A", layout(shown.nodes, HEIGHTS), { A: { height: HEIGHTS.A } }), 1, SIZE);
     let before: number[] = [];
     scene(
       app,
@@ -378,8 +381,13 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
       }),
       click(EDGE_DOT),
       tap((simulation) => {
-        expect(viewportTransform(simulation.html)).toEqual(before);
-        expect(dotsOf(simulation.html).length).toBeGreaterThan(0);
+        expect(viewportTransform(simulation.html)).not.toEqual(before);
+        const [x, y, zoom] = viewportTransform(simulation.html);
+        expect(x).toBeCloseTo(expected.x, 6);
+        expect(y).toBeCloseTo(expected.y, 6);
+        expect(zoom).toBeCloseTo(expected.zoom, 6);
+        // 寄せた先では A が画面に映るので、点はもう出ない
+        expect(dotsOf(simulation.html)).toHaveLength(0);
       }),
       expectScene(wrapperOf("A1")).toBeAbsent(),
       expectScene(mapNodeOf("A")).toHaveClass("map-node--folded"),
