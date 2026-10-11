@@ -8,9 +8,12 @@
 //   GET  /・/ws           ブラウザへの配信（同じポートで upgrade する）
 // 閲覧の口（openViewingPort）は、操作の口とは別の 127.0.0.1 の待受けで、GET /（ログを埋め込まない single-file の画面）と
 // /ws の配信だけを受ける。Origin は与えたホスト名の https:// だけを通し、/session/* などの操作は受けない。
+// /ws の配信には、server から WebSocket の制御フレームの ping を一定の間隔で送る（Issue #833）。tunnel が無通信の接続を切ることへの備えで、
+// アプリの JSON フレームは増やさない。間隔の既定は 30 秒で、テストは短い間隔を渡して縮める。
 // セッションの操作は sessions.ts の Sessions から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
+import { WebSocket } from "ws";
 import { Cause, Context, Effect, Layer, Option, Schema, Stream, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
@@ -266,27 +269,46 @@ export const portOf = (address: NetAddress.SocketAddress): Effect.Effect<number>
 // 応答しない接続を打ち切れる
 const WS_CLOSE_TIMEOUT_MS = 3_000;
 
+// /ws の配信への ping の間隔の既定（ms）。tunnel の無通信の切断より十分短い
+export const FEED_PING_INTERVAL_MS = 30_000;
+
+// 接続ごとに、一定の間隔で制御フレームの ping を送るサーバー側 WebSocket のクラス。
+// effect の Socket は制御フレームを送る手段を持たず、生の ws に手が届くのは WebSocketServer の WebSocket オプションだけなので、
+// ws の WebSocket を継承してここで差し込む。タイマーは接続の寿命に結び、close で止める（unref で、タイマーだけがプロセスを生かさない）
+const pingingWebSocket = (intervalMs: number) =>
+  class PingingWebSocket extends WebSocket {
+    readonly #pinger = (() => {
+      const timer = setInterval(() => {
+        if (this.readyState === WebSocket.OPEN) this.ping();
+      }, intervalMs);
+      timer.unref();
+      this.once("close", () => clearInterval(timer));
+      return timer;
+    })();
+  };
+
 // @types/ws@8.18 の ServerOptions は closeTimeout を宣言していないが、ws@8.22 のランタイムは
 // WebSocketServer のオプションとしてそのまま受け取り、各サーバー側 WebSocket の _closeTimeout へ伝える
 // （ws/lib/websocket-server.js の completeUpgrade → new this.options.WebSocket(...) で options ごと渡る）。
 // 型定義の遅れを、この 1 フィールドだけの型アサーションで補う（any にはしない）
-const websocketOptions = { closeTimeout: WS_CLOSE_TIMEOUT_MS } as NodeHttpServer.Options["websocket"];
+const websocketOptions = (pingIntervalMs: number) =>
+  ({ closeTimeout: WS_CLOSE_TIMEOUT_MS, WebSocket: pingingWebSocket(pingIntervalMs) }) as NodeHttpServer.Options["websocket"];
 
 // 127.0.0.1 で待ち受ける。port が 0 なら空きポート。
 // NodeHttpServer は Node の http.Server を引数に取るので、node:http への参照はここ 1 か所に閉じる。
 // disablePreemptiveShutdown: Scope を閉じたら、まず要求の処理を止めて接続中の Fiber を終わらせ、
 // その後に待受けを閉じる。既定の猶予つき停止は、接続が残っている間 20 秒待ってから諦めるため、
 // 終了が 20 秒遅れる（close() は時間内に戻ることを既存のテストが確かめている）
-const layerNodeServer = (port: number) =>
-  NodeHttpServer.layer(createServer, { port, host: "127.0.0.1", disablePreemptiveShutdown: true, websocket: websocketOptions });
+const layerNodeServer = (port: number, pingIntervalMs: number) =>
+  NodeHttpServer.layer(createServer, { port, host: "127.0.0.1", disablePreemptiveShutdown: true, websocket: websocketOptions(pingIntervalMs) });
 
 // 配信（Viewers）と待受け（HttpServer）の Layer。Scope を閉じると待受けが閉じる
-export const layerListener = (port: number): Layer.Layer<Viewers | HttpServer.HttpServer, HttpServerError.ServeError> =>
-  Layer.mergeAll(Viewers.layer, layerNodeServer(port));
+export const layerListener = (port: number, pingIntervalMs: number = FEED_PING_INTERVAL_MS): Layer.Layer<Viewers | HttpServer.HttpServer, HttpServerError.ServeError> =>
+  Layer.mergeAll(Viewers.layer, layerNodeServer(port, pingIntervalMs));
 
 // layerListener を、いまの Scope に結び付けて作る。serveFeed・serveSessions へ渡す Viewers と HttpServer の Context を返す
 // （port は HttpServer の address から portOf で読む）
-export const openListener = (port: number) => Layer.build(layerListener(port));
+export const openListener = (port: number, pingIntervalMs: number = FEED_PING_INTERVAL_MS) => Layer.build(layerListener(port, pingIntervalMs));
 
 // ブラウザへの配信だけを受ける（CLI の再生）。待ち受けているポートは HttpServer の address から読む
 export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewers | Scope.Scope> = Effect.flatMap(
@@ -304,7 +326,7 @@ export const serveSessions = (token: string): Effect.Effect<void, never, HttpSer
 // /ws の配信だけを受ける。配信は呼び出し側の Viewers を使う（保持値と PubSub を複製しない）。待受けは呼び出し側の Scope で閉じる。
 // Origin は `https://<hostname>` との完全一致だけを通す。Origin の無い GET / は通し、/ws は Origin が無くても断る。
 // 画面のビルドは開くときに 1 回だけ行う（Vite の開発用サーバーは使わない）
-export const openViewingPort = (hostname: string): Effect.Effect<number, HttpServerError.ServeError | ReviewPageFailed, Viewers | ReviewBuild | Scope.Scope> =>
+export const openViewingPort = (hostname: string, pingIntervalMs: number = FEED_PING_INTERVAL_MS): Effect.Effect<number, HttpServerError.ServeError | ReviewPageFailed, Viewers | ReviewBuild | Scope.Scope> =>
   Effect.gen(function* () {
     const { build } = yield* ReviewBuild;
     const page = yield* build;
@@ -323,7 +345,7 @@ export const openViewingPort = (hostname: string): Effect.Effect<number, HttpSer
       })),
       HttpRouter.route("GET", "/", Effect.succeed(HttpServerResponse.text(page, { contentType: "text/html; charset=utf-8" }))),
     ]);
-    const context = yield* Layer.build(layerNodeServer(0));
+    const context = yield* Layer.build(layerNodeServer(0, pingIntervalMs));
     const handler = yield* HttpRouter.toHttpEffect(Layer.mergeAll(routes, UnsupportedRoute, OriginCheck));
     yield* HttpServer.serveEffect(respond(handler)).pipe(Effect.provide(context));
     return yield* portOf(Context.get(context, HttpServer.HttpServer).address);

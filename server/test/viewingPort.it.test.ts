@@ -1,6 +1,7 @@
 // 閲覧の口（http.ts の openViewingPort。Issue #832）の IT。本物のソケットで、127.0.0.1 の別の待受けが
 // 静的な画面（ログを埋め込まない single-file ビルド）と /ws の配信だけを、与えたホスト名の Origin にだけ通すことを確かめる。
 // 配信は操作の口（serveFeed）と同じ Viewers の実体を使う。本物の tunnel・PIN・iPad は使わない。
+// /ws の配信が WebSocket の制御フレーム ping を一定の間隔で送ること（Issue #833。間隔はテストで縮める）も、同じ待受けで確かめる。
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { HttpServer } from "effect/http";
@@ -19,13 +20,14 @@ const intakeFrame = { type: "intake", status: "running" } as const;
 const modeFrame = { type: "session-mode", local: false } as const;
 
 // 操作の口（serveFeed）と閲覧の口を、同じ Viewers で立てる。閲覧の口だけを閉じられる Scope を別に持つ
-const ports = Effect.fnUntraced(function* () {
-  const ctx = yield* openListener(0);
+// pingIntervalMs を渡すと、両方の口の ping の間隔をその値にする。渡さなければ本番の既定値
+const ports = Effect.fnUntraced(function* (pingIntervalMs?: number) {
+  const ctx = yield* openListener(0, pingIntervalMs);
   const viewers = Context.get(ctx, Viewers);
   const operationPort = yield* portOf(Context.get(ctx, HttpServer.HttpServer).address);
   yield* Effect.provide(serveFeed, ctx);
   const viewingScope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void));
-  const viewingPort = yield* openViewingPort(HOST).pipe(
+  const viewingPort = yield* openViewingPort(HOST, pingIntervalMs).pipe(
     Effect.provide(Layer.merge(Layer.succeed(Viewers, viewers), fakeBuild)),
     Scope.provide(viewingScope),
   );
@@ -137,4 +139,71 @@ describe("閲覧の口（Issue #832）", () => {
     const operation = yield* connect(p.operationPort, "/ws", undefined);
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(operation.frames).toEqual([snapshot])));
   }));
+
+  describe("ping（Issue #833）", () => {
+    const SHORT_MS = 30;
+
+    it.live("閲覧の口の /ws へ、server から制御フレームの ping が繰り返し届く。アプリのフレームは増えない", () => Effect.gen(function* () {
+      const p = yield* ports(SHORT_MS);
+      const viewing = yield* connect(p.viewingPort, "/ws", ALLOWED);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.pings()).toBeGreaterThanOrEqual(2)));
+      expect(viewing.frames).toEqual([]);
+      expect(viewing.isOpen()).toBe(true);
+    }));
+
+    it.live("操作の口の /ws にも ping が繰り返し届く。アプリのフレームは増えない", () => Effect.gen(function* () {
+      const p = yield* ports(SHORT_MS);
+      const operation = yield* connect(p.operationPort, "/ws", undefined);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(operation.pings()).toBeGreaterThanOrEqual(2)));
+      expect(operation.frames).toEqual([]);
+      expect(operation.isOpen()).toBe(true);
+    }));
+
+    it.live("ping が流れても保持値と publish は今のまま届く", () => Effect.gen(function* () {
+      const p = yield* ports(SHORT_MS);
+      yield* p.viewers.publish(snapshot);
+      const viewing = yield* connect(p.viewingPort, "/ws", ALLOWED);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.pings()).toBeGreaterThanOrEqual(1)));
+      const next = { ...snapshot, round: 2 };
+      yield* p.viewers.publish(next);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames).toEqual([snapshot, next])));
+    }));
+
+    it.live("クライアントが切れた後も、別の接続には ping が届き続ける", () => Effect.gen(function* () {
+      const p = yield* ports(SHORT_MS);
+      const first = yield* connect(p.viewingPort, "/ws", ALLOWED);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(first.pings()).toBeGreaterThanOrEqual(1)));
+      yield* Effect.sync(() => first.close());
+      yield* Effect.tryPromise(() => first.closed);
+      const second = yield* connect(p.viewingPort, "/ws", ALLOWED);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(second.pings()).toBeGreaterThanOrEqual(2)));
+    }));
+
+    it.live("クライアントが切れると、その接続の ping の周期タイマーが解除される（接続中は解除されない）", () => Effect.gen(function* () {
+      const spyOn = <K extends "setInterval" | "clearInterval">(name: K) =>
+        Effect.acquireRelease(Effect.sync(() => vi.spyOn(globalThis, name)), (spy) => Effect.sync(() => spy.mockRestore()));
+      const setSpy = yield* spyOn("setInterval");
+      const clearSpy = yield* spyOn("clearInterval");
+      const p = yield* ports(SHORT_MS);
+      const client = yield* connect(p.viewingPort, "/ws", ALLOWED);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(client.pings()).toBeGreaterThanOrEqual(1)));
+      // 間隔が SHORT_MS の周期タイマーは、この接続のものだけ
+      const pingTimers = setSpy.mock.calls.flatMap((call, i) => call[1] === SHORT_MS ? [setSpy.mock.results[i]?.value] : []);
+      expect(pingTimers).toHaveLength(1);
+      const timer = pingTimers[0];
+      // 接続中は解除されていない
+      expect(clearSpy.mock.calls.filter(([t]) => t === timer)).toHaveLength(0);
+      yield* Effect.sync(() => client.close());
+      yield* Effect.tryPromise(() => client.closed);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(clearSpy.mock.calls.filter(([t]) => t === timer)).toHaveLength(1)));
+    }));
+
+    it.live("間隔を渡さない既定では、短い間に ping は来ない（既定は 30 秒）", () => Effect.gen(function* () {
+      const p = yield* ports();
+      const viewing = yield* connect(p.viewingPort, "/ws", ALLOWED);
+      const operation = yield* connect(p.operationPort, "/ws", undefined);
+      yield* Effect.sleep("300 millis");
+      expect([viewing.pings(), operation.pings()]).toEqual([0, 0]);
+    }));
+  });
 });

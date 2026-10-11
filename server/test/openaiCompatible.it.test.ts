@@ -33,9 +33,9 @@ const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer
 vi.mock("../src/http.ts", async (original) => {
   const { fakeListener } = await import("./fakeListener.ts");
   const actual = await original<typeof import("../src/http.ts")>();
-  return { ...actual, openListener: (...args: Parameters<typeof actual.openListener>) => {
+  return { ...actual, openListener: (port: number) => {
     listener.open();
-    return fakeListener().open(...args);
+    return fakeListener().open(port);
   } };
 });
 
