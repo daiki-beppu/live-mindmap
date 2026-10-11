@@ -2,7 +2,8 @@ import { Effect } from "effect";
 import { WebSocket } from "ws";
 
 // http のテストが /ws・/ へ張る WebSocket クライアント。受け取ったフレームと close の完了を返し、スコープを閉じると接続を捨てる。
-// 軽い IT（http.it.test.ts）と重い IT（http.heavy.test.ts）の両方から使う。
+// send は、ブラウザから届くメッセージを解釈しないことを確かめるテストが使う。
+// 軽い IT（http.it.test.ts・viewingPort.it.test.ts）と重い IT（http.heavy.test.ts）から使う。
 export const connect = Effect.fnUntraced(function* (port: number, path: string, origin: string | undefined) {
   const ws = yield* Effect.acquireRelease(
     Effect.sync(() => new WebSocket(`ws://127.0.0.1:${port}${path}`, origin === undefined ? {} : { origin })),
@@ -15,5 +16,5 @@ export const connect = Effect.fnUntraced(function* (port: number, path: string, 
     ws.once("open", resolve);
     ws.once("error", reject);
   }));
-  return { frames, closed };
+  return { frames, closed, send: (data: string | Uint8Array) => ws.send(data), isOpen: () => ws.readyState === WebSocket.OPEN };
 });
