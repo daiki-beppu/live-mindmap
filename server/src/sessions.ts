@@ -92,6 +92,8 @@ export class Sessions extends Context.Service<Sessions, {
   resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
   checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
   reserveDeps: Effect.Effect<void, SessionFailure, Scope.Scope>;
+  // いま live なセッションの Scope（閲覧の共有の寿命をセッションに結ぶ）。live でなければ失敗する
+  sessionScope: Effect.Effect<Scope.Scope, SessionFailure>;
 }>()("live-mindmap/server/Sessions") {
   static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
     Effect.gen(function* () {
@@ -453,7 +455,13 @@ export class Sessions extends Context.Service<Sessions, {
         };
       });
 
-      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps });
+      const sessionScope: Effect.Effect<Scope.Scope, SessionFailure> = Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        if (current.kind === "live") return current.live.scope;
+        return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
+      });
+
+      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps, sessionScope });
     }),
   );
 }
