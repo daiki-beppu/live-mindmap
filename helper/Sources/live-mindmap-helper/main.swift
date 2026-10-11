@@ -38,12 +38,30 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     // 区間がほぼ無音の認識結果は、両トラックとも SilenceFilteringTranscriber が捨てる（Issue #144）。
     let tap = ProcessTap(targets: targets)
     let microphone = MicrophoneCapture()
+    let silentJudgement = TapSilentJudgement(
+        sleep: { try await Task.sleep(for: $0) },
+        hasReceivedFrames: { tap.hasReceivedFrames },
+        currentLine: { currentTapDevices(targets: targets, aggregateMainUID: tap.aggregateMainSubDeviceUID) },
+        emit: { printError($0) }
+    )
     let audio = RunAudio(
         requestMicrophonePermission: { try await requestMicrophonePermission() },
         makeTranscriber: { _ in SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber()) },
-        startAudio: { track in try track == .相手 ? tap.start() : microphone.start() },
+        startAudio: { track in
+            guard track == .相手 else { return try microphone.start() }
+            let stream = try tap.start()
+            // 無音の原因を絞るため、開始直後と、10 秒間フレームが届かなかったときに、機器の状態を 1 行ずつ出す（読めなくても止めない）。
+            printError(currentTapDevices(targets: targets, aggregateMainUID: tap.aggregateMainSubDeviceUID))
+            silentJudgement.start()
+            return stream
+        },
         stopAudio: { track in
-            if track == .相手 { tap.stop() } else { microphone.stop() }
+            if track == .相手 {
+                silentJudgement.stop()
+                tap.stop()
+            } else {
+                microphone.stop()
+            }
         },
         recording: audioDir.map { directory in
             { track, stream, origin in
@@ -130,6 +148,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         failure = error
     }
     audio.stop()
+    silentJudgement.stop()
     screen?.stop()
     // 録音は全部閉じてから終わる。基準のエラーは、do 節のエラー、なければ 相手 → 自分 の順で最初の録音の失敗。
     do { try await audio.finish() } catch { if failure == nil { failure = error } }

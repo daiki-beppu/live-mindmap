@@ -25,6 +25,8 @@ export type IntakeGiveUpReason = "failures" | "configuration-changes";
 export const RESTART_WINDOW_MS = 60_000; // この時間以内に終わったら「続けて失敗した」と数える
 export const MAX_CONSECUTIVE_FAILURES = 3; // 続けて失敗した回数がこれに達したら諦める
 export const STDERR_TAIL_LINES = 5; // ログ・標準エラーに残す stderr の末尾の行数
+// helper の起動（run）の stderr の末尾の行数。起動直後のタップの機器の行と、10 秒後の同じ形の行が、後続の行に押し出されないよう多めに残す。
+export const HELPER_RUN_STDERR_TAIL_LINES = 10;
 // マイクの入力の構成の変化でヘルパーが終わるときの終了コード。BSD の sysexits.h の EX_TEMPFAIL（一時的な失敗。やり直すよう促す）。
 // ヘルパー（Swift）の microphoneConfigurationChangedExitCode と同じ値にそろえる（両側のテストで値を固定している）
 export const HELPER_EXIT_CONFIGURATION_CHANGED = 75;

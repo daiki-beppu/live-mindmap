@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { Context, Deferred, Effect, Fiber, Layer, Predicate, Schedule, Schema, Stream, type Scope } from "effect";
 import type { PlatformError } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
+import { HELPER_RUN_STDERR_TAIL_LINES, STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
 import { openHelperSocket } from "./helperSocket.ts";
 
 // SIGTERM を送ってから、SIGKILL に切り替えるまでの待ち時間
@@ -183,7 +183,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       ),
       scope,
     );
-    const stderrTail = Effect.sync(() => tailLines(Buffer.concat(stderrChunks).toString(), STDERR_TAIL_LINES));
+    const stderrTail = Effect.sync(() => tailLines(Buffer.concat(stderrChunks).toString(), HELPER_RUN_STDERR_TAIL_LINES));
 
     // exitCode は "exit" で解決するので、標準エラーのストリームを読み終えてから終わり方を確定する
     const exited = yield* Deferred.make<HelperExitInfo>();
