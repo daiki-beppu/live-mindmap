@@ -2,6 +2,7 @@
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
 import { Context, Effect, FileSystem, Layer, Ref, Scope } from "effect";
 import { MapCapture } from "./capture.ts";
+import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
@@ -74,7 +75,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
   // セッションの Scope の中で 1 回開く。Scope を閉じると updater が閉じ、予約が止まる
   open: (args: OpenSessionSink) => Effect.Effect<SessionSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
-  // 終了時の書き出しが使う撮影・見返し用の HTML のビルド・mix・FileSystem と、足した語の読みを作る Readings は、Layer を作るときに文脈から 1 回だけ受け取る
+  // 終了時の書き出しが使う撮影・見返し用の HTML のビルド・mix・FileSystem 、足した語の読みを作る Readings、ふつうの語の一覧は、Layer を作るときに文脈から 1 回だけ受け取る
   static readonly layer = <R>({ prepareUpdater }: SessionSinksDeps<R>): Layer.Layer<SessionSinks, never, R | MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem> =>
     Layer.effect(SessionSinks)(
       Effect.gen(function* () {
@@ -83,6 +84,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           yield* Effect.context<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>(),
         );
         const readings = yield* Readings;
+        // ふつうの語の一覧は、Layer を作るときに 1 回だけ読む（同梱のファイルなので、読めないのは予期しない失敗）
+        const commonWords = yield* loadCommonWords(COMMON_WORDS_PATH).pipe(Effect.provideContext(exportServices), Effect.orDie);
         return SessionSinks.of({
         prepare: (model) => Effect.gen(function* () {
           const scope = yield* Effect.scope;
@@ -117,7 +120,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 // words は Remark に入れず、ログの行にだけ残す。関所を通った後の本文を語彙で直し、直した本文を発言の本文にする
                 // （ログの raw には直す前の本文、words には直す前の位置のままを残す）。words が無い発言は直さない
                 const { words, ...rest } = settled;
-                const text = words === undefined ? rest.text : correctRemark(yield* Ref.get(vocabulary), rest.text, words).text;
+                const text = words === undefined ? rest.text : correctRemark(yield* Ref.get(vocabulary), rest.text, words, commonWords).text;
                 yield* session.push({ ...rest, text, id: `r${n}` }, words === undefined ? undefined : { raw: rest.text, words });
                 yield* relay.remark(settled.track);
               }),

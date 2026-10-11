@@ -1,6 +1,6 @@
 // 発言の補正（Issue #640、仕様 #633「照合と置き換え」）。I/O を持たない純粋な部品。
 // 語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
-// ふつうの語の一覧の守りはこの部品に含めない（別のチケット）。
+// ふつうの語の一覧（Issue #641）に載る区間は、英字の語への書き換え（ズーム→Zoom）を除いて直さない。一覧は呼び出し側が渡す。
 import type { Word } from "./words.ts";
 
 // 語彙の語。romaji は読み（照合のキーの元になるローマ字）。読みが無い語は語彙に入れない（呼び出し側で除く）
@@ -72,12 +72,14 @@ const HIRAGANA_RUN = /[ぁ-ゟ]+/g;
 const PUNCTUATION_OR_SPACE = /^[\p{P}\s]*$/u;
 const normalizeSurface = (s: string): string => s.normalize("NFKC").toLowerCase();
 const isHiraganaOnly = (s: string): boolean => HIRAGANA.test(s);
+const isLatinOnly = (s: string): boolean => /^[A-Za-z]+$/.test(s.normalize("NFKC"));
 
-type Term = { readonly surface: string; readonly key: string };
+// latin は表記が英字だけの語（NFKC にした値で判定）。ふつうの語の区間でも、英字の語への書き換えは通す
+type Term = { readonly surface: string; readonly key: string; readonly latin: boolean };
 type Candidate = { readonly location: number; readonly length: number; readonly span: string; readonly term: Term; readonly score: number };
 
 // 区間（句読点・空白をまたがない連続する 1〜5 語）ごとに、一番近い語を 1 つ選んで守りを当てる
-function findCandidates(terms: readonly Term[], text: string, words: readonly Word[]): Candidate[] {
+function findCandidates(terms: readonly Term[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>): Candidate[] {
   const found: Candidate[] = [];
   for (let i = 0; i < words.length; i++) {
     let romaji = "";
@@ -104,7 +106,10 @@ function findCandidates(terms: readonly Term[], text: string, words: readonly Wo
       // 区間が語彙のどれかの語の表記を含むなら、候補の絞り込みとは関係なく直さない
       const normalizedSpan = normalizeSurface(span);
       if (terms.some((term) => normalizedSpan.includes(normalizeSurface(term.surface)))) continue;
+      // 区間の表記がふつうの語の一覧に載っていれば、英字の語への書き換えだけを候補に残す
+      const isCommon = commonWords.has(span);
       for (const term of terms) {
+        if (isCommon && !term.latin) continue;
         const ratio = spanKey.length / term.key.length;
         if (ratio < MIN_LENGTH_RATIO || ratio > MAX_LENGTH_RATIO) continue;
         const score = similarity(spanKey, term.key);
@@ -124,14 +129,14 @@ function findCandidates(terms: readonly Term[], text: string, words: readonly Wo
 
 // 語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
 // 重なる区間は近さの高い方を採り、同じなら長い方を採る（それも同じなら先に出る区間）
-export function correctRemark(vocabulary: readonly VocabularyWord[], text: string, words: readonly Word[]): Correction {
+export function correctRemark(vocabulary: readonly VocabularyWord[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>): Correction {
   const terms: Term[] = vocabulary.flatMap((v) => {
     const key = matchKey(v.romaji);
-    return key === "" ? [] : [{ surface: v.surface, key }];
+    return key === "" ? [] : [{ surface: v.surface, key, latin: isLatinOnly(v.surface) }];
   });
   if (terms.length === 0 || words.length === 0) return { text, replacements: [] };
 
-  const ranked = findCandidates(terms, text, words).sort((a, b) => (a.score !== b.score ? b.score - a.score : b.length - a.length));
+  const ranked = findCandidates(terms, text, words, commonWords).sort((a, b) => (a.score !== b.score ? b.score - a.score : b.length - a.length));
   const picked: Candidate[] = [];
   for (const c of ranked) {
     if (!picked.some((p) => c.location < p.location + p.length && p.location < c.location + c.length)) picked.push(c);
