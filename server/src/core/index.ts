@@ -24,6 +24,7 @@ export {
   hasContent,
   InvalidLogEvent,
   LogEvent,
+  logTimestamp,
   makeSession,
   QUIET_MS,
   Remark,
