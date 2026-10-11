@@ -57,7 +57,7 @@ const emptyExport = { root: { id: "root", kind: "会議", text: "定例", eviden
 const KEYWORDS_RULE = "keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）";
 
 describe("CLI のプロセス入口", () => {
-  it.live("--help は全サブコマンドとグローバルフラグを表示して成功する", () => Effect.gen(function* () {
+  it.live("--help は全サブコマンド・グローバルフラグと exit code 3 の意味を表示して成功する", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const result = yield* runProcess(["--help"], sessionsDir);
 
@@ -69,9 +69,10 @@ describe("CLI のプロセス入口", () => {
     for (const flag of ["help", "version", "wizard", "completions", "log-level"]) {
       expect(result.stdout).toContain(`--${flag}`);
     }
+    expect(result.stdout).toContain("exit code 3 = 開始に要るものが未導入");
   }).pipe(Effect.scoped));
 
-  it.live.each(["play", "apps", "start", "stop", "status", "resume", "export", "restore", "review", "eval"])(
+  it.live.each(["play", "apps", "start", "stop", "status", "resume", "export", "restore", "review", "eval", "install", "check"])(
     "%s --help は処理本体を実行せず成功する",
     (command) => Effect.gen(function* () {
       const sessionsDir = yield* temporaryDirectory;
@@ -81,6 +82,9 @@ describe("CLI のプロセス入口", () => {
       expect(result.stderr).toBe("");
       expect(result.stdout).toMatch(/Usage/i);
       expect(result.stdout).toContain(command);
+      if (["start", "resume", "play", "install", "check"].includes(command)) {
+        expect(result.stdout).toContain("入れる前に利用者に確認する");
+      }
     }).pipe(Effect.scoped),
   );
 
