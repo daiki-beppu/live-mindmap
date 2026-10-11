@@ -93,8 +93,8 @@ export class Sessions extends Context.Service<Sessions, {
   resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
   checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
   reserveDeps: Effect.Effect<void, SessionFailure, Scope.Scope>;
-  // いま live なセッションの Scope（閲覧の共有の寿命をセッションに結ぶ）。live でなければ失敗する
-  sessionScope: Effect.Effect<Scope.Scope, SessionFailure>;
+  // いま live なセッションの Scope（閲覧の共有の寿命をセッションに結ぶ）と、ローカルモードかどうか。live でなければ失敗する
+  liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure>;
 }>()("live-mindmap/server/Sessions") {
   static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
     Effect.gen(function* () {
@@ -457,13 +457,13 @@ export class Sessions extends Context.Service<Sessions, {
         };
       });
 
-      const sessionScope: Effect.Effect<Scope.Scope, SessionFailure> = Effect.gen(function* () {
+      const liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
-        if (current.kind === "live") return current.live.scope;
+        if (current.kind === "live") return { scope: current.live.scope, local: current.live.model.local };
         return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
       });
 
-      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps, sessionScope });
+      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps, liveSession });
     }),
   );
 }

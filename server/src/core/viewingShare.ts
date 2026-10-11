@@ -38,3 +38,14 @@ export function formatShareOpened(status: Extract<ShareStatus, { status: "open" 
     "この URL の稼働は保証しません。切れることがあります",
   ].join("\n") + "\n";
 }
+
+// POST /share/open が、新しく開いたか、すでに開いていた共有の状態を返したかを伝える応答ヘッダー。
+// 判定は ViewingShare.open のロックの中で一度だけ行い、本文（状態）の形は変えない
+export const SHARE_OPEN_OUTCOME_HEADER = "x-share-open-outcome";
+export const ShareOpenOutcome = Schema.Literals(["opened", "already-open"]);
+export type ShareOpenOutcome = typeof ShareOpenOutcome.Type;
+
+// cli share がすでに共有中のときの標準エラー（1 行）。新しくは開かず、今の URL と許可の範囲を示す
+export function formatShareAlreadyOpen(status: Extract<ShareStatus, { status: "open" }>): string {
+  return `すでに閲覧の共有を開いています（新しくは開きません）。URL: ${status.url} 許可の範囲: ${ALLOW_WORDS[status.allow]}\n`;
+}
