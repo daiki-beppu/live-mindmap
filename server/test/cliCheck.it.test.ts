@@ -17,7 +17,7 @@ type CheckItem = Extract<typeof InstallEvent.Type, { type: "result" }>["items"][
 const states = ["ready", "missing", "outdated", "absent"] as const;
 const chromium = (need: CheckItem["need"], state: CheckItem["state"]): CheckItem => ({ name: "chromium", need, state });
 const claudeMissing = { name: "claude", need: "required", state: "missing" } as const;
-const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...item, size: 211_000_000, install: "pnpm cli install chromium" }] });
+const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...item, size: item.name === "claude" ? 224_000_000 : 211_000_000, install: `pnpm cli install ${item.name}` }] });
 
 const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFailed>) => {
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
@@ -50,11 +50,11 @@ const cliProcess = (dir: string, port: number, rootScript: boolean, model: strin
 }));
 
 describe("開始せずに確かめる CLI check", () => {
-  it.live("HTTP は不正な Claude 必須判定を状態確認前に拒否する", () => Effect.gen(function* () {
+  it.live("HTTP は不正なモデル経路を状態確認前に拒否する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps(Effect.succeed([claudeMissing]));
     const server = yield* serverWith(dir, deps.service);
-    const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?claudeRequired=invalid`));
+    const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?route=invalid`));
     expect(response.status).toBe(400);
     expect(deps.check).not.toHaveBeenCalled();
   }).pipe(Effect.scoped));
@@ -128,7 +128,7 @@ describe("開始せずに確かめる CLI check", () => {
     { need: "required", state: "absent", ready: false, code: 3 },
   ] as const)("CLI は $need / $state の JSON を出して exit $code を返す", ({ need, state, ready, code }) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const item = chromium(need, state);
+    const item: CheckItem = { name: need === "required" ? "claude" : "chromium", need, state };
     const deps = fakeDeps(Effect.succeed([item]));
     const server = yield* serverWith(dir, deps.service);
     const result = yield* cliProcess(dir, server.port, false);

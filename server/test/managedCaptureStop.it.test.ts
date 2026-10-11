@@ -15,6 +15,7 @@ import { collectingConsole, FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 
 const unmanaged = vi.hoisted(() => ({ launch: vi.fn(async () => { throw new Error("通常依存の Chromium は使用できません"); }) }));
 vi.mock("playwright", () => ({ chromium: { launch: unmanaged.launch } }));
@@ -39,7 +40,8 @@ describe("未導入の管理 Chromium と stop", () => {
         Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
         fakeAudioMix().layer,
       ).pipe(Layer.provideMerge(NodeFileSystem.layer));
-      const server = yield* startedServer(options, realLayers(options, exports));
+      const layers = realLayers(options, exports);
+      const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });
       const started = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ app: "test.app", title: "未導入", audio: false, screen: false }),
       }));

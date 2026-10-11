@@ -20,6 +20,7 @@ import type { DiffInput, Op } from "../../server/src/core/index.ts";
 import { ReviewBuild } from "../../server/src/review.ts";
 import { realLayers, startup, type ServerOptions } from "../../server/src/server.ts";
 import { updaterLayer } from "../../server/test/fixtures/sessionLayers.ts";
+import { withFakeClaude } from "../../server/test/fixtures/readyManagedDeps.ts";
 
 const e2eDir = join(import.meta.dirname, "..");
 const webDir = join(e2eDir, "../web");
@@ -63,7 +64,8 @@ const program = Effect.gen(function* () {
     Layer.provideMerge(NodeFileSystem.layer),
   );
   mkdirSync(sessionsDir, { recursive: true });
-  const port = yield* startup(options, realLayers(options, exportServices));
+  const layers = realLayers(options, exportServices);
+  const port = yield* startup(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });
 
   // sessionsDir の外は読ませない。無いファイルは本文なしの 404 にする（ブラウザの本文に <pre> が出ない）
   const serveFile = (urlPath: string, res: ServerResponse) => {

@@ -1,3 +1,4 @@
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +11,6 @@ import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
-import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const directory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-transfer-token-"))),
@@ -19,7 +19,7 @@ const directory = Effect.acquireRelease(
 const layers = {
   helpers: Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
   sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
-  managedDeps: forbiddenManagedDeps,
+  managedDeps: readyManagedDeps,
 };
 
 describe("モデル転送トークンのサーバー Scope", () => {

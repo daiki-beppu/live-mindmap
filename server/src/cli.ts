@@ -66,7 +66,9 @@ import {
 } from "./sessionFiles.ts";
 import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
-import { CheckReport, InstallEvent } from "./managedDepsProtocol.ts";
+import { CheckReport, InstallEvent, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
+import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
+import { StartupDepsMissing } from "./startupDepsMissing.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
@@ -157,6 +159,7 @@ const decodeReason = (error: Schema.SchemaError): string =>
 
 // 標準出力。Console.log が末尾に改行を足すので、改行の規則（withoutFinalNewline）で末尾の 1 つを外して渡す
 const write = (text: string) => Console.log(withoutFinalNewline(text));
+const writeWarnings = (warnings: ReadonlyArray<string>) => Effect.forEach(warnings, (warning) => Console.error(warning), { discard: true });
 
 // ファイル操作の失敗（PlatformError）を入口の 1 行にする。理由は OS のエラー（ENOENT など）の文面
 const fileFailed = (e: PlatformError.PlatformError) => new CommandFailed({ message: fileReason(e) });
@@ -198,7 +201,7 @@ const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string,
  * -------------------------------------------------------------------------- */
 
 const ServerErrorBody = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
-const StartedSession = Schema.Struct({ dir: Schema.String });
+const StartedSession = Schema.Struct({ dir: Schema.String, ...StartupWarnings.fields });
 const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String) });
 const IntakeStatus = Schema.Struct({
   status: Schema.Literals(["none", "running", "interrupted", "stopped"]),
@@ -221,6 +224,8 @@ const executeServerRequest = Effect.fnUntraced(function* (
   if (response.status < 200 || response.status >= 300) {
     // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする
     const raw = yield* response.json.pipe(Effect.orElseSucceed((): unknown => ({})));
+    const refusal = Schema.decodeUnknownResult(StartupRefusal)(raw);
+    if (Result.isSuccess(refusal)) return yield* new StartupDepsMissing({ items: refusal.success.items });
     const reported = yield* Schema.decodeUnknownEffect(ServerErrorBody)(raw).pipe(
       Effect.orElseSucceed((): { readonly error?: string } => ({})),
     );
@@ -388,7 +393,9 @@ const play = Command.make(
   Effect.fn("play")(
     function* ({ realtime, screen, transcript, model, local }) {
       const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
-      const updaterLayer = yield* prepareUpdaterLayer(selected);
+      const warnings = yield* requireStartupDeps("play", selected.route);
+      const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
+      yield* writeWarnings(warnings);
       return yield* Effect.gen(function* () {
         const port = yield* portConfig;
         const folder = yield* isDirectory(transcript);
@@ -479,13 +486,14 @@ const start = Command.make(
       if (!token) return yield* new ServerFailed({ message: "互換モデルの転送用トークンが空です\nサーバーを起動し直してください" });
       headers = { [MODEL_TRANSFER_HEADER]: token };
     }
-    const { dir } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
+    const { dir, warnings } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
       screen: !noScreen,
       model: selected,
     }, headers);
+    yield* writeWarnings(warnings ?? []);
     yield* write(`${dir}\n`);
   }),
 ).pipe(
@@ -528,7 +536,8 @@ const resume = Command.make(
   {},
   Effect.fn("resume")(function* () {
     const port = yield* portConfig;
-    yield* requestServer(port, "POST", "/session/resume", Schema.Unknown);
+    const { warnings } = yield* requestServer(port, "POST", "/session/resume", StartupWarnings);
+    yield* writeWarnings(warnings ?? []);
   }),
 ).pipe(
   Command.withDescription("止まった状態（起動し直しを諦めた状態）から、ヘルパーを起動し直して同じセッションを続ける"),
@@ -703,15 +712,18 @@ const evaluate = Command.make(
 
 const checkCommand = Command.make(
   "check",
-  {},
-  Effect.fn("check")(function* () {
-    const port = yield* portConfig;
-    const model = yield* resolveModelCandidate({});
-    const report = yield* requestServer(port, "GET", `/check?claudeRequired=${model.route === "claude"}`, CheckReport);
+  { for: Flag.Literals("for", ["start", "resume", "play"]).pipe(Flag.withDefault("start")) },
+  Effect.fn("check")(function* ({ for: entry }) {
+    const report = yield* Effect.gen(function* () {
+      if (entry === "resume") return yield* requestServer(yield* portConfig, "GET", "/check?for=resume", CheckReport);
+      const model = yield* resolveModelCandidate({});
+      if (entry === "play") return yield* checkManagedDeps(entry, model.route);
+      return yield* requestServer(yield* portConfig, "GET", `/check?for=${entry}&route=${model.route}`, CheckReport);
+    });
     yield* write(JSON.stringify(report));
     if (!report.ready) return yield* new RequiredDepsMissing();
   }),
-).pipe(Command.withDescription("セッションを開始せず、常駐サーバーに管理依存の確認を依頼して JSON を出す"));
+).pipe(Command.withDescription("開始せず管理依存を JSON で確認する。--for start|resume|play（既定 start）。play はサーバーを使わず、resume は開始時モデルを使う"));
 
 const installCommand = Command.make(
   "install",
@@ -767,6 +779,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
   if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
   const failure = error.success;
   if (failure instanceof RequiredDepsMissing) return Effect.void;
+  if (failure instanceof StartupDepsMissing) return Console.error(failure.message);
   if (CliError.isCliError(failure)) return Effect.void;
   if (failure instanceof ModelRefused) return Console.error(failure.message);
   return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
@@ -775,7 +788,7 @@ const reportFailure = (cause: Cause.Cause<unknown>) => {
 const teardown: Runtime.Teardown = (exit, onExit) => {
   if (Exit.isFailure(exit) && exit.cause.reasons.length === 1) {
     const error = Cause.findError(exit.cause);
-    if (Result.isSuccess(error) && error.success instanceof RequiredDepsMissing) {
+    if (Result.isSuccess(error) && (error.success instanceof RequiredDepsMissing || error.success instanceof StartupDepsMissing)) {
       process.exitCode = 3;
       return;
     }

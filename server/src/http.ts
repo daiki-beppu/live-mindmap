@@ -17,8 +17,8 @@ import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
 import { ManagedDeps } from "./managedDeps.ts";
-import { checkManagedDeps, ClaudeRequired } from "./managedDepsCheck.ts";
-import { DepNames, InstallBody } from "./managedDepsProtocol.ts";
+import { checkManagedDeps } from "./managedDepsCheck.ts";
+import { CheckFor, ModelRoute, DepNames, InstallBody } from "./managedDepsProtocol.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
 class ModelTransferToken extends Context.Service<ModelTransferToken, string>()("live-mindmap/http/ModelTransferToken") {}
@@ -87,6 +87,8 @@ const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   RestartGaveUp: 503,
   HelperExited: 500,
   UpdaterUnavailable: 503,
+  StartupDepsMissing: 503,
+  ManagedDepsFailed: 500,
   HttpServerError: 500,
 };
 
@@ -152,8 +154,7 @@ const SessionRoutes = HttpRouter.addAll([
   })),
   HttpRouter.route("POST", "/session/resume", Effect.gen(function* () {
     const sessions = yield* Sessions;
-    yield* sessions.resume;
-    return HttpServerResponse.jsonUnsafe({});
+    return HttpServerResponse.jsonUnsafe(yield* sessions.resume);
   })),
 ]);
 
@@ -165,11 +166,15 @@ const FeedRoutes = HttpRouter.addAll([
 const DepRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/check", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const raw = new URL(request.url, "http://127.0.0.1").searchParams.get("claudeRequired");
-    const value = yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(raw ?? "true").pipe(
+    const params = new URL(request.url, "http://127.0.0.1").searchParams;
+    const entry = yield* Schema.decodeUnknownEffect(CheckFor)(params.get("for") ?? "start").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps.pipe(Effect.provideService(ClaudeRequired, value === "true"), Effect.orDie));
+    if (entry === "resume") return HttpServerResponse.jsonUnsafe(yield* (yield* Sessions).checkResume);
+    const route = yield* Schema.decodeUnknownEffect(ModelRoute)(params.get("route") ?? "claude").pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
+    );
+    return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps(entry, route));
   })),
   HttpRouter.route("GET", "/deps/check", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -216,6 +221,9 @@ const respond = <R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse
       Effect.gen(function* () {
         const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
         if (failure !== undefined) {
+          if (failure._tag === "StartupDepsMissing") {
+            return HttpServerResponse.jsonUnsafe({ _tag: failure._tag, items: failure.items, error: failure.message }, { status: STATUS[failure._tag] });
+          }
           return HttpServerResponse.jsonUnsafe({ error: failure.message }, { status: STATUS[failure._tag] });
         }
         const [response] = yield* HttpServerError.causeResponse(cause);

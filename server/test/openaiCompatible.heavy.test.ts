@@ -1,3 +1,4 @@
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -94,7 +95,7 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
       helpers,
       sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(forbiddenManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
-      managedDeps: forbiddenManagedDeps,
+      managedDeps: readyManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({ SYNTHETIC_PROCESS_KEY: "synthetic-key" })));
     const config = join(root, "config.json");
     writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "synthetic-model", url: `http://127.0.0.1:${port}/v1`, apiKeyEnv: "SYNTHETIC_PROCESS_KEY", maxTokens: 321, extraBody: { seed: 17 } } } }));

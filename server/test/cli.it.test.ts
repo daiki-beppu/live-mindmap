@@ -23,7 +23,7 @@ import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
-import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
@@ -70,7 +70,7 @@ function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, 
   };
   const layer = Layer.mergeAll(
     NodeServices.layer,
-    forbiddenManagedDeps,
+    readyManagedDeps,
     NodeHttpClient.layerUndici,
     Layer.succeed(AppleIntelligence, AppleIntelligence.of({
       availability: Effect.succeed({ osVersion: "27.0", availability: { status: "unavailable", reason: "modelNotReady" } }),
@@ -292,7 +292,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     const deps = dependencies(sessions, "0", { HOME: home, LIVE_MINDMAP_CONFIG: config });
     const preparation = Layer.mergeAll(deps.layer, Layer.succeed(HttpClient.HttpClient, oauth.client));
     const server = yield* startedServer({ port: 0, sessionsDir: sessions }, {
-      helpers, managedDeps: forbiddenManagedDeps,
+      helpers, managedDeps: readyManagedDeps,
       sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(preparation)),
     });
     const snapshots: Snapshot[] = [];

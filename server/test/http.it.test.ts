@@ -1,3 +1,4 @@
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { DiffUpdatePaused, type DiffUpdateFrame, type DiffUpdater } from "../src/core/index.ts";
@@ -87,7 +88,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   }).pipe(Layer.provide(fakeExportServices()));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
-    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: forbiddenManagedDeps },
+    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: readyManagedDeps },
   );
   return {
     server, calls: fakeHelpers.calls, sessionsDir,

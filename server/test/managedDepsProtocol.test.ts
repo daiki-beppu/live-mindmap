@@ -1,9 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result, Schema } from "effect";
-import { CheckReport, InstallBody, InstallEvent } from "../src/managedDepsProtocol.ts";
+import { CheckReport, InstallBody, InstallEvent, StartupRefusal } from "../src/managedDepsProtocol.ts";
 import { ManagedDepsFailed } from "../src/managedDeps.ts";
 
 describe("管理依存の転送契約", () => {
+  it.effect("開始拒否の不足項目を転送し、空の不足項目は拒否する", () => Effect.gen(function* () {
+    const refusal = { _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing" }] };
+    expect(yield* Schema.decodeUnknownEffect(StartupRefusal)(refusal)).toEqual(refusal);
+    expect(Result.isFailure(yield* Effect.result(Schema.decodeUnknownEffect(StartupRefusal)({ ...refusal, items: [] })))).toBe(true);
+  }));
   it.effect("Claude を含む導入要求・導入結果・状態確認を転送できる", () => Effect.gen(function* () {
     const body = { names: ["chromium", "claude"] };
     expect(yield* Schema.decodeUnknownEffect(InstallBody)(body)).toEqual(body);

@@ -11,7 +11,7 @@ import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { Playwright } from "../src/playwright.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
-import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
@@ -176,7 +176,7 @@ describe("開始したセッションのローカルモード表示", () => {
   it.live.each([1200, 480])("同じ画面で通常→local→終了→通常が反映され、線と文字の出し入れで字幕・マップを動かさない（幅 %s）", (width) => Effect.gen(function* () {
     const dir = yield* Effect.acquireRelease(Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-local-view-"))),
       (path) => Effect.promise(() => rm(path, { recursive: true, force: true })));
-    const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers: helperLayer, sessionSinks, managedDeps: forbiddenManagedDeps });
+    const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers: helperLayer, sessionSinks, managedDeps: readyManagedDeps });
     const web = yield* Effect.acquireRelease(Effect.tryPromise(async () => {
       const vite = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), server: {
         host: "127.0.0.1", port: 0, hmr: false,
