@@ -5,6 +5,7 @@ import { AppleIntelligence } from "../../src/appleIntelligence.ts";
 import { prepareUpdaterLayer } from "../../src/diffUpdater.ts";
 import type { DiffUpdateState, Session } from "../../src/core/index.ts";
 import { classification, fakeChatgptHttp, jsonRequestBody } from "./chatgpt.ts";
+import { forbiddenManagedDeps } from "./forbiddenManagedDeps.ts";
 
 export const appleModel = { name: "apple", route: "apple", local: true } as const;
 type ProcessScript = { holdReady?: boolean; invalidReady?: boolean };
@@ -55,8 +56,9 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
     });
   })));
   const apple = AppleIntelligence.layer({ command: "fake-apple", args: [] }).pipe(Layer.provide(spawner));
+  // Apple の経路は Claude の SDK を読まないので、管理依存は読み込もうとしたら落ちる偽物にする
   const deps = Layer.mergeAll(apple, Layer.succeed(HttpClient.HttpClient, http.client),
-    Layer.succeed(FileSystem.FileSystem, FileSystem.makeNoop({})));
+    Layer.succeed(FileSystem.FileSystem, FileSystem.makeNoop({})), forbiddenManagedDeps);
   return {
     processes, control, requests: http.requests, deps,
     prepare: prepareUpdaterLayer(appleModel).pipe(Effect.provide(deps)),
