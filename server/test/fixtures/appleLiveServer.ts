@@ -7,7 +7,7 @@ import { SessionSinks } from "../../src/sessionSinks.ts";
 import type { SpeakingFrame } from "../../src/core/index.ts";
 import { appleModel, fakeAppleLifecycle } from "./appleLifecycle.ts";
 import { fakeExportServices } from "./exportServices.ts";
-import { forbiddenManagedDeps } from "./forbiddenManagedDeps.ts";
+import { readyManagedDeps } from "./readyManagedDeps.ts";
 import { startedServer } from "./startedServer.ts";
 
 export const appleLiveServer = Effect.fnUntraced(function* () {
@@ -29,7 +29,7 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
       Effect.tap(() => Deferred.succeed(speaking, args.speak)),
     ) });
   })).pipe(Layer.provide(realSinks));
-  const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers, sessionSinks: sinks, managedDeps: forbiddenManagedDeps });
+  const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers, sessionSinks: sinks, managedDeps: readyManagedDeps });
   const post = (path: string, body: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}${path}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   }));

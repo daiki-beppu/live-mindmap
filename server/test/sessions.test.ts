@@ -1,4 +1,5 @@
 import { defaultClaude } from "../src/modelSelection.ts";
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
@@ -172,7 +173,7 @@ const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Laye
   Effect.gen(function* () {
     // テストの終了で必ず解放する（closeServer で先に閉じても、二重の close は何もしない）
     const scope = yield* Effect.acquireRelease(Scope.make(), (made) => Scope.close(made, Exit.void));
-    const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
+    const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(readyManagedDeps, helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
     return { sessions: Context.get(context, Sessions), viewers: Context.get(context, Viewers), closeServer: () => Scope.close(scope, Exit.void) };
   });
 

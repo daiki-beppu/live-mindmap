@@ -20,7 +20,7 @@ const managedDeps = Layer.succeed(ManagedDeps, ManagedDeps.of({
 effectIt.effect("管理 SDK を読めないと UpdaterUnavailable で失敗する", () =>
   Effect.gen(function* () {
     const result = yield* Effect.result(Layer.build(claudeUpdaterLayer(defaultClaude).pipe(Layer.provide(managedDeps))));
-    expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "UpdaterUnavailable", message: "管理 SDK がありません" } });
+    expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "UpdaterUnavailable", message: "管理 SDK がありません", dependency: "claude" } });
   }).pipe(Effect.scoped),
 );
 

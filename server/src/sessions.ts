@@ -36,6 +36,9 @@ import {
 } from "./sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
+import { ManagedDeps } from "./managedDeps.ts";
+import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
+import type { CheckReport } from "./managedDepsProtocol.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
 export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; model: import("./modelSelection.ts").ExecutableModel };
@@ -58,6 +61,7 @@ type Launched = { attempt: HelperAttempt; scope: Scope.Closeable };
 
 // ヘルパーに依らない、セッションの寿命ぶんだけ存在するもの（起動し直しをまたいで引き継ぐ）。状態はすべて Ref
 type Live = {
+  model: SessionStart["model"];
   app: string;
   dir: string;
   audio: boolean;
@@ -81,17 +85,19 @@ type State = { kind: "idle" } | { kind: "starting" } | { kind: "live"; live: Liv
 
 export class Sessions extends Context.Service<Sessions, {
   apps: Effect.Effect<unknown>;
-  start: (input: SessionStart) => Effect.Effect<{ dir: string }, SessionFailure>;
+  start: (input: SessionStart) => Effect.Effect<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure>;
   stop: Effect.Effect<{ paths: string[] }, SessionFailure>;
   status: Effect.Effect<IntakeStatusReport>;
-  resume: Effect.Effect<void, SessionFailure>;
+  resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
+  checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
 }>()("live-mindmap/server/Sessions") {
-  static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers> = Layer.effect(Sessions)(
+  static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
     Effect.gen(function* () {
       const helpers = yield* Helpers;
       const sinks = yield* SessionSinks;
       const viewers = yield* Viewers;
       const sessionsDir = yield* SessionsDir;
+      const deps = yield* ManagedDeps;
       const serverScope = yield* Effect.scope;
       const state = yield* Ref.make<State>({ kind: "idle" });
 
@@ -267,10 +273,11 @@ export class Sessions extends Context.Service<Sessions, {
         }
       }, (effect, _live, _initial, _trigger, outcome) => effect.pipe(Effect.ensuring(Deferred.succeed(outcome, { kind: "aborted" }))));
 
-      const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string }, SessionFailure> {
+      const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
-          const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope));
+          const warnings = yield* requireStartupDeps("start", input.model.route).pipe(Effect.provideService(ManagedDeps, deps));
+          const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
           const dir = yield* sinks.createDir(sessionsDir);
           // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
           // 接続はマイクの許可待ち等で時間がかかることがあり、ここを接続成功後にすると、長く待ってから
@@ -292,6 +299,7 @@ export class Sessions extends Context.Service<Sessions, {
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
           const live: Live = {
+            model: input.model,
             app: input.app,
             dir,
             audio: input.audio,
@@ -316,11 +324,11 @@ export class Sessions extends Context.Service<Sessions, {
           yield* Ref.set(state, { kind: "live", live });
           yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
           yield* viewers.sessionMode({ type: "session-mode", local: input.model.local });
-          return { dir };
+          return { dir, warnings };
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
 
-      const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string }, SessionFailure> {
+      const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
         const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
           current.kind === "idle"
             ? [Option.none(), { kind: "starting" }]
@@ -384,6 +392,10 @@ export class Sessions extends Context.Service<Sessions, {
         const current = yield* Ref.get(state);
         if (current.kind !== "live") return yield* new NoSession();
         const { live } = current;
+        if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
+        const warnings = yield* requireStartupDeps("resume", live.model.route).pipe(Effect.provideService(ManagedDeps, deps));
+        const afterCheck = yield* Ref.get(state);
+        if (afterCheck.kind !== "live" || afterCheck.live !== live || (yield* Deferred.isDone(live.stopRequested))) return yield* new Aborted();
         // 取り込みの状態は、確かめてから書き換える（自動の起動し直しと取り合うので 1 つの操作にする）
         const taken = yield* Ref.modify(live.intake, (kind): [boolean, IntakeKind] => (kind === "stopped" ? [true, "interrupted"] : [false, kind]));
         if (!taken) return yield* new IntakeNotStopped();
@@ -396,6 +408,13 @@ export class Sessions extends Context.Service<Sessions, {
         const result = yield* Deferred.await(outcome);
         if (result.kind === "stopped") return yield* new RestartGaveUp({ stderrTail: result.stderrTail });
         if (result.kind === "aborted") return yield* new Aborted();
+        return { warnings };
+      });
+
+      const checkResume = Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        if (current.kind !== "live") return yield* new NoSession();
+        return yield* checkManagedDeps("resume", current.live.model.route).pipe(Effect.provideService(ManagedDeps, deps));
       });
 
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
@@ -410,7 +429,7 @@ export class Sessions extends Context.Service<Sessions, {
         };
       });
 
-      return Sessions.of({ apps: helpers.apps, start, stop, status, resume });
+      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume });
     }),
   );
 }

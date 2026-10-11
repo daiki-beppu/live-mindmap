@@ -1,4 +1,4 @@
-import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { readyManagedDeps, withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
@@ -78,7 +78,8 @@ const setup = (initial: Partial<Script> = {}) =>
   // context を受け継ぐので、サーバーを起こす Effect に渡す
   const stderr: string[] = [];
   const stderrConsole: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
-  const server = yield* startedServer(options, realLayers(options, fakeExportServices())).pipe(Effect.provideService(Console.Console, stderrConsole));
+  const layers = realLayers(options, fakeExportServices());
+  const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) }).pipe(Effect.provideService(Console.Console, stderrConsole));
 
   const out: string[] = [];
   const consoleService: Console.Console = {
@@ -86,7 +87,7 @@ const setup = (initial: Partial<Script> = {}) =>
     log: (...args: unknown[]) => { out.push(args.map(String).join(" ") + "\n"); },
   };
   // 接続先ポートと保存先は ConfigProvider、標準出力は Console で渡す
-  const cliLayer = Layer.mergeAll(forbiddenManagedDeps,
+  const cliLayer = Layer.mergeAll(readyManagedDeps,
     NodeServices.layer, unusedApple,
     NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: String(server.port) })),

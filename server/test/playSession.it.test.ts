@@ -1,5 +1,5 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -77,7 +77,7 @@ function dependencies(sessionsDir: string) {
     error: () => {},
   };
   const layer = Layer.mergeAll(
-    NodeServices.layer, unusedApple, forbiddenManagedDeps,
+    NodeServices.layer, unusedApple, readyManagedDeps,
     NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, consoleService),

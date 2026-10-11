@@ -2,6 +2,8 @@
 // （タグからステータスへの対応は http.ts の表 1 つが決める）。文面はこのモジュールが持つ。
 import { Schema } from "effect";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
+import type { StartupDepsMissing } from "./startupDepsMissing.ts";
+import type { ManagedDepsFailed } from "./managedDeps.ts";
 
 export class SessionBusy extends Schema.TaggedError<SessionBusy>()("SessionBusy", {}) {
   override get message(): string {
@@ -55,4 +57,4 @@ export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExit
   }
 }
 
-export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable;
+export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed;

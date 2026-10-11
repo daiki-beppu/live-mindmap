@@ -1,3 +1,4 @@
+import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import type { AppleIntelligence } from "../src/appleIntelligence.ts";
 import type { Scope } from "effect";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -76,7 +77,7 @@ const loopback = Effect.fnUntraced(function* (afterRequest: (call: number) => vo
 });
 const dependencies = (root: string) => {
   const stdout: string[] = [];
-  const layer = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  const layer = Layer.mergeAll(readyManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
   );
@@ -157,7 +158,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
       Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, unusedApple)),
     );
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
-      helpers, sessionSinks: sinks, managedDeps: forbiddenManagedDeps,
+      helpers, sessionSinks: sinks, managedDeps: readyManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, provider));
     const token = readFileSync(modelTransferTokenPath(join(root, "sessions"), server.port), "utf8");
     const { WebSocket } = yield* Effect.promise(() => import("ws"));

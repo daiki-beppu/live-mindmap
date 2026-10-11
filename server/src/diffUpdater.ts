@@ -13,11 +13,11 @@ import { appleRefusal } from "./modelSelection.ts";
 const prepareClaude = Effect.fnUntraced(function* (model: Extract<ExecutableModel, { route: "claude" }>) {
   const { layerClaude, AgentSdk } = yield* Effect.tryPromise({
     try: () => import("./claude.ts"),
-    catch: (e) => new UpdaterUnavailable({ message: e instanceof Error ? e.message : String(e) }),
+    catch: (e) => new UpdaterUnavailable({ message: e instanceof Error ? e.message : String(e), dependency: "claude" }),
   });
   const sdk = yield* AgentSdk.pipe(Effect.provide(AgentSdk.layer));
   return layerClaude(model.model).pipe(Layer.provide(Layer.succeed(AgentSdk, sdk)));
-}, Effect.mapError((error) => new UpdaterUnavailable({ message: error.message })));
+}, Effect.mapError((error) => new UpdaterUnavailable({ message: error.message, dependency: "claude" })));
 
 export const claudeUpdaterLayer = (model: Extract<ExecutableModel, { route: "claude" }>) => Layer.unwrap(prepareClaude(model));
 
@@ -33,4 +33,4 @@ export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: Executabl
   }
   const classify = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
   return localUpdaterLayer(classify);
-}, Effect.mapError((failure) => new UpdaterUnavailable({ message: failure.message })));
+}, Effect.mapError((failure) => failure instanceof UpdaterUnavailable ? failure : new UpdaterUnavailable({ message: failure.message })));
