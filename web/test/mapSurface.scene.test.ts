@@ -6,7 +6,7 @@ import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
-import { CLICK_ZOOM_FACTOR, pinchZoomFactor, zoomAtPoint } from "../src/camera.ts";
+import { CLICK_ZOOM_FACTOR, focusViewport, nodeRect, pinchZoomFactor, zoomAtPoint } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { KIND_COLOR } from "../src/kinds.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
@@ -364,8 +364,8 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
 });
 
 describe("mapSurface の Scene: パン（ビューポートの transform が、全体を収める位置から画面上で動いた分だけずれる）", () => {
-  // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は given の Model に入れ、パンの Message を resolve する 1 回に使う
-  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => ({ ...modelOf(snap(nodes()), mode), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) });
+  // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は update で given の Model に入れ（自動のカメラが全体を収める）、パンの Message を resolve する 1 回に使う
+  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
   const fitOf = (mode: MapSurfaceModel["mode"]) => {
     const positions = layout(nodes(), HEIGHTS);
     const rects = nodes().map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
@@ -456,7 +456,7 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
 
 describe("mapSurface の Scene: ズーム（ビューポートの transform が、今と同じ式で変わる）", () => {
   // Mount は 1 つの要素に 1 つで、resolve できるのは 1 回。実測は given の Model に入れ、ズームの Message を resolve する 1 回に使う
-  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => ({ ...modelOf(snap(nodes()), mode), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) });
+  const measuredModel = (mode: MapSurfaceModel["mode"]): MapSurfaceModel => update(modelOf(snap(nodes()), mode), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS })).model;
   const fitOf = (minZoom: number): { x: number; y: number; zoom: number } => {
     const positions = layout(nodes(), HEIGHTS);
     const rects = nodes().map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
@@ -524,6 +524,26 @@ describe("mapSurface の Scene: ズーム（ビューポートの transform が�
         tap((simulation) => expectNumbers(viewportTransform(simulation.html), transformOf(fitOf(0.02)))),
       );
     }
+  });
+});
+
+describe("mapSurface の Scene: カメラ（Issue #819。ビューポートの transform は Model の viewport を描く）", () => {
+  it("live で今の議題があると、測れた後の transform は、今の議題（と子孫）を寄せ先にした focusViewport の値で、全体を収めた値ではない", () => {
+    const all = nodes();
+    const topic = snap(all, { currentTopic: "A" });
+    const target = layout(all, HEIGHTS);
+    const dims = Object.fromEntries(Object.entries(HEIGHTS).map(([id, height]) => [id, { height }]));
+    const expected = focusViewport(["A", "P", "D"].map((id) => nodeRect(id, target, dims)), nodeRect("A", target, dims), SIZE);
+    const rects = all.map((n) => ({ x: target[n.id]!.x, y: target[n.id]!.y, width: NODE_WIDTH, height: HEIGHTS[n.id as keyof typeof HEIGHTS] }));
+    const fit = getViewportForBounds(fitBounds(rects), SIZE.width, SIZE.height, 0.5, 2, 0.1);
+    expect([expected.x, expected.y, expected.zoom]).not.toEqual([fit.x, fit.y, fit.zoom]);
+    scene(
+      app,
+      given(modelOf(topic, "live")),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), [0, 0, 1])),
+      measured(HEIGHTS),
+      tap((simulation) => expectNumbers(viewportTransform(simulation.html), [expected.x, expected.y, expected.zoom])),
+    );
   });
 });
 

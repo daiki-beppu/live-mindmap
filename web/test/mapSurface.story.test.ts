@@ -2,7 +2,7 @@ import { HashMap, Option, Schema } from "effect";
 import { expectNoOutMessage, expectOutMessage, given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { displayedPositions, init, Model, update, viewportOf } from "../src/app/mapSurface/main.ts";
+import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message, OutMessage } from "../src/app/mapSurface/message.ts";
 import { CLICK_ZOOM_FACTOR, pinchZoomFactor, USER_MAX_ZOOM, USER_MIN_ZOOM, zoomAtPoint } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
@@ -10,7 +10,8 @@ import { layout } from "../src/layout.ts";
 import { interpolate, startPositions } from "../src/motion.ts";
 
 // マップの表示面（Issue #814）の update。Mount が出す Message 1 つで、画面の大きさとノードの実測を受ける。
-// Model に持つのは見せ方（mode）・Snapshot・画面の大きさ・ノードの実測と、パンの状態（isMac・pan・pointer・nodePress・scrollAxisLock）だけで、配置・畳んだ後の木・viewport は持たない（view が毎回導く）
+// Model に持つのは見せ方（mode）・Snapshot・画面の大きさ・ノードの実測と、パンの状態（isMac・pointer・nodePress・scrollAxisLock）と、人が置いた位置の履歴で決まるカメラの欄だけで、配置・畳んだ後の木・カメラの目標は持たない（毎回導く）。
+// カメラ（Issue #819）の欄は viewport（今見せているビューポート）と、出来事の履歴で決まる事実（placedRound・beforeOverview・keepAnchor・pendingShift）と、見返しの 10 秒を計り直す idleStamp
 
 type MapSurfaceModel = typeof Model.Type;
 
@@ -18,7 +19,25 @@ const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "�
 const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "root"), node("P", "A", "論点")], round: 1, changes: [], remarks: [] };
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);
-const MODEL_FIELDS = ["camera", "gestureScale", "isMac", "mode", "motion", "nodeHeights", "nodePress", "pan", "pointer", "scrollAxisLock", "size", "snapshot", "viewing", "zoomScale"];
+const MODEL_FIELDS = [
+  "beforeOverview",
+  "gestureScale",
+  "idleStamp",
+  "isMac",
+  "keepAnchor",
+  "mode",
+  "motion",
+  "nodeHeights",
+  "nodePress",
+  "pendingShift",
+  "placedRound",
+  "pointer",
+  "scrollAxisLock",
+  "size",
+  "snapshot",
+  "viewing",
+  "viewport",
+];
 const heightsOf = (m: MapSurfaceModel) => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
 
 describe("mapSurface の update: Mount の Message を受ける", () => {
@@ -77,7 +96,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     );
   });
 
-  it("update の後も Model の欄は決まった 14 個だけ（配置・畳んだ後の木・viewport を足さない。camera は見る状態が返したカメラへの指示）", () => {
+  it("update の後も Model の欄は決まった 17 個だけ（配置・畳んだ後の木・カメラの目標を足さない。pan・zoomScale は無い）", () => {
     story(
       update,
       given(initial()),
@@ -90,16 +109,17 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
 });
 
 describe("mapSurface の Model: 本物の Schema", () => {
-  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pan・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、その出来事が返したカメラへの指示 camera と、ズームの zoomScale・gestureScale の 14 個だけ", () => {
+  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの gestureScale と、カメラの viewport・placedRound・beforeOverview・keepAnchor・pendingShift・idleStamp の 17 個だけ", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(MODEL_FIELDS);
   });
 
-  it("本物の Model は通り、「無い」を null で書いた Model・知らない mode は通らない", () => {
+  it("本物の Model は通り、「無い」を null で書いた Model・知らない mode は通らない。mode は still・live・review の 3 つ", () => {
     const is = Schema.is(Model);
     expect(is(initial("still"))).toBe(true);
     expect(is(initial("live"))).toBe(true);
+    expect(is(initial("review"))).toBe(true);
     expect(is({ ...initial(), size: null })).toBe(false);
-    expect(is({ ...initial(), mode: "review" })).toBe(false);
+    expect(is({ ...initial(), mode: "zoom" })).toBe(false);
   });
 
   it("Snapshot の中身も検査する（Schema.declare で素通しにしていない）", () => {
@@ -119,9 +139,9 @@ describe("mapSurface の Model: 本物の Schema", () => {
 describe("mapSurface の Model: パンの欄", () => {
   const is = Schema.is(Model);
 
-  it("初期は pan (0, 0)・pointer と nodePress と scrollAxisLock は None。isMac は init の引数のまま", () => {
+  it("初期は viewport (0, 0, 倍率 1)・pointer と nodePress と scrollAxisLock は None。isMac は init の引数のまま", () => {
     const m = initial("live", true);
-    expect(m.pan).toEqual({ x: 0, y: 0 });
+    expect(m.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
     expect(Option.isNone(m.pointer)).toBe(true);
     expect(Option.isNone(m.nodePress)).toBe(true);
     expect(Option.isNone(m.scrollAxisLock)).toBe(true);
@@ -135,8 +155,9 @@ describe("mapSurface の Model: パンの欄", () => {
     expect(is({ ...initial(), nodePress: null })).toBe(false);
     expect(is({ ...initial(), scrollAxisLock: null })).toBe(false);
     expect(is({ ...initial(), isMac: "yes" })).toBe(false);
-    expect(is({ ...initial(), pan: { x: "1", y: 0 } })).toBe(false);
-    expect(is({ ...initial(), pan: { x: Number.NaN, y: 0 } })).toBe(false);
+    expect(is({ ...initial(), viewport: { x: "1", y: 0, zoom: 1 } })).toBe(false);
+    expect(is({ ...initial(), viewport: { x: Number.NaN, y: 0, zoom: 1 } })).toBe(false);
+    expect(is({ ...initial(), viewport: { x: 0, y: 0 } })).toBe(false);
   });
 
   it("pointer は PanningPane か HoldingNode だけ。nodePress は nodeId・x・y・dragged、scrollAxisLock は軸 x か y と時刻", () => {
@@ -152,10 +173,11 @@ describe("mapSurface の Model: パンの欄", () => {
   });
 });
 
-// 画面上の移動量の比較。-0 と 0 は区別しない
+// 画面上の移動量の比較。測っていない Model の viewport は原点・倍率 1 から始まるので、移動量はそのまま viewport の x・y になる（倍率は変わらない）。-0 と 0 は区別しない
 const expectPan = (m: MapSurfaceModel, x: number, y: number) => {
-  expect(m.pan.x).toBeCloseTo(x, 9);
-  expect(m.pan.y).toBeCloseTo(y, 9);
+  expect(m.viewport.x).toBeCloseTo(x, 9);
+  expect(m.viewport.y).toBeCloseTo(y, 9);
+  expect(m.viewport.zoom).toBe(1);
 };
 
 const wheel = (over: Partial<typeof Message.WheeledMapSurface.Type> = {}) =>
@@ -226,14 +248,15 @@ describe("mapSurface の update: 二本指スクロールでパン（live）", (
     );
   });
 
-  it("Mac の ⌘ だけの wheel は、パンもズームもしない（この issue の範囲外）", () => {
+  it("Mac の ⌘ だけの wheel は、パンもズームもしない。動かしていないので自動のカメラも止めない", () => {
+    const before = measuredLive(true);
     story(
       update,
-      given(measuredLive(true)),
+      given(before),
       message(wheel({ deltaX: 40, deltaY: 100, metaKey: true, x: 300, y: 200 })),
       model((m) => {
-        expectPan(m, 0, 0);
-        expect(m.zoomScale).toBe(1);
+        expect(m.viewport).toEqual(before.viewport);
+        expect(m.viewing).toEqual({ mode: "auto" });
       }),
     );
   });
@@ -471,7 +494,7 @@ describe("mapSurface の update: 空いたところのドラッグでパン（li
 });
 
 describe("mapSurface の update: still ではパンしない", () => {
-  it("スクロール・軸固定・ドラッグのどれでも pan は変わらない", () => {
+  it("スクロール・軸固定・ドラッグのどれでも viewport は変わらない（見る状態も変えない）", () => {
     story(
       update,
       given(initial("still")),
@@ -479,7 +502,10 @@ describe("mapSurface の update: still ではパンしない", () => {
       message(wheel({ deltaX: 30, deltaY: 5, shiftKey: true, metaKey: true, timeStamp: 1000 })),
       message(pressPane()),
       message(movePointer(130, 90)),
-      model((m) => expectPan(m, 0, 0)),
+      model((m) => {
+        expectPan(m, 0, 0);
+        expect(m.viewing).toEqual({ mode: "auto" });
+      }),
     );
   });
 });
@@ -753,12 +779,11 @@ describe("mapSurface の Model: motion の欄", () => {
   });
 });
 
-// ズーム（Issue #816）。ビューポートは viewportOf（全体を収める位置 × zoomScale ＋ pan）で、見せる値と update が使う値は同じ。結果は zoomAtPoint と同じ（今の @xyflow／MapView と同じだけ変わる）
-const measuredLive = (isMac = false): MapSurfaceModel => ({
-  ...initial("live", isMac),
-  size: Option.some({ width: 800, height: 600 }),
-  nodeHeights: HashMap.make(["root", 40], ["A", 64], ["P", 88]),
-});
+// ズーム（Issue #816）。ビューポートは Model の viewport で、見せる値と update が使う値は同じ。結果は zoomAtPoint と同じ（今の @xyflow／MapView と同じだけ変わる）。
+// 測った後の viewport は、自動のカメラが全体を収めた位置（この Snapshot に今の議題は無い）
+const measuredLive = (isMac = false): MapSurfaceModel => update(initial("live", isMac), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
+// still は同じ寸法を測った Model（全体を収めた viewport。ズームもパンも受けない）
+const stillMeasured = (): MapSurfaceModel => update(initial("still"), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
 const POINT = { x: 300, y: 200 };
 const expectViewport = (actual: { x: number; y: number; zoom: number }, expected: { x: number; y: number; zoom: number }) => {
   expect(actual.x).toBeCloseTo(expected.x, 6);
@@ -769,50 +794,50 @@ const clickWith = (over: Partial<typeof Message.ClickedMapSurfaceWithModifier.Ty
   Message.ClickedMapSurfaceWithModifier({ ...POINT, ctrlKey: false, metaKey: false, altKey: false, ...over });
 
 describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム（live）", () => {
-  it("測っただけなら zoomScale は 1 で、viewportOf は全体を収める位置のまま（倍率は 1 でない）", () => {
+  it("測っただけなら viewport は全体を収める位置になり（倍率は 1 でない）、gestureScale は None、見る状態は自動のまま", () => {
     const m = measuredLive();
-    expect(m.zoomScale).toBe(1);
     expect(Option.isNone(m.gestureScale)).toBe(true);
-    expect(viewportOf(m).zoom).not.toBe(1);
+    expect(m.viewport.zoom).not.toBe(1);
+    expect(m.viewing).toEqual({ mode: "auto" });
   });
 
   it("ポインタの位置を中心に、pinchZoomFactor の倍率で変わる。結果は zoomAtPoint と同じ", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     const factor = pinchZoomFactor({ deltaY: -100, deltaMode: 0, ctrlKey: true }, false);
     expect(factor).toBeGreaterThan(1);
     story(
       update,
       given(measuredLive()),
       message(wheel({ ctrlKey: true, deltaY: -100, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, factor))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, factor))),
     );
   });
 
   it("縮小（deltaY が正）も同じ式", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     const factor = pinchZoomFactor({ deltaY: 100, deltaMode: 0, ctrlKey: true }, false);
     expect(factor).toBeLessThan(1);
     story(
       update,
       given(measuredLive()),
       message(wheel({ ctrlKey: true, deltaY: 100, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, factor))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, factor))),
     );
   });
 
   it("Mac の Ctrl 付きは 10 倍、行単位は 0.05 倍で効く", () => {
-    const before = viewportOf(measuredLive(true));
+    const before = measuredLive(true).viewport;
     const factor = pinchZoomFactor({ deltaY: -3, deltaMode: 1, ctrlKey: true }, true);
     story(
       update,
       given(measuredLive(true)),
       message(wheel({ ctrlKey: true, deltaY: -3, deltaMode: 1, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, factor))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, factor))),
     );
   });
 
   it("続けるほど足し上がり（倍率が掛かる）、点の下のワールド座標は動かない", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     const f1 = pinchZoomFactor({ deltaY: -50, deltaMode: 0, ctrlKey: true }, false);
     const f2 = pinchZoomFactor({ deltaY: -30, deltaMode: 0, ctrlKey: true }, false);
     story(
@@ -821,8 +846,8 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
       message(wheel({ ctrlKey: true, deltaY: -50, ...POINT })),
       message(wheel({ ctrlKey: true, deltaY: -30, ...POINT })),
       model((m) => {
-        expectViewport(viewportOf(m), zoomAtPoint(zoomAtPoint(before, POINT, f1), POINT, f2));
-        const v = viewportOf(m);
+        expectViewport(m.viewport, zoomAtPoint(zoomAtPoint(before, POINT, f1), POINT, f2));
+        const v = m.viewport;
         expect((POINT.x - v.x) / v.zoom).toBeCloseTo((POINT.x - before.x) / before.zoom, 6);
       }),
     );
@@ -833,25 +858,25 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
       update,
       given(measuredLive()),
       ...Array.from({ length: 20 }, () => message(wheel({ ctrlKey: true, deltaY: -500, ...POINT }))),
-      model((m) => expect(viewportOf(m).zoom).toBeCloseTo(USER_MAX_ZOOM, 9)),
+      model((m) => expect(m.viewport.zoom).toBeCloseTo(USER_MAX_ZOOM, 9)),
     );
     story(
       update,
       given(measuredLive()),
       ...Array.from({ length: 20 }, () => message(wheel({ ctrlKey: true, deltaY: 500, ...POINT }))),
-      model((m) => expect(viewportOf(m).zoom).toBeCloseTo(USER_MIN_ZOOM, 9)),
+      model((m) => expect(m.viewport.zoom).toBeCloseTo(USER_MIN_ZOOM, 9)),
     );
   });
 
   it("ズームしてからパンすると、パンの量だけ平行移動し、倍率は変わらない", () => {
     const zoomedModel = update(measuredLive(), wheel({ ctrlKey: true, deltaY: -100, ...POINT })).model;
-    const zoomed = viewportOf(zoomedModel);
-    expect(zoomed.zoom).not.toBe(viewportOf(measuredLive()).zoom);
+    const zoomed = zoomedModel.viewport;
+    expect(zoomed.zoom).not.toBe(measuredLive().viewport.zoom);
     story(
       update,
       given(zoomedModel),
       message(wheel({ deltaX: 40, deltaY: 100 })),
-      model((m) => expectViewport(viewportOf(m), { x: zoomed.x - 20, y: zoomed.y - 50, zoom: zoomed.zoom })),
+      model((m) => expectViewport(m.viewport, { x: zoomed.x - 20, y: zoomed.y - 50, zoom: zoomed.zoom })),
     );
   });
 
@@ -870,14 +895,12 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
   });
 
   it("still ではズームしない", () => {
+    const before = stillMeasured();
     story(
       update,
-      given({ ...measuredLive(), mode: "still" as const }),
+      given(before),
       message(wheel({ ctrlKey: true, deltaY: -100, ...POINT })),
-      model((m) => {
-        expect(m.zoomScale).toBe(1);
-        expectPan(m, 0, 0);
-      }),
+      model((m) => expect(m.viewport).toEqual(before.viewport)),
     );
   });
 
@@ -887,79 +910,71 @@ describe("mapSurface の update: Ctrl＋ホイール（ピンチ）でズーム�
       given(measuredLive()),
       message(wheel({ ctrlKey: true, shiftKey: true, deltaX: 30, deltaY: 5, timeStamp: 1000, ...POINT })),
       model((m) => {
-        expect(m.zoomScale).toBe(1);
-        expectPan(m, -30, 0);
+        const before = measuredLive().viewport;
+        expectViewport(m.viewport, { x: before.x - 30, y: before.y, zoom: before.zoom });
       }),
     );
   });
 });
 
-// zoomScale は操作した時点のフィット倍率との比。画面サイズの再測定でフィット倍率が変わっても、見せる倍率は 0.5〜2 に収まる
-describe("mapSurface の update: フィット倍率が変わっても倍率は 0.5〜2（live）", () => {
+// 人が置いた viewport は絶対の値で、画面の大きさが変わっても動かない（全体を収める位置との比ではない）。倍率は 0.5〜2 のまま
+describe("mapSurface の update: 画面の大きさが変わっても、人が置いた viewport は動かない（live）", () => {
   const SMALL = { width: 300, height: 200 };
   const LARGE = { width: 4000, height: 3000 };
-  const measuredAt = (size: { width: number; height: number }): MapSurfaceModel => ({ ...measuredLive(), size: Option.some(size) });
-  const resizeTo = (m: MapSurfaceModel, size: { width: number; height: number }): MapSurfaceModel =>
-    update(m, Message.MeasuredMapSurface({ ...size, nodeHeights: {} })).model;
+  const measuredAt = (size: { width: number; height: number }): MapSurfaceModel => update(initial("live"), Message.MeasuredMapSurface({ ...size, nodeHeights: { root: 40, A: 64, P: 88 } })).model;
+  const resizeTo = (m: MapSurfaceModel, size: { width: number; height: number }): MapSurfaceModel => update(m, Message.MeasuredMapSurface({ ...size, nodeHeights: {} })).model;
   const clickTimes = (m: MapSurfaceModel, n: number, over: Partial<typeof Message.ClickedMapSurfaceWithModifier.Type>): MapSurfaceModel =>
     Array.from({ length: n }).reduce<MapSurfaceModel>((acc) => update(acc, clickWith(over)).model, m);
 
-  it("拡大した後に画面を大きくしても、倍率は 2 以下", () => {
-    const small = measuredAt(SMALL);
-    const largeFit = viewportOf(measuredAt(LARGE)).zoom;
-    expect(viewportOf(small).zoom).toBeLessThan(largeFit);
-    const zoomedIn = clickTimes(small, 8, { ctrlKey: true });
-    expect(viewportOf(zoomedIn).zoom).toBeCloseTo(USER_MAX_ZOOM, 6);
-    expect(zoomedIn.zoomScale * largeFit).toBeGreaterThan(USER_MAX_ZOOM);
-    expect(viewportOf(resizeTo(zoomedIn, LARGE)).zoom).toBeLessThanOrEqual(USER_MAX_ZOOM + 1e-9);
+  it("拡大した後に画面を大きくしても、viewport は変わらず、倍率は 2 のまま", () => {
+    const zoomedIn = clickTimes(measuredAt(SMALL), 8, { ctrlKey: true });
+    expect(zoomedIn.viewport.zoom).toBeCloseTo(USER_MAX_ZOOM, 6);
+    expect(zoomedIn.viewing.mode).toBe("manual");
+    expect(resizeTo(zoomedIn, LARGE).viewport).toEqual(zoomedIn.viewport);
   });
 
-  it("縮小した後に画面を小さくしても、倍率は 0.5 以上", () => {
-    const large = measuredAt(LARGE);
-    const smallFit = viewportOf(measuredAt(SMALL)).zoom;
-    const zoomedOut = clickTimes(large, 8, { ctrlKey: true, altKey: true });
-    expect(viewportOf(zoomedOut).zoom).toBeCloseTo(USER_MIN_ZOOM, 6);
-    expect(zoomedOut.zoomScale * smallFit).toBeLessThan(USER_MIN_ZOOM);
-    expect(viewportOf(resizeTo(zoomedOut, SMALL)).zoom).toBeGreaterThanOrEqual(USER_MIN_ZOOM - 1e-9);
+  it("縮小した後に画面を小さくしても、viewport は変わらず、倍率は 0.5 のまま", () => {
+    const zoomedOut = clickTimes(measuredAt(LARGE), 8, { ctrlKey: true, altKey: true });
+    expect(zoomedOut.viewport.zoom).toBeCloseTo(USER_MIN_ZOOM, 6);
+    expect(resizeTo(zoomedOut, SMALL).viewport).toEqual(zoomedOut.viewport);
   });
 
-  it("倍率を制限した状態からの次のズームは、見せていたビューポートからの zoomAtPoint と一致する", () => {
+  it("大きさが変わった後の次のズームは、見せていた viewport からの zoomAtPoint と一致する", () => {
     const zoomedIn = clickTimes(measuredAt(SMALL), 8, { ctrlKey: true });
     const resized = resizeTo(zoomedIn, LARGE);
-    const before = viewportOf(resized);
     const after = update(resized, clickWith({ ctrlKey: true, altKey: true })).model;
-    expectViewport(viewportOf(after), zoomAtPoint(before, POINT, 1 / CLICK_ZOOM_FACTOR));
+    expectViewport(after.viewport, zoomAtPoint(resized.viewport, POINT, 1 / CLICK_ZOOM_FACTOR));
   });
 });
 
 describe("mapSurface の update: ⌘/Ctrl＋クリックでズーム（live）", () => {
   it("Ctrl＋クリックで、押した点を中心に CLICK_ZOOM_FACTOR（1.5）倍", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     story(
       update,
       given(measuredLive()),
       message(clickWith({ ctrlKey: true })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, CLICK_ZOOM_FACTOR))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, CLICK_ZOOM_FACTOR))),
     );
   });
 
   it("⌘＋クリックも同じ", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     story(
       update,
       given(measuredLive()),
       message(clickWith({ metaKey: true })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, CLICK_ZOOM_FACTOR))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, CLICK_ZOOM_FACTOR))),
     );
   });
 
   it("Alt 付きなら縮小（1.5 で割る）", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     story(
       update,
       given(measuredLive()),
       message(clickWith({ metaKey: true, altKey: true })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, 1 / CLICK_ZOOM_FACTOR))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, 1 / CLICK_ZOOM_FACTOR))),
     );
   });
 
@@ -970,16 +985,16 @@ describe("mapSurface の update: ⌘/Ctrl＋クリックでズーム（live）",
   it("still ではズームしない", () => {
     story(
       update,
-      given({ ...measuredLive(), mode: "still" as const }),
+      given(stillMeasured()),
       message(clickWith({ ctrlKey: true })),
-      model((m) => expect(m.zoomScale).toBe(1)),
+      model((m) => expect(m.viewport).toEqual(stillMeasured().viewport)),
     );
   });
 });
 
 describe("mapSurface の update: Safari の gesture でズーム（live）", () => {
   it("開始の後、scale の変化の比で、点を中心にズームする。scale は開始からの累積なので、1.2 → 1.5 は 1.2 倍 → 1.25 倍", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     const step1 = zoomAtPoint(before, POINT, 1.2);
     const step2 = zoomAtPoint(step1, POINT, 1.5 / 1.2);
     story(
@@ -987,25 +1002,25 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
       message(Message.ChangedMapSurfaceGesture({ scale: 1.2, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), step1)),
+      model((m) => expectViewport(m.viewport, step1)),
       message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), step2)),
+      model((m) => expectViewport(m.viewport, step2)),
     );
   });
 
   it("縮小（scale < 1）も同じ式", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     story(
       update,
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
       message(Message.ChangedMapSurfaceGesture({ scale: 0.8, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, 0.8))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, 0.8))),
     );
   });
 
   it("新しく始めると、scale は 1 から数え直す", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     const step1 = zoomAtPoint(before, POINT, 1.5);
     const step2 = zoomAtPoint(step1, POINT, 1.2);
     story(
@@ -1015,17 +1030,17 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
       message(Message.StartedMapSurfaceGesture()),
       message(Message.ChangedMapSurfaceGesture({ scale: 1.2, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), step2)),
+      model((m) => expectViewport(m.viewport, step2)),
     );
   });
 
   it("開始を受けていなくても、前の scale は 1 として扱う", () => {
-    const before = viewportOf(measuredLive());
+    const before = measuredLive().viewport;
     story(
       update,
       given(measuredLive()),
       message(Message.ChangedMapSurfaceGesture({ scale: 1.3, ...POINT })),
-      model((m) => expectViewport(viewportOf(m), zoomAtPoint(before, POINT, 1.3))),
+      model((m) => expectViewport(m.viewport, zoomAtPoint(before, POINT, 1.3))),
     );
   });
 
@@ -1035,17 +1050,17 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       given(measuredLive()),
       message(Message.StartedMapSurfaceGesture()),
       message(Message.ChangedMapSurfaceGesture({ scale: 100, ...POINT })),
-      model((m) => expect(viewportOf(m).zoom).toBeCloseTo(USER_MAX_ZOOM, 9)),
+      model((m) => expect(m.viewport.zoom).toBeCloseTo(USER_MAX_ZOOM, 9)),
     );
   });
 
   it("still ではズームしない", () => {
     story(
       update,
-      given({ ...measuredLive(), mode: "still" as const }),
+      given(stillMeasured()),
       message(Message.StartedMapSurfaceGesture()),
       message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
-      model((m) => expect(m.zoomScale).toBe(1)),
+      model((m) => expect(m.viewport).toEqual(stillMeasured().viewport)),
     );
   });
 });

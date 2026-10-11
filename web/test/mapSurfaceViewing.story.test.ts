@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message, OutMessage } from "../src/app/mapSurface/message.ts";
+import { nodeFocusViewport, nodeRect } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, reduceViewing, ViewingState, type VisibleTree } from "../src/viewing.ts";
@@ -317,13 +318,19 @@ describe("mapSurface の update: 縁の点の click（reduceViewing の edgeDot�
     );
   });
 
-  it("押した事実を viewing に渡すだけで、カメラを動かさない（pan・補間・SelectedNode は変わらない）", () => {
+  it("viewing に渡したうえで、そのノードへ寄る（今の倍率のまま、目標の位置と高さで測ったノードの中心が画面の中央に来る）。補間も SelectedNode も起こさない", () => {
+    const start = measuredModel(single(), "live", paused);
+    const shown = foldView(single(), NONE, null, NONE, NONE).nodes;
+    const expected = nodeFocusViewport(nodeRect("root", layout(shown, HEIGHTS), { root: { height: HEIGHTS.root } }), start.viewport.zoom, { width: 800, height: 600 });
+    expect(expected).not.toEqual(start.viewport);
     story(
       update,
-      given(measuredModel(single(), "live", paused)),
+      given(start),
       clickEdgeDot("root"),
       model((m) => {
-        expect(m.pan).toEqual({ x: 0, y: 0 });
+        expect(m.viewport.x).toBeCloseTo(expected.x, 6);
+        expect(m.viewport.y).toBeCloseTo(expected.y, 6);
+        expect(m.viewport.zoom).toBeCloseTo(expected.zoom, 6);
         expect(Option.isNone(m.motion)).toBe(true);
       }),
       expectNoOutMessage(),
@@ -336,7 +343,10 @@ describe("mapSurface の update: 縁の点の click（reduceViewing の edgeDot�
         update,
         given(measuredModel(single(), "live", paused)),
         clickEdgeDot(id),
-        model((m) => expect(m.viewing).toEqual(paused)),
+        model((m) => {
+          expect(m.viewing).toEqual(paused);
+          expect(m.viewport).toEqual(measuredModel(single(), "live", paused).viewport);
+        }),
       );
     }
   });
