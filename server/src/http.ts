@@ -6,6 +6,8 @@
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
 //   GET  /・/ws           ブラウザへの配信（同じポートで upgrade する）
+// 閲覧の口（openViewingPort）は、操作の口とは別の 127.0.0.1 の待受けで、GET /（ログを埋め込まない single-file の画面）と
+// /ws の配信だけを受ける。Origin は与えたホスト名の https:// だけを通し、/session/* などの操作は受けない。
 // セッションの操作は sessions.ts の Sessions から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
@@ -21,6 +23,7 @@ import { InstallDeps } from "./installDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
 import { Helpers } from "./helpers.ts";
 import { CheckFor, ModelRoute, CheckDepNames, InstallBody, UpdateBody, type InstallEvent } from "./managedDepsProtocol.ts";
+import { ReviewBuild, type ReviewPageFailed } from "./review.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
 class ModelTransferToken extends Context.Service<ModelTransferToken, string>()("live-mindmap/http/ModelTransferToken") {}
@@ -296,3 +299,32 @@ export const serveSessions = (token: string): Effect.Effect<void, never, HttpSer
   HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));
+
+// 閲覧の口。操作の口とは別の 127.0.0.1 の待受け（port 0 で空きポート）で、GET /（ログを埋め込まない single-file の画面）と
+// /ws の配信だけを受ける。配信は呼び出し側の Viewers を使う（保持値と PubSub を複製しない）。待受けは呼び出し側の Scope で閉じる。
+// Origin は `https://<hostname>` との完全一致だけを通す。Origin の無い GET / は通し、/ws は Origin が無くても断る。
+// 画面のビルドは開くときに 1 回だけ行う（Vite の開発用サーバーは使わない）
+export const openViewingPort = (hostname: string): Effect.Effect<number, HttpServerError.ServeError | ReviewPageFailed, Viewers | ReviewBuild | Scope.Scope> =>
+  Effect.gen(function* () {
+    const { build } = yield* ReviewBuild;
+    const page = yield* build;
+    const allowed = `https://${hostname}`;
+    const OriginCheck = HttpRouter.middleware((httpEffect) =>
+      Effect.gen(function* () {
+        const { origin } = (yield* HttpServerRequest.HttpServerRequest).headers;
+        if (origin !== undefined && origin !== allowed) return yield* new ForbiddenOrigin();
+        return yield* httpEffect;
+      }), { global: true });
+    const routes = HttpRouter.addAll([
+      HttpRouter.route("GET", "/ws", Effect.gen(function* () {
+        const { origin } = (yield* HttpServerRequest.HttpServerRequest).headers;
+        if (origin !== allowed) return yield* new ForbiddenOrigin();
+        return yield* feed;
+      })),
+      HttpRouter.route("GET", "/", Effect.succeed(HttpServerResponse.text(page, { contentType: "text/html; charset=utf-8" }))),
+    ]);
+    const context = yield* Layer.build(layerNodeServer(0));
+    const handler = yield* HttpRouter.toHttpEffect(Layer.mergeAll(routes, UnsupportedRoute, OriginCheck));
+    yield* HttpServer.serveEffect(respond(handler)).pipe(Effect.provide(context));
+    return yield* portOf(Context.get(context, HttpServer.HttpServer).address);
+  });
