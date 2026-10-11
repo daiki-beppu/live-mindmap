@@ -1,3 +1,4 @@
+import { getViewportForBounds } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import {
@@ -10,6 +11,7 @@ import {
   cameraFocus,
   clampUserZoom,
   edgeDots,
+  fitViewport,
   focusViewport,
   nodeFocusViewport,
   nodeRect,
@@ -696,5 +698,74 @@ describe("screenPoint・anchoredViewport: 開閉したノードの画面上の�
     const a = Object.freeze({ x: 3, y: 4 });
     expect(anchoredViewport(v, p, a)).toEqual({ x: 3 - 0.8, y: 4 - 1.6, zoom: 0.8 });
     expect(v).toEqual(viewport);
+  });
+});
+
+// 比べる相手は @xyflow の getViewportForBounds（fitView が padding 0.1 で呼ぶ関数）。丸め（floor）と中央寄せの補正まで同じ値になることを見る
+describe("fitViewport: @xyflow の fitView（padding 0.1）と同じ式で全体を収める", () => {
+  type Box = { x: number; y: number; width: number; height: number };
+  const boundsOf = (rects: Box[]): Box => {
+    const left = Math.min(...rects.map((r) => r.x));
+    const top = Math.min(...rects.map((r) => r.y));
+    const right = Math.max(...rects.map((r) => r.x + r.width));
+    const bottom = Math.max(...rects.map((r) => r.y + r.height));
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  };
+  const expectSameAsXyflow = (rects: Box[], size: { width: number; height: number }, minZoom: number, maxZoom: number) => {
+    const expected = getViewportForBounds(boundsOf(rects), size.width, size.height, minZoom, maxZoom, 0.1);
+    const actual = fitViewport(rects, size, minZoom, maxZoom);
+    expect(actual).not.toBeNull();
+    expect(actual!.zoom).toBeCloseTo(expected.zoom, 10);
+    expect(actual!.x).toBeCloseTo(expected.x, 8);
+    expect(actual!.y).toBeCloseTo(expected.y, 8);
+    return actual!;
+  };
+  const column = [
+    { x: 0, y: 0, width: 200, height: 40 },
+    { x: 260, y: -30, width: 200, height: 64 },
+    { x: 260, y: 52, width: 200, height: 88 },
+  ];
+
+  it("幅で決まる場合（横に長い箱）", () => {
+    expectSameAsXyflow([{ x: 0, y: 0, width: 4000, height: 100 }], { width: 800, height: 600 }, 0.02, 2);
+  });
+
+  it("高さで決まる場合（縦に長い箱）", () => {
+    expectSameAsXyflow([{ x: 0, y: 0, width: 200, height: 1500 }], { width: 800, height: 600 }, 0.02, 2);
+  });
+
+  it("負の座標を含む複数の箱は、外接箱で収める", () => {
+    expectSameAsXyflow(column, { width: 800, height: 600 }, 0.5, 2);
+  });
+
+  it("画面が奇数の大きさでも、余白の丸め（floor）まで同じ値になる", () => {
+    expectSameAsXyflow(column, { width: 801, height: 599 }, 0.5, 2);
+    expectSameAsXyflow([{ x: 13, y: 7, width: 333, height: 777 }], { width: 1013, height: 457 }, 0.02, 2);
+  });
+
+  it("上限（2 倍）で止める。箱が画面より十分小さいとき", () => {
+    const viewport = expectSameAsXyflow([{ x: 0, y: 0, width: 200, height: 40 }], { width: 800, height: 600 }, 0.5, 2);
+    expect(viewport.zoom).toBe(2);
+  });
+
+  it("下限は引数で決まる。収まらない大きな箱は、下限 0.5 では 0.5、下限 0.02 では収まる倍率になる", () => {
+    const tall = [{ x: 0, y: 0, width: 200, height: 5000 }];
+    const size = { width: 800, height: 600 };
+    const live = expectSameAsXyflow(tall, size, 0.5, 2);
+    const still = expectSameAsXyflow(tall, size, 0.02, 2);
+    expect(live.zoom).toBe(0.5);
+    expect(still.zoom).toBeLessThan(0.5);
+    expect(still.zoom).toBeGreaterThan(0.02);
+  });
+
+  it("箱が 1 つも無いときは null", () => {
+    expect(fitViewport([], { width: 800, height: 600 }, 0.5, 2)).toBeNull();
+  });
+
+  it("入力を書き換えない", () => {
+    const rects = column.map((r) => Object.freeze({ ...r }));
+    const size = Object.freeze({ width: 800, height: 600 });
+    expect(() => fitViewport(rects, size, 0.5, 2)).not.toThrow();
+    expect(rects).toEqual(column);
   });
 });

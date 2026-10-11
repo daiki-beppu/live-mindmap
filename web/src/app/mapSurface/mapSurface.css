@@ -1,0 +1,6 @@
+/* マップの表示面（Foldkit）: @xyflow の style.css が担っていた分（表示面・ビューポート・エッジの層・ノードの置き方）だけ。見た目は web/src/styles.css が持つ */
+.map-surface { position: relative; width: 100%; height: 100%; overflow: hidden; z-index: 0; }
+.map-viewport { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform-origin: 0 0; pointer-events: none; z-index: 2; }
+.map-edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.map-nodes { position: absolute; left: 0; top: 0; pointer-events: none; }
+.map-node-slot { position: absolute; left: 0; top: 0; box-sizing: border-box; transform-origin: 0 0; pointer-events: all; user-select: none; cursor: default; }
