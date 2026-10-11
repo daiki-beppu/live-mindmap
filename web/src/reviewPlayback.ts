@@ -80,3 +80,9 @@ export function playbackReducer(state: PlaybackState, event: PlaybackEvent, { du
       return { ...state, time: duration, playing: false };
   }
 }
+
+// メニューの項目の文言。例: 「60 倍（161 分を 2.7 分で）」
+export const rateOptionLabel = (rate: number, duration: number) => `${rate} 倍（${Math.round(duration / 60)} 分を ${(Math.round((duration / rate / 60) * 10) / 10).toFixed(1)} 分で）`;
+
+// 音声つきは倍率だけにする（2026-10-08 オペレーターが決定。所要時間は音声なしの版だけ）
+export const rateItemLabel = (rate: number, duration: number, timesOnly: boolean) => (timesOnly ? `${rate} 倍` : rateOptionLabel(rate, duration));

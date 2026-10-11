@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATE, PLAYBACK_RATES, playbackReducer, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
+import { AUDIO_RATE, AUDIO_RATES, initialPlayback, PLAYBACK_RATE, PLAYBACK_RATES, playbackReducer, rateItemLabel, rateOptionLabel, type PlaybackEvent, type PlaybackState } from "../src/reviewPlayback.ts";
 
 // 見返しの再生の状態（純粋な reducer）。時刻の元（rAF や音声の currentTime）は知らず、経過の秒だけを受け取る。
 const ctx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [10, 30, 60, 120] };
@@ -360,5 +360,22 @@ describe("ミュートと音量（toggleMute / setVolume）", () => {
     playbackReducer(first, { type: "toggleMute" }, audioCtx);
     playbackReducer(first, { type: "setVolume", volume: 0.5 }, audioCtx);
     expect(first).toEqual(before);
+  });
+});
+
+// 速さのメニューの項目の文言（Issue #825 で ReviewControls.tsx から移した純粋な関数。React 版は同じ関数を ReviewControls.tsx から再エクスポートして使う）
+describe("速さの項目の文言（rateOptionLabel / rateItemLabel）", () => {
+  it("rateOptionLabel は「N 倍（会議の分数 を 所要の分数 で）」。所要は小数 1 桁", () => {
+    expect(rateOptionLabel(60, 9660)).toBe("60 倍（161 分を 2.7 分で）");
+    expect(rateOptionLabel(10, 200)).toBe("10 倍（3 分を 0.3 分で）");
+    expect(rateOptionLabel(120, 3600)).toBe("120 倍（60 分を 0.5 分で）");
+  });
+
+  it("rateItemLabel は、音声なし（timesOnly=false）なら rateOptionLabel と同じ", () => {
+    for (const rate of PLAYBACK_RATES) expect(rateItemLabel(rate, 200, false)).toBe(rateOptionLabel(rate, 200));
+  });
+
+  it("rateItemLabel は、音声つき（timesOnly=true）なら倍率だけ（所要時間を付けない）", () => {
+    expect(AUDIO_RATES.map((rate) => rateItemLabel(rate, 9660, true))).toEqual(["0.5 倍", "0.75 倍", "1 倍", "1.25 倍", "1.5 倍", "1.75 倍", "2 倍"]);
   });
 });

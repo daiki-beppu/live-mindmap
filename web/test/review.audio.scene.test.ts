@@ -7,8 +7,9 @@ import { PauseAudio } from "../src/app/review/command.ts";
 import { makeContext } from "../src/app/review/context.ts";
 import { init, type Model, makeUpdate, makeView, snapshotOf } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
-import { ObserveAudio } from "../src/app/review/mount.ts";
+import { ObserveAudio, ObserveSeekPointer } from "../src/app/review/mount.ts";
 import { foldView } from "../src/folding.ts";
+import { settle, TOOLTIPS_AUDIO, TOOLTIPS_PLAIN, tooltipMounts } from "./reviewHarness.ts";
 
 // 見返しの録音つきの時刻の同期（Issue #824）の Scene。<audio> の Mount を Mount.resolve で解き、受けた時刻のマップが表示面に出ることを見る。
 // 比べる相手は、既存の純粋な関数 foldView が、その時刻の Snapshot から返すノード（#823 の Scene と同じ）
@@ -43,24 +44,26 @@ const renderedIds = (html: { children?: unknown }): string[] => {
 };
 
 describe("見返しの Scene: 録音つきの <audio> と Mount", () => {
-  it("録音つきは <audio> を 1 つ描き、src に録音の URL を持ち、ObserveAudio と ObserveMapSurface の Mount がある", () => {
+  it("録音つきは <audio> を 1 つ描き、src に録音の URL を持ち、ObserveAudio と ObserveMapSurface の Mount がある（操作の行の Mount も加わる）", () => {
     scene(
       audioApp,
       given(stoppedAt(10)),
-      Mount.expectExact(ObserveMapSurface, ObserveAudio),
+      Mount.expectExact(ObserveMapSurface, ObserveAudio, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_AUDIO)),
       expectScene(selector("audio")).toHaveAttr("src", URL),
       measuredAll(10),
       Mount.resolve(ObserveAudio, Message.UpdatedAudioTime({ time: 10 })),
+      settle,
     );
   });
 
-  it("録音なしは <audio> を描かず、Mount は ObserveMapSurface だけ", () => {
+  it("録音なしは <audio> を描かず、ObserveAudio の Mount も無い（あるのは 表示面・シークバーのポインタ・ツールチップ）", () => {
     scene(
       plainApp,
       given(init(plainContext)),
-      Mount.expectExact(ObserveMapSurface),
+      Mount.expectExact(ObserveMapSurface, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)),
       expectScene(selector("audio")).toBeAbsent(),
       measuredAll(30),
+      settle,
     );
   });
 });
@@ -75,6 +78,7 @@ describe("見返しの Scene: 時刻の同期（Mount.resolve で <audio> の時
       Mount.resolve(ObserveAudio, Message.UpdatedAudioTime({ time: 10 })),
       tap((simulation) => expect(renderedIds(simulation.html).sort()).toEqual(expectedIds(10).sort())),
       measuredAll(10),
+      settle,
     );
   });
 
@@ -89,6 +93,7 @@ describe("見返しの Scene: 時刻の同期（Mount.resolve で <audio> の時
       }),
       Command.resolve(PauseAudio, Message.CompletedPauseAudio()),
       measuredAll(30),
+      settle,
     );
   });
 
@@ -102,6 +107,7 @@ describe("見返しの Scene: 時刻の同期（Mount.resolve で <audio> の時
         expect(simulation.commands).toEqual([]);
       }),
       measuredAll(30),
+      settle,
     );
   });
 
@@ -112,6 +118,7 @@ describe("見返しの Scene: 時刻の同期（Mount.resolve で <audio> の時
       Mount.resolve(ObserveAudio, Message.UpdatedAudioTime({ time: 30 })),
       tap((simulation) => expect(renderedIds(simulation.html).sort()).toEqual(expectedIds(10).sort())),
       measuredAll(10),
+      settle,
     );
   });
 });

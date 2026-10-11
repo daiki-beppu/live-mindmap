@@ -9,6 +9,8 @@ import { embedReviewAudio, embedReviewLicenses, embedReviewLog } from "./core/in
 import { readLogLines } from "./logLines.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
+// 見返しの操作の行が写した video.js のアイコンの出どころとライセンス（Apache-2.0）。Vite の build.license はパッケージ単位で、写したファイルは載らないので、ここで足す
+const ICONS_NOTICE_PATH = join(WEB_ROOT, "src/app/review/icons.NOTICE.md");
 
 // 見返し用の HTML の書き出しの失敗。呼び出し側（CLI・server）は message をそのまま「map.html を書き出せませんでした: …」の理由に使う
 export class ReviewPageFailed extends Schema.TaggedError<ReviewPageFailed>()("ReviewPageFailed", { message: Schema.String }) {}
@@ -42,8 +44,9 @@ const buildReviewTemplate = Effect.fnUntraced(function* (fs: FileSystem.FileSyst
     catch: failed,
   });
   const html = yield* fs.readFileString(join(out, "index.html")).pipe(Effect.mapError(failed));
-  const licenses = yield* fs.readFileString(join(out, ".vite/license.md")).pipe(Effect.mapError(failed));
-  return yield* Effect.try({ try: () => embedReviewLicenses(html, licenses), catch: failed });
+  const bundledLicenses = yield* fs.readFileString(join(out, ".vite/license.md")).pipe(Effect.mapError(failed));
+  const iconsNotice = yield* fs.readFileString(ICONS_NOTICE_PATH).pipe(Effect.mapError(failed));
+  return yield* Effect.try({ try: () => embedReviewLicenses(html, `${bundledLicenses.trimEnd()}\n\n${iconsNotice.trim()}\n`), catch: failed });
 }, Effect.scoped, Effect.uninterruptible);
 
 // 見返し用の HTML のテンプレート（ログを差し込む前）をビルドする
