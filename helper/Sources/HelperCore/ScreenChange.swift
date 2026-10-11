@@ -109,6 +109,22 @@ func screenFrameToJudge<Image>(
     }
 }
 
+/// 送ると決めた画面の中身。`image` は JPEG の base64、`lines` は OCR で読んだ行（失敗したときは空）。
+public struct ScreenShot: Sendable, Equatable {
+    public var image: String
+    public var lines: [String]
+
+    public init(image: String, lines: [String]) {
+        self.image = image
+        self.lines = lines
+    }
+
+    /// JPEG と OCR の結果から作る。OCR が失敗した（nil）ときも画像は送り、`lines` は空にする。
+    init(jpeg: Data, recognizedLines: [String]?) {
+        self.init(image: jpeg.base64EncodedString(), lines: recognizedLines ?? [])
+    }
+}
+
 /// 最後に送った画面とマスごとに比べ、変わったマスが多いときだけ「送る」を返す。
 /// 基準を更新するのは送ったときだけなので、少しずつの変化もフレーム間ではなく最後に送った画面との差として積み上がる。
 /// 動いている場所（スクロール・動画・顔の小窓）は比べる対象から外し、話している人の枠の移動は送らない。
@@ -141,29 +157,29 @@ public struct ScreenChangeDetector: Sendable {
         }
     }
 
-    /// フレームを判定し、送るときだけ `encode` で画像（base64）を作ってイベントにする。
+    /// フレームを判定し、送るときだけ `encode` で画像（base64）と OCR の行を作ってイベントにする。
     /// `encode` が nil を返したら、送っていない画面を「最後に送った画面」にしないよう、基準を判定の前へ戻して nil を返す。
     /// 「なし」のときは画像を作らず、`image: null` のイベントにする。
-    public mutating func screenEvent(for frame: ScreenFrame, encode: () -> String?) -> HelperEvent? {
+    public mutating func screenEvent(for frame: ScreenFrame, encode: () -> ScreenShot?) -> HelperEvent? {
         let before = self
         switch next(.frame(frame)) {
         case .nothing:
             return nil
         case .none(let start):
-            return .screen(start: start, image: nil)
+            return .screen(start: start, image: nil, lines: nil)
         case .send(let start):
-            guard let image = encode() else {
+            guard let shot = encode() else {
                 self = before
                 return nil
             }
-            return .screen(start: start, image: image)
+            return .screen(start: start, image: shot.image, lines: shot.lines)
         }
     }
 
     /// ウィンドウが無くなったとき、画像を送った後なら `image: null` のイベントにする。それ以外は nil。
     public mutating func screenEvent(windowGoneAt time: Double) -> HelperEvent? {
         guard case .none(let start) = next(.windowGone(time: time)) else { return nil }
-        return .screen(start: start, image: nil)
+        return .screen(start: start, image: nil, lines: nil)
     }
 
     private mutating func reset() {

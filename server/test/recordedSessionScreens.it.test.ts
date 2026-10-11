@@ -54,6 +54,23 @@ describe("openRecordedSession の共有画面", () => {
       expect(JSON.stringify(screens)).not.toContain("bytes");
     }).pipe(Effect.scoped));
 
+  // Issue #643: lines は screen の行に残り、diff の行の input.screens には載らない
+  it.effect("pushScreen に渡した lines は log.jsonl の screen の行に残る。渡さなければキーが無く、diff の行の screens にも lines は載らない", () =>
+    Effect.gen(function* () {
+      const { session, lines } = yield* open();
+      yield* session.pushScreen(shot(5, allBytes), ["港南店", "Zendesk"]);
+      yield* session.pushScreen(shot(6, new Uint8Array([9, 9, 9]), "b"));
+      yield* session.push(remark("r1", 8));
+      yield* session.push(remark("r2", 9));
+      yield* session.idle;
+
+      const screens = lines().filter((l) => l.type === "screen");
+      expect(screens[0]!.lines).toEqual(["港南店", "Zendesk"]);
+      expect("lines" in screens[1]!).toBe(false);
+      const diff = lines().find((l) => l.type === "diff") as { input: { screens: Record<string, unknown>[] } };
+      expect(diff.input.screens.map((s) => Object.keys(s).sort())).toEqual([["image", "start"], ["image", "start"]]);
+    }).pipe(Effect.scoped));
+
   it.effect("同じ時刻の画像が重なっても上書きせず、別のファイルとして残る", () =>
     Effect.gen(function* () {
       const { dir, session, lines } = yield* open();

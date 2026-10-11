@@ -6,7 +6,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, DiffUpdater, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { correctRemark, DiffUpdater, screenCandidates, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
@@ -22,8 +22,9 @@ export type SessionSink = {
   // ヘルパーの確定結果。発言は、確定結果と 1 秒更新されなかった途中結果のどちらからも差分更新・ログ・speaking へ届く
   final: (r: SettledRemark) => Effect.Effect<void>;
   // 共有画面の変化（start は発言と同じ原点からの秒、image は JPEG のバイト列。ウィンドウが無くなったときは null）。
-  // セッションの pushScreen へ渡す。log.jsonl の記録・screens/ への書き出し・Claude へのメッセージはセッションが行う
-  screen: (change: { start: number; image: Uint8Array | null }) => Effect.Effect<void>;
+  // セッションの pushScreen へ渡す。log.jsonl の記録・screens/ への書き出し・Claude へのメッセージはセッションが行う。
+  // lines はヘルパーが Vision で読んだ文字の行（無い旧ヘルパーと、画像が null のときは undefined）。screen の行に残し、規則で取った候補を語彙に入れる
+  screen: (change: { start: number; image: Uint8Array | null; lines?: ReadonlyArray<string> | undefined }) => Effect.Effect<void>;
   // 共有画面を見ていない印（start は発言と同じ原点からの秒。指定はサーバーが開始時に、許可なしはヘルパーが流す）。
   // セッションの pushScreenOff へ渡す。log.jsonl に 1 行書くだけで、差分更新・Claude へのメッセージには載らない
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
@@ -125,6 +126,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 yield* relay.remark(settled.track);
               }),
           });
+          // 画面から語彙の候補を取るための状態。短い行が出た画面の数と、読みを頼んだ語（利用者の語・画面の語）。
+          // 並んで届いた画面で同じ語を二重に頼まないよう、1 回の Ref.modify で更新する
+          const screenVocabulary = yield* Ref.make<{ seen: ReadonlyMap<string, number>; requested: ReadonlySet<string> }>({ seen: new Map(), requested: new Set() });
           // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
           const screenCount = yield* Ref.make(0);
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
@@ -133,10 +137,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // 足した語の読みを作り、vocab の行を書いてから語彙に足す（直した発言の行が、必ず vocab の行より後ろに並ぶ）。
           // 読み取得の待ちだけが中断できる。停止（Scope の閉鎖）で読み取得が中断されても、足した語の記録は失いたくないので、
           // 中断のときは読みなし（全語 romaji: null）で vocab の行を 1 行書く。読み取得が返った後の処理は中断されない
-          const addVocabulary = (surfaces: ReadonlyArray<string>) =>
+          const addVocabulary = (surfaces: ReadonlyArray<string>, source: "user" | "screen") =>
             Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
-                const noReadings = surfaces.map((surface) => ({ surface, romaji: null, source: "user" as const }));
+                const noReadings = surfaces.map((surface) => ({ surface, romaji: null, source }));
                 const found = yield* restore(
                   readings.readings(surfaces).pipe(
                     Effect.catchTag("ReadingsFailed", () => Effect.succeed([])),
@@ -144,7 +148,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                   ),
                 );
                 const table = new Map(found.map((r) => [r.surface, r.romaji] as const));
-                const added = surfaces.map((surface) => ({ surface, romaji: table.get(surface) || null, source: "user" as const }));
+                const added = surfaces.map((surface) => ({ surface, romaji: table.get(surface) || null, source }));
                 yield* appendRecordedLog({ type: "vocab", words: added });
                 const usable = added.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji }]));
                 yield* Ref.update(vocabulary, (current) => [...current, ...usable.filter((u) => !current.some((c) => c.surface === u.surface))]);
@@ -155,16 +159,31 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             dir,
             partial: (p) => Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)),
             final: (r) => settling.final(r),
-            screen: ({ start, image }) =>
+            screen: ({ start, image, lines }) =>
               Effect.gen(function* () {
-                if (image === null) return yield* session.pushScreen({ start, image: null });
-                const n = yield* Ref.updateAndGet(screenCount, (c) => c + 1);
-                return yield* session.pushScreen({ start, image: { id: `s${n}`, bytes: image } });
+                if (image === null) {
+                  yield* session.pushScreen({ start, image: null }, lines);
+                } else {
+                  const n = yield* Ref.updateAndGet(screenCount, (c) => c + 1);
+                  yield* session.pushScreen({ start, image: { id: `s${n}`, bytes: image } }, lines);
+                }
+                if (lines === undefined || lines.length === 0) return;
+                // 規則で取った候補のうち、まだ読みを頼んでいない語だけを、まとめて 1 度だけ語彙に入れる
+                const news = yield* Ref.modify(screenVocabulary, (state) => {
+                  const out = screenCandidates(state.seen, lines);
+                  const fresh = out.candidates.filter((c) => !state.requested.has(c));
+                  return [fresh, { seen: out.seen, requested: new Set([...state.requested, ...fresh]) }];
+                });
+                if (news.length > 0) yield* Effect.forkIn(addVocabulary(news, "screen"), scope, { startImmediately: true });
               }),
             screenOff: (off) => session.pushScreenOff(off),
             addUserVocabulary: (words) => {
               const surfaces = [...new Set(words.filter((w) => w !== ""))];
-              return surfaces.length === 0 ? Effect.void : Effect.asVoid(Effect.forkIn(addVocabulary(surfaces), scope, { startImmediately: true }));
+              if (surfaces.length === 0) return Effect.void;
+              return Effect.andThen(
+                Ref.update(screenVocabulary, (state) => ({ ...state, requested: new Set([...state.requested, ...surfaces]) })),
+                Effect.asVoid(Effect.forkIn(addVocabulary(surfaces, "user"), scope, { startImmediately: true })),
+              );
             },
             drain: settling.drain,
             clearSpeaking: relay.clear,

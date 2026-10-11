@@ -23,7 +23,9 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("partial"), ...helperRemarkFields }),
   Schema.Struct({ type: Schema.Literal("origin"), hostTime: Schema.String.check(Schema.isPattern(/^\d+$/)) }),
   // 共有画面の変化。image は JPEG の base64（バイト列に戻す。base64 として不正なら SchemaError）で、ウィンドウが無くなったときは null
-  Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.Uint8ArrayFromBase64) }),
+  Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.Uint8ArrayFromBase64),
+    // Vision で読んだ文字の行（Issue #643）。無い旧ヘルパーのイベントも受け付ける
+    lines: Schema.optionalKey(Schema.Array(Schema.String)) }),
   // 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。ヘルパーが流す reason は許可なしだけ（指定はサーバーが書く）
   Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literal("許可なし") }),
   // 相手のタップが 10 秒、フレーム数 1 以上のバッファを受け取らなかった。start は origin と同じ原点からの秒

@@ -186,7 +186,7 @@ export class Sessions extends Context.Service<Sessions, {
           }
           case "screen":
             // 画面が取れないことは取り込みの途切れではないので、取り込みの記録（appendLog）や状態には触れない
-            return live.sink.screen({ start: event.start, image: event.image });
+            return live.sink.screen({ start: event.start, image: event.image, lines: event.lines });
           case "screen-off":
             // 共有画面だけが取れないことは取り込みの途切れではないので、appendLog・intake・起動し直しには触れない。
             // ログには届くたびに残し、画面の一文はセッションにつき 1 回だけ出す

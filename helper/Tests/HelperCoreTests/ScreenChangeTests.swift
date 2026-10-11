@@ -15,6 +15,11 @@ private let chromeBundleID = "com.google.Chrome"
 private let meetTitle = "Meet - abc-defg-hij"
 private let otherTabTitle = "Gmail - Inbox"
 
+/// 画像と行を持つ、送る画面（Issue #643）。行は既定で空。
+private func shot(_ image: String, lines: [String] = []) -> ScreenShot {
+    ScreenShot(image: image, lines: lines)
+}
+
 private func makeDetector(_ bundleID: String = zoomBundleID) -> ScreenChangeDetector {
     ScreenChangeDetector(bundleID: bundleID)
 }
@@ -945,10 +950,10 @@ struct ScreenEventTests {
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
         let moving = ScreenFrame(luma: luma(fill: 200), time: 1.25, title: nil)
         let b = ScreenFrame(luma: luma(fill: 200), time: 2.25, title: nil)
-        #expect(detector.screenEvent(for: a) { "A" } == .screen(start: 0, image: "A"))
-        #expect(detector.screenEvent(for: moving) { "動いている間は作らない" } == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
+        #expect(detector.screenEvent(for: moving) { shot("動いている間は作らない") } == nil)
         #expect(detector.screenEvent(for: b) { nil } == nil)
-        #expect(detector.screenEvent(for: b) { "B" } == .screen(start: 1.25, image: "B"))
+        #expect(detector.screenEvent(for: b) { shot("B") } == .screen(start: 1.25, image: "B", lines: []))
     }
 
     @Test("「なし」のときは画像を作らず、image: null のイベントを 1 回だけ返す（ブラウザの会議以外のタブ）")
@@ -957,11 +962,33 @@ struct ScreenEventTests {
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: meetTitle)
         let gone = ScreenFrame(luma: luma(fill: 20), time: 0.25, title: otherTabTitle)
         var encodeCount = 0
-        #expect(detector.screenEvent(for: a) { "A" } == .screen(start: 0, image: "A"))
-        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return "X" } == .screen(start: 0.25, image: nil))
-        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return "X" } == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
+        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return shot("X") } == .screen(start: 0.25, image: nil, lines: nil))
+        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return shot("X") } == nil)
         #expect(detector.screenEvent(windowGoneAt: 1) == nil)
         #expect(encodeCount == 0)
+    }
+
+    // Issue #643: 行は encode が返した画面の文字をそのまま載せる。送ると決めたときだけ encode が呼ばれる（= OCR も送るときだけ）
+    @Test("送る画面の event には、encode が返した行がそのまま載る。空の配列も空のまま載る")
+    func sentScreenCarriesLinesFromEncode() {
+        var detector = makeDetector()
+        let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
+        let moving = ScreenFrame(luma: luma(fill: 200), time: 1, title: nil)
+        let b = ScreenFrame(luma: luma(fill: 200), time: 2.25, title: nil)
+        #expect(detector.screenEvent(for: a) { shot("A", lines: ["港南店", "Zendesk"]) } == .screen(start: 0, image: "A", lines: ["港南店", "Zendesk"]))
+        #expect(detector.screenEvent(for: moving) { shot("動いている間は読まない", lines: ["読まない"]) } == nil)
+        #expect(detector.screenEvent(for: b) { shot("B", lines: []) } == .screen(start: 1, image: "B", lines: []))
+    }
+
+    @Test("image: null の screen には lines を付けない（nil）")
+    func nullImageScreenHasNoLines() {
+        var detector = makeDetector(chromeBundleID)
+        let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: meetTitle)
+        let gone = ScreenFrame(luma: luma(fill: 20), time: 0.25, title: otherTabTitle)
+        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
+        #expect(detector.screenEvent(for: gone) { shot("X", lines: ["読まない"]) } == .screen(start: 0.25, image: nil, lines: nil))
+        #expect(detector.screenEvent(windowGoneAt: 1) == nil)
     }
 
     @Test("送らないフレームでは画像を作らない")
@@ -969,8 +996,8 @@ struct ScreenEventTests {
         var detector = makeDetector()
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
         var encodeCount = 0
-        #expect(detector.screenEvent(for: a) { "A" } == .screen(start: 0, image: "A"))
-        #expect(detector.screenEvent(for: a) { encodeCount += 1; return "A" } == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
+        #expect(detector.screenEvent(for: a) { encodeCount += 1; return shot("A") } == nil)
         #expect(encodeCount == 0)
     }
 
@@ -979,7 +1006,7 @@ struct ScreenEventTests {
         var detector = makeDetector()
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
         #expect(detector.screenEvent(for: a) { nil } == nil)
-        #expect(detector.screenEvent(for: a) { "A" } == .screen(start: 0, image: "A"))
+        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
     }
 
     @Test("ウィンドウが無くなったら image: null のイベントを 1 回だけ返す。重複した通知や、何も送っていないときは nil")
@@ -987,8 +1014,8 @@ struct ScreenEventTests {
         var detector = makeDetector()
         #expect(detector.screenEvent(windowGoneAt: 1) == nil)
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
-        #expect(detector.screenEvent(for: a) { "A" } == .screen(start: 0, image: "A"))
-        #expect(detector.screenEvent(windowGoneAt: 3) == .screen(start: 3, image: nil))
+        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
+        #expect(detector.screenEvent(windowGoneAt: 3) == .screen(start: 3, image: nil, lines: nil))
         #expect(detector.screenEvent(windowGoneAt: 3.25) == nil)
     }
 }
@@ -1006,7 +1033,7 @@ private func emitWithWindowGoneDuringEncode(_ emitter: ScreenEventEmitter, frame
         _ = started.wait(timeout: .now() + 5)
         // 別スレッドが emitWindowGone に入る機会を与えてから画像を返す。
         Thread.sleep(forTimeInterval: 0.05)
-        return "B"
+        return shot("B")
     }
     // 同期の退行でスイートが止まらないよう、待ちには期限を付ける。
     _ = done.wait(timeout: .now() + 5)
@@ -1024,40 +1051,40 @@ struct ScreenEventEmitterTests {
     @Test("判定した順（画像 → 消失の null → 画像）のまま events に出る")
     func sequentialOrder() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitWindowGone(at: 3)
-        emitter.emit(ScreenFrame(luma: luma(fill: 200), time: 1, title: nil)) { "B" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 200), time: 1, title: nil)) { shot("B") }
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil), .screen(start: 1, image: "B")])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 3, image: nil, lines: nil), .screen(start: 1, image: "B", lines: [])])
     }
 
     @Test("画像の生成の途中で別スレッドから消失が来ても、null は画像の後に出る（最後の保持値が null になる）")
     func windowGoneDuringEncodeComesAfterImage() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         // 変わったフレームは動いている間なので送らない（画像も作らない）。止まって 1 秒後のフレームで送る
-        emitter.emit(ScreenFrame(luma: luma(fill: 200), time: 1, title: nil)) { "動いている間は作らない" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 200), time: 1, title: nil)) { shot("動いている間は作らない") }
         emitWithWindowGoneDuringEncode(emitter, frame: ScreenFrame(luma: luma(fill: 200), time: 2, title: nil), goneAt: 5)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 1, image: "B"), .screen(start: 5, image: nil)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 1, image: "B", lines: []), .screen(start: 5, image: nil, lines: nil)])
     }
 
     @Test("ブラウザで会議以外のタブになると、image: null の screen が 1 回だけ出て、会議のタブに戻ると次の画面が出る")
     func nonMeetingTabEmitsNullOnceThenReturns() async {
         let emitter = ScreenEventEmitter(bundleID: chromeBundleID)
         let page = luma(fill: 20)
-        emitter.emit(ScreenFrame(luma: page, time: 0, title: meetTitle)) { "A" }
-        emitter.emit(ScreenFrame(luma: page, time: 0.25, title: otherTabTitle)) { "画像は作らない" }
-        emitter.emit(ScreenFrame(luma: page, time: 0.5, title: otherTabTitle)) { "画像は作らない" }
-        emitter.emit(ScreenFrame(luma: page, time: 0.75, title: meetTitle)) { "A2" }
+        emitter.emit(ScreenFrame(luma: page, time: 0, title: meetTitle)) { shot("A") }
+        emitter.emit(ScreenFrame(luma: page, time: 0.25, title: otherTabTitle)) { shot("画像は作らない") }
+        emitter.emit(ScreenFrame(luma: page, time: 0.5, title: otherTabTitle)) { shot("画像は作らない") }
+        emitter.emit(ScreenFrame(luma: page, time: 0.75, title: meetTitle)) { shot("A2") }
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 0.25, image: nil), .screen(start: 0.75, image: "A2")])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 0.25, image: nil, lines: nil), .screen(start: 0.75, image: "A2", lines: [])])
     }
 
     @Test("画像を一度も送っていないときに会議以外のタブが来ても、何も出ない")
     func nonMeetingTabBeforeAnyImageEmitsNothing() async {
         let emitter = ScreenEventEmitter(bundleID: chromeBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: otherTabTitle)) { "画像は作らない" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: otherTabTitle)) { shot("画像は作らない") }
         let events = await collect(emitter)
         #expect(events.isEmpty)
     }
@@ -1066,33 +1093,33 @@ struct ScreenEventEmitterTests {
     func meetingAppTitleChangeEmitsNoNull() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
         let page = luma(fill: 20)
-        emitter.emit(ScreenFrame(luma: page, time: 0, title: meetTitle)) { "A" }
-        emitter.emit(ScreenFrame(luma: page, time: 0.25, title: otherTabTitle)) { "画像は作らない" }
+        emitter.emit(ScreenFrame(luma: page, time: 0, title: meetTitle)) { shot("A") }
+        emitter.emit(ScreenFrame(luma: page, time: 0.25, title: otherTabTitle)) { shot("画像は作らない") }
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A")])
+        #expect(events == [.screen(start: 0, image: "A", lines: [])])
     }
 
     @Test("会議以外のタブで null を出した後に取り込みが止まっても、null は重ねず screen-off だけが続く")
     func captureStoppedAfterNonMeetingTabDoesNotRepeatNull() async {
         let emitter = ScreenEventEmitter(bundleID: chromeBundleID)
         let page = luma(fill: 20)
-        emitter.emit(ScreenFrame(luma: page, time: 0, title: meetTitle)) { "A" }
-        emitter.emit(ScreenFrame(luma: page, time: 1, title: otherTabTitle)) { "画像は作らない" }
+        emitter.emit(ScreenFrame(luma: page, time: 0, title: meetTitle)) { shot("A") }
+        emitter.emit(ScreenFrame(luma: page, time: 1, title: otherTabTitle)) { shot("画像は作らない") }
         emitter.emitCaptureStopped(at: 2)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 1, image: nil), .screenOff(start: 2, reason: .許可なし)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 1, image: nil, lines: nil), .screenOff(start: 2, reason: .許可なし)])
     }
 
     // Issue #421: 撮っていたウィンドウが無くなっても終わらずに探し直し、見つけ直したウィンドウの最初の画面を送る。
     @Test("ウィンドウが消えて見つけ直すと、画像 → null（重なった通知でも 1 回）→ 見つけ直した最初の画像（前と同じ画像でも）の順で、screen-off は出ない")
     func windowGoneThenRediscoveredSendsNullOnceThenFirstFrame() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitWindowGone(at: 3) // streamDidBecomeInactive
         emitter.emitWindowGone(at: 3.25) // handleStop（重なった通知）
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 8, title: nil)) { "A2" } // 見つけ直したウィンドウの最初のフレーム（輝度は前と同じ）
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 8, title: nil)) { shot("A2") } // 見つけ直したウィンドウの最初のフレーム（輝度は前と同じ）
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil), .screen(start: 8, image: "A2")])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 3, image: nil, lines: nil), .screen(start: 8, image: "A2", lines: [])])
         #expect(!events.contains { if case .screenOff = $0 { return true } else { return false } })
     }
 
@@ -1100,9 +1127,9 @@ struct ScreenEventEmitterTests {
     func firstFrameAfterLateDiscoverySends() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
         emitter.emitWindowGone(at: 1)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 6, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 6, title: nil)) { shot("A") }
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 6, image: "A")])
+        #expect(events == [.screen(start: 6, image: "A", lines: [])])
     }
 
     @Test("終了後は何も送らず、画像も作らない")
@@ -1110,7 +1137,7 @@ struct ScreenEventEmitterTests {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
         emitter.close()
         var encodeCount = 0
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { encodeCount += 1; return "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { encodeCount += 1; return shot("A") }
         emitter.emitWindowGone(at: 1)
         emitter.close()
         let events = await collect(emitter)
@@ -1122,10 +1149,10 @@ struct ScreenEventEmitterTests {
     @Test("画像を送った後に取り込みが止まると、null の screen → screen-off（許可なし）の順に出る")
     func captureStoppedAfterImageSendsNullThenScreenOff() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitCaptureStopped(at: 6)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 6, image: nil), .screenOff(start: 6, reason: .許可なし)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 6, image: nil, lines: nil), .screenOff(start: 6, reason: .許可なし)])
     }
 
     @Test("画像を一度も送っていないときに止まると、screen-off だけが出る（null の screen は出さない）")
@@ -1139,31 +1166,31 @@ struct ScreenEventEmitterTests {
     @Test("ウィンドウが消えた後に止まっても、null の screen は重ねず screen-off だけが続く")
     func captureStoppedAfterWindowGoneDoesNotRepeatNull() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitWindowGone(at: 3)
         emitter.emitCaptureStopped(at: 4)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil), .screenOff(start: 4, reason: .許可なし)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 3, image: nil, lines: nil), .screenOff(start: 4, reason: .許可なし)])
     }
 
     @Test("ウィンドウが消えただけでは screen-off を出さない（許可の問題ではない）")
     func windowGoneAloneDoesNotSendScreenOff() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitWindowGone(at: 3)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 3, image: nil)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 3, image: nil, lines: nil)])
         #expect(!events.contains { if case .screenOff = $0 { return true } else { return false } })
     }
 
     @Test("取り込みが止まったことの通知は 1 回だけ。2 回目以降は何も送らない")
     func captureStoppedOnlyOnce() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
-        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { "A" }
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitCaptureStopped(at: 6)
         emitter.emitCaptureStopped(at: 7)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A"), .screen(start: 6, image: nil), .screenOff(start: 6, reason: .許可なし)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 6, image: nil, lines: nil), .screenOff(start: 6, reason: .許可なし)])
     }
 
     @Test("終了後に取り込みが止まっても何も送らない")
@@ -1201,5 +1228,23 @@ struct ScreenCapturePlanTests {
         let plan = screenCapturePlan(noScreen: false) { checks += 1; return false }
         #expect(plan == .denied)
         #expect(checks == 1)
+    }
+}
+
+@Suite("送る画面の組み立て（ScreenShot(jpeg:recognizedLines:)）")
+struct ScreenShotAssemblyTests {
+    private let jpeg = Data([0xFF, 0xD8, 0xFF])
+
+    @Test("OCR が失敗した（nil）ときも画像は base64 のまま残り、lines は空")
+    func keepsImageWhenRecognitionFails() {
+        let shot = ScreenShot(jpeg: jpeg, recognizedLines: nil)
+        #expect(shot == ScreenShot(image: "/9j/", lines: []))
+    }
+
+    @Test("OCR が行を返したら、その行がそのまま lines に載る")
+    func carriesRecognizedLines() {
+        let shot = ScreenShot(jpeg: jpeg, recognizedLines: ["港南店", "Zendesk"])
+        #expect(shot.image == "/9j/")
+        #expect(shot.lines == ["港南店", "Zendesk"])
     }
 }

@@ -157,8 +157,8 @@ struct WebSocketServerITTests {
         defer { Task { await server.stop() } }
 
         let origin = try HelperEvent.origin(hostTime: 42).jsonString()
-        let older = try HelperEvent.screen(start: 1, image: "b2xkZXI=").jsonString()
-        let latest = try HelperEvent.screen(start: 2, image: "bGF0ZXN0").jsonString()
+        let older = try HelperEvent.screen(start: 1, image: "b2xkZXI=", lines: nil).jsonString()
+        let latest = try HelperEvent.screen(start: 2, image: "bGF0ZXN0", lines: nil).jsonString()
         await server.broadcastRetained(origin, key: "origin")
         await server.broadcastRetained(older, key: "screen")
         await server.broadcastRetained(latest, key: "screen") // まだ誰も接続していない
@@ -192,7 +192,7 @@ struct WebSocketServerITTests {
         try await waitForClients(server, count: 1)
 
         // 接続した後に覚えさせた screen は、つながっているクライアントにも届き、origin はそのまま残る
-        let screen = try HelperEvent.screen(start: 5, image: "c2NyZWVu").jsonString()
+        let screen = try HelperEvent.screen(start: 5, image: "c2NyZWVu", lines: nil).jsonString()
         await server.broadcastRetained(screen, key: "screen")
         #expect(try await receiveText(first) == screen)
 

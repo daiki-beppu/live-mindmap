@@ -579,3 +579,56 @@ describe("ログの読み戻し（共有画面のないログは今までどお�
       expect(restored.remarks).toHaveLength(1);
     }));
 });
+
+// Issue #643: 画面の文字（OCR の行）。pushScreen の 2 番目の引数で渡した lines は screen の行にだけ残り、差分更新の入力（DiffInput.screens）には載らない
+describe("共有画面の文字（lines）", () => {
+  const start = { type: "start", title: "定例" };
+  it.effect("lines を渡した pushScreen は screen の行に lines を残す。空の配列は空のまま残り、渡さなければ lines のキーは無い", () =>
+    Effect.gen(function* () {
+      const { session, screenLines } = yield* setup();
+      yield* session.pushScreen(shot(1), ["港南店", "Zendesk"]);
+      yield* session.pushScreen(shot(2), []);
+      yield* session.pushScreen(shot(3));
+      yield* session.pushScreen(none(4));
+
+      const lines = screenLines();
+      expect(lines.map((l) => l.start)).toEqual([1, 2, 3, 4]);
+      expect((lines[0] as { lines?: unknown }).lines).toEqual(["港南店", "Zendesk"]);
+      expect((lines[1] as { lines?: unknown }).lines).toEqual([]);
+      expect("lines" in lines[2]!).toBe(false);
+      expect("lines" in lines[3]!).toBe(false);
+    }));
+
+  it.effect("差分更新の入力の screens は画像だけ。lines の文字は DiffInput のどこにも載らない（モデルには画像だけを渡す）", () =>
+    Effect.gen(function* () {
+      const { session, calls, call } = yield* setup();
+      yield* session.pushScreen(shot(1, "first"), ["港南店", "Zendesk"]);
+      yield* call(8, 9);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.screens?.map((s) => s.start)).toEqual([1]);
+      expect(Object.keys(calls[0]!.screens![0]!).sort()).toEqual(["image", "start"]);
+      const serialized = JSON.stringify(calls[0], (_key, value) => (value instanceof Uint8Array ? "<bytes>" : value));
+      expect(serialized).not.toContain("港南店");
+      expect(serialized).not.toContain("Zendesk");
+    }));
+
+  it.effect("lines つきの screen の行も、lines の無い古い screen の行も LogEvent として decode でき、restoreState で戻しても壊れた行にならない", () =>
+    Effect.gen(function* () {
+      const diff = { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [], dropped: [] };
+      const r1 = { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "発言" } };
+      const withLines = { type: "screen", start: 1, image: "0001.0.jpg", lines: ["港南店"] };
+      const old = { type: "screen", start: 2, image: "0002.0.jpg" };
+      yield* Schema.decodeUnknownEffect(LogEvent)(withLines);
+      yield* Schema.decodeUnknownEffect(LogEvent)(old);
+      const plain = yield* restoreState([start, r1, diff]);
+      const restored = yield* restoreState([start, withLines, old, r1, diff]);
+      expect(restored.remarks).toEqual(plain.remarks);
+      expect(restored.map).toEqual(plain.map);
+    }));
+
+  it.effect("vocab の行は出どころ screen も decode できる", () =>
+    Effect.gen(function* () {
+      yield* Schema.decodeUnknownEffect(LogEvent)({ type: "vocab", words: [{ surface: "港南店", romaji: "kounanten", source: "screen" }, { surface: "Zendesk", romaji: null, source: "screen" }] });
+    }));
+});
