@@ -5,6 +5,7 @@ import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "../src/managedDepsCheck.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
+import { HelperCheckFailure } from "../src/helpers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 
 const deps = (state: "ready" | "missing" | "outdated" | "absent") => ManagedDeps.of({
@@ -18,6 +19,35 @@ const deps = (state: "ready" | "missing" | "outdated" | "absent") => ManagedDeps
 const liveCheck = { screen: true, check: readyHelperChecks.check };
 
 describe("入口とモデル経路による管理依存の必要度", () => {
+  it.effect.each([
+    { status: "installed", locales: [], state: "ready" },
+    { status: "supported", locales: [], state: "missing" },
+    { status: "supported", locales: ["ja-JP", "ja_JP"], state: "missing" },
+    { status: "downloading", locales: ["ja-JP"], state: "missing" },
+    { status: "unsupported", locales: [], state: "missing" },
+  ] as const)("710-1: speech-ja $status / $locales は $state で容量・版を持たない", ({ status, locales, state }) => Effect.gen(function* () {
+    const report = yield* checkManagedDeps("start", "apple", { screen: false, check: Effect.succeed({
+      microphone: "authorized", speechJa: { status, installedLocales: [...locales] },
+    }) }).pipe(Effect.provideService(ManagedDeps, deps("ready")));
+    expect(report.items.filter((item) => item.name === "speech-ja")).toEqual([
+      { name: "speech-ja", need: "required", state, install: "pnpm cli install speech-ja" },
+    ]);
+    expect(report.ready).toBe(state === "ready");
+  }));
+  it.effect("710-1: helper 確認失敗は speech-ja の状態を捏造しない", () => Effect.gen(function* () {
+    const report = yield* checkManagedDeps("resume", "claude", { screen: false,
+      check: Effect.fail(new HelperCheckFailure({ message: "確認失敗" })),
+    }).pipe(Effect.provideService(ManagedDeps, deps("ready")));
+    expect(report.items.filter((item) => !["claude", "chromium"].includes(item.name))).toEqual([
+      { name: "helper", need: "required", state: "missing", install: "swift build -c release --package-path helper" },
+    ]);
+    expect(report.ready).toBe(false);
+  }));
+  it.effect("710-5: play はライブ確認なしで ready となり speech-ja を返さない", () => Effect.gen(function* () {
+    const report = yield* checkManagedDeps("play", "claude").pipe(Effect.provideService(ManagedDeps, deps("ready")));
+    expect(report.ready).toBe(true);
+    expect(report.items.map((item) => item.name)).toEqual(["chromium", "claude"]);
+  }));
   it.effect("偽 updater 用の確認は Claude だけ ready とし Chromium の状態と読込を保持する", () => Effect.gen(function* () {
     const fake = ManagedDeps.of({ ...deps("missing"), load: () => Effect.fail(new ManagedDepsFailed({ message: "管理依存の読込を委譲した" })) });
     const service = yield* ManagedDeps.pipe(Effect.provide(withFakeClaude(Layer.succeed(ManagedDeps, fake))));
@@ -65,6 +95,13 @@ describe("入口とモデル経路による管理依存の必要度", () => {
       { name: "chromium", need: "required", state: "missing" },
     ] });
     expect(error.message).toBe("開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）、chromium（Chromium）\n入れるには: pnpm cli install claude chromium\n利用者に確認してから入れてください");
+  });
+  it("710-2: Claude と speech-ja の不足はモデルの容量なしで指定の3行に整形する", () => {
+    const error = new StartupDepsMissing({ items: [
+      { name: "claude", need: "required", state: "missing", size: 224_000_000 },
+      { name: "speech-ja", need: "required", state: "missing" },
+    ] });
+    expect(error.message).toBe("開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）、speech-ja（日本語の音声認識モデル）\n入れるには: pnpm cli install claude speech-ja\n利用者に確認してから入れてください");
   });
   it.each([false, true])("C3: helper 不足は管理依存との同時不足=%s でも導入コマンドを別行で示す", (withClaude) => {
     const error = new StartupDepsMissing({ items: [

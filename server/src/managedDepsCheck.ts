@@ -28,6 +28,10 @@ const reportItem = (item: DepItem, required: ReadonlyArray<string>) => ({
 type LiveCheck = { screen: boolean; check: Effect.Effect<HelperCheck, HelperCheckFailure> };
 type CheckArgs = [entry: "play", route: typeof ModelRoute.Type] | [entry: "start" | "resume", route: typeof ModelRoute.Type, live: LiveCheck];
 
+export const speechJaItem = (status: HelperCheck["speechJa"]): typeof Item.Type => ({
+  name: "speech-ja", need: "required", state: status.status === "installed" ? "ready" : "missing", install: "pnpm cli install speech-ja",
+});
+
 const checkDependencies = Effect.fnUntraced(function* (...[entry, route, live]: CheckArgs) {
   const deps = yield* ManagedDeps;
   const items: Array<typeof Item.Type> = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
@@ -45,6 +49,7 @@ const checkDependencies = Effect.fnUntraced(function* (...[entry, route, live]: 
         items.push({ name: "screen-capture", need: "optional", state: status.screenCapture ? "ready" : "absent" });
         if (!status.screenCapture) warnings.push("画面収録の許可がありません。共有画面は読まず、音声だけで始めます");
       }
+      items.push(speechJaItem(status.speechJa));
     }
   }
   return { report: { ready: items.every((item) => item.need === "optional" || item.state === "ready"), items }, warnings };

@@ -7,8 +7,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { vi } from "vitest";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
-import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
-import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
+import { Helpers, HelperLaunchFailure, type HelperExitInfo, type HelperCheck } from "../src/helpers.ts";
+import { readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
 import { defaultClaude, type ExecutableModel } from "../src/modelSelection.ts";
 import { readModelTransferToken, MODEL_TRANSFER_HEADER } from "../src/modelTransferToken.ts";
@@ -41,7 +41,7 @@ const controlledDeps = () => {
 
 const controlledHelpers = () => {
   const calls: string[][] = [];
-  const control = { failRestarts: false };
+  const control = { failRestarts: false, speechStatus: "installed" as HelperCheck["speechJa"]["status"] };
   const endings: Array<Effect.Effect<void>> = [];
   const launch = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
     const index = calls.length;
@@ -60,7 +60,11 @@ const controlledHelpers = () => {
     yield* Effect.addFinalizer(() => stop);
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]) };
   });
-  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch })) };
+  const check = Effect.sync(() => ({ microphone: "authorized" as const, screenCapture: true,
+    speechJa: { status: control.speechStatus, installedLocales: ["ja-JP"] },
+  }));
+  const installSpeechJa = Stream.fromEffect(Effect.sync(() => { control.speechStatus = "installed"; return "取得完了"; }));
+  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, checkNoScreen: check, installSpeechJa, apps: Effect.succeed([]), launch })) };
 };
 
 const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingHelper = false) {
@@ -106,6 +110,47 @@ const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typ
 });
 
 describe("ライブの開始前の確かめ", () => {
+  it.live("710-2: speech-ja 不足は CLI start を副作用前に exit 3 で止め、導入後は同じサーバーで開始できる", () => Effect.gen(function* () {
+    const r = yield* resource(false);
+    r.helpers.control.speechStatus = "supported";
+    const result = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude");
+    expect(result).toEqual({ code: 3, stdout: "", stderr: "開始しません。足りないもの: speech-ja（日本語の音声認識モデル）\n入れるには: pnpm cli install speech-ja\n利用者に確認してから入れてください\n" });
+    expect(yield* r.status).toEqual({ status: "none" });
+    expect(existsSync(r.sessionsDir)).toBe(false);
+    expect(r.helpers.calls).toEqual([]);
+    expect(r.deps.load).not.toHaveBeenCalled();
+    expect(r.deps.install).not.toHaveBeenCalled();
+    expect((yield* cli(r.root, r.server.port, ["install", "speech-ja"], "claude")).code).toBe(0);
+    expect((yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude")).code).toBe(0);
+    expect(yield* r.status).toMatchObject({ status: "running" });
+    expect(r.helpers.calls).toHaveLength(1);
+  }).pipe(Effect.scoped));
+  it.live("710-2: speech-ja 不足の resume は同じセッションの停止状態・ログを保持し、導入後に回復する", () => Effect.gen(function* () {
+    const r = yield* resource(false);
+    const started = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude");
+    expect(started.code).toBe(0);
+    const dir = started.stdout.trim();
+    yield* stopIntake(r);
+    const before = yield* r.status;
+    const logBefore = yield* Effect.tryPromise(() => readFile(join(dir, "log.jsonl"), "utf8"));
+    const launches = r.helpers.calls.length;
+    r.helpers.control.speechStatus = "supported";
+    const checked = yield* cli(r.root, r.server.port, ["check", "--for", "resume"], "claude");
+    expect(checked.code).toBe(3);
+    expect(JSON.parse(checked.stdout).items.filter((item: { name: string }) => item.name === "speech-ja")).toEqual([
+      { name: "speech-ja", need: "required", state: "missing", install: "pnpm cli install speech-ja" },
+    ]);
+    expect(yield* cli(r.root, r.server.port, ["resume"], "claude")).toEqual({ code: 3, stdout: "", stderr: "開始しません。足りないもの: speech-ja（日本語の音声認識モデル）\n入れるには: pnpm cli install speech-ja\n利用者に確認してから入れてください\n" });
+    expect(yield* r.status).toEqual(before);
+    expect(r.helpers.calls).toHaveLength(launches);
+    expect(yield* Effect.tryPromise(() => readFile(join(dir, "log.jsonl"), "utf8"))).toBe(logBefore);
+    expect((yield* cli(r.root, r.server.port, ["install", "speech-ja"], "claude")).code).toBe(0);
+    r.helpers.control.failRestarts = false;
+    expect((yield* cli(r.root, r.server.port, ["resume"], "claude")).code).toBe(0);
+    expect(yield* r.status).toMatchObject({ status: "running", dir, restarts: 1 });
+    expect(r.helpers.calls).toHaveLength(launches + 1);
+    expect((yield* Effect.tryPromise(() => readFile(join(dir, "log.jsonl"), "utf8"))).startsWith(logBefore)).toBe(true);
+  }).pipe(Effect.scoped));
   it.live("C3: CLI check と start はヘルパーの確認失敗を exit 3 にする", () => Effect.gen(function* () {
     const r = yield* resource(false, true);
     const checked = yield* cli(r.root, r.server.port, ["check"], "claude");

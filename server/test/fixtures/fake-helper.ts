@@ -60,7 +60,7 @@ function writeAudioPlaceholders(audioDir: string, index: number | undefined): st
 }
 
 if (command === "check") {
-  console.log(JSON.stringify({ microphone: "authorized", ...(rest.includes("--no-screen") ? {} : { screenCapture: true }), speechJa: { status: "supported", installedLocales: [] } }));
+  console.log(JSON.stringify({ microphone: "authorized", ...(rest.includes("--no-screen") ? {} : { screenCapture: true }), speechJa: { status: "installed", installedLocales: ["ja-JP"] } }));
 } else if (command === "list") {
   console.log(JSON.stringify(script.apps));
 } else if (command === "mix") {

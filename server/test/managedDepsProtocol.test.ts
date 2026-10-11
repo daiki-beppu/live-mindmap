@@ -11,9 +11,18 @@ describe("管理依存の転送契約", () => {
       { name: "screen-capture", need: "optional", state: "ready" },
     ] };
     expect(yield* Schema.decodeUnknownEffect(CheckReport)(report)).toEqual(report);
-    for (const name of ["helper", "microphone", "screen-capture", "speech-ja"]) {
+    for (const name of ["helper", "microphone", "screen-capture"]) {
       expect(Result.isFailure(yield* Effect.result(Schema.decodeUnknownEffect(InstallBody)({ names: [name] })))).toBe(true);
     }
+  }));
+  it.effect("710-1・710-4: speech-ja の導入要求・結果・確認・開始拒否を転送できる", () => Effect.gen(function* () {
+    const body = { names: ["speech-ja", "claude"] };
+    expect(yield* Schema.decodeUnknownEffect(InstallBody)(body)).toEqual(body);
+    const items = [{ name: "speech-ja", need: "required", state: "ready", install: "pnpm cli install speech-ja" }];
+    expect(yield* Schema.decodeUnknownEffect(InstallEvent)({ type: "result", items })).toEqual({ type: "result", items });
+    expect(yield* Schema.decodeUnknownEffect(CheckReport)({ ready: true, items })).toEqual({ ready: true, items });
+    const refusal = { _tag: "StartupDepsMissing", items: [{ ...items[0], state: "missing" }] };
+    expect(yield* Schema.decodeUnknownEffect(StartupRefusal)(refusal)).toEqual(refusal);
   }));
   it.effect("開始拒否の不足項目を転送し、空の不足項目は拒否する", () => Effect.gen(function* () {
     const refusal = { _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing" }] };

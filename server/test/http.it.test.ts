@@ -44,11 +44,11 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   const checks: boolean[] = [];
   const check = Effect.sync(() => {
     checks.push(true);
-    return { ...permission, speechJa: { status: "supported" as const, installedLocales: [] } };
+    return { ...permission, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
   });
   const checkNoScreen = Effect.sync(() => {
     checks.push(false);
-    return { microphone: permission.microphone, speechJa: { status: "supported" as const, installedLocales: [] } };
+    return { microphone: permission.microphone, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
   });
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) =>
     Effect.gen(function* () {
@@ -83,7 +83,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []) };
     });
   const service = { apps: Effect.succeed(apps), check, checkNoScreen, launch };
-  return { helpers: Helpers.of(service), calls, checks };
+  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks };
 };
 
 const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } } = {}) {

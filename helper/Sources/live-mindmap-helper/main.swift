@@ -14,6 +14,7 @@ private func printError(_ message: String) {
 private let usage = """
 usage:
   live-mindmap-helper check [--no-screen]
+  live-mindmap-helper install-speech-ja
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
@@ -147,6 +148,14 @@ private func main() async -> Int32 {
             print(try status.jsonString())
         case "list":
             try listApps()
+        case "install-speech-ja":
+            switch parseInstallSpeechJaArguments(Array(arguments.dropFirst())) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
+                return 2
+            case .success:
+                try await installSpeechJa(progress: printError)
+            }
         case "run":
             let rest = Array(arguments.dropFirst())
             switch parseRunArguments(rest) {
