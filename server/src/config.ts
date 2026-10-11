@@ -15,3 +15,9 @@ export const sessionsDirConfig = Config.String("LIVE_MINDMAP_SESSIONS").pipe(
 );
 // ポートは Config.Int（Config.Port は 1 以上しか受けず、空きポートを選ばせる 0 を拒む）
 export const portConfig = Config.Int("LIVE_MINDMAP_PORT").pipe(Config.withDefault(DEFAULT_PORT));
+
+// 閲覧の共有の既定の許可（メール・ドメイン）。カンマ区切りで、前後の空白と空の要素は捨てる。無ければ空
+export const shareAllowConfig = Config.String("LIVE_MINDMAP_SHARE_ALLOW").pipe(
+  Config.withDefault(""),
+  Config.map((value) => value.split(",").map((item) => item.trim()).filter((item) => item !== "")),
+);

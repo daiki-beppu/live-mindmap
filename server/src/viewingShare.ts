@@ -3,7 +3,7 @@
 // どれも、この Scope の後始末（Tunnel の子プロセスを止める・閲覧の口の待受けを閉じる・状態を無しに戻す）に合流する。
 // http.ts を import しない（循環を避ける）。閲覧の口を開く関数は Layer の引数で受ける。
 import { Context, Deferred, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from "effect";
-import type { ShareOpenOutcome, ShareStatus } from "./core/index.ts";
+import type { ShareAllow, ShareOpenOutcome, ShareStatus } from "./core/index.ts";
 import { ReviewBuild } from "./review.ts";
 import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions } from "./sessions.ts";
@@ -18,7 +18,7 @@ export class ShareRefusedLocalMode extends Schema.TaggedError<ShareRefusedLocalM
   message: Schema.String,
 }) {}
 
-// 許可の範囲が空（--anyone が無い）。共有中・セッション無し・ローカル・cloudflared 無しの判定のあとで拒否する
+// 許可の範囲が空（メール・ドメインも --anyone も無い）。共有中・セッション無し・ローカル・cloudflared 無しの判定のあとで拒否する
 export class ShareScopeEmpty extends Schema.TaggedError<ShareScopeEmpty>()("ShareScopeEmpty", { message: Schema.String }) {}
 
 // 閲覧の口を開いた結果。port は待ち受けているポート。allow は許す Origin のホスト名を 1 つ決める（tunnel のホスト名が出てから呼ぶ）
@@ -34,7 +34,7 @@ type Current =
 export class ViewingShare extends Context.Service<ViewingShare, {
   // 閲覧の共有を開く。すでに開いていれば今の状態を返し、新しくは開かない。
   // 新しく開いたか既存を返したかは、ロックの中で決めた outcome で伝える
-  open: (scope: { readonly anyone: boolean }) => Effect.Effect<{ readonly outcome: ShareOpenOutcome; readonly status: Extract<ShareStatus, { status: "open" }> }, ShareOpenFailed | ShareRefusedLocalMode | ShareScopeEmpty | CloudflaredMissing | SessionFailure>;
+  open: (allow: ShareAllow | undefined) => Effect.Effect<{ readonly outcome: ShareOpenOutcome; readonly status: Extract<ShareStatus, { status: "open" }> }, ShareOpenFailed | ShareRefusedLocalMode | ShareScopeEmpty | CloudflaredMissing | SessionFailure>;
   // 閉じる。開いていなくても成功する
   close: Effect.Effect<void>;
   status: Effect.Effect<ShareStatus>;
@@ -49,7 +49,7 @@ export class ViewingShare extends Context.Service<ViewingShare, {
       // 開く・閉じるは 1 つずつ。二重に開かず、開く途中で閉じる操作と交わらない
       const lock = yield* Semaphore.make(1);
 
-      const open = (requested: { readonly anyone: boolean }) => lock.withPermit(Effect.gen(function* () {
+      const open = (allow: ShareAllow | undefined) => lock.withPermit(Effect.gen(function* () {
         const existing = yield* Ref.get(current);
         if (existing?.phase === "open") return { outcome: "already-open", status: existing.status } as const;
         const { scope: sessionScope, local } = yield* sessions.liveSession;
@@ -58,8 +58,8 @@ export class ViewingShare extends Context.Service<ViewingShare, {
         }
         // 閲覧の口やビルドを作る前に、cloudflared が使えるかを確かめる
         yield* tunnel.check.pipe(Effect.catchTag("TunnelFailed", (error) => Effect.fail(new ShareOpenFailed({ message: error.message }))));
-        if (!requested.anyone) {
-          return yield* new ShareScopeEmpty({ message: "閲覧の共有の許可の範囲を指定してください（--anyone）。閉じるときは --stop" });
+        if (allow === undefined) {
+          return yield* new ShareScopeEmpty({ message: "閲覧の共有の許可の範囲を指定してください（メール・ドメインを引数で渡すか、LIVE_MINDMAP_SHARE_ALLOW に書くか、誰でも見られてよいなら --anyone）。閉じるときは --stop" });
         }
         const id = {};
         // 共有の Scope の用意。fork・状態の登録・後始末の登録は途中で割り込まれない。
@@ -78,9 +78,9 @@ export class ViewingShare extends Context.Service<ViewingShare, {
         const failed = (message: string) => new ShareOpenFailed({ message });
         const body = Effect.gen(function* () {
           const view = yield* openViewingPort.pipe(Scope.provide(scope), Effect.provideService(Viewers, viewers), Effect.provideService(ReviewBuild, build));
-          const opened = yield* tunnel.open(view.port).pipe(Scope.provide(scope));
+          const opened = yield* tunnel.open(view.port, allow).pipe(Scope.provide(scope));
           yield* view.allow(opened.hostname);
-          const status = { status: "open", url: `https://${opened.hostname}`, allow: "anyone" } as const;
+          const status = { status: "open", url: `https://${opened.hostname}`, allow } as const;
           // 開始の途中で閉じられていたら、open を公開しない。閉じ始めると Scope は先に Closed になり、
           // 状態の消去は後始末の最後に走るため、状態が残っていても Closed なら公開しない
           const published = yield* Ref.modify(current, (now): readonly [boolean, Current | undefined] =>

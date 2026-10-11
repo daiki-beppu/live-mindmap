@@ -10,7 +10,7 @@ import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
-import { depsDirConfig, portConfig, sessionsDirConfig } from "./config.ts";
+import { depsDirConfig, portConfig, sessionsDirConfig, shareAllowConfig } from "./config.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
@@ -27,6 +27,7 @@ import {
   formatShareOpened,
   formatShareStatus,
   SHARE_OPEN_OUTCOME_HEADER,
+  ShareAllow,
   ShareOpenOutcome,
   ShareStatus,
   formatTable,
@@ -554,9 +555,17 @@ const status = Command.make(
   ),
 );
 
+// 許す範囲は 既定の許可 + 引数（重複は除く）。--anyone のときだけ「誰でも」。範囲が空なら {}（空の拒否はサーバーの判定順に任せる）
+const shareOpenBody = (anyone: boolean, mails: readonly string[]) =>
+  anyone ? { anyone: true } : mails.length > 0 ? { mails: [...new Set(mails)] } : {};
+
 const share = Command.make(
   "share",
   {
+    mails: Argument.String("mail").pipe(
+      Argument.withDescription("閲覧を許すメール（a@example.com）かドメイン（*@example.com）。LIVE_MINDMAP_SHARE_ALLOW の既定の許可に足される"),
+      Argument.variadic(),
+    ),
     anyone: Flag.Boolean("anyone").pipe(
       Flag.withDescription("URL を知っていれば誰でも見られる閲覧の共有を開く"),
       Flag.withDefault(false),
@@ -566,26 +575,29 @@ const share = Command.make(
       Flag.withDefault(false),
     ),
   },
-  Effect.fn("share")(function* ({ anyone, stop }) {
+  Effect.fn("share")(function* ({ mails, anyone, stop }) {
     if (stop && anyone) return yield* new CommandFailed({ message: "--stop と --anyone は一緒に指定できません" });
+    if (stop && mails.length > 0) return yield* new CommandFailed({ message: "--stop とメール・ドメインは一緒に指定できません" });
+    if (anyone && mails.length > 0) return yield* new CommandFailed({ message: "--anyone とメール・ドメインは一緒に指定できません" });
     const port = yield* portConfig;
+    const defaults = yield* shareAllowConfig;
     if (stop) {
       yield* requestServer(port, "POST", "/share/close", ShareStatus);
       return;
     }
     // 拒否の判定順（共有中・セッション無し・ローカル・cloudflared 無し・範囲が空）はサーバーが持つ。
     // 新しく開いたか既存を返したかは、サーバーがロックの中で決めてヘッダーで返す
-    const response = yield* executeServerRequest(port, "POST", "/share/open", anyone ? { anyone: true } : {});
+    const response = yield* executeServerRequest(port, "POST", "/share/open", shareOpenBody(anyone, [...defaults, ...mails]));
     const outcome = yield* Schema.decodeUnknownEffect(ShareOpenOutcome)(response.headers[SHARE_OPEN_OUTCOME_HEADER]).pipe(
       Effect.mapError(() => new ServerFailed({ message: "サーバーの応答が読めません: 共有の結果を示すヘッダーがありません" })),
     );
-    const status = yield* decodeServerBody(response, Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: Schema.Literal("anyone") }));
+    const status = yield* decodeServerBody(response, Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: ShareAllow }));
     if (outcome === "already-open") return yield* new CommandFailed({ message: formatShareAlreadyOpen(status).trimEnd() });
     yield* write(formatShareOpened(status));
   }),
 ).pipe(
   Command.withDescription(
-    "閲覧の共有を開き、URL・許可の範囲・稼働の保証が無い旨を出す（--anyone）。--stop で閉じる。セッションの終了でも閉じる",
+    "閲覧の共有を開き、URL・許可の範囲・稼働の保証が無い旨を出す（cli share <メール・ドメイン...>。LIVE_MINDMAP_SHARE_ALLOW の既定の許可に足す。誰でも見られてよいなら --anyone）。--stop で閉じる。セッションの終了でも閉じる",
   ),
 );
 

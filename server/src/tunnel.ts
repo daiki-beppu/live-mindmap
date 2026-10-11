@@ -4,7 +4,7 @@
 // パイプが詰まらないよう最後まで読み続ける。
 import { Context, Deferred, Effect, Layer, Schema, Stream, type Scope } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { quickTunnelHostname } from "./core/index.ts";
+import { quickTunnelArgs, quickTunnelHostname, type ShareAllow } from "./core/index.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 
 // SIGTERM を送ってから SIGKILL に切り替えるまでの待ち時間
@@ -25,18 +25,18 @@ export type OpenedTunnel = {
 export class Tunnel extends Context.Service<Tunnel, {
   // cloudflared が使える状態かを確かめる。起動はしない。無ければ CloudflaredMissing
   check: Effect.Effect<void, CloudflaredMissing | TunnelFailed>;
-  // port の 127.0.0.1 を公開する tunnel を開く。ホスト名が出るまで待つ。子プロセスは呼び出し側の Scope で止まる
-  open: (port: number) => Effect.Effect<OpenedTunnel, TunnelFailed, Scope.Scope>;
+  // port の 127.0.0.1 を公開する tunnel を開く（allow がメール・ドメインなら --allowed-mail で絞る）。ホスト名が出るまで待つ。子プロセスは呼び出し側の Scope で止まる
+  open: (port: number, allow: ShareAllow) => Effect.Effect<OpenedTunnel, TunnelFailed, Scope.Scope>;
 }>()("live-mindmap/server/Tunnel") {
   static readonly layer: Layer.Layer<Tunnel, never, ManagedDeps | ChildProcessSpawner.ChildProcessSpawner> = Layer.effect(Tunnel)(
     Effect.gen(function* () {
       const deps = yield* ManagedDeps;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const open = Effect.fnUntraced(function* (port: number): Effect.fn.Return<OpenedTunnel, TunnelFailed, Scope.Scope> {
+      const open = Effect.fnUntraced(function* (port: number, allow: ShareAllow): Effect.fn.Return<OpenedTunnel, TunnelFailed, Scope.Scope> {
         const scope = yield* Effect.scope;
         const binary = yield* deps.executable("cloudflared").pipe(Effect.mapError((error) => new TunnelFailed({ message: error.message })));
         const handle = yield* spawner
-          .spawn(ChildProcess.make(binary, ["tunnel", "--url", `http://127.0.0.1:${port}`], { stdin: "ignore", forceKillAfter: TUNNEL_STOP_TIMEOUT_MS }))
+          .spawn(ChildProcess.make(binary, quickTunnelArgs(port, allow), { stdin: "ignore", forceKillAfter: TUNNEL_STOP_TIMEOUT_MS }))
           .pipe(Effect.mapError((error) => new TunnelFailed({ message: `cloudflared を起動できません: ${error.message}` })));
         // stdout と stderr のどちらにホスト名が出てもよい。1 本の Fiber が最後まで読み続け（パイプが詰まらない）、
         // 最初のホスト名だけを取り出す。読んだ行はそれ以外どこにも出さない

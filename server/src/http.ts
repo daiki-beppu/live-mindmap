@@ -5,7 +5,7 @@
 //   POST /session/stop    セッションを終了し、書き出したパスを返す
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
-//   POST /share/open      { anyone: true } で閲覧の共有を開く（すでに開いていれば今の状態を返す）
+//   POST /share/open      { anyone: true } か { mails: [メール・ドメイン...] } で閲覧の共有を開く（すでに開いていれば今の状態を返す）
 //                         ローカルモードのセッションは 409、cloudflared が無いときは 503（入れ方を示す）、範囲が空（{}）は 400 で、どれも開かない
 //   POST /share/close     閲覧の共有を閉じる（開いていなくても成功する）
 //   GET  /share/status    閲覧の共有の状態（無し・共有中・切れた）を返す
@@ -21,7 +21,7 @@ import { WebSocket } from "ws";
 import { Cause, Context, Effect, Layer, Option, Ref, Schema, Stream, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
-import { SHARE_OPEN_OUTCOME_HEADER } from "./core/index.ts";
+import { SHARE_OPEN_OUTCOME_HEADER, ShareMail } from "./core/index.ts";
 import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
@@ -159,8 +159,12 @@ const feed = Effect.gen(function* () {
   return HttpServerResponse.empty();
 });
 
-// /share/open の本文。範囲は { anyone: true } か、範囲なしの {}（範囲が空の拒否はサーバーが判定順の最後で決める）。メール・ドメインの指定は #836
-const ShareOpenBody = Schema.Struct({ anyone: Schema.optionalKey(Schema.Literal(true)) });
+// /share/open の本文。範囲は { anyone: true } か { mails: [1 件以上] }、範囲なしの {}（範囲が空の拒否はサーバーが判定順の最後で決める）。
+// 両方を持つ本文は、どの形にも当たらず 400
+const ShareOpenBody = Schema.Union([
+  Schema.Struct({ anyone: Schema.optionalKey(Schema.Literal(true)) }),
+  Schema.Struct({ mails: Schema.Array(ShareMail).check(Schema.isMinLength(1)) }),
+]);
 
 const SessionRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/apps", Effect.gen(function* () {
@@ -185,7 +189,7 @@ const SessionRoutes = HttpRouter.addAll([
       Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
     );
     const share = yield* ViewingShare;
-    const { outcome, status } = yield* share.open({ anyone: body.anyone === true });
+    const { outcome, status } = yield* share.open("anyone" in body ? "anyone" : "mails" in body ? { mails: body.mails } : undefined);
     return HttpServerResponse.jsonUnsafe(status, { headers: { [SHARE_OPEN_OUTCOME_HEADER]: outcome } });
   })),
   HttpRouter.route("POST", "/share/close", Effect.gen(function* () {

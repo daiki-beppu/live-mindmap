@@ -2,7 +2,8 @@
 // 状態の型は 無し・共有中・切れた の 3 つ（切れたへの遷移は #837）。
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { formatShareAlreadyOpen, formatShareOpened, formatShareStatus, quickTunnelHostname, ShareStatus } from "../src/core/index.ts";
+import { formatShareAlreadyOpen, formatShareOpened, formatShareStatus, quickTunnelArgs, quickTunnelHostname, ShareStatus } from "../src/core/index.ts";
+import { allowedMails } from "./fixtures/allowedMail.ts";
 
 describe("quickTunnelHostname", () => {
   it("quick tunnel の URL を含む行から、ハイフンを含むラベルのホスト名を取る", () => {
@@ -25,6 +26,15 @@ describe("ShareStatus（状態の型は 3 つ）", () => {
     expect(decode({ status: "off" })).toEqual({ status: "off" });
     expect(decode({ status: "open", url: "https://a-b.trycloudflare.com", allow: "anyone" })).toEqual({ status: "open", url: "https://a-b.trycloudflare.com", allow: "anyone" });
     expect(decode({ status: "broken", allow: "anyone" })).toEqual({ status: "broken", allow: "anyone" });
+  });
+
+  it("許可の範囲はメール・ドメインの一覧（1 件以上）でも読める。空の一覧は読めない", () => {
+    const mails = ["a@x.com", "*@example.co.jp"];
+    expect(decode({ status: "open", url: "https://a-b.trycloudflare.com", allow: { mails } })).toEqual({ status: "open", url: "https://a-b.trycloudflare.com", allow: { mails } });
+    expect(decode({ status: "broken", allow: { mails } })).toEqual({ status: "broken", allow: { mails } });
+    expect(() => decode({ status: "open", url: "https://a-b.trycloudflare.com", allow: { mails: [] } })).toThrow();
+    expect(() => decode({ status: "broken", allow: { mails: [] } })).toThrow();
+    expect(() => decode({ status: "open", url: "https://a-b.trycloudflare.com", allow: "nobody" })).toThrow();
   });
 
   it("未知の状態、URL の無い共有中は読めない", () => {
@@ -59,6 +69,46 @@ describe("cli の表示", () => {
     expect(lines[0]).toContain("https://a-b.trycloudflare.com");
     expect(lines[1]).toContain("誰でも");
     expect(lines[2]).toContain("保証");
+  });
+});
+
+describe("メール・ドメインの範囲の表示", () => {
+  const mails = { mails: ["a@x.com", "*@example.co.jp"] };
+  const open = { status: "open", url: "https://a-b.trycloudflare.com", allow: mails } as const;
+
+  it("formatShareStatus: 共有中・切れたの許可の範囲にメール・ドメインを並べる（誰でもとは出さない）", () => {
+    expect(formatShareStatus(open).trimEnd().split("\n")).toEqual([
+      "閲覧の共有: 共有中", "URL: https://a-b.trycloudflare.com", "許可の範囲: a@x.com, *@example.co.jp",
+    ]);
+    const broken = formatShareStatus({ status: "broken", allow: mails });
+    expect(broken).toContain("許可の範囲: a@x.com, *@example.co.jp");
+    expect(broken).not.toContain("誰でも");
+  });
+
+  it("formatShareOpened / formatShareAlreadyOpen: メール・ドメインを出し、誰でもとは出さない", () => {
+    const opened = formatShareOpened(open).trimEnd().split("\n");
+    expect(opened).toHaveLength(3);
+    expect(opened[1]).toContain("a@x.com");
+    expect(opened[1]).toContain("*@example.co.jp");
+    expect(opened[1]).not.toContain("誰でも");
+    const already = formatShareAlreadyOpen(open);
+    expect(already).toContain("a@x.com");
+    expect(already).toContain("*@example.co.jp");
+    expect(already).not.toContain("誰でも");
+  });
+});
+
+describe("quickTunnelArgs（cloudflared の引数）", () => {
+  it("誰でもは --allowed-mail を付けず、ポートの URL だけを渡す", () => {
+    const args = quickTunnelArgs(4321, "anyone");
+    expect(args.slice(0, 3)).toEqual(["tunnel", "--url", "http://127.0.0.1:4321"]);
+    expect(args).not.toContain("--allowed-mail");
+  });
+
+  it("メール・ドメインがあれば --allowed-mail で全部を渡す", () => {
+    const args = quickTunnelArgs(4321, { mails: ["a@x.com", "*@example.co.jp"] });
+    expect(args.slice(0, 3)).toEqual(["tunnel", "--url", "http://127.0.0.1:4321"]);
+    expect(allowedMails(args)).toEqual(["*@example.co.jp", "a@x.com"]);
   });
 });
 

@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result, Stream } from "effect";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { CloudflaredMissing, Tunnel } from "../src/tunnel.ts";
+import { allowedMails } from "./fixtures/allowedMail.ts";
 import { archive } from "./fixtures/cloudflared.ts";
 import { fakeNpm, temporaryDeps } from "./fixtures/managedDeps.ts";
 
@@ -57,4 +58,46 @@ describe("Tunnel.check（cloudflared の有無）", () => {
     expect(Result.isSuccess(result)).toBe(true);
     expect(spawned).toEqual([]);
   }).pipe(Effect.scoped));
+});
+
+
+// Tunnel.open（Issue #836）。本物の Tunnel.layer が cloudflared へ渡す引数を、偽の spawner で観測する。cloudflared は起動しない。
+describe("Tunnel.open の引数（許可の範囲）", () => {
+  const argsFor = (allow: Parameters<(typeof Tunnel)["Service"]["open"]>[1]) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const root = join(dir, "deps");
+    const fixture = yield* archive(dir);
+    const options = { root, npm: yield* fakeNpm(dir), cloudflared: {
+      resolve: Effect.succeed(fixture.artifact),
+      download: (_url: string, destination: string) => Effect.tryPromise(() => copyFile(fixture.path, destination)),
+    } };
+    const deps = ManagedDeps.layer(options).pipe(Layer.provide(NodeServices.layer));
+    yield* Effect.gen(function* () {
+      const managed = yield* ManagedDeps;
+      yield* Stream.runCollect(managed.install(["cloudflared"]));
+    }).pipe(Effect.provide(deps));
+    const commands: ChildProcess.StandardCommand[] = [];
+    const spawner = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, ChildProcessSpawner.make((command) => {
+      if (ChildProcess.isStandardCommand(command)) commands.push(command);
+      return Effect.die("引数を観測したら起動しない");
+    }));
+    yield* Effect.gen(function* () {
+      const tunnel = yield* Tunnel;
+      yield* Effect.exit(tunnel.open(4321, allow));
+    }).pipe(Effect.scoped, Effect.provide(Tunnel.layer.pipe(Layer.provide(Layer.merge(deps, spawner)))));
+    expect(commands).toHaveLength(1);
+    return commands[0]!.args;
+  }).pipe(Effect.scoped);
+
+  it.live("メール・ドメインがあれば --allowed-mail で全部を渡す", () => Effect.gen(function* () {
+    const args = yield* argsFor({ mails: ["a@x.com", "*@example.co.jp"] });
+    expect(args).toContain("http://127.0.0.1:4321");
+    expect(allowedMails(args)).toEqual(["*@example.co.jp", "a@x.com"]);
+  }));
+
+  it.live("誰でもなら --allowed-mail を付けない", () => Effect.gen(function* () {
+    const args = yield* argsFor("anyone");
+    expect(args).toContain("http://127.0.0.1:4321");
+    expect(args).not.toContain("--allowed-mail");
+  }));
 });
