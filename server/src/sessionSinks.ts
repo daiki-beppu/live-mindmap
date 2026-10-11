@@ -105,7 +105,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             emit: (settled) =>
               Effect.gen(function* () {
                 const n = yield* Ref.updateAndGet(count, (c) => c + 1);
-                yield* session.push({ ...settled, id: `r${n}` });
+                // words は Remark に入れず、ログの行にだけ残す
+                const { words, ...rest } = settled;
+                yield* session.push({ ...rest, id: `r${n}` }, words);
                 yield* relay.remark(settled.track);
               }),
           });

@@ -4,20 +4,22 @@
 import type { HelperPartial } from "./live.ts";
 import { createRemarkGate } from "./remarkGate.ts";
 import type { Remark } from "./session.ts";
+import type { Word } from "./words.ts";
 
 export const SETTLE_QUIET_MS = 1000;
 
 // ID は呼び出し側が push の直前に振る（捨てた確定結果が番号を消費しない）
-export type SettledRemark = Omit<Remark, "id">;
+// words は Remark に入れず、運ぶ型にだけ持つ（スナップショット・差分更新への入力に漏らさない）
+export type SettledRemark = Omit<Remark, "id"> & { words?: readonly Word[] };
 
 const EPSILON = 1e-6;
 
-type Utterance = { track: Remark["track"]; start: number; end: number; text: string; lastAt: number; state: "open" | "emitted" | "consumed" };
+type Utterance = { track: Remark["track"]; start: number; end: number; text: string; words: readonly Word[] | undefined; lastAt: number; state: "open" | "emitted" | "consumed" };
 
 const keyOf = (track: string, start: number) => `${track}\u0000${start}`;
 // 途中結果の区間は確定結果の区間と端がずれるので、発話の区間の中央が確定結果の区間に入るかで覆いを決める
 const midpoint = (u: Utterance) => (u.start + u.end) / 2;
-const toRemark = (u: Utterance): SettledRemark => ({ track: u.track, start: u.start, end: u.end, text: u.text });
+const toRemark = (u: Utterance): SettledRemark => ({ track: u.track, start: u.start, end: u.end, text: u.text, ...(u.words === undefined ? {} : { words: u.words }) });
 
 export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
   const utterances: Utterance[] = []; // 作った順。覆われて使い終わったもの（consumed）は除く
@@ -46,10 +48,11 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
       if (current && current.state === "open" && now - current.lastAt <= quietMs) {
         current.end = p.end;
         current.text = p.text;
+        current.words = p.words; // text と同じ更新で置き換える（undefined でも代入し、古い words を残さない）
         current.lastAt = now;
         return;
       }
-      const next: Utterance = { track: p.track, start: p.start, end: p.end, text: p.text, lastAt: now, state: "open" };
+      const next: Utterance = { track: p.track, start: p.start, end: p.end, text: p.text, words: p.words, lastAt: now, state: "open" };
       utterances.push(next);
       latest.set(key, next);
     },

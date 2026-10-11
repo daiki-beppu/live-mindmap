@@ -6,6 +6,7 @@ import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, Diff
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MapNode, type MeetingMap, type PointStatus } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
+import { Word } from "./words.ts";
 
 export const Track = Schema.Literals(["自分", "相手"]);
 export type Track = typeof Track["Type"];
@@ -67,7 +68,9 @@ export const StartEvent = Schema.Struct({
   model: Schema.optionalKey(Schema.Struct({ name: Schema.String, route: Schema.String, local: Schema.Boolean })),
 });
 // noContent は、中身のない発言（hasContent が false）として差分更新・未反映の発言から外したことの印。ログにだけ付く
-export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)) });
+export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)),
+  // 直す前の本文と語（Issue #639）。words を受け取った発言の行にだけ付く。補正はしないので raw は remark.text と同じ
+  raw: Schema.optionalKey(Schema.String), words: Schema.optionalKey(Schema.Array(Word)) });
 // ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない
 const ScreenRef = Schema.Struct({ start: Schema.Finite, image: Schema.NullOr(Schema.String) });
 export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.String) });
@@ -280,7 +283,7 @@ export function snapshotOf(state: SessionState): Snapshot {
 }
 
 export type Session = {
-  readonly push: (remark: Remark) => Effect.Effect<void>;
+  readonly push: (remark: Remark, words?: readonly Word[]) => Effect.Effect<void>;
   // 呼び出し中のものと、それに続けて起きた呼び出しがすべて終わるまで待つ
   readonly idle: Effect.Effect<void>;
   // 共有画面の変化を受ける。差分更新は呼ばない。画像は writeScreen に渡し、変化ごとに screen の行を書く。
@@ -517,15 +520,16 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     });
 
     return {
-      push: (r) =>
+      push: (r, words) =>
         Effect.gen(function* () {
           yield* Ref.update(ref, (s) => ({ ...s, remarks: [...s.remarks, r] }));
+          const extra = words === undefined ? {} : { raw: r.text, words };
           if (!r.duplicate && !hasContent(r.text)) {
             // 中身のない発言: ログには残すが、差分更新・未反映の発言・待ち時間には関わらせない
-            yield* log.write({ type: "remark", remark: r, noContent: true });
+            yield* log.write({ type: "remark", remark: r, noContent: true, ...extra });
             return;
           }
-          yield* log.write({ type: "remark", remark: r });
+          yield* log.write({ type: "remark", remark: r, ...extra });
           if (r.duplicate) return;
           yield* cancelWaiter;
           yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], quiet: false }));

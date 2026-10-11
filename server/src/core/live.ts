@@ -2,6 +2,7 @@
 // Node の実行環境に依存しない（ADR 0003）。
 import { Effect, Schema } from "effect";
 import { Track } from "./session.ts";
+import { Word } from "./words.ts";
 
 // partial（途中結果）と remark（確定結果）が共通して持つ項目。
 // duplicate の項目がないイベントは、重複ではないものとして扱う（helper/README.md「イベントの形」）
@@ -11,6 +12,8 @@ const helperRemarkFields = {
   end: Schema.Finite,
   text: Schema.String,
   duplicate: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  // 本文を語に区切ったもの（Issue #639）。無い旧イベントも受け付ける
+  words: Schema.optionalKey(Schema.Array(Word)),
 };
 
 // ヘルパーのイベントの形（helper/README.md「イベントの形」）。decodeHelperEvent が使う。

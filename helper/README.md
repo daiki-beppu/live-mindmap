@@ -56,17 +56,18 @@ swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分] 
 `ws://127.0.0.1:<port>` に、テキストフレームで JSON を流す。`start` / `end` は、`run` が音声取得を始める直前を 0 とする、2 トラック共通の秒数。`id` はサーバーが採番するので、ここでは付けない。`自分` のトラックも `相手` と同じ形で流れる。
 
 ```json
-{"type":"partial","track":"相手","start":1.5,"end":2,"text":"こんに","duplicate":false}
-{"type":"remark","track":"相手","start":1.5,"end":3.25,"text":"こんにちは","duplicate":false}
-{"type":"partial","track":"自分","start":4,"end":4.5,"text":"はい","duplicate":false}
+{"type":"partial","track":"相手","start":1.5,"end":2,"text":"こんに","duplicate":false,"words":[{"surface":"こんに","romaji":"konni","location":0,"length":3}]}
+{"type":"remark","track":"相手","start":1.5,"end":3.25,"text":"こんにちは","duplicate":false,"words":[{"surface":"こんにちは","romaji":"konnichiha","location":0,"length":5}]}
+{"type":"partial","track":"自分","start":4,"end":4.5,"text":"はい","duplicate":false,"words":[{"surface":"はい","romaji":"hai","location":0,"length":2}]}
 {"type":"origin","hostTime":"123456789"}
 {"type":"screen","start":12.5,"image":"/9j/4AAQSkZJRg=="}
 {"type":"screen","start":80,"image":null}
 {"type":"screen-off","start":0.5,"reason":"許可なし"}
 ```
 
-- `partial`: 途中結果（トラック・開始・終了・本文・重複の印）。同じトラックで `start` が同じ途中結果の列は、同じ発話の更新（本文が変わっても同じ発話）。サーバーは、1 秒更新されない発話を最後の本文・区間で発言にする（`自分` の途中結果は発言にしない）。`duplicate` は、出力先がスピーカーのとき、`自分` の途中結果のうち、前後 8 秒の `相手` の確定結果と `相手` の最新の途中結果をつないだ文字列との文字 3-gram の被覆率が 0.6 以上のものが true（正規化後に 3 文字未満は false、`相手` の途中結果は常に false）。印の付いた途中結果も捨てずに流し、サーバーは字幕に出さない
-- `remark`: 確定結果（トラック・開始・終了・本文・重複の印）。`duplicate` は、出力先がスピーカーのとき、`自分` の発言のうち前後 8 秒の `相手` の発言と文字 3-gram の被覆率が 0.6 以上のものが true（`相手` の発言は常に false）。印の付いた発言も捨てずに流す。サーバーは印の付いた発言を差分更新に使わず、ログには残す
+- `words`（`partial` と `remark` の両方、両トラック）: 本文を CFStringTokenizer（`ja`、語の境界）で区切った語の配列。要素は `surface`（表記）・`romaji`（`kCFStringTokenizerAttributeLatinTranscription` のローマ字の読み。無ければ空文字）・`location` / `length`（本文の中の位置と長さ。UTF-16 コード単位で、`start` / `end` の秒とは別）。語が無い本文は空の配列。サーバーは `words` の無いイベントも受け付ける
+- `partial`: 途中結果（トラック・開始・終了・本文・重複の印・語）。同じトラックで `start` が同じ途中結果の列は、同じ発話の更新（本文が変わっても同じ発話）。サーバーは、1 秒更新されない発話を最後の本文・区間で発言にする（`自分` の途中結果は発言にしない）。`duplicate` は、出力先がスピーカーのとき、`自分` の途中結果のうち、前後 8 秒の `相手` の確定結果と `相手` の最新の途中結果をつないだ文字列との文字 3-gram の被覆率が 0.6 以上のものが true（正規化後に 3 文字未満は false、`相手` の途中結果は常に false）。印の付いた途中結果も捨てずに流し、サーバーは字幕に出さない
+- `remark`: 確定結果（トラック・開始・終了・本文・重複の印・語）。`duplicate` は、出力先がスピーカーのとき、`自分` の発言のうち前後 8 秒の `相手` の発言と文字 3-gram の被覆率が 0.6 以上のものが true（`相手` の発言は常に false）。印の付いた発言も捨てずに流す。サーバーは印の付いた発言を差分更新に使わず、ログには残す
 - `origin`: ヘルパーのプロセスにつき 1 回だけ、時刻の基準が決まった直後（`partial` / `remark` より前）に送る。`AudioGetCurrentHostTime()` の値（`--origin` を渡したときはその値）を `hostTime` に積む。64 bit の値は JSON の number では桁が落ちるので、文字列にする。サーバーは、ライブセッションの間、最初のヘルパーの `origin` の値を覚えておき、再起動したヘルパーに `--origin` として渡すことで、発言の時刻が再起動のたびに 0 へ戻らず、元の開始からの続きになるようにする。`origin` は broadcast した時点でサーバー側のクライアントの接続が間に合わないことが多いため、ヘルパーは値を保持し、broadcast より後に接続したクライアントにも送る
 - `screen`: 共有画面の変化。`start` は `origin` と同じ原点（`--origin` を渡したときはその値）からの秒。画像付きの `start` は、違うマスが今の値になった時刻の中央値を、前に送ると決めた時刻で下限補正した値（最初の画像だけは、そのフレームの時刻）。`image` が `null` のときの `start` は、ウィンドウが消えた時刻、または会議以外のタブと判定した時刻。`image` は JPEG の base64。映していたウィンドウが無くなったときは `image` が JSON の `null`（キーは省かない）。`screen` も `origin` と同じく、サーバーがつながる前に出た分は最新の 1 件だけを保持し、つながったら送る（`origin` の次に届く）
 - `screen-off`: 共有画面を取り込めない（画面収録の許可が無い・断られた・取り込みの途中で止まった）。`start` は `screen` と同じく `origin` と同じ原点からの秒。`reason` はヘルパーが流す限り `許可なし` だけ（`指定` はサーバーが書く）。`origin`・`screen` と同じく、`screen` とは別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。音声の取り込みは止まらない

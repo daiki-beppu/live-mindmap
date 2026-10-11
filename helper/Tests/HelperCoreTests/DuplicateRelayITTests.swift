@@ -94,7 +94,7 @@ private func final(_ text: String, _ start: Double, _ end: Double) -> Transcript
 }
 
 private func remark(_ track: Track, _ text: String, _ start: Double, _ end: Double, duplicate: Bool) throws -> String {
-    try HelperEvent.remark(track: track, start: start, end: end, text: text, duplicate: duplicate).jsonString()
+    try HelperEvent.remark(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text)).jsonString()
 }
 
 private func partialResult(_ text: String, _ start: Double, _ end: Double) -> TranscriptionResult {
@@ -102,7 +102,7 @@ private func partialResult(_ text: String, _ start: Double, _ end: Double) -> Tr
 }
 
 private func partialEvent(_ track: Track, _ text: String, _ start: Double, _ end: Double, duplicate: Bool) throws -> String {
-    try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate).jsonString()
+    try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text)).jsonString()
 }
 
 /// Issue #141 の状況。`相手` の発言が保留の上限より長く続き、その確定結果は上限に達した後に届く。

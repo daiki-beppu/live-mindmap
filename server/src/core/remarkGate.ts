@@ -4,8 +4,9 @@
 // 時刻は呼び出し側が渡す start/end だけを見る。タイマー・now は使わない（ADR 0003）。
 // settle.ts の SettledRemark と同じ形を Remark から直接組み立て、settle.ts への import は作らない（循環 import を避ける）。
 import type { Remark } from "./session.ts";
+import { cutWords, type Word } from "./words.ts";
 
-type GatedRemark = Omit<Remark, "id">;
+type GatedRemark = Omit<Remark, "id"> & { words?: readonly Word[] };
 
 // 比較のとき無視する文字（句読点と空白。order.md が列挙した集合）
 const IGNORED = /[、。，．,.!?！？「」\s]/u;
@@ -18,9 +19,10 @@ function compact(text: string): string {
   return body;
 }
 
-// 元の本文から、頭の重なり分を落とした残り。overlap の単位は呼び出し側の k と同じ UTF-16 コード単位。
-// 残りは「残す文字が overlap 分たまった次の残す文字」から始まるので、その手前の句読点・空白は残りに入らない
-function dropOverlap(text: string, overlap: number): string {
+// 元の本文から、頭の重なり分を落とす切る位置（UTF-16 コード単位）。overlap の単位は呼び出し側の k と同じ。
+// 残りは「残す文字が overlap 分たまった次の残す文字」から始まるので、その手前の句読点・空白は残りに入らない。
+// 本文と words は、この位置で同じように切る
+function overlapEnd(text: string, overlap: number): number {
   let kept = 0;
   let i = 0;
   for (const c of text) {
@@ -29,7 +31,7 @@ function dropOverlap(text: string, overlap: number): string {
     if (keep) kept += c.length;
     i += c.length;
   }
-  return text.slice(i);
+  return i;
 }
 
 // 前の部分が書き換わった全文（「シ子ど」→「シ子度で」）を重なりとして扱うときの、許す食い違いの比率。
@@ -97,12 +99,13 @@ export function createRemarkGate() {
       const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
       const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
       k = Math.max(k, fuzzy);
-      const text = k === 0 ? r.text : dropOverlap(r.text, k);
+      const at = k === 0 ? 0 : overlapEnd(r.text, k);
+      const text = r.text.slice(at);
       if (compact(text) === "") return undefined;
       const start = prev.end;
       if (r.end <= start) return undefined;
 
-      const emitted: GatedRemark = { ...r, start, text };
+      const emitted: GatedRemark = { ...r, start, text, ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }) };
       // 覚える本文は切る前の r.text。同じ始まりから全文を送り直す途中結果の頭と、前の全文が重なる
       last.set(r.track, { end: emitted.end, text: r.text });
       return emitted;
