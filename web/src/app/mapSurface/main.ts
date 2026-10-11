@@ -7,11 +7,11 @@ import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
 import { CLICK_ZOOM_FACTOR, edgeDots, fitViewport, OVERVIEW_MIN_ZOOM, pinchZoomFactor, scrollAlongAxis, scrollAxis, scrollPanDelta, USER_MAX_ZOOM, USER_MIN_ZOOM, zoomAtPoint, type Rect, type Viewport } from "../../camera.ts";
 import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
-import { foldView, type FoldView } from "../../folding.ts";
+import { foldView, pointedNode, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
-import { foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type VisibleTree } from "../../viewing.ts";
+import { CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type VisibleTree } from "../../viewing.ts";
 import "./mapSurface.css";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -20,6 +20,7 @@ import { ObserveMapSurface } from "./mount.ts";
 // 動きの状態（Issue #817）: motion は差分更新や高さの変化で目標の位置が変わったときの補間で、start は補間の始まりの位置（id → 位置）、elapsedMs は始めてからの経過 ms。補間していないときは None。
 // 表示する位置と目標の位置は Model に持たず、displayedPositions が motion と目標から毎回導く
 // 見る状態（Issue #818）: viewing は選んだノードと人が開いた・畳んだ・解いた集合（カメラの状態も持つが、カメラの動きは後の issue）。意味は reduceViewing が決め、update が Message から出来事を作って渡す
+// カメラへの指示（Issue #821）: camera は直近の出来事で reduceViewing が返した指示。ビューポートへ当てるのは後の issue（#819）
 // パンの状態: pan はフィットした位置に足す画面上の平行移動（倍率に依らない）。pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
 // ズームの状態（Issue #816）: zoomScale は全体を収めた倍率に掛ける倍率（初期 1）、gestureScale は Safari の gesture の前回の累積 scale（update が前回との比を求めるのに使う。始まりの前・外れたら None）。ビューポートは viewportOf が毎回導く
 export const Model = Schema.Struct({
@@ -36,6 +37,7 @@ export const Model = Schema.Struct({
   viewing: ViewingState,
   zoomScale: Schema.Finite,
   gestureScale: Schema.Option(Schema.Finite),
+  camera: CameraCommand,
 });
 export type Model = typeof Model.Type;
 
@@ -53,6 +55,7 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   viewing: INITIAL_VIEWING,
   zoomScale: 1,
   gestureScale: Option.none(),
+  camera: { type: "follow" },
 });
 
 // 補間の長さ（ms）。web/src/useAnimatedPositions.ts の DURATION_MS と同じ（React 版の部品には触らないので、ここに別に置く）
@@ -112,10 +115,10 @@ const followTarget = (before: Model, after: Model): Model => {
   });
 };
 
-// 見る状態に出来事を渡す。Message を受ける前の Model から作った木で reduceViewing を呼ぶ（押した時点の木）。カメラの指示は後の issue まで使わない。開閉・選択で目標の位置が変わるので補間を始める
+// 見る状態に出来事を渡す。Message を受ける前の Model から作った木で reduceViewing を呼ぶ（押した時点の木）。カメラの指示は Model に持つ（ビューポートへ当てるのは後の issue）。開閉・選択で目標の位置が変わるので補間を始める
 const applyViewing = (model: Model, event: ViewingEvent): Model => {
-  const { state } = reduceViewing(model.viewing, event, treeOf(model, foldViewOf(model)));
-  return followTarget(model, modifyFields(model, { viewing: () => state }));
+  const { state, camera } = reduceViewing(model.viewing, event, treeOf(model, foldViewOf(model)));
+  return followTarget(model, modifyFields(model, { viewing: () => state, camera: () => camera }));
 };
 
 type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
@@ -217,6 +220,14 @@ export const update = (model: Model, message: Message): Return =>
     },
     ClickedFoldDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "foldDot", id: nodeId }) }),
     ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
+    // 「変わったこと」の項目: Snapshot にあるノードは祖先と開くかを畳む見せ方から求めて指し、無いノードは選ぶだけ（SessionView の point と同じ）。親へは知らせない
+    ClickedChangeItem: ({ nodeId }) => {
+      const { opened, folded, unbundled } = humanSetsOf(model.viewing);
+      const found = pointedNode(model.snapshot, nodeId, opened, folded, unbundled);
+      return { model: applyViewing(model, found === null ? { type: "select", id: nodeId } : { type: "pointChange", id: nodeId, ...found }) };
+    },
+    // 右の列の Disclosure: 今の状態と同じ向きなら何もしない。違えば E と同じ出来事を渡し、sideHidden は reduceViewing だけが決める
+    ToggledSide: ({ isOpen }) => (isOpen === (model.viewing.sideHidden !== true) ? { model } : { model: applyViewing(model, { type: "side", meta: false, ctrl: false, alt: false }) }),
     WheeledMapSurface: ({ x, y, deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
       if (model.mode !== "live") return { model };
       // ⌘/Ctrl＋Shift＋スクロール: 縦か横の一方の軸だけを、生の量で動かす。軸は入力の時刻で決める

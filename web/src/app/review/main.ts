@@ -30,6 +30,7 @@ export const Model = Schema.Struct({
     viewing: MapSurface.Model.fields.viewing,
     zoomScale: MapSurface.Model.fields.zoomScale,
     gestureScale: MapSurface.Model.fields.gestureScale,
+    camera: MapSurface.Model.fields.camera,
   }),
 });
 export type Model = typeof Model.Type;

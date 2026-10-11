@@ -113,7 +113,7 @@ const viewingText = (mode: "auto" | "manual" | "overview"): Option.Option<string
   mode === "manual" ? Option.some(MANUAL_TEXT) : mode === "overview" ? Option.some(OVERVIEW_TEXT) : Option.none();
 
 type H = HtmlBuilder<Message>;
-type Slots = { readonly map: Html; readonly side: Html };
+type Slots = { readonly map: Html; readonly side: Html | null };
 
 const noticeView = (h: H, className: string, toast: NoticeModel): Html | null =>
   Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.div([h.Class(className), h.AriaLive("polite")], [text]) });
@@ -164,7 +164,7 @@ const diffUpdateView = (h: H, model: Model): Html | null =>
     ? h.div([h.Class("diff-update-notice"), h.Role("status")], ["マップの更新が止まっています（ChatGPT の利用上限）"])
     : null;
 
-// `.map` と `.side` の中身は別の issue が持つので、差し込み口で受け取る。並びは SessionView の .layout の直下と同じ
+// `.map` と `.side` は別の issue が持つので、差し込み口で受け取る（`.side` は包まずそのまま置く。右の列を隠しているときは null）。並びは SessionView の .layout の直下と同じ
 export const view = (model: Model, h: H, slots: Slots): Html =>
   h.div(
     [h.Class(model.local ? "layout layout--local" : "layout")],
@@ -175,7 +175,7 @@ export const view = (model: Model, h: H, slots: Slots): Html =>
       noticeView(h, "intake-notice", model.intakeToast),
       noticeView(h, "screen-notice", model.screenToast),
       diffUpdateView(h, model),
-      h.div([h.Class("side")], [slots.side]),
+      slots.side,
     ],
   );
 
