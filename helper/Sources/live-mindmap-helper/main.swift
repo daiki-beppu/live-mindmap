@@ -13,7 +13,7 @@ private func printError(_ message: String) {
 
 private let usage = """
 usage:
-  live-mindmap-helper check
+  live-mindmap-helper check [--no-screen]
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
@@ -33,14 +33,35 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     // 途中で入力の機器が変わったら、マイクの流れが `MicrophoneError.configurationChanged` で終わり、ヘルパーは終了コード 75（`microphoneConfigurationChangedExitCode`）で終わる。
     // サーバーは 75 を失敗の連続に数えずに起動し直し（Issue #161）、新しい機器の形式と出力先で取り込み直す（Issue #232）。
     let outputRoute = try currentOutputRoute()
-    let duplicates = outputRoute.marksDuplicates ? DuplicateMarker() : nil
     // 2 トラックは別の SpeechAnalyzer で処理する（1 つの transcriber は 1 回の transcribe にだけ使える）。
     // 区間がほぼ無音の認識結果は、両トラックとも SilenceFilteringTranscriber が捨てる（Issue #144）。
-    let theirTranscriber: Transcriber = SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber())
-    let myTranscriber: Transcriber = SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber())
-    try await theirTranscriber.prepare()
-    try await myTranscriber.prepare()
-    try await requestMicrophonePermission()
+    let tap = ProcessTap(targets: targets)
+    let microphone = MicrophoneCapture()
+    let audio = RunAudio(
+        requestMicrophonePermission: { try await requestMicrophonePermission() },
+        makeTranscriber: { _ in SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber()) },
+        startAudio: { track in try track == .相手 ? tap.start() : microphone.start() },
+        stopAudio: { track in
+            if track == .相手 { tap.stop() } else { microphone.stop() }
+        },
+        recording: audioDir.map { directory in
+            { track, stream, origin in
+                let base = URL(fileURLWithPath: directory, isDirectory: true)
+                let recorder = try TrackRecorder(
+                    url: base.appendingPathComponent(recordingFileName(track: track, attempt: audioIndex)),
+                    origin: origin
+                )
+                return recording(stream, to: recorder)
+            }
+        },
+        splitAudio: split,
+        echoCancelled: { microphone, reference in
+            let stream = try echoCancelled(microphone: microphone, reference: reference)
+            printError("echo cancellation: enabled (WebRTC AEC3, reference = process tap, output: \(outputRoute))")
+            return stream
+        }
+    )
+    try await audio.prepare()
     // 画面収録の許可は開始時に 1 回だけ確かめる（会議の途中で確認を出さない）。`--no-screen` なら確かめない。
     // まだ聞いていなければ OS のダイアログが出る。許可が無くても throw せず、音声だけで続ける。
     let screenPlan = screenCapturePlan(noScreen: noScreen) {
@@ -51,8 +72,6 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes, output: \(outputRoute))")
 
-    let tap = ProcessTap(targets: targets)
-    let microphone = MicrophoneCapture()
     // 時刻の基準。音声取得を始める直前に 1 回だけ取る。録音の 0 秒も、共有画面の時刻もこれにそろえる。
     // サーバーがヘルパーを再起動したときは `--origin` で元の基準を渡し、時刻を 0 から振り直さない（Issue #161）。
     let origin = explicitOrigin ?? AudioGetCurrentHostTime()
@@ -64,8 +83,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         signal(signalNumber, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
         source.setEventHandler {
-            tap.stop()
-            microphone.stop()
+            audio.stop()
             screen?.stop()
         }
         source.resume()
@@ -73,8 +91,6 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     }
     defer { signalSources.forEach { $0.cancel() } }
 
-    // 録音を閉じる Task。tap とマイクを止めて音声が終わった後に、終了前に待つ（録音ファイルを閉じてから終わる）。
-    var recordings: [Task<Void, Error>] = []
     var screenTasks: [Task<Void, Never>] = []
     var failure: Error?
     do {
@@ -105,45 +121,17 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
                 await server.broadcastRetained(json, key: "screen-off")
             }
         }
-        let recorders = try audioDir.map { directory -> (their: TrackRecorder, my: TrackRecorder) in
-            let base = URL(fileURLWithPath: directory, isDirectory: true)
-            return (
-                their: try TrackRecorder(url: base.appendingPathComponent(recordingFileName(track: .相手, attempt: audioIndex)), origin: origin),
-                my: try TrackRecorder(url: base.appendingPathComponent(recordingFileName(track: .自分, attempt: audioIndex)), origin: origin)
-            )
+        try await audio.run(origin: origin, marksDuplicates: outputRoute.marksDuplicates) { tracks, marksDuplicates in
+            try await relay(tracks: tracks, to: server, duplicates: marksDuplicates ? DuplicateMarker() : nil)
         }
-        var theirAudio = try tap.start()
-        var myAudio = try microphone.start()
-        // スピーカーのときだけ、タップの音を参照にした AEC3 でマイクのエコーを消してから、`自分` の STT と録音へ渡す。
-        // タップの流れは 1 か所でしか読めないので、`相手` の STT と AEC の参照に分ける。イヤホンのときは今まで通り素通し。
-        if outputRoute.marksDuplicates {
-            let (theirs, reference) = split(theirAudio)
-            theirAudio = theirs
-            myAudio = try echoCancelled(microphone: myAudio, reference: reference)
-            printError("echo cancellation: enabled (WebRTC AEC3, reference = process tap, output: \(outputRoute))")
-        }
-        // 録音は AEC の「後」の音（STT が聞いた音と同じ）。AEC の前の音は残らない。
-        if let recorders {
-            let their = recording(theirAudio, to: recorders.their)
-            let my = recording(myAudio, to: recorders.my)
-            theirAudio = their.stream
-            myAudio = my.stream
-            recordings = [their.finished, my.finished]
-        }
-        let theirResults = try await theirTranscriber.transcribe(theirAudio, origin: origin)
-        let myResults = try await myTranscriber.transcribe(myAudio, origin: origin)
-        try await relay(tracks: [(.相手, theirResults), (.自分, myResults)], to: server, duplicates: duplicates)
         failure = nil
     } catch {
         failure = error
     }
-    tap.stop()
-    microphone.stop()
+    audio.stop()
     screen?.stop()
     // 録音は全部閉じてから終わる。基準のエラーは、do 節のエラー、なければ 相手 → 自分 の順で最初の録音の失敗。
-    for recording in recordings {
-        if case .failure(let error) = await recording.result, failure == nil { failure = error }
-    }
+    do { try await audio.finish() } catch { if failure == nil { failure = error } }
     // 共有画面の取り込みが終わり、最後のイベントを流し切ってから、サーバーを閉じる。
     for task in screenTasks { await task.value }
     await server.stop()
@@ -155,7 +143,7 @@ private func main() async -> Int32 {
     do {
         switch arguments.first {
         case "check":
-            let status = try await systemCheck()
+            let status = try await systemCheck(noScreen: arguments.dropFirst().contains("--no-screen"))
             print(try status.jsonString())
         case "list":
             try listApps()

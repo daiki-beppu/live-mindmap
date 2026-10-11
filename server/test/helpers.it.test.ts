@@ -1,9 +1,36 @@
 import { createServer, type Server } from "node:net";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { TestClock } from "effect/testing";
 import { Helpers } from "../src/helpers.ts";
+
+describe("E2E と IT 用の fake-helper", () => {
+  it.live("C7: check はマイク・画面収録が許可済みの一行 JSON を返し正常終了する", () => Effect.gen(function* () {
+    const root = yield* Effect.acquireRelease(
+      Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-helper-check-"))),
+      (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+    );
+    const script = join(root, "script.json");
+    yield* Effect.tryPromise(() => writeFile(script, JSON.stringify({ apps: [], events: [] })));
+    const result = yield* Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+      execFile(process.execPath, [join(import.meta.dirname, "fixtures/fake-helper.ts"), script, join(root, "record.jsonl"), "check"], { timeout: 5_000 }, (error, stdout, stderr) => {
+        if (error && (error.killed || typeof error.code !== "number")) return reject(error);
+        resolve({ code: error ? error.code as number : 0, stdout, stderr });
+      });
+    }));
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ microphone: "authorized", screenCapture: true,
+      speechJa: { status: expect.stringMatching(/^(unsupported|supported|downloading|installed)$/), installedLocales: expect.any(Array) },
+    });
+  }).pipe(Effect.scoped));
+});
 
 // 接続の再試行は Schedule.spaced("200 millis")（CT-RESTART-DECISION）。
 // 子プロセスだけを偽物にし、ヘルパーが待ち受けるはずのポートに「接続を数えて切る」サーバーを置いて、再試行の間隔を TestClock で観測する

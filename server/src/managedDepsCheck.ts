@@ -1,6 +1,8 @@
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
+import type { HelperCheck, HelperCheckFailure } from "./helpers.ts";
+import { HELPER_BUILD_COMMAND } from "./helperPath.ts";
 import { ManagedDeps, type DepItem } from "./managedDeps.ts";
-import type { CheckFor, ModelRoute } from "./managedDepsProtocol.ts";
+import type { Item, ModelRoute } from "./managedDepsProtocol.ts";
 import { describeDep, StartupDepsMissing } from "./startupDepsMissing.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 
@@ -14,7 +16,7 @@ const commonByEntry = {
   start: ["chromium"],
   resume: ["chromium"],
   play: ["chromium"],
-} satisfies Record<typeof CheckFor.Type, ReadonlyArray<DepItem["name"]>>;
+} satisfies Record<"start" | "resume" | "play", ReadonlyArray<DepItem["name"]>>;
 
 const reportItem = (item: DepItem, required: ReadonlyArray<string>) => ({
   ...item,
@@ -23,17 +25,39 @@ const reportItem = (item: DepItem, required: ReadonlyArray<string>) => ({
   install: `pnpm cli install ${item.name}`,
 });
 
-export const checkManagedDeps = Effect.fnUntraced(function* (entry: typeof CheckFor.Type, route: typeof ModelRoute.Type) {
+type LiveCheck = { screen: boolean; check: Effect.Effect<HelperCheck, HelperCheckFailure> };
+type CheckArgs = [entry: "play", route: typeof ModelRoute.Type] | [entry: "start" | "resume", route: typeof ModelRoute.Type, live: LiveCheck];
+
+const checkDependencies = Effect.fnUntraced(function* (...[entry, route, live]: CheckArgs) {
   const deps = yield* ManagedDeps;
-  const items = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
-  return { ready: items.every((item) => item.need === "optional" || item.state === "ready"), items };
+  const items: Array<typeof Item.Type> = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
+  const warnings = items.filter((item) => item.need === "optional" && item.state !== "ready")
+    .map((item) => `警告: ${describeDep(item)} がありません。入れるには: ${item.install}`);
+  if (entry !== "play") {
+    const result = yield* Effect.result(live.check);
+    items.push({ name: "helper", need: "required", state: Result.isSuccess(result) ? "ready" : "missing", install: HELPER_BUILD_COMMAND });
+    if (Result.isSuccess(result)) {
+      const status = result.success;
+      items.push({ name: "microphone", need: "optional", state: status.microphone === "authorized" ? "ready" : "absent" });
+      if (status.microphone === "denied") warnings.push("マイクの許可がありません。自分の声が入りません");
+      if (status.microphone === "notDetermined") warnings.push("マイクの許可が未決定です。開始時に許可のダイアログが出ます");
+      if (live.screen) {
+        items.push({ name: "screen-capture", need: "optional", state: status.screenCapture ? "ready" : "absent" });
+        if (!status.screenCapture) warnings.push("画面収録の許可がありません。共有画面は読まず、音声だけで始めます");
+      }
+    }
+  }
+  return { report: { ready: items.every((item) => item.need === "optional" || item.state === "ready"), items }, warnings };
 });
 
-export const requireStartupDeps = Effect.fnUntraced(function* (entry: typeof CheckFor.Type, route: typeof ModelRoute.Type) {
-  const report = yield* checkManagedDeps(entry, route);
+export const checkManagedDeps = Effect.fnUntraced(function* (...args: CheckArgs) {
+  return (yield* checkDependencies(...args)).report;
+});
+
+export const requireStartupDeps = Effect.fnUntraced(function* (...args: CheckArgs) {
+  const { report, warnings } = yield* checkDependencies(...args);
   if (!report.ready) return yield* new StartupDepsMissing({ items: report.items.filter((item) => item.need === "required" && item.state !== "ready") });
-  return report.items.filter((item) => item.need === "optional" && item.state !== "ready")
-    .map((item) => `警告: ${describeDep(item)} がありません。入れるには: ${item.install}`);
+  return warnings;
 });
 
 export const startupPreparationFailure = (failure: UpdaterUnavailable): UpdaterUnavailable | StartupDepsMissing =>

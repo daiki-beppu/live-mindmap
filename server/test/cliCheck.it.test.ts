@@ -5,19 +5,19 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Stream } from "effect";
 import { vi } from "vitest";
 import { Helpers } from "../src/helpers.ts";
-import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
-import type { InstallEvent } from "../src/managedDepsProtocol.ts";
+import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
+import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 
-type CheckItem = Extract<typeof InstallEvent.Type, { type: "result" }>["items"][number];
+type CheckItem = DepItem;
 const states = ["ready", "missing", "outdated", "absent"] as const;
 const chromium = (need: CheckItem["need"], state: CheckItem["state"]): CheckItem => ({ name: "chromium", need, state });
 const claudeMissing = { name: "claude", need: "required", state: "missing" } as const;
-const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...item, size: item.name === "claude" ? 224_000_000 : 211_000_000, install: `pnpm cli install ${item.name}` }] });
+const responseFor = (ready: boolean, item: CheckItem) => ({ ready, items: [{ ...item, size: item.name === "claude" ? 224_000_000 : 211_000_000, install: `pnpm cli install ${item.name}` }, ...readyHelperItems] });
 
 const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFailed>) => {
   const check = vi.fn((_names: ReadonlyArray<string>) => result);
@@ -29,7 +29,7 @@ const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFai
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   const launch = vi.fn(() => Effect.die("check はセッションを開始しない"));
   const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
-    helpers: Layer.succeed(Helpers, Helpers.of({ apps: Effect.die("apps は対象外"), launch })),
+    helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.die("apps は対象外"), launch })),
     sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });
@@ -67,6 +67,7 @@ describe("開始せずに確かめる CLI check", () => {
     expect(yield* Effect.tryPromise(() => response.json())).toEqual({ ready: false, items: [
       { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need: "required", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
+      ...readyHelperItems,
     ] });
   }).pipe(Effect.scoped));
 
@@ -101,6 +102,7 @@ describe("開始せずに確かめる CLI check", () => {
     expect(JSON.parse(result.stdout)).toEqual({ ready, items: [
       { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need, state, size: 224_000_000, install: "pnpm cli install claude" },
+      ...readyHelperItems,
     ] });
     expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
     expect(deps.install).not.toHaveBeenCalled();
@@ -170,7 +172,7 @@ describe("開始せずに確かめる CLI check", () => {
     expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
   }).pipe(Effect.scoped));
 
-  it.live("正常な check の後も導入・helper 起動・既存ファイルの削除を行わない", () => Effect.gen(function* () {
+  it.live("正常な check の後も導入・セッションの開始・既存ファイルの削除を行わない", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const files = [join(dir, "deps/chromium/.work-retained/keep"), join(dir, "sessions/saved/keep")];
     yield* Effect.tryPromise(async () => {

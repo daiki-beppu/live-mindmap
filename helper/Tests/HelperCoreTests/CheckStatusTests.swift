@@ -33,6 +33,21 @@ private func decodeCheck(
 
 @Suite("確認結果の JSON")
 struct CheckStatusTests {
+    @Test("C4: 画面を確かめなかった結果では screenCapture を出さずマイクとモデルは保持する")
+    func omittedScreenCaptureIsNotEncoded() throws {
+        let status: CheckStatus = try CheckStatus(
+            speechStatus: .supported, installedLocales: [],
+            microphone: .authorized, screenCapture: nil
+        )
+        let output = try #require(JSONSerialization.jsonObject(with: Data(status.jsonString().utf8)) as? [String: Any])
+        let microphone = output["microphone"] as? String
+        let speechJa = output["speechJa"] as? [String: Any]
+        let speechStatus = speechJa?["status"] as? String
+        #expect(microphone == "authorized")
+        #expect(speechStatus == "supported")
+        #expect(!output.keys.contains("screenCapture"))
+    }
+
     @Test("日本語モデルの状態を区別して JSON に写す", arguments: [
         (AssetInventory.Status.unsupported, "unsupported"),
         (.supported, "supported"),

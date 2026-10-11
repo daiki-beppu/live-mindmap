@@ -712,13 +712,13 @@ const evaluate = Command.make(
 
 const checkCommand = Command.make(
   "check",
-  { for: Flag.Literals("for", ["start", "resume", "play"]).pipe(Flag.withDefault("start")) },
-  Effect.fn("check")(function* ({ for: entry }) {
+  { for: Flag.Literals("for", ["start", "resume", "play"]).pipe(Flag.withDefault("start")), noScreen: Flag.Boolean("no-screen").pipe(Flag.withDefault(false)) },
+  Effect.fn("check")(function* ({ for: entry, noScreen }) {
     const report = yield* Effect.gen(function* () {
       if (entry === "resume") return yield* requestServer(yield* portConfig, "GET", "/check?for=resume", CheckReport);
       const model = yield* resolveModelCandidate({});
       if (entry === "play") return yield* checkManagedDeps(entry, model.route);
-      return yield* requestServer(yield* portConfig, "GET", `/check?for=${entry}&route=${model.route}`, CheckReport);
+      return yield* requestServer(yield* portConfig, "GET", `/check?for=${entry}&route=${model.route}&screen=${!noScreen}`, CheckReport);
     });
     yield* write(JSON.stringify(report));
     if (!report.ready) return yield* new RequiredDepsMissing();

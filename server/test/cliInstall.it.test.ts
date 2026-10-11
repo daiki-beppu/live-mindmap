@@ -1,4 +1,5 @@
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
 import { readdir } from "node:fs/promises";
@@ -21,7 +22,7 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
-    helpers: Layer.succeed(Helpers, Helpers.of({ apps: Effect.die("apps は対象外"), launch: () => Effect.die("launch は対象外") })),
+    helpers: Layer.succeed(Helpers, Helpers.of({ ...forbiddenHelperChecks, apps: Effect.die("apps は対象外"), launch: () => Effect.die("launch は対象外") })),
     sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });

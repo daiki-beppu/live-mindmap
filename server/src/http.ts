@@ -18,6 +18,7 @@ import { Viewers } from "./viewers.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
+import { Helpers } from "./helpers.ts";
 import { CheckFor, ModelRoute, DepNames, InstallBody } from "./managedDepsProtocol.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
@@ -174,7 +175,12 @@ const DepRoutes = HttpRouter.addAll([
     const route = yield* Schema.decodeUnknownEffect(ModelRoute)(params.get("route") ?? "claude").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps(entry, route));
+    if (entry === "play") return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps(entry, route));
+    const screen = yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(params.get("screen") ?? "true").pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
+    );
+    const helpers = yield* Helpers;
+    return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps(entry, route, { screen: screen === "true", check: screen === "true" ? helpers.check : helpers.checkNoScreen }));
   })),
   HttpRouter.route("GET", "/deps/check", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -271,7 +277,7 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
 );
 
 // セッションの操作と配信を受ける（常駐サーバー）
-export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ManagedDeps | Viewers | Scope.Scope> => Effect.flatMap(
+export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | Helpers | ManagedDeps | Viewers | Scope.Scope> => Effect.flatMap(
   HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));

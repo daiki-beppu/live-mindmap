@@ -15,13 +15,13 @@ public struct CheckStatus: Encodable {
 
     private let speechJa: SpeechJa
     private let microphone: String
-    private let screenCapture: Bool
+    private let screenCapture: Bool?
 
     public init(
         speechStatus: AssetInventory.Status,
         installedLocales: [Locale],
         microphone: AVAuthorizationStatus,
-        screenCapture: Bool
+        screenCapture: Bool?
     ) throws {
         let status: String
         switch speechStatus {

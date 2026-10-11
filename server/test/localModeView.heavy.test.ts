@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
@@ -22,6 +23,7 @@ const TIMEOUT = 90_000;
 const webRoot = join(import.meta.dirname, "../../web");
 
 const helperLayer = Layer.succeed(Helpers, Helpers.of({
+  ...readyHelperChecks,
   apps: Effect.succeed([]),
   launch: () => Effect.gen(function* () {
     const events = yield* Queue.make<string, Cause.Done>();

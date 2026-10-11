@@ -1,4 +1,5 @@
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -84,6 +85,7 @@ const starts = (session: string) => {
 function fakeHelpers(events: unknown[]) {
   const calls: string[][] = [];
   const layer = Layer.succeed(Helpers, Helpers.of({
+    ...readyHelperChecks,
     apps: Effect.succeed([]),
     launch: (args) => Effect.gen(function* () {
       calls.push([...args]);

@@ -2,14 +2,14 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { NodeHttpClient } from "@effect/platform-node";
+import { NodeChildProcessSpawner, NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { vi } from "vitest";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
-import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
-import type { CheckReport } from "../src/managedDepsProtocol.ts";
+import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
+import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
 import { defaultClaude, type ExecutableModel } from "../src/modelSelection.ts";
 import { readModelTransferToken, MODEL_TRANSFER_HEADER } from "../src/modelTransferToken.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -20,7 +20,7 @@ import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 
 const refusal = "開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n";
-type Item = typeof CheckReport.Type.items[number];
+type Item = DepItem;
 
 const controlledDeps = () => {
   const state = { claude: "ready" as Item["state"], chromium: "ready" as Item["state"], loadFails: false, wait: undefined as Promise<void> | undefined };
@@ -60,17 +60,20 @@ const controlledHelpers = () => {
     yield* Effect.addFinalizer(() => stop);
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]) };
   });
-  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch })) };
+  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch })) };
 };
 
-const resource = Effect.fnUntraced(function* (realPreparation: boolean) {
+const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingHelper = false) {
   const root = yield* temporaryDeps;
   const sessionsDir = join(root, "sessions");
   const deps = controlledDeps();
   const helpers = controlledHelpers();
   const sinks = SessionSinks.layer({ prepareUpdater: realPreparation ? prepareUpdaterLayer : () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) })
     .pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), deps.layer, unusedApple, NodeHttpClient.layerUndici)));
-  const server = yield* startedServer({ port: 0, sessionsDir }, { managedDeps: deps.layer, helpers: helpers.layer, sessionSinks: sinks });
+  const helpersLayer = missingHelper
+    ? Helpers.layer({ command: join(root, "absent-helper"), args: [] }).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer))
+    : helpers.layer;
+  const server = yield* startedServer({ port: 0, sessionsDir }, { managedDeps: deps.layer, helpers: helpersLayer, sessionSinks: sinks });
   const request = (method: string, path: string, body?: object, headers?: Record<string, string>) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}${path}`, {
     method, headers: { "content-type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }));
@@ -103,6 +106,25 @@ const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typ
 });
 
 describe("ライブの開始前の確かめ", () => {
+  it.live("C3: CLI check と start はヘルパーの確認失敗を exit 3 にする", () => Effect.gen(function* () {
+    const r = yield* resource(false, true);
+    const checked = yield* cli(r.root, r.server.port, ["check"], "claude");
+    expect(checked.code).toBe(3);
+    expect(checked.stderr).toBe("");
+    const report = JSON.parse(checked.stdout);
+    expect(report.ready).toBe(false);
+    expect(report.items.filter((item: { name: string }) => !["chromium", "claude"].includes(item.name))).toEqual([
+      { name: "helper", need: "required", state: "missing", install: "swift build -c release --package-path helper" },
+    ]);
+    const started = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude");
+    expect(started.code).toBe(3);
+    expect(started.stdout).toBe("");
+    expect(started.stderr.split("\n").filter((line) => line.startsWith("入れるには:"))).toEqual(["入れるには: swift build -c release --package-path helper"]);
+    expect(yield* r.status).toEqual({ status: "none" });
+    expect(existsSync(r.sessionsDir)).toBe(false);
+    expect(r.deps.install).not.toHaveBeenCalled();
+    expect(r.deps.load).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
   it.live("HTTP の必須不足は副作用前に503で拒否し、同じサーバーで不足解消後に開始できる", () => Effect.gen(function* () {
     const r = yield* resource(false);
     r.deps.state.claude = "missing";
@@ -255,6 +277,7 @@ describe("ライブの開始前の確かめ", () => {
     expect(JSON.parse(checked.stdout)).toEqual({ ready: false, items: [
       { name: "chromium", need: "optional", state: "ready", size: 211_000_000, install: "pnpm cli install chromium" },
       { name: "claude", need: "required", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
+      ...readyHelperItems,
     ] });
     expect(r.helpers.calls).toEqual([]);
     expect(r.deps.load).not.toHaveBeenCalled();

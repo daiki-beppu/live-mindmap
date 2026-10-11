@@ -24,6 +24,9 @@ import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
+import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { fakeExportServices } from "./fixtures/exportServices.ts";
+import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
@@ -281,7 +284,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     oauth.control.refreshExpired = condition === "更新不能の期限切れ";
     oauth.control.ineligible = condition === "対象外プラン";
     const launches: string[][] = [];
-    const helpers = Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
       launches.push([...args]);
       const queue = yield* Queue.make<string, Cause.Done>();
       const exited = yield* Deferred.make<HelperExitInfo>();
@@ -335,6 +338,82 @@ describe("ChatGPT の CLI（Issue #669）", () => {
 });
 
 const CHATGPT_MODEL_DEFINITION = { route: "chatgpt", model: CHATGPT_MODEL.model, images: false };
+
+describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
+  const resource = Effect.fnUntraced(function* (microphone: "authorized" | "denied" | "notDetermined", screenCapture: boolean) {
+    const root = yield* temporaryDirectory;
+    const sessionsDir = join(root, "sessions");
+    const checks: boolean[] = [];
+    const launches: string[][] = [];
+    const speechJa = { status: "supported" as const, installedLocales: [] };
+    const service = {
+      apps: Effect.succeed([]),
+      check: Effect.sync(() => { checks.push(true); return { microphone, screenCapture, speechJa }; }),
+      checkNoScreen: Effect.sync(() => { checks.push(false); return { microphone, speechJa }; }),
+      launch: (args: ReadonlyArray<string>) => Effect.gen(function* () {
+        launches.push([...args]);
+        const queue = yield* Queue.make<string, Cause.Done>();
+        const exited = yield* Deferred.make<HelperExitInfo>();
+        const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
+        yield* Effect.addFinalizer(() => stop);
+        return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]) };
+      }),
+    };
+    const server = yield* startedServer({ port: 0, sessionsDir }, {
+      helpers: Layer.succeed(Helpers, Helpers.of(service)),
+      managedDeps: readyManagedDeps,
+      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+    });
+    const deps = dependencies(sessionsDir, String(server.port));
+    return { checks, launches, deps, sessionsDir };
+  });
+
+  it.live.each([
+    { argv: ["check"], microphone: "authorized", screenCapture: true, state: "ready" },
+    { argv: ["check", "--for", "start"], microphone: "denied", screenCapture: false, state: "absent" },
+    { argv: ["check"], microphone: "notDetermined", screenCapture: false, state: "absent" },
+  ] as const)("C5・C6: $argv は $microphone の許可をサーバーで確認して JSON に出す", ({ argv, microphone, screenCapture, state }) => Effect.gen(function* () {
+    const r = yield* resource(microphone, screenCapture);
+    yield* runCli([...argv]).pipe(Effect.provide(r.deps.layer));
+    const report = JSON.parse(r.deps.stdout.join(""));
+    expect(report).toEqual({ ready: true, items: [
+      { name: "chromium", need: "optional", state: "ready", size: 211_000_000, install: "pnpm cli install chromium" },
+      { name: "claude", need: "required", state: "ready", size: 224_000_000, install: "pnpm cli install claude" },
+      { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },
+      { name: "microphone", need: "optional", state },
+      { name: "screen-capture", need: "optional", state: screenCapture ? "ready" : "absent" },
+    ] });
+    expect(r.checks).toEqual([true]);
+    expect(r.launches).toEqual([]);
+    expect(r.deps.stderr).toEqual([]);
+    expect(existsSync(r.sessionsDir)).toBe(false);
+  }).pipe(Effect.scoped));
+
+  it.live("C4: check --no-screen は画面の確認も項目も出さず、マイクは確認する", () => Effect.gen(function* () {
+    const r = yield* resource("authorized", false);
+    yield* runCli(["check", "--no-screen"]).pipe(Effect.provide(r.deps.layer));
+    const report = JSON.parse(r.deps.stdout.join(""));
+    expect(report.ready).toBe(true);
+    expect(report.items.map((item: { name: string }) => item.name)).toEqual(["chromium", "claude", "helper", "microphone"]);
+    expect(report.items.find((item: { name: string }) => item.name === "microphone")).toEqual({ name: "microphone", need: "optional", state: "ready" });
+    expect(r.checks).toEqual([false]);
+    expect(r.launches).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.live.each([
+    { microphone: "denied", warning: "マイクの許可がありません。自分の声が入りません" },
+    { microphone: "notDetermined", warning: "マイクの許可が未決定です。開始時に許可のダイアログが出ます" },
+  ] as const)("C2・C4: start --no-screen は $microphone を stderr に警告して開始する", ({ microphone, warning }) => Effect.gen(function* () {
+    const r = yield* resource(microphone, false);
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]).pipe(Effect.provide(r.deps.layer));
+    expect(r.deps.stderr.join("")).toBe(warning + "\n");
+    expect(r.launches).toHaveLength(1);
+    expect(r.launches[0]).toContain("--no-screen");
+    expect(r.checks).toEqual([false]);
+    expect(existsSync(join(r.deps.stdout.join("").trim(), "log.jsonl"))).toBe(true);
+  }).pipe(Effect.scoped));
+
+});
 
 // play を 1 回流し、セッションのフォルダと出力したパスを返す
 const played = (deps: ReturnType<typeof dependencies>) => Effect.gen(function* () {

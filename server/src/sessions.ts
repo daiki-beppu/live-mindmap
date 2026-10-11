@@ -276,7 +276,7 @@ export class Sessions extends Context.Service<Sessions, {
       const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
-          const warnings = yield* requireStartupDeps("start", input.model.route).pipe(Effect.provideService(ManagedDeps, deps));
+          const warnings = yield* requireStartupDeps("start", input.model.route, { screen: input.screen, check: input.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
           const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
           const dir = yield* sinks.createDir(sessionsDir);
           // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
@@ -393,7 +393,7 @@ export class Sessions extends Context.Service<Sessions, {
         if (current.kind !== "live") return yield* new NoSession();
         const { live } = current;
         if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
-        const warnings = yield* requireStartupDeps("resume", live.model.route).pipe(Effect.provideService(ManagedDeps, deps));
+        const warnings = yield* requireStartupDeps("resume", live.model.route, { screen: live.screen, check: live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
         const afterCheck = yield* Ref.get(state);
         if (afterCheck.kind !== "live" || afterCheck.live !== live || (yield* Deferred.isDone(live.stopRequested))) return yield* new Aborted();
         // 取り込みの状態は、確かめてから書き換える（自動の起動し直しと取り合うので 1 つの操作にする）
@@ -414,7 +414,7 @@ export class Sessions extends Context.Service<Sessions, {
       const checkResume = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         if (current.kind !== "live") return yield* new NoSession();
-        return yield* checkManagedDeps("resume", current.live.model.route).pipe(Effect.provideService(ManagedDeps, deps));
+        return yield* checkManagedDeps("resume", current.live.model.route, { screen: current.live.screen, check: current.live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
       });
 
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {

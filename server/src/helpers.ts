@@ -38,7 +38,24 @@ export type HelperAttempt = {
 
 export type HelperCommand = { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
 
+const checkFields = {
+  microphone: Schema.Literals(["notDetermined", "denied", "authorized"]),
+  speechJa: Schema.Struct({
+    status: Schema.Literals(["unsupported", "supported", "downloading", "installed"]),
+    installedLocales: Schema.Array(Schema.String),
+  }),
+};
+const HelperCheckSchema = Schema.Struct({ ...checkFields, screenCapture: Schema.Boolean });
+const HelperCheckNoScreenSchema = Schema.Struct(checkFields);
+export type HelperCheck = typeof HelperCheckNoScreenSchema.Type & { readonly screenCapture?: boolean };
+
+export class HelperCheckFailure extends Schema.TaggedError<HelperCheckFailure>()("HelperCheckFailure", {
+  message: Schema.String,
+}) {}
+
 export class Helpers extends Context.Service<Helpers, {
+  check: Effect.Effect<HelperCheck, HelperCheckFailure>;
+  checkNoScreen: Effect.Effect<HelperCheck, HelperCheckFailure>;
   // 会議アプリの一覧（ヘルパーの `list` の結果）。失敗は予期しない失敗（defect）
   apps: Effect.Effect<unknown>;
   // ヘルパーを 1 回起動して接続する。args は `run` から始まるヘルパーの引数（--port は付けなくてよい）。
@@ -101,6 +118,15 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       );
     }),
   ).pipe(Effect.catchTag("PlatformError", (error) => listFailed(`ヘルパーの list が失敗しました: ${error.message}`)));
+
+  const check = Effect.fnUntraced(function* (noScreen: boolean) {
+    const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, "check", ...(noScreen ? ["--no-screen"] : [])], {
+      stdin: "ignore", forceKillAfter: HELPER_STOP_TIMEOUT_MS,
+    }));
+    const [stdout, stderr, code] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
+    if (code !== 0) return yield* new HelperCheckFailure({ message: `ヘルパーの check が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
+    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(noScreen ? HelperCheckNoScreenSchema : HelperCheckSchema))(stdout);
+  }, Effect.scoped, Effect.mapError((error) => new HelperCheckFailure({ message: error.message })));
 
   const launch = Effect.fnUntraced(function* (
     args: ReadonlyArray<string>,
@@ -167,5 +193,5 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     return { events, stop, exit: Deferred.await(exited), stderrTail };
   });
 
-  return Helpers.of({ apps, launch });
+  return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true) });
 });

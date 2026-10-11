@@ -1,4 +1,5 @@
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
+import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +18,7 @@ const directory = Effect.acquireRelease(
   (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),
 );
 const layers = {
-  helpers: Layer.succeed(Helpers, Helpers.of({ apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
+  helpers: Layer.succeed(Helpers, Helpers.of({ ...forbiddenHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
   sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
   managedDeps: readyManagedDeps,
 };
