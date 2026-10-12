@@ -1,0 +1,14 @@
+{"start":0,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/gallery.png","against":null,"keep":true,"why":"比べない"}
+{"start":108.98,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s1.png","against":0,"keep":false,"p":0.2356,"ms":2030.662667,"tokens":2011}
+{"start":137.9,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s2.png","against":0,"keep":true,"p":0.4857,"ms":1812.234125,"tokens":2011}
+{"start":371.11,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s3.png","against":137.9,"keep":true,"p":0.9083,"ms":1889.3577499999997,"tokens":2011}
+{"start":495.18,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s4.png","against":371.11,"keep":true,"p":0.8172,"ms":1691.5529159999996,"tokens":2011}
+{"start":593.93,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/gallery.png","against":495.18,"keep":false,"p":0.1171,"ms":1447.3055830000012,"tokens":2011}
+{"start":770.37,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s5.png","against":495.18,"keep":true,"p":0.8782,"ms":2306.7245839999996,"tokens":2011}
+{"start":960.75,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s4.png","against":770.37,"keep":true,"p":0.8498,"ms":1664.9025839999995,"tokens":2011}
+{"start":998.96,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s5.png","against":960.75,"keep":true,"p":0.8782,"ms":1405.6349169999994,"tokens":2011}
+{"start":1038.7,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s6.png","against":998.96,"keep":true,"p":0.9013,"ms":1394.179291999999,"tokens":2011}
+{"start":1179.39,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s7.png","against":1038.7,"keep":true,"p":0.9124,"ms":1361.9281250000022,"tokens":2011}
+{"start":1233.39,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s3.png","against":1179.39,"keep":true,"p":0.8819,"ms":1954.1709579999988,"tokens":2011}
+{"start":1278.8,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/s8.png","against":1233.39,"keep":true,"p":0.913,"ms":1510.439250000003,"tokens":2011}
+{"start":1351.18,"image":"/Users/mba/live-mindmap-samples/synth/screen/slides/gallery.png","against":1278.8,"keep":false,"p":0.0673,"ms":1741.5638749999998,"tokens":2011}
