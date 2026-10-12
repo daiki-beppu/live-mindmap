@@ -11,7 +11,7 @@ Foldkit のコードは、公式の skill と llms.txt に従って書く。こ�
 - 写した版は、`github.com/foldkit/foldkit` のタグ `foldkit@0.167.0`（コミット `74071173b1253e9efeec050a31ca86df1931ce5a`）の `skills/`。出どころは `skills-lock.json` にも残る。
 - skill の中身は書き換えない。食い違いは、この文書の側で読み替える。
 - 読み替え 1（subtree）: skill `foldkit` は、参照用に foldkit のソースを `repos/foldkit/` に subtree で置くよう書いている。この repo は subtree を置かない。ソースは入れた `node_modules` のものを読む（`web/node_modules/foldkit/` と `web/node_modules/@foldkit/ui/`）。
-- 読み替え 2（Tailwind）: skill `generate-program` は Tailwind を前提にしている（Tailwind 入りの `vite.config.ts`、`h.Class` に Tailwind のクラス）。載せ替えの間は、今の `web/src/styles.css` のクラス名で描く。Tailwind は、3 画面すべてを替えた後に CSS を替える段まで入れない。
+- 読み替え 2（Tailwind）: skill `generate-program` は Tailwind を前提にしている。web は Tailwind v4（`@tailwindcss/vite`）を入れてあり、`h.Class` には意味のクラス名（BEM）にユーティリティを並べて書く。設定は `web/src/styles.css` の中: Preflight は外す（`theme.css` と `utilities.css` だけを import）、既定のテーマは `--*: initial` で消して今の色を今の hex のまま token にする、走査は `source(none)` と `@source` で web/src に絞る。点滅（`@keyframes`）と子孫・状態のセレクタ・`min()`/`calc()`/`color-mix` の長い値は、層の外の素の CSS に残す（ユーティリティに勝たせるため）。影（`shadow-*`）とバッジは足さない。
 
 ## コードの置き場
 

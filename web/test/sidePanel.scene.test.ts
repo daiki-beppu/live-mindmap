@@ -8,6 +8,7 @@ import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { view as sideView } from "../src/app/sidePanel/main.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
+import { semanticClassesOf } from "./semanticClasses.ts";
 
 // 右の列（Issue #821）の Scene。描いた view から入り、選んだノードの根拠のパネルと変わったことの列が、今の画面（EvidencePanel.tsx・ChangeList.tsx）と同じ中身・同じ DOM で出ること、
 // 選択に連動して同じ画面の上で切り替わること、右の列の出す・隠すが Disclosure の panel として描かれることを見る。
@@ -66,7 +67,7 @@ const evidenceOf = (html: VNode): VNode => Option.getOrThrow(find("section.evide
 const sideOf = (html: VNode): VNode => Option.getOrThrow(find(".side")(html));
 const elements = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 const classOf = (vnode: VNode): string => Option.getOrElse(attr(vnode, "class"), () => "");
-const named = (vnode: VNode): string => `${vnode.sel}.${classOf(vnode).split(" ").join(".")}`;
+const named = (vnode: VNode): string => `${vnode.sel}.${semanticClassesOf(classOf(vnode)).join(".")}`;
 const EMPTY_NOT_SELECTED = "ノードを選ぶと、根拠の発言が出ます";
 const EMPTY_NOT_ON_MAP = "選んだノードは今のマップにありません";
 const EMPTY_NO_REMARKS = "根拠の発言はありません";
@@ -383,7 +384,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
       tap((s) => {
         const side = sideOf(s.html);
         expect(side.sel).toBe("div");
-        expect(classOf(side)).toBe("side");
+        expect(semanticClassesOf(classOf(side))).toEqual(["side"]);
         expect(Option.isSome(attr(side, "id"))).toBe(true);
         expect(Option.isSome(attr(side, "data-open"))).toBe(true);
         expect(elements(side).map(named)).toEqual(["section.evidence", "aside.changes"]);

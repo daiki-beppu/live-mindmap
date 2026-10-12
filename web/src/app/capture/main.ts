@@ -41,5 +41,5 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html => {
     onNone: () => [],
     onSome: (fits) => [h.Attribute(fits ? CAPTURE_READY_ATTRIBUTE : CAPTURE_OVERFLOW_ATTRIBUTE, "")],
   });
-  return h.div([h.Class("capture"), ...attribute], [h.submodel({ slotId: "map-surface", view: MapSurface.view, model: model.mapSurface, toParentMessage: toMapSurface })]);
+  return h.div([h.Class("capture w-full h-full"), ...attribute], [h.submodel({ slotId: "map-surface", view: MapSurface.view, model: model.mapSurface, toParentMessage: toMapSurface })]);
 };

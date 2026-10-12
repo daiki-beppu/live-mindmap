@@ -1,7 +1,0 @@
-/* キーの一覧（Issue #822）。見た目は styles.css の .key-list をそのまま使う。ここは Popover の置き場所だけを決める */
-.review__session { position: relative; }
-/* 一覧の位置は、右上（styles.css の .key-list と同じ上 12px・右 12px）に置いた大きさのない button から Popover が決める */
-.key-list__anchor { position: absolute; top: 12px; right: 12px; width: 0; height: 0; }
-.key-list__trigger { display: block; width: 0; height: 0; margin: 0; padding: 0; border: 0; overflow: hidden; }
-/* Popover が left・top を書くので、styles.css の right（と top）は外す */
-.key-list__anchor .key-list { right: auto; width: max-content; }

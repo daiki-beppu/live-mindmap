@@ -42,7 +42,6 @@ import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
 import { type ArrowDir, type CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
-import "./mapSurface.css";
 import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -553,7 +552,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
     h.keyed("div")(
       node.id,
       [
-        h.Class("map-node-slot"),
+        h.Class("map-node-slot absolute left-0 top-0 box-border origin-top-left [pointer-events:all] select-none cursor-default"),
         h.DataAttribute("node-id", node.id),
         h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
       ],
@@ -579,7 +578,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const edgeDotButtons = dots.map((dot) =>
     h.keyed("button")(dot.id, [
       h.Type("button"),
-      h.Class("edge-dot nopan nowheel"),
+      h.Class("edge-dot nopan nowheel absolute w-[10px] h-[10px] [margin:-5px_0_0_-5px] p-0 [border:0] rounded-[50%] bg-yellow-400 cursor-pointer pointer-events-auto"),
       h.Style({ left: `${dot.x}px`, top: `${dot.y}px` }),
       h.AriaLabel(`画面の外で変わったノードへ寄る（${dot.ids.length} 件）`),
       h.OnClick(Message.ClickedEdgeDot({ nodeId: dot.id })),
@@ -587,10 +586,10 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   );
 
   return h.div(
-    [h.Class("map-surface"), h.OnMount(ObserveMapSurface())],
+    [h.Class("map-surface relative w-full h-full overflow-hidden z-0"), h.OnMount(ObserveMapSurface())],
     [
-      h.div([h.Class("map-viewport"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges")], edges), h.div([h.Class("map-nodes")], nodes)]),
-      ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots")], edgeDotButtons)]),
+      h.div([h.Class("map-viewport absolute left-0 top-0 w-full h-full origin-top-left pointer-events-none z-2"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges absolute left-0 top-0 w-[1px] h-[1px] overflow-visible pointer-events-none")], edges), h.div([h.Class("map-nodes absolute left-0 top-0 pointer-events-none")], nodes)]),
+      ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots absolute inset-0 z-4 pointer-events-none overflow-hidden")], edgeDotButtons)]),
     ],
   );
 });

@@ -372,10 +372,10 @@ export const makeView = (context: Context) => (model: Model, h: HtmlBuilder<Mess
   const toMapSurface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const surface = surfaceOf(context, model);
   return h.div(
-    [h.Class("review")],
+    [h.Class("review flex flex-col w-full h-full")],
     [
       h.div(
-        [h.Class("review__session")],
+        [h.Class("review__session flex-1 min-h-0 relative")],
         [
           h.submodel({
             slotId: "session-layout",

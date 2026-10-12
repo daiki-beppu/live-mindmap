@@ -189,7 +189,7 @@ export const update = (model: Model, message: Message): Return => viewingNotices
 
 export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
   Option.match(model.session, {
-    onNone: () => h.p([h.Class("waiting")], ["サーバーを待っています"]),
+    onNone: () => h.p([h.Class("waiting m-0 p-[2rem] text-gray-500")], ["サーバーを待っています"]),
     onSome: (session) => {
       const surface = Option.getOrThrow(surfaceOf(model.feed, session));
       return h.submodel({

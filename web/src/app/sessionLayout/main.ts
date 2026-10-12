@@ -157,8 +157,8 @@ function captionsView(h: H, model: Model): Html | null {
               captions.map((c) =>
                 h.keyed("div")(
                   c.track,
-                  [h.Class("captions__block")],
-                  [h.span([h.Class("captions__track")], [c.track]), h.div([h.Class("captions__lines")], c.lines.map((line) => h.p([h.Class("captions__line")], [line])))],
+                  [h.Class("captions__block flex gap-[10px] items-baseline px-[12px] py-[6px] text-[16px] leading-[1.5] text-gray-700 bg-[rgb(255_255_255/0.88)] [border:1px_solid_var(--color-gray-200)] rounded-[6px] [box-shadow:none]")],
+                  [h.span([h.Class("captions__track flex-none text-[12px] text-gray-400")], [c.track]), h.div([h.Class("captions__lines min-w-0")], c.lines.map((line) => h.p([h.Class("captions__line m-0 wrap-anywhere")], [line])))],
                 ),
               ),
             ),
@@ -176,24 +176,24 @@ function localModeViews(h: H, model: Model): ReadonlyArray<Html> {
   });
   const data = Option.match(status, { onNone: () => [], onSome: (s) => [h.DataAttribute("status", s)] });
   return [
-    h.div([h.Class("local-mode-line"), ...data, h.AriaHidden(true)], []),
-    h.div([h.Class("local-mode-notice"), ...data, h.Role("status")], [`ローカルモード・Apple Intelligence${suffix}`]),
+    h.div([h.Class("local-mode-line absolute top-0 left-0 right-0 h-[2px] bg-[var(--local-mode-color)] pointer-events-none z-6"), ...data, h.AriaHidden(true)], []),
+    h.div([h.Class("local-mode-notice absolute top-[8px] left-[12px] text-[12px] leading-[18px] text-[color:var(--local-mode-color)] pointer-events-none z-6"), ...data, h.Role("status")], [`ローカルモード・Apple Intelligence${suffix}`]),
   ];
 }
 
 const diffUpdateView = (h: H, model: Model): Html | null =>
   Option.exists(model.diffUpdate, (state) => state.status === "paused" && state.reason === "ChatGPT の利用上限")
-    ? h.div([h.Class("diff-update-notice"), h.Role("status")], ["マップの更新が止まっています（ChatGPT の利用上限）"])
+    ? h.div([h.Class("diff-update-notice absolute top-[8px] left-[12px] text-[12px] text-gray-500 z-5 pointer-events-none"), h.Role("status")], ["マップの更新が止まっています（ChatGPT の利用上限）"])
     : null;
 
 // `.map`・キーの一覧・`.side` は別の部品が持つので、差し込み口で受け取る（`.side` は包まずそのまま置く。右の列を隠しているときは null）。並びは SessionView の .layout の直下と同じ。
 // キーの一覧は `.map` の中の最後に置く（表示面 → 見る状態の知らせ → キーの一覧）
 export const view = (model: Model, h: H, slots: Slots): Html =>
   h.div(
-    [h.Class(model.local ? "layout layout--local" : "layout")],
+    [h.Class(model.local ? "layout layout--local flex w-full h-full relative" : "layout flex w-full h-full relative")],
     [
       ...localModeViews(h, model),
-      h.div([h.Class("map")], [slots.map, noticeViewP(h, model.viewingToast), slots.keyList ?? null]),
+      h.div([h.Class("map flex-1 min-w-0 h-full relative")], [slots.map, noticeViewP(h, model.viewingToast), slots.keyList ?? null]),
       captionsView(h, model),
       noticeView(h, "intake-notice", model.intakeToast),
       noticeView(h, "screen-notice", model.screenToast),
@@ -204,7 +204,7 @@ export const view = (model: Model, h: H, slots: Slots): Html =>
   );
 
 function noticeViewP(h: H, toast: NoticeModel): Html | null {
-  return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice")], [text]) });
+  return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice absolute left-[16px] bottom-[4px] m-0 text-[13px] leading-[16px] whitespace-nowrap text-gray-500 pointer-events-none z-5")], [text]) });
 }
 
 // 親が h.submodel で組み込むための view。差し込み口は、親の builder で作る Html を返す関数（親の境界で実行される）で受ける

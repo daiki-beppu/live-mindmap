@@ -1,20 +1,82 @@
 import { readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+// Tailwind v4 の入口（Issue #830）。styles.css は @theme の token を持つ。素の CSS に残した規則が色を var(--color-*) で書いても、今の hex として読めるよう解決する
+const themeBlock = css.match(/@theme\b[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+const colorTokens = new Map([...themeBlock.matchAll(/(--color-[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1]!, m[2]!.trim()] as const));
+const resolveColors = (value: string) => value.replace(/var\(\s*(--color-[\w-]+)\s*\)/g, (whole, name: string) => colorTokens.get(name) ?? whole);
 const rule = (selector: string) => {
   const m = css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`));
-  return m?.[1] ?? "";
+  return resolveColors(m?.[1] ?? "");
 };
+
+const WIDTH_FORMULA = /min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/;
+
+// 素の CSS に残す規則（点滅・子孫と状態のセレクタ・min()/calc() の長い値）は、styles.css の文面で確かめる。
+// ユーティリティへ移した規則（.layout・.key-list・.map-node__count・.map-node__fold-dot の基本の値など）は、置き場に依らない実ブラウザの computed style と
+// 替える前の CSS との画面の照合で確かめる（tailwindCompare.heavy.test.ts）。
+
+describe("styles.css: Tailwind v4 の入口（Issue #830）", () => {
+  const imports = [...css.matchAll(/@import\s+(?:url\()?["']([^"']+)["']/g)].map((m) => m[1]!);
+
+  it("Preflight を入れない: theme.css と utilities.css だけを import し、`tailwindcss` の丸ごとの import も preflight.css も使わない", () => {
+    expect(imports).toContain("tailwindcss/theme.css");
+    expect(imports).toContain("tailwindcss/utilities.css");
+    expect(imports).not.toContain("tailwindcss");
+    expect(imports.filter((name) => /preflight/.test(name))).toEqual([]);
+    expect(css).not.toMatch(/@import\s+["']tailwindcss["']/);
+  });
+
+  it("既定のテーマを消す: @theme で `--*: initial` を宣言し、既定の token（影・角丸・OKLCH の色）を残さない", () => {
+    expect(css).toMatch(/@theme\b[^{]*\{/);
+    expect(themeBlock).toMatch(/--\*\s*:\s*initial\s*;/);
+    expect(css).not.toMatch(/--shadow-|--drop-shadow-|--inset-shadow-|--radius-/);
+    expect(css).not.toMatch(/oklch\(/i);
+  });
+
+  it("今の色 12 種を、今の hex のまま --color-* の token にする", () => {
+    const values = new Set([...colorTokens.values()].map((value) => value.toLowerCase()));
+    for (const hex of ["#111827", "#166534", "#374151", "#4b5563", "#6b7280", "#9ca3af", "#c2410c", "#e5e7eb", "#f3f4f6", "#f9fafb", "#facc15", "#fff"]) {
+      expect(values.has(hex), hex).toBe(true);
+    }
+    expect(colorTokens.get("--color-yellow-400")).toBe("#facc15");
+  });
+
+  it("走査を web のソースに絞る: utilities の import は source(none) で自動の走査を止め、@source で web/src だけを指す", () => {
+    expect(css).toMatch(/@import\s+["']tailwindcss\/utilities\.css["'][^;]*source\(none\)/);
+    const sources = [...css.matchAll(/@source\s+(?:not\s+)?["']([^"']+)["']/g)].map((m) => m[1]!);
+    expect(sources.length).toBeGreaterThan(0);
+    // 走査の起点は web/src の中だけ（リポジトリ全体・server・node_modules を読まない）
+    const srcDir = fileURLToPath(new URL("../src/", import.meta.url));
+    for (const path of sources) {
+      const resolved = resolve(srcDir, path) + sep;
+      expect(resolved.startsWith(srcDir), path).toBe(true);
+      expect(resolved, path).not.toContain("node_modules");
+    }
+  });
+
+  it("素の CSS に残す点滅の @keyframes と子孫・状態のセレクタが、層（@layer { … } のブロック）の外にある: ユーティリティに勝つため", () => {
+    const outsideBlocks = css.replace(/@layer\s+[\w-]+\s*\{[\s\S]*?\n\}/g, "");
+    expect(outsideBlocks).toMatch(/@keyframes map-node-blink/);
+    expect(outsideBlocks).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
+    expect(outsideBlocks).toMatch(/\.review-seek\[data-pointing\]/);
+  });
+});
 
 describe("styles.css: 変わったノードの強調", () => {
   it("赤い枠（outline）と map-node--changed の規則がない", () => {
     expect(css).not.toContain("map-node--changed");
     expect(css).not.toMatch(/outline\s*:\s*[^;]*#dc2626/i);
+    expect(css).not.toMatch(/#dc2626/i);
   });
 
   it("枠・影を足さない（box-shadow は none のまま）", () => {
     for (const m of css.matchAll(/box-shadow\s*:\s*([^;]+);/g)) expect(m[1]!.trim()).toBe("none");
+    expect(css).not.toMatch(/--tw-shadow|--shadow-/);
   });
 
   it("点滅は 1 秒周期で 3 回、ノードの塗りと枠だけを変え、文字は薄くしない（opacity を使わない）", () => {
@@ -26,79 +88,53 @@ describe("styles.css: 変わったノードの強調", () => {
     expect(css).not.toContain("map-node__flash");
   });
 
-  it("変わったノードには細い黄色の枠を outline で付ける（実寸を変えない）", () => {
+  it("変わったノードには細い黄色の枠を outline で付ける（実寸を変えない）。点滅は animate-* のユーティリティにしない", () => {
     expect(rule(".map-node--blink")).toMatch(/outline\s*:\s*1\.5px solid #facc15/i);
-  });
-
-  it("「変わったこと」の変化の種類は赤でない", () => {
-    expect(rule(".changes__type")).not.toMatch(/#dc2626/i);
+    expect(css).not.toMatch(/--animate-/);
   });
 });
 
-
-describe("styles.css: 字幕", () => {
+describe("styles.css: 字幕と知らせ", () => {
   it("仮のノードの規則はない", () => {
     expect(css).not.toContain(".draft-node");
   });
 
-  it("字幕は layout の下端に重ね、操作を邪魔しない。影は付けない", () => {
-    expect(rule(".captions")).toMatch(/position\s*:\s*absolute/);
-    expect(rule(".captions")).toMatch(/bottom\s*:/);
-    expect(rule(".captions")).toMatch(/pointer-events\s*:\s*none/);
-    expect(rule(".layout")).toMatch(/position\s*:\s*relative/);
-    expect(rule(".captions__block")).toMatch(/box-shadow\s*:\s*none/);
-    expect(rule(".captions__block")).not.toContain("--kind-color");
-  });
-
-  it("字幕は窓の中央に固定し、幅は列にかからない min(720px, 100vw − 2 × 316px)。見返しの操作の行に重ならないよう fixed にしない", () => {
+  it("字幕は窓の中央に固定する幅が min(720px, 100vw − 2 × 316px)（右の列にかからない）。見返しの操作の行に重ならないよう fixed にしない", () => {
     const r = rule(".captions");
-    expect(r).toMatch(/left\s*:\s*50%/);
-    expect(r).toMatch(/translateX\(-50%\)/);
-    expect(r).toMatch(/width\s*:\s*min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/);
+    expect(r).toMatch(new RegExp(`width\\s*:\\s*${WIDTH_FORMULA.source}`));
     expect(r).not.toMatch(/position\s*:\s*fixed/);
     expect(rule(".intake-notice")).not.toMatch(/position\s*:\s*fixed/);
   });
 
-  it("取り込みの一言は、字幕と同じ基準（layout）・同じ幅の式で、字幕の右端に並ぶ", () => {
+  it("取り込みの一言は、字幕の右端に並ぶ: left が 50% と同じ幅の式から決まる。80% の決め打ちではない", () => {
     const r = rule(".intake-notice");
-    expect(r).toMatch(/position\s*:\s*absolute/);
     expect(r).toMatch(/left\s*:[^;]*50%[^;]*min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/);
     expect(r).not.toMatch(/80%/);
   });
-});
 
-describe("styles.css: 共有画面を使っていない一文（Issue #280）", () => {
-  it("layout の直下に重ねる（absolute、fixed にしない）ので、字幕とマップの位置を動かさない", () => {
+  it("共有画面を使っていない一文は、字幕と同じ幅の式で、影を付けず、fixed にしない", () => {
     const r = rule(".screen-notice");
     expect(r).not.toBe(""); // 規則があること（否定のテストの前提）
-    expect(r).toMatch(/position\s*:\s*absolute/);
+    expect(r).toMatch(new RegExp(`width\\s*:\\s*${WIDTH_FORMULA.source}`));
     expect(r).not.toMatch(/position\s*:\s*fixed/);
-    expect(rule(".layout")).toMatch(/position\s*:\s*relative/);
-  });
-
-  it("字幕（下端）と取り込みの一言（字幕の右、下端）と重ならないよう、下端基準ではなく上端基準で置く", () => {
-    const r = rule(".screen-notice");
-    expect(r).toMatch(/top\s*:/);
     expect(r).not.toMatch(/bottom\s*:/);
-    expect(rule(".intake-notice")).toMatch(/bottom\s*:/);
-  });
-
-  it("操作を邪魔せず、影を付けない", () => {
-    const r = rule(".screen-notice");
-    expect(r).toMatch(/pointer-events\s*:\s*none/);
     expect(r).not.toMatch(/box-shadow\s*:\s*(?!\s*none)/);
   });
-});
 
-describe("styles.css: キー一覧", () => {
-  it("マップの右上に重ね、細い枠だけで、操作を邪魔しない。影は付けない", () => {
-    const r = rule(".key-list");
-    expect(r).toMatch(/position\s*:\s*absolute/);
-    expect(r).toMatch(/top\s*:/);
-    expect(r).toMatch(/right\s*:/);
-    expect(r).toMatch(/border\s*:\s*1px solid/);
-    expect(r).toMatch(/pointer-events\s*:\s*none/);
-    expect(r).not.toMatch(/box-shadow\s*:\s*(?!none)/);
+  it("相手の音声が届かない一文（Issue #863）は、字幕の左に置く式で、バッジ・影・枠・背景を付けず、10 秒で消えるアニメーションを持たない", () => {
+    const r = rule(".tap-notice");
+    expect(r).not.toBe("");
+    expect(r).toMatch(/right\s*:[^;]*50%[^;]*min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/);
+    expect(r).not.toMatch(/position\s*:\s*fixed/);
+    expect(r).not.toMatch(/box-shadow\s*:\s*(?!\s*none)/);
+    expect(r).not.toMatch(/border\s*:|background(-color)?\s*:/);
+    expect(r).not.toMatch(/animation/);
+  });
+
+  it("取り込みの一言（intake-notice）と相手の音声が届かない一文（tap-notice）は、字幕の左右の反対側に置く", () => {
+    const side = (r: string) => (/(^|[\s;])right\s*:/.test(r) ? "right" : /(^|[\s;])left\s*:/.test(r) ? "left" : "none");
+    expect(side(rule(".tap-notice"))).not.toBe("none");
+    expect(side(rule(".tap-notice"))).not.toBe(side(rule(".intake-notice")));
   });
 });
 
@@ -109,6 +145,7 @@ describe("styles.css: 選んだノード", () => {
 
   it("枠・点滅の outline・影には触れない（実寸が変わり、配置がずれるため）", () => {
     const r = rule(".map-node--selected");
+    expect(r).not.toBe("");
     expect(r).not.toMatch(/border|outline|box-shadow|padding|margin|width|height/);
   });
 
@@ -121,20 +158,16 @@ describe("styles.css: 選んだノード", () => {
   });
 });
 
-describe("styles.css: 人が開いたノードの小さな丸", () => {
-  it("ノードの実寸を変えないよう絶対位置で置き、ホバーしたときだけ出す", () => {
-    expect(rule(".map-node__fold-dot")).toMatch(/position\s*:\s*absolute/);
+describe("styles.css: 人が開いたノードの小さな丸と、畳んだノードの隠れた数の丸（状態の規則）", () => {
+  it("ホバーしたときだけ出す規則が子孫のセレクタで素の CSS にある（group-hover のユーティリティにしない）", () => {
     expect(css).toMatch(/\.map-node:hover\s+\.map-node__fold-dot\s*\{/);
   });
 
-  it("display: none で隠さない（Tab で届くよう opacity: 0 で描く）。普段は透明で、ホバーと :focus-visible のときだけ opacity: 1", () => {
-    const r = rule(".map-node__fold-dot");
-    expect(r).not.toMatch(/display\s*:\s*none/);
-    expect(r).not.toMatch(/visibility\s*:\s*hidden/);
-    expect(r).toMatch(/opacity\s*:\s*0\s*(;|$)/);
+  it("普段は透明で、ホバーと :focus-visible のときだけ opacity: 1。display: none・visibility: hidden では隠さない（Tab で届く）", () => {
     const shown = css.match(/[^{}]*\.map-node__fold-dot[^{}]*\{[^}]*opacity\s*:\s*1[^}]*\}/g) ?? [];
     expect(shown.some((b) => /\.map-node:hover\s+\.map-node__fold-dot/.test(b))).toBe(true);
     expect(shown.some((b) => /\.map-node__fold-dot:focus-visible/.test(b))).toBe(true);
+    expect(css).not.toMatch(/\.map-node__fold-dot[^{}]*\{[^}]*(display\s*:\s*none|visibility\s*:\s*hidden)/);
   });
 
   it("ノードを選んだだけ・マウスで押した（:focus）だけでは出たままにしない", () => {
@@ -146,74 +179,12 @@ describe("styles.css: 人が開いたノードの小さな丸", () => {
     }
   });
 
-  it("ボタンの既定の枠・余白を打ち消し、寸法と位置は今のまま", () => {
-    const r = rule(".map-node__fold-dot");
-    expect(r).toMatch(/padding\s*:\s*0\s*(;|$)/);
-    expect(r).toMatch(/margin\s*:\s*0\s*(;|$)/);
-    expect(r).toMatch(/width\s*:\s*12px/);
-    expect(r).toMatch(/height\s*:\s*12px/);
-    expect(r).toMatch(/top\s*:\s*50%/);
-    expect(r).toMatch(/right\s*:\s*6px/);
-  });
-
-  it("フォーカスの輪は :focus-visible のときだけ、既存のフォーカスと同じ outline: 2px solid #facc15。影は足さない", () => {
-    expect(rule(".map-node__fold-dot:focus-visible")).toMatch(/outline\s*:\s*2px solid #facc15/i);
-    expect(rule(".map-node__fold-dot:focus-visible")).not.toMatch(/box-shadow/);
-    expect(rule(".map-node__fold-dot:focus")).toBe("");
-  });
-});
-
-describe("styles.css: 畳んだノードの隠れた数の丸（押せるもの）", () => {
-  it("ボタンの既定の枠・余白を打ち消す（border: 0・margin: 0・font-family: inherit）。font の一括指定で大きさを変えない", () => {
-    const r = rule(".map-node__count--pressable");
-    expect(r).toMatch(/border\s*:\s*0\s*(;|$)/);
-    expect(r).toMatch(/margin\s*:\s*0\s*(;|$)/);
-    expect(r).toMatch(/font-family\s*:\s*inherit/);
-    expect(r).not.toMatch(/(?<![-\w])font\s*:/);
-  });
-
-  it("寸法・位置・普段の見た目は今のまま（.map-node__count の規則）", () => {
-    const r = rule(".map-node__count");
-    expect(r).toMatch(/position\s*:\s*absolute/);
-    expect(r).toMatch(/top\s*:\s*50%/);
-    expect(r).toMatch(/right\s*:\s*6px/);
-    expect(r).toMatch(/min-width\s*:\s*18px/);
-    expect(r).toMatch(/height\s*:\s*18px/);
-    expect(r).toMatch(/padding\s*:\s*0 4px/);
-    expect(r).toMatch(/background\s*:\s*#e5e7eb/);
-    expect(r).toMatch(/font-size\s*:\s*11px/);
-    expect(r).toMatch(/line-height\s*:\s*18px/);
-  });
-
   it("フォーカスの輪は :focus-visible のときだけ、outline: 2px solid #facc15。影は足さない", () => {
-    expect(rule(".map-node__count--pressable:focus-visible")).toMatch(/outline\s*:\s*2px solid #facc15/i);
-    expect(rule(".map-node__count--pressable:focus-visible")).not.toMatch(/box-shadow/);
+    for (const selector of [".map-node__fold-dot:focus-visible", ".map-node__count--pressable:focus-visible"]) {
+      expect(rule(selector), selector).toMatch(/outline\s*:\s*2px solid #facc15/i);
+      expect(rule(selector), selector).not.toMatch(/box-shadow/);
+    }
+    expect(rule(".map-node__fold-dot:focus")).toBe("");
     expect(rule(".map-node__count--pressable:focus")).toBe("");
-  });
-});
-
-describe("styles.css: 相手の音声が届かない一文（Issue #863）", () => {
-  it("字幕の横の控えめな表示。absolute で下端基準、操作を邪魔せず、バッジ・影・枠を付けない", () => {
-    const r = rule(".tap-notice");
-    expect(r).not.toBe("");
-    expect(r).toMatch(/position\s*:\s*absolute/);
-    expect(r).not.toMatch(/position\s*:\s*fixed/);
-    expect(r).toMatch(/bottom\s*:/);
-    expect(r).toMatch(/pointer-events\s*:\s*none/);
-    expect(r).not.toMatch(/box-shadow\s*:\s*(?!none)/);
-    expect(r).not.toMatch(/border\s*:|background(-color)?\s*:/);
-  });
-
-  it("10 秒で消えるアニメーションを持たない（次の origin かセッションの終わりまで出し続ける）", () => {
-    expect(rule(".tap-notice")).not.toBe("");
-    expect(rule(".tap-notice")).not.toMatch(/animation/);
-  });
-
-  it("取り込みの一言（intake-notice）の位置と重ならない側に置く", () => {
-    const tap = rule(".tap-notice");
-    const intake = rule(".intake-notice");
-    const side = (r: string) => (/(^|[\s;])right\s*:/.test(r) ? "right" : /(^|[\s;])left\s*:/.test(r) ? "left" : "none");
-    expect(side(tap)).not.toBe("none");
-    expect(side(tap)).not.toBe(side(intake));
   });
 });

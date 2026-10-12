@@ -1,15 +1,38 @@
-html, body, #root { margin: 0; width: 100%; height: 100%; }
-.layout { display: flex; width: 100%; height: 100%; position: relative; }
-.map { flex: 1; min-width: 0; height: 100%; position: relative; }
-body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
-.waiting { margin: 0; padding: 2rem; color: #6b7280; }
-.diff-update-notice { position: absolute; top: 8px; left: 12px; font-size: 12px; color: #6b7280; z-index: 5; pointer-events: none; }
+/* Tailwind v4（Issue #830）の入口。Preflight は入れない（theme.css と utilities.css だけを import する）。
+   既定のテーマは `--*: initial` で消し、今の色を今の hex のまま token にする。走査は utilities の source(none) で自動をやめ、@source で web/src だけを読む。
+   ユーティリティは view の h.Class に意味のクラス名と並べて書く（JS の closest()・scene テスト・下の素の CSS がその名前を使う）。
+   下の素の CSS は層（@layer）の外に置く: 層の外はユーティリティに勝つので、点滅・子孫と状態のセレクタ・min()/calc() の長い値・color-mix の規則が基本の値を上書きできる。
+   影は付けない（shadow-* は使わない。既定の影の token も置かない）。 */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./";
 
-.local-mode-line, .local-mode-notice { --local-mode-color: #166534; }
-.local-mode-line[data-status="restarting"], .local-mode-notice[data-status="restarting"] { --local-mode-color: #c2410c; }
-.local-mode-line[data-status="stopped"], .local-mode-notice[data-status="stopped"] { --local-mode-color: #6b7280; }
-.local-mode-line { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--local-mode-color); pointer-events: none; z-index: 6; }
-.local-mode-notice { position: absolute; top: 8px; left: 12px; font-size: 12px; line-height: 18px; color: var(--local-mode-color); pointer-events: none; z-index: 6; }
+@theme static {
+  --*: initial;
+  /* 数のユーティリティ（min-w-0 など）が calc(var(--spacing) * n) になるので、1px にして今の px と合わせる */
+  --spacing: 1px;
+  --color-white: #fff;
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+  --color-gray-900: #111827;
+  --color-yellow-400: #facc15;
+  --color-green-800: #166534;
+  --color-orange-700: #c2410c;
+  --font-weight-semibold: 600;
+}
+
+html, body, #root { margin: 0; width: 100%; height: 100%; }
+body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--color-white); }
+
+.local-mode-line, .local-mode-notice { --local-mode-color: var(--color-green-800); }
+.local-mode-line[data-status="restarting"], .local-mode-notice[data-status="restarting"] { --local-mode-color: var(--color-orange-700); }
+.local-mode-line[data-status="stopped"], .local-mode-notice[data-status="stopped"] { --local-mode-color: var(--color-gray-500); }
 .layout--local > .screen-notice { top: 36px; width: min(720px, calc(100% - 24px)); }
 
 /* 淡い塗り・枠・角丸だけ。影・バッジ・色帯は付けない */
@@ -18,7 +41,7 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
   width: 200px;
   font-size: 14px;
   line-height: 1.4;
-  color: #111827;
+  color: var(--color-gray-900);
   background: color-mix(in srgb, var(--kind-color) 15%, white);
   border: 1.5px solid var(--kind-color);
   border-radius: 8px;
@@ -33,135 +56,76 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
    文字は薄くしない（opacity はノード全体にかかるので使わない）。影・バッジは足さない。
    色の塗りで知らせる案・ノード全体の opacity で点滅する案は、実機で違和感があったため取りやめた（2026-10-01）。
    50% だけを指定し、始まりと終わりは元の塗り・枠の色から補間させる。
-   枠は細い黄色を outline で描き、次の反映まで残す（border の太さを変えると実寸が変わり、測った高さに基づく配置がずれる）。 */
+   枠は細い黄色を outline で描き、次の反映まで残す（border の太さを変えると実寸が変わり、測った高さに基づく配置がずれる）。
+   点滅は animate-* のユーティリティにせず、素の CSS に残す。 */
 .map-node--blink { outline: 1.5px solid #facc15; outline-offset: 2px; animation: map-node-blink 1s ease-in-out 3; }
 @keyframes map-node-blink { 50% { background-color: color-mix(in srgb, var(--kind-color) 4%, white); border-color: color-mix(in srgb, var(--kind-color) 35%, white); } }
 .map-node--rejected { opacity: 0.45; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 /* 畳んだノード: 塗りを薄く、文字を灰色にし、手がかりの文字と、右端に隠れたノード数の小さな丸を出す。影・バッジは付けない */
-.map-node--folded { color: #6b7280; background: color-mix(in srgb, var(--kind-color) 6%, white); }
+.map-node--folded { color: var(--color-gray-500); background: color-mix(in srgb, var(--kind-color) 6%, white); }
 /* 選んだノード: 種別の色の塗りを薄い灰色に置き換える。枠・点滅の outline・影・バッジは変えない（枠を変えると実寸が変わり配置がずれる） */
-.map-node--selected { background: #f3f4f6; }
-.map-node__hint { flex-basis: 100%; font-size: 12px; color: #6b7280; }
+.map-node--selected { background: var(--color-gray-100); }
+.map-node__hint { flex-basis: 100%; font-size: 12px; color: var(--color-gray-500); }
 .map-node--folded .map-node__button { flex-wrap: wrap; padding-right: 32px; }
-.map-node__count { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: #e5e7eb; color: #4b5563; font-size: 11px; line-height: 18px; text-align: center; pointer-events: none; }
+.map-node__count { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; border-radius: 9px; background: var(--color-gray-200); color: var(--color-gray-600); font-size: 11px; line-height: 18px; text-align: center; pointer-events: none; }
 /* 開閉できる丸（onFoldDot がある畳んだノード）だけ押せる */
 .map-node__count--pressable { pointer-events: all; cursor: pointer; border: 0; margin: 0; font-family: inherit; }
 .map-node__count--pressable:focus-visible { outline: 2px solid #facc15; }
 /* 人が開いたノードの、畳む小さな丸: ホバーか :focus-visible のときだけ出す（opacity で隠し、Tab で届くようにする）。絶対配置で、ノードの実寸は変えない */
-.map-node__fold-dot { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 12px; height: 12px; border-radius: 50%; background: #e5e7eb; border: 1px solid #9ca3af; box-sizing: border-box; display: block; opacity: 0; padding: 0; margin: 0; cursor: pointer; pointer-events: all; }
+.map-node__fold-dot { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 12px; height: 12px; border-radius: 50%; background: var(--color-gray-200); border: 1px solid var(--color-gray-400); box-sizing: border-box; display: block; opacity: 0; padding: 0; margin: 0; cursor: pointer; pointer-events: all; }
 .map-node:hover .map-node__fold-dot { opacity: 1; }
 .map-node__fold-dot:focus-visible { opacity: 1; outline: 2px solid #facc15; }
 
-
-/* 人が止めている間、画面の外で変わったノードを縁の点で知らせる。反映の枠と同じ黄色の小さな丸。影は付けない */
-.edge-dots { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
-.edge-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; padding: 0; border: 0; border-radius: 50%; background: #facc15; cursor: pointer; pointer-events: auto; }
-
-/* 右の列: 上に根拠、下に「変わったこと」 */
-.side { flex: none; width: 300px; height: 100%; display: flex; flex-direction: column; border-left: 1px solid #e5e7eb; font-size: 13px; color: #111827; }
-.evidence { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow-y: auto; border-bottom: 1px solid #e5e7eb; }
+/* 右の列・「変わったこと」の中の要素（子孫のセレクタ） */
 .evidence h2 { margin: 0 0 8px; font-size: 14px; }
 .evidence p { margin: 0 0 6px; }
 .evidence ul { margin: 0; padding: 0; list-style: none; }
-.evidence__kind { font-weight: 600; }
-.evidence__status { margin-left: 8px; color: #6b7280; }
-.evidence__text { overflow-wrap: anywhere; }
-.evidence__empty { color: #6b7280; }
-.evidence__remark { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-bottom: 1px solid #f3f4f6; }
-.evidence__time { color: #6b7280; font-variant-numeric: tabular-nums; }
-.evidence__track { font-weight: 600; }
-.evidence__remark-text { flex-basis: 100%; overflow-wrap: anywhere; }
-
-/* 「変わったこと」一覧 */
-.changes { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow-y: auto; }
 .changes h2 { margin: 0 0 8px; font-size: 14px; }
 .changes ul { margin: 0; padding: 0; list-style: none; }
-.changes__item { border-bottom: 1px solid #f3f4f6; }
-.changes__button { display: flex; flex-wrap: wrap; gap: 4px 8px; width: 100%; padding: 6px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-.changes__time { color: #6b7280; font-variant-numeric: tabular-nums; }
-.changes__type { font-weight: 600; color: #374151; }
-.changes__kind { color: #6b7280; }
-.changes__text { flex-basis: 100%; overflow-wrap: anywhere; }
-.capture { width: 100%; height: 100%; }
 
 /* 字幕（いま話している文字）: .layout の下端に重ね、.layout の横幅の中央に固定する（右の列を出し入れしても動かない）。
    幅は右の列（300px）の分を引いても収まる min(720px, 100vw − 2 × 316px)。fixed にすると、見返しで .layout の下の操作の行に重なるため使わない。白の半透明の帯と灰色の文字だけで、影・バッジは付けない。
    文ごとに 1 行。古い文は行ごと消える（文字単位で前から削ると目が滑るため、2026-10-02） */
 .captions { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(720px, calc(100vw - 2 * 316px)); display: flex; flex-direction: column; gap: 4px; pointer-events: none; z-index: 5; }
-.captions__block { display: flex; gap: 10px; align-items: baseline; padding: 6px 12px; font-size: 16px; line-height: 1.5; color: #374151; background: rgb(255 255 255 / 0.88); border: 1px solid #e5e7eb; border-radius: 6px; box-shadow: none; }
-.captions__track { flex: none; font-size: 12px; color: #9ca3af; }
-.captions__lines { min-width: 0; }
-.captions__line { margin: 0; overflow-wrap: anywhere; }
 
 /* 取り込みの状態の一言（字幕の横。Issue #161）: バッジ・影は重ねず、控えめな文字だけで出す。
    .captions の右端（中央から幅 min(720px, 100vw − 2 × 316px) の半分）の 12px 外に置く。
    transform: translate() の % は要素自身の幅が基準になり、.captions の幅を基準にできないため、
    同じ % が .layout（直近の absolute 位置指定の親）を基準に解決される left の calc() で配置する（2026-10-05）。
    C で字幕を隠しても、この一言は隠さず今の位置に残す */
-.intake-notice { position: absolute; left: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; font-size: 13px; color: #6b7280; pointer-events: none; z-index: 5; white-space: nowrap; }
+.intake-notice { position: absolute; left: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; font-size: 13px; color: var(--color-gray-500); pointer-events: none; z-index: 5; white-space: nowrap; }
 
 /* 相手の音声が届いていないことの一文（Issue #863）: 字幕の左に、下端基準で置く（右には .intake-notice がある）。
    文が長いので折り返しを許し、幅は字幕の左の余白に収める。レイアウトは動かさない（absolute）。バッジ・影・枠・背景は付けない */
-.tap-notice { position: absolute; right: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; width: 260px; text-align: right; font-size: 13px; line-height: 1.5; color: #6b7280; pointer-events: none; z-index: 5; }
+.tap-notice { position: absolute; right: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; width: 260px; text-align: right; font-size: 13px; line-height: 1.5; color: var(--color-gray-500); pointer-events: none; z-index: 5; }
 
 /* 共有画面を使っていないことの一文（Issue #280）: .layout の上端中央に重ねる。レイアウトは動かさない（absolute）。
    字幕と取り込みの一言（どちらも下端）とは重ならない。幅は字幕と同じ式で、長い文は折り返す。バッジ・影は付けない */
-.screen-notice { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: min(720px, calc(100vw - 2 * 316px)); text-align: center; font-size: 13px; line-height: 1.5; color: #6b7280; pointer-events: none; z-index: 5; }
+.screen-notice { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: min(720px, calc(100vw - 2 * 316px)); text-align: center; font-size: 13px; line-height: 1.5; color: var(--color-gray-500); pointer-events: none; z-index: 5; }
 
-/* 人が動かして自動のカメラを止めている間の一言（Issue #311）: バッジ・影は重ねず、控えめな文字だけで左下に出す。
-   字幕（.captions は下端から 24px 以上を占める）と重ならないよう、下端から 4〜20px の帯に固定する（行の高さ 16px・折り返しなし） */
-.viewing-notice { position: absolute; left: 16px; bottom: 4px; margin: 0; font-size: 13px; line-height: 16px; white-space: nowrap; color: #6b7280; pointer-events: none; z-index: 5; }
+/* キー一覧: Popover が left・top を書くので、右の位置（top 12px・right 12px）は外し、中身の大きさに合わせる */
+.key-list__anchor .key-list { right: auto; width: max-content; }
 
-/* キー一覧（?）: マップの右上に重ねる細い枠だけの一覧。影・バッジは付けず、ドラッグや縁の点の邪魔をしない */
-.key-list { position: absolute; top: 12px; right: 12px; z-index: 5; border: 1px solid #e5e7eb; background: #fff; padding: 8px 12px; font-size: 13px; color: #111827; pointer-events: none; }
-.key-list__row { margin: 0; line-height: 20px; }
-.key-list__keys { font-weight: 600; }
-
-/* 見返し（map.html）: セッションの領域の下に、全幅のシークバーと操作の行を縦に置く。影は付けない */
-.review { display: flex; flex-direction: column; width: 100%; height: 100%; }
-.review__session { flex: 1; min-height: 0; }
-.review-controls { flex: none; background: #374151; color: #f9fafb; box-shadow: none; }
-/* シークバー: 章ごとに区切って置く。トラックの背景は透明にし、章のすき間（2px）に操作の行の色（#374151）が見えるようにする。影・バッジは付けない */
-.review-seek { position: relative; display: block; width: 100%; height: 16px; cursor: pointer; touch-action: none; }
-.review-seek__track { position: absolute; left: 0; right: 0; top: 6px; height: 3px; background: transparent; }
+/* 見返し（map.html）のシークバー: ポインタを乗せている間・ドラッグ中は、トラックを太くし、つまみと吹き出しを出す。つまみは display: none や visibility: hidden では隠さない（Tab でフォーカスできなくなる） */
 .review-seek[data-pointing] .review-seek__track, .review-seek[data-dragging] .review-seek__track { top: 5px; height: 5px; }
-/* 章・塗り・目印はポインタの操作を奪わない（シークは Slider.Root が受ける） */
-.review-seek__chapter { position: absolute; top: 0; height: 100%; background: #6b7280; pointer-events: none; }
-.review-seek__progress { height: 100%; background: #f9fafb; pointer-events: none; }
-.review-seek__mark { position: absolute; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; pointer-events: none; z-index: 1; }
-/* つまみはふだん見せない。display: none や visibility: hidden は Tab でフォーカスできなくなるので opacity で隠す */
-.review-seek__thumb { position: absolute; top: 2px; left: var(--media-slider-fill, 0%); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #f9fafb; box-shadow: none; opacity: 0; }
 .review-seek[data-pointing] .review-seek__thumb, .review-seek[data-dragging] .review-seek__thumb, .review-seek__thumb:focus-visible { opacity: 1; }
 .review-seek__thumb:focus-visible { outline: 2px solid #facc15; }
-/* 吹き出し: ポインタの位置の章の名前と時刻。左右の位置は Slider.Preview が決める。マップの上に出すので z-index を付ける */
-.review-seek__preview { bottom: 100%; z-index: 10; display: none; flex-direction: column; align-items: center; padding: 4px 8px; border-radius: 4px; background: #374151; color: #f9fafb; font-size: 13px; line-height: 16px; white-space: nowrap; box-shadow: none; }
 .review-seek[data-pointing] .review-seek__preview, .review-seek[data-dragging] .review-seek__preview { display: flex; }
-.review-seek__preview-time { font-variant-numeric: tabular-nums; }
-.review-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px 8px; font-size: 14px; }
-.review-bar__end { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: none; }
-.review-bar__button { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: none; color: inherit; cursor: pointer; }
 .review-bar__button svg { width: 18px; height: 18px; }
-.review-bar__time { font-variant-numeric: tabular-nums; }
-.review-bar__topic { min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 見返しの速さのメニュー: 操作の行の右端。濃い灰色の行に合わせ、影・バッジは付けない。行は画面の下端なので上に開く */
 /* 音量: ミュートのボタンにポインタを乗せている間（ドラッグ中・キーボードのフォーカス中も）だけ、横にスライダーが出る。幅 0 で隠すのでフォーカスは保てる */
-.review-volume { display: flex; align-items: center; flex: none; }
-.review-volume__slider { position: relative; width: 0; height: 32px; overflow: hidden; opacity: 0; cursor: pointer; touch-action: none; transition: width 0.15s; }
 .review-volume:hover .review-volume__slider, .review-volume:focus-within .review-volume__slider, .review-volume__slider[data-dragging] { width: 64px; margin: 0 4px; opacity: 1; }
-.review-volume__track { position: absolute; left: 0; right: 0; top: 14px; height: 4px; border-radius: 2px; background: #6b7280; pointer-events: none; }
-.review-volume__fill { height: 100%; width: var(--media-slider-fill, 0%); border-radius: 2px; background: #f9fafb; }
-.review-volume__thumb { position: absolute; top: 10px; left: var(--media-slider-fill, 0%); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #f9fafb; box-shadow: none; }
 .review-volume__thumb:focus-visible { outline: 2px solid #facc15; }
-.review-rate { position: relative; flex: none; }
-.review-tip { position: absolute; left: 0; bottom: 100%; z-index: 10; display: none; padding: 4px 8px; border-radius: 4px; background: #374151; color: #f9fafb; font-size: 13px; line-height: 16px; white-space: nowrap; box-shadow: none; pointer-events: none; }
+
+/* ツールチップ: panel は常に描き、Tooltip が data-open を付けている間だけ出す（:hover の規則は panel が body へ移るので効かない）。位置は Floating UI が inline の left/top で書く */
+.review-tip[data-open] { display: block; }
 .review-volume .review-tip { left: 0; }
 .review-bar__end .review-tip { left: auto; right: 0; }
 .review-bar__button:hover > .review-tip { display: block; }
 .review-bar__button.review-rate__button { width: auto; gap: 4px; padding: 0 8px; }
-.review-rate__menu { position: absolute; right: 0; bottom: 100%; z-index: 10; display: flex; flex-direction: column; min-width: 220px; padding: 4px; border-radius: 6px; background: #374151; color: #f9fafb; box-shadow: none; }
-.review-rate__item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
-.review-rate__item:hover, .review-rate__item:focus-visible { background: #4b5563; }
-.review-rate__check { display: inline-flex; width: 16px; height: 16px; }
+
+/* 速さのメニューの項目: 矢印キーなどで選んでいる項目は Menu が data-active だけを付けるので、:hover・:focus-visible の強調と同じ色にそろえる */
+.review-rate__item:hover, .review-rate__item:focus-visible { background: var(--color-gray-600); }
+.review-rate__item[data-active] { background: var(--color-gray-600); }
 .review-rate__check svg { width: 16px; height: 16px; }
