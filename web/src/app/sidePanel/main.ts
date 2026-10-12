@@ -1,6 +1,6 @@
 // 右の列（Issue #821）: 選んだノードの根拠のパネルと、変わったことの列。出す・隠すは Disclosure。
 // Model と update は持たない。見る状態（選択・人の開閉・sideHidden）は表示面の Model が持つので、その Model から毎回導いて描く。
-// 描き方は今の React（EvidencePanel.tsx・ChangeList.tsx・SessionView.tsx の .side）と同じ要素・class・文言
+// 要素・class・文言は React 版（EvidencePanel・ChangeList・SessionView、Issue #829 で削除）から変えない
 import { Disclosure } from "@foldkit/ui";
 import { Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";

@@ -58,9 +58,6 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: #fff; }
 .edge-dots { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
 .edge-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; padding: 0; border: 0; border-radius: 50%; background: #facc15; cursor: pointer; pointer-events: auto; }
 
-/* Handle は描画に必要だが見せない */
-.react-flow__handle { opacity: 0; pointer-events: none; }
-
 /* 右の列: 上に根拠、下に「変わったこと」 */
 .side { flex: none; width: 300px; height: 100%; display: flex; flex-direction: column; border-left: 1px solid #e5e7eb; font-size: 13px; color: #111827; }
 .evidence { flex: 1; min-height: 0; box-sizing: border-box; padding: 12px; overflow-y: auto; border-bottom: 1px solid #e5e7eb; }

@@ -128,16 +128,6 @@ export type CameraCommand = typeof CameraCommand.Type;
 
 export const INITIAL_VIEWING: ViewingState = { mode: "auto" };
 
-// カメラへの指示と、その通し番号。番号が変わるたびに、マップは指示を受け取り直す
-export type CameraOrder = { command: CameraCommand; seq: number };
-
-// 次の指示を決める。まだ描画されていない refocus（current.seq が shownSeq と異なる）は、
-// 同じ更新内で続く follow で上書きしない（上書きするとマップに refocus が届かない）。それ以外は常に新しい番号の指示にする
-export function nextCameraOrder(current: CameraOrder, command: CameraCommand, shownSeq: number): CameraOrder {
-  if (command.type === "follow" && current.command.type === "refocus" && current.seq !== shownSeq) return current;
-  return { command, seq: current.seq + 1 };
-}
-
 const ZOOM_STEP = 1.25;
 
 const AUTO: ViewingState = { mode: "auto" };

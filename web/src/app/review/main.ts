@@ -70,6 +70,7 @@ export const Model = Schema.Struct({
     intake: SessionLayout.Model.fields.intake,
     intakeToast: SessionLayout.Model.fields.intakeToast,
     screenToast: SessionLayout.Model.fields.screenToast,
+    tapToast: SessionLayout.Model.fields.tapToast,
     viewingToast: SessionLayout.Model.fields.viewingToast,
     diffUpdate: SessionLayout.Model.fields.diffUpdate,
     local: SessionLayout.Model.fields.local,

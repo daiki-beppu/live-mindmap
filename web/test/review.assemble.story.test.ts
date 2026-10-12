@@ -197,6 +197,7 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
     expect(Option.isNone(m.sessionLayout.intake)).toBe(true);
     expect(m.sessionLayout.intakeToast.entries).toEqual([]);
     expect(m.sessionLayout.screenToast.entries).toEqual([]);
+    expect(m.sessionLayout.tapToast.entries).toEqual([]);
   });
 });
 

@@ -129,7 +129,7 @@ describe("embedReviewAudio", () => {
 });
 
 describe("reviewSnapshot", () => {
-  // web の入口（main.tsx）が同期で呼ぶので、reviewSnapshot は Effect にせず同期の関数のまま保つ
+  // web の入口（main.ts）が同期で呼ぶので、reviewSnapshot は Effect にせず同期の関数のまま保つ
   it.effect("ログの出来事から、元のセッションの最後の時点と同じマップ・「変わったこと」・根拠を同期で組み立てる", () =>
     Effect.gen(function* () {
       const { session, events } = yield* realisticEvents();

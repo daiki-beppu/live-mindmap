@@ -100,7 +100,7 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   idleStamp: 0,
 });
 
-// 補間の長さ（ms）。web/src/useAnimatedPositions.ts の DURATION_MS と同じ（React 版の部品には触らないので、ここに別に置く）
+// 補間の長さ（ms）。React 版（useAnimatedPositions、Issue #829 で削除）から引き継いだ値
 const MOTION_DURATION_MS = 500;
 
 // 畳んだ見せ方。人が開いた・畳んだ・解いた集合と選んだノードを渡して導く。still は畳まない
@@ -118,7 +118,7 @@ const dimsOf = (model: Model): Record<string, { height: number }> => Object.from
 // 補間の行き先（目標の位置）
 const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), heightsOf(model));
 
-// 見えている木。reduceViewing の入力で、丸を描くかの判定（foldToggle）にも同じものを使う。MapView.tsx の tree と同じ組み立て
+// 見えている木。reduceViewing の入力で、丸を描くかの判定（foldToggle）にも同じものを使う。React 版（MapView、削除済み）から引き継いだ組み立て
 const treeOf = (model: Model, view: FoldView | null = foldViewOf(model)): VisibleTree => {
   const shown = view?.nodes ?? model.snapshot.nodes;
   return {
@@ -321,7 +321,7 @@ const reflectionOf = (before: Model, after: Model): ViewingEvent | null => {
 
 type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
 
-// ドラッグでない click とみなす、押した位置からの最大の移動量（px）。MapNode.tsx の CLICK_SLOP と同じ
+// ドラッグでない click とみなす、押した位置からの最大の移動量（px）。React 版（MapNode、削除済み）から引き継いだ値
 const CLICK_SLOP = 4;
 const awayFrom = (press: { x: number; y: number }, x: number, y: number): boolean => Math.hypot(x - press.x, y - press.y) > CLICK_SLOP;
 // 空いたところのドラッグを受けるボタン。@xyflow（d3-zoom）のフィルタと同じく主ボタンと中ボタンで、Ctrl 付きは受けない
@@ -443,7 +443,7 @@ export const update = (model: Model, message: Message): Return =>
     }),
     CanceledPointer: () => ({ model: modifyFields(model, { pointer: () => Option.none() }) }),
     // 押した記録の無い click（キーボード）と、別のノードの click は選ぶ。押したノードの click は記録を使い切り、ドラッグ（途中で超えた・押した位置から離れて離した）なら選ばない。
-    // まとめのノード（run:）は選ばない（MapView.tsx のまとめの onSelect と同じ）
+    // まとめのノード（run:）は選ばない（React 版から引き継いだ挙動）
     ClickedNodeButton: ({ nodeId, clientX, clientY }) => {
       const press = Option.filter(model.nodePress, (p) => p.nodeId === nodeId);
       const consumed = Option.isNone(press) ? model : modifyFields(model, { nodePress: () => Option.none() });

@@ -1,6 +1,6 @@
 // 取り込みの状態（CONTEXT.md「取り込みの途切れ」）に応じて、字幕の横に出す一言の規則（order.md「画面」）。
 // サーバーは現在の状態だけを送り、ここで「途切れ／止まった → 動いている」の遷移から「再開しました」を導く。
-// React を使わない純粋な規則（useIntakeNotice.ts が React の糊、IntakeNotice.tsx が部品）。
+// 純粋な規則（Toast で出すのは app/sessionLayout）。
 
 // "none" はセッションが無い（終わった）ことを表す。cli status と同じ語彙（サーバー側の SessionIntakeStatus）
 export type IntakeStatus = "running" | "interrupted" | "stopped" | "none";

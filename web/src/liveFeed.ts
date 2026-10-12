@@ -1,8 +1,8 @@
 import type { DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SessionModeFrame, Snapshot, SpeakingFrame, TapNoticeFrame, Track } from "../../server/src/core/index.ts";
 import type { IntakeStatus } from "./intake.ts";
 
-// /ws から届く frame（Issue #161）の分類と、それによる状態の更新を担う、React を使わない純粋なモジュール。
-// useLiveFeed.ts は WebSocket の接続・再接続・購読だけを担う glue で、分類と状態更新はここに置く
+// /ws から届く frame（Issue #161）の分類と、それによる状態の更新を担う、純粋なモジュール。
+// WebSocket の接続・再接続・購読は app/liveFeed/subscription.ts が担い、分類と状態更新はここに置く
 // （web のテスト環境に DOM・レンダラが無く、useEffect 内のクロージャには到達できないため。CT-FRAME-DISPATCH）。
 
 export type Speaking = Record<Track, string>;

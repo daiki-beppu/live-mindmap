@@ -10,6 +10,7 @@ export const Message = defineMessageUnion({
   ChangedSpeaking: { speaking: Schema.Struct({ 相手: Schema.String, 自分: Schema.String }) },
   ReceivedIntakeStatus: { status: IntakeStatus },
   ReceivedScreenNotice: { text: Schema.Option(Schema.String) },
+  ReceivedTapNotice: { text: Schema.Option(Schema.String) },
   ReceivedDiffUpdate: { state: Schema.Option(DiffUpdateState) },
   ReceivedSessionMode: { local: Schema.Boolean },
   ChangedViewingMode: { mode: Schema.Literals(["auto", "manual", "overview"]) },
@@ -17,6 +18,7 @@ export const Message = defineMessageUnion({
   ToggledCaptions: { isOpen: Schema.Boolean },
   GotIntakeToastMessage: { message: Notice.Message },
   GotScreenToastMessage: { message: Notice.Message },
+  GotTapToastMessage: { message: Notice.Message },
   GotViewingToastMessage: { message: Notice.Message },
 });
 export type Message = typeof Message.Type;

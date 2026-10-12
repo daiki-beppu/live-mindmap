@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
-import type { Page } from "playwright-core";
+import type { Page, WebSocketRoute } from "playwright-core";
 import { createServer } from "vite";
 import { vi } from "vitest";
-import { DiffUpdater } from "../src/core/index.ts";
+import { DiffUpdater, type Snapshot } from "../src/core/index.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { Playwright } from "../src/playwright.ts";
@@ -60,38 +60,30 @@ const hasTopGreenLine = () => [...document.querySelectorAll("*")].some((element)
 });
 
 describe("開始したセッションのローカルモード表示", () => {
-  it.live("ローカル表示部品だけでも状態ごとの線色と指定文言を描く", () => Effect.gen(function* () {
+  it.live("ローカルモードの会議中の画面だけでも（server なし）、差分更新の状態ごとの線色と指定文言を描く", () => Effect.gen(function* () {
     const web = yield* Effect.acquireRelease(Effect.tryPromise(async () => {
-      const vite = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), server: { host: "127.0.0.1", port: 0, hmr: false },
-        plugins: [{ name: "notice-component-test", resolveId: (id) => id === "virtual:notice-test" ? "\0notice-test" : undefined,
-          load: (id) => id === "\0notice-test" ? `
-            import { createElement } from "react";
-            import { createRoot } from "react-dom/client";
-            import { LocalModeNotice } from "/src/LocalModeNotice.tsx";
-            const container = document.createElement("div");
-            container.id = "notice-test";
-            container.className = "layout layout--local";
-            document.body.append(container);
-            const root = createRoot(container);
-            window.renderNotice = (status) => root.render(createElement(LocalModeNotice, { local: true, diffUpdate: { status } }));
-            window.renderNotice("running");
-          ` : undefined }],
-      });
+      const vite = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, ws: false } });
       try { await vite.listen(); return vite; } catch (error) { await vite.close(); throw error; }
     }), (vite) => Effect.promise(() => vite.close()));
     const address = web.httpServer!.address();
     if (!address || typeof address === "string") throw new Error("web のポートを取得できません");
     const browser = yield* Effect.acquireRelease((yield* Playwright).launch(), (running) => Effect.promise(() => running.close()));
     const page = yield* Effect.tryPromise(() => browser.newPage());
-    yield* Effect.tryPromise(() => page.route("**/src/main.tsx", (route) => route.fulfill({ contentType: "text/javascript", body: 'import "/src/styles.css";' })));
+    // 本物の server の代わりに、`/ws` へ frame を送る（スナップショット → ローカルモード → 差分更新の状態）
+    let socket: WebSocketRoute | undefined;
+    const snapshot: Snapshot = { nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }], round: 0, changes: [], remarks: [] };
+    yield* Effect.tryPromise(() => page.routeWebSocket("**/ws", (ws) => {
+      socket = ws;
+      ws.send(JSON.stringify(snapshot));
+      ws.send(JSON.stringify({ type: "session-mode", local: true }));
+      ws.send(JSON.stringify({ type: "diff-update", state: { status: "running" } }));
+    }));
     yield* Effect.tryPromise(() => page.goto(`http://127.0.0.1:${address.port}/`));
-    yield* Effect.tryPromise(() => page.addScriptTag({ type: "module", url: "/@id/virtual:notice-test" }));
-    const notice = page.locator("#notice-test .local-mode-notice");
-    const line = page.locator("#notice-test .local-mode-line");
+    const notice = page.locator(".layout--local .local-mode-notice");
+    const line = page.locator(".layout--local .local-mode-line");
     for (const [status, text] of [["running", LABEL], ["restarting", `${LABEL}・マップの更新を再開しています`], ["stopped", `${LABEL}・マップの更新が止まっています`]] as const) {
-      yield* Effect.tryPromise(() => page.evaluate((status) => {
-        (window as unknown as { renderNotice: (status: string) => void }).renderNotice(status);
-      }, status));
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(socket).toBeDefined()));
+      socket!.send(JSON.stringify({ type: "diff-update", state: { status } }));
       yield* Effect.tryPromise(() => vi.waitFor(async () => expect(await notice.textContent()).toBe(text)));
       const color = yield* Effect.tryPromise(() => line.evaluate((element) => getComputedStyle(element).backgroundColor));
       const rgb = color.match(/\d+/g)!.map(Number);
@@ -104,6 +96,8 @@ describe("開始したセッションのローカルモード表示", () => {
         expect(color).not.toBe("rgb(22, 101, 52)");
       }
     }
+    // 会議中の画面は React ではなく Foldkit で描いている
+    expect(yield* Effect.tryPromise(() => page.locator(".react-flow").count())).toBe(0);
   }).pipe(Effect.provide(managedPlaywright)), TIMEOUT);
 
   it.live.each([1200, 480])("同じ画面の再起動・復帰・停止で線の色と文字を替え、既存のマップと字幕の位置を保つ（幅 %s）", (width) => Effect.gen(function* () {
