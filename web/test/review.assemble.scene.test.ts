@@ -7,6 +7,7 @@ import { Message } from "../src/app/review/message.ts";
 import { speakingAt } from "../src/reviewTimeline.ts";
 import { snapshotOf } from "../src/app/review/main.ts";
 import { attrOf, audioApp, audioContext, elementsOf, hasClass, one, plainApp, plainContext, settle, stateAt, type Sim, type VNode } from "./reviewHarness.ts";
+import { semanticClassesOf } from "./semanticClasses.ts";
 
 // 見返しを 1 つのプログラムに組み上げた（Issue #826）Scene。描いた view から入り、
 // .review > .review__session > .layout > [.map > [.map-surface, 見る状態の知らせ, キーの一覧], 字幕, .side]、.review-controls、<audio> の並びで、
@@ -41,7 +42,7 @@ describe("見返しの Scene: 画面の並び", () => {
         const review = one(sim.html, ".review");
         const parts = elementsOf(review).map((v) => (hasClass(v, "review__session") ? "session" : hasClass(v, "review-controls") ? "controls" : v.sel?.startsWith("audio") ? "audio" : "other"));
         expect(parts).toEqual(context === audioContext ? ["session", "controls", "audio"] : ["session", "controls"]);
-        expect(classesOf(one(sim.html, ".review__session")).map((c) => c.split(" ")[0])).toEqual(["layout"]);
+        expect(classesOf(one(sim.html, ".review__session")).map((c) => semanticClassesOf(c)[0])).toEqual(["layout"]);
       }),
     );
   });

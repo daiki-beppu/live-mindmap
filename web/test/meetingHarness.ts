@@ -22,6 +22,7 @@ import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import type { KeyId } from "../src/app/keys/table.ts";
 import { init, update, view } from "../src/app/meeting/main.ts";
 import { Message } from "../src/app/meeting/message.ts";
+import { semanticClassesOf } from "./semanticClasses.ts";
 
 export const app = { update, view };
 export { init, update, view, Message };
@@ -140,7 +141,7 @@ export const styleOf = (vnode: VNode): Record<string, string> => ((vnode.data as
 const numbers = (s: string): number[] => (s.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
 
 // .layout の直下の子の class（先頭の 1 つ）。画面の並びを見る
-export const layoutOutline = (html: VNode): string[] => elementsOf(one(html, ".layout")).map((child) => (attrOf(child, "class") ?? "").split(" ")[0] ?? "");
+export const layoutOutline = (html: VNode): string[] => elementsOf(one(html, ".layout")).map((child) => semanticClassesOf(attrOf(child, "class") ?? "")[0] ?? "");
 export const renderedIds = (html: VNode): string[] => findAll(html, "[data-node-id]").map((v) => attrOf(v, "data-node-id")!);
 // 選ばれているノードの id（aria-pressed="true" のボタンを持つノード）
 export const selectedIds = (html: VNode): string[] =>

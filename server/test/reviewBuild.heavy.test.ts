@@ -73,6 +73,27 @@ describe("map.html の本物のビルド", () => {
       const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
       expect(JSON.parse(match![1]!)).toEqual(events);
 
+      // CSS（Tailwind v4 の出力と、素の CSS に残した点滅）は <style> として HTML に入る（Issue #830）
+      const css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]!).join("\n");
+      expect(css.length).toBeGreaterThan(0);
+      // 素の CSS に残した点滅（1 秒周期で 3 回、opacity を使わない）が入る
+      expect(css).toMatch(/@keyframes map-node-blink/);
+      expect(css).toMatch(/\.map-node--blink\s*\{[^}]*animation\s*:[^;}]*\b1s\b[^;}]*\s3\b/);
+      // 自前の token（今の hex のまま）が入り、Tailwind が生成したユーティリティが入る
+      expect(css).toMatch(/--color-yellow-400\s*:\s*#facc15/i);
+      expect(css).toMatch(/\.(?:absolute|relative|flex)\s*\{/);
+      // 既定のテーマは消えている（既定の名前の token も、v4 の OKLCH の色も無い）
+      // （自前の token の green-800 = #166534 は今の色。値は今の hex で、既定の OKLCH の値ではない（OKLCH が無いことは下で確かめる））
+      expect(css).not.toMatch(/--color-(red|blue|green|slate|zinc|neutral)-(?!800\b)\d+/);
+      expect(css).not.toMatch(/--shadow-|--drop-shadow-|--radius-|--tw-shadow/);
+      expect(css).not.toMatch(/oklch\(/i);
+      // Preflight は入っていない（全要素の box-sizing・border のリセットや、button・img の既定の打ち消しが無い）
+      expect(css).not.toMatch(/\*,\s*(?:::after,\s*::before|::before,\s*::after)/);
+      expect(css).not.toMatch(/border\s*:\s*0 solid/);
+      expect(css).not.toMatch(/(?:^|[},])\s*(?:html|:host)\s*\{[^}]*-webkit-text-size-adjust/);
+      // 影は重ねない: box-shadow の値は none だけ
+      for (const m of css.matchAll(/box-shadow\s*:\s*([^;}]+)/g)) expect(m[1]!.trim()).toBe("none");
+
       // 同梱したライブラリの名前と LICENSE の全文が、HTML の中の表示されない要素に残る
       for (const { name } of BUNDLED_LICENSES) expect(html).toContain(`## ${name} - `);
       // React と、React に結び付いた依存（Issue #829 で web から消した）はもう同梱されない

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { RESUMED_NOTICE_MS } from "../src/intake.ts";
 import { init, update, view } from "../src/app/sessionLayout/main.ts";
 import { Message } from "../src/app/sessionLayout/message.ts";
+import { semanticClassesOf } from "./semanticClasses.ts";
 
 // セッションの画面の部品（Issue #820）の Scene。描いた view から入り、字幕・取り込みの知らせ・共有画面の知らせ・見る状態の知らせが
 // 今の画面（React の SessionView）と同じ位置・同じ要素・同じ文言で出ること、出入りで他の要素の並びが変わらないことを見る。
@@ -38,7 +39,7 @@ const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
 const elements = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 const classOf = (vnode: VNode): string => Option.getOrElse(attr(vnode, "class"), () => "");
 const hasClass = (vnode: VNode, name: string): boolean => classOf(vnode).split(" ").includes(name);
-const named = (vnode: VNode): string => `${vnode.sel}.${classOf(vnode).split(" ").join(".")}`;
+const named = (vnode: VNode): string => `${vnode.sel}.${semanticClassesOf(classOf(vnode)).join(".")}`;
 const layoutOf = (html: VNode): VNode => Option.getOrThrow(find(".layout")(html));
 const mapOf = (html: VNode): VNode => Option.getOrThrow(find(".map")(html));
 const outline = (html: VNode): string[] => elements(layoutOf(html)).map(named);
@@ -503,7 +504,7 @@ describe("sessionLayout の Scene: Toast に載せない知らせ（差分更新
       given(init()),
       expectScene(selector(".local-mode-line")).toBeAbsent(),
       expectScene(selector(".local-mode-notice")).toBeAbsent(),
-      tap((s) => expect(classOf(layoutOf(s.html))).toBe("layout")),
+      tap((s) => expect(semanticClassesOf(classOf(layoutOf(s.html)))).toEqual(["layout"])),
     );
   });
 
@@ -516,13 +517,13 @@ describe("sessionLayout の Scene: Toast に載せない知らせ（差分更新
       expectScene(selector(".local-mode-notice")).toHaveText("ローカルモード・Apple Intelligence"),
       expectScene(selector(".local-mode-notice")).toHaveAttr("role", "status"),
       tap((s) => {
-        expect(classOf(layoutOf(s.html))).toBe("layout layout--local");
+        expect(semanticClassesOf(classOf(layoutOf(s.html)))).toEqual(["layout", "layout--local"]);
         expect(outline(s.html).slice(0, 3)).toEqual(["div.local-mode-line", "div.local-mode-notice", "div.map"]);
       }),
       emit(Message.ReceivedSessionMode({ local: false })),
       expectScene(selector(".local-mode-line")).toBeAbsent(),
       expectScene(selector(".local-mode-notice")).toBeAbsent(),
-      tap((s) => expect(classOf(layoutOf(s.html))).toBe("layout")),
+      tap((s) => expect(semanticClassesOf(classOf(layoutOf(s.html)))).toEqual(["layout"])),
     );
   });
 
