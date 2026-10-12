@@ -2,6 +2,7 @@
 // ライブの終了時と cli restore は、同じログから同じ関数（sessionVocabularyUsage → finishPoolSession）を通す。
 import { Effect, Predicate, Schema, Stream } from "effect";
 import { normalizeSurface } from "./correction.ts";
+import { escapeCell } from "./markdownTable.ts";
 import { InvalidLogEvent, RemarkEvent, VocabEvent, VocabPoolEvent } from "./session.ts";
 
 // 最後に話されてからこのセッション数のあいだ話されなかった語を落とす（足した語を除く）。計測の根拠がない置き値で、ここ 1 か所で変える
@@ -52,6 +53,24 @@ export function finishPoolSession(pool: VocabularyPool, usage: SessionUsage): Vo
     return [{ surface, romaji, source: user ? "user" : "spoken", lastSpoken }];
   });
   return { sessions, words };
+}
+
+// cli vocab forget: 表記が完全一致する語を除いた溜まり。無ければ undefined。正規化では照合せず、sessions は変えない。消した語は覚えない
+export function forgetPoolWord(pool: VocabularyPool, surface: string): VocabularyPool | undefined {
+  if (!pool.words.some((w) => w.surface === surface)) return undefined;
+  return { sessions: pool.sessions, words: pool.words.filter((w) => w.surface !== surface) };
+}
+
+const POOL_SOURCE_LABELS = { spoken: "話された語", user: "足した語" } as const;
+const NEVER_SPOKEN = "未";
+
+// cli vocab list: 語ごとに 1 行の Markdown の表（formatTable と同じ書き方）。語が無ければ空だと分かる 1 行
+export function formatPoolTable(pool: VocabularyPool): string {
+  if (pool.words.length === 0) return "溜まりに語がありません\n";
+  const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
+  const header = ["表記", "出どころ", "最後に話されてからのセッション数"];
+  const rows = pool.words.map((w) => [w.surface, POOL_SOURCE_LABELS[w.source], w.lastSpoken === 0 ? NEVER_SPOKEN : String(pool.sessions - w.lastSpoken)]);
+  return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";
 }
 
 const typeOf = (event: unknown): unknown => (Predicate.isObject(event) && "type" in event ? event.type : undefined);

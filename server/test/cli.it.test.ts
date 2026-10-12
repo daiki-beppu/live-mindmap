@@ -1105,6 +1105,161 @@ describe("CLI", () => {
     }));
   });
 
+  // Issue #646: cli vocab list / forget。サーバーを使わず、セッションの置き場の vocabulary.json を直接読み書きする
+  describe("vocab（Issue #646）", () => {
+    const POOL = {
+      sessions: 10,
+      words: [
+        { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 7 },
+        { surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 },
+        { surface: "Zendesk", romaji: "zendesuku", source: "user", lastSpoken: 9 },
+      ],
+    };
+    const writePool = (root: string, pool: unknown) => writeFileSync(vocabularyPoolPath(root), JSON.stringify(pool));
+    const readPool = (root: string) => JSON.parse(readFileSync(vocabularyPoolPath(root), "utf8"));
+    // 失敗は message つきのタグ付きの失敗（入口の 1 行になる）
+    const failureMessage = (failure: unknown) => {
+      expect(Predicate.hasProperty(failure, "_tag")).toBe(true);
+      expect(CliError.isCliError(failure)).toBe(false);
+      return Predicate.hasProperty(failure, "message") ? String(failure.message) : "";
+    };
+
+    it.effect("list は溜まりの語を、表記・出どころ・最後に話されてからのセッション数で表に出す（足しただけで話されていない語は「未」）。ファイルは変えない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, POOL);
+      const before = readFileSync(vocabularyPoolPath(root), "utf8");
+      const deps = dependencies(root);
+
+      yield* runCli(["vocab", "list"]).pipe(Effect.provide(deps.layer));
+
+      const lines = deps.stdout.join("").trimEnd().split("\n");
+      expect(lines).toEqual([
+        "| 表記 | 出どころ | 最後に話されてからのセッション数 |",
+        "| --- | --- | --- |",
+        "| 港南店 | 話された語 | 3 |",
+        "| 葛西 | 足した語 | 未 |",
+        "| Zendesk | 足した語 | 1 |",
+      ]);
+      expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(before);
+    }));
+
+    it.effect("list は溜まりが空（ファイルが無い）なら、空だと分かる 1 行を出し、ファイルを作らない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const deps = dependencies(root);
+
+      yield* runCli(["vocab", "list"]).pipe(Effect.provide(deps.layer));
+
+      const lines = deps.stdout.join("").trimEnd().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain("|");
+      expect(lines[0]!.length).toBeGreaterThan(0);
+      expect(existsSync(vocabularyPoolPath(root))).toBe(false);
+    }));
+
+    it.effect("list は語が 0 件の溜まりのファイルでも、空だと分かる 1 行を出す", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, { sessions: 3, words: [] });
+      const deps = dependencies(root);
+
+      yield* runCli(["vocab", "list"]).pipe(Effect.provide(deps.layer));
+
+      expect(deps.stdout.join("").trimEnd().split("\n")).toHaveLength(1);
+      expect(deps.stdout.join("")).not.toContain("|");
+    }));
+
+    it.effect("forget は表記が完全一致した語だけを消し、始めたセッションの数とほかの語はそのまま。成功の結果を標準出力に 1 行出す", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, POOL);
+      const deps = dependencies(root);
+
+      yield* runCli(["vocab", "forget", "港南店"]).pipe(Effect.provide(deps.layer));
+
+      expect(readPool(root)).toEqual({ sessions: 10, words: [POOL.words[1], POOL.words[2]] });
+      expect(deps.stdout.join("")).toContain("港南店");
+      expect(deps.stderr).toEqual([]);
+      deps.stdout.length = 0;
+      yield* runCli(["vocab", "list"]).pipe(Effect.provide(deps.layer));
+      expect(deps.stdout.join("")).not.toContain("港南店");
+    }));
+
+    it.effect("forget は足した語も消せる", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, POOL);
+
+      yield* runCli(["vocab", "forget", "葛西"]).pipe(Effect.provide(dependencies(root).layer));
+
+      expect(readPool(root).words.map((w: { surface: string }) => w.surface)).toEqual(["港南店", "Zendesk"]);
+    }));
+
+    it.effect("溜まりに無い語を forget すると「溜まりにありません: <語>」で失敗し、溜まりのファイルはバイト列まで変わらない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, POOL);
+      const before = readFileSync(vocabularyPoolPath(root), "utf8");
+      const deps = dependencies(root);
+
+      const result = yield* Effect.result(runCli(["vocab", "forget", "新宿店"]).pipe(Effect.provide(deps.layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(failureMessage(result.failure)).toBe("溜まりにありません: 新宿店");
+      expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(before);
+      expect(readdirSync(root).filter((name) => name.includes("vocabulary"))).toEqual(["vocabulary.json"]); // 一時ファイルも残さない
+    }));
+
+    it.effect("forget は正規化では照合しない: 大小・全角が違う表記は溜まりに無い語として失敗し、溜まりは変わらない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, POOL);
+      const before = readFileSync(vocabularyPoolPath(root), "utf8");
+
+      const result = yield* Effect.result(runCli(["vocab", "forget", "zendesk"]).pipe(Effect.provide(dependencies(root).layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(failureMessage(result.failure)).toBe("溜まりにありません: zendesk");
+      expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe(before);
+    }));
+
+    it.effect("溜まりのファイルが無いときの forget は「溜まりにありません」で失敗し、ファイルを作らない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+
+      const result = yield* Effect.result(runCli(["vocab", "forget", "港南店"]).pipe(Effect.provide(dependencies(root).layer)));
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(failureMessage(result.failure)).toBe("溜まりにありません: 港南店");
+      expect(existsSync(vocabularyPoolPath(root))).toBe(false);
+    }));
+
+    it.effect("溜まりのファイルが壊れているとき、list も forget も既存の警告と同じ文言で失敗し、forget はファイルを書き換えない（空の溜まりとして成功しない）", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writeFileSync(vocabularyPoolPath(root), "{壊れた");
+
+      for (const args of [["vocab", "list"], ["vocab", "forget", "港南店"]]) {
+        const deps = dependencies(root);
+        const result = yield* Effect.result(runCli(args).pipe(Effect.provide(deps.layer)));
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) return;
+        expect(failureMessage(result.failure)).toMatch(/^語彙の溜まりを使えません（vocabulary\.json）: ./);
+        expect(deps.stdout).toEqual([]);
+      }
+      expect(readFileSync(vocabularyPoolPath(root), "utf8")).toBe("{壊れた");
+    }));
+
+    it.effect("vocab サブコマンドはサーバーを使わない（待受けを開かず、配信も作らない）", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      writePool(root, POOL);
+      const fake = fakeListener();
+      external.openListener.mockImplementation(fake.open);
+      const deps = dependencies(root);
+
+      yield* runCli(["vocab", "list"]).pipe(Effect.provide(deps.layer));
+      yield* runCli(["vocab", "forget", "港南店"]).pipe(Effect.provide(deps.layer));
+
+      expect(fake.events).toEqual([]);
+      expect(fake.published).toEqual([]);
+    }));
+  });
+
   describe("review", () => {
     const embedded = (html: string) => {
       const match = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);

@@ -30,7 +30,9 @@ import {
   ShareAllow,
   ShareOpenOutcome,
   ShareStatus,
+  formatPoolTable,
   formatTable,
+  forgetPoolWord,
   DiffEvent,
   DiffUpdater,
   fromTranscript,
@@ -59,7 +61,7 @@ import { withReplayCorrection } from "./replayCorrection.ts";
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { BrokenLogLine, readLogLines } from "./logLines.ts";
-import { updatePoolFromLog } from "./vocabularyPool.ts";
+import { poolUnavailableMessage, readPool, updatePoolFromLog, vocabularyPoolPath, writePool } from "./vocabularyPool.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
@@ -884,12 +886,36 @@ const logout = Command.make("logout").pipe(Command.withSubcommands([
   Command.make("chatgpt", {}, () => logoutChatgpt).pipe(Command.withDescription("ChatGPT の保存済み資格情報を削除する")),
 ]));
 
+const vocab = Command.make("vocab").pipe(Command.withSubcommands([
+  Command.make(
+    "list",
+    {},
+    Effect.fn("vocab list")(function* () {
+      const path = vocabularyPoolPath(yield* sessionsDirConfig);
+      const pool = yield* readPool(path).pipe(Effect.mapError((e) => new CommandFailed({ message: poolUnavailableMessage(e) })));
+      yield* write(formatPoolTable(pool));
+    }),
+  ).pipe(Command.withDescription("全セッションをまたぐ語彙の溜まり（vocabulary.json）の語を表で出す（表記・出どころ・最後に話されてからのセッション数）。サーバーは要らない。ファイルは変えない")),
+  Command.make(
+    "forget",
+    { word: Argument.String("word").pipe(Argument.withDescription("溜まりから消す語（表記が完全一致するもの）")) },
+    Effect.fn("vocab forget")(function* ({ word }) {
+      const path = vocabularyPoolPath(yield* sessionsDirConfig);
+      const pool = yield* readPool(path).pipe(Effect.mapError((e) => new CommandFailed({ message: poolUnavailableMessage(e) })));
+      const forgotten = forgetPoolWord(pool, word);
+      if (forgotten === undefined) return yield* new CommandFailed({ message: `溜まりにありません: ${word}` });
+      yield* writePool(path, forgotten).pipe(Effect.mapError((e) => new CommandFailed({ message: poolUnavailableMessage(e) })));
+      yield* write(`溜まりから消しました: ${word}`);
+    }),
+  ).pipe(Command.withDescription("語を語彙の溜まりから消す（表記の完全一致）。効くのは次のセッションから。今のセッションの語彙と字幕は変わらない。サーバーは要らない。消した語も、次のセッションで話されるか --vocab で足されれば溜まりに戻る")),
+]));
+
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription(
     "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
       + "exit code 3 = 開始に要るものが未導入",
   ),
-  Command.withSubcommands([login, logout, play, apps, start, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
+  Command.withSubcommands([login, logout, vocab, play, apps, start, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）

@@ -12,17 +12,18 @@ export const vocabularyPoolPath = (sessionsDir: string): string => join(sessions
 
 const decodePool = Schema.decodeUnknownEffect(Schema.fromJsonString(VocabularyPool));
 
-const warn = (reason: unknown) => Console.error(`語彙の溜まりを使えません（${POOL_FILE}）: ${errorMessage(reason)}`);
+export const poolUnavailableMessage = (reason: unknown): string => `語彙の溜まりを使えません（${POOL_FILE}）: ${errorMessage(reason)}`;
+const warn = (reason: unknown) => Console.error(poolUnavailableMessage(reason));
 
 // 無ければ空の溜まり。読めない・壊れているときは失敗
-const readPool = Effect.fnUntraced(function* (path: string) {
+export const readPool = Effect.fnUntraced(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(path))) return emptyPool;
   return yield* decodePool(yield* fs.readFileString(path));
 });
 
 // 途中で落ちても JSON が半端に残らないよう、一時ファイルに書いてから置き換える
-const writePool = Effect.fnUntraced(function* (path: string, pool: VocabularyPool) {
+export const writePool = Effect.fnUntraced(function* (path: string, pool: VocabularyPool) {
   const fs = yield* FileSystem.FileSystem;
   const temporary = `${path}.tmp`;
   yield* fs.writeFileString(temporary, JSON.stringify(pool));

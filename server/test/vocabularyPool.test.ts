@@ -4,6 +4,8 @@ import {
   beginPoolSession,
   emptyPool,
   finishPoolSession,
+  forgetPoolWord,
+  formatPoolTable,
   POOL_DROP_AFTER_SESSIONS,
   sessionVocabularyUsage,
   type VocabularyPool,
@@ -13,7 +15,9 @@ import {
 // - beginPoolSession: セッションの開始。始めたセッションの数を 1 つ進め、そのセッションの番号と、語彙に入れる溜まりの語を返す
 // - finishPoolSession: セッションの終了（Formal Spec の finish）。話された語と足した語を溜まりに入れ、古くなった語を落とす
 // - sessionVocabularyUsage: ログの行から、そのセッションの番号と、語ごとの「話された／足した」を導く（終了時とcli restoreが同じ関数を通す）
-// forget（#646）の性質はこの issue の範囲外。
+// Issue #646: cli vocab list / forget の純粋な部分。
+// - forgetPoolWord: 表記の完全一致で語を溜まりから除く（無ければ undefined。入力は書き換えない）
+// - formatPoolTable: 溜まりを表記・出どころ・最後に話されてからのセッション数の Markdown 表にする
 
 const K = POOL_DROP_AFTER_SESSIONS;
 
@@ -301,4 +305,94 @@ describe("sessionVocabularyUsage（ログの行から、そのセッションの
     const error = yield* Effect.flip(usageFromLog([start, { type: "vocab-pool", session: 1 }, { type: "vocab", words: "壊れた" }]));
     expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2 });
   }));
+});
+
+describe("forgetPoolWord（Issue #646: forget）", () => {
+  const pool: VocabularyPool = {
+    sessions: 5,
+    words: [
+      { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 4 },
+      { surface: "Zendesk", romaji: "zendesuku", source: "user", lastSpoken: 0 },
+    ],
+  };
+
+  it("表記が完全一致した語だけを除き、始めたセッションの数とほかの語はそのまま", () => {
+    expect(forgetPoolWord(pool, "港南店")).toEqual({ sessions: 5, words: [pool.words[1]] });
+    expect(forgetPoolWord(pool, "Zendesk")).toEqual({ sessions: 5, words: [pool.words[0]] });
+  });
+
+  it("入力の溜まりを書き換えない", () => {
+    const before = JSON.stringify(pool);
+    forgetPoolWord(pool, "港南店");
+    expect(JSON.stringify(pool)).toBe(before);
+  });
+
+  it("溜まりに無い語は undefined", () => {
+    expect(forgetPoolWord(pool, "葛西")).toBeUndefined();
+    expect(forgetPoolWord(emptyPool, "港南店")).toBeUndefined();
+  });
+
+  it("正規化（NFKC・小文字）までは広げない: 大小・全角半角が違う表記は別の語で、undefined", () => {
+    expect(forgetPoolWord(pool, "zendesk")).toBeUndefined();
+    expect(forgetPoolWord(pool, "Ｚendesk")).toBeUndefined();
+  });
+
+  it("消した語を覚えない: 除いた後に話されれば、終了時に溜まりへ入り直す", () => {
+    const forgotten = forgetPoolWord(pool, "港南店")!;
+    const begun = beginPoolSession(forgotten);
+    expect(begun.words.map((w) => w.surface)).toEqual(["Zendesk"]);
+    const finished = finishPoolSession(begun.pool, usageOf(begun.session, word("港南店", { spoken: true, romaji: "kounanten" })));
+    expect(entry(finished, "港南店")).toEqual({ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 6 });
+  });
+
+  it("消した語は、話されも足されもしなければ、終了時にも溜まりへ入らない", () => {
+    const forgotten = forgetPoolWord(pool, "港南店")!;
+    const finished = runSession(forgotten, [word("港南店")]); // 映っただけ
+    expect(surfaces(finished)).toEqual(["Zendesk"]);
+  });
+});
+
+describe("formatPoolTable（Issue #646: list）", () => {
+  const table = (pool: VocabularyPool) => formatPoolTable(pool).split("\n");
+
+  it("ヘッダ・区切り・語ごとの行の Markdown 表で、末尾は改行。行は溜まりの順", () => {
+    const text = formatPoolTable({
+      sessions: 10,
+      words: [
+        { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 7 },
+        { surface: "Zendesk", romaji: "zendesuku", source: "spoken", lastSpoken: 10 },
+      ],
+    });
+    expect(text).toBe([
+      "| 表記 | 出どころ | 最後に話されてからのセッション数 |",
+      "| --- | --- | --- |",
+      "| 港南店 | 話された語 | 3 |",
+      "| Zendesk | 話された語 | 0 |",
+      "",
+    ].join("\n"));
+  });
+
+  it("足した語は「足した語」。一度も話されていない（lastSpoken 0）語は数ではなく「未」、話されたことのある足した語は数", () => {
+    const rows = table({
+      sessions: 4,
+      words: [
+        { surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 },
+        { surface: "港南店", romaji: "kounanten", source: "user", lastSpoken: 2 },
+      ],
+    });
+    expect(rows.slice(2, 4)).toEqual(["| 葛西 | 足した語 | 未 |", "| 港南店 | 足した語 | 2 |"]);
+  });
+
+  it("溜まりが空なら、表ではなく空だと分かる 1 行（末尾は改行）", () => {
+    const text = formatPoolTable(emptyPool);
+    expect(text.endsWith("\n")).toBe(true);
+    expect(text.trimEnd().split("\n")).toHaveLength(1);
+    expect(text).not.toContain("|");
+    expect(text.trim().length).toBeGreaterThan(0);
+  });
+
+  it("表記の `|` はセルを壊さないようエスケープする", () => {
+    const rows = table({ sessions: 1, words: [{ surface: "a|b", romaji: null, source: "user", lastSpoken: 0 }] });
+    expect(rows[2]).toBe("| a\\|b | 足した語 | 未 |");
+  });
 });

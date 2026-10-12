@@ -3,6 +3,7 @@ import { Predicate, Schema } from "effect";
 import type { ExportNode, JsonExport } from "./export.ts";
 import { logMetrics } from "./logMetrics.ts";
 import { KINDS, type Kind } from "./map.ts";
+import { escapeCell } from "./markdownTable.ts";
 import type { LogEvent } from "./session.ts";
 
 // 比べる前に、本文とキーワードの両方にかける。全角・半角の違いと空白を吸収する（漢数字と算用数字は読み替えない）
@@ -230,9 +231,6 @@ function formatUsage(log: readonly LogEvent[] | undefined): string[] {
   const sum = (pick: (u: (typeof usages)[number]) => number) => String(usages.reduce((a, u) => a + pick(u), 0));
   return [sum((u) => u.input), sum((u) => u.cacheWrite), sum((u) => u.cacheRead), sum((u) => u.output)];
 }
-
-// 表のセルに入れる文字列。区切りの `|` と、その直前の `\` をエスケープし、改行は空白 1 つにして 1 行に保つ
-const escapeCell = (cell: string) => cell.replace(/[\\|]/g, "\\$&").replace(/\r\n|\r|\n/g, " ");
 
 // 1 ラン 1 行の Markdown の表（cli eval の標準出力）。truth があるときだけ、決定・TODO の再現率の列を足す。
 // 再現率の分子は recall が数える「当たった件数」で、当たる条件は matches、1 対 1 の割り当ては maxMatching が持つ

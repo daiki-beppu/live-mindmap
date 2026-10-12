@@ -2127,6 +2127,94 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     }).pipe(Effect.provide(layer));
   });
 
+  // Issue #646: cli vocab forget はファイルだけを書き換える（実行中のサーバーには何も送らない）。ここでは forget に当たる書き換えをファイルへ直接行う
+  const forgetFromFile = (sessionsDir: string, surface: string) => {
+    const pool = readPool(sessionsDir);
+    writeFileSync(vocabularyPoolPath(sessionsDir), JSON.stringify({ ...pool, words: pool.words.filter((w: { surface: string }) => w.surface !== surface) }));
+  };
+
+  it.effect("会議中に forget しても、今のセッションの語彙と字幕は変わらない（崩れた発言は直り、vocab の行は増えない）。話されたので終了時に溜まりへ入り直す", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, spokeOnlyKounan);
+      expect(poolWords(sessionsDir)).toEqual(["港南店"]);
+
+      let second = "";
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        second = dir;
+        yield* awaitVocabLines(dir, 1);
+        forgetFromFile(sessionsDir, "港南店");
+        expect(poolWords(sessionsDir)).toEqual([]);
+        yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
+      }));
+
+      expect(remarkLines(second).map((e) => e.remark.text)).toEqual(["港南店に行きます"]); // 今のセッションの語彙は変わらず、直る
+      expect(vocabLines(second)).toHaveLength(1);
+      expect(vocabLines(second)[0].words).toEqual([{ surface: "港南店", romaji: "kounanten", source: "carried" }]);
+      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 2 }] }); // 話されたので入り直す
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("会議中に forget して、そのセッションでは話されなかった語は、終了時にも溜まりへ戻らない（消した語は覚えない）", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, spokeOnlyKounan);
+
+      const second = yield* runSession(sessionsDir, ({ dir }) => Effect.gen(function* () {
+        yield* awaitVocabLines(dir, 1);
+        forgetFromFile(sessionsDir, "港南店");
+      }));
+
+      expect(vocabLines(second)).toHaveLength(1); // 今のセッションの語彙はそのまま
+      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [] });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("セッションの間に forget した語は、次のセッションの語彙（carried）に入らない。次のセッションで画面に映して話せば、終了時に溜まりへ入り直す", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, spokeOnlyKounan);
+      forgetFromFile(sessionsDir, "港南店");
+
+      const second = yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* settle;
+        expect(vocabLines(dir)).toEqual([]); // carried で入らない
+        yield* spokeOnlyKounan({ sink, dir });
+      }));
+
+      expect(vocabLines(second).flatMap((e) => e.words)).toEqual(expect.arrayContaining([{ surface: "港南店", romaji: "kounanten", source: "screen" }]));
+      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 2 }] });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("セッションの間に forget した足した語も、次のセッションで --vocab（addUserVocabulary）で足されれば、終了時に溜まりへ入り直す", () => {
+    const { layer } = layerWith();
+    return Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* sink.addUserVocabulary(["葛西"]);
+        yield* awaitVocabLines(dir, 1);
+      }));
+      forgetFromFile(sessionsDir, "葛西");
+      expect(poolWords(sessionsDir)).toEqual([]);
+
+      yield* runSession(sessionsDir, ({ dir }) => Effect.gen(function* () {
+        yield* settle;
+        expect(vocabLines(dir)).toEqual([]);
+      }));
+      expect(poolWords(sessionsDir)).toEqual([]); // 足されなければ戻らない
+
+      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
+        yield* sink.addUserVocabulary(["葛西"]);
+        yield* awaitVocabLines(dir, 1);
+      }));
+      expect(readPool(sessionsDir).words).toEqual([{ surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 }]);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("溜まりのファイルが壊れていても、セッションは止まらず（発言は残り、書き出しも通る）、警告を 1 行以上出し、語彙には何も入れない", () => {
     const { layer } = layerWith();
     const warned = collectingConsole();
