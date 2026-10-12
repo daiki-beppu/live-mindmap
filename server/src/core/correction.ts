@@ -70,7 +70,7 @@ function similarity(a: string, b: string): number {
 const HIRAGANA = /^[ぁ-ゟ]+$/;
 const HIRAGANA_RUN = /[ぁ-ゟ]+/g;
 const PUNCTUATION_OR_SPACE = /^[\p{P}\s]*$/u;
-const normalizeSurface = (s: string): string => s.normalize("NFKC").toLowerCase();
+export const normalizeSurface = (s: string): string => s.normalize("NFKC").toLowerCase();
 const isHiraganaOnly = (s: string): boolean => HIRAGANA.test(s);
 const isLatinOnly = (s: string): boolean => /^[A-Za-z]+$/.test(s.normalize("NFKC"));
 

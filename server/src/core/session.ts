@@ -113,9 +113,12 @@ export const logTimestamp = (): string => DateTime.formatIso(DateTime.nowUnsafe(
 // 語彙に入った語（Issue #640）。romaji は読み（作れなかった語は null）、source は出どころ
 export const VocabEvent = Schema.Struct({
   type: Schema.Literal("vocab"),
-  words: Schema.Array(Schema.Struct({ surface: Schema.String, romaji: Schema.NullOr(Schema.String), source: Schema.Literals(["user", "screen"]) })),
+  words: Schema.Array(Schema.Struct({ surface: Schema.String, romaji: Schema.NullOr(Schema.String), source: Schema.Literals(["user", "screen", "carried"]) })),
 });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent]);
+// このセッションの番号（Issue #645）。溜まりが開始時に数えた値で、終了時と cli restore が溜まりを更新するときの語の「最後に話されたセッション」になる。
+// 溜まりを使わなかったセッション（play・古いログ・溜まりが読めなかった回）には付かない
+export const VocabPoolEvent = Schema.Struct({ type: Schema.Literal("vocab-pool"), session: Schema.Int });
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 // ログを書く役。core から見て失敗しない（書けないときは書き手が defect にする）。

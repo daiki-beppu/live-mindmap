@@ -683,4 +683,55 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       expect(screen).toMatchObject({ start: 1, image: null });
       expect(screen).not.toHaveProperty("lines");
     }));
+
+  // Issue #645: 引き継いだ語（出どころ carried の vocab の行）も、再生では user・screen の行と同じく語彙を組み直す材料。
+  // 再生は全セッション共通の溜まりのファイルを読まず、書き換えない（ログの carried の行だけが材料）
+  it.effect("元のログの carried の vocab の行の語で直し直し、新しいログにも元の出どころ（carried・user）のまま vocab の行が残る。読みのサブコマンドは呼ばれない", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const original = sessionFolder(root, [
+        { type: "start", title: "t" },
+        { type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "carried" }] },
+        { type: "vocab", words: [{ surface: "葛西", romaji: "kasai", source: "user" }] },
+        recordedRemark("r1", 0, 5, ZENDESK_UTTERANCE),
+      ]);
+      const readings = fakeReadings({ Zendesk: "zendesuku", 葛西: "kasai" });
+      const base = dependencies(join(root, "sessions"));
+      const deps = { ...base, layer: Layer.mergeAll(base.layer, readings.layer) };
+      const replay = yield* played(deps, [original]);
+
+      const lines = logLines(replay);
+      expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: CORRECTED }, raw: ZENDESK_UTTERANCE.raw });
+      const vocabWords = lines.filter((l) => l.type === "vocab").flatMap((l) => l.words as Array<{ surface: string; romaji: string | null; source: string }>);
+      expect(vocabWords).toContainEqual({ surface: "Zendesk", romaji: "zendesuku", source: "carried" });
+      expect(vocabWords).toContainEqual({ surface: "葛西", romaji: "kasai", source: "user" });
+      expect(vocabWords).toHaveLength(2);
+      expect(readings.calls).toEqual([]);
+    }));
+
+  it.effect("溜まりのファイルが置き場にあっても、再生は読まず（溜まりの語で直さず、carried の行も出さず）、書き換えない。溜まりが無いときも作らない", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessionsDir = join(root, "sessions");
+      const original = sessionFolder(root, [{ type: "start", title: "t" }, recordedRemark("r1", 0, 5, ZENDESK_UTTERANCE)]);
+      const deps = dependencies(sessionsDir);
+
+      // 溜まりが無いとき: 作らない
+      const withoutPool = yield* played(deps, [original]);
+      expect(existsSync(join(sessionsDir, "vocabulary.json"))).toBe(false);
+      expect(logLines(withoutPool).some((l) => l.type === "vocab-pool")).toBe(false);
+
+      // 溜まりに Zendesk があっても、再生の語彙には入らない
+      const pool = JSON.stringify({ sessions: 4, words: [{ surface: "Zendesk", romaji: "zendesuku", source: "spoken", lastSpoken: 4 }] });
+      writeFileSync(join(sessionsDir, "vocabulary.json"), pool);
+      deps.stdout.length = 0;
+      const withPool = yield* played(deps, [original]);
+
+      expect(readFileSync(join(sessionsDir, "vocabulary.json"), "utf8")).toBe(pool);
+      const lines = logLines(withPool);
+      expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: ZENDESK_UTTERANCE.raw } }); // 直らない
+      expect(lines.filter((l) => l.type === "vocab")).toEqual([]);
+      expect(JSON.stringify(lines)).not.toContain("carried");
+      expect(lines.some((l) => l.type === "vocab-pool")).toBe(false);
+    }));
 });
