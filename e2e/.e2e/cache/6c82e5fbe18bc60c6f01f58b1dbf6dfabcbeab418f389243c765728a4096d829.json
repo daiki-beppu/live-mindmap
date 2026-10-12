@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-08T15:36:16.519Z",
+  "createdAt": "2026-10-12T05:48:34.063Z",
   "payload": {
     "actions": [
       {
@@ -24,7 +24,7 @@
       "callIndex": 0,
       "agent": "default"
     },
-    "summary": "マップ上の「来月の新機能の進め方を相談したいです」を選択しました。選択状態になり、根拠の発言が表示されています。",
+    "summary": "マップ上の「来月の新機能の進め方を相談したいです」を選択しました。選択状態になり、根拠欄に対応する発言が表示されています。",
     "startPath": "/",
     "endPath": "/",
     "endAnchors": [
@@ -34,9 +34,6 @@
         "states": [
           "pressed"
         ]
-      },
-      {
-        "testId": "rf__node-n7"
       },
       {
         "role": "button",
@@ -52,6 +49,6 @@
         "name": "来月の新機能の進め方を相談したいです"
       }
     ],
-    "endWaitMs": 11844
+    "endWaitMs": 12169
   }
 }
