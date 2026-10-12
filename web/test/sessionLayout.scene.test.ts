@@ -31,6 +31,7 @@ const RESUMED = "再開しました";
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
 const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
 const SCREEN = "共有画面は使っていません（画面収録の許可がありません。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）";
+const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります。cli stop の後、cli start で始め直してください）";
 const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
 
 // ---- 描いた木を読む道具 ----
@@ -91,9 +92,11 @@ const lateTimer = (n: number) => Subscription.emit(Message.GotIntakeToastMessage
 const emit = (message: Message) => Subscription.emit(message);
 const intake = (status: "running" | "interrupted" | "stopped" | "none") => emit(Message.ReceivedIntakeStatus({ status }));
 const screen = (text: string | null) => emit(Message.ReceivedScreenNotice({ text: Option.fromNullishOr(text) }));
+const tapNotice = (text: string | null) => emit(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
 const viewing = (mode: "auto" | "manual" | "overview") => emit(Message.ChangedViewingMode({ mode }));
 const speak = (相手: string, 自分 = "") => emit(Message.ChangedSpeaking({ speaking: { 相手, 自分 } }));
 
+let stableBefore: ReturnType<typeof stableParts>;
 const withSpeaking = { ...init(), speaking: { 相手: "議題は採用です。", 自分: "はい" } };
 
 describe("sessionLayout の Scene: 字幕", () => {
@@ -337,6 +340,88 @@ describe("sessionLayout の Scene: 共有画面の知らせ（今と同じ位置
   });
 });
 
+describe("sessionLayout の Scene: 相手の音声が届いていない知らせ（Issue #863。今と同じ位置・文言）", () => {
+  it("知らせが無いときは .tap-notice を描かない", () => {
+    scene(app, given(init()), expectScene(selector(".tap-notice")).toBeAbsent());
+  });
+
+  it("文を受けると .layout の直下に div.tap-notice[aria-live=polite] が出て、共有画面・取り込みの知らせとは別の class で描く。時間切れの Command は無い", () => {
+    scene(
+      app,
+      given(init()),
+      tapNotice(TAP),
+      settle,
+      expectScene(selector(".tap-notice")).toHaveText(TAP),
+      expectScene(selector(".tap-notice")).toHaveAttr("aria-live", "polite"),
+      expectScene(selector(".screen-notice")).toBeAbsent(),
+      expectScene(selector(".intake-notice")).toBeAbsent(),
+      tap((s) => {
+        const notice = directChild(s.html, "tap-notice")!;
+        expect(notice.sel).toBe("div");
+        expect(classOf(notice)).toBe("tap-notice");
+        expect(timers(s)).toHaveLength(0);
+      }),
+    );
+  });
+
+  it("ローカルモード（.layout--local）でも .layout の直下の子のまま", () => {
+    scene(
+      app,
+      given({ ...init(), local: true }),
+      tapNotice(TAP),
+      settle,
+      tap((s) => {
+        expect(hasClass(layoutOf(s.html), "layout--local")).toBe(true);
+        expect(directChild(s.html, "tap-notice")).toBeDefined();
+      }),
+    );
+  });
+
+  it("null の frame を受けると、その場で消える", () => {
+    scene(
+      app,
+      given(init()),
+      tapNotice(TAP),
+      settle,
+      tapNotice(null),
+      expectScene(selector(".tap-notice")).toBeAbsent(),
+      settle,
+      expectScene(selector(".tap-notice")).toBeAbsent(),
+    );
+  });
+
+  it("共有画面の知らせと同時に出ても別の要素で、.layout の直下は 共有画面 → 相手の音声 の順。出入りで .map・.captions・.side の並びは動かない", () => {
+    scene(
+      app,
+      given({ ...withSpeaking }),
+      tap((s) => {
+        stableBefore = stableParts(s.html);
+      }),
+      screen(SCREEN),
+      settle,
+      tapNotice(TAP),
+      settle,
+      tap((s) => {
+        expect(outline(s.html)).toEqual(["div.map", "div.captions", "div.screen-notice", "div.tap-notice", "div.side"]);
+        expect(stableParts(s.html)).toEqual(stableBefore);
+      }),
+      tapNotice(null),
+      settle,
+      tap((s) => expect(outline(s.html)).toEqual(["div.map", "div.captions", "div.screen-notice", "div.side"])),
+    );
+  });
+
+  it("素の要素（data-*・style・イベントのハンドラを持たない）", () => {
+    scene(
+      app,
+      given(init()),
+      tapNotice(TAP),
+      settle,
+      tap((s) => expectPlain(directChild(s.html, "tap-notice"))),
+    );
+  });
+});
+
 describe("sessionLayout の Scene: 見る状態の知らせ（今と同じ位置・文言）", () => {
   it("auto のときは .viewing-notice を描かない", () => {
     scene(app, given(init()), expectScene(selector(".viewing-notice")).toBeAbsent());
@@ -476,13 +561,15 @@ describe("sessionLayout の Scene: Toast に載せない知らせ（差分更新
 });
 
 describe("sessionLayout の Scene: 並び順（今の SessionView の .layout の直下と同じ）", () => {
-  it("全部出したときの .layout の直下は、ローカルモード → .map → 字幕 → 取り込み → 共有画面 → 差分更新 → .side の順", () => {
+  it("全部出したときの .layout の直下は、ローカルモード → .map → 字幕 → 取り込み → 共有画面 → 相手の音声 → 差分更新 → .side の順", () => {
     scene(
       app,
       given({ ...withSpeaking, local: true, diffUpdate: Option.some(PAUSED) }),
       intake("interrupted"),
       settle,
       screen(SCREEN),
+      settle,
+      tapNotice(TAP),
       settle,
       viewing("manual"),
       settle,
@@ -494,6 +581,7 @@ describe("sessionLayout の Scene: 並び順（今の SessionView の .layout �
           "div.captions",
           "div.intake-notice",
           "div.screen-notice",
+          "div.tap-notice",
           "div.diff-update-notice",
           "div.side",
         ]);
@@ -538,7 +626,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
   const expectNoWrapper = tap<ReturnType<typeof init>, Message>((s) => {
     expect(findAll('[role="region"]')(s.html)).toHaveLength(0);
     for (const child of elements(layoutOf(s.html))) {
-      expect(["map", "captions", "side", "local-mode-line", "local-mode-notice", "intake-notice", "screen-notice", "diff-update-notice"].some((name) => hasClass(child, name))).toBe(true);
+      expect(["map", "captions", "side", "local-mode-line", "local-mode-notice", "intake-notice", "screen-notice", "tap-notice", "diff-update-notice"].some((name) => hasClass(child, name))).toBe(true);
     }
   });
 

@@ -1,5 +1,5 @@
 // セッションの画面の部品（Issue #820）: 字幕・取り込みの途切れ・共有画面・見る状態の知らせ。見返しと会議中で共通に使う。
-// 知らせは Toast（headless）で持ち、消えるまでの時間は Toast の duration で持つ。描き方は今の React（SessionView）と同じ位置・要素・文言
+// 知らせは Toast（headless）で持ち、消えるまでの時間は Toast の duration で持つ。位置・要素・文言は React 版（SessionView、Issue #829 で削除）から変えない
 import { Option, Schema } from "effect";
 import { Disclosure } from "@foldkit/ui";
 import { Submodel, Update } from "foldkit";
@@ -18,6 +18,7 @@ export const Model = Schema.Struct({
   intake: Schema.Option(IntakeStatus),
   intakeToast: Notice.Model,
   screenToast: Notice.Model,
+  tapToast: Notice.Model,
   viewingToast: Notice.Model,
   diffUpdate: Schema.Option(DiffUpdateState),
   local: Schema.Boolean,
@@ -30,6 +31,7 @@ export const init = (): Model => ({
   intake: Option.none(),
   intakeToast: Notice.init({ id: "intake-notice" }),
   screenToast: Notice.init({ id: "screen-notice" }),
+  tapToast: Notice.init({ id: "tap-notice" }),
   viewingToast: Notice.init({ id: "viewing-notice" }),
   diffUpdate: Option.none(),
   local: false,
@@ -53,6 +55,13 @@ const foldScreenToast = Update.foldChild({
   read: (model: Model) => Option.some(model.screenToast),
   write: (model, screenToast) => modifyFields(model, { screenToast: () => screenToast }),
   toParentMessage: (message) => Message.GotScreenToastMessage({ message }),
+  foldOutMessage: ignoreOutMessage,
+});
+const foldTapToast = Update.foldChild({
+  update: (toast: NoticeModel, action: NoticeAction) => action(toast),
+  read: (model: Model) => Option.some(model.tapToast),
+  write: (model, tapToast) => modifyFields(model, { tapToast: () => tapToast }),
+  toParentMessage: (message) => Message.GotTapToastMessage({ message }),
   foldOutMessage: ignoreOutMessage,
 });
 const foldViewingToast = Update.foldChild({
@@ -100,12 +109,21 @@ export const update = (model: Model, message: Message): Return =>
       return noticeOf(next, foldIntakeToast, Option.none(), Option.fromNullishOr(text), status === "running" ? { duration: RESUMED_NOTICE_MS } : { sticky: true });
     },
     ReceivedScreenNotice: ({ text }) => noticeOf(model, foldScreenToast, shownText(model.screenToast), text, { sticky: true }),
+    ReceivedTapNotice: ({ text }) => noticeOf(model, foldTapToast, shownText(model.tapToast), text, { sticky: true }),
     ChangedViewingMode: ({ mode }) =>
       noticeOf(model, foldViewingToast, shownText(model.viewingToast), viewingText(mode), { sticky: true }),
     GotIntakeToastMessage: ({ message }) => foldIntakeToast(model, (toast) => Notice.update(toast, message)),
     GotScreenToastMessage: ({ message }) => foldScreenToast(model, (toast) => Notice.update(toast, message)),
+    GotTapToastMessage: ({ message }) => foldTapToast(model, (toast) => Notice.update(toast, message)),
     GotViewingToastMessage: ({ message }) => foldViewingToast(model, (toast) => Notice.update(toast, message)),
   });
+
+// 親（会議中）が、WebSocket の frame から届いた事実を伝える入口（子の Message を親が組み立てずに済む）
+export const receiveIntakeStatus = (model: Model, status: typeof IntakeStatus.Type): Return => update(model, Message.ReceivedIntakeStatus({ status }));
+export const receiveScreenNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedScreenNotice({ text }));
+export const receiveTapNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedTapNotice({ text }));
+export const receiveDiffUpdate = (model: Model, state: Model["diffUpdate"]): Return => update(model, Message.ReceivedDiffUpdate({ state }));
+export const receiveSessionMode = (model: Model, local: boolean): Return => update(model, Message.ReceivedSessionMode({ local }));
 
 // 親（見返し）が、見る状態の mode が変わったことを伝える入口（子の Message を親が組み立てずに済む）
 export const changeViewingMode = (model: Model, mode: "auto" | "manual" | "overview"): Return => update(model, Message.ChangedViewingMode({ mode }));
@@ -179,6 +197,7 @@ export const view = (model: Model, h: H, slots: Slots): Html =>
       captionsView(h, model),
       noticeView(h, "intake-notice", model.intakeToast),
       noticeView(h, "screen-notice", model.screenToast),
+      noticeView(h, "tap-notice", model.tapToast),
       diffUpdateView(h, model),
       slots.side,
     ],

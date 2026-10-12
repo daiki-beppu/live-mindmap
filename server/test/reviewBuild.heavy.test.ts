@@ -19,7 +19,7 @@ const TIMEOUT = 90_000;
 const WEB_DIST = join(import.meta.dirname, "../../web/dist");
 
 // pnpm が web の依存として置いた LICENSE（web/node_modules の symlink 先）。パッケージ名は、ビルドが同梱したことの確認にだけ使う
-const BUNDLED_LICENSES = ["react", "@xyflow/react"].map((name) => ({
+const BUNDLED_LICENSES = ["foldkit", "effect"].map((name) => ({
   name,
   text: readFileSync(join(import.meta.dirname, "../../web/node_modules", name, "LICENSE"), "utf8").trim(),
 }));
@@ -75,6 +75,8 @@ describe("map.html の本物のビルド", () => {
 
       // 同梱したライブラリの名前と LICENSE の全文が、HTML の中の表示されない要素に残る
       for (const { name } of BUNDLED_LICENSES) expect(html).toContain(`## ${name} - `);
+      // React と、React に結び付いた依存（Issue #829 で web から消した）はもう同梱されない
+      for (const gone of ["react", "react-dom", "@xyflow/react", "@videojs/react", "@tanstack/react-hotkeys"]) expect(html, gone).not.toContain(`## ${gone} - `);
 
       const seen = yield* Effect.acquireUseRelease(
         (yield* Playwright).launch(),

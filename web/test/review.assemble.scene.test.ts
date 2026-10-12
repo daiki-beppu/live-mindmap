@@ -204,17 +204,19 @@ describe("見返しの Scene: 見る状態の知らせ", () => {
     );
   });
 
-  it("取り込みの知らせ・共有画面の知らせは、どの状態でも出ない", () => {
+  it("取り込みの知らせ・共有画面の知らせ・相手の音声の知らせは、どの状態でも出ない", () => {
     scene(
       plainApp,
       given(stateAt(plainContext, 105)),
       settle,
       expectScene(selector(".intake-notice")).toBeAbsent(),
       expectScene(selector(".screen-notice")).toBeAbsent(),
+      expectScene(selector(".tap-notice")).toBeAbsent(),
       press("="),
       settle,
       expectScene(selector(".intake-notice")).toBeAbsent(),
       expectScene(selector(".screen-notice")).toBeAbsent(),
+      expectScene(selector(".tap-notice")).toBeAbsent(),
     );
   });
 });

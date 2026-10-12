@@ -14,7 +14,7 @@ export type Position = { x: number; y: number };
 // - 兄弟は nodes の並び（作られた順）に上から積む
 // - 親は子の範囲（最初の子の上端〜最後の子の下端）の上下中央に置く
 // - 末尾に子を足しても、それより上にある既存ノードは動かない
-// heights は React Flow が測った実寸の高さ。
+// heights は 表示面が測った実寸の高さ。
 export function layout(nodes: SnapshotNode[], heights: Record<string, number>): Record<string, Position> {
   const children = new Map<string | null, SnapshotNode[]>();
   for (const n of nodes) children.set(n.parent, [...(children.get(n.parent) ?? []), n]);

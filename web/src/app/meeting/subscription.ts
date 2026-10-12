@@ -1,0 +1,26 @@
+import { Option, Schema, Stream } from "effect";
+import { Subscription } from "foldkit";
+import { keyPressStream } from "../keys/subscription.ts";
+import * as LiveFeed from "../liveFeed/subscription.ts";
+import { subscriptions as mapSurfaceSubscriptions } from "../mapSurface/subscription.ts";
+import type { Model } from "./main.ts";
+import { Message } from "./message.ts";
+
+const own = Subscription.make<Model, Message>()((entry) => ({
+  keys: entry(
+    { hasSession: Schema.Boolean, hasSelection: Schema.Boolean },
+    {
+      modelToDependencies: (model) => ({ hasSession: Option.isSome(model.session), hasSelection: Option.exists(model.session, (s) => s.mapSurface.viewing.selection !== undefined) }),
+      dependenciesToStream: ({ hasSession, hasSelection }) => (hasSession ? keyPressStream({ screen: "live", hasSelection }) : Stream.empty),
+    },
+  ),
+}));
+const feed = Subscription.lift({ liveFeed: LiveFeed.subscriptions.liveFeed })<Model, Message>({
+  read: (model) => Option.some(model.feed),
+  toParentMessage: (message) => Message.GotLiveFeedMessage({ message }),
+});
+const surface = Subscription.lift({ mapSurfaceAnimationFrame: mapSurfaceSubscriptions.animationFrame, mapSurfacePointer: mapSurfaceSubscriptions.pointer })<Model, Message>({
+  read: (model) => Option.flatMap(model.session, (s) => Option.map(model.feed.snapshot, (snapshot) => ({ mode: "live" as const, snapshot, ...s.mapSurface }))),
+  toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
+});
+export const subscriptions = Subscription.aggregate(own, feed, surface);

@@ -15,8 +15,8 @@ Foldkit のコードは、公式の skill と llms.txt に従って書く。こ�
 
 ## コードの置き場
 
-- Foldkit のコードは `web/src/app/` に置く。oxlint と `@foldkit/oxlint-plugin` の対象はこのディレクトリだけにする。今の React のコード（`web/src/*.tsx` など）は対象にしない。
-- 純粋な関数（`layout.ts`・`camera.ts` など）は今の場所のまま、React 版と Foldkit 版の両方から使う。
+- Foldkit のコードは `web/src/app/` に置く。oxlint と `@foldkit/oxlint-plugin` の対象はこのディレクトリだけにする。
+- 純粋な関数（`layout.ts`・`camera.ts` など）は今の場所のまま、`web/src/app/` から使う。
 
 ## Foldkit の規約
 

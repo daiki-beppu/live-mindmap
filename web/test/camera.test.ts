@@ -1,4 +1,4 @@
-import { getViewportForBounds } from "@xyflow/react";
+import { getViewportForBounds } from "./fixtures/xyflowReference.ts";
 import { describe, expect, it } from "vitest";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import {

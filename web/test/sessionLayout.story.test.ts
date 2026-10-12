@@ -12,7 +12,7 @@ import { Message } from "../src/app/sessionLayout/message.ts";
 // Story は update を直接動かし、Model と、update が出す Command（時間切れ）を見る。描画は sessionLayout.scene.test.ts が見る。
 
 type SessionModel = typeof Model.Type;
-type Toasts = Pick<SessionModel, "intakeToast" | "screenToast" | "viewingToast">;
+type Toasts = Pick<SessionModel, "intakeToast" | "screenToast" | "tapToast" | "viewingToast">;
 type Simulation = StorySimulation<Model, Message>;
 
 const INTERRUPTED = "音声の取り込みが途切れました。再開しています";
@@ -21,6 +21,7 @@ const RESUMED = "再開しました";
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
 const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
 const SCREEN = "共有画面は使っていません（画面収録の許可がありません。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）";
+const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります。cli stop の後、cli start で始め直してください）";
 
 // 公開されている Toast の Model（entries・animation.isShowing・payload）だけを読む。出ている文 = 消し始めていない entry の文
 const shown = (toast: Toasts[keyof Toasts]): string[] => toast.entries.filter((e) => e.animation.isShowing).map((e) => e.payload.text);
@@ -61,6 +62,7 @@ const lateTimer = (n: number) => message(Message.GotIntakeToastMessage({ message
 
 const intake = (status: "running" | "interrupted" | "stopped" | "none") => message(Message.ReceivedIntakeStatus({ status }));
 const screen = (text: string | null) => message(Message.ReceivedScreenNotice({ text: Option.fromNullishOr(text) }));
+const tapNotice = (text: string | null) => message(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
 const viewing = (mode: "auto" | "manual" | "overview") => message(Message.ChangedViewingMode({ mode }));
 
 describe("sessionLayout の update: 取り込みの知らせ（Toast）", () => {
@@ -310,6 +312,80 @@ describe("sessionLayout の update: 共有画面の知らせ（Toast）", () => 
   });
 });
 
+describe("sessionLayout の update: 相手の音声が届いていない知らせ（Toast。Issue #863）", () => {
+  it("文を受けると出る。時間では消えない（サーバーが null の frame を送るまで残る）", () => {
+    story(
+      update,
+      given(init()),
+      tapNotice(TAP),
+      settle,
+      model((m) => expect(shown(m.tapToast)).toEqual([TAP])),
+      Command.expectNone(),
+    );
+  });
+
+  it("null（text なし）を受けると消える。出ていないときの null は何もしない", () => {
+    story(
+      update,
+      given(init()),
+      tapNotice(null),
+      model((m) => expect(count(m.tapToast)).toBe(0)),
+      Command.expectNone(),
+      tapNotice(TAP),
+      settle,
+      tapNotice(null),
+      model((m) => expect(shown(m.tapToast)).toEqual([])),
+      settle,
+      model((m) => expect(count(m.tapToast)).toBe(0)),
+      Command.expectNone(),
+    );
+  });
+
+  it("同じ文をもう一度受けても出ている文は 1 つだけ。別の文を受けると古い文は消えて新しい文だけが出る", () => {
+    story(
+      update,
+      given(init()),
+      tapNotice(TAP),
+      settle,
+      tapNotice(TAP),
+      settle,
+      model((m) => {
+        expect(shown(m.tapToast)).toEqual([TAP]);
+        expect(count(m.tapToast)).toBe(1);
+      }),
+      tapNotice("相手の音声を取得できていません"),
+      model((m) => expect(shown(m.tapToast)).toEqual(["相手の音声を取得できていません"])),
+      settle,
+      model((m) => expect(count(m.tapToast)).toBe(1)),
+    );
+  });
+
+  it("共有画面の知らせ・取り込みの知らせとは別の Toast。互いに影響しない", () => {
+    story(
+      update,
+      given(init()),
+      screen(SCREEN),
+      settle,
+      tapNotice(TAP),
+      settle,
+      intake("interrupted"),
+      settle,
+      model((m) => {
+        expect(shown(m.screenToast)).toEqual([SCREEN]);
+        expect(shown(m.tapToast)).toEqual([TAP]);
+        expect(shown(m.intakeToast)).toEqual([INTERRUPTED]);
+      }),
+      tapNotice(null),
+      settle,
+      model((m) => {
+        expect(shown(m.screenToast)).toEqual([SCREEN]);
+        expect(shown(m.tapToast)).toEqual([]);
+        expect(shown(m.intakeToast)).toEqual([INTERRUPTED]);
+      }),
+    );
+  });
+});
+
 describe("sessionLayout の update: 見る状態の知らせ（Toast）", () => {
   it("auto のままなら何も出ない", () => {
     story(
@@ -373,10 +449,10 @@ describe("sessionLayout の update: 見る状態の知らせ（Toast）", () => 
 });
 
 describe("sessionLayout の update: 知らせは種類ごとに別の Toast で、互いに影響しない", () => {
-  it("3 つの Toast は id が違い、スワイプでの消去は無効（maybeSwipeConfig が None）", () => {
+  it("4 つの Toast は id が違い、スワイプでの消去は無効（maybeSwipeConfig が None）", () => {
     const m = init();
-    expect(new Set([m.intakeToast.id, m.screenToast.id, m.viewingToast.id]).size).toBe(3);
-    for (const toast of [m.intakeToast, m.screenToast, m.viewingToast]) expect(Option.isNone(toast.maybeSwipeConfig)).toBe(true);
+    expect(new Set([m.intakeToast.id, m.screenToast.id, m.tapToast.id, m.viewingToast.id]).size).toBe(4);
+    for (const toast of [m.intakeToast, m.screenToast, m.tapToast, m.viewingToast]) expect(Option.isNone(toast.maybeSwipeConfig)).toBe(true);
   });
 
   it("3 種類を同時に出せる。1 つを消しても、残りは出たまま", () => {

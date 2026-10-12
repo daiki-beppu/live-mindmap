@@ -13,7 +13,7 @@ import { surfaceOf } from "./main.ts";
 import type { Model } from "./main.ts";
 import { Message } from "./message.ts";
 
-// 触らずに自動へ戻るまでの時間（ms）。SessionView.tsx の REVIEW_IDLE_MS と同じ（React 版の部品には触らないので、ここに別に置く）
+// 触らずに自動へ戻るまでの時間（ms）。React 版（SessionView、削除済み）の REVIEW_IDLE_MS から引き継いだ値
 export const REVIEW_IDLE_MS = 10_000;
 
 export const makeSubscriptions = (context: Context) => {

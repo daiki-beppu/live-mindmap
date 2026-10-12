@@ -1,4 +1,4 @@
-import { getViewportForBounds } from "@xyflow/react";
+import { getViewportForBounds } from "./fixtures/xyflowReference.ts";
 import { findAll, given, Mount, scene, tap } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { CAPTURE_OVERFLOW_ATTRIBUTE, CAPTURE_READY_ATTRIBUTE } from "../../server/src/core/capture.ts";

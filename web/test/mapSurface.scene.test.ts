@@ -1,4 +1,4 @@
-import { getBezierPath, getViewportForBounds, Position } from "@xyflow/react";
+import { getBezierPath, getViewportForBounds, Position } from "./fixtures/xyflowReference.ts";
 import { HashMap, Option } from "effect";
 import { attr, expect as expectScene, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";

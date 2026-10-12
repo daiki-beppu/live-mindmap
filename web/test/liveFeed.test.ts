@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { applyClose, applyFrame, applyOpen, createFeedState, type FeedState } from "../src/liveFeed.ts";
-import { createIntakeNoticeStore } from "../src/intakeNoticeStore.ts";
+import { intakeNoticeText } from "../src/intake.ts";
 
 // Issue #161: frame の分類（type の有無・値）による状態更新と、再接続時の扱い。
-// useLiveFeed.ts の useEffect 内クロージャ（DOM・レンダラが無い web のテスト環境では到達できない）から
-// 分岐を抜き出した純粋モジュールを、実コードとして直接検証する（CT-FRAME-DISPATCH）。
+// frame の分類と状態の更新の規則（web/src/liveFeed.ts。Foldkit の受信 web/src/app/liveFeed/main.ts の update が使う）を、実コードとして直接検証する（CT-FRAME-DISPATCH）。
 
 const snapshot: Snapshot = { nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }], round: 0, changes: [], remarks: [] };
 
@@ -150,31 +149,30 @@ describe("ローカルモードの通知", () => {
 });
 
 // Issue #161 U-G: 切断中にセッションが終わった場合、再接続したブラウザの一言が無期限に残らないこと。
-// applyFrame/applyOpen が作る FeedState の系列と、同じ intakeNoticeStore の実体で、
+// applyFrame/applyOpen が作る FeedState の系列と、取り込みの状態から一言を決める規則（intakeNoticeText）で、
 // 変化前（途切れの一言が出ている）→ 再接続（applyOpen）→ まだ none を受け取っていない間 → none を受け取った後
-// を一続きに観測する（CODING_STANDARDS.md「Negative tests」に従い、守っている状態に到達してから見る）
+// を一続きに観測する（CODING_STANDARDS.md「Negative tests」に従い、守っている状態に到達してから見る）。
+// 画面まで届くこと（Foldkit の会議中の画面の上で）は meeting.story.test.ts・meeting.scene.test.ts が見る
 describe("再接続からセッション終了までの一言（Issue #161 U-G）", () => {
+  const noticeOf = (state: FeedState): string | null => intakeNoticeText({ previous: null, current: state.intake, msSinceChange: 0 });
+
   it("[SCN-U-G-P2][SCN-U-G-N2] 再接続だけでは一言は消えず、保持されていた {type:\"intake\",status:\"none\"} を受け取ると消える", () => {
-    const store = createIntakeNoticeStore("running");
     let state: FeedState = createFeedState();
 
     // 取り込みが途切れ、一言が出ている（守っている状態に先に到達する）
     state = applyFrame(state, { type: "intake", status: "interrupted" });
-    store.setStatus(state.intake);
-    expect(store.text()).toBe("音声の取り込みが途切れました。再開しています");
+    expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
     // 接続し直す（applyOpen）。intake は直前の値のまま保たれる
     state = applyOpen(state);
-    store.setStatus(state.intake);
-    expect(store.text()).toBe("音声の取り込みが途切れました。再開しています");
+    expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
     // [SCN-U-G-N2] まだ取り込みの状態のフレームを 1 件も受け取っていない間は、一言は残り続ける
-    expect(store.text()).toBe("音声の取り込みが途切れました。再開しています");
+    expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
     // [SCN-U-G-P2] サーバーが保持していた {type:"intake",status:"none"} を受け取ると、一言が無くなる
     state = applyFrame(state, { type: "intake", status: "none" });
-    store.setStatus(state.intake);
-    expect(store.text()).toBeNull();
+    expect(noticeOf(state)).toBeNull();
   });
 });
 
