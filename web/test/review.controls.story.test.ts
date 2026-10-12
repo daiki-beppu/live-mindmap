@@ -33,10 +33,10 @@ const run = (update: ReturnType<typeof makeUpdate>, start: ReturnType<typeof sta
 };
 
 describe("見返しの Model: 操作の行の状態", () => {
-  it("最初は字幕も右の列も出していて、スライダーを押していない", () => {
+  it("最初は字幕も右の列も出していて（右の列の出し入れは表示面の見る状態が持つ）、スライダーを押していない", () => {
     const m = init(audioContext);
     expect(m.captionsHidden).toBe(false);
-    expect(m.sideHidden).toBe(false);
+    expect(m.mapSurface.viewing.sideHidden).not.toBe(true);
     expect(m.isPressingSlider).toBe(false);
     expect(Option.isNone(m.maybeSeekPointer)).toBe(true);
     expect(Schema.is(Model)(m)).toBe(true);
@@ -323,10 +323,10 @@ describe("押して離したらフォーカスを外す", () => {
 
   it("右の列のボタン（ClickedSide）を押すと、隠す／出すが替わり、フォーカスを外す。字幕には触らない", () => {
     const [hidden, shown] = run(plainUpdate, stateAt(plainContext, 100), Message.ClickedSide(), Message.ClickedSide());
-    expect(hidden!.model.sideHidden).toBe(true);
+    expect(hidden!.model.mapSurface.viewing.sideHidden).toBe(true);
     expect(hidden!.model.captionsHidden).toBe(false);
     expect(commandNames(hidden!.commands)).toEqual(["ReleaseFocus"]);
-    expect(shown!.model.sideHidden).toBe(false);
+    expect(shown!.model.mapSurface.viewing.sideHidden).not.toBe(true);
     expect(commandNames(shown!.commands)).toEqual(["ReleaseFocus"]);
   });
 });

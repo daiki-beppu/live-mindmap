@@ -89,7 +89,7 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     expect(HashMap.size(m.mapSurface.nodeHeights)).toBe(0);
   });
 
-  it("測定済みの後に目標の位置が変わる高さを再測定しても、補間は始まらず、描く位置は新しい高さの layout になる", () => {
+  it("測定済みの後に目標の位置が変わる高さを再測定すると補間が始まり、Tick 500 の後に描く位置は新しい高さの layout になる", () => {
     const ids = expectedIds(30);
     const nodes = foldView(snapshotOf(context, at(30)), new Set(), null, new Set(), new Set()).nodes;
     const base = Object.fromEntries(ids.map((id) => [id, 40]));
@@ -100,12 +100,14 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     const measure = (m: Model, nodeHeights: Record<string, number>): Model =>
       app.update(m, ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights }) })).model;
     const remeasured = measure(measure(at(30), base), changed);
-    expect(Option.isNone(remeasured.mapSurface.motion)).toBe(true);
+    expect(Option.isSome(remeasured.mapSurface.motion)).toBe(true);
+    const settledModel = app.update(remeasured, ReviewMessage.GotMapSurfaceMessage({ message: MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }) })).model;
+    expect(Option.isNone(settledModel.mapSurface.motion)).toBe(true);
     type V = { data?: { attrs?: Record<string, unknown>; style?: Record<string, string> }; children?: Array<V | string> };
     const wrappers = (v: V): V[] => [...(typeof v.data?.attrs?.["data-node-id"] === "string" ? [v] : []), ...(v.children ?? []).flatMap((c) => (typeof c === "string" ? [] : wrappers(c)))];
     scene(
       app,
-      given(remeasured),
+      given(settledModel),
       Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: changed })),
       tap((simulation) => {
         for (const w of wrappers(simulation.html as V)) {

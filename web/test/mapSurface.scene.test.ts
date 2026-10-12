@@ -42,8 +42,8 @@ const SIZE = { width: 800, height: 600 };
 const modelOf = (snapshot: Snapshot, mode: MapSurfaceModel["mode"]): MapSurfaceModel => init(snapshot, mode, false);
 const measured = (nodeHeights: Record<string, number>, size = SIZE) => Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ...size, nodeHeights }));
 
-// エッジの端点。出る側は親の右端から 2.5px 外、入る側は子の左端から 2.5px 外（@xyflow の .react-flow__handle の位置）
-const HANDLE_OUTSET = 2.5;
+// エッジの端点。出る側は親の右端から 3px 外、入る側は子の左端から 3px 外（@xyflow の .react-flow__handle の位置。実際のブラウザで測った値）
+const HANDLE_OUTSET = 3;
 const numbers = (s: string): number[] => (s.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
 const expectNumbers = (actual: number[], expected: number[]) => {
   expect(actual).toHaveLength(expected.length);

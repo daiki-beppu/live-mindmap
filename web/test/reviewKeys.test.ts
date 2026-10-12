@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUDIO_HOTKEYS, REVIEW_HOTKEYS, reviewHotkeyYieldsToFocus, reviewKeyEvent, SKIP_SECONDS, type ReviewKeyAction } from "../src/reviewKeys.ts";
+import { reviewHotkeyYieldsToFocus, reviewKeyEvent, SKIP_SECONDS, type ReviewKeyAction } from "../src/reviewKeys.ts";
 import { initialPlayback, playbackReducer, type PlaybackEvent } from "../src/reviewPlayback.ts";
 
 // 見返しのキーから再生の出来事への対応（DOM なし）。
@@ -7,33 +7,16 @@ const none = { meta: false, ctrl: false, alt: false };
 const ctx = { duration: 100, reflectionTimes: [10, 40, 70], rates: [10, 30, 60, 120] };
 const ev = (action: ReviewKeyAction, time = 50, duration = 100) => reviewKeyEvent(action, none, time, duration);
 
-describe("見返しのキーの一覧（REVIEW_HOTKEYS）", () => {
-  it("Space・K・J・L・, . < > Home End の 10 個で、C は含めない（C は SessionView の登録を使う）", () => {
-    expect(REVIEW_HOTKEYS.map(([hotkey]) => hotkey)).toEqual(["Space", "K", "J", "L", ",", ".", "<", ">", "Home", "End"]);
-    expect(REVIEW_HOTKEYS.map(([hotkey]) => hotkey.toUpperCase())).not.toContain("C");
-  });
+// 見返しのキーのバインディング（どのキーがどの動きか）は、キーの表（app/keys/table.ts）が持つ。ここは動きから再生の出来事への対応だけを見る
+const ACTIONS: readonly ReviewKeyAction[] = ["toggle", "back", "forward", "prev", "next", "slower", "faster", "start", "end", "mute"];
 
-  it("キーごとの動き: Space・K は toggle、J は back、L は forward、, は prev、. は next、< は slower、> は faster、Home は start、End は end", () => {
-    expect(Object.fromEntries(REVIEW_HOTKEYS)).toEqual({
-      Space: "toggle",
-      K: "toggle",
-      J: "back",
-      L: "forward",
-      ",": "prev",
-      ".": "next",
-      "<": "slower",
-      ">": "faster",
-      Home: "start",
-      End: "end",
-    });
-  });
-
-  it("飛ばす秒数は 10 秒", () => {
+describe("飛ばす秒数", () => {
+  it("J・L で飛ばす秒数は 10 秒", () => {
     expect(SKIP_SECONDS).toBe(10);
   });
 });
 
-describe("reviewKeyEvent: 時刻を動かす操作（movesTime: true、operate を通す）", () => {
+describe("reviewKeyEvent: 時刻を動かす操作（movesTime: true）", () => {
   it("toggle・prev・next は同名の出来事", () => {
     expect(ev("toggle")).toEqual({ event: { type: "toggle" }, movesTime: true });
     expect(ev("prev")).toEqual({ event: { type: "prev" }, movesTime: true });
@@ -52,21 +35,20 @@ describe("reviewKeyEvent: 時刻を動かす操作（movesTime: true、operate �
   });
 });
 
-describe("reviewKeyEvent: 速さは時刻を動かす操作に含めない（operate を通さない）", () => {
+describe("reviewKeyEvent: 速さ・ミュートは時刻を動かす操作に含めない（movesTime: false）", () => {
   it("< は slower、> は faster で、movesTime は false", () => {
     expect(ev("slower")).toEqual({ event: { type: "slower" }, movesTime: false });
     expect(ev("faster")).toEqual({ event: { type: "faster" }, movesTime: false });
   });
 
-  it("movesTime が false なのは slower・faster だけ", () => {
-    const actions = REVIEW_HOTKEYS.map(([, action]) => action);
-    const notMoving = actions.filter((a) => ev(a)?.movesTime === false);
-    expect(new Set(notMoving)).toEqual(new Set(["slower", "faster"]));
+  it("movesTime が false なのは slower・faster・mute だけ", () => {
+    const notMoving = ACTIONS.filter((a) => ev(a)?.movesTime === false);
+    expect(new Set(notMoving)).toEqual(new Set(["slower", "faster", "mute"]));
   });
 });
 
 describe("reviewKeyEvent: ⌘・Ctrl・Option と一緒のキーは受けない", () => {
-  const actions = [...new Set(REVIEW_HOTKEYS.map(([, action]) => action))];
+  const actions = ACTIONS;
 
   it.each([
     ["⌘", { meta: true, ctrl: false, alt: false }],
@@ -116,17 +98,8 @@ describe("reviewKeyEvent の出来事を playbackReducer に通した結果", ()
   });
 });
 
-describe("M（ミュート）: 音声つきの見返しだけの登録", () => {
-  it("AUDIO_HOTKEYS は M → mute の 1 つだけ", () => {
-    expect(AUDIO_HOTKEYS).toEqual([["M", "mute"]]);
-  });
-
-  it("REVIEW_HOTKEYS（音声なしでも登録される）には M を混ぜない", () => {
-    expect(REVIEW_HOTKEYS.map(([hotkey]) => hotkey.toUpperCase())).not.toContain("M");
-    expect(REVIEW_HOTKEYS.map(([, action]) => action as string)).not.toContain("mute");
-  });
-
-  it("mute は toggleMute の出来事で、時刻を動かす操作ではない（operate を通さない）", () => {
+describe("M（ミュート）", () => {
+  it("mute は toggleMute の出来事で、時刻を動かす操作ではない", () => {
     expect(ev("mute")).toEqual({ event: { type: "toggleMute" }, movesTime: false });
   });
 
@@ -154,24 +127,15 @@ describe("reviewHotkeyYieldsToFocus: Space を開閉の丸のボタンに譲る�
   const COUNT = within("map-node__count--pressable");
   const FOLD_DOT = within("map-node__fold-dot");
 
-  it("Space で、押せる隠れた数の丸・畳む丸の中にフォーカスがあれば譲る（再生の切り替えを起こさず、ボタンの click に任せる）", () => {
-    expect(reviewHotkeyYieldsToFocus("Space", COUNT)).toBe(true);
-    expect(reviewHotkeyYieldsToFocus("Space", FOLD_DOT)).toBe(true);
+  it("押せる隠れた数の丸・畳む丸の中にフォーカスがあれば譲る（再生の切り替えを起こさず、ボタンの click に任せる）", () => {
+    expect(reviewHotkeyYieldsToFocus(COUNT)).toBe(true);
+    expect(reviewHotkeyYieldsToFocus(FOLD_DOT)).toBe(true);
   });
 
   it("ノード本体のボタン・ほかのボタン・フォーカスなしでは譲らない（今のまま再生を切り替える）", () => {
-    expect(reviewHotkeyYieldsToFocus("Space", within("map-node__button"))).toBe(false);
-    expect(reviewHotkeyYieldsToFocus("Space", within("button"))).toBe(false);
-    expect(reviewHotkeyYieldsToFocus("Space", within())).toBe(false);
-    expect(reviewHotkeyYieldsToFocus("Space", null)).toBe(false);
-  });
-
-  it("Space 以外のキーは、丸の中でも譲らない", () => {
-    for (const [hotkey] of REVIEW_HOTKEYS) {
-      if (hotkey !== "Space") {
-        expect(reviewHotkeyYieldsToFocus(hotkey, COUNT)).toBe(false);
-        expect(reviewHotkeyYieldsToFocus(hotkey, FOLD_DOT)).toBe(false);
-      }
-    }
+    expect(reviewHotkeyYieldsToFocus(within("map-node__button"))).toBe(false);
+    expect(reviewHotkeyYieldsToFocus(within("button"))).toBe(false);
+    expect(reviewHotkeyYieldsToFocus(within())).toBe(false);
+    expect(reviewHotkeyYieldsToFocus(null)).toBe(false);
   });
 });

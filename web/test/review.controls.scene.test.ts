@@ -30,6 +30,7 @@ import {
   plainContext,
   renderedIds,
   settle,
+  sideHiddenOf,
   singleRateContext,
   stateAt,
   styleOf,
@@ -122,7 +123,7 @@ const expectVideoJsIcon = (vnode: VNode, name: keyof typeof VIDEOJS_ICONS) => {
 };
 const iconOfButton = (html: VNode, label: string): VNode => iconIn(one(html, `[aria-label="${label}"]`));
 
-// ---- ツールチップの文言（今の ReviewControls.tsx と同じ）----
+// ---- ツールチップの文言（styles.css が当たる形）----
 const TIPS: ReadonlyArray<readonly [label: string, text: string]> = [
   ["反映 1 つ戻る", "反映 1 つ戻る（,）"],
   ["再生", "再生（Space・K）"],
@@ -139,7 +140,7 @@ const tipPanelOf = (html: VNode, label: string): VNode => {
 };
 const isOpenTip = (html: VNode, label: string): boolean => attrOf(tipPanelOf(html, label), "data-open") !== undefined;
 
-describe("操作の行の並び・名前・class（今の ReviewControls.tsx と同じ）", () => {
+describe("操作の行の並び・名前・class（styles.css が当たる形）", () => {
   it("録音つき: .review の中は セッションの領域 → 操作の行。操作の行の中は シークバー → 行（戻る・再生・進む・音量・時刻・議題・右のまとまり）", () => {
     scene(
       audioApp,
@@ -294,6 +295,7 @@ describe("シークバー: キーで時刻が動き、表示（時刻・議題�
       settle,
       expectScene(seekRoot).toHaveAttr("data-dragging"),
       drag(Slider.Message.MovedDragPointer({ value: 50 })),
+      settle,
       expectScene(seekThumb).toHaveAttr("aria-valuenow", "50"),
       tap((sim) => expect(barText(sim.html, "review-bar__time")).toBe("0:00:50 / 0:03:20")),
       drag(Slider.Message.ReleasedDragPointer()),
@@ -936,7 +938,7 @@ describe("アイコン: インライン SVG。video.js のものを写し、描�
     const shown: IconNode = { tag: "path", attrs: { d: "M10 3v10h3.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5z", fill: "currentColor" }, children: [] };
     const hidden: IconNode = { tag: "path", attrs: { d: "M10 3v10" }, children: [] };
     scene(plainApp, given(stateAt(plainContext, 100)), settle, tap((sim) => expect(canonical(iconOfButton(sim.html, "右の列"), true, true)).toEqual(side(shown))));
-    scene(plainApp, given({ ...stateAt(plainContext, 100), sideHidden: true }), settle, tap((sim) => expect(canonical(iconOfButton(sim.html, "右の列"), true, true)).toEqual(side(hidden))));
+    scene(plainApp, given(sideHiddenOf(stateAt(plainContext, 100))), settle, tap((sim) => expect(canonical(iconOfButton(sim.html, "右の列"), true, true)).toEqual(side(hidden))));
   });
 
   it("字幕を隠した状態から始めると CaptionsOff、出した状態は CaptionsOn", () => {

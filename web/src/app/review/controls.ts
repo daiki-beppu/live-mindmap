@@ -1,4 +1,4 @@
-// 見返しの操作の行（Issue #825）: シークバー・ボタン・音量・速さのメニュー。名前・class・並び・文言は今の ReviewControls.tsx と同じ（今の CSS をそのまま当てるため）。
+// 見返しの操作の行（Issue #825）: シークバー・ボタン・音量・速さのメニュー。名前・class・並び・文言は今の CSS（styles.css）をそのまま当てられる形にする。
 // 部品は @foldkit/ui を使う: シークバーと音量は Slider、速さのメニューは Menu、ボタンのツールチップは Tooltip、字幕のボタンの開閉の属性は Disclosure（#820）。
 // 自前で描くのは、章・進み・印、章名と時刻のプレビュー、アイコン（icons.ts）、時刻と議題。
 // Slider・Menu・Tooltip が属性の束（root・track・thumb・trigger・panel…）に付ける style と id は、そのまま残す。束の後に h.Style を足さない。
@@ -243,7 +243,7 @@ export const controlsView = (context: Context, model: Model, topicName: string, 
             [
               captionsButton(model, h),
               ...(rates.length > 1 ? [rateControl(context, model, h)] : []),
-              barButton(h, model, "side", "top-end", "右の列", Message.ClickedSide(), SideIcon(h, model.sideHidden), "右の列（E）", [h.AriaPressed(String(!model.sideHidden))]),
+              barButton(h, model, "side", "top-end", "右の列", Message.ClickedSide(), SideIcon(h, model.mapSurface.viewing.sideHidden === true), "右の列（E）", [h.AriaPressed(String(model.mapSurface.viewing.sideHidden !== true))]),
             ],
           ),
         ],

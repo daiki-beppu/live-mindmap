@@ -46,7 +46,7 @@ export const Message = defineMessageUnion({
   // --- 親から ---
   // マップ（Snapshot）が新しくなった（差分更新の反映）。位置は補間で新しい目標へ移る
   ChangedSnapshot: { snapshot: Snapshot },
-  // 見返しのキーで時刻を動かした（manual・overview なら自動のカメラへ戻る。時刻が変わらない操作でも戻る）
+  // 人が見返しの時刻を動かした（ボタン・シーク・キー。manual・overview なら自動のカメラへ戻る。時刻が変わらない操作でも戻る）
   MovedTime: {},
   // キー。意味（どの倍率・位置になるか）は update が reduceViewing で決める。修飾キーは押されていたかだけを届ける
   PressedViewKey: { key: ViewKey, metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
@@ -56,6 +56,11 @@ export const Message = defineMessageUnion({
   PressedEnterKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
   // E（右の列の出し入れ）。列の幅だけマップの大きさが変わるので、update は大きさの Message を待ってずらす
   PressedSideKey: { metaKey: Schema.Boolean, ctrlKey: Schema.Boolean, altKey: Schema.Boolean },
+  // キーの一覧（見返しの Popover）が開閉した。一覧の開閉の結果は見返しが持ち、表示面は見る状態を動かさず 10 秒の計り直し（idleStamp）だけを進める
+  ToggledKeyList: {},
+  // --- Command の完了 ---
+  // 点滅（map-node--blink）のアニメーションを描画の確定の後に最初から再生し直した
+  CompletedRestartBlink: {},
   // --- 見返しの 10 秒のタイマーの Subscription から ---
   // 触らずに 10 秒たった（見返しの manual のときだけ効く。時刻は update が読まず、Subscription が計る）
   ElapsedIdleTime: {},

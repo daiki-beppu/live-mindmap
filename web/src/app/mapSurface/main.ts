@@ -43,6 +43,7 @@ import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
 import { type ArrowDir, type CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
 import "./mapSurface.css";
+import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
 
@@ -110,9 +111,10 @@ const foldViewOf = (model: Model): FoldView | null => {
 };
 // 畳んだ後に見せるノード
 const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
-const heightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights));
+// 測ったノードの高さは実際の高さ（小数）。配置とカメラは @xyflow と同じく offsetHeight（整数に丸めた高さ）で計算し、エッジの端点だけが小数のままの高さを使う
+const heightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
 // camera.ts の nodeRect などに渡す、ノードの id → { height }
-const dimsOf = (model: Model): Record<string, { height: number }> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, { height }]));
+const dimsOf = (model: Model): Record<string, { height: number }> => Object.fromEntries(Object.entries(heightsOf(model)).map(([id, height]) => [id, { height }]));
 // 補間の行き先（目標の位置）
 const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), heightsOf(model));
 
@@ -329,10 +331,6 @@ const followDisplayed = (model: Model): Model => {
   return follows ? autoCamera(anchored) : anchored;
 };
 
-// 補間を捨てて目標の位置にし、カメラを合わせ直す（補間を進める Tick が無い見返しが、保存の前に通す）。補間が無ければ何もしない
-export const skipMotion = (model: Model): Model =>
-  Option.isNone(model.motion) ? model : followDisplayed(modifyFields(model, { motion: () => Option.none() }));
-
 // キー・時間の出来事を見る状態へ渡す（still は受けない）
 const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
 
@@ -341,12 +339,23 @@ type KeyModifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
 export const pressViewKey = (model: Model, input: KeyModifiers & { key: ViewKey }): Return => update(model, Message.PressedViewKey(input));
 export const pressArrowKey = (model: Model, input: KeyModifiers & { dir: ArrowDir }): Return => update(model, Message.PressedArrowKey(input));
 export const pressEscapeKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEscapeKey(input));
+export const pressSideKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedSideKey(input));
 export const pressEnterKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEnterKey(input));
+
+// 親（見返し）が、キーの一覧を開いた・閉じたことを表示面へ伝える入口。見る状態は動かさず、10 秒を計り直す（idleStamp を進める）だけ
+export const toggledKeyList = (model: Model): Model => update(model, Message.ToggledKeyList()).model;
+
+// 親（見返し）が、update の前後の表示面から、点滅を最初から再生し直す Command を求める入口。
+// 測定済みで、表示する Snapshot の反映番号が変わり、変わった後も点滅の対象のノードがあるときだけ返す（同じ反映の中の再描画・選択・補間の Tick では返さない）
+export const blinkRestartsOf = (before: Model, after: Model): ReadonlyArray<ReturnType<typeof RestartBlink>> => {
+  if (after.mode === "still" || Option.isNone(after.size) || before.snapshot.round === after.snapshot.round) return [];
+  return (foldViewOf(after)?.blink.size ?? 0) > 0 ? [RestartBlink()] : [];
+};
 
 // 親（見返し）が、時刻の変更で Snapshot が別のものになったことを表示面へ伝える入口（子の Message を親が組み立てずに済む）
 export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => update(model, Message.ChangedSnapshot({ snapshot })).model;
 
-// 親（見返し）が、キーで時刻を動かしたことを表示面へ伝える入口（自動のカメラへ戻る）
+// 親（見返し）が、人が時刻を動かしたこと（ボタン・シーク・キー）を表示面へ伝える入口（自動のカメラへ戻る）
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
 export const update = (model: Model, message: Message): Return =>
@@ -378,6 +387,8 @@ export const update = (model: Model, message: Message): Return =>
     PressedEnterKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "enter", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     PressedSideKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "side", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     ElapsedIdleTime: () => pressed(model, { type: "idle" }),
+    CompletedRestartBlink: () => ({ model }),
+    ToggledKeyList: () => ({ model: modifyFields(model, { idleStamp: (stamp) => stamp + 1 }) }),
     TickedAnimationFrame: ({ deltaMs }) => {
       const ticked = modifyFields(model, {
         motion: Option.flatMap(({ start, elapsedMs }) => (elapsedMs + deltaMs >= MOTION_DURATION_MS ? Option.none() : Option.some({ start, elapsedMs: elapsedMs + deltaMs }))),
@@ -459,9 +470,9 @@ export const update = (model: Model, message: Message): Return =>
   });
 
 
-// エッジの端点。@xyflow の .react-flow__handle は content-box で幅 6px + 枠 1px × 2 = 8px で、.map-node の padding box
-// （枠 1.5px の内側）を基準に ±50% ずらして置かれるので、ノードの左右の端から 2.5px 外に出る（出る側は右端 +2.5、入る側は左端 −2.5）
-const HANDLE_OUTSET = 2.5;
+// エッジの端点。@xyflow は .react-flow__handle の実際の位置から端点を決める。実際のブラウザで測ると、出る側は親の右端 +3、入る側は子の左端 −3
+// （画面の倍率 1・2 のどちらでも同じ）。y はノードの高さの半分（小数のままの高さ）
+const HANDLE_OUTSET = 3;
 
 // @xyflow の既定のエッジ（ベジェ、曲率 0.25）の制御点のずれ。calculateControlOffset と同じ
 const CURVATURE = 0.25;
@@ -507,7 +518,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const selectedId = view_ === null ? null : (model.viewing.selection?.id ?? null);
   const { opened } = humanSetsOf(model.viewing);
   const shown = view_?.nodes ?? model.snapshot.nodes;
-  const heights = heightsOf(model);
+  const exactHeight = (id: string): number => Option.getOrThrow(HashMap.get(model.nodeHeights, id));
   const positions = displayedPositions(model);
   // 測れたノードだけ見せる。エッジは両端が測れてから描く
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
@@ -516,8 +527,8 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const edges = measured.flatMap((child) => {
     const parent = child.parent === null ? undefined : measured.find((n) => n.id === child.parent);
     if (parent === undefined) return [];
-    const source = { x: positions[parent.id]!.x + NODE_WIDTH + HANDLE_OUTSET, y: positions[parent.id]!.y + heights[parent.id]! / 2 };
-    const target = { x: positions[child.id]!.x - HANDLE_OUTSET, y: positions[child.id]!.y + heights[child.id]! / 2 };
+    const source = { x: positions[parent.id]!.x + NODE_WIDTH + HANDLE_OUTSET, y: positions[parent.id]!.y + exactHeight(parent.id) / 2 };
+    const target = { x: positions[child.id]!.x - HANDLE_OUTSET, y: positions[child.id]!.y + exactHeight(child.id) / 2 };
     return [h.keyed("path")(`${parent.id}->${child.id}`, [h.D(bezier(source, target)), h.Stroke(KIND_COLOR[child.kind]), h.StrokeWidth("2"), h.Fill("none")])];
   });
   const nodes = shown.map((node) =>

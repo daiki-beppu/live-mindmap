@@ -8,7 +8,7 @@ import { attrOf, audioApp, audioContext, descendants, hasClass, one, plainApp, p
 
 // 見返しのキーの一覧（Issue #822）の Scene。描いた view から入り、? で開いた一覧が、表から作った行で、マップの区画の中に出ること、
 // 開いたままマップを動かせること（背景を止めない）を見る。? のキーは文書の keydown（描いた木の外）から届くので Subscription.emit で流す。
-// Scene は座標を持たないので「マップの区画の中」は、.review__session の子孫であることで確かめる（実際の座標は切り替えの段の heavy IT）。
+// Scene は座標を持たないので「マップの区画の中」は、.map の子孫であることで確かめる（実際の座標は切り替えの段の heavy IT）。
 // 閉じる側（Esc・? の 2 回目）は Popover が Command（フォーカスを戻す）を出すので、update の Story（keys.story.test.ts）で確かめる
 
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };
@@ -25,7 +25,7 @@ const rowKeys = (html: VNode): string[] => findAll(html, ".key-list__keys").map(
 const rowTexts = (html: VNode): string[] => findAll(html, ".key-list__row").map((v) => textContent(v));
 
 describe("キーの一覧の Scene: ? で開く", () => {
-  it("最初は描かれず、? で .review__session（マップの区画）の中に 1 つ出る", () => {
+  it("最初は描かれず、? で .map（マップの区画）の中に 1 つ出る", () => {
     scene(
       plainApp,
       given(measuredModel(plainContext, plainApp)),
@@ -34,7 +34,7 @@ describe("キーの一覧の Scene: ? で開く", () => {
       pressQuestion,
       expectScene(selector(".key-list")).toExist(),
       tap((simulation) => {
-        expect(keyListIn(simulation.html, ".review__session")).toHaveLength(1);
+        expect(keyListIn(simulation.html, ".map")).toHaveLength(1);
         expect(findAll(simulation.html, ".key-list")).toHaveLength(1);
       }),
       settle,
@@ -90,12 +90,12 @@ describe("キーの一覧の Scene: 開いたままマップを動かせる（�
       tap((simulation) => {
         before = viewportTransform(simulation.html);
         expect(before).not.toBe("");
-        expect(keyListIn(simulation.html, ".review__session")).toHaveLength(1);
+        expect(keyListIn(simulation.html, ".map")).toHaveLength(1);
       }),
       Mount.resolve(ObserveMapSurface, wheel(100)),
       tap((simulation) => {
         expect(viewportTransform(simulation.html)).not.toBe(before);
-        expect(keyListIn(simulation.html, ".review__session")).toHaveLength(1);
+        expect(keyListIn(simulation.html, ".map")).toHaveLength(1);
       }),
       settle,
     );
@@ -142,7 +142,7 @@ describe("キーの一覧の Scene: 開いたままマップを動かせる（�
       Subscription.emit(Message.PressedKey({ key: "=", ...NO_MODIFIERS })),
       tap((simulation) => {
         expect(viewportTransform(simulation.html)).not.toBe(before);
-        expect(keyListIn(simulation.html, ".review__session")).toHaveLength(1);
+        expect(keyListIn(simulation.html, ".map")).toHaveLength(1);
       }),
       settle,
     );

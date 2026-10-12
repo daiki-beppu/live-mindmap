@@ -363,7 +363,7 @@ describe("ミュートと音量（toggleMute / setVolume）", () => {
   });
 });
 
-// 速さのメニューの項目の文言（Issue #825 で ReviewControls.tsx から移した純粋な関数。React 版は同じ関数を ReviewControls.tsx から再エクスポートして使う）
+// 速さのメニューの項目の文言（Issue #825 で React の操作の行から移した純粋な関数。操作の行（app/review/controls.ts）が使う）
 describe("速さの項目の文言（rateOptionLabel / rateItemLabel）", () => {
   it("rateOptionLabel は「N 倍（会議の分数 を 所要の分数 で）」。所要は小数 1 桁", () => {
     expect(rateOptionLabel(60, 9660)).toBe("60 倍（161 分を 2.7 分で）");
