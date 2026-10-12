@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { CAPTURE_SNAPSHOT_GLOBAL } from "../../server/src/core/capture.ts";
 import { REVIEW_AUDIO_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, type Snapshot } from "../../server/src/core/index.ts";
 import { App } from "./App.tsx";
-import { CaptureView } from "./CaptureView.tsx";
+import { runCapture } from "./app/capture/entry.ts";
 import { runReview } from "./app/review/entry.ts";
 import "./styles.css";
 
@@ -20,9 +20,11 @@ const audioUrl = reviewAudio == null ? undefined : URL.createObjectURL(new Blob(
 
 const root = document.getElementById("root")!;
 
-// 見返しは Foldkit の Runtime で起動し、React の root を作らない。撮影（CaptureView）と会議中（App）は React のまま。分岐の順序は 撮影 → 見返し → 会議中
-if (!captured && reviewLog != null) {
+// 撮影と見返しは Foldkit の Runtime で起動し、React の root を作らない。会議中（App）は React のまま。分岐の順序は 撮影 → 見返し → 会議中
+if (captured) {
+  runCapture({ container: root, snapshot: captured });
+} else if (reviewLog != null) {
   runReview({ container: root, events: JSON.parse(reviewLog), maybeAudioUrl: Option.fromNullishOr(audioUrl), isMac: navigator.userAgent.indexOf("Mac") >= 0 });
 } else {
-  createRoot(root).render(<StrictMode>{captured ? <CaptureView snapshot={captured} /> : <App />}</StrictMode>);
+  createRoot(root).render(<StrictMode><App /></StrictMode>);
 }

@@ -81,11 +81,12 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
 }, Effect.scoped);
 
 // 画面全体ではなく、ノードを囲む範囲（と余白）だけを切り抜いて撮る。小さなマップでも余白だらけにならない
+// ノードの箱は、Foldkit の表示面でノードを包む要素（.map-node-slot）から測る
 const captureMap = (snapshot: Snapshot, path: string): Effect.Effect<void, CaptureFailed, Playwright> =>
   withCapturePage(snapshot, (page) =>
     Effect.tryPromise({
       try: async () => {
-        const boxes = (await Promise.all((await page.locator(".react-flow__node").all()).map((node) => node.boundingBox()))).filter((b) => b !== null);
+        const boxes = (await Promise.all((await page.locator(".map-node-slot").all()).map((node) => node.boundingBox()))).filter((b) => b !== null);
         if (boxes.length === 0) {
           await page.screenshot({ path, type: "png" });
           return;
