@@ -1,6 +1,7 @@
 // 見返しの Foldkit プログラム（Issue #823）の Context。起動時に決まる入力（時間軸と再生の文脈）を Model の外に持つ。
 // 時間軸の snapshotAt が書き込む cache（Map）もここにあり、Model には入らない
 import { Option } from "effect";
+import type { Screen } from "../keys/table.ts";
 import { AUDIO_RATES, PLAYBACK_RATES, type PlaybackContext } from "../../reviewPlayback.ts";
 import { buildReviewTimeline, reviewChapters, reviewMarks, type Chapter, type Mark, type ReviewTimeline } from "../../reviewTimeline.ts";
 
@@ -13,3 +14,6 @@ export const makeContext = (events: readonly unknown[], { isMac = false, maybeAu
   const timeline = buildReviewTimeline(events);
   return { timeline, playback: { duration: timeline.duration, reflectionTimes: timeline.reflectionTimes, rates: Option.isSome(maybeAudioUrl) ? AUDIO_RATES : PLAYBACK_RATES }, isMac, maybeAudioUrl, chapters: reviewChapters(timeline), marks: reviewMarks(timeline) };
 };
+
+// キーの表を絞る画面。録音の有無は起動時に決まるので、Context から決める（M は録音つきの見返しだけ）
+export const reviewScreenOf = (context: Context): Screen => (Option.isSome(context.maybeAudioUrl) ? "reviewAudio" : "review");

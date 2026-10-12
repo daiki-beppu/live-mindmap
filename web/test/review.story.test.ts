@@ -37,9 +37,9 @@ const topicsOf = (snapshot: Snapshot): string[] => snapshot.nodes.filter((n) => 
 const topicsAt = (time: number): string[] => topicsOf(snapshotOf(context, at(time)));
 
 describe("見返しの Model: 本物の Schema で、再生の状態だけを持つ", () => {
-  // 操作の行（#825）の状態（Slider・Menu・Tooltip の子の Model、ポインタの位置、押している最中か、字幕と右の列を隠しているか）が加わる。
+  // キーの一覧（#822。Popover の Model）と、操作の行（#825）の状態（Slider・Menu・Tooltip の子の Model、ポインタの位置、押している最中か、字幕と右の列を隠しているか）が加わる。
   // 時間軸・Snapshot・配置・章・印は導いた値なので、これからも Model に入れない
-  const FIELDS = ["captionsHidden", "isPressingSlider", "mapSurface", "maybeSeekPointer", "playback", "rateMenu", "seekSlider", "sideHidden", "tooltips", "volumeSlider"];
+  const FIELDS = ["captionsHidden", "isPressingSlider", "keyList", "mapSurface", "maybeSeekPointer", "playback", "rateMenu", "seekSlider", "sideHidden", "tooltips", "volumeSlider"];
   it("欄は 再生の状態・表示面の実測・操作の行の状態 だけ（時間軸・Snapshot・配置・章・印を持たない）", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(FIELDS);
     expect(Object.keys(init(context)).sort()).toEqual(FIELDS);

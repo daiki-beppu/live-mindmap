@@ -1,8 +1,9 @@
-// 見返しの Foldkit プログラム（Issue #823・#824・#825）が受ける Message。Command の結果は Command の名前から作る（PlayAudio → SucceededPlayAudio・FailedPlayAudio）。prev・next は反映の時刻への移動。
+// 見返しの Foldkit プログラム（Issue #822・#823・#824・#825）が受ける Message。Command の結果は Command の名前から作る（PlayAudio → SucceededPlayAudio・FailedPlayAudio）。prev・next は反映の時刻への移動。
 // 表示面と、操作の行の部品（Slider・Menu・Tooltip）の Message は包んで受ける。Slider・Menu の結果は update が OutMessage（ChangedValue・Selected）で受け、中の Message は見ない
-import { Menu, Slider, Tooltip } from "@foldkit/ui";
+import { Menu, Popover, Slider, Tooltip } from "@foldkit/ui";
 import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
+import { pressedKeyFields } from "../keys/message.ts";
 import { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
 
 // ボタンごとの Tooltip。Model の tooltips の欄名と同じ
@@ -26,6 +27,10 @@ export const Message = defineMessageUnion({
   GotVolumeSliderMessage: { message: Slider.Message },
   GotRateMenuMessage: { message: Menu.Message },
   GotTooltipMessage: { tooltipId: TooltipKey, message: Tooltip.Message },
+  // キーの一覧（#822）の Popover。開閉の結果（Opened・Closed）は見返しでは受け流す
+  GotKeyListMessage: { message: Popover.Message },
+  // キーが押された事実（キーの Subscription から）。意味（どの再生・倍率・位置になるか）は update が決める
+  PressedKey: pressedKeyFields,
   ClickedMute: {},
   // 字幕の Disclosure（#820）が出す Message と同じ形。isOpen は、押したあとに字幕を出すか
   ToggledCaptions: { isOpen: Schema.Boolean },
