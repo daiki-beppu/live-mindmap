@@ -179,6 +179,24 @@ const fittedOf = (model: Model, size: Size): Viewport => {
   return fitViewport(rects, size, minZoomOf(model), USER_MAX_ZOOM) ?? IDENTITY;
 };
 
+// 全ノードを測り終えて、全体が画面に入っているか（撮影の ready / overflow）。画面の大きさが未測定、または見せるノードに未測定のものがあれば None。
+// 箱は fittedOf と同じ（表示位置 × NODE_WIDTH × 丸めた高さ）を今の viewport で画面に写し、4 辺が画面の中に入るかを見る。ノードが 0 件なら入っている
+export const fitsAllOf = (model: Model): Option.Option<boolean> => {
+  if (Option.isNone(model.size)) return Option.none();
+  const { width, height } = model.size.value;
+  const shown = shownNodesOf(model);
+  if (!shown.every((n) => HashMap.has(model.nodeHeights, n.id))) return Option.none();
+  if (shown.length === 0) return Option.some(true);
+  const heights = heightsOf(model);
+  const positions = displayedPositions(model);
+  const { x, y, zoom } = model.viewport;
+  const left = Math.min(...shown.map((n) => positions[n.id]!.x));
+  const top = Math.min(...shown.map((n) => positions[n.id]!.y));
+  const right = Math.max(...shown.map((n) => positions[n.id]!.x + NODE_WIDTH));
+  const bottom = Math.max(...shown.map((n) => positions[n.id]!.y + heights[n.id]!));
+  return Option.some(left * zoom + x >= 0 && top * zoom + y >= 0 && right * zoom + x <= width && bottom * zoom + y <= height);
+};
+
 // 寄せ先の箱（今の議題の外接箱と、収まらないときの中心）。見せないノードは、それを隠している畳んだノード・まとめのノードに置き換えて測る（位置の無い ID は原点で測られる）。
 // 補間中の位置ではなく目標の位置で測る。自動のカメラと、列で切れる分のずらしの両方が使う
 const focusBoxesOf = (model: Model, focus: { ids: string[]; center: string }): { rects: Rect[]; center: Rect } => {

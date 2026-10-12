@@ -77,6 +77,9 @@ describe("map.png の撮影", () => {
             draft: await page.locator(".draft-node").count(),
             side: await page.locator(".side").count(),
             waiting: await page.locator(".waiting").count(),
+            foldkitSurface: await page.locator(".map-surface").count(),
+            reactFlow: await page.locator(".react-flow").count(),
+            nodeSlots: await page.locator(".map-node-slot").count(),
           };
         }),
       ).pipe(Effect.provide(managedPlaywright));
@@ -93,6 +96,10 @@ describe("map.png の撮影", () => {
       expect(seen.draft).toBe(0);
       expect(seen.side).toBe(0);
       expect(seen.waiting).toBe(0); // 「サーバーを待っています」の待機表示を撮らない
+      // Foldkit の表示面で撮っている（React Flow ではない）。切り抜きの基準 .map-node-slot が全ノード分ある
+      expect(seen.foldkitSurface).toBe(1);
+      expect(seen.reactFlow).toBe(0);
+      expect(seen.nodeSlots).toBe(snapshot.nodes.length);
     }),
     TIMEOUT,
   );
