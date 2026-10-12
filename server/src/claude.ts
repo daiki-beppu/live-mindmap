@@ -33,6 +33,11 @@ const HAIKU_APPEND = `# 念押し（必ず守る）
 - 合意した内容（「〜してもらう」「〜を絞る」「〜にする」）は、論点の子の決定にする。合意に担当者の作業が付いていても、決定を TODO で済ませない。
 - その作業は、決定とは別に TODO として add する。決定と TODO の両方を残す。`;
 
+// PROTOTYPE（#766）: 新しい発言の文に付けた種類のヒントの読み方。PROTO766_HINT=1 のときだけ SYSTEM の末尾に足す
+const HINT_APPEND = `# 新しい発言のヒント
+- 新しい発言の文の後ろの〔種類 確からしさ〕は、別のモデルが文ごとに判定した種類（問い・提案・懸念・合意・作業）。参考にとどめ、発言の中身と食い違えば無視する。〔〕はノードの本文に写さない。
+- 〔合意〕の文は論点への決定に、〔作業〕の文は TODO にならないかを、特に確かめる。`;
+
 // Agent SDK の query。テストでは偽物の Layer に替える
 export class AgentSdk extends Context.Service<AgentSdk, {
   readonly query: typeof import("@anthropic-ai/claude-agent-sdk")["query"];
@@ -95,7 +100,7 @@ export const layerClaude = (model: string) => Layer.effect(
               prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
               options: {
                 // PROTOTYPE（#765）: #656 のチューニング。Haiku 5.5 は low と決定の追記、それ以外は medium
-                model, systemPrompt: SYSTEM + (model === "claude-haiku-5-5" ? "\n\n" + HAIKU_APPEND : ""), effort: model === "claude-haiku-5-5" ? "low" : "medium",
+                model, systemPrompt: SYSTEM + (model === "claude-haiku-5-5" ? "\n\n" + HAIKU_APPEND : "") + (process.env.PROTO766_HINT === "1" ? "\n\n" + HINT_APPEND : ""), effort: model === "claude-haiku-5-5" ? "low" : "medium",
                 tools: [], settingSources: [], persistSession: false, maxTurns: 4,
                 mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
                 outputFormat: { type: "json_schema", schema: OUTPUT_SCHEMA },
