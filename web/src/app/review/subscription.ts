@@ -1,14 +1,15 @@
-// 見返しの Subscription（Issue #824・#825・#819・#822）: キー（document の keydown）、録音なしの時計、スライダーのドラッグ、スライダーを押している間の文書の pointerup、触らずに 10 秒で自動に戻るタイマー。
+// 見返しの Subscription（Issue #824・#825・#819・#822・#826）: キー（document の keydown）、録音なしの時計、スライダーのドラッグ、スライダーを押している間の文書の pointerup、触らずに 10 秒で自動に戻るタイマー。
 // 録音なしの時計は、進めている間だけ rAF を開き、フレームの ms を Message にする（update は ms を経過秒にして reducer へ渡す）。
-// Slider（シーク・音量）のドラッグは Slider 自身の Subscription を、親の Message に包んで足す。
+// 表示面の補間（rAF）とポインタ（何も無い所のドラッグでのパン）は表示面自身の Subscription を、Slider（シーク・音量）のドラッグは Slider 自身の Subscription を、親の Message に包んで足す。
 // スライダーを押して離したことは、Slider の中の Message ではなく、押した事実（PressedSliderPointer）の後に文書の pointerup を受けて知る。
 // 触らずに 10 秒で自動に戻る（Issue #819）は、マップを止めている（manual）間だけタイマーを開く。update は時刻を読まない
 import { Option, Schema, Stream } from "effect";
 import { Slider } from "@foldkit/ui";
 import { Dom, Subscription } from "foldkit";
 import { keyPressStream } from "../keys/subscription.ts";
-import { idleElapsedStream } from "../mapSurface/subscription.ts";
+import { subscriptions as mapSurfaceSubscriptions, idleElapsedStream } from "../mapSurface/subscription.ts";
 import { reviewScreenOf, type Context } from "./context.ts";
+import { surfaceOf } from "./main.ts";
 import type { Model } from "./main.ts";
 import { Message } from "./message.ts";
 
@@ -60,5 +61,10 @@ export const makeSubscriptions = (context: Context) => {
     read: (model) => Option.some(model.volumeSlider),
     toParentMessage: (message) => Message.GotVolumeSliderMessage({ message }),
   });
-  return Subscription.aggregate(own, seek, volume);
+  // 表示面の Subscription: 位置を補間している間だけ rAF でフレームを進め、何も無い所を押して動かすパンの間だけ文書全体の pointermove・pointerup・pointercancel を受ける
+  const pointer = Subscription.lift({ mapSurfaceAnimationFrame: mapSurfaceSubscriptions.animationFrame, mapSurfacePointer: mapSurfaceSubscriptions.pointer })<Model, Message>({
+    read: (model) => Option.some(surfaceOf(context, model)),
+    toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
+  });
+  return Subscription.aggregate(own, seek, volume, pointer);
 };

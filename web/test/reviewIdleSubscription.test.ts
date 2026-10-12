@@ -52,6 +52,78 @@ describe("見返しの 10 秒のタイマー: 開く条件と計り直し", () =
   });
 });
 
+describe("見返しの 10 秒のタイマー: キーの一覧の開閉での計り直し", () => {
+  const key = (id: "?" | "Escape" | "E" | "C", modifiers: { metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean } = {}) =>
+    Message.PressedKey({ key: id, metaKey: false, ctrlKey: false, altKey: false, ...modifiers });
+  const depsOf = (m: Model) => subscriptions.idle.modelToDependencies(m);
+  const manual = (): Model => {
+    const m = update(measured(init(context)), wheel(100)).model;
+    expect(m.mapSurface.viewing.mode).toBe("manual");
+    return m;
+  };
+  // mode・viewport・選択・見る状態は変わらない
+  const expectSameViewing = (after: Model, before: Model) => {
+    expect(after.mapSurface.viewing).toEqual(before.mapSurface.viewing);
+    expect(after.mapSurface.viewport).toEqual(before.mapSurface.viewport);
+  };
+
+  it("? で開くと依存が変わり（待つ状態は保つ）、mode・viewport・選択は変わらない", () => {
+    const before = manual();
+    const after = update(before, key("?")).model;
+    expect(after.keyList.isOpen).toBe(true);
+    expect(depsOf(after)).not.toEqual(depsOf(before));
+    expect(depsOf(after).isWaiting).toBe(true);
+    expectSameViewing(after, before);
+  });
+
+  it("? で閉じると依存が変わる", () => {
+    const opened = update(manual(), key("?")).model;
+    const closed = update(opened, key("?")).model;
+    expect(closed.keyList.isOpen).toBe(false);
+    expect(depsOf(closed)).not.toEqual(depsOf(opened));
+    expectSameViewing(closed, opened);
+  });
+
+  it("一覧が開いた状態の Escape で閉じると依存が変わり、選択は残る", () => {
+    const selected = update(manual(), surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: "t1", clientX: 0, clientY: 0 }))).model;
+    const opened = update(selected, key("?")).model;
+    expect(opened.mapSurface.viewing.selection).toBeDefined();
+    const closed = update(opened, key("Escape")).model;
+    expect(closed.keyList.isOpen).toBe(false);
+    expect(closed.mapSurface.viewing.selection).toEqual(opened.mapSurface.viewing.selection);
+    expect(depsOf(closed)).not.toEqual(depsOf(opened));
+    expectSameViewing(closed, opened);
+  });
+
+  it("速さのメニューが開いているときの Escape はメニューを閉じるだけで、依存は変わらず、一覧は開いたまま", () => {
+    const opened = update(manual(), key("?")).model;
+    const withMenu = { ...opened, rateMenu: { ...opened.rateMenu, isOpen: true } };
+    const after = update(withMenu, key("Escape")).model;
+    expect(after.rateMenu.isOpen).toBe(false);
+    expect(after.keyList.isOpen).toBe(true);
+    expect(depsOf(after)).toEqual(depsOf(withMenu));
+  });
+
+  it("修飾キー付きの ? では何も起きない。E・C では計り直さない", () => {
+    const before = manual();
+    for (const modifiers of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+      const after = update(before, key("?", modifiers)).model;
+      expect(after, JSON.stringify(modifiers)).toEqual(before);
+    }
+    for (const id of ["E", "C"] as const) expect(depsOf(update(before, key(id)).model), id).toEqual(depsOf(before));
+  });
+
+  it("開閉から 10,000ms 経つと自動に戻る（開閉の前の待ちは無効になる）", async () => {
+    const before = manual();
+    const opened = update(before, key("?")).model;
+    // 開閉前の依存の待ちは作り直され、開閉後の依存の待ちが 10,000ms で ElapsedIdleTime を出す
+    const afterIdle = update(opened, idleMessage()).model;
+    expect(afterIdle.mapSurface.viewing.mode).toBe("auto");
+    expect(depsOf(opened).isWaiting).toBe(true);
+    expect(depsOf(opened)).not.toEqual(depsOf(before));
+  });
+});
+
 describe("見返しの 10 秒のタイマー: stream", () => {
   const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
   // stream を走らせて届いた Message を集める。body は走らせている間の操作。時計は TestClock

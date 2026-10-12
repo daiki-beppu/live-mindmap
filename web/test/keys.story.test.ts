@@ -80,7 +80,8 @@ describe("? でキーの一覧を開閉する（背景を止めない）", () =>
     const names = commandNames(result.commands);
     expect(names).not.toContain("InertOthers");
     expect(names).not.toContain("LockScroll");
-    expect(result.model.mapSurface).toEqual(start.mapSurface);
+    // マップの状態は idleStamp（10 秒の計り直し）以外が変わらない
+    expect(result.model.mapSurface).toEqual({ ...start.mapSurface, idleStamp: start.mapSurface.idleStamp + 1 });
     expect(result.model.playback).toEqual(start.playback);
   });
 
@@ -226,10 +227,10 @@ describe("E・C: ボタンと同じ Model の変化（フォーカスを外す C
 
   it("E で右の列を隠し、もう一度の E で戻す。ClickedSide と同じ Model", () => {
     const hidden = plainUpdate(start, keyOf("E"));
-    expect(hidden.model.sideHidden).toBe(true);
+    expect(hidden.model.mapSurface.viewing.sideHidden).toBe(true);
     expect(hidden.model).toEqual(plainUpdate(start, Message.ClickedSide()).model);
     expect(commandNames(hidden.commands)).toEqual([]);
-    expect(plainUpdate(hidden.model, keyOf("E")).model.sideHidden).toBe(false);
+    expect(plainUpdate(hidden.model, keyOf("E")).model.mapSurface.viewing.sideHidden).not.toBe(true);
   });
 
   it("C で字幕を隠し、もう一度の C で戻す。ToggledCaptions と同じ Model", () => {
@@ -298,9 +299,10 @@ describe.each([
   // 時刻を動かすキーは、manual・overview から自動のカメラへ戻す（viewport は移動後の時刻のマップに対する自動の位置）
   const NODE_HEIGHTS = { root: 40, n1: 40, n2: 40, n3: 40 };
   const autoViewportAt = (time: number) =>
-    MapSurface.skipMotion(
+    MapSurface.update(
       MapSurface.update(MapSurface.init(snapshotAt(context.timeline, time), "review", context.isMac), MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: NODE_HEIGHTS })).model,
-    ).viewport;
+      MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }),
+    ).model.viewport;
   const wheeled = (model: ReturnType<typeof stateAt>) =>
     update(model, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
   const startsOf = (time: number) => {
@@ -312,7 +314,10 @@ describe.each([
     expect(result.model.mapSurface.viewing.mode, label).toBe("auto");
     // 全体を見る状態の viewport は、自動の位置と同じになることがある。押す前と違うことを確かめるのは manual だけ
     if (before.mapSurface.viewing.mode === "manual") expect(before.mapSurface.viewport, label).not.toEqual(expected);
-    for (const axis of ["x", "y", "zoom"] as const) expect(result.model.mapSurface.viewport[axis], `${label} ${axis}`).toBeCloseTo(expected[axis], 9);
+    // 補間が終わった（Tick 500 の後の）viewport が、自動の位置になる
+    const settled = update(result.model, surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }))).model;
+    expect(Option.isNone(settled.mapSurface.motion), label).toBe(true);
+    for (const axis of ["x", "y", "zoom"] as const) expect(settled.mapSurface.viewport[axis], `${label} ${axis}`).toBeCloseTo(expected[axis], 9);
   };
 
   it.each(["Space", "K", "J", "L", ",", ".", "Home", "End"])("%s: manual・overview から自動に戻り、viewport は移動後の時刻の自動の位置になる", (id) => {

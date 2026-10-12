@@ -35,7 +35,7 @@ const isFromEditable = (event: KeyboardEvent): boolean =>
 // Enter は、選んだノードの開閉に使うときだけ既定動作を取り消して届ける。それ以外ではボタンの Enter を押せるまま残す。
 // Space は、開閉の丸の中では譲る（ボタンの click に任せる）
 const yields = (binding: Binding, focused: Focused, hasSelection: boolean): boolean =>
-  binding.key === "Enter" ? !enterFoldsSelection(focused, hasSelection) : binding.key === "Space" && reviewHotkeyYieldsToFocus("Space", focused);
+  binding.key === "Enter" ? !enterFoldsSelection(focused, hasSelection) : binding.key === "Space" && reviewHotkeyYieldsToFocus(focused);
 
 const isConditional = (binding: Binding): boolean => binding.key === "Enter" || binding.key === "Space";
 

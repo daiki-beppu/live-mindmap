@@ -72,7 +72,8 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           for (const entry of entries) {
             const node = entry.target as HTMLElement;
             const id = node.dataset.nodeId;
-            if (id !== undefined && node.isConnected) nodeHeights[id] = node.offsetHeight;
+            // 実際の高さ（小数）。倍率の影響を受けない CSS の高さを読む（offsetHeight は整数に丸める。丸めた高さは配置とカメラが、小数のままの高さはエッジの端点が使う）
+            if (id !== undefined && node.isConnected) nodeHeights[id] = Number.parseFloat(getComputedStyle(node).height);
           }
           if (Object.keys(nodeHeights).length > 0) emit(nodeHeights);
         });

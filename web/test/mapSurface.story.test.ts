@@ -2,7 +2,7 @@ import { HashMap, Option, Schema } from "effect";
 import { expectNoOutMessage, expectOutMessage, given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
+import { blinkRestartsOf, displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message, OutMessage } from "../src/app/mapSurface/message.ts";
 import { CLICK_ZOOM_FACTOR, pinchZoomFactor, USER_MAX_ZOOM, USER_MIN_ZOOM, zoomAtPoint } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
@@ -1062,5 +1062,65 @@ describe("mapSurface の update: Safari の gesture でズーム（live）", () 
       message(Message.ChangedMapSurfaceGesture({ scale: 1.5, ...POINT })),
       model((m) => expect(m.viewport).toEqual(stillMeasured().viewport)),
     );
+  });
+});
+
+describe("mapSurface の update: キーの一覧の開閉（ToggledKeyList）", () => {
+  it("idleStamp が 1 進むだけで、ほかの欄はすべて等しい（OutMessage も出ない）", () => {
+    const before = measuredLive();
+    story(
+      update,
+      given(before),
+      message(Message.ToggledKeyList()),
+      model((m) => expect(m).toEqual({ ...before, idleStamp: before.idleStamp + 1 })),
+      expectNoOutMessage(),
+    );
+  });
+});
+
+// 反映番号が変わった後も点滅の対象のノードがあるとき、点滅を最初から再生し直す Command（RestartBlink）を求める入口（blinkRestartsOf）
+describe("mapSurface: 反映番号が変わったら点滅をやり直す（blinkRestartsOf）", () => {
+  const change = (nodeId: string, round: number): Snapshot["changes"][number] => ({ change: "更新", node: nodeId, kind: "論点", text: nodeId, round, at: 0 }) as Snapshot["changes"][number];
+  // 直接変わるノード P（今の議題 B の下）と、畳まれた済みの議題 A の中の A1（畳んだ A が点滅の対象になる）
+  const nodesOf = (): SnapshotNode[] => [
+    node("root", null, "会議"),
+    { ...node("A", "root"), talkStatus: "済み" },
+    node("A1", "A", "論点"),
+    node("B", "root"),
+    node("P", "B", "論点"),
+  ];
+  const snapAt = (round: number, changed: string[]): Snapshot => ({ nodes: nodesOf(), round, changes: changed.map((id) => change(id, round)), remarks: [], currentTopic: "B", now: 10 });
+  const surfaceAt = (round: number, changed: string[], mode: MapSurfaceModel["mode"] = "review"): MapSurfaceModel =>
+    update(init(snapAt(round, changed), mode, false), Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, A: 40, A1: 40, B: 40, P: 40 } })).model;
+  const names = (commands: ReadonlyArray<{ name: string }>) => commands.map((c) => c.name);
+
+  it("直接変わったノードが、反映をまたいでも点滅の対象のとき RestartBlink を返す", () => {
+    expect(names(blinkRestartsOf(surfaceAt(2, ["P"]), surfaceAt(3, ["P"])))).toEqual(["RestartBlink"]);
+  });
+
+  it("畳んだノード（shownAs）が、反映をまたいでも点滅の対象のとき RestartBlink を返す", () => {
+    expect(names(blinkRestartsOf(surfaceAt(2, ["A1"]), surfaceAt(3, ["A1"])))).toEqual(["RestartBlink"]);
+  });
+
+  it("反映番号が変わらない（選択・カメラ・補間の Tick などの再描画）では返さない", () => {
+    const before = surfaceAt(2, ["P"]);
+    expect(blinkRestartsOf(before, before)).toEqual([]);
+    expect(blinkRestartsOf(before, update(before, Message.ClickedNodeButton({ nodeId: "P", clientX: 0, clientY: 0 })).model)).toEqual([]);
+    expect(blinkRestartsOf(before, update(before, Message.TickedAnimationFrame({ deltaMs: 16 })).model)).toEqual([]);
+  });
+
+  it("反映番号が変わっても、変わった後に点滅の対象が無ければ返さない", () => {
+    expect(blinkRestartsOf(surfaceAt(2, ["P"]), surfaceAt(3, []))).toEqual([]);
+  });
+
+  it("測定前（size が None）と still では返さない", () => {
+    const unmeasured = init(snapAt(3, ["P"]), "review", false);
+    expect(blinkRestartsOf(surfaceAt(2, ["P"]), unmeasured)).toEqual([]);
+    expect(blinkRestartsOf(surfaceAt(2, ["P"], "still"), surfaceAt(3, ["P"], "still"))).toEqual([]);
+  });
+
+  it("CompletedRestartBlink は何も変えない", () => {
+    const before = surfaceAt(3, ["P"]);
+    story(update, given(before), message(Message.CompletedRestartBlink()), model((m) => expect(m).toEqual(before)));
   });
 });

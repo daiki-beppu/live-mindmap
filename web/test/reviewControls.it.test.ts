@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 // 見返しの操作の行（Issue #825）の、ファイルとして確かめるもの: Slider・Tooltip・Menu と今のスタイルシートのぶつかりを直す CSS（controls.css）、
 // 今の web/src/styles.css を変えないこと、video.js のアイコンの出どころとライセンスの表示（icons.NOTICE.md）。
-// 実ブラウザでの見た目（位置・重なり）は未確認（スクリーンショットの差は #826 以降）
+// 実ブラウザでの見た目（位置・重なり・スクリーンショットの差）は、画面の照合の heavy IT（screenCompare.heavy.test.ts、#826）が見る
 
 const webRoot = join(import.meta.dirname, "..");
 const reviewDir = join(webRoot, "src/app/review");

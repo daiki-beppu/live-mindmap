@@ -1,0 +1,9 @@
+{"at": "2026-10-01T00:00:00.000Z", "type": "start", "title": "点滅の再始動の例"}
+{"at": "2026-10-01T00:00:02.000Z", "type": "remark", "remark": {"id": "r1", "track": "相手", "start": 0, "end": 2, "text": "最初の議題の話から始めます"}}
+{"at": "2026-10-01T00:00:03.000Z", "type": "diff", "input": {"recent": [], "fresh": ["r1"], "nodeCount": 0}, "ops": [{"op": "add", "ref": "t1", "parent": "root", "kind": "議題", "text": "最初の議題", "evidence": ["r1"]}, {"op": "add", "ref": "q1", "parent": "t1", "kind": "論点", "text": "最初の論点", "evidence": ["r1"]}], "dropped": []}
+{"at": "2026-10-01T00:00:05.000Z", "type": "remark", "remark": {"id": "r2", "track": "自分", "start": 3, "end": 5, "text": "次に今の議題へ移ります"}}
+{"at": "2026-10-01T00:00:06.000Z", "type": "diff", "input": {"recent": ["r1"], "fresh": ["r2"], "nodeCount": 2}, "ops": [{"op": "add", "ref": "t2", "parent": "root", "kind": "議題", "text": "今の議題", "evidence": ["r2"]}], "dropped": []}
+{"at": "2026-10-01T00:00:08.000Z", "type": "remark", "remark": {"id": "r3", "track": "相手", "start": 6, "end": 8, "text": "論点と今の議題を更新します"}}
+{"at": "2026-10-01T00:00:09.000Z", "type": "diff", "input": {"recent": ["r1", "r2"], "fresh": ["r3"], "nodeCount": 3}, "ops": [{"op": "update", "node": "n2", "text": "最初の論点（更新 1）", "evidence": ["r3"]}, {"op": "update", "node": "n3", "text": "今の議題（更新 1）", "evidence": ["r3"]}], "dropped": []}
+{"at": "2026-10-01T00:00:11.000Z", "type": "remark", "remark": {"id": "r4", "track": "自分", "start": 9, "end": 11, "text": "もう一度更新します"}}
+{"at": "2026-10-01T00:00:12.000Z", "type": "diff", "input": {"recent": ["r2", "r3"], "fresh": ["r4"], "nodeCount": 3}, "ops": [{"op": "update", "node": "n2", "text": "最初の論点（更新 2）", "evidence": ["r4"]}, {"op": "update", "node": "n3", "text": "今の議題（更新 2）", "evidence": ["r4"]}], "dropped": []}

@@ -1,11 +1,14 @@
 // 見返しの操作の行（Issue #825）の Story・Scene が共有する道具。テストではなく、題材の会議・Context・保留中の Command と Mount を解く step・描いた木を読む関数だけを置く。
+import * as Animation from "@foldkit/ui/animation";
 import * as Menu from "@foldkit/ui/menu";
 import * as Popover from "@foldkit/ui/popover";
 import * as Tooltip from "@foldkit/ui/tooltip";
 import { Option, Schema } from "effect";
 import type { MountDefinition } from "foldkit/mount";
+import { Command as StoryCommand, type StorySimulation } from "foldkit/story";
 import { Command, Mount, attr, find, findAll, textContent, type SceneSimulation } from "foldkit/scene";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
+import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { PauseAudio, PlayAudio, ReleaseFocus, ReleaseFocusAfterMenuClose, SeekAudio, WriteAudioSettings } from "../src/app/review/command.ts";
 import { makeContext, type Context } from "../src/app/review/context.ts";
@@ -48,6 +51,9 @@ export const stateAt = (context: Context, time: number, patch: Partial<Model["pl
   return { ...start, playback: { ...start.playback, time, playing: false, ...patch } };
 };
 
+// 右の列を隠した状態の Model。右の列の出し入れは表示面の見る状態（viewing.sideHidden）が持つ（見返しの Model に別の欄は無い）
+export const sideHiddenOf = (model: Model): Model => ({ ...model, mapSurface: { ...model.mapSurface, viewing: { ...model.mapSurface.viewing, sideHidden: true } } });
+
 // その時刻のマップに出るノードの id（表示面の描き方と同じ純粋な関数 foldView）
 export const expectedIds = (context: Context, time: number): string[] =>
   foldView(snapshotOf(context, stateAt(context, time)), new Set(), null, new Set(), new Set()).nodes.map((n) => n.id);
@@ -81,10 +87,21 @@ const commandSteps: Record<string, (args: unknown) => Step> = {
   WriteAudioSettings: () => Command.resolveAll([WriteAudioSettings, Message.CompletedWriteAudioSettings()]),
   ReleaseFocus: () => Command.resolveAll([ReleaseFocus, Message.CompletedReleaseFocus()]),
   ReleaseFocusAfterMenuClose: () => Command.resolveAll([ReleaseFocusAfterMenuClose, Message.CompletedReleaseFocusAfterMenuClose()]),
+  // 反映をまたいだとき、点滅を最初から再生し直す（表示面の Command）
+  RestartBlink: () => Command.resolveAll([RestartBlink, MapSurfaceMessage.CompletedRestartBlink()]),
   FocusItems: () => Command.resolveAll([Menu.FocusItems, Menu.Message.CompletedFocusItems()]),
   FocusButton: () => Command.resolveAll([Menu.FocusButton, Menu.Message.CompletedFocusButton()]),
   ScrollIntoView: () => Command.resolveAll([Menu.ScrollIntoView, Menu.Message.CompletedScrollIntoView()]),
   ClickItem: () => Command.resolveAll([Menu.ClickItem, Menu.Message.CompletedClickItem()]),
+  // 見る状態の知らせ（sessionLayout の Toast、#826）の出入り。出すと、描いた後に動きを始める Command が 1 つずつ続く
+  WaitForPaint: (args) => {
+    const { generation } = Schema.decodeUnknownSync(Schema.Struct({ generation: Schema.Number }))(args);
+    return Command.resolveAll([Animation.WaitForPaint, Animation.Message.CompletedWaitForPaint({ generation })]);
+  },
+  WaitForAnimationSettled: (args) => {
+    const { generation } = Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String, generation: Schema.Number }))(args);
+    return Command.resolveAll([Animation.WaitForAnimationSettled, Animation.Message.EndedAnimation({ generation })]);
+  },
   WaitBeforeShowing: (args) => {
     const { version } = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.Number }))(args);
     return Command.resolveAll([Tooltip.WaitBeforeShowing, Tooltip.Message.CompletedWaitBeforeShowing({ version })]);
@@ -131,3 +148,19 @@ export const argsOf = (commands: ReadonlyArray<{ name: string; args?: unknown }>
 export const TOOLTIPS_PLAIN = 6; // 戻る・再生・進む・字幕・速さ・右の列
 export const TOOLTIPS_AUDIO = 7; // + ミュート
 export const tooltipMounts = (count: number) => Array.from({ length: count }, () => Tooltip.AnchorTooltip);
+
+// Story 用: 測定済みで反映をまたぐ時刻の移動の update は、点滅を最初から再生し直す Command（RestartBlink）を出す。その Command を解く step
+export const restartedBlink = StoryCommand.resolve(RestartBlink, MapSurfaceMessage.CompletedRestartBlink());
+
+// Story 用: 見る状態の知らせ（sessionLayout の Toast）の出入りの動き（WaitForPaint / WaitForAnimationSettled）を、保留がなくなるまで全部解く。
+// mode が変わる操作の後に、続けて別の操作を流すときに挟む
+export const settleNotice = <Model, Message>(simulation: StorySimulation<Model, Message>): StorySimulation<Model, Message> => {
+  const pending = simulation.commands.find((c) => c.name === "WaitForPaint" || c.name === "WaitForAnimationSettled");
+  if (pending === undefined) return simulation;
+  const generation = pending.args?.generation as number;
+  return settleNotice(
+    pending.name === "WaitForPaint"
+      ? StoryCommand.resolve(Animation.WaitForPaint({ generation }), Animation.Message.CompletedWaitForPaint({ generation }))(simulation)
+      : StoryCommand.resolve(Animation.WaitForAnimationSettled({ id: pending.args?.id as string, generation }), Animation.Message.EndedAnimation({ generation }))(simulation),
+  );
+};

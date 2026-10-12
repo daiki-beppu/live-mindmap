@@ -1,7 +1,7 @@
 // 見返しの操作の行のアイコン（Issue #825）: インライン SVG。
 // video.js のアイコン 9 種は、@videojs/react 10.0.1 の default アイコンの SVG を写したもの（座標・属性は原本のまま。描き直していない）。
 // 出どころとライセンス（Apache-2.0）は icons.NOTICE.md にあり、見返しの HTML のライセンスの表示に残る。React の部品（@videojs/react）は import しない。
-// StepIcon・SideIcon は今の ReviewControls.tsx と同じ形の自前のアイコン
+// StepIcon・SideIcon は自前のアイコン
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { Message } from "./message.ts";
 
@@ -85,7 +85,7 @@ export const CaptionsOffIcon = (h: H): Html =>
     captionsLine(h, "7", "3", "11"),
   ]);
 
-// 戻る・進む（今の ReviewControls.tsx の StepIcon と同じ形）
+// 戻る・進む
 export const StepIcon = (h: H, direction: "prev" | "next"): Html =>
   h.svg(
     [h.ViewBox("0 0 16 16"), h.Width("16"), h.Height("16"), h.AriaHidden(true), h.Fill("currentColor")],

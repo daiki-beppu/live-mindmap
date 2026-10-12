@@ -2,7 +2,7 @@
 // 知らせは Toast（headless）で持ち、消えるまでの時間は Toast の duration で持つ。描き方は今の React（SessionView）と同じ位置・要素・文言
 import { Option, Schema } from "effect";
 import { Disclosure } from "@foldkit/ui";
-import { Update } from "foldkit";
+import { Submodel, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { DiffUpdateState } from "../../../../server/src/core/index.ts";
@@ -107,13 +107,17 @@ export const update = (model: Model, message: Message): Return =>
     GotViewingToastMessage: ({ message }) => foldViewingToast(model, (toast) => Notice.update(toast, message)),
   });
 
+// 親（見返し）が、見る状態の mode が変わったことを伝える入口（子の Message を親が組み立てずに済む）
+export const changeViewingMode = (model: Model, mode: "auto" | "manual" | "overview"): Return => update(model, Message.ChangedViewingMode({ mode }));
+
 const MANUAL_TEXT = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
 const OVERVIEW_TEXT = "全体を見ています・F か Esc で戻る・? でキー一覧";
 const viewingText = (mode: "auto" | "manual" | "overview"): Option.Option<string> =>
   mode === "manual" ? Option.some(MANUAL_TEXT) : mode === "overview" ? Option.some(OVERVIEW_TEXT) : Option.none();
 
 type H = HtmlBuilder<Message>;
-type Slots = { readonly map: Html; readonly side: Html | null };
+// keyList は、キーの一覧（見返しだけ。閉じていれば null）。省略すれば何も描かない
+type Slots = { readonly map: Html; readonly keyList?: Html | null; readonly side: Html | null };
 
 const noticeView = (h: H, className: string, toast: NoticeModel): Html | null =>
   Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.div([h.Class(className), h.AriaLive("polite")], [text]) });
@@ -164,13 +168,14 @@ const diffUpdateView = (h: H, model: Model): Html | null =>
     ? h.div([h.Class("diff-update-notice"), h.Role("status")], ["マップの更新が止まっています（ChatGPT の利用上限）"])
     : null;
 
-// `.map` と `.side` は別の issue が持つので、差し込み口で受け取る（`.side` は包まずそのまま置く。右の列を隠しているときは null）。並びは SessionView の .layout の直下と同じ
+// `.map`・キーの一覧・`.side` は別の部品が持つので、差し込み口で受け取る（`.side` は包まずそのまま置く。右の列を隠しているときは null）。並びは SessionView の .layout の直下と同じ。
+// キーの一覧は `.map` の中の最後に置く（表示面 → 見る状態の知らせ → キーの一覧）
 export const view = (model: Model, h: H, slots: Slots): Html =>
   h.div(
     [h.Class(model.local ? "layout layout--local" : "layout")],
     [
       ...localModeViews(h, model),
-      h.div([h.Class("map")], [slots.map, noticeViewP(h, model.viewingToast)]),
+      h.div([h.Class("map")], [slots.map, noticeViewP(h, model.viewingToast), slots.keyList ?? null]),
       captionsView(h, model),
       noticeView(h, "intake-notice", model.intakeToast),
       noticeView(h, "screen-notice", model.screenToast),
@@ -182,3 +187,9 @@ export const view = (model: Model, h: H, slots: Slots): Html =>
 function noticeViewP(h: H, toast: NoticeModel): Html | null {
   return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice")], [text]) });
 }
+
+// 親が h.submodel で組み込むための view。差し込み口は、親の builder で作る Html を返す関数（親の境界で実行される）で受ける
+type SlotViews = { readonly map: () => Html; readonly keyList: () => Html | null; readonly side: () => Html | null };
+export const submodelView = Submodel.defineView<Model, Message, SlotViews>((model, slots, h) =>
+  view(model, h, { map: slots.map(), keyList: slots.keyList(), side: slots.side() }),
+);

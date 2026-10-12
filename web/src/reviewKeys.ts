@@ -1,33 +1,16 @@
 import { FOLD_DOT_CLASSES, type Focused } from "./enterFold.ts";
 import type { PlaybackEvent } from "./reviewPlayback.ts";
 
-// 見返しのキーから再生の出来事への対応（DOM なし）。C（字幕）は SessionView の登録を使うので、ここには含めない。
+// 見返しのキーから再生の出来事への対応（DOM なし）。どのキーがどの動きかは、キーの表（app/keys/table.ts）が持つ。
 
 // J・L で動かす秒数
 export const SKIP_SECONDS = 10;
 
 export type ReviewKeyAction = "toggle" | "back" | "forward" | "prev" | "next" | "slower" | "faster" | "start" | "end" | "mute";
 
-// 定数で、hook を呼ぶ数と順序は変わらない
-export const REVIEW_HOTKEYS = [
-  ["Space", "toggle"],
-  ["K", "toggle"],
-  ["J", "back"],
-  ["L", "forward"],
-  [",", "prev"],
-  [".", "next"],
-  ["<", "slower"],
-  [">", "faster"],
-  ["Home", "start"],
-  ["End", "end"],
-] as const satisfies readonly (readonly [string, ReviewKeyAction])[];
-
-// M（ミュート）は音声つきの見返しだけ。REVIEW_HOTKEYS に混ぜず、ReviewView が常に登録して音声なしでは enabled で切る
-export const AUDIO_HOTKEYS = [["M", "mute"]] as const satisfies readonly (readonly [string, ReviewKeyAction])[];
-
 type Modifiers = { meta: boolean; ctrl: boolean; alt: boolean };
 
-// movesTime が true なら operate（人が時刻を動かした操作）、false なら dispatch に送る。⌘・Ctrl・Option と一緒なら null。
+// movesTime が true なら人が時刻を動かした操作、false なら時刻を動かさない操作。⌘・Ctrl・Option と一緒なら null。
 // 0〜会議の長さに収める処理は reducer の seek に任せる
 export function reviewKeyEvent(action: ReviewKeyAction, { meta, ctrl, alt }: Modifiers, time: number, duration: number): { event: PlaybackEvent; movesTime: boolean } | null {
   if (meta || ctrl || alt) return null;
@@ -52,8 +35,8 @@ export function reviewKeyEvent(action: ReviewKeyAction, { meta, ctrl, alt }: Mod
   }
 }
 
-// 見返しの hotkey を、フォーカス中の開閉の丸のボタンに譲るか。Space で丸の中なら true（再生を切り替えず、ボタン既定の click に任せる）。それ以外は false
-export function reviewHotkeyYieldsToFocus(hotkey: string, focused: Focused): boolean {
-  if (hotkey !== "Space" || focused === null) return false;
+// Space を、フォーカス中の開閉の丸のボタンに譲るか。丸の中なら true（再生を切り替えず、ボタン既定の click に任せる）
+export function reviewHotkeyYieldsToFocus(focused: Focused): boolean {
+  if (focused === null) return false;
   return !!focused.closest(FOLD_DOT_CLASSES.map((c) => `.${c}`).join(", "));
 }

@@ -16,9 +16,14 @@ import { Message } from "../src/app/sessionLayout/message.ts";
 type VNode = Parameters<typeof textContent>[0];
 type Sim = SceneSimulation<ReturnType<typeof init>, Message>;
 
-// 表示面（#814）と右の列（後の issue）の中身は、この部品の外。差し込み口に仮の要素を渡す
-const slots = (h: HtmlBuilder<Message>) => ({ map: h.div([h.Class("map-surface")], []), side: h.div([h.Class("side")], [h.div([h.Class("evidence-panel")], [])]) });
+// 表示面（#814）・右の列（#821）・キーの一覧（#822）の中身は、この部品の外。差し込み口に仮の要素を渡す（キーの一覧は閉じていれば null）
+const slots = (h: HtmlBuilder<Message>, keyList: boolean = false) => ({
+  map: h.div([h.Class("map-surface")], []),
+  keyList: keyList ? h.div([h.Class("key-list__anchor")], []) : null,
+  side: h.div([h.Class("side")], [h.div([h.Class("evidence-panel")], [])]),
+});
 const app = { update, view: (model: ReturnType<typeof init>, h: HtmlBuilder<Message>) => view(model, h, slots(h)) };
+const appWithKeyList = { update, view: (model: ReturnType<typeof init>, h: HtmlBuilder<Message>) => view(model, h, slots(h, true)) };
 
 const INTERRUPTED = "音声の取り込みが途切れました。再開しています";
 const STOPPED = "音声の取り込みが止まっています";
@@ -716,6 +721,30 @@ describe("sessionLayout の Scene: 出入りの動き・スワイプ・ホバー
       screen(null),
       expectScene(selector(".screen-notice")).toBeAbsent(),
       settle,
+    );
+  });
+});
+
+describe("sessionLayout の Scene: キーの一覧の差し込み口（#826）", () => {
+  it("キーの一覧は .map の中で、表示面と見る状態の知らせの後ろに並ぶ（.layout の直下には出ない）", () => {
+    scene(
+      appWithKeyList,
+      given(init()),
+      tap((s) => {
+        expect(mapOutline(s.html)).toEqual(["div.map-surface", "div.key-list__anchor"]);
+        expect(directChild(s.html, "key-list__anchor")).toBeUndefined();
+      }),
+      viewing("manual"),
+      settle,
+      tap((s) => expect(mapOutline(s.html)).toEqual(["div.map-surface", "p.viewing-notice", "div.key-list__anchor"])),
+    );
+  });
+
+  it("キーの一覧が null（閉じている）なら、何も描かず、.map の中は今のまま", () => {
+    scene(
+      app,
+      given(init()),
+      tap((s) => expect(mapOutline(s.html)).toEqual(["div.map-surface"])),
     );
   });
 });

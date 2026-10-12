@@ -3,6 +3,7 @@ import { given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { makeContext } from "../src/app/review/context.ts";
+import { restartedBlink, settleNotice } from "./reviewHarness.ts";
 import { init, Model, makeUpdate, snapshotOf } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
@@ -28,6 +29,7 @@ const events = [
 ];
 
 const context = makeContext(events);
+const restarted = restartedBlink;
 const update = makeUpdate(context);
 const at = (time: number): Model => {
   const start = init(context);
@@ -37,9 +39,9 @@ const topicsOf = (snapshot: Snapshot): string[] => snapshot.nodes.filter((n) => 
 const topicsAt = (time: number): string[] => topicsOf(snapshotOf(context, at(time)));
 
 describe("見返しの Model: 本物の Schema で、再生の状態だけを持つ", () => {
-  // キーの一覧（#822。Popover の Model）と、操作の行（#825）の状態（Slider・Menu・Tooltip の子の Model、ポインタの位置、押している最中か、字幕と右の列を隠しているか）が加わる。
+  // キーの一覧（#822。Popover の Model）と、操作の行（#825）の状態（Slider・Menu・Tooltip の子の Model、ポインタの位置、押している最中か、字幕を隠しているか）と、セッションの画面の部品（#826。字幕・知らせ。右の列の出し入れは表示面の見る状態が持つ）が加わる。
   // 時間軸・Snapshot・配置・章・印は導いた値なので、これからも Model に入れない
-  const FIELDS = ["captionsHidden", "isPressingSlider", "keyList", "mapSurface", "maybeSeekPointer", "playback", "rateMenu", "seekSlider", "sideHidden", "tooltips", "volumeSlider"];
+  const FIELDS = ["captionsHidden", "isPressingSlider", "keyList", "mapSurface", "maybeSeekPointer", "playback", "rateMenu", "seekSlider", "sessionLayout", "tooltips", "volumeSlider"];
   it("欄は 再生の状態・表示面の実測・操作の行の状態 だけ（時間軸・Snapshot・配置・章・印を持たない）", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(FIELDS);
     expect(Object.keys(init(context)).sort()).toEqual(FIELDS);
@@ -172,6 +174,7 @@ describe("見返しの update: 表示面の実測", () => {
       given(at(10)),
       message(Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40 } }) })),
       message(Message.ClickedNext()),
+      restarted,
       model((m) => {
         expect(m.playback.time).toBe(30);
         expect(m.mapSurface.size).toEqual(Option.some({ width: 800, height: 600 }));
@@ -212,7 +215,7 @@ describe("見返しの update: 表示面のカメラ", () => {
   const scrolled = (m: Model): Model =>
     update(m, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
 
-  it("人が動かすと見る状態が manual になり、viewport と idleStamp が mapSurface に残る。時刻を動かしても残る", () => {
+  it("人が動かすと見る状態が manual になり、viewport と idleStamp が mapSurface に残る。人が時刻を動かすと自動に戻る", () => {
     const base = measured(at(30));
     story(
       update,
@@ -224,13 +227,14 @@ describe("見返しの update: 表示面のカメラ", () => {
         expect(m.mapSurface.viewport.y).toBeCloseTo(base.mapSurface.viewport.y - 50, 9);
         expect(m.mapSurface.idleStamp).not.toBe(base.mapSurface.idleStamp);
       }),
+      settleNotice,
       message(Message.ClickedPrev()),
+      restarted,
       model((m) => {
         expect(m.playback.time).toBe(10);
-        expect(m.mapSurface.viewing.mode).toBe("manual");
-        expect(m.mapSurface.viewport).toEqual(scrolled(base).mapSurface.viewport);
-        expect(m.mapSurface.idleStamp).toBe(scrolled(base).mapSurface.idleStamp);
+        expect(m.mapSurface.viewing.mode).toBe("auto");
       }),
+      settleNotice,
     );
   });
 
@@ -245,6 +249,7 @@ describe("見返しの update: 表示面のカメラ", () => {
         expect(m.mapSurface.viewing).toEqual({ mode: "auto" });
         expect(m.mapSurface.viewport).not.toEqual(moved.mapSurface.viewport);
       }),
+      settleNotice,
     );
   });
 
@@ -261,11 +266,12 @@ describe("見返しの update: 表示面のカメラ", () => {
     );
   });
 
-  // 時刻の変更で Snapshot が別のものになったら、表示面へ ChangedSnapshot を渡して補間を捨てた結果が viewport になる
+  // 時刻の変更で Snapshot が別のものになったら、表示面へ ChangedSnapshot を渡して補間が終わった（Tick 500 の後の）最終配置が viewport になる
   const expectedAfter = (before: Model, to: number) =>
-    MapSurface.skipMotion(
+    MapSurface.update(
       MapSurface.update({ mode: "review", snapshot: snapshotAt(context.timeline, before.playback.time), ...before.mapSurface }, MapSurfaceMessage.ChangedSnapshot({ snapshot: snapshotAt(context.timeline, to) })).model,
-    );
+      MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }),
+    ).model;
   const expectFollowed = (before: Model, after: Model, to: number) => {
     const expected = expectedAfter(before, to);
     expect(after.playback.time).toBe(to);
@@ -278,24 +284,24 @@ describe("見返しの update: 表示面のカメラ", () => {
   it("自動・測定済みで prev すると、viewport が移動先の Snapshot へ寄せ直される", () => {
     const before = measured(at(30));
     expect(topicNameOf(snapshotOf(context, before))).not.toBe(topicNameOf(snapshotAt(context.timeline, 10)));
-    story(update, given(before), message(Message.ClickedPrev()), model((m) => expectFollowed(before, m, 10)));
+    story(update, given(before), message(Message.ClickedPrev()), restarted, model((m) => expectFollowed(before, m, 10)));
   });
 
   it("自動・測定済みで next すると、viewport が移動先の Snapshot へ寄せ直される", () => {
     const before = measured(at(10));
-    story(update, given(before), message(Message.ClickedNext()), model((m) => expectFollowed(before, m, 30)));
+    story(update, given(before), message(Message.ClickedNext()), restarted, model((m) => expectFollowed(before, m, 30)));
   });
 
   it("自動・測定済みで再生が進んで Snapshot が変わると（TickedFrame）、viewport が寄せ直される", () => {
     const start = measured(at(5));
     const before = { ...start, playback: { ...start.playback, playing: true, rate: 1 } };
-    story(update, given(before), message(Message.TickedFrame({ ms: 5000 })), model((m) => expectFollowed(before, m, 10)));
+    story(update, given(before), message(Message.TickedFrame({ ms: 5000 })), restarted, model((m) => expectFollowed(before, m, 10)));
   });
 
   it("自動・測定済みで曲が終わると（EndedAudio）、viewport が寄せ直される", () => {
     const start = measured(at(10));
     const before = { ...start, playback: { ...start.playback, playing: true, rate: 1 } };
-    story(update, given(before), message(Message.EndedAudio()), model((m) => expectFollowed(before, m, 30)));
+    story(update, given(before), message(Message.EndedAudio()), restarted, model((m) => expectFollowed(before, m, 30)));
   });
 
   it("Snapshot が変わらない時刻変更と、時刻を変えない操作では mapSurface を変えない", () => {
@@ -309,8 +315,8 @@ describe("見返しの update: 表示面のカメラ", () => {
   });
 });
 
-// 見返しは補間を進める Tick を持たないので、子の update が補間（motion）を始めても、保存する Model は最終配置になる。
-// カメラの計算と view の描画が同じ最終配置を使うことを、保存された Model から view と同じ式（displayedPositions → screenPoint）で描く位置を求めて確かめる。
+// 見返しも補間（motion）を保存し、補間の Subscription が TickedAnimationFrame で進める。補間の最中も終わった後も、押したノードの画面座標は変わらない。
+// 保存された Model から view と同じ式（displayedPositions → screenPoint）で描く位置を求めて確かめる。
 // 時間軸はこの describe の中だけで使う: 議題 t1（論点 q1・q2）の後に、今の議題 t2 が来る（t1 は今の議題でないので、丸で開閉できる）
 describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
   const ctx = makeContext([
@@ -331,6 +337,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
   const wheelMsg = got(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }));
   const clickDot = (nodeId: string) => got(MapSurfaceMessage.ClickedFoldDot({ nodeId }));
   const run = (start: Model, ...messages: Message[]): Model => messages.reduce((m, next) => upd(m, next).model, start);
+  const tick = (deltaMs: number) => got(MapSurfaceMessage.TickedAnimationFrame({ deltaMs }));
   const initial = (): Model => {
     const start = init(ctx);
     return { ...start, playback: { ...start.playback, time: 30 } };
@@ -355,7 +362,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
     expect(Object.keys(target).some((id) => Math.abs(target[id]!.x - shown[id]!.x) + Math.abs(target[id]!.y - shown[id]!.y) > 1e-3)).toBe(true);
   };
 
-  it("止めている間（manual）に丸を押すと、押したノードの画面座標は押す前と同じ。位置を保っている間に高さが変わっても同じ。motion は保存しない", () => {
+  it("止めている間（manual）に丸を押すと、押したノードの画面座標は押す前と同じ。補間の最中も終わった後も、位置を保っている間に高さが変わっても同じ", () => {
     const start = run(initial(), measureMsg(), wheelMsg);
     expect(start.mapSurface.viewing.mode).toBe("manual");
     const point = drawnAt(start, T1);
@@ -365,11 +372,26 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
       given(start),
       message(clickDot(T1)),
       model((m) => {
-        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expect(Option.isSome(m.mapSurface.motion)).toBe(true);
         expect(m.mapSurface.viewport.zoom).toBe(start.mapSurface.viewport.zoom);
         expectDrawnAt(m, T1, point);
       }),
+      message(tick(250)),
+      model((m) => {
+        expect(Option.isSome(m.mapSurface.motion)).toBe(true);
+        expectDrawnAt(m, T1, point);
+      }),
+      message(tick(250)),
+      model((m) => {
+        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expectDrawnAt(m, T1, point);
+      }),
       message(measureMsg({ ...HEIGHTS, [T1]: 120 })),
+      model((m) => {
+        expect(Option.isSome(m.mapSurface.motion)).toBe(true);
+        expectDrawnAt(m, T1, point);
+      }),
+      message(tick(500)),
       model((m) => {
         expect(Option.isNone(m.mapSurface.motion)).toBe(true);
         expectDrawnAt(m, T1, point);
@@ -390,15 +412,24 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
       message(clickDot(T1)),
       model((m) => {
         expect(m.mapSurface.viewing.mode).toBe("overview");
-        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expect(Option.isSome(m.mapSurface.motion)).toBe(true);
         expect(m.mapSurface.viewport.zoom).toBe(start.mapSurface.viewport.zoom);
+        expectDrawnAt(m, T1, point);
+      }),
+      message(tick(250)),
+      model((m) => {
+        expectDrawnAt(m, T1, point);
+      }),
+      message(tick(250)),
+      model((m) => {
+        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
         expectDrawnAt(m, T1, point);
       }),
     );
   });
 });
 
-// 今の議題が無い時刻（議題の外のノードだけがある）の自動のカメラは、全体を収める。高さの測り直しで目標の位置が動いても、描く最終配置に収める
+// 今の議題が無い時刻（議題の外のノードだけがある）の自動のカメラは、全体を収める。高さの測り直しで目標の位置が動くと、補間の最中は補間中の位置で収め直し、補間が終わった後は最終配置に収める
 describe("見返しの update: 今の議題が無い自動のカメラ", () => {
   const ctx = makeContext([
     { at: "a", type: "start", title: "定例" },
@@ -411,7 +442,7 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
   const start = init(ctx);
   const ids = snapshotAt(ctx.timeline, start.playback.time).nodes.map((n) => n.id);
 
-  it("測り直しで目標の位置が動いても、viewport は motion を捨てた最終配置で収めた位置と一致する", () => {
+  it("測り直しで目標の位置が動くと補間が始まり、Tick 500 の後の viewport は最終配置で収めた位置と一致する", () => {
     const heights = (h: number) => Object.fromEntries(ids.map((id) => [id, id === "root" ? 40 : h]));
     const first = upd(start, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(40) }))).model;
     const message = got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: heights(300) }));
@@ -420,7 +451,9 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     expect(first.mapSurface.viewing.mode).toBe("auto");
     const child = MapSurface.update(surfaceOf(first), (message as { message: MapSurfaceMessage }).message).model;
     expect(Option.isSome(child.motion)).toBe(true);
-    const next = upd(first, message).model;
+    const during = upd(first, message).model;
+    expect(Option.isSome(during.mapSurface.motion)).toBe(true);
+    const next = upd(during, got(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }))).model;
     expect(Option.isNone(next.mapSurface.motion)).toBe(true);
     const surface = surfaceOf(next);
     const positions = MapSurface.displayedPositions(surface);
@@ -432,5 +465,100 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     // 前提: 補間中の位置で収めた viewport とは別の値になる入力である
     const childFit = MapSurface.update({ ...surfaceOf(first) }, (message as { message: MapSurfaceMessage }).message).model.viewport;
     expect(Math.abs(childFit.x - expected.x) + Math.abs(childFit.y - expected.y) + Math.abs(childFit.zoom - expected.zoom)).toBeGreaterThan(1e-3);
+  });
+});
+
+// 見返しも位置の補間（500ms）を行う。測定済みで反映をまたぐと motion が保存され、Tick で始まりの位置から最終位置へ進み、500ms で止まる
+describe("見返しの update: 反映をまたぐ移動の補間", () => {
+  const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
+  const measuredAt = (time: number): Model => {
+    const m = at(time);
+    return update(m, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 200 } }))).model;
+  };
+  const displayed = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), ...m.mapSurface });
+  const finalPositions = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), ...m.mapSurface, motion: Option.none() });
+  const tick = (deltaMs: number) => got(MapSurfaceMessage.TickedAnimationFrame({ deltaMs }));
+
+  it("ClickedNext で目標の位置が変わると motion が保存され、Tick 250 で途中、Tick 500 で最終位置に止まる", () => {
+    const before = measuredAt(10);
+    expect(Option.isNone(before.mapSurface.motion)).toBe(true);
+    const beforePositions = displayed(before);
+    story(
+      update,
+      given(before),
+      message(Message.ClickedNext()),
+      restarted,
+      model((m) => {
+        expect(m.playback.time).toBe(30);
+        expect(Option.isSome(m.mapSurface.motion)).toBe(true);
+        const final = finalPositions(m);
+        // 表示位置は始まりの位置（共通のノードは動く前の位置）。最終位置とは違うノードがある
+        expect(displayed(m)["t1"]).toEqual(beforePositions["t1"]);
+        expect(Object.keys(final).some((id) => displayed(m)[id]!.y !== final[id]!.y)).toBe(true);
+      }),
+      message(tick(250)),
+      model((m) => {
+        expect(Option.isSome(m.mapSurface.motion)).toBe(true);
+        const final = finalPositions(m);
+        const now = displayed(m);
+        const moving = Object.keys(final).filter((id) => beforePositions[id] !== undefined && beforePositions[id]!.y !== final[id]!.y);
+        expect(moving.length).toBeGreaterThan(0);
+        for (const id of moving) {
+          expect(now[id]!.y).not.toBe(beforePositions[id]!.y);
+          expect(now[id]!.y).not.toBe(final[id]!.y);
+        }
+      }),
+      message(tick(250)),
+      model((m) => {
+        expect(Option.isNone(m.mapSurface.motion)).toBe(true);
+        expect(displayed(m)).toEqual(finalPositions(m));
+      }),
+      message(tick(16)),
+      model((m) => expect(Option.isNone(m.mapSurface.motion)).toBe(true)),
+    );
+  });
+
+  it("録音つきの時刻の通知（UpdatedAudioTime）と録音なしの時計（TickedFrame）でも、反映をまたぐと motion が保存される", () => {
+    const audioUpdate = makeUpdate(makeContext(events, { maybeAudioUrl: Option.some("blob:x") }));
+    const audioModel = measuredAt(10);
+    const heard = audioUpdate({ ...audioModel, playback: { ...audioModel.playback, playing: true } }, Message.UpdatedAudioTime({ time: 30 })).model;
+    expect(heard.playback.time).toBe(30);
+    expect(Option.isSome(heard.mapSurface.motion)).toBe(true);
+    const start = measuredAt(10);
+    const ticked = update({ ...start, playback: { ...start.playback, playing: true, rate: 1 } }, Message.TickedFrame({ ms: 20000 })).model;
+    expect(snapshotOf(context, ticked)).not.toBe(snapshotOf(context, start));
+    expect(Option.isSome(ticked.mapSurface.motion)).toBe(true);
+  });
+
+  it("目標の位置が変わらない操作（ClickedMute）と、同じ Snapshot の中の時刻の移動では motion は作られない", () => {
+    const before = measuredAt(10);
+    expect(Option.isNone(update(before, Message.ClickedMute()).model.mapSurface.motion)).toBe(true);
+    const start = { ...before, playback: { ...before.playback, playing: true, rate: 1 } };
+    expect(Option.isNone(update(start, Message.TickedFrame({ ms: 1000 })).model.mapSurface.motion)).toBe(true);
+  });
+});
+
+// 測定済みで表示する Snapshot の反映番号が変わる操作は、点滅を最初から再生し直す Command（RestartBlink）を出す。変わらない操作・測定前では出さない
+describe("見返しの update: 点滅のやり直し", () => {
+  const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
+  const measuredAt = (time: number): Model =>
+    update(at(time), got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 40 } }))).model;
+  const names = (result: ReturnType<typeof update>) => (result.commands ?? []).map((c) => c.name);
+
+  it("反映をまたぐ移動（ボタン・時計・シーク）で RestartBlink を出す", () => {
+    expect(names(update(measuredAt(10), Message.ClickedNext()))).toContain("RestartBlink");
+    expect(names(update(measuredAt(30), Message.ClickedPrev()))).toContain("RestartBlink");
+    const start = measuredAt(10);
+    expect(names(update({ ...start, playback: { ...start.playback, playing: true, rate: 1 } }, Message.TickedFrame({ ms: 20000 })))).toContain("RestartBlink");
+  });
+
+  it("同じ Snapshot の中の移動・補間の Tick・選択・ClickedMute・測定前の移動では出さない", () => {
+    const start = measuredAt(10);
+    expect(names(update({ ...start, playback: { ...start.playback, playing: true, rate: 1 } }, Message.TickedFrame({ ms: 1000 })))).not.toContain("RestartBlink");
+    const moved = update(start, Message.ClickedNext()).model;
+    expect(names(update(moved, got(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 16 }))))).not.toContain("RestartBlink");
+    expect(names(update(start, got(MapSurfaceMessage.ClickedNodeButton({ nodeId: "t1", clientX: 0, clientY: 0 }))))).not.toContain("RestartBlink");
+    expect(names(update(start, Message.ClickedMute()))).not.toContain("RestartBlink");
+    expect(names(update(at(10), Message.ClickedNext()))).not.toContain("RestartBlink");
   });
 });

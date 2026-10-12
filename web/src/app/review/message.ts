@@ -5,6 +5,7 @@ import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
 import { pressedKeyFields } from "../keys/message.ts";
 import { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
+import { Message as SessionLayoutMessage } from "../sessionLayout/message.ts";
 
 // ボタンごとの Tooltip。Model の tooltips の欄名と同じ
 export const TooltipKey = Schema.Literals(["prev", "toggle", "next", "mute", "captions", "rate", "side"]);
@@ -23,6 +24,8 @@ export const Message = defineMessageUnion({
   CompletedSeekAudio: {},
   CompletedWriteAudioSettings: {},
   GotMapSurfaceMessage: { message: MapSurfaceMessage },
+  // セッションの画面の部品（字幕・見る状態の知らせ）。見返しでは取り込み・共有画面の状態は送らない
+  GotSessionLayoutMessage: { message: SessionLayoutMessage },
   GotSeekSliderMessage: { message: Slider.Message },
   GotVolumeSliderMessage: { message: Slider.Message },
   GotRateMenuMessage: { message: Menu.Message },
