@@ -236,6 +236,63 @@ export class Sessions extends Context.Service<Sessions, {
 
       const markStopped = (live: Live) => Effect.andThen(Ref.set(live.intake, "stopped"), intakeFrame("stopped"));
 
+      // 次のヘルパーを 1 回起動する。end は連鎖を終える（exit は stop へ渡す終わり方）、retry は続けて起動し直す、
+      // launched は接続できたもの。restarted は、起動し直しとして数えた（以後の途切れは自動になる）ときだけ true
+      const relaunch = Effect.fnUntraced(function* (live: Live, reason: "auto" | "resume", outcome: Deferred.Deferred<RestartOutcome>) {
+        if (yield* Deferred.isDone(live.stopRequested)) return { kind: "end" as const, exit: undefined };
+        const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
+        yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
+        const scope = yield* Scope.fork(live.scope, "sequential");
+        const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin)), live.stopRequested).pipe(
+          Scope.provide(scope),
+          Effect.result,
+        );
+        if (Result.isFailure(result)) {
+          yield* Scope.close(scope, Exit.void);
+          if (yield* Deferred.isDone(live.stopRequested)) return { kind: "end" as const, exit: result.failure.exit }; // 中断。stop が後片付けを引き継ぐ（止めたヘルパーの終わり方を stop へ渡す）
+          const failure = result.failure;
+          const action = yield* finishAttempt(live, failure.exit ?? { code: null, signal: null }, failure.stderrTail);
+          if (action === "giveup") {
+            yield* markStopped(live);
+            yield* Deferred.succeed(outcome, { kind: "stopped", stderrTail: failure.stderrTail });
+            return { kind: "end" as const, exit: undefined };
+          }
+          return { kind: "retry" as const }; // 続けて起動し直す
+        }
+        const launched: Launched = { attempt: result.success, scope };
+        // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
+        // 読み終えてから止まる
+        if (yield* Deferred.isDone(live.stopRequested)) return { kind: "launched" as const, launched, restarted: false };
+        yield* Ref.update(live.restarts, (n) => n + 1);
+        yield* live.sink.appendLog({ type: "intake-restarted", trigger: reason });
+        yield* note("ヘルパーを起動し直しました\n");
+        yield* Ref.set(live.intake, "running");
+        yield* intakeFrame("running");
+        yield* Deferred.succeed(outcome, { kind: "running" });
+        return { kind: "launched" as const, launched, restarted: true };
+      });
+
+      // 接続済みのヘルパー 1 回分を読み終えた後を扱う。end は連鎖を終える、continue は次の起動し直しへ進む
+      const afterServe = Effect.fnUntraced(function* (live: Live, launched: Launched) {
+        const { exit, stderrTail } = yield* serve(live, launched);
+        // stop・サーバーの終了による意図した終了。届いていた最後の発話を落とさず、起動し直さない
+        if (yield* Deferred.isDone(live.stopRequested)) {
+          yield* live.sink.drain;
+          return { kind: "end" as const, exit };
+        }
+        yield* live.sink.drain; // 確定結果に覆われなかった最後の発話を発言にする
+        yield* live.sink.clearSpeaking; // いま話している文字を空にする（永久停止はしない）
+        yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
+        const action = yield* finishAttempt(live, exit, stderrTail);
+        if (action === "giveup") {
+          yield* markStopped(live);
+          return { kind: "end" as const, exit: undefined };
+        }
+        yield* Ref.set(live.intake, "interrupted");
+        yield* intakeFrame("interrupted");
+        return { kind: "continue" as const };
+      });
+
       // 起動し直しの連鎖。成功するまで（または諦めるまで）、decideIntakeRestart の判断に従って繰り返す。
       // initial があれば最初の 1 回は起動済みのもの（start の初回起動）。trigger は、最初の起動し直しの成功をログに残す
       // 「自動か resume か」の区別（以後の途切れは自動）。outcome は、最初の成功か諦めか中断で解決する（resume の応答の基準）
@@ -244,57 +301,16 @@ export class Sessions extends Context.Service<Sessions, {
         let reason = trigger;
         for (;;) {
           if (current === undefined) {
-            if (yield* Deferred.isDone(live.stopRequested)) return { exit: undefined };
-            const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
-            yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
-            const scope = yield* Scope.fork(live.scope, "sequential");
-            const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin)), live.stopRequested).pipe(
-              Scope.provide(scope),
-              Effect.result,
-            );
-            if (Result.isFailure(result)) {
-              yield* Scope.close(scope, Exit.void);
-              if (yield* Deferred.isDone(live.stopRequested)) return { exit: result.failure.exit }; // 中断。stop が後片付けを引き継ぐ（止めたヘルパーの終わり方を stop へ渡す）
-              const failure = result.failure;
-              const action = yield* finishAttempt(live, failure.exit ?? { code: null, signal: null }, failure.stderrTail);
-              if (action === "giveup") {
-                yield* markStopped(live);
-                yield* Deferred.succeed(outcome, { kind: "stopped", stderrTail: failure.stderrTail });
-                return { exit: undefined };
-              }
-              continue; // 続けて起動し直す
-            }
-            // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
-            // 読み終えてから止まる
-            if (!(yield* Deferred.isDone(live.stopRequested))) {
-              yield* Ref.update(live.restarts, (n) => n + 1);
-              yield* live.sink.appendLog({ type: "intake-restarted", trigger: reason });
-              yield* note("ヘルパーを起動し直しました\n");
-              yield* Ref.set(live.intake, "running");
-              yield* intakeFrame("running");
-              yield* Deferred.succeed(outcome, { kind: "running" });
-              reason = "auto";
-            }
-            current = { attempt: result.success, scope };
+            const step = yield* relaunch(live, reason, outcome);
+            if (step.kind === "end") return { exit: step.exit };
+            if (step.kind === "retry") continue;
+            if (step.restarted) reason = "auto";
+            current = step.launched;
           }
           const launched = current;
           current = undefined;
-          const { exit, stderrTail } = yield* serve(live, launched);
-          // stop・サーバーの終了による意図した終了。届いていた最後の発話を落とさず、起動し直さない
-          if (yield* Deferred.isDone(live.stopRequested)) {
-            yield* live.sink.drain;
-            return { exit };
-          }
-          yield* live.sink.drain; // 確定結果に覆われなかった最後の発話を発言にする
-          yield* live.sink.clearSpeaking; // いま話している文字を空にする（永久停止はしない）
-          yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
-          const action = yield* finishAttempt(live, exit, stderrTail);
-          if (action === "giveup") {
-            yield* markStopped(live);
-            return { exit: undefined };
-          }
-          yield* Ref.set(live.intake, "interrupted");
-          yield* intakeFrame("interrupted");
+          const after = yield* afterServe(live, launched);
+          if (after.kind === "end") return { exit: after.exit };
         }
       }, (effect, _live, _initial, _trigger, outcome) => effect.pipe(Effect.ensuring(Deferred.succeed(outcome, { kind: "aborted" }))));
 

@@ -72,33 +72,70 @@ const pidAlive = (pid: number): boolean => {
   }
 };
 
+const removeOwner = (file: string) => {
+  try { unlinkSync(file); } catch (error) { if (!codeIs(error, "ENOENT")) throw error; }
+};
+const removeEmptyDirectory = (dir: string) => {
+  try { rmdirSync(dir); }
+  catch (error) {
+    if (!codeIs(error, "ENOENT") && !codeIs(error, "ENOTEMPTY") && !codeIs(error, "EEXIST")) throw error;
+  }
+};
+const readPid = (file: string) => {
+  const pid = Number(readFileSync(file, "utf8"));
+  if (!Number.isSafeInteger(pid) || pid === 0 || (pid < 0 && !basename(file).startsWith("execution-"))) throw new ManagedDepsFailed({ message: "install.lock の pid が不正です" });
+  return pid;
+};
+const executionsFinishedIn = (directory: string) => {
+  const records = readdirSync(directory).filter((name) => name.startsWith("execution-"));
+  for (const name of records) {
+    if (pidAlive(readPid(join(directory, name)))) return false;
+  }
+  for (const name of records) removeOwner(join(directory, name));
+  return true;
+};
+
+// 既存の guard ディレクトリの所有者ファイルを確かめ、生きていなければ消す。ディレクトリが消えていたら何もしない（呼び出し側が rename を再試行する）
+const clearStaleGuard = (directory: string) => {
+  try {
+    for (const name of readdirSync(directory)) {
+      const file = join(directory, name);
+      if (pidAlive(readPid(file))) throw new ManagedDepsFailed({ message: "導入中です" });
+      // 古い回収処理は確認した UUID だけを削除し、交代後の所有者には触れない。
+      removeOwner(file);
+    }
+  } catch (error) {
+    if (codeIs(error, "ENOENT")) return;
+    throw error;
+  }
+};
+
+const publishGuard = (candidate: string, directory: string) => {
+  for (;;) {
+    try {
+      // 完成した非空候補だけを公開する。rename は別所有者の非空ディレクトリを置換しない。
+      renameSync(candidate, directory);
+      return;
+    } catch (error) {
+      if (!codeIs(error, "EEXIST") && !codeIs(error, "ENOTEMPTY")) throw error;
+      clearStaleGuard(directory);
+    }
+  }
+};
+
+const reclaimPidLock = (path: string) => {
+  try {
+    if (pidAlive(readPid(path))) throw new ManagedDepsFailed({ message: "導入中です" });
+    removeOwner(path);
+  } catch (error) { if (!codeIs(error, "ENOENT")) throw error; }
+};
+
 const acquireLock = (path: string) => {
   const uuid = randomUUID();
   const directory = `${path}.guard`;
   const candidate = `${directory}-${uuid}`;
   const owner = join(directory, uuid);
-  const removeOwner = (file: string) => {
-    try { unlinkSync(file); } catch (error) { if (!codeIs(error, "ENOENT")) throw error; }
-  };
-  const removeEmptyDirectory = (dir: string) => {
-    try { rmdirSync(dir); }
-    catch (error) {
-      if (!codeIs(error, "ENOENT") && !codeIs(error, "ENOTEMPTY") && !codeIs(error, "EEXIST")) throw error;
-    }
-  };
-  const readPid = (file: string) => {
-    const pid = Number(readFileSync(file, "utf8"));
-    if (!Number.isSafeInteger(pid) || pid === 0 || (pid < 0 && !basename(file).startsWith("execution-"))) throw new ManagedDepsFailed({ message: "install.lock の pid が不正です" });
-    return pid;
-  };
-  const executionsFinished = () => {
-    const records = readdirSync(directory).filter((name) => name.startsWith("execution-"));
-    for (const name of records) {
-      if (pidAlive(readPid(join(directory, name)))) return false;
-    }
-    for (const name of records) removeOwner(join(directory, name));
-    return true;
-  };
+  const executionsFinished = () => executionsFinishedIn(directory);
   const releaseGuard = () => {
     // UUID の削除後は PID lock や作業実体を操作しない。新所有者の非空ディレクトリは残す。
     removeOwner(owner);
@@ -108,31 +145,9 @@ const acquireLock = (path: string) => {
   try {
     mkdirSync(candidate, { mode: 0o700 });
     writeFileSync(join(candidate, uuid), String(process.pid), { flag: "wx", mode: 0o600 });
-    for (;;) {
-      try {
-        // 完成した非空候補だけを公開する。rename は別所有者の非空ディレクトリを置換しない。
-        renameSync(candidate, directory);
-        guarded = true;
-        break;
-      } catch (error) {
-        if (!codeIs(error, "EEXIST") && !codeIs(error, "ENOTEMPTY")) throw error;
-        try {
-          for (const name of readdirSync(directory)) {
-            const file = join(directory, name);
-            if (pidAlive(readPid(file))) throw new ManagedDepsFailed({ message: "導入中です" });
-            // 古い回収処理は確認した UUID だけを削除し、交代後の所有者には触れない。
-            removeOwner(file);
-          }
-        } catch (error) {
-          if (codeIs(error, "ENOENT")) continue;
-          throw error;
-        }
-      }
-    }
-    try {
-      if (pidAlive(readPid(path))) throw new ManagedDepsFailed({ message: "導入中です" });
-      removeOwner(path);
-    } catch (error) { if (!codeIs(error, "ENOENT")) throw error; }
+    publishGuard(candidate, directory);
+    guarded = true;
+    reclaimPidLock(path);
     // 所有者ファイルへの hard link により、空の PID lock を公開しない。
     linkSync(owner, path);
     return {
@@ -149,6 +164,12 @@ const acquireLock = (path: string) => {
     removeOwner(join(candidate, uuid));
     removeEmptyDirectory(candidate);
   }
+};
+
+const headlessShellPlatform = (platform: NodeJS.Platform, arch: string): string | undefined => {
+  if (platform === "darwin") return `mac-${arch}`;
+  if (platform === "linux") return arch === "x64" ? "linux64" : "linux-arm64";
+  return platform === "win32" ? "win64" : undefined;
 };
 
 const validateNames = (names: ReadonlyArray<string>): Effect.Effect<DepName[], ManagedDepsFailed> => names.length > 0 && names.every((name) => name === "chromium" || name === "claude" || name === "cloudflared")
@@ -327,33 +348,32 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       return binary;
     });
     const executable = validateExecutable.pipe(Effect.mapError(failed));
-    const verify = Effect.fnUntraced(function* (work: string, entity: string) {
-      if (name === "cloudflared") {
-        const binary = join(work, CLOUDFLARED_BINARY);
-        const stat = yield* metadata(binary);
-        if (!stat.isFile() || (stat.mode & 0o111) === 0) return yield* new ManagedDepsFailed({ message: "cloudflared の実行ファイルがありません" });
-        const now = yield* DateTime.now;
-        yield* fs.writeFileString(join(work, READY), JSON.stringify({
-          version, installedAt: DateTime.formatIso(now), hashes: { [join(entity, CLOUDFLARED_BINARY)]: yield* hash(binary) },
-        }));
-        return;
-      }
-      const pkg = yield* readJson(join(work, "node_modules", packageName, "package.json"), PackageRecord);
-      if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "導入版が固定版と一致しません" });
-      let binary: string;
+    const verifyCloudflared = Effect.fnUntraced(function* (work: string, entity: string) {
+      const binary = join(work, CLOUDFLARED_BINARY);
+      const stat = yield* metadata(binary);
+      if (!stat.isFile() || (stat.mode & 0o111) === 0) return yield* new ManagedDepsFailed({ message: "cloudflared の実行ファイルがありません" });
+      const now = yield* DateTime.now;
+      yield* fs.writeFileString(join(work, READY), JSON.stringify({
+        version, installedAt: DateTime.formatIso(now), hashes: { [join(entity, CLOUDFLARED_BINARY)]: yield* hash(binary) },
+      }));
+    });
+    const installedBinary = Effect.fnUntraced(function* (work: string) {
       if (name === "claude") {
         const binaryPkg = yield* readJson(join(work, "node_modules", binaryPackage, "package.json"), PackageRecord);
         if (binaryPkg.version !== version) return yield* new ManagedDepsFailed({ message: "バイナリの版が固定版と一致しません" });
-        binary = claudeBinary(work);
-      } else {
-        const shell = yield* shellInfo(work);
-        if (!(yield* isFile(shell.marker))) return yield* new ManagedDepsFailed({ message: "headless shell の導入が完了していません" });
-        const platform = process.platform === "darwin" ? `mac-${process.arch}`
-          : process.platform === "linux" ? (process.arch === "x64" ? "linux64" : "linux-arm64")
-          : process.platform === "win32" ? "win64" : undefined;
-        if (platform === undefined) return yield* new ManagedDepsFailed({ message: "未対応の Chromium プラットフォームです" });
-        binary = join(shell.directory, `chrome-headless-shell-${platform}`, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell");
+        return claudeBinary(work);
       }
+      const shell = yield* shellInfo(work);
+      if (!(yield* isFile(shell.marker))) return yield* new ManagedDepsFailed({ message: "headless shell の導入が完了していません" });
+      const platform = headlessShellPlatform(process.platform, process.arch);
+      if (platform === undefined) return yield* new ManagedDepsFailed({ message: "未対応の Chromium プラットフォームです" });
+      return join(shell.directory, `chrome-headless-shell-${platform}`, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell");
+    });
+    const verify = Effect.fnUntraced(function* (work: string, entity: string) {
+      if (name === "cloudflared") return yield* verifyCloudflared(work, entity);
+      const pkg = yield* readJson(join(work, "node_modules", packageName, "package.json"), PackageRecord);
+      if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "導入版が固定版と一致しません" });
+      const binary = yield* installedBinary(work);
       const expected = yield* hash(binary);
       if ((yield* hash(binary)) !== expected) return yield* new ManagedDepsFailed({ message: "導入直後のハッシュが一致しません" });
       const now = yield* DateTime.now;
