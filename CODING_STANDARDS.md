@@ -10,6 +10,16 @@ When a review defers a finding as "unverified" and it hinges on an external SDK 
 
 A test that asserts something does *not* happen (not sent, not opened, not closed) passes when nothing happens at all. Check it first reaches the state it guards: removing the guarded line must turn it red. Examples: #36 (a held remark after cancellation), #87 (closing an updater opened before a start failure).
 
+## Effect: what to wrap, what to fail, what to throw
+
+`server` and `web` both build on Effect 4, but not every function should return an `Effect`. Sort each function and each failure into one of three:
+
+- **Plain function.** No failure, no waiting, no dependency: return the value and don't wrap it in `Effect` (e.g. `applyOps`, `groupSize`, `toDrawnix`). Its tests pass values in and read values out.
+- **Typed failure.** Something from outside our code is broken: a helper event, a log or truth file read from disk, model output, user arguments, another process holding a lock. Return `Effect<A, TaggedError>`, even when the function is otherwise pure and synchronous; don't use `Result` for this, so callers read every failure the same way with `yield*` (precedent: `restoreState` with `InvalidLogEvent`).
+- **Defect.** Our own code broke a promise it made to itself: the bundled template has no `</body>`, JSON we embedded ourselves doesn't parse, a caller passes an id that isn't in the tree. `throw`, `!` or `Effect.die` are fine; don't add a typed error for it.
+
+This follows [ADR 0007](docs/adr/0007-core-session-on-effect.md) for `server/src/core/` and Effect's own split between [expected errors](https://effect.website/docs/v4/error-management/two-error-types) and [defects](https://effect.website/docs/v4/error-management/unexpected-errors). A `throw` inside a synchronous helper is fine when its caller already turns it into a typed failure with `Effect.try` (e.g. `managedDeps.ts`). In `web`, follow `web/AGENTS.md` for how Foldkit code is shaped. Example: #951 (`logMetrics` threw on a broken log; it is a typed failure).
+
 ## Tests
 
 Unlike the rest of this file, read this section when you add a test. Layer names, file suffixes and when each layer runs live in `AGENTS.md` → Checks; this section does not repeat them. For tests that assert something does not happen, see Negative tests above.
