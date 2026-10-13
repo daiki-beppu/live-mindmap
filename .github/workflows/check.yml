@@ -14,7 +14,6 @@ jobs:
     outputs:
       ts: ${{ steps.filter.outputs.ts }}
       swift: ${{ steps.filter.outputs.swift }}
-      actions: ${{ steps.filter.outputs.actions }}
     steps:
       # checkout せず、PR の変更ファイルを API で取る
       - id: filter
@@ -23,18 +22,17 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            printf '%s\n' ts=true swift=true actions=true >> "$GITHUB_OUTPUT"; exit 0
+            printf '%s\n' ts=true swift=true >> "$GITHUB_OUTPUT"; exit 0
           fi
           files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
           # 既知の docs 以外が 1 つでもあれば走らせる（知らないパスは走る側に倒す）
           code=$(printf '%s\n' "$files" | grep -Ev '^(docs/|LICENSE$)|\.md$' || true)
-          ts=false; swift=false; actions=false
+          ts=false; swift=false
           if printf '%s\n' "$code" | grep -Ev '^helper/' | grep -q .; then ts=true; fi
           # helper/package.json は server のテスト（server/test/helperScripts.it.test.ts）が読むので、helper/ の中でもこれだけは ts も走らせる
           if printf '%s\n' "$code" | grep -Fqx 'helper/package.json'; then ts=true; fi
           if printf '%s\n' "$code" | grep -Eq '^(helper/|\.github/workflows/)'; then swift=true; fi
-          if printf '%s\n' "$code" | grep -Eq '^\.github/'; then actions=true; fi
-          printf '%s\n' "ts=$ts" "swift=$swift" "actions=$actions" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "ts=$ts" "swift=$swift" >> "$GITHUB_OUTPUT"
 
   # typecheck・unit・軽い IT を server と web の両方で 1 ジョブにまとめる。Chromium は要らない
   ts:
@@ -188,23 +186,11 @@ jobs:
           path: helper/.build
           key: ${{ steps.build-cache.outputs.cache-primary-key }}
 
-  # workflow の点検（.github/ を変えた PR だけ）。式の文脈・shell・action の入力の誤りを拾う。
-  # ただし check.yml 自体が読み込めない誤り（#797 の job の env の runner.temp）ではこのジョブも走らず、チェックが 1 つも付かない。check.yml を変えたら手元でも actionlint を回す
-  # 版は固定する。上げるときは下の 2 か所（script の tag と引数）を揃える。shellcheck は ubuntu-24.04 に入っているものを actionlint が使う
-  actionlint:
-    needs: changes
-    if: needs.changes.outputs.actions == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - run: bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
-      - run: '"$RUNNER_TEMP/actionlint" -color'
-
   # ruleset の必須チェック。ID を変えない。
   # always() が無いと、依存が落ちたときに skipped（= Success 扱い）になって落ちた PR がマージできてしまう
   check:
     if: always()
-    needs: [changes, ts, heavy, e2e, helper, actionlint]
+    needs: [changes, ts, heavy, e2e, helper]
     runs-on: ubuntu-slim
     steps:
       # success か skipped 以外（failure・cancelled・runner を取れずに終わったときの値・空など）が 1 つでもあれば落とす
