@@ -78,53 +78,68 @@ const isLatinOnly = (s: string): boolean => /^[A-Za-z]+$/.test(s.normalize("NFKC
 type Term = { readonly surface: string; readonly key: string; readonly latin: boolean };
 type Candidate = { readonly location: number; readonly length: number; readonly span: string; readonly term: Term; readonly score: number };
 
-// 区間（句読点・空白をまたがない連続する 1〜5 語）ごとに、一番近い語を 1 つ選んで守りを当てる
-function findCandidates(terms: readonly Term[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>): Candidate[] {
-  const found: Candidate[] = [];
-  for (let i = 0; i < words.length; i++) {
-    let romaji = "";
-    for (let j = i; j < Math.min(i + MAX_SPAN_WORDS, words.length); j++) {
-      const word = words[j]!;
-      if (word.romaji === "" || PUNCTUATION_OR_SPACE.test(word.surface)) break;
-      // 前の語との間に本文がある（空白など）ときは、またがない
-      if (j > i) {
-        const previous = words[j - 1]!;
-        if (text.slice(previous.location + previous.length, word.location) !== "") break;
-      }
-      romaji += word.romaji;
-      const spanKey = matchKey(romaji);
-      if (spanKey.length < MIN_SPAN_KEY_LENGTH) continue;
-      const first = words[i]!;
-      if (isHiraganaOnly(first.surface) || isHiraganaOnly(word.surface)) continue;
-      const location = first.location;
-      const length = word.location + word.length - location;
-      const span = text.slice(location, location + length);
-      const chars = [...span];
-      if (chars.length < 2 || isHiraganaOnly(chars[0]!) || isHiraganaOnly(chars[chars.length - 1]!)) continue;
+// 区間の検査。語彙の表記を含む区間や、端がひらがなの区間は直さない
+function spanOf(terms: readonly Term[], text: string, words: readonly Word[], i: number, j: number): { location: number; length: number; span: string } | undefined {
+  const first = words[i]!;
+  const word = words[j]!;
+  if (isHiraganaOnly(first.surface) || isHiraganaOnly(word.surface)) return undefined;
+  const location = first.location;
+  const length = word.location + word.length - location;
+  const span = text.slice(location, location + length);
+  const chars = [...span];
+  if (chars.length < 2 || isHiraganaOnly(chars[0]!) || isHiraganaOnly(chars[chars.length - 1]!)) return undefined;
+  // 区間が語彙のどれかの語の表記を含むなら、候補の絞り込みとは関係なく直さない
+  const normalizedSpan = normalizeSurface(span);
+  if (terms.some((term) => normalizedSpan.includes(normalizeSurface(term.surface)))) return undefined;
+  return { location, length, span };
+}
 
-      let best: { term: Term; score: number } | undefined;
-      // 区間が語彙のどれかの語の表記を含むなら、候補の絞り込みとは関係なく直さない
-      const normalizedSpan = normalizeSurface(span);
-      if (terms.some((term) => normalizedSpan.includes(normalizeSurface(term.surface)))) continue;
-      // 区間の表記がふつうの語の一覧に載っていれば、英字の語への書き換えだけを候補に残す
-      const isCommon = commonWords.has(span);
-      for (const term of terms) {
-        if (isCommon && !term.latin) continue;
-        const ratio = spanKey.length / term.key.length;
-        if (ratio < MIN_LENGTH_RATIO || ratio > MAX_LENGTH_RATIO) continue;
-        const score = similarity(spanKey, term.key);
-        if (term.key.length <= EXACT_ONLY_KEY_LENGTH && score < 1) continue;
-        if (score < MIN_SCORE) continue;
-        if (best === undefined || score > best.score) best = { term, score };
-      }
-      if (best === undefined) continue;
-      // 区間の中のひらがなを、置き換え先が落とすなら直さない
-      const hiraganaRuns = span.match(HIRAGANA_RUN) ?? [];
-      if (hiraganaRuns.some((run) => !best.term.surface.includes(run))) continue;
-      found.push({ location, length, span, term: best.term, score: best.score });
-    }
+// 区間の表記に対する語の近さ。この語を候補にしないなら undefined
+function scoreOf(term: Term, spanKey: string, isCommon: boolean): number | undefined {
+  // 区間の表記がふつうの語の一覧に載っていれば、英字の語への書き換えだけを候補に残す
+  if (isCommon && !term.latin) return undefined;
+  const ratio = spanKey.length / term.key.length;
+  if (ratio < MIN_LENGTH_RATIO || ratio > MAX_LENGTH_RATIO) return undefined;
+  const score = similarity(spanKey, term.key);
+  if (term.key.length <= EXACT_ONLY_KEY_LENGTH && score < 1) return undefined;
+  return score < MIN_SCORE ? undefined : score;
+}
+
+// 区間に一番近い語を選ぶ（同じ点なら先に出た語）。区間の中のひらがなを置き換え先が落とすなら選ばない
+function bestTerm(terms: readonly Term[], span: string, spanKey: string, commonWords: ReadonlySet<string>): { term: Term; score: number } | undefined {
+  let best: { term: Term; score: number } | undefined;
+  const isCommon = commonWords.has(span);
+  for (const term of terms) {
+    const score = scoreOf(term, spanKey, isCommon);
+    if (score !== undefined && (best === undefined || score > best.score)) best = { term, score };
+  }
+  if (best === undefined) return undefined;
+  const hiraganaRuns = span.match(HIRAGANA_RUN) ?? [];
+  return hiraganaRuns.some((run) => !best.term.surface.includes(run)) ? undefined : best;
+}
+
+// 語 i から始まる区間の候補。句読点・空白・語の間の隙間のところで打ち切る
+function candidatesFrom(terms: readonly Term[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>, i: number): Candidate[] {
+  const found: Candidate[] = [];
+  let romaji = "";
+  for (let j = i; j < Math.min(i + MAX_SPAN_WORDS, words.length); j++) {
+    const word = words[j]!;
+    if (word.romaji === "" || PUNCTUATION_OR_SPACE.test(word.surface)) break;
+    // 前の語との間に本文がある（空白など）ときは、またがない
+    if (j > i && text.slice(words[j - 1]!.location + words[j - 1]!.length, word.location) !== "") break;
+    romaji += word.romaji;
+    const spanKey = matchKey(romaji);
+    if (spanKey.length < MIN_SPAN_KEY_LENGTH) continue;
+    const area = spanOf(terms, text, words, i, j);
+    const best = area && bestTerm(terms, area.span, spanKey, commonWords);
+    if (area && best) found.push({ ...area, term: best.term, score: best.score });
   }
   return found;
+}
+
+// 区間（句読点・空白をまたがない連続する 1〜5 語）ごとに、一番近い語を 1 つ選んで守りを当てる
+function findCandidates(terms: readonly Term[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>): Candidate[] {
+  return words.flatMap((_, i) => candidatesFrom(terms, text, words, commonWords, i));
 }
 
 // 語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。

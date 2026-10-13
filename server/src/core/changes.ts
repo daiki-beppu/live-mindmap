@@ -35,13 +35,37 @@ function combinedInto(removed: MapNode, before: MeetingMap, after: MeetingMap): 
   return undefined;
 }
 
-export function diffMaps(before: MeetingMap, after: MeetingMap): Change[] {
-  const mergedInto = new Map<string, string>(); // 消えたノード → 統合先
+// 消えたノード → 統合先
+function mergeTargets(before: MeetingMap, after: MeetingMap): Map<string, string> {
+  const mergedInto = new Map<string, string>();
   for (const id of before.order) {
     if (after.nodes[id]) continue;
     const into = combinedInto(before.nodes[id]!, before, after);
     if (into) mergedInto.set(id, into);
   }
+  return mergedInto;
+}
+
+// 反映前からあるノードの変化の種類。積む順は 更新 → 決定済み化 → 却下 → 移動 → 統合
+function changeTypesOf(id: string, old: MapNode, n: MapNode, before: MeetingMap, after: MeetingMap, mergedInto: ReadonlyMap<string, string>, combinedTargets: ReadonlySet<string>): ChangeType[] {
+  const decided = n.kind === "論点" && pointStatus(before, id) === "未決" && pointStatus(after, id) === "決定済み";
+  const rejected = n.kind === "案" && old.planStatus !== "却下" && n.planStatus === "却下";
+  // 元の親が統合で消え、今の親がその統合先なら、引き取られただけで移動ではない
+  const moved = old.parent !== n.parent && !(old.parent !== null && mergedInto.get(old.parent) === n.parent);
+  const combined = combinedTargets.has(id);
+  const textChanged = old.text !== n.text;
+  const evidenceOnly = hasNew(old.evidence, n.evidence) && !decided && !rejected && !moved && !combined;
+  const types: ChangeType[] = [];
+  if (textChanged || evidenceOnly) types.push("更新");
+  if (decided) types.push("決定済み化");
+  if (rejected) types.push("却下");
+  if (moved) types.push("移動");
+  if (combined) types.push("統合");
+  return types;
+}
+
+export function diffMaps(before: MeetingMap, after: MeetingMap): Change[] {
+  const mergedInto = mergeTargets(before, after);
   const combinedTargets = new Set(mergedInto.values());
 
   const changes: Change[] = [];
@@ -49,25 +73,8 @@ export function diffMaps(before: MeetingMap, after: MeetingMap): Change[] {
     if (id === ROOT_ID) continue;
     const n = after.nodes[id]!;
     const old = before.nodes[id];
-    const push = (change: ChangeType) => changes.push({ change, node: id, kind: n.kind, text: n.text });
-    if (!old) {
-      push("追加");
-      continue;
-    }
-
-    const decided = n.kind === "論点" && pointStatus(before, id) === "未決" && pointStatus(after, id) === "決定済み";
-    const rejected = n.kind === "案" && old.planStatus !== "却下" && n.planStatus === "却下";
-    // 元の親が統合で消え、今の親がその統合先なら、引き取られただけで移動ではない
-    const moved = old.parent !== n.parent && !(old.parent !== null && mergedInto.get(old.parent) === n.parent);
-    const combined = combinedTargets.has(id);
-    const textChanged = old.text !== n.text;
-    const evidenceOnly = hasNew(old.evidence, n.evidence) && !decided && !rejected && !moved && !combined;
-
-    if (textChanged || evidenceOnly) push("更新");
-    if (decided) push("決定済み化");
-    if (rejected) push("却下");
-    if (moved) push("移動");
-    if (combined) push("統合");
+    const types: ChangeType[] = old ? changeTypesOf(id, old, n, before, after, mergedInto, combinedTargets) : ["追加"];
+    for (const change of types) changes.push({ change, node: id, kind: n.kind, text: n.text });
   }
   return changes;
 }

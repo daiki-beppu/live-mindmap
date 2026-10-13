@@ -169,25 +169,30 @@ function underClosed(map: MeetingMap, id: string): boolean {
   return false;
 }
 
-// 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
-function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
-  const lines: string[] = [];
-  const ids = (m: MeetingMap) => m.order.filter((id) => id !== ROOT_ID && m.nodes[id]);
-  for (const id of ids(prev)) {
-    if (!cur.nodes[id]) lines.push(`- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
-  }
-  // 前回は済みの下で畳まれていて、今回は畳まれない場所へ親が変わったノード。AI はまだ中身を知らない
-  // cur で済みの下に留まった移動は、まだ畳まれているので含めない
-  const surfaced = new Set(ids(cur).filter((id) => {
+const changeIds = (m: MeetingMap) => m.order.filter((id) => id !== ROOT_ID && m.nodes[id]);
+
+const removedLines = (prev: MeetingMap, cur: MeetingMap): string[] =>
+  changeIds(prev).filter((id) => !cur.nodes[id]).map((id) => `- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
+
+// 前回は済みの下で畳まれていて、今回は畳まれない場所へ親が変わったノード。AI はまだ中身を知らない
+// cur で済みの下に留まった移動は、まだ畳まれているので含めない
+function surfacedIds(prev: MeetingMap, cur: MeetingMap): Set<string> {
+  return new Set(changeIds(cur).filter((id) => {
     const old = prev.nodes[id];
     return !!old && cur.nodes[id]!.parent !== old.parent && underClosed(prev, id) && !underClosed(cur, id);
   }));
+}
+
+// ノードごとの行。追加、または 更新 → 移動 → 畳んだ中から出た の順
+function nodeChangeLines(prev: MeetingMap, cur: MeetingMap): string[] {
+  const surfaced = surfacedIds(prev, cur);
   // 祖先が出るなら、子孫はその中身に含まれる
   const hasSurfacedAncestor = (id: string) => {
     for (let p = cur.nodes[id]!.parent; p !== null; p = cur.nodes[p]!.parent) if (surfaced.has(p)) return true;
     return false;
   };
-  for (const id of ids(cur)) {
+  const lines: string[] = [];
+  for (const id of changeIds(cur)) {
     const n = cur.nodes[id]!;
     const old = prev.nodes[id];
     if (!old) {
@@ -203,21 +208,33 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
       lines.push(...foldedOutlineLines(cur, id, 1));
     }
   }
-  for (const id of ids(cur)) {
+  return lines;
+}
+
+// 済みにした / 話し中に戻った（配下を全部出す）ノードの行
+function talkStatusLines(prev: MeetingMap, cur: MeetingMap): string[] {
+  const lines: string[] = [];
+  const walk = (pid: string, depth: number) => {
+    for (const c of children(cur, pid)) {
+      lines.push(outlineLine(cur, c.id, depth));
+      walk(c.id, depth + 1);
+    }
+  };
+  for (const id of changeIds(cur)) {
     const closedNow = !!cur.nodes[id]!.talkStatus;
     const closedBefore = !!prev.nodes[id]?.talkStatus;
     if (!closedBefore && closedNow) lines.push(`- ${id} 済みにした`);
     if (closedBefore && !closedNow) {
       lines.push(`- ${id} 話し中に戻った。畳んでいた中身:`);
-      const walk = (pid: string, depth: number) => {
-        for (const c of children(cur, pid)) {
-          lines.push(outlineLine(cur, c.id, depth));
-          walk(c.id, depth + 1);
-        }
-      };
       walk(id, 1);
     }
   }
+  return lines;
+}
+
+// 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
+function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
+  const lines = [...removedLines(prev, cur), ...nodeChangeLines(prev, cur), ...talkStatusLines(prev, cur)];
   return lines.length ? lines.join("\n") : "（変更なし）";
 }
 

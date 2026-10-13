@@ -192,64 +192,82 @@ const decodeRemark = Schema.decodeUnknownEffect(RemarkEvent);
 const decodeDiff = Schema.decodeUnknownEffect(DiffEvent);
 const decodeScreen = Schema.decodeUnknownEffect(ScreenEvent);
 
+type UnsentScreen = ScreenRefs & { readonly seq: number };
+// 復元の途中の状態。remarks・processed・known・files・unsent（screen の行で追記）は復元が所有する蓄積用で、行ごとに全コピーしないよう追記する。
+// それ以外（map・history・received・attached）は、diff の反映が新しい値で返す
+type Replay = {
+  readonly map: MeetingMap | undefined;
+  readonly remarks: Remark[];
+  readonly processed: Remark[];
+  readonly known: Set<string>;
+  readonly history: History;
+  readonly unsent: UnsentScreen[];
+  readonly received: number;
+  readonly attached: readonly ScreenRefs[];
+  readonly files: Set<string>;
+};
+
+// diff の行を 1 回分、復元の状態へ反映する。判定の順は、start が無い → ログに無い発言 → 反映数の超過 → screenCount の超過
+const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Replay, InvalidLogEvent> {
+  const { map } = replay;
+  if (!map) return yield* invalid("ログの diff より前に start がありません");
+  const fresh: Remark[] = [];
+  for (const id of e.input.fresh) {
+    const r = replay.remarks.find((x) => x.id === id);
+    if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
+    fresh.push(r);
+  }
+  const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
+  if (count > fresh.length) return yield* invalid("diff の反映数が入力の発言数を超えています");
+  const consumed = fresh.slice(0, count);
+  const { known, processed } = replay;
+  for (const r of consumed) {
+    known.add(r.id);
+    if (hasContent(r.text)) processed.push(r);
+  }
+  const selectedBefore = e.input.screenCount ?? 0;
+  if (selectedBefore > replay.received) return yield* invalid(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${replay.received} より大きい`);
+  const cutoff = Math.max(...fresh.map((r) => r.end));
+  const unsent = fresh.length ? replay.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff) : replay.unsent;
+  const attached = [...replay.attached, ...(e.input.screens ?? [])].slice(-LAST_SCREENS);
+  const stamp = stampOf(replay.history, consumed);
+  const applied = applyOps(map, e.ops, known, stamp);
+  const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
+  return { ...replay, map: applied.map, unsent, attached, history };
+});
+
 // ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
 // 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff 以外（screen-off・screen-input-skipped・intake-*・知らない type）は読み飛ばす。
 // まだ添えていない変化は、screen の行を受け取り順に積み、後ろの diff で、その diff の screenCount より前に受け取った画面のうち、
 // 区切り（渡した新しい発言の end の最大値）以下に映り始めたものを外して求める（選んだ後に受け取った画面は、時刻が区切り以下でも残す）。
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
-  let map: MeetingMap | undefined;
-  const remarks: Remark[] = [];
-  const processed: Remark[] = [];
-  const known = new Set<string>();
-  let history: History = { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined };
-  let unsent: (ScreenRefs & { readonly seq: number })[] = [];
-  let received = 0;
-  let attached: ScreenRefs[] = [];
-  const files = new Set<string>();
+  let replay: Replay = {
+    map: undefined, remarks: [], processed: [], known: new Set(), history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
+    unsent: [], received: 0, attached: [], files: new Set(),
+  };
   let index = -1;
   for (const event of events) {
     index++;
     const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
+    const failed = Effect.mapError((error: { readonly message: string }) => invalid(error.message));
     const type = typeOf(event);
     if (type === StartEvent.fields.type.literal) {
-      const e = yield* decodeStart(event).pipe(Effect.mapError((error) => invalid(error.message)));
-      map = emptyMap(e.title);
+      const e = yield* decodeStart(event).pipe(failed);
+      replay = { ...replay, map: emptyMap(e.title) };
     } else if (type === RemarkEvent.fields.type.literal) {
-      const e = yield* decodeRemark(event).pipe(Effect.mapError((error) => invalid(error.message)));
-      remarks.push(e.remark);
+      const e = yield* decodeRemark(event).pipe(failed);
+      replay.remarks.push(e.remark);
     } else if (type === ScreenEvent.fields.type.literal) {
-      const e = yield* decodeScreen(event).pipe(Effect.mapError((error) => invalid(error.message)));
-      unsent.push({ start: e.start, image: e.image, seq: received++ });
-      if (e.image !== null) files.add(e.image);
+      const e = yield* decodeScreen(event).pipe(failed);
+      replay.unsent.push({ start: e.start, image: e.image, seq: replay.received });
+      if (e.image !== null) replay.files.add(e.image);
+      replay = { ...replay, received: replay.received + 1 };
     } else if (type === DiffEvent.fields.type.literal) {
-      const e = yield* decodeDiff(event).pipe(Effect.mapError((error) => invalid(error.message)));
-      if (!map) return yield* invalid("ログの diff より前に start がありません");
-      const fresh: Remark[] = [];
-      for (const id of e.input.fresh) {
-        const r = remarks.find((x) => x.id === id);
-        if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
-        fresh.push(r);
-      }
-      const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
-      if (count > fresh.length) return yield* invalid("diff の反映数が入力の発言数を超えています");
-      const consumed = fresh.slice(0, count);
-      for (const r of consumed) {
-        known.add(r.id);
-        if (hasContent(r.text)) processed.push(r);
-      }
-      const selectedBefore = e.input.screenCount ?? 0;
-      if (selectedBefore > received) return yield* invalid(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${received} より大きい`);
-      if (fresh.length) {
-        const cutoff = Math.max(...fresh.map((r) => r.end));
-        unsent = unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff);
-      }
-      attached = [...attached, ...(e.input.screens ?? [])].slice(-LAST_SCREENS);
-      const stamp = stampOf(history, consumed);
-      const applied = applyOps(map, e.ops, known, stamp);
-      if (e.error === undefined) history = recordRound(history, map, applied, stamp);
-      map = applied.map;
+      const e = yield* decodeDiff(event).pipe(failed);
+      replay = yield* replayDiff(replay, e, invalid);
     }
   }
+  const { map, remarks, processed, known, history, unsent, attached, files, received } = replay;
   if (!map) return yield* new InvalidLogEvent({ index: 0, reason: "ログに start がありません" });
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
   return { map, pending, processed, remarks, known, ...history, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), last: attached, files, received } };
