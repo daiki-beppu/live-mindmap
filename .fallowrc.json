@@ -1,0 +1,159 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/v3.33.1/schema.json",
+  "entry": [
+    "server/bench/**/*.ts",
+    "e2e/e2e.config.ts",
+    "e2e/tests/**/*.e2e.ts",
+    "e2e/scripts/serve.ts",
+    "server/test/fixtures/fake-helper.ts",
+    "server/test/fixtures/chatgptWorker.ts",
+    "server/test/fixtures/managedDepsProcess.mjs",
+    "server/test/fixtures/managedDepsRunnerHooks.mjs",
+    "web/test/fixtures/preTailwind.css"
+  ],
+  "ignorePatterns": [
+    "helper/**"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "ignoreDependencies": [
+    "@foldkit/oxlint-plugin"
+  ],
+  "usedClassMembers": [
+    "message"
+  ],
+  "duplicates": {
+    "enabled": true,
+    "mode": "mild",
+    "minTokens": 50,
+    "minLines": 5,
+    "ignoreDefaults": true
+  },
+  "health": {
+    "maxCyclomatic": 20,
+    "maxCognitive": 15,
+    "maxCrap": 0
+  },
+  "rules": {
+    "require-suppression-reason": "error"
+  },
+  "failOnParseError": true,
+  "ignoreExports": [
+    {
+      "file": "web/src/app/capture/main.ts",
+      "exports": [
+        "Model",
+        "init",
+        "update",
+        "view"
+      ]
+    },
+    {
+      "file": "web/src/app/capture/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/keys/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/liveFeed/main.ts",
+      "exports": [
+        "Model",
+        "init",
+        "update"
+      ]
+    },
+    {
+      "file": "web/src/app/liveFeed/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/liveFeed/subscription.ts",
+      "exports": [
+        "subscriptions"
+      ]
+    },
+    {
+      "file": "web/src/app/mapSurface/main.ts",
+      "exports": [
+        "Model",
+        "init",
+        "update",
+        "view"
+      ]
+    },
+    {
+      "file": "web/src/app/mapSurface/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/mapSurface/subscription.ts",
+      "exports": [
+        "subscriptions"
+      ]
+    },
+    {
+      "file": "web/src/app/meeting/main.ts",
+      "exports": [
+        "Model",
+        "init",
+        "update",
+        "view"
+      ]
+    },
+    {
+      "file": "web/src/app/meeting/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/meeting/subscription.ts",
+      "exports": [
+        "subscriptions"
+      ]
+    },
+    {
+      "file": "web/src/app/review/main.ts",
+      "exports": [
+        "Model",
+        "init"
+      ]
+    },
+    {
+      "file": "web/src/app/review/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/sessionLayout/main.ts",
+      "exports": [
+        "Model",
+        "init",
+        "update",
+        "view"
+      ]
+    },
+    {
+      "file": "web/src/app/sessionLayout/message.ts",
+      "exports": [
+        "Message"
+      ]
+    },
+    {
+      "file": "web/src/app/sidePanel/main.ts",
+      "exports": [
+        "view"
+      ]
+    }
+  ]
+}
