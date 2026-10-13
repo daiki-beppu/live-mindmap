@@ -137,7 +137,6 @@ export const settle = <Model, Message, OutMessage>(simulation: SceneSimulation<M
 
 // 保留中の Command の名前（並びは保証されないので昇順にそろえる）
 export const commandNames = (commands: ReadonlyArray<{ name: string }> | undefined): string[] => (commands ?? []).map((c) => c.name).sort();
-export const mountNames = (simulation: { mounts: ReadonlyArray<{ name: string }> }): string[] => simulation.mounts.map((m) => m.name).sort();
 
 // Menu が自分で返す Command（フォーカスの移動・スクロール・クリックの代行・型検索の遅延）。見返しの Command と分けて数える
 const MENU_COMMANDS = new Set(["FocusItems", "FocusButton", "ScrollIntoView", "ClickItem", "DelayClearSearch"]);

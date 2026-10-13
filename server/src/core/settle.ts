@@ -3,7 +3,7 @@
 // 時刻は呼び出し側が渡す（ミリ秒）。タイマーは持たない（中核は実行環境に依存しない。ADR 0003）。
 import type { HelperPartial } from "./live.ts";
 import { createRemarkGate } from "./remarkGate.ts";
-import type { Remark } from "./session.ts";
+import type { Remark } from "./remark.ts";
 import type { Word } from "./words.ts";
 
 export const SETTLE_QUIET_MS = 1000;

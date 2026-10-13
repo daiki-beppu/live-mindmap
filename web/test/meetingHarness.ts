@@ -25,7 +25,7 @@ import { Message } from "../src/app/meeting/message.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
 
 export const app = { update, view };
-export { init, update, view, Message };
+export { init, update, Message };
 export type Model = ReturnType<typeof init>;
 export type MeetingMessage = typeof Message.Type;
 
@@ -133,7 +133,6 @@ export type VNode = Parameters<typeof textContent>[0];
 export type Sim = SceneSimulation<Model, Message, undefined>;
 
 export const attrOf = (vnode: VNode, name: string): string | undefined => Option.getOrUndefined(attr(vnode, name));
-export const hasClass = (vnode: VNode, name: string): boolean => (attrOf(vnode, "class") ?? "").split(" ").includes(name);
 export const elementsOf = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 export const one = (html: VNode, css: string): VNode => Option.getOrThrow(find(html, css));
 export const texts = (html: VNode, css: string): string[] => findAll(html, css).map(textContent);

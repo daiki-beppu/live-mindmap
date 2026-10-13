@@ -1077,11 +1077,12 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
   const vocabLines = (dir: string) => logEvents(dir).filter((e) => e.type === "vocab");
   const remarkLines = (dir: string) => logEvents(dir).filter((e) => e.type === "remark");
 
-  // 語を足し、vocab の行が書かれる（読みができる）まで待つ
+  // vocab の行が見えても書き込み後の語彙更新はまだ終わっていないので、I/O の完了後にも譲る
   const openWithVocabulary = Effect.fn("openWithVocabulary")(function* (words: ReadonlyArray<string> = ["港南店", "Zendesk"]) {
     const opened = yield* openRecordingSink();
     yield* opened.sink.addUserVocabulary(words);
     yield* settleUntil(() => vocabLines(opened.dir).length === 1);
+    yield* settle;
     return opened;
   });
 
@@ -1302,6 +1303,7 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
 
       yield* Deferred.succeed(readings.gate.current, undefined);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 10, end: 12, text: garbled.text, words: garbled.words });
       yield* sink.drain;
       yield* sink.flush;
@@ -1417,6 +1419,7 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       const { sink, dir, speaks } = yield* openRecordingSink();
       yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
       yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
@@ -1450,6 +1453,7 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
 
       yield* Deferred.succeed(readings.gate.current, undefined);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 10, end: 12, text: garbled.text, words: garbled.words });
       yield* sink.drain;
       yield* sink.flush;
@@ -1471,6 +1475,7 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       const { sink, dir } = yield* openRecordingSink();
       yield* showScreen(sink, 1, ["港南店"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* showScreen(sink, 5, ["来週の予定", "議事録"]);
       yield* sink.screen({ start: 6, image: null });
       yield* settle;
@@ -1556,6 +1561,7 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       const { sink, dir } = yield* openRecordingSink();
       yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
       yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
@@ -1578,6 +1584,7 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       const { sink, dir } = yield* openRecordingSink();
       yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
       yield* sink.final({ track: "相手", start: 10, end: 12, text: zendesk.text, words: zendesk.words });
       yield* sink.drain;
@@ -1670,6 +1677,7 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       const { sink, dir, speaks } = yield* openRecordingSink();
       yield* sink.addUserVocabulary(["Notion", "Figma"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
       yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
@@ -1753,6 +1761,7 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
 
       yield* Deferred.succeed(katakana.gate, undefined);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 10, end: 12, text: katakanaNotion.text, words: katakanaNotion.words });
       yield* sink.drain;
       yield* sink.flush;
@@ -1775,6 +1784,7 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       const { sink, dir } = yield* openRecordingSink();
       yield* sink.addUserVocabulary(["Notion", "OJT", "港南店"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
       yield* sink.final({ track: "相手", start: 10, end: 12, text: garbled.text, words: garbled.words });
       yield* TestClock.adjust(QUIET_MS);
@@ -1819,6 +1829,7 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       const { sink, dir } = yield* openRecordingSink();
       yield* sink.addUserVocabulary(["Notion", "Figma", "Slack"]);
       yield* settleUntil(() => vocabLines(dir).length === 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
       yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
@@ -1938,6 +1949,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     Effect.gen(function* () {
       yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
       yield* awaitVocabLines(dir, 1);
+      yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
     });
   const idle = (_context: Context) => Effect.void;
@@ -1994,6 +2006,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
       yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
         yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
         yield* awaitVocabLines(dir, 1);
+        yield* settle;
         yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
       }));
       expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 }] });

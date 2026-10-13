@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { scrollPanDelta } from "../src/camera.ts";
 import { keyListRows } from "../src/app/keys/table.ts";
-import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
+import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
 import { mapPoint } from "./reviewPage.ts";
 import { withBrowser, type Page } from "./screenCompare.ts";
 
@@ -15,7 +15,7 @@ let frames: MeetingFrames;
 beforeAll(async () => {
   server = await startMeetingServer();
   frames = await meetingFrames();
-}, TIMEOUT);
+}, MEETING_TIMEOUT);
 afterAll(async () => {
   await server.close();
 });
@@ -63,7 +63,7 @@ describe("会議中（Foldkit 版）の入口", () => {
       expect(await page.locator("[data-node-id]").count()).toBeGreaterThan(1);
       await context.close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -83,7 +83,7 @@ describe("会議中（Foldkit 版）の入口", () => {
       expect(await readMeetingViewport(page)).toEqual(before);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 });
 
@@ -106,7 +106,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       await waitForMeasuredNodes(page, await nodeCount(page));
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -127,7 +127,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect(await page.evaluate(() => (document.querySelector(".map-surface") as (HTMLElement & { __same?: boolean }) | null)?.__same)).toBe(true);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -148,7 +148,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect(after.zoom).toBe(before.zoom);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -166,7 +166,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect((await readMeetingViewport(page)).zoom).toBeGreaterThan(before.zoom);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -191,7 +191,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect(await readMeetingViewport(page)).toEqual(dragged);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -213,7 +213,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       await moved.context().close();
       await fresh.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -242,7 +242,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect((await readMeetingViewport(page)).zoom).toBeCloseTo(before.zoom * 1.21, 5);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -258,7 +258,7 @@ describe("会議中（Foldkit 版）の Mount", () => {
       expect(await readMeetingViewport(page)).toEqual(before);
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 });
 
@@ -285,7 +285,7 @@ describe("会議中（Foldkit 版）の Subscription", () => {
       await page.locator(".captions").waitFor();
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 
   it(
@@ -314,6 +314,6 @@ describe("会議中（Foldkit 版）の Subscription", () => {
       await page.locator(".screen-notice").waitFor();
       await page.context().close();
     }),
-    TIMEOUT,
+    MEETING_TIMEOUT,
   );
 });

@@ -3,7 +3,8 @@ import { Schema } from "effect";
 import { toDrawnix } from "./drawnix.ts";
 import { KINDS, PLAN_STATUSES, ROOT_ID } from "./map.ts";
 import { toMarkdown } from "./markdown.ts";
-import { Remark, type Snapshot, type SnapshotNode } from "./session.ts";
+import { Remark } from "./remark.ts";
+import type { Snapshot, SnapshotNode } from "./snapshot.ts";
 
 export type ExportNode = Omit<SnapshotNode, "parent" | "evidence" | "touchedAt" | "evidenceRound" | "talkStatus"> & {
   evidence: Remark[];
@@ -22,8 +23,7 @@ const ExportNode: Schema.Codec<ExportNode> = Schema.Struct({
   assignee: Schema.optionalKey(Schema.String),
   due: Schema.optionalKey(Schema.String),
   pointStatus: Schema.optionalKey(Schema.Literals(["未決", "決定済み"])),
-  // session.ts と互いに import するので、Remark も suspend で遅らせる（どちらが先に読み込まれても初期化順で壊れない）
-  evidence: Schema.mutable(Schema.Array(Schema.suspend((): Schema.Codec<Remark> => Remark))),
+  evidence: Schema.mutable(Schema.Array(Remark)),
   children: Schema.mutable(Schema.Array(Schema.suspend((): Schema.Codec<ExportNode> => ExportNode))),
 });
 

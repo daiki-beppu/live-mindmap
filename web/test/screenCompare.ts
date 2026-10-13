@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { Playwright } from "../../server/src/playwright.ts";
 import { managedPlaywright } from "../../server/test/fixtures/managedPlaywright.ts";
+import type { Viewport } from "../src/camera.ts";
 
 // 画面の照合（heavy IT の部品）。比べる 2 つのページそれぞれについて「開き方」と「ビューポートの値の読み方」を受け取り、
 // 同じ操作を交互に流して、ステップごとにビューポート（x・y・zoom）・<audio> の実際の値・スクリーンショットを比べる。
@@ -8,8 +9,6 @@ import { managedPlaywright } from "../../server/test/fixtures/managedPlaywright.
 
 export type Browser = Effect.Success<ReturnType<(typeof Playwright)["Service"]["launch"]>>;
 export type Page = Awaited<ReturnType<Browser["newPage"]>>;
-
-export type Viewport = { x: number; y: number; zoom: number };
 
 export type Side = {
   name: string;

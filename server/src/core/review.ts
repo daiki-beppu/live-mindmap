@@ -1,6 +1,7 @@
 // 見返し用の HTML（map.html）の、Node に依存しない部分。サーバー（書き出し）とブラウザ（表示）の両方が読む。
 import { Effect } from "effect";
-import { restoreState, snapshotOf, type Snapshot } from "./session.ts";
+import { restoreState, snapshotOf } from "./session.ts";
+import type { Snapshot } from "./snapshot.ts";
 
 // ログ（log.jsonl の出来事）を埋め込む <script type="application/json"> の id
 export const REVIEW_LOG_ELEMENT_ID = "live-mindmap-review-log";

@@ -3,10 +3,7 @@ import { Schema } from "effect";
 // 取り込みの途切れ（CONTEXT.md）の状態・ブラウザへのフレーム・ログの形・起動し直しの上限の判断。
 // Node の実行環境に依存しない（ADR 0003）。タイマーは持たない（60 秒・3 回、構成の変化の 60 秒・10 回の判断は、実時間を受け取って純粋に決める）。
 
-// ヘルパーごとの取り込みの状態。running: 動いている。interrupted: 途切れて起動し直している。stopped: 諦めて止まった
-export type IntakeStatus = "running" | "interrupted" | "stopped";
-
-// cli status が出す状態の語彙（order.md「知らせ方」。CLI は「セッションなし」も扱うので、サーバーの IntakeStatus を拡張する）
+// cli status が出す状態の語彙（order.md「知らせ方」。CLI は「セッションなし」も扱うので、サーバーの取り込み状態に none を加える）
 export const SessionIntakeStatus = Schema.Literals(["none", "running", "interrupted", "stopped"]);
 export type SessionIntakeStatus = typeof SessionIntakeStatus["Type"];
 

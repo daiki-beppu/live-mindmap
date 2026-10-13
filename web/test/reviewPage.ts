@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { embedReviewAudio, embedReviewLog } from "../../server/src/core/index.ts";
 import { buildReviewTemplateHtml } from "../../server/test/fixtures/reviewTemplate.ts";
-import type { Browser, Page, Side, Step, Viewport } from "./screenCompare.ts";
+import type { Viewport } from "../src/camera.ts";
+import type { Browser, Page, Side, Step } from "./screenCompare.ts";
 
 // 見返し（map.html・map-audio.html）の heavy IT が共有する道具（Issue #826）。テストではなく、
 // テストの中で作る WAV・ビルドしたテンプレートへのログと音声の埋め込み・ページの開き方・ビューポートの読み方・照合の操作の列だけを置く。

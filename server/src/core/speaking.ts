@@ -1,7 +1,7 @@
 // いま話している文字（仮のノードに出す文字）。マップ（Snapshot）には入れない。
 // Node の実行環境に依存しない（ADR 0003）。
 import { Schema } from "effect";
-import { Track, type Remark } from "./session.ts";
+import { Track, type Remark } from "./remark.ts";
 
 // ブラウザへ送る frame。スナップショットの frame とは type で見分ける
 export const SpeakingFrame = Schema.Struct({ type: Schema.Literal("speaking"), track: Track, text: Schema.String });

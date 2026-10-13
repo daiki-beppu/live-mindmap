@@ -17,32 +17,26 @@ export * from "./groupSize.ts";
 export * from "./markdown.ts";
 export * from "./playback.ts";
 export * from "./review.ts";
+export * from "./remark.ts";
+export * from "./snapshot.ts";
 export {
-  ChangeEntry,
   DiffEvent,
   DiffUpdater,
   DiffUsage,
-  FILLERS,
   hasContent,
   InvalidLogEvent,
   LogEvent,
   logTimestamp,
   makeSession,
   QUIET_MS,
-  Remark,
   RemarkEvent,
   restoreSession,
   restoreState,
   ScreenEvent,
-  ScreenInputSkippedEvent,
   ScreenOffEvent,
   SessionLog,
-  Snapshot,
-  SnapshotNode,
   StartEvent,
-  Track,
   VocabEvent,
-  VocabPoolEvent,
 } from "./session.ts";
 export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
