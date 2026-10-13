@@ -6,6 +6,7 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
 - **Make the issue self-contained**: takt copies the issue's body, labels and comments, as they stand when the task is enqueued, into the implementing agent's task. Edits and comments made after enqueueing do not reach it, and that agent cannot open linked issues. Copy every spec detail the work needs (values, rules, decided constraints) into the body or a comment before enqueueing; a link alone is context for humans.
+- **Write acceptance criteria the run can check**: the implementing agent finishes before the PR and its CI exist, so a criterion about the PR body or a CI result blocks the run (#955 went BLOCKED three times on them). Ask for the result in the implementation report instead; it is copied into the PR body when the PR is made. When a criterion says something fails or does not fail, name the layer: the command's exit code, `pnpm typecheck`, or CI (#955's "nothing fails yet" was read as exit code 0 instead of "not wired into typecheck and CI").
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
