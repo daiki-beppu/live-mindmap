@@ -4,7 +4,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
-import { Cause, Console, Effect, Exit, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schema, Stream, type Runtime } from "effect";
+import { Cause, Console, Effect, Exit, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 import { Argument, CliError, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
@@ -12,7 +12,7 @@ import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
 import { depsDirConfig, portConfig, sessionsDirConfig, shareAllowConfig } from "./config.ts";
 import { ManagedDeps } from "./managedDeps.ts";
-import { withoutFinalNewline } from "./consoleText.ts";
+import { StdoutIsTty, withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { prepareUpdaterLayer } from "./diffUpdater.ts";
@@ -82,6 +82,7 @@ import { Viewers } from "./viewers.ts";
 import { CheckReport, InstallEvent, Item, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
+import { planServerStop, readServerPid, removeServerPid, ServerProcess } from "./serverProcess.ts";
 
 // server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
@@ -826,7 +827,8 @@ const checkCommand = Command.make(
 ));
 
 const installFromServer = Effect.fnUntraced(function* (port: number, path: "/deps/install" | "/update", names: ReadonlyArray<string>) {
-    yield* Console.error("時間がかかるので run_in_background で呼んでよい");
+    // エージェント（標準出力が端末でない）にだけ出す。人の端末には要らない文
+    if (!(yield* StdoutIsTty)) yield* Console.error("時間がかかるので run_in_background で呼んでよい");
     const response = yield* executeServerRequest(port, "POST", path, { names });
     let result: Extract<typeof InstallEvent["Type"], { type: "result" }> | undefined;
     yield* response.stream.pipe(
@@ -879,6 +881,63 @@ const updateCommand = Command.make(
   }),
 ).pipe(Command.withDescription("常駐サーバーに版違いの管理依存だけの更新を依頼する。名前を省くと全対象。speech-ja は OS が更新するので不要"));
 
+// サーバーが SIGTERM の後に終わるのを待つ上限と、確かめる間隔
+const SERVER_EXIT_TIMEOUT_MS = 15_000;
+const SERVER_EXIT_POLL_MS = 100;
+const ServerIdentity = Schema.Struct({ pid: Schema.Int.check(Schema.isGreaterThan(0)) });
+
+const serverStop = Command.make(
+  "stop",
+  {},
+  Effect.fn("server stop")(function* () {
+    const port = yield* portConfig;
+    const sessionsDir = yield* sessionsDirConfig;
+    const processes = yield* ServerProcess;
+    const recorded = yield* orFileFailed(readServerPid(sessionsDir, port)).pipe(
+      Effect.catchTag("BrokenServerPid", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+    );
+    const reported = yield* requestServer(port, "GET", "/server", ServerIdentity).pipe(
+      Effect.map((identity): number | undefined => identity.pid),
+      Effect.catchTags({
+        ServerUnreachable: () => Effect.succeed(undefined),
+        // PID を名乗る口が無いのは、この口より前の版のサーバー
+        ServerFailed: () => Effect.fail(new CommandFailed({ message: `ポート ${port} のサーバーは server stop に対応していない版です。起動した端末で Ctrl-C で止めてください` })),
+      }),
+    );
+    const plan = planServerStop({ reported, recorded, recordedAlive: recorded === undefined ? false : yield* processes.alive(recorded) });
+    switch (plan.action) {
+      case "not-running":
+        if (plan.stale !== undefined) yield* orFileFailed(removeServerPid(sessionsDir, port));
+        yield* write(`ポート ${port} のサーバーは動いていません\n`);
+        return;
+      case "unresponsive":
+        return yield* new CommandFailed({
+          message: `ポート ${port} のサーバーが応答しません。記録の pid ${plan.pid} が live-mindmap のサーバーか確かめてから止めてください（ps -p ${plan.pid} -o command=）`,
+        });
+      case "terminate": {
+        // 止めるとセッションは書き出されずに終わるので、進行中なら断る
+        const { status } = yield* requestServer(port, "GET", "/session/status", IntakeStatus);
+        if (status !== "none") return yield* new CommandFailed({ message: "セッションが進行中です。先に cli stop で書き出してから、もう一度 server stop を打ってください" });
+        yield* processes.terminate(plan.pid);
+        const exited = yield* processes.alive(plan.pid).pipe(
+          Effect.repeat({ until: (alive) => !alive, schedule: Schedule.spaced(SERVER_EXIT_POLL_MS) }),
+          Effect.timeoutOption(SERVER_EXIT_TIMEOUT_MS),
+        );
+        if (Option.isNone(exited)) return yield* new CommandFailed({ message: `サーバー（pid ${plan.pid}）が ${SERVER_EXIT_TIMEOUT_MS / 1000} 秒たっても終わりません` });
+        yield* write(`サーバーを止めました（ポート ${port}、pid ${plan.pid}）\n`);
+      }
+    }
+  }),
+).pipe(Command.withDescription(
+  "常駐サーバー（pnpm dev）を止める。LIVE_MINDMAP_PORT のポートで応答したサーバー自身の PID にだけ SIGTERM を送り、終わるまで待つ。"
+    + "セッションが進行中なら断る（先に stop）。動いていなければ何もしない。pkill などで止めない",
+));
+
+const serverCommand = Command.make("server").pipe(
+  Command.withDescription("常駐サーバー（pnpm dev）そのものの操作。止めるのは server stop"),
+  Command.withSubcommands([serverStop]),
+);
+
 const login = Command.make("login").pipe(Command.withSubcommands([
   Command.make("chatgpt", {}, () => loginChatgpt).pipe(Command.withDescription("システムブラウザで ChatGPT にサインインする")),
 ]));
@@ -915,7 +974,7 @@ const root = Command.make("live-mindmap").pipe(
     "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
       + "exit code 3 = 開始に要るものが未導入",
   ),
-  Command.withSubcommands([login, logout, vocab, play, apps, start, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand]),
+  Command.withSubcommands([login, logout, vocab, play, apps, start, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）

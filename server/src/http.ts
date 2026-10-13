@@ -203,6 +203,11 @@ const SessionRoutes = HttpRouter.addAll([
   })),
 ]);
 
+// 待ち受けているサーバー自身の PID。cli server stop は、記録の PID ではなくこれにだけシグナルを送る（serverProcess.ts）
+const ServerRoutes = HttpRouter.addAll([
+  HttpRouter.route("GET", "/server", Effect.sync(() => HttpServerResponse.jsonUnsafe({ pid: process.pid }))),
+]);
+
 const FeedRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/ws", feed),
   HttpRouter.route("GET", "/", feed),
@@ -355,7 +360,7 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
 
 // セッションの操作と配信を受ける（常駐サーバー）
 export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ViewingShare | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
-  HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
+  HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, ServerRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));
 

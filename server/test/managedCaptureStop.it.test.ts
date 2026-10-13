@@ -66,7 +66,8 @@ describe("未導入の管理 Chromium と stop", () => {
       expect(existsSync(join(sessionDir, "map.png"))).toBe(false);
       expect(unmanaged.launch).not.toHaveBeenCalled();
       expect(warnings.errors.filter((message) => message.startsWith("map.png を書き出せませんでした:"))).toHaveLength(1);
-      expect(warnings.errors.find((message) => message.startsWith("map.png を書き出せませんでした:"))).toContain("pnpm cli install chromium");
+      // 入れ方は 1 回だけ出す
+      expect(warnings.errors.find((message) => message.startsWith("map.png を書き出せませんでした:"))?.split("pnpm cli install chromium")).toHaveLength(2);
     }).pipe(Effect.provideService(Console.Console, warnings.service), Effect.scoped);
   });
 });

@@ -10,6 +10,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
+import { StdoutIsTty } from "../src/consoleText.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem, type DepEvent } from "../src/managedDeps.ts";
 import { Helpers } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -152,7 +153,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     const consoleService: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); }, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
     const layer = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
       Layer.succeed(Console.Console, consoleService), ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(dir, "home"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_SESSIONS: dir })));
-    const fiber = yield* runCli(["update", "chromium"]).pipe(Effect.provide(layer), Effect.tap(() => Effect.sync(() => { ended = true; })), Effect.forkChild);
+    const fiber = yield* runCli(["update", "chromium"]).pipe(Effect.provide(layer), Effect.provideService(StdoutIsTty, false), Effect.tap(() => Effect.sync(() => { ended = true; })), Effect.forkChild);
     try {
       yield* Effect.tryPromise(() => vi.waitFor(() => expect(stderr.join("")).toContain("ダウンロード\n")));
       expect(deps.update.mock.calls).toEqual([[["chromium"]]]);

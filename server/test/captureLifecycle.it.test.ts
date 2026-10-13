@@ -95,8 +95,10 @@ describe("撮影 scope の資源所有権", () => {
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isSuccess(result)) return;
     expect(result.failure).toBeInstanceOf(CaptureFailed);
-    expect(result.failure.message).toContain("pnpm cli install chromium");
+    // 入っているのに起動できないときは、入れ方を勧めない（入っていないときの ChromiumMissing だけが入れ方を持つ）
+    expect(result.failure.message).toContain("Chromium を起動できません");
     expect(result.failure.message).toContain("launch failed");
+    expect(result.failure.message).not.toContain("pnpm cli install");
     expect(resources.createServer).toHaveBeenCalledTimes(1);
     expect(resources.launch).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);

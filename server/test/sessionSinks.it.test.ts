@@ -456,7 +456,7 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(fileNames(paths)).toEqual(["map.md", "map.json", "map.drawnix", "map.html"]);
       expect(warnings.errors).toHaveLength(1);
       expect(warnings.errors[0]).toContain("map.png を書き出せませんでした: 後始末に失敗");
-      expect(warnings.errors[0]).toContain("pnpm cli install chromium");
+      expect(warnings.errors[0]).not.toContain("pnpm cli install");
     })).pipe(
       Effect.provide(
         sinksLayer({
@@ -500,7 +500,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       expect(warnings.errors).toHaveLength(1);
       expect(warnings.errors[0]).toContain("map.png を書き出せませんでした: 撮影に失敗\n詳細");
-      expect(warnings.errors[0]).toContain("pnpm cli install chromium");
+      expect(warnings.errors[0]).not.toContain("pnpm cli install");
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer, capture: failingCapture("撮影に失敗\n詳細") }))));
 
   it.effect("サーバーの警告は、map.html の失敗の理由の改行を残す", () =>

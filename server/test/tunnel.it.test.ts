@@ -34,6 +34,8 @@ describe("Tunnel.check（cloudflared の有無）", () => {
     if (Result.isFailure(result)) {
       expect(result.failure).toBeInstanceOf(CloudflaredMissing);
       expect(result.failure.message).toContain(INSTALL_HOW);
+      // 導入はセッション中には断られるので、先にセッションを終えることを示す
+      expect(result.failure.message).toContain("cli stop でセッションを終えてから");
     }
     expect(spawned).toEqual([]);
   }).pipe(Effect.scoped));

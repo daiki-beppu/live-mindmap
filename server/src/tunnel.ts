@@ -12,7 +12,8 @@ const TUNNEL_STOP_TIMEOUT_MS = 5_000;
 
 export class TunnelFailed extends Schema.TaggedError<TunnelFailed>()("TunnelFailed", { message: Schema.String }) {}
 
-// cloudflared が管理ディレクトリに無い。message は入れ方を含む
+// cloudflared が管理ディレクトリに無い。message は入れ方を含む。share はセッション中にしか打てず、
+// 導入はセッション中には断られる（Sessions.reserveDeps）ので、先にセッションを終える順で示す
 export class CloudflaredMissing extends Schema.TaggedError<CloudflaredMissing>()("CloudflaredMissing", { message: Schema.String }) {}
 
 export type OpenedTunnel = {
@@ -67,7 +68,7 @@ export class Tunnel extends Context.Service<Tunnel, {
         Effect.mapError((error) => new TunnelFailed({ message: error.message })),
         Effect.flatMap(([item]) => item?.state === "ready"
           ? Effect.void
-          : Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。pnpm cli install cloudflared で入れてから、もう一度 share を打ってください" }))),
+          : Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。管理依存はセッション中には入れられないので、cli stop でセッションを終えてから pnpm cli install cloudflared で入れてください（share は次のセッションから使えます）" }))),
       );
       return Tunnel.of({ check, open });
     }),

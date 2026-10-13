@@ -9,6 +9,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
+import { StdoutIsTty } from "../src/consoleText.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import { Helpers } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -135,6 +136,24 @@ describe("CLI install とサーバー", () => {
     expect(response.status).toBe(200);
     expect(yield* Effect.tryPromise(() => response.json())).toEqual([installed]);
   }).pipe(Effect.scoped));
+  it.live("標準出力が端末（人が読む）なら、エージェント向けの run_in_background の文を出さない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const server = yield* serverWith(dir, ManagedDeps.of({
+      executable: () => Effect.die("実行ファイル取得は対象外"),
+      load: () => Effect.die("撮影は対象外"),
+      check: () => Effect.succeed([installed]),
+      update: () => Stream.die("更新は対象外"),
+      install: () => Stream.succeed({ type: "result" as const, items: [installed] }),
+    }));
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const consoleService: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); }, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
+    const deps = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer, Layer.succeed(Console.Console, consoleService),
+      ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_SESSIONS: dir })));
+    yield* runCli(["install", "chromium"]).pipe(Effect.provide(deps), Effect.provideService(StdoutIsTty, true));
+    expect(JSON.parse(stdout.join(""))).toEqual([installed]);
+    expect(stderr.join("")).not.toContain("run_in_background");
+  }).pipe(Effect.scoped));
   it.live("偽 ManagedDeps の段階を完了前に stderr へ出し、完了まで stdout と終了を保留する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const release = yield* Deferred.make<void>();
@@ -154,7 +173,7 @@ describe("CLI install とサーバー", () => {
     const consoleService: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); }, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
     const deps = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer, Layer.succeed(Console.Console, consoleService),
       ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_SESSIONS: dir })));
-    const fiber = yield* runCli(["install", "chromium"]).pipe(Effect.provide(deps), Effect.tap(() => Effect.sync(() => { ended = true; })), Effect.forkChild);
+    const fiber = yield* runCli(["install", "chromium"]).pipe(Effect.provide(deps), Effect.provideService(StdoutIsTty, false), Effect.tap(() => Effect.sync(() => { ended = true; })), Effect.forkChild);
     try {
       yield* Effect.tryPromise(() => vi.waitFor(() => expect(stderr.join("")).toContain("ダウンロード\n")));
       expect(requests).toEqual([["chromium"]]);

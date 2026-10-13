@@ -744,7 +744,7 @@ describe("CLI", () => {
 
     const warning = deps.stderr.find((line) => line.startsWith("map.png を書き出せませんでした:"));
     expect(warning).toContain("撮影に失敗 詳細");
-    expect(warning).toContain("pnpm cli install chromium");
+    expect(warning).not.toContain("pnpm cli install");
     expect(warning).toMatch(/^[^\n]+\n$/);
   }));
 
