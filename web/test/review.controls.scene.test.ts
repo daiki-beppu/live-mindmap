@@ -15,32 +15,27 @@ import { VIDEOJS_ICONS, type IconNode } from "./fixtures/videojsIcons.ts";
 import {
   appOf,
   argsOf,
-  attrOf,
   audioApp,
   audioContext,
   commandNames,
   descendants,
   DURATION,
-  elementsOf,
   expectedIds,
   hasClass,
   labelled,
-  one,
   plainApp,
   plainContext,
-  renderedIds,
   settle,
   sideHiddenOf,
   singleRateContext,
   stateAt,
-  styleOf,
   tagOf,
   TOOLTIPS_AUDIO,
   TOOLTIPS_PLAIN,
   tooltipMounts,
   type Sim,
-  type VNode,
 } from "./reviewHarness.ts";
+import { attrOf, elementsOf, one, renderedIds, styleOf, type VNode } from "./sceneTree.ts";
 
 // 見返しの操作の行（Issue #825）の Scene。描いた view から入り、シークバー・音量・速さのメニュー・ツールチップ・アイコン・字幕と右の列のボタンを
 // ユーザーが触る形（キー・クリック・フォーカス・ポインタ）で確かめる。会議の長さは 200 秒、章は A（0〜100）・B（100〜200）、TODO の印は 160 秒。

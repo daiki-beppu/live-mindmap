@@ -6,7 +6,7 @@ import * as Tooltip from "@foldkit/ui/tooltip";
 import { Option, Schema } from "effect";
 import type { MountDefinition } from "foldkit/mount";
 import { Command as StoryCommand, type StorySimulation } from "foldkit/story";
-import { Command, Mount, attr, find, findAll, textContent, type SceneSimulation } from "foldkit/scene";
+import { Command, Mount, type SceneSimulation } from "foldkit/scene";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
@@ -16,6 +16,8 @@ import { init, makeUpdate, makeView, snapshotOf, type Model } from "../src/app/r
 import { Message } from "../src/app/review/message.ts";
 import { ObserveAudio, ObserveSeekPointer } from "../src/app/review/mount.ts";
 import { foldView } from "../src/folding.ts";
+import { resolveNoticeMotion } from "./noticeMotion.ts";
+import { attrOf, elementsOf, one, type VNode } from "./sceneTree.ts";
 
 // ---- 題材の会議 ----
 // 議題 A（0〜100 秒）→ 議題 B（100〜200 秒）。B の中の 160 秒に TODO が 1 つ。会議の長さは 200 秒（最後の発言の end）。
@@ -59,20 +61,13 @@ export const expectedIds = (context: Context, time: number): string[] =>
   foldView(snapshotOf(context, stateAt(context, time)), new Set(), null, new Set(), new Set()).nodes.map((n) => n.id);
 
 // ---- 描いた木を読む ----
-export type VNode = Parameters<typeof textContent>[0];
 export type Sim = SceneSimulation<Model, Message, undefined>;
 
-export const attrOf = (vnode: VNode, name: string): string | undefined => Option.getOrUndefined(attr(vnode, name));
 export const hasClass = (vnode: VNode, name: string): boolean => (attrOf(vnode, "class") ?? "").split(" ").includes(name);
-export const elementsOf = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
 export const descendants = (vnode: VNode): VNode[] => elementsOf(vnode).flatMap((child) => [child, ...descendants(child)]);
-export const one = (html: VNode, css: string): VNode => Option.getOrThrow(find(html, css));
-export const styleOf = (vnode: VNode): Record<string, string> => ((vnode.data as { style?: Record<string, string> } | undefined)?.style ?? {}) as Record<string, string>;
 export const tagOf = (vnode: VNode): string => (vnode.sel ?? "").split(/[#.]/)[0] ?? "";
 export const labelled = (html: VNode, label: string): VNode => one(html, `[aria-label="${label}"]`);
 
-// 描いた木の中の data-node-id を持つ要素の id（マップのノード）
-export const renderedIds = (html: VNode): string[] => findAll(html, "[data-node-id]").map((v) => attrOf(v, "data-node-id")!);
 
 // ---- 保留中の Command と Mount を解く step ----
 // Scene は保留の Command を残したまま次の操作を流せず、終わりに Mount が残っていても落ちる。操作のたびに、出た Command と Mount を「何も起こさない結果」で解く
@@ -156,10 +151,5 @@ export const restartedBlink = StoryCommand.resolve(RestartBlink, MapSurfaceMessa
 export const settleNotice = <Model, Message>(simulation: StorySimulation<Model, Message>): StorySimulation<Model, Message> => {
   const pending = simulation.commands.find((c) => c.name === "WaitForPaint" || c.name === "WaitForAnimationSettled");
   if (pending === undefined) return simulation;
-  const generation = pending.args?.generation as number;
-  return settleNotice(
-    pending.name === "WaitForPaint"
-      ? StoryCommand.resolve(Animation.WaitForPaint({ generation }), Animation.Message.CompletedWaitForPaint({ generation }))(simulation)
-      : StoryCommand.resolve(Animation.WaitForAnimationSettled({ id: pending.args?.id as string, generation }), Animation.Message.EndedAnimation({ generation }))(simulation),
-  );
+  return settleNotice(resolveNoticeMotion(simulation, pending));
 };

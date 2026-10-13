@@ -8,10 +8,10 @@
 import * as Animation from "@foldkit/ui/animation";
 import * as Popover from "@foldkit/ui/popover";
 import * as Toast from "@foldkit/ui/toast";
-import { Duration, Option } from "effect";
+import { Duration } from "effect";
 import { expect } from "vitest";
 import { Command as StoryCommand, type StorySimulation } from "foldkit/story";
-import { attr, Command, find, findAll, given, Mount, scene, Subscription, textContent, type SceneSimulation, type SceneStep } from "foldkit/scene";
+import { Command, findAll, given, Mount, scene, Subscription, textContent, type SceneSimulation, type SceneStep } from "foldkit/scene";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import type { LiveFrame } from "../src/app/liveFeed/message.ts";
 import { Message as LiveFeedMessage } from "../src/app/liveFeed/message.ts";
@@ -23,6 +23,8 @@ import type { KeyId } from "../src/app/keys/table.ts";
 import { init, update, view } from "../src/app/meeting/main.ts";
 import { Message } from "../src/app/meeting/message.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
+import { resolveNoticeMotion } from "./noticeMotion.ts";
+import { attrOf, elementsOf, one, styleOf, type VNode } from "./sceneTree.ts";
 
 export const app = { update, view };
 export { init, update, Message };
@@ -129,19 +131,13 @@ export const referencePress = (model: MapSurface.Model, key: KeyId, mods: Mods =
 export const referenceUpdate = (model: MapSurface.Model, message: MapSurfaceMessage): MapSurface.Model => MapSurface.update(model, message).model;
 
 // ---- 描いた木を読む ----
-export type VNode = Parameters<typeof textContent>[0];
 export type Sim = SceneSimulation<Model, Message, undefined>;
 
-export const attrOf = (vnode: VNode, name: string): string | undefined => Option.getOrUndefined(attr(vnode, name));
-export const elementsOf = (vnode: VNode): VNode[] => (vnode.children ?? []).filter((c): c is VNode => typeof c !== "string" && c.sel !== undefined);
-export const one = (html: VNode, css: string): VNode => Option.getOrThrow(find(html, css));
 export const texts = (html: VNode, css: string): string[] => findAll(html, css).map(textContent);
-export const styleOf = (vnode: VNode): Record<string, string> => ((vnode.data as { style?: Record<string, string> } | undefined)?.style ?? {}) as Record<string, string>;
 const numbers = (s: string): number[] => (s.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
 
 // .layout の直下の子の class（先頭の 1 つ）。画面の並びを見る
 export const layoutOutline = (html: VNode): string[] => elementsOf(one(html, ".layout")).map((child) => semanticClassesOf(attrOf(child, "class") ?? "")[0] ?? "");
-export const renderedIds = (html: VNode): string[] => findAll(html, "[data-node-id]").map((v) => attrOf(v, "data-node-id")!);
 // 選ばれているノードの id（aria-pressed="true" のボタンを持つノード）
 export const selectedIds = (html: VNode): string[] =>
   findAll(html, "[data-node-id]")
@@ -253,10 +249,5 @@ export const settleStory = <M, Msg>(simulation: StorySimulation<M, Msg>): StoryS
   const pending = simulation.commands.find((c) => c.name === "WaitForPaint" || c.name === "WaitForAnimationSettled" || c.name === "RestartBlink");
   if (pending === undefined) return simulation;
   if (pending.name === "RestartBlink") return settleStory(StoryCommand.resolve(RestartBlink, MapSurfaceMessage.CompletedRestartBlink())(simulation));
-  const generation = pending.args?.generation as number;
-  return settleStory(
-    pending.name === "WaitForPaint"
-      ? StoryCommand.resolve(Animation.WaitForPaint({ generation }), Animation.Message.CompletedWaitForPaint({ generation }))(simulation)
-      : StoryCommand.resolve(Animation.WaitForAnimationSettled({ id: pending.args?.id as string, generation }), Animation.Message.EndedAnimation({ generation }))(simulation),
-  );
+  return settleStory(resolveNoticeMotion(simulation, pending));
 };

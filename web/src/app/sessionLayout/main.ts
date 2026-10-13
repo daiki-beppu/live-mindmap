@@ -128,6 +128,24 @@ export const receiveSessionMode = (model: Model, local: boolean): Return => upda
 // 親（見返し）が、見る状態の mode が変わったことを伝える入口（子の Message を親が組み立てずに済む）
 export const changeViewingMode = (model: Model, mode: "auto" | "manual" | "overview"): Return => update(model, Message.ChangedViewingMode({ mode }));
 
+// 親が字幕の部品を子として組み込む配線。親ごとに違うのは、Model のどこから読み、どこへ書き戻し、親の Message に包むか（read・write・toParentMessage）だけ
+export const sessionLayoutFolds = <ParentModel, ParentMessage>(parent: {
+  readonly read: (model: ParentModel) => Option.Option<Model>;
+  readonly write: (model: ParentModel, layout: Model) => ParentModel;
+  readonly toParentMessage: (message: Message) => ParentMessage;
+}) => {
+  const fold = { ...parent, foldOutMessage: () => (model: ParentModel) => ({ model }) };
+  return {
+    foldSessionLayout: Update.foldChild({ update, ...fold }),
+    foldViewingMode: Update.foldChild({ update: changeViewingMode, ...fold }),
+    foldIntake: Update.foldChild({ update: receiveIntakeStatus, ...fold }),
+    foldScreenNotice: Update.foldChild({ update: receiveScreenNotice, ...fold }),
+    foldTapNotice: Update.foldChild({ update: receiveTapNotice, ...fold }),
+    foldDiffUpdate: Update.foldChild({ update: receiveDiffUpdate, ...fold }),
+    foldSessionMode: Update.foldChild({ update: receiveSessionMode, ...fold }),
+  };
+};
+
 const MANUAL_TEXT = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
 const OVERVIEW_TEXT = "全体を見ています・F か Esc で戻る・? でキー一覧";
 const viewingText = (mode: "auto" | "manual" | "overview"): Option.Option<string> =>

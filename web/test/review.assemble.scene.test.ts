@@ -6,7 +6,8 @@ import { Message } from "../src/app/review/message.ts";
 
 import { speakingAt } from "../src/reviewTimeline.ts";
 import { snapshotOf } from "../src/app/review/main.ts";
-import { attrOf, audioApp, audioContext, elementsOf, hasClass, one, plainApp, plainContext, settle, stateAt, type Sim, type VNode } from "./reviewHarness.ts";
+import { audioApp, audioContext, hasClass, plainApp, plainContext, settle, stateAt, type Sim } from "./reviewHarness.ts";
+import { attrOf, elementsOf, one, type VNode } from "./sceneTree.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
 
 // 見返しを 1 つのプログラムに組み上げた（Issue #826）Scene。描いた view から入り、

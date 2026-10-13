@@ -7,16 +7,15 @@ import { Command, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
-import type { ArrowDir, ViewKey } from "../../viewing.ts";
 import { AUDIO_RATE, initialPlayback, PlaybackState, playbackReducer, type PlaybackEvent } from "../../reviewPlayback.ts";
 import { reviewKeyEvent, type ReviewKeyAction } from "../../reviewKeys.ts";
 import { snapshotAt, speakingAt, topicNameOf } from "../../reviewTimeline.ts";
-import { initKeyList, keyListView } from "../keys/keyList.ts";
+import { initKeyList, keyListFolds, keyListView } from "../keys/keyList.ts";
 import type { KeyId } from "../keys/table.ts";
 import * as MapSurface from "../mapSurface/main.ts";
 import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
+import { plainKey, surfaceFolds, type KeyHandler } from "../mapSurface/parentFolds.ts";
 import * as SessionLayout from "../sessionLayout/main.ts";
-import { Message as SessionLayoutMessage } from "../sessionLayout/message.ts";
 import * as SidePanel from "../sidePanel/main.ts";
 import { PauseAudio, PlayAudio, ReleaseFocus, ReleaseFocusAfterMenuClose, REVIEW_AUDIO_ID, SeekAudio, WriteAudioSettings } from "./command.ts";
 import { reviewScreenOf, type Context } from "./context.ts";
@@ -125,32 +124,21 @@ export const makeUpdate = (context: Context) => {
     const { mode: _mode, snapshot: _snapshot, ...next } = surface;
     return modifyFields(model, { mapSurface: () => next });
   };
-  const mapSurfaceFold = {
-    read: (model: Model) => Option.some(surfaceOf(context, model)),
-    write: (model: Model, surface: MapSurface.Model) => storeSurface(model, surface),
-    toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }),
-    // 選択は表示面の viewing が持つので、ノードが選ばれたこと（SelectedNode）は見返しでは受け流す
-    foldOutMessage: () => (model: Model) => ({ model }),
-  };
-  const foldMapSurface = Update.foldChild({ update: MapSurface.update, ...mapSurfaceFold });
-  // キーの事実は、表示面の入口（pressViewKey など）で渡す
-  const foldViewKey = Update.foldChild({ update: MapSurface.pressViewKey, ...mapSurfaceFold });
-  const foldArrowKey = Update.foldChild({ update: MapSurface.pressArrowKey, ...mapSurfaceFold });
-  const foldEscapeKey = Update.foldChild({ update: MapSurface.pressEscapeKey, ...mapSurfaceFold });
-  const foldEnterKey = Update.foldChild({ update: MapSurface.pressEnterKey, ...mapSurfaceFold });
-  const foldSideKey = Update.foldChild({ update: MapSurface.pressSideKey, ...mapSurfaceFold });
+  // 選択は表示面の viewing が持つので、ノードが選ばれたこと（SelectedNode）は見返しでは受け流す（配線は surfaceFolds）。キーの事実は、表示面の入口（pressViewKey など）で渡す
+  const { foldMapSurface, foldEscapeKey, toggleSide: toggledSide, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+    read: (model) => Option.some(surfaceOf(context, model)),
+    write: (model, surface) => storeSurface(model, surface),
+    toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
+  });
   // 字幕の部品（見る状態の知らせの Toast）。導く欄（speaking・captionsHidden）は保存しない
-  const sessionLayoutFold = {
-    read: (model: Model) => Option.some(layoutOf(context, model)),
-    write: (model: Model, layout: SessionLayout.Model) => {
+  const { foldSessionLayout, foldViewingMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
+    read: (model) => Option.some(layoutOf(context, model)),
+    write: (model, layout) => {
       const { speaking: _speaking, captionsHidden: _captionsHidden, ...sessionLayout } = layout;
       return modifyFields(model, { sessionLayout: () => sessionLayout });
     },
-    toParentMessage: (message: SessionLayoutMessage) => Message.GotSessionLayoutMessage({ message }),
-    foldOutMessage: () => (model: Model) => ({ model }),
-  };
-  const foldSessionLayout = Update.foldChild({ update: SessionLayout.update, ...sessionLayoutFold });
-  const foldViewingMode = Update.foldChild({ update: SessionLayout.changeViewingMode, ...sessionLayoutFold });
+    toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
+  });
   // 子（Slider・Menu・Tooltip）は foldChild で組み込み、結果は OutMessage（ChangedValue・Selected）だけを variant の名前で受ける。子の内部の Message は見ない
   const foldSeekSlider = Update.foldChild({
     update: Slider.update,
@@ -190,16 +178,12 @@ export const makeUpdate = (context: Context) => {
     // 吹き出しが出た・隠れた（Shown・Hidden）ことは、見返しでは受け流す
     foldOutMessage: () => () => (model: Model) => ({ model }),
   });
-  // キーの一覧（Popover）。開閉の結果（Opened・Closed）は見返しでは受け流す（開いているかは Popover の Model が持つ）
-  const keyListFold = {
-    read: (model: Model) => Option.some(model.keyList),
-    write: (model: Model, keyList: Popover.Model) => modifyFields(model, { keyList: () => keyList }),
-    toParentMessage: (message: Popover.Message) => Message.GotKeyListMessage({ message }),
-    foldOutMessage: () => (model: Model) => ({ model }),
-  };
-  const foldKeyList = Update.foldChild({ update: Popover.update, ...keyListFold });
-  const foldKeyListOpen = Update.foldChildStep({ update: Popover.open, ...keyListFold });
-  const foldKeyListClose = Update.foldChildStep({ update: Popover.close, ...keyListFold });
+  // キーの一覧（Popover）。開いているかは Popover の Model が持つ
+  const { foldKeyList, foldKeyListOpen, foldKeyListClose } = keyListFolds<Model, Message>({
+    read: (model) => Option.some(model.keyList),
+    write: (model, keyList) => modifyFields(model, { keyList: () => keyList }),
+    toParentMessage: (message) => Message.GotKeyListMessage({ message }),
+  });
   // 速さのメニューを外から閉じる（Esc）。選ばれたことの OutMessage は出ない
   const foldRateMenuClose = Update.foldChildStep({
     update: RateMenu.close,
@@ -256,49 +240,26 @@ export const makeUpdate = (context: Context) => {
   // 人が時刻を動かした操作（▶・反映の前後のボタン・シーク・時刻を動かすキー）の結果に、表示面へ「時刻を動かした」を渡す（自動のカメラへ戻る）。再生の reduce の後に渡す
   const byHuman = (result: Return): Return => ({ ...result, model: storeSurface(result.model, MapSurface.movedTime(surfaceOf(context, result.model))) });
   // 右の列・字幕の出し入れ。ボタンと E・C のキーで同じ Model の変化にする（フォーカスを外すのはボタンだけ）。右の列は表示面の見る状態が持つ
-  const NO_MODIFIERS: Modifiers = { metaKey: false, ctrlKey: false, altKey: false };
-  const toggledSide = (model: Model): Return => foldSideKey(model, NO_MODIFIERS);
   const toggledCaptions = (model: Model): Model => modifyFields(model, { captionsHidden: (hidden) => !hidden });
 
   // --- キー（#822）。Subscription は「このキーが押された」だけを届け、意味はここで決める ---
-  type Modifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
-  type KeyHandler = (model: Model, modifiers: Modifiers) => Return;
-  const viewKey = (key: ViewKey): KeyHandler => (model, modifiers) => foldViewKey(model, { key, ...modifiers });
-  const arrowKey = (dir: ArrowDir): KeyHandler => (model, modifiers) => foldArrowKey(model, { dir, ...modifiers });
-  const isPlain = ({ metaKey, ctrlKey, altKey }: Modifiers): boolean => !metaKey && !ctrlKey && !altKey;
-  // ⌘・Ctrl・Option と一緒なら何もしない
-  const plainKey = (handler: (model: Model) => Return): KeyHandler => (model, modifiers) => (isPlain(modifiers) ? handler(model) : { model });
   // Esc: 速さのメニューが開いていれば、それを閉じるだけ。キーの一覧が開いていれば、それを閉じるだけ。どちらも閉じていれば見る状態に渡す
-  const escapeKey: KeyHandler = (model, modifiers) =>
+  const escapeKey: KeyHandler<Model, Message> = (model, modifiers) =>
     model.rateMenu.isOpen
       ? foldRateMenuClose(model)
       : model.keyList.isOpen
         ? toggledKeyList(foldKeyListClose(model))
         : foldEscapeKey(model, modifiers);
   // 見返しのキーは、再生の出来事にしてから、ボタンと同じ Model の変化と Command にする（⌘・Ctrl・Option と一緒なら出来事にならない）
-  const reviewKey = (action: ReviewKeyAction): KeyHandler => (model, { metaKey, ctrlKey, altKey }) => {
+  const reviewKey = (action: ReviewKeyAction): KeyHandler<Model, Message> => (model, { metaKey, ctrlKey, altKey }) => {
     const keyEvent = reviewKeyEvent(action, { meta: metaKey, ctrl: ctrlKey, alt: altKey }, model.playback.time, context.playback.duration);
     if (keyEvent === null) return { model };
     if (!keyEvent.movesTime) return changedSettings(model, keyEvent.event);
     return byHuman(keyEvent.event.type === "toggle" ? toggled(model) : moved(model, keyEvent.event));
   };
-  const KEY_HANDLERS: Record<KeyId, KeyHandler> = {
+  const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
+    ...surfaceKeyHandlers,
     Escape: escapeKey,
-    F: viewKey("F"),
-    "=": viewKey("="),
-    "-": viewKey("-"),
-    "0": viewKey("0"),
-    Z: viewKey("Z"),
-    "Shift+ArrowLeft": viewKey("Shift+ArrowLeft"),
-    "Shift+ArrowRight": viewKey("Shift+ArrowRight"),
-    "Shift+ArrowUp": viewKey("Shift+ArrowUp"),
-    "Shift+ArrowDown": viewKey("Shift+ArrowDown"),
-    ArrowLeft: arrowKey("left"),
-    ArrowRight: arrowKey("right"),
-    ArrowUp: arrowKey("up"),
-    ArrowDown: arrowKey("down"),
-    Enter: foldEnterKey,
-    E: plainKey(toggledSide),
     C: plainKey((model) => ({ model: toggledCaptions(model) })),
     "?": plainKey((model) => toggledKeyList(model.keyList.isOpen ? foldKeyListClose(model) : foldKeyListOpen(model))),
     Space: reviewKey("toggle"),
