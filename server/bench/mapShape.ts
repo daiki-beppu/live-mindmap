@@ -1,10 +1,10 @@
 import { join } from "node:path";
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect, FileSystem, Schema } from "effect";
 import { Argument, Command } from "effect/cli";
 import { childrenByParent, groupSize, RemarkEvent, reviewSnapshot, type SnapshotNode } from "../src/core/index.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
-import { BENCH_VERSION, InvalidInputFile, MissingSessionDir, readInputText, reportFailure, write } from "./entry.ts";
+import { benchProgram, InvalidInputFile, MissingSessionDir, readInputText, write } from "./entry.ts";
 
 export type MapShape = {
   minutes: number;
@@ -131,9 +131,7 @@ export const command = Command.make("mapShape", {
 })).pipe(Command.withDescription("保存したセッションのマップを復元し、本文を出さずに形の数だけを Markdown 表で比較する"));
 
 if (import.meta.main) {
-  Command.run(command, { version: BENCH_VERSION }).pipe(
-    Effect.tapCause(reportFailure),
-    Effect.provide(NodeServices.layer),
+  benchProgram(command).pipe(
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

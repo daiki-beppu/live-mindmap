@@ -1,13 +1,13 @@
 // 字幕の精度の計測（Issue #390）。発言（確定した文字起こし）を、合成会議の台本（timeline.tsv）と突き合わせ、
 // 文字誤り率（CER）と、固有名詞・略語の正解率を出す。
 // 発言は `stt-bench run` の出力（1 行 1 結果の JSONL。確定結果だけを使う）か、kanary transcribe の JSON（拡張子 .json）。
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { TranscriptFile } from "../src/core/index.ts";
 import { createRemarkSettler } from "../src/core/settle.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
-import { BENCH_VERSION, InvalidInputFile, inputFileError, readInputText, reportFailure, write } from "./entry.ts";
+import { benchProgram, InvalidInputFile, inputFileError, readInputText, write } from "./entry.ts";
 import { parseResults, type SttResult } from "./sttLatency.ts";
 
 // 台本の 1 行（話者・開始秒・終了秒・文）。発言は区間と本文だけを見る
@@ -244,9 +244,7 @@ export const command = Command.make(
 ).pipe(Command.withDescription("発言を合成会議の台本と突き合わせ、CER と固有名詞・略語の正解率、多い食い違いを出す"));
 
 if (import.meta.main) {
-  Command.run(command, { version: BENCH_VERSION }).pipe(
-    Effect.tapCause(reportFailure),
-    Effect.provide(NodeServices.layer),
+  benchProgram(command).pipe(
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }
