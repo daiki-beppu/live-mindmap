@@ -26,23 +26,36 @@ export type ScreenCandidates = {
   readonly seen: ReadonlyMap<string, number>;
 };
 
+/** 1 行から取れる語。カタカナ → 漢字（3〜12 字）→ 大文字を含む英字の語の順 */
+function lineWords(raw: string): string[] {
+  const words: string[] = [];
+  for (const m of raw.matchAll(KATAKANA)) words.push(m[0]);
+  for (const m of raw.matchAll(HAN_RUN)) {
+    const n = codePoints(m[0]);
+    if (n >= HAN_MIN && n <= HAN_MAX) words.push(m[0]);
+  }
+  for (const m of raw.matchAll(LATIN_WORD)) {
+    if (HAS_UPPER.test(m[0])) words.push(m[0]);
+  }
+  return words;
+}
+
+/** 参加者の小窓の名前のような短い行なら、その行（前後の空白を除く）。そうでなければ undefined */
+function shortLineOf(raw: string): string | undefined {
+  const line = raw.trim();
+  const n = codePoints(line);
+  return n >= SHORT_MIN && n <= SHORT_MAX && SHORT_LINE.test(line) && !HIRAGANA_ONLY.test(line) ? line : undefined;
+}
+
 /** 1 画面の行から候補を取る。`seen` は渡されたものを書き換えず、更新した数を新しく返す。 */
 export function screenCandidates(seen: ReadonlyMap<string, number>, lines: ReadonlyArray<string>): ScreenCandidates {
   const found = new Set<string>();
   const shortLines = new Set<string>();
 
   for (const raw of lines) {
-    for (const m of raw.matchAll(KATAKANA)) found.add(m[0]);
-    for (const m of raw.matchAll(HAN_RUN)) {
-      const n = codePoints(m[0]);
-      if (n >= HAN_MIN && n <= HAN_MAX) found.add(m[0]);
-    }
-    for (const m of raw.matchAll(LATIN_WORD)) {
-      if (HAS_UPPER.test(m[0])) found.add(m[0]);
-    }
-    const line = raw.trim();
-    const n = codePoints(line);
-    if (n >= SHORT_MIN && n <= SHORT_MAX && SHORT_LINE.test(line) && !HIRAGANA_ONLY.test(line)) shortLines.add(line);
+    for (const word of lineWords(raw)) found.add(word);
+    const line = shortLineOf(raw);
+    if (line !== undefined) shortLines.add(line);
   }
 
   const next = new Map(seen);
