@@ -46,45 +46,46 @@ const codeOf = (content: string): string =>
     .filter((line) => !line.trimStart().startsWith("//"))
     .join("\n");
 
-export const findEntrypointViolations = (files: ReadonlyArray<SourceFile>): Violation[] => {
+// Issue #237・#236: 呼び出しの場所の集合が許可リストとちょうど一致する
+const checkCallers = (files: ReadonlyArray<SourceFile>, byPath: ReadonlyMap<string, string>, pattern: RegExp, allowed: readonly string[], label: string): Violation[] => {
   const violations: Violation[] = [];
-  const byPath = new Map(files.map((f) => [f.path, f.content]));
+  for (const { path, content } of files) {
+    if (allowed.includes(path)) continue;
+    for (const line of matchingLines(content, pattern)) {
+      violations.push({ path, line, message: `${label} を呼べるのは ${allowed.join("・") || "どこにも無い"} だけ` });
+    }
+  }
+  for (const path of allowed) {
+    if (matchingLines(byPath.get(path) ?? "", pattern).length === 0) {
+      violations.push({ path, message: `${label} を呼んでいない` });
+    }
+  }
+  return violations;
+};
 
-  // Issue #237・#236: 呼び出しの場所の集合が許可リストとちょうど一致する
-  const checkCallers = (pattern: RegExp, allowed: readonly string[], label: string) => {
-    for (const { path, content } of files) {
-      if (allowed.includes(path)) continue;
-      for (const line of matchingLines(content, pattern)) {
-        violations.push({ path, line, message: `${label} を呼べるのは ${allowed.join("・") || "どこにも無い"} だけ` });
-      }
-    }
-    for (const path of allowed) {
-      if (matchingLines(byPath.get(path) ?? "", pattern).length === 0) {
-        violations.push({ path, message: `${label} を呼んでいない` });
-      }
-    }
-  };
-  checkCallers(RUN_MAIN, RUN_MAIN_ALLOWED, "NodeRuntime.runMain");
-  checkCallers(RUN_SYNC, RUN_SYNC_ALLOWED, "Effect.runSync（runSyncExit を含む）");
+const checkRunPromise = (files: ReadonlyArray<SourceFile>): Violation[] => {
+  const violations: Violation[] = [];
   for (const { path, content } of files) {
     if (RUN_PROMISE_ALLOWED.includes(path)) continue;
     for (const line of matchingLines(content, RUN_PROMISE)) {
       violations.push({ path, line, message: "Effect.runPromise（runPromiseExit を含む）は呼ばない" });
     }
   }
+  return violations;
+};
 
-  // Issue #449: サーバーの入口は process.exit も、既定で process.exit を呼ぶ teardown の onExit も呼ばない
-  const server = byPath.get("src/server.ts");
-  if (server !== undefined) {
-    for (const line of matchingLinesInCode(server, PROCESS_EXIT)) {
-      violations.push({ path: "src/server.ts", line, message: "process.exit を呼ばない" });
-    }
-    for (const line of matchingLinesInCode(server, ON_EXIT)) {
-      violations.push({ path: "src/server.ts", line, message: "teardown の onExit を呼ばない" });
-    }
-  }
+// Issue #449: サーバーの入口は process.exit も、既定で process.exit を呼ぶ teardown の onExit も呼ばない
+const checkServerEntry = (server: string | undefined): Violation[] => {
+  if (server === undefined) return [];
+  return [
+    ...matchingLinesInCode(server, PROCESS_EXIT).map((line) => ({ path: "src/server.ts", line, message: "process.exit を呼ばない" })),
+    ...matchingLinesInCode(server, ON_EXIT).map((line) => ({ path: "src/server.ts", line, message: "teardown の onExit を呼ばない" })),
+  ];
+};
 
-  // Issue #561: bench の各入口も process.exit を呼ばず、exitNaturally で自然に終わる
+// Issue #561: bench の各入口も process.exit を呼ばず、exitNaturally で自然に終わる
+const checkBenchEntries = (byPath: ReadonlyMap<string, string>): Violation[] => {
+  const violations: Violation[] = [];
   for (const path of BENCH_SCRIPTS) {
     const content = byPath.get(path);
     if (content === undefined) continue;
@@ -95,8 +96,18 @@ export const findEntrypointViolations = (files: ReadonlyArray<SourceFile>): Viol
       violations.push({ path, message: "runMain に teardown: exitNaturally を渡す" });
     }
   }
-
   return violations;
+};
+
+export const findEntrypointViolations = (files: ReadonlyArray<SourceFile>): Violation[] => {
+  const byPath = new Map(files.map((f) => [f.path, f.content]));
+  return [
+    ...checkCallers(files, byPath, RUN_MAIN, RUN_MAIN_ALLOWED, "NodeRuntime.runMain"),
+    ...checkCallers(files, byPath, RUN_SYNC, RUN_SYNC_ALLOWED, "Effect.runSync（runSyncExit を含む）"),
+    ...checkRunPromise(files),
+    ...checkServerEntry(byPath.get("src/server.ts")),
+    ...checkBenchEntries(byPath),
+  ];
 };
 
 if (import.meta.main) {

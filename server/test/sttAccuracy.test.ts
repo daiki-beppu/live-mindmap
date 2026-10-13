@@ -20,6 +20,21 @@ describe("突き合わせ", () => {
     expect(align("ab", "ac")).toEqual(["eq", "sub"]);
   });
 
+  it("同じ距離の手順が複数あるときは、後ろから見て斜め（一致・置換）→ 脱落 → 挿入の順に選ぶ", () => {
+    expect(align("ab", "ba")).toEqual(["sub", "sub"]);
+    expect(align("abcd", "cdab")).toEqual(["sub", "sub", "sub", "sub"]);
+    expect(align("abc", "bca")).toEqual(["del", "eq", "eq", "ins"]);
+    expect(align("aab", "ab")).toEqual(["del", "eq", "eq"]);
+    expect(align("ab", "aab")).toEqual(["ins", "eq", "eq"]);
+    expect(align("kitten", "sitting")).toEqual(["sub", "eq", "eq", "eq", "sub", "eq", "ins"]);
+  });
+
+  it("片方が空なら、もう片方の全文字が脱落（台本のみ）か挿入（発言のみ）になる", () => {
+    expect(align("", "abc")).toEqual(["ins", "ins", "ins"]);
+    expect(align("abc", "")).toEqual(["del", "del", "del"]);
+    expect(align("", "")).toEqual([]);
+  });
+
   it("区切りは発言の区間をまたがない行の間に置き、発言は区間の中央で区切りに入れる", () => {
     const lines = [line(0, 10, "あ"), line(11, 20, "い"), line(21, 40, "う"), line(41, 50, "え")];
     // 20〜21 秒の間は発言がまたぐので切れず、40〜41 秒の間で切れる
@@ -41,6 +56,19 @@ describe("採点", () => {
       Notion: { total: 0, correct: 0, kanaOnly: 0, misses: [] },
     });
     expect([...s.confusions]).toEqual([["j→∅", 1]]);
+  });
+
+  it("複数の区切りにまたがっても、内訳・語の出現・崩れ方を区切りの順、文字の順に数え、食い違いの並びは出会った順になる", () => {
+    const lines = [line(0, 10, "OJTとKPIを決める"), line(11, 20, "OJTの進め方"), line(100, 110, "Notionに書く"), line(111, 120, "来週のOJT")];
+    const remarks = [line(0, 10, "OTとKPIを決めた"), line(11, 20, "OJTの進め"), line(100, 110, "ノーションに書く"), line(111, 120, "来週のOJTです")];
+    const s = score(lines, remarks, ["OJT", "KPI", "Notion"], 30);
+    expect({ refChars: s.refChars, sub: s.sub, del: s.del, ins: s.ins }).toEqual({ refChars: 33, sub: 6, del: 3, ins: 2 });
+    expect([...s.confusions]).toEqual([["j→∅", 1], ["る→た", 1], ["方notion→ノーション", 1], ["∅→です", 1]]);
+    expect(s.terms.map((t) => [t.term, t.total, t.correct, t.kanaOnly, [...t.misses]])).toEqual([
+      ["OJT", 3, 2, 0, [["ot", 1]]],
+      ["KPI", 1, 1, 0, []],
+      ["Notion", 1, 0, 0, [["ノーション", 1]]],
+    ]);
   });
 
   it("ひらがな・カタカナの違いだけのものは、正解に入れずに別に数える", () => {

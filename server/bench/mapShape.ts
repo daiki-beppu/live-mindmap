@@ -34,45 +34,67 @@ export function largestGroup(nodes: readonly SnapshotNode[]): { id: string; size
   return best;
 }
 
-export function mapShape(events: readonly unknown[]): MapShape {
-  const nodes = reviewSnapshot(events).nodes;
+// 最後の発言の end（秒）。発言が無ければ 0
+function lastRemarkEnd(events: readonly unknown[]): number {
   let end = 0;
   for (const event of events) {
     if (Schema.is(RemarkEvent)(event)) end = Math.max(end, event.remark.end);
   }
-  const minutes = end / 60;
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const kids = childrenByParent(nodes);
+  return end;
+}
+
+// 子が 1 つだけの鎖をたどった長さ(chain)と、そのうち親と同じ種別が続く長さ(same)
+function singleChildChain(n: SnapshotNode, kids: Map<string, SnapshotNode[]>): { chain: number; same: number } {
+  let chain = 0, same = 0;
+  let current = n;
+  let matching = true;
+  while (kids.get(current.id)?.length === 1) {
+    const child = kids.get(current.id)![0]!;
+    chain++;
+    matching = matching && child.kind === current.kind;
+    if (matching) same++;
+    current = child;
+  }
+  return { chain, same };
+}
+
+function depthOf(n: SnapshotNode, byId: Map<string, SnapshotNode>): number {
+  let depth = 0;
+  for (let current = n; current.parent !== null; current = byId.get(current.parent)!) depth++;
+  return depth;
+}
+
+function countKinds(nodes: readonly SnapshotNode[], byId: Map<string, SnapshotNode>) {
   let topics = 0, nested = 0, derived = 0, maxTopic = 0;
-  const maxGroup = largestGroup(nodes)?.size ?? 0;
-  let oneChild = 0, longestChain = 0, longestSameKindChain = 0, maxDepth = 0;
-  const childDistribution = [0, 0, 0, 0, 0, 0, 0];
   for (const n of nodes) {
     const parent = n.parent === null ? undefined : byId.get(n.parent);
     if (n.kind === "議題") {
       topics++;
       if (parent?.kind === "議題") nested++;
+      maxTopic = Math.max(maxTopic, groupSize(nodes, n.id).size);
     }
     if (n.kind === "論点" && parent?.kind === "論点") derived++;
-    if (n.kind === "議題") maxTopic = Math.max(maxTopic, groupSize(nodes, n.id).size);
+  }
+  return { topics, nested, derived, maxTopic };
+}
+
+export function mapShape(events: readonly unknown[]): MapShape {
+  const nodes = reviewSnapshot(events).nodes;
+  const minutes = lastRemarkEnd(events) / 60;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const kids = childrenByParent(nodes);
+  const { topics, nested, derived, maxTopic } = countKinds(nodes, byId);
+  const maxGroup = largestGroup(nodes)?.size ?? 0;
+  let oneChild = 0, longestChain = 0, longestSameKindChain = 0, maxDepth = 0;
+  const childDistribution = [0, 0, 0, 0, 0, 0, 0];
+  for (const n of nodes) {
     const count = kids.get(n.id)?.length ?? 0;
     childDistribution[Math.min(6, count)]!++;
     if (count === 1) oneChild++;
-    let chain = 0, same = 0;
-    let current = n;
-    let matching = true;
-    while (kids.get(current.id)?.length === 1) {
-      const child = kids.get(current.id)![0]!;
-      chain++;
-      matching = matching && child.kind === current.kind;
-      if (matching) same++;
-      current = child;
-    }
+    const { chain, same } = singleChildChain(n, kids);
     longestChain = Math.max(longestChain, chain);
     longestSameKindChain = Math.max(longestSameKindChain, same);
-    let depth = 0;
-    for (let current = n; current.parent !== null; current = byId.get(current.parent)!) depth++;
-    maxDepth = Math.max(maxDepth, depth);
+    maxDepth = Math.max(maxDepth, depthOf(n, byId));
   }
   return {
     minutes, nodes: nodes.length, topics, nested,

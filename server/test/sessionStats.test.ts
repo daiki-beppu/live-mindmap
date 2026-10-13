@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { formatRow, overlapRatio, parseLog, sessionStats } from "../bench/sessionStats.ts";
+import { formatRow, overlapRatio, parseLog, sessionStats, type LogLine } from "../bench/sessionStats.ts";
 
 const remark = (id: string, track: "相手" | "自分", start: number, end: number) =>
   JSON.stringify({ type: "remark", remark: { id, track, start, end, text: "本文" } });
@@ -77,4 +77,44 @@ describe("セッションの数だけの集計", () => {
     expect(headZero).toMatch(/無音\D*0/);
     expect(headTwo).not.toBe(headZero);
   }));
+});
+
+describe("1 行ずつの数え方（型ごとの集計）", () => {
+  it("すべての型を数え、remark の無い remark 行・未知の型は飛ばし、逆向きの区間は長さ 0、end は最大を取る。入力は書き換えない", () => {
+    const events: LogLine[] = [
+      { type: "remark" },
+      { type: "remark", remark: { track: "相手", start: 0, end: 4 } },
+      { type: "remark", remark: { track: "相手", start: 2, end: 6 } },
+      { type: "remark", remark: { track: "自分", start: 10, end: 9 } },
+      { type: "diff" },
+      { type: "diff", ops: [{}, {}, {}], error: "boom" },
+      { type: "diff", ops: [], error: "" },
+      { type: "unknown" },
+      { type: "intake-stopped" },
+      { type: "intake-stopped" },
+      { type: "intake-restarted" },
+      { type: "intake-gave-up" },
+      { type: "intake-gave-up" },
+      { type: "intake-gave-up" },
+      { type: "tap-silent" },
+      { type: "tap-silent" },
+    ];
+    const before = JSON.stringify(events);
+    const s = sessionStats(events);
+    expect(s.tracks.相手.remarks).toBe(2);
+    expect(s.tracks.相手.duration).toBe(8);
+    expect(s.tracks.相手.overlap).toBeCloseTo(2 / 6);
+    expect(s.tracks.自分).toEqual({ remarks: 1, duration: 0, overlap: 0 });
+    expect({ lastEnd: s.lastEnd, diffs: s.diffs, diffErrors: s.diffErrors, ops: s.ops, intake: s.intake, tapSilent: s.tapSilent }).toEqual({
+      lastEnd: 9, diffs: 3, diffErrors: 1, ops: 3, intake: { stopped: 2, restarted: 1, gaveUp: 3 }, tapSilent: 2,
+    });
+    expect(JSON.stringify(events)).toBe(before);
+  });
+
+  it("ログが空なら、すべて 0 の集計になる", () => {
+    expect(sessionStats([])).toEqual({
+      tracks: { 相手: { remarks: 0, duration: 0, overlap: 0 }, 自分: { remarks: 0, duration: 0, overlap: 0 } },
+      lastEnd: 0, diffs: 0, diffErrors: 0, ops: 0, intake: { stopped: 0, restarted: 0, gaveUp: 0 }, tapSilent: 0,
+    });
+  });
 });
