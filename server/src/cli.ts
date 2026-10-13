@@ -4,9 +4,9 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
-import { Cause, Console, Effect, Exit, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
+import { Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
-import { Argument, CliError, Command, Flag } from "effect/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
@@ -19,7 +19,6 @@ import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import { configuredModels, ModelRefused, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
-import { exitNaturally } from "./exitNaturally.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
   formatIntakeStatus,
@@ -81,6 +80,7 @@ import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScre
 import { Viewers } from "./viewers.ts";
 import { CheckReport, InstallEvent, Item, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
+import { depsMissingTeardown, reportEntryFailure } from "./entryFailure.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
 import { planServerStop, readServerPid, removeServerPid, ServerProcess } from "./serverProcess.ts";
 
@@ -984,28 +984,14 @@ export const runCli = Command.runWith(root, { version: VERSION });
  * 入口
  * -------------------------------------------------------------------------- */
 
-// 失敗の表示はここだけ。CliError（help・引数の誤り）は effect/cli が出力済みなので二重に出さない
-export const reportFailure = (cause: Cause.Cause<unknown>) => {
-  const error = Cause.findError(cause);
-  if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
-  const failure = error.success;
+// 失敗の表示はここだけ。共通の前半（entryFailure）で済まないものを、この表で表示する
+export const reportFailure = reportEntryFailure((failure) => {
   if (failure instanceof RequiredDepsMissing) return Effect.void;
-  if (failure instanceof StartupDepsMissing) return Console.error(failure.message);
-  if (CliError.isCliError(failure)) return Effect.void;
   if (failure instanceof ModelRefused) return Console.error(failure.message);
   return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
-};
+});
 
-export const teardown: Runtime.Teardown = (exit, onExit) => {
-  if (Exit.isFailure(exit) && exit.cause.reasons.length === 1) {
-    const error = Cause.findError(exit.cause);
-    if (Result.isSuccess(error) && (error.success instanceof RequiredDepsMissing || error.success instanceof StartupDepsMissing)) {
-      process.exitCode = 3;
-      return;
-    }
-  }
-  exitNaturally(exit, onExit);
-};
+export const teardown: Runtime.Teardown = depsMissingTeardown((failure) => failure instanceof RequiredDepsMissing || failure instanceof StartupDepsMissing);
 
 if (import.meta.main) {
   // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）

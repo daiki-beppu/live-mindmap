@@ -53,3 +53,16 @@ export function screenCandidates(seen: ReadonlyMap<string, number>, lines: Reado
   }
   return { candidates: [...found], seen: next };
 }
+
+/** 画面を見るたびに持ち回る状態。`seen` は短い行ごとの画面数、`requested` は読みを頼み済みの語。 */
+export type ScreenVocabularyState = {
+  readonly seen: ReadonlyMap<string, number>;
+  readonly requested: ReadonlySet<string>;
+};
+
+/** 1 画面の行から候補を取り、読みをまだ頼んでいない語だけを（出た順に）返す。渡された状態は書き換えず、更新した状態を新しく返す。 */
+export function requestScreenWords(state: ScreenVocabularyState, lines: ReadonlyArray<string>): readonly [fresh: ReadonlyArray<string>, next: ScreenVocabularyState] {
+  const out = screenCandidates(state.seen, lines);
+  const fresh = out.candidates.filter((c) => !state.requested.has(c));
+  return [fresh, { seen: out.seen, requested: new Set([...state.requested, ...fresh]) }];
+}

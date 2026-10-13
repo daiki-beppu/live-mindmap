@@ -2,6 +2,7 @@
 // 予約は Effect の Clock と Effect.sleep のファイバーで張る（中核は実行環境のタイマーを使わない。ADR 0003）。
 import { Clock, Effect, Fiber, Ref } from "effect";
 import { speakingText, type Remark, type SpeakingFrame, type Track } from "./core/index.ts";
+import { createStopGate } from "./stopGate.ts";
 
 export const SPEAKING_INTERVAL_MS = 300; // トラックごとに、この時間に 1 回まで送る
 const TRACKS: Track[] = ["相手", "自分"];
@@ -20,7 +21,8 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
     相手: { partial: "", lastSent: undefined, timer: undefined },
     自分: { partial: "", lastSent: undefined, timer: undefined },
   });
-  const stopped = yield* Ref.make(false);
+  const gate = yield* createStopGate;
+  const { unlessStopped } = gate;
 
   const update = (track: Track, f: (s: TrackState) => TrackState) =>
     Ref.update(state, (current) => ({ ...current, [track]: f(current[track]) }));
@@ -66,9 +68,6 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
     }
   });
 
-  const unlessStopped = (effect: Effect.Effect<void>) =>
-    Effect.flatMap(Ref.get(stopped), (isStopped) => (isStopped ? Effect.void : effect));
-
   return {
     // 途中結果。重複の印つきなら、そのトラックの途中結果は空として扱う。
     // 予約中ならそのまま待つ（予約が送るとき、最新の値を使う）。
@@ -106,7 +105,7 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ unreflected, s
     stop:
       unlessStopped(
         Effect.gen(function* () {
-          yield* Ref.set(stopped, true);
+          yield* gate.stop;
           yield* emptyFrames();
         }),
       ),

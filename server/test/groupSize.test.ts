@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupSize, ROOT_ID, type MapNode } from "../src/core/index.ts";
+import { childrenByParent, groupSize, ROOT_ID, type MapNode } from "../src/core/index.ts";
 
 type Node = Pick<MapNode, "id" | "parent" | "kind" | "talkStatus">;
 const node = (id: string, parent: string | null, kind: Node["kind"]): Node => ({ id, parent, kind });
@@ -85,5 +85,18 @@ describe("まとまりの大きさと一番近い祖先の議題", () => {
     const nodes = [root(), node("p", ROOT_ID, "論点"), node("a", "p", "案")];
 
     expect(groupSize(nodes, "a")).toEqual({ size: 0, topicId: ROOT_ID });
+  });
+});
+
+describe("親ごとの子の一覧", () => {
+  it("子を入力の順のまま親ごとにまとめ、親を持たないノードと子のないノードは載せない", () => {
+    const nodes = [root(), node("t", ROOT_ID, "議題"), node("a", "t", "案"), node("b", ROOT_ID, "案"), node("c", "t", "要点")];
+
+    const kids = childrenByParent(nodes);
+
+    expect([...kids.keys()].sort()).toEqual([ROOT_ID, "t"].sort());
+    expect(kids.get("t")?.map((n) => n.id)).toEqual(["a", "c"]);
+    expect(kids.get(ROOT_ID)?.map((n) => n.id)).toEqual(["t", "b"]);
+    expect(kids.has("a")).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
 // 予約は Effect の Clock と Effect.sleep のファイバーで張る（中核は実行環境のタイマーを使わない。ADR 0003）。
 import { Clock, Effect, Fiber, Ref } from "effect";
 import { createRemarkSettler, type HelperPartial, type SettledRemark } from "./core/index.ts";
+import { createStopGate } from "./stopGate.ts";
 
 export type RemarkSettlingOptions = {
   emit: (remark: SettledRemark) => Effect.Effect<void>;
@@ -12,7 +13,8 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
   const settler = createRemarkSettler();
   const scope = yield* Effect.scope;
   const timer = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined);
-  const stopped = yield* Ref.make(false);
+  const gate = yield* createStopGate;
+  const { unlessStopped } = gate;
 
   const cancel = Effect.gen(function* () {
     const fiber = yield* Ref.getAndSet(timer, undefined);
@@ -36,10 +38,6 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
     );
     yield* Ref.set(timer, fiber);
   });
-
-  // 停止後は何も受け付けない
-  const unlessStopped = (effect: Effect.Effect<void>) =>
-    Effect.flatMap(Ref.get(stopped), (isStopped) => (isStopped ? Effect.void : effect));
 
   return {
     partial: (p: HelperPartial) =>
@@ -67,7 +65,7 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
     // 予約を取り消す。以後の入力は無視する
     stop:
       Effect.gen(function* () {
-        yield* Ref.set(stopped, true);
+        yield* gate.stop;
         yield* cancel;
       }),
     // 予約のファイバーがあるか

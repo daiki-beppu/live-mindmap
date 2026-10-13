@@ -1,10 +1,11 @@
 // 再生での発言の補正（Issue #644）。記録したログの vocab の行（読み）・screen の lines・remark の raw と words から、
-// 今の規則（correctRemark・screenCandidates）で発言を直し直す。読みのサブコマンドもモデルも呼ばない（読みは vocab の行から同期で引く）。
+// 今の規則（correctRemark・requestScreenWords）で発言を直し直す。読みのサブコマンドもモデルも呼ばない（読みは vocab の行から同期で引く）。
 // ライブの語彙の扱い（sessionSinks.ts）と同じ規則: 語彙は読みのある語だけ、画面の語は規則で取った候補のうち未要求の語だけ。
 import { Context, Effect, Ref } from "effect";
 import {
   correctRemark,
-  screenCandidates,
+  requestScreenWords,
+  type ScreenVocabularyState,
   type LogEvent,
   type Session,
   type VocabularyWord,
@@ -45,7 +46,7 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
     });
 
   const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>(usable(initialSurfaces));
-  const screenState = yield* Ref.make<{ seen: ReadonlyMap<string, number>; requested: ReadonlySet<string> }>({
+  const screenState = yield* Ref.make<ScreenVocabularyState>({
     seen: new Map(),
     requested: new Set(initialSurfaces),
   });
@@ -67,11 +68,7 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
       Effect.gen(function* () {
         yield* session.pushScreen(change, lines);
         if (lines === undefined || lines.length === 0) return;
-        const news = yield* Ref.modify(screenState, (state) => {
-          const out = screenCandidates(state.seen, lines);
-          const fresh = out.candidates.filter((c) => !state.requested.has(c));
-          return [fresh, { seen: out.seen, requested: new Set([...state.requested, ...fresh]) }];
-        });
+        const news = yield* Ref.modify(screenState, (state) => requestScreenWords(state, lines));
         if (news.length === 0) return;
         yield* record(news, "screen");
         const added = usable(news);

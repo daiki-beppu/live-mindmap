@@ -7,7 +7,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, DiffUpdater, screenCandidates, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { correctRemark, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -133,7 +133,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           });
           // 画面から語彙の候補を取るための状態。短い行が出た画面の数と、読みを頼んだ語（利用者の語・画面の語）。
           // 並んで届いた画面で同じ語を二重に頼まないよう、1 回の Ref.modify で更新する
-          const screenVocabulary = yield* Ref.make<{ seen: ReadonlyMap<string, number>; requested: ReadonlySet<string> }>({ seen: new Map(), requested: new Set() });
+          const screenVocabulary = yield* Ref.make<ScreenVocabularyState>({ seen: new Map(), requested: new Set() });
           // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
           const screenCount = yield* Ref.make(0);
 
@@ -203,11 +203,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 }
                 if (lines === undefined || lines.length === 0) return;
                 // 規則で取った候補のうち、まだ読みを頼んでいない語だけを、まとめて 1 度だけ語彙に入れる
-                const news = yield* Ref.modify(screenVocabulary, (state) => {
-                  const out = screenCandidates(state.seen, lines);
-                  const fresh = out.candidates.filter((c) => !state.requested.has(c));
-                  return [fresh, { seen: out.seen, requested: new Set([...state.requested, ...fresh]) }];
-                });
+                const news = yield* Ref.modify(screenVocabulary, (state) => requestScreenWords(state, lines));
                 if (news.length > 0) yield* FiberSet.run(vocabularyAdds, addVocabulary(news, "screen"), { startImmediately: true });
               }),
             screenOff: (off) => session.pushScreenOff(off),

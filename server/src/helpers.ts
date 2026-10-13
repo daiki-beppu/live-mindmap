@@ -38,6 +38,28 @@ export type HelperAttempt = {
 
 export type HelperCommand = { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
 
+const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
+
+// ヘルパーを 1 回起動して終わりを待ち、標準出力・標準エラー・終了コードを返す（呼び出し側の Scope の中で動く）。stdin は常に閉じる。
+// options.stdout が "ignore" のときは標準出力を読まず、stdout は ""
+export const runHelperCommand = Effect.fnUntraced(function* (
+  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
+  helper: HelperCommand,
+  args: ReadonlyArray<string>,
+  options: { readonly stdout?: "ignore"; readonly forceKillAfter?: number } = {},
+) {
+  const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, ...args], { stdin: "ignore", ...options }));
+  const [stdout, stderr, code] = yield* Effect.all(
+    [options.stdout === "ignore" ? Effect.succeed("") : readText(handle.stdout), readText(handle.stderr), handle.exitCode],
+    { concurrency: "unbounded" },
+  );
+  return { stdout, stderr, code };
+});
+
+// ヘルパーの標準エラーから失敗の理由を作る。標準エラーが空なら終了コード
+export const stderrReason = (stderr: string, code: number): string =>
+  tailLines(stderr, STDERR_TAIL_LINES).join("\n").trim() || `終了コード ${code}`;
+
 const checkFields = {
   microphone: Schema.Literals(["notDetermined", "denied", "authorized"]),
   speechJa: Schema.Struct({
@@ -109,14 +131,11 @@ const freePort = Effect.callback<number, HelperLaunchFailure>((resume) => {
 const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-  const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
-
   // ヘルパーの list の失敗は予期しない失敗（500）。HTTP の側が文面を伏せずに返す
   const listFailed = (reason: string) => Effect.die(new HelperListFailure({ message: reason }));
   const apps = Effect.scoped(
     Effect.gen(function* () {
-      const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, "list"], { stdin: "ignore" }));
-      const [stdout, stderr, code] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
+      const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["list"]);
       if (code !== 0) return yield* listFailed(`ヘルパーの list が失敗しました: ${stderr.trim() || `終了コード ${code}`}`);
       return yield* decodeJsonText(stdout).pipe(
         Effect.catchTag("SchemaError", () => listFailed(`ヘルパーの list の出力が JSON ではありません: ${stdout.trim()}`)),
@@ -125,10 +144,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   ).pipe(Effect.catchTag("PlatformError", (error) => listFailed(`ヘルパーの list が失敗しました: ${error.message}`)));
 
   const check = Effect.fnUntraced(function* (noScreen: boolean) {
-    const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, "check", ...(noScreen ? ["--no-screen"] : [])], {
-      stdin: "ignore", forceKillAfter: HELPER_STOP_TIMEOUT_MS,
-    }));
-    const [stdout, stderr, code] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
+    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["check", ...(noScreen ? ["--no-screen"] : [])], { forceKillAfter: HELPER_STOP_TIMEOUT_MS });
     if (code !== 0) return yield* new HelperCheckFailure({ message: `ヘルパーの check が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(noScreen ? HelperCheckNoScreenSchema : HelperCheckSchema))(stdout);
   }, Effect.scoped, Effect.mapError((error) => new HelperCheckFailure({ message: error.message })));

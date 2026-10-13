@@ -56,6 +56,8 @@ const BrowserRecord = Schema.Struct({
     revisionOverrides: Schema.optionalKey(Schema.Record(Schema.String, Schema.String.check(Schema.isPattern(/^\d+$/)))),
   })),
 });
+// 相対パスが基準の外へ出ている（絶対パス・`..` で始まる）
+const escapes = (path: string): boolean => isAbsolute(path) || path === ".." || path.startsWith(`..${sep}`);
 const failed = (error: unknown) => error instanceof ManagedDepsFailed
   ? error : new ManagedDepsFailed({ message: error instanceof Error ? error.message : String(error) });
 const codeIs = (error: unknown, code: string): boolean =>
@@ -242,11 +244,15 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const shell = yield* shellInfo(current);
       return { ...missing, state: (yield* isFile(shell.marker)) ? "ready" as const : "missing" as const };
     });
-    const load = Effect.gen(function* () {
+    // current の実体と、管理ディレクトリからの相対パス
+    const currentEntity = Effect.gen(function* () {
       const entity = yield* fs.realPath(join(dir, CURRENT));
       const managedDir = yield* fs.realPath(dir);
-      const entityPath = relative(managedDir, entity);
-      if (isAbsolute(entityPath) || entityPath === ".." || entityPath.startsWith(`..${sep}`)) {
+      return { entity, entityPath: relative(managedDir, entity) };
+    });
+    const load = Effect.gen(function* () {
+      const { entity, entityPath } = yield* currentEntity;
+      if (escapes(entityPath)) {
         return yield* new ManagedDepsFailed({ message: "current の実体が管理ディレクトリ外です" });
       }
       const require = createRequire(join(entity, "package.json"));
@@ -259,7 +265,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const packagePath = yield* fs.realPath(resolved.package);
       for (const path of [modulePath, packagePath]) {
         const within = relative(join(entity, "node_modules"), path);
-        if (isAbsolute(within) || within === ".." || within.startsWith(`..${sep}`)) {
+        if (escapes(within)) {
           return yield* new ManagedDepsFailed({ message: `${packageName} の解決先が管理実体の node_modules 外です` });
         }
       }
@@ -301,10 +307,8 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
     const binaryNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound"
       ? new CloudflaredUnavailable({ message: "cloudflared の実行ファイルがありません" }) : error;
     const validateExecutable = Effect.gen(function* () {
-      const entity = yield* fs.realPath(join(dir, CURRENT));
-      const managedDir = yield* fs.realPath(dir);
-      const entityPath = relative(managedDir, entity);
-      if (entityPath === "" || isAbsolute(entityPath) || entityPath === ".." || entityPath.startsWith(`..${sep}`) || basename(entity).startsWith(".work-")) {
+      const { entity, entityPath } = yield* currentEntity;
+      if (entityPath === "" || escapes(entityPath) || basename(entity).startsWith(".work-")) {
         return yield* new ManagedDepsFailed({ message: "current の実体が完成済み管理ディレクトリ内ではありません" });
       }
       const binary = yield* fs.realPath(join(entity, CLOUDFLARED_BINARY)).pipe(Effect.mapError(binaryNotFound));
