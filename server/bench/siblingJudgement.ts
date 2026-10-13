@@ -1,8 +1,8 @@
 import { Effect, Schema } from "effect";
 import { childrenByParent } from "../src/core/groupSize.ts";
-import { restoreState, snapshotOf } from "../src/core/session.ts";
 import type { Judge } from "./claudeJudge.ts";
 import { largestGroup } from "./mapShape.ts";
+import { restoredNodes } from "./restoredNodes.ts";
 
 const LABELS = ["別", "具体化", "重なり", "外れ"] as const;
 const Label = Schema.Literals(LABELS);
@@ -91,11 +91,9 @@ export const judgeSiblings = Effect.fnUntraced(function* <E, R>(
   judge: Judge<E, R>,
   options: { parent?: string } = {},
 ) {
-  const state = yield* restoreState(events).pipe(
+  const { nodes, byId } = yield* restoredNodes(events).pipe(
     Effect.mapError((error) => new SiblingJudgementFailed({ message: `イベント ${error.index + 1} を復元できません` })),
   );
-  const nodes = snapshotOf(state).nodes;
-  const byId = new Map(nodes.map((node) => [node.id, node]));
   const kids = childrenByParent(nodes);
   const target = options.parent === undefined ? undefined : byId.get(options.parent);
   if (options.parent !== undefined && (target === undefined || target.parent === null)) {

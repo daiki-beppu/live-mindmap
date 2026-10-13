@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { findTestLayerViolations, type SourceFile } from "../scripts/check-test-layers.ts";
+import { findTestLayerViolations } from "../scripts/check-test-layers.ts";
+import type { SourceFile } from "../scripts/sourceFiles.ts";
 
 // この unit 自身も点検にかかる。指定子の字面を import の形のまま書かないよう、入力は変数から組み立てる。
 const file = (path: string, content: string): SourceFile[] => [{ path, content }];

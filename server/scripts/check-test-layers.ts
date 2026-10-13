@@ -1,11 +1,9 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { parseSync, Visitor, type ESTree } from "vite";
+import { readSources, reportViolations, type SourceFile } from "./sourceFiles.ts";
 
 // Issue #557: テストの層はファイル名の接尾辞で決まる（foo.test.ts = unit、foo.it.test.ts = 軽い IT、foo.heavy.test.ts = 重い IT）。
 // unit は偽物の Layer で組み、本物の資源（子プロセス・ファイル・ソケット・WebSocket・ブラウザ）を直接 import しない。
 // 本物の資源が要るテストは .it.test.ts か .heavy.test.ts へ移す。import の推移はたどらない（偽物の Layer 経由や補助ファイル経由の利用は拾わない）。
-export type SourceFile = { path: string; content: string };
 export type Violation = { path: string; line: number; message: string };
 
 // node: の付く書き方も付かない書き方も、同じ資源として扱う
@@ -55,20 +53,8 @@ export const findTestLayerViolations = (files: ReadonlyArray<SourceFile>): Viola
     )
     .sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
 
-const sources = (root: string, dir: string): SourceFile[] =>
-  readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
-    .filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"))
-    .map((f) => {
-      const path = join(dir, f);
-      return { path, content: readFileSync(join(root, path), "utf8") };
-    });
-
 if (import.meta.main) {
   // server と web の typecheck から同じ script を呼ぶ。pnpm の script はパッケージのディレクトリで動くので、
   // import.meta.dirname（常に server/）ではなく cwd の test/ を点検する
-  const violations = findTestLayerViolations(sources(process.cwd(), "test"));
-  for (const v of violations) {
-    console.error(`${v.path}:${v.line}: ${v.message}`);
-  }
-  if (violations.length > 0) process.exitCode = 1;
+  reportViolations(findTestLayerViolations(readSources(process.cwd(), "test", [".ts", ".tsx"])));
 }

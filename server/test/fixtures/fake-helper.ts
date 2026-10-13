@@ -53,10 +53,15 @@ function audioFileNames(index: number | undefined): [string, string] {
   return [`相手${suffix}.m4a`, `自分${suffix}.m4a`];
 }
 
-function writeAudioPlaceholders(audioDir: string, index: number | undefined): string[] {
+// 録音がなければすぐ finish を呼ぶ。あれば、実物のヘルパーが録音を閉じるまでにかかる時間を真似る。先に空のファイルを作り、遅れて内容を書き終えてから finish を呼ぶ
+function closeAudioThen(audioDir: string | undefined, index: number | undefined, finish: () => void): void {
+  if (!audioDir) return finish();
   const files = audioFileNames(index).map((name) => join(audioDir, name));
   for (const file of files) writeFileSync(file, "");
-  return files;
+  setTimeout(() => {
+    for (const file of files) writeFileSync(file, AUDIO_COMPLETE);
+    finish();
+  }, AUDIO_FLUSH_MS);
 }
 
 if (command === "check") {
@@ -89,14 +94,7 @@ if (command === "check") {
     record({ type: "signal", signal: "SIGTERM" });
     if (script.ignoreSigterm) return;
     for (const client of wss.clients) client.close();
-    const finish = () => wss.close(() => process.exit(0));
-    if (!audioDir) return finish();
-    // 実物のヘルパーが録音を閉じるまでにかかる時間を真似る。先に空のファイルを作り、遅れて内容を書き終える
-    writeAudioPlaceholders(audioDir, audioIndex);
-    setTimeout(() => {
-      for (const name of audioFileNames(audioIndex)) writeFileSync(join(audioDir, name), AUDIO_COMPLETE);
-      finish();
-    }, AUDIO_FLUSH_MS);
+    closeAudioThen(audioDir, audioIndex, () => wss.close(() => process.exit(0)));
   });
   wss.on("connection", (client) => {
     record({ type: "connection" });
@@ -113,13 +111,7 @@ if (command === "check") {
         return;
       }
       // エラーで終わる: 実物と同じく、録音を閉じてから終了コードで終わる
-      const finish = () => process.exit(code ?? 1);
-      if (!audioDir) return finish();
-      writeAudioPlaceholders(audioDir, audioIndex);
-      setTimeout(() => {
-        for (const name of audioFileNames(audioIndex)) writeFileSync(join(audioDir, name), AUDIO_COMPLETE);
-        finish();
-      }, AUDIO_FLUSH_MS);
+      closeAudioThen(audioDir, audioIndex, () => process.exit(code ?? 1));
     }, afterMs);
   }
 } else {

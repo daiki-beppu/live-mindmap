@@ -1,12 +1,11 @@
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readSources, reportViolations, type SourceFile } from "./sourceFiles.ts";
 
 // Issue #237・#236: NodeRuntime.runMain（SIGINT・SIGTERM でルートのファイバーを中断する）と runPromise は
 // 入口（server.ts・cli.ts・bench の各スクリプト）でだけ呼ぶ。それ以外のモジュールは Effect のまま返し、
 // 古いコードから runPromise で新しいコードを呼ぶ形を取らない。runPromise は src・bench のどこにも無い
 // （Issue #436: server.ts の終了時の書き出しと startServer* の Promise の口を消した）。
 // runSync は web の同期の入口から呼ぶ境界（core/review.ts の reviewSnapshot）だけに残す。ソースを読んで呼び出しの場所を確かめる
-export type SourceFile = { path: string; content: string };
 export type Violation = { path: string; line?: number; message: string };
 
 const BENCH_SCRIPTS = ["bench/sessionStats.ts", "bench/mapShape.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/edgeJudge.ts", "bench/siblingJudge.ts"];
@@ -100,19 +99,7 @@ export const findEntrypointViolations = (files: ReadonlyArray<SourceFile>): Viol
   return violations;
 };
 
-const sources = (root: string, dir: string): SourceFile[] =>
-  readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
-    .filter((f) => f.endsWith(".ts"))
-    .map((f) => {
-      const path = join(dir, f);
-      return { path, content: readFileSync(join(root, path), "utf8") };
-    });
-
 if (import.meta.main) {
   const root = join(import.meta.dirname, "..");
-  const violations = findEntrypointViolations([...sources(root, "src"), ...sources(root, "bench")]);
-  for (const v of violations) {
-    console.error(`${v.path}${v.line === undefined ? "" : `:${v.line}`}: ${v.message}`);
-  }
-  if (violations.length > 0) process.exitCode = 1;
+  reportViolations(findEntrypointViolations([...readSources(root, "src", [".ts"]), ...readSources(root, "bench", [".ts"])]));
 }

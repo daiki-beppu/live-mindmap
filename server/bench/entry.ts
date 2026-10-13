@@ -1,6 +1,8 @@
 // bench の 4 本のスクリプトが共有する入口の部品。runMain は各スクリプトの入口だけが呼ぶ（ここでは呼ばない）。
 // 引数の誤りは effect/cli の既定の Formatter が出力し、中身の失敗はタグ付きにして、入口で日本語の説明付きの 1 行（<パス>: <説明>（<理由>））にする。
 import { Console, Effect, type Runtime, Schema } from "effect";
+import { Command } from "effect/cli";
+import { NodeServices } from "@effect/platform-node";
 import { depsMissingTeardown, reportEntryFailure } from "../src/entryFailure.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { describe, fileReason, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
@@ -67,4 +69,11 @@ export const readJsonFile = <S extends Schema.Decoder<unknown>>(path: string, sc
     Effect.flatMap((text) =>
       Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(inputFileError(path))),
     ),
+  );
+
+// 4 本のスクリプトの入口で、runMain の手前までをそろえる。runMain は teardown を literal で渡す規則（check-entrypoints）のため、各スクリプトの入口に残す
+export const benchProgram = <Name extends string, Input, Config, E, R>(command: Command.Command<Name, Input, Config, E, R>) =>
+  Command.run(command, { version: BENCH_VERSION }).pipe(
+    Effect.tapCause(reportFailure),
+    Effect.provide(NodeServices.layer),
   );

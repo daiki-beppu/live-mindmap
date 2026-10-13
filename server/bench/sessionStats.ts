@@ -3,14 +3,14 @@
 // 使い方は各 Command・Flag の withDescription が正本で、`node bench/sessionStats.ts --help` で読む。
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Schema, Stream, type PlatformError } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Track } from "../src/core/index.ts";
 import { describe } from "../src/truthFile.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
-import { BENCH_VERSION, MissingSessionDir, readInputText, reportFailure, write } from "./entry.ts";
+import { benchProgram, MissingSessionDir, readInputText, write } from "./entry.ts";
 
 const TRACKS: readonly Track[] = ["相手", "自分"];
 
@@ -189,9 +189,7 @@ export const command = Command.make(
 );
 
 if (import.meta.main) {
-  Command.run(command, { version: BENCH_VERSION }).pipe(
-    Effect.tapCause(reportFailure),
-    Effect.provide(NodeServices.layer),
+  benchProgram(command).pipe(
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

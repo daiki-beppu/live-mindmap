@@ -1,11 +1,11 @@
 // 音声認識の確定の遅れの集計と、「途中結果が T 秒変わらなければ確定として扱う」案の計算（Issue #97）。
 // 入力は `stt-bench run` の出力（1 行 1 結果の JSONL）。
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { Track } from "../src/core/index.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
-import { BENCH_VERSION, inputFileError, readInputText, readJsonFile, reportFailure, write } from "./entry.ts";
+import { benchProgram, inputFileError, readInputText, readJsonFile, write } from "./entry.ts";
 
 // arrival は流し始めを 0 とする壁時計の秒、start / end は音声ファイルの秒
 export const SttResult = Schema.Struct({ track: Track, arrival: Schema.Finite, isFinal: Schema.Boolean, start: Schema.Finite, end: Schema.Finite, text: Schema.String });
@@ -199,9 +199,7 @@ export const command = Command.make(
 );
 
 if (import.meta.main) {
-  Command.run(command, { version: BENCH_VERSION }).pipe(
-    Effect.tapCause(reportFailure),
-    Effect.provide(NodeServices.layer),
+  benchProgram(command).pipe(
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

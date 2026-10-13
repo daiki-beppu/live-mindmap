@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { findEntrypointViolations, type SourceFile } from "../scripts/check-entrypoints.ts";
+import { findEntrypointViolations } from "../scripts/check-entrypoints.ts";
+import type { SourceFile } from "../scripts/sourceFiles.ts";
 
 const BENCH = ["bench/sessionStats.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/edgeJudge.ts", "bench/mapShape.ts", "bench/siblingJudge.ts"];
 const BENCH_BODY = "NodeRuntime.runMain({ teardown: exitNaturally })(main);\n";

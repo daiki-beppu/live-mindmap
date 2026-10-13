@@ -1,6 +1,6 @@
 import { Effect, Result, Schema } from "effect";
-import { restoreState, snapshotOf } from "../src/core/session.ts";
 import type { Judge } from "./claudeJudge.ts";
+import { restoredNodes } from "./restoredNodes.ts";
 
 const Label = Schema.Literals(["具体化", "答え", "派生", "なし"]);
 type Label = typeof Label["Type"];
@@ -43,11 +43,9 @@ const judgeBatch = Effect.fnUntraced(function* <E, R>(prompt: string, want: numb
 });
 
 export const judgeEdges = Effect.fnUntraced(function* <E, R>(events: Iterable<unknown>, judge: Judge<E, R>) {
-  const state = yield* restoreState(events).pipe(
+  const { nodes, byId } = yield* restoredNodes(events).pipe(
     Effect.mapError((error) => new EdgeJudgementFailed({ message: `イベント ${error.index + 1} を復元できません` })),
   );
-  const nodes = snapshotOf(state).nodes;
-  const byId = new Map(nodes.map((node) => [node.id, node]));
   const targets = nodes.flatMap((child) => {
     if (child.parent === null) return [];
     const parent = byId.get(child.parent)!;
