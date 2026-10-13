@@ -34,29 +34,50 @@ export const speechJaItem = (status: HelperCheck["speechJa"]): typeof Item.Type 
   name: "speech-ja", need: "required", state: status.status === "installed" ? "ready" : "missing", install: "pnpm cli install speech-ja",
 });
 
+const pinnedVersion = (item: typeof Item.Type) =>
+  item.name === "claude" ? claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"] : chromiumManifest.dependencies["playwright-core"];
+
+const depWarnings = (items: ReadonlyArray<typeof Item.Type>): string[] =>
+  items.filter((item) => item.state === "outdated" || (item.need === "optional" && item.state !== "ready"))
+    .map((item) => item.state === "outdated"
+      ? `警告: ${describeDep(item)} が版違いです（入っている版 ${item.version}、固定版 ${pinnedVersion(item)}）。そろえるには: pnpm cli update ${item.name}`
+      : `警告: ${describeDep(item)} がありません。入れるには: ${item.install}`);
+
+const microphoneWarnings = (microphone: HelperCheck["microphone"]): string[] => [
+  ...(microphone === "denied" ? ["マイクの許可がありません。自分の声が入りません"] : []),
+  ...(microphone === "notDetermined" ? ["マイクの許可が未決定です。開始時に許可のダイアログが出ます"] : []),
+];
+
+// 画面収録は、共有画面を読む入口（screen）のときだけ報告に載せる
+const screenCaptureReport = (status: HelperCheck, screen: boolean): { items: Array<typeof Item.Type>; warnings: string[] } => screen
+  ? {
+      items: [{ name: "screen-capture", need: "optional", state: status.screenCapture ? "ready" : "absent" }],
+      warnings: status.screenCapture ? [] : ["画面収録の許可がありません。共有画面は読まず、音声だけで始めます"],
+    }
+  : { items: [], warnings: [] };
+
+const liveItems = (result: Result.Result<HelperCheck, HelperCheckFailure>, screen: boolean): { items: Array<typeof Item.Type>; warnings: string[] } => {
+  const helper = { name: "helper", need: "required", state: Result.isSuccess(result) ? "ready" : "missing", install: HELPER_BUILD_COMMAND } satisfies typeof Item.Type;
+  if (Result.isFailure(result)) return { items: [helper], warnings: [] };
+  const status = result.success;
+  const screenCapture = screenCaptureReport(status, screen);
+  return {
+    items: [
+      helper,
+      { name: "microphone", need: "optional", state: status.microphone === "authorized" ? "ready" : "absent" },
+      ...screenCapture.items,
+      speechJaItem(status.speechJa),
+    ],
+    warnings: [...microphoneWarnings(status.microphone), ...screenCapture.warnings],
+  };
+};
+
 const checkDependencies = Effect.fnUntraced(function* (...[entry, route, live]: CheckArgs) {
   const deps = yield* ManagedDeps;
-  const items: Array<typeof Item.Type> = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
-  const warnings = items.filter((item) => item.state === "outdated" || (item.need === "optional" && item.state !== "ready"))
-    .map((item) => item.state === "outdated"
-      ? `警告: ${describeDep(item)} が版違いです（入っている版 ${item.version}、固定版 ${item.name === "claude" ? claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"] : chromiumManifest.dependencies["playwright-core"]}）。そろえるには: pnpm cli update ${item.name}`
-      : `警告: ${describeDep(item)} がありません。入れるには: ${item.install}`);
-  if (entry !== "play") {
-    const result = yield* Effect.result(live.check);
-    items.push({ name: "helper", need: "required", state: Result.isSuccess(result) ? "ready" : "missing", install: HELPER_BUILD_COMMAND });
-    if (Result.isSuccess(result)) {
-      const status = result.success;
-      items.push({ name: "microphone", need: "optional", state: status.microphone === "authorized" ? "ready" : "absent" });
-      if (status.microphone === "denied") warnings.push("マイクの許可がありません。自分の声が入りません");
-      if (status.microphone === "notDetermined") warnings.push("マイクの許可が未決定です。開始時に許可のダイアログが出ます");
-      if (live.screen) {
-        items.push({ name: "screen-capture", need: "optional", state: status.screenCapture ? "ready" : "absent" });
-        if (!status.screenCapture) warnings.push("画面収録の許可がありません。共有画面は読まず、音声だけで始めます");
-      }
-      items.push(speechJaItem(status.speechJa));
-    }
-  }
-  return { report: { ready: items.every((item) => item.need === "optional" || item.state === "ready"), items }, warnings };
+  const common: Array<typeof Item.Type> = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
+  const liveResult = entry === "play" ? { items: [], warnings: [] } : liveItems(yield* Effect.result(live.check), live.screen);
+  const items = [...common, ...liveResult.items];
+  return { report: { ready: items.every((item) => item.need === "optional" || item.state === "ready"), items }, warnings: [...depWarnings(common), ...liveResult.warnings] };
 });
 
 export const checkManagedDeps = Effect.fnUntraced(function* (...args: CheckArgs) {

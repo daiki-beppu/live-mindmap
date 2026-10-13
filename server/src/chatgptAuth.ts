@@ -66,11 +66,11 @@ export const accessToken = Effect.fnUntraced(function* (path: string) {
   }));
 }, Effect.catchIf((error) => error._tag !== "ChatgptUnavailable", () => Effect.fail(chatgptRefusal("ChatGPT の資格情報を読み込み・保存できません"))));
 
-export const loginChatgpt = Effect.gen(function* () {
-  const endpoints = yield* ChatgptEndpoints;
-  const path = yield* authPath;
-  const fs = yield* FileSystem.FileSystem;
-  const registration = yield* withAuthLock(path, Effect.gen(function* () {
+type Registration = { readonly host: string; readonly previous: Credentials | undefined };
+
+// 認証ファイルのロックの中で、この Mac の host id（無ければ作る）と前回の資格情報を読む
+const hostRegistration = Effect.fnUntraced(function* (path: string, fs: FileSystem.FileSystem) {
+  return yield* withAuthLock(path, Effect.gen(function* () {
     const hostPath = join(dirname(path), "chatgpt-host-id");
     let host = yield* fs.readFileString(hostPath).pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.void));
     if (host === undefined) {
@@ -78,12 +78,12 @@ export const loginChatgpt = Effect.gen(function* () {
       yield* writeAuthFile(hostPath, host);
     }
     const previous = yield* readCredentials(path);
-    return { host, previous };
+    return { host, previous } satisfies Registration;
   }));
-  const state = randomBytes(24).toString("base64url");
-  const nonce = randomBytes(24).toString("base64url");
-  const verifier = randomBytes(48).toString("base64url");
-  const callback = yield* Deferred.make<URLSearchParams>();
+});
+
+// ループバックの待受けを Scope に開き（閉じるのは Scope の終わり）、callback の URL を返す
+const callbackServer = Effect.fnUntraced(function* (callback: Deferred.Deferred<URLSearchParams>) {
   const server = yield* Effect.acquireRelease(Effect.sync(() => createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method !== "GET" || url.pathname !== "/auth/callback") { response.writeHead(404).end(); return; }
@@ -99,18 +99,19 @@ export const loginChatgpt = Effect.gen(function* () {
   });
   const address = server.address();
   if (address === null || typeof address === "string") return yield* chatgptRefusal("ChatGPT の認可結果を受信できません");
-  const redirect = `http://127.0.0.1:${address.port}/auth/callback`;
-  const query = new URLSearchParams({
-    client_id: registration.previous?.client_id ?? "dynamic_agent_client",
-    ...(registration.previous === undefined ? { agent_name_hint: "live-mindmap" } : { id_token_hint: registration.previous.id_token }),
-    ext_agent_host_id: registration.host, response_type: "code", redirect_uri: redirect,
-    scope: LOGIN_SCOPE, resource: endpoints.resource, state, nonce,
-    code_challenge_method: "S256", code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-  });
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const browser = yield* spawner.spawn(ChildProcess.make("open", [`${endpoints.authorize}?${query}`]));
-  const exit = yield* browser.exitCode;
-  if (exit !== 0) return yield* chatgptRefusal("ChatGPT のサインイン画面を開けません");
+  return `http://127.0.0.1:${address.port}/auth/callback`;
+});
+
+const authorizeQuery = (input: { registration: Registration; redirect: string; resource: string; state: string; nonce: string; verifier: string }) => new URLSearchParams({
+  client_id: input.registration.previous?.client_id ?? "dynamic_agent_client",
+  ...(input.registration.previous === undefined ? { agent_name_hint: "live-mindmap" } : { id_token_hint: input.registration.previous.id_token }),
+  ext_agent_host_id: input.registration.host, response_type: "code", redirect_uri: input.redirect,
+  scope: LOGIN_SCOPE, resource: input.resource, state: input.state, nonce: input.nonce,
+  code_challenge_method: "S256", code_challenge: createHash("sha256").update(input.verifier).digest("base64url"),
+});
+
+const awaitAuthorization = Effect.fnUntraced(function* (callback: Deferred.Deferred<URLSearchParams>, registration: Registration, state: string) {
+  const endpoints = yield* ChatgptEndpoints;
   const result = yield* Deferred.await(callback).pipe(Effect.timeout(endpoints.loginTimeout));
   if (result.get("state") !== state || result.has("error")) return yield* chatgptRefusal("ChatGPT の認可結果が不正です");
   const clientId = result.get("client_id") ?? registration.previous?.client_id;
@@ -118,12 +119,13 @@ export const loginChatgpt = Effect.gen(function* () {
   if (!clientId || clientId === "dynamic_agent_client" || !code || (registration.previous !== undefined && clientId !== registration.previous.client_id)) {
     return yield* chatgptRefusal("ChatGPT の認可結果が不正です");
   }
-  const token = yield* tokenRequest({ grant_type: "authorization_code", client_id: clientId, code,
-    code_verifier: verifier, redirect_uri: redirect, resource: endpoints.resource });
-  if (token.id_token === undefined || token.refresh_token === undefined || token.scope === undefined) return yield* chatgptRefusal("ChatGPT の認証応答が不正です");
-  const now = yield* Clock.currentTimeMillis;
+  return { clientId, code };
+});
+
+const verifiedClaims = Effect.fnUntraced(function* (idToken: string, clientId: string, nonce: string, now: number) {
+  const endpoints = yield* ChatgptEndpoints;
   const verified = yield* Effect.tryPromise({
-    try: (signal) => jwtVerify(token.id_token!, createRemoteJWKSet(new URL(endpoints.jwks), {
+    try: (signal) => jwtVerify(idToken, createRemoteJWKSet(new URL(endpoints.jwks), {
       timeoutDuration: 10_000,
       [customFetch]: (url, options) => fetch(url, { ...options, signal: AbortSignal.any([options.signal, signal]) }),
     }), {
@@ -133,11 +135,41 @@ export const loginChatgpt = Effect.gen(function* () {
   });
   const claims = yield* Schema.decodeUnknownEffect(Claims)(verified.payload);
   if (claims.nonce !== nonce) return yield* chatgptRefusal("ChatGPT の ID トークンを検証できません");
-  const credentials: Credentials = {
-    client_id: clientId, ext_agent_host_id: registration.host, subject: claims.sub,
-    ...(claims.email === undefined ? {} : { email: claims.email }), id_token: token.id_token,
-    access_token: token.access_token, refresh_token: token.refresh_token,
-    scopes: token.scope.split(" ").filter(Boolean), expires_at: now + token.expires_in * 1000, saved_at: new Date(now).toISOString(),
-  };
+  return claims;
+});
+
+const loginCredentials = (input: {
+  clientId: string; host: string; claims: typeof Claims.Type; now: number;
+  token: typeof Token.Type & { readonly id_token: string; readonly refresh_token: string; readonly scope: string };
+}): Credentials => ({
+  client_id: input.clientId, ext_agent_host_id: input.host, subject: input.claims.sub,
+  ...(input.claims.email === undefined ? {} : { email: input.claims.email }), id_token: input.token.id_token,
+  access_token: input.token.access_token, refresh_token: input.token.refresh_token,
+  scopes: input.token.scope.split(" ").filter(Boolean), expires_at: input.now + input.token.expires_in * 1000, saved_at: new Date(input.now).toISOString(),
+});
+
+export const loginChatgpt = Effect.gen(function* () {
+  const endpoints = yield* ChatgptEndpoints;
+  const path = yield* authPath;
+  const fs = yield* FileSystem.FileSystem;
+  const registration = yield* hostRegistration(path, fs);
+  const state = randomBytes(24).toString("base64url");
+  const nonce = randomBytes(24).toString("base64url");
+  const verifier = randomBytes(48).toString("base64url");
+  const callback = yield* Deferred.make<URLSearchParams>();
+  const redirect = yield* callbackServer(callback);
+  const query = authorizeQuery({ registration, redirect, resource: endpoints.resource, state, nonce, verifier });
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const browser = yield* spawner.spawn(ChildProcess.make("open", [`${endpoints.authorize}?${query}`]));
+  const exit = yield* browser.exitCode;
+  if (exit !== 0) return yield* chatgptRefusal("ChatGPT のサインイン画面を開けません");
+  const { clientId, code } = yield* awaitAuthorization(callback, registration, state);
+  const token = yield* tokenRequest({ grant_type: "authorization_code", client_id: clientId, code,
+    code_verifier: verifier, redirect_uri: redirect, resource: endpoints.resource });
+  const { id_token, refresh_token, scope } = token;
+  if (id_token === undefined || refresh_token === undefined || scope === undefined) return yield* chatgptRefusal("ChatGPT の認証応答が不正です");
+  const now = yield* Clock.currentTimeMillis;
+  const claims = yield* verifiedClaims(id_token, clientId, nonce, now);
+  const credentials = loginCredentials({ clientId, host: registration.host, claims, now, token: { ...token, id_token, refresh_token, scope } });
   yield* withAuthLock(path, writeAuthFile(path, JSON.stringify(credentials)));
 }).pipe(Effect.scoped, Effect.timeout("5 minutes"), Effect.catchIf((error) => !(error instanceof ChatgptUnavailable), () => Effect.fail(chatgptRefusal("ChatGPT のサインインを完了できません"))));

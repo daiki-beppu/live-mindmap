@@ -105,10 +105,12 @@ class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed",
 
 // ログの行を type で選ぶ集合（decode は LogEvent のまま）
 const typesOf = (events: readonly { readonly fields: { readonly type: { readonly literal: string } } }[]): ReadonlySet<string> => new Set(events.map((event) => event.fields.type.literal));
+const hasLoggedType = (types: ReadonlySet<string>) => (event: unknown): event is { readonly type: string } =>
+  Predicate.isObject(event) && "type" in event && Predicate.isString(event.type) && types.has(event.type);
 // 録音済みセッションを読むとき（題名・発言・画面）
-const RECORDED_TYPES = typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]);
+const isRecordedEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]));
 // evaluate が読むとき（題名・発言・差分）
-const EVAL_TYPES = typesOf([StartEvent, RemarkEvent, DiffEvent]);
+const isEvalEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, DiffEvent]));
 
 // 入口で 1 行にする失敗の class
 const CLI_FAILURES = [
@@ -295,6 +297,31 @@ const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
   return slideChanges(rows, (i) => fs.readFile(jpegPath(i)).pipe(Effect.mapError((e) => new CommandFailed({ message: `${jpegPath(i)} が読めません: ${e.message}` }))));
 });
 
+// raw と words が両方そろう行だけ、直し直す元として運ぶ（無い古い行は直さずに流す）
+const replayableRemark = (decoded: (typeof RemarkEvent)["Type"]): PlaybackRemark =>
+  decoded.raw !== undefined && decoded.words !== undefined ? { ...decoded.remark, raw: decoded.raw, words: decoded.words } : decoded.remark;
+
+const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof ScreenEvent)["Type"], lineNo: number): Effect.Effect<PlaybackScreen<CommandFailed>, CommandFailed> => {
+  const { start, image } = decoded;
+  const recordedLines = decoded.lines === undefined ? {} : { lines: decoded.lines };
+  if (image === null) return Effect.succeed({ start, image: null, ...recordedLines });
+  // ログ由来の image は、screens/ 直下の単一のファイル名だけを認める（外のファイルを読まない）
+  const screensDir = resolve(dir, SCREENS_DIR);
+  const path = resolve(screensDir, image);
+  // basename 比較で区切り文字を含む値（絶対パス・../・./）を、dirname 比較で ""・.・.. を拒否する
+  if (basename(image) !== image || dirname(path) !== screensDir) {
+    return Effect.fail(new CommandFailed({ message: `${LOG_FILE} ${lineNo} 行目の image が screens/ 直下のファイル名ではありません: ${image}` }));
+  }
+  return Effect.succeed({
+    start,
+    ...recordedLines,
+    image: {
+      id: image,
+      load: fs.readFile(path).pipe(Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${e.message}` }))),
+    },
+  });
+};
+
 // セッションのフォルダ（log.jsonl を持つフォルダ）のログから、再生に渡す題名・発言・共有画面の変化を読む。
 // 流すのは start（題名）・remark・screen・screen-off だけで、ほかの行（intake-*・diff など）は読み飛ばす。
 // 画像は元のフォルダの screens/ から、入れる直前に読む。変化の時刻はログの start をそのまま使う
@@ -308,8 +335,7 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
   const vocabulary: (typeof VocabEvent)["Type"][] = [];
   const screens: PlaybackScreen<CommandFailed>[] = [];
   for (const [i, event] of events.entries()) {
-    if (!Predicate.isObject(event) || !("type" in event)) continue;
-    if (!Predicate.isString(event.type) || !RECORDED_TYPES.has(event.type)) continue;
+    if (!isRecordedEvent(event)) continue;
     const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(
       Effect.mapError((e) => new BrokenLogLine({ line: lines[i]?.no ?? 1, reason: decodeReason(e) })),
     );
@@ -318,36 +344,14 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
         title ??= decoded.title;
         break;
       case "remark":
-        // raw と words が両方そろう行だけ、直し直す元として運ぶ（無い古い行は直さずに流す）
-        remarks.push(decoded.raw !== undefined && decoded.words !== undefined ? { ...decoded.remark, raw: decoded.raw, words: decoded.words } : decoded.remark);
+        remarks.push(replayableRemark(decoded));
         break;
       case "vocab":
         vocabulary.push(decoded);
         break;
-      case "screen": {
-        const { start, image } = decoded;
-        const recordedLines = decoded.lines === undefined ? {} : { lines: decoded.lines };
-        if (image === null) {
-          screens.push({ start, image: null, ...recordedLines });
-          break;
-        }
-        // ログ由来の image は、screens/ 直下の単一のファイル名だけを認める（外のファイルを読まない）
-        const screensDir = resolve(dir, SCREENS_DIR);
-        const path = resolve(screensDir, image);
-        // basename 比較で区切り文字を含む値（絶対パス・../・./）を、dirname 比較で ""・.・.. を拒否する
-        if (basename(image) !== image || dirname(path) !== screensDir) {
-          return yield* new CommandFailed({ message: `${LOG_FILE} ${lines[i]?.no ?? 1} 行目の image が screens/ 直下のファイル名ではありません: ${image}` });
-        }
-        screens.push({
-          start,
-          ...recordedLines,
-          image: {
-            id: image,
-            load: fs.readFile(path).pipe(Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${e.message}` }))),
-          },
-        });
+      case "screen":
+        screens.push(yield* recordedScreen(fs, dir, decoded, lines[i]?.no ?? 1));
         break;
-      }
       case "screen-off":
         screens.push({ start: decoded.start, reason: decoded.reason });
         break;
@@ -740,6 +744,36 @@ const review = Command.make(
   ),
 );
 
+// 元ログを選んだモデルで再生し、新しいランのフォルダを返す（updater の layer などは呼び出し側の Scope が持つ）
+const replayedRunDir = Effect.fnUntraced(function* (source: string, selected: ExecutableModel) {
+  const recorded = yield* loadRecordedSession(resolve(source));
+  const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
+  return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
+    Effect.provide(updaterLayer),
+  )).dir;
+});
+
+const evaluatedRun = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, dir: string) {
+  const path = join(dir, EXPORT_FILE);
+  if (!(yield* pathExists(fs, path).pipe(orFileFailed))) return yield* new MissingRunExport({ path });
+  const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
+  const exp = yield* Schema.decodeEffect(Schema.fromJsonString(JsonExport))(text).pipe(
+    Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
+  );
+  const logPath = join(dir, LOG_FILE);
+  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return { name: basename(dir), title: exp.root.text, exp };
+  // 検証は restore と同じ restoreState で行う。壊れた行は、どのランか分かるようにパスと行番号を添えて失敗にする
+  const { lines, events } = yield* readLogLines(logPath).pipe(
+    orFileFailed,
+    Effect.catchTag("BrokenLogLine", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` }))),
+  );
+  yield* restoreState(events).pipe(
+    Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${lines[e.index]?.no ?? 1} 行目が読めません: ${e.reason}` }))),
+  );
+  const log = yield* Effect.forEach(events.filter(isEvalEvent), (event) => Schema.decodeUnknownEffect(LogEvent)(event).pipe(Effect.orDie));
+  return { name: basename(dir), title: exp.root.text, exp, log };
+});
+
 const evaluate = Command.make(
   "eval",
   {
@@ -765,38 +799,8 @@ const evaluate = Command.make(
     const fs = yield* FileSystem.FileSystem;
     const runs: Run[] = [];
     for (const source of sessions) {
-      const dir = selected === undefined ? source : yield* Effect.gen(function* () {
-        const recorded = yield* loadRecordedSession(resolve(source));
-        const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
-        return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
-          Effect.provide(updaterLayer),
-        )).dir;
-      }).pipe(Effect.scoped);
-      const path = join(dir, EXPORT_FILE);
-      if (!(yield* pathExists(fs, path).pipe(orFileFailed))) return yield* new MissingRunExport({ path });
-      const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
-      const exp = yield* Schema.decodeEffect(Schema.fromJsonString(JsonExport))(text).pipe(
-        Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
-      );
-      const logPath = join(dir, LOG_FILE);
-      if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) {
-        runs.push({ name: basename(dir), title: exp.root.text, exp });
-        continue;
-      }
-      // 検証は restore と同じ restoreState で行う。壊れた行は、どのランか分かるようにパスと行番号を添えて失敗にする
-      const { lines, events } = yield* readLogLines(logPath).pipe(
-        orFileFailed,
-        Effect.catchTag("BrokenLogLine", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` }))),
-      );
-      yield* restoreState(events).pipe(
-        Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${lines[e.index]?.no ?? 1} 行目が読めません: ${e.reason}` }))),
-      );
-      const log: LogEvent[] = [];
-      for (const event of events) {
-        if (!Predicate.isObject(event) || !("type" in event) || !Predicate.isString(event.type) || !EVAL_TYPES.has(event.type)) continue;
-        log.push(yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(Effect.orDie));
-      }
-      runs.push({ name: basename(dir), title: exp.root.text, exp, log });
+      const dir = selected === undefined ? source : yield* replayedRunDir(source, selected).pipe(Effect.scoped);
+      runs.push(yield* evaluatedRun(fs, dir));
     }
     yield* write(formatTable(runs, expected, screen));
   }),
