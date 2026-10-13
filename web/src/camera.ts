@@ -156,6 +156,43 @@ export function overviewViewport(
 
 export type EdgeDot = { id: string; ids: string[]; side: "top" | "right" | "bottom" | "left"; x: number; y: number };
 
+type EdgeCandidate = { id: string; dist: number; dot: Omit<EdgeDot, "id" | "ids"> };
+
+function offscreenCandidate(
+  id: string,
+  target: Record<string, Position>,
+  dims: Record<string, { height: number }>,
+  viewport: Viewport,
+  size: Size,
+): EdgeCandidate | null {
+  const cx = size.width / 2;
+  const cy = size.height / 2;
+  const r = nodeRect(id, target, dims);
+  const left = r.x * viewport.zoom + viewport.x;
+  const top = r.y * viewport.zoom + viewport.y;
+  const right = left + r.width * viewport.zoom;
+  const bottom = top + r.height * viewport.zoom;
+  if (right > 0 && left < size.width && bottom > 0 && top < size.height) return null;
+  const dx = (left + right) / 2 - cx;
+  const dy = (top + bottom) / 2 - cy;
+  const tx = dx === 0 ? Infinity : (cx - EDGE_INSET) / Math.abs(dx);
+  const ty = dy === 0 ? Infinity : (cy - EDGE_INSET) / Math.abs(dy);
+  const horizontal = tx <= ty;
+  const t = horizontal ? tx : ty;
+  const side = horizontal ? (dx > 0 ? "right" : "left") : dy > 0 ? "bottom" : "top";
+  return { id, dist: Math.hypot(dx, dy), dot: { side, x: cx + dx * t, y: cy + dy * t } };
+}
+
+function mergeNearDots(candidates: readonly EdgeCandidate[]): EdgeDot[] {
+  const dots: EdgeDot[] = [];
+  for (const c of candidates) {
+    const near = dots.find((d) => Math.hypot(d.x - c.dot.x, d.y - c.dot.y) <= MERGE_DISTANCE);
+    if (near) near.ids.push(c.id);
+    else dots.push({ id: c.id, ids: [c.id], ...c.dot });
+  }
+  return dots;
+}
+
 // ids のうち画面の外にあるノードを、画面の中心からノードの中心へ向かう線と、縁から EDGE_INSET だけ内側の四角との交点に置く。
 // 画面と一部でも重なるノードは含めない。近い点は 1 つにまとめる（id は画面の中心に一番近いノード、ids はまとめた全部）。
 // 位置は目標の位置と高さで測る。x・y は画面座標（map 要素の左上が原点）で点の中心
@@ -166,36 +203,9 @@ export function edgeDots(
   viewport: Viewport,
   size: Size,
 ): EdgeDot[] {
-  const cx = size.width / 2;
-  const cy = size.height / 2;
-  const halfW = cx - EDGE_INSET;
-  const halfH = cy - EDGE_INSET;
-  const candidates: { id: string; dist: number; dot: Omit<EdgeDot, "id" | "ids"> }[] = [];
-  for (const id of ids) {
-    const r = nodeRect(id, target, dims);
-    const left = r.x * viewport.zoom + viewport.x;
-    const top = r.y * viewport.zoom + viewport.y;
-    const right = left + r.width * viewport.zoom;
-    const bottom = top + r.height * viewport.zoom;
-    if (right > 0 && left < size.width && bottom > 0 && top < size.height) continue;
-    const dx = (left + right) / 2 - cx;
-    const dy = (top + bottom) / 2 - cy;
-    const tx = dx === 0 ? Infinity : halfW / Math.abs(dx);
-    const ty = dy === 0 ? Infinity : halfH / Math.abs(dy);
-    const horizontal = tx <= ty;
-    const t = horizontal ? tx : ty;
-    const side = horizontal ? (dx > 0 ? "right" : "left") : dy > 0 ? "bottom" : "top";
-    candidates.push({ id, dist: Math.hypot(dx, dy), dot: { side, x: cx + dx * t, y: cy + dy * t } });
-  }
+  const candidates = ids.flatMap((id) => offscreenCandidate(id, target, dims, viewport, size) ?? []);
   candidates.sort((a, b) => a.dist - b.dist || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-
-  const dots: EdgeDot[] = [];
-  for (const c of candidates) {
-    const near = dots.find((d) => Math.hypot(d.x - c.dot.x, d.y - c.dot.y) <= MERGE_DISTANCE);
-    if (near) near.ids.push(c.id);
-    else dots.push({ id: c.id, ids: [c.id], ...c.dot });
-  }
-  return dots;
+  return mergeNearDots(candidates);
 }
 
 // 点を押したノードへ寄る。今の倍率のまま（MIN_ZOOM 未満なら MIN_ZOOM にして）、ノードの中心を画面の中央に置く

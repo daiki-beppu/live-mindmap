@@ -39,45 +39,56 @@ export function initialPlayback(duration: number, rate: number = PLAYBACK_RATE):
 
 const clamp = (time: number, duration: number) => Math.min(Math.max(time, 0), duration);
 
+function togglePlay(state: PlaybackState, duration: number): PlaybackState {
+  if (state.playing) return { ...state, playing: false };
+  return { ...state, time: state.time >= duration ? 0 : state.time, playing: true };
+}
+
+function stepReflection(state: PlaybackState, reflectionTimes: readonly number[], dir: "prev" | "next"): PlaybackState {
+  const target = dir === "prev" ? reflectionTimes.filter((x) => x < state.time).at(-1) : reflectionTimes.find((x) => x > state.time);
+  return target === undefined ? state : { ...state, time: target };
+}
+
+function stepRate(state: PlaybackState, rates: readonly number[], dir: "slower" | "faster"): PlaybackState {
+  const index = rates.indexOf(state.rate);
+  const target = index < 0 ? undefined : rates[index + (dir === "faster" ? 1 : -1)];
+  return target === undefined ? state : { ...state, rate: target };
+}
+
+function stoppedAtEnd(state: PlaybackState, duration: number): PlaybackState {
+  return { ...state, time: duration, playing: false };
+}
+
+function advanceTo(state: PlaybackState, time: number, duration: number): PlaybackState {
+  return time >= duration ? stoppedAtEnd(state, duration) : { ...state, time };
+}
+
 export function playbackReducer(state: PlaybackState, event: PlaybackEvent, { duration, reflectionTimes, rates }: PlaybackContext): PlaybackState {
   switch (event.type) {
     case "toggle":
-      if (state.playing) return { ...state, playing: false };
-      return { ...state, time: state.time >= duration ? 0 : state.time, playing: true };
+      return togglePlay(state, duration);
     case "seek":
       return { ...state, time: clamp(event.time, duration) };
-    case "prev": {
-      const target = reflectionTimes.filter((x) => x < state.time).at(-1);
-      return target === undefined ? state : { ...state, time: target };
-    }
-    case "next": {
-      const target = reflectionTimes.find((x) => x > state.time);
-      return target === undefined ? state : { ...state, time: target };
-    }
+    case "prev":
+    case "next":
+      return stepReflection(state, reflectionTimes, event.type);
     case "setRate":
       return rates.includes(event.rate) ? { ...state, rate: event.rate } : state;
     case "slower":
-    case "faster": {
-      const index = rates.indexOf(state.rate);
-      const target = index < 0 ? undefined : rates[index + (event.type === "faster" ? 1 : -1)];
-      return target === undefined ? state : { ...state, rate: target };
-    }
+    case "faster":
+      return stepRate(state, rates, event.type);
     case "toggleMute":
       return { ...state, muted: !state.muted };
     case "setVolume":
       return { ...state, muted: false, volume: Math.min(Math.max(event.volume, 0), 1) };
-    case "elapsed": {
-      if (!state.playing) return state;
-      const time = state.time + event.seconds * state.rate;
-      return time >= duration ? { ...state, time: duration, playing: false } : { ...state, time };
-    }
-    case "audioTime": {
+    case "elapsed":
+      return state.playing ? advanceTo(state, state.time + event.seconds * state.rate, duration) : state;
+    case "audioTime":
       // 止めている間は無視する（止めた直後に届いた通知で、止めた時刻やシーク先から戻らないように）。録音が会議より長くても、会議の長さで止める
       if (!state.playing) return state;
-      return event.time >= duration ? { ...state, time: duration, playing: false } : { ...state, time: Math.max(event.time, 0) };
-    }
+      return event.time >= duration ? stoppedAtEnd(state, duration) : { ...state, time: Math.max(event.time, 0) };
     case "ended":
-      return { ...state, time: duration, playing: false };
+      return stoppedAtEnd(state, duration);
   }
 }
 

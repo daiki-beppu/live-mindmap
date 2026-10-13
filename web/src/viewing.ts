@@ -209,56 +209,164 @@ function isDescendant(tree: VisibleTree, id: string, ancestor: string): boolean 
   return false;
 }
 
+type Modifiers = { meta: boolean; ctrl: boolean; alt: boolean };
+
+function modified(e: Modifiers): boolean {
+  return e.meta || e.ctrl || e.alt;
+}
+
+function parentOf(tree: VisibleTree, shown: ReadonlySet<string>, id: string): string | null {
+  const parent = tree.parents[id];
+  return parent != null && shown.has(parent) ? parent : null;
+}
+
+function targetY(tree: VisibleTree, id: string): number {
+  return tree.targets[id]?.y ?? 0;
+}
+
+function depthOf(tree: VisibleTree, shown: ReadonlySet<string>, id: string): number {
+  let depth = 0;
+  for (let p = parentOf(tree, shown, id); p !== null; p = parentOf(tree, shown, p)) depth++;
+  return depth;
+}
+
+function initialSelection(tree: VisibleTree, shown: ReadonlySet<string>): string | undefined {
+  if (tree.currentTopic !== undefined && shown.has(tree.currentTopic)) return tree.currentTopic;
+  return tree.ids.find((id) => {
+    const parent = tree.parents[id];
+    return parent == null || !shown.has(parent);
+  });
+}
+
+// 子のうち y の差が最も小さいもの。差が同じなら最初の子。子が無ければ from のまま
+function nearestChild(tree: VisibleTree, shown: ReadonlySet<string>, from: string): string {
+  let best = from;
+  let bestGap = Infinity;
+  for (const id of tree.ids) {
+    if (parentOf(tree, shown, id) !== from) continue;
+    const gap = Math.abs(targetY(tree, id) - targetY(tree, from));
+    if (gap < bestGap) {
+      best = id;
+      bestGap = gap;
+    }
+  }
+  return best;
+}
+
+function rowNeighbor(tree: VisibleTree, shown: ReadonlySet<string>, from: string, dir: "up" | "down"): string | undefined {
+  const depth = depthOf(tree, shown, from);
+  const row = tree.ids.filter((id) => depthOf(tree, shown, id) === depth).sort((a, b) => targetY(tree, a) - targetY(tree, b));
+  const at = row.indexOf(from);
+  return row[dir === "up" ? Math.max(0, at - 1) : Math.min(row.length - 1, at + 1)];
+}
+
 // 見せるノードの中で、矢印の移り先を決める。目標の位置で測る。端や行き先が無いときは同じノードのまま。
 // 始点が無い・見せるノードに無いときは、向きに動かず今の議題（無ければルート）を選ぶ
 function nextSelection(tree: VisibleTree, from: string | undefined, dir: ArrowDir): string | undefined {
   const shown = new Set(tree.ids);
-  if (from === undefined || !shown.has(from)) {
-    if (tree.currentTopic !== undefined && shown.has(tree.currentTopic)) return tree.currentTopic;
-    return tree.ids.find((id) => {
-      const parent = tree.parents[id];
-      return parent == null || !shown.has(parent);
-    });
-  }
-  const y = (id: string) => tree.targets[id]?.y ?? 0;
-  const parentOf = (id: string) => {
-    const parent = tree.parents[id];
-    return parent != null && shown.has(parent) ? parent : null;
-  };
+  if (from === undefined || !shown.has(from)) return initialSelection(tree, shown);
   switch (dir) {
     case "left":
-      return parentOf(from) ?? from;
-    case "right": {
-      let best = from;
-      let bestGap = Infinity;
-      for (const id of tree.ids) {
-        if (parentOf(id) !== from) continue;
-        const gap = Math.abs(y(id) - y(from));
-        if (gap < bestGap) {
-          best = id;
-          bestGap = gap;
-        }
-      }
-      return best;
-    }
+      return parentOf(tree, shown, from) ?? from;
+    case "right":
+      return nearestChild(tree, shown, from);
     case "up":
-    case "down": {
-      const depthOf = (id: string) => {
-        let depth = 0;
-        for (let p = parentOf(id); p !== null; p = parentOf(p)) depth++;
-        return depth;
-      };
-      const depth = depthOf(from);
-      const row = tree.ids.filter((id) => depthOf(id) === depth).sort((a, b) => y(a) - y(b));
-      const at = row.indexOf(from);
-      return row[dir === "up" ? Math.max(0, at - 1) : Math.min(row.length - 1, at + 1)];
-    }
+    case "down":
+      return rowNeighbor(tree, shown, from, dir);
   }
 }
 
 // 重ねる状態の出し入れ: 該当するフラグを反転する（隠した状態から戻すときはフィールドごと外す）
 function toggled(state: ViewingState, key: "sideHidden" | "captionsHidden"): ViewingState {
   return state[key] ? without(state, key) : { ...state, [key]: true };
+}
+
+type Reduced = { state: ViewingState; camera: CameraCommand };
+
+function reduceOverlay(state: ViewingState, event: Extract<ViewingEvent, { type: "keyList" | "side" | "captions" }>): Reduced {
+  if (modified(event)) return { state, camera: idle(state) };
+  switch (event.type) {
+    case "keyList":
+      return { state: state.keyList ? without(state, "keyList") : { ...state, keyList: true }, camera: idle(state) };
+    case "side":
+      return { state: toggled(state, "sideHidden"), camera: SHIFT_INTO_VIEW };
+    case "captions":
+      return { state: toggled(state, "captionsHidden"), camera: idle(state) };
+  }
+}
+
+function reduceArrow(state: ViewingState, event: Extract<ViewingEvent, { type: "arrow" }>, tree: VisibleTree): Reduced {
+  if (modified(event)) return { state, camera: idle(state) };
+  const id = nextSelection(tree, state.selection?.id, event.dir);
+  if (id === undefined) return { state, camera: idle(state) };
+  const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
+  return { state: { ...moved, selection: { id, byKey: true } }, camera: { type: "revealNode", id } };
+}
+
+function foldTargetOf(state: ViewingState, event: Extract<ViewingEvent, { type: "enter" | "foldDot" }>): string | undefined {
+  if (event.type === "foldDot") return event.id;
+  return modified(event) ? undefined : state.selection?.id;
+}
+
+// 「議題 N 件」を解く: 入っていた議題の ID を解いた集合に足し（中身は畳んだまま）、選択を最初の議題へ移す
+function unbundleRun(state: ViewingState, tree: VisibleTree, id: string, camera: CameraCommand): Reduced {
+  const members = tree.runs[id]!;
+  return {
+    state: { ...state, humanUnbundled: new Set([...(state.humanUnbundled ?? []), ...members]), selection: { id: members[0]!, byKey: state.selection?.byKey ?? false } },
+    camera,
+  };
+}
+
+function toggleHumanFold(state: ViewingState, tree: VisibleTree, id: string, toggle: "open" | "fold", camera: CameraCommand): Reduced {
+  const next = withHuman(state, id, toggle === "open" ? "humanOpened" : "humanFolded");
+  // 選択が畳むノードの子孫にあるときは、隠れる選択をそのノードへ移す
+  const selected = state.selection;
+  if (toggle === "fold" && selected !== undefined && selected.id !== id && isDescendant(tree, selected.id, id)) {
+    return { state: { ...next, selection: { ...selected, id } }, camera };
+  }
+  return { state: next, camera };
+}
+
+function reduceFoldToggle(state: ViewingState, event: Extract<ViewingEvent, { type: "enter" | "foldDot" }>, tree: VisibleTree): Reduced {
+  const id = foldTargetOf(state, event);
+  const toggle = id === undefined ? null : foldToggle(tree, id);
+  if (id === undefined || toggle === null) return { state, camera: idle(state) };
+  // 開閉はカメラのモードを変えない。自動は今の議題へ寄り直し、止めているか全体を見ているときは、そのノードの画面上の位置を保つ
+  const camera: CameraCommand = state.mode === "auto" ? REFOCUS : { type: "keepNode", id };
+  if (toggle === "unbundle") return unbundleRun(state, tree, id, camera);
+  return toggleHumanFold(state, tree, id, toggle, camera);
+}
+
+function reducePointChange(state: ViewingState, event: Extract<ViewingEvent, { type: "pointChange" }>, tree: VisibleTree): Reduced {
+  // 祖先の人の畳みを外し、畳む条件に当たる指したノードは人が開いた集合に足す。カメラは人の状態になり、そのノードへ寄る
+  let next = state;
+  for (const a of event.ancestors) next = releaseFolded(next, a);
+  if (event.open) next = withHuman(next, event.id, "humanOpened");
+  const moved = withOverlayOf(next, { mode: "manual", topic: tree.currentTopic });
+  return { state: { ...moved, selection: { id: event.id, byKey: false } }, camera: { type: "focusNode", id: event.id } };
+}
+
+function reduceFitSubtree(state: ViewingState, event: Extract<ViewingEvent, { type: "key" }>, tree: VisibleTree): Reduced {
+  const id = state.selection?.id;
+  if (modified(event) || id === undefined || !tree.ids.includes(id)) return { state, camera: idle(state) };
+  const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
+  return { state: moved, camera: { type: "fitSubtree", id } };
+}
+
+// 選んだノードが統合・削除・時刻の戻しで消えたら、選択の id だけを移り先へ替える
+function relocateSelection(state: ViewingState, replaced: Readonly<Record<string, string>>): ViewingState {
+  const to = state.selection ? replaced[state.selection.id] : undefined;
+  return state.selection && to !== undefined ? { ...state, selection: { ...state.selection, id: to } } : state;
+}
+
+function reduceViaCamera(state: ViewingState, event: CameraEvent, tree: VisibleTree, scope: ViewingScope): Reduced {
+  const out = reduceCamera(cameraPart(state), event, tree, scope);
+  const withSets = withOverlayOf(state, out.state);
+  // 人が畳んだ議題に変化が当たって今の議題になったら、その議題の人の畳みは解ける
+  if (event.type === "reflect") return { state: relocateSelection(releaseFolded(withSets, tree.currentTopic), event.replaced), camera: out.camera };
+  // 選択と人の開閉を外すのは、キー一覧が閉じているときの修飾なしの Esc だけ（自動のときも外す）
+  if (event.type === "escape" && !modified(event)) return { state: withoutHuman(without(withSets, "selection")), camera: out.camera };
+  return { state: withSets, camera: out.camera };
 }
 
 // キー一覧の開閉・右の列と字幕の出し入れはカメラの状態と独立。? と、開いている間の修飾なしの Esc がキー一覧を、
@@ -270,81 +378,62 @@ export function reduceViewing(
   tree: VisibleTree,
   scope: ViewingScope = "live",
 ): { state: ViewingState; camera: CameraCommand } {
-  const modified = (e: { meta: boolean; ctrl: boolean; alt: boolean }) => e.meta || e.ctrl || e.alt;
-  if (event.type === "keyList") {
-    if (modified(event)) return { state, camera: idle(state) };
-    return { state: state.keyList ? without(state, "keyList") : { ...state, keyList: true }, camera: idle(state) };
+  switch (event.type) {
+    case "keyList":
+    case "side":
+    case "captions":
+      return reduceOverlay(state, event);
+    case "select":
+      return { state: { ...state, selection: { id: event.id, byKey: false } }, camera: idle(state) };
+    case "arrow":
+      return reduceArrow(state, event, tree);
+    case "enter":
+    case "foldDot":
+      return reduceFoldToggle(state, event, tree);
+    case "pointChange":
+      return reducePointChange(state, event, tree);
+    case "key":
+      return event.key === "Z" ? reduceFitSubtree(state, event, tree) : reduceViaCamera(state, { ...event, key: event.key }, tree, scope);
+    case "escape":
+      if (!modified(event) && state.keyList) return { state: without(state, "keyList"), camera: idle(state) };
+      return reduceViaCamera(state, event, tree, scope);
+    case "userMoved":
+    case "reflect":
+    case "edgeDot":
+    case "idle":
+    case "timeMoved":
+      return reduceViaCamera(state, event, tree, scope);
   }
-  if (event.type === "side") {
-    if (modified(event)) return { state, camera: idle(state) };
-    return { state: toggled(state, "sideHidden"), camera: SHIFT_INTO_VIEW };
-  }
-  if (event.type === "captions") {
-    if (modified(event)) return { state, camera: idle(state) };
-    return { state: toggled(state, "captionsHidden"), camera: idle(state) };
-  }
-  if (event.type === "escape" && !modified(event) && state.keyList) return { state: without(state, "keyList"), camera: idle(state) };
-  if (event.type === "select") return { state: { ...state, selection: { id: event.id, byKey: false } }, camera: idle(state) };
-  if (event.type === "arrow") {
-    if (modified(event)) return { state, camera: idle(state) };
-    const id = nextSelection(tree, state.selection?.id, event.dir);
-    if (id === undefined) return { state, camera: idle(state) };
-    const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
-    return { state: { ...moved, selection: { id, byKey: true } }, camera: { type: "revealNode", id } };
-  }
-  if (event.type === "enter" || event.type === "foldDot") {
-    const id = event.type === "enter" ? state.selection?.id : event.id;
-    const toggle = id === undefined || (event.type === "enter" && modified(event)) ? null : foldToggle(tree, id);
-    if (id === undefined || toggle === null) return { state, camera: idle(state) };
-    // 開閉はカメラのモードを変えない。自動は今の議題へ寄り直し、止めているか全体を見ているときは、そのノードの画面上の位置を保つ
-    const camera: CameraCommand = state.mode === "auto" ? REFOCUS : { type: "keepNode", id };
-    if (toggle === "unbundle") {
-      // 「議題 N 件」を解く: 入っていた議題の ID を解いた集合に足し（中身は畳んだまま）、選択を最初の議題へ移す
-      const members = tree.runs[id]!;
-      return {
-        state: { ...state, humanUnbundled: new Set([...(state.humanUnbundled ?? []), ...members]), selection: { id: members[0]!, byKey: state.selection?.byKey ?? false } },
-        camera,
-      };
-    }
-    const toggled = withHuman(state, id, toggle === "open" ? "humanOpened" : "humanFolded");
-    // 選択が畳むノードの子孫にあるときは、隠れる選択をそのノードへ移す
-    const selected = state.selection;
-    if (toggle === "fold" && selected !== undefined && selected.id !== id && isDescendant(tree, selected.id, id)) {
-      return { state: { ...toggled, selection: { ...selected, id } }, camera };
-    }
-    return { state: toggled, camera };
-  }
-  if (event.type === "pointChange") {
-    // 祖先の人の畳みを外し、畳む条件に当たる指したノードは人が開いた集合に足す。カメラは人の状態になり、そのノードへ寄る
-    let next = state;
-    for (const a of event.ancestors) next = releaseFolded(next, a);
-    if (event.open) next = withHuman(next, event.id, "humanOpened");
-    const moved = withOverlayOf(next, { mode: "manual", topic: tree.currentTopic });
-    return { state: { ...moved, selection: { id: event.id, byKey: false } }, camera: { type: "focusNode", id: event.id } };
-  }
-  if (event.type === "key" && event.key === "Z") {
-    const id = state.selection?.id;
-    if (modified(event) || id === undefined || !tree.ids.includes(id)) return { state, camera: idle(state) };
-    const moved = withOverlayOf(state, { mode: "manual", topic: tree.currentTopic });
-    return { state: moved, camera: { type: "fitSubtree", id } };
-  }
-  const out = reduceCamera(cameraPart(state), event as CameraEvent, tree, scope);
-  const withSets = withOverlayOf(state, out.state);
-  // 人が畳んだ議題に変化が当たって今の議題になったら、その議題の人の畳みは解ける
-  const next = event.type === "reflect" ? releaseFolded(withSets, tree.currentTopic) : withSets;
-  // 選んだノードが統合・削除・時刻の戻しで消えたら、選択の id だけを移り先へ替える
-  if (event.type === "reflect") {
-    const to = next.selection ? event.replaced[next.selection.id] : undefined;
-    if (next.selection && to !== undefined) return { state: { ...next, selection: { ...next.selection, id: to } }, camera: out.camera };
-  }
-  // 選択と人の開閉を外すのは、キー一覧が閉じているときの修飾なしの Esc だけ（自動のときも外す）
-  return { state: event.type === "escape" && !modified(event) ? withoutHuman(without(next, "selection")) : next, camera: out.camera };
 }
 
 // reduceCamera が受ける出来事。Z（選んだノードへ寄る）、Enter・丸（開閉）、「変わったこと」から指す操作は重ねる状態に依るので、reduceViewing が先に処理して渡さない
 type CameraEvent =
   | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" | "enter" | "foldDot" | "pointChange" | "key" }>
   | { type: "key"; key: Exclude<ViewKey, "Z">; meta: boolean; ctrl: boolean; alt: boolean };
+
+function reduceCameraEdgeDot(state: CameraViewing, event: Extract<CameraEvent, { type: "edgeDot" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
+  // 点を描いてから押すまでにノードが消えていたら、何もしない
+  if (!tree.ids.includes(event.id)) return { state, camera: idle(state) };
+  return { state: { mode: "manual", topic: tree.currentTopic }, camera: { type: "focusNode", id: event.id } };
+}
+
+function reduceCameraReflect(state: CameraViewing, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
+  if (state.mode === "auto") return { state: AUTO, camera: FOLLOW };
+  if (tree.currentTopic !== state.topic) return { state: AUTO, camera: REFOCUS };
+  return { state, camera: state.mode === "overview" ? FIT_ALL : HOLD };
+}
+
+// F: 全体を見る、もう一度押すと前の状態へ戻る
+function toggleOverview(state: CameraViewing, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
+  if (state.mode !== "overview") return { state: { mode: "overview", topic: tree.currentTopic, before: state }, camera: FIT_ALL };
+  return state.before.mode === "auto" ? { state: AUTO, camera: REFOCUS } : { state: state.before, camera: { type: "restore" } };
+}
+
+function reduceCameraKey(state: CameraViewing, event: Extract<CameraEvent, { type: "key" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
+  if (modified(event)) return { state, camera: idle(state) };
+  if (event.key !== "F") return { state: { mode: "manual", topic: tree.currentTopic }, camera: commandOf(event.key) };
+  return toggleOverview(state, tree);
+}
 
 // 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
 // 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体を見ているとき時刻を動かすと戻る。
@@ -357,28 +446,20 @@ function reduceCamera(
   switch (event.type) {
     case "idle":
       if (scope === "review" && state.mode === "manual") return { state: AUTO, camera: REFOCUS };
-      return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
+      return { state, camera: idle(state) };
     case "timeMoved":
       if (scope === "review" && state.mode !== "auto") return { state: AUTO, camera: REFOCUS };
-      return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
+      return { state, camera: idle(state) };
     case "userMoved":
       return { state: { mode: "manual", topic: tree.currentTopic }, camera: HOLD };
     case "reflect":
-      if (state.mode === "auto") return { state: AUTO, camera: FOLLOW };
-      if (tree.currentTopic !== state.topic) return { state: AUTO, camera: REFOCUS };
-      return { state, camera: state.mode === "overview" ? FIT_ALL : HOLD };
+      return reduceCameraReflect(state, tree);
     case "edgeDot":
-      // 点を描いてから押すまでにノードが消えていたら、何もしない
-      if (!tree.ids.includes(event.id)) return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
-      return { state: { mode: "manual", topic: tree.currentTopic }, camera: { type: "focusNode", id: event.id } };
+      return reduceCameraEdgeDot(state, event, tree);
     case "escape":
-      if (event.meta || event.ctrl || event.alt) return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
+      if (modified(event)) return { state, camera: idle(state) };
       return state.mode === "auto" ? { state, camera: FOLLOW } : { state: AUTO, camera: REFOCUS };
-    case "key": {
-      if (event.meta || event.ctrl || event.alt) return { state, camera: state.mode === "auto" ? FOLLOW : HOLD };
-      if (event.key !== "F") return { state: { mode: "manual", topic: tree.currentTopic }, camera: commandOf(event.key) };
-      if (state.mode !== "overview") return { state: { mode: "overview", topic: tree.currentTopic, before: state }, camera: FIT_ALL };
-      return state.before.mode === "auto" ? { state: AUTO, camera: REFOCUS } : { state: state.before, camera: { type: "restore" } };
-    }
+    case "key":
+      return reduceCameraKey(state, event, tree);
   }
 }
