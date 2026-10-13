@@ -4,6 +4,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "test:e2e:smoke": "e2e run tests/smoke --target web --strict-cache",
     "test:e2e": "e2e run --strict-cache --retries 0"
   },
