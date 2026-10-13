@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screenCandidates } from "../src/core/index.ts";
+import { requestScreenWords, screenCandidates } from "../src/core/index.ts";
 
 // 共有画面の文字（OCR の行）から、語彙の候補を取る規則（Issue #643、仕様 #633「共有画面から候補を取る規則」）。I/O を持たない純粋な関数。
 // 入力は、これまでの画面で短い行が出た画面の数（seen）と、この画面の行。出力は、候補（この画面で取れた語）と、更新した数。
@@ -108,5 +108,38 @@ describe("screenCandidates（共有画面の行 → 語彙の候補）", () => {
       // 同じ a.seen から別の続きを作っても、b の結果に影響されない
       expect(screenCandidates(a.seen, ["葛西"]).candidates).toEqual([]);
     });
+  });
+});
+
+describe("requestScreenWords（候補のうち、読みをまだ頼んでいない語だけを選び、頼んだ語に加える）", () => {
+  const state = (seen: [string, number][], requested: string[]) => ({ seen: new Map(seen), requested: new Set(requested) });
+
+  it("頼んでいない語だけを出た順に返し、頼んだ語の集合に加える", () => {
+    const [fresh, next] = requestScreenWords(state([], ["港南店"]), ["港南店", "Zendesk", "野々村"]);
+
+    expect(fresh).toEqual(["Zendesk", "野々村"]);
+    expect([...next.requested].sort()).toEqual(["Zendesk", "港南店", "野々村"].sort());
+  });
+
+  it("同じ語を続けて渡しても、2 回目は何も頼まない", () => {
+    const [first, afterFirst] = requestScreenWords(state([], []), ["Zendesk"]);
+    const [second, afterSecond] = requestScreenWords(afterFirst, ["Zendesk"]);
+
+    expect(first).toEqual(["Zendesk"]);
+    expect(second).toEqual([]);
+    expect([...afterSecond.requested]).toEqual(["Zendesk"]);
+  });
+
+  it("短い行の画面数を引き継ぎ、3 画面目で初めて候補になる。渡された状態は書き換えない", () => {
+    const initial = state([], []);
+    const [a, s1] = requestScreenWords(initial, ["葛西"]);
+    const [b, s2] = requestScreenWords(s1, ["葛西"]);
+    const [c, s3] = requestScreenWords(s2, ["葛西"]);
+
+    expect([a, b, c]).toEqual([[], [], ["葛西"]]);
+    expect(s3.seen.get("葛西")).toBe(3);
+    expect(initial.seen.size).toBe(0);
+    expect(initial.requested.size).toBe(0);
+    expect(s1.seen.get("葛西")).toBe(1);
   });
 });

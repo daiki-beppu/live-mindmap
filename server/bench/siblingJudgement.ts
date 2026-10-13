@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { childrenByParent } from "../src/core/groupSize.ts";
 import { restoreState, snapshotOf } from "../src/core/session.ts";
 import type { Judge } from "./claudeJudge.ts";
 import { largestGroup } from "./mapShape.ts";
@@ -95,13 +96,7 @@ export const judgeSiblings = Effect.fnUntraced(function* <E, R>(
   );
   const nodes = snapshotOf(state).nodes;
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  const kids = new Map<string, typeof nodes>();
-  for (const node of nodes) {
-    if (node.parent === null) continue;
-    const siblings = kids.get(node.parent);
-    if (siblings) siblings.push(node);
-    else kids.set(node.parent, [node]);
-  }
+  const kids = childrenByParent(nodes);
   const target = options.parent === undefined ? undefined : byId.get(options.parent);
   if (options.parent !== undefined && (target === undefined || target.parent === null)) {
     return yield* new SiblingJudgementFailed({ message: "指定した親が最終マップにないか、ルートです" });

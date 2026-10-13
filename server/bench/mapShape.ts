@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, FileSystem, Schema } from "effect";
 import { Argument, Command } from "effect/cli";
-import { groupSize, RemarkEvent, reviewSnapshot, type SnapshotNode } from "../src/core/index.ts";
+import { childrenByParent, groupSize, RemarkEvent, reviewSnapshot, type SnapshotNode } from "../src/core/index.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
 import { BENCH_VERSION, InvalidInputFile, MissingSessionDir, readInputText, reportFailure, write } from "./entry.ts";
 
@@ -42,13 +42,7 @@ export function mapShape(events: readonly unknown[]): MapShape {
   }
   const minutes = end / 60;
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const kids = new Map<string, SnapshotNode[]>();
-  for (const n of nodes) {
-    if (n.parent === null) continue;
-    const siblings = kids.get(n.parent);
-    if (siblings) siblings.push(n);
-    else kids.set(n.parent, [n]);
-  }
+  const kids = childrenByParent(nodes);
   let topics = 0, nested = 0, derived = 0, maxTopic = 0;
   const maxGroup = largestGroup(nodes)?.size ?? 0;
   let oneChild = 0, longestChain = 0, longestSameKindChain = 0, maxDepth = 0;

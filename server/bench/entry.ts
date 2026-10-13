@@ -1,8 +1,7 @@
 // bench の 4 本のスクリプトが共有する入口の部品。runMain は各スクリプトの入口だけが呼ぶ（ここでは呼ばない）。
 // 引数の誤りは effect/cli の既定の Formatter が出力し、中身の失敗はタグ付きにして、入口で日本語の説明付きの 1 行（<パス>: <説明>（<理由>））にする。
-import { Cause, Console, Effect, Exit, Result, Runtime, Schema } from "effect";
-import { CliError } from "effect/cli";
-import { exitNaturally as defaultExitNaturally } from "../src/exitNaturally.ts";
+import { Console, Effect, type Runtime, Schema } from "effect";
+import { depsMissingTeardown, reportEntryFailure } from "../src/entryFailure.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { describe, fileReason, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
 
@@ -47,26 +46,10 @@ const failureLine = (failure: BenchFailure): string => {
   }
 };
 
-// 失敗の表示はここだけ。CliError（help・引数の誤り）は effect/cli が出力済みなので二重に出さない
-export const reportFailure = (cause: Cause.Cause<unknown>) => {
-  const error = Cause.findError(cause);
-  if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
-  const failure = error.success;
-  if (failure instanceof StartupDepsMissing) return Console.error(failure.message);
-  if (CliError.isCliError(failure)) return Effect.void;
-  return Console.error(isBenchFailure(failure) ? failureLine(failure) : describe(failure));
-};
+// 失敗の表示はここだけ。共通の前半（entryFailure）で済まないものを、この表で 1 行にする
+export const reportFailure = reportEntryFailure((failure) => Console.error(isBenchFailure(failure) ? failureLine(failure) : describe(failure)));
 
-export const exitNaturally: Runtime.Teardown = (exit, onExit) => {
-  if (Exit.isFailure(exit) && exit.cause.reasons.length === 1) {
-    const error = Cause.findError(exit.cause);
-    if (Result.isSuccess(error) && error.success instanceof StartupDepsMissing) {
-      process.exitCode = 3;
-      return;
-    }
-  }
-  defaultExitNaturally(exit, onExit);
-};
+export const exitNaturally: Runtime.Teardown = depsMissingTeardown((failure) => failure instanceof StartupDepsMissing);
 
 // 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
 // （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）

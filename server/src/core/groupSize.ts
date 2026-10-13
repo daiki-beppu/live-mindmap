@@ -3,6 +3,18 @@ import { ROOT_ID, type MapNode } from "./map.ts";
 export type GroupNode = Pick<MapNode, "id" | "parent" | "kind" | "talkStatus">;
 export type GroupSize = { size: number; topicId: string };
 
+// 親ごとの子の一覧（入力の順）。親を持たないノードと、子のないノードは載らない。ノードはコピーしない。
+export function childrenByParent<N extends { readonly id: string; readonly parent: string | null }>(nodes: readonly N[]): Map<string, N[]> {
+  const kids = new Map<string, N[]>();
+  for (const n of nodes) {
+    if (n.parent === null) continue;
+    const siblings = kids.get(n.parent);
+    if (siblings) siblings.push(n);
+    else kids.set(n.parent, [n]);
+  }
+  return kids;
+}
+
 // 入力は既存のマップと同じ木。本文・根拠・実行環境を必要としない。
 export function groupSize(nodes: readonly GroupNode[], id: string): GroupSize {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -15,13 +27,7 @@ export function groupSize(nodes: readonly GroupNode[], id: string): GroupSize {
   }
   if (origin.kind === "論点" && origin.talkStatus === "済み") return { size: 0, topicId };
 
-  const kids = new Map<string, GroupNode[]>();
-  for (const n of nodes) {
-    if (n.parent === null) continue;
-    const siblings = kids.get(n.parent);
-    if (siblings) siblings.push(n);
-    else kids.set(n.parent, [n]);
-  }
+  const kids = childrenByParent(nodes);
   let size = 0;
   const pending = [...(kids.get(id) ?? [])];
   while (pending.length) {
