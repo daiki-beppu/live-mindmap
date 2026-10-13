@@ -149,6 +149,170 @@ function removeNode(map: MeetingMap, id: string) {
   map.order = map.order.filter((k) => k !== id);
 }
 
+// 1 回の反映の間だけ使う状態。仮 ID は refs で実 ID に解決する。
+type ApplyState = {
+  map: MeetingMap;
+  refs: Map<string, string>;
+  known: ReadonlySet<string>;
+  round: number;
+  at: number;
+  changeOrder: string[];
+};
+
+type OpOf<K extends Op["op"]> = Extract<Op, { op: K }>;
+
+// 捨てるときは理由を、適用したときは null を返す。
+type Applied = string | null;
+
+const resolveId = (s: ApplyState, id: string) => s.refs.get(id) ?? id;
+
+// 対象のノード。無いかルートなら undefined。
+function target(s: ApplyState, id: string): MapNode | undefined {
+  const n = s.map.nodes[resolveId(s, id)];
+  return n && n.id !== ROOT_ID ? n : undefined;
+}
+
+function evidenceError(known: ReadonlySet<string>, evidence: string[]): string | null {
+  const unknown = evidence.filter((u) => !known.has(u));
+  if (unknown.length) return `根拠に知らない発言がある: ${unknown.join(", ")}`;
+  if (evidence.length === 0) return "根拠が無い";
+  return null;
+}
+
+function newNode(op: OpOf<"add">, id: string, parent: string, round: number): MapNode {
+  return {
+    id, parent, kind: op.kind, text: op.text, evidence: [...op.evidence],
+    evidenceRound: round,
+    ...(op.kind === "案" ? { planStatus: "検討中" as const } : {}),
+    ...(op.kind === "TODO" && op.assignee ? { assignee: op.assignee } : {}),
+    ...(op.kind === "TODO" && op.due ? { due: op.due } : {}),
+  };
+}
+
+function applyAdd(s: ApplyState, op: OpOf<"add">): Applied {
+  const { map } = s;
+  if (map.nodes[op.ref] || s.refs.has(op.ref)) return "仮 ID が既存の ID と重なる";
+  const parentId = resolveId(s, op.parent);
+  const err = parentError(map.nodes[parentId], op.kind) ?? evidenceError(s.known, op.evidence);
+  if (err) return err;
+  const id = `n${map.nextId++}`;
+  map.nodes[id] = newNode(op, id, parentId, s.round);
+  map.order.push(id);
+  s.refs.set(op.ref, id);
+  reopenUp(map, id);
+  s.changeOrder.push(id);
+  touchUp(map, id, s.at);
+  return null;
+}
+
+function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
+  const n = target(s, op.node);
+  if (!n) return "対象が無い";
+  if (op.planStatus && n.kind !== "案") return "状態を持つのは案だけ";
+  const err = evidenceError(s.known, op.evidence);
+  if (err) return err;
+  const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
+  const valueChanged = (!!op.text && op.text !== n.text)
+    || (!!op.planStatus && op.planStatus !== n.planStatus)
+    || evidenceAdded;
+  reopenUp(s.map, n.id);
+  if (valueChanged) { s.changeOrder.push(n.id); touchUp(s.map, n.id, s.at); }
+  if (evidenceAdded) n.evidenceRound = s.round;
+  if (op.text) n.text = op.text;
+  if (op.planStatus) n.planStatus = op.planStatus;
+  for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
+  return null;
+}
+
+function applyMove(s: ApplyState, op: OpOf<"move">): Applied {
+  const n = target(s, op.node);
+  const parentId = resolveId(s, op.parent);
+  if (!n) return "対象が無い";
+  if (isDescendant(s.map, parentId, n.id)) return "自分の子孫の下へは移せない";
+  const err = parentError(s.map.nodes[parentId], n.kind);
+  if (err) return err;
+  if (n.parent !== parentId) {
+    s.changeOrder.push(n.id);
+    touchUp(s.map, n.parent, s.at);
+    n.parent = parentId;
+    touchUp(s.map, n.id, s.at);
+  }
+  reopenUp(s.map, n.id);
+  return null;
+}
+
+function combineError(map: MeetingMap, from: MapNode | undefined, into: MapNode | undefined): string | null {
+  if (!from || !into || from.id === into.id) return "対象が無い";
+  if (from.kind !== into.kind) return "統合は同じ種別どうしに限る";
+  if (isDescendant(map, into.id, from.id)) return "子孫へは統合できない";
+  if (isLeafKind(into.kind) && children(map, from.id).length) return `${into.kind} は子を持てない`;
+  return null;
+}
+
+// 統合元と統合先の evidenceRound の大きい方（片方が無ければもう片方）
+function mergedEvidenceRound(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined || b === undefined) return a ?? b;
+  return Math.max(a, b);
+}
+
+function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
+  const from = target(s, op.from), into = target(s, op.into);
+  const err = combineError(s.map, from, into);
+  if (err) return err;
+  // combineError が通ったので、どちらも存在する
+  const src = from!, dst = into!;
+  touchUp(s.map, src.parent, s.at);
+  for (const k of children(s.map, src.id)) k.parent = dst.id;
+  for (const u of src.evidence) if (!dst.evidence.includes(u)) dst.evidence.push(u);
+  const fromRound = src.evidenceRound;
+  removeNode(s.map, src.id);
+  s.changeOrder.push(dst.id);
+  const merged = mergedEvidenceRound(fromRound, dst.evidenceRound);
+  if (merged !== undefined) dst.evidenceRound = merged;
+  touchUp(s.map, dst.id, s.at);
+  reopenUp(s.map, dst.id);
+  return null;
+}
+
+function applyDelete(s: ApplyState, op: OpOf<"delete">): Applied {
+  const n = target(s, op.node);
+  if (!n) return "対象が無い";
+  if (children(s.map, n.id).length) return "子を持つノードは削除できない";
+  touchUp(s.map, n.parent, s.at);
+  removeNode(s.map, n.id);
+  return null;
+}
+
+function closeError(s: ApplyState, n: MapNode): string | null {
+  if (n.kind !== "議題" && n.kind !== "論点") return "閉じられるのは議題・論点だけ";
+  if (n.talkStatus) return "すでに済み";
+  const recentlyEvidenced = Object.values(s.map.nodes).some((m) => (m.evidenceRound ?? -Infinity) >= s.round - 1 && isDescendant(s.map, m.id, n.id));
+  if (recentlyEvidenced) return "同じ応答か直前の差分更新で根拠が足されている";
+  return null;
+}
+
+function applyClose(s: ApplyState, op: OpOf<"close">): Applied {
+  const n = target(s, op.node);
+  if (!n) return "対象が無い";
+  const err = closeError(s, n);
+  if (err) return err;
+  n.talkStatus = "済み";
+  return null;
+}
+
+function applyOp(s: ApplyState, op: Op): Applied {
+  switch (op.op) {
+    case "noop": return null;
+    case "add": return applyAdd(s, op);
+    case "update": return applyUpdate(s, op);
+    case "move": return applyMove(s, op);
+    case "combine": return applyCombine(s, op);
+    case "delete": return applyDelete(s, op);
+    case "close": return applyClose(s, op);
+  }
+}
+
+
 // マップの変更はすべてここを通す。操作は適用する時点のマップに対して検証し、
 // 成り立たない操作は捨てて理由を返し、残りは適用を続ける。
 // known は根拠に使える発言の ID。知らない発言を根拠に挙げた操作は捨てる。
@@ -159,117 +323,11 @@ function removeNode(map: MeetingMap, id: string) {
 // close と開き直しは changeOrder・touchedAt に影響しない。
 // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
 export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
-  const { round, at } = stamp;
-  const map = cloneMap(input);
+  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [] };
   const dropped: Dropped[] = [];
-  const changeOrder: string[] = [];
-  const refs = new Map<string, string>();
-  const resolve = (id: string) => refs.get(id) ?? id;
-  const drop = (op: Op, reason: string) => dropped.push({ op, reason });
-  const evidenceError = (evidence: string[]) => {
-    const unknown = evidence.filter((u) => !known.has(u));
-    if (unknown.length) return `根拠に知らない発言がある: ${unknown.join(", ")}`;
-    if (evidence.length === 0) return "根拠が無い";
-    return null;
-  };
-
   for (const op of ops) {
-    switch (op.op) {
-      case "noop":
-        break;
-      case "add": {
-        if (map.nodes[op.ref] || refs.has(op.ref)) { drop(op, "仮 ID が既存の ID と重なる"); break; }
-        const parentId = resolve(op.parent);
-        const err = parentError(map.nodes[parentId], op.kind) ?? evidenceError(op.evidence);
-        if (err) { drop(op, err); break; }
-        const id = `n${map.nextId++}`;
-        map.nodes[id] = {
-          id, parent: parentId, kind: op.kind, text: op.text, evidence: [...op.evidence],
-          evidenceRound: round,
-          ...(op.kind === "案" ? { planStatus: "検討中" as const } : {}),
-          ...(op.kind === "TODO" && op.assignee ? { assignee: op.assignee } : {}),
-          ...(op.kind === "TODO" && op.due ? { due: op.due } : {}),
-        };
-        map.order.push(id);
-        refs.set(op.ref, id);
-        reopenUp(map, id);
-        changeOrder.push(id);
-        touchUp(map, id, at);
-        break;
-      }
-      case "update": {
-        const n = map.nodes[resolve(op.node)];
-        if (!n || n.id === ROOT_ID) { drop(op, "対象が無い"); break; }
-        if (op.planStatus && n.kind !== "案") { drop(op, "状態を持つのは案だけ"); break; }
-        const err = evidenceError(op.evidence);
-        if (err) { drop(op, err); break; }
-        const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
-        const valueChanged = (!!op.text && op.text !== n.text)
-          || (!!op.planStatus && op.planStatus !== n.planStatus)
-          || evidenceAdded;
-        reopenUp(map, n.id);
-        if (valueChanged) { changeOrder.push(n.id); touchUp(map, n.id, at); }
-        if (evidenceAdded) n.evidenceRound = round;
-        if (op.text) n.text = op.text;
-        if (op.planStatus) n.planStatus = op.planStatus;
-        for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
-        break;
-      }
-      case "move": {
-        const n = map.nodes[resolve(op.node)], parentId = resolve(op.parent);
-        if (!n || n.id === ROOT_ID) { drop(op, "対象が無い"); break; }
-        if (isDescendant(map, parentId, n.id)) { drop(op, "自分の子孫の下へは移せない"); break; }
-        const err = parentError(map.nodes[parentId], n.kind);
-        if (err) { drop(op, err); break; }
-        if (n.parent !== parentId) {
-          changeOrder.push(n.id);
-          touchUp(map, n.parent, at);
-          n.parent = parentId;
-          touchUp(map, n.id, at);
-        }
-        reopenUp(map, n.id);
-        break;
-      }
-      case "combine": {
-        const from = map.nodes[resolve(op.from)], into = map.nodes[resolve(op.into)];
-        if (!from || !into || from.id === ROOT_ID || into.id === ROOT_ID || from.id === into.id) { drop(op, "対象が無い"); break; }
-        if (from.kind !== into.kind) { drop(op, "統合は同じ種別どうしに限る"); break; }
-        if (isDescendant(map, into.id, from.id)) { drop(op, "子孫へは統合できない"); break; }
-        const kids = children(map, from.id);
-        if (kids.length && isLeafKind(into.kind)) { drop(op, `${into.kind} は子を持てない`); break; }
-        touchUp(map, from.parent, at);
-        for (const k of kids) k.parent = into.id;
-        for (const u of from.evidence) if (!into.evidence.includes(u)) into.evidence.push(u);
-        const fromRound = from.evidenceRound;
-        removeNode(map, from.id);
-        changeOrder.push(into.id);
-        const mergedRound = fromRound === undefined || into.evidenceRound === undefined
-          ? (fromRound ?? into.evidenceRound)
-          : Math.max(fromRound, into.evidenceRound);
-        if (mergedRound !== undefined) into.evidenceRound = mergedRound;
-        touchUp(map, into.id, at);
-        reopenUp(map, into.id);
-        break;
-      }
-      case "delete": {
-        const n = map.nodes[resolve(op.node)];
-        if (!n || n.id === ROOT_ID) { drop(op, "対象が無い"); break; }
-        if (children(map, n.id).length) { drop(op, "子を持つノードは削除できない"); break; }
-        touchUp(map, n.parent, at);
-        removeNode(map, n.id);
-        break;
-      }
-      case "close": {
-        const n = map.nodes[resolve(op.node)];
-        if (!n || n.id === ROOT_ID) { drop(op, "対象が無い"); break; }
-        if (n.kind !== "議題" && n.kind !== "論点") { drop(op, "閉じられるのは議題・論点だけ"); break; }
-        if (n.talkStatus) { drop(op, "すでに済み"); break; }
-        const recentlyEvidenced = Object.values(map.nodes).some((m) => (m.evidenceRound ?? -Infinity) >= round - 1 && isDescendant(map, m.id, n.id));
-        if (recentlyEvidenced) { drop(op, "同じ応答か直前の差分更新で根拠が足されている"); break; }
-        n.talkStatus = "済み";
-        break;
-      }
-    }
+    const reason = applyOp(s, op);
+    if (reason) dropped.push({ op, reason });
   }
-  return { map, dropped, changeOrder };
+  return { map: s.map, dropped, changeOrder: s.changeOrder };
 }
