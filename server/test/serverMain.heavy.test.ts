@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { WebSocket } from "ws";
 import { DEFAULT_HELPER_PATH } from "../src/helperPath.ts";
+import { serverPidPath } from "../src/serverProcess.ts";
 
 const main = join(import.meta.dirname, "../src/server.ts");
 // main を実物の子プロセスとして起動するので、1 件ごとに Node の起動と TypeScript の変換が入る。
@@ -55,7 +57,7 @@ const processResource = Effect.fnUntraced(function* (
   });
   // 起動失敗のケースでは exited を観測する。listening の拒否を未処理にしない。
   const started = listening.then((value) => ({ port: value }), (error: unknown) => ({ error }));
-  return { child, exited, started, output };
+  return { child, exited, started, output, sessionsDir };
 });
 
 describe("server main の終了（要件6・7）", () => {
@@ -85,6 +87,29 @@ describe("server main の終了（要件6・7）", () => {
         yield* Effect.tryPromise(() => expect(fetch(`http://127.0.0.1:${started.port}/session/status`)).rejects.toThrow());
       }), TIMEOUT);
   }
+
+  // 実物の CLI の server stop が、起動した本物のサーバーを PID の記録と自己申告の PID で止める（pkill を使わない止め方）
+  it.live("cli server stop で止まり、終了コード 0 で終わり、PID の記録を消す", () =>
+    Effect.gen(function* () {
+      const p = yield* processResource(0);
+      const started = yield* Effect.tryPromise(() => p.started);
+      if ("error" in started) throw started.error;
+      const record = serverPidPath(p.sessionsDir, started.port);
+      expect(existsSync(record)).toBe(true);
+      const stopped = yield* Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+        execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), "server", "stop"], {
+          timeout: TIMEOUT,
+          env: { ...process.env, LIVE_MINDMAP_PORT: String(started.port), LIVE_MINDMAP_SESSIONS: p.sessionsDir, NO_COLOR: "1" },
+        }, (error, stdout, stderr) => {
+          if (error && (error.killed || typeof error.code !== "number")) return reject(error);
+          resolve({ code: error ? error.code as number : 0, stdout, stderr });
+        });
+      }));
+      expect(stopped).toEqual({ code: 0, stdout: `サーバーを止めました（ポート ${started.port}、pid ${p.child.pid}）\n`, stderr: "" });
+      const exit = yield* Effect.tryPromise(() => p.exited);
+      expect(exit).toEqual({ code: 0, signal: null });
+      expect(existsSync(record)).toBe(false);
+    }), TIMEOUT);
 
   it.live("待受けに失敗したプロセスは終了し、先に起動していたサーバーは応答を続ける", () =>
     Effect.gen(function* () {

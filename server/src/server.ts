@@ -26,6 +26,7 @@ import { Tunnel } from "./tunnel.ts";
 import { Viewers } from "./viewers.ts";
 import { ViewingShare } from "./viewingShare.ts";
 import { makeModelTransferToken, publishModelTransferToken } from "./modelTransferToken.ts";
+import { publishServerPid } from "./serverProcess.ts";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
 
 export type ListenOptions = {
@@ -66,7 +67,7 @@ export const realLayers = (options: ServerOptions, exportServices: ExportService
 };
 
 // サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
-// 止める順（登録の逆）: 配信を渡し切る（drained）→ 配信の停止・接続の Fiber の終了 → Sessions
+// 止める順（登録の逆）: PID の記録を消す → 転送用トークンを消す → 配信を渡し切る（drained）→ 配信の停止・接続の Fiber の終了 → Sessions
 // （進行中のセッションのヘルパー・updater の後始末）→ 待受けを閉じる
 export const startup = Effect.fnUntraced(function* (options: ListenOptions, layers: ServerLayers) {
   const token = makeModelTransferToken();
@@ -88,6 +89,8 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
     yield* Effect.addFinalizer(() => viewers.drained);
     const port = yield* portOf((yield* HttpServer.HttpServer).address);
     yield* publishModelTransferToken(options.sessionsDir, port, token).pipe(Effect.provide(NodeFileSystem.layer));
+    // cli server stop が止める相手を確かめるための記録。Scope を閉じると消す
+    yield* publishServerPid(options.sessionsDir, port, process.pid).pipe(Effect.provide(NodeFileSystem.layer));
     options.onListening?.(port);
     return port;
   }).pipe(Effect.provide(context));

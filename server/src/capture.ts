@@ -47,10 +47,9 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   if (!url) return yield* new CaptureFailed({ message: "撮影用の表示ページの URL を取得できません" });
   const browser = yield* Effect.acquireRelease(
     playwright.launch().pipe(
+      // 入れ方を示すのは、入っていないときだけ（入っているのに起動できないときに入れ直しを勧めない）
       Effect.mapError((e) =>
-        new CaptureFailed({
-          message: `Chromium を起動できません。pnpm cli install chromium で入る（${e.message}）`,
-        }),
+        new CaptureFailed({ message: e._tag === "ChromiumMissing" ? e.message : `Chromium を起動できません（${e.message}）` }),
       ),
     ),
     (browser) => Effect.promise(() => browser.close()),

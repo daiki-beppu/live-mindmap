@@ -33,7 +33,7 @@ export const fakeTunnel = (options: { readonly holdFirstOpen?: boolean; readonly
     check: Effect.suspend(() => {
       checkedCount += 1;
       return options.missing === true
-        ? Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。pnpm cli install cloudflared で入れてから、もう一度 share を打ってください" }))
+        ? Effect.fail(new CloudflaredMissing({ message: "cloudflared がありません。管理依存はセッション中には入れられないので、cli stop でセッションを終えてから pnpm cli install cloudflared で入れてください（share は次のセッションから使えます）" }))
         : Effect.void;
     }),
     open: (port, allow) => Effect.gen(function* () {

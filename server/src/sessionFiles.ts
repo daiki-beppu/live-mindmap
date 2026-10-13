@@ -37,7 +37,8 @@ export const writeExportFiles = Effect.fnUntraced(function* (dir: string, snapsh
   return paths;
 });
 
-export const captureWarning = (reason: string) => `map.png を書き出せませんでした: ${reason}（pnpm cli install chromium で入る）`;
+// 入れ方が要るときは reason（CaptureFailed）が含む。ここで足すと、入っているときにも入れ方を勧め、入っていないときは 2 回出る
+export const captureWarning = (reason: string) => `map.png を書き出せませんでした: ${reason}`;
 export const reviewWarning = (file: string, reason: string) => `${file} を書き出せませんでした: ${reason}`;
 
 // セッションのフォルダ直下の録音（相手*.m4a・自分*.m4a）の有無

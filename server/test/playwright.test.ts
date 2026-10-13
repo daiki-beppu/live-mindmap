@@ -45,11 +45,15 @@ describe("Playwright の管理依存", () => {
     }).pipe(Effect.provide(Playwright.layer.pipe(Layer.provide(Layer.succeed(ManagedDeps, deps)))));
   }));
 
-  it.effect("未導入でも構築でき、起動時に管理依存の失敗を返す", () => Effect.gen(function* () {
-    const error = new ManagedDepsFailed({ message: "未導入" });
+  // 入っていないときだけ入れ方を示す。入っているのに読めないときに「入れて」と言わない（2026-10-13、#968 の読み込みの失敗で起きた）
+  it.effect.each([
+    { state: "missing", expected: "ChromiumMissing" },
+    { state: "ready", expected: "ManagedDepsFailed" },
+  ] as const)("読み込みに失敗したとき、導入の状態が $state なら $expected を返す", ({ state, expected }) => Effect.gen(function* () {
+    const error = new ManagedDepsFailed({ message: "読めない" });
     const deps = ManagedDeps.of({
       executable: () => Effect.die("実行ファイル取得は対象外"),
-      check: () => Effect.die("check は呼ばない"),
+      check: () => Effect.succeed([{ name: "chromium", need: "optional", state }]),
       update: () => Stream.die("更新は対象外"), install: () => Stream.die("install は呼ばない"),
       load: () => Effect.fail(error),
     });
@@ -57,7 +61,11 @@ describe("Playwright の管理依存", () => {
       const service = yield* Playwright;
       const result = yield* Effect.result(service.launch());
       expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) expect(result.failure.message).toBe("未導入");
+      if (Result.isFailure(result)) {
+        expect(result.failure._tag).toBe(expected);
+        if (expected === "ManagedDepsFailed") expect(result.failure).toBe(error);
+        else expect(result.failure.message).toContain("pnpm cli install chromium");
+      }
     }).pipe(Effect.provide(Playwright.layer.pipe(Layer.provide(Layer.succeed(ManagedDeps, deps)))));
   }));
 });
