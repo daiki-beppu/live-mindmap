@@ -1,0 +1,19 @@
+name: actionlint
+
+# workflow の点検。check.yml とは別の workflow にしてある: check.yml 自体が読み込めない誤り（#797 の job の env の runner.temp）では
+# check.yml のジョブが 1 つも走らずチェックが付かないが、こちらは走って赤が付く。必須チェックにはしていない（赤が見えれば足りる）
+on:
+  pull_request:
+    paths: [".github/**"]
+  push:
+    branches: [main]
+    paths: [".github/**"]
+
+jobs:
+  # 版は固定する。上げるときは下の 2 か所（script の tag と引数）を揃える。shellcheck は ubuntu-24.04 に入っているものを actionlint が使う
+  actionlint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+      - run: '"$RUNNER_TEMP/actionlint" -color'

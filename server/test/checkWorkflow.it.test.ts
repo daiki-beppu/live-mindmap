@@ -81,7 +81,7 @@ const allJobs = (): string[] => {
 
 const otherJobs = (): string[] => allJobs().filter((j) => j !== "check");
 
-const allSuccess = { changes: "success", ts: "success", heavy: "success", e2e: "success", helper: "success", actionlint: "success" };
+const allSuccess = { changes: "success", ts: "success", heavy: "success", e2e: "success", helper: "success" };
 
 describe("check ジョブの構造", () => {
   it("判定のステップは条件なしで毎回走る（スキップされたステップは成功扱いになる）", () => {
@@ -269,7 +269,7 @@ describe("check ジョブの判定", () => {
 
   it("docs だけの PR（テストのジョブが skipped）なら通る", () => {
     const r = runStep(
-      needsJson({ changes: "success", ts: "skipped", heavy: "skipped", e2e: "skipped", helper: "skipped", actionlint: "skipped" }),
+      needsJson({ changes: "success", ts: "skipped", heavy: "skipped", e2e: "skipped", helper: "skipped" }),
     );
     expect(r.status).toBe(0);
   });
@@ -358,15 +358,15 @@ const filterOutputs = (files: string[], event = "pull_request"): Record<string, 
 
 describe("changes ジョブの振り分け", () => {
   it("helper/package.json だけの変更は ts のジョブを走らせる（swift も走る）", () => {
-    expect(filterOutputs(["helper/package.json"])).toEqual({ ts: "true", swift: "true", actions: "false" });
+    expect(filterOutputs(["helper/package.json"])).toEqual({ ts: "true", swift: "true" });
   });
 
   it("helper/Sources の下だけの変更は ts を飛ばし、swift だけ走らせる", () => {
-    expect(filterOutputs(["helper/Sources/Foo.swift"])).toEqual({ ts: "false", swift: "true", actions: "false" });
+    expect(filterOutputs(["helper/Sources/Foo.swift"])).toEqual({ ts: "false", swift: "true" });
   });
 
   it("helper/ の package.json 以外のファイルだけの変更は ts を飛ばす", () => {
-    expect(filterOutputs(["helper/scripts/checkTestLayers.ts", "helper/Package.swift"])).toEqual({ ts: "false", swift: "true", actions: "false" });
+    expect(filterOutputs(["helper/scripts/checkTestLayers.ts", "helper/Package.swift"])).toEqual({ ts: "false", swift: "true" });
   });
 
   it("入れ子の package.json（helper/Sources/x/package.json）は例外にしない", () => {
@@ -374,7 +374,7 @@ describe("changes ジョブの振り分け", () => {
   });
 
   it("docs だけの変更は ts も swift も飛ばす", () => {
-    expect(filterOutputs(["docs/a.md", "README.md", "LICENSE"])).toEqual({ ts: "false", swift: "false", actions: "false" });
+    expect(filterOutputs(["docs/a.md", "README.md", "LICENSE"])).toEqual({ ts: "false", swift: "false" });
   });
 
   it("docs と helper/package.json の変更なら ts が走る", () => {
@@ -382,16 +382,11 @@ describe("changes ジョブの振り分け", () => {
   });
 
   it("server の変更は ts を走らせる", () => {
-    expect(filterOutputs(["server/src/a.ts"])).toEqual({ ts: "true", swift: "false", actions: "false" });
+    expect(filterOutputs(["server/src/a.ts"])).toEqual({ ts: "true", swift: "false" });
   });
 
-  // workflow を変えた PR だけ actionlint を走らせる。check.yml は swift も ts も走らせる
-  it(".github/ の変更は actionlint を走らせる", () => {
-    expect(filterOutputs([".github/workflows/check.yml"])).toEqual({ ts: "true", swift: "true", actions: "true" });
-  });
-
-  it("main への push は全部走らせる", () => {
-    expect(filterOutputs([], "push")).toEqual({ ts: "true", swift: "true", actions: "true" });
+  it("main への push は両方走らせる", () => {
+    expect(filterOutputs([], "push")).toEqual({ ts: "true", swift: "true" });
   });
 });
 
