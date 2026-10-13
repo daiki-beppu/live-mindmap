@@ -22,11 +22,12 @@ This follows [ADR 0007](docs/adr/0007-core-session-on-effect.md) for `server/src
 
 ## Tests
 
-Unlike the rest of this file, read this section when you add a test. Layer names, file suffixes and when each layer runs live in `AGENTS.md` → Checks; this section does not repeat them. For tests that assert something does not happen, see Negative tests above.
+Unlike the rest of this file, read this section when you add a test. Layer names and file suffixes live in [`docs/agents/checks.md`](docs/agents/checks.md), and when each layer runs in `AGENTS.md` → Checks; this section does not repeat them. For tests that assert something does not happen, see Negative tests above.
 
 - **Evidence gate.** Add a test only if you can show all five: the obligation to add it; the contract it checks, taken from its source of truth (issue, spec, public interface — not the current code); how it fails on a real path; why no existing test already catches that failure; and the smallest layer that holds the contract. If any one is missing, don't add it. Source: takt's [`testing.md`](https://github.com/nrslib/takt/blob/main/builtins/ja/facets/policies/testing.md) (not copied here).
 - **Contracts, not structure.** Don't turn internal structure or assets that never run into a contract: line counts, source wording, imports, where a file lives, README prose. CLI output and protocol values are contracts and may be checked by exact match.
 - **Layers.** A layer is set by the real dependency boundaries the test actually crosses. Put each test in the smallest layer that holds its contract, and don't check the same failure again in another layer.
+- **Waiting helpers.** A helper that waits for a condition runs against a wall-clock deadline and throws on timeout, naming the condition it waited for. Polling a fixed number of times and then returning lets the test pass on a fast machine and fail only under CI load: #668's `waitForDiffState` polled 200 times, returned silently, and passed takt review.
 - **Fakes.** Shape fakes as decided in [#446](https://github.com/daiki-beppu/live-mindmap/issues/446).
 - **E2E.** Judge only with locator `expect`; the procedure is in `e2e/README.md`.
 - **Evals.** Evals are not a test layer (`AGENTS.md` → Evals); the deterministic parts of eval tooling are ordinary tests and sit in a layer like any other.

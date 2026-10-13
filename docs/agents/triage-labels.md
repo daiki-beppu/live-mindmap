@@ -12,6 +12,8 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 Specs take `spec` instead of any of these; see [Specs](issue-tracker.md#specs).
 
+Issues that group others carry none of these labels and sit outside triage: a parent issue whose sub-issues are the implementation tickets, and a `wayfinder:map`. Triage their sub-issues instead. An issue that is itself work and has spun off sub-issues (such as a bug under investigation) is triaged as usual.
+
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
 Edit the right-hand column to match whatever vocabulary you actually use.
