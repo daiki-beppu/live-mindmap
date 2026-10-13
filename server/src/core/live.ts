@@ -1,7 +1,7 @@
 // ヘルパーが WebSocket で流すイベント（helper/README.md「イベントの形」）を decode する。
 // Node の実行環境に依存しない（ADR 0003）。
 import { Effect, Schema } from "effect";
-import { Track } from "./session.ts";
+import { Track } from "./remark.ts";
 import { Word } from "./words.ts";
 
 // partial（途中結果）と remark（確定結果）が共通して持つ項目。

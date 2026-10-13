@@ -1,7 +1,8 @@
 // 回帰評価の 3 指標。セッションのログ（log.jsonl）を順に当て直して数える純粋関数（ADR 0007）。
 // 当て方は復元（session.ts の restoreState）と同じ: 反映ごとに applyOps を当て、error のない反映だけ round を進める。
 import { applyOps, emptyMap, type MeetingMap } from "./map.ts";
-import { stampOf, type LogEvent, type Remark } from "./session.ts";
+import { stampOf, type LogEvent } from "./session.ts";
+import type { Remark } from "./remark.ts";
 
 export type LogMetrics = {
   remarks: number; // 発言の数（ログの remark の行の数）

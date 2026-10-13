@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindingsOf } from "../src/app/keys/table.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { subscriptions } from "../src/app/meeting/subscription.ts";
-import { element, eventOfBinding, fakeDocument, keydown, settle, type KeyInit } from "./keysHarness.ts";
+import { element, eventOfBinding, fakeDocument, keydown, settleKeyEvents, type KeyInit } from "./keysHarness.ts";
 import { FIRST, frameMessage, HEIGHTS, init, Message, SIZE, surfaceMessage, update, type MeetingMessage, type Model } from "./meetingHarness.ts";
 
 // 会議中の Subscription のうち、キー（文書の keydown。Issue #829）。画面は会議中の表（"live"）で決まり、スナップショットが届くまで（表示面が無い間）は流れを空にする。
@@ -29,12 +29,12 @@ const pressEachOn = (model: Model, inits: readonly KeyInit[]) =>
       const collected: MeetingMessage[] = [];
       const stream = subscriptions.keys.dependenciesToStream(subscriptions.keys.modelToDependencies(model));
       const fiber = yield* Effect.forkChild(Stream.runForEach(stream, (m) => Effect.sync(() => void collected.push(m as MeetingMessage))));
-      yield* settle;
+      yield* settleKeyEvents;
       const perEvent: MeetingMessage[][] = [];
       for (const init of inits) {
         const before = collected.length;
         doc.fire(keydown(init));
-        yield* settle;
+        yield* settleKeyEvents;
         perEvent.push(collected.slice(before));
       }
       yield* Fiber.interrupt(fiber);

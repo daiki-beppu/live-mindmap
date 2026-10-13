@@ -3,7 +3,7 @@
 // settle.ts の 4 つの出口（due / final の 2 分岐 / drain）が、出す直前にここを通す。
 // 時刻は呼び出し側が渡す start/end だけを見る。タイマー・now は使わない（ADR 0003）。
 // settle.ts の SettledRemark と同じ形を Remark から直接組み立て、settle.ts への import は作らない（循環 import を避ける）。
-import type { Remark } from "./session.ts";
+import type { Remark } from "./remark.ts";
 import { cutWords, type Word } from "./words.ts";
 
 type GatedRemark = Omit<Remark, "id"> & { words?: readonly Word[] };

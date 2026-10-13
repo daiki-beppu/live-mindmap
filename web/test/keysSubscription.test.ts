@@ -7,7 +7,7 @@ import { init, makeUpdate } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
 import { makeSubscriptions } from "../src/app/review/subscription.ts";
 import { audioContext, plainContext } from "./reviewHarness.ts";
-import { element, eventOfBinding, fakeDocument, keydown, pressEach, settle, type FakeKeyEvent, type KeyInit } from "./keysHarness.ts";
+import { element, eventOfBinding, fakeDocument, keydown, pressEach, settleKeyEvents, type FakeKeyEvent, type KeyInit } from "./keysHarness.ts";
 
 // キーの Subscription（Issue #822）の stream。document の keydown を、Dom.streamFromKeyBindings（普通の道）と、日本語入力がオンのときの道（halfWidthKeyOf で半角に直して同じ表で照合）で受け、
 // 「このキーが押された」の Message（PressedKey）だけを出す。意味は update が決める（keys.story.test.ts）。document は偽の代役、日本語入力の道は送り直し（dispatchEvent・stopImmediatePropagation）をしない
@@ -290,12 +290,12 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
         vi.stubGlobal("document", doc);
         const collected: Array<typeof Message.Type> = [];
         const fiber = yield* Effect.forkChild(Stream.runForEach(subscriptions(context).keys.dependenciesToStream({ hasSelection }), (m) => Effect.sync(() => void collected.push(m))));
-        yield* settle;
+        yield* settleKeyEvents;
         const perEvent: Array<Array<typeof Message.Type>> = [];
         for (const init of inits) {
           const before = collected.length;
           doc.fire(keydown(init));
-          yield* settle;
+          yield* settleKeyEvents;
           perEvent.push(collected.slice(before));
         }
         yield* Fiber.interrupt(fiber);

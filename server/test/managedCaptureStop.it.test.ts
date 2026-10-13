@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Console, Effect, Layer } from "effect";
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
+import { ManagedDeps } from "../src/managedDeps.ts";
 import { Playwright } from "../src/playwright.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { realLayers } from "../src/server.ts";
@@ -16,17 +17,31 @@ import { collectingConsole, FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
-import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
+import { readyManagedDeps, withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 
 const unmanaged = vi.hoisted(() => ({ launch: vi.fn(async () => { throw new Error("通常依存の Chromium は使用できません"); }) }));
-vi.mock("playwright", () => ({ chromium: { launch: unmanaged.launch } }));
+vi.mock("playwright-core", () => ({ chromium: { launch: unmanaged.launch } }));
 
 vi.mock("vite", () => ({ createServer: async () => ({
   listen: async () => {}, close: async () => {}, resolvedUrls: { local: ["http://127.0.0.1:1/"] },
 }) }));
 
-describe("未導入の管理 Chromium と stop", () => {
-  it.live("サーバーは起動し、セッションの stop は PNG だけ省略して案内と他形式を返す", () => {
+beforeEach(() => { unmanaged.launch.mockClear(); });
+
+// 管理実体の絶対パス import は名前指定の vi.mock に届かないため、読込口だけをテスト用に接続する。
+const loadChromium = Layer.effect(ManagedDeps, Effect.gen(function* () {
+  const deps = yield* ManagedDeps;
+  const load = ((name: "chromium" | "claude") => name === "chromium"
+    ? Effect.promise(() => import("playwright-core"))
+    : Effect.die("Claude SDK の読み込みは対象外")) as ManagedDeps["Service"]["load"];
+  return ManagedDeps.of({ ...deps, load });
+})).pipe(Layer.provide(readyManagedDeps));
+
+describe("管理 Chromium と stop", () => {
+  it.live.each([
+    { available: false, title: "サーバーは起動し、セッションの stop は PNG だけ省略して案内と他形式を返す" },
+    { available: true, title: "Chromium の launch に失敗しても stop は理由を警告し PNG 以外の形式を返す" },
+  ])("$title", ({ available }) => {
     const warnings = collectingConsole();
     return Effect.gen(function* () {
       const dir = yield* temporaryDeps;
@@ -36,8 +51,9 @@ describe("未導入の管理 Chromium と stop", () => {
       const options = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root,
         helper: { command: process.execPath, args: [join(import.meta.dirname, "fixtures/fake-helper.ts"), script, join(dir, "helper.log")] },
         prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
+      const capture = MapCapture.layer.pipe(Layer.provide(Playwright.layer));
       const exports = Layer.mergeAll(
-        MapCapture.layer.pipe(Layer.provide(Playwright.layer)),
+        available ? capture.pipe(Layer.provide(loadChromium)) : capture,
         Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
         fakeAudioMix().layer,
         fakeReadings().layer,
@@ -64,10 +80,16 @@ describe("未導入の管理 Chromium と stop", () => {
         expect(stopped.stdout).toContain(join(sessionDir, file));
       }
       expect(existsSync(join(sessionDir, "map.png"))).toBe(false);
-      expect(unmanaged.launch).not.toHaveBeenCalled();
-      expect(warnings.errors.filter((message) => message.startsWith("map.png を書き出せませんでした:"))).toHaveLength(1);
-      // 入れ方は 1 回だけ出す
-      expect(warnings.errors.find((message) => message.startsWith("map.png を書き出せませんでした:"))?.split("pnpm cli install chromium")).toHaveLength(2);
+      const captureWarnings = warnings.errors.filter((message) => message.startsWith("map.png を書き出せませんでした:"));
+      expect(captureWarnings).toHaveLength(1);
+      if (available) {
+        expect(captureWarnings[0]).toContain("通常依存の Chromium は使用できません");
+        expect(unmanaged.launch).toHaveBeenCalledTimes(1);
+      } else {
+        expect(unmanaged.launch).not.toHaveBeenCalled();
+        // 入れ方は 1 回だけ出す
+        expect(captureWarnings[0]?.split("pnpm cli install chromium")).toHaveLength(2);
+      }
     }).pipe(Effect.provideService(Console.Console, warnings.service), Effect.scoped);
   });
 });

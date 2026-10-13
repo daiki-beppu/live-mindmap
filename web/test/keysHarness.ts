@@ -117,7 +117,7 @@ export const fakeDocument = (): FakeDocument => {
   return doc;
 };
 
-export const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
+export const settleKeyEvents = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
 
 // stream を走らせ、イベントを 1 つずつ document に流して、イベントごとに届いた Message の並びを返す（届かなければ空）。走り終えたら listener が残っていないことも返す。
 // makeStream は偽の document を target として受ける（target を取らない stream を使うときは、呼び出し側が document をグローバルに差し替える）
@@ -127,12 +127,12 @@ export const pressEach = <A>(makeStream: (target: EventTarget) => Stream.Stream<
       const doc = fakeDocument();
       const collected: A[] = [];
       const fiber = yield* Effect.forkChild(Stream.runForEach(makeStream(doc as unknown as EventTarget), (m) => Effect.sync(() => void collected.push(m))));
-      yield* settle;
+      yield* settleKeyEvents;
       const perEvent: A[][] = [];
       for (const event of events) {
         const before = collected.length;
         doc.fire(event);
-        yield* settle;
+        yield* settleKeyEvents;
         perEvent.push(collected.slice(before));
       }
       yield* Fiber.interrupt(fiber);

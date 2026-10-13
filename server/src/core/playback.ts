@@ -1,5 +1,6 @@
 import { Effect } from "effect";
-import type { Remark, ScreenOffEvent, Session } from "./session.ts";
+import type { ScreenOffEvent, Session } from "./session.ts";
+import type { Remark } from "./remark.ts";
 import type { Word } from "./words.ts";
 
 // 共有画面の変化。image は、画像のバイト列を入れる直前に作るもの（再生が終わるまで全画像のバイト列を持たないための形）。
