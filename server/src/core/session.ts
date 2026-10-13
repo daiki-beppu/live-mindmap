@@ -164,8 +164,11 @@ export const Snapshot = Schema.Struct({
 });
 export type Snapshot = typeof Snapshot["Type"];
 
-const BATCH = 2;
-export const QUIET_MS = 1500; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
+// PROTOTYPE（#880）: 呼び方を環境変数で差し替える。P880_SHORT 字未満の発言はまとめる件数に数えない
+const BATCH = Number(process.env.P880_BATCH ?? 2);
+export const QUIET_MS = Number(process.env.P880_QUIET_MS ?? 1500); // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
+const SHORT = Number(process.env.P880_SHORT ?? 0);
+const weight = (rs: readonly Remark[]) => (SHORT ? rs.filter((r) => [...r.text].length >= SHORT).length : rs.length);
 const RECENT = 3;
 
 // 中身のない発言の判定に使うフィラー（長音 ー〜~ を除いた形）。確定した発言の語がこれだけなら中身なしとする
@@ -407,7 +410,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         Effect.gen(function* () {
           const reservation: Reservation = { kind: "reserved" };
           const fresh = yield* Ref.modify(ref, (s): [readonly Remark[] | undefined, SessionState & Runtime] =>
-            s.inFlight || s.pending.length < min || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
+            s.inFlight || s.pending.length === 0 || (min > 0 && weight(s.pending) < min) || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
           );
           if (!fresh) return;
           const fiber = yield* Effect.forkIn(Effect.interruptible(runCall(fresh)), scope, { startImmediately: true });
@@ -426,10 +429,10 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
             const state = yield* Ref.get(ref);
             if (state.diffUpdate.status === "paused") {
-              if (state.retryEnabled) yield* Effect.forkIn(Effect.sleep(DIFF_UPDATE_RETRY_MS).pipe(Effect.andThen(startDiffIfReady(1, true))), scope);
+              if (state.retryEnabled) yield* Effect.forkIn(Effect.sleep(DIFF_UPDATE_RETRY_MS).pipe(Effect.andThen(startDiffIfReady(0, true))), scope);
               return;
             }
-            yield* startDiffIfReady(quiet || (Exit.isSuccess(exit) && exit.value) ? 1 : BATCH);
+            yield* startDiffIfReady(quiet || (Exit.isSuccess(exit) && exit.value) ? 0 : BATCH);
           }),
         ),
         Effect.asVoid,
@@ -548,7 +551,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
       FiberHandle.run(
         quietWaiter,
         Effect.sleep(QUIET_MS).pipe(
-          Effect.andThen(Effect.uninterruptible(Effect.andThen(Ref.update(ref, (s) => ({ ...s, quiet: true })), startDiffIfReady(1)))),
+          Effect.andThen(Effect.uninterruptible(Effect.andThen(Ref.update(ref, (s) => ({ ...s, quiet: true })), startDiffIfReady(0)))),
         ),
       ),
     );
@@ -602,7 +605,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           yield* idle;
           const state = yield* Ref.get(ref);
           if (state.pending.length === 0 || state.diffUpdate.status === "paused" || state.diffUpdate.status === "stopped") return;
-          yield* startDiffIfReady(1);
+          yield* startDiffIfReady(0);
         }
       }),
       snapshot: Effect.map(Ref.get(ref), snapshotOf),
