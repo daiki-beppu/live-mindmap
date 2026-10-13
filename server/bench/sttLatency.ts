@@ -50,6 +50,50 @@ const EPSILON = 1e-6;
 // そのため、発話の区間の中央が確定結果の区間に入るかで、確定結果が覆う発話を決める
 const midpoint = (u: Utterance) => (u.start + u.end) / 2;
 
+type Pending = Omit<SettledRemark, "id">;
+
+// 発話の列。utterances は作った順、open は更新を受け付けている発話（キーは ${track}\u0000${start}）
+type SettleState = { utterances: Utterance[]; open: Map<string, Utterance>; out: Pending[]; overwritten: number };
+
+const openKey = (track: Track, start: number) => `${track}\u0000${start}`;
+const settleAt = (u: Utterance, quietSeconds: number) => u.lastArrival + quietSeconds;
+const stableRemark = (u: Utterance, at: number): Pending => ({ track: u.track, start: u.start, end: u.end, text: u.text, at, source: "stable" });
+
+function acceptPartial(state: SettleState, r: SttResult, quietSeconds: number): void {
+  const key = openKey(r.track, r.start);
+  const current = state.open.get(key);
+  if (current && r.arrival - current.lastArrival <= quietSeconds) {
+    Object.assign(current, { end: r.end, text: r.text, lastArrival: r.arrival });
+    return;
+  }
+  const next: Utterance = { track: r.track, start: r.start, end: r.end, text: r.text, lastArrival: r.arrival, consumed: false };
+  state.utterances.push(next);
+  state.open.set(key, next);
+}
+
+function acceptFinal(state: SettleState, f: SttResult, { quietSeconds, lateFinal }: SettleOptions): void {
+  const covered = state.utterances.filter(
+    (u) => !u.consumed && u.track === f.track && midpoint(u) >= f.start - EPSILON && midpoint(u) <= f.end + EPSILON,
+  );
+  covered.forEach((u) => {
+    u.consumed = true;
+    state.open.delete(openKey(u.track, u.start));
+  });
+  const emittedBefore = covered.filter((u) => settleAt(u, quietSeconds) < f.arrival);
+  if (emittedBefore.length === 0) {
+    state.out.push({ track: f.track, start: f.start, end: f.end, text: f.text, at: f.arrival, source: "final" });
+    return;
+  }
+  for (const u of covered) {
+    state.out.push(stableRemark(u, settleAt(u, quietSeconds) < f.arrival ? settleAt(u, quietSeconds) : f.arrival));
+  }
+  // 同じ start の発話（更新の間隔で分けたもの）は本文が積み上がるので、最後の本文だけを使う
+  const lastByStart = new Map(covered.map((u) => [u.start, u.text]));
+  if (normalize([...lastByStart.values()].join("")) === normalize(f.text)) return;
+  state.overwritten++;
+  if (lateFinal === "correct") state.out.push({ track: f.track, start: f.start, end: f.end, text: f.text, at: f.arrival, source: "correction" });
+}
+
 // 途中結果が T 秒変わらなければ、最後の本文・区間で発言にする。
 // - 発話 = 同じトラックで start が同じ途中結果の列（本文が変わっても同じ発話の更新）。更新の間隔が T 以内の間は続き、最後の途中結果の arrival + T に出す。間隔が T を超えたら、そこで出して、後の途中結果は別の発話にする
 // - 確定結果は、同じトラックで区間の中央が確定結果の区間に入る発話を覆う
@@ -58,60 +102,22 @@ const midpoint = (u: Utterance) => (u.start + u.end) / 2;
 //   1 件の上書きとして数える。lateFinal が "correct" なら、確定結果を訂正として届いた時刻に 1 件流す
 //   （先に出した発言の一部だけが覆われ、残りの発話が T 前だったときは、その発話を確定の届いた時刻に出す）
 // - ID は、出した時刻の順（同時刻は作った順）に r1, r2, …
-export function settleVolatile(results: SttResult[], { quietSeconds, lateFinal }: SettleOptions): { remarks: SettledRemark[]; overwritten: number } {
+export function settleVolatile(results: SttResult[], options: SettleOptions): { remarks: SettledRemark[]; overwritten: number } {
   const ordered = results.map((r, i) => ({ r, i })).sort((a, b) => a.r.arrival - b.r.arrival || a.i - b.i).map(({ r }) => r);
 
   // 発話 = 同じトラックで start が同じ途中結果の列。ただし、更新の間隔が T を超えたところで、その時点の本文は出されるので、
   // そこで列を分ける（後の途中結果は、同じ start の別の発話として数える）。
   // 結果は届いた順に処理する。確定結果は、それまでに届いた途中結果の発話だけを覆い、後から届く途中結果は新しい発話になる
-  const utterances: Utterance[] = [];
-  const open = new Map<string, Utterance>();
-  const settleAt = (u: Utterance) => u.lastArrival + quietSeconds;
-
-  type Pending = Omit<SettledRemark, "id">;
-  const out: Pending[] = [];
-  let overwritten = 0;
-
+  const state: SettleState = { utterances: [], open: new Map(), out: [], overwritten: 0 };
   for (const r of ordered) {
-    if (!r.isFinal) {
-      const key = `${r.track}\u0000${r.start}`;
-      const current = open.get(key);
-      if (current && r.arrival - current.lastArrival <= quietSeconds) {
-        Object.assign(current, { end: r.end, text: r.text, lastArrival: r.arrival });
-        continue;
-      }
-      const next: Utterance = { track: r.track, start: r.start, end: r.end, text: r.text, lastArrival: r.arrival, consumed: false };
-      utterances.push(next);
-      open.set(key, next);
-      continue;
-    }
-    const f = r;
-    const covered = utterances.filter(
-      (u) => !u.consumed && u.track === f.track && midpoint(u) >= f.start - EPSILON && midpoint(u) <= f.end + EPSILON,
-    );
-    covered.forEach((u) => {
-      u.consumed = true;
-      open.delete(`${u.track}\u0000${u.start}`);
-    });
-    const emittedBefore = covered.filter((u) => settleAt(u) < f.arrival);
-    if (emittedBefore.length === 0) {
-      out.push({ track: f.track, start: f.start, end: f.end, text: f.text, at: f.arrival, source: "final" });
-      continue;
-    }
-    for (const u of covered) {
-      if (settleAt(u) < f.arrival) out.push({ track: u.track, start: u.start, end: u.end, text: u.text, at: settleAt(u), source: "stable" });
-      else out.push({ track: u.track, start: u.start, end: u.end, text: u.text, at: f.arrival, source: "stable" });
-    }
-    // 同じ start の発話（更新の間隔で分けたもの）は本文が積み上がるので、最後の本文だけを使う
-    const lastByStart = new Map(covered.map((u) => [u.start, u.text]));
-    if (normalize([...lastByStart.values()].join("")) === normalize(f.text)) continue;
-    overwritten++;
-    if (lateFinal === "correct") out.push({ track: f.track, start: f.start, end: f.end, text: f.text, at: f.arrival, source: "correction" });
+    if (r.isFinal) acceptFinal(state, r, options);
+    else acceptPartial(state, r, options.quietSeconds);
   }
   // 確定結果に覆われなかった発話は、T が満ちた時刻に出す
-  for (const u of utterances) {
-    if (!u.consumed) out.push({ track: u.track, start: u.start, end: u.end, text: u.text, at: settleAt(u), source: "stable" });
+  for (const u of state.utterances) {
+    if (!u.consumed) state.out.push(stableRemark(u, settleAt(u, options.quietSeconds)));
   }
+  const { out, overwritten } = state;
   return { remarks: out.map((p, i) => ({ p, i })).sort((a, b) => a.p.at - b.p.at || a.i - b.i).map(({ p }, n) => ({ id: `r${n + 1}`, ...p })), overwritten };
 }
 

@@ -86,6 +86,61 @@ const judgeChildren = Effect.fnUntraced(function* <E, R>(parent: Node, children:
 
 const median = (values: readonly number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 
+type TreeNode = Node & { parent: string | null };
+type Kids = Map<string, TreeNode[]>;
+
+const judgeParents = Effect.fnUntraced(function* <E, R>(nodes: readonly TreeNode[], kids: Kids, judge: Judge<E, R>) {
+  const parents: SiblingJudgement["parents"] = [];
+  for (const node of nodes) {
+    const children = kids.get(node.id) ?? [];
+    if (node.parent === null || children.length < MIN_CHILDREN) continue;
+    parents.push({ parent: node.id, children: yield* judgeChildren(node, children, judge) });
+  }
+  return parents;
+});
+
+const judgeTarget = Effect.fnUntraced(function* <E, R>(
+  target: TreeNode,
+  parents: SiblingJudgement["parents"],
+  kids: Kids,
+  judge: Judge<E, R>,
+) {
+  const reused = parents.find((p) => p.parent === target.id);
+  const children = reused?.children ?? (kids.has(target.id) ? yield* judgeChildren(target, kids.get(target.id)!, judge) : []);
+  return { parent: target.id, children, ...tally(children) } satisfies NonNullable<SiblingJudgement["target"]>;
+});
+
+// 最大のまとまりの合否。境目ちょうどでも浮動小数の誤差で合否がずれないよう、整数で比べる。
+function checkOf(runs: Check["runs"], overall: Tally, childCount: number): Check {
+  const mid = median(runs.map((run) => run.notSeparate));
+  const pass = overall.total === 0
+    ? mid <= 1
+    : mid * overall.total <= overall.notSeparate * childCount + overall.total;
+  const threshold = overall.total === 0 ? 1 : overall.notSeparateRatio * childCount + 1;
+  return { childCount, runs, median: mid, threshold, pass };
+}
+
+const judgeLargest = Effect.fnUntraced(function* <E, R>(
+  largest: { id: string; size: number },
+  byId: Map<string, TreeNode>,
+  kids: Kids,
+  overall: Tally,
+  judge: Judge<E, R>,
+) {
+  let check: Check | null = null;
+  if (largest.size > BIG_GROUP) {
+    const parent = byId.get(largest.id)!;
+    const children = kids.get(largest.id) ?? [];
+    const runs: Check["runs"] = [];
+    for (let i = 0; i < RUNS; i++) {
+      const labelled = yield* judgeChildren(parent, children, judge);
+      runs.push({ children: labelled, notSeparate: tally(labelled).notSeparate });
+    }
+    check = checkOf(runs, overall, children.length);
+  }
+  return { parent: largest.id, size: largest.size, check } satisfies NonNullable<SiblingJudgement["maxGroup"]>;
+});
+
 export const judgeSiblings = Effect.fnUntraced(function* <E, R>(
   events: Iterable<unknown>,
   judge: Judge<E, R>,
@@ -100,43 +155,11 @@ export const judgeSiblings = Effect.fnUntraced(function* <E, R>(
     return yield* new SiblingJudgementFailed({ message: "指定した親が最終マップにないか、ルートです" });
   }
 
-  const parents: SiblingJudgement["parents"] = [];
-  for (const node of nodes) {
-    const children = kids.get(node.id) ?? [];
-    if (node.parent === null || children.length < MIN_CHILDREN) continue;
-    parents.push({ parent: node.id, children: yield* judgeChildren(node, children, judge) });
-  }
+  const parents = yield* judgeParents(nodes, kids, judge);
   const overall = tally(parents.flatMap((p) => p.children));
-
-  let targetResult: SiblingJudgement["target"] = null;
-  if (target !== undefined) {
-    const reused = parents.find((p) => p.parent === target.id);
-    const children = reused?.children ?? (kids.has(target.id) ? yield* judgeChildren(target, kids.get(target.id)!, judge) : []);
-    targetResult = { parent: target.id, children, ...tally(children) };
-  }
-
-  let maxGroup: SiblingJudgement["maxGroup"] = null;
+  const targetResult: SiblingJudgement["target"] = target === undefined ? null : yield* judgeTarget(target, parents, kids, judge);
   const largest = largestGroup(nodes);
-  if (largest !== undefined) {
-    let check: Check | null = null;
-    if (largest.size > BIG_GROUP) {
-      const parent = byId.get(largest.id)!;
-      const children = kids.get(largest.id) ?? [];
-      const runs: Check["runs"] = [];
-      for (let i = 0; i < RUNS; i++) {
-        const labelled = yield* judgeChildren(parent, children, judge);
-        runs.push({ children: labelled, notSeparate: tally(labelled).notSeparate });
-      }
-      const mid = median(runs.map((run) => run.notSeparate));
-      // 境目ちょうどでも浮動小数の誤差で合否がずれないよう、整数で比べる。
-      const pass = overall.total === 0
-        ? mid <= 1
-        : mid * overall.total <= overall.notSeparate * children.length + overall.total;
-      const threshold = overall.total === 0 ? 1 : overall.notSeparateRatio * children.length + 1;
-      check = { childCount: children.length, runs, median: mid, threshold, pass };
-    }
-    maxGroup = { parent: largest.id, size: largest.size, check };
-  }
+  const maxGroup: SiblingJudgement["maxGroup"] = largest === undefined ? null : yield* judgeLargest(largest, byId, kids, overall, judge);
 
   return { parents, ...overall, target: targetResult, maxGroup } satisfies SiblingJudgement;
 });

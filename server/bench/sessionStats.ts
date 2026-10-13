@@ -70,6 +70,42 @@ export function overlapRatio(intervals: readonly Interval[]): number {
   return covered === 0 ? 0 : doubled / covered;
 }
 
+type RemarkOf = NonNullable<LogLine["remark"]>;
+
+function countRemark(stats: SessionStats, intervals: Record<Track, Interval[]>, r: RemarkOf): void {
+  const t = stats.tracks[r.track];
+  t.remarks += 1;
+  t.duration += Math.max(0, r.end - r.start);
+  intervals[r.track].push(r);
+  stats.lastEnd = Math.max(stats.lastEnd, r.end);
+}
+
+// ログの 1 行を種別ごとに stats へ足す。remark の欄が無い remark 行と、未知の種別は数えない
+function countLine(stats: SessionStats, intervals: Record<Track, Interval[]>, e: LogLine): void {
+  switch (e.type) {
+    case "remark":
+      if (e.remark) countRemark(stats, intervals, e.remark);
+      break;
+    case "diff":
+      stats.diffs += 1;
+      if (e.error) stats.diffErrors += 1;
+      stats.ops += e.ops?.length ?? 0;
+      break;
+    case "intake-stopped":
+      stats.intake.stopped += 1;
+      break;
+    case "intake-restarted":
+      stats.intake.restarted += 1;
+      break;
+    case "intake-gave-up":
+      stats.intake.gaveUp += 1;
+      break;
+    case "tap-silent":
+      stats.tapSilent += 1;
+      break;
+  }
+}
+
 export function sessionStats(events: readonly LogLine[]): SessionStats {
   const intervals: Record<Track, Interval[]> = { 相手: [], 自分: [] };
   const stats: SessionStats = {
@@ -81,24 +117,7 @@ export function sessionStats(events: readonly LogLine[]): SessionStats {
     intake: { stopped: 0, restarted: 0, gaveUp: 0 },
     tapSilent: 0,
   };
-  for (const e of events) {
-    if (e.type === "remark") {
-      const r = e.remark;
-      if (!r) continue;
-      const t = stats.tracks[r.track];
-      t.remarks += 1;
-      t.duration += Math.max(0, r.end - r.start);
-      intervals[r.track].push(r);
-      stats.lastEnd = Math.max(stats.lastEnd, r.end);
-    } else if (e.type === "diff") {
-      stats.diffs += 1;
-      if (e.error) stats.diffErrors += 1;
-      stats.ops += e.ops?.length ?? 0;
-    } else if (e.type === "intake-stopped") stats.intake.stopped += 1;
-    else if (e.type === "intake-restarted") stats.intake.restarted += 1;
-    else if (e.type === "intake-gave-up") stats.intake.gaveUp += 1;
-    else if (e.type === "tap-silent") stats.tapSilent += 1;
-  }
+  for (const e of events) countLine(stats, intervals, e);
   for (const track of TRACKS) stats.tracks[track].overlap = overlapRatio(intervals[track]);
   return stats;
 }

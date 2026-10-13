@@ -52,25 +52,31 @@ export const normalize = (text: string) => kanjiToDigits(text.normalize("NFKC").
 
 type Op = "eq" | "sub" | "del" | "ins";
 
-// 編集距離の最短の手順。ref の各文字が eq・sub・del のどれか 1 つ、hyp の余りが ins になる
-export function align(ref: string, hyp: string): Op[] {
-  const r = Array.from(ref);
-  const h = Array.from(hyp);
+const substitutionCost = (a: string | undefined, b: string | undefined) => (a === b ? 0 : 1);
+
+// 編集距離の表。d[i * (h.length + 1) + j] は、ref の先頭 i 文字と hyp の先頭 j 文字の距離
+function distanceTable(r: readonly string[], h: readonly string[]): Uint32Array {
   const w = h.length + 1;
   const d = new Uint32Array((r.length + 1) * w);
   for (let j = 0; j <= h.length; j++) d[j] = j;
   for (let i = 1; i <= r.length; i++) {
     d[i * w] = i;
     for (let j = 1; j <= h.length; j++) {
-      const diag = d[(i - 1) * w + j - 1]! + (r[i - 1] === h[j - 1] ? 0 : 1);
+      const diag = d[(i - 1) * w + j - 1]! + substitutionCost(r[i - 1], h[j - 1]);
       d[i * w + j] = Math.min(diag, d[(i - 1) * w + j]! + 1, d[i * w + j - 1]! + 1);
     }
   }
+  return d;
+}
+
+// 表を後ろからたどる。同じ距離の手順が複数あるときは、斜め（一致・置換）→ 脱落 → 挿入の順に選ぶ
+function backtrace(d: Uint32Array, r: readonly string[], h: readonly string[]): Op[] {
+  const w = h.length + 1;
   const ops: Op[] = [];
   let i = r.length;
   let j = h.length;
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && d[i * w + j] === d[(i - 1) * w + j - 1]! + (r[i - 1] === h[j - 1] ? 0 : 1)) {
+    if (i > 0 && j > 0 && d[i * w + j] === d[(i - 1) * w + j - 1]! + substitutionCost(r[i - 1], h[j - 1])) {
       ops.push(r[i - 1] === h[j - 1] ? "eq" : "sub");
       i--, j--;
     } else if (i > 0 && d[i * w + j] === d[(i - 1) * w + j]! + 1) {
@@ -82,6 +88,13 @@ export function align(ref: string, hyp: string): Op[] {
     }
   }
   return ops.reverse();
+}
+
+// 編集距離の最短の手順。ref の各文字が eq・sub・del のどれか 1 つ、hyp の余りが ins になる
+export function align(ref: string, hyp: string): Op[] {
+  const r = Array.from(ref);
+  const h = Array.from(hyp);
+  return backtrace(distanceTable(r, h), r, h);
 }
 
 // 長い会議を 1 回で突き合わせると表が大きすぎるので、区切りで分けてから突き合わせる。
@@ -121,53 +134,76 @@ const toHiragana = (text: string) => text.replace(/[\u30a1-\u30f6]/g, (c) => Str
 // 語の前後にこれだけの文字のずれを許して、正しい表記が発言に出たかを見る（近くの誤りで並びが 1〜2 文字ずれるため）
 const TERM_SLACK = 2;
 
+const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
+
+// 続いている誤りの、台本側と発言側の文字列（eq で閉じる）
+type ErrorRun = { ref: string; hyp: string };
+
+function closeError(confusions: Map<string, number>, run: ErrorRun): void {
+  if (run.ref || run.hyp) bump(confusions, `${run.ref || "∅"}→${run.hyp || "∅"}`);
+  run.ref = run.hyp = "";
+}
+
+function extendError(run: ErrorRun, op: "sub" | "del" | "ins", refChar: string | undefined, hypChar: string | undefined): void {
+  if (op === "sub" || op === "del") run.ref += refChar;
+  if (op === "sub" || op === "ins") run.hyp += hypChar;
+}
+
+// 1 区切り分の手順 ops から、置換・脱落・挿入の数と食い違い（confusions）を result に足す。
+// 返す cursor[p] は、台本の p 文字目を見る直前までに使った発言の文字数（p = r.length は末尾）
+function countErrors(result: AccuracyScore, ops: readonly Op[], r: readonly string[], h: readonly string[]): number[] {
+  const cursor: number[] = [];
+  const run: ErrorRun = { ref: "", hyp: "" };
+  let ri = 0;
+  let hi = 0;
+  for (const op of ops) {
+    if (op !== "ins") cursor[ri] = hi;
+    if (op === "eq") closeError(result.confusions, run);
+    else {
+      result[op]++;
+      extendError(run, op, r[ri], h[hi]);
+    }
+    if (op !== "ins") ri++;
+    if (op !== "del") hi++;
+  }
+  closeError(result.confusions, run);
+  cursor[r.length] = h.length;
+  return cursor;
+}
+
+// 台本の p 文字目から始まる語 1 件が、発言に正しい表記で出たかを数える
+function countOccurrence(t: TermScore, key: string, h: readonly string[], from: number, to: number): void {
+  t.total++;
+  const said = h.slice(from, to).join("");
+  const around = h.slice(Math.max(0, from - TERM_SLACK), to + TERM_SLACK).join("");
+  if (around.includes(key)) {
+    t.correct++;
+    return;
+  }
+  if (toHiragana(around).includes(toHiragana(key))) t.kanaOnly++;
+  bump(t.misses, said || "∅");
+}
+
+function countTerms(byTerm: Iterable<TermScore>, r: readonly string[], h: readonly string[], cursor: readonly number[]): void {
+  for (const t of byTerm) {
+    const key = normalize(t.term);
+    const len = Array.from(key).length;
+    for (let p = 0; p + len <= r.length; p++) {
+      if (r.slice(p, p + len).join("") !== key) continue;
+      countOccurrence(t, key, h, cursor[p]!, cursor[p + len]!);
+    }
+  }
+}
+
 export function score(lines: readonly TimedText[], remarks: readonly TimedText[], terms: readonly string[], seconds = 30): AccuracyScore {
   const result: AccuracyScore = { refChars: 0, sub: 0, del: 0, ins: 0, terms: [], confusions: new Map() };
-  const byTerm = new Map(terms.map((term) => [term, { term, total: 0, correct: 0, kanaOnly: 0, misses: new Map<string, number>() }]));
-  const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
+  const byTerm = new Map<string, TermScore>(terms.map((term) => [term, { term, total: 0, correct: 0, kanaOnly: 0, misses: new Map<string, number>() }]));
   for (const { ref, hyp } of chunk(lines, remarks, seconds)) {
     const r = Array.from(ref);
     const h = Array.from(hyp);
-    const ops = align(ref, hyp);
-    // cursor[p] は、台本の p 文字目を見る直前までに使った発言の文字数（p = r.length は末尾）
-    const cursor: number[] = [];
-    let ri = 0;
-    let hi = 0;
-    let errRef = "";
-    let errHyp = "";
-    const closeError = () => {
-      if (errRef || errHyp) bump(result.confusions, `${errRef || "∅"}→${errHyp || "∅"}`);
-      errRef = errHyp = "";
-    };
-    for (const op of ops) {
-      if (op !== "ins") cursor[ri] = hi;
-      if (op === "eq") closeError();
-      else result[op]++;
-      if (op === "sub" || op === "del") errRef += r[ri];
-      if (op === "sub" || op === "ins") errHyp += h[hi];
-      if (op !== "ins") ri++;
-      if (op !== "del") hi++;
-    }
-    closeError();
-    cursor[r.length] = h.length;
+    const cursor = countErrors(result, align(ref, hyp), r, h);
     result.refChars += r.length;
-    const chars = (s: string) => Array.from(s);
-    for (const t of byTerm.values()) {
-      const key = normalize(t.term);
-      const len = chars(key).length;
-      for (let p = 0; p + len <= r.length; p++) {
-        if (r.slice(p, p + len).join("") !== key) continue;
-        t.total++;
-        const said = h.slice(cursor[p], cursor[p + len]).join("");
-        const around = h.slice(Math.max(0, cursor[p]! - TERM_SLACK), cursor[p + len]! + TERM_SLACK).join("");
-        if (around.includes(key)) {
-          t.correct++;
-          continue;
-        }
-        if (toHiragana(around).includes(toHiragana(key))) t.kanaOnly++;
-        bump(t.misses, said || "∅");
-      }
-    }
+    countTerms(byTerm.values(), r, h, cursor);
   }
   result.terms = [...byTerm.values()];
   return result;

@@ -188,6 +188,56 @@ describe("途中結果が T 秒変わらなければ確定として扱う", () =
   });
 });
 
+describe("settleVolatile: 複数のトラック・発話・確定が混ざった列", () => {
+  const results = [
+    partial(1.0, 0, 2, "あ"), partial(1.5, 0, 2.5, "あい"), partial(1.2, 0, 1.5, "自分の", "自分"),
+    final(2.0, 0, 2.6, "あい。"),
+    partial(10, 5, 7, "うえ"), partial(14, 5, 8, "うえお"),
+    final(20, 5, 8, "うえおか。"),
+    final(21, 30, 31, "単独。", "自分"),
+    partial(25, 40, 41, "未確定"),
+    final(5.0, 0, 1.6, "自分の。", "自分"),
+  ];
+
+  it("discard: 発言の並び（出した時刻、同時刻は作った順）と r1… の採番、上書きの件数が変わらない", () => {
+    const { remarks, overwritten } = settleVolatile(results, { quietSeconds: T, lateFinal: "discard" });
+    expect(remarks).toEqual([
+      { id: "r1", track: "相手", start: 0, end: 2.6, text: "あい。", at: 2, source: "final" },
+      { id: "r2", track: "自分", start: 0, end: 1.5, text: "自分の", at: 3.2, source: "stable" },
+      { id: "r3", track: "相手", start: 5, end: 7, text: "うえ", at: 12, source: "stable" },
+      { id: "r4", track: "相手", start: 5, end: 8, text: "うえお", at: 16, source: "stable" },
+      { id: "r5", track: "自分", start: 30, end: 31, text: "単独。", at: 21, source: "final" },
+      { id: "r6", track: "相手", start: 40, end: 41, text: "未確定", at: 27, source: "stable" },
+    ]);
+    expect(overwritten).toBe(1);
+  });
+
+  it("correct: 訂正の発言が、届いた時刻の順の位置に入り、後ろの採番が 1 つずれる", () => {
+    const { remarks, overwritten } = settleVolatile(results, { quietSeconds: T, lateFinal: "correct" });
+    expect(remarks.map((r) => [r.id, r.track, r.start, r.at, r.source])).toEqual([
+      ["r1", "相手", 0, 2, "final"],
+      ["r2", "自分", 0, 3.2, "stable"],
+      ["r3", "相手", 5, 12, "stable"],
+      ["r4", "相手", 5, 16, "stable"],
+      ["r5", "相手", 5, 20, "correction"],
+      ["r6", "自分", 30, 21, "final"],
+      ["r7", "相手", 40, 27, "stable"],
+    ]);
+    expect(remarks[4]!.text).toBe("うえおか。");
+    expect(overwritten).toBe(1);
+  });
+
+  it("入力の配列と要素を書き換えず、到着の順が入れ替わっていても同じ結果になる", () => {
+    const before = JSON.stringify(results);
+    const shuffled = [...results].reverse();
+    expect(settleVolatile(shuffled, { quietSeconds: T, lateFinal: "correct" })).toEqual(
+      settleVolatile(results, { quietSeconds: T, lateFinal: "correct" }),
+    );
+    expect(settleVolatile(results, { quietSeconds: T, lateFinal: "discard" }).remarks).toHaveLength(6);
+    expect(JSON.stringify(results)).toBe(before);
+  });
+});
+
 describe("文ごとの話し終わりからの遅れ", () => {
   it("行の区間の中央を覆う発言のうち、最初に届いたものまでの時間 − 行の end。覆う発言がない行は数えない", () => {
     const lines = [{ start: 1, end: 3 }, { start: 3.5, end: 4.5 }, { start: 30, end: 31 }];

@@ -173,6 +173,24 @@ describe("最大のまとまりの合否の補助", () => {
     expect(result.maxGroup!.check!.pass).toBe(pass);
   }));
 
+  it.effect("C2・C3: 判定器は、全体の親（現れる順）→ 指定した親 → 最大のまとまりの 5 回の順に呼ばれ、指定した親が全体に入っていなければ追加で 1 回呼ばれる", () => Effect.gen(function* () {
+    const map = build([...bigGroup({ cases: 9, withPoints: 8 }), { ref: "Q", parent: "T", kind: "論点" }, ...kids("Q", "案", 5), { ref: "R", parent: "T", kind: "論点" }, ...kids("R", "案", 2)]);
+    const order: string[] = [];
+    const answer = (name: string, count: (call: number, n: number) => string) => (call: number, n: number) => (order.push(name), count(call, n));
+    const fake = fakeJudge({
+      [parentText("P")]: answer("P", (call, n) => withNotSeparate(call === 0 ? 2 : 0, n)),
+      [parentText("Q")]: answer("Q", (_, n) => withNotSeparate(1, n)),
+      [parentText("R")]: answer("R", (_, n) => withNotSeparate(1, n)),
+    });
+    const result = yield* judgeSiblings(map.events, fake.judge, { parent: map.id("R") });
+    expect(order).toEqual(["P", "Q", "R", "P", "P", "P", "P", "P"]);
+    expect(result.parents.map((p) => p.parent)).toEqual([map.id("P"), map.id("Q")]);
+    expect(result.target).toMatchObject({ parent: map.id("R"), total: 2, notSeparate: 1 });
+    expect(result).toMatchObject({ total: 14, notSeparate: 3 });
+    expect(result.maxGroup).toMatchObject({ parent: map.id("P"), size: 41 });
+    expect(result.maxGroup!.check).toMatchObject({ childCount: 9, median: 0, pass: true });
+  }));
+
   it.effect("C3: 最大のまとまりがちょうど 40 なら 5 回の判定をせず、合否は不要", () => Effect.gen(function* () {
     const map = groupMap(8, 8); // P は 案 8 + 要点 32 = 40
     const fake = passFake([]);

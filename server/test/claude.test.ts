@@ -26,6 +26,37 @@ type Options = { model: string; systemPrompt: string; outputFormat: { type: stri
 
 const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
+// 1 つの user メッセージに対して流す応答の列（hang・throw・end は流さないので、ここには来ない）
+function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: number): unknown[] {
+  // result の usage・modelUsage・total_cost_usd は、数え方の根拠にしないことを確かめるための別の値
+  const result = {
+    type: "result",
+    usage: { input_tokens: 7, cache_creation_input_tokens: 7, cache_read_input_tokens: 7, output_tokens: 7 },
+    modelUsage: { "decoy-model": { inputTokens: 9999 } },
+    total_cost_usd: 123,
+  };
+  if (behavior === "retried") {
+    return [
+      assistant("claude-haiku-5-5", ASSISTANT_USAGE),
+      assistant("claude-haiku-5-5", { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 4000, output_tokens: 8 }),
+      { ...result, subtype: "success", structured_output: noopOutput("retried") },
+    ];
+  }
+  if (behavior === "nullcache") {
+    return [
+      assistant("claude-haiku-5-5", { input_tokens: 5, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 6 }),
+      { ...result, subtype: "success", structured_output: noopOutput("nullcache") },
+    ];
+  }
+  const first = assistant("claude-haiku-5-5", ASSISTANT_USAGE);
+  if (behavior === "fail") return [first, { ...result, subtype: "error_during_execution" }];
+  if (behavior === "readings") return [first, { ...result, subtype: "success", structured_output: { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] } }];
+  if (behavior === "missing") return [first, { ...result, subtype: "success" }];
+  if (behavior === "invalid") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "add", evidence: [] }] } }];
+  if (behavior === "extra") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "noop", reason: "extra", unknown: 1 }], note: "x" } }];
+  return [first, { ...result, subtype: "success", structured_output: noopOutput(`q${queryIndex}-m${messageIndex}`) }];
+}
+
 const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex: number) => Behavior) =>
   ((params: { prompt: AsyncIterable<Message>; options: Options }) => {
     const record: Created = { messages: [], closeCalls: 0, options: params.options };
@@ -37,31 +68,7 @@ const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex
         if (behavior === "hang") await new Promise<never>(() => {});
         if (behavior === "throw") throw new Error("CLI が落ちた");
         if (behavior === "end") return;
-        // result の usage・modelUsage・total_cost_usd は、数え方の根拠にしないことを確かめるための別の値
-        const result = {
-          type: "result",
-          usage: { input_tokens: 7, cache_creation_input_tokens: 7, cache_read_input_tokens: 7, output_tokens: 7 },
-          modelUsage: { "decoy-model": { inputTokens: 9999 } },
-          total_cost_usd: 123,
-        };
-        if (behavior === "retried") {
-          yield assistant("claude-haiku-5-5", ASSISTANT_USAGE);
-          yield assistant("claude-haiku-5-5", { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 4000, output_tokens: 8 });
-          yield { ...result, subtype: "success", structured_output: noopOutput("retried") };
-          continue;
-        }
-        if (behavior === "nullcache") {
-          yield assistant("claude-haiku-5-5", { input_tokens: 5, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 6 });
-          yield { ...result, subtype: "success", structured_output: noopOutput("nullcache") };
-          continue;
-        }
-        yield assistant("claude-haiku-5-5", ASSISTANT_USAGE);
-        if (behavior === "fail") yield { ...result, subtype: "error_during_execution" };
-        else if (behavior === "readings") yield { ...result, subtype: "success", structured_output: { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] } };
-        else if (behavior === "missing") yield { ...result, subtype: "success" };
-        else if (behavior === "invalid") yield { ...result, subtype: "success", structured_output: { ops: [{ op: "add", evidence: [] }] } };
-        else if (behavior === "extra") yield { ...result, subtype: "success", structured_output: { ops: [{ op: "noop", reason: "extra", unknown: 1 }], note: "x" } };
-        else yield { ...result, subtype: "success", structured_output: noopOutput(`q${queryIndex}-m${messageIndex}`) };
+        yield* responsesFor(behavior, queryIndex, messageIndex);
       }
     })();
     return Object.assign(gen, { close: () => void record.closeCalls++ });

@@ -117,6 +117,49 @@ describe("findEntrypointViolations", () => {
     });
   });
 
+  describe("複数の違反の並び順", () => {
+    it("runMain の呼び出し元 → runMain を呼んでいない → runSync の同じ 2 つ → runPromise → server → bench の各入口（process.exit → exitNaturally）の順に報告する", () => {
+      const files: SourceFile[] = [
+        { path: "src/server.ts", content: "NodeRuntime.runMain(program);\nprocess.exit(1);\nconst t = onExit(x);\n" },
+        { path: "src/cli.ts", content: "export const a = 1;\n" },
+        { path: "bench/sessionStats.ts", content: "NodeRuntime.runMain({})(main);\nprocess.exit(1);\n" },
+        { path: "bench/mapShape.ts", content: BENCH_BODY },
+        { path: "bench/sttAccuracy.ts", content: BENCH_BODY },
+        { path: "bench/sttLatency.ts", content: BENCH_BODY },
+        { path: "bench/sttReplay.ts", content: BENCH_BODY },
+        { path: "bench/edgeJudge.ts", content: BENCH_BODY },
+        { path: "bench/siblingJudge.ts", content: BENCH_BODY },
+        { path: "src/other.ts", content: "NodeRuntime.runMain(x);\nEffect.runSync(y);\nEffect.runPromise(z);\n" },
+      ];
+      const violations = findEntrypointViolations(files);
+      expect(violations.map((v) => [v.path, v.line, v.message.split(" ")[0]])).toEqual([
+        ["src/other.ts", 1, "NodeRuntime.runMain"],
+        ["src/cli.ts", undefined, "NodeRuntime.runMain"],
+        ["src/other.ts", 2, "Effect.runSync（runSyncExit"],
+        ["src/core/review.ts", undefined, "Effect.runSync（runSyncExit"],
+        ["src/other.ts", 3, "Effect.runPromise（runPromiseExit"],
+        ["src/server.ts", 2, "process.exit"],
+        ["src/server.ts", 3, "teardown"],
+        ["bench/sessionStats.ts", 2, "process.exit"],
+        ["bench/sessionStats.ts", undefined, "runMain"],
+      ]);
+    });
+
+    it("同じ種類の違反は、ファイルの渡した順、その中では行番号の順に報告する", () => {
+      const violations = findEntrypointViolations([
+        ...validTree(),
+        { path: "src/b.ts", content: "Effect.runPromise(a);\nEffect.runPromiseExit(b);\n" },
+        { path: "src/a.ts", content: "\nEffect.runPromise(c);\n" },
+      ]);
+      expect(violations.map((v) => [v.path, v.line])).toEqual([["src/b.ts", 1], ["src/b.ts", 2], ["src/a.ts", 2]]);
+    });
+
+    it("許可リストの入口が入力に無ければ、runMain を呼んでいない違反として許可リストの順に報告する", () => {
+      const violations = findEntrypointViolations(validTree().filter((f) => f.path !== "src/server.ts" && f.path !== "bench/mapShape.ts"));
+      expect(violations.map((v) => [v.path, v.line])).toEqual([["src/server.ts", undefined], ["bench/mapShape.ts", undefined]]);
+    });
+  });
+
   describe("コメント行", () => {
     it.each([
       "// Effect.runPromise(x)",
