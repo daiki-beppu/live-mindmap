@@ -14,6 +14,10 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
+## Specs
+
+A spec is not a task: it is the issue an implementation's parent issue points to. Label it `spec`, never `ready-for-agent`, even where a skill (such as `/to-spec`) says to apply the AFK-ready label, so specs stay out of the queue of work. When the implementation's parent issue closes, close the spec too, with a comment naming the parent.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
