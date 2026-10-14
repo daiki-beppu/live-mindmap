@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { scrollPanDelta } from "../src/camera.ts";
 import { join } from "node:path";
-import { mapPoint, openReviewPage, prepareReviewPages, readFoldkitViewport, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
-import { withBrowser, type Page } from "./screenCompare.ts";
+import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, readFoldkitViewport, rectOf, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
+import { withBrowser, type Browser, type Page } from "./screenCompare.ts";
 
 // 見返し（Foldkit 版）の Mount の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #826）。React 版が無くなった後も残す。
 // ResizeObserver（画面の大きさ・ノードの高さ）・wheel・gesture（Safari のピンチ）・<audio> の時刻は、DOM が無い unit では確かめられない（偽の要素では実際の通知が起きない）。
@@ -285,6 +285,119 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       await page.waitForTimeout(300);
       expect(await blinkingIds(page)).toEqual(["n2", "n3"]);
       expect(await runningBlinks(page)).toEqual({});
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+});
+
+// ユーティリティへ移した値は、素の CSS の文面では確かめられない。実ブラウザの computed style と位置で確かめる（Issue #1008: 替える前の CSS との照合は外し、今の値を期待値にする）。
+// 値は animation・transition が終わった後に読む（styleOf・rectOf が最後まで進める）。操作の後に変わる値は、決め打ちの待ちではなく、値に届くまで待つ
+describe("見返し（Foldkit 版）の寸法", () => {
+  const open = (browser: Browser) => openReviewPage(browser, pages.audioPath, { audio: true });
+
+  it(
+    "レイアウト・操作の行の部品: 重ね方と寸法・色・影なし。つまみは Slider の translateX(-50%) と二重にずれない（margin-left 0）。吹き出しは閉じている間は出ない",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      expect(await styleOf(page, ".layout", ["position", "display"])).toEqual({ position: "relative", display: "flex" });
+      expect((await styleOf(page, ".map", ["position"])).position).toBe("relative");
+      const hit = await rectOf(page, ".review-slider-hit");
+      expect((await styleOf(page, ".review-slider-hit", ["position"])).position).toBe("absolute");
+      const hitParent = await page.locator(".review-slider-hit").first().evaluate((el) => el.parentElement!.getBoundingClientRect().toJSON() as { left: number; top: number; width: number; height: number });
+      near(hit.width, hitParent.width, "slider-hit の幅");
+      near(hit.height, hitParent.height, "slider-hit の高さ");
+      for (const selector of [".review-seek__thumb", ".review-volume__thumb"]) expect((await styleOf(page, selector, ["margin-left"]))["margin-left"], selector).toBe("0px");
+      expect(await styleOf(page, ".review-seek__thumb", ["opacity", "width", "height", "border-radius", "background-color", "box-shadow"])).toEqual({ opacity: "0", width: "12px", height: "12px", "border-radius": "50%", "background-color": "rgb(249, 250, 251)", "box-shadow": "none" });
+      expect(await styleOf(page, ".review-volume__slider", ["opacity", "width", "overflow"])).toEqual({ opacity: "0", width: "0px", overflow: "hidden" });
+      expect(await styleOf(page, ".review-controls", ["background-color", "color", "box-shadow"])).toEqual({ "background-color": "rgb(55, 65, 81)", color: "rgb(249, 250, 251)", "box-shadow": "none" });
+      expect((await styleOf(page, ".review-tip", ["display"])).display).toBe("none");
+      expect(await styleOf(page, ".review-bar__button", ["width", "height", "border-radius"])).toEqual({ width: "32px", height: "32px", "border-radius": "6px" });
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+
+  it(
+    "速さのメニューを開く: 外側（backdrop）は画面いっぱいの fixed で z-index がある。メニューは濃い灰色で影が無く、位置は Floating UI の left/top",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      await page.locator(".review-rate__button").first().click();
+      await page.locator(".review-rate__menu").waitFor({ timeout: 10_000 });
+      const backdrop = await styleOf(page, ".review-rate__backdrop", ["position", "z-index"]);
+      expect(backdrop.position).toBe("fixed");
+      expect(Number(backdrop["z-index"])).toBeGreaterThan(0);
+      const box = await rectOf(page, ".review-rate__backdrop");
+      near(box.width, PAGE_VIEWPORT.width, "backdrop の幅");
+      near(box.height, PAGE_VIEWPORT.height, "backdrop の高さ");
+      expect(await styleOf(page, ".review-rate__menu", ["position", "background-color", "box-shadow", "min-width", "display"])).toEqual({ position: "absolute", "background-color": "rgb(55, 65, 81)", "box-shadow": "none", "min-width": "220px", display: "flex" });
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+
+  it(
+    "吹き出し: ボタンにポインタを乗せると出て、濃い灰色で影が無い。離すと消える",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      await page.locator(".review-bar__button").nth(1).hover();
+      await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].some((tip) => getComputedStyle(tip).display !== "none"), undefined, { timeout: 10_000 });
+      const tips = await page.locator(".review-tip").evaluateAll((all) => all.filter((tip) => getComputedStyle(tip).display !== "none").map((tip) => { const s = getComputedStyle(tip); return { background: s.backgroundColor, shadow: s.boxShadow, position: s.position, nowrap: s.whiteSpace }; }));
+      expect(tips.length).toBeGreaterThan(0);
+      for (const tip of tips) expect(tip).toEqual({ background: "rgb(55, 65, 81)", shadow: "none", position: "absolute", nowrap: "nowrap" });
+      const { x, y } = await mapPoint(page, "corner");
+      await page.mouse.move(x, y);
+      await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].every((tip) => getComputedStyle(tip).display === "none"), undefined, { timeout: 10_000 });
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+
+  it(
+    "畳んだノードの隠れた数の丸（押せる）と、開いたノードの畳む丸: 寸法・位置・色・ボタンの既定の打ち消し。畳む丸は普段は透明",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      const count = 'button[aria-label="開く"]';
+      const parentFont = await page.locator(count).first().evaluate((el) => getComputedStyle(el.closest(".map-node__button") ?? el.parentElement!).fontFamily);
+      const c = await styleOf(page, count, ["position", "border-top-width", "margin-top", "margin-left", "font-family", "min-width", "height", "padding-left", "padding-right", "padding-top", "background-color", "color", "font-size", "line-height", "text-align", "pointer-events", "cursor", "border-radius", "box-sizing"]);
+      expect(c).toMatchObject({
+        position: "absolute", "border-top-width": "0px", "margin-top": "0px", "margin-left": "0px", "min-width": "18px", height: "18px",
+        "padding-left": "4px", "padding-right": "4px", "padding-top": "0px", "background-color": "rgb(229, 231, 235)", color: "rgb(75, 85, 99)",
+        "font-size": "11px", "line-height": "18px", "text-align": "center", "pointer-events": "all", cursor: "pointer", "border-radius": "9px", "box-sizing": "border-box",
+      });
+      expect(c["font-family"]).toBe(parentFont);
+      const node = await page.locator(".map-node", { has: page.locator(count) }).first().evaluate((el) => el.getBoundingClientRect().toJSON() as { right: number; top: number; height: number });
+      const dot = await rectOf(page, count);
+      near(node.right - dot.right, 6 + 1.5, "数の丸の右端");
+      near(dot.top + dot.height / 2, node.top + node.height / 2, "数の丸の縦の中心");
+
+      await page.locator(count).first().click();
+      const fold = 'button[aria-label="畳む"]';
+      await page.locator(fold).first().waitFor({ timeout: 10_000 });
+      const { x, y } = await mapPoint(page, "corner");
+      await page.mouse.move(x, y);
+      // ポインタが離れて透明に戻るのを、値に届くまで待つ（決め打ちの待ちにしない）
+      await expect
+        .poll(() => styleOf(page, fold, ["position", "opacity", "display", "width", "height", "padding-top", "margin-top", "border-top-width", "border-radius", "background-color", "pointer-events", "cursor", "transform", "right"]), { timeout: 10_000 })
+        .toMatchObject({
+          position: "absolute", opacity: "0", display: "block", width: "12px", height: "12px", "padding-top": "0px", "margin-top": "0px", "border-top-width": "1px", "border-radius": "50%",
+          "background-color": "rgb(229, 231, 235)", "pointer-events": "all", cursor: "pointer", right: "6px", transform: "matrix(1, 0, 0, 1, 0, -6)",
+        });
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+
+  it(
+    "キー一覧（?）: 細い枠だけで、影が無く、ポインタを奪わず、白地",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      await page.keyboard.press("?");
+      await page.locator(".key-list").waitFor({ timeout: 10_000 });
+      expect(await styleOf(page, ".key-list", ["position", "border-top-width", "border-top-style", "border-top-color", "pointer-events", "box-shadow", "background-color", "padding-top", "padding-left", "font-size", "color", "z-index"])).toEqual({
+        position: "absolute", "border-top-width": "1px", "border-top-style": "solid", "border-top-color": "rgb(229, 231, 235)", "pointer-events": "none", "box-shadow": "none",
+        "background-color": "rgb(255, 255, 255)", "padding-top": "8px", "padding-left": "12px", "font-size": "13px", color: "rgb(17, 24, 39)", "z-index": "5",
+      });
       await page.context().close();
     }),
     TIMEOUT,

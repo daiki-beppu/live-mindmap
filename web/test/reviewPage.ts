@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { expect } from "vitest";
 import { embedReviewAudio, embedReviewLog } from "../../server/src/core/index.ts";
 import { buildReviewTemplateHtml } from "../../server/test/fixtures/reviewTemplate.ts";
 import type { Viewport } from "../src/camera.ts";
@@ -185,3 +186,19 @@ export const FULL_STEPS: Step[] = [
     },
   },
 ];
+
+// ---- 寸法の確認 ----
+// 動いている animation・transition は読む前に最後まで進めて終わらせる（途中の値を読んで揺れるのを避ける）
+export const styleOf = <K extends string>(page: Page, selector: string, props: readonly K[], nth = 0): Promise<Record<K, string>> =>
+  page.locator(selector).nth(nth).evaluate((element, names) => {
+    for (const animation of element.getAnimations()) animation.finish();
+    const style = getComputedStyle(element);
+    return Object.fromEntries(names.map((name) => [name, style.getPropertyValue(name)]));
+  }, props) as Promise<Record<K, string>>;
+export const rectOf = (page: Page, selector: string, nth = 0) =>
+  page.locator(selector).nth(nth).evaluate((element) => {
+    for (const animation of element.getAnimations()) animation.finish();
+    const r = element.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  });
+export const near = (actual: number, expected: number, label: string) => expect(Math.abs(actual - expected), `${label}: ${actual} / ${expected}`).toBeLessThanOrEqual(1);

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { scrollPanDelta } from "../src/camera.ts";
 import { keyListRows } from "../src/app/keys/table.ts";
 import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
-import { mapPoint } from "./reviewPage.ts";
+import { mapPoint, near, rectOf, styleOf } from "./reviewPage.ts";
 import { withBrowser, type Page } from "./screenCompare.ts";
 
 // 会議中（Foldkit 版）の Mount と Subscription の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #829）。React 版が無くなった後も残す。
@@ -312,6 +312,89 @@ describe("会議中（Foldkit 版）の Subscription", () => {
       expect(await nodeCount(page)).toBe(count);
       await sendFrame(page, NOTICE_FRAMES.screen);
       await page.locator(".screen-notice").waitFor();
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+});
+
+// ユーティリティへ移した値は、素の CSS の文面では確かめられない。実ブラウザの computed style と位置で確かめる（Issue #1008: 替える前の CSS との照合は外し、今の値を期待値にする）。
+// 字幕と知らせの位置は、窓の幅 1280 で幅 648px、字幕の左右 12px の外に知らせ。値は animation・transition が終わった後に読み（styleOf・rectOf が最後まで進める）、
+// 配置が落ち着くのは決め打ちの待ちではなく、値に届くまで待つ
+describe("会議中（Foldkit 版）の寸法", () => {
+  const CAPTIONS_WIDTH = 648; // min(720px, 100vw − 2 × 316px) の 1280px での値
+
+  it(
+    "字幕・取り込みの一言・相手の音声の一文・共有画面の一文・ローカルモードの表示",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      await sendFrame(page, { type: "intake", status: "interrupted" });
+      await sendFrames(page, [NOTICE_FRAMES.screen, NOTICE_FRAMES.tap]);
+      for (const selector of [".intake-notice", ".tap-notice", ".screen-notice", ".captions"]) await page.locator(selector).first().waitFor({ timeout: 10_000 });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - CAPTIONS_WIDTH) <= 1, { timeout: 10_000 }).toBe(true);
+      const layout = await rectOf(page, ".layout");
+      const captions = await rectOf(page, ".captions");
+      near(captions.width, CAPTIONS_WIDTH, "字幕の幅");
+      near((captions.left + captions.right) / 2, (layout.left + layout.right) / 2, "字幕の中央");
+      near(captions.bottom, layout.bottom - 24, "字幕の下端");
+      expect(await styleOf(page, ".captions", ["position", "pointer-events", "display", "flex-direction", "gap"])).toEqual({ position: "absolute", "pointer-events": "none", display: "flex", "flex-direction": "column", gap: "4px" });
+      expect(await styleOf(page, ".captions__block", ["box-shadow", "background-color", "border-top-width", "border-top-color", "border-radius", "padding-top", "padding-left", "font-size", "color"])).toEqual({
+        "box-shadow": "none", "background-color": "rgba(255, 255, 255, 0.88)", "border-top-width": "1px", "border-top-color": "rgb(229, 231, 235)", "border-radius": "6px", "padding-top": "6px", "padding-left": "12px", "font-size": "16px", color: "rgb(55, 65, 81)",
+      });
+      expect(await styleOf(page, ".captions__track", ["color", "font-size"])).toEqual({ color: "rgb(156, 163, 175)", "font-size": "12px" });
+
+      const intake = await rectOf(page, ".intake-notice");
+      near(intake.left, captions.right + 12, "取り込みの一言の左端");
+      near(intake.bottom, layout.bottom - 24, "取り込みの一言の下端");
+      expect(await styleOf(page, ".intake-notice", ["position", "pointer-events", "white-space", "font-size", "color", "z-index"])).toEqual({ position: "absolute", "pointer-events": "none", "white-space": "nowrap", "font-size": "13px", color: "rgb(107, 114, 128)", "z-index": "5" });
+
+      const tap = await rectOf(page, ".tap-notice");
+      near(tap.right, captions.left - 12, "相手の音声の一文の右端");
+      near(tap.width, 260, "相手の音声の一文の幅");
+      near(tap.bottom, layout.bottom - 24, "相手の音声の一文の下端");
+      expect(await styleOf(page, ".tap-notice", ["position", "pointer-events", "text-align", "background-color", "border-top-width", "box-shadow"])).toEqual({ position: "absolute", "pointer-events": "none", "text-align": "right", "background-color": "rgba(0, 0, 0, 0)", "border-top-width": "0px", "box-shadow": "none" });
+
+      const screen = await rectOf(page, ".screen-notice");
+      near(screen.top, layout.top + 12, "共有画面の一文の上端");
+      near((screen.left + screen.right) / 2, (layout.left + layout.right) / 2, "共有画面の一文の中央");
+      near(screen.width, CAPTIONS_WIDTH, "共有画面の一文の幅");
+      expect(await styleOf(page, ".screen-notice", ["position", "pointer-events", "text-align", "box-shadow", "line-height"])).toEqual({ position: "absolute", "pointer-events": "none", "text-align": "center", "box-shadow": "none", "line-height": "19.5px" });
+
+      // ローカルモード: 線は上端 2px の帯、知らせは左上。共有画面の一文は 36px 下へ、幅は layout − 24px（上限 720px）。線の色は server/test/localModeView.heavy.test.ts が running を見る
+      await sendFrames(page, [{ type: "session-mode", local: true }, { type: "diff-update", state: { status: "running" } }]);
+      await page.locator(".layout--local .local-mode-line").waitFor({ timeout: 10_000 });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".local-mode-line")).height - 2) <= 1, { timeout: 10_000 }).toBe(true);
+      const line = await rectOf(page, ".local-mode-line");
+      near(line.height, 2, "ローカルモードの線の高さ");
+      near(line.width, layout.right - layout.left, "ローカルモードの線の幅");
+      expect(await styleOf(page, ".local-mode-line", ["position", "pointer-events", "z-index"])).toEqual({ position: "absolute", "pointer-events": "none", "z-index": "6" });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".layout--local > .screen-notice")).top - (layout.top + 36)) <= 1, { timeout: 10_000 }).toBe(true);
+      const localScreen = await rectOf(page, ".layout--local > .screen-notice");
+      near(localScreen.top, layout.top + 36, "ローカルモードの共有画面の一文の上端");
+      near(localScreen.width, Math.min(720, layout.right - layout.left - 24), "ローカルモードの共有画面の一文の幅");
+      await sendFrame(page, { type: "diff-update", state: { status: "restarting" } });
+      await expect.poll(async () => (await styleOf(page, ".local-mode-line", ["background-color"]))["background-color"], { timeout: 10_000 }).toBe("rgb(194, 65, 12)");
+      await sendFrame(page, { type: "diff-update", state: { status: "stopped" } });
+      await expect.poll(async () => (await styleOf(page, ".local-mode-line", ["background-color"]))["background-color"], { timeout: 10_000 }).toBe("rgb(107, 114, 128)");
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "畳んだノード・選んだノード・変わったノードの見た目: 選んだ塗り #f3f4f6、畳んだ文字 #6b7280、変わったノードの outline-offset 2px（点滅は終わらせてから読む）",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      expect(await page.locator(".map-node--folded").count()).toBe(1);
+      expect(await styleOf(page, ".map-node--folded", ["color"])).toEqual({ color: "rgb(107, 114, 128)" });
+      await sendFrames(page, frames.reflected);
+      await page.locator(".map-node--blink").first().waitFor({ timeout: 10_000 });
+      // クラスが付いた直後は、CI で規則がまだ効いていない値（0px）を読むことがある。点滅が終わって落ち着いた値を待つ
+      await page.waitForFunction(() => document.querySelector(".map-node--blink")!.getAnimations().every((a) => a.playState === "finished"), undefined, { timeout: 10_000 });
+      await expect.poll(async () => styleOf(page, ".map-node--blink", ["outline-offset"]), { timeout: 10_000 }).toEqual({ "outline-offset": "2px" });
+      await page.locator(".map-node__button").first().click();
+      await page.waitForFunction(() => document.querySelector(".map-node--selected") !== null, undefined, { timeout: 10_000 });
+      expect((await styleOf(page, ".map-node--selected", ["background-color"]))["background-color"]).toBe("rgb(243, 244, 246)");
       await page.context().close();
     }),
     MEETING_TIMEOUT,

@@ -4,7 +4,7 @@ import { resolveConfig } from "vite";
 import { describe, expect, it } from "vitest";
 
 // Issue #830: CSS を Tailwind v4（@tailwindcss/vite）に替える。依存・Vite の設定を、ファイルとして確かめる。
-// ビルドした CSS の中身（Preflight が無い・token・keyframes・影が無い）は server/test/reviewBuild.heavy.test.ts、画面の見た目は tailwindCompare.heavy.test.ts が見る。
+// ビルドした CSS の中身（Preflight が無い・token・keyframes・影が無い）は server/test/reviewBuild.heavy.test.ts、画面の見た目は review.mount.heavy.test.ts・meeting.mount.heavy.test.ts の寸法の確認が見る。
 const webRoot = join(import.meta.dirname, "..");
 const read = (...path: string[]) => readFileSync(join(...path), "utf8");
 const web = JSON.parse(read(webRoot, "package.json")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
