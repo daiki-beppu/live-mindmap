@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export const DiffUpdateReason = Schema.Literal("ChatGPT の利用上限");
+export const DiffUpdateReason = Schema.Literals(["ChatGPT の利用上限", "Claude の利用上限"]);
 export const DiffUpdateState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("running") }),
   Schema.Struct({ status: Schema.Literal("restarting") }),
@@ -14,6 +14,7 @@ export type DiffUpdateFrame = typeof DiffUpdateFrame["Type"];
 export class DiffUpdatePaused extends Schema.TaggedError<DiffUpdatePaused>()("DiffUpdatePaused", {
   reason: DiffUpdateReason,
   message: Schema.String,
+  retryAt: Schema.optionalKey(Schema.Finite), // 再試行する時刻（エポックからのミリ秒）。無ければ DIFF_UPDATE_RETRY_MS ごと
 }) {}
 
 export class DiffUpdateStopped extends Schema.TaggedError<DiffUpdateStopped>()("DiffUpdateStopped", {

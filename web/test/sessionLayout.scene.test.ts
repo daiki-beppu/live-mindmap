@@ -495,6 +495,21 @@ describe("sessionLayout の Scene: Toast に載せない知らせ（差分更新
     );
   });
 
+  it("Claude の利用上限で止まっている間も、同じ形（div.diff-update-notice[role=status]）で理由に合わせた文が出る", () => {
+    scene(
+      app,
+      given(init()),
+      emit(Message.ReceivedDiffUpdate({ state: Option.some({ status: "paused", reason: "Claude の利用上限" }) })),
+      expectScene(selector(".diff-update-notice")).toHaveText("マップの更新が止まっています（Claude の利用上限）"),
+      expectScene(selector(".diff-update-notice")).toHaveAttr("role", "status"),
+      tap((s) => expect(directChild(s.html, "diff-update-notice")?.sel).toBe("div")),
+      emit(Message.ReceivedDiffUpdate({ state: Option.some(PAUSED) })),
+      expectScene(selector(".diff-update-notice")).toHaveText("マップの更新が止まっています（ChatGPT の利用上限）"),
+      emit(Message.ReceivedDiffUpdate({ state: Option.some({ status: "running" }) })),
+      expectScene(selector(".diff-update-notice")).toBeAbsent(),
+    );
+  });
+
   it.each([{ status: "running" }, { status: "restarting" }, { status: "stopped" }] as const)("差分更新が %j のときは .diff-update-notice を描かない", (state) => {
     scene(app, given({ ...init(), diffUpdate: Option.some(state) }), expectScene(selector(".diff-update-notice")).toBeAbsent());
   });

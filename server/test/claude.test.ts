@@ -3,7 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { AgentSdk, buildPrompt, claudeTuning, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
 import { OUTPUT_SCHEMA, SYSTEM } from "../src/claudePrompt.ts";
-import { applyOps, DiffUpdater } from "../src/core/index.ts";
+import { applyOps, DiffUpdater, DiffUpdatePaused } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
 
 // 偽の query()。prompt（AsyncIterable）から user メッセージを 1 つ読むたびに、behave の指示どおり 1 回分の応答を返す。
@@ -16,7 +16,9 @@ import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange }
 // 実際の SDK は 1 つの応答を内容のブロックごとに別の assistant として流し、同じ message.id・同じ入力とキャッシュの usage を持つ。
 // その output_tokens は仮の小さい値で、その turn の正しい usage は result が持つ。modelUsage・total_cost_usd は query 全体の累計
 //   readings: success で、英字の語のカタカナの読み（Issue #642）の structured_output を返す
-type Behavior = "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "hang" | "retried" | "nullcache";
+//   limit: rate_limit_event（rejected、resetsAt あり）の後に失敗の result / limitNoReset: 同じで resetsAt が無い
+//   warned: allowed_warning と allowed の rate_limit_event を流してから success の result
+type Behavior = "limit" | "limitNoReset" | "warned" | "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "hang" | "retried" | "nullcache";
 type Message = { type: string; message?: { role?: string; content?: unknown }; parent_tool_use_id?: unknown };
 
 // assistant メッセージ 1 つ分（内容のブロックごとに 1 つ）。SDK では message が BetaMessage で、id・usage・model を持つ
@@ -31,6 +33,8 @@ type Created = { messages: Message[]; closeCalls: number; options: Options };
 // query() に渡された options（systemPrompt・effort・出力スキーマ・env）
 type Options = { model: string; systemPrompt: string; effort?: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
 
+// SDK の resetsAt はエポック秒
+const RESETS_AT_SECONDS = 1791316800;
 const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
 // 1 つの user メッセージに対して流す応答の列（hang・throw・end は流さないので、ここには来ない）
@@ -54,6 +58,17 @@ function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: numb
     return [
       assistant("msg_a", 3),
       { ...result, usage: { input_tokens: 5, cache_creation_input_tokens: null, output_tokens: 6 }, subtype: "success", structured_output: noopOutput("nullcache") },
+    ];
+  }
+  // rejected の後に失敗の result が続いても、イベントの時点で一時停止になる
+  if (behavior === "limit") return [{ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: RESETS_AT_SECONDS } }, { ...result, subtype: "error_during_execution" }];
+  if (behavior === "limitNoReset") return [{ type: "rate_limit_event", rate_limit_info: { status: "rejected" } }, { ...result, subtype: "error_during_execution" }];
+  if (behavior === "warned") {
+    return [
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", resetsAt: RESETS_AT_SECONDS } },
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed" } },
+      assistant("msg_a", 3),
+      { ...result, subtype: "success", structured_output: noopOutput("warned") },
     ];
   }
   const first = assistant("msg_a", 3);
@@ -2349,5 +2364,52 @@ describe("前回の応答の仮 ID と捨てた操作（query の開き直し）
       expect(created).toHaveLength(2);
       expect(texts(created[1]!)[0]).not.toContain("前回の応答");
       expect(texts(created[1]!)[0]).toBe(buildPrompt(growing(3)));
+    }));
+});
+
+describe("Claude の利用上限（rate_limit_event）", () => {
+  it.effect("rejected は DiffUpdatePaused（理由は Claude の利用上限）で失敗し、resetsAt（秒）はミリ秒の retryAt になる", () =>
+    Effect.gen(function* () {
+      const { updater } = yield* setup(() => "limit");
+
+      const failure = yield* Effect.flip(updater.update(input(1)));
+
+      expect(failure).toBeInstanceOf(DiffUpdatePaused);
+      const paused = failure as DiffUpdatePaused;
+      expect(paused.reason).toBe("Claude の利用上限");
+      expect(paused.retryAt).toBe(RESETS_AT_SECONDS * 1000);
+    }));
+
+  it.effect("resetsAt が無い rejected は retryAt を持たない一時停止になる", () =>
+    Effect.gen(function* () {
+      const { updater } = yield* setup(() => "limitNoReset");
+
+      const paused = (yield* Effect.flip(updater.update(input(1)))) as DiffUpdatePaused;
+
+      expect(paused._tag).toBe("DiffUpdatePaused");
+      expect(paused.reason).toBe("Claude の利用上限");
+      expect("retryAt" in paused && paused.retryAt !== undefined).toBe(false);
+    }));
+
+  it.effect("一時停止の後の呼び出しは古い query を閉じ、新しい query でマップ全体を送って続く", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((q) => (q === 0 ? "limit" : "ok"));
+
+      yield* Effect.flip(updater.update(input(1)));
+      const output = yield* updater.update(input(2));
+
+      expect(created).toHaveLength(2);
+      expect(created[0]!.closeCalls).toBeGreaterThanOrEqual(1);
+      expect(contents(created[1]!)).toEqual([buildPrompt(input(2))]);
+      expect(output.ops).toEqual(noop("q1-m0"));
+    }));
+
+  it.effect("allowed_warning と allowed の rate_limit_event は読み飛ばし、success の result で成功する", () =>
+    Effect.gen(function* () {
+      const { updater } = yield* setup(() => "warned");
+
+      const output = yield* updater.update(input(1));
+
+      expect(output.ops).toEqual(noop("warned"));
     }));
 });

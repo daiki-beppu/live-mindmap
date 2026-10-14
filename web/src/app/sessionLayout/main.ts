@@ -211,9 +211,13 @@ const selfPauseView = (h: H, model: Model): Html | null =>
   model.selfPaused ? h.div([h.Class("self-pause-notice"), h.AriaLive("polite")], [SELF_PAUSE_TEXT]) : null;
 
 const diffUpdateView = (h: H, model: Model): Html | null =>
-  Option.exists(model.diffUpdate, (state) => state.status === "paused" && state.reason === "ChatGPT の利用上限")
-    ? h.div([h.Class("diff-update-notice absolute top-[8px] left-[12px] text-[12px] text-gray-500 z-5 pointer-events-none"), h.Role("status")], ["マップの更新が止まっています（ChatGPT の利用上限）"])
-    : null;
+  Option.match(model.diffUpdate, {
+    onNone: () => null,
+    onSome: (state) =>
+      state.status === "paused"
+        ? h.div([h.Class("diff-update-notice absolute top-[8px] left-[12px] text-[12px] text-gray-500 z-5 pointer-events-none"), h.Role("status")], [`マップの更新が止まっています（${state.reason}）`])
+        : null,
+  });
 
 // `.map`・キーの一覧・`.side` は別の部品が持つので、差し込み口で受け取る（`.side` は包まずそのまま置く。右の列を隠しているときは null）。並びは SessionView の .layout の直下と同じ。
 // キーの一覧は `.map` の中の最後に置く（表示面 → 見る状態の知らせ → キーの一覧）

@@ -807,12 +807,12 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         const before = calls.length;
         const cont = scripted([]);
         const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
-        // 1 つ目の発言で、元のセッションは時計を進めて再試行し、復元したセッションは新しい発言で呼ぶ。どちらも一時停止した発言を含む
+        // 復元したセッションも一時停止のまま戻るので、どちらも 1 つ目の発言を受けてから時計を進めて再試行する。どちらも一時停止した発言を含む
         yield* session.push(spoken("n0", next[0]!));
-        yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);
-        yield* settleUntil(() => calls.length === before + 1);
-        yield* session.idle;
         yield* restored.push(spoken("n0", next[0]!));
+        yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);
+        yield* settleUntil(() => calls.length === before + 1 && cont.calls.length === 1);
+        yield* session.idle;
         yield* restored.idle;
         for (const [i, end] of next.slice(1).entries()) {
           yield* session.push(spoken(`n${i + 1}`, end));
