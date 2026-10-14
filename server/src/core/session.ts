@@ -218,16 +218,22 @@ type Replay = {
   readonly previousResponse: PreviousResponse | undefined;
 };
 
+// diff の入力の新しい発言を、ログの発言から id で引く。ログに無い id があれば不整合
+const freshRemarksOf = (remarks: readonly Remark[], ids: readonly string[], invalid: (reason: string) => InvalidLogEvent): Effect.Effect<Remark[], InvalidLogEvent> => {
+  const fresh: Remark[] = [];
+  for (const id of ids) {
+    const r = remarks.find((x) => x.id === id);
+    if (!r) return Effect.fail(invalid(`ログに発言がありません: ${id}`));
+    fresh.push(r);
+  }
+  return Effect.succeed(fresh);
+};
+
 // diff の行を 1 回分、復元の状態へ反映する。判定の順は、start が無い → ログに無い発言 → 反映数の超過 → screenCount の超過
 const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Replay, InvalidLogEvent> {
   const { map } = replay;
   if (!map) return yield* invalid("ログの diff より前に start がありません");
-  const fresh: Remark[] = [];
-  for (const id of e.input.fresh) {
-    const r = replay.remarks.find((x) => x.id === id);
-    if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
-    fresh.push(r);
-  }
+  const fresh = yield* freshRemarksOf(replay.remarks, e.input.fresh, invalid);
   const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
   if (count > fresh.length) return yield* invalid("diff の反映数が入力の発言数を超えています");
   const consumed = fresh.slice(0, count);
