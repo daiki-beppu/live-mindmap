@@ -32,7 +32,7 @@ const cliProcess = (dir: string, port: number, names: string[]) => Effect.tryPro
   execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), "update", ...names], {
     cwd: join(import.meta.dirname, "../.."),
     timeout: 15_000,
-    env: { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
+    env: { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
     resolve({ code: error ? error.code as number : 0, stdout, stderr });
@@ -152,7 +152,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     let ended = false;
     const consoleService: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); }, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
     const layer = Layer.mergeAll(forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
-      Layer.succeed(Console.Console, consoleService), ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(dir, "home"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_SESSIONS: dir })));
+      Layer.succeed(Console.Console, consoleService), ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(dir, "home"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_SESSIONS: dir })));
     const fiber = yield* runCli(["update", "chromium"]).pipe(Effect.provide(layer), Effect.provideService(StdoutIsTty, false), Effect.tap(() => Effect.sync(() => { ended = true; })), Effect.forkChild);
     try {
       yield* Effect.tryPromise(() => vi.waitFor(() => expect(stderr.join("")).toContain("ダウンロード\n")));

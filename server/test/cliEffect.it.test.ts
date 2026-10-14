@@ -102,7 +102,7 @@ function dependencies(sessionsDir: string, port = "12345") {
   const layer = Layer.mergeAll(
     NodeServices.layer, unusedApple, readyManagedDeps,
     NodeHttpClient.layerUndici,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port })),
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({
       capture: (snapshot: Snapshot, path: string) => Effect.sync(() => {

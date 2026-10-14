@@ -74,6 +74,19 @@ describe("モデル選択（Issue #663）", () => {
     if (!result.ok) expect(result.lines).toHaveLength(1);
   });
 
+  it("C9: 設定に judges・judge があっても差分更新のモデルの選択は断られない", () => {
+    const config = { default: "fast", models, judge: "off", judges: { custom: { route: "system-one", apiKeyEnv: "CUSTOM_KEY" } } };
+    expect(select({}, undefined, config)).toMatchObject({ ok: true, model: { name: "fast", route: "claude", model: models.fast.model }, local: false });
+    expect(listModels({ config, configPath, macState: availableMac }).ok).toBe(true);
+    expect(selectModel({ flags: { local: true }, envModel: undefined, config, configPath, macState: availableMac })).toMatchObject({ ok: true, local: true });
+  });
+
+  it.each([{ unknownKey: true }, { judges: { off: 1 }, extra: 1 }])("C9: judges・judge 以外の知らないトップレベルのキーは今までどおり 1 行で断る (%j)", (config) => {
+    const result = select({}, undefined, config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.lines).toHaveLength(1);
+  });
+
   it("invDefaultClaude: 設定も指定もなければ従来の Claude", () => {
     expect(select({}, undefined, {})).toMatchObject({
       ok: true, model: { name: "claude", route: "claude", model: "claude-sonnet-5-5" }, local: false,

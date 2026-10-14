@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Effect, FileSystem, Layer } from "effect";
-import { resolveModelCandidate } from "../src/modelConfig.ts";
+import { resolveJudge, resolveModelCandidate } from "../src/modelConfig.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 
 describe("check のモデル候補解決", () => {
@@ -22,5 +22,64 @@ describe("check のモデル候補解決", () => {
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: "/synthetic" }))),
     ));
     expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "ModelRefused" } });
+  }));
+});
+
+describe("判定のモデルの解決（Issue #983）", () => {
+  const run = (flags: { judge?: string }, local: boolean, env: Record<string, string>, config: unknown) =>
+    Effect.result(resolveJudge(flags, local).pipe(
+      Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({ readFileString: () => Effect.succeed(JSON.stringify(config)) })),
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: "/synthetic", ...env }))),
+    ));
+
+  it.effect("既定では環境変数の鍵があれば jev を選ぶ", () => Effect.gen(function* () {
+    const result = yield* run({}, false, { TYPESAFE_AI_API_KEY: "synthetic-key" }, {});
+    expect(result).toMatchObject({ _tag: "Success", success: { judge: { name: "jev", route: "system-one", timeoutMs: 1000 } } });
+  }));
+
+  it.effect("LIVE_MINDMAP_JUDGE は設定の judge に勝ち、--judge は LIVE_MINDMAP_JUDGE に勝つ", () => Effect.gen(function* () {
+    const config = { judge: "a", judges: {
+      a: { route: "system-one", apiKeyEnv: "A_KEY" }, b: { route: "system-one", apiKeyEnv: "B_KEY" }, c: { route: "system-one", apiKeyEnv: "C_KEY" },
+    } };
+    const env = { A_KEY: "a", B_KEY: "b", C_KEY: "c" };
+    expect(yield* run({}, false, env, config)).toMatchObject({ _tag: "Success", success: { judge: { name: "a" } } });
+    expect(yield* run({}, false, { ...env, LIVE_MINDMAP_JUDGE: "b" }, config)).toMatchObject({ _tag: "Success", success: { judge: { name: "b" } } });
+    expect(yield* run({ judge: "c" }, false, { ...env, LIVE_MINDMAP_JUDGE: "b" }, config)).toMatchObject({ _tag: "Success", success: { judge: { name: "c" } } });
+  }));
+
+  it.effect("鍵の環境変数が無いか空なら失敗せず、1 行の知らせとともに判定なしになる", () => Effect.gen(function* () {
+    for (const env of [{}, { TYPESAFE_AI_API_KEY: "" }, { TYPESAFE_AI_API_KEY: "  " }] as ReadonlyArray<Record<string, string>>) {
+      const result = yield* run({}, false, env, {});
+      expect(result._tag).toBe("Success");
+      if (result._tag !== "Success") continue;
+      expect(result.success.judge).toBeUndefined();
+      expect(result.success.notice).toContain("TYPESAFE_AI_API_KEY");
+      expect(result.success.notice).not.toMatch(/[\r\n]/);
+    }
+  }));
+
+  it.effect("off は鍵があっても判定なし", () => Effect.gen(function* () {
+    const result = yield* run({ judge: "off" }, false, { TYPESAFE_AI_API_KEY: "k" }, {});
+    expect(result).toMatchObject({ _tag: "Success", success: { judge: undefined } });
+  }));
+
+  it.effect("ローカルモードで LIVE_MINDMAP_JUDGE を明示すると ModelRefused で断り、明示しなければ判定なしで始まる", () => Effect.gen(function* () {
+    const env = { TYPESAFE_AI_API_KEY: "k" };
+    expect(yield* run({}, true, { ...env, LIVE_MINDMAP_JUDGE: "jev" }, {})).toMatchObject({ _tag: "Failure", failure: { _tag: "ModelRefused" } });
+    expect(yield* run({}, true, env, {})).toMatchObject({ _tag: "Success", success: { judge: undefined } });
+  }));
+
+  it.effect("知らない名前・judges の書き誤りは ModelRefused で断る", () => Effect.gen(function* () {
+    expect(yield* run({ judge: "missing" }, false, {}, {})).toMatchObject({ _tag: "Failure", failure: { _tag: "ModelRefused" } });
+    expect(yield* run({}, false, {}, { judges: { bad: { route: "claude" } } })).toMatchObject({ _tag: "Failure", failure: { _tag: "ModelRefused" } });
+  }));
+
+  it.effect("設定に judges・judge があっても check のモデル候補解決は断られない", () => Effect.gen(function* () {
+    const fs = FileSystem.makeNoop({ readFileString: () => Effect.succeed(JSON.stringify({ judge: "off", judges: { x: { route: "system-one", apiKeyEnv: "X" } } })) });
+    const selected = yield* resolveModelCandidate({}).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provide(Layer.mergeAll(unusedApple, ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: "/synthetic" })))),
+    );
+    expect(selected.route).toBe("claude");
   }));
 });

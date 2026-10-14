@@ -37,7 +37,7 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
 });
 
 const cliProcess = (dir: string, port: number, rootScript: boolean, model: string | null = "claude") => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  const env = { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: model ?? "", NO_COLOR: "1" };
+  const env = { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: model ?? "", NO_COLOR: "1" };
   if (model === null) delete (env as NodeJS.ProcessEnv).LIVE_MINDMAP_MODEL;
   execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "check"] : [join(import.meta.dirname, "../src/cli.ts"), "check"], {
     cwd: join(import.meta.dirname, "../.."),
