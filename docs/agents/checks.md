@@ -22,7 +22,7 @@ CI (`.github/workflows/check.yml`) runs the same checks split into parallel jobs
 
 - Docs-only PRs skip every test job (the `changes` job and the required `check` job still run).
 - `helper/` changes add the Swift job.
-- The `ts` job runs typecheck of server, web and e2e, plus unit and light ITs of server and web, together.
+- The `ts` job runs typecheck of server, web and e2e, plus unit and light ITs of server and web, together, then runs fallow last with `--format github-annotations --fail-on-issues` (without the flag, annotations alone exit 0 even with issues).
 - The `heavy` job runs every `--project heavy` IT of server and web (a `package` matrix) split per test (grouped by `file:line`) across 4 runners each, with new heavy ITs picked up automatically.
 - The `e2e` job (also gated by the `ts` output, so helper-only PRs skip it) runs `pnpm --filter @live-mindmap/e2e test:e2e` (all targets) in one runner: `--strict-cache` replays the committed cache only and `--retries 0` disables the CI default retry, no credentials (`E2E_OAUTH_CREDENTIALS`, `*_API_KEY`, `secrets.*`) are passed, and a step that cannot be replayed (`REPLAY_STALE`, a recorded mismatch) fails the job.
 - Only the `heavy` and `e2e` jobs install Chromium.

@@ -52,6 +52,8 @@ jobs:
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web --filter @live-mindmap/e2e typecheck
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test
       - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test:it
+      # 落ちても前のステップの結果を隠さないよう最後に置く。github-annotations は --fail-on-issues が無いと指摘があっても 0 で終わる
+      - run: pnpm fallow --format github-annotations --fail-on-issues
 
   # 重い IT（--project heavy）全体を、server と web のそれぞれ 4 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
   # vitest list で一覧を取り、file:line ごとにまとめて配る（each やループの同じ行のテストは 1 つの runner に入り、重複して走らない）。

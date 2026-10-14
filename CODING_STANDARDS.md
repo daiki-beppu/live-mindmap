@@ -32,3 +32,15 @@ Unlike the rest of this file, read this section when you add a test. Layer names
 - **E2E.** Judge only with locator `expect`; the procedure is in `e2e/README.md`.
 - **Evals.** Evals are not a test layer (`AGENTS.md` → Evals); the deterministic parts of eval tooling are ordinary tests and sit in a layer like any other.
 - **Existing tests.** This applies to new tests. Don't sweep existing tests that pin internal structure in one go.
+
+## Suppressions
+
+Unlike the rest of this file, read this section when you add a suppression (`fallow-ignore-next-line`, `@expected-unused`), not only in review.
+
+- **Principle.** A suppression records a decision not to share code or to keep a shape as it is. It is not a way to clear a finding. The default fix is to rewrite.
+- **When it is allowed.**
+  - `code-duplication`: sharing would tie together two things that change separately (different protocol boundaries, or old and new side by side during a migration).
+  - Complexity: splitting would make it harder to read, as with an exhaustive `match` or a branch table whose value is being flat.
+  - `@expected-unused`: only an export whose use already has an open ticket. Put the issue number in the reason.
+- **Reason.** Write what gets worse if the code is rewritten. "False positive" and "fix later" are not reasons. Remove a false positive in `.fallowrc.json`, not with a suppression, and state why in the PR body.
+- **Review.** Check each `fallow-ignore-next-line` and `@expected-unused` added in the diff one by one against the cases above. If the reason does not fit, ask for a rewrite.
