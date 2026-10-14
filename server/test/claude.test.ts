@@ -1,7 +1,7 @@
 import { defaultClaude } from "../src/modelSelection.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
-import { AgentSdk, buildPrompt, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
+import { AgentSdk, buildPrompt, claudeTuning, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
 import { OUTPUT_SCHEMA, SYSTEM } from "../src/claudePrompt.ts";
 import { applyOps, DiffUpdater } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
@@ -28,8 +28,8 @@ const assistant = (id: string, outputTokens: number, model = "claude-haiku-5-5")
 const RESULT_USAGE = { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: 520 };
 const RETRIED_RESULT_USAGE = { input_tokens: 230, cache_creation_input_tokens: 45, cache_read_input_tokens: 6100, output_tokens: 1040 };
 type Created = { messages: Message[]; closeCalls: number; options: Options };
-// query() に渡された options（systemPrompt・出力スキーマ・env）
-type Options = { model: string; systemPrompt: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
+// query() に渡された options（systemPrompt・effort・出力スキーマ・env）
+type Options = { model: string; systemPrompt: string; effort?: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
 
 const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
@@ -1916,6 +1916,74 @@ describe("query の options の env（5 分 TTL のキャッシュ）", () => {
         expect(options.env?.PATH).toBe(process.env.PATH);
         expect(options.env?.LIVE_MINDMAP_TEST_ENV).toBe("引き継がれる");
       }
+    }));
+});
+
+const HAIKU = "claude-haiku-5-5";
+const HAIKU_APPEND = [
+  "# 念押し（必ず守る）",
+  "## 決定を TODO で置き換えない",
+  "- 合意した内容（「〜してもらう」「〜を絞る」「〜にする」）は、論点の子の決定にする。合意に担当者の作業が付いていても、決定を TODO で済ませない。",
+  "- その作業は、決定とは別に TODO として add する。決定と TODO の両方を残す。",
+].join("\n");
+
+const optionsAfterRenew = (model: string) =>
+  Effect.gen(function* () {
+    const { created, updater, close } = yield* setup(() => "ok", model);
+    for (let n = 1; n <= QUERY_RENEW_CALLS + 1; n++) yield* updater.update(input(n));
+    yield* close;
+    return created.map((c) => c.options);
+  });
+
+describe("モデル名ごとの effort と SYSTEM の追記（Issue #719）", () => {
+  it.effect("claude-haiku-5-5 では effort が low で、systemPrompt は SYSTEM の後に決定の追記を足したもの", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup(() => "ok", HAIKU);
+      yield* updater.update(input(1));
+
+      expect(created).toHaveLength(1);
+      expect(created[0]!.options.model).toBe(HAIKU);
+      expect(created[0]!.options.effort).toBe("low");
+      expect(claudeTuning(HAIKU).systemAppend).toBe(HAIKU_APPEND);
+      expect(created[0]!.options.systemPrompt.startsWith(SYSTEM)).toBe(true);
+      expect(created[0]!.options.systemPrompt.endsWith(HAIKU_APPEND)).toBe(true);
+      expect(created[0]!.options.systemPrompt.length).toBeGreaterThan(SYSTEM.length + HAIKU_APPEND.length);
+    }));
+
+  it.effect("既定の Sonnet 5.5 など Haiku 以外では effort が medium で、systemPrompt は SYSTEM のまま（追記を含まない）", () =>
+    Effect.gen(function* () {
+      for (const model of [defaultClaude.model, "claude-opus-5-5", "unknown-model"]) {
+        const { created, updater } = yield* setup(() => "ok", model);
+        yield* updater.update(input(1));
+
+        expect(created[0]!.options.effort).toBe("medium");
+        expect(created[0]!.options.systemPrompt).toBe(SYSTEM);
+        expect(created[0]!.options.systemPrompt).not.toContain("決定を TODO で置き換えない");
+      }
+      expect(SYSTEM).not.toContain(HAIKU_APPEND);
+    }));
+
+  it.effect("query を開き直したあとも、effort と systemPrompt は開き直す前と同じ（Haiku・Sonnet とも）", () =>
+    Effect.gen(function* () {
+      for (const model of [HAIKU, defaultClaude.model]) {
+        const seen = yield* optionsAfterRenew(model);
+
+        expect(seen).toHaveLength(2);
+        expect(seen[0]!.effort).toBe(model === HAIKU ? "low" : "medium");
+        expect(seen[1]!.effort).toBe(seen[0]!.effort);
+        expect(seen[1]!.systemPrompt).toBe(seen[0]!.systemPrompt);
+        expect(seen[1]!.systemPrompt.endsWith(HAIKU_APPEND)).toBe(model === HAIKU);
+      }
+    }));
+
+  it.effect("カタカナの読みの query にも effort は効くが、決定の追記は付かない（Haiku）", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup(() => "readings", HAIKU);
+      yield* updater.katakana!(["Notion"]);
+
+      expect(created).toHaveLength(1);
+      expect(created[0]!.options.effort).toBe("low");
+      expect(created[0]!.options.systemPrompt).not.toContain("決定を TODO で置き換えない");
     }));
 });
 

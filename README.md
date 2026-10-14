@@ -156,6 +156,31 @@ pnpm dev
 
 Claude のサブスク（Free / Pro / Max）の認証での利用は案内していません。Anthropic の規約で、第三者のアプリがサブスクの認証で要求を送ることが認められていないためです（[ADR 0004](docs/adr/0004-mit-license-no-monetization.md)）。
 
+### Haiku 5.5 を選ぶ
+
+Haiku 5.5 は組み込みの名前ではありません。既定は Sonnet 5.5（`claude`）のままで、設定に書いたときだけ選べます。`my-haiku` は利用者が付ける名前です。
+
+```json
+{
+  "models": {
+    "my-haiku": {
+      "route": "claude",
+      "model": "claude-haiku-5-5"
+    }
+  }
+}
+```
+
+```sh
+pnpm cli start --app us.zoom.xos --model my-haiku
+```
+
+モデル名が `claude-haiku-5-5` のとき、アプリが自動で `effort: "low"` と、決定を TODO で置き換えないための追記を使います。設定項目はありません。この設定例の品質は保証しません。Sonnet 5.5 medium と比べて測った差は次のとおりです。
+
+- 料金は 1 会議でおよそ 1/8〜1/12（$0.08 前後）
+- 画面のある会議では並びますが、画面のない会議では決定を 2 本で 2 件少なく拾います
+- 反映までの遅れの p90 は 10.9 秒です（Sonnet 5.5 は 8.0 秒）
+
 ### ChatGPT のサブスク認証
 
 ChatGPT は Sign in with ChatGPT で Plus / Pro のサブスクを使います。Claude の API キーとは別の認証です。
