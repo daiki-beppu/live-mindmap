@@ -119,7 +119,7 @@ public final class TrackRecorder: @unchecked Sendable {
 }
 
 // 下流（文字起こし）へ渡す未消費のバッファの上限。ProcessTap と同じ。
-private let downstreamBacklogLimit = 2048
+let downstreamBacklogLimit = 2048
 
 /// `recording` が使う録音の操作。実際の録音は `TrackRecorder`。テストでは `finish` の失敗を差し替える。
 protocol TrackRecording: Sendable {

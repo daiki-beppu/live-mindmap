@@ -217,4 +217,49 @@ struct WebSocketServerITTests {
         #expect(await server.clientCount == 0)
         await #expect(throws: (any Error).self) { try await task.receive() }
     }
+
+    // Issue #1069: server から helper への最初の指示。受信したテキストを messages に流す
+    @Test("クライアントが送ったテキストは messages に届いた順で流れる")
+    func clientMessagesReachMessagesStream() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+
+        try await task.send(.string(#"{"type":"self-pause","paused":true}"#))
+        try await task.send(.string(#"{"type":"self-pause","paused":false}"#))
+        var iterator = server.messages.makeAsyncIterator()
+        #expect(await iterator.next() == #"{"type":"self-pause","paused":true}"#)
+        #expect(await iterator.next() == #"{"type":"self-pause","paused":false}"#)
+    }
+
+    @Test("stop すると messages の流れが終わる")
+    func stopEndsMessagesStream() async throws {
+        let server = WebSocketServer(port: 0)
+        _ = try await server.start()
+        await server.stop()
+        var iterator = server.messages.makeAsyncIterator()
+        #expect(await iterator.next() == nil)
+    }
+
+    @Test("接続前に覚えた self-pause は後から接続したクライアントに届き、同じ種類は最新の 1 件に置き換わる")
+    func retainedSelfPauseReachesLateJoiningClient() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let paused = try HelperEvent.selfPause(paused: true, start: 3).jsonString()
+        let resumed = try HelperEvent.selfPause(paused: false, start: 9).jsonString()
+        await server.broadcastRetained(paused, key: "self-pause")
+        await server.broadcastRetained(resumed, key: "self-pause")
+
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+        #expect(try await receiveText(task) == resumed)
+    }
 }

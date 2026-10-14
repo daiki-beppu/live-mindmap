@@ -43,10 +43,12 @@ describe("表のすべてのバインディングで Message が届く（押し�
     for (const messages of perEvent) for (const m of messages) expect(m).toMatchObject(NO_MODIFIERS);
   });
 
-  it("その画面の表に無い行は届かない: 会議中は見返しのキー（Space K J L , . < > Home End M）、音声なしの見返しは M を受けない", async () => {
-    const reviewOnly = [" ", "k", "j", "l", ",", ".", "<", ">", "Home", "End", "m"];
+  it("その画面の表に無い行は届かない: 会議中は見返しのキー（Space K J L , . < > Home End）、音声なしの見返しは M を受けない。会議中の M は自分の休止として届く", async () => {
+    const reviewOnly = [" ", "k", "j", "l", ",", ".", "<", ">", "Home", "End"];
     const live = await press("live", reviewOnly.map((key) => keydown({ key })));
     live.perEvent.forEach((messages, i) => expect(messages, reviewOnly[i]).toEqual([]));
+    const liveMute = await press("live", [keydown({ key: "m" })]);
+    expect(liveMute.perEvent).toEqual([[pressed("M")]]);
     const review = await press("review", [keydown({ key: "m" }), keydown({ key: "M", shiftKey: true })]);
     expect(review.perEvent).toEqual([[], []]);
     const audio = await press("reviewAudio", [keydown({ key: "m" })]);

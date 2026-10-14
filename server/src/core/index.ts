@@ -8,6 +8,7 @@ export * from "./intake.ts";
 export * from "./latinWords.ts";
 export * from "./screenNotice.ts";
 export * from "./screenVocabulary.ts";
+export * from "./selfPause.ts";
 export * from "./tapNotice.ts";
 export * from "./sessionMode.ts";
 export * from "./live.ts";

@@ -96,7 +96,7 @@ describe("事実を Message にする", () => {
     );
   });
 
-  it("server が送る 7 種類の frame（snapshot と 6 つの type）を decode して ReceivedLiveFrame にする", async () => {
+  it("server が送る 8 種類の frame（snapshot と 7 つの type）を decode して ReceivedLiveFrame にする", async () => {
     const frames = [
       snapshot,
       { type: "speaking", track: "相手", text: "こんにち" },
@@ -105,6 +105,7 @@ describe("事実を Message にする", () => {
       { type: "tap-notice", text: null },
       { type: "diff-update", state: { status: "paused", reason: "ChatGPT の利用上限" } },
       { type: "session-mode", local: true },
+      { type: "self-pause", paused: true },
     ] as const;
     await run((collected) =>
       Effect.gen(function* () {
@@ -145,6 +146,8 @@ describe("事実を Message にする", () => {
         ws.receive(JSON.stringify({ type: "future-frame", x: 1 }));
         ws.receive(JSON.stringify({ type: "speaking", track: "他人", text: "x" }));
         ws.receive(JSON.stringify({ type: "intake", status: "unknown-status" }));
+        ws.receive(JSON.stringify({ type: "self-pause", paused: "yes" }));
+        ws.receive(JSON.stringify({ type: "self-pause" }));
         ws.receive(JSON.stringify({ type: "intake", status: "stopped" }));
         yield* settle;
         expect(collected).toEqual([Message.ConnectedLiveFeed(), Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" } })]);

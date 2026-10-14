@@ -94,6 +94,7 @@ export const SEMANTIC_CLASSES: ReadonlySet<string> = new Set([
   "review-volume__thumb",
   "review-volume__track",
   "screen-notice",
+  "self-pause-notice",
   "side",
   "side--selected",
   "side--hidden",

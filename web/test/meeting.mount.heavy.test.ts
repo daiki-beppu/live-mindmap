@@ -381,6 +381,55 @@ describe("会議中（Foldkit 版）の寸法", () => {
     MEETING_TIMEOUT,
   );
 
+  // Issue #1069: 休止中の一言は取り込みの一言と同じ場所・同じ灰色の文字で字幕の右に出る。取り込みの一言と同時に出るときはその下。字幕・マップは動かさない
+  it(
+    "自分の休止の一言: 字幕の右（左端は字幕の右 +12px・下端は layout −24px）に取り込みの一言と同じ文字で出て、字幕・マップの位置は動かない。取り込みの一言と同時なら重ならず下に並ぶ",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      await sendFrames(page, [{ type: "speaking", track: "相手", text: "字幕です。" }]);
+      await page.locator(".captions").first().waitFor({ timeout: 10_000 });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - CAPTIONS_WIDTH) <= 1, { timeout: 10_000 }).toBe(true);
+      await settled(page);
+      const layout = await rectOf(page, ".layout");
+      const captionsBefore = await rectOf(page, ".captions");
+      const mapBefore = await rectOf(page, ".map");
+      const viewportBefore = await readMeetingViewport(page);
+
+      await sendFrame(page, { type: "self-pause", paused: true });
+      await page.locator(".self-pause-notice").waitFor({ timeout: 10_000 });
+      expect((await page.locator(".self-pause-notice").textContent())?.trim()).toBe("自分を休止中（M で再開）");
+      const pause = await rectOf(page, ".self-pause-notice");
+      near(pause.left, captionsBefore.right + 12, "休止の一言の左端");
+      near(pause.bottom, layout.bottom - 24, "休止の一言の下端");
+      expect(await styleOf(page, ".self-pause-notice", ["position", "pointer-events", "white-space", "font-size", "color", "z-index"])).toEqual({ position: "absolute", "pointer-events": "none", "white-space": "nowrap", "font-size": "13px", color: "rgb(107, 114, 128)", "z-index": "5" });
+      // 出ても動かない
+      for (const [name, before] of [["字幕", captionsBefore], ["マップ", mapBefore]] as const) {
+        const now = await rectOf(page, name === "字幕" ? ".captions" : ".map");
+        for (const key of ["left", "top", "right", "bottom"] as const) near(now[key], before[key], `${name}の${key}`);
+      }
+      expect(await readMeetingViewport(page)).toEqual(viewportBefore);
+
+      // 取り込みの一言と同時: 取り込みの一言は上、休止の一言はその下で、重ならない。どちらが出入りしても字幕は動かない
+      await sendFrame(page, { type: "intake", status: "interrupted" });
+      await page.locator(".intake-notice").waitFor({ timeout: 10_000 });
+      const intake = await rectOf(page, ".intake-notice");
+      const pauseWithIntake = await rectOf(page, ".self-pause-notice");
+      expect(intake.bottom, "取り込みの一言の下端は休止の一言の上端より上").toBeLessThanOrEqual(pauseWithIntake.top + 1);
+      near(pauseWithIntake.bottom, layout.bottom - 24, "同時に出ているときの休止の一言の下端");
+      near(intake.left, captionsBefore.right + 12, "同時に出ているときの取り込みの一言の左端");
+      near(pauseWithIntake.left, captionsBefore.right + 12, "同時に出ているときの休止の一言の左端");
+      const captionsWith = await rectOf(page, ".captions");
+      for (const key of ["left", "top", "right", "bottom"] as const) near(captionsWith[key], captionsBefore[key], `同時に出ているときの字幕の${key}`);
+
+      // 再開で休止の一言だけ消え、取り込みの一言は残る。取り込みの一言が 1 つだけのときは今の位置（下端 layout −24）
+      await sendFrame(page, { type: "self-pause", paused: false });
+      await expect.poll(async () => page.locator(".self-pause-notice").count(), { timeout: 10_000 }).toBe(0);
+      await expect.poll(async () => Math.abs((await rectOf(page, ".intake-notice")).bottom - (layout.bottom - 24)) <= 1, { timeout: 10_000 }).toBe(true);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
   it(
     "畳んだノード・選んだノード・変わったノードの見た目: 選んだ塗り #f3f4f6、畳んだ文字 #6b7280、変わったノードの outline-offset 2px（点滅は終わらせてから読む）",
     () => withBrowser(async (browser) => {
@@ -499,6 +548,35 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
       await page.locator(".side").waitFor({ state: "visible", timeout: 10_000 });
       await page.keyboard.press("Escape");
       await page.locator(".side").waitFor({ state: "hidden", timeout: 10_000 });
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "自分の休止の一言は、字幕・取り込みの一言・共有画面の一言のどれとも重ならず、画面に収まり、1 行で、字幕の位置を動かさない",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await sendFrame(page, { type: "intake", status: "interrupted" });
+      await sendFrame(page, NOTICE_FRAMES.screen);
+      for (const selector of [".intake-notice", ".screen-notice", ".captions"]) await page.locator(selector).first().waitFor({ timeout: 10_000 });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
+      const captionsBefore = await rectOf(page, ".captions");
+      await sendFrame(page, { type: "self-pause", paused: true });
+      await page.locator(".self-pause-notice").waitFor({ timeout: 10_000 });
+      const captions = await rectOf(page, ".captions");
+      for (const key of ["left", "top", "right", "bottom"] as const) near(captions[key], captionsBefore[key], `字幕の${key}`);
+      const pause = await rectOf(page, ".self-pause-notice");
+      expect(pause.bottom, "休止の一言の下端は字幕の上端より上").toBeLessThanOrEqual(captions.top + 1);
+      expect(pause.left, "休止の一言の左端").toBeGreaterThanOrEqual(0);
+      expect(pause.right, "休止の一言の右端").toBeLessThanOrEqual(viewport.width);
+      const lineHeight = Number.parseFloat((await styleOf(page, ".self-pause-notice", ["line-height"]))["line-height"]);
+      expect(pause.height, "休止の一言の高さ").toBeLessThanOrEqual(lineHeight + 1);
+      for (const selector of [".intake-notice", ".screen-notice"]) {
+        const other = await rectOf(page, selector);
+        const overlap = other.left < pause.right && pause.left < other.right && other.top < pause.bottom && pause.top < other.bottom;
+        expect(overlap, `${selector} と重ならない`).toBe(false);
+      }
       await page.context().close();
     }),
     MEETING_TIMEOUT,

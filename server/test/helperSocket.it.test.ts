@@ -36,7 +36,7 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
       );
       const port = (server.address() as AddressInfo).port;
 
-      const events = yield* openHelperSocket(`ws://127.0.0.1:${port}`);
+      const { events } = yield* openHelperSocket(`ws://127.0.0.1:${port}`);
       // Queue.offerUnsafe は接続の時点からすぐに流れている（購読を遅らせても、
       // ハンドシェイクと同じ塊で届いた分を取りこぼさないことを確かめるため、TestClock で少し進めてから読む）
       const waiting = yield* Effect.forkChild(Effect.sleep(50));
@@ -75,7 +75,7 @@ describe("openHelperSocket（ヘルパーへの WebSocket。Queue.offerUnsafe + 
       );
       const reopenedPort = (server.address() as AddressInfo).port;
 
-      const events = yield* openHelperSocket(`ws://127.0.0.1:${reopenedPort}`);
+      const { events } = yield* openHelperSocket(`ws://127.0.0.1:${reopenedPort}`);
       expect(events).toBeDefined();
     }));
 });

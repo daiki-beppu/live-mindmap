@@ -15,6 +15,7 @@ export const Model = Schema.Struct({
   tapNotice: Schema.Option(Schema.String),
   diffUpdate: Schema.Option(DiffUpdateState),
   local: Schema.Boolean,
+  selfPaused: Schema.Boolean,
 });
 export type Model = typeof Model.Type;
 
@@ -26,6 +27,7 @@ const toModel = (feed: FeedState): Model => ({
   tapNotice: Option.fromNullishOr(feed.tapNotice),
   diffUpdate: Option.fromNullishOr(feed.diffUpdate),
   local: feed.local,
+  selfPaused: feed.selfPaused,
 });
 
 const toFeed = (model: Model): FeedState => ({
@@ -36,6 +38,7 @@ const toFeed = (model: Model): FeedState => ({
   tapNotice: Option.getOrNull(model.tapNotice),
   diffUpdate: Option.getOrNull(model.diffUpdate),
   local: model.local,
+  selfPaused: model.selfPaused,
 });
 
 export const init = (): Model => toModel(createFeedState());
@@ -53,6 +56,7 @@ const apply = (model: Model, step: (feed: FeedState) => FeedState): Return => {
       tapNotice: () => next.tapNotice,
       diffUpdate: () => next.diffUpdate,
       local: () => next.local,
+      selfPaused: () => next.selfPaused,
     }),
   };
 };

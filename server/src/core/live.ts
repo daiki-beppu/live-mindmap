@@ -2,6 +2,7 @@
 // Node の実行環境に依存しない（ADR 0003）。
 import { Effect, Schema } from "effect";
 import { Track } from "./remark.ts";
+import { SELF_PAUSE_REASON } from "./selfPause.ts";
 import { Word } from "./words.ts";
 
 // partial（途中結果）と remark（確定結果）が共通して持つ項目。
@@ -30,6 +31,8 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literal("許可なし") }),
   // 相手のタップが 10 秒、フレーム数 1 以上のバッファを受け取らなかった。start は origin と同じ原点からの秒
   Schema.Struct({ type: Schema.Literal("tap-silent"), start: Schema.Finite }),
+  // 自分の休止の状態が変わった（Issue #1069）。start は origin と同じ原点からの秒
+  Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Boolean, reason: Schema.Literal(SELF_PAUSE_REASON), start: Schema.Finite }),
 ]);
 export type HelperEvent = typeof HelperEvent["Type"];
 

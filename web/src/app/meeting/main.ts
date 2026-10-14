@@ -13,6 +13,7 @@ import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
 import { plainKey, surfaceFolds, type KeyHandler } from "../mapSurface/parentFolds.ts";
 import * as SessionLayout from "../sessionLayout/main.ts";
 import * as SidePanel from "../sidePanel/main.ts";
+import { RequestSelfPause } from "./command.ts";
 import { Message } from "./message.ts";
 
 const Session = Schema.Struct({
@@ -41,6 +42,7 @@ const Session = Schema.Struct({
     tapToast: SessionLayout.Model.fields.tapToast,
     viewingToast: SessionLayout.Model.fields.viewingToast,
     diffUpdate: SessionLayout.Model.fields.diffUpdate,
+    selfPaused: SessionLayout.Model.fields.selfPaused,
     local: SessionLayout.Model.fields.local,
   }),
   keyList: Popover.Model,
@@ -72,7 +74,7 @@ const { foldMapSurface, foldEscapeKey, keyHandlers: surfaceKeyHandlers } = surfa
   toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
 });
 
-const { foldSessionLayout, foldViewingMode, foldIntake, foldScreenNotice, foldTapNotice, foldDiffUpdate, foldSessionMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
+const { foldSessionLayout, foldViewingMode, foldIntake, foldScreenNotice, foldTapNotice, foldSelfPause, foldDiffUpdate, foldSessionMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
   read: (model) => Option.map(model.session, (s) => layoutOf(model.feed, s)),
   write: (model, layout) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: stripLayout(layout) })) }),
   toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
@@ -97,6 +99,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
       (m: Model) => foldIntake(m, feed.intake),
       (m: Model) => foldScreenNotice(m, feed.screenNotice),
       (m: Model) => foldTapNotice(m, feed.tapNotice),
+      (m: Model) => foldSelfPause(m, feed.selfPaused),
       (m: Model) => foldDiffUpdate(m, feed.diffUpdate),
       (m: Model) => foldSessionMode(m, feed.local),
     ]);
@@ -105,6 +108,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
   if (before.intake !== feed.intake) steps.push((m) => foldIntake(m, feed.intake));
   if (!sameOption(before.screenNotice, feed.screenNotice)) steps.push((m) => foldScreenNotice(m, feed.screenNotice));
   if (!sameOption(before.tapNotice, feed.tapNotice)) steps.push((m) => foldTapNotice(m, feed.tapNotice));
+  if (before.selfPaused !== feed.selfPaused) steps.push((m) => foldSelfPause(m, feed.selfPaused));
   if (before.diffUpdate !== feed.diffUpdate) steps.push((m) => foldDiffUpdate(m, feed.diffUpdate));
   if (before.local !== feed.local) steps.push((m) => foldSessionMode(m, feed.local));
   if (Option.isSome(before.snapshot) && Option.isSome(feed.snapshot) && before.snapshot.value !== feed.snapshot.value) {
@@ -142,7 +146,9 @@ const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
   Escape: (model, modifiers) => (keyListOpen(model) ? toggledKeyList(foldKeyListClose(model)) : foldEscapeKey(model, modifiers)),
   C: plainKey((model) => ({ model: toggledCaptions(model) })),
   "?": plainKey((model) => toggledKeyList(keyListOpen(model) ? foldKeyListClose(model) : foldKeyListOpen(model))),
-  Space: inert, K: inert, J: inert, L: inert, ",": inert, ".": inert, "<": inert, ">": inert, Home: inert, End: inert, M: inert,
+  Space: inert, K: inert, J: inert, L: inert, ",": inert, ".": inert, "<": inert, ">": inert, Home: inert, End: inert,
+  // 画面に見えている状態（休止の一言が出ているか）の逆を、状態を指定する形で server へ送る。Model は変えない（切り替わるのは /ws の frame が届いたとき）
+  M: plainKey((model) => ({ model, commands: [RequestSelfPause({ paused: !Option.exists(model.session, (s) => s.sessionLayout.selfPaused) })] })),
 };
 
 const updateOwn = (model: Model, message: Message): Return =>
@@ -151,6 +157,7 @@ const updateOwn = (model: Model, message: Message): Return =>
     GotMapSurfaceMessage: ({ message: m }) => foldMapSurface(model, m),
     GotSessionLayoutMessage: ({ message: m }) => foldSessionLayout(model, m),
     GotKeyListMessage: ({ message: m }) => foldKeyList(model, m),
+    CompletedRequestSelfPause: () => ({ model }),
     PressedKey: ({ key, metaKey, ctrlKey, altKey }) => (Option.isNone(model.session) ? { model } : KEY_HANDLERS[key](model, { metaKey, ctrlKey, altKey })),
   });
 

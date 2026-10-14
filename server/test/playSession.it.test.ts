@@ -332,6 +332,21 @@ describe("play <セッションのフォルダ>", () => {
         expect(logLines(replay).filter((l) => l.type === "remark")).toHaveLength(2);
       }));
 
+    it.effect("自分の休止の行（self-paused・self-resumed）は、中身が壊れていても読み飛ばし、流し直したログにも写さない", () =>
+      Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const original = sessionFolder(root, [
+          { type: "start", title: "t" },
+          remarkLine("r1", 0, 5),
+          { type: "self-paused", reason: "手動", start: 5 },
+          { type: "self-resumed", start: "壊れている" },
+          remarkLine("r2", 6, 9),
+        ]);
+        const replay = yield* played(dependencies(join(root, "sessions")), [original]);
+        expect(logLines(replay).filter((l) => l.type === "remark")).toHaveLength(2);
+        expect(logLines(replay).filter((l) => l.type === "self-paused" || l.type === "self-resumed")).toEqual([]);
+      }));
+
     it.effect("usage つきの diff の行（今の形式）と usage の無い diff の行（古い形式）が混ざったフォルダも、同じように再生できる", () =>
       Effect.gen(function* () {
         const root = yield* temporaryDirectory;

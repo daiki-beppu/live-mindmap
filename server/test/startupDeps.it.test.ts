@@ -58,7 +58,7 @@ const controlledHelpers = () => {
     endings.push(finish({ code: 1, signal: null }));
     const stop = finish({ code: null, signal: "SIGTERM" });
     yield* Effect.addFinalizer(() => stop);
-    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]) };
+    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]), send: () => Effect.void };
   });
   const check = Effect.sync(() => ({ microphone: "authorized" as const, screenCapture: true,
     speechJa: { status: control.speechStatus, installedLocales: ["ja-JP"] },

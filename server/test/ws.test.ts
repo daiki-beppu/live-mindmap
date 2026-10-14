@@ -65,6 +65,42 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       expect(yield* Queue.take(reconnected.frames)).toEqual(ended);
     }).pipe(Effect.provide(Viewers.layer)));
 
+  // Issue #1069: 自分の休止は、休止中だけ最後の値を保持して新しい接続へ送り、false で保持を消す
+  it.effect("自分の休止は接続中へ届き、休止中の途中接続にも届く。false を送ると、その後の接続には届かない", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const first = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(first.socket));
+      yield* viewers.selfPause({ type: "self-pause", paused: true });
+      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: true });
+
+      const late = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(late.socket));
+      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: true });
+
+      yield* viewers.selfPause({ type: "self-pause", paused: false });
+      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: false });
+      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: false });
+
+      const after = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(after.socket));
+      yield* Effect.yieldNow;
+      expect(yield* Queue.size(after.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
+
+  it.effect("自分の休止の保持は取り込みの状態・一言の保持と独立している（休止を解いても他の保持は残る）", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      yield* viewers.intake(intake("running"));
+      yield* viewers.selfPause({ type: "self-pause", paused: true });
+      yield* viewers.selfPause({ type: "self-pause", paused: false });
+      const late = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(late.socket));
+      expect(yield* Queue.take(late.frames)).toEqual(intake("running"));
+      yield* Effect.yieldNow;
+      expect(yield* Queue.size(late.frames)).toBe(0);
+    }).pipe(Effect.provide(Viewers.layer)));
+
   it.effect("初回の最新全体、接続中の更新、再接続の最新全体が届く", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;

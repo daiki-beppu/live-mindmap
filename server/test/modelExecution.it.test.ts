@@ -98,7 +98,7 @@ function fakeHelpers(events: unknown[]) {
       const exited = yield* Deferred.make<HelperExitInfo>();
       const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
       yield* Effect.addFinalizer(() => stop);
-      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]) };
+      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]), send: () => Effect.void };
     }),
   }));
   return { calls, layer };

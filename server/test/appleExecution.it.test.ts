@@ -88,7 +88,7 @@ const audioHelper = () => {
     const ended = yield* Deferred.make<HelperExitInfo>();
     const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(ended, { code: null, signal: "SIGTERM" })));
     yield* Effect.addFinalizer(() => stop);
-    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(ended), stderrTail: Effect.succeed([]) };
+    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(ended), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }) }));
   return { layer, launches };
 };

@@ -18,6 +18,8 @@ const KEY_LIST = [
   { group: "キー", keys: "E", action: "右の列（変わったこと・根拠）を出す・隠す" },
   { group: "キー", keys: "C", action: "字幕を出す・隠す" },
   { group: "キー", keys: "?", action: "このキー一覧を開閉する" },
+  // Issue #1069: 会議中だけの行（見返しの M＝ミュートとは別の行）
+  { group: "キー", keys: "M", action: "自分を休止・再開" },
   { group: "マウス・トラックパッド", keys: "スクロール", action: "縦横に移動する" },
   { group: "マウス・トラックパッド", keys: "何もないところをドラッグ", action: "移動する" },
   { group: "マウス・トラックパッド", keys: "⌘/Ctrl + スクロール・ピンチ", action: "拡大・縮小" },
@@ -43,6 +45,9 @@ const AUDIO_KEY_LIST = [{ group: "キー", keys: "M", action: "ミュート・�
 
 const SCREENS: readonly Screen[] = ["live", "review", "reviewAudio"];
 const keyRows = KEY_LIST.filter((row) => row.group === "キー");
+// 見返しの一覧には、会議中だけの M の行（自分の休止）を載せない
+const liveOnlyRows = keyRows.filter((row) => row.keys === "M");
+const sharedKeyRows = keyRows.filter((row) => row.keys !== "M");
 const mouseRows = KEY_LIST.filter((row) => row.group !== "キー");
 const pair = (rows: ReadonlyArray<{ keys: string; action: string }>) => rows.map(({ keys, action }) => ({ keys, action }));
 
@@ -52,17 +57,21 @@ describe("キーの一覧: React 版から写した文言・同じ順", () => {
   });
 
   it("見返し（音声なし）: キーの行 → 見返しの行 → マウスの行。M の行は出ない", () => {
-    expect(pair(keyListRows("review"))).toEqual(pair([...keyRows, ...REVIEW_KEY_LIST, ...mouseRows]));
+    expect(pair(keyListRows("review"))).toEqual(pair([...sharedKeyRows, ...REVIEW_KEY_LIST, ...mouseRows]));
     expect(keyListRows("review").some((row) => row.keys === "M")).toBe(false);
   });
 
   it("見返し（音声つき）: キーの行 → 見返しの行 → M の行 → マウスの行", () => {
-    expect(pair(keyListRows("reviewAudio"))).toEqual(pair([...keyRows, ...REVIEW_KEY_LIST, ...AUDIO_KEY_LIST, ...mouseRows]));
+    expect(pair(keyListRows("reviewAudio"))).toEqual(pair([...sharedKeyRows, ...REVIEW_KEY_LIST, ...AUDIO_KEY_LIST, ...mouseRows]));
+    // 音声つきの見返しの M は「ミュート・戻す」だけ。会議中の M の行（自分を休止・再開）は載らない
+    expect(keyListRows("reviewAudio").filter((row) => row.keys === "M").map((row) => row.action)).toEqual(["ミュート・戻す"]);
   });
 
-  it("会議中の一覧に見返しのキー（Space・K など）は出ない", () => {
+  it("会議中の一覧に見返しのキー（Space・K など）と見返しの M（ミュート）は出ない。M は自分の休止の行だけ", () => {
     const labels = keyListRows("live").map((row) => row.keys);
-    for (const row of [...REVIEW_KEY_LIST, ...AUDIO_KEY_LIST]) expect(labels).not.toContain(row.keys);
+    for (const row of REVIEW_KEY_LIST) expect(labels).not.toContain(row.keys);
+    expect(keyListRows("live").filter((row) => row.keys === "M").map((row) => row.action)).toEqual(liveOnlyRows.map((row) => row.action));
+    expect(keyListRows("live").some((row) => row.action === "ミュート・戻す")).toBe(false);
   });
 });
 
@@ -127,10 +136,11 @@ describe("キーの表: 一覧の 1 行が受けるバインディング", () =>
     }
   });
 
-  it("画面で絞る: 会議中は見返しのキーを受けず、音声なしの見返しは M を受けない", () => {
+  it("画面で絞る: 会議中は見返しのキーを受けず（M だけは自分の休止として受ける）、音声なしの見返しは M を受けない", () => {
     const keysOf = (screen: Screen) => bindingsOf(screen).map((b) => b.keys);
     expect(keysOf("live")).not.toContain("Space");
     expect(keysOf("live")).not.toContain("J");
+    expect(keysOf("live")).toContain("M");
     expect(keysOf("review")).toContain("Space");
     expect(keysOf("review")).not.toContain("M");
     expect(keysOf("reviewAudio")).toContain("M");
