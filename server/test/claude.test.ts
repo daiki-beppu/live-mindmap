@@ -1903,7 +1903,7 @@ describe("system プロンプト: 会話の扱い", () => {
 });
 
 describe("query の options の env（5 分 TTL のキャッシュ）", () => {
-  it.effect("env に FORCE_PROMPT_CACHING_5M: \"1\" が入り、process.env の値（PATH など）も引き継がれている。開き直した query も同じ", () =>
+  it.effect("env に FORCE_PROMPT_CACHING_5M: \"1\" と CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: \"1\" が入り、process.env の値（PATH など）も引き継がれている。開き直した query も同じ", () =>
     Effect.gen(function* () {
       process.env.LIVE_MINDMAP_TEST_ENV = "引き継がれる";
       yield* Effect.addFinalizer(() => Effect.sync(() => void delete process.env.LIVE_MINDMAP_TEST_ENV));
@@ -1913,6 +1913,7 @@ describe("query の options の env（5 分 TTL のキャッシュ）", () => {
       expect(seen).toHaveLength(2);
       for (const options of seen) {
         expect(options.env?.FORCE_PROMPT_CACHING_5M).toBe("1");
+        expect(options.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
         expect(options.env?.PATH).toBe(process.env.PATH);
         expect(options.env?.LIVE_MINDMAP_TEST_ENV).toBe("引き継がれる");
       }

@@ -109,7 +109,8 @@ export const layerClaude = (model: string) => Layer.effect(
               tools: [], settingSources: [], persistSession: false, maxTurns: 4,
               mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
               outputFormat: { type: "json_schema", schema },
-              env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1" }, // env は subprocess の環境を置き換えるので process.env を引き継ぐ
+              // env は subprocess の環境を置き換えるので process.env を引き継ぐ。NONESSENTIAL_TRAFFIC はテレメトリー・エラー報告などの不要な通信を止める
+              env: { ...process.env, FORCE_PROMPT_CACHING_5M: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
             },
           }),
           catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
