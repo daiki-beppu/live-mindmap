@@ -22,7 +22,7 @@ type Item = DepItem;
 const localCli = (root: string, args: string[]) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
   execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...args], {
     timeout: 15_000,
-    env: { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_MODEL: "claude",
+    env: { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "claude",
       LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_DEPS: join(root, "deps"), LIVE_MINDMAP_PORT: "0", NO_COLOR: "1" },
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
@@ -42,7 +42,7 @@ const dependencies = (root: string, items: Item[]) => {
   const managed = Layer.succeed(ManagedDeps, ManagedDeps.of({ executable: () => Effect.die("実行ファイル取得は対象外"), check, install, update: () => Stream.die("更新は対象外"), load: load as unknown as ManagedDeps["Service"]["load"] }));
   const layer = Layer.mergeAll(
     managed, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off",
       LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" })),
     Layer.succeed(Console.Console, { ...console,
       log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
@@ -57,6 +57,16 @@ describe("サーバーを使わない再生の開始前の確かめ", () => {
     const root = yield* temporaryDeps;
     const result = yield* localCli(root, ["play", fixture]);
     expect(result).toEqual({ code: 3, stdout: "", stderr: refusal });
+    expect(existsSync(join(root, "sessions"))).toBe(false);
+  }).pipe(Effect.scoped));
+
+  it.live("Issue #983: play --judge は知らない名前を依存の確かめより前に断る", () => Effect.gen(function* () {
+    const root = yield* temporaryDeps;
+    const result = yield* localCli(root, ["play", fixture, "--judge", "missing"]);
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("判定のモデル missing が設定にありません");
+    expect(result.stderr).not.toContain("足りないもの");
     expect(existsSync(join(root, "sessions"))).toBe(false);
   }).pipe(Effect.scoped));
 

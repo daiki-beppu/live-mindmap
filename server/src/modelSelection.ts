@@ -15,6 +15,9 @@ const ModelDefinition = Schema.Union([ClaudeDefinition, CompatibleDefinition, Ch
 const ModelConfig = Schema.Struct({
   default: Schema.optionalKey(Schema.NonEmptyString),
   models: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, ModelDefinition)),
+  // 判定のモデルの設定は judgeSelection.ts が検証する。ここでは差分更新のモデルの選択が断らないよう受け流す。
+  judge: Schema.optionalKey(Schema.Unknown),
+  judges: Schema.optionalKey(Schema.Unknown),
 });
 
 export type ExecutableModel = ((typeof ClaudeDefinition.Type | typeof CompatibleDefinition.Type | typeof ChatGPTDefinition.Type) & { readonly name: string; readonly local: false })
@@ -36,15 +39,17 @@ export const configDiagnostic = (path: string, where: string, field: string, rea
   ok: false, lines: [oneLine(`設定ファイルが不正です: ${path}（「${where}」の ${field}: ${reason}）`)],
 });
 
+// Schema の誤りを「場所・項目・理由」の 1 行診断へ変える。section は定義を並べる設定のキー（models / judges）。
+export const schemaDiagnostic = (path: string, issue: SchemaIssue.Issue, section: "models" | "judges"): Refusal => {
+  const first = SchemaIssue.makeFormatterStandardSchemaV1()(issue).issues[0]!;
+  const keys = (first.path ?? []).map((segment) => Predicate.isObject(segment) ? segment.key : segment).map(String);
+  const where = keys[0] === section && keys.length > 1 ? keys.slice(0, 2).join(".") : "設定";
+  return configDiagnostic(path, where, keys.at(-1) ?? "JSON", first.message);
+};
+
 const catalog = (config: unknown, configPath: string): Catalog | Refusal => {
   const parsed = Schema.decodeUnknownResult(ModelConfig, { onExcessProperty: "error" })(config);
-  if (Result.isFailure(parsed)) {
-    const issue = SchemaIssue.makeFormatterStandardSchemaV1()(parsed.failure.issue).issues[0]!;
-    const keys = (issue.path ?? []).map((segment) => Predicate.isObject(segment) ? segment.key : segment).map(String);
-    const where = keys[0] === "models" && keys.length > 1 ? keys.slice(0, 2).join(".") : "設定";
-    const field = keys.at(-1) ?? "JSON";
-    return configDiagnostic(configPath, where, field, issue.message);
-  }
+  if (Result.isFailure(parsed)) return schemaDiagnostic(configPath, parsed.failure.issue, "models");
   const definitions = parsed.success.models ?? {};
   if (Object.hasOwn(definitions, "apple")) return configDiagnostic(configPath, "models.apple", "apple", "組み込みの apple は上書きできません");
   const configured = Object.entries(definitions).map(([name, definition]) => ({ name, ...definition }));

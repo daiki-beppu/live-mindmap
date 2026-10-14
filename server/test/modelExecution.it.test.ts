@@ -68,7 +68,7 @@ function dependencies(root: string, env: Record<string, string>) {
   const stdout: string[] = [];
   const layer = Layer.mergeAll(
     NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer, managedDeps,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: sessions, LIVE_MINDMAP_PORT: "0", ...env })),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_SESSIONS: sessions, LIVE_MINDMAP_PORT: "0", ...env })),
     Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
   );
   return { sessions, stdout, layer };

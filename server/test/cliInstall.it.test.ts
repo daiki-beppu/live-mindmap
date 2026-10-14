@@ -34,7 +34,7 @@ const cliProcess = (dir: string, port: number, rootScript: boolean, name: string
   execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "install", name] : [join(import.meta.dirname, "../src/cli.ts"), "install", name], {
     cwd: join(import.meta.dirname, "../.."),
     timeout: 15_000,
-    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
+    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
     resolve({ code: error ? error.code as number : 0, stdout, stderr });

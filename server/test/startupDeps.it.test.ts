@@ -88,11 +88,11 @@ const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingH
   return { root, sessionsDir, deps, helpers, server, request, status };
 });
 
-const cli = (root: string, port: number, args: string[], model: string) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+const cli = (root: string, port: number, args: string[], model: string, extraEnv: Record<string, string> = {}) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
   execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...args], {
     timeout: 15_000,
-    env: { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_MODEL: model,
-      LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_DEPS: join(root, "deps"), LIVE_MINDMAP_PORT: String(port), NO_COLOR: "1" },
+    env: { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: model,
+      LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_DEPS: join(root, "deps"), LIVE_MINDMAP_PORT: String(port), NO_COLOR: "1", ...extraEnv },
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
     resolve({ code: error ? error.code as number : 0, stdout, stderr });
@@ -110,6 +110,22 @@ const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typ
 });
 
 describe("ライブの開始前の確かめ", () => {
+  it.live("Issue #983: start --judge は知らない名前をサーバーへの要求より前に断り、鍵が無ければ 1 行知らせて判定なしで開始する", () => Effect.gen(function* () {
+    const r = yield* resource(false);
+    const args = ["start", "--app", "us.zoom.xos", "--no-audio"];
+    const refused = yield* cli(r.root, r.server.port, [...args, "--judge", "missing"], "claude");
+    expect(refused.code).not.toBe(0);
+    expect(refused.stdout).toBe("");
+    expect(refused.stderr).toContain("判定のモデル missing が設定にありません");
+    expect(yield* r.status).toEqual({ status: "none" });
+    expect(r.helpers.calls).toEqual([]);
+
+    const noKey = yield* cli(r.root, r.server.port, [...args, "--judge", "jev"], "claude", { TYPESAFE_AI_API_KEY: "" });
+    expect(noKey.code).toBe(0);
+    expect(noKey.stderr).toBe("判定のモデル jev の鍵がありません（環境変数 TYPESAFE_AI_API_KEY）。判定なしで始めます\n");
+    expect(yield* r.status).toMatchObject({ status: "running" });
+  }));
+
   it.live("710-2: speech-ja 不足は CLI start を副作用前に exit 3 で止め、導入後は同じサーバーで開始できる", () => Effect.gen(function* () {
     const r = yield* resource(false);
     r.helpers.control.speechStatus = "supported";

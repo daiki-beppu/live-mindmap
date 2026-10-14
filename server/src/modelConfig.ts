@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Config, Effect, FileSystem, Option, Schema } from "effect";
+import { judgeCandidate, selectJudge, type JudgeFlags } from "./judgeSelection.ts";
 import { configDiagnostic, listModels, modelCandidate, selectModel, type ModelFlags } from "./modelSelection.ts";
 import { fileReason } from "./truthFile.ts";
 import { AppleIntelligence } from "./appleIntelligence.ts";
@@ -12,6 +13,7 @@ const loadModelConfig = Effect.fn("loadModelConfig")(function* () {
   const home = yield* Config.String("HOME").pipe(Config.withDefault(homedir()));
   const configPath = Option.getOrElse(override, () => join(home, ".live-mindmap", "config.json"));
   const envModel = Option.getOrUndefined(yield* Config.option(Config.String("LIVE_MINDMAP_MODEL")));
+  const envJudge = Option.getOrUndefined(yield* Config.option(Config.String("LIVE_MINDMAP_JUDGE")));
   const fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(configPath).pipe(
     Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.void),
@@ -20,7 +22,7 @@ const loadModelConfig = Effect.fn("loadModelConfig")(function* () {
   const config: unknown = text === undefined ? {} : yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
     Effect.mapError(() => reject(configDiagnostic(configPath, "設定", "JSON", "JSON として読めません").lines)),
   );
-  return { config, configPath, envModel, macState: {} };
+  return { config, configPath, envModel, envJudge, macState: {} };
 });
 const resolveCandidate = Effect.fn("resolveCandidate")(function* (flags: ModelFlags) {
   const input = { ...yield* loadModelConfig(), flags };
@@ -45,4 +47,16 @@ export const configuredModels = Effect.fn("configuredModels")(function* () {
   const macState = yield* (yield* AppleIntelligence).availability.pipe(Effect.mapError((error) => new ModelRefused({ message: error.message })));
   const result = listModels({ ...input, macState });
   return result.ok ? result.models : yield* reject(result.lines);
+});
+
+// 判定のモデルは差分更新のモデルとは独立に、開始時に一度だけ決める。local は差分更新のモデルの選択結果から渡す。
+export const resolveJudge = Effect.fn("resolveJudge")(function* (flags: JudgeFlags, local: boolean) {
+  const { config, configPath, envJudge } = yield* loadModelConfig();
+  const input = { flags, envJudge, config, configPath, local };
+  const candidate = judgeCandidate(input);
+  if (!candidate.ok) return yield* reject(candidate.lines);
+  const apiKeyEnv = candidate.judge?.apiKeyEnv;
+  const key = apiKeyEnv === undefined ? undefined : Option.getOrUndefined(yield* Config.option(Config.String(apiKeyEnv)));
+  const result = selectJudge({ ...input, apiKeys: apiKeyEnv === undefined ? {} : { [apiKeyEnv]: key } });
+  return result.ok ? result : yield* reject(result.lines);
 });

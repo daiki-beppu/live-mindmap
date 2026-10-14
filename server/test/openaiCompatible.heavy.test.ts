@@ -26,7 +26,7 @@ const runProcess = (root: string, port: number, argv: string[]) => Effect.tryPro
     const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["LIVE_MINDMAP_MODEL", "SYNTHETIC_PROCESS_KEY"].includes(name)));
     execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...argv], {
       encoding: "utf8", timeout: 10_000,
-      env: { ...env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: String(port), NO_COLOR: "1" },
+      env: { ...env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: String(port), NO_COLOR: "1" },
     }, (error, stdout, stderr) => {
       if (error && (error.killed || typeof error.code !== "number")) return reject(error);
       resolve({ code: error ? error.code as number : 0, stdout, stderr });

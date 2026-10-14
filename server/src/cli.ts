@@ -17,7 +17,7 @@ import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
-import { configuredModels, ModelRefused, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
+import { configuredModels, ModelRefused, resolveJudge, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
@@ -377,6 +377,14 @@ const isDirectory = Effect.fn("isDirectory")(function* (path: string) {
   return (yield* fs.exists(path)) && (yield* fs.stat(path)).type === "Directory";
 }, orFileFailed);
 
+const judgeFlag = Flag.String("judge").pipe(
+  Flag.withDescription("判定のモデルの名前、または off（判定を使わない）。環境変数 LIVE_MINDMAP_JUDGE・設定の judge より優先。開始時に決め、途中で変えない"),
+  Flag.optional,
+);
+const resolveJudgeNotice = Effect.fn("resolveJudgeNotice")(function* (judge: Option.Option<string>, selected: { readonly local: boolean }) {
+  const { notice } = yield* resolveJudge({ judge: Option.getOrUndefined(judge) }, selected.local);
+  yield* writeWarnings(notice === undefined ? [] : [notice]);
+});
 const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した差分更新モデルの名前（環境変数・設定の既定値より優先）"), Flag.optional);
 const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（Apple Intelligence の子プロセスだけを使い、会議の中身を Mac の外に出さない。--model は apple だけ組み合わせられる）"), Flag.withDefault(false));
 
@@ -408,6 +416,7 @@ const play = Command.make(
   "play",
   {
     model: modelFlag,
+    judge: judgeFlag,
     local: localFlag,
     transcript: Argument.String("source").pipe(
       Argument.withDescription(
@@ -430,8 +439,9 @@ const play = Command.make(
     ),
   },
   Effect.fn("play")(
-    function* ({ realtime, screen, transcript, model, local }) {
+    function* ({ realtime, screen, transcript, model, judge, local }) {
       const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
+      yield* resolveJudgeNotice(judge, selected);
       const warnings = yield* requireStartupDeps("play", selected.route);
       const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
       yield* writeWarnings(warnings);
@@ -502,6 +512,7 @@ const start = Command.make(
   "start",
   {
     model: modelFlag,
+    judge: judgeFlag,
     local: localFlag,
     app: Flag.String("app").pipe(Flag.withDescription("会議アプリの bundle id（例 us.zoom.xos）")),
     title: Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとセッションの開始時刻）"), Flag.optional),
@@ -518,12 +529,13 @@ const start = Command.make(
       Flag.optional,
     ),
   },
-  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, local, vocab }) {
+  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, judge, local, vocab }) {
     const vocabulary = Option.isSome(vocab)
       ? (yield* readTextFile(vocab.value).pipe(Effect.mapError((e) => new CommandFailed({ message: `${vocab.value} が読めません: ${fileReason(e)}` }))))
           .split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "")
       : [];
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
+    yield* resolveJudgeNotice(judge, selected);
     const port = yield* portConfig;
     let headers: Record<string, string> | undefined;
     if (selected.route === "openai-compatible" || selected.route === "chatgpt") {

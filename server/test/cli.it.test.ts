@@ -82,7 +82,7 @@ function dependencies(sessionsDir: string, port = "0", modelEnv: Record<string, 
       launch: Effect.die("このテストでは推論子を起動できません"),
     })),
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({
-      HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"),
+      HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off",
       LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: port, ...modelEnv,
     })),
     Layer.succeed(Console.Console, consoleService),

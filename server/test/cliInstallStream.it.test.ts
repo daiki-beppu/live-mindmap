@@ -11,7 +11,7 @@ const cli = join(import.meta.dirname, "../src/cli.ts");
 const cliProcess = (dir: string, port: number, args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
   execFile(process.execPath, [cli, ...args], {
     timeout: 10_000,
-    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: dir, LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
+    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: dir, LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
     resolve({ code: error ? error.code as number : 0, stdout, stderr });

@@ -145,6 +145,12 @@ pnpm cli play <文字起こし.transcript.json> --model apple --realtime
 
 `eval` は別の入口です。`--model <名前>` を明示したときだけ元ログをそのモデルで再生し、新しいランを評価します。指定なしなら、環境変数や `default` に関係なく保存済み結果を集計します。`eval` に `--local` はありません。評価の手順は [bench README](server/bench/README.md) を参照してください。
 
+### 判定のモデルを選ぶ
+
+判定のモデルは差分更新のモデルとは別に、`start` と `play` の開始時に一度だけ選びます（会議中は変えません）。選択順は、`--judge <名前>` → 環境変数 `LIVE_MINDMAP_JUDGE` → 設定ファイルの `judge` → 組み込みの `jev` です。`--judge off` で判定を使いません。設定の `judges` に `{ "route": "system-one", "apiKeyEnv": "<鍵の環境変数名>", "timeoutMs": 1000 }` の形で名前を足せます（`timeoutMs` は省略すると 1 秒）。
+
+`jev` の鍵は環境変数 `TYPESAFE_AI_API_KEY` です。選んだ判定のモデルの鍵が無いときは、標準エラーに 1 行知らせて判定なしで始めます。ローカルモードでは、`--judge`・`LIVE_MINDMAP_JUDGE`・`judge` でクラウドの判定のモデルを明示すると開始を断り、何も明示しなければ判定なしで始めます。
+
 ### Claude の認証
 
 `claude` を選ぶと Claude（Agent SDK 経由）を呼びます。自分の Anthropic API キーを環境変数で渡してください。費用は API キーの持ち主に請求されます。

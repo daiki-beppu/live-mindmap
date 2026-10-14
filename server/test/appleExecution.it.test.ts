@@ -33,7 +33,7 @@ const temporaryDirectory = Effect.acquireRelease(
   (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
 );
 const environment = (root: string, port: number) => ConfigProvider.layer(ConfigProvider.fromEnvRecord({
-  HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"),
+  HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off",
   LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: String(port),
 }));
 const appleProcess = Effect.fnUntraced(function* () {
@@ -155,6 +155,24 @@ describe("apple を使う開始・再生の配線", () => {
     expect(process.requests.length).toBeGreaterThan(1);
     expect(process.requests.every((request) => request.alive)).toBe(true);
     expect(process.state).toMatchObject({ opened: 1, closed: 1 });
+  }));
+
+  it.live.each([
+    ["play", ["play", join(import.meta.dirname, "fixtures/short.transcript.json")]],
+    ["start", ["start", "--app", "us.zoom.xos", "--no-audio"]],
+  ] as const)("Issue #983: %s --model apple で --judge jev を明示するとローカルモードの拒否になり、開始の副作用がない", ([, args]) => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const process = yield* appleProcess();
+    const helper = audioHelper();
+    const stderr: string[] = [];
+    const layer = Layer.mergeAll(readyManagedDeps, NodeServices.layer, NodeHttpClient.layerUndici, process.layer, helper.layer, fakeExportServices(), fakeScreenJpeg().layer,
+      environment(root, 0), Layer.succeed(Console.Console, { ...console, error: (...a: unknown[]) => { stderr.push(a.map(String).join(" ")); } }));
+    const result = yield* Effect.result(runCli([...args, "--model", "apple", "--judge", "jev"]).pipe(Effect.provide(layer)));
+    expect(result._tag).toBe("Failure");
+    expect(JSON.stringify(result)).toContain("ローカルモードでは判定のモデル jev を選べません");
+    expect(helper.launches).toEqual([]);
+    expect(process.state).toMatchObject({ opened: 0, closed: 0 });
+    expect(existsSync(join(root, "sessions"))).toBe(false);
   }));
 
   it.live("eval --model apple は再生の Scope で子を所有し、最後の更新と書き出しの後に閉じる", () => Effect.gen(function* () {
