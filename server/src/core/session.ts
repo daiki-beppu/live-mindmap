@@ -235,19 +235,24 @@ const freshRemarksOf = (remarks: readonly Remark[], ids: readonly string[], inva
   return Effect.succeed(fresh);
 };
 
+// diff が反映した分の発言を、復元の状態の known・processed へ足す。失敗した回は渡した発言をすべて反映済みとして扱う
+const consumeFresh = (replay: Replay, fresh: readonly Remark[], e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.Effect<readonly Remark[], InvalidLogEvent> => {
+  const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
+  if (count > fresh.length) return Effect.fail(invalid("diff の反映数が入力の発言数を超えています"));
+  const consumed = fresh.slice(0, count);
+  for (const r of consumed) {
+    replay.known.add(r.id);
+    if (hasContent(r.text)) replay.processed.push(r);
+  }
+  return Effect.succeed(consumed);
+};
+
 // diff の行を 1 回分、復元の状態へ反映する。判定の順は、start が無い → ログに無い発言 → 反映数の超過 → screenCount の超過
 const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Replay, InvalidLogEvent> {
   const { map } = replay;
   if (!map) return yield* invalid("ログの diff より前に start がありません");
   const fresh = yield* freshRemarksOf(replay.remarks, e.input.fresh, invalid);
-  const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
-  if (count > fresh.length) return yield* invalid("diff の反映数が入力の発言数を超えています");
-  const consumed = fresh.slice(0, count);
-  const { known, processed } = replay;
-  for (const r of consumed) {
-    known.add(r.id);
-    if (hasContent(r.text)) processed.push(r);
-  }
+  const consumed = yield* consumeFresh(replay, fresh, e, invalid);
   const selectedBefore = e.input.screenCount ?? 0;
   if (selectedBefore > replay.received) return yield* invalid(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${replay.received} より大きい`);
   const cutoff = Math.max(...fresh.map((r) => r.end));
@@ -259,7 +264,7 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
   const unsent = fresh.length ? replay.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff || (h.image !== null && h.image === carried)) : replay.unsent;
   const attached = [...replay.attached, ...added].slice(-LAST_SCREENS);
   const stamp = stampOf(replay.history, consumed);
-  const applied = applyOps(map, e.ops, known, stamp);
+  const applied = applyOps(map, e.ops, replay.known, stamp);
   const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
   return { ...replay, map: applied.map, unsent, attached, carried: fresh.length ? carried : replay.carried, anchor, history, previousResponse: e.error === undefined ? previousResponseOf(applied) : undefined };
 });
