@@ -1095,9 +1095,9 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの区間（Issue #1
     const { updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 6, text: "あした", duplicate: false, wordTimes: [span(0, 3, 5, 6)] });
+      yield* sink.partial({ track: "相手", start: 5, end: 7.5, text: "あした", duplicate: false, wordTimes: [span(0, 3, 5, 6)] });
       yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false, wordTimes: [span(0, 3, 5, 6), span(3, 1, 6, 6.5), span(4, 2, 6.5, 8)] });
-      yield* TestClock.adjust(SETTLE_QUIET_MS);
+      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
       yield* settle;
 
       const lines = remarkLines(dir);

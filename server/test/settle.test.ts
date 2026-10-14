@@ -1435,36 +1435,37 @@ describe("wordTimes の運搬（Issue #1019）", () => {
   describe("途中結果から作る発言に wordTimes が付く", () => {
     it("due: 最後の途中結果の wordTimes が付く。更新のたびに置き換わり、古い区間は残らない", () => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")), 0);
-      s.partial(partialT("相手", 10, 13, "あいう", timesOf("あいう")), 400);
-      s.partial(partialT("相手", 10, 15, "あいうえお", timesOf("あいうえお")), 900);
+      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")));
+      s.partial(partialT("相手", 10, 11.5, "あいう", timesOf("あいう")));
+      s.partial(partialT("相手", 10, 12.25, "あいうえお", timesOf("あいうえお")));
 
-      const out = s.due(900 + T);
-      expect(brief(out)).toEqual([["相手", 10, 15, "あいうえお"]]);
+      const out = tick(s, quiet(12.25));
+      expect(brief(out)).toEqual([["相手", 10, 12.25, "あいうえお"]]);
       expect(timesOfRemark(out[0])).toEqual(timesOf("あいうえお"));
     });
 
     it("wordTimes の無い途中結果で更新したら、先の wordTimes は残らない（text と同じ更新）", () => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")), 0);
-      s.partial(partialT("相手", 10, 13, "あいう"), 400);
+      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")));
+      s.partial(partialT("相手", 10, 11.5, "あいう"));
 
-      const out = s.due(400 + T);
-      expect(brief(out)).toEqual([["相手", 10, 13, "あいう"]]);
+      const out = tick(s, quiet(11.5));
+      expect(brief(out)).toEqual([["相手", 10, 11.5, "あいう"]]);
       expect(out[0]).not.toHaveProperty("wordTimes");
     });
 
     it("wordTimes の無い途中結果だけから作る発言には wordTimes のキーが無い", () => {
       const s = createRemarkSettler();
-      s.partial(partial("相手", 10, 11, "あ"), 0);
+      s.partial(partial("相手", 10, 11, "あ"));
 
-      expect(s.due(T)[0]).not.toHaveProperty("wordTimes");
+      expect(tick(s, quiet(11))[0]).not.toHaveProperty("wordTimes");
     });
 
-    it("final（途中結果が出た後に届いた確定結果の分岐）: 出す未出の発話に、その途中結果の wordTimes が付く", () => {
+    it("final（途中結果の期限を越えた end の確定結果の分岐）: 出す未出の発話に、その途中結果の wordTimes が付く", () => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 12, "あいう", timesOf("あいう")), 0);
-      const out = s.final(finalT("相手", 10, 12, "別の確定", timesOf("別の確定", 20)), T + 1);
+      s.partial(partialT("相手", 10, 12, "あいう", timesOf("あいう")));
+      // 確定結果の end が途中結果の期限（13000）に届いている: 確定結果は捨て、途中結果からの発言を出す
+      const out = s.final(finalT("相手", 10, 13, "別の確定", timesOf("別の確定", 20)));
 
       expect(brief(out)).toEqual([["相手", 10, 12, "あいう"]]);
       expect(timesOfRemark(out[0])).toEqual(timesOf("あいう"));
@@ -1472,11 +1473,11 @@ describe("wordTimes の運搬（Issue #1019）", () => {
 
     it("drain: まだ出ていない発話に、最後の途中結果の wordTimes が付く", () => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")), 0);
-      s.partial(partialT("相手", 10, 13, "あいう", timesOf("あいう")), 100);
+      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")));
+      s.partial(partialT("相手", 10, 11.5, "あいう", timesOf("あいう")));
 
       const out = s.drain();
-      expect(brief(out)).toEqual([["相手", 10, 13, "あいう"]]);
+      expect(brief(out)).toEqual([["相手", 10, 11.5, "あいう"]]);
       expect(timesOfRemark(out[0])).toEqual(timesOf("あいう"));
     });
   });
@@ -1484,7 +1485,7 @@ describe("wordTimes の運搬（Issue #1019）", () => {
   describe("確定結果の wordTimes", () => {
     it("途中結果が無いとき、確定結果の wordTimes はそのまま出る", () => {
       const s = createRemarkSettler();
-      const out = s.final(finalT("相手", 10, 12, "こんにちは", timesOf("こんにちは")), 0);
+      const out = s.final(finalT("相手", 10, 12, "こんにちは", timesOf("こんにちは")));
 
       expect(timesOfRemark(out[0])).toEqual(timesOf("こんにちは"));
     });
@@ -1492,12 +1493,12 @@ describe("wordTimes の運搬（Issue #1019）", () => {
     it("wordTimes の無い確定結果には wordTimes のキーが付かない", () => {
       const s = createRemarkSettler();
 
-      expect(s.final(finalT("相手", 10, 12, "こんにちは"), 0)[0]).not.toHaveProperty("wordTimes");
+      expect(s.final(finalT("相手", 10, 12, "こんにちは"))[0]).not.toHaveProperty("wordTimes");
     });
 
     it("自分の確定結果は関所を通らず、wordTimes もそのまま出る", () => {
       const s = createRemarkSettler();
-      const out = s.final(finalT("自分", 0, 2, "はい", timesOf("はい", 0)), 0);
+      const out = s.final(finalT("自分", 0, 2, "はい", timesOf("はい", 0)));
 
       expect(timesOfRemark(out[0])).toEqual(timesOf("はい", 0));
     });
@@ -1505,18 +1506,17 @@ describe("wordTimes の運搬（Issue #1019）", () => {
 
   // 文の終わりで先に出す経路と、同じ発話の更新で頭に挿入が入る経路でも、本文・words と同じ位置で切る
   describe("文の終わりで切った発言・頭の挿入を切った発言の wordTimes", () => {
-    const S = SETTLE_SENTENCE_MS;
     const texts = (rs: SettledRemark[]) => rs.map((r) => r.text);
 
     it("文の終わりまでを出すとき、その本文に収まる区間だけが元の秒で付き、後で出す残りは切った後の位置になる", () => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 15, "あいう。え", timesOf("あいう。え")), 0);
+      s.partial(partialT("相手", 10, 15, "あいう。え", timesOf("あいう。え")));
 
-      const first = s.due(S);
+      const first = tick(s, 15000 + S);
       expect(texts(first)).toEqual(["あいう。"]);
       expect(timesOfRemark(first[0])).toEqual(timesOf("あいう。"));
 
-      const rest = s.due(T);
+      const rest = tick(s, 15000 + T);
       expect(texts(rest)).toEqual(["え"]);
       expect(timesOfRemark(rest[0])).toEqual([{ location: 0, length: 1, start: 14, end: 15 }]);
     });
@@ -1527,21 +1527,21 @@ describe("wordTimes の運搬（Issue #1019）", () => {
         { location: 0, length: 2, start: 10, end: 11 },
         { location: 2, length: 3, start: 11, end: 13 },
       ];
-      s.partial(partialT("相手", 10, 15, "あいう。え", times), 0);
+      s.partial(partialT("相手", 10, 15, "あいう。え", times));
 
-      const out = s.due(S);
+      const out = tick(s, 15000 + S);
       expect(texts(out)).toEqual(["あいう。"]);
       expect(timesOfRemark(out[0])).toEqual([times[0]]);
     });
 
     it("頭の挿入を切るとき、wordTimes も words と同じ位置で切り、残る区間の位置が切った後の本文に合い、秒は元のまま", () => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 13, "はい。", timesOf("はい。")), 0);
-      expect(texts(s.due(S))).toEqual(["はい。"]);
+      s.partial(partialT("相手", 10, 13, "はい。", timesOf("はい。")));
+      expect(texts(tick(s, 13000 + S))).toEqual(["はい。"]);
       const text = "あ、はい、続き。";
-      s.partial(partialT("相手", 10, 18, text, timesOf(text)), 60);
+      s.partial(partialT("相手", 10, 18, text, timesOf(text)));
 
-      const out = [...s.due(110), ...s.due(60 + T), ...s.drain()];
+      const out = [...tick(s, 18000 + S), ...tick(s, 18000 + T), ...s.drain()];
       expect(out.map((r) => r.text)).toEqual(["続き。"]);
       expect(timesOfRemark(out[0])).toEqual([
         { location: 0, length: 1, start: 15, end: 16 },
@@ -1555,10 +1555,10 @@ describe("wordTimes の運搬（Issue #1019）", () => {
   describe("関所が頭を切った発言の wordTimes", () => {
     const secondRemark = (first: string, second: string, secondTimes: TestWordTime[] | undefined, secondWords?: TestWord[]) => {
       const s = createRemarkSettler();
-      s.partial(partialT("相手", 10, 12, first, timesOf(first)), 0);
-      expect(brief(s.due(T))).toEqual([["相手", 10, 12, first]]);
-      s.partial({ ...partialT("相手", 10, 15, second, secondTimes), ...(secondWords === undefined ? {} : { words: secondWords }) }, T + 1);
-      const out = s.due(T + 1 + T);
+      s.partial(partialT("相手", 10, 12, first, timesOf(first)));
+      expect(brief(tick(s, quiet(12)))).toEqual([["相手", 10, 12, first]]);
+      s.partial({ ...partialT("相手", 10, 15, second, secondTimes), ...(secondWords === undefined ? {} : { words: secondWords }) });
+      const out = tick(s, quiet(15));
       expect(out).toHaveLength(1);
       return out[0]!;
     };
