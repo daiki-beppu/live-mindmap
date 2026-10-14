@@ -27,7 +27,10 @@ test("会議中: start で届いた発言が字幕とノードになり、stop �
 
   const [dir] = await cliRun(runInfo, "start", "--app", APP);
 
-  await expect(browser.locator(".captions__line").filter({ hasText: lastCaption.text })).toBeVisible(WAIT);
+  // 途中結果は差分更新に渡らず、字幕に残る。確定した発言は呼び出し中でなければすぐ差分更新に渡り、反映すると字幕から消える
+  // （偽の updater はすぐ返すので、字幕に見えるうちには捉えられない）。確定した発言は、ノード（文言は発言そのまま）になったことを確かめる
+  const lastShown = lastCaption.type === "partial" ? browser.locator(".captions__line") : browser.locator(".map-node__text");
+  await expect(lastShown.filter({ hasText: lastCaption.text })).toBeVisible(WAIT);
   const nodes = screen.getByRole("button", { pressed: false }).filter({ has: browser.locator(".map-node__text") });
   await expect(nodes.first()).toBeVisible(WAIT);
 

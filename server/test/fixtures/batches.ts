@@ -30,6 +30,14 @@ export function gatedScripted(...script: BatchStep[]) {
   return { calls, update, replies };
 }
 
+// held を、ログから戻した「まだ渡していない発言」として持つセッションを開く。復元は差分更新も log も呼ばない。held が空なら新しく開く
+const openHolding = (title: string, held: readonly Remark[], events: LogEvent[]) => {
+  if (held.length === 0) return makeSession({ title });
+  const log: LogEvent[] = [{ type: "start", title }, ...held.map((remark): LogEvent => ({ type: "remark", remark }))];
+  events.push(...log);
+  return restoreSession(log);
+};
+
 // batches の各組を、それぞれ 1 回の差分更新の呼び出しに渡す。台本の i 番目の手が、i 番目の組の呼び出しの応答になる。
 // 組 k の発言は、組 k-1 の呼び出し中に届け、その呼び出しが終わった時点でまとめて渡る。最初の組だけは、最後の 1 件より前の発言を
 // 復元したたまりとして持たせたセッションで開き、最後の 1 件を push して 1 回目の呼び出しにまとめる（呼び出し中になる前の発言は 1 件ずつ呼ばれるため）。
@@ -49,16 +57,7 @@ export const playBatches = Effect.fn("playBatches")(function* (
   const layer = Layer.merge(updaterLayer(update), collectLog(events));
   const first = batches[0];
   if (!first || first.length === 0) throw new Error("最初の組には発言が要る");
-  const held = first.slice(0, -1);
-  let session: Session;
-  if (held.length === 0) {
-    session = yield* makeSession({ title }).pipe(Effect.provide(layer));
-  } else {
-    // 最後の 1 件より前の発言を、ログから戻した「まだ渡していない発言」として持つ。復元は差分更新も log も呼ばない
-    const log: LogEvent[] = [{ type: "start", title }, ...held.map((remark): LogEvent => ({ type: "remark", remark }))];
-    session = yield* restoreSession(log).pipe(Effect.provide(layer));
-    events.push(...log);
-  }
+  const session = yield* openHolding(title, first.slice(0, -1), events).pipe(Effect.provide(layer));
   yield* session.push(first.at(-1)!);
   for (const [k] of batches.entries()) {
     const following = batches[k + 1];

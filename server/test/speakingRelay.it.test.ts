@@ -10,11 +10,19 @@ import { TestClock } from "effect/testing";
 import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type SpeakingFrame, type Track } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
-import { settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
+import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 import { remark, textsOf } from "./fixtures/speakingRelay.ts";
 
 // いま話している文字（SpeakingFrame）をブラウザへ送る層のうち、本物のファイルシステムで記録するセッションとつなぐ部分。
 // 期待値は書き換え前のこのファイルと同じにする（order.md:49「期待値は変えない」）。
+
+// 反映の後に本物のファイルシステムへログを書いてから次の呼び出しが始まる。回数で区切る settleUntil では、CI の負荷で書き終わる前に尽きる。
+// 呼び出しが起きることだけを待つので、実時間（5 秒）で区切る。TestClock は進めない
+const settleUntil = (condition: () => boolean) =>
+  Effect.gen(function* () {
+    const deadline = Date.now() + 5_000;
+    while (!condition() && Date.now() < deadline) yield* Effect.yieldNow;
+  });
 
 // 同じ Session・同じ relay・同じ記録つきセッションの配線（openRecordedSession の onDiff）の上で、変化の前後を続けて観測する
 describe("仮の文字（未反映の発言 + 途中結果）が、反映で消える範囲", () => {
