@@ -1,7 +1,11 @@
 // eval の 3 指標（本文の書き換え・1 ノードの書き換えの最多・話し中の兄弟の最多）の数え方。偽の差分の列で確かめる。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 import { type Dropped, type LogEvent, type Op } from "../src/core/index.ts";
 import { logMetrics } from "../src/core/logMetrics.ts";
+
+// 成功するログの指標を同期で取り出す
+const metricsOf = (events: readonly LogEvent[]) => Effect.runSync(logMetrics(events));
 
 type Step = { ops: Op[]; error?: string };
 
@@ -32,7 +36,7 @@ const close = (node: string): Op => ({ op: "close", node });
 
 describe("logMetrics: 本文の書き換え", () => {
   it("本文が変わった update だけを書き換えと数える。根拠だけ・同じ本文・状態だけ・捨てられた update は数えない", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "取り組み"), add("t2", "t1", "要点", "辞書を育てる"), add("t3", "t1", "案", "週次で見直す")] },
       {
         ops: [
@@ -50,7 +54,7 @@ describe("logMetrics: 本文の書き換え", () => {
   });
 
   it("本文が実際に変わった update は 1 回と数える。同じ応答で add した ref への update も数える", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "取り組み"), add("t2", "t1", "要点", "辞書を育てる")] },
       { ops: [update("n2", ["r2"], { text: "辞書を毎週育てる" })] },
       { ops: [add("t9", "n1", "要点", "初版"), update("t9", ["r3"], { text: "改訂版" })] },
@@ -60,7 +64,7 @@ describe("logMetrics: 本文の書き換え", () => {
   });
 
   it("1 つのノードへの書き換えの最多は、ノードごとの回数の最大。全体の回数とは別に出る", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "取り組み"), add("t2", "t1", "要点", "a"), add("t3", "t1", "要点", "b")] },
       { ops: [update("n2", ["r2"], { text: "a1" }), update("n3", ["r2"], { text: "b1" })] },
       { ops: [update("n2", ["r3"], { text: "a2" })] },
@@ -72,7 +76,7 @@ describe("logMetrics: 本文の書き換え", () => {
   });
 
   it("書き換えの数は、diff の行の ops の数ではなくログを順に当て直した結果で決まる（error の diff も ops を当てる）", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "取り組み"), add("t2", "t1", "要点", "a")] },
       { ops: [update("n2", ["r2"], { text: "a1" })], error: "途中で失敗" },
     ]));
@@ -83,23 +87,27 @@ describe("logMetrics: 本文の書き換え", () => {
 
 describe("logMetrics: 発言の数", () => {
   it("remark の行の数（重複の印つき・中身なしも含む）", () => {
-    expect(logMetrics(log([{ ops: [add("t1", "root", "議題", "取り組み")] }], 2)).remarks).toBe(3);
+    expect(metricsOf(log([{ ops: [add("t1", "root", "議題", "取り組み")] }], 2)).remarks).toBe(3);
   });
 
   it("start だけのログは、すべて 0", () => {
-    expect(logMetrics([{ type: "start", title: "空" }])).toEqual({ remarks: 0, rewrites: 0, maxRewritesPerNode: 0, maxOpenSiblings: 0 });
+    expect(metricsOf([{ type: "start", title: "空" }])).toEqual({ remarks: 0, rewrites: 0, maxRewritesPerNode: 0, maxOpenSiblings: 0 });
   });
 
-  it("diff より前に start がないログは、復元と同じ理由で失敗する", () => {
-    const events = log([{ ops: [] }]).slice(1);
+  it.effect("diff より前に start がないログは、その diff の位置（0 始まり）の InvalidLogEvent で失敗し、理由に start の欠落を示す", () =>
+    Effect.gen(function* () {
+      const events = log([{ ops: [] }]).slice(1);
 
-    expect(() => logMetrics(events)).toThrow("start");
-  });
+      const error = yield* Effect.flip(logMetrics(events));
+
+      expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 1 });
+      expect(error.reason).toContain("start がありません");
+    }));
 });
 
 describe("logMetrics: 話し中の兄弟の最多", () => {
   it("ルート直下も数える。種別が違う兄弟も合わせて数える", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "A"), add("t2", "root", "議題", "B"), add("t3", "root", "議題", "C")] },
       {
         ops: [
@@ -113,7 +121,7 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
   });
 
   it("済みのノードは兄弟に数えない", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "A"), add("t2", "root", "議題", "B")] },
       { ops: [] },
       { ops: [close("n1")] }, // 直前の応答で根拠が足されたのは 1 つ前の round なので閉じられる
@@ -125,7 +133,7 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
   });
 
   it("途中の時点の最大を取る。後で閉じても最大は下がらない", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "A"), add("t2", "root", "議題", "B"), add("t3", "root", "議題", "C"), add("t4", "root", "議題", "D")] },
       { ops: [] },
       { ops: [close("n1"), close("n2"), close("n3"), close("n4")] },
@@ -135,7 +143,7 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
   });
 
   it("兄弟の数はすべての親について数え、最大の親の値を取る", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "A"), add("t2", "root", "議題", "B")] },
       { ops: [add("a1", "n1", "要点", "p1"), add("b1", "n2", "要点", "q1"), add("b2", "n2", "要点", "q2"), add("b3", "n2", "要点", "q3")] },
     ]));
@@ -144,7 +152,7 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
   });
 
   it("1 つの応答の途中の状態は数えない（反映ごとのマップで数える）", () => {
-    const m = logMetrics(log([
+    const m = metricsOf(log([
       { ops: [add("t1", "root", "議題", "A"), add("t2", "n1", "要点", "p")] },
       {
         ops: [
@@ -169,10 +177,10 @@ describe("logMetrics: 復元と同じ反映の番号（round）の規則", () =>
     ];
 
     // n1 が開いたままなので n1・n2・n3 の 3 つ
-    expect(logMetrics(log(base)).maxOpenSiblings).toBe(3);
+    expect(metricsOf(log(base)).maxOpenSiblings).toBe(3);
 
     // 失敗が無ければ round は 3 になり、close は通って n2・n3 の 2 つ（最大は閉じる前の 2）
     const ok = [base[0]!, { ops: [] }, base[2]!, base[3]!];
-    expect(logMetrics(log(ok)).maxOpenSiblings).toBe(2);
+    expect(metricsOf(log(ok)).maxOpenSiblings).toBe(2);
   });
 });
