@@ -1,11 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { DateTime, Effect, Layer } from "effect";
+import { DateTime, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { exportFiles, hasContent, makeSession, QUIET_MS, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
+import { exportFiles, hasContent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
+import { playBatches } from "./fixtures/batches.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
 // セッションは Scope を要る Effect（makeSession）。差分更新・ログは偽物の Service を Layer で渡す。
-// QUIET_MS の待ちは TestClock で進める（実時間では待たない）。
+// 差分更新は、呼び出し中でなければ発言 1 件ですぐ呼ぶ。時間に依る呼び出しは無いので、「呼ばれない」ことは TestClock を進めて確かめる。
 
 let seq = 0;
 const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
@@ -38,6 +39,8 @@ function manual() {
 // 時間を進めた後に、起こるはずの呼び出しが走り切るまで譲る。「呼ばれない」ことの確認の前にも使う
 const settle = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
 
+const freshIds = (input: DiffInput) => input.fresh.map((u) => u.id);
+
 const open = (update: (input: DiffInput) => Effect.Effect<DiffOutput, UpdateFailure>, events: LogEvent[] = []) =>
   makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
 
@@ -48,17 +51,12 @@ const setup = Effect.fn("setup")(function* (...script: Op[][]) {
   return { session, calls, events };
 });
 
-// 台本の 1 手ごとに発言を 2 つ流し、差分更新を 1 回ずつ起こす。流した発言の ID を手ごとに返す。
+// 台本の 1 手ごとに発言を 2 つ流し、差分更新を 1 回ずつ起こす（2 つは前の呼び出し中に届き、まとめて 1 回で渡る）。流した発言の ID を手ごとに返す。
 const play = Effect.fn("play")(function* (...script: (Op[] | ((ids: string[][]) => Op[]))[]) {
   const pairs = script.map(() => [remark("発言"), remark("発言")] as const);
   const ids = pairs.map((p) => p.map((u) => u.id));
   const resolved = script.map((s) => (typeof s === "function" ? s(ids) : s));
-  const { session, calls, events } = yield* setup(...resolved);
-  for (const [a, b] of pairs) {
-    yield* session.push(a);
-    yield* session.push(b);
-    yield* session.idle;
-  }
+  const { session, calls, events } = yield* playBatches(pairs, resolved);
   const snap = yield* session.snapshot;
   const byText = (text: string) => snap.nodes.find((n) => n.text === text);
   const dropped = events.flatMap((e) => (e.type === "diff" ? e.dropped : []));
@@ -232,7 +230,6 @@ describe("ログ", () => {
       );
       for (const text of ["一つ目", "二つ目"]) {
         yield* session.push(remark(text));
-        yield* session.push(remark(text));
         yield* session.idle;
       }
 
@@ -246,7 +243,6 @@ describe("ログ", () => {
     Effect.gen(function* () {
       const events: LogEvent[] = [];
       const session = yield* open(() => Effect.fail({ _tag: "ClaudeResultFailed", message: "timeout" }), events);
-      yield* session.push(remark("発言"));
       yield* session.push(remark("発言"));
       yield* session.idle;
 
@@ -280,7 +276,6 @@ describe("ログ", () => {
         events,
       );
       yield* session.push(remark("発言"));
-      yield* session.push(remark("発言"));
       yield* session.idle;
 
       const call = (events.find((e) => e.type === "diff") as { call?: Call } | undefined)?.call;
@@ -307,7 +302,6 @@ describe("ログ", () => {
           ),
           events,
         );
-        yield* session.push(remark("発言"));
         yield* session.push(remark("発言"));
         yield* session.idle;
 
@@ -342,7 +336,6 @@ describe("ログ", () => {
       const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(layer));
       yield* session.pushScreen({ start: 1, image: { id: "s1", bytes: new TextEncoder().encode("bytes:s1") } });
       yield* session.push(remark("発言"));
-      yield* session.push(remark("発言"));
       yield* session.idle;
 
       const diff = events.find((e) => e.type === "diff") as { input: { screens?: unknown[] }; call?: Call } | undefined;
@@ -356,7 +349,6 @@ describe("ログ", () => {
     Effect.gen(function* () {
       const events: LogEvent[] = [];
       const session = yield* open(() => Effect.succeed({ ops: [] }), events);
-      yield* session.push(remark("発言"));
       yield* session.push(remark("発言"));
       yield* session.idle;
       expect(events.some((e) => e.type === "diff" && e.call !== undefined)).toBe(true);
@@ -374,26 +366,38 @@ describe("ログ", () => {
 });
 
 describe("差分更新の呼び出し", () => {
-  it.effect("発言が 2 つたまると差分更新を呼び、返った追加をマップに入れる", () =>
+  it.effect("呼び出し中でなければ、発言 1 件の push で、時間を進めなくても差分更新を呼び、返った追加をマップに入れる", () =>
     Effect.gen(function* () {
-      const a = remark("今日は採用の話をします"), b = remark("まず面接の回数から");
+      const a = remark("今日は採用の話をします");
       const { session, calls } = yield* setup([
-        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id, b.id] },
+        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] },
       ]);
 
       yield* session.push(a);
-      expect(calls).toHaveLength(0);
-      yield* session.push(b);
+      expect(calls).toHaveLength(1); // idle も TestClock も進めていない
+      expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id]);
       yield* session.idle;
 
       expect(calls).toHaveLength(1);
-      expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id, b.id]);
       const snap = yield* session.snapshot;
       const topic = snap.nodes.find((n) => n.text === "採用")!;
-      expect(topic).toMatchObject({ kind: "議題", parent: "root", evidence: [a.id, b.id] });
+      expect(topic).toMatchObject({ kind: "議題", parent: "root", evidence: [a.id] });
     }));
 
-  it.effect("重複の印が付いた発言は数えず入力にも入れないが、ログには残す", () =>
+  it.effect("呼び出しが終わっていれば、次の発言も 1 件ですぐ呼ぶ。入力の recent は処理済みの発言", () =>
+    Effect.gen(function* () {
+      const [a, b] = [remark("一"), remark("二")];
+      const { session, calls } = yield* setup();
+
+      yield* session.push(a);
+      yield* session.idle;
+      yield* session.push(b);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]!.fresh.map((u) => u.id)).toEqual([b.id]);
+      expect(calls[1]!.recent.map((u) => u.id)).toEqual([a.id]);
+    }));
+
+  it.effect("重複の印が付いた発言は呼び出しを起こさず入力にも入れないが、ログには残す", () =>
     Effect.gen(function* () {
       const a = remark("予算は来週決めます", { track: "相手" });
       const echo = remark("予算は来週決めます", { track: "自分", duplicate: true });
@@ -401,19 +405,37 @@ describe("差分更新の呼び出し", () => {
       const { session, calls, events } = yield* setup();
 
       yield* session.push(a);
+      yield* session.idle;
+      expect(calls).toHaveLength(1);
       yield* session.push(echo);
       yield* session.idle;
-      expect(calls).toHaveLength(0);
+      expect(calls).toHaveLength(1);
 
       yield* session.push(b);
       yield* session.idle;
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id, b.id]);
+      expect(calls).toHaveLength(2);
+      expect(calls.flatMap((c) => c.fresh.map((u) => u.id))).toEqual([a.id, b.id]);
       const logged = events.flatMap((e) => (e.type === "remark" ? [e.remark] : []));
       expect(logged).toContainEqual(echo);
     }));
 
-  it.effect("呼び出し中は次を呼ばず、その間にたまった発言を次の 1 回にまとめる", () =>
+  it.effect("呼び出し中に届いた重複の印つきの発言は、終わった後の呼び出しに混ざらない", () =>
+    Effect.gen(function* () {
+      const { calls, update } = manual();
+      const session = yield* open(update);
+      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
+
+      yield* session.push(a);
+      yield* session.push(b);
+      yield* session.push(remark("反響", { duplicate: true }));
+      yield* session.push(c);
+      calls[0]!.reply();
+      yield* settleUntil(() => calls.length === 2);
+      expect(calls).toHaveLength(2);
+      expect(freshIds(calls[1]!.input)).toEqual([b.id, c.id]);
+    }));
+
+  it.effect("呼び出し中は次を呼ばず、その間にたまった発言を、届いた順に次の 1 回へまとめる。呼び出しは重ならない", () =>
     Effect.gen(function* () {
       const { calls, update } = manual();
       const session = yield* open(update);
@@ -421,16 +443,37 @@ describe("差分更新の呼び出し", () => {
 
       for (const r of [a!, b!, c!, d!, e!]) yield* session.push(r);
       expect(calls).toHaveLength(1);
+      expect(freshIds(calls[0]!.input)).toEqual([a!.id]);
 
       calls[0]!.reply();
       yield* settleUntil(() => calls.length === 2);
       expect(calls).toHaveLength(2);
-      expect(calls[1]!.input.fresh.map((u) => u.id)).toEqual([c!.id, d!.id, e!.id]);
-      expect(calls[1]!.input.recent.map((u) => u.id)).toEqual([a!.id, b!.id]);
+      expect(freshIds(calls[1]!.input)).toEqual([b!.id, c!.id, d!.id, e!.id]);
+      expect(calls[1]!.input.recent.map((u) => u.id)).toEqual([a!.id]);
 
       calls[1]!.reply();
       yield* session.idle;
       expect(calls).toHaveLength(2);
+    }));
+
+  it.effect("呼び出しが続けて終わるとき、呼び出しは 1 つずつで、前の返事より先に次の呼び出しは始まらない", () =>
+    Effect.gen(function* () {
+      const { calls, update } = manual();
+      const session = yield* open(update);
+      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
+
+      yield* session.push(a);
+      yield* session.push(b);
+      yield* settle;
+      expect(calls).toHaveLength(1);
+      calls[0]!.reply();
+      yield* settleUntil(() => calls.length === 2);
+      yield* session.push(c); // 2 つ目の呼び出し中に届く
+      yield* settle;
+      expect(calls).toHaveLength(2);
+      calls[1]!.reply();
+      yield* settleUntil(() => calls.length === 3);
+      expect(calls.map((c2) => freshIds(c2.input))).toEqual([[a.id], [b.id], [c.id]]);
     }));
 
   it.effect("差分更新が失敗しても、理由をログに残して次の呼び出しへ進む", () =>
@@ -440,8 +483,10 @@ describe("差分更新の呼び出し", () => {
       const update = (): Effect.Effect<DiffOutput, UpdateFailure> =>
         n++ === 0 ? Effect.fail({ _tag: "UpdateFailed", message: "timeout" }) : Effect.succeed({ ops: [{ op: "noop", reason: "雑談" }] });
       const session = yield* open(update, events);
-      for (const t of ["一", "二", "三", "四"]) yield* session.push(remark(t));
-      yield* session.idle;
+      for (const t of ["一", "二"]) {
+        yield* session.push(remark(t));
+        yield* session.idle;
+      }
 
       const diffs = events.filter((e) => e.type === "diff");
       expect(diffs).toHaveLength(2);
@@ -461,7 +506,6 @@ describe("差分更新の呼び出し", () => {
       const session = yield* open(() => steps[n++]!, events);
       for (let i = 0; i < 3; i++) {
         yield* session.push(remark("発言"));
-        yield* session.push(remark("発言"));
         yield* session.idle;
       }
 
@@ -480,20 +524,25 @@ describe("差分更新の呼び出し", () => {
       expect(calls[2]!.recent.map((u) => u.id)).toEqual([ids[0]![1], ids[1]![0], ids[1]![1]]);
     }));
 
-  it.effect("1 つだけ残った発言は、終わりの flush で流す", () =>
+  it.effect("呼び出し中の flush は、続けて起きるたまった発言の呼び出しが終わるまで待つ。残りが無ければ何も呼ばない", () =>
     Effect.gen(function* () {
-      const [a, b, c] = ["一", "二", "三"].map((t) => remark(t));
-      const { session, calls } = yield* setup();
+      const { calls, update } = manual();
+      const session = yield* open(update);
+      const [a, b] = [remark("一"), remark("二")];
 
-      yield* session.push(a!);
-      yield* session.push(b!);
-      yield* session.push(c!);
-      yield* session.idle;
-      expect(calls).toHaveLength(1);
-
-      yield* session.flush;
+      yield* session.push(a);
+      yield* session.push(b);
+      let flushed = false;
+      const flushing = yield* session.flush.pipe(Effect.andThen(Effect.sync(() => { flushed = true; })), Effect.forkChild);
+      calls[0]!.reply();
+      yield* settleUntil(() => calls.length === 2);
+      yield* settle;
+      expect(flushed).toBe(false); // b の呼び出しの返事を待っている
+      calls[1]!.reply();
+      yield* Fiber.join(flushing);
+      expect(flushed).toBe(true);
       expect(calls).toHaveLength(2);
-      expect(calls[1]!.fresh.map((u) => u.id)).toEqual([c!.id]);
+
       yield* session.flush;
       expect(calls).toHaveLength(2);
     }));
@@ -536,14 +585,16 @@ describe("中身のない発言の扱い", () => {
       const { session, calls, events } = yield* setup();
 
       yield* session.push(a);
+      yield* session.idle;
       yield* session.push(filler);
       yield* session.idle;
-      expect(calls).toHaveLength(0); // フィラーは 2 つ目として数えない
+      expect(calls).toHaveLength(1); // フィラーでは呼ばない
 
       yield* session.push(b);
       yield* session.idle;
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id, b.id]);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]!.fresh.map((u) => u.id)).toEqual([b.id]);
+      expect(calls[1]!.recent.map((u) => u.id)).toEqual([a.id]);
 
       expect(events).toContainEqual({ type: "remark", remark: filler, noContent: true });
       expect(events).toContainEqual({ type: "remark", remark: a });
@@ -551,231 +602,142 @@ describe("中身のない発言の扱い", () => {
       expect(marked).toHaveLength(1);
     }));
 
-  it.effect("中身のない発言だけでは差分更新を呼ばない", () =>
+  it.effect("中身のない発言だけでは差分更新を呼ばない。時間が経っても呼ばない", () =>
     Effect.gen(function* () {
       const { session, calls } = yield* setup();
       yield* session.push(remark("あ", { track: "自分" }));
       yield* session.push(remark("えー"));
       yield* session.push(remark("うん"));
       yield* session.idle;
-      yield* TestClock.adjust(QUIET_MS * 2); // 待ちも仕掛けていないので、時間が経っても呼ばない
+      yield* TestClock.adjust("1 hour");
       yield* session.idle;
       expect(calls).toHaveLength(0);
     }));
 
-  it.effect("中身のない発言は待ち時間の起点にならない（最後の中身のある発言から数える）", () =>
+  it.effect("呼び出し中に届いた中身のない発言は、終わった後の呼び出しに混ざらず、それだけでは次の呼び出しも起こさない", () =>
     Effect.gen(function* () {
-      const { session, calls } = yield* setup();
-      const a = remark("今日は採用の話をします");
+      const { calls, update } = manual();
+      const session = yield* open(update);
+      const [a, b] = [remark("今日は採用の話をします"), remark("担当は佐藤さんで")];
 
       yield* session.push(a);
-      yield* TestClock.adjust(QUIET_MS - 500);
-      yield* session.push(remark("あ", { track: "自分" })); // フィラーは待ちを仕掛け直さない
-      yield* TestClock.adjust(500); // a から QUIET_MS。フィラーから数えていたら、まだ呼ばれない
-      yield* settleUntil(() => calls.length === 1);
+      yield* session.push(remark("あ", { track: "自分" }));
+      calls[0]!.reply();
+      yield* session.idle;
+      yield* settle;
+      expect(calls).toHaveLength(1); // フィラーだけが届いていたので、終わっても次は呼ばない
 
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.fresh.map((u) => u.id)).toEqual([a.id]);
+      yield* session.push(remark("えー"));
+      yield* session.push(b);
+      yield* session.push(remark("うん"));
+      expect(calls).toHaveLength(2);
+      expect(freshIds(calls[1]!.input)).toEqual([b.id]);
     }));
 });
 
-describe("差分更新の呼び出し: 発言が 1 つでも一定時間で呼ぶ", () => {
-  const ids = (input: DiffInput) => input.fresh.map((u) => u.id);
-
-  it("定数 QUIET_MS は 1.5 秒（ミリ秒）", () => {
-    expect(QUIET_MS).toBe(1500);
-  });
-
-  it.effect("発言が 1 つだけたまり、最後の発言から QUIET_MS 経っても新しい発言が来なければ、その 1 つで差分更新を呼ぶ", () =>
+describe("差分更新の呼び出し: 時間では呼ばない", () => {
+  it.effect("呼び出しが終わり何もたまっていなければ、時間をいくら進めても呼び出しは増えない", () =>
     Effect.gen(function* () {
       const { calls, update } = manual();
       const session = yield* open(update);
       const a = remark("今日は採用の話をします");
 
       yield* session.push(a);
-      yield* TestClock.adjust(QUIET_MS - 1);
+      calls[0]!.reply();
+      yield* session.idle;
+      yield* TestClock.adjust("1 hour");
       yield* settle;
-      expect(calls).toHaveLength(0); // 待ちが切れる前は呼ばない
-
-      yield* TestClock.adjust(1);
-      yield* settleUntil(() => calls.length === 1);
       expect(calls).toHaveLength(1);
-      expect(ids(calls[0]!.input)).toEqual([a.id]);
+      expect(freshIds(calls[0]!.input)).toEqual([a.id]);
     }));
 
-  it.effect("QUIET_MS 以内に 2 つ目が来れば、2 つまとめて 1 回だけ呼ぶ。最初の発言の待ちが後で切れても呼びは増えない", () =>
+  it.effect("呼び出し中にたまった発言は、時間が経っても呼ばず、呼び出しが終わった時点ではじめて 1 回で渡す", () =>
+    Effect.gen(function* () {
+      const { calls, update } = manual();
+      const session = yield* open(update);
+      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
+
+      yield* session.push(a);
+      yield* session.push(b);
+      yield* session.push(c);
+      yield* TestClock.adjust("1 hour");
+      yield* settle;
+      expect(calls).toHaveLength(1);
+
+      calls[0]!.reply();
+      yield* settleUntil(() => calls.length === 2);
+      expect(calls).toHaveLength(2);
+      expect(freshIds(calls[1]!.input)).toEqual([b.id, c.id]);
+      expect(calls[1]!.input.recent.map((u) => u.id)).toEqual([a.id]);
+
+      calls[1]!.reply();
+      yield* session.idle;
+      yield* TestClock.adjust("1 hour");
+      yield* settle;
+      expect(calls).toHaveLength(2);
+    }));
+
+  it.effect("呼び出しが終わった時点で 1 件だけたまっていても、待たずにすぐ呼ぶ", () =>
     Effect.gen(function* () {
       const { calls, update } = manual();
       const session = yield* open(update);
       const [a, b] = [remark("一"), remark("二")];
 
       yield* session.push(a);
-      yield* TestClock.adjust(QUIET_MS - 100);
-      expect(calls).toHaveLength(0);
-      yield* session.push(b);
-      expect(calls).toHaveLength(1);
-      expect(ids(calls[0]!.input)).toEqual([a.id, b.id]);
-
-      calls[0]!.reply();
-      yield* session.idle;
-      yield* TestClock.adjust(QUIET_MS * 2); // a の待ちが切れる時刻を過ぎても、たまっている発言が無いので何も起きない
-      yield* settle;
-      expect(calls).toHaveLength(1);
-    }));
-
-  it.effect("古い待ちが切れる時刻を過ぎても、後から来た発言をその時点で流さない（待ちは最後の発言から数え、古い待ちは取り消される）", () =>
-    Effect.gen(function* () {
-      const { calls, update } = manual();
-      const session = yield* open(update);
-      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
-
-      yield* session.push(a); // t=0。a の待ちは t=QUIET_MS に切れるはずだった
-      yield* session.push(b); // 2 つたまったので呼ぶ。a の待ちはここで取り消される
-      calls[0]!.reply();
-      yield* session.idle;
-      yield* TestClock.adjust(QUIET_MS - 500); // t=1000
-      yield* session.push(c); // c の待ちは t=2500 に切れる
-      yield* TestClock.adjust(600); // t=1600。a の待ちが生きていれば t=1500 で c を流している
-      yield* settle;
-      expect(calls).toHaveLength(1);
-
-      yield* TestClock.adjust(899); // t=2499。c の待ちの直前
-      yield* settle;
-      expect(calls).toHaveLength(1);
-      yield* TestClock.adjust(1); // t=2500: c の待ちが切れて、はじめて流す
-      yield* settleUntil(() => calls.length === 2);
-      expect(calls).toHaveLength(2);
-      expect(ids(calls[1]!.input)).toEqual([c.id]);
-    }));
-
-  it.effect("重複の印つきの発言は待ちを張り直さない（最後の中身のある発言から QUIET_MS 経ったときに呼ぶ）", () =>
-    Effect.gen(function* () {
-      const { calls, update } = manual();
-      const session = yield* open(update);
-      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
-
-      yield* session.push(a);
       yield* session.push(b);
       calls[0]!.reply();
-      yield* session.idle; // a・b は反映済み
-      yield* session.push(c); // t=0 から QUIET_MS
-      yield* TestClock.adjust(QUIET_MS - 500);
-      yield* settle;
-      expect(calls).toHaveLength(1);
-      yield* session.push(remark("反響", { duplicate: true })); // 重複の印つきは待ちを張り直さない
-      yield* TestClock.adjust(500); // c から QUIET_MS。反響から数えていたら、まだ呼ばれない
-      yield* settleUntil(() => calls.length === 2);
-      expect(ids(calls[1]!.input)).toEqual([c.id]);
+      yield* settleUntil(() => calls.length === 2); // 時間は進めない
+      expect(freshIds(calls[1]!.input)).toEqual([b.id]);
     }));
 
-  it.effect("呼び出し中は、待ちが切れても呼ばない。終わった時点で、たまった発言を次の 1 回にまとめて呼ぶ", () =>
-    Effect.gen(function* () {
-      const { calls, update } = manual();
-      const session = yield* open(update);
-      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
-
-      yield* session.push(a);
-      yield* session.push(b);
-      expect(calls).toHaveLength(1); // a, b が呼び出し中
-      yield* session.push(c);
-      yield* TestClock.adjust(QUIET_MS); // c の待ちも切れる。それでも呼び出し中は呼ばない
-      yield* settle;
-      expect(calls).toHaveLength(1);
-
-      calls[0]!.reply();
-      yield* settleUntil(() => calls.length === 2);
-      expect(calls).toHaveLength(2);
-      expect(ids(calls[1]!.input)).toEqual([c.id]);
-      expect(calls[1]!.input.recent.map((u) => u.id)).toEqual([a.id, b.id]);
-
-      calls[1]!.reply();
-      yield* session.idle;
-      yield* TestClock.adjust(QUIET_MS);
-      yield* settle;
-      expect(calls).toHaveLength(2);
-    }));
-
-  it.effect("呼び出し中にたまった発言が 2 つ以上あれば、待ちが切れていなくても、終わった時点で 1 回にまとめて呼ぶ", () =>
-    Effect.gen(function* () {
-      const { calls, update } = manual();
-      const session = yield* open(update);
-      const [a, b, c, d] = [remark("一"), remark("二"), remark("三"), remark("四")];
-
-      for (const r of [a, b, c, d]) yield* session.push(r);
-      expect(calls).toHaveLength(1);
-      calls[0]!.reply();
-      yield* settleUntil(() => calls.length === 2);
-      expect(calls).toHaveLength(2);
-      expect(ids(calls[1]!.input)).toEqual([c.id, d.id]);
-    }));
-
-  it.effect("呼び出しが終わった時点で 1 つだけたまっていて、その待ちがまだ切れていなければ、待ちが切れるまで呼ばない", () =>
-    Effect.gen(function* () {
-      const { calls, update } = manual();
-      const session = yield* open(update);
-      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
-
-      yield* session.push(a);
-      yield* session.push(b);
-      yield* session.push(c);
-      calls[0]!.reply();
-      yield* session.idle;
-      expect(calls).toHaveLength(1);
-
-      yield* TestClock.adjust(QUIET_MS);
-      yield* settleUntil(() => calls.length === 2);
-      expect(calls).toHaveLength(2);
-      expect(ids(calls[1]!.input)).toEqual([c.id]);
-    }));
-
-  it.effect("時間を進めなければ、1 つだけ残った発言は待たずに呼ぶことはなく、flush まで呼ばない", () =>
-    Effect.gen(function* () {
-      const { calls, update } = manual();
-      const session = yield* open(update);
-
-      yield* session.push(remark("一"));
-      yield* settle;
-      expect(calls).toHaveLength(0);
-      yield* TestClock.adjust(QUIET_MS - 1);
-      yield* settle;
-      expect(calls).toHaveLength(0);
-    }));
-
-  it.effect("flush は待ちが切れるのを待たず、1 つだけ残った発言を今すぐ流す", () =>
+  it.effect("呼び出しの合間に時間が経っても、後から来た発言は届いた時点で呼ぶ（古い時刻に引きずられない）", () =>
     Effect.gen(function* () {
       const { session, calls } = yield* setup();
-      const a = remark("一");
+      const [a, b, c] = [remark("一"), remark("二"), remark("三")];
 
       yield* session.push(a);
-      expect(calls).toHaveLength(0);
-      yield* session.flush; // 時間は進めない
+      yield* session.idle;
+      yield* TestClock.adjust("1 hour");
+      yield* session.push(b);
+      expect(calls).toHaveLength(2);
+      yield* TestClock.adjust(1);
+      yield* session.push(c);
+      expect(calls).toHaveLength(3);
+      expect(calls.map((c2) => c2.fresh.map((u) => u.id))).toEqual([[a.id], [b.id], [c.id]]);
+    }));
+
+  it.effect("flush は、呼び出し中でなくて残りも無ければ何も呼ばず、時間が経っても後から呼び出しを起こさない", () =>
+    Effect.gen(function* () {
+      const { session, calls } = yield* setup();
+
+      yield* session.push(remark("一"));
+      yield* session.flush;
       expect(calls).toHaveLength(1);
-      expect(ids(calls[0]!)).toEqual([a.id]);
-      yield* TestClock.adjust(QUIET_MS * 2); // 取り消された待ちが後から二重に呼ばない
+      yield* TestClock.adjust("1 hour");
       yield* settle;
       expect(calls).toHaveLength(1);
     }));
 });
 
 describe("セッションの Scope（Fiber の後始末）", () => {
-  it.effect("Scope を閉じると、QUIET_MS の待ちの Fiber は中断され、時間が経っても差分更新を呼ばない", () =>
+  it.effect("Scope を閉じると、呼び出し中の差分更新の Fiber も中断され、後から返った結果をログに書かない", () =>
     Effect.gen(function* () {
-      const { calls, update } = scripted();
+      const { calls, update } = manual();
       const events: LogEvent[] = [];
       yield* Effect.scoped(
         Effect.gen(function* () {
           const session = yield* open(update, events);
           yield* session.push(remark("一"));
+          expect(calls).toHaveLength(1);
         }),
       );
 
-      yield* TestClock.adjust(QUIET_MS * 3);
+      calls[0]!.reply(); // 閉じた後の返事は届かない
       yield* settle;
-      expect(calls).toHaveLength(0);
       expect(events.some((e) => e.type === "diff")).toBe(false);
     }));
 
-  it.effect("Scope を閉じると、呼び出し中の差分更新の Fiber も中断され、後から返った結果をログに書かない", () =>
+  it.effect("Scope を閉じた後は、呼び出し中にたまっていた発言も、時間が経っても差分更新に渡らない", () =>
     Effect.gen(function* () {
       const { calls, update } = manual();
       const events: LogEvent[] = [];
@@ -788,8 +750,10 @@ describe("セッションの Scope（Fiber の後始末）", () => {
         }),
       );
 
-      calls[0]!.reply(); // 閉じた後の返事は届かない
+      calls[0]!.reply();
+      yield* TestClock.adjust("1 hour");
       yield* settle;
+      expect(calls).toHaveLength(1);
       expect(events.some((e) => e.type === "diff")).toBe(false);
     }));
 });
@@ -805,65 +769,56 @@ describe("変わったこと（反映の履歴）", () => {
     };
   }
 
-  // 発言を 2 つ流して反映を 1 回起こす。end は呼び出し側が決める。
-  const reflect = Effect.fn("reflect")(function* (session: Session, ends: [number, number]) {
-    const rs = ends.map((end) => remark("発言", { end, start: end - 1 }));
-    for (const r of rs) yield* session.push(r);
-    yield* session.idle;
-    return rs.map((r) => r.id);
-  });
+  // 2 つの発言を、1 回の呼び出しにまとめて渡す組にする。end は呼び出し側が決める。
+  const group = (ends: [number, number]) => ends.map((end) => remark("発言", { end, start: end - 1 }));
 
   it.effect("同じセッションで 反映 → 反映 → 何もしない反映 → 失敗した反映 を続けると、round が進み、記録が積み上がる", () =>
     Effect.gen(function* () {
       const events: LogEvent[] = [];
       const [a, b] = [remark("一"), remark("二")];
-      const update = stepped(
-        [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }],
-        [{ op: "update", node: "n1", text: "中途採用", evidence: [b.id] }],
-        [{ op: "noop", reason: "雑談" }],
-        failure("timeout"),
-        [{ op: "add", ref: "t2", parent: "n1", kind: "論点", text: "面接は何回か", evidence: [b.id] }],
-      );
-      const session = yield* open(update, events);
-
-      expect(yield* session.snapshot).toMatchObject({ round: 0, changes: [] });
-
       // 反映 1。新しい発言の end の最大値が at になる（最後の発言の end ではない）
-      yield* session.push({ ...a, start: 1, end: 50 });
-      yield* session.push({ ...b, start: 2, end: 30 });
-      yield* session.idle;
-      expect((yield* session.snapshot).round).toBe(1);
-      expect((yield* session.snapshot).changes).toEqual([{ round: 1, at: 50, change: "追加", node: "n1", kind: "議題", text: "採用" }]);
+      const first = [{ ...a, start: 1, end: 50 }, { ...b, start: 2, end: 30 }];
+      const snaps: Snapshot[] = [];
+      yield* playBatches(
+        [first, group([60, 70]), group([80, 90]), group([100, 110]), group([120, 125])],
+        [
+          [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }],
+          [{ op: "update", node: "n1", text: "中途採用", evidence: [b.id] }],
+          [{ op: "noop", reason: "雑談" }],
+          failure("timeout"),
+          [{ op: "add", ref: "t2", parent: "n1", kind: "論点", text: "面接は何回か", evidence: [b.id] }],
+        ],
+        {
+          events,
+          onApplied: (k, session) =>
+            Effect.gen(function* () {
+              snaps.push(yield* session.snapshot);
+              if (k === 3) expect(events.at(-1)).toMatchObject({ type: "diff", error: expect.stringContaining("timeout") });
+            }),
+        },
+      );
 
-      // 反映 2
-      yield* reflect(session, [60, 70]);
-      expect((yield* session.snapshot).round).toBe(2);
-      expect((yield* session.snapshot).changes).toEqual([
+      expect(snaps[0]).toMatchObject({ round: 1, changes: [{ round: 1, at: 50, change: "追加", node: "n1", kind: "議題", text: "採用" }] });
+      expect(snaps[1]!.round).toBe(2);
+      expect(snaps[1]!.changes).toEqual([
         { round: 1, at: 50, change: "追加", node: "n1", kind: "議題", text: "採用" },
         { round: 2, at: 70, change: "更新", node: "n1", kind: "議題", text: "中途採用" },
       ]);
-
       // 何もしない反映でも round は進む（前回の赤い枠を消すため）。記録は増えない
-      yield* reflect(session, [80, 90]);
-      expect((yield* session.snapshot).round).toBe(3);
-      expect((yield* session.snapshot).changes).toHaveLength(2);
-
+      expect(snaps[2]!.round).toBe(3);
+      expect(snaps[2]!.changes).toHaveLength(2);
       // 失敗した反映では round も記録も進まない
-      yield* reflect(session, [100, 110]);
-      expect(events.at(-1)).toMatchObject({ type: "diff", error: expect.stringContaining("timeout") });
-      expect((yield* session.snapshot).round).toBe(3);
-      expect((yield* session.snapshot).changes).toHaveLength(2);
-
+      expect(snaps[3]!.round).toBe(3);
+      expect(snaps[3]!.changes).toHaveLength(2);
       // 失敗の後の反映は、次の round として積み上がる
-      yield* reflect(session, [120, 125]);
-      expect((yield* session.snapshot).round).toBe(4);
-      expect((yield* session.snapshot).changes.at(-1)).toEqual({ round: 4, at: 125, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" });
-      expect((yield* session.snapshot).changes).toHaveLength(3);
+      expect(snaps[4]!.round).toBe(4);
+      expect(snaps[4]!.changes.at(-1)).toEqual({ round: 4, at: 125, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" });
+      expect(snaps[4]!.changes).toHaveLength(3);
     }));
 
   it.effect("SessionLog.write が呼ばれた時点のスナップショットに、その反映の round と記録がすでに載っている（送信より先に記録する）", () =>
     Effect.gen(function* () {
-      const [a, b, c, d] = [remark("一"), remark("二"), remark("三"), remark("四")];
+      const [a, b] = [remark("一"), remark("二")];
       const update = stepped(
         [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }],
         failure("timeout"),
@@ -879,8 +834,10 @@ describe("変わったこと（反映の履歴）", () => {
       );
       const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
       holder.session = session;
-      for (const r of [a, b, c, d]) yield* session.push(r);
-      yield* session.idle;
+      for (const r of [a, b]) {
+        yield* session.push(r);
+        yield* session.idle;
+      }
 
       expect(seen).toEqual([
         { failed: false, round: 1, changes: 1 },
@@ -890,11 +847,10 @@ describe("変わったこと（反映の履歴）", () => {
 
   it.effect("snapshot が返す changes は、あとから書き換えてもセッションの記録に影響しない", () =>
     Effect.gen(function* () {
-      const [a, b] = [remark("一"), remark("二")];
+      const a = remark("一");
       const update = stepped([{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a.id] }]);
       const session = yield* open(update);
       yield* session.push(a);
-      yield* session.push(b);
       yield* session.idle;
 
       (yield* session.snapshot).changes.length = 0;
@@ -909,10 +865,7 @@ describe("根拠の発言（snapshot の remarks）", () => {
     Effect.gen(function* () {
       const a = remark("採用の話をします", { track: "自分", start: 1.5, end: 9.5 });
       const b = remark("面接を何回にするか", { track: "相手", start: 10, end: 19 });
-      const { session } = yield* setup([add("t1", "採用", [a.id, b.id])]);
-      yield* session.push(a);
-      yield* session.push(b);
-      yield* session.idle;
+      const { session } = yield* playBatches([[a, b]], [[add("t1", "採用", [a.id, b.id])]]);
 
       const snap = yield* session.snapshot;
       const node = snap.nodes.find((n) => n.text === "採用")!;
@@ -928,9 +881,8 @@ describe("根拠の発言（snapshot の remarks）", () => {
       const echo = remark("反響", { duplicate: true });
       const b = remark("二つ目");
       const c = remark("三つ目（反映待ち）");
-      const { session } = yield* setup([add("t1", "採用", [b.id, a.id])]);
-      for (const r of [a, echo, b, c]) yield* session.push(r);
-      yield* session.idle;
+      const { session } = yield* playBatches([[a, echo, b]], [[add("t1", "採用", [b.id, a.id])]]);
+      yield* session.push(c); // 呼び出し中（反映待ち）の発言は、根拠になっていないので含めない
 
       expect((yield* session.snapshot).remarks.map((r) => r.id)).toEqual([a.id, b.id]);
     }));
@@ -938,10 +890,7 @@ describe("根拠の発言（snapshot の remarks）", () => {
   it.effect("複数のノードが同じ発言を根拠にしても、発言は 1 度だけ含める", () =>
     Effect.gen(function* () {
       const [a, b] = [remark("一"), remark("二")];
-      const { session } = yield* setup([add("t1", "採用", [a.id]), add("t2", "評価", [a.id, b.id])]);
-      yield* session.push(a);
-      yield* session.push(b);
-      yield* session.idle;
+      const { session } = yield* playBatches([[a, b]], [[add("t1", "採用", [a.id]), add("t2", "評価", [a.id, b.id])]]);
 
       expect((yield* session.snapshot).remarks.map((r) => r.id)).toEqual([a.id, b.id]);
     }));
@@ -949,15 +898,13 @@ describe("根拠の発言（snapshot の remarks）", () => {
   it.effect("同じセッションで update が根拠を足すと、その発言が次の snapshot から含まれる", () =>
     Effect.gen(function* () {
       const [a, b, c, d] = [remark("一"), remark("二"), remark("三"), remark("四")];
-      const { session } = yield* setup([add("t1", "採用", [a.id])], [{ op: "update", node: "n1", evidence: [c.id] }]);
-      yield* session.push(a);
-      yield* session.push(b);
-      yield* session.idle;
-      expect((yield* session.snapshot).remarks.map((r) => r.id)).toEqual([a.id]);
-
-      yield* session.push(c);
-      yield* session.push(d);
-      yield* session.idle;
+      const seen: string[][] = [];
+      const { session } = yield* playBatches(
+        [[a, b], [c, d]],
+        [[add("t1", "採用", [a.id])], [{ op: "update", node: "n1", evidence: [c.id] }]],
+        { onApplied: (_, s) => Effect.map(s.snapshot, (snap) => { seen.push(snap.remarks.map((r) => r.id)); }) },
+      );
+      expect(seen).toEqual([[a.id], [a.id, c.id]]);
       expect((yield* session.snapshot).remarks.map((r) => r.id)).toEqual([a.id, c.id]);
     }));
 
@@ -970,10 +917,7 @@ describe("根拠の発言（snapshot の remarks）", () => {
   it.effect("返した remarks を書き換えても、セッションの記録にも次の snapshot にも影響しない", () =>
     Effect.gen(function* () {
       const [a, b] = [remark("元の本文"), remark("二")];
-      const { session } = yield* setup([add("t1", "採用", [a.id])]);
-      yield* session.push(a);
-      yield* session.push(b);
-      yield* session.idle;
+      const { session } = yield* playBatches([[a, b]], [[add("t1", "採用", [a.id])]]);
 
       const first = yield* session.snapshot;
       first.remarks[0]!.text = "書き換え";
@@ -991,16 +935,22 @@ describe("unreflectedRemarks（反映前の発言）", () => {
       const [a, b, dup, c] = [remark("ア"), remark("イ"), remark("重複", { duplicate: true }), remark("ウ")];
       const ids = Effect.map(session.unreflectedRemarks, (rs) => rs.map((r) => r.id));
 
-      yield* session.push(a);
+      yield* session.push(a); // すぐ渡り、結果待ちになる
+      expect(yield* ids).toEqual([a.id]);
       yield* session.push(dup);
-      expect(yield* ids).toEqual([a.id]); // まだ渡していない
-      yield* session.push(b); // a・b が差分更新に渡り、結果待ちになる
+      expect(yield* ids).toEqual([a.id]);
+      yield* session.push(b); // 呼び出し中なので、渡さずにためる
       yield* session.push(c);
       expect(yield* ids).toEqual([a.id, b.id, c.id]);
 
       calls[0]!.reply();
-      yield* session.idle; // c だけが残り、c は QUIET_MS 待ちなので、呼び出しは増えない
-      expect(yield* ids).toEqual([c.id]);
+      yield* settleUntil(() => calls.length === 2); // b・c が 1 回にまとまって渡り、結果待ちになる
+      expect(freshIds(calls[1]!.input)).toEqual([b.id, c.id]);
+      expect(yield* ids).toEqual([b.id, c.id]);
+
+      calls[1]!.reply();
+      yield* session.idle;
+      expect(yield* ids).toEqual([]);
     }));
 
   it.effect("中身のない発言は、渡す前も結果待ちの間も含まない", () =>
@@ -1010,23 +960,27 @@ describe("unreflectedRemarks（反映前の発言）", () => {
       const [a, filler, b, filler2] = [remark("ア"), remark("あ", { track: "自分" }), remark("イ"), remark("えー")];
       const ids = Effect.map(session.unreflectedRemarks, (rs) => rs.map((r) => r.id));
 
-      yield* session.push(a);
+      yield* session.push(a); // 結果待ち
       yield* session.push(filler);
       expect(yield* ids).toEqual([a.id]);
-      yield* session.push(b); // a・b が結果待ちになる
+      yield* session.push(b); // 渡さずにためる
       yield* session.push(filler2);
       expect(yield* ids).toEqual([a.id, b.id]);
 
       calls[0]!.reply();
+      yield* settleUntil(() => calls.length === 2);
+      expect(yield* ids).toEqual([b.id]);
+      calls[1]!.reply();
       yield* session.idle;
       expect(yield* session.unreflectedRemarks).toEqual([]);
     }));
 
   it.effect("返した発言を書き換えても、セッションの記録にも次の呼び出しにも影響しない", () =>
     Effect.gen(function* () {
-      const { session } = yield* setup();
+      const { update } = manual();
+      const session = yield* open(update);
       const a = remark("元の本文");
-      yield* session.push(a);
+      yield* session.push(a); // 結果待ち
 
       const first = yield* session.unreflectedRemarks;
       first[0]!.text = "書き換え";
@@ -1167,18 +1121,8 @@ describe("今の議題（currentTopic）と会議の今の時刻（now）", () =
 
   it.effect("差分更新が失敗した反映でも、前の値のまま", () =>
     Effect.gen(function* () {
-      const calls: number[] = [];
-      const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> => {
-        calls.push(1);
-        if (calls.length === 2) return Effect.fail({ _tag: "UpdateFailed", message: "timeout" });
-        return Effect.succeed({ ops: nested([[input.fresh[0]!.id, input.fresh[1]!.id]]) });
-      };
-      const session = yield* open(update);
-      for (let i = 0; i < 2; i++) {
-        yield* session.push(remark("発言"));
-        yield* session.push(remark("発言"));
-        yield* session.idle;
-      }
+      const pairs = [[remark("発言"), remark("発言")], [remark("発言"), remark("発言")]];
+      const { session } = yield* playBatches(pairs, [nested([pairs[0]!.map((r) => r.id)]), { _tag: "UpdateFailed", message: "timeout" }]);
       const snap = yield* session.snapshot;
       expect(snap.round).toBe(1);
       expect(snap.currentTopic).toBe("n1");
@@ -1374,20 +1318,21 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
     Effect.gen(function* () {
       const ps = [remark("発言"), remark("発言")];
       const later = [remark("発言"), remark("発言")];
-      let n = 0;
-      const update = (): Effect.Effect<DiffOutput, UpdateFailure> =>
-        n++ === 0
-          ? Effect.succeed({ ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ps[0]!.id] }] })
-          : Effect.fail({ _tag: "UpdateFailed", message: "timeout" });
-      const session = yield* open(update);
-      for (const r of ps) yield* session.push(r);
-      yield* session.idle;
-      const before = (yield* session.snapshot).nodes.find((x) => x.text === "採用")!;
-      expect(before.touchedAt).toBe(ps[1]!.end);
-      expect(before.evidenceRound).toBe(1);
-      for (const r of later) yield* session.push(r);
-      yield* session.idle;
-      expect(n).toBe(2);
+      let before: SnapshotNode | undefined;
+      const { session, calls } = yield* playBatches(
+        [ps, later],
+        [[{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [ps[0]!.id] }], { _tag: "UpdateFailed", message: "timeout" }],
+        {
+          onApplied: (k, s) =>
+            Effect.gen(function* () {
+              if (k !== 0) return;
+              before = (yield* s.snapshot).nodes.find((x) => x.text === "採用")!;
+              expect(before.touchedAt).toBe(ps[1]!.end);
+              expect(before.evidenceRound).toBe(1);
+            }),
+        },
+      );
+      expect(calls).toHaveLength(2);
       expect((yield* session.snapshot).nodes.find((x) => x.text === "採用")).toEqual(before);
     }));
 
@@ -1407,18 +1352,14 @@ describe("ノードの最後に触れた時刻（touchedAt）と最後に根拠�
 // 議題・論点の「済み」（talkStatus）。閉じる（close）は applyOps が判定し、適用・復元の両方で同じ結果になる。
 // 手の n 番目が round n。根拠が足された反映の番号（evidenceRound）と今の round を比べて、閉じるを通すか捨てるかを決める。
 describe("議題・論点の済みと閉じる（close）", () => {
-  // 手ごとに発言を 2 つ流して反映を起こし、手ごとのスナップショットを返す
+  // 手ごとに発言を 2 つ流して反映を起こし（2 つは前の呼び出し中に届き、まとめて 1 回で渡る）、手ごとのスナップショットを返す
   const replay = Effect.fn("replay")(function* (...script: (Op[] | ((ids: string[][]) => Op[]))[]) {
     const pairs = script.map(() => [remark("発言"), remark("発言")] as const);
     const ids = pairs.map((p) => p.map((u) => u.id));
-    const { session, events } = yield* setup(...script.map((s) => (typeof s === "function" ? s(ids) : s)));
-    const snaps = [];
-    for (const [a, b] of pairs) {
-      yield* session.push(a);
-      yield* session.push(b);
-      yield* session.idle;
-      snaps.push(yield* session.snapshot);
-    }
+    const snaps: Snapshot[] = [];
+    const { session, events } = yield* playBatches(pairs, script.map((s) => (typeof s === "function" ? s(ids) : s)), {
+      onApplied: (_, s) => Effect.map(s.snapshot, (snap) => { snaps.push(snap); }),
+    });
     const dropped = events.flatMap((e) => (e.type === "diff" ? e.dropped : []));
     return { session, events, snaps, snap: snaps.at(-1)!, dropped, ids };
   });

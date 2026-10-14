@@ -85,9 +85,11 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
         res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "採用の進め方" }], 済み: "なし" }) } }] }));
       });
     });
+    // 発言は、設定を書き換えた後に流す。差分更新は発言が届いたらすぐ呼ぶので、先に流すと書き換えより前に呼ばれてしまう
+    let sayRemark: (() => void) | undefined;
     const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
       const queue = yield* Queue.make<string, Cause.Done>();
-      Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));
+      sayRemark = () => { Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" })); };
       const exited = yield* Deferred.make<HelperExitInfo>();
       const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
       yield* Effect.addFinalizer(() => stop);
@@ -105,6 +107,8 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
     expect(started.stderr).toBe("");
     expect(requests).toHaveLength(1);
     writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "replacement", url: "http://127.0.0.1:1/v1" } } }));
+    sayRemark!();
+    for (let i = 0; i < 500 && requests.length < 2; i++) yield* Effect.sleep(10);
     const stopped = yield* runProcess(root, server.port, ["stop"]);
     expect(stopped.code).toBe(0);
     expect(requests).toHaveLength(2);

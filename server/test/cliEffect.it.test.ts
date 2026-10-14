@@ -17,7 +17,7 @@ import { afterEach, beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
-import { QUIET_MS, type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
+import { type DiffInput, type Op, type Snapshot } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -37,7 +37,7 @@ const directory = Effect.acquireRelease(
 );
 
 // 登録済みの待ち（sleep）の長さ（ミリ秒）。TestClock に委譲しつつ、目覚めるか中断されるまで一覧に残す。
-// TestClock を進める前に、依存する待ち（静穏待ち・次の再生待ち）が登録済みであることを状態で確かめるために使う
+// TestClock を進める前に、依存する待ち（次の再生待ち）が登録済みであることを状態で確かめるために使う
 const trackedClock = (clock: Clock.Clock, pending: number[]): Clock.Clock => ({
   currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
   currentTimeMillis: clock.currentTimeMillis,
@@ -139,7 +139,7 @@ describe("CLI の Effect 境界", () => {
     });
     yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-    expect(calls).toEqual([["r1", "r2"], ["r3"]]);
+    expect(calls).toEqual([["r1"], ["r2"], ["r3"]]);
     expect(external.openListener.mock.calls[0]?.[0]).toBe(12345);
     expect(deps.captures).toHaveLength(1);
     expect(deps.captures[0]?.nodes.map((node) => node.text)).toEqual(["short"]);
@@ -312,15 +312,15 @@ describe("CLI の Effect 境界", () => {
     external.openListener.mockImplementation(open);
     yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-    expect(update).toHaveBeenCalledTimes(2);
-    expect(published.map((snapshot) => snapshot.round)).toEqual([0, 1]);
-    expect(deps.captures.map((snapshot) => snapshot.round)).toEqual([1]);
+    expect(update).toHaveBeenCalledTimes(3);
+    expect(published.map((snapshot) => snapshot.round)).toEqual([0, 1, 2]);
+    expect(deps.captures.map((snapshot) => snapshot.round)).toEqual([2]);
     expect(close).toHaveBeenCalledTimes(1);
     const log = readFileSync(join(deps.stdout.join("").split("\n")[0]!, "..", "log.jsonl"), "utf8");
     expect(log).toContain("更新に失敗");
   }));
 
-  it.effect("realtime は再生間隔と静穏待ちを同じ TestClock で進め、二つの待ちを直列にしない", () => Effect.gen(function* () {
+  it.effect("realtime は再生間隔だけを TestClock で待ち、発言は届いた時点ですぐ差分更新へ渡る", () => Effect.gen(function* () {
     const dir = yield* directory;
     const deps = dependencies(dir);
     const root = yield* Deferred.make<void>();
@@ -342,16 +342,13 @@ describe("CLI の Effect 境界", () => {
     const fiber = yield* runCli(["play", fixture, "--realtime"]).pipe(Effect.provide(deps.layer), Effect.provideService(Clock.Clock, tracked), Effect.forkChild);
     yield* Deferred.await(root);
     yield* sleepsRegistered(pending, [9800]);
-    yield* TestClock.adjust(9800);
-    yield* sleepsRegistered(pending, [QUIET_MS, 9400]);
-    yield* TestClock.adjust(QUIET_MS - 1);
     expect(calls).toEqual([]);
-    yield* TestClock.adjust(1);
+    yield* TestClock.adjust(9800);
     yield* Deferred.await(reflected);
     expect(calls).toEqual([["r1"]]);
     yield* sleepsRegistered(pending, [9400]);
-    yield* TestClock.adjust(9400 - QUIET_MS);
-    yield* sleepsRegistered(pending, [QUIET_MS, 8800]);
+    yield* TestClock.adjust(9400);
+    yield* sleepsRegistered(pending, [8800]);
     yield* TestClock.adjust(8800);
     yield* Fiber.join(fiber);
     expect(calls).toEqual([["r1"], ["r2"], ["r3"]]);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
 import { InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange } from "../src/core/index.ts";
+import { playBatches } from "./fixtures/batches.ts";
 import { remark, restore, scripted, type Step } from "./fixtures/restore.ts";
 import { collectLog, forbiddenUpdater, logLayer, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
@@ -46,22 +47,12 @@ const original = Effect.fn("original")(function* () {
       { op: "add", ref: "t8", parent: "root", kind: "論点", text: "予算", evidence: [id(5, 0)] },
     ],
   ];
-  const { update } = scripted(...script);
-  const events: LogEvent[] = [];
-  const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
-  const push = Effect.fn("push")(function* (...rs: Remark[]) {
-    for (const r of rs) yield* session.push(r);
-    yield* session.idle;
-  });
-  yield* push(...p[0]!);
-  yield* push(...p[1]!);
-  yield* push(...p[2]!);
-  yield* push(remark("予算は来週決めます", { track: "自分", duplicate: true }));
-  yield* push(...p[3]!);
-  yield* push(...p[4]!);
-  yield* push(...p[5]!);
-  const lone = remark("最後の発言"); // 2 つに満たず、まだ差分更新に渡っていない
-  yield* push(lone);
+  // 1 回の呼び出しに 2 件を渡すため、組ごとに前の呼び出し中に届かせる。重複の印つきの発言は差分更新に渡らない
+  const duplicate = remark("予算は来週決めます", { track: "自分", duplicate: true });
+  const { session, events } = yield* playBatches([p[0]!, p[1]!, p[2]!, [duplicate, ...p[3]!], p[4]!, p[5]!], script);
+  // 最後の発言は、差分更新に渡った（返事を待っている）が、まだ反映されていない。台本が尽きているので、この呼び出しは返らない
+  const lone = remark("最後の発言");
+  yield* session.push(lone);
   return { session, events, lone };
 });
 
@@ -127,7 +118,7 @@ describe("ログからの復元", () => {
   it.effect("作成順と逆の順に更新した反映でも、復元後の今の議題・最後に変わったノードが元と一致する", () =>
     Effect.gen(function* () {
       const [a, b, c, d] = [remark("発言"), remark("発言"), remark("発言"), remark("発言")];
-      const { update } = scripted(
+      const { session, events } = yield* playBatches([[a!, b!], [c!, d!]], [
         [
           { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a!.id] },
           { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [b!.id] },
@@ -136,13 +127,7 @@ describe("ログからの復元", () => {
           { op: "update", node: "n2", text: "予算2", evidence: [c!.id] },
           { op: "update", node: "n1", text: "採用2", evidence: [d!.id] },
         ],
-      );
-      const events: LogEvent[] = [];
-      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
-      for (const r of [a!, b!]) yield* session.push(r);
-      yield* session.idle;
-      for (const r of [c!, d!]) yield* session.push(r);
-      yield* session.idle;
+      ]);
 
       const restored = yield* restore(viaJsonl(events));
       expect((yield* session.snapshot).currentTopic).toBe("n1");
@@ -271,24 +256,21 @@ describe("ログからの復元", () => {
       // 元のセッションをそのまま続けた場合と、復元して続けた場合で、差分更新への入力が一致する
       const p = [remark("一"), remark("二"), remark("三"), remark("四")];
       const first: Op[] = [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [p[0]!.id] }];
-      const events: LogEvent[] = [];
-      const live = scripted(first, []);
-      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(live.update), collectLog(events))));
-      yield* session.push(p[0]!);
-      yield* session.push(p[1]!);
-      yield* session.idle;
-      yield* session.push(p[2]!); // 未処理のまま落ちる
-      yield* session.idle;
+      // 元のセッション: 1 回目の呼び出し中に p[1]〜p[3] が届き、2 回目の呼び出しに 3 件まとめて渡る
+      const { session, calls, events } = yield* playBatches([[p[0]!], [p[1]!, p[2]!, p[3]!]], [first, []]);
+      // 復元するのは、1 回目の反映まで書いて落ちた時点のログ。p[1]・p[2] は未処理のまま、p[3] はまだ届いていない
+      const secondDiff = events.findIndex((e, i) => e.type === "diff" && events.slice(0, i).some((x) => x.type === "diff"));
+      const logged = events.slice(0, secondDiff).filter((e) => !(e.type === "remark" && e.remark.id === p[3]!.id));
+      expect(secondDiff).toBeGreaterThan(0);
 
       const restoredScript = scripted([]);
-      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(restoredScript.update), silentLog)));
-      yield* session.push(p[3]!);
+      const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(restoredScript.update), silentLog)));
+      expect((yield* restored.unreflectedRemarks).map((r) => r.id)).toEqual([p[1]!.id, p[2]!.id]);
       yield* restored.push(p[3]!);
-      yield* session.idle;
       yield* restored.idle;
 
       expect(restoredScript.calls).toHaveLength(1);
-      expect(restoredScript.calls[0]).toEqual(live.calls[1]);
+      expect(restoredScript.calls[0]).toEqual(calls[1]);
       expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
     }));
 
@@ -339,16 +321,14 @@ describe("ログからの復元", () => {
     Effect.gen(function* () {
       const { r1, events } = legacyLogWithProcessedFillers();
       const n1 = remark("担当は佐藤さんで");
-      const n2 = remark("来週までに");
       const cont = scripted([]);
       const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
       yield* restored.push(n1);
-      yield* restored.push(n2);
       yield* restored.idle;
 
       expect(cont.calls).toHaveLength(1);
       expect(cont.calls[0]!.recent.map((u) => u.id)).toEqual([r1.id]);
-      expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([n1.id, n2.id]);
+      expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([n1.id]);
     }));
 
   it.effect("中身のない発言を処理済みから除いても、復元した回数・変わったこと・マップは変わらない", () =>
@@ -369,7 +349,7 @@ describe("済み（close）を含むログからの復元", () => {
   const closedSession = Effect.fn("closedSession")(function* () {
     const p = Array.from({ length: 5 }, () => [remark("発言"), remark("発言")] as const);
     const id = (i: number, j: 0 | 1) => p[i]![j].id;
-    const { update } = scripted(
+    const { session, events } = yield* playBatches(p, [
       [
         { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [id(0, 0)] },
         { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: [id(0, 0)] },
@@ -385,13 +365,7 @@ describe("済み（close）を含むログからの復元", () => {
       ],
       [{ op: "add", ref: "t4", parent: "n2", kind: "案", text: "3 回", evidence: [id(3, 0)] }],
       [{ op: "close", node: "n3" }],
-    );
-    const events: LogEvent[] = [];
-    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
-    for (const pair of p) {
-      for (const r of pair) yield* session.push(r);
-      yield* session.idle;
-    }
+    ]);
     return { session, events };
   });
 
@@ -518,8 +492,9 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
   };
 
   // 元のセッション: 2 回目の呼び出しは失敗。最後の呼び出しの後に、まだ添えていない変化が 3 件残る（F は最後の diff の区切りより前の時刻だが、行は diff より後）
-  //   call 1 (cutoff 11): A@1, B@2 / call 2 (cutoff 21, 失敗): C@15 → 最後に添えた 2 件は B, C
-  //   diff より後に受けた: F@18（区切り 21 以下）, D@100, E(なし)@120
+  // 発言 1 件ごとに 1 回呼ぶ。
+  //   call 1 (cutoff 10): A@1, B@2 / call 2 (cutoff 20, 失敗): C@15 → 最後に添えた 2 件は B, C
+  //   diff より後に受けた: F@18（区切り 20 以下）, D@100, E(なし)@120
   const original = Effect.gen(function* () {
     const events: LogEvent[] = [];
     const screens: Screens = [];
@@ -528,11 +503,9 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
     yield* session.pushScreen(shot(1, "A"));
     yield* session.pushScreen(shot(2, "B"));
     yield* session.push(spoken("a1", 10));
-    yield* session.push(spoken("a2", 11));
     yield* session.idle;
     yield* session.pushScreen(shot(15, "C"));
-    yield* session.push(spoken("a3", 20));
-    yield* session.push(spoken("a4", 21));
+    yield* session.push(spoken("a2", 20));
     yield* session.idle;
     yield* session.pushScreen(shot(18, "F"));
     yield* session.pushScreen(shot(100, "D"));
@@ -544,7 +517,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
     Effect.gen(function* () {
       const { session, live, events: logged, screens } = yield* original;
       const events = [...logged]; // 続きを入れる前までのログ
-      const next = [spoken("a5", 200), spoken("a6", 201)];
+      const next = [spoken("a3", 200)];
       for (const r of next) yield* session.push(r);
       yield* session.idle;
       const expected = live.calls[2]!;
@@ -572,8 +545,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       const cont = scripted([]);
       const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), log)));
       expect(reads).toEqual([]);
-      yield* restored.push(spoken("a5", 200));
-      yield* restored.push(spoken("a6", 201));
+      yield* restored.push(spoken("a3", 200));
       yield* restored.idle;
       expect([...reads].sort()).toEqual(["0002.0.jpg", "0015.0.jpg", "0018.0.jpg", "0100.0.jpg"]);
     }));
@@ -616,8 +588,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
           const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events, screens))));
           yield* session.pushScreen(shot(1, "A"));
           yield* session.pushScreen(shot(2, "B"));
-          yield* session.push(spoken("a1", 10));
-          yield* session.push(spoken("a2", 20));
+          yield* session.push(spoken("a1", 20));
           yield* settleUntil(() => calls.length === 1); // 1 回目が応答待ちになるまで
           expect(calls).toHaveLength(1);
           yield* session.pushScreen(lateImage);
@@ -626,7 +597,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
           yield* session.idle;
 
           const logged = [...events];
-          const next = [spoken("a3", 200), spoken("a4", 201)];
+          const next = [spoken("a2", 200)];
           for (const r of next) yield* session.push(r);
           yield* session.idle;
           expect(calls).toHaveLength(2);
@@ -674,7 +645,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       const cont = scripted([]);
       const restored = yield* restoreSession(events).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(stored).log)));
       yield* restored.push(spoken("r2", 20));
-      yield* restored.push(spoken("r3", 21));
       yield* restored.idle;
       // 区切りは 10: 映り始めが 1〜4 の変化はすべて添え済み
       expect("screens" in cont.calls[0]!).toBe(false);

@@ -170,34 +170,50 @@ describe("play --screen", () => {
 
       expect(external.created).toHaveLength(1);
       const sent = external.created[0]!.messages;
-      expect(sent).toHaveLength(2); // r1+r2 と r3+r4 の 2 回
+      expect(sent).toHaveLength(4); // 発言 1 件ごとに 1 回（r1・r2・r3・r4）
 
-      // 1 回目: 発言 r2 の start（9.8）までに映り始めた 0・3・4・8 のうち、新しい 3 件（3 なし・4・8 gallery）だけ
+      // r1: 発言 r1 の start（0.5）までに映り始めた 0 の 1 件
       const first = blocksOf(sent[0]!);
-      expect(first.map((b) => b.type)).toEqual(["text", "text", "image", "text", "image", "text"]);
-      expect(heading(first[0])).toBe("## 共有画面：なし（[00:03] から）");
-      expect(heading(first[1])).toBe("## 共有画面 [00:04] から");
-      expect(first[2]!.source).toMatchObject({ type: "base64", media_type: "image/jpeg" });
-      expect(imageBytes(first[2])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s2.png")));
-      expect(heading(first[3])).toBe("## 共有画面 [00:08] から");
-      expect(imageBytes(first[4])).toEqual(Buffer.from(fakeJpegBytes("png:slides/gallery.png")));
+      expect(first.map((b) => b.type)).toEqual(["text", "image", "text"]);
+      expect(heading(first[0])).toBe("## 共有画面 [00:00] から");
+      expect(first[1]!.source).toMatchObject({ type: "base64", media_type: "image/jpeg" });
+      expect(imageBytes(first[1])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s1.png")));
       // 節はマップと発言（buildPrompt の文字列）より前
-      const prompt = first[5]!.text!;
+      const prompt = first[2]!.text!;
       expect(prompt).toContain("## 現在のマップ");
       expect(prompt).toContain("今日は採用の進め方を決めます");
-      expect(prompt).toContain("面接を何回にするかですね");
+      expect(prompt).not.toContain("面接を何回にするかですね");
       expect(prompt).not.toContain("共有画面");
 
-      // 2 回目: 後から映り始めた 12・15・18・22・26 のうち、新しい 3 件（18 なし・22・26 なし）。12・15 は古いので載らない
+      // r2: 発言 r2 の start（9.8）までに新しく映り始めた 3（なし）・4・8 gallery の 3 件
       const second = blocksOf(sent[1]!);
-      expect(second.map((b) => b.type)).toEqual(["text", "text", "image", "text", "text"]);
-      expect(heading(second[0])).toBe("## 共有画面：なし（[00:18] から）");
-      expect(heading(second[1])).toBe("## 共有画面 [00:22] から");
-      expect(imageBytes(second[2])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s6.png")));
-      expect(heading(second[3])).toBe("## 共有画面：なし（[00:26] から）");
-      // 2 通目はマップの全体の代わりに変更が載る（buildPrompt の中身は変わらない）
-      expect(second[4]!.text).toContain("## 前回からのマップの変更");
-      expect(second[4]!.text).toContain("2 回にしましょう");
+      expect(second.map((b) => b.type)).toEqual(["text", "text", "image", "text", "image", "text"]);
+      expect(heading(second[0])).toBe("## 共有画面：なし（[00:03] から）");
+      expect(heading(second[1])).toBe("## 共有画面 [00:04] から");
+      expect(imageBytes(second[2])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s2.png")));
+      expect(heading(second[3])).toBe("## 共有画面 [00:08] から");
+      expect(imageBytes(second[4])).toEqual(Buffer.from(fakeJpegBytes("png:slides/gallery.png")));
+      // 2 通目以降はマップの全体の代わりに変更が載る（buildPrompt の中身は変わらない）
+      expect(second[5]!.text).toContain("## 前回からのマップの変更");
+      expect(second[5]!.text).toContain("面接を何回にするかですね");
+
+      // r3: 発言 r3 の start（19.2）までに新しく映り始めた 12・15・18（なし）
+      const third = blocksOf(sent[2]!);
+      expect(third.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text", "text"]);
+      expect(heading(third[0])).toBe("## 共有画面 [00:12] から");
+      expect(imageBytes(third[1])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s4.png")));
+      expect(heading(third[2])).toBe("## 共有画面 [00:15] から");
+      expect(imageBytes(third[3])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s5.png")));
+      expect(heading(third[4])).toBe("## 共有画面：なし（[00:18] から）");
+      expect(third[5]!.text).toContain("この図の右側を見てください");
+
+      // r4: 発言 r4 の start（30）までに新しく映り始めた 22・26（なし）
+      const fourth = blocksOf(sent[3]!);
+      expect(fourth.map((b) => b.type)).toEqual(["text", "image", "text", "text"]);
+      expect(heading(fourth[0])).toBe("## 共有画面 [00:22] から");
+      expect(imageBytes(fourth[1])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s6.png")));
+      expect(heading(fourth[2])).toBe("## 共有画面：なし（[00:26] から）");
+      expect(fourth[3]!.text).toContain("2 回にしましょう");
     }));
 
   it.effect("image の列は slides.tsv のあるフォルダからの相対パスで引かれ、変換は画像ごとに 1 回", () =>
@@ -241,14 +257,19 @@ describe("play --screen", () => {
 
       // diff の入力の要約: 添えた画面だけ（一覧の形は screen の行と同じ { start, image }）
       const diffs = lines.filter((l) => l.type === "diff") as unknown as { input: Record<string, unknown> }[];
-      expect(diffs).toHaveLength(2);
-      expect(diffs[0]!.input.screens).toEqual([
+      expect(diffs).toHaveLength(4);
+      expect(diffs[0]!.input.screens).toEqual([{ start: 0, image: "0000.0.jpg" }]);
+      expect(diffs[1]!.input.screens).toEqual([
         { start: 3, image: null },
         { start: 4, image: "0004.0.jpg" },
         { start: 8, image: "0008.0.jpg" },
       ]);
-      expect(diffs[1]!.input.screens).toEqual([
+      expect(diffs[2]!.input.screens).toEqual([
+        { start: 12, image: "0012.0.jpg" },
+        { start: 15, image: "0015.0.jpg" },
         { start: 18, image: null },
+      ]);
+      expect(diffs[3]!.input.screens).toEqual([
         { start: 22, image: "0022.0.jpg" },
         { start: 26, image: null },
       ]);
@@ -258,10 +279,10 @@ describe("play --screen", () => {
       expect(files).toEqual(["0000.0.jpg", "0004.0.jpg", "0008.0.jpg", "0012.0.jpg", "0015.0.jpg", "0022.0.jpg", "0033.0.jpg"]);
       // 送ったものと同じバイト列
       const sent = external.created[0]!.messages;
-      const sentFirst = blocksOf(sent[0]!);
-      expect(readFileSync(join(session, "screens", "0004.0.jpg"))).toEqual(imageBytes(sentFirst[2]));
-      expect(readFileSync(join(session, "screens", "0008.0.jpg"))).toEqual(imageBytes(sentFirst[4]));
-      expect(readFileSync(join(session, "screens", "0022.0.jpg"))).toEqual(imageBytes(blocksOf(sent[1]!)[2]));
+      const sentSecond = blocksOf(sent[1]!);
+      expect(readFileSync(join(session, "screens", "0004.0.jpg"))).toEqual(imageBytes(sentSecond[2]));
+      expect(readFileSync(join(session, "screens", "0008.0.jpg"))).toEqual(imageBytes(sentSecond[4]));
+      expect(readFileSync(join(session, "screens", "0022.0.jpg"))).toEqual(imageBytes(blocksOf(sent[3]!)[1]));
       // 添えなかった画面も、変換したバイト列がそのまま書かれる
       expect(readFileSync(join(session, "screens", "0033.0.jpg"))).toEqual(Buffer.from(fakeJpegBytes("png:slides/s7.png")));
     }));
@@ -269,22 +290,24 @@ describe("play --screen", () => {
   it.effect("変化の無い呼び出しには節が載らず、content は文字列のまま", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      // 最初の呼び出しの前にだけ変化があり、2 回目の呼び出しの前には新しい変化が無い（最後の行の end の後の「なし」は 100 秒で、どの呼び出しにも届かない）
+      // 最初の呼び出しの前にだけ変化があり、2 回目以降の呼び出しの前には新しい変化が無い（最後の行の end の後の「なし」は 100 秒で、どの呼び出しにも届かない）
       const { transcriptPath, tsvPath } = meeting(root, FOUR_REMARKS, [[0, 100, "s1", "slides/s1.png"]]);
       const deps = dependencies(join(root, "sessions"));
       const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
 
       const sent = external.created[0]!.messages;
-      // 否定のテストなので、2 回目の呼び出しが実際に起きたことを先に確かめる
-      expect(sent).toHaveLength(2);
+      // 否定のテストなので、2 回目以降の呼び出しが実際に起きたことを先に確かめる
+      expect(sent).toHaveLength(4);
       expect(blocksOf(sent[0]!).map((b) => b.type)).toEqual(["text", "image", "text"]);
-      expect(typeof sent[1]!.message.content).toBe("string");
-      expect(sent[1]!.message.content).toContain("2 回にしましょう");
-      expect(sent[1]!.message.content).not.toContain("共有画面");
+      for (const message of sent.slice(1)) {
+        expect(typeof message.message.content).toBe("string");
+        expect(message.message.content).not.toContain("共有画面");
+      }
+      expect(sent[3]!.message.content).toContain("2 回にしましょう");
 
       const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { input: Record<string, unknown> }[];
-      expect(diffs).toHaveLength(2);
-      expect("screens" in diffs[1]!.input).toBe(false);
+      expect(diffs).toHaveLength(4);
+      for (const diff of diffs.slice(1)) expect("screens" in diff.input).toBe(false);
       expect(diffs[0]!.input.screens).toEqual([{ start: 0, image: "0000.0.jpg" }]);
     }));
 
@@ -312,10 +335,10 @@ describe("play --screen", () => {
       const session = yield* played(deps, [transcriptPath]);
 
       const sent = external.created[0]!.messages;
-      expect(sent).toHaveLength(2);
-      expect(sent.map((m) => typeof m.message.content)).toEqual(["string", "string"]);
+      expect(sent).toHaveLength(4);
+      expect(sent.map((m) => typeof m.message.content)).toEqual(["string", "string", "string", "string"]);
       const lines = logLines(session);
-      expect(lines.filter((l) => l.type === "diff")).toHaveLength(2);
+      expect(lines.filter((l) => l.type === "diff")).toHaveLength(4);
       expect(lines.some((l) => l.type === "screen")).toBe(false);
       expect(lines.some((l) => "screens" in ((l.input as object | undefined) ?? {}))).toBe(false);
       expect(readdirSync(session)).not.toContain("screens");
@@ -346,9 +369,9 @@ describe("play --screen", () => {
     }));
 
   // 開き直した query の最初のメッセージへの、共有画面の送り直し。
-  // 発言 30 個（2 個ずつ 15 回の呼び出し。呼び出し k の区切りは 20k-1 秒）。QUERY_RENEW_CALLS = 14 なので 15 回目は開き直した query の最初のメッセージ。
-  // 変化は、映り始めがその呼び出しの 2 つ目の発言の start 以下なら、その呼び出しに添わる（20k-15 秒は呼び出し k）
-  const THIRTY_REMARKS = segments(Array.from({ length: 30 }, (_, i): [number, number, string] => [i * 10, i * 10 + 9, `発言${i}`]));
+  // 発言 15 個（1 個ずつ 15 回の呼び出し。呼び出し k の発言の start は 10(k-1) 秒）。QUERY_RENEW_CALLS = 14 なので 15 回目は開き直した query の最初のメッセージ。
+  // 変化は、映り始めがその呼び出しの発言の start 以下なら、その呼び出しに添わる（10(k-1)-9 秒より後〜10(k-1) 秒は呼び出し k）
+  const FIFTEEN_REMARKS = segments(Array.from({ length: 15 }, (_, i): [number, number, string] => [i * 10, i * 10 + 9, `発言${i}`]));
   const textHeadings = (blocks: Block[]) => blocks.filter((b) => b.type === "text").map((b) => b.text!.trim());
   const imagesOf = (blocks: Block[]) => blocks.filter((b) => b.type === "image").map((b) => imageBytes(b));
   const jpeg = (slide: string) => Buffer.from(fakeJpegBytes(`png:slides/${slide}.png`));
@@ -357,20 +380,20 @@ describe("play --screen", () => {
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       // s1 は呼び出し 1、s2 は呼び出し 2、s3 は呼び出し 3 に添わる。その後は 15 回目まで新しい変化が無い
-      const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [
-        [5, 25, "s1", "slides/s1.png"],
-        [25, 45, "s2", "slides/s2.png"],
-        [45, 1000, "s3", "slides/s3.png"],
+      const { transcriptPath, tsvPath } = meeting(root, FIFTEEN_REMARKS, [
+        [0, 10, "s1", "slides/s1.png"],
+        [10, 20, "s2", "slides/s2.png"],
+        [20, 1000, "s3", "slides/s3.png"],
       ]);
       const deps = dependencies(join(root, "sessions"));
       const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
 
       expect(external.created).toHaveLength(2);
       expect(external.created[0]!.messages).toHaveLength(14);
-      expect(external.created[1]!.messages).toHaveLength(1);
+      expect(external.created[1]!.messages).toHaveLength(1); // 呼び出し 15
       const reopened = blocksOf(external.created[1]!.messages[0]!);
       expect(reopened.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text"]);
-      expect(textHeadings(reopened).slice(0, 2)).toEqual(["## 共有画面 [00:25] から", "## 共有画面 [00:45] から"]);
+      expect(textHeadings(reopened).slice(0, 2)).toEqual(["## 共有画面 [00:10] から", "## 共有画面 [00:20] から"]);
       expect(imagesOf(reopened)).toEqual([jpeg("s2"), jpeg("s3")]);
       // 最後は buildPrompt の text。開き直しなのでマップは全体
       expect(reopened[4]!.text).toContain("## 現在のマップ");
@@ -387,13 +410,13 @@ describe("play --screen", () => {
   it.effect("最後に添えたのが「なし」なら、「なし」とその前の画面が載る。新しく添える画面は別に続き、画像は最大 5 枚", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      // s1 は呼び出し 1、s2 は呼び出し 2、45 秒の「なし」は呼び出し 3。15 回目（区切り 299 秒、14 回目は 279 秒）には s4・s5・s6 が新しく添わる
-      const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [
-        [5, 25, "s1", "slides/s1.png"],
-        [25, 45, "s2", "slides/s2.png"],
-        [280, 285, "s4", "slides/s4.png"],
-        [285, 290, "s5", "slides/s5.png"],
-        [290, 400, "s6", "slides/s6.png"],
+      // s1 は呼び出し 1、s2 は呼び出し 2、20 秒の「なし」は呼び出し 3。15 回目（発言の start は 140 秒、14 回目は 130 秒）には s4・s5・s6 が新しく添わる
+      const { transcriptPath, tsvPath } = meeting(root, FIFTEEN_REMARKS, [
+        [0, 10, "s1", "slides/s1.png"],
+        [10, 20, "s2", "slides/s2.png"],
+        [131, 134, "s4", "slides/s4.png"],
+        [134, 137, "s5", "slides/s5.png"],
+        [137, 400, "s6", "slides/s6.png"],
       ]);
       const deps = dependencies(join(root, "sessions"));
       const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
@@ -402,12 +425,12 @@ describe("play --screen", () => {
       const reopened = blocksOf(external.created[1]!.messages[0]!);
       expect(textHeadings(reopened).slice(0, -1)).toEqual([
         // 送り直し（その呼び出しより前に最後に添えた 2 件）
-        "## 共有画面 [00:25] から",
-        "## 共有画面：なし（[00:45] から）",
+        "## 共有画面 [00:10] から",
+        "## 共有画面：なし（[00:20] から）",
         // その呼び出しで新しく添える画面
-        "## 共有画面 [04:40] から",
-        "## 共有画面 [04:45] から",
-        "## 共有画面 [04:50] から",
+        "## 共有画面 [02:11] から",
+        "## 共有画面 [02:14] から",
+        "## 共有画面 [02:17] から",
       ]);
       expect(imagesOf(reopened)).toEqual([jpeg("s2"), jpeg("s4"), jpeg("s5"), jpeg("s6")]);
       expect(reopened[reopened.length - 1]!.text).toContain("## 現在のマップ");
@@ -415,9 +438,9 @@ describe("play --screen", () => {
       // ログの screens は、その呼び出しで新しく添えた 3 件だけ
       const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { input: { screens?: unknown } }[];
       expect(diffs[14]!.input.screens).toEqual([
-        { start: 280, image: "0280.0.jpg" },
-        { start: 285, image: "0285.0.jpg" },
-        { start: 290, image: "0290.0.jpg" },
+        { start: 131, image: "0131.0.jpg" },
+        { start: 134, image: "0134.0.jpg" },
+        { start: 137, image: "0137.0.jpg" },
       ]);
     }));
 
@@ -425,21 +448,21 @@ describe("play --screen", () => {
     it.effect(`${mode === "fail" ? "失敗" : "ストリームの終わり"}の後に開いた query の最初のメッセージにも、最後に添えた 2 件が載る（失敗した呼び出しで選んだ画面も数える）`, () =>
       Effect.gen(function* () {
         const root = yield* temporaryDirectory;
-        // 呼び出し 3（0 から数えて 2 通目）が失敗: そこで選んだ「なし」（45 秒）も添えたものに数える。呼び出し 4 が新しい query の最初のメッセージ
+        // 呼び出し 3（0 から数えて 2 通目）が失敗: そこで選んだ「なし」（20 秒）も添えたものに数える。呼び出し 4 が新しい query の最初のメッセージ
         external.behave = (n) => (n === 2 ? mode : "ok");
-        const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [
-          [5, 25, "s1", "slides/s1.png"],
-          [25, 45, "s2", "slides/s2.png"],
+        const { transcriptPath, tsvPath } = meeting(root, FIFTEEN_REMARKS, [
+          [0, 10, "s1", "slides/s1.png"],
+          [10, 20, "s2", "slides/s2.png"],
         ]);
         const deps = dependencies(join(root, "sessions"));
         const session = yield* played(deps, [transcriptPath, "--screen", tsvPath]);
 
         expect(external.created).toHaveLength(2);
         expect(external.created[0]!.messages).toHaveLength(3);
-        expect(external.created[1]!.messages).toHaveLength(12);
+        expect(external.created[1]!.messages).toHaveLength(12); // 呼び出し 4〜15
         const reopened = blocksOf(external.created[1]!.messages[0]!);
         expect(reopened.map((b) => b.type)).toEqual(["text", "image", "text", "text"]);
-        expect(textHeadings(reopened).slice(0, 2)).toEqual(["## 共有画面 [00:25] から", "## 共有画面：なし（[00:45] から）"]);
+        expect(textHeadings(reopened).slice(0, 2)).toEqual(["## 共有画面 [00:10] から", "## 共有画面：なし（[00:20] から）"]);
         expect(imagesOf(reopened)).toEqual([jpeg("s2")]);
         // 同じ query の 2 通目以降には付かない
         expect(typeof external.created[1]!.messages[1]!.message.content).toBe("string");
@@ -448,7 +471,7 @@ describe("play --screen", () => {
         const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { error?: string; input: Record<string, unknown> }[];
         expect(diffs).toHaveLength(15);
         expect(diffs[2]!.error).toBeDefined();
-        expect(diffs[2]!.input.screens).toEqual([{ start: 45, image: null }]);
+        expect(diffs[2]!.input.screens).toEqual([{ start: 20, image: null }]);
         expect("screens" in diffs[3]!.input).toBe(false);
       }));
   }
@@ -457,8 +480,8 @@ describe("play --screen", () => {
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       external.behave = (n) => (n === 0 ? "fail" : "ok");
-      // 画面の変化は 15 回目より後（最後の呼び出しの区切り 299 秒より後）にだけある
-      const { transcriptPath, tsvPath } = meeting(root, THIRTY_REMARKS, [[500, 600, "s1", "slides/s1.png"]]);
+      // 画面の変化は 15 回目より後（最後の発言の start 140 秒より後）にだけある
+      const { transcriptPath, tsvPath } = meeting(root, FIFTEEN_REMARKS, [[500, 600, "s1", "slides/s1.png"]]);
       const deps = dependencies(join(root, "sessions"));
       yield* played(deps, [transcriptPath, "--screen", tsvPath]);
 

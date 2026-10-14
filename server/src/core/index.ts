@@ -28,7 +28,6 @@ export {
   LogEvent,
   logTimestamp,
   makeSession,
-  QUIET_MS,
   RemarkEvent,
   restoreSession,
   restoreState,

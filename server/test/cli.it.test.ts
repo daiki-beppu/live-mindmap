@@ -50,10 +50,8 @@ vi.mock("../src/http.ts", async (importOriginal) => {
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 
 const script: Op[][] = [
-  [
-    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-    { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-  ],
+  [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
+  [{ op: "add", ref: "t2", parent: "n1", kind: "論点", text: "面接は何回か", evidence: ["r2"] }],
   [{ op: "add", ref: "t3", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] }],
 ];
 
@@ -630,7 +628,7 @@ describe("CLI", () => {
     const { calls } = scripted();
 
     yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
-    expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1", "r2"], ["r3"]]);
+    expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"], ["r2"], ["r3"]]);
 
     deps.stdout.length = 0;
     yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
@@ -716,7 +714,7 @@ describe("CLI", () => {
 
     expect(deps.captures).toHaveLength(1);
     expect(deps.captures[0]!.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
-    expect(deps.captures[0]!.round).toBe(2);
+    expect(deps.captures[0]!.round).toBe(3);
     expect(paths).toHaveLength(5);
   }));
 
@@ -806,15 +804,15 @@ describe("CLI", () => {
   it.effect("再生の途中でも、export はその時点のマップを標準出力に出し、ファイルは作らない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const deps = dependencies(dir);
-    const reachedSecond = yield* Deferred.make<void>();
+    const reachedThird = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     let calls = 0;
     external.openClaudeUpdater.mockReturnValue({
       update: () => Effect.suspend(() => {
         const ops = script[calls++] ?? [];
-        if (calls === 2) {
-          Deferred.doneUnsafe(reachedSecond, Effect.void);
-          return Deferred.await(release).pipe(Effect.as({ ops })); // 2 回目の更新が終わらない、進行中の状態で止める
+        if (calls === 3) {
+          Deferred.doneUnsafe(reachedThird, Effect.void);
+          return Deferred.await(release).pipe(Effect.as({ ops })); // 3 回目（r3）の更新が終わらない、進行中の状態で止める
         }
         return Effect.succeed({ ops });
       }),
@@ -822,7 +820,7 @@ describe("CLI", () => {
     });
 
     const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
-    yield* Deferred.await(reachedSecond);
+    yield* Deferred.await(reachedThird);
 
     const [session] = yield* Effect.tryPromise(() => readdir(dir));
     const sessionDir = join(dir, session!);
@@ -862,7 +860,7 @@ describe("CLI", () => {
       yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
       expect(external.openClaudeUpdater).toHaveBeenCalledTimes(1);
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(3);
       expect(close).toHaveBeenCalledTimes(1);
     }));
 
@@ -1823,22 +1821,25 @@ describe("CLI", () => {
       yield* Effect.sleep(100); // close 前に送られたものが届くのを待つ
       ws.close();
 
-      expect(received.map((s) => s.nodes.length)).toEqual([1, 3, 4]);
+      expect(received.map((s) => s.nodes.length)).toEqual([1, 2, 3, 4]);
       expect(received[0]!.nodes.map((x) => x.kind)).toEqual(["会議"]);
       const last = received.at(-1)!;
       expect(last.nodes.map((x) => x.text)).toEqual(["short", "採用", "面接は何回か", "2 回にする"]);
       expect(last.nodes.find((x) => x.kind === "論点")).toMatchObject({ pointStatus: "決定済み" });
-      // 反映ごとに round が進み、その反映の新しい発言の end の最大値を時刻として、記録が積み上がって届く
-      expect(received.map((s) => s.round)).toEqual([0, 1, 2]);
+      // 反映ごとに round が進み、その反映の新しい発言（1 件ずつ渡る）の end を時刻として、記録が積み上がって届く
+      expect(received.map((s) => s.round)).toEqual([0, 1, 2, 3]);
       expect(received[0]!.changes).toEqual([]);
       expect(received[1]!.changes).toEqual([
-        { round: 1, at: 19.2, change: "追加", node: "n1", kind: "議題", text: "採用" },
-        { round: 1, at: 19.2, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" },
+        { round: 1, at: 9.8, change: "追加", node: "n1", kind: "議題", text: "採用" },
+      ]);
+      expect(received[2]!.changes).toEqual([
+        ...received[1]!.changes,
+        { round: 2, at: 19.2, change: "追加", node: "n2", kind: "論点", text: "面接は何回か" },
       ]);
       expect(last.changes).toEqual([
-        ...received[1]!.changes,
-        { round: 2, at: 28, change: "決定済み化", node: "n2", kind: "論点", text: "面接は何回か" },
-        { round: 2, at: 28, change: "追加", node: "n3", kind: "決定", text: "2 回にする" },
+        ...received[2]!.changes,
+        { round: 3, at: 28, change: "決定済み化", node: "n2", kind: "論点", text: "面接は何回か" },
+        { round: 3, at: 28, change: "追加", node: "n3", kind: "決定", text: "2 回にする" },
       ]);
       // 根拠: 届いたスナップショットから、ノードの根拠の ID で発言（時刻・本文）を引ける
       const n1 = last.nodes.find((x) => x.id === "n1")!;
@@ -1863,8 +1864,9 @@ describe("CLI", () => {
 
       yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
 
-      expect(n).toBe(2); // 2 回とも更新へ到達したうえで
-      expect(fake.published.map((s) => s.nodes.length)).toEqual([1, 1]); // 初期のルート＋成功した 1 回（変更なし）だけ
+      expect(n).toBe(3); // 発言 3 件が 1 件ずつ、3 回とも更新へ到達したうえで
+      expect(fake.published.map((s) => s.nodes.length)).toEqual([1, 1, 1]); // 初期のルート＋成功した 2 回（変更なし）だけ。失敗した 1 回目は送らない
+      expect(fake.published.map((s) => s.round)).toEqual([0, 1, 2]);
     }));
 
     it.effect("再生が終わると配信を閉じる", () => Effect.gen(function* () {

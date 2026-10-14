@@ -66,7 +66,7 @@ const carries = (values: Record<string, unknown>, text: string) =>
   Object.values(values).some((v) => typeof v === "string" && v.includes(text));
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
-// short.transcript.json の発言: r1 [0.5, 9.8] / r2 [9.8, 19.2] / r3 [19.2, 28.0]。差分更新の呼び出しは [r1, r2] と [r3] の 2 回。
+// short.transcript.json の発言: r1 [0.5, 9.8] / r2 [9.8, 19.2] / r3 [19.2, 28.0]。差分更新は発言 1 件ごとに 1 回（r1・r2・r3 の 3 回）。
 
 // 入れ子のあるマップ（深さ 3）。決定は r1 と r3、TODO は r2 を根拠にする。
 const scriptA: Op[][] = [
@@ -90,16 +90,19 @@ const scriptB: Op[][] = [
 ];
 
 // play を 1 回流し、ランのフォルダを返す。ランごとにセッションの置き場を分けて、開始時刻の衝突を避ける。
-// usages を渡すと、n 回目の差分更新がその n 番目のトークン数を結果と一緒に返す（渡さない・足りない回は返さない）
+// script は「発言 r1・r2 が揃った時点の手」と「r3 の手」の 2 手で書く。発言は 1 件ずつ渡るので、r1 の呼び出しは何もせず（ops なし）、
+// script[0] を r2 の呼び出し、script[1] を r3 の呼び出しで返す。r1 の手は、r2 の呼び出しの時点で既知の発言（r1・r2）だけを根拠にしている。
+// usages を渡すと、n 回目（r1 の呼び出しが 0 回目）の差分更新がその n 番目のトークン数を結果と一緒に返す（渡さない・足りない回は返さない）
 const play = (script: Op[][], file = fixture, usages: DiffUsage[] = []) =>
   Effect.gen(function* () {
+    const steps: Op[][] = [[], ...script];
     const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-run-")));
     let n = 0;
     external.openClaudeUpdater.mockReturnValue({
       update: (_input: DiffInput) =>
         Effect.sync(() => {
           const usage = usages[n];
-          return { ops: script[n++] ?? [], ...(usage ? { usage } : {}) };
+          return { ops: steps[n++] ?? [], ...(usage ? { usage } : {}) };
         }),
       close: () => {},
     });
@@ -342,7 +345,7 @@ describe("eval: 複数のランを並べる", () => {
 describe("eval: log.jsonl から数える 3 指標", () => {
   const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
   const USAGE_HEADERS = ["入力トークン", "キャッシュ書き込みトークン", "キャッシュ読み出しトークン", "出力トークン"];
-  // 1 回目の呼び出し [r1, r2] で議題と要点を立て、2 回目の [r3] で要点の本文を変える（書き換え 1 回）。発言は 3 件
+  // r2 の呼び出しで議題と要点を立て、r3 の呼び出しで要点の本文を変える（書き換え 1 回）。発言は 3 件
   const scriptRewrite: Op[][] = [
     [
       { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ツールの共有", evidence: ["r1"] },
@@ -350,7 +353,7 @@ describe("eval: log.jsonl から数える 3 指標", () => {
     ],
     [{ op: "update", node: "n2", text: "justは辞書を育てる", evidence: ["r3"] }],
   ];
-  // 2 回目は根拠を足すだけ（text を渡さない）
+  // r3 の呼び出しは根拠を足すだけ（text を渡さない）
   const scriptEvidenceOnly: Op[][] = [scriptRewrite[0]!, [{ op: "update", node: "n2", evidence: ["r3"] }]];
 
   it.effect("3 列と、続くトークン数の 4 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", () => Effect.gen(function* () {
@@ -453,7 +456,7 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
 });
 
 describe("eval: 正解との再現率（キーワード）", () => {
-  // 決定の親は論点に限る。議題と論点を 1 回目で作り、決定は 2 回目で足す（r3 は 2 回目から根拠に使える。論点は scriptA と同じく n2）
+  // 決定の親は論点に限る。議題と論点を r2 の呼び出しで作り、決定は r3 の呼び出しで足す（r3 は r3 の呼び出しから根拠に使える。論点は scriptA と同じく n2）
   const base: Op[] = [
     { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
     { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },

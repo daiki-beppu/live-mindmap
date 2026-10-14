@@ -16,6 +16,14 @@ import { remark, textsOf } from "./fixtures/speakingRelay.ts";
 // いま話している文字（SpeakingFrame）をブラウザへ送る層のうち、本物のファイルシステムで記録するセッションとつなぐ部分。
 // 期待値は書き換え前のこのファイルと同じにする（order.md:49「期待値は変えない」）。
 
+// 反映の後に本物のファイルシステムへログを書いてから次の呼び出しが始まる。回数で区切る settleUntil では、CI の負荷で書き終わる前に尽きる。
+// 呼び出しが起きることだけを待つので、実時間（5 秒）で区切る。TestClock は進めない
+const settleUntil = (condition: () => boolean) =>
+  Effect.gen(function* () {
+    const deadline = Date.now() + 5_000;
+    while (!condition() && Date.now() < deadline) yield* Effect.yieldNow;
+  });
+
 // 同じ Session・同じ relay・同じ記録つきセッションの配線（openRecordedSession の onDiff）の上で、変化の前後を続けて観測する
 describe("仮の文字（未反映の発言 + 途中結果）が、反映で消える範囲", () => {
   type Call = { input: DiffInput; resolve: (ops: Op[]) => void; reject: (e: Error) => void };
@@ -72,22 +80,29 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     Effect.gen(function* () {
       const { session, say, partial, calls, frames, unreflectedAtPublish, add, idle } = yield* setup();
 
-      yield* say(remark(1, "相手", "赤"));
-      yield* say(remark(2, "相手", "青")); // r1・r2 が差分更新に渡る（結果待ち）
+      yield* say(remark(1, "相手", "赤")); // r1 だけがすぐ差分更新に渡る（結果待ち）
       expect(calls).toHaveLength(1);
-      yield* say(remark(3, "相手", "緑")); // 反映に渡していない
+      expect(calls[0]!.input.fresh.map((r) => r.id)).toEqual(["r1"]);
+      yield* say(remark(2, "相手", "青")); // 呼び出し中に届いたので、渡さずにためる
+      yield* say(remark(3, "相手", "緑"));
       yield* partial("相手", "…");
+      expect(calls).toHaveLength(1);
       expect(textsOf(frames, "相手").at(-1)).toBe("赤 青 緑 …"); // 反映前: 結果待ちの発言も未反映の発言も、途中結果も
 
-      calls[0]!.resolve(add(["r1", "r2"]));
-      yield* idle();
+      calls[0]!.resolve(add(["r1"]));
+      yield* settleUntil(() => calls.length === 2); // r1 の反映が済むと、ためた r2・r3 が 1 回にまとまって渡る
+      expect(calls[1]!.input.fresh.map((r) => r.id)).toEqual(["r2", "r3"]);
+      expect(textsOf(frames, "相手").at(-1)).toBe("青 緑 …"); // r1 だけが消える
+      expect(unreflectedAtPublish.at(-1)).toEqual(["r2", "r3"]); // 反映したマップの送信の時点で、すでに反映済みの発言は未反映から外れている
 
-      expect(textsOf(frames, "相手").at(-1)).toBe("緑 …"); // r1・r2 だけが消える
-      expect(unreflectedAtPublish.at(-1)).toEqual(["r3"]); // 反映したマップの送信の時点で、すでに反映済みの発言は未反映から外れている
-
-      yield* say(remark(4, "相手", "黄")); // 話し終えた（途中結果は空になる）。r3・r4 が差分更新に渡る
-      expect(textsOf(frames, "相手").at(-1)).toBe("緑 黄");
+      yield* say(remark(4, "相手", "黄")); // 話し終えた（途中結果は空になる）。r2・r3 の結果待ちの間に届いた
+      expect(textsOf(frames, "相手").at(-1)).toBe("青 緑 黄");
       calls[1]!.resolve([{ op: "noop", reason: "なし" }]);
+      yield* settleUntil(() => calls.length === 3);
+      expect(calls[2]!.input.fresh.map((r) => r.id)).toEqual(["r4"]);
+      expect(textsOf(frames, "相手").at(-1)).toBe("黄"); // r2・r3 が消え、r4 だけが残る
+
+      calls[2]!.resolve([{ op: "noop", reason: "なし" }]);
       yield* idle();
 
       expect(textsOf(frames, "相手").at(-1)).toBe(""); // 何も残らない
@@ -97,10 +112,9 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
   it.effect("反映が失敗しても、その回に渡した発言は仮の文字から消える。マップは送られない", () =>
     Effect.gen(function* () {
       const { say, partial, calls, frames, unreflectedAtPublish, idle } = yield* setup();
-      yield* say(remark(1, "相手", "赤"));
-      yield* say(remark(2, "相手", "青"));
+      yield* say(remark(1, "相手", "赤")); // r1 がすぐ渡り、結果待ち
       yield* partial("相手", "…");
-      expect(textsOf(frames, "相手").at(-1)).toBe("赤 青 …");
+      expect(textsOf(frames, "相手").at(-1)).toBe("赤 …");
       const publishedBefore = unreflectedAtPublish.length;
 
       calls[0]!.reject(new Error("差分更新の失敗"));
@@ -113,17 +127,20 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
   it.effect("トラックごとに別の仮の文字になる。相手の反映待ちの発言は、自分の仮の文字に出ない", () =>
     Effect.gen(function* () {
       const { say, partial, calls, frames, add, idle } = yield* setup();
-      yield* say(remark(1, "相手", "赤"));
-      yield* say(remark(2, "自分", "青"));
+      yield* say(remark(1, "相手", "赤")); // r1 がすぐ渡り、結果待ち
+      yield* say(remark(2, "自分", "青")); // 呼び出し中に届いたので、ためる
       yield* partial("相手", "…");
 
       expect(textsOf(frames, "相手").at(-1)).toBe("赤 …");
       expect(textsOf(frames, "自分").at(-1)).toBe("青");
 
-      calls[0]!.resolve(add(["r1", "r2"]));
-      yield* idle();
-
+      calls[0]!.resolve(add(["r1"]));
+      yield* settleUntil(() => calls.length === 2);
       expect(textsOf(frames, "相手").at(-1)).toBe("…");
+      expect(textsOf(frames, "自分").at(-1)).toBe("青"); // 相手の反映では消えない
+
+      calls[1]!.resolve([{ op: "noop", reason: "なし" }]);
+      yield* idle();
       expect(textsOf(frames, "自分").at(-1)).toBe("");
     }));
 
@@ -142,18 +159,21 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
 
   it.effect("途中結果と未反映の発言は、スナップショットのノード・エクスポート・ログに入らない", () =>
     Effect.gen(function* () {
-      const { session, say, partial, calls, dir, add, idle } = yield* setup();
-      yield* say(remark(1, "相手", "確定した発言ア"));
-      yield* say(remark(2, "相手", "確定した発言イ"));
-      yield* say(remark(3, "相手", "未反映の発言ウ"));
+      const { session, say, partial, calls, dir, add } = yield* setup();
+      yield* say(remark(1, "相手", "確定した発言ア")); // すぐ渡り、結果待ち
+      yield* say(remark(2, "相手", "確定した発言イ")); // 呼び出し中に届いたので、ためる
       yield* partial("相手", "ZZ-途中結果");
-      calls[0]!.resolve(add(["r1", "r2"], "採用"));
-      yield* idle();
+      calls[0]!.resolve(add(["r1"], "採用"));
+      yield* settleUntil(() => calls.length === 2); // r2 の呼び出しが始まり、結果待ち
+      yield* say(remark(3, "相手", "未反映の発言ウ")); // r2 の結果待ちの間に届き、ためる
+      calls[1]!.resolve(add(["r2"], "採用イ"));
+      yield* settleUntil(() => calls.length === 3);
+      expect(calls[2]!.input.fresh.map((r) => r.id)).toEqual(["r3"]); // r3 は呼び出しに渡ったが、結果を返さない
 
       // 観測単位（ノード・根拠の発言・変わったこと・ログのイベント）ごとに、途中結果が入っていないことを検査する
       const partialText = "ZZ-途中結果";
       const snapshot = yield* session!.snapshot;
-      expect(snapshot.nodes.map((n) => n.text)).toEqual(["定例", "採用"]); // 未反映の発言ウもノードにならない
+      expect(snapshot.nodes.map((n) => n.text)).toEqual(["定例", "採用", "採用イ"]); // 未反映の発言ウもノードにならない
       expect(snapshot.remarks.map((r) => r.id)).toEqual(["r1", "r2"]); // 根拠に挙がった発言だけ
       for (const text of [...snapshot.nodes.map((n) => n.text), ...snapshot.remarks.map((r) => r.text), ...snapshot.changes.map((c) => JSON.stringify(c))]) {
         expect(text).not.toContain(partialText);

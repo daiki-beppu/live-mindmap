@@ -208,7 +208,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     yield* runCli(["play", fixture, "--model", "fast"]).pipe(Effect.provide(deps.layer));
 
     expect(sdk.created.map((query) => query.model)).toEqual(["claude-haiku-5-5"]);
-    expect(sdk.created[0]!.messages).toHaveLength(2);
+    expect(sdk.created[0]!.messages).toHaveLength(3);
     const session = dirname(deps.stdout.join("").trim().split("\n")[0]!);
     expect(starts(session)).toEqual([expect.objectContaining({ type: "start", model: { name: "fast", route: "claude", local: false } })]);
     expect(sdk.created.map((query) => query.closed)).toEqual([1]);
@@ -288,12 +288,12 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     deps.stdout.length = 0;
     sdk.responses.push({ ops: Array.from({ length: nodeCount }, (_, n) => ({
       op: "add", ref: `topic${n + 1}`, parent: "root", kind: "議題", text: "採用", evidence: ["r1"],
-    })) }, { ops: [{ op: "noop", reason: "合成テスト" }] });
+    })) });
 
     yield* runCli(["eval", source, "--model", "fast"]).pipe(Effect.provide(deps.layer));
 
     expect(sdk.created.map((query) => query.model)).toEqual(["claude-haiku-5-5"]);
-    expect(sdk.created[0]!.messages).toHaveLength(2);
+    expect(sdk.created[0]!.messages).toHaveLength(3);
     expect(sdk.created[0]!.messages[0]!.message.content).toContain("今日は採用の進め方を決めます");
     const after = Object.fromEntries(readdirSync(source).map((name) => [name, readFileSync(join(source, name), "utf8")]));
     expect(after).toEqual(before);
