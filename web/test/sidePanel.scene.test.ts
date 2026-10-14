@@ -420,7 +420,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
     scene(
       app,
       given(modelOf(snap(), { ...OPENED, selection: { id: "A1", byKey: false }, sideHidden: true })),
-      expectScene(selector(".side")).toBeAbsent(),
+      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html)))).toEqual(["side", "side--selected", "side--hidden"])),
       nodeButton("A2"),
       clickedNode("A2"),
       toggleSide(true),
@@ -468,6 +468,61 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
       expectScene(selector(".side")).toBeAbsent(),
       toggleSide(true),
       tap((s) => expect(textOf(sideOf(s.html), ".changes__text")).toEqual(["報告", "消えたノード", "面接は何回か", "採用"])),
+    );
+  });
+});
+
+describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタン（Issue #969）", () => {
+  it("何も選んでいなければ、side--selected も閉じるボタンも描かない", () => {
+    scene(
+      app,
+      given(modelOf()),
+      mounted,
+      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html))).includes("side--selected")).toBe(false)),
+      expectScene(selector("button.side__close")).toBeAbsent(),
+    );
+  });
+
+  it("ノードを選ぶと .side に side--selected が付き、根拠のパネルの中に閉じるボタンが出る", () => {
+    scene(
+      app,
+      given(modelOf(snap(), OPENED)),
+      nodeButton("A1"),
+      clickedNode("A1"),
+      tap((s) => {
+        const side = sideOf(s.html);
+        expect(semanticClassesOf(classOf(side))).toEqual(["side", "side--selected"]);
+        expect(findAll("button.side__close")(evidenceOf(s.html))).toHaveLength(1);
+      }),
+      expectScene(selector("button.side__close")).toExist(),
+    );
+  });
+
+  it("右の列を隠したまま選ぶと、.side を side--hidden 付きで描き、閉じるボタンで選びを外すと .side が無くなる", () => {
+    scene(
+      app,
+      given(modelOf(snap(), { ...OPENED, sideHidden: true })),
+      expectScene(selector(".side")).toBeAbsent(),
+      nodeButton("A1"),
+      clickedNode("A1"),
+      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html)))).toEqual(["side", "side--selected", "side--hidden"])),
+      expectScene(selector("button.side__close")).toExist(),
+      click(selector("button.side__close")),
+      expectScene(selector(".side")).toBeAbsent(),
+      expectScene(selector(".map-node--selected")).toBeAbsent(),
+    );
+  });
+
+  it("閉じるボタンを押すと選びが外れ、目印も閉じるボタンも消える", () => {
+    scene(
+      app,
+      given(modelOf(snap(), { ...OPENED, selection: { id: "A1", byKey: false } })),
+      mounted,
+      expectScene(selector("button.side__close")).toExist(),
+      click(selector("button.side__close")),
+      expectScene(selector("button.side__close")).toBeAbsent(),
+      expectScene(selector(".map-node--selected")).toBeAbsent(),
+      tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html))).includes("side--selected")).toBe(false)),
     );
   });
 });

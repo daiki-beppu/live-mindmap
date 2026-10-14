@@ -400,3 +400,217 @@ describe("会議中（Foldkit 版）の寸法", () => {
     MEETING_TIMEOUT,
   );
 });
+
+// Issue #969: 幅 768px 以下（スマホ・縦向きの iPad）の並べ方。CSS の @media で切り替え、会議中の画面（.meeting）だけに効く。
+// 狭い幅では右の列とキーの一覧を隠し、ノードを選んでいる間だけ根拠を画面下のシートとして出す。字幕は左右 12px の余白を除いた幅いっぱい、知らせは字幕の上に 1 行で重ねる。
+// 769px 以上（Mac の幅）の並べ方は変えない
+const NARROW_VIEWPORTS = [
+  { width: 390, height: 844 },
+  { width: 768, height: 1024 },
+] as const;
+const MARGIN = 12;
+
+const selectFirstNode = async (page: Page): Promise<void> => {
+  // 自動のカメラは今の議題を追うので、狭い幅では先頭のノードが画面の外にあることがある。画面の中にある最初のノードを押す
+  const index = await page.evaluate(() =>
+    [...document.querySelectorAll(".map-node__button")].findIndex((el) => {
+      const r = el.getBoundingClientRect();
+      return r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight;
+    }),
+  );
+  expect(index, "画面の中にあるノードがある").toBeGreaterThanOrEqual(0);
+  await page.locator(".map-node__button").nth(index).click();
+  await page.waitForFunction(() => document.querySelector(".map-node--selected") !== null, undefined, { timeout: 10_000 });
+};
+
+describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width×$height", (viewport) => {
+  it(
+    "字幕は画面の下に左右 12px の余白を除いた幅いっぱいで、幅は 0 より大きく画面に収まる。マップは画面全体を覆う",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await page.locator(".captions").waitFor({ timeout: 10_000 });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
+      const layout = await rectOf(page, ".layout");
+      const captions = await rectOf(page, ".captions");
+      expect(captions.width).toBeGreaterThan(0);
+      expect(captions.left).toBeGreaterThanOrEqual(0);
+      expect(captions.right).toBeLessThanOrEqual(viewport.width);
+      near(captions.left, MARGIN, "字幕の左の余白");
+      near(viewport.width - captions.right, MARGIN, "字幕の右の余白");
+      expect(captions.bottom).toBeLessThanOrEqual(layout.bottom);
+      expect(captions.top).toBeGreaterThan(layout.top + layout.height / 2);
+      // カメラは測った画面の大きさから計算するので、.map が画面全体なら狭い幅でもマップは画面に合う
+      const map = await rectOf(page, ".map");
+      near(map.left, layout.left, "マップの左端");
+      near(map.right, layout.right, "マップの右端");
+      near(map.top, layout.top, "マップの上端");
+      near(map.bottom, layout.bottom, "マップの下端");
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "右の列（根拠・変わったこと）とキーの一覧は出ない",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await settled(page);
+      expect(await page.locator(".side").isVisible()).toBe(false);
+      expect(await page.locator(".changes").isVisible()).toBe(false);
+      await page.keyboard.press("Shift+?");
+      await settled(page);
+      expect(await page.locator(".key-list__keys").first().isVisible()).toBe(false);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "ノードを選ぶと根拠のシートが画面の下に出る（変わったことは出ない）。閉じるボタンと Esc のどちらでも選びが外れて閉じる",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await settled(page);
+      expect(await page.locator(".side").isVisible()).toBe(false);
+      await selectFirstNode(page);
+      await page.locator(".side").waitFor({ state: "visible", timeout: 10_000 });
+      const sheet = await rectOf(page, ".side");
+      near(sheet.left, 0, "シートの左端");
+      near(sheet.right, viewport.width, "シートの右端");
+      near(sheet.bottom, viewport.height, "シートの下端");
+      expect(sheet.height).toBeLessThanOrEqual(viewport.height / 2 + 1);
+      expect(sheet.height).toBeGreaterThan(0);
+      expect(await page.locator(".changes").isVisible()).toBe(false);
+      expect((await page.locator(".evidence__text").first().textContent())?.length ?? 0).toBeGreaterThan(0);
+      // 影は付けない（淡い塗り・枠・角丸だけ）
+      expect((await styleOf(page, ".side", ["box-shadow"]))["box-shadow"]).toBe("none");
+      // 開いても .map の大きさは変わらない（カメラが動き直さない）
+      const layout = await rectOf(page, ".layout");
+      const map = await rectOf(page, ".map");
+      near(map.width, layout.width, "シートを開いたときのマップの幅");
+      near(map.height, layout.height, "シートを開いたときのマップの高さ");
+
+      // 閉じるボタンで選びを外す
+      await page.locator(".side__close").click();
+      await page.locator(".side").waitFor({ state: "hidden", timeout: 10_000 });
+      expect(await page.locator(".map-node--selected").count()).toBe(0);
+
+      // Esc でも外れる
+      await selectFirstNode(page);
+      await page.locator(".side").waitFor({ state: "visible", timeout: 10_000 });
+      await page.keyboard.press("Escape");
+      await page.locator(".side").waitFor({ state: "hidden", timeout: 10_000 });
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "E で右の列を隠していても、ノードを選ぶと根拠のシートが出て、閉じるボタンで選びが外れて閉じる",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await settled(page);
+      await page.keyboard.press("E");
+      await settled(page);
+      expect(await page.locator(".side").isVisible()).toBe(false);
+      await selectFirstNode(page);
+      await page.locator(".side").waitFor({ state: "visible", timeout: 10_000 });
+      const sheet = await rectOf(page, ".side");
+      near(sheet.left, 0, "シートの左端");
+      near(sheet.right, viewport.width, "シートの右端");
+      near(sheet.bottom, viewport.height, "シートの下端");
+      expect(sheet.height).toBeLessThanOrEqual(viewport.height / 2 + 1);
+      expect(sheet.height).toBeGreaterThan(0);
+      expect((await page.locator(".evidence__text").first().textContent())?.length ?? 0).toBeGreaterThan(0);
+      await page.locator(".side__close").click();
+      await page.locator(".side").waitFor({ state: "hidden", timeout: 10_000 });
+      expect(await page.locator(".map-node--selected").count()).toBe(0);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "取り込みの知らせと共有画面の知らせは、字幕の上に 1 行で重なる",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await sendFrame(page, { type: "intake", status: "interrupted" });
+      await sendFrame(page, NOTICE_FRAMES.screen);
+      for (const selector of [".intake-notice", ".screen-notice", ".captions"]) await page.locator(selector).first().waitFor({ timeout: 10_000 });
+      await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
+      const captions = await rectOf(page, ".captions");
+      for (const selector of [".intake-notice", ".screen-notice"]) {
+        const notice = await rectOf(page, selector);
+        expect(notice.bottom, `${selector} の下端は字幕の上端より上`).toBeLessThanOrEqual(captions.top + 1);
+        expect(notice.left, `${selector} の左端`).toBeGreaterThanOrEqual(0);
+        expect(notice.right, `${selector} の右端`).toBeLessThanOrEqual(viewport.width);
+        // 1 行分の高さ（折り返さない）
+        const lineHeight = Number.parseFloat((await styleOf(page, selector, ["line-height"]))["line-height"]);
+        expect(notice.height, `${selector} の高さ`).toBeLessThanOrEqual(lineHeight + 1);
+      }
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+});
+
+describe("会議中（Foldkit 版）の広い幅: 769px 以上は今の並べ方のまま", () => {
+  it(
+    "1280×801（Mac の幅）: 何も選ばなくても右の列が幅 300px で見え、ノードを選んでも右の列のまま。閉じるボタンは出ない。字幕は幅 648px。? でキーの一覧が出る",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      await settled(page);
+      await page.locator(".captions").waitFor({ timeout: 10_000 });
+      const layout = await rectOf(page, ".layout");
+      expect(await page.locator(".side").isVisible()).toBe(true);
+      expect(await page.locator(".changes").isVisible()).toBe(true);
+      near((await rectOf(page, ".side")).width, 300, "右の列の幅");
+      near((await rectOf(page, ".captions")).width, 648, "字幕の幅");
+      await selectFirstNode(page);
+      await page.locator(".evidence__text").first().waitFor({ timeout: 10_000 });
+      const side = await rectOf(page, ".side");
+      near(side.width, 300, "ノードを選んだときの右の列の幅");
+      near(side.top, layout.top, "ノードを選んだときの右の列の上端");
+      near(side.right, layout.right, "ノードを選んだときの右の列の右端");
+      expect(await page.locator(".changes").isVisible()).toBe(true);
+      expect(await page.locator(".side__close").isVisible()).toBe(false);
+      await page.keyboard.press("Shift+?");
+      await page.locator(".key-list__keys").first().waitFor({ state: "visible", timeout: 10_000 });
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "1280×801: ノードを選んでから E で右の列を隠すと .side は見えず、.map は .layout と同じ幅。もう一度 E で幅 300px の右の列が戻る",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      await settled(page);
+      await selectFirstNode(page);
+      await page.locator(".evidence__text").first().waitFor({ timeout: 10_000 });
+      await page.keyboard.press("E");
+      await settled(page);
+      expect(await page.locator(".side").isVisible()).toBe(false);
+      expect(await page.locator(".side__close").isVisible()).toBe(false);
+      near((await rectOf(page, ".map")).width, (await rectOf(page, ".layout")).width, "マップの幅");
+      await page.keyboard.press("E");
+      await page.locator(".side").waitFor({ state: "visible", timeout: 10_000 });
+      near((await rectOf(page, ".side")).width, 300, "戻した右の列の幅");
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "769×1024（狭い幅の境界のすぐ上）: 右の列は幅 300px で見え、字幕の幅は今の式 min(720, 100vw − 632) = 137px",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport: { width: 769, height: 1024 } });
+      await settled(page);
+      await page.locator(".captions").waitFor({ timeout: 10_000 });
+      expect(await page.locator(".side").isVisible()).toBe(true);
+      near((await rectOf(page, ".side")).width, 300, "右の列の幅");
+      await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - 137) <= 1, { timeout: 10_000 }).toBe(true);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+});

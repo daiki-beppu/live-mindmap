@@ -296,7 +296,7 @@ const rememberBeforeOverview = (before: Model, after: Model, command: CameraComm
 };
 
 // 10 秒を計り直さない出来事（右の列・字幕の出し入れと、クリックでの選択）
-const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select";
+const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select" || event.type === "deselect";
 
 // 見る状態に出来事を渡し、返ってきたカメラの指示をその場で適用する。reduceViewing へ渡す木は Message を受ける前の Model（押した時点の木。反映だけは反映の後の Model）から作る。
 // previous は、目標の位置が変わったとき補間を始める元の表示位置を持つ Model（反映では Snapshot を差し替える前）
@@ -459,6 +459,7 @@ export const update = (model: Model, message: Message): Return =>
       return { model: applyViewing(model, found === null ? { type: "select", id: nodeId } : { type: "pointChange", id: nodeId, ...found }) };
     },
     // 右の列の Disclosure: 今の状態と同じ向きなら何もしない。違えば E と同じ出来事を渡し、sideHidden は reduceViewing だけが決める
+    ClickedEvidenceClose: () => ({ model: applyViewing(model, { type: "deselect" }) }),
     ToggledSide: ({ isOpen }) => (isOpen === (model.viewing.sideHidden !== true) ? { model } : { model: applyViewing(model, { type: "side", meta: false, ctrl: false, alt: false }) }),
     WheeledMapSurface: ({ x, y, deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {
       if (model.mode === "still") return { model };

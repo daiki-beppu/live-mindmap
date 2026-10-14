@@ -129,3 +129,35 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .review-rate__item:hover, .review-rate__item:focus-visible { background: var(--color-gray-600); }
 .review-rate__item[data-active] { background: var(--color-gray-600); }
 .review-rate__check svg { width: 16px; height: 16px; }
+
+/* 根拠のシートの閉じるボタン: 広い幅（と見返し）では出さない。狭い幅の会議中だけ下の @media が出す */
+.side__close { display: none; }
+
+/* 右の列を隠していて、ノードを選んでいる状態の .side: 広い幅と見返しでは見せない。狭い幅の会議中だけ、下の @media の .meeting .side--selected が出す */
+.side--hidden { display: none; }
+
+/* 狭い幅（スマホ・縦向きの iPad。Issue #969）: 幅 768px 以下の会議中の画面（.meeting。見返しには付かない）だけ並べ方を替える。見る人かどうかは区別しない。
+   DOM は変えず、.layout を CSS グリッドにする。列は左右 12px の余白と中身、行は下から 24px の余白・字幕・取り込みの知らせ・共有画面の知らせ（空の行は高さ 0）。
+   .map は全てのマスに広げる（右の列は絶対配置なので .map の大きさは変わらず、カメラが動き直さない）。シートは淡い塗り・枠・角丸だけで、影は付けない。
+   769px 以上の規則（上）は書き換えない */
+@media (max-width: 768px) {
+  .meeting .layout { display: grid; grid-template-columns: 12px minmax(0, 1fr) 12px; grid-template-rows: minmax(0, 1fr) auto auto auto 24px; }
+  .meeting .layout > .map { grid-column: 1 / -1; grid-row: 1 / -1; width: auto; height: auto; min-width: 0; }
+  .meeting .captions { position: relative; left: auto; bottom: auto; transform: none; width: auto; grid-column: 2; grid-row: 4; }
+  .meeting .intake-notice, .meeting .screen-notice, .meeting .layout--local > .screen-notice {
+    position: relative; left: auto; top: auto; bottom: auto; transform: none; width: auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.5; text-align: center; z-index: 5;
+  }
+  .meeting .intake-notice { grid-column: 2; grid-row: 3; }
+  .meeting .screen-notice, .meeting .layout--local > .screen-notice { grid-column: 2; grid-row: 2; }
+  .meeting .changes, .meeting .key-list__anchor, .meeting .side { display: none; }
+  .meeting .side--selected {
+    display: flex; position: absolute; left: 0; right: 0; bottom: 0; width: auto; height: auto; max-height: 50%;
+    box-sizing: border-box; background: var(--color-white); border: 0; border-top: 1px solid var(--color-gray-200); border-radius: 12px 12px 0 0; box-shadow: none; z-index: 6;
+  }
+  .meeting .side--selected .evidence { position: relative; border-bottom: 0; }
+  .meeting .side__close {
+    display: block; position: absolute; top: 8px; right: 12px; padding: 4px 10px; font: inherit; font-size: 13px; color: var(--color-gray-700);
+    background: var(--color-gray-50); border: 1px solid var(--color-gray-200); border-radius: 8px; box-shadow: none; cursor: pointer;
+  }
+}

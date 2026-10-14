@@ -741,7 +741,7 @@ describe("会議中の Scene: 変わったことの列と根拠のパネル", ()
     );
   });
 
-  it("右の列を隠すと、選択は残ったまま .side だけが描かれなくなり、戻すと根拠がそのまま出る", () => {
+  it("右の列を隠すと、選択は残ったまま .side に side--hidden が付き（広い幅では見えない）、戻すと根拠がそのまま出る", () => {
     meetingScene(init(false),
       frame(FIRST),
       settle,
@@ -749,7 +749,7 @@ describe("会議中の Scene: 変わったことの列と根拠のパネル", ()
       settle,
       press("E"),
       settle,
-      expectScene(selector(".side")).toBeAbsent(),
+      expectScene(selector(".side.side--hidden")).toExist(),
       tap((sim) => expect(selectedIds(sim.html)).toEqual(["A"])),
       press("E"),
       settle,

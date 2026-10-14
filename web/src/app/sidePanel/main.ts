@@ -42,6 +42,7 @@ function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
     [h.Class("evidence flex-1 min-h-0 box-border p-[12px] overflow-y-auto "+"[border-bottom:1px_solid_var(--color-gray-200)]"), h.AriaLabelledBy("evidence-heading")],
     [
       h.h2([h.Id("evidence-heading")], ["根拠"]),
+      selectedId === null ? null : h.button([h.Type("button"), h.Class("side__close"), h.OnClick(Message.ClickedEvidenceClose())], ["閉じる"]),
       ...(selectedId === null
         ? [h.p([h.Class("evidence__empty text-gray-500")], ["ノードを選ぶと、根拠の発言が出ます"])]
         : evidence === null
@@ -87,8 +88,9 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html | null 
       id: "side",
       isOpen: model.viewing.sideHidden !== true,
       onToggle: (isOpen) => Message.ToggledSide({ isOpen }),
-      // 隠しているときは .side ごと描かない（animatePanel は使わない）
-      toView: ({ panel }) => (model.viewing.sideHidden === true ? null : h.div([h.Class("side flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900"), ...panel], [evidencePanel(h, model), changeList(h, model)])),
+      // 隠していて選んでいないときは .side ごと描かない（animatePanel は使わない）。
+      // 隠していて選んでいるときは side--hidden を付けて描く（狭い幅の会議中だけ、根拠のシートとして出す）
+      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], [evidencePanel(h, model), changeList(h, model)])),
     },
     h,
   ),
