@@ -1,5 +1,6 @@
-import { mkdir, readFile, readdir, readlink, symlink, writeFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, readlink, realpath, symlink, writeFile, rm } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber, Result, Stream } from "effect";
 import { vi } from "vitest";
@@ -59,10 +60,10 @@ describe("管理 Claude SDK の導入と公開", () => {
       expect(events.filter((event) => event.type === "result")).toMatchObject([{ type: "result", items: [ready] }]);
       expect(yield* deps.check(["claude"])).toMatchObject([ready]);
       const record = JSON.parse(yield* Effect.tryPromise(() => readFile(join(root, "claude/current/.ready.json"), "utf8"))) as { hashes: Record<string, string> };
-      expect(Object.keys(record.hashes)).toHaveLength(1);
-      for (const binary of Object.keys(record.hashes)) {
-        expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe("synthetic CLI binary");
-      }
+      const entity = basename(yield* Effect.tryPromise(() => realpath(join(root, "claude/current"))));
+      const binary = join(root, "claude", entity, "node_modules", `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`, process.platform === "win32" ? "claude.exe" : "claude");
+      expect(record.hashes).toEqual({ [binary]: createHash("sha256").update("synthetic CLI binary").digest("hex") });
+      expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe("synthetic CLI binary");
       const module = yield* deps.load("claude");
       expect((module as unknown as { query: unknown }).query).toBeTypeOf("function");
       expect(yield* Effect.tryPromise(() => leftovers(root))).toEqual([]);

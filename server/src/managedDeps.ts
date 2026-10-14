@@ -43,6 +43,7 @@ const LOCK = "install.lock";
 const READY = ".ready.json";
 const MARKER = "INSTALLATION_COMPLETE";
 const CLOUDFLARED_BINARY = "cloudflared";
+// hashes: cloudflared では使うとき（validateExecutable）の照合に使う。Chromium と Claude では導入時の記録だけで照合しない。
 const ReadyRecord = Schema.Struct({
   version: Schema.String,
   installedAt: Schema.String,
@@ -374,11 +375,12 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const pkg = yield* readJson(join(work, "node_modules", packageName, "package.json"), PackageRecord);
       if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "導入版が固定版と一致しません" });
       const binary = yield* installedBinary(work);
-      const expected = yield* hash(binary);
-      if ((yield* hash(binary)) !== expected) return yield* new ManagedDepsFailed({ message: "導入直後のハッシュが一致しません" });
+      // Chromium と Claude は導入時点のハッシュを記録するだけで、後から照合しない。
+      // Claude は npm ci が lock の integrity で照合済み、headless shell は Playwright が取得するため期待値を持たない。
+      const recorded = yield* hash(binary);
       const now = yield* DateTime.now;
       const publishedBinary = name === "claude" ? claudeBinary(entity) : binary;
-      yield* fs.writeFileString(join(work, READY), JSON.stringify({ version, installedAt: DateTime.formatIso(now), hashes: { [publishedBinary]: expected } }));
+      yield* fs.writeFileString(join(work, READY), JSON.stringify({ version, installedAt: DateTime.formatIso(now), hashes: { [publishedBinary]: recorded } }));
     });
     const cleanup = <E>(effect: Effect.Effect<void, E>) => effect.pipe(Effect.catch((error) => Effect.logWarning(`管理依存の後片付けに失敗しました: ${String(error)}`)));
 
@@ -427,7 +429,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
         Stream.concat(progress(`ダウンロード: ${name === "cloudflared" ? CLOUDFLARED_BINARY : packageName}`), step(acquireArtifact)),
         Stream.concat(
           name === "chromium" ? Stream.concat(progress("展開: Chromium headless shell"), step(run(lock, { command: process.execPath, args: [join(work, "node_modules/playwright-core/cli.js")] }, ["install", "--only-shell", "chromium"], work, false))) : Stream.empty,
-          Stream.concat(progress("確認: 版・完了 marker・ハッシュ"), Stream.unwrap(Effect.gen(function* () {
+          Stream.concat(progress(name === "cloudflared" ? "確認: 版・完了 marker・ハッシュ" : "確認: 版・完了 marker、ハッシュを記録"), Stream.unwrap(Effect.gen(function* () {
             yield* verify(work, entity);
             yield* Effect.acquireRelease(entityAccess.take(1), () => entityAccess.release(1));
             yield* fs.rename(work, entity).pipe(Effect.uninterruptible);
