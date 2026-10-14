@@ -59,8 +59,8 @@ describe("openRecordedSession の共有画面", () => {
     Effect.gen(function* () {
       const { session, lines } = yield* open();
       yield* session.pushScreen(shot(5, allBytes), ["港南店", "Zendesk"]);
-      yield* session.pushScreen(shot(6, new Uint8Array([9, 9, 9]), "b"));
-      yield* session.push(remark("r1", 8)); // 発言 1 件ですぐ差分更新が呼ばれる
+      yield* session.pushScreen(shot(15, new Uint8Array([9, 9, 9]), "b"));
+      yield* session.push(remark("r1", 20)); // 発言 1 件ですぐ差分更新が呼ばれる
       yield* session.idle;
 
       const screens = lines().filter((l) => l.type === "screen");

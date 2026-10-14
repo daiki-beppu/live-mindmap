@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
-import { InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange } from "../src/core/index.ts";
+import { TestClock } from "effect/testing";
+import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, InvalidLogEvent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type ScreenChange, type Session } from "../src/core/index.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { remark, restore, scripted, type Step } from "./fixtures/restore.ts";
 import { collectLog, forbiddenUpdater, logLayer, settleUntil, silentLog, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
@@ -493,8 +494,8 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
 
   // 元のセッション: 2 回目の呼び出しは失敗。最後の呼び出しの後に、まだ添えていない変化が 3 件残る（F は最後の diff の区切りより前の時刻だが、行は diff より後）
   // 発言 1 件ごとに 1 回呼ぶ。
-  //   call 1 (cutoff 10): A@1, B@2 / call 2 (cutoff 20, 失敗): C@15 → 最後に添えた 2 件は B, C
-  //   diff より後に受けた: F@18（区切り 20 以下）, D@100, E(なし)@120
+  //   call 1 (cutoff 10): A@1 を添え、B@2 は 10 秒未満なので持ち越す / call 2 (cutoff 40, 失敗): 持ち越した B と C@15 → 最後に添えた 2 件は B, C
+  //   diff より後に受けた: F@28（区切り 40 以下）, D@100, E(なし)@120
   const original = Effect.gen(function* () {
     const events: LogEvent[] = [];
     const screens: Screens = [];
@@ -505,9 +506,9 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
     yield* session.push(spoken("a1", 10));
     yield* session.idle;
     yield* session.pushScreen(shot(15, "C"));
-    yield* session.push(spoken("a2", 20));
+    yield* session.push(spoken("a2", 40));
     yield* session.idle;
-    yield* session.pushScreen(shot(18, "F"));
+    yield* session.pushScreen(shot(28, "F"));
     yield* session.pushScreen(shot(100, "D"));
     yield* session.pushScreen(gone(120));
     return { session, live, events, screens };
@@ -522,7 +523,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       yield* session.idle;
       const expected = live.calls[2]!;
       // 元のセッションの続きで、3 件添える（F・D・E）と、2 件送り直す（B・C）ことが前提
-      expect(view(expected.screens)!.map((s) => s.start)).toEqual([18, 100, 120]);
+      expect(view(expected.screens)!.map((s) => s.start)).toEqual([28, 100, 120]);
       expect(view(expected.previousScreens)!.map((s) => s.start)).toEqual([2, 15]);
 
       const cont = scripted([]);
@@ -547,7 +548,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       expect(reads).toEqual([]);
       yield* restored.push(spoken("a3", 200));
       yield* restored.idle;
-      expect([...reads].sort()).toEqual(["0002.0.jpg", "0015.0.jpg", "0018.0.jpg", "0100.0.jpg"]);
+      expect([...reads].sort()).toEqual(["0002.0.jpg", "0015.0.jpg", "0028.0.jpg", "0100.0.jpg"]);
     }));
 
   it.effect("復元した後に同じ時刻の画面を受けても、前の画像を上書きしない（ファイル名は -2 から番号が付く）", () =>
@@ -558,12 +559,12 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       const { log } = reader(screens, lines, written);
       const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(forbiddenUpdater, log)));
       yield* restored.pushScreen(shot(2, "again")); // B と同じ秒
-      yield* restored.pushScreen(shot(18, "again2")); // 添えていない F と同じ秒
+      yield* restored.pushScreen(shot(28, "again2")); // 添えていない F と同じ秒
       yield* restored.pushScreen(shot(1, "old")); // 最後に添えた 2 件には入らない A と同じ秒
-      expect(written.map((w) => w.file)).toEqual(["0002.0-2.jpg", "0018.0-2.jpg", "0001.0-2.jpg"]);
+      expect(written.map((w) => w.file)).toEqual(["0002.0-2.jpg", "0028.0-2.jpg", "0001.0-2.jpg"]);
       expect(lines.filter((l) => l.type === "screen")).toEqual([
         { type: "screen", start: 2, image: "0002.0-2.jpg" },
-        { type: "screen", start: 18, image: "0018.0-2.jpg" },
+        { type: "screen", start: 28, image: "0028.0-2.jpg" },
         { type: "screen", start: 1, image: "0001.0-2.jpg" },
       ]);
     }));
@@ -572,7 +573,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
   const duringCall: [string, ChangeKind][] = [["成功", "success"], ["失敗", "failure"]];
   type ChangeKind = "success" | "failure";
   for (const [label, kind] of duringCall) {
-    for (const [imageLabel, lateImage] of [["画像あり", shot(18, "F")], ["「なし」", gone(18)]] as const) {
+    for (const [imageLabel, lateImage] of [["画像あり", shot(23, "F")], ["「なし」", gone(23)]] as const) {
       it.effect(`応答待ちの間に受けた画面（${imageLabel}）は、呼び出しが${label}でも復元後の続きに残り、元のセッションと一致する`, () =>
         Effect.gen(function* () {
           const events: LogEvent[] = [];
@@ -587,12 +588,12 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
           };
           const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events, screens))));
           yield* session.pushScreen(shot(1, "A"));
-          yield* session.pushScreen(shot(2, "B"));
-          yield* session.push(spoken("a1", 20));
+          yield* session.pushScreen(shot(12, "B"));
+          yield* session.push(spoken("a1", 25));
           yield* settleUntil(() => calls.length === 1); // 1 回目が応答待ちになるまで
           expect(calls).toHaveLength(1);
           yield* session.pushScreen(lateImage);
-          yield* session.pushScreen(gone(19));
+          yield* session.pushScreen(gone(24));
           yield* Deferred.succeed(gate, undefined);
           yield* session.idle;
 
@@ -602,8 +603,8 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
           yield* session.idle;
           expect(calls).toHaveLength(2);
           const expected = calls[1]!;
-          expect(view(expected.screens)!.map((x) => x.start)).toEqual([18, 19]);
-          expect(view(expected.previousScreens)!.map((x) => x.start)).toEqual([1, 2]);
+          expect(view(expected.screens)!.map((x) => x.start)).toEqual([23, 24]);
+          expect(view(expected.previousScreens)!.map((x) => x.start)).toEqual([1, 12]);
 
           const cont = scripted([]);
           const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
@@ -616,6 +617,230 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         }));
     }
   }
+
+  // 持ち越し（Issue #927）: ログに残るのは添えた画面（diff の screens）だけ。持ち越しの変化と 10 秒の起点は、ログから同じに求め直せること
+  describe("持ち越しと 10 秒の起点の復元", () => {
+    // 同じ入力列を、元のセッションと、途中のログから復元したセッションの両方へ流して、続きの呼び出しに添える画面を比べる
+    const compare = (prepare: (s: Session) => Effect.Effect<void>, next: readonly number[], images = true) =>
+      Effect.gen(function* () {
+        const events: LogEvent[] = [];
+        const screens: Screens = [];
+        const live = scripted([]);
+        const session = yield* makeSession({ title: "定例", images }).pipe(Effect.provide(Layer.merge(updaterLayer(live.update), collectLog(events, screens))));
+        yield* prepare(session);
+        const logged = [...events];
+        const before = live.calls.length;
+        const cont = scripted([]);
+        const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
+        for (const [i, end] of next.entries()) {
+          yield* session.push(spoken(`n${i}`, end));
+          yield* session.idle;
+          yield* restored.push(spoken(`n${i}`, end));
+          yield* restored.idle;
+        }
+        return { liveCalls: live.calls.slice(before), restoredCalls: cont.calls };
+      });
+    const startsOfCall = (c: DiffInput) => view(c.screens)?.map((x) => x.start);
+    const previousOfCall = (c: DiffInput) => view(c.previousScreens)?.map((x) => x.start);
+
+    it.effect("持ち越している変化は、復元した後も、10 秒が過ぎるまで添えず、過ぎたら添える（復元しなかった場合と同じ）", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* compare(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              yield* s.pushScreen(shot(4, "Y"));
+              yield* s.pushScreen(shot(8, "Z"));
+              yield* s.push(spoken("p2", 9));
+              yield* s.idle;
+            }),
+          [9.5, 10, 20],
+        );
+        // 前提: 元のセッションは Z を 10 秒が過ぎた呼び出しで 1 度だけ添える
+        expect(liveCalls.map(startsOfCall)).toEqual([undefined, [8], undefined]);
+        expect(restoredCalls.map(startsOfCall)).toEqual(liveCalls.map(startsOfCall));
+        expect(restoredCalls.map(previousOfCall)).toEqual(liveCalls.map(previousOfCall));
+        expect(liveCalls.map((c) => view(c.screens))).toEqual(restoredCalls.map((c) => view(c.screens)));
+      }));
+
+    it.effect("10 秒の起点は、送り直す 2 件（最後に添えた画面）から画像が押し出されても、復元後に失われない", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* compare(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              for (const [i, t] of [2, 3, 4].entries()) {
+                yield* s.pushScreen(gone(t));
+                yield* s.push(spoken(`q${i}`, t + 0.5));
+                yield* s.idle;
+              }
+              yield* s.pushScreen(shot(8, "Z")); // X から 10 秒未満。最後に添えた 2 件は「なし」だけ
+            }),
+          [9, 10],
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([undefined, [8]]);
+        expect(restoredCalls.map(startsOfCall)).toEqual(liveCalls.map(startsOfCall));
+      }));
+
+    it.effect("共有の終了を添えたあとでも、10 秒の起点は最後に添えた画像のまま復元される", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* compare(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              yield* s.pushScreen(gone(5));
+              yield* s.push(spoken("p2", 6));
+              yield* s.idle;
+              yield* s.pushScreen(shot(12, "W"));
+            }),
+          [13],
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([[12]]);
+        expect(restoredCalls.map(startsOfCall)).toEqual([[12]]);
+      }));
+
+    it.effect("画像を添えない会議（screen-input-skipped）で捨てた最新の画像は、復元しても持ち越しにならない", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* compare(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(1, "X"));
+              yield* s.push(spoken("p1", 9));
+              yield* s.idle;
+            }),
+          [30],
+          false,
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([undefined]);
+        expect(restoredCalls.map(startsOfCall)).toEqual([undefined]);
+      }));
+
+    it.effect("途中の変化は復元後も添えない（持ち越した 1 件だけが残る）", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* compare(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              yield* s.pushScreen(shot(3, "Y"));
+              yield* s.pushScreen(shot(6, "Z"));
+              yield* s.push(spoken("p2", 7));
+              yield* s.idle;
+            }),
+          [30, 40],
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([[6], undefined]);
+        expect(restoredCalls.map(startsOfCall)).toEqual([[6], undefined]);
+      }));
+
+    // 一時停止の回は diff の行を書かない。復元は選ぶ前の画面の状態から続けるので、ライブも選ぶ前に戻って再試行する
+    // paused の回（paused 番目の呼び出し）を Deferred で止め、その間に during を受けてから一時停止させる。
+    // 続きの発言を元のセッション（時計を進めて再試行）と復元したセッションの両方へ流して、添える画面を比べる
+    const comparePaused = (prepare: (s: Session) => Effect.Effect<void>, pausedEnd: number, during: readonly ScreenChange[], next: readonly number[]) =>
+      Effect.gen(function* () {
+        const events: LogEvent[] = [];
+        const screens: Screens = [];
+        const gate = yield* Deferred.make<void>();
+        const calls: DiffInput[] = [];
+        let pausedCall = Number.POSITIVE_INFINITY;
+        const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> => {
+          calls.push(input);
+          if (calls.length !== pausedCall) return Effect.succeed({ ops: [] });
+          return Deferred.await(gate).pipe(Effect.andThen(Effect.fail(new DiffUpdatePaused({ reason: "ChatGPT の利用上限", message: "上限" }))));
+        };
+        const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events, screens))));
+        yield* prepare(session);
+        pausedCall = calls.length + 1;
+        yield* session.push(spoken("pz", pausedEnd));
+        yield* settleUntil(() => calls.length === pausedCall);
+        for (const change of during) yield* session.pushScreen(change);
+        yield* Deferred.succeed(gate, undefined);
+        yield* session.idle;
+        expect(events.at(-1)).toMatchObject({ type: "diff-update-paused" });
+        const logged = [...events];
+        const before = calls.length;
+        const cont = scripted([]);
+        const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
+        // 1 つ目の発言で、元のセッションは時計を進めて再試行し、復元したセッションは新しい発言で呼ぶ。どちらも一時停止した発言を含む
+        yield* session.push(spoken("n0", next[0]!));
+        yield* TestClock.adjust(DIFF_UPDATE_RETRY_MS);
+        yield* settleUntil(() => calls.length === before + 1);
+        yield* session.idle;
+        yield* restored.push(spoken("n0", next[0]!));
+        yield* restored.idle;
+        for (const [i, end] of next.slice(1).entries()) {
+          yield* session.push(spoken(`n${i + 1}`, end));
+          yield* session.idle;
+          yield* restored.push(spoken(`n${i + 1}`, end));
+          yield* restored.idle;
+        }
+        return { liveCalls: calls.slice(before), restoredCalls: cont.calls };
+      });
+
+    it.effect("一時停止した回で新しい持ち越しができても、復元と元のセッションの続きは一致する（持ち越しは選ぶ前に戻る）", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* comparePaused(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              yield* s.pushScreen(shot(4, "Y"));
+            }),
+          5, [], [12, 20],
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([undefined, [4]]);
+        expect(restoredCalls.map(startsOfCall)).toEqual(liveCalls.map(startsOfCall));
+        expect(restoredCalls.map(previousOfCall)).toEqual(liveCalls.map(previousOfCall));
+        expect(restoredCalls.map(previousOfCall)).toEqual([[0], [0]]);
+      }));
+
+    it.effect("一時停止した回で、それまでの持ち越しが添える対象に選ばれても、復元と元のセッションの続きは一致する（選んだ画面は戻る）", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* comparePaused(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              yield* s.pushScreen(shot(8, "Z"));
+              yield* s.push(spoken("p2", 9));
+              yield* s.idle;
+            }),
+          10, [], [11],
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([[8]]);
+        expect(restoredCalls.map(startsOfCall)).toEqual([[8]]);
+        expect(liveCalls.map(previousOfCall)).toEqual([[0]]);
+        expect(restoredCalls.map(previousOfCall)).toEqual([[0]]);
+      }));
+
+    it.effect("一時停止した回の応答待ちの間に受けた画面は、選ぶ前に戻した後も失われず、復元と元のセッションの続きは一致する", () =>
+      Effect.gen(function* () {
+        const { liveCalls, restoredCalls } = yield* comparePaused(
+          (s) =>
+            Effect.gen(function* () {
+              yield* s.pushScreen(shot(0, "X"));
+              yield* s.push(spoken("p1", 1));
+              yield* s.idle;
+              yield* s.pushScreen(shot(8, "Z"));
+              yield* s.push(spoken("p2", 9));
+              yield* s.idle;
+            }),
+          10, [shot(25, "W")], [11, 30],
+        );
+        expect(liveCalls.map(startsOfCall)).toEqual([[8], [25]]);
+        expect(restoredCalls.map(startsOfCall)).toEqual([[8], [25]]);
+        expect(restoredCalls.map(previousOfCall)).toEqual(liveCalls.map(previousOfCall));
+      }));
+  });
 
   it.effect("diff の screenCount が、そこまでに読んだ screen の行の数より大きいログは、その diff の位置の InvalidLogEvent で失敗する", () =>
     Effect.gen(function* () {
