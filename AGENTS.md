@@ -24,7 +24,11 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 
 SDK または `playwright-core` の固定版を更新するときは、[Claude の更新手順](server/managed-deps/claude/README.md) または [Chromium の更新手順](server/managed-deps/chromium/README.md) を読む。
 
-Run before a PR: `bash helper/scripts/build-webrtc-apm.sh` (needs `uv`; a no-op once built), `pnpm typecheck`, `pnpm test` while implementing (unit tests of server, web and helper), `pnpm test:it` when done (light integration tests of all three). Run heavy ITs you added or changed by file, e.g. `pnpm --filter @live-mindmap/server exec vitest run test/foo.heavy.test.ts`, and leave the full set to CI. State the layers you ran and their results in the PR body. Before merging, also follow `CODING_STANDARDS.md`. Merge with `gh pr merge --squash --auto` instead of waiting on CI; if the PR then shows `DIRTY`, rebase onto `origin/main` and push, or it stays unmerged.
+Run before a PR: `bash helper/scripts/build-webrtc-apm.sh` (needs `uv`; a no-op once built), `pnpm typecheck` (ends with the root `pnpm fallow`: `.fallowrc.json`, 未使用・重複・複雑度。1 件でも落ちる), `pnpm test` while implementing (unit tests of server, web and helper), `pnpm test:it` when done (light integration tests of all three). Run heavy ITs you added or changed by file, e.g. `pnpm --filter @live-mindmap/server exec vitest run test/foo.heavy.test.ts`, and leave the full set to CI. State the layers you ran and their results in the PR body. Before merging, also follow `CODING_STANDARDS.md`. Merge with `gh pr merge --squash --auto` instead of waiting on CI; if the PR then shows `DIRTY`, rebase onto `origin/main` and push, or it stays unmerged.
+
+When fallow fails, the default fix is to rewrite the code; suppress only as `CODING_STANDARDS.md` → Suppressions allows. CI's `ts` job runs fallow last, with `github-annotations` output and `--fail-on-issues`.
+
+`fallow` is exact-pinned in the root `package.json`, because a new release can add checks or change defaults and turn a green `main` red. To bump it, read the changelog for new checks and changed defaults, fix every newly reported issue in the same PR, and don't add suppressions in bulk to a PR that only raises the version.
 
 Read [`docs/agents/checks.md`](docs/agents/checks.md) (what each command runs, test layers, CI jobs) when you add or change a test, when a check fails, or when you change CI. When you add a test, also read the Tests section of `CODING_STANDARDS.md`.
 
