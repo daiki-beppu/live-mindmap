@@ -125,9 +125,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 const n = yield* Ref.updateAndGet(count, (c) => c + 1);
                 // words は Remark に入れず、ログの行にだけ残す。関所を通った後の本文を語彙で直し、直した本文を発言の本文にする
                 // （ログの raw には直す前の本文、words には直す前の位置のままを残す）。words が無い発言は直さない
-                const { words, ...rest } = settled;
+                // wordTimes（Issue #1019）も Remark に入れず、ログの行にだけ残す（本文の位置は直す前のまま）
+                const { words, wordTimes, ...rest } = settled;
                 const text = words === undefined ? rest.text : correctRemark(yield* Ref.get(vocabulary), rest.text, words, commonWords).text;
-                yield* session.push({ ...rest, text, id: `r${n}` }, words === undefined ? undefined : { raw: rest.text, words });
+                yield* session.push({ ...rest, text, id: `r${n}` }, words === undefined ? undefined : { raw: rest.text, words }, wordTimes);
                 yield* relay.remark(settled.track);
               }),
           });

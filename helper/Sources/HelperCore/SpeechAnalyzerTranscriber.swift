@@ -110,7 +110,8 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                             text: String(result.text.characters),
                             isFinal: result.isFinal,
                             start: range.start.isNumeric ? range.start.seconds : 0,
-                            end: range.end.isNumeric ? range.end.seconds : 0
+                            end: range.end.isNumeric ? range.end.seconds : 0,
+                            wordTimes: Self.wordTimes(of: result.text)
                         )))
                     }
                     continuation.finish()
@@ -123,6 +124,21 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
                 collector.cancel()
             }
         }
+    }
+
+    /// 結果の本文から、run ごとの区間を取り出す。秒はアナライザ基準のまま（原点への補正は `TrackTimeline.align`）。
+    /// 区間の無い run（`audioTimeRange` が無い・数値でない）は、位置だけ進めて要素を作らない。
+    static func wordTimes(of text: AttributedString) -> [WordTime] {
+        var location = 0
+        var times: [WordTime] = []
+        for run in text.runs {
+            let length = String(text.characters[run.range]).utf16.count
+            if let range = run.audioTimeRange, range.start.isNumeric, range.end.isNumeric {
+                times.append(WordTime(location: location, length: length, start: range.start.seconds, end: range.end.seconds))
+            }
+            location += length
+        }
+        return times
     }
 
     public static func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {

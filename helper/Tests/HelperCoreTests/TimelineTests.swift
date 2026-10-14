@@ -84,6 +84,28 @@ struct TimelineTests {
         #expect(partial.shifted(by: 2) == TranscriptionResult(text: "こんに", isFinal: false, start: 2, end: 3))
     }
 
+    @Test("時刻のずらしは語の区間の start と end にも同じ秒数を足し、位置と長さは変えない")
+    func shiftMovesWordTimes() {
+        let result = TranscriptionResult(
+            text: "こんにちは", isFinal: true, start: 1.0, end: 2.5,
+            wordTimes: [WordTime(location: 0, length: 3, start: 1.0, end: 1.5), WordTime(location: 3, length: 2, start: 1.5, end: 2.5)])
+        #expect(result.shifted(by: 0.75) == TranscriptionResult(
+            text: "こんにちは", isFinal: true, start: 1.75, end: 3.25,
+            wordTimes: [WordTime(location: 0, length: 3, start: 1.75, end: 2.25), WordTime(location: 3, length: 2, start: 2.25, end: 3.25)]))
+    }
+
+    @Test("トラックの時間軸の align は、語の区間も共通の原点基準にそろえる")
+    func alignShiftsWordTimes() throws {
+        let origin = AudioGetCurrentHostTime()
+        let timeline = TrackTimeline(origin: origin)
+        timeline.record(try audio(at: hostTime(after: origin, nanos: 2_000_000_000)))
+        let aligned = timeline.align(TranscriptionResult(
+            text: "はい", isFinal: false, start: 0, end: 1, wordTimes: [WordTime(location: 0, length: 2, start: 0.25, end: 0.5)]))
+        #expect(aligned.wordTimes.count == 1)
+        #expect(abs(aligned.wordTimes[0].start - 2.25) < 0.001 && abs(aligned.wordTimes[0].end - 2.5) < 0.001)
+        #expect(aligned.wordTimes[0].location == 0 && aligned.wordTimes[0].length == 2)
+    }
+
     @Test("0 秒のずらしは結果を変えない")
     func zeroShiftIsIdentity() {
         let result = TranscriptionResult(text: "はい", isFinal: true, start: 4, end: 5)

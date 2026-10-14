@@ -33,7 +33,7 @@ struct WebSocketServerITTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let json = try HelperEvent.partial(track: .相手, start: 1, end: 2, text: "こんに", duplicate: false, words: transcriptWords("こんに")).jsonString()
+        let json = try HelperEvent.partial(track: .相手, start: 1, end: 2, text: "こんに", duplicate: false, words: transcriptWords("こんに"), wordTimes: []).jsonString()
         await server.broadcast(json)
         #expect(try await receiveText(task) == json)
     }
@@ -55,7 +55,7 @@ struct WebSocketServerITTests {
         }
         try await waitForClients(server, count: 2)
 
-        let json = try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "了解です", duplicate: false, words: transcriptWords("了解です")).jsonString()
+        let json = try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "了解です", duplicate: false, words: transcriptWords("了解です"), wordTimes: []).jsonString()
         await server.broadcast(json)
         #expect(try await receiveText(first) == json)
         #expect(try await receiveText(second) == json)
@@ -72,7 +72,7 @@ struct WebSocketServerITTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let expected = try ["あ", "あい", "あいう"].map { try HelperEvent.partial(track: .相手, start: 0, end: 1, text: $0, duplicate: false, words: transcriptWords($0)).jsonString() }
+        let expected = try ["あ", "あい", "あいう"].map { try HelperEvent.partial(track: .相手, start: 0, end: 1, text: $0, duplicate: false, words: transcriptWords($0), wordTimes: []).jsonString() }
         for json in expected { await server.broadcast(json) }
         var received: [String] = []
         for _ in expected { received.append(try await receiveText(task)) }
@@ -171,7 +171,7 @@ struct WebSocketServerITTests {
         #expect(try await receiveText(task) == latest)
 
         // 古い screen が後ろに残っていないこと: 次に届くのは、その後に broadcast した内容
-        let marker = try HelperEvent.partial(track: .相手, start: 3, end: 4, text: "次", duplicate: false, words: transcriptWords("次")).jsonString()
+        let marker = try HelperEvent.partial(track: .相手, start: 3, end: 4, text: "次", duplicate: false, words: transcriptWords("次"), wordTimes: []).jsonString()
         await server.broadcast(marker)
         #expect(try await receiveText(task) == marker)
     }

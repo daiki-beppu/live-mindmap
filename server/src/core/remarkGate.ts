@@ -4,9 +4,9 @@
 // 時刻は呼び出し側が渡す start/end だけを見る。タイマー・now は使わない（ADR 0003）。
 // settle.ts の SettledRemark と同じ形を Remark から直接組み立て、settle.ts への import は作らない（循環 import を避ける）。
 import type { Remark } from "./remark.ts";
-import { cutWords, type Word } from "./words.ts";
+import { cutWords, type Word, type WordTime } from "./words.ts";
 
-type GatedRemark = Omit<Remark, "id"> & { words?: readonly Word[] };
+type GatedRemark = Omit<Remark, "id"> & { words?: readonly Word[]; wordTimes?: readonly WordTime[] };
 
 // 比較のとき無視する文字（句読点と空白。order.md が列挙した集合）
 const IGNORED = /[、。，．,.!?！？「」\s]/u;
@@ -105,7 +105,11 @@ export function createRemarkGate() {
       const start = prev.end;
       if (r.end <= start) return undefined;
 
-      const emitted: GatedRemark = { ...r, start, text, ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }) };
+      const emitted: GatedRemark = {
+        ...r, start, text,
+        ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }),
+        ...(r.wordTimes === undefined || at === 0 ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
+      };
       // 覚える本文は切る前の r.text。同じ始まりから全文を送り直す途中結果の頭と、前の全文が重なる
       last.set(r.track, { end: emitted.end, text: r.text });
       return emitted;

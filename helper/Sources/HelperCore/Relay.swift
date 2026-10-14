@@ -31,19 +31,6 @@ private func relayTheirs<Results: AsyncSequence>(
     await duplicates.finishTheirs()
 }
 
-/// 判定の済んだ `自分` の結果のイベント。確定結果は `remark`、途中結果は `partial`。
-private func mineEvent(_ decision: MineDecision) -> HelperEvent {
-    let result = decision.result
-    if result.isFinal {
-        return .remark(
-            track: .自分, start: result.start, end: result.end, text: result.text, duplicate: decision.duplicate,
-            words: transcriptWords(result.text))
-    }
-    return .partial(
-        track: .自分, start: result.start, end: result.end, text: result.text, duplicate: decision.duplicate,
-        words: transcriptWords(result.text))
-}
-
 /// `自分` の途中結果は、区間が重なる `相手` の文字が届くか保留の上限（1 秒）に達するまで保留し、その時点の文脈で判定して印を付けて流す
 /// （捨てない）。発言になっていない直前の途中結果は、`相手` の文字が届くたびに照らし直す。確定結果は判定を待つ間、順序を保って保留する。
 /// 判定の済んだ途中結果と確定結果は、どちらも判定器の `mineDecisions` に積み、そこを読む 1 タスクだけが送る
@@ -67,7 +54,7 @@ private func relayMine<Results: AsyncSequence>(
             for await decision in duplicates.mineDecisions {
                 // 他トラックのエラーなどでキャンセルされたら、判定が済んでいても送らずに終える。
                 if Task.isCancelled { return }
-                await server.broadcast(try mineEvent(decision).jsonString())
+                await server.broadcast(try event(from: decision.result, track: .自分, duplicate: decision.duplicate).jsonString())
             }
         }
         group.addTask {

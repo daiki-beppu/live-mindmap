@@ -76,9 +76,9 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 `ws://127.0.0.1:<port>` に、テキストフレームで JSON を流す。`start` / `end` は、`run` が音声取得を始める直前を 0 とする、2 トラック共通の秒数。`id` はサーバーが採番するので、ここでは付けない。`自分` のトラックも `相手` と同じ形で流れる。
 
 ```json
-{"type":"partial","track":"相手","start":1.5,"end":2,"text":"こんに","duplicate":false,"words":[{"surface":"こんに","romaji":"konni","location":0,"length":3}]}
-{"type":"remark","track":"相手","start":1.5,"end":3.25,"text":"こんにちは","duplicate":false,"words":[{"surface":"こんにちは","romaji":"konnichiha","location":0,"length":5}]}
-{"type":"partial","track":"自分","start":4,"end":4.5,"text":"はい","duplicate":false,"words":[{"surface":"はい","romaji":"hai","location":0,"length":2}]}
+{"type":"partial","track":"相手","start":1.5,"end":2,"text":"こんに","duplicate":false,"words":[{"surface":"こんに","romaji":"konni","location":0,"length":3}],"wordTimes":[{"location":0,"length":3,"start":1.5,"end":2}]}
+{"type":"remark","track":"相手","start":1.5,"end":3.25,"text":"こんにちは","duplicate":false,"words":[{"surface":"こんにちは","romaji":"konnichiha","location":0,"length":5}],"wordTimes":[{"location":0,"length":5,"start":1.5,"end":3.25}]}
+{"type":"partial","track":"自分","start":4,"end":4.5,"text":"はい","duplicate":false,"words":[{"surface":"はい","romaji":"hai","location":0,"length":2}],"wordTimes":[{"location":0,"length":2,"start":4,"end":4.5}]}
 {"type":"origin","hostTime":"123456789"}
 {"type":"screen","start":12.5,"image":"/9j/4AAQSkZJRg==","lines":["港南店","Zendesk"]}
 {"type":"screen","start":80,"image":null}
@@ -88,6 +88,7 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 ```
 
 - `words`（`partial` と `remark` の両方、両トラック）: 本文を CFStringTokenizer（`ja`、語の境界）で区切った語の配列。要素は `surface`（表記）・`romaji`（`kCFStringTokenizerAttributeLatinTranscription` のローマ字の読み。無ければ空文字）・`location` / `length`（本文の中の位置と長さ。UTF-16 コード単位で、`start` / `end` の秒とは別）。語が無い本文は空の配列。サーバーは `words` の無いイベントも受け付ける
+- `wordTimes`（`partial` と `remark` の両方、両トラック。常に載せる）: STT（SpeechAnalyzer）の結果の run ごとの区間の配列。要素は `location` / `length`（本文の中の位置と長さ。UTF-16 コード単位。`words` と違い、区切りの元は STT の run）・`start` / `end`（会議の原点からの秒。発言の `start` / `end` と同じ基準）。時刻を持たない run は要素にしない。区間を持たない結果は空の配列。サーバーは `wordTimes` の無いイベントも受け付け、`log.jsonl` の発言の行にそのまま残す
 - `partial`: 途中結果（トラック・開始・終了・本文・重複の印・語）。同じトラックで `start` が同じ途中結果の列は、同じ発話の更新（本文が変わっても同じ発話）。サーバーは、1 秒更新されない発話を最後の本文・区間で発言にする（`自分` の途中結果は発言にしない）。`duplicate` は、出力先がスピーカーのとき、`自分` の途中結果のうち、前後 8 秒の `相手` の確定結果と `相手` の最新の途中結果をつないだ文字列との文字 3-gram の被覆率が 0.6 以上のものが true（正規化後に 3 文字未満は false、`相手` の途中結果は常に false）。印の付いた途中結果も捨てずに流し、サーバーは字幕に出さない
 - `remark`: 確定結果（トラック・開始・終了・本文・重複の印・語）。`duplicate` は、出力先がスピーカーのとき、`自分` の発言のうち前後 8 秒の `相手` の発言と文字 3-gram の被覆率が 0.6 以上のものが true（`相手` の発言は常に false）。印の付いた発言も捨てずに流す。サーバーは印の付いた発言を差分更新に使わず、ログには残す
 - `origin`: ヘルパーのプロセスにつき 1 回だけ、時刻の基準が決まった直後（`partial` / `remark` より前）に送る。`AudioGetCurrentHostTime()` の値（`--origin` を渡したときはその値）を `hostTime` に積む。64 bit の値は JSON の number では桁が落ちるので、文字列にする。サーバーは、ライブセッションの間、最初のヘルパーの `origin` の値を覚えておき、再起動したヘルパーに `--origin` として渡すことで、発言の時刻が再起動のたびに 0 へ戻らず、元の開始からの続きになるようにする。`origin` は broadcast した時点でサーバー側のクライアントの接続が間に合わないことが多いため、ヘルパーは値を保持し、broadcast より後に接続したクライアントにも送る

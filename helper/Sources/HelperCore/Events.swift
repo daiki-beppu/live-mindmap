@@ -13,12 +13,15 @@ public struct TranscriptionResult: Sendable, Equatable {
     public var isFinal: Bool
     public var start: Double
     public var end: Double
+    /// STT の run ごとの区間。本文の UTF-16 位置と、`start` / `end` と同じ基準の秒。持たない結果は空。
+    public var wordTimes: [WordTime]
 
-    public init(text: String, isFinal: Bool, start: Double, end: Double) {
+    public init(text: String, isFinal: Bool, start: Double, end: Double, wordTimes: [WordTime] = []) {
         self.text = text
         self.isFinal = isFinal
         self.start = start
         self.end = end
+        self.wordTimes = wordTimes
     }
 }
 
@@ -30,8 +33,8 @@ public enum ScreenOffReason: String, Sendable, Equatable {
 }
 
 public enum HelperEvent: Sendable, Equatable {
-    case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word])
-    case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word])
+    case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
+    case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
     /// 2 トラック共通の時刻の基準（`AudioGetCurrentHostTime()` の値）の通知。ヘルパー起動につき 1 回だけ流す（Issue #161）。
     case origin(hostTime: UInt64)
     /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
@@ -60,13 +63,13 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, hostTime, image, lines, reason, paused
+        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .remark(track, start, end, text, duplicate, words):
+        case let .remark(track, start, end, text, duplicate, words, wordTimes):
             try container.encode("remark", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
@@ -74,7 +77,8 @@ extension HelperEvent: Encodable {
             try container.encode(text, forKey: .text)
             try container.encode(duplicate, forKey: .duplicate)
             try container.encode(words, forKey: .words)
-        case let .partial(track, start, end, text, duplicate, words):
+            try container.encode(wordTimes, forKey: .wordTimes)
+        case let .partial(track, start, end, text, duplicate, words, wordTimes):
             try container.encode("partial", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(start, forKey: .start)
@@ -82,6 +86,7 @@ extension HelperEvent: Encodable {
             try container.encode(text, forKey: .text)
             try container.encode(duplicate, forKey: .duplicate)
             try container.encode(words, forKey: .words)
+            try container.encode(wordTimes, forKey: .wordTimes)
         case let .origin(hostTime):
             try container.encode("origin", forKey: .type)
             // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
@@ -114,13 +119,19 @@ extension HelperEvent: Encodable {
     }
 }
 
-/// STT の結果をイベントにする。`duplicate` は常に false。重複の判定は `DuplicateMarker` が行い、呼び出し側（`relay`）が印を付ける。
+/// STT の結果をイベントにする。両トラック・確定/途中のすべてのイベントは、ここで作る。
+/// `duplicate` は重複の印。既定は false（判定器を通さない経路と `相手`）。判定は `DuplicateMarker` が行い、呼び出し側（`relay`）が渡す。
 /// `words` は本文を語に区切る関数（既定は CFStringTokenizer。unit テストは固定の関数を渡す）。語は確定結果にも途中結果にも載る。
+/// `wordTimes` は結果の区間をそのまま載せる。
 public func event(
-    from result: TranscriptionResult, track: Track, words: (String) -> [Word] = transcriptWords
+    from result: TranscriptionResult, track: Track, duplicate: Bool = false, words: (String) -> [Word] = transcriptWords
 ) -> HelperEvent {
     if result.isFinal {
-        return .remark(track: track, start: result.start, end: result.end, text: result.text, duplicate: false, words: words(result.text))
+        return .remark(
+            track: track, start: result.start, end: result.end, text: result.text, duplicate: duplicate,
+            words: words(result.text), wordTimes: result.wordTimes)
     }
-    return .partial(track: track, start: result.start, end: result.end, text: result.text, duplicate: false, words: words(result.text))
+    return .partial(
+        track: track, start: result.start, end: result.end, text: result.text, duplicate: duplicate,
+        words: words(result.text), wordTimes: result.wordTimes)
 }
