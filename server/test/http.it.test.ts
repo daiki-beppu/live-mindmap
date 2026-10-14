@@ -49,6 +49,7 @@ type AttemptScript = {
 const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } = { microphone: "authorized", screenCapture: true }) => {
   const calls: string[][] = [];
   const checks: boolean[] = [];
+  const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
   const check = Effect.sync(() => {
     checks.push(true);
     return { ...permission, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
@@ -87,10 +88,10 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
         yield* Deferred.succeed(exitDeferred, script.exitAfterStop ?? { code: null, signal: "SIGTERM" });
       });
       yield* Effect.addFinalizer(() => Effect.ignore(stop));
-      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []) };
+      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (paused: boolean) => Effect.sync(() => { sent.push(paused); }) };
     });
   const service = { apps: Effect.succeed(apps), check, checkNoScreen, launch };
-  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks };
+  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks, sent };
 };
 
 const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } = {}) {
@@ -108,7 +109,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
   );
   return {
-    server, calls: fakeHelpers.calls, checks: fakeHelpers.checks, sessionsDir,
+    server, calls: fakeHelpers.calls, checks: fakeHelpers.checks, sent: fakeHelpers.sent, sessionsDir,
     request: (method: string, path: string, body: string | undefined, origin: string | undefined) => fetch(
       `http://127.0.0.1:${server.port}${path}`,
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
@@ -381,6 +382,49 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       // 通常の stop の後は none に戻る。「止まった」（諦めた状態）の文面は intake.test.ts、状態の値は sessions.test.ts が観測する
       expect(yield* status()).toBe("セッションなし\n閲覧の共有: 無し\n");
     }));
+
+  describe("自分の休止（POST /session/self-pause）", () => {
+    const selfPause = (r: { request: (m: string, p: string, b: string | undefined, o: string | undefined) => Promise<Response> }, body: string | undefined) =>
+      Effect.tryPromise(() => r.request("POST", "/session/self-pause", body, undefined));
+
+    it.live("セッション中に {paused:true} を送ると 204 になり、helper へ休止の指示が届く。{paused:false} で再開の指示が届く", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+
+        expect((yield* selfPause(r, '{"paused":true}')).status).toBe(204);
+        expect(r.sent).toEqual([true]);
+        expect((yield* selfPause(r, '{"paused":false}')).status).toBe(204);
+        expect(r.sent).toEqual([true, false]);
+      }));
+
+    for (const body of ['{}', '{"paused":"true"}', '{"paused":1}', '{"paused":true,"extra":1}', "not json", undefined]) {
+      it.live(`本文が ${String(body)} なら 400 で拒否し、helper へ何も送らない`, () =>
+        Effect.gen(function* () {
+          const r = yield* resourceWithFakeHelpers([{}]);
+          yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+
+          expect((yield* selfPause(r, body)).status).toBe(400);
+          expect(r.sent).toEqual([]);
+        }));
+    }
+
+    it.live("セッションが無いときは 409 で、helper へ何も送らない", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        expect((yield* selfPause(r, '{"paused":true}')).status).toBe(409);
+        expect(r.sent).toEqual([]);
+      }));
+
+    it.live("非ローカル Origin からは 403 で拒否し、helper へ何も送らない", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+        const response = yield* Effect.tryPromise(() => r.request("POST", "/session/self-pause", '{"paused":true}', "https://evil.example"));
+        expect(response.status).toBe(403);
+        expect(r.sent).toEqual([]);
+      }));
+  });
 
   for (const screen of ["no", 0, "false"]) {
     it.live(`body.screen が ${JSON.stringify(screen)}（boolean でも null でもない）なら400で拒否し、ヘルパーを起動しない`, () =>

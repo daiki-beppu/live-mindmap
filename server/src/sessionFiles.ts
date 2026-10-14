@@ -11,6 +11,7 @@ import {
   SessionLog,
   toJsonExport,
   type IntakeLogEvent,
+  type SelfPauseLogEvent,
   type DiffUpdateFrame,
   type LogEvent,
   type Session,
@@ -141,7 +142,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
   const fs = yield* FileSystem.FileSystem;
   // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。
   // at は Clock ではなく実時刻（TestClock の下でも log.jsonl は実際の時刻で書く）。Effect を実行した時点で決める
-  const writeLogLine = (event: LogEvent | IntakeLogEvent) =>
+  const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) =>
     Effect.suspend(() =>
       fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: logTimestamp(), ...event }) + "\n", { flag: "a" }),
     ).pipe(Effect.orDie);
@@ -192,5 +193,5 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
   // 発言が 1 件も来なくても、export が前のセッションではなくこのセッションのマップを返すように、作成直後にも書く
   yield* serialized(writeExport(session));
   yield* Effect.flatMap(session.snapshot, publish); // 最初のルート
-  return { session, appendLog: (event: LogEvent | IntakeLogEvent) => serialized(writeLogLine(event)) };
+  return { session, appendLog: (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) => serialized(writeLogLine(event)) };
 });

@@ -7,7 +7,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type Remark, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { correctRemark, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type Remark, type SelfPauseLogEvent, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -41,8 +41,8 @@ export type SessionSink = {
   clearSpeaking: Effect.Effect<void>;
   // 予約を取り消し、いま話している文字を空にして、以後は何も送らない
   stopRelays: Effect.Effect<void>;
-  // log.jsonl へ、取り込みの途切れ等の記録を追記する
-  appendLog: (event: IntakeLogEvent) => Effect.Effect<void>;
+  // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する
+  appendLog: (event: IntakeLogEvent | SelfPauseLogEvent) => Effect.Effect<void>;
   // 差分更新の結果を待つ
   flush: Effect.Effect<void>;
   // map.md・map.json・map.drawnix（と撮影できれば map.png、書き出せれば map.html）を書き出し、パスを返す

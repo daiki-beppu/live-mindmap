@@ -14,13 +14,16 @@ export class HelperSocketError extends Schema.TaggedError<HelperSocketError>()("
   }
 }
 
-// つないだら、届いたメッセージ（テキスト）を届いた順に流す Stream を返す。Scope を閉じると切断する。
-// ヘルパー側が閉じると（または接続が切れると）Stream が終わる
+// つないだ接続。events は届いたメッセージ（テキスト）を届いた順に流す。ヘルパー側が閉じると（または接続が切れると）終わる。
+// send はヘルパーへテキストを 1 件送る。開いていないときは何もしない（失敗は呼び出し側に返さない）
+export type HelperSocket = { events: Stream.Stream<string>; send: (text: string) => Effect.Effect<void> };
+
+// つないだら HelperSocket を返す。Scope を閉じると切断する
 export const openHelperSocket = Effect.fnUntraced(function* (
   url: string,
-): Effect.fn.Return<Stream.Stream<string>, HelperSocketError, Scope.Scope> {
+): Effect.fn.Return<HelperSocket, HelperSocketError, Scope.Scope> {
   const queue = yield* Queue.make<string, Cause.Done>();
-  yield* Effect.acquireRelease(
+  const ws = yield* Effect.acquireRelease(
     Effect.callback<WebSocket, HelperSocketError>((resume) => {
       const ws = new WebSocket(url);
       ws.on("message", (data) => Queue.offerUnsafe(queue, String(data)));
@@ -44,5 +47,9 @@ export const openHelperSocket = Effect.fnUntraced(function* (
         Queue.endUnsafe(queue);
       }),
   );
-  return Stream.fromQueue(queue);
+  const send = (text: string) =>
+    Effect.sync(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(text, () => {});
+    });
+  return { events: Stream.fromQueue(queue), send };
 });

@@ -229,6 +229,25 @@ describe("ログからの復元", () => {
       expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
     }));
 
+  // Issue #1069: 自分の休止のログ（self-paused / self-resumed）があっても、復元は同じマップに戻る
+  it.effect("self-paused / self-resumed のログを含んでいても、復元は同じマップに戻る", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* original();
+      const lines = viaJsonl(events);
+      const withSelfPause = [
+        lines[0],
+        { type: "self-paused", reason: "手動", start: 10.5 },
+        ...lines.slice(1, 3),
+        { type: "self-resumed", reason: "手動", start: 42 },
+        ...lines.slice(3),
+      ];
+      const restored = yield* restore(withSelfPause);
+
+      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+      expect(JSON.stringify(yield* restored.exportJson)).not.toContain("手動");
+    }));
+
   it.effect("復元したセッションは続きの発言を受け取り、元のセッションと同じ入力・同じマップになる", () =>
     Effect.gen(function* () {
       const { events, lone } = yield* original();

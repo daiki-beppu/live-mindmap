@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type IntakeLogEvent, type SettledRemark, type Track } from "../src/core/index.ts";
+import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "../src/sessionSinks.ts";
@@ -36,6 +36,7 @@ type AttemptScript = {
   unexpectedExit?: { afterMs: number; exit: HelperExitInfo }; // 自発的な予期せぬ終了
   stopExit?: HelperExitInfo; // stop が呼ばれたときの終わり方（既定 SIGTERM）
   stopDelayMs?: number; // stop が呼ばれてから終わるまでの時間（既定 0）
+  connectGate?: Deferred.Deferred<void>; // 解放されるまで接続しない（launch が待つ。解放すると接続できる）
   hold?: boolean; // 接続待ちのまま保つ。stopRequested が立つと止めて、stopExit（既定 SIGTERM）の HelperLaunchFailure で終わる
 };
 
@@ -44,6 +45,7 @@ type FakeHelpersHandle = {
   readonly calls: ReadonlyArray<ReadonlyArray<string>>; // launch に渡された argv（起動した回数も分かる）
   readonly send: (attemptIndex: number, event: unknown) => void; // 指定した起動回の events へ 1 件流す
   readonly stops: number[]; // stop が実際に走った起動回（0 始まり）。ヘルパーが止められたことを観測する
+  readonly sentPauses: { attempt: number; paused: boolean }[]; // HelperAttempt.send で helper へ送られた休止の指示（起動回ごと。Issue #1069）
 };
 
 // 偽の Helpers。台本（attempts）の数を超えたら最後の台本を使い回す
@@ -52,6 +54,7 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
     const calls: string[][] = [];
     const queues: Queue.Queue<unknown, Cause.Done>[] = [];
     const stops: number[] = [];
+    const sentPauses: { attempt: number; paused: boolean }[] = [];
     const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>): Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope> =>
       Effect.gen(function* () {
         const index = calls.length;
@@ -75,6 +78,7 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
           yield* recordStop;
           return yield* new HelperLaunchFailure({ stderrTail: script.stderrTail ?? [], exit: script.stopExit ?? { code: null, signal: "SIGTERM" } });
         }
+        if (script.connectGate) yield* Deferred.await(script.connectGate);
         const queue = yield* Queue.make<unknown, Cause.Done>();
         queues[index] = queue;
         const exitDeferred = yield* Deferred.make<HelperExitInfo>();
@@ -102,6 +106,7 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
           stop,
           exit: Deferred.await(exitDeferred),
           stderrTail: Effect.succeed(script.stderrTail ?? []),
+          send: (paused: boolean) => Effect.sync(() => { sentPauses.push({ attempt: index, paused }); }),
         };
       });
     const send = (attemptIndex: number, event: unknown) => {
@@ -109,7 +114,7 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
       if (!queue) throw new Error(`起動回 ${attemptIndex} はまだ接続していない`);
       Queue.offerUnsafe(queue, JSON.stringify(event));
     };
-    return { helpers: Helpers.of({ ...readyHelperChecks, apps: Effect.succeed(APPS), launch }), calls, send, stops };
+    return { helpers: Helpers.of({ ...readyHelperChecks, apps: Effect.succeed(APPS), launch }), calls, send, stops, sentPauses };
   });
 }
 
@@ -123,7 +128,7 @@ type FakeSinksHandle = {
   readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { drained: number; cleared: number; stopped: number };
-  readonly appended: IntakeLogEvent[];
+  readonly appended: Array<IntakeLogEvent | SelfPauseLogEvent>;
   readonly vocabAdded: string[][]; // addUserVocabulary へ届いた語（呼び出しごと）
   readonly order: string[]; // flush・exports・close が起きた順
   readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
@@ -141,7 +146,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const screenOffs: { start: number; reason: "指定" | "許可なし" }[] = [];
     const sequence: string[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
-    const appended: IntakeLogEvent[] = [];
+    const appended: Array<IntakeLogEvent | SelfPauseLogEvent> = [];
     const vocabAdded: string[][] = [];
     const order: string[] = [];
     const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
@@ -160,7 +165,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           drain: Effect.sync(() => { relayStats.drained++; }),
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
-          appendLog: (event: IntakeLogEvent) => Effect.sync(() => { appended.push(event); }),
+          appendLog: (event: IntakeLogEvent | SelfPauseLogEvent) => Effect.sync(() => { appended.push(event); }),
           flush: Effect.sync(() => { order.push("flush"); }),
           exports: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => { order.push("exports"); return [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`]; }),
           audioFileNames: (attempt: number) => (attempt > 1 ? [`相手-${attempt}.m4a`, `自分-${attempt}.m4a`] : ["相手.m4a", "自分.m4a"]),
@@ -365,11 +370,18 @@ const viewerClient = Effect.fnUntraced(function* () {
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "tap-notice"; text: string | null } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "tap-notice").map((f) => f.text);
   });
+  // 届いたフレームのうち、type が self-pause のものの paused を、届いた順に返す（Issue #1069）
+  const selfPauses = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    const received: unknown[] = [];
+    while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
+    return received.filter((f): f is { type: "self-pause"; paused: boolean } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "self-pause").map((f) => f.paused);
+  });
   const sessionModes = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     return yield* Ref.get(modes);
   });
-  return { socket, intakeStatuses, screenNotices, tapNotices, sessionModes };
+  return { socket, intakeStatuses, screenNotices, tapNotices, selfPauses, sessionModes };
 });
 
 // Console.error に渡された行を、Node の console と同じ形（引数を空白で連ねて末尾に改行 1 つ）で集める Console。
@@ -814,6 +826,241 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         })));
   });
 
+  describe("自分の休止（self-pause。Issue #1069）", () => {
+    const boot = (attempts: AttemptScript[]) =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers(attempts);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const booted = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        return { fakeHelpers, fakeSinks, ...booted };
+      });
+    const pauseEvent = (paused: boolean, startSeconds: number) => ({ type: "self-pause", paused, reason: "手動", start: startSeconds });
+    const selfLogs = (appended: ReadonlyArray<IntakeLogEvent | SelfPauseLogEvent>) => appended.filter((e) => e.type === "self-paused" || e.type === "self-resumed");
+
+    it.effect("setSelfPause は動いている起動回の helper へ指示を送る。値は呼んだとおり（true → false）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{}]);
+        yield* sessions.start(start());
+
+        yield* sessions.setSelfPause(true);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }]);
+        yield* sessions.setSelfPause(false);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 0, paused: false }]);
+      }));
+
+    it.effect("セッションが無いときの setSelfPause は NoSession で失敗し、helper へ何も送らない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{}]);
+        const exit = yield* Effect.exit(sessions.setSelfPause(true));
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(NoSession);
+        expect(fakeHelpers.sentPauses).toEqual([]);
+      }));
+
+    it.effect("helper の休止イベントは self-paused / self-resumed の組として start・reason のままログ（sink）に残り、画面へフレームが届く。セッションは running のまま", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, pauseEvent(true, 12.5));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(false, 30));
+        yield* TestClock.adjust(1);
+
+        expect(selfLogs(fakeSinks.appended)).toEqual([
+          { type: "self-paused", reason: "手動", start: 12.5 },
+          { type: "self-resumed", reason: "手動", start: 30 },
+        ]);
+        expect(yield* watcher.selfPauses).toEqual([true, false]);
+        expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    it.effect("同じ paused のイベントが重ねて届いても、ログもフレームも変わった 1 回だけ（組が崩れない）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, pauseEvent(true, 1));
+        fakeHelpers.send(0, pauseEvent(true, 2));
+        yield* TestClock.adjust(1);
+        expect(selfLogs(fakeSinks.appended)).toEqual([{ type: "self-paused", reason: "手動", start: 1 }]);
+        expect(yield* watcher.selfPauses).toEqual([true]);
+
+        // 休止していない状態への「再開」も、変わっていなければ何も書かない
+        fakeHelpers.send(0, pauseEvent(false, 3));
+        fakeHelpers.send(0, pauseEvent(false, 4));
+        yield* TestClock.adjust(1);
+        expect(selfLogs(fakeSinks.appended).map((e) => e.type)).toEqual(["self-paused", "self-resumed"]);
+        expect(yield* watcher.selfPauses).toEqual([false]);
+      }));
+
+    it.effect("休止していない状態で最初に届いた paused:false は何も変えない（ログもフレームもなし）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, pauseEvent(false, 1));
+        yield* TestClock.adjust(1);
+
+        expect(selfLogs(fakeSinks.appended)).toEqual([]);
+        expect(yield* watcher.selfPauses).toEqual([]);
+      }));
+
+    it.effect("休止中に後からつないだ画面にも休止のフレームが届く。再開した後につないだ画面には届かない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, pauseEvent(true, 5));
+        yield* TestClock.adjust(1);
+
+        const late = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(late.socket));
+        expect(yield* late.selfPauses).toEqual([true]);
+
+        fakeHelpers.send(0, pauseEvent(false, 9));
+        yield* TestClock.adjust(1);
+        expect(yield* late.selfPauses).toEqual([false]);
+
+        const after = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(after.socket));
+        expect(yield* after.selfPauses).toEqual([]);
+      }));
+
+    it.effect("stop で休止の保持を消すフレーム（paused:false）が届き、その後につないだ画面には出ない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, pauseEvent(true, 5));
+        yield* TestClock.adjust(1);
+        expect(yield* watcher.selfPauses).toEqual([true]);
+
+        yield* sessions.stop;
+        expect(yield* watcher.selfPauses).toEqual([false]);
+
+        const after = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(after.socket));
+        expect(yield* after.selfPauses).toEqual([]);
+      }));
+
+    it.effect("壊れた self-pause（paused が真偽値でない・reason が手動でない・start が数でない）はログにも画面にも届かない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "self-pause", paused: "true", reason: "手動", start: 1 });
+        fakeHelpers.send(0, { type: "self-pause", paused: true, reason: "自動", start: 1 });
+        fakeHelpers.send(0, { type: "self-pause", paused: true, reason: "手動", start: "1" });
+        yield* TestClock.adjust(1);
+
+        expect(selfLogs(fakeSinks.appended)).toEqual([]);
+        expect(yield* watcher.selfPauses).toEqual([]);
+      }));
+
+    const relaunchAfter = (ms: number) => Effect.andThen(TestClock.adjust(ms), TestClock.adjust(10));
+
+    it.effect("helper が受け付けた休止（self-pause イベント）は、起動し直した新しい起動回の --self-paused になる", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
+        yield* sessions.start(start());
+        expect(fakeHelpers.calls[0]).not.toContain("--self-paused");
+
+        fakeHelpers.send(0, pauseEvent(true, 1));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+
+        expect(fakeHelpers.calls).toHaveLength(2);
+        expect(fakeHelpers.calls[1]).toContain("--self-paused");
+      }));
+
+    it.effect("接続中の helper が無視した休止の要求（イベントが無い）は、起動し直した回の引数にも送信にも残らない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
+        yield* sessions.start(start());
+
+        yield* sessions.setSelfPause(true);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }]);
+        yield* relaunchAfter(500);
+
+        expect(fakeHelpers.calls).toHaveLength(2);
+        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
+      }));
+
+    it.effect("接続待ちの間の休止の要求は、接続した回へ送られる。helper が無視したら（イベントが無い）、その次の回の引数にも送信にも残らない", () =>
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>();
+        const { fakeHelpers, sessions } = yield* boot([
+          { unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
+          { connectGate: gate, unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
+          {},
+        ]);
+        yield* sessions.start(start());
+        yield* relaunchAfter(500); // 起動回 1 が接続待ちで止まる
+        expect(fakeHelpers.calls).toHaveLength(2);
+
+        yield* sessions.setSelfPause(true);
+        expect(fakeHelpers.sentPauses).toEqual([]);
+        yield* Deferred.succeed(gate, undefined);
+        yield* TestClock.adjust(1);
+        expect(fakeHelpers.sentPauses).toEqual([{ attempt: 1, paused: true }]);
+
+        yield* relaunchAfter(500);
+        expect(fakeHelpers.calls).toHaveLength(3);
+        expect(fakeHelpers.calls[2]).not.toContain("--self-paused");
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 2)).toEqual([]);
+      }));
+
+    it.effect("休止を続ける起動の接続待ちの間に再開を求めると、その起動回へ paused:false が送られる", () =>
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>();
+        const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, { connectGate: gate }]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, pauseEvent(true, 1));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+        expect(fakeHelpers.calls[1]).toContain("--self-paused");
+
+        yield* sessions.setSelfPause(false);
+        yield* Deferred.succeed(gate, undefined);
+        yield* TestClock.adjust(1);
+
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: false }]);
+      }));
+
+    it.effect("再開が受け付けられた（pause → resume のイベント）後に起動し直すと --self-paused を渡さず、休止も送らない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, pauseEvent(true, 1));
+        fakeHelpers.send(0, pauseEvent(false, 2));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+
+        expect(fakeHelpers.calls).toHaveLength(2);
+        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+        expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
+      }));
+
+    it.effect("次のセッションには休止を持ち越さない（stop 後の start は --self-paused なし）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{}, {}]);
+        yield* sessions.start(start());
+        yield* sessions.setSelfPause(true);
+        yield* sessions.stop;
+        yield* sessions.start(start());
+
+        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+      }));
+  });
+
   describe("共有画面を使わない（screen-off・--no-screen。Issue #280）", () => {
     const NOTICE_MS = 10_000; // 「届いてから約 10 秒」
     const boot = (attempts: AttemptScript[]) =>
@@ -1242,7 +1489,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       yield* TestClock.adjust(500);
       yield* TestClock.adjust(10);
     });
-    const gaveUp = (appended: ReadonlyArray<IntakeLogEvent>) => appended.filter((e) => e.type === "intake-gave-up");
+    const gaveUp = (appended: ReadonlyArray<IntakeLogEvent | SelfPauseLogEvent>) => appended.filter((e) => e.type === "intake-gave-up");
 
     it.effect("60 秒以内に 5 回続けて届いても止まった状態にならず、次の起動が行われ、最後は running。intake-gave-up は書かれない", () =>
       Effect.gen(function* () {

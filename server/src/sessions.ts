@@ -10,7 +10,7 @@
 // ヘルパーを止め、ヘルパーが終われば読み取りがほどける。stop は起動し直しのループの終わりを Fiber.join で待ってから書き出す。
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
-import { Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream } from "effect";
+import { Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
 import {
   CONFIGURATION_CHANGE_WINDOW_MS,
   decideIntakeRestart,
@@ -18,6 +18,7 @@ import {
   MAX_CONFIGURATION_CHANGES,
   SCREEN_NOTICE_MS,
   SCREEN_NOTICE_TEXT,
+  SELF_PAUSE_REASON,
   TAP_NOTICE_TEXT,
   type HelperEvent,
   type IntakeGiveUpReason,
@@ -62,6 +63,10 @@ type ChainEnd = { exit: HelperExitInfo | undefined };
 type Launched = { attempt: HelperAttempt; scope: Scope.Closeable };
 
 // ヘルパーに依らない、セッションの寿命ぶんだけ存在するもの（起動し直しをまたいで引き継ぐ）。状態はすべて Ref
+// 休止の指示の送り先。connected: いま接続している起動回（指示をすぐ送る）。waiting: 起動し直しの途中（接続待ち）。
+// pending は、接続待ちの間に求められた状態で、次の起動の引数に使うか、接続した回へ送る（どちらかで消す）。helper が受け付けた状態は selfPaused だけが持つ
+type SelfPauseLink = { kind: "connected"; attempt: HelperAttempt } | { kind: "waiting"; pending: boolean | undefined };
+
 type Live = {
   model: SessionStart["model"];
   app: string;
@@ -81,6 +86,8 @@ type Live = {
   configurationChanges: Ref.Ref<ReadonlyArray<number>>; // 構成の変化（終了コード 75）で終わった時刻（Clock）。窓の外は decideIntakeRestart が除く
   restarts: Ref.Ref<number>; // 成功した起動し直しの回数（cli status の「起動し直した回数」）
   lastInterruptedAt: Ref.Ref<string | undefined>; // 最後に途切れた時刻（ISO）
+  selfPaused: Ref.Ref<boolean>; // helper が受け付けて報告した自分の休止の状態（Issue #1069）。起動し直しをまたいで続き、次の起動の引数になる。変わったときだけログとフレームを出す
+  selfPauseLink: SynchronizedRef.SynchronizedRef<SelfPauseLink>; // 休止の指示の送り先。送信と切り替えを 1 つずつ行う
 };
 
 type State = { kind: "idle"; installations: number } | { kind: "starting" } | { kind: "live"; live: Live } | { kind: "stopping" };
@@ -95,6 +102,8 @@ export class Sessions extends Context.Service<Sessions, {
   reserveDeps: Effect.Effect<void, SessionFailure, Scope.Scope>;
   // いま live なセッションの Scope（閲覧の共有の寿命をセッションに結ぶ）と、ローカルモードかどうか。live でなければ失敗する
   liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure>;
+  // 自分の休止・再開を求める（paused が求める状態。Issue #1069）。いま接続している helper へ指示を送る。live でなければ失敗する
+  setSelfPause: (paused: boolean) => Effect.Effect<void, SessionFailure>;
 }>()("live-mindmap/server/Sessions") {
   static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
     Effect.gen(function* () {
@@ -121,13 +130,14 @@ export class Sessions extends Context.Service<Sessions, {
       const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => viewers.intake({ type: "intake", status });
 
       // run の argv（port は Helpers が足す。audio・origin は未定義なら渡さない。screen が false なら --no-screen）
-      const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined): string[] => [
+      const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined, selfPaused: boolean): string[] => [
         "run",
         "--app",
         live.app,
         ...(live.audio ? ["--audio-dir", live.dir, "--audio-index", String(attempt)] : []),
         ...(live.screen ? [] : ["--no-screen"]),
         ...(origin !== undefined ? ["--origin", origin] : []),
+        ...(selfPaused ? ["--self-paused"] : []),
       ];
 
       // 諦めたときの標準エラーの 1 行。理由は decideIntakeRestart の判断から作る（ログと同じ理由）
@@ -197,7 +207,21 @@ export class Sessions extends Context.Service<Sessions, {
             return Effect.andThen(
               live.sink.appendLog({ type: "tap-silent", start: event.start }),
               viewers.tapNotice({ type: "tap-notice", text: TAP_NOTICE_TEXT }),
-            );        }
+            );
+          case "self-pause":
+            // 報告された状態と比べ、変わったときだけログ（組）とフレームを出す。同じ状態のイベントは何も変えない。
+            // 取り込みの途切れではないので、intake・起動し直しには触れない
+            return Effect.flatMap(
+              Ref.modify(live.selfPaused, (current): [boolean, boolean] => [current !== event.paused, event.paused]),
+              (changed) =>
+                changed
+                  ? Effect.andThen(
+                      live.sink.appendLog({ type: event.paused ? "self-paused" : "self-resumed", reason: SELF_PAUSE_REASON, start: event.start }),
+                      viewers.selfPause({ type: "self-pause", paused: event.paused }),
+                    )
+                  : Effect.void,
+            );
+        }
       };
 
       // 許可なしの一文を、まだ出していなければ出す。届いてから SCREEN_NOTICE_MS 後に消すフレームを送る（保持も消える）。
@@ -227,7 +251,9 @@ export class Sessions extends Context.Service<Sessions, {
       const serve = Effect.fnUntraced(function* (live: Live, { attempt, scope }: Launched) {
         // 「止めて」の印が立ったら、その回のヘルパーを止める
         yield* Effect.forkIn(Effect.andThen(Deferred.await(live.stopRequested), attempt.stop), scope);
-        yield* Stream.runForEach(attempt.events, handleEvent(live));
+        yield* Stream.runForEach(attempt.events, handleEvent(live)).pipe(
+          Effect.ensuring(SynchronizedRef.set(live.selfPauseLink, { kind: "waiting", pending: undefined })),
+        );
         const exit = yield* attempt.exit;
         const stderrTail = yield* attempt.stderrTail;
         yield* Scope.close(scope, Exit.void);
@@ -243,7 +269,13 @@ export class Sessions extends Context.Service<Sessions, {
         const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
         yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
         const scope = yield* Scope.fork(live.scope, "sequential");
-        const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin)), live.stopRequested).pipe(
+        // 接続待ちの間に求められた状態があれば、起動の引数に使って消す。無ければ helper が受け付けた状態を続ける
+        const requested = yield* SynchronizedRef.modify(live.selfPauseLink, (link): [boolean | undefined, SelfPauseLink] => [
+          link.kind === "waiting" ? link.pending : undefined,
+          { kind: "waiting", pending: undefined },
+        ]);
+        const paused = requested ?? (yield* Ref.get(live.selfPaused));
+        const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin), paused), live.stopRequested).pipe(
           Scope.provide(scope),
           Effect.result,
         );
@@ -260,6 +292,13 @@ export class Sessions extends Context.Service<Sessions, {
           return { kind: "retry" as const }; // 続けて起動し直す
         }
         const launched: Launched = { attempt: result.success, scope };
+        // 起動の引数を決めた後に求められた状態は、接続できた回へ送る（落とさない）
+        yield* SynchronizedRef.updateEffect(live.selfPauseLink, (link) =>
+          Effect.as(
+            link.kind === "waiting" && link.pending !== undefined ? result.success.send(link.pending) : Effect.void,
+            { kind: "connected", attempt: result.success } as SelfPauseLink,
+          ),
+        );
         // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
         // 読み終えてから止まる
         if (yield* Deferred.isDone(live.stopRequested)) return { kind: "launched" as const, launched, restarted: false };
@@ -327,7 +366,7 @@ export class Sessions extends Context.Service<Sessions, {
           const stopRequested = yield* Deferred.make<void>();
           const attemptScope = yield* Scope.fork(scope, "sequential");
           const attempt = yield* helpers
-            .launch(runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, 1, undefined), stopRequested)
+            .launch(runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, 1, undefined, false), stopRequested)
             .pipe(
               Scope.provide(attemptScope),
               Effect.catchTag("HelperLaunchFailure", (failure) =>
@@ -359,6 +398,8 @@ export class Sessions extends Context.Service<Sessions, {
             configurationChanges: yield* Ref.make<ReadonlyArray<number>>([]),
             restarts: yield* Ref.make(0),
             lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
+            selfPaused: yield* Ref.make(false),
+            selfPauseLink: yield* SynchronizedRef.make<SelfPauseLink>({ kind: "connected", attempt }),
           };
           const outcome = yield* Deferred.make<RestartOutcome>();
           const fiber = yield* Effect.forkIn(chain(live, { attempt, scope: attemptScope }, "auto", outcome), scope);
@@ -423,6 +464,8 @@ export class Sessions extends Context.Service<Sessions, {
                 yield* intakeFrame("none");
                 // 相手の音声が届いていないことの一文も、セッションの終わりで消す
                 yield* viewers.tapNotice({ type: "tap-notice", text: null });
+                // 自分を休止中の一文も、セッションの終わりで消す
+                yield* viewers.selfPause({ type: "self-pause", paused: false });
               }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 }))),
             ),
           );
@@ -479,7 +522,18 @@ export class Sessions extends Context.Service<Sessions, {
         return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
       });
 
-      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps, liveSession });
+      // 求める状態を、いま接続している helper へ指示として送る（同じ状態の指示でも送る。何も変えないかどうかは helper の側が決める）。
+      // 接続していない間（起動し直しの途中）に求められた状態は、次の起動の引数か、接続した回への送信で helper へ届く。
+      // 受け付けたかどうかは helper の self-pause イベントだけが決める（無視された要求は残らない）
+      const setSelfPause = (paused: boolean): Effect.Effect<void, SessionFailure> =>
+        Effect.gen(function* () {
+          const current = yield* Ref.get(state);
+          if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
+          yield* SynchronizedRef.updateEffect(current.live.selfPauseLink, (link): Effect.Effect<SelfPauseLink> =>
+            link.kind === "connected" ? Effect.as(link.attempt.send(paused), link) : Effect.succeed({ kind: "waiting", pending: paused }));
+        });
+
+      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause });
     }),
   );
 }

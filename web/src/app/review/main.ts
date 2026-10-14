@@ -114,6 +114,7 @@ const layoutOf = (context: Context, model: Model): SessionLayout.Model => ({
   ...model.sessionLayout,
   speaking: speakingAt(context.timeline, model.playback.time),
   captionsHidden: model.captionsHidden,
+  selfPaused: false, // 見返しに自分の休止の一言は出ない
 });
 
 type Return = Update.Return<Model, Message>;

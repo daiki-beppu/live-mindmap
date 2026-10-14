@@ -42,6 +42,8 @@ public enum HelperEvent: Sendable, Equatable {
     case screenOff(start: Double, reason: ScreenOffReason)
     /// 相手のタップから、フレーム数 1 以上のバッファが 10 秒届かなかった。`start` は `origin` と同じ原点からの秒。1 回だけ流す。
     case tapSilent(start: Double)
+    /// `自分` の休止の状態が変わった（Issue #1069）。`reason` は今は手動だけ（JSON では `手動`）。`start` は `origin` と同じ原点からの秒。
+    case selfPause(paused: Bool, start: Double)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -58,7 +60,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, hostTime, image, lines, reason
+        case type, track, start, end, text, duplicate, words, hostTime, image, lines, reason, paused
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -102,6 +104,11 @@ extension HelperEvent: Encodable {
             try container.encode(reason.rawValue, forKey: .reason)
         case let .tapSilent(start):
             try container.encode("tap-silent", forKey: .type)
+            try container.encode(start, forKey: .start)
+        case let .selfPause(paused, start):
+            try container.encode("self-pause", forKey: .type)
+            try container.encode(paused, forKey: .paused)
+            try container.encode("手動", forKey: .reason)
             try container.encode(start, forKey: .start)
         }
     }

@@ -94,6 +94,7 @@ const emit = (message: Message) => Subscription.emit(message);
 const intake = (status: "running" | "interrupted" | "stopped" | "none") => emit(Message.ReceivedIntakeStatus({ status }));
 const screen = (text: string | null) => emit(Message.ReceivedScreenNotice({ text: Option.fromNullishOr(text) }));
 const tapNotice = (text: string | null) => emit(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
+const selfPause = (paused: boolean) => emit(Message.ReceivedSelfPause({ paused }));
 const viewing = (mode: "auto" | "manual" | "overview") => emit(Message.ChangedViewingMode({ mode }));
 const speak = (相手: string, 自分 = "") => emit(Message.ChangedSpeaking({ speaking: { 相手, 自分 } }));
 
@@ -627,7 +628,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
   const expectNoWrapper = tap<ReturnType<typeof init>, Message>((s) => {
     expect(findAll('[role="region"]')(s.html)).toHaveLength(0);
     for (const child of elements(layoutOf(s.html))) {
-      expect(["map", "captions", "side", "local-mode-line", "local-mode-notice", "intake-notice", "screen-notice", "tap-notice", "diff-update-notice"].some((name) => hasClass(child, name))).toBe(true);
+      expect(["map", "captions", "side", "local-mode-line", "local-mode-notice", "intake-notice", "screen-notice", "tap-notice", "diff-update-notice", "self-pause-notice"].some((name) => hasClass(child, name))).toBe(true);
     }
   });
 
@@ -658,6 +659,63 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
       expectNoWrapper,
       tap((s) => expect(outline(s.html)).toEqual(["div.map", "div.captions", "div.side"])),
     );
+  });
+
+  // Issue #1069: 休止中は出し続ける一言。時間では消えず、出入りしてもマップ・字幕・右の列の並びと class は動かない
+  it("自分の休止の一言: 出る前・出ている間・消えた後で、.map・.captions・.side の並びと class が同じ。包み要素も増えない", () => {
+    scene(
+      app,
+      given(base),
+      remember,
+      selfPause(true),
+      settle,
+      expectUnchanged,
+      expectNoWrapper,
+      tap((s) => {
+        expect(outline(s.html).filter((name) => name !== "div.self-pause-notice")).toEqual(["div.map", "div.captions", "div.side"]);
+        expect(outline(s.html).filter((name) => name === "div.self-pause-notice")).toHaveLength(1);
+        expect(textContent(directChild(s.html, "self-pause-notice")!)).toBe("自分を休止中（M で再開）");
+        expect(attr(directChild(s.html, "self-pause-notice")!, "aria-live")).toEqual(Option.some("polite"));
+        expectPlain(directChild(s.html, "self-pause-notice"));
+        expect(timers(s)).toHaveLength(0);
+      }),
+      selfPause(true),
+      settle,
+      tap((s) => expect(outline(s.html).filter((name) => name === "div.self-pause-notice")).toHaveLength(1)),
+      selfPause(false),
+      settle,
+      expectUnchanged,
+      expectNoWrapper,
+      tap((s) => expect(outline(s.html)).toEqual(["div.map", "div.captions", "div.side"])),
+    );
+  });
+
+  it("自分の休止の一言は、取り込みの一言と同時に出ても別の要素で、片方の出入りが他方に触れない。マップ・字幕の並びも同じ", () => {
+    scene(
+      app,
+      given(base),
+      remember,
+      intake("interrupted"),
+      settle,
+      selfPause(true),
+      settle,
+      expectUnchanged,
+      tap((s) => {
+        expect(textContent(directChild(s.html, "intake-notice")!)).toBe(INTERRUPTED);
+        expect(textContent(directChild(s.html, "self-pause-notice")!)).toBe("自分を休止中（M で再開）");
+      }),
+      selfPause(false),
+      settle,
+      tap((s) => {
+        expect(directChild(s.html, "self-pause-notice")).toBeUndefined();
+        expect(textContent(directChild(s.html, "intake-notice")!)).toBe(INTERRUPTED);
+      }),
+      expectUnchanged,
+    );
+  });
+
+  it("休止の状態は init では false（休止していない）", () => {
+    expect(init().selfPaused).toBe(false);
   });
 
   it("共有画面の知らせ: 出る前・出ている間・消えた後で同じ", () => {

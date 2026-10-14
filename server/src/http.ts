@@ -5,6 +5,7 @@
 //   POST /session/stop    セッションを終了し、書き出したパスを返す
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
+//   POST /session/self-pause  { paused: boolean } で自分の休止（true）・再開（false）を求める。成功は 204、本文が違えば 400、セッションが無ければ 409
 //   POST /share/open      { anyone: true } か { mails: [メール・ドメイン...] } で閲覧の共有を開く（すでに開いていれば今の状態を返す）
 //                         ローカルモードのセッションは 409、cloudflared が無いときは 503（入れ方を示す）、範囲が空（{}）は 400 で、どれも開かない
 //   POST /share/close     閲覧の共有を閉じる（開いていなくても成功する）
@@ -166,6 +167,9 @@ const ShareOpenBody = Schema.Union([
   Schema.Struct({ mails: Schema.Array(ShareMail).check(Schema.isMinLength(1)) }),
 ]);
 
+// /session/self-pause の本文。状態を指定する形（トグルではない）なので、同じ指示を重ねても結果が変わらない
+const SelfPauseBody = Schema.Struct({ paused: Schema.Boolean });
+
 const SessionRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/apps", Effect.gen(function* () {
     const sessions = yield* Sessions;
@@ -183,6 +187,14 @@ const SessionRoutes = HttpRouter.addAll([
   HttpRouter.route("POST", "/session/resume", Effect.gen(function* () {
     const sessions = yield* Sessions;
     return HttpServerResponse.jsonUnsafe(yield* sessions.resume);
+  })),
+  HttpRouter.route("POST", "/session/self-pause", Effect.gen(function* () {
+    const body = yield* HttpServerRequest.schemaBodyJson(SelfPauseBody, { onExcessProperty: "error" }).pipe(
+      Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
+    );
+    const sessions = yield* Sessions;
+    yield* sessions.setSelfPause(body.paused);
+    return HttpServerResponse.empty({ status: 204 });
   })),
   HttpRouter.route("POST", "/share/open", Effect.gen(function* () {
     const body = yield* HttpServerRequest.schemaBodyJson(ShareOpenBody, { onExcessProperty: "error" }).pipe(

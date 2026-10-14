@@ -31,6 +31,9 @@ import {
   referenceUpdate,
   RESUMED,
   SCREEN,
+  SELF_PAUSE_TEXT,
+  selfPause,
+  selfPauseRequests,
   SECOND,
   selectedIds,
   settle,
@@ -56,7 +59,7 @@ import { one, renderedIds } from "./sceneTree.ts";
 // マップの動き（ビューポート・選択・補間）は、live の表示面（MapSurface）に同じ Message を流した結果と、描いた木が一致することで見る（動きの中身は mapSurface の Story・Scene が見る）。
 
 const WAITING = "サーバーを待っています";
-const NOTICE_CLASSES = ["intake-notice", "screen-notice", "tap-notice", "diff-update-notice", "local-mode-notice", "local-mode-line"];
+const NOTICE_CLASSES = ["intake-notice", "screen-notice", "tap-notice", "diff-update-notice", "self-pause-notice", "local-mode-notice", "local-mode-line"];
 
 const expectOnlyWaiting = (sim: Sim) => {
   expect(texts(sim.html, "p.waiting")).toEqual([WAITING]);
@@ -78,6 +81,7 @@ describe("会議中の Scene: 待ち表示（最初のスナップショット�
       frame({ type: "screen-notice", text: SCREEN }),
       frame({ type: "tap-notice", text: TAP }),
       frame({ type: "diff-update", state: PAUSED }),
+      selfPause(true),
       frame({ type: "session-mode", local: true }),
       settle,
       tap(expectOnlyWaiting),
@@ -316,6 +320,154 @@ describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開し
       intake("running"),
       tap((sim) => expect(timers(sim)).toHaveLength(0)),
       expectScene(selector(".intake-notice")).toHaveText(RESUMED),
+    );
+  });
+});
+
+describe("会議中の Scene: 自分の休止（M・休止中の一言）", () => {
+  it("休止の frame で一言が出て（aria-live: polite）、再開の frame で消える。時間では消えない", () => {
+    meetingScene(init(false),
+      frame(FIRST),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+      selfPause(true),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
+      expectScene(selector(".self-pause-notice")).toHaveAttr("aria-live", "polite"),
+      tap((sim) => expect(timers(sim)).toHaveLength(0)),
+      selfPause(true),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
+      tap((sim) => expect(findAll(sim.html, ".self-pause-notice")).toHaveLength(1)),
+      selfPause(false),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+    );
+  });
+
+  it("最初のスナップショットの前に届いていた休止も、スナップショットが来た時点から出る", () => {
+    meetingScene(init(false),
+      selfPause(true),
+      frame(FIRST),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
+    );
+  });
+
+  it("一言が出ても、マップ・字幕の描画は変わらない。.layout の直下は 字幕 → 一言 → .side の並びで、包む要素は増えない", () => {
+    let before: { map: unknown; captions: unknown };
+    meetingScene(init(false),
+      speak("字幕です。"),
+      frame(FIRST),
+      settle,
+      tap((sim) => (before = { map: shapeOf(one(sim.html, ".map")), captions: shapeOf(one(sim.html, ".captions")) })),
+      selfPause(true),
+      settle,
+      tap((sim) => {
+        expect(shapeOf(one(sim.html, ".map"))).toEqual(before.map);
+        expect(shapeOf(one(sim.html, ".captions"))).toEqual(before.captions);
+        const outline = layoutOutline(sim.html);
+        expect(outline.filter((name) => name !== "self-pause-notice")).toEqual(["map", "captions", "side"]);
+        expect(outline.indexOf("self-pause-notice")).toBeGreaterThan(outline.indexOf("captions"));
+        expect(outline.indexOf("self-pause-notice")).toBeLessThan(outline.indexOf("side"));
+      }),
+    );
+  });
+
+  it("取り込みの一言（途切れ）と同時に出ても、どちらも別の要素として残り、片方が消えても他方は残る", () => {
+    meetingScene(init(false),
+      frame(FIRST),
+      intake("interrupted"),
+      selfPause(true),
+      settle,
+      tap((sim) => {
+        expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
+        expect(texts(sim.html, ".self-pause-notice")).toEqual([SELF_PAUSE_TEXT]);
+      }),
+      intake("running"),
+      settle,
+      selfPause(false),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+      expectScene(selector(".intake-notice")).toHaveText(RESUMED),
+    );
+  });
+
+  it("M: 画面に見えている状態の逆を指示に載せる。押しただけでは一言を出さず、frame が届いて初めて切り替わる（休止中の M は paused:false）", () => {
+    meetingScene(init(false),
+      frame(FIRST),
+      settle,
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([true])),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+      selfPause(true),
+      settle,
+      expectScene(selector(".self-pause-notice")).toExist(),
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([false])),
+      settle,
+      expectScene(selector(".self-pause-notice")).toExist(),
+      selfPause(false),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([true])),
+      settle,
+    );
+  });
+
+  it("M: 切れると見えている状態が空に戻るので次の M は paused:true。つなぎ直して server が休止を送り直すと、また paused:false", () => {
+    meetingScene(init(false),
+      connected(),
+      frame(FIRST),
+      selfPause(true),
+      settle,
+      expectScene(selector(".self-pause-notice")).toExist(),
+      disconnected(),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([true])),
+      settle,
+      connected(),
+      frame(FIRST),
+      selfPause(true),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([false])),
+      settle,
+    );
+  });
+
+  it("M: ⌘・Ctrl・Option と一緒なら指示を出さない。スナップショットが届くまでも出さない", () => {
+    meetingScene(init(false),
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([])),
+      frame(FIRST),
+      settle,
+      raw(press("M", { metaKey: true })),
+      raw(press("M", { ctrlKey: true })),
+      raw(press("M", { altKey: true })),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([])),
+      settle,
+    );
+  });
+
+  it("M は休止の指示だけを出し、ほかの表示（字幕・マップ・キーの一覧）には触れない", () => {
+    let before: unknown;
+    meetingScene(init(false),
+      speak("字幕です。"),
+      frame(FIRST),
+      settle,
+      tap((sim) => (before = shapeOf(sim.html))),
+      raw(press("M")),
+      tap((sim) => {
+        expect(commandNames(sim)).toEqual(["RequestSelfPause"]);
+        expect(shapeOf(sim.html)).toEqual(before);
+      }),
+      settle,
     );
   });
 });
@@ -642,7 +794,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
     );
   });
 
-  it("?: キーの一覧は .map の中に、会議中の行だけで開く。見返しのキー（Space・K / J / L / Home / End / M）は載らない。もう一度の ? で閉じる", () => {
+  it("?: キーの一覧は .map の中に、会議中の行だけで開く。見返しのキー（Space・K / J / L / Home / End）は載らず、M は自分の休止・再開の行として載る。もう一度の ? で閉じる", () => {
     meetingScene(init(false),
       frame(FIRST),
       settle,
@@ -653,7 +805,10 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
         const list = one(sim.html, ".map .key-list");
         const labels = texts(list, ".key-list__keys");
         expect(labels).toEqual(keyListRows("live").map((row) => row.keys));
-        for (const review of ["Space・K", "J / L", ", / .", "< / >", "Home / End", "M"]) expect(labels).not.toContain(review);
+        for (const review of ["Space・K", "J / L", ", / .", "< / >", "Home / End"]) expect(labels).not.toContain(review);
+        expect(labels).toContain("M");
+        expect(texts(list, ".key-list__row")).toContain("M 自分を休止・再開");
+        expect(texts(list, ".key-list__row").some((row) => row.includes("ミュート"))).toBe(false);
         expect(findAll(one(sim.html, ".layout"), ".side .key-list")).toHaveLength(0);
       }),
       press("?"),
@@ -682,8 +837,8 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
     );
   });
 
-  it("見返しのキー（Space・K・J・L・, . < > Home End M）を押しても、会議中の画面は何も変わらず、Command も出ない", () => {
-    const REVIEW_ONLY = ["Space", "K", "J", "L", ",", ".", "<", ">", "Home", "End", "M"] as const satisfies ReadonlyArray<KeyId>;
+  it("見返しのキー（Space・K・J・L・, . < > Home End）を押しても、会議中の画面は何も変わらず、Command も出ない", () => {
+    const REVIEW_ONLY = ["Space", "K", "J", "L", ",", ".", "<", ">", "Home", "End"] as const satisfies ReadonlyArray<KeyId>;
     let before: unknown;
     const steps = REVIEW_ONLY.flatMap((key) => [
       press(key),

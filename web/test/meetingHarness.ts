@@ -20,6 +20,7 @@ import * as MapSurface from "../src/app/mapSurface/main.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import type { KeyId } from "../src/app/keys/table.ts";
+import { RequestSelfPause } from "../src/app/meeting/command.ts";
 import { init, update, view } from "../src/app/meeting/main.ts";
 import { Message } from "../src/app/meeting/message.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
@@ -77,6 +78,7 @@ export const RESUMED = "再開しました";
 export const SCREEN = "共有画面は使っていません（画面収録の許可がありません）";
 export const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります）";
 export const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
+export const SELF_PAUSE_TEXT = "自分を休止中（M で再開）";
 export const PAUSED_TEXT = "マップの更新が止まっています（ChatGPT の利用上限）";
 
 // ---- 受信（WebSocket。描いた木の外）を流す Message ----
@@ -97,6 +99,7 @@ export const disconnected = () => Subscription.emit(disconnectedMessage());
 export const press = (key: KeyId, mods: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => Subscription.emit(keyMessage(key, mods));
 export const surface = (message: MapSurfaceMessage) => Subscription.emit(surfaceMessage(message));
 export const speak = (text: string, track: "相手" | "自分" = "相手") => frame({ type: "speaking", track, text });
+export const selfPause = (paused: boolean) => frame({ type: "self-pause", paused });
 export const intake = (status: "running" | "interrupted" | "stopped" | "none") => frame({ type: "intake", status });
 
 type EmitStep = ReturnType<typeof frame>;
@@ -197,6 +200,8 @@ const mountStep = (name: string): Step | undefined =>
       ? Mount.resolve(Popover.AnchorPopover, Popover.Message.CompletedAnchorPopover())
       : undefined;
 const commandStep = (name: string, args: unknown): Step | undefined => {
+  // M が送る休止・再開の指示（Issue #1069）。結果は Model を変えない（状態は /ws の frame でだけ変わる）ので、完了で閉じる
+  if (name === "RequestSelfPause") return Command.resolveAll([RequestSelfPause, Message.CompletedRequestSelfPause()]);
   if (name === "RestartBlink") return Command.resolveAll([RestartBlink, MapSurfaceMessage.CompletedRestartBlink()]);
   // キーの一覧（Popover）を閉じたときにフォーカスを戻す・開いたときにパネルへフォーカスを移す
   if (name === "FocusButton") return Command.resolveAll([Popover.FocusButton, Popover.Message.CompletedFocusButton()]);
@@ -230,6 +235,9 @@ export const settleCommands = <M, Msg, Out>(simulation: SceneSimulation<M, Msg, 
 
 // 保留の Command の名前（並びは保証されないので昇順にそろえる）
 export const commandNames = (simulation: { commands: ReadonlyArray<{ name: string }> }): string[] => simulation.commands.map((c) => c.name).sort();
+// 保留の休止・再開の指示（M を押して出た Command）が送る paused の値を、出た順に返す
+export const selfPauseRequests = (simulation: { commands: ReadonlyArray<{ name: string; args?: unknown }> }): boolean[] =>
+  simulation.commands.filter((c) => c.name === "RequestSelfPause").map((c) => (c.args as { paused: boolean }).paused);
 export const timers = (simulation: { commands: ReadonlyArray<{ name: string; args?: unknown }> }) => simulation.commands.filter((c) => c.name === "WaitBeforeDismissal");
 // 保留の時間切れ（先頭）を、いま来たものとして解く
 export const expire = (simulation: Sim): Sim => {

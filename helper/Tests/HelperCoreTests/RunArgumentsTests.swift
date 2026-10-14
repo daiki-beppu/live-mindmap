@@ -99,4 +99,15 @@ struct RunArgumentsTests {
         #expect(args.port == 12345)
         #expect(args.audioIndex == 2)
     }
+
+    // Issue #1069: 起動し直した helper が、休止を続けたまま始まるための引数（値は取らない）
+    @Test("--self-paused は休止した状態で始める。無ければ休止しない")
+    func selfPausedFlag() throws {
+        #expect(try parseRunArguments(["--app", "x"]).get().selfPaused == false)
+        #expect(try parseRunArguments(["--app", "x", "--self-paused"]).get().selfPaused == true)
+        let args = try parseRunArguments(["--self-paused", "--app", "x", "--port", "1234"]).get()
+        #expect(args.selfPaused == true)
+        #expect(args.app == "x")
+        #expect(args.port == 1234)
+    }
 }

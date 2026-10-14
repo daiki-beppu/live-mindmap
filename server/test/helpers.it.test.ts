@@ -7,7 +7,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { TestClock } from "effect/testing";
-import { Helpers } from "../src/helpers.ts";
+import { WebSocketServer } from "ws";
+import { HELPER_CONTROL_TOKEN_ENV, Helpers } from "../src/helpers.ts";
 
 describe("E2E と IT 用の fake-helper", () => {
   it.live("C7: check はマイク・画面収録が許可済みの一行 JSON を返し正常終了する", () => Effect.gen(function* () {
@@ -150,4 +151,66 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
 
       expect(counter.spawned).toHaveLength(0);
     }));
+});
+
+// Issue #1069: HelperAttempt.send は、実物の Helpers が JSON にして helper の WebSocket へ送る（server から helper への最初の指示）。
+// 子プロセスだけを偽物にし、helper が待ち受けるはずのポートに本物の WebSocket サーバーを置いて、届いたテキストを観測する
+const wsSpawner = (received: string[], envs: Array<Record<string, string | undefined> | undefined> = []) =>
+  Layer.succeed(ChildProcessSpawner.ChildProcessSpawner)(
+    ChildProcessSpawner.make((command: ChildProcess.Command) =>
+      Effect.gen(function* () {
+        const args = (command as ChildProcess.StandardCommand).args;
+        envs.push((command as ChildProcess.StandardCommand).options.env);
+        const port = Number(args[args.indexOf("--port") + 1]);
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const wss = new WebSocketServer({ host: "127.0.0.1", port });
+            wss.on("connection", (socket) => socket.on("message", (data) => received.push(String(data))));
+            return wss;
+          }),
+          (wss) => Effect.sync(() => void wss.close()),
+        );
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.never,
+          isRunning: Effect.succeed(true),
+          kill: () => Effect.void,
+          stdin: undefined as never,
+          stdout: Stream.empty,
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => undefined as never,
+          getOutputFd: () => Stream.empty,
+          unref: Effect.succeed(Effect.void),
+        });
+      }),
+    ),
+  );
+
+describe("HelperAttempt.send（自分の休止の指示。Issue #1069）", () => {
+  it.live("paused の値を、その起動回のトークンつきの {type:'self-pause',paused,token} の JSON にして helper の WebSocket へ、呼んだ順に送る（SCN-U3-P2）", () =>
+    Effect.gen(function* () {
+      const received: string[] = [];
+      const envs: Array<Record<string, string | undefined> | undefined> = [];
+      const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(wsSpawner(received, envs)))));
+      const attempt = yield* helpers.launch(["run"], yield* Deferred.make<void>());
+      yield* attempt.send(true);
+      yield* attempt.send(false);
+      for (let i = 0; i < 100 && received.length < 2; i++) yield* realDelay(20);
+      const token = envs[0]?.[HELPER_CONTROL_TOKEN_ENV];
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      expect(received.map((text) => JSON.parse(text))).toEqual([
+        { type: "self-pause", paused: true, token },
+        { type: "self-pause", paused: false, token },
+      ]);
+    }).pipe(Effect.scoped));
+
+  it.live("トークンは起動ごとに変わる", () =>
+    Effect.gen(function* () {
+      const envs: Array<Record<string, string | undefined> | undefined> = [];
+      const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(wsSpawner([], envs)))));
+      yield* helpers.launch(["run"], yield* Deferred.make<void>());
+      yield* helpers.launch(["run"], yield* Deferred.make<void>());
+      expect(envs[0]?.[HELPER_CONTROL_TOKEN_ENV]).not.toBe(envs[1]?.[HELPER_CONTROL_TOKEN_ENV]);
+    }).pipe(Effect.scoped));
 });

@@ -11,6 +11,7 @@ export const Message = defineMessageUnion({
   ReceivedIntakeStatus: { status: IntakeStatus },
   ReceivedScreenNotice: { text: Schema.Option(Schema.String) },
   ReceivedTapNotice: { text: Schema.Option(Schema.String) },
+  ReceivedSelfPause: { paused: Schema.Boolean },
   ReceivedDiffUpdate: { state: Schema.Option(DiffUpdateState) },
   ReceivedSessionMode: { local: Schema.Boolean },
   ChangedViewingMode: { mode: Schema.Literals(["auto", "manual", "overview"]) },

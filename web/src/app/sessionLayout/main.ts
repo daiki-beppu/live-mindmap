@@ -21,6 +21,8 @@ export const Model = Schema.Struct({
   tapToast: Notice.Model,
   viewingToast: Notice.Model,
   diffUpdate: Schema.Option(DiffUpdateState),
+  // 自分を休止中か（Issue #1069）。/ws の frame だけで変わる。M が送る値の基準にもなる（画面に見えている状態）
+  selfPaused: Schema.Boolean,
   local: Schema.Boolean,
 });
 export type Model = typeof Model.Type;
@@ -34,6 +36,7 @@ export const init = (): Model => ({
   tapToast: Notice.init({ id: "tap-notice" }),
   viewingToast: Notice.init({ id: "viewing-notice" }),
   diffUpdate: Option.none(),
+  selfPaused: false,
   local: false,
 });
 
@@ -98,6 +101,7 @@ export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     ChangedSpeaking: ({ speaking }) => ({ model: modifyFields(model, { speaking: () => speaking }) }),
     ToggledCaptions: ({ isOpen }) => ({ model: modifyFields(model, { captionsHidden: () => !isOpen }) }),
+    ReceivedSelfPause: ({ paused }) => ({ model: modifyFields(model, { selfPaused: () => paused }) }),
     ReceivedDiffUpdate: ({ state }) => ({ model: modifyFields(model, { diffUpdate: () => state }) }),
     ReceivedSessionMode: ({ local }) => ({ model: modifyFields(model, { local: () => local }) }),
     // 変わらない状態は何もしない。変わったら intakeNoticeText が文を決める（届いた時点が変わった時点なので経過時間は 0）
@@ -122,6 +126,7 @@ export const update = (model: Model, message: Message): Return =>
 export const receiveIntakeStatus = (model: Model, status: typeof IntakeStatus.Type): Return => update(model, Message.ReceivedIntakeStatus({ status }));
 export const receiveScreenNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedScreenNotice({ text }));
 export const receiveTapNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedTapNotice({ text }));
+export const receiveSelfPause = (model: Model, paused: boolean): Return => update(model, Message.ReceivedSelfPause({ paused }));
 export const receiveDiffUpdate = (model: Model, state: Model["diffUpdate"]): Return => update(model, Message.ReceivedDiffUpdate({ state }));
 export const receiveSessionMode = (model: Model, local: boolean): Return => update(model, Message.ReceivedSessionMode({ local }));
 
@@ -141,6 +146,7 @@ export const sessionLayoutFolds = <ParentModel, ParentMessage>(parent: {
     foldIntake: Update.foldChild({ update: receiveIntakeStatus, ...fold }),
     foldScreenNotice: Update.foldChild({ update: receiveScreenNotice, ...fold }),
     foldTapNotice: Update.foldChild({ update: receiveTapNotice, ...fold }),
+    foldSelfPause: Update.foldChild({ update: receiveSelfPause, ...fold }),
     foldDiffUpdate: Update.foldChild({ update: receiveDiffUpdate, ...fold }),
     foldSessionMode: Update.foldChild({ update: receiveSessionMode, ...fold }),
   };
@@ -199,6 +205,11 @@ function localModeViews(h: H, model: Model): ReadonlyArray<Html> {
   ];
 }
 
+// 自分を休止中の間だけ出し続ける一言（Toast ではなく、状態に応じて出す要素。時間では消えない）。位置は styles.css の .self-pause-notice
+const SELF_PAUSE_TEXT = "自分を休止中（M で再開）";
+const selfPauseView = (h: H, model: Model): Html | null =>
+  model.selfPaused ? h.div([h.Class("self-pause-notice"), h.AriaLive("polite")], [SELF_PAUSE_TEXT]) : null;
+
 const diffUpdateView = (h: H, model: Model): Html | null =>
   Option.exists(model.diffUpdate, (state) => state.status === "paused" && state.reason === "ChatGPT の利用上限")
     ? h.div([h.Class("diff-update-notice absolute top-[8px] left-[12px] text-[12px] text-gray-500 z-5 pointer-events-none"), h.Role("status")], ["マップの更新が止まっています（ChatGPT の利用上限）"])
@@ -216,6 +227,7 @@ export const view = (model: Model, h: H, slots: Slots): Html =>
       noticeView(h, "intake-notice", model.intakeToast),
       noticeView(h, "screen-notice", model.screenToast),
       noticeView(h, "tap-notice", model.tapToast),
+      selfPauseView(h, model),
       diffUpdateView(h, model),
       slots.side,
     ],

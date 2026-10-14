@@ -29,6 +29,7 @@ describe("初期値", () => {
       tapNotice: Option.none(),
       diffUpdate: Option.none(),
       local: false,
+      selfPaused: false,
     } satisfies Model);
   });
 });
@@ -93,6 +94,24 @@ describe("受信（frame を受けた）", () => {
         expect(m.tapNotice).toEqual(Option.none());
         expect(m.diffUpdate).toEqual(Option.none());
       }),
+    );
+  });
+});
+
+describe("自分の休止（Issue #1069）", () => {
+  it("休止の frame で true、再開の frame で false。切れると false に戻り、つなぎ直して server が送り直した frame でまた true になる", () => {
+    story(
+      update,
+      given(init()),
+      received({ type: "self-pause", paused: true }),
+      model((m) => expect(m.selfPaused).toBe(true)),
+      disconnected(),
+      model((m) => expect(m.selfPaused).toBe(false)),
+      connected(),
+      received({ type: "self-pause", paused: true }),
+      model((m) => expect(m.selfPaused).toBe(true)),
+      received({ type: "self-pause", paused: false }),
+      model((m) => expect(m.selfPaused).toBe(false)),
     );
   });
 });
@@ -189,6 +208,7 @@ describe("つないだときの値（server が、つないだら保持してい
           tapNotice: Option.some(TAP_NOTICE),
           diffUpdate: Option.some({ status: "paused", reason: "ChatGPT の利用上限" }),
           local: true,
+          selfPaused: false,
         } satisfies Model);
       }),
     );

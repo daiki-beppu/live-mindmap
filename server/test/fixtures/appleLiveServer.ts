@@ -20,7 +20,7 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
     const ended = yield* Deferred.make<HelperExitInfo>();
     const stop = Effect.asVoid(Effect.andThen(Queue.end(events), Deferred.succeed(ended, { code: null, signal: "SIGTERM" })));
     yield* Effect.addFinalizer(() => stop);
-    return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(ended), stderrTail: Effect.succeed([]) };
+    return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(ended), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }) }));
   const speaking = yield* Deferred.make<(frame: SpeakingFrame) => Effect.Effect<void>>();
   const realSinks = SessionSinks.layer<never>({ prepareUpdater: () => fake.prepare }).pipe(Layer.provide(fakeExportServices()));

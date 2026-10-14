@@ -23,10 +23,14 @@ public actor WebSocketServer {
     /// `broadcastRetained` で最後に送った内容。後から接続したクライアントにも送る（Issue #161）。
     /// 種類（`key`）ごとに最新の 1 件だけ覚える（`origin` と、共有画面の `screen`）。順序は、その種類を最初に覚えた順。
     private var retained: [(key: String, text: String)] = []
+    /// クライアントから届いたテキストフレームを、届いた順に流す（Issue #1069。サーバーからの休止の指示）。`stop` で終わる。
+    public nonisolated let messages: AsyncStream<String>
+    private nonisolated let messageContinuation: AsyncStream<String>.Continuation
 
     /// `port` が 0 のときは空きポートを使う。
     public init(port: UInt16) {
         requestedPort = port
+        (messages, messageContinuation) = AsyncStream.makeStream(of: String.self)
     }
 
     public var clientCount: Int { clients.count }
@@ -106,6 +110,7 @@ public actor WebSocketServer {
         listener = nil
         for connection in clients.values { connection.cancel() }
         clients.removeAll()
+        messageContinuation.finish()
     }
 
     private func accept(_ connection: NWConnection) {
@@ -132,15 +137,16 @@ public actor WebSocketServer {
         receiveLoop(connection)
     }
 
-    /// クライアントからの close フレームや切断を検知するために、受信を回し続ける。内容は使わない。
+    /// クライアントからの close フレームや切断を検知するために、受信を回し続ける。テキストフレームは `messages` に流す。
     private func receiveLoop(_ connection: NWConnection) {
         let id = ObjectIdentifier(connection)
-        connection.receiveMessage { [weak self] _, context, _, error in
+        connection.receiveMessage { [weak self] data, context, _, error in
             guard let self else { return }
             let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
             if error != nil || metadata?.opcode == .close {
                 Task { await self.remove(id) }
             } else {
+                if metadata?.opcode == .text, let data { self.messageContinuation.yield(String(decoding: data, as: UTF8.self)) }
                 Task { await self.continueReceiving(id) }
             }
         }

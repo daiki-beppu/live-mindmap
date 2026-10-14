@@ -16,7 +16,7 @@ usage:
   live-mindmap-helper check [--no-screen]
   live-mindmap-helper install-speech-ja
   live-mindmap-helper list
-  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen]
+  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-paused]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
 """
@@ -28,7 +28,7 @@ private func listApps() throws {
     print(String(decoding: try encoder.encode(apps), as: UTF8.self))
 }
 
-private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool) async throws {
+private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool, selfPaused: Bool) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
@@ -52,6 +52,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
             Task { await server.broadcastRetained(json, key: "tap-silent") }
         }
     )
+    // `自分` の休止（Issue #1069）。手で選んだ状態で、サーバーが起動し直したときは `--self-paused` で休止のまま始める。
+    let selfPause = SelfPause(paused: selfPaused)
     let audio = RunAudio(
         requestMicrophonePermission: { try await requestMicrophonePermission() },
         makeTranscriber: { _ in SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber()) },
@@ -86,7 +88,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
             let stream = try echoCancelled(microphone: microphone, reference: reference)
             printError("echo cancellation: enabled (WebRTC AEC3, reference = process tap, output: \(outputRoute))")
             return stream
-        }
+        },
+        selfPause: selfPause
     )
     try await audio.prepare()
     // 画面収録の許可は開始時に 1 回だけ確かめる（会議の途中で確認を出さない）。`--no-screen` なら確かめない。
@@ -118,10 +121,30 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     defer { signalSources.forEach { $0.cancel() } }
 
     var screenTasks: [Task<Void, Never>] = []
+    var selfPauseTask: Task<Void, Never>?
     var failure: Error?
     do {
         // 原点は接続より前に決まることが多く、通常の broadcast だとクライアント不在時に失われるので、保持して流す。
         try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString(), key: "origin")
+        // 休止の状態が変わるたびに `self-pause` を流す。接続前に出た分も、最新の 1 件を覚えて、つながったら送る。
+        // サーバーからの指示は 1 つの Task が順に読む（`自分` を作らないセッションでは `requestSelfPause` が何も変えず、イベントも出ない）。
+        let emitSelfPause = { (paused: Bool, hostTime: UInt64) async in
+            let start = offsetSeconds(from: origin, to: hostTime)
+            guard let json = try? HelperEvent.selfPause(paused: paused, start: start).jsonString() else { return }
+            await server.broadcastRetained(json, key: "self-pause")
+        }
+        // 始めた時点の休止の状態を、最初に 1 回知らせる。サーバーは起動の間に求められた状態（休止も再開も）を、helper が受け付けるまで知らない。
+        // 同じ状態なら、サーバーは何も変えない
+        await announceSelfPause(audio: audio, now: { AudioGetCurrentHostTime() }, emit: emitSelfPause)
+        // 指示は、server が起動時に環境変数で渡したトークンを持つものだけ受け付ける（同じ端末の別のプロセスからの指示を拒否する）。無ければ指示を処理しない
+        let controlToken = ProcessInfo.processInfo.environment[helperControlTokenEnvironmentKey] ?? ""
+        if controlToken.isEmpty {
+            printError("self-pause: \(helperControlTokenEnvironmentKey) が無いので、休止の指示を受け付けない")
+        } else {
+            selfPauseTask = Task {
+                await serveSelfPauseRequests(server.messages, audio: audio, token: controlToken, now: { AudioGetCurrentHostTime() }, emit: emitSelfPause)
+            }
+        }
         // 共有画面。接続前に出た分も、最新の 1 件を覚えて、つながったら送る。events は 1 つの Task が順に読むので、順序が保たれる。
         if let screen {
             screenTasks = [
@@ -162,6 +185,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     // 共有画面の取り込みが終わり、最後のイベントを流し切ってから、サーバーを閉じる。
     for task in screenTasks { await task.value }
     await server.stop()
+    // サーバーを閉じると指示の流れが終わる
+    await selfPauseTask?.value
     if let failure { throw failure }
 }
 
@@ -189,7 +214,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen)
+                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen, selfPaused: args.selfPaused)
             }
         case "mix":
             switch parseMixArguments(Array(arguments.dropFirst())) {

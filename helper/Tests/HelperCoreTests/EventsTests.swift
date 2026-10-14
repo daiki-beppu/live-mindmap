@@ -237,4 +237,17 @@ struct EventsTests {
         #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) != HelperEvent.screenOff(start: 2, reason: .許可なし))
         #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) != HelperEvent.screen(start: 1, image: nil, lines: nil))
     }
+
+    // Issue #1069: 自分の休止の状態が変わるたびに流すイベント。reason は今は手動だけ。start は origin からの秒
+    @Test("self-pause は paused・reason（手動）・start を持ち、休止にも再開にも同じ形で使える")
+    func selfPauseEventShape() throws {
+        for paused in [true, false] {
+            let json = try decode(.selfPause(paused: paused, start: 12.5))
+            #expect(Set(json.keys) == ["type", "paused", "reason", "start"])
+            #expect(json["type"] as? String == "self-pause")
+            #expect(json["paused"] as? Bool == paused)
+            #expect(json["reason"] as? String == "手動")
+            #expect(json["start"] as? Double == 12.5)
+        }
+    }
 }

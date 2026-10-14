@@ -1,6 +1,7 @@
 // ヘルパー（Swift の子プロセス）という外の世界。子プロセス・空きポート・ヘルパーへの WebSocket を受け持つ（ADR 0008）。
 // 子プロセスは effect/process（Node では NodeChildProcessSpawner）で起動する。1 回分の起動は呼び出し側の Scope 1 つで、
 // ヘルパーの停止はその Scope の後始末。SIGTERM から SIGKILL へ上げる待ちは forceKillAfter に任せる。
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { Context, Deferred, Effect, Fiber, Layer, Predicate, Schedule, Schema, Stream, type Scope } from "effect";
 import type { PlatformError } from "effect";
@@ -24,6 +25,9 @@ export class HelperLaunchFailure extends Schema.TaggedError<HelperLaunchFailure>
   }
 }
 
+// helper が休止の指示を認証するトークンを受け取る環境変数名（helper/README.md「サーバーからの指示」）。起動ごとに作った値を渡し、指示の JSON の token で返す
+export const HELPER_CONTROL_TOKEN_ENV = "LIVE_MINDMAP_HELPER_CONTROL_TOKEN";
+
 // 接続できたヘルパー 1 回分
 export type HelperAttempt = {
   // ヘルパーが WebSocket で送ったテキストを届いた順に流す。ヘルパーとの接続が閉じると終わる
@@ -34,6 +38,8 @@ export type HelperAttempt = {
   exit: Effect.Effect<HelperExitInfo>;
   // 標準エラーの末尾（exit が返った後の値が確定した値）
   stderrTail: Effect.Effect<ReadonlyArray<string>>;
+  // 自分の休止・再開の指示を送る（Issue #1069）。paused は求める状態。helper に届かなくても失敗にしない
+  send: (paused: boolean) => Effect.Effect<void>;
 };
 
 export type HelperCommand = { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
@@ -174,12 +180,16 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   ): Effect.fn.Return<HelperAttempt, HelperLaunchFailure, Scope.Scope> {
     const scope = yield* Effect.scope;
     const port = yield* freePort;
+    // この起動回の指示用トークン。環境変数で helper にだけ渡す（引数・ログ・標準エラーには出さない）
+    const controlToken = randomBytes(32).toString("hex");
     // 既定の detached: true のまま起動し、プロセスグループごと止める。forceKillAfter は Scope の後始末（kill を通らない）にも効かせる
     const handle = yield* spawner
       .spawn(
         ChildProcess.make(helper.command, [...helper.args, ...args, "--port", String(port)], {
           stdin: "ignore",
           stdout: "ignore",
+          env: { [HELPER_CONTROL_TOKEN_ENV]: controlToken },
+          extendEnv: true,
           forceKillAfter: HELPER_STOP_TIMEOUT_MS,
         }),
       )
@@ -228,9 +238,11 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       const exit = yield* Deferred.await(exited);
       return yield* new HelperLaunchFailure({ stderrTail: yield* stderrTail, exit });
     });
-    const events = yield* Effect.raceFirst(connect, helperEnded);
+    const socket = yield* Effect.raceFirst(connect, helperEnded);
+    // server から helper への指示は、type 付きの JSON 1 件（helper/README.md「サーバーからの指示」）。組み立てはここ 1 か所
+    const send = (paused: boolean) => socket.send(JSON.stringify({ type: "self-pause", paused, token: controlToken }));
 
-    return { events, stop, exit: Deferred.await(exited), stderrTail };
+    return { events: socket.events, stop, exit: Deferred.await(exited), stderrTail, send };
   });
 
   return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true), installSpeechJa });

@@ -4,7 +4,7 @@
 // 先に購読してから保持している値を送る（逆にすると、保持値を送っている間に来た値を取りこぼす）。切れたら Fiber ごと終わる。
 import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref } from "effect";
 import { Socket } from "effect/socket";
-import type { DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SessionModeFrame, Snapshot, SpeakingFrame, TapNoticeFrame, Track } from "./core/index.ts";
+import type { DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, Snapshot, SpeakingFrame, TapNoticeFrame, Track } from "./core/index.ts";
 
 // 配信の終わり。これを受け取った接続は、先に届いていたフレームを書いてから終わる（drained が使う）
 const FEED_END = Symbol("live-mindmap/server/Viewers/end");
@@ -30,10 +30,12 @@ type Retained = {
   readonly screenNotice: string | undefined;
   // 相手の音声が届いていないことの一文。新しい origin かセッションの終わりで消すフレーム（text が null）が届くまで保持する
   readonly tapNotice: string | undefined;
+  // 自分を休止中であること（Issue #1069）。休止の間だけ保持し、再開のフレーム（paused が false）かセッションの終わりで保持も消す
+  readonly selfPause: string | undefined;
   readonly sessionMode: string | undefined;
 };
 
-const NOTHING_RETAINED: Retained = { snapshot: undefined, speaking: new Map(), intake: undefined, screenNotice: undefined, tapNotice: undefined, diffUpdate: undefined, sessionMode: undefined };
+const NOTHING_RETAINED: Retained = { snapshot: undefined, speaking: new Map(), intake: undefined, screenNotice: undefined, tapNotice: undefined, diffUpdate: undefined, selfPause: undefined, sessionMode: undefined };
 
 const retainedFrames = (retained: Retained): string[] => [
   ...(retained.snapshot === undefined ? [] : [retained.snapshot]),
@@ -41,6 +43,7 @@ const retainedFrames = (retained: Retained): string[] => [
   ...(retained.intake === undefined ? [] : [retained.intake]),
   ...(retained.screenNotice === undefined ? [] : [retained.screenNotice]),
   ...(retained.tapNotice === undefined ? [] : [retained.tapNotice]),
+  ...(retained.selfPause === undefined ? [] : [retained.selfPause]),
   ...(retained.diffUpdate === undefined ? [] : [retained.diffUpdate]),
   ...(retained.sessionMode === undefined ? [] : [retained.sessionMode]),
 ];
@@ -55,6 +58,8 @@ export class Viewers extends Context.Service<Viewers, {
   screenNotice: (frame: ScreenNoticeFrame) => Effect.Effect<void>;
   // 相手の音声が届いていないことの一文を送る。text が null なら一文を消し、保持も消す
   tapNotice: (frame: TapNoticeFrame) => Effect.Effect<void>;
+  // 自分を休止中であることを送る。paused が false なら一言を消し、保持も消す（消した後につないだクライアントには送らない）
+  selfPause: (frame: SelfPauseFrame) => Effect.Effect<void>;
   sessionMode: (frame: SessionModeFrame) => Effect.Effect<void>;
   // 1 つのクライアントへ配信し続ける。切れるか、配信が終わるまで終わらない
   connect: (socket: Socket.Socket) => Effect.Effect<void, Socket.SocketError>;
@@ -137,6 +142,11 @@ export class Viewers extends Context.Service<Viewers, {
       return send(data, (current) => ({ ...current, tapNotice: frame.text === null ? undefined : data }));
     };
 
-    return Viewers.of({ publish, speak, intake, diffUpdate, screenNotice, tapNotice, sessionMode, connect, drained });
+    const selfPause = (frame: SelfPauseFrame) => {
+      const data = JSON.stringify(frame);
+      return send(data, (current) => ({ ...current, selfPause: frame.paused ? data : undefined }));
+    };
+
+    return Viewers.of({ publish, speak, intake, diffUpdate, screenNotice, tapNotice, selfPause, sessionMode, connect, drained });
   }));
 }

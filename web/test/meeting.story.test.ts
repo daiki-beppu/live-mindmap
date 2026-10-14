@@ -71,7 +71,7 @@ describe("会議中の update: Model は本物の Schema に通る", () => {
 });
 
 describe("会議中の update: キー（会議中の行だけ。見返しのキーは効かない）", () => {
-  const REVIEW_ONLY = ["Space", "K", "J", "L", ",", ".", "<", ">", "Home", "End", "M"] as const satisfies ReadonlyArray<typeof KeyId.Type>;
+  const REVIEW_ONLY = ["Space", "K", "J", "L", ",", ".", "<", ">", "Home", "End"] as const satisfies ReadonlyArray<typeof KeyId.Type>;
   const shown = run([frameMessage(SECOND), measured]).model;
 
   it("見返しのキーを押しても Model は変わらず、Command も出ない（スナップショットの前でも後でも）", () => {
@@ -111,6 +111,42 @@ describe("会議中の update: キー（会議中の行だけ。見返しのキ�
       expect(once.model, key).not.toEqual(shown);
       expect(run([keyMessage(key)], once.model).model, key).toEqual(shown);
     }
+  });
+});
+
+describe("会議中の update: M（自分の休止・再開。Issue #1069）", () => {
+  const shown = run([frameMessage(SECOND), measured]).model;
+  const requested = (result: { commands?: ReadonlyArray<{ name: string }> }) =>
+    (result.commands ?? []).filter((c) => c.name === "RequestSelfPause").map((c) => (c as unknown as { args: { paused: boolean } }).args.paused);
+
+  it("見えている状態の逆を指示の Command に載せる。Model は変えない（状態は frame でだけ変わる）", () => {
+    const first = update(shown, keyMessage("M"));
+    expect(requested(first)).toEqual([true]);
+    expect(first.model).toEqual(shown);
+
+    const paused = run([frameMessage({ type: "self-pause", paused: true })], shown).model;
+    const second = update(paused, keyMessage("M"));
+    expect(requested(second)).toEqual([false]);
+    expect(second.model).toEqual(paused);
+  });
+
+  it("休止の frame が来るたびに、次の M が送る値が追従する（休止 → 再開 → 休止）", () => {
+    let current = shown;
+    for (const paused of [true, false, true]) {
+      current = update(current, frameMessage({ type: "self-pause", paused })).model;
+      expect(requested(update(current, keyMessage("M")))).toEqual([!paused]);
+    }
+  });
+
+  it("⌘・Ctrl・Option と一緒なら何も出さない。スナップショットの前でも出さない", () => {
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+      const result = update(shown, keyMessage("M", mods));
+      expect(result.model, JSON.stringify(mods)).toEqual(shown);
+      expect(names(result), JSON.stringify(mods)).toEqual([]);
+    }
+    const waiting = update(init(false), keyMessage("M"));
+    expect(names(waiting)).toEqual([]);
+    expect(waiting.model).toEqual(init(false));
   });
 });
 

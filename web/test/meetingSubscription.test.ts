@@ -61,9 +61,15 @@ describe("会議中の Subscription の keys", () => {
     bindings.forEach((b, i) => expect(doc.perEvent[i], b.keys).toEqual([pressed(b.key)]));
   });
 
-  it("見返しのキー（Space・K・J・L・, . < > Home End M）は、スナップショットが届いた後でも Message にならない（会議中の表に無い）", async () => {
-    const { perEvent } = await pressEachOn(shown(), [{ key: " " }, { key: "k" }, { key: "j" }, { key: "l" }, { key: "," }, { key: "." }, { key: "<", shiftKey: true }, { key: ">", shiftKey: true }, { key: "Home" }, { key: "End" }, { key: "m" }]);
+  it("見返しのキー（Space・K・J・L・, . < > Home End）は、スナップショットが届いた後でも Message にならない（会議中の表に無い）", async () => {
+    const { perEvent } = await pressEachOn(shown(), [{ key: " " }, { key: "k" }, { key: "j" }, { key: "l" }, { key: "," }, { key: "." }, { key: "<", shiftKey: true }, { key: ">", shiftKey: true }, { key: "Home" }, { key: "End" }]);
     expect(perEvent.flat()).toEqual([]);
+  });
+
+  // Issue #1069: M は会議中では自分の休止・再開のキー（見返しのミュートとは別の行）
+  it("M は、スナップショットが届いた後なら PressedKey(M) になる。待ち表示の間は Message にならない", async () => {
+    expect((await pressEachOn(shown(), [{ key: "m" }, { key: "M", shiftKey: true }])).perEvent).toEqual([[pressed("M")], []]);
+    expect((await pressEachOn(init(false), [{ key: "m" }])).perEvent).toEqual([[]]);
   });
 
   it("依存は選択の有無で変わる: ノードを選んだ時だけ、ノード本体のボタンの中の Enter が届く", async () => {

@@ -31,6 +31,7 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
         diffUpdate: (frame) => Effect.sync(() => { diffUpdates.push(frame); }),
         screenNotice: () => Effect.void,
         tapNotice: () => Effect.void,
+        selfPause: () => Effect.void,
         sessionMode: (frame) => Effect.sync(() => { modes.push(frame); }),
         connect: () => Effect.void,
         drained: Effect.sync(() => { events.push("drained"); }),

@@ -76,7 +76,7 @@ const helperLayer = (launches: string[][], beforeLaunch: Effect.Effect<void>) =>
     yield* Queue.offer(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "合成の発言" }));
     const stop = Effect.andThen(Queue.end(queue), Deferred.succeed(exit, { code: 0, signal: null })).pipe(Effect.asVoid);
     yield* Effect.addFinalizer(() => stop);
-    return { events: Stream.fromQueue(queue), stop, exit: Deferred.await(exit), stderrTail: Effect.succeed([]) };
+    return { events: Stream.fromQueue(queue), stop, exit: Deferred.await(exit), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }),
 }));
 

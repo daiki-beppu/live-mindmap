@@ -37,7 +37,7 @@ export const KeyId = Schema.Literals([
 ]);
 export type KeyId = typeof KeyId.Type;
 
-// 会議中・見返し（音声なし）・見返し（音声つき）。M は音声つきの見返しだけ
+// 会議中・見返し（音声なし）・見返し（音声つき）。M は会議中（自分の休止）と音声つきの見返し（ミュート）だけで、意味が別
 export type Screen = "live" | "review" | "reviewAudio";
 
 // keys は foldkit の書き方（"Shift+=" "Shift+Plus" "Space" など。+ のキーは Plus）。Shift は厳密に照合されるので、Shift が要る字（JIS の =・US の +・? < >）は Shift 付きの行を別に持つ
@@ -53,6 +53,7 @@ export type KeyRow = {
 const ALL: readonly Screen[] = ["live", "review", "reviewAudio"];
 const REVIEW: readonly Screen[] = ["review", "reviewAudio"];
 const AUDIO: readonly Screen[] = ["reviewAudio"];
+const LIVE: readonly Screen[] = ["live"];
 
 const bind = (key: KeyId, ...keys: readonly string[]): readonly Binding[] => keys.map((k) => ({ keys: k, key }));
 
@@ -89,6 +90,7 @@ export const KEY_ROWS: readonly KeyRow[] = [
   { keys: "E", action: "右の列（変わったこと・根拠）を出す・隠す", screens: ALL, bindings: bind("E", "E") },
   { keys: "C", action: "字幕を出す・隠す", screens: ALL, bindings: bind("C", "C") },
   { keys: "?", action: "このキー一覧を開閉する", screens: ALL, bindings: bind("?", "?", "Shift+?") },
+  { keys: "M", action: "自分を休止・再開", screens: LIVE, bindings: bind("M", "M") },
   { keys: "Space・K", action: "進める・止める", screens: REVIEW, bindings: [...bind("Space", "Space"), ...bind("K", "K")] },
   { keys: "J / L", action: "10 秒戻る・進む", screens: REVIEW, bindings: [...bind("J", "J"), ...bind("L", "L")] },
   { keys: ", / .", action: "反映 1 つ戻る・進む", screens: REVIEW, bindings: [...bind(",", ","), ...bind(".", ".")] },

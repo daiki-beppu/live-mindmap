@@ -31,7 +31,7 @@ const helperLayer = Layer.succeed(Helpers, Helpers.of({
     const exit = yield* Deferred.make<HelperExitInfo>();
     const stop = Effect.asVoid(Effect.andThen(Queue.end(events), Deferred.succeed(exit, { code: null, signal: "SIGTERM" })));
     yield* Effect.addFinalizer(() => stop);
-    return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(exit), stderrTail: Effect.succeed([]) };
+    return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(exit), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }),
 }));
 const realSinks = SessionSinks.layer({
