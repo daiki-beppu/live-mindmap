@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreAudio
 import Foundation
 
@@ -85,7 +86,7 @@ public final class RunAudio {
                 myAudio = try echoCancelled(microphone, reference)
             }
         }
-        // 休止のゲートを通った音だけを録音へ流す（休止の間の音は録音に残さない）。STT へは区間ごとに分けて流す
+        // 休止のゲートを通った音と、休止の間の同じ長さの無音を録音へ流す。STT へは休止していない音だけを区間ごとに分けて流す
         var gatedRecording: AudioStream.Continuation?
         var recordingOutput: AudioStream?
         if let recording {
@@ -160,7 +161,19 @@ public final class RunAudio {
         }
     }
 
-    /// `自分` の音を休止のゲートに通し、休止していない間の音だけを、録音と STT に流す。
+    /// 元のバッファと同じ形式・フレーム数・取得時刻で、全サンプルが 0 のバッファ。
+    private static func silence(like item: CapturedAudio) throws -> CapturedAudio {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: item.buffer.format, frameCapacity: item.buffer.frameLength) else {
+            throw TranscriberError.conversionFailed("無音のバッファを作れない")
+        }
+        buffer.frameLength = item.buffer.frameLength
+        for audioBuffer in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            if let data = audioBuffer.mData { memset(data, 0, Int(audioBuffer.mDataByteSize)) }
+        }
+        return CapturedAudio(buffer: buffer, hostTime: item.hostTime)
+    }
+
+    /// `自分` の音を休止のゲートに通し、休止していない間の音を録音と STT に流す。休止の間の音は、録音へは同じ長さの無音にして流す。
     /// STT は休止に入るたびに区間を閉じて（`Transcriber` の音声の流れが終わると、届いた分が確定する）、再開後は新しい `Transcriber` で次の区間を始める。
     /// 区間の結果は 1 本の流れにつなぐ。休止の間もマイクの音は読み続けて捨てる（取り込みは止めない）。
     private func mySegmentedResults(
@@ -207,8 +220,15 @@ public final class RunAudio {
                         segment?.finish()
                         segment = nil
                     }
-                    // 休止中に取った音は捨てる
-                    if state.paused { continue }
+                    // 休止中に取った音は STT へ流さず捨てる。録音へは同じ長さ・同じ取得時刻の無音を流し、録音の位置を発言の時刻に揃える
+                    if state.paused {
+                        if let recording {
+                            if case .dropped = recording.yield(try Self.silence(like: item)) {
+                                throw TranscriberError.backlogExceeded(limit: downstreamBacklogLimit)
+                            }
+                        }
+                        continue
+                    }
                     if segment == nil { segment = try await open() }
                     if case .dropped = recording?.yield(item) {
                         throw TranscriberError.backlogExceeded(limit: downstreamBacklogLimit)
