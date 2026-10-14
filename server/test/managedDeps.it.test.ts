@@ -597,7 +597,7 @@ describe("管理 Chromium の導入", () => {
       stream: (path, options) => {
         if (failure !== "hash") return fs.stream(path, options);
         hashes++;
-        if (hashes === 2) { reached = true; return Stream.succeed(new Uint8Array([1])); }
+        if (hashes === 1) { reached = true; return Stream.die("hash failure"); }
         return fs.stream(path, options);
       },
     };
