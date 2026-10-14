@@ -4,15 +4,14 @@ import { Command, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
-import type { ArrowDir, ViewKey } from "../../viewing.ts";
-import { initKeyList, keyListView } from "../keys/keyList.ts";
+import { initKeyList, keyListFolds, keyListView } from "../keys/keyList.ts";
 import type { KeyId } from "../keys/table.ts";
 import * as LiveFeed from "../liveFeed/main.ts";
 import type { Message as LiveFeedMessage } from "../liveFeed/message.ts";
 import * as MapSurface from "../mapSurface/main.ts";
 import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
+import { plainKey, surfaceFolds, type KeyHandler } from "../mapSurface/parentFolds.ts";
 import * as SessionLayout from "../sessionLayout/main.ts";
-import { Message as SessionLayoutMessage } from "../sessionLayout/message.ts";
 import * as SidePanel from "../sidePanel/main.ts";
 import { Message } from "./message.ts";
 
@@ -67,42 +66,23 @@ const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"]
   return rest;
 };
 
-const mapSurfaceFold = {
-  read: (model: Model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
-  write: (model: Model, surface: MapSurface.Model) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(surface) })) }),
-  toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }),
-  foldOutMessage: () => (model: Model) => ({ model }),
-};
-const foldMapSurface = Update.foldChild({ update: MapSurface.update, ...mapSurfaceFold });
-const foldViewKey = Update.foldChild({ update: MapSurface.pressViewKey, ...mapSurfaceFold });
-const foldArrowKey = Update.foldChild({ update: MapSurface.pressArrowKey, ...mapSurfaceFold });
-const foldEscapeKey = Update.foldChild({ update: MapSurface.pressEscapeKey, ...mapSurfaceFold });
-const foldEnterKey = Update.foldChild({ update: MapSurface.pressEnterKey, ...mapSurfaceFold });
-const foldSideKey = Update.foldChild({ update: MapSurface.pressSideKey, ...mapSurfaceFold });
+const { foldMapSurface, foldEscapeKey, keyHandlers: surfaceKeyHandlers } = surfaceFolds<Model, Message>({
+  read: (model) => Option.flatMap(model.session, (s) => surfaceOf(model.feed, s)),
+  write: (model, surface) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(surface) })) }),
+  toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
+});
 
-const sessionLayoutFold = {
-  read: (model: Model) => Option.map(model.session, (s) => layoutOf(model.feed, s)),
-  write: (model: Model, layout: SessionLayout.Model) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: stripLayout(layout) })) }),
-  toParentMessage: (message: SessionLayoutMessage) => Message.GotSessionLayoutMessage({ message }),
-  foldOutMessage: () => (model: Model) => ({ model }),
-};
-const foldSessionLayout = Update.foldChild({ update: SessionLayout.update, ...sessionLayoutFold });
-const foldViewingMode = Update.foldChild({ update: SessionLayout.changeViewingMode, ...sessionLayoutFold });
-const foldIntake = Update.foldChild({ update: SessionLayout.receiveIntakeStatus, ...sessionLayoutFold });
-const foldScreenNotice = Update.foldChild({ update: SessionLayout.receiveScreenNotice, ...sessionLayoutFold });
-const foldTapNotice = Update.foldChild({ update: SessionLayout.receiveTapNotice, ...sessionLayoutFold });
-const foldDiffUpdate = Update.foldChild({ update: SessionLayout.receiveDiffUpdate, ...sessionLayoutFold });
-const foldSessionMode = Update.foldChild({ update: SessionLayout.receiveSessionMode, ...sessionLayoutFold });
+const { foldSessionLayout, foldViewingMode, foldIntake, foldScreenNotice, foldTapNotice, foldDiffUpdate, foldSessionMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
+  read: (model) => Option.map(model.session, (s) => layoutOf(model.feed, s)),
+  write: (model, layout) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: stripLayout(layout) })) }),
+  toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
+});
 
-const keyListFold = {
-  read: (model: Model) => Option.map(model.session, (s) => s.keyList),
-  write: (model: Model, keyList: Popover.Model) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, keyList })) }),
-  toParentMessage: (message: Popover.Message) => Message.GotKeyListMessage({ message }),
-  foldOutMessage: () => (model: Model) => ({ model }),
-};
-const foldKeyList = Update.foldChild({ update: Popover.update, ...keyListFold });
-const foldKeyListOpen = Update.foldChildStep({ update: Popover.open, ...keyListFold });
-const foldKeyListClose = Update.foldChildStep({ update: Popover.close, ...keyListFold });
+const { foldKeyList, foldKeyListOpen, foldKeyListClose } = keyListFolds<Model, Message>({
+  read: (model) => Option.map(model.session, (s) => s.keyList),
+  write: (model, keyList) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, keyList })) }),
+  toParentMessage: (message) => Message.GotKeyListMessage({ message }),
+});
 
 const received = (model: Model, feed: LiveFeed.Model): Return => {
   const before = model.feed;
@@ -152,25 +132,14 @@ const viewingNotices = (before: Model, result: Return): Return => {
   return Update.combine(before, [() => result, (m: Model) => foldViewingMode(m, now.value)]);
 };
 
-type Modifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
-type KeyHandler = (model: Model, modifiers: Modifiers) => Return;
-const NO_MODIFIERS: Modifiers = { metaKey: false, ctrlKey: false, altKey: false };
-const plain = ({ metaKey, ctrlKey, altKey }: Modifiers) => !metaKey && !ctrlKey && !altKey;
-const plainKey = (handler: (model: Model) => Return): KeyHandler => (model, modifiers) => (plain(modifiers) ? handler(model) : { model });
-const viewKey = (key: ViewKey): KeyHandler => (model, modifiers) => foldViewKey(model, { key, ...modifiers });
-const arrowKey = (dir: ArrowDir): KeyHandler => (model, modifiers) => foldArrowKey(model, { dir, ...modifiers });
-const inert: KeyHandler = (model) => ({ model });
+const inert: KeyHandler<Model, Message> = (model) => ({ model });
 const keyListOpen = (model: Model) => Option.exists(model.session, (s) => s.keyList.isOpen);
 const toggledKeyList = (result: Return): Return => ({ ...result, model: modifyFields(result.model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(MapSurface.toggledKeyList({ mode: "live", snapshot: Option.getOrThrow(result.model.feed.snapshot), ...s.mapSurface })) })) }) });
 const toggledCaptions = (model: Model): Model => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: { ...s.sessionLayout, captionsHidden: !s.sessionLayout.captionsHidden } })) });
 
-const KEY_HANDLERS: Record<KeyId, KeyHandler> = {
+const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
+  ...surfaceKeyHandlers,
   Escape: (model, modifiers) => (keyListOpen(model) ? toggledKeyList(foldKeyListClose(model)) : foldEscapeKey(model, modifiers)),
-  F: viewKey("F"), "=": viewKey("="), "-": viewKey("-"), "0": viewKey("0"), Z: viewKey("Z"),
-  "Shift+ArrowLeft": viewKey("Shift+ArrowLeft"), "Shift+ArrowRight": viewKey("Shift+ArrowRight"), "Shift+ArrowUp": viewKey("Shift+ArrowUp"), "Shift+ArrowDown": viewKey("Shift+ArrowDown"),
-  ArrowLeft: arrowKey("left"), ArrowRight: arrowKey("right"), ArrowUp: arrowKey("up"), ArrowDown: arrowKey("down"),
-  Enter: foldEnterKey,
-  E: plainKey((model) => foldSideKey(model, NO_MODIFIERS)),
   C: plainKey((model) => ({ model: toggledCaptions(model) })),
   "?": plainKey((model) => toggledKeyList(keyListOpen(model) ? foldKeyListClose(model) : foldKeyListOpen(model))),
   Space: inert, K: inert, J: inert, L: inert, ",": inert, ".": inert, "<": inert, ">": inert, Home: inert, End: inert, M: inert,

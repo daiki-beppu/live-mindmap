@@ -4,7 +4,8 @@ import { keyListRows, type Screen } from "../src/app/keys/table.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { Message } from "../src/app/review/message.ts";
-import { attrOf, audioApp, audioContext, descendants, hasClass, one, plainApp, plainContext, settle, stateAt, styleOf, type VNode } from "./reviewHarness.ts";
+import { audioApp, audioContext, descendants, hasClass, plainApp, plainContext, settle, stateAt } from "./reviewHarness.ts";
+import { attrOf, one, styleOf, type VNode } from "./sceneTree.ts";
 
 // 見返しのキーの一覧（Issue #822）の Scene。描いた view から入り、? で開いた一覧が、表から作った行で、マップの区画の中に出ること、
 // 開いたままマップを動かせること（背景を止めない）を見る。? のキーは文書の keydown（描いた木の外）から届くので Subscription.emit で流す。

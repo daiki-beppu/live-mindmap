@@ -3,12 +3,28 @@
 // 一覧の行は、キーの Subscription と同じ表（table.ts）を画面で絞って作る。見た目は今の .key-list（styles.css）をそのまま使う。
 // Popover はパネルの位置を trigger の button から決めるので、「?」のボタンは出さず、マップの右上に大きさのない button を置く（見た目と tab の順は変えない）
 import { Popover } from "@foldkit/ui";
+import type { Option } from "effect";
+import { Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { keyListRows, type Screen } from "./table.ts";
 
 const KEY_LIST_ID = "key-list";
 
 export const initKeyList = (): Popover.Model => Popover.init({ id: KEY_LIST_ID, isModal: false, contentFocus: true });
+
+// 親がキーの一覧（Popover）を子として組み込む配線。開閉の結果（Opened・Closed）は親では受け流す（開いているかは Popover の Model が持つ）
+export const keyListFolds = <Model, Message>(parent: {
+  readonly read: (model: Model) => Option.Option<Popover.Model>;
+  readonly write: (model: Model, keyList: Popover.Model) => Model;
+  readonly toParentMessage: (message: Popover.Message) => Message;
+}) => {
+  const fold = { ...parent, foldOutMessage: () => (model: Model) => ({ model }) };
+  return {
+    foldKeyList: Update.foldChild({ update: Popover.update, ...fold }),
+    foldKeyListOpen: Update.foldChildStep({ update: Popover.open, ...fold }),
+    foldKeyListClose: Update.foldChildStep({ update: Popover.close, ...fold }),
+  };
+};
 
 export const keyListView = <Message>(h: HtmlBuilder<Message>, model: Popover.Model, screen: Screen, toParentMessage: (message: Popover.Message) => Message): Html =>
   h.submodel({

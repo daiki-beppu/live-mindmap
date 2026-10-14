@@ -130,6 +130,15 @@ describe("focusViewport: 倍率と中心", () => {
     expect(fits(r, v)).toBe(true);
   });
 
+  it("収まるときは、負の座標を含む複数の箱の外接箱の中心が画面の中央に来る（箱ごとに最小・最大の辺が違っても）", () => {
+    const rects = [rect(-300, 50, 200, 40), rect(100, -120, 200, 40), rect(400, 200, 200, 60)];
+    const v = focusViewport(rects, rects[0]!, size);
+    const left = -300, top = -120, right = 600, bottom = 260;
+    expect(v.zoom).toBeCloseTo(1.1);
+    expect(((left + right) / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
+    expect(((top + bottom) / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
+  });
+
   it("下限 0.75 でも収まらないときは 0.75 倍で、中心のノードが画面の中央に来る", () => {
     const rects = [rect(0, 0, 200, 40), rect(5000, 3000, 200, 40)];
     const center = rects[1]!;

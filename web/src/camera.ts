@@ -59,12 +59,18 @@ export function focusViewport(rects: Rect[], center: Rect, size: Size): Viewport
   return { x: size.width / 2 - cx * zoom, y: size.height / 2 - cy * zoom, zoom };
 }
 
+function boundsOf(rects: readonly Rect[]) {
+  return {
+    left: Math.min(...rects.map((r) => r.x)),
+    top: Math.min(...rects.map((r) => r.y)),
+    right: Math.max(...rects.map((r) => r.x + r.width)),
+    bottom: Math.max(...rects.map((r) => r.y + r.height)),
+  };
+}
+
 // rects の外接箱と、それが（余白込みで）画面に収まる倍率（範囲に収める前）
 function fitBox(rects: Rect[], size: Size) {
-  const left = Math.min(...rects.map((r) => r.x));
-  const top = Math.min(...rects.map((r) => r.y));
-  const right = Math.max(...rects.map((r) => r.x + r.width));
-  const bottom = Math.max(...rects.map((r) => r.y + r.height));
+  const { left, top, right, bottom } = boundsOf(rects);
   const fitZoom = Math.min(size.width / (right - left + PADDING * 2), size.height / (bottom - top + PADDING * 2));
   return { left, top, right, bottom, fitZoom };
 }
@@ -297,10 +303,7 @@ const fitPadding = (side: number): number => Math.floor((side - side / (1 + FIT_
 // 箱が 1 つも無いときは null
 export function fitViewport(rects: readonly Rect[], size: Size, minZoom: number, maxZoom: number): Viewport | null {
   if (rects.length === 0) return null;
-  const left = Math.min(...rects.map((r) => r.x));
-  const top = Math.min(...rects.map((r) => r.y));
-  const right = Math.max(...rects.map((r) => r.x + r.width));
-  const bottom = Math.max(...rects.map((r) => r.y + r.height));
+  const { left, top, right, bottom } = boundsOf(rects);
   const padX = fitPadding(size.width);
   const padY = fitPadding(size.height);
   const fitZoom = Math.min((size.width - padX * 2) / (right - left), (size.height - padY * 2) / (bottom - top));

@@ -21,7 +21,6 @@ import {
   MANUAL,
   matchesReference,
   meetingScene,
-  one,
   OVERVIEW,
   PAUSED,
   PAUSED_TEXT,
@@ -31,7 +30,6 @@ import {
   raw,
   referenceUpdate,
   RESUMED,
-  renderedIds,
   SCREEN,
   SECOND,
   selectedIds,
@@ -50,6 +48,7 @@ import {
   type Model,
   type Sim,
 } from "./meetingHarness.ts";
+import { one, renderedIds } from "./sceneTree.ts";
 
 // 会議中の Foldkit プログラム（Issue #829）の Scene。描いた view から入り、`/ws` の frame（描いた木の外から届くので Subscription.emit で流す）が、
 // 最初のスナップショットまでの待ち表示・画面の並び・知らせ・字幕・マップ・右の列・キーまで届くことを、同じ画面（1 つの Model）の上の続きで見る。

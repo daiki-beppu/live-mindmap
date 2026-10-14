@@ -352,7 +352,7 @@ const followDisplayed = (model: Model): Model => {
 const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
 
 // 親（見返し）が、キーが押された事実を表示面へ伝える入口（子の Message を親が組み立てずに済む）。意味は update が reduceViewing で決める
-type KeyModifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
+export type KeyModifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
 export const pressViewKey = (model: Model, input: KeyModifiers & { key: ViewKey }): Return => update(model, Message.PressedViewKey(input));
 export const pressArrowKey = (model: Model, input: KeyModifiers & { dir: ArrowDir }): Return => update(model, Message.PressedArrowKey(input));
 export const pressEscapeKey = (model: Model, input: KeyModifiers): Return => update(model, Message.PressedEscapeKey(input));
