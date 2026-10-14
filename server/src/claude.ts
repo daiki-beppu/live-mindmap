@@ -2,7 +2,7 @@
 // Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
-import { DiffOperations, DiffUpdater, type DiffInput, type KatakanaAnswer, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
+import { DiffOperations, DiffUpdatePaused, DiffUpdater, type DiffInput, type KatakanaAnswer, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
 
 import { buildPrompt, fmtTime, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
 import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
@@ -149,7 +149,7 @@ export const layerClaude = (model: string) => Layer.effect(
     // assistant の usage を足すと重なって出力が少なくなる。そのため 4 項目は result の usage（その turn の分。
     // 構造化出力のやり直しも含む）から取り、model だけ assistant から取る。
     // modelUsage・total_cost_usd は query 全体の累計なので使わない（金額は単価が変わるので持たない）
-    const awaitStructured = Effect.fnUntraced(function* (o: { readonly output: AsyncIterator<SDKMessage> }, label: string): Effect.fn.Return<{ structured: unknown; usage: DiffUsage | undefined }, ClaudeQueryFailed | ClaudeResultFailed> {
+    const awaitStructured = Effect.fnUntraced(function* (o: { readonly output: AsyncIterator<SDKMessage> }, label: string): Effect.fn.Return<{ structured: unknown; usage: DiffUsage | undefined }, ClaudeQueryFailed | ClaudeResultFailed | DiffUpdatePaused> {
       let model: string | undefined;
       for (;;) {
         const { value: m, done } = yield* next(o);
@@ -157,6 +157,11 @@ export const layerClaude = (model: string) => Layer.effect(
         if (m.type === "assistant") {
           model = m.message.model;
           continue;
+        }
+        // 利用上限（rejected）は失敗ではなく一時停止。resetsAt は秒なのでミリ秒にして渡す
+        if (m.type === "rate_limit_event" && m.rate_limit_info.status === "rejected") {
+          const resetsAt = m.rate_limit_info.resetsAt;
+          return yield* new DiffUpdatePaused({ reason: "Claude の利用上限", message: "Claude の利用上限", ...(resetsAt !== undefined ? { retryAt: resetsAt * 1000 } : {}) });
         }
         if (m.type !== "result") continue;
         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `${label}に失敗: ${m.subtype}`, subtype: m.subtype });
@@ -176,7 +181,7 @@ export const layerClaude = (model: string) => Layer.effect(
       }
     });
 
-    const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffResult, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid> {
+    const awaitResult = Effect.fnUntraced(function* (o: Open): Effect.fn.Return<DiffResult, ClaudeQueryFailed | ClaudeResultFailed | DiffOutputInvalid | DiffUpdatePaused> {
       const { structured, usage } = yield* awaitStructured(o, "差分更新");
       const decoded = yield* Schema.decodeUnknownEffect(DiffOperations)(structured).pipe(
         Effect.mapError((e) => new DiffOutputInvalid({ message: `差分更新の出力が不正: ${e.message}`, issue: e.issue })),
