@@ -277,6 +277,56 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       }));
   });
 
+  describe("speaker（話者の区間。Issue #1020）", () => {
+    it.effect("仮と確定のどちらも known として decode され、track・start・end・slot・final を保つ", () =>
+      Effect.gen(function* () {
+        for (const final of [false, true]) {
+          const event = { type: "speaker", track: "相手", start: 1.5, end: 2.75, slot: 3, final } as const;
+          const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify(event)));
+          assert.deepStrictEqual(decoded, { kind: "known", event });
+        }
+      }));
+
+    it.effect.each([
+      ["track が不正", { type: "speaker", track: "司会", start: 0, end: 1, slot: 0, final: true }],
+      ["slot が文字列", { type: "speaker", track: "相手", start: 0, end: 1, slot: "0", final: true }],
+      ["slot が小数", { type: "speaker", track: "相手", start: 0, end: 1, slot: 0.5, final: true }],
+      ["slot が負", { type: "speaker", track: "相手", start: 0, end: 1, slot: -1, final: true }],
+      ["slot のキーが無い", { type: "speaker", track: "相手", start: 0, end: 1, final: true }],
+      ["final が真偽値でない", { type: "speaker", track: "相手", start: 0, end: 1, slot: 0, final: "true" }],
+      ["final のキーが無い", { type: "speaker", track: "相手", start: 0, end: 1, slot: 0 }],
+      ["start が文字列", { type: "speaker", track: "相手", start: "0", end: 1, slot: 0, final: true }],
+      ["end のキーが無い", { type: "speaker", track: "相手", start: 0, slot: 0, final: true }],
+    ])("壊れた speaker は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        const [, data] = row;
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(data)));
+        if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた speaker のはずが通った）");
+        assert.strictEqual(result.failure._tag, "SchemaError");
+      }));
+  });
+
+  describe("speaker-off（話者分離を使えない。Issue #1020）", () => {
+    it.effect.each(["モデルなし", "読み込みに失敗", "途中で停止"] as const)("reason が %s の正しい形は known として decode される", (reason) =>
+      Effect.gen(function* () {
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "speaker-off", start: 2.5, reason })));
+        assert.deepStrictEqual(decoded, { kind: "known", event: { type: "speaker-off", start: 2.5, reason } });
+      }));
+
+    it.effect.each([
+      ["reason が知らない文字列", { type: "speaker-off", start: 0, reason: "other" }],
+      ["reason のキーが無い", { type: "speaker-off", start: 0 }],
+      ["start のキーが無い", { type: "speaker-off", reason: "モデルなし" }],
+      ["start が文字列", { type: "speaker-off", start: "0", reason: "モデルなし" }],
+    ])("壊れた speaker-off は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        const [, data] = row;
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(data)));
+        if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた speaker-off のはずが通った）");
+        assert.strictEqual(result.failure._tag, "SchemaError");
+      }));
+  });
+
   describe("知らない type・壊れた入力", () => {
     it.effect("知らない type は失敗にならず、「知らないイベント」として返る", () =>
       Effect.gen(function* () {

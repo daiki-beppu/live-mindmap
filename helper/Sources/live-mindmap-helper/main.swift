@@ -15,6 +15,7 @@ private let usage = """
 usage:
   live-mindmap-helper check [--no-screen]
   live-mindmap-helper install-speech-ja
+  live-mindmap-helper install-speaker-models
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-paused]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
@@ -54,6 +55,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     )
     // `自分` の休止（Issue #1069）。手で選んだ状態で、サーバーが起動し直したときは `--self-paused` で休止のまま始める。
     let selfPause = SelfPause(paused: selfPaused)
+    // 話者の区間（`speaker`）と `speaker-off` は 1 つの Task が順に流す（順序を保つ）。話者分離のエラーは `run` に伝えない。
+    let (speakerEvents, speakerContinuation) = AsyncStream.makeStream(of: HelperEvent.self)
     let audio = RunAudio(
         requestMicrophonePermission: { try await requestMicrophonePermission() },
         makeTranscriber: { _ in SilenceFilteringTranscriber(wrapping: SpeechAnalyzerTranscriber()) },
@@ -89,7 +92,9 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
             printError("echo cancellation: enabled (WebRTC AEC3, reference = process tap, output: \(outputRoute))")
             return stream
         },
-        selfPause: selfPause
+        selfPause: selfPause,
+        makeDiarizer: { SortformerSpeakerDiarizer() },
+        emitSpeaker: { speakerContinuation.yield($0) }
     )
     try await audio.prepare()
     // 画面収録の許可は開始時に 1 回だけ確かめる（会議の途中で確認を出さない）。`--no-screen` なら確かめない。
@@ -120,6 +125,17 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     }
     defer { signalSources.forEach { $0.cancel() } }
 
+    // `speaker-off(モデルなし)` はサーバーがつながる前に出ることがあるので、保持して流す。`speaker` は通常の broadcast。
+    let speakerTask = Task {
+        for await event in speakerEvents {
+            guard let json = try? event.jsonString() else { continue }
+            if case .speakerOff = event {
+                await server.broadcastRetained(json, key: "speaker-off")
+            } else {
+                await server.broadcast(json)
+            }
+        }
+    }
     var screenTasks: [Task<Void, Never>] = []
     var selfPauseTask: Task<Void, Never>?
     var failure: Error?
@@ -180,6 +196,9 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     audio.stop()
     silentJudgement.stop()
     screen?.stop()
+    // 話者の区間は流し切ってから、サーバーを閉じる。
+    speakerContinuation.finish()
+    await speakerTask.value
     // 録音は全部閉じてから終わる。基準のエラーは、do 節のエラー、なければ 相手 → 自分 の順で最初の録音の失敗。
     do { try await audio.finish() } catch { if failure == nil { failure = error } }
     // 共有画面の取り込みが終わり、最後のイベントを流し切ってから、サーバーを閉じる。
@@ -206,6 +225,14 @@ private func main() async -> Int32 {
                 return 2
             case .success:
                 try await installSpeechJa(progress: printError)
+            }
+        case "install-speaker-models":
+            switch parseInstallSpeakerModelsArguments(Array(arguments.dropFirst())) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
+                return 2
+            case .success:
+                try await installSpeakerModels(progress: printError)
             }
         case "run":
             let rest = Array(arguments.dropFirst())

@@ -165,7 +165,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: helper/.build
-          key: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-${{ hashFiles('helper/Package.swift', 'helper/Sources/**', 'helper/Tests/**', 'helper/scripts/build-webrtc-apm.sh') }}
+          key: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-${{ hashFiles('helper/Package.swift', 'helper/Sources/**', 'helper/Tests/**', 'helper/scripts/build-webrtc-apm.sh', 'helper/Package.resolved') }}
           restore-keys: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-
       # checkout で mtime が変わるので、中身のハッシュで比べて変わっていないファイルはコンパイルしない
       - run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
@@ -179,6 +179,14 @@ jobs:
       - name: IT
         run: swift test --skip-build --filter 'ITTests/'
         working-directory: helper
+      # 話者分離（Sortformer）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
+      - id: speaker-models
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Application Support/FluidAudio/Models/sortformer
+          key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
+      - if: steps.speaker-models.outputs.cache-hit != 'true'
+        run: bash helper/scripts/fetch-speaker-models.sh
       - name: heavy IT
         run: swift test --skip-build --filter 'HeavyTests/'
         working-directory: helper

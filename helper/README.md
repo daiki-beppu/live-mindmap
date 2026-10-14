@@ -85,6 +85,9 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 {"type":"screen-off","start":0.5,"reason":"許可なし"}
 {"type":"tap-silent","start":10.5}
 {"type":"self-pause","paused":true,"reason":"手動","start":42.5}
+{"type":"speaker","track":"相手","start":1.5,"end":2.25,"slot":1,"final":false}
+{"type":"speaker","track":"相手","start":0,"end":1.5,"slot":0,"final":true}
+{"type":"speaker-off","start":0.5,"reason":"モデルなし"}
 ```
 
 - `words`（`partial` と `remark` の両方、両トラック）: 本文を CFStringTokenizer（`ja`、語の境界）で区切った語の配列。要素は `surface`（表記）・`romaji`（`kCFStringTokenizerAttributeLatinTranscription` のローマ字の読み。無ければ空文字）・`location` / `length`（本文の中の位置と長さ。UTF-16 コード単位で、`start` / `end` の秒とは別）。語が無い本文は空の配列。サーバーは `words` の無いイベントも受け付ける
@@ -96,6 +99,9 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 - `screen-off`: 共有画面を取り込めない（画面収録の許可が無い・断られた・取り込みの途中で止まった）。`start` は `screen` と同じく `origin` と同じ原点からの秒。`reason` はヘルパーが流す限り `許可なし` だけ（`指定` はサーバーが書く）。`origin`・`screen` と同じく、`screen` とは別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。音声の取り込みは止まらない
 - `tap-silent`: `相手` のタップを始めてから 10 秒（`tapSilentJudgementDelay`）、フレーム数 1 以上のバッファを 1 つも受け取らなかった。サンプルの値（ゼロかどうか）は見ない。`start` は `origin` と同じ原点からの秒（判定した時刻）。ヘルパーのプロセスにつき最大 1 回だけ流し、別の key で保持して、後からつながったクライアントにも送る。判定の時点で、機器の状態の 1 行を標準エラーにも出す
 - `self-pause`: `自分` の休止の状態が変わった（サーバーからの指示による。`自分` があれば、起動時に現在の状態（`paused`）を 1 回流す。休止・再開どちらでも。`自分` がなければ流さない）。`paused` は変わった後の状態、`reason` は今は `手動` だけ、`start` は `origin` と同じ原点からの秒。別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。サーバーは `log.jsonl` に `self-paused` / `self-resumed` の組で残す
+
+- `speaker`: `相手` のトラックだけに FluidAudio の Sortformer（CoreML、`fastV2_1`）で話者分離をかけた、話者の区間（Issue #1020）。STT の `partial` / `remark` とは別のイベントで、発言・字幕・差分更新には結び付けない。`track` は常に `相手`。`start` / `end` は `origin` と同じ原点からの秒（発言の `start` / `end` と同じ規則で、最初のバッファの取得時刻の差を足す）。`slot` は Sortformer の出力の番号（0 始まり。話者のラベルではない）。`final` が `true` なら確定した区間、`false` なら確定より新しい部分の仮の区間（後で変わり得る）。通常の broadcast で流し、保持しない。音声が終わったら残りを確定させて流す。`自分` のトラックには話者分離をかけない。音声は Mac の外に出ない
+- `speaker-off`: 話者分離を使えない。`reason` は `モデルなし`（モデルのファイルが無い。会議中にはモデルを取りに行かない）・`読み込みに失敗`・`途中で停止`（区間の流れがエラーで終わった）のどれか。`start` は `origin` と同じ原点からの秒。認識とセッションは止めない。別の key で保持して、後からつながったクライアントにも送る。モデルはセットアップの段で `bash helper/scripts/fetch-speaker-models.sh`（`live-mindmap-helper install-speaker-models`。保存先は FluidAudio の既定の `~/Library/Application Support/FluidAudio/Models`。入っていれば何もしない）が前もって取得する
 
 ### エコーキャンセル（スピーカーのとき）
 

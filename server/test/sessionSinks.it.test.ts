@@ -324,6 +324,37 @@ describe("SessionSinks（実物 Layer）", () => {
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
+  // Issue #1020: appendLog で渡した speaker・speaker-off は、生の値のまま受け取った順で log.jsonl に残り、at が付く。差分更新の入力には載らない
+  it.effect("appendLog の speaker・speaker-off は生の値のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
+    const inputs: DiffInput[] = [];
+    const updaterLayer = Layer.succeed(
+      DiffUpdater,
+      DiffUpdater.of({ update: (input) => Effect.sync(() => { inputs.push(input); return { ops: [] }; }) }),
+    );
+    return Effect.scoped(Effect.gen(function* () {
+      const sessionsDir = yield* withTmpSessionsDir();
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(sessionsDir);
+      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+
+      yield* sink.appendLog({ type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false });
+      yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
+      yield* sink.appendLog({ type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
+      yield* sink.appendLog({ type: "speaker-off", start: 9, reason: "読み込みに失敗" });
+      yield* sink.flush;
+
+      const log = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
+      const speakerLines = log.filter((e) => e.type === "speaker" || e.type === "speaker-off");
+      expect(speakerLines.map(({ at, ...rest }) => ({ hasAt: typeof at === "string", rest }))).toEqual([
+        { hasAt: true, rest: { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false } },
+        { hasAt: true, rest: { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true } },
+        { hasAt: true, rest: { type: "speaker-off", start: 9, reason: "読み込みに失敗" } },
+      ]);
+      expect(log.map((e) => e.type).filter((t) => t === "start" || t === "speaker" || t === "speaker-off" || t === "remark")).toEqual(["start", "speaker", "remark", "speaker", "speaker-off"]);
+      for (const input of inputs) expect(JSON.stringify(input)).not.toContain("speaker");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
   it.effect("exports は書き出した 5 パスを返す（4 つ目が map.png、5 つ目が map.html）", () =>
     Effect.scoped(Effect.gen(function* () {
       const sessionsDir = yield* withTmpSessionsDir();
