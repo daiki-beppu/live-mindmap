@@ -1,0 +1,293 @@
+<!doctype html>
+<!-- PROTOTYPE（使い捨て）: 自分の休止の自動と手動の組み合わせ（issue #1044）。main には入れない。 -->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自分の休止の試作</title>
+<style>
+  :root { --fg:#1f2328; --mute:#6b7280; --line:#d0d7de; --bg:#fff; --soft:#f6f8fa; --accent:#2f6feb; --pause:#9a6700; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --mute:#8b949e; --line:#30363d; --bg:#0d1117; --soft:#161b22; --accent:#58a6ff; --pause:#d29922; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 system-ui, "Hiragino Sans", sans-serif; }
+  main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:28px 0 8px; }
+  p.lead { color:var(--mute); margin:0 0 16px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button { font:inherit; padding:6px 12px; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:6px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.on { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.35; cursor:default; }
+  .panel { border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
+  .state { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; }
+  .state dt { color:var(--mute); } .state dd { margin:0; }
+  .big { font-size:18px; font-weight:600; }
+  .big.paused { color:var(--pause); }
+  .changed { background:var(--soft); border-radius:4px; padding:0 4px; }
+  .tabs { display:flex; gap:4px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  .tabs button { border:none; border-bottom:2px solid transparent; border-radius:0; }
+  .tabs button.on { border-bottom-color:var(--accent); }
+  .steps { list-style:none; padding:0; margin:12px 0 0; display:grid; gap:6px; }
+  .steps li { display:flex; gap:8px; align-items:center; }
+  .steps .n { width:20px; color:var(--mute); text-align:right; }
+  .steps li.done button { opacity:.45; }
+  .steps .after { color:var(--mute); font-size:13px; }
+  table.log { width:100%; border-collapse:collapse; font-size:13px; }
+  table.log td { border-top:1px solid var(--line); padding:4px 6px; vertical-align:top; }
+  .policy p { margin:4px 0 0; color:var(--mute); font-size:13px; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
+  .screen { position:relative; height:420px; border:1px solid var(--line); border-radius:8px; overflow:hidden; display:flex; font-size:13px; }
+  .screen .map { flex:1; position:relative; background:repeating-linear-gradient(0deg,transparent 0 39px,var(--soft) 39px 40px); }
+  .screen .side { width:200px; border-left:1px solid var(--line); padding:8px; color:var(--mute); }
+  .screen .node { position:absolute; border:1.5px solid #8aa4d6; border-radius:6px; padding:2px 8px; background:var(--bg); }
+  .screen .captions { position:absolute; left:calc((100% - 200px) / 2); bottom:20px; transform:translateX(-50%); width:380px; display:flex; flex-direction:column; gap:4px; }
+  .screen .cap { background:color-mix(in srgb, var(--bg) 85%, transparent); padding:2px 8px; border-radius:4px; color:var(--mute); }
+  .screen .cap b { font-weight:400; font-size:11px; color:#9ca3af; margin-right:6px; }
+  .screen .say { position:absolute; color:var(--mute); white-space:nowrap; }
+  .screen .say.paused { color:var(--pause); }
+  .screen .say.dim { color:#9ca3af; }
+  kbd { border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+<h1>自分の休止：自動と手動、どちらが勝つか</h1>
+<p class="lead">会議アプリがマイクを開いているかで自動の休止が入ったり外れたりするところへ、利用者が live-mindmap の画面から切り替えたらどうなるかを、ボタンで試す。3 つの決め方を切り替えて比べる。Zoom・Meet はミュートボタンを押してもマイクを開いたまま（#1043）なので、会議中のミュートは自動では拾えない。</p>
+
+<h2>決め方</h2>
+<div class="row" id="policies"></div>
+<div class="policy" id="policyText"></div>
+
+<div class="cols">
+<div>
+<h2>いまの状態</h2>
+<div class="panel"><dl class="state" id="state"></dl></div>
+
+<h2>自由に押す</h2>
+<div class="panel">
+  <div style="color:var(--mute);font-size:13px">会議アプリの側</div>
+  <div class="row" id="appButtons"></div>
+  <div style="color:var(--mute);font-size:13px;margin-top:10px">利用者の側（live-mindmap の画面）</div>
+  <div class="row" id="userButtons"></div>
+  <div class="row" style="margin-top:10px"><button id="reset">最初に戻す</button></div>
+</div>
+</div>
+
+<div>
+<h2>場面ごとに試す</h2>
+<div class="tabs" id="tabs"></div>
+<div class="panel" style="border-top:none;border-radius:0 0 8px 8px">
+  <p id="scDesc" style="margin:0"></p>
+  <ol class="steps" id="steps"></ol>
+</div>
+</div>
+</div>
+
+
+<h2>画面での見せ方（模型）</h2>
+<p class="lead" style="margin-bottom:8px">ライブ画面の簡略な模型。上の状態と連動する。<kbd>M</kbd> で休止・再開（上の「休止 / 再開」と同じ）。ライブ画面にはボタンが 1 つもなく、操作はすべてキーなので、ここもキーで切り替える。案ごとに一言の置き場所と言い方が違う。</p>
+<div class="row" id="variants" style="margin-bottom:8px"></div>
+<p id="variantText" style="color:var(--mute);font-size:13px;margin:0 0 8px"></p>
+<div class="screen" id="screen"></div>
+
+<h2>これまでの動き</h2>
+<table class="log" id="log"></table>
+</main>
+
+<script>
+// ---- 持ち出せる部分：純粋な reducer。DOM には触らない。 ----
+// app: 'using'（会議アプリがマイクを開いている）| 'idle'（閉じている）| 'unknown'（判定できない）
+// manual: null（自動に従う）| 'pause' | 'take'
+const Policies = {
+  sticky: {
+    name: 'A. 手動は戻すまで続く',
+    text: '手で選んだ休止・取るは、利用者が「自動に戻す」を押すまでずっと続く。アプリがマイクを開け閉めしても変わらない。',
+  },
+  untilEdge: {
+    name: 'B. 手動は次の切り替わりまで',
+    text: '手で選んだ休止・取るは、会議アプリがマイクを開くか閉じるまで続き、そこで自動に戻る。',
+  },
+  pauseSticky: {
+    name: 'C. 手の休止は戻すまで、手の取るは次の切り替わりまで',
+    text: '手で休止にしたら、利用者が戻すまで休止のまま（次の会議に入っても）。自動の休止中に手で取るにしたのは、アプリがマイクを開くか閉じるまで。',
+  },
+};
+
+const initial = (policy) => ({ policy, app: 'idle', manual: null });
+
+// 自動だけならどうなるか
+const autoTakes = (app) => app !== 'idle'; // 判定できないときは取る
+const takes = (s) => s.manual === null ? autoTakes(s.app) : s.manual === 'take';
+const reason = (s) => s.manual !== null ? '手動'
+  : s.app === 'unknown' ? '判定できないので取る' : '自動';
+
+function reduce(s, action) {
+  switch (action.type) {
+    case 'app': {
+      if (action.app === s.app) return s;
+      const edge = autoTakes(action.app) !== autoTakes(s.app); // 自動の結論が変わったか
+      let manual = s.manual;
+      if (edge && s.policy === 'untilEdge') manual = null;
+      if (edge && s.policy === 'pauseSticky' && manual === 'take') manual = null;
+      return { ...s, app: action.app, manual };
+    }
+    case 'toggle': { // 画面の 1 つのボタン：いまの逆にする
+      const want = takes(s) ? 'pause' : 'take';
+      let manual = want;
+      // 自動と同じ結論になるなら、手動を外して自動に従う（A 以外）
+      if (s.policy !== 'sticky' && (want === 'take') === autoTakes(s.app)) manual = null;
+      if (s.policy === 'pauseSticky' && want === 'pause') manual = 'pause';
+      return { ...s, manual };
+    }
+    case 'auto': return { ...s, manual: null };
+    case 'policy': return initial(action.policy);
+    default: return s;
+  }
+}
+// ---- ここまで ----
+
+const appLabel = { using: 'マイクを開いている', idle: 'マイクを閉じている', unknown: '判定できない' };
+const manualLabel = { null: 'なし（自動に従う）', pause: '休止', take: '取る' };
+const actionLabel = (a, s) => a.type === 'app'
+  ? { using: 'アプリがマイクを開く', idle: 'アプリがマイクを閉じる', unknown: 'アプリの状態が読めなくなる' }[a.app]
+  : a.type === 'toggle' ? (takes(s) ? '画面で「休止」を押す' : '画面で「再開」を押す')
+  : a.type === 'auto' ? '画面で「自動に戻す」を押す' : '';
+
+const Scenarios = [
+  { name: '聞くだけのセミナー', desc: 'YouTube LIVE を Chrome で見る。Chrome はマイクを開かないので、何もしなくても休止になる。途中で Meet の会議に入ると取り始める。',
+    steps: [{ type:'app', app:'idle' }, { type:'app', app:'using' }, { type:'app', app:'idle' }] },
+  { name: '会議中にミュート', desc: 'Zoom の会議中にミュートボタンを押す。Zoom はマイクを開いたままなので自動では休止にならない。画面で休止にして、後でミュートを外したのに戻し忘れる。会議を出て、次の会議に入ると？',
+    steps: [{ type:'app', app:'using' }, { type:'toggle' }, { type:'app', app:'idle' }, { type:'app', app:'using' }] },
+  { name: 'セミナーで自分の独り言を取りたい', desc: '聞くだけのセミナー（自動で休止）だが、自分のメモ代わりに声を取りたいので画面で再開する。その後セミナー側でマイクを使う場面（質疑で発言）があり、また聞くだけに戻る。',
+    steps: [{ type:'app', app:'idle' }, { type:'toggle' }, { type:'app', app:'using' }, { type:'app', app:'idle' }] },
+  { name: '判定できない', desc: 'アプリのプロセスが読めなくなる（判定できない）と自動では取る。その間に画面で休止にして、読めるようになったら？',
+    steps: [{ type:'app', app:'using' }, { type:'app', app:'unknown' }, { type:'toggle' }, { type:'app', app:'idle' }] },
+];
+
+let s = initial('untilEdge');
+let prev = s;
+let log = [];
+let sc = 0, scStep = 0;
+
+function dispatch(a) {
+  const label = actionLabel(a, s);
+  prev = s; s = reduce(s, a);
+  if (a.type !== 'policy') log.unshift({ label, after: takes(s) ? '取る' : '休止', why: reason(s) });
+  render();
+}
+
+function render() {
+  const pol = document.getElementById('policies');
+  pol.innerHTML = '';
+  for (const [k, p] of Object.entries(Policies)) {
+    const b = document.createElement('button');
+    b.textContent = p.name; b.className = s.policy === k ? 'on' : '';
+    b.onclick = () => { log = []; scStep = 0; dispatch({ type: 'policy', policy: k }); };
+    pol.appendChild(b);
+  }
+  document.getElementById('policyText').innerHTML = `<p>${Policies[s.policy].text}</p>`;
+
+  const ch = (k) => prev[k] !== s[k] ? 'changed' : '';
+  const t = takes(s), tp = takes(prev);
+  document.getElementById('state').innerHTML = `
+    <dt>自分のトラック</dt><dd class="big ${t ? '' : 'paused'} ${t !== tp ? 'changed' : ''}">${t ? '取っている' : '休止中'}</dd>
+    <dt>理由</dt><dd>${reason(s)}</dd>
+    <dt>会議アプリ</dt><dd class="${ch('app')}">${appLabel[s.app]}</dd>
+    <dt>手で選んだもの</dt><dd class="${ch('manual')}">${manualLabel[s.manual]}</dd>
+    <dt>自動だけなら</dt><dd>${autoTakes(s.app) ? '取る' : '休止'}</dd>`;
+
+  const ab = document.getElementById('appButtons'); ab.innerHTML = '';
+  for (const app of ['using', 'idle', 'unknown']) {
+    const a = { type: 'app', app }; const b = document.createElement('button');
+    b.textContent = actionLabel(a, s); b.disabled = s.app === app; b.onclick = () => dispatch(a); ab.appendChild(b);
+  }
+  const ub = document.getElementById('userButtons'); ub.innerHTML = '';
+  const tb = document.createElement('button'); tb.textContent = t ? '休止' : '再開'; tb.onclick = () => dispatch({ type: 'toggle' }); ub.appendChild(tb);
+  if (s.policy === 'sticky') {
+    const b = document.createElement('button'); b.textContent = '自動に戻す'; b.disabled = s.manual === null; b.onclick = () => dispatch({ type: 'auto' }); ub.appendChild(b);
+  }
+
+  const tabs = document.getElementById('tabs'); tabs.innerHTML = '';
+  Scenarios.forEach((x, i) => {
+    const b = document.createElement('button'); b.textContent = x.name; b.className = i === sc ? 'on' : '';
+    b.onclick = () => { sc = i; startScenario(); }; tabs.appendChild(b);
+  });
+  document.getElementById('scDesc').textContent = Scenarios[sc].desc;
+  const st = document.getElementById('steps'); st.innerHTML = '';
+  const start = document.createElement('li');
+  start.innerHTML = '<span class="n">0</span>'; const sb = document.createElement('button'); sb.textContent = 'この場面を最初から';
+  sb.onclick = startScenario; start.appendChild(sb); st.appendChild(start);
+  // 手順のラベルは、そこまで進めたときの状態で決める
+  let sim = initial(s.policy);
+  Scenarios[sc].steps.forEach((a, i) => {
+    const li = document.createElement('li'); li.className = i < scStep ? 'done' : '';
+    li.innerHTML = `<span class="n">${i + 1}</span>`;
+    const b = document.createElement('button'); b.textContent = actionLabel(a, sim); b.disabled = i !== scStep;
+    b.onclick = () => { scStep++; dispatch(a); }; li.appendChild(b);
+    sim = reduce(sim, a);
+    if (i < scStep) { const sp = document.createElement('span'); sp.className = 'after'; sp.textContent = `→ ${takes(sim) ? '取る' : '休止'}（${reason(sim)}）`; li.appendChild(sp); }
+    st.appendChild(li);
+  });
+
+  document.getElementById('log').innerHTML = log.map(l => `<tr><td>${l.label}</td><td>${l.after}</td><td style="color:var(--mute)">${l.why}</td></tr>`).join('');
+}
+
+function startScenario() { scStep = 0; log = []; prev = s = initial(s.policy); render(); }
+document.getElementById('reset').onclick = startScenario;
+render();
+
+// ---- 模型（使い捨て） ----
+const Variants = {
+  A: { name: 'A. 字幕の右（取り込みの一言の場所）', text: '取り込みが途切れたときの一言と同じ場所・同じ灰色の文字。休止の間ずっと出す。理由は括弧で短く。取り込みの一言が出ている間は、その下に並べる。' },
+  B: { name: 'B. 左上の状態の一文', text: 'ローカルモードの一文と同じ左上。休止の間ずっと出す。ローカルモード・差分更新の一文が出ているときはその下の行。字幕から離れるので共有画面の視線を邪魔しない。' },
+  C: { name: 'C. 切り替わったときだけ 3 秒', text: '休止に入った・外れたときに字幕の右に 3 秒だけ出して消える。ずっと出す表示は無く、いまの状態はキー一覧（?）の M の行に書く。画面はいちばん静か。' },
+};
+let variant = 'A';
+let flash = null, flashTimer = null;
+const sayText = (st) => {
+  if (takes(st)) return null;
+  return st.manual === 'pause' ? '自分を休止中（M で再開）' : '自分を休止中（会議アプリがマイクを使っていない）';
+};
+function renderScreen() {
+  const vb = document.getElementById('variants'); vb.innerHTML = '';
+  for (const [k, v] of Object.entries(Variants)) {
+    const b = document.createElement('button'); b.textContent = v.name; b.className = variant === k ? 'on' : '';
+    b.onclick = () => { variant = k; renderScreen(); }; vb.appendChild(b);
+  }
+  document.getElementById('variantText').textContent = Variants[variant].text;
+  const t = takes(s);
+  const caps = [`<div class="cap"><b>相手</b>来週のリリースは木曜で確定にしましょう。</div>`];
+  if (t) caps.push(`<div class="cap"><b>自分</b>了解です、QA の枠を押さえます。</div>`);
+  let say = '';
+  const text = sayText(s);
+  if (variant === 'A' && text) say = `<div class="say paused" style="left:calc((100% - 200px) / 2 + 202px);bottom:20px">${text}</div>`;
+  if (variant === 'B' && text) say = `<div class="say paused" style="left:12px;top:8px">${text}</div>`;
+  if (variant === 'C' && flash) say = `<div class="say ${flash.paused ? 'paused' : 'dim'}" style="left:calc((100% - 200px) / 2 + 202px);bottom:20px">${flash.text}</div>`;
+  document.getElementById('screen').innerHTML = `
+    <div class="map">
+      <div class="node" style="left:40%;top:70px">リリース計画</div>
+      <div class="node" style="left:20%;top:150px">日程</div>
+      <div class="node" style="left:58%;top:150px">QA</div>
+      <div class="node" style="left:14%;top:220px">木曜で確定</div>
+      <div class="captions">${caps.join('')}</div>
+      ${say}
+    </div>
+    <div class="side">変わったこと<br>根拠</div>`;
+}
+const _dispatch = dispatch;
+dispatch = (a) => {
+  const before = takes(s);
+  _dispatch(a);
+  if (a.type !== 'policy' && before !== takes(s)) {
+    flash = takes(s) ? { text: '自分を取り始めました', paused: false } : { text: sayText(s), paused: true };
+    clearTimeout(flashTimer); flashTimer = setTimeout(() => { flash = null; renderScreen(); }, 3000);
+  }
+  renderScreen();
+};
+const _render = render;
+render = () => { _render(); renderScreen(); };
+document.addEventListener('keydown', (e) => { if ((e.key === 'm' || e.key === 'M') && !e.metaKey && !e.ctrlKey) dispatch({ type: 'toggle' }); });
+renderScreen();
+</script>
+</body>
+</html>
