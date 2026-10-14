@@ -7,14 +7,14 @@
 import type { HelperPartial } from "./live.ts";
 import { createRemarkGate } from "./remarkGate.ts";
 import type { Remark } from "./remark.ts";
-import { cutWords, type Word } from "./words.ts";
+import { cutWords, keepWordsBefore, type Word, type WordTime } from "./words.ts";
 
 export const SETTLE_QUIET_MS = 1000;
 export const SETTLE_SENTENCE_MS = 50;
 
 // ID は呼び出し側が push の直前に振る（捨てた確定結果が番号を消費しない）
-// words は Remark に入れず、運ぶ型にだけ持つ（スナップショット・差分更新への入力に漏らさない）
-export type SettledRemark = Omit<Remark, "id"> & { words?: readonly Word[] };
+// words と wordTimes は Remark に入れず、運ぶ型にだけ持つ（スナップショット・差分更新への入力に漏らさない）
+export type SettledRemark = Omit<Remark, "id"> & { words?: readonly Word[]; wordTimes?: readonly WordTime[] };
 
 const EPSILON = 1e-6;
 
@@ -26,6 +26,7 @@ type Utterance = {
   end: number;
   text: string;
   words: readonly Word[] | undefined;
+  wordTimes: readonly WordTime[] | undefined;
   lastAt: number;
   state: "open" | "emitted" | "consumed";
   ends: SentenceEnd[]; // まだ出していない文の終わり
@@ -59,7 +60,11 @@ const insertionEnd = (text: string, emitted: string): number => {
 const keyOf = (track: string, start: number) => `${track}\u0000${start}`;
 // 途中結果の区間は確定結果の区間と端がずれるので、発話の区間の中央が確定結果の区間に入るかで覆いを決める
 const midpoint = (u: Utterance) => (u.start + u.end) / 2;
-const toRemark = (u: Utterance): SettledRemark => ({ track: u.track, start: u.start, end: u.end, text: u.text, ...(u.words === undefined ? {} : { words: u.words }) });
+const toRemark = (u: Utterance): SettledRemark => ({
+  track: u.track, start: u.start, end: u.end, text: u.text,
+  ...(u.words === undefined ? {} : { words: u.words }),
+  ...(u.wordTimes === undefined ? {} : { wordTimes: u.wordTimes }),
+});
 
 const sentenceEnds = (text: string): number[] => {
   const positions: number[] = [];
@@ -95,13 +100,14 @@ const cutEnd = (u: Utterance, pos: number, emittedEnd: number): number => {
   return emittedEnd + ((u.end - emittedEnd) * (pos - u.cutPos)) / (u.text.length - u.cutPos);
 };
 
-// 発話の頭から pos までの発言。words は無ければキーも付けない
+// 発話の頭から pos までの発言。words・wordTimes は無ければキーも付けない
 const toCutRemark = (u: Utterance, pos: number, emittedEnd: number): SettledRemark => ({
   track: u.track,
   start: u.start,
   end: cutEnd(u, pos, emittedEnd),
   text: u.text.slice(0, pos),
-  ...(u.words === undefined ? {} : { words: u.words.filter((w) => w.location + w.length <= pos) }),
+  ...(u.words === undefined ? {} : { words: keepWordsBefore(u.words, pos) }),
+  ...(u.wordTimes === undefined ? {} : { wordTimes: keepWordsBefore(u.wordTimes, pos) }),
 });
 
 export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
@@ -126,7 +132,13 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
       // 関所と同じく句読点・空白を無視して比べる（出した文の句読点が変わっても見落とさない）。
       // 先頭に現れるときは切らず、関所の重なりに任せる（頭だけ書き換わった出した文の後ろまで捨てないため）
       const at = sameUtterance === undefined ? 0 : insertionEnd(r.text, sameUtterance.text);
-      if (at > 0) candidate = { ...r, text: r.text.slice(at), ...(r.words === undefined ? {} : { words: cutWords(r.words, at) }) };
+      if (at > 0) {
+        candidate = {
+          ...r, text: r.text.slice(at),
+          ...(r.words === undefined ? {} : { words: cutWords(r.words, at) }),
+          ...(r.wordTimes === undefined ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
+        };
+      }
       carry.pass({ track: r.track, start: prev.end, end: prev.end, text: prev.text });
     }
     const carried = carry.pass(candidate);
@@ -209,10 +221,11 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
         current.end = p.end;
         current.text = p.text;
         current.words = p.words; // text と同じ更新で置き換える（undefined でも代入し、古い words を残さない）
+        current.wordTimes = p.wordTimes;
         current.lastAt = now;
         return out;
       }
-      const next: Utterance = { track: p.track, start: p.start, end: p.end, text: p.text, words: p.words, lastAt: now, state: "open", ends: sentenceEnds(p.text).map((pos) => ({ pos, at: now })), cut: false, cutPos: 0 };
+      const next: Utterance = { track: p.track, start: p.start, end: p.end, text: p.text, words: p.words, wordTimes: p.wordTimes, lastAt: now, state: "open", ends: sentenceEnds(p.text).map((pos) => ({ pos, at: now })), cut: false, cutPos: 0 };
       utterances.push(next);
       latest.set(key, next);
       return out;

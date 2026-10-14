@@ -28,8 +28,8 @@ struct RelayITTests {
             received.append(text)
         }
         let expected = [
-            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに")).jsonString(),
-            try HelperEvent.remark(track: .相手, start: 0, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは")).jsonString(),
+            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに"), wordTimes: []).jsonString(),
+            try HelperEvent.remark(track: .相手, start: 0, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは"), wordTimes: []).jsonString(),
         ]
         #expect(received == expected)
         // 実際のトークナイザの語が、確定結果にも途中結果にも載る（空の words を期待値と取り違えない）
@@ -98,17 +98,41 @@ struct MultiTrackRelayITTests {
 
         let received = try await receiveTexts(task, count: 4)
         let expectedMine = [
-            try HelperEvent.partial(track: .自分, start: 0, end: 1, text: "は", duplicate: false, words: transcriptWords("は")).jsonString(),
-            try HelperEvent.remark(track: .自分, start: 0.5, end: 1.5, text: "はい", duplicate: false, words: transcriptWords("はい")).jsonString(),
+            try HelperEvent.partial(track: .自分, start: 0, end: 1, text: "は", duplicate: false, words: transcriptWords("は"), wordTimes: []).jsonString(),
+            try HelperEvent.remark(track: .自分, start: 0.5, end: 1.5, text: "はい", duplicate: false, words: transcriptWords("はい"), wordTimes: []).jsonString(),
         ]
         let expectedTheirs = [
-            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに")).jsonString(),
-            try HelperEvent.remark(track: .相手, start: 0.25, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは")).jsonString(),
+            try HelperEvent.partial(track: .相手, start: 0, end: 1, text: "こんに", duplicate: false, words: transcriptWords("こんに"), wordTimes: []).jsonString(),
+            try HelperEvent.remark(track: .相手, start: 0.25, end: 2, text: "こんにちは", duplicate: false, words: transcriptWords("こんにちは"), wordTimes: []).jsonString(),
         ]
         // トラック間の到着順は決まっていない。同じトラックの中の順序だけが保たれる。
         #expect(Set(received) == Set(expectedMine + expectedTheirs))
         #expect(received.filter(expectedMine.contains) == expectedMine)
         #expect(received.filter(expectedTheirs.contains) == expectedTheirs)
+    }
+
+    @Test("両トラックの結果の語の区間が、同じ形で接続先に届く（判定器なし）")
+    func wordTimesReachClientOnBothTracks() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let times = [WordTime(location: 0, length: 2, start: 1, end: 1.5)]
+        let mine = finishedStream([TranscriptionResult(text: "はい", isFinal: true, start: 1, end: 1.5, wordTimes: times)])
+        let theirs = finishedStream([TranscriptionResult(text: "はい", isFinal: true, start: 1, end: 1.5, wordTimes: times)])
+        try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: nil)
+
+        let received = try await receiveTexts(task, count: 2)
+        var tracks: Set<String> = []
+        for text in received {
+            let object = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            tracks.insert(try #require(object["track"] as? String))
+            let got = try #require(object["wordTimes"] as? [[String: Any]])
+            #expect(NSArray(array: got).isEqual(to: [["location": 0, "length": 2, "start": 1.0, "end": 1.5]]))
+        }
+        #expect(tracks == ["自分", "相手"])
     }
 
     @Test("一方のトラックが先に正常に終わっても、もう一方は流れ続ける")
@@ -130,7 +154,7 @@ struct MultiTrackRelayITTests {
         try await relay(tracks: [(.自分, finishedEarly), (.相手, late)], to: server, duplicates: nil)
 
         let received = try await receiveTexts(task, count: 1)
-        #expect(received == [try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "あとから", duplicate: false, words: transcriptWords("あとから")).jsonString()])
+        #expect(received == [try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "あとから", duplicate: false, words: transcriptWords("あとから"), wordTimes: []).jsonString()])
     }
 
     @Test("一方のトラックがエラーで終わったら、そのエラーを返し、終わらないもう一方の流れも終わる")

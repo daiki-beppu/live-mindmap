@@ -1055,6 +1055,108 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの読み（Issue #6
   });
 });
 
+// Issue #1019: 語ごとの区間（wordTimes）を log.jsonl の remark の行に残す。
+// wordTimes は Remark に入れず、差分更新への入力・スナップショット・書き出しには載らない。wordTimes の無いイベントの行は今までと同じ
+describe("SessionSinks（実物 Layer）: 発言の語ごとの区間（Issue #1019）", () => {
+  const span = (location: number, length: number, start: number, end: number) => ({ location, length, start, end });
+  const remarkLines = (dir: string) => logEvents(dir).filter((e) => e.type === "remark");
+
+  it.effect("wordTimes 付きの確定結果は、log.jsonl の remark の行に wordTimes が残る。remark 自体には入らない", () => {
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      const wordTimes = [span(0, 2, 1, 1.5), span(2, 1, 1.5, 1.75), span(3, 2, 1.75, 3)];
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: "明日の会議", wordTimes });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      const lines = remarkLines(dir);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].wordTimes).toEqual(wordTimes);
+      expect(lines[0].remark).toEqual({ id: "r1", track: "相手", start: 1, end: 3, text: "明日の会議" });
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
+  it.effect("words と wordTimes を両方持つ確定結果の行には、どちらも残る", () => {
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      const words = [{ surface: "はい", romaji: "hai", location: 0, length: 2 }];
+      const wordTimes = [span(0, 2, 0, 1)];
+      yield* sink.final({ track: "自分", start: 0, end: 1, text: "はい", words, wordTimes });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      expect(remarkLines(dir)[0]).toMatchObject({ raw: "はい", words, wordTimes });
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
+  it.effect("途中結果から作った発言にも、最後の途中結果の wordTimes が付く", () => {
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      yield* sink.partial({ track: "相手", start: 5, end: 7.5, text: "あした", duplicate: false, wordTimes: [span(0, 3, 5, 6)] });
+      yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false, wordTimes: [span(0, 3, 5, 6), span(3, 1, 6, 6.5), span(4, 2, 6.5, 8)] });
+      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
+      yield* settle;
+
+      const lines = remarkLines(dir);
+      expect(lines).toHaveLength(1);
+      expect(lines[0].remark.text).toBe("あしたの会議");
+      expect(lines[0].wordTimes).toEqual([span(0, 3, 5, 6), span(3, 1, 6, 6.5), span(4, 2, 6.5, 8)]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
+  it.effect("関所が頭を切った発言の行は、wordTimes が切った後の本文の位置に合い、秒は元のまま", () => {
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      yield* sink.final({ track: "相手", start: 10, end: 12, text: "あいう", wordTimes: [span(0, 3, 10, 12)] });
+      yield* sink.final({ track: "相手", start: 11, end: 15, text: "あいうえお", wordTimes: [span(0, 2, 11, 12), span(2, 2, 12, 14), span(4, 1, 14, 15)] });
+      yield* sink.drain;
+      yield* sink.flush;
+
+      const lines = remarkLines(dir);
+      expect(lines.map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あいう"], ["r2", "えお"]]);
+      // 切る位置は 3。"うえ"（位置 2〜4）は途中で切れるので落ち、"お" は切った後の本文の位置 1 になる
+      expect(lines[1].wordTimes).toEqual([span(1, 1, 14, 15)]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
+  it.effect("wordTimes の無いイベントから作った発言の行には wordTimes のキーが無い", () => {
+    const { updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      yield* sink.final({ track: "相手", start: 1, end: 2, text: "確定" });
+      yield* sink.partial({ track: "相手", start: 5, end: 6, text: "途中", duplicate: false });
+      yield* TestClock.adjust(SETTLE_QUIET_MS);
+      yield* settle;
+      yield* sink.drain;
+      yield* sink.flush;
+
+      const lines = remarkLines(dir);
+      expect(lines).toHaveLength(2);
+      for (const line of lines) expect(line).not.toHaveProperty("wordTimes");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
+  it.effect("wordTimes は差分更新への入力・書き出しに載らない（Remark の契約は変わらない）", () => {
+    const { calls, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir } = yield* openRecordingSink();
+      yield* sink.final({ track: "相手", start: 1, end: 3, text: "明日の会議", wordTimes: [span(0, 5, 1, 3)] });
+      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+
+      expect(calls.flatMap((c) => c.fresh)[0]).toEqual({ id: "r1", track: "相手", start: 1, end: 3, text: "明日の会議" });
+      expect(JSON.stringify(calls)).not.toContain("wordTimes");
+      yield* sink.drain;
+      yield* sink.flush;
+      yield* sink.exports;
+      expect(readFileSync(join(dir, "export.json"), "utf8")).not.toContain("wordTimes");
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+});
+
 // Issue #640: 利用者が足した語で発言を直す。
 // SessionSink の addUserVocabulary(words) が、語を Readings（読みのサブコマンド）にまとめて 1 回渡して読みを作り、
 // log.jsonl に vocab の行（表記・読み・出どころ user。読みが無い語は romaji: null）を書いてから、語彙に読みのある語を足す。

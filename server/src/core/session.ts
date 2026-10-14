@@ -10,7 +10,7 @@ import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
 import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
 import { Remark } from "./remark.ts";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "./snapshot.ts";
-import { Word } from "./words.ts";
+import { Word, WordTime } from "./words.ts";
 
 // 共有画面の変化: start（映り始めた会議の秒）から、image の画面が映る。null は何も映らない。
 // image の id は画像の識別、bytes は送る JPEG（core は Node に依存しないので Uint8Array）
@@ -72,7 +72,9 @@ export const StartEvent = Schema.Struct({
 export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)),
   // 直す前の本文と語（Issue #639）。words を受け取った発言の行にだけ付く。raw は関所を通った後の補正する前の本文で、
   // 補正した発言では remark.text（直した本文）と異なる。words は raw の位置のまま（直した本文には合わせない）
-  raw: Schema.optionalKey(Schema.String), words: Schema.optionalKey(Schema.Array(Word)) });
+  raw: Schema.optionalKey(Schema.String), words: Schema.optionalKey(Schema.Array(Word)),
+  // STT の run ごとの区間（Issue #1019）。受け取った発言の行にだけ付く（古いログには無い）。位置は関所を通った後の本文（raw）のまま、秒は会議の原点から
+  wordTimes: Schema.optionalKey(Schema.Array(WordTime)) });
 // ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない
 const ScreenRef = Schema.Struct({ start: Schema.Finite, image: Schema.NullOr(Schema.String) });
 // lines は受け取った OCR の行（Issue #643）。受け取らなかった画面と古いログには付かない
@@ -333,7 +335,7 @@ export function snapshotOf(state: SessionState): Snapshot {
 
 export type Session = {
   // original は補正する前の本文と、その本文の位置に合わせた語。付けた発言の行に raw・words を残す
-  readonly push: (remark: Remark, original?: { readonly raw: string; readonly words: readonly Word[] }) => Effect.Effect<void>;
+  readonly push: (remark: Remark, original?: { readonly raw: string; readonly words: readonly Word[] }, wordTimes?: readonly WordTime[]) => Effect.Effect<void>;
   // 呼び出し中のものと、それに続けて起きた呼び出しがすべて終わるまで待つ
   readonly idle: Effect.Effect<void>;
   // 共有画面の変化を受ける。差分更新は呼ばない。画像は writeScreen に渡し、変化ごとに screen の行を書く。
@@ -574,10 +576,10 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     });
 
     return {
-      push: (r, original) =>
+      push: (r, original, wordTimes) =>
         Effect.gen(function* () {
           yield* Ref.update(ref, (s) => ({ ...s, remarks: [...s.remarks, r] }));
-          const extra = original === undefined ? {} : { raw: original.raw, words: original.words };
+          const extra = { ...(original === undefined ? {} : { raw: original.raw, words: original.words }), ...(wordTimes === undefined ? {} : { wordTimes }) };
           if (!r.duplicate && !hasContent(r.text)) {
             // 中身のない発言: ログには残すが、差分更新・未反映の発言には関わらせない
             yield* log.write({ type: "remark", remark: r, noContent: true, ...extra });

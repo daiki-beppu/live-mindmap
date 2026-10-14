@@ -46,8 +46,12 @@ final class TrackTimeline: @unchecked Sendable {
 }
 
 extension TranscriptionResult {
-    /// `start` と `end` だけを `seconds` 秒ずらした結果。
+    /// `start` / `end` と、語の区間の `start` / `end` を `seconds` 秒ずらした結果。語の位置と長さは変えない。
     func shifted(by seconds: Double) -> TranscriptionResult {
-        TranscriptionResult(text: text, isFinal: isFinal, start: start + seconds, end: end + seconds)
+        TranscriptionResult(
+            text: text, isFinal: isFinal, start: start + seconds, end: end + seconds,
+            wordTimes: wordTimes.map {
+                WordTime(location: $0.location, length: $0.length, start: $0.start + seconds, end: $0.end + seconds)
+            })
     }
 }

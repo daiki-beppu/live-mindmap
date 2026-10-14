@@ -94,7 +94,7 @@ private func final(_ text: String, _ start: Double, _ end: Double) -> Transcript
 }
 
 private func remark(_ track: Track, _ text: String, _ start: Double, _ end: Double, duplicate: Bool) throws -> String {
-    try HelperEvent.remark(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text)).jsonString()
+    try HelperEvent.remark(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text), wordTimes: []).jsonString()
 }
 
 private func partialResult(_ text: String, _ start: Double, _ end: Double) -> TranscriptionResult {
@@ -102,7 +102,7 @@ private func partialResult(_ text: String, _ start: Double, _ end: Double) -> Tr
 }
 
 private func partialEvent(_ track: Track, _ text: String, _ start: Double, _ end: Double, duplicate: Bool) throws -> String {
-    try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text)).jsonString()
+    try HelperEvent.partial(track: track, start: start, end: end, text: text, duplicate: duplicate, words: transcriptWords(text), wordTimes: []).jsonString()
 }
 
 /// Issue #141 の状況。`相手` の発言が保留の上限より長く続き、その確定結果は上限に達した後に届く。
@@ -918,5 +918,33 @@ struct DuplicateRelayITTests {
 
         for _ in 0..<100 where !terminated.isSet { try await Task.sleep(for: .milliseconds(50)) }
         #expect(terminated.isSet)
+    }
+
+    // Issue #1019: 重複の判定を通る `自分` の経路（relayMine）でも、語の区間が載る
+    @Test("重複の判定を通る自分の確定結果と途中結果にも、語の区間がそのまま載る")
+    func mineResultsCarryWordTimesThroughDuplicateMarker() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let task = try await connect(to: server, port: port)
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        let times = [WordTime(location: 0, length: 3, start: 10.5, end: 11), WordTime(location: 3, length: 2, start: 11, end: 11.5)]
+        let mine = finishedStream([
+            TranscriptionResult(text: "ありがと", isFinal: false, start: 10.5, end: 11.5, wordTimes: times),
+            TranscriptionResult(text: "ありがとう", isFinal: true, start: 10.5, end: 11.5, wordTimes: times),
+        ])
+        try await relay(tracks: [(.自分, mine), (.相手, finishedStream([]))], to: server, duplicates: DuplicateMarker())
+
+        let received = try await receiveTexts(task, count: 2)
+        for text in received {
+            let object = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            #expect(object["track"] as? String == "自分")
+            let got = try #require(object["wordTimes"] as? [[String: Any]])
+            #expect(NSArray(array: got).isEqual(to: [
+                ["location": 0, "length": 3, "start": 10.5, "end": 11.0],
+                ["location": 3, "length": 2, "start": 11.0, "end": 11.5],
+            ]))
+        }
     }
 }

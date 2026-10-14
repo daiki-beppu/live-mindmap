@@ -159,6 +159,26 @@ describe("ログからの復元", () => {
       expect(snap.changes.find((c) => c.change === "却下")).toMatchObject({ node: "n3", round: 2 });
     }));
 
+  // Issue #1019: wordTimes（語ごとの区間）を持つ remark の行を含む新しいログも、持たない古い行と同じように復元できる
+  it.effect("wordTimes 付きの remark の行を含むログも、wordTimes を除いたログと同じマップ・書き出しに復元される", () =>
+    Effect.gen(function* () {
+      const { events } = yield* original();
+      const plain = viaJsonl(events);
+      const withTimes = plain.map((line) => {
+        const e = line as { type?: string; remark?: { text: string } };
+        return e.type === "remark"
+          ? { ...e, wordTimes: [{ location: 0, length: e.remark!.text.length, start: 0, end: 1 }] }
+          : line;
+      });
+      expect(withTimes.some((line) => "wordTimes" in (line as object))).toBe(true);
+
+      const restoredPlain = yield* restore(plain);
+      const restoredTimes = yield* restore(withTimes);
+      expect(yield* restoredTimes.snapshot).toEqual(yield* restoredPlain.snapshot);
+      expect(yield* restoredTimes.exportJson).toEqual(yield* restoredPlain.exportJson);
+      expect(JSON.stringify(yield* restoredTimes.exportJson)).not.toContain("wordTimes");
+    }));
+
   it.effect("復元の間は差分更新を呼ばず、イベントを SessionLog に書き直さない", () =>
     Effect.gen(function* () {
       const { events } = yield* original();

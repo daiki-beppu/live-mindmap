@@ -1416,3 +1416,190 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
     });
   });
 });
+
+// Issue #1019: 語ごとの区間（wordTimes）を発言まで運ぶ。words と同じ位置（UTF-16）で本文と一緒に切る。
+// wordTimes を持たない入力からは、wordTimes のキーを持つ発言を作らない
+type TestWordTime = { location: number; length: number; start: number; end: number };
+// 1 文字ずつ 1 秒の区間（位置 i の文字は start = base + i、end = base + i + 1）
+const timesOf = (text: string, base = 10): TestWordTime[] =>
+  [...text].map((c, i) => ({ location: i, length: c.length, start: base + i, end: base + i + 1 }));
+const partialT = (track: HelperPartial["track"], start: number, end: number, text: string, wordTimes?: TestWordTime[]): HelperPartial => ({
+  ...partial(track, start, end, text),
+  ...(wordTimes === undefined ? {} : { wordTimes }),
+});
+const finalT = (track: SettledRemark["track"], start: number, end: number, text: string, wordTimes?: TestWordTime[]) =>
+  final(track, start, end, text, wordTimes === undefined ? {} : ({ wordTimes } as Partial<SettledRemark>));
+const timesOfRemark = (r: SettledRemark | undefined) => (r as { wordTimes?: TestWordTime[] } | undefined)?.wordTimes;
+
+describe("wordTimes の運搬（Issue #1019）", () => {
+  describe("途中結果から作る発言に wordTimes が付く", () => {
+    it("due: 最後の途中結果の wordTimes が付く。更新のたびに置き換わり、古い区間は残らない", () => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")));
+      s.partial(partialT("相手", 10, 11.5, "あいう", timesOf("あいう")));
+      s.partial(partialT("相手", 10, 12.25, "あいうえお", timesOf("あいうえお")));
+
+      const out = tick(s, quiet(12.25));
+      expect(brief(out)).toEqual([["相手", 10, 12.25, "あいうえお"]]);
+      expect(timesOfRemark(out[0])).toEqual(timesOf("あいうえお"));
+    });
+
+    it("wordTimes の無い途中結果で更新したら、先の wordTimes は残らない（text と同じ更新）", () => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")));
+      s.partial(partialT("相手", 10, 11.5, "あいう"));
+
+      const out = tick(s, quiet(11.5));
+      expect(brief(out)).toEqual([["相手", 10, 11.5, "あいう"]]);
+      expect(out[0]).not.toHaveProperty("wordTimes");
+    });
+
+    it("wordTimes の無い途中結果だけから作る発言には wordTimes のキーが無い", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 11, "あ"));
+
+      expect(tick(s, quiet(11))[0]).not.toHaveProperty("wordTimes");
+    });
+
+    it("final（途中結果の期限を越えた end の確定結果の分岐）: 出す未出の発話に、その途中結果の wordTimes が付く", () => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 12, "あいう", timesOf("あいう")));
+      // 確定結果の end が途中結果の期限（13000）に届いている: 確定結果は捨て、途中結果からの発言を出す
+      const out = s.final(finalT("相手", 10, 13, "別の確定", timesOf("別の確定", 20)));
+
+      expect(brief(out)).toEqual([["相手", 10, 12, "あいう"]]);
+      expect(timesOfRemark(out[0])).toEqual(timesOf("あいう"));
+    });
+
+    it("drain: まだ出ていない発話に、最後の途中結果の wordTimes が付く", () => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 11, "あ", timesOf("あ")));
+      s.partial(partialT("相手", 10, 11.5, "あいう", timesOf("あいう")));
+
+      const out = s.drain();
+      expect(brief(out)).toEqual([["相手", 10, 11.5, "あいう"]]);
+      expect(timesOfRemark(out[0])).toEqual(timesOf("あいう"));
+    });
+  });
+
+  describe("確定結果の wordTimes", () => {
+    it("途中結果が無いとき、確定結果の wordTimes はそのまま出る", () => {
+      const s = createRemarkSettler();
+      const out = s.final(finalT("相手", 10, 12, "こんにちは", timesOf("こんにちは")));
+
+      expect(timesOfRemark(out[0])).toEqual(timesOf("こんにちは"));
+    });
+
+    it("wordTimes の無い確定結果には wordTimes のキーが付かない", () => {
+      const s = createRemarkSettler();
+
+      expect(s.final(finalT("相手", 10, 12, "こんにちは"))[0]).not.toHaveProperty("wordTimes");
+    });
+
+    it("自分の確定結果は関所を通らず、wordTimes もそのまま出る", () => {
+      const s = createRemarkSettler();
+      const out = s.final(finalT("自分", 0, 2, "はい", timesOf("はい", 0)));
+
+      expect(timesOfRemark(out[0])).toEqual(timesOf("はい", 0));
+    });
+  });
+
+  // 文の終わりで先に出す経路と、同じ発話の更新で頭に挿入が入る経路でも、本文・words と同じ位置で切る
+  describe("文の終わりで切った発言・頭の挿入を切った発言の wordTimes", () => {
+    const texts = (rs: SettledRemark[]) => rs.map((r) => r.text);
+
+    it("文の終わりまでを出すとき、その本文に収まる区間だけが元の秒で付き、後で出す残りは切った後の位置になる", () => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 15, "あいう。え", timesOf("あいう。え")));
+
+      const first = tick(s, 15000 + S);
+      expect(texts(first)).toEqual(["あいう。"]);
+      expect(timesOfRemark(first[0])).toEqual(timesOf("あいう。"));
+
+      const rest = tick(s, 15000 + T);
+      expect(texts(rest)).toEqual(["え"]);
+      expect(timesOfRemark(rest[0])).toEqual([{ location: 0, length: 1, start: 14, end: 15 }]);
+    });
+
+    it("文の終わりを切る位置をまたぐ区間は落ちる", () => {
+      const s = createRemarkSettler();
+      const times: TestWordTime[] = [
+        { location: 0, length: 2, start: 10, end: 11 },
+        { location: 2, length: 3, start: 11, end: 13 },
+      ];
+      s.partial(partialT("相手", 10, 15, "あいう。え", times));
+
+      const out = tick(s, 15000 + S);
+      expect(texts(out)).toEqual(["あいう。"]);
+      expect(timesOfRemark(out[0])).toEqual([times[0]]);
+    });
+
+    it("頭の挿入を切るとき、wordTimes も words と同じ位置で切り、残る区間の位置が切った後の本文に合い、秒は元のまま", () => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 13, "はい。", timesOf("はい。")));
+      expect(texts(tick(s, 13000 + S))).toEqual(["はい。"]);
+      const text = "あ、はい、続き。";
+      s.partial(partialT("相手", 10, 18, text, timesOf(text)));
+
+      const out = [...tick(s, 18000 + S), ...tick(s, 18000 + T), ...s.drain()];
+      expect(out.map((r) => r.text)).toEqual(["続き。"]);
+      expect(timesOfRemark(out[0])).toEqual([
+        { location: 0, length: 1, start: 15, end: 16 },
+        { location: 1, length: 1, start: 16, end: 17 },
+        { location: 2, length: 1, start: 17, end: 18 },
+      ]);
+    });
+  });
+
+  // 関所が頭を切るとき、本文・words・wordTimes は同じ位置で切る。完全に残る区間だけを残して位置をずらす（秒はそのまま）。
+  describe("関所が頭を切った発言の wordTimes", () => {
+    const secondRemark = (first: string, second: string, secondTimes: TestWordTime[] | undefined, secondWords?: TestWord[]) => {
+      const s = createRemarkSettler();
+      s.partial(partialT("相手", 10, 12, first, timesOf(first)));
+      expect(brief(tick(s, quiet(12)))).toEqual([["相手", 10, 12, first]]);
+      s.partial({ ...partialT("相手", 10, 15, second, secondTimes), ...(secondWords === undefined ? {} : { words: secondWords }) });
+      const out = tick(s, quiet(15));
+      expect(out).toHaveLength(1);
+      return out[0]!;
+    };
+
+    it("完全一致の重なりで切る: 切った後に残る区間だけが、切った後の本文の位置・元の秒で残る", () => {
+      const r = secondRemark("あいう", "あいうえお", timesOf("あいうえお"));
+
+      expect(r.text).toBe("えお");
+      expect(timesOfRemark(r)).toEqual([
+        { location: 0, length: 1, start: 13, end: 14 },
+        { location: 1, length: 1, start: 14, end: 15 },
+      ]);
+    });
+
+    it("切る位置をまたぐ区間は落ちる（words と同じ規則）", () => {
+      // 切る位置は 3。"うえ"（位置 2〜4）は途中で切れるので落ち、"お"（位置 4）は位置 1 になる
+      const times: TestWordTime[] = [
+        { location: 0, length: 2, start: 10, end: 11 },
+        { location: 2, length: 2, start: 11, end: 12 },
+        { location: 4, length: 1, start: 12, end: 13 },
+      ];
+      const r = secondRemark("あいう", "あいうえお", times);
+
+      expect(r.text).toBe("えお");
+      expect(timesOfRemark(r)).toEqual([{ location: 1, length: 1, start: 12, end: 13 }]);
+    });
+
+    it("words と wordTimes を一緒に持つとき、どちらも同じ切り位置で切る", () => {
+      const words: TestWord[] = [w("あいう", 0), w("え", 3), w("お", 4)];
+      const r = secondRemark("あいう", "あいうえお", timesOf("あいうえお"), words);
+
+      expect(r.text).toBe("えお");
+      expect(wordsOfRemark(r)).toEqual([w("え", 0), w("お", 1)]);
+      expect(timesOfRemark(r)?.map((t) => t.location)).toEqual([0, 1]);
+    });
+
+    it("wordTimes の無い発言を切っても、wordTimes のキーは付かない", () => {
+      const r = secondRemark("あいう", "あいうえお", undefined);
+
+      expect(r.text).toBe("えお");
+      expect(r).not.toHaveProperty("wordTimes");
+    });
+  });
+});
