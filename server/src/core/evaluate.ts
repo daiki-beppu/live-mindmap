@@ -1,5 +1,5 @@
 // 回帰評価: 再生したマップの指標と、正解の決定・TODO に対する再現率。Node に依存しない（ADR 0003）。
-import { Predicate, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 import type { ExportNode, JsonExport } from "./export.ts";
 import { logMetrics } from "./logMetrics.ts";
 import { KINDS, type Kind } from "./map.ts";
@@ -213,12 +213,12 @@ const RECALL_HEADERS: Record<TruthKind, string> = { 決定: "決定の再現率"
 
 // log.jsonl から数える 3 指標の見出しと値。ログが無いランは - にする。書き換え/発言は n/m (0.xx)（発言が 0 件なら 0/0）
 const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
-function formatLogMetrics(log: readonly LogEvent[] | undefined): string[] {
+const formatLogMetrics = Effect.fnUntraced(function* (log: readonly LogEvent[] | undefined) {
   if (!log) return LOG_HEADERS.map(() => "-");
-  const m = logMetrics(log);
+  const m = yield* logMetrics(log);
   const ratio = m.remarks === 0 ? "0/0" : `${m.rewrites}/${m.remarks} (${(m.rewrites / m.remarks).toFixed(2)})`;
   return [ratio, String(m.maxRewritesPerNode), String(m.maxOpenSiblings)];
-}
+});
 
 const formatRecall = ({ hit, total }: Recall) => (total === 0 ? "0/0" : `${hit}/${total} (${Math.round((hit / total) * 100)}%)`);
 
@@ -235,18 +235,18 @@ function formatUsage(log: readonly LogEvent[] | undefined): string[] {
 // 1 ラン 1 行の Markdown の表（cli eval の標準出力）。truth があるときだけ、決定・TODO の再現率の列を足す。
 // 再現率の分子は recall が数える「当たった件数」で、当たる条件は matches、1 対 1 の割り当ては maxMatching が持つ
 // screen があるときは、その後ろに共有画面の 4 列（取れた数/項目数。出てはいけないは漏れた項目の数/項目数）を足す
-export function formatTable(runs: Run[], truth?: Truth, screen?: ScreenTruth): string {
+export const formatTable = Effect.fnUntraced(function* (runs: Run[], truth?: Truth, screen?: ScreenTruth) {
   const header = [
     "ラン", "会議", "ノード", "深さ", ...KINDS, ...LOG_HEADERS, ...USAGE_HEADERS,
     ...(truth ? TRUTH_KINDS.map((k) => RECALL_HEADERS[k]) : []),
     ...(screen ? SCREEN_HEADERS : []),
   ];
-  const rows = runs.map(({ name, title, exp, log }) => {
+  const rows = yield* Effect.forEach(runs, Effect.fnUntraced(function* ({ name, title, exp, log }) {
     const m = measure(exp);
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
     const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
-    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...formatLogMetrics(log), ...formatUsage(log), ...recalls, ...scores].map(String);
-  });
+    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log), ...recalls, ...scores].map(String);
+  }));
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";
-}
+});

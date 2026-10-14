@@ -1,7 +1,8 @@
-import { expect, it } from "vitest";
+import { expect, it } from "@effect/vitest";
+import { Effect } from "effect";
 import { logMetrics, type LogEvent } from "../src/core/index.ts";
 
-it("invConservation: 再適用でも未消費の発言を根拠にした操作は指標へ含めない", () => {
+it.effect("invConservation: 再適用でも未消費の発言を根拠にした操作は指標へ含めない", () => Effect.gen(function* () {
   const events: LogEvent[] = [
     { type: "start", title: "定例" },
     { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 10, text: "採用について" } },
@@ -14,11 +15,13 @@ it("invConservation: 再適用でも未消費の発言を根拠にした操作�
       ], dropped: [], ...{ processedRemarks: 1 },
     },
   ];
-  expect(logMetrics(events).rewrites).toBe(0);
+  expect((yield* logMetrics(events)).rewrites).toBe(0);
   // input.fresh 全体の発言参照を検査する既存契約は、部分反映でも維持する。
-  expect(() => logMetrics([events[0]!, events[1]!, events[3]!])).toThrow("ログに発言がありません: r2");
-  expect(logMetrics([...events, {
+  const error = yield* Effect.flip(logMetrics([events[0]!, events[1]!, events[3]!]));
+  expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2 });
+  expect(error.reason).toContain("r2");
+  expect((yield* logMetrics([...events, {
     type: "diff", input: { recent: ["r1"], fresh: ["r2"], nodeCount: 1 },
     ops: [{ op: "update", node: "n1", text: "反映した修正", evidence: ["r2"] }], dropped: [], ...{ processedRemarks: 1 },
-  }]).rewrites).toBe(1);
-});
+  }])).rewrites).toBe(1);
+}));

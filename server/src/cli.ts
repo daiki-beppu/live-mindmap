@@ -802,7 +802,10 @@ const evaluate = Command.make(
       const dir = selected === undefined ? source : yield* replayedRunDir(source, selected).pipe(Effect.scoped);
       runs.push(yield* evaluatedRun(fs, dir));
     }
-    yield* write(formatTable(runs, expected, screen));
+    const table = yield* formatTable(runs, expected, screen).pipe(
+      Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new CommandFailed({ message: `log.jsonl の指標が数えられません: ${e.reason}` }))),
+    );
+    yield* write(table);
   }),
 ).pipe(
   Command.withDescription(
