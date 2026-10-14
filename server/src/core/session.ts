@@ -372,7 +372,9 @@ type Runtime = {
   readonly retryAt: number | undefined; // 一時停止から再試行する時刻（エポックからのミリ秒）。無ければ DIFF_UPDATE_RETRY_MS 後
   readonly inFlight: InFlight | undefined;
   readonly reflecting: readonly Remark[]; // 差分更新の結果待ちの発言。結果を log する直前に外す
+  readonly catchUpUntil: string | undefined; // 一時停止の間にたまった発言の最後の ID。これが pending に残っている間は CATCH_UP_REMARKS 件ずつ渡す
   readonly unsentScreens: readonly HeldScreen[]; // まだ差分更新に添えていない共有画面の変化（受け取った順）
+  readonly catchUpScreen: HeldScreen | undefined; // 一時停止の間にたまった共有画面のうち start が最も遅い 1 件（同じ start なら後に受け取った方。要素の同一性で照合する）。これが unsentScreens に残っている間は SCREENS_MAX で切らない
   readonly screenFiles: ReadonlySet<string>; // 画像に付けたファイル名
   readonly lastScreens: readonly HeldScreen[]; // 最後に添えた共有画面（古い順・最大 LAST_SCREENS 件）。失敗した回に選んだ画面も数える（一時停止の回は数えない）。画像はファイル名だけで、送るときに読み戻す
   readonly receivedScreens: number; // 受け取った共有画面の総数。diff の行の screenCount に使う
@@ -384,7 +386,12 @@ type Runtime = {
 type HeldScreen = { readonly start: number; readonly image: { readonly id: string; readonly file: string } | null };
 
 const LAST_SCREENS = 2; // query を開き直したときに送り直す、最後に添えた共有画面の件数
-const SCREENS_MAX = 3; // 1 回の呼び出しに添える共有画面の上限（新しいものから）
+// Why: 一時停止から戻ったとき、たまった発言を 1 回に全部渡すと、共有画面の境目（渡した発言の end の最大値）が先へ進み、間に映った画面が捨てられる。
+// 1 回の量は、待ち時間なしで流したときに 1 回で渡る発言の数（2 件）に合わせる
+const CATCH_UP_REMARKS = 2;
+// 1 回の呼び出しに添える共有画面の上限（新しいものから）。通常時の費用を抑えるための上限。
+// Why: 一時停止の間にたまった画面（catchUpScreen まで）には適用しない。受け取った順と start の順は食い違うことがあり、境目（start <= cutoff）で未送信一覧から外れる順は start の順なので、start が最も遅いものを印にする。切り捨てた画面は未送信一覧からも外れるので、後の回で回復できず、映った時刻の発言に添えられなくなる
+const SCREENS_MAX = 3;
 
 // 映り始めた時刻から付ける画像のファイル名（整数部 4 桁・小数 1 桁。例 0754.2.jpg）。重なったら 2 件目から -n を足す
 function screenFileName(start: number, used: ReadonlySet<string>): string {
@@ -405,6 +412,14 @@ const classifyFailure = (cause: Cause.Cause<DiffUpdateError>) => {
   };
 };
 
+// 次の呼び出しに渡す発言と、残す pending、新しい catchUpUntil を決める。たまりの最後の発言が pending に残っている間だけ小分けにする
+function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined): { readonly fresh: readonly Remark[]; readonly rest: readonly Remark[]; readonly catchUpUntil: string | undefined } {
+  const end = catchUpUntil === undefined ? -1 : pending.findIndex((r) => r.id === catchUpUntil);
+  if (end < 0) return { fresh: pending, rest: [], catchUpUntil: undefined };
+  // 末尾を含む回が一部だけ反映されると、残りが pending へ戻る。印は、末尾が pending から無くなったと確かめるまで残す
+  return { fresh: pending.slice(0, CATCH_UP_REMARKS), rest: pending.slice(CATCH_UP_REMARKS), catchUpUntil };
+}
+
 type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly last: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
 const noScreens: InitialScreens = { unsent: [], last: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
 
@@ -413,7 +428,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
     const log = yield* SessionLog;
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, retryAt: undefined, inFlight: undefined, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, retryAt: undefined, inFlight: undefined, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
 
     const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
       const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -427,12 +442,17 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
 
     // 呼び出し中でなく、発言が 1 つ以上たまっていれば、たまった分をまとめて差分更新に渡す。
     // 取り出しから fork までの間に中断されて発言を取りこぼさないよう、中断させない
+    function takeStep(s: SessionState & Runtime, reservation: Reservation): [readonly Remark[], SessionState & Runtime] {
+      const taken = takeFresh(s.pending, s.catchUpUntil);
+      return [taken.fresh, { ...s, pending: taken.rest, catchUpUntil: taken.catchUpUntil, inFlight: reservation }];
+    }
+
     function startDiffIfReady(retry = false): Effect.Effect<void> {
       return Effect.uninterruptible(
         Effect.gen(function* () {
           const reservation: Reservation = { kind: "reserved" };
           const fresh = yield* Ref.modify(ref, (s): [readonly Remark[] | undefined, SessionState & Runtime] =>
-            s.inFlight || s.pending.length === 0 || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
+            s.inFlight || s.pending.length === 0 || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : takeStep(s, reservation),
           );
           if (!fresh) return;
           const fiber = yield* Effect.forkIn(Effect.interruptible(runCall(fresh)), scope, { startImmediately: true });
@@ -485,7 +505,9 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const cutoff = Math.max(...fresh.map((u) => u.end));
             const candidates = byStart(s.unsentScreens.filter((h) => h.start <= cutoff || (h.image !== null && h.image.file === s.carriedScreen)));
             const keyed = candidates.map((h) => ({ start: h.start, image: h.image?.file ?? null, held: h }));
-            const chosen = images ? selectScreens(keyed, s.carriedScreen, s.lastImageStart, cutoff).slice(-SCREENS_MAX) : [];
+            const selected = images ? selectScreens(keyed, s.carriedScreen, s.lastImageStart, cutoff) : [];
+            const catchingUp = s.catchUpScreen !== undefined && s.unsentScreens.includes(s.catchUpScreen);
+            const chosen = catchingUp ? selected : selected.slice(-SCREENS_MAX);
             const attached = chosen.map((c) => c.held);
             const carriedScreen = images ? carriedOf(keyed, new Set(chosen.flatMap((c) => (c.image === null ? [] : [c.image])))) : undefined;
             const input = {
@@ -497,12 +519,14 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             };
             const keptUnsent = s.unsentScreens.filter((h) => h.start > cutoff || (carriedScreen !== undefined && h.image?.file === carriedScreen));
             const before = { unsentScreens: s.unsentScreens, carriedScreen: s.carriedScreen, lastImageStart: s.lastImageStart, lastScreens: s.lastScreens };
+            const catchUpScreen = s.catchUpScreen !== undefined && keptUnsent.includes(s.catchUpScreen) ? s.catchUpScreen : undefined;
             return [
               { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [], previousResponse: s.previousResponse, before, keptUnsent: keptUnsent.length },
               {
                 ...s,
                 reflecting: fresh,
                 unsentScreens: keptUnsent,
+                catchUpScreen,
                 carriedScreen,
                 lastImageStart: anchorAfter(chosen, s.lastImageStart),
                 lastScreens: [...s.lastScreens, ...attached].slice(-LAST_SCREENS),
@@ -558,7 +582,10 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
               const { reason } = outcome.pause;
               const retryAt = state.status === "paused" ? undefined : outcome.pause.retryAt;
               // Why: 一時停止の回は diff の行を書かず、復元は選ぶ前の画面の状態から続ける。ライブも選ぶ前に戻して揃える（応答待ちの間に受けた画面は末尾に残す）
-              yield* Ref.update(ref, (s) => ({ ...s, ...before, unsentScreens: [...before.unsentScreens, ...s.unsentScreens.slice(keptUnsent)], reflecting: [], pending: [...fresh, ...s.pending], diffUpdate: { status: "paused" as const, reason }, retryAt, previousResponse: undefined }));
+              yield* Ref.update(ref, (s) => {
+                const unsentScreens = [...before.unsentScreens, ...s.unsentScreens.slice(keptUnsent)];
+                return { ...s, ...before, unsentScreens, catchUpScreen: byStart(unsentScreens).at(-1), reflecting: [], pending: [...fresh, ...s.pending], catchUpUntil: [...fresh, ...s.pending].at(-1)?.id, diffUpdate: { status: "paused" as const, reason }, retryAt, previousResponse: undefined };
+              });
               yield* log.write({ type: "diff-update-paused", reason });
               return;
             }
@@ -608,7 +635,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           }
           yield* log.write({ type: "remark", remark: r, ...extra });
           if (r.duplicate) return;
-          yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r] }));
+          yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], catchUpUntil: s.diffUpdate.status === "paused" ? r.id : s.catchUpUntil }));
           yield* startDiffIfReady();
         }),
       idle,
@@ -622,7 +649,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           if (change.image && file) yield* log.writeScreen(file, change.image.bytes);
           const held: HeldScreen = { start: change.start, image: change.image && file ? { id: change.image.id, file } : null };
           // 受け取った数（diff の行の screenCount）は、候補に載せるのと同時に数える。数えたのに候補に無い画面を、復元が処理済みにしないため
-          yield* Ref.update(ref, (s) => ({ ...s, receivedScreens: s.receivedScreens + 1, unsentScreens: [...s.unsentScreens, held] }));
+          yield* Ref.update(ref, (s) => ({ ...s, receivedScreens: s.receivedScreens + 1, unsentScreens: [...s.unsentScreens, held], catchUpScreen: s.diffUpdate.status === "paused" && (s.catchUpScreen === undefined || held.start >= s.catchUpScreen.start) ? held : s.catchUpScreen }));
           yield* log.write({ type: "screen", start: change.start, image: file, ...(lines === undefined ? {} : { lines }) });
         }),
       pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),

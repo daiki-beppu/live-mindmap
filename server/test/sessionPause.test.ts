@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Clock, ConfigProvider, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Result, Schema, Scope } from "effect";
 import { HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { emptyMap, LogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffUpdateError, type Remark } from "../src/core/index.ts";
+import { emptyMap, LogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffUpdateError, type Remark, type ScreenChange } from "../src/core/index.ts";
 import { prepareChatgpt } from "../src/chatgptResponses.ts";
 import { localUpdaterLayer } from "../src/localDiffUpdater.ts";
 import { classificationRequest } from "../src/localPrompt.ts";
@@ -97,7 +97,7 @@ describe("同じSessionでの一時停止と再開", () => {
     expect(yield* session.unreflectedRemarks).toEqual([]);
   }));
 
-  it.effect("429の発言と新着を保持し、5分ごとの再試行が成功したら文数上限で順に反映する", () => Effect.gen(function* () {
+  it.effect("429の発言と新着を保持し、5分ごとの再試行が成功したら古い順に2発言ずつ反映する", () => Effect.gen(function* () {
     const failure = yield* rateLimitFailure;
     const requests: string[][] = [];
     const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
@@ -124,14 +124,14 @@ describe("同じSessionでの一時停止と再開", () => {
     yield* TestClock.adjust(1);
     yield* settleUntil(() => requests.length === 2);
     yield* session.idle;
-    expect(requests).toEqual([["r1"], ["r1", "r2", "r3"]]);
+    expect(requests).toEqual([["r1"], ["r1", "r2"]]);
     expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
     yield* TestClock.adjust(FIVE_MINUTES - 1);
     expect(requests).toHaveLength(2);
     yield* TestClock.adjust(1);
-    yield* settleUntil(() => requests.length === 5);
+    yield* settleUntil(() => requests.length === 6);
     yield* session.idle;
-    expect(requests).toEqual([["r1"], ["r1", "r2", "r3"], ["r1", "r2", "r3"], ["r4", "r5", "r6"], ["r7"]]);
+    expect(requests).toEqual([["r1"], ["r1", "r2"], ["r1", "r2"], ["r3", "r4"], ["r5", "r6"], ["r7"]]);
     expect(yield* session.unreflectedRemarks).toEqual([]);
     expect((yield* session.snapshot).nodes.filter((n) => n.kind === "要点").flatMap((n) => n.evidence)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
   }));
@@ -310,5 +310,259 @@ describe("同じSessionでの一時停止と再開", () => {
     yield* settleUntil(() => calls.length === 3);
     yield* session.idle;
     expect("previousResponse" in calls[2]!).toBe(false);
+  }));
+});
+
+describe("一時停止から戻った後の小分け", () => {
+  const shot = (start: number): ScreenChange => ({ start, image: { id: `s${start}`, bytes: new Uint8Array([start]) } });
+  const timed = (n: number, end: number): Remark => ({ id: `r${n}`, track: "相手", start: end - 1, end, text: `発言${n}。` });
+  const maxEnd = (input: DiffInput) => Math.max(...input.fresh.map((r) => r.end));
+
+  it.effect("溜まった発言は古い順に2発言以下ずつ渡り、つなげると溜まった分と一致する", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const calls: DiffInput[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        return calls.length === 1 ? Effect.fail(failure) : Effect.succeed({ ops: [] });
+      })), silentLog,
+    )));
+    for (const n of [1, 2, 3, 4, 5, 6]) yield* session.push(remark(n));
+    yield* session.idle;
+    expect(calls).toHaveLength(1);
+    expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6"]);
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 4);
+    yield* session.idle;
+    expect(calls).toHaveLength(4);
+    const retried = calls.slice(1).map((c) => ids(c.fresh));
+    for (const fresh of retried) expect(fresh.length).toBeLessThanOrEqual(2);
+    expect(retried.flat()).toEqual(["r1", "r2", "r3", "r4", "r5", "r6"]);
+    expect(yield* session.unreflectedRemarks).toEqual([]);
+  }));
+
+  it.effect("溜まっている間に映り始めた共有画面は捨てられず、各回に添える画面はその回の発言のendを超えず、前の回の境目より後になる", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const calls: DiffInput[] = [];
+    const written: { file: string; bytes: Uint8Array }[] = [];
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        return calls.length === 1 ? Effect.fail(failure) : Effect.succeed({ ops: [] });
+      })), collectLog(events, written),
+    )));
+    const ends = [10, 20, 30, 40, 50, 60];
+    for (const [i, end] of ends.entries()) yield* session.push(timed(i + 1, end));
+    yield* session.idle;
+    expect(calls).toHaveLength(1);
+    for (const start of [5, 15, 25, 35, 45]) yield* session.pushScreen(shot(start));
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 4);
+    yield* session.idle;
+    expect(calls).toHaveLength(4);
+    const retried = calls.slice(1);
+    let bound = -Infinity;
+    for (const call of retried) {
+      expect(call.fresh.length).toBeLessThanOrEqual(2);
+      for (const screen of call.screens ?? []) {
+        expect(screen.start).toBeLessThanOrEqual(maxEnd(call));
+        expect(screen.start).toBeGreaterThan(bound);
+      }
+      bound = maxEnd(call);
+    }
+    expect(retried.flatMap((c) => (c.screens ?? []).map((s) => s.start))).toEqual([5, 15, 25, 35, 45]);
+  }));
+
+  it.effect("停止中にたまった共有画面は3枚上限で捨てられず、最初の回に全て添えられ、復元しても未送信に残らない", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const calls: DiffInput[] = [];
+    const written: { file: string; bytes: Uint8Array }[] = [];
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        return calls.length === 1 ? Effect.fail(failure) : Effect.succeed({ ops: [] });
+      })), collectLog(events, written),
+    )));
+    yield* session.push(timed(1, 1));
+    yield* session.idle;
+    expect(calls).toHaveLength(1);
+    for (const start of [5, 15, 25, 35, 45]) yield* session.pushScreen(shot(start));
+    for (const [i, end] of [50, 60, 70, 80].entries()) yield* session.push(timed(i + 2, end));
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 4);
+    yield* session.idle;
+    const retried = calls.slice(1);
+    expect(ids(retried[0]!.fresh)).toEqual(["r1", "r2"]);
+    expect(retried[0]!.screens?.map((s) => s.start)).toEqual([5, 15, 25, 35, 45]);
+    expect(retried.flatMap((c) => (c.screens ?? []).map((s) => s.start))).toEqual([5, 15, 25, 35, 45]);
+    const diffs = events.filter((e) => e.type === "diff");
+    expect(diffs[0]?.input.screens?.map((s) => s.start)).toEqual([5, 15, 25, 35, 45]);
+    const restored = yield* restoreState(events.map((e) => JSON.parse(JSON.stringify(e)) as unknown));
+    expect(restored.screens.unsent.map((h) => h.start)).toEqual([]);
+  }));
+
+  it.effect("停止中にたまった画面が最後の発言のendより後でも次の回に全て添え、渡し終えた後は3枚上限に戻る", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const calls: DiffInput[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        return calls.length === 1 ? Effect.fail(failure) : Effect.succeed({ ops: [] });
+      })), collectLog([], []),
+    )));
+    yield* session.push(timed(1, 10));
+    yield* session.idle;
+    for (const start of [15, 25, 35, 45, 55]) yield* session.pushScreen(shot(start));
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 2);
+    yield* session.idle;
+    expect(calls[1]!.screens).toBeUndefined();
+    yield* session.push(timed(2, 60));
+    yield* session.idle;
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.screens?.map((s) => s.start)).toEqual([15, 25, 35, 45, 55]);
+    for (const start of [65, 75, 85, 95]) yield* session.pushScreen(shot(start));
+    yield* session.push(timed(3, 100));
+    yield* session.idle;
+    expect(calls).toHaveLength(4);
+    expect(calls[3]!.screens?.map((s) => s.start)).toEqual([75, 85, 95]);
+  }));
+
+  it.effect("画面を添えた再試行が再び一時停止しても、次の再試行に同じ画面が全て添えられる", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const calls: DiffInput[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        return calls.length <= 2 ? Effect.fail(failure) : Effect.succeed({ ops: [] });
+      })), collectLog([], []),
+    )));
+    yield* session.push(timed(1, 10));
+    yield* session.idle;
+    for (const start of [15, 25, 35, 45, 55]) yield* session.pushScreen(shot(start));
+    yield* session.push(timed(2, 60));
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 2);
+    yield* session.idle;
+    expect(calls[1]!.screens?.map((s) => s.start)).toEqual([15, 25, 35, 45, 55]);
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 3);
+    yield* session.idle;
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.screens?.map((s) => s.start)).toEqual([15, 25, 35, 45, 55]);
+  }));
+
+  it.effect("溜まった分を渡し終えた後は、呼び出し中に届いた発言を1回でまとめて渡す", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const gate = yield* Deferred.make<void>();
+    const calls: string[][] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.gen(function* () {
+        calls.push(ids(input.fresh));
+        if (calls.length === 1) return yield* Effect.fail(failure);
+        if (calls.length === 3) yield* Deferred.await(gate);
+        return { ops: [] };
+      })), silentLog,
+    )));
+    for (const n of [1, 2, 3, 4]) yield* session.push(remark(n));
+    yield* session.idle;
+    expect(calls).toEqual([["r1"]]);
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 3);
+    expect(calls).toEqual([["r1"], ["r1", "r2"], ["r3", "r4"]]);
+    for (const n of [5, 6, 7]) yield* session.push(remark(n));
+    expect(calls).toHaveLength(3);
+    yield* Deferred.succeed(gate, undefined);
+    yield* session.idle;
+    expect(calls).toEqual([["r1"], ["r1", "r2"], ["r3", "r4"], ["r5", "r6", "r7"]]);
+  }));
+
+  it.effect("溜まりの最後の回が一部だけ反映され、新着と重なっても、残りは2発言以下ずつ渡す", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const gate = yield* Deferred.make<void>();
+    const calls: string[][] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.gen(function* () {
+        calls.push(ids(input.fresh));
+        if (calls.length === 1) return yield* Effect.fail(failure);
+        if (calls.length === 3) {
+          yield* Deferred.await(gate);
+          return { ops: [], processedRemarks: 1 };
+        }
+        return { ops: [] };
+      })), silentLog,
+    )));
+    for (const n of [1, 2, 3, 4]) yield* session.push(remark(n));
+    yield* session.idle;
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 3);
+    expect(calls).toEqual([["r1"], ["r1", "r2"], ["r3", "r4"]]);
+    for (const n of [5, 6, 7]) yield* session.push(remark(n));
+    yield* Deferred.succeed(gate, undefined);
+    yield* session.idle;
+    expect(calls).toEqual([["r1"], ["r1", "r2"], ["r3", "r4"], ["r4", "r5"], ["r6", "r7"]]);
+  }));
+
+  const outOfOrderStarts = [25, 35, 45, 55, 5];
+  const expectOutOfOrderCatchUp = (calls: readonly DiffInput[], events: readonly LogEvent[]) => {
+    expect(calls).toHaveLength(3);
+    expect(ids(calls[1]!.fresh)).toEqual(["r1", "r2"]);
+    expect(calls[1]!.screens?.map((s) => s.start)).toEqual([5]);
+    expect(ids(calls[2]!.fresh)).toEqual(["r3"]);
+    expect(calls[2]!.screens?.map((s) => s.start)).toEqual([25, 35, 45, 55]);
+    const diffs = events.filter((e) => e.type === "diff");
+    expect(diffs.map((e) => e.input.screens?.map((s) => s.start))).toEqual([[5], [25, 35, 45, 55]]);
+  };
+
+  it.effect("停止中に共有画面が時刻と食い違う順で届いても、startが最も遅い画面を印にして3枚上限で捨てない", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const calls: DiffInput[] = [];
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        return calls.length === 1 ? Effect.fail(failure) : Effect.succeed({ ops: [] });
+      })), collectLog(events, []),
+    )));
+    yield* session.push(timed(1, 1));
+    yield* session.idle;
+    expect(calls).toHaveLength(1);
+    for (const start of outOfOrderStarts) yield* session.pushScreen(shot(start));
+    yield* session.push(timed(2, 10));
+    yield* session.push(timed(3, 60));
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 3);
+    yield* session.idle;
+    expectOutOfOrderCatchUp(calls, events);
+  }));
+
+  it.effect("呼び出し中に共有画面が時刻と食い違う順で届き、その回が一時停止しても、startが最も遅い画面を印にする", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const gate = yield* Deferred.make<void>();
+    const calls: DiffInput[] = [];
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.gen(function* () {
+        calls.push(input);
+        if (calls.length === 1) {
+          yield* Deferred.await(gate);
+          return yield* Effect.fail(failure);
+        }
+        return { ops: [] };
+      })), collectLog(events, []),
+    )));
+    yield* session.push(timed(1, 1));
+    yield* settleUntil(() => calls.length === 1);
+    for (const start of outOfOrderStarts) yield* session.pushScreen(shot(start));
+    yield* Deferred.succeed(gate, undefined);
+    yield* session.idle;
+    yield* session.push(timed(2, 10));
+    yield* session.push(timed(3, 60));
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 3);
+    yield* session.idle;
+    expectOutOfOrderCatchUp(calls, events);
   }));
 });
