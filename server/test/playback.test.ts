@@ -112,8 +112,8 @@ describe("再生", () => {
         yield* playback(yield* setupWithScreens(order), remarks, { screens: [shot(0), shot(9.8), shot(10), shot(25)] });
         expect(order).toEqual([
           "screen:0", "push:r1", "diff:r1[0]",
-          "screen:9.8", "push:r2", "diff:r2[9.8]",
-          "screen:10", "push:r3", "diff:r3[10]",
+          "screen:9.8", "push:r2", "diff:r2", // 0 から 10 秒未満なので添えず持ち越す
+          "screen:10", "push:r3", "diff:r3[9.8]", // 持ち越しは cutoff 28.0 が 0 + 10 を過ぎたので添える。10 は 9.8 から 10 秒未満なので持ち越す
           "screen:25",
         ]);
       }));
@@ -125,8 +125,8 @@ describe("再生", () => {
         yield* playback(yield* setupWithScreens(order), remarks, { screens: [loading(0), loading(9.8), loading(10), loading(25)] });
         expect(order).toEqual([
           "load:0", "screen:0", "push:r1", "diff:r1[0]",
-          "load:9.8", "screen:9.8", "push:r2", "diff:r2[9.8]",
-          "load:10", "screen:10", "push:r3", "diff:r3[10]",
+          "load:9.8", "screen:9.8", "push:r2", "diff:r2",
+          "load:10", "screen:10", "push:r3", "diff:r3[9.8]",
           "load:25", "screen:25",
         ]);
       }));

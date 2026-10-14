@@ -284,8 +284,8 @@ describe("SessionSinks（実物 Layer）", () => {
 
       yield* sink.screen({ start: 1, image: new Uint8Array([0xff, 0xd8, 0xff, 0x01]) });
       yield* sink.screen({ start: 2, image: null });
-      yield* sink.screen({ start: 3, image: new Uint8Array([0xff, 0xd8, 0xff, 0x02]) });
-      yield* sink.final({ track: "相手", start: 4, end: 5, text: "採用" });
+      yield* sink.screen({ start: 12, image: new Uint8Array([0xff, 0xd8, 0xff, 0x02]) });
+      yield* sink.final({ track: "相手", start: 13, end: 14, text: "採用" });
       yield* sink.flush;
 
       const ids = inputs.flatMap((input) => input.screens ?? []).map((c) => c.image?.id ?? null);

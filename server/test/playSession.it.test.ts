@@ -227,7 +227,7 @@ describe("play <セッションのフォルダ>", () => {
   it.effect("screen-off が新しいログにも、同じ start・同じ reason・同じ並び（同じ時刻の screen との前後を含む）で残り、差分更新に添える画面には載らない。時刻はファイル名ではなくログの start", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      // 同じ時刻（3 と 6）で screen-off と screen が混ざる。画像のファイル名は時刻と関係ない名前にする
+      // 同じ時刻（3 と 11）で screen-off と screen が混ざる。画像のファイル名は時刻と関係ない名前にする
       const original = sessionFolder(
         root,
         [
@@ -236,9 +236,9 @@ describe("play <セッションのフォルダ>", () => {
           { type: "screen", start: 1, image: "first.jpg" },
           { type: "screen-off", start: 3, reason: "指定" },
           { type: "screen", start: 3, image: null },
-          { type: "screen-off", start: 6, reason: "許可なし" },
-          { type: "screen", start: 6, image: "second.jpg" },
-          remarkLine("r2", 6, 9),
+          { type: "screen-off", start: 11, reason: "許可なし" },
+          { type: "screen", start: 11, image: "second.jpg" },
+          remarkLine("r2", 11, 14),
           { type: "screen", start: 20, image: null },
           { type: "screen-off", start: 25, reason: "指定" },
         ],
@@ -261,16 +261,16 @@ describe("play <セッションのフォルダ>", () => {
         "screen:1:0001.0.jpg",
         "screen-off:3:指定",
         "screen:3:null",
-        "screen-off:6:許可なし",
-        "screen:6:0006.0.jpg",
+        "screen-off:11:許可なし",
+        "screen:11:0011.0.jpg",
         "remark:r2",
         "screen:20:null",
         "screen-off:25:指定",
       ]);
       // 画像は元のフォルダの screens/ から読み、新しい名前で書く
       expect(readFileSync(join(replay, "screens", "0001.0.jpg"), "utf8")).toBe("bytes-first");
-      expect(readFileSync(join(replay, "screens", "0006.0.jpg"), "utf8")).toBe("bytes-second");
-      expect(readdirSync(join(replay, "screens")).sort()).toEqual(["0001.0.jpg", "0006.0.jpg"]);
+      expect(readFileSync(join(replay, "screens", "0011.0.jpg"), "utf8")).toBe("bytes-second");
+      expect(readdirSync(join(replay, "screens")).sort()).toEqual(["0001.0.jpg", "0011.0.jpg"]);
       // 差分更新に添える画面は screen だけ
       // 発言 1 件ごとに呼ばれる。r1 の時点では画面はまだ再生されておらず、r2 の呼び出しに screen の 3 件が添う
       const inputs = diffInputs(lines);
@@ -279,7 +279,7 @@ describe("play <セッションのフォルダ>", () => {
         screens: [
           { start: 1, image: "0001.0.jpg" },
           { start: 3, image: null },
-          { start: 6, image: "0006.0.jpg" },
+          { start: 11, image: "0011.0.jpg" },
         ],
       });
       expect(deps.convert.calls).toEqual([]);

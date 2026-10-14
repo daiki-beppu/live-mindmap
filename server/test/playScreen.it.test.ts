@@ -185,29 +185,24 @@ describe("play --screen", () => {
       expect(prompt).not.toContain("面接を何回にするかですね");
       expect(prompt).not.toContain("共有画面");
 
-      // r2: 発言 r2 の start（9.8）までに新しく映り始めた 3（なし）・4・8 gallery の 3 件
+      // r2: 発言 r2 の start（9.8）までに新しく映り始めた 3（なし）・4・8 gallery。なしは常に添える。4・8 は 0 から 10 秒未満なので添えず、最新の 8 gallery を持ち越す
       const second = blocksOf(sent[1]!);
-      expect(second.map((b) => b.type)).toEqual(["text", "text", "image", "text", "image", "text"]);
+      expect(second.map((b) => b.type)).toEqual(["text", "text"]);
       expect(heading(second[0])).toBe("## 共有画面：なし（[00:03] から）");
-      expect(heading(second[1])).toBe("## 共有画面 [00:04] から");
-      expect(imageBytes(second[2])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s2.png")));
-      expect(heading(second[3])).toBe("## 共有画面 [00:08] から");
-      expect(imageBytes(second[4])).toEqual(Buffer.from(fakeJpegBytes("png:slides/gallery.png")));
       // 2 通目以降はマップの全体の代わりに変更が載る（buildPrompt の中身は変わらない）
-      expect(second[5]!.text).toContain("## 前回からのマップの変更");
-      expect(second[5]!.text).toContain("面接を何回にするかですね");
+      expect(second[1]!.text).toContain("## 前回からのマップの変更");
+      expect(second[1]!.text).toContain("面接を何回にするかですね");
 
-      // r3: 発言 r3 の start（19.2）までに新しく映り始めた 12・15・18（なし）
+      // r3: 発言 r3 の start（19.2）までに新しく映り始めた 12・15・18（なし）と、持ち越した 8。
+      // 持ち越した 8 gallery は 0 から 10 秒が過ぎたので添える。12・15 は 8 から 10 秒未満の途中の変化なので捨て、なし（18）は添える
       const third = blocksOf(sent[2]!);
-      expect(third.map((b) => b.type)).toEqual(["text", "image", "text", "image", "text", "text"]);
-      expect(heading(third[0])).toBe("## 共有画面 [00:12] から");
-      expect(imageBytes(third[1])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s4.png")));
-      expect(heading(third[2])).toBe("## 共有画面 [00:15] から");
-      expect(imageBytes(third[3])).toEqual(Buffer.from(fakeJpegBytes("png:slides/s5.png")));
-      expect(heading(third[4])).toBe("## 共有画面：なし（[00:18] から）");
-      expect(third[5]!.text).toContain("この図の右側を見てください");
+      expect(third.map((b) => b.type)).toEqual(["text", "image", "text", "text"]);
+      expect(heading(third[0])).toBe("## 共有画面 [00:08] から");
+      expect(imageBytes(third[1])).toEqual(Buffer.from(fakeJpegBytes("png:slides/gallery.png")));
+      expect(heading(third[2])).toBe("## 共有画面：なし（[00:18] から）");
+      expect(third[3]!.text).toContain("この図の右側を見てください");
 
-      // r4: 発言 r4 の start（30）までに新しく映り始めた 22・26（なし）
+      // r4: 発言 r4 の start（30）までに新しく映り始めた 22・26（なし）。22 は 8 から 10 秒以上離れている
       const fourth = blocksOf(sent[3]!);
       expect(fourth.map((b) => b.type)).toEqual(["text", "image", "text", "text"]);
       expect(heading(fourth[0])).toBe("## 共有画面 [00:22] から");
@@ -259,14 +254,9 @@ describe("play --screen", () => {
       const diffs = lines.filter((l) => l.type === "diff") as unknown as { input: Record<string, unknown> }[];
       expect(diffs).toHaveLength(4);
       expect(diffs[0]!.input.screens).toEqual([{ start: 0, image: "0000.0.jpg" }]);
-      expect(diffs[1]!.input.screens).toEqual([
-        { start: 3, image: null },
-        { start: 4, image: "0004.0.jpg" },
-        { start: 8, image: "0008.0.jpg" },
-      ]);
+      expect(diffs[1]!.input.screens).toEqual([{ start: 3, image: null }]);
       expect(diffs[2]!.input.screens).toEqual([
-        { start: 12, image: "0012.0.jpg" },
-        { start: 15, image: "0015.0.jpg" },
+        { start: 8, image: "0008.0.jpg" },
         { start: 18, image: null },
       ]);
       expect(diffs[3]!.input.screens).toEqual([
@@ -280,10 +270,11 @@ describe("play --screen", () => {
       // 送ったものと同じバイト列
       const sent = external.created[0]!.messages;
       const sentSecond = blocksOf(sent[1]!);
-      expect(readFileSync(join(session, "screens", "0004.0.jpg"))).toEqual(imageBytes(sentSecond[2]));
-      expect(readFileSync(join(session, "screens", "0008.0.jpg"))).toEqual(imageBytes(sentSecond[4]));
+      expect(sentSecond.some((b) => b.type === "image")).toBe(false);
+      expect(readFileSync(join(session, "screens", "0008.0.jpg"))).toEqual(imageBytes(blocksOf(sent[2]!)[1]));
       expect(readFileSync(join(session, "screens", "0022.0.jpg"))).toEqual(imageBytes(blocksOf(sent[3]!)[1]));
       // 添えなかった画面も、変換したバイト列がそのまま書かれる
+      expect(readFileSync(join(session, "screens", "0004.0.jpg"))).toEqual(Buffer.from(fakeJpegBytes("png:slides/s2.png")));
       expect(readFileSync(join(session, "screens", "0033.0.jpg"))).toEqual(Buffer.from(fakeJpegBytes("png:slides/s7.png")));
     }));
 
@@ -407,15 +398,17 @@ describe("play --screen", () => {
       expect(diffs.some((d) => "previousScreens" in d.input)).toBe(false);
     }));
 
-  it.effect("最後に添えたのが「なし」なら、「なし」とその前の画面が載る。新しく添える画面は別に続き、画像は最大 5 枚", () =>
+  it.effect("最後に添えたのが画像でも「なし」でも、直前の 2 件が載る。新しく添える画面（持ち越した変化を含む）は別に続く", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      // s1 は呼び出し 1、s2 は呼び出し 2、20 秒の「なし」は呼び出し 3。15 回目（発言の start は 140 秒、14 回目は 130 秒）には s4・s5・s6 が新しく添わる
+      // s1 は呼び出し 1、s2 は呼び出し 2、20 秒の「なし」は呼び出し 3。
+      // 呼び出し 14（発言の start は 130 秒）では s4（125）を添え、s5（127）は 10 秒未満なので持ち越す。
+      // 15 回目（発言の start は 140 秒）では、持ち越した s5 と s6（137。s5 から 10 秒）を添える
       const { transcriptPath, tsvPath } = meeting(root, FIFTEEN_REMARKS, [
         [0, 10, "s1", "slides/s1.png"],
         [10, 20, "s2", "slides/s2.png"],
-        [131, 134, "s4", "slides/s4.png"],
-        [134, 137, "s5", "slides/s5.png"],
+        [125, 127, "s4", "slides/s4.png"],
+        [127, 137, "s5", "slides/s5.png"],
         [137, 400, "s6", "slides/s6.png"],
       ]);
       const deps = dependencies(join(root, "sessions"));
@@ -425,21 +418,20 @@ describe("play --screen", () => {
       const reopened = blocksOf(external.created[1]!.messages[0]!);
       expect(textHeadings(reopened).slice(0, -1)).toEqual([
         // 送り直し（その呼び出しより前に最後に添えた 2 件）
-        "## 共有画面 [00:10] から",
         "## 共有画面：なし（[00:20] から）",
+        "## 共有画面 [02:05] から",
         // その呼び出しで新しく添える画面
-        "## 共有画面 [02:11] から",
-        "## 共有画面 [02:14] から",
+        "## 共有画面 [02:07] から",
         "## 共有画面 [02:17] から",
       ]);
-      expect(imagesOf(reopened)).toEqual([jpeg("s2"), jpeg("s4"), jpeg("s5"), jpeg("s6")]);
+      expect(imagesOf(reopened)).toEqual([jpeg("s4"), jpeg("s5"), jpeg("s6")]);
       expect(reopened[reopened.length - 1]!.text).toContain("## 現在のマップ");
 
-      // ログの screens は、その呼び出しで新しく添えた 3 件だけ
+      // ログの screens は、その呼び出しで新しく添えた 2 件だけ。持ち越していた s5 が、前の呼び出しの s4 の次に添わる
       const diffs = logLines(session).filter((l) => l.type === "diff") as unknown as { input: { screens?: unknown } }[];
+      expect(diffs[13]!.input.screens).toEqual([{ start: 125, image: "0125.0.jpg" }]);
       expect(diffs[14]!.input.screens).toEqual([
-        { start: 131, image: "0131.0.jpg" },
-        { start: 134, image: "0134.0.jpg" },
+        { start: 127, image: "0127.0.jpg" },
         { start: 137, image: "0137.0.jpg" },
       ]);
     }));
