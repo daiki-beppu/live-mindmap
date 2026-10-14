@@ -17,8 +17,8 @@ const rule = (selector: string) => {
 const WIDTH_FORMULA = /min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/;
 
 // 素の CSS に残す規則（点滅・子孫と状態のセレクタ・min()/calc() の長い値）は、styles.css の文面で確かめる。
-// ユーティリティへ移した規則（.layout・.key-list・.map-node__count・.map-node__fold-dot の基本の値など）は、置き場に依らない実ブラウザの computed style と
-// 替える前の CSS との画面の照合で確かめる（tailwindCompare.heavy.test.ts）。
+// ユーティリティへ移した規則（.layout・.key-list・.map-node__count・.map-node__fold-dot の基本の値など）は、置き場に依らない実ブラウザの computed style で確かめる
+// （review.mount.heavy.test.ts・meeting.mount.heavy.test.ts の寸法）。
 
 describe("styles.css: Tailwind v4 の入口（Issue #830）", () => {
   const imports = [...css.matchAll(/@import\s+(?:url\()?["']([^"']+)["']/g)].map((m) => m[1]!);

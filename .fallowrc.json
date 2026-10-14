@@ -8,8 +8,7 @@
     "server/test/fixtures/fake-helper.ts",
     "server/test/fixtures/chatgptWorker.ts",
     "server/test/fixtures/managedDepsProcess.mjs",
-    "server/test/fixtures/managedDepsRunnerHooks.mjs",
-    "web/test/fixtures/preTailwind.css"
+    "server/test/fixtures/managedDepsRunnerHooks.mjs"
   ],
   "ignorePatterns": [
     "helper/**"

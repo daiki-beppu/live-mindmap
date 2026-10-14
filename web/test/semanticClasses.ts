@@ -1,6 +1,6 @@
 // Issue #830: Tailwind v4 へ替えた後、view の h.Class には意味のクラス名（BEM）にユーティリティが並ぶ。
-// scene テストが「並びと意味のクラス」を確かめるときは、ユーティリティを数えず、意味のクラス名だけを比べる（ユーティリティの中身は画面の照合 tailwindCompare.heavy.test.ts が見る）。
-// 意味のクラス名は、JS の closest()・scene テストの find・素の CSS に残した子の指定・替える前の CSS が当たる名前なので、消さない。
+// scene テストが「並びと意味のクラス」を確かめるときは、ユーティリティを数えず、意味のクラス名だけを比べる（ユーティリティの中身は review.mount.heavy.test.ts・meeting.mount.heavy.test.ts の寸法の確認が見る）。
+// 意味のクラス名は、JS の closest()・scene テストの find・素の CSS に残した子の指定が当たる名前なので、消さない。
 // 一覧は、替える前の web/src の h.Class と CSS のクラス名から作った（unit はファイルを読まない）。
 export const SEMANTIC_CLASSES: ReadonlySet<string> = new Set([
   "captions",
