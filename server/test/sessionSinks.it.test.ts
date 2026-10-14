@@ -22,7 +22,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 // Issue #240 段 3（ADR 0008）→ Issue #243 段 6: SessionSinks の実物 Layer を、実 tmpdir + 偽の DiffUpdater／capture で確かめる。
 // updater・ログ・いま話している文字・書き出しを開く契約（CT-SINK-SCOPE）と、録音ファイル名の採番（要件117,127）
 // がこのファイルの対象。段 6 で、SessionSinks は新しいセッション（makeSession）を直接使う。
-// 1 秒の途中結果（SETTLE_QUIET_MS）の待ちは TestClock で進める（本物の時間では待たない）。
+// 1 秒の途中結果（SETTLE_QUIET_MS）の待ちは、音声の時刻（後続の結果の end）で進める（壁時計では進まない。本物の時間では待たない）。
 //
 // 想定する契約（server/src/sessionSinks.ts）:
 // - `SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer) })` が実物の Layer を作る。撮影・見返し用の HTML のビルド・mix・FileSystem は Layer の文脈から受け取る（テストの sinksLayer が偽物を渡す）。
@@ -682,13 +682,13 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     const { calls, updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 6, text: "あしたの", duplicate: false });
+      yield* sink.partial({ track: "相手", start: 5, end: 7.5, text: "あしたの", duplicate: false });
       yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議は", duplicate: false });
 
-      yield* TestClock.adjust(SETTLE_QUIET_MS - 1);
+      yield* sink.partial({ track: "自分", start: 0, end: 8 + (SETTLE_QUIET_MS - 1) / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
       yield* settle;
       expect(logEvents(dir).filter((e) => e.type === "remark")).toEqual([]); // 1 秒の直前まではまだ発言にならない
-      yield* TestClock.adjust(1); // 1 秒更新されなかった: 発言になり、すぐ差分更新に渡る
+      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める // 音声の時刻で 1 秒更新されなかった: 発言になり、すぐ差分更新に渡る
       yield* settle;
       expect(logEvents(dir).filter((e) => e.type === "remark")).toHaveLength(1);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
@@ -706,7 +706,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
       yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false });
-      yield* TestClock.adjust(SETTLE_QUIET_MS);
+      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
 
       yield* sink.final(finalRemark("相手", 5.2, 8.2, "明日の会議は十時です。")); // r1 を覆う確定結果。本文が違っても捨てる
@@ -976,9 +976,9 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの読み（Issue #6
     const { updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 6, text: "あした", duplicate: false, words: [word("あした", 0)] });
+      yield* sink.partial({ track: "相手", start: 5, end: 7.5, text: "あした", duplicate: false, words: [word("あした", 0)] });
       yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false, words: [word("あした", 0), word("の", 3), word("会議", 4)] });
-      yield* TestClock.adjust(SETTLE_QUIET_MS);
+      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
       yield* settle;
 
       const lines = remarkLines(dir);
@@ -1184,7 +1184,7 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openWithVocabulary();
       yield* sink.partial({ track: "相手", start: 5, end: 6, text: garbled.text, words: garbled.words, duplicate: false });
-      yield* TestClock.adjust(SETTLE_QUIET_MS);
+      yield* sink.partial({ track: "自分", start: 0, end: 6 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       expect(calls.flatMap((c) => c.fresh)[0]).toMatchObject({ id: "r1", text: "港南店に行きます" });
 

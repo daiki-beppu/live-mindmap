@@ -183,7 +183,7 @@ node bench/sttAccuracy.ts bench/meetings/lecture.timeline.tsv bench/meetings/lec
 - `<remarks>`: 拡張子が `.json` なら kanary transcribe の JSON、それ以外は `stt-bench run` の JSONL（`--settle` が無ければ確定結果だけを使う）。
 - `--terms`: 固有名詞・略語の正しい表記を 1 行 1 語で並べたファイル。
 - `--window`: 突き合わせる区切りの最短の秒数（既定 30）。
-- `--settle`: JSONL の途中結果と確定結果を、本番と同じ `createRemarkSettler()`（関所つき）へ `arrival` の時刻どおりに通し、出た発言で採点する。付けなければ確定結果だけで採点する。`.json` に付けると失敗する（途中結果も到着の時刻もないため）。
+- `--settle`: JSONL の途中結果と確定結果を、本番と同じ `createRemarkSettler()`（関所つき）へ `arrival` の順に通し（時計は結果の `end` の最大値。`arrival` は並び順だけに使う）、出た発言で採点する。付けなければ確定結果だけで採点する。`.json` に付けると失敗する（途中結果も到着の時刻もないため）。
 - 出力:
   - CER の表（台本の文字数・CER・置換・脱落・挿入）。
   - `--terms` を渡したときは、正解率の行と、語ごとの表（語・正解・かな違い・出現・崩れ方）。

@@ -1,6 +1,7 @@
 // 途中結果（partial）が一定時間更新されなければ、最後の本文・区間で発言にする規則（Issue #99、調査 #97。
 // 参照実装は bench/sttLatency.ts の settleVolatile、lateFinal: "discard"）。
-// 時刻は呼び出し側が渡す（ミリ秒）。タイマーは持たない（中核は実行環境に依存しない。ADR 0003）。
+// 時計は届いた結果の end の最大値（会議の音声の時刻、ミリ秒）。壁時計は使わない。タイマーは持たない（中核は実行環境に依存しない。ADR 0003）。
+// 結果が届くたびに「時計を進める（期限の順に、来た発話を出す）→ 入力を当てはめる」の順で処理するので、結果が届く間隔に出力が依らない。
 // 加えて、文の終わり（。？！ ? !）までの本文が SETTLE_SENTENCE_MS 変わらなければ、そこまでを発言にする（Issue #996）。
 // 途中結果から作る発言は、出した分（同じ発話、無ければ同じトラック）の記録と突き合わせ、出した分の後ろだけを次の発言にする。
 import type { HelperPartial } from "./live.ts";
@@ -160,6 +161,9 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
     return out;
   };
 
+  // 音声の時計（ミリ秒）。届いた結果の end の最大値。戻らない
+  let clock = 0;
+
   const dueUtterance = (u: Utterance, now: number): SettledRemark[] => {
     if (u.state !== "open") return [];
     if (u.lastAt + quietMs <= now) return release(u);
@@ -167,30 +171,59 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
     return pos === undefined ? [] : releaseSentence(u, pos);
   };
 
+  const nextDue = (): number | undefined => {
+    let min: number | undefined;
+    const consider = (t: number) => {
+      if (min === undefined || t < min) min = t;
+    };
+    for (const u of utterances) {
+      if (u.state !== "open") continue;
+      consider(u.lastAt + quietMs);
+      for (const e of u.ends) consider(e.at + SETTLE_SENTENCE_MS);
+    }
+    return min;
+  };
+
+  // 時計を t まで進める。期限の順に一つずつ時計を進めて出す（一度に跳ぶと、先に出した分の記録の前に後の発話が出る）
+  const advance = (t: number): SettledRemark[] => {
+    const out: SettledRemark[] = [];
+    for (let d = nextDue(); d !== undefined && d <= t; d = nextDue()) {
+      clock = Math.max(clock, d);
+      out.push(...utterances.flatMap((u) => dueUtterance(u, clock)));
+    }
+    clock = Math.max(clock, t);
+    return out;
+  };
+
   return {
-    // 途中結果。自分は、ヘルパーの重複判定（確定結果にだけ行う）を通らないので、発言にしない
-    partial(p: HelperPartial, now: number): void {
-      if (p.track === "自分") return;
+    // 途中結果。自分は、ヘルパーの重複判定（確定結果にだけ行う）を通らないので、発言にしない。
+    // 返すのは、この結果で時計が進んで期限の来た発言
+    partial(p: HelperPartial): SettledRemark[] {
+      const out = advance(p.end * 1000);
+      if (p.track === "自分") return out;
       const key = keyOf(p.track, p.start);
       const current = latest.get(key);
-      if (current && current.state === "open" && now - current.lastAt <= quietMs) {
+      const now = clock;
+      if (current && current.state === "open") {
         current.ends = updateEnds(current, p.text, now);
         current.end = p.end;
         current.text = p.text;
         current.words = p.words; // text と同じ更新で置き換える（undefined でも代入し、古い words を残さない）
         current.lastAt = now;
-        return;
+        return out;
       }
       const next: Utterance = { track: p.track, start: p.start, end: p.end, text: p.text, words: p.words, lastAt: now, state: "open", ends: sentenceEnds(p.text).map((pos) => ({ pos, at: now })), cut: false, cutPos: 0 };
       utterances.push(next);
       latest.set(key, next);
+      return out;
     },
 
-    // 確定結果。返すのは、発言として出すもの
-    final(r: SettledRemark, now: number): SettledRemark[] {
-      if (r.track === "自分") return [r];
+    // 確定結果。返すのは、期限の来た発言に続けて、発言として出すもの
+    final(r: SettledRemark): SettledRemark[] {
+      const due = advance(r.end * 1000);
+      if (r.track === "自分") return [...due, r];
       const covered = utterances.filter((u) => u.track === r.track && midpoint(u) >= r.start - EPSILON && midpoint(u) <= r.end + EPSILON);
-      const alreadyOut = covered.some((u) => u.state === "emitted" || (u.state === "open" && (u.cut || u.lastAt + quietMs < now)));
+      const alreadyOut = covered.some((u) => u.state === "emitted" || (u.state === "open" && u.cut));
       const pending = covered.filter((u) => u.state === "open");
       // 既に出した分（同じ発話、無ければ同じトラック）があれば、確定結果もその後ろだけを出す
       const out = alreadyOut ? pending.flatMap(release) : passCarried(keyOf(r.track, r.start), r);
@@ -199,26 +232,7 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
         if (latest.get(keyOf(u.track, u.start)) === u) latest.delete(keyOf(u.track, u.start));
       }
       for (let i = utterances.length - 1; i >= 0; i--) if (utterances[i]!.state === "consumed") utterances.splice(i, 1);
-      return out;
-    },
-
-    // T 経った発話を出す
-    due(now: number): SettledRemark[] {
-      return utterances.flatMap((u) => dueUtterance(u, now));
-    },
-
-    // 次に出す時刻。なければ undefined
-    nextDue(): number | undefined {
-      let min: number | undefined;
-      const consider = (t: number) => {
-        if (min === undefined || t < min) min = t;
-      };
-      for (const u of utterances) {
-        if (u.state !== "open") continue;
-        consider(u.lastAt + quietMs);
-        for (const e of u.ends) consider(e.at + SETTLE_SENTENCE_MS);
-      }
-      return min;
+      return [...due, ...out];
     },
 
     // 停止時。まだ出ていない発話をすべて出す
