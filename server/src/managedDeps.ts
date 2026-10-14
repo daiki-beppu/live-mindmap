@@ -1,8 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { lstat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as PlaywrightModule from "playwright-core";
 import { Console, Context, DateTime, Effect, FileSystem, Layer, PlatformError, Predicate, Schema, Semaphore, Stream } from "effect";
@@ -49,6 +48,11 @@ const ReadyRecord = Schema.Struct({
   hashes: Schema.Record(Schema.String, Schema.String),
 });
 const PackageRecord = Schema.Struct({ version: Schema.String });
+const EntryPackageRecord = Schema.Struct({
+  version: Schema.String,
+  main: Schema.optionalKey(Schema.String),
+  exports: Schema.optionalKey(Schema.Unknown),
+});
 const BrowserRecord = Schema.Struct({
   browsers: Schema.Array(Schema.Struct({
     name: Schema.String,
@@ -58,6 +62,31 @@ const BrowserRecord = Schema.Struct({
 });
 // 相対パスが基準の外へ出ている（絶対パス・`..` で始まる）
 const escapes = (path: string): boolean => isAbsolute(path) || path === ".." || path.startsWith(`..${sep}`);
+// package.json の exports から、`import` で "." を読むときの入口を選ぶ（require・types は選ばない）
+const IMPORT_CONDITIONS = new Set(["node", "import", "module-sync", "default"]);
+const exportTarget = (target: unknown): string | undefined => {
+  if (typeof target === "string") return target;
+  if (Array.isArray(target)) {
+    for (const item of target) {
+      const found = exportTarget(item);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof target !== "object" || target === null) return undefined;
+  for (const [key, value] of Object.entries(target)) {
+    if (!IMPORT_CONDITIONS.has(key)) continue;
+    const found = exportTarget(value);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+const importEntry = (exports: unknown, main: string | undefined): string | undefined => {
+  if (exports === undefined) return main ?? "index.js";
+  const subpaths = typeof exports === "object" && exports !== null && !Array.isArray(exports)
+    && Object.keys(exports).length > 0 && Object.keys(exports).every((key) => key.startsWith("."));
+  return exportTarget(subpaths ? (exports as Record<string, unknown>)["."] : exports);
+};
 const failed = (error: unknown) => error instanceof ManagedDepsFailed
   ? error : new ManagedDepsFailed({ message: error instanceof Error ? error.message : String(error) });
 const codeIs = (error: unknown, code: string): boolean =>
@@ -276,21 +305,18 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       if (escapes(entityPath)) {
         return yield* new ManagedDepsFailed({ message: "current の実体が管理ディレクトリ外です" });
       }
-      const require = createRequire(join(entity, "package.json"));
-      const resolved = yield* Effect.try({
-        // SDK は package.json を exports に公開しないので、管理実体の既知のパッケージ位置を検証する。
-        try: () => ({ module: require.resolve(packageName), package: join(entity, "node_modules", packageName, "package.json") }),
-        catch: failed,
-      });
-      const modulePath = yield* fs.realPath(resolved.module);
-      const packagePath = yield* fs.realPath(resolved.package);
-      for (const path of [modulePath, packagePath]) {
-        const within = relative(join(entity, "node_modules"), path);
-        if (escapes(within)) {
-          return yield* new ManagedDepsFailed({ message: `${packageName} の解決先が管理実体の node_modules 外です` });
-        }
-      }
-      const pkg = yield* readJson(packagePath, PackageRecord);
+      const nodeModules = join(entity, "node_modules");
+      const inside = (path: string) => !escapes(relative(nodeModules, path));
+      const outside = () => new ManagedDepsFailed({ message: `${packageName} の解決先が管理実体の node_modules 外です` });
+      // CJS の入口では名前つき export が出ないことがあるので、import と同じ条件で ESM の入口を選ぶ。
+      // SDK は package.json を exports に公開しないので、管理実体の既知のパッケージ位置から直接読む。
+      const packagePath = yield* fs.realPath(join(nodeModules, packageName, "package.json"));
+      if (!inside(packagePath)) return yield* outside();
+      const pkg = yield* readJson(packagePath, EntryPackageRecord);
+      const entry = importEntry(pkg.exports, pkg.main);
+      if (entry === undefined) return yield* new ManagedDepsFailed({ message: `${packageName} の ESM 入口がありません` });
+      const modulePath = yield* fs.realPath(resolve(dirname(packagePath), entry));
+      if (!inside(modulePath)) return yield* outside();
       const ready = yield* readJson(join(entity, READY), ReadyRecord);
       if (pkg.version !== ready.version) return yield* new ManagedDepsFailed({ message: "読込版が導入記録と一致しません" });
       const module = yield* Effect.tryPromise({
