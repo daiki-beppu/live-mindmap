@@ -389,7 +389,9 @@ describe("会議中（Foldkit 版）の寸法", () => {
       expect(await styleOf(page, ".map-node--folded", ["color"])).toEqual({ color: "rgb(107, 114, 128)" });
       await sendFrames(page, frames.reflected);
       await page.locator(".map-node--blink").first().waitFor({ timeout: 10_000 });
-      expect(await styleOf(page, ".map-node--blink", ["outline-offset"])).toEqual({ "outline-offset": "2px" });
+      // クラスが付いた直後は、CI で規則がまだ効いていない値（0px）を読むことがある。点滅が終わって落ち着いた値を待つ
+      await page.waitForFunction(() => document.querySelector(".map-node--blink")!.getAnimations().every((a) => a.playState === "finished"), undefined, { timeout: 10_000 });
+      await expect.poll(async () => styleOf(page, ".map-node--blink", ["outline-offset"]), { timeout: 10_000 }).toEqual({ "outline-offset": "2px" });
       await page.locator(".map-node__button").first().click();
       await page.waitForFunction(() => document.querySelector(".map-node--selected") !== null, undefined, { timeout: 10_000 });
       expect((await styleOf(page, ".map-node--selected", ["background-color"]))["background-color"]).toBe("rgb(243, 244, 246)");
