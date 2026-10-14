@@ -7,6 +7,7 @@ import Testing
 // 本物の Sortformer（CoreML、fastV2_1）を使う。モデルは helper/scripts/fetch-speaker-models.sh が前もって取得する。
 // モデルが無い環境では prepare() が modelMissing で失敗し、テストも失敗する（環境の問題として報告する）。
 // 2 人の声は `say` の Kyoko と Rocko（どちらも macOS 同梱の日本語の声。Reed は同じ人の 2 行目に別の枠が付いたので使わない）。
+// Rocko は言語ごとに同じ名前の声があり、名前だけだとシステムの言語の声が選ばれる。英語の CI では英語の Rocko が日本語の文をほぼ無音で読むので、日本語の声を ID で指す。
 
 private let sampleRate = 16_000.0
 
@@ -50,6 +51,8 @@ private func synthesize(_ text: String, voice: String, in directory: URL, index:
         return input
     }
     try #require(status != .error, "変換に失敗: \(error?.localizedDescription ?? "")")
+    // 声がその言語を読めないと、say は失敗せずにほぼ無音を書く
+    try #require(Double(output.frameLength) / sampleRate > 1.0, "say の \(voice) がほぼ無音を書いた（\(output.frameLength) サンプル）: \(text)")
     return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
 }
 
@@ -57,9 +60,9 @@ private func synthesize(_ text: String, voice: String, in directory: URL, index:
 private func conversation(in directory: URL) throws -> (samples: [Float], lines: [PlacedLine]) {
     let script = [
         SpokenLine(speaker: "A", voice: "Kyoko", text: "こんにちは、今日の会議を始めます。まず先週の進み具合から確認しましょう。"),
-        SpokenLine(speaker: "B", voice: "Rocko", text: "はい、先週は設計の見直しを終えて、実装に入ったところです。"),
+        SpokenLine(speaker: "B", voice: "com.apple.eloquence.ja-JP.Rocko", text: "はい、先週は設計の見直しを終えて、実装に入ったところです。"),
         SpokenLine(speaker: "A", voice: "Kyoko", text: "分かりました。それでは次に、来週の予定について話してください。"),
-        SpokenLine(speaker: "B", voice: "Rocko", text: "来週はテストを書いて、レビューの依頼まで進める予定です。"),
+        SpokenLine(speaker: "B", voice: "com.apple.eloquence.ja-JP.Rocko", text: "来週はテストを書いて、レビューの依頼まで進める予定です。"),
     ]
     var samples = [Float](repeating: 0, count: Int(1.0 * sampleRate))
     var placed: [PlacedLine] = []
