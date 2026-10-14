@@ -45,7 +45,7 @@ describe("sttAccuracy の Command", () => {
     const timeline = join(dir, "timeline.tsv");
     const jsonl = join(dir, "results.jsonl");
     writeFileSync(timeline, "真壁\t0.00\t5.00\tあいうえお\n");
-    // 同じ start で全文を送り直す途中結果。到着の間は 1 秒以上あり、それぞれが発言として出る
+    // 同じ start で全文を送り直す途中結果。end の間隔は 1 秒以上あり、それぞれが発言として出る
     writeFileSync(jsonl, [
       { track: "相手", arrival: 0, isFinal: false, start: 0, end: 2, text: "あい" },
       { track: "相手", arrival: 2, isFinal: false, start: 0, end: 4, text: "あいうえ" },
@@ -61,23 +61,45 @@ describe("sttAccuracy の Command", () => {
     expect(settled.stdout).toContain("| 5 | 0.0% | 0 | 0 | 0 |");
   }).pipe(Effect.scoped));
 
-  it.effect("--settle は確定結果の到着が 1 秒の期限の前か後かで採点が変わる（到着は秒で、ミリ秒に直して通す）", () => Effect.gen(function* () {
+  it.effect("--settle は確定結果の end が 1 秒の期限の前か後かで採点が変わる（到着の時刻ではなく end で測る）", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const timeline = join(dir, "timeline.tsv");
     writeFileSync(timeline, "真壁\t0.00\t3.00\tあいう\n");
-    const run = (finalArrival: number) => {
-      const jsonl = join(dir, `results-${finalArrival}.jsonl`);
+    const run = (name: string, finalEnd: number, finalArrival: number) => {
+      const jsonl = join(dir, `results-${name}.jsonl`);
       writeFileSync(jsonl, [
         { track: "相手", arrival: 0, isFinal: false, start: 0, end: 2, text: "あい" },
-        { track: "相手", arrival: finalArrival, isFinal: true, start: 0, end: 3, text: "あいう" },
+        { track: "相手", arrival: finalArrival, isFinal: true, start: 0, end: finalEnd, text: "あいう" },
       ].map((r) => JSON.stringify(r)).join("\n") + "\n");
       return runCommand(command, [timeline, jsonl, "--settle"]);
     };
 
-    const before = yield* run(0.5);
+    // 途中結果（end 2）の期限は 3 秒。確定結果の end が 2.5 なら期限の前で、途中結果は出ず確定結果が出る
+    const before = yield* run("before", 2.5, 5);
     expect(before.stdout).toContain("| 3 | 0.0% | 0 | 0 | 0 |");
-    const after = yield* run(2);
+    // 確定結果の end が 3 なら期限に届いていて、途中結果「あい」が先に出る
+    const after = yield* run("after", 3, 5);
     expect(after.stdout).toContain("| 3 | 33.3% | 0 | 1 | 0 |");
+  }).pipe(Effect.scoped));
+
+  it.effect("--settle は到着の時刻の間隔に依らない: 同じ結果の列を詰めても延ばしても、採点は同じ", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const timeline = join(dir, "timeline.tsv");
+    writeFileSync(timeline, "真壁\t0.00\t3.00\tあいう\n");
+    const run = (name: string, arrivals: readonly [number, number]) => {
+      const jsonl = join(dir, `results-${name}.jsonl`);
+      writeFileSync(jsonl, [
+        { track: "相手", arrival: arrivals[0], isFinal: false, start: 0, end: 2, text: "あい" },
+        { track: "相手", arrival: arrivals[1], isFinal: true, start: 0, end: 2.5, text: "あいう" },
+      ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+      return runCommand(command, [timeline, jsonl, "--settle"]);
+    };
+
+    const compressed = yield* run("compressed", [0, 0.1]);
+    const stretched = yield* run("stretched", [0, 60]);
+
+    expect(compressed.stdout).toContain("| 3 | 0.0% | 0 | 0 | 0 |");
+    expect(stretched.stdout).toBe(compressed.stdout);
   }).pipe(Effect.scoped));
 
   it.effect("--settle は確定結果が来ない途中結果からも発言を作って採点する（付けなければ脱落になる）", () => Effect.gen(function* () {

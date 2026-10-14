@@ -231,18 +231,16 @@ export function summarize(s: AccuracyScore, confusions = 15): string {
   return out.join("\n") + "\n";
 }
 
-// 途中結果と確定結果を、本番の createRemarkSettler（関所つき）へ到着の時刻どおりに通して出た発言。
-// 手順は bench の drops.ts と同じ（到着のたびに、期限の来た発話を出してから、確定結果は final、途中結果は partial へ渡し、最後に drain）
+// 途中結果と確定結果を、本番の createRemarkSettler（関所つき）へ到着の順に通して出た発言。
+// 時計は届いた結果の end の最大値（音声の時刻）で、到着の時刻は並び順にだけ使う。最後に drain
 export function settleResults(results: readonly SttResult[]): TimedText[] {
   const settler = createRemarkSettler();
   const out: TimedText[] = [];
   const keep = (rs: readonly TimedText[]) => out.push(...rs.map(({ start, end, text }) => ({ start, end, text })));
   // Array.prototype.sort は安定。同じ到着の時刻はファイルの行の順を保つ
   for (const r of [...results].sort((a, b) => a.arrival - b.arrival)) {
-    const now = r.arrival * 1000;
-    for (let due = settler.nextDue(); due !== undefined && due <= now; due = settler.nextDue()) keep(settler.due(due));
-    if (r.isFinal) keep(settler.final({ track: r.track, start: r.start, end: r.end, text: r.text }, now));
-    else settler.partial({ track: r.track, start: r.start, end: r.end, text: r.text, duplicate: false }, now);
+    if (r.isFinal) keep(settler.final({ track: r.track, start: r.start, end: r.end, text: r.text }));
+    else keep(settler.partial({ track: r.track, start: r.start, end: r.end, text: r.text, duplicate: false }));
   }
   keep(settler.drain());
   return out;
