@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRemarkSettler, SETTLE_QUIET_MS, type HelperPartial, type SettledRemark } from "../src/core/index.ts";
+import { createRemarkSettler, SETTLE_QUIET_MS, SETTLE_SENTENCE_MS, type HelperPartial, type SettledRemark } from "../src/core/index.ts";
 
 // 途中結果が T 秒変わらなければ発言として出す規則（Issue #99。参照実装は bench/sttLatency.ts の settleVolatile、lateFinal: "discard"）。
 // 時刻 now は呼び出し側が渡す（中核は実行環境のタイマーを使わない。ADR 0003）。単位はミリ秒。
@@ -793,6 +793,417 @@ describe("words の運搬（Issue #639）", () => {
       expect(brief(out)).toEqual([["相手", 15, 18, "かき"]]);
       expect(wordsOfRemark(out[0])).toEqual([w("かき", 0)]);
       expectWordsFitText(out[0]);
+    });
+  });
+});
+
+// Issue #996: 相手の途中結果で、文の終わり（。？！ ? !）までの本文が S ミリ秒変わらなければ、そこまでを発言にする。
+// 文の終わりの無い途中結果は、従来どおり T 更新されなければ出す。出した後に同じ発話の続きが届いたら、出した分の後ろだけを出す。
+// 以下は、本文の長さ = 区間の長さ（start 10）になるように区間を作り、文の終わりまでの発言の end が文の終わりの位置になるようにする
+describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
+  const S = SETTLE_SENTENCE_MS;
+  const texts = (rs: SettledRemark[]) => rs.map((r) => r.text);
+  // 同じ発話（相手・start 10）の途中結果。SpeechAnalyzer は区間の始まりから全文を送り直す
+  const pt = (text: string) => partial("相手", 10, 10 + text.length, text);
+
+  it("S は 50 ミリ秒", () => {
+    expect(S).toBe(50);
+  });
+
+  describe("文の終わりまでが S 変わらなければ、そこまでを出す", () => {
+    it("S に 1ms 足りなければ出ない。S 経つと文の終わりまでが 1 件で出て、区間は発話の頭から文の終わりまで", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+
+      expect(s.nextDue()).toBe(S);
+      expect(s.due(S - 1)).toEqual([]);
+      expect(brief(s.due(S))).toEqual([["相手", 10, 14, "あいう。"]]);
+    });
+
+    it("出した後の残り（文の終わりの無い部分）は、従来どおり T 経つと、出した発言の end から始まる発言として出る。二度は出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+
+      expect(s.nextDue()).toBe(T);
+      expect(s.due(T - 1)).toEqual([]);
+      expect(brief(s.due(T))).toEqual([["相手", 14, 15, "え"]]);
+      expect(s.due(T * 10)).toEqual([]);
+      expect(s.nextDue()).toBeUndefined();
+    });
+
+    it("文の終わりより後ろの本文が変わっても、文の終わりまでが変わっていなければ S で出る。残りの期限は最後の到着から T", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      s.partial(pt("あいう。えお"), 30);
+
+      expect(s.nextDue()).toBe(S);
+      expect(s.due(S - 1)).toEqual([]);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+      expect(s.nextDue()).toBe(30 + T);
+      expect(brief(s.due(30 + T))).toEqual([["相手", 14, 16, "えお"]]);
+    });
+
+    it("S 経つ前に文の終わりが取り消されたら出さない。取り消されなければ同じ時刻で出る", () => {
+      const kept = createRemarkSettler();
+      kept.partial(pt("あいう。"), 0);
+      kept.partial(pt("あいう。"), 30);
+      expect(texts(kept.due(S))).toEqual(["あいう。"]);
+
+      const cancelled = createRemarkSettler();
+      cancelled.partial(pt("あいう。"), 0);
+      cancelled.partial(pt("あいうえ"), 30);
+      expect(cancelled.due(S)).toEqual([]);
+      expect(cancelled.due(30 + S)).toEqual([]);
+      expect(cancelled.nextDue()).toBe(30 + T); // 文の終わりの期限は残らない
+      expect(brief(cancelled.due(30 + T))).toEqual([["相手", 10, 14, "あいうえ"]]);
+    });
+
+    it("取り消された文の終わりが別の位置で現れ直したら、現れ直した時刻から S を数える", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。"), 0);
+      s.partial(pt("あいうえ"), 30);
+      s.partial(pt("あいうえ。"), 40);
+
+      expect(s.due(40 + S - 1)).toEqual([]);
+      expect(texts(s.due(40 + S))).toEqual(["あいうえ。"]);
+    });
+
+    it("文の終わりを残したまま、その手前の本文が修正されたら、S は修正した時刻から数え直す", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      s.partial(pt("あいお。え"), 30);
+
+      expect(s.due(S)).toEqual([]);
+      expect(s.due(30 + S - 1)).toEqual([]);
+      expect(texts(s.due(30 + S))).toEqual(["あいお。"]);
+    });
+
+    it("続きが延びて本文の長さに対する区間の割合が小さくなっても、次の文の終わりまでは S で出る", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 15, "あいう。え"), 0);
+      expect(brief(s.due(S))).toEqual([["相手", 10, 14, "あいう。"]]);
+      s.partial(partial("相手", 10, 16, "あいう。え。おかきく"), 60);
+
+      const out = s.due(60 + S);
+      expect(texts(out)).toEqual(["え。"]);
+      expect(out[0]!.start).toBe(14);
+      expect(out[0]!.end).toBeGreaterThan(14);
+    });
+
+    it("文の終わりの文字は 。？！ と半角の ? !。読点・半角ピリオドでは出ない", () => {
+      for (const mark of ["。", "？", "！", "?", "!"]) {
+        const s = createRemarkSettler();
+        s.partial(pt(`あいう${mark}え`), 0);
+        expect(texts(s.due(S))).toEqual([`あいう${mark}`]);
+      }
+      for (const mark of ["、", ".", "，"]) {
+        const s = createRemarkSettler();
+        s.partial(pt(`あいう${mark}え`), 0);
+        expect(s.nextDue()).toBe(T);
+        expect(s.due(T - 1)).toEqual([]);
+      }
+    });
+
+    it("文の終わりが複数あり、どちらも落ち着いていれば、最後の文の終わりまでを 1 件で出す", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あ。い。う"), 0);
+
+      expect(brief(s.due(S))).toEqual([["相手", 10, 14, "あ。い。"]]);
+    });
+
+    it("後の文の終わりがまだ落ち着いていなければ、落ち着いた文の終わりまでを出し、後の文は後の S で出る。2 件の区間は隙間も重なりもない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あ。い"), 0);
+      s.partial(pt("あ。い。"), 30);
+
+      expect(brief(s.due(S))).toEqual([["相手", 10, 12, "あ。"]]);
+      expect(s.nextDue()).toBe(30 + S);
+      expect(s.due(30 + S - 1)).toEqual([]);
+      expect(brief(s.due(30 + S))).toEqual([["相手", 12, 14, "い。"]]);
+      expect(s.due(T * 10)).toEqual([]); // 出し終えた本文は T 経っても出ない
+    });
+
+    it("文の終わりの期限より先に T が来たら、全文を 1 件で出す。文の終わりまでと残りに分けて二重に出さない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+
+      expect(brief(s.due(T))).toEqual([["相手", 10, 15, "あいう。え"]]);
+      expect(s.due(T * 10)).toEqual([]);
+    });
+
+    it("文の終わりで切った発言の end は、発話の区間を文字の位置で比例配分した時刻", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 15, "あいう。え"), 0); // 長さ 5 の本文に区間 5 秒
+
+      expect(brief(s.due(S))).toEqual([["相手", 10, 14, "あいう。"]]);
+    });
+  });
+
+  describe("出した後に同じ発話の続きが届いても、出した分を二度と出さない", () => {
+    it("文の終わりで出した後の続きの途中結果が次の文の終わりまで落ち着いたら、次の文だけが出て、区間は前の発言の end から始まる", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あ。い"), 0);
+      expect(brief(s.due(S))).toEqual([["相手", 10, 12, "あ。"]]);
+
+      s.partial(pt("あ。い。う"), 60);
+
+      expect(brief(s.due(60 + S))).toEqual([["相手", 12, 14, "い。"]]);
+    });
+
+    it("1 秒の規則で出した後に全文を送り直し、文の終わりが落ち着いたら、新しい部分だけが出る", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あい"), 0);
+      expect(brief(s.due(T))).toEqual([["相手", 10, 12, "あい"]]);
+
+      s.partial(pt("あいう。え"), T + 1);
+
+      expect(brief(s.due(T + 1 + S))).toEqual([["相手", 12, 14, "う。"]]);
+    });
+
+    it("文の終わりで 2 回に分けて出した後に全文が届いたら、残りだけが出る（直前の発言 1 件の記憶では前の文が再び出る）", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あ。"), 0);
+      expect(texts(s.due(S))).toEqual(["あ。"]);
+      s.partial(pt("あ。い。"), 60);
+      expect(texts(s.due(60 + S))).toEqual(["い。"]);
+
+      s.partial(pt("あ。い。う"), 120);
+
+      expect([...s.due(120 + S), ...s.due(120 + T)].map((r) => r.text)).toEqual(["う"]);
+      expect(s.due(T * 10)).toEqual([]);
+    });
+
+    it("別の発話の発言が間に出た後でも、同じ発話の続きは出した分の後ろだけが出る", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 14, "あい。う"), 0);
+      expect(texts(s.due(S))).toEqual(["あい。"]);
+      s.partial(partial("相手", 30, 32, "べつ。"), 100);
+      expect(texts(s.due(100 + S))).toEqual(["べつ。"]);
+
+      s.partial(partial("相手", 10, 40, "あい。うえお。"), 200); // 区間は、間に出た発言（30〜32）の end より後ろまで延びる
+
+      const out = [...s.due(200 + S), ...s.due(200 + T)].map((r) => r.text);
+      expect(out.join("")).not.toContain("あい。"); // 出した文を含まない
+      expect(out.join("")).toContain("うえお。");
+    });
+
+    it("先頭が書き換わった全文を送り直しても、書き換えずに延びた分だけが出る", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("今日はシ子ど。"), 0);
+      expect(texts(s.due(S))).toEqual(["今日はシ子ど。"]);
+
+      s.partial(pt("今日はシ子度です。"), 60);
+
+      expect(brief(s.due(60 + S))).toEqual([["相手", 17, 19, "です。"]]);
+    });
+  });
+
+  describe("出す直前の関所が捨てた候補は、出した分の記録を進めない", () => {
+    it("1 秒の経路: 捨てられた途中結果の後の発言は、確定結果の end の後ろから全文が出る", () => {
+      const s = createRemarkSettler();
+      expect(texts(s.final(final("相手", 10, 15, "あいうえお"), 0))).toEqual(["あいうえお"]);
+      s.partial(partial("相手", 12, 14, "かきく"), 1);
+      expect(s.due(1 + T)).toEqual([]);
+      s.partial(partial("相手", 12, 18, "かきくけこ"), 2 + T);
+
+      expect(brief(s.due(2 + 2 * T))).toEqual([["相手", 15, 18, "かきくけこ"]]);
+    });
+
+    it("文の終わりの経路: 捨てられた途中結果の後の発言は、確定結果の end の後ろから全文が出る", () => {
+      const s = createRemarkSettler();
+      expect(texts(s.final(final("相手", 10, 15, "あいうえお"), 0))).toEqual(["あいうえお"]);
+      s.partial(partial("相手", 12, 14, "かきく。"), 1);
+      expect(s.due(1 + S)).toEqual([]);
+      s.partial(partial("相手", 12, 18, "かきく。けこ。"), 60);
+
+      expect(brief(s.due(60 + S))).toEqual([["相手", 15, 18, "かきく。けこ。"]]);
+    });
+
+    it("トラック全体の関所が捨てた候補は、出した分の記録を進めない（未出力の続きを後で欠かない）", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 13, "はい。"), 0);
+      expect(texts(s.due(S))).toEqual(["はい。"]);
+      s.partial(partial("相手", 30, 32, "別件。"), 100);
+      expect(texts(s.due(100 + S))).toEqual(["別件。"]);
+      s.partial(partial("相手", 10, 31, "はい。続き。"), 200);
+      expect(s.due(200 + S)).toEqual([]); // end 31 <= 32 で関所が捨てる
+      s.partial(partial("相手", 10, 40, "はい。続き。末尾。"), 300);
+
+      const out = [...s.due(300 + S), ...s.due(300 + T), ...s.drain()].map((r) => r.text).join("");
+      expect(out).toContain("続き。");
+      expect(out).toContain("末尾。");
+      expect(out).not.toContain("はい");
+    });
+
+    it("開始のずれた確定結果は、トラックで最後に出した全文と突き合わせ、出した分を再び出さない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+      expect(texts(s.final(final("相手", 9.5, 15.5, "あいう。え"), 60))).toEqual(["え"]);
+
+      const next = s.final(final("相手", 9.5, 17, "あいう。えお。か"), 70);
+
+      expect(texts(next)).toEqual(["お。か"]);
+    });
+
+    it("同じ発話で出した本文の頭に挿入が入った更新: 文の終わりの経路でも出した文は再び出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 13, "はい。"), 0);
+      expect(texts(s.due(S))).toEqual(["はい。"]);
+      s.partial(partial("相手", 10, 18, "あ、はい。続き。"), 60);
+
+      const out = [...s.due(110), ...s.due(60 + T), ...s.drain()];
+      expect(out.map((r) => r.text).join("")).not.toContain("はい");
+      expect(out.map((r) => r.text).join("")).toContain("続き。");
+    });
+
+    it("同じ発話で出した本文の頭に挿入が入り、出した文の句読点も変わった更新: 出した文は再び出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 13, "はい。"), 0);
+      expect(texts(s.due(S))).toEqual(["はい。"]);
+      s.partial(partial("相手", 10, 18, "あ、はい、続き。"), 60);
+
+      const out = [...s.due(110), ...s.due(60 + T), ...s.drain()];
+      expect(out.map((r) => r.text).join("")).not.toContain("はい");
+      expect(out.map((r) => r.text).join("")).toContain("続き。");
+    });
+
+    it("頭の挿入を句読点を無視して切るとき、words も同じ位置で切り、残る語の位置が切った後の本文に合う", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 13, "はい。", wordsOf("はい", "。")), 0);
+      expect(texts(s.due(S))).toEqual(["はい。"]);
+      s.partial(partialW("相手", 10, 18, "あ、はい、続き。", wordsOf("あ", "、", "はい", "、", "続き", "。")), 60);
+
+      const out = [...s.due(110), ...s.due(60 + T), ...s.drain()];
+      expect(out.map((r) => r.text)).toEqual(["続き。"]);
+      expectWordsFitText(out[0]);
+      expect(wordsOfRemark(out[0])!.map((x) => x.surface)).toEqual(["続き", "。"]);
+    });
+
+    it("出した文が頭で句読点だけ書き換わり後ろで繰り返されても、その間の本文を捨てない", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 13, "はい。"), 0);
+      expect(texts(s.due(S))).toEqual(["はい。"]);
+      s.partial(partial("相手", 10, 20, "はい、そうです。はい。"), 60);
+
+      const out = [...s.due(110), ...s.due(60 + T), ...s.drain()];
+      expect(out.map((r) => r.text)).toEqual(["そうです。はい。"]);
+    });
+
+    it("同じ発話で出した本文の頭に挿入が入った更新: 1 秒の経路でも出した分は再び出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 12, "はい"), 0);
+      expect(texts(s.due(T))).toEqual(["はい"]);
+      s.partial(partial("相手", 10, 15, "あ、はい続き"), T + 1);
+
+      expect(brief(s.due(2 * T + 1))).toEqual([["相手", 12, 15, "続き"]]);
+    });
+  });
+
+  describe("確定結果との関係", () => {
+    it("文の終わりで一部を出した発話を確定結果が覆うとき、確定結果は出さず、まだ出ていない残りだけを出す。その後は何も出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+
+      const finals = s.final(final("相手", 9.5, 15.5, "あいう。えお。"), S + 10);
+
+      expect(brief(finals)).toEqual([["相手", 14, 15, "え"]]);
+      expect(s.due(T * 10)).toEqual([]);
+      expect(s.drain()).toEqual([]);
+      expect(s.nextDue()).toBeUndefined();
+    });
+
+    it("一部を出した発話を確定結果が使い終えた後、同じ開始の確定結果が続いても、出した分は再び出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+      expect(texts(s.final(final("相手", 9.5, 15.5, "あいう。え"), S + 10))).toEqual(["え"]);
+
+      const next = s.final(final("相手", 10, 17, "あいう。えお。か"), S + 20);
+
+      expect(texts(next)).toEqual(["お。か"]);
+    });
+
+    it("文の終わりで出し切った発話を確定結果が覆うとき、確定結果の全文は出ない", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。"), 0);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+
+      expect(s.final(final("相手", 9.5, 14.5, "あいう。"), S + 10)).toEqual([]);
+      expect(s.due(T * 10)).toEqual([]);
+      expect(s.drain()).toEqual([]);
+    });
+
+    it("まだ何も出ていない発話を、S 経つ前に確定結果が覆うときは、確定結果をそのまま出す", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+
+      expect(brief(s.final(final("相手", 9.5, 15.5, "あいう。えお。"), S - 1))).toEqual([["相手", 9.5, 15.5, "あいう。えお。"]]);
+      expect(s.due(T * 10)).toEqual([]);
+      expect(s.nextDue()).toBeUndefined();
+    });
+
+    it("文の終わりで一部を出した発話は、停止時（drain）に残りだけが出る", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+      expect(texts(s.due(S))).toEqual(["あいう。"]);
+
+      expect(brief(s.drain())).toEqual([["相手", 14, 15, "え"]]);
+      expect(s.drain()).toEqual([]);
+    });
+  });
+
+  describe("自分の途中結果からは発言を作らない", () => {
+    it("相手の「あ。」は S で出るが、自分の「い。」は出ず、期限にも drain にも現れない", () => {
+      const s = createRemarkSettler();
+      s.partial(partial("相手", 10, 12, "あ。"), 0);
+      s.partial(partial("自分", 20, 22, "い。"), 0);
+
+      expect(brief(s.due(S))).toEqual([["相手", 10, 12, "あ。"]]);
+      expect(s.due(T * 10)).toEqual([]);
+      expect(s.drain()).toEqual([]);
+
+      const mine = createRemarkSettler();
+      mine.partial(partial("自分", 20, 22, "い。"), 0);
+      expect(mine.nextDue()).toBeUndefined();
+      expect(mine.due(S)).toEqual([]);
+      expect(mine.drain()).toEqual([]);
+    });
+  });
+
+  describe("words（Issue #639）の契約を、文の終わりで出す発言にも当てはめる", () => {
+    it("出す本文に収まる語だけが付き、位置と長さが本文に合う。後で T の規則で出す残りの words も合う", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 15, "あいう。え", wordsOf("あい", "う。", "え")), 0);
+
+      const first = s.due(S);
+      expect(texts(first)).toEqual(["あいう。"]);
+      expect(wordsOfRemark(first[0])).toEqual(wordsOf("あい", "う。"));
+      expectWordsFitText(first[0]);
+
+      const rest = s.due(T);
+      expect(texts(rest)).toEqual(["え"]);
+      expect(wordsOfRemark(rest[0])).toEqual([w("え", 0)]);
+      expectWordsFitText(rest[0]);
+    });
+
+    it("切る位置をまたぐ語は落ちる", () => {
+      const s = createRemarkSettler();
+      s.partial(partialW("相手", 10, 15, "あいう。え", wordsOf("あ", "い", "う。え")), 0);
+
+      const out = s.due(S);
+      expect(texts(out)).toEqual(["あいう。"]);
+      expect(wordsOfRemark(out[0])).toEqual(wordsOf("あ", "い"));
+      expectWordsFitText(out[0]);
+    });
+
+    it("words の無い途中結果から作る発言には words のキーが無い", () => {
+      const s = createRemarkSettler();
+      s.partial(pt("あいう。え"), 0);
+
+      expect(s.due(S)[0]).not.toHaveProperty("words");
     });
   });
 });
