@@ -1,6 +1,6 @@
 // Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
-import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type PreviousResponse, type Remark } from "./core/index.ts";
 
 // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
@@ -184,7 +184,8 @@ function surfacedIds(prev: MeetingMap, cur: MeetingMap): Set<string> {
 }
 
 // ノードごとの行。追加、または 更新 → 移動 → 畳んだ中から出た の順
-function nodeChangeLines(prev: MeetingMap, cur: MeetingMap): string[] {
+// refIds は、前回の応答で作られたノードの n の ID → その応答での仮 ID。追加の行に添える
+function nodeChangeLines(prev: MeetingMap, cur: MeetingMap, refIds: ReadonlyMap<string, string>): string[] {
   const surfaced = surfacedIds(prev, cur);
   // 祖先が出るなら、子孫はその中身に含まれる
   const hasSurfacedAncestor = (id: string) => {
@@ -196,7 +197,8 @@ function nodeChangeLines(prev: MeetingMap, cur: MeetingMap): string[] {
     const n = cur.nodes[id]!;
     const old = prev.nodes[id];
     if (!old) {
-      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）`);
+      const ref = refIds.get(id);
+      lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）${ref === undefined ? "" : `（前回の応答の仮 id ${ref}）`}`);
       continue;
     }
     const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.due !== old.due
@@ -232,10 +234,16 @@ function talkStatusLines(prev: MeetingMap, cur: MeetingMap): string[] {
   return lines;
 }
 
-// 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、適用できなかった操作は出ない
-function renderChanges(prev: MeetingMap, cur: MeetingMap): string {
-  const lines = [...removedLines(prev, cur), ...nodeChangeLines(prev, cur), ...talkStatusLines(prev, cur)];
-  return lines.length ? lines.join("\n") : "（変更なし）";
+// 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、変更の行には適用できなかった操作は出ない。
+// 前回の応答で捨てた操作は、末尾の節に JSON と理由を 1 行ずつ出す（無ければ節ごと出さない）
+function renderChanges(prev: MeetingMap, cur: MeetingMap, previousResponse?: PreviousResponse): string {
+  const refIds = new Map(Object.entries(previousResponse?.refs ?? {}).map(([ref, id]) => [id, ref]));
+  const lines = [...removedLines(prev, cur), ...nodeChangeLines(prev, cur, refIds), ...talkStatusLines(prev, cur)];
+  const dropped = previousResponse?.dropped ?? [];
+  return [
+    lines.length ? lines.join("\n") : "（変更なし）",
+    ...(dropped.length ? ["### 前回の応答で捨てた操作", ...dropped.map((d) => `- ${JSON.stringify(d.op)}（理由: ${d.reason}）`)] : []),
+  ].join("\n");
 }
 
 // 計測では除く論点の配下でも、子の議題の表示は残すので探索を分ける。
@@ -316,11 +324,12 @@ function renderTopicList(map: MeetingMap): string {
 }
 
 // previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
-export function buildPrompt({ map, recent, fresh }: DiffInput, previous?: MeetingMap): string {
+// 前回の応答の仮 ID と捨てた操作（previousResponse）は、変更を載せる回にだけ出す
+export function buildPrompt({ map, recent, fresh, previousResponse }: DiffInput, previous?: MeetingMap): string {
   return [
     renderTopicList(map), "",
     ...(previous
-      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map)]
+      ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map, previousResponse)]
       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
     "## 新しい発言", fresh.map(fmtRemark).join("\n"),

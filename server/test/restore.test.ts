@@ -687,3 +687,42 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       expect(Object.keys(cont.calls[0]!).sort()).toEqual(["fresh", "map", "recent"]);
     }));
 });
+
+describe("復元して続けた差分更新の入力: 前回の応答", () => {
+  const failure = (message: string): UpdateFailure => ({ _tag: "UpdateFailed", message });
+
+  const continued = (events: LogEvent[], next: Remark) =>
+    Effect.gen(function* () {
+      const cont = scripted([]);
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), silentLog)));
+      yield* restored.push(next);
+      yield* restored.idle;
+      return cont.calls;
+    });
+
+  it.effect("最後の差分更新が成功したログから続けると、その応答の対応と捨てた操作が入力に載り、元のセッションの続きと一致する", () =>
+    Effect.gen(function* () {
+      const p = [remark("一"), remark("二"), remark("三")];
+      const dropOp: Op = { op: "add", ref: "u9", parent: "n99", kind: "課題", text: "親が無い", evidence: [p[0]!.id] };
+      const first: Op[] = [{ op: "add", ref: "u1", parent: "root", kind: "議題", text: "採用", evidence: [p[0]!.id] }, dropOp];
+      const { calls, events } = yield* playBatches([[p[0]!], [p[1]!, p[2]!]], [first, []]);
+      const secondDiff = events.findIndex((e, i) => e.type === "diff" && events.slice(0, i).some((x) => x.type === "diff"));
+      const logged = events.slice(0, secondDiff).filter((e) => !(e.type === "remark" && e.remark.id === p[2]!.id));
+
+      const got = yield* continued(logged, p[2]!);
+      expect(got[0]!.previousResponse).toEqual({ refs: { u1: "n1" }, dropped: [{ op: dropOp, reason: "親が存在しない" }] });
+      expect(got[0]).toEqual(calls[1]);
+    }));
+
+  it.effect("最後の差分更新が失敗したログから続けると、続きの入力に前回の応答は載らない", () =>
+    Effect.gen(function* () {
+      const p = [remark("一"), remark("二"), remark("三")];
+      const { events } = yield* playBatches(
+        [[p[0]!], [p[1]!]],
+        [[{ op: "add", ref: "u1", parent: "root", kind: "議題", text: "採用", evidence: [p[0]!.id] }], failure("timeout")],
+      );
+      const got = yield* continued(events, p[2]!);
+      expect(got).toHaveLength(1);
+      expect("previousResponse" in got[0]!).toBe(false);
+    }));
+});

@@ -280,4 +280,35 @@ describe("同じSessionでの一時停止と再開", () => {
     expect(yield* restored.unreflectedRemarks).toEqual([]);
     expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
   }));
+
+  it.effect("対応と捨てた操作を持つ成功の後に利用上限で止まると、再試行の入力にも、止まったログから復元した状態にも、前回の応答は載らない", () => Effect.gen(function* () {
+    const failure = yield* rateLimitFailure;
+    const events: LogEvent[] = [];
+    const calls: DiffInput[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      updaterLayer((input) => Effect.suspend(() => {
+        calls.push(input);
+        if (calls.length === 2) return Effect.fail(failure);
+        return Effect.succeed({ ops: calls.length === 1
+          ? [
+            { op: "add" as const, ref: "u1", parent: "root", kind: "議題" as const, text: "採用", evidence: ["r1"] },
+            { op: "add" as const, ref: "u2", parent: "n99", kind: "課題" as const, text: "親が無い", evidence: ["r1"] },
+          ]
+          : [] });
+      })), collectLog(events),
+    )));
+    yield* session.push(remark(1));
+    yield* session.idle;
+    yield* session.push(remark(2));
+    yield* session.idle;
+    // 2 回目の入力には 1 回目の応答が載り、その回が利用上限で止まる
+    expect(calls[1]!.previousResponse?.refs).toEqual({ u1: "n1" });
+    expect(calls[1]!.previousResponse?.dropped.map((d) => d.reason)).toEqual(["親が存在しない"]);
+    const restoredState = yield* restoreState(events.map((e) => JSON.parse(JSON.stringify(e)) as unknown));
+    expect(restoredState.previousResponse).toBeUndefined();
+    yield* TestClock.adjust(FIVE_MINUTES);
+    yield* settleUntil(() => calls.length === 3);
+    yield* session.idle;
+    expect("previousResponse" in calls[2]!).toBe(false);
+  }));
 });
