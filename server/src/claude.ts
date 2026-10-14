@@ -28,6 +28,20 @@ function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
 // 14 は、計測（#75）で品質を確かめた最長の回数
 export const QUERY_RENEW_CALLS = 14;
 
+// Haiku 5.5 のときだけ SYSTEM の末尾に足す念押し（#719）
+const HAIKU_DECISION_APPEND = [
+  "# 念押し（必ず守る）",
+  "## 決定を TODO で置き換えない",
+  "- 合意した内容（「〜してもらう」「〜を絞る」「〜にする」）は、論点の子の決定にする。合意に担当者の作業が付いていても、決定を TODO で済ませない。",
+  "- その作業は、決定とは別に TODO として add する。決定と TODO の両方を残す。",
+].join("\n");
+
+// モデル名ごとの調整はここだけで決める（#615/#656/#686/#719）。設定の項目にはしない。
+export const claudeTuning = (model: string): { readonly effort: "low" | "medium"; readonly systemAppend: string } =>
+  model === "claude-haiku-5-5"
+    ? { effort: "low", systemAppend: HAIKU_DECISION_APPEND }
+    : { effort: "medium", systemAppend: "" };
+
 // Agent SDK の query。テストでは偽物の Layer に替える
 export class AgentSdk extends Context.Service<AgentSdk, {
   readonly query: typeof import("@anthropic-ai/claude-agent-sdk")["query"];
@@ -75,6 +89,9 @@ export const layerClaude = (model: string) => Layer.effect(
   DiffUpdater,
   Effect.gen(function* () {
     const sdk = yield* AgentSdk;
+    // 調整は初期化で一度だけ決める。query を開き直しても同じ値になる
+    const tuning = claudeTuning(model);
+    const diffSystem = tuning.systemAppend ? `${SYSTEM}\n\n${tuning.systemAppend}` : SYSTEM;
     const sessionScope = yield* Scope.Scope;
     const current = yield* Ref.make(Option.none<Open>());
     const closed = yield* Ref.make(false);
@@ -88,7 +105,7 @@ export const layerClaude = (model: string) => Layer.effect(
           try: () => sdk.query({
             prompt: Stream.toAsyncIterable(Stream.fromQueue(input)),
             options: {
-              model, systemPrompt,
+              model, systemPrompt, effort: tuning.effort,
               tools: [], settingSources: [], persistSession: false, maxTurns: 4,
               mcpServers: {}, strictMcpConfig: true, plugins: [], skills: [], agents: {},
               outputFormat: { type: "json_schema", schema },
@@ -104,7 +121,7 @@ export const layerClaude = (model: string) => Layer.effect(
 
     const open = Effect.gen(function* () {
       const scope = yield* Scope.fork(sessionScope, "sequential");
-      return yield* acquireQuery(SYSTEM, OUTPUT_SCHEMA).pipe(
+      return yield* acquireQuery(diffSystem, OUTPUT_SCHEMA).pipe(
         Effect.map((q): Open => ({ scope, ...q, calls: 0 })),
         Scope.provide(scope),
         Effect.tapError(() => Scope.close(scope, Exit.void)),
