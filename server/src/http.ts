@@ -2,6 +2,8 @@
 // タグ付きの失敗からステータスへの対応表・失敗から応答への変換を、この 1 か所に置く。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
 //   POST /session/start   { app, title?, audio?, screen? } でセッションを開始する
+//   POST /session/recorded { file, title?, vocab?, model? } で、音声 1 本から録画からのセッションを始める。応答は NDJSON の stream
+//                         （started → progress... → finished。読み終えるか stop されると finished で終わる）。ライブの最中は 409
 //   POST /session/stop    セッションを終了し、書き出したパスを返す
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
@@ -22,9 +24,9 @@ import { WebSocket } from "ws";
 import { Cause, Context, Effect, Layer, Option, Ref, Schema, Stream, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
-import { SHARE_OPEN_OUTCOME_HEADER, ShareMail } from "./core/index.ts";
+import { SHARE_OPEN_OUTCOME_HEADER, ShareMail, type RecordedEvent } from "./core/index.ts";
 import type { SessionFailure } from "./sessionFailure.ts";
-import { Sessions, type SessionStart } from "./sessions.ts";
+import { Sessions, type RecordedStart, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import type { CloudflaredMissing } from "./tunnel.ts";
 import { ViewingShare, ShareOpenFailed, ShareRefusedLocalMode, ShareScopeEmpty, type ViewingPort } from "./viewingShare.ts";
@@ -56,6 +58,14 @@ const SessionStartBody = Schema.Struct({
   vocab: Schema.optionalKey(Schema.Array(Schema.String)), // 利用者が足した語（cli start --vocab）。1 語ずつ
   model: Schema.optionalKey(TransferredModel),
   judge: Schema.optionalKey(TransferredJudge), // 開始時に決めた判定のモデル（cli start）。鍵は送らず、環境変数の名前だけを送る
+});
+
+// /session/recorded の本文。file は録画の音声の絶対パス（CLI が解決して渡す）。title・vocab・model は /session/start と同じ意味
+const SessionRecordedBody = Schema.Struct({
+  file: Schema.NonEmptyString,
+  title: Schema.optional(Schema.NullOr(Schema.String)),
+  vocab: Schema.optionalKey(Schema.Array(Schema.String)),
+  model: Schema.optionalKey(TransferredModel),
 });
 
 const toSessionStart = (body: typeof SessionStartBody["Type"], model: SessionStart["model"]): SessionStart => ({
@@ -104,6 +114,7 @@ const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   SessionTransition: 409,
   NoSession: 409,
   IntakeNotStopped: 409,
+  NotForRecordedSession: 409,
   Aborted: 503,
   RestartGaveUp: 503,
   HelperExited: 500,
@@ -135,20 +146,46 @@ const OriginRestriction = HttpRouter.middleware((httpEffect) =>
     return yield* httpEffect;
   }), { global: true });
 
-const startSession = Effect.gen(function* () {
-  const body = yield* HttpServerRequest.schemaBodyJson(SessionStartBody).pipe(
-    Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
-  );
-  const result = acceptTransferredModel(body.model ?? defaultClaude);
+// 本文のモデルを検証して実行できる形にする。互換モデルは、転送用トークンが合うときだけ受ける（/session/start と /session/recorded が共有する）
+const acceptBodyModel = Effect.fnUntraced(function* (model: typeof TransferredModel["Type"] | undefined, withJudge = false) {
+  const result = acceptTransferredModel(model ?? defaultClaude);
   if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
   // 判定は環境変数の鍵を、本文で指定できる url へ送る。互換モデルと同じ危険があるので、転送用トークンを求める
-  if (body.model?.route === "openai-compatible" || body.model?.route === "chatgpt" || body.judge !== undefined) {
+  if (model?.route === "openai-compatible" || model?.route === "chatgpt" || withJudge) {
     const token = yield* ModelTransferToken;
     const request = yield* HttpServerRequest.HttpServerRequest;
     if (!matchesModelTransferToken(token, request.headers[MODEL_TRANSFER_HEADER])) return yield* new ForbiddenModelTransfer();
   }
+  return result.model;
+});
+
+// セッションを始める本文を読み、そのモデルを検証する。本文が違えば 400
+const acceptedBody = Effect.fnUntraced(function* <A extends { readonly model?: typeof TransferredModel["Type"]; readonly judge?: unknown }, R>(
+  decode: Effect.Effect<A, { readonly message: string }, R>,
+) {
+  const body = yield* decode.pipe(Effect.mapError((failure) => new InvalidBody({ detail: failure.message })));
+  return { body, model: yield* acceptBodyModel(body.model, body.judge !== undefined) };
+});
+
+const startSession = Effect.gen(function* () {
+  const { body, model } = yield* acceptedBody(HttpServerRequest.schemaBodyJson(SessionStartBody));
   const sessions = yield* Sessions;
-  return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body, result.model)));
+  return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body, model)));
+});
+
+// 録画からのセッション。始められたら NDJSON の stream で経過を流す。始められなかったら（ライブの最中など）通常の失敗の応答
+const startRecordedSession = Effect.gen(function* () {
+  const { body, model } = yield* acceptedBody(HttpServerRequest.schemaBodyJson(SessionRecordedBody));
+  const sessions = yield* Sessions;
+  const input: RecordedStart = { file: body.file, title: body.title ?? undefined, vocab: body.vocab ?? [], model };
+  const { dir, warnings, events } = yield* sessions.startRecorded(input);
+  return HttpServerResponse.stream(
+    Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(
+      Stream.map((event) => JSON.stringify(event) + "\n"),
+      Stream.encodeText,
+    ),
+    { contentType: "application/x-ndjson" },
+  );
 });
 
 // ブラウザへの配信。`/ws`（ブラウザ）と `/`（既存のテスト・Vite の proxy の書き換え先）を同じ Viewers で受ける。
@@ -180,6 +217,7 @@ const SessionRoutes = HttpRouter.addAll([
     return HttpServerResponse.jsonUnsafe(yield* sessions.apps);
   })),
   HttpRouter.route("POST", "/session/start", startSession),
+  HttpRouter.route("POST", "/session/recorded", startRecordedSession),
   HttpRouter.route("POST", "/session/stop", Effect.gen(function* () {
     const sessions = yield* Sessions;
     return HttpServerResponse.jsonUnsafe(yield* sessions.stop);

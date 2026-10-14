@@ -61,6 +61,8 @@ public enum HelperEvent: Sendable, Equatable {
     case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
     /// 話者分離が使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続ける。`start` は `origin` と同じ原点からの秒。
     case speakerOff(start: Double, reason: SpeakerOffReason)
+    /// 録画の文字起こし（`transcribe-file`）が最初に流す、ファイルの音声の全体の長さ（秒）。サーバーが進み具合の「全体」に使う。
+    case fileDuration(duration: Double)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -77,7 +79,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final
+        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration
         case manual, basis, lastKnown, idleFor
     }
 
@@ -147,6 +149,9 @@ extension HelperEvent: Encodable {
             try container.encode("speaker-off", forKey: .type)
             try container.encode(start, forKey: .start)
             try container.encode(reason.rawValue, forKey: .reason)
+        case let .fileDuration(duration):
+            try container.encode("file-duration", forKey: .type)
+            try container.encode(duration, forKey: .duration)
         }
     }
 }

@@ -29,6 +29,13 @@ export class IntakeNotStopped extends Schema.TaggedError<IntakeNotStopped>()("In
   }
 }
 
+// 録画からのセッション（cli recorded）では使えない操作（resume・自分の休止）。ヘルパーは起動し直さない
+export class NotForRecordedSession extends Schema.TaggedError<NotForRecordedSession>()("NotForRecordedSession", {}) {
+  override get message(): string {
+    return "録画からのセッションでは使えません";
+  }
+}
+
 // stop・サーバーの終了に中断された（起動・起動し直し自体は成立していない）
 export class Aborted extends Schema.TaggedError<Aborted>()("Aborted", {}) {
   override get message(): string {
@@ -57,4 +64,4 @@ export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExit
   }
 }
 
-export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed;
+export type SessionFailure = SessionBusy | SessionTransition | NoSession | IntakeNotStopped | NotForRecordedSession | Aborted | RestartGaveUp | HelperExited | UpdaterUnavailable | StartupDepsMissing | ManagedDepsFailed;

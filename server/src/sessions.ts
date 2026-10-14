@@ -10,12 +10,13 @@
 // ヘルパーを止め、ヘルパーが終われば読み取りがほどける。stop は起動し直しのループの終わりを Fiber.join で待ってから書き出す。
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
-import { Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
+import { Cause, Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
 import {
   CONFIGURATION_CHANGE_WINDOW_MS,
   decideIntakeRestart,
   decodeHelperEvent,
   MAX_CONFIGURATION_CHANGES,
+  type RecordedEvent,
   SCREEN_NOTICE_MS,
   SCREEN_NOTICE_TEXT,
   INITIAL_SELF_PAUSE_STATE,
@@ -33,6 +34,7 @@ import {
   HelperExited,
   IntakeNotStopped,
   NoSession,
+  NotForRecordedSession,
   RestartGaveUp,
   SessionBusy,
   SessionTransition,
@@ -47,6 +49,9 @@ import type { CheckReport } from "./managedDepsProtocol.ts";
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
 // vocab は利用者が足した語（cli start --vocab。1 語ずつ。足さなければ空）。開始のときにだけ受け取る
 export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel; judge?: import("./judgeSelection.ts").JudgeModel };
+
+// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味
+export type RecordedStart = { file: string; title: string | undefined; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -93,19 +98,44 @@ type Live = {
   selfPauseLink: SynchronizedRef.SynchronizedRef<SelfPauseLink>; // 休止の指示の送り先。送信と切り替えを 1 つずつ行う
 };
 
-type State = { kind: "idle"; installations: number } | { kind: "starting" } | { kind: "live"; live: Live } | { kind: "stopping" };
+// セッションに入れた位置（秒）・録画の全体の長さ（届く前は null）・マップの更新回数
+type RecordedProgressState = { position: number; duration: number | null; rounds: number };
+
+// 録画からのセッション。ヘルパーは 1 回だけ起動し、起動し直さない。ヘルパーに依らない状態は持たない
+type Recorded = {
+  model: RecordedStart["model"];
+  dir: string;
+  sink: SessionSink;
+  scope: Scope.Closeable; // セッションの Scope。サーバーの Scope の子
+  stopRequested: Deferred.Deferred<void>; // 「止めて」の印
+  run: Ref.Ref<Fiber.Fiber<void> | undefined>; // ヘルパーの出力を読む fiber
+  events: Queue.Queue<RecordedEvent, Cause.Done>; // 開始の応答の stream へ流す進み具合・終わり
+  progress: Ref.Ref<RecordedProgressState>;
+};
+
+type State =
+  | { kind: "idle"; installations: number }
+  | { kind: "starting" }
+  | { kind: "live"; live: Live }
+  | { kind: "recorded"; recorded: Recorded }
+  | { kind: "stopping" };
+
+// 開始の応答で返す、録画からのセッションの経過。events は進み具合から終わりまで（finished の後に閉じる）
+export type RecordedRun = { dir: string; warnings: ReadonlyArray<string>; events: Stream.Stream<RecordedEvent> };
 
 export class Sessions extends Context.Service<Sessions, {
   apps: Effect.Effect<unknown>;
   start: (input: SessionStart) => Effect.Effect<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure>;
+  // 録画からのセッションを始める。ヘルパーが読み終えるか stop されるまで続き、その経過を events で流す
+  startRecorded: (input: RecordedStart) => Effect.Effect<RecordedRun, SessionFailure>;
   stop: Effect.Effect<{ paths: string[] }, SessionFailure>;
   status: Effect.Effect<IntakeStatusReport>;
   resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
   checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
   reserveDeps: Effect.Effect<void, SessionFailure, Scope.Scope>;
-  // いま live なセッションの Scope（閲覧の共有の寿命をセッションに結ぶ）と、ローカルモードかどうか。live でなければ失敗する
+  // いま進行中のセッション（ライブ・録画から）の Scope（閲覧の共有の寿命をセッションに結ぶ）と、ローカルモードかどうか。無ければ失敗する
   liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure>;
-  // 自分の休止・再開を求める（paused が求める状態。Issue #1069）。いま接続している helper へ指示を送る。live でなければ失敗する
+  // 自分の休止・再開を求める（paused が求める状態。Issue #1069）。いま接続している helper へ指示を送る。live でなければ失敗する（録画からのセッションは NotForRecordedSession）
   setSelfPause: (paused: boolean) => Effect.Effect<void, SessionFailure>;
 }>()("live-mindmap/server/Sessions") {
   static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
@@ -122,7 +152,7 @@ export class Sessions extends Context.Service<Sessions, {
           const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
             current.kind === "idle"
               ? [Option.none(), { kind: "idle", installations: current.installations + 1 }]
-              : [Option.some(current.kind === "live" ? new SessionBusy() : new SessionTransition()), current]);
+              : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current]);
           if (Option.isSome(refusal)) return yield* refusal.value;
         }),
         () => Ref.update(state, (current): State => current.kind === "idle" ? { kind: "idle", installations: current.installations - 1 } : current),
@@ -238,6 +268,9 @@ export class Sessions extends Context.Service<Sessions, {
             const { type: _type, ...state } = event;
             return Ref.set(live.selfPauseState, state);
           }
+          case "file-duration":
+            // 録画の文字起こしだけが流す。ライブのヘルパーは流さないので、何もしない
+            return Effect.void;
           case "speaker":
           case "speaker-off":
             // 話者の区間は、このチケットでは発言・字幕・差分更新に使わない。受け取った値のまま、届いた順に log.jsonl へ残すだけ
@@ -257,15 +290,16 @@ export class Sessions extends Context.Service<Sessions, {
         );
       });
 
-      const handleEvent = (live: Live) => (data: string) =>
+      const handleEventWith = (apply: (event: HelperEvent) => Effect.Effect<void>) => (data: string) =>
         decodeHelperEvent(data).pipe(
           Effect.map((decoded) => (decoded.kind === "unknown" ? undefined : decoded.event)),
           Effect.catchTag("SchemaError", (error) => Effect.as(skipped(error.message), undefined)),
           Effect.catchDefect((defect) => Effect.as(skipped(defectReason(defect)), undefined)),
           Effect.flatMap((event) =>
-            event === undefined ? Effect.void : applyEvent(live, event).pipe(Effect.catchDefect((defect) => applyFailed(defectReason(defect)))),
+            event === undefined ? Effect.void : apply(event).pipe(Effect.catchDefect((defect) => applyFailed(defectReason(defect)))),
           ),
         );
+      const handleEvent = (live: Live) => handleEventWith((event) => applyEvent(live, event));
 
       // 接続済みのヘルパー 1 回分を、終わるまで読む。ヘルパーが終われば接続が閉じて読み取りが終わり、
       // 標準エラーを読み終えた終わり方が確定する。終わったら 1 回分の Scope を閉じる
@@ -432,7 +466,7 @@ export class Sessions extends Context.Service<Sessions, {
         const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
           current.kind === "idle" && current.installations === 0
             ? [Option.none(), { kind: "starting" }]
-            : [Option.some(current.kind === "live" ? new SessionBusy() : new SessionTransition()), current],
+            : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current],
         );
         if (Option.isSome(refusal)) return yield* refusal.value;
         return yield* begin(input).pipe(
@@ -440,52 +474,180 @@ export class Sessions extends Context.Service<Sessions, {
         );
       });
 
+      // セッションを閉じて idle に戻す（ライブの stop と録画からのセッションの終わりが共有する）。
+      // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
+      const closeSession = (sink: SessionSink, scope: Scope.Closeable) =>
+        Effect.gen(function* () {
+          yield* sink.stopRelays;
+          // session.flush() で最後の差分更新が終わっているので、ここで閉じる（updater・ヘルパーの後始末）
+          yield* Scope.close(scope, Exit.void);
+          // 接続中のクライアントにも、途切れ・止まったの一言を消すフレームを送る。status は "running" ではなく
+          // "none"（セッションが無い）にする。"running" だと、直前が interrupted/stopped だったクライアントが
+          // 「再開した」と解釈し、終わったセッションに「再開しました」が出てしまう（CT-NOTICE-CLEAR）
+          yield* intakeFrame("none");
+          // 相手の音声が届いていないことの一文も、セッションの終わりで消す
+          yield* viewers.tapNotice({ type: "tap-notice", text: null });
+          // 自分を休止中の一文も、セッションの終わりで消す
+          yield* viewers.selfPause({ type: "self-pause", paused: false });
+        }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 })));
+
+      // 録画の文字起こしのイベントを、セッションへつなぐ。話者は分けないので、使うのは発言・途中結果・全体の長さだけ
+      const publishProgress = ({ progress, events }: Pick<Recorded, "progress" | "events">) =>
+        Effect.flatMap(Ref.get(progress), (current) => Queue.offer(events, { type: "progress", ...current }));
+
+      const applyRecordedEvent = (recorded: Recorded, event: HelperEvent): Effect.Effect<void> => {
+        switch (event.type) {
+          case "remark": {
+            const { type: _type, ...settled } = event;
+            return recorded.sink.final(settled);
+          }
+          case "partial": {
+            const { type: _type, ...partial } = event;
+            return recorded.sink.partial(partial);
+          }
+          case "file-duration":
+            return Effect.andThen(Ref.update(recorded.progress, (p) => ({ ...p, duration: event.duration })), publishProgress(recorded));
+          default:
+            return Effect.void;
+        }
+      };
+
+      // イベント列を終え、セッションの Scope を閉じる。状態を recorded にした後の終わらせ方は、成功・失敗・中断のどれでも必ずここを通す
+      const closeRecorded = (recorded: Recorded) => Effect.andThen(Queue.end(recorded.events), closeSession(recorded.sink, recorded.scope));
+
+      // 書き出して終える。helperFailure があれば、終わりの知らせに載せる。終わらせる後始末（closeRecorded）は呼び出し側が付ける
+      const finishRecorded = (recorded: Recorded, failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) =>
+        Effect.gen(function* () {
+          yield* recorded.sink.flush;
+          const paths = yield* recorded.sink.exports;
+          yield* Queue.offer(recorded.events, { type: "finished", paths, ...(failure === undefined ? {} : { failure }) });
+          return { paths };
+        });
+
+      // ヘルパーの出力を、終わるまで読む。終わったら、止められていなければ（stop と取り合って先に取れたら）そこまでの分を入れ切って終える。
+      // 終わらせる本体は、セッションの Scope が閉じても続くよう、サーバーの Scope の fiber で動かす
+      const runRecorded = Effect.fnUntraced(function* (recorded: Recorded, attempt: HelperAttempt, attemptScope: Scope.Closeable) {
+        yield* Effect.forkIn(Effect.andThen(Deferred.await(recorded.stopRequested), attempt.stop), attemptScope);
+        yield* Stream.runForEach(attempt.events, handleEventWith((event) => applyRecordedEvent(recorded, event)));
+        const exit = yield* attempt.exit;
+        const stderrTail = yield* attempt.stderrTail;
+        // 1 回分の Scope（ヘルパーの停止）は、読み終えても閉じない。セッションの Scope が閉じるときに後始末される
+        if (yield* Deferred.isDone(recorded.stopRequested)) return;
+        const failed = exit.code !== 0;
+        if (failed) yield* note(`取り込みが止まった（${exit.code ?? exit.signal ?? "不明"}）\n`);
+        // 0 以外で終わっても、そこまでに文字にして届いた分は入れ切って終える。入れている間、状態は recorded のまま
+        // （status・share が効き、別のセッションは始められない）。入れ切る前に stop が状態を取れば、溜まりが捨てられて早く戻る
+        // 入れ切る途中で失敗（defect を含む）しても、所有権を取って後始末（イベント列を終える・Scope を閉じる・idle に戻す）まで進める
+        const drained = yield* Effect.exit(Effect.andThen(recorded.sink.drain, recorded.sink.finishBacklog));
+        const claimed = yield* Ref.modify(state, (current): [boolean, State] =>
+          current.kind === "recorded" && current.recorded === recorded ? [true, { kind: "stopping" }] : [false, current]);
+        if (!claimed) return;
+        const finishing = Exit.isFailure(drained)
+          ? Effect.andThen(note(`録画の取り込みの終了処理に失敗した: ${Cause.pretty(drained.cause)}\n`), Effect.failCause(drained.cause))
+          : finishRecorded(recorded, failed ? { code: exit.code, signal: exit.signal, stderrTail: [...stderrTail] } : undefined);
+        yield* Effect.forkIn(finishing.pipe(Effect.ensuring(closeRecorded(recorded))), serverScope);
+      });
+
+      const beginRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
+        const scope = yield* Scope.fork(serverScope, "sequential");
+        return yield* Effect.gen(function* () {
+          const warnings = yield* requireStartupDeps("recorded", input.model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+          const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const dir = yield* sinks.createDir(sessionsDir);
+          const stopRequested = yield* Deferred.make<void>();
+          const attemptScope = yield* Scope.fork(scope, "sequential");
+          const attempt = yield* helpers
+            .launch(["transcribe-file", "--file", input.file], stopRequested)
+            .pipe(
+              Scope.provide(attemptScope),
+              Effect.catchTag("HelperLaunchFailure", (failure) =>
+                Effect.fail(new HelperExited({ code: failure.exit?.code ?? null, signal: failure.exit?.signal ?? null, stderrTail: failure.stderrTail })),
+              ),
+            );
+          const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
+          const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
+          const sink = yield* sinks.open({
+            dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
+            recorded: {
+              progress: ({ position, rounds }) =>
+                Effect.andThen(
+                  Ref.update(progress, (p) => ({ ...p, position: Math.max(p.position, position), rounds })),
+                  publishProgress({ progress, events }),
+                ),
+            },
+          }).pipe(Scope.provide(scope));
+          if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
+          const recorded: Recorded = { model: input.model, dir, sink, scope, stopRequested, run: yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined), events, progress };
+          // 状態を recorded にしてから読み始める（ヘルパーがすぐ終わっても、終わらせる側が状態を取れるように）
+          const ready = yield* Deferred.make<void>();
+          const run = yield* Effect.forkIn(Effect.andThen(Deferred.await(ready), runRecorded(recorded, attempt, attemptScope)), scope);
+          yield* Ref.set(recorded.run, run);
+          yield* Ref.set(state, { kind: "recorded", recorded });
+          yield* Deferred.succeed(ready, undefined);
+          yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
+          yield* viewers.sessionMode({ type: "session-mode", local: input.model.local });
+          return { dir, warnings, events: Stream.fromQueue(events) };
+        }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
+      });
+
+      const startRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
+        const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
+          current.kind === "idle" && current.installations === 0
+            ? [Option.none(), { kind: "starting" }]
+            : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current],
+        );
+        if (Option.isSome(refusal)) return yield* refusal.value;
+        return yield* beginRecorded(input).pipe(
+          Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void)),
+        );
+      });
+
+      // 止めて書き出す。順番の要る停止（ヘルパーを止める → 読み終える → 書き出す）は本体に書き、
+      // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
+      const stopLive = (live: Live) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(live.stopRequested, undefined);
+          const fiber = yield* Ref.get(live.chain);
+          // 連鎖の終わりを待つ。close の前に届いた発言は、すべて読み終えて push 済みになる
+          const end = fiber === undefined ? { exit: undefined } : yield* Fiber.join(fiber);
+          if (end.exit?.signal === "SIGKILL") {
+            yield* note(`ヘルパーが SIGTERM から ${HELPER_STOP_TIMEOUT_MS}ms 経っても終了しないので、SIGKILL で止めます\n`);
+            if (live.audio) {
+              // その時点で動いていた起動回の録音ファイル名を示す。起動し直していれば相手-2.m4a 等になる
+              const names = live.sink.audioFileNames(yield* Ref.get(live.attempt)).join("・");
+              yield* note(`録音の書き終わりを確認できないまま、セッションを閉じます。${live.dir} の ${names} が不完全なことがあります\n`);
+            }
+          }
+          yield* live.sink.flush;
+          return { paths: yield* live.sink.exports };
+        }).pipe(Effect.ensuring(closeSession(live.sink, live.scope)));
+
+      // 録画からのセッションの stop。溜まっている発言は入れず、入れている途中の 1 件だけ入れ終えて、そこまでの分で書き出す
+      const stopRecorded = (recorded: Recorded) =>
+        Effect.gen(function* () {
+          // 溜まりを捨ててから止めの印を立てる（印で差分更新の待ちがほどけても、次の発言を取らせない）
+          yield* recorded.sink.discardBacklog;
+          yield* Deferred.succeed(recorded.stopRequested, undefined);
+          const fiber = yield* Ref.get(recorded.run);
+          if (fiber !== undefined) yield* Fiber.join(fiber);
+          yield* recorded.sink.finishBacklog;
+          return yield* finishRecorded(recorded, undefined);
+        }).pipe(Effect.ensuring(closeRecorded(recorded)));
+
       // 止めて書き出す。順番の要る停止（ヘルパーを止める → 読み終える → 書き出す）は本体に書き、
       // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
       const stop = Effect.uninterruptible(
         Effect.gen(function* () {
-          const claimed = yield* Ref.modify(state, (current): [Result.Result<Live, SessionFailure>, State] =>
-            current.kind === "live"
-              ? [Result.succeed(current.live), { kind: "stopping" }]
+          const claimed = yield* Ref.modify(state, (current): [Result.Result<Extract<State, { kind: "live" | "recorded" }>, SessionFailure>, State] =>
+            current.kind === "live" || current.kind === "recorded"
+              ? [Result.succeed(current), { kind: "stopping" }]
               : [Result.fail(current.kind === "idle" ? new NoSession() : new SessionTransition()), current],
           );
           if (Result.isFailure(claimed)) return yield* claimed.failure;
-          const live = claimed.success;
+          const target = claimed.success;
           // 本体は呼び出し側（HTTP 要求の fiber）ではなくサーバーの Scope の fiber で動かす。要求の切断で呼び出し側が
           // 中断されても、読み終える・書き出す・状態を idle に戻すまで続ける。中断はサーバーの終了（serverScope を閉じる）だけ
-          const body = Effect.gen(function* () {
-            yield* Deferred.succeed(live.stopRequested, undefined);
-            const fiber = yield* Ref.get(live.chain);
-            // 連鎖の終わりを待つ。close の前に届いた発言は、すべて読み終えて push 済みになる
-            const end = fiber === undefined ? { exit: undefined } : yield* Fiber.join(fiber);
-            if (end.exit?.signal === "SIGKILL") {
-              yield* note(`ヘルパーが SIGTERM から ${HELPER_STOP_TIMEOUT_MS}ms 経っても終了しないので、SIGKILL で止めます\n`);
-              if (live.audio) {
-                // その時点で動いていた起動回の録音ファイル名を示す。起動し直していれば相手-2.m4a 等になる
-                const names = live.sink.audioFileNames(yield* Ref.get(live.attempt)).join("・");
-                yield* note(`録音の書き終わりを確認できないまま、セッションを閉じます。${live.dir} の ${names} が不完全なことがあります\n`);
-              }
-            }
-            yield* live.sink.flush;
-            return { paths: yield* live.sink.exports };
-          }).pipe(
-            Effect.ensuring(
-              Effect.gen(function* () {
-                // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
-                yield* live.sink.stopRelays;
-                // session.flush() で最後の差分更新が終わっているので、ここで閉じる（updater・ヘルパーの後始末）
-                yield* Scope.close(live.scope, Exit.void);
-                // 接続中のクライアントにも、途切れ・止まったの一言を消すフレームを送る。status は "running" ではなく
-                // "none"（セッションが無い）にする。"running" だと、直前が interrupted/stopped だったクライアントが
-                // 「再開した」と解釈し、終わったセッションに「再開しました」が出てしまう（CT-NOTICE-CLEAR）
-                yield* intakeFrame("none");
-                // 相手の音声が届いていないことの一文も、セッションの終わりで消す
-                yield* viewers.tapNotice({ type: "tap-notice", text: null });
-                // 自分を休止中の一文も、セッションの終わりで消す
-                yield* viewers.selfPause({ type: "self-pause", paused: false });
-              }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 }))),
-            ),
-          );
+          const body = target.kind === "live" ? stopLive(target.live) : stopRecorded(target.recorded);
           const running = yield* Effect.forkIn(Effect.interruptible(body), serverScope);
           return yield* Effect.interruptible(Fiber.join(running));
         }),
@@ -494,6 +656,7 @@ export class Sessions extends Context.Service<Sessions, {
       // 応答は、起動し直しの連鎖が実際に到達した状態（RestartOutcome）から作る
       const resume = Effect.gen(function* () {
         const current = yield* Ref.get(state);
+        if (current.kind === "recorded") return yield* new NotForRecordedSession();
         if (current.kind !== "live") return yield* new NoSession();
         const { live } = current;
         if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
@@ -517,12 +680,15 @@ export class Sessions extends Context.Service<Sessions, {
 
       const checkResume = Effect.gen(function* () {
         const current = yield* Ref.get(state);
+        if (current.kind === "recorded") return yield* new NotForRecordedSession();
         if (current.kind !== "live") return yield* new NoSession();
         return yield* checkManagedDeps("resume", current.live.model.route, { screen: current.live.screen, check: current.live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
       });
 
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
+        // 録画からのセッションは、ヘルパーが読み終えるまで動いていて、途切れも起動し直しもない
+        if (current.kind === "recorded") return { status: "running", dir: current.recorded.dir, restarts: 0, lastInterruptedAt: undefined };
         if (current.kind !== "live") return { status: "none" };
         const { live } = current;
         return {
@@ -536,6 +702,7 @@ export class Sessions extends Context.Service<Sessions, {
       const liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         if (current.kind === "live") return { scope: current.live.scope, local: current.live.model.local };
+        if (current.kind === "recorded") return { scope: current.recorded.scope, local: current.recorded.model.local };
         return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
       });
 
@@ -545,12 +712,13 @@ export class Sessions extends Context.Service<Sessions, {
       const setSelfPause = (paused: boolean): Effect.Effect<void, SessionFailure> =>
         Effect.gen(function* () {
           const current = yield* Ref.get(state);
+          if (current.kind === "recorded") return yield* new NotForRecordedSession();
           if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
           yield* SynchronizedRef.updateEffect(current.live.selfPauseLink, (link): Effect.Effect<SelfPauseLink> =>
             link.kind === "connected" ? Effect.as(link.attempt.send(paused), link) : Effect.succeed({ kind: "waiting", pending: paused }));
         });
 
-      return Sessions.of({ apps: helpers.apps, start, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause });
+      return Sessions.of({ apps: helpers.apps, start, startRecorded, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause });
     }),
   );
 }

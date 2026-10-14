@@ -20,6 +20,19 @@ private func receiveText(_ task: URLSessionWebSocketTask) async throws -> String
 
 private enum WebSocketTestError: Error { case binaryFrame }
 
+/// 別 Task で動く待ちが終わったかを、期限付きで確かめるための印
+private actor Completion {
+    private(set) var done = false
+    func mark() { done = true }
+
+    /// 終わるまで、最大 `seconds` 秒待つ。終われば true
+    func finishes(within seconds: Double) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(seconds)
+        while !done, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        return done
+    }
+}
+
 @Suite("localhost の WebSocket", .timeLimit(.minutes(1)))
 struct WebSocketServerITTests {
     @Test("接続したクライアントが broadcast したテキストをテキストフレームで受け取る")
@@ -261,5 +274,34 @@ struct WebSocketServerITTests {
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
         #expect(try await receiveText(task) == resumed)
+    }
+
+    @Test("stop の後は、遅れて届く送信完了の通知があっても、waitUntilSent がすぐ戻る。stop の前は、送り終わるまで戻らない")
+    func waitUntilSentReturnsAfterStop() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+
+        // 受信を呼ばないクライアントに大きなフレームを送ると、送信が終わらないまま残る
+        let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+        await server.broadcast(String(repeating: "x", count: 64_000_000))
+
+        let beforeStop = Completion()
+        Task { await server.waitUntilSent(); await beforeStop.mark() }
+        // 前提: stop の前は、送り終わるまで戻らない（送信が残っていなければ、このテストは無効）
+        #expect(await beforeStop.finishes(within: 0.5) == false)
+
+        // stop は接続を cancel する。送りかけのフレームの完了通知は、その後に遅れて届く
+        await server.stop()
+        #expect(await beforeStop.finishes(within: 5))
+        for _ in 0..<3 {
+            let afterStop = Completion()
+            Task { await server.waitUntilSent(); await afterStop.mark() }
+            #expect(await afterStop.finishes(within: 5))
+            try await Task.sleep(for: .milliseconds(200))
+        }
     }
 }

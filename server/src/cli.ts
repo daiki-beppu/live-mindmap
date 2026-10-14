@@ -37,7 +37,9 @@ import {
   fromTranscript,
   JsonExport,
   LogEvent,
+  RecordedEvent,
   RemarkEvent,
+  formatRecordedProgress,
   ScreenEvent,
   ScreenOffEvent,
   StartEvent,
@@ -274,6 +276,22 @@ const requestServer = Effect.fnUntraced(function* <A>(
   const response = yield* executeServerRequest(port, method, path, body, headers);
   return yield* decodeServerBody(response, schema);
 });
+
+// 常駐サーバーが NDJSON で流す経過（1 行 1 イベント）を、届いた順に 1 件ずつ handle へ渡す。読めない行は ServerFailed
+const forEachServerEvent = <A, R>(
+  response: HttpClientResponse.HttpClientResponse,
+  schema: Schema.Decoder<A>,
+  handle: (event: A) => Effect.Effect<void, ServerFailed, R>,
+) =>
+  response.stream.pipe(
+    Stream.decodeText,
+    Stream.splitLines,
+    Stream.runForEach((line) => Schema.decodeEffect(Schema.fromJsonString(schema))(line).pipe(
+      Effect.mapError((error) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(error)}` })),
+      Effect.flatMap(handle),
+    )),
+    Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerFailed({ message: String(error) }))),
+  );
 
 /* ----------------------------------------------------------------------------
  * サブコマンド
@@ -514,6 +532,29 @@ const apps = Command.make(
   }),
 ).pipe(Command.withDescription("会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む"));
 
+// --vocab のファイル（1 行に 1 語、空行は無視）を語の一覧にする。足さなければ空。start と recorded が共有する
+const vocabFlag = Flag.File("vocab", { mustExist: true }).pipe(
+  Flag.withDescription("利用者が足す語のファイル（1 行に 1 語、空行は無視）。この語で発言を直す。足せるのは開始時だけ（resume では受け取らない）"),
+  Flag.optional,
+);
+const titleFlag = Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとセッションの開始時刻）"), Flag.optional);
+const readVocabulary = Effect.fnUntraced(function* (vocab: Option.Option<string>) {
+  if (Option.isNone(vocab)) return [];
+  const text = yield* readTextFile(vocab.value).pipe(Effect.mapError((e) => new CommandFailed({ message: `${vocab.value} が読めません: ${fileReason(e)}` })));
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+});
+
+// 互換モデル（openai-compatible・chatgpt）か判定をサーバーへ渡すときだけ、転送用トークンを読んで要求のヘッダーにする。start と recorded が共有する
+const modelTransferHeaders = Effect.fnUntraced(function* (selected: { readonly route: string }, port: number, withJudge = false) {
+  if (selected.route !== "openai-compatible" && selected.route !== "chatgpt" && !withJudge) return undefined;
+  const sessionsDir = yield* sessionsDirConfig;
+  const token = yield* readModelTransferToken(sessionsDir, port).pipe(
+    Effect.mapError(() => new ServerFailed({ message: "モデル・判定の転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
+  );
+  if (!token) return yield* new ServerFailed({ message: "モデル・判定の転送用トークンが空です\nサーバーを起動し直してください" });
+  return { [MODEL_TRANSFER_HEADER]: token };
+});
+
 const start = Command.make(
   "start",
   {
@@ -521,7 +562,7 @@ const start = Command.make(
     judge: judgeFlag,
     local: localFlag,
     app: Flag.String("app").pipe(Flag.withDescription("会議アプリの bundle id（例 us.zoom.xos）")),
-    title: Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとセッションの開始時刻）"), Flag.optional),
+    title: titleFlag,
     noAudio: Flag.Boolean("no-audio").pipe(
       Flag.withDescription("トラックごとの録音（相手.m4a・自分.m4a）をセッションのフォルダに残さない（既定は残す）"),
       Flag.withDefault(false),
@@ -530,28 +571,14 @@ const start = Command.make(
       Flag.withDescription("共有画面を AI に渡さない（取り込まない）"),
       Flag.withDefault(false),
     ),
-    vocab: Flag.File("vocab", { mustExist: true }).pipe(
-      Flag.withDescription("利用者が足す語のファイル（1 行に 1 語、空行は無視）。この語で発言を直す。足せるのは開始時だけ（resume では受け取らない）"),
-      Flag.optional,
-    ),
+    vocab: vocabFlag,
   },
   Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, judge, local, vocab }) {
-    const vocabulary = Option.isSome(vocab)
-      ? (yield* readTextFile(vocab.value).pipe(Effect.mapError((e) => new CommandFailed({ message: `${vocab.value} が読めません: ${fileReason(e)}` }))))
-          .split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "")
-      : [];
+    const vocabulary = yield* readVocabulary(vocab);
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const chosenJudge = yield* resolveRoutingJudge(judge, model, selected);
     const port = yield* portConfig;
-    let headers: Record<string, string> | undefined;
-    if (selected.route === "openai-compatible" || selected.route === "chatgpt" || chosenJudge !== undefined) {
-      const sessionsDir = yield* sessionsDirConfig;
-      const token = yield* readModelTransferToken(sessionsDir, port).pipe(
-        Effect.mapError(() => new ServerFailed({ message: "モデル・判定の転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
-      );
-      if (!token) return yield* new ServerFailed({ message: "モデル・判定の転送用トークンが空です\nサーバーを起動し直してください" });
-      headers = { [MODEL_TRANSFER_HEADER]: token };
-    }
+    const headers = yield* modelTransferHeaders(selected, port, chosenJudge !== undefined);
     const { dir, warnings } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
       app,
       title: Option.getOrUndefined(title),
@@ -568,6 +595,85 @@ const start = Command.make(
   Command.withDescription(
     "ライブのセッションを開始する。サーバーがヘルパーを起動し、セッションのフォルダを出す。同時に 1 つだけ。"
       + "管理依存は入れる前に利用者に確認する",
+  ),
+);
+
+// 録画からのセッションの経過（NDJSON）を読んで、進み具合を標準エラーに出し、終わりを返す。
+// 端末なら同じ行を書き換え、端末でないときは変わるたびに 1 行出す
+const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse.HttpClientResponse, onStarted: (dir: string) => void) {
+  const tty = yield* StdoutIsTty;
+  let finished: Extract<RecordedEvent, { type: "finished" }> | undefined;
+  let drawing = false;
+  yield* forEachServerEvent(response, RecordedEvent, (event) => Effect.gen(function* () {
+    switch (event.type) {
+      case "started":
+        onStarted(event.dir);
+        yield* writeWarnings(event.warnings);
+        break;
+      case "progress": {
+        const text = formatRecordedProgress(event);
+        if (tty) {
+          drawing = true;
+          yield* Effect.sync(() => { process.stderr.write(`\r\x1b[K${text}`); });
+        } else {
+          yield* Console.error(text);
+        }
+        break;
+      }
+      case "finished":
+        finished = event;
+        break;
+    }
+  }));
+  if (drawing) yield* Effect.sync(() => { process.stderr.write("\n"); });
+  return finished;
+});
+
+const recorded = Command.make(
+  "recorded",
+  {
+    file: Argument.File("file", { mustExist: true }).pipe(Argument.withDescription("録画の音声（または動画）のファイル")),
+    model: modelFlag,
+    local: localFlag,
+    title: titleFlag,
+    vocab: vocabFlag,
+  },
+  Effect.fn("recorded")(function* ({ file, model, local, title, vocab }) {
+    const vocabulary = yield* readVocabulary(vocab);
+    const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
+    const port = yield* portConfig;
+    const headers = yield* modelTransferHeaders(selected, port);
+    let dir: string | undefined;
+    // Ctrl-C は、そこまでに入れた分で終えて map.* を書き出す（stop と同じ）。サーバーは接続が切れても書き出しを最後まで続ける。
+    // 開始の応答（2xx）を受け取った後なら、started を読む前の中断でも止める
+    const stopOnInterrupt = Effect.gen(function* () {
+      const { paths } = yield* requestServer(port, "POST", "/session/stop", StoppedSession);
+      yield* write([...(dir === undefined ? [] : [dir]), ...paths].map((line) => `${line}\n`).join(""));
+    }).pipe(Effect.ignore);
+    // 開始の要求が断られた（2xx 以外）ときは中断の対象に入れない。既存のセッションを止めないため
+    const finished = yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const response = yield* restore(executeServerRequest(port, "POST", "/session/recorded", {
+          file: resolve(file),
+          title: Option.getOrUndefined(title),
+          ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
+          model: selected,
+        }, headers));
+        return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
+      }),
+    );
+    if (dir === undefined || finished === undefined) return yield* new ServerFailed({ message: "録画からのセッションが終わる前に接続が終了しました" });
+    yield* write([dir, ...finished.paths].map((line) => `${line}\n`).join(""));
+    if (finished.failure !== undefined) {
+      const { code, signal, stderrTail } = finished.failure;
+      yield* Console.error(stderrTail.join("\n"));
+      return yield* new CommandFailed({ message: `文字起こしのヘルパーが途中で終了しました（${code ?? signal ?? "不明"}）。そこまでの分で終えました` });
+    }
+  }),
+).pipe(
+  Command.withDescription(
+    "音声 1 本の録画から、常駐サーバーでセッションを組む。終わるまで待ち、進み具合（入れた位置 / 全体の長さ・マップの更新回数）を標準エラーに出す。"
+      + "終わったらセッションのフォルダと map.* のパスを出す。Ctrl-C ではそこまでの分で終える。同時に 1 つだけ",
   ),
 );
 
@@ -857,22 +963,14 @@ const installFromServer = Effect.fnUntraced(function* (port: number, path: "/dep
     if (!(yield* StdoutIsTty)) yield* Console.error("時間がかかるので run_in_background で呼んでよい");
     const response = yield* executeServerRequest(port, "POST", path, { names });
     let result: Extract<typeof InstallEvent["Type"], { type: "result" }> | undefined;
-    yield* response.stream.pipe(
-      Stream.decodeText,
-      Stream.splitLines,
-      Stream.runForEach((line) => Effect.gen(function* () {
-        const event = yield* Schema.decodeEffect(Schema.fromJsonString(InstallEvent))(line).pipe(
-          Effect.mapError((error) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(error)}` })),
-        );
-        if (result !== undefined) return yield* new ServerFailed({ message: "完了後にイベントを受信しました" });
-        switch (event.type) {
-          case "progress": yield* Console.error(oneLine(event.message)); break;
-          case "error": return yield* new ServerFailed({ message: event.message });
-          case "result": result = event; break;
-        }
-      })),
-      Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerFailed({ message: String(error) }))),
-    );
+    yield* forEachServerEvent(response, InstallEvent, (event) => Effect.gen(function* () {
+      if (result !== undefined) return yield* new ServerFailed({ message: "完了後にイベントを受信しました" });
+      switch (event.type) {
+        case "progress": yield* Console.error(oneLine(event.message)); break;
+        case "error": return yield* new ServerFailed({ message: event.message });
+        case "result": result = event; break;
+      }
+    }));
     if (result === undefined) return yield* new ServerFailed({ message: "導入結果を受信する前に接続が終了しました" });
     yield* write(JSON.stringify(result.items));
 });
@@ -1000,7 +1098,7 @@ const root = Command.make("live-mindmap").pipe(
     "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
       + "exit code 3 = 開始に要るものが未導入",
   ),
-  Command.withSubcommands([login, logout, vocab, play, apps, start, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
+  Command.withSubcommands([login, logout, vocab, play, apps, start, recorded, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）

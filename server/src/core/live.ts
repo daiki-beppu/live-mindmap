@@ -48,6 +48,8 @@ export const HelperEvent = Schema.Union([
     slot: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     final: Schema.Boolean,
   }),
+  // 録画の文字起こし（transcribe-file）が最初に流す、ファイルの音声の全体の長さ（秒）。進み具合の「全体」に使う
+  Schema.Struct({ type: Schema.Literal("file-duration"), duration: Schema.Finite }),
   // 話者分離を使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続く。start は origin と同じ原点からの秒
   Schema.Struct({ type: Schema.Literal("speaker-off"), start: Schema.Finite, reason: Schema.Literals(["モデルなし", "読み込みに失敗", "途中で停止"]) }),
 ]);

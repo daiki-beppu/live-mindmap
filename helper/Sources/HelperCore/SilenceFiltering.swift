@@ -11,6 +11,36 @@ let silenceThresholdDBFS: Double = -70
 /// `silenceThresholdDBFS` を二乗平均の値に変換したもの（dBFS = 10 * log10(二乗平均) の逆算）。比較はこの値 1 つで行う。
 private let silenceThresholdMeanSquare = pow(10, silenceThresholdDBFS / 10)
 
+/// 二乗平均がしきい値未満（ほぼ無音）か。ライブの `TrackLoudness` とファイルの区間の読み直し（`FileLoudness`）が、同じ基準で捨てる。
+func isSilentMeanSquare(_ meanSquare: Double) -> Bool {
+    meanSquare < silenceThresholdMeanSquare
+}
+
+/// `buffer` のフレームごとの二乗平均（全チャンネルの全サンプルの二乗の平均）を、フレームの順に `body` へ渡す。
+/// 左右を平均すると逆相の信号が 0 になり、音があるのに無音と判定し得るため、モノラル化せず全チャンネルで測る。
+/// interleaved な形式（`相手` の ProcessTap の 2ch 出力）はチャンネルが channelData[0] に交互に並ぶだけで、
+/// channelData[1] 以降は存在しない（EchoCancellation.swift の EchoInputConverter と同じ前提）。
+/// Float32 以外の形式（チャンネルデータを取れない）やチャンネル数 0 のバッファは測れないので、何も渡さず false を返す。
+@discardableResult
+func forEachFrameMeanSquare(of buffer: AVAudioPCMBuffer, _ body: (Int, Float) -> Void) -> Bool {
+    let format = buffer.format
+    guard format.commonFormat == .pcmFormatFloat32, let channelData = buffer.floatChannelData else { return false }
+    let channels = Int(format.channelCount)
+    guard channels > 0 else { return false }
+    let interleaved = format.isInterleaved
+    for frame in 0..<Int(buffer.frameLength) {
+        var sumOfSquares = 0.0
+        for channel in 0..<channels {
+            let sample = interleaved
+                ? Double(channelData[0][frame * channels + channel])
+                : Double(channelData[channel][frame])
+            sumOfSquares += sample * sample
+        }
+        body(frame, Float(sumOfSquares / Double(channels)))
+    }
+    return true
+}
+
 /// 音量の記録を保持する長さ（秒）。`isBelowSilenceThreshold` は区間 `[start, end)` に入るフレームだけを集計し、
 /// 窓への集約は行わない（区間境界を窓内で切れないために区間内外のサンプルが混入／脱落する問題を避けるため）。
 /// この秒数は取得・保持するフレーム数というメモリ量の上限であり、判定の粒度には関係しない。STT の結果到着遅延の
@@ -68,30 +98,12 @@ final class TrackLoudness: @unchecked Sendable {
             energies = Array(repeating: .nan, count: Int((loudnessRetentionSeconds * sampleRate).rounded()))
         }
 
-        guard format.commonFormat == .pcmFormatFloat32, let channelData = buffer.floatChannelData else {
+        let measured = forEachFrameMeanSquare(of: buffer) { frame, meanSquare in
+            energies[(recordedFrames + frame) % energies.count] = meanSquare
+        }
+        guard measured else {
             writeUnmeasurable(frames: frames)
             return
-        }
-        let channels = Int(format.channelCount)
-        guard channels > 0 else {
-            writeUnmeasurable(frames: frames)
-            return
-        }
-        // 左右を平均すると逆相の信号が 0 になり、音があるのに無音と判定し得るため、モノラル化せず全チャンネルの
-        // 全サンプルの二乗平均で測る。interleaved な形式（`相手` の ProcessTap の 2ch 出力）はチャンネルが
-        // channelData[0] に交互に並ぶだけで、channelData[1] 以降は存在しない（EchoCancellation.swift の
-        // EchoInputConverter と同じ前提）。
-        let interleaved = format.isInterleaved
-        for frame in 0..<frames {
-            var sumOfSquares = 0.0
-            for channel in 0..<channels {
-                let sample = interleaved
-                    ? Double(channelData[0][frame * channels + channel])
-                    : Double(channelData[channel][frame])
-                sumOfSquares += sample * sample
-            }
-            let meanSquare = sumOfSquares / Double(channels)
-            energies[(recordedFrames + frame) % energies.count] = Float(meanSquare)
         }
         recordedFrames += frames
     }
@@ -137,7 +149,7 @@ final class TrackLoudness: @unchecked Sendable {
             guard !value.isNaN else { return nil }
             sum += Double(value)
         }
-        return sum / Double(endFrame - firstFrame) < silenceThresholdMeanSquare
+        return isSilentMeanSquare(sum / Double(endFrame - firstFrame))
     }
 }
 
