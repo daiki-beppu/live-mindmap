@@ -8,7 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
-import { DiffUpdatePaused, DiffUpdater, QUIET_MS, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type DiffInput, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
+import { DiffUpdatePaused, DiffUpdater, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type DiffInput, type Snapshot, type SpeakingFrame } from "../src/core/index.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { POOL_DROP_AFTER_SESSIONS } from "../src/core/vocabularyPool.ts";
@@ -22,7 +22,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 // Issue #240 段 3（ADR 0008）→ Issue #243 段 6: SessionSinks の実物 Layer を、実 tmpdir + 偽の DiffUpdater／capture で確かめる。
 // updater・ログ・いま話している文字・書き出しを開く契約（CT-SINK-SCOPE）と、録音ファイル名の採番（要件117,127）
 // がこのファイルの対象。段 6 で、SessionSinks は新しいセッション（makeSession）を直接使う。
-// 1 秒の途中結果（SETTLE_QUIET_MS）と QUIET_MS の待ちは TestClock で進める（本物の時間では待たない）。
+// 1 秒の途中結果（SETTLE_QUIET_MS）の待ちは TestClock で進める（本物の時間では待たない）。
 //
 // 想定する契約（server/src/sessionSinks.ts）:
 // - `SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer) })` が実物の Layer を作る。撮影・見返し用の HTML のビルド・mix・FileSystem は Layer の文脈から受け取る（テストの sinksLayer が偽物を渡す）。
@@ -644,17 +644,20 @@ const openRecordingSink = Effect.fn("openRecordingSink")(function* () {
 
 // 差分更新に渡った入力を記録する偽の DiffUpdater の Layer。
 // katakana（英字の語のカタカナの読み。Issue #642）は、table の語だけ答える。呼び出しごとの引数を katakanaCalls に記録する。
-// katakana.failure を設定すると失敗し、katakana.gate を設定するとその Deferred が完了するまで答えない
+// katakana.failure を設定すると失敗し、katakana.gate を設定するとその Deferred が完了するまで答えない。
+// updateGate.gate を設定すると、差分更新はその Deferred が完了するまで返らない（呼び出し中のまま止めて、反映前の状態を見る）
 const makeRecordingUpdater = (table: Record<string, string> = {}) => {
   const calls: DiffInput[] = [];
   const katakanaCalls: string[][] = [];
   const katakana: { failure: string | null; gate: Deferred.Deferred<void> | null } = { failure: null, gate: null };
+  const updateGate: { gate: Deferred.Deferred<void> | null } = { gate: null };
   const updaterLayer = Layer.succeed(
     DiffUpdater,
     DiffUpdater.of({
       update: (input) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           calls.push(input);
+          if (updateGate.gate !== null) yield* Deferred.await(updateGate.gate);
           return { ops: [] };
         }),
       katakana: (words) =>
@@ -666,7 +669,7 @@ const makeRecordingUpdater = (table: Record<string, string> = {}) => {
         }),
     }),
   );
-  return { calls, katakanaCalls, katakana, updaterLayer };
+  return { calls, katakanaCalls, katakana, updateGate, updaterLayer };
 };
 
 const logEvents = (dir: string) =>
@@ -685,11 +688,9 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* TestClock.adjust(SETTLE_QUIET_MS - 1);
       yield* settle;
       expect(logEvents(dir).filter((e) => e.type === "remark")).toEqual([]); // 1 秒の直前まではまだ発言にならない
-      yield* TestClock.adjust(1); // 1 秒更新されなかった: 発言になる。1 件だけなので、差分更新は QUIET_MS 後
+      yield* TestClock.adjust(1); // 1 秒更新されなかった: 発言になり、すぐ差分更新に渡る
       yield* settle;
       expect(logEvents(dir).filter((e) => e.type === "remark")).toHaveLength(1);
-      expect(calls).toHaveLength(0);
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       expect(calls.flatMap((c) => c.fresh)[0]).toMatchObject({ id: "r1", track: "相手", start: 5, end: 8, text: "あしたの会議は" });
 
@@ -705,7 +706,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
       yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false });
-      yield* TestClock.adjust(SETTLE_QUIET_MS + QUIET_MS);
+      yield* TestClock.adjust(SETTLE_QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
 
       yield* sink.final(finalRemark("相手", 5.2, 8.2, "明日の会議は十時です。")); // r1 を覆う確定結果。本文が違っても捨てる
@@ -755,20 +756,19 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  it.effect("発言が 1 件だけ届き QUIET_MS 新しい発言が来ないとき、flush を待たずにその 1 件で差分更新が呼ばれ、反映後のマップが公開される", () => {
+  it.effect("発言が 1 件だけ届いたとき、時間を進めなくても flush を待たずにその 1 件で差分更新がすぐ呼ばれ、反映後のマップが公開される。時間を進めても呼び出しは増えない", () => {
     const { calls, updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, published } = yield* openRecordingSink();
       yield* sink.final(finalRemark("相手", 1, 5, "採用の面接について"));
 
-      yield* TestClock.adjust(QUIET_MS - 1);
-      yield* settle;
-      expect(calls).toHaveLength(0); // QUIET_MS の直前まではまだ呼ばない
-      yield* TestClock.adjust(1);
-      yield* settleUntil(() => calls.length > 0);
+      yield* settleUntil(() => calls.length > 0); // 時間は進めていない
       expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
       yield* settleUntil(() => published.length >= 2);
       expect(published.map((s) => s.round)).toEqual([0, 1]);
+      yield* TestClock.adjust(600_000); // 時間では呼ばない
+      yield* settle;
+      expect(calls).toHaveLength(1);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
@@ -873,11 +873,11 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
 
       const flushing = yield* Effect.forkChild(sink.flush);
       for (let i = 0; i < 3; i++) {
-        yield* TestClock.adjust(30); // r1+r2 の反映、続けて r3 の反映が、それぞれ 30 ms かかる
+        yield* TestClock.adjust(30); // r1 の反映、続けて（r1 の呼び出し中に届いた）r2+r3 のまとめの反映が、それぞれ 30 ms かかる
         yield* settle;
       }
       yield* Fiber.join(flushing);
-      expect(state.calls.flat().sort()).toEqual(["r1", "r2", "r3"]); // flush が戻った時点で、3 件とも差分更新に渡っている
+      expect(state.calls).toEqual([["r1"], ["r2", "r3"]]); // flush が戻った時点で、3 件とも差分更新に渡っている。r1 はすぐ、r2・r3 は r1 の呼び出し中に届いたので 1 回にまとまる
       expect(state.closed).toBe(0);
       yield* Scope.close(scope, Exit.void);
       yield* TestClock.adjust(100);
@@ -887,32 +887,38 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  it.effect("反映前の確定した発言は、自分の speaking にも出る（emit が relay.remark へつながる。base:301）", () =>
-    Effect.scoped(Effect.gen(function* () {
+  it.effect("反映前の確定した発言は、自分の speaking にも出る（emit が relay.remark へつながる。base:301）", () => {
+    const { calls, updateGate, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
       const { sink, speaks } = yield* openRecordingSink();
+      updateGate.gate = yield* Deferred.make<void>(); // 差分更新は呼ばれても返らない（反映前のまま）
 
       yield* sink.final(finalRemark("自分", 1, 2, "面接は何回にしますか"));
+      yield* settleUntil(() => calls.length === 1);
 
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* settleUntil(() => speaks.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか")));
       expect(speaks.some((f) => f.track === "自分" && f.text.includes("面接は何回にしますか"))).toBe(true);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
+      yield* Deferred.succeed(updateGate.gate, undefined);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
 
   it.effect("差分更新で反映された発言は、相手の最後の speaking から消える（onDiff が relay.flushAll につながる）。反映前は本文が出ている", () => {
-    const { calls, updaterLayer } = makeRecordingUpdater();
+    const { calls, updateGate, updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
       const { sink, speaks } = yield* openRecordingSink();
       const lastText = (track: "相手" | "自分") => speaks.filter((f) => f.track === track).at(-1)?.text;
+      const reply = yield* Deferred.make<void>();
+      updateGate.gate = reply; // 差分更新は呼ばれても返らない（反映前のまま）
 
       yield* sink.partial({ track: "自分", start: 5, end: 6, text: "じぶんのとちゅう", duplicate: false });
       yield* sink.final(finalRemark("相手", 1, 5, "採用の面接について"));
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* settleUntil(() => lastText("相手") === "採用の面接について");
       expect(lastText("相手")).toBe("採用の面接について"); // 反映前: 確定した発言の本文が出ている
-      expect(calls).toHaveLength(0);
+      expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]); // 発言 1 件ですぐ呼ばれているが、まだ返っていない
 
-      yield* TestClock.adjust(QUIET_MS);
-      yield* settleUntil(() => calls.length > 0);
+      yield* Deferred.succeed(reply, undefined);
       yield* settleUntil(() => lastText("相手") === "");
       expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
       expect(lastText("相手")).toBe(""); // 反映後: 処理済みの発言が消えている
@@ -1037,7 +1043,6 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの読み（Issue #6
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openRecordingSink();
       yield* sink.final({ track: "相手", start: 1, end: 3, text: "明日の会議", words: [word("明日", 0), word("の", 2), word("会議", 3)] });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
 
       expect(calls.flatMap((c) => c.fresh)[0]).toEqual({ id: "r1", track: "相手", start: 1, end: 3, text: "明日の会議" });
@@ -1120,13 +1125,16 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
 
   it.effect("崩れた確定結果は直った本文が発言になる。remark の行は text が直した本文で、raw が直す前の本文、words は直す前の本文の位置のまま。差分更新・字幕にも直った表記が渡る", () => {
     const readings = fakeReadings(READINGS);
-    const { calls, updaterLayer } = makeRecordingUpdater(KATAKANA);
+    const { calls, updateGate, updaterLayer } = makeRecordingUpdater(KATAKANA);
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir, speaks } = yield* openWithVocabulary();
+      const reply = yield* Deferred.make<void>();
+      updateGate.gate = reply; // 差分更新は呼ばれても返らない（字幕が反映前の本文を出している間）
       yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* settleUntil(() => speaks.some((f) => f.text === "港南店に行きます"));
+      yield* Deferred.succeed(reply, undefined);
       yield* sink.drain;
       yield* sink.flush;
 
@@ -1147,12 +1155,17 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
   // Issue #641: 同梱のふつうの語の一覧（開発 を含む）が補正に渡る。語彙の 改札 と読みが近くても、ふつうの語の 開発 は直さない
   it.effect("同梱のふつうの語の一覧が補正に渡る。語彙に読みの近い語があっても、一覧に載る語の発言は直さず、log と字幕に届いた本文のまま出る", () => {
     const readings = fakeReadings({ 改札: "kaisatsu" });
-    const { updaterLayer } = makeRecordingUpdater(KATAKANA);
+    const { calls, updateGate, updaterLayer } = makeRecordingUpdater(KATAKANA);
     const common = utterance(["開発", "kaihatsu"]);
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir, speaks } = yield* openWithVocabulary(["改札"]);
+      const reply = yield* Deferred.make<void>();
+      updateGate.gate = reply; // 差分更新は呼ばれても返らない（字幕が反映前の本文を出している間）
       yield* sink.final({ track: "相手", start: 1, end: 2, text: common.text, words: common.words });
-      yield* TestClock.adjust(QUIET_MS);
+      yield* settleUntil(() => calls.length === 1);
+      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+      yield* settleUntil(() => speaks.some((f) => f.text === "開発"));
+      yield* Deferred.succeed(reply, undefined);
       yield* sink.drain;
       yield* sink.flush;
 
@@ -1171,9 +1184,7 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openWithVocabulary();
       yield* sink.partial({ track: "相手", start: 5, end: 6, text: garbled.text, words: garbled.words, duplicate: false });
-      yield* TestClock.adjust(SETTLE_QUIET_MS + QUIET_MS);
-      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
-      yield* TestClock.adjust(QUIET_MS); // 発言を出した後の QUIET_MS の待ちは、出した時刻から数え直される
+      yield* TestClock.adjust(SETTLE_QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       expect(calls.flatMap((c) => c.fresh)[0]).toMatchObject({ id: "r1", text: "港南店に行きます" });
 
@@ -1272,7 +1283,6 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir } = yield* openWithVocabulary();
       yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       yield* sink.drain;
       yield* sink.flush;
@@ -1421,7 +1431,6 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       yield* settleUntil(() => vocabLines(dir).length === 1);
       yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       yield* settleUntil(() => speaks.some((f) => f.text === "港南店に行きます"));
       yield* sink.drain;
@@ -1538,7 +1547,6 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       yield* showScreen(sink, 2);
       yield* sink.screen({ start: 3, image: null });
       yield* sink.final({ track: "相手", start: 4, end: 6, text: garbled.text, words: garbled.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       yield* sink.drain;
       yield* sink.flush;
@@ -1563,7 +1571,6 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
       yield* settleUntil(() => vocabLines(dir).length === 1);
       yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       yield* sink.drain;
       yield* sink.flush;
@@ -1679,7 +1686,6 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       yield* settleUntil(() => vocabLines(dir).length === 1);
       yield* settle;
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       yield* settleUntil(() => speaks.some((f) => f.text === "Notionを開く"));
       yield* sink.drain;
@@ -1752,7 +1758,6 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       expect(vocabLines(dir)).toEqual([]);
 
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1); // 差分更新はモデルの読みを待たずに走る
       yield* sink.drain;
       yield* sink.flush;
@@ -1787,7 +1792,6 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       yield* settle;
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
       yield* sink.final({ track: "相手", start: 10, end: 12, text: garbled.text, words: garbled.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 2);
       yield* sink.drain;
       yield* sink.flush;
@@ -1831,7 +1835,6 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
       yield* settleUntil(() => vocabLines(dir).length === 1);
       yield* settle;
       yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
-      yield* TestClock.adjust(QUIET_MS);
       yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
       yield* sink.drain;
       yield* sink.flush;

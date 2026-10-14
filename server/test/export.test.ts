@@ -1,18 +1,16 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import {
   KINDS,
   exportFiles,
-  makeSession,
   toDrawnix,
   toMarkdown,
   type ExportNode,
   type JsonExport,
-  type Op,
   type Remark,
 } from "../src/core/index.ts";
 import { KIND_COLORS } from "../src/core/drawnix.ts";
-import { silentLog, updaterLayer } from "./fixtures/sessionLayers.ts";
+import { playBatches } from "./fixtures/batches.ts";
 
 const remark = (id: string, start: number, text = "発言"): Remark => ({ id, track: "相手", start, end: start + 5, text });
 
@@ -177,16 +175,14 @@ describe("exportFiles と map.json", () => {
     Effect.gen(function* () {
       const r1 = remark("r1", 3, "採用の話をします");
       const r2 = remark("r2", 7, "面接は何回にしますか");
-      const ops: Op[] = [
-        { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-        { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-      ];
-      const session = yield* makeSession({ title: "定例" }).pipe(
-        Effect.provide(Layer.merge(updaterLayer(() => Effect.succeed({ ops })), silentLog)),
+      // 1 回目の呼び出しで議題、その呼び出し中に届いた 2 件目を渡す 2 回目の呼び出しでその下（確定した id n1）の論点を足す
+      const { session } = yield* playBatches(
+        [[r1], [r2]],
+        [
+          [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
+          [{ op: "add", ref: "t2", parent: "n1", kind: "論点", text: "面接は何回か", evidence: ["r2"] }],
+        ],
       );
-      yield* session.push(r1);
-      yield* session.push(r2);
-      yield* session.idle;
       const json = JSON.parse(exportFiles(yield* session.exportJson)["map.json"]);
       expect(Object.keys(json)).toEqual(["root"]);
       expect(json.root.children[0]).toMatchObject({

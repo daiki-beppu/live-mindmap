@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
-import { makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
+import { restoreSession, type DiffUpdater, type SessionLog, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
 import { collectLog, settleUntil, updaterLayer } from "./fixtures/sessionLayers.ts";
 
 const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n * 10, end: n * 10 + 9, text: `発言${n}` });
@@ -8,13 +8,17 @@ const ids = (remarks: readonly Remark[]) => remarks.map((r) => r.id);
 const add = (r: Remark): Op => ({ op: "add", ref: `topic-${r.id}`, parent: "root", kind: "議題", text: r.text, evidence: [r.id] });
 const partial = (input: DiffInput): DiffOutput & { processedRemarks: number } => ({ ops: [add(input.fresh[0]!)], processedRemarks: 1 });
 
+// 差分更新は呼び出し中でなければ発言 1 件ですぐ呼ぶ。複数の発言を最初の 1 回にまとめて渡すため、
+// 先頭の発言をログから戻した「まだ渡していない発言」として持たせ、次の push で新しい発言とまとめて 1 回で渡す。
+const openHeld = (held: readonly number[], layer: Layer.Layer<DiffUpdater | SessionLog>) =>
+  restoreSession([{ type: "start", title: "定例" }, ...held.map((n) => ({ type: "remark", remark: remark(n) }))]).pipe(Effect.provide(layer));
+
 describe("invConservation: 部分反映", () => {
   it.effect("未消費の発言を根拠にした操作は適用せず、次回の反映で初めて使える", () => Effect.gen(function* () {
     const events: LogEvent[] = [];
-    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+    const session = yield* openHeld([1], Layer.merge(
       updaterLayer((input) => Effect.succeed({ ops: input.fresh.map(add), processedRemarks: 1 })), collectLog(events),
-    )));
-    yield* session.push(remark(1));
+    ));
     yield* session.push(remark(2));
     yield* session.idle;
     const diffs = events.filter((e) => e.type === "diff");
@@ -25,10 +29,9 @@ describe("invConservation: 部分反映", () => {
   it.effect("残り1件も新着を待たず同じSessionで反映する", () => Effect.gen(function* () {
     const calls: DiffInput[] = [];
     const events: LogEvent[] = [];
-    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+    const session = yield* openHeld([1], Layer.merge(
       updaterLayer((input) => Effect.sync(() => { calls.push(input); return partial(input); })), collectLog(events),
-    )));
-    yield* session.push(remark(1));
+    ));
     yield* session.push(remark(2));
     yield* session.idle;
     expect(calls.map((c) => ids(c.fresh))).toEqual([["r1", "r2"], ["r2"]]);
@@ -49,7 +52,7 @@ describe("invConservation: 部分反映", () => {
     const calls: DiffInput[] = [];
     let active = 0;
     let maximum = 0;
-    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+    const session = yield* openHeld([1], Layer.merge(
       updaterLayer((input) => Effect.gen(function* () {
         calls.push(input);
         active++;
@@ -58,8 +61,7 @@ describe("invConservation: 部分反映", () => {
         active--;
         return partial(input);
       })), collectLog([]),
-    )));
-    yield* session.push(remark(1));
+    ));
     yield* session.push(remark(2));
     yield* settleUntil(() => calls.length === 1);
     yield* session.push(remark(3));
@@ -106,10 +108,9 @@ describe("invConservation: 部分反映", () => {
 
   it.effect("反映数を省略したupdaterは全件消費し、次回は後続だけを渡す（C04）", () => Effect.gen(function* () {
     const calls: DiffInput[] = [];
-    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+    const session = yield* openHeld([1], Layer.merge(
       updaterLayer((input) => Effect.sync(() => { calls.push(input); return { ops: input.fresh.map(add) }; })), collectLog([]),
-    )));
-    yield* session.push(remark(1));
+    ));
     yield* session.push(remark(2));
     yield* session.idle;
     expect(yield* session.unreflectedRemarks).toEqual([]);
@@ -144,13 +145,12 @@ describe("invConservation: 部分反映", () => {
     it.effect(`不正な反映数${count}は通常失敗として全件消費し、操作を反映しない`, () => Effect.gen(function* () {
       const calls: DiffInput[] = [];
       const events: LogEvent[] = [];
-      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+      const session = yield* openHeld([1], Layer.merge(
         updaterLayer((input) => Effect.sync(() => {
           calls.push(input);
           return { ops: [add(input.fresh[0]!)], processedRemarks: calls.length === 1 ? count : 1 };
         })), collectLog(events),
-      )));
-      yield* session.push(remark(1));
+      ));
       yield* session.push(remark(2));
       yield* session.idle;
       expect(calls).toHaveLength(1);

@@ -69,14 +69,16 @@ describe("再生", () => {
           }),
       });
       expect(sleepCount).toBe(3);
-      expect(calls[0]).toEqual(["r1", "r2"]);
+      // 最初の呼び出しは発言 1 件。終わらないうちに届いた r2 以降は、終わってからまとめて渡る（順序は保たれる）
+      expect(calls[0]).toEqual(["r1"]);
+      expect(calls.flat()).toEqual(["r1", "r2", "r3"]);
     }));
 
-  it.effect("待ち時間なし（sleep を渡さない）: sleep せず、1 発言ごとに呼び出しの終わりを待つ", () =>
+  it.effect("待ち時間なし（sleep を渡さない）: sleep せず、1 発言ごとにすぐ呼び、その呼び出しの終わりを待つ", () =>
     Effect.gen(function* () {
       const order: string[] = [];
       yield* playback(yield* setup(order), remarks);
-      expect(order).toEqual(["push:r1", "push:r2", "diff:r1+r2", "push:r3", "diff:r3"]);
+      expect(order).toEqual(["push:r1", "diff:r1", "push:r2", "diff:r2", "push:r3", "diff:r3"]);
     }));
 
   describe("共有画面の変化（screens）", () => {
@@ -103,16 +105,16 @@ describe("再生", () => {
       return yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
     });
 
-    it.effect("待ち時間なし: 発言を入れる前に、その発言の start までに映り始めた変化をすべて入れる（start ちょうども含む）。残りは最後の発言の後、flush の前に入る", () =>
+    it.effect("待ち時間なし: 発言を入れる前に、その発言の start までに映り始めた変化をすべて入れる（start ちょうども含む）。残りは最後の発言の後に入る（もう渡す発言が無いので、差分更新には添わない）", () =>
       Effect.gen(function* () {
         const order: string[] = [];
         // 発言の start は 0.5・9.8・19.2。end の最大は 9.8・19.2・28.0
         yield* playback(yield* setupWithScreens(order), remarks, { screens: [shot(0), shot(9.8), shot(10), shot(25)] });
         expect(order).toEqual([
-          "screen:0", "push:r1",
-          "screen:9.8", "push:r2", "diff:r1+r2[0,9.8]",
-          "screen:10", "push:r3",
-          "screen:25", "diff:r3[10,25]",
+          "screen:0", "push:r1", "diff:r1[0]",
+          "screen:9.8", "push:r2", "diff:r2[9.8]",
+          "screen:10", "push:r3", "diff:r3[10]",
+          "screen:25",
         ]);
       }));
 
@@ -122,10 +124,10 @@ describe("再生", () => {
         const loading = (start: number) => shot(start, () => order.push(`load:${start}`));
         yield* playback(yield* setupWithScreens(order), remarks, { screens: [loading(0), loading(9.8), loading(10), loading(25)] });
         expect(order).toEqual([
-          "load:0", "screen:0", "push:r1",
-          "load:9.8", "screen:9.8", "push:r2", "diff:r1+r2[0,9.8]",
-          "load:10", "screen:10", "push:r3",
-          "load:25", "screen:25", "diff:r3[10,25]",
+          "load:0", "screen:0", "push:r1", "diff:r1[0]",
+          "load:9.8", "screen:9.8", "push:r2", "diff:r2[9.8]",
+          "load:10", "screen:10", "push:r3", "diff:r3[10]",
+          "load:25", "screen:25",
         ]);
       }));
 
@@ -155,16 +157,16 @@ describe("再生", () => {
         );
         const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), log)));
         yield* playback(session, remarks, { sleep: () => Effect.void, screens: [shot(9.9)] });
-        expect(calls[0]).toEqual(["r1", "r2"]);
-        // 後続の r3 の差分更新も、画像の読み戻しで止まらずに updater へ届く
-        expect(calls[1]).toEqual(["r3"]);
+        expect(calls[0]).toEqual(["r1"]);
+        // 門が開くまでに届いた r2・r3 は、画像の読み戻しで止まらずに updater へ届く（順序は保たれる）
+        expect(calls.flat()).toEqual(["r1", "r2", "r3"]);
       }), 3000);
 
     it.effect("screens を渡さない再生は今までと同じ（変化の口を呼ばない）", () =>
       Effect.gen(function* () {
         const order: string[] = [];
         yield* playback(yield* setupWithScreens(order), remarks);
-        expect(order).toEqual(["push:r1", "push:r2", "diff:r1+r2", "push:r3", "diff:r3"]);
+        expect(order).toEqual(["push:r1", "diff:r1", "push:r2", "diff:r2", "push:r3", "diff:r3"]);
       }));
   });
 
@@ -204,10 +206,10 @@ describe("再生", () => {
           screens: [shot(0), off(9.8, "指定"), off(10, "許可なし"), shot(25)],
         });
         expect(order).toEqual([
-          "screen:0", "push:r1",
-          "off:9.8:指定", "push:r2", "diff:r1+r2[0]",
-          "off:10:許可なし", "push:r3",
-          "screen:25", "diff:r3[25]",
+          "screen:0", "push:r1", "diff:r1[0]",
+          "off:9.8:指定", "push:r2", "diff:r2",
+          "off:10:許可なし", "push:r3", "diff:r3",
+          "screen:25",
         ]);
       }));
 
@@ -222,11 +224,11 @@ describe("再生", () => {
         expect(second.filter((s) => s.startsWith("screen:") || s.startsWith("off:"))).toEqual(["screen:5", "off:5:許可なし"]);
       }));
 
-    it.effect("最後の発言の後に残る screen-off も、flush の前に入る", () =>
+    it.effect("最後の発言の後に残る screen-off も、最後の発言の後に入る（渡す発言が無いので、差分更新は増えない）", () =>
       Effect.gen(function* () {
         const order: string[] = [];
         yield* playback(yield* setupWithOff(order), remarks, { screens: [off(100, "許可なし")] });
-        expect(order).toEqual(["push:r1", "push:r2", "diff:r1+r2", "push:r3", "off:100:許可なし", "diff:r3"]);
+        expect(order).toEqual(["push:r1", "diff:r1", "push:r2", "diff:r2", "push:r3", "diff:r3", "off:100:許可なし"]);
       }));
 
     // 発言の間に隙間がある再生。r1 は 0〜2 秒、r2 は 10〜12 秒
@@ -278,18 +280,18 @@ describe("再生", () => {
         ]);
       }));
 
-    it.effect("等速: 最後の発言の後に残る変化も start まで待ってから入り、flush はその後", () =>
+    it.effect("等速: 最後の発言の後に残る変化も start まで待ってから入り、差分更新は発言ごとに入る", () =>
       Effect.gen(function* () {
         const order: string[] = [];
         yield* playback(yield* setupWithOff(order), gapped, { sleep: sleeper(order), screens: [shot(15), off(20, "許可なし")] });
-        // 差分更新の呼び出しの位置は中核（セッション）が決める。ここでは待ちと変化の順番、flush が最後であること（呼び出しが全部済んでいること）を見る
+        // 差分更新の呼び出しの位置は中核（セッション）が決める。ここでは待ちと変化の順番を見る。渡す発言が無い変化は、差分更新を増やさない
         expect(withoutDiff(order)).toEqual([
           "sleep:2000", "push:r1",
           "sleep:10000", "push:r2",
           "sleep:3000", "screen:15",
           "sleep:5000", "off:20:許可なし",
         ]);
-        expect(order.filter((s) => s.startsWith("diff:"))).toHaveLength(1);
+        expect(order.filter((s) => s.startsWith("diff:"))).toEqual(["diff:r1", "diff:r2"]);
       }));
 
     it.effect("等速: 変化を渡さないときの待ちは今までと同じ", () =>
@@ -305,7 +307,7 @@ describe("再生", () => {
         yield* playback(yield* setupWithOff(order), gapped, { screens: [shot(6), off(500, "指定")] });
         expect(order.some((s) => s.startsWith("sleep:"))).toBe(false);
         expect(withoutDiff(order)).toEqual(["push:r1", "screen:6", "push:r2", "off:500:指定"]);
-        expect(order.filter((s) => s.startsWith("diff:"))).toHaveLength(1);
+        expect(order.filter((s) => s.startsWith("diff:"))).toEqual(["diff:r1", "diff:r2[6]"]);
       }));
   });
 });

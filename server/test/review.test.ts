@@ -1,9 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
-import { REVIEW_AUDIO_ELEMENT_ID, REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, embedReviewAudio, embedReviewLicenses, embedReviewLog, makeSession, reviewSnapshot, type LogEvent, type Op, type Remark } from "../src/core/index.ts";
+import { Effect } from "effect";
+import { REVIEW_AUDIO_ELEMENT_ID, REVIEW_LICENSES_ELEMENT_ID, REVIEW_LOG_ELEMENT_ID, embedReviewAudio, embedReviewLicenses, embedReviewLog, reviewSnapshot, type Remark } from "../src/core/index.ts";
 import { embeddedAudio, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
-import { collectLog, updaterLayer } from "./fixtures/sessionLayers.ts";
+import { playBatches } from "./fixtures/batches.ts";
 
 // 書き出す HTML への埋め込み（ログ・ライセンス・音声）とスナップショットの組み立て。ファイルは使わない
 
@@ -18,18 +18,15 @@ function licensesTemplate(html: string): { raw: string; decoded: string } {
 const remark = (id: string, text: string, extra: Partial<Remark> = {}): Remark => ({ id, track: "相手", start: 0, end: 5, text, ...extra });
 
 // 発言と差分更新を通した本物のログ（at 付き JSONL 1 行ぶんの形）
+// 1 回目の呼び出しで議題、その呼び出し中に届いた 2 件目を渡す 2 回目の呼び出しでその下（確定した id n1）の論点を足す
 const realisticEvents = Effect.fn("realisticEvents")(function* () {
-  const ops: Op[] = [
-    { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] },
-    { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] },
-  ];
-  const events: LogEvent[] = [];
-  const session = yield* makeSession({ title: "定例" }).pipe(
-    Effect.provide(Layer.merge(updaterLayer(() => Effect.succeed({ ops })), collectLog(events))),
+  const { session, events } = yield* playBatches(
+    [[remark("r1", "採用の話をします")], [remark("r2", "面接は何回にしますか")]],
+    [
+      [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
+      [{ op: "add", ref: "t2", parent: "n1", kind: "論点", text: "面接は何回か", evidence: ["r2"] }],
+    ],
   );
-  yield* session.push(remark("r1", "採用の話をします"));
-  yield* session.push(remark("r2", "面接は何回にしますか"));
-  yield* session.idle;
   return { session, events: events.map((e, i) => JSON.parse(JSON.stringify({ at: `2026-10-07T00:00:0${i}.000Z`, ...e }))) as unknown[] };
 });
 

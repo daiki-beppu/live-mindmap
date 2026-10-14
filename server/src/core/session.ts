@@ -1,6 +1,6 @@
 // セッション: 発言の流れを受け、差分更新を呼んでマップを組み立てる。
 // WebSocket・CLI・Node の実行環境に依存しない（ADR 0003）。差分更新（DiffUpdater）とログの書き先（SessionLog）は Service で受ける。
-import { Cause, Context, DateTime, Effect, Exit, Fiber, FiberHandle, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
+import { Cause, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
 import { diffMaps } from "./changes.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import type { KatakanaAnswer } from "./latinWords.ts";
@@ -125,8 +125,6 @@ export class InvalidLogEvent extends Schema.TaggedError<InvalidLogEvent>()("Inva
   reason: Schema.String,
 }) {}
 
-const BATCH = 2;
-export const QUIET_MS = 1500; // 最後の発言からこの時間、次の発言が来なければ、1 つでも差分更新を呼ぶ
 const RECENT = 3;
 
 // 中身のない発言の判定に使うフィラー（長音 ー〜~ を除いた形）。確定した発言の語がこれだけなら中身なしとする
@@ -305,7 +303,7 @@ export type Session = {
   // 共有画面を見ていない印を受ける。受け取った start・reason のまま screen-off の行を 1 行書くだけで、
   // 差分更新・添える画面・受け取った画面の数は変えない（Claude へのメッセージに載らない）
   readonly pushScreenOff: (off: Pick<typeof ScreenOffEvent["Type"], "start" | "reason">) => Effect.Effect<void>;
-  // 終わりに、2 つに満たず待ちも切れていない発言も流す（最後の発言を取りこぼさない）
+  // 終わりに、たまっている発言も流す（最後の発言を取りこぼさない）
   readonly flush: Effect.Effect<void>;
   readonly snapshot: Effect.Effect<Snapshot>;
   readonly diffUpdate: Effect.Effect<DiffUpdateState>;
@@ -323,7 +321,6 @@ type Runtime = {
   readonly retryEnabled: boolean; // 終了のflushが始まったら、書き出し中も再試行を起動しない
   readonly diffUpdate: DiffUpdateState;
   readonly inFlight: InFlight | undefined;
-  readonly quiet: boolean; // 最後の発言から QUIET_MS 経った。呼び出し中に経った場合も、終わった時点で 1 つで流す
   readonly reflecting: readonly Remark[]; // 差分更新の結果待ちの発言。結果を log する直前に外す
   readonly unsentScreens: readonly HeldScreen[]; // まだ差分更新に添えていない共有画面の変化（受け取った順）
   readonly screenFiles: ReadonlySet<string>; // 画像に付けたファイル名
@@ -364,9 +361,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
     const log = yield* SessionLog;
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, diffUpdate: { status: "running" }, inFlight: undefined, quiet: false, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received });
-    // QUIET_MS の待ち。Scope を閉じると中断される
-    const quietWaiter = yield* FiberHandle.make<void, never>();
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, diffUpdate: { status: "running" }, inFlight: undefined, reflecting: [], unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received });
 
     const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
       const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -378,15 +373,14 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
       setLifecycleState("status" in notification ? notification : { status: "stopped" }).pipe(Effect.uninterruptible),
     ), scope, { startImmediately: true });
 
-    // 呼び出し中でなく、発言が min 以上たまっていれば、たまった分をまとめて差分更新に渡す。
-    // 呼び出しの後に 1 つしか残っていなくても、QUIET_MS 経つまでは 2 つ目を待つ（試作 v3 で確かめた入力の形に揃える）。
+    // 呼び出し中でなく、発言が 1 つ以上たまっていれば、たまった分をまとめて差分更新に渡す。
     // 取り出しから fork までの間に中断されて発言を取りこぼさないよう、中断させない
-    function startDiffIfReady(min: number, retry = false): Effect.Effect<void> {
+    function startDiffIfReady(retry = false): Effect.Effect<void> {
       return Effect.uninterruptible(
         Effect.gen(function* () {
           const reservation: Reservation = { kind: "reserved" };
           const fresh = yield* Ref.modify(ref, (s): [readonly Remark[] | undefined, SessionState & Runtime] =>
-            s.inFlight || s.pending.length < min || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
+            s.inFlight || s.pending.length === 0 || (retry ? !s.retryEnabled || s.diffUpdate.status !== "paused" : s.diffUpdate.status === "paused" || s.diffUpdate.status === "stopped") ? [undefined, s] : [s.pending, { ...s, pending: [], inFlight: reservation }],
           );
           if (!fresh) return;
           const fiber = yield* Effect.forkIn(Effect.interruptible(runCall(fresh)), scope, { startImmediately: true });
@@ -401,14 +395,14 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
       return callUpdater(fresh).pipe(
         Effect.onExit((exit) =>
           Effect.gen(function* () {
-            const quiet = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] => [s.quiet, { ...s, inFlight: undefined }]);
+            yield* Ref.update(ref, (s) => ({ ...s, inFlight: undefined }));
             if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return;
             const state = yield* Ref.get(ref);
             if (state.diffUpdate.status === "paused") {
-              if (state.retryEnabled) yield* Effect.forkIn(Effect.sleep(DIFF_UPDATE_RETRY_MS).pipe(Effect.andThen(startDiffIfReady(1, true))), scope);
+              if (state.retryEnabled) yield* Effect.forkIn(Effect.sleep(DIFF_UPDATE_RETRY_MS).pipe(Effect.andThen(startDiffIfReady(true))), scope);
               return;
             }
-            yield* startDiffIfReady(quiet || (Exit.isSuccess(exit) && exit.value) ? 1 : BATCH);
+            yield* startDiffIfReady();
           }),
         ),
         Effect.asVoid,
@@ -416,7 +410,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     }
 
     // update だけを中断可能にする。状態の反映から SessionLog.write までは中断させない
-    function callUpdater(fresh: readonly Remark[]): Effect.Effect<boolean> {
+    function callUpdater(fresh: readonly Remark[]): Effect.Effect<void> {
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const state = (yield* Ref.get(ref)).diffUpdate;
@@ -487,17 +481,17 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             if (outcome.stopped) {
               yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending] }));
               yield* setLifecycleState({ status: "stopped" });
-              return false;
+              return;
             }
             if (outcome.paused) {
               yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], diffUpdate: { status: "paused" as const, reason: "ChatGPT の利用上限" as const } }));
               yield* log.write({ type: "diff-update-paused", reason: "ChatGPT の利用上限" });
-              return false;
+              return;
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
             yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...(outcome.call ? { call: outcome.call } : {}) });
-            return false;
+            return;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
           const dropped = yield* Ref.modify(ref, (s) => {
@@ -514,23 +508,9 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             ...(outcome.processedRemarks !== undefined ? { processedRemarks: outcome.processedRemarks } : {}),
             ...(outcome.usage ? { usage: outcome.usage } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
           if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
-          return outcome.count < fresh.length;
         }),
       );
     }
-
-    const cancelWaiter = FiberHandle.clear(quietWaiter);
-
-    // 最後の発言から QUIET_MS 新しい発言が来なければ、たまった分で差分更新を呼ぶ。新しい発言が来たら中断して取り消す。
-    // 待ちが切れた後の処理は中断させない（取り出した発言を取りこぼさない）
-    const waitForQuiet = Effect.asVoid(
-      FiberHandle.run(
-        quietWaiter,
-        Effect.sleep(QUIET_MS).pipe(
-          Effect.andThen(Effect.uninterruptible(Effect.andThen(Ref.update(ref, (s) => ({ ...s, quiet: true })), startDiffIfReady(1)))),
-        ),
-      ),
-    );
 
     const idle: Effect.Effect<void> = Effect.gen(function* () {
       for (;;) {
@@ -548,16 +528,14 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           yield* Ref.update(ref, (s) => ({ ...s, remarks: [...s.remarks, r] }));
           const extra = original === undefined ? {} : { raw: original.raw, words: original.words };
           if (!r.duplicate && !hasContent(r.text)) {
-            // 中身のない発言: ログには残すが、差分更新・未反映の発言・待ち時間には関わらせない
+            // 中身のない発言: ログには残すが、差分更新・未反映の発言には関わらせない
             yield* log.write({ type: "remark", remark: r, noContent: true, ...extra });
             return;
           }
           yield* log.write({ type: "remark", remark: r, ...extra });
           if (r.duplicate) return;
-          yield* cancelWaiter;
-          yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], quiet: false }));
-          yield* startDiffIfReady(BATCH);
-          if ((yield* Ref.get(ref)).pending.length > 0) yield* waitForQuiet;
+          yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r] }));
+          yield* startDiffIfReady();
         }),
       idle,
       pushScreen: (change, lines) =>
@@ -581,7 +559,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           yield* idle;
           const state = yield* Ref.get(ref);
           if (state.pending.length === 0 || state.diffUpdate.status === "paused" || state.diffUpdate.status === "stopped") return;
-          yield* startDiffIfReady(1);
+          yield* startDiffIfReady();
         }
       }),
       snapshot: Effect.map(Ref.get(ref), snapshotOf),
@@ -592,7 +570,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
   });
 }
 
-// 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しと待ちはこの Scope の Fiber で、Scope を閉じると中断される
+// 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しはこの Scope の Fiber で、Scope を閉じると中断される
 export const makeSession = Effect.fnUntraced(function* ({ title, images = true }: { readonly title: string; readonly images?: boolean }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   const log = yield* SessionLog;
   yield* log.write({ type: "start", title });

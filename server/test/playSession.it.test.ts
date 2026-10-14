@@ -272,8 +272,10 @@ describe("play <セッションのフォルダ>", () => {
       expect(readFileSync(join(replay, "screens", "0006.0.jpg"), "utf8")).toBe("bytes-second");
       expect(readdirSync(join(replay, "screens")).sort()).toEqual(["0001.0.jpg", "0006.0.jpg"]);
       // 差分更新に添える画面は screen だけ
-      expect(diffInputs(lines)[0]).toMatchObject({
-        fresh: ["r1", "r2"],
+      // 発言 1 件ごとに呼ばれる。r1 の時点では画面はまだ再生されておらず、r2 の呼び出しに screen の 3 件が添う
+      const inputs = diffInputs(lines);
+      expect(inputs.map((d) => d.fresh)).toEqual([["r1"], ["r2"]]);
+      expect(inputs[1]).toMatchObject({
         screens: [
           { start: 1, image: "0001.0.jpg" },
           { start: 3, image: null },

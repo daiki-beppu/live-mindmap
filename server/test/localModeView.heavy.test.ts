@@ -117,8 +117,7 @@ describe("開始したセッションのローカルモード表示", () => {
     expect((yield* server.start).status).toBe(200);
     const waitText = (text: string) => Effect.tryPromise(() => vi.waitFor(async () => expect(await page.locator(".local-mode-notice").textContent()).toBe(text)));
     yield* waitText(LABEL);
-    yield* server.emit({ type: "remark", track: "相手", start: 0, end: 1, text: "面接官は3人です。" });
-    yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "採用を進めます。" });
+    yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "採用を進めます。" }); // 発言 1 件ですぐ差分更新を呼ぶ
     yield* Effect.tryPromise(() => page.locator(".map-node__text").filter({ hasText: /^採用$/ }).waitFor());
     yield* server.speak({ type: "speaking", track: "自分", text: "状態が変わる前から表示している字幕です。" });
     // 既存 CSS は幅632px未満で字幕の幅が0になる。配置の保持はその状態でも測り、可視表示は広い画面で確かめる。

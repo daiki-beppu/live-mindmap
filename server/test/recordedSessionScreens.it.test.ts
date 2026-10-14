@@ -60,8 +60,7 @@ describe("openRecordedSession の共有画面", () => {
       const { session, lines } = yield* open();
       yield* session.pushScreen(shot(5, allBytes), ["港南店", "Zendesk"]);
       yield* session.pushScreen(shot(6, new Uint8Array([9, 9, 9]), "b"));
-      yield* session.push(remark("r1", 8));
-      yield* session.push(remark("r2", 9));
+      yield* session.push(remark("r1", 8)); // 発言 1 件ですぐ差分更新が呼ばれる
       yield* session.idle;
 
       const screens = lines().filter((l) => l.type === "screen");
@@ -90,8 +89,7 @@ describe("openRecordedSession の共有画面", () => {
     Effect.gen(function* () {
       const { dir, session, inputs, lines } = yield* open();
       yield* session.pushScreen(shot(5, allBytes));
-      yield* session.push(remark("r1", 8));
-      yield* session.push(remark("r2", 9));
+      yield* session.push(remark("r1", 8)); // 発言 1 件ですぐ差分更新が呼ばれる
       yield* session.idle;
 
       expect(inputs).toHaveLength(1);
@@ -103,8 +101,7 @@ describe("openRecordedSession の共有画面", () => {
   it.effect("画面を 1 件も受けないセッションは screens/ を作らず、screen の行も無い", () =>
     Effect.gen(function* () {
       const { dir, session, inputs, lines } = yield* open();
-      yield* session.push(remark("r1", 8));
-      yield* session.push(remark("r2", 9));
+      yield* session.push(remark("r1", 8)); // 発言 1 件ですぐ差分更新が呼ばれる
       yield* session.idle;
 
       expect(inputs).toHaveLength(1); // 否定のテストなので、差分更新が実際に起きたことを先に確かめる

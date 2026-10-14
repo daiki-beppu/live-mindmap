@@ -52,7 +52,6 @@ describe("ChatGPT の利用上限の分類", () => {
       updaterLayer((input) => Effect.suspend(() => { calls.push(input); return Effect.fail(failure); })), silentLog,
     )));
     yield* session.push(remark(1));
-    yield* session.push(remark(2));
     yield* session.idle;
     expect(calls).toHaveLength(1);
     expect(yield* session.unreflectedRemarks).toEqual([]);
@@ -75,25 +74,26 @@ describe("同じSessionでの一時停止と再開", () => {
       })), silentLog,
     )));
     yield* session.push(remark(1));
-    yield* session.push(remark(2));
     yield* session.idle;
     const before = yield* session.snapshot;
     expect(before.round).toBe(1);
-    expect(before.nodes.filter((n) => n.kind === "議題").flatMap((n) => n.evidence)).toEqual(["r1", "r2"]);
+    expect(before.nodes.filter((n) => n.kind === "議題").flatMap((n) => n.evidence)).toEqual(["r1"]);
+    // r2 の呼び出しが利用上限で止まり、止まっている間に届いた r3 は呼び出しを起こさず保持される
+    yield* session.push(remark(2));
     yield* session.push(remark(3));
-    yield* session.push(remark(4));
     yield* session.idle;
     const paused = yield* session.snapshot;
     expect(paused.nodes).toEqual(before.nodes);
     expect(paused.changes).toEqual(before.changes);
     expect(paused.round).toBe(before.round);
-    expect(ids(yield* session.unreflectedRemarks)).toEqual(["r3", "r4"]);
+    expect(ids(yield* session.unreflectedRemarks)).toEqual(["r2", "r3"]);
+    expect(calls).toHaveLength(2);
     yield* TestClock.adjust(FIVE_MINUTES);
     yield* settleUntil(() => calls.length === 3);
     yield* session.idle;
-    expect(calls.map((c) => ids(c.fresh))).toEqual([["r1", "r2"], ["r3", "r4"], ["r3", "r4"]]);
-    expect(ids(calls[2]!.recent)).toEqual(["r1", "r2"]);
-    expect((yield* session.snapshot).nodes.filter((n) => n.kind === "議題").flatMap((n) => n.evidence)).toEqual(["r1", "r2", "r3", "r4"]);
+    expect(calls.map((c) => ids(c.fresh))).toEqual([["r1"], ["r2"], ["r2", "r3"]]);
+    expect(ids(calls[2]!.recent)).toEqual(["r1"]);
+    expect((yield* session.snapshot).nodes.filter((n) => n.kind === "議題").flatMap((n) => n.evidence)).toEqual(["r1", "r2", "r3"]);
     expect(yield* session.unreflectedRemarks).toEqual([]);
   }));
 
@@ -112,25 +112,26 @@ describe("同じSessionでの一時停止と再開", () => {
     yield* session.push(remark(1));
     yield* session.push(remark(2));
     yield* session.idle;
+    expect(requests).toEqual([["r1"]]);
     expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2"]);
     expect((yield* session.snapshot).round).toBe(0);
     yield* TestClock.adjust(60_000);
     for (const n of [3, 4, 5, 6, 7]) yield* session.push(remark(n));
     yield* TestClock.adjust(FIVE_MINUTES - 60_000 - 1);
     yield* session.idle;
-    expect(requests).toEqual([["r1", "r2"]]);
+    expect(requests).toEqual([["r1"]]);
     expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
     yield* TestClock.adjust(1);
     yield* settleUntil(() => requests.length === 2);
     yield* session.idle;
-    expect(requests).toEqual([["r1", "r2"], ["r1", "r2", "r3"]]);
+    expect(requests).toEqual([["r1"], ["r1", "r2", "r3"]]);
     expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
     yield* TestClock.adjust(FIVE_MINUTES - 1);
     expect(requests).toHaveLength(2);
     yield* TestClock.adjust(1);
     yield* settleUntil(() => requests.length === 5);
     yield* session.idle;
-    expect(requests).toEqual([["r1", "r2"], ["r1", "r2", "r3"], ["r1", "r2", "r3"], ["r4", "r5", "r6"], ["r7"]]);
+    expect(requests).toEqual([["r1"], ["r1", "r2", "r3"], ["r1", "r2", "r3"], ["r4", "r5", "r6"], ["r7"]]);
     expect(yield* session.unreflectedRemarks).toEqual([]);
     expect((yield* session.snapshot).nodes.filter((n) => n.kind === "要点").flatMap((n) => n.evidence)).toEqual(["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);
   }));
@@ -165,7 +166,7 @@ describe("同じSessionでの一時停止と再開", () => {
     expect(ids(yield* session.unreflectedRemarks)).toEqual(["r1", "r2", "r3"]);
     yield* Deferred.succeed(gate, undefined);
     yield* session.idle;
-    expect(calls).toEqual([["r1", "r2"], ["r1", "r2"], ["r2", "r3"], ["r3"]]);
+    expect(calls).toEqual([["r1"], ["r1", "r2"], ["r2", "r3"], ["r3"]]);
     expect(maximum).toBe(1);
     expect(yield* session.unreflectedRemarks).toEqual([]);
   }));
@@ -245,7 +246,7 @@ describe("同じSessionでの一時停止と再開", () => {
     expect(yield* session.unreflectedRemarks).toEqual([]);
     yield* session.push(remark(3));
     yield* session.flush;
-    expect(calls.map((c) => ids(c.fresh))).toEqual([["r1", "r2"], ["r1", "r2"], ["r3"]]);
+    expect(calls.map((c) => ids(c.fresh))).toEqual([["r1"], ["r1", "r2"], ["r3"]]);
     expect(ids(calls[2]!.recent)).toEqual(["r1", "r2"]);
     yield* TestClock.adjust(FIVE_MINUTES);
     expect(calls).toHaveLength(3);
