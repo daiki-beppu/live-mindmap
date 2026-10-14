@@ -57,6 +57,27 @@ func recognize(_ audio: URL, with transcriber: any Transcriber, start: Continuou
     }
 }
 
+struct SegmentLine: Encodable {
+    var arrival: Double
+    var start: Double
+    var end: Double
+    var slot: Int
+    var isFinal: Bool
+}
+
+/// 話者分離（本物の Sortformer）を同じ音声に掛け、区間が届くたびに `out` へ 1 行の JSONL を書く（Issue #1020）。到着時刻は `start` が 0。
+/// STT の結果の出力（標準出力）とは別のファイルに書く。モデルの準備は計測に含めない（呼び出し側で済ませる）。
+func diarize(_ audio: URL, with diarizer: any SpeakerDiarizer, start: ContinuousClock.Instant, out: FileHandle) async throws {
+    let origin = AudioGetCurrentHostTime()
+    let segments = try await diarizer.diarize(try pacedAudio(from: audio, origin: origin), origin: origin)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    for try await segment in segments {
+        let line = SegmentLine(arrival: (ContinuousClock.now - start).seconds, start: segment.start, end: segment.end, slot: segment.slot, isFinal: segment.isFinal)
+        out.write(try encoder.encode(line) + Data("\n".utf8))
+    }
+}
+
 extension Duration {
     var seconds: Double {
         Double(components.seconds) + Double(components.attoseconds) / 1e18
@@ -77,8 +98,8 @@ func printLine(_ line: ResultLine) {
 }
 
 /// 計測の 1 回分。`load` があれば、2 本目を並行して認識に流す（2 本同時の負荷。2 本目の結果は出さない）。
-/// モデルの準備は計測に含めない。どちらも準備が済んでから、同時に流し始める。
-func runBench(variant: Variant, audio: URL, load: URL?, vocabulary: Vocabulary? = nil) async throws {
+/// モデルの準備は計測に含めない。どちらも準備が済んでから、同時に流し始める。`diarizeTo` があれば、主の音声に話者分離も並行して掛け、区間を別ファイルに書く。
+func runBench(variant: Variant, audio: URL, load: URL?, vocabulary: Vocabulary? = nil, diarizeTo: URL? = nil) async throws {
     let main = makeTranscriber(variant, vocabulary: vocabulary)
     try await main.prepare()
     var background: (any Transcriber)?
@@ -87,11 +108,22 @@ func runBench(variant: Variant, audio: URL, load: URL?, vocabulary: Vocabulary? 
         try await t.prepare()
         background = t
     }
+    var diarization: (diarizer: SortformerSpeakerDiarizer, out: FileHandle)?
+    if let diarizeTo {
+        let diarizer = SortformerSpeakerDiarizer()
+        try await diarizer.prepare()
+        FileManager.default.createFile(atPath: diarizeTo.path, contents: nil)
+        diarization = (diarizer, try FileHandle(forWritingTo: diarizeTo))
+    }
+    defer { try? diarization?.out.close() }
     let start = ContinuousClock.now
     try await withThrowingTaskGroup(of: Void.self) { group in
         group.addTask { try await recognize(audio, with: main, start: start) { printLine($0) } }
         if let load, let background {
             group.addTask { try await recognize(load, with: background, start: start, emit: nil) }
+        }
+        if let diarization {
+            group.addTask { try await diarize(audio, with: diarization.diarizer, start: start, out: diarization.out) }
         }
         try await group.waitForAll()
     }

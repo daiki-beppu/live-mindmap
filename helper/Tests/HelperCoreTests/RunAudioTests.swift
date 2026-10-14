@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 import Testing
 @testable import HelperCore
@@ -16,6 +17,7 @@ private enum AudioObservation: Equatable {
     case recordingOrigin(Track, UInt64)
     case startedOrigin(Track, UInt64)
     case forwarded(Track, TranscriptionResult), duplicates(Bool), finished(Track)
+    case diarizerPrepared, diarizerHeard(Float), diarizerOrigin(UInt64), speakerEvent(HelperEvent)
     /// Issue #1069: 休止で区間ごとに作る Transcriber の何番目（0 始まり）が、どの音を聞いた・聞き終えたか
     case segmentHeard(Track, Int, Float), segmentEnded(Track, Int)
 }
@@ -129,6 +131,45 @@ private struct RunTranscriber: Transcriber {
     }
 }
 
+private struct DiarizerPreparationFailure: Error {}
+private struct DiarizerStreamFailure: Error {}
+
+private struct FakeDiarizer: SpeakerDiarizer {
+    let observations: AudioObservations
+    let prepareFailure: Error?
+    let segments: [SpeakerSegment]
+    let streamFailure: Error?
+    /// true なら、最初の音声を受け取った時点で（入力が開いたまま）区間を返して失敗し、以後は音声を読まない。
+    let failsOnFirstAudio: Bool
+
+    func prepare() async throws {
+        observations.append(.diarizerPrepared)
+        if let prepareFailure { throw prepareFailure }
+    }
+
+    func diarize(_ audio: AudioStream, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerSegment, Error> {
+        observations.append(.diarizerOrigin(origin))
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await item in audio {
+                        let data = try #require(item.buffer.floatChannelData)
+                        observations.append(.diarizerHeard(data[0][0]))
+                        if failsOnFirstAudio {
+                            segments.forEach { continuation.yield($0) }
+                            continuation.finish(throwing: streamFailure ?? DiarizerStreamFailure())
+                            return
+                        }
+                    }
+                    segments.forEach { continuation.yield($0) }
+                    if let streamFailure { continuation.finish(throwing: streamFailure) } else { continuation.finish() }
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
 private final class RunAudioFixture {
     let observations = AudioObservations()
     var permissionFailure: Error?
@@ -139,6 +180,11 @@ private final class RunAudioFixture {
     var relayFailure: AudioFailure?
     var recordingEnabled = true
     var heldAudio: (stream: AudioStream, continuation: AudioStream.Continuation)?
+    var diarizerEnabled = false
+    var diarizerPrepareFailure: Error?
+    var diarizerSegments: [SpeakerSegment] = []
+    var diarizerStreamFailure: Error?
+    var diarizerFailsOnFirstAudio = false
     let started = AsyncStream<Track>.makeStream()
     var initiallySelfPaused = false
     /// 台本ではなく、テストが yield して終わらせる 自分 の入力。stopAudio(.自分) で終わる
@@ -249,7 +295,16 @@ private final class RunAudioFixture {
                     }
                 }
             },
-            selfPause: SelfPause(paused: initiallySelfPaused)
+            selfPause: SelfPause(paused: initiallySelfPaused),
+            makeDiarizer: {
+                guard self.diarizerEnabled else { return nil }
+                return FakeDiarizer(
+                    observations: self.observations, prepareFailure: self.diarizerPrepareFailure,
+                    segments: self.diarizerSegments, streamFailure: self.diarizerStreamFailure,
+                    failsOnFirstAudio: self.diarizerFailsOnFirstAudio
+                )
+            },
+            emitSpeaker: { self.observations.append(.speakerEvent($0)) }
         )
     }
 
@@ -416,6 +471,194 @@ struct RunAudioTests {
         #expect(fixture.observations.values.contains(.forwarded(.相手, runResult(.相手))))
         #expect(fixture.observations.values.contains(.stopped(.相手)))
         #expect(fixture.observations.values.contains(.finished(.相手)))
+    }
+
+    // Issue #1020: 話者分離。相手のトラックだけに掛け、失敗しても認識とセッションは続く
+    private var tentative: SpeakerSegment { SpeakerSegment(start: 1.5, end: 2.5, slot: 1, isFinal: false) }
+    private var confirmed: SpeakerSegment { SpeakerSegment(start: 0, end: 1.5, slot: 0, isFinal: true) }
+
+    private func speakerEvents(_ fixture: RunAudioFixture) -> [HelperEvent] {
+        fixture.observations.values.compactMap { if case .speakerEvent(let event) = $0 { return event }; return nil }
+    }
+
+    @Test("C3: 話者分離は相手の音声だけを受け取り、区間（仮・確定）を届いた順に speaker イベントとして流す", arguments: [false, true])
+    func diarizerHearsOnlyTheirAudioAndEmitsSegments(speaker: Bool) async throws {
+        let fixture = RunAudioFixture()
+        fixture.diarizerEnabled = true
+        fixture.diarizerSegments = [tentative, confirmed]
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: speaker, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+        let events = fixture.observations.values
+        let origin = try #require(events.compactMap { if case .startedOrigin(.相手, let origin) = $0 { return origin }; return nil }.first)
+        #expect(events.contains(.diarizerOrigin(origin)))
+        #expect(events.contains(.diarizerHeard(1)))
+        // 自分のマイク（4。AEC 後は 2）は話者分離に渡さない
+        #expect(!events.contains(.diarizerHeard(4)))
+        #expect(!events.contains(.diarizerHeard(2)))
+        #expect(speakerEvents(fixture) == [
+            .speaker(track: .相手, start: 1.5, end: 2.5, slot: 1, isFinal: false),
+            .speaker(track: .相手, start: 0, end: 1.5, slot: 0, isFinal: true),
+        ])
+        // 認識・録音は話者分離の有無で変わらない
+        #expect(events.contains(.heard(.相手, 1)))
+        #expect(events.contains(.recorded(.相手, 1)))
+        #expect(events.contains(.forwarded(.相手, runResult(.相手))))
+        #expect(events.contains(.forwarded(.自分, runResult(.自分))))
+    }
+
+    @Test("C3: マイク拒否でも話者分離は相手の音声に掛かる")
+    func diarizerRunsWhenMicrophoneDenied() async throws {
+        let fixture = RunAudioFixture()
+        fixture.permissionFailure = MicrophoneError.permissionDenied
+        fixture.diarizerEnabled = true
+        fixture.diarizerSegments = [confirmed]
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: false, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+        #expect(fixture.observations.values.contains(.diarizerHeard(1)))
+        #expect(speakerEvents(fixture) == [.speaker(track: .相手, start: 0, end: 1.5, slot: 0, isFinal: true)])
+    }
+
+    @Test("C3: 話者分離の準備は音声の取得より前に済み、成功なら speaker-off は流れない")
+    func diarizerIsPreparedBeforeAudioStarts() async throws {
+        let fixture = RunAudioFixture()
+        fixture.diarizerEnabled = true
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: false, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+        let events = fixture.observations.values
+        let prepared = try #require(events.firstIndex(of: .diarizerPrepared))
+        let started = try #require(events.firstIndex(of: .started(.相手)))
+        #expect(prepared < started)
+        #expect(events.filter { $0 == .diarizerPrepared }.count == 1)
+        #expect(!speakerEvents(fixture).contains { if case .speakerOff = $0 { return true }; return false })
+    }
+
+    @Test("C5: 準備の失敗は prepare も run も止めず、原因に応じた speaker-off を 1 回だけ流し、認識・録音・転送は続く", arguments: [
+        (DiarizerFailureKind.missing, SpeakerOffReason.モデルなし),
+        (DiarizerFailureKind.loading, SpeakerOffReason.読み込みに失敗),
+    ])
+    fileprivate func preparationFailureEmitsSpeakerOff(kind: DiarizerFailureKind, reason: SpeakerOffReason) async throws {
+        let fixture = RunAudioFixture()
+        fixture.diarizerEnabled = true
+        fixture.diarizerSegments = [confirmed]
+        fixture.diarizerPrepareFailure = kind == .missing
+            ? SpeakerDiarizerError.modelMissing(URL(fileURLWithPath: "/nonexistent/Sortformer"))
+            : DiarizerPreparationFailure()
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        let origin = AudioGetCurrentHostTime()
+        try await audio.run(origin: origin, marksDuplicates: false, relay: fixture.relay)
+        let returned = AudioGetCurrentHostTime()
+        audio.stop()
+        try await audio.finish()
+        let emitted = speakerEvents(fixture)
+        #expect(emitted.count == 1)
+        guard case .speakerOff(let start, let actual)? = emitted.first else {
+            Issue.record("speaker-off が流れていません: \(emitted)")
+            return
+        }
+        #expect(actual == reason)
+        // start は origin からの秒。流した時刻は origin と run が戻った時刻の間にあるので、実行環境の速さによらず決まる。
+        #expect(start >= 0 && start <= offsetSeconds(from: origin, to: returned))
+        let events = fixture.observations.values
+        #expect(events.contains(.heard(.相手, 1)))
+        #expect(events.contains(.recorded(.相手, 1)))
+        #expect(events.contains(.forwarded(.相手, runResult(.相手))))
+        #expect(events.contains(.forwarded(.自分, runResult(.自分))))
+        #expect(events.contains(.finished(.相手)))
+        // 準備できなかった話者分離には音声を渡さない
+        #expect(!events.contains { if case .diarizerHeard = $0 { return true }; return false })
+    }
+
+    @Test("C5: 区間の流れが途中でエラーになると、それまでの区間の後に speaker-off（途中で停止）を流し、run は成功して認識は続く")
+    func streamFailureEmitsSpeakerOffAfterSegments() async throws {
+        let fixture = RunAudioFixture()
+        fixture.diarizerEnabled = true
+        fixture.diarizerSegments = [confirmed]
+        fixture.diarizerStreamFailure = DiarizerStreamFailure()
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: false, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+        let emitted = speakerEvents(fixture)
+        #expect(emitted.count == 2)
+        #expect(emitted.first == .speaker(track: .相手, start: 0, end: 1.5, slot: 0, isFinal: true))
+        guard case .speakerOff(let start, let reason)? = emitted.last else {
+            Issue.record("最後が speaker-off ではありません: \(emitted)")
+            return
+        }
+        #expect(reason == .途中で停止)
+        #expect(start >= 0)
+        let events = fixture.observations.values
+        #expect(events.contains(.forwarded(.相手, runResult(.相手))))
+        #expect(events.contains(.forwarded(.自分, runResult(.自分))))
+        #expect(events.contains(.finished(.相手)))
+    }
+
+    @Test("C5: 取得の途中（入力が開いたまま）で話者分離が失敗しても、speaker-off の後に届いた音声は認識に届き続ける")
+    func recognitionContinuesAfterDiarizerFailsMidStream() async throws {
+        let fixture = RunAudioFixture()
+        fixture.permissionFailure = MicrophoneError.permissionDenied
+        fixture.diarizerEnabled = true
+        fixture.diarizerFailsOnFirstAudio = true
+        fixture.diarizerSegments = [confirmed]
+        fixture.heldAudio = AudioStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        let running = Task { try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: false, relay: fixture.relay) }
+        defer { running.cancel(); fixture.heldAudio?.continuation.finish() }
+        var starts = fixture.started.stream.makeAsyncIterator()
+        _ = await starts.next()
+        fixture.heldAudio?.continuation.yield(runSample(1))
+        // speaker-off が流れるまで待つ（話者分離は失敗済みで、入力はまだ開いている）
+        try await waitUntil { speakerEvents(fixture).contains { if case .speakerOff = $0 { return true }; return false } }
+        fixture.heldAudio?.continuation.yield(runSample(5))
+        try await waitUntil { fixture.observations.values.contains(.heard(.相手, 5)) }
+        audio.stop()
+        try await running.value
+        try await audio.finish()
+        let events = fixture.observations.values
+        #expect(events.contains(.recorded(.相手, 5)))
+        #expect(!events.contains(.diarizerHeard(5)))
+        #expect(events.contains(.forwarded(.相手, runResult(.相手))))
+        let emitted = speakerEvents(fixture)
+        #expect(emitted.count == 2)
+        guard case .speakerOff(_, let reason)? = emitted.last else {
+            Issue.record("最後が speaker-off ではありません: \(emitted)")
+            return
+        }
+        #expect(reason == .途中で停止)
+    }
+
+    @Test("C3: 取得中の stop は話者分離の流れも閉じ、run を完了させる")
+    func stopEndsDiarizerStream() async throws {
+        let fixture = RunAudioFixture()
+        fixture.permissionFailure = MicrophoneError.permissionDenied
+        fixture.diarizerEnabled = true
+        fixture.diarizerSegments = [confirmed]
+        fixture.heldAudio = AudioStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        let running = Task { try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: false, relay: fixture.relay) }
+        defer { running.cancel(); fixture.heldAudio?.continuation.finish() }
+        var starts = fixture.started.stream.makeAsyncIterator()
+        _ = await starts.next()
+        fixture.heldAudio?.continuation.yield(runSample(1))
+        audio.stop()
+        try await running.value
+        try await audio.finish()
+        #expect(fixture.observations.values.contains(.diarizerHeard(1)))
+        #expect(fixture.observations.values.contains(.forwarded(.相手, runResult(.相手))))
+        #expect(speakerEvents(fixture) == [.speaker(track: .相手, start: 0, end: 1.5, slot: 0, isFinal: true)])
     }
 
     // MARK: Issue #1069 自分の休止
@@ -765,3 +1008,15 @@ private final class EmittedPauses: @unchecked Sendable {
     func append(_ paused: Bool, _ hostTime: UInt64) { lock.withLock { storage.append(EmittedPause(paused: paused, hostTime: hostTime)) } }
     var values: [EmittedPause] { lock.withLock { storage } }
 }
+
+private struct WaitTimeout: Error {}
+
+private func waitUntil(_ condition: () -> Bool) async throws {
+    for _ in 0..<500 {
+        if condition() { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw WaitTimeout()
+}
+
+private enum DiarizerFailureKind { case missing, loading }

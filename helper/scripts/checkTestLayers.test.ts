@@ -19,6 +19,21 @@ test("unit のファイルに WebSocketServer(port: があれば違反にする"
   assert.deepEqual(violations, [{ path: "FooTests.swift", line: 1, pattern: "WebSocketServer(port:" }]);
 });
 
+test("unit のファイルに SortformerSpeakerDiarizer( があれば違反にする", () => {
+  const violations = findRealResourceUses("FooTests.swift", "let d = SortformerSpeakerDiarizer(modelDirectory: dir)");
+  assert.deepEqual(violations, [{ path: "FooTests.swift", line: 1, pattern: "SortformerSpeakerDiarizer(" }]);
+});
+
+test("HeavyTests.swift と ITTests.swift は SortformerSpeakerDiarizer( を使っても違反にしない", () => {
+  const content = "let d = SortformerSpeakerDiarizer()";
+  assert.deepEqual(findRealResourceUses("SortformerSpeakerDiarizerHeavyTests.swift", content), []);
+  assert.deepEqual(findRealResourceUses("SortformerSpeakerDiarizerITTests.swift", content), []);
+});
+
+test("MockSortformerSpeakerDiarizer( のように語の途中にある別の型名は、unit でも違反にしない", () => {
+  assert.deepEqual(findRealResourceUses("FooTests.swift", "let d = MockSortformerSpeakerDiarizer()"), []);
+});
+
 test("補助ファイル（EchoTestSupport.swift）も unit として扱い、temporaryDirectory を違反にする", () => {
   const violations = findRealResourceUses(
     "SttBenchTests/EchoTestSupport.swift",

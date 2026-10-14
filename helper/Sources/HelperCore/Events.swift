@@ -32,6 +32,13 @@ public enum ScreenOffReason: String, Sendable, Equatable {
     case 許可なし
 }
 
+/// `speaker-off` の理由（Issue #1020）。
+public enum SpeakerOffReason: String, Sendable, Equatable {
+    case モデルなし
+    case 読み込みに失敗
+    case 途中で停止
+}
+
 public enum HelperEvent: Sendable, Equatable {
     case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
     case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
@@ -47,6 +54,11 @@ public enum HelperEvent: Sendable, Equatable {
     case tapSilent(start: Double)
     /// `自分` の休止の状態が変わった（Issue #1069）。`reason` は今は手動だけ（JSON では `手動`）。`start` は `origin` と同じ原点からの秒。
     case selfPause(paused: Bool, start: Double)
+    /// `相手` のトラックの話者の区間（Issue #1020）。`start` / `end` は `origin` と同じ原点からの秒。
+    /// `slot` は Sortformer の出力の番号。`isFinal` が false なら仮の区間で、JSON のキーは `final`。
+    case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
+    /// 話者分離が使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続ける。`start` は `origin` と同じ原点からの秒。
+    case speakerOff(start: Double, reason: SpeakerOffReason)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -63,7 +75,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused
+        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -115,6 +127,17 @@ extension HelperEvent: Encodable {
             try container.encode(paused, forKey: .paused)
             try container.encode("手動", forKey: .reason)
             try container.encode(start, forKey: .start)
+        case let .speaker(track, start, end, slot, isFinal):
+            try container.encode("speaker", forKey: .type)
+            try container.encode(track.rawValue, forKey: .track)
+            try container.encode(start, forKey: .start)
+            try container.encode(end, forKey: .end)
+            try container.encode(slot, forKey: .slot)
+            try container.encode(isFinal, forKey: .final)
+        case let .speakerOff(start, reason):
+            try container.encode("speaker-off", forKey: .type)
+            try container.encode(start, forKey: .start)
+            try container.encode(reason.rawValue, forKey: .reason)
         }
     }
 }
@@ -134,4 +157,9 @@ public func event(
     return .partial(
         track: track, start: result.start, end: result.end, text: result.text, duplicate: duplicate,
         words: words(result.text), wordTimes: result.wordTimes)
+}
+
+/// 話者の区間をイベントにする。トラックは呼び出し側が決める（話者分離は `相手` にだけ掛ける）。
+public func event(from segment: SpeakerSegment, track: Track) -> HelperEvent {
+    .speaker(track: track, start: segment.start, end: segment.end, slot: segment.slot, isFinal: segment.isFinal)
 }

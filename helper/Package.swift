@@ -18,9 +18,13 @@ let package = Package(
         .executable(name: "live-mindmap-helper", targets: ["live-mindmap-helper"]),
         .executable(name: "live-mindmap-apple", targets: ["live-mindmap-apple"]),
     ],
+    dependencies: [
+        // Sortformer（話者分離。Issue #1020）を含むコミットに固定する。v0.9.1 のタグには入っていない。
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", revision: "ea63ac36fcadb8a6611d0f58a8e4a0e7dd4381e2"),
+    ],
     targets: [
         // 純粋なロジック（イベントの形・アプリの選択）と、Core Audio / SpeechAnalyzer / WebSocket の実装
-        .target(name: "HelperCore", dependencies: ["CWebRTCAPM"]),
+        .target(name: "HelperCore", dependencies: ["CWebRTCAPM", .product(name: "FluidAudio", package: "FluidAudio")]),
         // WebRTC AEC3 の C++ を閉じ込め、C の関数だけを公開するシム（Issue #112）
         .target(
             name: "CWebRTCAPM",

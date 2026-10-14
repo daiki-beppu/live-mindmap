@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type Track } from "../src/core/index.ts";
+import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "../src/sessionSinks.ts";
@@ -118,6 +118,9 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
   });
 }
 
+// sink の appendLog が受け取る型（intake の記録と speaker の記録）
+type LogLineEvent = Parameters<SessionSink["appendLog"]>[0];
+
 type FakeSinksHandle = {
   readonly sinks: SessionSinks["Service"];
   readonly opened: { count: number; closed: number };
@@ -128,7 +131,7 @@ type FakeSinksHandle = {
   readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { drained: number; cleared: number; stopped: number };
-  readonly appended: Array<IntakeLogEvent | SelfPauseLogEvent>;
+  readonly appended: LogLineEvent[];
   readonly vocabAdded: string[][]; // addUserVocabulary へ届いた語（呼び出しごと）
   readonly order: string[]; // flush・exports・close が起きた順
   readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
@@ -146,7 +149,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const screenOffs: { start: number; reason: "指定" | "許可なし" }[] = [];
     const sequence: string[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
-    const appended: Array<IntakeLogEvent | SelfPauseLogEvent> = [];
+    const appended: LogLineEvent[] = [];
     const vocabAdded: string[][] = [];
     const order: string[] = [];
     const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
@@ -165,7 +168,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           drain: Effect.sync(() => { relayStats.drained++; }),
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
-          appendLog: (event: IntakeLogEvent | SelfPauseLogEvent) => Effect.sync(() => { appended.push(event); }),
+          appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),
           flush: Effect.sync(() => { order.push("flush"); }),
           exports: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => { order.push("exports"); return [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`]; }),
           audioFileNames: (attempt: number) => (attempt > 1 ? [`相手-${attempt}.m4a`, `自分-${attempt}.m4a`] : ["相手.m4a", "自分.m4a"]),
@@ -835,7 +838,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         return { fakeHelpers, fakeSinks, ...booted };
       });
     const pauseEvent = (paused: boolean, startSeconds: number) => ({ type: "self-pause", paused, reason: "手動", start: startSeconds });
-    const selfLogs = (appended: ReadonlyArray<IntakeLogEvent | SelfPauseLogEvent>) => appended.filter((e) => e.type === "self-paused" || e.type === "self-resumed");
+    const selfLogs = (appended: ReadonlyArray<LogLineEvent>) => appended.filter((e) => e.type === "self-paused" || e.type === "self-resumed");
 
     it.effect("setSelfPause は動いている起動回の helper へ指示を送る。値は呼んだとおり（true → false）", () =>
       Effect.gen(function* () {
@@ -1059,6 +1062,62 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
       }));
+  });
+
+  describe("話者の区間（speaker・speaker-off。Issue #1020）", () => {
+    const boot = (attempts: AttemptScript[]) =>
+      Effect.gen(function* () {
+        const fakeHelpers = yield* makeFakeHelpers(attempts);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const booted = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        return { fakeHelpers, fakeSinks, ...booted };
+      });
+
+    it.effect("speaker と speaker-off は届いた値のまま、届いた順に log（sink）へ残る。セッションは running のまま", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false });
+        fakeHelpers.send(0, { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
+        fakeHelpers.send(0, { type: "speaker-off", start: 9, reason: "途中で停止" });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.appended).toEqual([
+          { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false },
+          { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true },
+          { type: "speaker-off", start: 9, reason: "途中で停止" },
+        ]);
+        expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    it.effect("speaker・speaker-off は発言・途中結果・画面の記録に触れない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "speaker", track: "相手", start: 0, end: 1, slot: 1, final: true });
+        fakeHelpers.send(0, { type: "speaker-off", start: 2, reason: "モデルなし" });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.finals).toEqual([]);
+        expect(fakeSinks.partials).toEqual([]);
+        expect(fakeSinks.screenOffs).toEqual([]);
+        expect(fakeSinks.screens).toEqual([]);
+      }));
+
+    it.effect.each([
+      ["slot が数でない", { type: "speaker", track: "相手", start: 0, end: 1, slot: "0", final: true }],
+      ["final が真偽値でない", { type: "speaker", track: "相手", start: 0, end: 1, slot: 0, final: "yes" }],
+      ["reason が知らない文字列", { type: "speaker-off", start: 0, reason: "other" }],
+    ])("壊れた speaker 系のイベントは sink に届かない（%s）", (row) =>
+      withStderr(() =>
+        Effect.gen(function* () {
+          const [, data] = row;
+          const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
+          yield* sessions.start(start());
+          fakeHelpers.send(0, data);
+          yield* TestClock.adjust(1);
+          expect(fakeSinks.appended).toEqual([]);
+        })));
   });
 
   describe("共有画面を使わない（screen-off・--no-screen。Issue #280）", () => {
@@ -1489,7 +1548,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       yield* TestClock.adjust(500);
       yield* TestClock.adjust(10);
     });
-    const gaveUp = (appended: ReadonlyArray<IntakeLogEvent | SelfPauseLogEvent>) => appended.filter((e) => e.type === "intake-gave-up");
+    const gaveUp = (appended: ReadonlyArray<LogLineEvent>) => appended.filter((e) => e.type === "intake-gave-up");
 
     it.effect("60 秒以内に 5 回続けて届いても止まった状態にならず、次の起動が行われ、最後は running。intake-gave-up は書かれない", () =>
       Effect.gen(function* () {

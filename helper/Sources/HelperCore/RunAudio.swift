@@ -1,3 +1,6 @@
+import CoreAudio
+import Foundation
+
 public final class RunAudio {
     public typealias AudioStream = AsyncThrowingStream<CapturedAudio, Error>
     public typealias ResultStream = AsyncThrowingStream<TranscriptionResult, Error>
@@ -10,6 +13,10 @@ public final class RunAudio {
     private let recording: Recording?
     private let splitAudio: (AudioStream) -> (AudioStream, AudioStream)
     private let echoCancelled: (AudioStream, AudioStream) throws -> AudioStream
+    private let makeDiarizer: () -> SpeakerDiarizer?
+    private let emitSpeaker: (HelperEvent) -> Void
+    private var diarizer: SpeakerDiarizer?
+    private var diarizerFailure: SpeakerOffReason?
     private var theirTranscriber: Transcriber?
     private var myTranscriber: Transcriber?
     private var recordings: [Task<Void, Error>] = []
@@ -23,7 +30,9 @@ public final class RunAudio {
         recording: Recording?,
         splitAudio: @escaping (AudioStream) -> (AudioStream, AudioStream),
         echoCancelled: @escaping (AudioStream, AudioStream) throws -> AudioStream,
-        selfPause: SelfPause
+        selfPause: SelfPause,
+        makeDiarizer: @escaping () -> SpeakerDiarizer?,
+        emitSpeaker: @escaping (HelperEvent) -> Void
     ) {
         self.requestMicrophonePermission = requestMicrophonePermission
         self.makeTranscriber = makeTranscriber
@@ -33,6 +42,8 @@ public final class RunAudio {
         self.splitAudio = splitAudio
         self.echoCancelled = echoCancelled
         self.selfPause = selfPause
+        self.makeDiarizer = makeDiarizer
+        self.emitSpeaker = emitSpeaker
     }
 
     public func prepare() async throws {
@@ -46,6 +57,16 @@ public final class RunAudio {
             let mine = makeTranscriber(.自分)
             try await mine.prepare()
             myTranscriber = mine
+        }
+        // 話者分離は補助。準備に失敗しても throw せず、`run` の開始時に `speaker-off` を流して認識だけで続ける。
+        if let candidate = makeDiarizer() {
+            do {
+                try await candidate.prepare()
+                diarizer = candidate
+            } catch {
+                if case SpeakerDiarizerError.modelMissing = error { diarizerFailure = .モデルなし } else { diarizerFailure = .読み込みに失敗 }
+                FileHandle.standardError.write(Data("speaker diarization: 使えない（認識は続ける）: \(error)\n".utf8))
+            }
         }
     }
 
@@ -82,18 +103,61 @@ public final class RunAudio {
                 recordingOutput = mine.stream
             }
         }
+        // 話者分離は `相手` のトラックにだけ掛ける。録音を通した後の音声を分け、認識とは別の流れで読む。
+        let diarizerTask = await startDiarizer(on: &theirAudio, origin: origin)
         var tracks: [(Track, ResultStream)] = []
         do {
             tracks.append((.相手, try await theirTranscriber.transcribe(theirAudio, origin: origin)))
         } catch {
             // ゲートを始める前に失敗したら、作った録音の入力を終わらせる（終わらせないと finish が録音の終了を待ち続ける）
             gatedRecording?.finish(throwing: error)
+            diarizerTask?.cancel()
+            await diarizerTask?.value
             throw error
         }
         if let myTranscriber, let myAudio {
             tracks.append((.自分, mySegmentedResults(microphone: myAudio, first: myTranscriber, recording: gatedRecording, recordingOutput: recordingOutput, origin: origin)))
         }
-        try await relay(tracks, marksDuplicates)
+        do {
+            try await relay(tracks, marksDuplicates)
+        } catch {
+            diarizerTask?.cancel()
+            await diarizerTask?.value
+            throw error
+        }
+        // 上流が終われば、残りの区間を確定させて流れが終わる。待ってから戻る（サーバーを閉じる前に流し切る）。
+        await diarizerTask?.value
+    }
+
+    /// 話者分離を始める。使えない場合は `speaker-off` を 1 回流して nil を返す。使えるなら `audio` の流れを 2 つに分け、片方を話者分離に渡す。
+    private func startDiarizer(on audio: inout AudioStream, origin: UInt64) async -> Task<Void, Never>? {
+        func emitOff(_ reason: SpeakerOffReason) {
+            emitSpeaker(.speakerOff(start: offsetSeconds(from: origin, to: AudioGetCurrentHostTime()), reason: reason))
+        }
+        if let diarizerFailure {
+            emitOff(diarizerFailure)
+            return nil
+        }
+        guard let diarizer else { return nil }
+        let (transcribed, diarized) = splitAudio(audio)
+        do {
+            let segments = try await diarizer.diarize(diarized, origin: origin)
+            audio = transcribed
+            let emit = emitSpeaker
+            return Task {
+                do {
+                    for try await segment in segments { emit(event(from: segment, track: .相手)) }
+                } catch {
+                    FileHandle.standardError.write(Data("speaker diarization: 途中で停止（認識は続ける）: \(error)\n".utf8))
+                    emitOff(.途中で停止)
+                }
+            }
+        } catch {
+            audio = transcribed
+            FileHandle.standardError.write(Data("speaker diarization: 開始できない（認識は続ける）: \(error)\n".utf8))
+            emitOff(.読み込みに失敗)
+            return nil
+        }
     }
 
     /// `自分` の音を休止のゲートに通し、休止していない間の音だけを、録音と STT に流す。

@@ -35,8 +35,21 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("tap-silent"), start: Schema.Finite }),
   // 自分の休止の状態が変わった（Issue #1069）。start は origin と同じ原点からの秒
   Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Boolean, reason: Schema.Literal(SELF_PAUSE_REASON), start: Schema.Finite }),
+  // 相手のトラックの話者の区間（Issue #1020）。start / end は origin と同じ原点からの秒。slot は Sortformer の出力の番号（0 始まり）。final が false なら仮の区間
+  Schema.Struct({
+    type: Schema.Literal("speaker"),
+    track: Track,
+    start: Schema.Finite,
+    end: Schema.Finite,
+    slot: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    final: Schema.Boolean,
+  }),
+  // 話者分離を使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続く。start は origin と同じ原点からの秒
+  Schema.Struct({ type: Schema.Literal("speaker-off"), start: Schema.Finite, reason: Schema.Literals(["モデルなし", "読み込みに失敗", "途中で停止"]) }),
 ]);
 export type HelperEvent = typeof HelperEvent["Type"];
+// 受け取った値のまま log.jsonl に残す話者分離のイベント（発言・字幕・差分更新には使わない）
+export type SpeakerLogEvent = Extract<HelperEvent, { type: "speaker" | "speaker-off" }>;
 
 export const HelperPartial = Schema.Struct(helperRemarkFields);
 export type HelperPartial = typeof HelperPartial["Type"];

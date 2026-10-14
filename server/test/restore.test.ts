@@ -268,6 +268,25 @@ describe("ログからの復元", () => {
       expect(JSON.stringify(yield* restored.exportJson)).not.toContain("手動");
     }));
 
+  // Issue #1020: 話者の区間の生の記録（speaker・speaker-off）があっても、復元は同じマップに戻る
+  it.effect("speaker・speaker-off のログを含んでいても、復元は同じマップに戻る", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* original();
+      const lines = viaJsonl(events);
+      const withSpeaker = [
+        lines[0],
+        { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true },
+        ...lines.slice(1, 3),
+        { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false },
+        { type: "speaker-off", start: 9, reason: "途中で停止" },
+        ...lines.slice(3),
+      ];
+      const restored = yield* restore(withSpeaker);
+
+      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+    }));
+
   it.effect("復元したセッションは続きの発言を受け取り、元のセッションと同じ入力・同じマップになる", () =>
     Effect.gen(function* () {
       const { events, lone } = yield* original();

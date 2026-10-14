@@ -302,4 +302,69 @@ struct EventsTests {
             #expect(json["start"] as? Double == 12.5)
         }
     }
+
+    // Issue #1020: 話者の区間。STT とは別のイベントで、仮と確定は final で見分ける。slot は Sortformer の出力の番号
+    @Test("speaker は type・track・start・end・slot・final だけを持つ")
+    func speakerCarriesSegmentFields() throws {
+        let json = try decode(.speaker(track: .相手, start: 1.5, end: 2.75, slot: 2, isFinal: true))
+        #expect(Set(json.keys) == ["type", "track", "start", "end", "slot", "final"])
+        #expect(json["type"] as? String == "speaker")
+        #expect(json["track"] as? String == "相手")
+        #expect(json["start"] as? Double == 1.5)
+        #expect(json["end"] as? Double == 2.75)
+        #expect(json["slot"] as? Int == 2)
+        #expect(json["final"] as? Bool == true)
+    }
+
+    @Test("speaker の final は、仮なら false・確定なら true")
+    func speakerFinalFlag() throws {
+        let tentative = try decode(.speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: false))
+        let confirmed = try decode(.speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: true))
+        #expect(tentative["final"] as? Bool == false)
+        #expect(confirmed["final"] as? Bool == true)
+    }
+
+    @Test("speaker の JSON 文字列は固定のキー順")
+    func speakerJSONString() throws {
+        #expect(
+            try HelperEvent.speaker(track: .相手, start: 0.5, end: 1.5, slot: 3, isFinal: false).jsonString()
+                == "{\"end\":1.5,\"final\":false,\"slot\":3,\"start\":0.5,\"track\":\"相手\",\"type\":\"speaker\"}")
+    }
+
+    @Test("話者の区間はトラックを添えて speaker イベントになる。仮・確定・枠・時刻はそのまま運ぶ")
+    func segmentBecomesSpeakerEvent() {
+        let confirmed = SpeakerSegment(start: 1, end: 2.5, slot: 1, isFinal: true)
+        let tentative = SpeakerSegment(start: 2.5, end: 3, slot: 0, isFinal: false)
+        #expect(event(from: confirmed, track: .相手) == .speaker(track: .相手, start: 1, end: 2.5, slot: 1, isFinal: true))
+        #expect(event(from: tentative, track: .相手) == .speaker(track: .相手, start: 2.5, end: 3, slot: 0, isFinal: false))
+    }
+
+    @Test("speaker-off は type・start・reason だけを持ち、reason は原因の 3 語のどれか")
+    func speakerOffCarriesStartAndReason() throws {
+        for (reason, text) in [
+            (SpeakerOffReason.モデルなし, "モデルなし"), (.読み込みに失敗, "読み込みに失敗"), (.途中で停止, "途中で停止"),
+        ] {
+            let json = try decode(.speakerOff(start: 4.5, reason: reason))
+            #expect(Set(json.keys) == ["type", "start", "reason"])
+            #expect(json["type"] as? String == "speaker-off")
+            #expect(json["start"] as? Double == 4.5)
+            #expect(json["reason"] as? String == text)
+        }
+    }
+
+    @Test("speaker-off の JSON 文字列は固定のキー順")
+    func speakerOffJSONString() throws {
+        #expect(
+            try HelperEvent.speakerOff(start: 0, reason: .モデルなし).jsonString()
+                == "{\"reason\":\"モデルなし\",\"start\":0,\"type\":\"speaker-off\"}")
+    }
+
+    @Test("speaker と speaker-off は値が等しければ等しく、互いに区別される")
+    func speakerEventEquality() {
+        #expect(HelperEvent.speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: true) == .speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: true))
+        #expect(HelperEvent.speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: true) != .speaker(track: .相手, start: 0, end: 1, slot: 1, isFinal: true))
+        #expect(HelperEvent.speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: true) != .speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: false))
+        #expect(HelperEvent.speakerOff(start: 1, reason: .モデルなし) != HelperEvent.speakerOff(start: 1, reason: .途中で停止))
+        #expect(HelperEvent.speakerOff(start: 1, reason: .モデルなし) != HelperEvent.screenOff(start: 1, reason: .許可なし))
+    }
 }
