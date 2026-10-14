@@ -27,6 +27,7 @@ import { Sessions, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import type { CloudflaredMissing } from "./tunnel.ts";
 import { ViewingShare, ShareOpenFailed, ShareRefusedLocalMode, ShareScopeEmpty, type ViewingPort } from "./viewingShare.ts";
+import { TransferredJudge } from "./judgeSelection.ts";
 import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
@@ -53,9 +54,11 @@ const SessionStartBody = Schema.Struct({
   screen: Schema.optional(Schema.NullOr(Schema.Boolean)),
   vocab: Schema.optionalKey(Schema.Array(Schema.String)), // 利用者が足した語（cli start --vocab）。1 語ずつ
   model: Schema.optionalKey(TransferredModel),
+  judge: Schema.optionalKey(TransferredJudge), // 開始時に決めた判定のモデル（cli start）。鍵は送らず、環境変数の名前だけを送る
 });
 
 const toSessionStart = (body: typeof SessionStartBody["Type"], model: SessionStart["model"]): SessionStart => ({
+  ...(body.judge ? { judge: body.judge } : {}),
   app: body.app,
   title: body.title ?? undefined,
   audio: body.audio ?? true,
@@ -137,7 +140,8 @@ const startSession = Effect.gen(function* () {
   );
   const result = acceptTransferredModel(body.model ?? defaultClaude);
   if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
-  if (body.model?.route === "openai-compatible" || body.model?.route === "chatgpt") {
+  // 判定は環境変数の鍵を、本文で指定できる url へ送る。互換モデルと同じ危険があるので、転送用トークンを求める
+  if (body.model?.route === "openai-compatible" || body.model?.route === "chatgpt" || body.judge !== undefined) {
     const token = yield* ModelTransferToken;
     const request = yield* HttpServerRequest.HttpServerRequest;
     if (!matchesModelTransferToken(token, request.headers[MODEL_TRANSFER_HEADER])) return yield* new ForbiddenModelTransfer();

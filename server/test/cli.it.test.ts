@@ -6,7 +6,7 @@ import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Context, Deferred, Duration, Effect, Fiber, Layer, Predicate, Queue, Result, Stream, type Cause } from "effect";
 import { CliError } from "effect/cli";
-import { HttpClient, HttpServer } from "effect/http";
+import { HttpClient, HttpClientResponse, HttpServer } from "effect/http";
 import { afterEach, beforeEach, vi } from "vitest";
 import { CaptureFailed, MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
@@ -22,6 +22,7 @@ import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTransferToken.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
@@ -619,6 +620,87 @@ describe("CLI", () => {
       expect(external.openListener).toHaveBeenCalledOnce();
       expect(external.openClaudeUpdater).toHaveBeenCalledOnce();
       expect(readdirSync(sessions)).toHaveLength(1);
+    }));
+  });
+
+  describe("play の判定による振り分け（Issue #984）", () => {
+    // 判定の宛先（api.typesafe.ai）への要求だけを数える偽の HttpClient。「含む」の確からしさは 0.9
+    const judgeClient = () => {
+      const urls: string[] = [];
+      const client = HttpClient.make((request) => Effect.sync(() => {
+        urls.push(request.url);
+        const body = request.body._tag === "Uint8Array" ? JSON.parse(new TextDecoder().decode(request.body.body)) : { questions: { route: {} } };
+        const name = Object.keys(body.questions)[0]!;
+        return HttpClientResponse.fromWeb(request, new Response(JSON.stringify({ answers: { [name]: { type: "noul", noul: 0.9 } } }), { headers: { "content-type": "application/json" } }));
+      }));
+      return { urls, client };
+    };
+    const judging = { LIVE_MINDMAP_JUDGE: "jev", TYPESAFE_AI_API_KEY: "synthetic-key" };
+
+    it.effect("既定のモデルで判定が選ばれていると、play は 1 回の差分更新ごとに判定を呼び、Sonnet・Haiku の 2 本の updater を準備する", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const deps = dependencies(join(root, "sessions"), "0", judging);
+      const { calls } = scripted();
+      const judged = judgeClient();
+      yield* runCli(["play", fixture]).pipe(Effect.provideService(HttpClient.HttpClient, judged.client), Effect.provide(deps.layer));
+      expect(calls).toHaveLength(3);
+      expect(judged.urls).toHaveLength(3);
+      expect(judged.urls.every((u) => u.startsWith("https://api.typesafe.ai/"))).toBe(true);
+      expect(external.openClaudeUpdater).toHaveBeenCalledTimes(2);
+    }));
+
+    it.effect("--model で claude を名指しすると判定を呼ばず、updater は 1 本だけ準備する", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const deps = dependencies(join(root, "sessions"), "0", judging);
+      const { calls } = scripted();
+      const judged = judgeClient();
+      yield* runCli(["play", fixture, "--model", "claude"]).pipe(Effect.provideService(HttpClient.HttpClient, judged.client), Effect.provide(deps.layer));
+      expect(calls).toHaveLength(3);
+      expect(judged.urls).toEqual([]);
+      expect(external.openClaudeUpdater).toHaveBeenCalledOnce();
+    }));
+
+    // start は CLI が判定を解決して、転送用トークンのヘッダーつきでサーバーへ送る。サーバーへの要求の本文とヘッダーを記録する
+    const startRequest = (argv: string[]) => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const deps = dependencies(sessions, "0", judging);
+      mkdirSync(dirname(modelTransferTokenPath(sessions, 0)), { recursive: true });
+      writeFileSync(modelTransferTokenPath(sessions, 0), "synthetic-token");
+      const sent: { body: Record<string, unknown>; token: string | undefined }[] = [];
+      const client = HttpClient.make((request) => Effect.sync(() => {
+        const body = request.body._tag === "Uint8Array" ? JSON.parse(new TextDecoder().decode(request.body.body)) : {};
+        sent.push({ body, token: request.headers[MODEL_TRANSFER_HEADER] });
+        return HttpClientResponse.fromWeb(request, new Response(JSON.stringify({ dir: "/fake/session" }), { headers: { "content-type": "application/json" } }));
+      }));
+      yield* runCli(argv).pipe(Effect.provideService(HttpClient.HttpClient, client), Effect.provide(deps.layer));
+      return sent;
+    });
+
+    it.effect("start は、鍵ありでモデルを指定しないと、解決した判定を転送用トークンつきでサーバーへ送る", () => Effect.gen(function* () {
+      const sent = yield* startRequest(["start", "--app", "us.zoom.xos"]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.token).toBe("synthetic-token");
+      expect(sent[0]!.body.judge).toMatchObject({ name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY" });
+    }));
+
+    it.effect("start は、--model で claude を名指しすると判定を送らない", () => Effect.gen(function* () {
+      const sent = yield* startRequest(["start", "--app", "us.zoom.xos", "--model", "claude"]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.body).not.toHaveProperty("judge");
+    }));
+
+    it.effect("開始が断られる（存在しない判定の名前）と、判定も updater も呼ばず、待受けもフォルダも作らない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const deps = dependencies(sessions, "0", judging);
+      const judged = judgeClient();
+      const result = yield* Effect.result(runCli(["play", fixture, "--judge", "no-such-judge"]).pipe(Effect.provideService(HttpClient.HttpClient, judged.client), Effect.provide(deps.layer)));
+      expect(Result.isFailure(result)).toBe(true);
+      expect(judged.urls).toEqual([]);
+      expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+      expect(external.openListener).not.toHaveBeenCalled();
+      expect(existsSync(sessions)).toBe(false);
     }));
   });
 

@@ -40,6 +40,12 @@ export const resolveModel = Effect.fn("resolveModel")(function* (flags: ModelFla
   const result = selectModel({ ...input, macState });
   return result.ok ? result.model : yield* reject(result.lines);
 });
+// 差分更新のモデルを利用者が名指ししたか（--model・LIVE_MINDMAP_MODEL・設定の default）。名指ししたときは判定で振り分けない
+export const modelChosenByUser = Effect.fn("modelChosenByUser")(function* (flags: ModelFlags) {
+  const { config, envModel } = yield* loadModelConfig();
+  const configured = typeof config === "object" && config !== null && "default" in config && config.default !== undefined;
+  return flags.model !== undefined || envModel !== undefined || configured;
+});
 export const configuredModels = Effect.fn("configuredModels")(function* () {
   const input = yield* loadModelConfig();
   const definitions = listModels(input);

@@ -153,6 +153,38 @@ describe("ログの行（LogEvent）（CT-4DATA）", () => {
   }
 });
 
+describe("diff の行の judge（判定の記録）", () => {
+  const diff = (judge: unknown) => ({ type: "diff", input: { recent: [], fresh: [], nodeCount: 0 }, ops: [], dropped: [], judge });
+  const decoded = (judge: unknown) => Schema.decodeUnknownEffect(LogEvent)(diff(judge));
+
+  it.effect("確からしさつきの記録は decode でき、値はそのまま残る", () =>
+    Effect.gen(function* () {
+      const judge = { model: "claude-haiku-5-5", ms: 42, confidence: 0.12 };
+      const row = yield* decoded(judge);
+      assert.deepStrictEqual(row.type === "diff" ? row.judge : undefined, judge);
+    }));
+
+  it.effect("判定できなかった理由つき（確からしさなし）の記録も decode でき、値はそのまま残る", () =>
+    Effect.gen(function* () {
+      const judge = { model: "claude-sonnet-5-5", ms: 1000, failure: "時間切れ" };
+      const row = yield* decoded(judge);
+      assert.deepStrictEqual(row.type === "diff" ? row.judge : undefined, judge);
+    }));
+
+  it.effect("judge の無い古い行は今までどおり decode できる", () =>
+    expectDecodeSuccess(Schema.decodeUnknownEffect(LogEvent)({ type: "diff", input: { recent: [], fresh: [], nodeCount: 0 }, ops: [], dropped: [] })));
+
+  for (const [title, judge] of [
+    ["ms が文字列", { model: "m", ms: "42" }],
+    ["model が無い", { ms: 42 }],
+    ["ms が無い", { model: "m" }],
+    ["confidence が文字列", { model: "m", ms: 1, confidence: "0.1" }],
+    ["failure が数値", { model: "m", ms: 1, failure: 1 }],
+  ] as const) {
+    it.effect(`${title}の judge は decode に失敗する`, () => expectDecodeFailure(decoded(judge)));
+  }
+});
+
 describe("diff の行の usage", () => {
   const diff = (usage: unknown) => ({ type: "diff", input: { recent: [], fresh: [], nodeCount: 0 }, ops: [], dropped: [], usage });
   const valid = { input: 10, cacheWrite: 0, cacheRead: 30, output: 40, model: "claude-sonnet-5-5" };
