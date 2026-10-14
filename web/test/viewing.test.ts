@@ -2087,3 +2087,33 @@ describe("reduceViewing: select（マップのクリック）は今までどお�
     expect(auto.camera).toEqual({ type: "follow" });
   });
 });
+
+describe("reduceViewing: deselect は選択だけを外す（狭い幅のシートの閉じるボタン）", () => {
+  it.each([
+    ["自動", selected("A1", false), { mode: "auto" }],
+    ["manual", selected("A1", true, { mode: "manual", topic: "A" }), { mode: "manual", topic: "A" }],
+    ["overview", selected("A1", true, { mode: "overview", topic: "A", before: { mode: "auto" } }), { mode: "overview", topic: "A", before: { mode: "auto" } }],
+  ] as const)("%s のとき、選択だけが消え、カメラのモードは残る", (_name, from, expected) => {
+    const out = reduceViewing(from, { type: "deselect" }, arrowTree("A"));
+    expect("selection" in out.state).toBe(false);
+    expect(out.state).toEqual(expected);
+  });
+
+  it("Esc と違い、人の開閉・右の列・字幕・キー一覧には触れず、カメラも動かさない", () => {
+    const from: ViewingState = { mode: "manual", topic: "A", humanOpened: new Set(["A"]), sideHidden: true, captionsHidden: true, keyList: true, selection: { id: "A1", byKey: true } };
+    const out = reduceViewing(from, { type: "deselect" }, arrowTree("A"));
+    expect(out.state).toEqual({ mode: "manual", topic: "A", humanOpened: new Set(["A"]), sideHidden: true, captionsHidden: true, keyList: true });
+    expect(out.camera).toEqual({ type: "hold" });
+  });
+
+  it("自動のときのカメラは今までどおり（follow）", () => {
+    expect(reduceViewing(selected("A1", false), { type: "deselect" }, arrowTree("A")).camera).toEqual({ type: "follow" });
+  });
+
+  it("選んでいないときは何も変わらず、入力の状態を書き換えない", () => {
+    const from: ViewingState = { mode: "manual", topic: "A" };
+    const out = reduceViewing(from, { type: "deselect" }, arrowTree("A"));
+    expect(out.state).toEqual(from);
+    expect(from).toEqual({ mode: "manual", topic: "A" });
+  });
+});

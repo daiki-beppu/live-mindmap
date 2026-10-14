@@ -41,6 +41,8 @@ export const Message = defineMessageUnion({
   // --- 右の列から ---
   // 「変わったこと」の項目を押した（そのノードへ移る。祖先と開くかは update が畳む見せ方から求める）
   ClickedChangeItem: { nodeId: Schema.String },
+  // 根拠のシートの閉じるボタンを押した（選びだけを外す。狭い幅でキーボードなしに選びを外す手段）
+  ClickedEvidenceClose: {},
   // 右の列の Disclosure が出し入れを求めた（isOpen: 出す向きか）
   ToggledSide: { isOpen: Schema.Boolean },
   // --- 親から ---

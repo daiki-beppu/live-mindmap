@@ -13,7 +13,7 @@ export const runMeeting = ({ container, isMac }: MeetingInput): void => {
       Model,
       init: () => ({ model: init(isMac) }),
       update,
-      view: (model, h) => ({ title: TITLE, body: h.div([h.Id(ROOT_ID)], [view(model, h)]) }),
+      view: (model, h) => ({ title: TITLE, body: h.div([h.Id(ROOT_ID), h.Class("meeting")], [view(model, h)]) }),
       subscriptions,
       container,
     }),

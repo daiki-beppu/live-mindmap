@@ -1124,3 +1124,25 @@ describe("mapSurface: 反映番号が変わったら点滅をやり直す（blin
     story(update, given(before), message(Message.CompletedRestartBlink()), model((m) => expect(m).toEqual(before)));
   });
 });
+
+// 狭い幅の根拠のシートの閉じるボタン（Issue #969）。Esc と違い、選びだけを外す
+describe("mapSurface の update: 根拠のシートの閉じるボタン（ClickedEvidenceClose）", () => {
+  it("選んでいたノードの選びが外れ、カメラのモードと人の開閉は残る", () => {
+    const before: MapSurfaceModel = { ...measuredLive(), viewing: { mode: "manual", topic: "A", humanOpened: new Set(["A"]), selection: { id: "P", byKey: false } } };
+    story(
+      update,
+      given(before),
+      message(Message.ClickedEvidenceClose()),
+      model((m) => expect(m.viewing).toEqual({ mode: "manual", topic: "A", humanOpened: new Set(["A"]) })),
+    );
+  });
+
+  it("選んでいないときに押しても、選びは無いまま", () => {
+    story(
+      update,
+      given(measuredLive()),
+      message(Message.ClickedEvidenceClose()),
+      model((m) => expect("selection" in m.viewing).toBe(false)),
+    );
+  });
+});

@@ -10,7 +10,7 @@ type CameraViewing = typeof AutoCamera.Type | typeof ManualCamera.Type | typeof 
 
 // カメラの状態に重ねる、独立した出し入れの状態。開いている・隠しているときだけ true を持つ（そうでなければフィールドを置かない）。
 // keyList: キー一覧が開いている / sideHidden: 右の列を隠している / captionsHidden: 字幕を隠している
-// selection: 選んだノード（byKey: キーで選んだか）。選んでいないときはフィールドを置かない。Esc でだけ外れる
+// selection: 選んだノード（byKey: キーで選んだか）。選んでいないときはフィールドを置かない。Esc か、狭い幅のシートの閉じるボタン（deselect）で外れる
 // humanOpened・humanFolded: 人が開いた・畳んだ議題・論点（空ならフィールドを置かない。同じ ID が両方に入ることはない）。Esc でだけ全部解け、
 // 人が畳んだ議題が今の議題になると、その議題の畳みだけ解ける
 // humanUnbundled: 人が「議題 N 件」を解いたときに、そこに入っていた議題の ID（run: の ID は持たない。空ならフィールドを置かない）。Esc でだけ解ける
@@ -55,6 +55,8 @@ export type ViewingEvent =
   | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean }
   // ノードをクリックで選んだ（カメラの状態は変えない）
   | { type: "select"; id: string }
+  // 選びだけを外す（狭い幅の根拠のシートの閉じるボタン）。Esc と違い、人の開閉には触れない
+  | { type: "deselect" }
   // Shift なしの矢印でノードを選ぶ
   | { type: "arrow"; dir: ArrowDir; meta: boolean; ctrl: boolean; alt: boolean }
   // Enter: 選んだ議題・論点を開く・畳む
@@ -385,6 +387,8 @@ export function reduceViewing(
       return reduceOverlay(state, event);
     case "select":
       return { state: { ...state, selection: { id: event.id, byKey: false } }, camera: idle(state) };
+    case "deselect":
+      return { state: without(state, "selection"), camera: idle(state) };
     case "arrow":
       return reduceArrow(state, event, tree);
     case "enter":
@@ -408,7 +412,7 @@ export function reduceViewing(
 
 // reduceCamera が受ける出来事。Z（選んだノードへ寄る）、Enter・丸（開閉）、「変わったこと」から指す操作は重ねる状態に依るので、reduceViewing が先に処理して渡さない
 type CameraEvent =
-  | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "arrow" | "enter" | "foldDot" | "pointChange" | "key" }>
+  | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "deselect" | "arrow" | "enter" | "foldDot" | "pointChange" | "key" }>
   | { type: "key"; key: Exclude<ViewKey, "Z">; meta: boolean; ctrl: boolean; alt: boolean };
 
 function reduceCameraEdgeDot(state: CameraViewing, event: Extract<CameraEvent, { type: "edgeDot" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
