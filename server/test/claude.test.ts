@@ -11,15 +11,22 @@ import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange }
 //   missing: success だが structured_output が無い / invalid: success だが structured_output が DiffOutput の形に合わない
 //   extra: success で、structured_output の操作に余分なキーがある
 //   hang: 何も返さない（Scope を閉じても待ち続ける偽物。呼び出し側が中断で離れられることを確かめる）
-//   retried: success。assistant が 2 つ（構造化出力のやり直しで要求が 2 回）流れ、result の usage・modelUsage・total_cost_usd は最後の要求の分しか持たない
-//   nullcache: success。assistant の cache_creation_input_tokens・cache_read_input_tokens が null（SDK の型では number | null）
+//   retried: success。構造化出力のやり直しで要求が 2 回。同じ message.id の assistant が 2 つ、別の id の assistant が 1 つ流れ、result の usage がその turn の全要求分を持つ
+//   nullcache: success。result の usage の cache_creation_input_tokens が null（SDK の型では number | null）、cache_read_input_tokens は欠けている
+// 実際の SDK は 1 つの応答を内容のブロックごとに別の assistant として流し、同じ message.id・同じ入力とキャッシュの usage を持つ。
+// その output_tokens は仮の小さい値で、その turn の正しい usage は result が持つ。modelUsage・total_cost_usd は query 全体の累計
 //   readings: success で、英字の語のカタカナの読み（Issue #642）の structured_output を返す
 type Behavior = "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "hang" | "retried" | "nullcache";
 type Message = { type: string; message?: { role?: string; content?: unknown }; parent_tool_use_id?: unknown };
 
-// assistant メッセージ 1 つ分（要求ごとに 1 つ）。SDK では message が BetaMessage で、usage と model を持つ
-const assistant = (model: string, usage: Record<string, number | null>) => ({ type: "assistant", message: { model, usage } });
-const ASSISTANT_USAGE = { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: 50 };
+// assistant メッセージ 1 つ分（内容のブロックごとに 1 つ）。SDK では message が BetaMessage で、id・usage・model を持つ
+const assistant = (id: string, outputTokens: number, model = "claude-haiku-5-5") => ({
+  type: "assistant",
+  message: { id, model, usage: { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: outputTokens } },
+});
+// result の usage。assistant の usage の和とは一致しない値にしてある
+const RESULT_USAGE = { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 3000, output_tokens: 520 };
+const RETRIED_RESULT_USAGE = { input_tokens: 230, cache_creation_input_tokens: 45, cache_read_input_tokens: 6100, output_tokens: 1040 };
 type Created = { messages: Message[]; closeCalls: number; options: Options };
 // query() に渡された options（systemPrompt・出力スキーマ・env）
 type Options = { model: string; systemPrompt: string; outputFormat: { type: string; schema: unknown }; env?: Record<string, string | undefined> };
@@ -28,33 +35,35 @@ const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
 // 1 つの user メッセージに対して流す応答の列（hang・throw・end は流さないので、ここには来ない）
 function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: number): unknown[] {
-  // result の usage・modelUsage・total_cost_usd は、数え方の根拠にしないことを確かめるための別の値
+  // modelUsage・total_cost_usd は、数え方の根拠にしないことを確かめるための別の値
   const result = {
     type: "result",
-    usage: { input_tokens: 7, cache_creation_input_tokens: 7, cache_read_input_tokens: 7, output_tokens: 7 },
+    usage: RESULT_USAGE,
     modelUsage: { "decoy-model": { inputTokens: 9999 } },
     total_cost_usd: 123,
   };
   if (behavior === "retried") {
     return [
-      assistant("claude-haiku-5-5", ASSISTANT_USAGE),
-      assistant("claude-haiku-5-5", { input_tokens: 1, cache_creation_input_tokens: 2, cache_read_input_tokens: 4000, output_tokens: 8 }),
-      { ...result, subtype: "success", structured_output: noopOutput("retried") },
+      assistant("msg_a", 3),
+      assistant("msg_a", 5),
+      assistant("msg_b", 2),
+      { ...result, usage: RETRIED_RESULT_USAGE, subtype: "success", structured_output: noopOutput("retried") },
     ];
   }
   if (behavior === "nullcache") {
     return [
-      assistant("claude-haiku-5-5", { input_tokens: 5, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 6 }),
-      { ...result, subtype: "success", structured_output: noopOutput("nullcache") },
+      assistant("msg_a", 3),
+      { ...result, usage: { input_tokens: 5, cache_creation_input_tokens: null, output_tokens: 6 }, subtype: "success", structured_output: noopOutput("nullcache") },
     ];
   }
-  const first = assistant("claude-haiku-5-5", ASSISTANT_USAGE);
+  const first = assistant("msg_a", 3);
+  const second = assistant("msg_a", 5);
   if (behavior === "fail") return [first, { ...result, subtype: "error_during_execution" }];
   if (behavior === "readings") return [first, { ...result, subtype: "success", structured_output: { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] } }];
   if (behavior === "missing") return [first, { ...result, subtype: "success" }];
   if (behavior === "invalid") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "add", evidence: [] }] } }];
   if (behavior === "extra") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "noop", reason: "extra", unknown: 1 }], note: "x" } }];
-  return [first, { ...result, subtype: "success", structured_output: noopOutput(`q${queryIndex}-m${messageIndex}`) }];
+  return [first, second, { ...result, subtype: "success", structured_output: noopOutput(`q${queryIndex}-m${messageIndex}`) }];
 }
 
 const fakeQuery = (created: Created[], behave: (queryIndex: number, messageIndex: number) => Behavior) =>
@@ -267,27 +276,30 @@ describe("structured_output の検証（Schema で decode）", () => {
     }));
 });
 
-describe("トークン数の数え方（assistant の message.usage の和）", () => {
-  it.effect("要求が 1 回なら、その assistant の usage と model がそのまま返る（result の usage・modelUsage・total_cost_usd は使わない）", () =>
+describe("トークン数の数え方（result の usage）", () => {
+  const OK_USAGE = { input: 100, cacheWrite: 20, cacheRead: 3000, output: 520, model: "claude-haiku-5-5" };
+  const RETRIED_USAGE = { input: 230, cacheWrite: 45, cacheRead: 6100, output: 1040, model: "claude-haiku-5-5" };
+
+  it.effect("同じ message.id の assistant が複数流れても、result の usage がそのまま返り、model は assistant のもの（modelUsage・total_cost_usd は使わない）", () =>
     Effect.gen(function* () {
       const { updater } = yield* setup(() => "ok");
 
       const output = yield* updater.update(input(1));
 
-      expect(output.usage).toEqual({ input: 100, cacheWrite: 20, cacheRead: 3000, output: 50, model: "claude-haiku-5-5" });
+      expect(output.usage).toEqual(OK_USAGE);
       expect(output.ops).toEqual(noop("q0-m0"));
     }));
 
-  it.effect("やり直しで assistant が複数なら、全部の assistant の usage の和になる（result の usage は最後の 1 回分しか持たない）", () =>
+  it.effect("やり直しで id の違う assistant が複数でも、result の usage がそのまま返る", () =>
     Effect.gen(function* () {
       const { updater } = yield* setup(() => "retried");
 
       const output = yield* updater.update(input(1));
 
-      expect(output.usage).toEqual({ input: 101, cacheWrite: 22, cacheRead: 7000, output: 58, model: "claude-haiku-5-5" });
+      expect(output.usage).toEqual(RETRIED_USAGE);
     }));
 
-  it.effect("cache の 2 項目が null の assistant は 0 として足す（NaN や null にならない）", () =>
+  it.effect("result の usage の null と欠けた値は 0 になる（NaN や null にならない）", () =>
     Effect.gen(function* () {
       const { updater } = yield* setup(() => "nullcache");
 
@@ -296,15 +308,15 @@ describe("トークン数の数え方（assistant の message.usage の和）", 
       expect(output.usage).toEqual({ input: 5, cacheWrite: 0, cacheRead: 0, output: 6, model: "claude-haiku-5-5" });
     }));
 
-  it.effect("呼び出しごとに数え直す（前の呼び出しの usage は持ち越さない）", () =>
+  it.effect("呼び出しごとにその回の result の usage になる（前の呼び出しの usage は持ち越さない）", () =>
     Effect.gen(function* () {
       const { updater } = yield* setup((_queryIndex, messageIndex) => (messageIndex === 0 ? "retried" : "ok"));
 
       const first = yield* updater.update(input(1));
       const second = yield* updater.update(input(2));
 
-      expect(first.usage).toEqual({ input: 101, cacheWrite: 22, cacheRead: 7000, output: 58, model: "claude-haiku-5-5" });
-      expect(second.usage).toEqual({ input: 100, cacheWrite: 20, cacheRead: 3000, output: 50, model: "claude-haiku-5-5" });
+      expect(first.usage).toEqual(RETRIED_USAGE);
+      expect(second.usage).toEqual(OK_USAGE);
     }));
 });
 

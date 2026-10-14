@@ -127,26 +127,33 @@ export const layerClaude = (model: string) => Layer.effect(
         catch: (e) => new ClaudeQueryFailed({ message: messageOf(e), cause: e }),
       });
 
-    // result までに届いた assistant の message.usage を足す（再試行で要求が複数でも全部数える）。
-    // result の usage は最後の 1 回分しか持たず、modelUsage・total_cost_usd は使わない（金額は単価が変わるので持たない）
+    // SDK は 1 応答をブロックごとの assistant で、同じ id・同じ usage のまま流す。output_tokens は仮の値なので、
+    // assistant の usage を足すと重なって出力が少なくなる。そのため 4 項目は result の usage（その turn の分。
+    // 構造化出力のやり直しも含む）から取り、model だけ assistant から取る。
+    // modelUsage・total_cost_usd は query 全体の累計なので使わない（金額は単価が変わるので持たない）
     const awaitStructured = Effect.fnUntraced(function* (o: { readonly output: AsyncIterator<SDKMessage> }, label: string): Effect.fn.Return<{ structured: unknown; usage: DiffUsage | undefined }, ClaudeQueryFailed | ClaudeResultFailed> {
-      let usage: DiffUsage | undefined;
+      let model: string | undefined;
       for (;;) {
         const { value: m, done } = yield* next(o);
         if (done) return yield* new ClaudeQueryFailed({ message: `${label}の結果が無い`, cause: "stream ended before result" });
         if (m.type === "assistant") {
-          const u = m.message.usage;
-          usage = {
-            input: (usage?.input ?? 0) + u.input_tokens,
-            cacheWrite: (usage?.cacheWrite ?? 0) + (u.cache_creation_input_tokens ?? 0),
-            cacheRead: (usage?.cacheRead ?? 0) + (u.cache_read_input_tokens ?? 0),
-            output: (usage?.output ?? 0) + u.output_tokens,
-            model: m.message.model,
-          };
+          model = m.message.model;
           continue;
         }
         if (m.type !== "result") continue;
         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `${label}に失敗: ${m.subtype}`, subtype: m.subtype });
+        // 型は必須だが、値は null や欠けがありうる（usage 自体が無い result も流れる）ので 0 に寄せる
+        const u: Partial<Record<"input_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens" | "output_tokens", number | null>> | undefined = m.usage;
+        const usage: DiffUsage | undefined =
+          model === undefined
+            ? undefined
+            : {
+                input: u?.input_tokens ?? 0,
+                cacheWrite: u?.cache_creation_input_tokens ?? 0,
+                cacheRead: u?.cache_read_input_tokens ?? 0,
+                output: u?.output_tokens ?? 0,
+                model,
+              };
         return { structured: m.structured_output, usage };
       }
     });
