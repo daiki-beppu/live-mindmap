@@ -2181,3 +2181,104 @@ describe("英字の語のカタカナの読み（katakana。Issue #642）", () =
       expect(created[1]!.messages).toHaveLength(1);
     }));
 });
+
+describe("前回の応答の仮 ID と捨てた操作（buildPrompt）", () => {
+  // 1 回目の応答: 議題 n1。2 回目の応答（前回の応答）: 仮 ID u2 の論点（→ n2）と、仮 ID の無い…ではなく ref が対応表に無い追加 n3
+  const prevMap = evolve(emptyMap("会議"), [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "送料", evidence: ["r1"] }]).map;
+  const lastResponse = evolve(prevMap, [
+    { op: "add", ref: "u2", parent: "n1", kind: "TODO", text: "送料を調べる", evidence: ["r1"] },
+    { op: "add", ref: "u3", parent: "n1", kind: "課題", text: "梱包", evidence: ["r1"] },
+    { op: "add", ref: "u4", parent: "n99", kind: "課題", text: "親が無い", evidence: ["r1"] },
+    { op: "add", ref: "n1", parent: "n1", kind: "課題", text: "既存と重なる", evidence: ["r1"] },
+  ]);
+  const withPrevious = (previousResponse?: DiffInput["previousResponse"]): DiffInput => ({ ...inputOf(lastResponse.map, 2), ...(previousResponse ? { previousResponse } : {}) });
+  const addLine = (prompt: string, id: string) => prompt.split("\n").find((l) => l.startsWith(`- 追加 ${id} `));
+
+  it("前回の応答で作られたノードの「追加」の行の末尾に、仮 ID を添える。対応に無いノードには添えない", () => {
+    expect(lastResponse.refs).toEqual({ u2: "n2", u3: "n3" });
+    const prompt = buildPrompt(withPrevious({ refs: { u2: "n2" }, dropped: [] }), prevMap);
+    expect(addLine(prompt, "n2")).toMatch(/（親: n1）（前回の応答の仮 id u2）$/);
+    expect(addLine(prompt, "n3")).toBeDefined();
+    expect(addLine(prompt, "n3")).not.toContain("前回の応答の仮 id");
+  });
+
+  it("対応が複数あれば、それぞれの追加の行に自分の仮 ID が付く。捨てた add の ref は、どの行にも付かない", () => {
+    const prompt = buildPrompt(withPrevious({ refs: lastResponse.refs, dropped: lastResponse.dropped }), prevMap);
+    expect(addLine(prompt, "n2")).toMatch(/（前回の応答の仮 id u2）$/);
+    expect(addLine(prompt, "n3")).toMatch(/（前回の応答の仮 id u3）$/);
+    expect(prompt).not.toContain("仮 id u4");
+    expect(prompt.match(/前回の応答の仮 id/g)).toHaveLength(2);
+  });
+
+  it("前回の応答で捨てた操作は、末尾の節に JSON と理由が 1 行ずつ並ぶ（既存 ID と重なって捨てた add も、仮 ID の添え書きにならずここに出る）", () => {
+    const prompt = buildPrompt(withPrevious({ refs: lastResponse.refs, dropped: lastResponse.dropped }), prevMap);
+    expect(lastResponse.dropped.map((d) => d.reason)).toEqual(["親が存在しない", "仮 ID が既存の ID と重なる"]);
+    const part = mapPartOf(prompt).trimEnd().split("\n");
+    const at = part.indexOf("### 前回の応答で捨てた操作");
+    expect(at).toBeGreaterThan(0);
+    const rows = part.slice(at + 1);
+    expect(rows).toHaveLength(2);
+    for (const [i, d] of lastResponse.dropped.entries()) {
+      expect(rows[i]).toContain(JSON.stringify(d.op));
+      expect(rows[i]).toContain(d.reason);
+    }
+    // 節は変更の行より後ろ
+    expect(part.findIndex((l) => l.startsWith("- 追加 n2 "))).toBeLessThan(at);
+  });
+
+  it("変更が無い回でも、捨てた操作があれば節は出る", () => {
+    const dropped = lastResponse.dropped;
+    const prompt = buildPrompt({ ...inputOf(prevMap, 2), previousResponse: { refs: {}, dropped } }, prevMap);
+    expect(mapPartOf(prompt)).toContain("（変更なし）");
+    expect(mapPartOf(prompt)).toContain("### 前回の応答で捨てた操作");
+  });
+
+  it("捨てた操作が無ければ、節ごと出さない。対応も空なら前回の応答への言及が一切無く、previousResponse が無い入力と同じ文字列になる", () => {
+    const withRefsOnly = buildPrompt(withPrevious({ refs: { u2: "n2" }, dropped: [] }), prevMap);
+    expect(withRefsOnly).not.toContain("### 前回の応答で捨てた操作");
+    const empty = buildPrompt(withPrevious({ refs: {}, dropped: [] }), prevMap);
+    expect(empty).not.toContain("前回の応答");
+    expect(empty).toBe(buildPrompt(withPrevious(), prevMap));
+  });
+
+  it("マップ全体を送る回（previous なし）は、previousResponse があっても仮 ID の添え書きも節も載せない", () => {
+    const given = withPrevious({ refs: lastResponse.refs, dropped: lastResponse.dropped });
+    const prompt = buildPrompt(given);
+    expect(prompt).not.toContain("前回の応答");
+    expect(prompt).toBe(buildPrompt(withPrevious()));
+  });
+});
+
+describe("前回の応答の仮 ID と捨てた操作（query の開き直し）", () => {
+  const previousResponse: DiffInput["previousResponse"] = {
+    refs: { u2: "n2" },
+    dropped: [{ op: { op: "update", node: "u9", text: "x", evidence: ["r1"] }, reason: "対象のノードが存在しない" }],
+  };
+  const carrying = (n: number): DiffInput => ({ ...growing(n), previousResponse });
+
+  it.effect("継続の回には前回の応答の節が載り、QUERY_RENEW_CALLS 回の後に開き直した query の最初のメッセージには載らない", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup();
+      yield* updater.update(growing(1));
+      yield* updater.update(carrying(2));
+      for (let n = 3; n <= QUERY_RENEW_CALLS; n++) yield* updater.update(growing(n));
+      yield* updater.update(carrying(QUERY_RENEW_CALLS + 1));
+
+      expect(created).toHaveLength(2);
+      expect(texts(created[0]!)[1]).toContain("### 前回の応答で捨てた操作");
+      expect(texts(created[1]!)[0]).not.toContain("前回の応答");
+      expect(texts(created[1]!)[0]).toBe(buildPrompt(growing(QUERY_RENEW_CALLS + 1)));
+    }));
+
+  it.effect("失敗の後に開き直した query の最初のメッセージには載らない", () =>
+    Effect.gen(function* () {
+      const { created, updater } = yield* setup((q, m) => (q === 0 && m === 1 ? "fail" : "ok"));
+      yield* updater.update(growing(1));
+      yield* Effect.flip(updater.update(carrying(2)));
+      yield* updater.update(carrying(3));
+
+      expect(created).toHaveLength(2);
+      expect(texts(created[1]!)[0]).not.toContain("前回の応答");
+      expect(texts(created[1]!)[0]).toBe(buildPrompt(growing(3)));
+    }));
+});

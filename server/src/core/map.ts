@@ -322,12 +322,13 @@ function applyOp(s: ApplyState, op: Op): Applied {
 // add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
 // close と開き直しは changeOrder・touchedAt に影響しない。
 // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[] } {
+// refs は、適用できた add の仮 ID → 作られた n の ID（捨てた add は含まない。同じ応答で後から削除・統合されたノードの add は含む）。
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string> } {
   const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [] };
   const dropped: Dropped[] = [];
   for (const op of ops) {
     const reason = applyOp(s, op);
     if (reason) dropped.push({ op, reason });
   }
-  return { map: s.map, dropped, changeOrder: s.changeOrder };
+  return { map: s.map, dropped, changeOrder: s.changeOrder, refs: Object.fromEntries(s.refs) };
 }

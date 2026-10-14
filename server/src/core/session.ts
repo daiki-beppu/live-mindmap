@@ -25,6 +25,12 @@ export type DiffInput = {
   fresh: Remark[]; // 新しい発言
   screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
   previousScreens?: readonly ScreenChange[]; // この呼び出しより前に最後に添えた共有画面（古い順・最大 2 件）。query を開き直したときの最初のメッセージに送り直す。無ければキーごと付けない
+  previousResponse?: PreviousResponse; // 直前に適用した応答の、仮 ID の対応と捨てた操作。直前の差分更新が失敗した回と、どちらも空の回にはキーごと付けない
+};
+// 直前に適用した応答。refs は適用できた add の仮 ID → n の ID、dropped はその応答で捨てた操作と理由
+export type PreviousResponse = {
+  readonly refs: Readonly<Record<string, string>>;
+  readonly dropped: readonly Dropped[];
 };
 // 差分更新の失敗の形。core は具体の失敗の型を知らず、タグと文面だけを見る（ログの error 欄に使う）
 export type DiffUpdateError = { readonly _tag: string; readonly message: string };
@@ -152,6 +158,7 @@ export type SessionState = {
   readonly changes: readonly ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
   readonly currentTopic: string | undefined; // 今の議題の ID。変わったノードのある反映で更新する
   readonly lastChanged: string | undefined; // 直近の反映で最後に変わったノードの ID。変わったノードが無ければ undefined
+  readonly previousResponse: PreviousResponse | undefined; // 最後に適用した応答の対応と捨てた操作。差分更新の失敗の後と、どちらも空の応答の後は undefined
 };
 
 // ログから戻す共有画面の状態。画像は参照（screens/ のファイル名）だけで、バイト列は restoreSession が読む手段で読む（core はファイルを読まない）
@@ -183,6 +190,11 @@ function recordRound(history: History, before: MeetingMap, applied: { map: Meeti
   };
 }
 
+// 適用した応答から、次の差分更新の入力に載せる値を作る。対応も捨てた操作も無ければ載せるものが無い
+// ライブ（callUpdater）と復元（replayDiff）が同じ関数を通す
+const previousResponseOf = (applied: { refs: Record<string, string>; dropped: Dropped[] }): PreviousResponse | undefined =>
+  Object.keys(applied.refs).length || applied.dropped.length ? { refs: applied.refs, dropped: applied.dropped } : undefined;
+
 const typeOf = (event: unknown): unknown => (Predicate.isObject(event) && "type" in event ? event.type : undefined);
 
 const decodeStart = Schema.decodeUnknownEffect(StartEvent);
@@ -203,18 +215,25 @@ type Replay = {
   readonly received: number;
   readonly attached: readonly ScreenRefs[];
   readonly files: Set<string>;
+  readonly previousResponse: PreviousResponse | undefined;
+};
+
+// diff の入力の新しい発言を、ログの発言から id で引く。ログに無い id があれば不整合
+const freshRemarksOf = (remarks: readonly Remark[], ids: readonly string[], invalid: (reason: string) => InvalidLogEvent): Effect.Effect<Remark[], InvalidLogEvent> => {
+  const fresh: Remark[] = [];
+  for (const id of ids) {
+    const r = remarks.find((x) => x.id === id);
+    if (!r) return Effect.fail(invalid(`ログに発言がありません: ${id}`));
+    fresh.push(r);
+  }
+  return Effect.succeed(fresh);
 };
 
 // diff の行を 1 回分、復元の状態へ反映する。判定の順は、start が無い → ログに無い発言 → 反映数の超過 → screenCount の超過
 const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Replay, InvalidLogEvent> {
   const { map } = replay;
   if (!map) return yield* invalid("ログの diff より前に start がありません");
-  const fresh: Remark[] = [];
-  for (const id of e.input.fresh) {
-    const r = replay.remarks.find((x) => x.id === id);
-    if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
-    fresh.push(r);
-  }
+  const fresh = yield* freshRemarksOf(replay.remarks, e.input.fresh, invalid);
   const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
   if (count > fresh.length) return yield* invalid("diff の反映数が入力の発言数を超えています");
   const consumed = fresh.slice(0, count);
@@ -231,7 +250,7 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
   const stamp = stampOf(replay.history, consumed);
   const applied = applyOps(map, e.ops, known, stamp);
   const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
-  return { ...replay, map: applied.map, unsent, attached, history };
+  return { ...replay, map: applied.map, unsent, attached, history, previousResponse: e.error === undefined ? previousResponseOf(applied) : undefined };
 });
 
 // ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
@@ -241,7 +260,7 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
   let replay: Replay = {
     map: undefined, remarks: [], processed: [], known: new Set(), history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
-    unsent: [], received: 0, attached: [], files: new Set(),
+    unsent: [], received: 0, attached: [], files: new Set(), previousResponse: undefined,
   };
   let index = -1;
   for (const event of events) {
@@ -263,12 +282,14 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
       replay = yield* replayDiff(replay, e, invalid);
+    } else if (type === DiffUpdatePausedEvent.fields.type.literal) {
+      replay = { ...replay, previousResponse: undefined };
     }
   }
-  const { map, remarks, processed, known, history, unsent, attached, files, received } = replay;
+  const { map, remarks, processed, known, history, unsent, attached, files, received, previousResponse } = replay;
   if (!map) return yield* new InvalidLogEvent({ index: 0, reason: "ログに start がありません" });
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map, pending, processed, remarks, known, ...history, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), last: attached, files, received } };
+  return { map, pending, processed, remarks, known, ...history, previousResponse, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), last: attached, files, received } };
 });
 
 // 状態からスナップショットを作る（純粋）
@@ -415,7 +436,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         Effect.gen(function* () {
           const state = (yield* Ref.get(ref)).diffUpdate;
           if (state.status === "paused") yield* log.write({ type: "diff-update-retry", reason: state.reason });
-          const { map, recent, input, attached, previous } = yield* Ref.modify(ref, (s) => {
+          const { map, recent, input, attached, previous, previousResponse } = yield* Ref.modify(ref, (s) => {
             const recent = s.processed.slice(-RECENT);
             // 添える共有画面: 新しい発言の end の最大値以下に映り始めた、まだ添えていない変化を時刻順に並べ、新しい SCREENS_MAX 件。
             // 候補はすべて処理済みにする（添えなかった古い変化を後から送ると、映り続ける画面と食い違う）。後に映り始めた変化は次へ回す
@@ -430,7 +451,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
               ...(s.receivedScreens > 0 ? { screenCount: s.receivedScreens } : {}),
             };
             return [
-              { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [] },
+              { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [], previousResponse: s.previousResponse },
               {
                 ...s,
                 reflecting: fresh,
@@ -459,7 +480,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             Effect.flatMap(([screens, previousScreens]) =>
               Effect.suspend(() => {
                 const startedAt = logTimestamp();
-                return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}) }))).pipe(
+                return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}), ...(previousResponse ? { previousResponse } : {}) }))).pipe(
                   Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp() } as CallTimes })),
                 );
               }),
@@ -479,17 +500,17 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           );
           if (!outcome.ok) {
             if (outcome.stopped) {
-              yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending] }));
+              yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], previousResponse: undefined }));
               yield* setLifecycleState({ status: "stopped" });
               return;
             }
             if (outcome.paused) {
-              yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], diffUpdate: { status: "paused" as const, reason: "ChatGPT の利用上限" as const } }));
+              yield* Ref.update(ref, (s) => ({ ...s, reflecting: [], pending: [...fresh, ...s.pending], diffUpdate: { status: "paused" as const, reason: "ChatGPT の利用上限" as const }, previousResponse: undefined }));
               yield* log.write({ type: "diff-update-paused", reason: "ChatGPT の利用上限" });
               return;
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
-            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh] }));
+            yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh], previousResponse: undefined }));
             yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...(outcome.call ? { call: outcome.call } : {}) });
             return;
           }
@@ -500,7 +521,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const stamp = stampOf(s, consumed);
             const applied = applyOps(s.map, outcome.ops, known, stamp);
             return [applied.dropped, {
-              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, map: applied.map, reflecting: [],
+              ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, map: applied.map, reflecting: [], previousResponse: previousResponseOf(applied),
               known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
@@ -588,6 +609,7 @@ export const makeSession = Effect.fnUntraced(function* ({ title, images = true }
     changes: [],
     currentTopic: undefined,
     lastChanged: undefined,
+    previousResponse: undefined,
   }, noScreens, images);
 });
 

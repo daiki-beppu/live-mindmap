@@ -275,3 +275,21 @@ describe("applyOps: close", () => {
     for (const id of ["n1", "n2", "n3", "n4", "n5", "n6"]) expect(node(got.map, id).touchedAt).toBe(0);
   });
 });
+
+describe("applyOps: 仮 ID の対応 refs", () => {
+  it("適用できた add の仮 ID → n の ID だけを返す。捨てた add（親が無い・既存 ID と重なる）は含まない", () => {
+    const got = stamped(base(), [
+      { op: "add", ref: "a1", parent: "root", kind: "課題", text: "成功", evidence: ["r2"] },
+      { op: "add", ref: "a2", parent: "zzz", kind: "課題", text: "親が無い", evidence: ["r2"] },
+      { op: "add", ref: "a3", parent: "a1", kind: "案", text: "a1 を親にする", evidence: ["r2"] },
+      { op: "add", ref: "n1", parent: "root", kind: "課題", text: "既存と重なる", evidence: ["r2"] },
+    ]);
+    expect(got.dropped.map((d) => d.reason)).toEqual(["親が存在しない", "仮 ID が既存の ID と重なる"]);
+    expect(got.refs).toEqual({ a1: "n7", a3: "n8" });
+  });
+
+  it("add が無い、または全部捨てた応答では、空の対応を返す", () => {
+    expect(stamped(base(), [{ op: "update", node: "n3", text: "4 回", evidence: ["r2"] }]).refs).toEqual({});
+    expect(stamped(base(), [{ op: "add", ref: "a1", parent: "zzz", kind: "課題", text: "x", evidence: ["r2"] }]).refs).toEqual({});
+  });
+});

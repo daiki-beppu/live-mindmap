@@ -1698,3 +1698,67 @@ describe("議題・論点の済みと閉じる（close）", () => {
       }));
   });
 });
+
+describe("差分更新の入力に載せる前回の応答（仮 ID の対応と捨てた操作）", () => {
+  const failure = (message: string): UpdateFailure => ({ _tag: "UpdateFailed", message });
+  const pair = () => [remark("発言"), remark("発言")];
+
+  it.effect("1 回目の入力にはキーが無く、2 回目の入力には、1 回目に適用できた add の対応と捨てた操作が載る", () =>
+    Effect.gen(function* () {
+      const [a, b, c, d] = [...pair(), ...pair()];
+      const dropOp: Op = { op: "add", ref: "u9", parent: "n99", kind: "課題", text: "親が無い", evidence: [a!.id] };
+      const first: Op[] = [
+        { op: "add", ref: "u1", parent: "root", kind: "議題", text: "送料", evidence: [a!.id] },
+        dropOp,
+      ];
+      const { calls } = yield* playBatches([[a!, b!], [c!, d!]], [first, []]);
+
+      expect(calls).toHaveLength(2);
+      expect("previousResponse" in calls[0]!).toBe(false);
+      expect(calls[1]!.previousResponse).toEqual({ refs: { u1: "n1" }, dropped: [{ op: dropOp, reason: "親が存在しない" }] });
+    }));
+
+  it.effect("載るのは最後に適用した応答の分だけ: 3 回目の入力は 2 回目の応答の対応で、1 回目の対応は残らない", () =>
+    Effect.gen(function* () {
+      const [a, b, c, d, e, f] = [...pair(), ...pair(), ...pair()];
+      const { calls } = yield* playBatches(
+        [[a!, b!], [c!, d!], [e!, f!]],
+        [
+          [{ op: "add", ref: "u1", parent: "root", kind: "議題", text: "一", evidence: [a!.id] }],
+          [{ op: "add", ref: "u2", parent: "n1", kind: "論点", text: "二", evidence: [c!.id] }],
+          [],
+        ],
+      );
+      expect(calls[2]!.previousResponse).toEqual({ refs: { u2: "n2" }, dropped: [] });
+    }));
+
+  it.effect("成功した回の後に失敗した回があると、その次の入力には載らない（失敗した回の応答は適用されていない）", () =>
+    Effect.gen(function* () {
+      const [a, b, c, d, e, f] = [...pair(), ...pair(), ...pair()];
+      const { calls } = yield* playBatches(
+        [[a!, b!], [c!, d!], [e!, f!]],
+        [
+          [{ op: "add", ref: "u1", parent: "root", kind: "議題", text: "一", evidence: [a!.id] }],
+          failure("timeout"),
+          [],
+        ],
+      );
+      expect(calls).toHaveLength(3);
+      expect(calls[1]!.previousResponse).toEqual({ refs: { u1: "n1" }, dropped: [] });
+      expect("previousResponse" in calls[2]!).toBe(false);
+    }));
+
+  it.effect("1 回目が失敗なら、2 回目の入力にも載らない", () =>
+    Effect.gen(function* () {
+      const [a, b, c, d] = [...pair(), ...pair()];
+      const { calls } = yield* playBatches([[a!, b!], [c!, d!]], [failure("timeout"), []]);
+      expect("previousResponse" in calls[1]!).toBe(false);
+    }));
+
+  it.effect("add も捨てた操作も無い応答（noop）の後の入力には、キーを付けない", () =>
+    Effect.gen(function* () {
+      const [a, b, c, d] = [...pair(), ...pair()];
+      const { calls } = yield* playBatches([[a!, b!], [c!, d!]], [[{ op: "noop", reason: "雑談" }], []]);
+      expect("previousResponse" in calls[1]!).toBe(false);
+    }));
+});
