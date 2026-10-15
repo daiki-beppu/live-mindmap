@@ -629,13 +629,15 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
   return finished;
 });
 
+const recordedTitleFlag = Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとファイル名。拡張子は除く）"), Flag.optional);
+
 const recorded = Command.make(
   "recorded",
   {
     file: Argument.File("file", { mustExist: true }).pipe(Argument.withDescription("録画の音声（または動画）のファイル")),
     model: modelFlag,
     local: localFlag,
-    title: titleFlag,
+    title: recordedTitleFlag,
     vocab: vocabFlag,
   },
   Effect.fn("recorded")(function* ({ file, model, local, title, vocab }) {

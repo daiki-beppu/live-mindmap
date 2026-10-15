@@ -49,7 +49,7 @@ const resource = Effect.fnUntraced(function* () {
       }) };
     })),
   });
-  const helpers = { check: checked, checkNoScreen: checked, installSpeechJa,
+  const helpers = { check: checked, checkNoScreen: checked, creationDate: () => Effect.succeed(null), installSpeechJa,
     apps: Effect.die("導入は会議アプリを取得しない"), launch: () => Effect.die("導入はセッションを開始しない"),
   };
   const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {

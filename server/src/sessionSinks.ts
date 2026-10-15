@@ -1,6 +1,6 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, Effect, FiberSet, FileSystem, Layer, Ref, Scope } from "effect";
+import { Context, DateTime, Effect, FiberSet, FileSystem, Layer, Ref, Scope } from "effect";
 import { dirname } from "node:path";
 import type { JudgeModel } from "./judgeSelection.ts";
 import { MapCapture } from "./capture.ts";
@@ -69,6 +69,7 @@ export type OpenSessionSink = {
   updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>;
   dir: string; // createDir で作ったセッションのフォルダ
   title: string | undefined; // 省略したときは、セッションのフォルダ名（開始時刻）
+  logShiftMs?: number; // log.jsonl の時刻に足す幅（録画からのセッションが作成日時へそろえる）。省略は 0
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   speak: (frame: SpeakingFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
@@ -87,7 +88,8 @@ const audioFileNames = (attempt: number): string[] => TRACKS.map((track) => (att
 export class SessionSinks extends Context.Service<SessionSinks, {
   prepare: SessionSinksDeps["prepareUpdater"];
   // セッションのフォルダを作る。ヘルパーが録音を書き出す先として、起動の前に確定させる。失敗したら以後 open を呼ばない
-  createDir: (sessionsDir: string) => Effect.Effect<string>;
+  // at は録画からのセッションが渡す基準の時刻（ファイルの作成日時）。省略すると今の時刻
+  createDir: (sessionsDir: string, at?: DateTime.DateTime) => Effect.Effect<string>;
   // セッションの Scope の中で 1 回開く。Scope を閉じると updater が閉じ、予約が止まる
   open: (args: OpenSessionSink) => Effect.Effect<SessionSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
@@ -107,8 +109,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const scope = yield* Effect.scope;
           return yield* prepareUpdater(model, judge).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
         }),
-        createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer, recorded }) {
+        createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
+        open: Effect.fnUntraced(function* ({ dir, title, logShiftMs, publish, speak, diffUpdate, model, updaterLayer, recorded }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
@@ -119,6 +121,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const { session, appendLog: appendRecordedLog } = yield* openRecordedSession({
             dir,
             title,
+            logShiftMs,
             model,
             publish,
             diffUpdate,

@@ -11,6 +11,7 @@
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
 import { Cause, Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
+import { parse } from "node:path";
 import {
   CONFIGURATION_CHANGE_WINDOW_MS,
   decideIntakeRestart,
@@ -554,11 +555,20 @@ export class Sessions extends Context.Service<Sessions, {
         return yield* Effect.gen(function* () {
           const warnings = yield* requireStartupDeps("recorded", input.model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
           const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
-          const dir = yield* sinks.createDir(sessionsDir);
+          // 基準の時刻は、ファイルの作成日時。取れないとき（記録が無い・聞けなかった）は、流し始めた今の時刻。
+          // フォルダ名と log.jsonl の時刻は、この 1 つの基準から決める（ずらし幅 = 基準 − 今）
+          const now = DateTime.nowUnsafe();
+          const created = yield* helpers.creationDate(input.file).pipe(
+            Effect.catchTag("HelperCreationDateFailure", (failure) =>
+              Effect.as(note(`作成日時を読めないので、今の時刻でセッションを作ります: ${failure.message}\n`), null)),
+          );
+          const createdAt = created === null ? Option.none() : DateTime.make(created);
+          const base = Option.getOrElse(createdAt, () => now);
+          const dir = yield* sinks.createDir(sessionsDir, base);
           const stopRequested = yield* Deferred.make<void>();
           const attemptScope = yield* Scope.fork(scope, "sequential");
           const attempt = yield* helpers
-            .launch(["transcribe-file", "--file", input.file], stopRequested)
+            .launch(["transcribe-file", "--file", input.file, "--audio-dir", dir], stopRequested)
             .pipe(
               Scope.provide(attemptScope),
               Effect.catchTag("HelperLaunchFailure", (failure) =>
@@ -568,7 +578,8 @@ export class Sessions extends Context.Service<Sessions, {
           const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
           const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
           const sink = yield* sinks.open({
-            dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
+            dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
+            model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
             recorded: {
               progress: ({ position, rounds }) =>
                 Effect.andThen(

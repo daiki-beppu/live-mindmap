@@ -18,7 +18,8 @@ usage:
   live-mindmap-helper install-speaker-models
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
-  live-mindmap-helper transcribe-file --file <path> [--port <n>]
+  live-mindmap-helper transcribe-file --file <path> [--port <n>] [--audio-dir <dir>]
+  live-mindmap-helper creation-date --file <path>
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
 """
@@ -241,10 +242,15 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
 /// 音声ファイル 1 本を文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。音声・画面・話者分離は扱わない。
 /// 流れ: 待ち受けを始める → 全体の長さ（`file-duration`。保持して流す）→ 最初のクライアントを待つ → 文字にして流す →
 /// 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
-private func transcribeFile(file: String, port: UInt16) async throws {
+private func transcribeFile(file: String, port: UInt16, audioDir: String?) async throws {
     let url = URL(fileURLWithPath: file)
     // 読めないファイルは、待ち受けを始める前にここで失敗する
     let duration = try await fileDuration(of: url)
+    // 音声は待ち受けを始める前に書き終える。stop（Ctrl-C）がどの時点で来ても、完成した 相手.m4a が残る
+    if let audioDir {
+        try await exportFileAudio(
+            from: url, to: URL(fileURLWithPath: audioDir, isDirectory: true).appendingPathComponent(recordingFileName(track: .相手, attempt: 1)))
+    }
     let transcriber = SpeechAnalyzerTranscriber()
     try await transcriber.prepare()
     let server = WebSocketServer(port: port)
@@ -326,7 +332,17 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await transcribeFile(file: args.file, port: args.port)
+                try await transcribeFile(file: args.file, port: args.port, audioDir: args.audioDir)
+            }
+        case "creation-date":
+            switch parseCreationDateArguments(Array(arguments.dropFirst())) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
+                return 2
+            case .success(let file):
+                let date = await fileCreationDate(of: URL(fileURLWithPath: file))
+                let value = date.map { "\"\($0.formatted(.iso8601))\"" } ?? "null"
+                print("{\"creationDate\":\(value)}")
             }
         case "mix":
             switch parseMixArguments(Array(arguments.dropFirst())) {

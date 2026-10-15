@@ -1,11 +1,11 @@
 import { defaultClaude } from "../src/modelSelection.ts";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit, Layer } from "effect";
+import { Cause, DateTime, Effect, Exit, Layer } from "effect";
 import type { DiffInput, IntakeLogEvent, Remark } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -58,6 +58,32 @@ describe("createSessionDir", () => {
       }
     }).pipe(Effect.scoped));
 
+  it.effect("時刻を渡すと、フォルダ名はその時刻になる（今の時刻ではない）", () =>
+    Effect.gen(function* () {
+      const root = yield* sessionsDir;
+      const dir = yield* createSessionDir(root, DateTime.makeUnsafe("2026-10-01T01:02:03Z")).pipe(Effect.provide(NodeFileSystem.layer));
+      expect(basename(dir)).toBe("2026-10-01T01-02-03.000Z");
+      expect(readdirSync(root)).toEqual(["2026-10-01T01-02-03.000Z"]);
+    }).pipe(Effect.scoped));
+
+  it.effect("同じ名前のフォルダが既にあるときは使い回さず、-2、-3 を付けた新しいフォルダを作る。既にあるフォルダの中身は変わらない", () =>
+    Effect.gen(function* () {
+      const root = yield* sessionsDir;
+      const at = DateTime.makeUnsafe("2026-10-01T01:02:03Z");
+      const create = createSessionDir(root, at).pipe(Effect.provide(NodeFileSystem.layer));
+      const first = yield* create;
+      writeFileSync(join(first, "log.jsonl"), "前のセッション\n");
+      writeFileSync(join(first, "相手.m4a"), "前の音声");
+      const second = yield* create;
+      const third = yield* create;
+
+      expect([first, second, third].map((dir) => basename(dir))).toEqual(["2026-10-01T01-02-03.000Z", "2026-10-01T01-02-03.000Z-2", "2026-10-01T01-02-03.000Z-3"]);
+      expect(readFileSync(join(first, "log.jsonl"), "utf8")).toBe("前のセッション\n");
+      expect(readFileSync(join(first, "相手.m4a"), "utf8")).toBe("前の音声");
+      expect(readdirSync(second)).toEqual([]);
+      expect(readdirSync(third)).toEqual([]);
+    }).pipe(Effect.scoped));
+
   it.effect("sessionsDir がまだ無くても、親のフォルダごと作る", () =>
     Effect.gen(function* () {
       const root = yield* sessionsDir;
@@ -80,6 +106,35 @@ describe("openRecordedSession のログと export.json", () => {
       expect(Date.parse(first!.at as string)).toBeLessThanOrEqual(Date.now() + 1);
       expect(exported()).toEqual(JSON.parse(JSON.stringify(yield* session.exportJson)));
       expect(published).toHaveLength(1); // 最初のルート
+    }).pipe(Effect.scoped));
+
+  it.effect("logShiftMs を渡すと、log.jsonl の at と diff の call の時刻が、実時刻にそのずらし幅を足した値になる", () =>
+    Effect.gen(function* () {
+      const shift = -3 * 24 * 3_600_000;
+      const root = yield* sessionsDir;
+      const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
+      const open = yield* openRecordedSession({ model: defaultClaude, dir, title: "定例", logShiftMs: shift, publish: () => Effect.void }).pipe(
+        Effect.provide(Layer.mergeAll(updaterLayer(() => Effect.succeed({ ops: [] })), NodeFileSystem.layer)),
+      );
+      const before = Date.now();
+      yield* open.session.push(remark(1));
+      yield* open.session.idle;
+      yield* open.appendLog(note(1));
+      const after = Date.now();
+
+      const lines = readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      const diff = lines.find((l) => l.type === "diff")!;
+      const call = diff.call as { startedAt: string; endedAt: string };
+      const times = [...lines.map((l) => l.at as string), call.startedAt, call.endedAt].map((t) => Date.parse(t));
+      expect(lines.map((l) => l.type)).toEqual(["start", "remark", "diff", "intake-stopped"]);
+      // どの時刻も、実行の間の実時刻から 3 日前にずれている（at だけでなく call も）
+      for (const time of times) {
+        expect(time).toBeGreaterThanOrEqual(Date.parse(lines[0]!.at as string));
+        expect(time).toBeLessThanOrEqual(after + shift + 1);
+      }
+      expect(Date.parse(call.startedAt)).toBeGreaterThanOrEqual(before + shift - 1);
+      expect(Date.parse(lines[3]!.at as string)).toBeGreaterThanOrEqual(before + shift - 1);
+      expect(existsSync(join(dir, "export.json"))).toBe(true);
     }).pipe(Effect.scoped));
 
   it.effect("at は行を書く時点の実時刻で、同じ appendLog を後から実行し直すと新しい時刻になる。export.json は書き直さない", () =>

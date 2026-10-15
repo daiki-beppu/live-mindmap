@@ -117,7 +117,8 @@ export const DiffEvent = Schema.Struct({
 });
 
 // log.jsonl の時刻の書き方。Clock ではなく実時刻（TestClock の下でも実際の時刻）。Effect を実行した時点で決める
-export const logTimestamp = (): string => DateTime.formatIso(DateTime.nowUnsafe());
+// shiftMs は、録画からのセッションで、基準の時刻（ファイルの作成日時）へそろえるための足し幅。ライブと play は 0
+export const logTimestamp = (shiftMs = 0): string => DateTime.formatIso(DateTime.addDuration(DateTime.nowUnsafe(), shiftMs));
 // 語彙に入った語（Issue #640）。romaji は読み（作れなかった語は null）、source は出どころ
 export const VocabEvent = Schema.Struct({
   type: Schema.Literal("vocab"),
@@ -441,7 +442,7 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
 type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly last: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
 const noScreens: InitialScreens = { unsent: [], last: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
 
-function openSession(initial: SessionState, screens: InitialScreens, images: boolean): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+function openSession(initial: SessionState, screens: InitialScreens, images: boolean, logShiftMs = 0): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   return Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
@@ -570,9 +571,9 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           const outcome = yield* Effect.all([Effect.forEach(attached, readBack), readPrevious]).pipe(
             Effect.flatMap(([screens, previousScreens]) =>
               Effect.suspend(() => {
-                const startedAt = logTimestamp();
+                const startedAt = logTimestamp(logShiftMs);
                 return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}), ...(previousResponse ? { previousResponse } : {}) }))).pipe(
-                  Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp() } as CallTimes })),
+                  Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp(logShiftMs) } as CallTimes })),
                 );
               }),
             ),
@@ -688,7 +689,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
 }
 
 // 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しはこの Scope の Fiber で、Scope を閉じると中断される
-export const makeSession = Effect.fnUntraced(function* ({ title, images = true }: { readonly title: string; readonly images?: boolean }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+export const makeSession = Effect.fnUntraced(function* ({ title, images = true, logShiftMs = 0 }: { readonly title: string; readonly images?: boolean; readonly logShiftMs?: number }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   const log = yield* SessionLog;
   yield* log.write({ type: "start", title });
   if (!images) yield* log.write({
@@ -707,7 +708,7 @@ export const makeSession = Effect.fnUntraced(function* ({ title, images = true }
     lastChanged: undefined,
     previousResponse: undefined,
     diffUpdate: { status: "running" },
-  }, noScreens, images);
+  }, noScreens, images, logShiftMs);
 });
 
 // ログのイベントから、セッションを元の状態に戻す。差分更新は呼ばず、イベントも log し直さない。

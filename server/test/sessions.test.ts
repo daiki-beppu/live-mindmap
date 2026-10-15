@@ -205,7 +205,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const original = fake.sinks;
     const sinks = SessionSinks.of({
       ...original,
-      createDir: (dir) => Effect.andThen(Effect.sync(() => { state.createdDirs++; }), original.createDir(dir)),
+      createDir: (dir, at) => Effect.andThen(Effect.sync(() => { state.createdDirs++; }), original.createDir(dir, at)),
       prepare: () => Effect.gen(function* () {
         yield* Effect.acquireRelease(
           Effect.sync(() => { state.opened++; }),

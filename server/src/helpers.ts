@@ -81,6 +81,12 @@ export class HelperCheckFailure extends Schema.TaggedError<HelperCheckFailure>()
   message: Schema.String,
 }) {}
 
+export class HelperCreationDateFailure extends Schema.TaggedError<HelperCreationDateFailure>()("HelperCreationDateFailure", {
+  message: Schema.String,
+}) {}
+
+const HelperCreationDateSchema = Schema.Struct({ creationDate: Schema.NullOr(Schema.String) });
+
 export class HelperInstallFailure extends Schema.TaggedError<HelperInstallFailure>()("HelperInstallFailure", {
   message: Schema.String,
 }) {}
@@ -89,6 +95,8 @@ export class Helpers extends Context.Service<Helpers, {
   check: Effect.Effect<HelperCheck, HelperCheckFailure>;
   checkNoScreen: Effect.Effect<HelperCheck, HelperCheckFailure>;
   installSpeechJa: Stream.Stream<string, HelperInstallFailure>;
+  // 録画のファイルに記録された作成日時（ISO8601）。記録が無いファイルは null。ヘルパーの `creation-date` を 1 回だけ起動して聞く
+  creationDate: (file: string) => Effect.Effect<string | null, HelperCreationDateFailure>;
   // 会議アプリの一覧（ヘルパーの `list` の結果）。失敗は予期しない失敗（defect）
   apps: Effect.Effect<unknown>;
   // ヘルパーを 1 回起動して接続する。args は `run` から始まるヘルパーの引数（--port は付けなくてよい）。
@@ -154,6 +162,13 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     if (code !== 0) return yield* new HelperCheckFailure({ message: `ヘルパーの check が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(noScreen ? HelperCheckNoScreenSchema : HelperCheckSchema))(stdout);
   }, Effect.scoped, Effect.mapError((error) => new HelperCheckFailure({ message: error.message })));
+
+  const creationDate = Effect.fnUntraced(function* (file: string) {
+    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["creation-date", "--file", file], { forceKillAfter: HELPER_STOP_TIMEOUT_MS });
+    if (code !== 0) return yield* new HelperCreationDateFailure({ message: `ヘルパーの creation-date が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
+    const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(HelperCreationDateSchema))(stdout);
+    return decoded.creationDate;
+  }, Effect.scoped, Effect.mapError((error) => new HelperCreationDateFailure({ message: error.message })));
 
   const installSpeechJa = Stream.unwrap(Effect.gen(function* () {
     const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, "install-speech-ja"], {
@@ -245,5 +260,5 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     return { events: socket.events, stop, exit: Deferred.await(exited), stderrTail, send };
   });
 
-  return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true), installSpeechJa });
+  return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true), installSpeechJa, creationDate });
 });
