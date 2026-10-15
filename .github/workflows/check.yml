@@ -179,17 +179,7 @@ jobs:
         run: swift test --skip-build --skip 'ITTests/|HeavyTests/'
         working-directory: helper
       - name: IT
-        # 診断（#1086）: 10 分で終わらなければ、テストのプロセスのスタックを出して落とす。原因が分かったら元に戻す
-        run: |
-          swift test --skip-build --filter 'ITTests/' &
-          pid=$!
-          for _ in $(seq 1 120); do kill -0 "$pid" 2>/dev/null || break; sleep 5; done
-          if kill -0 "$pid" 2>/dev/null; then
-            for t in $(pgrep -f swiftpm-testing-helper); do sample "$t" 3 -mayDie 2>&1 | sed -n '1,400p'; done
-            kill "$pid"
-            exit 1
-          fi
-          wait "$pid"
+        run: swift test --skip-build --filter 'ITTests/'
         working-directory: helper
       # 話者分離（Sortformer）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
       - id: speaker-models
