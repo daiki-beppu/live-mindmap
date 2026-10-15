@@ -40,7 +40,7 @@ export type CaptionBoardInput = {
   // 相手の確定区間と仮の区間
   readonly intervals: readonly Segment[];
   // 枠のラベルを覗く（振らない）
-  readonly previewLabel: (slot: number) => string;
+  readonly previewLabel: (slot: number) => string | undefined;
 };
 
 type Unit = { source: number; start: number; end: number; text: string; speaker: string | undefined; label: CaptionLabel };
@@ -78,21 +78,23 @@ const wordUnits = (
   return times.map((w, i) => unit(w.start, w.end, text.slice(i === 0 ? 0 : w.location, times[i + 1]?.location ?? text.length)));
 };
 
-const partialUnits = (p: HelperPartial, source: number, intervals: readonly Segment[], previewLabel: (slot: number) => string): Unit[] =>
+const partialUnits = (p: HelperPartial, source: number, intervals: readonly Segment[], previewLabel: (slot: number) => string | undefined): Unit[] =>
   wordUnits(p.text, p.start, p.end, p.wordTimes, (start, end, text) => {
     if (p.track === "自分") return { source, start, end, text, speaker: "自分", label: "確定" };
     const slot = longestOverlap(start, end, intervals);
-    return slot === undefined ? { source, start, end, text, speaker: undefined, label: "なし" } : { source, start, end, text, speaker: previewLabel(slot), label: "仮" };
+    const speaker = slot === undefined ? undefined : previewLabel(slot);
+    return { source, start, end, text, speaker, label: speaker === undefined ? "なし" : "仮" };
   });
 
 // 発言を語ごとの単位にする（表示済みの吹き出しの境目で文字を分配できるように）。出た発言（unreflected）は発言の話者、保留中の発言（held）は区間から予想した仮の話者
-const remarkUnits = (r: SettledRemark, source: number, intervals: readonly Segment[], previewLabel: (slot: number) => string, settled: boolean): Unit[] =>
+const remarkUnits = (r: SettledRemark, source: number, intervals: readonly Segment[], previewLabel: (slot: number) => string | undefined, settled: boolean): Unit[] =>
   wordUnits(r.text, r.start, r.end, r.wordTimes, (start, end, text) => {
     const base = { source, start, end, text };
     if (r.track === "自分") return { ...base, speaker: "自分", label: "確定" };
     if (settled) return { ...base, speaker: r.speaker, label: r.speaker === undefined ? "なし" : "確定" };
     const slot = longestOverlap(start, end, intervals);
-    return slot === undefined ? { ...base, speaker: undefined, label: "なし" } : { ...base, speaker: previewLabel(slot), label: "仮" };
+    const speaker = slot === undefined ? undefined : previewLabel(slot);
+    return { ...base, speaker, label: speaker === undefined ? "なし" : "仮" };
   });
 
 // 1 回の計算が、確定状態を読んで作る次の状態。build が確定し、preview は捨てる

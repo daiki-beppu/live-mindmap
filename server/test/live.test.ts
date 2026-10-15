@@ -328,6 +328,31 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       }));
   });
 
+  describe("speaker-mixed（枠への混入。Issue #1024）", () => {
+    it.effect("正しい形は known として decode される。値は生のまま", () =>
+      Effect.gen(function* () {
+        const row = { type: "speaker-mixed", track: "相手", slot: 2, start: 95.5 } as const;
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify(row)));
+        assert.deepStrictEqual(decoded, { kind: "known", event: row });
+      }));
+
+    it.effect.each([
+      ["slot のキーが無い", { type: "speaker-mixed", track: "相手", start: 1 }],
+      ["slot が負", { type: "speaker-mixed", track: "相手", slot: -1, start: 1 }],
+      ["slot が小数", { type: "speaker-mixed", track: "相手", slot: 1.5, start: 1 }],
+      ["start のキーが無い", { type: "speaker-mixed", track: "相手", slot: 1 }],
+      ["start が文字列", { type: "speaker-mixed", track: "相手", slot: 1, start: "1" }],
+      ["track が不正", { type: "speaker-mixed", track: "司会", slot: 1, start: 1 }],
+      ["track のキーが無い", { type: "speaker-mixed", slot: 1, start: 1 }],
+    ])("壊れた speaker-mixed は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        const [, data] = row;
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(data)));
+        if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた speaker-mixed のはずが通った）");
+        assert.strictEqual(result.failure._tag, "SchemaError");
+      }));
+  });
+
   describe("speaker-off（話者分離を使えない。Issue #1020）", () => {
     it.effect.each(["モデルなし", "読み込みに失敗", "途中で停止"] as const)("reason が %s の正しい形は known として decode される", (reason) =>
       Effect.gen(function* () {

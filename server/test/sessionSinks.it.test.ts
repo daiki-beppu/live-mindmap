@@ -2855,6 +2855,130 @@ describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", (
     });
   });
 
+  describe("speaker-mixed（枠への混入。Issue #1024）", () => {
+    const mixed = (slot: number, start: number) => ({ type: "speaker-mixed", track: "相手", slot, start }) as const;
+
+    it.effect("戻した枠の、戻した後の発言にはラベルが付かず、前の発言は変わらない。同じ枠が後でまた話しても、会議の最後までラベルは戻らない。差分更新にも同じ話者が渡る", () => {
+      const { calls, updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        // 混入の前: 枠 0 が 相手 A、枠 1 が 相手 B
+        yield* sink.speaker(segment(0, 10, 13));
+        yield* sink.speaker(segment(1, 13, 16));
+        yield* sink.speaker(settledAt(16));
+        yield* sink.final(finalRemark("相手", 10, 13, "ひとつめ"));
+        yield* sink.final(finalRemark("相手", 13, 16, "ふたつめ"));
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"]]);
+
+        // 枠 1 に混入を検出
+        yield* sink.speaker(mixed(1, 16));
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"]]); // 前の発言はそのまま
+
+        // 混入の後: 枠 1 の発言は話者なし。枠 0 は 相手 A のまま
+        yield* sink.speaker(segment(0, 20, 23));
+        yield* sink.speaker(segment(1, 23, 26));
+        yield* sink.speaker(settledAt(26));
+        yield* sink.final(finalRemark("相手", 20, 23, "みっつめ"));
+        yield* sink.final(finalRemark("相手", 23, 26, "よっつめ"));
+        yield* settle;
+
+        // さらに後でも、枠 1 のラベルは戻らない
+        yield* sink.speaker(segment(1, 30, 33));
+        yield* sink.speaker(settledAt(33));
+        yield* sink.final(finalRemark("相手", 30, 33, "いつつめ"));
+        yield* sink.speaker(segment(1, 40, 43));
+        yield* sink.speaker(segment(0, 43, 46));
+        yield* sink.speaker(settledAt(46));
+        yield* sink.final(finalRemark("相手", 40, 43, "むっつめ"));
+        yield* sink.final(finalRemark("相手", 43, 46, "ななつめ"));
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        expect(brief(dir)).toEqual([
+          ["r1", "相手 A", "ひとつめ"],
+          ["r2", "相手 B", "ふたつめ"],
+          ["r3", "相手 A", "みっつめ"],
+          ["r4", undefined, "よっつめ"],
+          ["r5", undefined, "いつつめ"],
+          ["r6", undefined, "むっつめ"],
+          ["r7", "相手 A", "ななつめ"],
+        ]);
+        // 話者なしの行には speaker の項目が無い
+        for (const r of loggedRemarks(dir).filter((r) => r.speaker === undefined)) expect("speaker" in r).toBe(false);
+        // 差分更新への入力: 前の発言の話者は変わらず、戻した後は話者なし
+        const fresh = calls.flatMap((c) => c.fresh);
+        expect(fresh.map((r) => [r.id, r.speaker])).toEqual([
+          ["r1", "相手 A"], ["r2", "相手 B"], ["r3", "相手 A"], ["r4", undefined], ["r5", undefined], ["r6", undefined], ["r7", "相手 A"],
+        ]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("戻した枠に区間が挟まれた語も、隣の枠のラベルにならない（区間は取り除かず、ラベルを付ける段で外す）", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.speaker(segment(0, 10, 12));
+        yield* sink.speaker(settledAt(12));
+        yield* sink.final(finalRemark("相手", 10, 12, "ひとつめ"));
+        yield* sink.speaker(mixed(1, 12));
+
+        yield* sink.speaker(segment(0, 20, 22));
+        yield* sink.speaker(segment(1, 22, 26));
+        yield* sink.speaker(segment(0, 26, 28));
+        yield* sink.speaker(settledAt(28));
+        yield* sink.final({ track: "相手", start: 22, end: 26, text: "まんなか", wordTimes: [{ location: 0, length: 4, start: 22, end: 26 }] });
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", undefined, "まんなか"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("字幕の仮のラベルも、戻した枠では「なし」になり、他の枠は仮のラベルのまま。混入のイベントで、次の speaker-settled を待たずに字幕が直る", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, speaks } = yield* open();
+        yield* sink.speaker(segment(1, 10, 11, false));
+        yield* sink.speaker(settledAt(11));
+        yield* sink.partial({ track: "相手", start: 10, end: 11, text: "あいう", duplicate: false, wordTimes: [{ location: 0, length: 3, start: 10, end: 11 }] });
+        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+        yield* settleUntil(() => speaks.some((f) => f.bubbles.some((b) => b.text.includes("あいう") && b.label === "仮")));
+        expect(speaks.at(-1)!.bubbles.map((b) => [b.speaker, b.label])).toEqual([["相手 A", "仮"]]);
+
+        yield* sink.speaker(mixed(1, 11));
+        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+        yield* settleUntil(() => speaks.at(-1)?.bubbles.some((b) => b.label === "なし") === true);
+
+        expect(speaks.at(-1)!.bubbles.map((b) => [b.speaker, b.label, b.text])).toEqual([[undefined, "なし", "あいう"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("speaker-mixed は生の値のまま、受け取った順で log.jsonl に at 付きで残る。差分更新の入力には載らない", () => {
+      const { calls, updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.speaker(segment(1, 10, 13));
+        yield* sink.speaker(mixed(1, 95.5));
+        yield* sink.speaker(settledAt(13));
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        const rows = logEvents(dir).filter((e) => e.type === "speaker" || e.type === "speaker-mixed" || e.type === "speaker-settled");
+        expect(rows.map((e) => e.type)).toEqual(["speaker", "speaker-mixed", "speaker-settled"]);
+        const row = logEvents(dir).find((e) => e.type === "speaker-mixed")!;
+        expect(typeof row.at).toBe("string");
+        const { at, ...rest } = row;
+        expect(rest).toEqual({ type: "speaker-mixed", track: "相手", slot: 1, start: 95.5 });
+        expect(JSON.stringify(calls)).not.toContain("speaker-mixed");
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+  });
+
   describe("log.jsonl", () => {
     it.effect("発言の行に決まった話者が残る。話者なしの行には speaker の項目が無い。speaker の行は先に書かれたまま残る", () => {
       const { updaterLayer } = makeRecordingUpdater();

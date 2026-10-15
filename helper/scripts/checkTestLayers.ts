@@ -7,6 +7,7 @@ const REAL_RESOURCE_PATTERNS = [
   "WebRTCEchoCanceller(",
   "SpeechAnalyzerTranscriber(",
   "SortformerSpeakerDiarizer(",
+  "WeSpeakerEmbedder(",
   "FileManager.default.temporaryDirectory",
   "WebSocketServer(port:",
 ] as const;

@@ -379,6 +379,24 @@ struct EventsTests {
         #expect(event(from: .settled(to: 3), track: .相手) == .speakerSettled(track: .相手, to: 3))
     }
 
+    // Issue #1024: 枠への混入。slot は Sortformer の出力の番号、start は混入を判定した確定区間の終わり（origin を 0 とする秒）
+    @Test("speaker-mixed は type・track・slot・start だけを持ち、JSON 文字列は固定のキー順")
+    func speakerMixedCarriesSlotAndStart() throws {
+        let json = try decode(.speakerMixed(track: .相手, slot: 2, start: 95.5))
+        #expect(Set(json.keys) == ["type", "track", "slot", "start"])
+        #expect(json["type"] as? String == "speaker-mixed")
+        #expect(json["track"] as? String == "相手")
+        #expect(json["slot"] as? Int == 2)
+        #expect(json["start"] as? Double == 95.5)
+        #expect(try HelperEvent.speakerMixed(track: .相手, slot: 2, start: 95.5).jsonString()
+            == "{\"slot\":2,\"start\":95.5,\"track\":\"相手\",\"type\":\"speaker-mixed\"}")
+    }
+
+    @Test("話者分離の流れの混入は、トラックを添えて speaker-mixed になる")
+    func mixedItemBecomesSpeakerMixed() {
+        #expect(event(from: .mixed(slot: 2, at: 95.5), track: .相手) == .speakerMixed(track: .相手, slot: 2, start: 95.5))
+    }
+
     @Test("speaker-off は type・start・reason だけを持ち、reason は原因の 3 語のどれか")
     func speakerOffCarriesStartAndReason() throws {
         for (reason, text) in [

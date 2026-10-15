@@ -24,6 +24,9 @@ public enum SpeakerDiarization: Sendable, Equatable {
     /// 区間の `end` からは「揃った」を判定できない（FluidAudio は確定区間を話者の枠の番号順に流し、閉じた区間だけを確定として流す）ので、
     /// 確定済みの位置はヘルパーが流す。黙っている間も更新ごとに進む。
     case settled(to: Double)
+    /// 枠 `slot` に別の声が混ざっていると判定した（Issue #1024）。`at` は判定のもとになった確定区間の終わり（`origin` を 0 とする秒）。
+    /// 区間の後、`settled` の前に流す。1 つの枠につき 1 回。
+    case mixed(slot: Int, at: Double)
 }
 
 public enum SpeakerDiarizerError: Error, Equatable, CustomStringConvertible {

@@ -94,11 +94,11 @@ export const createSpeakingRelay = Effect.fnUntraced(function* ({ context, send 
           flush(),
         ),
       ),
-    // 話者の区間が確定した（speaker-settled）。仮のラベルが変わりうるので、字幕が変わるときだけ間引いて送る
+    // 話者の区間が確定した（speaker-settled）か、枠が混入で戻った（speaker-mixed）。仮のラベルが変わりうるので、字幕が変わるときだけ間引いて送る
     speaker: (event: SpeakerLogEvent) =>
       unlessStopped(
         Effect.gen(function* () {
-          if (event.type === "speaker-settled") {
+          if (event.type === "speaker-settled" || event.type === "speaker-mixed") {
             const { lastFrame } = yield* Ref.get(state);
             // 比較は盤の状態を進めない（送らないときに、送っていない境目を確定しないため）
             const frame = { type: "captions", bubbles: board.preview(yield* inputNow()) } satisfies CaptionsFrame;

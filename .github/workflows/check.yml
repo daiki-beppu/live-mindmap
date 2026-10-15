@@ -181,11 +181,13 @@ jobs:
       - name: IT
         run: swift test --skip-build --filter 'ITTests/'
         working-directory: helper
-      # 話者分離（Sortformer）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
+      # 話者分離（Sortformer）と、混入の検出（WeSpeaker）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
       - id: speaker-models
         uses: actions/cache@v6
         with:
-          path: ~/Library/Application Support/FluidAudio/Models/sortformer
+          path: |
+            ~/Library/Application Support/FluidAudio/Models/sortformer
+            ~/Library/Application Support/FluidAudio/Models/speaker-diarization
           key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
       - if: steps.speaker-models.outputs.cache-hit != 'true'
         run: bash helper/scripts/fetch-speaker-models.sh

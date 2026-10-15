@@ -135,6 +135,7 @@ struct SortformerSpeakerDiarizerHeavyTests {
             switch item {
             case .segment(let segment): segments.append(segment)
             case .settled(let to): settled.append(to)
+            case .mixed: break
             }
         }
         #expect(!settled.isEmpty, "確定済みの位置が 1 件も届かなかった")

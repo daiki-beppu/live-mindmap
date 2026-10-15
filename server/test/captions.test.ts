@@ -21,7 +21,7 @@ const remarkOf = (parts: readonly Part[], extra: { speaker?: string; track?: Tra
 
 type Interval = { slot: number; start: number; end: number };
 const LABELS: Record<number, string> = { 0: "相手 A", 1: "相手 B", 2: "相手 C", 3: "相手 A", 4: "相手 B" };
-const previewLabel = (slot: number): string => LABELS[slot] ?? "相手 Z";
+const previewLabel = (slot: number): string | undefined => LABELS[slot] ?? "相手 Z";
 
 type Context = {
   partials?: readonly HelperPartial[];
@@ -50,6 +50,35 @@ describe("途中結果から吹き出しを作る", () => {
     const bubbles = frameOf(board, { partials: [partialOf([["こんにちは", 10, 12]])] });
 
     expect(summary(bubbles)).toEqual([["相手", undefined, "なし", "こんにちは"]]);
+  });
+
+  it("覗いたラベルが無い枠（混入で戻した枠）と重なる語は、話者なし・ラベルは「なし」になる", () => {
+    const board = createCaptionBoard();
+    const reverted = (slot: number): string | undefined => (slot === 1 ? undefined : previewLabel(slot));
+
+    const bubbles = board.build({
+      partials: [partialOf([["こんにちは、", 10, 12], ["ありがとう", 12, 14]])],
+      unreflected: [],
+      held: [],
+      intervals: [{ slot: 0, start: 10, end: 12 }, { slot: 1, start: 12, end: 14 }],
+      previewLabel: reverted,
+    });
+
+    expect(summary(bubbles)).toEqual([["相手", "相手 A", "仮", "こんにちは、"], ["相手", undefined, "なし", "ありがとう"]]);
+  });
+
+  it("保留中の発言の区間から予想する仮のラベルも、覗いたラベルが無い枠では話者なし・「なし」になる", () => {
+    const board = createCaptionBoard();
+
+    const bubbles = board.build({
+      partials: [],
+      unreflected: [],
+      held: [remarkOf([["あ", 10, 12]])],
+      intervals: [{ slot: 1, start: 10, end: 12 }],
+      previewLabel: () => undefined,
+    });
+
+    expect(summary(bubbles)).toEqual([["相手", undefined, "なし", "あ"]]);
   });
 
   it("話者が替わる語で吹き出しが分かれ、1 つの吹き出しに 2 人の話が混ざらない", () => {
