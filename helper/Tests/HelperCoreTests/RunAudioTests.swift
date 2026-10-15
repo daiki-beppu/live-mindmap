@@ -15,6 +15,8 @@ private enum AudioObservation: Equatable {
     case permission, created(Track), prepared(Track), started(Track), stopped(Track)
     case split, echo, recorded(Track, Float), heard(Track, Float), origin(Track, UInt64)
     case recordingOrigin(Track, UInt64)
+    /// Issue #1070: 録音に流れたバッファの長さ（フレーム数）・取得時刻・全サンプルが 0 か
+    case recordedBuffer(Track, frames: Int, hostTime: UInt64, silent: Bool)
     case startedOrigin(Track, UInt64)
     case forwarded(Track, TranscriptionResult), duplicates(Bool), finished(Track)
     case diarizerPrepared, diarizerHeard(Float), diarizerOrigin(UInt64), speakerEvent(HelperEvent)
@@ -25,6 +27,8 @@ private enum AudioObservation: Equatable {
 /// Issue #1069: マイクの音の流れの台本。1 つ取り出されるごとに次の段へ進む（取り出しは、前の音をゲートが処理し終えてから起きる）。
 private enum MicrophoneStep {
     case audio(Float, at: UInt64)
+    /// フレーム数を指定する音（`audio` は 1 フレーム）
+    case sizedAudio(Float, frames: Int, at: UInt64)
     /// `at` は指示を受け付けた時刻
     case requestPause(Bool, at: UInt64)
     /// 観測がそろうまで待つ。5 秒そろわなければ失敗にする（そろわない実装を止まらない待ちにしない）
@@ -86,8 +90,8 @@ private func audioStream(_ values: [CapturedAudio]) -> AudioStream {
     }
 }
 
-private func runSample(_ value: Float, hostTime: UInt64 = 123) -> CapturedAudio {
-    constantAudio(value: value, frames: 1, sampleRate: 48_000, channels: 1, interleaved: false, hostTime: hostTime)
+private func runSample(_ value: Float, frames: Int = 1, hostTime: UInt64 = 123) -> CapturedAudio {
+    constantAudio(value: value, frames: frames, sampleRate: 48_000, channels: 1, interleaved: false, hostTime: hostTime)
 }
 
 /// 0 番目の Transcriber の結果は従来どおりの本文。休止の区間で作る 2 つ目以降は、番号を付けて区別する
@@ -105,6 +109,8 @@ private struct RunTranscriber: Transcriber {
     var transcribeFailure: AudioFailure?
     /// 解放されるまで入力を読まない（読み出しが遅れる Transcriber）
     var stall: Latch?
+    /// 本物の Transcriber と同じく、最初のバッファの取得時刻で結果の時刻を補正する（`TrackTimeline`）
+    var alignsToTimeline = false
 
     func prepare() async throws {
         observations.append(.prepared(track))
@@ -115,7 +121,9 @@ private struct RunTranscriber: Transcriber {
         observations.append(.origin(track, origin))
         if let transcribeFailure { throw transcribeFailure }
         await stall?.wait()
+        let timeline = TrackTimeline(origin: origin)
         for try await item in audio {
+            timeline.record(item)
             let data = try #require(item.buffer.floatChannelData)
             observations.append(.heard(track, data[0][0]))
             observations.append(.segmentHeard(track, instance, data[0][0]))
@@ -124,7 +132,8 @@ private struct RunTranscriber: Transcriber {
         return ResultStream { continuation in
             if let recognitionFailure { continuation.finish(throwing: recognitionFailure) }
             else {
-                continuation.yield(runResult(track, instance: instance))
+                let result = runResult(track, instance: instance)
+                continuation.yield(alignsToTimeline ? timeline.align(result) : result)
                 continuation.finish()
             }
         }
@@ -195,6 +204,7 @@ private final class RunAudioFixture {
     /// 自分 の録音の出力を、1 件目で失敗させる（入力は読み続ける）
     var myRecordingOutputFails = false
     var microphoneScript: MicrophoneScript?
+    var alignsMyTranscriberToTimeline = false
     /// 台本の requestPause の段で呼ぶ。テストが RunAudio.requestSelfPause に結びつけ、戻り値を記録する
     var requestPause: @Sendable (Bool, UInt64) -> Void = { _, _ in }
     let transcriberCounts = TranscriberCounts()
@@ -211,7 +221,8 @@ private final class RunAudioFixture {
                     track: track, instance: self.transcriberCounts.next(track), observations: self.observations,
                     prepareFailure: self.prepareFailure, recognitionFailure: self.recognitionFailure,
                     transcribeFailure: track == .相手 ? self.theirTranscribeFailure : nil,
-                    stall: track == .自分 ? self.stallMyTranscriber : nil
+                    stall: track == .自分 ? self.stallMyTranscriber : nil,
+                    alignsToTimeline: track == .自分 && self.alignsMyTranscriberToTimeline
                 )
             },
             startAudio: { track, origin in
@@ -228,6 +239,7 @@ private final class RunAudioFixture {
                         while let step = script.next() {
                             switch step {
                             case .audio(let value, let hostTime): return runSample(value, hostTime: hostTime)
+                            case .sizedAudio(let value, let frames, let hostTime): return runSample(value, frames: frames, hostTime: hostTime)
                             case .requestPause(let paused, let hostTime): requestPause(paused, hostTime)
                             case .waitFor(let expected):
                                 var waited = 0
@@ -259,6 +271,9 @@ private final class RunAudioFixture {
                         for try await item in stream {
                             let data = try #require(item.buffer.floatChannelData)
                             self.observations.append(.recorded(track, data[0][0]))
+                            let frames = Int(item.buffer.frameLength)
+                            let silent = (0..<frames).allSatisfy { data[0][$0] == 0 }
+                            self.observations.append(.recordedBuffer(track, frames: frames, hostTime: item.hostTime, silent: silent))
                             if track == .自分, self.myRecordingOutputFails {
                                 if !outputFailed { continuation.finish(throwing: AudioFailure.myRecording) }
                                 outputFailed = true
@@ -673,7 +688,7 @@ struct RunAudioTests {
         events.compactMap { if case .heard(.自分, let value) = $0 { return value }; return nil }
     }
 
-    @Test("C9: 休止の間の音は STT にも録音にも届かず、休止に入るまでの音は発言に確定し、再開後の音は新しい Transcriber に届く。相手は止まらない")
+    @Test("C9: 休止の間の音は STT に届かず（録音には同じ長さの無音が入り）、休止に入るまでの音は発言に確定し、再開後の音は新しい Transcriber に届く。相手は止まらない")
     func pausedMicrophoneAudioIsDroppedAndEarlierAudioIsFinalized() async throws {
         let fixture = RunAudioFixture()
         // 取る a(=4) → 休止 → b(=5)を捨てる → 区間が確定するまで待つ → 再開 → c(=6)
@@ -690,8 +705,8 @@ struct RunAudioTests {
         try await audio.finish()
         let events = fixture.observations.values
 
-        // 録音・STT には a と c だけ。休止中の b はどこにも届かない
-        #expect(recordedMine(events) == [4, 6])
+        // STT には a と c だけ。休止中の b は届かない。録音には、b の位置に無音（0）が入る
+        #expect(recordedMine(events) == [4, 0, 6])
         #expect(heardMine(events) == [4, 6])
         #expect(events.contains(.segmentHeard(.自分, 0, 4)))
         #expect(events.contains(.segmentHeard(.自分, 1, 6)))
@@ -707,7 +722,7 @@ struct RunAudioTests {
         #expect(events.contains(.forwarded(.相手, runResult(.相手))))
     }
 
-    @Test("C9: 休止のまま始めると、最初の音を捨て、再開した後の音だけが STT と録音に届く（起動し直しで休止が続く）")
+    @Test("C9: 休止のまま始めると、最初の音は STT に届かず（録音には無音が入り）、再開した後の音が STT と録音に届く（起動し直しで休止が続く）")
     func startsPausedDropsAudioUntilResumed() async throws {
         let fixture = RunAudioFixture()
         fixture.initiallySelfPaused = true
@@ -720,7 +735,7 @@ struct RunAudioTests {
         try await audio.finish()
         let events = fixture.observations.values
 
-        #expect(recordedMine(events) == [6])
+        #expect(recordedMine(events) == [0, 6])
         #expect(heardMine(events) == [6])
         #expect(!forwardedMine(events).isEmpty)
     }
@@ -737,12 +752,110 @@ struct RunAudioTests {
         try await audio.finish()
         let events = fixture.observations.values
 
-        #expect(recordedMine(events) == [4])
+        #expect(recordedMine(events) == [4, 0])
         #expect(events.contains(.segmentEnded(.自分, 0)))
         #expect(events.contains(.finished(.自分)))
         #expect(forwardedMine(events) == [runResult(.自分, instance: 0)])
     }
 
+
+    // MARK: Issue #1070 休止の間の録音を無音で埋める
+
+    private func recordedBuffersMine(_ events: [AudioObservation]) -> [(frames: Int, hostTime: UInt64, silent: Bool)] {
+        events.compactMap {
+            if case .recordedBuffer(.自分, let frames, let hostTime, let silent) = $0 { return (frames, hostTime, silent) }
+            return nil
+        }
+    }
+
+    @Test("C10: 休止中に捨てた音ごとに、同じフレーム数・同じ取得時刻の無音が 自分 の録音に流れる。録音ファイルは増えない")
+    func pausedAudioIsRecordedAsSilenceOfTheSameLength() async throws {
+        let fixture = RunAudioFixture()
+        // a(480 フレーム)@100 → 休止@150 → b(960)@200・c(240)@210（休止中）→ 区間が確定するまで待つ → 再開@250 → d(100)@300
+        fixture.microphoneScript = MicrophoneScript([
+            .sizedAudio(4, frames: 480, at: 100), .requestPause(true, at: 150),
+            .sizedAudio(5, frames: 960, at: 200), .sizedAudio(5, frames: 240, at: 210),
+            .waitFor(.segmentEnded(.自分, 0)),
+            .requestPause(false, at: 250), .sizedAudio(6, frames: 100, at: 300),
+        ])
+        let audio = fixture.makeAudio()
+        fixture.requestPause = { paused, hostTime in _ = audio.requestSelfPause(paused, at: hostTime) }
+        try await audio.prepare()
+        try await audio.run(origin: 123, marksDuplicates: false, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+        let events = fixture.observations.values
+
+        let recorded = recordedBuffersMine(events)
+        #expect(recorded.map(\.frames) == [480, 960, 240, 100])
+        #expect(recorded.map(\.hostTime) == [100, 200, 210, 300])
+        #expect(recorded.map(\.silent) == [false, true, true, false])
+        // 休止の無音は STT に届かない
+        #expect(heardMine(events) == [4, 6])
+        // 休止で録音ファイルを分けない（録音の開始・終了は 自分 につき 1 回）
+        #expect(events.filter { $0 == .recordingOrigin(.自分, 123) }.count == 1)
+        #expect(events.filter { $0 == .finished(.自分) }.count == 1)
+    }
+
+    @Test("C10: 休止のまま始めても、最初の音と同じ長さの無音から 自分 の録音が始まる")
+    func startingPausedRecordsSilenceFromTheFirstBuffer() async throws {
+        let fixture = RunAudioFixture()
+        fixture.initiallySelfPaused = true
+        fixture.microphoneScript = MicrophoneScript([
+            .sizedAudio(4, frames: 480, at: 100), .requestPause(false, at: 150), .sizedAudio(6, frames: 100, at: 200),
+        ])
+        let audio = fixture.makeAudio()
+        fixture.requestPause = { paused, hostTime in _ = audio.requestSelfPause(paused, at: hostTime) }
+        try await audio.prepare()
+        try await audio.run(origin: 123, marksDuplicates: false, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+
+        let recorded = recordedBuffersMine(fixture.observations.values)
+        #expect(recorded.map(\.frames) == [480, 100])
+        #expect(recorded.map(\.hostTime) == [100, 200])
+        #expect(recorded.map(\.silent) == [true, false])
+    }
+
+    @Test("C10: 休止のあとの発言の時刻と、録音のその位置が秒単位で一致する")
+    func speechTimeAfterPauseMatchesRecordingPosition() async throws {
+        let origin: UInt64 = 1_000_000
+        func tick(_ seconds: Double) -> UInt64 { origin + AudioConvertNanosToHostTime(UInt64(seconds * 1_000_000_000)) }
+        let frames = 4800 // 48 kHz で 0.1 秒
+        let fixture = RunAudioFixture()
+        fixture.alignsMyTranscriberToTimeline = true
+        // 0.0 と 0.1 の音 → 0.2 に休止 → 0.2・0.3 の音（休止中）→ 区間が確定するまで待つ → 0.4 に再開 → 0.4・0.5 の音
+        fixture.microphoneScript = MicrophoneScript([
+            .sizedAudio(4, frames: frames, at: tick(0.0)), .sizedAudio(4, frames: frames, at: tick(0.1)),
+            .requestPause(true, at: tick(0.2)),
+            .sizedAudio(5, frames: frames, at: tick(0.2)), .sizedAudio(5, frames: frames, at: tick(0.3)),
+            .waitFor(.segmentEnded(.自分, 0)),
+            .requestPause(false, at: tick(0.4)),
+            .sizedAudio(6, frames: frames, at: tick(0.4)), .sizedAudio(6, frames: frames, at: tick(0.5)),
+        ])
+        let audio = fixture.makeAudio()
+        fixture.requestPause = { paused, hostTime in _ = audio.requestSelfPause(paused, at: hostTime) }
+        try await audio.prepare()
+        try await audio.run(origin: origin, marksDuplicates: false, relay: fixture.relay)
+        audio.stop()
+        try await audio.finish()
+        let events = fixture.observations.values
+
+        // 再開後の区間の発言の開始（runResult は区間内で 1 秒から始まる）から、区間の補正量 = 会議内での区間の開始秒を取り出す
+        let results = forwardedMine(events)
+        #expect(results.count == 2)
+        let speechOffset = try #require(results.last).start - 1
+
+        // 録音の中の、再開後の最初のバッファの位置（先頭の無音 + それまでに録音へ書いたフレーム数）
+        let recorded = recordedBuffersMine(events)
+        let resumed = try #require(recorded.firstIndex { $0.hostTime == tick(0.4) })
+        let leading = leadingSilenceFrames(origin: origin, firstHostTime: try #require(recorded.first).hostTime, sampleRate: 48_000)
+        let writtenBefore = recorded[..<resumed].reduce(Int(leading)) { $0 + $1.frames }
+        let recordingPosition = Double(writtenBefore) / 48_000
+
+        #expect(abs(speechOffset - 0.4) < 0.001)
+        #expect(abs(recordingPosition - speechOffset) < 0.001)
+    }
 
     // MARK: 取得時刻での振り分け（読んだ時刻ではない）
 
@@ -763,13 +876,13 @@ struct RunAudioTests {
         try await audio.finish()
         let events = fixture.observations.values
 
-        #expect(recordedMine(events) == [4, 6])
+        #expect(recordedMine(events) == [4, 0, 6, 0])
         #expect(heardMine(events) == [4, 6])
         #expect(events.contains(.segmentHeard(.自分, 1, 6)))
         #expect(forwardedMine(events).count == 2)
     }
 
-    @Test("U1: 休止中に取った音は、再開の後に読んでも STT にも録音にも流れない")
+    @Test("U1: 休止中に取った音は、再開の後に読んでも STT に流れず、録音には無音が入る")
     func audioAcquiredDuringPauseIsDroppedWhenReadAfterResume() async throws {
         let fixture = RunAudioFixture()
         // a@100 → 休止@150 → 再開@250 → b@200（休止中に取った音を、再開の後に読む）→ c@300
@@ -785,7 +898,7 @@ struct RunAudioTests {
         try await audio.finish()
         let events = fixture.observations.values
 
-        #expect(recordedMine(events) == [4, 6])
+        #expect(recordedMine(events) == [4, 0, 6])
         #expect(heardMine(events) == [4, 6])
         #expect(!events.contains { if case .segmentHeard(.自分, _, 5) = $0 { return true }; return false })
     }
@@ -828,6 +941,24 @@ struct RunAudioTests {
     @Test("U2: 録音側だけが遅れて未消費が上限（2048 個）を超えたら、音を捨てずに backlogExceeded で run が失敗し、後片付けが終わる")
     func recordingBacklogFailsRun() async throws {
         let fixture = RunAudioFixture()
+        fixture.heldMicrophone = AudioStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
+        let latch = Latch()
+        fixture.stallMyRecording = latch
+        let audio = fixture.makeAudio()
+        try await audio.prepare()
+        let running = Task { try await audio.run(origin: 123, marksDuplicates: false, relay: fixture.relay) }
+        feedBeyondLimit(fixture)
+        try await expectBacklogExceeded(running)
+        latch.release()
+        audio.stop()
+        _ = try? await within { try await audio.finish() }
+        #expect(fixture.observations.values.contains(.finished(.自分)))
+    }
+
+    @Test("U2: 休止中に録音側だけが遅れて未消費が上限（2048 個）を超えたら、無音を黙って捨てず、backlogExceeded で run が失敗し、後片付けが終わる")
+    func recordingBacklogDuringPauseFailsRun() async throws {
+        let fixture = RunAudioFixture()
+        fixture.initiallySelfPaused = true
         fixture.heldMicrophone = AudioStream.makeStream(of: CapturedAudio.self, throwing: Error.self)
         let latch = Latch()
         fixture.stallMyRecording = latch

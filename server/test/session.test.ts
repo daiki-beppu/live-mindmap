@@ -239,6 +239,30 @@ describe("ログ", () => {
       expect(diffs[1]).not.toHaveProperty("usage");
     }));
 
+  it.effect("差分更新が判定の記録（judge）を返すと、diff の行に usage と並べてそのまま残り、返さない回の行には judge のキー自体が付かない", () =>
+    Effect.gen(function* () {
+      const usage = { input: 120, cacheWrite: 30, cacheRead: 4000, output: 55, model: "claude-haiku-5-5" };
+      const judge = { model: "claude-haiku-5-5", ms: 42, confidence: 0.12 };
+      const failedJudge = { model: "claude-sonnet-5-5", ms: 1000, failure: "時間切れ" };
+      const results = [{ ops: [], usage, judge }, { ops: [], judge: failedJudge }, { ops: [] }];
+      let n = 0;
+      const events: LogEvent[] = [];
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
+        updaterLayer(() => Effect.sync(() => results[n++]!)), collectLog(events))));
+      for (const text of ["一つ目", "二つ目", "三つ目"]) {
+        yield* session.push(remark(text));
+        yield* session.idle;
+      }
+
+      const diffs = events.flatMap((e) => (e.type === "diff" ? [e] : []));
+      expect(diffs).toHaveLength(3);
+      expect(diffs[0]).toMatchObject({ usage, judge });
+      expect(diffs[1]).toMatchObject({ judge: failedJudge });
+      expect(diffs[1]!.judge).not.toHaveProperty("confidence");
+      expect(diffs[1]).not.toHaveProperty("usage");
+      expect(diffs[2]).not.toHaveProperty("judge");
+    }));
+
   it.effect("失敗した回の diff の行には usage を付けず、error の形は変わらない", () =>
     Effect.gen(function* () {
       const events: LogEvent[] = [];
@@ -249,6 +273,44 @@ describe("ログ", () => {
       const diff = events.find((e) => e.type === "diff");
       expect(diff).toMatchObject({ type: "diff", error: expect.stringContaining("timeout") });
       expect(diff).not.toHaveProperty("usage");
+    }));
+
+  it.effect("失敗値の judge は error の diff の行に残り、judge の無い失敗の行にはキーが付かない。往復しても restoreSession が読める", () =>
+    Effect.gen(function* () {
+      const judge = { model: "claude-sonnet-5-5", ms: 7, confidence: 0.9 };
+      const failures: UpdateFailure[] = [{ _tag: "Fake", message: "x", judge }, { _tag: "Fake", message: "y" }];
+      let n = 0;
+      const events: LogEvent[] = [];
+      const session = yield* open(() => Effect.fail(failures[n++]!), events);
+      for (const text of ["一つ目", "二つ目"]) {
+        yield* session.push(remark(text));
+        yield* session.idle;
+      }
+      const diffs = events.flatMap((e) => (e.type === "diff" ? [e] : []));
+      expect(diffs[0]).toMatchObject({ error: "Fake: x", judge, ops: [] });
+      expect(diffs[1]).toMatchObject({ error: "Fake: y" });
+      expect(diffs[1]).not.toHaveProperty("judge");
+
+      const roundTripped = events.map((e): unknown => JSON.parse(JSON.stringify(e)));
+      const restored = yield* restoreSession(roundTripped).pipe(Effect.provide(Layer.merge(updaterLayer(() => Effect.succeed({ ops: [] })), collectLog([]))));
+      expect((yield* restored.snapshot).nodes.length).toBe(1);
+    }));
+
+  it.effect("反映数が不正な回の error の行にも judge が残り、正しい反映数の成功行は error を持たない", () =>
+    Effect.gen(function* () {
+      const judge = { model: "claude-haiku-5-5", ms: 3, confidence: 0.1 };
+      const results = [{ ops: [], judge, processedRemarks: 2 }, { ops: [], judge, processedRemarks: 1 }];
+      let n = 0;
+      const events: LogEvent[] = [];
+      const session = yield* open(() => Effect.succeed(results[n++]!), events);
+      for (const text of ["一つ目", "二つ目"]) {
+        yield* session.push(remark(text));
+        yield* session.idle;
+      }
+      const diffs = events.flatMap((e) => (e.type === "diff" ? [e] : []));
+      expect(diffs[0]).toMatchObject({ error: "InvalidProcessedRemarks: 反映数が入力の発言数に対して不正です", judge });
+      expect(diffs[1]).toMatchObject({ judge });
+      expect(diffs[1]).not.toHaveProperty("error");
     }));
 
   // 差分更新の呼び出しの開始・終了の時刻（Issue #862）。at と同じ実時刻の ISO 文字列

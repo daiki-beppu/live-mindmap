@@ -46,7 +46,7 @@ import type { CheckReport } from "./managedDepsProtocol.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
 // vocab は利用者が足した語（cli start --vocab。1 語ずつ。足さなければ空）。開始のときにだけ受け取る
-export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel };
+export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel; judge?: import("./judgeSelection.ts").JudgeModel };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -373,7 +373,7 @@ export class Sessions extends Context.Service<Sessions, {
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
           const warnings = yield* requireStartupDeps("start", input.model.route, { screen: input.screen, check: input.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-          const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const updaterLayer = yield* sinks.prepare(input.model, input.judge).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
           const dir = yield* sinks.createDir(sessionsDir);
           // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
           // 接続はマイクの許可待ち等で時間がかかることがあり、ここを接続成功後にすると、長く待ってから
