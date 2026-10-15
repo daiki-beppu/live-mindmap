@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { formatRow, parseLog, command as statsCommand, sessionStats } from "../bench/sessionStats.ts";
-import { command as latencyCommand, finalRemarks, settleVolatile, summarize, type SttResult } from "../bench/sttLatency.ts";
+import { command as latencyCommand, finalRemarks, settledRemarks, summarize, type SttResult } from "../bench/sttLatency.ts";
 import { runCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 import { logText } from "./fixtures/benchCommand.ts";
 
@@ -17,13 +17,13 @@ const results = [partial(5, 0, 5, "あ"), partial(19, 0, 8, "あいう"), final(
 const resultsText = results.map((r) => JSON.stringify(r)).join("\n") + "\n";
 
 describe("sttLatency の Command", () => {
-  it.effect("結果ファイルだけを渡すと、しきい値 2 秒の集計の表を、今と同じ改行で stdout に出す", () => Effect.gen(function* () {
+  it.effect("結果ファイルだけを渡すと、本番の定数と同じ静かな間（1 秒）の集計の表を、今と同じ改行で stdout に出す", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const file = join(dir, "results.jsonl");
     writeFileSync(file, resultsText);
     const { result, stdout, stderr } = yield* runCommand(latencyCommand, [file]);
     expect(result._tag).toBe("Success");
-    expect(stdout).toBe(summarize(results, 2));
+    expect(stdout).toBe(summarize(results, 1));
     expect(stderr).toBe("");
   }).pipe(Effect.scoped));
 
@@ -33,7 +33,7 @@ describe("sttLatency の Command", () => {
     writeFileSync(file, resultsText);
     const { stdout } = yield* runCommand(latencyCommand, [file, "--quiet", "3.5"]);
     expect(stdout).toBe(summarize(results, 3.5));
-    expect(stdout).not.toBe(summarize(results, 2));
+    expect(stdout).not.toBe(summarize(results, 1));
   }).pipe(Effect.scoped));
 
   it.effect("--lines の行の時刻から数えた遅れが表に届く", () => Effect.gen(function* () {
@@ -43,20 +43,39 @@ describe("sttLatency の Command", () => {
     writeFileSync(file, resultsText);
     writeFileSync(join(dir, "lines.json"), JSON.stringify(lines));
     const { stdout } = yield* runCommand(latencyCommand, [file, "--lines", join(dir, "lines.json")]);
-    expect(stdout).toBe(summarize(results, 2, lines));
+    expect(stdout).toBe(summarize(results, 1, lines));
   }).pipe(Effect.scoped));
 
   it.effect.each([
     { emit: "final" as const },
     { emit: "discard" as const },
-    { emit: "correct" as const },
   ])("--emit $emit は、その規則の発言を JSON 1 行（末尾の改行 1 つ）で出す", ({ emit }) => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const file = join(dir, "results.jsonl");
     writeFileSync(file, resultsText);
     const { stdout } = yield* runCommand(latencyCommand, [file, "--emit", emit]);
-    const remarks = emit === "final" ? finalRemarks(results) : settleVolatile(results, { quietSeconds: 2, lateFinal: emit }).remarks;
+    const remarks = emit === "final" ? finalRemarks(results) : settledRemarks(results, 1);
     expect(stdout).toBe(JSON.stringify(remarks) + "\n");
+  }).pipe(Effect.scoped));
+
+  it.effect("--emit discard の --quiet は静かな間の秒数として規則に届く（既定の 1 秒と違う発言になる）", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const file = join(dir, "results.jsonl");
+    const quietResults = [partial(3, 2, 2.8, "はい")];
+    writeFileSync(file, quietResults.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const { stdout } = yield* runCommand(latencyCommand, [file, "--emit", "discard", "--quiet", "3.5"]);
+    expect(stdout).toBe(JSON.stringify(settledRemarks(quietResults, 3.5)) + "\n");
+    expect(stdout).not.toBe(JSON.stringify(settledRemarks(quietResults, 1)) + "\n");
+  }).pipe(Effect.scoped));
+
+  it.effect("--emit correct は廃止: 規則外の値として effect/cli の CliError になり、発言の JSON は出ない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const file = join(dir, "results.jsonl");
+    writeFileSync(file, resultsText);
+    const { result, stdout } = yield* runCommand(latencyCommand, [file, "--emit", "correct"]);
+    expect(result._tag).toBe("Failure");
+    expect(taggedFailure(result)).toBeUndefined();
+    expect(stdout).not.toMatch(/^\[/);
   }).pipe(Effect.scoped));
 
   it.effect("--emit のときは --lines を読まない（今と同じ。行の時刻のファイルが無くても成功する）", () => Effect.gen(function* () {
