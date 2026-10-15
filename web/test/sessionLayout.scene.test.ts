@@ -94,7 +94,7 @@ const emit = (message: Message) => Subscription.emit(message);
 const intake = (status: "running" | "interrupted" | "stopped" | "none") => emit(Message.ReceivedIntakeStatus({ status }));
 const screen = (text: string | null) => emit(Message.ReceivedScreenNotice({ text: Option.fromNullishOr(text) }));
 const tapNotice = (text: string | null) => emit(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
-const selfPause = (paused: boolean) => emit(Message.ReceivedSelfPause({ paused }));
+const selfPause = (paused: boolean, reason: "手動" | "自動" = "手動") => emit(Message.ReceivedSelfPause({ selfPaused: paused ? reason : false }));
 const viewing = (mode: "auto" | "manual" | "overview") => emit(Message.ChangedViewingMode({ mode }));
 const speak = (相手: string, 自分 = "") => emit(Message.ChangedSpeaking({ speaking: { 相手, 自分 } }));
 
@@ -726,6 +726,31 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
         expect(textContent(directChild(s.html, "intake-notice")!)).toBe(INTERRUPTED);
       }),
       expectUnchanged,
+    );
+  });
+
+  // Issue #1071: 理由で文言が変わる。同じ画面の上で、手動 → 自動 → 手動 → 再開と続けて観測する
+  it("自分の休止の一言: 理由が手動なら「M で再開」、自動なら「会議アプリがマイクを使っていない」。理由だけ変わっても要素は 1 つで、再開で消える", () => {
+    scene(
+      app,
+      given(base),
+      remember,
+      selfPause(true, "手動"),
+      settle,
+      tap((s) => expect(textContent(directChild(s.html, "self-pause-notice")!)).toBe("自分を休止中（M で再開）")),
+      selfPause(true, "自動"),
+      settle,
+      expectUnchanged,
+      tap((s) => {
+        expect(textContent(directChild(s.html, "self-pause-notice")!)).toBe("自分を休止中（会議アプリがマイクを使っていない）");
+        expect(outline(s.html).filter((name) => name === "div.self-pause-notice")).toHaveLength(1);
+      }),
+      selfPause(true, "手動"),
+      settle,
+      tap((s) => expect(textContent(directChild(s.html, "self-pause-notice")!)).toBe("自分を休止中（M で再開）")),
+      selfPause(false),
+      settle,
+      tap((s) => expect(directChild(s.html, "self-pause-notice")).toBeUndefined()),
     );
   });
 

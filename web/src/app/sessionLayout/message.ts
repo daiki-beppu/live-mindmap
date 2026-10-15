@@ -1,7 +1,7 @@
 // セッションの画面（Issue #820）が受ける Message。外（WebSocket のフレーム・見る状態の Model・C のキー）から届く値と、Toast の子の Message
 import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
-import { DiffUpdateState } from "../../../../server/src/core/index.ts";
+import { DiffUpdateState, SelfPaused } from "../../../../server/src/core/index.ts";
 import { Notice } from "./toast.ts";
 
 export const IntakeStatus = Schema.Literals(["running", "interrupted", "stopped", "none"]);
@@ -11,7 +11,7 @@ export const Message = defineMessageUnion({
   ReceivedIntakeStatus: { status: IntakeStatus },
   ReceivedScreenNotice: { text: Schema.Option(Schema.String) },
   ReceivedTapNotice: { text: Schema.Option(Schema.String) },
-  ReceivedSelfPause: { paused: Schema.Boolean },
+  ReceivedSelfPause: { selfPaused: SelfPaused },
   ReceivedDiffUpdate: { state: Schema.Option(DiffUpdateState) },
   ReceivedSessionMode: { local: Schema.Boolean },
   ChangedViewingMode: { mode: Schema.Literals(["auto", "manual", "overview"]) },

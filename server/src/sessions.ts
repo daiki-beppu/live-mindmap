@@ -18,11 +18,13 @@ import {
   MAX_CONFIGURATION_CHANGES,
   SCREEN_NOTICE_MS,
   SCREEN_NOTICE_TEXT,
-  SELF_PAUSE_REASON,
+  INITIAL_SELF_PAUSE_STATE,
   TAP_NOTICE_TEXT,
   type HelperEvent,
   type IntakeGiveUpReason,
   type IntakeStatusReport,
+  type SelfPauseFrame,
+  type SelfPauseState,
 } from "./core/index.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 import { Helpers, HELPER_STOP_TIMEOUT_MS, type HelperAttempt, type HelperExitInfo } from "./helpers.ts";
@@ -64,7 +66,7 @@ type Launched = { attempt: HelperAttempt; scope: Scope.Closeable };
 
 // ヘルパーに依らない、セッションの寿命ぶんだけ存在するもの（起動し直しをまたいで引き継ぐ）。状態はすべて Ref
 // 休止の指示の送り先。connected: いま接続している起動回（指示をすぐ送る）。waiting: 起動し直しの途中（接続待ち）。
-// pending は、接続待ちの間に求められた状態で、次の起動の引数に使うか、接続した回へ送る（どちらかで消す）。helper が受け付けた状態は selfPaused だけが持つ
+// pending は、接続待ちの間に求められた状態で、接続した回へ送って消す。helper が受け付けたかどうかは self-pause イベントだけが決める（起動の引数には使わない）
 type SelfPauseLink = { kind: "connected"; attempt: HelperAttempt } | { kind: "waiting"; pending: boolean | undefined };
 
 type Live = {
@@ -86,7 +88,8 @@ type Live = {
   configurationChanges: Ref.Ref<ReadonlyArray<number>>; // 構成の変化（終了コード 75）で終わった時刻（Clock）。窓の外は decideIntakeRestart が除く
   restarts: Ref.Ref<number>; // 成功した起動し直しの回数（cli status の「起動し直した回数」）
   lastInterruptedAt: Ref.Ref<string | undefined>; // 最後に途切れた時刻（ISO）
-  selfPaused: Ref.Ref<boolean>; // helper が受け付けて報告した自分の休止の状態（Issue #1069）。起動し直しをまたいで続き、次の起動の引数になる。変わったときだけログとフレームを出す
+  selfPauseFrame: Ref.Ref<SelfPauseFrame>; // helper が報告した自分の休止の状態と理由（Issue #1069・#1071）。paused が変わったときだけログとフレームを出し、休止中に理由だけが変わったときはフレームだけ出す
+  selfPauseState: Ref.Ref<SelfPauseState>; // helper が知らせた休止の規則の状態。起動し直しをまたいで続き、次の起動の引数になる（server は覚えるだけ）
   selfPauseLink: SynchronizedRef.SynchronizedRef<SelfPauseLink>; // 休止の指示の送り先。送信と切り替えを 1 つずつ行う
 };
 
@@ -129,15 +132,19 @@ export class Sessions extends Context.Service<Sessions, {
       const note = (text: string) => Console.error(withoutFinalNewline(text));
       const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => viewers.intake({ type: "intake", status });
 
-      // run の argv（port は Helpers が足す。audio・origin は未定義なら渡さない。screen が false なら --no-screen）
-      const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined, selfPaused: boolean): string[] => [
+      // run の argv（port は Helpers が足す。audio・origin は未定義なら渡さない。screen が false なら --no-screen。
+      // 休止の規則の状態は、初期状態と違う値だけ渡す）
+      const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined, selfPause: SelfPauseState): string[] => [
         "run",
         "--app",
         live.app,
         ...(live.audio ? ["--audio-dir", live.dir, "--audio-index", String(attempt)] : []),
         ...(live.screen ? [] : ["--no-screen"]),
         ...(origin !== undefined ? ["--origin", origin] : []),
-        ...(selfPaused ? ["--self-paused"] : []),
+        ...(selfPause.manual !== INITIAL_SELF_PAUSE_STATE.manual ? ["--self-manual", selfPause.manual] : []),
+        ...(selfPause.basis !== INITIAL_SELF_PAUSE_STATE.basis ? ["--self-basis", selfPause.basis] : []),
+        ...(selfPause.lastKnown !== INITIAL_SELF_PAUSE_STATE.lastKnown ? ["--self-last-known", selfPause.lastKnown] : []),
+        ...(selfPause.idleFor !== INITIAL_SELF_PAUSE_STATE.idleFor ? ["--self-idle-for", String(selfPause.idleFor)] : []),
       ];
 
       // 諦めたときの標準エラーの 1 行。理由は decideIntakeRestart の判断から作る（ログと同じ理由）
@@ -208,19 +215,29 @@ export class Sessions extends Context.Service<Sessions, {
               live.sink.appendLog({ type: "tap-silent", start: event.start }),
               viewers.tapNotice({ type: "tap-notice", text: TAP_NOTICE_TEXT }),
             );
-          case "self-pause":
-            // 報告された状態と比べ、変わったときだけログ（組）とフレームを出す。同じ状態のイベントは何も変えない。
-            // 取り込みの途切れではないので、intake・起動し直しには触れない
+          case "self-pause": {
+            // 報告された状態と比べ、paused が変わったときだけログ（組）とフレームを出す。休止中に理由だけが変わったときはフレームだけ出す。
+            // 同じ状態・同じ理由のイベントは何も変えない。取り込みの途切れではないので、intake・起動し直しには触れない
+            const frame: SelfPauseFrame = event.paused ? { type: "self-pause", paused: true, reason: event.reason } : { type: "self-pause", paused: false };
             return Effect.flatMap(
-              Ref.modify(live.selfPaused, (current): [boolean, boolean] => [current !== event.paused, event.paused]),
-              (changed) =>
-                changed
+              Ref.modify(live.selfPauseFrame, (current): ["transition" | "reason" | "same", SelfPauseFrame] => [
+                current.paused !== frame.paused ? "transition" : current.paused && frame.paused && current.reason !== frame.reason ? "reason" : "same",
+                frame,
+              ]),
+              (change) =>
+                change === "transition"
                   ? Effect.andThen(
-                      live.sink.appendLog({ type: event.paused ? "self-paused" : "self-resumed", reason: SELF_PAUSE_REASON, start: event.start }),
-                      viewers.selfPause({ type: "self-pause", paused: event.paused }),
+                      live.sink.appendLog({ type: event.paused ? "self-paused" : "self-resumed", reason: event.reason, start: event.start }),
+                      viewers.selfPause(frame),
                     )
-                  : Effect.void,
+                  : change === "reason" ? viewers.selfPause(frame) : Effect.void,
             );
+          }
+          case "self-pause-state": {
+            // 起動し直しで送り直すために覚えるだけ。ログにも画面にも出さない
+            const { type: _type, ...state } = event;
+            return Ref.set(live.selfPauseState, state);
+          }
           case "speaker":
           case "speaker-off":
             // 話者の区間は、このチケットでは発言・字幕・差分更新に使わない。受け取った値のまま、届いた順に log.jsonl へ残すだけ
@@ -273,13 +290,8 @@ export class Sessions extends Context.Service<Sessions, {
         const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
         yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
         const scope = yield* Scope.fork(live.scope, "sequential");
-        // 接続待ちの間に求められた状態があれば、起動の引数に使って消す。無ければ helper が受け付けた状態を続ける
-        const requested = yield* SynchronizedRef.modify(live.selfPauseLink, (link): [boolean | undefined, SelfPauseLink] => [
-          link.kind === "waiting" ? link.pending : undefined,
-          { kind: "waiting", pending: undefined },
-        ]);
-        const paused = requested ?? (yield* Ref.get(live.selfPaused));
-        const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin), paused), live.stopRequested).pipe(
+        // 休止の規則の状態は、helper が知らせた最新のものを引き継ぐ。接続待ちの間に求められた状態は、接続した回へ送る
+        const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin), yield* Ref.get(live.selfPauseState)), live.stopRequested).pipe(
           Scope.provide(scope),
           Effect.result,
         );
@@ -370,7 +382,7 @@ export class Sessions extends Context.Service<Sessions, {
           const stopRequested = yield* Deferred.make<void>();
           const attemptScope = yield* Scope.fork(scope, "sequential");
           const attempt = yield* helpers
-            .launch(runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, 1, undefined, false), stopRequested)
+            .launch(runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, 1, undefined, INITIAL_SELF_PAUSE_STATE), stopRequested)
             .pipe(
               Scope.provide(attemptScope),
               Effect.catchTag("HelperLaunchFailure", (failure) =>
@@ -402,7 +414,8 @@ export class Sessions extends Context.Service<Sessions, {
             configurationChanges: yield* Ref.make<ReadonlyArray<number>>([]),
             restarts: yield* Ref.make(0),
             lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
-            selfPaused: yield* Ref.make(false),
+            selfPauseFrame: yield* Ref.make<SelfPauseFrame>({ type: "self-pause", paused: false }),
+            selfPauseState: yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE),
             selfPauseLink: yield* SynchronizedRef.make<SelfPauseLink>({ kind: "connected", attempt }),
           };
           const outcome = yield* Deferred.make<RestartOutcome>();
@@ -527,7 +540,7 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       // 求める状態を、いま接続している helper へ指示として送る（同じ状態の指示でも送る。何も変えないかどうかは helper の側が決める）。
-      // 接続していない間（起動し直しの途中）に求められた状態は、次の起動の引数か、接続した回への送信で helper へ届く。
+      // 接続していない間（起動し直しの途中）に求められた状態は、接続した回への送信で helper へ届く。
       // 受け付けたかどうかは helper の self-pause イベントだけが決める（無視された要求は残らない）
       const setSelfPause = (paused: boolean): Effect.Effect<void, SessionFailure> =>
         Effect.gen(function* () {

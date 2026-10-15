@@ -380,11 +380,18 @@ const viewerClient = Effect.fnUntraced(function* () {
     while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
     return received.filter((f): f is { type: "self-pause"; paused: boolean } => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "self-pause").map((f) => f.paused);
   });
+  // 届いたフレームのうち、type が self-pause のものを、届いた順にそのまま返す（Issue #1071。休止中の理由を確かめる）
+  const selfPauseFrames = Effect.gen(function* () {
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    const received: unknown[] = [];
+    while ((yield* Queue.size(frames)) > 0) received.push(yield* Queue.take(frames));
+    return received.filter((f) => typeof f === "object" && f !== null && (f as { type?: unknown }).type === "self-pause");
+  });
   const sessionModes = Effect.gen(function* () {
     for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
     return yield* Ref.get(modes);
   });
-  return { socket, intakeStatuses, screenNotices, tapNotices, selfPauses, sessionModes };
+  return { socket, intakeStatuses, screenNotices, tapNotices, selfPauses, selfPauseFrames, sessionModes };
 });
 
 // Console.error に渡された行を、Node の console と同じ形（引数を空白で連ねて末尾に改行 1 つ）で集める Console。
@@ -837,7 +844,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const booted = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
         return { fakeHelpers, fakeSinks, ...booted };
       });
-    const pauseEvent = (paused: boolean, startSeconds: number) => ({ type: "self-pause", paused, reason: "手動", start: startSeconds });
+    const pauseEvent = (paused: boolean, startSeconds: number, reason: string = "手動") => ({ type: "self-pause", paused, reason, start: startSeconds });
+    const stateEvent = (manual: string, basis: string, lastKnown: string, idleFor: number) => ({ type: "self-pause-state", manual, basis, lastKnown, idleFor });
+    // 次の起動の argv のうち、自分の休止の引き継ぎの引数だけ（フラグと値を、並んだまま）
+    const carryOverArgs = (argv: ReadonlyArray<string>) => argv.flatMap((arg, i) => (arg.startsWith("--self-") ? [arg, argv[i + 1] ?? ""] : []));
     const selfLogs = (appended: ReadonlyArray<LogLineEvent>) => appended.filter((e) => e.type === "self-paused" || e.type === "self-resumed");
 
     it.effect("setSelfPause は動いている起動回の helper へ指示を送る。値は呼んだとおり（true → false）", () =>
@@ -952,35 +962,174 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(yield* after.selfPauses).toEqual([]);
       }));
 
-    it.effect("壊れた self-pause（paused が真偽値でない・reason が手動でない・start が数でない）はログにも画面にも届かない", () =>
+    it.effect("壊れた self-pause（paused が真偽値でない・reason が手動・自動・判定できないのどれでもない・start が数でない）はログにも画面にも届かない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
         const watcher = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(watcher.socket));
         yield* sessions.start(start());
         fakeHelpers.send(0, { type: "self-pause", paused: "true", reason: "手動", start: 1 });
-        fakeHelpers.send(0, { type: "self-pause", paused: true, reason: "自動", start: 1 });
+        fakeHelpers.send(0, { type: "self-pause", paused: true, reason: "不明", start: 1 });
+        fakeHelpers.send(0, { type: "self-pause", paused: true, start: 1 });
         fakeHelpers.send(0, { type: "self-pause", paused: true, reason: "手動", start: "1" });
         yield* TestClock.adjust(1);
 
         expect(selfLogs(fakeSinks.appended)).toEqual([]);
-        expect(yield* watcher.selfPauses).toEqual([]);
+        expect(yield* watcher.selfPauseFrames).toEqual([]);
+      }));
+
+    it.effect("自動・手動・判定できないの理由は、それぞれ log.jsonl の reason に残り、self-paused / self-resumed の組は崩れない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, pauseEvent(true, 3, "自動"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(false, 4, "判定できない"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(true, 5, "手動"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(false, 6, "自動"));
+        yield* TestClock.adjust(1);
+
+        expect(selfLogs(fakeSinks.appended)).toEqual([
+          { type: "self-paused", reason: "自動", start: 3 },
+          { type: "self-resumed", reason: "判定できない", start: 4 },
+          { type: "self-paused", reason: "手動", start: 5 },
+          { type: "self-resumed", reason: "自動", start: 6 },
+        ]);
+      }));
+
+    it.effect("休止の一言のフレームは、休止中は理由（手動 / 自動）を持ち、再開では paused:false だけを送る", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, pauseEvent(true, 1, "自動"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(false, 2, "自動"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(true, 3, "手動"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(false, 4, "判定できない"));
+        yield* TestClock.adjust(1);
+
+        expect(yield* watcher.selfPauseFrames).toEqual([
+          { type: "self-pause", paused: true, reason: "自動" },
+          { type: "self-pause", paused: false },
+          { type: "self-pause", paused: true, reason: "手動" },
+          { type: "self-pause", paused: false },
+        ]);
+      }));
+
+    it.effect("休止中に理由だけが変わったとき（手動の休止が外れて自動の休止になる）は、フレームだけ置き換え、ログは書かない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, pauseEvent(true, 1, "手動"));
+        yield* TestClock.adjust(1);
+        fakeHelpers.send(0, pauseEvent(true, 2, "自動"));
+        yield* TestClock.adjust(1);
+        // 理由が同じ重ねての報告は、何も送らない
+        fakeHelpers.send(0, pauseEvent(true, 3, "自動"));
+        yield* TestClock.adjust(1);
+
+        expect(selfLogs(fakeSinks.appended)).toEqual([{ type: "self-paused", reason: "手動", start: 1 }]);
+        expect(yield* watcher.selfPauseFrames).toEqual([
+          { type: "self-pause", paused: true, reason: "手動" },
+          { type: "self-pause", paused: true, reason: "自動" },
+        ]);
+
+        // 休止中に後からつないだ画面には、最新の理由が届く
+        const late = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(late.socket));
+        expect(yield* late.selfPauseFrames).toEqual([{ type: "self-pause", paused: true, reason: "自動" }]);
       }));
 
     const relaunchAfter = (ms: number) => Effect.andThen(TestClock.adjust(ms), TestClock.adjust(10));
 
-    it.effect("helper が受け付けた休止（self-pause イベント）は、起動し直した新しい起動回の --self-paused になる", () =>
+    it.effect("helper が知らせた引き継ぎの状態（self-pause-state）は、起動し直した新しい起動回の引数になる。--self-paused は渡さない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
-        expect(fakeHelpers.calls[0]).not.toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[0] ?? [])).toEqual([]);
 
         fakeHelpers.send(0, pauseEvent(true, 1));
+        fakeHelpers.send(0, stateEvent("pause", "using", "idle", 1.5));
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
-        expect(fakeHelpers.calls[1]).toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([
+          "--self-manual", "pause", "--self-basis", "using", "--self-last-known", "idle", "--self-idle-for", "1.5",
+        ]);
+        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+      }));
+
+    it.effect("引き継ぎの状態は最新の 1 件だけが次の起動の引数になり、既定の値（手動なし・基準なし・読めた値なし・待ち 0）の引数は渡さない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
+        yield* sessions.start(start());
+
+        fakeHelpers.send(0, stateEvent("pause", "using", "using", 0));
+        fakeHelpers.send(0, stateEvent("none", "unknown", "idle", 2));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual(["--self-last-known", "idle", "--self-idle-for", "2"]);
+      }));
+
+    it.effect("引き継ぎの状態が一度も届いていない、または初期状態に戻ったときは、起動し直しに休止の引数を渡さない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([
+          { unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
+          { unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
+          {},
+        ]);
+        yield* sessions.start(start());
+        yield* relaunchAfter(500);
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+
+        fakeHelpers.send(1, stateEvent("take", "idle", "idle", 3));
+        fakeHelpers.send(1, stateEvent("none", "unknown", "unknown", 0));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+        expect(carryOverArgs(fakeHelpers.calls[2] ?? [])).toEqual([]);
+      }));
+
+    it.effect("壊れた self-pause-state（値が決まった語でない・待ちが負や数でない）は引き継がない", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, stateEvent("resume", "using", "idle", 1));
+        fakeHelpers.send(0, stateEvent("pause", "pause", "idle", 1));
+        fakeHelpers.send(0, stateEvent("pause", "using", "take", 1));
+        fakeHelpers.send(0, stateEvent("pause", "using", "idle", -1));
+        fakeHelpers.send(0, { type: "self-pause-state", manual: "pause", basis: "using", lastKnown: "idle", idleFor: "1" });
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+      }));
+
+    it.effect("self-pause-state はログにも画面にも出ない（server が覚えるだけ）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
+        const watcher = yield* viewerClient();
+        yield* Effect.forkChild(viewers.connect(watcher.socket));
+        yield* sessions.start(start());
+        const before = fakeSinks.appended.length;
+        fakeHelpers.send(0, stateEvent("pause", "using", "idle", 1.5));
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.appended.length).toBe(before);
+        expect(yield* watcher.selfPauseFrames).toEqual([]);
+        expect((yield* sessions.status).status).toBe("running");
       }));
 
     it.effect("接続中の helper が無視した休止の要求（イベントが無い）は、起動し直した回の引数にも送信にも残らない", () =>
@@ -993,7 +1142,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
-        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
       }));
 
@@ -1017,19 +1166,20 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         yield* relaunchAfter(500);
         expect(fakeHelpers.calls).toHaveLength(3);
-        expect(fakeHelpers.calls[2]).not.toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[2] ?? [])).toEqual([]);
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 2)).toEqual([]);
       }));
 
-    it.effect("休止を続ける起動の接続待ちの間に再開を求めると、その起動回へ paused:false が送られる", () =>
+    it.effect("引き継ぎの状態で起動し直した回の接続待ちの間に再開を求めると、その起動回へ paused:false が送られる", () =>
       Effect.gen(function* () {
         const gate = yield* Deferred.make<void>();
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, { connectGate: gate }]);
         yield* sessions.start(start());
         fakeHelpers.send(0, pauseEvent(true, 1));
+        fakeHelpers.send(0, stateEvent("pause", "using", "using", 0));
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
-        expect(fakeHelpers.calls[1]).toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toContain("--self-manual");
 
         yield* sessions.setSelfPause(false);
         yield* Deferred.succeed(gate, undefined);
@@ -1038,7 +1188,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: false }]);
       }));
 
-    it.effect("再開が受け付けられた（pause → resume のイベント）後に起動し直すと --self-paused を渡さず、休止も送らない", () =>
+    it.effect("再開が受け付けられた（pause → resume のイベント）後に起動し直すと、引き継ぎの引数を渡さず、休止も送らない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
@@ -1048,19 +1198,21 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
-        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
       }));
 
-    it.effect("次のセッションには休止を持ち越さない（stop 後の start は --self-paused なし）", () =>
+    it.effect("次のセッションには休止も引き継ぎの状態も持ち越さない（stop 後の start は引き継ぎの引数なし）", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{}, {}]);
         yield* sessions.start(start());
-        yield* sessions.setSelfPause(true);
+        fakeHelpers.send(0, pauseEvent(true, 1));
+        fakeHelpers.send(0, stateEvent("pause", "using", "idle", 1.5));
+        yield* TestClock.adjust(1);
         yield* sessions.stop;
         yield* sessions.start(start());
 
-        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
       }));
   });
 

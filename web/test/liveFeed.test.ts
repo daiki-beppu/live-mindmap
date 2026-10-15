@@ -148,34 +148,36 @@ describe("ローカルモードの通知", () => {
   });
 });
 
-// Issue #1069: 自分の休止。休止中は出し続ける独立した状態で、frame の paused に追従し、つなぎ直しでは false に戻る
+// Issue #1069・#1071: 自分の休止。休止中は出し続ける独立した状態で、休止中は frame の理由（手動 / 自動）、再開では false に追従し、つなぎ直しでは false に戻る
 describe("applyFrame: self-pause（自分の休止）", () => {
-  it("休止の frame で true になり、再開の frame で false に戻る（同じ状態の上で連続して観測する）", () => {
+  it("休止の frame で理由になり、休止中に理由だけ変わればその理由に置き換わり、再開の frame で false に戻る（同じ状態の上で連続して観測する）", () => {
     let state: FeedState = createFeedState();
     expect(state.selfPaused).toBe(false);
-    state = applyFrame(state, { type: "self-pause", paused: true });
-    expect(state.selfPaused).toBe(true);
-    state = applyFrame(state, { type: "self-pause", paused: true });
-    expect(state.selfPaused).toBe(true);
+    state = applyFrame(state, { type: "self-pause", paused: true, reason: "手動" });
+    expect(state.selfPaused).toBe("手動");
+    state = applyFrame(state, { type: "self-pause", paused: true, reason: "手動" });
+    expect(state.selfPaused).toBe("手動");
+    state = applyFrame(state, { type: "self-pause", paused: true, reason: "自動" });
+    expect(state.selfPaused).toBe("自動");
     state = applyFrame(state, { type: "self-pause", paused: false });
     expect(state.selfPaused).toBe(false);
   });
 
   it("スナップショット・字幕・取り込みの状態・各知らせ・モードは変えない", () => {
     const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "あ", 自分: "い" }, intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: "相手の音声が届いていません", local: true, selfPaused: false };
-    expect(applyFrame(state, { type: "self-pause", paused: true })).toEqual({ ...state, selfPaused: true });
+    expect(applyFrame(state, { type: "self-pause", paused: true, reason: "自動" })).toEqual({ ...state, selfPaused: "自動" });
   });
 
   it("他の frame は休止の状態に触れない", () => {
-    const state: FeedState = { ...createFeedState(), selfPaused: true };
-    expect(applyFrame(state, { type: "intake", status: "interrupted" }).selfPaused).toBe(true);
-    expect(applyFrame(state, { type: "tap-notice", text: null }).selfPaused).toBe(true);
-    expect(applyFrame(state, { type: "speaking", track: "自分", text: "は" }).selfPaused).toBe(true);
-    expect(applyFrame(state, snapshot).selfPaused).toBe(true);
+    const state: FeedState = { ...createFeedState(), selfPaused: "自動" };
+    expect(applyFrame(state, { type: "intake", status: "interrupted" }).selfPaused).toBe("自動");
+    expect(applyFrame(state, { type: "tap-notice", text: null }).selfPaused).toBe("自動");
+    expect(applyFrame(state, { type: "speaking", track: "自分", text: "は" }).selfPaused).toBe("自動");
+    expect(applyFrame(state, snapshot).selfPaused).toBe("自動");
   });
 
   it("つなぎ直し（close・open）で false に戻る。つなぎ直せば server が保持値を送り直す", () => {
-    const state: FeedState = { ...createFeedState(), selfPaused: true };
+    const state: FeedState = { ...createFeedState(), selfPaused: "自動" };
     expect(applyClose(state).selfPaused).toBe(false);
     expect(applyOpen(state).selfPaused).toBe(false);
   });

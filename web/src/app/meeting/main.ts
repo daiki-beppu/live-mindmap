@@ -148,7 +148,7 @@ const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
   "?": plainKey((model) => toggledKeyList(keyListOpen(model) ? foldKeyListClose(model) : foldKeyListOpen(model))),
   Space: inert, K: inert, J: inert, L: inert, ",": inert, ".": inert, "<": inert, ">": inert, Home: inert, End: inert,
   // 画面に見えている状態（休止の一言が出ているか）の逆を、状態を指定する形で server へ送る。Model は変えない（切り替わるのは /ws の frame が届いたとき）
-  M: plainKey((model) => ({ model, commands: [RequestSelfPause({ paused: !Option.exists(model.session, (s) => s.sessionLayout.selfPaused) })] })),
+  M: plainKey((model) => ({ model, commands: [RequestSelfPause({ paused: !Option.exists(model.session, (s) => s.sessionLayout.selfPaused !== false) })] })),
 };
 
 const updateOwn = (model: Model, message: Message): Return =>

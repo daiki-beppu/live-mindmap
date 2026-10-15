@@ -124,7 +124,7 @@ describe("会議中の update: M（自分の休止・再開。Issue #1069）", (
     expect(requested(first)).toEqual([true]);
     expect(first.model).toEqual(shown);
 
-    const paused = run([frameMessage({ type: "self-pause", paused: true })], shown).model;
+    const paused = run([frameMessage({ type: "self-pause", paused: true, reason: "自動" })], shown).model;
     const second = update(paused, keyMessage("M"));
     expect(requested(second)).toEqual([false]);
     expect(second.model).toEqual(paused);
@@ -133,7 +133,7 @@ describe("会議中の update: M（自分の休止・再開。Issue #1069）", (
   it("休止の frame が来るたびに、次の M が送る値が追従する（休止 → 再開 → 休止）", () => {
     let current = shown;
     for (const paused of [true, false, true]) {
-      current = update(current, frameMessage({ type: "self-pause", paused })).model;
+      current = update(current, frameMessage(paused ? { type: "self-pause", paused, reason: "手動" } : { type: "self-pause", paused })).model;
       expect(requested(update(current, keyMessage("M")))).toEqual([!paused]);
     }
   });

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import HelperCore
 
@@ -91,5 +92,55 @@ struct SelfPauseTests {
         #expect(state.request(true, at: 2) == false)
         #expect(state.request(false, at: 3) == true)
         #expect(state.resolve(at: 4) == (false, false))
+    }
+}
+
+// Issue #1071: 指示の処理は認証と読み取りだけを受け持ち、受け付けた指示を順に監視へ渡す。
+// 同じ状態の指示を何も変えないことは規則（SelfPauseRuleTests）と監視（SelfPauseMonitorTests）が確かめる。
+@Suite("自分の休止の指示の処理と起動時の通知")
+struct SelfPauseServingTests {
+    private final class Requests: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [Bool] = []
+        func append(_ paused: Bool) { lock.withLock { storage.append(paused) } }
+        var values: [Bool] { lock.withLock { storage } }
+    }
+
+    private final class Events: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [HelperEvent] = []
+        func append(_ event: HelperEvent) { lock.withLock { storage.append(event) } }
+        var values: [HelperEvent] { lock.withLock { storage } }
+    }
+
+    @Test("認証できた指示だけを、届いた順に渡す。壊れた指示・認証のない指示・違うトークンの指示は渡さない")
+    func servesOnlyAuthenticatedRequestsInOrder() async {
+        let (messages, continuation) = AsyncStream.makeStream(of: String.self)
+        for text in [
+            message(paused: false, token: token), message(paused: true, token: token), message(paused: true, token: token),
+            "not json", message(paused: false, token: token),
+            message(paused: true, token: nil), message(paused: true, token: String(repeating: "b", count: 64)),
+        ] { continuation.yield(text) }
+        continuation.finish()
+        let requests = Requests()
+        await serveSelfPauseRequests(messages, token: token) { requests.append($0) }
+        #expect(requests.values == [false, true, true, false])
+    }
+
+    @Test("起動時に、始めの休止の状態（paused と理由）と送り直す状態を 1 回ずつ通知する。時刻は origin からの秒")
+    func announcesInitialState() async {
+        let events = Events()
+        let rule = SelfPauseRule(app: "x", ownPID: 1)
+        await announceSelfPause(rule, at: 7, origin: 7, emit: { events.append($0) })
+        #expect(events.values == [.selfPause(paused: false, reason: .undetermined, start: 0), .selfPauseState(.initial)])
+    }
+
+    @Test("手動の休止を引き継いで始めたときは、paused=true・理由は手動を通知する")
+    func announcesRestoredManualPause() async {
+        let events = Events()
+        let carry = SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .using, idleFor: 0)
+        let rule = SelfPauseRule(app: "x", ownPID: 1, restoring: carry)
+        await announceSelfPause(rule, at: 7, origin: 7, emit: { events.append($0) })
+        #expect(events.values == [.selfPause(paused: true, reason: .manual, start: 0), .selfPauseState(carry)])
     }
 }

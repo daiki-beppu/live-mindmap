@@ -5,7 +5,7 @@ import { Disclosure } from "@foldkit/ui";
 import { Submodel, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
-import { DiffUpdateState } from "../../../../server/src/core/index.ts";
+import { DiffUpdateState, SelfPaused } from "../../../../server/src/core/index.ts";
 import { captionsOf } from "../../captions.ts";
 import { intakeNoticeText, RESUMED_NOTICE_MS } from "../../intake.ts";
 import { IntakeStatus, Message } from "./message.ts";
@@ -21,8 +21,8 @@ export const Model = Schema.Struct({
   tapToast: Notice.Model,
   viewingToast: Notice.Model,
   diffUpdate: Schema.Option(DiffUpdateState),
-  // 自分を休止中か（Issue #1069）。/ws の frame だけで変わる。M が送る値の基準にもなる（画面に見えている状態）
-  selfPaused: Schema.Boolean,
+  // 自分を休止中か（Issue #1069）と、その理由（Issue #1071）。/ws の frame だけで変わる。M が送る値の基準にもなる（画面に見えている状態）
+  selfPaused: SelfPaused,
   local: Schema.Boolean,
 });
 export type Model = typeof Model.Type;
@@ -101,7 +101,7 @@ export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     ChangedSpeaking: ({ speaking }) => ({ model: modifyFields(model, { speaking: () => speaking }) }),
     ToggledCaptions: ({ isOpen }) => ({ model: modifyFields(model, { captionsHidden: () => !isOpen }) }),
-    ReceivedSelfPause: ({ paused }) => ({ model: modifyFields(model, { selfPaused: () => paused }) }),
+    ReceivedSelfPause: ({ selfPaused }) => ({ model: modifyFields(model, { selfPaused: () => selfPaused }) }),
     ReceivedDiffUpdate: ({ state }) => ({ model: modifyFields(model, { diffUpdate: () => state }) }),
     ReceivedSessionMode: ({ local }) => ({ model: modifyFields(model, { local: () => local }) }),
     // 変わらない状態は何もしない。変わったら intakeNoticeText が文を決める（届いた時点が変わった時点なので経過時間は 0）
@@ -126,7 +126,7 @@ export const update = (model: Model, message: Message): Return =>
 export const receiveIntakeStatus = (model: Model, status: typeof IntakeStatus.Type): Return => update(model, Message.ReceivedIntakeStatus({ status }));
 export const receiveScreenNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedScreenNotice({ text }));
 export const receiveTapNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedTapNotice({ text }));
-export const receiveSelfPause = (model: Model, paused: boolean): Return => update(model, Message.ReceivedSelfPause({ paused }));
+export const receiveSelfPause = (model: Model, selfPaused: SelfPaused): Return => update(model, Message.ReceivedSelfPause({ selfPaused }));
 export const receiveDiffUpdate = (model: Model, state: Model["diffUpdate"]): Return => update(model, Message.ReceivedDiffUpdate({ state }));
 export const receiveSessionMode = (model: Model, local: boolean): Return => update(model, Message.ReceivedSessionMode({ local }));
 
@@ -206,9 +206,10 @@ function localModeViews(h: H, model: Model): ReadonlyArray<Html> {
 }
 
 // 自分を休止中の間だけ出し続ける一言（Toast ではなく、状態に応じて出す要素。時間では消えない）。位置は styles.css の .self-pause-notice
-const SELF_PAUSE_TEXT = "自分を休止中（M で再開）";
+// 理由で文言が変わる。手動はいつでも M で戻せる。自動は会議アプリがマイクを使い始めると戻る
+const SELF_PAUSE_TEXT = { 手動: "自分を休止中（M で再開）", 自動: "自分を休止中（会議アプリがマイクを使っていない）" } as const;
 const selfPauseView = (h: H, model: Model): Html | null =>
-  model.selfPaused ? h.div([h.Class("self-pause-notice"), h.AriaLive("polite")], [SELF_PAUSE_TEXT]) : null;
+  model.selfPaused ? h.div([h.Class("self-pause-notice"), h.AriaLive("polite")], [SELF_PAUSE_TEXT[model.selfPaused]]) : null;
 
 const diffUpdateView = (h: H, model: Model): Html | null =>
   Option.match(model.diffUpdate, {

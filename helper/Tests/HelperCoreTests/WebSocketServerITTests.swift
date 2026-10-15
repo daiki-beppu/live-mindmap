@@ -252,8 +252,8 @@ struct WebSocketServerITTests {
         let port = try await server.start()
         defer { Task { await server.stop() } }
 
-        let paused = try HelperEvent.selfPause(paused: true, start: 3).jsonString()
-        let resumed = try HelperEvent.selfPause(paused: false, start: 9).jsonString()
+        let paused = try HelperEvent.selfPause(paused: true, reason: .manual, start: 3).jsonString()
+        let resumed = try HelperEvent.selfPause(paused: false, reason: .manual, start: 9).jsonString()
         await server.broadcastRetained(paused, key: "self-pause")
         await server.broadcastRetained(resumed, key: "self-pause")
 

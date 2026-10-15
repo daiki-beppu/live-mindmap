@@ -17,7 +17,7 @@ usage:
   live-mindmap-helper install-speech-ja
   live-mindmap-helper install-speaker-models
   live-mindmap-helper list
-  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-paused]
+  live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
 """
@@ -29,7 +29,7 @@ private func listApps() throws {
     print(String(decoding: try encoder.encode(apps), as: UTF8.self))
 }
 
-private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool, selfPaused: Bool) async throws {
+private func run(app bundleID: String, port: UInt16, audioDir: String?, origin explicitOrigin: UInt64?, audioIndex: Int, noScreen: Bool, selfPauseCarryOver: SelfPauseCarryOver) async throws {
     // 合うプロセスがなければ、ここで失敗する（Mac 全体のタップには切り替えない）。
     let targets = try tapTargets(forApp: bundleID, in: try currentAudioProcesses())
     // 出力先は開始時に 1 回だけ判定する。スピーカーのときだけ、`自分` の確定結果に重複の印を付ける。
@@ -53,8 +53,10 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
             Task { await server.broadcastRetained(json, key: "tap-silent") }
         }
     )
-    // `自分` の休止（Issue #1069）。手で選んだ状態で、サーバーが起動し直したときは `--self-paused` で休止のまま始める。
-    let selfPause = SelfPause(paused: selfPaused)
+    // `自分` の休止（Issue #1069・#1071）。会議アプリのマイクの使用と手動の指示の組み合わせは `SelfPauseRule` が決める。
+    // サーバーが起動し直したときは、引数で引き継いだ状態（手動・基準・最後に読めた値・待ちの進み具合）から始める。
+    let selfPauseRule = SelfPauseRule(app: bundleID, ownPID: getpid(), restoring: selfPauseCarryOver)
+    let selfPause = SelfPause(paused: selfPauseRule.paused)
     // 話者の区間（`speaker`）と `speaker-off` は 1 つの Task が順に流す（順序を保つ）。話者分離のエラーは `run` に伝えない。
     let (speakerEvents, speakerContinuation) = AsyncStream.makeStream(of: HelperEvent.self)
     let audio = RunAudio(
@@ -138,27 +140,49 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     }
     var screenTasks: [Task<Void, Never>] = []
     var selfPauseTask: Task<Void, Never>?
+    var selfPauseMonitor: SelfPauseMonitor?
+    var selfPauseMonitorTask: Task<Void, Never>?
+    var inputObserver: AudioInputObserver?
     var failure: Error?
     do {
         // 原点は接続より前に決まることが多く、通常の broadcast だとクライアント不在時に失われるので、保持して流す。
         try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString(), key: "origin")
-        // 休止の状態が変わるたびに `self-pause` を流す。接続前に出た分も、最新の 1 件を覚えて、つながったら送る。
-        // サーバーからの指示は 1 つの Task が順に読む（`自分` を作らないセッションでは `requestSelfPause` が何も変えず、イベントも出ない）。
-        let emitSelfPause = { (paused: Bool, hostTime: UInt64) async in
-            let start = offsetSeconds(from: origin, to: hostTime)
-            guard let json = try? HelperEvent.selfPause(paused: paused, start: start).jsonString() else { return }
-            await server.broadcastRetained(json, key: "self-pause")
-        }
-        // 始めた時点の休止の状態を、最初に 1 回知らせる。サーバーは起動の間に求められた状態（休止も再開も）を、helper が受け付けるまで知らない。
-        // 同じ状態なら、サーバーは何も変えない
-        await announceSelfPause(audio: audio, now: { AudioGetCurrentHostTime() }, emit: emitSelfPause)
-        // 指示は、server が起動時に環境変数で渡したトークンを持つものだけ受け付ける（同じ端末の別のプロセスからの指示を拒否する）。無ければ指示を処理しない
-        let controlToken = ProcessInfo.processInfo.environment[helperControlTokenEnvironmentKey] ?? ""
-        if controlToken.isEmpty {
-            printError("self-pause: \(helperControlTokenEnvironmentKey) が無いので、休止の指示を受け付けない")
-        } else {
-            selfPauseTask = Task {
-                await serveSelfPauseRequests(server.messages, audio: audio, token: controlToken, now: { AudioGetCurrentHostTime() }, emit: emitSelfPause)
+        // 休止の状態が変わるたびに `self-pause` を、引き継ぐ状態が変わるたびに `self-pause-state` を流す。接続前に出た分も、最新の 1 件ずつ覚えて、つながったら送る。
+        // `自分` を作らないセッション（マイクの許可が無い）では、休止の監視も指示の処理も始めず、イベントも出さない。
+        if audio.hasMyTrack {
+            let emitSelfPause = { (event: HelperEvent) async in
+                guard let json = try? event.jsonString() else { return }
+                if case .selfPauseState = event {
+                    await server.broadcastRetained(json, key: "self-pause-state")
+                } else {
+                    await server.broadcastRetained(json, key: "self-pause")
+                }
+            }
+            // 始めた時点の休止の状態を、最初に 1 回知らせる。サーバーは起動の間に求められた状態を、helper が受け付けるまで知らない。
+            await announceSelfPause(selfPauseRule, at: AudioGetCurrentHostTime(), origin: origin, emit: emitSelfPause)
+            let monitor = SelfPauseMonitor(
+                rule: selfPauseRule,
+                origin: origin,
+                readProcesses: { try? currentInputProcesses() },
+                sleep: { try await Task.sleep(for: $0) },
+                now: { AudioGetCurrentHostTime() },
+                requestGate: { paused, hostTime in _ = audio.requestSelfPause(paused, at: hostTime) },
+                emit: emitSelfPause
+            )
+            selfPauseMonitor = monitor
+            // 機器・プロセス一覧の変化の通知で、ポーリングを待たずに読み直す
+            let observer = AudioInputObserver { monitor.requestRead() }
+            observer.start()
+            inputObserver = observer
+            selfPauseMonitorTask = monitor.start()
+            // 指示は、server が起動時に環境変数で渡したトークンを持つものだけ受け付ける（同じ端末の別のプロセスからの指示を拒否する）。無ければ指示を処理しない
+            let controlToken = ProcessInfo.processInfo.environment[helperControlTokenEnvironmentKey] ?? ""
+            if controlToken.isEmpty {
+                printError("self-pause: \(helperControlTokenEnvironmentKey) が無いので、休止の指示を受け付けない")
+            } else {
+                selfPauseTask = Task {
+                    await serveSelfPauseRequests(server.messages, token: controlToken) { monitor.press(paused: $0) }
+                }
             }
         }
         // 共有画面。接続前に出た分も、最新の 1 件を覚えて、つながったら送る。events は 1 つの Task が順に読むので、順序が保たれる。
@@ -194,6 +218,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         failure = error
     }
     audio.stop()
+    inputObserver?.stop()
+    selfPauseMonitor?.stop()
     silentJudgement.stop()
     screen?.stop()
     // 話者の区間は流し切ってから、サーバーを閉じる。
@@ -203,6 +229,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     do { try await audio.finish() } catch { if failure == nil { failure = error } }
     // 共有画面の取り込みが終わり、最後のイベントを流し切ってから、サーバーを閉じる。
     for task in screenTasks { await task.value }
+    // 監視は止めてある。受け付け済みの入力を処理し、self-pause / self-pause-state を流し切ってから、サーバーを閉じる。
+    await selfPauseMonitorTask?.value
     await server.stop()
     // サーバーを閉じると指示の流れが終わる
     await selfPauseTask?.value
@@ -241,7 +269,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen, selfPaused: args.selfPaused)
+                try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen, selfPauseCarryOver: args.selfPauseCarryOver)
             }
         case "mix":
             switch parseMixArguments(Array(arguments.dropFirst())) {

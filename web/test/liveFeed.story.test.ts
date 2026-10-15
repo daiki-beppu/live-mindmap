@@ -99,17 +99,19 @@ describe("受信（frame を受けた）", () => {
 });
 
 describe("自分の休止（Issue #1069）", () => {
-  it("休止の frame で true、再開の frame で false。切れると false に戻り、つなぎ直して server が送り直した frame でまた true になる", () => {
+  it("休止の frame で理由（手動 / 自動）になり、再開の frame で false。切れると false に戻り、つなぎ直して server が送り直した frame でまた true になる", () => {
     story(
       update,
       given(init()),
-      received({ type: "self-pause", paused: true }),
-      model((m) => expect(m.selfPaused).toBe(true)),
+      received({ type: "self-pause", paused: true, reason: "自動" }),
+      model((m) => expect(m.selfPaused).toBe("自動")),
+      received({ type: "self-pause", paused: true, reason: "手動" }),
+      model((m) => expect(m.selfPaused).toBe("手動")),
       disconnected(),
       model((m) => expect(m.selfPaused).toBe(false)),
       connected(),
-      received({ type: "self-pause", paused: true }),
-      model((m) => expect(m.selfPaused).toBe(true)),
+      received({ type: "self-pause", paused: true, reason: "自動" }),
+      model((m) => expect(m.selfPaused).toBe("自動")),
       received({ type: "self-pause", paused: false }),
       model((m) => expect(m.selfPaused).toBe(false)),
     );
