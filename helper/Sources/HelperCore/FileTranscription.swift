@@ -134,6 +134,18 @@ struct FileAudioSource {
     }
 }
 
+/// `AVAssetReader` の読み出し（`copyNextSampleBuffer`）は、デコードが済むまでスレッドを止めて待つ。
+/// Swift の並行処理のスレッド（コア数ぶんしかない）の上で呼ぶと、ほかの同期の待ちと重なったときにスレッドが尽きて止まる
+/// （CI のランナーで IT が止まり続けた。Issue #1086）。読み出しは、このキューの上で行う。
+private let fileReadingQueue = DispatchQueue(label: "live-mindmap.file-reading")
+
+/// `body` を `fileReadingQueue` の上で動かし、その結果を返す。
+private func onFileReadingQueue<T>(_ body: @escaping () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        fileReadingQueue.async { continuation.resume(with: Result { try body() }) }
+    }
+}
+
 /// ファイルの音声の全体の長さ（秒）。
 public func fileDuration(of url: URL) async throws -> Double {
     let source = try await FileAudioSource.open(url)
@@ -174,19 +186,9 @@ public struct FileAudioInputs: AsyncSequence {
             }
             if reading == nil { reading = try await Reading.open(url) }
             guard let reading else { return nil }
-            while let sample = reading.output.copyNextSampleBuffer() {
-                if CMSampleBufferGetNumSamples(sample) == 0 { continue }
-                let buffer = try reading.source.pcmBuffer(from: sample, .analyzing)
-                let start = reading.framesRead
-                reading.framesRead += Int(buffer.frameLength)
-                let startTime = CMTime(value: CMTimeValue(start), timescale: CMTimeScale(reading.source.sampleRate))
-                return AnalyzerInput(buffer: buffer, bufferStartTime: startTime)
-            }
-            finished = true
-            if reading.reader.status == .failed {
-                throw FileTranscriptionError.readFailed(reading.reader.error?.localizedDescription ?? "不明")
-            }
-            return nil
+            let input = try await onFileReadingQueue { try reading.nextInput() }
+            if input == nil { finished = true }
+            return input
         }
     }
 
@@ -204,6 +206,22 @@ public struct FileAudioInputs: AsyncSequence {
         }
 
         deinit { reader.cancelReading() }
+
+        /// 次の入力を読む。読み終えたら `nil`。同期で待つので `fileReadingQueue` の上で呼ぶ。
+        func nextInput() throws -> AnalyzerInput? {
+            while let sample = output.copyNextSampleBuffer() {
+                if CMSampleBufferGetNumSamples(sample) == 0 { continue }
+                let buffer = try source.pcmBuffer(from: sample, .analyzing)
+                let start = framesRead
+                framesRead += Int(buffer.frameLength)
+                let startTime = CMTime(value: CMTimeValue(start), timescale: CMTimeScale(source.sampleRate))
+                return AnalyzerInput(buffer: buffer, bufferStartTime: startTime)
+            }
+            if reader.status == .failed {
+                throw FileTranscriptionError.readFailed(reader.error?.localizedDescription ?? "不明")
+            }
+            return nil
+        }
 
         static func open(_ url: URL) async throws -> Reading {
             let source = try await FileAudioSource.open(url)
@@ -224,7 +242,7 @@ final class FileLoudness {
         self.source = source
     }
 
-    /// 区間 `[start, end)`（ファイルの秒）がほぼ無音か。`nil` は「測れない」（無音と混同しない。測れない区間の結果は捨てない）。
+    /// 区間 `[start, end)`（ファイルの秒）がほぼ無音か。同期で待つので `fileReadingQueue` の上で呼ぶ。`nil` は「測れない」（無音と混同しない。測れない区間の結果は捨てない）。
     /// 区間が音声の長さを越える分は、読めた部分だけで判定する。ファイルと重ならない区間・読めない区間は `nil`。
     /// フレームは `[ceil(start·sr), ceil(end·sr))`（ライブの `TrackLoudness` と同じ区切り）。
     func isBelowSilenceThreshold(start: Double, end: Double) -> Bool? {
@@ -273,7 +291,8 @@ public func transcribeFile(at url: URL, with transcriber: any FileTranscriber) a
         do {
             for try await result in results {
                 // 測れない区間（nil）は、ほぼ無音とみなさない
-                if loudness.isBelowSilenceThreshold(start: result.start, end: result.end) ?? false { continue }
+                let silent = try await onFileReadingQueue { loudness.isBelowSilenceThreshold(start: result.start, end: result.end) }
+                if silent ?? false { continue }
                 continuation.yield(result)
             }
             continuation.finish()
