@@ -96,8 +96,11 @@ enum FileAudioTestSupport {
             return
         }
         let (width, height) = content.size
+        // Why: H.264 だと、ハードウェアのエンコーダの無い CI のランナーで最初のフレームが粗く（黒が明るさ 4）なり、
+        // 次のフレームで黒に締まるのを画面の切り替わりと数えた（#1090）。フレームごとに独立した JPEG の最高品質なら、単色はどこでもそのまま戻る。
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+            AVVideoCodecKey: AVVideoCodecType.jpeg, AVVideoWidthKey: width, AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [AVVideoQualityKey: 1.0],
         ])
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
