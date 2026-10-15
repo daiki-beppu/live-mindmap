@@ -323,6 +323,121 @@ struct SelfPauseRestartTests {
         #expect(rule.paused == true)
         #expect(rule.read(idle, at: 2) == SelfPauseChange(paused: true, reason: .automatic))
     }
+
+    // 起動し直しの前の規則（original）と、その carryOver から作り直した規則（restored）に、同じ時刻・同じ読み取りの列を渡し、
+    // 各手の後の paused・reason・carryOver が一致することを確かめる。期待値は書かず、起動し直しの前の規則の結論と比べる。
+    // 列の最初の読み取りは、original が最後に操作した時刻と同じにする（restored は最初の読み取りでは時間が進まないため）。
+    private typealias Reading = (processes: [InputProcess]?, time: Double)
+
+    private func expectSameConclusions(
+        _ original: SelfPauseRule,
+        thenReading readings: [Reading],
+        restoredPausedBeforeFirstRead: Bool,
+        restoredReasonBeforeFirstRead: SelfPauseReason,
+        wait: Double = 2
+    ) {
+        var original = original
+        var restored = makeRule(wait: wait, restoring: original.carryOver)
+        #expect(restored.judgement == .unknown)
+        #expect(restored.paused == restoredPausedBeforeFirstRead)
+        #expect(restored.reason == restoredReasonBeforeFirstRead)
+        for (index, reading) in readings.enumerated() {
+            _ = original.read(reading.processes, at: reading.time)
+            _ = restored.read(reading.processes, at: reading.time)
+            #expect(restored.paused == original.paused, "読み取り \(index) の後の paused")
+            #expect(restored.reason == original.reason, "読み取り \(index) の後の reason")
+            #expect(restored.carryOver == original.carryOver, "読み取り \(index) の後の carryOver")
+        }
+    }
+
+    @Test("起動し直しの前後で同じ結論: 手動の休止（基準 using）は、マイクが基準から変わるまで続き、変わったら自動の結論に従う")
+    func sameConclusionsManualPauseWithUsingBasis() {
+        var original = makeRule()
+        _ = original.read(using, at: 0)
+        _ = original.press(paused: true, at: 0)
+        #expect(original.paused == true && original.reason == .manual)
+        expectSameConclusions(
+            original,
+            thenReading: [(using, 0), (using, 1), (nil, 2), (using, 3), (idle, 4), (idle, 5), (using, 6)],
+            restoredPausedBeforeFirstRead: true,
+            restoredReasonBeforeFirstRead: .manual
+        )
+    }
+
+    @Test("起動し直しの前後で同じ結論: 手動の休止（基準 idle、待ちの途中）は、使い始めで外れる")
+    func sameConclusionsManualPauseWithIdleBasisDuringWait() {
+        var original = makeRule(wait: 2)
+        _ = original.read(idle, at: 0)
+        _ = original.read(idle, at: 1)
+        _ = original.press(paused: true, at: 1)
+        #expect(original.paused == true && original.reason == .manual)
+        expectSameConclusions(
+            original,
+            thenReading: [(idle, 1), (idle, 2), (nil, 3), (using, 4), (using, 5)],
+            restoredPausedBeforeFirstRead: true,
+            restoredReasonBeforeFirstRead: .manual
+        )
+    }
+
+    @Test("起動し直しの前後で同じ結論: 手動の取る（基準 idle）は、マイクが基準から変わるまで続く")
+    func sameConclusionsManualTake() {
+        var original = makeRule(wait: 2)
+        _ = original.read(idle, at: 0)
+        _ = original.read(idle, at: 2)
+        _ = original.press(paused: false, at: 2)
+        #expect(original.paused == false && original.reason == .manual)
+        expectSameConclusions(
+            original,
+            thenReading: [(idle, 2), (idle, 3), (nil, 4), (idle, 5), (using, 6), (idle, 7)],
+            restoredPausedBeforeFirstRead: false,
+            restoredReasonBeforeFirstRead: .manual
+        )
+    }
+
+    @Test("起動し直しの前後で同じ結論: 待ちが済んだ自動の休止は、同じ「使っていない」が読めた時点で待たずに休止に戻る")
+    func sameConclusionsAutomaticPauseAfterWait() {
+        var original = makeRule(wait: 2)
+        _ = original.read(idle, at: 0)
+        _ = original.read(idle, at: 2)
+        #expect(original.paused == true && original.reason == .automatic)
+        // 読めるまでは「分からない」のはさまりとして取る
+        expectSameConclusions(
+            original,
+            thenReading: [(idle, 2), (idle, 3), (using, 4), (idle, 5), (idle, 6)],
+            restoredPausedBeforeFirstRead: false,
+            restoredReasonBeforeFirstRead: .undetermined
+        )
+    }
+
+    @Test("起動し直しの前後で同じ結論: 待ちの途中は、復元した進み具合から続きを数える")
+    func sameConclusionsAutomaticDuringWait() {
+        var original = makeRule(wait: 3)
+        _ = original.read(idle, at: 0)
+        _ = original.read(idle, at: 2)
+        #expect(original.paused == false)
+        expectSameConclusions(
+            original,
+            thenReading: [(idle, 2), (idle, 3), (idle, 4), (idle, 5), (using, 6)],
+            restoredPausedBeforeFirstRead: false,
+            restoredReasonBeforeFirstRead: .undetermined,
+            wait: 3
+        )
+    }
+
+    @Test("起動し直しの前後で同じ結論: 休止の後に「分からない」をはさんでも、同じ「使っていない」が読めたら休止に戻る")
+    func sameConclusionsAutomaticPauseAcrossUnknown() {
+        var original = makeRule(wait: 2)
+        _ = original.read(idle, at: 0)
+        _ = original.read(idle, at: 2)
+        _ = original.read(nil, at: 3)
+        #expect(original.judgement == .unknown)
+        expectSameConclusions(
+            original,
+            thenReading: [(idle, 3), (idle, 4), (nil, 5), (using, 6), (idle, 7)],
+            restoredPausedBeforeFirstRead: false,
+            restoredReasonBeforeFirstRead: .undetermined
+        )
+    }
 }
 
 // Formal Spec の不変条件。Quint のモデルを、深さ 7 まで総当たりして毎手で 6 つの不変条件を確かめる。
