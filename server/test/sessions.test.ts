@@ -1202,6 +1202,52 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
       }));
 
+    it.effect("手動の休止の状態を覚えたまま諦めて止まったセッションを resume すると、覚えた状態が新しい起動回の引数になる（自動の起動し直しと同じ内容）", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([
+          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
+          { connect: false, stderrTail: ["失敗2"] },
+          { connect: false, stderrTail: ["失敗3"] },
+          {}, // resume
+        ]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, pauseEvent(true, 1));
+        fakeHelpers.send(0, stateEvent("pause", "using", "idle", 1.5));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+        expect((yield* sessions.status).status).toBe("stopped");
+        expect(fakeHelpers.calls).toHaveLength(3);
+
+        yield* sessions.resume;
+
+        const expected = ["--self-manual", "pause", "--self-basis", "using", "--self-last-known", "idle", "--self-idle-for", "1.5"];
+        expect(fakeHelpers.calls).toHaveLength(4);
+        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual(expected); // 失敗した起動回は状態を上書きしない
+        expect(carryOverArgs(fakeHelpers.calls[2] ?? [])).toEqual(expected);
+        expect(carryOverArgs(fakeHelpers.calls[3] ?? [])).toEqual(expected);
+        expect(fakeHelpers.calls[3]).not.toContain("--self-paused");
+      }));
+
+    it.effect("自動で休止していた状態（手動なし・待ちが済んだ）も、止まったセッションの resume で新しい起動回の引数になる", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, sessions } = yield* boot([
+          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
+          { connect: false, stderrTail: ["失敗2"] },
+          { connect: false, stderrTail: ["失敗3"] },
+          {}, // resume
+        ]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, stateEvent("none", "unknown", "idle", 3));
+        yield* TestClock.adjust(1);
+        yield* relaunchAfter(500);
+        expect((yield* sessions.status).status).toBe("stopped");
+
+        yield* sessions.resume;
+
+        expect(fakeHelpers.calls).toHaveLength(4);
+        expect(carryOverArgs(fakeHelpers.calls[3] ?? [])).toEqual(["--self-last-known", "idle", "--self-idle-for", "3"]);
+      }));
+
     it.effect("次のセッションには休止も引き継ぎの状態も持ち越さない（stop 後の start は引き継ぎの引数なし）", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{}, {}]);
