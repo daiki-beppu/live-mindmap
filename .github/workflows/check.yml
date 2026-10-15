@@ -144,6 +144,8 @@ jobs:
     if: needs.changes.outputs.swift == 'true'
     # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
     runs-on: macos-26
+    # 通常は 5 分ほどで終わる。テストが止まったときに macOS の枠を占め続けず、ログを残して落とす
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       # WebRTC AEC3 のライブラリ。キャッシュが外れたときだけ uv を入れてビルドする

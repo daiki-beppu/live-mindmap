@@ -166,6 +166,8 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           addUserVocabulary: (words) => Effect.sync(() => { vocabAdded.push([...words]); }),
           screenOff: (e) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
+          finishBacklog: Effect.void,
+          discardBacklog: Effect.void,
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
           appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),

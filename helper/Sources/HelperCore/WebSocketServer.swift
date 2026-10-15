@@ -19,6 +19,11 @@ public actor WebSocketServer {
     private var listener: NWListener?
     private var clients: [ObjectIdentifier: NWConnection] = [:]
     private var stopped = false
+    /// 最初のクライアントの接続を待っている呼び出し（`waitForClient`）。
+    private var clientWaiters: [CheckedContinuation<Void, Never>] = []
+    /// 送信を依頼して、まだ送り終わっていない（`contentProcessed` が来ていない）フレームの数と、その完了を待っている呼び出し（`waitUntilSent`）。
+    private var pendingSends = 0
+    private var sendWaiters: [CheckedContinuation<Void, Never>] = []
     private let queue = DispatchQueue(label: "live-mindmap.websocket")
     /// `broadcastRetained` で最後に送った内容。後から接続したクライアントにも送る（Issue #161）。
     /// 種類（`key`）ごとに最新の 1 件だけ覚える（`origin` と、共有画面の `screen`）。順序は、その種類を最初に覚えた順。
@@ -93,14 +98,43 @@ public actor WebSocketServer {
         broadcast(text)
     }
 
+    /// 最初のクライアントが接続するまで待つ（接続済みなら、すぐ戻る）。`broadcast` は接続前の送信を捨てるので、
+    /// 保持（`broadcastRetained`）しないイベントを流す前に呼ぶ。`stop` でも戻る。
+    public func waitForClient() async {
+        if !clients.isEmpty || stopped { return }
+        await withCheckedContinuation { clientWaiters.append($0) }
+    }
+
+    /// これまでに送った全フレームが、送り終わる（失敗を含む）まで待つ。`stop` は接続を cancel して送りかけのフレームを捨てうるので、
+    /// 最後のイベントまで届けたい呼び出しは、`stop` の前にこれを待つ。
+    public func waitUntilSent() async {
+        if pendingSends == 0 || stopped { return }
+        await withCheckedContinuation { sendWaiters.append($0) }
+    }
+
     private func send(_ text: String, to connection: NWConnection) {
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
         let id = ObjectIdentifier(connection)
+        pendingSends += 1
         connection.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] error in
-            guard error != nil, let self else { return }
-            Task { await self.remove(id) }
+            guard let self else { return }
+            Task { await self.sendFinished(id, failed: error != nil) }
         })
+    }
+
+    private func sendFinished(_ id: ObjectIdentifier, failed: Bool) {
+        // `stop` が数を 0 に戻した後に届く完了通知で、数を負にしない
+        guard !stopped else { return }
+        pendingSends -= 1
+        if failed { remove(id) }
+        if pendingSends == 0 { resumeAll(&sendWaiters) }
+    }
+
+    private func resumeAll(_ waiters: inout [CheckedContinuation<Void, Never>]) {
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
     }
 
     /// 待ち受けと全接続を閉じる。以後、新しい接続は受け付けない。
@@ -111,6 +145,10 @@ public actor WebSocketServer {
         for connection in clients.values { connection.cancel() }
         clients.removeAll()
         messageContinuation.finish()
+        // 待っている呼び出しは、止まった以上これ以上待てないので戻す
+        resumeAll(&clientWaiters)
+        pendingSends = 0
+        resumeAll(&sendWaiters)
     }
 
     private func accept(_ connection: NWConnection) {
@@ -134,6 +172,7 @@ public actor WebSocketServer {
         guard !stopped else { return connection.cancel() }
         clients[ObjectIdentifier(connection)] = connection
         for entry in retained { send(entry.text, to: connection) }
+        resumeAll(&clientWaiters)
         receiveLoop(connection)
     }
 

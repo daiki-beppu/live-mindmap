@@ -46,3 +46,4 @@ export * from "./transcript.ts";
 export * from "./viewingShare.ts";
 export * from "./vocabularyPool.ts";
 export * from "./words.ts";
+export * from "./recordedProgress.ts";
