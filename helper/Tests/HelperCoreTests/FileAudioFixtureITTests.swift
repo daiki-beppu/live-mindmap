@@ -96,11 +96,8 @@ enum FileAudioTestSupport {
             return
         }
         let (width, height) = content.size
-        // Why: H.264 だと、ハードウェアのエンコーダの無い CI のランナーで最初のフレームが粗く（黒が明るさ 4）なり、
-        // 次のフレームで黒に締まるのを画面の切り替わりと数えた（#1090）。フレームごとに独立した JPEG の最高品質なら、単色はどこでもそのまま戻る。
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.jpeg, AVVideoWidthKey: width, AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: [AVVideoQualityKey: 1.0],
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
         ])
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -114,8 +111,13 @@ enum FileAudioTestSupport {
             var buffer: CVPixelBuffer?
             CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
             let pixels = try #require(buffer)
-            if case .slides(let switchAt) = content, Double(i) / 10 >= switchAt { fillWhite(pixels) }
-            if case .text(let lines) = content { drawText(lines, on: pixels) }
+            // Why: CVPixelBufferCreate は中身を初期化しない。黒も塗らないと、使い回されたメモリの残りが映り、
+            // ほかのテストと並ぶと先頭のフレームが黒でなくなって画面の切り替わりが 1 件増えた（#1090）
+            switch content {
+            case .slides(let switchAt): fill(pixels, with: Double(i) / 10 >= switchAt ? 0xFF : 0x00)
+            case .text(let lines): drawText(lines, on: pixels)
+            case .black, .undecodable: fill(pixels, with: 0x00)
+            }
             adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: 10))
         }
         input.markAsFinished()
@@ -123,16 +125,17 @@ enum FileAudioTestSupport {
         if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }
 
-    private static func fillWhite(_ buffer: CVPixelBuffer) {
+    /// すべての画素の B・G・R・A を `byte` で塗る（0x00 は黒、0xFF は白）。
+    private static func fill(_ buffer: CVPixelBuffer, with byte: UInt8) {
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let base = CVPixelBufferGetBaseAddress(buffer) else { return }
-        memset(base, 0xFF, CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
+        memset(base, Int32(byte), CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
     }
 
     /// 白地に黒い文字を 1 行ずつ描く。描き方は ScreenTextITTests と同じ（Hiragino Sans 72pt、x=80、行は上から 160 ずつ下げる）。
     private static func drawText(_ lines: [String], on buffer: CVPixelBuffer) {
-        fillWhite(buffer)
+        fill(buffer, with: 0xFF)
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         let height = CVPixelBufferGetHeight(buffer)
