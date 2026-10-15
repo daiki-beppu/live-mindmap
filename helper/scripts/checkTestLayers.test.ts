@@ -30,6 +30,21 @@ test("HeavyTests.swift と ITTests.swift は SortformerSpeakerDiarizer( を使�
   assert.deepEqual(findRealResourceUses("SortformerSpeakerDiarizerITTests.swift", content), []);
 });
 
+test("unit のファイルに WeSpeakerEmbedder( があれば違反にする", () => {
+  const violations = findRealResourceUses("FooTests.swift", "let e = WeSpeakerEmbedder(modelDirectory: dir)");
+  assert.deepEqual(violations, [{ path: "FooTests.swift", line: 1, pattern: "WeSpeakerEmbedder(" }]);
+});
+
+test("HeavyTests.swift と ITTests.swift は WeSpeakerEmbedder( を使っても違反にしない", () => {
+  const content = "let e = WeSpeakerEmbedder()";
+  assert.deepEqual(findRealResourceUses("WeSpeakerEmbedderHeavyTests.swift", content), []);
+  assert.deepEqual(findRealResourceUses("SlotMixITTests.swift", content), []);
+});
+
+test("FakeSpeakerEmbedder( のように語の途中にある別の型名は、unit でも違反にしない", () => {
+  assert.deepEqual(findRealResourceUses("FooTests.swift", "let e = FakeSpeakerEmbedder()"), []);
+});
+
 test("MockSortformerSpeakerDiarizer( のように語の途中にある別の型名は、unit でも違反にしない", () => {
   assert.deepEqual(findRealResourceUses("FooTests.swift", "let d = MockSortformerSpeakerDiarizer()"), []);
 });

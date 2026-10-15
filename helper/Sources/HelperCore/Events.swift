@@ -68,6 +68,9 @@ public enum HelperEvent: Sendable, Equatable {
     /// `相手` の話者分離が、ここまで確定した（Issue #1021）。`to` より前の確定した区間（`speaker` の `final: true`）は、すべて流した。
     /// `origin` と同じ原点からの秒。値は前に流した値より小さくならない。サーバーはこの位置で、発言の終わりまでの区間が揃ったかを判定する。
     case speakerSettled(track: Track, to: Double)
+    /// `相手` の話者の枠 `slot` に、別の声が混ざっている（Issue #1024）。Sortformer の枠は 4 つまでで、5 人目以降が声の近い人の枠に混ざる。
+    /// `start` は判定のもとになった確定区間の終わり（`origin` と同じ原点からの秒）。サーバーはその枠のラベルを、以降の発言に付けない。
+    case speakerMixed(track: Track, slot: Int, start: Double)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -164,6 +167,11 @@ extension HelperEvent: Encodable {
             try container.encode("speaker-settled", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(to, forKey: .to)
+        case let .speakerMixed(track, slot, start):
+            try container.encode("speaker-mixed", forKey: .type)
+            try container.encode(track.rawValue, forKey: .track)
+            try container.encode(slot, forKey: .slot)
+            try container.encode(start, forKey: .start)
         }
     }
 }
@@ -195,5 +203,6 @@ public func event(from item: SpeakerDiarization, track: Track) -> HelperEvent {
     switch item {
     case .segment(let segment): return event(from: segment, track: track)
     case .settled(let to): return .speakerSettled(track: track, to: to)
+    case .mixed(let slot, let at): return .speakerMixed(track: track, slot: slot, start: at)
     }
 }

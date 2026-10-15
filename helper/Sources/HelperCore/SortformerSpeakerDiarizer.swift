@@ -8,6 +8,8 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
     private static let config = SortformerConfig.default
     private let modelDirectory: URL
     private var models: SortformerModels?
+    /// 枠への混入の検出（Issue #1024）に使う WeSpeaker。読めなければ nil で、検出だけを止める（話者分離は続ける）。
+    private var embedder: WeSpeakerEmbedder?
 
     public init(modelDirectory: URL = defaultSpeakerModelDirectory) {
         self.modelDirectory = modelDirectory
@@ -21,6 +23,15 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
         // 読み込みの途中で壊れたキャッシュを見つけても、FluidAudio がキャッシュを消して取り直さないようにする（会議中に取りに行かない）。
         ModelHub.offlineMode = true
         models = try await SortformerModels.loadFromHuggingFace(config: Self.config, cacheDirectory: modelDirectory)
+        // 混入の検出は補助の機能。WeSpeaker を読めなくても、話者分離（speaker-off も含めて）は止めない。
+        let embedder = WeSpeakerEmbedder(modelDirectory: modelDirectory)
+        do {
+            try await embedder.prepare()
+            self.embedder = embedder
+        } catch {
+            self.embedder = nil
+            FileHandle.standardError.write(Data("話者の混入の検出を使わない（WeSpeaker を読めない）: \(error)\n".utf8))
+        }
     }
 
     public func diarize(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerDiarization, Error> {
@@ -29,6 +40,7 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
         diarizer.initialize(models: models)
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(Self.config.sampleRate), channels: 1, interleaved: false)
         guard let target else { throw SpeakerDiarizerError.conversionFailed("16 kHz モノラルの形式を作れない") }
+        let mixing = embedder.map { SlotMixTracker(embedder: $0) }
         return AsyncThrowingStream { continuation in
             let worker = Task.detached {
                 var converter: AVAudioConverter?
@@ -45,14 +57,16 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
                         }
                         let converted = try SpeechAnalyzerTranscriber.convert(buffer, with: converter, to: target)
                         guard let channel = converted.floatChannelData?[0] else { continue }
-                        diarizer.addAudio(Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength))))
+                        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
+                        mixing?.append(samples16k: samples)
+                        diarizer.addAudio(samples)
                         if let update = try diarizer.process() {
-                            Self.yield(update, shift: shift ?? 0, settledTo: &settledTo, finished: false, to: continuation)
+                            Self.yield(update, shift: shift ?? 0, settledTo: &settledTo, finished: false, mixing: mixing, to: continuation)
                         }
                     }
                     // 上流が終わった。残りの仮の区間を確定させてから終える。
                     if let update = try diarizer.finalizeSession() {
-                        Self.yield(update, shift: shift ?? 0, settledTo: &settledTo, finished: true, to: continuation)
+                        Self.yield(update, shift: shift ?? 0, settledTo: &settledTo, finished: true, mixing: mixing, to: continuation)
                     }
                     continuation.finish()
                 } catch {
@@ -63,21 +77,29 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
         }
     }
 
-    /// 確定した区間を先に、続けて仮の区間を流し、最後に確定済みの位置を流す。`finished` は `finalizeSession()` の更新で、残りがすべて確定している。
+    /// 確定した区間を先に、続けて仮の区間を流し、混入があればその次に、最後に確定済みの位置を流す。`finished` は `finalizeSession()` の更新で、残りがすべて確定している。
+    /// 混入を確定済みの位置より先に流すのは、サーバーが確定済みの位置で保留の発言を出す前に、戻した枠を知らせるため。
     static func yield(
         _ update: DiarizerTimelineUpdate, shift: Double, settledTo: inout Double, finished: Bool,
+        mixing: SlotMixTracker? = nil,
         to continuation: AsyncThrowingStream<SpeakerDiarization, Error>.Continuation
     ) {
-        for segment in segments(of: update, finished: finished) {
+        let updated = segments(of: update, finished: finished)
+        for segment in updated {
             continuation.yield(.segment(SpeakerSegment(
                 start: segment.start + shift, end: segment.end + shift, slot: segment.slot, isFinal: segment.isFinal
             )))
+        }
+        for mix in mixing?.mixed(finalized: updated) ?? [] {
+            continuation.yield(.mixed(slot: mix.slot, at: mix.at + shift))
         }
         let position = finished
             ? processedEnd(of: update, config: timelineConfig)
             : settledPosition(of: update, config: timelineConfig)
         settledTo = max(settledTo, position + shift)
         continuation.yield(.settled(to: settledTo))
+        // 今後確定する区間の start は、この位置以上になる。それより前の音声は埋め込みに使わない。
+        if !finished { mixing?.discard(before: position) }
     }
 
     /// 流す区間（シフト前）。確定した区間を先に、続けて仮の区間。`finished`（`finalizeSession()` の更新）では、

@@ -169,6 +169,8 @@ export function createSpeakerAttribution() {
   let off = false;
   let clock = 0; // 音声の時計（ミリ秒）。戻らない
   const labels = new Map<number, string>();
+  // 混入で戻した枠（Issue #1024）。会議の最後まで戻したまま（外さない）。ラベルは labels に残し、枠のラベルを別の枠へ使い回さない
+  const reverted = new Set<number>();
   const held: Held[] = [];
   // 字幕のための仮の区間（Issue #1022）。ヘルパーは更新ごとに「確定区間 → 仮の区間 → speaker-settled」の順に流すので、
   // 仮の区間は届いた分をためておき、speaker-settled でその更新ぶんに入れ替える。発言の判定には使わない
@@ -190,9 +192,9 @@ export function createSpeakerAttribution() {
 
   const isSettled = (r: SettledRemark) => settledTo >= r.end - EPSILON;
 
-  // 規則を当てて出す。先に話した順にラベルを振る
+  // 規則を当てて出す。先に話した順にラベルを振る。戻した枠の区間は、切り方には使い（隣の枠に寄せない）、ラベルだけ付けない
   const attribute = (r: SettledRemark): SettledRemark[] =>
-    splitBySpeaker(r, segments).map(({ remark, slot }) => (slot === undefined ? remark : { ...remark, speaker: labelOf(slot) }));
+    splitBySpeaker(r, segments).map(({ remark, slot }) => (slot === undefined || reverted.has(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
 
   // 保留の先頭から、揃った発言か時間切れの発言を出す
   const release = (): SettledRemark[] => {
@@ -233,6 +235,11 @@ export function createSpeakerAttribution() {
         return held.splice(0).map((h) => h.remark);
       }
       if (event.track !== "相手") return [];
+      if (event.type === "speaker-mixed") {
+        // 以降の発言に付けないだけ。出した発言は書き換えず、保留の発言も出さない（利用者には知らせない）
+        reverted.add(event.slot);
+        return [];
+      }
       if (event.type === "speaker-settled") {
         settledTo = Math.max(settledTo, event.to);
         provisional = incoming;
@@ -252,11 +259,12 @@ export function createSpeakerAttribution() {
     previewSegments: (): Segment[] => [...segments, ...provisional],
 
     // 字幕のための覗き。振ったラベルがあればそれを、無ければ「まだ振っていない枠の中で、初めて現れた順」の予想を返す。labels は書き換えない
-    // （仮のラベルを発言に使わない。発言のラベルは、初めて話した順に labelOf だけが振る）
-    previewLabel(slot: number): string {
+    // （仮のラベルを発言に使わない。発言のラベルは、初めて話した順に labelOf だけが振る）。戻した枠は、以降の発言と同じく undefined（ラベルなし）
+    previewLabel(slot: number): string | undefined {
+      if (reverted.has(slot)) return undefined;
       const known = labels.get(slot);
       if (known !== undefined) return known;
-      const unassigned = seenSlots.filter((s) => !labels.has(s));
+      const unassigned = seenSlots.filter((s) => !labels.has(s) && !reverted.has(s));
       const rank = unassigned.indexOf(slot);
       return `相手 ${letters(labels.size + (rank < 0 ? unassigned.length : rank))}`;
     },

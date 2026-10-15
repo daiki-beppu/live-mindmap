@@ -1277,12 +1277,13 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         return { fakeHelpers, fakeSinks, ...booted };
       });
 
-    it.effect("speaker と speaker-off は届いた値のまま、届いた順に sink.speaker へ渡る（話者の決定と log への記録は sink が行う）。セッションは running のまま", () =>
+    it.effect("speaker・speaker-mixed・speaker-settled・speaker-off は届いた値のまま、届いた順に sink.speaker へ渡る（話者の決定と log への記録は sink が行う）。セッションは running のまま", () =>
       Effect.gen(function* () {
         const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
         yield* sessions.start(start());
         fakeHelpers.send(0, { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false });
         fakeHelpers.send(0, { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
+        fakeHelpers.send(0, { type: "speaker-mixed", track: "相手", slot: 2, start: 95.5 });
         fakeHelpers.send(0, { type: "speaker-settled", track: "相手", to: 1.5 });
         fakeHelpers.send(0, { type: "speaker-off", start: 9, reason: "途中で停止" });
         yield* TestClock.adjust(1);
@@ -1291,6 +1292,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.speakers).toEqual([
           { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false },
           { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true },
+          { type: "speaker-mixed", track: "相手", slot: 2, start: 95.5 },
           { type: "speaker-settled", track: "相手", to: 1.5 },
           { type: "speaker-off", start: 9, reason: "途中で停止" },
         ]);

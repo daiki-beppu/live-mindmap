@@ -634,3 +634,154 @@ describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / pr
     expect(attribution.previewSegments().filter((s) => s.slot === 1)).toEqual([]);
   });
 });
+
+// Issue #1024: 混入（speaker-mixed）で戻した枠は、以降の発言にラベルを付けない。前の発言は変えず、会議の最後まで戻したまま。
+const mixedEvent = (slot: number, start = 100, track: "相手" | "自分" = "相手"): SpeakerLogEvent => ({ type: "speaker-mixed", track, slot, start });
+
+describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", () => {
+  it("戻した枠の、戻した後の発言は話者なしで出る。他の枠の発言のラベルは変わらない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(speakerEvent(1, 12, 14));
+    attribution.speaker(settledEvent(14));
+    expect(pairs(attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000))).toEqual([["相手 A", "あ"], ["相手 B", "い"]]);
+
+    expect(attribution.speaker(mixedEvent(1))).toEqual([]);
+    attribution.speaker(speakerEvent(0, 20, 22));
+    attribution.speaker(speakerEvent(1, 22, 24));
+    attribution.speaker(settledEvent(24));
+
+    expect(pairs(attribution.remarks([heard("う", 20, 22), heard("え", 22, 24)], 24_000))).toEqual([["相手 A", "う"], [undefined, "え"]]);
+  });
+
+  it("戻す前に出した発言は書き換えない。戻した後に、その発言の区間と重なる区間が届いても同じ", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(1, 10, 12));
+    attribution.speaker(settledEvent(12));
+    const [first] = attribution.remarks([heard("あ", 10, 12)], 12_000);
+    const snapshot = structuredClone(first);
+
+    attribution.speaker(mixedEvent(1));
+    attribution.speaker(speakerEvent(1, 10, 12));
+    attribution.speaker(settledEvent(30));
+    attribution.remarks([], 30_000);
+
+    expect(first).toEqual(snapshot);
+    expect(first!.speaker).toBe("相手 A");
+  });
+
+  it("戻した枠は、その後に区間が届いても、会議の最後まで戻したまま（ラベルが付かない・付いたり消えたりしない）", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(1, 10, 12));
+    attribution.speaker(settledEvent(12));
+    attribution.remarks([heard("あ", 10, 12)], 12_000);
+    attribution.speaker(mixedEvent(1));
+
+    const out: (string | undefined)[] = [];
+    for (let i = 0; i < 5; i++) {
+      const start = 20 + i * 10;
+      attribution.speaker(speakerEvent(1, start, start + 2));
+      attribution.speaker(settledEvent(start + 2));
+      out.push(...attribution.remarks([heard("ふたたび", start, start + 2)], (start + 2) * 1000).map((r) => r.speaker));
+    }
+    attribution.speaker(mixedEvent(1)); // 同じ枠に 2 度目が届いても変わらない
+    attribution.speaker(speakerEvent(1, 100, 102));
+    attribution.speaker(settledEvent(102));
+    out.push(...attribution.remarks([heard("さいご", 100, 102)], 102_000).map((r) => r.speaker));
+
+    expect(out).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
+  });
+
+  it("戻した枠の区間は取り除かない。隣の枠の語に寄せられて、別の人のラベルが付くことはない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(settledEvent(12));
+    attribution.remarks([heard("あ", 10, 12)], 12_000);
+    attribution.speaker(mixedEvent(1));
+
+    // 枠 1 の語（12〜14）が枠 0 の語（10〜12、14〜16）に挟まれている
+    attribution.speaker(speakerEvent(0, 20, 22));
+    attribution.speaker(speakerEvent(1, 22, 26));
+    attribution.speaker(speakerEvent(0, 26, 28));
+    attribution.speaker(settledEvent(28));
+    const out = attribution.remarks([{ track: "相手", start: 22, end: 26, text: "まんなか", wordTimes: [{ location: 0, length: 4, start: 22, end: 26 }] }], 28_000);
+
+    expect(pairs(out)).toEqual([[undefined, "まんなか"]]);
+  });
+
+  it("戻してもラベルは消さない。戻した枠のラベル（相手 B）を、後で初めて話す別の枠が使い回さない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(speakerEvent(1, 12, 14));
+    attribution.speaker(settledEvent(14));
+    attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000);
+    attribution.speaker(mixedEvent(1));
+
+    attribution.speaker(speakerEvent(2, 20, 22));
+    attribution.speaker(settledEvent(22));
+
+    expect(pairs(attribution.remarks([heard("う", 20, 22)], 22_000))).toEqual([["相手 C", "う"]]);
+  });
+
+  it("まだラベルを振っていない枠を戻しても、その枠の発言は話者なしで、他の枠の振り方は変わらない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(mixedEvent(3));
+    attribution.speaker(speakerEvent(3, 10, 12));
+    attribution.speaker(speakerEvent(0, 12, 14));
+    attribution.speaker(settledEvent(14));
+
+    expect(pairs(attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000))).toEqual([[undefined, "あ"], ["相手 A", "い"]]);
+  });
+
+  it("混入のイベントでは発言を出さない。保留中の発言も、揃うまで保留のまま", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.remarks([heard("あ", 10, 12)], 12_000);
+
+    expect(attribution.speaker(mixedEvent(1))).toEqual([]);
+    expect(attribution.heldRemarks()).toHaveLength(1);
+  });
+
+  it("previewLabel: 戻した枠は undefined（字幕に仮のラベルを出さない）。他の枠のラベルと、戻す前に振ったラベルの続きは変わらない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(speakerEvent(1, 12, 14));
+    attribution.speaker(settledEvent(14));
+    attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000);
+    expect(attribution.previewLabel(1)).toBe("相手 B");
+
+    attribution.speaker(mixedEvent(1));
+    attribution.speaker(speakerEvent(2, 20, 21, false));
+    attribution.speaker(settledEvent(21));
+
+    expect(attribution.previewLabel(1)).toBeUndefined();
+    expect(attribution.previewLabel(0)).toBe("相手 A");
+    expect(attribution.previewLabel(2)).toBe("相手 C");
+  });
+
+  it("まだラベルを振っていない枠を戻すと、その枠の previewLabel も undefined になる", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(5, 8, 8.5, false));
+    attribution.speaker(settledEvent(9));
+    expect(attribution.previewLabel(5)).toBe("相手 A");
+
+    attribution.speaker(mixedEvent(5));
+
+    expect(attribution.previewLabel(5)).toBeUndefined();
+  });
+
+  it("speaker-off の後に届いた混入は何も起こさない（出す発言もない）", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerOff);
+
+    expect(attribution.speaker(mixedEvent(1))).toEqual([]);
+  });
+
+  it("track が自分の混入は無視する。相手の枠は戻らない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(1, 10, 12));
+    attribution.speaker(settledEvent(12));
+    attribution.speaker(mixedEvent(1, 100, "自分"));
+
+    expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([["相手 A", "あ"]]);
+  });
+});

@@ -96,6 +96,8 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 {"type":"self-pause-state","manual":"pause","basis":"using","lastKnown":"idle","idleFor":1.5}
 {"type":"speaker","track":"相手","start":1.5,"end":2.25,"slot":1,"final":false}
 {"type":"speaker","track":"相手","start":0,"end":1.5,"slot":0,"final":true}
+{"type":"speaker-settled","track":"相手","to":2.25}
+{"type":"speaker-mixed","track":"相手","slot":2,"start":95.5}
 {"type":"speaker-off","start":0.5,"reason":"モデルなし"}
 {"type":"file-duration","duration":3484.5}
 {"type":"file-audio-tracks","count":2}
@@ -116,7 +118,12 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 - `file-audio-tracks`: `transcribe-file` が `file-duration` の次に 1 回流す、ファイルの音声トラックの本数（`count`。1 以上）。文字にするのは最初の 1 本だけ。サーバーは 2 本以上のときだけ、`cli recorded` の端末に知らせる。別の key で保持して、後からつながったクライアントにも送る。`run` は流さない
 - `speaker`: `相手` のトラックだけに FluidAudio の Sortformer（CoreML、`fastV2_1`）で話者分離をかけた、話者の区間（Issue #1020）。STT の `partial` / `remark` とは別のイベントで、サーバーが確定した区間（`final: true`）から `相手` の発言の話者を決める（Issue #1021。仮の区間は発言に使わない）。`track` は常に `相手`。`start` / `end` は `origin` と同じ原点からの秒（発言の `start` / `end` と同じ規則で、最初のバッファの取得時刻の差を足す）。`slot` は Sortformer の出力の番号（0 始まり。話者のラベルではない）。`final` が `true` なら確定した区間、`false` なら確定より新しい部分の仮の区間（後で変わり得る）。通常の broadcast で流し、保持しない。音声が終わったら残りを確定させて流す。`自分` のトラックには話者分離をかけない。音声は Mac の外に出ない
 - `speaker-settled`: `相手` の話者分離が、ここまで確定した（Issue #1021）。`to` より前の確定した区間（`speaker` の `final: true`）は、すべて流した。`track` は常に `相手`。`to` は `origin` と同じ原点からの秒で、値は前に流した値より小さくならない。話者分離の更新ごとに、その更新の区間を流した後で 1 件流す（区間が無い更新、黙っている間も流す）。音声が終わったら、残りを確定させて流した後に、処理した音声の終わりを流す。`to` は FluidAudio の確定の条件（確定済みの末尾から最小の間隔と前後の余白を引いた位置、ただし閉じていない区間・確定待ちの区間の start を越えない）から求める。FluidAudio は 1 回の更新の確定区間を時刻の順ではなく話者の枠の番号順に流し、閉じた区間だけを確定として流すので、サーバーは区間の `end` から「揃った」を判定できない。サーバーは発言の `end` 以上の `to` が届くまで、`相手` の発言を保留する。通常の broadcast で流し、保持しない
-- `speaker-off`: 話者分離を使えない。`reason` は `モデルなし`（モデルのファイルが無い。会議中にはモデルを取りに行かない）・`読み込みに失敗`・`途中で停止`（区間の流れがエラーで終わった）のどれか。`start` は `origin` と同じ原点からの秒。認識とセッションは止めない。別の key で保持して、後からつながったクライアントにも送る。モデルはセットアップの段で `bash helper/scripts/fetch-speaker-models.sh`（`live-mindmap-helper install-speaker-models`。保存先は FluidAudio の既定の `~/Library/Application Support/FluidAudio/Models`。入っていれば何もしない）が前もって取得する
+- `speaker-mixed`: `相手` の話者の枠 `slot` に、別の声が混ざっている（Issue #1024）。Sortformer の枠は 4 つまでで、相手が 5 人以上のとき 5 人目以降を声の近い人の枠に黙って混ぜるのを検出する。`track` は常に `相手`。`start` は判定のもとになった確定区間の終わりで、`origin` と同じ原点からの秒。1 つの枠につき 1 回だけ流し、区間の後・同じ更新の `speaker-settled` の前に流す。サーバーは、その枠のラベルを以降の発言に付けず（話者なしの `相手`）、会議の最後まで戻したままにする。ログ（`log.jsonl`）には残し、利用者には知らせない。通常の broadcast で流し、保持しない。検出は、枠ごとに確定した区間（2 秒以上。10 秒を超える区間は中央の 10 秒）を FluidAudio 同梱の WeSpeaker で声の埋め込みにし、枠の中を AHC（cosine 距離 0.6、平均結合）で塊に分けて行う。2 番目の塊が 5 区間以上・枠の 10% 以上で、その重心がどの枠の主な塊とも cos 0.6 未満のときに流す。既知の声と cos 0.9 以上で一致する塊は割り当て違いとして無視する。基準値は `SlotMixCriteria` にまとめた、合成会議 4 本（TTS）で選んだ仮の値。枠ごとの主な塊の重心は `SlotMixTracker.centroids` から取り出せる（起動し直しをまたぐ枠のつなぎ直しで使う）。WeSpeaker を読めないときは、標準エラーに 1 行出して検出だけをやめる（話者分離は続け、`speaker-off` は出さない）。録画（`transcribe-file`）は話者分離をしないので流さない
+- `speaker-off`: 話者分離を使えない。`reason` は `モデルなし`（モデルのファイルが無い。会議中にはモデルを取りに行かない）・`読み込みに失敗`・`途中で停止`（区間の流れがエラーで終わった）のどれか。`start` は `origin` と同じ原点からの秒。認識とセッションは止めない。別の key で保持して、後からつながったクライアントにも送る。モデルはセットアップの段で `bash helper/scripts/fetch-speaker-models.sh`（`live-mindmap-helper install-speaker-models`。保存先は FluidAudio の既定の `~/Library/Application Support/FluidAudio/Models`。入っていれば何もしない）が前もって取得する。取得するのは Sortformer と、`speaker-mixed` に使う WeSpeaker（`speaker-diarization/` の下。モデルごとに取得完了の印を持つ）。会議中にはどちらも取りに行かない
+
+### 既知の制限（話者の枠への混入）
+
+Sortformer は枠が 4 つまでで、5 人目以降を声の近い人の枠に混ぜる。混入を検出するまで（合成会議で約 1.6〜13 分）は、その枠に誤ったラベルが残る。検出した枠は以降 `相手` に戻るが、検出前のラベル・案の出した人・TODO の担当者・入れた名前はそのまま残る。基準値は TTS の合成会議で測った値で、人の声では相手 4 人以下でも誤検出してラベルを消すおそれがある。起きれば `log.jsonl` の `speaker-mixed` の記録で気づける。
 
 ### エコーキャンセル（スピーカーのとき）
 
