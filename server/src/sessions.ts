@@ -273,8 +273,9 @@ export class Sessions extends Context.Service<Sessions, {
             return Effect.void;
           case "speaker":
           case "speaker-off":
-            // 話者の区間は、このチケットでは発言・字幕・差分更新に使わない。受け取った値のまま、届いた順に log.jsonl へ残すだけ
-            return live.sink.appendLog(event);
+          case "speaker-settled":
+            // 受け取った値のまま、届いた順に log.jsonl へ残し（sink が行う）、相手の発言の話者を決める段へ渡す。字幕・差分更新には載せない
+            return live.sink.speaker(event);
         }
       };
 

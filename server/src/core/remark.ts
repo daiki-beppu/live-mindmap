@@ -11,6 +11,8 @@ export const Remark = Schema.Struct({
   end: Schema.Finite,
   text: Schema.mutableKey(Schema.String),
   duplicate: Schema.optionalKey(Schema.Boolean), // 重複の印。付いた発言は差分更新に使わない
+  // 話者（Issue #1021）。"自分" か、サーバーが振ったラベル（"相手 A"）。無ければ話者なし（古いログも）
+  speaker: Schema.optionalKey(Schema.String),
 });
 export type Remark = typeof Remark["Type"];
 

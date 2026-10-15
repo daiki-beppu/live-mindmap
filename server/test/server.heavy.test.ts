@@ -51,7 +51,7 @@ const setup = (initial: Partial<Script> = {}) =>
   const scriptPath = join(dir, "script.json");
   const recordPath = join(dir, "record.jsonl");
   const writeScript = (script: Partial<Script> = {}) =>
-    writeFileSync(scriptPath, JSON.stringify({ apps: APPS, events: [remark("相手", 1, 5, "採用の面接について")], ...script } satisfies Script));
+    writeFileSync(scriptPath, JSON.stringify({ apps: APPS, events: [{ type: "speaker-off", start: 0, reason: "モデルなし" }, remark("相手", 1, 5, "採用の面接について")], ...script } satisfies Script));
   writeScript(initial);
   writeFileSync(recordPath, "");
   const records = (): HelperRecord[] =>

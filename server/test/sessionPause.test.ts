@@ -13,7 +13,7 @@ const FIVE_MINUTES = 300_000;
 const code = "subscription_sharing_usage_limit_exceeded";
 const remark = (n: number): Remark => ({ id: `r${n}`, track: "相手", start: n, end: n + 1, text: `発言${n}。` });
 const ids = (remarks: readonly Remark[]) => remarks.map((r) => r.id);
-const probe = classificationRequest(emptyMap("定例"), [], [{ remark: "probe", text: "確認。" }]);
+const probe = classificationRequest(emptyMap("定例"), [], [{ remark: { id: "probe", track: "相手", start: 0, end: 1, text: "確認。" }, text: "確認。" }]);
 
 // HTTP 境界が生成した失敗を使う。core のテストが独自の一時停止タグを定義しないため。
 const responseFailure = Effect.fnUntraced(function* (status: number, body: string): Effect.fn.Return<DiffUpdateError> {
@@ -102,7 +102,7 @@ describe("同じSessionでの一時停止と再開", () => {
     const requests: string[][] = [];
     const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(
       localUpdaterLayer({ katakana: () => Effect.succeed([]), classify: (request) => Effect.suspend(() => {
-        const sentences = [...request.prompt.matchAll(/^\d+\. \[(r\d+)\] (.+)$/gm)];
+        const sentences = [...request.prompt.matchAll(/^\d+\. (r\d+) \[\d+:\d+\] [^:]+: (.+)$/gm)];
         requests.push(sentences.map((s) => s[1]!));
         return requests.length <= 2 ? Effect.fail(failure) : Effect.succeed({
           議題: { id: "新しい議題", 題: "採用" }, 文: sentences.map((s) => ({ 種類: "説明" as const, text: s[2]! })), 済み: "なし",

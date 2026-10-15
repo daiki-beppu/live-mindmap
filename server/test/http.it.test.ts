@@ -121,6 +121,7 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
   it.effect("同じライブセッションの一時停止・再開・終了が接続中と再接続の画面へ届く", () => Effect.gen(function* () {
     let calls = 0;
     const r = yield* resourceWithFakeHelpers([{ events: [
+      { type: "speaker-off", start: 0, reason: "モデルなし" }, // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
       { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" },
       { type: "remark", track: "相手", start: 1, end: 2, text: "次の発言" },
     ] }], { updaterLayer: () => updaterLayer(() => Effect.suspend(() => {
@@ -478,6 +479,7 @@ describe("ライブのセッションの共有画面（偽のヘルパー + 偽�
       const r = yield* resourceWithFakeHelpers([{
         events: [
           { type: "screen", start: 1, image: Buffer.from(jpeg).toString("base64") },
+          { type: "speaker-off", start: 0, reason: "モデルなし" },
           { type: "remark", track: "相手", start: 0, end: 5, text: "今日は採用の進め方を決めます" },
           { type: "remark", track: "相手", start: 5, end: 9, text: "面接を何回にするかですね" },
         ],

@@ -117,6 +117,7 @@ describe("開始したセッションのローカルモード表示", () => {
     expect((yield* server.start).status).toBe(200);
     const waitText = (text: string) => Effect.tryPromise(() => vi.waitFor(async () => expect(await page.locator(".local-mode-notice").textContent()).toBe(text)));
     yield* waitText(LABEL);
+    yield* server.emit({ type: "speaker-off", start: 0, reason: "モデルなし" }); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
     yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "採用を進めます。" }); // 発言 1 件ですぐ差分更新を呼ぶ
     yield* Effect.tryPromise(() => page.locator(".map-node__text").filter({ hasText: /^採用$/ }).waitFor());
     yield* server.speak({ type: "speaking", track: "自分", text: "状態が変わる前から表示している字幕です。" });

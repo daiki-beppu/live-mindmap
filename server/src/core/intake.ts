@@ -16,7 +16,7 @@ export type SessionIntakeStatus = typeof SessionIntakeStatus["Type"];
 export const IntakeFrame = Schema.Struct({ type: Schema.Literal("intake"), status: SessionIntakeStatus });
 export type IntakeFrame = typeof IntakeFrame["Type"];
 
-// log.jsonl に残すサーバー独自の記録（order.md「ログに残す」）。intake- で始まる種類と tap-silent と、話者分離の speaker / speaker-off。いずれも知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
+// log.jsonl に残すサーバー独自の記録（order.md「ログに残す」）。intake- で始まる種類と tap-silent と、話者分離の speaker / speaker-off / speaker-settled。いずれも知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
 // signal は Node のシグナル名の文字列（"SIGKILL" 等）。NodeJS.Signals は使わない（core は Node の実行環境に依存しない。ADR 0003）
 export type IntakeLogEvent =
   | { type: "intake-stopped"; code: number | null; signal: string | null; stderrTail: string[] }
@@ -24,7 +24,7 @@ export type IntakeLogEvent =
   | { type: "intake-gave-up"; reason: IntakeGiveUpReason }
   // 相手のタップが 10 秒、フレーム数 1 以上のバッファを受け取らなかった。start は origin と同じ原点からの秒
   | { type: "tap-silent"; start: number }
-  // 話者分離の生の区間と、使えないこと（Issue #1020）。helper が流した値のまま残す。復元では知らない種類として読み飛ばされる
+  // 話者分離の生の区間と、使えないこと（Issue #1020）。helper が流した値のまま、届いた順に残す（Issue #1021 の話者の決定に使う確定区間の元）。復元では知らない種類として読み飛ばされる
   | SpeakerLogEvent;
 
 // 諦めた理由。failures: 壊れて続けて落ちた（RESTART_WINDOW_MS 以内の終了が MAX_CONSECUTIVE_FAILURES 回続いた）。
