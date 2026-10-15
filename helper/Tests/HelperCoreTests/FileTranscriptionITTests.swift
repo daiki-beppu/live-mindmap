@@ -440,6 +440,23 @@ struct FileScreenITTests {
         #expect(!events.contains { kind(of: $0) == .screenOff })
     }
 
+    // 一時的な診断（#1090）。CI で先頭のフレームが乱れる割合と、生の画素か描画かを調べる。
+    @Test("診断: 先頭のフレームの明るさを 10 回読む")
+    func diagnoseFirstFrame() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+        for round in 0..<10 {
+            let raw = (try? rawBrightness(movie)) ?? []
+            guard case .reading(let reading) = await FileScreenReading.open(movie) else { continue }
+            var starts: [String] = []
+            while let events = reading.next() {
+                for case let .screen(start, image, _) in events { starts.append("\(start):\(image.flatMap(meanBrightness) ?? -1)") }
+            }
+            print("DIAG1090 round=\(round) raw=\(raw) screens=\(starts)")
+        }
+    }
+
     @Test("最初の画面が届く時点で、文字起こしは始まっていて結果をまだ出していない。保留を解くと発言が最後まで届く（映像の処理は文字起こしの完了を待たない）")
     func screensArriveWhileTranscriptionIsInProgress() async throws {
         let dir = try temporaryDirectory()
