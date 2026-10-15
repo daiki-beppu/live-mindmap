@@ -63,6 +63,9 @@ public enum HelperEvent: Sendable, Equatable {
     case speakerOff(start: Double, reason: SpeakerOffReason)
     /// 録画の文字起こし（`transcribe-file`）が最初に流す、ファイルの音声の全体の長さ（秒）。サーバーが進み具合の「全体」に使う。
     case fileDuration(duration: Double)
+    /// `相手` の話者分離が、ここまで確定した（Issue #1021）。`to` より前の確定した区間（`speaker` の `final: true`）は、すべて流した。
+    /// `origin` と同じ原点からの秒。値は前に流した値より小さくならない。サーバーはこの位置で、発言の終わりまでの区間が揃ったかを判定する。
+    case speakerSettled(track: Track, to: Double)
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -79,7 +82,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration
+        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to
         case manual, basis, lastKnown, idleFor
     }
 
@@ -152,6 +155,10 @@ extension HelperEvent: Encodable {
         case let .fileDuration(duration):
             try container.encode("file-duration", forKey: .type)
             try container.encode(duration, forKey: .duration)
+        case let .speakerSettled(track, to):
+            try container.encode("speaker-settled", forKey: .type)
+            try container.encode(track.rawValue, forKey: .track)
+            try container.encode(to, forKey: .to)
         }
     }
 }
@@ -176,4 +183,12 @@ public func event(
 /// 話者の区間をイベントにする。トラックは呼び出し側が決める（話者分離は `相手` にだけ掛ける）。
 public func event(from segment: SpeakerSegment, track: Track) -> HelperEvent {
     .speaker(track: track, start: segment.start, end: segment.end, slot: segment.slot, isFinal: segment.isFinal)
+}
+
+/// 話者分離が流す 1 件をイベントにする。トラックは呼び出し側が決める（話者分離は `相手` にだけ掛ける）。
+public func event(from item: SpeakerDiarization, track: Track) -> HelperEvent {
+    switch item {
+    case .segment(let segment): return event(from: segment, track: track)
+    case .settled(let to): return .speakerSettled(track: track, to: to)
+    }
 }

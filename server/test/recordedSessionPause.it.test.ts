@@ -27,7 +27,7 @@ describe("一時停止の保存ログ", () => {
       Effect.provideService(FileSystem.FileSystem, files.fs), Effect.provideService(HttpClient.HttpClient, http.client),
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))), Effect.orDie,
     );
-    const failed = yield* Effect.result(classify(classificationRequest(emptyMap("定例"), [], [{ remark: "probe", text: "確認。" }])));
+    const failed = yield* Effect.result(classify(classificationRequest(emptyMap("定例"), [], [{ remark: { id: "probe", track: "相手", start: 0, end: 1, text: "確認。" }, text: "確認。" }])));
     if (Result.isSuccess(failed)) return yield* Effect.die("429が成功として返りました");
     let calls = 0;
     const published: Snapshot[] = [];

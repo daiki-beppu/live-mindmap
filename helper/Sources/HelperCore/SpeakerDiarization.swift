@@ -17,6 +17,15 @@ public struct SpeakerSegment: Sendable, Equatable {
     }
 }
 
+/// 話者分離が流す 1 件。区間か、確定済みの位置。
+public enum SpeakerDiarization: Sendable, Equatable {
+    case segment(SpeakerSegment)
+    /// この位置（`origin` を 0 とする秒）より前の確定した区間は、すべて流した。値は前に流した値より小さくならない。
+    /// 区間の `end` からは「揃った」を判定できない（FluidAudio は確定区間を話者の枠の番号順に流し、閉じた区間だけを確定として流す）ので、
+    /// 確定済みの位置はヘルパーが流す。黙っている間も更新ごとに進む。
+    case settled(to: Double)
+}
+
 public enum SpeakerDiarizerError: Error, Equatable, CustomStringConvertible {
     /// モデルのファイルが無い（セットアップの `fetch-speaker-models.sh` が済んでいない）。会議中には取りに行かない。
     case modelMissing(URL)
@@ -39,8 +48,9 @@ public enum SpeakerDiarizerError: Error, Equatable, CustomStringConvertible {
 public protocol SpeakerDiarizer {
     /// モデルの読み込み。音声を流す前に呼ぶ。ネットワークへは行かない（モデルが無ければ `SpeakerDiarizerError.modelMissing`）。
     func prepare() async throws
-    /// 音声バッファの流れを話者の区間の流れにする。`audio` が終わると、残りを確定させてから区間の流れも終わる。
-    /// `audio` がエラーで終わった場合や処理に失敗した場合は、区間の流れもそのエラーで終わる。
-    /// 区間の `start` / `end` は、ホスト時刻 `origin` を 0 とする秒数。
-    func diarize(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerSegment, Error>
+    /// 音声バッファの流れを話者の区間と確定済みの位置の流れにする。更新ごとに、区間を流した後で確定済みの位置を 1 件流す。
+    /// `audio` が終わると、残りを確定させて流し、処理した音声の終わりを確定済みの位置として流してから終わる。
+    /// `audio` がエラーで終わった場合や処理に失敗した場合は、流れもそのエラーで終わる。
+    /// 区間の `start` / `end` と位置は、ホスト時刻 `origin` を 0 とする秒数。
+    func diarize(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerDiarization, Error>
 }

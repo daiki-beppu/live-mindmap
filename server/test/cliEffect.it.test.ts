@@ -278,7 +278,7 @@ describe("CLI の Effect 境界", () => {
     }));
     const deps = dependencies(dir);
     yield* runCli(["eval", "--truth", truth, dir]).pipe(Effect.provide(deps.layer));
-    expect(deps.stdout.join("").trimEnd().split("\n").at(-1)).toMatch(/\| 0\/0 \| 1\/1 \(100%\) \|$/);
+    expect(deps.stdout.join("").trimEnd().split("\n").at(-1)).toMatch(/\| 0\/0 \| 1\/1 \(100%\) \| 0 \| 0 \|$/);
     expect(deps.stderr).toEqual([]);
   }));
 

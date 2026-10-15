@@ -23,9 +23,43 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
     });
 
     expect(prompt.split("\n").filter((line) => line.startsWith("- root "))).toEqual(["- root 会議: 定例"]);
-    expect(prompt.split("\n").filter((line) => line.startsWith("r1 "))).toEqual(["r1 [01:05] 来週に開催します"]);
+    expect(prompt.split("\n").filter((line) => line.startsWith("r1 "))).toEqual(["r1 [01:05] 相手: 来週に開催します"]);
     expect(OUTPUT_SCHEMA).toMatchObject({ type: "object", properties: { ops: { type: "array" } } });
     expect(sdkLoad).not.toHaveBeenCalled();
+  });
+
+  // Issue #1021: 新しい発言も直前の発言も、1 行は「ID [mm:ss] 話者: 本文」。話者は 相手 A / 相手 / 自分
+  it("新しい発言と直前の発言の行に話者が出る（ラベルあり・話者なし・自分。トラック名だけの古い自分の発言も 自分:）", async () => {
+    const { buildPrompt } = await import("../src/claudePrompt.ts");
+    const lines = (prompt: string, section: string) => {
+      const body = prompt.split(`## ${section}`)[1]!.split("\n\n## ")[0]!;
+      return body.split("\n").filter((line) => /^r\d+ /.test(line));
+    };
+
+    const prompt = buildPrompt({
+      map: emptyMap("定例"),
+      recent: [
+        { id: "r10", track: "相手", start: 194, end: 196, text: "前の発言", speaker: "相手 A" },
+        { id: "r11", track: "自分", start: 197, end: 198, text: "うん", speaker: "自分" },
+        { id: "r12", track: "自分", start: 199, end: 200, text: "古いログの自分" },
+      ],
+      fresh: [
+        { id: "r13", track: "相手", start: 194.9, end: 196, text: "ラベルあり", speaker: "相手 B" },
+        { id: "r14", track: "相手", start: 200, end: 201, text: "話者なし" },
+        { id: "r15", track: "自分", start: 202, end: 203, text: "自分です", speaker: "自分" },
+      ],
+    });
+
+    expect(lines(prompt, "直前の発言（処理済み・文脈用）")).toEqual([
+      "r10 [03:14] 相手 A: 前の発言",
+      "r11 [03:17] 自分: うん",
+      "r12 [03:19] 自分: 古いログの自分",
+    ]);
+    expect(lines(prompt, "新しい発言")).toEqual([
+      "r13 [03:14] 相手 B: ラベルあり",
+      "r14 [03:20] 相手: 話者なし",
+      "r15 [03:22] 自分: 自分です",
+    ]);
   });
 
   it("論点の配下を件数から除いても、その下の議題を全体・変更メッセージの一覧に残す", async () => {

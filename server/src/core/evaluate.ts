@@ -177,6 +177,19 @@ export function recall(exp: JsonExport, truth: Truth): Record<TruthKind, Recall>
   ) as Record<TruthKind, Recall>;
 }
 
+// 取りこぼした正解のうち、時刻と keywords が合う別の種別のノードとして出た数（種別違い）。
+// 種別を問わない全ノードでの 1 対 1 の割り当て件数 − 同じ種別のノードでの割り当て件数（recall の hit）。ノードは 1 件の正解にしか数えない
+export function wrongKind(exp: JsonExport, truth: Truth): Record<TruthKind, number> {
+  const nodes = allNodes(exp);
+  const same = recall(exp, truth);
+  return Object.fromEntries(
+    TRUTH_KINDS.map((kind) => {
+      const candidates = truth[kind].map((item) => nodes.flatMap((n, i) => (matches(n, item) ? [i] : [])));
+      return [kind, maxMatching(candidates, nodes.length) - same[kind].hit];
+    }),
+  ) as Record<TruthKind, number>;
+}
+
 export type ScreenScore = {
   pointing: Recall; // 指す発言
   memory: Recall; // うち記憶（memory が true の指す発言のうち取れた数）
@@ -210,6 +223,7 @@ const SCREEN_HEADERS = ["指す発言", "うち記憶", "話だけ", "出ては�
 const formatCount = ({ hit, total }: Recall) => `${hit}/${total}`;
 
 const RECALL_HEADERS: Record<TruthKind, string> = { 決定: "決定の再現率", TODO: "TODO の再現率" };
+const WRONG_KIND_HEADERS: Record<TruthKind, string> = { 決定: "決定の種別違い", TODO: "TODO の種別違い" };
 
 // log.jsonl から数える 3 指標の見出しと値。ログが無いランは - にする。書き換え/発言は n/m (0.xx)（発言が 0 件なら 0/0）
 const LOG_HEADERS = ["書き換え/発言", "1 ノードの書き換えの最多", "話し中の兄弟の最多"];
@@ -234,18 +248,20 @@ function formatUsage(log: readonly LogEvent[] | undefined): string[] {
 
 // 1 ラン 1 行の Markdown の表（cli eval の標準出力）。truth があるときだけ、決定・TODO の再現率の列を足す。
 // 再現率の分子は recall が数える「当たった件数」で、当たる条件は matches、1 対 1 の割り当ては maxMatching が持つ
+// 再現率の直後に、決定・TODO の種別違い（wrongKind。正解が別の種別のノードとして出た数）の列も足す
 // screen があるときは、その後ろに共有画面の 4 列（取れた数/項目数。出てはいけないは漏れた項目の数/項目数）を足す
 export const formatTable = Effect.fnUntraced(function* (runs: Run[], truth?: Truth, screen?: ScreenTruth) {
   const header = [
     "ラン", "会議", "ノード", "深さ", ...KINDS, ...LOG_HEADERS, ...USAGE_HEADERS,
-    ...(truth ? TRUTH_KINDS.map((k) => RECALL_HEADERS[k]) : []),
+    ...(truth ? [...TRUTH_KINDS.map((k) => RECALL_HEADERS[k]), ...TRUTH_KINDS.map((k) => WRONG_KIND_HEADERS[k])] : []),
     ...(screen ? SCREEN_HEADERS : []),
   ];
   const rows = yield* Effect.forEach(runs, Effect.fnUntraced(function* ({ name, title, exp, log }) {
     const m = measure(exp);
     const recalls = truth ? TRUTH_KINDS.map((k) => formatRecall(recall(exp, truth)[k])) : [];
+    const wrongKinds = truth ? TRUTH_KINDS.map((k) => String(wrongKind(exp, truth)[k])) : [];
     const scores = screen ? Object.values(screenScore(exp, screen)).map(formatCount) : [];
-    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log), ...recalls, ...scores].map(String);
+    return [name, title, m.nodes, m.depth, ...KINDS.map((k) => m.byKind[k]), ...(yield* formatLogMetrics(log)), ...formatUsage(log), ...recalls, ...wrongKinds, ...scores].map(String);
   }));
   const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
   return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";

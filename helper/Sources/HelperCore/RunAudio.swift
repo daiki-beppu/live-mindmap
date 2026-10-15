@@ -147,7 +147,7 @@ public final class RunAudio {
             let emit = emitSpeaker
             return Task {
                 do {
-                    for try await segment in segments { emit(event(from: segment, track: .相手)) }
+                    for try await item in segments { emit(event(from: item, track: .相手)) }
                 } catch {
                     FileHandle.standardError.write(Data("speaker diarization: 途中で停止（認識は続ける）: \(error)\n".utf8))
                     emitOff(.途中で停止)

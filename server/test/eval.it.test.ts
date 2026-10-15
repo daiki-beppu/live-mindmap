@@ -360,7 +360,7 @@ describe("eval: log.jsonl から数える 3 指標", () => {
     const truth = yield* writeTruth({ 決定: [], TODO: [] });
     const { header, rows } = parseTable(yield* evalCli(["--truth", truth, yield* play(scriptRewrite)]));
 
-    expect(header.slice(-9)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS, "決定の再現率", "TODO の再現率"]);
+    expect(header.slice(-11)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS, "決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"]);
     expect(header.indexOf(LOG_HEADERS[0]!)).toBe(header.indexOf("要点") + 1);
     expect(rows[0]).toMatchObject({ "書き換え/発言": "1/3 (0.33)", "1 ノードの書き換えの最多": "1", "話し中の兄弟の最多": "1" });
   }));
@@ -423,7 +423,7 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
       const truth = { 決定: [], TODO: [], [kind]: [{ text: "x", from, to, keywords }] };
       const { header, rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), dir]));
 
-      expect(header.slice(-2)).toEqual(["決定の再現率", "TODO の再現率"]);
+      expect(header.slice(-4)).toEqual(["決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い"]);
       expect(rows[0]![kind === "決定" ? "決定の再現率" : "TODO の再現率"]).toBe(expected);
     }));
   }
@@ -452,6 +452,99 @@ describe("eval: 正解との再現率（時刻の重なり）", () => {
     const { rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(both), dirA, dirEmpty]));
     expect(rows.map((r) => r["決定の再現率"])).toEqual(["1/1 (100%)", "0/1 (0%)"]);
     expect(rows.map((r) => r["TODO の再現率"])).toEqual(["1/1 (100%)", "0/1 (0%)"]);
+  }));
+});
+
+describe("eval: 種別違い（正解が別の種別のノードとして出た数）", () => {
+  // 決定の正解に時刻（r3 [19.2, 28.0]）もキーワードも合うが、種別が要点のノードだけがあるマップ
+  const scriptPointOnly: Op[][] = [
+    [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }],
+    [{ op: "add", ref: "t2", parent: "n1", kind: "要点", text: "2 回にする", evidence: ["r3"] }],
+  ];
+  const decisionTruth = { 決定: [{ text: "x", from: 20, to: 25, keywords: ["2回"] }], TODO: [] };
+  const run = (truth: unknown, script: Op[][]) => Effect.gen(function* () {
+    const { header, rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(truth), yield* play(script)]));
+    return { header, row: rows[0]! };
+  });
+
+  it.effect("決定の時刻に要点のノードだけがあるマップでは、決定の種別違いが 1 で、再現率は 0/1", () => Effect.gen(function* () {
+    const { row } = yield* run(decisionTruth, scriptPointOnly);
+    expect(row["決定の種別違い"]).toBe("1");
+    expect(row["決定の再現率"]).toBe("0/1 (0%)");
+    expect(row["TODO の種別違い"]).toBe("0");
+  }));
+
+  it.effect("決定として出ている正解は、種別違いに数えない", () => Effect.gen(function* () {
+    const { row } = yield* run(decisionTruth, scriptA);
+    expect(row["決定の種別違い"]).toBe("0");
+    expect(row["決定の再現率"]).toBe("1/1 (100%)");
+  }));
+
+  it.effect("TODO の正解にも同じように数える（決定のノードとして出た TODO は TODO の種別違い）", () => Effect.gen(function* () {
+    // 決定ノード「2 回にする」は r1・r3 が根拠。TODO の正解を r3 の区間に置く
+    const { row } = yield* run({ 決定: [], TODO: [{ text: "x", from: 20, to: 25, keywords: ["2回"] }] }, scriptA);
+    expect(row["TODO の種別違い"]).toBe("1");
+    expect(row["TODO の再現率"]).toBe("0/1 (0%)");
+    expect(row["決定の種別違い"]).toBe("0");
+  }));
+
+  it.effect("時刻が合っても keywords が合わなければ数えない", () => Effect.gen(function* () {
+    const { row } = yield* run({ 決定: [{ text: "x", from: 20, to: 25, keywords: ["存在しない語"] }], TODO: [] }, scriptPointOnly);
+    expect(row["決定の種別違い"]).toBe("0");
+  }));
+
+  it.effect("keywords が合っても時刻が合わなければ数えない", () => Effect.gen(function* () {
+    const { row } = yield* run({ 決定: [{ text: "x", from: 28.1, to: 40, keywords: ["2回"] }], TODO: [] }, scriptPointOnly);
+    expect(row["決定の種別違い"]).toBe("0");
+  }));
+
+  it.effect("1 つのノードは 1 件の正解にしか数えない（同じ要点ノードに当たる正解が 2 件でも種別違いは 1）", () => Effect.gen(function* () {
+    const twice = { 決定: [{ text: "x", from: 20, to: 25, keywords: ["2回"] }, { text: "y", from: 21, to: 26, keywords: ["2回"] }], TODO: [] };
+    const { row } = yield* run(twice, scriptPointOnly);
+    expect(row["決定の再現率"]).toBe("0/2 (0%)");
+    expect(row["決定の種別違い"]).toBe("1");
+  }));
+
+  it.effect("正解 1 件に決定のノードと要点のノードの両方が当たるときは、種別違いに数えない", () => Effect.gen(function* () {
+    const script: Op[][] = [
+      [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }, { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] }],
+      [
+        { op: "add", ref: "d1", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] },
+        { op: "add", ref: "p1", parent: "n2", kind: "要点", text: "2 回にする", evidence: ["r3"] },
+      ],
+    ];
+    const { row } = yield* run(decisionTruth, script);
+    expect(row["決定の再現率"]).toBe("1/1 (100%)");
+    expect(row["決定の種別違い"]).toBe("0");
+  }));
+
+  it.effect("同じ種別の候補はあるが割り当てで外れた正解も、別の種別のノードに当たれば数える", () => Effect.gen(function* () {
+    // 決定ノード 1 つ（r3 を根拠）に当たる正解が 2 件。1 件は決定で再現でき、もう 1 件は要点のノードに当たる
+    const script: Op[][] = [
+      [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] }, { op: "add", ref: "t2", parent: "t1", kind: "論点", text: "面接は何回か", evidence: ["r2"] }],
+      [
+        { op: "add", ref: "d1", parent: "n2", kind: "決定", text: "2 回にする", evidence: ["r3"] },
+        { op: "add", ref: "p1", parent: "n2", kind: "要点", text: "2 回にする", evidence: ["r3"] },
+      ],
+    ];
+    const twice = { 決定: [{ text: "x", from: 20, to: 25, keywords: ["2回"] }, { text: "y", from: 21, to: 26, keywords: ["2回"] }], TODO: [] };
+    const { row } = yield* run(twice, script);
+    expect(row["決定の再現率"]).toBe("1/2 (50%)");
+    expect(row["決定の種別違い"]).toBe("1");
+  }));
+
+  it.effect("決定・TODO の 2 列が再現率の直後に並び、複数のランを並べても列が揃う", () => Effect.gen(function* () {
+    const dirA = yield* play(scriptPointOnly);
+    const dirB = yield* play(scriptA);
+    const { header, rows } = parseTable(yield* evalCli(["--truth", yield* writeTruth(decisionTruth), dirA, dirB]));
+    const at = header.indexOf("TODO の再現率");
+    expect(header.slice(at + 1, at + 3)).toEqual(["決定の種別違い", "TODO の種別違い"]);
+    expect(rows.map((r) => [r["決定の種別違い"], r["TODO の種別違い"]])).toEqual([["1", "0"], ["0", "0"]]);
+  }));
+
+  it.effect("--truth を付けないときは、種別違いの列が出ない", () => Effect.gen(function* () {
+    const { header } = parseTable(yield* evalCli([yield* play(scriptPointOnly)]));
+    expect(header.some((h) => h.includes("種別違い"))).toBe(false);
   }));
 });
 
@@ -667,9 +760,9 @@ describe("eval --screen-truth: 共有画面の正解の列", () => {
         出てはいけない: [{ keywords: ["求人票"] }, { keywords: ["存在しない"] }, { keywords: ["2回"] }, { keywords: ["存在しない2"] }],
       }));
       const { header, rows } = parseTable(yield* evalCli(["--truth", truth, "--screen-truth", screen, yield* play(scriptA)]));
-      const last6 = header.slice(-6);
-      expect(last6).toEqual(["決定の再現率", "TODO の再現率", ...SCREEN_HEADERS]);
-      expect(last6.map((h) => rows[0]![h])).toEqual(["1/2 (50%)", "1/1 (100%)", "2/3", "1/1", "1/2", "2/4"]);
+      const last8 = header.slice(-8);
+      expect(last8).toEqual(["決定の再現率", "TODO の再現率", "決定の種別違い", "TODO の種別違い", ...SCREEN_HEADERS]);
+      expect(last8.map((h) => rows[0]![h])).toEqual(["1/2 (50%)", "1/1 (100%)", "0", "0", "2/3", "1/1", "1/2", "2/4"]);
     }));
 
     it.effect("--screen-truth を付けないときは、4 列のどれも出ない", () => Effect.gen(function* () {

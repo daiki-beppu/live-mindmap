@@ -73,6 +73,7 @@ const helperLayer = (launches: string[][], beforeLaunch: Effect.Effect<void>) =>
     yield* beforeLaunch;
     const queue = yield* Queue.unbounded<string, Cause.Done>();
     const exit = yield* Deferred.make<HelperExitInfo>();
+    yield* Queue.offer(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
     yield* Queue.offer(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "合成の発言" }));
     const stop = Effect.andThen(Queue.end(queue), Deferred.succeed(exit, { code: 0, signal: null })).pipe(Effect.asVoid);
     yield* Effect.addFinalizer(() => stop);

@@ -88,6 +88,31 @@ describe("ログからの復元", () => {
       expect(yield* restored.unreflectedRemarks).toEqual(yield* session.unreflectedRemarks);
     }));
 
+  // Issue #1021: log.jsonl の発言の行に決まった話者が残る。復元でも話者を保ち、話者を持たない古い行は話者なしとして戻す
+  it.effect("発言の行の話者（相手 A・自分）は復元しても保たれ、話者を持たない古い行は話者なしのまま。speaker の行は読み飛ばす", () =>
+    Effect.gen(function* () {
+      const labeled = remark("ラベルつき", { speaker: "相手 A" });
+      const own = remark("自分の発言", { track: "自分", speaker: "自分" });
+      const old = remark("話者のない古い行");
+      // speaker の行は SessionSink が書く行（LogEvent ではない）。ファイルから読み直した形にして渡す
+      const rows: ReadonlyArray<{ readonly type: string; readonly [key: string]: unknown }> = [
+        { type: "start", title: "定例" },
+        { type: "speaker", track: "相手", start: 0, end: 1, slot: 2, final: true },
+        { type: "remark", remark: labeled },
+        { type: "speaker-settled", track: "相手", to: 1 },
+        { type: "speaker-off", start: 5, reason: "途中で停止" },
+        { type: "remark", remark: own },
+        { type: "remark", remark: old },
+      ];
+
+      const restored = yield* restore(rows.map((row, i) => JSON.parse(JSON.stringify({ at: `2026-10-01T00:00:0${i}.000Z`, ...row }))));
+
+      const back = yield* restored.unreflectedRemarks;
+      expect(back).toEqual([labeled, own, old]);
+      expect(back.map((r) => r.speaker)).toEqual(["相手 A", "自分", undefined]);
+      expect("speaker" in back[2]!).toBe(false);
+    }));
+
   it.effect("復元したスナップショットの touchedAt・evidenceRound が元と一致し、ルート以外のノードに付いている", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
@@ -280,6 +305,7 @@ describe("ログからの復元", () => {
         { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true },
         ...lines.slice(1, 3),
         { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false },
+        { type: "speaker-settled", track: "相手", to: 1.5 },
         { type: "speaker-off", start: 9, reason: "途中で停止" },
         ...lines.slice(3),
       ];

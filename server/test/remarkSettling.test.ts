@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { TestClock } from "effect/testing";
-import { SETTLE_QUIET_MS, type HelperPartial, type SettledRemark } from "../src/core/index.ts";
+import { SETTLE_QUIET_MS, SPEAKER_WAIT_MS, type HelperPartial, type SettledRemark, type SpeakerLogEvent, type WordTime } from "../src/core/index.ts";
 import { createRemarkSettling } from "../src/remarkSettling.ts";
 
 // 途中結果が T 秒変わらなければ発言として出す規則に、停止の門をつなぐ層（中核は実行環境のタイマーを使わない。ADR 0003）。
@@ -13,9 +13,17 @@ const partial = (track: HelperPartial["track"], start: number, end: number, text
 const final = (track: SettledRemark["track"], start: number, end: number, text: string): SettledRemark => ({ track, start, end, text });
 const texts = (emitted: SettledRemark[]) => emitted.map((r) => r.text);
 
-const setup = Effect.fn("setup")(function* () {
+// Issue #1021: 相手の発言は話者の確定区間が揃うまで（最大 SPEAKER_WAIT_MS）出ない。
+// 下の既存の観測は発言を締める規則（settle.ts）が対象なので、始めに speaker-off を渡して、相手の発言を待たずに話者なしで出す。
+// 話者を決める規則と待ちは、speakerOff: false で組み立てた別の describe が対象にする
+const speakers = (emitted: SettledRemark[]) => emitted.map((r) => [r.speaker, r.text]);
+const settledTo = (to: number): SpeakerLogEvent => ({ type: "speaker-settled", track: "相手", to });
+const SPEAKER_OFF: SpeakerLogEvent = { type: "speaker-off", start: 0, reason: "モデルなし" };
+
+const setup = Effect.fn("setup")(function* ({ speakerOff = true }: { speakerOff?: boolean } = {}) {
   const emitted: SettledRemark[] = [];
   const settling = yield* createRemarkSettling({ emit: (r) => Effect.sync(() => emitted.push(r)) });
+  if (speakerOff) yield* settling.speaker(SPEAKER_OFF);
   return { settling, emitted };
 });
 
@@ -97,7 +105,7 @@ describe("途中結果から発言を出す", () => {
       yield* settling.partial(partial("相手", 10, 11, "相手の途中"));
       yield* settling.partial(partial("自分", 10, 11, "自分の途中"));
       yield* settling.final({ track: "自分", start: 0, end: 2, text: "自分の確定。", duplicate: true });
-      expect(emitted).toEqual([{ track: "自分", start: 0, end: 2, text: "自分の確定。", duplicate: true }]);
+      expect(emitted).toEqual([{ track: "自分", start: 0, end: 2, text: "自分の確定。", duplicate: true, speaker: "自分" }]);
 
       // 守っている状態に到達したことを先に確かめる: 同じ時間で、相手の途中結果は出る
       yield* settling.partial(partial("自分", 10, 20, "自分の途中"));
@@ -279,6 +287,159 @@ describe("停止", () => {
       yield* settling.final(final("相手", 30, 31, "う。"));
       yield* settling.drain;
       yield* TestClock.adjust(T * 5);
+      expect(emitted).toEqual([]);
+    }));
+});
+
+// Issue #1021: 発言を締める 4 つの出口（due の 1 秒 / due の文の終わり / final の既出分岐 / final の passCarried 分岐 / drain）の
+// どれから出た発言にも、同じ規則で話者が付く。同じ確定区間（slot 3 → slot 1 → slot 4）を先に届けておき、各出口の出力を比べる。
+describe("どの出口から出た発言にも同じ規則で話者が付く（Issue #1021）", () => {
+  const segment = (slot: number, start: number, end: number): SpeakerLogEvent => ({ type: "speaker", track: "相手", start, end, slot, final: true });
+  const span = (location: number, length: number, start: number, end: number): WordTime => ({ location, length, start, end });
+  const heardPartial = (start: number, end: number, text: string, wordTimes: WordTime[]): HelperPartial => ({ ...partial("相手", start, end, text), wordTimes });
+
+  // 確定区間と確定済みの位置は、発言より先に届いている（揃っているので、締まった発言はすぐ出る）
+  const withSegments = Effect.fn("withSegments")(function* () {
+    const made = yield* setup({ speakerOff: false });
+    for (const s of [segment(3, 10, 11), segment(1, 11, 14), segment(4, 14, 16), settledTo(16)]) yield* made.settling.speaker(s);
+    return made;
+  });
+
+  it.effect("due（1 秒更新されなかった途中結果）: 話者が替わる所で切り、先に話した順にラベルが付く", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* withSegments();
+
+      yield* settling.partial(heardPartial(10, 14, "はい、ありがとう", [span(0, 3, 10, 11), span(3, 5, 11, 14)]));
+      yield* settling.partial(partial("自分", 0, 14 + T / 1000, "x"));
+
+      expect(speakers(emitted)).toEqual([["相手 A", "はい、"], ["相手 B", "ありがとう"]]);
+      expect(emitted.map((r) => [r.start, r.end])).toEqual([[10, 11], [11, 14]]);
+    }));
+
+  it.effect("due（文の終わりで締める発言）: 同じ規則で切り、同じラベルになる", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* withSegments();
+
+      yield* settling.partial(heardPartial(10, 14, "はい、ありがとう。", [span(0, 3, 10, 11), span(3, 6, 11, 14)]));
+      yield* settling.partial(partial("自分", 0, 14.05, "x")); // 文の終わりから SETTLE_SENTENCE_MS（50ms）経った。1 秒は経っていない
+
+      expect(speakers(emitted)).toEqual([["相手 A", "はい、"], ["相手 B", "ありがとう。"]]);
+    }));
+
+  it.effect("final の既出分岐（区間の一部が先に出ている確定結果）: 残りの発話を同じ規則で切る。ラベルは先に出した分と続けて振られる", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* withSegments();
+
+      yield* settling.partial(heardPartial(10, 11, "はい、", [span(0, 3, 10, 11)]));
+      yield* settling.partial(heardPartial(11, 16, "ありがとう、お願いします", [span(0, 6, 11, 14), span(6, 6, 14, 16)]));
+      yield* settling.partial(partial("自分", 0, 12, "x")); // 先頭の発話だけ 1 秒経って出る
+      expect(speakers(emitted)).toEqual([["相手 A", "はい、"]]);
+
+      yield* settling.final({ ...final("相手", 10, 16.5, "はい、ありがとう、お願いします") });
+
+      expect(speakers(emitted)).toEqual([["相手 A", "はい、"], ["相手 B", "ありがとう、"], ["相手 C", "お願いします"]]);
+    }));
+
+  it.effect("final の passCarried 分岐（途中結果が無い確定結果）: 同じ規則で切る", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* withSegments();
+
+      yield* settling.final({ ...final("相手", 10, 14, "はい、ありがとう"), wordTimes: [span(0, 3, 10, 11), span(3, 5, 11, 14)] });
+
+      expect(speakers(emitted)).toEqual([["相手 A", "はい、"], ["相手 B", "ありがとう"]]);
+    }));
+
+  it.effect("drain: 区間が揃っていれば同じ規則で切る", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* withSegments();
+
+      yield* settling.partial(heardPartial(10, 14, "はい、ありがとう", [span(0, 3, 10, 11), span(3, 5, 11, 14)]));
+      expect(emitted).toEqual([]);
+      yield* settling.drain;
+
+      expect(speakers(emitted)).toEqual([["相手 A", "はい、"], ["相手 B", "ありがとう"]]);
+    }));
+
+  it.effect("drain: 区間が揃っていない発言は、3 秒を待たずに話者なしで出る。出た後に区間が届いても変わらない", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* setup({ speakerOff: false });
+
+      yield* settling.partial(heardPartial(10, 14, "はい、ありがとう", [span(0, 3, 10, 11), span(3, 5, 11, 14)]));
+      yield* settling.drain;
+      expect(speakers(emitted)).toEqual([[undefined, "はい、ありがとう"]]);
+
+      yield* settling.speaker(segment(3, 10, 14));
+      yield* settling.speaker(settledTo(14));
+      yield* settling.drain;
+      expect(speakers(emitted)).toEqual([[undefined, "はい、ありがとう"]]);
+    }));
+
+  it.effect("すべての出口をまたいで、ラベルの対応は 1 つ（出口が違っても同じ枠は同じラベル。新しい枠は続きのラベル）", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* setup({ speakerOff: false });
+      for (const s of [segment(3, 0, 2), segment(1, 2, 4), segment(3, 4, 6), segment(9, 6, 8), settledTo(8)]) yield* settling.speaker(s);
+
+      yield* settling.partial(heardPartial(0, 2, "ひとつめ", [span(0, 4, 0, 2)])); // 1 秒の出口
+      yield* settling.partial(partial("自分", 0, 3, "x"));
+      yield* settling.final({ ...final("相手", 2, 4, "ふたつめ"), wordTimes: [span(0, 4, 2, 4)] }); // 確定結果の出口
+      yield* settling.partial(heardPartial(4, 6, "みっつめ", [span(0, 4, 4, 6)]));
+      yield* settling.partial(heardPartial(6, 8, "よっつめ", [span(0, 4, 6, 8)]));
+      yield* settling.drain; // drain の出口
+
+      expect(speakers(emitted)).toEqual([["相手 A", "ひとつめ"], ["相手 B", "ふたつめ"], ["相手 A", "みっつめ"], ["相手 C", "よっつめ"]]);
+    }));
+});
+
+describe("確定を待って出す・使えないとき（Issue #1021）", () => {
+  it.effect("確定区間が揃うまで出ない。音声の時計（結果の end）が SPEAKER_WAIT_MS 進んでも揃わなければ話者なしで出る。壁時計では進まない", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* setup({ speakerOff: false });
+
+      yield* settling.final(final("相手", 10, 12, "あい。"));
+      yield* TestClock.adjust(SPEAKER_WAIT_MS * 10);
+      expect(emitted).toEqual([]);
+
+      yield* settling.partial(partial("自分", 0, 12 + (SPEAKER_WAIT_MS - 1) / 1000, "x"));
+      expect(emitted).toEqual([]);
+      yield* settling.partial(partial("自分", 0, 12 + SPEAKER_WAIT_MS / 1000, "x"));
+      expect(emitted).toEqual([{ track: "相手", start: 10, end: 12, text: "あい。" }]);
+    }));
+
+  it.effect("区間の end が発言の end に届いても、確定済みの位置が届くまでは出ない。位置が届くと話者付きで出る", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* setup({ speakerOff: false });
+      yield* settling.final(final("相手", 10, 14, "あい。"));
+
+      yield* settling.speaker({ type: "speaker", track: "相手", start: 12, end: 14, slot: 0, final: true });
+      expect(emitted).toEqual([]);
+      yield* settling.speaker(settledTo(14));
+      expect(speakers(emitted)).toEqual([["相手 A", "あい。"]]);
+    }));
+
+  it.effect("speaker-off を受けたら、保留中の発言は話者なしですぐ出て、以後の相手の発言は待たずに出る", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* setup({ speakerOff: false });
+      yield* settling.final(final("相手", 10, 12, "あい。"));
+      expect(emitted).toEqual([]);
+
+      yield* settling.speaker({ type: "speaker-off", start: 12, reason: "途中で停止" });
+      expect(texts(emitted)).toEqual(["あい。"]);
+
+      yield* settling.final(final("相手", 20, 22, "うえ。"));
+      expect(texts(emitted)).toEqual(["あい。", "うえ。"]);
+      expect(emitted.every((r) => r.speaker === undefined)).toBe(true);
+    }));
+
+  it.effect("stop の後に届いた話者の区間・speaker-off は何も出さない", () =>
+    Effect.gen(function* () {
+      const { settling, emitted } = yield* setup({ speakerOff: false });
+      yield* settling.final(final("相手", 10, 12, "あい。"));
+
+      yield* settling.stop;
+      yield* settling.speaker({ type: "speaker", track: "相手", start: 10, end: 12, slot: 0, final: true });
+      yield* settling.speaker(settledTo(12));
+      yield* settling.speaker({ type: "speaker-off", start: 12, reason: "途中で停止" });
+
       expect(emitted).toEqual([]);
     }));
 });

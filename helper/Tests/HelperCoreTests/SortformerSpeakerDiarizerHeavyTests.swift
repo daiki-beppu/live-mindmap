@@ -130,7 +130,15 @@ struct SortformerSpeakerDiarizerHeavyTests {
 
         let stream = try await diarizer.diarize(audio, origin: origin)
         var segments: [SpeakerSegment] = []
-        for try await segment in stream { segments.append(segment) }
+        var settled: [Double] = []
+        for try await item in stream {
+            switch item {
+            case .segment(let segment): segments.append(segment)
+            case .settled(let to): settled.append(to)
+            }
+        }
+        #expect(!settled.isEmpty, "確定済みの位置が 1 件も届かなかった")
+        #expect(settled == settled.sorted(), "確定済みの位置が前の値より小さくなった")
 
         let confirmed = segments.filter(\.isFinal)
         #expect(!confirmed.isEmpty, "確定の区間が 1 件も届かなかった（全 \(segments.count) 件）")

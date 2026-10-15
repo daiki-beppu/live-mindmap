@@ -118,8 +118,9 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
   });
 }
 
-// sink の appendLog が受け取る型（intake の記録と speaker の記録）
+// sink の appendLog が受け取る型（intake の記録・自分の休止の記録）。speaker の記録は sink.speaker が受け取る（Issue #1021）
 type LogLineEvent = Parameters<SessionSink["appendLog"]>[0];
+type SpeakerLine = Parameters<SessionSink["speaker"]>[0];
 
 type FakeSinksHandle = {
   readonly sinks: SessionSinks["Service"];
@@ -132,6 +133,7 @@ type FakeSinksHandle = {
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { drained: number; cleared: number; stopped: number };
   readonly appended: LogLineEvent[];
+  readonly speakers: SpeakerLine[]; // sink.speaker へ届いた speaker・speaker-off（届いた順）
   readonly vocabAdded: string[][]; // addUserVocabulary へ届いた語（呼び出しごと）
   readonly order: string[]; // flush・exports・close が起きた順
   readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
@@ -150,6 +152,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const sequence: string[] = [];
     const relayStats = { drained: 0, cleared: 0, stopped: 0 };
     const appended: LogLineEvent[] = [];
+    const speakers: SpeakerLine[] = [];
     const vocabAdded: string[][] = [];
     const order: string[] = [];
     const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
@@ -171,6 +174,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
           appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),
+          speaker: (event: SpeakerLine) => Effect.sync(() => { speakers.push(event); }),
           flush: Effect.sync(() => { order.push("flush"); }),
           exports: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => { order.push("exports"); return [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`]; }),
           audioFileNames: (attempt: number) => (attempt > 1 ? [`相手-${attempt}.m4a`, `自分-${attempt}.m4a`] : ["相手.m4a", "自分.m4a"]),
@@ -179,7 +183,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
       });
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, createDir, prepare: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }))) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, vocabAdded, order, control };
+    return { sinks: SessionSinks.of({ open, createDir, prepare: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) }))) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, speakers, vocabAdded, order, control };
   });
 }
 
@@ -1273,21 +1277,46 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         return { fakeHelpers, fakeSinks, ...booted };
       });
 
-    it.effect("speaker と speaker-off は届いた値のまま、届いた順に log（sink）へ残る。セッションは running のまま", () =>
+    it.effect("speaker と speaker-off は届いた値のまま、届いた順に sink.speaker へ渡る（話者の決定と log への記録は sink が行う）。セッションは running のまま", () =>
       Effect.gen(function* () {
         const { fakeHelpers, fakeSinks, sessions } = yield* boot([{}]);
         yield* sessions.start(start());
         fakeHelpers.send(0, { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false });
         fakeHelpers.send(0, { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
+        fakeHelpers.send(0, { type: "speaker-settled", track: "相手", to: 1.5 });
         fakeHelpers.send(0, { type: "speaker-off", start: 9, reason: "途中で停止" });
         yield* TestClock.adjust(1);
 
-        expect(fakeSinks.appended).toEqual([
+        expect(fakeSinks.appended).toEqual([]); // 話者の記録は appendLog 経由ではなく sink.speaker 経由の 1 経路だけ
+        expect(fakeSinks.speakers).toEqual([
           { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 2, final: false },
           { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true },
+          { type: "speaker-settled", track: "相手", to: 1.5 },
           { type: "speaker-off", start: 9, reason: "途中で停止" },
         ]);
         expect((yield* sessions.status).status).toBe("running");
+      }));
+
+    // Issue #1021: 枠とラベルの対応は SessionSink が 1 つだけ持つ。ヘルパーを起動し直しても、同じ sink へ届ける（セッションの寿命で 1 つ）
+    it.effect("ヘルパーを起動し直した後の speaker・speaker-off も、起動し直す前と同じ sink（開いたのは 1 回）へ届く", () =>
+      Effect.gen(function* () {
+        const { fakeHelpers, fakeSinks, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
+        yield* sessions.start(start());
+        fakeHelpers.send(0, { type: "speaker", track: "相手", start: 0, end: 1, slot: 2, final: true });
+        yield* TestClock.adjust(500); // 構成の変化（75）による終了: 待たずに起動し直す
+        yield* TestClock.adjust(10);
+        expect(fakeHelpers.calls).toHaveLength(2);
+        fakeHelpers.send(1, { type: "origin", hostTime: "2" });
+        fakeHelpers.send(1, { type: "speaker", track: "相手", start: 1, end: 2, slot: 0, final: true });
+        fakeHelpers.send(1, { type: "speaker-off", start: 3, reason: "途中で停止" });
+        yield* TestClock.adjust(1);
+
+        expect(fakeSinks.opened.count).toBe(1);
+        expect(fakeSinks.speakers).toEqual([
+          { type: "speaker", track: "相手", start: 0, end: 1, slot: 2, final: true },
+          { type: "speaker", track: "相手", start: 1, end: 2, slot: 0, final: true },
+          { type: "speaker-off", start: 3, reason: "途中で停止" },
+        ]);
       }));
 
     it.effect("speaker・speaker-off は発言・途中結果・画面の記録に触れない", () =>
@@ -1307,6 +1336,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
     it.effect.each([
       ["slot が数でない", { type: "speaker", track: "相手", start: 0, end: 1, slot: "0", final: true }],
       ["final が真偽値でない", { type: "speaker", track: "相手", start: 0, end: 1, slot: 0, final: "yes" }],
+      ["speaker-settled の to が数でない", { type: "speaker-settled", track: "相手", to: "14" }],
+      ["speaker-settled に to が無い", { type: "speaker-settled", track: "相手" }],
       ["reason が知らない文字列", { type: "speaker-off", start: 0, reason: "other" }],
     ])("壊れた speaker 系のイベントは sink に届かない（%s）", (row) =>
       withStderr(() =>
@@ -1316,6 +1347,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* sessions.start(start());
           fakeHelpers.send(0, data);
           yield* TestClock.adjust(1);
+          expect(fakeSinks.speakers).toEqual([]);
           expect(fakeSinks.appended).toEqual([]);
         })));
   });
