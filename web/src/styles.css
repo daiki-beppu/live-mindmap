@@ -99,8 +99,10 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 /* 相手の音声が届いていないことの一文（Issue #863）: 字幕の左に、下端基準で置く（右には .intake-notice がある）。
    文が長いので折り返しを許し、幅は字幕の左の余白に収める。レイアウトは動かさない（absolute）。バッジ・影・枠・背景は付けない */
 /* 自分を休止中の一言（Issue #1069）: 取り込みの一言と同じ場所・同じ文字で字幕の右に出し続ける。取り込みの一言と同時に出るときは、
-   取り込みの一言を 1 行分（line-height 1.5 の 19.5px）より上へ上げ、休止の一言をその下に置く。包む要素は足さない（字幕・マップを動かさない） */
-.self-pause-notice { position: absolute; left: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; font-size: 13px; line-height: 1.5; color: var(--color-gray-500); pointer-events: none; z-index: 5; white-space: nowrap; }
+   取り込みの一言を 1 行分（line-height 1.5 の 19.5px）より上へ上げ、休止の一言をその下に置く。包む要素は足さない（字幕・マップを動かさない）。
+   自動の文言は長く、字幕の右の余白に 1 行では収まらない（769px 以上）ので、右端を .layout の右端に合わせて折り返しを許す。
+   上端を「下から 24px + 1 行分」に固定し、折り返した行は下へ伸ばす（1 行のときの下端は従来どおり layout −24px） */
+.self-pause-notice { position: absolute; left: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); right: 0; top: calc(100% - 24px - 19.5px); font-size: 13px; line-height: 1.5; color: var(--color-gray-500); pointer-events: none; z-index: 5; white-space: normal; }
 .layout:has(> .self-pause-notice) > .intake-notice { bottom: 44px; line-height: 1.5; }
 .tap-notice { position: absolute; right: calc(50% + min(720px, calc(100vw - 2 * 316px)) / 2 + 12px); bottom: 24px; width: 260px; text-align: right; font-size: 13px; line-height: 1.5; color: var(--color-gray-500); pointer-events: none; z-index: 5; }
 

@@ -48,7 +48,7 @@ public enum MeetingAppError: Error, Equatable, CustomStringConvertible {
 
 /// `processBundleID` が `appBundleID` のアプリ本体、またはその helper か。`.` の境界で判定する
 /// （`com.google.ChromeCanary` は `com.google.Chrome` にならない）。
-private func belongs(_ processBundleID: String, toApp appBundleID: String) -> Bool {
+func belongs(_ processBundleID: String, toApp appBundleID: String) -> Bool {
     processBundleID == appBundleID || processBundleID.hasPrefix(appBundleID + ".")
 }
 

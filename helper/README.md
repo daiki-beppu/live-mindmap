@@ -20,7 +20,7 @@
 cd helper
 swift run live-mindmap-helper list                         # 音を出している会議アプリを JSON で出す
 swift run live-mindmap-helper check                        # モデル・マイク・画面収録の状態を JSON で出す
-swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-paused]   # 既定のポートは 8765
+swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <秒>]   # 既定のポートは 8765
 swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分]   # セッションの録音を 0 秒から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする
 swift run live-mindmap-helper readings <語>...             # 語ごとのローマ字の読みを JSON で出す
 ```
@@ -54,7 +54,9 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 
 `--origin <host time>` は、`run` の時刻の基準（`AudioGetCurrentHostTime()`）を上書きする。サーバーが予期せず落ちたヘルパーを再起動するときに使い、再起動後のヘルパーの発言・録音の時刻を 0 に戻さず、元の起動の続きにする。`--audio-index <n>`（既定は 1）は、録音ファイルの名前の番号を選ぶ。1 なら `相手.m4a`・`自分.m4a`（今まで通り）、2 以上なら `相手-N.m4a`・`自分-N.m4a` になる。再起動したヘルパーが前回の録音を上書き（`AVAudioFile(forWriting:)` は既存ファイルを黙って切り詰める/置き換える）しないようにするため。
 
-`--self-paused`（値は取らない）を付けると、`自分` を休止した状態で始める。サーバーが、手で選んだ休止を続けたままヘルパーを起動し直すときに使う（次の「サーバーからの指示」を参照）。
+`--self-manual`・`--self-basis`・`--self-last-known`・`--self-idle-for` は、`自分` の休止の規則（`SelfPauseRule`）の状態を引き継ぐ。サーバーが、手で選んだ状態・待ちの進み具合を続けたままヘルパーを起動し直すときに使う。初期状態と同じ値は渡さない。`--self-manual` は手動の状態（`pause` か `take`）、`--self-basis` は手動の基準（手で選んだ時点の判定。`using` か `idle`）、`--self-last-known` は最後に読めた判定（`using` か `idle`）、`--self-idle-for` は「使っていない」が続いた秒数（0 以上）。値が不正なら使い方の誤りとして終了コード 2 で終わる。
+
+`自分` があるとき、ヘルパーは `--app` に当たるプロセス（`相手` の取り込みの対象と同じ規則。自分の pid は除く）の入力の使用（Core Audio の `IsRunningInput`）を読み、会議アプリがマイクを使っていない間は `自分` を自動で休止する。どれか 1 つが使っていれば「使っている」、当たるプロセスが無い・読めないときは「分からない」（休止にせず取る）。「使っていない」が 3 秒続いてから休止に入り、使い始めるとすぐ取る。読み直しは、プロセスの機器とプロセス一覧の変化の通知と、0.5 秒ごとのポーリング。組み合わせの規則は `SelfPauseRule`（Core Audio もタイマーも持たない）。
 
 ## サーバーからの指示
 
@@ -85,6 +87,7 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 {"type":"screen-off","start":0.5,"reason":"許可なし"}
 {"type":"tap-silent","start":10.5}
 {"type":"self-pause","paused":true,"reason":"手動","start":42.5}
+{"type":"self-pause-state","manual":"pause","basis":"using","lastKnown":"idle","idleFor":1.5}
 {"type":"speaker","track":"相手","start":1.5,"end":2.25,"slot":1,"final":false}
 {"type":"speaker","track":"相手","start":0,"end":1.5,"slot":0,"final":true}
 {"type":"speaker-off","start":0.5,"reason":"モデルなし"}
@@ -98,7 +101,8 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 - `screen`: 共有画面の変化。`start` は `origin` と同じ原点（`--origin` を渡したときはその値）からの秒。画像付きの `start` は、違うマスが今の値になった時刻の中央値を、前に送ると決めた時刻で下限補正した値（最初の画像だけは、そのフレームの時刻）。`image` が `null` のときの `start` は、ウィンドウが消えた時刻、または会議以外のタブと判定した時刻。`image` は JPEG の base64。`lines` は、送ると決めた画面だけを Vision（`VNRecognizeTextRequest`、日本語と英語）で読んだ文字の行（文字列の配列。上から順）で、OCR が失敗したときは空の配列（画像は送る）。差分更新のモデルには画像だけを渡す。映していたウィンドウが無くなったときは `image` が JSON の `null`（キーは省かない）で、`lines` のキーは付けない。`screen` も `origin` と同じく、サーバーがつながる前に出た分は最新の 1 件だけを保持し、つながったら送る（`origin` の次に届く）
 - `screen-off`: 共有画面を取り込めない（画面収録の許可が無い・断られた・取り込みの途中で止まった）。`start` は `screen` と同じく `origin` と同じ原点からの秒。`reason` はヘルパーが流す限り `許可なし` だけ（`指定` はサーバーが書く）。`origin`・`screen` と同じく、`screen` とは別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。音声の取り込みは止まらない
 - `tap-silent`: `相手` のタップを始めてから 10 秒（`tapSilentJudgementDelay`）、フレーム数 1 以上のバッファを 1 つも受け取らなかった。サンプルの値（ゼロかどうか）は見ない。`start` は `origin` と同じ原点からの秒（判定した時刻）。ヘルパーのプロセスにつき最大 1 回だけ流し、別の key で保持して、後からつながったクライアントにも送る。判定の時点で、機器の状態の 1 行を標準エラーにも出す
-- `self-pause`: `自分` の休止の状態が変わった（サーバーからの指示による。`自分` があれば、起動時に現在の状態（`paused`）を 1 回流す。休止・再開どちらでも。`自分` がなければ流さない）。`paused` は変わった後の状態、`reason` は今は `手動` だけ、`start` は `origin` と同じ原点からの秒。別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。サーバーは `log.jsonl` に `self-paused` / `self-resumed` の組で残す
+- `self-pause`: `自分` の休止の状態が変わった（サーバーからの指示と、会議アプリのマイクの使用による。`自分` があれば、起動時に現在の状態（`paused`）を 1 回流す。休止・再開どちらでも。`自分` がなければ流さない）。`paused` は変わった後の状態、`reason` は `手動`（手で選んだ）・`自動`（会議アプリがマイクを使っていない）・`判定できない`（読めない間。取っている）のどれか、`start` は `origin` と同じ原点からの秒。休止中に理由だけが変わったときも流す。別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。サーバーは `paused` が変わったときだけ `log.jsonl` に `self-paused` / `self-resumed` の組で `reason` つきで残す
+- `self-pause-state`: `自分` の休止の規則の、起動し直しで引き継ぐ状態（`manual`・`basis`・`lastKnown`・`idleFor`）。値が変わるたびに流し（`自分` があれば、起動時にも 1 回）、別の key で最新の 1 件を保持する。サーバーは覚えるだけで（ログにも画面にも出さない）、ヘルパーを起動し直すとき引数で送り直す
 
 - `speaker`: `相手` のトラックだけに FluidAudio の Sortformer（CoreML、`fastV2_1`）で話者分離をかけた、話者の区間（Issue #1020）。STT の `partial` / `remark` とは別のイベントで、発言・字幕・差分更新には結び付けない。`track` は常に `相手`。`start` / `end` は `origin` と同じ原点からの秒（発言の `start` / `end` と同じ規則で、最初のバッファの取得時刻の差を足す）。`slot` は Sortformer の出力の番号（0 始まり。話者のラベルではない）。`final` が `true` なら確定した区間、`false` なら確定より新しい部分の仮の区間（後で変わり得る）。通常の broadcast で流し、保持しない。音声が終わったら残りを確定させて流す。`自分` のトラックには話者分離をかけない。音声は Mac の外に出ない
 - `speaker-off`: 話者分離を使えない。`reason` は `モデルなし`（モデルのファイルが無い。会議中にはモデルを取りに行かない）・`読み込みに失敗`・`途中で停止`（区間の流れがエラーで終わった）のどれか。`start` は `origin` と同じ原点からの秒。認識とセッションは止めない。別の key で保持して、後からつながったクライアントにも送る。モデルはセットアップの段で `bash helper/scripts/fetch-speaker-models.sh`（`live-mindmap-helper install-speaker-models`。保存先は FluidAudio の既定の `~/Library/Application Support/FluidAudio/Models`。入っていれば何もしない）が前もって取得する

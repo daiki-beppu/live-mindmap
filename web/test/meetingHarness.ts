@@ -79,6 +79,8 @@ export const SCREEN = "共有画面は使っていません（画面収録の許
 export const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります）";
 export const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
 export const SELF_PAUSE_TEXT = "自分を休止中（M で再開）";
+// 自動の休止（会議アプリがマイクを使っていない。Issue #1071）の一言
+export const SELF_PAUSE_AUTO_TEXT = "自分を休止中（会議アプリがマイクを使っていない）";
 export const PAUSED_TEXT = "マップの更新が止まっています（ChatGPT の利用上限）";
 
 // ---- 受信（WebSocket。描いた木の外）を流す Message ----
@@ -99,7 +101,8 @@ export const disconnected = () => Subscription.emit(disconnectedMessage());
 export const press = (key: KeyId, mods: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => Subscription.emit(keyMessage(key, mods));
 export const surface = (message: MapSurfaceMessage) => Subscription.emit(surfaceMessage(message));
 export const speak = (text: string, track: "相手" | "自分" = "相手") => frame({ type: "speaking", track, text });
-export const selfPause = (paused: boolean) => frame({ type: "self-pause", paused });
+// 休止の frame。休止中は理由（手動 / 自動）を持ち、再開は paused:false だけ（Issue #1071）
+export const selfPause = (paused: boolean, reason: "手動" | "自動" = "手動") => frame(paused ? { type: "self-pause", paused: true, reason } : { type: "self-pause", paused: false });
 export const intake = (status: "running" | "interrupted" | "stopped" | "none") => frame({ type: "intake", status });
 
 type EmitStep = ReturnType<typeof frame>;

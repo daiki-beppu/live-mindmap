@@ -34,6 +34,7 @@ import {
   SELF_PAUSE_TEXT,
   selfPause,
   selfPauseRequests,
+  SELF_PAUSE_AUTO_TEXT,
   SECOND,
   selectedIds,
   settle,
@@ -342,6 +343,45 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
       selfPause(false),
       settle,
       expectScene(selector(".self-pause-notice")).toBeAbsent(),
+    );
+  });
+
+  // Issue #1071: 理由で一言が変わる。同じ画面（同じ Model）の上で、手動 → 自動 → 再開 → 自動と続けて観測する
+  it("休止の理由で一言の文言が変わる。休止中に理由だけ変わっても、一言は 1 つのまま置き換わり、再開で消える", () => {
+    meetingScene(init(false),
+      frame(FIRST),
+      settle,
+      selfPause(true, "自動"),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_AUTO_TEXT),
+      expectScene(selector(".self-pause-notice")).toHaveAttr("aria-live", "polite"),
+      selfPause(true, "手動"),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
+      tap((sim) => expect(findAll(sim.html, ".self-pause-notice")).toHaveLength(1)),
+      selfPause(true, "自動"),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_AUTO_TEXT),
+      tap((sim) => expect(findAll(sim.html, ".self-pause-notice")).toHaveLength(1)),
+      selfPause(false),
+      settle,
+      expectScene(selector(".self-pause-notice")).toBeAbsent(),
+      selfPause(true, "自動"),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_AUTO_TEXT),
+    );
+  });
+
+  it("自動の休止中の M は、手動のときと同じく逆の状態（paused:false）を指示に載せる。M の動きは理由で変わらない", () => {
+    meetingScene(init(false),
+      frame(FIRST),
+      settle,
+      selfPause(true, "自動"),
+      settle,
+      raw(press("M")),
+      tap((sim) => expect(selfPauseRequests(sim)).toEqual([false])),
+      settle,
+      expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_AUTO_TEXT),
     );
   });
 

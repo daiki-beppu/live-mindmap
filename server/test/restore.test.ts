@@ -259,6 +259,8 @@ describe("ログからの復元", () => {
         { type: "self-paused", reason: "手動", start: 10.5 },
         ...lines.slice(1, 3),
         { type: "self-resumed", reason: "手動", start: 42 },
+        { type: "self-paused", reason: "自動", start: 50 },
+        { type: "self-resumed", reason: "判定できない", start: 60 },
         ...lines.slice(3),
       ];
       const restored = yield* restore(withSelfPause);

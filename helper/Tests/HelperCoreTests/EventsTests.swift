@@ -290,17 +290,40 @@ struct EventsTests {
         #expect(HelperEvent.screenOff(start: 1, reason: .許可なし) != HelperEvent.screen(start: 1, image: nil, lines: nil))
     }
 
-    // Issue #1069: 自分の休止の状態が変わるたびに流すイベント。reason は今は手動だけ。start は origin からの秒
-    @Test("self-pause は paused・reason（手動）・start を持ち、休止にも再開にも同じ形で使える")
+    // Issue #1069・#1071: 自分の休止の状態が変わるたびに流すイベント。reason は手動・自動・判定できないのどれか。start は origin からの秒
+    @Test("self-pause は paused・reason・start を持ち、休止にも再開にも同じ形で使える")
     func selfPauseEventShape() throws {
         for paused in [true, false] {
-            let json = try decode(.selfPause(paused: paused, start: 12.5))
+            let json = try decode(.selfPause(paused: paused, reason: .manual, start: 12.5))
             #expect(Set(json.keys) == ["type", "paused", "reason", "start"])
             #expect(json["type"] as? String == "self-pause")
             #expect(json["paused"] as? Bool == paused)
             #expect(json["reason"] as? String == "手動")
             #expect(json["start"] as? Double == 12.5)
         }
+    }
+
+    @Test("self-pause の reason は、手動・自動・判定できないがそれぞれの文字列で出る")
+    func selfPauseReasonValues() throws {
+        for (reason, text) in [(SelfPauseReason.manual, "手動"), (.automatic, "自動"), (.undetermined, "判定できない")] {
+            #expect(try decode(.selfPause(paused: true, reason: reason, start: 1))["reason"] as? String == text)
+        }
+        #expect(try HelperEvent.selfPause(paused: true, reason: .automatic, start: 12.5).jsonString()
+            == "{\"paused\":true,\"reason\":\"自動\",\"start\":12.5,\"type\":\"self-pause\"}")
+    }
+
+    @Test("self-pause-state は手動・基準・最後に読めた値・待ちの進み具合だけを持つ。server が起動し直しで送り直すため")
+    func selfPauseStateEventShape() throws {
+        let state = SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5)
+        let json = try decode(.selfPauseState(state))
+        #expect(Set(json.keys) == ["type", "manual", "basis", "lastKnown", "idleFor"])
+        #expect(json["type"] as? String == "self-pause-state")
+        #expect(json["manual"] as? String == "pause")
+        #expect(json["basis"] as? String == "using")
+        #expect(json["lastKnown"] as? String == "idle")
+        #expect(json["idleFor"] as? Double == 1.5)
+        #expect(try HelperEvent.selfPauseState(.initial).jsonString()
+            == "{\"basis\":\"unknown\",\"idleFor\":0,\"lastKnown\":\"unknown\",\"manual\":\"none\",\"type\":\"self-pause-state\"}")
     }
 
     // Issue #1020: 話者の区間。STT とは別のイベントで、仮と確定は final で見分ける。slot は Sortformer の出力の番号

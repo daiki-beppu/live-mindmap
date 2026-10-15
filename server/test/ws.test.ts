@@ -71,12 +71,21 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       const viewers = yield* Viewers;
       const first = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(first.socket));
-      yield* viewers.selfPause({ type: "self-pause", paused: true });
-      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: true });
+      yield* viewers.selfPause({ type: "self-pause", paused: true, reason: "自動" });
+      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: true, reason: "自動" });
 
       const late = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(late.socket));
-      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: true });
+      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: true, reason: "自動" });
+
+      // 休止中に理由だけが変わったら、保持も置き換わる（後からつないだ画面には最新の理由が届く）
+      yield* viewers.selfPause({ type: "self-pause", paused: true, reason: "手動" });
+      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: true, reason: "手動" });
+      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: true, reason: "手動" });
+      const replaced = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(replaced.socket));
+      expect(yield* Queue.take(replaced.frames)).toEqual({ type: "self-pause", paused: true, reason: "手動" });
+      expect(yield* Queue.size(replaced.frames)).toBe(0);
 
       yield* viewers.selfPause({ type: "self-pause", paused: false });
       expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: false });
@@ -92,7 +101,7 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
     Effect.gen(function* () {
       const viewers = yield* Viewers;
       yield* viewers.intake(intake("running"));
-      yield* viewers.selfPause({ type: "self-pause", paused: true });
+      yield* viewers.selfPause({ type: "self-pause", paused: true, reason: "手動" });
       yield* viewers.selfPause({ type: "self-pause", paused: false });
       const late = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(late.socket));
