@@ -34,9 +34,9 @@ const fakeClient = (answer: (sent: Sent) => HttpClientResponse.HttpClientRespons
 const ok = (noul: unknown, extra: object = {}) => (sent: Sent) =>
   respond(sent.request, { answers: { route: { type: "noul", noul } }, ...extra });
 
-const ask = (judgeModel: JudgeModel, client: HttpClient.HttpClient, key = "synthetic-key") =>
+const ask = (judgeModel: JudgeModel, client: HttpClient.HttpClient, key = "synthetic-key", accountId?: string) =>
   Effect.gen(function* () {
-    const asking = yield* makeSystemOne(judgeModel, key).pipe(Effect.provideService(HttpClient.HttpClient, client));
+    const asking = yield* makeSystemOne(judgeModel, { apiKey: key, ...(accountId === undefined ? {} : { accountId }) }).pipe(Effect.provideService(HttpClient.HttpClient, client));
     return yield* asking(state, questions);
   });
 
@@ -131,5 +131,60 @@ describe("判定の口: 判定できなかった（例外にしない）", () =>
     const outcome = yield* Fiber.join(fiber);
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.reason.trim()).not.toBe("");
+  }));
+});
+
+describe("判定の口: Clef（Workers AI、Issue #985）", () => {
+  const clef = (model: "clef" | "clef-flash"): JudgeModel => ({
+    name: model, route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model, timeoutMs: 2000,
+  });
+  const wrapped = (noul: unknown) => (sent: Sent) =>
+    respond(sent.request, { result: { model: "clef", answers: { route: { type: "noul", noul } }, usage: { input_tokens: 3 } }, success: true, errors: [], messages: [] });
+
+  it.effect.each(["clef", "clef-flash"] as const)("%s: アカウント ID を入れた Workers AI の宛先へ、トークンの Bearer・モデル名つきで POST する", (model) => Effect.gen(function* () {
+    const fake = fakeClient(wrapped(0.9));
+    yield* ask(clef(model), fake.client, "cf-token", "acct-123");
+    expect(fake.requests).toHaveLength(1);
+    const { request, body } = fake.requests[0]!;
+    expect([request.method, request.url]).toEqual(["POST", `https://api.cloudflare.com/client/v4/accounts/acct-123/ai/run/@cf/cloudflare/${model}`]);
+    expect(request.headers.authorization).toBe("Bearer cf-token");
+    expect(body).toEqual({ model, state, questions });
+    expect(JSON.stringify(body)).not.toContain("cf-token");
+  }));
+
+  it.effect("アカウント ID は URL 用に符号化して宛先へ入れる", () => Effect.gen(function* () {
+    const fake = fakeClient(wrapped(0.9));
+    yield* ask(clef("clef"), fake.client, "cf-token", "a/b c");
+    expect(fake.requests[0]!.request.url).toBe("https://api.cloudflare.com/client/v4/accounts/a%2Fb%20c/ai/run/@cf/cloudflare/clef");
+  }));
+
+  it.effect("result に包まれた応答も、包まれていない応答と同じ判定に写し、usage も残す", () => Effect.gen(function* () {
+    const outcome = yield* ask(clef("clef-flash"), fakeClient(wrapped(0.8)).client, "cf-token", "acct-123");
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.answers.route).toMatchObject({ chosen: "yes" });
+    expect(outcome.answers.route!.distribution.yes).toBeCloseTo(0.8);
+    expect(outcome.answers.route!.distribution.no).toBeCloseTo(0.2);
+    expect(outcome.answers.route!.confidence).toBeCloseTo(0.8);
+    expect(outcome.usage).toEqual({ input_tokens: 3 });
+  }));
+
+  it.effect("包まれた応答でも、質問の答えが無い・確率が範囲外なら判定できなかった", () => Effect.gen(function* () {
+    const missing = yield* ask(clef("clef"), fakeClient((sent) => respond(sent.request, { result: { answers: {} } })).client, "t", "a");
+    expect(missing).toMatchObject({ ok: false });
+    const range = yield* ask(clef("clef"), fakeClient(wrapped(1.5)).client, "t", "a");
+    expect(range).toMatchObject({ ok: false });
+  }));
+
+  it.effect("明示した url は Workers AI の宛先より優先する", () => Effect.gen(function* () {
+    const fake = fakeClient(wrapped(0.5));
+    yield* ask({ ...clef("clef"), url: "http://test.invalid/clef" }, fake.client, "t", "acct-123");
+    expect(fake.requests[0]!.request.url).toBe("http://test.invalid/clef");
+  }));
+
+  it.effect("アカウント ID が無い judge は従来どおり TypeSafe の宛先（維持）", () => Effect.gen(function* () {
+    const fake = fakeClient(ok(0.5));
+    yield* ask(judge, fake.client);
+    expect(fake.requests[0]!.request.url).toBe("https://api.typesafe.ai/v1/systemone");
   }));
 });

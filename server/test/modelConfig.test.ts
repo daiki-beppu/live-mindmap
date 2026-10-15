@@ -73,6 +73,37 @@ describe("判定のモデルの解決（Issue #983）", () => {
     }
   }));
 
+  it.effect("clef は CLOUDFLARE_API_TOKEN と CLOUDFLARE_ACCOUNT_ID の両方が環境変数にあれば選ばれ、時間切れは 2 秒", () => Effect.gen(function* () {
+    const env = { CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "a" };
+    expect(yield* run({ judge: "clef-flash" }, false, env, {})).toMatchObject({
+      _tag: "Success", success: { judge: { name: "clef-flash", model: "clef-flash", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", timeoutMs: 2000 } },
+    });
+    expect(yield* run({ judge: "clef" }, false, env, { judges: { clef: { timeoutMs: 3000 } } })).toMatchObject({
+      _tag: "Success", success: { judge: { name: "clef", timeoutMs: 3000, accountIdEnv: "CLOUDFLARE_ACCOUNT_ID" } },
+    });
+  }));
+
+  it.effect("clef は Cloudflare の鍵のどちらかが無い・空なら失敗せず、欠けた名前を含む 1 行の知らせとともに判定なしになる", () => Effect.gen(function* () {
+    const cases: ReadonlyArray<readonly [Record<string, string>, string]> = [
+      [{ CLOUDFLARE_API_TOKEN: "t" }, "CLOUDFLARE_ACCOUNT_ID"],
+      [{ CLOUDFLARE_ACCOUNT_ID: "a" }, "CLOUDFLARE_API_TOKEN"],
+      [{ CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: " " }, "CLOUDFLARE_ACCOUNT_ID"],
+    ];
+    for (const [env, missing] of cases) {
+      const result = yield* run({ judge: "clef" }, false, env, {});
+      expect(result._tag).toBe("Success");
+      if (result._tag !== "Success") continue;
+      expect(result.success.judge).toBeUndefined();
+      expect(result.success.notice).toContain(missing);
+      expect(result.success.notice).not.toMatch(/[\r\n]/);
+    }
+  }));
+
+  it.effect("ローカルモードで clef を明示すると ModelRefused で断る", () => Effect.gen(function* () {
+    const env = { CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "a" };
+    expect(yield* run({ judge: "clef" }, true, env, {})).toMatchObject({ _tag: "Failure", failure: { _tag: "ModelRefused" } });
+  }));
+
   it.effect("off は鍵があっても判定なし", () => Effect.gen(function* () {
     const result = yield* run({ judge: "off" }, false, { TYPESAFE_AI_API_KEY: "k" }, {});
     expect(result).toMatchObject({ _tag: "Success", success: { judge: undefined } });

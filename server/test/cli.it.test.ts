@@ -690,6 +690,49 @@ describe("CLI", () => {
       expect(sent[0]!.body).not.toHaveProperty("judge");
     }));
 
+    const cloudflare = { CLOUDFLARE_API_TOKEN: "cf-token", CLOUDFLARE_ACCOUNT_ID: "acct-123" };
+
+    it.effect("play --judge clef-flash は、Cloudflare の鍵が 2 つあれば Workers AI の宛先で判定を呼ぶ", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const deps = dependencies(join(root, "sessions"), "0", cloudflare);
+      const { calls } = scripted();
+      const judged = judgeClient();
+      yield* runCli(["play", fixture, "--judge", "clef-flash"]).pipe(Effect.provideService(HttpClient.HttpClient, judged.client), Effect.provide(deps.layer));
+      expect(calls).toHaveLength(3);
+      expect(judged.urls).toHaveLength(3);
+      expect(judged.urls.every((u) => u === "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/run/@cf/cloudflare/clef-flash")).toBe(true);
+      expect(external.openClaudeUpdater).toHaveBeenCalledTimes(2);
+    }));
+
+    it.effect("play --judge clef は、アカウント ID が無ければ判定を呼ばず、断りもせず updater は 1 本だけ準備する", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const deps = dependencies(join(root, "sessions"), "0", { CLOUDFLARE_API_TOKEN: "cf-token" });
+      const { calls } = scripted();
+      const judged = judgeClient();
+      yield* runCli(["play", fixture, "--judge", "clef"]).pipe(Effect.provideService(HttpClient.HttpClient, judged.client), Effect.provide(deps.layer));
+      expect(calls).toHaveLength(3);
+      expect(judged.urls).toEqual([]);
+      expect(external.openClaudeUpdater).toHaveBeenCalledOnce();
+    }));
+
+    it.effect("start --judge clef は、鍵の値ではなく環境変数の名前（トークンとアカウント ID）を転送する", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const deps = dependencies(sessions, "0", cloudflare);
+      mkdirSync(dirname(modelTransferTokenPath(sessions, 0)), { recursive: true });
+      writeFileSync(modelTransferTokenPath(sessions, 0), "synthetic-token");
+      const bodies: Record<string, unknown>[] = [];
+      const client = HttpClient.make((request) => Effect.sync(() => {
+        bodies.push(request.body._tag === "Uint8Array" ? JSON.parse(new TextDecoder().decode(request.body.body)) : {});
+        return HttpClientResponse.fromWeb(request, new Response(JSON.stringify({ dir: "/fake/session" }), { headers: { "content-type": "application/json" } }));
+      }));
+      yield* runCli(["start", "--app", "us.zoom.xos", "--judge", "clef"]).pipe(Effect.provideService(HttpClient.HttpClient, client), Effect.provide(deps.layer));
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]!.judge).toMatchObject({ name: "clef", route: "system-one", model: "clef", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", timeoutMs: 2000 });
+      expect(JSON.stringify(bodies[0])).not.toContain("cf-token");
+      expect(JSON.stringify(bodies[0])).not.toContain("acct-123");
+    }));
+
     it.effect("開始が断られる（存在しない判定の名前）と、判定も updater も呼ばず、待受けもフォルダも作らない", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const sessions = join(root, "sessions");

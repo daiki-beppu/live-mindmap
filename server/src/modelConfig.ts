@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Config, Effect, FileSystem, Option, Schema } from "effect";
-import { judgeCandidate, selectJudge, type JudgeFlags } from "./judgeSelection.ts";
+import { judgeCandidate, judgeEnvs, selectJudge, type JudgeFlags } from "./judgeSelection.ts";
 import { configDiagnostic, listModels, modelCandidate, selectModel, type ModelFlags } from "./modelSelection.ts";
 import { fileReason } from "./truthFile.ts";
 import { AppleIntelligence } from "./appleIntelligence.ts";
@@ -61,8 +61,10 @@ export const resolveJudge = Effect.fn("resolveJudge")(function* (flags: JudgeFla
   const input = { flags, envJudge, config, configPath, local };
   const candidate = judgeCandidate(input);
   if (!candidate.ok) return yield* reject(candidate.lines);
-  const apiKeyEnv = candidate.judge?.apiKeyEnv;
-  const key = apiKeyEnv === undefined ? undefined : Option.getOrUndefined(yield* Config.option(Config.String(apiKeyEnv)));
-  const result = selectJudge({ ...input, apiKeys: apiKeyEnv === undefined ? {} : { [apiKeyEnv]: key } });
+  const apiKeys: Record<string, string | undefined> = {};
+  for (const name of candidate.judge === undefined ? [] : judgeEnvs(candidate.judge)) {
+    apiKeys[name] = Option.getOrUndefined(yield* Config.option(Config.String(name)));
+  }
+  const result = selectJudge({ ...input, apiKeys });
   return result.ok ? result : yield* reject(result.lines);
 });

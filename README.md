@@ -148,9 +148,38 @@ pnpm cli play <文字起こし.transcript.json> --model apple --realtime
 
 ### 判定のモデルを選ぶ
 
-判定のモデルは差分更新のモデルとは別に、`start` と `play` の開始時に一度だけ選びます（会議中は変えません）。選択順は、`--judge <名前>` → 環境変数 `LIVE_MINDMAP_JUDGE` → 設定ファイルの `judge` → 組み込みの `jev` です。`--judge off` で判定を使いません。設定の `judges` に `{ "route": "system-one", "apiKeyEnv": "<鍵の環境変数名>", "timeoutMs": 1000 }` の形で名前を足せます（`timeoutMs` は省略すると 1 秒）。
+判定のモデルは差分更新のモデルとは別に、`start` と `play` の開始時に一度だけ選びます（会議中は変えません）。選択順は、`--judge <名前>` → 環境変数 `LIVE_MINDMAP_JUDGE` → 設定ファイルの `judge` → 組み込みの `jev` です。`--judge off` で判定を使いません。
 
-`jev` の鍵は環境変数 `TYPESAFE_AI_API_KEY` です。選んだ判定のモデルの鍵が無いときは、標準エラーに 1 行知らせて判定なしで始めます。ローカルモードでは、`--judge`・`LIVE_MINDMAP_JUDGE`・`judge` でクラウドの判定のモデルを明示すると開始を断り、何も明示しなければ判定なしで始めます。
+組み込みは次の 3 つです。
+
+| 名前 | 判定の宛先 | 鍵の環境変数 | 時間切れ |
+|------|-----------|--------------|----------|
+| `jev`（既定） | TypeSafe の System One API | `TYPESAFE_AI_API_KEY` | 1 秒 |
+| `clef-flash` | Cloudflare Workers AI の Clef-flash | `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` | 2 秒 |
+| `clef` | Cloudflare Workers AI の Clef | `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` | 2 秒 |
+
+```sh
+export CLOUDFLARE_API_TOKEN=...
+export CLOUDFLARE_ACCOUNT_ID=...
+pnpm cli start --judge clef-flash
+```
+
+設定ファイルの `judge` で選び、`judges` で時間切れを上書きしたり、System One API の形の判定のモデルを足したりできます。
+
+```json
+{
+  "judge": "clef",
+  "judges": {
+    "clef": { "timeoutMs": 3000 },
+    "my-judge": { "route": "system-one", "apiKeyEnv": "MY_JUDGE_API_KEY", "url": "https://judge.example.com/v1/systemone", "timeoutMs": 1500 }
+  }
+}
+```
+
+- 組み込みの名前で `timeoutMs` だけを書くと、宛先・モデル名・鍵はそのままで時間切れだけが変わります。`route` と `apiKeyEnv` を書いた項目は、組み込みを丸ごと置き換えます。
+- 自分で足す判定のモデルは `route`（`system-one`）と `apiKeyEnv` が要ります。`timeoutMs` は省略すると 1 秒です。
+
+選んだ判定のモデルの鍵（Clef は 2 つの環境変数の両方）が無い、または空のときは、標準エラーに 1 行知らせて判定なしで始めます。ローカルモードでは、`--judge`・`LIVE_MINDMAP_JUDGE`・`judge` でクラウドの判定のモデルを明示すると開始を断り、何も明示しなければ判定なしで始めます。
 
 ### Claude の認証
 

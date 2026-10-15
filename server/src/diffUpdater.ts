@@ -6,7 +6,7 @@ import { prepareAppleUpdater } from "./appleDiffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import { DiffUpdater } from "./core/index.ts";
 import { defaultClaude, type ExecutableModel } from "./modelSelection.ts";
-import type { JudgeModel } from "./judgeSelection.ts";
+import { judgeEnvs, type JudgeModel } from "./judgeSelection.ts";
 import { HAIKU, routedUpdater, SONNET } from "./routedDiffUpdater.ts";
 import { makeSystemOne } from "./systemOne.ts";
 import { localUpdaterLayer } from "./localDiffUpdater.ts";
@@ -36,9 +36,13 @@ const isBuiltInClaude = (model: ExecutableModel): model is ClaudeModel =>
 
 // Sonnet 5.5 用と Haiku 5.5 用の query を 1 本ずつ持つ振り分け。判定の鍵が無いときは undefined（判定なしで始める）
 const prepareRouted = Effect.fnUntraced(function* (judge: JudgeModel) {
-  const key = yield* Config.option(Config.String(judge.apiKeyEnv)).pipe(Effect.orElseSucceed(() => Option.none<string>()));
-  if (Option.isNone(key) || key.value.trim() === "") return undefined;
-  const ask = yield* makeSystemOne(judge, key.value);
+  const values: string[] = [];
+  for (const name of judgeEnvs(judge)) {
+    const value = yield* Config.option(Config.String(name)).pipe(Effect.orElseSucceed(() => Option.none<string>()));
+    if (Option.isNone(value) || value.value.trim() === "") return undefined;
+    values.push(value.value);
+  }
+  const ask = yield* makeSystemOne(judge, { apiKey: values[0]!, ...(judge.accountIdEnv === undefined ? {} : { accountId: values[1]! }) });
   const claude = yield* loadClaude();
   return Layer.effect(DiffUpdater, Effect.gen(function* () {
     // それぞれの Layer は自分の Service を提供するので、別々に build して取り出す（セッションの Scope が閉じると両方閉じる）
