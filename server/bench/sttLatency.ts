@@ -1,9 +1,9 @@
-// 音声認識の確定の遅れの集計と、「途中結果が T 秒変わらなければ確定として扱う」案の計算（Issue #97）。
+// 音声認識の確定の遅れの集計と、本番の区切り方（core の createRemarkSettler）で作った発言の遅れの計算（Issue #97、#1079）。
 // 入力は `stt-bench run` の出力（1 行 1 結果の JSONL）。
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { Track } from "../src/core/index.ts";
+import { createRemarkSettler, SETTLE_QUIET_MS, Track } from "../src/core/index.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
 import { benchProgram, inputFileError, readInputText, readJsonFile, write } from "./entry.ts";
 
@@ -11,13 +11,7 @@ import { benchProgram, inputFileError, readInputText, readJsonFile, write } from
 export const SttResult = Schema.Struct({ track: Track, arrival: Schema.Finite, isFinal: Schema.Boolean, start: Schema.Finite, end: Schema.Finite, text: Schema.String });
 export type SttResult = typeof SttResult["Type"];
 
-export type RemarkSource = "stable" | "final" | "correction";
-export type SettledRemark = { id: string; track: Track; start: number; end: number; text: string; at: number; source: RemarkSource };
-
-// 確定結果が、途中結果から出した発言を出し終えた後に届いたときの扱い。
-// discard: 出した発言を残し、確定結果は流さない。correct: 確定結果を、訂正の発言として 1 件流す。
-export type LateFinal = "discard" | "correct";
-export type SettleOptions = { quietSeconds: number; lateFinal: LateFinal };
+export type SettledRemark = { id: string; track: Track; start: number; end: number; text: string; at: number; source?: "final" };
 
 // 1 行 1 結果。壊れた行・形が違う行は飛ばさず、SchemaError で失敗する
 export function parseResults(text: string) {
@@ -39,86 +33,51 @@ export function percentile(values: number[], p: number): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]!;
 }
 
-// 本文の比較では、句読点と空白の違いを無視する（確定結果は句読点が付く）
-const normalize = (text: string) => text.replace(/[\s、。，．,.!?！？]/g, "");
-
-// 区間が同じ発話の途中結果: 同じトラックで start が同じもの
-type Utterance = { track: Track; start: number; end: number; text: string; lastArrival: number; closedBy?: SttResult; consumed: boolean };
-
 const EPSILON = 1e-6;
-// 途中結果の区間は、確定結果の区間と端がずれる（実測: 途中結果の start は直前の確定の end、確定の start はそれより遅い）。
-// そのため、発話の区間の中央が確定結果の区間に入るかで、確定結果が覆う発話を決める
-const midpoint = (u: Utterance) => (u.start + u.end) / 2;
 
-type Pending = Omit<SettledRemark, "id">;
+// 本番の規則の時計を進める刻み（ミリ秒）。規則の期限は結果が届く間に来るので、刻みごとに拾って出た時刻にする。誤差は刻み以下
+const CLOCK_STEP_MS = 10;
 
-// 発話の列。utterances は作った順、open は更新を受け付けている発話（キーは ${track}\u0000${start}）
-type SettleState = { utterances: Utterance[]; open: Map<string, Utterance>; out: Pending[]; overwritten: number };
-
-const openKey = (track: Track, start: number) => `${track}\u0000${start}`;
-const settleAt = (u: Utterance, quietSeconds: number) => u.lastArrival + quietSeconds;
-const stableRemark = (u: Utterance, at: number): Pending => ({ track: u.track, start: u.start, end: u.end, text: u.text, at, source: "stable" });
-
-function acceptPartial(state: SettleState, r: SttResult, quietSeconds: number): void {
-  const key = openKey(r.track, r.start);
-  const current = state.open.get(key);
-  if (current && r.arrival - current.lastArrival <= quietSeconds) {
-    Object.assign(current, { end: r.end, text: r.text, lastArrival: r.arrival });
-    return;
-  }
-  const next: Utterance = { track: r.track, start: r.start, end: r.end, text: r.text, lastArrival: r.arrival, consumed: false };
-  state.utterances.push(next);
-  state.open.set(key, next);
-}
-
-function acceptFinal(state: SettleState, f: SttResult, { quietSeconds, lateFinal }: SettleOptions): void {
-  const covered = state.utterances.filter(
-    (u) => !u.consumed && u.track === f.track && midpoint(u) >= f.start - EPSILON && midpoint(u) <= f.end + EPSILON,
-  );
-  covered.forEach((u) => {
-    u.consumed = true;
-    state.open.delete(openKey(u.track, u.start));
-  });
-  const emittedBefore = covered.filter((u) => settleAt(u, quietSeconds) < f.arrival);
-  if (emittedBefore.length === 0) {
-    state.out.push({ track: f.track, start: f.start, end: f.end, text: f.text, at: f.arrival, source: "final" });
-    return;
-  }
-  for (const u of covered) {
-    state.out.push(stableRemark(u, settleAt(u, quietSeconds) < f.arrival ? settleAt(u, quietSeconds) : f.arrival));
-  }
-  // 同じ start の発話（更新の間隔で分けたもの）は本文が積み上がるので、最後の本文だけを使う
-  const lastByStart = new Map(covered.map((u) => [u.start, u.text]));
-  if (normalize([...lastByStart.values()].join("")) === normalize(f.text)) return;
-  state.overwritten++;
-  if (lateFinal === "correct") state.out.push({ track: f.track, start: f.start, end: f.end, text: f.text, at: f.arrival, source: "correction" });
-}
-
-// 途中結果が T 秒変わらなければ、最後の本文・区間で発言にする。
-// - 発話 = 同じトラックで start が同じ途中結果の列（本文が変わっても同じ発話の更新）。更新の間隔が T 以内の間は続き、最後の途中結果の arrival + T に出す。間隔が T を超えたら、そこで出して、後の途中結果は別の発話にする
-// - 確定結果は、同じトラックで区間の中央が確定結果の区間に入る発話を覆う
-// - 覆われる発話の T が満ちる前（arrival <= 最後の arrival + T）に確定が届けば、途中結果からは出さず、確定結果を届いた時刻に 1 件出す
-// - 覆われる発話のどれかが先に出ていれば、確定は後から届いたもの。本文（句読点・空白を除く）が出した発言の連結と違えば、
-//   1 件の上書きとして数える。lateFinal が "correct" なら、確定結果を訂正として届いた時刻に 1 件流す
-//   （先に出した発言の一部だけが覆われ、残りの発話が T 前だったときは、その発話を確定の届いた時刻に出す）
-// - ID は、出した時刻の順（同時刻は作った順）に r1, r2, …
-export function settleVolatile(results: SttResult[], options: SettleOptions): { remarks: SettledRemark[]; overwritten: number } {
+// 途中結果と確定結果を、届いた時刻の順（同時刻はファイルの順）に本番の createRemarkSettler へ通して出た発言。ID は出た順に r1, r2, …
+// 規則の時計は届いた結果の end（音声の時刻）でしか進まないので、届いた時刻（arrival）へは、自分の途中結果（発言にならず時計だけ進む）で進める。
+// 区切り方（期限・文の終わり・出した分の後ろだけ・自分の扱い）は core の規則が決める。ここでは写さない
+export function settledRemarks(results: readonly SttResult[], quietSeconds: number): SettledRemark[] {
+  const settler = createRemarkSettler(quietSeconds * 1000);
+  const out: SettledRemark[] = [];
+  const keep = (remarks: readonly { track: Track; start: number; end: number; text: string }[], atMs: number) => {
+    for (const r of remarks) out.push({ id: `r${out.length + 1}`, track: r.track, start: r.start, end: r.end, text: r.text, at: atMs / 1000 });
+  };
+  // 時計を ms まで進める。*1000 で ms に届かない丸め誤差は、1 ulp ずつ上げて消す
+  const tick = (ms: number) => {
+    let end = ms / 1000;
+    while (end * 1000 < ms) end *= 1 + Number.EPSILON;
+    return settler.partial({ track: "自分", start: 0, end, text: "", duplicate: false });
+  };
   const ordered = results.map((r, i) => ({ r, i })).sort((a, b) => a.r.arrival - b.r.arrival || a.i - b.i).map(({ r }) => r);
-
-  // 発話 = 同じトラックで start が同じ途中結果の列。ただし、更新の間隔が T を超えたところで、その時点の本文は出されるので、
-  // そこで列を分ける（後の途中結果は、同じ start の別の発話として数える）。
-  // 結果は届いた順に処理する。確定結果は、それまでに届いた途中結果の発話だけを覆い、後から届く途中結果は新しい発話になる
-  const state: SettleState = { utterances: [], open: new Map(), out: [], overwritten: 0 };
+  // 規則の時計は 0 から始まるので、最初の結果が届く時刻まで、一度に進める（それまでは何も出ない）
+  let clockMs = ordered.length === 0 ? 0 : Math.round(ordered[0]!.arrival * 1000);
+  tick(clockMs);
+  const advanceTo = (targetMs: number) => {
+    while (clockMs < targetMs) {
+      clockMs = Math.min(clockMs + CLOCK_STEP_MS, targetMs);
+      keep(tick(clockMs), clockMs);
+    }
+  };
   for (const r of ordered) {
-    if (r.isFinal) acceptFinal(state, r, options);
-    else acceptPartial(state, r, options.quietSeconds);
+    const arrivalMs = Math.round(r.arrival * 1000);
+    advanceTo(arrivalMs);
+    keep(
+      r.isFinal
+        ? settler.final({ track: r.track, start: r.start, end: r.end, text: r.text })
+        : settler.partial({ track: r.track, start: r.start, end: r.end, text: r.text, duplicate: false }),
+      arrivalMs,
+    );
   }
-  // 確定結果に覆われなかった発話は、T が満ちた時刻に出す
-  for (const u of state.utterances) {
-    if (!u.consumed) state.out.push(stableRemark(u, settleAt(u, options.quietSeconds)));
+  if (ordered.length > 0) {
+    advanceTo(clockMs + Math.round(quietSeconds * 1000));
+    keep(settler.drain(), clockMs);
   }
-  const { out, overwritten } = state;
-  return { remarks: out.map((p, i) => ({ p, i })).sort((a, b) => a.p.at - b.p.at || a.i - b.i).map(({ p }, n) => ({ id: `r${n + 1}`, ...p })), overwritten };
+  return out;
 }
 
 // 現状: 確定結果だけを、届いた時刻に発言として流す（ID は届いた順の連番）
@@ -159,16 +118,12 @@ const fmt = (x: number) => (Number.isNaN(x) ? "" : x.toFixed(1));
 
 // lines を渡すと、確定結果の end ではなく、各文の話し終わりから数えた遅れ（lineDelays）を出す
 export function summarize(results: SttResult[], quietSeconds: number, lines?: readonly SpokenLine[]): string {
-  const rows: string[][] = [["方式", "件数", "遅れ p50 (秒)", "遅れ p90 (秒)", "上書き"]];
-  const row = (name: string, delays: number[], overwritten: string) =>
-    rows.push([name, String(delays.length), fmt(percentile(delays, 0.5)), fmt(percentile(delays, 0.9)), overwritten]);
+  const rows: string[][] = [["方式", "件数", "遅れ p50 (秒)", "遅れ p90 (秒)"]];
+  const row = (name: string, delays: number[]) => rows.push([name, String(delays.length), fmt(percentile(delays, 0.5)), fmt(percentile(delays, 0.9))]);
   const finals = results.filter((r) => r.isFinal);
-  row("確定結果（現状）", lines ? lineDelays(lines, finals.map((r) => ({ start: r.start, end: r.end, at: r.arrival }))) : finalDelays(results), "");
-  for (const lateFinal of ["discard", "correct"] as const) {
-    const { remarks, overwritten } = settleVolatile(results, { quietSeconds, lateFinal });
-    const counted = remarks.filter((r) => r.source !== "correction");
-    row(`途中結果が ${quietSeconds} 秒変わらなければ（${lateFinal}）`, lines ? lineDelays(lines, counted) : counted.map((r) => r.at - r.end), String(overwritten));
-  }
+  row("確定結果（現状）", lines ? lineDelays(lines, finals.map((r) => ({ start: r.start, end: r.end, at: r.arrival }))) : finalDelays(results));
+  const remarks = settledRemarks(results, quietSeconds);
+  row(`途中結果を本番の区切り方で（静かな間 ${quietSeconds} 秒）`, lines ? lineDelays(lines, remarks) : remarks.map((r) => r.at - r.end));
   return rows.map((r) => `| ${r.join(" | ")} |`).join("\n") + "\n";
 }
 
@@ -178,11 +133,11 @@ export const command = Command.make(
   {
     file: Argument.String("results").pipe(Argument.withDescription("stt-bench run の出力（1 行 1 結果の JSONL）")),
     quiet: Flag.Finite("quiet").pipe(
-      Flag.withDescription("途中結果が変わらなければ確定として扱う秒数"),
-      Flag.withDefault(2),
+      Flag.withDescription("本番の区切り方の、途中結果が変わらなければ発言にする秒数（既定は本番の定数）"),
+      Flag.withDefault(SETTLE_QUIET_MS / 1000),
     ),
-    emit: Flag.Literals("emit", ["final", "discard", "correct"]).pipe(
-      Flag.withDescription("表の代わりに、その規則の発言（sttReplay.ts 用の JSON）を出す。final は確定結果だけ"),
+    emit: Flag.Literals("emit", ["final", "discard"]).pipe(
+      Flag.withDescription("表の代わりに、発言（sttReplay.ts 用の JSON）を出す。final は確定結果だけ、discard は本番の区切り方で作る"),
       Flag.optional,
     ),
     lines: Flag.File("lines").pipe(
@@ -193,7 +148,7 @@ export const command = Command.make(
   Effect.fn("sttLatency")(function* ({ emit, file, lines, quiet }) {
     const results = yield* parseResults(yield* readInputText(file)).pipe(Effect.mapError(inputFileError(file)));
     if (Option.isSome(emit)) {
-      const remarks = emit.value === "final" ? finalRemarks(results) : settleVolatile(results, { quietSeconds: quiet, lateFinal: emit.value }).remarks;
+      const remarks = emit.value === "final" ? finalRemarks(results) : settledRemarks(results, quiet);
       yield* write(JSON.stringify(remarks) + "\n");
       return;
     }
@@ -201,7 +156,7 @@ export const command = Command.make(
     yield* write(summarize(results, quiet, spoken));
   }),
 ).pipe(
-  Command.withDescription("音声認識の確定の遅れを集計し、確定結果と「途中結果が T 秒変わらなければ確定」の案の遅れ・上書き件数を表で出す"),
+  Command.withDescription("音声認識の確定の遅れを集計し、確定結果と、本番の区切り方で作った発言の遅れを表で出す"),
 );
 
 if (import.meta.main) {

@@ -160,14 +160,14 @@ swift run -c release stt-bench run --variant <名前> <音声.wav> [--load <音�
 
 ```sh
 cd server
-node bench/sttLatency.ts <results> [--quiet <秒>] [--emit final|discard|correct] [--lines <lines.json>]
+node bench/sttLatency.ts <results> [--quiet <秒>] [--emit final|discard] [--lines <lines.json>]
 ```
 
 - `<results>`: `stt-bench run` の JSONL。
-- `--quiet`: 途中結果が変わらなければ確定として扱う秒数（既定 2）。
+- `--quiet`: 本番の区切り方（`core` の `createRemarkSettler`）が、途中結果が変わらなければ発言にする秒数。本番の定数（`SETTLE_QUIET_MS`）を差し替える。既定は本番と同じ 1。
 - `--lines`: `synth` の `<名前>.lines.json`。渡すと、確定結果の `end` ではなく各文の話し終わりから数えた遅れを出す（`start`・`end` だけを読む）。
-- 出力: Markdown の表。列は 方式・件数・遅れ p50 (秒)・遅れ p90 (秒)・上書き。
-- `--emit` を付けると、表の代わりに、その規則の発言の JSON 配列（`sttReplay.ts` 用）を出す。
+- 出力: Markdown の表。列は 方式・件数・遅れ p50 (秒)・遅れ p90 (秒)。2 行目は、途中結果と確定結果を届いた時刻の順に本番の規則へ通して出た発言の遅れ（途中結果の届いた時刻を規則の時計として渡す）。
+- `--emit` を付けると、表の代わりに、発言の JSON 配列（`sttReplay.ts` 用）を出す。`final` は確定結果だけ、`discard` は本番の区切り方で作る（後から届いた確定結果は流さない）。
 
 ## sttAccuracy（認識の正確さ）
 
