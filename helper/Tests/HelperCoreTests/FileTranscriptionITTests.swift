@@ -44,8 +44,13 @@ private final class ScriptedFileTranscriber: FileTranscriber, @unchecked Sendabl
     private var _receivedSeconds = 0.0
     private var _statedStarts: [Double] = []
     private let script: [TranscriptionResult]
+    /// 読み始める位置（ファイルの秒）。入力が明示する開始位置は、この位置から読んだ長さを足した値と一致する。
+    private let origin: Double
 
-    init(script: [TranscriptionResult]) { self.script = script }
+    init(script: [TranscriptionResult], origin: Double = 0) {
+        self.script = script
+        self.origin = origin
+    }
 
     var receivedSeconds: Double { lock.withLock { _receivedSeconds } }
     var statedStarts: [Double] { lock.withLock { _statedStarts } }
@@ -56,7 +61,7 @@ private final class ScriptedFileTranscriber: FileTranscriber, @unchecked Sendabl
         var position = 0.0
         for try await input in inputs {
             if let start = input.bufferStartTime {
-                lock.withLock { _statedStarts.append(start.seconds - position) }
+                lock.withLock { _statedStarts.append(start.seconds - (origin + position)) }
             }
             position += Double(input.buffer.frameLength) / input.buffer.format.sampleRate
         }
@@ -141,6 +146,28 @@ struct FileTranscriptionITTests {
 
         #expect(abs(transcriber.receivedSeconds - 4.0) < 0.01)
         for drift in transcriber.statedStarts { #expect(abs(drift) < 0.001, "入力の開始位置がファイルの位置からずれている: \(drift)") }
+    }
+
+    @Test("開始位置（from）を渡すと、役へ渡る音声はその位置から途切れず最後まで続き、入力が明示する位置はファイル上の位置と一致する。結果の時刻はファイルの時刻のまま、無音の区間の結果だけが捨てられる")
+    func audioHandedOverStartsAtFrom() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("meeting.wav")
+        try writeRecording(url, loudSeconds: 2, silentSeconds: 2)
+        let transcriber = ScriptedFileTranscriber(script: [
+            result("大きい音です", isFinal: true, 1.2, 1.8),
+            result("無音の幻です", isFinal: true, 2.5, 3.5),
+        ], origin: 1.0)
+
+        let stream = try await transcribeFile(at: url, with: transcriber, from: 1.0)
+        var kept: [TranscriptionResult] = []
+        for try await item in stream { kept.append(item) }
+
+        // 1 秒から 4 秒までの 3 秒分が、途切れず渡る
+        #expect(abs(transcriber.receivedSeconds - 3.0) < 0.01)
+        #expect(!transcriber.statedStarts.isEmpty, "開始位置を明示する入力がある")
+        for drift in transcriber.statedStarts { #expect(abs(drift) < 0.001, "入力の開始位置がファイルの位置からずれている: \(drift)") }
+        #expect(kept == [result("大きい音です", isFinal: true, 1.2, 1.8)])
     }
 
     @Test("無音の区間の結果（partial・final とも）だけが捨てられる。大きい音の区間の結果と、測れない区間（ファイルの外）の結果は、時刻をそのままに残る")
@@ -415,6 +442,24 @@ struct FileScreenITTests {
             let image = try #require(screen.image, "送る画面には画像がある")
             #expect(Data(base64Encoded: image)?.starts(with: [0xFF, 0xD8]) == true, "画像は JPEG")
             #expect(screen.lines != nil, "画像のある screen は OCR の行（空でもよい）を持つ")
+        }
+        #expect(!events.contains { kind(of: $0) == .screenOff })
+    }
+
+    @Test("開始位置（from）3 秒を渡すと、映像も 3 秒から読み始める。3 秒より前の screen は出ず、出る screen の start はファイルの時刻のまま")
+    func screensStartFromTheGivenPosition() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+
+        let stream = try await fileSessionEvents(at: movie, with: ScriptedFileTranscriber(script: Self.script), from: 3)
+        var events: [HelperEvent] = []
+        for try await event in stream { events.append(event) }
+
+        let shown = screens(in: events)
+        #expect(!shown.isEmpty, "開始位置からの映像で最初の画面が出る")
+        for screen in shown {
+            #expect(screen.start >= 3 - 0.25 && screen.start < 6, "screen の start はファイルの時刻のまま（開始位置以降）: \(screen.start)")
         }
         #expect(!events.contains { kind(of: $0) == .screenOff })
     }

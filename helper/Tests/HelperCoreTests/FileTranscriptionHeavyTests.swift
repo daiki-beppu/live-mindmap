@@ -66,4 +66,28 @@ struct FileTranscriptionHeavyTests {
         #expect(first.start >= leadingSilence - 0.5, "最初の発言が、前に置いた無音の中から始まっている: \(first.start)")
         #expect(elapsed < .seconds(duration), "音声の長さ \(duration) 秒より時間がかかった: \(elapsed)")
     }
+
+    @Test("途中（from）から読んでも、結果の時刻はファイルの音声の時刻のまま（読み始めからの時刻にならない）")
+    func keepsFileTimeWhenReadingFromMiddle() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("file-transcription-from-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let leadingSilence = 3.0
+        let from = 2.0
+        let url = try synthesizedRecording("明日の会議は十時から始めます。資料は事前に共有してください。", leadingSilence: leadingSilence, into: dir)
+        let duration = try await fileDuration(of: url)
+        let transcriber = SpeechAnalyzerTranscriber()
+        try await transcriber.prepare()
+
+        var results: [TranscriptionResult] = []
+        for try await item in try await transcribeFile(at: url, with: transcriber, from: from) { results.append(item) }
+
+        let finals = results.filter(\.isFinal)
+        let first = try #require(finals.first, "確定結果が 1 件も出なかった")
+        // 読み始めからの時刻なら、発言は from を引いた 1 秒付近から始まる。ファイルの時刻なら、前に置いた無音（3 秒）の後
+        #expect(first.start >= leadingSilence - 0.5, "最初の発言の時刻がファイルの時刻になっていない: \(first.start)")
+        for item in results {
+            #expect(item.start >= from - 0.5 && item.end <= duration + 0.5, "時刻がファイルの範囲の外: \(item.start)〜\(item.end) / \(duration)")
+        }
+    }
 }

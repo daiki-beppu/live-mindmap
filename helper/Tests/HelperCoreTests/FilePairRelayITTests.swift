@@ -43,6 +43,13 @@ private final class ScriptedTranscriber: FileTranscriber, @unchecked Sendable {
     private let failWhen: (@Sendable () -> Bool)?
     /// 台本の結果をすべて流し終えたら立つ。`pause` に達して止まったときも立つ。
     let reachedScript = Flag()
+    private let startsLock = NSLock()
+    private var _firstStart: Double?
+    private var _lastEnd = 0.0
+    /// 引いた最初の入力の開始位置（ファイルの秒）。1 つも引いていなければ nil。
+    var firstStart: Double? { startsLock.withLock { _firstStart } }
+    /// 引いた入力の終わりの最大値（ファイルの秒）。
+    var lastEnd: Double { startsLock.withLock { _lastEnd } }
 
     init(steps: [Step] = [], tail: [TranscriptionResult] = [], tailDelay: Duration = .milliseconds(300), pause: (after: Double, gate: Gate)? = nil, failWhen: (@Sendable () -> Bool)? = nil) {
         self.steps = steps
@@ -63,6 +70,10 @@ private final class ScriptedTranscriber: FileTranscriber, @unchecked Sendable {
                 for try await input in inputs {
                     let start = try #require(input.bufferStartTime).seconds
                     let end = start + Double(input.buffer.frameLength) / input.buffer.format.sampleRate
+                    startsLock.withLock {
+                        if _firstStart == nil { _firstStart = start }
+                        _lastEnd = max(_lastEnd, end)
+                    }
                     for (index, step) in steps.enumerated() where end >= step.after && !fired.contains(index) {
                         fired.insert(index)
                         step.results.forEach { continuation.yield($0) }
@@ -233,6 +244,14 @@ private struct Rig {
         }
     }
 
+    /// トラックごとの開始位置（`theirsFrom`・`mineFrom` 秒）から読み始めて流す（起動し直し）。
+    func relay(theirs theirsTranscriber: ScriptedTranscriber, mine mineTranscriber: ScriptedTranscriber, theirsFrom: Double, mineFrom: Double) -> Task<Void, Error> {
+        let server = server, theirs = theirs, mine = mine
+        return Task {
+            try await relayFilePair(theirs: theirs, mine: mine, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server, theirsFrom: theirsFrom, mineFrom: mineFrom)
+        }
+    }
+
     /// 映像の処理を差し替えて流す（映像を遅らせたり、止めたりするため）。
     func relay(
         theirs theirsTranscriber: ScriptedTranscriber, mine mineTranscriber: ScriptedTranscriber, relayScreen: @escaping FileScreenRelay
@@ -277,6 +296,75 @@ struct FilePairRelayITTests {
             try await waitUntil("両方の確定結果が届く") { rig.inbox.values.count == 2 }
             try await relaying.value
             #expect(Set(rig.inbox.values.map { "\($0.track)/\($0.type)/\($0.duplicate)" }) == ["相手/remark/false", "自分/remark/true"])
+        }
+    }
+
+    @Test("開始位置（from）から読み始めた 2 本は、互いを待ち続けて止まらず、どちらも開始位置から最後まで読み切る。結果の時刻はファイルの時刻のまま流れる")
+    func pairStartingAtFromDoesNotStall() async throws {
+        try await withRig { rig in
+            let theirsTranscriber = ScriptedTranscriber(tail: [final(sentence, 2.5, 3.5)])
+            let mineTranscriber = ScriptedTranscriber(steps: [Step(after: 3.5, results: [final(second, 3.0, 3.9)])])
+            let relaying = rig.relay(theirs: theirsTranscriber, mine: mineTranscriber, theirsFrom: 2.0, mineFrom: 2.0)
+            defer { relaying.cancel() }
+            try await waitUntil("両方の確定結果が届く") { rig.inbox.values.count == 2 }
+            try await relaying.value
+            // 0 秒から読み直していない。2 本とも 2 秒から 4 秒の最後まで読む
+            #expect(abs(try #require(theirsTranscriber.firstStart) - 2.0) < 0.001)
+            #expect(abs(try #require(mineTranscriber.firstStart) - 2.0) < 0.001)
+            #expect(abs(theirsTranscriber.lastEnd - 4.0) < 0.01)
+            #expect(abs(mineTranscriber.lastEnd - 4.0) < 0.01)
+            #expect(Set(rig.inbox.values.map { "\($0.track)/\($0.type)/\($0.text)" }) == ["相手/remark/\(sentence)", "自分/remark/\(second)"])
+        }
+    }
+
+    @Test("トラックごとの開始位置（相手 3.0・自分 1.0）から、それぞれの位置で読み始め、互いを待って止まらず最後まで読み切る。映像は大きい方（3.0）から読む")
+    func pairWithDifferentFromReadsEachTrackFromItsOwnPosition() async throws {
+        try await withRig(theirsWhiteFrom: 3.0) { rig in
+            let theirsTranscriber = ScriptedTranscriber(tail: [final(sentence, 3.2, 3.8)])
+            let mineTranscriber = ScriptedTranscriber(steps: [Step(after: 3.5, results: [final(second, 1.2, 1.8)])])
+            let relaying = rig.relay(theirs: theirsTranscriber, mine: mineTranscriber, theirsFrom: 3.0, mineFrom: 1.0)
+            defer { relaying.cancel() }
+            try await waitUntil("両方の確定結果が届く") { rig.inbox.values.count == 2 }
+            try await relaying.value
+            #expect(abs(try #require(theirsTranscriber.firstStart) - 3.0) < 0.001)
+            #expect(abs(try #require(mineTranscriber.firstStart) - 1.0) < 0.001)
+            #expect(abs(theirsTranscriber.lastEnd - 4.0) < 0.01)
+            #expect(abs(mineTranscriber.lastEnd - 4.0) < 0.01)
+            try await waitUntil("screen が届く") { !rig.screens.values.isEmpty }
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(rig.screens.values.allSatisfy { $0.start >= 3.0 - 0.001 })
+        }
+    }
+
+    @Test("映像つきの 2 本を正の開始位置（2.0）から読むと、開始位置以降の screen だけが届き、音声と映像は止まらずに最後まで読み切る")
+    func pairWithVideoStartingAtPositiveFrom() async throws {
+        // 変化は 1 秒後のフレームで判定されるので、3.0 の変化を判定できるよう映像は 5 秒にする
+        try await withRig(theirsWhiteFrom: 3.0, videoSeconds: 5) { rig in
+            let theirsTranscriber = ScriptedTranscriber()
+            let mineTranscriber = ScriptedTranscriber()
+            let relaying = rig.relay(theirs: theirsTranscriber, mine: mineTranscriber, theirsFrom: 2.0, mineFrom: 2.0)
+            defer { relaying.cancel() }
+            try await relaying.value
+            try await waitUntil("3.0 の変化の screen が届く") { rig.screens.values.contains { abs($0.start - 3.0) < 0.001 } }
+            try await Task.sleep(for: .milliseconds(200))
+            #expect(!rig.screens.values.isEmpty)
+            #expect(rig.screens.values.allSatisfy { $0.start >= 2.0 - 0.001 })
+            #expect(abs(theirsTranscriber.lastEnd - 4.0) < 0.01)
+            #expect(abs(mineTranscriber.lastEnd - 4.0) < 0.01)
+        }
+    }
+
+    @Test("開始位置がサンプルの区切りの間（切り上がる小数）でも、2 本は互いを待って止まらず最後まで読み切る")
+    func pairStartingAtFractionalFromDoesNotStall() async throws {
+        try await withRig { rig in
+            let theirsTranscriber = ScriptedTranscriber(tail: [final(sentence, 2.5, 3.5)])
+            let mineTranscriber = ScriptedTranscriber(steps: [Step(after: 3.5, results: [final(second, 3.0, 3.9)])])
+            let relaying = rig.relay(theirs: theirsTranscriber, mine: mineTranscriber, theirsFrom: 2.00002, mineFrom: 2.00002)
+            defer { relaying.cancel() }
+            try await waitUntil("両方の確定結果が届く") { rig.inbox.values.count == 2 }
+            try await relaying.value
+            #expect(abs(theirsTranscriber.lastEnd - 4.0) < 0.01)
+            #expect(abs(mineTranscriber.lastEnd - 4.0) < 0.01)
         }
     }
 

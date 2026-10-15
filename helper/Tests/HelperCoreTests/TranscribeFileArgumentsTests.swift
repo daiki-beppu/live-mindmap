@@ -14,6 +14,53 @@ struct TranscribeFileArgumentsTests {
         #expect(args.port == 8765)
         #expect(args.audioDir == nil)
         #expect(args.selfFile == nil)
+        #expect(args.from == nil)
+        #expect(args.selfFrom == nil)
+    }
+
+    @Test("--from は読み始める音声の時刻（秒）として解釈される。--audio-dir を渡さない起動し直しの形でも解釈できる")
+    func from() throws {
+        let args = try parseTranscribeFileArguments(["--file", "/tmp/a.m4a", "--self-file", "/tmp/me.m4a", "--from", "660"]).get()
+        #expect(args.from == 660)
+        #expect(args.audioDir == nil)
+        #expect(args.selfFile == "/tmp/me.m4a")
+    }
+
+    @Test("--from は小数の秒と 0 も受け付ける。引数の順序にもよらない")
+    func fromFractionAndZero() throws {
+        #expect(try parseTranscribeFileArguments(["--file", "/tmp/a.m4a", "--from", "600.5"]).get().from == 600.5)
+        #expect(try parseTranscribeFileArguments(["--file", "/tmp/a.m4a", "--from", "0"]).get().from == 0)
+        #expect(try parseTranscribeFileArguments(["--from", "12", "--file", "/tmp/a.m4a"]).get().from == 12)
+    }
+
+    @Test("--from に値がない・数でない・負・有限でないと拒否される")
+    func invalidFrom() {
+        for value in ["abc", "-1", "nan", "inf", "-inf", ""] {
+            let result = parseTranscribeFileArguments(["--file", "/tmp/a.m4a", "--from", value])
+            #expect(throws: TranscribeFileArgumentsError.self) { try result.get() }
+        }
+        let withoutValue = parseTranscribeFileArguments(["--file", "/tmp/a.m4a", "--from"])
+        #expect(throws: TranscribeFileArgumentsError.self) { try withoutValue.get() }
+    }
+
+    @Test("--self-from は自分用の録音の読み始める音声の時刻（秒）として解釈される。--from とは別の値を持つ")
+    func selfFrom() throws {
+        let args = try parseTranscribeFileArguments(["--file", "a.m4a", "--self-file", "b.m4a", "--from", "10", "--self-from", "2"]).get()
+        #expect(args.from == 10)
+        #expect(args.selfFrom == 2)
+        #expect(try parseTranscribeFileArguments(["--file", "a.m4a", "--self-file", "b.m4a", "--self-from", "0.5"]).get().from == nil)
+    }
+
+    @Test("--self-from に値がない・数でない・負・有限でないと拒否される。--self-file が無い --self-from も拒否される")
+    func invalidSelfFrom() {
+        for value in ["abc", "-1", "nan", "inf", "-inf", ""] {
+            let result = parseTranscribeFileArguments(["--file", "a.m4a", "--self-file", "b.m4a", "--self-from", value])
+            #expect(throws: TranscribeFileArgumentsError.self) { try result.get() }
+        }
+        let withoutValue = parseTranscribeFileArguments(["--file", "a.m4a", "--self-file", "b.m4a", "--self-from"])
+        #expect(throws: TranscribeFileArgumentsError.self) { try withoutValue.get() }
+        let withoutSelfFile = parseTranscribeFileArguments(["--file", "a.m4a", "--self-from", "2"])
+        #expect(throws: TranscribeFileArgumentsError.self) { try withoutSelfFile.get() }
     }
 
     @Test("--self-file は自分用の録音のファイルとして解釈される。--file は相手用のまま")
