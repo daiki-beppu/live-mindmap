@@ -171,3 +171,19 @@ effectIt.effect("振り分けの Haiku の query は effort low、Sonnet の que
   expect(sonnet).toMatchObject({ model: "claude-sonnet-5-5", effort: "medium" });
   expect(haiku).toMatchObject({ model: "claude-haiku-5-5", effort: "low" });
 }).pipe(Effect.scoped));
+
+// Clef（Issue #985）: 鍵はトークンとアカウント ID の 2 つ。両方そろったときだけ判定を呼び、宛先は Workers AI
+const clefJudge: JudgeModel = { name: "clef-flash", route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model: "clef-flash", timeoutMs: 2000 };
+
+effectIt.effect("Cloudflare の鍵が 2 つそろっていると、Workers AI の宛先・Bearer・モデル名で判定を呼ぶ", () => Effect.gen(function* () {
+  const { models, judgeCalls, result } = yield* run(defaultClaude, clefJudge, 0.1, { CLOUDFLARE_API_TOKEN: "cf-token", CLOUDFLARE_ACCOUNT_ID: "acct-123" });
+  expect(judgeCalls).toHaveLength(1);
+  expect(judgeCalls[0]!.url).toBe("https://api.cloudflare.com/client/v4/accounts/acct-123/ai/run/@cf/cloudflare/clef-flash");
+  expect(judgeCalls[0]!.headers.authorization).toBe("Bearer cf-token");
+  expect(models).toEqual(["claude-haiku-5-5"]);
+  expect(result.judge).toMatchObject({ model: "claude-haiku-5-5", confidence: 0.1 });
+}).pipe(Effect.scoped));
+
+untouched("Cloudflare のアカウント ID だけが無いと判定を呼ばず Sonnet 5.5 だけを使う", defaultClaude, clefJudge, "claude-sonnet-5-5", { CLOUDFLARE_API_TOKEN: "cf-token" });
+untouched("Cloudflare のトークンだけが無いと判定を呼ばず Sonnet 5.5 だけを使う", defaultClaude, clefJudge, "claude-sonnet-5-5", { CLOUDFLARE_ACCOUNT_ID: "acct-123" });
+untouched("Cloudflare のアカウント ID が空なら判定を呼ばず Sonnet 5.5 だけを使う", defaultClaude, clefJudge, "claude-sonnet-5-5", { CLOUDFLARE_API_TOKEN: "cf-token", CLOUDFLARE_ACCOUNT_ID: "" });

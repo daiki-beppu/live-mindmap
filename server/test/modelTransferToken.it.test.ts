@@ -76,10 +76,13 @@ describe("モデル転送トークンのサーバー Scope", () => {
     yield* server.close;
   }));
 
-  it.live("start の本文の judge は転送用トークンが無ければ 403 で、準備に渡らない。トークンが合えば準備まで届く", () => Effect.gen(function* () {
+  const judges: readonly JudgeModel[] = [
+    { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 },
+    { name: "clef", route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model: "clef", timeoutMs: 2000 },
+  ];
+  it.live.each(judges)("start の本文の judge（$name）は転送用トークンが無ければ 403 で、準備に渡らない。トークンが合えば accountIdEnv も落ちずに準備まで届く", (judge) => Effect.gen(function* () {
     const root = yield* directory;
     const sessionsDir = join(root, "sessions");
-    const judge: JudgeModel = { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 };
     const prepared: (JudgeModel | undefined)[] = [];
     const sessionSinks = SessionSinks.layer({ prepareUpdater: (_model, chosen) => Effect.sync(() => {
       prepared.push(chosen);
