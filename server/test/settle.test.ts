@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRemarkSettler, SETTLE_QUIET_MS, SETTLE_SENTENCE_MS, type HelperPartial, type SettledRemark } from "../src/core/index.ts";
 
-// 途中結果が T 秒変わらなければ発言として出す規則（Issue #99。参照実装は bench/sttLatency.ts の settleVolatile、lateFinal: "discard"）。
+// 途中結果が T 秒変わらなければ発言として出す規則（Issue #99）。
 // 発言を締める時計は、届いた結果の end の最大値（会議の音声の時刻。Issue #1083）。壁時計も、結果が届いた時刻も使わない。
 // 時計は partial / final が受け取る結果の end（秒）でだけ進む（中核は実行環境のタイマーを使わない。ADR 0003）。テストでは、自分の途中結果（発言にならない）で時計だけを進める。
 // partial / final は、時計を進めて期限の来た発話を出してから、入力を当てはめる。出た発言は戻り値で返す。
