@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import Foundation
 import Speech
 import Testing
@@ -377,6 +378,16 @@ struct FileScreenITTests {
         let lines: [String]?
     }
 
+    /// base64 の JPEG の平均の明るさ（0〜255）。件数が合わないときに、どんな画面が出たかを示すためだけに使う。
+    private func meanBrightness(_ base64: String) -> Int? {
+        guard let data = Data(base64Encoded: base64), let image = CIImage(data: data) else { return nil }
+        let context = CIContext()
+        guard let gray = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: image, kCIInputExtentKey: CIVector(cgRect: image.extent)])?.outputImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(gray, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+        return (Int(pixel[0]) + Int(pixel[1]) + Int(pixel[2])) / 3
+    }
+
     private func screens(in events: [HelperEvent]) -> [Shown] {
         var shown: [Shown] = []
         for event in events {
@@ -395,7 +406,7 @@ struct FileScreenITTests {
         let events = try await collect(movie)
 
         let shown = screens(in: events)
-        #expect(shown.count == 2)
+        #expect(shown.count == 2, "screen の start と画像の明るさ: \(shown.map { ($0.start, $0.image.flatMap(meanBrightness)) })")
         if shown.count == 2 {
             #expect(abs(shown[0].start - 0) <= 0.25, "最初の画面の start: \(shown[0].start)")
             #expect(abs(shown[1].start - 2) <= 0.25, "切り替わりの画面の start: \(shown[1].start)")
