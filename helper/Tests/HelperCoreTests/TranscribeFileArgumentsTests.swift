@@ -12,6 +12,20 @@ struct TranscribeFileArgumentsTests {
         let args = try parseTranscribeFileArguments(["--file", "/tmp/meeting.m4a"]).get()
         #expect(args.file == "/tmp/meeting.m4a")
         #expect(args.port == 8765)
+        #expect(args.audioDir == nil)
+    }
+
+    @Test("--audio-dir は音声を書くフォルダとして解釈される")
+    func audioDir() throws {
+        let args = try parseTranscribeFileArguments(["--file", "/tmp/a.mp4", "--audio-dir", "/tmp/session"]).get()
+        #expect(args.file == "/tmp/a.mp4")
+        #expect(args.audioDir == "/tmp/session")
+    }
+
+    @Test("--audio-dir に値がないと拒否される")
+    func audioDirWithoutValue() {
+        let result = parseTranscribeFileArguments(["--file", "/tmp/a.mp4", "--audio-dir"])
+        #expect(throws: TranscribeFileArgumentsError.self) { try result.get() }
     }
 
     @Test("--port は指定した値になる")

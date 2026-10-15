@@ -115,18 +115,27 @@ export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, 
   return paths;
 });
 
-// セッションのフォルダ（名前は開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す
-export const createSessionDir = Effect.fnUntraced(function* (sessionsDir: string) {
+// セッションのフォルダ（名前は基準の時刻。省略すると開始時刻）を作る。ライブでは、ヘルパーの起動前に作って録音の書き出し先として渡す。
+// 同じ名前のフォルダが既にあれば使い回さず、-2、-3… を付けた新しいフォルダを作る（録画のファイルの作成日時は、流し直しても同じ名前になる）
+export const createSessionDir = Effect.fnUntraced(function* (sessionsDir: string, at?: DateTime.DateTime) {
   const fs = yield* FileSystem.FileSystem;
-  const dir = join(sessionsDir, DateTime.formatIso(DateTime.nowUnsafe()).replaceAll(":", "-"));
-  yield* fs.makeDirectory(dir, { recursive: true });
-  return dir;
+  const base = join(sessionsDir, DateTime.formatIso(at ?? DateTime.nowUnsafe()).replaceAll(":", "-"));
+  yield* fs.makeDirectory(sessionsDir, { recursive: true });
+  for (let n = 1; ; n++) {
+    const dir = n === 1 ? base : `${base}-${n}`;
+    const created = yield* fs.makeDirectory(dir).pipe(
+      Effect.as(true),
+      Effect.catchIf((e) => e.reason._tag === "AlreadyExists", () => Effect.succeed(false)),
+    );
+    if (created) return dir;
+  }
 });
 
 export type RecordedSessionOptions = {
   model: ExecutableModel;
   dir: string; // createSessionDir で作ったセッションのフォルダ
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
+  logShiftMs?: number; // log.jsonl の時刻（各行の at と diff の call）に足す幅。録画からのセッションが、基準の時刻へそろえるために渡す。省略は 0
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   onDiff?: Effect.Effect<void>; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
   diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>;
@@ -137,14 +146,14 @@ export type RecordedSessionOptions = {
 // appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
 // session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
 // ログが書けないとき（FileSystem の失敗）は、そのまま defect にする。
-export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, publish, onDiff, diffUpdate, model }: RecordedSessionOptions) {
+export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, model }: RecordedSessionOptions) {
   // SessionLog のメソッドの R は空なので、FileSystem はここで 1 回だけ受け取ってクロージャで使う
   const fs = yield* FileSystem.FileSystem;
   // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。
   // at は Clock ではなく実時刻（TestClock の下でも log.jsonl は実際の時刻で書く）。Effect を実行した時点で決める
   const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) =>
     Effect.suspend(() =>
-      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: logTimestamp(), ...event }) + "\n", { flag: "a" }),
+      fs.writeFileString(join(dir, LOG_FILE), JSON.stringify({ at: logTimestamp(logShiftMs), ...event }) + "\n", { flag: "a" }),
     ).pipe(Effect.orDie);
   const writeExport = (session: Session) =>
     Effect.flatMap(session.exportJson, (json) => fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(json))).pipe(Effect.orDie);
@@ -185,7 +194,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, pu
   );
   const images = model.route !== "apple" && model.images !== false;
   if (diffUpdate) yield* Effect.addFinalizer(() => diffUpdate({ type: "diff-update", state: null }));
-  const session = yield* makeSession({ title: title ?? basename(dir), images }).pipe(Effect.provide(log));
+  const session = yield* makeSession({ title: title ?? basename(dir), images, logShiftMs }).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
   if (diffUpdate) {
     yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });

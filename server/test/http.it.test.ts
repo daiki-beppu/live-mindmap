@@ -90,7 +90,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       yield* Effect.addFinalizer(() => Effect.ignore(stop));
       return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (paused: boolean) => Effect.sync(() => { sent.push(paused); }) };
     });
-  const service = { apps: Effect.succeed(apps), check, checkNoScreen, launch };
+  const service = { apps: Effect.succeed(apps), check, checkNoScreen, creationDate: () => Effect.succeed(null), launch };
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks, sent };
 };
 

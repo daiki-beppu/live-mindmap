@@ -64,7 +64,7 @@ const controlledHelpers = () => {
     speechJa: { status: control.speechStatus, installedLocales: ["ja-JP"] },
   }));
   const installSpeechJa = Stream.fromEffect(Effect.sync(() => { control.speechStatus = "installed"; return "取得完了"; }));
-  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, checkNoScreen: check, installSpeechJa, apps: Effect.succeed([]), launch })) };
+  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, checkNoScreen: check, creationDate: () => Effect.succeed(null), installSpeechJa, apps: Effect.succeed([]), launch })) };
 };
 
 const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingHelper = false) {

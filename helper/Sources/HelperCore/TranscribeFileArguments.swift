@@ -7,10 +7,13 @@ import Foundation
 public struct TranscribeFileArguments: Equatable {
     public var file: String
     public var port: UInt16
+    /// ファイルの音声を `相手.m4a` として書く先のフォルダ。省略したら音声を書かない。
+    public var audioDir: String?
 
-    public init(file: String, port: UInt16 = defaultTranscribeFilePort) {
+    public init(file: String, port: UInt16 = defaultTranscribeFilePort, audioDir: String? = nil) {
         self.file = file
         self.port = port
+        self.audioDir = audioDir
     }
 }
 
@@ -22,15 +25,19 @@ public struct TranscribeFileArgumentsError: Error, Equatable {
 /// `run` と同じ。サーバーは `Helpers.launch` で `--port` を足して起動する。
 public let defaultTranscribeFilePort: UInt16 = 8765
 
-/// `arguments` は `transcribe-file` の語の後に続く引数の列（`--file` と `--port` とその値）。
+/// `arguments` は `transcribe-file` の語の後に続く引数の列（`--file`・`--port`・`--audio-dir` とその値）。
 public func parseTranscribeFileArguments(_ arguments: [String]) -> Result<TranscribeFileArguments, TranscribeFileArgumentsError> {
     var file: String?
     var port = defaultTranscribeFilePort
+    var audioDir: String?
     var index = 0
     while index < arguments.count {
         switch arguments[index] {
         case "--file" where index + 1 < arguments.count:
             file = arguments[index + 1]
+            index += 2
+        case "--audio-dir" where index + 1 < arguments.count:
+            audioDir = arguments[index + 1]
             index += 2
         case "--port" where index + 1 < arguments.count:
             guard let value = UInt16(arguments[index + 1]) else {
@@ -45,5 +52,5 @@ public func parseTranscribeFileArguments(_ arguments: [String]) -> Result<Transc
     guard let file else {
         return .failure(TranscribeFileArgumentsError("--file が必要"))
     }
-    return .success(TranscribeFileArguments(file: file, port: port))
+    return .success(TranscribeFileArguments(file: file, port: port, audioDir: audioDir))
 }

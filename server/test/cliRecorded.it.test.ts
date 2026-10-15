@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
@@ -15,7 +15,7 @@ import type { DiffInput } from "../src/core/index.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { embeddedAudio, FAKE_MIX_BYTES, fakeAudioMix, type FakeMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
@@ -41,7 +41,12 @@ type Script = {
   // true なら、台本のイベントを流し終えてもヘルパーは終わらない（stop の印で終わる）
   hold?: boolean;
   exit?: HelperExitInfo; // 自然に終わるときの終わり方（既定 code 0）
+  // ヘルパーの creation-date の答え。ISO8601 の文字列、null（作成日時を持たないファイル）、"fail"（問い合わせの失敗）。既定は null
+  creationDate?: string | null | "fail";
 };
+
+// 偽のヘルパーが --audio-dir へ書く音声（相手.m4a）の中身
+const HELPER_AUDIO = "ヘルパーが書いた音声";
 
 // ヘルパーは、録画の文字起こしでは partial → remark の順に出す
 const events = (script: Script): unknown[] => [
@@ -58,8 +63,18 @@ function fakeHelpers(script: Script) {
   // 起動した後に、テストからヘルパーのイベントを足す
   const live: { queue: Queue.Queue<string, Cause.Done> | undefined } = { queue: undefined };
   const feed = (event: unknown) => { Queue.offerUnsafe(live.queue!, JSON.stringify(event)); };
+  const creationDateCalls: string[] = [];
+  const creationDate = (file: string) => {
+    creationDateCalls.push(file);
+    return script.creationDate === "fail"
+      ? Effect.fail({ _tag: "HelperCreationDateFailure", message: "作成日時を読めない" } as never)
+      : Effect.succeed(script.creationDate ?? null);
+  };
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.gen(function* () {
     calls.push([...args]);
+    // 本物のヘルパーは、待ち受けを始める前に --audio-dir のフォルダへ 相手.m4a を書く
+    const audioDir = args[args.indexOf("--audio-dir") + 1];
+    if (args.includes("--audio-dir") && audioDir !== undefined) writeFileSync(join(audioDir, "相手.m4a"), HELPER_AUDIO);
     const queue = yield* Queue.make<string, Cause.Done>();
     live.queue = queue;
     const exited = yield* Deferred.make<HelperExitInfo>();
@@ -71,8 +86,8 @@ function fakeHelpers(script: Script) {
     if (script.hold !== true) yield* finish(script.exit ?? { code: 0, signal: null });
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: () => Effect.void };
   });
-  const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch }));
-  return { calls, stopSeen, layer, feed };
+  const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), creationDate, launch }));
+  return { calls, creationDateCalls, stopSeen, layer, feed };
 }
 
 type UpdateScript = (input: DiffInput, call: number) => Effect.Effect<void>;
@@ -166,7 +181,7 @@ function cliDependencies(sessionsDir: string, port: number, apple: typeof unused
   return { layer, stdout, stderr };
 }
 
-const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions } = {}) {
+const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; mix?: FakeMix } = {}) {
   // 実行準備（prepareUpdater）へ届いたモデル
   const models: ExecutableModel[] = [];
   const root = yield* temporaryDirectory;
@@ -176,7 +191,7 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const helpers = fakeHelpers(script);
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { models.push(model); return Effect.succeed(updater.layer); } }).pipe(Layer.provide(fakeExportServices(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }))),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { models.push(model); return Effect.succeed(updater.layer); } }).pipe(Layer.provide(fakeExportServices({ ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }), ...(options.mix === undefined ? {} : { mix: options.mix }) }))),
   });
   const deps = cliDependencies(sessionsDir, server.port, unusedApple, options.cli);
   const cli = (argv: string[]) => runCli(argv).pipe(Effect.provide(deps.layer));
@@ -220,12 +235,13 @@ describe("cli recorded <file>", () => {
     // 相対パスで渡しても、サーバー（作業フォルダが違う）には絶対パスで渡る
     yield* r.cli(["recorded", relative(process.cwd(), r.file)]);
 
-    expect(r.helpers.calls).toEqual([["transcribe-file", "--file", resolve(r.file)]]);
+    // 絶対パスのファイルと、音声を書くセッションのフォルダ（--audio-dir）で起動する
+    const dir = onlySession(r.sessionsDir);
+    expect(r.helpers.calls).toEqual([["transcribe-file", "--file", resolve(r.file), "--audio-dir", dir]]);
     // 呼び出しが 3 回あり、重ならず、1 回に 1 発言ずつ
     expect(r.updater.inputs.map((input) => input.fresh.map((remark) => remark.id))).toEqual([["r1"], ["r2"], ["r3"]]);
     expect(r.updater.state.overlaps).toBe(0);
 
-    const dir = onlySession(r.sessionsDir);
     const lines = logLines(dir);
     // 発言を入れる → その差分更新の終わり → 次の発言、の順
     expect(lines.filter((l) => l.type === "remark" || l.type === "diff").map((l) => l.type)).toEqual(["remark", "diff", "remark", "diff", "remark", "diff"]);
@@ -237,13 +253,13 @@ describe("cli recorded <file>", () => {
     ]);
     for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
 
-    // 標準出力は、フォルダと map.* のパスだけ
+    // 標準出力は、フォルダと map.* のパス（音声つきの見返しは map-audio.html）だけ
     const out = r.deps.stdout.join("").trim().split("\n");
     expect(out[0]).toBe(dir);
     expect(out.slice(1).map((path) => basename(path))).toEqual(expect.arrayContaining(["map.md", "map.json", "map.drawnix"]));
     for (const path of out.slice(1)) {
       expect(path.startsWith(dir)).toBe(true);
-      expect(basename(path).startsWith("map.")).toBe(true);
+      expect(basename(path)).toMatch(/^map[.-]/);
     }
     // 進み具合は標準エラーに 1 行ずつ。最後の行は、入れた位置・全体の長さ・マップの更新回数
     const progress = r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
@@ -257,6 +273,98 @@ describe("cli recorded <file>", () => {
     yield* r.cli(["recorded", r.file, "--title", "週次会議"]);
     const start = logLines(onlySession(r.sessionsDir)).find((l) => l.type === "start");
     expect(start).toMatchObject({ title: "週次会議" });
+  }).pipe(Effect.scoped));
+
+  it.live("録画からのセッションのフォルダに 相手.m4a（ヘルパーが書いた音声）と map-audio.html ができ、map-audio.html には 相手.m4a から混ぜた音声が入る。元のファイルはコピーしない", () => Effect.gen(function* () {
+    const mix = fakeAudioMix();
+    const r = yield* resource(THREE, fakeUpdater(), { mix });
+    yield* r.cli(["recorded", r.file]);
+
+    const dir = onlySession(r.sessionsDir);
+    expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
+    expect(existsSync(join(dir, "map-audio.html"))).toBe(true);
+    expect(embeddedAudio(readFileSync(join(dir, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
+    expect(mix.calls.map((call) => call.session)).toEqual([dir]);
+    expect(readdirSync(dir)).not.toContain(basename(r.file));
+    // 標準出力の map.* のパスに map-audio.html も入る
+    expect(r.deps.stdout.join("").trim().split("\n").map((path) => basename(path))).toContain("map-audio.html");
+  }).pipe(Effect.scoped));
+
+  describe("フォルダ名と log.jsonl の時刻の基準", () => {
+    const CREATED = "2026-10-01T01:02:03Z";
+    const FOLDER = "2026-10-01T01-02-03.000Z";
+    const folderTime = (dir: string) => Date.parse(basename(dir).replace(/T(\d{2})-(\d{2})-(\d{2})/, "T$1:$2:$3"));
+    // log.jsonl に書かれた時刻のすべて: 各行の at と、diff の call の startedAt・endedAt
+    const loggedTimes = (lines: Line[]) => lines.flatMap((l) => [
+      l.at as string,
+      ...(l.type === "diff" && l.call !== undefined ? [(l.call as { startedAt: string }).startedAt, (l.call as { endedAt: string }).endedAt] : []),
+    ]).map((t) => Date.parse(t));
+
+    it.live("作成日時を持つファイルでは、フォルダ名がその日時になり、log.jsonl のすべての時刻（at と diff の call）がその日時から数分以内になる。問い合わせはそのファイルの絶対パス", () => Effect.gen(function* () {
+      const r = yield* resource({ ...THREE, creationDate: CREATED });
+      yield* r.cli(["recorded", relative(process.cwd(), r.file)]);
+
+      expect(r.helpers.creationDateCalls).toEqual([resolve(r.file)]);
+      const dir = onlySession(r.sessionsDir);
+      expect(basename(dir)).toBe(FOLDER);
+      const lines = logLines(dir);
+      expect(lines.some((l) => l.type === "diff" && l.call !== undefined)).toBe(true);
+      const created = Date.parse(CREATED);
+      const times = loggedTimes(lines);
+      expect(times.length).toBeGreaterThan(lines.length);
+      for (const time of times) {
+        expect(time).toBeGreaterThanOrEqual(created);
+        expect(time).toBeLessThan(created + 5 * 60_000);
+      }
+    }).pipe(Effect.scoped));
+
+    it.live.each([
+      { name: "作成日時を持たないファイル（null）", creationDate: null },
+      { name: "作成日時を読めないファイル（問い合わせの失敗）", creationDate: "fail" as const },
+    ])("$name では、フォルダ名と log.jsonl のすべての時刻が、流し始めた今の時刻になり、セッションは止まらない", ({ creationDate }) => Effect.gen(function* () {
+      const r = yield* resource({ ...THREE, creationDate });
+      const before = Date.now();
+      yield* r.cli(["recorded", r.file]);
+      const after = Date.now();
+
+      const dir = onlySession(r.sessionsDir);
+      expect(basename(dir)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z$/);
+      expect(folderTime(dir)).toBeGreaterThanOrEqual(before - 1);
+      expect(folderTime(dir)).toBeLessThanOrEqual(after + 1);
+      const lines = logLines(dir);
+      expect(remarksOf(lines)).toHaveLength(3);
+      for (const time of loggedTimes(lines)) {
+        expect(time).toBeGreaterThanOrEqual(before - 1);
+        expect(time).toBeLessThanOrEqual(after + 1);
+      }
+      expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
+    }).pipe(Effect.scoped));
+
+    it.live("同じ名前のフォルダが既にあるときは使い回さず、-2 を付けた新しいフォルダに書く。既にあるフォルダの log.jsonl と 相手.m4a は変わらない", () => Effect.gen(function* () {
+      const r = yield* resource({ ...THREE, creationDate: CREATED });
+      const existing = join(r.sessionsDir, FOLDER);
+      mkdirSync(existing, { recursive: true });
+      writeFileSync(join(existing, "log.jsonl"), "前のセッション\n");
+      writeFileSync(join(existing, "相手.m4a"), "前の音声");
+
+      yield* r.cli(["recorded", r.file]);
+
+      expect(readdirSync(r.sessionsDir).filter((name) => name !== "vocabulary.json").sort()).toEqual([FOLDER, `${FOLDER}-2`]);
+      expect(readFileSync(join(existing, "log.jsonl"), "utf8")).toBe("前のセッション\n");
+      expect(readFileSync(join(existing, "相手.m4a"), "utf8")).toBe("前の音声");
+      const dir = join(r.sessionsDir, `${FOLDER}-2`);
+      expect(r.helpers.calls[0]).toEqual(["transcribe-file", "--file", resolve(r.file), "--audio-dir", dir]);
+      expect(r.deps.stdout.join("").trim().split("\n")[0]).toBe(dir);
+      expect(remarksOf(logLines(dir))).toHaveLength(3);
+      expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
+    }).pipe(Effect.scoped));
+  });
+
+  it.live("--title を省くと、ファイル名（拡張子なし）がセッションの題名になる", () => Effect.gen(function* () {
+    const r = yield* resource(THREE);
+    yield* r.cli(["recorded", r.file]);
+    const start = logLines(onlySession(r.sessionsDir)).find((l) => l.type === "start");
+    expect(start).toMatchObject({ title: "meeting" });
   }).pipe(Effect.scoped));
 
   it.live("ヘルパーが 0 以外で終わると、入れた分で終えて map.* を書き、CLI は失敗する（標準エラーにヘルパーの末尾を出す）", () => Effect.gen(function* () {

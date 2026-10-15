@@ -353,6 +353,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
       apps: Effect.succeed([]),
       check: Effect.sync(() => { checks.push(true); return { microphone, screenCapture, speechJa }; }),
       checkNoScreen: Effect.sync(() => { checks.push(false); return { microphone, speechJa }; }),
+      creationDate: () => Effect.succeed(null),
       launch: (args: ReadonlyArray<string>) => Effect.gen(function* () {
         launches.push([...args]);
         const queue = yield* Queue.make<string, Cause.Done>();
