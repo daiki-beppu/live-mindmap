@@ -164,3 +164,90 @@ public final class SpeechAnalyzerTranscriber: Transcriber {
         return output
     }
 }
+
+/// ファイル 1 本を文字にする口（`transcribe-file`）。ライブの `transcribe` と違い、音声は analyzer が引いたぶんだけ読む
+/// （間に上限つきの列を置かないので、入力の上限 2048 に当たらず、速さは analyzer に合う）。
+/// 入力は途切れなくファイルの先頭から続くので、結果の時刻はファイルの音声の時刻（先頭が 0 秒）になる。
+extension SpeechAnalyzerTranscriber: FileTranscriber {
+    public func transcribe(_ inputs: FileAudioInputs) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
+        guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let transcriber = self.transcriber
+        return AsyncThrowingStream { continuation in
+            // 入力 → analyzer。列が終わったら、最後の位置までを確定させる。
+            let feeder = Task {
+                do {
+                    let last = try await analyzer.analyzeSequence(ConvertedAnalyzerInputs(base: inputs, format: format))
+                    if let last {
+                        try await analyzer.finalizeAndFinish(through: last)
+                    } else {
+                        // 入力が 0 件のまま finalize を呼ぶと戻らず、結果の流れが終わらない（#70）。確定させる結果が無いので、捨てる。
+                        await analyzer.cancelAndFinishNow()
+                    }
+                } catch {
+                    continuation.finish(throwing: error)
+                    await analyzer.cancelAndFinishNow()
+                }
+            }
+            // SpeechTranscriber の結果 → TranscriptionResult。analyzer の終了で結果の流れも終わる。
+            let collector = Task {
+                do {
+                    for try await result in transcriber.results {
+                        let range = result.range
+                        continuation.yield(TranscriptionResult(
+                            text: String(result.text.characters),
+                            isFinal: result.isFinal,
+                            start: range.start.isNumeric ? range.start.seconds : 0,
+                            end: range.end.isNumeric ? range.end.seconds : 0,
+                            wordTimes: Self.wordTimes(of: result.text)
+                        ))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                feeder.cancel()
+                collector.cancel()
+            }
+        }
+    }
+}
+
+/// `FileAudioInputs`（ファイルの形式のまま）を analyzer の形式に変換する列。
+private struct ConvertedAnalyzerInputs: AsyncSequence {
+    typealias Element = AnalyzerInput
+
+    let base: FileAudioInputs
+    let format: AVAudioFormat
+
+    func makeAsyncIterator() -> Iterator {
+        Iterator(base: base.makeAsyncIterator(), format: format)
+    }
+
+    struct Iterator: AsyncIteratorProtocol {
+        var base: FileAudioInputs.Iterator
+        let format: AVAudioFormat
+        var converter: AVAudioConverter?
+
+        init(base: FileAudioInputs.Iterator, format: AVAudioFormat) {
+            self.base = base
+            self.format = format
+        }
+
+        mutating func next() async throws -> AnalyzerInput? {
+            guard let input = try await base.next() else { return nil }
+            if converter == nil {
+                converter = AVAudioConverter(from: input.buffer.format, to: format)
+            }
+            guard let converter else {
+                throw TranscriberError.conversionFailed("\(input.buffer.format) → \(format)")
+            }
+            let converted = try SpeechAnalyzerTranscriber.convert(input.buffer, with: converter, to: format)
+            // 位置は渡さない。変換後のバッファの長さは丸めで元とずれ、元の位置を明示すると「前の入力と重なる」と拒否される。
+            // 途切れなく続くので、analyzer が数える位置（先頭が 0）が、そのままファイルの音声の時刻になる
+            return AnalyzerInput(buffer: converted)
+        }
+    }
+}

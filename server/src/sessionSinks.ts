@@ -12,6 +12,7 @@ import { correctRemark, DiffUpdater, requestScreenWords, wordsForKatakana, katak
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
+import { createRecordedBacklog } from "./recordedBacklog.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
 import { createSpeakingRelay } from "./speakingRelay.ts";
@@ -44,6 +45,10 @@ export type SessionSink = {
   stopRelays: Effect.Effect<void>;
   // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する
   appendLog: (event: IntakeLogEvent | SelfPauseLogEvent) => Effect.Effect<void>;
+  // 録画からのセッションで、溜まっている発言をすべて入れ終えるまで待つ（ライブでは何もしない）。drain の後に呼ぶ
+  finishBacklog: Effect.Effect<void>;
+  // 録画からのセッションで、溜まっている発言を捨てる。入れている途中の 1 件は待たない（入れ終えるのは finishBacklog が待つ。ライブでは何もしない）
+  discardBacklog: Effect.Effect<void>;
   // 差分更新の結果を待つ
   flush: Effect.Effect<void>;
   // map.md・map.json・map.drawnix（と撮影できれば map.png、書き出せれば map.html）を書き出し、パスを返す
@@ -64,6 +69,9 @@ export type OpenSessionSink = {
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   speak: (frame: SpeakingFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
+  // 録画からのセッションのとき（cli recorded）だけ渡す。締めた発言はすぐ入れず溜め、1 発言入れて差分更新が終わるたびに progress を呼ぶ。
+  // いま話している文字（字幕）はヘルパーの途中結果ではなく、入れた位置で出す
+  recorded?: { progress: (progress: { position: number; rounds: number }) => Effect.Effect<void> };
 };
 
 const TRACKS: Track[] = ["相手", "自分"];
@@ -97,7 +105,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           return yield* prepareUpdater(model, judge).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
         }),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer }) {
+        open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer, recorded }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
@@ -120,8 +128,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const count = yield* Ref.make(0);
           // 語彙（読みのある語だけ）。セッションの中では減らさない。出口は発言を締めるたびにその時点の語彙を読む
           const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>([]);
-          const settling = yield* createRemarkSettling({
-            emit: (settled) =>
+          // 締めた発言を、語彙で直してセッションへ入れる（ログの remark の行・差分更新・字幕）
+          const admit = (settled: SettledRemark) =>
               Effect.gen(function* () {
                 const n = yield* Ref.updateAndGet(count, (c) => c + 1);
                 // words は Remark に入れず、ログの行にだけ残す。関所を通った後の本文を語彙で直し、直した本文を発言の本文にする
@@ -131,8 +139,19 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 const text = words === undefined ? rest.text : correctRemark(yield* Ref.get(vocabulary), rest.text, words, commonWords).text;
                 yield* session.push({ ...rest, text, id: `r${n}` }, words === undefined ? undefined : { raw: rest.text, words }, wordTimes);
                 yield* relay.remark(settled.track);
-              }),
-          });
+              });
+          // 録画からのセッションは、入れたあと差分更新の終わりを待ってから次の発言を入れる
+          const backlog = recorded === undefined
+            ? undefined
+            : yield* createRecordedBacklog({
+                deliver: (settled: SettledRemark) =>
+                  Effect.gen(function* () {
+                    yield* admit(settled);
+                    yield* session.idle;
+                    yield* recorded.progress({ position: settled.end, rounds: (yield* session.snapshot).round });
+                  }),
+              });
+          const settling = yield* createRemarkSettling({ emit: backlog === undefined ? admit : backlog.offer });
           // 画面から語彙の候補を取るための状態。短い行が出た画面の数と、読みを頼んだ語（利用者の語・画面の語）。
           // 並んで届いた画面で同じ語を二重に頼まないよう、1 回の Ref.modify で更新する
           const screenVocabulary = yield* Ref.make<ScreenVocabularyState>({ seen: new Map(), requested: new Set() });
@@ -193,7 +212,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
 
           return {
             dir,
-            partial: (p) => Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)),
+            partial: (p) => backlog === undefined ? Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)) : settling.partial(p),
             final: (r) => settling.final(r),
             screen: ({ start, image, lines }) =>
               Effect.gen(function* () {
@@ -218,6 +237,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               );
             },
             drain: settling.drain,
+            finishBacklog: backlog === undefined ? Effect.void : backlog.finish,
+            discardBacklog: backlog === undefined ? Effect.void : backlog.discard,
             clearSpeaking: relay.clear,
             stopRelays: Effect.andThen(relay.stop, settling.stop),
             appendLog: appendRecordedLog,

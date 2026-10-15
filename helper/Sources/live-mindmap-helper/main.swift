@@ -18,6 +18,7 @@ usage:
   live-mindmap-helper install-speaker-models
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
+  live-mindmap-helper transcribe-file --file <path> [--port <n>]
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
 """
@@ -237,6 +238,54 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     if let failure { throw failure }
 }
 
+/// 音声ファイル 1 本を文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。音声・画面・話者分離は扱わない。
+/// 流れ: 待ち受けを始める → 全体の長さ（`file-duration`。保持して流す）→ 最初のクライアントを待つ → 文字にして流す →
+/// 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
+private func transcribeFile(file: String, port: UInt16) async throws {
+    let url = URL(fileURLWithPath: file)
+    // 読めないファイルは、待ち受けを始める前にここで失敗する
+    let duration = try await fileDuration(of: url)
+    let transcriber = SpeechAnalyzerTranscriber()
+    try await transcriber.prepare()
+    let server = WebSocketServer(port: port)
+    let actualPort = try await server.start()
+    printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(duration) s)")
+    try await server.broadcastRetained(HelperEvent.fileDuration(duration: duration).jsonString(), key: "file-duration")
+
+    let work = Task {
+        // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
+        await server.waitForClient()
+        for try await result in try await transcribeFile(at: url, with: transcriber) {
+            await server.broadcast(try event(from: result, track: .相手).jsonString())
+        }
+    }
+    // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
+    let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
+        signal(signalNumber, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+        source.setEventHandler {
+            work.cancel()
+            Task { await server.stop() }
+        }
+        source.resume()
+        return source
+    }
+    defer { signalSources.forEach { $0.cancel() } }
+
+    var failure: Error?
+    do {
+        try await work.value
+    } catch is CancellationError {
+        failure = nil
+    } catch {
+        failure = error
+    }
+    // 最後のイベントまで届けてから止める（stop は接続を cancel して、送りかけのフレームを捨てうる）
+    await server.waitUntilSent()
+    await server.stop()
+    if let failure { throw failure }
+}
+
 private func main() async -> Int32 {
     let arguments = Array(CommandLine.arguments.dropFirst())
     do {
@@ -270,6 +319,14 @@ private func main() async -> Int32 {
                 return 2
             case .success(let args):
                 try await run(app: args.app, port: args.port, audioDir: args.audioDir, origin: args.origin, audioIndex: args.audioIndex, noScreen: args.noScreen, selfPauseCarryOver: args.selfPauseCarryOver)
+            }
+        case "transcribe-file":
+            switch parseTranscribeFileArguments(Array(arguments.dropFirst())) {
+            case .failure(let error):
+                printError("\(error.message)\n\(usage)")
+                return 2
+            case .success(let args):
+                try await transcribeFile(file: args.file, port: args.port)
             }
         case "mix":
             switch parseMixArguments(Array(arguments.dropFirst())) {

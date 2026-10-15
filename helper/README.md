@@ -21,6 +21,7 @@ cd helper
 swift run live-mindmap-helper list                         # 音を出している会議アプリを JSON で出す
 swift run live-mindmap-helper check                        # モデル・マイク・画面収録の状態を JSON で出す
 swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <秒>]   # 既定のポートは 8765
+swift run live-mindmap-helper transcribe-file --file <path> [--port <n>]   # 音声ファイル 1 本を文字にして、相手の partial・remark として流す（cli recorded が起動する）
 swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分]   # セッションの録音を 0 秒から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする
 swift run live-mindmap-helper readings <語>...             # 語ごとのローマ字の読みを JSON で出す
 ```
@@ -28,6 +29,9 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 `run` は、選んだアプリ（本体と helper のプロセス）だけをタップする。Zoom は `us.zoom.xos`、ブラウザはブラウザ全体になる（Meet のタブだけには絞れない）。合うプロセスがなければ、Mac 全体のタップには切り替えず、エラーで終わる。音声の処理が取得に追いつかず、未消費のバッファが上限（2048 個）を超えたときも、音声を捨てずにエラーで終わる。
 同時にマイクも取り、`自分` のトラックとして、`相手` とは別の SpeechAnalyzer で文字起こしする（2 本が並行して動く）。Apple の音声処理（Voice Processing のエコーキャンセル）は有効にしない（有効にするとプロセスタップが止まる）。スピーカーのときは、下の「エコーキャンセル」で漏れを消す。入力の機器が変わる（`AVAudioEngineConfigurationChange`）と、標準エラーに理由を 1 行出して終了コード 75 で終わる。作り直しはサーバーの起動し直しに任せる。マイクが許可されていないときは、エラーで終わる。Ctrl-C（SIGINT / SIGTERM）で、タップ・マイク・WebSocket を片付けて終わる。
 
+`transcribe-file` は、音声ファイル（音声のトラックがあれば動画も）1 本を `相手` として文字にして流す。音声・共有画面・話者分離は扱わない。手順は次のとおり。待ち受けを始め、全体の長さの `file-duration` を保持して流す → 最初のクライアントが接続するのを待つ → `partial`・`remark` を流す → 最後のフレームを送り終えるのを待つ → 終了コード 0 で終わる。
+音声は `AVAssetReader` で PCM に読み、SpeechAnalyzer が引いたぶんだけ渡す。間に上限つきの列を置かない（入力の上限 2048 個に当たらない）ので、速さは analyzer に合い、等速より速く進む。
+結果の `start` / `end` は、ファイルの音声の先頭を 0 とする秒数（壁時計ではない）。ほぼ無音の区間の結果は、ライブと同じ基準（−70 dBFS）で捨てる。ライブの音量の記録は直近 30 秒しか持たないので、ここではファイルから区間の音量を読み直して判定する（ファイルと重ならない区間など、測れない区間の結果は捨てない）。SIGINT / SIGTERM で読むのをやめて終わる。終了コード: 0 は正常、1 はエラー、2 は使い方の誤り。
 `run` の終了コード: 0 は正常、1 はエラー、2 は使い方の誤り、75 はマイクの入力の構成の変化（sysexits.h の `EX_TEMPFAIL`。サーバーは失敗に数えずに起動し直す）。
 
 `check` は状態の照会だけを行い、ダイアログ、モデルのダウンロード・予約、音声・画面の取り込みを行わない。成功時は標準出力に次の形の JSON を出して終了コード 0 で終わる。失敗時は標準エラーに理由を出して終了コード 1 で終わる。
@@ -91,6 +95,7 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 {"type":"speaker","track":"相手","start":1.5,"end":2.25,"slot":1,"final":false}
 {"type":"speaker","track":"相手","start":0,"end":1.5,"slot":0,"final":true}
 {"type":"speaker-off","start":0.5,"reason":"モデルなし"}
+{"type":"file-duration","duration":3484.5}
 ```
 
 - `words`（`partial` と `remark` の両方、両トラック）: 本文を CFStringTokenizer（`ja`、語の境界）で区切った語の配列。要素は `surface`（表記）・`romaji`（`kCFStringTokenizerAttributeLatinTranscription` のローマ字の読み。無ければ空文字）・`location` / `length`（本文の中の位置と長さ。UTF-16 コード単位で、`start` / `end` の秒とは別）。語が無い本文は空の配列。サーバーは `words` の無いイベントも受け付ける
@@ -104,6 +109,7 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 - `self-pause`: `自分` の休止の状態が変わった（サーバーからの指示と、会議アプリのマイクの使用による。`自分` があれば、起動時に現在の状態（`paused`）を 1 回流す。休止・再開どちらでも。`自分` がなければ流さない）。`paused` は変わった後の状態、`reason` は `手動`（手で選んだ）・`自動`（会議アプリがマイクを使っていない）・`判定できない`（読めない間。取っている）のどれか、`start` は `origin` と同じ原点からの秒。休止中に理由だけが変わったときも流す。別の key で最新の 1 件を保持し、後からつながったクライアントにも送る。サーバーは `paused` が変わったときだけ `log.jsonl` に `self-paused` / `self-resumed` の組で `reason` つきで残す
 - `self-pause-state`: `自分` の休止の規則の、起動し直しで引き継ぐ状態（`manual`・`basis`・`lastKnown`・`idleFor`）。値が変わるたびに流し（`自分` があれば、起動時にも 1 回）、別の key で最新の 1 件を保持する。サーバーは覚えるだけで（ログにも画面にも出さない）、ヘルパーを起動し直すとき引数で送り直す
 
+- `file-duration`: `transcribe-file` が最初に 1 回流す、ファイルの音声の全体の長さ（`duration`。秒）。サーバーが進み具合の「全体」に使う。別の key で保持して、後からつながったクライアントにも送る。`run` は流さない
 - `speaker`: `相手` のトラックだけに FluidAudio の Sortformer（CoreML、`fastV2_1`）で話者分離をかけた、話者の区間（Issue #1020）。STT の `partial` / `remark` とは別のイベントで、発言・字幕・差分更新には結び付けない。`track` は常に `相手`。`start` / `end` は `origin` と同じ原点からの秒（発言の `start` / `end` と同じ規則で、最初のバッファの取得時刻の差を足す）。`slot` は Sortformer の出力の番号（0 始まり。話者のラベルではない）。`final` が `true` なら確定した区間、`false` なら確定より新しい部分の仮の区間（後で変わり得る）。通常の broadcast で流し、保持しない。音声が終わったら残りを確定させて流す。`自分` のトラックには話者分離をかけない。音声は Mac の外に出ない
 - `speaker-off`: 話者分離を使えない。`reason` は `モデルなし`（モデルのファイルが無い。会議中にはモデルを取りに行かない）・`読み込みに失敗`・`途中で停止`（区間の流れがエラーで終わった）のどれか。`start` は `origin` と同じ原点からの秒。認識とセッションは止めない。別の key で保持して、後からつながったクライアントにも送る。モデルはセットアップの段で `bash helper/scripts/fetch-speaker-models.sh`（`live-mindmap-helper install-speaker-models`。保存先は FluidAudio の既定の `~/Library/Application Support/FluidAudio/Models`。入っていれば何もしない）が前もって取得する
 

@@ -18,7 +18,8 @@ const commonByEntry = {
   start: ["chromium"],
   resume: ["chromium"],
   play: ["chromium"],
-} satisfies Record<"start" | "resume" | "play", ReadonlyArray<DepItem["name"]>>;
+  recorded: ["chromium"],
+} satisfies Record<"start" | "resume" | "play" | "recorded", ReadonlyArray<DepItem["name"]>>;
 
 const reportItem = (item: DepItem, required: ReadonlyArray<string>) => ({
   ...item,
@@ -28,7 +29,11 @@ const reportItem = (item: DepItem, required: ReadonlyArray<string>) => ({
 });
 
 type LiveCheck = { screen: boolean; check: Effect.Effect<HelperCheck, HelperCheckFailure> };
-type CheckArgs = [entry: "play", route: typeof ModelRoute.Type] | [entry: "start" | "resume", route: typeof ModelRoute.Type, live: LiveCheck];
+type CheckArgs =
+  | [entry: "play", route: typeof ModelRoute.Type]
+  | [entry: "start" | "resume", route: typeof ModelRoute.Type, live: LiveCheck]
+  // 録画からのセッション（cli recorded）。helper と speech-ja だけを見る（マイク・画面収録はファイルの取り込みに関わらない）
+  | [entry: "recorded", route: typeof ModelRoute.Type, helper: { check: Effect.Effect<HelperCheck, HelperCheckFailure> }];
 
 export const speechJaItem = (status: HelperCheck["speechJa"]): typeof Item.Type => ({
   name: "speech-ja", need: "required", state: status.status === "installed" ? "ready" : "missing", install: "pnpm cli install speech-ja",
@@ -72,10 +77,20 @@ const liveItems = (result: Result.Result<HelperCheck, HelperCheckFailure>, scree
   };
 };
 
-const checkDependencies = Effect.fnUntraced(function* (...[entry, route, live]: CheckArgs) {
+const recordedItems = (result: Result.Result<HelperCheck, HelperCheckFailure>): Array<typeof Item.Type> => {
+  const helper = { name: "helper", need: "required", state: Result.isSuccess(result) ? "ready" : "missing", install: HELPER_BUILD_COMMAND } satisfies typeof Item.Type;
+  return Result.isFailure(result) ? [helper] : [helper, speechJaItem(result.success.speechJa)];
+};
+
+const checkDependencies = Effect.fnUntraced(function* (...args: CheckArgs) {
+  const [entry, route] = args;
   const deps = yield* ManagedDeps;
   const common: Array<typeof Item.Type> = (yield* deps.check([...commonByEntry[entry], "claude"])).map((item) => reportItem(item, requiredByRoute[route]));
-  const liveResult = entry === "play" ? { items: [], warnings: [] } : liveItems(yield* Effect.result(live.check), live.screen);
+  const liveResult = entry === "play"
+    ? { items: [], warnings: [] }
+    : entry === "recorded"
+      ? { items: recordedItems(yield* Effect.result(args[2].check)), warnings: [] }
+      : liveItems(yield* Effect.result(args[2].check), args[2].screen);
   const items = [...common, ...liveResult.items];
   return { report: { ready: items.every((item) => item.need === "optional" || item.state === "ready"), items }, warnings: [...depWarnings(common), ...liveResult.warnings] };
 });
