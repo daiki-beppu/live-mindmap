@@ -16,6 +16,7 @@ export * from "./logMetrics.ts";
 export * from "./map.ts";
 export * from "./groupSize.ts";
 export * from "./markdown.ts";
+export * from "./pacing.ts";
 export * from "./playback.ts";
 export * from "./review.ts";
 export * from "./remark.ts";

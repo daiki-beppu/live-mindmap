@@ -51,8 +51,8 @@ import type { CheckReport } from "./managedDepsProtocol.ts";
 // vocab は利用者が足した語（cli start --vocab。1 語ずつ。足さなければ空）。開始のときにだけ受け取る
 export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel; judge?: import("./judgeSelection.ts").JudgeModel };
 
-// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味
-export type RecordedStart = { file: string; title: string | undefined; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel };
+// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる
+export type RecordedStart = { file: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean; model: import("./modelSelection.ts").ExecutableModel };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -509,6 +509,11 @@ export class Sessions extends Context.Service<Sessions, {
           }
           case "file-duration":
             return Effect.andThen(Ref.update(recorded.progress, (p) => ({ ...p, duration: event.duration })), publishProgress(recorded));
+          case "screen":
+            return recorded.sink.screen({ start: event.start, image: event.image, lines: event.lines });
+          case "screen-off":
+            // ライブと違い、画面の一文（showScreenNotice）は出さない
+            return recorded.sink.screenOff({ start: event.start, reason: event.reason });
           default:
             return Effect.void;
         }
@@ -581,6 +586,7 @@ export class Sessions extends Context.Service<Sessions, {
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
             model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
             recorded: {
+              realtime: input.realtime,
               progress: ({ position, rounds }) =>
                 Effect.andThen(
                   Ref.update(progress, (p) => ({ ...p, position: Math.max(p.position, position), rounds })),

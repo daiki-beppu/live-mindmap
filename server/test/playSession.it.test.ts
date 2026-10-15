@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, ConfigProvider, Console, Duration, Effect, Fiber, Layer } from "effect";
+import { Clock, ConfigProvider, Console, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
@@ -16,6 +16,7 @@ import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeReadings } from "./fixtures/readings.ts";
+import { advanceTo as advanceToVirtual, trackingClock } from "./fixtures/virtualTime.ts";
 
 // play <セッションのフォルダ> を、CLI の入口から偽の Agent SDK の query まで通して確かめる（試すシームは CLI の play + 偽の query）。
 // 組み方は playScreen.it.test.ts と同じ: 本物の layerClaude を残し、AgentSdk.layer だけを偽物に替える。
@@ -425,33 +426,6 @@ describe("play <セッションのフォルダ>", () => {
 // --realtime: 変化も発言と同じ時計で、start の時刻まで待ってから入る。実時間では待たず、TestClock を少しずつ進める。
 // 発言 r1 は 0〜2 秒、r2 は 10〜12 秒。変化は 6 秒と 8 秒
 describe("play --realtime で変化を時刻どおりに待つ", () => {
-  const wait = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-
-  // 状態が成り立つまで、実時間で短く待つ確認を上限つきで繰り返す（仮想時計は進めない）
-  const eventually = (condition: () => boolean, what: string) =>
-    Effect.gen(function* () {
-      for (let i = 0; i < 1000 && !condition(); i++) yield* wait(5);
-      expect(condition(), what).toBe(true);
-    });
-
-  // sleep だけを包んだ Clock。登録中の sleep の終点（仮想時刻の ms）を pending に持つ。TestClock が公開していない sleep の登録を観測するため
-  const trackingClock = (pending: number[]) =>
-    TestClock.testClockWith((testClock) =>
-      Effect.succeed<Clock.Clock>({
-        ...testClock,
-        sleep: (duration) =>
-          Effect.suspend(() => {
-            const end = testClock.currentTimeMillisUnsafe() + Duration.toMillis(duration);
-            pending.push(end);
-            return testClock.sleep(duration).pipe(
-              Effect.ensuring(Effect.sync(() => void pending.splice(pending.indexOf(end), 1))),
-            );
-          }),
-      }),
-    );
-
-  const virtualNow = TestClock.testClockWith((testClock) => Effect.succeed(testClock.currentTimeMillisUnsafe()));
-
   // 新しいセッションのログ（まだ無ければ空）
   const currentLog = (sessionsDir: string): Line[] => {
     const folders = sessionFolders(sessionsDir);
@@ -460,18 +434,8 @@ describe("play --realtime で変化を時刻どおりに待つ", () => {
   };
   const has = (sessionsDir: string, match: (l: Line) => boolean) => currentLog(sessionsDir).some(match);
 
-  // 仮想時刻 target に終わる sleep の登録を確かめてから、target - 1 ms まで進めて行が無いことを、target まで進めて行が入ることを確かめる。
-  // 仮想時計は target で止めたまま実時間で行を待つので、実 I/O の速さで観測時刻が動かない
   const advanceTo = (sessionsDir: string, pending: number[], target: number, match: (l: Line) => boolean) =>
-    Effect.gen(function* () {
-      yield* eventually(() => pending.includes(target), `仮想時刻 ${target} ms に終わる sleep が登録される`);
-      expect(has(sessionsDir, match)).toBe(false);
-      yield* TestClock.adjust(target - 1 - (yield* virtualNow));
-      expect(has(sessionsDir, match)).toBe(false);
-      yield* TestClock.adjust(1);
-      yield* eventually(() => has(sessionsDir, match), `仮想時刻 ${target} ms で行が入る`);
-      expect(yield* virtualNow).toBe(target);
-    });
+    advanceToVirtual(pending, target, () => has(sessionsDir, match));
 
   const isRemark = (id: string) => (l: Line) => l.type === "remark" && (l.remark as { id: string }).id === id;
 

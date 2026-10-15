@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import type { ScreenOffEvent, Session } from "./session.ts";
+import { createPacer } from "./pacing.ts";
 import type { Remark } from "./remark.ts";
 import type { Word } from "./words.ts";
 
@@ -37,15 +38,8 @@ export const playback = Effect.fnUntraced(function* <E = never>(
   remarks: Iterable<PlaybackRemark>,
   { sleep, screens }: PlaybackOptions<E> = {},
 ): Effect.fn.Return<void, E> {
-  // 等速の「今の時刻」。発言と変化で共有する
-  let now = 0;
-  // 時刻 t まで待つ。すでに過ぎた時刻は待たず、時計も戻さない
-  const waitUntil = Effect.fnUntraced(function* (t: number) {
-    if (sleep && t > now) {
-      yield* sleep((t - now) * 1000);
-      now = t;
-    }
-  });
+  // 等速の時計。発言と変化で共有する
+  const { waitUntil } = createPacer(sleep);
   const waiting = [...(screens ?? [])].sort((a, b) => a.start - b.start);
   let next = 0;
   // 入れる直前に画像を作る。作ったバイト列は pushScreen に渡したら持たない

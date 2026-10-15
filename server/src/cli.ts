@@ -639,8 +639,12 @@ const recorded = Command.make(
     local: localFlag,
     title: recordedTitleFlag,
     vocab: vocabFlag,
+    realtime: Flag.Boolean("realtime").pipe(
+      Flag.withDescription("発言と共有画面の変化を、音声の時刻どおりに等速で入れる（既定は待ち時間なし）"),
+      Flag.withDefault(false),
+    ),
   },
-  Effect.fn("recorded")(function* ({ file, model, local, title, vocab }) {
+  Effect.fn("recorded")(function* ({ file, model, local, title, vocab, realtime }) {
     const vocabulary = yield* readVocabulary(vocab);
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
@@ -659,6 +663,7 @@ const recorded = Command.make(
           file: resolve(file),
           title: Option.getOrUndefined(title),
           ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
+          ...(realtime ? { realtime } : {}),
           model: selected,
         }, headers));
         return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
