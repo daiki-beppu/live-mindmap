@@ -3,7 +3,7 @@
 import { Option, Schema } from "effect";
 import type { Update } from "foldkit";
 import { modifyFields } from "foldkit/struct";
-import { DiffUpdateState, SessionIntakeStatus, Snapshot, Track } from "../../../../server/src/core/index.ts";
+import { DiffUpdateState, SelfPaused, SessionIntakeStatus, Snapshot, Track } from "../../../../server/src/core/index.ts";
 import { applyClose, applyFrame, applyOpen, createFeedState, type FeedState } from "../../liveFeed.ts";
 import { Message } from "./message.ts";
 
@@ -15,7 +15,7 @@ export const Model = Schema.Struct({
   tapNotice: Schema.Option(Schema.String),
   diffUpdate: Schema.Option(DiffUpdateState),
   local: Schema.Boolean,
-  selfPaused: Schema.Boolean,
+  selfPaused: SelfPaused,
 });
 export type Model = typeof Model.Type;
 

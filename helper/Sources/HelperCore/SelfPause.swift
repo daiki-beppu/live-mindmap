@@ -3,7 +3,7 @@ import Foundation
 /// server が helper を起動するときに渡す、休止の指示の認証用トークンの環境変数名。起動ごとに server が作り、指示の JSON の `token` で返す。
 public let helperControlTokenEnvironmentKey = "LIVE_MINDMAP_HELPER_CONTROL_TOKEN"
 
-/// `自分` の休止の状態（Issue #1069）。サーバーから届く手動の指示で変わり、休止の間に取った音は `RunAudio` が捨てる。
+/// `自分` の休止の状態（Issue #1069）。`SelfPauseRule` が決めた休止・再開（手動の指示と会議アプリのマイクの使用）で変わり、休止の間に取った音は `RunAudio` が捨てる。
 /// 休止・再開は、指示を受け付けた時刻（ホスト時刻）の境界として覚える。音の側は、バッファを取得した時刻でその境界と照らして振り分ける
 /// （読んだ時点の状態では、休止の前に取った音を休止の後に読んだ場合や、休止中に取った音を再開の後に読んだ場合を取り違える）。
 /// 同じ状態の指示は何も変えない（`request` が false を返す）。音の流れの側（別スレッド）と指示を読む側から使うので、ロックで守る。
@@ -15,7 +15,7 @@ public final class SelfPause: @unchecked Sendable {
     private var applied: Bool
     private var boundaries: [(hostTime: UInt64, paused: Bool)] = []
 
-    /// 起動し直した helper が、休止を続けたまま始めるときは `paused: true`（`--self-paused`）。
+    /// 規則（`SelfPauseRule`）が休止から始めるときは `paused: true`。
     public init(paused: Bool = false) {
         self.requested = paused
         self.applied = paused
@@ -30,9 +30,6 @@ public final class SelfPause: @unchecked Sendable {
             return true
         }
     }
-
-    /// 最新の要求の状態（起動時の初期通知が読む）
-    var requestedState: Bool { lock.withLock { requested } }
 
     /// 取得時刻が `hostTime` のバッファの扱い。`hostTime` 以下の境界を取り出して反映し、
     /// その時点で休止中か（`paused`）と、取り出した境界に休止への切り替えが含まれたか（`enteredPause`。含まれたら、それより前の区間を閉じる）を返す。
@@ -71,24 +68,22 @@ public final class SelfPause: @unchecked Sendable {
     }
 }
 
-/// 始めた時点の休止の状態を、時刻を付けて 1 回 `emit` する（休止・再開どちらでも）。`自分` を作らないセッションでは何もしない。
+/// 始めた時点の休止の状態（`paused` と理由）と、起動し直しで引き継ぐ状態を、時刻を付けて 1 回ずつ `emit` する。
 /// サーバーは起動の間に求めた状態を、helper が受け付けるまで知らないので、指示の処理を始める前にこれを出す。
-public func announceSelfPause(audio: RunAudio, now: () -> UInt64, emit: (Bool, UInt64) async -> Void) async {
-    guard let paused = audio.currentSelfPause else { return }
-    await emit(paused, now())
+public func announceSelfPause(_ rule: SelfPauseRule, at hostTime: UInt64, origin: UInt64, emit: (HelperEvent) async -> Void) async {
+    await emit(.selfPause(paused: rule.paused, reason: rule.reason, start: offsetSeconds(from: origin, to: hostTime)))
+    await emit(.selfPauseState(rule.carryOver))
 }
 
-/// サーバーからの指示を順に読み、`自分` の休止の状態が変わったときだけ `emit`（変わった後の状態と、指示を受け付けた時刻）を呼ぶ。
-/// 認証できない指示・読み取れない指示・同じ状態の指示・`自分` を作らないセッションの指示では呼ばない。`messages` が終わると戻る。
+/// サーバーからの指示を順に読み、認証できた指示の求める状態を、届いた順に `request` へ渡す。
+/// 認証できない指示・読み取れない指示では呼ばない。同じ状態の指示を何も変えないことは、渡した先の規則が受け持つ。`messages` が終わると戻る。
 public func serveSelfPauseRequests<Messages: AsyncSequence>(
-    _ messages: Messages, audio: RunAudio, token: String, now: () -> UInt64, emit: (Bool, UInt64) async -> Void
+    _ messages: Messages, token: String, request: (Bool) -> Void
 ) async where Messages.Element == String {
     do {
         for try await message in messages {
             guard let paused = SelfPause.requestedState(in: message, token: token) else { continue }
-            let hostTime = now()
-            guard audio.requestSelfPause(paused, at: hostTime) else { continue }
-            await emit(paused, hostTime)
+            request(paused)
         }
     } catch {}
 }

@@ -52,8 +52,10 @@ public enum HelperEvent: Sendable, Equatable {
     case screenOff(start: Double, reason: ScreenOffReason)
     /// 相手のタップから、フレーム数 1 以上のバッファが 10 秒届かなかった。`start` は `origin` と同じ原点からの秒。1 回だけ流す。
     case tapSilent(start: Double)
-    /// `自分` の休止の状態が変わった（Issue #1069）。`reason` は今は手動だけ（JSON では `手動`）。`start` は `origin` と同じ原点からの秒。
-    case selfPause(paused: Bool, start: Double)
+    /// `自分` の休止の状態が変わった（Issue #1069・#1071）。`reason` は手動・自動・判定できないのどれか。休止中に理由だけが変わったときも流す。`start` は `origin` と同じ原点からの秒。
+    case selfPause(paused: Bool, reason: SelfPauseReason, start: Double)
+    /// `自分` の休止の規則の、起動し直しで引き継ぐ状態（Issue #1071）。server が覚え、helper を起動し直すときに引数で送り直す。
+    case selfPauseState(SelfPauseCarryOver)
     /// `相手` のトラックの話者の区間（Issue #1020）。`start` / `end` は `origin` と同じ原点からの秒。
     /// `slot` は Sortformer の出力の番号。`isFinal` が false なら仮の区間で、JSON のキーは `final`。
     case speaker(track: Track, start: Double, end: Double, slot: Int, isFinal: Bool)
@@ -76,6 +78,7 @@ public enum HelperEvent: Sendable, Equatable {
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
         case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final
+        case manual, basis, lastKnown, idleFor
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -122,11 +125,17 @@ extension HelperEvent: Encodable {
         case let .tapSilent(start):
             try container.encode("tap-silent", forKey: .type)
             try container.encode(start, forKey: .start)
-        case let .selfPause(paused, start):
+        case let .selfPause(paused, reason, start):
             try container.encode("self-pause", forKey: .type)
             try container.encode(paused, forKey: .paused)
-            try container.encode("手動", forKey: .reason)
+            try container.encode(reason.rawValue, forKey: .reason)
             try container.encode(start, forKey: .start)
+        case let .selfPauseState(state):
+            try container.encode("self-pause-state", forKey: .type)
+            try container.encode(state.manual.rawValue, forKey: .manual)
+            try container.encode(state.basis.rawValue, forKey: .basis)
+            try container.encode(state.lastKnown.rawValue, forKey: .lastKnown)
+            try container.encode(state.idleFor, forKey: .idleFor)
         case let .speaker(track, start, end, slot, isFinal):
             try container.encode("speaker", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)

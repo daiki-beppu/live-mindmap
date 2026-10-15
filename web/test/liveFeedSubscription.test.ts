@@ -105,7 +105,7 @@ describe("事実を Message にする", () => {
       { type: "tap-notice", text: null },
       { type: "diff-update", state: { status: "paused", reason: "ChatGPT の利用上限" } },
       { type: "session-mode", local: true },
-      { type: "self-pause", paused: true },
+      { type: "self-pause", paused: true, reason: "自動" },
     ] as const;
     await run((collected) =>
       Effect.gen(function* () {
@@ -148,6 +148,8 @@ describe("事実を Message にする", () => {
         ws.receive(JSON.stringify({ type: "intake", status: "unknown-status" }));
         ws.receive(JSON.stringify({ type: "self-pause", paused: "yes" }));
         ws.receive(JSON.stringify({ type: "self-pause" }));
+        ws.receive(JSON.stringify({ type: "self-pause", paused: true })); // 休止中は理由が要る
+        ws.receive(JSON.stringify({ type: "self-pause", paused: true, reason: "判定できない" })); // 休止中の理由は手動・自動だけ
         ws.receive(JSON.stringify({ type: "intake", status: "stopped" }));
         yield* settle;
         expect(collected).toEqual([Message.ConnectedLiveFeed(), Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" } })]);

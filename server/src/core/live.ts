@@ -2,7 +2,7 @@
 // Node の実行環境に依存しない（ADR 0003）。
 import { Effect, Schema } from "effect";
 import { Track } from "./remark.ts";
-import { SELF_PAUSE_REASON } from "./selfPause.ts";
+import { SelfPauseReason, SelfPauseState } from "./selfPause.ts";
 import { Word, WordTime } from "./words.ts";
 
 // partial（途中結果）と remark（確定結果）が共通して持つ項目。
@@ -33,8 +33,12 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literal("許可なし") }),
   // 相手のタップが 10 秒、フレーム数 1 以上のバッファを受け取らなかった。start は origin と同じ原点からの秒
   Schema.Struct({ type: Schema.Literal("tap-silent"), start: Schema.Finite }),
-  // 自分の休止の状態が変わった（Issue #1069）。start は origin と同じ原点からの秒
-  Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Boolean, reason: Schema.Literal(SELF_PAUSE_REASON), start: Schema.Finite }),
+  // 自分の休止の状態が変わった（Issue #1069・#1071）。休止中に理由だけが変わったときも届く。start は origin と同じ原点からの秒。
+  // 休止（paused: true）の理由は手動か自動。判定できないのは取っている間だけ
+  Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Literal(true), reason: Schema.Literals(["手動", "自動"]), start: Schema.Finite }),
+  Schema.Struct({ type: Schema.Literal("self-pause"), paused: Schema.Literal(false), reason: SelfPauseReason, start: Schema.Finite }),
+  // 自分の休止の規則の状態（Issue #1071）。server は覚えるだけで、helper を起動し直すときに引数で送り直す
+  Schema.Struct({ type: Schema.Literal("self-pause-state"), ...SelfPauseState.fields }),
   // 相手のトラックの話者の区間（Issue #1020）。start / end は origin と同じ原点からの秒。slot は Sortformer の出力の番号（0 始まり）。final が false なら仮の区間
   Schema.Struct({
     type: Schema.Literal("speaker"),

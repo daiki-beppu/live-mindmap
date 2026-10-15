@@ -1,4 +1,4 @@
-import type { DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, Snapshot, SpeakingFrame, TapNoticeFrame, Track } from "../../server/src/core/index.ts";
+import type { DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SelfPaused, SessionModeFrame, Snapshot, SpeakingFrame, TapNoticeFrame, Track } from "../../server/src/core/index.ts";
 import type { IntakeStatus } from "./intake.ts";
 
 // /ws から届く frame（Issue #161）の分類と、それによる状態の更新を担う、純粋なモジュール。
@@ -12,9 +12,9 @@ const NO_SPEAKING: Speaking = { 相手: "", 自分: "" };
 const DEFAULT_INTAKE: IntakeStatus = "running";
 
 // tapNotice は、相手の音声が届いていないことの一文（Issue #863）。サーバーが新しい origin かセッションの終わりで消すフレームを送るまで入る
-// selfPaused は、自分を休止中であること（Issue #1069）。サーバーが休止の間だけ保持して送り直し、再開かセッションの終わりで false を送る
+// selfPaused は、自分を休止中であること（Issue #1069）と、その理由（Issue #1071。休止中は手動か自動、休止していなければ false）。サーバーが休止の間だけ保持して送り直し、再開かセッションの終わりで false を送る
 // screenNotice は、共有画面を使っていないことの一文（Issue #280）。出している間だけ文が入る。寿命はサーバーが持つ
-export type FeedState = { snapshot: Snapshot | null; speaking: Speaking; intake: IntakeStatus; screenNotice: string | null; tapNotice: string | null; diffUpdate: DiffUpdateState | null; selfPaused: boolean; local: boolean };
+export type FeedState = { snapshot: Snapshot | null; speaking: Speaking; intake: IntakeStatus; screenNotice: string | null; tapNotice: string | null; diffUpdate: DiffUpdateState | null; selfPaused: SelfPaused; local: boolean };
 
 export function createFeedState(): FeedState {
   return { snapshot: null, speaking: NO_SPEAKING, intake: DEFAULT_INTAKE, screenNotice: null, tapNotice: null, diffUpdate: null, selfPaused: false, local: false };
@@ -30,7 +30,7 @@ export function applyFrame(state: FeedState, frame: Snapshot | SpeakingFrame | I
   if (frame.type === "intake") return { ...state, intake: frame.status };
   if (frame.type === "screen-notice") return { ...state, screenNotice: frame.text };
   if (frame.type === "tap-notice") return { ...state, tapNotice: frame.text };
-  if (frame.type === "self-pause") return { ...state, selfPaused: frame.paused };
+  if (frame.type === "self-pause") return { ...state, selfPaused: frame.paused ? frame.reason : false };
   if (frame.type === "diff-update") return { ...state, diffUpdate: frame.state };
   if (frame.type === "session-mode") return { ...state, local: frame.local };
   return state;

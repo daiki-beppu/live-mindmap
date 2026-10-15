@@ -395,19 +395,34 @@ describe("会議中（Foldkit 版）の寸法", () => {
       const mapBefore = await rectOf(page, ".map");
       const viewportBefore = await readMeetingViewport(page);
 
-      await sendFrame(page, { type: "self-pause", paused: true });
+      await sendFrame(page, { type: "self-pause", paused: true, reason: "手動" });
       await page.locator(".self-pause-notice").waitFor({ timeout: 10_000 });
       expect((await page.locator(".self-pause-notice").textContent())?.trim()).toBe("自分を休止中（M で再開）");
       const pause = await rectOf(page, ".self-pause-notice");
       near(pause.left, captionsBefore.right + 12, "休止の一言の左端");
       near(pause.bottom, layout.bottom - 24, "休止の一言の下端");
-      expect(await styleOf(page, ".self-pause-notice", ["position", "pointer-events", "white-space", "font-size", "color", "z-index"])).toEqual({ position: "absolute", "pointer-events": "none", "white-space": "nowrap", "font-size": "13px", color: "rgb(107, 114, 128)", "z-index": "5" });
+      expect(await styleOf(page, ".self-pause-notice", ["position", "pointer-events", "white-space", "font-size", "color", "z-index"])).toEqual({ position: "absolute", "pointer-events": "none", "white-space": "normal", "font-size": "13px", color: "rgb(107, 114, 128)", "z-index": "5" });
       // 出ても動かない
       for (const [name, before] of [["字幕", captionsBefore], ["マップ", mapBefore]] as const) {
         const now = await rectOf(page, name === "字幕" ? ".captions" : ".map");
         for (const key of ["left", "top", "right", "bottom"] as const) near(now[key], before[key], `${name}の${key}`);
       }
       expect(await readMeetingViewport(page)).toEqual(viewportBefore);
+
+      // 自動の文言は長く折り返す。全文が .layout の右端の内側に収まり、上端は固定（layout −24px −1 行分）、字幕の右 +12px に置く
+      await sendFrame(page, { type: "self-pause", paused: true, reason: "自動" });
+      await expect.poll(async () => (await page.locator(".self-pause-notice").textContent())?.trim(), { timeout: 10_000 }).toBe("自分を休止中（会議アプリがマイクを使っていない）");
+      const auto = await rectOf(page, ".self-pause-notice");
+      expect(auto.right, "自動の文言の右端は layout の右端の内側").toBeLessThanOrEqual(layout.right + 1);
+      near(auto.left, captionsBefore.right + 12, "自動の文言の左端");
+      near(auto.top, layout.bottom - 43.5, "自動の文言の上端");
+      expect(await page.locator(".self-pause-notice").evaluate((el) => el.scrollWidth <= el.clientWidth), "自動の文言は横にあふれない").toBe(true);
+      for (const [name, before] of [["字幕", captionsBefore], ["マップ", mapBefore]] as const) {
+        const now = await rectOf(page, name === "字幕" ? ".captions" : ".map");
+        for (const key of ["left", "top", "right", "bottom"] as const) near(now[key], before[key], `自動の文言のとき、${name}の${key}`);
+      }
+      await sendFrame(page, { type: "self-pause", paused: true, reason: "手動" });
+      await expect.poll(async () => (await page.locator(".self-pause-notice").textContent())?.trim(), { timeout: 10_000 }).toBe("自分を休止中（M で再開）");
 
       // 取り込みの一言と同時: 取り込みの一言は上、休止の一言はその下で、重ならない。どちらが出入りしても字幕は動かない
       await sendFrame(page, { type: "intake", status: "interrupted" });
@@ -562,7 +577,7 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
       for (const selector of [".intake-notice", ".screen-notice", ".captions"]) await page.locator(selector).first().waitFor({ timeout: 10_000 });
       await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
       const captionsBefore = await rectOf(page, ".captions");
-      await sendFrame(page, { type: "self-pause", paused: true });
+      await sendFrame(page, { type: "self-pause", paused: true, reason: "手動" });
       await page.locator(".self-pause-notice").waitFor({ timeout: 10_000 });
       const captions = await rectOf(page, ".captions");
       for (const key of ["left", "top", "right", "bottom"] as const) near(captions[key], captionsBefore[key], `字幕の${key}`);

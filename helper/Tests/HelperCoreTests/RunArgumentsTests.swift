@@ -100,14 +100,52 @@ struct RunArgumentsTests {
         #expect(args.audioIndex == 2)
     }
 
-    // Issue #1069: 起動し直した helper が、休止を続けたまま始まるための引数（値は取らない）
-    @Test("--self-paused は休止した状態で始める。無ければ休止しない")
-    func selfPausedFlag() throws {
-        #expect(try parseRunArguments(["--app", "x"]).get().selfPaused == false)
-        #expect(try parseRunArguments(["--app", "x", "--self-paused"]).get().selfPaused == true)
-        let args = try parseRunArguments(["--self-paused", "--app", "x", "--port", "1234"]).get()
-        #expect(args.selfPaused == true)
+    // Issue #1071: 起動し直した helper が、手動・基準・最後に読めた値・待ちの進み具合を引き継ぐための引数（既定の値は渡さない）
+    @Test("自分の休止の引き継ぎは、無ければ初期状態（手動なし・基準なし・読めた値なし・待ち 0）")
+    func selfPauseCarryOverDefaults() throws {
+        #expect(try parseRunArguments(["--app", "x"]).get().selfPauseCarryOver == .initial)
+    }
+
+    @Test("--self-manual・--self-basis・--self-last-known・--self-idle-for を読む。順序は問わず、他の引数と混ぜてよい")
+    func selfPauseCarryOverFlags() throws {
+        let args = try parseRunArguments([
+            "--self-idle-for", "1.5", "--app", "x", "--self-manual", "pause", "--port", "1234",
+            "--self-last-known", "idle", "--self-basis", "using",
+        ]).get()
+        #expect(args.selfPauseCarryOver == SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5))
         #expect(args.app == "x")
         #expect(args.port == 1234)
+        let take = try parseRunArguments(["--app", "x", "--self-manual", "take", "--self-basis", "idle", "--self-last-known", "using"]).get()
+        #expect(take.selfPauseCarryOver == SelfPauseCarryOver(manual: .take, basis: .idle, lastKnown: .using, idleFor: 0))
+    }
+
+    @Test("引き継ぎの引数の値が不正なら、使い方の誤りとして拒否する",
+          arguments: [
+              ["--self-manual", "resume"], ["--self-manual", "unknown"],
+              ["--self-basis", "pause"], ["--self-basis", "unknown"],
+              ["--self-last-known", "take"], ["--self-last-known", "unknown"],
+              ["--self-idle-for", "abc"], ["--self-idle-for", "-1"], ["--self-idle-for", ""],
+          ])
+    func invalidCarryOverValuesAreRejected(flag: [String]) {
+        guard case .failure = parseRunArguments(["--app", "x"] + flag) else {
+            Issue.record("\(flag) を受け付けた")
+            return
+        }
+    }
+
+    @Test("値が無い引き継ぎの引数は、不明な引数として拒否する")
+    func carryOverFlagWithoutValueIsRejected() {
+        for flag in ["--self-manual", "--self-basis", "--self-last-known", "--self-idle-for"] {
+            guard case .failure = parseRunArguments(["--app", "x", flag]) else {
+                Issue.record("\(flag) を値なしで受け付けた")
+                return
+            }
+        }
+    }
+
+    // 置き換えた旧形式（休止の真偽だけを渡す --self-paused）は受け付けない
+    @Test("--self-paused は廃止した。不明な引数として拒否する")
+    func legacySelfPausedFlagIsRejected() {
+        #expect(parseRunArguments(["--app", "x", "--self-paused"]) == .failure(RunArgumentsError("不明な引数: --self-paused")))
     }
 }

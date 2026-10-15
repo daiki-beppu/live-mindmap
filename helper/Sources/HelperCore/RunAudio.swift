@@ -261,9 +261,6 @@ public final class RunAudio {
     /// `自分` のトラックがあるか（マイクの許可がある）。無いセッションでは休止の指示が効かない。
     public var hasMyTrack: Bool { myTranscriber != nil }
 
-    /// `自分` があるときだけ、現在の休止の要求状態。無ければ nil。
-    var currentSelfPause: Bool? { hasMyTrack ? selfPause.requestedState : nil }
-
     /// 休止・再開を、指示を受け付けた時刻 `hostTime` の境界として求める（Issue #1069）。状態が変わったときだけ true を返す。`自分` を作らないセッション（マイクの許可が無い）では何も変えず false。
     public func requestSelfPause(_ paused: Bool, at hostTime: UInt64) -> Bool {
         guard hasMyTrack else { return false }
