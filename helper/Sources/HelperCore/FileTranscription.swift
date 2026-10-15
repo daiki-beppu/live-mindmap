@@ -44,6 +44,8 @@ enum FilePCM {
 struct FileAudioSource {
     let asset: AVURLAsset
     let track: AVAssetTrack
+    /// ファイルにある音声トラックの本数。使うのは最初の 1 本（`track`）だけ。
+    let audioTrackCount: Int
     let sampleRate: Double
     let channels: Int
     let measuringFormat: AVAudioFormat
@@ -73,7 +75,7 @@ struct FileAudioSource {
             throw FileTranscriptionError.unsupportedFormat("\(basic.mChannelsPerFrame) チャンネル: \(url.path)")
         }
         return FileAudioSource(
-            asset: asset, track: track, sampleRate: basic.mSampleRate, channels: Int(basic.mChannelsPerFrame),
+            asset: asset, track: track, audioTrackCount: tracks.count, sampleRate: basic.mSampleRate, channels: Int(basic.mChannelsPerFrame),
             measuringFormat: measuringFormat, analyzingFormat: analyzingFormat)
     }
 
@@ -148,10 +150,33 @@ private func onFileReadingQueue<T>(_ body: @escaping () throws -> T) async throw
 
 /// ファイルの音声の全体の長さ（秒）。
 public func fileDuration(of url: URL) async throws -> Double {
-    let source = try await FileAudioSource.open(url)
+    try await duration(of: FileAudioSource.open(url), path: url.path)
+}
+
+private func duration(of source: FileAudioSource, path: String) async throws -> Double {
     let range = try await source.track.load(.timeRange)
-    guard range.duration.isNumeric else { throw FileTranscriptionError.readFailed("長さが決まらない: \(url.path)") }
+    guard range.duration.isNumeric else { throw FileTranscriptionError.readFailed("長さが決まらない: \(path)") }
     return range.duration.seconds
+}
+
+/// `transcribe-file` が最初に流すファイルの情報。
+public struct FileHeader: Equatable, Sendable {
+    /// ファイルの音声の全体の長さ（秒）。
+    public let duration: Double
+    /// ファイルの音声トラックの本数。文字にするのは最初の 1 本だけなので、2 本以上あることを知らせるために数える。
+    public let audioTrackCount: Int
+}
+
+/// ファイルの長さと音声トラックの本数を読む。読めないファイルはここで失敗する（待ち受けを始める前に呼ぶ）。
+public func readFileHeader(of url: URL) async throws -> FileHeader {
+    let source = try await FileAudioSource.open(url)
+    return FileHeader(duration: try await duration(of: source, path: url.path), audioTrackCount: source.audioTrackCount)
+}
+
+/// `file-duration`、`file-audio-tracks` の順に、別々のキーで保持して流す。後から接続したクライアントにも、この順で届く。
+public func broadcastFileHeader(_ header: FileHeader, on server: WebSocketServer) async throws {
+    try await server.broadcastRetained(HelperEvent.fileDuration(duration: header.duration).jsonString(), key: "file-duration")
+    try await server.broadcastRetained(HelperEvent.fileAudioTracks(count: header.audioTrackCount).jsonString(), key: "file-audio-tracks")
 }
 
 /// ファイルの音声を、引かれたぶんだけ読んで `AnalyzerInput` にする列。各入力は、ファイル上の位置（先頭からのフレーム数）を `bufferStartTime` に持つ。

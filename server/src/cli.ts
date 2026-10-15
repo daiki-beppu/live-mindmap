@@ -39,6 +39,7 @@ import {
   LogEvent,
   RecordedEvent,
   RemarkEvent,
+  formatAudioTracksNotice,
   formatRecordedProgress,
   ScreenEvent,
   ScreenOffEvent,
@@ -615,6 +616,17 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
         if (tty) {
           drawing = true;
           yield* Effect.sync(() => { process.stderr.write(`\r\x1b[K${text}`); });
+        } else {
+          yield* Console.error(text);
+        }
+        break;
+      }
+      case "audio-tracks": {
+        const text = formatAudioTracksNotice(event.count);
+        if (tty && drawing) {
+          // 進み具合の行を消してから出す。次の進み具合は新しい行から描き直す
+          drawing = false;
+          yield* Effect.sync(() => { process.stderr.write(`\r\x1b[K${text}\n`); });
         } else {
           yield* Console.error(text);
         }

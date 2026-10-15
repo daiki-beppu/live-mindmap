@@ -11,7 +11,7 @@ import { vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
-import type { DiffInput } from "../src/core/index.ts";
+import { formatAudioTracksNotice, type DiffInput } from "../src/core/index.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -39,6 +39,8 @@ const temporaryDirectory = Effect.acquireRelease(
 type Remark = { start: number; end: number; text: string };
 type Script = {
   duration?: number;
+  // ヘルパーが流す file-audio-tracks の本数（file-duration の後）。省略すると流さない
+  audioTracks?: number;
   remarks: Remark[];
   // 渡すと remarks の代わりに、このイベントをこの順で流す（共有画面の変化を発言の間に挟むとき）
   events?: unknown[];
@@ -59,6 +61,7 @@ const remarkEvents = (r: Remark, track: "相手" | "自分" = "相手"): unknown
 ];
 const events = (script: Script): unknown[] => [
   ...(script.duration === undefined ? [] : [{ type: "file-duration", duration: script.duration }]),
+  ...(script.audioTracks === undefined ? [] : [{ type: "file-audio-tracks", count: script.audioTracks }]),
   ...(script.events ?? script.remarks.flatMap((r) => remarkEvents(r))),
 ];
 
@@ -189,12 +192,12 @@ function cliDependencies(sessionsDir: string, port: number, apple: typeof unused
   return { layer, stdout, stderr };
 }
 
-const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; mix?: FakeMix; readings?: FakeReadings } = {}) {
+const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; mix?: FakeMix; readings?: FakeReadings } = {}) {
   // 実行準備（prepareUpdater）へ届いたモデル
   const models: ExecutableModel[] = [];
   const root = yield* temporaryDirectory;
   const sessionsDir = join(root, "sessions");
-  const file = join(root, "meeting.m4a");
+  const file = join(root, options.fileName ?? "meeting.m4a");
   writeFileSync(file, "audio");
   const helpers = fakeHelpers(script);
   const server = yield* startedServer({ port: 0, sessionsDir }, {
@@ -275,6 +278,37 @@ describe("cli recorded <file>", () => {
     expect(progress.at(-1)).toBe("12:30 / 58:04  マップの更新 3 回");
     for (const line of progress) expect(line).toMatch(/^(\d+:\d\d|--:--) \/ (\d+:\d\d|--:--)  マップの更新 \d+ 回$/);
   }).pipe(Effect.scoped));
+
+  describe("動画のファイル", () => {
+    const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
+
+    it.live("音声のトラックが 2 本あると、最初のトラックだけを使ったことと --self を使えることを標準エラーに 1 回出す。発言は入り、セッションのフォルダには 相手.m4a だけが残り、動画はコピーされない", () => Effect.gen(function* () {
+      const r = yield* resource({ ...THREE, audioTracks: 2 }, fakeUpdater(), { fileName: "meeting.mp4" });
+      yield* r.cli(["recorded", r.file]);
+
+      const notice = formatAudioTracksNotice(2);
+      // 文面は本番の formatter とは別に確かめる（最初のトラックだけを使ったことと、--self を使えること）
+      expect(notice).toContain("最初のトラックだけを使いました");
+      expect(notice).toContain("--self");
+      expect(stderrLines(r).filter((l) => l === "音声のトラックが 2 本あります。最初のトラックだけを使いました（分けたいときは --self を使えます）")).toHaveLength(1);
+      expect(stderrLines(r).filter((l) => l === notice)).toHaveLength(1);
+      const dir = onlySession(r.sessionsDir);
+      expect(remarksOf(logLines(dir)).map((x) => x.text)).toEqual(["最初の発言です", "次の発言です", "三つ目の発言です"]);
+      expect(r.helpers.calls).toEqual([["transcribe-file", "--file", resolve(r.file), "--audio-dir", dir]]);
+      expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
+      expect(readdirSync(dir)).not.toContain("meeting.mp4");
+    }).pipe(Effect.scoped));
+
+    it.live("音声のトラックが 1 本なら、知らせは出ない", () => Effect.gen(function* () {
+      const r = yield* resource({ ...THREE, audioTracks: 1 }, fakeUpdater(), { fileName: "meeting.mp4" });
+      yield* r.cli(["recorded", r.file]);
+
+      const output = r.deps.stderr.join("");
+      expect(output).not.toContain("--self");
+      expect(output).not.toContain(formatAudioTracksNotice(2));
+      expect(remarksOf(logLines(onlySession(r.sessionsDir)))).toHaveLength(3);
+    }).pipe(Effect.scoped));
+  });
 
   it.live("--title は start と同じく、セッションの題名になる", () => Effect.gen(function* () {
     const r = yield* resource(THREE);

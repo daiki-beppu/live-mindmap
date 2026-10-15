@@ -63,6 +63,8 @@ public enum HelperEvent: Sendable, Equatable {
     case speakerOff(start: Double, reason: SpeakerOffReason)
     /// 録画の文字起こし（`transcribe-file`）が最初に流す、ファイルの音声の全体の長さ（秒）。サーバーが進み具合の「全体」に使う。
     case fileDuration(duration: Double)
+    /// 録画の文字起こし（`transcribe-file`）が `file-duration` の後に流す、ファイルの音声トラックの本数。使うのは最初の 1 本だけ。サーバーは 2 本以上のとき端末に知らせる。
+    case fileAudioTracks(count: Int)
     /// `相手` の話者分離が、ここまで確定した（Issue #1021）。`to` より前の確定した区間（`speaker` の `final: true`）は、すべて流した。
     /// `origin` と同じ原点からの秒。値は前に流した値より小さくならない。サーバーはこの位置で、発言の終わりまでの区間が揃ったかを判定する。
     case speakerSettled(track: Track, to: Double)
@@ -82,7 +84,7 @@ public enum HelperEvent: Sendable, Equatable {
 
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to
+        case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to, count
         case manual, basis, lastKnown, idleFor
     }
 
@@ -155,6 +157,9 @@ extension HelperEvent: Encodable {
         case let .fileDuration(duration):
             try container.encode("file-duration", forKey: .type)
             try container.encode(duration, forKey: .duration)
+        case let .fileAudioTracks(count):
+            try container.encode("file-audio-tracks", forKey: .type)
+            try container.encode(count, forKey: .count)
         case let .speakerSettled(track, to):
             try container.encode("speaker-settled", forKey: .type)
             try container.encode(track.rawValue, forKey: .track)

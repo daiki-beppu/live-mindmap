@@ -62,3 +62,11 @@ struct FileDurationEventTests {
         #expect(try HelperEvent.fileDuration(duration: 3484.5).jsonString() == "{\"duration\":3484.5,\"type\":\"file-duration\"}")
     }
 }
+
+@Suite("file-audio-tracks イベント")
+struct FileAudioTracksEventTests {
+    @Test("音声のトラックの本数を type と count だけの JSON にする")
+    func json() throws {
+        #expect(try HelperEvent.fileAudioTracks(count: 2).jsonString() == "{\"count\":2,\"type\":\"file-audio-tracks\"}")
+    }
+}

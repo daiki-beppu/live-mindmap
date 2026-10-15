@@ -50,6 +50,8 @@ export const HelperEvent = Schema.Union([
   }),
   // 録画の文字起こし（transcribe-file）が最初に流す、ファイルの音声の全体の長さ（秒）。進み具合の「全体」に使う
   Schema.Struct({ type: Schema.Literal("file-duration"), duration: Schema.Finite }),
+  // 録画の文字起こしが file-duration の後に流す、ファイルの音声トラックの本数。使うのは最初の 1 本だけで、2 本以上なら端末に知らせる
+  Schema.Struct({ type: Schema.Literal("file-audio-tracks"), count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)) }),
   // 話者分離を使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続く。start は origin と同じ原点からの秒
   Schema.Struct({ type: Schema.Literal("speaker-off"), start: Schema.Finite, reason: Schema.Literals(["モデルなし", "読み込みに失敗", "途中で停止"]) }),
   // 相手の話者分離が、ここまで確定した（Issue #1021）。to より前の確定した区間（speaker の final: true）はすべて届いている。origin と同じ原点からの秒。「揃った」の判定はこの位置だけで行う
