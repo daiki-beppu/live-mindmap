@@ -21,7 +21,7 @@ cd helper
 swift run live-mindmap-helper list                         # 音を出している会議アプリを JSON で出す
 swift run live-mindmap-helper check                        # モデル・マイク・画面収録の状態を JSON で出す
 swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <秒>]   # 既定のポートは 8765
-swift run live-mindmap-helper transcribe-file --file <path> [--port <n>] [--audio-dir <dir>]   # 音声ファイル 1 本を文字にして、相手の partial・remark として流す（cli recorded が起動する）。--audio-dir を渡すと、待ち受けの前にファイルの音声を <dir>/相手.m4a に書く
+swift run live-mindmap-helper transcribe-file --file <path> [--port <n>] [--audio-dir <dir>]   # 音声（動画）ファイル 1 本を文字にして、相手の partial・remark として流し、映像があれば共有画面の screen も流す（cli recorded が起動する）。--audio-dir を渡すと、待ち受けの前にファイルの音声を <dir>/相手.m4a に書く
 swift run live-mindmap-helper creation-date --file <path>  # ファイルに記録された作成日時を {"creationDate":"<ISO8601>"|null} で出す（記録が無い・読めないときは null。終了コード 0）
 swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分]   # セッションの録音を 0 秒から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする
 swift run live-mindmap-helper readings <語>...             # 語ごとのローマ字の読みを JSON で出す
@@ -30,8 +30,9 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 `run` は、選んだアプリ（本体と helper のプロセス）だけをタップする。Zoom は `us.zoom.xos`、ブラウザはブラウザ全体になる（Meet のタブだけには絞れない）。合うプロセスがなければ、Mac 全体のタップには切り替えず、エラーで終わる。音声の処理が取得に追いつかず、未消費のバッファが上限（2048 個）を超えたときも、音声を捨てずにエラーで終わる。
 同時にマイクも取り、`自分` のトラックとして、`相手` とは別の SpeechAnalyzer で文字起こしする（2 本が並行して動く）。Apple の音声処理（Voice Processing のエコーキャンセル）は有効にしない（有効にするとプロセスタップが止まる）。スピーカーのときは、下の「エコーキャンセル」で漏れを消す。入力の機器が変わる（`AVAudioEngineConfigurationChange`）と、標準エラーに理由を 1 行出して終了コード 75 で終わる。作り直しはサーバーの起動し直しに任せる。マイクが許可されていないときは、エラーで終わる。Ctrl-C（SIGINT / SIGTERM）で、タップ・マイク・WebSocket を片付けて終わる。
 
-`transcribe-file` は、音声ファイル（音声のトラックがあれば動画も）1 本を `相手` として文字にして流す。音声・共有画面・話者分離は扱わない。`--audio-dir` があれば、最初にファイルの音声だけ（動画からは映像を除く）を AAC の `相手.m4a` として書く（元のファイルはコピーしない。先頭が 0 秒で、結果の時刻と一致する。出力が既にあれば上書きせず終了コード 1）。手順は次のとおり。待ち受けを始め、全体の長さの `file-duration` と音声トラックの本数の `file-audio-tracks` を保持して流す → 最初のクライアントが接続するのを待つ → `partial`・`remark` を流す → 最後のフレームを送り終えるのを待つ → 終了コード 0 で終わる。
+`transcribe-file` は、音声ファイル（音声のトラックがあれば動画も）1 本を `相手` として文字にして流す。映像のトラックがあれば、最初の 1 本を共有画面として流す（下記）。音声の取り込みと話者分離は扱わない。`--audio-dir` があれば、最初にファイルの音声だけ（動画からは映像を除く）を AAC の `相手.m4a` として書く（元のファイルはコピーしない。先頭が 0 秒で、結果の時刻と一致する。出力が既にあれば上書きせず終了コード 1）。手順は次のとおり。待ち受けを始め、全体の長さの `file-duration` と音声トラックの本数の `file-audio-tracks` を保持して流す → 最初のクライアントが接続するのを待つ → `partial`・`remark` を流す → 最後のフレームを送り終えるのを待つ → 終了コード 0 で終わる。
 音声は `AVAssetReader` で PCM に読み、SpeechAnalyzer が引いたぶんだけ渡す。間に上限つきの列を置かない（入力の上限 2048 個に当たらない）ので、速さは analyzer に合い、等速より速く進む。
+映像は `AVAssetReader` で BGRA に読み、ライブと同じ 4 fps（`screenFramesPerSecond`）に間引いて、ライブと同じ変化の判定（`ScreenChangeDetector`）に動画の時刻（PTS、先頭が 0 秒で音声の時刻と同じ）つきで流す。送る画像（1280×720 に収めた JPEG・品質 0.8）と送ると決めた画面の OCR もライブと同じ。ブラウザのタブのタイトルによる判定はかけず、顔だけの画面も特別扱いしない。映像を止めるフラグは無い。判定と OCR は文字にする処理と並べて進め、画面の `screen` はすべて `partial`・`remark` より先に流す（サーバーが音声の時刻の順に入れる）。映像のトラックが無いファイルでは `screen` も `screen-off` も出ない。映像のトラックがあって読めなければ、標準エラーに 1 行出して `screen-off`（許可なし）を流し、音声だけで続ける（途中で読めなくなったときは、画像を送った後なら `image: null` の後に `screen-off`）。
 結果の `start` / `end` は、ファイルの音声の先頭を 0 とする秒数（壁時計ではない）。ほぼ無音の区間の結果は、ライブと同じ基準（−70 dBFS）で捨てる。ライブの音量の記録は直近 30 秒しか持たないので、ここではファイルから区間の音量を読み直して判定する（ファイルと重ならない区間など、測れない区間の結果は捨てない）。SIGINT / SIGTERM で読むのをやめて終わる。終了コード: 0 は正常、1 はエラー、2 は使い方の誤り。
 `run` の終了コード: 0 は正常、1 はエラー、2 は使い方の誤り、75 はマイクの入力の構成の変化（sysexits.h の `EX_TEMPFAIL`。サーバーは失敗に数えずに起動し直す）。
 

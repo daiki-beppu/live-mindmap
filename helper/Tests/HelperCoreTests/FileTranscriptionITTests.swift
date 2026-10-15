@@ -68,6 +68,47 @@ private final class ScriptedFileTranscriber: FileTranscriber, @unchecked Sendabl
     }
 }
 
+/// 結果の流れを先に返し、`release()` まで台本の結果を流さない偽の役（文字起こしが進行中の状態を作る）。
+private final class GatedFileTranscriber: FileTranscriber, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: AsyncThrowingStream<TranscriptionResult, Error>.Continuation?
+    private var released = false
+    private var _isTranscribing = false
+    private let script: [TranscriptionResult]
+
+    init(script: [TranscriptionResult]) { self.script = script }
+
+    /// `transcribe()` が呼ばれ済みで、まだ結果を流していない間だけ true。
+    var isTranscribing: Bool { lock.withLock { _isTranscribing } }
+
+    func prepare() async throws {}
+
+    func transcribe(_ inputs: FileAudioInputs) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
+        let (stream, continuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self, throwing: Error.self)
+        let flush = lock.withLock { () -> Bool in
+            pending = continuation
+            _isTranscribing = true
+            return released
+        }
+        if flush { emit(continuation) }
+        return stream
+    }
+
+    func release() {
+        let continuation = lock.withLock { () -> AsyncThrowingStream<TranscriptionResult, Error>.Continuation? in
+            released = true
+            return pending
+        }
+        if let continuation { emit(continuation) }
+    }
+
+    private func emit(_ continuation: AsyncThrowingStream<TranscriptionResult, Error>.Continuation) {
+        lock.withLock { _isTranscribing = false }
+        for result in script { continuation.yield(result) }
+        continuation.finish()
+    }
+}
+
 private func result(_ text: String, isFinal: Bool, _ start: Double, _ end: Double) -> TranscriptionResult {
     TranscriptionResult(text: text, isFinal: isFinal, start: start, end: end)
 }
@@ -285,5 +326,174 @@ struct FileTranscriptionITTests {
         let session = try #require(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A))
         try await session.export(to: output, as: .m4a)
         return output
+    }
+}
+
+// 録画の動画の映像を共有画面として流す経路（fileSessionEvents）の IT。文字にする役は偽物（台本の結果を返す）。
+// ファイルは、テストの中で作った 6 秒の動画（既定は 64x64・10 fps、文字つきだけ 1280x720、音声は 0〜2 秒がサイン波で残りは無音）。
+// 確かめること: 映像の切り替わりが動画の時刻つきの screen になること、読めない映像は screen-off になって音声の結果が続くこと、
+// 音声だけのファイルには画面のイベントが無いこと、画面のイベントが文字起こしの結果より先に流れること、
+// 文字起こしが始まっていてまだ結果を出さない間に最初の画面が流れること（並行）、動画に描いた文字が screen の lines に届くこと。
+
+private enum EventKind: Equatable {
+    case screen, screenOff, partial, remark, other
+}
+
+private func kind(of event: HelperEvent) -> EventKind {
+    switch event {
+    case .screen: .screen
+    case .screenOff: .screenOff
+    case .partial: .partial
+    case .remark: .remark
+    default: .other
+    }
+}
+
+@Suite("録画の動画の映像を共有画面として流す経路（fileSessionEvents）", .timeLimit(.minutes(2)))
+struct FileScreenITTests {
+    private static let script = [
+        result("最初の発言", isFinal: false, 0.5, 1.5),
+        result("最初の発言です", isFinal: true, 0.5, 1.5),
+    ]
+
+    private func makeMovie(in dir: URL, video: FileAudioTestSupport.Video) async throws -> URL {
+        let wav = dir.appendingPathComponent("source.wav")
+        try writeRecording(wav, loudSeconds: 2, silentSeconds: 4)
+        let movie = dir.appendingPathComponent("meeting.mov")
+        try await FileAudioTestSupport.writeMovie(movie, audio: wav, videoSeconds: 6, video: video)
+        return movie
+    }
+
+    private func collect(_ url: URL) async throws -> [HelperEvent] {
+        let stream = try await fileSessionEvents(at: url, with: ScriptedFileTranscriber(script: Self.script))
+        var events: [HelperEvent] = []
+        for try await event in stream { events.append(event) }
+        return events
+    }
+
+    private struct Shown {
+        let start: Double
+        let image: String?
+        let lines: [String]?
+    }
+
+    private func screens(in events: [HelperEvent]) -> [Shown] {
+        var shown: [Shown] = []
+        for event in events {
+            if case let .screen(start, image, lines) = event { shown.append(Shown(start: start, image: image, lines: lines)) }
+        }
+        return shown
+    }
+
+    @Test("0〜2 秒が黒、2 秒からが白の動画からは、動画の時刻（約 0 秒と約 2 秒）つきで、画像のある screen が 2 件出る。screen-off は出ない")
+    func slidesBecomeScreenEventsWithVideoTime() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).count == 1) // 前提: 映像つき
+
+        let events = try await collect(movie)
+
+        let shown = screens(in: events)
+        #expect(shown.count == 2)
+        if shown.count == 2 {
+            #expect(abs(shown[0].start - 0) <= 0.25, "最初の画面の start: \(shown[0].start)")
+            #expect(abs(shown[1].start - 2) <= 0.25, "切り替わりの画面の start: \(shown[1].start)")
+        }
+        for screen in shown {
+            let image = try #require(screen.image, "送る画面には画像がある")
+            #expect(Data(base64Encoded: image)?.starts(with: [0xFF, 0xD8]) == true, "画像は JPEG")
+            #expect(screen.lines != nil, "画像のある screen は OCR の行（空でもよい）を持つ")
+        }
+        #expect(!events.contains { kind(of: $0) == .screenOff })
+    }
+
+    @Test("最初の画面が届く時点で、文字起こしは始まっていて結果をまだ出していない。保留を解くと発言が最後まで届く（映像の処理は文字起こしの完了を待たない）")
+    func screensArriveWhileTranscriptionIsInProgress() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+        let transcriber = GatedFileTranscriber(script: Self.script)
+
+        let stream = try await fileSessionEvents(at: movie, with: transcriber)
+        var events: [HelperEvent] = []
+        var screenCount = 0
+        for try await event in stream {
+            events.append(event)
+            if case .screen = event {
+                screenCount += 1
+                // Why: release() が transcribe() より先に呼ばれても後から結果は流れる（直列の実装でも時間切れまで止まらず、すぐ失敗させるため）。
+                // その場合に成功してしまわないよう、開始済みで未完了であることをここで確かめる。
+                if screenCount == 1 { #expect(transcriber.isTranscribing, "最初の画面が届く時点で、文字起こしは始まっていて結果をまだ出していない") }
+                if screenCount == 2 { transcriber.release() } // 2 件目の画面が届くまで、結果は保留されている
+            }
+        }
+
+        #expect(screenCount == 2)
+        #expect(events.map(kind(of:)) == [.screen, .screen, .partial, .remark])
+    }
+
+    @Test("動画に描いた文字（港南店・Zendesk）が、画像のある screen の lines に届く")
+    func drawnTextReachesScreenLines() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .text(["港南店", "Zendesk"]))
+
+        let shown = screens(in: try await collect(movie)).filter { $0.image != nil }
+
+        #expect(!shown.isEmpty)
+        let joined = shown.flatMap { $0.lines ?? [] }.joined(separator: "\n")
+        #expect(joined.contains("港南店"), "lines: \(joined)")
+        #expect(joined.contains("Zendesk"), "lines: \(joined)")
+    }
+
+    @Test("画面のイベントは、どれも文字起こしの結果（partial・remark）より前に流れ、結果は台本のとおり最後まで続く")
+    func screenEventsPrecedeTranscription() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+
+        let kinds = try await collect(movie).map(kind(of:))
+
+        let firstResult = try #require(kinds.firstIndex { $0 == .partial || $0 == .remark })
+        let lastScreen = try #require(kinds.lastIndex(of: .screen))
+        #expect(lastScreen < firstResult)
+        #expect(kinds.filter { $0 == .partial }.count == 1)
+        #expect(kinds.filter { $0 == .remark }.count == 1)
+    }
+
+    @Test("映像のトラックが読めない動画では、start 0 の screen-off（許可なし）が先に流れ、screen は出ず、音声の結果が続く")
+    func undecodableVideoTurnsScreenOff() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await makeMovie(in: dir, video: .undecodable)
+        let track = try #require(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).first) // 前提: 映像のトラックはある
+        let reader = try AVAssetReader(asset: AVURLAsset(url: movie))
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        var readable = false
+        if reader.canAdd(output) {
+            reader.add(output)
+            readable = reader.startReading() && output.copyNextSampleBuffer() != nil
+        }
+        #expect(!readable) // 前提: BGRA では読めない
+
+        let events = try await collect(movie)
+
+        #expect(events.first == .screenOff(start: 0, reason: .許可なし))
+        #expect(screens(in: events).isEmpty)
+        #expect(events.dropFirst().map(kind(of:)) == [.partial, .remark])
+    }
+
+    @Test("音声だけのファイルでは、screen も screen-off も出ず、音声の結果だけが流れる")
+    func audioOnlyFileHasNoScreenEvents() async throws {
+        let dir = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("meeting.wav")
+        try writeRecording(wav, loudSeconds: 2, silentSeconds: 4)
+        #expect(try await AVURLAsset(url: wav).loadTracks(withMediaType: .video).isEmpty) // 前提: 映像なし
+
+        let events = try await collect(wav)
+
+        #expect(events.map(kind(of:)) == [.partial, .remark])
     }
 }

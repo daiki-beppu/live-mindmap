@@ -516,8 +516,8 @@ export class Sessions extends Context.Service<Sessions, {
           case "screen":
             return recorded.sink.screen({ start: event.start, image: event.image, lines: event.lines });
           case "screen-off":
-            // ライブと違い、画面の一文（showScreenNotice）は出さない
-            return recorded.sink.screenOff({ start: event.start, reason: event.reason });
+            // ライブと違い、画面の一文（showScreenNotice）は出さない。代わりに端末へ知らせる（録画で screen-off が出るのは映像が読めないときだけ）
+            return Effect.andThen(recorded.sink.screenOff({ start: event.start, reason: event.reason }), Queue.offer(recorded.events, { type: "screen-off" }));
           default:
             return Effect.void;
         }

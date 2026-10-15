@@ -11,7 +11,7 @@ import { vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
-import { formatAudioTracksNotice, type DiffInput } from "../src/core/index.ts";
+import { formatAudioTracksNotice, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -232,6 +232,24 @@ const THREE: Script = {
     { start: 700, end: 750, text: "三つ目の発言です" },
   ],
 };
+
+const SCREEN_IMAGE = Buffer.from("jpeg-bytes").toString("base64");
+const sessionLog = (sessionsDir: string): Line[] => {
+  const dirs = existsSync(sessionsDir) ? readdirSync(sessionsDir).filter((name) => existsSync(join(sessionsDir, name, "log.jsonl"))) : [];
+  return dirs.length === 1 ? logLines(join(sessionsDir, dirs[0]!)) : [];
+};
+const has = (sessionsDir: string, match: (l: Line) => boolean) => sessionLog(sessionsDir).some(match);
+const garbledWords = [
+  { surface: "江南", romaji: "kounan", location: 0, length: 2 },
+  { surface: "店", romaji: "ten", location: 2, length: 1 },
+  { surface: "に", romaji: "ni", location: 3, length: 1 },
+  { surface: "行き", romaji: "iki", location: 4, length: 2 },
+  { surface: "ます", romaji: "masu", location: 6, length: 2 },
+];
+const garbledRemark = (start: number, end: number) => ({ type: "remark", track: "相手", start, end, text: "江南店に行きます", words: garbledWords });
+const garbledPartial = (start: number, end: number) => ({ type: "partial", track: "相手", start, end, text: "江南店に行きます" });
+const vocabLines = (lines: Line[]) => lines.filter((l) => l.type === "vocab");
+const remarkTexts = (lines: Line[]) => lines.filter((l) => l.type === "remark").map((l) => (l.remark as { text: string }).text);
 
 const waitForRemarks = (sessionsDir: string, count: number) =>
   Effect.promise(() => vi.waitFor(() => {
@@ -624,7 +642,6 @@ describe("cli recorded <file>", () => {
 // --realtime: 発言を音声の end、共有画面の変化を start の時刻まで待ってから入れる（play --realtime と同じ意味）。
 // 実時間では待たず、サーバーと CLI の両方に TestClock を包んだ Clock を渡して、仮想時計を少しずつ進める
 describe("cli recorded <file> --realtime", () => {
-  const SCREEN_IMAGE = Buffer.from("jpeg-bytes").toString("base64");
   // 本物のヘルパーが録画で流すのは相手のトラックだけ。相手の発言は話者を決める段で最大 3 秒の音声の時刻まで保留されるので、
   // 共有画面の変化の方が先に届く。それでも発言は end、変化は start の時刻に、時刻の順で入る
   const MIXED: Script = {
@@ -638,11 +655,6 @@ describe("cli recorded <file> --realtime", () => {
     ],
   };
 
-  const sessionLog = (sessionsDir: string): Line[] => {
-    const dirs = existsSync(sessionsDir) ? readdirSync(sessionsDir).filter((name) => existsSync(join(sessionsDir, name, "log.jsonl"))) : [];
-    return dirs.length === 1 ? logLines(join(sessionsDir, dirs[0]!)) : [];
-  };
-  const has = (sessionsDir: string, match: (l: Line) => boolean) => sessionLog(sessionsDir).some(match);
   const isRemark = (id: string) => (l: Line) => l.type === "remark" && (l.remark as { id: string }).id === id;
 
   // 偽の時計をサーバーにも CLI にも渡す（resource の中のサーバーの起動も、この Clock の下で行う）
@@ -751,18 +763,6 @@ describe("cli recorded <file> --realtime", () => {
   })).pipe(Effect.scoped), 30_000);
 
   // 補正に使う語彙は、発言を締めた時点で確定する。等速でも、入れる時刻を待つ間に届いた語彙で直し直さない
-  const garbledWords = [
-    { surface: "江南", romaji: "kounan", location: 0, length: 2 },
-    { surface: "店", romaji: "ten", location: 2, length: 1 },
-    { surface: "に", romaji: "ni", location: 3, length: 1 },
-    { surface: "行き", romaji: "iki", location: 4, length: 2 },
-    { surface: "ます", romaji: "masu", location: 6, length: 2 },
-  ];
-  const garbledRemark = (start: number, end: number) => ({ type: "remark", track: "相手", start, end, text: "江南店に行きます", words: garbledWords });
-  const garbledPartial = (start: number, end: number) => ({ type: "partial", track: "相手", start, end, text: "江南店に行きます" });
-  const vocabLines = (lines: Line[]) => lines.filter((l) => l.type === "vocab");
-  const remarkTexts = (lines: Line[]) => lines.filter((l) => l.type === "remark").map((l) => (l.remark as { text: string }).text);
-
   // 読みの取得を止めたまま r1 を締め、読みが返ってから r2 を締める。screenLines があれば、読みを止めている間に共有画面の変化（6 秒）も届ける
   const vocabularyRun = (realtime: boolean, pending: number[], source: "user" | "screen") => Effect.gen(function* () {
     // 前の実行が仮想時計を進めているので、この実行の起点を覚えておく
@@ -840,4 +840,81 @@ describe("cli recorded <file> --realtime", () => {
       expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1"]);
       for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
     })).pipe(Effect.scoped), 30_000);
+});
+
+// 動画の映像を共有画面として使う（Issue #1090）。本物のヘルパーは、映像の判定と OCR を文字起こしと並べて先に済ませるので、
+// 共有画面の変化と screen-off は、発言よりも先に届く。それでも発言と同じ音声の時刻の順でセッションに入り、語彙も映った後の発言から効く
+describe("cli recorded <file> 動画の映像", () => {
+  const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
+
+  it.live("画面の変化が発言より先に届いても、音声の時刻の順（画面は start、発言は end）でログに入り、差分更新には、その呼び出しの発言までに映り始めた画面が添えられる", () => Effect.gen(function* () {
+    const r = yield* resource({
+      duration: 20,
+      remarks: [],
+      events: [
+        { type: "screen", start: 1, image: SCREEN_IMAGE, lines: ["最初の画面"] },
+        { type: "screen", start: 11, image: SCREEN_IMAGE, lines: ["次の画面"] },
+        ...remarkEvents({ start: 0, end: 2, text: "最初の発言です" }),
+        ...remarkEvents({ start: 10, end: 12, text: "次の発言です" }),
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    const lines = logLines(onlySession(r.sessionsDir));
+    expect(lines.filter((l) => l.type === "remark" || l.type === "screen").map((l) => l.type === "screen" ? `screen@${String(l.start)}` : `remark:${(l.remark as { text: string }).text}`))
+      .toEqual(["screen@1", "remark:最初の発言です", "screen@11", "remark:次の発言です"]);
+    // 1 回目の差分更新（最初の発言、end 2 秒）には 1 秒の画面、2 回目（end 12 秒）には 11 秒の画面だけ（10 秒以上離れている）
+    expect(r.updater.inputs.map((input) => input.fresh.map((remark) => remark.id))).toEqual([["r1"], ["r2"]]);
+    expect(r.updater.inputs.map((input) => (input.screens ?? []).map((screen) => screen.start))).toEqual([[1], [11]]);
+  }).pipe(Effect.scoped));
+
+  it.live("映像が読めない（screen-off）ことは、標準エラーに知らせの 1 行がちょうど 1 回出る。発言は入る", () => Effect.gen(function* () {
+    const r = yield* resource({
+      duration: 20,
+      remarks: [],
+      events: [
+        { type: "screen-off", start: 0, reason: "許可なし" },
+        ...remarkEvents({ start: 0, end: 2, text: "最初の発言です" }),
+        ...remarkEvents({ start: 10, end: 12, text: "次の発言です" }),
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    const notice = formatScreenOffNotice();
+    expect(notice).toContain("映像");
+    expect(stderrLines(r).filter((l) => l === notice)).toHaveLength(1);
+    expect(remarkTexts(logLines(onlySession(r.sessionsDir)))).toEqual(["最初の発言です", "次の発言です"]);
+  }).pipe(Effect.scoped));
+
+  it.live("screen-off が無ければ、映像が読めないという知らせは出ない", () => Effect.gen(function* () {
+    const r = yield* resource({
+      duration: 20,
+      remarks: [],
+      events: [
+        { type: "screen", start: 1, image: SCREEN_IMAGE, lines: ["画面の文字"] },
+        ...remarkEvents({ start: 0, end: 2, text: "最初の発言です" }),
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(stderrLines(r).filter((l) => l === formatScreenOffNotice())).toHaveLength(0);
+  }).pipe(Effect.scoped));
+
+  // 画面（6 秒）の語彙は、読みが返った後でも、その画面より前に終わる発言（0〜2 秒）は直さず、後に終わる発言（10〜12 秒）から直す
+  it.live("画面の OCR の語彙は、画面が映った後に終わる発言だけを直す。映る前に終わった発言は、語彙が先に届いていても直さない", () => Effect.gen(function* () {
+    const readings = fakeReadings({ 港南店: "kounanten" });
+    const r = yield* resource({ remarks: [], hold: true }, fakeUpdater(), { readings });
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+    yield* eventually(() => r.helpers.calls.length === 1, "ヘルパーが起動する");
+    // 画面が先に届き、読みが返って vocab の行ができてから、発言を流す
+    r.helpers.feed({ type: "screen", start: 6, image: SCREEN_IMAGE, lines: ["港南店"] });
+    yield* eventually(() => has(r.sessionsDir, (l) => l.type === "vocab"), "読みが返って vocab の行ができる");
+    expect(readings.calls).toHaveLength(1);
+    for (const event of [garbledPartial(0, 2), garbledRemark(0, 2), garbledPartial(10, 12), garbledRemark(10, 12)]) r.helpers.feed(event);
+    yield* r.helpers.end;
+    yield* Fiber.join(running);
+
+    const lines = sessionLog(r.sessionsDir);
+    expect(remarkTexts(lines)).toEqual(["江南店に行きます", "港南店に行きます"]);
+  }).pipe(Effect.scoped), 30_000);
 });

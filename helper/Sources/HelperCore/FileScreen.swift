@@ -1,0 +1,160 @@
+import AVFoundation
+import CoreImage
+import Foundation
+
+// 録画の動画の映像を共有画面として流す経路（`transcribe-file`、Issue #1090）。
+//   動画 → AVAssetReader（最初の映像トラック、BGRA） → 4 fps に間引く → 1280×720 に収める → ScreenChangeDetector → screen
+// 判定器・送る画像（JPEG 0.8）・OCR はライブ（`ScreenCapture`）と同じ。時刻は動画の時刻（PTS、先頭が 0 秒）で、音声の時刻と同じ。
+// ブラウザのタブの判定はかけない（bundle id を空に、タイトルを nil にする）。顔だけの画面も特別扱いしない。
+// 映像のトラックが無いファイルは何も流さない。映像が読めなければ `screen-off` で知らせて、音声だけで続ける。
+
+/// ライブと同じ 4 fps（`screenFramesPerSecond`）に間引く。時刻を 1/4 秒の枠に分け、前に通した枠より後ろの枠のフレームだけを通す。
+struct ScreenFrameThinner {
+    private var lastSlot: Int?
+
+    mutating func admits(_ time: Double) -> Bool {
+        let slot = Int((time * Double(screenFramesPerSecond)).rounded(.down))
+        if let lastSlot, slot <= lastSlot { return false }
+        lastSlot = slot
+        return true
+    }
+}
+
+/// 映像の読み出しは、デコードが済むまでスレッドを止めて待つ。Swift の並行処理のスレッドで呼ばず、専用の直列のキューで行う（音声の `fileReadingQueue` と同じ事情。Issue #1086）。
+/// 音声の読み出しと別のキューにして、映像の JPEG・OCR で音声の読み出しを止めない。
+private let fileScreenQueue = DispatchQueue(label: "live-mindmap.file-screen")
+
+private func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { continuation in
+        fileScreenQueue.async { continuation.resume(returning: body()) }
+    }
+}
+
+/// 動画の最初の映像トラックを読み、変化した画面のイベントにする。`next()` は `fileScreenQueue` の上でだけ呼ぶ。
+final class FileScreenReading: @unchecked Sendable {
+    enum Opened {
+        /// 映像のトラックが無い（音声だけのファイル）。「読めない」とは別。
+        case noVideo
+        /// 映像のトラックはあるが、読み始められない。
+        case unreadable(String)
+        case reading(FileScreenReading)
+    }
+
+    private let reader: AVAssetReader
+    private let output: AVAssetReaderTrackOutput
+    private let imageContext = CIContext()
+    private var thinner = ScreenFrameThinner()
+    private var detector = ScreenChangeDetector(bundleID: "")
+    /// 最後に読んだフレームの時刻（途中で読めなくなったときの `screen-off` の時刻）。
+    private var lastTime = 0.0
+    private var finished = false
+
+    private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
+        self.reader = reader
+        self.output = output
+    }
+
+    deinit { reader.cancelReading() }
+
+    static func open(_ url: URL) async -> Opened {
+        let asset = AVURLAsset(url: url)
+        let tracks: [AVAssetTrack]
+        do {
+            tracks = try await asset.loadTracks(withMediaType: .video)
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
+        guard let track = tracks.first else { return .noVideo }
+        return await onFileScreenQueue { start(asset, track) }
+    }
+
+    private static func start(_ asset: AVURLAsset, _ track: AVAssetTrack) -> Opened {
+        do {
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(
+                track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+            guard reader.canAdd(output) else { return .unreadable("映像を BGRA として読み出せない") }
+            reader.add(output)
+            guard reader.startReading() else { return .unreadable(reader.error?.localizedDescription ?? "不明") }
+            return .reading(FileScreenReading(reader: reader, output: output))
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
+    }
+
+    func cancel() {
+        reader.cancelReading()
+    }
+
+    /// 次のイベントを読む（出るまでフレームを進める）。映像を読み終えたら nil。
+    /// 途中で読めなくなったら、画像を送った後なら `image: null`、続けて `screen-off`（許可なし）を返してから終わる（ライブの `emitCaptureStopped` と同じ順）。
+    func next() -> [HelperEvent]? {
+        if finished { return nil }
+        while let sample = output.copyNextSampleBuffer() {
+            let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+            guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { continue }
+            lastTime = time
+            let frame = ScreenFrame(luma: rendered.luma, time: time, title: nil)
+            if let event = detector.screenEvent(for: frame, encode: { screenShot(of: rendered.image) }) { return [event] }
+        }
+        finished = true
+        guard reader.status == .failed else { return nil }
+        printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
+        var events: [HelperEvent] = []
+        if let event = detector.screenEvent(windowGoneAt: lastTime) { events.append(event) }
+        events.append(.screenOff(start: lastTime, reason: .許可なし))
+        return events
+    }
+
+    /// フレームを 1280×720 に収めた画像にして、輝度の画像と一緒に返す。作れなければ nil（そのフレームは判定に入れない）。
+    private func render(_ sample: CMSampleBuffer) -> (luma: [UInt8], image: CGImage)? {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { return nil }
+        let source = CIImage(cvPixelBuffer: pixelBuffer)
+        let width = Int(source.extent.width)
+        let height = Int(source.extent.height)
+        guard width > 0, height > 0 else { return nil }
+        let size = fitScreenSize(width: width, height: height)
+        let fitted = (size.width, size.height) == (width, height)
+            ? source
+            : source.transformed(by: CGAffineTransform(scaleX: Double(size.width) / Double(width), y: Double(size.height) / Double(height)))
+        let rect = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+        guard let image = imageContext.createCGImage(fitted, from: rect), let luma = lumaGrid(of: image) else { return nil }
+        return (luma: luma, image: image)
+    }
+}
+
+/// 動画のセッションのイベント（`cli recorded`）。文字起こしを先に始め、映像の判定と OCR をそれと並べて進める。
+/// 流す順は、画面のイベントをすべて流し切ってから、文字起こしの結果。文字起こしの結果は流れの中に溜まるので、画面を先に流しても止まらない。
+/// サーバーは画面の変化を発言より先に受け取る前提で、音声の時刻の順に並べる。
+/// 映像が読めなければ `screen-off`（許可なし）を流して、音声の結果は続く。映像のトラックが無ければ画面のイベントは出ない。
+public func fileSessionEvents(at url: URL, with transcriber: any FileTranscriber) async throws -> AsyncThrowingStream<HelperEvent, Error> {
+    let results = try await transcribeFile(at: url, with: transcriber)
+    let (stream, continuation) = AsyncThrowingStream.makeStream(of: HelperEvent.self, throwing: Error.self)
+    let task = Task {
+        var reading: FileScreenReading?
+        do {
+            switch await FileScreenReading.open(url) {
+            case .noVideo:
+                break
+            case .unreadable(let reason):
+                printScreenError("動画の映像を読めない（音声だけで続ける）: \(reason)")
+                continuation.yield(.screenOff(start: 0, reason: .許可なし))
+            case .reading(let opened):
+                reading = opened
+                while !Task.isCancelled, let events = await onFileScreenQueue({ opened.next() }) {
+                    for event in events { continuation.yield(event) }
+                }
+            }
+            reading?.cancel()
+            for try await result in results {
+                continuation.yield(event(from: result, track: .相手))
+            }
+            continuation.finish()
+        } catch {
+            reading?.cancel()
+            continuation.finish(throwing: error)
+        }
+    }
+    continuation.onTermination = { _ in task.cancel() }
+    return stream
+}

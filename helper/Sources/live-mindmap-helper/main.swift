@@ -239,7 +239,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     if let failure { throw failure }
 }
 
-/// 音声ファイル 1 本を文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。音声・画面・話者分離は扱わない。
+/// 動画・音声ファイル 1 本を文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。映像があれば共有画面（`screen`）も流す（読めなければ `screen-off`）。音声の取り込みと話者分離は扱わない。
 /// 流れ: 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ → 文字にして流す →
 /// 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
 private func transcribeFile(file: String, port: UInt16, audioDir: String?) async throws {
@@ -261,8 +261,8 @@ private func transcribeFile(file: String, port: UInt16, audioDir: String?) async
     let work = Task {
         // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
         await server.waitForClient()
-        for try await result in try await transcribeFile(at: url, with: transcriber) {
-            await server.broadcast(try event(from: result, track: .相手).jsonString())
+        for try await event in try await fileSessionEvents(at: url, with: transcriber) {
+            await server.broadcast(try event.jsonString())
         }
     }
     // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
