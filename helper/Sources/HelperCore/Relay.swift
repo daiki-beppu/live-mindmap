@@ -38,7 +38,7 @@ private func relayTheirs<Results: AsyncSequence>(
 private func relayMine<Results: AsyncSequence>(
     _ results: Results, to server: WebSocketServer, duplicates: DuplicateMarker
 ) async throws where Results.Element == TranscriptionResult {
-    let (held, heldContinuation) = AsyncStream.makeStream(of: (TranscriptionResult, ContinuousClock.Instant).self)
+    let (held, heldContinuation) = AsyncStream.makeStream(of: (TranscriptionResult, Double).self)
     try await withThrowingTaskGroup(of: Void.self) { group in
         group.addTask {
             for await (result, heldSince) in held {
@@ -63,7 +63,7 @@ private func relayMine<Results: AsyncSequence>(
                 if result.isFinal {
                     // 保留中の途中結果を先に流してから確定結果を渡す（この順で積まれた順序がそのまま送信順になる）。
                     await duplicates.emitHeldPartialAndEndRecheck()
-                    heldContinuation.yield((result, .now))
+                    heldContinuation.yield((result, await duplicates.now()))
                 } else {
                     await duplicates.hold(minePartial: result)
                 }

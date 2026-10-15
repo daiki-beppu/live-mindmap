@@ -51,8 +51,9 @@ import type { CheckReport } from "./managedDepsProtocol.ts";
 // vocab は利用者が足した語（cli start --vocab。1 語ずつ。足さなければ空）。開始のときにだけ受け取る
 export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel; judge?: import("./judgeSelection.ts").JudgeModel };
 
-// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる
-export type RecordedStart = { file: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean; model: import("./modelSelection.ts").ExecutableModel };
+// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる。
+// selfFile は自分用の録音のファイル（絶対パス。cli recorded --self）。あれば、file を 相手、selfFile を 自分 の 2 トラックで組む
+export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean; model: import("./modelSelection.ts").ExecutableModel };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -578,7 +579,7 @@ export class Sessions extends Context.Service<Sessions, {
           const stopRequested = yield* Deferred.make<void>();
           const attemptScope = yield* Scope.fork(scope, "sequential");
           const attempt = yield* helpers
-            .launch(["transcribe-file", "--file", input.file, "--audio-dir", dir], stopRequested)
+            .launch(["transcribe-file", "--file", input.file, ...(input.selfFile === undefined ? [] : ["--self-file", input.selfFile]), "--audio-dir", dir], stopRequested)
             .pipe(
               Scope.provide(attemptScope),
               Effect.catchTag("HelperLaunchFailure", (failure) =>
@@ -592,6 +593,7 @@ export class Sessions extends Context.Service<Sessions, {
             model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
             recorded: {
               realtime: input.realtime,
+              selfTrack: input.selfFile !== undefined,
               progress: ({ position, rounds }) =>
                 Effect.andThen(
                   Ref.update(progress, (p) => ({ ...p, position: Math.max(p.position, position), rounds })),

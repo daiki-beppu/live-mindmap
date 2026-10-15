@@ -99,6 +99,7 @@ public struct MineDecision: Sendable, Equatable {
 /// `resolve` は 1 つずつ順に呼ぶ（呼び出し側が FIFO を保つ）。
 public actor DuplicateMarker {
     private let sleep: @Sendable (Duration) async throws -> Void
+    private let clock: @Sendable () async -> Double
     private var theirs: [TranscriptionResult] = []
     private var theirLatestPartial: TranscriptionResult?
     private var latestTheirEnd = -Double.infinity
@@ -119,12 +120,31 @@ public actor DuplicateMarker {
     /// （`AsyncStream` は複数消費者を支えない）。
     public nonisolated let mineDecisions: AsyncStream<MineDecision>
 
-    /// `sleep` は保留の上限の待ち処理。テストで差し替える。確定結果の 8 秒と途中結果の 1 秒の両方で使う。
-    public init(sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+    /// `sleep` は保留の上限の待ち処理、`now` は保留に入れた時刻を測る時計（秒）。確定結果の 8 秒と途中結果の 1 秒の両方で、この 2 つを使う。
+    /// 既定はライブと同じ壁時計（`ContinuousClock`・`Task.sleep`）。録画（`cli recorded --self`）は、読んだ位置の時計と、それで待つ `sleep` を組で渡す。
+    /// `sleep` と `now` は同じ時計のものにする（混ぜると待ち時間が合わない）。
+    public init(
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        now: @escaping @Sendable () async -> Double = DuplicateMarker.wallClockSeconds
+    ) {
         self.sleep = sleep
+        self.clock = now
         let (stream, continuation) = AsyncStream.makeStream(of: MineDecision.self)
         self.mineDecisions = stream
         self.mineDecisionContinuation = continuation
+    }
+
+    /// 保留の時計の現在の値（秒）。`resolve` の `heldSince` はこの値で渡す。
+    public func now() async -> Double {
+        await clock()
+    }
+
+    private static let wallClockOrigin = ContinuousClock.now
+
+    /// ライブの保留の時計。起動時からの壁時計の秒数。
+    @Sendable public static func wallClockSeconds() -> Double {
+        let elapsed = ContinuousClock.now - wallClockOrigin
+        return Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
     }
 
     /// `相手` の確定結果を文脈に加える。区間が重なる保留中の `自分` の途中結果を解放し、
@@ -215,14 +235,15 @@ public actor DuplicateMarker {
 
     /// `mine` が重複かを返す。後 8 秒の `相手` の確定結果が届く、`相手` の流れが終わる、保留の上限に達する、のどれかで判定する。
     /// 文脈は、前後 8 秒の `相手` の確定結果と、窓に重なる `相手` の最新の途中結果。
-    public func resolve(_ mine: TranscriptionResult, heldSince: ContinuousClock.Instant) async -> Bool {
+    public func resolve(_ mine: TranscriptionResult, heldSince: Double) async -> Bool {
         generation += 1
         let current = generation
         deadlineReached = false
         // 上限は保留を始めた時刻から数える。前の発言の待ちで遅れた分は、待ち時間から引く。
         // 待ち時間はタスクの外で求める。タスクの中で求めると、Xcode 26.6（Swift 6.3.3）の debug ビルドで
         // 「freed pointer was not the last allocation」で落ちた（PR #109 の二分探索）。
-        let wait = max(.zero, .seconds(duplicateHoldLimit) - (.now - heldSince))
+        let elapsed = await clock() - heldSince
+        let wait = Duration.seconds(max(0, duplicateHoldLimit - elapsed))
         let timer = Task { [sleep] in
             try? await sleep(wait)
             guard !Task.isCancelled else { return }

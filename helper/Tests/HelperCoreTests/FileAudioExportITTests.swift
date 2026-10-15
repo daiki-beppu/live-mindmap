@@ -136,4 +136,103 @@ struct FileAudioExportITTests {
         }
         #expect(!FileManager.default.fileExists(atPath: output.path))
     }
+
+    // `cli recorded --self`: 2 本の入力から、ライブと同じ名前（相手.m4a・自分.m4a）の 2 本をセッションのフォルダへ書く
+    @Test("相手用と自分用の 2 本から、相手.m4a と自分.m4a がフォルダに書かれる。入れ替わらず、それぞれ自分の入力の音になる")
+    func exportsBothTracksUnderLiveNames() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let theirs = dir.appendingPathComponent("them.wav") // 前半が音、後半が無音
+        try Support.writeWAV(theirs, loudSeconds: 2, silentSeconds: 2)
+        let session = dir.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+
+        // 自分用: 0〜2 秒が無音、2〜4 秒が音（相手用と逆）
+        let mineSilentThenLoud = dir.appendingPathComponent("me-silent-then-loud.wav")
+        try writeSilentThenLoud(mineSilentThenLoud, silentSeconds: 2, loudSeconds: 2)
+
+        try await exportFileAudioTracks(theirs: theirs, mine: mineSilentThenLoud, into: session)
+
+        let theirsOutput = session.appendingPathComponent(recordingFileName(track: .相手, attempt: 1))
+        let mineOutput = session.appendingPathComponent(recordingFileName(track: .自分, attempt: 1))
+        #expect(theirsOutput.lastPathComponent == "相手.m4a")
+        #expect(mineOutput.lastPathComponent == "自分.m4a")
+        #expect(try Support.rms(of: theirsOutput, from: 0.3, to: 1.7) > 0.1)
+        #expect(try Support.rms(of: theirsOutput, from: 2.4, to: 3.6) < 0.02)
+        #expect(try Support.rms(of: mineOutput, from: 0.3, to: 1.7) < 0.02)
+        #expect(try Support.rms(of: mineOutput, from: 2.4, to: 3.6) > 0.1)
+        let names = try FileManager.default.contentsOfDirectory(atPath: session.path).sorted()
+        #expect(names == ["自分.m4a", "相手.m4a"].sorted())
+    }
+
+    @Test("自分用が無いとき（--self なし）は、相手.m4a だけを書き、自分.m4a は作らない")
+    func exportsOnlyTheirsWithoutSelfFile() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let theirs = dir.appendingPathComponent("them.wav")
+        try Support.writeWAV(theirs, loudSeconds: 1, silentSeconds: 1)
+        let session = dir.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+
+        try await exportFileAudioTracks(theirs: theirs, mine: nil, into: session)
+
+        #expect(try FileManager.default.contentsOfDirectory(atPath: session.path) == ["相手.m4a"])
+    }
+
+    @Test("自分用が動画でも、書かれる 自分.m4a は音声だけ（映像のトラックは無い）")
+    func selfMovieIsExportedAsAudioOnly() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let theirs = dir.appendingPathComponent("them.wav")
+        try Support.writeWAV(theirs, loudSeconds: 1, silentSeconds: 1)
+        let wav = dir.appendingPathComponent("source.wav")
+        try Support.writeWAV(wav, loudSeconds: 2, silentSeconds: 1)
+        let movie = dir.appendingPathComponent("meeting.mov")
+        try await Support.writeMovie(movie, audio: wav, videoSeconds: 3)
+        let session = dir.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+
+        try await exportFileAudioTracks(theirs: theirs, mine: movie, into: session)
+
+        let asset = AVURLAsset(url: session.appendingPathComponent("自分.m4a"))
+        #expect(try await asset.loadTracks(withMediaType: .video).isEmpty)
+        #expect(try await asset.loadTracks(withMediaType: .audio).count == 1)
+        #expect(abs(try await asset.load(.duration).seconds - 3) < 0.3)
+    }
+
+    @Test("自分用が読めないときは失敗する（相手.m4a だけが残ったまま成功扱いにならない）")
+    func unreadableSelfFileFails() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let theirs = dir.appendingPathComponent("them.wav")
+        try Support.writeWAV(theirs, loudSeconds: 1, silentSeconds: 1)
+        let broken = dir.appendingPathComponent("me.m4a")
+        try Data("音声ではない".utf8).write(to: broken)
+        let session = dir.appendingPathComponent("session", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+
+        await #expect(throws: (any Error).self) {
+            try await exportFileAudioTracks(theirs: theirs, mine: broken, into: session)
+        }
+        #expect(!FileManager.default.fileExists(atPath: session.appendingPathComponent("自分.m4a").path))
+    }
+}
+
+/// 前半 `silentSeconds` 秒が無音、後半 `loudSeconds` 秒が 440 Hz のサイン波の WAV。
+private func writeSilentThenLoud(_ url: URL, silentSeconds: Double, loudSeconds: Double) throws {
+    let rate = Support.sampleRate
+    let format = try #require(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1))
+    let frames = AVAudioFrameCount(rate * (silentSeconds + loudSeconds))
+    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+    buffer.frameLength = frames
+    let samples = try #require(buffer.floatChannelData)[0]
+    let silentFrames = Int(rate * silentSeconds)
+    for i in 0..<Int(frames) {
+        samples[i] = i < silentFrames ? 0 : 0.5 * Float(sin(2 * Double.pi * 440 * Double(i) / rate))
+    }
+    let file = try AVAudioFile(forWriting: url, settings: [
+        AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
+        AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+    ])
+    try file.write(from: buffer)
 }

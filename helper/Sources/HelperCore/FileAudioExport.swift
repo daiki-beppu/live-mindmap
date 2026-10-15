@@ -38,6 +38,15 @@ public func exportFileAudio(from input: URL, to output: URL) async throws {
     }
 }
 
+/// `cli recorded` の音声を、ライブと同じ名前でセッションのフォルダ `directory` に書く。相手用は `相手.m4a`、自分用（あれば）は `自分.m4a`。
+/// 自分用が読めないときは失敗し、`自分.m4a` は残らない。
+public func exportFileAudioTracks(theirs: URL, mine: URL?, into directory: URL) async throws {
+    try await exportFileAudio(from: theirs, to: directory.appendingPathComponent(recordingFileName(track: .相手, attempt: 1)))
+    if let mine {
+        try await exportFileAudio(from: mine, to: directory.appendingPathComponent(recordingFileName(track: .自分, attempt: 1)))
+    }
+}
+
 /// ファイルに記録された作成日時。記録が無いとき、ファイルを読めないときは nil（ファイルシステムの日時では代用しない）。
 public func fileCreationDate(of url: URL) async -> Date? {
     let asset = AVURLAsset(url: url)

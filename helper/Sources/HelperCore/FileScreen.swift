@@ -45,8 +45,8 @@ final class FileScreenReading: @unchecked Sendable {
     private let imageContext = CIContext()
     private var thinner = ScreenFrameThinner()
     private var detector = ScreenChangeDetector(bundleID: "")
-    /// 最後に読んだフレームの時刻（途中で読めなくなったときの `screen-off` の時刻）。
-    private var lastTime = 0.0
+    /// 最後に読んだフレームの時刻（途中で読めなくなったときの `screen-off` の時刻。`--self-file` の 2 トラックでは映像の判定の進み）。
+    private(set) var lastTime = 0.0
     private var finished = false
 
     private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
@@ -157,4 +157,50 @@ public func fileSessionEvents(at url: URL, with transcriber: any FileTranscriber
     }
     continuation.onTermination = { _ in task.cancel() }
     return stream
+}
+
+/// 2 トラック（`cli recorded --self`）の映像を選ぶ。メインに映像があればメイン、なければ自分用にあれば自分用、どちらにもなければ nil。
+/// 映像の有無を確かめられないファイルは、映像なしとして扱う（音声の読み出しが、そのファイルの失敗を扱う）。
+public func selectFileVideo(theirs: URL, mine: URL) async -> URL? {
+    if await hasVideoTrack(theirs) { return theirs }
+    if await hasVideoTrack(mine) { return mine }
+    return nil
+}
+
+private func hasVideoTrack(_ url: URL) async -> Bool {
+    guard let tracks = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video) else { return false }
+    return !tracks.isEmpty
+}
+
+/// 2 トラック（`cli recorded --self`）の映像を読み、変化した画面を `server` に流す。判定・画像・`screen-off` は 1 本のとき（`FileScreenReading`）と同じ。
+/// 1 本のときと違い、文字起こしの結果と並べて流す。イベントを流した後に、判定したフレームの時刻まで `progress` を進め
+/// （音声の読み手は、判定の済んだ時刻を越えて入力を渡さない）、どの出口でも終わりを知らせる。取り消されたら読むのをやめる。
+public func relayFileScreen(from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen) async {
+    switch await FileScreenReading.open(url) {
+    case .noVideo:
+        break
+    case .unreadable(let reason):
+        printScreenError("動画の映像を読めない（音声だけで続ける）: \(reason)")
+        await broadcast(.screenOff(start: 0, reason: .許可なし), to: server)
+    case .reading(let reading):
+        // 取り消されたら、読み出しを止めて `next()` を抜けさせる（変化の無い長い区間を、次のイベントまで読み切らない）
+        await withTaskCancellationHandler {
+            while !Task.isCancelled, case let (events, time)? = await onFileScreenQueue({ reading.next().map { ($0, reading.lastTime) } }) {
+                for event in events where !Task.isCancelled { await broadcast(event, to: server) }
+                await progress.advance(to: time)
+            }
+        } onCancel: {
+            reading.cancel()
+        }
+        reading.cancel()
+    }
+    await progress.finish()
+}
+
+private func broadcast(_ event: HelperEvent, to server: WebSocketServer) async {
+    do {
+        await server.broadcast(try event.jsonString())
+    } catch {
+        printScreenError("画面のイベントを JSON にできなかったので送らない: \(error)")
+    }
 }

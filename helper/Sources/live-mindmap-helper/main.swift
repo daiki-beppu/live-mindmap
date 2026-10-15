@@ -18,7 +18,7 @@ usage:
   live-mindmap-helper install-speaker-models
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
-  live-mindmap-helper transcribe-file --file <path> [--port <n>] [--audio-dir <dir>]
+  live-mindmap-helper transcribe-file --file <path> [--self-file <path>] [--port <n>] [--audio-dir <dir>]
   live-mindmap-helper creation-date --file <path>
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
@@ -239,20 +239,29 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     if let failure { throw failure }
 }
 
-/// 動画・音声ファイル 1 本を文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。映像があれば共有画面（`screen`）も流す（読めなければ `screen-off`）。音声の取り込みと話者分離は扱わない。
-/// 流れ: 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ → 文字にして流す →
-/// 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
-private func transcribeFile(file: String, port: UInt16, audioDir: String?) async throws {
+/// 動画・音声ファイルを文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。映像があれば共有画面（`screen`）も流す（読めなければ `screen-off`）。音声の取り込みと話者分離は扱わない。
+/// `selfFile` があるときは、自分用の録音も読み、ライブと同じ 2 トラック（`相手`・`自分`）で流す。2 本の読み手は同じ音声の時刻に揃え、
+/// `自分` は `DuplicateMarker` に通して重複の印を付ける（保留は読んだ位置の時計で測る）。映像は、メインにあればメインの、なければ自分用の映像を使う。
+/// 流れ: 読めるかを確かめる → 音声を書く → 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ →
+/// 文字にして流す → 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
+private func transcribeFile(file: String, selfFile: String?, port: UInt16, audioDir: String?) async throws {
     let url = URL(fileURLWithPath: file)
+    let selfURL = selfFile.map { URL(fileURLWithPath: $0) }
     // 読めないファイルは、待ち受けを始める前にここで失敗する
-    let header = try await readFileHeader(of: url)
-    // 音声は待ち受けを始める前に書き終える。stop（Ctrl-C）がどの時点で来ても、完成した 相手.m4a が残る
+    var header = try await readFileHeader(of: url)
+    if let selfURL {
+        // 進み具合の「全体」は、長いほうの長さ。音声トラックの本数は、メインのファイルのもの
+        let selfHeader = try await readFileHeader(of: selfURL)
+        header = FileHeader(duration: max(header.duration, selfHeader.duration), audioTrackCount: header.audioTrackCount)
+    }
+    // 音声は待ち受けを始める前に書き終える。stop（Ctrl-C）がどの時点で来ても、完成した 相手.m4a（と 自分.m4a）が残る
     if let audioDir {
-        try await exportFileAudio(
-            from: url, to: URL(fileURLWithPath: audioDir, isDirectory: true).appendingPathComponent(recordingFileName(track: .相手, attempt: 1)))
+        try await exportFileAudioTracks(theirs: url, mine: selfURL, into: URL(fileURLWithPath: audioDir, isDirectory: true))
     }
     let transcriber = SpeechAnalyzerTranscriber()
     try await transcriber.prepare()
+    let selfTranscriber = selfURL == nil ? nil : SpeechAnalyzerTranscriber()
+    try await selfTranscriber?.prepare()
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
@@ -261,9 +270,14 @@ private func transcribeFile(file: String, port: UInt16, audioDir: String?) async
     let work = Task {
         // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
         await server.waitForClient()
-        for try await event in try await fileSessionEvents(at: url, with: transcriber) {
-            await server.broadcast(try event.jsonString())
+        guard let selfURL, let selfTranscriber else {
+            for try await event in try await fileSessionEvents(at: url, with: transcriber) {
+                await server.broadcast(try event.jsonString())
+            }
+            return
         }
+        try await relayFilePair(
+            theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server)
     }
     // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
@@ -332,7 +346,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await transcribeFile(file: args.file, port: args.port, audioDir: args.audioDir)
+                try await transcribeFile(file: args.file, selfFile: args.selfFile, port: args.port, audioDir: args.audioDir)
             }
         case "creation-date":
             switch parseCreationDateArguments(Array(arguments.dropFirst())) {

@@ -8,7 +8,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, createPacer, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
+import { correctRemark, createPacer, createTrackMerge, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -77,7 +77,8 @@ export type OpenSessionSink = {
   // 録画からのセッションのとき（cli recorded）だけ渡す。締めた発言はすぐ入れず溜め、1 発言入れて差分更新が終わるたびに progress を呼ぶ。
   // いま話している文字（字幕）はヘルパーの途中結果ではなく、入れた位置で出す
   // realtime なら、音声の時刻（発言は end、共有画面の変化は start）まで待ってから入れる。差分更新の終わりは待たない（play --realtime と同じ意味）
-  recorded?: { realtime: boolean; progress: (progress: { position: number; rounds: number }) => Effect.Effect<void> };
+  // selfTrack は 2 本の録画（cli recorded --self）。相手と自分の発言を、トラックをまたいで音声の時刻（end）の順にして溜める（ヘルパーの保留や話者を決める段の保留で、届く順が時刻の順と前後するため）
+  recorded?: { realtime: boolean; selfTrack?: boolean; progress: (progress: { position: number; rounds: number }) => Effect.Effect<void> };
 };
 
 // 語彙で直した後の発言（セッションへ入れる直前の形）。words と wordTimes は Remark に入れず、ログの行にだけ残す
@@ -229,14 +230,18 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                   }),
                   (due) => Effect.forEach(due, backlog.offer, { discard: true }),
                 );
+          // 2 本の録画だけ、発言を端から時刻の順にまとめる（固定の待ち時間は持たない。片方が黙っている間は、そのトラックの次の発言か drain まで溜める）。
+          // 1 本のときは通さない（ヘルパーが続いている間に、最後の発言が溜まったままにならない）
+          const merge = recorded?.selfTrack === true
+            ? createTrackMerge<CorrectedRemark>({ tracks: TRACKS, trackOf: (c) => c.rest.track, timeOf: (c) => c.rest.end })
+            : undefined;
+          const offerRemarks = (corrected: ReadonlyArray<CorrectedRemark>) =>
+            Effect.forEach(corrected, (c) =>
+              Effect.andThen(flushScreens(c.rest.end), backlog === undefined ? Effect.void : backlog.offer({ kind: "remark", corrected: c })), { discard: true });
           const settling = yield* createRemarkSettling({
             emit: backlog === undefined
               ? (settled) => Effect.flatMap(correct(settled), admit)
-              : (settled) => Effect.gen(function* () {
-                  const corrected = yield* correct(settled);
-                  yield* flushScreens(corrected.rest.end);
-                  yield* backlog.offer({ kind: "remark", corrected });
-                }),
+              : (settled) => Effect.flatMap(correct(settled), (corrected) => offerRemarks(merge === undefined ? [corrected] : merge.offer(corrected))),
           });
           // 画面から語彙の候補を取るための状態。短い行が出た画面の数と、読みを頼んだ語（利用者の語・画面の語）。
           // 並んで届いた画面で同じ語を二重に頼まないよう、1 回の Ref.modify で更新する
@@ -334,9 +339,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               );
             },
             // 自然な終わり: 残りの発言を出してから、どの発言にも覆われなかった画面の変化を溜まりへ入れる
-            drain: Effect.andThen(settling.drain, flushScreens()),
+            drain: Effect.andThen(settling.drain, Effect.suspend(() => Effect.andThen(offerRemarks(merge?.drain() ?? []), flushScreens()))),
             finishBacklog: backlog === undefined ? Effect.void : backlog.finish,
-            discardBacklog: backlog === undefined ? Effect.void : backlog.discard,
+            discardBacklog: backlog === undefined ? Effect.void : Effect.andThen(Effect.sync(() => { merge?.drain(); }), backlog.discard),
             clearSpeaking: relay.clear,
             stopRelays: Effect.andThen(relay.stop, settling.stop),
             appendLog: appendRecordedLog,

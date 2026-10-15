@@ -13,6 +13,33 @@ struct TranscribeFileArgumentsTests {
         #expect(args.file == "/tmp/meeting.m4a")
         #expect(args.port == 8765)
         #expect(args.audioDir == nil)
+        #expect(args.selfFile == nil)
+    }
+
+    @Test("--self-file は自分用の録音のファイルとして解釈される。--file は相手用のまま")
+    func selfFile() throws {
+        let args = try parseTranscribeFileArguments(["--file", "/tmp/them.m4a", "--self-file", "/tmp/me.m4a", "--audio-dir", "/tmp/session"]).get()
+        #expect(args.file == "/tmp/them.m4a")
+        #expect(args.selfFile == "/tmp/me.m4a")
+        #expect(args.audioDir == "/tmp/session")
+    }
+
+    @Test("--self-file は引数の順序によらず解釈される")
+    func selfFileBeforeFile() throws {
+        let args = try parseTranscribeFileArguments(["--self-file", "/tmp/me.m4a", "--file", "/tmp/them.m4a"]).get()
+        #expect(args == TranscribeFileArguments(file: "/tmp/them.m4a", selfFile: "/tmp/me.m4a"))
+    }
+
+    @Test("--self-file に値がないと拒否される")
+    func selfFileWithoutValue() {
+        let result = parseTranscribeFileArguments(["--file", "/tmp/a.m4a", "--self-file"])
+        #expect(throws: TranscribeFileArgumentsError.self) { try result.get() }
+    }
+
+    @Test("--self-file だけで --file がないと拒否される")
+    func selfFileWithoutFile() {
+        let result = parseTranscribeFileArguments(["--self-file", "/tmp/me.m4a"])
+        #expect(throws: TranscribeFileArgumentsError.self) { try result.get() }
     }
 
     @Test("--audio-dir は音声を書くフォルダとして解釈される")

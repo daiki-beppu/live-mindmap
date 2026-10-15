@@ -650,6 +650,10 @@ const recorded = Command.make(
   "recorded",
   {
     file: Argument.File("file", { mustExist: true }).pipe(Argument.withDescription("録画の音声（または動画）のファイル")),
+    self: Flag.File("self", { mustExist: true }).pipe(
+      Flag.withDescription("自分用の録音のファイル（音声または動画）。足すと、file を 相手、これを 自分 の 2 トラックで組む"),
+      Flag.optional,
+    ),
     model: modelFlag,
     local: localFlag,
     title: recordedTitleFlag,
@@ -659,7 +663,7 @@ const recorded = Command.make(
       Flag.withDefault(false),
     ),
   },
-  Effect.fn("recorded")(function* ({ file, model, local, title, vocab, realtime }) {
+  Effect.fn("recorded")(function* ({ file, self, model, local, title, vocab, realtime }) {
     const vocabulary = yield* readVocabulary(vocab);
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
@@ -676,6 +680,7 @@ const recorded = Command.make(
       Effect.gen(function* () {
         const response = yield* restore(executeServerRequest(port, "POST", "/session/recorded", {
           file: resolve(file),
+          ...(Option.isSome(self) ? { selfFile: resolve(self.value) } : {}),
           title: Option.getOrUndefined(title),
           ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
           ...(realtime ? { realtime } : {}),
@@ -694,7 +699,7 @@ const recorded = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "音声 1 本の録画から、常駐サーバーでセッションを組む。終わるまで待ち、進み具合（入れた位置 / 全体の長さ・マップの更新回数）を標準エラーに出す。"
+    "音声 1 本（--self で自分用の 2 本目も）の録画から、常駐サーバーでセッションを組む。終わるまで待ち、進み具合（入れた位置 / 全体の長さ・マップの更新回数）を標準エラーに出す。"
       + "終わったらセッションのフォルダと map.* のパスを出す。Ctrl-C ではそこまでの分で終える。同時に 1 つだけ",
   ),
 );
