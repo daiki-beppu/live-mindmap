@@ -2,7 +2,7 @@
 // タグ付きの失敗からステータスへの対応表・失敗から応答への変換を、この 1 か所に置く。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
 //   POST /session/start   { app, title?, audio?, screen? } でセッションを開始する
-//   POST /session/recorded { file, title?, vocab?, realtime?, model? } で、音声 1 本から録画からのセッションを始める。応答は NDJSON の stream
+//   POST /session/recorded { file, selfFile?, title?, vocab?, realtime?, model? } で、音声 1 本（selfFile があれば自分用の 2 本目も）から録画からのセッションを始める。応答は NDJSON の stream
 //                         （started → progress... → finished。読み終えるか stop されると finished で終わる）。ライブの最中は 409
 //   POST /session/stop    セッションを終了し、書き出したパスを返す
 //   GET  /session/status  取り込みの状態を返す
@@ -63,6 +63,7 @@ const SessionStartBody = Schema.Struct({
 // /session/recorded の本文。file は録画の音声の絶対パス（CLI が解決して渡す）。title・vocab・model は /session/start と同じ意味。realtime は音声の時刻どおりに等速で入れる（省略は待ち時間なし）
 const SessionRecordedBody = Schema.Struct({
   file: Schema.NonEmptyString,
+  selfFile: Schema.optionalKey(Schema.NonEmptyString), // 自分用の録音の絶対パス（cli recorded --self）。省略は 1 本だけ
   title: Schema.optional(Schema.NullOr(Schema.String)),
   vocab: Schema.optionalKey(Schema.Array(Schema.String)),
   realtime: Schema.optionalKey(Schema.Boolean),
@@ -178,7 +179,7 @@ const startSession = Effect.gen(function* () {
 const startRecordedSession = Effect.gen(function* () {
   const { body, model } = yield* acceptedBody(HttpServerRequest.schemaBodyJson(SessionRecordedBody));
   const sessions = yield* Sessions;
-  const input: RecordedStart = { file: body.file, title: body.title ?? undefined, vocab: body.vocab ?? [], realtime: body.realtime ?? false, model };
+  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title ?? undefined, vocab: body.vocab ?? [], realtime: body.realtime ?? false, model };
   const { dir, warnings, events } = yield* sessions.startRecorded(input);
   return HttpServerResponse.stream(
     Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(

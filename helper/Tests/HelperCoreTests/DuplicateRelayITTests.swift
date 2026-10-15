@@ -20,6 +20,32 @@ private final class DurationLog: @unchecked Sendable {
     var values: [Duration] { lock.lock(); defer { lock.unlock() }; return items }
 }
 
+private final class DecisionLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [MineDecision] = []
+    func append(_ decision: MineDecision) { lock.withLock { items.append(decision) } }
+    var values: [MineDecision] { lock.withLock { items } }
+}
+
+/// 音声の時刻の時計の代役。値（秒）は、テストが `advance` で進めたときだけ進む（壁時計とは無関係）。
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
+private final class AudioClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seconds = 0.0
+    var value: Double { lock.withLock { seconds } }
+    func advance(to target: Double) { lock.withLock { seconds = target } }
+}
+
+private func seconds(_ duration: Duration) -> Double {
+    Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+}
+
 private let sentence = "明日の会議は十時から始めます"
 private let other = "来週の火曜日に資料を送ります"
 
@@ -521,7 +547,7 @@ struct DuplicateRelayITTests {
         let mineFinal = final("明日の会議は十時", 10.5, 12)
         await marker.hold(minePartial: partialResult("明日の会議は十時", 10.5, 12))
         await marker.emitHeldPartialAndEndRecheck()
-        let duplicate = await marker.resolve(mineFinal, heldSince: ContinuousClock.now)
+        let duplicate = await marker.resolve(mineFinal, heldSince: await marker.now())
         await marker.emit(resolvedRemark: mineFinal, duplicate: duplicate)
         await marker.finishMineDecisions()
 
@@ -884,7 +910,7 @@ struct DuplicateRelayITTests {
             durations.append(duration)
             try await Task.sleep(for: .milliseconds(300))
         })
-        let heldSince = ContinuousClock.now
+        let heldSince = await marker.now()
         _ = await marker.resolve(final(sentence, 0, 2), heldSince: heldSince)
         _ = await marker.resolve(final(other, 3, 5), heldSince: heldSince)
 
@@ -946,5 +972,94 @@ struct DuplicateRelayITTests {
                 ["location": 3, "length": 2, "start": 11.0, "end": 11.5],
             ]))
         }
+    }
+
+    // 音声の時刻で保留を測る（`cli recorded --self`）。ライブは既定の時計（壁時計）のまま。
+    @Test("確定結果の保留の上限は、注入した時計の時刻で数える。保留に入れた時刻から数え、時計が進んだ分は待ち時間から引かれる")
+    func resolveWaitIsMeasuredOnInjectedClock() async {
+        let clock = AudioClock()
+        let durations = DurationLog()
+        let marker = DuplicateMarker(sleep: { durations.append($0) }, now: { clock.value })
+        clock.advance(to: 100)
+
+        // 壁時計なら、この差は出ない。時計の値だけで待ち時間が決まる。
+        _ = await marker.resolve(final(sentence, 90, 92), heldSince: 100)
+        clock.advance(to: 103)
+        _ = await marker.resolve(final(other, 93, 95), heldSince: 100)
+
+        let waits = durations.values.map(seconds)
+        #expect(waits.count == 2)
+        guard waits.count == 2 else { return }
+        #expect(abs(waits[0] - 8) < 0.001)
+        #expect(abs(waits[1] - 5) < 0.001)
+    }
+
+    @Test("relayMine は、自分の確定結果が届いた時刻を注入した時計で取る。前の発言の待ちの間に時計が進んだ分は、次の発言の待ちから引かれる")
+    func relayMineTakesHeldSinceFromInjectedClock() async throws {
+        let server = WebSocketServer(port: 0)
+        _ = try await server.start()
+        defer { Task { await server.stop() } }
+
+        let clock = AudioClock()
+        clock.advance(to: 100)
+        let durations = DurationLog()
+        let nowCalls = CallCounter()
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (release, releaseContinuation) = AsyncStream.makeStream(of: Void.self)
+        let marker = DuplicateMarker(
+            sleep: { duration in
+                durations.append(duration)
+                enteredContinuation.yield()
+                // 1 件目の待ちだけを、テストの合図まで止める（2 件目以降は待たずに戻る）
+                if durations.values.count == 1 { for await _ in release { return } }
+            },
+            now: { nowCalls.increment(); return clock.value })
+        let (mine, mineContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        // 相手の流れは終わらせない（終わると保留なしで判定が返る）
+        let (theirs, theirsContinuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self)
+        let relaying = Task { try await relay(tracks: [(.自分, mine), (.相手, theirs)], to: server, duplicates: marker) }
+        defer { relaying.cancel() }
+
+        // 2 件とも、音声の時刻 100 秒に届く。1 件目の待ちが止まっている間に、時計を 3 秒進める。
+        mineContinuation.yield(final(sentence, 90, 92))
+        mineContinuation.yield(final(other, 93, 95))
+        await awaitSignal(entered)
+        // 2 件目の届いた時刻まで取り終えるのを待ってから、時計を進める（読み取りの回数そのものは契約ではないので、下限だけで同期する）
+        for _ in 0..<400 where nowCalls.value < 3 { try await Task.sleep(for: .milliseconds(25)) }
+        clock.advance(to: 103)
+        releaseContinuation.yield()
+        await awaitSignal(entered)
+
+        let waits = durations.values.map(seconds)
+        mineContinuation.finish()
+        theirsContinuation.finish()
+        try await relaying.value
+        try #require(waits.count == 2)
+        #expect(abs(waits[0] - 8) < 0.001)
+        #expect(abs(waits[1] - 5) < 0.001)
+    }
+
+    @Test("自分の途中結果の保留（1 秒）も注入した sleep で解ける。相手の文字が無いまま、時計が 1 秒進むまでは流れず、進むと印なしで流れる")
+    func partialHoldIsReleasedByInjectedSleep() async throws {
+        let clock = AudioClock()
+        let marker = DuplicateMarker(
+            sleep: { duration in
+                let target = clock.value + seconds(duration)
+                while clock.value < target { try await Task.sleep(for: .milliseconds(5)) }
+            },
+            now: { clock.value })
+        let received = DecisionLog()
+        let reader = Task { for await decision in marker.mineDecisions { received.append(decision) } }
+        defer { reader.cancel() }
+
+        await marker.hold(minePartial: partialResult("明日の", 1, 2))
+        // 壁時計で 1.3 秒たっても、時計（音声の時刻）が進んでいなければ流れない
+        try await Task.sleep(for: .milliseconds(1300))
+        #expect(received.values.isEmpty)
+
+        clock.advance(to: 1)
+        for _ in 0..<200 where received.values.isEmpty { try await Task.sleep(for: .milliseconds(25)) }
+        #expect(received.values.map(\.result) == [partialResult("明日の", 1, 2)])
+        #expect(received.values.map(\.duplicate) == [false])
     }
 }

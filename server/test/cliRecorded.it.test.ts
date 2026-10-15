@@ -12,6 +12,7 @@ import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { formatAudioTracksNotice, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
+import { AudioMix } from "../src/audioMix.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -53,6 +54,8 @@ type Script = {
 
 // 偽のヘルパーが --audio-dir へ書く音声（相手.m4a）の中身
 const HELPER_AUDIO = "ヘルパーが書いた音声";
+// --self-file があるときだけ、偽のヘルパーが --audio-dir へ書く 自分.m4a の中身
+const HELPER_SELF_AUDIO = "ヘルパーが書いた自分の音声";
 
 // ヘルパーは、録画の文字起こしでは partial → remark の順に出す
 const remarkEvents = (r: Remark, track: "相手" | "自分" = "相手"): unknown[] => [
@@ -85,6 +88,8 @@ function fakeHelpers(script: Script) {
     // 本物のヘルパーは、待ち受けを始める前に --audio-dir のフォルダへ 相手.m4a を書く
     const audioDir = args[args.indexOf("--audio-dir") + 1];
     if (args.includes("--audio-dir") && audioDir !== undefined) writeFileSync(join(audioDir, "相手.m4a"), HELPER_AUDIO);
+    // --self-file のときは、自分用の音声も書く（待ち受けの前に 相手.m4a と 自分.m4a の両方を書き終える）
+    if (args.includes("--self-file") && audioDir !== undefined) writeFileSync(join(audioDir, "自分.m4a"), HELPER_SELF_AUDIO);
     const queue = yield* Queue.make<string, Cause.Done>();
     live.queue = queue;
     const exited = yield* Deferred.make<HelperExitInfo>();
@@ -199,6 +204,9 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const sessionsDir = join(root, "sessions");
   const file = join(root, options.fileName ?? "meeting.m4a");
   writeFileSync(file, "audio");
+  // --self に渡す、自分用の録音
+  const selfFile = join(root, "me.m4a");
+  writeFileSync(selfFile, "self audio");
   const helpers = fakeHelpers(script);
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
@@ -210,7 +218,7 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
     availability: Effect.succeed({ osVersion: "27.0", availability: { status: "available" } }),
     launch: Effect.die("CLI は Apple を起動しない"),
   })));
-  return { root, sessionsDir, file, helpers, updater, server, deps, cli, models, localDeps };
+  return { root, sessionsDir, file, selfFile, helpers, updater, server, deps, cli, models, localDeps };
 });
 
 type Line = Record<string, unknown> & { type: string };
@@ -325,6 +333,169 @@ describe("cli recorded <file>", () => {
       expect(output).not.toContain("--self");
       expect(output).not.toContain(formatAudioTracksNotice(2));
       expect(remarksOf(logLines(onlySession(r.sessionsDir)))).toHaveLength(3);
+    }).pipe(Effect.scoped));
+  });
+
+  describe("--self（自分用の録音を足して、ライブと同じ 2 トラックで組む）", () => {
+    type SpokenRemark = { start: number; end: number; text: string };
+    // ヘルパーは、録画の文字起こしでは partial → remark の順に出す。duplicate は 自分 の重複の印
+    const spoken = (track: "相手" | "自分", r: SpokenRemark, duplicate = false): unknown[] => [
+      { type: "partial", track, ...r, duplicate },
+      { type: "remark", track, ...r, duplicate },
+    ];
+    const idsAndTracks = (dir: string) => remarksOf(logLines(dir)).map((x) => ({ id: x.id, track: x.track, end: x.end, text: x.text }));
+    const sessionEntries = (sessionsDir: string) => (existsSync(sessionsDir) ? readdirSync(sessionsDir) : []).filter((name) => name !== "vocabulary.json");
+
+    // 音声の時刻の順に交互に流す 2 本の台本。最後の 自分 は、相手の二つ目とほぼ同じ文のスピーカーの回り込み（ヘルパーが重複の印を付けた確定結果）
+    const INTERLEAVED: Script = {
+      duration: 10,
+      remarks: [],
+      events: [
+        ...spoken("相手", { start: 0, end: 2, text: "相手の一つ目" }),
+        ...spoken("自分", { start: 2.5, end: 4, text: "自分の発言" }),
+        ...spoken("相手", { start: 4.5, end: 6, text: "相手の二つ目" }),
+        ...spoken("自分", { start: 4.6, end: 6.2, text: "相手の二つ目" }, true),
+      ],
+    };
+
+    it.live("--self のファイルは、絶対パスの --self-file としてヘルパーに渡る（--file・--audio-dir の組はそのまま）", () => Effect.gen(function* () {
+      const r = yield* resource(INTERLEAVED);
+      yield* r.cli(["recorded", relative(process.cwd(), r.file), "--self", relative(process.cwd(), r.selfFile)]);
+
+      const dir = onlySession(r.sessionsDir);
+      expect(r.helpers.calls).toEqual([["transcribe-file", "--file", resolve(r.file), "--self-file", resolve(r.selfFile), "--audio-dir", dir]]);
+    }).pipe(Effect.scoped));
+
+    it.live("相手 と 自分 の発言が、音声の時刻（end）の順に並ぶ。相手 の保留を自分が追い越さない。自分 の重複の印はライブと同じに付き、差分更新には入らない", () => Effect.gen(function* () {
+      const r = yield* resource(INTERLEAVED);
+      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+      const dir = onlySession(r.sessionsDir);
+      expect(idsAndTracks(dir)).toEqual([
+        { id: "r1", track: "相手", end: 2, text: "相手の一つ目" },
+        { id: "r2", track: "自分", end: 4, text: "自分の発言" },
+        { id: "r3", track: "相手", end: 6, text: "相手の二つ目" },
+        { id: "r4", track: "自分", end: 6.2, text: "相手の二つ目" },
+      ]);
+      // 重複の印は、自分 の最後の発言にだけ付く（ログに残り、差分更新の fresh には入らない）
+      const remarks = remarksOf(logLines(dir)) as { track: string; duplicate?: boolean }[];
+      expect(remarks.map((x) => x.duplicate === true)).toEqual([false, false, false, true]);
+      expect(r.updater.inputs.flatMap((input) => input.fresh.map((remark) => remark.text))).toEqual(["相手の一つ目", "自分の発言", "相手の二つ目"]);
+      expect(r.updater.state.overlaps).toBe(0);
+    }).pipe(Effect.scoped));
+
+    it.live("自分 の確定結果が、先の時刻の 相手 の発言より後に届いても（ヘルパーの重複の保留で遅れた形）、音声の時刻の順に並ぶ。届いた順のままにしない", () => Effect.gen(function* () {
+      const r = yield* resource({
+        duration: 12,
+        remarks: [],
+        events: [
+          ...spoken("相手", { start: 0, end: 2, text: "相手の一つ目" }),
+          ...spoken("相手", { start: 4.5, end: 6, text: "相手の二つ目" }),
+          // 相手 の音声の時計が進み、二つ目も話者の保留を終えた後に、遅れた 自分 の確定結果が届く
+          ...spoken("相手", { start: 10, end: 11, text: "相手の三つ目" }),
+          ...spoken("自分", { start: 2.5, end: 4, text: "自分の発言" }),
+        ],
+      });
+      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+      const dir = onlySession(r.sessionsDir);
+      expect(idsAndTracks(dir).map((x) => [x.id, x.track, x.end])).toEqual([
+        ["r1", "相手", 2], ["r2", "自分", 4], ["r3", "相手", 6], ["r4", "相手", 11],
+      ]);
+    }).pipe(Effect.scoped));
+
+    it.live("--self の 自分 の発言は、ライブと同じ字幕のフレームで track: 自分 の本文として WebSocket に届く（相手 の本文は track: 相手）。終了時の空のフレームとは区別する", () => Effect.gen(function* () {
+      // 2 つ目の差分更新（自分 の発言を入れた直後）を止め、自分 の発言が未反映の間に出る字幕を見る。終了時の空のフレームはまだ出ない
+      const gate = Effect.runSync(Deferred.make<void>());
+      const updater = fakeUpdater((_input, call) => call === 2 ? Deferred.await(gate) : Effect.void);
+      const r = yield* resource(INTERLEAVED, updater);
+      const frames: string[] = [];
+      const socket = new WebSocket(`ws://127.0.0.1:${r.server.port}/ws`);
+      socket.on("message", (data) => { frames.push(String(data)); });
+      yield* Effect.promise(() => new Promise<void>((done) => socket.on("open", () => done())));
+      yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
+      yield* Effect.forkChild(r.cli(["recorded", r.file, "--self", r.selfFile]));
+
+      // 字幕のフレーム（captions）の吹き出しを、すべてのフレームから集める
+      const bubbles = () => frames.flatMap((frame) => {
+        try { return [JSON.parse(frame) as { type?: string; bubbles?: { track: string; text: string }[] }]; } catch { return []; }
+      }).flatMap((frame) => frame.type === "captions" ? frame.bubbles ?? [] : []);
+      yield* Effect.promise(() => vi.waitFor(() => {
+        expect(bubbles().some((b) => b.track === "自分" && b.text.includes("自分の発言"))).toBe(true);
+      }, { timeout: 10_000 }));
+      expect(bubbles().some((b) => b.track === "相手" && b.text.includes("自分の発言"))).toBe(false);
+      yield* Deferred.succeed(gate, undefined);
+    }).pipe(Effect.scoped));
+
+    it.live("1 トラックしか発言が無くても、ヘルパーが終われば全部入る（どちらかが黙っている間に溜めた発言は、終わりで出し切る）", () => Effect.gen(function* () {
+      const r = yield* resource({
+        duration: 10,
+        remarks: [],
+        events: [
+          ...spoken("相手", { start: 0, end: 2, text: "相手の一つ目" }),
+          ...spoken("相手", { start: 4, end: 5, text: "相手の二つ目" }),
+        ],
+      });
+      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+      expect(idsAndTracks(onlySession(r.sessionsDir)).map((x) => [x.id, x.track, x.end])).toEqual([["r1", "相手", 2], ["r2", "相手", 5]]);
+    }).pipe(Effect.scoped));
+
+    it.live("自分.m4a もセッションのフォルダに残り、map-audio.html ができる。mix を呼んだ時点で 相手.m4a と 自分.m4a の両方がフォルダにある。元のファイルはコピーしない", () => Effect.gen(function* () {
+      const fake = fakeAudioMix();
+      const foldersAtMix: string[][] = [];
+      const recording = Layer.effect(AudioMix, Effect.gen(function* () {
+        const inner = yield* AudioMix;
+        return AudioMix.of({ mix: (session, out, track) => { foldersAtMix.push(readdirSync(session).sort()); return inner.mix(session, out, track); } });
+      })).pipe(Layer.provide(fake.layer));
+      const r = yield* resource(INTERLEAVED, fakeUpdater(), { mix: { ...fake, layer: recording } });
+      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+      const dir = onlySession(r.sessionsDir);
+      expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
+      expect(readFileSync(join(dir, "自分.m4a"), "utf8")).toBe(HELPER_SELF_AUDIO);
+      expect(fake.calls.map((call) => call.session)).toEqual([dir]);
+      expect(foldersAtMix).toHaveLength(1);
+      expect(foldersAtMix[0]).toEqual(expect.arrayContaining(["相手.m4a", "自分.m4a"]));
+      expect(embeddedAudio(readFileSync(join(dir, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
+      expect(readdirSync(dir)).not.toContain(basename(r.file));
+      expect(readdirSync(dir)).not.toContain(basename(r.selfFile));
+    }).pipe(Effect.scoped));
+
+    it.live("--self を渡さないときは 自分.m4a を作らず、ヘルパーの引数に --self-file が入らない", () => Effect.gen(function* () {
+      const r = yield* resource(THREE);
+      yield* r.cli(["recorded", r.file]);
+
+      const dir = onlySession(r.sessionsDir);
+      expect(r.helpers.calls[0]).not.toContain("--self-file");
+      expect(readdirSync(dir)).not.toContain("自分.m4a");
+    }).pipe(Effect.scoped));
+
+    it.live("作成日時の問い合わせと題名は、メインのファイルだけで決める（--self のファイルは使わない）", () => Effect.gen(function* () {
+      const r = yield* resource({ ...INTERLEAVED, creationDate: "2026-10-01T01:02:03Z" });
+      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+      expect(r.helpers.creationDateCalls).toEqual([resolve(r.file)]);
+      expect(basename(onlySession(r.sessionsDir))).toBe("2026-10-01T01-02-03.000Z");
+      expect(logLines(onlySession(r.sessionsDir)).find((l) => l.type === "start")).toMatchObject({ title: "meeting" });
+    }).pipe(Effect.scoped));
+
+    it.live("--self だけを渡す（メインのファイルが無い）と断る。ヘルパーは起動せず、セッションのフォルダも作らない", () => Effect.gen(function* () {
+      const r = yield* resource(INTERLEAVED);
+      const result = yield* Effect.result(r.cli(["recorded", "--self", r.selfFile]));
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(r.helpers.calls).toEqual([]);
+      expect(sessionEntries(r.sessionsDir)).toEqual([]);
+    }).pipe(Effect.scoped));
+
+    it.live("--self に存在しないファイルを渡すと断る。ヘルパーは起動せず、セッションのフォルダも作らない", () => Effect.gen(function* () {
+      const r = yield* resource(INTERLEAVED);
+      const result = yield* Effect.result(r.cli(["recorded", r.file, "--self", join(r.root, "absent.m4a")]));
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(r.helpers.calls).toEqual([]);
+      expect(sessionEntries(r.sessionsDir)).toEqual([]);
     }).pipe(Effect.scoped));
   });
 

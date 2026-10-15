@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import Vision
 
-// 共有画面の文字を読む（Issue #643）。変化の判定で送ると決めた画面だけに、`ScreenCapture` の `encode` の中でかける。
+// 共有画面の文字を読む（Issue #643）。変化の判定で送ると決めた画面だけに、`screenShot(of:)`（ScreenImage.swift）の中でかける。
 
 /// 画像に映った文字を、認識した行ごとに上から順に返す。日本語と英語を読む。認識に失敗したら nil。文字が無ければ空の配列。
 public func recognizeScreenText(_ image: CGImage) -> [String]? {

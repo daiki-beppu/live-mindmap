@@ -10,6 +10,7 @@ export * from "./screenNotice.ts";
 export * from "./screenVocabulary.ts";
 export * from "./selfPause.ts";
 export * from "./tapNotice.ts";
+export * from "./trackMerge.ts";
 export * from "./sessionMode.ts";
 export * from "./live.ts";
 export * from "./logMetrics.ts";

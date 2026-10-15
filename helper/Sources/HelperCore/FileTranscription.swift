@@ -165,6 +165,11 @@ public struct FileHeader: Equatable, Sendable {
     public let duration: Double
     /// ファイルの音声トラックの本数。文字にするのは最初の 1 本だけなので、2 本以上あることを知らせるために数える。
     public let audioTrackCount: Int
+
+    public init(duration: Double, audioTrackCount: Int) {
+        self.duration = duration
+        self.audioTrackCount = audioTrackCount
+    }
 }
 
 /// ファイルの長さと音声トラックの本数を読む。読めないファイルはここで失敗する（待ち受けを始める前に呼ぶ）。
@@ -184,36 +189,54 @@ public struct FileAudioInputs: AsyncSequence {
     public typealias Element = AnalyzerInput
 
     let url: URL
+    /// 揃える相手がいるとき（`cli recorded --self`）の、この読み手の操作口。nil なら待たずに読む。
+    let alignment: FileReadingAlignment.Reader?
 
-    init(url: URL) {
+    init(url: URL, alignment: FileReadingAlignment.Reader? = nil) {
         self.url = url
+        self.alignment = alignment
     }
 
     public func makeAsyncIterator() -> Iterator {
-        Iterator(url: url)
+        Iterator(url: url, alignment: alignment)
     }
 
     public struct Iterator: AsyncIteratorProtocol {
         let url: URL
+        let alignment: FileReadingAlignment.Reader?
         private var reading: Reading?
         private var finished = false
 
-        init(url: URL) {
+        init(url: URL, alignment: FileReadingAlignment.Reader?) {
             self.url = url
+            self.alignment = alignment
         }
 
         public mutating func next() async throws -> AnalyzerInput? {
             if finished { return nil }
-            if Task.isCancelled {
+            do {
+                if Task.isCancelled { throw CancellationError() }
+                if reading == nil { reading = try await Reading.open(url) }
+                guard let reading else { return nil }
+                // 次の入力の開始位置まで、もう一方の読み手が読み終えるのを待つ
+                try await alignment?.waitTurn(start: reading.position)
+                let input = try await onFileReadingQueue { try reading.nextInput() }
+                // 渡す入力の終わりまで、映像の判定が済むのを待つ（`onFileReadingQueue` の外）
+                if input != nil { try await alignment?.waitScreen(through: reading.position) }
+                if input == nil {
+                    finished = true
+                    await alignment?.finish()
+                } else {
+                    await alignment?.advance(to: reading.position)
+                }
+                return input
+            } catch {
+                // 失敗・キャンセルでも読み手は終わりとして数え、もう一方を待たせない
                 finished = true
                 reading?.reader.cancelReading()
-                throw CancellationError()
+                await alignment?.finish()
+                throw error
             }
-            if reading == nil { reading = try await Reading.open(url) }
-            guard let reading else { return nil }
-            let input = try await onFileReadingQueue { try reading.nextInput() }
-            if input == nil { finished = true }
-            return input
         }
     }
 
@@ -231,6 +254,9 @@ public struct FileAudioInputs: AsyncSequence {
         }
 
         deinit { reader.cancelReading() }
+
+        /// ここまでに渡した位置（ファイルの先頭からの秒）。次に渡す入力の開始位置でもある。
+        var position: Double { Double(framesRead) / source.sampleRate }
 
         /// 次の入力を読む。読み終えたら `nil`。同期で待つので `fileReadingQueue` の上で呼ぶ。
         func nextInput() throws -> AnalyzerInput? {
@@ -308,9 +334,12 @@ final class FileLoudness {
 
 /// `url` のファイルを `transcriber` で文字にする。区間がほぼ無音の結果（途中結果・確定結果とも）は、ファイルから音量を読み直して捨てる。
 /// 結果の時刻は `transcriber` が返したまま（ファイルの音声の時刻）。
-public func transcribeFile(at url: URL, with transcriber: any FileTranscriber) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
+/// `alignment` があれば、もう一方のファイルの読み手と同じ音声の時刻に揃えて読む（`cli recorded --self`）。
+public func transcribeFile(
+    at url: URL, with transcriber: any FileTranscriber, alignment: FileReadingAlignment.Reader? = nil
+) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
     let loudness = FileLoudness(source: try await FileAudioSource.open(url))
-    let results = try await transcriber.transcribe(FileAudioInputs(url: url))
+    let results = try await transcriber.transcribe(FileAudioInputs(url: url, alignment: alignment))
     let (stream, continuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self, throwing: Error.self)
     let task = Task {
         do {
