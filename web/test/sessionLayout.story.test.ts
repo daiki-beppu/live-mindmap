@@ -504,15 +504,15 @@ describe("sessionLayout の update: 知らせは種類ごとに別の Toast で�
 });
 
 describe("sessionLayout の update: 字幕・Toast に載せない知らせ", () => {
-  it("ChangedSpeaking で話している文字を置き換える。字幕は初めは出す側（隠していない）", () => {
+  it("ChangedCaptions で字幕を置き換える。字幕は初めは出す側（隠していない）", () => {
     expect(init().captionsHidden).toBe(false);
     story(
       update,
       given(init()),
-      message(Message.ChangedSpeaking({ speaking: { 相手: "議題は採用です。", 自分: "はい" } })),
-      model((m) => expect(m.speaking).toEqual({ 相手: "議題は採用です。", 自分: "はい" })),
-      message(Message.ChangedSpeaking({ speaking: { 相手: "", 自分: "" } })),
-      model((m) => expect(m.speaking).toEqual({ 相手: "", 自分: "" })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。", 自分: "はい" } } })),
+      model((m) => expect(m.captions).toEqual({ _tag: "Lines", speaking: { 相手: "議題は採用です。", 自分: "はい" } })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "", 自分: "" } } })),
+      model((m) => expect(m.captions).toEqual({ _tag: "Lines", speaking: { 相手: "", 自分: "" } })),
       Command.expectNone(),
     );
   });
@@ -533,10 +533,10 @@ describe("sessionLayout の update: 字幕・Toast に載せない知らせ", ()
     story(
       update,
       given(init()),
-      message(Message.ChangedSpeaking({ speaking: { 相手: "議題は採用です。", 自分: "" } })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。", 自分: "" } } })),
       message(Message.ToggledCaptions({ isOpen: false })),
-      message(Message.ChangedSpeaking({ speaking: { 相手: "議題は採用です。次へ。", 自分: "" } })),
-      model((m) => expect(m.speaking).toEqual({ 相手: "議題は採用です。次へ。", 自分: "" })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。次へ。", 自分: "" } } })),
+      model((m) => expect(m.captions).toEqual({ _tag: "Lines", speaking: { 相手: "議題は採用です。次へ。", 自分: "" } })),
     );
   });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { applyClose, applyFrame, applyOpen, createFeedState, type FeedState } from "../src/liveFeed.ts";
 import { intakeNoticeText } from "../src/intake.ts";
+import { spoken, spokenFrame } from "./fixtures/captions.ts";
 
 // Issue #161: frame の分類（type の有無・値）による状態更新と、再接続時の扱い。
 // frame の分類と状態の更新の規則（web/src/liveFeed.ts。Foldkit の受信 web/src/app/liveFeed/main.ts の update が使う）を、実コードとして直接検証する（CT-FRAME-DISPATCH）。
@@ -10,33 +11,33 @@ const snapshot: Snapshot = { nodes: [{ id: "root", parent: null, kind: "会議",
 
 describe("applyFrame（frame の分類と状態更新）", () => {
   it("[SCN-U-D-P1] 状態のフレームはスナップショットを上書きしない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "あ", 自分: "" }, intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
-    const next = applyFrame(state, { type: "intake", status: "interrupted" });
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("あ", ""), intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    const next = applyFrame(state, { type: "intake", status: "interrupted" }, 0);
     expect(next.intake).toBe("interrupted");
     expect(next.snapshot).toBe(snapshot);
-    expect(next.speaking).toEqual({ 相手: "あ", 自分: "" });
+    expect(next.captions).toEqual(spoken("あ", ""));
   });
 
   it("[SCN-U-D-N1] type を持たないフレームはスナップショットとして反映される", () => {
-    const state: FeedState = { diffUpdate: null, snapshot: null, speaking: { 相手: "", 自分: "" }, intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    const state: FeedState = { diffUpdate: null, snapshot: null, captions: spoken("", ""), intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
     const incoming: Snapshot = { nodes: [{ id: "n1", parent: null, kind: "会議", text: "x", evidence: [] }], round: 1, changes: [], remarks: [] };
-    const next = applyFrame(state, incoming);
+    const next = applyFrame(state, incoming, 0);
     expect(next.snapshot).toEqual(incoming);
     expect(next.intake).toBe("interrupted");
   });
 
   it("[SCN-U-D-P2] 知らない type のフレームは何も変えない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "あ", 自分: "い" }, intake: "stopped", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
-    // 将来の拡張の type を想定した、知らない type のフレーム（Snapshot | SpeakingFrame | IntakeFrame の型には無い値だが、
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("あ", "い"), intake: "stopped", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    // 将来の拡張の type を想定した、知らない type のフレーム（Snapshot | CaptionsFrame | IntakeFrame の型には無い値だが、
     // サーバーが将来送り得る未知の type をブラウザが無視できることを確かめるため、あえて union の外の値を渡す）
-    const next = applyFrame(state, { type: "unknown-future" } as unknown as Parameters<typeof applyFrame>[1]);
+    const next = applyFrame(state, { type: "unknown-future" } as unknown as Parameters<typeof applyFrame>[1], 0);
     expect(next).toEqual(state);
   });
 
-  it("[SCN-U-D-N2] speaking のフレームはトラックの文字だけを変える", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "", 自分: "まえのはつわ" }, intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
-    const next = applyFrame(state, { type: "speaking", track: "相手", text: "あ" });
-    expect(next.speaking).toEqual({ 相手: "あ", 自分: "まえのはつわ" });
+  it("[SCN-U-D-N2] captions のフレームは字幕の吹き出しだけを変える", () => {
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("", "まえのはつわ"), intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    const next = applyFrame(state, spokenFrame("あ", "相手"), 0);
+    expect(next.captions).toEqual(spoken("あ", "")); // フレームは吹き出しの並びの全体なので、前の吹き出しは置き換わる
     expect(next.snapshot).toBe(snapshot);
     expect(next.intake).toBe("running");
   });
@@ -44,15 +45,15 @@ describe("applyFrame（frame の分類と状態更新）", () => {
 
 describe("applyOpen（再接続直後の扱い）", () => {
   it("[SCN-U-A-P1] 再接続しても途切れの一言が途切れない（intake を保つ）", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "のこり", 自分: "" }, intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("のこり", ""), intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
     const next = applyOpen(state);
     expect(next.intake).toBe("interrupted"); // 旧コード（intake を既定値へ戻す）だと "running" になり、ここが赤くなる
   });
 
   it("[SCN-U-A-N1] 再接続は字幕だけを空に戻す", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "のこりのもじ", 自分: "" }, intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("のこりのもじ", ""), intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
     const next = applyOpen(state);
-    expect(next.speaking).toEqual({ 相手: "", 自分: "" });
+    expect(next.captions).toEqual(spoken("", ""));
     expect(next.intake).toBe("running");
     expect(next.snapshot).toBe(snapshot);
   });
@@ -60,17 +61,17 @@ describe("applyOpen（再接続直後の扱い）", () => {
 
 describe("screen-notice（共有画面を使っていないことの一文。Issue #280）", () => {
   it("text を持つフレームは知らせの文だけを変え、スナップショット・字幕・取り込みの状態は変えない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "あ", 自分: "い" }, intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
-    const next = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" });
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("あ", "い"), intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false };
+    const next = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" }, 0);
     expect(next.screenNotice).toBe("共有画面は使っていません");
     expect(next.snapshot).toBe(snapshot);
-    expect(next.speaking).toEqual({ 相手: "あ", 自分: "い" });
+    expect(next.captions).toEqual(spoken("あ", "い"));
     expect(next.intake).toBe("interrupted");
   });
 
   it("text が null のフレームで知らせが消える", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "", 自分: "" }, intake: "running", screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
-    const next = applyFrame(state, { type: "screen-notice", text: null });
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("", ""), intake: "running", screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
+    const next = applyFrame(state, { type: "screen-notice", text: null }, 0);
     expect(next.screenNotice).toBeNull();
     expect(next.snapshot).toBe(snapshot);
     expect(next.intake).toBe("running");
@@ -78,14 +79,14 @@ describe("screen-notice（共有画面を使っていないことの一文。Iss
 
   it("スナップショット・字幕・取り込みのフレームは、出ている知らせを消さない", () => {
     let state: FeedState = { ...createFeedState(), screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
-    state = applyFrame(state, { type: "speaking", track: "相手", text: "あ" });
-    state = applyFrame(state, { type: "intake", status: "interrupted" });
-    state = applyFrame(state, snapshot);
+    state = applyFrame(state, spokenFrame("あ", "相手"), 0);
+    state = applyFrame(state, { type: "intake", status: "interrupted" }, 0);
+    state = applyFrame(state, snapshot, 0);
     expect(state.screenNotice).toBe("共有画面は使っていません");
   });
 
   it("再接続（applyOpen）で、出ていた知らせを null に戻す（切れている間に消すフレームを取りこぼしても古い一文が残らない）", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "のこり", 自分: "" }, intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("のこり", ""), intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
     const next = applyOpen(state);
     expect(next.screenNotice).toBeNull();
     expect(next.intake).toBe("interrupted");
@@ -94,11 +95,11 @@ describe("screen-notice（共有画面を使っていないことの一文。Iss
 
   it("同じ状態の上で、知らせ → 再接続 → 保持されていた知らせの再送、と続けて観測できる", () => {
     let state = createFeedState();
-    state = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" });
+    state = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" }, 0);
     expect(state.screenNotice).not.toBeNull();
     state = applyOpen(state);
     expect(state.screenNotice).toBeNull();
-    state = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" });
+    state = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" }, 0);
     expect(state.screenNotice).toBe("共有画面は使っていません");
   });
 });
@@ -106,43 +107,43 @@ describe("screen-notice（共有画面を使っていないことの一文。Iss
 describe("applyClose（接続が閉じたときの扱い。Issue #280）", () => {
   it("通知を受信した後に接続が閉じ、再接続しない間は、通知が残らない", () => {
     let state = createFeedState();
-    state = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" });
+    state = applyFrame(state, { type: "screen-notice", text: "共有画面は使っていません" }, 0);
     expect(state.screenNotice).toBe("共有画面は使っていません");
     state = applyClose(state);
     expect(state.screenNotice).toBeNull();
   });
 
   it("スナップショット・字幕・取り込みの状態は変えない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "のこり", 自分: "" }, intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("のこり", ""), intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false };
     const next = applyClose(state);
     expect(next.snapshot).toBe(snapshot);
-    expect(next.speaking).toEqual({ 相手: "のこり", 自分: "" });
+    expect(next.captions).toEqual(spoken("のこり", ""));
     expect(next.intake).toBe("interrupted");
   });
 });
 
 describe("createFeedState（初期値）", () => {
   it("スナップショットなし・字幕は空・取り込みは running・共有画面の知らせなし（まだフレームを受け取っていないときの既定値）", () => {
-    expect(createFeedState()).toEqual({ snapshot: null, speaking: { 相手: "", 自分: "" }, intake: "running", screenNotice: null, tapNotice: null, diffUpdate: null, local: false, selfPaused: false });
+    expect(createFeedState()).toEqual({ snapshot: null, captions: spoken("", ""), intake: "running", screenNotice: null, tapNotice: null, diffUpdate: null, local: false, selfPaused: false });
   });
 });
 
 // mode 通知は独立した状態。変更前の字幕・マップを保持したまま同じ feed で表示を出し入れする。
 describe("ローカルモードの通知", () => {
   it("開始・切断・再接続の再送・終了へ追従し、他の配信状態を変えない", () => {
-    let state: FeedState = { ...createFeedState(), snapshot, speaking: { 相手: "字幕", 自分: "" }, intake: "interrupted" };
+    let state: FeedState = { ...createFeedState(), snapshot, captions: spoken("字幕", ""), intake: "interrupted" };
     expect(state.local).toBe(false);
-    state = applyFrame(state, { type: "session-mode", local: true });
+    state = applyFrame(state, { type: "session-mode", local: true }, 0);
     expect(state.local).toBe(true);
     expect(state.snapshot).toEqual(snapshot);
-    expect(state.speaking).toEqual({ 相手: "字幕", 自分: "" });
+    expect(state.captions).toEqual(spoken("字幕", ""));
     expect(state.intake).toBe("interrupted");
     state = applyClose(state);
     expect(state.local).toBe(false);
     state = applyOpen(state);
-    state = applyFrame(state, { type: "session-mode", local: true });
+    state = applyFrame(state, { type: "session-mode", local: true }, 0);
     expect(state.local).toBe(true);
-    state = applyFrame(state, { type: "session-mode", local: false });
+    state = applyFrame(state, { type: "session-mode", local: false }, 0);
     expect(state.local).toBe(false);
     expect(state.snapshot).toEqual(snapshot);
   });
@@ -153,27 +154,27 @@ describe("applyFrame: self-pause（自分の休止）", () => {
   it("休止の frame で理由になり、休止中に理由だけ変わればその理由に置き換わり、再開の frame で false に戻る（同じ状態の上で連続して観測する）", () => {
     let state: FeedState = createFeedState();
     expect(state.selfPaused).toBe(false);
-    state = applyFrame(state, { type: "self-pause", paused: true, reason: "手動" });
+    state = applyFrame(state, { type: "self-pause", paused: true, reason: "手動" }, 0);
     expect(state.selfPaused).toBe("手動");
-    state = applyFrame(state, { type: "self-pause", paused: true, reason: "手動" });
+    state = applyFrame(state, { type: "self-pause", paused: true, reason: "手動" }, 0);
     expect(state.selfPaused).toBe("手動");
-    state = applyFrame(state, { type: "self-pause", paused: true, reason: "自動" });
+    state = applyFrame(state, { type: "self-pause", paused: true, reason: "自動" }, 0);
     expect(state.selfPaused).toBe("自動");
-    state = applyFrame(state, { type: "self-pause", paused: false });
+    state = applyFrame(state, { type: "self-pause", paused: false }, 0);
     expect(state.selfPaused).toBe(false);
   });
 
   it("スナップショット・字幕・取り込みの状態・各知らせ・モードは変えない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "あ", 自分: "い" }, intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: "相手の音声が届いていません", local: true, selfPaused: false };
-    expect(applyFrame(state, { type: "self-pause", paused: true, reason: "自動" })).toEqual({ ...state, selfPaused: "自動" });
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("あ", "い"), intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: "相手の音声が届いていません", local: true, selfPaused: false };
+    expect(applyFrame(state, { type: "self-pause", paused: true, reason: "自動" }, 0)).toEqual({ ...state, selfPaused: "自動" });
   });
 
   it("他の frame は休止の状態に触れない", () => {
     const state: FeedState = { ...createFeedState(), selfPaused: "自動" };
-    expect(applyFrame(state, { type: "intake", status: "interrupted" }).selfPaused).toBe("自動");
-    expect(applyFrame(state, { type: "tap-notice", text: null }).selfPaused).toBe("自動");
-    expect(applyFrame(state, { type: "speaking", track: "自分", text: "は" }).selfPaused).toBe("自動");
-    expect(applyFrame(state, snapshot).selfPaused).toBe("自動");
+    expect(applyFrame(state, { type: "intake", status: "interrupted" }, 0).selfPaused).toBe("自動");
+    expect(applyFrame(state, { type: "tap-notice", text: null }, 0).selfPaused).toBe("自動");
+    expect(applyFrame(state, spokenFrame("は", "自分"), 0).selfPaused).toBe("自動");
+    expect(applyFrame(state, snapshot, 0).selfPaused).toBe("自動");
   });
 
   it("つなぎ直し（close・open）で false に戻る。つなぎ直せば server が保持値を送り直す", () => {
@@ -195,7 +196,7 @@ describe("再接続からセッション終了までの一言（Issue #161 U-G�
     let state: FeedState = createFeedState();
 
     // 取り込みが途切れ、一言が出ている（守っている状態に先に到達する）
-    state = applyFrame(state, { type: "intake", status: "interrupted" });
+    state = applyFrame(state, { type: "intake", status: "interrupted" }, 0);
     expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
     // 接続し直す（applyOpen）。intake は直前の値のまま保たれる
@@ -206,7 +207,7 @@ describe("再接続からセッション終了までの一言（Issue #161 U-G�
     expect(noticeOf(state)).toBe("音声の取り込みが途切れました。再開しています");
 
     // [SCN-U-G-P2] サーバーが保持していた {type:"intake",status:"none"} を受け取ると、一言が無くなる
-    state = applyFrame(state, { type: "intake", status: "none" });
+    state = applyFrame(state, { type: "intake", status: "none" }, 0);
     expect(noticeOf(state)).toBeNull();
   });
 });
@@ -219,28 +220,28 @@ describe("applyFrame: tap-notice（相手の音声が届かない一文）", () 
   it("文のフレームで出て、続く null のフレームで消える（同じ状態の上で連続して観測する）", () => {
     let state: FeedState = createFeedState();
     expect(state.tapNotice).toBeNull();
-    state = applyFrame(state, { type: "tap-notice", text });
+    state = applyFrame(state, { type: "tap-notice", text }, 0);
     expect(state.tapNotice).toBe(text);
-    state = applyFrame(state, { type: "tap-notice", text: null });
+    state = applyFrame(state, { type: "tap-notice", text: null }, 0);
     expect(state.tapNotice).toBeNull();
   });
 
   it("消えた後でも、次の文のフレームでまた出る（起動し直した回でも届かなければ出し直す）", () => {
     let state: FeedState = createFeedState();
-    state = applyFrame(state, { type: "tap-notice", text });
-    state = applyFrame(state, { type: "tap-notice", text: null });
-    state = applyFrame(state, { type: "tap-notice", text });
+    state = applyFrame(state, { type: "tap-notice", text }, 0);
+    state = applyFrame(state, { type: "tap-notice", text: null }, 0);
+    state = applyFrame(state, { type: "tap-notice", text }, 0);
     expect(state.tapNotice).toBe(text);
   });
 
   it("共有画面の一文・字幕・取り込みの状態は変えず、共有画面の一文の消去は tap-notice に触れない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, speaking: { 相手: "あ", 自分: "い" }, intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: text, local: false, selfPaused: false };
-    const shown = applyFrame(state, { type: "tap-notice", text });
+    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("あ", "い"), intake: "interrupted", screenNotice: "共有画面は使っていません", tapNotice: text, local: false, selfPaused: false };
+    const shown = applyFrame(state, { type: "tap-notice", text }, 0);
     expect(shown).toEqual(state);
-    const screenCleared = applyFrame(state, { type: "screen-notice", text: null });
+    const screenCleared = applyFrame(state, { type: "screen-notice", text: null }, 0);
     expect(screenCleared.screenNotice).toBeNull();
     expect(screenCleared.tapNotice).toBe(text);
-    const tapCleared = applyFrame(state, { type: "tap-notice", text: null });
+    const tapCleared = applyFrame(state, { type: "tap-notice", text: null }, 0);
     expect(tapCleared).toEqual({ ...state, tapNotice: null });
   });
 

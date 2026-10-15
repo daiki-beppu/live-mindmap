@@ -5,7 +5,10 @@
 export const SEMANTIC_CLASSES: ReadonlySet<string> = new Set([
   "captions",
   "captions__block",
+  "captions__bubble",
   "captions__line",
+  "captions__name",
+  "captions__row",
   "captions__lines",
   "captions__track",
   "capture",

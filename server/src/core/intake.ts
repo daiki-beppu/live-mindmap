@@ -8,7 +8,7 @@ import type { SpeakerLogEvent } from "./live.ts";
 export const SessionIntakeStatus = Schema.Literals(["none", "running", "interrupted", "stopped"]);
 export type SessionIntakeStatus = typeof SessionIntakeStatus["Type"];
 
-// ブラウザへ送る、取り込みの状態のフレーム。スナップショット（type なし）・speaking（type: "speaking"）とは type で見分ける。
+// ブラウザへ送る、取り込みの状態のフレーム。スナップショット（type なし）・captions（type: "captions"）とは type で見分ける。
 // status は cli status と同じ語彙（SessionIntakeStatus）を使う。"none" は、セッションが終わったことを伝える専用の値で、
 // "running" とは区別する。接続を保ったクライアントは、直前が interrupted/stopped だった状態から "running" へ変わると
 // 「再開しました」と解釈する（intakeNoticeText）ため、セッションが終わっただけのときに "running" を送ると、終わったのに

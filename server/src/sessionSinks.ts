@@ -8,14 +8,14 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, createPacer, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type Remark, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { correctRemark, createPacer, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
 import { createRecordedBacklog } from "./recordedBacklog.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
-import { createSpeakingRelay } from "./speakingRelay.ts";
+import { createSpeakingRelay, type CaptionContext } from "./speakingRelay.ts";
 import { errorMessage } from "./truthFile.ts";
 
 // 開いたセッション 1 つ。ヘルパーに依らず、起動し直しをまたいで 1 つを使い続ける
@@ -72,7 +72,7 @@ export type OpenSessionSink = {
   title: string | undefined; // 省略したときは、セッションのフォルダ名（開始時刻）
   logShiftMs?: number; // log.jsonl の時刻に足す幅（録画からのセッションが作成日時へそろえる）。省略は 0
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
-  speak: (frame: SpeakingFrame) => Effect.Effect<void>;
+  speak: (frame: CaptionsFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   // 録画からのセッションのとき（cli recorded）だけ渡す。締めた発言はすぐ入れず溜め、1 発言入れて差分更新が終わるたびに progress を呼ぶ。
   // いま話している文字（字幕）はヘルパーの途中結果ではなく、入れた位置で出す
@@ -85,6 +85,7 @@ type CorrectedRemark = {
   rest: Omit<SettledRemark, "words" | "wordTimes">;
   original: { raw: string; words: NonNullable<SettledRemark["words"]> } | undefined;
   wordTimes: SettledRemark["wordTimes"];
+  replacements: readonly Replacement[]; // 語彙で直した置き換え（字幕の表へ入れる）。直さなかった発言は空
 };
 
 // 録画からのセッションの溜まりの要素。発言と共有画面の変化は、同じ列に音声の時刻の順で並べて同じ時計で入れる。
@@ -133,9 +134,26 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
-          // relay を先に作る。unreflected は session ができた後（onDiff が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
+          // relay を先に作る。context は session と settling ができた後（onDiff・途中結果が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
           // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
-          const relay = yield* createSpeakingRelay({ unreflected: Effect.suspend((): Effect.Effect<Remark[]> => session.unreflectedRemarks), send: speak });
+          // 字幕用の表（発言の id → 補正前の本文・補正前の位置の wordTimes・置き換え）。Remark には入れず、未反映の発言を盤へ渡すときだけ上書きする。
+          // 字幕用の本文と位置は、表示済みの吹き出しの境目を持つ盤が作る
+          const captionTexts = yield* Ref.make<ReadonlyMap<string, { readonly text: string; readonly wordTimes: readonly WordTime[]; readonly replacements: readonly Replacement[] }>>(new Map());
+          const relay = yield* createSpeakingRelay({
+            context: Effect.suspend((): Effect.Effect<CaptionContext> =>
+              Effect.zipWith(session.unreflectedRemarks, Ref.get(captionTexts), (remarks, captions): CaptionContext => ({
+                unreflected: remarks.map(({ id, ...remark }) => {
+                  const caption = captions.get(id);
+                  return caption === undefined ? { id, remark } : { id, remark: { ...remark, text: caption.text, wordTimes: caption.wordTimes }, replacements: caption.replacements };
+                }),
+                // 録画のセッションは、先読みした発言を字幕に出さない（反映までは出ない）
+                held: backlog === undefined ? settling.preview.heldRemarks() : [],
+                intervals: settling.preview.segments(),
+                previewLabel: settling.preview.label,
+              })),
+            ),
+            send: speak,
+          });
           // 記録つきセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
           const { session, appendLog: appendRecordedLog } = yield* openRecordedSession({
             dir,
@@ -160,16 +178,24 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const correct = (settled: SettledRemark) =>
             Effect.gen(function* () {
               const { words, wordTimes, ...rest } = settled;
-              if (words === undefined) return { rest, original: undefined, wordTimes } satisfies CorrectedRemark;
+              if (words === undefined) return { rest, original: undefined, wordTimes, replacements: [] } satisfies CorrectedRemark;
               const effective = (yield* Ref.get(vocabulary)).filter((w) => w.from === undefined || w.from < rest.end);
-              const text = correctRemark(effective, rest.text, words, commonWords).text;
-              return { rest: { ...rest, text }, original: { raw: rest.text, words }, wordTimes } satisfies CorrectedRemark;
+              const { text, replacements } = correctRemark(effective, rest.text, words, commonWords);
+              return { rest: { ...rest, text }, original: { raw: rest.text, words }, wordTimes, replacements } satisfies CorrectedRemark;
             });
           // 直した発言を、採番してセッションへ入れる（ログの remark の行・差分更新・字幕）
-          const admit = ({ rest, original, wordTimes }: CorrectedRemark) =>
+          const admit = ({ rest, original, wordTimes, replacements }: CorrectedRemark) =>
             Effect.gen(function* () {
               const n = yield* Ref.updateAndGet(count, (c) => c + 1);
-              yield* session.push({ ...rest, id: `r${n}` }, original, wordTimes);
+              const id = `r${n}`;
+              // 補正前の本文・位置と置き換えは、表へ入れる（session.push の前に。push で未反映になった発言を盤が時刻つきで受けるため）。
+              // 未反映でなくなった発言の項目は、ここで捨てる
+              if (wordTimes !== undefined) {
+                const unreflected = new Set((yield* session.unreflectedRemarks).map((r) => r.id));
+                const entry = { text: original?.raw ?? rest.text, wordTimes, replacements };
+                yield* Ref.update(captionTexts, (table) => new Map([...table].filter(([key]) => unreflected.has(key)).concat([[id, entry]])));
+              }
+              yield* session.push({ ...rest, id }, original, wordTimes);
               yield* relay.remark(rest.track);
             });
           // 録画からのセッションは、溜めた順に入れる。待ち時間なしは、発言を入れたあと差分更新の終わりを待ってから次を入れる。
@@ -292,9 +318,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
 
           return {
             dir,
-            partial: (p) => backlog === undefined ? Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)) : settling.partial(p),
+            partial: (p) => backlog === undefined ? Effect.andThen(relay.partial(p), settling.partial(p)) : settling.partial(p),
             final: (r) => settling.final(r),
-            speaker: (event) => Effect.andThen(appendRecordedLog(event), settling.speaker(event)),
+            speaker: (event) => Effect.andThen(Effect.andThen(appendRecordedLog(event), settling.speaker(event)), backlog === undefined ? relay.speaker(event) : Effect.void),
             screen: (change) => backlog === undefined
               ? Effect.andThen(pushScreenChange(change), requestScreenVocabulary(change.lines))
               : Effect.andThen(requestScreenVocabulary(change.lines, change.start), enqueueScreen({ kind: "screen", change })),

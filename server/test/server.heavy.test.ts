@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "@effect/vitest";
 import { ConfigProvider, Console, Effect, Layer } from "effect";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
-import type { DiffInput, Op, Snapshot, SpeakingFrame } from "../src/core/index.ts";
+import type { DiffInput, Op, Snapshot, CaptionsFrame } from "../src/core/index.ts";
 import { HELPER_RUN_STDERR_TAIL_LINES } from "../src/core/index.ts";
 import { HELPER_STOP_TIMEOUT_MS } from "../src/helpers.ts";
 import { ReviewBuild } from "../src/review.ts";
@@ -22,7 +22,7 @@ import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 // Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約 6 本だけに絞る
 // （order.md:40-46、CT-TEST-SPLIT）。偽の Layer・TestClock で確かめられる振る舞い（起動し直しの回数・
-// resume・argv・stop/close の重なり・updater の開閉・speaking・状態のフレーム・cli status 等）は
+// resume・argv・stop/close の重なり・updater の開閉・captions・状態のフレーム・cli status 等）は
 // server/test/sessions.test.ts・sessionSinks.it.test.ts・http.it.test.ts に移した。このファイルに残るのは、
 // 実物の子プロセス・実物の HTTP・実物の WebSocket を通さないと確かめられない契約だけ。
 
@@ -122,10 +122,10 @@ const connect = (port: number) =>
   Effect.gen(function* () {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   const received: Snapshot[] = [];
-  const speaking: SpeakingFrame[] = [];
+  const captions: CaptionsFrame[] = [];
   ws.addEventListener("message", (e) => {
     const frame = JSON.parse(String(e.data));
-    if (frame.type === "speaking") speaking.push(frame);
+    if (frame.type === "captions") captions.push(frame);
     else if (!("type" in frame)) received.push(frame);
   });
   yield* Effect.acquireRelease(Effect.void, () => Effect.sync(() => ws.close()));
@@ -136,7 +136,7 @@ const connect = (port: number) =>
         ws.addEventListener("error", () => reject(new Error("接続できない")));
       }),
   );
-  return { ws, received, speaking };
+  return { ws, received, captions };
   });
 
 const logEvents = (dir: string) =>

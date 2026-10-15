@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
 import { Helpers, type HelperExitInfo } from "../../src/helpers.ts";
 import { SessionSinks } from "../../src/sessionSinks.ts";
-import type { SpeakingFrame } from "../../src/core/index.ts";
+import type { CaptionsFrame } from "../../src/core/index.ts";
 import { appleModel, fakeAppleLifecycle } from "./appleLifecycle.ts";
 import { fakeExportServices } from "./exportServices.ts";
 import { readyManagedDeps } from "./readyManagedDeps.ts";
@@ -22,7 +22,7 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
     yield* Effect.addFinalizer(() => stop);
     return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(ended), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }) }));
-  const speaking = yield* Deferred.make<(frame: SpeakingFrame) => Effect.Effect<void>>();
+  const speaking = yield* Deferred.make<(frame: CaptionsFrame) => Effect.Effect<void>>();
   const realSinks = SessionSinks.layer<never>({ prepareUpdater: () => fake.prepare }).pipe(Layer.provide(fakeExportServices()));
   const sinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
     const service = yield* SessionSinks;
@@ -38,6 +38,6 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
     start: post("/session/start", { app: "us.zoom.xos", audio: false, screen: false, model: appleModel }),
     stop: post("/session/stop", {}),
     emit: (event: object) => Queue.offer(events, JSON.stringify(event)),
-    speak: (frame: SpeakingFrame) => Effect.flatMap(Deferred.await(speaking), (send) => send(frame)),
+    speak: (frame: CaptionsFrame) => Effect.flatMap(Deferred.await(speaking), (send) => send(frame)),
   };
 });

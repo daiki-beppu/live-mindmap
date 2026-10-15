@@ -4,7 +4,7 @@
 // 先に購読してから保持している値を送る（逆にすると、保持値を送っている間に来た値を取りこぼす）。切れたら Fiber ごと終わる。
 import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref } from "effect";
 import { Socket } from "effect/socket";
-import type { DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, Snapshot, SpeakingFrame, TapNoticeFrame, Track } from "./core/index.ts";
+import type { CaptionsFrame, DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, Snapshot, TapNoticeFrame } from "./core/index.ts";
 
 // 配信の終わり。これを受け取った接続は、先に届いていたフレームを書いてから終わる（drained が使う）
 const FEED_END = Symbol("live-mindmap/server/Viewers/end");
@@ -14,9 +14,9 @@ type Feed = string | typeof FEED_END;
 type Retained = {
   readonly diffUpdate: string | undefined;
   readonly snapshot: string | undefined;
-  // いま話している文字は、トラックごとに最後に送った値だけを持ち、空でなければ、つないだ直後に送り直す
-  // （スナップショットには入れない）。Map の並びは最初に送った順で、送り直す順もこれに従う
-  readonly speaking: ReadonlyMap<Track, string>;
+  // いま話している文字（字幕の吹き出しの並び）は、最後に送った frame だけを持ち、吹き出しが 1 つでもあれば、つないだ直後に送り直す
+  // （スナップショットには入れない）
+  readonly captions: string | undefined;
   // 取り込みの状態（途切れている／止まった／動いている／セッションが終わった）。最後に送った状態は status に
   // 関わらず保持し、後から接続した（再接続を含む）クライアントにも今の状態が届く（CT-LATE-JOIN）。
   // 「今の取り込み状態」の正本はサーバーにあり、途中から・再接続で繋いだブラウザが実フレームを受け取るまで
@@ -35,11 +35,11 @@ type Retained = {
   readonly sessionMode: string | undefined;
 };
 
-const NOTHING_RETAINED: Retained = { snapshot: undefined, speaking: new Map(), intake: undefined, screenNotice: undefined, tapNotice: undefined, diffUpdate: undefined, selfPause: undefined, sessionMode: undefined };
+const NOTHING_RETAINED: Retained = { snapshot: undefined, captions: undefined, intake: undefined, screenNotice: undefined, tapNotice: undefined, diffUpdate: undefined, selfPause: undefined, sessionMode: undefined };
 
 const retainedFrames = (retained: Retained): string[] => [
   ...(retained.snapshot === undefined ? [] : [retained.snapshot]),
-  ...retained.speaking.values(),
+  ...(retained.captions === undefined ? [] : [retained.captions]),
   ...(retained.intake === undefined ? [] : [retained.intake]),
   ...(retained.screenNotice === undefined ? [] : [retained.screenNotice]),
   ...(retained.tapNotice === undefined ? [] : [retained.tapNotice]),
@@ -50,8 +50,8 @@ const retainedFrames = (retained: Retained): string[] => [
 
 export class Viewers extends Context.Service<Viewers, {
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
-  // いま話している文字を、つないでいるクライアントへ送る。空の文字は送るが保持しない（つなぎ直したときに送り返さない）
-  speak: (frame: SpeakingFrame) => Effect.Effect<void>;
+  // いま話している文字（吹き出しの並び）を、つないでいるクライアントへ送る。空の並びは送るが保持しない（つなぎ直したときに送り返さない）
+  speak: (frame: CaptionsFrame) => Effect.Effect<void>;
   intake: (frame: IntakeFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   // 共有画面を使っていないことの一文を送る。text が null なら一文を消し、保持も消す（消した後につないだクライアントには送らない）
@@ -84,14 +84,9 @@ export class Viewers extends Context.Service<Viewers, {
       return send(data, (current) => ({ ...current, snapshot: data }));
     };
 
-    const speak = (frame: SpeakingFrame) => {
+    const speak = (frame: CaptionsFrame) => {
       const data = JSON.stringify(frame);
-      return send(data, (current) => {
-        const speaking = new Map(current.speaking);
-        if (frame.text === "") speaking.delete(frame.track);
-        else speaking.set(frame.track, data);
-        return { ...current, speaking };
-      });
+      return send(data, (current) => ({ ...current, captions: frame.bubbles.length === 0 ? undefined : data }));
     };
 
     const intake = (frame: IntakeFrame) => {

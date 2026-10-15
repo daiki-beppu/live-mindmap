@@ -54,11 +54,14 @@ const program = Effect.gen(function* () {
   const sessionsDir = join(root, "sessions");
   const scriptPath = join(root, "script.json");
   const recordPath = join(root, "record.jsonl");
-  const fixture = JSON.parse(readFileSync(join(e2eDir, "fixtures/meeting.json"), "utf8")) as { apps: unknown; events: unknown[] };
-  // CI のランナーには話者分離のモデルが無いので、本物のヘルパーは最初に speaker-off を流す。流さないと、相手の発言が
-  // 話者の区間を待って保留され（Issue #1021）、後ろに結果が届かない最後の発言が字幕に出ない
-  const speakerOff = { type: "speaker-off", start: 0, reason: "モデルなし" };
-  writeFileSync(scriptPath, JSON.stringify({ apps: fixture.apps, events: [speakerOff, ...fixture.events.slice(0, eventCount)] }));
+  const fixture = JSON.parse(readFileSync(join(e2eDir, "fixtures/meeting.json"), "utf8")) as { apps: unknown; events: unknown[]; speakers: { before: number; [key: string]: unknown }[] };
+  // 話者のイベント（speaker / speaker-settled）は、台本の発言（remark / partial）の前に挟む。before はその発言の番号（先頭から数える）。
+  // 流す範囲（先頭から eventCount 件）の発言に掛かるものだけを入れる。話者の区間が揃わない相手の発言は保留され（Issue #1021）、
+  // 後ろに結果が届かない最後の発言が字幕に出ないので、台本の相手の発言には必ず区間を付けてある
+  const playedEvents = fixture.events.slice(0, eventCount).flatMap((event, index) =>
+    [...fixture.speakers.filter((speaker) => speaker.before === index).map(({ before: _before, ...speaker }) => speaker), event],
+  );
+  writeFileSync(scriptPath, JSON.stringify({ apps: fixture.apps, events: playedEvents }));
   writeFileSync(recordPath, "");
 
   const helper = { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };

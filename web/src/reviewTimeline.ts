@@ -1,5 +1,5 @@
 import { reviewSnapshot, topicOf, type LogEvent, type Remark, type Snapshot } from "../../server/src/core/index.ts";
-import type { Speaking } from "./liveFeed.ts";
+import type { Speaking } from "./captions.ts";
 
 // 見返しの時間軸（純粋なモジュール）。ログの出来事の配列から、時刻 t のスナップショット・字幕・反映の時刻を導く。
 // 時刻の軸は発言の end（会議の中の秒）。ログの at は使わない。

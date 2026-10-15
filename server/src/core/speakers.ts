@@ -11,7 +11,7 @@ export const SPEAKER_WAIT_MS = 3000;
 const MIN_RUN_SECONDS = 0.5;
 const EPSILON = 1e-6;
 
-type Segment = { readonly start: number; readonly end: number; readonly slot: number };
+export type Segment = { readonly start: number; readonly end: number; readonly slot: number };
 export type SpeakerCut = { remark: SettledRemark; slot: number | undefined };
 
 // 判定の単位。語の区間（wordTimes）の 1 つ。location は本文の位置
@@ -22,7 +22,7 @@ type Run = { slot: number; first: number; last: number };
 const overlap = (aStart: number, aEnd: number, bStart: number, bEnd: number) => Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
 
 // [start, end] に最も長く重なる枠。同じ枠の区間は合計で比べ、同じ長さなら小さい枠。重なりが無ければ undefined
-const longestOverlap = (start: number, end: number, segments: readonly Segment[]): number | undefined => {
+export const longestOverlap = (start: number, end: number, segments: readonly Segment[]): number | undefined => {
   const totals = new Map<number, number>();
   for (const s of segments) {
     const o = overlap(start, end, s.start, s.end);
@@ -170,6 +170,15 @@ export function createSpeakerAttribution() {
   let clock = 0; // 音声の時計（ミリ秒）。戻らない
   const labels = new Map<number, string>();
   const held: Held[] = [];
+  // 字幕のための仮の区間（Issue #1022）。ヘルパーは更新ごとに「確定区間 → 仮の区間 → speaker-settled」の順に流すので、
+  // 仮の区間は届いた分をためておき、speaker-settled でその更新ぶんに入れ替える。発言の判定には使わない
+  let provisional: Segment[] = [];
+  let incoming: Segment[] = [];
+  // 区間に現れた枠の、初めて現れた順。まだラベルを振っていない枠の予想に使う
+  const seenSlots: number[] = [];
+  const see = (slot: number) => {
+    if (!seenSlots.includes(slot)) seenSlots.push(slot);
+  };
 
   const labelOf = (slot: number): string => {
     const known = labels.get(slot);
@@ -219,15 +228,37 @@ export function createSpeakerAttribution() {
       if (off) return [];
       if (event.type === "speaker-off") {
         off = true;
+        provisional = [];
+        incoming = [];
         return held.splice(0).map((h) => h.remark);
       }
       if (event.track !== "相手") return [];
       if (event.type === "speaker-settled") {
         settledTo = Math.max(settledTo, event.to);
+        provisional = incoming;
+        incoming = [];
         return release();
       }
+      see(event.slot);
       if (event.final) segments.push({ start: event.start, end: event.end, slot: event.slot });
+      else incoming.push({ start: event.start, end: event.end, slot: event.slot });
       return [];
+    },
+
+    // 字幕のための覗き。話者が決まるのを待っている発言（出す前なので、読むだけ）
+    heldRemarks: (): SettledRemark[] => held.map((h) => h.remark),
+
+    // 字幕のための覗き。確定した区間と、いまの仮の区間
+    previewSegments: (): Segment[] => [...segments, ...provisional],
+
+    // 字幕のための覗き。振ったラベルがあればそれを、無ければ「まだ振っていない枠の中で、初めて現れた順」の予想を返す。labels は書き換えない
+    // （仮のラベルを発言に使わない。発言のラベルは、初めて話した順に labelOf だけが振る）
+    previewLabel(slot: number): string {
+      const known = labels.get(slot);
+      if (known !== undefined) return known;
+      const unassigned = seenSlots.filter((s) => !labels.has(s));
+      const rank = unassigned.indexOf(slot);
+      return `相手 ${letters(labels.size + (rank < 0 ? unassigned.length : rank))}`;
     },
 
     // 停止時。保留を待たずにすべて出す。揃っていれば規則を当て、揃っていなければ話者なし。状態は捨てない

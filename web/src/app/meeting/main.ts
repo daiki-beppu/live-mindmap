@@ -4,6 +4,7 @@ import { Command, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
+import { displayBubbles } from "../../captions.ts";
 import { initKeyList, keyListFolds, keyListView } from "../keys/keyList.ts";
 import type { KeyId } from "../keys/table.ts";
 import * as LiveFeed from "../liveFeed/main.ts";
@@ -62,9 +63,10 @@ const stripSurface = (surface: MapSurface.Model): SessionModel["mapSurface"] => 
   const { mode: _mode, snapshot: _snapshot, ...rest } = surface;
   return rest;
 };
-const layoutOf = (feed: LiveFeed.Model, session: SessionModel): SessionLayout.Model => ({ ...session.sessionLayout, speaking: feed.speaking });
+// 字幕は feed の吹き出しから導く（保存しない）。時刻は状態が最後に受けた時刻で、view は時刻を読まない
+const layoutOf = (feed: LiveFeed.Model, session: SessionModel): SessionLayout.Model => ({ ...session.sessionLayout, captions: { _tag: "Bubbles", bubbles: displayBubbles(feed.captions, feed.captions.clock) } });
 const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"] => {
-  const { speaking: _speaking, ...rest } = layout;
+  const { captions: _captions, ...rest } = layout;
   return rest;
 };
 

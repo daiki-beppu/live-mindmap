@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
-import type { Snapshot } from "../../server/src/core/index.ts";
+import type { CaptionsFrame, Snapshot } from "../../server/src/core/index.ts";
+import { spokenBubble } from "./fixtures/captions.ts";
 import { buildReviewTimeline, snapshotAt, speakingAt } from "../src/reviewTimeline.ts";
 import { LOG_PATH, PAGE_VIEWPORT, readFoldkitViewport } from "./reviewPage.ts";
 import type { Browser, Page } from "./screenCompare.ts";
@@ -43,8 +44,8 @@ export async function meetingFrames(): Promise<MeetingFrames> {
   const framesAt = (t: number): unknown[] => {
     const speaking = speakingAt(timeline, t);
     return [
-      { type: "speaking", track: "相手", text: speaking.相手 },
-      { type: "speaking", track: "自分", text: speaking.自分 },
+      // 見返しの時刻の字幕の文字を、確定したラベルつきの吹き出しにして流す（空のトラックは吹き出しにしない）
+      { type: "captions", bubbles: [...(speaking.相手 === "" ? [] : [spokenBubble(speaking.相手, "相手")]), ...(speaking.自分 === "" ? [] : [spokenBubble(speaking.自分, "自分")])] } satisfies CaptionsFrame,
       snapshotAt(timeline, t) satisfies Snapshot,
     ];
   };
