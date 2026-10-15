@@ -425,6 +425,12 @@ const classifyFailure = (cause: Cause.Cause<DiffUpdateFailure>) => {
   };
 };
 
+// diff の行の末尾に添える判定の記録と呼び出しの時刻。無いものは欄ごと書かない
+const judgeAndCallFields = (outcome: { readonly [K in "judge" | "call"]?: typeof DiffEvent["Type"][K] | undefined }) => ({
+  ...(outcome.judge ? { judge: outcome.judge } : {}),
+  ...(outcome.call ? { call: outcome.call } : {}),
+});
+
 // 次の呼び出しに渡す発言と、残す pending、新しい catchUpUntil を決める。たまりの最後の発言が pending に残っている間だけ小分けにする
 function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined): { readonly fresh: readonly Remark[]; readonly rest: readonly Remark[]; readonly catchUpUntil: string | undefined } {
   const end = catchUpUntil === undefined ? -1 : pending.findIndex((r) => r.id === catchUpUntil);
@@ -604,7 +610,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
             yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh], previousResponse: undefined }));
-            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...(outcome.judge ? { judge: outcome.judge } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
+            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...judgeAndCallFields(outcome) });
             return;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
@@ -620,7 +626,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           });
           yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped,
             ...(outcome.processedRemarks !== undefined ? { processedRemarks: outcome.processedRemarks } : {}),
-            ...(outcome.usage ? { usage: outcome.usage } : {}), ...(outcome.judge ? { judge: outcome.judge } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
+            ...(outcome.usage ? { usage: outcome.usage } : {}), ...judgeAndCallFields(outcome) });
           if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
         }),
       );
