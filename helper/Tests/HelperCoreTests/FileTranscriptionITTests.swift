@@ -72,7 +72,7 @@ private func result(_ text: String, isFinal: Bool, _ start: Double, _ end: Doubl
     TranscriptionResult(text: text, isFinal: isFinal, start: start, end: end)
 }
 
-@Suite("ファイルを文字にする経路（transcribeFile）")
+@Suite("ファイルを文字にする経路（transcribeFile）", .timeLimit(.minutes(1)))
 struct FileTranscriptionITTests {
     @Test("全体の長さは、ファイルの音声の長さ（秒）")
     func durationOfFile() async throws {
