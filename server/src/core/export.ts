@@ -6,7 +6,7 @@ import { toMarkdown } from "./markdown.ts";
 import { Remark } from "./remark.ts";
 import type { Snapshot, SnapshotNode } from "./snapshot.ts";
 
-export type ExportNode = Omit<SnapshotNode, "parent" | "evidence" | "touchedAt" | "evidenceRound" | "talkStatus"> & {
+export type ExportNode = Omit<SnapshotNode, "parent" | "evidence" | "touchedAt" | "evidenceRound" | "talkStatus" | "proposer" | "assigneeSpeaker"> & {
   evidence: Remark[];
   children: ExportNode[];
 };
@@ -32,7 +32,7 @@ export const JsonExport: Schema.Codec<JsonExport> = Schema.Struct({ root: Export
 export function toJsonExport(snapshot: Snapshot, remarks: Iterable<Remark>): JsonExport {
   const byId = new Map([...remarks].map((r) => [r.id, r]));
   const build = (node: SnapshotNode): ExportNode => {
-    const { parent: _parent, evidence, touchedAt: _touchedAt, evidenceRound: _evidenceRound, talkStatus: _talkStatus, ...rest } = node;
+    const { parent: _parent, evidence, touchedAt: _touchedAt, evidenceRound: _evidenceRound, talkStatus: _talkStatus, proposer: _proposer, assigneeSpeaker: _assigneeSpeaker, ...rest } = node;
     return {
       ...rest,
       evidence: evidence.flatMap((id) => byId.get(id) ?? []),

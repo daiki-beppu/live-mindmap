@@ -71,7 +71,7 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
       { op: "add", ref: "a", parent: "p", kind: "案", text: "案", evidence: ["r1"] },
       { op: "add", ref: "child", parent: "p", kind: "議題", text: "子の議題", evidence: ["r1"] },
       { op: "add", ref: "k", parent: "child", kind: "要点", text: "子の中身", evidence: ["r1"] },
-    ], new Set(["r1"]), { round: 1, at: 600 });
+    ], new Set(["r1"]), { round: 1, at: 600 }, new Map());
     expect(dropped).toEqual([]);
 
     for (const sent of [undefined, previous]) {

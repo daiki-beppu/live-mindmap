@@ -24,7 +24,7 @@ const response = (text: string) => new Response(text, { headers: { "content-type
 describe("ChatGPT Responses（C03）", () => {
   it.effect("strict な分類要求を Responses に送り、UTF-8・イベント境界をまたぐ SSE から操作へ届く", () => Effect.gen(function* () {
     const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
-    const answer = classification([{ 種類: "説明", text: "面接官は3人" }, { 種類: "作業", text: "求人票を直す", 担当: "佐藤", 期限: "来週" }]);
+    const answer = classification([{ 種類: "説明", text: "面接官は3人" }, { 種類: "作業", text: "求人票を直す", 担当: "佐藤", 担当の話者: "", 期限: "来週" }]);
     const http = fakeChatgptHttp((_request, call) => {
       const bytes = new TextEncoder().encode(completedSse(call === 1 ? probe : answer));
       return new Response(new ReadableStream<Uint8Array>({ start(controller) {
@@ -45,7 +45,7 @@ describe("ChatGPT Responses（C03）", () => {
         text: { format: { type: "json_schema", strict: true, schema: expected.jsonSchema } } });
       expect(body.input).toEqual([{ role: "user", content: expected.prompt }]);
       for (const key of ["tools", "previous_response_id", "temperature", "max_tokens", "max_output_tokens", "messages"]) expect(Object.hasOwn(body, key)).toBe(false);
-      const applied = applyOps(input.map, result.ops, new Set(["r1"]), { round: 1, at: 1 });
+      const applied = applyOps(input.map, result.ops, new Set(["r1"]), { round: 1, at: 1 }, new Map());
       expect(applied.dropped).toEqual([]);
       expect(Object.values(applied.map.nodes).filter((n) => n.kind !== "会議").map((n) => [n.kind, n.text, n.evidence])).toEqual([
         ["議題", "採用", ["r1"]], ["要点", "面接官は3人", ["r1"]], ["TODO", "求人票を直す", ["r1"]],

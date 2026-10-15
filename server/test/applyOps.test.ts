@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyOps, emptyMap, type MeetingMap, type Op } from "../src/core/index.ts";
+import { applyOps, emptyMap, type MeetingMap, type Op, type Remark } from "../src/core/index.ts";
 
 const known = new Set(["r1", "r2", "r3", "r4"]);
-const stamped = (map: MeetingMap, ops: Op[], stamp = { round: 2, at: 10 }) => applyOps(map, ops, known, stamp);
+// 発言の表。r4 は ID が最後でも開始がいちばん早い（統合で比べるのは ID の順ではなく開始時刻）
+const remarkAt = (id: string, start: number): Remark => ({ id, track: "相手", start, end: start + 1, text: "発言" });
+const remarks: ReadonlyMap<string, Remark> = new Map([remarkAt("r1", 10), remarkAt("r2", 20), remarkAt("r3", 30), remarkAt("r4", 5)].map((r) => [r.id, r]));
+const stamped = (map: MeetingMap, ops: Op[], stamp = { round: 2, at: 10 }) => applyOps(map, ops, known, stamp, remarks);
 
 // 基準のマップ（反映 1 回目、時刻 0）:
 //   n1 議題 採用
@@ -19,7 +22,7 @@ const base = (): MeetingMap =>
     { op: "add", ref: "t4", parent: "t2", kind: "決定", text: "3 回にする", evidence: ["r1"] },
     { op: "add", ref: "t5", parent: "t2", kind: "TODO", text: "日程を決める", evidence: ["r1"] },
     { op: "add", ref: "t6", parent: "root", kind: "課題", text: "人が足りない", evidence: ["r1"] },
-  ], known, { round: 1, at: 0 }).map;
+  ], known, { round: 1, at: 0 }, remarks).map;
 
 const node = (map: MeetingMap, id: string) => map.nodes[id]!;
 const reasons = (ops: Op[], map: MeetingMap = base(), stamp?: { round: number; at: number }) => stamped(map, ops, stamp).dropped.map((d) => d.reason);
@@ -291,5 +294,238 @@ describe("applyOps: 仮 ID の対応 refs", () => {
   it("add が無い、または全部捨てた応答では、空の対応を返す", () => {
     expect(stamped(base(), [{ op: "update", node: "n3", text: "4 回", evidence: ["r2"] }]).refs).toEqual({});
     expect(stamped(base(), [{ op: "add", ref: "a1", parent: "zzz", kind: "課題", text: "x", evidence: ["r2"] }]).refs).toEqual({});
+  });
+});
+
+// 案の出した人（Issue #1023）。サーバーが決めて add の proposer に載せた値を、ノードに持たせる。更新では変えず、統合では根拠の最も早い発言が早いほうを残す
+describe("applyOps: 案の出した人", () => {
+  const plans = (): MeetingMap => stamped(base(), [
+    { op: "add", ref: "p1", parent: "n2", kind: "案", text: "月 1", evidence: ["r1"], proposer: "相手 A" }, // n7
+    { op: "add", ref: "p2", parent: "n2", kind: "案", text: "週 1", evidence: ["r2"], proposer: "相手 B" }, // n8
+    { op: "add", ref: "p3", parent: "n2", kind: "案", text: "隔週", evidence: ["r4"], proposer: "相手 C" }, // n9（r4 は r1 より早い）
+    { op: "add", ref: "p4", parent: "n2", kind: "案", text: "旧ログの案", evidence: ["r3"] }, // n10: 出した人を持たない
+  ], { round: 1, at: 0 }).map;
+
+  it("案の add の proposer をノードに持たせる。無ければキーごと持たない", () => {
+    const map = plans();
+    expect(node(map, "n7").proposer).toBe("相手 A");
+    expect(node(map, "n8").proposer).toBe("相手 B");
+    expect(node(map, "n10")).not.toHaveProperty("proposer");
+  });
+
+  it("話者なしの相手は「相手」をそのまま持つ", () => {
+    const { map } = stamped(base(), [{ op: "add", ref: "p1", parent: "n2", kind: "案", text: "案", evidence: ["r1"], proposer: "相手" }]);
+    expect(node(map, "n7").proposer).toBe("相手");
+  });
+
+  it("案以外には proposer が付いても持たせない（捨てもしない）", () => {
+    const got = stamped(base(), [
+      { op: "add", ref: "a", parent: "root", kind: "議題", text: "議題", evidence: ["r1"], proposer: "相手 A" },
+      { op: "add", ref: "b", parent: "n1", kind: "論点", text: "論点", evidence: ["r1"], proposer: "相手 A" },
+      { op: "add", ref: "c", parent: "n2", kind: "決定", text: "決定", evidence: ["r1"], proposer: "相手 A" },
+      { op: "add", ref: "d", parent: "root", kind: "課題", text: "課題", evidence: ["r1"], proposer: "相手 A" },
+      { op: "add", ref: "e", parent: "n2", kind: "TODO", text: "TODO", evidence: ["r1"], proposer: "相手 A" },
+      { op: "add", ref: "f", parent: "root", kind: "要点", text: "要点", evidence: ["r1"], proposer: "相手 A" },
+    ]);
+    expect(got.dropped).toEqual([]);
+    for (const id of ["n7", "n8", "n9", "n10", "n11", "n12"]) expect(node(got.map, id), id).not.toHaveProperty("proposer");
+  });
+
+  it("更新で、より早い発言が根拠に足されても出した人は変わらない", () => {
+    const got = stamped(plans(), [
+      { op: "update", node: "n7", text: "月 2", evidence: ["r4"], planStatus: "却下" }, // r4 は n7 の根拠 r1 より早い
+      { op: "update", node: "n10", text: "言い換え", evidence: ["r4"] }, // 出した人が無い案に足しても、計算して付けない
+    ]);
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n7")).toMatchObject({ text: "月 2", evidence: ["r1", "r4"], proposer: "相手 A" });
+    expect(node(got.map, "n10")).not.toHaveProperty("proposer");
+  });
+
+  it("統合では、根拠の最も早い発言が早いほうの出した人が統合先に残る（統合元が早い）", () => {
+    const got = stamped(plans(), [{ op: "combine", from: "n9", into: "n7" }]); // n9 は r4（開始 5）、n7 は r1（開始 10）
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n7")).toMatchObject({ proposer: "相手 C", evidence: ["r1", "r4"] });
+    expect(got.map.nodes).not.toHaveProperty("n9");
+  });
+
+  it("統合では、統合先が早ければ統合先の出した人のまま", () => {
+    const got = stamped(plans(), [{ op: "combine", from: "n7", into: "n9" }]);
+    expect(node(got.map, "n9").proposer).toBe("相手 C");
+  });
+
+  it("統合で比べるのは発言の開始時刻で、ID の順や根拠の並びではない", () => {
+    const got = stamped(plans(), [{ op: "combine", from: "n8", into: "n7" }]); // r2（開始 20）は r1（開始 10）より遅い
+    expect(node(got.map, "n7").proposer).toBe("相手 A");
+    const reverse = stamped(plans(), [{ op: "combine", from: "n7", into: "n8" }]);
+    expect(node(reverse.map, "n8").proposer).toBe("相手 A");
+  });
+
+  it("統合で最も早い発言の開始が同じなら、統合先の出した人を残す", () => {
+    const { map } = stamped(base(), [
+      { op: "add", ref: "p1", parent: "n2", kind: "案", text: "先", evidence: ["r1"], proposer: "相手 A" }, // n7
+      { op: "add", ref: "p2", parent: "n2", kind: "案", text: "後", evidence: ["r1"], proposer: "相手 B" }, // n8
+    ], { round: 1, at: 0 });
+    expect(node(stamped(map, [{ op: "combine", from: "n7", into: "n8" }]).map, "n8").proposer).toBe("相手 B");
+  });
+
+  it("統合元が早く出した人を持たないとき、統合先の出した人は消える（古いログの案が早いなら、後の人を残さない）", () => {
+    const { map } = stamped(base(), [
+      { op: "add", ref: "p1", parent: "n2", kind: "案", text: "旧", evidence: ["r4"] }, // n7: 出した人なし、r4 は開始 5
+      { op: "add", ref: "p2", parent: "n2", kind: "案", text: "新", evidence: ["r2"], proposer: "相手 B" }, // n8
+    ], { round: 1, at: 0 });
+    expect(node(stamped(map, [{ op: "combine", from: "n7", into: "n8" }]).map, "n8")).not.toHaveProperty("proposer");
+  });
+
+  it("統合元が遅く出した人を持たないとき、統合先の出した人は残る", () => {
+    const { map } = stamped(base(), [
+      { op: "add", ref: "p1", parent: "n2", kind: "案", text: "旧", evidence: ["r3"] }, // n7: 出した人なし、r3 は開始 30
+      { op: "add", ref: "p2", parent: "n2", kind: "案", text: "新", evidence: ["r2"], proposer: "相手 B" }, // n8
+    ], { round: 1, at: 0 });
+    expect(node(stamped(map, [{ op: "combine", from: "n7", into: "n8" }]).map, "n8").proposer).toBe("相手 B");
+  });
+
+  it("発言の表に根拠が無い統合では、統合先の出した人を変えない（落ちない）", () => {
+    const got = applyOps(plans(), [{ op: "combine", from: "n9", into: "n7" }], known, { round: 2, at: 10 }, new Map());
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n7").proposer).toBe("相手 A");
+  });
+
+  it("出した人は、いつもその案の根拠の発言のどれかの話者（更新・統合をしても）", () => {
+    const speakerOf: Record<string, string> = { r1: "相手 A", r2: "相手 B", r4: "相手 C" };
+    const evidenceSpeakers = (map: MeetingMap, id: string) => node(map, id).evidence.map((u) => speakerOf[u]);
+    const afterUpdate = stamped(plans(), [{ op: "update", node: "n8", evidence: ["r1", "r4"] }]).map;
+    expect(evidenceSpeakers(afterUpdate, "n8")).toContain(node(afterUpdate, "n8").proposer);
+    const afterCombine = stamped(afterUpdate, [{ op: "combine", from: "n9", into: "n8" }]).map;
+    expect(evidenceSpeakers(afterCombine, "n8")).toContain(node(afterCombine, "n8").proposer);
+  });
+});
+
+// TODO の担当者（Issue #1023）。名前の assignee が優先で、名前が無いときだけ担当の話者を持つ。更新で埋めたり替えたりできる
+describe("applyOps: TODO の担当者", () => {
+  it("名前だけ・話者だけ・どちらも無いは、あるほうだけを持つ", () => {
+    const { map } = stamped(base(), [
+      { op: "add", ref: "a", parent: "n2", kind: "TODO", text: "名前", evidence: ["r2"], assignee: "田中" }, // n7
+      { op: "add", ref: "b", parent: "n2", kind: "TODO", text: "話者", evidence: ["r2"], assigneeSpeaker: "相手 A" }, // n8
+      { op: "add", ref: "c", parent: "n2", kind: "TODO", text: "無し", evidence: ["r2"] }, // n9
+    ]);
+    expect(node(map, "n7")).toMatchObject({ assignee: "田中" });
+    expect(node(map, "n7")).not.toHaveProperty("assigneeSpeaker");
+    expect(node(map, "n8")).toMatchObject({ assigneeSpeaker: "相手 A" });
+    expect(node(map, "n8")).not.toHaveProperty("assignee");
+    expect(node(map, "n9")).not.toHaveProperty("assignee");
+    expect(node(map, "n9")).not.toHaveProperty("assigneeSpeaker");
+  });
+
+  it("名前と話者が両方あれば名前を優先し、話者は持たない", () => {
+    const { map } = stamped(base(), [{ op: "add", ref: "a", parent: "n2", kind: "TODO", text: "両方", evidence: ["r2"], assignee: "田中", assigneeSpeaker: "相手 A", due: "来週" }]);
+    expect(node(map, "n7")).toMatchObject({ assignee: "田中", due: "来週" });
+    expect(node(map, "n7")).not.toHaveProperty("assigneeSpeaker");
+  });
+
+  it("名前が空文字なら話者を持つ", () => {
+    const { map } = stamped(base(), [{ op: "add", ref: "a", parent: "n2", kind: "TODO", text: "空の名前", evidence: ["r2"], assignee: "", assigneeSpeaker: "自分" }]);
+    expect(node(map, "n7")).toMatchObject({ assigneeSpeaker: "自分" });
+    expect(node(map, "n7")).not.toHaveProperty("assignee");
+  });
+
+  it("TODO 以外の add の assigneeSpeaker は、操作を捨てずに無視する", () => {
+    const got = stamped(base(), [
+      { op: "add", ref: "a", parent: "n2", kind: "案", text: "案", evidence: ["r2"], assigneeSpeaker: "相手 A" },
+      { op: "add", ref: "b", parent: "root", kind: "課題", text: "課題", evidence: ["r2"], assigneeSpeaker: "相手 A" },
+      { op: "add", ref: "c", parent: "n2", kind: "決定", text: "決定", evidence: ["r2"], assigneeSpeaker: "相手 A" },
+    ]);
+    expect(got.dropped).toEqual([]);
+    for (const id of ["n7", "n8", "n9"]) expect(node(got.map, id), id).not.toHaveProperty("assigneeSpeaker");
+  });
+
+  const todos = (): MeetingMap => stamped(base(), [
+    { op: "add", ref: "a", parent: "n2", kind: "TODO", text: "話者の担当", evidence: ["r1"], assigneeSpeaker: "相手 A" }, // n7
+    { op: "add", ref: "b", parent: "n2", kind: "TODO", text: "名前の担当", evidence: ["r1"], assignee: "田中" }, // n8
+    { op: "add", ref: "c", parent: "n2", kind: "TODO", text: "担当なし", evidence: ["r1"] }, // n9
+  ], { round: 1, at: 0 }).map;
+
+  it("更新で名前が来たら名前を置き、担当の話者は消す", () => {
+    const got = stamped(todos(), [{ op: "update", node: "n7", evidence: ["r2"], assignee: "鈴木" }]);
+    expect(node(got.map, "n7")).toMatchObject({ assignee: "鈴木" });
+    expect(node(got.map, "n7")).not.toHaveProperty("assigneeSpeaker");
+  });
+
+  it("更新で名前を替えられる。話者のあった TODO でなくても名前は置き換わる", () => {
+    const got = stamped(todos(), [{ op: "update", node: "n8", evidence: ["r2"], assignee: "鈴木" }]);
+    expect(node(got.map, "n8").assignee).toBe("鈴木");
+  });
+
+  it("名前の無い TODO には、更新で担当の話者を埋められ、替えられる", () => {
+    const filled = stamped(todos(), [{ op: "update", node: "n9", evidence: ["r2"], assigneeSpeaker: "相手 B" }]).map;
+    expect(node(filled, "n9").assigneeSpeaker).toBe("相手 B");
+    const replaced = stamped(todos(), [{ op: "update", node: "n7", evidence: ["r2"], assigneeSpeaker: "相手 B" }]).map;
+    expect(node(replaced, "n7").assigneeSpeaker).toBe("相手 B");
+  });
+
+  it("名前のある TODO への assigneeSpeaker の更新は無視する（名前を優先）", () => {
+    const got = stamped(todos(), [{ op: "update", node: "n8", evidence: ["r2"], assigneeSpeaker: "相手 B" }]);
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n8")).toMatchObject({ assignee: "田中" });
+    expect(node(got.map, "n8")).not.toHaveProperty("assigneeSpeaker");
+  });
+
+  it("同じ更新に名前と話者があれば、名前を置いて話者は持たない", () => {
+    const got = stamped(todos(), [{ op: "update", node: "n9", evidence: ["r2"], assignee: "鈴木", assigneeSpeaker: "相手 B" }]);
+    expect(node(got.map, "n9")).toMatchObject({ assignee: "鈴木" });
+    expect(node(got.map, "n9")).not.toHaveProperty("assigneeSpeaker");
+  });
+
+  it("TODO 以外への assignee・assigneeSpeaker の更新は、操作を捨てずに担当者を持たせない", () => {
+    const got = stamped(todos(), [
+      { op: "update", node: "n3", evidence: ["r2"], assignee: "鈴木" },
+      { op: "update", node: "n6", evidence: ["r2"], assigneeSpeaker: "相手 B" },
+    ]);
+    expect(got.dropped).toEqual([]);
+    for (const id of ["n3", "n6"]) {
+      expect(node(got.map, id)).not.toHaveProperty("assignee");
+      expect(node(got.map, id)).not.toHaveProperty("assigneeSpeaker");
+    }
+  });
+
+  it("更新で担当者が実際に変わったら、値の変わったノードとして changeOrder と touchedAt に載る", () => {
+    const got = stamped(todos(), [{ op: "update", node: "n9", evidence: ["r1"], assigneeSpeaker: "相手 B" }], { round: 2, at: 77 }); // 根拠は既存、変わるのは担当者だけ
+    expect(got.changeOrder).toEqual(["n9"]);
+    expect(node(got.map, "n9").touchedAt).toBe(77);
+    const named = stamped(todos(), [{ op: "update", node: "n7", evidence: ["r1"], assignee: "鈴木" }]);
+    expect(named.changeOrder).toEqual(["n7"]);
+  });
+
+  it("担当者が変わらない更新は、changeOrder に載らない", () => {
+    const same = stamped(todos(), [
+      { op: "update", node: "n8", evidence: ["r1"], assignee: "田中" },
+      { op: "update", node: "n7", evidence: ["r1"], assigneeSpeaker: "相手 A" },
+      { op: "update", node: "n8", evidence: ["r1"], assigneeSpeaker: "相手 B" }, // 名前があるので無視される
+    ]);
+    expect(same.changeOrder).toEqual([]);
+  });
+
+  it("更新は出した人にも担当者にも関係のない欄（due・出した人）を変えない", () => {
+    const { map } = stamped(base(), [{ op: "add", ref: "a", parent: "n2", kind: "TODO", text: "期限つき", evidence: ["r1"], due: "来週" }]); // n7
+    const got = stamped(map, [{ op: "update", node: "n7", evidence: ["r2"], assigneeSpeaker: "相手 B" }]);
+    expect(node(got.map, "n7")).toMatchObject({ due: "来週", assigneeSpeaker: "相手 B" });
+  });
+});
+
+describe("applyOps: 人の欄を持たない種別", () => {
+  it("議題・論点・課題・決定・要点には、proposer も assigneeSpeaker も付かない（add でも update でも）", () => {
+    const got = stamped(base(), [
+      { op: "add", ref: "a", parent: "n2", kind: "要点", text: "要点", evidence: ["r2"], proposer: "相手 A", assigneeSpeaker: "相手 A", assignee: "田中" },
+      { op: "update", node: "n1", evidence: ["r2"], assigneeSpeaker: "相手 A", assignee: "田中" },
+      { op: "update", node: "n2", evidence: ["r2"], assigneeSpeaker: "相手 A", assignee: "田中" },
+      { op: "update", node: "n4", evidence: ["r2"], assigneeSpeaker: "相手 A", assignee: "田中" },
+      { op: "update", node: "n6", evidence: ["r2"], assigneeSpeaker: "相手 A", assignee: "田中" },
+    ]);
+    expect(got.dropped).toEqual([]);
+    for (const n of Object.values(got.map.nodes)) {
+      if (n.kind === "案" || n.kind === "TODO") continue;
+      expect(n, n.id).not.toHaveProperty("proposer");
+      expect(n, n.id).not.toHaveProperty("assigneeSpeaker");
+      expect(n, n.id).not.toHaveProperty("assignee");
+    }
   });
 });
