@@ -32,7 +32,7 @@ function toOps(raw: Classification, sentences: readonly Sentence[], nextRef: () 
       ops.push({ op: "add", ref: nextRef(), parent: point, kind: "決定", text: s.text, evidence });
     } else if (s.種類 === "作業") {
       ops.push({ op: "add", ref: nextRef(), parent: topic, kind: "TODO", text: s.text, evidence,
-        ...(blank(s.担当) ? {} : { assignee: s.担当 }), ...(blank(s.期限) ? {} : { due: s.期限 }) });
+        ...(blank(s.担当) ? {} : { assignee: s.担当 }), ...(blank(s.担当の話者) ? {} : { assigneeSpeaker: s.担当の話者 }), ...(blank(s.期限) ? {} : { due: s.期限 }) });
     } else {
       const kinds = { 説明: "要点", 問い: "論点", 提案: "案", 懸念: "課題" } as const;
       ops.push({ op: "add", ref: nextRef(), parent: topic, kind: kinds[s.種類], text: s.text, evidence });

@@ -46,11 +46,11 @@ const freshOf = Effect.fnUntraced(function* (
 });
 
 // 操作を前から 1 つずつ増やして当て、update の前後で本文が変わったノードの ID を、書き換えの起きた順に返す（同じ応答の中の仮 ID も applyOps が解決する）
-function rewrittenIds(start: MeetingMap, ops: DiffLogEvent["ops"], known: ReadonlySet<string>, stamp: { round: number; at: number }): string[] {
+function rewrittenIds(start: MeetingMap, ops: DiffLogEvent["ops"], known: ReadonlySet<string>, stamp: { round: number; at: number }, byId: ReadonlyMap<string, Remark>): string[] {
   const ids: string[] = [];
   let before = start;
   ops.forEach((op, i) => {
-    const after = applyOps(start, ops.slice(0, i + 1), known, stamp).map;
+    const after = applyOps(start, ops.slice(0, i + 1), known, stamp, byId).map;
     if (op.op === "update") {
       for (const [id, node] of Object.entries(before.nodes)) {
         if (after.nodes[id] && after.nodes[id].text !== node.text) ids.push(id);
@@ -75,8 +75,8 @@ const applyDiff = Effect.fnUntraced(function* (
   const known = progress.known;
   for (const r of fresh) known.add(r.id);
   const stamp = stampOf({ round: progress.round }, fresh);
-  const rewritten = rewrittenIds(progress.map, event.ops, known, stamp);
-  const applied = applyOps(progress.map, event.ops, known, stamp);
+  const rewritten = rewrittenIds(progress.map, event.ops, known, stamp, byId);
+  const applied = applyOps(progress.map, event.ops, known, stamp, byId);
   return { map: applied.map, round: event.error === undefined ? stamp.round : progress.round, known, rewritten };
 });
 

@@ -1,6 +1,7 @@
 // マップと差分操作。語彙と規則は GLOSSARY.md / docs/adr/0001-map-is-a-tree.md に従う。
 // 型は Schema を正本にして導き、値は普通のオブジェクトのままにする（ADR 0007）。
 import { Schema } from "effect";
+import { earliestRemark, type Remark } from "./remark.ts";
 
 export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO", "要点"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -19,7 +20,11 @@ export const MapNode = Schema.Struct({
   kind: Schema.Literals([...KINDS, "会議"]),
   text: Schema.mutableKey(Schema.String),
   planStatus: Schema.optionalKey(Schema.mutableKey(PlanStatusSchema)), // 案だけ
-  assignee: Schema.optionalKey(Schema.String), // TODO だけ
+  assignee: Schema.optionalKey(Schema.mutableKey(Schema.String)), // TODO だけ。会話に出た名前
+  // 名前が出ないまま話者が自分から引き受けたときの担当の話者（"自分" か振ったラベル）。TODO だけ。名前が分かったら消す
+  assigneeSpeaker: Schema.optionalKey(Schema.mutableKey(Schema.String)),
+  // 案を最初に言った話者。案だけ。サーバーが根拠の発言から決める（AI は書かない）。話者なしの相手は "相手"
+  proposer: Schema.optionalKey(Schema.mutableKey(Schema.String)),
   due: Schema.optionalKey(Schema.String), // TODO だけ
   // 発言の ID。ルート以外は 1 つ以上（ルートは emptyMap が空で作るので、要素数は検査しない）
   evidence: Schema.mutable(Schema.Array(Schema.String)),
@@ -44,6 +49,8 @@ export type MeetingMap = typeof MeetingMap["Type"];
 // 要素数は検査しない: ログの保存形式（Op・Dropped・LogEvent）は、根拠が空のまま捨てた add / update も
 // 元の形で残す（session.ts の log）。根拠 1 件以上という制約は Claude への出力契約（DiffOutput）だけが持つ。
 const Evidence = Schema.mutable(Schema.Array(Schema.String)).annotate({ description: "根拠の発言 id（例 r12）" });
+// TODO の担当の話者の説明（claude.ts がここから Claude に渡す JSON Schema を作る）
+const AssigneeSpeaker = Schema.String.annotate({ description: "担当の話者（例 相手 A / 自分）。名前が出ないまま、話者が自分から引き受けたとき（「私がやります」）だけ書く。頼まれた側を話者から推し量って書かない" });
 const NodeRef = Schema.String.annotate({ description: "既存ノードの id（例 n3）か、同じ応答で add した ref" });
 
 // AI が出す差分操作。`ref` は、同じ応答の後続の操作から親として指すための仮 ID。
@@ -56,6 +63,8 @@ export const Op = Schema.Union([
     text: Schema.String,
     evidence: Evidence,
     assignee: Schema.optionalKey(Schema.String),
+    assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker), // サーバーがセッションの話者か確かめる
+    proposer: Schema.optionalKey(Schema.String), // サーバーが決める出した人（ログに残す）。AI の出力の契約には出さない（DiffOps で外す）
     due: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
@@ -64,6 +73,8 @@ export const Op = Schema.Union([
     text: Schema.optionalKey(Schema.String),
     evidence: Evidence,
     planStatus: Schema.optionalKey(PlanStatusSchema),
+    assignee: Schema.optionalKey(Schema.String),
+    assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker),
   }),
   Schema.Struct({ op: Schema.Literal("combine"), from: NodeRef, into: NodeRef }),
   Schema.Struct({ op: Schema.Literal("move"), node: NodeRef, parent: NodeRef }),
@@ -79,7 +90,7 @@ export type Dropped = typeof Dropped["Type"];
 // Claude の structured_output の形。claude.ts がここから Claude に渡す JSON Schema を作り、受け取った値を検証する。
 // add / update の根拠だけ、Op の構造定義を再利用したまま 1 件以上を要求する（Claude に渡す JSON Schema では minItems: 1 になる）。
 const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
-  add.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
+  add.mapFields(({ proposer: _proposer, ...fields }) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   ...rest,
 ]);
@@ -157,6 +168,7 @@ type ApplyState = {
   round: number;
   at: number;
   changeOrder: string[];
+  remarks: ReadonlyMap<string, Remark>;
 };
 
 type OpOf<K extends Op["op"]> = Extract<Op, { op: K }>;
@@ -184,7 +196,9 @@ function newNode(op: OpOf<"add">, id: string, parent: string, round: number): Ma
     id, parent, kind: op.kind, text: op.text, evidence: [...op.evidence],
     evidenceRound: round,
     ...(op.kind === "案" ? { planStatus: "検討中" as const } : {}),
+    ...(op.kind === "案" && op.proposer ? { proposer: op.proposer } : {}),
     ...(op.kind === "TODO" && op.assignee ? { assignee: op.assignee } : {}),
+    ...(op.kind === "TODO" && !op.assignee && op.assigneeSpeaker ? { assigneeSpeaker: op.assigneeSpeaker } : {}),
     ...(op.kind === "TODO" && op.due ? { due: op.due } : {}),
   };
 }
@@ -205,6 +219,23 @@ function applyAdd(s: ApplyState, op: OpOf<"add">): Applied {
   return null;
 }
 
+// update の担当者。TODO だけが持つ。名前が来たら名前を置いて担当の話者は消し、名前が無いときだけ担当の話者を置く
+function assignmentOf(n: MapNode, op: OpOf<"update">): { changed: boolean; apply: () => void } {
+  if (n.kind !== "TODO") return { changed: false, apply: () => {} };
+  if (op.assignee) {
+    const name = op.assignee;
+    return {
+      changed: name !== n.assignee || n.assigneeSpeaker !== undefined,
+      apply: () => { n.assignee = name; delete n.assigneeSpeaker; },
+    };
+  }
+  if (op.assigneeSpeaker && !n.assignee) {
+    const speaker = op.assigneeSpeaker;
+    return { changed: speaker !== n.assigneeSpeaker, apply: () => { n.assigneeSpeaker = speaker; } };
+  }
+  return { changed: false, apply: () => {} };
+}
+
 function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
   const n = target(s, op.node);
   if (!n) return "対象が無い";
@@ -212,14 +243,17 @@ function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
   const err = evidenceError(s.known, op.evidence);
   if (err) return err;
   const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
+  const assigned = assignmentOf(n, op);
   const valueChanged = (!!op.text && op.text !== n.text)
     || (!!op.planStatus && op.planStatus !== n.planStatus)
-    || evidenceAdded;
+    || evidenceAdded
+    || assigned.changed;
   reopenUp(s.map, n.id);
   if (valueChanged) { s.changeOrder.push(n.id); touchUp(s.map, n.id, s.at); }
   if (evidenceAdded) n.evidenceRound = s.round;
   if (op.text) n.text = op.text;
   if (op.planStatus) n.planStatus = op.planStatus;
+  assigned.apply();
   for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
   return null;
 }
@@ -255,6 +289,14 @@ function mergedEvidenceRound(a: number | undefined, b: number | undefined): numb
   return Math.max(a, b);
 }
 
+// 統合後の出した人。根拠の最も早い発言が早いほうの値を残す（同じなら統合先。比べられなければ統合先）。
+// 早いほうが出した人を持たなければ、持たない（後の人を残さない）
+function mergedProposer(s: ApplyState, src: MapNode, dst: MapNode): string | undefined {
+  const from = earliestRemark(src.evidence, s.remarks);
+  const into = earliestRemark(dst.evidence, s.remarks);
+  return from && into && from.start < into.start ? src.proposer : dst.proposer;
+}
+
 function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
   const from = target(s, op.from), into = target(s, op.into);
   const err = combineError(s.map, from, into);
@@ -263,6 +305,10 @@ function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
   const src = from!, dst = into!;
   touchUp(s.map, src.parent, s.at);
   for (const k of children(s.map, src.id)) k.parent = dst.id;
+  if (dst.kind === "案") {
+    const proposer = mergedProposer(s, src, dst);
+    if (proposer === undefined) delete dst.proposer; else dst.proposer = proposer;
+  }
   for (const u of src.evidence) if (!dst.evidence.includes(u)) dst.evidence.push(u);
   const fromRound = src.evidenceRound;
   removeNode(s.map, src.id);
@@ -322,9 +368,11 @@ function applyOp(s: ApplyState, op: Op): Applied {
 // add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
 // close と開き直しは changeOrder・touchedAt に影響しない。
 // changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
+// remarks は発言の表（id → 発言）。統合で根拠の最も早い発言を比べるのに使う。
+// proposer は add の値をそのまま持たせる（案だけ）。update は変えず、combine は根拠の最も早い発言が早いほうを残す。
 // refs は、適用できた add の仮 ID → 作られた n の ID（捨てた add は含まない。同じ応答で後から削除・統合されたノードの add は含む）。
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string> } {
-  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [] };
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }, remarks: ReadonlyMap<string, Remark>): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string> } {
+  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [], remarks };
   const dropped: Dropped[] = [];
   for (const op of ops) {
     const reason = applyOp(s, op);
