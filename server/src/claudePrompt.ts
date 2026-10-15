@@ -1,6 +1,7 @@
 // Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
-import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type PreviousResponse, type Remark } from "./core/index.ts";
+import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type PreviousResponse } from "./core/index.ts";
+import { remarkLine } from "./remarkLine.ts";
 
 // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
@@ -122,9 +123,6 @@ ${NOOP_SCOPE}
 - 「さっきの表」「前のグラフ」のように、今は映っていない前の画面を指したら、前に添えた画面から読む。
 - 参加者の顔の一覧だけが映っているときは、共有画面は無いものとして扱う。`;
 
-
-export const fmtTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-const fmtRemark = (r: Remark) => `${r.id} [${fmtTime(r.start)}] ${r.text}`;
 
 // 1 ノードの書式（ID・種別・状態・本文・TODO の担当と期限）。アウトラインと変更で共有する。根拠は渡さない
 function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): string {
@@ -331,8 +329,8 @@ export function buildPrompt({ map, recent, fresh, previousResponse }: DiffInput,
     ...(previous
       ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map, previousResponse)]
       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
-    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map(fmtRemark).join("\n") : "（なし）", "",
-    "## 新しい発言", fresh.map(fmtRemark).join("\n"),
+    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r)).join("\n") : "（なし）", "",
+    "## 新しい発言", fresh.map((r) => remarkLine(r)).join("\n"),
   ].join("\n");
 }
 

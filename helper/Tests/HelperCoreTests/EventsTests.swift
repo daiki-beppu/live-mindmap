@@ -362,6 +362,23 @@ struct EventsTests {
         #expect(event(from: tentative, track: .相手) == .speaker(track: .相手, start: 2.5, end: 3, slot: 0, isFinal: false))
     }
 
+    @Test("speaker-settled は type・track・to だけを持ち、JSON 文字列は固定のキー順")
+    func speakerSettledCarriesPosition() throws {
+        let json = try decode(.speakerSettled(track: .相手, to: 14.5))
+        #expect(Set(json.keys) == ["type", "track", "to"])
+        #expect(json["type"] as? String == "speaker-settled")
+        #expect(json["track"] as? String == "相手")
+        #expect(json["to"] as? Double == 14.5)
+        #expect(try HelperEvent.speakerSettled(track: .相手, to: 14.5).jsonString() == "{\"to\":14.5,\"track\":\"相手\",\"type\":\"speaker-settled\"}")
+    }
+
+    @Test("話者分離の流れの 1 件は、区間なら speaker、確定済みの位置なら speaker-settled になる")
+    func diarizationItemBecomesEvent() {
+        let segment = SpeakerSegment(start: 1, end: 2.5, slot: 1, isFinal: true)
+        #expect(event(from: .segment(segment), track: .相手) == .speaker(track: .相手, start: 1, end: 2.5, slot: 1, isFinal: true))
+        #expect(event(from: .settled(to: 3), track: .相手) == .speakerSettled(track: .相手, to: 3))
+    }
+
     @Test("speaker-off は type・start・reason だけを持ち、reason は原因の 3 語のどれか")
     func speakerOffCarriesStartAndReason() throws {
         for (reason, text) in [

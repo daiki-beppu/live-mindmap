@@ -72,7 +72,9 @@ func diarize(_ audio: URL, with diarizer: any SpeakerDiarizer, start: Continuous
     let segments = try await diarizer.diarize(try pacedAudio(from: audio, origin: origin), origin: origin)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    for try await segment in segments {
+    for try await item in segments {
+        // 確定済みの位置のイベントは、区間の到着の計測には載せない
+        guard case .segment(let segment) = item else { continue }
         let line = SegmentLine(arrival: (ContinuousClock.now - start).seconds, start: segment.start, end: segment.end, slot: segment.slot, isFinal: segment.isFinal)
         out.write(try encoder.encode(line) + Data("\n".utf8))
     }

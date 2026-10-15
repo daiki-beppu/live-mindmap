@@ -8,7 +8,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type Remark, type SelfPauseLogEvent, type SettledRemark, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
+import { correctRemark, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type Remark, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type SpeakingFrame, type Track, type VocabularyWord } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -43,8 +43,11 @@ export type SessionSink = {
   clearSpeaking: Effect.Effect<void>;
   // 予約を取り消し、いま話している文字を空にして、以後は何も送らない
   stopRelays: Effect.Effect<void>;
-  // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する
-  appendLog: (event: IntakeLogEvent | SelfPauseLogEvent) => Effect.Effect<void>;
+  // ヘルパーの話者の区間と使えないこと。受け取った値のまま、届いた順に log.jsonl へ残してから、相手の発言の話者を決める段へ渡す（確定した区間が揃った保留を出す）。
+  // 差分更新・字幕には載らない。speaker-off の後の相手の発言は、待たずに話者なしで出る。話者の記録の経路はここだけ
+  speaker: (event: SpeakerLogEvent) => Effect.Effect<void>;
+  // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する（話者の記録は speaker が行う）
+  appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void>;
   // 録画からのセッションで、溜まっている発言をすべて入れ終えるまで待つ（ライブでは何もしない）。drain の後に呼ぶ
   finishBacklog: Effect.Effect<void>;
   // 録画からのセッションで、溜まっている発言を捨てる。入れている途中の 1 件は待たない（入れ終えるのは finishBacklog が待つ。ライブでは何もしない）
@@ -214,6 +217,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             dir,
             partial: (p) => backlog === undefined ? Effect.andThen(relay.partial(p.track, p.text, p.duplicate), settling.partial(p)) : settling.partial(p),
             final: (r) => settling.final(r),
+            speaker: (event) => Effect.andThen(appendRecordedLog(event), settling.speaker(event)),
             screen: ({ start, image, lines }) =>
               Effect.gen(function* () {
                 if (image === null) {

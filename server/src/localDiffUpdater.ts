@@ -17,12 +17,12 @@ function toOps(raw: Classification, sentences: readonly Sentence[], nextRef: () 
     topic = ROOT_ID;
     if (first !== -1 && raw.議題.題 !== "") {
       topic = nextRef();
-      ops.push({ op: "add", ref: topic, parent: ROOT_ID, kind: "議題", text: raw.議題.題, evidence: [sentences[first]!.remark] });
+      ops.push({ op: "add", ref: topic, parent: ROOT_ID, kind: "議題", text: raw.議題.題, evidence: [sentences[first]!.remark.id] });
     }
   }
   raw.文.forEach((s, i) => {
     if (s.種類 === "なし") return;
-    const evidence = [sentences[i]!.remark];
+    const evidence = [sentences[i]!.remark.id];
     if (s.種類 === "合意") {
       let point = s.論点;
       if (point === "新しい論点") {

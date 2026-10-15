@@ -41,6 +41,7 @@ export {
 export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, PreviousResponse, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
 export * from "./speaking.ts";
+export * from "./speakers.ts";
 export * from "./topic.ts";
 export * from "./transcript.ts";
 export * from "./viewingShare.ts";

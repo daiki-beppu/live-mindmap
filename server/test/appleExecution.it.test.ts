@@ -84,6 +84,7 @@ const audioHelper = () => {
   const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
     launches.push([...args]);
     const queue = yield* Queue.make<string, Cause.Done>();
+    Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
     Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "面接官は3人です。" }));
     const ended = yield* Deferred.make<HelperExitInfo>();
     const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(ended, { code: null, signal: "SIGTERM" })));

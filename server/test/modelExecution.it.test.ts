@@ -154,7 +154,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const root = yield* temporaryDirectory;
     writeConfig(root);
     const sessionsDir = join(root, "sessions");
-    const helpers = fakeHelpers([{ type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }]);
+    const helpers = fakeHelpers([{ type: "speaker-off", start: 0, reason: "モデルなし" }, { type: "remark", track: "相手", start: 0, end: 9, text: "合成の発言です" }]) // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）;
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
       managedDeps,

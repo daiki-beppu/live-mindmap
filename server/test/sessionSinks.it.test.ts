@@ -67,6 +67,10 @@ const { settle, settleUntil } = fileIo;
 const sinksLayer = ({ updaterLayer, ...services }: { updaterLayer: Layer.Layer<DiffUpdater> } & ExportServicesOptions) =>
   SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer, ...services })));
 
+// Issue #1021: 相手の発言は話者の確定区間が揃うまで（最大 3 秒）出ない。話者に関係しない観測のテストは、始めに speaker-off を渡して、相手の発言を待たずに話者なしで出す。
+// 話者の決定と待ちは、末尾の describe（speakerOff: false で開く）が対象にする
+const SPEAKER_OFF = { type: "speaker-off", start: 0, reason: "モデルなし" } as const;
+
 const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
   return yield* Effect.acquireRelease(
     Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-sinks-"))),
@@ -111,6 +115,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(yield* withTmpSessionsDir());
       const sink = yield* sinks.open({ dir, title: "終了", model: defaultClaude, updaterLayer, diffUpdate: () => Effect.void, speak: () => Effect.void, publish: (s) => Effect.sync(() => { published.push(s); }) });
+      yield* sink.speaker(SPEAKER_OFF);
       for (const n of [1, 2]) yield* sink.final({ track: "相手", start: n, end: n + 1, text: `発言${n}` });
       yield* sink.drain;
       yield* sink.flush;
@@ -190,6 +195,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
 
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "ひとつめ" });
       yield* sink.final({ track: "自分", start: 2, end: 3, text: "ふたつめ" });
@@ -219,6 +225,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
 
       yield* sink.screen({ start: 1, image: new Uint8Array([0xff, 0xd8, 0xff, 0x00]) });
       yield* sink.screen({ start: 2.5, image: null });
@@ -249,6 +256,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const dir = yield* sinks.createDir(sessionsDir);
       const model = { ...defaultClaude, images: false };
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(model), model, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00, 0x80]);
 
       yield* sink.screen({ start: 1, image: bytes });
@@ -281,6 +289,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
 
       yield* sink.screen({ start: 1, image: new Uint8Array([0xff, 0xd8, 0xff, 0x01]) });
       yield* sink.screen({ start: 2, image: null });
@@ -306,6 +315,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
 
       yield* sink.screenOff({ start: 0, reason: "指定" });
       yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
@@ -324,8 +334,9 @@ describe("SessionSinks（実物 Layer）", () => {
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  // Issue #1020: appendLog で渡した speaker・speaker-off は、生の値のまま受け取った順で log.jsonl に残り、at が付く。差分更新の入力には載らない
-  it.effect("appendLog の speaker・speaker-off は生の値のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
+  // Issue #1020 → #1021: sink.speaker で渡した speaker・speaker-off は、生の値のまま受け取った順で log.jsonl に先に書かれ、at が付く。差分更新の入力には載らない。
+  // 相手の発言は話者の確定区間が揃うまで保留されるので、発言の行は保留が解ける speaker-off の後ろに並ぶ
+  it.effect("sink.speaker の speaker・speaker-off は生の値のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
     const inputs: DiffInput[] = [];
     const updaterLayer = Layer.succeed(
       DiffUpdater,
@@ -337,10 +348,10 @@ describe("SessionSinks（実物 Layer）", () => {
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
 
-      yield* sink.appendLog({ type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false });
+      yield* sink.speaker({ type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false });
       yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
-      yield* sink.appendLog({ type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
-      yield* sink.appendLog({ type: "speaker-off", start: 9, reason: "読み込みに失敗" });
+      yield* sink.speaker({ type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
+      yield* sink.speaker({ type: "speaker-off", start: 9, reason: "読み込みに失敗" });
       yield* sink.flush;
 
       const log = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
@@ -350,7 +361,7 @@ describe("SessionSinks（実物 Layer）", () => {
         { hasAt: true, rest: { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true } },
         { hasAt: true, rest: { type: "speaker-off", start: 9, reason: "読み込みに失敗" } },
       ]);
-      expect(log.map((e) => e.type).filter((t) => t === "start" || t === "speaker" || t === "speaker-off" || t === "remark")).toEqual(["start", "speaker", "remark", "speaker", "speaker-off"]);
+      expect(log.map((e) => e.type).filter((t) => t === "start" || t === "speaker" || t === "speaker-off" || t === "remark")).toEqual(["start", "speaker", "speaker", "speaker-off", "remark"]);
       for (const input of inputs) expect(JSON.stringify(input)).not.toContain("speaker");
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
@@ -361,6 +372,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
 
@@ -377,6 +389,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
       writeFileSync(join(dir, "相手.m4a"), "録音");
@@ -399,6 +412,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
 
@@ -419,6 +433,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
       writeFileSync(join(dir, "相手.m4a"), "録音");
@@ -439,6 +454,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
 
@@ -456,6 +472,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
 
@@ -471,6 +488,7 @@ describe("SessionSinks（実物 Layer）", () => {
     const sinks = yield* SessionSinks;
     const dir = yield* sinks.createDir(sessionsDir);
     const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+    yield* sink.speaker(SPEAKER_OFF);
     yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
     yield* sink.flush;
     return { dir, sink };
@@ -599,6 +617,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
 
@@ -623,6 +642,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       const firstScope = yield* Scope.make();
       const first = yield* Scope.provide(sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "一つ目", ...noop }), firstScope);
+      yield* first.speaker(SPEAKER_OFF);
       expect(state).toMatchObject({ opened: 1, closed: 0 });
       yield* first.final({ track: "相手", start: 0, end: 1, text: "ひとつめの発言" });
       yield* first.flush; // 1 つ目の updater で差分更新が呼ばれる
@@ -632,6 +652,7 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5))); // フォルダ名は開始時刻（実時間のミリ秒）
       const secondScope = yield* Scope.make();
       const second = yield* Scope.provide(sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "二つ目", ...noop }), secondScope);
+      yield* second.speaker(SPEAKER_OFF);
       expect(state).toMatchObject({ opened: 2, closed: 1 }); // 2 つ目は 1 つ目を使い回さず、新しく開く
       yield* second.final({ track: "相手", start: 0, end: 1, text: "ふたつめの発言" });
       yield* second.flush;
@@ -658,7 +679,7 @@ describe("SessionSinks（実物 Layer）", () => {
 });
 
 // 公開したスナップショット・送った speaking を記録する Sink の組み立て
-const openRecordingSink = Effect.fn("openRecordingSink")(function* () {
+const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff = true }: { speakerOff?: boolean } = {}) {
   const sessionsDir = yield* withTmpSessionsDir();
   const sinks = yield* SessionSinks;
   const dir = yield* sinks.createDir(sessionsDir);
@@ -670,6 +691,7 @@ const openRecordingSink = Effect.fn("openRecordingSink")(function* () {
     publish: (snapshot) => Effect.sync(() => void published.push(snapshot)),
     speak: (frame) => Effect.sync(() => void speaks.push(frame)),
   });
+  if (speakerOff) yield* sink.speaker(SPEAKER_OFF);
   return { sink, dir, speaks, published };
 });
 
@@ -898,6 +920,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       const dir = yield* sinks.createDir(sessionsDir);
       const scope = yield* Scope.make();
       const sink = yield* Scope.provide(sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void }), scope);
+      yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final(finalRemark("相手", 1, 2, "ひとつめ"));
       yield* sink.final(finalRemark("自分", 3, 4, "ふたつめ"));
       yield* sink.final(finalRemark("相手", 5, 6, "みっつめ"));
@@ -965,6 +988,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       const noop = { publish: () => Effect.void, speak: () => Effect.void };
       const firstDir = yield* sinks.createDir(sessionsDir);
       const first = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir: firstDir, title: "前", ...noop });
+      yield* first.speaker(SPEAKER_OFF);
       yield* first.final(finalRemark("相手", 1, 2, "前の発言"));
       yield* first.flush;
       yield* first.exports;
@@ -2067,6 +2091,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void });
+      yield* sink.speaker(SPEAKER_OFF);
       yield* script({ sink, dir });
       yield* sink.drain;
       yield* sink.flush;
@@ -2376,5 +2401,275 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
       expect(existsSync(join(dir, "export.json"))).toBe(true);
       expect(warned.errors.length).toBeGreaterThan(0);
     }).pipe(Effect.provideService(Console.Console, warned.service), Effect.provide(layer));
+  });
+});
+
+// Issue #1021: 相手の発言の話者。実物の SessionSink に、ヘルパーの speaker / speaker-off と発言を流して確かめる。
+// 発言を締める時計と同じく、3 秒の待ちも音声の時刻（届いた結果の end）で進める。壁時計（TestClock）では進まない。
+// 秒の値は、ミリ秒に直したとき端数が出ない値にそろえる（14.999 × 1000 = 14999、15 × 1000 = 15000）
+describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", () => {
+  const segment = (slot: number, start: number, end: number, final = true) => ({ type: "speaker", track: "相手", start, end, slot, final }) as const;
+  const settledAt = (to: number) => ({ type: "speaker-settled", track: "相手", to }) as const;
+  const open = () => openRecordingSink({ speakerOff: false });
+  type Sink = Effect.Success<ReturnType<typeof openRecordingSink>>["sink"];
+  // 自分の途中結果は発言にならず、音声の時計だけを進める
+  const tick = (sink: Sink, end: number) => sink.partial({ track: "自分", start: 0, end, text: "時計を進める", duplicate: false });
+  const loggedRemarks = (dir: string) => logEvents(dir).filter((e) => e.type === "remark").map((e) => e.remark);
+  const brief = (dir: string) => loggedRemarks(dir).map((r) => [r.id, r.speaker, r.text]);
+
+  describe("確定を待って出す", () => {
+    it.effect("確定した区間が発言の終わりまで揃うと、ラベルを付けて出る。log.jsonl の行にも差分更新への入力にも同じ話者が載る", () => {
+      const { calls, updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
+        yield* sink.speaker(segment(2, 10, 11.5));
+        yield* sink.speaker(settledAt(11.5));
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]); // 終わり（12 秒）まで確定していない
+        expect(calls).toEqual([]);
+
+        yield* sink.speaker(segment(2, 11.5, 12)); // 区間の end が発言の end に届いても、位置が届くまでは出さない
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]);
+
+        yield* sink.speaker(settledAt(12));
+        yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+
+        const expected = { id: "r1", track: "相手", start: 10, end: 12, text: "来週に開催します", speaker: "相手 A" };
+        expect(loggedRemarks(dir)).toEqual([expected]);
+        expect(calls.flatMap((c) => c.fresh)).toEqual([expected]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("仮の区間（final: false）では揃わない。話者にも使わない", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
+        yield* sink.speaker(segment(2, 10, 12, false));
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]);
+
+        yield* tick(sink, 15);
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", undefined, "来週に開催します"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("3 秒待っても揃わなければ話者なしで出る（3 秒の直前では出ない）。壁時計は進めても数えない。出した後に区間が届いても、行も差分更新への入力も変わらない", () => {
+      const { calls, updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
+
+        yield* TestClock.adjust(600_000); // 壁時計では数えない
+        yield* tick(sink, 14.999);
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]);
+
+        yield* tick(sink, 15);
+        yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
+        const emitted = { id: "r1", track: "相手", start: 10, end: 12, text: "来週に開催します" };
+        expect(loggedRemarks(dir)).toEqual([emitted]);
+        expect("speaker" in loggedRemarks(dir)[0]).toBe(false);
+
+        // 出した後に、同じ時間の確定区間が届く
+        yield* sink.speaker(segment(2, 10, 12));
+        yield* sink.speaker(settledAt(12));
+        yield* tick(sink, 30);
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([emitted]);
+        expect(calls.flatMap((c) => c.fresh)).toEqual([emitted]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("文の終わりで締める発言も、ラベルが揃うまで出ない。揃えば待たずに出て、揃わなければ締めた時点から 3 秒で話者なしになる（1 秒の締め切りとは重ならない）", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.partial({ track: "相手", start: 10, end: 12.5, text: "お願いします。", duplicate: false });
+        yield* tick(sink, 12.55); // 文の終わりから 50ms。ここで発言が締まる（1 秒は経っていない）
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]); // 締まっても、ラベルが揃うまで出ない
+
+        yield* sink.speaker(segment(2, 10, 12.5)); // 確定した区間が届いても、位置が届くまでは出ない
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]);
+        yield* sink.speaker(settledAt(12.5)); // 位置が届く: 待たずに出る
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", "相手 A", "お願いします。"]]);
+
+        // 揃わないとき: 締めた時点（22.55）から 3 秒
+        yield* sink.partial({ track: "相手", start: 20, end: 22.5, text: "ありがとうございます。", duplicate: false });
+        yield* tick(sink, 22.55);
+        yield* tick(sink, 25.549);
+        yield* settle;
+        expect(loggedRemarks(dir)).toHaveLength(1);
+        yield* tick(sink, 25.55);
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", "相手 A", "お願いします。"], ["r2", undefined, "ありがとうございます。"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("停止（drain）で、保留中の発言は 3 秒を待たずに話者なしで出る", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
+        yield* settle;
+        expect(loggedRemarks(dir)).toEqual([]);
+
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        expect(brief(dir)).toEqual([["r1", undefined, "来週に開催します"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+  });
+
+  describe("話者が替わったところで切る", () => {
+    it.effect("1 つの確定結果が 2 人分に切れると r1・r2 になり、次の発言は r3 になる（番号が重ならず飛ばない）。差分更新にも同じ ID・話者で渡る", () => {
+      const { calls, updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.speaker(segment(3, 10, 11));
+        yield* sink.speaker(segment(1, 11, 14));
+        yield* sink.speaker(settledAt(14));
+        yield* sink.final({
+          track: "相手", start: 10, end: 14, text: "はい、ありがとう",
+          wordTimes: [{ location: 0, length: 3, start: 10, end: 11 }, { location: 3, length: 5, start: 11, end: 14 }],
+        });
+        yield* sink.speaker(segment(1, 20, 22));
+        yield* sink.speaker(settledAt(22));
+        yield* sink.final(finalRemark("相手", 20, 22, "つぎ"));
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        expect(loggedRemarks(dir).map((r) => [r.id, r.speaker, r.text, r.start, r.end])).toEqual([
+          ["r1", "相手 A", "はい、", 10, 11],
+          ["r2", "相手 B", "ありがとう", 11, 14],
+          ["r3", "相手 B", "つぎ", 20, 22],
+        ]);
+        // r1「はい、」はフィラーだけで中身がないので、ログには残るが差分更新には渡らない（hasContent）
+        expect(calls.flatMap((c) => c.fresh).map((r) => [r.id, r.speaker])).toEqual([["r2", "相手 B"], ["r3", "相手 B"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+  });
+
+  describe("ラベル", () => {
+    it.effect("初めて話した順に 相手 A・B・C を振り、同じ枠が話せば同じラベル。新しい枠は続きのラベルで、使い回さない。自分は常に「自分」でラベルを消費しない", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.final(finalRemark("自分", 0.5, 1, "もしもし")); // 自分が先に話しても、相手の最初が 相手 A
+        for (const s of [segment(2, 10, 13), segment(0, 13, 16), segment(2, 16, 19), segment(1, 19, 22), settledAt(22)]) yield* sink.speaker(s);
+        yield* sink.final(finalRemark("相手", 10, 13, "ひとつめ"));
+        yield* sink.final(finalRemark("相手", 13, 16, "ふたつめ"));
+        yield* sink.final(finalRemark("相手", 16, 19, "みっつめ"));
+        yield* sink.final(finalRemark("相手", 19, 22, "よっつめ"));
+        yield* sink.final(finalRemark("自分", 23, 24, "はい"));
+        yield* sink.speaker(segment(0, 25, 27));
+        yield* sink.speaker(settledAt(27));
+        yield* sink.final(finalRemark("相手", 25, 27, "いつつめ"));
+        yield* sink.speaker(segment(5, 40, 42)); // 確定区間が届いただけ（どの発言にも出ていない枠）。ラベルは振らない
+        yield* sink.speaker(segment(3, 50, 52));
+        yield* sink.speaker(settledAt(52));
+        yield* sink.final(finalRemark("相手", 50, 52, "むっつめ"));
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        expect(brief(dir)).toEqual([
+          ["r1", "自分", "もしもし"],
+          ["r2", "相手 A", "ひとつめ"],
+          ["r3", "相手 B", "ふたつめ"],
+          ["r4", "相手 A", "みっつめ"],
+          ["r5", "相手 C", "よっつめ"],
+          ["r6", "自分", "はい"],
+          ["r7", "相手 B", "いつつめ"],
+          ["r8", "相手 D", "むっつめ"],
+        ]);
+        const valid = new Set<string | undefined>([undefined, "自分", "相手 A", "相手 B", "相手 C", "相手 D"]);
+        for (const r of loggedRemarks(dir)) expect(valid.has(r.speaker)).toBe(true);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+
+    it.effect("最初に話す枠の番号が 7 でも 相手 A になる（枠の番号をそのまま見せない）", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.speaker(segment(7, 0, 3));
+        yield* sink.speaker(settledAt(3));
+        yield* sink.final(finalRemark("相手", 0, 3, "ななばん"));
+        yield* settle;
+
+        expect(brief(dir)).toEqual([["r1", "相手 A", "ななばん"]]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+  });
+
+  describe("speaker-off（話者分離を使えない）", () => {
+    it.effect("保留中の発言はすぐ話者なしで出て、以後の相手の発言は待たずに話者なしで出る。先に出した発言のラベルは変わらず、セッションは止まらない", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.speaker(segment(2, 0, 3));
+        yield* sink.speaker(settledAt(3));
+        yield* sink.final(finalRemark("相手", 0, 3, "ラベルあり"));
+        yield* sink.final(finalRemark("相手", 10, 12, "保留中"));
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", "相手 A", "ラベルあり"]]);
+
+        yield* sink.speaker({ type: "speaker-off", start: 12, reason: "途中で停止" });
+        yield* settle;
+        expect(brief(dir)).toEqual([["r1", "相手 A", "ラベルあり"], ["r2", undefined, "保留中"]]);
+
+        yield* sink.final(finalRemark("相手", 20, 22, "待たない")); // 時計を進めない
+        yield* sink.speaker(segment(2, 20, 30)); // off の後の区間は使わない
+        yield* sink.final(finalRemark("相手", 30, 32, "使わない"));
+        yield* sink.final(finalRemark("自分", 33, 34, "自分は続く"));
+        yield* settle;
+
+        expect(brief(dir)).toEqual([
+          ["r1", "相手 A", "ラベルあり"],
+          ["r2", undefined, "保留中"],
+          ["r3", undefined, "待たない"],
+          ["r4", undefined, "使わない"],
+          ["r5", "自分", "自分は続く"],
+        ]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
+  });
+
+  describe("log.jsonl", () => {
+    it.effect("発言の行に決まった話者が残る。話者なしの行には speaker の項目が無い。speaker の行は先に書かれたまま残る", () => {
+      const { updaterLayer } = makeRecordingUpdater();
+      return Effect.scoped(Effect.gen(function* () {
+        const { sink, dir } = yield* open();
+        yield* sink.speaker(segment(4, 0, 3));
+        yield* sink.speaker(settledAt(3));
+        yield* sink.final(finalRemark("相手", 0, 3, "あいて"));
+        yield* sink.final(finalRemark("自分", 4, 5, "じぶん"));
+        yield* sink.final(finalRemark("相手", 10, 12, "だれもいない"));
+        yield* sink.drain;
+        yield* sink.flush;
+        yield* settle;
+
+        const rows = loggedRemarks(dir);
+        expect(rows).toEqual([
+          { id: "r1", track: "相手", start: 0, end: 3, text: "あいて", speaker: "相手 A" },
+          { id: "r2", track: "自分", start: 4, end: 5, text: "じぶん", speaker: "自分" },
+          { id: "r3", track: "相手", start: 10, end: 12, text: "だれもいない" },
+        ]);
+        expect(logEvents(dir).filter((e) => e.type === "speaker").map(({ at, ...rest }) => rest)).toEqual([{ type: "speaker", track: "相手", start: 0, end: 3, slot: 4, final: true }]);
+        // 確定済みの位置も、生の値のまま残る
+        expect(logEvents(dir).filter((e) => e.type === "speaker-settled").map(({ at, ...rest }) => rest)).toEqual([{ type: "speaker-settled", track: "相手", to: 3 }]);
+      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+    });
   });
 });

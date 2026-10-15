@@ -1,5 +1,6 @@
 import { Schema } from "effect";
-import { children, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { children, emptyMap, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { remarkLine } from "./remarkLine.ts";
 
 export const SYSTEM = `あなたは会議のマインドマップに、新しい発言の内容を書き足す係です。
 新しい発言は文に切って、番号付きで並べてあります。文ごとに種類を1つ選び、並べた順に返してください。
@@ -18,9 +19,10 @@ export const SYSTEM = `あなたは会議のマインドマップに、新しい
 議題: 話し中の議題のidを選ぶ。話題が変わったら「新しい議題」を選び、題に20字以内の議題名を書く。
 済み: 話が終わって戻らない議題・論点のidを1つ。ほとんどの回は「なし」。`;
 
-export type Sentence = { readonly remark: string; readonly text: string };
+// 元の発言（ID・話者・時刻）と、その発言の 1 文
+export type Sentence = { readonly remark: Remark; readonly text: string };
 export const splitSentences = (remark: Remark): Sentence[] =>
-  remark.text.split(/(?<=[。？！?!])/).map((text) => text.trim()).filter(Boolean).map((text) => ({ remark: remark.id, text }));
+  remark.text.split(/(?<=[。？！?!])/).map((text) => text.trim()).filter(Boolean).map((text) => ({ remark, text }));
 
 const summary = Schema.NonEmptyString.check(Schema.isMaxLength(40));
 const sentenceSchema = (points: readonly string[]) => Schema.Union([
@@ -55,8 +57,14 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
   });
   const prompt = [
     "## 現在のマップ（話し中の部分）", lines.join("\n"), "",
-    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => `${r.id} [${r.start}] ${r.text}`).join("\n") : "（なし）", "",
-    `## 新しい発言（${sentences.length} 文）`, sentences.map((s, i) => `${i + 1}. [${s.remark}] ${s.text}`).join("\n"),
+    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r)).join("\n") : "（なし）", "",
+    `## 新しい発言（${sentences.length} 文）`, sentences.map((s, i) => `${i + 1}. ${remarkLine(s.remark, { text: s.text })}`).join("\n"),
   ].join("\n");
   return { prompt, schema, jsonSchema: Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" }).schema };
 }
+
+// 開始検査（接続確認）の分類リクエスト。本番と同じ形式で、会議の状態には適用しない
+export const probeRequest = () => {
+  const text = "接続を確認します。";
+  return classificationRequest(emptyMap("接続確認"), [], [{ remark: { id: "probe", track: "相手", start: 0, end: 1, text }, text }]);
+};

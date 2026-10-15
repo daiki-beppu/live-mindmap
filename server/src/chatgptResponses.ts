@@ -1,9 +1,9 @@
 import { Effect, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { DiffUpdatePaused, emptyMap } from "./core/index.ts";
+import { DiffUpdatePaused } from "./core/index.ts";
 import { accessToken, ChatgptEndpoints } from "./chatgptAuth.ts";
 import { authPath, chatgptRefusal, ChatgptUnavailable } from "./chatgptAuthStore.ts";
-import { classificationRequest, SYSTEM } from "./localPrompt.ts";
+import { probeRequest, SYSTEM } from "./localPrompt.ts";
 import type { Classify, LocalModel } from "./localDiffUpdater.ts";
 import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
@@ -77,7 +77,7 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
     Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(text)),
   ));
   // 開始検査は分類だけ。読みの要求は足さない（開始時の通信の回数を変えない）
-  yield* classify(classificationRequest(emptyMap("接続確認"), [], [{ remark: "probe", text: "接続を確認します。" }]));
+  yield* classify(probeRequest());
   const katakana: LocalModel["katakana"] = (words) => refuse(exchange(KATAKANA_SYSTEM, katakanaPrompt(words), KATAKANA_JSON_SCHEMA).pipe(
     Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(text)),
     Effect.map(toAnswers),
