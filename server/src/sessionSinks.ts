@@ -2,6 +2,7 @@
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
 import { Context, Effect, FiberSet, FileSystem, Layer, Ref, Scope } from "effect";
 import { dirname } from "node:path";
+import type { JudgeModel } from "./judgeSelection.ts";
 import { MapCapture } from "./capture.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
@@ -52,7 +53,7 @@ export type SessionSink = {
 };
 
 export type SessionSinksDeps<R = never> = {
-  prepareUpdater: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, R | Scope.Scope>;
+  prepareUpdater: (model: ExecutableModel, judge?: JudgeModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, R | Scope.Scope>;
 };
 
 export type OpenSessionSink = {
@@ -91,9 +92,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
         // ふつうの語の一覧は、Layer を作るときに 1 回だけ読む（同梱のファイルなので、読めないのは予期しない失敗）
         const commonWords = yield* loadCommonWords(COMMON_WORDS_PATH).pipe(Effect.provideContext(exportServices), Effect.orDie);
         return SessionSinks.of({
-        prepare: (model) => Effect.gen(function* () {
+        prepare: (model, judge) => Effect.gen(function* () {
           const scope = yield* Effect.scope;
-          return yield* prepareUpdater(model).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
+          return yield* prepareUpdater(model, judge).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
         }),
         createDir: (sessionsDir) => createSessionDir(sessionsDir).pipe(Effect.provideContext(exportServices), Effect.orDie),
         open: Effect.fnUntraced(function* ({ dir, title, publish, speak, diffUpdate, model, updaterLayer }) {

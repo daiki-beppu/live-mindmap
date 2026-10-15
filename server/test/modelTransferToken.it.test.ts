@@ -1,5 +1,5 @@
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
-import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
+import { forbiddenHelperChecks, readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +7,8 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
 import { Helpers } from "../src/helpers.ts";
-import { modelTransferTokenPath } from "../src/modelTransferToken.ts";
+import type { JudgeModel } from "../src/judgeSelection.ts";
+import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTransferToken.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -72,6 +73,27 @@ describe("モデル転送トークンのサーバー Scope", () => {
     const server = yield* startedServer(options, layers);
     expect(notifications).toEqual([server.port]);
     expect(existsSync(modelTransferTokenPath(sessionsDir, server.port))).toBe(true);
+    yield* server.close;
+  }));
+
+  it.live("start の本文の judge は転送用トークンが無ければ 403 で、準備に渡らない。トークンが合えば準備まで届く", () => Effect.gen(function* () {
+    const root = yield* directory;
+    const sessionsDir = join(root, "sessions");
+    const judge: JudgeModel = { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 };
+    const prepared: (JudgeModel | undefined)[] = [];
+    const sessionSinks = SessionSinks.layer({ prepareUpdater: (_model, chosen) => Effect.sync(() => {
+      prepared.push(chosen);
+      return updaterLayer(() => Effect.succeed({ ops: [] }));
+    }) }).pipe(Layer.provide(fakeExportServices()));
+    const server = yield* startedServer({ port: 0, sessionsDir }, { ...layers, sessionSinks, helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("準備の届き先だけを確かめる") })) });
+    const start = (headers: Record<string, string>) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
+      method: "POST", headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify({ app: "us.zoom.xos", audio: false, screen: false, judge }),
+    }));
+    expect((yield* start({})).status).toBe(403);
+    expect(prepared).toEqual([]);
+    yield* start({ [MODEL_TRANSFER_HEADER]: readFileSync(modelTransferTokenPath(sessionsDir, server.port), "utf8") });
+    expect(prepared).toEqual([judge]);
     yield* server.close;
   }));
 });

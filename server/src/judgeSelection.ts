@@ -16,6 +16,16 @@ const JudgeConfig = Schema.Struct({
   models: Schema.optionalKey(Schema.Unknown),
 });
 
+// start の本文で転送する判定のモデル（解決済みの JudgeModel と同じ形）
+export const TransferredJudge = Schema.Struct({
+  name: Schema.NonEmptyString,
+  route: Schema.Literal("system-one"),
+  apiKeyEnv: Schema.NonEmptyString,
+  model: Schema.optionalKey(Schema.NonEmptyString),
+  url: Schema.optionalKey(Schema.NonEmptyString),
+  timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+
 const defaultTimeoutMs = 1000;
 const defaultJudgeName = "jev";
 const noJudgeName = "off";

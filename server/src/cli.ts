@@ -17,7 +17,7 @@ import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { prepareUpdaterLayer } from "./diffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
-import { configuredModels, ModelRefused, resolveJudge, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
+import { configuredModels, ModelRefused, modelChosenByUser, resolveJudge, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
@@ -382,8 +382,14 @@ const judgeFlag = Flag.String("judge").pipe(
   Flag.optional,
 );
 const resolveJudgeNotice = Effect.fn("resolveJudgeNotice")(function* (judge: Option.Option<string>, selected: { readonly local: boolean }) {
-  const { notice } = yield* resolveJudge({ judge: Option.getOrUndefined(judge) }, selected.local);
+  const { notice, judge: chosen } = yield* resolveJudge({ judge: Option.getOrUndefined(judge) }, selected.local);
   yield* writeWarnings(notice === undefined ? [] : [notice]);
+  return chosen;
+});
+// 振り分けに使う判定。差分更新のモデルを利用者が名指ししたときは、選んだモデルだけを使うので判定を渡さない（判定の選択の断りと知らせは出す）
+const resolveRoutingJudge = Effect.fn("resolveRoutingJudge")(function* (judge: Option.Option<string>, model: Option.Option<string>, selected: { readonly local: boolean }) {
+  const resolved = yield* resolveJudgeNotice(judge, selected);
+  return (yield* modelChosenByUser({ model: Option.getOrUndefined(model) })) ? undefined : resolved;
 });
 const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した差分更新モデルの名前（環境変数・設定の既定値より優先）"), Flag.optional);
 const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（Apple Intelligence の子プロセスだけを使い、会議の中身を Mac の外に出さない。--model は apple だけ組み合わせられる）"), Flag.withDefault(false));
@@ -441,9 +447,9 @@ const play = Command.make(
   Effect.fn("play")(
     function* ({ realtime, screen, transcript, model, judge, local }) {
       const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
-      yield* resolveJudgeNotice(judge, selected);
+      const chosenJudge = yield* resolveRoutingJudge(judge, model, selected);
       const warnings = yield* requireStartupDeps("play", selected.route);
-      const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
+      const updaterLayer = yield* prepareUpdaterLayer(selected, chosenJudge).pipe(Effect.mapError(startupPreparationFailure));
       yield* writeWarnings(warnings);
       return yield* Effect.gen(function* () {
         const port = yield* portConfig;
@@ -535,15 +541,15 @@ const start = Command.make(
           .split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "")
       : [];
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
-    yield* resolveJudgeNotice(judge, selected);
+    const chosenJudge = yield* resolveRoutingJudge(judge, model, selected);
     const port = yield* portConfig;
     let headers: Record<string, string> | undefined;
-    if (selected.route === "openai-compatible" || selected.route === "chatgpt") {
+    if (selected.route === "openai-compatible" || selected.route === "chatgpt" || chosenJudge !== undefined) {
       const sessionsDir = yield* sessionsDirConfig;
       const token = yield* readModelTransferToken(sessionsDir, port).pipe(
-        Effect.mapError(() => new ServerFailed({ message: "互換モデルの転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
+        Effect.mapError(() => new ServerFailed({ message: "モデル・判定の転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
       );
-      if (!token) return yield* new ServerFailed({ message: "互換モデルの転送用トークンが空です\nサーバーを起動し直してください" });
+      if (!token) return yield* new ServerFailed({ message: "モデル・判定の転送用トークンが空です\nサーバーを起動し直してください" });
       headers = { [MODEL_TRANSFER_HEADER]: token };
     }
     const { dir, warnings } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
@@ -553,6 +559,7 @@ const start = Command.make(
       screen: !noScreen,
       ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
       model: selected,
+      ...(chosenJudge ? { judge: chosenJudge } : {}),
     }, headers);
     yield* writeWarnings(warnings ?? []);
     yield* write(`${dir}\n`);

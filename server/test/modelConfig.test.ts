@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Effect, FileSystem, Layer } from "effect";
-import { resolveJudge, resolveModelCandidate } from "../src/modelConfig.ts";
+import { modelChosenByUser, resolveJudge, resolveModelCandidate } from "../src/modelConfig.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 
 describe("check のモデル候補解決", () => {
@@ -22,6 +22,21 @@ describe("check のモデル候補解決", () => {
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: "/synthetic" }))),
     ));
     expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "ModelRefused" } });
+  }));
+});
+
+describe("差分更新のモデルを利用者が名指ししたか（判定で振り分けない条件）", () => {
+  const chosen = (flags: { model?: string }, env: Record<string, string>, config: unknown) =>
+    modelChosenByUser(flags).pipe(
+      Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({ readFileString: () => Effect.succeed(JSON.stringify(config)) })),
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: "/synthetic", ...env }))),
+    );
+
+  it.effect("何も指定しなければ false。--model claude・LIVE_MINDMAP_MODEL・設定の default は、組み込みと同じ名前でも true", () => Effect.gen(function* () {
+    expect(yield* chosen({}, {}, {})).toBe(false);
+    expect(yield* chosen({ model: "claude" }, {}, {})).toBe(true);
+    expect(yield* chosen({}, { LIVE_MINDMAP_MODEL: "claude" }, {})).toBe(true);
+    expect(yield* chosen({}, {}, { default: "claude" })).toBe(true);
   }));
 });
 

@@ -46,8 +46,18 @@ export const DiffUsage = Schema.Struct({
   model: Schema.String,
 });
 export type DiffUsage = typeof DiffUsage["Type"];
-// 差分更新の結果。トークン数を数えられない実装は usage を返さない。
-export type DiffResult = DiffOutput & { readonly usage?: DiffUsage };
+// 判定の記録。回した先のモデル・判定にかかった ms・「含む」の確からしさ、判定できなかったときはその理由（確からしさは付かない）
+const JudgeRecord = Schema.Struct({
+  model: Schema.String,
+  ms: Schema.Finite,
+  confidence: Schema.optionalKey(Schema.Finite),
+  failure: Schema.optionalKey(Schema.String),
+});
+type JudgeRecord = typeof JudgeRecord["Type"];
+// 差分更新の結果。トークン数を数えられない実装は usage を返さない。判定を使わない実装は judge を返さない。
+export type DiffResult = DiffOutput & { readonly usage?: DiffUsage; readonly judge?: JudgeRecord };
+// update の失敗。判定を呼んだ回の失敗は judge を運ぶ
+export type DiffUpdateFailure = DiffUpdateError & { readonly judge?: JudgeRecord };
 
 // 差分更新を出す役。セッションごとの Service（SessionSinks.open がセッションごとに Layer を作る）。
 // core は Claude 側を import できないので static layer は持たない。Layer は src 側が作る
@@ -55,7 +65,7 @@ export type DiffResult = DiffOutput & { readonly usage?: DiffUsage };
 export type KatakanaAsk = (words: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<KatakanaAnswer>, DiffUpdateError>;
 
 export class DiffUpdater extends Context.Service<DiffUpdater, {
-  readonly update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateError>;
+  readonly update: (input: DiffInput) => Effect.Effect<DiffResult, DiffUpdateFailure>;
   // 無い updater では、英字の語は読みを返さない語として扱う
   readonly katakana?: KatakanaAsk;
   readonly lifecycle?: Stream.Stream<DiffUpdateLifecycle>;
@@ -101,6 +111,7 @@ export const DiffEvent = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
   processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
   usage: Schema.optionalKey(DiffUsage), // この呼び出しのトークン数。数えられない実装・失敗した呼び出しには付かない
+  judge: Schema.optionalKey(JudgeRecord), // 振り分けの判定の記録。判定を使わない実装・判定を呼ばなかった回には付かない
   // update を呼ぶ直前と、応答（または失敗）を受けた直後の実時刻（at と同じ書き方）。update に入らなかった回（添える画像の読み戻しの失敗）には付かない
   call: Schema.optionalKey(Schema.Struct({ startedAt: Schema.String, endedAt: Schema.String })),
 });
@@ -402,9 +413,11 @@ function screenFileName(start: number, used: ReadonlySet<string>): string {
 }
 
 // 失敗した差分更新の error 欄。タグ付きの失敗は "<_tag>: <message>"、defect は "defect: <内容>"
-const classifyFailure = (cause: Cause.Cause<DiffUpdateError>) => {
+const classifyFailure = (cause: Cause.Cause<DiffUpdateFailure>) => {
   const failure = Cause.findError(cause);
+  const judge = Result.isSuccess(failure) ? failure.success.judge : undefined;
   return {
+    judge,
     ok: false as const,
     error: Result.isSuccess(failure) ? `${failure.success._tag}: ${failure.success.message}` : `defect: ${String(Cause.squash(cause))}`,
     pause: Result.isSuccess(failure) && failure.success instanceof DiffUpdatePaused ? failure.success : undefined,
@@ -548,7 +561,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           );
           // 失敗は、添える画像の読み戻しと update の、中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
           type CallTimes = { startedAt: string; endedAt: string };
-          const classifyUnlessInterrupt = (cause: Cause.Cause<DiffUpdateError>) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)));
+          const classifyUnlessInterrupt = (cause: Cause.Cause<DiffUpdateFailure>) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)));
           const outcome = yield* Effect.all([Effect.forEach(attached, readBack), readPrevious]).pipe(
             Effect.flatMap(([screens, previousScreens]) =>
               Effect.suspend(() => {
@@ -560,11 +573,11 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             ),
             Effect.flatMap(({ exit, call }) =>
               exit.pipe(
-                Effect.flatMap(({ ops, usage, processedRemarks }) => {
+                Effect.flatMap(({ ops, usage, judge, processedRemarks }) => {
                   const count = processedRemarks ?? fresh.length;
                   return !Number.isInteger(count) || count <= 0 || count > fresh.length
-                    ? Effect.fail({ _tag: "InvalidProcessedRemarks", message: "反映数が入力の発言数に対して不正です" })
-                    : Effect.succeed({ ok: true as const, ops, usage, processedRemarks, count, call: call as CallTimes | undefined });
+                    ? Effect.fail({ _tag: "InvalidProcessedRemarks", message: "反映数が入力の発言数に対して不正です", judge })
+                    : Effect.succeed({ ok: true as const, ops, usage, judge, processedRemarks, count, call: call as CallTimes | undefined });
                 }),
                 Effect.catchCause((cause) => Effect.map(classifyUnlessInterrupt(cause), (failure) => ({ ...failure, call: call as CallTimes | undefined }))),
               ),
@@ -591,7 +604,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             }
             // 失敗した回の発言は処理済みとして扱い、マップは変えずに次へ進む
             yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh], previousResponse: undefined }));
-            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...(outcome.call ? { call: outcome.call } : {}) });
+            yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...(outcome.judge ? { judge: outcome.judge } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
             return;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
@@ -607,7 +620,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           });
           yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped,
             ...(outcome.processedRemarks !== undefined ? { processedRemarks: outcome.processedRemarks } : {}),
-            ...(outcome.usage ? { usage: outcome.usage } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
+            ...(outcome.usage ? { usage: outcome.usage } : {}), ...(outcome.judge ? { judge: outcome.judge } : {}), ...(outcome.call ? { call: outcome.call } : {}) });
           if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
         }),
       );

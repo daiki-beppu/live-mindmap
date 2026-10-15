@@ -4,7 +4,7 @@ import { DiffUpdater, SessionLog, type DiffInput, type DiffResult, type LogEvent
 // core の Service（DiffUpdater・SessionLog）の偽物を Layer にする。偽物は Service.of で作り、Layer.succeed で渡す。
 
 // DiffUpdater.update の失敗の型（core は構造型で受ける）
-export type UpdateFailure = { readonly _tag: string; readonly message: string };
+export type UpdateFailure = { readonly _tag: string; readonly message: string; readonly judge?: { readonly model: string; readonly ms: number; readonly confidence?: number; readonly failure?: string } };
 
 export const updaterLayer = (update: (input: DiffInput) => Effect.Effect<DiffResult, UpdateFailure>) =>
   Layer.succeed(DiffUpdater, DiffUpdater.of({ update }));
