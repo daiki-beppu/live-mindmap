@@ -15,7 +15,7 @@ const own = Subscription.make<Model, Message>()((entry) => ({
     },
   ),
 }));
-const feed = Subscription.lift({ liveFeed: LiveFeed.subscriptions.liveFeed })<Model, Message>({
+const feed = Subscription.lift({ liveFeed: LiveFeed.subscriptions.liveFeed, captionDeadline: LiveFeed.subscriptions.captionDeadline })<Model, Message>({
   read: (model) => Option.some(model.feed),
   toParentMessage: (message) => Message.GotLiveFeedMessage({ message }),
 });

@@ -5,6 +5,7 @@ import { RESUMED_NOTICE_MS } from "../src/intake.ts";
 import { KeyId } from "../src/app/keys/table.ts";
 import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
+import { spokenFrame } from "./fixtures/captions.ts";
 import { Model as MeetingModel } from "../src/app/meeting/main.ts";
 import {
   connectedMessage,
@@ -43,7 +44,7 @@ describe("会議中の update: Model は本物の Schema に通る", () => {
     expect(isModel(init(true))).toBe(true);
     const after = run([
       connectedMessage(),
-      frameMessage({ type: "speaking", track: "相手", text: "字幕です。" }),
+      frameMessage(spokenFrame("字幕です。", "相手")),
       frameMessage({ type: "intake", status: "interrupted" }),
       frameMessage({ type: "screen-notice", text: "共有画面は使っていません" }),
       frameMessage({ type: "tap-notice", text: TAP }),
@@ -164,7 +165,7 @@ describe("会議中の update: 反映で点滅の再生し直し（RestartBlink�
     const second = run([frameMessage(SECOND), measured]).model;
     expect(names(update(second, frameMessage(THIRD_QUIET)))).not.toContain("RestartBlink");
     expect(names(update(second, frameMessage(SECOND)))).not.toContain("RestartBlink");
-    expect(names(update(first, frameMessage({ type: "speaking", track: "相手", text: "字幕。" })))).not.toContain("RestartBlink");
+    expect(names(update(first, frameMessage(spokenFrame("字幕。", "相手"))))).not.toContain("RestartBlink");
     expect(names(update(first, frameMessage({ type: "intake", status: "running" })))).not.toContain("RestartBlink");
   });
 

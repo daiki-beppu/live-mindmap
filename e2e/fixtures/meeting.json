@@ -31,19 +31,19 @@
       "duplicate": false
     },
     {
+      "type": "partial",
+      "track": "相手",
+      "start": 9,
+      "end": 11,
+      "text": "検索の改善を先にやりた",
+      "duplicate": false
+    },
+    {
       "type": "remark",
       "track": "自分",
       "start": 9,
       "end": 12,
       "text": "担当を分けて進めましょう",
-      "duplicate": false
-    },
-    {
-      "type": "partial",
-      "track": "相手",
-      "start": 12,
-      "end": 14,
-      "text": "検索の改善を先にやりた",
       "duplicate": false
     },
     {
@@ -85,6 +85,83 @@
       "end": 30,
       "text": "期限は金曜日にしましょう",
       "duplicate": false
+    }
+  ],
+  "speakers": [
+    {
+      "before": 0,
+      "type": "speaker",
+      "track": "相手",
+      "start": 0,
+      "end": 4,
+      "slot": 0,
+      "final": true
+    },
+    {
+      "before": 0,
+      "type": "speaker-settled",
+      "track": "相手",
+      "to": 4
+    },
+    {
+      "before": 3,
+      "type": "speaker",
+      "track": "相手",
+      "start": 9,
+      "end": 11,
+      "slot": 1,
+      "final": false
+    },
+    {
+      "before": 3,
+      "type": "speaker-settled",
+      "track": "相手",
+      "to": 11
+    },
+    {
+      "before": 5,
+      "type": "speaker",
+      "track": "相手",
+      "start": 14,
+      "end": 18,
+      "slot": 1,
+      "final": true
+    },
+    {
+      "before": 5,
+      "type": "speaker-settled",
+      "track": "相手",
+      "to": 18
+    },
+    {
+      "before": 7,
+      "type": "speaker",
+      "track": "相手",
+      "start": 21,
+      "end": 25,
+      "slot": 0,
+      "final": true
+    },
+    {
+      "before": 7,
+      "type": "speaker-settled",
+      "track": "相手",
+      "to": 25
+    },
+    {
+      "before": 9,
+      "type": "speaker",
+      "track": "相手",
+      "start": 27,
+      "end": 30,
+      "slot": 1,
+      "final": true
+    },
+    {
+      "before": 9,
+      "type": "speaker-settled",
+      "track": "相手",
+      "to": 30
     }
   ]
 }

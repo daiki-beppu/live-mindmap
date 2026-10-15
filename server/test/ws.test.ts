@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Queue } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import type { IntakeFrame, Snapshot, SpeakingFrame } from "../src/core/index.ts";
+import type { CaptionsFrame, IntakeFrame, Snapshot } from "../src/core/index.ts";
 import { Viewers } from "../src/viewers.ts";
 
 const snap = (...texts: string[]): Snapshot => ({
@@ -12,7 +12,11 @@ const snap = (...texts: string[]): Snapshot => ({
   ],
   round: 0, changes: [], remarks: [],
 });
-const speaking = (track: "相手" | "自分", text: string): SpeakingFrame => ({ type: "speaking", track, text });
+// 吹き出し 1 つの字幕のフレーム。texts が空なら空の並び
+const captions = (...texts: string[]): CaptionsFrame => ({
+  type: "captions",
+  bubbles: texts.map((text, i) => ({ id: `c${i}`, track: "相手", label: "なし", start: i, end: i + 1, text })),
+});
 const intake = (status: IntakeFrame["status"]): IntakeFrame => ({ type: "intake", status });
 
 // Socket の契約に合わせ、切断は reader の失敗、送信は writer の完了で表す。
@@ -153,37 +157,32 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       expect(yield* Queue.take(c.frames)).toEqual(snap("採用"));
     }).pipe(Effect.provide(Viewers.layer)));
 
-  it.effect("snapshot、トラックごとの最後の非空speaking、最後のintakeの順に送る", () =>
+  it.effect("snapshot、最後の非空captions、最後のintakeの順に送る", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
       yield* viewers.publish(snap("採用"));
-      yield* viewers.speak(speaking("相手", "あ"));
-      yield* viewers.speak(speaking("相手", "あ い"));
-      yield* viewers.speak(speaking("自分", "はい"));
+      yield* viewers.speak(captions("あ"));
+      yield* viewers.speak(captions("あ", "い"));
       yield* viewers.intake(intake("interrupted"));
       yield* viewers.intake(intake("stopped"));
       const c = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(c.socket));
-      expect(yield* Queue.takeN(c.frames, 4)).toEqual([
-        snap("採用"), speaking("相手", "あ い"), speaking("自分", "はい"), intake("stopped"),
-      ]);
+      expect(yield* Queue.takeN(c.frames, 3)).toEqual([snap("採用"), captions("あ", "い"), intake("stopped")]);
       yield* TestClock.adjust(1);
       expect(yield* Queue.size(c.frames)).toBe(0);
     }).pipe(Effect.provide(Viewers.layer)));
 
-  it.effect("空speakingは接続中に送り、保持から除く。他トラックは残る", () =>
+  it.effect("空のcaptionsは接続中に送り、保持から除く。つなぎ直したクライアントには送らない", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
-      yield* viewers.speak(speaking("相手", "あ"));
-      yield* viewers.speak(speaking("自分", "はい"));
+      yield* viewers.speak(captions("あ"));
       const first = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(first.socket));
-      expect(yield* Queue.takeN(first.frames, 2)).toEqual([speaking("相手", "あ"), speaking("自分", "はい")]);
-      yield* viewers.speak(speaking("相手", ""));
-      expect(yield* Queue.take(first.frames)).toEqual(speaking("相手", ""));
+      expect(yield* Queue.take(first.frames)).toEqual(captions("あ"));
+      yield* viewers.speak(captions());
+      expect(yield* Queue.take(first.frames)).toEqual(captions());
       const second = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(second.socket));
-      expect(yield* Queue.take(second.frames)).toEqual(speaking("自分", "はい"));
       yield* TestClock.adjust(1);
       expect(yield* Queue.size(second.frames)).toBe(0);
     }).pipe(Effect.provide(Viewers.layer)));

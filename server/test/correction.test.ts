@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { correctRemark, type VocabularyWord, type Word } from "../src/core/index.ts";
+import { correctRemark, placeCorrectionForCaptions, type VocabularyWord, type Word } from "../src/core/index.ts";
 
 // Issue #640: 発言の補正の部品（I/O なし）。語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
 // 照合のキー・区間・近さ・守りは #633「照合と置き換え」のとおり。ふつうの語の一覧の守りは Issue #641（末尾の describe）。一覧は小さな Set で渡し、同梱の 5 万語のファイルは読まない。
@@ -329,5 +329,164 @@ describe("correctRemark: ふつうの語の一覧の守り（Issue #641）", () 
     // 一覧の 江南店舗 は区間 江南店 を含むだけ、江南 は区間の一部だけ
     const result = correctWith(["江南店舗", "江南"], [vocab("港南店", "kounanten")], ["江南", "kounan"], ["店", "ten"]);
     expect(result.text).toBe("港南店");
+  });
+});
+
+// 字幕用の補正: 直す前の本文と語の時刻（wordTimes）から、直した後の本文と位置を作る（字幕が直した本文を語ごとに分けるため）
+describe("placeCorrectionForCaptions", () => {
+  // 吹き出しの id を run の位置から返す。all は run ごとに別の吹き出し
+  const all = (w: { location: number }) => String(w.location);
+  const time = (location: number, length: number, start: number, end: number) => ({ location, length, start, end });
+  const replacement = (location: number, length: number, surface: string) => ({ location, length, span: "", surface, score: 1 });
+  // 各 run の文字（本文を run の位置で切る）
+  const pieces = (result: { text: string; wordTimes: readonly { location: number; length: number }[] }) => result.wordTimes.map((w) => result.text.slice(w.location, w.location + w.length));
+
+  it("置き換えが無ければ、本文も位置もそのまま", () => {
+    const wordTimes = [time(0, 3, 10, 12), time(3, 4, 12, 14)];
+
+    expect(placeCorrectionForCaptions("あいうえおかき", wordTimes, [], all)).toEqual({ text: "あいうえおかき", wordTimes });
+  });
+
+  it("置き換えの先頭から始まる語の位置は保ち、後ろの語は長さの差だけずらす", () => {
+    const wordTimes = [time(0, 3, 10, 12), time(3, 2, 12, 14), time(5, 2, 14, 15)];
+    const result = placeCorrectionForCaptions("あいうえおかき", wordTimes, [replacement(3, 2, "Zendesk")], all);
+
+    expect(result.text).toBe("あいうZendeskかき");
+    expect(result.wordTimes.map((w) => w.location)).toEqual([0, 3, 10]);
+    expect(pieces(result)).toEqual(["あいう", "Zendesk", "かき"]);
+  });
+
+  it("置き換えの内側から始まる語にも、直した表記の文字を 1 文字以上割り当てる（空にしない）", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 3, 11, 12), time(4, 1, 12, 13)];
+    const result = placeCorrectionForCaptions("あいうえお", wordTimes, [replacement(0, 4, "Zendesk")], all);
+
+    expect(result.text).toBe("Zendeskお");
+    expect(result.wordTimes.map((w) => w.location)).toEqual([0, 2, 7]);
+    expect(pieces(result)).toEqual(["Ze", "ndesk", "お"]);
+  });
+
+  it("境目をまたぐ置き換え（野|野村 → 野々村）は、2 つの run に文字を分ける", () => {
+    const result = placeCorrectionForCaptions("野野村", [time(0, 1, 10, 11), time(1, 2, 11, 12)], [replacement(0, 3, "野々村")], all);
+
+    expect(pieces(result)).toEqual(["野", "々村"]);
+  });
+
+  it("1 文字が必要な区間の数が表記の文字数を超える置き換えは適用しない（イ|ワシ → 鰯）", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 2, 11, 12)];
+
+    expect(placeCorrectionForCaptions("イワシ", wordTimes, [replacement(0, 3, "鰯")], all)).toEqual({ text: "イワシ", wordTimes });
+  });
+
+  it("1 文字が必要な区間の数が表記の文字数ちょうどなら適用する", () => {
+    const result = placeCorrectionForCaptions("イワシ", [time(0, 1, 10, 11), time(1, 2, 11, 12)], [replacement(0, 3, "いわし")], all);
+
+    expect(pieces(result)).toEqual(["い", "わし"]);
+  });
+
+  it("適用できない置き換えが混ざっても、後ろの語は適用した置き換えの差だけずらす", () => {
+    // 0〜3 は適用できない（鰯）、4〜6 は適用できる（Zendesk、内側なし）、その後ろに「を」
+    const wordTimes = [time(0, 1, 10, 11), time(1, 2, 11, 12), time(3, 1, 12, 13), time(4, 2, 13, 14), time(6, 1, 14, 15)];
+    const result = placeCorrectionForCaptions("イワシのあいを", wordTimes, [replacement(0, 3, "鰯"), replacement(4, 2, "Zendesk")], all);
+
+    expect(result.text).toBe("イワシのZendeskを");
+    expect(result.wordTimes.map((w) => w.location)).toEqual([0, 1, 3, 4, 11]);
+    expect(pieces(result)).toEqual(["イ", "ワシ", "の", "Zendesk", "を"]);
+  });
+
+  it("サロゲートペアを含む表記は、ペアを割らない", () => {
+    const result = placeCorrectionForCaptions("よしのや", [time(0, 1, 10, 11), time(1, 1, 11, 12), time(2, 2, 12, 13)], [replacement(0, 4, "𠮷野家")], all);
+
+    expect(result.text).toBe("𠮷野家");
+    expect(result.wordTimes.map((w) => w.location)).toEqual([0, 2, 3]);
+    expect(pieces(result)).toEqual(["𠮷", "野", "家"]);
+  });
+
+  it("表示済みの吹き出しに属する run が無い（bubbleOf が常に undefined）なら、除いた run の文字と終わりの時刻を直前の run が引き継ぐ", () => {
+    const result = placeCorrectionForCaptions("イワシ", [time(0, 1, 10, 11), time(1, 2, 11, 12)], [replacement(0, 3, "鰯")], () => undefined);
+
+    expect(result.text).toBe("鰯");
+    expect(result.wordTimes).toEqual([time(0, 1, 10, 12)]);
+  });
+
+  it("一部の run だけ残すと、残す run の位置で分け、除いた run の文字は直前の run に入る", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 1, 11, 12), time(2, 2, 12, 13)];
+    const result = placeCorrectionForCaptions("よしのや", wordTimes, [replacement(0, 4, "𠮷野家")], (w) => (w.location === 2 ? "B" : "A"));
+
+    expect(result.wordTimes.map((w) => w.location)).toEqual([0, 3]);
+    expect(pieces(result)).toEqual(["𠮷野", "家"]);
+    expect(result.wordTimes[0]!.end).toBe(12);
+  });
+
+  it("1 文字が必要な区間の数が表記の文字数を超える置き換えは、残す run だけを数えて適用しない", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 2, 11, 12)];
+
+    expect(placeCorrectionForCaptions("イワシ", wordTimes, [replacement(0, 3, "鰯")], (w) => (w.location === 1 ? "B" : "A"))).toEqual({ text: "イワシ", wordTimes });
+  });
+
+  // bubbleOf を表で与える（キー: run の位置）
+  const bubbles = (table: Record<number, string>) => (w: { location: number }) => table[w.location];
+
+  it("後ろの吹き出しが置き換えの外の文字を持つなら適用する（意|和志す → 鰯す）", () => {
+    const result = placeCorrectionForCaptions("意和志す", [time(0, 1, 10, 11), time(1, 3, 11, 12)], [replacement(0, 3, "鰯")], bubbles({ 0: "A", 1: "B" }));
+
+    expect(result.text).toBe("鰯す");
+    expect(pieces(result)).toEqual(["鰯", "す"]);
+  });
+
+  it("前の吹き出しが置き換えより前の文字を持つなら適用する（あ意|和志 → あ鰯）", () => {
+    const result = placeCorrectionForCaptions("あ意和志", [time(0, 2, 10, 11), time(2, 2, 11, 12)], [replacement(1, 3, "鰯")], bubbles({ 0: "A", 2: "B" }));
+
+    expect(result.text).toBe("あ鰯");
+    expect(pieces(result)).toEqual(["あ", "鰯"]);
+  });
+
+  it("残す run の次の run が同じ吹き出しなら、その run の外の文字も吹き出しのものとして数える", () => {
+    const result = placeCorrectionForCaptions("意和志す", [time(0, 1, 10, 11), time(1, 2, 11, 12), time(3, 1, 12, 13)], [replacement(0, 3, "鰯")], bubbles({ 0: "A", 1: "B", 3: "B" }));
+
+    expect(result.text).toBe("鰯す");
+    expect(pieces(result)).toEqual(["鰯", "", "す"]);
+  });
+
+  it("同じ吹き出しの続きの run は残さず、必要な文字数が表記の文字数ちょうどなら適用する", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 1, 11, 12), time(2, 2, 12, 13)];
+
+    expect(placeCorrectionForCaptions("よしのや", wordTimes, [replacement(0, 4, "𠮷野")], bubbles({ 0: "A", 1: "B", 2: "B" })).text).toBe("𠮷野");
+    expect(placeCorrectionForCaptions("よしのや", wordTimes, [replacement(0, 4, "𠮷野")], bubbles({ 0: "A", 1: "B", 2: "C" }))).toEqual({ text: "よしのや", wordTimes });
+  });
+
+  it("別の置き換えの区間は外の文字に数えず、互いに適用しない。外の文字があるなら適用する", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 3, 11, 12), time(4, 2, 12, 13)];
+    const both = placeCorrectionForCaptions("意和志イワシ", wordTimes, [replacement(0, 3, "鰯"), replacement(3, 3, "鰯")], bubbles({ 0: "A", 1: "B", 4: "C" }));
+
+    expect(both.text).toBe("意和志イワシ");
+    expect(pieces(both).every((piece) => piece !== "")).toBe(true);
+    const first = placeCorrectionForCaptions("意和志イワシ", wordTimes, [replacement(0, 3, "鰯")], bubbles({ 0: "A", 1: "B", 4: "C" }));
+    expect(pieces(first)).toEqual(["鰯", "イ", "ワシ"]);
+  });
+
+  it("後ろの吹き出しの外の文字が空白だけなら適用しない（意|和志␠ → 鰯）", () => {
+    const wordTimes = [time(0, 1, 10, 11), time(1, 3, 11, 12)];
+
+    expect(placeCorrectionForCaptions("意和志 ", wordTimes, [replacement(0, 3, "鰯")], bubbles({ 0: "A", 1: "B" }))).toEqual({ text: "意和志 ", wordTimes });
+  });
+
+  it("前の吹き出しの外の文字が空白だけなら適用しない（␠意|和志 → 鰯）", () => {
+    const wordTimes = [time(0, 2, 10, 11), time(2, 2, 11, 12)];
+
+    expect(placeCorrectionForCaptions(" 意和志", wordTimes, [replacement(1, 3, "鰯")], bubbles({ 0: "A", 2: "B" }))).toEqual({ text: " 意和志", wordTimes });
+  });
+
+  it("外の文字が空白と空白以外の両方なら適用する（意|和志␠す → 鰯␠す）", () => {
+    const result = placeCorrectionForCaptions("意和志 す", [time(0, 1, 10, 11), time(1, 4, 11, 12)], [replacement(0, 3, "鰯")], bubbles({ 0: "A", 1: "B" }));
+
+    expect(result.text).toBe("鰯 す");
+    expect(pieces(result)).toEqual(["鰯", " す"]);
+    expect(pieces(result)[1]!.trim()).toBe("す");
+  });
+
+  it("表示されていない先頭の run は 1 文字を求めない", () => {
+    const result = placeCorrectionForCaptions("意和志", [time(0, 1, 10, 11), time(1, 2, 11, 12)], [replacement(0, 3, "鰯")], bubbles({ 1: "B" }));
+
+    expect(pieces(result)).toEqual(["", "鰯"]);
   });
 });

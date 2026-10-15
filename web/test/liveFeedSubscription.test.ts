@@ -3,7 +3,7 @@ import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { Message } from "../src/app/liveFeed/message.ts";
-import { liveFeedStream, RECONNECT_MS } from "../src/app/liveFeed/subscription.ts";
+import { captionDeadlineStream, liveFeedStream, RECONNECT_MS } from "../src/app/liveFeed/subscription.ts";
 
 // ライブの受信（Issue #828）の Subscription の stream。WebSocket と location は最小の代役、時計は TestClock。
 // Subscription は「つながった」「frame を受けた」「切れた」の事実を Message にするだけで、1 秒後のつなぎ直しはこの stream の中にある。
@@ -99,7 +99,7 @@ describe("事実を Message にする", () => {
   it("server が送る 8 種類の frame（snapshot と 7 つの type）を decode して ReceivedLiveFrame にする", async () => {
     const frames = [
       snapshot,
-      { type: "speaking", track: "相手", text: "こんにち" },
+      { type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "仮", start: 1, end: 2, text: "こんにち" }] },
       { type: "intake", status: "interrupted" },
       { type: "screen-notice", text: "共有画面は使っていません" },
       { type: "tap-notice", text: null },
@@ -112,7 +112,26 @@ describe("事実を Message にする", () => {
         sockets()[0]!.open();
         for (const f of frames) sockets()[0]!.receive(JSON.stringify(f));
         yield* settle;
-        expect(collected).toEqual([Message.ConnectedLiveFeed(), ...frames.map((frame) => Message.ReceivedLiveFrame({ frame }))]);
+        expect(collected).toEqual([Message.ConnectedLiveFeed(), ...frames.map((frame) => Message.ReceivedLiveFrame({ frame, receivedAt: 0 }))]);
+      }),
+    );
+  });
+
+  it("frame を受けた時刻は、Subscription が Clock から付ける（接続や切断の事実には付けない）", async () => {
+    await run((collected) =>
+      Effect.gen(function* () {
+        sockets()[0]!.open();
+        yield* TestClock.adjust(500);
+        sockets()[0]!.receive(JSON.stringify({ type: "intake", status: "stopped" }));
+        yield* settle;
+        yield* TestClock.adjust(250);
+        sockets()[0]!.receive(JSON.stringify({ type: "intake", status: "running" }));
+        yield* settle;
+        expect(collected).toEqual([
+          Message.ConnectedLiveFeed(),
+          Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 500 }),
+          Message.ReceivedLiveFrame({ frame: { type: "intake", status: "running" }, receivedAt: 750 }),
+        ]);
       }),
     );
   });
@@ -124,13 +143,13 @@ describe("事実を Message にする", () => {
         ws.open();
         ws.receive(JSON.stringify(snapshot));
         ws.receive(JSON.stringify({ type: "future-frame", ...snapshot }));
-        ws.receive(JSON.stringify({ type: "speaking", track: "他人", text: "x", ...snapshot }));
+        ws.receive(JSON.stringify({ type: "captions", bubbles: "x", ...snapshot }));
         ws.receive(JSON.stringify({ type: "intake", status: "stopped" }));
         yield* settle;
         expect(collected).toEqual([
           Message.ConnectedLiveFeed(),
-          Message.ReceivedLiveFrame({ frame: snapshot }),
-          Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" } }),
+          Message.ReceivedLiveFrame({ frame: snapshot, receivedAt: 0 }),
+          Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 0 }),
         ]);
         expect(sockets()).toHaveLength(1);
       }),
@@ -144,7 +163,7 @@ describe("事実を Message にする", () => {
         ws.open();
         ws.receive("これは JSON ではない");
         ws.receive(JSON.stringify({ type: "future-frame", x: 1 }));
-        ws.receive(JSON.stringify({ type: "speaking", track: "他人", text: "x" }));
+        ws.receive(JSON.stringify({ type: "captions", bubbles: [{ id: "c", track: "他人", label: "なし", start: 0, end: 1, text: "x" }] }));
         ws.receive(JSON.stringify({ type: "intake", status: "unknown-status" }));
         ws.receive(JSON.stringify({ type: "self-pause", paused: "yes" }));
         ws.receive(JSON.stringify({ type: "self-pause" }));
@@ -152,7 +171,7 @@ describe("事実を Message にする", () => {
         ws.receive(JSON.stringify({ type: "self-pause", paused: true, reason: "判定できない" })); // 休止中の理由は手動・自動だけ
         ws.receive(JSON.stringify({ type: "intake", status: "stopped" }));
         yield* settle;
-        expect(collected).toEqual([Message.ConnectedLiveFeed(), Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" } })]);
+        expect(collected).toEqual([Message.ConnectedLiveFeed(), Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 0 })]);
         expect(sockets()).toHaveLength(1); // 無視しただけで、つなぎ直さない
       }),
     );
@@ -185,7 +204,7 @@ describe("1 秒後のつなぎ直し", () => {
           Message.ConnectedLiveFeed(),
           Message.DisconnectedLiveFeed(),
           Message.ConnectedLiveFeed(),
-          Message.ReceivedLiveFrame({ frame: { type: "session-mode", local: true } }),
+          Message.ReceivedLiveFrame({ frame: { type: "session-mode", local: true }, receivedAt: RECONNECT_MS }),
         ]);
       }),
     );
@@ -254,5 +273,35 @@ describe("止めたとき", () => {
         expect(sockets()).toHaveLength(1);
       }),
     );
+  });
+});
+
+describe("字幕の期限", () => {
+  const collect = (deadline: number | null) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const collected: Array<typeof Message.Type> = [];
+        const fiber = yield* Effect.forkChild(Stream.runForEach(captionDeadlineStream(deadline), (m) => Effect.sync(() => void collected.push(m))));
+        yield* settle;
+        const before = [...collected];
+        yield* TestClock.adjust(999);
+        const almost = [...collected];
+        yield* TestClock.adjust(1);
+        yield* settle;
+        yield* Fiber.interrupt(fiber);
+        return { before, almost, after: collected };
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
+
+  it("期限の時刻まで待って、来た時刻つきで 1 回だけ届ける", async () => {
+    const { before, almost, after } = await collect(1000);
+
+    expect(before).toEqual([]);
+    expect(almost).toEqual([]);
+    expect(after).toEqual([Message.ReachedCaptionDeadline({ at: 1000 })]);
+  });
+
+  it("期限が無ければ何も届けない", async () => {
+    expect((await collect(null)).after).toEqual([]);
   });
 });

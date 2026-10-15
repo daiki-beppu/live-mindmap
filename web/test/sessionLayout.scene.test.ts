@@ -2,11 +2,14 @@ import { Duration, Option } from "effect";
 import * as Animation from "@foldkit/ui/animation";
 import * as Toast from "@foldkit/ui/toast";
 import type { HtmlBuilder } from "foldkit/html";
-import { attr, Command, expect as expectScene, find, findAll, given, scene, selector, Subscription, tap, textContent, type SceneSimulation } from "foldkit/scene";
+import { attr, Command, expect as expectScene, find, findAll, given, Mount, scene, selector, Subscription, tap, textContent, type SceneSimulation } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
+import { CAPTION_BUBBLE_WIDTH, CAPTION_PALETTE_SIZE, type DisplayBubble } from "../src/captions.ts";
 import { RESUMED_NOTICE_MS } from "../src/intake.ts";
 import { init, update, view } from "../src/app/sessionLayout/main.ts";
 import { Message } from "../src/app/sessionLayout/message.ts";
+import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
+import { SPEAKER_NAME_COLORS } from "../src/app/sessionLayout/speakerName.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
 
 // セッションの画面の部品（Issue #820）の Scene。描いた view から入り、字幕・取り込みの知らせ・共有画面の知らせ・見る状態の知らせが
@@ -96,10 +99,10 @@ const screen = (text: string | null) => emit(Message.ReceivedScreenNotice({ text
 const tapNotice = (text: string | null) => emit(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
 const selfPause = (paused: boolean, reason: "手動" | "自動" = "手動") => emit(Message.ReceivedSelfPause({ selfPaused: paused ? reason : false }));
 const viewing = (mode: "auto" | "manual" | "overview") => emit(Message.ChangedViewingMode({ mode }));
-const speak = (相手: string, 自分 = "") => emit(Message.ChangedSpeaking({ speaking: { 相手, 自分 } }));
+const speak = (相手: string, 自分 = "") => emit(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手, 自分 } } }));
 
 let stableBefore: ReturnType<typeof stableParts>;
-const withSpeaking = { ...init(), speaking: { 相手: "議題は採用です。", 自分: "はい" } };
+const withSpeaking = { ...init(), captions: { _tag: "Lines" as const, speaking: { 相手: "議題は採用です。", 自分: "はい" } } };
 
 describe("sessionLayout の Scene: 字幕", () => {
   it("話している文字がなければ .captions を描かない", () => {
@@ -109,7 +112,7 @@ describe("sessionLayout の Scene: 字幕", () => {
   it("文ごとに 1 行（p.captions__line）、トラックごとに 1 ブロック（相手 → 自分）で、aria-live=polite の .captions に描く", () => {
     scene(
       app,
-      given({ ...init(), speaking: { 相手: "議題は採用です。まず面接の", 自分: "はい" } }),
+      given({ ...init(), captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。まず面接の", 自分: "はい" } } }),
       expectScene(selector(".captions")).toExist(),
       expectScene(selector(".captions")).toHaveAttr("aria-live", "polite"),
       tap((s) => {
@@ -124,7 +127,7 @@ describe("sessionLayout の Scene: 字幕", () => {
   it("末尾の 2 文だけを出す。古い文は行ごと消える（captionsOf と同じ）", () => {
     scene(
       app,
-      given({ ...init(), speaking: { 相手: "一つ目です。二つ目です。三つ目です。", 自分: "" } }),
+      given({ ...init(), captions: { _tag: "Lines", speaking: { 相手: "一つ目です。二つ目です。三つ目です。", 自分: "" } } }),
       tap((s) => {
         expect(findAll(".captions__track")(s.html).map(textContent)).toEqual(["相手"]);
         expect(findAll("p.captions__line")(s.html).map(textContent)).toEqual(["二つ目です。", "三つ目です。"]);
@@ -189,6 +192,99 @@ describe("sessionLayout の Scene: 字幕", () => {
 
   it("隠した状態から始めても .captions を描かない", () => {
     scene(app, given({ ...withSpeaking, captionsHidden: true }), expectScene(selector(".captions")).toBeAbsent());
+  });
+});
+
+// Issue #1022: 会議中の字幕（話者つきの吹き出し）。名前の欄は 1 つの部品（speakerName.ts）から作る
+describe("sessionLayout の Scene: 字幕の吹き出し", () => {
+  const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), nameState: "settled", colorIndex: 1, text: id, ...extra });
+  const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
+  const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
+  const rows = (html: VNode) => findAll(".captions__row")(html);
+
+  it("吹き出しが無ければ .captions を描かない", () => {
+    scene(app, given(init()), expectScene(selector(".captions")).toBeAbsent());
+  });
+
+  it("吹き出しごとに 1 行（.captions__row）を、渡された順（話し始めの順）に描く。行は 名前の欄 + 吹き出し で、aria-live=polite の .captions の中にある", () => {
+    scene(
+      app,
+      given(withBubbles(bubble("a", { text: "こんにちは" }), bubble("b", { side: "right", name: Option.none(), colorIndex: 0, text: "はい" }))),
+      settled,
+      expectScene(selector(".captions")).toHaveAttr("aria-live", "polite"),
+      tap((s) => {
+        expect(rows(s.html)).toHaveLength(2);
+        expect(findAll(".captions__bubble")(s.html).map(textContent)).toEqual(["こんにちは", "はい"]);
+        for (const row of rows(s.html)) expect(elements(row).map((c) => semanticClassesOf(classOf(c))[0])).toEqual(["captions__name", "captions__bubble"]);
+      }),
+    );
+  });
+
+  it("相手は左、自分は右に寄せる（行の寄せ方）", () => {
+    scene(
+      app,
+      given(withBubbles(bubble("a"), bubble("m", { side: "right", name: Option.none() }))),
+      settled,
+      tap((s) => {
+        const [left, right] = rows(s.html);
+        expect(classOf(left!)).toContain("justify-start");
+        expect(classOf(right!)).toContain("justify-end");
+      }),
+    );
+  });
+
+  it("名前の欄は、名前があるときだけ名前を出し、無いとき（自分・同じ人が続くとき）も欄は残す。仮は薄く、確定は通常の濃さ", () => {
+    scene(
+      app,
+      given(withBubbles(bubble("a", { name: Option.some("相手 B"), nameState: "provisional" }), bubble("a2", { name: Option.none() }), bubble("m", { side: "right", name: Option.none() }))),
+      settled,
+      tap((s) => {
+        const names = findAll(".captions__name")(s.html);
+        expect(names.map(textContent)).toEqual(["相手 B", "", ""]);
+        expect(classOf(names[0]!)).toContain("opacity-50");
+        expect(classOf(names[1]!)).not.toContain("opacity");
+      }),
+    );
+  });
+
+  it("吹き出しの幅は定数（CAPTION_BUBBLE_WIDTH）から渡す CSS の変数で決まり、文字の量では変わらない。幅の式は styles.css", () => {
+    scene(
+      app,
+      given(withBubbles(bubble("short", { text: "はい" }), bubble("long", { text: "これはとても長い文章です。".repeat(10) }))),
+      settled,
+      tap((s) => {
+        const style = Option.getOrThrow(find(".captions")(s.html)).data?.style ?? {};
+        expect(style["--caption-bubble-ratio"]).toBe(String(CAPTION_BUBBLE_WIDTH));
+      }),
+    );
+  });
+
+  it("名前の色の数は、色の番号の数（CAPTION_PALETTE_SIZE）と同じ", () => {
+    expect(SPEAKER_NAME_COLORS).toHaveLength(CAPTION_PALETTE_SIZE);
+  });
+
+  it("吹き出しに塗り・枠・角丸・影・バッジを付けない。文字の色だけを話者ごとに変える", () => {
+    scene(
+      app,
+      given(withBubbles(bubble("a", { colorIndex: 1 }), bubble("b", { colorIndex: 2 }))),
+      settled,
+      tap((s) => {
+        const [a, b] = findAll(".captions__bubble")(s.html);
+        for (const node of [...rows(s.html), a!, b!, ...findAll(".captions__name")(s.html)]) expect(classOf(node)).not.toMatch(/\b(bg-|shadow|border|rounded|badge)/);
+        expect(classOf(a!)).not.toBe(classOf(b!));
+      }),
+    );
+  });
+
+  it("吹き出しが入れ替わっても、同じ id の行は同じ行として残る（キーは id）。隠すと .captions ごと消え、出し直すと戻る", () => {
+    scene(
+      app,
+      given(withBubbles(bubble("a"), bubble("b"))),
+      settled,
+      tap((s) => expect(rows(s.html).map((r) => attr(r, "data-caption-id")).map((v) => Option.getOrUndefined(v))).toEqual(["a", "b"])),
+      emit(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [bubble("b"), bubble("c")] } })),
+      tap((s) => expect(rows(s.html).map((r) => Option.getOrUndefined(attr(r, "data-caption-id")))).toEqual(["b", "c"])),
+    );
   });
 });
 

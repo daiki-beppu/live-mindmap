@@ -23,7 +23,7 @@ describe("一時停止通知の実画面", () => {
       await page.routeWebSocket("**/ws", (ws) => {
         socket = ws;
         ws.send(JSON.stringify(snapshot));
-        ws.send(JSON.stringify({ type: "speaking", track: "相手", text: "保持している字幕" }));
+        ws.send(JSON.stringify({ type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "確定", start: 0, end: 1, text: "保持している字幕" }] }));
         ws.send(JSON.stringify({ type: "diff-update", state: { status: "running" } } satisfies DiffUpdateFrame));
       });
       await page.goto(vite.resolvedUrls!.local[0]!);

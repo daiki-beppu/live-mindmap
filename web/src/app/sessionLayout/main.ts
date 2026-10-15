@@ -6,13 +6,16 @@ import { Submodel, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { DiffUpdateState, SelfPaused } from "../../../../server/src/core/index.ts";
-import { captionsOf } from "../../captions.ts";
+import { CAPTION_BUBBLE_WIDTH, captionsOf, Captions, NO_CAPTIONS, type DisplayBubble } from "../../captions.ts";
 import { intakeNoticeText, RESUMED_NOTICE_MS } from "../../intake.ts";
 import { IntakeStatus, Message } from "./message.ts";
+import { CAPTION_ID_KEY, SlideCaptions } from "./mount.ts";
+import { SPEAKER_NAME_COLORS, speakerNameCell } from "./speakerName.ts";
 import { Notice, shownText, type NoticeModel } from "./toast.ts";
 
 export const Model = Schema.Struct({
-  speaking: Schema.Struct({ 相手: Schema.String, 自分: Schema.String }),
+  // 字幕。会議中は話者つきの吹き出し（Bubbles）、見返しはトラックごとの文（Lines）。どちらも外から導いた値を受ける
+  captions: Captions,
   // 字幕を隠しているか。Disclosure は状態を持たないので、開閉の状態はここの 1 か所だけ
   captionsHidden: Schema.Boolean,
   intake: Schema.Option(IntakeStatus),
@@ -28,7 +31,7 @@ export const Model = Schema.Struct({
 export type Model = typeof Model.Type;
 
 export const init = (): Model => ({
-  speaking: { 相手: "", 自分: "" },
+  captions: NO_CAPTIONS,
   captionsHidden: false,
   intake: Option.none(),
   intakeToast: Notice.init({ id: "intake-notice" }),
@@ -99,7 +102,8 @@ const noticeOf = (
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
-    ChangedSpeaking: ({ speaking }) => ({ model: modifyFields(model, { speaking: () => speaking }) }),
+    ChangedCaptions: ({ captions }) => ({ model: modifyFields(model, { captions: () => captions }) }),
+    CompletedSlideCaptions: () => ({ model }),
     ToggledCaptions: ({ isOpen }) => ({ model: modifyFields(model, { captionsHidden: () => !isOpen }) }),
     ReceivedSelfPause: ({ selfPaused }) => ({ model: modifyFields(model, { selfPaused: () => selfPaused }) }),
     ReceivedDiffUpdate: ({ state }) => ({ model: modifyFields(model, { diffUpdate: () => state }) }),
@@ -164,9 +168,39 @@ type Slots = { readonly map: Html; readonly keyList?: Html | null; readonly side
 const noticeView = (h: H, className: string, toast: NoticeModel): Html | null =>
   Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.div([h.Class(className), h.AriaLive("polite")], [text]) });
 
+const LINES_BLOCK_CLASS = "captions__block flex gap-[10px] items-baseline px-[12px] py-[6px] text-[16px] leading-[1.5] text-gray-700 bg-[rgb(255_255_255/0.88)] [border:1px_solid_var(--color-gray-200)] rounded-[6px] [box-shadow:none]";
+
+// 見返しの字幕: トラックごとに 1 ブロック
+const linesView = (h: H, speaking: { 相手: string; 自分: string }): ReadonlyArray<Html> =>
+  captionsOf(speaking).map((c) =>
+    h.keyed("div")(
+      c.track,
+      [h.Class(LINES_BLOCK_CLASS)],
+      [h.span([h.Class("captions__track flex-none text-[12px] text-gray-400")], [c.track]), h.div([h.Class("captions__lines min-w-0")], c.lines.map((line) => h.p([h.Class("captions__line m-0 wrap-anywhere")], [line])))],
+    ),
+  );
+
+// 会議中の字幕: 吹き出しの行。名前の欄（固定幅）+ 吹き出し（幅は固定）。相手は左、自分は右に寄せる。塗り・影・バッジは付けない
+const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
+  h.keyed("div")(
+    bubble.id,
+    [
+      h.Class(`captions__row flex items-baseline gap-[8px] ${bubble.side === "right" ? "justify-end" : "justify-start"}`),
+      h.DataAttribute(CAPTION_ID_KEY, bubble.id),
+    ],
+    [
+      speakerNameCell(h, bubble),
+      h.p(
+        [h.Class(`captions__bubble m-0 flex-none text-[16px] leading-[1.5] wrap-anywhere ${bubble.side === "right" ? "text-right" : "text-left"} ${SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0]}`)],
+        [bubble.text],
+      ),
+    ],
+  );
+
 function captionsView(h: H, model: Model): Html | null {
-  const captions = captionsOf(model.speaking);
-  if (captions.length === 0) return null;
+  const lines = model.captions._tag === "Lines" ? linesView(h, model.captions.speaking) : [];
+  const bubbles = model.captions._tag === "Bubbles" ? model.captions.bubbles : [];
+  if (lines.length === 0 && bubbles.length === 0) return null;
   return Disclosure.view(
     {
       id: "captions",
@@ -177,14 +211,14 @@ function captionsView(h: H, model: Model): Html | null {
         model.captionsHidden
           ? null
           : h.div(
-              [h.Class("captions"), h.AriaLive("polite"), ...panel],
-              captions.map((c) =>
-                h.keyed("div")(
-                  c.track,
-                  [h.Class("captions__block flex gap-[10px] items-baseline px-[12px] py-[6px] text-[16px] leading-[1.5] text-gray-700 bg-[rgb(255_255_255/0.88)] [border:1px_solid_var(--color-gray-200)] rounded-[6px] [box-shadow:none]")],
-                  [h.span([h.Class("captions__track flex-none text-[12px] text-gray-400")], [c.track]), h.div([h.Class("captions__lines min-w-0")], c.lines.map((line) => h.p([h.Class("captions__line m-0 wrap-anywhere")], [line])))],
-                ),
-              ),
+              [
+                h.Class("captions"),
+                h.AriaLive("polite"),
+                // 吹き出しの幅（名前の欄を除いた列に対する割合）は定数から渡す。幅の式は styles.css の .captions__bubble
+                ...(bubbles.length === 0 ? [] : [h.Style({ "--caption-bubble-ratio": String(CAPTION_BUBBLE_WIDTH) }), h.OnMount(SlideCaptions())]),
+                ...panel,
+              ],
+              bubbles.length === 0 ? lines : bubbles.map((bubble) => bubbleRowView(h, bubble)),
             ),
     },
     h,

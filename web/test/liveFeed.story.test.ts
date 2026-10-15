@@ -2,8 +2,10 @@ import { Option } from "effect";
 import { given, message, model, story } from "foldkit/story";
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
+import { CAPTION_LABEL_WAIT_MS } from "../src/captions.ts";
 import { init, update, type Model } from "../src/app/liveFeed/main.ts";
 import { Message } from "../src/app/liveFeed/message.ts";
+import { spoken, spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 
 // ライブの受信（Issue #828）の update。「つながった」「frame を受けた」「切れた」の事実の Message の列を、同じ Model の上に続けて流し、
 // 今の useLiveFeed.test.ts と liveFeed.test.ts が見ている値（受信・切断・つなぎ直し・つないだときに server が先に送る値）を確かめる。
@@ -15,7 +17,7 @@ const TAP_NOTICE = "相手の音声が届いていません";
 const node = (id: string, parent: string | null) => ({ id, parent, kind: parent === null ? ("会議" as const) : ("議題" as const), text: id, evidence: parent ? ["r1"] : [] });
 const snapshot: Snapshot = { nodes: [node("root", null), node("A", "root")], round: 3, changes: [], remarks: [] };
 
-const received = (frame: typeof Message.ReceivedLiveFrame.Type["frame"]) => message(Message.ReceivedLiveFrame({ frame }));
+const received = (frame: typeof Message.ReceivedLiveFrame.Type["frame"], receivedAt = 0) => message(Message.ReceivedLiveFrame({ frame, receivedAt }));
 const connected = () => message(Message.ConnectedLiveFeed());
 const disconnected = () => message(Message.DisconnectedLiveFeed());
 
@@ -23,7 +25,7 @@ describe("初期値", () => {
   it("まだ何も受けていない: スナップショット・知らせ・差分更新は None、字幕は空、取り込みは動いている、モード表示は出ない", () => {
     expect(init()).toEqual({
       snapshot: Option.none(),
-      speaking: { 相手: "", 自分: "" },
+      captions: spoken("", ""),
       intake: "running",
       screenNotice: Option.none(),
       tapNotice: Option.none(),
@@ -63,14 +65,26 @@ describe("受信（frame を受けた）", () => {
     );
   });
 
-  it("字幕はトラックごと。片方を受けても、もう片方は変わらない", () => {
+  it("字幕のフレームは吹き出しの並びの全体を置き換える。同じ id を受け直しても、最初に受けた時刻を保つ", () => {
     story(
       update,
       given(init()),
-      received({ type: "speaking", track: "相手", text: "こんにち" }),
-      received({ type: "speaking", track: "自分", text: "はい" }),
-      received({ type: "speaking", track: "相手", text: "こんにちは" }),
-      model((m) => expect(m.speaking).toEqual({ 相手: "こんにちは", 自分: "はい" })),
+      received(spokenFrame("こんにち"), 100),
+      received({ type: "captions", bubbles: [spokenBubble("こんにちは", "相手"), spokenBubble("はい", "自分")] }, 200),
+      model((m) => expect(m.captions.entries.map((e) => [e.bubble.id, e.bubble.text, e.receivedAt])).toEqual([["spoken-相手", "こんにちは", 100], ["spoken-自分", "はい", 200]])),
+      received({ type: "captions", bubbles: [] }, 300),
+      model((m) => expect(m.captions.entries).toEqual([])),
+    );
+  });
+
+  it("字幕の期限が来ると、出すと決められる文字が決まる（ReachedCaptionDeadline）。時刻は Message が運ぶ", () => {
+    story(
+      update,
+      given(init()),
+      received({ type: "captions", bubbles: [{ id: "x", track: "相手", label: "なし", start: 0, end: 1, text: "こんにちは" }] }, 1000),
+      model((m) => expect(Option.isNone(m.captions.entries[0]!.placement)).toBe(true)),
+      message(Message.ReachedCaptionDeadline({ at: 1000 + CAPTION_LABEL_WAIT_MS })),
+      model((m) => expect(Option.isSome(m.captions.entries[0]!.placement)).toBe(true)),
     );
   });
 
@@ -124,7 +138,7 @@ describe("切れた", () => {
       update,
       given(init()),
       received(snapshot),
-      received({ type: "speaking", track: "相手", text: "こんにち" }),
+      received(spokenFrame("こんにち", "相手")),
       received({ type: "intake", status: "interrupted" }),
       received({ type: "screen-notice", text: NOTICE }),
       received({ type: "tap-notice", text: TAP_NOTICE }),
@@ -136,7 +150,7 @@ describe("切れた", () => {
         expect(m.tapNotice).toEqual(Option.none());
         expect(m.local).toBe(false);
         expect(m.snapshot).toEqual(Option.some(snapshot));
-        expect(m.speaking).toEqual({ 相手: "こんにち", 自分: "" });
+        expect(m.captions).toEqual(spoken("こんにち", ""));
         expect(m.intake).toBe("interrupted");
         expect(m.diffUpdate).toEqual(Option.some({ status: "restarting" }));
       }),
@@ -150,14 +164,14 @@ describe("つなぎ直した（切れた後に、つながった）", () => {
       update,
       given(init()),
       received(snapshot),
-      received({ type: "speaking", track: "自分", text: "はい" }),
+      received(spokenFrame("はい", "自分")),
       received({ type: "intake", status: "stopped" }),
       received({ type: "screen-notice", text: NOTICE }),
       received({ type: "session-mode", local: true }),
       disconnected(),
       connected(),
       model((m) => {
-        expect(m.speaking).toEqual({ 相手: "", 自分: "" });
+        expect(m.captions).toEqual(spoken("", ""));
         expect(m.screenNotice).toEqual(Option.none());
         expect(m.tapNotice).toEqual(Option.none());
         expect(m.local).toBe(false);
@@ -204,7 +218,7 @@ describe("つないだときの値（server が、つないだら保持してい
       model((m) => {
         expect(m).toEqual({
           snapshot: Option.some(snapshot),
-          speaking: { 相手: "", 自分: "" },
+          captions: spoken("", ""),
           intake: "interrupted",
           screenNotice: Option.some(NOTICE),
           tapNotice: Option.some(TAP_NOTICE),

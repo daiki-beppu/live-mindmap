@@ -564,3 +564,73 @@ describe("createSpeakerAttribution: ラベル（相手 A / B / C…）", () => {
     for (const r of out) expect(valid.has(r.speaker)).toBe(true);
   });
 });
+
+// Issue #1022: 字幕の仮のラベル。仮の区間（final:false）は字幕にだけ使い、発言の判定とラベルの割り当てには使わない。
+describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / previewSegments）", () => {
+  it("仮の区間だけの枠は、仮の区間で初めて現れた順のラベルで覗ける", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(3, 8, 8.5, false));
+    attribution.speaker(speakerEvent(1, 8.5, 9, false));
+    attribution.speaker(settledEvent(9));
+
+    expect(attribution.previewLabel(3)).toBe("相手 A");
+    expect(attribution.previewLabel(1)).toBe("相手 B");
+  });
+
+  it("覗いても発言のラベルの割り当ては変わらない（先取りしない）。後から出た発言が初めて話した順で振られる", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(3, 8, 8.5, false));
+    attribution.speaker(settledEvent(9));
+    expect(attribution.previewLabel(3)).toBe("相手 A");
+
+    attribution.speaker(speakerEvent(2, 20, 22));
+    attribution.speaker(settledEvent(22));
+
+    expect(pairs(attribution.remarks([heard("あ", 20, 22)], 22_000))).toEqual([["相手 A", "あ"]]); // 枠 2 が先に話したので A
+  });
+
+  it("発言で振ったラベルがある枠は、そのラベルを覗ける。まだ振っていない枠は、振ったラベルの次から覗ける", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(2, 20, 22));
+    attribution.speaker(settledEvent(22));
+    attribution.remarks([heard("あ", 20, 22)], 22_000); // 枠 2 が 相手 A を得る
+    attribution.speaker(speakerEvent(7, 30, 31, false));
+    attribution.speaker(settledEvent(31));
+
+    expect(attribution.previewLabel(2)).toBe("相手 A");
+    expect(attribution.previewLabel(7)).toBe("相手 B");
+  });
+
+  it("仮の区間は発言の判定に使わない。仮の区間だけでは、揃った発言も話者なしで出る", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(5, 10, 12, false));
+    attribution.speaker(settledEvent(12));
+
+    expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([[undefined, "あ"]]);
+  });
+
+  it("previewSegments は確定区間と現在の仮の区間を返す。仮の区間は speaker-settled のたびに、その更新ぶんに入れ替わる", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 0, 4)); // 確定
+    attribution.speaker(speakerEvent(1, 8, 8.5, false));
+    attribution.speaker(settledEvent(8.5));
+    expect(attribution.previewSegments()).toEqual(expect.arrayContaining([seg(0, 0, 4), seg(1, 8, 8.5)]));
+    expect(attribution.previewSegments()).toHaveLength(2);
+
+    attribution.speaker(speakerEvent(2, 8, 9, false));
+    attribution.speaker(settledEvent(9));
+
+    expect(attribution.previewSegments()).toHaveLength(2);
+    expect(attribution.previewSegments()).toEqual(expect.arrayContaining([seg(0, 0, 4), seg(2, 8, 9)]));
+  });
+
+  it("speaker-off の後は仮の区間を空にする", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(1, 8, 8.5, false));
+    attribution.speaker(settledEvent(8.5));
+
+    attribution.speaker(speakerOff);
+
+    expect(attribution.previewSegments().filter((s) => s.slot === 1)).toEqual([]);
+  });
+});

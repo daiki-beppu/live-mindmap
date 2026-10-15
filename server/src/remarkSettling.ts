@@ -25,6 +25,12 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
     speaker: (event: SpeakerLogEvent) => unlessStopped(Effect.suspend(() => emitAll(attribution.speaker(event)))),
     // 停止時。まだ出ていない発話と保留を T・3 秒を待たずにすべて出す（揃っていない保留は話者なし）
     drain: unlessStopped(Effect.suspend(() => emitAll([...attribution.remarks(settler.drain(), 0), ...attribution.drain()]))),
+    // 字幕のための読み取り（Issue #1022）。発言の判定には使わない
+    preview: {
+      heldRemarks: attribution.heldRemarks,
+      segments: attribution.previewSegments,
+      label: attribution.previewLabel,
+    },
     // 以後の入力は無視する
     stop: gate.stop,
   };
