@@ -240,12 +240,12 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
 }
 
 /// 音声ファイル 1 本を文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。音声・画面・話者分離は扱わない。
-/// 流れ: 待ち受けを始める → 全体の長さ（`file-duration`。保持して流す）→ 最初のクライアントを待つ → 文字にして流す →
+/// 流れ: 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ → 文字にして流す →
 /// 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
 private func transcribeFile(file: String, port: UInt16, audioDir: String?) async throws {
     let url = URL(fileURLWithPath: file)
     // 読めないファイルは、待ち受けを始める前にここで失敗する
-    let duration = try await fileDuration(of: url)
+    let header = try await readFileHeader(of: url)
     // 音声は待ち受けを始める前に書き終える。stop（Ctrl-C）がどの時点で来ても、完成した 相手.m4a が残る
     if let audioDir {
         try await exportFileAudio(
@@ -255,8 +255,8 @@ private func transcribeFile(file: String, port: UInt16, audioDir: String?) async
     try await transcriber.prepare()
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
-    printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(duration) s)")
-    try await server.broadcastRetained(HelperEvent.fileDuration(duration: duration).jsonString(), key: "file-duration")
+    printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
+    try await broadcastFileHeader(header, on: server)
 
     let work = Task {
         // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す

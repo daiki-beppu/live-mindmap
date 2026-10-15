@@ -36,7 +36,8 @@ enum FileAudioTestSupport {
 
     /// 音声（`audio`）と映像（黒い 64x64 を `videoSeconds` 秒）を持つ mov。`creationDate` を渡すと QuickTime の作成日時のメタデータを付ける。
     /// `audioStartSeconds` を渡すと、音声のトラックを movie の 0 秒ではなくその秒から始める。
-    static func writeMovie(_ url: URL, audio: URL, videoSeconds: Int, creationDate: String? = nil, audioStartSeconds: Double = 0) async throws {
+    /// `moreAudio` を渡すと、`audio` の後ろに 2 本目以降の音声のトラックとして順に加える（どれも 0 秒から始める）。
+    static func writeMovie(_ url: URL, audio: URL, videoSeconds: Int, creationDate: String? = nil, audioStartSeconds: Double = 0, moreAudio: [URL] = []) async throws {
         let video = url.deletingLastPathComponent().appendingPathComponent("video-\(UUID().uuidString).mov")
         try await writeSilentVideo(video, seconds: videoSeconds)
         let composition = AVMutableComposition()
@@ -50,6 +51,13 @@ enum FileAudioTestSupport {
             .insertTimeRange(CMTimeRange(start: .zero, duration: videoDuration), of: videoTrack, at: .zero)
         try #require(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
             .insertTimeRange(CMTimeRange(start: .zero, duration: audioDuration), of: audioTrack, at: CMTime(seconds: audioStartSeconds, preferredTimescale: 600))
+        for extra in moreAudio {
+            let extraAsset = AVURLAsset(url: extra)
+            let extraTrack = try #require(try await extraAsset.loadTracks(withMediaType: .audio).first)
+            let extraDuration = try await extraAsset.load(.duration)
+            try #require(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
+                .insertTimeRange(CMTimeRange(start: .zero, duration: extraDuration), of: extraTrack, at: .zero)
+        }
         let session = try #require(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough))
         if let creationDate {
             let item = AVMutableMetadataItem()

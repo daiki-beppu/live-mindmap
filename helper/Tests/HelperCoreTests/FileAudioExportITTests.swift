@@ -61,6 +61,28 @@ struct FileAudioExportITTests {
         #expect(try await asset.loadTracks(withMediaType: .audio).count == 1)
     }
 
+    @Test("音声のトラックが 2 本の mov からは、最初のトラックの音だけを書く。出力の音声は 1 本で、映像は無い")
+    func firstOfTwoAudioTracksIsExported() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let first = dir.appendingPathComponent("first.wav") // 前半が音、後半が無音
+        try Support.writeWAV(first, loudSeconds: 2, silentSeconds: 2)
+        let second = dir.appendingPathComponent("second.wav") // 全体が音（混ぜた場合も 2 本目を読んだ場合も、後半の rms が上がる）
+        try Support.writeWAV(second, loudSeconds: 4, silentSeconds: 0)
+        let movie = dir.appendingPathComponent("meeting.mov")
+        try await Support.writeMovie(movie, audio: first, videoSeconds: 4, moreAudio: [second])
+        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .audio).count == 2) // 前提: 音声のトラックが 2 本ある
+        let output = dir.appendingPathComponent("相手.m4a")
+
+        try await exportFileAudio(from: movie, to: output)
+
+        let asset = AVURLAsset(url: output)
+        #expect(try await asset.loadTracks(withMediaType: .audio).count == 1)
+        #expect(try await asset.loadTracks(withMediaType: .video).isEmpty)
+        #expect(try Support.rms(of: output, from: 0.3, to: 1.7) > 0.1)
+        #expect(try Support.rms(of: output, from: 2.4, to: 3.6) < 0.02)
+    }
+
     @Test("冒頭に空きのある mov でも、空きを残して文字起こしと同じ原点で書き、末尾も欠けない")
     func trackStartingAfterZero() async throws {
         let dir = try Support.temporaryDirectory()

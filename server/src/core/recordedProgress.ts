@@ -12,6 +12,8 @@ export const RecordedEvent = Schema.Union([
     duration: Schema.NullOr(Schema.Finite), // 録画の全体の長さ（秒）。届く前は null
     rounds: Schema.Int, // マップの更新回数
   }),
+  // 音声のトラックが 2 本以上ある。最初の 1 本だけを使った。count は本数
+  Schema.Struct({ type: Schema.Literal("audio-tracks"), count: Schema.Int }),
   Schema.Struct({
     type: Schema.Literal("finished"),
     paths: Schema.Array(Schema.String),
@@ -35,6 +37,10 @@ export const formatClock = (seconds: number | null): string => {
   const two = (n: number) => String(n).padStart(2, "0");
   return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
 };
+
+// 例: 音声のトラックが 2 本あります。最初のトラックだけを使いました（分けたいときは --self を使えます）
+export const formatAudioTracksNotice = (count: number): string =>
+  `音声のトラックが ${count} 本あります。最初のトラックだけを使いました（分けたいときは --self を使えます）`;
 
 // 例: 12:30 / 58:04  マップの更新 3 回
 export const formatRecordedProgress = (progress: RecordedProgress): string =>

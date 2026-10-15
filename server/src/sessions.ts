@@ -270,6 +270,7 @@ export class Sessions extends Context.Service<Sessions, {
             return Ref.set(live.selfPauseState, state);
           }
           case "file-duration":
+          case "file-audio-tracks":
             // 録画の文字起こしだけが流す。ライブのヘルパーは流さないので、何もしない
             return Effect.void;
           case "speaker":
@@ -509,6 +510,9 @@ export class Sessions extends Context.Service<Sessions, {
           }
           case "file-duration":
             return Effect.andThen(Ref.update(recorded.progress, (p) => ({ ...p, duration: event.duration })), publishProgress(recorded));
+          case "file-audio-tracks":
+            // 1 本なら知らせることがない。2 本以上のときだけ、最初の 1 本だけを使ったことを端末へ回す
+            return event.count > 1 ? Queue.offer(recorded.events, { type: "audio-tracks", count: event.count }) : Effect.void;
           case "screen":
             return recorded.sink.screen({ start: event.start, image: event.image, lines: event.lines });
           case "screen-off":
