@@ -388,6 +388,27 @@ struct FileScreenITTests {
         return (Int(pixel[0]) + Int(pixel[1]) + Int(pixel[2])) / 3
     }
 
+    /// 一時的な診断（#1090）: CIContext を通さず、デコードしたままの BGRA の画素の平均（先頭から 4 枚）。
+    private func rawBrightness(_ url: URL) throws -> [Int] {
+        let asset = AVURLAsset(url: url)
+        let reader = try AVAssetReader(asset: asset)
+        let track = asset.tracks(withMediaType: .video)[0]
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output)
+        reader.startReading()
+        var means: [Int] = []
+        while means.count < 4, let sample = output.copyNextSampleBuffer(), let buffer = CMSampleBufferGetImageBuffer(sample) {
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+            let count = CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer)
+            var sum = 0
+            for i in 0..<count { sum += Int(base[i]) }
+            CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+            means.append(sum / count)
+        }
+        return means
+    }
+
     private func screens(in events: [HelperEvent]) -> [Shown] {
         var shown: [Shown] = []
         for event in events {
@@ -406,7 +427,7 @@ struct FileScreenITTests {
         let events = try await collect(movie)
 
         let shown = screens(in: events)
-        #expect(shown.count == 2, "screen の start と画像の明るさ: \(shown.map { ($0.start, $0.image.flatMap(meanBrightness)) })")
+        #expect(shown.count == 2, "screen の start と画像の明るさ: \(shown.map { ($0.start, $0.image.flatMap(meanBrightness)) })、生の画素の明るさ（先頭から 4 枚）: \((try? rawBrightness(movie)) ?? [])")
         if shown.count == 2 {
             #expect(abs(shown[0].start - 0) <= 0.25, "最初の画面の start: \(shown[0].start)")
             #expect(abs(shown[1].start - 2) <= 0.25, "切り替わりの画面の start: \(shown[1].start)")
