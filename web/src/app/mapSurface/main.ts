@@ -6,6 +6,7 @@ import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
+import { personLine } from "../../people.ts";
 import {
   anchoredViewport,
   cameraFocus,
@@ -508,6 +509,7 @@ type H = HtmlBuilder<Message>;
 function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, toggle: ReturnType<typeof foldToggle>, opened: boolean): Html {
   const fold = view?.folds[node.id] ?? null;
   const mark = markOf(node);
+  const person = personLine(node);
   return h.div(
     [
       h.Class(
@@ -518,7 +520,7 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
     [
       h.button(
         [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected))],
-        [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
+        [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person text-[12px] text-gray-500")], [person]), fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
       ),
       fold === null
         ? null

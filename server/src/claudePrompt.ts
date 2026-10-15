@@ -1,6 +1,6 @@
 // Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
-import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MeetingMap, type PreviousResponse } from "./core/index.ts";
+import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MapNode, type MeetingMap, type PreviousResponse } from "./core/index.ts";
 import { remarkLine } from "./remarkLine.ts";
 
 // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
@@ -30,7 +30,7 @@ export const SYSTEM = `あなたは会議のマインドマップを継続的に
 - 案: 論点への答えの候補、または議題の中で出た自由なアイデア。状態は 検討中 / 却下。
 - 決定: 論点に対して会議で出した答え。親は必ず論点。子を持たない。採用した案の内容は決定の本文に書く。
 - 課題: 問題や懸念の記述。答えを出すべき問いになったら論点として扱う。
-- TODO: 会議で決まった、誰かが後で行う作業。担当者（会話に出た名前）と期限は任意。子を持たない。
+- TODO: 会議で決まった、誰かが後で行う作業。担当者（会話に出た名前、または担当の話者）と期限は任意。子を持たない。
 - 要点: 議題の中で共有された中身。紹介、体験談、おすすめ、質問とその答えを表す。答えを出す対象でも、問題の指摘でも、答えの候補でもない。要点の下に、その中身を具体化する要点（具体例・数字・手順・経緯）を置ける。
 - 子: 親を具体化する・親に答える・親から派生したノード。親との関係を一言（「〜の例」「〜への答え」「〜への懸念」）で言える。
 - 兄弟: 同じ親について並ぶ、別々の中身（同じ論点への別の案、同じ議題の別の紹介、同じ要点の別の具体例）。
@@ -60,6 +60,7 @@ export const SYSTEM = `あなたは会議のマインドマップを継続的に
 ## 決定と TODO
 - 「〜にしましょう」「〜を結論とする」「〜を基準にする」のような合意は決定にする。案として置かない。答えている論点が無ければ、先に論点を add してからその子に決定を add する。
 - 「〜さんが〜する」「〜を持ち帰る」「〜に当たる」のように、誰かが後でやると決まった作業は TODO にする。案として置かない。
+- TODO の担当者は、会話に出た名前を assignee に書く。名前が出ないまま話者が自分から引き受けたとき（「私がやります」）に限り、その話者を assigneeSpeaker に書く（発言の行頭の話者。例 相手 A / 自分）。「じゃあお願いします」のように頼まれた側を、話者から推し量って担当者にしない。担当者はその TODO を言い出した話者とは限らない。担当者が後から分かったら、TODO を update して assignee か assigneeSpeaker を渡す。名前が分かったら assignee を渡す。
 - 紹介・解説・体験談・流した動画や資料の解説の中で語られた「〜にする」「〜すべき」は、会議の合意でも作業の割り当てでもない。決定や TODO にせず、要点にする。
 
 ## 決めない会議（共有・紹介・雑談）
@@ -129,8 +130,14 @@ function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): str
   const n = map.nodes[id]!;
   const status = n.kind === "論点" ? `(${pointStatus(map, id)})`
     : n.kind === "案" && (n.planStatus === "却下" || explicitPlanStatus) ? `(${n.planStatus === "却下" ? "却下" : "検討中"})` : n.planStatus === "却下" ? "(却下)" : "";
-  const todo = n.kind === "TODO" && (n.assignee || n.due) ? ` [${[n.assignee, n.due].filter(Boolean).join(" / ")}]` : "";
-  return `${n.id} ${n.kind}${status}: ${n.text}${todo}`;
+  return `${n.id} ${n.kind}${status}: ${n.text}${n.kind === "TODO" ? todoSuffix(n) : ""}`;
+}
+
+// TODO の担当（名前、無ければ担当の話者）と期限。どちらも無ければ空
+function todoSuffix(n: MapNode): string {
+  const who = n.assignee ?? (n.assigneeSpeaker ? `担当の話者 ${n.assigneeSpeaker}` : undefined);
+  const parts = [who, n.due].filter(Boolean);
+  return parts.length ? ` [${parts.join(" / ")}]` : "";
 }
 
 // アウトラインの 1 行（字下げ・ID・種別・状態・本文・「（済み）」）。全体のアウトラインと、開き直した配下の出力で共有する
@@ -199,7 +206,7 @@ function nodeChangeLines(prev: MeetingMap, cur: MeetingMap, refIds: ReadonlyMap<
       lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）${ref === undefined ? "" : `（前回の応答の仮 id ${ref}）`}`);
       continue;
     }
-    const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.due !== old.due
+    const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.assigneeSpeaker !== old.assigneeSpeaker || n.due !== old.due
       || (n.kind === "論点" && pointStatus(cur, id) !== pointStatus(prev, id));
     if (changed) lines.push(`- 更新 ${nodeLabel(cur, id, true)}`);
     if (n.parent !== old.parent) lines.push(`- 移動 ${id} → 親: ${n.parent}`);

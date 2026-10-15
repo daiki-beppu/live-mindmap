@@ -53,7 +53,7 @@ function changeTypesOf(id: string, old: MapNode, n: MapNode, before: MeetingMap,
   // 元の親が統合で消え、今の親がその統合先なら、引き取られただけで移動ではない
   const moved = old.parent !== n.parent && !(old.parent !== null && mergedInto.get(old.parent) === n.parent);
   const combined = combinedTargets.has(id);
-  const textChanged = old.text !== n.text;
+  const textChanged = old.text !== n.text || old.assignee !== n.assignee || old.assigneeSpeaker !== n.assigneeSpeaker;
   const evidenceOnly = hasNew(old.evidence, n.evidence) && !decided && !rejected && !moved && !combined;
   const types: ChangeType[] = [];
   if (textChanged || evidenceOnly) types.push("更新");

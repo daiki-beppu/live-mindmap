@@ -338,6 +338,85 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
     );
   });
 
+  // Issue #1023: 案は本文の後ろに「— 出した人」、TODO は「→ 担当者 · 期限」を薄く小さな文字で出す。色やバッジでは話者を分けない
+  describe("案の出した人と TODO の担当者", () => {
+    const people = () => snap([
+      node("root", null, "会議", "定例"),
+      node("A", "root", "議題", "予算", { proposer: "相手 A", assigneeSpeaker: "相手 A" }),
+      node("P", "A", "論点", "上限をどうするか", { pointStatus: "未決", proposer: "相手 A" }),
+      node("D1", "P", "案", "月額制", { proposer: "相手 A" }),
+      node("D2", "P", "案", "年額制", { proposer: "自分" }),
+      node("D3", "P", "案", "従量制", { proposer: "相手" }),
+      node("D4", "P", "案", "旧ログの案"),
+      node("T1", "A", "TODO", "見積もりを出す", { assigneeSpeaker: "自分", due: "10/15" }),
+      node("T2", "A", "TODO", "契約書を直す", { assignee: "田中", due: "来週" }),
+      node("T3", "A", "TODO", "担当なし"),
+      node("K", "A", "課題", "課題", { assignee: "田中", proposer: "相手 B" }),
+    ]);
+    const heights = { root: 40, A: 64, P: 88, D1: 52, D2: 52, D3: 52, D4: 52, T1: 52, T2: 52, T3: 52, K: 52 };
+    const person = (id: string) => selector(`[data-node-id="${id}"] .map-node__person`);
+    // ノードの中で、本文（map-node__text）と人の行（map-node__person）が出る順
+    const order = (html: VNode, id: string): string[] => {
+      const wrapper = descendants(html).find((v) => (v.data?.attrs as Record<string, unknown> | undefined)?.["data-node-id"] === id)!;
+      return descendants(wrapper).flatMap((v) => (Option.getOrElse(attr(v, "class"), () => "").match(/map-node__(?:text|person)\b/g) ?? []));
+    };
+
+    it("案は「— 相手 A」「— 自分」を、本文の後ろに出す", () => {
+      scene(
+        app,
+        given(modelOf(people(), "still")),
+        measured(heights),
+        expectScene(person("D1")).toHaveText("— 相手 A"),
+        expectScene(person("D2")).toHaveText("— 自分"),
+        tap((simulation) => expect(order(simulation.html, "D1")).toEqual(["map-node__text", "map-node__person"])),
+      );
+    });
+
+    it("話者なしの相手の案と、出した人の無い案には出ない", () => {
+      scene(
+        app,
+        given(modelOf(people(), "still")),
+        measured(heights),
+        expectScene(person("D3")).toBeAbsent(),
+        expectScene(person("D4")).toBeAbsent(),
+        tap((simulation) => expect(order(simulation.html, "D4")).toEqual(["map-node__text"])),
+      );
+    });
+
+    it("TODO は「→ 自分 · 10/15」「→ 田中 · 来週」。担当者も期限も無ければ出ない", () => {
+      scene(
+        app,
+        given(modelOf(people(), "still")),
+        measured(heights),
+        expectScene(person("T1")).toHaveText("→ 自分 · 10/15"),
+        expectScene(person("T2")).toHaveText("→ 田中 · 来週"),
+        tap((simulation) => expect(order(simulation.html, "T1")).toEqual(["map-node__text", "map-node__person"])),
+        expectScene(person("T3")).toBeAbsent(),
+      );
+    });
+
+    it("議題・論点・課題には人が出ない", () => {
+      scene(
+        app,
+        given(modelOf(people(), "still")),
+        measured(heights),
+        expectScene(person("A")).toBeAbsent(),
+        expectScene(person("P")).toBeAbsent(),
+        expectScene(person("K")).toBeAbsent(),
+      );
+    });
+
+    it("live でも出る（選択や畳みの有無に関わらない）", () => {
+      scene(
+        app,
+        given(modelOf(people(), "live")),
+        measured(heights),
+        expectScene(person("D1")).toHaveText("— 相手 A"),
+        expectScene(person("T1")).toHaveText("→ 自分 · 10/15"),
+      );
+    });
+  });
+
   it("却下の案だけ map-node--rejected。選択・点滅の class は、この Scene では付かない", () => {
     scene(
       app,

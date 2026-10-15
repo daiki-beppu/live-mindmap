@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyOps, diffMaps, emptyMap, type Change, type MeetingMap, type Op } from "../src/core/index.ts";
 
 const known = new Set(["r1", "r2", "r3", "r4", "r5"]);
-const step = (map: MeetingMap, ops: Op[]): MeetingMap => applyOps(map, ops, known, { round: 1, at: 0 }).map;
+const step = (map: MeetingMap, ops: Op[]): MeetingMap => applyOps(map, ops, known, { round: 1, at: 0 }, new Map()).map;
 
 // 前のマップ:
 //   n1 議題 採用
@@ -58,6 +58,31 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
 
   it("更新: 本文も根拠も増えなければ記録しない", () => {
     expect(changesOf([{ op: "update", node: "n4", text: "面接官が足りない", evidence: ["r2"] }])).toEqual([]);
+  });
+
+  describe("更新: TODO の担当者（Issue #1023）", () => {
+    const withTodos = (): MeetingMap => step(before(), [
+      { op: "add", ref: "a", parent: "n2", kind: "TODO", text: "担当なし", evidence: ["r1"] }, // n7
+      { op: "add", ref: "b", parent: "n2", kind: "TODO", text: "話者の担当", evidence: ["r1"], assigneeSpeaker: "相手 A" }, // n8
+    ]);
+
+    it("担当の話者が変わると「更新」になる（本文も根拠も変わらなくても）", () => {
+      expect(changesOf([{ op: "update", node: "n7", evidence: ["r1"], assigneeSpeaker: "相手 B" }], withTodos())).toEqual([{ change: "更新", node: "n7", kind: "TODO", text: "担当なし" }]);
+      expect(changesOf([{ op: "update", node: "n8", evidence: ["r1"], assigneeSpeaker: "相手 B" }], withTodos())).toEqual([{ change: "更新", node: "n8", kind: "TODO", text: "話者の担当" }]);
+    });
+
+    it("担当の名前が分かると「更新」になる（担当の話者が消えるだけでも 1 件）", () => {
+      expect(changesOf([{ op: "update", node: "n8", evidence: ["r1"], assignee: "鈴木" }], withTodos())).toEqual([{ change: "更新", node: "n8", kind: "TODO", text: "話者の担当" }]);
+    });
+
+    it("担当者が変わらない更新は記録しない", () => {
+      expect(changesOf([{ op: "update", node: "n8", evidence: ["r1"], assigneeSpeaker: "相手 A" }], withTodos())).toEqual([]);
+    });
+  });
+
+  it("更新: 案の出した人だけが違うマップの比較は、変わったことにしない（出した人は更新で変わらない）", () => {
+    const withPlan = step(before(), [{ op: "add", ref: "p", parent: "n2", kind: "案", text: "月 1", evidence: ["r2"], proposer: "相手 A" }]); // n7
+    expect(changesOf([{ op: "update", node: "n7", evidence: ["r2"] }], withPlan)).toEqual([]);
   });
 
   it("更新: 本文と根拠が両方変わっても、同じノードの「更新」は 1 件だけ", () => {
@@ -219,7 +244,7 @@ describe("種別「要点」を applyOps が受け入れる", () => {
       { op: "add", ref: "t1", parent: "root", kind: "議題", text: "ふりかえり", evidence: ["r1"] },
       { op: "add", ref: "t2", parent: "t1", kind: "要点", text: "毎週 15 分で回す", evidence: ["r2"] },
       { op: "add", ref: "t3", parent: "t2", kind: "要点", text: "司会は持ち回り", evidence: ["r3"] },
-    ], known, { round: 1, at: 0 });
+    ], known, { round: 1, at: 0 }, new Map());
 
     expect(result.map.order.map((id) => result.map.nodes[id]!.kind)).toEqual(["会議", "議題", "要点", "要点"]);
     expect(result.map.nodes[result.map.order[3]!]!.parent).toBe(result.map.order[2]);
