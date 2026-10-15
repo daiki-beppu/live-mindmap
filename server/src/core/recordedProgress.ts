@@ -14,6 +14,8 @@ export const RecordedEvent = Schema.Union([
   }),
   // 音声のトラックが 2 本以上ある。最初の 1 本だけを使った。count は本数
   Schema.Struct({ type: Schema.Literal("audio-tracks"), count: Schema.Int }),
+  // 動画の映像が読めなかった。共有画面なしで、音声だけで続けた
+  Schema.Struct({ type: Schema.Literal("screen-off") }),
   Schema.Struct({
     type: Schema.Literal("finished"),
     paths: Schema.Array(Schema.String),
@@ -41,6 +43,9 @@ export const formatClock = (seconds: number | null): string => {
 // 例: 音声のトラックが 2 本あります。最初のトラックだけを使いました（分けたいときは --self を使えます）
 export const formatAudioTracksNotice = (count: number): string =>
   `音声のトラックが ${count} 本あります。最初のトラックだけを使いました（分けたいときは --self を使えます）`;
+
+// 録画で screen-off が届くのは、動画の映像が読めなかったときだけ
+export const formatScreenOffNotice = (): string => "動画の映像を読めませんでした。共有画面なしで、音声だけで続けました";
 
 // 例: 12:30 / 58:04  マップの更新 3 回
 export const formatRecordedProgress = (progress: RecordedProgress): string =>

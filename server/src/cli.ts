@@ -40,6 +40,7 @@ import {
   RecordedEvent,
   RemarkEvent,
   formatAudioTracksNotice,
+  formatScreenOffNotice,
   formatRecordedProgress,
   ScreenEvent,
   ScreenOffEvent,
@@ -605,6 +606,13 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
   const tty = yield* StdoutIsTty;
   let finished: Extract<RecordedEvent, { type: "finished" }> | undefined;
   let drawing = false;
+  // 知らせを 1 行出す。端末で進み具合を描いている最中なら、その行を消してから出す（次の進み具合は新しい行から描き直す）
+  const notify = (text: string) => tty && drawing
+    ? Effect.sync(() => {
+      drawing = false;
+      process.stderr.write(`\r\x1b[K${text}\n`);
+    })
+    : Console.error(text);
   yield* forEachServerEvent(response, RecordedEvent, (event) => Effect.gen(function* () {
     switch (event.type) {
       case "started":
@@ -621,17 +629,12 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
         }
         break;
       }
-      case "audio-tracks": {
-        const text = formatAudioTracksNotice(event.count);
-        if (tty && drawing) {
-          // 進み具合の行を消してから出す。次の進み具合は新しい行から描き直す
-          drawing = false;
-          yield* Effect.sync(() => { process.stderr.write(`\r\x1b[K${text}\n`); });
-        } else {
-          yield* Console.error(text);
-        }
+      case "audio-tracks":
+        yield* notify(formatAudioTracksNotice(event.count));
         break;
-      }
+      case "screen-off":
+        yield* notify(formatScreenOffNotice());
+        break;
       case "finished":
         finished = event;
         break;

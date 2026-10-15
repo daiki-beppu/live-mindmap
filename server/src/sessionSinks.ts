@@ -151,8 +151,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const vocabularyAdds = yield* FiberSet.make();
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
           const count = yield* Ref.make(0);
-          // 語彙（読みのある語だけ）。セッションの中では減らさない。出口は発言を締めるたびにその時点の語彙を読む
-          const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>([]);
+          // 語彙（読みのある語だけ）。セッションの中では減らさない。出口は発言を締めるたびにその時点の語彙を読む。
+          // from があるのは録画の画面の語彙だけ。その画面が映り始めた秒で、音声の時刻でそれより後に終わる発言だけを直す（ライブは受け取ってすぐ効くので持たない）
+          const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord & { readonly from?: number }>>([]);
           // 締めた発言を、その時点の語彙で直す。ライブは締めた直後、録画は溜める前（入れる時刻を待つ前）に呼ぶので、等速でも待ち時間なしと同じ語彙で直る。
           // 関所を通った後の本文を語彙で直し、直した本文を発言の本文にする（ログの raw には直す前の本文、words には直す前の位置のままを残す）。words が無い発言は直さない
           // wordTimes（Issue #1019）も Remark に入れず、ログの行にだけ残す（本文の位置は直す前のまま）
@@ -160,7 +161,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             Effect.gen(function* () {
               const { words, wordTimes, ...rest } = settled;
               if (words === undefined) return { rest, original: undefined, wordTimes } satisfies CorrectedRemark;
-              const text = correctRemark(yield* Ref.get(vocabulary), rest.text, words, commonWords).text;
+              const effective = (yield* Ref.get(vocabulary)).filter((w) => w.from === undefined || w.from < rest.end);
+              const text = correctRemark(effective, rest.text, words, commonWords).text;
               return { rest: { ...rest, text }, original: { raw: rest.text, words }, wordTimes } satisfies CorrectedRemark;
             });
           // 直した発言を、採番してセッションへ入れる（ログの remark の行・差分更新・字幕）
@@ -238,7 +240,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           // 読み取得の待ち（モデル・読みのサブコマンド）だけが中断できる。停止（Scope の閉鎖）で中断されても、足した語の記録は失いたくないので、
           // 中断のときは読みなし（全語 romaji: null）で vocab の行を 1 行書く。読み取得が返った後の処理は中断されない
           const updater = Context.get(updaterContext, DiffUpdater);
-          const addVocabulary = (surfaces: ReadonlyArray<string>, source: "user" | "screen") =>
+          const addVocabulary = (surfaces: ReadonlyArray<string>, source: "user" | "screen", from?: number) =>
             Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
                 const noReadings = surfaces.map((surface) => ({ surface, romaji: null, source }));
@@ -263,7 +265,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 );
                 const added = surfaces.map((surface) => ({ surface, romaji: found.get(surface) || null, source }));
                 yield* appendRecordedLog({ type: "vocab", words: added });
-                const usable = added.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji }]));
+                const usable = added.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji, ...(from === undefined ? {} : { from }) }]));
                 yield* Ref.update(vocabulary, (current) => [...current, ...usable.filter((u) => !current.some((c) => c.surface === u.surface))]);
               }),
             );
@@ -279,12 +281,13 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               }
             });
           // 画面の語彙を頼む。規則で取った候補のうち、まだ読みを頼んでいない語だけを、まとめて 1 度だけ語彙に入れる。
-          // ライブはセッションへ入れた後、録画は受け取った時点（入れる時刻を待たない）で呼ぶ
-          const requestScreenVocabulary = (lines: ReadonlyArray<string> | undefined) =>
+          // ライブはセッションへ入れた後、録画は受け取った時点（入れる時刻を待たない）で呼ぶ。
+          // 録画は from（画面が映り始めた秒）を渡し、語彙が効き始める時刻にする（映る前に終わった発言は直さない。溜まりに並べる規則 start < end と同じ）
+          const requestScreenVocabulary = (lines: ReadonlyArray<string> | undefined, from?: number) =>
             Effect.gen(function* () {
               if (lines === undefined || lines.length === 0) return;
               const news = yield* Ref.modify(screenVocabulary, (state) => requestScreenWords(state, lines));
-              if (news.length > 0) yield* FiberSet.run(vocabularyAdds, addVocabulary(news, "screen"), { startImmediately: true });
+              if (news.length > 0) yield* FiberSet.run(vocabularyAdds, addVocabulary(news, "screen", from), { startImmediately: true });
             });
 
           return {
@@ -294,7 +297,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             speaker: (event) => Effect.andThen(appendRecordedLog(event), settling.speaker(event)),
             screen: (change) => backlog === undefined
               ? Effect.andThen(pushScreenChange(change), requestScreenVocabulary(change.lines))
-              : Effect.andThen(requestScreenVocabulary(change.lines), enqueueScreen({ kind: "screen", change })),
+              : Effect.andThen(requestScreenVocabulary(change.lines, change.start), enqueueScreen({ kind: "screen", change })),
             screenOff: (off) => backlog === undefined ? session.pushScreenOff(off) : enqueueScreen({ kind: "screen-off", off }),
             addUserVocabulary: (words) => {
               const surfaces = [...new Set(words.filter((w) => w !== ""))];
