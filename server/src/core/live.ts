@@ -52,10 +52,12 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("file-duration"), duration: Schema.Finite }),
   // 話者分離を使えない（モデルが無い・読み込みに失敗・途中で停止）。認識は続く。start は origin と同じ原点からの秒
   Schema.Struct({ type: Schema.Literal("speaker-off"), start: Schema.Finite, reason: Schema.Literals(["モデルなし", "読み込みに失敗", "途中で停止"]) }),
+  // 相手の話者分離が、ここまで確定した（Issue #1021）。to より前の確定した区間（speaker の final: true）はすべて届いている。origin と同じ原点からの秒。「揃った」の判定はこの位置だけで行う
+  Schema.Struct({ type: Schema.Literal("speaker-settled"), track: Track, to: Schema.Finite }),
 ]);
 export type HelperEvent = typeof HelperEvent["Type"];
-// 受け取った値のまま log.jsonl に残す話者分離のイベント（発言・字幕・差分更新には使わない）
-export type SpeakerLogEvent = Extract<HelperEvent, { type: "speaker" | "speaker-off" }>;
+// 話者分離のイベント。受け取った値のまま log.jsonl に残し、確定した区間は相手の発言の話者を決めるのに使う（Issue #1021。仮の区間・字幕・差分更新の入力には使わない）
+export type SpeakerLogEvent = Extract<HelperEvent, { type: "speaker" | "speaker-off" | "speaker-settled" }>;
 
 export const HelperPartial = Schema.Struct(helperRemarkFields);
 export type HelperPartial = typeof HelperPartial["Type"];

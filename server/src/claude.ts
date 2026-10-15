@@ -4,7 +4,8 @@ import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-age
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
 import { DiffOperations, DiffUpdatePaused, DiffUpdater, type DiffInput, type KatakanaAnswer, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
 
-import { buildPrompt, fmtTime, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
+import { buildPrompt, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
+import { fmtTime } from "./remarkLine.ts";
 import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 

@@ -55,7 +55,10 @@ const program = Effect.gen(function* () {
   const scriptPath = join(root, "script.json");
   const recordPath = join(root, "record.jsonl");
   const fixture = JSON.parse(readFileSync(join(e2eDir, "fixtures/meeting.json"), "utf8")) as { apps: unknown; events: unknown[] };
-  writeFileSync(scriptPath, JSON.stringify({ apps: fixture.apps, events: fixture.events.slice(0, eventCount) }));
+  // CI のランナーには話者分離のモデルが無いので、本物のヘルパーは最初に speaker-off を流す。流さないと、相手の発言が
+  // 話者の区間を待って保留され（Issue #1021）、後ろに結果が届かない最後の発言が字幕に出ない
+  const speakerOff = { type: "speaker-off", start: 0, reason: "モデルなし" };
+  writeFileSync(scriptPath, JSON.stringify({ apps: fixture.apps, events: [speakerOff, ...fixture.events.slice(0, eventCount)] }));
   writeFileSync(recordPath, "");
 
   const helper = { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };

@@ -23,13 +23,9 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
         models = try await SortformerModels.loadFromHuggingFace(config: Self.config, cacheDirectory: modelDirectory)
     }
 
-    public func diarize(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerSegment, Error> {
+    public func diarize(_ audio: AsyncThrowingStream<CapturedAudio, Error>, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerDiarization, Error> {
         guard let models else { throw SpeakerDiarizerError.notPrepared }
-        // 区間は流すだけで読み返さないので、タイムラインに予測と区間の履歴を溜めない（会議の長さに比例して増えるのを防ぐ）。
-        var timelineConfig = DiarizerTimelineConfig.sortformerDefault
-        timelineConfig.maxStoredFrames = 0
-        timelineConfig.storeSegments = false
-        let diarizer = SortformerDiarizer(config: Self.config, timelineConfig: timelineConfig)
+        let diarizer = SortformerDiarizer(config: Self.config, timelineConfig: Self.timelineConfig)
         diarizer.initialize(models: models)
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(Self.config.sampleRate), channels: 1, interleaved: false)
         guard let target else { throw SpeakerDiarizerError.conversionFailed("16 kHz モノラルの形式を作れない") }
@@ -37,6 +33,7 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
             let worker = Task.detached {
                 var converter: AVAudioConverter?
                 var shift: Double?
+                var settledTo = -Double.infinity
                 do {
                     for try await captured in audio {
                         let buffer = captured.buffer
@@ -50,12 +47,12 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
                         guard let channel = converted.floatChannelData?[0] else { continue }
                         diarizer.addAudio(Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength))))
                         if let update = try diarizer.process() {
-                            Self.yield(update, shift: shift ?? 0, to: continuation)
+                            Self.yield(update, shift: shift ?? 0, settledTo: &settledTo, finished: false, to: continuation)
                         }
                     }
                     // 上流が終わった。残りの仮の区間を確定させてから終える。
                     if let update = try diarizer.finalizeSession() {
-                        Self.yield(update, shift: shift ?? 0, to: continuation)
+                        Self.yield(update, shift: shift ?? 0, settledTo: &settledTo, finished: true, to: continuation)
                     }
                     continuation.finish()
                 } catch {
@@ -66,18 +63,55 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
         }
     }
 
-    /// 確定した区間を先に、続けて仮の区間を流す。
-    private static func yield(
-        _ update: DiarizerTimelineUpdate, shift: Double, to continuation: AsyncThrowingStream<SpeakerSegment, Error>.Continuation
+    /// 確定した区間を先に、続けて仮の区間を流し、最後に確定済みの位置を流す。`finished` は `finalizeSession()` の更新で、残りがすべて確定している。
+    static func yield(
+        _ update: DiarizerTimelineUpdate, shift: Double, settledTo: inout Double, finished: Bool,
+        to continuation: AsyncThrowingStream<SpeakerDiarization, Error>.Continuation
     ) {
-        for (segments, isFinal) in [(update.finalizedSegments, true), (update.tentativeSegments, false)] {
-            for segment in segments {
-                continuation.yield(SpeakerSegment(
-                    start: Double(segment.startTime) + shift, end: Double(segment.endTime) + shift,
-                    slot: segment.speakerIndex, isFinal: isFinal
-                ))
-            }
+        for segment in segments(of: update, finished: finished) {
+            continuation.yield(.segment(SpeakerSegment(
+                start: segment.start + shift, end: segment.end + shift, slot: segment.slot, isFinal: segment.isFinal
+            )))
         }
+        let position = finished
+            ? processedEnd(of: update, config: timelineConfig)
+            : settledPosition(of: update, config: timelineConfig)
+        settledTo = max(settledTo, position + shift)
+        continuation.yield(.settled(to: settledTo))
+    }
+
+    /// 流す区間（シフト前）。確定した区間を先に、続けて仮の区間。`finished`（`finalizeSession()` の更新）では、
+    /// 残りの仮の区間（終わりで閉じた区間）は FluidAudio がこの後 `finalize()` で確定させ、再び返さないので、確定として流す。
+    static func segments(of update: DiarizerTimelineUpdate, finished: Bool) -> [SpeakerSegment] {
+        [(update.finalizedSegments, true), (update.tentativeSegments, finished)].flatMap { segments, isFinal in
+            segments.map { SpeakerSegment(start: Double($0.startTime), end: Double($0.endTime), slot: $0.speakerIndex, isFinal: isFinal) }
+        }
+    }
+
+    static var timelineConfig: DiarizerTimelineConfig {
+        // 区間は流すだけで読み返さないので、タイムラインに予測と区間の履歴を溜めない（会議の長さに比例して増えるのを防ぐ）。
+        var config = DiarizerTimelineConfig.sortformerDefault
+        config.maxStoredFrames = 0
+        config.storeSegments = false
+        return config
+    }
+
+    /// この更新の後に確定する区間は、start がこの位置（`origin` ではなくタイムラインの 0 からの秒）以上になる。
+    /// F は FluidAudio の `updateSegments` の `finalizedEndFrame`（確定済みの末尾から `minFramesOff` と前後の余白を引いた位置）と同じ式。
+    /// これより前で始まる区間でも、閉じていないものと確定待ちのものは仮の区間として出るので、その start の最小値 T より先へは進めない。
+    static func settledPosition(of update: DiarizerTimelineUpdate, config: DiarizerTimelineConfig) -> Double {
+        let result = update.chunkResult
+        let frame = result.startFrame + result.finalizedFrameCount - config.minFramesOff - config.onsetPadFrames - config.offsetPadFrames
+        let finalized = Double(Float(frame) * config.frameDurationSeconds)
+        let tentative = update.tentativeSegments.map { Double($0.startTime) }.min() ?? .infinity
+        return min(finalized, tentative)
+    }
+
+    /// `finalizeSession()` の後。処理した音声の終わり。残りの区間がすべて確定しているので、これより後に区間は来ない。
+    static func processedEnd(of update: DiarizerTimelineUpdate, config: DiarizerTimelineConfig) -> Double {
+        let result = update.chunkResult
+        let frames = Double(Float(result.startFrame + result.finalizedFrameCount + result.tentativeFrameCount) * config.frameDurationSeconds)
+        return max(frames, (update.finalizedSegments + update.tentativeSegments).map { Double($0.endTime) }.max() ?? -.infinity)
     }
 
     /// モデルの本体（`.mlmodelc`）の場所。FluidAudio の保存の規則（`<保存先>/<repo のフォルダ>/<bundle>`）と同じ。

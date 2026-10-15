@@ -89,7 +89,11 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
     let sayRemark: (() => void) | undefined;
     const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
       const queue = yield* Queue.make<string, Cause.Done>();
-      sayRemark = () => { Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" })); };
+      // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
+      sayRemark = () => {
+        Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" }));
+        Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));
+      };
       const exited = yield* Deferred.make<HelperExitInfo>();
       const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
       yield* Effect.addFinalizer(() => stop);

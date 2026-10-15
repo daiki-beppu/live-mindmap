@@ -147,6 +147,8 @@ private struct FakeDiarizer: SpeakerDiarizer {
     let observations: AudioObservations
     let prepareFailure: Error?
     let segments: [SpeakerSegment]
+    /// 区間の後に流す確定済みの位置。nil なら流さない
+    let settledTo: Double?
     let streamFailure: Error?
     /// true なら、最初の音声を受け取った時点で（入力が開いたまま）区間を返して失敗し、以後は音声を読まない。
     let failsOnFirstAudio: Bool
@@ -156,7 +158,7 @@ private struct FakeDiarizer: SpeakerDiarizer {
         if let prepareFailure { throw prepareFailure }
     }
 
-    func diarize(_ audio: AudioStream, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerSegment, Error> {
+    func diarize(_ audio: AudioStream, origin: UInt64) async throws -> AsyncThrowingStream<SpeakerDiarization, Error> {
         observations.append(.diarizerOrigin(origin))
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -165,12 +167,13 @@ private struct FakeDiarizer: SpeakerDiarizer {
                         let data = try #require(item.buffer.floatChannelData)
                         observations.append(.diarizerHeard(data[0][0]))
                         if failsOnFirstAudio {
-                            segments.forEach { continuation.yield($0) }
+                            segments.forEach { continuation.yield(.segment($0)) }
                             continuation.finish(throwing: streamFailure ?? DiarizerStreamFailure())
                             return
                         }
                     }
-                    segments.forEach { continuation.yield($0) }
+                    segments.forEach { continuation.yield(.segment($0)) }
+                    if let settledTo { continuation.yield(.settled(to: settledTo)) }
                     if let streamFailure { continuation.finish(throwing: streamFailure) } else { continuation.finish() }
                 } catch { continuation.finish(throwing: error) }
             }
@@ -192,6 +195,7 @@ private final class RunAudioFixture {
     var diarizerEnabled = false
     var diarizerPrepareFailure: Error?
     var diarizerSegments: [SpeakerSegment] = []
+    var diarizerSettledTo: Double?
     var diarizerStreamFailure: Error?
     var diarizerFailsOnFirstAudio = false
     let started = AsyncStream<Track>.makeStream()
@@ -315,7 +319,7 @@ private final class RunAudioFixture {
                 guard self.diarizerEnabled else { return nil }
                 return FakeDiarizer(
                     observations: self.observations, prepareFailure: self.diarizerPrepareFailure,
-                    segments: self.diarizerSegments, streamFailure: self.diarizerStreamFailure,
+                    segments: self.diarizerSegments, settledTo: self.diarizerSettledTo, streamFailure: self.diarizerStreamFailure,
                     failsOnFirstAudio: self.diarizerFailsOnFirstAudio
                 )
             },
@@ -501,6 +505,7 @@ struct RunAudioTests {
         let fixture = RunAudioFixture()
         fixture.diarizerEnabled = true
         fixture.diarizerSegments = [tentative, confirmed]
+        fixture.diarizerSettledTo = 1.5
         let audio = fixture.makeAudio()
         try await audio.prepare()
         try await audio.run(origin: AudioGetCurrentHostTime(), marksDuplicates: speaker, relay: fixture.relay)
@@ -516,6 +521,7 @@ struct RunAudioTests {
         #expect(speakerEvents(fixture) == [
             .speaker(track: .相手, start: 1.5, end: 2.5, slot: 1, isFinal: false),
             .speaker(track: .相手, start: 0, end: 1.5, slot: 0, isFinal: true),
+            .speakerSettled(track: .相手, to: 1.5),
         ])
         // 認識・録音は話者分離の有無で変わらない
         #expect(events.contains(.heard(.相手, 1)))

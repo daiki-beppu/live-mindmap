@@ -37,7 +37,7 @@ describe("ChatGPT Responses（C03）", () => {
       const result = yield* updater.update(input);
       expect(http.requests).toHaveLength(2);
       const request = http.requests[1]!;
-      const expected = classificationRequest(input.map, input.recent, input.fresh.flatMap((r) => r.text.split(/(?<=[。！])/).filter(Boolean).map((text) => ({ remark: r.id, text }))));
+      const expected = classificationRequest(input.map, input.recent, input.fresh.flatMap((r) => r.text.split(/(?<=[。！])/).filter(Boolean).map((text) => ({ remark: r, text }))));
       const body = jsonRequestBody(request);
       expect([request.method, request.url]).toEqual(["POST", "https://api.openai.com/v1/responses"]);
       expect(request.headers.authorization).toBe("Bearer synthetic-access");
