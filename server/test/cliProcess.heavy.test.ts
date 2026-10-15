@@ -2,19 +2,21 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 const cli = join(import.meta.dirname, "../src/cli.ts");
+// HOME を差し替える前に解決し、子プロセスも親と同じ管理の依存を読むようにする
+const depsDir = process.env.LIVE_MINDMAP_DEPS ?? join(homedir(), ".live-mindmap", "deps");
 
 function runProcess(argv: string[], sessionsDir: string, env: Record<string, string> = {}) {
   return Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
     execFile(process.execPath, [cli, ...argv], {
       encoding: "utf8",
       timeout: 10_000,
-      env: { ...process.env, HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1", ...env },
+      env: { ...process.env, HOME: join(sessionsDir, "home"), LIVE_MINDMAP_DEPS: depsDir, LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1", ...env },
     }, (error, stdout, stderr) => {
       if (error) {
         if (error.killed || typeof error.code !== "number") {
