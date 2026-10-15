@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CAPTION_SLIDE_MS } from "../src/captions.ts";
 import { scrollPanDelta } from "../src/camera.ts";
 import { keyListRows } from "../src/app/keys/table.ts";
 import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
+import { spokenFrame } from "./fixtures/captions.ts";
 import { mapPoint, near, rectOf, styleOf } from "./reviewPage.ts";
 import { withBrowser, type Page } from "./screenCompare.ts";
 
@@ -297,7 +299,7 @@ describe("会議中（Foldkit 版）の Subscription", () => {
       await page.locator(".screen-notice").waitFor();
       await page.locator(".tap-notice").waitFor();
       const count = await nodeCount(page);
-      const captions = await page.locator(".captions__line").allTextContents();
+      const captions = await page.locator(".captions__bubble").allTextContents();
       expect(captions.length).toBeGreaterThan(0);
       expect(connectionCount(page)).toBe(1);
       await closeSocket(page);
@@ -305,10 +307,10 @@ describe("会議中（Foldkit 版）の Subscription", () => {
       await page.locator(".tap-notice").waitFor({ state: "detached" });
       expect(await nodeCount(page)).toBe(count);
       // 切れただけでは字幕は残る
-      expect(await page.locator(".captions__line").allTextContents()).toEqual(captions);
+      expect(await page.locator(".captions__bubble").allTextContents()).toEqual(captions);
       // つなぎ直す（RECONNECT_MS 後）。server が先に送る frame（字幕・スナップショット）で画面が最新になる
       await expect.poll(() => connectionCount(page), { timeout: 15_000 }).toBe(2);
-      await expect.poll(() => page.locator(".captions__line").allTextContents(), { timeout: 15_000 }).toEqual(captions);
+      await expect.poll(() => page.locator(".captions__bubble").allTextContents(), { timeout: 15_000 }).toEqual(captions);
       expect(await nodeCount(page)).toBe(count);
       await sendFrame(page, NOTICE_FRAMES.screen);
       await page.locator(".screen-notice").waitFor();
@@ -325,6 +327,122 @@ describe("会議中（Foldkit 版）の寸法", () => {
   const CAPTIONS_WIDTH = 648; // min(720px, 100vw − 2 × 316px) の 1280px での値
 
   it(
+    "字幕の吹き出し: 幅は文字の量で変わらない。吹き出しが増えて位置が変わる動きは、終われば止まる（揺れ続けない）",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      const bubble = (id: string, start: number, text: string) => ({ id, track: "相手", speaker: "相手 A", label: "確定", start, end: start + 1, text });
+      await sendFrame(page, { type: "captions", bubbles: [bubble("short", 1, "はい"), bubble("long", 2, "これはとても長い文章です。".repeat(8))] });
+      await expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(2);
+      const bubbleWidths = () => page.evaluate(() => Array.from(document.querySelectorAll(".captions__bubble")).map((b) => b.getBoundingClientRect().width));
+      await expect.poll(async () => (await bubbleWidths()).every((w) => w > 0), { timeout: 5_000 }).toBe(true);
+      const [shortWidth, longWidth] = await bubbleWidths();
+      near(shortWidth!, longWidth!, "短い文と長い文の吹き出しの幅");
+      await page.waitForTimeout(500); // Mount（動きの監視）が張られるのを待つ
+      // 動きが付いた呼び出しを記録する（動きは 250ms で終わるので、終わった後に探しても見つからない）
+      await page.evaluate(() => {
+        const slides: { id: string | null; transform: boolean }[] = [];
+        (window as unknown as { __slides: typeof slides }).__slides = slides;
+        const animate = Element.prototype.animate;
+        Element.prototype.animate = function (this: Element, keyframes, options) {
+          slides.push({ id: this.getAttribute("data-caption-id"), transform: JSON.stringify(keyframes).includes("translateY") });
+          return animate.call(this, keyframes, options);
+        };
+      });
+      await sendFrame(page, { type: "captions", bubbles: [bubble("short", 1, "はい"), bubble("long", 2, "これはとても長い文章です。".repeat(8)), bubble("next", 3, "次の発言です")] });
+      // 末尾に足すと既存の行が上へ動く。その行に滑りの動き（transform）が付く
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __slides: { id: string | null; transform: boolean }[] }).__slides.filter((r) => r.transform).map((r) => r.id)), { timeout: 5_000 }).toEqual(expect.arrayContaining(["short"]));
+      await expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(3);
+      // 動きは CAPTION_SLIDE_MS で終わる。終わった後は、動きが残らず、位置（変形を含まない offsetTop）が動かない
+      await expect.poll(() => page.evaluate(() => document.getAnimations().length), { timeout: 5_000 }).toBe(0);
+      const tops = () => page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>(".captions__row")).map((row) => row.offsetTop));
+      const before = await tops();
+      await page.waitForTimeout(400);
+      expect(await tops()).toEqual(before);
+      expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  const captionBubble = (id: string, start: number, text: string) => ({ id, track: "相手", speaker: "相手 A", label: "確定", start, end: start + 1, text });
+  // animate の呼び出しを記録する。滑り（translateY）の動きは、作った時点で途中（半分）に止める
+  const recordAnimations = (page: Page) =>
+    page.evaluate((halfway) => {
+      const records: { id: string | null; kind: "slide" | "fade"; dy: number }[] = [];
+      (window as unknown as { __animations: typeof records }).__animations = records;
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function (this: Element, keyframes, options) {
+        const json = JSON.stringify(keyframes);
+        const animation = animate.call(this, keyframes, options);
+        const slide = /translateY\((-?[\d.]+)px\)/.exec(json);
+        records.push({ id: this.getAttribute("data-caption-id"), kind: slide === null ? "fade" : "slide", dy: slide === null ? 0 : Number(slide[1]) });
+        if (slide !== null) {
+          animation.pause();
+          animation.currentTime = halfway;
+        }
+        return animation;
+      };
+    }, CAPTION_SLIDE_MS / 2);
+  const recorded = (page: Page) => page.evaluate(() => (window as unknown as { __animations: { id: string | null; kind: "slide" | "fade"; dy: number }[] }).__animations.slice());
+
+  it(
+    "字幕: 空の字幕から最初の吹き出しが出るときにも、透明度のフェードが付く",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      await sendFrame(page, { type: "captions", bubbles: [] });
+      await expect.poll(() => page.locator(".captions").count(), { timeout: 10_000 }).toBe(0);
+      await recordAnimations(page);
+      await sendFrame(page, { type: "captions", bubbles: [captionBubble("first", 1, "はじめまして")] });
+      await expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(1);
+      await expect.poll(async () => (await recorded(page)).filter((r) => r.kind === "fade").map((r) => r.id), { timeout: 5_000 }).toEqual(["first"]);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "字幕: 滑りのアニメーションの途中に行が増えても、次の移動量は変形を除いた位置（offsetTop）の差だけで決まる。終わった後は動きが残らず位置が止まる",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      const wait = (count: number) => expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(count);
+      const send = (ids: readonly string[]) => sendFrame(page, { type: "captions", bubbles: ids.map((id, i) => captionBubble(id, i + 1, `${id} の発言です。`.repeat(3))) });
+      const tops = () =>
+        page.evaluate(() => {
+          const container = document.querySelector<HTMLElement>(".captions")!;
+          return Object.fromEntries(Array.from(container.children).map((row) => [row.getAttribute("data-caption-id"), container.offsetTop + (row as HTMLElement).offsetTop]));
+        });
+      await send(["a", "b"]);
+      await wait(2);
+      await page.waitForTimeout(500); // Mount（動きの監視）が張られ、最初のフェードが終わるのを待つ
+      await recordAnimations(page);
+
+      await send(["a", "b", "c"]);
+      await wait(3);
+      await expect.poll(async () => (await recorded(page)).filter((r) => r.kind === "slide").length, { timeout: 5_000 }).toBeGreaterThan(0);
+      // 最初の滑りが途中（半分）で止まっている間に、さらに行を足す。止まっている行の見かけの位置は、offsetTop に入らない
+      const before = await tops();
+      const firstCount = (await recorded(page)).length;
+      await send(["a", "b", "c", "d"]);
+      await expect.poll(() => page.locator(".captions__bubble").last().textContent(), { timeout: 10_000 }).toContain("d の発言");
+      await expect.poll(async () => (await recorded(page)).length, { timeout: 5_000 }).toBeGreaterThan(firstCount);
+      const after = await tops();
+      const second = (await recorded(page)).slice(firstCount).filter((r) => r.kind === "slide");
+      expect(second.length).toBeGreaterThan(0);
+      for (const { id, dy } of second) expect(dy, `${id} の移動量`).toBe(before[id!]! - after[id!]!);
+
+      // 途中で止めた動きを終わらせる。終わった後は、動きが残らず、位置が動かない
+      await page.evaluate(() => document.getAnimations().forEach((animation) => animation.finish()));
+      await expect.poll(() => page.evaluate(() => document.getAnimations().length), { timeout: 5_000 }).toBe(0);
+      const settledTops = await tops();
+      await page.waitForTimeout(400);
+      expect(await tops()).toEqual(settledTops);
+      expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
     "字幕・取り込みの一言・相手の音声の一文・共有画面の一文・ローカルモードの表示",
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first });
@@ -338,10 +456,11 @@ describe("会議中（Foldkit 版）の寸法", () => {
       near((captions.left + captions.right) / 2, (layout.left + layout.right) / 2, "字幕の中央");
       near(captions.bottom, layout.bottom - 24, "字幕の下端");
       expect(await styleOf(page, ".captions", ["position", "pointer-events", "display", "flex-direction", "gap"])).toEqual({ position: "absolute", "pointer-events": "none", display: "flex", "flex-direction": "column", gap: "4px" });
-      expect(await styleOf(page, ".captions__block", ["box-shadow", "background-color", "border-top-width", "border-top-color", "border-radius", "padding-top", "padding-left", "font-size", "color"])).toEqual({
-        "box-shadow": "none", "background-color": "rgba(255, 255, 255, 0.88)", "border-top-width": "1px", "border-top-color": "rgb(229, 231, 235)", "border-radius": "6px", "padding-top": "6px", "padding-left": "12px", "font-size": "16px", color: "rgb(55, 65, 81)",
+      // 吹き出しは塗り・枠・影・バッジを持たず、文字の色だけで話者を分ける。名前の欄は小さい文字で、固定幅
+      expect(await styleOf(page, ".captions__bubble", ["box-shadow", "background-color", "border-top-width", "border-radius", "font-size"])).toEqual({
+        "box-shadow": "none", "background-color": "rgba(0, 0, 0, 0)", "border-top-width": "0px", "border-radius": "0px", "font-size": "16px",
       });
-      expect(await styleOf(page, ".captions__track", ["color", "font-size"])).toEqual({ color: "rgb(156, 163, 175)", "font-size": "12px" });
+      expect(await styleOf(page, ".captions__name", ["font-size"])).toEqual({ "font-size": "12px" });
 
       const intake = await rectOf(page, ".intake-notice");
       near(intake.left, captions.right + 12, "取り込みの一言の左端");
@@ -386,7 +505,7 @@ describe("会議中（Foldkit 版）の寸法", () => {
     "自分の休止の一言: 字幕の右（左端は字幕の右 +12px・下端は layout −24px）に取り込みの一言と同じ文字で出て、字幕・マップの位置は動かない。取り込みの一言と同時なら重ならず下に並ぶ",
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first });
-      await sendFrames(page, [{ type: "speaking", track: "相手", text: "字幕です。" }]);
+      await sendFrames(page, [spokenFrame("字幕です。")]);
       await page.locator(".captions").first().waitFor({ timeout: 10_000 });
       await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - CAPTIONS_WIDTH) <= 1, { timeout: 10_000 }).toBe(true);
       await settled(page);

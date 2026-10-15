@@ -3,13 +3,14 @@
 import { Option, Schema } from "effect";
 import type { Update } from "foldkit";
 import { modifyFields } from "foldkit/struct";
-import { DiffUpdateState, SelfPaused, SessionIntakeStatus, Snapshot, Track } from "../../../../server/src/core/index.ts";
-import { applyClose, applyFrame, applyOpen, createFeedState, type FeedState } from "../../liveFeed.ts";
+import { DiffUpdateState, SelfPaused, SessionIntakeStatus, Snapshot } from "../../../../server/src/core/index.ts";
+import { CaptionState } from "../../captions.ts";
+import { applyCaptionDeadline, applyClose, applyFrame, applyOpen, createFeedState, type FeedState } from "../../liveFeed.ts";
 import { Message } from "./message.ts";
 
 export const Model = Schema.Struct({
   snapshot: Schema.Option(Snapshot),
-  speaking: Schema.Record(Track, Schema.String),
+  captions: CaptionState,
   intake: SessionIntakeStatus,
   screenNotice: Schema.Option(Schema.String),
   tapNotice: Schema.Option(Schema.String),
@@ -21,7 +22,7 @@ export type Model = typeof Model.Type;
 
 const toModel = (feed: FeedState): Model => ({
   snapshot: Option.fromNullishOr(feed.snapshot),
-  speaking: feed.speaking,
+  captions: feed.captions,
   intake: feed.intake,
   screenNotice: Option.fromNullishOr(feed.screenNotice),
   tapNotice: Option.fromNullishOr(feed.tapNotice),
@@ -32,7 +33,7 @@ const toModel = (feed: FeedState): Model => ({
 
 const toFeed = (model: Model): FeedState => ({
   snapshot: Option.getOrNull(model.snapshot),
-  speaking: model.speaking,
+  captions: model.captions,
   intake: model.intake,
   screenNotice: Option.getOrNull(model.screenNotice),
   tapNotice: Option.getOrNull(model.tapNotice),
@@ -50,7 +51,7 @@ const apply = (model: Model, step: (feed: FeedState) => FeedState): Return => {
   return {
     model: modifyFields(model, {
       snapshot: () => next.snapshot,
-      speaking: () => next.speaking,
+      captions: () => next.captions,
       intake: () => next.intake,
       screenNotice: () => next.screenNotice,
       tapNotice: () => next.tapNotice,
@@ -64,6 +65,7 @@ const apply = (model: Model, step: (feed: FeedState) => FeedState): Return => {
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     ConnectedLiveFeed: () => apply(model, applyOpen),
-    ReceivedLiveFrame: ({ frame }) => apply(model, (feed) => applyFrame(feed, frame)),
+    ReceivedLiveFrame: ({ frame, receivedAt }) => apply(model, (feed) => applyFrame(feed, frame, receivedAt)),
+    ReachedCaptionDeadline: ({ at }) => apply(model, (feed) => applyCaptionDeadline(feed, at)),
     DisconnectedLiveFeed: () => apply(model, applyClose),
   });

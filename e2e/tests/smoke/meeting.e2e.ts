@@ -4,11 +4,13 @@ import { test } from "@e2e-dev/web";
 import { expect } from "e2e";
 import { cli, e2eDir, readRunInfo, type RunInfo, run } from "../runInfo.ts";
 
-// 会議中の流れ。smoke（target web、先頭 3 件）と全件（target web-full）の両方で同じ本文が動く。起動スクリプト（scripts/serve.ts）が立てた server・web に対して、CLI の start → 発言 → 字幕とノード → stop → 書き出し、を通す。
+// 会議中の流れ。smoke（target web、先頭 4 件）と全件（target web-full）の両方で同じ本文が動く。起動スクリプト（scripts/serve.ts）が立てた server・web に対して、CLI の start → 発言 → 字幕とノード → stop → 書き出し、を通す。
 // 画面の判定と待ちは locator の expect だけで行う（agent.assert・waitFor・extract は使わない）。
 
 const script = JSON.parse(readFileSync(join(e2eDir, "fixtures/meeting.json"), "utf8")) as { events: { type: string; track: string; text: string }[] };
 const APP = "us.zoom.xos";
+// smoke（target web）が台本から流す件数。e2e.config.ts の target と同じ
+const SMOKE_EVENTS = 4;
 // 反映までの待ち。locator の expect の timeout で待つ
 const WAIT = { timeout: 30_000 };
 
@@ -29,8 +31,22 @@ test("会議中: start で届いた発言が字幕とノードになり、stop �
 
   // 途中結果は差分更新に渡らず、字幕に残る。確定した発言は呼び出し中でなければすぐ差分更新に渡り、反映すると字幕から消える
   // （偽の updater はすぐ返すので、字幕に見えるうちには捉えられない）。確定した発言は、ノード（文言は発言そのまま）になったことを確かめる
-  const lastShown = lastCaption.type === "partial" ? browser.locator(".captions__line") : browser.locator(".map-node__text");
+  const lastShown = lastCaption.type === "partial" ? browser.locator(".captions__bubble") : browser.locator(".map-node__text");
   await expect(lastShown.filter({ hasText: lastCaption.text })).toBeVisible(WAIT);
+
+  // 字幕は話者つきの吹き出し（Issue #1022）。smoke の台本は、確定せずに残る 2 つの途中結果で終わる。
+  // 相手の途中結果は左の行で、左の欄に仮のラベル（相手 B）か、約 3 秒たった後の「相手」だけが出る（遅い環境で 3 秒を超えても落ちないよう両方を許す。仮の濃さと 3 秒の規則は web の unit が確かめる）。自分の途中結果は右の行で、名前の欄は空
+  if (runInfo.events === SMOKE_EVENTS) {
+    const theirs = browser.locator(".captions__row").filter({ hasText: "検索の改善を先にやりた" });
+    await expect(theirs).toHaveAttribute("class", /justify-start/);
+    await expect(theirs.filter({ has: browser.locator(".captions__name").filter({ hasText: /^相手( B)?$/ }) })).toBeVisible();
+    const mine = browser.locator(".captions__row").filter({ hasText: "担当を分け" });
+    await expect(mine).toHaveAttribute("class", /justify-end/);
+    // 名前の欄は 2 つ（行ごとに 1 つ）。文字が入っているのは相手の行だけで、自分の欄は空
+    await expect(browser.locator(".captions__name")).toHaveCount(2);
+    await expect(browser.locator(".captions__name").filter({ hasText: /\S/ })).toHaveCount(1);
+  }
+
   const nodes = screen.getByRole("button", { pressed: false }).filter({ has: browser.locator(".map-node__text") });
   await expect(nodes.first()).toBeVisible(WAIT);
 

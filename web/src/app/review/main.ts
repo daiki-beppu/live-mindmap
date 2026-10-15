@@ -64,7 +64,7 @@ export const Model = Schema.Struct({
   isPressingSlider: Schema.Boolean,
   // 字幕を隠しているか（字幕の部品へは view で渡す）。ボタンの押した状態（aria-pressed）とアイコンに使う。右の列の出し入れは表示面の見る状態（viewing.sideHidden）が持つ
   captionsHidden: Schema.Boolean,
-  // セッションの画面の部品のうち、見返しが導かないもの（見る状態の知らせ。見返しは取り込み・共有画面の状態を送らない）。字幕の文（speaking）と字幕を隠しているかは導く／別の欄が持つので除く
+  // セッションの画面の部品のうち、見返しが導かないもの（見る状態の知らせ。見返しは取り込み・共有画面の状態を送らない）。字幕と字幕を隠しているかは導く／別の欄が持つので除く
   sessionLayout: Schema.Struct({
     intake: SessionLayout.Model.fields.intake,
     intakeToast: SessionLayout.Model.fields.intakeToast,
@@ -89,7 +89,7 @@ export const init = (context: Context): Model => {
   const { mode: _mode, snapshot: _snapshot, ...mapSurface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac);
   // ツールチップは、ポインタを乗せたらすぐ出す（今の CSS の :hover と同じ）。フォーカスでは Tooltip が遅れずに出す
   const tooltip = (key: keyof Model["tooltips"]) => Tooltip.init({ id: tooltipId(key), showDelay: 0 });
-  const { speaking: _speaking, captionsHidden: _captionsHidden, ...sessionLayout } = SessionLayout.init();
+  const { captions: _captions, captionsHidden: _captionsHidden, ...sessionLayout } = SessionLayout.init();
   return {
     playback: initialPlayback(context.playback.duration, Option.isSome(context.maybeAudioUrl) ? AUDIO_RATE : undefined),
     mapSurface,
@@ -112,7 +112,7 @@ export const surfaceOf = (context: Context, model: Model): MapSurface.Model => (
 // 字幕の部品の Model。字幕の文はその時刻の発言から毎回導き、字幕を隠しているかは見返しの Model の欄から渡す
 const layoutOf = (context: Context, model: Model): SessionLayout.Model => ({
   ...model.sessionLayout,
-  speaking: speakingAt(context.timeline, model.playback.time),
+  captions: { _tag: "Lines", speaking: speakingAt(context.timeline, model.playback.time) },
   captionsHidden: model.captionsHidden,
   selfPaused: false, // 見返しに自分の休止の一言は出ない
 });
@@ -131,11 +131,11 @@ export const makeUpdate = (context: Context) => {
     write: (model, surface) => storeSurface(model, surface),
     toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
   });
-  // 字幕の部品（見る状態の知らせの Toast）。導く欄（speaking・captionsHidden）は保存しない
+  // 字幕の部品（見る状態の知らせの Toast）。導く欄（captions・captionsHidden）は保存しない
   const { foldSessionLayout, foldViewingMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
     read: (model) => Option.some(layoutOf(context, model)),
     write: (model, layout) => {
-      const { speaking: _speaking, captionsHidden: _captionsHidden, ...sessionLayout } = layout;
+      const { captions: _captions, captionsHidden: _captionsHidden, ...sessionLayout } = layout;
       return modifyFields(model, { sessionLayout: () => sessionLayout });
     },
     toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),

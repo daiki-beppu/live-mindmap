@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Effect, Exit, Scope } from "effect";
-import type { DiffUpdateFrame, SpeakingFrame } from "../src/core/index.ts";
+import type { CaptionsFrame, DiffUpdateFrame } from "../src/core/index.ts";
 import { appleLiveServer } from "./fixtures/appleLiveServer.ts";
 import { connect } from "./fixtures/wsClient.ts";
 
@@ -40,9 +40,9 @@ describe("Apple の状態配信", () => {
     const requests = server.fake.requests.length;
     yield* server.emit({ type: "partial", track: "自分", start: 0, end: 1, text: "停止後も続く字幕です。" });
     yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "停止後も記録する発言です。" });
-    const speaking = (all: unknown[]) => all.filter((frame): frame is SpeakingFrame =>
-      typeof frame === "object" && frame !== null && "type" in frame && frame.type === "speaking");
-    yield* Effect.tryPromise(() => vi.waitFor(() => expect(speaking(second.frames).some((frame) => frame.text === "停止後も続く字幕です。")).toBe(true)));
+    const captions = (all: unknown[]) => all.filter((frame): frame is CaptionsFrame =>
+      typeof frame === "object" && frame !== null && "type" in frame && frame.type === "captions");
+    yield* Effect.tryPromise(() => vi.waitFor(() => expect(captions(second.frames).some((frame) => frame.bubbles.some((b) => b.text === "停止後も続く字幕です。"))).toBe(true)));
     expect((yield* server.stop).status).toBe(200);
     yield* waitState(second.frames, null);
     yield* waitState(stopped.frames, null);

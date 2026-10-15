@@ -7,14 +7,17 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type SpeakingFrame, type Track } from "../src/core/index.ts";
+import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type CaptionsFrame, type Track } from "../src/core/index.ts";
 import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
-import { remark, textsOf } from "./fixtures/speakingRelay.ts";
+import { partialOf, remark } from "./fixtures/speakingRelay.ts";
 
-// いま話している文字（SpeakingFrame）をブラウザへ送る層のうち、本物のファイルシステムで記録するセッションとつなぐ部分。
-// 期待値は書き換え前のこのファイルと同じにする（order.md:49「期待値は変えない」）。
+// いま話している文字（CaptionsFrame）をブラウザへ送る層のうち、本物のファイルシステムで記録するセッションとつなぐ部分。
+// 反映で消える範囲と、重複の印つきを出さないことは、書き換え前と同じ。文字列 1 本の期待値は、吹き出し 1 つにつき 1 要素の並びに替えた（Issue #1022）。
+
+// そのトラックの吹き出しの文字（frame ごと）。末尾の要素が、最後に送った frame
+const textsOf = (frames: readonly CaptionsFrame[], track: Track): string[][] => frames.map((f) => f.bubbles.filter((b) => b.track === track).map((b) => b.text));
 
 // 反映の後に本物のファイルシステムへログを書いてから次の呼び出しが始まる。回数で区切る settleUntil では、CI の負荷で書き終わる前に尽きる。
 // 呼び出しが起きることだけを待つので、実時間（5 秒）で区切る。TestClock は進めない
@@ -39,7 +42,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
           reject: (e) => resume(Effect.fail({ _tag: "UpdateFailed", message: e.message })),
         });
       });
-    const frames: SpeakingFrame[] = [];
+    const frames: CaptionsFrame[] = [];
     const unreflectedAtPublish: string[][] = []; // publish が呼ばれた時点で、Session が未反映とみなしていた発言の ID
     let session: Session | undefined;
     let relay: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
@@ -55,7 +58,10 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       onDiff: Effect.suspend(() => relay!.flushAll),
     }).pipe(Effect.provide(Layer.mergeAll(updaterLayer(update), NodeFileSystem.layer)));
     session = started.session;
-    relay = yield* createSpeakingRelay({ unreflected: session.unreflectedRemarks, send: (f) => Effect.sync(() => frames.push(f)) });
+    relay = yield* createSpeakingRelay({
+      context: Effect.map(session.unreflectedRemarks, (remarks) => ({ unreflected: remarks.map(({ id, ...r }) => ({ id, remark: r })), held: [], intervals: [], previewLabel: () => "相手 A" })),
+      send: (f) => Effect.sync(() => frames.push(f)),
+    });
     // server/src/sessions.ts の読み取りループと同じ順: 発言は push してから relay に知らせる
     const say = (r: Remark) =>
       Effect.gen(function* () {
@@ -64,7 +70,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       });
     const partial = (track: Track, text: string, duplicate = false) =>
       Effect.gen(function* () {
-        yield* relay!.partial(track, text, duplicate);
+        yield* relay!.partial(partialOf(track, text, 100, { duplicate }));
         yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       });
     const add = (evidence: string[], text = "採用"): Op[] => [{ op: "add", ref: "t1", parent: "root", kind: "議題", text, evidence }];
@@ -87,25 +93,25 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       yield* say(remark(3, "相手", "緑"));
       yield* partial("相手", "…");
       expect(calls).toHaveLength(1);
-      expect(textsOf(frames, "相手").at(-1)).toBe("赤 青 緑 …"); // 反映前: 結果待ちの発言も未反映の発言も、途中結果も
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["赤", "青", "緑", "…"]); // 反映前: 結果待ちの発言も未反映の発言も、途中結果も
 
       calls[0]!.resolve(add(["r1"]));
       yield* settleUntil(() => calls.length === 2); // r1 の反映が済むと、ためた r2・r3 が 1 回にまとまって渡る
       expect(calls[1]!.input.fresh.map((r) => r.id)).toEqual(["r2", "r3"]);
-      expect(textsOf(frames, "相手").at(-1)).toBe("青 緑 …"); // r1 だけが消える
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["青", "緑", "…"]); // r1 だけが消える
       expect(unreflectedAtPublish.at(-1)).toEqual(["r2", "r3"]); // 反映したマップの送信の時点で、すでに反映済みの発言は未反映から外れている
 
       yield* say(remark(4, "相手", "黄")); // 話し終えた（途中結果は空になる）。r2・r3 の結果待ちの間に届いた
-      expect(textsOf(frames, "相手").at(-1)).toBe("青 緑 黄");
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["青", "緑", "黄"]);
       calls[1]!.resolve([{ op: "noop", reason: "なし" }]);
       yield* settleUntil(() => calls.length === 3);
       expect(calls[2]!.input.fresh.map((r) => r.id)).toEqual(["r4"]);
-      expect(textsOf(frames, "相手").at(-1)).toBe("黄"); // r2・r3 が消え、r4 だけが残る
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["黄"]); // r2・r3 が消え、r4 だけが残る
 
       calls[2]!.resolve([{ op: "noop", reason: "なし" }]);
       yield* idle();
 
-      expect(textsOf(frames, "相手").at(-1)).toBe(""); // 何も残らない
+      expect(textsOf(frames, "相手").at(-1)).toEqual([]); // 何も残らない
       expect(session).toBeDefined();
     }));
 
@@ -114,13 +120,13 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       const { say, partial, calls, frames, unreflectedAtPublish, idle } = yield* setup();
       yield* say(remark(1, "相手", "赤")); // r1 がすぐ渡り、結果待ち
       yield* partial("相手", "…");
-      expect(textsOf(frames, "相手").at(-1)).toBe("赤 …");
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["赤", "…"]);
       const publishedBefore = unreflectedAtPublish.length;
 
       calls[0]!.reject(new Error("差分更新の失敗"));
       yield* idle();
 
-      expect(textsOf(frames, "相手").at(-1)).toBe("…");
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["…"]);
       expect(unreflectedAtPublish).toHaveLength(publishedBefore); // 失敗した反映ではマップを送らない（既存の動作）
     }));
 
@@ -131,17 +137,17 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       yield* say(remark(2, "自分", "青")); // 呼び出し中に届いたので、ためる
       yield* partial("相手", "…");
 
-      expect(textsOf(frames, "相手").at(-1)).toBe("赤 …");
-      expect(textsOf(frames, "自分").at(-1)).toBe("青");
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["赤", "…"]);
+      expect(textsOf(frames, "自分").at(-1)).toEqual(["青"]);
 
       calls[0]!.resolve(add(["r1"]));
       yield* settleUntil(() => calls.length === 2);
-      expect(textsOf(frames, "相手").at(-1)).toBe("…");
-      expect(textsOf(frames, "自分").at(-1)).toBe("青"); // 相手の反映では消えない
+      expect(textsOf(frames, "相手").at(-1)).toEqual(["…"]);
+      expect(textsOf(frames, "自分").at(-1)).toEqual(["青"]); // 相手の反映では消えない
 
       calls[1]!.resolve([{ op: "noop", reason: "なし" }]);
       yield* idle();
-      expect(textsOf(frames, "自分").at(-1)).toBe("");
+      expect(textsOf(frames, "自分").at(-1)).toEqual([]);
     }));
 
   it.effect("重複の印が付いた発言と途中結果は、仮の文字に出ない。項目がない（印なし）途中結果は出る", () =>
@@ -150,11 +156,11 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
 
       yield* say(remark(1, "自分", "相手の声の拾い直し", { duplicate: true }));
       yield* partial("自分", "拾い直しの途中結果", true);
-      expect(textsOf(frames, "自分").every((t) => !t.includes("拾い直し"))).toBe(true);
-      expect(textsOf(frames, "自分").at(-1)).toBe("");
+      expect(textsOf(frames, "自分").flat().every((t) => !t.includes("拾い直し"))).toBe(true);
+      expect(textsOf(frames, "自分").at(-1)).toEqual([]);
 
       yield* partial("自分", "自分の声", false);
-      expect(textsOf(frames, "自分").at(-1)).toBe("自分の声");
+      expect(textsOf(frames, "自分").at(-1)).toEqual(["自分の声"]);
     }));
 
   it.effect("途中結果と未反映の発言は、スナップショットのノード・エクスポート・ログに入らない", () =>

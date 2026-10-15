@@ -42,7 +42,7 @@ const realSinks = SessionSinks.layer({
 const sessionSinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
   const sinks = yield* SessionSinks;
   return SessionSinks.of({ ...sinks, open: (args) => sinks.open(args).pipe(
-    Effect.tap(() => args.speak({ type: "speaking", track: "相手", text: "位置を確かめる字幕です。" })),
+    Effect.tap(() => args.speak({ type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "確定", start: 0, end: 1, text: "位置を確かめる字幕です。" }] })),
   ) });
 })).pipe(Layer.provide(realSinks));
 
@@ -120,7 +120,7 @@ describe("開始したセッションのローカルモード表示", () => {
     yield* server.emit({ type: "speaker-off", start: 0, reason: "モデルなし" }); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
     yield* server.emit({ type: "remark", track: "相手", start: 1, end: 2, text: "採用を進めます。" }); // 発言 1 件ですぐ差分更新を呼ぶ
     yield* Effect.tryPromise(() => page.locator(".map-node__text").filter({ hasText: /^採用$/ }).waitFor());
-    yield* server.speak({ type: "speaking", track: "自分", text: "状態が変わる前から表示している字幕です。" });
+    yield* server.speak({ type: "captions", bubbles: [{ id: "c2", track: "自分", speaker: "自分", label: "確定", start: 0, end: 1, text: "状態が変わる前から表示している字幕です。" }] });
     // 既存 CSS は幅632px未満で字幕の幅が0になる。配置の保持はその状態でも測り、可視表示は広い画面で確かめる。
     yield* Effect.tryPromise(() => page.getByText("状態が変わる前から表示している字幕です。", { exact: true }).waitFor({ state: "attached" }));
     if (width === 1200) yield* Effect.tryPromise(() => page.locator(".captions").waitFor());

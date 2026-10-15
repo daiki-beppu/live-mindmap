@@ -19,10 +19,13 @@ import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import * as MapSurface from "../src/app/mapSurface/main.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
+import { Message as SessionLayoutMessage } from "../src/app/sessionLayout/message.ts";
+import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import type { KeyId } from "../src/app/keys/table.ts";
 import { RequestSelfPause } from "../src/app/meeting/command.ts";
 import { init, update, view } from "../src/app/meeting/main.ts";
 import { Message } from "../src/app/meeting/message.ts";
+import { spokenFrame } from "./fixtures/captions.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
 import { resolveNoticeMotion } from "./noticeMotion.ts";
 import { attrOf, elementsOf, one, styleOf, type VNode } from "./sceneTree.ts";
@@ -84,7 +87,7 @@ export const SELF_PAUSE_AUTO_TEXT = "自分を休止中（会議アプリがマ�
 export const PAUSED_TEXT = "マップの更新が止まっています（ChatGPT の利用上限）";
 
 // ---- 受信（WebSocket。描いた木の外）を流す Message ----
-export const frameMessage = (frame: LiveFrame) => Message.GotLiveFeedMessage({ message: LiveFeedMessage.ReceivedLiveFrame({ frame }) });
+export const frameMessage = (frame: LiveFrame, receivedAt = 0) => Message.GotLiveFeedMessage({ message: LiveFeedMessage.ReceivedLiveFrame({ frame, receivedAt }) });
 export const connectedMessage = () => Message.GotLiveFeedMessage({ message: LiveFeedMessage.ConnectedLiveFeed() });
 export const disconnectedMessage = () => Message.GotLiveFeedMessage({ message: LiveFeedMessage.DisconnectedLiveFeed() });
 export const surfaceMessage = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
@@ -100,7 +103,7 @@ export const connected = () => Subscription.emit(connectedMessage());
 export const disconnected = () => Subscription.emit(disconnectedMessage());
 export const press = (key: KeyId, mods: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => Subscription.emit(keyMessage(key, mods));
 export const surface = (message: MapSurfaceMessage) => Subscription.emit(surfaceMessage(message));
-export const speak = (text: string, track: "相手" | "自分" = "相手") => frame({ type: "speaking", track, text });
+export const speak = (text: string, track: "相手" | "自分" = "相手") => frame(spokenFrame(text, track));
 // 休止の frame。休止中は理由（手動 / 自動）を持ち、再開は paused:false だけ（Issue #1071）
 export const selfPause = (paused: boolean, reason: "手動" | "自動" = "手動") => frame(paused ? { type: "self-pause", paused: true, reason } : { type: "self-pause", paused: false });
 export const intake = (status: "running" | "interrupted" | "stopped" | "none") => frame({ type: "intake", status });
@@ -201,7 +204,9 @@ const mountStep = (name: string): Step | undefined =>
     ? Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS }))
     : name === "AnchorPopover"
       ? Mount.resolve(Popover.AnchorPopover, Popover.Message.CompletedAnchorPopover())
-      : undefined;
+      : name === "SlideCaptions"
+        ? Mount.resolve(SlideCaptions, SessionLayoutMessage.CompletedSlideCaptions())
+        : undefined;
 const commandStep = (name: string, args: unknown): Step | undefined => {
   // M が送る休止・再開の指示（Issue #1069）。結果は Model を変えない（状態は /ws の frame でだけ変わる）ので、完了で閉じる
   if (name === "RequestSelfPause") return Command.resolveAll([RequestSelfPause, Message.CompletedRequestSelfPause()]);
@@ -220,15 +225,26 @@ const commandStep = (name: string, args: unknown): Step | undefined => {
   return undefined;
 };
 
+// 字幕を隠す・空にするなどで .captions ごと消えた SlideCaptions の Mount を、消えたものとして受け取る（消えた Mount は受け取らないと、次の Message が落ちる）
+const endedSlides = <M, Msg, Out>(simulation: SceneSimulation<M, Msg, Out>): SceneSimulation<M, Msg, Out> => {
+  try {
+    return endedSlides(Mount.expectEnded(SlideCaptions)(simulation));
+  } catch {
+    return simulation; // 消えた Mount が無い
+  }
+};
+
 export const settle = <M, Msg, Out>(simulation: SceneSimulation<M, Msg, Out>): SceneSimulation<M, Msg, Out> => {
   for (const mount of simulation.mounts) {
     const step = mountStep(mount.name);
     if (step !== undefined) return settle(step(simulation));
   }
-  return settleCommands(simulation);
+  return settleCommands(endedSlides(simulation));
 };
 // Mount は解かず、保留の Command だけを全部解く（測り直した後の幅を、最初の測定の幅で上書きさせないため）
+// （字幕を滑らせる SlideCaptions の Mount は測定に関わらないので、ここでも解く）
 export const settleCommands = <M, Msg, Out>(simulation: SceneSimulation<M, Msg, Out>): SceneSimulation<M, Msg, Out> => {
+  if (simulation.mounts.some((mount) => mount.name === "SlideCaptions")) return settleCommands(Mount.resolve(SlideCaptions, SessionLayoutMessage.CompletedSlideCaptions())(simulation));
   for (const command of simulation.commands) {
     const step = commandStep(command.name, command.args);
     if (step !== undefined) return settleCommands(step(simulation));
@@ -249,10 +265,10 @@ export const expire = (simulation: Sim): Sim => {
 };
 // 保留の時間切れを「何も起こさない結果」（版が違う完了）で全部閉じる。実行時は走ったままのタイマーが後で古い版として届くだけなので、次の流れを妨げない
 export const quiet = <M, Msg, Out>(simulation: SceneSimulation<M, Msg, Out>): SceneSimulation<M, Msg, Out> => {
-  const pending = timers(simulation)[0];
-  if (pending === undefined) return simulation;
+  const pending = timers(endedSlides(simulation))[0];
+  if (pending === undefined) return endedSlides(simulation);
   const { entryId, version, duration } = pending.args as { entryId: string; version: number; duration: Duration.Duration };
-  return quiet(Command.resolve(Toast.WaitBeforeDismissal({ entryId, version, duration }), Toast.Message.CompletedWaitBeforeDismissal({ entryId, version: version + 1000 }))(simulation));
+  return quiet(Command.resolve(Toast.WaitBeforeDismissal({ entryId, version, duration }), Toast.Message.CompletedWaitBeforeDismissal({ entryId, version: version + 1000 }))(endedSlides(simulation)));
 };
 
 // Story 用: 出す・消すときの Toast の動きと、点滅の再生し直しを、保留がなくなるまで全部解く

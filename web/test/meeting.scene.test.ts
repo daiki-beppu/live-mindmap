@@ -2,7 +2,6 @@ import * as Popover from "@foldkit/ui/popover";
 import { click, expect as expectScene, findAll, Mount, selector, tap } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
-import { captionsOf } from "../src/captions.ts";
 import { keyListRows, type KeyId } from "../src/app/keys/table.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import {
@@ -52,6 +51,7 @@ import {
   type Model,
   type Sim,
 } from "./meetingHarness.ts";
+import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { one, renderedIds } from "./sceneTree.ts";
 
 // 会議中の Foldkit プログラム（Issue #829）の Scene。描いた view から入り、`/ws` の frame（描いた木の外から届くので Subscription.emit で流す）が、
@@ -109,7 +109,7 @@ describe("会議中の Scene: 最初のスナップショットで画面が出�
         expect(findAll(sim.html, "p.waiting")).toHaveLength(0);
         expect(layoutOutline(sim.html)).toEqual(["local-mode-line", "local-mode-notice", "map", "captions", "intake-notice", "screen-notice", "tap-notice", "diff-update-notice", "side"]);
         expect(findAll(one(sim.html, ".map"), ".map-surface")).toHaveLength(1);
-        expect(texts(sim.html, ".captions__line")).toEqual(["次の質問です。"]);
+        expect(texts(sim.html, ".captions__bubble")).toEqual(["次の質問です。"]);
         expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
         expect(texts(sim.html, ".screen-notice")).toEqual([SCREEN]);
         expect(texts(sim.html, ".tap-notice")).toEqual([TAP]);
@@ -200,7 +200,7 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
       frame({ type: "diff-update", state: PAUSED }),
       expectScene(selector(".diff-update-notice")).toHaveText(PAUSED_TEXT),
       expectScene(selector(".diff-update-notice")).toHaveAttr("role", "status"),
-      expectScene(selector(".captions__line")).toHaveText("続いている字幕。"),
+      expectScene(selector(".captions__bubble")).toHaveText("続いている字幕。"),
       expectScene(selector(".map-surface")).toExist(),
       frame({ type: "diff-update", state: { status: "running" } }),
       expectScene(selector(".diff-update-notice")).toBeAbsent(),
@@ -232,21 +232,19 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
     );
   });
 
-  it("字幕: speaking の frame に追従し（トラックごとに末尾 2 文）、空にすると .captions ごと消える", () => {
-    const lines = (相手: string, 自分 = "") => captionsOf({ 相手, 自分 }).flatMap((c) => c.lines);
+  it("字幕: captions の frame に追従し（吹き出しを話し始めの順に 1 列に出す）、空の並びにすると .captions ごと消える", () => {
     meetingScene(init(false),
       frame(FIRST),
       settle,
       expectScene(selector(".captions")).toBeAbsent(),
-      speak("一つ目です。二つ目です。三つ目です。"),
-      tap((sim) => expect(texts(sim.html, ".captions__line")).toEqual(lines("一つ目です。二つ目です。三つ目です。"))),
-      speak("はい。", "自分"),
+      speak("一つ目です。二つ目です。"),
+      tap((sim) => expect(texts(sim.html, ".captions__bubble")).toEqual(["一つ目です。二つ目です。"])),
+      frame({ type: "captions", bubbles: [spokenBubble("一つ目です。", "相手", 1), spokenBubble("はい。", "自分", 2)] }),
       tap((sim) => {
-        expect(texts(sim.html, ".captions__track")).toEqual(["相手", "自分"]);
-        expect(texts(sim.html, ".captions__line")).toEqual(["二つ目です。", "三つ目です。", "はい。"]);
+        expect(texts(sim.html, ".captions__bubble")).toEqual(["一つ目です。", "はい。"]);
+        expect(texts(sim.html, ".captions__name")).toEqual(["相手 A", ""]);
       }),
-      speak(""),
-      speak("", "自分"),
+      frame({ type: "captions", bubbles: [] }),
       expectScene(selector(".captions")).toBeAbsent(),
     );
   });
@@ -541,7 +539,7 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
         expect(findAll(sim.html, ".local-mode-notice")).toHaveLength(0);
         expect(findAll(sim.html, ".layout--local")).toHaveLength(0);
         // 残るもの
-        expect(texts(sim.html, ".captions__line")).toEqual(["途中の字幕。"]);
+        expect(texts(sim.html, ".captions__bubble")).toEqual(["途中の字幕。"]);
         expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
         expect(texts(sim.html, ".diff-update-notice")).toEqual([PAUSED_TEXT]);
         expect(renderedIds(sim.html)).toEqual(["root", "A"]);
@@ -566,7 +564,7 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
       settle,
       tap((sim) => {
         expect(texts(sim.html, ".screen-notice")).toEqual([SCREEN]);
-        expect(texts(sim.html, ".captions__line")).toEqual(["つなぎ直した後の字幕。"]);
+        expect(texts(sim.html, ".captions__bubble")).toEqual(["つなぎ直した後の字幕。"]);
         expect(findAll(sim.html, ".layout--local")).toHaveLength(1);
         expect(texts(sim.html, ".intake-notice")).toEqual([INTERRUPTED]);
         // 表示面は作り直さない: 選択もビューポートも同じ
@@ -726,7 +724,7 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
       frameRaw(FIRST),
       tap((sim) => expect(commandNames(sim)).not.toContain("RestartBlink")),
       settle,
-      frameRaw({ type: "speaking", track: "相手", text: "字幕。" }),
+      frameRaw(spokenFrame("字幕。", "相手")),
       tap((sim) => expect(commandNames(sim)).not.toContain("RestartBlink")),
       settle,
       frameRaw({ type: "screen-notice", text: SCREEN }),
@@ -830,7 +828,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
       expectScene(selector(".captions")).toBeAbsent(),
       press("C"),
       settle,
-      tap((sim) => expect(texts(sim.html, ".captions__line")).toEqual(["隠している間の字幕。"])),
+      tap((sim) => expect(texts(sim.html, ".captions__bubble")).toEqual(["隠している間の字幕。"])),
     );
   });
 
@@ -980,7 +978,7 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
         atRemeasured = viewportOf(sim.html);
         matchesReference(sim.html, remeasuredReference());
       }),
-      frameRaw({ type: "speaking", track: "相手", text: "次の質問です。" }), settleCommands, same,
+      frameRaw(spokenFrame("次の質問です。", "相手")), settleCommands, same,
       frameRaw({ type: "intake", status: "interrupted" }), settleCommands, same,
       frameRaw({ type: "screen-notice", text: SCREEN }), settleCommands, same,
       frameRaw({ type: "tap-notice", text: TAP }), settleCommands, same,

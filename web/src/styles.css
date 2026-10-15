@@ -89,6 +89,11 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
    文ごとに 1 行。古い文は行ごと消える（文字単位で前から削ると目が滑るため、2026-10-02） */
 .captions { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(720px, calc(100vw - 2 * 316px)); display: flex; flex-direction: column; gap: 4px; pointer-events: none; z-index: 5; }
 
+/* 会議中の字幕の吹き出し（Issue #1022）: 行は「名前の欄（固定幅）+ 吹き出し」。吹き出しの幅は、名前の欄を除いた列に --caption-bubble-ratio（view が定数から渡す）を掛けた固定の値で、文字の量では伸び縮みしない。
+   塗り・影・バッジは付けず、文字の色だけを話者ごとに変える。位置が変わるときの動きは Mount（SlideCaptions）が付ける */
+.captions { --caption-name-width: 72px; }
+.captions__bubble { width: calc(var(--caption-bubble-ratio) * (100% - var(--caption-name-width) - 8px)); }
+
 /* 取り込みの状態の一言（字幕の横。Issue #161）: バッジ・影は重ねず、控えめな文字だけで出す。
    .captions の右端（中央から幅 min(720px, 100vw − 2 × 316px) の半分）の 12px 外に置く。
    transform: translate() の % は要素自身の幅が基準になり、.captions の幅を基準にできないため、
