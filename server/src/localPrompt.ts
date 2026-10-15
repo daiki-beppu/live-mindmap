@@ -13,7 +13,7 @@ export const SYSTEM = `あなたは会議のマインドマップに、新しい
 - 提案: 「〜してはどうか」「〜という手もある」と、やり方の候補を出した
 - 懸念: 問題やリスクの指摘
 - 合意: 会議として結論を出した。「〜にしましょう」「〜は外す」「〜で決まり」。提案や意見の段階は合意ではない
-- 作業: 会議の後にやる作業を引き受けた、または頼まれた。担当は話し手か頼んだ相手（分からなければ空文字）、期限は文に出たもの（無ければ空文字）
+- 作業: 会議の後にやる作業を引き受けた、または頼まれた。担当は文に出た名前（無ければ空文字）。担当の話者は、名前が出ないまま話し手が自分から引き受けたとき（「私がやります」）だけ、その発言の話者（例 相手 A / 自分）を書く。頼まれた側を話し手から推し量って書かない（それ以外は空文字）。期限は文に出たもの（無ければ空文字）
 
 なし以外ではtextに40字以内で中身を要約する。合意では答えている論点のidを選び、無ければ「新しい論点」を選んで論点の文に問いを書く。
 議題: 話し中の議題のidを選ぶ。話題が変わったら「新しい議題」を選び、題に20字以内の議題名を書く。
@@ -29,7 +29,7 @@ const sentenceSchema = (points: readonly string[]) => Schema.Union([
   Schema.Struct({ 種類: Schema.Literal("なし") }),
   Schema.Struct({ 種類: Schema.Literals(["説明", "問い", "提案", "懸念"]), text: summary }),
   Schema.Struct({ 種類: Schema.Literal("合意"), 論点: Schema.Literals([...points, "新しい論点"]), 論点の文: Schema.String.check(Schema.isMaxLength(40)), text: summary }),
-  Schema.Struct({ 種類: Schema.Literal("作業"), 担当: Schema.String, 期限: Schema.String, text: summary }),
+  Schema.Struct({ 種類: Schema.Literal("作業"), 担当: Schema.String, 担当の話者: Schema.String, 期限: Schema.String, text: summary }),
 ]);
 export type Classification = {
   readonly 議題: { readonly id: string; readonly 題: string };

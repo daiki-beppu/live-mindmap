@@ -5,6 +5,7 @@ import { diffMaps } from "./changes.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
+import { attributePeople } from "./people.ts";
 import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
 import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
@@ -227,6 +228,7 @@ type UnsentScreen = ScreenRefs & { readonly seq: number };
 type Replay = {
   readonly map: MeetingMap | undefined;
   readonly remarks: Remark[];
+  readonly byId: Map<string, Remark>; // remarks の id 引き。出した人の統合で根拠の開始を比べる
   readonly processed: Remark[];
   readonly known: Set<string>;
   readonly history: History;
@@ -281,7 +283,7 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
   const unsent = fresh.length ? replay.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff || (h.image !== null && h.image === carried)) : replay.unsent;
   const attached = [...replay.attached, ...added].slice(-LAST_SCREENS);
   const stamp = stampOf(replay.history, consumed);
-  const applied = applyOps(map, e.ops, replay.known, stamp);
+  const applied = applyOps(map, e.ops, replay.known, stamp, replay.byId);
   const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
   // ライブ（callUpdater）と同じく、一時停止からの再試行で届いた diff の行（失敗も含む）で running に戻る
   const diffUpdate = replay.diffUpdate.status === "paused" ? { status: "running" as const } : replay.diffUpdate;
@@ -295,7 +297,7 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
 // 10 秒未満で添えなかった変化の最新の 1 件（持ち越し）は外さず残し、起点（直前に添えた画像の start）とともに、ログの input.screens から求める。
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
   let replay: Replay = {
-    map: undefined, remarks: [], processed: [], known: new Set(), history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
+    map: undefined, remarks: [], byId: new Map(), processed: [], known: new Set(), history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
     unsent: [], received: 0, attached: [], carried: undefined, anchor: undefined, imagesSkipped: false, files: new Set(), previousResponse: undefined, diffUpdate: { status: "running" },
   };
   let index = -1;
@@ -310,6 +312,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === RemarkEvent.fields.type.literal) {
       const e = yield* decodeRemark(event).pipe(failed);
       replay.remarks.push(e.remark);
+      replay.byId.set(e.remark.id, e.remark);
     } else if (type === ScreenEvent.fields.type.literal) {
       const e = yield* decodeScreen(event).pipe(failed);
       replay.unsent.push({ start: e.start, image: e.image, seq: replay.received });
@@ -614,17 +617,20 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             return;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
-          const dropped = yield* Ref.modify(ref, (s) => {
+          const { dropped, ops } = yield* Ref.modify(ref, (s) => {
             const consumed = fresh.slice(0, outcome.count);
             const known = new Set([...s.known, ...consumed.map((r) => r.id)]);
             const stamp = stampOf(s, consumed);
-            const applied = applyOps(s.map, outcome.ops, known, stamp);
-            return [applied.dropped, {
+            // 出した人と担当の話者はサーバーが決め、決めた後の操作をログに残す（復元は計算し直さず、ログの値を読む）
+            const byId = new Map(s.remarks.map((r) => [r.id, r]));
+            const ops = attributePeople(outcome.ops, byId);
+            const applied = applyOps(s.map, ops, known, stamp, byId);
+            return [{ dropped: applied.dropped, ops }, {
               ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, map: applied.map, reflecting: [], previousResponse: previousResponseOf(applied),
               known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
-          yield* log.write({ type: "diff", input, ops: [...outcome.ops], dropped, ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) });
+          yield* log.write({ type: "diff", input, ops, dropped, ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) });
           if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
         }),
       );

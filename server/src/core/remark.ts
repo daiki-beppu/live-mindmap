@@ -16,3 +16,13 @@ export const Remark = Schema.Struct({
 });
 export type Remark = typeof Remark["Type"];
 
+
+// 根拠の発言のうち、開始がいちばん早い発言。同じ開始なら ids の前のほう。発言の表に無い id は飛ばす（1 件も引けなければ undefined）
+export function earliestRemark(ids: readonly string[], remarks: ReadonlyMap<string, Remark>): Remark | undefined {
+  let earliest: Remark | undefined;
+  for (const id of ids) {
+    const r = remarks.get(id);
+    if (r && (!earliest || r.start < earliest.start)) earliest = r;
+  }
+  return earliest;
+}

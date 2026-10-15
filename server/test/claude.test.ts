@@ -129,7 +129,7 @@ const mapPartOf = (prompt: string) => {
 
 // 発言 id r1〜r40 を、根拠に使える既知の発言として applyOps に渡す
 const KNOWN = new Set(Array.from({ length: 40 }, (_, i) => `r${i + 1}`));
-const evolve = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, KNOWN, { round: 1, at: 0 });
+const evolve = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, KNOWN, { round: 1, at: 0 }, new Map());
 const inputOf = (map: MeetingMap, n: number): DiffInput => ({
   map,
   recent: n > 1 ? [{ id: `r${n - 1}`, track: "相手", start: n - 1, end: n, text: `前の発言${n - 1}` }] : [],
@@ -661,6 +661,19 @@ describe("差分更新: 変更の中身", () => {
       expect(todo[0]).toContain("金曜");
     }));
 
+  it.effect("更新（TODO の担当の話者）: 変わった担当の話者が載る", () =>
+    Effect.gen(function* () {
+      // 名前の無い TODO（担当の話者だけ）を変更前にする。名前の差が混ざらず、話者の比較だけで更新行が出る
+      const { assignee: _assignee, ...unnamed } = base.nodes.n5!;
+      const before: MeetingMap = { ...base, nodes: { ...base.nodes, n5: { ...unnamed, assigneeSpeaker: "相手 A" } } };
+      const { message, dropped } = yield* second(before, [{ op: "update", node: "n5", evidence: ["r1"], assigneeSpeaker: "相手 B" }]);
+
+      expect(dropped).toEqual([]);
+      const todo = line(message, "n5");
+      expect(todo).toHaveLength(1);
+      expect(todo[0]).toContain("相手 B");
+    }));
+
   it.effect("移動: 新しい親が載る", () =>
     Effect.gen(function* () {
       const { message } = yield* second(base, [{ op: "move", node: "n6", parent: "n7" }]);
@@ -1002,7 +1015,7 @@ describe("毎回のメッセージの議題の一覧", () => {
   //      > n18 議題「予算」[済み] > n19 議題「社内報」(話し中のまま) > n20 要点
   const built = (() => {
     const step = (map: MeetingMap, ops: Op[], at: number) => {
-      const r = applyOps(map, ops, KNOWN, { round: 1, at });
+      const r = applyOps(map, ops, KNOWN, { round: 1, at }, new Map());
       expect(r.dropped).toEqual([]);
       return r.map;
     };
@@ -1038,7 +1051,7 @@ describe("毎回のメッセージの議題の一覧", () => {
   })();
   // 済みにする。根拠が足された反映（round 1）から 2 つ後の反映で閉じる
   const closed = (() => {
-    const r = applyOps(built, ["n4", "n12", "n18"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 4, at: 9999 });
+    const r = applyOps(built, ["n4", "n12", "n18"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 4, at: 9999 }, new Map());
     expect(r.dropped).toEqual([]);
     return r.map;
   })();
@@ -1119,10 +1132,10 @@ describe("毎回のメッセージの議題の一覧", () => {
       { op: "add", ref: "c", parent: "p", kind: "案", text: "案C", evidence: ev },
       { op: "add", ref: "b", parent: "p", kind: "議題", text: "議題B", evidence: ev },
       { op: "add", ref: "bk", parent: "b", kind: "要点", text: "要点K", evidence: ev },
-    ], KNOWN, { round: 1, at: 600 });
+    ], KNOWN, { round: 1, at: 600 }, new Map());
     expect(added.dropped).toEqual([]);
     expect(["n1", "n2", "n3", "n4", "n5"].map((id) => added.map.nodes[id]!.kind)).toEqual(["議題", "論点", "案", "議題", "要点"]);
-    const closedP = applyOps(added.map, [{ op: "close", node: "n2" }], KNOWN, { round: 3, at: 9999 });
+    const closedP = applyOps(added.map, [{ op: "close", node: "n2" }], KNOWN, { round: 3, at: 9999 }, new Map());
     expect(closedP.dropped).toEqual([]);
     expect(closedP.map.nodes.n2!.talkStatus).toBe("済み");
     expect(closedP.map.nodes.n4!.talkStatus).toBeUndefined();
@@ -1166,7 +1179,7 @@ describe("毎回のメッセージの議題の一覧", () => {
   // 話し中の子が上限に近い・超えた親の名指し（#167）。「話し中の子 N」の数だけを確かめ、ほかの書式は決めない。親の id を含む行を一覧から探して、本文と数を確かめる
   describe("話し中の子が上限に近い・超えた親の名指し", () => {
     const build = (specs: Array<{ ref: string; parent: string; kind: "議題" | "論点" | "要点"; text: string }>) => {
-      const r = applyOps(emptyMap("講演"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 });
+      const r = applyOps(emptyMap("講演"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 }, new Map());
       expect(r.dropped).toEqual([]);
       return r.map;
     };
@@ -1227,7 +1240,7 @@ describe("毎回のメッセージの議題の一覧", () => {
       const added = build([{ ref: "t", parent: "root", kind: "議題", text: "会議" }, ...spec("pa", "甲", 4), ...spec("pb", "乙", 5)]);
       // n1 議題, n2 甲の論点(話し中の子 4・済み 2), n3〜n6 要点, n7・n8 済みにする論点, n9 乙の論点(話し中の子 5・済み 2), n10〜n14 要点, n15・n16 済みにする論点
       expect(["n2", "n9"].map((id) => added.nodes[id]!.text)).toEqual(["甲の論点", "乙の論点"]);
-      const r = applyOps(added, ["n7", "n8", "n15", "n16"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 });
+      const r = applyOps(added, ["n7", "n8", "n15", "n16"].map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 }, new Map());
       expect(r.dropped).toEqual([]);
       expect(["n7", "n8", "n15", "n16"].every((id) => r.map.nodes[id]!.talkStatus === "済み")).toBe(true);
 
@@ -1279,11 +1292,11 @@ describe("毎回のメッセージの議題の一覧", () => {
   describe("目安を超えた議題・論点・案・課題・要点の名指し", () => {
     type Spec = { ref: string; parent: string; kind: "議題" | "論点" | "案" | "課題" | "要点"; text: string };
     const build = (specs: Spec[], closeTexts: string[] = []) => {
-      const added = applyOps(emptyMap("定例"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 });
+      const added = applyOps(emptyMap("定例"), specs.map((s) => ({ op: "add" as const, ...s, evidence: ev })), KNOWN, { round: 1, at: 600 }, new Map());
       expect(added.dropped).toEqual([]);
       if (closeTexts.length === 0) return added.map;
       const ids = closeTexts.map((t) => idOf(added.map, t));
-      const r = applyOps(added.map, ids.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 });
+      const r = applyOps(added.map, ids.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 9999 }, new Map());
       expect(r.dropped).toEqual([]);
       expect(ids.every((id) => r.map.nodes[id]!.talkStatus === "済み")).toBe(true);
       return r.map;
@@ -1561,6 +1574,7 @@ describe("種別「要点」の経路", () => {
       ],
       known,
       { round: 1, at: 0 },
+      new Map(),
     );
 
     const prompt = buildPrompt({ map, recent: [], fresh: [{ id: "r3", track: "相手", start: 3, end: 4, text: "x" }] });
@@ -1584,9 +1598,10 @@ describe("議題・論点の「済み」（close）の経路", () => {
       ],
       known,
       { round: 1, at: 0 },
+      new Map(),
     ).map;
     // 根拠が足された反映の 2 つ後の反映で閉じる（直前の反映なら捨てられる）
-    const closed = applyOps(opened, [{ op: "close", node: "n1" }, { op: "close", node: "n2" }], known, { round: 3, at: 0 });
+    const closed = applyOps(opened, [{ op: "close", node: "n1" }, { op: "close", node: "n2" }], known, { round: 3, at: 0 }, new Map());
     expect(closed.dropped).toEqual([]);
 
     const prompt = buildPrompt({ map: closed.map, recent: [], fresh });
@@ -1629,12 +1644,12 @@ describe("済みの議題・論点を AI へ畳んで渡す", () => {
   })();
   // 根拠が足された反映の 2 つ後（round 3）で閉じ、その次（round 4）で ops を当てる
   const closeAt = (map: MeetingMap, nodes: string[]) => {
-    const r = applyOps(map, nodes.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 0 });
+    const r = applyOps(map, nodes.map((node) => ({ op: "close" as const, node })), KNOWN, { round: 3, at: 0 }, new Map());
     expect(r.dropped).toEqual([]);
     return r.map;
   };
   const apply = (map: MeetingMap, ops: Op[]) => {
-    const r = applyOps(map, ops, KNOWN, { round: 4, at: 0 });
+    const r = applyOps(map, ops, KNOWN, { round: 4, at: 0 }, new Map());
     expect(r.dropped).toEqual([]);
     return r.map;
   };

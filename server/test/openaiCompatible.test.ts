@@ -52,7 +52,7 @@ const open = Effect.fnUntraced(function* (selected: CompatibleModel) {
 describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
   it.effect("設定URL・モデル・認証・出力上限・追加bodyを送り、同じ発言の複数文から操作を生成する", () => Effect.gen(function* () {
     const fake = fakeClient((_body, call) => call === 1 ? none : classified([
-      { 種類: "説明", text: "面接官は3人" }, { 種類: "作業", text: "求人票を直す", 担当: "佐藤", 期限: "来週" },
+      { 種類: "説明", text: "面接官は3人" }, { 種類: "作業", text: "求人票を直す", 担当: "佐藤", 担当の話者: "", 期限: "来週" },
     ]));
     const updater = yield* open({ ...model, apiKeyEnv: "SYNTHETIC_MODEL_KEY", maxTokens: 777,
       extraBody: { temperature: 0.1, chat_template_kwargs: { enable_thinking: false }, model: "wrong", max_tokens: 1, messages: [], response_format: {} },
@@ -66,7 +66,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
     expect(body.messages.map((m) => m.role)).toEqual(["system", "user"]);
     expect(body.response_format.json_schema.schema.properties!.文).toMatchObject({ minItems: 2, maxItems: 2 });
     expect(result).toMatchObject({ processedRemarks: 1 });
-    const applied = applyOps(emptyMap("定例"), result.ops, new Set(["r1"]), { round: 1, at: 10 });
+    const applied = applyOps(emptyMap("定例"), result.ops, new Set(["r1"]), { round: 1, at: 10 }, new Map());
     expect(applied.dropped).toEqual([]);
     expect(Object.values(applied.map.nodes).filter((n) => n.kind !== "会議").map((n) => [n.kind, n.text, n.evidence])).toEqual([
       ["議題", "採用", ["r1"]], ["要点", "面接官は3人", ["r1"]], ["TODO", "求人票を直す", ["r1"]],
@@ -79,7 +79,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
       const fake = fakeClient((_body, call) => call === 1 ? none : classified([{ 種類: kind, text: "文の要約" }]));
       const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
       const result = yield* updater.update(input("分類する文です。"));
-      const applied = applyOps(emptyMap("定例"), result.ops, new Set(["r1"]), { round: 1, at: 10 });
+      const applied = applyOps(emptyMap("定例"), result.ops, new Set(["r1"]), { round: 1, at: 10 }, new Map());
       expect(applied.dropped).toEqual([]);
       const nodes = Object.values(applied.map.nodes);
       const topic = nodes.find((n) => n.kind === "議題")!;
@@ -93,7 +93,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
     ]));
     const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
     const result = yield* updater.update(input("はい。2回にしましょう。"));
-    const applied = applyOps(emptyMap("定例"), result.ops, new Set(["r1"]), { round: 1, at: 10 });
+    const applied = applyOps(emptyMap("定例"), result.ops, new Set(["r1"]), { round: 1, at: 10 }, new Map());
     expect(applied.dropped).toEqual([]);
     const nodes = Object.values(applied.map.nodes);
     expect(nodes.filter((n) => n.kind !== "会議")).toHaveLength(3);
@@ -108,7 +108,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
       { op: "add", ref: "d", parent: "root", kind: "議題", text: "終了議題", evidence: ["old"] },
       { op: "add", ref: "e", parent: "d", kind: "論点", text: "終了議題の論点", evidence: ["old"] },
       { op: "add", ref: "f", parent: "root", kind: "議題", text: "閉じる議題", evidence: ["old"] },
-    ], new Set(["old"]), { round: 1, at: 1 }).map;
+    ], new Set(["old"]), { round: 1, at: 1 }, new Map()).map;
     map.nodes.n4!.talkStatus = "済み";
     const fake = fakeClient((_body, call) => call === 1 ? none : {
       議題: { id: "n1", 題: "" }, 文: [{ 種類: "合意", 論点: "n2", 論点の文: "", text: "2回にする" }], 済み: "n6",
