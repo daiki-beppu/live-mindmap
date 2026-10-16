@@ -12,7 +12,8 @@ import { matchKey } from "./match.ts";
 import { Message } from "./message.ts";
 import { bindingsOf, type Binding, type KeyId, type Screen } from "./table.ts";
 
-export type KeyPressConfig = { screen: Screen; hasSelection: boolean; target?: EventTarget };
+// hasSelection は keydown のたびに読む（Issue #1133）。張った時点の値で持つと、選択が変わった直後の Enter が張り直しの前の値で判定される
+export type KeyPressConfig = { screen: Screen; hasSelection: () => boolean; target?: EventTarget };
 
 type Modifiers = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
 
@@ -54,7 +55,7 @@ export const keyPressStream = ({ screen, hasSelection, target }: KeyPressConfig)
               // 取り消すかは譲るかの判定の後で決める（mapEvent が、届けるときだけ取り消す）
               preventDefault: false,
               mapEvent: (event: KeyboardEvent): Option.Option<Message> => {
-                if (yields(binding, focusedOf(event), hasSelection)) return Option.none();
+                if (yields(binding, focusedOf(event), hasSelection())) return Option.none();
                 event.preventDefault();
                 return Option.some(pressedKey(binding.key, event));
               },
@@ -73,7 +74,7 @@ export const keyPressStream = ({ screen, hasSelection, target }: KeyPressConfig)
       const half = halfWidthKeyOf(event);
       if (half === null) return Option.none();
       const binding = matchKey(bindings, half);
-      if (binding === undefined || yields(binding, focusedOf(event), hasSelection)) return Option.none();
+      if (binding === undefined || yields(binding, focusedOf(event), hasSelection())) return Option.none();
       return Option.some(pressedKey(binding.key, event));
     },
   });

@@ -27,7 +27,8 @@ const pressEachOn = (model: Model, inits: readonly KeyInit[]) =>
       const doc = fakeDocument();
       vi.stubGlobal("document", doc);
       const collected: MeetingMessage[] = [];
-      const stream = subscriptions.keys.dependenciesToStream(subscriptions.keys.modelToDependencies(model));
+      const dependencies = subscriptions.keys.modelToDependencies(model);
+      const stream = subscriptions.keys.dependenciesToStream(dependencies, () => dependencies);
       const fiber = yield* Effect.forkChild(Stream.runForEach(stream, (m) => Effect.sync(() => void collected.push(m as MeetingMessage))));
       yield* settleKeyEvents;
       const perEvent: MeetingMessage[][] = [];
@@ -77,6 +78,13 @@ describe("会議中の Subscription の keys", () => {
     const inCircle: KeyInit[] = [{ key: "Enter", target: element("button", ["map-node__button"]) }];
     expect((await pressEachOn(shown(), inCircle)).perEvent).toEqual([[]]);
     expect((await pressEachOn(selected(), inCircle)).perEvent).toEqual([[pressed("Enter")]]);
+  });
+
+  // Issue #1133: 張り直すのはセッションの有無が変わったときだけ。選択の有無は keydown のたびに readDependencies から読む
+  it("セッションの有無が変わったときだけ張り直す（選択の有無だけの変化では張り直さない）", () => {
+    const { keepAliveEquivalence } = subscriptions.keys;
+    expect(keepAliveEquivalence?.({ hasSession: true, hasSelection: false }, { hasSession: true, hasSelection: true })).toBe(true);
+    expect(keepAliveEquivalence?.({ hasSession: false, hasSelection: false }, { hasSession: true, hasSelection: false })).toBe(false);
   });
 
   it("走り終えると、document の keydown の listener が残らない", async () => {

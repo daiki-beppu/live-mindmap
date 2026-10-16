@@ -11,7 +11,9 @@ const own = Subscription.make<Model, Message>()((entry) => ({
     { hasSession: Schema.Boolean, hasSelection: Schema.Boolean },
     {
       modelToDependencies: (model) => ({ hasSession: Option.isSome(model.session), hasSelection: Option.exists(model.session, (s) => s.mapSurface.viewing.selection !== undefined) }),
-      dependenciesToStream: ({ hasSession, hasSelection }) => (hasSession ? keyPressStream({ screen: "live", hasSelection }) : Stream.empty),
+      // 張り直すのはセッションの有無が変わったときだけ。選択の有無は keydown のたびに readDependencies から読む（Issue #1133）
+      keepAliveEquivalence: (a, b) => a.hasSession === b.hasSession,
+      dependenciesToStream: ({ hasSession }, readDependencies) => (hasSession ? keyPressStream({ screen: "live", hasSelection: () => readDependencies().hasSelection }) : Stream.empty),
     },
   ),
 }));
