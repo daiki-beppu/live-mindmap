@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Clock, Effect, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { makeSession, type DiffInput } from "../src/core/index.ts";
 import {
   finalDelays,
@@ -276,6 +277,19 @@ describe("発言の ID から元の区間を引く", () => {
   });
 });
 
+// 仮想時計を 100 ms ずつ進めて effect を終わらせる（push の遅れで登録される sleep も、仮想時刻どおりに起きる）
+const stepToEnd = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    let done = false;
+    const fiber = yield* effect.pipe(Effect.ensuring(Effect.sync(() => { done = true; })), Effect.forkChild);
+    for (let i = 0; i < 1000 && !done; i++) {
+      yield* TestClock.adjust(100);
+      yield* Effect.promise(() => new Promise<void>((r) => setTimeout(r, 2)));
+    }
+    expect(done, "effect が仮想時計を進めて終わる").toBe(true);
+    return yield* Fiber.join(fiber);
+  });
+
 describe("届いた時刻で本番のセッションに流す", () => {
   const items = [
     { id: "r1", track: "相手" as const, start: 0.5, end: 2.0, text: "a", at: 10.0 },
@@ -302,18 +316,61 @@ describe("届いた時刻で本番のセッションに流す", () => {
       ),
     );
 
-  it.effect("発言の end ではなく届いた時刻（at）の差だけ待ってから流す（最初は 0 からの差）", () =>
+  // push の開始時刻（仮想時刻 ms）と flush を記録する session。pushTakes は発言 ID ごとの push の所要時間
+  const recording = (pushTakes: Record<string, number> = {}) =>
     Effect.gen(function* () {
-      const events: string[] = [];
-      const sleeps: number[] = [];
-      yield* replayByArrival(yield* setup(events), items, { sleep: (ms) => Effect.sync(() => void sleeps.push(Math.round(ms))) });
-      expect(sleeps).toEqual([10_000, 500, 3_500]);
+      const session = yield* setup([]);
+      const log: { kind: "push" | "flush"; id?: string; at: number }[] = [];
+      const wrapped = {
+        ...session,
+        push: (remark: Parameters<typeof session.push>[0]) =>
+          Effect.gen(function* () {
+            log.push({ kind: "push", id: remark.id, at: yield* Clock.currentTimeMillis });
+            yield* Effect.sleep(pushTakes[remark.id] ?? 0);
+            return yield* session.push(remark);
+          }),
+        flush: Effect.gen(function* () {
+          log.push({ kind: "flush", at: yield* Clock.currentTimeMillis });
+          return yield* session.flush;
+        }),
+      };
+      return { wrapped, log };
+    });
+  const pushAts = (log: { kind: string; id?: string; at: number }[]) => log.filter((e) => e.kind === "push").map((e) => [e.id, e.at]);
+
+  it.effect("各発言は、流し始めを基準に自分の at の時刻に push される", () =>
+    Effect.gen(function* () {
+      const { wrapped, log } = yield* recording();
+      yield* stepToEnd(replayByArrival(wrapped, items));
+      expect(pushAts(log)).toEqual([["r1", 10_000], ["r2", 10_500], ["r3", 14_000]]);
+    }));
+
+  it.effect("ある push が遅れても、後ろの発言はその遅れが足されず、自分の at に push される", () =>
+    Effect.gen(function* () {
+      const { wrapped, log } = yield* recording({ r1: 2_000 });
+      yield* stepToEnd(replayByArrival(wrapped, items));
+      expect(pushAts(log).find(([id]) => id === "r3")).toEqual(["r3", 14_000]);
+    }));
+
+  it.effect("push が at を過ぎて終わったら、次の発言は眠らずにすぐ push される", () =>
+    Effect.gen(function* () {
+      const { wrapped, log } = yield* recording({ r1: 2_000 });
+      yield* stepToEnd(replayByArrival(wrapped, items));
+      // r1 は 10000 に始まり 12000 に終わる。r2 の at(10500) は過ぎているので 12000 ちょうどに push される
+      expect(pushAts(log).find(([id]) => id === "r2")).toEqual(["r2", 12_000]);
+    }));
+
+  it.effect("全ての push の後に、flush が 1 回呼ばれる", () =>
+    Effect.gen(function* () {
+      const { wrapped, log } = yield* recording();
+      yield* stepToEnd(replayByArrival(wrapped, items));
+      expect(log.map((e) => e.kind)).toEqual(["push", "push", "push", "flush"]);
     }));
 
   it.effect("待ってから流す順で、流した発言は最後に取りこぼさず差分更新に渡る", () =>
     Effect.gen(function* () {
       const events: string[] = [];
-      yield* replayByArrival(yield* setup(events), items, { sleep: () => Effect.void });
+      yield* stepToEnd(replayByArrival(yield* setup(events), items));
       expect(events.filter((s) => s.startsWith("push:"))).toEqual(["push:r1", "push:r2", "push:r3"]);
       const diffed = events.filter((s) => s.startsWith("diff:")).join("+").replaceAll("diff:", "").split("+");
       expect(diffed.sort()).toEqual(["r1", "r2", "r3"]);
@@ -334,7 +391,7 @@ describe("届いた時刻で本番のセッションに流す", () => {
           ),
         ),
       );
-      yield* replayByArrival(session, [{ ...items[0]!, source: "final" }], { sleep: () => Effect.void });
+      yield* stepToEnd(replayByArrival(session, [{ ...items[0]!, source: "final" }]));
       expect(pushed).toEqual([{ id: "r1", track: "相手", start: 0.5, end: 2.0, text: "a" }]);
     }));
 });
