@@ -278,6 +278,7 @@ export class Sessions extends Context.Service<Sessions, {
           case "speaker-off":
           case "speaker-settled":
           case "speaker-mixed":
+          case "speaker-centroid":
             // 受け取った値のまま、届いた順に log.jsonl へ残し（sink が行う）、相手の発言の話者を決める段へ渡す。字幕・差分更新には載せない
             return live.sink.speaker(event);
         }
@@ -354,6 +355,8 @@ export class Sessions extends Context.Service<Sessions, {
             { kind: "connected", attempt: result.success } as SelfPauseLink,
           ),
         );
+        // 新しいヘルパーの枠は振り直されている。そのイベントを読み始める前に、sink へ知らせる（stop と競合した接続でも、届いていたイベントを読むので知らせる）
+        yield* live.sink.speakersRenumbered;
         // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
         // 読み終えてから止まる
         if (yield* Deferred.isDone(live.stopRequested)) return { kind: "launched" as const, launched, restarted: false };

@@ -50,7 +50,7 @@ private func orderViolations(_ received: [SpeakerDiarization]) -> [SpeakerSegmen
         switch element {
         case .settled(let to):
             position = max(position, to)
-        case .mixed:
+        case .mixed, .centroid:
             break
         case .segment(let segment):
             if segment.isFinal && segment.start < position - 1e-6 { violations.append(segment) }

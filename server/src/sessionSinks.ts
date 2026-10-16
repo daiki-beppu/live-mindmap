@@ -47,6 +47,9 @@ export type SessionSink = {
   // ヘルパーの話者の区間と使えないこと。受け取った値のまま、届いた順に log.jsonl へ残してから、相手の発言の話者を決める段へ渡す（確定した区間が揃った保留を出す）。
   // 差分更新・字幕には載らない。speaker-off の後の相手の発言は、待たずに話者なしで出る。話者の記録の経路はここだけ
   speaker: (event: SpeakerLogEvent) => Effect.Effect<void>;
+  // ヘルパーを起動し直して接続できた（Sortformer の枠が振り直された）。新しいヘルパーのイベントを読み始める前に呼ぶ（Issue #1025）。
+  // 前の世代の保留を話者の判定を済ませて出し切り、以後の新しい枠は、重心をラベルに照らし合わせるまで話者なしで出す。ログには書かない
+  speakersRenumbered: Effect.Effect<void>;
   // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する（話者の記録は speaker が行う）
   appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void>;
   // 録画からのセッションで、溜まっている発言をすべて入れ終えるまで待つ（ライブでは何もしない）。drain の後に呼ぶ
@@ -326,6 +329,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             partial: (p) => backlog === undefined ? Effect.andThen(relay.partial(p), settling.partial(p)) : settling.partial(p),
             final: (r) => settling.final(r),
             speaker: (event) => Effect.andThen(Effect.andThen(appendRecordedLog(event), settling.speaker(event)), backlog === undefined ? relay.speaker(event) : Effect.void),
+            speakersRenumbered: settling.renumbered,
             screen: (change) => backlog === undefined
               ? Effect.andThen(pushScreenChange(change), requestScreenVocabulary(change.lines))
               : Effect.andThen(requestScreenVocabulary(change.lines, change.start), enqueueScreen({ kind: "screen", change })),
