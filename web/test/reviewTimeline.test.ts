@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { reviewSnapshot } from "../../server/src/core/index.ts";
+import { mapOnlyReviewEvents, reviewSnapshot } from "../../server/src/core/index.ts";
+import { captionsOf } from "../src/captions.ts";
 import { buildReviewTimeline, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, speakingAt, topicNameOf } from "../src/reviewTimeline.ts";
 
 // 見返しの時間軸（純粋なモジュール）。ログ（log.jsonl の行）の配列だけを入れて確かめる。
@@ -426,5 +427,38 @@ describe("reviewMarks（決定・TODO の目印）", () => {
 
   it("変わったことが無ければ目印は無い", () => {
     expect(reviewMarks(meeting([], 60))).toEqual([]);
+  });
+});
+
+describe("マップだけの版の出来事（字幕が出ない）", () => {
+  const remarkEnds = [5, 10, 20, 30, 40];
+
+  it("元の出来事では、発言の end と end + 1 の時刻に字幕が出る（比べる対象が空ではない）", () => {
+    const tl = buildReviewTimeline(events);
+    for (const t of remarkEnds) expect(captionsOf(speakingAt(tl, t)), `t=${t}`).not.toEqual([]);
+  });
+
+  it("マップだけの出来事では、すべての発言の end と end + 1 の時刻で、字幕が出ない", () => {
+    const tl = buildReviewTimeline(mapOnlyReviewEvents(events));
+    for (const t of remarkEnds) {
+      expect(captionsOf(speakingAt(tl, t)), `t=${t}`).toEqual([]);
+      expect(captionsOf(speakingAt(tl, t + 1)), `t=${t + 1}`).toEqual([]);
+    }
+  });
+
+  it("マップだけの出来事でも、反映の時刻・会議の長さ・各時刻のマップは元と同じ", () => {
+    const original = buildReviewTimeline(events);
+    const mapOnly = buildReviewTimeline(mapOnlyReviewEvents(events));
+
+    expect(mapOnly.reflectionTimes).toEqual(original.reflectionTimes);
+    expect(mapOnly.duration).toBe(original.duration);
+    for (const t of [0, 9.9, 10, 25, 30, 40]) {
+      const a = snapshotAt(original, t);
+      const b = snapshotAt(mapOnly, t);
+      expect(b.nodes, `t=${t}`).toEqual(a.nodes);
+      expect(b.changes, `t=${t}`).toEqual(a.changes);
+      expect(b.round, `t=${t}`).toBe(a.round);
+      expect(b.now, `t=${t}`).toBe(a.now);
+    }
   });
 });

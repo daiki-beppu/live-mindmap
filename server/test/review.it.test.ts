@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
+import { mapOnlyReviewEvents } from "../src/core/index.ts";
 import { ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
 import { reviewVariants, selfReviewVariants } from "../src/sessionFiles.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
@@ -23,6 +24,7 @@ const fakeBuild = (build: Effect.Effect<string, ReviewPageFailed>) =>
     self.pipe(Effect.provideService(ReviewBuild, ReviewBuild.of({ build })), Effect.provide(NodeFileSystem.layer));
 
 const PLAIN = { file: "map.html", audio: false } as const;
+const MAP_ONLY = { file: "map-only.html", audio: false, mapOnly: true } as const;
 const WITH_AUDIO = { file: "map-audio.html", audio: true } as const;
 
 describe("writeReviewPages", () => {
@@ -238,4 +240,47 @@ describe("selfReviewVariants（自分の声だけの版）", () => {
     symlinkSync(join(dangling, "無い.m4a"), join(dangling, "自分.m4a"));
     expect(yield* selfReviewVariants(dangling)).toEqual([]);
   }).pipe(Effect.provide(NodeFileSystem.layer)));
+
+  it.effect("mapOnly の版には発言・共有画面の文字を抜いた出来事を、mapOnly のない版には元の出来事をそのまま埋め込む。ビルドは 1 回だけ", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const events = [
+      { at: "a", type: "start", title: "定例" },
+      { at: "a", type: "screen", start: 3, image: "s1.jpg", lines: ["社外秘 売上 12 億"] },
+      { at: "b", type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "給与は九百万です" }, raw: "きゅうよは九百万です" },
+    ];
+    const logPath = join(dir, "log.jsonl");
+    writeFileSync(logPath, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
+    let builds = 0;
+
+    const { paths, skipped } = yield* writeReviewPages(dir, logPath, [PLAIN, MAP_ONLY]).pipe(
+      fakeBuild(Effect.sync(() => { builds++; return TEMPLATE; })),
+      Effect.provide(fakeAudioMix().layer),
+    );
+
+    expect(skipped).toEqual([]);
+    expect(paths).toEqual([join(dir, "map.html"), join(dir, "map-only.html")]);
+    expect(builds).toBe(1);
+    const plain = yield* Effect.tryPromise(() => readFile(paths[0]!, "utf8"));
+    const mapOnly = yield* Effect.tryPromise(() => readFile(paths[1]!, "utf8"));
+    expect(JSON.parse(embeddedText(plain))).toEqual(events);
+    expect(JSON.parse(embeddedText(mapOnly))).toEqual(mapOnlyReviewEvents(events));
+    for (const secret of ["給与は九百万です", "きゅうよは九百万です", "社外秘 売上 12 億"]) {
+      expect(plain).toContain(secret);
+      expect(mapOnly).not.toContain(secret);
+    }
+  }));
+
+  it.effect("mapOnly の版で、壊れた発言の行があれば ReviewPageFailed になり、何も書かない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const logPath = join(dir, "log.jsonl");
+    writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n${JSON.stringify({ type: "remark", note: "給与は九百万です" })}\n`);
+
+    const result = yield* Effect.result(
+      writeReviewPages(dir, logPath, [PLAIN, MAP_ONLY]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(fakeAudioMix().layer)),
+    );
+
+    expect(Result.isFailure(result) && result.failure).toBeInstanceOf(ReviewPageFailed);
+    expect(existsSync(join(dir, "map.html"))).toBe(false);
+    expect(existsSync(join(dir, "map-only.html"))).toBe(false);
+  }));
 });

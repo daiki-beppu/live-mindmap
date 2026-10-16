@@ -5,7 +5,7 @@ import { Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import { AudioMix } from "./audioMix.ts";
-import { embedReviewAudio, embedReviewLicenses, embedReviewLog } from "./core/index.ts";
+import { embedReviewAudio, embedReviewLicenses, embedReviewLog, mapOnlyReviewEvents } from "./core/index.ts";
 import { readLogLines } from "./logLines.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
@@ -17,8 +17,11 @@ export class ReviewPageFailed extends Schema.TaggedError<ReviewPageFailed>()("Re
 
 const failed = (e: unknown) => new ReviewPageFailed({ message: e instanceof Error ? e.message : String(e) });
 
-// 書き出す版。audio が true なら、録音を mix して埋め込む。track が `自分` なら、その声だけを混ぜる（省略すると全トラック）
-export type ReviewVariant = { readonly file: string; readonly audio: boolean; readonly track?: "自分" };
+// 書き出す版。audio が true なら、録音を mix して埋め込む。track が `自分` なら、その声だけを混ぜる（省略すると全トラック）。
+// mapOnly が true なら、発言の文字と共有画面から読んだ文字を抜いた出来事を埋め込む（録音つきとは組み合わせない）
+export type ReviewVariant =
+  | { readonly file: string; readonly audio: false; readonly mapOnly?: true }
+  | { readonly file: string; readonly audio: true; readonly track?: "自分" };
 
 // 書き出さなかった版と、その理由
 export type SkippedReviewVariant = { readonly file: string; readonly reason: string };
@@ -79,6 +82,7 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
 
 // log.jsonl の出来事を、版ごとに 1 つの HTML へ埋め込んで dir に書き、書いたパスを版の順に返す。ビルドは 1 回だけ。
 // ログが読めない・ビルドに失敗したら、何も書かずに ReviewPageFailed で終わる。
+// マップだけの版の埋め込みは mapOnlyReviewEvents（壊れた発言・画面の行では ReviewPageFailed）。
 // 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は書く）。音声は版のファイルを書く前に取る
 export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPath: string, variants: readonly ReviewVariant[]) {
   const fs = yield* FileSystem.FileSystem;
@@ -94,11 +98,12 @@ export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPat
   const pages: { path: string; html: string }[] = [];
   const skipped: SkippedReviewVariant[] = [];
   for (const variant of variants) {
-    const html = yield* Effect.try({ try: () => embedReviewLog(template, events), catch: failed });
     if (!variant.audio) {
+      const html = yield* Effect.try({ try: () => embedReviewLog(template, variant.mapOnly ? mapOnlyReviewEvents(events) : events), catch: failed });
       pages.push({ path: join(dir, variant.file), html });
       continue;
     }
+    const html = yield* Effect.try({ try: () => embedReviewLog(template, events), catch: failed });
     const audio = yield* Effect.result(mixedAudio(dir, variant.track));
     if (Result.isFailure(audio)) {
       skipped.push({ file: variant.file, reason: audio.failure });
