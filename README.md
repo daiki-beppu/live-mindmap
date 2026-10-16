@@ -44,7 +44,7 @@ AIは毎回マップを作り直さず、既存構造に対して次の操作を
 - **変わったところを見る**: 会議中・見返しで F を押すと全体を見て、もう一度押すと最後の反映で変わったところへ寄る（Esc で戻る）
 - **根拠をたどる**: ノードから元の発言・話者・時刻を見る
 - **閲覧の共有**（`cli share`）: メール・ドメインで絞って、マップを外から見せる
-- **書き出しの公開**（`cli publish`）: 見返しをマップだけ（発言の文字・共有画面の文字は含めない）の HTML にして、あなたの Cloudflare アカウントの workers.dev に期限つき（既定 7 日、最長 30 日）で置く。既定は合言葉つきで、製品が合言葉を作って HTML を暗号化し、URL と合言葉を出す（置いた中身は Cloudflare からも読めない。開くときはページに合言葉を入れる）。`--anyone` を付けたときだけ、合言葉なしでリンクを知る誰でも見られる。閲覧の共有（`cli share`）は会議中にあなたの Mac からマップを見せるのに対し、公開は書き出した HTML を Cloudflare に置くので、Mac も `cli share` も閉じた後にリンクで見られる。`CLOUDFLARE_ACCOUNT_ID` と `CLOUDFLARE_API_TOKEN`（Workers Admin の権限 1 つ）が要る。アカウント無しの一時の置き場は 60 分・5 MiB までで使えないので、利用者自身のアカウントに置く
+- **書き出しの公開**（`cli publish`）: 見返しの HTML を、あなたの Cloudflare アカウントの workers.dev に期限つき（既定 7 日、最長 30 日）で置く。中身の段は `--content` で選ぶ（積み上げ式）。`map` はマップだけ（既定。発言の文字・共有画面の文字は含めない）、`remarks` は発言の文字・共有画面の文字も（`map.html` と同じ中身）、`audio` は録音も（`map-audio.html` と同じ中身。録音が無いセッションでは失敗）。発言の文字・録音を含む公開は、実行する前に利用者に確かめる。`remarks`・`audio` で `--confirmed` が無いと、何も置かずに終了コード4で止まる（`map` では `--confirmed` の有無で変わらない）。既定は合言葉つきで、製品が合言葉を作って HTML を暗号化し、URL と合言葉を出す（置いた中身は Cloudflare からも読めない。開くときはページに合言葉を入れる）。`--anyone` を付けたときだけ、合言葉なしでリンクを知る誰でも見られる。閲覧の共有（`cli share`）は会議中にあなたの Mac からマップを見せるのに対し、公開は書き出した HTML を Cloudflare に置くので、Mac も `cli share` も閉じた後にリンクで見られる。`CLOUDFLARE_ACCOUNT_ID` と `CLOUDFLARE_API_TOKEN`（Workers Admin の権限 1 つ）が要る。アカウント無しの一時の置き場は 60 分・5 MiB までで使えないので、利用者自身のアカウントに置く
 - **書き出しと見返し**（`cli stop`・`cli review`）: md・json・drawnix・png と、シークできる map.html・音声つきの map-audio.html。録音はトラックごとに残る
 - **録画から組む**（`cli recorded`）: 録画した会議のファイルから、ライブと同じセッションを組む
 - **やり直す**（`cli play`・`cli restore`）: 文字起こしや過去のセッションを流し直す、ログからマップを戻す
@@ -137,6 +137,8 @@ pnpm cli install cloudflared              # 閲覧の共有を使う場合
 話者分離のモデル（Sortformer と WeSpeaker）は CLI ではなく、リポジトリのルートで `bash helper/scripts/fetch-speaker-models.sh` を一度だけ実行して取得します（入っていれば何もしません）。保存先は `~/Library/Application Support/FluidAudio/Models` です。会議中にはモデルを取りに行かず、無ければ話者を分けずに続けます。
 
 開始時に必須の依存が足りないときは、CLI は不足内容と導入コマンドを表示し、終了コード3（exit 3）で止まります。エージェントはこの案内を受けたら利用者に確認し、同意を得てから導入してください。Chromium は任意の依存なので、未導入でも開始でき、撮影時には上記のとおり map.png だけが省略されます。
+
+発言の文字・録音を含む公開（`cli publish --content remarks|audio`）で `--confirmed` が無いときは、Cloudflare に何も送らず、確かめる内容を表示して終了コード4（exit 4）で止まります。エージェントはこの案内を受けたら利用者に、閉じた会議なら相手の了解を、イベントなら規約と登壇者の許可を確かめたかを聞き、了解を得てから `--confirmed` を付けて実行し直してください。同意は記録しません。
 
 導入時には、パッケージ取得のために npm のレジストリへ、Chromium の取得のために Playwright の CDN へ通信します。`speech-ja` の取得先は Apple です。
 
