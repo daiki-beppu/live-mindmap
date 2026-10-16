@@ -107,7 +107,8 @@ export const deployWorker = Effect.fnUntraced(function* (credentials: Cloudflare
   let completionJwt = uploadSession.jwt;
   if ((uploadSession.buckets ?? []).some((bucket) => bucket.length > 0)) {
     const form = new FormData();
-    form.append(hash, content);
+    // パートの Content-Type は、Worker が配信するときの Content-Type になる。型なしの文字列だと HTML として配信されない
+    form.append(hash, new Blob([content], { type: "text/html" }), hash);
     const uploaded = yield* send({ method: "POST", path: accountPath(credentials, "/workers/assets/upload"), search: "?base64=true", bearer: uploadSession.jwt, form });
     completionJwt = (yield* Schema.decodeUnknownEffect(UploadDone)(uploaded.result).pipe(Effect.mapError(() => malformed("アセットのアップロード")))).jwt;
   }

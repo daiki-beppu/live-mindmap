@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Effect, Layer, Result } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { afterEach, vi } from "vitest";
@@ -170,15 +170,18 @@ const recordRows = (s: Setup): Record<string, unknown>[] =>
 const asMs = (value: unknown): number => (typeof value === "number" ? value : Date.parse(String(value)));
 
 // 偽の API が受け取った HTML（assets/upload の base64 を戻したもの）
-function uploadedHtml(s: Setup): string {
+// パートの Content-Type は Worker が配信するときの Content-Type になるので、text/html であることも確かめる
+async function uploadedHtml(s: Setup): Promise<string> {
   const upload = s.api.calls.find((c) => c.path.endsWith("/workers/assets/upload"));
   expect(upload, "assets/upload が呼ばれていない").toBeDefined();
   expect(upload!.search).toContain("base64=true");
   expect(upload!.headers["authorization"]).toBe("Bearer upload-jwt");
   const parts = [...upload!.form!.values()];
   expect(parts).toHaveLength(1);
-  const raw = typeof parts[0] === "string" ? parts[0] : null;
-  return Buffer.from(raw ?? "", "base64").toString("utf8");
+  const part = parts[0];
+  expect(part instanceof Blob, "アセットのパートが型付きの Blob ではない").toBe(true);
+  expect((part as Blob).type).toMatch(/^text\/html/);
+  return Buffer.from(await (part as Blob).text(), "base64").toString("utf8");
 }
 
 // 偽の API が受け取った Worker のスクリプト（script PUT の JavaScript の module）
@@ -288,7 +291,7 @@ describe("cli publish --anyone（Issue #1250）", () => {
       const result = yield* publish(s, ["--anyone"]);
 
       expect(Result.isSuccess(result), failureText(result)).toBe(true);
-      const html = uploadedHtml(s);
+      const html = yield* Effect.promise(() => uploadedHtml(s));
       expect(html).not.toContain(REMARK_TEXT);
       expect(html).not.toContain(SCREEN_LINE);
       const embedded = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
@@ -354,7 +357,7 @@ describe("cli publish --anyone（Issue #1250）", () => {
 
       yield* publish(s, ["--anyone"]);
 
-      const html = uploadedHtml(s);
+      const html = yield* Effect.promise(() => uploadedHtml(s));
       const metas = [...html.matchAll(/<meta\s[^>]*content="([^"]*)"[^>]*>/g)].map((m) => m[1]!);
       expect(metas.length).toBeGreaterThanOrEqual(2);
       for (const content of metas) expect(content.trim()).not.toBe("");
@@ -375,7 +378,7 @@ describe("cli publish --anyone（Issue #1250）", () => {
       const result = yield* publish(s, ["--anyone"]);
 
       expect(Result.isSuccess(result), failureText(result)).toBe(true);
-      const html = uploadedHtml(s);
+      const html = yield* Effect.promise(() => uploadedHtml(s));
       expect(html.match(/<title>/g)).toHaveLength(1);
       expect(html).toContain("\\u003ctitle>罠\\u003c/title>");
       const embedded = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
@@ -657,6 +660,32 @@ describe("cli publish --anyone（Issue #1250）", () => {
       expect(Result.isFailure(result)).toBe(true);
       expect(s.api.calls.filter(isScriptDelete).map(scriptName)).toEqual([scriptName(s.api.calls.find(isScriptPut)!)]);
       expect(s.stdout.join("")).not.toContain("workers.dev");
+    }));
+
+    it.effect("script PUT の後、記録を書く前に中断されても、同じ名前の Worker を DELETE する。記録は無い", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+      const reached = yield* Deferred.make<void>();
+      const inner = s.api.client;
+      // workers.dev の有効化の要求だけ、到達を知らせて止める（PUT は済み、記録はまだ）
+      const client = HttpClient.make((request) => {
+        if (request.method === "POST" && /\/workers\/scripts\/[^/]+\/subdomain$/.test(new URL(request.url).pathname)) {
+          return Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never));
+        }
+        return inner.execute(request);
+      });
+      s.api = { ...s.api, client };
+
+      const fiber = yield* Effect.forkChild(publish(s, ["--anyone"]));
+      yield* Deferred.await(reached);
+      yield* Fiber.interrupt(fiber);
+
+      const put = s.api.calls.find(isScriptPut);
+      expect(put).toBeDefined();
+      expect(s.api.calls.filter(isScriptDelete).map(scriptName)).toEqual([scriptName(put!)]);
+      expect(s.stdout.join("")).not.toContain("workers.dev");
+      expect(recordRows(s)).toEqual([]);
     }));
   });
 

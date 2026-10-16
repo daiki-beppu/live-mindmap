@@ -1155,11 +1155,18 @@ const MISSING_CREDENTIALS_MESSAGE = [
 ].join("\n");
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// 置く途中で失敗したら、作りかけの Worker を消してから、元の失敗で返す。消すのも失敗したら、元の失敗の文に残っているかもしれない旨を足す（元の失敗は置き換えない）
+// 置く途中で失敗・中断（Ctrl-C など）されたら、作りかけの Worker を消す。失敗のときは消してから元の失敗で返し、消すのも失敗したら、元の失敗の文に残っているかもしれない旨を足す（元の失敗は置き換えない）。中断は catch に届かず、記録の無い Worker が残るので onInterrupt でも消す。消す処理自体は中断されない
 const withWorkerRollback = <A, R>(credentials: CloudflareCredentials, name: string, place: Effect.Effect<A, CommandFailed, R>) =>
   place.pipe(
+    Effect.onInterrupt(() =>
+      deleteWorker(credentials, name).pipe(
+        Effect.catch((cleanup) => Console.error(`Worker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）`)),
+        Effect.uninterruptible,
+      ),
+    ),
     Effect.catch((failure) =>
       deleteWorker(credentials, name).pipe(
+        Effect.uninterruptible,
         Effect.match({
           onSuccess: () => failure,
           onFailure: (cleanup) => new CommandFailed({ message: `${failure.message}\nWorker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）` }),
