@@ -129,10 +129,8 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .review-volume:hover .review-volume__slider, .review-volume:focus-within .review-volume__slider, .review-volume__slider[data-dragging] { width: 64px; margin: 0 4px; opacity: 1; }
 .review-volume__thumb:focus-visible { outline: 2px solid #facc15; }
 
-/* ツールチップ: panel は常に描き、Tooltip が data-open を付けている間だけ出す（:hover の規則は panel が body へ移るので効かない）。位置は Floating UI が inline の left/top で書く */
+/* ツールチップ: panel は常に描き、Tooltip が data-open を付けている間だけ出す（:hover の規則は panel が body へ移るので効かない）。位置は Floating UI が inline の left/top で書くので、left・right・top・bottom は書かない（Issue #1226） */
 .review-tip[data-open] { display: block; }
-.review-volume .review-tip { left: 0; }
-.review-bar__end .review-tip { left: auto; right: 0; }
 .review-bar__button:hover > .review-tip { display: block; }
 .review-bar__button.review-rate__button { width: auto; gap: 4px; padding: 0 8px; }
 
