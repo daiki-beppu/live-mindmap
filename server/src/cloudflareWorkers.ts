@@ -41,7 +41,7 @@ export const classifyFailure = (status: number, envelope: Envelope): CloudflareF
 };
 
 // 分類の結果を、利用者向けの 1 行（以上）にする。トークンは文に入れない
-export const describeCloudflareFailure = (failure: CloudflareFailed): string => {
+export const describeCloudflareFailure = (failure: CloudflareFailed, operation = "公開"): string => {
   switch (failure.kind) {
     case "permission":
       return `Cloudflare の権限が足りません。API トークンに Workers の編集（Workers Admin）の権限があるか確かめてください（${failure.detail}）`;
@@ -50,7 +50,7 @@ export const describeCloudflareFailure = (failure: CloudflareFailed): string => 
     case "workerLimit":
       return `Cloudflare アカウントの Worker の数が上限に達しています。使っていない Worker を消してください（${failure.detail}）`;
     case "other":
-      return `Cloudflare への公開に失敗しました: ${failure.detail}`;
+      return `Cloudflare への${operation}に失敗しました: ${failure.detail}`;
   }
 };
 
@@ -128,5 +128,14 @@ export const deployWorker = Effect.fnUntraced(function* (credentials: Cloudflare
 // Worker を消す。まだ無い（404）なら成功として扱う
 export const deleteWorker = (credentials: CloudflareCredentials, name: string) =>
   send({ method: "DELETE", path: scriptPath(credentials, name), search: "?force=true", bearer: credentials.token }, [404]).pipe(Effect.asVoid);
+
+const WorkerList = Schema.Array(Schema.Struct({ id: Schema.String }));
+
+// アカウントにある Worker の名前の一覧（1 回の応答で全件が返る前提）
+export const listWorkerNames = Effect.fnUntraced(function* (credentials: CloudflareCredentials) {
+  const { result } = yield* send({ method: "GET", path: accountPath(credentials, "/workers/scripts"), bearer: credentials.token });
+  const workers = yield* Schema.decodeUnknownEffect(WorkerList)(result).pipe(Effect.mapError(() => malformed("Worker の一覧")));
+  return workers.map((worker) => worker.id);
+});
 
 export const workerUrl = (name: string, subdomain: string): string => `https://${name}.${subdomain}.workers.dev`;

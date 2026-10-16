@@ -1,7 +1,7 @@
 import { NodeFileSystem, NodeHttpClient, NodeRuntime } from "@effect/platform-node";
 import { Console, Effect, FileSystem } from "effect";
 import { accessToken, ChatgptEndpoints } from "../../src/chatgptAuth.ts";
-import { withAuthLock } from "../../src/chatgptAuthStore.ts";
+import { withFileLock } from "../../src/fileLock.ts";
 
 const [path, tokenUrl, mode] = process.argv.slice(2);
 if (!path || !tokenUrl) throw new Error("worker arguments are missing");
@@ -22,7 +22,7 @@ const action = Effect.gen(function* () {
       })),
     ),
   });
-  if (mode === "hold") return yield* withAuthLock(path, Effect.andThen(Console.log("locked"), Effect.never));
+  if (mode === "hold") return yield* withFileLock(path, Effect.andThen(Console.log("locked"), Effect.never));
   yield* Console.log(yield* accessToken(path).pipe(Effect.provideService(FileSystem.FileSystem, observed)));
   if (mode === "refresh-stay") return yield* Effect.never;
 });

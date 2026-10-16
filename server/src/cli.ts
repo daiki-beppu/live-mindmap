@@ -50,6 +50,8 @@ import {
   PUBLISH_DEFAULT_DAYS,
   PUBLISH_MAX_ASSET_BYTES,
   PUBLISH_MAX_DAYS,
+  formatPublishList,
+  selectListedRecords,
   generatePassphrase,
   lockedPublishPage,
   publishWorkerScript,
@@ -75,8 +77,8 @@ import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { BrokenLogLine, readLogLines } from "./logLines.ts";
 import { poolUnavailableMessage, readPool, updatePoolFromLog, vocabularyPoolPath, writePool } from "./vocabularyPool.ts";
-import { accountSubdomain, CloudflareFailed, deleteWorker, deployWorker, describeCloudflareFailure, newWorkerName, workerUrl, type CloudflareCredentials } from "./cloudflareWorkers.ts";
-import { appendPublishRecord } from "./publishRecords.ts";
+import { accountSubdomain, CloudflareFailed, deleteWorker, deployWorker, describeCloudflareFailure, listWorkerNames, newWorkerName, workerUrl, type CloudflareCredentials } from "./cloudflareWorkers.ts";
+import { appendPublishRecord, markWithdrawn, readPublishRecords } from "./publishRecords.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
@@ -1179,6 +1181,75 @@ const withWorkerRollback = <A, R>(credentials: CloudflareCredentials, name: stri
     ),
   );
 
+const STILL_THERE = "取り下げられなかった物は、まだ置き場にあります。--anyone で置いた物は、期限まで URL を知る誰でも見られます";
+const WORKER_PREFIX = "lmm-";
+
+const readRecords = readPublishRecords().pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
+
+// 手元の記録だけから作る。資格情報があるときだけ、記録に無い lmm- の Worker を知らせる（消さない）
+const publishList = Command.make(
+  "list",
+  { all: Flag.Boolean("all").pipe(Flag.withDescription("取り下げた物も含めて全部出す（既定は公開中だけ）"), Flag.withDefault(false)) },
+  Effect.fn("publish list")(function* ({ all }) {
+    const records = yield* readRecords;
+    const now = yield* Clock.currentTimeMillis;
+    yield* write(formatPublishList(selectListedRecords(records, all), now, all));
+    const accountId = yield* cloudflareAccountIdConfig;
+    const token = yield* cloudflareApiTokenConfig;
+    if (accountId === undefined || token === undefined) return;
+    const known = new Set(records.map((record) => record.name));
+    yield* listWorkerNames({ accountId, token }).pipe(
+      Effect.flatMap((names) => writeWarnings(names.filter((name) => name.startsWith(WORKER_PREFIX) && !known.has(name)).map((name) => `記録に無い ${WORKER_PREFIX} の Worker がアカウントにあります（消していません）: ${name}`))),
+      Effect.catch((e) => Console.error(`Worker の一覧を取れませんでした。記録に無い Worker は確かめていません: ${describeCloudflareFailure(e, "Worker の一覧の取得")}`)),
+    );
+  }),
+).pipe(Command.withDescription("公開の記録（~/.live-mindmap/publish/records.jsonl）から、公開中の物を表で出す（URL・合言葉・期限・中身の段・元のセッション・状態）。--all で取り下げた物も出す。資格情報があれば、記録に無い lmm- の Worker を知らせるだけで消さない。サーバーもローカルモードも関係しない"));
+
+// 引数は名前か URL。まとめて取り下げる口・セッション単位の口は持たない
+const publishWithdraw = Command.make(
+  "withdraw",
+  { targets: Argument.String("target").pipe(Argument.withDescription("取り下げる Worker の名前か URL（1 つ以上）"), Argument.atLeast(1)) },
+  Effect.fn("publish withdraw")(function* ({ targets }) {
+    const accountId = yield* cloudflareAccountIdConfig;
+    const token = yield* cloudflareApiTokenConfig;
+    if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: `${MISSING_CREDENTIALS_MESSAGE}\n${STILL_THERE}` });
+    const records = yield* readRecords;
+    const found = new Map<string, (typeof records)[number]>();
+    let unmatched = 0;
+    for (const target of targets) {
+      const wanted = target.replace(/\/$/, "");
+      const record = records.find((r) => r.name === wanted || r.url === wanted);
+      if (record === undefined) {
+        unmatched += 1;
+        yield* Console.error(`記録にありません: ${target}`);
+      } else found.set(record.name, record);
+    }
+    const withdrawn: string[] = [];
+    let failed = 0;
+    for (const record of found.values()) {
+      // 消すのは記録のアカウントの Worker。環境変数のアカウントで消すと、別のアカウントの物は 404（成功扱い）になり、消えていないのに取り下げた扱いになる
+      const outcome = yield* deleteWorker({ accountId: record.accountId, token }, record.name).pipe(
+        Effect.match({ onSuccess: () => undefined, onFailure: (e) => e }),
+      );
+      if (outcome === undefined) {
+        withdrawn.push(record.name);
+        yield* write(`取り下げました: ${record.url}`);
+      } else {
+        failed += 1;
+        yield* Console.error(`取り下げられませんでした: ${record.url}（${describeCloudflareFailure(outcome, "取り下げ")}）`);
+      }
+    }
+    if (withdrawn.length > 0) {
+      // 残る物があるときは、記録の書き換えに失敗しても「まだ置き場にある」旨を落とさない
+      const remaining = unmatched > 0 || failed > 0 ? `\n${STILL_THERE}` : "";
+      yield* markWithdrawn(withdrawn).pipe(
+        Effect.mapError((e) => new CommandFailed({ message: `Worker は消しましたが、公開の記録を書き換えられませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}${remaining}` })),
+      );
+    }
+    if (unmatched > 0 || failed > 0) return yield* new CommandFailed({ message: STILL_THERE });
+  }),
+).pipe(Command.withDescription("公開した Worker を、期限の前にすぐ消す（引数は名前か URL。1 つ以上）。記録の行は残し、状態を「取り下げた」にする。Cloudflare 側に既に無い（404）物は成功。記録に無い名前・URL や消せなかった物があれば 0 以外で返す。まとめて取り下げる口・セッション単位の口は無い。CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN が要る。サーバーもローカルモードも関係しない"));
+
 const publish = Command.make(
   "publish",
   {
@@ -1253,8 +1324,10 @@ const publish = Command.make(
 ).pipe(
   Command.withDescription(
     `セッションの見返しをマップだけの段（発言の文字・共有画面の文字は含めない）で、あなたの Cloudflare アカウントの workers.dev に期限つきで置き、URL・期限・URL に出るアカウントのサブドメイン（合言葉つきなら合言葉も）を出す。既定では製品が作った合言葉で暗号化して置き（置いた中身は Cloudflare からも読めない）、URL と合言葉を出す。--anyone を付けると合言葉なしで、リンクを知る誰でも見られる。期限は既定 ${PUBLISH_DEFAULT_DAYS} 日、--days で 1〜${PUBLISH_MAX_DAYS}。`
-      + "CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN（Workers Admin の権限 1 つ）が要る。ローカルモードのセッションは拒む。サーバーは要らない",
+      + "CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN（Workers Admin の権限 1 つ）が要る。ローカルモードのセッションは拒む。サーバーは要らない。"
+      + "サブコマンド: list（公開中の一覧）、withdraw（期限の前の取り下げ）",
   ),
+  Command.withSubcommands([publishList, publishWithdraw]),
 );
 
 const root = Command.make("live-mindmap").pipe(

@@ -3,7 +3,8 @@ import { ConfigProvider, Deferred, Effect, Fiber, FileSystem, Result } from "eff
 import { HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { accessToken } from "../src/chatgptAuth.ts";
-import { logoutChatgpt, readCredentials, withAuthLock, writeAuthFile } from "../src/chatgptAuthStore.ts";
+import { logoutChatgpt, readCredentials, writeAuthFile } from "../src/chatgptAuthStore.ts";
+import { withFileLock } from "../src/fileLock.ts";
 import { CHATGPT_HOME, chatgptCredentials, fakeChatgptFiles, fakeChatgptHttp } from "./fixtures/chatgpt.ts";
 
 describe("認証ストア（C02）", () => {
@@ -59,10 +60,10 @@ describe("認証ストア（C02）", () => {
     const files = fakeChatgptFiles(chatgptCredentials(0));
     const entered = yield* Deferred.make<void>();
     yield* Effect.gen(function* () {
-      const holder = yield* withAuthLock(files.authPath, Effect.andThen(Deferred.succeed(entered, undefined), Effect.never)).pipe(Effect.forkChild);
+      const holder = yield* withFileLock(files.authPath, Effect.andThen(Deferred.succeed(entered, undefined), Effect.never)).pipe(Effect.forkChild);
       yield* Deferred.await(entered);
       yield* Fiber.interrupt(holder);
-      expect(yield* withAuthLock(files.authPath, Effect.succeed("reacquired"))).toBe("reacquired");
+      expect(yield* withFileLock(files.authPath, Effect.succeed("reacquired"))).toBe("reacquired");
     }).pipe(Effect.provideService(FileSystem.FileSystem, files.fs));
   }));
 
@@ -70,7 +71,7 @@ describe("認証ストア（C02）", () => {
     const files = fakeChatgptFiles(chatgptCredentials(0));
     yield* Effect.gen(function* () {
       yield* files.fs.makeDirectory(`${files.authPath}.lock`);
-      const pending = yield* Effect.result(withAuthLock(files.authPath, Effect.succeed("unexpected"))).pipe(Effect.forkChild);
+      const pending = yield* Effect.result(withFileLock(files.authPath, Effect.succeed("unexpected"))).pipe(Effect.forkChild);
       yield* TestClock.adjust(30_001);
       expect(Result.isFailure(yield* Fiber.join(pending))).toBe(true);
       expect(yield* files.fs.exists(`${files.authPath}.lock`)).toBe(true);
