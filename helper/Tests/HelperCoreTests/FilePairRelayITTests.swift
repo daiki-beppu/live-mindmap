@@ -226,7 +226,7 @@ private struct Rig {
         if theirsWhiteFrom != nil || mineWhiteFrom != nil {
             // Why: 送る画面の OCR は、プロセスで最初の 1 回だけ文字認識のモデルを組み立て、負荷のある機械では 20 秒かかった。
             // 映像の判定が済むまで音声は進まないので、それが下の待ちに入ると揺れる。測る前に 1 回読ませておく
-            _ = recognizeScreenText(try #require(blankImage()))
+            _ = await recognizeScreenText(try #require(blankImage()))
         }
         server = WebSocketServer(port: 0)
         let port = try await server.start()
