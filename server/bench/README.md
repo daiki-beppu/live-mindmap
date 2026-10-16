@@ -1,6 +1,6 @@
 # bench: eval の道具
 
-eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
+eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
 
 実会議の録音・文字起こしなどの素材はリポジトリの外にある。置き場所と中身は `~/live-mindmap-samples/README.md` を参照。リポジトリ内には `server/bench/meetings/`（正解・文字起こしの JSON と `lecture.timeline.tsv`）がある。
 
@@ -165,9 +165,37 @@ node bench/sttLatency.ts <results> [--quiet <秒>] [--emit final|discard] [--lin
 
 - `<results>`: `stt-bench run` の JSONL。
 - `--quiet`: 本番の区切り方（`core` の `createRemarkSettler`）が、途中結果が変わらなければ発言にする秒数。本番の定数（`SETTLE_QUIET_MS`）を差し替える。既定は本番と同じ 1。
-- `--lines`: `synth` の `<名前>.lines.json`。渡すと、確定結果の `end` ではなく各文の話し終わりから数えた遅れを出す（`start`・`end` だけを読む）。
+- `--lines`: `synth` の `<名前>.lines.json`。渡すと、確定結果の `end` ではなく各文の話し終わりから数えた遅れを出す（`start`・`end` だけを読む）。実会議では `speechEnds` の出力を渡す。
 - 出力: Markdown の表。列は 方式・件数・遅れ p50 (秒)・遅れ p90 (秒)。2 行目は、途中結果と確定結果を届いた時刻の順に本番の規則へ通して出た発言の遅れ（途中結果の届いた時刻を規則の時計として渡す）。
 - `--emit` を付けると、表の代わりに、発言の JSON 配列（`sttReplay.ts` 用）を出す。`final` は確定結果だけ、`discard` は本番の区切り方で作る（後から届いた確定結果は流さない）。
+
+## sttReplay（話し終わり → ノード）
+
+素材 → `sttLatency --emit` → `sttReplay`。
+
+```sh
+cd server
+node bench/sttReplay.ts <items.json> [--lines <lines.json>] [--truth <正解.json>] [--title <題名>]
+```
+
+- `<items.json>`: `sttLatency.ts --emit` の出力。
+- 流し方: 流し始めを基準に、各発言を自分の `at` の時刻に本番のセッションへ届ける。等速で流し、最後に flush する。差分更新が混んで push が遅れても、後ろの発言に遅れを足さない。push が `at` を過ぎて終わったら、次の発言は待たずにすぐ流す。
+- 出力の「話し終わり → ノード」は、別の道具で差し引かずに、そのまま PR 本文の表に書ける。遅れを差し引いて数えた過去の値（#878・#880・#881）と同じ物差しで並べられる。
+- `--lines` を渡すと各文の話し終わりから、なければノードに反映された発言の `end` から数える。`--truth` を渡すと再現率を 1 行で出す。
+
+## speechEnds（実会議の話し終わり）
+
+録音 → `speechEnds` → `sttLatency --lines` / `sttReplay --lines`。
+
+```sh
+cd server
+node bench/speechEnds.ts <録音> [--noise <dB>] [--min-silence <秒>] [--min-speech <秒>] > lines.json
+```
+
+- **ffmpeg が要る**。PATH 上のものを使う（リポジトリには入れない）。無い・録音の長さを読めないときは、空の配列で成功せず失敗する。
+- 規則: 無音区間（silencedetect）の始まりを話し終わり（`end`）、終わりを次の話し始め（`start`）とする。先頭の無音の前と末尾の無音の後ろには行を作らない。`--min-speech` より短い話している区間は捨てる。既定は `--noise -30`・`--min-silence 0.5`・`--min-speech 0.2`。
+- 出力は `[{"start":…,"end":…}]` で、`sttLatency.ts --lines` と `sttReplay.ts --lines` にそのまま渡せる。
+- 合成会議で確かめる手順: `stt-bench synth` の `<名前>.wav` から `speechEnds` で行の時刻を作り、`<名前>.lines.json` と並べて差を見る（それぞれを `sttLatency --lines` に渡して p50・p90 を比べてもよい）。試作では 0.5 秒以内で合った。
 
 ## sttAccuracy（認識の正確さ）
 

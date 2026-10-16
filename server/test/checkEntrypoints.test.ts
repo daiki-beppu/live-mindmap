@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { findEntrypointViolations } from "../scripts/check-entrypoints.ts";
 import type { SourceFile } from "../scripts/sourceFiles.ts";
 
-const BENCH = ["bench/sessionStats.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/edgeJudge.ts", "bench/mapShape.ts", "bench/siblingJudge.ts"];
+const BENCH = ["bench/sessionStats.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/speechEnds.ts", "bench/edgeJudge.ts", "bench/mapShape.ts", "bench/siblingJudge.ts"];
 const BENCH_BODY = "NodeRuntime.runMain({ teardown: exitNaturally })(main);\n";
 
 const validTree = (): SourceFile[] => [
@@ -127,6 +127,7 @@ describe("findEntrypointViolations", () => {
         { path: "bench/sttAccuracy.ts", content: BENCH_BODY },
         { path: "bench/sttLatency.ts", content: BENCH_BODY },
         { path: "bench/sttReplay.ts", content: BENCH_BODY },
+        { path: "bench/speechEnds.ts", content: BENCH_BODY },
         { path: "bench/edgeJudge.ts", content: BENCH_BODY },
         { path: "bench/siblingJudge.ts", content: BENCH_BODY },
         { path: "src/other.ts", content: "NodeRuntime.runMain(x);\nEffect.runSync(y);\nEffect.runPromise(z);\n" },
