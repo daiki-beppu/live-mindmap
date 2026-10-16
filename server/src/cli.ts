@@ -883,6 +883,20 @@ const restore = Command.make(
   }, Effect.scoped),
 ).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す。終了の処理を通らなかったセッションの語は、語彙の溜まりにも入れる"));
 
+// 渡されたセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）と、その log.jsonl。log.jsonl が無ければ失敗にする
+const sessionLog = Effect.fnUntraced(function* (session: Option.Option<string>) {
+  const dir = Option.isSome(session)
+    ? resolve(session.value)
+    : yield* Effect.gen(function* () {
+        const sessionsDir = yield* sessionsDirConfig;
+        return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
+      });
+  const logPath = join(dir, LOG_FILE);
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+  return { dir, logPath };
+});
+
 const review = Command.make(
   "review",
   {
@@ -896,15 +910,7 @@ const review = Command.make(
     ),
   },
   Effect.fn("review")(function* ({ session, selfOnly }) {
-    const dir = Option.isSome(session)
-      ? resolve(session.value)
-      : yield* Effect.gen(function* () {
-          const sessionsDir = yield* sessionsDirConfig;
-          return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
-        });
-    const logPath = join(dir, LOG_FILE);
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+    const { dir, logPath } = yield* sessionLog(session);
     if (selfOnly) {
       const variants = yield* selfReviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
@@ -1195,6 +1201,33 @@ export class ConfirmationRequired extends Schema.TaggedError<ConfirmationRequire
 const publishVariant = (content: (typeof PUBLISH_CONTENTS)[number]): ReviewVariant =>
   content === "map" ? { file: "index.html", audio: false, mapOnly: true } : { file: "index.html", audio: content === "audio" };
 
+// 置くセッションを決め、手元で分かる理由（log.jsonl が無い・ローカルモード・audio なのに録音が無い）で置けなければ失敗にする
+const publishableSession = Effect.fnUntraced(function* (session: Option.Option<string>, content: (typeof PUBLISH_CONTENTS)[number]) {
+  const { dir, logPath } = yield* sessionLog(session).pipe(Effect.catchTag("NoSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) }))));
+  const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
+  const start = events.find(hasLoggedType(new Set(["start"])));
+  const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
+  if (decodedStart !== undefined && Result.isSuccess(decodedStart) && decodedStart.success.model?.local === true) {
+    return yield* new CommandFailed({ message: "ローカルモードのセッションは公開できません。会議の中身を Mac の外に出さないためです" });
+  }
+  if (content === "audio") {
+    const variants = yield* reviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
+    if (!variants.some((variant) => variant.audio)) return yield* new CommandFailed({ message: `録音がありません: ${dir}` });
+  }
+  return { dir, logPath };
+});
+
+// 置く中身の段の見返しを作り、公開用の head にする（暗号化の前）
+const publishedMapHtml = Effect.fnUntraced(function* (dir: string, logPath: string, content: (typeof PUBLISH_CONTENTS)[number]) {
+  const rendered = yield* renderReviewPages(dir, logPath, [publishVariant(content)]).pipe(
+    Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+    Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+  );
+  // 公開する中身の音声を作れなかったときは、音声なしで置かずに失敗にする（--self-only と同じ）
+  for (const { file, reason } of rendered.skipped) return yield* new CommandFailed({ message: reviewWarning(file, reason) });
+  return yield* Effect.try({ try: () => replaceHeadForPublish(rendered.pages[0]!.html), catch: (e) => new CommandFailed({ message: e instanceof Error ? e.message : String(e) }) });
+});
+
 const publish = Command.make(
   "publish",
   {
@@ -1210,25 +1243,7 @@ const publish = Command.make(
   Effect.fn("publish")(function* ({ session, anyone, content, confirmed, days }) {
     const dayCount = /^\d+$/.test(days) ? Number(days) : Number.NaN;
     if (!(dayCount >= 1 && dayCount <= PUBLISH_MAX_DAYS)) return yield* new CommandFailed({ message: `--days は 1〜${PUBLISH_MAX_DAYS} の整数で指定してください: ${days}` });
-    const dir = Option.isSome(session)
-      ? resolve(session.value)
-      : yield* Effect.gen(function* () {
-          const sessionsDir = yield* sessionsDirConfig;
-          return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE).pipe(Effect.catchTag("NoSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) })))));
-        });
-    const logPath = join(dir, LOG_FILE);
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
-    const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
-    const start = events.find(hasLoggedType(new Set(["start"])));
-    const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
-    if (decodedStart !== undefined && Result.isSuccess(decodedStart) && decodedStart.success.model?.local === true) {
-      return yield* new CommandFailed({ message: "ローカルモードのセッションは公開できません。会議の中身を Mac の外に出さないためです" });
-    }
-    if (content === "audio") {
-      const variants = yield* reviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-      if (!variants.some((variant) => variant.audio)) return yield* new CommandFailed({ message: `録音がありません: ${dir}` });
-    }
+    const { dir, logPath } = yield* publishableSession(session, content);
     const accountId = yield* cloudflareAccountIdConfig;
     const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: MISSING_CREDENTIALS_MESSAGE });
@@ -1236,13 +1251,7 @@ const publish = Command.make(
     // 手元で分かる失敗を出した後、ビルド・mix・Cloudflare への要求の前に止める。入口の teardown が終了コード 4 にする
     if (content !== "map" && !confirmed) return yield* new ConfirmationRequired({ content, anyone });
 
-    const rendered = yield* renderReviewPages(dir, logPath, [publishVariant(content)]).pipe(
-      Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
-      Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
-    );
-    // 公開する中身の音声を作れなかったときは、音声なしで置かずに失敗にする（--self-only と同じ）
-    for (const { file, reason } of rendered.skipped) return yield* new CommandFailed({ message: reviewWarning(file, reason) });
-    const mapHtml = yield* Effect.try({ try: () => replaceHeadForPublish(rendered.pages[0]!.html), catch: (e) => new CommandFailed({ message: e instanceof Error ? e.message : String(e) }) });
+    const mapHtml = yield* publishedMapHtml(dir, logPath, content);
     // 合言葉が既定。暗号化は資格情報の確認の後、Cloudflare への最初の要求（accountSubdomain）の前に行う
     const passphrase = anyone ? undefined : generatePassphrase();
     const html = passphrase === undefined
