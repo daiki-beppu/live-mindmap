@@ -2,11 +2,11 @@
 // 録音の無音区間（ffmpeg の silencedetect）の始まりを話し終わりとする。ffmpeg は PATH 上のものを使う。
 // 使い方は各 Command・Flag の withDescription が正本で、`node bench/speechEnds.ts --help` で読む。
 import { NodeRuntime } from "@effect/platform-node";
-import { Effect, Stream, type PlatformError } from "effect";
+import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe } from "../src/truthFile.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
+import { runFfmpegFilter } from "./ffmpeg.ts";
 import { benchProgram, InvalidInputFile, write } from "./entry.ts";
 import type { SpokenLine } from "./sttLatency.ts";
 
@@ -47,19 +47,10 @@ export function speechLines(silences: readonly Silence[], duration: number, minS
 
 // ffmpeg は結果を stderr に出すので、stdout と stderr をまとめて受け取る。起動できない（ffmpeg が無い）ときは失敗する
 const runSilenceDetect = Effect.fnUntraced(function* (file: string, noise: number, minSilence: number) {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
-  return yield* Effect.scoped(
-    Effect.gen(function* () {
-      const handle = yield* spawner.spawn(
-        ChildProcess.make("ffmpeg", ["-nostats", "-i", file, "-af", `silencedetect=noise=${noise}dB:d=${minSilence}`, "-f", "null", "-"], { stdin: "ignore" }),
-      );
-      const [stdout, stderr, code] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
-      // 失敗した ffmpeg の出力から行を作らない（無音を検出できていないのに、全体を発話として成功させない）
-      if (code !== 0) return yield* new InvalidInputFile({ path: file, reason: `ffmpeg が失敗した（終了コード ${code}）` });
-      return stdout + stderr;
-    }),
-  );
+  const { exitCode, output } = yield* runFfmpegFilter(file, `silencedetect=noise=${noise}dB:d=${minSilence}`);
+  // 失敗した ffmpeg の出力から行を作らない（無音を検出できていないのに、全体を発話として成功させない）
+  if (exitCode !== 0) return yield* new InvalidInputFile({ path: file, reason: `ffmpeg が失敗した（終了コード ${exitCode}）` });
+  return output;
 }, Effect.catchTag("PlatformError", (e) => Effect.fail(new InvalidInputFile({ path: "ffmpeg", reason: describe(e) }))));
 
 export const command = Command.make(

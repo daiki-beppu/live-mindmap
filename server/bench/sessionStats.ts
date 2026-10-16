@@ -4,12 +4,12 @@
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { NodeRuntime } from "@effect/platform-node";
-import { Effect, Schema, Stream, type PlatformError } from "effect";
+import { Effect, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Track } from "../src/core/index.ts";
 import { describe } from "../src/truthFile.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
+import { runFfmpegFilter } from "./ffmpeg.ts";
 import { benchProgram, MissingSessionDir, readInputText, write } from "./entry.ts";
 
 const TRACKS: readonly Track[] = ["相手", "自分"];
@@ -151,17 +151,7 @@ const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
 // ffmpeg は長さと音量を stderr に出すので、stdout と stderr をまとめて受け取る。
 // ffmpeg が無い・失敗したときは空の出力として扱う（呼び出し側が、読めない録音として飛ばす）
 const runFfmpeg = Effect.fnUntraced(function* (file: string) {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
-  return yield* Effect.scoped(
-    Effect.gen(function* () {
-      const handle = yield* spawner.spawn(
-        ChildProcess.make("ffmpeg", ["-nostats", "-i", file, "-af", "volumedetect", "-f", "null", "-"], { stdin: "ignore" }),
-      );
-      const [stdout, stderr] = yield* Effect.all([readText(handle.stdout), readText(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
-      return stdout + stderr;
-    }),
-  );
+  return (yield* runFfmpegFilter(file, "volumedetect")).output;
 }, Effect.catchTag("PlatformError", () => Effect.succeed("")));
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
