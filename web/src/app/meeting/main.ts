@@ -12,7 +12,7 @@ import type { Message as LiveFeedMessage } from "../liveFeed/message.ts";
 import * as MapSurface from "../mapSurface/main.ts";
 import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
 import { plainKey, surfaceFolds, type KeyHandler } from "../mapSurface/parentFolds.ts";
-import { WIDE, type Flags } from "../sessionLayout/flags.ts";
+import { startingSurface, WIDE, type Flags } from "../startFlags.ts";
 import * as SessionLayout from "../sessionLayout/main.ts";
 import * as SidePanel from "../sidePanel/main.ts";
 import { RequestSelfPause } from "./command.ts";
@@ -50,7 +50,7 @@ const Session = Schema.Struct({
   keyList: Popover.Model,
 });
 
-// startsNarrow: 開いた時点で幅が狭かったか（flags.ts）。画面の部品はスナップショットが届いてから作るので、そのときに右の列と字幕を隠して始めるために覚えておく
+// startsNarrow: 開いた時点で幅が狭かったか（startFlags.ts）。画面の部品はスナップショットが届いてから作るので、そのときに右の列と字幕を隠して始めるために覚えておく
 export const Model = Schema.Struct({ feed: LiveFeed.Model, isMac: Schema.Boolean, startsNarrow: Schema.Boolean, session: Schema.Option(Session) });
 export type Model = typeof Model.Type;
 type SessionModel = typeof Session.Type;
@@ -95,8 +95,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
   const withFeed = modifyFields(model, { feed: () => feed });
   if (Option.isNone(withFeed.session)) {
     if (Option.isNone(feed.snapshot)) return { model: withFeed };
-    const initial = MapSurface.init(feed.snapshot.value, "live", model.isMac);
-    const surface = model.startsNarrow ? { ...initial, viewing: { ...initial.viewing, sideHidden: true as const } } : initial;
+    const surface = startingSurface(MapSurface.init(feed.snapshot.value, "live", model.isMac), { startsNarrow: model.startsNarrow });
     const layout = { ...SessionLayout.init(), captionsHidden: model.startsNarrow };
     const session: SessionModel = { mapSurface: stripSurface(surface), sessionLayout: stripLayout(layout), keyList: initKeyList() };
     const created = modifyFields(withFeed, { session: () => Option.some(session) });

@@ -40,9 +40,10 @@ test("見返し: 時刻を先頭へ動かすと、終わりで揃っていたノ
 // 録音なしの速さは 10・30・60・120 倍（最初は 30 倍）。PC の幅とスマホの幅（390×844）で同じ手順を流す。agent は使わない（replay cache は要らない）。
 // スマホの幅で開くと字幕と右の列を隠して始める（Issue #1236 の一部）ので、ボタンは押していない状態から始まり、1 回押すと出る
 test("見返し: 速さのメニューから速さを選べ、閉じた後は字幕・右の列のボタンが効く。スマホの幅では字幕と右の列を隠して始める", async ({ app, browser, screen }) => {
-  for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
+  // startsHidden: その幅で開いたときに、字幕と右の列を隠して始めるか
+  for (const { viewport, startsHidden } of [{ viewport: { width: 1280, height: 720 }, startsHidden: false }, { viewport: { width: 390, height: 844 }, startsHidden: true }]) {
     // 開いたときに出ているか（aria-pressed）と、1 回押した後
-    const [before, after] = viewport.width <= 768 ? ["false", "true"] : ["true", "false"];
+    const [before, after] = startsHidden ? ["false", "true"] : ["true", "false"];
     await browser.setViewport(viewport);
     await openReview({ app, browser }, `review-rate-${viewport.width}`);
     const rateButton = browser.locator(".review-rate__button");

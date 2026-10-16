@@ -130,11 +130,18 @@ describe("会議中の update: 狭い幅で開いたときの右の列と字幕"
     expect(hidden(run([keyMessage("E"), keyMessage("C")], opened).model)).toEqual({ side: false, captions: false });
   });
 
-  it("広い幅で開くと、今までどおり両方出して始める。次のスナップショットでも隠す・出すは変わらない", () => {
-    const opened = run([frameMessage(FIRST), measured], init(false, { startsNarrow: false })).model;
-    expect(hidden(opened)).toEqual({ side: false, captions: false });
-    const shownByHand = run([frameMessage(FIRST), measured, keyMessage("E"), keyMessage("C")], init(false, { startsNarrow: true })).model;
-    expect(hidden(run([frameMessage(SECOND)], shownByHand).model)).toEqual({ side: false, captions: false });
+  it("広い幅で開くと、今までどおり両方出して始める", () => {
+    expect(hidden(run([frameMessage(FIRST), measured], init(false, { startsNarrow: false })).model)).toEqual({ side: false, captions: false });
+  });
+
+  it("開いた後は、次のスナップショットでも画面の大きさが変わっても、隠す・出すは変わらない（人の操作を上書きしない）", () => {
+    const resized = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, nodeHeights: HEIGHTS }));
+    const hiddenAtStart = run([frameMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
+    expect(hidden(run([frameMessage(SECOND), resized], hiddenAtStart).model)).toEqual({ side: true, captions: true });
+    const shownByHand = run([keyMessage("E"), keyMessage("C")], hiddenAtStart).model;
+    expect(hidden(run([frameMessage(SECOND), resized], shownByHand).model)).toEqual({ side: false, captions: false });
+    const shownAtStart = run([frameMessage(FIRST), measured], init(false, { startsNarrow: false })).model;
+    expect(hidden(run([resized], shownAtStart).model)).toEqual({ side: false, captions: false });
   });
 });
 

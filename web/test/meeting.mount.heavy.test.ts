@@ -725,9 +725,13 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
   );
 
   it(
-    "右の列を隠して始めていても、ノードを選ぶと根拠のシートが出て、閉じるボタンで選びが外れて閉じる",
+    "E で右の列を隠していても、ノードを選ぶと根拠のシートが出て、閉じるボタンで選びが外れて閉じる",
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
+      await settled(page);
+      // 狭い幅は右の列を隠して始めるので、E で 1 回出してから、もう 1 回で隠す
+      await page.keyboard.press("E");
+      await page.keyboard.press("E");
       await settled(page);
       expect(await page.locator(".side").isVisible()).toBe(false);
       await selectFirstNode(page);
@@ -774,15 +778,12 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
 
 describe("会議中（Foldkit 版）の開いたときの字幕と右の列", () => {
   it(
-    "390×844 で開くと字幕を隠して始め、C で出せる。E で右の列を出しても、狭い幅では右の列は出ない（並べ方は CSS のまま）",
+    "390×844 で開くと字幕を隠して始め、C で出せる（右の列は狭い幅の CSS が隠すので、隠して始めることは meeting.story.test.ts が見る）",
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first, viewport: NARROW_VIEWPORTS[0] });
       await settled(page);
       expect(await page.locator(".captions").count()).toBe(0);
       await showCaptions(page);
-      await page.keyboard.press("E");
-      await settled(page);
-      expect(await page.locator(".side").isVisible()).toBe(false);
       await page.context().close();
     }),
     MEETING_TIMEOUT,

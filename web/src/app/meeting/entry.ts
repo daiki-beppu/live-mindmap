@@ -1,5 +1,5 @@
 import { Runtime } from "foldkit";
-import { Flags, flags } from "../sessionLayout/flags.ts";
+import { Flags, readFlags } from "../startFlags.ts";
 import { init, Model, update, view } from "./main.ts";
 import { subscriptions } from "./subscription.ts";
 
@@ -19,6 +19,6 @@ export const runMeeting = ({ container, isMac }: MeetingInput): void => {
       subscriptions,
       container,
     }),
-    { flags },
+    { flags: readFlags },
   );
 };

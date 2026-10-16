@@ -3,7 +3,7 @@
 // freezeModel は切らない（既定のまま）
 import { Option } from "effect";
 import { Runtime } from "foldkit";
-import { Flags, flags } from "../sessionLayout/flags.ts";
+import { Flags, readFlags } from "../startFlags.ts";
 import { makeContext } from "./context.ts";
 import { init, makeUpdate, makeView, Model } from "./main.ts";
 import { makeSubscriptions } from "./subscription.ts";
@@ -34,6 +34,6 @@ export const runReview = ({ container, events, maybeAudioUrl, isMac }: ReviewInp
       subscriptions: makeSubscriptions(context),
       container,
     }),
-    { flags },
+    { flags: readFlags },
   );
 };
