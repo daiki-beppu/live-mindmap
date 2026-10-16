@@ -22,15 +22,16 @@ struct ScreenFrameThinner {
 
 /// 映像の読み出しは、デコードが済むまでスレッドを止めて待つ。Swift の並行処理のスレッドで呼ばず、専用の直列のキューで行う（音声の `fileReadingQueue` と同じ事情。Issue #1086）。
 /// 音声の読み出しと別のキューにして、映像の JPEG・OCR で音声の読み出しを止めない。
-private let fileScreenQueue = DispatchQueue(label: "live-mindmap.file-screen")
+let fileScreenQueue = DispatchQueue(label: "live-mindmap.file-screen")
 
-private func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
     await withCheckedContinuation { continuation in
         fileScreenQueue.async { continuation.resume(returning: body()) }
     }
 }
 
 /// 動画の最初の映像トラックを読み、変化した画面のイベントにする。`next()` は `fileScreenQueue` の上でだけ呼ぶ。
+/// AVAssetReader には `fileScreenQueue` の上（と `deinit`）でだけ触れる。読み出し中に別のスレッドから `cancelReading` が入ると落ちる（Issue #1198）。
 final class FileScreenReading: @unchecked Sendable {
     enum Opened {
         /// 映像のトラックが無い（音声だけのファイル）。「読めない」とは別。
@@ -48,6 +49,10 @@ final class FileScreenReading: @unchecked Sendable {
     /// 最後に読んだフレームの時刻（途中で読めなくなったときの `screen-off` の時刻。`--self-file` の 2 トラックでは映像の判定の進み）。
     private(set) var lastTime: Double
     private var finished = false
+    /// 取り消しの印。`cancel()` はどのスレッドからでも立てられ、`next()` はフレームを読むたびに見る。
+    private let cancelLock = NSLock()
+    private var cancelled = false
+    private var isCancelled: Bool { cancelLock.withLock { cancelled } }
 
     private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput, startingAt: Double) {
         self.reader = reader
@@ -85,15 +90,20 @@ final class FileScreenReading: @unchecked Sendable {
         }
     }
 
+    /// 読むのをやめる。どのスレッドから呼んでもよい。読み出し中の `next()` は次のフレームで抜け、読み手は `fileScreenQueue` の上で止める。
     func cancel() {
-        reader.cancelReading()
+        cancelLock.withLock { cancelled = true }
+        fileScreenQueue.async { self.reader.cancelReading() }
     }
+
+    /// 読み手の状態（テストで、取り消しが AVAssetReader に触れた時機を見る）。
+    var readerStatus: AVAssetReader.Status { reader.status }
 
     /// 次のイベントを読む（出るまでフレームを進める）。映像を読み終えたら nil。
     /// 途中で読めなくなったら、画像を送った後なら `image: null`、続けて `screen-off`（許可なし）を返してから終わる（ライブの `emitCaptureStopped` と同じ順）。
     func next() -> [HelperEvent]? {
-        if finished { return nil }
-        while let sample = output.copyNextSampleBuffer() {
+        if finished || isCancelled { return nil }
+        while !isCancelled, let sample = output.copyNextSampleBuffer() {
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { continue }
             lastTime = time
@@ -101,7 +111,7 @@ final class FileScreenReading: @unchecked Sendable {
             if let event = detector.screenEvent(for: frame, encode: { screenShot(of: rendered.image) }) { return [event] }
         }
         finished = true
-        guard reader.status == .failed else { return nil }
+        guard !isCancelled, reader.status == .failed else { return nil }
         printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
         var events: [HelperEvent] = []
         if let event = detector.screenEvent(windowGoneAt: lastTime) { events.append(event) }
