@@ -99,7 +99,7 @@ describe("事実を Message にする", () => {
   it("server が送る 8 種類の frame（snapshot と 7 つの type）を decode して ReceivedLiveFrame にする", async () => {
     const frames = [
       snapshot,
-      { type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "仮", start: 1, end: 2, text: "こんにち" }] },
+      { type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "仮", start: 1, end: 2, text: "こんにち", settledLength: 0 }] },
       { type: "intake", status: "interrupted" },
       { type: "screen-notice", text: "共有画面は使っていません" },
       { type: "tap-notice", text: null },

@@ -139,6 +139,8 @@ export const DisplayBubble = Schema.Struct({
   // 名前ごとの色の番号（0 〜 CAPTION_PALETTE_SIZE - 1）。同じ名前は同じ色
   colorIndex: Schema.Int,
   text: Schema.String,
+  // text の先頭から何文字までが確定か。残りは途中結果
+  settledLength: Schema.Int,
 });
 export type DisplayBubble = typeof DisplayBubble["Type"];
 
@@ -166,12 +168,22 @@ export function displayBubbles(state: CaptionState, now: number): DisplayBubble[
     Option.isSome(e.placement) && e.placement.value.kind === "continue" && ids.has(e.placement.value.into) ? e.placement.value.into : undefined;
   const heads = ordered.filter((e) => isShown(e) && continuedInto(e) === undefined);
   const full = heads.map((head) => {
-    const text = ordered.filter((e) => continuedInto(e) === head.bubble.id).reduce((t, e) => joinText(t, e.bubble.text), head.bubble.text);
-    return { head, text };
+    const joined = ordered
+      .filter((e) => continuedInto(e) === head.bubble.id)
+      .reduce(
+        (acc, e) => {
+          const text = joinText(acc.text, e.bubble.text);
+          // 前に途中の分が残っていれば、後ろの文字は全部途中。前が全部確定なら、後ろの確定の分だけ延びる
+          const settledLength = acc.settledLength < acc.text.length ? acc.settledLength : text.length - e.bubble.text.length + e.bubble.settledLength;
+          return { text, settledLength };
+        },
+        { text: head.bubble.text, settledLength: head.bubble.settledLength },
+      );
+    return { head, ...joined };
   });
   const visible = full.slice(-CAPTION_VISIBLE_BUBBLES);
   let previousName: string | undefined;
-  return visible.map(({ head, text }) => {
+  return visible.map(({ head, text, settledLength }) => {
     const { track, speaker, label } = head.bubble;
     const limited = label === "仮" && now - head.receivedAt >= CAPTION_PROVISIONAL_LIMIT_MS;
     const name = track === "自分" ? undefined : ((label !== "なし" && !limited ? speaker : undefined) ?? UNKNOWN_SPEAKER);
@@ -184,6 +196,7 @@ export function displayBubbles(state: CaptionState, now: number): DisplayBubble[
       nameState: label === "仮" && !limited ? "provisional" : "settled",
       colorIndex: name === undefined ? 0 : colorIndexOf(name),
       text,
+      settledLength,
     };
   });
 }

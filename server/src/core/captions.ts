@@ -20,6 +20,8 @@ export const CaptionBubble = Schema.Struct({
   start: Schema.Finite,
   end: Schema.Finite,
   text: Schema.String,
+  // text の先頭から何文字までが確定（発言になった文字）か。残りは途中結果。全部確定なら text の長さ
+  settledLength: Schema.Int,
   // 区間が届く前に 1 つで送った吹き出しから、話者で分かれて出た吹き出しだけが持つ。分かれる前の吹き出し（id）。表示したかを知っている側（ブラウザ）が、文字を移すかどうかを決める
   splitFrom: Schema.optionalKey(Schema.String),
 });
@@ -43,7 +45,8 @@ export type CaptionBoardInput = {
   readonly previewLabel: (slot: number) => string | undefined;
 };
 
-type Unit = { source: number; start: number; end: number; text: string; speaker: string | undefined; label: CaptionLabel };
+// settled は、語が発言（unreflected・held）から来たか。途中結果の語は false。remarkUnits の引数 settled（話者の決め方の旗）とは別
+type Unit = { source: number; start: number; end: number; text: string; speaker: string | undefined; label: CaptionLabel; settled: boolean };
 // 送った吹き出しの境目。id は最初に送ったときに振り、動かさない。start / last は、いま属している語の開始時刻の最小と最大。
 // open は、属する語に話者が一度も付いていない境目（ラベル「なし」で送ったまま）。区間が届いて話者が分かれたとき、開いた境目だけ語を話者で分け直せる。splitFrom は分け直して生まれた境目の、もとの境目の id
 // 盤が覚える境目は「送った吹き出し」の境目。build だけが確定し、preview は確定しない（送らなかった比較で、ブラウザが知らない id や閉じた境目を作らないため）
@@ -61,6 +64,21 @@ export const continuesAfter = (previousEnd: number, start: number): boolean => M
 // 語（開始時刻）が属する、送った吹き出しの境目。先に範囲に入る吹き出し（既存の所属）を探し、無いときだけ最初の語の揺れ（許容）で、直後に始まる吹き出しを探す
 const ownerOf = (previous: readonly Boundary[], start: number): Boundary | undefined =>
   [...previous].reverse().find((b) => b.start <= start && start <= b.last) ?? previous.find((b) => b.start - START_TOLERANCE_S <= start && start < b.start);
+
+// 語をつないだ本文と、先頭から続く発言の語の長さ（確定の文字数）。途中結果の語より後ろは、発言の語でも確定に数えない。本文の trim で先頭の空白が落ちた分を引く
+const joinUnits = (us: readonly Unit[]): { text: string; settledLength: number } => {
+  let raw = "";
+  let settledEnd = 0;
+  let contiguous = true;
+  for (const u of us) {
+    raw += (needsSpace(raw, u.text) ? " " : "") + u.text;
+    contiguous = contiguous && u.settled;
+    if (contiguous) settledEnd = raw.length;
+  }
+  const text = raw.trim();
+  const dropped = raw.length - raw.trimStart().length;
+  return { text, settledLength: Math.min(text.length, Math.max(0, settledEnd - dropped)) };
+};
 
 const TRACKS: readonly Track[] = ["相手", "自分"];
 const needsSpace = (left: string, right: string) => /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right);
@@ -80,16 +98,16 @@ const wordUnits = (
 
 const partialUnits = (p: HelperPartial, source: number, intervals: readonly Segment[], previewLabel: (slot: number) => string | undefined): Unit[] =>
   wordUnits(p.text, p.start, p.end, p.wordTimes, (start, end, text) => {
-    if (p.track === "自分") return { source, start, end, text, speaker: "自分", label: "確定" };
+    if (p.track === "自分") return { source, start, end, text, speaker: "自分", label: "確定", settled: false };
     const slot = longestOverlap(start, end, intervals);
     const speaker = slot === undefined ? undefined : previewLabel(slot);
-    return { source, start, end, text, speaker, label: speaker === undefined ? "なし" : "仮" };
+    return { source, start, end, text, speaker, label: speaker === undefined ? "なし" : "仮", settled: false };
   });
 
 // 発言を語ごとの単位にする（表示済みの吹き出しの境目で文字を分配できるように）。出た発言（unreflected）は発言の話者、保留中の発言（held）は区間から予想した仮の話者
 const remarkUnits = (r: SettledRemark, source: number, intervals: readonly Segment[], previewLabel: (slot: number) => string | undefined, settled: boolean): Unit[] =>
   wordUnits(r.text, r.start, r.end, r.wordTimes, (start, end, text) => {
-    const base = { source, start, end, text };
+    const base = { source, start, end, text, settled: true };
     if (r.track === "自分") return { ...base, speaker: "自分", label: "確定" };
     if (settled) return { ...base, speaker: r.speaker, label: r.speaker === undefined ? "なし" : "確定" };
     const slot = longestOverlap(start, end, intervals);
@@ -166,6 +184,7 @@ export function createCaptionBoard() {
     draft.boundariesOf.set(track, boundaries.map((b) => ({ ...b, last: Math.max(...groups.get(b)!.map((u) => u.start)), open: b.open && groups.get(b)!.every((u) => u.speaker === undefined) })));
     return [...groups].map(([b, us]): CaptionBubble => {
       const named = us.find((u) => u.speaker !== undefined);
+      const { text, settledLength } = joinUnits(us);
       return {
         id: b.id,
         track,
@@ -173,7 +192,8 @@ export function createCaptionBoard() {
         label: named?.label ?? "なし",
         start: us[0]!.start,
         end: us.at(-1)!.end,
-        text: us.reduce((text, u) => text + (needsSpace(text, u.text) ? " " : "") + u.text, "").trim(),
+        text,
+        settledLength,
         ...(b.splitFrom === undefined ? {} : { splitFrom: b.splitFrom }),
       };
     });

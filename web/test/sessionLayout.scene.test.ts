@@ -197,7 +197,7 @@ describe("sessionLayout の Scene: 字幕", () => {
 
 // Issue #1022: 会議中の字幕（話者つきの吹き出し）。名前の欄は 1 つの部品（speakerName.ts）から作る
 describe("sessionLayout の Scene: 字幕の吹き出し", () => {
-  const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), nameState: "settled", colorIndex: 1, text: id, ...extra });
+  const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), nameState: "settled", colorIndex: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
   const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
   const rows = (html: VNode) => findAll(".captions__row")(html);
@@ -274,6 +274,102 @@ describe("sessionLayout の Scene: 字幕の吹き出し", () => {
         expect(classOf(a!)).not.toBe(classOf(b!));
       }),
     );
+  });
+
+  describe("確定の分と途中の分（settledLength）", () => {
+    const bubbleOf = (html: VNode) => Option.getOrThrow(find(".captions__bubble")(html));
+    const pendingOf = (html: VNode) => findAll(".captions__pending")(html);
+    const cursorsOf = (html: VNode) => findAll(".captions__cursor")(html);
+
+    it("全部確定の吹き出しは、途中の分の要素もカーソルも出さない。文字は今のまま（薄くしない）", () => {
+      scene(
+        app,
+        given(withBubbles(bubble("a", { text: "こんにちは", settledLength: 5 }))),
+        settled,
+        tap((s) => {
+          expect(pendingOf(s.html)).toHaveLength(0);
+          expect(cursorsOf(s.html)).toHaveLength(0);
+          expect(textContent(bubbleOf(s.html))).toBe("こんにちは");
+          expect(classOf(bubbleOf(s.html))).not.toContain("opacity");
+        }),
+      );
+    });
+
+    it("途中の分は別の要素で不透明度 0.5。確定の分は薄くならず、全体の文字は変わらない", () => {
+      scene(
+        app,
+        given(withBubbles(bubble("a", { text: "こんにちは元気", settledLength: 5 }))),
+        settled,
+        tap((s) => {
+          const pending = pendingOf(s.html);
+          expect(pending).toHaveLength(1);
+          expect(classOf(pending[0]!)).toContain("opacity-50");
+          expect(textContent(pending[0]!)).toBe("元気");
+          expect(textContent(bubbleOf(s.html))).toBe("こんにちは元気");
+          expect(classOf(bubbleOf(s.html))).not.toContain("opacity");
+        }),
+      );
+    });
+
+    it("途中の分は話者の色を保つ: 途中の分の要素に色の class を付けず、親の吹き出しの色を受け継ぐ", () => {
+      scene(
+        app,
+        given(withBubbles(bubble("a", { text: "こんにちは元気", settledLength: 5, colorIndex: 2 }))),
+        settled,
+        tap((s) => {
+          expect(classOf(pendingOf(s.html)[0]!)).not.toMatch(/\b(text-|bg-|shadow|border|rounded|badge)/);
+          expect(classOf(bubbleOf(s.html))).toMatch(/\btext-/);
+        }),
+      );
+    });
+
+    it("確定が 0 文字（途中だけ）の吹き出しは、本文が全部途中の分になる", () => {
+      scene(
+        app,
+        given(withBubbles(bubble("a", { text: "こんにち", settledLength: 0 }))),
+        settled,
+        tap((s) => {
+          expect(textContent(pendingOf(s.html)[0]!)).toBe("こんにち");
+          expect(textContent(bubbleOf(s.html))).toBe("こんにち");
+        }),
+      );
+    });
+
+    it("カーソルは、途中の分がある吹き出しだけに 1 つ。途中の分の中の末尾にあり、文字を持たない", () => {
+      scene(
+        app,
+        given(withBubbles(bubble("a", { text: "こんにちは元気", settledLength: 5 }), bubble("b", { text: "はい", settledLength: 2 }))),
+        settled,
+        tap((s) => {
+          const cursors = cursorsOf(s.html);
+          expect(cursors).toHaveLength(1);
+          expect(textContent(cursors[0]!)).toBe("");
+          const pending = elements(pendingOf(s.html)[0]!);
+          expect(hasClass(pending.at(-1)!, "captions__cursor")).toBe(true);
+          const rowOfB = rows(s.html).find((r) => Option.getOrUndefined(attr(r, "data-caption-id")) === "b")!;
+          expect(findAll(".captions__cursor")(rowOfB)).toHaveLength(0);
+        }),
+      );
+    });
+
+    it("途中の分が発言になると、同じ行（同じ id）のまま、途中の分の要素とカーソルが消えて普通の濃さになる", () => {
+      scene(
+        app,
+        given(withBubbles(bubble("a", { text: "こんにちは", settledLength: 0 }))),
+        settled,
+        tap((s) => {
+          expect(cursorsOf(s.html)).toHaveLength(1);
+          expect(rows(s.html).map((r) => Option.getOrUndefined(attr(r, "data-caption-id")))).toEqual(["a"]);
+        }),
+        emit(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [bubble("a", { text: "こんにちは", settledLength: 5 })] } })),
+        tap((s) => {
+          expect(rows(s.html).map((r) => Option.getOrUndefined(attr(r, "data-caption-id")))).toEqual(["a"]);
+          expect(pendingOf(s.html)).toHaveLength(0);
+          expect(cursorsOf(s.html)).toHaveLength(0);
+          expect(textContent(bubbleOf(s.html))).toBe("こんにちは");
+        }),
+      );
+    });
   });
 
   it("吹き出しが入れ替わっても、同じ id の行は同じ行として残る（キーは id）。隠すと .captions ごと消え、出し直すと戻る", () => {
