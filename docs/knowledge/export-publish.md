@@ -73,8 +73,8 @@ Workers Static Assets は、REST API の Direct Upload（assets-upload-session �
 
 ## 出典
 
-- [会議の後にマップを URL で見せる機能の地図を作ったとき](2026-10-16.md#export-publish-map)
-- [会議の後にマップを URL で見せる相手を決めたとき](2026-10-16.md#export-publish-audience)
-- [会議の後に URL で見せる物の既定値を決めたとき](2026-10-16.md#export-publish-defaults)
-- [会議の後に相手の発言を URL で出すときの確認を決めたとき](2026-10-16.md#export-publish-consent)
+- [会議の後にマップを URL で見せる機能の地図を作ったとき](../devlog/2026-10-16.md#export-publish-map)
+- [会議の後にマップを URL で見せる相手を決めたとき](../devlog/2026-10-16.md#export-publish-audience)
+- [会議の後に URL で見せる物の既定値を決めたとき](../devlog/2026-10-16.md#export-publish-defaults)
+- [会議の後に相手の発言を URL で出すときの確認を決めたとき](../devlog/2026-10-16.md#export-publish-consent)
 - チケット [#1212 後片付けと取り消し](https://github.com/daiki-beppu/live-mindmap/issues/1212)、仕様 [#1246](https://github.com/daiki-beppu/live-mindmap/issues/1246)、実装の親 [#1247](https://github.com/daiki-beppu/live-mindmap/issues/1247)、用語「取り下げ」[PR #1244](https://github.com/daiki-beppu/live-mindmap/pull/1244)
