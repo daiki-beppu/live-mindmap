@@ -278,7 +278,7 @@ describe("会議中の字幕（吹き出し）", () => {
 
       const extended: HelperPartial = { ...first, end: 2, text: "来週のリリースは金曜に", wordTimes: [...wordTimes, { location: 8, length: 3, start: 1.3, end: 2 }] };
       settler.partial(extended);
-      state = receiveCaptions(state, board.build({ ...input, partials: [settler.unsettled(extended)] }), 100);
+      state = receiveCaptions(state, board.build({ ...input, partials: [settler.unemittedTail(extended)] }), 100);
 
       expect(view(state, 100 + WAIT).map((b) => [nameOf(b), b.text])).toEqual([["相手 A", "来週のリリースは金曜に"]]);
     });

@@ -68,51 +68,60 @@ export function createRemarkGate() {
   // トラックごとの「直前に出した発言」。関所で落とした発言では更新しない
   const last = new Map<GatedRemark["track"], { end: number; text: string }>();
 
+  // 出す直前の判断。出さない発言は undefined。状態は変えない（覚える値は remembered で返す）
+  const judge = (r: GatedRemark): { emitted: GatedRemark; remembered: { end: number; text: string } } | undefined => {
+    const prev = last.get(r.track);
+    if (prev === undefined || r.start >= prev.end) {
+      // 重なっていない: 本文も時刻もそのまま出す
+      return { emitted: r, remembered: { end: r.end, text: r.text } };
+    }
+    const prevBody = compact(prev.text);
+    const newBody = compact(r.text);
+    // 直前の本文に丸ごと含まれる（newBody が空文字の場合も、空文字はどんな文字列にも含まれるのでここで弾かれる）
+    if (prevBody.includes(newBody)) return undefined;
+
+    // 直前の本文の末尾と、新しい本文の頭で重なる最長の部分の長さ。無ければ 0
+    let k = 0;
+    for (let candidate = Math.min(prevBody.length, newBody.length); candidate >= 1; candidate--) {
+      if (prevBody.endsWith(newBody.slice(0, candidate))) {
+        k = candidate;
+        break;
+      }
+    }
+    // 重なりの候補は 2 つ持つ。完全一致（UTF-16 単位）と、書き換わった前の部分を許す重なり（コードポイント単位）。
+    // 完全一致が短くても、その先に書き換えを含む長い重なりがあれば既出の部分が混ざるので、長い方を採る。
+    // 完全一致だけが持つ候補を残すのは、不対サロゲートとの比較で k がペアの途中を指す場合の、切り出し結果が空になる既存の扱いのため。
+    // 抑制した発言で「直前」を更新しないため、切り出し後の本文を状態更新前に検証する。
+    // 切る位置は、重ねたコードポイントの UTF-16 の長さ
+    const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
+    const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
+    k = Math.max(k, fuzzy);
+    const at = k === 0 ? 0 : overlapEnd(r.text, k);
+    const text = r.text.slice(at);
+    if (compact(text) === "") return undefined;
+    const start = prev.end;
+    if (r.end <= start) return undefined;
+
+    const emitted: GatedRemark = {
+      ...r, start, text,
+      ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }),
+      ...(r.wordTimes === undefined || at === 0 ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
+    };
+    // 覚える本文は切る前の r.text。同じ始まりから全文を送り直す途中結果の頭と、前の全文が重なる
+    return { emitted, remembered: { end: emitted.end, text: r.text } };
+  };
+
   return {
     // 出す直前に通す。出さない発言は undefined を返す
     pass(r: GatedRemark): GatedRemark | undefined {
-      const prev = last.get(r.track);
-      if (prev === undefined || r.start >= prev.end) {
-        // 重なっていない: 本文も時刻もそのまま出す
-        last.set(r.track, { end: r.end, text: r.text });
-        return r;
-      }
-
-      const prevBody = compact(prev.text);
-      const newBody = compact(r.text);
-      // 直前の本文に丸ごと含まれる（newBody が空文字の場合も、空文字はどんな文字列にも含まれるのでここで弾かれる）
-      if (prevBody.includes(newBody)) return undefined;
-
-      // 直前の本文の末尾と、新しい本文の頭で重なる最長の部分の長さ。無ければ 0
-      let k = 0;
-      for (let candidate = Math.min(prevBody.length, newBody.length); candidate >= 1; candidate--) {
-        if (prevBody.endsWith(newBody.slice(0, candidate))) {
-          k = candidate;
-          break;
-        }
-      }
-      // 重なりの候補は 2 つ持つ。完全一致（UTF-16 単位）と、書き換わった前の部分を許す重なり（コードポイント単位）。
-      // 完全一致が短くても、その先に書き換えを含む長い重なりがあれば既出の部分が混ざるので、長い方を採る。
-      // 完全一致だけが持つ候補を残すのは、不対サロゲートとの比較で k がペアの途中を指す場合の、切り出し結果が空になる既存の扱いのため。
-      // 抑制した発言で「直前」を更新しないため、切り出し後の本文を状態更新前に検証する。
-      // 切る位置は、重ねたコードポイントの UTF-16 の長さ
-      const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
-      const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
-      k = Math.max(k, fuzzy);
-      const at = k === 0 ? 0 : overlapEnd(r.text, k);
-      const text = r.text.slice(at);
-      if (compact(text) === "") return undefined;
-      const start = prev.end;
-      if (r.end <= start) return undefined;
-
-      const emitted: GatedRemark = {
-        ...r, start, text,
-        ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }),
-        ...(r.wordTimes === undefined || at === 0 ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
-      };
-      // 覚える本文は切る前の r.text。同じ始まりから全文を送り直す途中結果の頭と、前の全文が重なる
-      last.set(r.track, { end: emitted.end, text: r.text });
-      return emitted;
+      const judged = judge(r);
+      if (judged === undefined) return undefined;
+      last.set(r.track, judged.remembered);
+      return judged.emitted;
+    },
+    // pass と同じ判断を、「直前に出した発言」を更新せずに返す（字幕へ渡す途中結果のため。Issue #1222）
+    preview(r: GatedRemark): GatedRemark | undefined {
+      return judge(r)?.emitted;
     },
   };
 }

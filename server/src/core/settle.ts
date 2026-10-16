@@ -110,6 +110,13 @@ const toCutRemark = (u: Utterance, pos: number, emittedEnd: number): SettledRema
   ...(u.wordTimes === undefined ? {} : { wordTimes: keepWordsBefore(u.wordTimes, pos) }),
 });
 
+// 本文の頭 at コード単位を除いた結果。words・wordTimes も同じ位置で切る（無ければキーも付けない）
+const cutHead = <R extends { readonly text: string; readonly words?: readonly Word[]; readonly wordTimes?: readonly WordTime[] }>(r: R, at: number): R => ({
+  ...r, text: r.text.slice(at),
+  ...(r.words === undefined ? {} : { words: cutWords(r.words, at) }),
+  ...(r.wordTimes === undefined ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
+});
+
 export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
   const utterances: Utterance[] = []; // 作った順。覆われて使い終わったもの（consumed）は除く
   const latest = new Map<string, Utterance>(); // 同じトラック・start で、更新を受け付けられる発話
@@ -122,8 +129,9 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
   const emittedByTrack = new Map<Remark["track"], Emitted>();
 
   // 出した分（同じ発話の記録を優先し、無ければトラックの記録）の後ろだけを返す。後ろが無ければ undefined。
-  // 発言を出す経路（passCarried）と、字幕へ渡す途中結果（unsettled）が同じ規則で切るよう、ここ 1 か所に置く（Issue #1222）。記録は進めない
-  const afterEmitted = <R extends SettledRemark>(key: string, r: R): R | undefined => {
+  // 発言を出す経路（passCarried）と、字幕へ渡す途中結果（unemittedTail）が同じ規則で切るよう、ここ 1 か所に置く（Issue #1222）。
+  // どちらも、この後にトラック全体の関所を通す（発言は gate.pass、字幕は gate.preview）。記録は進めない
+  const afterEmitted = (key: string, r: SettledRemark): SettledRemark | undefined => {
     const sameUtterance = emittedByKey.get(key);
     const prev = sameUtterance ?? emittedByTrack.get(r.track);
     if (prev === undefined) return r;
@@ -131,14 +139,9 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
     // 関所と同じく句読点・空白を無視して比べる（出した文の句読点が変わっても見落とさない）。
     // 先頭に現れるときは切らず、関所の重なりに任せる（頭だけ書き換わった出した文の後ろまで捨てないため）
     const at = sameUtterance === undefined ? 0 : insertionEnd(r.text, sameUtterance.text);
-    const candidate: R = at === 0 ? r : {
-      ...r, text: r.text.slice(at),
-      ...(r.words === undefined ? {} : { words: cutWords(r.words, at) }),
-      ...(r.wordTimes === undefined ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
-    };
     const carry = createRemarkGate();
     carry.pass({ track: r.track, start: prev.end, end: prev.end, text: prev.text });
-    return carry.pass(candidate) as R | undefined;
+    return carry.pass(at === 0 ? r : cutHead(r, at));
   };
 
   // 途中結果・確定結果を、出した分の後ろだけにして返す
@@ -236,9 +239,12 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
     // 字幕へ渡す途中結果（Issue #1222）。発言を出すときと同じ規則で、もう発言になった分を除いた後ろだけにする。
     // 全部が発言になっていれば、本文・語・語の区間を空にして返す（そのトラックの途中結果は空として扱う）。状態は変えない。
     // 自分の途中結果は発言にならないので、そのまま返す
-    unsettled(p: HelperPartial): HelperPartial {
+    unemittedTail(p: HelperPartial): HelperPartial {
       if (p.track === "自分") return p;
-      return afterEmitted(keyOf(p.track, p.start), p) ?? { ...p, text: "", ...(p.words === undefined ? {} : { words: [] }), ...(p.wordTimes === undefined ? {} : { wordTimes: [] }) };
+      const carried = afterEmitted(keyOf(p.track, p.start), p);
+      // 発言を出すときと同じく、トラック全体の関所も通す（記録は進めない）
+      const tail = carried === undefined ? undefined : gate.preview(carried);
+      return tail === undefined ? cutHead(p, p.text.length) : { ...p, ...tail };
     },
 
     // 確定結果。返すのは、期限の来た発言に続けて、発言として出すもの

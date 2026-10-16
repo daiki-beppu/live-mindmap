@@ -491,9 +491,9 @@ describe("補正つきの未反映の発言（replacements）の字幕用の本�
   });
 });
 
-// Issue #1222: 発言にした後に、STT が同じ区切りを延ばした途中結果。字幕へ渡す途中結果は、settler が出した分を除いた後ろだけにする（settler.unsettled）。
+// Issue #1222: 発言にした後に、STT が同じ区切りを延ばした途中結果。字幕へ渡す途中結果は、settler が出した分を除いた後ろだけにする（settler.unemittedTail）。
 // 盤は変えない。発言と、その後ろの途中結果は、別の吹き出しになってよい（並べると 1 回ずつ）
-describe("発言になった分を除いた途中結果（settler.unsettled）を盤へ渡す", () => {
+describe("発言になった分を除いた途中結果（settler.unemittedTail）を盤へ渡す", () => {
   // 相手の途中結果を settler へ入れ、自分の途中結果で音声の時計を 1 秒進めて、発言にする
   const settle = (settler: ReturnType<typeof createRemarkSettler>, p: HelperPartial): SettledRemark[] => [
     ...settler.partial(p),
@@ -511,7 +511,7 @@ describe("発言になった分を除いた途中結果（settler.unsettled）�
 
     const extended = partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2], ["金曜に", 1.3, 2.0]]);
     settler.partial(extended);
-    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unsettled(extended)] });
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unemittedTail(extended)] });
 
     expect(texts(bubbles)).toEqual(["来週のリリースは", "金曜に"]);
   });
@@ -524,7 +524,7 @@ describe("発言になった分を除いた途中結果（settler.unsettled）�
 
     const shifted = partialOf([["来週の", 0.7, 1.2], ["リリースは", 1.2, 1.9], ["金曜に", 2.0, 2.6]]);
     settler.partial(shifted);
-    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unsettled(shifted)] });
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unemittedTail(shifted)] });
 
     expect(texts(bubbles)).toEqual(["来週のリリースは", "金曜に"]);
   });
@@ -537,8 +537,8 @@ describe("発言になった分を除いた途中結果（settler.unsettled）�
 
     const same = partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2]]);
     settler.partial(same);
-    expect(settler.unsettled(same).text).toBe("");
-    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unsettled(same)] });
+    expect(settler.unemittedTail(same).text).toBe("");
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unemittedTail(same)] });
 
     expect(bubbles.map((b) => [b.id, b.text])).toEqual(shown.map((b) => [b.id, b.text]));
   });
@@ -551,7 +551,7 @@ describe("発言になった分を除いた途中結果（settler.unsettled）�
 
     const inserted = partialOf([["えっと、", 0, 0.3], ["来週の", 0.3, 0.8], ["リリースは", 0.8, 1.4], ["金曜に", 1.5, 2.2]]);
     settler.partial(inserted);
-    const caption = settler.unsettled(inserted);
+    const caption = settler.unemittedTail(inserted);
     const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [caption] });
     const [next] = settle(settler, inserted);
 
