@@ -1603,3 +1603,37 @@ describe("wordTimes の運搬（Issue #1019）", () => {
     });
   });
 });
+
+// Issue #1222: 字幕へ渡す途中結果（unemittedTail）は、発言を出すときと同じ規則（出した分の記録・トラック全体の関所）で、もう発言になった分を除く。状態は変えない
+describe("unemittedTail（字幕へ渡す、まだ発言になっていない分）", () => {
+  it("同じ発話で出した分の後ろだけを返し、呼んでも発言の記録は進まない（同じ途中結果が後で発言になるときは、同じ後ろが出る）", () => {
+    const s = createRemarkSettler();
+    s.partial(partial("相手", 0, 1.2, "来週のリリースは"));
+    expect(tick(s, quiet(1.2)).map((r) => r.text)).toEqual(["来週のリリースは"]);
+    const extended = partial("相手", 0, 2.5, "来週のリリースは金曜に");
+    s.partial(extended);
+
+    expect(s.unemittedTail(extended).text).toBe("金曜に");
+    expect(s.unemittedTail(extended).text).toBe("金曜に");
+    expect(tick(s, quiet(2.5)).map((r) => r.text)).toEqual(["金曜に"]);
+  });
+
+  it("同じ発話の記録の後に同じトラックの別の発話を出していれば、トラック全体の関所でも突き合わせる（関所が捨てる分は字幕にも出さない）", () => {
+    const s = createRemarkSettler();
+    s.partial(partial("相手", 0, 1.2, "来週のリリースは"));
+    tick(s, quiet(1.2));
+    s.partial(partial("相手", 2.5, 3, "金曜にします"));
+    expect(tick(s, quiet(3)).map((r) => r.text)).toEqual(["金曜にします"]);
+    const late = partial("相手", 0, 4.5, "来週のリリースは金曜にします");
+    s.partial(late);
+
+    expect(s.unemittedTail(late).text).toBe("");
+    expect(tick(s, quiet(4.5))).toEqual([]);
+  });
+
+  it("自分の途中結果は発言にならないので、そのまま返す", () => {
+    const s = createRemarkSettler();
+    const mine = partial("自分", 0, 1, "はい");
+    expect(s.unemittedTail(mine)).toBe(mine);
+  });
+});

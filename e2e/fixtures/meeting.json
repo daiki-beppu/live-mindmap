@@ -85,6 +85,38 @@
       "end": 30,
       "text": "期限は金曜日にしましょう",
       "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "相手",
+      "start": 31,
+      "end": 33,
+      "text": "来週のリリースは",
+      "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "自分",
+      "start": 33,
+      "end": 34.5,
+      "text": "はい",
+      "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "相手",
+      "start": 31,
+      "end": 35,
+      "text": "来週のリリースは金曜に",
+      "duplicate": false
+    },
+    {
+      "type": "partial",
+      "track": "自分",
+      "start": 33,
+      "end": 35.5,
+      "text": "はい、了解です",
+      "duplicate": false
     }
   ],
   "speakers": [
@@ -162,6 +194,21 @@
       "type": "speaker-settled",
       "track": "相手",
       "to": 30
+    },
+    {
+      "before": 10,
+      "type": "speaker",
+      "track": "相手",
+      "start": 31,
+      "end": 33,
+      "slot": 0,
+      "final": true
+    },
+    {
+      "before": 10,
+      "type": "speaker-settled",
+      "track": "相手",
+      "to": 33
     }
   ]
 }

@@ -983,6 +983,27 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
+  // Issue #1222: 発言にした後に、STT が同じ区切りを延ばした途中結果が届く。字幕へは、もう発言になった分を除いた後ろだけを渡す
+  it.effect("発言 → 同じ区切りが延びた途中結果の順に届いても、送ったどのフレームにも同じ文字が 2 回現れない。後ろだけが途中結果の吹き出しに出る", () => {
+    const { calls, updateGate, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, speaks } = yield* openRecordingSink();
+      updateGate.gate = yield* Deferred.make<void>(); // 差分更新は呼ばれても返らない（発言は反映前のまま字幕に残る）
+      const wordTimes = [{ location: 0, length: 3, start: 0, end: 0.5 }, { location: 3, length: 5, start: 0.5, end: 1.2 }];
+      yield* sink.partial({ track: "相手", start: 0, end: 1.2, text: "来週のリリースは", wordTimes, duplicate: false });
+      yield* sink.partial({ track: "自分", start: 0, end: 1.2 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果で音声の時計だけを進め、相手の途中結果を発言にする
+      yield* settleUntil(() => calls.length === 1);
+
+      yield* sink.partial({ track: "相手", start: 0, end: 2, text: "来週のリリースは金曜に", wordTimes: [...wordTimes, { location: 8, length: 3, start: 1.3, end: 2 }], duplicate: false });
+      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+      yield* settleUntil(() => hasBubble(speaks, "相手", "金曜に"));
+
+      expect(lastTexts(speaks, "相手")).toEqual(["来週のリリースは", "金曜に"]);
+      for (const frame of speaks) expect(frame.bubbles.map((b) => b.text).join("").split("来週").length - 1).toBeLessThanOrEqual(1);
+      yield* Deferred.succeed(updateGate.gate, undefined);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
+
   it.effect("差分更新で反映された発言は、相手の最後の captions から消える（onDiff が relay.flushAll につながる）。反映前は本文が出ている", () => {
     const { calls, updateGate, updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
