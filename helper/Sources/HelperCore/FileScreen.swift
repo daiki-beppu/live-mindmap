@@ -46,17 +46,19 @@ final class FileScreenReading: @unchecked Sendable {
     private var thinner = ScreenFrameThinner()
     private var detector = ScreenChangeDetector(bundleID: "")
     /// 最後に読んだフレームの時刻（途中で読めなくなったときの `screen-off` の時刻。`--self-file` の 2 トラックでは映像の判定の進み）。
-    private(set) var lastTime = 0.0
+    private(set) var lastTime: Double
     private var finished = false
 
-    private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
+    private init(reader: AVAssetReader, output: AVAssetReaderTrackOutput, startingAt: Double) {
         self.reader = reader
         self.output = output
+        self.lastTime = startingAt
     }
 
     deinit { reader.cancelReading() }
 
-    static func open(_ url: URL) async -> Opened {
+    /// `startingAt` は読み始める映像の時刻（秒。起動し直しのとき 0 より後ろ）。
+    static func open(_ url: URL, startingAt: Double = 0) async -> Opened {
         let asset = AVURLAsset(url: url)
         let tracks: [AVAssetTrack]
         do {
@@ -65,18 +67,19 @@ final class FileScreenReading: @unchecked Sendable {
             return .unreadable(error.localizedDescription)
         }
         guard let track = tracks.first else { return .noVideo }
-        return await onFileScreenQueue { start(asset, track) }
+        return await onFileScreenQueue { start(asset, track, startingAt: startingAt) }
     }
 
-    private static func start(_ asset: AVURLAsset, _ track: AVAssetTrack) -> Opened {
+    private static func start(_ asset: AVURLAsset, _ track: AVAssetTrack, startingAt: Double) -> Opened {
         do {
             let reader = try AVAssetReader(asset: asset)
             let output = AVAssetReaderTrackOutput(
                 track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
             guard reader.canAdd(output) else { return .unreadable("映像を BGRA として読み出せない") }
             reader.add(output)
+            if startingAt > 0 { reader.timeRange = CMTimeRange(start: CMTime(seconds: startingAt, preferredTimescale: 600), duration: .positiveInfinity) }
             guard reader.startReading() else { return .unreadable(reader.error?.localizedDescription ?? "不明") }
-            return .reading(FileScreenReading(reader: reader, output: output))
+            return .reading(FileScreenReading(reader: reader, output: output, startingAt: startingAt))
         } catch {
             return .unreadable(error.localizedDescription)
         }
@@ -127,13 +130,14 @@ final class FileScreenReading: @unchecked Sendable {
 /// 流す順は、画面のイベントをすべて流し切ってから、文字起こしの結果。文字起こしの結果は流れの中に溜まるので、画面を先に流しても止まらない。
 /// サーバーは画面の変化を発言より先に受け取る前提で、音声の時刻の順に並べる。
 /// 映像が読めなければ `screen-off`（許可なし）を流して、音声の結果は続く。映像のトラックが無ければ画面のイベントは出ない。
-public func fileSessionEvents(at url: URL, with transcriber: any FileTranscriber) async throws -> AsyncThrowingStream<HelperEvent, Error> {
-    let results = try await transcribeFile(at: url, with: transcriber)
+/// `from` は読み始める音声・映像の時刻（秒。サーバーの起動し直しのとき）。結果の時刻はファイルの時刻のまま。
+public func fileSessionEvents(at url: URL, with transcriber: any FileTranscriber, from: Double = 0) async throws -> AsyncThrowingStream<HelperEvent, Error> {
+    let results = try await transcribeFile(at: url, with: transcriber, from: from)
     let (stream, continuation) = AsyncThrowingStream.makeStream(of: HelperEvent.self, throwing: Error.self)
     let task = Task {
         var reading: FileScreenReading?
         do {
-            switch await FileScreenReading.open(url) {
+            switch await FileScreenReading.open(url, startingAt: from) {
             case .noVideo:
                 break
             case .unreadable(let reason):
@@ -175,8 +179,8 @@ private func hasVideoTrack(_ url: URL) async -> Bool {
 /// 2 トラック（`cli recorded --self`）の映像を読み、変化した画面を `server` に流す。判定・画像・`screen-off` は 1 本のとき（`FileScreenReading`）と同じ。
 /// 1 本のときと違い、文字起こしの結果と並べて流す。イベントを流した後に、判定したフレームの時刻まで `progress` を進め
 /// （音声の読み手は、判定の済んだ時刻を越えて入力を渡さない）、どの出口でも終わりを知らせる。取り消されたら読むのをやめる。
-public func relayFileScreen(from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen) async {
-    switch await FileScreenReading.open(url) {
+public func relayFileScreen(from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen, startingAt: Double = 0) async {
+    switch await FileScreenReading.open(url, startingAt: startingAt) {
     case .noVideo:
         break
     case .unreadable(let reason):

@@ -173,11 +173,12 @@ extension SpeechAnalyzerTranscriber: FileTranscriber {
         guard let format = analyzerFormat else { throw TranscriberError.noCompatibleFormat }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let transcriber = self.transcriber
+        let origin = FileTimeOrigin()
         return AsyncThrowingStream { continuation in
             // 入力 → analyzer。列が終わったら、最後の位置までを確定させる。
             let feeder = Task {
                 do {
-                    let last = try await analyzer.analyzeSequence(ConvertedAnalyzerInputs(base: inputs, format: format))
+                    let last = try await analyzer.analyzeSequence(ConvertedAnalyzerInputs(base: inputs, format: format, origin: origin))
                     if let last {
                         try await analyzer.finalizeAndFinish(through: last)
                     } else {
@@ -194,13 +195,14 @@ extension SpeechAnalyzerTranscriber: FileTranscriber {
                 do {
                     for try await result in transcriber.results {
                         let range = result.range
+                        // analyzer の時刻は最初の入力が 0。途中から読んだ分を足して、ファイルの音声の時刻に戻す
                         continuation.yield(TranscriptionResult(
                             text: String(result.text.characters),
                             isFinal: result.isFinal,
                             start: range.start.isNumeric ? range.start.seconds : 0,
                             end: range.end.isNumeric ? range.end.seconds : 0,
                             wordTimes: Self.wordTimes(of: result.text)
-                        ))
+                        ).shifted(by: origin.seconds))
                     }
                     continuation.finish()
                 } catch {
@@ -221,23 +223,27 @@ private struct ConvertedAnalyzerInputs: AsyncSequence {
 
     let base: FileAudioInputs
     let format: AVAudioFormat
+    let origin: FileTimeOrigin
 
     func makeAsyncIterator() -> Iterator {
-        Iterator(base: base.makeAsyncIterator(), format: format)
+        Iterator(base: base.makeAsyncIterator(), format: format, origin: origin)
     }
 
     struct Iterator: AsyncIteratorProtocol {
         var base: FileAudioInputs.Iterator
         let format: AVAudioFormat
+        let origin: FileTimeOrigin
         var converter: AVAudioConverter?
 
-        init(base: FileAudioInputs.Iterator, format: AVAudioFormat) {
+        init(base: FileAudioInputs.Iterator, format: AVAudioFormat, origin: FileTimeOrigin) {
             self.base = base
             self.format = format
+            self.origin = origin
         }
 
         mutating func next() async throws -> AnalyzerInput? {
             guard let input = try await base.next() else { return nil }
+            if let start = input.bufferStartTime, start.isNumeric { origin.record(start.seconds) }
             if converter == nil {
                 converter = AVAudioConverter(from: input.buffer.format, to: format)
             }
@@ -249,5 +255,23 @@ private struct ConvertedAnalyzerInputs: AsyncSequence {
             // 途切れなく続くので、analyzer が数える位置（先頭が 0）が、そのままファイルの音声の時刻になる
             return AnalyzerInput(buffer: converted)
         }
+    }
+}
+
+/// 最初の入力のファイル上の位置（秒）。結果を読む側と入力を送る側で共有する（最初の入力を渡した後にしか結果は出ない）。
+private final class FileTimeOrigin: @unchecked Sendable {
+    private let lock = NSLock()
+    private var first: Double?
+
+    func record(_ seconds: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        if first == nil { first = seconds }
+    }
+
+    var seconds: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return first ?? 0
     }
 }

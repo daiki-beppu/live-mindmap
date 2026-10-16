@@ -3,7 +3,7 @@
 import { Schema } from "effect";
 
 // 録画からのセッションの経過を伝える 1 行。started の次から progress が続き、finished で終わる。
-// finished の failure は、ヘルパーが 0 以外で終わったとき（入れた分で終えた）の終わり方と標準エラーの末尾
+// finished の failure は、ヘルパーの起動し直しを諦めたとき（入れた分で終えた）の最後の終わり方と標準エラーの末尾
 export const RecordedEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("started"), dir: Schema.String, warnings: Schema.Array(Schema.String) }),
   Schema.Struct({
@@ -47,6 +47,10 @@ export const formatAudioTracksNotice = (count: number): string =>
 // 録画で screen-off が届くのは、動画の映像が読めなかったときだけ
 export const formatScreenOffNotice = (): string => "動画の映像を読めませんでした。共有画面なしで、音声だけで続けました";
 
+// 例: 12:30 / 58:04（進んだ位置 / 全体の長さ）
+export const formatRecordedPosition = (position: number, duration: number | null): string =>
+  `${formatClock(position)} / ${formatClock(duration)}`;
+
 // 例: 12:30 / 58:04  マップの更新 3 回
 export const formatRecordedProgress = (progress: RecordedProgress): string =>
-  `${formatClock(progress.position)} / ${formatClock(progress.duration)}  マップの更新 ${progress.rounds} 回`;
+  `${formatRecordedPosition(progress.position, progress.duration)}  マップの更新 ${progress.rounds} 回`;

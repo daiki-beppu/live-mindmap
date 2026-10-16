@@ -11,9 +11,9 @@ import { vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
-import { formatAudioTracksNotice, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
+import { formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
 import { AudioMix } from "../src/audioMix.ts";
-import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { embeddedAudio, FAKE_MIX_BYTES, fakeAudioMix, type FakeMix } from "./fixtures/audioMix.ts";
@@ -50,6 +50,10 @@ type Script = {
   exit?: HelperExitInfo; // 自然に終わるときの終わり方（既定 code 0）
   // ヘルパーの creation-date の答え。ISO8601 の文字列、null（作成日時を持たないファイル）、"fail"（問い合わせの失敗）。既定は null
   creationDate?: string | null | "fail";
+  // true なら、この回の起動は接続できないまま待つ（stop の印で HelperLaunchFailure になる）。起動し直しの接続待ちの間の stop を試す
+  blockLaunch?: boolean;
+  // true なら、この回の起動は接続できず、すぐ失敗する（HelperLaunchFailure）
+  failLaunch?: boolean;
 };
 
 // 偽のヘルパーが --audio-dir へ書く音声（相手.m4a）の中身
@@ -68,14 +72,17 @@ const events = (script: Script): unknown[] => [
   ...(script.events ?? script.remarks.flatMap((r) => remarkEvents(r))),
 ];
 
-function fakeHelpers(script: Script) {
+// attempts[n] は n 回目（0 始まり）の起動の台本。無い回は script を使う（起動し直しで別の振る舞いを試すときだけ渡す）
+function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
   const calls: string[][] = [];
   const stopSeen = Effect.runSync(Deferred.make<void>());
   // 起動した後に、テストからヘルパーのイベントを足す
-  const live: { queue: Queue.Queue<string, Cause.Done> | undefined; end: Effect.Effect<void> | undefined } = { queue: undefined, end: undefined };
+  const live: { queue: Queue.Queue<string, Cause.Done> | undefined; end: Effect.Effect<void> | undefined; crash: Effect.Effect<void> | undefined } = { queue: undefined, end: undefined, crash: undefined };
   const feed = (event: unknown) => { Queue.offerUnsafe(live.queue!, JSON.stringify(event)); };
   // hold のヘルパーを、自然な終わり（code 0）で終わらせる
   const end = Effect.suspend(() => live.end!);
+  // hold のヘルパーを、終了コード 1 で落とす（ヘルパーだけが落ちた）
+  const crash = Effect.suspend(() => live.crash!);
   const creationDateCalls: string[] = [];
   const creationDate = (file: string) => {
     creationDateCalls.push(file);
@@ -85,25 +92,32 @@ function fakeHelpers(script: Script) {
   };
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.gen(function* () {
     calls.push([...args]);
+    const current = attempts[calls.length - 1] ?? script;
+    if (current.failLaunch === true) return yield* new HelperLaunchFailure({ stderrTail: ["起動できない"], exit: { code: 1, signal: null } });
+    if (current.blockLaunch === true) {
+      yield* Deferred.await(stopRequested);
+      return yield* new HelperLaunchFailure({ stderrTail: [], exit: { code: null, signal: "SIGTERM" } });
+    }
     // 本物のヘルパーは、待ち受けを始める前に --audio-dir のフォルダへ 相手.m4a を書く
     const audioDir = args[args.indexOf("--audio-dir") + 1];
     if (args.includes("--audio-dir") && audioDir !== undefined) writeFileSync(join(audioDir, "相手.m4a"), HELPER_AUDIO);
     // --self-file のときは、自分用の音声も書く（待ち受けの前に 相手.m4a と 自分.m4a の両方を書き終える）
-    if (args.includes("--self-file") && audioDir !== undefined) writeFileSync(join(audioDir, "自分.m4a"), HELPER_SELF_AUDIO);
+    if (args.includes("--audio-dir") && args.includes("--self-file") && audioDir !== undefined) writeFileSync(join(audioDir, "自分.m4a"), HELPER_SELF_AUDIO);
     const queue = yield* Queue.make<string, Cause.Done>();
     live.queue = queue;
     const exited = yield* Deferred.make<HelperExitInfo>();
     const finish = (info: HelperExitInfo) => Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, info)));
     live.end = finish({ code: 0, signal: null });
+    live.crash = finish({ code: 1, signal: null });
     const stop = finish({ code: null, signal: "SIGTERM" });
     yield* Effect.addFinalizer(() => stop);
     yield* Effect.forkScoped(Effect.andThen(Deferred.await(stopRequested), Deferred.succeed(stopSeen, undefined)));
-    for (const event of events(script)) Queue.offerUnsafe(queue, JSON.stringify(event));
-    if (script.hold !== true) yield* finish(script.exit ?? { code: 0, signal: null });
+    for (const event of events(current)) Queue.offerUnsafe(queue, JSON.stringify(event));
+    if (current.hold !== true) yield* finish(current.exit ?? { code: 0, signal: null });
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: () => Effect.void };
   });
   const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), creationDate, launch }));
-  return { calls, creationDateCalls, stopSeen, layer, feed, end };
+  return { calls, creationDateCalls, stopSeen, layer, feed, end, crash };
 }
 
 type UpdateScript = (input: DiffInput, call: number) => Effect.Effect<void>;
@@ -197,7 +211,7 @@ function cliDependencies(sessionsDir: string, port: number, apple: typeof unused
   return { layer, stdout, stderr };
 }
 
-const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; mix?: FakeMix; readings?: FakeReadings } = {}) {
+const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; mix?: FakeMix; readings?: FakeReadings; attempts?: ReadonlyArray<Script> } = {}) {
   // 実行準備（prepareUpdater）へ届いたモデル
   const models: ExecutableModel[] = [];
   const root = yield* temporaryDirectory;
@@ -207,7 +221,7 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   // --self に渡す、自分用の録音
   const selfFile = join(root, "me.m4a");
   writeFileSync(selfFile, "self audio");
-  const helpers = fakeHelpers(script);
+  const helpers = fakeHelpers(script, options.attempts);
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
     sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { models.push(model); return Effect.succeed(updater.layer); } }).pipe(Layer.provide(fakeExportServices({ ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }), ...(options.mix === undefined ? {} : { mix: options.mix }), ...(options.readings === undefined ? {} : { readings: options.readings }) }))),
@@ -240,6 +254,10 @@ const THREE: Script = {
     { start: 700, end: 750, text: "三つ目の発言です" },
   ],
 };
+
+const failureText = (result: Result.Result<unknown, unknown>) => (Result.isFailure(result) ? String(result.failure) : "");
+
+const within = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.timeout("10 seconds"));
 
 const SCREEN_IMAGE = Buffer.from("jpeg-bytes").toString("base64");
 const sessionLog = (sessionsDir: string): Line[] => {
@@ -598,15 +616,54 @@ describe("cli recorded <file>", () => {
     expect(start).toMatchObject({ title: "meeting" });
   }).pipe(Effect.scoped));
 
-  it.live("ヘルパーが 0 以外で終わると、入れた分で終えて map.* を書き、CLI は失敗する（標準エラーにヘルパーの末尾を出す）", () => Effect.gen(function* () {
+  it.live("ヘルパーが落ち続けて起動し直しを諦めると、そこまでに入れた分で終えて map.* を書き、CLI は失敗する。進んだ位置とヘルパーの標準エラーの末尾が出る", () => Effect.gen(function* () {
+    // どの回も r1・r2 を流して 0 以外で終わる（2 回目以降は音声の時刻 660 より前の結果なので捨てられる）
     const r = yield* resource({ ...THREE, remarks: THREE.remarks.slice(0, 2), exit: { code: 1, signal: null } });
     const result = yield* Effect.result(r.cli(["recorded", r.file]));
     expect(Result.isFailure(result)).toBe(true);
     const dir = onlySession(r.sessionsDir);
-    expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1", "r2"]);
-    expect(existsSync(join(dir, "map.md"))).toBe(true);
+    const lines = logLines(dir);
+    // 諦めたら Ctrl-C と同じく、溜まりは捨てて入れている途中の 1 件だけ入れ終える。入れ終えた分は先頭から連続し、読み直しで重なっていない
+    const ids = remarksOf(lines).map((x) => x.id);
+    expect(ids.length).toBeGreaterThanOrEqual(1);
+    expect(ids).toEqual(["r1", "r2"].slice(0, ids.length));
+    // ライブと同じ判断（続けて 3 回失敗）で諦める: 起動は 3 回、起動し直しは 2 回
+    expect(r.helpers.calls).toHaveLength(3);
+    expect(lines.filter((l) => l.type === "intake-stopped")).toHaveLength(3);
+    expect(lines.filter((l) => l.type === "intake-restarted")).toHaveLength(2);
+    expect(lines.filter((l) => l.type === "intake-gave-up")).toEqual([expect.objectContaining({ reason: "failures" })]);
+    for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
     expect(r.deps.stdout.join("")).toContain(join(dir, "map.md"));
     expect(r.deps.stderr.join("")).toContain("helper stderr");
+    // 進んだ位置（入れた最後の発言の end / 全体の長さ。r2 まで入れていれば 11:00 / 58:04）は、進み具合の行（… マップの更新 N 回）とは別に、諦めたことの知らせとして出る
+    const reached = formatRecordedPosition(ids.length === 2 ? 660 : 600, 3484);
+    const stderrLines = r.deps.stderr.join("").replaceAll("\r", "\n").split("\n");
+    const notices = [...stderrLines.filter((l) => !/マップの更新 \d+ 回$/.test(l)), failureText(result)];
+    expect(notices.some((l) => l.includes(reached))).toBe(true);
+  }).pipe(Effect.scoped));
+
+  it.live("起動し直したヘルパーに接続できない回も 1 回の失敗として数え、続けて 3 回で諦める。map.* を書き、CLI は進んだ位置と最後の起動失敗の標準エラーを出して失敗する", () => Effect.gen(function* () {
+    // 1 回目は r1・r2 を流して落ちる。2・3 回目は接続できない
+    const first: Script = { duration: 3484, remarks: THREE.remarks.slice(0, 2), exit: { code: 1, signal: null } };
+    const r = yield* resource(THREE, undefined, { attempts: [first, { remarks: [], failLaunch: true }, { remarks: [], failLaunch: true }] });
+    const result = yield* Effect.result(r.cli(["recorded", r.file]));
+    expect(Result.isFailure(result)).toBe(true);
+    const dir = onlySession(r.sessionsDir);
+    const lines = logLines(dir);
+    expect(r.helpers.calls).toHaveLength(3);
+    expect(lines.filter((l) => l.type === "intake-stopped")).toHaveLength(3);
+    // 接続できなかった回は起動し直しに数えない
+    expect(lines.filter((l) => l.type === "intake-restarted")).toHaveLength(0);
+    expect(lines.filter((l) => l.type === "intake-gave-up")).toEqual([expect.objectContaining({ reason: "failures" })]);
+    for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
+    expect(r.deps.stderr.join("")).toContain("起動できない");
+    const stderrLines = r.deps.stderr.join("").replaceAll("\r", "\n").split("\n");
+    const notices = [...stderrLines.filter((l) => !/マップの更新 \d+ 回$/.test(l)), failureText(result)];
+    // 入れ終えた最後の発言の end までの位置が出る（溜まりは捨てるので、r2 まで入れたかは実行の順による）
+    const ids = remarksOf(lines).map((x) => x.id);
+    expect(ids.length).toBeGreaterThanOrEqual(1);
+    expect(ids).toEqual(["r1", "r2"].slice(0, ids.length));
+    expect(notices.some((l) => l.includes(formatRecordedPosition(ids.length === 2 ? 660 : 600, 3484)))).toBe(true);
   }).pipe(Effect.scoped));
 
   it.live("Ctrl-C は、そこまでに入れた分で終えて map.* を書き出す。溜まっていた分は入れず、そのあと status はセッションなしになる", () => Effect.gen(function* () {
@@ -728,8 +785,6 @@ describe("cli recorded <file>", () => {
   }).pipe(Effect.scoped));
 
   const failsRemarkTwo = () => failingLogWrite((content) => content.includes('"type":"remark"') && content.includes("次の発言です"));
-  const within = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.timeout("10 seconds"));
-  const failureText = (result: Result.Result<unknown, unknown>) => (Result.isFailure(result) ? String(result.failure) : "");
 
   // 失敗の後で、次の recorded を始められる（SessionBusy・SessionTransition で断られない）ことを、ヘルパーの起動で確かめる
   const nextRecordedStarts = (r: { cli: (argv: string[]) => Effect.Effect<void, unknown, never>; helpers: { calls: string[][] }; file: string }, held: boolean) => Effect.gen(function* () {
@@ -810,6 +865,276 @@ describe("cli recorded <file>", () => {
   }).pipe(Effect.scoped));
 });
 
+// ヘルパーだけが落ちたときの起動し直し（Issue #1093）。ライブと同じ判断（60 秒・3 回）で、サーバーが最後に作った発言の end から読み直す。
+// 偽のヘルパーは、起動の回ごとの台本（attempts）に従って流す。偽の読み直しは頭から全部を流すので、
+// 開始位置（--from）より前の結果をサーバーが捨てることを、発言が重ならず抜けもないことで確かめる
+describe("cli recorded <file> ヘルパーが落ちたとき", () => {
+  const flagOf = (flag: string) => (args: string[]) => { const i = args.indexOf(flag); return i < 0 ? undefined : args[i + 1]; };
+  const fromOf = flagOf("--from");
+  const selfFromOf = flagOf("--self-from");
+  const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
+  const waitForLaunches = (r: { helpers: { calls: string[][] } }, count: number) =>
+    Effect.promise(() => vi.waitFor(() => { expect(r.helpers.calls.length).toBeGreaterThanOrEqual(count); }, { timeout: 10_000 }));
+  // 発言が重ならず（start は前の発言の end 以降）、同じ発言が 2 回入らない
+  const expectNoOverlap = (remarks: { start: number; end: number; text: string }[]) => {
+    for (const [i, remark] of remarks.entries()) if (i > 0) expect(remark.start).toBeGreaterThanOrEqual(remarks[i - 1]!.end);
+    expect(new Set(remarks.map((x) => x.text)).size).toBe(remarks.length);
+  };
+  const spoken = (track: "相手" | "自分", r: Remark): unknown[] => [
+    { type: "partial", track, ...r, duplicate: false },
+    { type: "remark", track, ...r, duplicate: false },
+  ];
+
+  it.live.each([
+    { name: "終了コード 1", exit: { code: 1, signal: null } },
+    { name: "シグナル（SIGKILL）", exit: { code: null, signal: "SIGKILL" } },
+  ])("ヘルパーが $name で落ちると、最後に作った発言の end（660）から読み直す。--audio-dir は渡さない。発言は重ならず抜けもなく、番号も続く。CLI は成功する", ({ exit }) => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), { attempts: [{ duration: 3484, remarks: THREE.remarks.slice(0, 2), exit }] });
+    yield* r.cli(["recorded", r.file]);
+
+    const dir = onlySession(r.sessionsDir);
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(r.helpers.calls[0]).toEqual(["transcribe-file", "--file", resolve(r.file), "--audio-dir", dir]);
+    expect(r.helpers.calls[1]).toEqual(expect.arrayContaining(["transcribe-file", "--file", resolve(r.file), "--from", "660"]));
+    expect(r.helpers.calls[1]).not.toContain("--audio-dir");
+    expect(fromOf(r.helpers.calls[1]!)).toBe("660");
+
+    const lines = logLines(dir);
+    const remarks = remarksOf(lines);
+    expect(remarks.map((x) => ({ id: x.id, start: x.start, end: x.end, text: x.text }))).toEqual([
+      { id: "r1", start: 590, end: 600, text: "最初の発言です" },
+      { id: "r2", start: 600, end: 660, text: "次の発言です" },
+      { id: "r3", start: 700, end: 750, text: "三つ目の発言です" },
+    ]);
+    expectNoOverlap(remarks);
+    expect(r.updater.inputs.map((input) => input.fresh.map((remark) => remark.id))).toEqual([["r1"], ["r2"], ["r3"]]);
+    expect(lines.filter((l) => l.type === "intake-stopped")).toEqual([expect.objectContaining({ code: exit.code, signal: exit.signal })]);
+    expect(lines.filter((l) => l.type === "intake-restarted")).toHaveLength(1);
+    expect(lines.some((l) => l.type === "intake-gave-up")).toBe(false);
+    for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
+    expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
+  }).pipe(Effect.scoped));
+
+  it.live("作った発言がまだ無いうちに落ちたら、--from は渡さず頭から読み直す。何も捨てない", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), { attempts: [{ duration: 3484, remarks: [], exit: { code: 1, signal: null } }] });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(r.helpers.calls[1]).not.toContain("--from");
+    expect(r.helpers.calls[1]).not.toContain("--audio-dir");
+    expect(remarksOf(logLines(onlySession(r.sessionsDir))).map((x) => x.id)).toEqual(["r1", "r2", "r3"]);
+  }).pipe(Effect.scoped));
+
+  it.live("溜まりに止まっていてセッションにまだ入れていない発言も、作った発言に含める。差分更新が終わらない間に 3 発言を作って落ちると、750 から読み直し、あとで溜まりが流れても 3 発言が 1 回ずつ", () => Effect.gen(function* () {
+    const gate = Effect.runSync(Deferred.make<void>());
+    const updater = fakeUpdater((_input, call) => call === 1 ? Deferred.await(gate) : Effect.void);
+    const r = yield* resource(THREE, updater, { attempts: [{ ...THREE, exit: { code: 1, signal: null } }] });
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
+    yield* waitForLaunches(r, 2);
+
+    expect(fromOf(r.helpers.calls[1]!)).toBe("750");
+    yield* Deferred.succeed(gate, undefined);
+    yield* within(Fiber.join(running));
+
+    const remarks = remarksOf(logLines(onlySession(r.sessionsDir)));
+    expect(remarks.map((x) => ({ id: x.id, end: x.end, text: x.text }))).toEqual([
+      { id: "r1", end: 600, text: "最初の発言です" },
+      { id: "r2", end: 660, text: "次の発言です" },
+      { id: "r3", end: 750, text: "三つ目の発言です" },
+    ]);
+    expectNoOverlap(remarks);
+  }).pipe(Effect.scoped));
+
+  it.live("確定していない途中結果も、起動し直す前に発言にしてから開始位置を決める。落ちる直前の途中結果（760〜770）の end 770 から読み直し、その発言は 1 件だけ", () => Effect.gen(function* () {
+    const unsettled = { start: 760, end: 770, text: "確定していない発言です" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 3484, remarks: [], events: [...remarkEvents(THREE.remarks[0]!), { type: "partial", track: "相手", ...unsettled }], exit: { code: 1, signal: null } },
+        // 頭から読み直した結果: 最初の発言と、落ちる前の途中結果の確定結果、その後の発言
+        { duration: 3484, remarks: [], events: [...remarkEvents(THREE.remarks[0]!), ...remarkEvents(unsettled), ...remarkEvents({ start: 800, end: 810, text: "続きの発言です" })] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(fromOf(r.helpers.calls[1]!)).toBe("770");
+    const remarks = remarksOf(logLines(onlySession(r.sessionsDir)));
+    expect(remarks.map((x) => [x.id, x.text])).toEqual([["r1", "最初の発言です"], ["r2", "確定していない発言です"], ["r3", "続きの発言です"]]);
+    expectNoOverlap(remarks);
+  }).pipe(Effect.scoped));
+
+  it.live("--self の 2 トラックでは、トラックごとに最後に作った発言の end（相手 10・自分 6）から読み直す（--from と --self-from）。--self-file も渡し、--audio-dir は渡さない", () => Effect.gen(function* () {
+    const mine = { start: 5, end: 6, text: "自分の発言です" };
+    const theirs = { start: 8, end: 10, text: "相手の発言です" };
+    const next = { start: 12, end: 14, text: "続きの発言です" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: [...spoken("相手", theirs), ...spoken("自分", mine)], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [...spoken("相手", theirs), ...spoken("自分", mine), ...spoken("相手", next)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(fromOf(r.helpers.calls[1]!)).toBe("10");
+    expect(selfFromOf(r.helpers.calls[1]!)).toBe("6");
+    expect(r.helpers.calls[1]).toEqual(expect.arrayContaining(["--self-file", resolve(r.selfFile)]));
+    expect(r.helpers.calls[1]).not.toContain("--audio-dir");
+    const remarks = remarksOf(logLines(onlySession(r.sessionsDir)));
+    expect(remarks.map((x) => [x.track, x.end, x.text])).toEqual([
+      ["自分", 6, "自分の発言です"], ["相手", 10, "相手の発言です"], ["相手", 14, "続きの発言です"],
+    ]);
+  }).pipe(Effect.scoped));
+
+  it.live("--self で、自分 の確定結果が届く前に、相手 のより後ろの発言を作って落ちても、自分 の発言は抜けない（--self-from は渡さず、自分 は頭から読み直す）。発言は end の順に 1 回ずつ", () => Effect.gen(function* () {
+    const mine = { start: 5, end: 6, text: "自分の発言です" };
+    const theirs = { start: 8, end: 10, text: "相手の発言です" };
+    const next = { start: 12, end: 14, text: "続きの発言です" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: spoken("相手", theirs), exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [...spoken("相手", theirs), ...spoken("自分", mine), ...spoken("相手", next)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(fromOf(r.helpers.calls[1]!)).toBe("10");
+    expect(r.helpers.calls[1]).toContain("--self-file");
+    expect(r.helpers.calls[1]).not.toContain("--self-from");
+    expect(r.helpers.calls[1]).not.toContain("--audio-dir");
+    const remarks = remarksOf(logLines(onlySession(r.sessionsDir)));
+    expect(remarks.map((x) => [x.id, x.track, x.end, x.text])).toEqual([
+      ["r1", "自分", 6, "自分の発言です"], ["r2", "相手", 10, "相手の発言です"], ["r3", "相手", 14, "続きの発言です"],
+    ]);
+  }).pipe(Effect.scoped));
+
+  it.live("--self で両トラックの発言を作っていれば、トラックごとの end から読み直し、各トラックで開始位置より前の流し直しは捨てる。発言の番号は r1 から続く", () => Effect.gen(function* () {
+    const mineFirst = { start: 1, end: 2, text: "自分の最初の発言です" };
+    const theirs = { start: 8, end: 10, text: "相手の発言です" };
+    const mineNext = { start: 5, end: 6, text: "自分の続きの発言です" };
+    const theirsNext = { start: 12, end: 14, text: "相手の続きの発言です" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: [...spoken("自分", mineFirst), ...spoken("相手", theirs)], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [...spoken("自分", mineFirst), ...spoken("相手", theirs), ...spoken("自分", mineNext), ...spoken("相手", theirsNext)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+    expect(fromOf(r.helpers.calls[1]!)).toBe("10");
+    expect(selfFromOf(r.helpers.calls[1]!)).toBe("2");
+    const remarks = remarksOf(logLines(onlySession(r.sessionsDir)));
+    expect(remarks.map((x) => [x.id, x.track, x.end])).toEqual([["r1", "自分", 2], ["r2", "自分", 6], ["r3", "相手", 10], ["r4", "相手", 14]]);
+  }).pipe(Effect.scoped));
+
+  it.live("--self で起動し直しても、共有画面は重ならず消えない。落ちる前に入れた画面（5）は 1 回、読み直した回が流し直した画面（11）も 1 回で、発言との時刻の順を保つ", () => Effect.gen(function* () {
+    const mine = { start: 1, end: 2, text: "自分の発言です" };
+    const theirs = { start: 8, end: 10, text: "相手の発言です" };
+    const next = { start: 12, end: 14, text: "続きの発言です" };
+    const screen = (start: number) => ({ type: "screen", start, image: SCREEN_IMAGE, lines: ["画面の文字"] });
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: [...spoken("自分", mine), screen(5), ...spoken("相手", theirs), screen(11)], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [screen(11), ...spoken("相手", next)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
+
+    const timeline = sessionLog(r.sessionsDir).filter((l) => l.type === "remark" || l.type === "screen").map((l) => l.type === "screen" ? `screen@${String(l.start)}` : `remark:${(l.remark as { text: string }).text}`);
+    expect(timeline).toEqual(["remark:自分の発言です", "screen@5", "remark:相手の発言です", "screen@11", "remark:続きの発言です"]);
+  }).pipe(Effect.scoped));
+
+  it.live("落ちる前に先読みしていた、開始位置より後の共有画面は入れない。読み直した回が流し直した画面が 1 回だけ、続きの発言の前に入る", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const second = { start: 12, end: 14, text: "続きの発言です" };
+    const screen = { type: "screen", start: 11, image: SCREEN_IMAGE, lines: ["画面の文字"] };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: [screen, ...remarkEvents(first)], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [screen, ...remarkEvents(second)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(fromOf(r.helpers.calls[1]!)).toBe("2");
+    const timeline = sessionLog(r.sessionsDir).filter((l) => l.type === "remark" || l.type === "screen").map((l) => l.type === "screen" ? `screen@${String(l.start)}` : `remark:${(l.remark as { text: string }).text}`);
+    expect(timeline).toEqual(["remark:最初の発言です", "screen@11", "remark:続きの発言です"]);
+  }).pipe(Effect.scoped));
+
+  it.live("まだ発言に覆われていない screen-off も、起動し直しで失われない。流し直されても、ログには 1 回だけ入る", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const second = { start: 12, end: 14, text: "続きの発言です" };
+    const off = { type: "screen-off", start: 11, reason: "許可なし" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: [off, ...remarkEvents(first)], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [off, ...remarkEvents(second)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    const timeline = sessionLog(r.sessionsDir).filter((l) => l.type === "remark" || l.type === "screen-off").map((l) => l.type === "screen-off" ? `screen-off@${String(l.start)}` : `remark:${(l.remark as { text: string }).text}`);
+    expect(timeline).toEqual(["remark:最初の発言です", "screen-off@11", "remark:続きの発言です"]);
+  }).pipe(Effect.scoped));
+
+  it.live("起動し直したヘルパーが流し直す知らせ（音声のトラックが複数・映像が読めない）は、標準エラーに 1 回だけ出る", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const second = { start: 10, end: 12, text: "次の発言です" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      fileName: "meeting.mp4",
+      attempts: [
+        { duration: 20, audioTracks: 2, remarks: [], events: [{ type: "screen-off", start: 0, reason: "許可なし" }, ...remarkEvents(first)], exit: { code: 1, signal: null } },
+        { duration: 20, audioTracks: 2, remarks: [], events: [{ type: "screen-off", start: 0, reason: "許可なし" }, ...remarkEvents(first), ...remarkEvents(second)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(stderrLines(r).filter((l) => l === formatAudioTracksNotice(2))).toHaveLength(1);
+    expect(stderrLines(r).filter((l) => l === formatScreenOffNotice())).toHaveLength(1);
+    expect(remarkTexts(logLines(onlySession(r.sessionsDir)))).toEqual(["最初の発言です", "次の発言です"]);
+  }).pipe(Effect.scoped));
+
+  it.live("起動し直したヘルパーの接続を待っている間の stop は、すぐ戻り、それ以上は起動しない。入れた分で map.* を書く", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [{ duration: 3484, remarks: THREE.remarks.slice(0, 2), exit: { code: 1, signal: null } }, { remarks: [], blockLaunch: true }],
+    });
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
+    yield* waitForLaunches(r, 2);
+    yield* within(r.cli(["stop"]));
+    const result = yield* Effect.result(within(Fiber.join(running)));
+
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(r.helpers.calls).toHaveLength(2);
+    const dir = onlySession(r.sessionsDir);
+    expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1", "r2"]);
+    expect(existsSync(join(dir, "map.md"))).toBe(true);
+  }).pipe(Effect.scoped));
+
+  it.live("最初の起動に失敗したら、起動し直さずに開始の失敗として返す", () => Effect.gen(function* () {
+    const r = yield* resource({ ...THREE, failLaunch: true });
+    const result = yield* Effect.result(within(r.cli(["recorded", r.file])));
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(r.helpers.calls).toHaveLength(1);
+  }).pipe(Effect.scoped));
+
+  it.live("サーバーとの接続が切れたら続けない。CLI は、途中までのセッションのフォルダと、もう一度 cli recorded を呼べば頭から組み直せることを出し、失敗で返る", () => Effect.gen(function* () {
+    // 最初の発言を入れた差分更新が終わらないまま、サーバーが落ちる
+    const r = yield* resource({ ...THREE, hold: true }, fakeUpdater(() => Effect.never));
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
+    yield* waitForRemarks(r.sessionsDir, 1);
+    const dir = onlySession(r.sessionsDir);
+
+    yield* r.server.close;
+    const result = yield* Effect.result(within(Fiber.join(running)));
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(failureText(result)).toContain(dir);
+    expect(failureText(result)).toContain("cli recorded");
+  }).pipe(Effect.scoped));
+});
+
 // --realtime: 発言を音声の end、共有画面の変化を start の時刻まで待ってから入れる（play --realtime と同じ意味）。
 // 実時間では待たず、サーバーと CLI の両方に TestClock を包んだ Clock を渡して、仮想時計を少しずつ進める
 describe("cli recorded <file> --realtime", () => {
@@ -827,6 +1152,40 @@ describe("cli recorded <file> --realtime", () => {
   };
 
   const isRemark = (id: string) => (l: Line) => l.type === "remark" && (l.remark as { id: string }).id === id;
+
+  it.effect("起動し直しを諦めると、時刻を待っている溜まりの発言は入れない。仮想時計を進めなくても CLI は失敗で返り、入る発言は r1 だけ。map.* は書く", () => withVirtualClock((pending) => Effect.gen(function* () {
+    // 1 回目: r1（0-2）と r2（10-12）を流して落ちる。2 回目: 何も流さず、テストが落とすまで居続ける。3 回目: すぐ落ちる
+    const r = yield* resource(
+      { remarks: [], hold: true },
+      fakeUpdater(),
+      { attempts: [
+        { duration: 20, remarks: [], events: [...remarkEvents({ start: 0, end: 2, text: "最初の発言です" }), ...remarkEvents({ start: 10, end: 12, text: "次の発言です" })], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], hold: true },
+        { duration: 20, remarks: [], exit: { code: 1, signal: null } },
+      ] },
+    );
+    let finished = false;
+    const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.ensuring(Effect.sync(() => { finished = true; })), Effect.forkChild);
+
+    yield* advanceTo(pending, 2000, () => has(r.sessionsDir, isRemark("r1")));
+    // r2 は、仮想時刻 12000 ms を待つ溜まりに入っている。時計を進めない限り、入れる側からは解けない
+    yield* eventually(() => pending.includes(12000), "r2 が仮想時刻 12000 ms の待ちに入る");
+    yield* eventually(() => r.helpers.calls.length === 2, "2 回目のヘルパーが起動する");
+    yield* r.helpers.crash;
+
+    // 仮想時計は 2000 ms のまま。諦めた CLI が溜まりを入れ切ろうとして 12000 ms を待つなら、ここで終わらない
+    yield* eventually(() => finished, "仮想時計を進めなくても CLI が終わる");
+    const result = yield* Effect.result(Fiber.join(running));
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(yield* virtualNow).toBe(2000);
+    expect(r.helpers.calls).toHaveLength(3);
+    const dir = onlySession(r.sessionsDir);
+    expect(logLines(dir).filter((l) => l.type === "intake-gave-up")).toHaveLength(1);
+    expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1"]);
+    expect(existsSync(join(dir, "map.md"))).toBe(true);
+  })).pipe(Effect.scoped), 30_000);
+
 
   // 偽の時計をサーバーにも CLI にも渡す（resource の中のサーバーの起動も、この Clock の下で行う）
   const withVirtualClock = <A, E, R>(body: (pending: number[]) => Effect.Effect<A, E, R>) =>

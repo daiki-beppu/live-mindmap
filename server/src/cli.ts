@@ -41,7 +41,9 @@ import {
   RemarkEvent,
   formatAudioTracksNotice,
   formatScreenOffNotice,
+  formatRecordedPosition,
   formatRecordedProgress,
+  type RecordedProgress,
   ScreenEvent,
   ScreenOffEvent,
   StartEvent,
@@ -97,6 +99,8 @@ const VERSION = "0.1.0";
 
 class ServerUnreachable extends Schema.TaggedError<ServerUnreachable>()("ServerUnreachable", {}) {}
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", { message: Schema.String }) {}
+// NDJSON を読んでいる最中に、サーバーとの接続が失われた。入口の失敗の表には載せず、読んだ側（recorded・install）が自分の失敗に変える
+class ServerStreamClosed extends Schema.TaggedError<ServerStreamClosed>()("ServerStreamClosed", { reason: Schema.String }) {}
 class RequiredDepsMissing extends Schema.TaggedError<RequiredDepsMissing>()("RequiredDepsMissing", {}) {}
 class NoSession extends Schema.TaggedError<NoSession>()("NoSession", { sessionsDir: Schema.String }) {}
 class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
@@ -279,7 +283,7 @@ const requestServer = Effect.fnUntraced(function* <A>(
   return yield* decodeServerBody(response, schema);
 });
 
-// 常駐サーバーが NDJSON で流す経過（1 行 1 イベント）を、届いた順に 1 件ずつ handle へ渡す。読めない行は ServerFailed
+// 常駐サーバーが NDJSON で流す経過（1 行 1 イベント）を、届いた順に 1 件ずつ handle へ渡す。読めない行は ServerFailed、通信の失敗は ServerStreamClosed
 const forEachServerEvent = <A, R>(
   response: HttpClientResponse.HttpClientResponse,
   schema: Schema.Decoder<A>,
@@ -292,7 +296,7 @@ const forEachServerEvent = <A, R>(
       Effect.mapError((error) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(error)}` })),
       Effect.flatMap(handle),
     )),
-    Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerFailed({ message: String(error) }))),
+    Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerStreamClosed({ reason: String(error) }))),
   );
 
 /* ----------------------------------------------------------------------------
@@ -605,6 +609,7 @@ const start = Command.make(
 const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse.HttpClientResponse, onStarted: (dir: string) => void) {
   const tty = yield* StdoutIsTty;
   let finished: Extract<RecordedEvent, { type: "finished" }> | undefined;
+  let lastProgress: RecordedProgress | undefined;
   let drawing = false;
   // 知らせを 1 行出す。端末で進み具合を描いている最中なら、その行を消してから出す（次の進み具合は新しい行から描き直す）
   const notify = (text: string) => tty && drawing
@@ -620,6 +625,7 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
         yield* writeWarnings(event.warnings);
         break;
       case "progress": {
+        lastProgress = event;
         const text = formatRecordedProgress(event);
         if (tty) {
           drawing = true;
@@ -639,10 +645,20 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
         finished = event;
         break;
     }
-  }));
-  if (drawing) yield* Effect.sync(() => { process.stderr.write("\n"); });
-  return finished;
+  })).pipe(Effect.ensuring(Effect.suspend(() => drawing ? Effect.sync(() => { process.stderr.write("\n"); }) : Effect.void)));
+  return { finished, lastProgress };
 });
+
+// 録画からのセッションの途中で、サーバーとの接続が切れた。途中までのセッションのフォルダ（開始の応答を受け取っていれば）と、
+// もう一度 cli recorded を呼べば頭から組み直せることを知らせる
+const disconnectedFailure = (dir: string | undefined, reason: string | undefined) =>
+  new ServerFailed({
+    message: [
+      `録画からのセッションが終わる前に接続が終了しました${reason === undefined ? "" : `: ${reason}`}`,
+      ...(dir === undefined ? [] : [`途中までのセッションのフォルダ: ${dir}`]),
+      "もう一度 cli recorded を呼べば、頭から組み直せます",
+    ].join("\n"),
+  });
 
 const recordedTitleFlag = Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとファイル名。拡張子は除く）"), Flag.optional);
 
@@ -688,13 +704,18 @@ const recorded = Command.make(
         }, headers));
         return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
       }),
+    ).pipe(
+      // サーバーが落ちた・接続が切れた。続けない（待ち続けない）。途中までのセッションのフォルダと、組み直し方を知らせて失敗にする
+      Effect.catchTag("ServerStreamClosed", (closed) => Effect.fail(disconnectedFailure(dir, closed.reason))),
     );
-    if (dir === undefined || finished === undefined) return yield* new ServerFailed({ message: "録画からのセッションが終わる前に接続が終了しました" });
-    yield* write([dir, ...finished.paths].map((line) => `${line}\n`).join(""));
-    if (finished.failure !== undefined) {
-      const { code, signal, stderrTail } = finished.failure;
+    if (dir === undefined || finished.finished === undefined) return yield* disconnectedFailure(dir, undefined);
+    yield* write([dir, ...finished.finished.paths].map((line) => `${line}\n`).join(""));
+    if (finished.finished.failure !== undefined) {
+      // ヘルパーの起動し直しを諦めて、入れた分で終えた。どこまで組めたかと、ヘルパーの標準エラーの末尾を出す
+      const { code, signal, stderrTail } = finished.finished.failure;
+      const position = formatRecordedPosition(finished.lastProgress?.position ?? 0, finished.lastProgress?.duration ?? null);
       yield* Console.error(stderrTail.join("\n"));
-      return yield* new CommandFailed({ message: `文字起こしのヘルパーが途中で終了しました（${code ?? signal ?? "不明"}）。そこまでの分で終えました` });
+      return yield* new CommandFailed({ message: `文字起こしのヘルパーが落ち続け、起動し直しを諦めました（${code ?? signal ?? "不明"}）。${position} まで組めたところで終えました` });
     }
   }),
 ).pipe(
@@ -997,7 +1018,7 @@ const installFromServer = Effect.fnUntraced(function* (port: number, path: "/dep
         case "error": return yield* new ServerFailed({ message: event.message });
         case "result": result = event; break;
       }
-    }));
+    })).pipe(Effect.catchTag("ServerStreamClosed", (closed) => Effect.fail(new ServerFailed({ message: closed.reason }))));
     if (result === undefined) return yield* new ServerFailed({ message: "導入結果を受信する前に接続が終了しました" });
     yield* write(JSON.stringify(result.items));
 });
