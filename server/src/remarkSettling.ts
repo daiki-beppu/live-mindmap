@@ -29,6 +29,8 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
     drain: unlessStopped(Effect.suspend(() => emitAll([...attribution.remarks(settler.drain(), 0), ...attribution.drain()]))),
     // 字幕のための読み取り（Issue #1022）。発言の判定には使わない
     preview: {
+      // 途中結果のうち、もう発言になった分を除いた後ろ（Issue #1222）。発言を出すときと同じ規則で切る
+      unsettled: settler.unsettled,
       heldRemarks: attribution.heldRemarks,
       segments: attribution.previewSegments,
       label: attribution.previewLabel,

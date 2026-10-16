@@ -389,7 +389,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
 
           return {
             dir,
-            partial: (p) => backlog === undefined ? Effect.andThen(relay.partial(p), settling.partial(p)) : settling.partial(p),
+            // 字幕へは、settling が当てはめた後の、もう発言になった分を除いた途中結果を渡す（この結果で出た発言も除く。Issue #1222）
+            partial: (p) => backlog === undefined ? Effect.andThen(settling.partial(p), Effect.suspend(() => relay.partial(settling.preview.unsettled(p)))) : settling.partial(p),
             final: (r) => settling.final(r),
             speaker: (event) => Effect.andThen(Effect.andThen(appendRecordedLog(event), settling.speaker(event)), backlog === undefined ? relay.speaker(event) : Effect.void),
             speakersRenumbered: settling.renumbered,
