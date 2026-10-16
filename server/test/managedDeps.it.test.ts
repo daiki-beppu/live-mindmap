@@ -556,9 +556,13 @@ describe("管理 Chromium の導入", () => {
     }).pipe(Effect.provide(managedLayer(root, npm)));
   }).pipe(Effect.scoped));
 
-  // macOS は回収前のゾンビだけのグループにも kill(-pgid, 0) が EPERM を返す（#1111）。親が回収を止めている間だけ EPERM を返すグループを、
-  // 実行記録の別グループとして足す。親は holdMillis の後に終わり、ゾンビは launchd に回収される。
-  const interruptWithZombie = Effect.fnUntraced(function* (holdMillis: number) {
+  // 回収前のゾンビだけのグループは、kill(-pgid, 0) で生存と見える（macOS は EPERM、Linux は成功。#1111）。親が回収を止めている間だけ
+  // そう見えるグループを、実行記録の別グループとして足す。親は stdin が閉じるまで同期で止まり、閉じると終わってゾンビが init（launchd）に回収される。
+  const isZombie = async (pid: number) => {
+    if (process.platform !== "darwin") return (await readFile(`/proc/${pid}/stat`, "utf8")).includes(") Z ");
+    try { process.kill(-pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+  };
+  const interruptWithZombie = Effect.fnUntraced(function* (reap: boolean) {
     const dir = yield* temporaryDeps;
     const root = join(dir, "deps");
     const npm = yield* fakeNpm(dir);
@@ -567,24 +571,29 @@ describe("管理 Chromium の導入", () => {
     const base = join(root, "chromium");
     const fiber = yield* install().pipe(Effect.provide(managedLayer(root, npm)), Effect.forkChild);
     yield* Effect.tryPromise(() => vi.waitFor(async () => expect(await readFile(join(dir, "browser-started"), "utf8")).toBe("started")));
-    const parent = yield* Effect.acquireRelease(Effect.sync(() => spawn(process.execPath, ["-e", `
+    const runner = Number(yield* Effect.tryPromise(() => readFile(join(dir, "browser-pid"), "utf8")));
+    const reaper = yield* Effect.acquireRelease(Effect.sync(() => spawn(process.execPath, ["-e", `
+const fs = require('node:fs');
 const zombie = require('node:child_process').spawn('/usr/bin/true', [], { detached: true, stdio: 'ignore' });
-require('node:fs').writeSync(1, String(zombie.pid));
-Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${holdMillis});
-`], { stdio: ["ignore", "pipe", "inherit"] })), (child) => Effect.sync(() => { child.kill("SIGKILL"); }));
-    const group = Number(String((yield* Effect.tryPromise(() => once(parent.stdout!, "data")))[0]));
-    yield* Effect.tryPromise(() => vi.waitFor(() => expect(() => process.kill(-group, 0)).toThrow(expect.objectContaining({ code: "EPERM" }))));
-    yield* Effect.tryPromise(() => writeFile(join(base, "install.lock.guard", "execution-zombie"), String(-group)));
+fs.writeSync(1, String(zombie.pid));
+try { fs.readSync(0, Buffer.alloc(1)); } catch {}
+`], { stdio: ["pipe", "pipe", "inherit"] })), (child) => Effect.sync(() => { child.kill("SIGKILL"); }));
+    const zombie = Number(String((yield* Effect.tryPromise(() => once(reaper.stdout!, "data")))[0]));
+    yield* Effect.tryPromise(() => vi.waitFor(async () => expect(await isZombie(zombie)).toBe(true)));
+    yield* Effect.tryPromise(() => writeFile(join(base, "install.lock.guard", "execution-zombie"), String(-zombie)));
+    // Effect が導入ランナーを止め終えた（後片付けが子孫を確かめ始める）後に、ゾンビの回収を許す。
+    const release = reap ? yield* Effect.tryPromise(() => vi.waitFor(() => expect(() => process.kill(runner, 0)).toThrow(), { timeout: 10_000 }).then(() => { reaper.stdin!.end(); })).pipe(Effect.forkChild) : undefined;
     yield* Fiber.interrupt(fiber);
+    if (release !== undefined) yield* Fiber.join(release);
     return (yield* Effect.tryPromise(() => readdir(base))).filter((name) => name.startsWith("install.lock") || name.startsWith(".work-"));
   });
 
-  it.live("中断の後片付けは、EPERM を返す回収前の子孫が消えるのを待ってから作業実体と lock を片付ける", () => Effect.gen(function* () {
-    expect(yield* interruptWithZombie(300)).toEqual([]);
+  it.live("中断の後片付けは、生存と見える回収前の子孫が消えるのを待ってから作業実体と lock を片付ける", () => Effect.gen(function* () {
+    expect(yield* interruptWithZombie(true)).toEqual([]);
   }).pipe(Effect.scoped));
 
   it.live("中断の後も期限内に子孫が消えなければ、作業実体と lock を残す", () => Effect.gen(function* () {
-    const left = yield* interruptWithZombie(30_000);
+    const left = yield* interruptWithZombie(false);
     expect(left.some((name) => name.startsWith(".work-"))).toBe(true);
     expect(left).toContain("install.lock");
   }).pipe(Effect.scoped));
