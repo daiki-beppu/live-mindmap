@@ -48,9 +48,15 @@ public final class SelfPause: @unchecked Sendable {
     /// サーバーからの指示（`{"type":"self-pause","paused":boolean,"token":string}`）が求める状態。
     /// 壊れた JSON・知らない type・`paused` が真偽値でない指示・`token` が `token` と一致しない指示は nil。`token` が空のときは何も受け付けない。
     public static func requestedState(in message: String, token: String) -> Bool? {
+        instructedState(in: message, type: "self-pause", token: token)
+    }
+
+    /// サーバーからの指示（`{"type":<type>,"paused":boolean,"token":string}`）が求める状態。指示の読み取りの規則は type によらず同じ。
+    /// 録画ファイルの読み取りの停止（`reading-pause`。`FileReadingGate`）も、ここで読む。
+    static func instructedState(in message: String, type: String, token: String) -> Bool? {
         guard !token.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any],
-              object["type"] as? String == "self-pause",
+              object["type"] as? String == type,
               let sent = object["token"] as? String,
               constantTimeEqual(sent, token),
               let value = object["paused"] as? NSNumber,

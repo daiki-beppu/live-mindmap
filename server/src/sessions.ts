@@ -18,6 +18,7 @@ import {
   decodeHelperEvent,
   MAX_CONFIGURATION_CHANGES,
   type RecordedEvent,
+  type RecordedProgress,
   SCREEN_NOTICE_MS,
   SCREEN_NOTICE_TEXT,
   INITIAL_SELF_PAUSE_STATE,
@@ -100,8 +101,9 @@ type Live = {
   selfPauseLink: SynchronizedRef.SynchronizedRef<SelfPauseLink>; // 休止の指示の送り先。送信と切り替えを 1 つずつ行う
 };
 
-// セッションに入れた位置（秒）・録画の全体の長さ（届く前は null）・マップの更新回数
-type RecordedProgressState = { position: number; duration: number | null; rounds: number };
+// セッションに入れた位置（秒）・録画の全体の長さ（届く前は null）・マップの更新回数・差分更新の一時停止（一時停止の間だけ。理由と次に試す時刻）
+type RecordedProgressState = { position: number; duration: number | null; rounds: number; paused?: RecordedPause };
+type RecordedPause = NonNullable<RecordedProgress["paused"]>;
 
 // 録画からのセッション。ヘルパーは 1 回だけ起動し、起動し直さない。ヘルパーに依らない状態は持たない
 type Recorded = {
@@ -350,7 +352,7 @@ export class Sessions extends Context.Service<Sessions, {
         // 起動の引数を決めた後に求められた状態は、接続できた回へ送る（落とさない）
         yield* SynchronizedRef.updateEffect(live.selfPauseLink, (link) =>
           Effect.as(
-            link.kind === "waiting" && link.pending !== undefined ? result.success.send(link.pending) : Effect.void,
+            link.kind === "waiting" && link.pending !== undefined ? result.success.send({ type: "self-pause", paused: link.pending }) : Effect.void,
             { kind: "connected", attempt: result.success } as SelfPauseLink,
           ),
         );
@@ -599,6 +601,16 @@ export class Sessions extends Context.Service<Sessions, {
                   Ref.update(progress, (p) => ({ ...p, position: Math.max(p.position, position), rounds })),
                   publishProgress({ progress, events }),
                 ),
+              // 差分更新の一時停止に入る・理由か時刻が変わる・戻る。ヘルパーには停止か再開を（状態が変わったときだけ）送り、進み具合の行に理由と時刻を載せる
+              paused: (pause) =>
+                Effect.gen(function* () {
+                  const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
+                    const { paused: before, ...rest } = p;
+                    return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
+                  });
+                  if (changedState) yield* attempt.send({ type: "reading-pause", paused: pause !== undefined });
+                  yield* publishProgress({ progress, events });
+                }),
             },
           }).pipe(Scope.provide(scope));
           if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
@@ -740,7 +752,7 @@ export class Sessions extends Context.Service<Sessions, {
           if (current.kind === "recorded") return yield* new NotForRecordedSession();
           if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
           yield* SynchronizedRef.updateEffect(current.live.selfPauseLink, (link): Effect.Effect<SelfPauseLink> =>
-            link.kind === "connected" ? Effect.as(link.attempt.send(paused), link) : Effect.succeed({ kind: "waiting", pending: paused }));
+            link.kind === "connected" ? Effect.as(link.attempt.send({ type: "self-pause", paused }), link) : Effect.succeed({ kind: "waiting", pending: paused }));
         });
 
       return Sessions.of({ apps: helpers.apps, start, startRecorded, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause });

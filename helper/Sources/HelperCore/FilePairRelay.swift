@@ -8,11 +8,11 @@ import Foundation
 public func relayFilePair(
     theirs theirsURL: URL, mine mineURL: URL,
     theirsTranscriber: any FileTranscriber, mineTranscriber: any FileTranscriber,
-    to server: WebSocketServer
+    to server: WebSocketServer, gate: FileReadingGate? = nil
 ) async throws {
     try await relayFilePair(
-        theirs: theirsURL, mine: mineURL, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server,
-        relayScreen: { video, progress in await relayFileScreen(from: video, to: server, progress: progress) })
+        theirs: theirsURL, mine: mineURL, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server, gate: gate,
+        relayScreen: { video, progress in await relayFileScreen(from: video, to: server, progress: progress, gate: gate) })
 }
 
 /// 映像を流す処理（映像のファイルと、判定の進みの操作口を受け取る）。
@@ -22,7 +22,7 @@ typealias FileScreenRelay = @Sendable (URL, FileReadingAlignment.Screen) async -
 func relayFilePair(
     theirs theirsURL: URL, mine mineURL: URL,
     theirsTranscriber: any FileTranscriber, mineTranscriber: any FileTranscriber,
-    to server: WebSocketServer, relayScreen: @escaping FileScreenRelay
+    to server: WebSocketServer, gate: FileReadingGate? = nil, relayScreen: @escaping FileScreenRelay
 ) async throws {
     // 読み手は 2 本ともここで足してから読み始める
     let alignment = FileReadingAlignment()
@@ -34,8 +34,8 @@ func relayFilePair(
     do {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                let theirs = try await transcribeFile(at: theirsURL, with: theirsTranscriber, alignment: theirsReader)
-                let mine = try await transcribeFile(at: mineURL, with: mineTranscriber, alignment: mineReader)
+                let theirs = try await transcribeFile(at: theirsURL, with: theirsTranscriber, alignment: theirsReader, gate: gate)
+                let mine = try await transcribeFile(at: mineURL, with: mineTranscriber, alignment: mineReader, gate: gate)
                 try await relay(
                     tracks: [(.相手, theirs), (.自分, mine)], to: server,
                     duplicates: DuplicateMarker(sleep: { try await alignment.sleep($0) }, now: { await alignment.now() }))

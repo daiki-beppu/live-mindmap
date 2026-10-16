@@ -188,20 +188,24 @@ const wsSpawner = (received: string[], envs: Array<Record<string, string | undef
   );
 
 describe("HelperAttempt.send（自分の休止の指示。Issue #1069）", () => {
-  it.live("paused の値を、その起動回のトークンつきの {type:'self-pause',paused,token} の JSON にして helper の WebSocket へ、呼んだ順に送る（SCN-U3-P2）", () =>
+  it.live("指示（self-pause と reading-pause）を、その起動回のトークンつきの {type,paused,token} の JSON にして helper の WebSocket へ、呼んだ順に送る（SCN-U3-P2）", () =>
     Effect.gen(function* () {
       const received: string[] = [];
       const envs: Array<Record<string, string | undefined> | undefined> = [];
       const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(wsSpawner(received, envs)))));
       const attempt = yield* helpers.launch(["run"], yield* Deferred.make<void>());
-      yield* attempt.send(true);
-      yield* attempt.send(false);
-      for (let i = 0; i < 100 && received.length < 2; i++) yield* realDelay(20);
+      yield* attempt.send({ type: "self-pause", paused: true });
+      yield* attempt.send({ type: "self-pause", paused: false });
+      yield* attempt.send({ type: "reading-pause", paused: true });
+      yield* attempt.send({ type: "reading-pause", paused: false });
+      for (let i = 0; i < 100 && received.length < 4; i++) yield* realDelay(20);
       const token = envs[0]?.[HELPER_CONTROL_TOKEN_ENV];
       expect(token).toMatch(/^[0-9a-f]{64}$/);
       expect(received.map((text) => JSON.parse(text))).toEqual([
         { type: "self-pause", paused: true, token },
         { type: "self-pause", paused: false, token },
+        { type: "reading-pause", paused: true, token },
+        { type: "reading-pause", paused: false, token },
       ]);
     }).pipe(Effect.scoped));
 
