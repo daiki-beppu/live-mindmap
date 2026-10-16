@@ -118,6 +118,7 @@ type Recorded = {
   run: Ref.Ref<Fiber.Fiber<void> | undefined>; // ヘルパーの出力を読む fiber
   events: Queue.Queue<RecordedEvent, Cause.Done>; // 開始の応答の stream へ流す進み具合・終わり
   progress: Ref.Ref<RecordedProgressState>;
+  readingTarget: SynchronizedRef.SynchronizedRef<HelperAttempt>; // 読み取りの停止・再開の指示の送り先（いま動いているヘルパー）。progress の更新と送信・起動し直しでの切り替えを 1 つずつ行う
   from: Ref.Ref<Partial<Readonly<Record<Track, number>>>>; // いまの回のヘルパーがトラックごとに読み始める音声の時刻（秒）。無いトラックは頭から。そのトラックでこれより前に始まる発言・途中結果は捨てる
   attemptStartedAt: Ref.Ref<number>; // 直近の起動を始めた時刻（Clock）。60 秒の判断の基準
   failures: Ref.Ref<number>; // 続けて失敗した回数
@@ -606,6 +607,12 @@ export class Sessions extends Context.Service<Sessions, {
           return { kind: "failed" as const, end: { exit: result.failure.exit ?? { code: null, signal: null }, stderrTail: result.failure.stderrTail } satisfies AttemptEnd };
         }
         const launched: Launched = { attempt: result.success, scope };
+        // 送り先を新しい回へ切り替える。一時停止の間に起動し直したなら、読み始める前の回へ停止を伝える（一時停止中かどうかは progress.paused だけが持つ）
+        yield* SynchronizedRef.updateEffect(recorded.readingTarget, () =>
+          Effect.gen(function* () {
+            if ((yield* Ref.get(recorded.progress)).paused !== undefined) yield* launched.attempt.send({ type: "reading-pause", paused: true });
+            return launched.attempt;
+          }));
         // 接続成功と stop が競合したときは、起動し直しとは数えず、届いていたイベントを読み終えてから止まる
         if (!(yield* Deferred.isDone(recorded.stopRequested))) {
           yield* recorded.sink.appendLog({ type: "intake-restarted", trigger: "auto" });
@@ -695,6 +702,7 @@ export class Sessions extends Context.Service<Sessions, {
             );
           const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
           const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
+          const readingTarget = yield* SynchronizedRef.make(attempt);
           const sink = yield* sinks.open({
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
             model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
@@ -709,11 +717,16 @@ export class Sessions extends Context.Service<Sessions, {
               // 差分更新の一時停止に入る・理由か時刻が変わる・戻る。ヘルパーには停止か再開を（状態が変わったときだけ）送り、進み具合の行に理由と時刻を載せる
               paused: (pause) =>
                 Effect.gen(function* () {
-                  const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
-                    const { paused: before, ...rest } = p;
-                    return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
-                  });
-                  if (changedState) yield* attempt.send({ type: "reading-pause", paused: pause !== undefined });
+                  // 状態の更新と送信は、起動し直しでの送り先の切り替えと同じ排他区間で行う（送り先が古い回のまま送られない）
+                  yield* SynchronizedRef.updateEffect(readingTarget, (target) =>
+                    Effect.gen(function* () {
+                      const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
+                        const { paused: before, ...rest } = p;
+                        return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
+                      });
+                      if (changedState) yield* target.send({ type: "reading-pause", paused: pause !== undefined });
+                      return target;
+                    }));
                   yield* publishProgress({ progress, events });
                 }),
             },
@@ -730,6 +743,7 @@ export class Sessions extends Context.Service<Sessions, {
             run: yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined),
             events,
             progress,
+            readingTarget,
             from: yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({}),
             attemptStartedAt: yield* Ref.make(startedAt),
             failures: yield* Ref.make(0),

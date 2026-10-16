@@ -78,6 +78,8 @@ function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
   const calls: string[][] = [];
   // サーバーからヘルパーへ送られた指示（self-pause・reading-pause）を、送られた順に
   const sent: { type: string; paused: boolean }[] = [];
+  // 同じ指示を、送り先の起動回（0 始まり）つきで記録したもの
+  const sentByAttempt: { attempt: number; type: string; paused: boolean }[] = [];
   const stopSeen = Effect.runSync(Deferred.make<void>());
   // 起動した後に、テストからヘルパーのイベントを足す
   const live: { queue: Queue.Queue<string, Cause.Done> | undefined; end: Effect.Effect<void> | undefined; crash: Effect.Effect<void> | undefined } = { queue: undefined, end: undefined, crash: undefined };
@@ -95,7 +97,8 @@ function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
   };
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.gen(function* () {
     calls.push([...args]);
-    const current = attempts[calls.length - 1] ?? script;
+    const attemptIndex = calls.length - 1;
+    const current = attempts[attemptIndex] ?? script;
     if (current.failLaunch === true) return yield* new HelperLaunchFailure({ stderrTail: ["起動できない"], exit: { code: 1, signal: null } });
     if (current.blockLaunch === true) {
       yield* Deferred.await(stopRequested);
@@ -117,10 +120,10 @@ function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
     yield* Effect.forkScoped(Effect.andThen(Deferred.await(stopRequested), Deferred.succeed(stopSeen, undefined)));
     for (const event of events(current)) Queue.offerUnsafe(queue, JSON.stringify(event));
     if (current.hold !== true) yield* finish(current.exit ?? { code: 0, signal: null });
-    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { sent.push(instruction); }) };
+    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { sent.push(instruction); sentByAttempt.push({ attempt: attemptIndex, ...instruction }); }) };
   });
   const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), creationDate, launch }));
-  return { calls, sent, creationDateCalls, stopSeen, layer, feed, end, crash };
+  return { calls, sent, sentByAttempt, creationDateCalls, stopSeen, layer, feed, end, crash };
 }
 
 type UpdateScript = (input: DiffInput, call: number) => Effect.Effect<void, UpdateFailure>;
@@ -1732,6 +1735,51 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
       yield* runCli(["status"]).pipe(Effect.provide(after.layer));
       expect(after.stdout.join("")).toContain("セッションなし");
     })).pipe(Effect.scoped), 60_000);
+
+  const readingPausesOf = (r: { helpers: { sentByAttempt: { attempt: number; type: string; paused: boolean }[] } }, attempt: number) =>
+    r.helpers.sentByAttempt.filter((s) => s.type === "reading-pause" && s.attempt === attempt).map((s) => s.paused);
+
+  it.effect("起動し直した後に一時停止へ入ると、読み取りの停止は 2 回目のヘルパーへ届く。再開もその回へ届き、1 回目には何も送られない", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);
+    // 1 回目は何も流さず落ちる。2 回目（hold）が r1 を流し、その差分更新が一時停止する
+    const r = yield* resource({ ...THREE, hold: true }, updater, { attempts: [{ duration: 3484, remarks: [], exit: { code: 1, signal: null } }] });
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+
+    yield* eventually(() => pauseLogged(r), "2 回目のヘルパーが流した r1 の差分更新が一時停止する");
+    yield* eventually(() => readingPausesOf(r, 1).length > 0, "2 回目のヘルパーへ読み取りの停止が送られる");
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(readingPausesOf(r, 1)).toEqual([true]);
+    expect(readingPausesOf(r, 0)).toEqual([]);
+
+    yield* advanceTo(pending, RETRY_AT, () => has(r.sessionsDir, isRemark("r2")));
+    expect(readingPausesOf(r, 1)).toEqual([true, false]);
+    expect(readingPausesOf(r, 0)).toEqual([]);
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarkIds(r)).toEqual(["r1", "r2", "r3"]);
+  })).pipe(Effect.scoped), 60_000);
+
+  it.effect("一時停止の間にヘルパーが落ちて起動し直すと、2 回目のヘルパーへ接続した直後に読み取りの停止が届く。再開もその回へ届く", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);
+    // 1 回目（hold）が r1 を流して一時停止し、その間に落ちる。2 回目（hold）は何も流さず居続ける
+    const r = yield* resource({ ...THREE, hold: true }, updater, { attempts: [{ ...THREE, hold: true }, { duration: 3484, remarks: [], hold: true }] });
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+
+    yield* eventually(() => pauseLogged(r), "1 回目の差分更新が一時停止する");
+    yield* eventually(() => readingPausesOf(r, 0).length > 0, "1 回目のヘルパーへ読み取りの停止が送られる");
+    yield* r.helpers.crash;
+    yield* eventually(() => r.helpers.calls.length === 2, "2 回目のヘルパーが起動する");
+    yield* eventually(() => readingPausesOf(r, 1).length > 0, "2 回目のヘルパーへ読み取りの停止が届く");
+    expect(readingPausesOf(r, 0)).toEqual([true]);
+    expect(readingPausesOf(r, 1)).toEqual([true]);
+    expect(remarkIds(r)).toEqual(["r1"]);
+
+    yield* advanceTo(pending, RETRY_AT, () => readingPausesOf(r, 1).length > 1);
+    expect(readingPausesOf(r, 0)).toEqual([true]);
+    expect(readingPausesOf(r, 1)).toEqual([true, false]);
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+  })).pipe(Effect.scoped), 60_000);
 
   it.live("一時停止がなければ、ヘルパーへ読み取りの停止は送らず、進み具合に理由は出ない", () => Effect.gen(function* () {
     const r = yield* resource(THREE);
