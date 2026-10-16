@@ -59,6 +59,14 @@ const hasTopGreenLine = () => [...document.querySelectorAll("*")].some((element)
   return (fill || border) && color !== undefined && color[1]! > color[0]! && color[1]! > color[2]!;
 });
 
+// 幅 768px 以下で開いた会議中の画面は、字幕を隠して始める（web/src/app/startFlags.ts）。字幕の位置を測る前に C で出す。
+// C は画面の部品ができてから（最初のスナップショットの後）でないと効かないので、.layout が出てから押す
+const showCaptionsIfNarrow = (page: Page, width: number) =>
+  width > 768 ? Effect.void : Effect.tryPromise(async () => {
+    await page.locator(".layout").waitFor();
+    await page.keyboard.press("C");
+  });
+
 describe("開始したセッションのローカルモード表示", () => {
   it.live("ローカルモードの会議中の画面だけでも（server なし）、差分更新の状態ごとの線色と指定文言を描く", () => Effect.gen(function* () {
     const web = yield* Effect.acquireRelease(Effect.tryPromise(async () => {
@@ -122,6 +130,7 @@ describe("開始したセッションのローカルモード表示", () => {
     yield* Effect.tryPromise(() => page.locator(".map-node__text").filter({ hasText: /^採用$/ }).waitFor());
     yield* server.speak({ type: "captions", bubbles: [{ id: "c2", track: "自分", speaker: "自分", label: "確定", start: 0, end: 1, text: "状態が変わる前から表示している字幕です。" }] });
     // 既存 CSS は幅632px未満で字幕の幅が0になる。配置の保持はその状態でも測り、可視表示は広い画面で確かめる。
+    yield* showCaptionsIfNarrow(page, width);
     yield* Effect.tryPromise(() => page.getByText("状態が変わる前から表示している字幕です。", { exact: true }).waitFor({ state: "attached" }));
     if (width === 1200) yield* Effect.tryPromise(() => page.locator(".captions").waitFor());
     const before = yield* Effect.tryPromise(() => bounds(page));
@@ -204,6 +213,7 @@ describe("開始したセッションのローカルモード表示", () => {
     yield* Effect.tryPromise(() => page.goto(`http://127.0.0.1:${address.port}/`));
     expect((yield* start(false)).status).toBe(200);
     yield* Effect.tryPromise(() => page.locator(".layout").waitFor());
+    yield* showCaptionsIfNarrow(page, width);
     expect(yield* Effect.tryPromise(() => page.getByText(LABEL, { exact: true }).count())).toBe(0);
     expect(yield* Effect.tryPromise(() => page.evaluate(hasTopGreenLine))).toBe(false);
     const before = yield* Effect.tryPromise(() => bounds(page));

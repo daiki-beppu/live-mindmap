@@ -15,6 +15,7 @@ import type { KeyId } from "../keys/table.ts";
 import * as MapSurface from "../mapSurface/main.ts";
 import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
 import { plainKey, surfaceFolds, type KeyHandler } from "../mapSurface/parentFolds.ts";
+import { startingSurface, WIDE, type Flags } from "../startFlags.ts";
 import * as SessionLayout from "../sessionLayout/main.ts";
 import * as SidePanel from "../sidePanel/main.ts";
 import { PauseAudio, PlayAudio, ReleaseFocus, ReleaseFocusAfterMenuClose, REVIEW_AUDIO_ID, SeekAudio, WriteAudioSettings } from "./command.ts";
@@ -85,8 +86,10 @@ const VOLUME_STEP = 0.05;
 const seekSliderInit = (context: Context): Slider.Model => Slider.init({ id: SEEK_SLIDER_ID, min: 0, max: context.playback.duration, step: SEEK_STEP_SECONDS });
 const volumeSliderInit = (): Slider.Model => Slider.init({ id: VOLUME_SLIDER_ID, min: 0, max: 1, step: VOLUME_STEP });
 
-export const init = (context: Context): Model => {
-  const { mode: _mode, snapshot: _snapshot, ...mapSurface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac);
+// 狭い幅で開いたら、右の列と字幕を隠して始める（startFlags.ts）
+export const init = (context: Context, flags: Flags = WIDE): Model => {
+  const { mode: _mode, snapshot: _snapshot, ...surface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac);
+  const mapSurface = startingSurface(surface, flags);
   // ツールチップは、ポインタを乗せたらすぐ出す（今の CSS の :hover と同じ）。フォーカスでは Tooltip が遅れずに出す
   const tooltip = (key: keyof Model["tooltips"]) => Tooltip.init({ id: tooltipId(key), showDelay: 0 });
   const { captions: _captions, captionsHidden: _captionsHidden, ...sessionLayout } = SessionLayout.init();
@@ -100,7 +103,7 @@ export const init = (context: Context): Model => {
     tooltips: { prev: tooltip("prev"), toggle: tooltip("toggle"), next: tooltip("next"), mute: tooltip("mute"), captions: tooltip("captions"), rate: tooltip("rate"), side: tooltip("side") },
     maybeSeekPointer: Option.none(),
     isPressingSlider: false,
-    captionsHidden: false,
+    captionsHidden: flags.startsNarrow,
     sessionLayout,
   };
 };

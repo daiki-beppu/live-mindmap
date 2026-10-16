@@ -586,12 +586,19 @@ describe("会議中（Foldkit 版）の寸法", () => {
 
 // Issue #969: 幅 768px 以下（スマホ・縦向きの iPad）の並べ方。CSS の @media で切り替え、会議中の画面（.meeting）だけに効く。
 // 狭い幅では右の列とキーの一覧を隠し、ノードを選んでいる間だけ根拠を画面下のシートとして出す。字幕は左右 12px の余白を除いた幅いっぱい、知らせは字幕の上に 1 行で重ねる。
+// 狭い幅で開くと字幕と右の列を隠して始める（Issue #1236 の一部）ので、字幕の並べ方を見るときは C で出してから測る。
 // 769px 以上（Mac の幅）の並べ方は変えない
 const NARROW_VIEWPORTS = [
   { width: 390, height: 844 },
   { width: 768, height: 1024 },
 ] as const;
 const MARGIN = 12;
+
+// 狭い幅で開いた直後は字幕を隠している。C で出して、.captions が描かれるまで待つ
+const showCaptions = async (page: Page): Promise<void> => {
+  await page.keyboard.press("C");
+  await page.locator(".captions").waitFor({ timeout: 10_000 });
+};
 
 const selectFirstNode = async (page: Page): Promise<void> => {
   // 自動のカメラは今の議題を追うので、狭い幅では先頭のノードが画面の外にあることがある。画面の中にある最初のノードを押す
@@ -611,7 +618,7 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
     "字幕は画面の下に左右 12px の余白を除いた幅いっぱいで、幅は 0 より大きく画面に収まる。マップは画面全体を覆う",
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
-      await page.locator(".captions").waitFor({ timeout: 10_000 });
+      await showCaptions(page);
       await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
       const layout = await rectOf(page, ".layout");
       const captions = await rectOf(page, ".captions");
@@ -693,6 +700,7 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
       const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
       await sendFrame(page, { type: "intake", status: "interrupted" });
       await sendFrame(page, NOTICE_FRAMES.screen);
+      await showCaptions(page);
       for (const selector of [".intake-notice", ".screen-notice", ".captions"]) await page.locator(selector).first().waitFor({ timeout: 10_000 });
       await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
       const captionsBefore = await rectOf(page, ".captions");
@@ -721,6 +729,8 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
       await settled(page);
+      // 狭い幅は右の列を隠して始めるので、E で 1 回出してから、もう 1 回で隠す
+      await page.keyboard.press("E");
       await page.keyboard.press("E");
       await settled(page);
       expect(await page.locator(".side").isVisible()).toBe(false);
@@ -747,6 +757,7 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
       const page = await openMeetingPage(browser, server, { frames: frames.first, viewport });
       await sendFrame(page, { type: "intake", status: "interrupted" });
       await sendFrame(page, NOTICE_FRAMES.screen);
+      await showCaptions(page);
       for (const selector of [".intake-notice", ".screen-notice", ".captions"]) await page.locator(selector).first().waitFor({ timeout: 10_000 });
       await expect.poll(async () => Math.abs((await rectOf(page, ".captions")).width - (viewport.width - 2 * MARGIN)) <= 1, { timeout: 10_000 }).toBe(true);
       const captions = await rectOf(page, ".captions");
@@ -759,6 +770,34 @@ describe.each(NARROW_VIEWPORTS)("会議中（Foldkit 版）の狭い幅: $width�
         const lineHeight = Number.parseFloat((await styleOf(page, selector, ["line-height"]))["line-height"]);
         expect(notice.height, `${selector} の高さ`).toBeLessThanOrEqual(lineHeight + 1);
       }
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+});
+
+describe("会議中（Foldkit 版）の開いたときの字幕と右の列", () => {
+  it(
+    "390×844 で開くと字幕を隠して始め、C で出せる（右の列は狭い幅の CSS が隠すので、隠して始めることは meeting.story.test.ts が見る）",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first, viewport: NARROW_VIEWPORTS[0] });
+      await settled(page);
+      expect(await page.locator(".captions").count()).toBe(0);
+      await showCaptions(page);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "1280×801 で開くと字幕と右の列が出ていて、開いた後に 390 へ狭めても字幕は隠れない",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      await page.locator(".captions").waitFor({ timeout: 10_000 });
+      expect(await page.locator(".side").isVisible()).toBe(true);
+      await page.setViewportSize(NARROW_VIEWPORTS[0]);
+      await settled(page);
+      expect(await page.locator(".captions").count()).toBe(1);
       await page.context().close();
     }),
     MEETING_TIMEOUT,

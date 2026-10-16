@@ -192,6 +192,16 @@ describe("見返しの update: 表示面の見る状態", () => {
     expect(Schema.is(Model)(init(context))).toBe(true);
   });
 
+  it("狭い幅で開くと（Flags の startsNarrow）、右の列と字幕を隠して始める。広い幅では両方出して始める", () => {
+    const narrow = init(context, { startsNarrow: true });
+    expect(narrow.mapSurface.viewing).toEqual({ mode: "auto", sideHidden: true });
+    expect(narrow.captionsHidden).toBe(true);
+    expect(Schema.is(Model)(narrow)).toBe(true);
+    const wide = init(context, { startsNarrow: false });
+    expect(wide).toEqual(init(context));
+    expect(wide.captionsHidden).toBe(false);
+  });
+
   it("表示面のノードを click して選ぶと mapSurface.viewing に入り、時刻を動かしても残る", () => {
     story(
       update,

@@ -38,9 +38,9 @@ const volumeIcon = (h: H, muted: boolean, volume: number): Html => (muted || vol
 type Placement = "top-start" | "top-end";
 type Trigger = ReadonlyArray<ChildAttribute>;
 
-// 吹き出し（review-tip）と速さのメニュー（review-rate__menu）の bottom・right は、替える前のビルドで効いていた値（bottom: 100%、メニューは right: 0）をそのまま書く。
-// 替える前は controls.css の打ち消し（bottom: auto など）が styles.css より先に読み込まれて負けていた（Issue #830 の範囲は今と同じ見た目で、見た目の直しは範囲外）。
-const tip = (h: H, panel: Trigger, text: string): Html => h.span([...panel, h.Class("review-tip absolute left-0 bottom-full z-10 hidden px-[8px] py-[4px] rounded-[4px] bg-gray-700 text-gray-50 text-[13px] leading-[16px] whitespace-nowrap pointer-events-none")], [text]);
+// 吹き出し（review-tip）と速さのメニュー（review-rate__menu）の位置は anchor だけで決める（Tooltip・Menu が position: absolute と left・top をインラインで書く）。
+// クラスに bottom・right などを書くと left・top と上下・左右で重なり、高さが潰れたり幅が広がったりする（Issue #1225・#1226）。重なり順の z-index だけをクラスに置く
+const tip = (h: H, panel: Trigger, text: string): Html => h.span([...panel, h.Class("review-tip z-10 hidden px-[8px] py-[4px] rounded-[4px] bg-gray-700 text-gray-50 text-[13px] leading-[16px] whitespace-nowrap pointer-events-none")], [text]);
 
 // ツールチップを付けたボタンの部品。toView は、ツールチップの束（trigger・panel）を受けて、ボタンを返す
 const withTooltip = (h: H, model: Model, key: TooltipKey, placement: Placement, toView: (render: { trigger: Trigger; panel: Trigger }) => Html): Html =>
@@ -209,7 +209,7 @@ const rateControl = (context: Context, model: Model, h: H): Html => {
             buttonClassName: "review-bar__button review-rate__button relative inline-flex items-center justify-center w-[32px] h-[32px] p-0 [border:0] rounded-[6px] bg-transparent text-inherit cursor-pointer",
             buttonAttributes: [...trigger, ...childAttributes([h.Id(Menu.buttonId(RATE_MENU_ID))])],
             buttonContent: h.span([h.Class("review-contents contents")], [SpeedIcon(h), h.span([], [`${rate}×`])]),
-            itemsClassName: "review-rate__menu absolute right-0 bottom-full z-10 flex flex-col min-w-[220px] p-[4px] rounded-[6px] bg-gray-700 text-gray-50",
+            itemsClassName: "review-rate__menu z-10 flex flex-col min-w-[220px] p-[4px] rounded-[6px] bg-gray-700 text-gray-50",
             backdropClassName: "review-rate__backdrop fixed inset-0 z-9",
             anchor: { placement: "top-end" },
           },

@@ -401,3 +401,133 @@ describe("見返し（Foldkit 版）の寸法", () => {
     TIMEOUT,
   );
 });
+
+// 速さのメニューとツールチップの位置（Issue #1225・#1226）: パネルのクラスが位置（bottom・right）を持つと、anchor が書く left・top と上下・左右で重なり、
+// メニューが画面幅に広がって外へはみ出したり、高さが潰れたりする。外側（backdrop）だけが見えて、どのボタンも押せなくなる。位置は anchor だけで決まることを、PC とスマホの幅で確かめる。
+// 項目を選んだ後の速さの表示と、閉じた後に字幕・右の列のボタンが効くことは、E2E の見返しの流れ（e2e/tests/review/review.e2e.ts）が見る
+describe("見返し（Foldkit 版）の速さのメニューとツールチップの位置", () => {
+  type Box = Awaited<ReturnType<typeof rectOf>>;
+  const inside = (box: Box, viewport: { width: number; height: number }, label: string) => {
+    expect(box.left, `${label} の左端`).toBeGreaterThanOrEqual(0);
+    expect(box.top, `${label} の上端`).toBeGreaterThanOrEqual(0);
+    expect(box.right, `${label} の右端`).toBeLessThanOrEqual(viewport.width);
+    expect(box.bottom, `${label} の下端`).toBeLessThanOrEqual(viewport.height);
+  };
+  // ツールチップを出す相手と向き（controls.ts の placement）。音声なしの見返しにはミュートが無い
+  const tipped = [
+    { label: "反映 1 つ戻る", align: "start" },
+    { label: "再生", align: "start" },
+    { label: "反映 1 つ進む", align: "start" },
+    { label: "ミュート", align: "start" },
+    { label: "字幕", align: "end" },
+    { label: "右の列", align: "end" },
+  ] as const;
+  const shownTip = '.review-tip[data-open]';
+  const settledRects = async (page: Page, tipSelector: string, triggerSelector: string): Promise<{ tip: Box; button: Box }> => {
+    const read = async () => ({ tip: await rectOf(page, tipSelector), button: await rectOf(page, triggerSelector) });
+    let last = await read();
+    const deadline = Date.now() + 5_000;
+    for (let stable = 0; stable < 3; ) {
+      if (Date.now() > deadline) throw new Error(`${triggerSelector} と吹き出しの位置が落ち着きません`);
+      await page.waitForTimeout(50);
+      const now = await read();
+      stable = JSON.stringify(now) === JSON.stringify(last) ? stable + 1 : 0;
+      last = now;
+    }
+    return last;
+  };
+
+  for (const viewport of [PAGE_VIEWPORT, { width: 390, height: 844 }]) {
+    it(
+      `${viewport.width}×${viewport.height}: 速さのメニューはボタンの上に右端を揃えて出て、項目が全部見え、各項目の点で一番上に来る`,
+      () => withBrowser(async (browser) => {
+        const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+        await page.setViewportSize(viewport);
+        await page.locator(".review-rate__button").first().click();
+        // anchor の位置が付く（visibility が外れる）まで待つ
+        await page.waitForFunction(() => { const menu = document.querySelector(".review-rate__menu"); return menu !== null && getComputedStyle(menu).visibility === "visible"; }, undefined, { timeout: 10_000 });
+        const menu = await rectOf(page, ".review-rate__menu");
+        const button = await rectOf(page, ".review-rate__button");
+        inside(menu, viewport, "メニュー");
+        expect(menu.width, "最小幅").toBeGreaterThanOrEqual(220);
+        expect(menu.bottom, "メニューはボタンの上").toBeLessThanOrEqual(button.top + 1);
+        near(menu.right, button.right, "メニューの右端はボタンの右端");
+        const items = await page.locator(".review-rate__item").evaluateAll((all) => all.map((el) => el.getBoundingClientRect().height));
+        // 項目の数 × 1 項目の高さ ＋ 上下の余白（p-[4px]）
+        near(menu.height, items.reduce((sum, height) => sum + height, 0) + 8, "メニューの高さ");
+        const hits = await page.locator(".review-rate__item").evaluateAll((all) =>
+          all.map((el) => {
+            const r = el.getBoundingClientRect();
+            return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest(".review-rate__item") === el;
+          }),
+        );
+        expect(hits, "各項目の中心で一番上に来るのは、外側（backdrop）でなくその項目").toEqual(items.map(() => true));
+        await page.context().close();
+      }),
+      TIMEOUT,
+    );
+
+    it(
+      `${viewport.width}×${viewport.height}: ボタンのツールチップはボタンの上に指定の向きで出て、文字が 1 行すべて見える`,
+      () => withBrowser(async (browser) => {
+        const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+        await page.setViewportSize(viewport);
+        const targets = [...tipped.map(({ label, align }) => ({ label, align, trigger: `button[aria-label="${label}"]` })), { label: "速さ", align: "end" as const, trigger: ".review-rate__button" }];
+        for (const { label, align, trigger } of targets) {
+          await page.locator(trigger).first().hover();
+          await page.waitForFunction((selector) => { const tip = document.querySelector(selector); return tip !== null && getComputedStyle(tip).visibility === "visible"; }, shownTip, { timeout: 10_000 });
+          // ミュートにポインタを乗せると音量のスライダーが transition で広がり、帯の中のボタンが動く。ボタンと吹き出しの位置が止まってから測る
+          const { tip, button } = await settledRects(page, shownTip, trigger);
+          const clipped = await page.locator(shownTip).evaluate((el) => el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
+          // 1 行（leading-[16px]）＋ 上下の余白（py-[4px]）
+          near(tip.height, 24, `${label} のツールチップの高さ`);
+          expect(clipped, `${label} のツールチップの文字が見切れない`).toBe(false);
+          inside(tip, viewport, `${label} のツールチップ`);
+          expect(tip.bottom, `${label} のツールチップはボタンの上`).toBeLessThanOrEqual(button.top + 1);
+          if (align === "start") near(tip.left, button.left, `${label} のツールチップの左端はボタンの左端`);
+          else near(tip.right, button.right, `${label} のツールチップの右端はボタンの右端`);
+          const { x, y } = await mapPoint(page, "corner");
+          await page.mouse.move(x, y);
+          await page.locator(shownTip).waitFor({ state: "detached", timeout: 10_000 });
+        }
+        await page.context().close();
+      }),
+      TIMEOUT,
+    );
+  }
+});
+
+// 狭い幅で開いたときの最初の状態（Issue #1236 の一部）: 幅 768px 以下（styles.css の狭い幅の境目）で開くと、右の列と字幕を隠して始める。
+// ボタンで今までどおり出せる。広い幅では今までどおり両方出ている。開いた後に幅を変えても、隠す・出すは変えない（人の操作を上書きしない）
+describe("見返し（Foldkit 版）の開いたときの右の列と字幕", () => {
+  const pressed = (page: Page, label: string) => page.locator(`button[aria-label="${label}"]`).first().getAttribute("aria-pressed");
+  const shown = async (page: Page) => ({ side: await page.locator(".side").count(), captions: await page.locator(".captions").count(), sideButton: await pressed(page, "右の列"), captionsButton: await pressed(page, "字幕") });
+  const HIDDEN = { side: 0, captions: 0, sideButton: "false", captionsButton: "false" };
+  const SHOWN = { side: 1, captions: 1, sideButton: "true", captionsButton: "true" };
+
+  it(
+    "390×844 で開くと、右の列と字幕が隠れていて、字幕・右の列のボタンで出せる",
+    () => withBrowser(async (browser) => {
+      const page = await openReviewPage(browser, pages.audioPath, { audio: true, viewport: { width: 390, height: 844 } });
+      expect(await shown(page)).toEqual(HIDDEN);
+      await page.locator('button[aria-label="字幕"]').first().click();
+      await page.locator('button[aria-label="右の列"]').first().click();
+      await expect.poll(() => shown(page), { timeout: 10_000 }).toEqual(SHOWN);
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+
+  it(
+    "1280×801 で開くと、右の列と字幕は今までどおり出ている。開いた後に 390 へ狭めても隠れない",
+    () => withBrowser(async (browser) => {
+      const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+      expect(await shown(page)).toEqual(SHOWN);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForTimeout(300);
+      expect(await shown(page)).toEqual(SHOWN);
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+});
