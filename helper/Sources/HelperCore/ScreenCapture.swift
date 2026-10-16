@@ -13,6 +13,8 @@ import ScreenCaptureKit
 public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     public var events: AsyncStream<HelperEvent> { emitter.events }
     private let emitter: ScreenEventEmitter
+    /// 標準エラーへの 1 行。テストでは差し替えて、出た行を確かめる。
+    private let log: (String) -> Void
     private let bundleID: String
     private let origin: UInt64
     private let queue = DispatchQueue(label: "live-mindmap.screen-capture")
@@ -30,10 +32,15 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
     private var waitGeneration = 0
     private var waiter: CheckedContinuation<Void, Never>?
 
-    public init(bundleID: String, origin: UInt64) {
+    public convenience init(bundleID: String, origin: UInt64) {
+        self.init(bundleID: bundleID, origin: origin, emitter: ScreenEventEmitter(bundleID: bundleID), log: printScreenError)
+    }
+
+    init(bundleID: String, origin: UInt64, emitter: ScreenEventEmitter, log: @escaping (String) -> Void) {
         self.bundleID = bundleID
         self.origin = origin
-        self.emitter = ScreenEventEmitter(bundleID: bundleID)
+        self.emitter = emitter
+        self.log = log
     }
 
     /// 取り込みを始め、`stop()` まで待つ。会議アプリのウィンドウが見つからない間と、撮っていたウィンドウが無くなった後は、
@@ -48,7 +55,7 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
             do {
                 content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             } catch {
-                printScreenError("共有画面を取り込めない（音声だけで続ける）: \(error)")
+                log("共有画面を取り込めない（音声だけで続ける）: \(error)")
                 return
             }
             switch nextScreenWindowAction(bundleID: bundleID, state: state, among: windowCandidates(in: content)) {
@@ -56,7 +63,7 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
                 return // 未開始と無くなった状態では返らない
             case .retry(let seconds):
                 if !announcedRetry {
-                    printScreenError("画面に出ている \(bundleID) のウィンドウが見つからない（見つかるまで \(Int(seconds)) 秒ごとに探し直す）")
+                    log("画面に出ている \(bundleID) のウィンドウが見つからない（見つかるまで \(Int(seconds)) 秒ごとに探し直す）")
                     announcedRetry = true
                 }
                 await wait(timeout: seconds, wakeOnLost: false)
@@ -170,7 +177,7 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
             try await stream.startCapture()
             return stream
         } catch {
-            printScreenError("共有画面を取り込めない（音声だけで続ける）: \(error)")
+            log("共有画面を取り込めない（音声だけで続ける）: \(error)")
             return nil
         }
     }
@@ -251,10 +258,14 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
         }
     }
 
-    /// 共有中のウィンドウがすべて閉じた。ストリームは止まらない（開き直されれば続く）ので、`finish()` は呼ばない。
     public func streamDidBecomeInactive(_ stream: SCStream) {
-        printScreenError("共有していたウィンドウが閉じた（音声だけで続ける）")
-        reportWindowGone()
+        handleStreamInactive()
+    }
+
+    /// OS から inactive の通知が来た。ウィンドウが閉じたとは限らず、その後もフレームは届く（Issue #1174）。
+    /// 起きた事実だけを出し、撮影は止めず、探し直さず、`image: null` も流さない。ウィンドウが本当に無くなったことは `handleStop` が扱う。
+    func handleStreamInactive() {
+        log("OS から inactive の通知が来た（撮影は続けている）")
     }
 
     /// 画像を送った後に撮っていたウィンドウが無くなったら、原点からの秒で `image: null` を 1 回だけ流す。
@@ -271,11 +282,11 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate, @u
             nextScreenWindowAction(bundleID: bundleID, state: .capturing(windowID: id), among: windowCandidates(in: $0))
         } ?? .nothing
         if action == .nothing {
-            printScreenError("共有画面の取り込みが止まった（音声だけで続ける）: \(error)")
+            log("共有画面の取り込みが止まった（音声だけで続ける）: \(error)")
             emitter.emitCaptureStopped(at: offsetSeconds(from: origin, to: AudioGetCurrentHostTime()))
             finish()
         } else {
-            printScreenError("共有していたウィンドウが無くなった（見つかるまで \(Int(screenWindowRetryInterval)) 秒ごとに探し直す）")
+            log("共有していたウィンドウが無くなった（見つかるまで \(Int(screenWindowRetryInterval)) 秒ごとに探し直す）")
             reportWindowGone()
             markWindowLost()
         }
