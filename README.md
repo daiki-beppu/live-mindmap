@@ -31,18 +31,33 @@ AIは毎回マップを作り直さず、既存構造に対して次の操作を
 
 ノードをクリックすると、その内容の根拠になった元発言・発言者・時刻を確認できる。
 
+## できること
+
+使い方の詳細は下の「ライブのセッション」以降と `pnpm cli --help`。
+
+- **会議をその場でマップにする**（`cli start`）: 会議アプリの音声を Mac の中で文字起こしし、AI が差分更新でマップを組み続ける
+- **相手と自分を分ける**: 自分のマイクは別のトラックで取り、スピーカーで聞いても相手の声の漏れを消す。相手の声は話者（相手 A〜D）に分ける
+- **自分の休止**: 会議アプリがマイクを使っていない間は自分を取らない。画面の M でも切り替えられる
+- **共有画面を文脈に使う**: 画面が変わると AI に添え、画面の文字は語彙にも使う
+- **語彙で固有名詞を直す**: `--vocab`・共有画面・過去のセッションの語で表記を直す（`cli vocab`）
+- **長い会議**: 済んだ議題を閉じて畳み、今の議題にカメラを寄せる
+- **根拠をたどる**: ノードから元の発言・話者・時刻を見る
+- **閲覧の共有**（`cli share`）: メール・ドメインで絞って、マップを外から見せる
+- **書き出しと見返し**（`cli stop`・`cli review`）: md・json・drawnix・png と、シークできる map.html・音声つきの map-audio.html。録音はトラックごとに残る
+- **録画から組む**（`cli recorded`）: 録画した会議のファイルから、ライブと同じセッションを組む
+- **やり直す**（`cli play`・`cli restore`）: 文字起こしや過去のセッションを流し直す、ログからマップを戻す
+- **モデルを選ぶ**: 差分更新は Claude・ChatGPT のサブスク・Apple Intelligence（ローカルモード）。判定（Jev・Clef）で重さに応じてモデルを振り分ける
+- **評価**（`cli eval` ほか）: マップの形・音声認識の精度と遅れを測る（[bench README](server/bench/README.md)）
+
 ## ロードマップ
 
-### MVP
+予定と進み具合の正本は GitHub の issue にある。
 
-会議音声取得 → リアルタイム文字起こし → AI構造化 → Webマインドマップ自動更新
+- 進めているもの: [仕様の issue](https://github.com/daiki-beppu/live-mindmap/issues?q=is%3Aissue+is%3Aopen+label%3Aspec)（実装は各仕様の親 issue の sub-issue）
+- 設計中のもの: [`wayfinder:map` の地図](https://github.com/daiki-beppu/live-mindmap/issues?q=is%3Aissue+is%3Aopen+label%3Awayfinder%3Amap)
+- アイデアと未整理の報告: [`needs-triage`](https://github.com/daiki-beppu/live-mindmap/issues?q=is%3Aissue+is%3Aopen+label%3Aneeds-triage)
 
-（自動参加Botは作らない）
-
-### その後
-
-- 会議URLを渡すだけで「AI Map Bot」が参加し、クラウド上の仮想ブラウザでマップを表示・画面共有する
-- 必要に応じて Mac アプリを追加
+目指す先は、会議 URL を渡すだけで「AI Map Bot」が参加し、クラウド上の仮想ブラウザでマップを表示・画面共有すること。
 
 ## 方針
 
