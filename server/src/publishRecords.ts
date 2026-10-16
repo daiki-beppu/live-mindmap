@@ -13,6 +13,8 @@ export type PublishRecord = {
   // 中身の段。この段ではマップだけ
   readonly level: "map";
   readonly anyone: boolean;
+  // 合言葉つき（anyone: false）のときだけ入る
+  readonly passphrase?: string;
   readonly publishedAt: string;
   readonly expiresAt: string;
   readonly status: "published";

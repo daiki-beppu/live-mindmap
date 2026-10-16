@@ -11,14 +11,14 @@ import { TestClock } from "effect/testing";
 import { afterEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
-import { REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
+import { openSealed, PUBLISH_TITLE, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
-// cli publish --anyone（Issue #1250）。runCli を、偽の Cloudflare API・一時フォルダの HOME・偽の ReviewBuild・止めた時計で呼ぶ。
+// cli publish（Issue #1250 の --anyone と、Issue #1251 の既定の合言葉）。runCli を、偽の Cloudflare API・一時フォルダの HOME・偽の ReviewBuild・止めた時計で呼ぶ。
 // 偽の API が受け取った Worker のスクリプトは、実際に import して Request を渡す
 
 const ACCOUNT = "acct-1234567890";
@@ -210,7 +210,7 @@ async function uploadedWorker(s: Setup) {
   return { metadata, call, assetFetches };
 }
 
-describe("cli publish --anyone（Issue #1250）", () => {
+describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉）", () => {
   describe("成功の通し", () => {
     it.effect("セッションを省くと log.jsonl を持つ最新のセッションをマップだけの段で置き、URL・期限・サブドメインの旨を出す。記録は 1 か所に 0o600 で書く", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
@@ -506,7 +506,26 @@ describe("cli publish --anyone（Issue #1250）", () => {
       }));
     const normal = (s: Setup) => { writeSession(s.sessions, "2026-10-01T00-00-00.000Z"); };
 
-    refused("--anyone が無い", [], normal, /--anyone/);
+    refused("--anyone が無くても、--days が範囲外なら止まる", ["--days", "0"], normal, /1.*30|--days/);
+    refused("--anyone が無くても、ローカルモードのセッションは拒む", [], (s) => { writeSession(s.sessions, "2026-10-01T00-00-00.000Z", MEETING, { local: true }); }, /ローカル/);
+    refused("--anyone が無くても、CLOUDFLARE_API_TOKEN が無ければ止まる", [], normal, /CLOUDFLARE_API_TOKEN/, { env: { CLOUDFLARE_API_TOKEN: "" } });
+    refused("--anyone が無くても、見返しのビルドの失敗で止まる", [], normal, /ビルドに失敗/, { buildFailure: new ReviewPageFailed({ message: "ビルドに失敗" }) });
+    refused("--anyone が無いときの 25 MiB は暗号化した後の HTML で数える（平文は 25 MiB 未満でも、暗号文で超えれば止まる）", [], normal, /25|MiB|大き/, {
+      template: `<!doctype html><html><head><title>t</title></head><body><!--${"a".repeat(20 * MIB)}--></body></html>`,
+    });
+    // 未知のフラグは CLI の解析が使い方つきで拒む（refused の「使い方だけの失敗は証拠にしない」の対象外）
+    it.effect("--passphrase は持たない（合言葉は引数で受けず、製品が作る）", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      normal(s);
+
+      const result = yield* publish(s, ["--passphrase", "my-own-words"]);
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(output(s, result)).toContain("Unrecognized flag: --passphrase");
+      expect(s.api.calls).toEqual([]);
+      expect(recordFiles(s)).toEqual([]);
+    }));
     refused("--days が 0", ["--anyone", "--days", "0"], normal, /1.*30|--days/);
     refused("--days が 31", ["--anyone", "--days", "31"], normal, /1.*30|--days/);
     refused("--days が整数でない", ["--anyone", "--days", "1.5"], normal, /1.*30|--days/);
@@ -708,4 +727,142 @@ describe("cli publish --anyone（Issue #1250）", () => {
       expect(new Set(hosts)).toEqual(new Set(["api.cloudflare.com"]));
     }));
   });
+});
+
+describe("cli publish の既定は合言葉で暗号化して置く（Issue #1251）", () => {
+  const passphraseOf = (s: Setup) => {
+    const m = /合言葉:\s*(\S+)/.exec(s.stdout.join(""));
+    expect(m, "stdout に「合言葉: …」の行が無い").not.toBeNull();
+    return m![1]!;
+  };
+  const sealedOf = (outer: string) => {
+    const m = /<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/.exec(outer);
+    expect(m, "外側のページに暗号文の script が無い").not.toBeNull();
+    return JSON.parse(m![1]!) as { salt: string; iv: string; data: string };
+  };
+  const placedDefault = (root: string, extra: Partial<Setup> = {}, argv: string[] = []) => {
+    const s = setup(root, undefined, extra);
+    writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+    return { s, run: publish(s, argv) };
+  };
+
+  it.effect("--anyone が無くても止まらずに置き、URL と合言葉を出す。受け取った HTML は stdout の合言葉で復号でき、マップだけの段（発言・画面の文字が無い）に戻る", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const { s, run } = placedDefault(root);
+
+    const result = yield* run;
+
+    expect(Result.isSuccess(result), failureText(result)).toBe(true);
+    const name = scriptName(s.api.calls.find(isScriptPut)!);
+    const out = s.stdout.join("");
+    expect(out).toContain(`https://${name}.${SUBDOMAIN}.workers.dev`);
+    const passphrase = passphraseOf(s);
+    expect(passphrase).toMatch(/^[a-z0-9]{5}(-[a-z0-9]{5}){3}$/);
+    expect(s.stderr.join("")).not.toContain(passphrase);
+
+    const outer = yield* Effect.promise(() => uploadedHtml(s));
+    const inner = yield* Effect.promise(() => openSealed(sealedOf(outer), passphrase));
+    expect(inner).not.toContain(REMARK_TEXT);
+    expect(inner).not.toContain(SCREEN_LINE);
+    const embedded = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(inner);
+    expect(embedded).not.toBeNull();
+    const events = JSON.parse(embedded![1]!) as { type: string; remark?: { text: string }; lines?: string[] }[];
+    expect(events.some((e) => e.type === "diff")).toBe(true);
+    expect(events.filter((e) => e.type === "remark").every((e) => e.remark!.text === "")).toBe(true);
+    expect(events.filter((e) => e.type === "screen").every((e) => e.lines === undefined)).toBe(true);
+    // 違う合言葉では開けない
+    yield* Effect.promise(() => expect(openSealed(sealedOf(outer), `${passphrase}x`)).rejects.toThrow());
+    // manifest は外側のページのバイト数
+    const session = s.api.calls.find((c) => c.path.endsWith("/assets-upload-session"))!;
+    const manifest = (session.json as { manifest: Record<string, { size: number }> }).manifest;
+    expect(Object.keys(manifest)).toEqual(["/index.html"]);
+    expect(manifest["/index.html"]!.size).toBe(Buffer.byteLength(outer));
+  }));
+
+  it.effect("外側のページは入力欄 1 つと暗号文だけで、title とメタは決まった文。会議名・発言・画面の文字・見返しのログの埋め込みは平文に無い", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const named = `<!doctype html><html><head><title>${MEETING}</title><meta property="og:title" content="${MEETING}"><meta name="description" content="${MEETING}の議事"></head><body></body></html>`;
+    const { s, run } = placedDefault(root, { template: named });
+
+    yield* run;
+
+    const outer = yield* Effect.promise(() => uploadedHtml(s));
+    for (const secret of [MEETING, REMARK_TEXT, SCREEN_LINE, REVIEW_LOG_ELEMENT_ID, passphraseOf(s)]) expect(outer).not.toContain(secret);
+    const titles = [...outer.matchAll(/<title>([\s\S]*?)<\/title>/g)];
+    expect(titles).toHaveLength(1);
+    expect(titles[0]![1]).toBe(PUBLISH_TITLE);
+    const metas = [...outer.matchAll(/<meta\s[^>]*content="([^"]*)"[^>]*>/g)].map((m) => m[1]!);
+    expect(metas.length).toBeGreaterThanOrEqual(2);
+    for (const content of metas) expect(content.trim()).not.toBe("");
+    expect(outer.match(/<input\b/g)).toHaveLength(1);
+    // 復号した内側の title も決まった文
+    const inner = yield* Effect.promise(() => openSealed(sealedOf(outer), passphraseOf(s)));
+    expect(inner.match(/<title>/g)).toHaveLength(1);
+    expect(inner).toContain(`<title>${PUBLISH_TITLE}</title>`);
+  }));
+
+  it.effect("記録には、既定では stdout と同じ合言葉と anyone: false が入る（0o600 のまま）。2 回置くと合言葉は異なる", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const { s, run } = placedDefault(root);
+
+    yield* run;
+    const first = passphraseOf(s);
+    s.stdout.length = 0;
+    yield* publish(s, []);
+    const second = passphraseOf(s);
+
+    const rows = recordRows(s);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ anyone: false, passphrase: first, level: "map", status: "published" });
+    expect(rows[1]).toMatchObject({ anyone: false, passphrase: second });
+    expect(first).not.toBe(second);
+    expect(statSync(recordFiles(s)[0]!).mode & 0o777).toBe(0o600);
+  }));
+
+  it.effect("--anyone では合言葉の行を出さず、記録に passphrase の欄も無く、置く HTML は平文のマップのまま", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const { s, run } = placedDefault(root, {}, ["--anyone"]);
+
+    yield* run;
+
+    expect(s.stdout.join("")).not.toContain("合言葉");
+    const rows = recordRows(s);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ anyone: true });
+    expect("passphrase" in rows[0]!).toBe(false);
+    expect(yield* Effect.promise(() => uploadedHtml(s))).toContain(REVIEW_LOG_ELEMENT_ID);
+  }));
+
+  it.effect("Cloudflare へ送るすべての要求（パス・クエリ・本文・Worker のスクリプト・メタデータ）に、合言葉も平文の中身も無い", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const { s, run } = placedDefault(root);
+
+    yield* run;
+
+    const passphrase = passphraseOf(s);
+    const sent = yield* Effect.promise(async () => {
+      const parts: string[] = [];
+      for (const call of s.api.calls) {
+        parts.push(call.path, call.search, call.text, JSON.stringify(call.headers));
+        if (call.form !== null) for (const value of call.form.values()) parts.push(typeof value === "string" ? value : await value.text());
+      }
+      return parts.join("\n");
+    });
+    expect(sent.length).toBeGreaterThan(0);
+    for (const secret of [passphrase, passphrase.replaceAll("-", ""), MEETING, REMARK_TEXT, SCREEN_LINE, REVIEW_LOG_ELEMENT_ID]) expect(sent).not.toContain(secret);
+    const worker = yield* Effect.promise(() => uploadedWorker(s));
+    expect(JSON.stringify(worker.metadata)).not.toContain(passphrase);
+  }));
+
+  it.effect("既定でも Worker の期限・クローラー拒否は同じ（期限の後は 410）", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const { s, run } = placedDefault(root);
+
+    yield* run;
+
+    const worker = yield* Effect.promise(() => uploadedWorker(s));
+    expect((yield* Effect.promise(() => worker.call("/", "Mozilla/5.0", NOW + 7 * DAY))).status).toBe(410);
+    expect((yield* Effect.promise(() => worker.call("/", "GPTBot/1.0"))).status).toBe(403);
+    expect((yield* Effect.promise(() => worker.call("/", "Mozilla/5.0"))).status).toBe(200);
+  }));
 });

@@ -6,6 +6,9 @@ export const PUBLISH_MAX_DAYS = 30;
 // Cloudflare の静的アセット 1 ファイルの上限
 export const PUBLISH_MAX_ASSET_BYTES = 25 * 1024 * 1024;
 
+import { SEALED_SCRIPT_ID, unlockPageScript } from "./passphrase.ts";
+import type { Sealed } from "./passphrase.ts";
+
 export const PUBLISH_TITLE = "共有されたマインドマップ";
 const PUBLISH_DESCRIPTION = "期限つきで共有されたマインドマップです";
 
@@ -22,6 +25,8 @@ const HEAD_OPEN = /<head(\s[^>]*)?>/i;
 const TITLE_TAG = /<title[^>]*>[\s\S]*?<\/title>/gi;
 const META_TAG = /<meta\s[^>]*?(?:name|property)\s*=\s*["']?(?:og:title|og:description|description|twitter:title|twitter:description)["']?[^>]*>/gi;
 
+const FIXED_HEAD = `<title>${PUBLISH_TITLE}</title><meta property="og:title" content="${PUBLISH_TITLE}"><meta name="description" content="${PUBLISH_DESCRIPTION}"><meta property="og:description" content="${PUBLISH_DESCRIPTION}">`;
+
 // head の <title> とプレビュー用のメタを、決まった文に差し替える。対象は <head> の開きから、最初の <script> か </head> までだけで、
 // 埋め込んだログや JS の中の "<title>" という字面には触れない
 export function replaceHeadForPublish(html: string): string {
@@ -34,8 +39,15 @@ export function replaceHeadForPublish(html: string): string {
   if (candidates.length === 0) throw new Error("テンプレートに </head> がありません");
   const end = Math.min(...candidates);
   const kept = html.slice(start, end).replace(TITLE_TAG, "").replace(META_TAG, "");
-  const fixed = `<title>${PUBLISH_TITLE}</title><meta property="og:title" content="${PUBLISH_TITLE}"><meta name="description" content="${PUBLISH_DESCRIPTION}"><meta property="og:description" content="${PUBLISH_DESCRIPTION}">`;
-  return html.slice(0, start) + fixed + kept + html.slice(end);
+  return html.slice(0, start) + FIXED_HEAD + kept + html.slice(end);
+}
+
+// 合言葉で暗号化して置く外側のページ（Issue #1251）。合言葉の入力欄と暗号文と復号のスクリプトだけを持ち、会議に由来する文字は入れない。
+// 暗号文は base64 なので、<script> の中に置いても "<" が出ない
+export function lockedPublishPage(sealed: Sealed): string {
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FIXED_HEAD}</head>`
+    + `<body><form><label>合言葉 <input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" autofocus></label> <button type="submit">開く</button></form><p role="alert"></p>`
+    + `<script type="application/json" id="${SEALED_SCRIPT_ID}">${JSON.stringify(sealed)}</script><script>${unlockPageScript()}</script></body></html>`;
 }
 
 // 置く Worker のスクリプト（module）。判定の順は 期限（410）→ /robots.txt → AI クローラー（403）→ asset。すべての応答に x-robots-tag を付ける。
