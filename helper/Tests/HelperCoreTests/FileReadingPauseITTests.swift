@@ -162,7 +162,7 @@ struct FileReadingPauseITTests {
         let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
         context?.setFillColor(gray: 1, alpha: 1)
         context?.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
-        _ = recognizeScreenText(try #require(context?.makeImage()))
+        _ = await recognizeScreenText(try #require(context?.makeImage()))
 
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
