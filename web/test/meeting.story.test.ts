@@ -115,6 +115,29 @@ describe("会議中の update: キー（会議中の行だけ。見返しのキ�
   });
 });
 
+// 狭い幅で開いたとき（Issue #1236 の一部）: 画面の部品は最初のスナップショットで作るので、そのときに右の列と字幕を隠して始める。E・C で今までどおり出せる
+describe("会議中の update: 狭い幅で開いたときの右の列と字幕", () => {
+  const sessionOf = (m: Model) => {
+    if (m.session._tag === "None") throw new Error("スナップショットを受けた後なのに画面の部品がありません");
+    return m.session.value;
+  };
+  const hidden = (m: Model) => ({ side: sessionOf(m).mapSurface.viewing.sideHidden === true, captions: sessionOf(m).sessionLayout.captionsHidden });
+
+  it("狭い幅で開くと、最初のスナップショットで右の列と字幕を隠して始め、E・C で出せる", () => {
+    const opened = run([frameMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
+    expect(Schema.is(MeetingModel)(opened)).toBe(true);
+    expect(hidden(opened)).toEqual({ side: true, captions: true });
+    expect(hidden(run([keyMessage("E"), keyMessage("C")], opened).model)).toEqual({ side: false, captions: false });
+  });
+
+  it("広い幅で開くと、今までどおり両方出して始める。次のスナップショットでも隠す・出すは変わらない", () => {
+    const opened = run([frameMessage(FIRST), measured], init(false, { startsNarrow: false })).model;
+    expect(hidden(opened)).toEqual({ side: false, captions: false });
+    const shownByHand = run([frameMessage(FIRST), measured, keyMessage("E"), keyMessage("C")], init(false, { startsNarrow: true })).model;
+    expect(hidden(run([frameMessage(SECOND)], shownByHand).model)).toEqual({ side: false, captions: false });
+  });
+});
+
 describe("会議中の update: M（自分の休止・再開。Issue #1069）", () => {
   const shown = run([frameMessage(SECOND), measured]).model;
   const requested = (result: { commands?: ReadonlyArray<{ name: string }> }) =>

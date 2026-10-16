@@ -1,7 +1,7 @@
 // 会議中の Foldkit プログラム（Issue #829）の Story・Scene が共有する道具。テストではなく、題材のスナップショット・frame を流す Message・保留の Command と Mount を解く step・描いた木を読む関数だけを置く。
 //
 // この道具が固定する、会議中のプログラム（web/src/app/meeting/main.ts・message.ts）の外から見える形:
-// - main.ts: `Model`（Schema）・`init(isMac: boolean)`・`update`・`view`（`(model, h) => Html`。根は `.layout`。スナップショットが無い間は `p.waiting`）
+// - main.ts: `Model`（Schema）・`init(isMac: boolean, flags?: Flags)`・`update`・`view`（`(model, h) => Html`。根は `.layout`。スナップショットが無い間は `p.waiting`）
 // - message.ts: `Message`。受信は `GotLiveFeedMessage({ message })`（message は app/liveFeed/message.ts の Message）、表示面は `GotMapSurfaceMessage({ message })`、
 //   セッションの画面の部品は `GotSessionLayoutMessage({ message })`、キーの一覧は `GotKeyListMessage({ message })`、キーは `PressedKey({ key, metaKey, ctrlKey, altKey })`
 // Model の中身の欄の分け方は固定しない。振る舞いは描いた木・出る Command・同じ入力を流した表示面（MapSurface）との一致で見る

@@ -496,3 +496,38 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
     );
   }
 });
+
+// 狭い幅で開いたときの最初の状態（Issue #1236 の一部）: 幅 768px 以下（styles.css の狭い幅の境目）で開くと、右の列と字幕を隠して始める。
+// ボタンで今までどおり出せる。広い幅では今までどおり両方出ている。開いた後に幅を変えても、隠す・出すは変えない（人の操作を上書きしない）
+describe("見返し（Foldkit 版）の開いたときの右の列と字幕", () => {
+  const pressed = (page: Page, label: string) => page.locator(`button[aria-label="${label}"]`).first().getAttribute("aria-pressed");
+  const shown = async (page: Page) => ({ side: await page.locator(".side").count(), captions: await page.locator(".captions").count(), sideButton: await pressed(page, "右の列"), captionsButton: await pressed(page, "字幕") });
+  const HIDDEN = { side: 0, captions: 0, sideButton: "false", captionsButton: "false" };
+  const SHOWN = { side: 1, captions: 1, sideButton: "true", captionsButton: "true" };
+
+  it(
+    "390×844 で開くと、右の列と字幕が隠れていて、字幕・右の列のボタンで出せる",
+    () => withBrowser(async (browser) => {
+      const page = await openReviewPage(browser, pages.audioPath, { audio: true, viewport: { width: 390, height: 844 } });
+      expect(await shown(page)).toEqual(HIDDEN);
+      await page.locator('button[aria-label="字幕"]').first().click();
+      await page.locator('button[aria-label="右の列"]').first().click();
+      await expect.poll(() => shown(page), { timeout: 10_000 }).toEqual(SHOWN);
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+
+  it(
+    "1280×801 で開くと、右の列と字幕は今までどおり出ている。開いた後に 390 へ狭めても隠れない",
+    () => withBrowser(async (browser) => {
+      const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+      expect(await shown(page)).toEqual(SHOWN);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForTimeout(300);
+      expect(await shown(page)).toEqual(SHOWN);
+      await page.context().close();
+    }),
+    TIMEOUT,
+  );
+});

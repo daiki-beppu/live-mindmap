@@ -55,12 +55,14 @@ export async function prepareReviewPages(logPath: string = LOG_PATH): Promise<Re
 export type OpenOptions = {
   // 録音つきなら、<audio> が読み込めるまで待つ（読み込めなければ、前提が崩れている）
   audio: boolean;
+  // 開くときの画面の大きさ（既定は PAGE_VIEWPORT）。狭い幅で開いたときの最初の状態を見るときに渡す
+  viewport?: { width: number; height: number };
   afterOpen?: (page: Page) => Promise<void>;
 };
 
 // ページを開き、ノードが出て（録音つきなら <audio> が読み込めて）画面が使える状態になるまで待って返す
-export async function openReviewPage(browser: Browser, htmlPath: string, { audio, afterOpen }: OpenOptions): Promise<Page> {
-  const context = await browser.newContext({ viewport: PAGE_VIEWPORT });
+export async function openReviewPage(browser: Browser, htmlPath: string, { audio, viewport = PAGE_VIEWPORT, afterOpen }: OpenOptions): Promise<Page> {
+  const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   await page.goto(pathToFileURL(htmlPath).href);
   await page.locator(".map-node").first().waitFor({ timeout: 30_000 });

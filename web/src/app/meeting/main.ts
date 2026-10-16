@@ -12,6 +12,7 @@ import type { Message as LiveFeedMessage } from "../liveFeed/message.ts";
 import * as MapSurface from "../mapSurface/main.ts";
 import type { Message as MapSurfaceMessage } from "../mapSurface/message.ts";
 import { plainKey, surfaceFolds, type KeyHandler } from "../mapSurface/parentFolds.ts";
+import { WIDE, type Flags } from "../sessionLayout/flags.ts";
 import * as SessionLayout from "../sessionLayout/main.ts";
 import * as SidePanel from "../sidePanel/main.ts";
 import { RequestSelfPause } from "./command.ts";
@@ -49,13 +50,14 @@ const Session = Schema.Struct({
   keyList: Popover.Model,
 });
 
-export const Model = Schema.Struct({ feed: LiveFeed.Model, isMac: Schema.Boolean, session: Schema.Option(Session) });
+// startsNarrow: 開いた時点で幅が狭かったか（flags.ts）。画面の部品はスナップショットが届いてから作るので、そのときに右の列と字幕を隠して始めるために覚えておく
+export const Model = Schema.Struct({ feed: LiveFeed.Model, isMac: Schema.Boolean, startsNarrow: Schema.Boolean, session: Schema.Option(Session) });
 export type Model = typeof Model.Type;
 type SessionModel = typeof Session.Type;
 type Return = Update.Return<Model, Message>;
 const sameOption = (a: Option.Option<string>, b: Option.Option<string>): boolean => (Option.isNone(a) ? Option.isNone(b) : Option.isSome(b) && a.value === b.value);
 
-export const init = (isMac: boolean): Model => ({ feed: LiveFeed.init(), isMac, session: Option.none() });
+export const init = (isMac: boolean, { startsNarrow }: Flags = WIDE): Model => ({ feed: LiveFeed.init(), isMac, startsNarrow, session: Option.none() });
 
 const surfaceOf = (feed: LiveFeed.Model, session: SessionModel): Option.Option<MapSurface.Model> =>
   Option.map(feed.snapshot, (snapshot) => ({ mode: "live" as const, snapshot, ...session.mapSurface }));
@@ -93,8 +95,9 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
   const withFeed = modifyFields(model, { feed: () => feed });
   if (Option.isNone(withFeed.session)) {
     if (Option.isNone(feed.snapshot)) return { model: withFeed };
-    const surface = MapSurface.init(feed.snapshot.value, "live", model.isMac);
-    const layout = SessionLayout.init();
+    const initial = MapSurface.init(feed.snapshot.value, "live", model.isMac);
+    const surface = model.startsNarrow ? { ...initial, viewing: { ...initial.viewing, sideHidden: true as const } } : initial;
+    const layout = { ...SessionLayout.init(), captionsHidden: model.startsNarrow };
     const session: SessionModel = { mapSurface: stripSurface(surface), sessionLayout: stripLayout(layout), keyList: initKeyList() };
     const created = modifyFields(withFeed, { session: () => Option.some(session) });
     return Update.combine(created, [

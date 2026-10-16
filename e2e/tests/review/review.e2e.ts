@@ -37,9 +37,12 @@ test("見返し: 時刻を先頭へ動かすと、終わりで揃っていたノ
 
 // 速さのメニュー（Issue #1225）: メニューがボタンの位置に出ず、外側（backdrop）だけが画面にかぶさると、項目もほかのボタンも押せなくなる。
 // 項目とボタンは locator の tap で押す（tap は、押す点で一番上に来るのがその要素であることまで確かめる）。位置と高さの数値は web の heavy IT（review.mount.heavy.test.ts）が見る。
-// 録音なしの速さは 10・30・60・120 倍（最初は 30 倍）。PC の幅とスマホの幅（390×844）で同じ手順を流す。agent は使わない（replay cache は要らない）
-test("見返し: 速さのメニューから速さを選べ、閉じた後は字幕・右の列のボタンが効く", async ({ app, browser, screen }) => {
+// 録音なしの速さは 10・30・60・120 倍（最初は 30 倍）。PC の幅とスマホの幅（390×844）で同じ手順を流す。agent は使わない（replay cache は要らない）。
+// スマホの幅で開くと字幕と右の列を隠して始める（Issue #1236 の一部）ので、ボタンは押していない状態から始まり、1 回押すと出る
+test("見返し: 速さのメニューから速さを選べ、閉じた後は字幕・右の列のボタンが効く。スマホの幅では字幕と右の列を隠して始める", async ({ app, browser, screen }) => {
   for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
+    // 開いたときに出ているか（aria-pressed）と、1 回押した後
+    const [before, after] = viewport.width <= 768 ? ["false", "true"] : ["true", "false"];
     await browser.setViewport(viewport);
     await openReview({ app, browser }, `review-rate-${viewport.width}`);
     const rateButton = browser.locator(".review-rate__button");
@@ -54,12 +57,12 @@ test("見返し: 速さのメニューから速さを選べ、閉じた後は字
     await expect(menu).toBeHidden(WAIT);
 
     const captions = screen.getByRole("button", { name: "字幕" });
-    await expect(captions).toHaveAttribute("aria-pressed", "true", WAIT);
+    await expect(captions).toHaveAttribute("aria-pressed", before, WAIT);
     await captions.tap();
-    await expect(captions).toHaveAttribute("aria-pressed", "false", WAIT);
+    await expect(captions).toHaveAttribute("aria-pressed", after, WAIT);
     const side = screen.getByRole("button", { name: "右の列" });
-    await expect(side).toHaveAttribute("aria-pressed", "true", WAIT);
+    await expect(side).toHaveAttribute("aria-pressed", before, WAIT);
     await side.tap();
-    await expect(side).toHaveAttribute("aria-pressed", "false", WAIT);
+    await expect(side).toHaveAttribute("aria-pressed", after, WAIT);
   }
 });
