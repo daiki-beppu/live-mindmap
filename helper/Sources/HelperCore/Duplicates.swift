@@ -8,7 +8,7 @@ import Foundation
 let duplicateWindow: Double = 8
 
 /// 重複とみなす文字 3-gram の被覆率のしきい値。
-/// 漏れた発言の実測（12 件）は 0.68〜1.00（docs/knowledge/2026-09-30.md）。それより下に余裕を取りつつ、
+/// 漏れた発言の実測（12 件）は 0.68〜1.00（docs/devlog/2026-09-30.md）。それより下に余裕を取りつつ、
 /// 自分の言葉と漏れが半々の発言（0.5 前後）には印を付けない値にした。
 let duplicateThreshold: Double = 0.6
 
