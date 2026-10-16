@@ -156,45 +156,120 @@ export function splitBySpeaker(remark: SettledRemark, segments: readonly Segment
 // 0 → A、25 → Z、26 → AA…
 const letters = (n: number): string => (n < 26 ? "" : letters(Math.floor(n / 26) - 1)) + String.fromCharCode(65 + (n % 26));
 
+// 起動し直した後の新しい枠を、前のラベルにつなぎ直す cos の基準（Issue #1025）。helper の SlotMixCriteria（混入の判定）とは別の判定
+// 1 つのラベルとだけこの値以上で一致する枠は、そのラベルにつなぐ
+export const LINK_MIN_SIMILARITY = 0.9;
+// どのラベルともこの値未満の枠は、新しいラベルにする。この値以上でつなぐ値未満の間は、話者なしのまま
+export const NEW_LABEL_MAX_SIMILARITY = 0.6;
+
+const norm = (v: readonly number[]) => Math.hypot(...v);
+
+// 長さの違うベクトルと、長さ 0 のベクトルは比べられない（undefined）
+const cosine = (a: readonly number[], b: readonly number[]): number | undefined => {
+  const denominator = norm(a) * norm(b);
+  if (a.length !== b.length || !(denominator > 0)) return undefined;
+  return a.reduce((sum, x, i) => sum + x * b[i]!, 0) / denominator;
+};
+
 type Held = { remark: SettledRemark; heldAt: number };
+// 起動し直した後の世代の枠の状態。linked: 前のラベルにつないだ。new: どのラベルとも遠い（初めて話したときにラベルを振る）。無ければ照らし合わせが済むまで（話者なし）
+type SlotState = "linked" | "new";
 
 // 相手の発言に話者を付けて出す段。settler が締めた発言を受け取り、確定した区間が発言の終わりまで揃ってから出す。
 // 揃わなければ SPEAKER_WAIT_MS（音声の時計）の後に話者なしで出す。speaker-off の後は待たずに話者なしで出す。
 // 出した発言は書き換えない。枠とラベルの対応はこの段が持つ（セッションに 1 つ）。どの戻り値も「いま出す発言」
+// ヘルパーを起動し直すと Sortformer の枠は振り直される。restart() 以降の世代では、枠の重心（speaker-centroid）を、
+// セッションの間持つラベルごとの重心と照らし合わせるまで、その枠の発言に話者を付けない（Issue #1025）。
+// 状態は 2 つ。ラベル単位（採番した数・ラベルの重心・戻したラベル。起動し直しをまたいで残す）と、世代の枠単位（restart で捨てる）
 export function createSpeakerAttribution() {
-  const segments: Segment[] = []; // 相手の確定した区間
+  let off = false;
+  let clock = 0; // 音声の時計（ミリ秒）。戻らない
+  const held: Held[] = [];
+
+  // ラベル単位。起動し直しをまたいで残す
+  let labelCount = 0;
+  const labelCentroids = new Map<string, readonly number[]>();
+  // 混入で戻したラベル（Issue #1024）。会議の最後まで、どの枠にも付けない（戻した枠のラベルを、つないだ別の枠にも使い回さない）
+  const revertedLabels = new Set<string>();
+  // 起動し直した後の世代か。最初の世代は照らし合わせをしない（枠の番号がそのままラベルの元）
+  let renumbered = false;
+
+  // 世代の枠単位。restart で捨てる
+  let segments: Segment[] = []; // 相手の確定した区間
   // ヘルパーの speaker-settled の最大値。この位置より前の確定区間はすべて届いている。
   // 確定区間の end からは判定しない（FluidAudio は確定区間を枠の番号順に、閉じたものだけ流すので、end の最大値は「揃った」を保証しない）
   let settledTo = Number.NEGATIVE_INFINITY;
-  let off = false;
-  let clock = 0; // 音声の時計（ミリ秒）。戻らない
-  const labels = new Map<number, string>();
-  // 混入で戻した枠（Issue #1024）。会議の最後まで戻したまま（外さない）。ラベルは labels に残し、枠のラベルを別の枠へ使い回さない
-  const reverted = new Set<number>();
-  const held: Held[] = [];
+  let slotLabels = new Map<number, string>();
+  let slotStates = new Map<number, SlotState>();
+  let slotCentroids = new Map<number, readonly number[]>();
+  // 混入で戻した枠。世代の最後まで戻したまま（外さない）
+  let revertedSlots = new Set<number>();
   // 字幕のための仮の区間（Issue #1022）。ヘルパーは更新ごとに「確定区間 → 仮の区間 → speaker-settled」の順に流すので、
   // 仮の区間は届いた分をためておき、speaker-settled でその更新ぶんに入れ替える。発言の判定には使わない
   let provisional: Segment[] = [];
   let incoming: Segment[] = [];
   // 区間に現れた枠の、初めて現れた順。まだラベルを振っていない枠の予想に使う
-  const seenSlots: number[] = [];
+  let seenSlots: number[] = [];
   const see = (slot: number) => {
     if (!seenSlots.includes(slot)) seenSlots.push(slot);
   };
 
-  const labelOf = (slot: number): string => {
-    const known = labels.get(slot);
-    if (known !== undefined) return known;
-    const label = `相手 ${letters(labels.size)}`;
-    labels.set(slot, label);
+  // 起動し直した後の世代で、照らし合わせが済んでいない枠
+  const isPending = (slot: number) => renumbered && !revertedSlots.has(slot) && !slotStates.has(slot);
+
+  // ラベルを付けない枠か。戻した枠、照らし合わせが済んでいない枠、戻したラベルの枠
+  const isUnlabeled = (slot: number) => {
+    if (revertedSlots.has(slot) || isPending(slot)) return true;
+    const label = slotLabels.get(slot);
+    return label !== undefined && revertedLabels.has(label);
+  };
+
+  const assignLabel = (slot: number): string => {
+    const label = `相手 ${letters(labelCount++)}`;
+    slotLabels.set(slot, label);
+    const centroid = slotCentroids.get(slot);
+    if (centroid !== undefined) labelCentroids.set(label, centroid);
     return label;
+  };
+
+  const labelOf = (slot: number): string => slotLabels.get(slot) ?? assignLabel(slot);
+
+  // 新しい枠の重心を、ラベルの重心に照らし合わせる。迷えば決めない（次の重心で照らし合わせ直す）。決めたら固定する
+  const match = (slot: number, centroid: readonly number[]): void => {
+    const similar: string[] = [];
+    let farFromAll = true;
+    for (const [label, other] of labelCentroids) {
+      const value = cosine(centroid, other);
+      if (value === undefined) continue;
+      if (value >= LINK_MIN_SIMILARITY) similar.push(label);
+      if (value >= NEW_LABEL_MAX_SIMILARITY) farFromAll = false;
+    }
+    if (similar.length > 1) return;
+    const linked = similar[0];
+    if (linked !== undefined) {
+      if (revertedLabels.has(linked)) revertedSlots.add(slot);
+      else {
+        slotLabels.set(slot, linked);
+        slotStates.set(slot, "linked");
+      }
+    } else if (farFromAll) slotStates.set(slot, "new");
+  };
+
+  const onCentroid = (slot: number, centroid: readonly number[]): void => {
+    if (!(norm(centroid) > 0)) return;
+    slotCentroids.set(slot, centroid);
+    if (revertedSlots.has(slot)) return;
+    if (isPending(slot)) match(slot, centroid);
+    // つないだ枠の重心では、ラベルの重心を動かさない（ラベルの重心は、そのラベルを振った枠のもの。つないだ枠の揺れで、別の枠の照らし合わせが変わらないように）
+    const label = slotLabels.get(slot);
+    if (label !== undefined && slotStates.get(slot) !== "linked") labelCentroids.set(label, centroid);
   };
 
   const isSettled = (r: SettledRemark) => settledTo >= r.end - EPSILON;
 
-  // 規則を当てて出す。先に話した順にラベルを振る。戻した枠の区間は、切り方には使い（隣の枠に寄せない）、ラベルだけ付けない
+  // 規則を当てて出す。先に話した順にラベルを振る。ラベルを付けない枠の区間は、切り方には使い（隣の枠に寄せない）、ラベルだけ付けない
   const attribute = (r: SettledRemark): SettledRemark[] =>
-    splitBySpeaker(r, segments).map(({ remark, slot }) => (slot === undefined || reverted.has(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
+    splitBySpeaker(r, segments).map(({ remark, slot }) => (slot === undefined || isUnlabeled(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
 
   // 保留の先頭から、揃った発言か時間切れの発言を出す
   const release = (): SettledRemark[] => {
@@ -207,6 +282,9 @@ export function createSpeakerAttribution() {
     }
     return out;
   };
+
+  // 保留を待たずにすべて出す。揃っていれば規則を当て、揃っていなければ話者なし
+  const flush = (): SettledRemark[] => held.splice(0).flatMap((h) => (isSettled(h.remark) ? attribute(h.remark) : [h.remark]));
 
   return {
     // settler が締めた発言。now は音声の時刻（ミリ秒）。時計を進めて期限の来た保留を出してから、新しい発言を受ける
@@ -224,7 +302,7 @@ export function createSpeakerAttribution() {
       return out;
     },
 
-    // ヘルパーの speaker / speaker-settled / speaker-off。確定した相手の区間は覚えるだけで、保留を出すのは確定済みの位置が進んだとき。
+    // ヘルパーの speaker / speaker-settled / speaker-mixed / speaker-centroid / speaker-off。確定した相手の区間は覚えるだけで、保留を出すのは確定済みの位置が進んだとき。
     // speaker-off では保留を話者なしですべて出す
     speaker(event: SpeakerLogEvent): SettledRemark[] {
       if (off) return [];
@@ -236,8 +314,16 @@ export function createSpeakerAttribution() {
       }
       if (event.track !== "相手") return [];
       if (event.type === "speaker-mixed") {
-        // 以降の発言に付けないだけ。出した発言は書き換えず、保留の発言も出さない（利用者には知らせない）
-        reverted.add(event.slot);
+        // 以降の発言に付けないだけ。出した発言は書き換えず、保留の発言も出さない（利用者には知らせない）。
+        // ラベルも戻す（そのラベルにつないだ別の枠にも付けない）
+        revertedSlots.add(event.slot);
+        const label = slotLabels.get(event.slot);
+        if (label !== undefined) revertedLabels.add(label);
+        return [];
+      }
+      if (event.type === "speaker-centroid") {
+        // 判定だけ。発言を出すのは speaker-settled と時間切れ
+        onCentroid(event.slot, event.centroid);
         return [];
       }
       if (event.type === "speaker-settled") {
@@ -252,26 +338,42 @@ export function createSpeakerAttribution() {
       return [];
     },
 
+    // ヘルパーを起動し直した（Sortformer の枠が振り直される）。前の世代の保留を出し切ってから、枠単位の状態を捨てる。
+    // ラベル単位の状態と、音声の時計、speaker-off は残す。以降の枠は、重心を照らし合わせるまで話者なし
+    restart(): SettledRemark[] {
+      const out = flush();
+      renumbered = true;
+      segments = [];
+      settledTo = Number.NEGATIVE_INFINITY;
+      slotLabels = new Map();
+      slotStates = new Map();
+      slotCentroids = new Map();
+      revertedSlots = new Set();
+      provisional = [];
+      incoming = [];
+      seenSlots = [];
+      return out;
+    },
+
     // 字幕のための覗き。話者が決まるのを待っている発言（出す前なので、読むだけ）
     heldRemarks: (): SettledRemark[] => held.map((h) => h.remark),
 
     // 字幕のための覗き。確定した区間と、いまの仮の区間
     previewSegments: (): Segment[] => [...segments, ...provisional],
 
-    // 字幕のための覗き。振ったラベルがあればそれを、無ければ「まだ振っていない枠の中で、初めて現れた順」の予想を返す。labels は書き換えない
-    // （仮のラベルを発言に使わない。発言のラベルは、初めて話した順に labelOf だけが振る）。戻した枠は、以降の発言と同じく undefined（ラベルなし）
+    // 字幕のための覗き。振ったラベルがあればそれを、無ければ「まだ振っていない枠の中で、初めて現れた順」の予想を返す。ラベルは振らない
+    // （仮のラベルを発言に使わない。発言のラベルは、初めて話した順に labelOf だけが振る）。
+    // 戻した枠・戻したラベル・照らし合わせが済んでいない枠は、以降の発言と同じく undefined（ラベルなし）
     previewLabel(slot: number): string | undefined {
-      if (reverted.has(slot)) return undefined;
-      const known = labels.get(slot);
+      if (isUnlabeled(slot)) return undefined;
+      const known = slotLabels.get(slot);
       if (known !== undefined) return known;
-      const unassigned = seenSlots.filter((s) => !labels.has(s) && !reverted.has(s));
+      const unassigned = seenSlots.filter((s) => !slotLabels.has(s) && !isUnlabeled(s));
       const rank = unassigned.indexOf(slot);
-      return `相手 ${letters(labels.size + (rank < 0 ? unassigned.length : rank))}`;
+      return `相手 ${letters(labelCount + (rank < 0 ? unassigned.length : rank))}`;
     },
 
     // 停止時。保留を待たずにすべて出す。揃っていれば規則を当て、揃っていなければ話者なし。状態は捨てない
-    drain(): SettledRemark[] {
-      return held.splice(0).flatMap((h) => (isSettled(h.remark) ? attribute(h.remark) : [h.remark]));
-    },
+    drain: flush,
   };
 }

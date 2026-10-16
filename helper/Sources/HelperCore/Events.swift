@@ -71,6 +71,9 @@ public enum HelperEvent: Sendable, Equatable {
     /// `相手` の話者の枠 `slot` に、別の声が混ざっている（Issue #1024）。Sortformer の枠は 4 つまでで、5 人目以降が声の近い人の枠に混ざる。
     /// `start` は判定のもとになった確定区間の終わり（`origin` と同じ原点からの秒）。サーバーはその枠のラベルを、以降の発言に付けない。
     case speakerMixed(track: Track, slot: Int, start: Double)
+    /// `相手` の話者の枠 `slot` の、主な塊の声の埋め込みの重心（長さ 1。Issue #1025）。重心が変わった枠だけを、変わるたびに最新の値で流す。
+    /// サーバーはラベルごとの重心を覚え、ヘルパーを起動し直した後の新しい枠を前のラベルにつなぎ直すのに使う。ヘルパーは重心をプロセスをまたいで持たない。
+    case speakerCentroid(track: Track, slot: Int, centroid: [Float])
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {
@@ -88,7 +91,7 @@ public enum HelperEvent: Sendable, Equatable {
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
         case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to, count
-        case manual, basis, lastKnown, idleFor
+        case manual, basis, lastKnown, idleFor, centroid
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -172,6 +175,11 @@ extension HelperEvent: Encodable {
             try container.encode(track.rawValue, forKey: .track)
             try container.encode(slot, forKey: .slot)
             try container.encode(start, forKey: .start)
+        case let .speakerCentroid(track, slot, centroid):
+            try container.encode("speaker-centroid", forKey: .type)
+            try container.encode(track.rawValue, forKey: .track)
+            try container.encode(slot, forKey: .slot)
+            try container.encode(centroid, forKey: .centroid)
         }
     }
 }
@@ -204,5 +212,6 @@ public func event(from item: SpeakerDiarization, track: Track) -> HelperEvent {
     case .segment(let segment): return event(from: segment, track: track)
     case .settled(let to): return .speakerSettled(track: track, to: to)
     case .mixed(let slot, let at): return .speakerMixed(track: track, slot: slot, start: at)
+    case .centroid(let slot, let centroid): return .speakerCentroid(track: track, slot: slot, centroid: centroid)
     }
 }

@@ -353,6 +353,33 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
       }));
   });
 
+  describe("speaker-centroid（枠ごとの声の埋め込みの重心。Issue #1025）", () => {
+    it.effect("正しい形は known として decode される。値は生のまま", () =>
+      Effect.gen(function* () {
+        const row = { type: "speaker-centroid", track: "相手", slot: 2, centroid: [0.25, -0.5, 1] } as const;
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify(row)));
+        assert.deepStrictEqual(decoded, { kind: "known", event: row });
+      }));
+
+    it.effect.each([
+      ["slot のキーが無い", { type: "speaker-centroid", track: "相手", centroid: [1] }],
+      ["slot が負", { type: "speaker-centroid", track: "相手", slot: -1, centroid: [1] }],
+      ["slot が小数", { type: "speaker-centroid", track: "相手", slot: 1.5, centroid: [1] }],
+      ["centroid のキーが無い", { type: "speaker-centroid", track: "相手", slot: 1 }],
+      ["centroid が配列でない", { type: "speaker-centroid", track: "相手", slot: 1, centroid: "1,2" }],
+      ["centroid に文字列が混じる", { type: "speaker-centroid", track: "相手", slot: 1, centroid: [1, "2"] }],
+      ["centroid に null が混じる", { type: "speaker-centroid", track: "相手", slot: 1, centroid: [1, null] }],
+      ["track が不正", { type: "speaker-centroid", track: "司会", slot: 1, centroid: [1] }],
+      ["track のキーが無い", { type: "speaker-centroid", slot: 1, centroid: [1] }],
+    ])("壊れた speaker-centroid は、読み飛ばさずに SchemaError で失敗する（%s）", (row) =>
+      Effect.gen(function* () {
+        const [, data] = row;
+        const result = yield* Effect.result(decodeHelperEvent(JSON.stringify(data)));
+        if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた speaker-centroid のはずが通った）");
+        assert.strictEqual(result.failure._tag, "SchemaError");
+      }));
+  });
+
   describe("speaker-off（話者分離を使えない。Issue #1020）", () => {
     it.effect.each(["モデルなし", "読み込みに失敗", "途中で停止"] as const)("reason が %s の正しい形は known として decode される", (reason) =>
       Effect.gen(function* () {

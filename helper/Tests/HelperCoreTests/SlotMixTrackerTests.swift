@@ -53,10 +53,10 @@ struct SlotMixTrackerTests {
         let tracker = SlotMixTracker(embedder: embedder)
         tracker.append(samples16k: audio([(0, 10, 0.1)]))
 
-        _ = tracker.mixed(finalized: [final(0, 0, 1.9)])
+        _ = tracker.update(finalized: [final(0, 0, 1.9)]).mixed
         #expect(embedder.calls.isEmpty)
 
-        _ = tracker.mixed(finalized: [final(0, 3, 5)])
+        _ = tracker.update(finalized: [final(0, 3, 5)]).mixed
         #expect(embedder.calls.map(\.count) == [2 * rate])
     }
 
@@ -66,7 +66,7 @@ struct SlotMixTrackerTests {
         let tracker = SlotMixTracker(embedder: embedder)
         tracker.append(samples16k: audio([(0, 10, 0.1)]))
 
-        _ = tracker.mixed(finalized: [SpeakerSegment(start: 0, end: 5, slot: 0, isFinal: false)])
+        _ = tracker.update(finalized: [SpeakerSegment(start: 0, end: 5, slot: 0, isFinal: false)]).mixed
 
         #expect(embedder.calls.isEmpty)
     }
@@ -78,7 +78,7 @@ struct SlotMixTrackerTests {
         // 区間 [2, 27)（25 秒）。中央の 10 秒は [9.5, 19.5)
         tracker.append(samples16k: audio([(0, 9.5, 0.1), (9.5, 19.5, 0.2), (19.5, 30, 0.3)]))
 
-        _ = tracker.mixed(finalized: [final(0, 2, 27)])
+        _ = tracker.update(finalized: [final(0, 2, 27)]).mixed
 
         #expect(embedder.calls.count == 1)
         #expect(embedder.calls[0].count == 10 * rate)
@@ -91,7 +91,7 @@ struct SlotMixTrackerTests {
         let tracker = SlotMixTracker(embedder: embedder)
         tracker.append(samples16k: audio([(0, 12, 0.1)]))
 
-        _ = tracker.mixed(finalized: [final(0, 1, 11)])
+        _ = tracker.update(finalized: [final(0, 1, 11)]).mixed
 
         #expect(embedder.calls.map(\.count) == [10 * rate])
     }
@@ -104,7 +104,7 @@ struct SlotMixTrackerTests {
         tracker.append(samples16k: audio([(0, 40, 0.1), (40, 60, 0.2), (60, 70, 0.3)]))
         let segments = run(slot: 0, from: 0, count: 20) + run(slot: 1, from: 40, count: 10) + run(slot: 1, from: 60, count: 5)
 
-        let mixed = tracker.mixed(finalized: segments.reversed())
+        let mixed = tracker.update(finalized: segments.reversed()).mixed
 
         #expect(mixed.count == 1)
         #expect(mixed.first?.slot == 1)
@@ -118,7 +118,7 @@ struct SlotMixTrackerTests {
         let tracker = SlotMixTracker(embedder: embedder)
         tracker.append(samples16k: audio([(40, 60, 0.2), (60, 72, 0.3)]))
 
-        let mixed = tracker.mixed(finalized: run(slot: 1, from: 40, count: 10) + run(slot: 1, from: 60, count: 6))
+        let mixed = tracker.update(finalized: run(slot: 1, from: 40, count: 10) + run(slot: 1, from: 60, count: 6)).mixed
 
         #expect(embedder.calls.count == 16)
         #expect(mixed.count == 1)
@@ -133,7 +133,7 @@ struct SlotMixTrackerTests {
         tracker.append(samples16k: audio([(0, 20, 0.1), (20, 30, 0.2)]))
 
         tracker.discard(before: 18)
-        let mixed = tracker.mixed(finalized: [final(1, 22, 26)])
+        let mixed = tracker.update(finalized: [final(1, 22, 26)]).mixed
 
         #expect(mixed.isEmpty)
         #expect(embedder.calls.count == 1)
@@ -141,26 +141,81 @@ struct SlotMixTrackerTests {
         #expect(Set(embedder.calls[0]) == [0.2])
     }
 
-    @Test("埋め込みを重ねても、枠ごとの重心を取り出せる")
-    func exposesCentroids() {
+    @Test("重心が変わった枠について、最後の重心を返す（長さ 1）。1 回の呼び出しで同じ枠は 1 件")
+    func returnsCentroidOfChangedSlot() {
         let embedder = FakeSpeakerEmbedder()
         let tracker = SlotMixTracker(embedder: embedder)
         tracker.append(samples16k: audio([(0, 6, 0.1)]))
 
-        _ = tracker.mixed(finalized: run(slot: 3, from: 0, count: 3))
+        let centroids = tracker.update(finalized: run(slot: 3, from: 0, count: 3)).centroids
 
-        #expect(Set(tracker.centroids.keys) == [3])
-        #expect((tracker.centroids[3] ?? [])[0] > 0.99)
+        #expect(centroids.map(\.slot) == [3])
+        let vector = centroids.first?.centroid ?? []
+        #expect(vector.count == 8)
+        #expect(vector[0] > 0.99)
+        #expect(abs(vector.reduce(0) { $0 + $1 * $1 } - 1) < 1e-4)
     }
 
-    @Test("更新の流し方は、区間 → 混入 → 確定済みの位置の順。混入の時刻にはシフトを足す")
+    @Test("複数の枠の重心は、枠の番号の順に返す")
+    func centroidsAreOrderedBySlot() {
+        let embedder = FakeSpeakerEmbedder()
+        let tracker = SlotMixTracker(embedder: embedder)
+        tracker.append(samples16k: audio([(0, 2, 0.1), (2, 4, 0.2)]))
+
+        let centroids = tracker.update(finalized: [final(3, 0, 2), final(1, 2, 4)]).centroids
+
+        #expect(centroids.map(\.slot) == [1, 3])
+        #expect((centroids[0].centroid)[1] > 0.99)
+        #expect((centroids[1].centroid)[0] > 0.99)
+    }
+
+    @Test("重心が変わらなかった枠は返さない（毎回すべての枠を流さない）")
+    func unchangedCentroidIsNotReturnedAgain() {
+        let embedder = FakeSpeakerEmbedder()
+        let tracker = SlotMixTracker(embedder: embedder)
+        tracker.append(samples16k: audio([(0, 12, 0.1)]))
+
+        let first = tracker.update(finalized: run(slot: 3, from: 0, count: 3))
+        let second = tracker.update(finalized: [final(3, 6, 8)])
+
+        #expect(first.centroids.map(\.slot) == [3])
+        #expect(second.centroids.isEmpty)
+    }
+
+    @Test("主な塊が替わって重心が動いた枠は、また返す")
+    func movedCentroidIsReturnedAgain() {
+        let embedder = FakeSpeakerEmbedder()
+        let tracker = SlotMixTracker(embedder: embedder)
+        tracker.append(samples16k: audio([(0, 6, 0.1), (6, 14, 0.2)]))
+
+        let first = tracker.update(finalized: run(slot: 1, from: 0, count: 3))
+        let second = tracker.update(finalized: run(slot: 1, from: 6, count: 4))
+
+        #expect((first.centroids.first?.centroid ?? [])[0] > 0.99)
+        #expect(second.centroids.map(\.slot) == [1])
+        #expect((second.centroids.first?.centroid ?? [])[1] > 0.99)
+    }
+
+    @Test("2 秒未満の区間・仮の区間・埋め込みに失敗した区間は、重心を返さない")
+    func skippedSegmentsReturnNoCentroid() {
+        let failing = SlotMixTracker(embedder: FakeSpeakerEmbedder(failingCalls: [1]))
+        failing.append(samples16k: audio([(0, 10, 0.1)]))
+        let tracker = SlotMixTracker(embedder: FakeSpeakerEmbedder())
+        tracker.append(samples16k: audio([(0, 10, 0.1)]))
+
+        #expect(tracker.update(finalized: [final(0, 0, 1.9)]).centroids.isEmpty)
+        #expect(tracker.update(finalized: [SpeakerSegment(start: 0, end: 5, slot: 0, isFinal: false)]).centroids.isEmpty)
+        #expect(failing.update(finalized: [final(0, 0, 3)]).centroids.isEmpty)
+    }
+
+    @Test("更新の流し方は、区間 → 混入 → 確定済みの位置の順。混入の時刻にはシフトを足す（重心は混入の前。下のテスト）")
     func yieldOrdersMixedBetweenSegmentsAndSettled() async throws {
         let shift = 2.0
         let embedder = FakeSpeakerEmbedder()
         let tracker = SlotMixTracker(embedder: embedder)
         // 枠 1 の主な塊 10 区間と別の声 4 区間を先に入れておく（50〜78 秒）。更新の確定区間（枠 1、約 0.8〜3.2 秒）が 5 区間目になる
         tracker.append(samples16k: audio([(0, 5, 0.3), (50, 70, 0.2), (70, 78, 0.3)]))
-        _ = tracker.mixed(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4))
+        _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4)).mixed
 
         let config = SortformerSpeakerDiarizer.timelineConfig
         let timeline = DiarizerTimeline(config: config)
@@ -181,12 +236,58 @@ struct SlotMixTrackerTests {
             switch element {
             case .segment: "segment"
             case .mixed: "mixed"
+            case .centroid: "centroid"
             case .settled: "settled"
             }
         }
-        #expect(kinds == ["segment", "mixed", "settled"])
+        #expect(kinds.filter { $0 != "centroid" } == ["segment", "mixed", "settled"])
         guard case .mixed(let slot, let at) = received[1] else { return }
         #expect(slot == 1)
         #expect(abs(at - (Double(segment.endTime) + shift)) < 1e-6)
+    }
+
+    @Test("更新の流し方は、区間 → 重心 → 混入 → 確定済みの位置の順。重心は混入より先、確定済みの位置より前。重心の値はそのまま、シフトを足さない")
+    func yieldOrdersCentroidBeforeMixedAndSettled() async throws {
+        let embedder = FakeSpeakerEmbedder()
+        let tracker = SlotMixTracker(embedder: embedder)
+        // 枠 1 の主な塊 10 区間と別の声 4 区間を先に入れておく（50〜78 秒）。更新の確定区間（枠 1、約 0〜2.2 秒）が 5 区間目になり、混入になる。
+        // 同じ更新の枠 3（約 2.4〜4.6 秒）は初めての枠で、重心が新しくできる
+        tracker.append(samples16k: audio([(0, 5, 0.3), (50, 70, 0.2), (70, 78, 0.3)]))
+        _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4))
+
+        let timeline = DiarizerTimeline(config: SortformerSpeakerDiarizer.timelineConfig)
+        // Why: 1 つの式にまとめると、CI のランナーでは型の推論が時間内に終わらずコンパイルが落ちた
+        func active(_ slot: Int, _ frame: Int) -> Bool {
+            if slot == 1 { return (0..<28).contains(frame) }
+            if slot == 3 { return (30..<58).contains(frame) }
+            return false
+        }
+        let predictions: [Float] = (0..<60).flatMap { (frame: Int) -> [Float] in
+            (0..<4).map { (slot: Int) -> Float in active(slot, frame) ? 1 : 0 }
+        }
+        let update = try timeline.addPredictions(finalizedPredictions: predictions, tentativePredictions: [])
+        #expect(update.finalizedSegments.count == 2)
+
+        let stream = AsyncThrowingStream<SpeakerDiarization, Error> { continuation in
+            var settledTo = -Double.infinity
+            SortformerSpeakerDiarizer.yield(update, shift: 2, settledTo: &settledTo, finished: false, mixing: tracker, to: continuation)
+            continuation.finish()
+        }
+        var received: [SpeakerDiarization] = []
+        for try await element in stream { received.append(element) }
+
+        let kinds = received.map { element -> String in
+            switch element {
+            case .segment: "segment"
+            case .centroid: "centroid"
+            case .mixed: "mixed"
+            case .settled: "settled"
+            }
+        }
+        #expect(kinds == ["segment", "segment", "centroid", "mixed", "settled"])
+        guard case .centroid(let slot, let centroid) = received[2] else { return }
+        #expect(slot == 3)
+        #expect(centroid.count == 8)
+        #expect(centroid[2] > 0.99)
     }
 }
