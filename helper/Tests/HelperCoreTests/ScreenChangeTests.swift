@@ -1116,7 +1116,7 @@ struct ScreenEventEmitterTests {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
         emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
         emitter.emitWindowGone(at: 3) // handleStop
-        emitter.emitWindowGone(at: 3.25) // 重なった通知
+        emitter.emitWindowGone(at: 3.25) // 2 回目の消失の通知（重なっても null は 1 回）
         emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 8, title: nil)) { shot("A2") } // 見つけ直したウィンドウの最初のフレーム（輝度は前と同じ）
         let events = await collect(emitter)
         #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 3, image: nil, lines: nil), .screen(start: 8, image: "A2", lines: [])])
