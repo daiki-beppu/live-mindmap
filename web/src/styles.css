@@ -90,9 +90,11 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .captions { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(720px, calc(100vw - 2 * 316px)); display: flex; flex-direction: column; gap: 4px; pointer-events: none; z-index: 5; }
 
 /* 会議中の字幕の吹き出し（Issue #1022）: 行は「名前の欄（固定幅）+ 吹き出し」。吹き出しの幅は、名前の欄を除いた列に --caption-bubble-ratio（view が定数から渡す）を掛けた固定の値で、文字の量では伸び縮みしない。
-   塗り・影・バッジは付けず、文字の色だけを話者ごとに変える。位置が変わるときの動きは Mount（SlideCaptions）が付ける */
+   枠は試作の案 E（prototype/speaker-captions）の形: 白の半透明の塗りと細い灰色の線、角丸で、話し手の側の下の角だけ小さくして吹き出しに見せる。自分（右）は薄い灰色で塗る。
+   塗りは話者で色分けせず、文字の色だけを話者ごとに変える。影・バッジは付けない。幅は枠と余白を含めて固定（border-box）。位置が変わるときの動きは Mount（SlideCaptions）が付ける */
 .captions { --caption-name-width: 72px; }
-.captions__bubble { width: calc(var(--caption-bubble-ratio) * (100% - var(--caption-name-width) - 8px)); }
+.captions__bubble { width: calc(var(--caption-bubble-ratio) * (100% - var(--caption-name-width) - 8px)); box-sizing: border-box; padding: 5px 12px; background: rgb(255 255 255 / 0.92); border: 1px solid var(--color-gray-200); border-radius: 12px 12px 12px 4px; box-shadow: none; }
+.captions__bubble--right { background: rgb(243 244 246 / 0.95); border-radius: 12px 12px 4px 12px; }
 /* 途中の分の末尾のカーソル。幅 2px は右の margin -2px で行の中の幅を取らせず、折り返しも吹き出しの幅も変えない */
 .captions__cursor { display: inline-block; width: 2px; height: 1em; margin-right: -2px; vertical-align: -0.1em; background-color: currentColor; animation: caption-cursor-blink 1s steps(1) infinite; }
 @keyframes caption-cursor-blink { 50% { visibility: hidden; } }

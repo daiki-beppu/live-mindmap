@@ -480,9 +480,9 @@ describe("会議中（Foldkit 版）の寸法", () => {
       near((captions.left + captions.right) / 2, (layout.left + layout.right) / 2, "字幕の中央");
       near(captions.bottom, layout.bottom - 24, "字幕の下端");
       expect(await styleOf(page, ".captions", ["position", "pointer-events", "display", "flex-direction", "gap"])).toEqual({ position: "absolute", "pointer-events": "none", display: "flex", "flex-direction": "column", gap: "4px" });
-      // 吹き出しは塗り・枠・影・バッジを持たず、文字の色だけで話者を分ける。名前の欄は小さい文字で、固定幅
-      expect(await styleOf(page, ".captions__bubble", ["box-shadow", "background-color", "border-top-width", "border-radius", "font-size"])).toEqual({
-        "box-shadow": "none", "background-color": "rgba(0, 0, 0, 0)", "border-top-width": "0px", "border-radius": "0px", "font-size": "16px",
+      // 吹き出しは白の半透明の塗りと細い線の枠を持ち、話し手の側の下の角だけ小さい。影は付けない。名前の欄は小さい文字で、固定幅
+      expect(await styleOf(page, ".captions__bubble", ["box-shadow", "background-color", "border-top-width", "border-top-left-radius", "border-bottom-left-radius", "font-size"])).toEqual({
+        "box-shadow": "none", "background-color": "rgba(255, 255, 255, 0.92)", "border-top-width": "1px", "border-top-left-radius": "12px", "border-bottom-left-radius": "4px", "font-size": "16px",
       });
       expect(await styleOf(page, ".captions__name", ["font-size"])).toEqual({ "font-size": "12px" });
 

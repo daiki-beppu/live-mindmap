@@ -80,12 +80,11 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
   ).pipe(Effect.mapError((e) => e.message));
 });
 
-// log.jsonl の出来事を、版ごとに 1 つの HTML へ埋め込んで dir に書き、書いたパスを版の順に返す。ビルドは 1 回だけ。
-// ログが読めない・ビルドに失敗したら、何も書かずに ReviewPageFailed で終わる。
+// log.jsonl の出来事を、版ごとに 1 つの HTML へ埋め込んで返す（何も書かない）。ビルドは 1 回だけ。音声の mix の入力は sessionDir。
+// ログが読めない・ビルドに失敗したら、ReviewPageFailed で終わる。
 // マップだけの版の埋め込みは mapOnlyReviewEvents（壊れた発言・画面の行では ReviewPageFailed）。
-// 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は書く）。音声は版のファイルを書く前に取る
-export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPath: string, variants: readonly ReviewVariant[]) {
-  const fs = yield* FileSystem.FileSystem;
+// 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は返す）
+export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string, logPath: string, variants: readonly ReviewVariant[]) {
   const { events } = yield* readLogLines(logPath).pipe(
     Effect.mapError((e) =>
       e._tag === "BrokenLogLine"
@@ -95,23 +94,31 @@ export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPat
   );
   const { build } = yield* ReviewBuild;
   const template = yield* build;
-  const pages: { path: string; html: string }[] = [];
+  const pages: { file: string; html: string }[] = [];
   const skipped: SkippedReviewVariant[] = [];
   for (const variant of variants) {
     if (!variant.audio) {
       const html = yield* Effect.try({ try: () => embedReviewLog(template, variant.mapOnly ? mapOnlyReviewEvents(events) : events), catch: failed });
-      pages.push({ path: join(dir, variant.file), html });
+      pages.push({ file: variant.file, html });
       continue;
     }
     const html = yield* Effect.try({ try: () => embedReviewLog(template, events), catch: failed });
-    const audio = yield* Effect.result(mixedAudio(dir, variant.track));
+    const audio = yield* Effect.result(mixedAudio(sessionDir, variant.track));
     if (Result.isFailure(audio)) {
       skipped.push({ file: variant.file, reason: audio.failure });
       continue;
     }
     const withAudio = yield* Effect.try({ try: () => embedReviewAudio(html, audio.success), catch: failed });
-    pages.push({ path: join(dir, variant.file), html: withAudio });
+    pages.push({ file: variant.file, html: withAudio });
   }
-  for (const page of pages) yield* fs.writeFileString(page.path, page.html).pipe(Effect.mapError(failed));
-  return { paths: pages.map((page) => page.path), skipped } satisfies ReviewPagesResult;
+  return { pages, skipped };
+});
+
+// renderReviewPages の結果を dir に書き、書いたパスを版の順に返す。全部作ってから書く（途中で失敗したら何も書かない）。mix の入力も dir
+export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPath: string, variants: readonly ReviewVariant[]) {
+  const fs = yield* FileSystem.FileSystem;
+  const { pages, skipped } = yield* renderReviewPages(dir, logPath, variants);
+  const written = pages.map((page) => ({ path: join(dir, page.file), html: page.html }));
+  for (const page of written) yield* fs.writeFileString(page.path, page.html).pipe(Effect.mapError(failed));
+  return { paths: written.map((page) => page.path), skipped } satisfies ReviewPagesResult;
 });

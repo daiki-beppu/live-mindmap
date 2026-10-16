@@ -190,7 +190,7 @@ const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | strin
     : [settled, h.span([h.Class("captions__pending opacity-50")], [pending, h.span([h.Class("captions__cursor")], [])])];
 };
 
-// 会議中の字幕: 吹き出しの行。名前の欄（固定幅）+ 吹き出し（幅は固定）。相手は左、自分は右に寄せる。塗り・影・バッジは付けない
+// 会議中の字幕: 吹き出しの行。名前の欄（固定幅）+ 吹き出し（幅は固定）。相手は左、自分は右に寄せる。吹き出しの枠は styles.css の .captions__bubble。影・バッジは付けない
 const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
   h.keyed("div")(
     bubble.id,
@@ -201,7 +201,7 @@ const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
     [
       speakerNameCell(h, bubble),
       h.p(
-        [h.Class(`captions__bubble m-0 flex-none text-[16px] leading-[1.5] wrap-anywhere ${bubble.side === "right" ? "text-right" : "text-left"} ${SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0]}`)],
+        [h.Class(`captions__bubble ${bubble.side === "right" ? "captions__bubble--right " : ""}m-0 flex-none text-[16px] leading-[1.5] wrap-anywhere ${bubble.side === "right" ? "text-right" : "text-left"} ${SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0]}`)],
         bubbleTextView(h, bubble),
       ),
     ],

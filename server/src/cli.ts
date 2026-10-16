@@ -49,9 +49,12 @@ import {
   StartEvent,
   PUBLISH_DEFAULT_DAYS,
   PUBLISH_MAX_ASSET_BYTES,
+  PUBLISH_CONTENTS,
   PUBLISH_MAX_DAYS,
   formatPublishList,
+  type PublishRecord,
   selectListedRecords,
+  publishConfirmationMessage,
   generatePassphrase,
   lockedPublishPage,
   publishWorkerScript,
@@ -79,7 +82,7 @@ import { BrokenLogLine, readLogLines } from "./logLines.ts";
 import { poolUnavailableMessage, readPool, updatePoolFromLog, vocabularyPoolPath, writePool } from "./vocabularyPool.ts";
 import { accountSubdomain, CloudflareFailed, deleteWorker, deployWorker, describeCloudflareFailure, listWorkerNames, newWorkerName, workerUrl, type CloudflareCredentials } from "./cloudflareWorkers.ts";
 import { appendPublishRecord, markWithdrawn, readPublishRecords } from "./publishRecords.ts";
-import { ReviewBuild, writeReviewPages } from "./review.ts";
+import { renderReviewPages, ReviewBuild, type ReviewVariant, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
 import {
@@ -98,7 +101,7 @@ import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScre
 import { Viewers } from "./viewers.ts";
 import { CheckReport, InstallEvent, Item, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
-import { depsMissingTeardown, reportEntryFailure } from "./entryFailure.ts";
+import { exitCodeTeardown, reportEntryFailure } from "./entryFailure.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
 import { planServerStop, readServerPid, removeServerPid, ServerProcess } from "./serverProcess.ts";
 
@@ -883,6 +886,20 @@ const restore = Command.make(
   }, Effect.scoped),
 ).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す。終了の処理を通らなかったセッションの語は、語彙の溜まりにも入れる"));
 
+// 渡されたセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）と、その log.jsonl。log.jsonl が無ければ失敗にする
+const sessionLog = Effect.fnUntraced(function* (session: Option.Option<string>) {
+  const dir = Option.isSome(session)
+    ? resolve(session.value)
+    : yield* Effect.gen(function* () {
+        const sessionsDir = yield* sessionsDirConfig;
+        return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
+      });
+  const logPath = join(dir, LOG_FILE);
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+  return { dir, logPath };
+});
+
 const review = Command.make(
   "review",
   {
@@ -896,15 +913,7 @@ const review = Command.make(
     ),
   },
   Effect.fn("review")(function* ({ session, selfOnly }) {
-    const dir = Option.isSome(session)
-      ? resolve(session.value)
-      : yield* Effect.gen(function* () {
-          const sessionsDir = yield* sessionsDirConfig;
-          return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
-        });
-    const logPath = join(dir, LOG_FILE);
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+    const { dir, logPath } = yield* sessionLog(session);
     if (selfOnly) {
       const variants = yield* selfReviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
@@ -1205,6 +1214,41 @@ const publishList = Command.make(
   }),
 ).pipe(Command.withDescription("公開の記録（~/.live-mindmap/publish/records.jsonl）から、公開中の物を表で出す（URL・合言葉・期限・中身の段・元のセッション・状態）。--all で取り下げた物も出す。資格情報があれば、記録に無い lmm- の Worker を知らせるだけで消さない。サーバーもローカルモードも関係しない"));
 
+// 引数の名前・URL を記録に突き合わせる。記録に無い物は stderr に出して数える
+const matchWithdrawTargets = Effect.fnUntraced(function* (records: ReadonlyArray<PublishRecord>, targets: ReadonlyArray<string>) {
+  const found = new Map<string, PublishRecord>();
+  let unmatched = 0;
+  for (const target of targets) {
+    const wanted = target.replace(/\/$/, "");
+    const record = records.find((r) => r.name === wanted || r.url === wanted);
+    if (record === undefined) {
+      unmatched += 1;
+      yield* Console.error(`記録にありません: ${target}`);
+    } else found.set(record.name, record);
+  }
+  return { found: [...found.values()], unmatched };
+});
+
+// 記録の Worker を 1 つずつ消す。消せた物の名前と、消せなかった数を返す
+const deletePublishedWorkers = Effect.fnUntraced(function* (records: ReadonlyArray<PublishRecord>, token: string) {
+  const withdrawn: string[] = [];
+  let failed = 0;
+  for (const record of records) {
+    // 消すのは記録のアカウントの Worker。環境変数のアカウントで消すと、別のアカウントの物は 404（成功扱い）になり、消えていないのに取り下げた扱いになる
+    const outcome = yield* deleteWorker({ accountId: record.accountId, token }, record.name).pipe(
+      Effect.match({ onSuccess: () => undefined, onFailure: (e) => e }),
+    );
+    if (outcome === undefined) {
+      withdrawn.push(record.name);
+      yield* write(`取り下げました: ${record.url}`);
+    } else {
+      failed += 1;
+      yield* Console.error(`取り下げられませんでした: ${record.url}（${describeCloudflareFailure(outcome, "取り下げ")}）`);
+    }
+  }
+  return { withdrawn, failed };
+});
+
 // 引数は名前か URL。まとめて取り下げる口・セッション単位の口は持たない
 const publishWithdraw = Command.make(
   "withdraw",
@@ -1214,31 +1258,8 @@ const publishWithdraw = Command.make(
     const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: `${MISSING_CREDENTIALS_MESSAGE}\n${STILL_THERE}` });
     const records = yield* readRecords;
-    const found = new Map<string, (typeof records)[number]>();
-    let unmatched = 0;
-    for (const target of targets) {
-      const wanted = target.replace(/\/$/, "");
-      const record = records.find((r) => r.name === wanted || r.url === wanted);
-      if (record === undefined) {
-        unmatched += 1;
-        yield* Console.error(`記録にありません: ${target}`);
-      } else found.set(record.name, record);
-    }
-    const withdrawn: string[] = [];
-    let failed = 0;
-    for (const record of found.values()) {
-      // 消すのは記録のアカウントの Worker。環境変数のアカウントで消すと、別のアカウントの物は 404（成功扱い）になり、消えていないのに取り下げた扱いになる
-      const outcome = yield* deleteWorker({ accountId: record.accountId, token }, record.name).pipe(
-        Effect.match({ onSuccess: () => undefined, onFailure: (e) => e }),
-      );
-      if (outcome === undefined) {
-        withdrawn.push(record.name);
-        yield* write(`取り下げました: ${record.url}`);
-      } else {
-        failed += 1;
-        yield* Console.error(`取り下げられませんでした: ${record.url}（${describeCloudflareFailure(outcome, "取り下げ")}）`);
-      }
-    }
+    const { found, unmatched } = yield* matchWithdrawTargets(records, targets);
+    const { withdrawn, failed } = yield* deletePublishedWorkers(found, token);
     if (withdrawn.length > 0) {
       // 残る物があるときは、記録の書き換えに失敗しても「まだ置き場にある」旨を落とさない
       const remaining = unmatched > 0 || failed > 0 ? `\n${STILL_THERE}` : "";
@@ -1249,6 +1270,46 @@ const publishWithdraw = Command.make(
     if (unmatched > 0 || failed > 0) return yield* new CommandFailed({ message: STILL_THERE });
   }),
 ).pipe(Command.withDescription("公開した Worker を、期限の前にすぐ消す（引数は名前か URL。1 つ以上）。記録の行は残し、状態を「取り下げた」にする。Cloudflare 側に既に無い（404）物は成功。記録に無い名前・URL や消せなかった物があれば 0 以外で返す。まとめて取り下げる口・セッション単位の口は無い。CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN が要る。サーバーもローカルモードも関係しない"));
+// remarks・audio の公開を、利用者の確認（--confirmed）なしに置こうとした。Cloudflare に何も送らずに止め、エージェントに利用者へ確かめさせる（終了コード 4）
+export class ConfirmationRequired extends Schema.TaggedError<ConfirmationRequired>()("ConfirmationRequired", {
+  content: Schema.Literals(["remarks", "audio"]),
+  anyone: Schema.Boolean,
+}) {
+  override get message(): string {
+    return publishConfirmationMessage({ content: this.content, anyone: this.anyone });
+  }
+}
+
+// 中身の段ごとの版。mix の入力はセッションのフォルダ、置く HTML は index.html の名前で作る（どこにも書かない）
+const publishVariant = (content: (typeof PUBLISH_CONTENTS)[number]): ReviewVariant =>
+  content === "map" ? { file: "index.html", audio: false, mapOnly: true } : { file: "index.html", audio: content === "audio" };
+
+// 置くセッションを決め、手元で分かる理由（log.jsonl が無い・ローカルモード・audio なのに録音が無い）で置けなければ失敗にする
+const publishableSession = Effect.fnUntraced(function* (session: Option.Option<string>, content: (typeof PUBLISH_CONTENTS)[number]) {
+  const { dir, logPath } = yield* sessionLog(session).pipe(Effect.catchTag("NoSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) }))));
+  const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
+  const start = events.find(hasLoggedType(new Set(["start"])));
+  const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
+  if (decodedStart !== undefined && Result.isSuccess(decodedStart) && decodedStart.success.model?.local === true) {
+    return yield* new CommandFailed({ message: "ローカルモードのセッションは公開できません。会議の中身を Mac の外に出さないためです" });
+  }
+  if (content === "audio") {
+    const variants = yield* reviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
+    if (!variants.some((variant) => variant.audio)) return yield* new CommandFailed({ message: `録音がありません: ${dir}` });
+  }
+  return { dir, logPath };
+});
+
+// 置く中身の段の見返しを作り、公開用の head にする（暗号化の前）
+const publishedMapHtml = Effect.fnUntraced(function* (dir: string, logPath: string, content: (typeof PUBLISH_CONTENTS)[number]) {
+  const rendered = yield* renderReviewPages(dir, logPath, [publishVariant(content)]).pipe(
+    Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+    Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+  );
+  // 公開する中身の音声を作れなかったときは、音声なしで置かずに失敗にする（--self-only と同じ）
+  for (const { file, reason } of rendered.skipped) return yield* new CommandFailed({ message: reviewWarning(file, reason) });
+  return yield* Effect.try({ try: () => replaceHeadForPublish(rendered.pages[0]!.html), catch: (e) => new CommandFailed({ message: e instanceof Error ? e.message : String(e) }) });
+});
 
 const publish = Command.make(
   "publish",
@@ -1258,40 +1319,22 @@ const publish = Command.make(
       Argument.optional,
     ),
     anyone: Flag.Boolean("anyone").pipe(Flag.withDescription("合言葉なしで、リンクを知る誰でも見られる形で置く（付けないと、製品が作った合言葉で暗号化して置き、URL と合言葉を出す）"), Flag.withDefault(false)),
+    content: Flag.Literals("content", PUBLISH_CONTENTS).pipe(Flag.withDescription("置く中身の段（積み上げ式）。map = マップだけ（既定）、remarks = 発言の文字・共有画面の文字も、audio = 録音も（録音が無いセッションでは失敗）"), Flag.withDefault("map")),
+    confirmed: Flag.Boolean("confirmed").pipe(Flag.withDescription("利用者に確かめて了解を得たことを示す。remarks・audio ではこれが無いと、何も置かずに終了コード 4 で止まる。map では効果がない"), Flag.withDefault(false)),
     days: Flag.String("days").pipe(Flag.withDescription(`置く期間の日数（1〜${PUBLISH_MAX_DAYS}）。省略すると ${PUBLISH_DEFAULT_DAYS} 日`), Flag.withDefault(String(PUBLISH_DEFAULT_DAYS))),
   },
-  Effect.fn("publish")(function* ({ session, anyone, days }) {
+  Effect.fn("publish")(function* ({ session, anyone, content, confirmed, days }) {
     const dayCount = /^\d+$/.test(days) ? Number(days) : Number.NaN;
     if (!(dayCount >= 1 && dayCount <= PUBLISH_MAX_DAYS)) return yield* new CommandFailed({ message: `--days は 1〜${PUBLISH_MAX_DAYS} の整数で指定してください: ${days}` });
-    const dir = Option.isSome(session)
-      ? resolve(session.value)
-      : yield* Effect.gen(function* () {
-          const sessionsDir = yield* sessionsDirConfig;
-          return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE).pipe(Effect.catchTag("NoSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) })))));
-        });
-    const logPath = join(dir, LOG_FILE);
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
-    const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
-    const start = events.find(hasLoggedType(new Set(["start"])));
-    const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
-    if (decodedStart !== undefined && Result.isSuccess(decodedStart) && decodedStart.success.model?.local === true) {
-      return yield* new CommandFailed({ message: "ローカルモードのセッションは公開できません。会議の中身を Mac の外に出さないためです" });
-    }
+    const { dir, logPath } = yield* publishableSession(session, content);
     const accountId = yield* cloudflareAccountIdConfig;
     const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: MISSING_CREDENTIALS_MESSAGE });
     const credentials: CloudflareCredentials = { accountId, token };
+    // 手元で分かる失敗を出した後、ビルド・mix・Cloudflare への要求の前に止める。入口の teardown が終了コード 4 にする
+    if (content !== "map" && !confirmed) return yield* new ConfirmationRequired({ content, anyone });
 
-    const mapHtml = yield* Effect.scoped(Effect.gen(function* () {
-      const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "live-mindmap-publish-" });
-      const { paths } = yield* writeReviewPages(tmp, logPath, [{ file: "index.html", audio: false, mapOnly: true }]);
-      return replaceHeadForPublish(yield* fs.readFileString(paths[0]!));
-    })).pipe(
-      Effect.catchIf(PlatformError.isPlatformError, (e) => Effect.fail(fileFailed(e))),
-      Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
-      Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
-    );
+    const mapHtml = yield* publishedMapHtml(dir, logPath, content);
     // 合言葉が既定。暗号化は資格情報の確認の後、Cloudflare への最初の要求（accountSubdomain）の前に行う
     const passphrase = anyone ? undefined : generatePassphrase();
     const html = passphrase === undefined
@@ -1313,7 +1356,7 @@ const publish = Command.make(
       Effect.gen(function* () {
         yield* deployWorker(credentials, name, html, publishWorkerScript(expiresAt)).pipe(Effect.mapError(cloudflareFailed));
         yield* appendPublishRecord({
-          name, url, accountId, dir, level: "map", anyone,
+          name, url, accountId, dir, level: content, anyone,
           ...(passphrase === undefined ? {} : { passphrase }),
           publishedAt: new Date(publishedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(), status: "published",
         }).pipe(Effect.mapError((e) => new CommandFailed({ message: `公開の記録を書けませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}` })));
@@ -1323,7 +1366,9 @@ const publish = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    `セッションの見返しをマップだけの段（発言の文字・共有画面の文字は含めない）で、あなたの Cloudflare アカウントの workers.dev に期限つきで置き、URL・期限・URL に出るアカウントのサブドメイン（合言葉つきなら合言葉も）を出す。既定では製品が作った合言葉で暗号化して置き（置いた中身は Cloudflare からも読めない）、URL と合言葉を出す。--anyone を付けると合言葉なしで、リンクを知る誰でも見られる。期限は既定 ${PUBLISH_DEFAULT_DAYS} 日、--days で 1〜${PUBLISH_MAX_DAYS}。`
+    `セッションの見返しを、あなたの Cloudflare アカウントの workers.dev に期限つきで置き、URL・期限・URL に出るアカウントのサブドメイン（合言葉つきなら合言葉も）を出す。既定では製品が作った合言葉で暗号化して置き（置いた中身は Cloudflare からも読めない）、URL と合言葉を出す。--anyone を付けると合言葉なしで、リンクを知る誰でも見られる。期限は既定 ${PUBLISH_DEFAULT_DAYS} 日、--days で 1〜${PUBLISH_MAX_DAYS}。`
+      + "--content で中身の段を選ぶ（積み上げ式）。map = マップだけ（既定。発言の文字・共有画面の文字は含めない）、remarks = 発言の文字・共有画面の文字も（map.html と同じ中身）、audio = 録音も（map-audio.html と同じ中身。録音が無いセッションでは失敗）。"
+      + "発言の文字・録音を含む公開は、実行する前に利用者に確かめる。remarks・audio で --confirmed が無いと、何も置かずに終了コード 4 で止まり、確かめる内容を出すので、利用者に聞いて了解を得てから --confirmed を付けて実行し直す。map では --confirmed の有無で振る舞いは変わらない。"
       + "CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN（Workers Admin の権限 1 つ）が要る。ローカルモードのセッションは拒む。サーバーは要らない。"
       + "サブコマンド: list（公開中の一覧）、withdraw（期限の前の取り下げ）",
   ),
@@ -1333,7 +1378,7 @@ const publish = Command.make(
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription(
     "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
-      + "exit code 3 = 開始に要るものが未導入",
+      + "exit code 3 = 開始に要るものが未導入。exit code 4 = 発言の文字・録音を含む公開で、利用者の確認（--confirmed）が無い",
   ),
   Command.withSubcommands([login, logout, vocab, play, apps, start, recorded, stop, status, share, resume, exportCommand, restore, review, publish, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
 );
@@ -1348,11 +1393,11 @@ export const runCli = Command.runWith(root, { version: VERSION });
 // 失敗の表示はここだけ。共通の前半（entryFailure）で済まないものを、この表で表示する
 export const reportFailure = reportEntryFailure((failure) => {
   if (failure instanceof RequiredDepsMissing) return Effect.void;
-  if (failure instanceof ModelRefused) return Console.error(failure.message);
+  if (failure instanceof ModelRefused || failure instanceof ConfirmationRequired) return Console.error(failure.message);
   return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
 });
 
-export const teardown: Runtime.Teardown = depsMissingTeardown((failure) => failure instanceof RequiredDepsMissing || failure instanceof StartupDepsMissing);
+export const teardown: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof RequiredDepsMissing || failure instanceof StartupDepsMissing ? 3 : failure instanceof ConfirmationRequired ? 4 : undefined));
 
 if (import.meta.main) {
   // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）

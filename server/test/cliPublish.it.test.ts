@@ -5,16 +5,17 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Deferred, Effect, Fiber, FileSystem, Layer, Result } from "effect";
+import { Cause, ConfigProvider, Console, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Result } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { afterEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
+import * as cliEntry from "../src/cli.ts";
 import { runCli } from "../src/cli.ts";
 import { openSealed, PUBLISH_TITLE, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
-import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { embeddedAudio, FAKE_MIX_BYTES, fakeAudioMix, type FakeMix } from "./fixtures/audioMix.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
@@ -101,6 +102,10 @@ type Setup = {
   env?: Record<string, string>;
   template?: string;
   buildFailure?: ReviewPageFailed;
+  // 偽の音声 mix（呼び出しの記録と失敗の設定を取り出すとき）。省くと呼び出しを見ない偽物
+  mix?: FakeMix;
+  // 見返しのビルドの呼び出し回数
+  builds?: { count: number };
 };
 
 function layerOf(s: Setup) {
@@ -125,9 +130,12 @@ function layerOf(s: Setup) {
     Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.die("publish は撮影しない") })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({
-      build: s.buildFailure ? Effect.fail(s.buildFailure) : Effect.succeed(s.template ?? TEMPLATE),
+      build: Effect.suspend(() => {
+        if (s.builds) s.builds.count += 1;
+        return s.buildFailure ? Effect.fail(s.buildFailure) : Effect.succeed(s.template ?? TEMPLATE);
+      }),
     })),
-    fakeAudioMix().layer,
+    (s.mix ?? fakeAudioMix()).layer,
     fakeScreenJpeg().layer,
   );
 }
@@ -1289,3 +1297,280 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
     }));
   });
 });
+
+describe("cli publish の中身の段と確認の終了コード 4（Issue #1252）", () => {
+  const SESSION = "2026-10-01T00-00-00.000Z";
+  const CONFIRMATION_PARTS = ["閉じた会議", "相手の了解", "イベント", "規約", "登壇者の許可", "--confirmed"];
+  const VOICE = "声は話し手を特定できれば個人情報にもなる";
+  const PUBLIC = "URL を知る誰でも見られる";
+
+  const placed = (root: string, options: { recording?: boolean; extra?: Partial<Setup> } = {}) => {
+    const mix = fakeAudioMix();
+    const builds = { count: 0 };
+    const s = setup(root, undefined, { mix, builds, ...options.extra });
+    const dir = writeSession(s.sessions, SESSION);
+    if (options.recording) writeFileSync(join(dir, "相手.m4a"), "recording");
+    return { s, dir, mix, builds };
+  };
+  const eventsOf = (html: string) => {
+    const embedded = new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([\\s\\S]*?)</script>`).exec(html);
+    expect(embedded, "ログの埋め込みが無い").not.toBeNull();
+    return JSON.parse(embedded![1]!) as { type: string; remark?: { text: string }; lines?: string[] }[];
+  };
+  const sealedHtml = async (outer: string, passphrase: string) => {
+    const m = /<script type="application\/json"[^>]*>([\s\S]*?)<\/script>/.exec(outer);
+    return openSealed(JSON.parse(m![1]!) as { salt: string; iv: string; data: string }, passphrase);
+  };
+  const nothingPlaced = (s: Setup) => {
+    expect(s.api.calls).toEqual([]);
+    expect(recordFiles(s)).toEqual([]);
+  };
+  const confirmationFailure = (result: Result.Result<unknown, unknown>) => {
+    expect(Result.isFailure(result)).toBe(true);
+    const failure = Result.isFailure(result) ? result.failure : null;
+    expect((failure as { _tag?: string } | null)?._tag).toBe("ConfirmationRequired");
+    return failure;
+  };
+
+  describe("--content の段", () => {
+    it.effect("remarks は map.html と同じ中身（発言・画面の文字が入り、音声は無い）で置き、記録の level は remarks", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s, dir, mix } = placed(root, { recording: true });
+
+      const result = yield* publish(s, ["--content", "remarks", "--confirmed", "--anyone"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      const html = yield* Effect.promise(() => uploadedHtml(s));
+      const events = eventsOf(html);
+      expect(events.some((e) => e.type === "remark" && e.remark!.text === REMARK_TEXT)).toBe(true);
+      expect(events.some((e) => e.type === "screen" && e.lines?.includes(SCREEN_LINE))).toBe(true);
+      expect(embeddedAudio(html)).toBeNull();
+      expect(mix.calls).toEqual([]);
+      expect(recordRows(s)).toHaveLength(1);
+      expect(recordRows(s)[0]).toMatchObject({ dir, level: "remarks", anyone: true, status: "published" });
+    }));
+
+    it.effect("remarks も既定は合言葉で暗号化して置き、stdout の合言葉で復号すると発言の文字がある。平文の外側には無い", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s } = placed(root);
+
+      const result = yield* publish(s, ["--content", "remarks", "--confirmed"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      const passphrase = /合言葉:\s*(\S+)/.exec(s.stdout.join(""))![1]!;
+      const outer = yield* Effect.promise(() => uploadedHtml(s));
+      for (const secret of [REMARK_TEXT, SCREEN_LINE, REVIEW_LOG_ELEMENT_ID]) expect(outer).not.toContain(secret);
+      const inner = yield* Effect.promise(() => sealedHtml(outer, passphrase));
+      expect(inner).toContain(REMARK_TEXT);
+      expect(inner).toContain(SCREEN_LINE);
+      expect(recordRows(s)[0]).toMatchObject({ anyone: false, level: "remarks", passphrase });
+    }));
+
+    it.effect("audio は map-audio.html と同じ中身（発言の文字と全トラックを混ぜた音声）。mix はセッションのフォルダを入力に、track 指定なしで 1 回。セッションのフォルダには何も書かない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s, dir, mix } = placed(root, { recording: true });
+      const before = readdirSync(dir).sort();
+
+      const result = yield* publish(s, ["--content", "audio", "--confirmed", "--anyone"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      const html = yield* Effect.promise(() => uploadedHtml(s));
+      expect(eventsOf(html).some((e) => e.type === "remark" && e.remark!.text === REMARK_TEXT)).toBe(true);
+      expect(embeddedAudio(html)?.equals(FAKE_MIX_BYTES)).toBe(true);
+      expect(mix.calls).toHaveLength(1);
+      expect(mix.calls[0]!.session).toBe(dir);
+      expect(mix.calls[0]!.track).toBeUndefined();
+      expect(readdirSync(dir).sort()).toEqual(before);
+      expect(recordRows(s)[0]).toMatchObject({ dir, level: "audio", anyone: true, status: "published" });
+    }));
+
+    it.effect("既定（--content を省く）は map。発言・画面の文字も音声も入らず、記録の level は map。未知の値は何も置かずに拒む", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s, mix } = placed(root, { recording: true });
+
+      const result = yield* publish(s, ["--anyone"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      const html = yield* Effect.promise(() => uploadedHtml(s));
+      expect(html).not.toContain(REMARK_TEXT);
+      expect(html).not.toContain(SCREEN_LINE);
+      expect(embeddedAudio(html)).toBeNull();
+      expect(mix.calls).toEqual([]);
+      expect(recordRows(s)[0]).toMatchObject({ level: "map" });
+
+      const root2 = yield* temporaryDirectory;
+      const unknown = placed(root2, { recording: true });
+      const bad = yield* publish(unknown.s, ["--content", "all", "--confirmed", "--anyone"]);
+      expect(Result.isFailure(bad)).toBe(true);
+      expect(output(unknown.s, bad)).not.toMatch(/ConfirmationRequired/);
+      nothingPlaced(unknown.s);
+    }));
+  });
+
+  describe("audio が失敗する（何も置かない）", () => {
+    for (const confirmed of [true, false]) {
+      it.effect(`録音の無いセッションの audio は録音が無い旨で失敗する（--confirmed ${confirmed ? "あり" : "なし"}）。要求 0 件・記録なし・mix も呼ばない`, () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const { s, mix } = placed(root);
+
+        const result = yield* publish(s, ["--content", "audio", "--anyone", ...(confirmed ? ["--confirmed"] : [])]);
+
+        expect(Result.isFailure(result)).toBe(true);
+        expect(output(s, result)).toContain("録音");
+        expect((Result.isFailure(result) ? result.failure : null) as { _tag?: string } | null).not.toMatchObject({ _tag: "ConfirmationRequired" });
+        expect(mix.calls).toEqual([]);
+        nothingPlaced(s);
+      }));
+    }
+
+    it.effect("mix が失敗したら公開は失敗し、理由を出す。音声の無い HTML を audio として置かない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s, mix } = placed(root, { recording: true });
+      mix.failure.reason = "mix-broke-synthetic";
+
+      const result = yield* publish(s, ["--content", "audio", "--confirmed", "--anyone"]);
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect(output(s, result)).toContain("mix-broke-synthetic");
+      expect(mix.calls).toHaveLength(1);
+      nothingPlaced(s);
+    }));
+  });
+
+  describe("--confirmed が無いと、何も置かずに終了コード 4 で止まる", () => {
+    for (const content of ["remarks", "audio"] as const) {
+      it.effect(`${content}: ConfirmationRequired で失敗し、Cloudflare への要求・記録・ビルド・mix が 0 件。入口の teardown は終了コード 4`, () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const { s, mix, builds } = placed(root, { recording: true });
+
+        const result = yield* publish(s, ["--content", content, "--anyone"]);
+
+        const failure = confirmationFailure(result);
+        nothingPlaced(s);
+        expect(builds.count).toBe(0);
+        expect(mix.calls).toEqual([]);
+
+        yield* cliEntry.reportFailure(Cause.fail(failure)).pipe(Effect.provide(layerOf(s)));
+        const saved = process.exitCode;
+        process.exitCode = undefined;
+        try {
+          cliEntry.teardown(Exit.fail(failure), () => { throw new Error("自然終了してはならない"); });
+          expect(process.exitCode).toBe(4);
+        } finally {
+          process.exitCode = saved;
+        }
+      }));
+    }
+
+    it.effect("止まる判定はビルドより前: ビルドが失敗する環境でも、確認の文が出て終了コード 4 の失敗になる", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s } = placed(root, { extra: { buildFailure: new ReviewPageFailed({ message: "ビルドに失敗" }) } });
+
+      const result = yield* publish(s, ["--content", "remarks"]);
+
+      confirmationFailure(result);
+      nothingPlaced(s);
+    }));
+
+    it.effect("確認の前に手元の失敗が出る: --days が範囲外・資格情報なしは、確認ではなくその理由で止まる", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const days = placed(root);
+      const r1 = yield* publish(days.s, ["--content", "remarks", "--days", "0"]);
+      expect(Result.isFailure(r1)).toBe(true);
+      expect((Result.isFailure(r1) ? r1.failure : null) as { _tag?: string } | null).not.toMatchObject({ _tag: "ConfirmationRequired" });
+      nothingPlaced(days.s);
+
+      const root2 = yield* temporaryDirectory;
+      const creds = placed(root2, { extra: { env: { CLOUDFLARE_API_TOKEN: "" } } });
+      const r2 = yield* publish(creds.s, ["--content", "remarks"]);
+      expect(output(creds.s, r2)).toContain("CLOUDFLARE_API_TOKEN");
+      nothingPlaced(creds.s);
+    }));
+
+    it.effect("--confirmed があれば止まらずに置く（remarks）", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const { s } = placed(root);
+
+      const result = yield* publish(s, ["--content", "remarks", "--confirmed", "--anyone"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(s.api.calls.some(isScriptPut)).toBe(true);
+    }));
+  });
+
+  describe("止まったときの出力（エージェント向けの文）", () => {
+    const stopped = (root: string, argv: string[]) => Effect.gen(function* () {
+      const { s } = placed(root, { recording: true });
+      const result = yield* publish(s, argv);
+      const failure = confirmationFailure(result);
+      yield* cliEntry.reportFailure(Cause.fail(failure)).pipe(Effect.provide(layerOf(s)));
+      return s.stderr.join("");
+    });
+
+    it.effect("remarks は基本の文だけ（声の文・公衆への送信の文は無い）", () => Effect.gen(function* () {
+      const text = yield* stopped(yield* temporaryDirectory, ["--content", "remarks"]);
+      for (const part of CONFIRMATION_PARTS) expect(text).toContain(part);
+      expect(text).not.toContain(VOICE);
+      expect(text).not.toContain(PUBLIC);
+    }));
+
+    it.effect("audio は声の文が加わり、--anyone は公衆への送信の文が加わる（それぞれ、その条件のときだけ）", () => Effect.gen(function* () {
+      const audio = yield* stopped(yield* temporaryDirectory, ["--content", "audio"]);
+      expect(audio).toContain(VOICE);
+      expect(audio).not.toContain(PUBLIC);
+
+      const anyone = yield* stopped(yield* temporaryDirectory, ["--content", "remarks", "--anyone"]);
+      expect(anyone).toContain(PUBLIC);
+      expect(anyone).toContain("公衆への送信");
+      expect(anyone).not.toContain(VOICE);
+    }));
+  });
+
+  describe("map は --confirmed の有無で変わらない。同意も会議の種類も扱わない", () => {
+    it.effect("map は --confirmed があってもなくても、置く HTML・出力の形・記録の欄が同じで、記録に同意の欄が無い", () => Effect.gen(function* () {
+      const without = placed(yield* temporaryDirectory);
+      const withFlag = placed(yield* temporaryDirectory);
+
+      const a = yield* publish(without.s, ["--anyone"]);
+      const b = yield* publish(withFlag.s, ["--anyone", "--confirmed"]);
+
+      expect(Result.isSuccess(a), failureText(a)).toBe(true);
+      expect(Result.isSuccess(b), failureText(b)).toBe(true);
+      expect(yield* Effect.promise(() => uploadedHtml(withFlag.s))).toBe(yield* Effect.promise(() => uploadedHtml(without.s)));
+      const shape = (s: Setup) => s.stdout.join("").replace(/lmm-[0-9a-f]{32}/g, "NAME");
+      expect(shape(withFlag.s)).toBe(shape(without.s));
+      expect(Object.keys(recordRows(withFlag.s)[0]!).sort()).toEqual(Object.keys(recordRows(without.s)[0]!).sort());
+      expect(recordRows(withFlag.s)[0]).toMatchObject({ level: "map" });
+      expect(s2text(withFlag.s)).not.toMatch(/confirm/i);
+    }));
+
+    it.effect("remarks を --confirmed 付きで置いても、記録にも出力にも同意の欄・語が残らない", () => Effect.gen(function* () {
+      const { s } = placed(yield* temporaryDirectory);
+
+      yield* publish(s, ["--content", "remarks", "--confirmed", "--anyone"]);
+
+      const row = recordRows(s)[0]!;
+      expect(Object.keys(row).some((k) => /confirm|consent|meeting/i.test(k))).toBe(false);
+      expect(JSON.stringify(row)).not.toMatch(/confirm/i);
+      expect(s2text(s)).not.toMatch(/--confirmed/);
+    }));
+  });
+
+  describe("publish --help", () => {
+    it.effect("発言の文字・録音を含む公開は実行前に利用者に確かめる旨と、--content・--confirmed・終了コード 4 が出る。会議の種類のフラグは無い", () => Effect.gen(function* () {
+      const { s } = placed(yield* temporaryDirectory);
+
+      const result = yield* publish(s, ["--help"]);
+
+      const text = output(s, result);
+      expect(text).toContain("発言の文字・録音を含む公開は、実行する前に利用者に確かめる");
+      expect(text).toContain("--content");
+      expect(text).toContain("--confirmed");
+      expect(text).toMatch(/\b4\b/);
+      expect(text).not.toMatch(/--meeting|--kind|--event/);
+      nothingPlaced(s);
+    }));
+  });
+});
+
+const s2text = (s: Setup) => [s.stdout.join(""), s.stderr.join("")].join("\n");
