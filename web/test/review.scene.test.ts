@@ -69,7 +69,6 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
     const m = init(context);
     // 表示面の状態のうち、実測（size・nodeHeights）とパンの状態（#815）と見る状態（viewing。#818）とカメラの欄（#819）だけを持ち、導く mode・snapshot は持たない
     expect(Object.keys(m.mapSurface).sort()).toEqual([
-      "beforeOverview",
       "gestureScale",
       "idleStamp",
       "isMac",

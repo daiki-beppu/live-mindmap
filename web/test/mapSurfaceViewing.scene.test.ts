@@ -334,7 +334,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   it("全体を見ている（overview）間も出る", () => {
     scene(
       app,
-      given(panned({ mode: "overview", topic: "B", before: { mode: "auto" } })),
+      given(panned({ mode: "overview", topic: "B" })),
       tap((simulation) => expect(dotsOf(simulation.html)).toHaveLength(expectedDots(simulation.html).length)),
       mounted,
     );

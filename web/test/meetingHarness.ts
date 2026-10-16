@@ -74,7 +74,8 @@ export const SIZE = { width: 800, height: 600 };
 export const HEIGHTS: Record<string, number> = { root: 40, A: 40, A1: 40, B: 40 };
 
 export const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-export const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
+export const DIFF = "変わったところを見ています・Esc で戻る・? でキー一覧";
+export const OVERVIEW = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
 export const INTERRUPTED = "音声の取り込みが途切れました。再開しています";
 export const STOPPED = "音声の取り込みが止まっています";
 export const RESUMED = "再開しました";

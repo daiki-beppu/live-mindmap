@@ -10,6 +10,7 @@ import { personLine } from "../../people.ts";
 import {
   anchoredViewport,
   cameraFocus,
+  changedFocus,
   clampUserZoom,
   CLICK_ZOOM_FACTOR,
   edgeDots,
@@ -54,7 +55,7 @@ import { ObserveMapSurface } from "./mount.ts";
 // パンの状態: pointer は押している間の相手、nodePress はノードのボタンを押した記録（click で使い切る）、scrollAxisLock は軸固定の軸
 // ズームの状態（Issue #816）: gestureScale は Safari の gesture の前回の累積 scale（update が前回との比を求めるのに使う。始まりの前・外れたら None）
 // カメラの状態（Issue #819）: viewport は今見せているビューポート（人が置いた位置は入力の履歴で決まり、他の欄から導けないので持つ）。
-// 以下は出来事の履歴で決まる事実: placedRound は今の議題へ寄せた round（変化の無い反映で寄せ直さないため）、beforeOverview は全体を見に行く前の viewport（F で戻る）、
+// 以下は出来事の履歴で決まる事実: placedRound は今の議題へ寄せた round（変化の無い反映で寄せ直さないため）、
 // keepAnchor は人の開閉の後も同じ画面座標に映し続けるノード、pendingShift は列を出したあと画面の幅が変わるのを待っているずらし。
 // idleStamp は見る状態を動かす出来事（E・C・選択を除く）のたびに進む通し番号で、見返しの 10 秒を計り直す依存になる
 export const Model = Schema.Struct({
@@ -71,7 +72,6 @@ export const Model = Schema.Struct({
   gestureScale: Schema.Option(Schema.Finite),
   viewport: Schema.Struct({ x: Schema.Finite, y: Schema.Finite, zoom: Schema.Finite }),
   placedRound: Schema.Option(Schema.Finite),
-  beforeOverview: Schema.Option(Schema.Struct({ x: Schema.Finite, y: Schema.Finite, zoom: Schema.Finite })),
   keepAnchor: Schema.Option(Schema.Struct({ id: Schema.String, point: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }) })),
   pendingShift: Schema.Boolean,
   idleStamp: Schema.Finite,
@@ -94,7 +94,6 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   gestureScale: Option.none(),
   viewport: IDENTITY,
   placedRound: Option.none(),
-  beforeOverview: Option.none(),
   keepAnchor: Option.none(),
   pendingShift: false,
   idleStamp: 0,
@@ -129,6 +128,7 @@ const treeOf = (model: Model, view: FoldView | null = foldViewOf(model)): Visibl
       ? Object.fromEntries(shown.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"]))
       : {},
     runs: view?.runs ?? {},
+    changed: changedFocus(model.snapshot, view?.shownAs ?? {})?.ids ?? [],
     currentTopic: model.snapshot.currentTopic,
   };
 };
@@ -207,7 +207,16 @@ const focusBoxesOf = (model: Model, focus: { ids: string[]; center: string }): {
   return { rects: [...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims)), center: nodeRect(shownId(focus.center), target, dims) };
 };
 
-// 自動のカメラ。止めている間は動かさず、全体を見ている間は全体を、自動のときは今の議題（無ければ全体）を収める。still は常に全体
+// 差分を見ている間のカメラ: 最後の反映で変わったノード全部を、人の倍率の範囲で収める。位置を保っている間と、変わったノードが無い反映では動かさない
+const diffCamera = (model: Model, size: Size): Model => {
+  if (Option.isSome(model.keepAnchor)) return model;
+  const changed = changedFocus(model.snapshot, foldViewOf(model)?.shownAs ?? {});
+  if (changed === null) return model;
+  const boxes = focusBoxesOf(model, changed);
+  return setViewport(model, focusViewport(boxes.rects, boxes.center, size, USER_MIN_ZOOM));
+};
+
+// 自動のカメラ。止めている間は動かさず、全体を見ている間は全体を、差分を見ている間は変わったノードを、自動のときは今の議題（無ければ全体）を収める。still は常に全体
 const autoCamera = (model: Model): Model => {
   if (Option.isNone(model.size)) return model;
   const size = model.size.value;
@@ -219,6 +228,7 @@ const autoCamera = (model: Model): Model => {
     const viewport = overviewViewport(treeOf(model).ids, targetOf(model), dimsOf(model), size);
     return viewport === null ? model : setViewport(model, viewport);
   }
+  if (model.viewing.mode === "diff") return diffCamera(model, size);
   const focus = cameraFocus(model.snapshot);
   if (focus === null) return setViewport(modifyFields(model, { placedRound: () => Option.none() }), fittedOf(model, size));
   if (!shouldMoveCamera(model.snapshot, Option.getOrNull(model.placedRound))) return model;
@@ -257,6 +267,7 @@ const commandHandlers: CommandHandlers = {
   follow: (model) => model,
   hold: (model) => model,
   fitAll: (model) => model,
+  fitChanged: (model) => model,
   shiftIntoView: (model) => model,
   refocus: (model) => modifyFields(model, { placedRound: () => Option.none() }),
   zoomBy: (model, { factor }, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(model.viewport.zoom * factor), size)),
@@ -271,11 +282,6 @@ const commandHandlers: CommandHandlers = {
     const at = displayedPositions(previous)[id] ?? displayedPositions(model)[id];
     return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: keepTargetOf(foldViewOf(model), id), point: screenPoint(model.viewport, at) }) });
   },
-  restore: (model) => {
-    const before = model.beforeOverview;
-    const cleared = modifyFields(model, { beforeOverview: () => Option.none() });
-    return Option.match(before, { onNone: () => cleared, onSome: (viewport) => setViewport(cleared, viewport) });
-  },
 };
 
 // 指示をその場で適用する。指示のたびに、ずらしの保留（shiftIntoView のときだけ立てる）と位置を保つ基準を捨てる。画面の大きさが無いうちは viewport を動かさない
@@ -287,27 +293,18 @@ const applyCommand = (model: Model, command: CameraCommand, previous: Model): Mo
   return handle(reset, command, { size: model.size.value, previous });
 };
 
-// 全体を見る前の位置を、全体を見に行く前に覚える。戻る（restore）以外で全体を見る状態を抜けたら捨てる
-const rememberBeforeOverview = (before: Model, after: Model, command: CameraCommand): Model => {
-  const wasOverview = before.viewing.mode === "overview";
-  const isOverview = after.viewing.mode === "overview";
-  if (isOverview && !wasOverview) return modifyFields(after, { beforeOverview: () => Option.some(before.viewport) });
-  if (wasOverview && !isOverview && command.type !== "restore") return modifyFields(after, { beforeOverview: () => Option.none() });
-  return after;
-};
-
 // 10 秒を計り直さない出来事（右の列・字幕の出し入れと、クリックでの選択）
 const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select" || event.type === "deselect";
 
 // 見る状態に出来事を渡し、返ってきたカメラの指示をその場で適用する。reduceViewing へ渡す木は Message を受ける前の Model（押した時点の木。反映だけは反映の後の Model）から作る。
 // previous は、目標の位置が変わったとき補間を始める元の表示位置を持つ Model（反映では Snapshot を差し替える前）
-// 呼び順: 見る状態 → 補間 → 全体を見る前の位置 → 指示 → 自動のカメラ → 位置を保つ。列で切れる分だけずらす指示（shiftIntoView）と位置を保つ指示（keepNode）は寄せ直しも収め直しもしない
+// 呼び順: 見る状態 → 補間 → 指示 → 自動のカメラ → 位置を保つ。列で切れる分だけずらす指示（shiftIntoView）と位置を保つ指示（keepNode）は寄せ直しも収め直しもしない
 const applyViewing = (model: Model, event: ViewingEvent, previous: Model = model): Model => {
   const { state, camera } = reduceViewing(model.viewing, event, treeOf(model), model.mode === "review" ? "review" : "live");
   const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (keepsIdleTimer(event) ? stamp : stamp + 1) });
   // still は見る状態（選択・開閉）だけを受け、カメラは常に全体を収めるので指示を適用しない
   if (model.mode === "still") return reduced;
-  const followed = rememberBeforeOverview(model, followTarget(previous, reduced), camera);
+  const followed = followTarget(previous, reduced);
   const commanded = applyCommand(followed, camera, previous);
   return reanchor(camera.type === "shiftIntoView" || camera.type === "keepNode" ? commanded : autoCamera(commanded));
 };

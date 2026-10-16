@@ -135,7 +135,7 @@ export const receiveDiffUpdate = (model: Model, state: Model["diffUpdate"]): Ret
 export const receiveSessionMode = (model: Model, local: boolean): Return => update(model, Message.ReceivedSessionMode({ local }));
 
 // 親（見返し）が、見る状態の mode が変わったことを伝える入口（子の Message を親が組み立てずに済む）
-export const changeViewingMode = (model: Model, mode: "auto" | "manual" | "overview"): Return => update(model, Message.ChangedViewingMode({ mode }));
+export const changeViewingMode = (model: Model, mode: "auto" | "manual" | "overview" | "diff"): Return => update(model, Message.ChangedViewingMode({ mode }));
 
 // 親が字幕の部品を子として組み込む配線。親ごとに違うのは、Model のどこから読み、どこへ書き戻し、親の Message に包むか（read・write・toParentMessage）だけ
 export const sessionLayoutFolds = <ParentModel, ParentMessage>(parent: {
@@ -157,9 +157,10 @@ export const sessionLayoutFolds = <ParentModel, ParentMessage>(parent: {
 };
 
 const MANUAL_TEXT = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-const OVERVIEW_TEXT = "全体を見ています・F か Esc で戻る・? でキー一覧";
-const viewingText = (mode: "auto" | "manual" | "overview"): Option.Option<string> =>
-  mode === "manual" ? Option.some(MANUAL_TEXT) : mode === "overview" ? Option.some(OVERVIEW_TEXT) : Option.none();
+const OVERVIEW_TEXT = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
+const DIFF_TEXT = "変わったところを見ています・Esc で戻る・? でキー一覧";
+const viewingText = (mode: "auto" | "manual" | "overview" | "diff"): Option.Option<string> =>
+  mode === "manual" ? Option.some(MANUAL_TEXT) : mode === "overview" ? Option.some(OVERVIEW_TEXT) : mode === "diff" ? Option.some(DIFF_TEXT) : Option.none();
 
 type H = HtmlBuilder<Message>;
 // keyList は、キーの一覧（見返しだけ。閉じていれば null）。省略すれば何も描かない

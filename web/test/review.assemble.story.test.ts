@@ -20,7 +20,8 @@ const seekTo = (direction: "Min" | "Max", value: number) => Message.GotSeekSlide
 const wheel = (deltaY: number) => surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 0, deltaY, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }));
 
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
+const DIFF = "変わったところを見ています・Esc で戻る・? でキー一覧";
+const OVERVIEW = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
 
 type Context = typeof plainContext;
 type App = typeof plainApp;
@@ -66,6 +67,15 @@ describe.each([
     const overview = update(measured(context, 150), keyOf("F")).model;
     expect(overview.mapSurface.viewing.mode).toBe("overview");
     expect(update(overview, Message.ClickedPrev()).model.mapSurface.viewing.mode).toBe("auto");
+  });
+
+  it("差分を見ている間（diff）も、時刻を動かすボタン・キーで自動に戻る。F → F で差分を見る状態に入るのは、最後の反映で変わったノードがあるとき", () => {
+    const overview = update(measured(context, 150), keyOf("F")).model;
+    const diff = update(overview, keyOf("F")).model;
+    expect(diff.mapSurface.viewing.mode).toBe("diff");
+    for (const operation of [Message.ClickedPrev(), Message.ClickedNext(), keyOf("J"), keyOf(","), seekTo("Min", 150)]) {
+      expect(update(diff, operation).model.mapSurface.viewing.mode).toBe("auto");
+    }
   });
 
   it("時刻を動かさない操作（速さ・ミュート・自動で進む時計・音声の時刻の通知）では、止めた見る状態のまま", () => {
@@ -154,6 +164,36 @@ describe("見る状態の知らせは、どの入口で mode が変わっても�
       message(Message.ClickedPrev()),
       settle,
       model((m) => expect(noticeOf(m)).toBeNull()),
+    );
+  });
+
+  it("F を 2 回押すと『変わったところを見ています』に入れ替わり、時刻を動かすボタンで消える。Esc でも消える", () => {
+    story(
+      update,
+      given(measured(plainContext, 150)),
+      message(keyOf("F")),
+      settle,
+      model((m) => expect(noticeOf(m)).toBe(OVERVIEW)),
+      message(keyOf("F")),
+      settle,
+      model((m) => {
+        expect(m.mapSurface.viewing.mode).toBe("diff");
+        expect(noticeOf(m)).toBe(DIFF);
+      }),
+      message(Message.ClickedPrev()),
+      settle,
+      model((m) => expect(noticeOf(m)).toBeNull()),
+      message(keyOf("F")),
+      settle,
+      message(keyOf("F")),
+      settle,
+      model((m) => expect(noticeOf(m)).toBe(DIFF)),
+      message(keyOf("Escape")),
+      settle,
+      model((m) => {
+        expect(m.mapSurface.viewing.mode).toBe("auto");
+        expect(noticeOf(m)).toBeNull();
+      }),
     );
   });
 

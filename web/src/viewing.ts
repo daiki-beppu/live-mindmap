@@ -1,12 +1,13 @@
 import { Schema } from "effect";
 import type { Position } from "./layout.ts";
 
-// 見る状態: 自動のカメラに任せているか（auto）、人が動かして止めているか（manual）、全体を見ているか（overview）。
-// manual は止めた時点の今の議題を覚える。overview は F を押した時点の今の議題と、F で戻る先（before）を覚える。
+// 見る状態: 自動のカメラに任せているか（auto）、人が動かして止めているか（manual）、全体を見ているか（overview）、最後の反映で変わったところを見ているか（diff）。
+// manual・overview・diff は、入った時点の今の議題を覚える。
 const AutoCamera = Schema.Struct({ mode: Schema.Literal("auto") });
 const ManualCamera = Schema.Struct({ mode: Schema.Literal("manual"), topic: Schema.UndefinedOr(Schema.String) });
-const OverviewCamera = Schema.Struct({ mode: Schema.Literal("overview"), topic: Schema.UndefinedOr(Schema.String), before: Schema.Union([AutoCamera, ManualCamera]) });
-type CameraViewing = typeof AutoCamera.Type | typeof ManualCamera.Type | typeof OverviewCamera.Type;
+const OverviewCamera = Schema.Struct({ mode: Schema.Literal("overview"), topic: Schema.UndefinedOr(Schema.String) });
+const DiffCamera = Schema.Struct({ mode: Schema.Literal("diff"), topic: Schema.UndefinedOr(Schema.String) });
+type CameraViewing = typeof AutoCamera.Type | typeof ManualCamera.Type | typeof OverviewCamera.Type | typeof DiffCamera.Type;
 
 // カメラの状態に重ねる、独立した出し入れの状態。開いている・隠しているときだけ true を持つ（そうでなければフィールドを置かない）。
 // keyList: キー一覧が開いている / sideHidden: 右の列を隠している / captionsHidden: 字幕を隠している
@@ -28,6 +29,7 @@ export const ViewingState = Schema.Union([
   Schema.Struct({ ...AutoCamera.fields, ...overlayFields }),
   Schema.Struct({ ...ManualCamera.fields, ...overlayFields }),
   Schema.Struct({ ...OverviewCamera.fields, ...overlayFields }),
+  Schema.Struct({ ...DiffCamera.fields, ...overlayFields }),
 ]);
 const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
 const HUMAN_KEYS = ["humanOpened", "humanFolded", "humanUnbundled"] as const satisfies readonly (keyof Overlay)[];
@@ -68,7 +70,7 @@ export type ViewingEvent =
   | { type: "pointChange"; id: string; ancestors: readonly string[]; open: boolean }
   // 触らずに 10 秒たった（見返しの manual のときだけ効く）
   | { type: "idle" }
-  // 見返しで時刻を動かした（▶・シーク・反映の前後。見返しの manual・overview で効く）
+  // 見返しで時刻を動かした（▶・シーク・反映の前後。見返しの manual・overview・diff で効く）
   | { type: "timeMoved" };
 
 export type ArrowDir = "left" | "right" | "up" | "down";
@@ -80,12 +82,14 @@ export type ViewingScope = "live" | "review";
 // parents: 見せるノードそれぞれの親（ルートは null）
 // foldState: 見せる議題・論点（まとめのノードを除く）が畳まれているか開いているか
 // runs: 見せるまとめのノード → そこに入っている議題（並び順）
+// changed: 最後の反映で変わったノードの寄せ先（畳みで隠れたものは見えている代わりのノード。無ければ空）
 export type VisibleTree = {
   ids: string[];
   targets: Record<string, Position>;
   parents: Record<string, string | null>;
   foldState: Record<string, "folded" | "open">;
   runs: Record<string, readonly string[]>;
+  changed: readonly string[];
   currentTopic: string | undefined;
 };
 
@@ -110,7 +114,7 @@ export function foldToggle(tree: VisibleTree, id: string): "open" | "fold" | "un
 // focusNode: 今の倍率のまま、そのノードへ寄る
 // revealNode: 人の倍率の範囲に収めてから、そのノードが画面の外なら最小限ずらして入れる（中なら動かさない）
 // fitSubtree: そのノードと、見せるノードのうちその子孫が収まるまで寄る
-// pan: 画面の 1/3 ずつ動かす（dx・dy は見えてくる側の向き） / fitAll: 全体を収める / restore: 全体を見る前の倍率・位置へ戻す
+// pan: 画面の 1/3 ずつ動かす（dx・dy は見えてくる側の向き） / fitAll: 全体を収める / fitChanged: 最後の反映で変わったノード全部が収まるまで寄る
 export const CameraCommand = Schema.Union([
   Schema.Struct({ type: Schema.Literal("follow") }),
   Schema.Struct({ type: Schema.Literal("refocus") }),
@@ -123,7 +127,7 @@ export const CameraCommand = Schema.Union([
   Schema.Struct({ type: Schema.Literal("keepNode"), id: Schema.String }),
   Schema.Struct({ type: Schema.Literal("revealNode"), id: Schema.String }),
   Schema.Struct({ type: Schema.Literal("fitSubtree"), id: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("restore") }),
+  Schema.Struct({ type: Schema.Literal("fitChanged") }),
   Schema.Struct({ type: Schema.Literal("shiftIntoView") }),
 ]);
 export type CameraCommand = typeof CameraCommand.Type;
@@ -137,6 +141,7 @@ const FOLLOW: CameraCommand = { type: "follow" };
 const REFOCUS: CameraCommand = { type: "refocus" };
 const HOLD: CameraCommand = { type: "hold" };
 const FIT_ALL: CameraCommand = { type: "fitAll" };
+const FIT_CHANGED: CameraCommand = { type: "fitChanged" };
 const SHIFT_INTO_VIEW: CameraCommand = { type: "shiftIntoView" };
 
 function commandOf(key: Exclude<ViewKey, "F" | "Z">): CameraCommand {
@@ -424,13 +429,15 @@ function reduceCameraEdgeDot(state: CameraViewing, event: Extract<CameraEvent, {
 function reduceCameraReflect(state: CameraViewing, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
   if (state.mode === "auto") return { state: AUTO, camera: FOLLOW };
   if (tree.currentTopic !== state.topic) return { state: AUTO, camera: REFOCUS };
-  return { state, camera: state.mode === "overview" ? FIT_ALL : HOLD };
+  if (state.mode === "overview") return { state, camera: FIT_ALL };
+  return { state, camera: state.mode === "diff" && tree.changed.length > 0 ? FIT_CHANGED : HOLD };
 }
 
-// F: 全体を見る、もう一度押すと前の状態へ戻る
+// F: 全体を見る。全体を見ているときにもう一度押すと、最後の反映で変わったところを見る（変わったノードが無ければ自動に戻る）。差分を見ているときは全体を見る
 function toggleOverview(state: CameraViewing, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
-  if (state.mode !== "overview") return { state: { mode: "overview", topic: tree.currentTopic, before: state }, camera: FIT_ALL };
-  return state.before.mode === "auto" ? { state: AUTO, camera: REFOCUS } : { state: state.before, camera: { type: "restore" } };
+  if (state.mode !== "overview") return { state: { mode: "overview", topic: tree.currentTopic }, camera: FIT_ALL };
+  if (tree.changed.length === 0) return { state: AUTO, camera: REFOCUS };
+  return { state: { mode: "diff", topic: tree.currentTopic }, camera: FIT_CHANGED };
 }
 
 function reduceCameraKey(state: CameraViewing, event: Extract<CameraEvent, { type: "key" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {
@@ -439,8 +446,8 @@ function reduceCameraKey(state: CameraViewing, event: Extract<CameraEvent, { typ
   return toggleOverview(state, tree);
 }
 
-// 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときは F でも戻る）。
-// 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体を見ているとき時刻を動かすと戻る。
+// 純粋な関数。ライブでは時間でも時刻でも自動に戻らない（戻るのは、今の議題が変わる反映と、修飾なしの Esc だけ。全体を見ているときに変わったノードが無ければ F でも戻る）。
+// 見返し（scope が "review"）では、さらに、止めているとき触らずに 10 秒たつと戻り、止めているか全体・差分を見ているとき時刻を動かすと戻る。
 function reduceCamera(
   state: CameraViewing,
   event: CameraEvent,

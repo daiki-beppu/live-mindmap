@@ -208,10 +208,12 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
     expect(plainUpdate(start, keyOf("Enter")).model).toEqual(plainUpdate(start, enterKey()).model);
   });
 
-  it("F で全体を見て、もう一度の F で戻る（同じ Model の上の続き）", () => {
+  it("F で全体を見て、もう一度の F で変わったところを見る。もう一度で全体に戻る（同じ Model の上の続き）", () => {
     const overview = plainUpdate(start, keyOf("F")).model;
     expect(overview.mapSurface.viewing.mode).toBe("overview");
-    expect(plainUpdate(overview, keyOf("F")).model.mapSurface.viewing.mode).not.toBe("overview");
+    const diff = plainUpdate(overview, keyOf("F")).model;
+    expect(diff.mapSurface.viewing.mode).toBe("diff");
+    expect(plainUpdate(diff, keyOf("F")).model.mapSurface.viewing.mode).toBe("overview");
   });
 
   it("修飾キーは載せたまま表示面へ渡す（⌘・Ctrl・Option 付きの = と矢印）", () => {
@@ -307,7 +309,8 @@ describe.each([
     update(model, surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 40, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0 }))).model;
   const startsOf = (time: number) => {
     const base = measured(context, update, time);
-    return [["manual", wheeled(base)], ["overview", update(base, keyOf("F")).model]] as const;
+    const overview = update(base, keyOf("F")).model;
+    return [["manual", wheeled(base)], ["overview", overview], ["diff", update(overview, keyOf("F")).model]] as const;
   };
   const expectAutoAt = (result: ReturnType<Update>, before: ReturnType<typeof stateAt>, label: string) => {
     const expected = autoViewportAt(result.model.playback.time);
@@ -320,7 +323,7 @@ describe.each([
     for (const axis of ["x", "y", "zoom"] as const) expect(settled.mapSurface.viewport[axis], `${label} ${axis}`).toBeCloseTo(expected[axis], 9);
   };
 
-  it.each(["Space", "K", "J", "L", ",", ".", "Home", "End"])("%s: manual・overview から自動に戻り、viewport は移動後の時刻の自動の位置になる", (id) => {
+  it.each(["Space", "K", "J", "L", ",", ".", "Home", "End"])("%s: manual・overview・diff から自動に戻り、viewport は移動後の時刻の自動の位置になる", (id) => {
     for (const [name, before] of startsOf(100)) {
       expect(before.mapSurface.viewing.mode).toBe(name);
       expectAutoAt(update(before, keyOf(id)), before, `${id} ${name}`);
@@ -383,13 +386,13 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
   };
   const direct = (...messages: Message[]) => feed(update, start, messages);
 
-  it("変換中（key が Process）の F で全体を見る状態になり、もう一度の F で戻る", async () => {
+  it("変換中（key が Process）の F で全体を見る状態になり、もう一度の F で変わったところを見る状態になる", async () => {
     const f = { key: "Process", code: "KeyF", isComposing: true };
     const once = await viaStream([f]);
     expect(once.model.mapSurface.viewing.mode).toBe("overview");
     expect(once.model).toEqual(direct(keyOf("F")));
     const twice = await viaStream([f, f]);
-    expect(twice.model.mapSurface.viewing.mode).not.toBe("overview");
+    expect(twice.model.mapSurface.viewing.mode).toBe("diff");
     expect(twice.model).toEqual(direct(keyOf("F"), keyOf("F")));
   });
 

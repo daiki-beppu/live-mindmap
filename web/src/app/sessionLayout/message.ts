@@ -17,7 +17,7 @@ export const Message = defineMessageUnion({
   ReceivedSelfPause: { selfPaused: SelfPaused },
   ReceivedDiffUpdate: { state: Schema.Option(DiffUpdateState) },
   ReceivedSessionMode: { local: Schema.Boolean },
-  ChangedViewingMode: { mode: Schema.Literals(["auto", "manual", "overview"]) },
+  ChangedViewingMode: { mode: Schema.Literals(["auto", "manual", "overview", "diff"]) },
   // Disclosure の onToggle が運ぶ「次に開くか」
   ToggledCaptions: { isOpen: Schema.Boolean },
   GotIntakeToastMessage: { message: Notice.Message },
