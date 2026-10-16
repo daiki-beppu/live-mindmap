@@ -93,6 +93,10 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
    塗り・影・バッジは付けず、文字の色だけを話者ごとに変える。位置が変わるときの動きは Mount（SlideCaptions）が付ける */
 .captions { --caption-name-width: 72px; }
 .captions__bubble { width: calc(var(--caption-bubble-ratio) * (100% - var(--caption-name-width) - 8px)); }
+/* 途中の分の末尾のカーソル。幅 2px は右の margin -2px で行の中の幅を取らせず、折り返しも吹き出しの幅も変えない */
+.captions__cursor { display: inline-block; width: 2px; height: 1em; margin-right: -2px; vertical-align: -0.1em; background-color: currentColor; animation: caption-cursor-blink 1s steps(1) infinite; }
+@keyframes caption-cursor-blink { 50% { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .captions__cursor { animation: none; } }
 
 /* 取り込みの状態の一言（字幕の横。Issue #161）: バッジ・影は重ねず、控えめな文字だけで出す。
    .captions の右端（中央から幅 min(720px, 100vw − 2 × 316px) の半分）の 12px 外に置く。

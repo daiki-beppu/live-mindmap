@@ -57,7 +57,7 @@ describe("captionsOf（字幕）", () => {
 // Issue #1022: 会議中の字幕。サーバーの吹き出し（CaptionBubble）を、表示の吹き出しに直す純粋な状態。
 // 時計は持たない。時刻（ミリ秒）は引数で渡す。状態は同じ値にフレームを順に当てて観測する。
 describe("会議中の字幕（吹き出し）", () => {
-  const bubble = (id: string, extra: Partial<CaptionBubble> = {}): CaptionBubble => ({ id, track: "相手", label: "なし", start: 0, end: 1, text: id, ...extra });
+  const bubble = (id: string, extra: Partial<CaptionBubble> = {}): CaptionBubble => ({ id, track: "相手", label: "なし", start: 0, end: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const named = (id: string, speaker: string, label: "仮" | "確定", extra: Partial<CaptionBubble> = {}) => bubble(id, { speaker, label, ...extra });
   const mine = (id: string, extra: Partial<CaptionBubble> = {}) => bubble(id, { track: "自分", speaker: "自分", label: "確定", ...extra });
   // 期限までに起きる割り当てを済ませてから、その時刻の表示を読む
@@ -215,6 +215,59 @@ describe("会議中の字幕（吹き出し）", () => {
       state = receiveCaptions(state, [first, { ...continued, speaker: "相手 B", label: "確定" }, { ...separate, speaker: "相手 B", label: "確定" }], WAIT + 100);
 
       expect(view(state, WAIT + 100).map((b) => [b.id, nameOf(b), b.text])).toEqual([["a", "相手 A", "こんにちはあ"], ["c", "相手 B", "い"]]);
+    });
+
+    describe("続けた吹き出しの確定の文字数（settledLength）", () => {
+      const settledOf = (state: CaptionState, now: number) => view(state, now).map((b) => [b.id, b.text, b.settledLength]);
+
+      it("前が全部確定なら、確定の文字数は「前の本文の長さ + 後ろの確定の分」", () => {
+        const first = named("a", "相手 A", "確定", { start: 1, end: 3, text: "こんにちは" });
+        const orphan = bubble("b", { start: 3.1, end: 5, text: "ありがとう元気", settledLength: 5 });
+        const state = receiveCaptions(createCaptionState(), [first, orphan], 0);
+
+        expect(settledOf(state, WAIT)).toEqual([["a", "こんにちはありがとう元気", 10]]);
+      });
+
+      it("前の吹き出しに途中の分が残っていれば、後ろは確定の分があっても全部途中（確定の文字数は前のまま）", () => {
+        const first = named("a", "相手 A", "確定", { start: 1, end: 3, text: "こんにちは元気", settledLength: 5 });
+        const orphan = bubble("b", { start: 3.1, end: 5, text: "ありがとう", settledLength: 5 });
+        const state = receiveCaptions(createCaptionState(), [first, orphan], 0);
+
+        expect(settledOf(state, WAIT)).toEqual([["a", "こんにちは元気ありがとう", 5]]);
+      });
+
+      it("前が全部確定で、後ろが全部途中なら、確定の文字数は前の本文の長さ", () => {
+        const first = named("a", "相手 A", "確定", { start: 1, end: 3, text: "こんにちは" });
+        const orphan = bubble("b", { start: 3.1, end: 5, text: "ありがとう", settledLength: 0 });
+        const state = receiveCaptions(createCaptionState(), [first, orphan], 0);
+
+        expect(settledOf(state, WAIT)).toEqual([["a", "こんにちはありがとう", 5]]);
+      });
+
+      it("3 つ続くとき、途中の分が出た後ろは全部途中のまま（途中の後ろに確定を作らない）", () => {
+        const first = named("a", "相手 A", "確定", { start: 1, end: 3, text: "あい" });
+        const second = bubble("b", { start: 3.1, end: 4, text: "うえ", settledLength: 1 });
+        const third = bubble("c", { start: 4.1, end: 5, text: "おか", settledLength: 2 });
+        const state = receiveCaptions(createCaptionState(), [first, second, third], 0);
+
+        expect(settledOf(state, WAIT)).toEqual([["a", "あいうえおか", 3]]);
+      });
+
+      it("続けない吹き出し（先頭の吹き出し）は、受けた確定の文字数のまま", () => {
+        const state = receiveCaptions(createCaptionState(), [named("a", "相手 A", "仮", { text: "こんにちは元気", settledLength: 5 })], 0);
+
+        expect(settledOf(state, 100)).toEqual([["a", "こんにちは元気", 5]]);
+      });
+
+      it("途中の分が発言になって確定の文字数が増えたフレームを受けると、同じ id の表示の確定の文字数が増える", () => {
+        const provisional = named("a", "相手 A", "仮", { text: "こんにちは", settledLength: 0 });
+        let state = receiveCaptions(createCaptionState(), [provisional], 0);
+        expect(settledOf(state, 100)).toEqual([["a", "こんにちは", 0]]);
+
+        state = receiveCaptions(state, [{ ...provisional, label: "確定", settledLength: 5 }], 200);
+
+        expect(settledOf(state, 200)).toEqual([["a", "こんにちは", 5]]);
+      });
     });
 
     it("直前の吹き出しが無い（先頭の）ラベルなしの文字は、待ちの上限の後に名前「相手」の吹き出しで出る", () => {

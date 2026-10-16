@@ -95,6 +95,32 @@ describe("styles.css: 変わったノードの強調", () => {
 });
 
 describe("styles.css: 字幕と知らせ", () => {
+  it("途中の分のカーソル: 幅 2px・文字の高さ・話者の色（currentColor）で、幅を取らない（右の margin が -2px）。影・枠は付けない", () => {
+    const r = rule(".captions__cursor");
+    expect(r).toMatch(/width\s*:\s*2px/);
+    expect(r).toMatch(/height\s*:\s*1em/);
+    expect(r).toMatch(/margin-right\s*:\s*-2px/);
+    expect(r).toMatch(/background-color\s*:\s*currentColor/i);
+    expect(r).not.toMatch(/box-shadow|border|outline/);
+  });
+
+  it("カーソルは 1 秒周期で止まらず点滅し、@keyframes は層の外。animate-* のユーティリティにしない", () => {
+    expect(rule(".captions__cursor")).toMatch(/animation\s*:[^;]*\b1s\b[^;]*\binfinite\b/);
+    const outsideBlocks = css.replace(/@layer\s+[\w-]+\s*\{[\s\S]*?\n\}/g, "");
+    expect(outsideBlocks).toMatch(/@keyframes\s+[\w-]+\s*\{[^@]*\}\s*\}/);
+    const name = rule(".captions__cursor").match(/animation\s*:\s*([\w-]+)/)?.[1] ?? "";
+    expect(name).not.toBe("");
+    expect(outsideBlocks).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
+    expect(css).not.toMatch(/--animate-/);
+    // 参照先の keyframes が、可視状態を切り替える（点滅する）定義であること
+    expect(outsideBlocks).toMatch(new RegExp(`@keyframes\\s+${name}\\b[^{]*\\{[^@]*visibility\\s*:\\s*hidden`));
+  });
+
+  it("prefers-reduced-motion: reduce のときは、カーソルを点滅させずに出したままにする（animation: none）", () => {
+    const m = css.match(/@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)\s*\{([\s\S]*?\.captions__cursor\s*\{[^}]*\})/);
+    expect(m?.[1] ?? "").toMatch(/\.captions__cursor\s*\{[^}]*animation\s*:\s*none/);
+  });
+
   it("仮のノードの規則はない", () => {
     expect(css).not.toContain(".draft-node");
   });

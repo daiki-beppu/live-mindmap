@@ -10,6 +10,7 @@ export const spokenBubble = (text: string, track: Track = "相手", start = trac
   start,
   end: start + 1,
   text,
+  settledLength: text.length,
 });
 
 export const spokenFrame = (text: string, track: Track = "相手"): CaptionsFrame => ({ type: "captions", bubbles: [spokenBubble(text, track)] });

@@ -180,6 +180,15 @@ const linesView = (h: H, speaking: { 相手: string; 自分: string }): Readonly
     ),
   );
 
+// 吹き出しの文字。確定の分はそのまま、途中の分だけ別の要素にして不透明度 0.5（色は親の話者の色を受け継ぐ）にし、末尾に点滅するカーソルを置く
+const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | string> => {
+  const settled = bubble.text.slice(0, bubble.settledLength);
+  const pending = bubble.text.slice(bubble.settledLength);
+  return pending === ""
+    ? [settled]
+    : [settled, h.span([h.Class("captions__pending opacity-50")], [pending, h.span([h.Class("captions__cursor")], [])])];
+};
+
 // 会議中の字幕: 吹き出しの行。名前の欄（固定幅）+ 吹き出し（幅は固定）。相手は左、自分は右に寄せる。塗り・影・バッジは付けない
 const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
   h.keyed("div")(
@@ -192,7 +201,7 @@ const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
       speakerNameCell(h, bubble),
       h.p(
         [h.Class(`captions__bubble m-0 flex-none text-[16px] leading-[1.5] wrap-anywhere ${bubble.side === "right" ? "text-right" : "text-left"} ${SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0]}`)],
-        [bubble.text],
+        bubbleTextView(h, bubble),
       ),
     ],
   );

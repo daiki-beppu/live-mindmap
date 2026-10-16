@@ -560,3 +560,110 @@ describe("発言になった分を除いた途中結果（settler.unemittedTail�
     expect(texts(bubbles)).toEqual(["来週のリリースは", "金曜に"]);
   });
 });
+
+// Issue #1221: 吹き出しの「本文の先頭から何文字までが確定（発言になった語）か」。途中結果の語だけが途中
+describe("吹き出しの確定の文字数（settledLength）", () => {
+  const slot0 = [{ slot: 0, start: 10, end: 14 }];
+
+  it("途中結果だけの吹き出しは、確定 0 文字", () => {
+    const bubbles = frameOf(createCaptionBoard(), { partials: [partialOf([["こんにち", 10, 12]])], intervals: slot0 });
+
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]!.settledLength).toBe(0);
+  });
+
+  it("自分の途中結果だけの吹き出しは、話者ラベルは「確定」でも確定 0 文字", () => {
+    const bubbles = frameOf(createCaptionBoard(), { partials: [partialOf([["担当を分けましょう", 9, 11]], "自分")] });
+
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]).toMatchObject({ track: "自分", speaker: "自分", label: "確定", settledLength: 0 });
+  });
+
+  it("発言（マップに反映前）だけの吹き出しは、全部確定（本文の長さ）", () => {
+    const bubbles = frameOf(createCaptionBoard(), { unreflected: [{ id: "r1", remark: remarkOf([["了解", 10, 12], ["です", 12, 14]], { speaker: "相手 A" }) }], intervals: slot0 });
+
+    expect(bubbles[0]).toMatchObject({ text: "了解です", settledLength: 4 });
+  });
+
+  // 発言と途中結果は語の出どころが別なので、同じ吹き出しになるのは、先に途中結果として送った吹き出しの中で一部が発言になったとき
+  it("前半が発言・末尾が途中結果の吹き出しは、発言の分の文字数が確定になる", () => {
+    const board = createCaptionBoard();
+    const first = frameOf(board, { partials: [partialOf([["こんにちは", 10, 12], ["元気", 12.1, 13]])], intervals: slot0 });
+    expect(first[0]).toMatchObject({ text: "こんにちは元気", settledLength: 0 });
+
+    const bubbles = frameOf(board, {
+      unreflected: [{ id: "r1", remark: remarkOf([["こんにちは", 10, 12]], { speaker: "相手 A" }) }],
+      partials: [partialOf([["元気", 12.1, 13]])],
+      intervals: slot0,
+    });
+
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]).toMatchObject({ id: first[0]!.id, text: "こんにちは元気", settledLength: 5 });
+  });
+
+  it("話者を待っている発言（held）の語は確定に数える", () => {
+    const bubbles = frameOf(createCaptionBoard(), { held: [remarkOf([["はい", 10, 11]])], intervals: slot0 });
+
+    expect(bubbles[0]).toMatchObject({ text: "はい", settledLength: 2 });
+  });
+
+  it("held の発言の後ろに途中結果が続けば、held の分だけが確定", () => {
+    const board = createCaptionBoard();
+    frameOf(board, { partials: [partialOf([["はい", 10, 11], ["そう", 11.1, 12]])], intervals: slot0 });
+
+    const bubbles = frameOf(board, { held: [remarkOf([["はい", 10, 11]])], partials: [partialOf([["そう", 11.1, 12]])], intervals: slot0 });
+
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0]).toMatchObject({ text: "はいそう", settledLength: 2 });
+  });
+
+  it("語彙で補正した発言（置換後の本文）も発言の語なので、補正後の本文の長さが確定", () => {
+    const remark = remarkOf([["くろーど", 10, 12]], { speaker: "相手 A" });
+    const bubbles = frameOf(createCaptionBoard(), {
+      unreflected: [{ id: "r1", remark, replacements: [{ location: 0, length: 4, span: "くろーど", surface: "Claude", score: 1 }] }],
+      intervals: slot0,
+    });
+
+    expect(bubbles[0]).toMatchObject({ text: "Claude", settledLength: 6 });
+  });
+
+  it("英数字の間に入る空白は途中の分の先頭に数える（確定は発言の語の長さだけ）", () => {
+    const board = createCaptionBoard();
+    frameOf(board, { partials: [partialOf([["OK", 10, 11], ["Google", 11.1, 12]])], intervals: slot0 });
+
+    const bubbles = frameOf(board, {
+      unreflected: [{ id: "r1", remark: remarkOf([["OK", 10, 11]], { speaker: "相手 A" }) }],
+      partials: [partialOf([["Google", 11.1, 12]])],
+      intervals: slot0,
+    });
+
+    expect(bubbles[0]).toMatchObject({ text: "OK Google", settledLength: 2 });
+  });
+
+  it("途中結果が発言になると、同じ id の吹き出しの確定の文字数が 0 → 本文の長さに増え、build と preview の比較が差分として扱う", () => {
+    const board = createCaptionBoard();
+    const parts: Part[] = [["こんにちは", 10, 12]];
+    const intervals = [{ slot: 0, start: 10, end: 12 }];
+    const before = frameOf(board, { partials: [partialOf(parts)], intervals });
+    expect(before[0]!.settledLength).toBe(0);
+
+    const previewed = board.preview({ partials: [], unreflected: [{ id: "r5", remark: remarkOf(parts, { speaker: "相手 A" }) }], held: [], intervals, previewLabel });
+    const built = frameOf(board, { unreflected: [{ id: "r5", remark: remarkOf(parts, { speaker: "相手 A" }) }], intervals });
+
+    expect(previewed[0]).toMatchObject({ id: before[0]!.id, settledLength: 5 });
+    expect(built[0]).toMatchObject({ id: before[0]!.id, settledLength: 5 });
+    expect(JSON.stringify(previewed)).not.toBe(JSON.stringify(before));
+  });
+
+  it("途中結果の語が伸びても確定の文字数は変わらない（途中の分だけが伸びる）", () => {
+    const board = createCaptionBoard();
+    const settledRemark = { id: "r1", remark: remarkOf([["あい", 10, 11]], { speaker: "相手 A" }) };
+    frameOf(board, { partials: [partialOf([["あい", 10, 11], ["う", 11.1, 12]])], intervals: slot0 });
+    const first = frameOf(board, { unreflected: [settledRemark], partials: [partialOf([["う", 11.1, 12]])], intervals: slot0 });
+
+    const next = frameOf(board, { unreflected: [settledRemark], partials: [partialOf([["うえお", 11.1, 13]])], intervals: slot0 });
+
+    expect(first[0]).toMatchObject({ text: "あいう", settledLength: 2 });
+    expect(next[0]).toMatchObject({ id: first[0]!.id, text: "あいうえお", settledLength: 2 });
+  });
+});

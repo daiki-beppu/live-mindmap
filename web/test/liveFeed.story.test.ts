@@ -81,7 +81,7 @@ describe("受信（frame を受けた）", () => {
     story(
       update,
       given(init()),
-      received({ type: "captions", bubbles: [{ id: "x", track: "相手", label: "なし", start: 0, end: 1, text: "こんにちは" }] }, 1000),
+      received({ type: "captions", bubbles: [{ id: "x", track: "相手", label: "なし", start: 0, end: 1, text: "こんにちは", settledLength: 5 }] }, 1000),
       model((m) => expect(Option.isNone(m.captions.entries[0]!.placement)).toBe(true)),
       message(Message.ReachedCaptionDeadline({ at: 1000 + CAPTION_LABEL_WAIT_MS })),
       model((m) => expect(Option.isSome(m.captions.entries[0]!.placement)).toBe(true)),

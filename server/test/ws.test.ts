@@ -15,7 +15,7 @@ const snap = (...texts: string[]): Snapshot => ({
 // 吹き出し 1 つの字幕のフレーム。texts が空なら空の並び
 const captions = (...texts: string[]): CaptionsFrame => ({
   type: "captions",
-  bubbles: texts.map((text, i) => ({ id: `c${i}`, track: "相手", label: "なし", start: i, end: i + 1, text })),
+  bubbles: texts.map((text, i) => ({ id: `c${i}`, track: "相手", label: "なし", start: i, end: i + 1, text, settledLength: text.length })),
 });
 const intake = (status: IntakeFrame["status"]): IntakeFrame => ({ type: "intake", status });
 

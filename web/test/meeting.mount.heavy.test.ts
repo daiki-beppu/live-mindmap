@@ -330,7 +330,7 @@ describe("会議中（Foldkit 版）の寸法", () => {
     "字幕の吹き出し: 幅は文字の量で変わらない。吹き出しが増えて位置が変わる動きは、終われば止まる（揺れ続けない）",
     () => withBrowser(async (browser) => {
       const page = await openMeetingPage(browser, server, { frames: frames.first });
-      const bubble = (id: string, start: number, text: string) => ({ id, track: "相手", speaker: "相手 A", label: "確定", start, end: start + 1, text });
+      const bubble = (id: string, start: number, text: string) => ({ id, track: "相手", speaker: "相手 A", label: "確定", start, end: start + 1, text, settledLength: text.length });
       await sendFrame(page, { type: "captions", bubbles: [bubble("short", 1, "はい"), bubble("long", 2, "これはとても長い文章です。".repeat(8))] });
       await expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(2);
       const bubbleWidths = () => page.evaluate(() => Array.from(document.querySelectorAll(".captions__bubble")).map((b) => b.getBoundingClientRect().width));
@@ -364,7 +364,31 @@ describe("会議中（Foldkit 版）の寸法", () => {
     MEETING_TIMEOUT,
   );
 
-  const captionBubble = (id: string, start: number, text: string) => ({ id, track: "相手", speaker: "相手 A", label: "確定", start, end: start + 1, text });
+  const captionBubble = (id: string, start: number, text: string) => ({ id, track: "相手", speaker: "相手 A", label: "確定", start, end: start + 1, text, settledLength: text.length });
+
+  it(
+    "字幕: 途中の分とカーソルがあっても、同じ行が確定に変わっても、吹き出しの幅・高さ・行の位置は変わらない",
+    () => withBrowser(async (browser) => {
+      const page = await openMeetingPage(browser, server, { frames: frames.first });
+      const text = "これはとても長い文章です。".repeat(8);
+      const pending = (settledLength: number) => ({ id: "p", track: "相手", speaker: "相手 A", label: "確定", start: 1, end: 2, text, settledLength });
+      await sendFrame(page, { type: "captions", bubbles: [pending(10)] });
+      await expect.poll(() => page.locator(".captions__cursor").count(), { timeout: 10_000 }).toBe(1);
+      const measure = () => page.evaluate(() => {
+        const bubble = document.querySelector<HTMLElement>(".captions__bubble")!;
+        const row = document.querySelector<HTMLElement>(".captions__row")!;
+        const rect = bubble.getBoundingClientRect();
+        return { width: rect.width, height: rect.height, top: row.offsetTop, rowHeight: row.offsetHeight };
+      });
+      const withCursor = await measure();
+      await sendFrame(page, { type: "captions", bubbles: [pending(text.length)] });
+      await expect.poll(() => page.locator(".captions__cursor").count(), { timeout: 10_000 }).toBe(0);
+      expect(await page.locator(".captions__row").count()).toBe(1);
+      expect(await measure()).toEqual(withCursor);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
   // animate の呼び出しを記録する。滑り（translateY）の動きは、作った時点で途中（半分）に止める
   const recordAnimations = (page: Page) =>
     page.evaluate((halfway) => {
