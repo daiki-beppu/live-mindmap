@@ -20,7 +20,6 @@ export * from "./markdown.ts";
 export * from "./pacing.ts";
 export * from "./playback.ts";
 export { generatePassphrase, openSealed, sealWithPassphrase } from "./passphrase.ts";
-export type { Sealed } from "./passphrase.ts";
 export * from "./publish.ts";
 export * from "./review.ts";
 export * from "./remark.ts";
