@@ -44,12 +44,14 @@ export const makeSubscriptions = (context: Context) => {
         dependenciesToStream: ({ isWaiting }) => Stream.map(idleElapsedStream({ isWaiting, afterMs: REVIEW_IDLE_MS }), (message) => Message.GotMapSurfaceMessage({ message })),
       },
     ),
-    // キー。画面は Context の録音の有無で決まり、依存は選択の有無だけ（Enter を開閉に使うかの判断に要る）。意味は update が決める
+    // キー。画面は Context の録音の有無で決まり、意味は update が決める。張り直すことは無い（keepAliveEquivalence が常に等しいと判定する）。
+    // 選択の有無（Enter を開閉に使うかの判断に要る）は、keydown のたびに readDependencies から読む（Issue #1133: 張り直しの前の Enter が古い値で判定されないように）
     keys: entry(
       { hasSelection: Schema.Boolean },
       {
         modelToDependencies: (model) => ({ hasSelection: model.mapSurface.viewing.selection !== undefined }),
-        dependenciesToStream: ({ hasSelection }) => keyPressStream({ screen: reviewScreenOf(context), hasSelection }),
+        keepAliveEquivalence: () => true,
+        dependenciesToStream: (_, readDependencies) => keyPressStream({ screen: reviewScreenOf(context), hasSelection: () => readDependencies().hasSelection }),
       },
     ),
   }));

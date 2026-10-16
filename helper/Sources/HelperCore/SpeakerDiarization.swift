@@ -27,6 +27,9 @@ public enum SpeakerDiarization: Sendable, Equatable {
     /// 枠 `slot` に別の声が混ざっていると判定した（Issue #1024）。`at` は判定のもとになった確定区間の終わり（`origin` を 0 とする秒）。
     /// 区間の後、`settled` の前に流す。1 つの枠につき 1 回。
     case mixed(slot: Int, at: Double)
+    /// 枠 `slot` の主な塊の声の埋め込みの重心（長さ 1。Issue #1025）。重心が変わった枠だけを流す。値は `origin` に依らない。
+    /// 区間の後、`mixed` の前に流す。サーバーが、ヘルパーを起動し直した後の枠を前のラベルにつなぎ直すのに使う（ヘルパーはプロセスをまたぐ状態を持たない）。
+    case centroid(slot: Int, centroid: [Float])
 }
 
 public enum SpeakerDiarizerError: Error, Equatable, CustomStringConvertible {

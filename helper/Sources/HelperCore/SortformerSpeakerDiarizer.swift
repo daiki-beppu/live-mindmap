@@ -77,8 +77,8 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
         }
     }
 
-    /// 確定した区間を先に、続けて仮の区間を流し、混入があればその次に、最後に確定済みの位置を流す。`finished` は `finalizeSession()` の更新で、残りがすべて確定している。
-    /// 混入を確定済みの位置より先に流すのは、サーバーが確定済みの位置で保留の発言を出す前に、戻した枠を知らせるため。
+    /// 確定した区間を先に、続けて仮の区間を流し、重心（変わった枠だけ）、混入の順に流し、最後に確定済みの位置を流す。`finished` は `finalizeSession()` の更新で、残りがすべて確定している。
+    /// 重心と混入を確定済みの位置より先に流すのは、サーバーが確定済みの位置で保留の発言を出す前に、枠のつなぎ直しと戻した枠を知らせるため。
     static func yield(
         _ update: DiarizerTimelineUpdate, shift: Double, settledTo: inout Double, finished: Bool,
         mixing: SlotMixTracker? = nil,
@@ -90,8 +90,13 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
                 start: segment.start + shift, end: segment.end + shift, slot: segment.slot, isFinal: segment.isFinal
             )))
         }
-        for mix in mixing?.mixed(finalized: updated) ?? [] {
-            continuation.yield(.mixed(slot: mix.slot, at: mix.at + shift))
+        if let result = mixing?.update(finalized: updated) {
+            for item in result.centroids {
+                continuation.yield(.centroid(slot: item.slot, centroid: item.centroid))
+            }
+            for mix in result.mixed {
+                continuation.yield(.mixed(slot: mix.slot, at: mix.at + shift))
+            }
         }
         let position = finished
             ? processedEnd(of: update, config: timelineConfig)

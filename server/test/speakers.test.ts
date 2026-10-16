@@ -785,3 +785,324 @@ describe("createSpeakerAttribution: 混入で戻した枠（speaker-mixed）", (
     expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([["相手 A", "あ"]]);
   });
 });
+
+// Issue #1025: ヘルパーを起動し直すと Sortformer の枠は振り直される。新しい枠の声の重心（speaker-centroid）を、
+// ラベルごとの重心と cos で照らし合わせる。0.9 以上が 1 つだけ → そのラベル、すべて 0.6 未満 → 新しいラベル、それ以外 → 話者なしのまま。
+// 照らし合わせが済むまでは話者なし。済んだ後は替わらない。戻したラベル（混入）には、つなげても付けない。
+describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し（speaker-centroid・restart）", () => {
+  const centroidEvent = (slot: number, centroid: readonly number[], track: "相手" | "自分" = "相手"): SpeakerLogEvent => ({ type: "speaker-centroid", track, slot, centroid: [...centroid] });
+  const unit = (x: number, y: number, z: number) => {
+    const n = Math.hypot(x, y, z);
+    return [x / n, y / n, z / n];
+  };
+  const A = [1, 0, 0];
+  const B = [0, 1, 0];
+  const FAR = [0, 0, 1]; // A・B のどちらとも cos 0
+  const NEAR_A = [0.95, Math.sqrt(1 - 0.95 ** 2), 0]; // A と 0.95、B と 約 0.31
+  const NEAR_B = [Math.sqrt(1 - 0.95 ** 2), 0.95, 0]; // B と 0.95、A と 約 0.31
+  const MID = [0.75, Math.sqrt(1 - 0.75 ** 2), 0]; // A と 0.75、B と 約 0.66（0.6 以上 0.9 未満）
+
+  // 1 回目のヘルパー: 枠 0 が 相手 A、枠 1 が 相手 B。重心は区間と同じ更新で届く
+  const firstRun = (centroids: { a: readonly number[]; b: readonly number[] } = { a: A, b: B }) => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(centroidEvent(0, centroids.a));
+    attribution.speaker(speakerEvent(1, 12, 14));
+    attribution.speaker(centroidEvent(1, centroids.b));
+    attribution.speaker(settledEvent(14));
+    expect(pairs(attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000))).toEqual([["相手 A", "あ"], ["相手 B", "い"]]);
+    return attribution;
+  };
+
+  // 起動し直した後の 1 つの枠が、[start, start + 2] に話した発言の話者
+  const spokenBy = (attribution: ReturnType<typeof createSpeakerAttribution>, slot: number, start: number): (string | undefined)[] => {
+    attribution.speaker(speakerEvent(slot, start, start + 2));
+    attribution.speaker(settledEvent(start + 2));
+    return attribution.remarks([heard("発言", start, start + 2)], (start + 2) * 1000).map((r) => r.speaker);
+  };
+
+  it("1 つのラベルとだけ cos 0.9 以上で一致する新しい枠は、そのラベルにつながる（枠の番号が前と違っても、重心の長さが違っても）", () => {
+    const attribution = firstRun();
+    expect(attribution.restart()).toEqual([]);
+
+    attribution.speaker(centroidEvent(2, NEAR_A.map((v) => v * 3)));
+
+    expect(spokenBy(attribution, 2, 20)).toEqual(["相手 A"]);
+  });
+
+  it("ラベルを振った後に初めて重心が届いた枠（短い発言が先）も、起動し直した後に一致する別の枠がそのラベルにつながる", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(settledEvent(12));
+    expect(pairs(attribution.remarks([heard("あ", 10, 12)], 12_000))).toEqual([["相手 A", "あ"]]); // 重心なしで採番
+    attribution.speaker(centroidEvent(0, A)); // 採番の後に重心が届く
+
+    attribution.restart();
+    attribution.speaker(centroidEvent(2, NEAR_A));
+
+    expect(spokenBy(attribution, 2, 20)).toEqual(["相手 A"]);
+  });
+
+  it("起動し直した後、同じ番号の枠でも、重心が届くまでは旧ラベルを付けない（話者なし）", () => {
+    const attribution = firstRun();
+    attribution.restart();
+
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+  });
+
+  it("照らし合わせが済むまでに出た発言は話者なしのまま変わらず、済んだ後の発言から付く", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(speakerEvent(0, 20, 22));
+    attribution.speaker(settledEvent(22));
+    const [earlier] = attribution.remarks([heard("まえ", 20, 22)], 22_000);
+    const snapshot = structuredClone(earlier);
+
+    attribution.speaker(centroidEvent(0, NEAR_B));
+
+    expect(spokenBy(attribution, 0, 30)).toEqual(["相手 B"]);
+    expect(earlier).toEqual(snapshot);
+    expect(earlier!.speaker).toBeUndefined();
+  });
+
+  it("どのラベルとも cos 0.6 未満の新しい枠は、まだ使っていない次のラベルになる（初めて話したときに振る）", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, FAR));
+
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 C"]);
+  });
+
+  it("新しいラベルは前の世代のラベルと重ならない。新しい世代の枠の表の大きさ（1）から 相手 B と採番しない", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    attribution.speaker(centroidEvent(1, FAR));
+
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 A"]);
+    expect(spokenBy(attribution, 1, 30)).toEqual(["相手 C"]);
+  });
+
+  it("新しいラベルは初めて話した順に振る。重心が届いた順ではない", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(3, FAR));
+    attribution.speaker(centroidEvent(1, [0, 0, -1])); // FAR と cos -1、A・B と cos 0
+
+    expect(spokenBy(attribution, 1, 20)).toEqual(["相手 C"]);
+    expect(spokenBy(attribution, 3, 30)).toEqual(["相手 D"]);
+  });
+
+  it("新しい枠が発言しなければラベルを振らない。次に初めて話した枠が、続きのラベルを受ける", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, FAR)); // 区間も発言もない
+    attribution.speaker(centroidEvent(1, [0, 0, -1]));
+
+    expect(spokenBy(attribution, 1, 20)).toEqual(["相手 C"]);
+  });
+
+  it("0.6 以上 0.9 未満の間の新しい枠は、最も近いラベルがあっても話者なしのまま", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, MID));
+
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+    expect(spokenBy(attribution, 0, 30)).toEqual([undefined]);
+  });
+
+  it("2 つ以上のラベルと 0.9 以上で一致する新しい枠は、話者なしのまま", () => {
+    const attribution = firstRun({ a: [1, 0, 0], b: [0.8, 0.6, 0] }); // A と B が近い
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, unit(1, 0.3, 0))); // A と 約 0.96、B と 約 0.94
+
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+  });
+
+  it("迷っていた枠は、次の重心で照らし合わせ直す。決まったら、決まった後の発言から付く", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, MID));
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+
+    attribution.speaker(centroidEvent(0, NEAR_A));
+
+    expect(spokenBy(attribution, 0, 30)).toEqual(["相手 A"]);
+  });
+
+  it("混入で戻したラベルに一致する新しい枠は、戻したまま（話者なし）。他のラベルは付く", () => {
+    const attribution = firstRun();
+    attribution.speaker(mixedEvent(1));
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_B));
+    attribution.speaker(centroidEvent(1, NEAR_A));
+
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+    expect(spokenBy(attribution, 0, 30)).toEqual([undefined]);
+    expect(spokenBy(attribution, 1, 40)).toEqual(["相手 A"]);
+  });
+
+  it("戻したラベルには、起動し直した後の別の枠も、後から届く近い重心も、ラベルを付けない。戻したラベルを新しいラベルとして使い回さない", () => {
+    const attribution = firstRun();
+    attribution.speaker(mixedEvent(1));
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_B));
+    attribution.speaker(centroidEvent(2, FAR));
+
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+    expect(spokenBy(attribution, 2, 30)).toEqual(["相手 C"]); // 相手 B（戻した）を使い回さない
+  });
+
+  it("起動し直した後に混入で戻した枠のラベルも、つないだ別の枠に付けない", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    attribution.speaker(centroidEvent(1, NEAR_A));
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 A"]);
+
+    attribution.speaker(mixedEvent(0)); // 枠 0 に混入 → ラベル 相手 A を戻す
+
+    expect(spokenBy(attribution, 0, 30)).toEqual([undefined]);
+    expect(spokenBy(attribution, 1, 40)).toEqual([undefined]);
+  });
+
+  it("2 つの新しい枠が同じラベルに一致するときは、どちらもそのラベルになる", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    attribution.speaker(centroidEvent(2, NEAR_A.map((v) => v * 2)));
+
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 A"]);
+    expect(spokenBy(attribution, 2, 30)).toEqual(["相手 A"]);
+  });
+
+  it("一度つないだ枠のラベルは、その後に別のラベルへ近い重心が届いても替わらない", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 A"]);
+
+    attribution.speaker(centroidEvent(0, NEAR_B));
+    attribution.speaker(centroidEvent(0, FAR));
+
+    expect(spokenBy(attribution, 0, 30)).toEqual(["相手 A"]);
+    expect(spokenBy(attribution, 0, 40)).toEqual(["相手 A"]);
+  });
+
+  it("一度新しいラベルに決まった枠のラベルも、その後に近い重心が届いても替わらない", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, FAR));
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 C"]);
+
+    attribution.speaker(centroidEvent(0, NEAR_A));
+
+    expect(spokenBy(attribution, 0, 30)).toEqual(["相手 C"]);
+  });
+
+  it("起動し直しを 2 回しても、1 回目のラベルにつながる。2 回目の世代で振った新しいラベルにもつながる", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, FAR));
+    expect(spokenBy(attribution, 0, 20)).toEqual(["相手 C"]);
+    attribution.restart();
+    attribution.speaker(centroidEvent(1, NEAR_B));
+    attribution.speaker(centroidEvent(2, FAR.map((v) => v * 0.5)));
+
+    expect(spokenBy(attribution, 1, 30)).toEqual(["相手 B"]);
+    expect(spokenBy(attribution, 2, 40)).toEqual(["相手 C"]);
+  });
+
+  it("起動し直す前の世代は今までどおり。重心が届いても、先に話した順にラベルを振り、照らし合わせで保留にしない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(2, 10, 12));
+    attribution.speaker(centroidEvent(2, MID));
+    attribution.speaker(speakerEvent(0, 12, 14));
+    attribution.speaker(centroidEvent(0, MID)); // 世代の最初の枠どうしが近くても、つなぎ直しの対象ではない
+    attribution.speaker(settledEvent(14));
+
+    expect(pairs(attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000))).toEqual([["相手 A", "あ"], ["相手 B", "い"]]);
+  });
+
+  it("restart は保留中の発言を、駆け引きなしにすべて出す（揃っていれば規則を当て、揃っていなければ話者なし）。出した後は保留に残らない", () => {
+    const attribution = createSpeakerAttribution();
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(settledEvent(12));
+    expect(attribution.remarks([heard("あ", 10, 12)], 12_000).map((r) => r.speaker)).toEqual(["相手 A"]);
+    expect(attribution.remarks([heard("い", 20, 22)], 22_000)).toEqual([]); // まだ揃っていない
+
+    const out = attribution.restart();
+
+    expect(pairs(out)).toEqual([[undefined, "い"]]);
+    expect(attribution.heldRemarks()).toEqual([]);
+    expect(attribution.restart()).toEqual([]);
+  });
+
+  it("restart は前の世代の枠の区間を持ち越さない。前の世代の枠 0 の区間が、新しい世代の枠 0 の発言に使われない", () => {
+    const attribution = firstRun();
+    attribution.speaker(speakerEvent(0, 20, 30)); // 前の世代の枠 0 が 20〜30 に話した（確定）
+    attribution.speaker(settledEvent(30));
+    attribution.restart();
+
+    expect(attribution.previewSegments().filter((s) => s.start >= 20)).toEqual([]);
+    attribution.speaker(centroidEvent(1, NEAR_A));
+    attribution.speaker(speakerEvent(1, 40, 42));
+    attribution.speaker(settledEvent(42));
+    expect(pairs(attribution.remarks([heard("あと", 25, 27), heard("さらに", 40, 42)], 42_000))).toEqual([[undefined, "あと"], ["相手 A", "さらに"]]);
+  });
+
+  it("restart は音声の時計を戻さない。保留の期限は、起動し直しをまたいでも音声の時刻で進む", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    expect(attribution.remarks([heard("まだ", 100, 102)], 102_000)).toEqual([]);
+
+    expect(pairs(attribution.remarks([], 102_000 + SPEAKER_WAIT_MS))).toEqual([[undefined, "まだ"]]);
+  });
+
+  it("speaker-off の後に restart しても、話者分離は戻らない（待たずに話者なしで出る）", () => {
+    const attribution = firstRun();
+    attribution.speaker({ type: "speaker-off", start: 15, reason: "途中で停止" });
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    attribution.speaker(speakerEvent(0, 20, 22));
+    attribution.speaker(settledEvent(22));
+
+    expect(pairs(attribution.remarks([heard("あ", 20, 22)], 22_000))).toEqual([[undefined, "あ"]]);
+  });
+
+  it("自分のトラックの speaker-centroid は無視する", () => {
+    const attribution = firstRun();
+    attribution.restart();
+
+    expect(attribution.speaker(centroidEvent(0, NEAR_A, "自分"))).toEqual([]);
+    expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
+  });
+
+  it("speaker-centroid を受けても、何も出さない（発言を出すのは speaker-settled と時間切れだけ）", () => {
+    const attribution = firstRun();
+    attribution.restart();
+    attribution.speaker(speakerEvent(0, 20, 22));
+    attribution.remarks([heard("あ", 20, 22)], 20_000); // 揃っていないので保留
+
+    expect(attribution.speaker(centroidEvent(0, NEAR_A))).toEqual([]);
+    expect(attribution.heldRemarks()).toHaveLength(1);
+  });
+
+  it("字幕の仮のラベル: 照らし合わせが済むまでと戻したラベルは「なし」、つないだ枠はそのラベル", () => {
+    const attribution = firstRun();
+    attribution.speaker(mixedEvent(1));
+    attribution.restart();
+    attribution.speaker(speakerEvent(0, 20, 22, false));
+    attribution.speaker(speakerEvent(1, 22, 24, false));
+    attribution.speaker(speakerEvent(2, 24, 26, false));
+
+    expect([0, 1, 2].map((slot) => attribution.previewLabel(slot))).toEqual([undefined, undefined, undefined]);
+
+    attribution.speaker(centroidEvent(0, NEAR_A));
+    attribution.speaker(centroidEvent(1, NEAR_B));
+    attribution.speaker(centroidEvent(2, MID));
+
+    expect([0, 1, 2].map((slot) => attribution.previewLabel(slot))).toEqual(["相手 A", undefined, undefined]);
+  });
+});

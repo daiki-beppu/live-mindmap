@@ -397,6 +397,26 @@ struct EventsTests {
         #expect(event(from: .mixed(slot: 2, at: 95.5), track: .相手) == .speakerMixed(track: .相手, slot: 2, start: 95.5))
     }
 
+    // Issue #1025: 枠ごとの主な塊の声の埋め込みの重心。サーバーが、起動し直しをまたいで枠とラベルをつなぎ直すのに使う。
+    // slot は Sortformer の出力の番号、centroid は長さ 1 の埋め込み（ヘルパーはプロセスをまたぐ状態を持たないので、毎回その回の値を流す）
+    @Test("speaker-centroid は type・track・slot・centroid だけを持ち、JSON 文字列は固定のキー順")
+    func speakerCentroidCarriesSlotAndCentroid() throws {
+        let event = HelperEvent.speakerCentroid(track: .相手, slot: 2, centroid: [0.25, -0.5, 1])
+        let json = try decode(event)
+        #expect(Set(json.keys) == ["type", "track", "slot", "centroid"])
+        #expect(json["type"] as? String == "speaker-centroid")
+        #expect(json["track"] as? String == "相手")
+        #expect(json["slot"] as? Int == 2)
+        #expect((json["centroid"] as? [Double]) == [0.25, -0.5, 1])
+        #expect(try event.jsonString() == "{\"centroid\":[0.25,-0.5,1],\"slot\":2,\"track\":\"相手\",\"type\":\"speaker-centroid\"}")
+    }
+
+    @Test("話者分離の流れの重心は、トラックを添えて speaker-centroid になる。値はそのまま")
+    func centroidItemBecomesSpeakerCentroid() {
+        #expect(event(from: .centroid(slot: 2, centroid: [0.25, -0.5, 1]), track: .相手)
+            == .speakerCentroid(track: .相手, slot: 2, centroid: [0.25, -0.5, 1]))
+    }
+
     @Test("speaker-off は type・start・reason だけを持ち、reason は原因の 3 語のどれか")
     func speakerOffCarriesStartAndReason() throws {
         for (reason, text) in [

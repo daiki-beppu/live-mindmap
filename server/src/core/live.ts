@@ -59,10 +59,13 @@ export const HelperEvent = Schema.Union([
   // 相手の話者の枠 slot に、別の声が混ざっている（Issue #1024。Sortformer の枠は 4 つまでで、5 人目以降が声の近い人の枠に混ざる）。
   // start は判定のもとになった確定区間の終わり（origin と同じ原点からの秒）。以降の発言に、その枠のラベルを付けない
   Schema.Struct({ type: Schema.Literal("speaker-mixed"), track: Track, slot: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), start: Schema.Finite }),
+  // 相手の話者の枠 slot の、主な塊の声の埋め込みの重心（Issue #1025。長さ 1 の値だが、decode では長さを検証しない）。
+  // ヘルパーを起動し直した後の新しい枠を、前のラベルにつなぎ直すのに使う。重心が変わった枠だけ、変わるたびに最新の値で届く
+  Schema.Struct({ type: Schema.Literal("speaker-centroid"), track: Track, slot: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)), centroid: Schema.Array(Schema.Finite) }),
 ]);
 export type HelperEvent = typeof HelperEvent["Type"];
 // 話者分離のイベント。受け取った値のまま log.jsonl に残し、確定した区間は相手の発言の話者を決めるのに使う（Issue #1021。仮の区間・字幕・差分更新の入力には使わない）
-export type SpeakerLogEvent = Extract<HelperEvent, { type: "speaker" | "speaker-off" | "speaker-settled" | "speaker-mixed" }>;
+export type SpeakerLogEvent = Extract<HelperEvent, { type: "speaker" | "speaker-off" | "speaker-settled" | "speaker-mixed" | "speaker-centroid" }>;
 
 export const HelperPartial = Schema.Struct(helperRemarkFields);
 export type HelperPartial = typeof HelperPartial["Type"];

@@ -1,11 +1,11 @@
 import { defaultClaude } from "../src/modelSelection.ts";
 // 発言を、認識結果が届いた時刻（at）で本番のセッションに流す（Issue #97）。
-// end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ。
+// end の時刻で流すと認識の遅れが消えるので、流し始めからの at の時刻まで待って流す。
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Clock, Effect, Layer, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
@@ -24,18 +24,17 @@ export const ReplayItem = Remark.mapFields((fields) => ({
 }));
 export type ReplayItem = typeof ReplayItem["Type"];
 
-export type ReplayOptions = { sleep?: (ms: number) => Effect.Effect<void> }; // 既定は Effect.sleep
-
-// 本番の playback と同じ流し方（等速）。待ち時間だけが、発言の end の差ではなく at の差になる
+// 本番の playback と同じ流し方（等速）。待ち時間だけが、発言の end ではなく at になる。
+// 各発言は、流し始めを基準に自分の at の時刻まで待ってから push する。push が遅れても後ろの発言に遅れを足さず、
+// push が at を過ぎて終わったら、次の発言は待たずにすぐ push する
 export const replayByArrival = Effect.fnUntraced(function* (
   session: Session,
   items: readonly ReplayItem[],
-  { sleep = (ms) => Effect.sleep(ms) }: ReplayOptions = {},
 ): Effect.fn.Return<void> {
-  let prevAt = 0;
+  const t0 = yield* Clock.currentTimeMillis;
   for (const item of items) {
-    yield* sleep((item.at - prevAt) * 1000);
-    prevAt = item.at;
+    const wait = t0 + item.at * 1000 - (yield* Clock.currentTimeMillis);
+    if (wait > 0) yield* Effect.sleep(wait);
     const { id, track, start, end, text } = item;
     yield* session.push({ id, track, start, end, text });
   }
@@ -135,7 +134,7 @@ export const command = Command.make(
 ).pipe(
   Command.withDescription(
     "発言を、認識結果が届いた時刻（at）で本番のセッションに流し、遅れ（差分更新が返った時刻 − 流し始め − 発言の end）と再現率を出す（Issue #97）。"
-      + "end の時刻で流すと認識の遅れが消えるので、at の差だけ待つ",
+      + "end の時刻で流すと認識の遅れが消えるので、流し始めからの at の時刻どおりに届ける（push が遅れても後ろの発言に遅れを足さず、at を過ぎていれば次はすぐ流す）",
   ),
   // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
   Command.provide(Layer.effectContext(Layer.build(claudeUpdaterLayer(defaultClaude)).pipe(

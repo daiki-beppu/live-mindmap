@@ -16,7 +16,7 @@ export type SessionIntakeStatus = typeof SessionIntakeStatus["Type"];
 export const IntakeFrame = Schema.Struct({ type: Schema.Literal("intake"), status: SessionIntakeStatus });
 export type IntakeFrame = typeof IntakeFrame["Type"];
 
-// log.jsonl に残すサーバー独自の記録（order.md「ログに残す」）。intake- で始まる種類と tap-silent と、話者分離の speaker / speaker-off / speaker-settled / speaker-mixed。いずれも知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
+// log.jsonl に残すサーバー独自の記録（order.md「ログに残す」）。intake- で始まる種類と tap-silent と、話者分離の speaker / speaker-off / speaker-settled / speaker-mixed / speaker-centroid。いずれも知らない種類として復元時に読み飛ばされる（CT-RESTORE）。
 // signal は Node のシグナル名の文字列（"SIGKILL" 等）。NodeJS.Signals は使わない（core は Node の実行環境に依存しない。ADR 0003）
 export type IntakeLogEvent =
   | { type: "intake-stopped"; code: number | null; signal: string | null; stderrTail: string[] }

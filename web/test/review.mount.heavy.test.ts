@@ -237,8 +237,6 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       // n1 を選び、Enter で畳む（n2 は n1 の下に隠れる）
       await page.locator('[data-node-id="n1"] .map-node').click();
       await page.waitForSelector('[data-node-id="n1"] .map-node--selected');
-      // 選択が反映され、キーの Subscription が選択ありで張り直されるのを待つ（直後の Enter は選択なしの設定で流れて開閉にならない）
-      await page.waitForTimeout(500);
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => document.querySelector('[data-node-id="n2"]') === null);
       // 隠れた n2 の変化は、n2 を隠している n1 の点滅として出る

@@ -41,12 +41,14 @@ func jpegData(of image: CGImage) -> Data? {
 
 /// 送ると決めた画面の中身（JPEG と OCR の行）を作る。JPEG を作れなければ nil（この画面は送らない）。
 /// OCR は失敗しても画像は送り、lines は空にする。どちらも失敗は標準エラーに 1 行出す。
+/// OCR を同期で待つので、映像のキュー・画面収録のキューの上で呼ぶ（`recognizeScreenTextBlocking`）。
+@available(*, noasync, message: "並行処理のスレッドを塞ぐ。映像のキュー・画面収録のキューの上で呼ぶ")
 func screenShot(of image: CGImage) -> ScreenShot? {
     guard let jpeg = jpegData(of: image) else {
         printScreenError("JPEG を作れなかったので、この画面は送らない")
         return nil
     }
-    let lines = recognizeScreenText(image)
+    let lines = recognizeScreenTextBlocking(image)
     if lines == nil {
         printScreenError("画面の文字を読めなかったので、lines は空で送る")
     }

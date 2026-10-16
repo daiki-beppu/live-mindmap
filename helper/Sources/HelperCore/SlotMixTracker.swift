@@ -11,13 +11,12 @@ public final class SlotMixTracker: @unchecked Sendable {
     /// `samples[0]` のタイムライン上のサンプル位置。
     private var baseIndex = 0
     private var embedFailureReported = false
+    /// 最後に返した枠ごとの重心。変わった枠だけを返すために覚える（この 1 回の `diarize` の中だけ。プロセスをまたぐ状態は持たない）。
+    private var reportedCentroids: [Int: [Float]] = [:]
 
     public init(embedder: SpeakerEmbedder) {
         self.embedder = embedder
     }
-
-    /// 枠ごとの主な塊の重心（後の、起動し直しをまたぐ枠のつなぎ直しで使う）。
-    public var centroids: [Int: [Float]] { detector.centroids }
 
     public func append(samples16k: [Float]) {
         samples.append(contentsOf: samples16k)
@@ -31,18 +30,20 @@ public final class SlotMixTracker: @unchecked Sendable {
         baseIndex += drop
     }
 
-    /// 確定した区間のうち 2 秒以上のものを時刻順に埋め込みにし、混入を判定する。混入した枠と、判定のもとになった区間の end（シフト前の秒）を返す。
+    /// 確定した区間のうち 2 秒以上のものを時刻順に埋め込みにし、混入を判定する。
+    /// `centroids` は、この呼び出しで重心が変わった枠の最後の重心（長さ 1）を枠の番号順に返す（Issue #1025。サーバーが起動し直しをまたぐ枠のつなぎ直しに使う）。
+    /// `mixed` は混入した枠と、判定のもとになった区間の end（シフト前の秒）。
     /// 10 秒を超える区間は中央の 10 秒を使う。仮の区間は使わない。
-    public func mixed(finalized segments: [SpeakerSegment]) -> [(slot: Int, at: Double)] {
+    public func update(finalized segments: [SpeakerSegment]) -> (centroids: [(slot: Int, centroid: [Float])], mixed: [(slot: Int, at: Double)]) {
         let usable = segments
             .filter { $0.isFinal && $0.end - $0.start >= SlotMixCriteria.minSegmentSeconds }
             .sorted { ($0.start, $0.end, $0.slot) < ($1.start, $1.end, $1.slot) }
-        var result: [(slot: Int, at: Double)] = []
+        var mixed: [(slot: Int, at: Double)] = []
         for segment in usable {
             guard let window = window(of: segment) else { continue }
             do {
                 if detector.add(slot: segment.slot, embedding: try embedder.embed(window)) {
-                    result.append((slot: segment.slot, at: segment.end))
+                    mixed.append((slot: segment.slot, at: segment.end))
                 }
             } catch {
                 // 補助の機能なので、話者分離は止めない。同じ失敗は 1 回だけ知らせる。
@@ -52,7 +53,12 @@ public final class SlotMixTracker: @unchecked Sendable {
                 }
             }
         }
-        return result
+        let centroids = detector.centroids
+            .filter { reportedCentroids[$0.key] != $0.value }
+            .sorted { $0.key < $1.key }
+            .map { (slot: $0.key, centroid: $0.value) }
+        for item in centroids { reportedCentroids[item.slot] = item.centroid }
+        return (centroids: centroids, mixed: mixed)
     }
 
     private func window(of segment: SpeakerSegment) -> [Float]? {

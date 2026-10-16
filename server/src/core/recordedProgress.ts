@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { DiffUpdateReason } from "./diffUpdate.ts";
 
 // 録画からのセッションの経過を伝える 1 行。started の次から progress が続き、finished で終わる。
-// finished の failure は、ヘルパーが 0 以外で終わったとき（入れた分で終えた）の終わり方と標準エラーの末尾
+// finished の failure は、ヘルパーの起動し直しを諦めたとき（入れた分で終えた）の最後の終わり方と標準エラーの末尾
 export const RecordedEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("started"), dir: Schema.String, warnings: Schema.Array(Schema.String) }),
   Schema.Struct({
@@ -56,10 +56,14 @@ const formatRetryAt = (retryAt: number): string => {
   return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
 };
 
+// 例: 12:30 / 58:04（進んだ位置 / 全体の長さ）
+export const formatRecordedPosition = (position: number, duration: number | null): string =>
+  `${formatClock(position)} / ${formatClock(duration)}`;
+
 // 例: 12:30 / 58:04  マップの更新 3 回
 // 一時停止の間は続けて、例: 12:30 / 58:04  マップの更新 3 回  ChatGPT の利用上限で待機中（次に試す時刻 3:47）
 export const formatRecordedProgress = (progress: RecordedProgress): string => {
-  const line = `${formatClock(progress.position)} / ${formatClock(progress.duration)}  マップの更新 ${progress.rounds} 回`;
+  const line = `${formatRecordedPosition(progress.position, progress.duration)}  マップの更新 ${progress.rounds} 回`;
   if (progress.paused === undefined) return line;
   return `${line}  ${progress.paused.reason}で待機中（次に試す時刻 ${formatRetryAt(progress.paused.retryAt)}）`;
 };

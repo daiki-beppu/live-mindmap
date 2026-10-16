@@ -16,7 +16,7 @@ const logText = [
   JSON.stringify({ type: "diff", ops: [{}], dropped: [] }),
 ].join("\n") + "\n";
 
-describe.each(["sttLatency.ts", "sttReplay.ts", "sessionStats.ts"])("bench/%s のプロセス入口", (script) => {
+describe.each(["sttLatency.ts", "sttReplay.ts", "sessionStats.ts", "speechEnds.ts"])("bench/%s のプロセス入口", (script) => {
   it.live("--help は使い方を stdout に出して exit 0（stderr は空）", () => Effect.gen(function* () {
     const r = yield* runScript(script, ["--help"]);
     expect(r.code).toBe(0);
