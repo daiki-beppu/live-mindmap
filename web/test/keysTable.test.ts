@@ -8,7 +8,7 @@ import { bindingsOf, KeyId, keyListRows, POINTER_ROWS, type Screen } from "../sr
 // ---- 一覧の文言と順の正解（React 版の KeyList.tsx から写したもの） ----
 const KEY_LIST = [
   { group: "キー", keys: "Esc", action: "今の議題へ戻る（一覧が開いているときは閉じるだけ）" },
-  { group: "キー", keys: "F", action: "全体を見る・もう一度で戻る" },
+  { group: "キー", keys: "F", action: "全体を見る・もう一度で変わったところへ寄る" },
   { group: "キー", keys: "= / -", action: "拡大・縮小（JIS 配列では ^ でも拡大）" },
   { group: "キー", keys: "0", action: "倍率 1.0 にする" },
   { group: "キー", keys: "← → ↑ ↓", action: "ノードを選ぶ（← 親・→ 縦に近い子・↑↓ 同じ深さの上下。Esc で外す）" },

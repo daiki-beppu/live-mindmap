@@ -11,7 +11,7 @@ import { interpolate, startPositions } from "../src/motion.ts";
 
 // マップの表示面（Issue #814）の update。Mount が出す Message 1 つで、画面の大きさとノードの実測を受ける。
 // Model に持つのは見せ方（mode）・Snapshot・画面の大きさ・ノードの実測と、パンの状態（isMac・pointer・nodePress・scrollAxisLock）と、人が置いた位置の履歴で決まるカメラの欄だけで、配置・畳んだ後の木・カメラの目標は持たない（毎回導く）。
-// カメラ（Issue #819）の欄は viewport（今見せているビューポート）と、出来事の履歴で決まる事実（placedRound・beforeOverview・keepAnchor・pendingShift）と、見返しの 10 秒を計り直す idleStamp
+// カメラ（Issue #819）の欄は viewport（今見せているビューポート）と、出来事の履歴で決まる事実（placedRound・keepAnchor・pendingShift）と、見返しの 10 秒を計り直す idleStamp
 
 type MapSurfaceModel = typeof Model.Type;
 
@@ -20,7 +20,6 @@ const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "ro
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);
 const MODEL_FIELDS = [
-  "beforeOverview",
   "gestureScale",
   "idleStamp",
   "isMac",
@@ -96,7 +95,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     );
   });
 
-  it("update の後も Model の欄は決まった 17 個だけ（配置・畳んだ後の木・カメラの目標を足さない。pan・zoomScale は無い）", () => {
+  it("update の後も Model の欄は決まった 16 個だけ（配置・畳んだ後の木・カメラの目標を足さない。pan・zoomScale は無い）", () => {
     story(
       update,
       given(initial()),
@@ -109,7 +108,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
 });
 
 describe("mapSurface の Model: 本物の Schema", () => {
-  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの gestureScale と、カメラの viewport・placedRound・beforeOverview・keepAnchor・pendingShift・idleStamp の 17 個だけ", () => {
+  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの gestureScale と、カメラの viewport・placedRound・keepAnchor・pendingShift・idleStamp の 16 個だけ", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(MODEL_FIELDS);
   });
 

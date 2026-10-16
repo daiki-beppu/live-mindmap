@@ -59,7 +59,7 @@ const bind = (key: KeyId, ...keys: readonly string[]): readonly Binding[] => key
 
 export const KEY_ROWS: readonly KeyRow[] = [
   { keys: "Esc", action: "今の議題へ戻る（一覧が開いているときは閉じるだけ）", screens: ALL, bindings: bind("Escape", "Escape") },
-  { keys: "F", action: "全体を見る・もう一度で戻る", screens: ALL, bindings: bind("F", "F") },
+  { keys: "F", action: "全体を見る・もう一度で変わったところへ寄る", screens: ALL, bindings: bind("F", "F") },
   {
     keys: "= / -",
     action: "拡大・縮小（JIS 配列では ^ でも拡大）",

@@ -61,7 +61,7 @@ const clickChange = (nodeId: string) => message(Message.ClickedChangeItem({ node
 const toggleSide = (isOpen: boolean) => message(Message.ToggledSide({ isOpen }));
 
 // pointChange・select・side は、木の中身を使わない（currentTopic だけ）。更新前の木の currentTopic を渡して純粋な関数を呼ぶ
-const treeOf = (snapshot: Snapshot): VisibleTree => ({ ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, currentTopic: snapshot.currentTopic });
+const treeOf = (snapshot: Snapshot): VisibleTree => ({ ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, changed: [], currentTopic: snapshot.currentTopic });
 const reduced = (state: ViewingState, event: ViewingEvent, snapshot: Snapshot) => reduceViewing(state, event, treeOf(snapshot));
 // 項目を押したときの、今の画面と同じ出来事（SessionView.tsx の point）
 const pointEvent = (snapshot: Snapshot, state: ViewingState, id: string): ViewingEvent => {

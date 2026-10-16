@@ -39,7 +39,6 @@ export const Model = Schema.Struct({
     gestureScale: MapSurface.Model.fields.gestureScale,
     viewport: MapSurface.Model.fields.viewport,
     placedRound: MapSurface.Model.fields.placedRound,
-    beforeOverview: MapSurface.Model.fields.beforeOverview,
     keepAnchor: MapSurface.Model.fields.keepAnchor,
     pendingShift: MapSurface.Model.fields.pendingShift,
     idleStamp: MapSurface.Model.fields.idleStamp,

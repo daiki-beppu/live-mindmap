@@ -20,7 +20,8 @@ const press = (key: string) => Subscription.emit(Message.PressedKey({ key: key a
 const labelSel = (label: string) => selector(`[aria-label="${label}"]`);
 
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
+const DIFF = "変わったところを見ています・Esc で戻る・? でキー一覧";
+const OVERVIEW = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
 
 const classesOf = (vnode: VNode): string[] => elementsOf(vnode).map((v) => attrOf(v, "class") ?? "");
 const orderOf = (vnode: VNode, names: readonly string[]): string[] =>
@@ -200,6 +201,26 @@ describe("見返しの Scene: 見る状態の知らせ", () => {
       press("F"),
       settle,
       expectScene(selector(".viewing-notice")).toHaveText(OVERVIEW),
+      click(labelSel("反映 1 つ戻る")),
+      settle,
+      expectScene(selector(".viewing-notice")).toBeAbsent(),
+    );
+  });
+
+  it("F を 2 回押すと『変わったところを見ています』が .map の中に出て、時刻を動かすと消える", () => {
+    scene(
+      plainApp,
+      given(
+        plainApp.update(stateAt(plainContext, 105), Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }) })).model,
+      ),
+      settle,
+      press("F"),
+      settle,
+      expectScene(selector(".viewing-notice")).toHaveText(OVERVIEW),
+      press("F"),
+      settle,
+      expectScene(selector(".viewing-notice")).toHaveText(DIFF),
+      tap((sim) => expect(findAll(one(sim.html, ".map"), "p.viewing-notice")).toHaveLength(1)),
       click(labelSel("反映 1 つ戻る")),
       settle,
       expectScene(selector(".viewing-notice")).toBeAbsent(),

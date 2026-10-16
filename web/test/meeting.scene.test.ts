@@ -7,6 +7,7 @@ import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import {
   commandNames,
   connected,
+  DIFF,
   disconnected,
   expire,
   FIRST,
@@ -68,7 +69,7 @@ const expectOnlyWaiting = (sim: Sim) => {
     expect(findAll(sim.html, css), css).toHaveLength(0);
   }
 };
-const noticeTextOf = (reference: { viewing: { mode: string } }): string[] => (reference.viewing.mode === "manual" ? [MANUAL] : reference.viewing.mode === "overview" ? [OVERVIEW] : []);
+const noticeTextOf = (reference: { viewing: { mode: string } }): string[] => (reference.viewing.mode === "manual" ? [MANUAL] : reference.viewing.mode === "overview" ? [OVERVIEW] : reference.viewing.mode === "diff" ? [DIFF] : []);
 
 describe("会議中の Scene: 待ち表示（最初のスナップショットまで）", () => {
   it("起動直後は『サーバーを待っています』だけが出て、マップ・字幕・知らせ・右の列は描かない", () => {
@@ -751,7 +752,7 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
 });
 
 describe("会議中の Scene: キー（会議中の行だけ。見返しのキーは効かない）", () => {
-  const SEQUENCE: ReadonlyArray<KeyId> = ["ArrowRight", "ArrowDown", "=", "Shift+ArrowLeft", "Shift+ArrowUp", "-", "Z", "F", "0", "Escape", "Escape", "ArrowLeft", "Enter"];
+  const SEQUENCE: ReadonlyArray<KeyId> = ["ArrowRight", "ArrowDown", "=", "Shift+ArrowLeft", "Shift+ArrowUp", "-", "Z", "F", "F", "0", "Escape", "Escape", "ArrowLeft", "Enter"];
 
   it("表示面のキー（拡大・縮小・倍率・全体・寄る・移動・矢印・Enter・Esc）は、live の表示面に同じキーを押した結果と一致する。1 つずつ続けて押す", () => {
     let reference = referenceOf(SECOND);

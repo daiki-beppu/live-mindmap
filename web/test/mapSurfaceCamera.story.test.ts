@@ -1,11 +1,12 @@
 import { HashMap, Option, Schema } from "effect";
 import { given, message, model, story } from "foldkit/story";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
+import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import {
   cameraFocus,
+  changedFocus,
   clampUserZoom,
   fitViewport,
   focusViewport,
@@ -18,6 +19,7 @@ import {
   shiftIntoView,
   subtreeViewport,
   USER_MAX_ZOOM,
+  USER_MIN_ZOOM,
   zoomAroundCenter,
   type Rect,
   type Viewport,
@@ -48,6 +50,10 @@ const baseNodes = (): SnapshotNode[] => [
   node("B3", "B", "論点"),
 ];
 const tree = (extra: Partial<Snapshot> = {}): Snapshot => snap(baseNodes(), { currentTopic: "A", ...extra });
+const change = (nodeId: string, round: number): ChangeEntry => ({ change: "追加", node: nodeId, kind: "論点", text: nodeId, round, at: round }) as ChangeEntry;
+// 今の議題は A のまま、round の反映で ids が変わった。lastChanged は ids の最後
+const withChanges = (ids: string[], round = 2, extra: Partial<Snapshot> = {}): Snapshot =>
+  snap(baseNodes(), { round, currentTopic: "A", changes: ids.map((id) => change(id, round)), lastChanged: ids.at(-1)!, ...extra });
 // 今の議題の下に、変更の記録を残さずノードが 1 つ増えた反映（寄せ先の箱が変わる）
 const withSilentNode = (extra: Partial<Snapshot> = {}): Snapshot => snap([...baseNodes(), node("A3", "A", "論点")], { round: 2, currentTopic: "A", ...extra });
 
@@ -99,6 +105,13 @@ const focusExpected = (m: MapSurfaceModel): Viewport => {
   const dims = dimsOf(m);
   return focusViewport([...new Set(focus.ids.map(shownId))].map((id) => nodeRect(id, target, dims)), nodeRect(shownId(focus.center), target, dims), sizeOf(m));
 };
+// 最後の反映で変わったノードへ寄せた位置（下限は人の下限）。見せないノードは、見えている代わりのノードに置き換えて測る
+const changedExpected = (m: MapSurfaceModel): Viewport => {
+  const focus = changedFocus(m.snapshot, viewOf(m)?.shownAs ?? {})!;
+  const target = targetsOf(m);
+  const dims = dimsOf(m);
+  return focusViewport(focus.ids.map((id) => nodeRect(id, target, dims)), nodeRect(focus.center, target, dims), sizeOf(m), USER_MIN_ZOOM);
+};
 // 全体を収めた位置。測れたノードだけを、positions の位置で収める（still は下限 0.02、ふだんは 0.5）
 const fitExpected = (m: MapSurfaceModel, positions: Record<string, { x: number; y: number }> = targetsOf(m)): Viewport => {
   const heights = heightsOf(m);
@@ -122,7 +135,6 @@ describe("カメラの Model: 欄の初期値と本物の Schema", () => {
     const m = init(tree(), "live", false);
     expect(m.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
     expect(Option.isNone(m.placedRound)).toBe(true);
-    expect(Option.isNone(m.beforeOverview)).toBe(true);
     expect(Option.isNone(m.keepAnchor)).toBe(true);
     expect(m.pendingShift).toBe(false);
     expect(Number.isFinite(m.idleStamp)).toBe(true);
@@ -132,11 +144,9 @@ describe("カメラの Model: 欄の初期値と本物の Schema", () => {
     const is = Schema.is(Model);
     const m = init(tree(), "live", false);
     expect(is(m)).toBe(true);
-    expect(is({ ...m, placedRound: Option.some(2), beforeOverview: Option.some({ x: 1, y: 2, zoom: 1 }), keepAnchor: Option.some({ id: "A", point: { x: 3, y: 4 } }), pendingShift: true })).toBe(true);
+    expect(is({ ...m, placedRound: Option.some(2), keepAnchor: Option.some({ id: "A", point: { x: 3, y: 4 } }), pendingShift: true })).toBe(true);
     expect(is({ ...m, placedRound: null })).toBe(false);
-    expect(is({ ...m, beforeOverview: null })).toBe(false);
     expect(is({ ...m, keepAnchor: null })).toBe(false);
-    expect(is({ ...m, beforeOverview: Option.some({ x: 1, y: 2 }) })).toBe(false);
     expect(is({ ...m, keepAnchor: Option.some({ id: "A", point: { x: "3", y: 4 } }) })).toBe(false);
     expect(is({ ...m, pendingShift: "yes" })).toBe(false);
   });
@@ -432,9 +442,12 @@ describe("人が動かすと止まる: パン・ズームで見る状態の user
   });
 });
 
-describe("全体を見て戻る: 全体を見る前の位置を覚え、F で元の位置に戻す", () => {
-  it("止めている位置から F を押すと、全体を目標の位置で収めた viewport になり（見る状態は overview）、もう一度 F で、F の前の viewport にそのまま戻って manual になる", () => {
-    const start = settle(tree());
+describe("全体を見て、もう一度で変わったところへ寄る", () => {
+  // 今の議題 A の外（B1）が最後の反映で変わった。自動のカメラは A に寄るので、B1 は寄せ先に入らない
+  const outside = () => settle(withChanges(["B1"]));
+
+  it("止めている位置から F を押すと、全体を目標の位置で収めた viewport になり（見る状態は overview）、もう一度 F で、変わったノードへ寄る viewport になって diff になる（止めていた位置へは戻らない）", () => {
+    const start = outside();
     story(
       update,
       given(start),
@@ -445,16 +458,86 @@ describe("全体を見て戻る: 全体を見る前の位置を覚え、F で元
         expect(m.viewing.mode).toBe("overview");
         expectViewport(m.viewport, overviewExpected(m));
       }),
+      message(key("F")),
+      model((m) => {
+        expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+        expectViewport(m.viewport, changedExpected(m));
+        // 止めていた位置でも、自動のカメラが寄る今の議題でもない
+        expectDifferent(m.viewport, update(start, scroll).model.viewport);
+        expectDifferent(m.viewport, focusExpected(m));
+      }),
     );
-    const moved = update(start, scroll).model;
-    const there = update(moved, key("F")).model;
-    expectDifferent(there.viewport, moved.viewport);
-    const back = update(there, key("F")).model;
-    expect(back.viewport).toEqual(moved.viewport);
-    expect(back.viewing).toEqual(manualAt("A"));
   });
 
-  it("自動から F・F で戻ると、自動に戻り、今の議題へ寄せ直す（覚えた位置ではなく、全体を見ている間の反映を含めた今の寄せ先）", () => {
+  it("自動から F・F でも同じ。diff になり、変わったノード（議題の外の B1）へ寄る", () => {
+    story(
+      update,
+      given(outside()),
+      message(key("F")),
+      model((m) => expect(m.viewing.mode).toBe("overview")),
+      message(key("F")),
+      model((m) => {
+        expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+        expectViewport(m.viewport, changedExpected(m));
+        expectDifferent(m.viewport, focusExpected(m));
+      }),
+    );
+  });
+
+  it("寄せ先は最後の反映で変わったノード全部。議題の外（B1）と中（A1）の両方が画面に入る", () => {
+    const m = run(settle(withChanges(["A1", "B1"])), key("F"), key("F"));
+    const target = targetsOf(m);
+    const dims = dimsOf(m);
+    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+    for (const id of ["A1", "B1"]) {
+      const r = nodeRect(id, target, dims);
+      const left = r.x * m.viewport.zoom + m.viewport.x;
+      const top = r.y * m.viewport.zoom + m.viewport.y;
+      expect(left).toBeGreaterThanOrEqual(0);
+      expect(top).toBeGreaterThanOrEqual(0);
+      expect(left + r.width * m.viewport.zoom).toBeLessThanOrEqual(SIZE.width);
+      expect(top + r.height * m.viewport.zoom).toBeLessThanOrEqual(SIZE.height);
+    }
+  });
+
+  it("人の下限 0.5 でも収まらないとき、倍率は 0.5 で、最後に変わったノード（lastChanged）が画面の中央に来る", () => {
+    const m = run(settle(withChanges(["A1", "B3"]), "live", SMALL), key("F"), key("F"));
+    const b3 = nodeRect("B3", targetsOf(m), dimsOf(m));
+    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+    expect(m.viewport.zoom).toBeCloseTo(USER_MIN_ZOOM, 6);
+    const at = screenPoint(m.viewport, { x: b3.x + b3.width / 2, y: b3.y + b3.height / 2 });
+    expect(at.x).toBeCloseTo(SMALL.width / 2, 6);
+    expect(at.y).toBeCloseTo(SMALL.height / 2, 6);
+  });
+
+  it("変わったノードが畳みで隠れているとき、畳みを解かず、見えている祖先（済みの議題 A）に寄る", () => {
+    const folded = foldable({ round: 2, changes: [change("A1", 2)], lastChanged: "A1" });
+    const m = run(settle(folded), key("F"), key("F"));
+    const view = viewOf(m)!;
+    expect(view.nodes.map((n) => n.id)).not.toContain("A1");
+    expect(m.viewing).toEqual({ mode: "diff", topic: "B" });
+    expect(humanSetsOf(m.viewing).opened.size).toBe(0);
+    const a = nodeRect("A", targetsOf(m), dimsOf(m));
+    expectViewport(m.viewport, focusViewport([a], a, sizeOf(m), USER_MIN_ZOOM));
+  });
+
+  it("最後の反映で変わったノードが無いときの F・F は、自動に戻り、今の議題へ寄せ直す。止めていても同じ", () => {
+    const quiet = settle(tree());
+    for (const start of [quiet, update(quiet, scroll).model]) {
+      const m = run(start, key("F"), key("F"));
+      expect(m.viewing).toEqual({ mode: "auto" });
+      expectViewport(m.viewport, focusExpected(m));
+    }
+  });
+
+  it("何もしない反映の後（最後の反映で変わったノードが無い）も、F・F は自動に戻る。前の反映の変化は寄せ先にならない", () => {
+    const afterQuiet = run(outside(), changed(withChanges(["B1"], 2, { round: 3, changes: [change("B1", 2)] })));
+    const m = run(afterQuiet, key("F"), key("F"));
+    expect(m.viewing).toEqual({ mode: "auto" });
+    expectViewport(m.viewport, focusExpected(m));
+  });
+
+  it("自動から F・F で戻る前に、変化の無い反映が届いても、自動に戻り、今の議題へ寄せ直す（全体を見ている間の反映を含めた今の寄せ先）", () => {
     story(
       update,
       given(settle(tree())),
@@ -498,7 +581,7 @@ describe("全体を見て戻る: 全体を見る前の位置を覚え、F で元
     );
   });
 
-  it("全体を見ている間に、人が動かすと manual になり、覚えた位置は使わない（動かした先の位置から F・F で、その位置に戻る）", () => {
+  it("全体を見ている間に、人が動かすと manual になる（動かすだけで viewport は変わらない）", () => {
     story(
       update,
       given(settle(tree())),
@@ -507,21 +590,68 @@ describe("全体を見て戻る: 全体を見る前の位置を覚え、F で元
       message(wheel({ deltaX: 10, deltaY: 10 })),
       model((m) => expect(m.viewing).toEqual(manualAt("A"))),
     );
-    const first = run(settle(tree()), scroll, key("F"), wheel({ deltaX: 10, deltaY: 10 }));
-    const twice = run(first, key("F"), key("F"));
-    expect(twice.viewport).toEqual(first.viewport);
-    expect(twice.viewing).toEqual(manualAt("A"));
+  });
+});
+
+describe("差分を見ている間のカメラ", () => {
+  const inDiff = () => run(settle(withChanges(["B1"])), key("F"), key("F"));
+
+  it("F で全体を見る（overview）。目標の位置で全体を収めた viewport になる", () => {
+    const m = run(inDiff(), key("F"));
+    expect(m.viewing).toEqual({ mode: "overview", topic: "A" });
+    expectViewport(m.viewport, overviewExpected(m));
   });
 
-  it("Esc で抜けた後（自動に戻り、今の議題へ寄る）にもう一度止めて F・F をしても、古い位置ではなく、その直前の位置に戻る", () => {
-    const first = run(settle(tree()), scroll, key("F"));
-    const escaped = update(first, Message.PressedEscapeKey({ ...mods })).model;
-    expect(escaped.viewing).toEqual({ mode: "auto" });
-    expectViewport(escaped.viewport, focusExpected(escaped));
-    const second = run(escaped, wheel({ deltaX: -80, deltaY: 30 }));
-    const twice = run(second, key("F"), key("F"));
-    expect(twice.viewport).toEqual(second.viewport);
-    expectDifferent(twice.viewport, update(settle(tree()), scroll).model.viewport);
+  it("Esc で自動に戻り、今の議題へ寄る", () => {
+    const m = update(inDiff(), Message.PressedEscapeKey({ ...mods })).model;
+    expect(m.viewing).toEqual({ mode: "auto" });
+    expectViewport(m.viewport, focusExpected(m));
+  });
+
+  it("人が動かすと manual になる。スクロールで viewport は動かした分だけ動く", () => {
+    const start = inDiff();
+    const m = update(start, scroll).model;
+    expect(m.viewing).toEqual(manualAt("A"));
+    expect(m.viewport.zoom).toBe(start.viewport.zoom);
+    expect(m.viewport.x).toBeCloseTo(start.viewport.x - 20, 9);
+    expect(m.viewport.y).toBeCloseTo(start.viewport.y - 50, 9);
+  });
+
+  it("今の議題が同じ反映で変化があれば、新しい反映で変わったノード全部へ寄り直す（diff のまま）", () => {
+    const start = inDiff();
+    const next = snap(baseNodes(), { round: 3, currentTopic: "A", changes: [change("B1", 2), change("A1", 3), change("B3", 3)], lastChanged: "B3" });
+    const m = update(start, changed(next)).model;
+    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+    expectViewport(m.viewport, changedExpected(m));
+    expectDifferent(m.viewport, start.viewport);
+    // 前の反映の変化（B1）ではなく、新しい反映の変化（A1・B3）で決まる
+    expect(changedFocus(m.snapshot, {})!.ids.sort()).toEqual(["A1", "B3"]);
+  });
+
+  it("今の議題が同じで変化の無い反映は、動かさない（viewport も見る状態もそのまま）。何度届いても", () => {
+    const start = inDiff();
+    const quiet = snap(baseNodes(), { round: 3, currentTopic: "A", changes: [change("B1", 2)] });
+    const once = update(start, changed(quiet)).model;
+    expect(once.viewing).toEqual({ mode: "diff", topic: "A" });
+    expect(once.viewport).toEqual(start.viewport);
+    const twice = update(once, changed({ ...quiet, round: 4 })).model;
+    expect(twice.viewing).toEqual({ mode: "diff", topic: "A" });
+    expect(twice.viewport).toEqual(start.viewport);
+  });
+
+  it("今の議題が変わる反映は、自動に戻り、新しい今の議題へ寄る", () => {
+    const next = snap(baseNodes(), { round: 3, currentTopic: "B", changes: [change("B2", 3)], lastChanged: "B2" });
+    const m = update(inDiff(), changed(next)).model;
+    expect(m.viewing).toEqual({ mode: "auto" });
+    expectViewport(m.viewport, focusExpected(m));
+  });
+
+  it("実測（ノードの高さ・画面の大きさ）が届くたびに、変わったノードへ寄せ直す", () => {
+    const start = inDiff();
+    const m = update(start, measure(SMALL, { B1: 200 })).model;
+    expect(m.viewing).toEqual({ mode: "diff", topic: "A" });
+    expectViewport(m.viewport, changedExpected(m));
+    expectDifferent(m.viewport, start.viewport);
   });
 });
 

@@ -1,4 +1,5 @@
 import type { Snapshot } from "../../server/src/core/index.ts";
+import { changedNodeIds } from "./changes.ts";
 import { DEFAULT_HEIGHT, NODE_WIDTH, type Position } from "./layout.ts";
 
 // 倍率の範囲。下限 0.75 は、14px の文字が 10.5px で映る大きさ。
@@ -37,6 +38,18 @@ export function cameraFocus(snapshot: Snapshot): { ids: string[]; center: string
   return { ids: [...ids], center: snapshot.lastChanged ?? topic };
 }
 
+// 最後の反映で変わったノード全部の寄せ先と、下限でも収まらないときの中心にするノード（最後に変わったノード。変わったものの外でもよい。無ければ寄せ先の最後）。
+// 畳みで隠れたノードは、畳みを解かず、shownAs の見えている代わりのノードに置き換える。ノードに無い id は除く。変わったノードが無ければ null
+export function changedFocus(snapshot: Snapshot, shownAs: Readonly<Record<string, string>>): { ids: string[]; center: string } | null {
+  const present = new Set(snapshot.nodes.map((n) => n.id));
+  const changed = [...changedNodeIds(snapshot)].filter((id) => present.has(id));
+  if (changed.length === 0) return null;
+  const shownId = (id: string) => shownAs[id] ?? id;
+  const ids = [...new Set(changed.map(shownId))];
+  const last = snapshot.lastChanged !== undefined ? shownId(snapshot.lastChanged) : ids[ids.length - 1]!;
+  return { ids, center: last };
+}
+
 // id が ancestor 自身またはその子孫か
 function isUnder(byId: Map<string, Snapshot["nodes"][number]>, id: string, ancestor: string): boolean {
   for (let cur = byId.get(id); cur; cur = cur.parent ? byId.get(cur.parent) : undefined) {
@@ -50,12 +63,12 @@ export function nodeRect(id: string, target: Record<string, Position>, dims: Rec
   return { x: p.x, y: p.y, width: NODE_WIDTH, height: dims[id]?.height ?? DEFAULT_HEIGHT };
 }
 
-// rects の外接箱が（余白込みで）収まる倍率（MIN_ZOOM〜MAX_ZOOM）で、画面の中央に映す。
-// MIN_ZOOM でも収まらないときは、center の中心を画面の中央にする。画面座標は 座標 × zoom + x（y）
-export function focusViewport(rects: Rect[], center: Rect, size: Size): Viewport {
+// rects の外接箱が（余白込みで）収まる倍率（minZoom〜MAX_ZOOM。既定の下限は MIN_ZOOM）で、画面の中央に映す。
+// minZoom でも収まらないときは、center の中心を画面の中央にする。画面座標は 座標 × zoom + x（y）
+export function focusViewport(rects: Rect[], center: Rect, size: Size, minZoom: number = MIN_ZOOM): Viewport {
   const { left, top, right, bottom, fitZoom } = fitBox(rects, size);
-  const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitZoom));
-  const [cx, cy] = fitZoom >= MIN_ZOOM ? [(left + right) / 2, (top + bottom) / 2] : [center.x + center.width / 2, center.y + center.height / 2];
+  const zoom = Math.min(MAX_ZOOM, Math.max(minZoom, fitZoom));
+  const [cx, cy] = fitZoom >= minZoom ? [(left + right) / 2, (top + bottom) / 2] : [center.x + center.width / 2, center.y + center.height / 2];
   return { x: size.width / 2 - cx * zoom, y: size.height / 2 - cy * zoom, zoom };
 }
 

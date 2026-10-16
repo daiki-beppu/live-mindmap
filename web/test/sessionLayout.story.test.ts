@@ -19,7 +19,8 @@ const INTERRUPTED = "音声の取り込みが途切れました。再開して�
 const STOPPED = "音声の取り込みが止まっています";
 const RESUMED = "再開しました";
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
+const OVERVIEW = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
+const DIFF = "変わったところを見ています・Esc で戻る・? でキー一覧";
 const SCREEN = "共有画面は使っていません（画面収録の許可がありません。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）";
 const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります。cli stop の後、cli start で始め直してください）";
 
@@ -63,7 +64,7 @@ const lateTimer = (n: number) => message(Message.GotIntakeToastMessage({ message
 const intake = (status: "running" | "interrupted" | "stopped" | "none") => message(Message.ReceivedIntakeStatus({ status }));
 const screen = (text: string | null) => message(Message.ReceivedScreenNotice({ text: Option.fromNullishOr(text) }));
 const tapNotice = (text: string | null) => message(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
-const viewing = (mode: "auto" | "manual" | "overview") => message(Message.ChangedViewingMode({ mode }));
+const viewing = (mode: "auto" | "manual" | "overview" | "diff") => message(Message.ChangedViewingMode({ mode }));
 
 describe("sessionLayout の update: 取り込みの知らせ（Toast）", () => {
   it("接続直後の running では何も出ない。none も出ない", () => {
@@ -498,6 +499,50 @@ describe("sessionLayout の update: 知らせは種類ごとに別の Toast で�
         expect(count(m.intakeToast)).toBe(0);
         expect(shown(m.screenToast)).toEqual([SCREEN]);
         expect(shown(m.viewingToast)).toEqual([OVERVIEW]);
+      }),
+    );
+  });
+});
+
+describe("sessionLayout の update: 差分を見ているときの一言", () => {
+  it("overview → diff → overview → auto の順に、文が入れ替わり（全体のときの一言と同じ場所・同じ Toast）、最後に消える。時間では消えない", () => {
+    story(
+      update,
+      given(init()),
+      viewing("overview"),
+      settle,
+      model((m) => expect(shown(m.viewingToast)).toEqual([OVERVIEW])),
+      viewing("diff"),
+      model((m) => expect(shown(m.viewingToast)).toEqual([DIFF])),
+      settle,
+      model((m) => expect(count(m.viewingToast)).toBe(1)),
+      Command.expectNone(),
+      viewing("overview"),
+      model((m) => expect(shown(m.viewingToast)).toEqual([OVERVIEW])),
+      settle,
+      viewing("diff"),
+      settle,
+      viewing("auto"),
+      model((m) => expect(shown(m.viewingToast)).toEqual([])),
+      settle,
+      model((m) => expect(count(m.viewingToast)).toBe(0)),
+      Command.expectNone(),
+    );
+  });
+
+  it("manual → diff でも文が入れ替わる。diff の一言は、他の知らせと重ならず別の枠に出る", () => {
+    story(
+      update,
+      given(init()),
+      screen(SCREEN),
+      settle,
+      viewing("manual"),
+      settle,
+      viewing("diff"),
+      settle,
+      model((m) => {
+        expect(shown(m.viewingToast)).toEqual([DIFF]);
+        expect(shown(m.screenToast)).toEqual([SCREEN]);
       }),
     );
   });

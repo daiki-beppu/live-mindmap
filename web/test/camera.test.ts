@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import {
   CLICK_ZOOM_FACTOR,
+  MAX_ZOOM,
   OVERVIEW_MIN_ZOOM,
   SCROLL_AXIS_RESET_MS,
   USER_MAX_ZOOM,
   USER_MIN_ZOOM,
   anchoredViewport,
   cameraFocus,
+  changedFocus,
   clampUserZoom,
   edgeDots,
   fitViewport,
@@ -146,6 +148,137 @@ describe("focusViewport: 倍率と中心", () => {
     expect(v.zoom).toBeCloseTo(0.75);
     expect((center.x + center.width / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
     expect((center.y + center.height / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
+  });
+});
+
+describe("changedFocus: 最後の反映で変わったノードの寄せ先", () => {
+  it("今の議題の外（Z）と中（D2）が両方変わったら、両方が入る。今の議題の祖先などは足さない", () => {
+    const focus = changedFocus(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)] }), {})!;
+    expect(new Set(focus.ids)).toEqual(new Set(["D2", "Z"]));
+  });
+
+  it("最後の 1 回の反映（現在の round）で変わったノードだけ。それより前の round の変化は入らない", () => {
+    const focus = changedFocus(snap({ round: 3, changes: [change("Z", 1), change("A", 2), change("D1", 3)] }), {})!;
+    expect(focus.ids).toEqual(["D1"]);
+  });
+
+  it("最後の反映で変わったノードが無いとき（何もしない反映）は null", () => {
+    expect(changedFocus(snap({ round: 2, changes: [change("D1", 1)] }), {})).toBeNull();
+    expect(changedFocus(snap({ round: 1, changes: [] }), {})).toBeNull();
+  });
+
+  it("ノードに無い id は寄せ先に入れない。残りが無ければ null", () => {
+    expect(changedFocus(snap({ round: 2, changes: [change("gone", 2), change("D1", 2)] }), {})!.ids).toEqual(["D1"]);
+    expect(changedFocus(snap({ round: 2, changes: [change("gone", 2)] }), {})).toBeNull();
+  });
+
+  it("畳みで隠れたノードは、畳みを解かず、見えている代わりのノード（shownAs）で置き換える。同じ代わりは 1 つにまとめる", () => {
+    const shownAs = { D1: "D", D2: "D", B: "run:X" };
+    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("D2", 2), change("B", 2), change("Z", 2)] }), shownAs)!;
+    expect([...focus.ids].sort()).toEqual(["D", "Z", "run:X"]);
+    expect(focus.ids).not.toContain("D1");
+    expect(focus.ids).not.toContain("D2");
+    expect(focus.ids).not.toContain("B");
+  });
+
+  it("中心は、最後に変わったノード（lastChanged）。変化が今の議題の外でもよい。隠れていれば見えている代わりのノード", () => {
+    const changes = [change("D1", 2), change("Z", 2)];
+    expect(changedFocus(snap({ round: 2, changes, lastChanged: "Z" }), {})!.center).toBe("Z");
+    expect(changedFocus(snap({ round: 2, changes, lastChanged: "D1" }), {})!.center).toBe("D1");
+    expect(changedFocus(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "D2" }), { D2: "D" })!.center).toBe("D");
+  });
+
+  it("lastChanged が無いときの中心は、寄せ先の中のノード", () => {
+    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)] }), {})!;
+    expect(focus.ids).toContain(focus.center);
+  });
+
+  it("lastChanged が今の反映の変化に入っていなくても、中心は lastChanged。寄せ先には足さない", () => {
+    const focus = changedFocus(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)], lastChanged: "A" }), {})!;
+    expect(focus.center).toBe("A");
+    expect(focus.ids).not.toContain("A");
+  });
+
+  it("入力の snapshot と shownAs を書き換えない", () => {
+    const s = snap({ round: 2, changes: [change("D1", 2), change("Z", 2)], lastChanged: "Z" });
+    const shownAs = { D1: "D" };
+    const frozenSnap = JSON.stringify(s);
+    changedFocus(s, shownAs);
+    expect(JSON.stringify(s)).toBe(frozenSnap);
+    expect(shownAs).toEqual({ D1: "D" });
+  });
+});
+
+describe("changedFocus と focusViewport(USER_MIN_ZOOM): 変わったノード全部が収まる viewport", () => {
+  const dims = {};
+  const viewportOf = (s: Snapshot, target: Record<string, { x: number; y: number }>, shownAs: Record<string, string> = {}) => {
+    const focus = changedFocus(s, shownAs)!;
+    const rects = focus.ids.map((id) => nodeRect(id, target, dims));
+    return { focus, rects, v: focusViewport(rects, nodeRect(focus.center, target, dims), size, USER_MIN_ZOOM) };
+  };
+
+  it("今の議題の外（Z）と中（D2）が両方変わったとき、両方が収まる。自動のカメラの下限 0.75 では収まらない広さでも、0.5 まで下げて収める", () => {
+    const target = { D2: { x: 0, y: 0 }, Z: { x: 3400, y: 600 } };
+    const s = snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "Z" });
+    const { rects, v } = viewportOf(s, target);
+    expect(v.zoom).toBeGreaterThanOrEqual(USER_MIN_ZOOM);
+    expect(v.zoom).toBeLessThan(0.75);
+    expect(rects.every((r) => fits(r, v))).toBe(true);
+    // 対照: 下限を指定しない（自動のカメラの）viewport は 0.75 で、両方は収まらない
+    const auto = focusViewport(rects, nodeRect("Z", target, dims), size);
+    expect(auto.zoom).toBeCloseTo(0.75);
+    expect(rects.every((r) => fits(r, auto))).toBe(false);
+  });
+
+  it("外接箱の中心が画面の中央に来る", () => {
+    const target = { D2: { x: 0, y: 0 }, Z: { x: 3400, y: 600 } };
+    const { rects, v } = viewportOf(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)] }), target);
+    const left = Math.min(...rects.map((r) => r.x));
+    const right = Math.max(...rects.map((r) => r.x + r.width));
+    const top = Math.min(...rects.map((r) => r.y));
+    const bottom = Math.max(...rects.map((r) => r.y + r.height));
+    expect(((left + right) / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
+    expect(((top + bottom) / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
+  });
+
+  it("下限 0.5 でも収まらないときは 0.5 倍で、最後に変わったノード（lastChanged）が画面の中央に来る", () => {
+    const target = { D2: { x: 0, y: 0 }, Z: { x: 9000, y: 6000 } };
+    const { v } = viewportOf(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "Z" }), target);
+    const z = nodeRect("Z", target, dims);
+    expect(v.zoom).toBeCloseTo(USER_MIN_ZOOM);
+    expect((z.x + z.width / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
+    expect((z.y + z.height / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
+    // lastChanged が D2 なら D2 が中央に来る（中心は変わったノードの位置で決まる）
+    const other = viewportOf(snap({ round: 2, changes: [change("D2", 2), change("Z", 2)], lastChanged: "D2" }), target).v;
+    const d = nodeRect("D2", target, dims);
+    expect((d.x + d.width / 2) * other.zoom + other.x).toBeCloseTo(size.width / 2);
+  });
+
+  it("lastChanged が今の反映の変化に入っていなくても、0.5 倍で収まらないときは lastChanged が画面の中央に来る", () => {
+    const target = { D1: { x: 0, y: 0 }, Z: { x: 9000, y: 6000 }, D2: { x: 200, y: 300 } };
+    const { v } = viewportOf(snap({ round: 2, changes: [change("D1", 2), change("Z", 2)], lastChanged: "D2" }), target);
+    const d = nodeRect("D2", target, dims);
+    expect(v.zoom).toBeCloseTo(USER_MIN_ZOOM);
+    expect((d.x + d.width / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
+    expect((d.y + d.height / 2) * v.zoom + v.y).toBeCloseTo(size.height / 2);
+  });
+
+  it("変わったノードが 1 つだけで小さいときは、上限 1.1 倍で画面の中央に映る", () => {
+    const target = { D1: { x: 100, y: 100 } };
+    const { rects, v } = viewportOf(snap({ round: 2, changes: [change("D1", 2)] }), target);
+    expect(v.zoom).toBeCloseTo(MAX_ZOOM);
+    const r = rects[0]!;
+    expect((r.x + r.width / 2) * v.zoom + v.x).toBeCloseTo(size.width / 2);
+  });
+
+  it("畳みで隠れたノードは、見えている祖先の位置で収める（隠れたノードの位置は使わない）", () => {
+    // D1・D2 は D の中に畳まれて見えない。D の位置で収め、D1・D2 の位置（遠い）には引きずられない
+    const target = { D: { x: 100, y: 100 }, D1: { x: 9000, y: 6000 }, D2: { x: 9000, y: 6000 }, Z: { x: 400, y: 200 } };
+    const s = snap({ round: 2, changes: [change("D1", 2), change("D2", 2), change("Z", 2)], lastChanged: "D2" });
+    const { focus, rects, v } = viewportOf(s, target, { D1: "D", D2: "D" });
+    expect([...focus.ids].sort()).toEqual(["D", "Z"]);
+    expect(v.zoom).toBeGreaterThan(0.75);
+    expect(rects.every((r) => fits(r, v))).toBe(true);
   });
 });
 

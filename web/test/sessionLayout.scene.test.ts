@@ -33,7 +33,8 @@ const INTERRUPTED = "音声の取り込みが途切れました。再開して�
 const STOPPED = "音声の取り込みが止まっています";
 const RESUMED = "再開しました";
 const MANUAL = "動かしています・議題が変わるか Esc で今の議題へ・? でキー一覧";
-const OVERVIEW = "全体を見ています・F か Esc で戻る・? でキー一覧";
+const DIFF = "変わったところを見ています・Esc で戻る・? でキー一覧";
+const OVERVIEW = "全体を見ています・F で変わったところへ・Esc で戻る・? でキー一覧";
 const SCREEN = "共有画面は使っていません（画面収録の許可がありません。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）";
 const TAP = "相手の音声が届いていません（出力の機器を切り替えた後に起きることがあります。cli stop の後、cli start で始め直してください）";
 const PAUSED = { status: "paused", reason: "ChatGPT の利用上限" } as const;
@@ -98,7 +99,7 @@ const intake = (status: "running" | "interrupted" | "stopped" | "none") => emit(
 const screen = (text: string | null) => emit(Message.ReceivedScreenNotice({ text: Option.fromNullishOr(text) }));
 const tapNotice = (text: string | null) => emit(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
 const selfPause = (paused: boolean, reason: "手動" | "自動" = "手動") => emit(Message.ReceivedSelfPause({ selfPaused: paused ? reason : false }));
-const viewing = (mode: "auto" | "manual" | "overview") => emit(Message.ChangedViewingMode({ mode }));
+const viewing = (mode: "auto" | "manual" | "overview" | "diff") => emit(Message.ChangedViewingMode({ mode }));
 const speak = (相手: string, 自分 = "") => emit(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手, 自分 } } }));
 
 let stableBefore: ReturnType<typeof stableParts>;
@@ -634,6 +635,22 @@ describe("sessionLayout の Scene: 見る状態の知らせ（今と同じ位置
         expect(mapOutline(s.html)).toEqual(["div.map-surface", "p.viewing-notice"]);
         expect(timers(s)).toHaveLength(0);
       }),
+    );
+  });
+
+  it("overview → diff の順に、文が入れ替わり（1 つだけが DOM に出る）、auto で消える", () => {
+    scene(
+      app,
+      given(init()),
+      viewing("overview"),
+      settle,
+      viewing("diff"),
+      tap((s) => expect(findAll(".viewing-notice")(s.html).map(textContent)).toEqual([DIFF])),
+      settle,
+      tap((s) => expect(findAll(".viewing-notice")(s.html).map(textContent)).toEqual([DIFF])),
+      viewing("auto"),
+      expectScene(selector(".viewing-notice")).toBeAbsent(),
+      settle,
     );
   });
 

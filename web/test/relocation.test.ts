@@ -31,6 +31,7 @@ const stateOf = (snapshot: Snapshot, selectedId: string | null = null) => {
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
     foldState: {},
     runs: {},
+    changed: [],
     currentTopic: snapshot.currentTopic,
   };
   return { tree, snapshot, selectedId };
@@ -137,6 +138,7 @@ describe("relocations: 見えている木から消えたノードの移り先", 
       parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
       foldState: {},
       runs: {},
+      changed: [],
       currentTopic: b.currentTopic,
     };
     expect(hiddenTree.ids).not.toContain("P2");

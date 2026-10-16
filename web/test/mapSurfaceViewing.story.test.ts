@@ -42,18 +42,19 @@ const tick = (deltaMs: number) => message(Message.TickedAnimationFrame({ deltaMs
 const positionsOf = (m: MapSurfaceModel) => displayedPositions(m);
 
 // select は木に依らないので、空の木で純粋な関数を呼んだ値と比べる
-const EMPTY_TREE: VisibleTree = { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, currentTopic: undefined };
+const EMPTY_TREE: VisibleTree = { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, changed: [], currentTopic: undefined };
 const selectedBy = (state: ViewingState, id: string): ViewingState => reduceViewing(state, { type: "select", id }, EMPTY_TREE).state;
 
 describe("ViewingState の Schema（Schema.declare で素通しにしない）", () => {
   const is = Schema.is(ViewingState);
 
-  it("本物の見る状態は通る（カメラの 3 つの mode・重ねる状態・Set の集合）", () => {
+  it("本物の見る状態は通る（カメラの 4 つの mode・重ねる状態・Set の集合）", () => {
     expect(is({ mode: "auto" })).toBe(true);
     expect(is({ mode: "manual", topic: "B" })).toBe(true);
     expect(is({ mode: "manual", topic: undefined })).toBe(true);
-    expect(is({ mode: "overview", topic: "B", before: { mode: "auto" } })).toBe(true);
-    expect(is({ mode: "overview", topic: "B", before: { mode: "manual", topic: "A" } })).toBe(true);
+    expect(is({ mode: "overview", topic: "B" })).toBe(true);
+    expect(is({ mode: "diff", topic: "B" })).toBe(true);
+    expect(is({ mode: "diff", topic: undefined })).toBe(true);
     expect(
       is({
         mode: "manual",
@@ -78,7 +79,8 @@ describe("ViewingState の Schema（Schema.declare で素通しにしない）",
     expect(is({ mode: "zoom" })).toBe(false);
     expect(is({ mode: "auto", selection: { id: "A" } })).toBe(false);
     expect(is({ mode: "auto", selection: { id: 1, byKey: false } })).toBe(false);
-    expect(is({ mode: "overview", topic: "B", before: { mode: "overview", topic: "B", before: { mode: "auto" } } })).toBe(false);
+    expect(is({ mode: "diff" })).toBe(false);
+    expect(is({ mode: "diff", topic: 1 })).toBe(false);
   });
 });
 
