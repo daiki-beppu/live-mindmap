@@ -9,3 +9,6 @@ dist/
 
 # WebRTC AEC3 のビルド結果（helper/scripts/build-webrtc-apm.sh が作る）
 helper/.deps/webrtc-apm/
+
+# playwright-cli が録画・操作のたびに書く作業ファイル
+.playwright-cli/
