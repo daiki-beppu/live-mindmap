@@ -31,18 +31,18 @@ private func drawnImage(_ lines: [String], width: Int = 1280, height: Int = 720)
 @Suite("共有画面の文字の OCR")
 struct ScreenTextITTests {
     @Test("描いた日本語と英字の行を読み、行に含まれる（港南店・Zendesk）")
-    func readsDrawnJapaneseAndLatinLines() throws {
+    func readsDrawnJapaneseAndLatinLines() async throws {
         let image = try drawnImage(["港南店", "Zendesk"])
-        let lines = try #require(recognizeScreenText(image))
+        let lines = try #require(await recognizeScreenText(image))
         let joined = lines.joined(separator: "\n")
         #expect(joined.contains("港南店"))
         #expect(joined.contains("Zendesk"))
     }
 
     @Test("文字の無い画像では、失敗（nil）ではなく空の配列を返す")
-    func blankImageGivesEmptyLinesNotNil() throws {
+    func blankImageGivesEmptyLinesNotNil() async throws {
         let image = try drawnImage([])
-        let lines = try #require(recognizeScreenText(image))
+        let lines = try #require(await recognizeScreenText(image))
         #expect(lines.isEmpty)
     }
 }
