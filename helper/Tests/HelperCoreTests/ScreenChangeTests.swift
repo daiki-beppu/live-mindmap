@@ -1115,8 +1115,8 @@ struct ScreenEventEmitterTests {
     func windowGoneThenRediscoveredSendsNullOnceThenFirstFrame() async {
         let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
         emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
-        emitter.emitWindowGone(at: 3) // streamDidBecomeInactive
-        emitter.emitWindowGone(at: 3.25) // handleStop（重なった通知）
+        emitter.emitWindowGone(at: 3) // handleStop
+        emitter.emitWindowGone(at: 3.25) // 重なった通知
         emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 8, title: nil)) { shot("A2") } // 見つけ直したウィンドウの最初のフレーム（輝度は前と同じ）
         let events = await collect(emitter)
         #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 3, image: nil, lines: nil), .screen(start: 8, image: "A2", lines: [])])
@@ -1200,6 +1200,22 @@ struct ScreenEventEmitterTests {
         emitter.emitCaptureStopped(at: 1)
         let events = await collect(emitter)
         #expect(events.isEmpty)
+    }
+}
+
+// Issue #1174: inactive の通知はウィンドウが閉じたことを意味しない（その後もフレームは届く）。撮影は続け、閉じたとも出さない。
+@Suite("共有画面: OS から inactive の通知が来たとき")
+struct ScreenStreamInactiveTests {
+    @Test("「閉じた」の行を出さず、image: null の screen も流さない")
+    func inactiveNoticeIsNotWindowGone() async {
+        let emitter = ScreenEventEmitter(bundleID: zoomBundleID)
+        var lines: [String] = []
+        let capture = ScreenCapture(bundleID: zoomBundleID, origin: 0, emitter: emitter, log: { lines.append($0) })
+        emitter.emit(ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)) { shot("A") }
+        capture.handleStreamInactive()
+        let events = await collect(emitter)
+        #expect(events == [.screen(start: 0, image: "A", lines: [])])
+        #expect(!lines.contains { $0.contains("閉じた") })
     }
 }
 
