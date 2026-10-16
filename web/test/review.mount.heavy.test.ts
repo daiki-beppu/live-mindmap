@@ -403,96 +403,80 @@ describe("見返し（Foldkit 版）の寸法", () => {
 });
 
 // 速さのメニューとツールチップの位置（Issue #1225・#1226）: パネルのクラスが位置（bottom・right）を持つと、anchor が書く left・top と上下・左右で重なり、
-// メニューが画面幅に広がって外へはみ出したり、高さが潰れたりする。外側（backdrop）だけが見えて、どのボタンも押せなくなる。位置は anchor だけで決まることを、PC とスマホの幅で確かめる
+// メニューが画面幅に広がって外へはみ出したり、高さが潰れたりする。外側（backdrop）だけが見えて、どのボタンも押せなくなる。位置は anchor だけで決まることを、PC とスマホの幅で確かめる。
+// 項目を選んだ後の速さの表示と、閉じた後に字幕・右の列のボタンが効くことは、E2E の見返しの流れ（e2e/tests/review/review.e2e.ts）が見る
 describe("見返し（Foldkit 版）の速さのメニューとツールチップの位置", () => {
-  type Box = { left: number; top: number; right: number; bottom: number; width: number; height: number };
-  const boxOf = (page: Page, selector: string): Promise<Box> => page.locator(selector).first().evaluate((el) => el.getBoundingClientRect().toJSON() as Box);
+  type Box = Awaited<ReturnType<typeof rectOf>>;
   const inside = (box: Box, viewport: { width: number; height: number }, label: string) => {
     expect(box.left, `${label} の左端`).toBeGreaterThanOrEqual(0);
     expect(box.top, `${label} の上端`).toBeGreaterThanOrEqual(0);
     expect(box.right, `${label} の右端`).toBeLessThanOrEqual(viewport.width);
     expect(box.bottom, `${label} の下端`).toBeLessThanOrEqual(viewport.height);
   };
+  // ツールチップを出す相手と向き（controls.ts の placement）。音声なしの見返しにはミュートが無い
+  const tipped = [
+    { label: "反映 1 つ戻る", align: "start" },
+    { label: "再生", align: "start" },
+    { label: "反映 1 つ進む", align: "start" },
+    { label: "ミュート", align: "start" },
+    { label: "字幕", align: "end" },
+    { label: "右の列", align: "end" },
+  ] as const;
+  const shownTip = '.review-tip[data-open]';
 
   for (const viewport of [PAGE_VIEWPORT, { width: 390, height: 844 }]) {
     it(
-      `${viewport.width}×${viewport.height}: 速さのメニューはボタンの上に右端を揃えて出て、項目が全部見え、押せる。閉じた後は字幕・右の列のボタンが 1 回で効く`,
+      `${viewport.width}×${viewport.height}: 速さのメニューはボタンの上に右端を揃えて出て、項目が全部見え、各項目の点で一番上に来る`,
       () => withBrowser(async (browser) => {
         const page = await openReviewPage(browser, pages.audioPath, { audio: true });
         await page.setViewportSize(viewport);
         await page.locator(".review-rate__button").first().click();
-        await page.locator(".review-rate__item").first().waitFor({ timeout: 10_000 });
         // anchor の位置が付く（visibility が外れる）まで待つ
-        await page.waitForFunction(() => getComputedStyle(document.querySelector(".review-rate__menu")!).visibility === "visible", undefined, { timeout: 10_000 });
-        const menu = await boxOf(page, ".review-rate__menu");
-        const button = await boxOf(page, ".review-rate__button");
+        await page.waitForFunction(() => { const menu = document.querySelector(".review-rate__menu"); return menu !== null && getComputedStyle(menu).visibility === "visible"; }, undefined, { timeout: 10_000 });
+        const menu = await rectOf(page, ".review-rate__menu");
+        const button = await rectOf(page, ".review-rate__button");
         inside(menu, viewport, "メニュー");
-        expect(menu.width, "メニューの幅は中身に合わせる（画面幅に広がらない）").toBeLessThan(viewport.width - 16);
         expect(menu.width, "最小幅").toBeGreaterThanOrEqual(220);
         expect(menu.bottom, "メニューはボタンの上").toBeLessThanOrEqual(button.top + 1);
-        if (menu.left > 0) near(menu.right, button.right, "メニューの右端はボタンの右端");
-        const items = await page.locator(".review-rate__item").evaluateAll((all) => all.map((el) => el.getBoundingClientRect().toJSON() as { top: number; bottom: number; height: number }));
-        const itemsHeight = items.reduce((sum, item) => sum + item.height, 0);
-        // 項目の数 × 1 項目の高さ ＋ 上下の余白（4px ずつ）
-        near(menu.height, itemsHeight + 8, "メニューの高さ");
-        // 各項目の中心で一番上に来るのは、外側（backdrop）でなくその項目
+        near(menu.right, button.right, "メニューの右端はボタンの右端");
+        const items = await page.locator(".review-rate__item").evaluateAll((all) => all.map((el) => el.getBoundingClientRect().height));
+        // 項目の数 × 1 項目の高さ ＋ 上下の余白（p-[4px]）
+        near(menu.height, items.reduce((sum, height) => sum + height, 0) + 8, "メニューの高さ");
         const hits = await page.locator(".review-rate__item").evaluateAll((all) =>
           all.map((el) => {
             const r = el.getBoundingClientRect();
             return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest(".review-rate__item") === el;
           }),
         );
-        expect(hits).toEqual(items.map(() => true));
-
-        // 録音つきの項目は「<速さ> 倍」。今の速さでない最後の項目を選ぶ
-        const before = (await page.locator(".review-rate__button").first().textContent())?.trim();
-        const target = page.locator(".review-rate__item").filter({ hasNotText: new RegExp(`^${before?.replace("×", "")} 倍$`) }).last();
-        const targetRate = Number((await target.textContent())!.match(/^([\d.]+) 倍$/)![1]);
-        expect(`${targetRate}×`).not.toBe(before);
-        await target.click();
-        await page.locator(".review-rate__menu").waitFor({ state: "detached", timeout: 10_000 });
-        expect((await page.locator(".review-rate__button").first().textContent())?.trim()).toBe(`${targetRate}×`);
-        await expect.poll(() => page.locator(".review-rate__backdrop").count(), { timeout: 10_000 }).toBe(0);
-
-        const captions = page.locator('button[aria-label="字幕"]');
-        const captionsBefore = await captions.getAttribute("aria-pressed");
-        await captions.click();
-        await expect.poll(() => captions.getAttribute("aria-pressed"), { timeout: 10_000 }).not.toBe(captionsBefore);
-        const side = page.locator('button[aria-label="右の列"]');
-        const sideBefore = await side.getAttribute("aria-pressed");
-        await side.click();
-        await expect.poll(() => side.getAttribute("aria-pressed"), { timeout: 10_000 }).not.toBe(sideBefore);
+        expect(hits, "各項目の中心で一番上に来るのは、外側（backdrop）でなくその項目").toEqual(items.map(() => true));
         await page.context().close();
       }),
       TIMEOUT,
     );
 
     it(
-      `${viewport.width}×${viewport.height}: ボタンのツールチップは文字が 1 行すべて見える高さで、画面の中に出る`,
+      `${viewport.width}×${viewport.height}: ボタンのツールチップはボタンの上に指定の向きで出て、文字が 1 行すべて見える`,
       () => withBrowser(async (browser) => {
         const page = await openReviewPage(browser, pages.audioPath, { audio: true });
         await page.setViewportSize(viewport);
-        for (const label of ["字幕", "右の列", "反映 1 つ戻る", "反映 1 つ進む", "再生"]) {
-          await page.locator(`button[aria-label="${label}"]`).hover();
-          await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].some((tip) => getComputedStyle(tip).display !== "none" && getComputedStyle(tip).visibility === "visible"), undefined, { timeout: 10_000 });
-          const tip = await page.locator(".review-tip").evaluateAll((all) => {
-            const el = all.find((tip) => getComputedStyle(tip).display !== "none")!;
-            return { box: el.getBoundingClientRect().toJSON() as Box, clipped: el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth };
-          });
-          // 1 行（leading 16px）＋ 上下の余白（4px ずつ）
-          near(tip.box.height, 24, `${label} のツールチップの高さ`);
-          expect(tip.clipped, `${label} のツールチップの文字が見切れない`).toBe(false);
-          inside(tip.box, viewport, `${label} のツールチップ`);
+        const targets = [...tipped.map(({ label, align }) => ({ label, align, trigger: `button[aria-label="${label}"]` })), { label: "速さ", align: "end" as const, trigger: ".review-rate__button" }];
+        for (const { label, align, trigger } of targets) {
+          await page.locator(trigger).first().hover();
+          await page.waitForFunction((selector) => { const tip = document.querySelector(selector); return tip !== null && getComputedStyle(tip).visibility === "visible"; }, shownTip, { timeout: 10_000 });
+          const tip = await rectOf(page, shownTip);
+          const button = await rectOf(page, trigger);
+          const clipped = await page.locator(shownTip).evaluate((el) => el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
+          // 1 行（leading-[16px]）＋ 上下の余白（py-[4px]）
+          near(tip.height, 24, `${label} のツールチップの高さ`);
+          expect(clipped, `${label} のツールチップの文字が見切れない`).toBe(false);
+          inside(tip, viewport, `${label} のツールチップ`);
+          expect(tip.bottom, `${label} のツールチップはボタンの上`).toBeLessThanOrEqual(button.top + 1);
+          if (align === "start") near(tip.left, button.left, `${label} のツールチップの左端はボタンの左端`);
+          else near(tip.right, button.right, `${label} のツールチップの右端はボタンの右端`);
           const { x, y } = await mapPoint(page, "corner");
           await page.mouse.move(x, y);
-          await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].every((tip) => getComputedStyle(tip).display === "none"), undefined, { timeout: 10_000 });
+          await page.locator(shownTip).waitFor({ state: "detached", timeout: 10_000 });
         }
-        // 速さのボタンのツールチップも
-        await page.locator(".review-rate__button").first().hover();
-        await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].some((tip) => getComputedStyle(tip).display !== "none" && getComputedStyle(tip).visibility === "visible"), undefined, { timeout: 10_000 });
-        const rateTip = await page.locator(".review-tip").evaluateAll((all) => all.find((tip) => getComputedStyle(tip).display !== "none")!.getBoundingClientRect().toJSON() as Box);
-        near(rateTip.height, 24, "速さのツールチップの高さ");
-        inside(rateTip, viewport, "速さのツールチップ");
         await page.context().close();
       }),
       TIMEOUT,

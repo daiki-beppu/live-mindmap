@@ -39,9 +39,9 @@ test("見返し: 時刻を先頭へ動かすと、終わりで揃っていたノ
 // 項目とボタンは locator の tap で押す（tap は、押す点で一番上に来るのがその要素であることまで確かめる）。位置と高さの数値は web の heavy IT（review.mount.heavy.test.ts）が見る。
 // 録音なしの速さは 10・30・60・120 倍（最初は 30 倍）。PC の幅とスマホの幅（390×844）で同じ手順を流す。agent は使わない（replay cache は要らない）
 test("見返し: 速さのメニューから速さを選べ、閉じた後は字幕・右の列のボタンが効く", async ({ app, browser, screen }) => {
-  for (const [index, viewport] of [{ width: 1280, height: 720 }, { width: 390, height: 844 }].entries()) {
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 844 }]) {
     await browser.setViewport(viewport);
-    await openReview({ app, browser }, `review-rate-${index}`);
+    await openReview({ app, browser }, `review-rate-${viewport.width}`);
     const rateButton = browser.locator(".review-rate__button");
     await expect(rateButton).toContainText("30×", WAIT);
 
