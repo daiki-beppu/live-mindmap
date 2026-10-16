@@ -193,28 +193,33 @@ public struct FileAudioInputs: AsyncSequence {
     let alignment: FileReadingAlignment.Reader?
     /// 読み始める音声の時刻（ファイルの先頭からの秒）。0 なら先頭から。各入力の `bufferStartTime` は、ここから読んでもファイル上の位置のまま。
     let from: Double
+    /// サーバーの指示で読み手を止める門（`FileReadingGate`）。nil なら止めない。
+    let gate: FileReadingGate?
 
-    init(url: URL, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0) {
+    init(url: URL, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0, gate: FileReadingGate? = nil) {
         self.url = url
         self.alignment = alignment
         self.from = from
+        self.gate = gate
     }
 
     public func makeAsyncIterator() -> Iterator {
-        Iterator(url: url, alignment: alignment, from: from)
+        Iterator(url: url, alignment: alignment, from: from, gate: gate)
     }
 
     public struct Iterator: AsyncIteratorProtocol {
         let url: URL
         let alignment: FileReadingAlignment.Reader?
         let from: Double
+        let gate: FileReadingGate?
         private var reading: Reading?
         private var finished = false
 
-        init(url: URL, alignment: FileReadingAlignment.Reader?, from: Double) {
+        init(url: URL, alignment: FileReadingAlignment.Reader?, from: Double, gate: FileReadingGate?) {
             self.url = url
             self.alignment = alignment
             self.from = from
+            self.gate = gate
         }
 
         public mutating func next() async throws -> AnalyzerInput? {
@@ -225,6 +230,8 @@ public struct FileAudioInputs: AsyncSequence {
                 guard let reading else { return nil }
                 // 次の入力の開始位置まで、もう一方の読み手が読み終えるのを待つ
                 try await alignment?.waitTurn(start: reading.position)
+                // 止められている間は、ファイルを読み進めない。待ちの解除は門を見ないので、読む直前に確かめる
+                try await gate?.waitOpen()
                 let input = try await onFileReadingQueue { try reading.nextInput() }
                 // 渡す入力の終わりまで、映像の判定が済むのを待つ（`onFileReadingQueue` の外）
                 if input != nil { try await alignment?.waitScreen(through: reading.position) }
@@ -353,11 +360,12 @@ final class FileLoudness {
 /// 結果の時刻は `transcriber` が返したまま（ファイルの音声の時刻）。
 /// `alignment` があれば、もう一方のファイルの読み手と同じ音声の時刻に揃えて読む（`cli recorded --self`）。
 /// `from` があれば、その音声の時刻（秒）から読む（サーバーの起動し直し）。結果の時刻は、途中から読んでもファイルの時刻のまま。
+/// `gate` があれば、サーバーの指示で止められている間は、ファイルを読み進めない。
 public func transcribeFile(
-    at url: URL, with transcriber: any FileTranscriber, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0
+    at url: URL, with transcriber: any FileTranscriber, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0, gate: FileReadingGate? = nil
 ) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
     let loudness = FileLoudness(source: try await FileAudioSource.open(url))
-    let results = try await transcriber.transcribe(FileAudioInputs(url: url, alignment: alignment, from: from))
+    let results = try await transcriber.transcribe(FileAudioInputs(url: url, alignment: alignment, from: from, gate: gate))
     let (stream, continuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self, throwing: Error.self)
     let task = Task {
         do {

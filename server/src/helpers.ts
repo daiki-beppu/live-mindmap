@@ -38,9 +38,12 @@ export type HelperAttempt = {
   exit: Effect.Effect<HelperExitInfo>;
   // 標準エラーの末尾（exit が返った後の値が確定した値）
   stderrTail: Effect.Effect<ReadonlyArray<string>>;
-  // 自分の休止・再開の指示を送る（Issue #1069）。paused は求める状態。helper に届かなくても失敗にしない
-  send: (paused: boolean) => Effect.Effect<void>;
+  // ヘルパーへ指示を送る。paused は求める状態。helper に届かなくても失敗にしない
+  // self-pause: 自分の休止・再開（Issue #1069）。reading-pause: 録画のファイルの読み取りの停止・再開（Issue #1092。transcribe-file だけ）
+  send: (instruction: HelperInstruction) => Effect.Effect<void>;
 };
+
+export type HelperInstruction = { type: "self-pause" | "reading-pause"; paused: boolean };
 
 export type HelperCommand = { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
 
@@ -255,7 +258,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     });
     const socket = yield* Effect.raceFirst(connect, helperEnded);
     // server から helper への指示は、type 付きの JSON 1 件（helper/README.md「サーバーからの指示」）。組み立てはここ 1 か所
-    const send = (paused: boolean) => socket.send(JSON.stringify({ type: "self-pause", paused, token: controlToken }));
+    const send = (instruction: HelperInstruction) => socket.send(JSON.stringify({ ...instruction, token: controlToken }));
 
     return { events: socket.events, stop, exit: Deferred.await(exited), stderrTail, send };
   });

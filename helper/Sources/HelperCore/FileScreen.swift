@@ -30,7 +30,7 @@ func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -
     }
 }
 
-/// 動画の最初の映像トラックを読み、変化した画面のイベントにする。`next()` は `fileScreenQueue` の上でだけ呼ぶ。
+/// 動画の最初の映像トラックを読み、変化した画面のイベントにする。`step()` は `fileScreenQueue` の上でだけ呼ぶ。
 /// AVAssetReader の読み出しと停止（`copyNextSampleBuffer`・`cancelReading`）は `fileScreenQueue` の上（と `deinit`）でだけ行う。読み出し中に別のスレッドから `cancelReading` が入ると落ちる（Issue #1198）。
 final class FileScreenReading: @unchecked Sendable {
     enum Opened {
@@ -102,24 +102,35 @@ final class FileScreenReading: @unchecked Sendable {
     /// 読み手の状態（テストで、取り消しが AVAssetReader に触れた時機を見る）。`fileScreenQueue` の上か、キューを塞いでいる間にだけ読む。
     var readerStatus: AVAssetReader.Status { reader.status }
 
-    /// 次のイベントを読む（出るまでフレームを進める）。映像を読み終えたら nil。
+    /// `step()` の結果。
+    enum Step {
+        /// フレームを 1 つ読んだ。出すイベントは無い。
+        case frame
+        /// イベントが出た。
+        case events([HelperEvent])
+        /// 映像を読み終えた。
+        case end
+    }
+
+    /// フレームを 1 つだけ読んで進める。呼び出し側が 1 フレームごとに止められるよう、イベントが出るまでは進めない（一時停止の間は読み進めない。Issue #1092）。
     /// 途中で読めなくなったら、画像を送った後なら `image: null`、続けて `screen-off`（許可なし）を返してから終わる（ライブの `emitCaptureStopped` と同じ順）。
-    func next() -> [HelperEvent]? {
-        if finished || isCancelled { return nil }
-        while !isCancelled, let sample = output.copyNextSampleBuffer() {
+    func step() -> Step {
+        if finished || isCancelled { return .end }
+        if !isCancelled, let sample = output.copyNextSampleBuffer() {
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-            guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { continue }
+            guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { return .frame }
             lastTime = time
             let frame = ScreenFrame(luma: rendered.luma, time: time, title: nil)
-            if let event = detector.screenEvent(for: frame, encode: { screenShot(of: rendered.image) }) { return [event] }
+            if let event = detector.screenEvent(for: frame, encode: { screenShot(of: rendered.image) }) { return .events([event]) }
+            return .frame
         }
         finished = true
-        guard !isCancelled, reader.status == .failed else { return nil }
+        guard !isCancelled, reader.status == .failed else { return .end }
         printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
         var events: [HelperEvent] = []
         if let event = detector.screenEvent(windowGoneAt: lastTime) { events.append(event) }
         events.append(.screenOff(start: lastTime, reason: .許可なし))
-        return events
+        return .events(events)
     }
 
     /// フレームを 1280×720 に収めた画像にして、輝度の画像と一緒に返す。作れなければ nil（そのフレームは判定に入れない）。
@@ -144,8 +155,11 @@ final class FileScreenReading: @unchecked Sendable {
 /// サーバーは画面の変化を発言より先に受け取る前提で、音声の時刻の順に並べる。
 /// 映像が読めなければ `screen-off`（許可なし）を流して、音声の結果は続く。映像のトラックが無ければ画面のイベントは出ない。
 /// `from` は読み始める音声・映像の時刻（秒。サーバーの起動し直しのとき）。結果の時刻はファイルの時刻のまま。
-public func fileSessionEvents(at url: URL, with transcriber: any FileTranscriber, from: Double = 0) async throws -> AsyncThrowingStream<HelperEvent, Error> {
-    let results = try await transcribeFile(at: url, with: transcriber, from: from)
+/// `gate` があれば、サーバーの指示で止められている間は読み進めない。
+public func fileSessionEvents(
+    at url: URL, with transcriber: any FileTranscriber, from: Double = 0, gate: FileReadingGate? = nil
+) async throws -> AsyncThrowingStream<HelperEvent, Error> {
+    let results = try await transcribeFile(at: url, with: transcriber, from: from, gate: gate)
     let (stream, continuation) = AsyncThrowingStream.makeStream(of: HelperEvent.self, throwing: Error.self)
     let task = Task {
         var reading: FileScreenReading?
@@ -158,8 +172,14 @@ public func fileSessionEvents(at url: URL, with transcriber: any FileTranscriber
                 continuation.yield(.screenOff(start: 0, reason: .許可なし))
             case .reading(let opened):
                 reading = opened
-                while !Task.isCancelled, let events = await onFileScreenQueue({ opened.next() }) {
-                    for event in events { continuation.yield(event) }
+                screenLoop: while !Task.isCancelled {
+                    // 止められている間は、映像も読み進めない（1 フレームごとに確かめる）
+                    try await gate?.waitOpen()
+                    switch await onFileScreenQueue({ opened.step() }) {
+                    case .frame: continue
+                    case .events(let events): for event in events { continuation.yield(event) }
+                    case .end: break screenLoop
+                    }
                 }
             }
             reading?.cancel()
@@ -192,7 +212,10 @@ private func hasVideoTrack(_ url: URL) async -> Bool {
 /// 2 トラック（`cli recorded --self`）の映像を読み、変化した画面を `server` に流す。判定・画像・`screen-off` は 1 本のとき（`FileScreenReading`）と同じ。
 /// 1 本のときと違い、文字起こしの結果と並べて流す。イベントを流した後に、判定したフレームの時刻まで `progress` を進め
 /// （音声の読み手は、判定の済んだ時刻を越えて入力を渡さない）、どの出口でも終わりを知らせる。取り消されたら読むのをやめる。
-public func relayFileScreen(from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen, startingAt: Double = 0) async {
+/// `gate` があれば、サーバーの指示で止められている間は読み進めない。
+public func relayFileScreen(
+    from url: URL, to server: WebSocketServer, progress: FileReadingAlignment.Screen, startingAt: Double = 0, gate: FileReadingGate? = nil
+) async {
     switch await FileScreenReading.open(url, startingAt: startingAt) {
     case .noVideo:
         break
@@ -202,7 +225,19 @@ public func relayFileScreen(from url: URL, to server: WebSocketServer, progress:
     case .reading(let reading):
         // 取り消されたら、読み出しを止めて `next()` を抜けさせる（変化の無い長い区間を、次のイベントまで読み切らない）
         await withTaskCancellationHandler {
-            while !Task.isCancelled, case let (events, time)? = await onFileScreenQueue({ reading.next().map { ($0, reading.lastTime) } }) {
+            while !Task.isCancelled {
+                // 止められている間は、映像も読み進めない。キャンセルされたら読むのをやめる
+                do { try await gate?.waitOpen() } catch { break }
+                let stepped = await onFileScreenQueue { () -> (events: [HelperEvent], time: Double)? in
+                    switch reading.step() {
+                    case .frame: return ([], reading.lastTime)
+                    case .events(let events): return (events, reading.lastTime)
+                    case .end: return nil
+                    }
+                }
+                guard let (events, time) = stepped else { break }
+                // イベントが出ないフレームでは、判定の進みを動かさない（従来はイベントが出るまで 1 回で読み進めていた）
+                if events.isEmpty { continue }
                 for event in events where !Task.isCancelled { await broadcast(event, to: server) }
                 await progress.advance(to: time)
             }

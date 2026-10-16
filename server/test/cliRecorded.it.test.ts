@@ -7,11 +7,12 @@ import { describe, expect, it } from "@effect/vitest";
 import { WebSocket } from "ws";
 import { Clock, ConfigProvider, Console, Deferred, Effect, FileSystem, Fiber, Layer, Queue, Result, Stream, type Cause } from "effect";
 import { HttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
-import { formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
+import { DiffUpdatePaused, formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
 import { AudioMix } from "../src/audioMix.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -22,7 +23,7 @@ import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
-import { updaterLayer } from "./fixtures/sessionLayers.ts";
+import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { advanceTo, eventually, runToEnd, trackingClock, virtualNow } from "./fixtures/virtualTime.ts";
 import { FAKE_TUNNEL_HOST, fakeTunnel } from "./fixtures/tunnel.ts";
@@ -75,6 +76,10 @@ const events = (script: Script): unknown[] => [
 // attempts[n] は n 回目（0 始まり）の起動の台本。無い回は script を使う（起動し直しで別の振る舞いを試すときだけ渡す）
 function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
   const calls: string[][] = [];
+  // サーバーからヘルパーへ送られた指示（self-pause・reading-pause）を、送られた順に
+  const sent: { type: string; paused: boolean }[] = [];
+  // 同じ指示を、送り先の起動回（0 始まり）つきで記録したもの
+  const sentByAttempt: { attempt: number; type: string; paused: boolean }[] = [];
   const stopSeen = Effect.runSync(Deferred.make<void>());
   // 起動した後に、テストからヘルパーのイベントを足す
   const live: { queue: Queue.Queue<string, Cause.Done> | undefined; end: Effect.Effect<void> | undefined; crash: Effect.Effect<void> | undefined } = { queue: undefined, end: undefined, crash: undefined };
@@ -92,7 +97,8 @@ function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
   };
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.gen(function* () {
     calls.push([...args]);
-    const current = attempts[calls.length - 1] ?? script;
+    const attemptIndex = calls.length - 1;
+    const current = attempts[attemptIndex] ?? script;
     if (current.failLaunch === true) return yield* new HelperLaunchFailure({ stderrTail: ["起動できない"], exit: { code: 1, signal: null } });
     if (current.blockLaunch === true) {
       yield* Deferred.await(stopRequested);
@@ -114,13 +120,13 @@ function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
     yield* Effect.forkScoped(Effect.andThen(Deferred.await(stopRequested), Deferred.succeed(stopSeen, undefined)));
     for (const event of events(current)) Queue.offerUnsafe(queue, JSON.stringify(event));
     if (current.hold !== true) yield* finish(current.exit ?? { code: 0, signal: null });
-    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: () => Effect.void };
+    return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { sent.push(instruction); sentByAttempt.push({ attempt: attemptIndex, ...instruction }); }) };
   });
   const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), creationDate, launch }));
-  return { calls, creationDateCalls, stopSeen, layer, feed, end, crash };
+  return { calls, sent, sentByAttempt, creationDateCalls, stopSeen, layer, feed, end, crash };
 }
 
-type UpdateScript = (input: DiffInput, call: number) => Effect.Effect<void>;
+type UpdateScript = (input: DiffInput, call: number) => Effect.Effect<void, UpdateFailure>;
 
 // 呼び出しを記録する差分更新。呼び出しが重なったら（前の呼び出しの終わりを待たずに次を呼んだら）overlaps が増える
 function fakeUpdater(before: UpdateScript = () => Effect.void) {
@@ -130,8 +136,7 @@ function fakeUpdater(before: UpdateScript = () => Effect.void) {
     inputs.push(input);
     state.inFlight += 1;
     if (state.inFlight > 1) state.overlaps += 1;
-    yield* before(input, inputs.length);
-    state.inFlight -= 1;
+    yield* before(input, inputs.length).pipe(Effect.ensuring(Effect.sync(() => { state.inFlight -= 1; })));
     return { ops: [] };
   }));
   return { inputs, state, layer };
@@ -161,6 +166,32 @@ function failingLogWrite(matches: (content: string) => boolean) {
     }),
   ).pipe(Layer.provide(NodeServices.layer));
   return { writes, layer };
+}
+
+// log.jsonl への書き込みのうち、条件に合う最初の 1 回を、release されるまで保留する FileSystem。保留に入ったら entered が完了する
+function stallingLogWrite(matches: (content: string) => boolean) {
+  const entered = Effect.runSync(Deferred.make<void>());
+  const release = Effect.runSync(Deferred.make<void>());
+  const state = { armed: true };
+  const layer = Layer.effect(
+    FileSystem.FileSystem,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return new Proxy(fs, {
+        get(target, key, receiver) {
+          const value = Reflect.get(target, key, receiver);
+          if (key !== "writeFileString") return value;
+          return (path: string, data: string, options?: unknown) => {
+            const write = (value as (...args: unknown[]) => Effect.Effect<void>).call(target, path, data, options);
+            if (!(state.armed && path.endsWith("log.jsonl") && matches(data))) return write;
+            state.armed = false;
+            return Effect.andThen(Deferred.succeed(entered, undefined), Effect.andThen(Deferred.await(release), write));
+          };
+        },
+      });
+    }),
+  ).pipe(Layer.provide(NodeServices.layer));
+  return { entered, release, layer };
 }
 
 // /session/recorded の応答の本文を読み始めた（stream にアクセスした）ことを知らせ、本文は永遠に来ないものにする HttpClient
@@ -283,6 +314,14 @@ const waitForRemarks = (sessionsDir: string, count: number) =>
     expect(dirs).toHaveLength(1);
     expect(remarksOf(logLines(join(sessionsDir, dirs[0]!)))).toHaveLength(count);
   }, { timeout: 10_000 }));
+
+// 偽の時計をサーバーにも CLI にも渡す（resource の中のサーバーの起動も、この Clock の下で行う）
+const withVirtualClock = <A, E, R>(body: (pending: number[]) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const pending: number[] = [];
+    const clock = yield* trackingClock(pending);
+    return yield* body(pending).pipe(Effect.provideService(Clock.Clock, clock));
+  });
 
 describe("cli recorded <file>", () => {
   it.live("ファイルを渡すと、1 発言ずつ差分更新の終わりを待って入れ、マップ・log.jsonl・map.* ができる。進み具合の行と、フォルダと map.* のパスが出る", () => Effect.gen(function* () {
@@ -1186,15 +1225,6 @@ describe("cli recorded <file> --realtime", () => {
     expect(existsSync(join(dir, "map.md"))).toBe(true);
   })).pipe(Effect.scoped), 30_000);
 
-
-  // 偽の時計をサーバーにも CLI にも渡す（resource の中のサーバーの起動も、この Clock の下で行う）
-  const withVirtualClock = <A, E, R>(body: (pending: number[]) => Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const pending: number[] = [];
-      const clock = yield* trackingClock(pending);
-      return yield* body(pending).pipe(Effect.provideService(Clock.Clock, clock));
-    });
-
   it.effect("発言は end、画面の変化は start の仮想時刻ちょうどに入り、差分更新の終わりは待たない", () => withVirtualClock((pending) => Effect.gen(function* () {
     // 1 回目の差分更新は、最後まで終わらない（等速は、呼び出しの終わりを待たずに次を入れる）
     const gate = yield* Deferred.make<void>();
@@ -1370,6 +1400,83 @@ describe("cli recorded <file> --realtime", () => {
       expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1"]);
       for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
     })).pipe(Effect.scoped), 30_000);
+
+  // 差分更新の応答を待つ間に音声の時刻が来る発言が 3 件以上あっても、セッションに入って処理を待つ発言は 1 回分（2 件）まで。
+  // 相手の最後の発言は drain まで保留されるので、r4 を置いて r3 を締める
+  const FOUR: Script = {
+    remarks: [],
+    hold: true,
+    events: [
+      ...remarkEvents({ start: 0, end: 2, text: "一つ目の発言です" }),
+      ...remarkEvents({ start: 10, end: 12, text: "二つ目の発言です" }),
+      ...remarkEvents({ start: 20, end: 22, text: "三つ目の発言です" }),
+      ...remarkEvents({ start: 30, end: 32, text: "四つ目の発言です" }),
+    ],
+  };
+  // r1 と r2 が入った状態（1 回目の差分更新は未完了）にして、r3（22 秒）の時刻を過ぎるまで仮想時計を進める
+  const reachThirdRemark = (r: { sessionsDir: string; updater: { inputs: unknown[] } }, pending: number[]) => Effect.gen(function* () {
+    yield* advanceTo(pending, 2000, () => has(r.sessionsDir, isRemark("r1")));
+    yield* advanceTo(pending, 12000, () => has(r.sessionsDir, isRemark("r2")));
+    yield* eventually(() => pending.includes(22000), "r3 の音声の時刻の待ちに入る");
+    yield* TestClock.adjust(18_000);
+    yield* realDelay(300);
+  });
+  const realDelay = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  it.effect("差分更新の応答を待つ間は、処理を待つ発言が 2 件になった時点で次の発言を入れず、応答が終わると残りが順に 1 回ずつ入る", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const r = yield* resource(FOUR, fakeUpdater((_input, call) => call === 1 ? Deferred.await(gate) : Effect.void));
+    const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.forkChild);
+
+    yield* reachThirdRemark(r, pending);
+    // 30 秒の時点でも r3 は入らない
+    expect(remarksOf(sessionLog(r.sessionsDir)).map((x) => x.id)).toEqual(["r1", "r2"]);
+    expect(r.updater.inputs).toHaveLength(1);
+
+    yield* Deferred.succeed(gate, undefined);
+    yield* eventually(() => has(r.sessionsDir, isRemark("r3")), "応答が終わると r3 が入る");
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarksOf(sessionLog(r.sessionsDir)).map((x) => x.id)).toEqual(["r1", "r2", "r3", "r4"]);
+    const fed = r.updater.inputs.flatMap((input) => input.fresh.map((remark) => remark.id));
+    expect([...fed].sort()).toEqual(["r1", "r2", "r3", "r4"]);
+    expect(r.updater.state.overlaps).toBe(0);
+  })).pipe(Effect.scoped), 30_000);
+
+  it.effect("処理を待つ発言の数が上限で待っている間の Ctrl-C は、仮想時計を進めなくてもすぐ戻り、待っていた発言は入れず、入れた分で map.* を書く", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const r = yield* resource(FOUR, fakeUpdater((_input, call) => call === 1 ? Deferred.await(gate) : Effect.void));
+    const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.forkChild);
+
+    yield* reachThirdRemark(r, pending);
+    yield* Fiber.interrupt(running).pipe(Effect.forkChild);
+    let ended = false;
+    yield* Fiber.await(running).pipe(Effect.ensuring(Effect.sync(() => { ended = true; })), Effect.forkChild);
+    // 差分更新の応答はまだ終わっていない。終えると書き出しが進む
+    yield* Deferred.succeed(gate, undefined);
+    yield* eventually(() => ended, "recorded の CLI が戻る");
+
+    const dir = onlySession(r.sessionsDir);
+    expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1", "r2"]);
+    for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
+  })).pipe(Effect.scoped), 30_000);
+
+  it.effect("処理を待つ発言の数が上限で待っている間に差分更新が stopped になっても、待ちは解け、残りの発言が入って CLI が戻る", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const r = yield* resource(FOUR, fakeUpdater((_input, call) => call === 1
+      ? Effect.andThen(Deferred.await(gate), Effect.fail({ _tag: "DiffUpdateStopped", message: "再起動の上限" } satisfies UpdateFailure))
+      : Effect.void));
+    const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.forkChild);
+
+    yield* reachThirdRemark(r, pending);
+    expect(remarksOf(sessionLog(r.sessionsDir)).map((x) => x.id)).toEqual(["r1", "r2"]);
+
+    yield* Deferred.succeed(gate, undefined);
+    yield* eventually(() => has(r.sessionsDir, isRemark("r3")), "stopped になると r3 が入る");
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarksOf(sessionLog(r.sessionsDir)).map((x) => x.id)).toEqual(["r1", "r2", "r3", "r4"]);
+  })).pipe(Effect.scoped), 30_000);
 });
 
 // 動画の映像を共有画面として使う（Issue #1090）。本物のヘルパーは、映像の判定と OCR を文字起こしと並べて先に済ませるので、
@@ -1447,4 +1554,237 @@ describe("cli recorded <file> 動画の映像", () => {
     const lines = sessionLog(r.sessionsDir);
     expect(remarkTexts(lines)).toEqual(["江南店に行きます", "港南店に行きます"]);
   }).pipe(Effect.scoped), 30_000);
+});
+
+// 差分更新が利用上限で一時停止している間（Issue #1092）、録画からのセッションは溜まっている発言をセッションへ入れず、ヘルパーにもファイルを読み進めさせない。
+// 次に試す時刻に再試行が成功したら、止めた続きから入れる。再試行がまた一時停止しても諦めず、待っている間の stop・Ctrl-C は入れた分で終える。
+// ヘルパーは台本のイベント（r1〜r3）を、一時停止の前にすべて流し終えている（先に読んで溜まっている分を入れないことを見る）。
+describe("cli recorded <file> 差分更新の一時停止", () => {
+  const CHATGPT = "ChatGPT の利用上限";
+  const CLAUDE = "Claude の利用上限";
+  const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
+  // 進み具合の行が出す「次に試す時刻」（地方時の時:分）。時は 1 桁でも 2 桁でも含まれる
+  const localClock = (ms: number) => {
+    const date = new Date(ms);
+    return `${date.getHours()}:${String(date.getMinutes()).padStart(2, "0")}`;
+  };
+  const pausedLine = (r: { deps: { stderr: string[] } }, reason: string, retryAt: number) =>
+    stderrLines(r).some((line) => line.includes(reason) && line.includes(localClock(retryAt)));
+  const paused = (reason: typeof CHATGPT | typeof CLAUDE, retryAt?: number) =>
+    Effect.fail(new DiffUpdatePaused({ reason, message: reason, ...(retryAt === undefined ? {} : { retryAt }) }));
+  const realDelay = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const readingPauses = (r: { helpers: { sent: { type: string; paused: boolean }[] } }) => r.helpers.sent.filter((s) => s.type === "reading-pause");
+  const remarkIds = (r: { sessionsDir: string }) => remarksOf(sessionLog(r.sessionsDir)).map((x) => x.id);
+  const isRemark = (id: string) => (l: Line) => l.type === "remark" && (l.remark as { id: string }).id === id;
+  const pauseLogged = (r: { sessionsDir: string }) => has(r.sessionsDir, (l) => l.type === "diff-update-paused");
+
+  // 1 回目の差分更新（r1）が一時停止する。時刻は仮想時計の 0 から数える
+  const RETRY_AT = 2 * 3_600_000 + 37 * 60_000;
+
+  it.effect("一時停止の間は、先に読んで溜まっている r2・r3 を入れず、差分更新も呼ばない。ヘルパーへ読み取りの停止を送り、進み具合に理由と次に試す時刻を出す。次に試す時刻に成功したら、続きから r2・r3 の順で 1 回ずつ入り、再開を送り、進み具合から理由が消える", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);
+    const r = yield* resource({ ...THREE, hold: true }, updater);
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+
+    yield* eventually(() => pauseLogged(r), "1 回目の差分更新が一時停止する");
+    yield* eventually(() => readingPauses(r).length > 0, "ヘルパーへ読み取りの停止が送られる");
+    yield* eventually(() => pausedLine(r, CHATGPT, RETRY_AT), "進み具合の行に、理由と次に試す時刻が出る");
+    yield* realDelay(300); // 一時停止の間に、溜まっている分が入らないことを実時間で見る
+    // 一時停止の間は増えない: 発言は r1 だけ、差分更新の呼び出しも 1 回のまま
+    expect(remarkIds(r)).toEqual(["r1"]);
+    expect(updater.inputs).toHaveLength(1);
+    // 停止の指示は 1 回目の一時停止で送られ、再開の指示はまだ送られない
+    expect(readingPauses(r)[0]).toEqual({ type: "reading-pause", paused: true });
+    expect(readingPauses(r).some((s) => !s.paused)).toBe(false);
+
+    // 次に試す時刻の直前まで進めても、入らない。時刻に着いて再試行が成功すると、続きから入る
+    yield* advanceTo(pending, RETRY_AT, () => has(r.sessionsDir, isRemark("r2")));
+    // 最後の相手の発言は、話者を決める段が保留するので、ヘルパーの終わり（drain）で出る
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+
+    expect(remarkIds(r)).toEqual(["r1", "r2", "r3"]);
+    // 再試行（r1 をもう一度）の後は、r2・r3 が 1 回ずつ、重ならずに呼ばれる
+    expect(updater.inputs.map((input) => input.fresh.map((remark) => remark.id))).toEqual([["r1"], ["r1"], ["r2"], ["r3"]]);
+    expect(updater.state.overlaps).toBe(0);
+    // 再開の指示は、停止の指示の後に送られ、最後の状態は再開
+    expect(readingPauses(r).at(0)?.paused).toBe(true);
+    expect(readingPauses(r).at(-1)).toEqual({ type: "reading-pause", paused: false });
+    // 再開した後の進み具合の行には、理由が出ない
+    const lines = stderrLines(r);
+    expect(lines.at(-1)).toBe("12:30 / 58:04  マップの更新 3 回");
+    expect(lines.at(-1)).not.toContain(CHATGPT);
+  })).pipe(Effect.scoped), 60_000);
+
+  it.effect("--realtime でも、一時停止の間は音声の時刻が過ぎても次の発言を入れず、差分更新を呼ばない。次に試す時刻に成功したら続きから入る", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const RT_RETRY_AT = 100_000;
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RT_RETRY_AT) : Effect.void);
+    const r = yield* resource({
+      remarks: [],
+      hold: true,
+      events: [
+        ...remarkEvents({ start: 0, end: 2, text: "最初の発言です" }),
+        ...remarkEvents({ start: 10, end: 12, text: "次の発言です" }),
+        ...remarkEvents({ start: 20, end: 22, text: "三つ目の発言です" }),
+      ],
+    }, updater);
+    const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.forkChild);
+
+    yield* advanceTo(pending, 2000, () => has(r.sessionsDir, isRemark("r1")));
+    yield* eventually(() => pauseLogged(r), "r1 の差分更新が一時停止する");
+    yield* eventually(() => readingPauses(r).length > 0, "ヘルパーへ読み取りの停止が送られる");
+    // r2・r3 の音声の時刻（12・22 秒）をとうに過ぎるまで仮想時計を進めても、次に試す時刻の前なら入らない
+    yield* TestClock.adjust(30_000);
+    yield* realDelay(300);
+    expect(remarkIds(r)).toEqual(["r1"]);
+    expect(updater.inputs).toHaveLength(1);
+
+    yield* TestClock.adjust(RT_RETRY_AT - 32_000);
+    yield* eventually(() => has(r.sessionsDir, isRemark("r2")), "次に試す時刻に成功して、r2 が入る");
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarkIds(r)).toEqual(["r1", "r2", "r3"]);
+    expect(readingPauses(r).at(-1)).toEqual({ type: "reading-pause", paused: false });
+  })).pipe(Effect.scoped), 60_000);
+
+  it.effect("--realtime で、一時停止の行の書き込みを待っている間に次の発言の音声の時刻が過ぎても、次の発言を入れず、差分更新を呼ばない。書き込みが終わっても、次に試す時刻まで入らない", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const RT_RETRY_AT = 100_000;
+    const stall = stallingLogWrite((content) => content.includes('"type":"diff-update-paused"'));
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RT_RETRY_AT) : Effect.void);
+    const r = yield* resource({
+      remarks: [],
+      hold: true,
+      events: [
+        ...remarkEvents({ start: 0, end: 2, text: "最初の発言です" }),
+        ...remarkEvents({ start: 10, end: 12, text: "次の発言です" }),
+        ...remarkEvents({ start: 20, end: 22, text: "三つ目の発言です" }),
+      ],
+    }, updater, { fileSystem: stall.layer });
+    const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.forkChild);
+
+    yield* advanceTo(pending, 2000, () => Deferred.isDoneUnsafe(stall.entered));
+    // r2・r3 の音声の時刻（12・22 秒）をとうに過ぎるまで、一時停止の行の書き込みを保留したまま仮想時計を進める
+    yield* TestClock.adjust(30_000);
+    yield* realDelay(300);
+    yield* Deferred.succeed(stall.release, undefined);
+    yield* eventually(() => readingPauses(r).length > 0, "ヘルパーへ読み取りの停止が送られる");
+    yield* realDelay(300);
+    expect(remarkIds(r)).toEqual(["r1"]);
+    expect(updater.inputs).toHaveLength(1);
+
+    yield* TestClock.adjust(RT_RETRY_AT - 32_000);
+    yield* eventually(() => has(r.sessionsDir, isRemark("r2")), "次に試す時刻に成功して、r2 が入る");
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarkIds(r)).toEqual(["r1", "r2", "r3"]);
+    expect(readingPauses(r).at(-1)).toEqual({ type: "reading-pause", paused: false });
+  })).pipe(Effect.scoped), 60_000);
+
+  it.effect("再試行がもう一度一時停止しても自動では諦めず、止めは解かない。進み具合は新しい理由と次に試す時刻に更新される。次の試しで成功したら続きから入る", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const FIRST = 3_600_000 + 23 * 60_000;
+    const SECOND = FIRST + 300_000; // 再試行でも戻らなければ 5 分ごと
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, FIRST) : call === 2 ? paused(CLAUDE) : Effect.void);
+    const r = yield* resource({ ...THREE, hold: true }, updater);
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+
+    yield* eventually(() => pausedLine(r, CHATGPT, FIRST), "進み具合に 1 回目の理由と次に試す時刻が出る");
+    // 1 回目の試しの時刻に着くと再試行が呼ばれ、また一時停止する。それでも r2 は入らず、再開は送られない
+    yield* eventually(() => pending.includes(FIRST), "次に試す時刻の sleep が登録される");
+    yield* TestClock.adjust(FIRST);
+    yield* eventually(() => updater.inputs.length === 2, "再試行が呼ばれる");
+    yield* eventually(() => pausedLine(r, CLAUDE, SECOND), "進み具合が、新しい理由と新しい次に試す時刻に更新される");
+    yield* realDelay(300);
+    expect(remarkIds(r)).toEqual(["r1"]);
+    expect(readingPauses(r).some((s) => !s.paused)).toBe(false);
+    expect(running.pollUnsafe()).toBeUndefined(); // CLI は戻らない
+
+    yield* advanceTo(pending, SECOND, () => has(r.sessionsDir, isRemark("r2")));
+    // 最後の相手の発言は、話者を決める段が保留するので、ヘルパーの終わり（drain）で出る
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarkIds(r)).toEqual(["r1", "r2", "r3"]);
+    expect(updater.inputs.map((input) => input.fresh.map((remark) => remark.id))).toEqual([["r1"], ["r1"], ["r1"], ["r2"], ["r3"]]);
+    expect(readingPauses(r).at(-1)).toEqual({ type: "reading-pause", paused: false });
+  })).pipe(Effect.scoped), 60_000);
+
+  type Halt = (r: { cli: (argv: string[]) => Effect.Effect<void, unknown, never> }, running: Fiber.Fiber<unknown, unknown>) => Effect.Effect<unknown, unknown>;
+  it.effect.each<{ name: string; halt: Halt }>([
+    { name: "stop", halt: (r) => r.cli(["stop"]) },
+    { name: "Ctrl-C", halt: (_r, running) => Fiber.interrupt(running) },
+  ])("一時停止で待っている間の $name は、仮想時計を進めなくてもすぐ戻り、入れた分（r1）で map.* を書く。溜まっていた分は入れず、status はセッションなしになる", ({ halt }) =>
+    withVirtualClock(() => Effect.gen(function* () {
+      const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);
+      const r = yield* resource({ ...THREE, hold: true }, updater);
+      const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+      yield* eventually(() => pauseLogged(r), "1 回目の差分更新が一時停止する");
+      yield* eventually(() => readingPauses(r).length > 0, "ヘルパーへ読み取りの停止が送られる");
+      yield* realDelay(200);
+
+      let halted = false;
+      yield* halt(r, running).pipe(Effect.ensuring(Effect.sync(() => { halted = true; })), Effect.forkChild);
+      yield* eventually(() => halted, "仮想時計を進めなくても、停止の要求が戻る");
+      let ended = false;
+      yield* Fiber.await(running).pipe(Effect.ensuring(Effect.sync(() => { ended = true; })), Effect.forkChild);
+      yield* eventually(() => ended, "仮想時計を進めなくても、recorded の CLI が戻る");
+
+      expect(yield* virtualNow).toBe(0);
+      const dir = onlySession(r.sessionsDir);
+      expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1"]);
+      for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
+      const after = cliDependencies(r.sessionsDir, r.server.port);
+      yield* runCli(["status"]).pipe(Effect.provide(after.layer));
+      expect(after.stdout.join("")).toContain("セッションなし");
+    })).pipe(Effect.scoped), 60_000);
+
+  const readingPausesOf = (r: { helpers: { sentByAttempt: { attempt: number; type: string; paused: boolean }[] } }, attempt: number) =>
+    r.helpers.sentByAttempt.filter((s) => s.type === "reading-pause" && s.attempt === attempt).map((s) => s.paused);
+
+  it.effect("起動し直した後に一時停止へ入ると、読み取りの停止は 2 回目のヘルパーへ届く。再開もその回へ届き、1 回目には何も送られない", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);
+    // 1 回目は何も流さず落ちる。2 回目（hold）が r1 を流し、その差分更新が一時停止する
+    const r = yield* resource({ ...THREE, hold: true }, updater, { attempts: [{ duration: 3484, remarks: [], exit: { code: 1, signal: null } }] });
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+
+    yield* eventually(() => pauseLogged(r), "2 回目のヘルパーが流した r1 の差分更新が一時停止する");
+    yield* eventually(() => readingPausesOf(r, 1).length > 0, "2 回目のヘルパーへ読み取りの停止が送られる");
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(readingPausesOf(r, 1)).toEqual([true]);
+    expect(readingPausesOf(r, 0)).toEqual([]);
+
+    yield* advanceTo(pending, RETRY_AT, () => has(r.sessionsDir, isRemark("r2")));
+    expect(readingPausesOf(r, 1)).toEqual([true, false]);
+    expect(readingPausesOf(r, 0)).toEqual([]);
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+    expect(remarkIds(r)).toEqual(["r1", "r2", "r3"]);
+  })).pipe(Effect.scoped), 60_000);
+
+  it.effect("一時停止の間にヘルパーが落ちて起動し直すと、2 回目のヘルパーへ接続した直後に読み取りの停止が届く。再開もその回へ届く", () => withVirtualClock((pending) => Effect.gen(function* () {
+    const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);
+    // 1 回目（hold）が r1 を流して一時停止し、その間に落ちる。2 回目（hold）は何も流さず居続ける
+    const r = yield* resource({ ...THREE, hold: true }, updater, { attempts: [{ ...THREE, hold: true }, { duration: 3484, remarks: [], hold: true }] });
+    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
+
+    yield* eventually(() => pauseLogged(r), "1 回目の差分更新が一時停止する");
+    yield* eventually(() => readingPausesOf(r, 0).length > 0, "1 回目のヘルパーへ読み取りの停止が送られる");
+    yield* r.helpers.crash;
+    yield* eventually(() => r.helpers.calls.length === 2, "2 回目のヘルパーが起動する");
+    yield* eventually(() => readingPausesOf(r, 1).length > 0, "2 回目のヘルパーへ読み取りの停止が届く");
+    expect(readingPausesOf(r, 0)).toEqual([true]);
+    expect(readingPausesOf(r, 1)).toEqual([true]);
+    expect(remarkIds(r)).toEqual(["r1"]);
+
+    yield* advanceTo(pending, RETRY_AT, () => readingPausesOf(r, 1).length > 1);
+    expect(readingPausesOf(r, 0)).toEqual([true]);
+    expect(readingPausesOf(r, 1)).toEqual([true, false]);
+    yield* r.helpers.end;
+    yield* runToEnd(Fiber.join(running));
+  })).pipe(Effect.scoped), 60_000);
+
+  it.live("一時停止がなければ、ヘルパーへ読み取りの停止は送らず、進み具合に理由は出ない", () => Effect.gen(function* () {
+    const r = yield* resource(THREE);
+    yield* r.cli(["recorded", r.file]);
+    expect(readingPauses(r)).toEqual([]);
+    expect(stderrLines(r).some((line) => line.includes("利用上限"))).toBe(false);
+  }).pipe(Effect.scoped));
 });

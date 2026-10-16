@@ -106,7 +106,7 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
           stop,
           exit: Deferred.await(exitDeferred),
           stderrTail: Effect.succeed(script.stderrTail ?? []),
-          send: (paused: boolean) => Effect.sync(() => { sentPauses.push({ attempt: index, paused }); }),
+          send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sentPauses.push({ attempt: index, paused: instruction.paused }); }),
         };
       });
     const send = (attemptIndex: number, event: unknown) => {

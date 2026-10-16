@@ -38,7 +38,7 @@ const openRecorded = Effect.fn("openRecorded")(function* (updaterLayer: Layer.La
   const sink = yield* sinks.open({
     dir, title: "録画", model: defaultClaude, updaterLayer: yield* sinks.prepare(defaultClaude),
     publish: () => Effect.void, speak: () => Effect.void, diffUpdate: () => Effect.void,
-    recorded: { realtime: false, selfTrack, progress: () => Effect.void },
+    recorded: { realtime: false, selfTrack, progress: () => Effect.void, paused: () => Effect.void },
   });
   yield* sink.speaker(SPEAKER_OFF);
   return sink;

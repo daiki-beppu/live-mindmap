@@ -1,6 +1,6 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, DateTime, Effect, FiberSet, FileSystem, Layer, Ref, Scope } from "effect";
+import { Context, DateTime, Deferred, Effect, FiberSet, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
 import { dirname } from "node:path";
 import type { JudgeModel } from "./judgeSelection.ts";
 import { MapCapture } from "./capture.ts";
@@ -8,7 +8,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { correctRemark, createPacer, createTrackMerge, DiffUpdater, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
+import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -88,7 +88,14 @@ export type OpenSessionSink = {
   // いま話している文字（字幕）はヘルパーの途中結果ではなく、入れた位置で出す
   // realtime なら、音声の時刻（発言は end、共有画面の変化は start）まで待ってから入れる。差分更新の終わりは待たない（play --realtime と同じ意味）
   // selfTrack は 2 本の録画（cli recorded --self）。相手と自分の発言を、トラックをまたいで音声の時刻（end）の順にして溜める（ヘルパーの保留や話者を決める段の保留で、届く順が時刻の順と前後するため）
-  recorded?: { realtime: boolean; selfTrack?: boolean; progress: (progress: { position: number; rounds: number }) => Effect.Effect<void> };
+  // paused は、差分更新の一時停止に入ったとき・理由か次に試す時刻が変わったとき・戻ったとき（undefined）に呼ぶ。
+  // 一時停止の間は、溜まりから発言を入れない（戻るまで待つ。いくらでも待ち、自動では諦めない）。ヘルパーに読み取りを止めさせるのは呼び出し側
+  recorded?: {
+    realtime: boolean;
+    selfTrack?: boolean;
+    progress: (progress: { position: number; rounds: number }) => Effect.Effect<void>;
+    paused: (pause: { reason: DiffUpdatePauseReason; retryAt: number } | undefined) => Effect.Effect<void>;
+  };
 };
 
 // 語彙で直した後の発言（セッションへ入れる直前の形）。words と wordTimes は Remark に入れず、ログの行にだけ残す
@@ -108,6 +115,8 @@ type RecordedItem =
 
 // 録画の要素を入れる音声の時刻（秒）。発言は end、共有画面の変化は start。待つ時刻と、画面の変化を発言の前後へ並べる基準は、これ 1 つ
 const timeOf = (item: RecordedItem): number => item.kind === "remark" ? item.corrected.rest.end : item.kind === "screen" ? item.change.start : item.off.start;
+
+type DiffUpdatePauseReason = typeof DiffUpdateReason["Type"];
 
 const TRACKS: Track[] = ["相手", "自分"];
 
@@ -165,6 +174,48 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             ),
             send: speak,
           });
+          // 録画からのセッションは、差分更新の一時停止の間、溜まりから発言を入れない。
+          // 止めるかどうかは、core の差分更新の状態（session.diffUpdate）で決める。ログと表示の書き込みを待たずに、遷移の時点から効く。
+          // 状態が変わったかもしれない合図（frameChanged）は、差分更新の frame ごとに完了させ、次の合図に差し替える。
+          // hold は、合図を先に取ってから状態を読み、paused ならその合図を待つ（読んだ後に起きた変化を取りこぼさない）
+          const frameChanged = yield* Ref.make(yield* Deferred.make<void>());
+          const notifyFrame = Effect.flatMap(Deferred.make<void>(), (next) => Effect.flatMap(Ref.getAndSet(frameChanged, next), (current) => Deferred.succeed(current, undefined)));
+          const hold = Effect.gen(function* () {
+            for (;;) {
+              const changed = yield* Ref.get(frameChanged);
+              if ((yield* Effect.suspend(() => session.diffUpdate)).status !== "paused") return;
+              yield* Deferred.await(changed);
+            }
+          });
+          // 等速で発言を入れる前の待ち。処理を待つ発言（反映中と未反映）が 1 回分（CATCH_UP_REMARKS 件）に達している間は、減るまで入れない。
+          // 差分更新が止まった（stopped）後は待たない。hold と同じく、合図を先に取ってから状態を読む
+          const roomForRemark = Effect.gen(function* () {
+            for (;;) {
+              const changed = yield* Ref.get(frameChanged);
+              const stopped = (yield* Effect.suspend(() => session.diffUpdate)).status === "stopped";
+              if (stopped || (yield* Effect.suspend(() => session.unreflectedRemarks)).length < CATCH_UP_REMARKS) return;
+              yield* Deferred.await(changed);
+            }
+          });
+          // 最後に呼び出し側へ知らせた一時停止の理由と次に試す時刻。同じ状態を重ねて知らせないために持つ
+          const pauseLock = yield* Semaphore.make(1);
+          const pauseState = yield* Ref.make<{ readonly reason: DiffUpdatePauseReason; readonly retryAt: number } | undefined>(undefined);
+          const followPause = (frame: DiffUpdateFrame): Effect.Effect<void> =>
+            recorded === undefined
+              ? Effect.void
+              : Effect.andThen(notifyFrame, frame.state === null ? Effect.void : pauseLock.withPermit(
+                  Effect.gen(function* () {
+                    const state = frame.state;
+                    // session は openRecordedSession が返した後に決まる。一時停止の状態が書かれるのは、返った後だけ（開いた直後は running）
+                    const retryAt = state?.status === "paused" ? yield* Effect.suspend(() => session.nextRetryAt) : undefined;
+                    const before = yield* Ref.get(pauseState);
+                    const next = state?.status === "paused" && retryAt !== undefined ? { reason: state.reason, retryAt } : undefined;
+                    if (before?.reason === next?.reason && before?.retryAt === next?.retryAt) return;
+                    // 戻ったときは、待っている溜まりを（合図で）先に動かしてあるので、その後で呼び出し側へ知らせる
+                    yield* Ref.set(pauseState, next);
+                    yield* recorded.paused(next);
+                  }),
+                ));
           // 記録つきセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
           const { session, appendLog: appendRecordedLog } = yield* openRecordedSession({
             dir,
@@ -172,7 +223,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             logShiftMs,
             model,
             publish,
-            diffUpdate,
+            diffUpdate: (frame) => Effect.andThen(diffUpdate(frame), followPause(frame)),
             onDiff: relay.flushAll,
           }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
           // 語彙追加（読み取得つき）の処理の集まり。ログを開いた後に作るので、後始末（登録の逆順）ではログを閉じる前に中断される。
@@ -210,12 +261,13 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               yield* relay.remark(rest.track);
             });
           // 録画からのセッションは、溜めた順に入れる。待ち時間なしは、発言を入れたあと差分更新の終わりを待ってから次を入れる。
-          // 等速は音声の時刻まで待って入れ、差分更新の終わりは待たない（発言を作る段 settling は、どちらでも同じ）
+          // 等速は音声の時刻まで待って入れ、差分更新の終わりは待たない。ただし処理を待つ発言が 1 回分に達したときだけ、減るまで次の発言を入れない（発言を作る段 settling は、どちらでも同じ）
           const pacer = recorded?.realtime ? createPacer((ms) => Effect.sleep(ms)) : undefined;
           const backlog = recorded === undefined
             ? undefined
             : yield* createRecordedBacklog<RecordedItem>({
-                ...(pacer === undefined ? {} : { pace: (item: RecordedItem) => pacer.waitUntil(timeOf(item)) }),
+                hold,
+                ...(pacer === undefined ? {} : { pace: (item: RecordedItem) => Effect.andThen(pacer.waitUntil(timeOf(item)), item.kind === "remark" ? roomForRemark : Effect.void) }),
                 deliver: (item) =>
                   Effect.gen(function* () {
                     if (item.kind === "screen") return yield* pushScreenChange(item.change);

@@ -268,17 +268,30 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
     try await broadcastFileHeader(header, on: server)
 
+    // 差分更新が一時停止している間、サーバーは読み取りの停止を指示する（reading-pause）。止められている間は、ファイルを読み進めない。
+    // 指示は、server が起動時に環境変数で渡したトークンを持つものだけ受け付ける。無ければ指示を処理しない
+    let gate = FileReadingGate()
+    let controlToken = ProcessInfo.processInfo.environment[helperControlTokenEnvironmentKey] ?? ""
+    var readingPauseTask: Task<Void, Never>?
+    if controlToken.isEmpty {
+        printError("reading-pause: \(helperControlTokenEnvironmentKey) が無いので、読み取りの停止の指示を受け付けない")
+    } else {
+        readingPauseTask = Task { await serveFileReadingRequests(server.messages, token: controlToken, gate: gate) }
+    }
+    defer { readingPauseTask?.cancel() }
+
     let work = Task {
         // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
         await server.waitForClient()
         guard let selfURL, let selfTranscriber else {
-            for try await event in try await fileSessionEvents(at: url, with: transcriber, from: from ?? 0) {
+            for try await event in try await fileSessionEvents(at: url, with: transcriber, from: from ?? 0, gate: gate) {
                 await server.broadcast(try event.jsonString())
             }
             return
         }
         try await relayFilePair(
-            theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server, theirsFrom: from ?? 0, mineFrom: selfFrom ?? 0)
+            theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server,
+            theirsFrom: from ?? 0, mineFrom: selfFrom ?? 0, gate: gate)
     }
     // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
@@ -286,6 +299,8 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
         let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
         source.setEventHandler {
             work.cancel()
+            // 止められて待っている読み手も、ここで抜けさせる
+            Task { await gate.stop() }
             Task { await server.stop() }
         }
         source.resume()

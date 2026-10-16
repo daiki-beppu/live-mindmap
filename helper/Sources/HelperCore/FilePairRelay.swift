@@ -8,11 +8,14 @@ import Foundation
 public func relayFilePair(
     theirs theirsURL: URL, mine mineURL: URL,
     theirsTranscriber: any FileTranscriber, mineTranscriber: any FileTranscriber,
-    to server: WebSocketServer, theirsFrom: Double = 0, mineFrom: Double = 0
+    to server: WebSocketServer, theirsFrom: Double = 0, mineFrom: Double = 0, gate: FileReadingGate? = nil
 ) async throws {
     try await relayFilePair(
-        theirs: theirsURL, mine: mineURL, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server, theirsFrom: theirsFrom, mineFrom: mineFrom,
-        relayScreen: { video, progress in await relayFileScreen(from: video, to: server, progress: progress, startingAt: max(theirsFrom, mineFrom)) })
+        theirs: theirsURL, mine: mineURL, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server,
+        theirsFrom: theirsFrom, mineFrom: mineFrom, gate: gate,
+        relayScreen: { video, progress in
+            await relayFileScreen(from: video, to: server, progress: progress, startingAt: max(theirsFrom, mineFrom), gate: gate)
+        })
 }
 
 /// 映像を流す処理（映像のファイルと、判定の進みの操作口を受け取る）。
@@ -22,7 +25,7 @@ typealias FileScreenRelay = @Sendable (URL, FileReadingAlignment.Screen) async -
 func relayFilePair(
     theirs theirsURL: URL, mine mineURL: URL,
     theirsTranscriber: any FileTranscriber, mineTranscriber: any FileTranscriber,
-    to server: WebSocketServer, theirsFrom: Double = 0, mineFrom: Double = 0, relayScreen: @escaping FileScreenRelay
+    to server: WebSocketServer, theirsFrom: Double = 0, mineFrom: Double = 0, gate: FileReadingGate? = nil, relayScreen: @escaping FileScreenRelay
 ) async throws {
     // 読み手は 2 本ともここで足してから読み始める（`theirsFrom`・`mineFrom` はそれぞれの読み始める音声の時刻。起動し直しのとき 0 より後ろ）
     // 映像は両トラックの先読みの境（大きい方）から読む。それより前の画面は、前の回がすでに溜まりへ入れている
@@ -35,8 +38,8 @@ func relayFilePair(
     do {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
-                let theirs = try await transcribeFile(at: theirsURL, with: theirsTranscriber, alignment: theirsReader, from: theirsFrom)
-                let mine = try await transcribeFile(at: mineURL, with: mineTranscriber, alignment: mineReader, from: mineFrom)
+                let theirs = try await transcribeFile(at: theirsURL, with: theirsTranscriber, alignment: theirsReader, from: theirsFrom, gate: gate)
+                let mine = try await transcribeFile(at: mineURL, with: mineTranscriber, alignment: mineReader, from: mineFrom, gate: gate)
                 try await relay(
                     tracks: [(.相手, theirs), (.自分, mine)], to: server,
                     duplicates: DuplicateMarker(sleep: { try await alignment.sleep($0) }, now: { await alignment.now() }))

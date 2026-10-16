@@ -40,6 +40,7 @@ export {
   StartEvent,
   VocabEvent,
 } from "./session.ts";
+export { CATCH_UP_REMARKS } from "./session.ts";
 export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, PreviousResponse, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
 export * from "./captions.ts";

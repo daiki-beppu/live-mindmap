@@ -572,8 +572,11 @@ struct FileScreenITTests {
         #expect(reading.readerStatus == .reading, "取り消した側のスレッドで AVAssetReader が止められた")
         held.signal()
 
-        let events = await onFileScreenQueue { reading.next() }
-        #expect(events == nil)
+        let step = await onFileScreenQueue { reading.step() }
+        guard case .end = step else {
+            Issue.record("取り消した後の step() は .end のはず")
+            return
+        }
         #expect(await onFileScreenQueue { reading.readerStatus } == .cancelled)
     }
 }
