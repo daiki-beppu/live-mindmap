@@ -3,6 +3,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Config, Effect, FileSystem } from "effect";
+import type { PublishContent } from "./core/index.ts";
 
 export type PublishRecord = {
   readonly name: string;
@@ -10,8 +11,8 @@ export type PublishRecord = {
   readonly accountId: string;
   // 元のセッションのフォルダ
   readonly dir: string;
-  // 中身の段。この段ではマップだけ
-  readonly level: "map";
+  // 中身の段（map・remarks・audio）。実際に置いた段
+  readonly level: PublishContent;
   readonly anyone: boolean;
   // 合言葉つき（anyone: false）のときだけ入る
   readonly passphrase?: string;

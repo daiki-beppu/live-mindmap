@@ -6,6 +6,21 @@ export const PUBLISH_MAX_DAYS = 30;
 // Cloudflare の静的アセット 1 ファイルの上限
 export const PUBLISH_MAX_ASSET_BYTES = 25 * 1024 * 1024;
 
+// 中身の段（積み上げ式）。map = マップだけ、remarks = 発言の文字・共有画面の文字も（map.html と同じ中身）、audio = 録音も（map-audio.html と同じ中身）
+export const PUBLISH_CONTENTS = ["map", "remarks", "audio"] as const;
+export type PublishContent = (typeof PUBLISH_CONTENTS)[number];
+
+// remarks・audio で --confirmed が無いときに出す、エージェント向けの文。Cloudflare に何も送らずに止まり、利用者に確かめさせる
+export function publishConfirmationMessage(input: { readonly content: "remarks" | "audio"; readonly anyone: boolean }): string {
+  return [
+    `${input.content === "audio" ? "発言の文字と録音" : "発言の文字"}を含む公開は、利用者に確かめるまで置きません（何も送っていません）`,
+    "利用者に、閉じた会議なら相手の了解を、イベントなら規約と登壇者の許可を確かめたかを聞いてください",
+    "了解を得たら、--confirmed を付けて実行し直してください",
+    ...(input.content === "audio" ? ["録音について: 声は話し手を特定できれば個人情報にもなる"] : []),
+    ...(input.anyone ? ["--anyone について: URL を知る誰でも見られる＝公衆への送信に当たる"] : []),
+  ].join("\n");
+}
+
 import { SEALED_SCRIPT_ID, unlockPageScript } from "./passphrase.ts";
 import type { Sealed } from "./passphrase.ts";
 

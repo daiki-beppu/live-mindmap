@@ -3,7 +3,7 @@
 import { Console, Effect, type Runtime, Schema } from "effect";
 import { Command } from "effect/cli";
 import { NodeServices } from "@effect/platform-node";
-import { depsMissingTeardown, reportEntryFailure } from "../src/entryFailure.ts";
+import { exitCodeTeardown, reportEntryFailure } from "../src/entryFailure.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { describe, fileReason, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
 
@@ -51,7 +51,7 @@ const failureLine = (failure: BenchFailure): string => {
 // 失敗の表示はここだけ。共通の前半（entryFailure）で済まないものを、この表で 1 行にする
 export const reportFailure = reportEntryFailure((failure) => Console.error(isBenchFailure(failure) ? failureLine(failure) : describe(failure)));
 
-export const exitNaturally: Runtime.Teardown = depsMissingTeardown((failure) => failure instanceof StartupDepsMissing);
+export const exitNaturally: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof StartupDepsMissing ? 3 : undefined));
 
 // 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
 // （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）
