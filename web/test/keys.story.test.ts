@@ -378,7 +378,7 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
 
   // イベントを stream に流して届いた Message を順に並べ、update に渡して畳んだ Model
   const viaStream = async (inits: readonly KeyInit[]) => {
-    const { perEvent } = await pressEach((target) => keyPressStream({ screen, hasSelection: true, target }), inits.map((init) => keydown(init)));
+    const { perEvent } = await pressEach((target) => keyPressStream({ screen, hasSelection: () => true, target }), inits.map((init) => keydown(init)));
     return { messages: perEvent.flat() as Message[], model: feed(update, start, perEvent.flat() as Message[]) };
   };
   const direct = (...messages: Message[]) => feed(update, start, messages);
@@ -422,7 +422,7 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
 
   it("押したままの J（10 秒戻る）は、録音つきでも 1 回ごとに <audio> へ時刻を書く", async () => {
     const audioStart = stateAt(audioContext, 100);
-    const { perEvent } = await pressEach((target) => keyPressStream({ screen: "reviewAudio", hasSelection: false, target }), [keydown({ key: "j", repeat: true }), keydown({ key: "j", repeat: true })]);
+    const { perEvent } = await pressEach((target) => keyPressStream({ screen: "reviewAudio", hasSelection: () => false, target }), [keydown({ key: "j", repeat: true }), keydown({ key: "j", repeat: true })]);
     const seeks: unknown[] = [];
     let model = audioStart;
     for (const message of perEvent.flat() as Message[]) {
@@ -435,7 +435,7 @@ describe("日本語入力がオンのとき・押したままの繰り返し: �
 
   it("表のすべてのバインディングを流して update に渡しても、Model は本物の Schema を通る", async () => {
     const inits = bindingsOf("reviewAudio").map((b) => eventOfBinding(b.keys));
-    const { perEvent } = await pressEach((target) => keyPressStream({ screen: "reviewAudio", hasSelection: true, target }), inits);
+    const { perEvent } = await pressEach((target) => keyPressStream({ screen: "reviewAudio", hasSelection: () => true, target }), inits);
     let model = withSelection(audioUpdate, measured(audioContext, audioUpdate));
     for (const message of perEvent.flat() as Message[]) {
       model = audioUpdate(model, message).model;

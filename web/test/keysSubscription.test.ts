@@ -18,7 +18,7 @@ const pressed = (key: string) => Message.PressedKey({ key: key as never, ...NO_M
 
 // 画面ごとの stream に、イベントを順に流す。届いた Message をイベントごとに返す
 const press = (screen: Screen, events: readonly FakeKeyEvent[], hasSelection = false) =>
-  pressEach((target) => keyPressStream({ screen, hasSelection, target }), events);
+  pressEach((target) => keyPressStream({ screen, hasSelection: () => hasSelection, target }), events);
 const pressOne = async (screen: Screen, init: KeyInit, hasSelection = false) => {
   const event = keydown(init);
   const { perEvent } = await press(screen, [event], hasSelection);
@@ -161,6 +161,47 @@ describe("Enter: 選んだノードの開閉に使うときだけ既定動作を
   });
 });
 
+// Issue #1133: 選択の有無は stream を張った時点の値で持たず、keydown のたびに読む。選択が変わった直後の Enter も、張り直しを待たずにその時点の選択で決まる
+describe("Enter: 選択の有無は keydown のたびに読む（張り直さない）", () => {
+  // 同じ stream を張ったまま、選択の有無を変えてはノード本体のボタンの中で Enter を押す。ステップごとに届いた Message と、既定動作を取り消したかを返す
+  const pressWhile = (steps: readonly boolean[]) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const doc = fakeDocument();
+        let hasSelection = false;
+        const collected: Array<typeof Message.Type> = [];
+        const stream = keyPressStream({ screen: "review", hasSelection: () => hasSelection, target: doc as unknown as EventTarget });
+        const fiber = yield* Effect.forkChild(Stream.runForEach(stream, (m) => Effect.sync(() => void collected.push(m))));
+        yield* settleKeyEvents;
+        const perStep: Array<{ messages: Array<typeof Message.Type>; prevented: boolean }> = [];
+        for (const selected of steps) {
+          hasSelection = selected;
+          const event = keydown({ key: "Enter", target: element("button", ["map-node__button"]) });
+          const before = collected.length;
+          doc.fire(event);
+          yield* settleKeyEvents;
+          perStep.push({ messages: collected.slice(before), prevented: event.preventDefault.mock.calls.length > 0 });
+        }
+        yield* Fiber.interrupt(fiber);
+        return perStep;
+      }),
+    );
+
+  it("選択なし → あり: 同じ stream のまま、ノード本体のボタンの中の Enter が届き、既定動作を取り消す", async () => {
+    expect(await pressWhile([false, true])).toEqual([
+      { messages: [], prevented: false },
+      { messages: [pressed("Enter")], prevented: true },
+    ]);
+  });
+
+  it("選択あり → なし: 同じ stream のまま、同じ Enter は譲られる（届かず、取り消さない）", async () => {
+    expect(await pressWhile([true, false])).toEqual([
+      { messages: [pressed("Enter")], prevented: true },
+      { messages: [], prevented: false },
+    ]);
+  });
+});
+
 describe("Space: 開閉の丸の中では譲る", () => {
   it("開閉の丸（隠れた数の丸・畳む丸）の中: 届かず、取り消さない（ボタンの click を残す）", async () => {
     for (const cls of ["map-node__count--pressable", "map-node__fold-dot"]) {
@@ -291,7 +332,7 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
         const doc = fakeDocument();
         vi.stubGlobal("document", doc);
         const collected: Array<typeof Message.Type> = [];
-        const fiber = yield* Effect.forkChild(Stream.runForEach(subscriptions(context).keys.dependenciesToStream({ hasSelection }), (m) => Effect.sync(() => void collected.push(m))));
+        const fiber = yield* Effect.forkChild(Stream.runForEach(subscriptions(context).keys.dependenciesToStream({ hasSelection }, () => ({ hasSelection })), (m) => Effect.sync(() => void collected.push(m))));
         yield* settleKeyEvents;
         const perEvent: Array<Array<typeof Message.Type>> = [];
         for (const init of inits) {
@@ -312,6 +353,12 @@ describe("見返しの Subscription の keys: 依存と、画面の決まり方"
     const selected = update(start, Message.GotMapSurfaceMessage({ message: MapSurfaceMessage.ClickedNodeButton({ nodeId: "n1", clientX: 0, clientY: 0 }) })).model;
     expect(selected.mapSurface.viewing.selection).toBeDefined();
     expect(subscriptions(plainContext).keys.modelToDependencies(selected)).toEqual({ hasSelection: true });
+  });
+
+  // Issue #1133: 選択の有無が変わっても stream を張り直さない（Enter の判定は keydown のたびに readDependencies から読む）
+  it("選択の有無だけが変わっても張り直さない（keepAliveEquivalence が等しいと判定する）", () => {
+    const { keepAliveEquivalence } = subscriptions(plainContext).keys;
+    expect(keepAliveEquivalence?.({ hasSelection: false }, { hasSelection: true })).toBe(true);
   });
 
   it("録音なしの見返しは M を受けず、録音つきの見返しは M を受ける（画面は Context の音声の有無で決まる）", async () => {
