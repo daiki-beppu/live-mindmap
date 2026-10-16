@@ -4,7 +4,7 @@ import { lstat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as PlaywrightModule from "playwright-core";
-import { Console, Context, DateTime, Effect, FileSystem, Layer, PlatformError, Predicate, Schema, Semaphore, Stream } from "effect";
+import { Clock, Console, Context, DateTime, Effect, FileSystem, Layer, PlatformError, Predicate, Schema, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import manifest from "../managed-deps/chromium/package.json" with { type: "json" };
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
@@ -196,6 +196,21 @@ const acquireLock = (path: string) => {
   }
 };
 
+// 子孫の終了を待つ期限。Effect は導入ランナーの scope を閉じるとき、SIGTERM から forceKillAfter（5 秒）、SIGKILL 後さらに 1 秒まで
+// グループの消滅を待つが、kill(-pgid, 0) の失敗をすべて消滅と見なす。macOS は終わりかけ（回収前）のグループにも EPERM を返すため、
+// EPERM を生存と見なす executionsFinished はその直後に一度だけ確かめると「生きている」と判定する（EPERM は別ユーザーのグループへの
+// 番号の再利用と区別できないので、消滅とは見なさない）。止める処理は Effect が済ませており、
+// 残るのはカーネルの回収だけなので、Effect の SIGKILL 後の待ちと同じ 1 秒を期限にする。
+const EXECUTIONS_GRACE_MILLIS = 1_000;
+const awaitExecutionsFinished = Effect.fnUntraced(function* (lock: ReturnType<typeof acquireLock>) {
+  const deadline = (yield* Clock.currentTimeMillis) + EXECUTIONS_GRACE_MILLIS;
+  for (;;) {
+    if (yield* Effect.try({ try: lock.executionsFinished, catch: failed })) return true;
+    if ((yield* Clock.currentTimeMillis) >= deadline) return false;
+    yield* Effect.sleep(10);
+  }
+});
+
 const headlessShellPlatform = (platform: NodeJS.Platform, arch: string): string | undefined => {
   if (platform === "darwin") return `mac-${arch}`;
   if (platform === "linux") return arch === "x64" ? "linux64" : "linux-arm64";
@@ -344,7 +359,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
         const [, , code] = yield* Effect.all([consume(handle.stdout), consume(handle.stderr), handle.exitCode], { concurrency: "unbounded" });
         return { code, tail };
       }));
-      if (!(yield* Effect.try({ try: lock.executionsFinished, catch: failed }))) return yield* new ManagedDepsFailed({ message: "外部導入プロセスの終了を確認できません" });
+      if (!(yield* awaitExecutionsFinished(lock))) return yield* new ManagedDepsFailed({ message: "外部導入プロセスの終了を確認できません" });
       if (completed.code !== 0) return yield* new ManagedDepsFailed({ message: `導入に失敗しました: ${completed.tail.trim().split("\n").slice(-10).join("\n") || `終了コード ${completed.code}`}` });
     });
     const hash = Effect.fnUntraced(function* (path: string) {
@@ -414,7 +429,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const artifact = name === "cloudflared" ? yield* (options.cloudflared?.resolve ?? resolveCloudflaredArtifact(process.platform, process.arch)) : undefined;
       if (operation === "update" && (yield* checkDependency).state !== "outdated") return Stream.succeed<DepEvent>({ type: "result", items: [] });
       yield* fs.makeDirectory(dir, { recursive: true });
-      const lock = yield* Effect.acquireRelease(Effect.try({ try: () => acquireLock(join(dir, LOCK)), catch: failed }), (lock) => cleanup(Effect.try({ try: lock.release, catch: failed })));
+      const lock = yield* Effect.acquireRelease(Effect.try({ try: () => acquireLock(join(dir, LOCK)), catch: failed }), (lock) => cleanup(awaitExecutionsFinished(lock).pipe(Effect.andThen(Effect.try({ try: lock.release, catch: failed })))));
       for (const name of yield* fs.readDirectory(dir)) {
         if (name.startsWith(".work-")) yield* fs.remove(join(dir, name), { recursive: true, force: true });
       }
@@ -428,7 +443,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       yield* Effect.acquireRelease(
         fs.makeDirectory(work),
         () => cleanup(Effect.gen(function* () {
-          if (!(yield* Effect.try({ try: lock.executionsFinished, catch: failed }))) return yield* new ManagedDepsFailed({ message: "外部導入プロセスの終了を確認できないため作業実体を保持します" });
+          if (!(yield* awaitExecutionsFinished(lock))) return yield* new ManagedDepsFailed({ message: "外部導入プロセスの終了を確認できないため作業実体を保持します" });
           yield* fs.remove(work, { recursive: true, force: true });
           yield* fs.remove(link, { force: true });
           if (!published) yield* fs.remove(entity, { recursive: true, force: true });
