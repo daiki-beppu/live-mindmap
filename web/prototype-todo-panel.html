@@ -1,0 +1,54 @@
+<!doctype html>
+<!-- PROTOTYPE（Issue #1282、使い捨て）: 見返しの画面に、右の列の TODO の一覧の 3 案を出す。
+     ?variant=A|B|C で案、?data=short|long で素材（web/.prototype-todo-panel/*.json、コミットしない）を選ぶ。← → でも切り替わる -->
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>prototype: TODO の一覧</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      .proto-bar { position: fixed; left: 50%; top: 8px; transform: translateX(-50%); z-index: 1000; display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-radius: 999px; background: #111; color: #fff; font: 13px system-ui; box-shadow: 0 2px 8px rgb(0 0 0 / 0.3); }
+      .proto-bar button { background: #333; color: #fff; border: 0; border-radius: 999px; padding: 2px 10px; cursor: pointer; font: inherit; }
+      .proto-bar button[aria-pressed="true"] { background: #facc15; color: #111; }
+    </style>
+    <script>
+      // main.ts は読み込み時に埋め込みのログを読むので、モジュールより先に同期で差し込む
+      const params = new URLSearchParams(location.search);
+      const data = params.get("data") ?? "short";
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", `/.prototype-todo-panel/${data}.json`, false);
+      xhr.send();
+      const el = document.createElement("script");
+      el.type = "application/json";
+      el.id = "live-mindmap-review-log";
+      el.textContent = xhr.responseText;
+      document.head.appendChild(el);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div class="proto-bar" id="proto-bar"></div>
+    <script>
+      const VARIANTS = { A: "均等の 3 段・時刻が上", B: "TODO が上・本文が先", C: "根拠を広く・時刻の欄" };
+      const keys = Object.keys(VARIANTS);
+      const go = (next) => { const p = new URLSearchParams(location.search); for (const [k, v] of Object.entries(next)) p.set(k, v); location.search = p.toString(); };
+      const current = params.get("variant") ?? "A";
+      if (!params.has("variant")) go({ variant: "A" });
+      const bar = document.getElementById("proto-bar");
+      const btn = (label, pressed, onClick) => { const b = document.createElement("button"); b.textContent = label; b.setAttribute("aria-pressed", String(pressed)); b.onclick = onClick; bar.appendChild(b); };
+      const step = (d) => go({ variant: keys[(keys.indexOf(current) + d + keys.length) % keys.length] });
+      btn("←", false, () => step(-1));
+      bar.appendChild(Object.assign(document.createElement("span"), { textContent: `${current}（${VARIANTS[current]}）` }));
+      btn("→", false, () => step(1));
+      btn("TODO 10 件", data === "short", () => go({ data: "short" }));
+      btn("15 件・長い会議", data === "long", () => go({ data: "long" }));
+      addEventListener("keydown", (e) => {
+        if (e.target.closest?.("input, textarea, [contenteditable]")) return;
+        if (e.key === "ArrowLeft" && e.altKey) step(-1);
+        if (e.key === "ArrowRight" && e.altKey) step(1);
+      });
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

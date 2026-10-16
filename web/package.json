@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prototype:todo-panel": "vite --port 5199 --open /prototype-todo-panel.html",
     "build": "vite build",
     "test": "vitest run --project unit",
     "test:it": "vitest run --project it",

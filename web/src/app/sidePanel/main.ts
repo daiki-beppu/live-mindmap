@@ -9,6 +9,7 @@ import { evidenceOf, type Evidence } from "../../evidence.ts";
 import { humanSetsOf } from "../../viewing.ts";
 import type { Model } from "../mapSurface/main.ts";
 import { Message } from "../mapSurface/message.ts";
+import { LAYOUT, todoPanel, variantOf } from "./prototypeTodoPanel.ts";
 
 function evidenceBody(h: HtmlBuilder<Message>, { node, remarks }: Evidence): ReadonlyArray<Html> {
   const status = node.kind === "論点" ? node.pointStatus : node.kind === "案" ? node.planStatus : undefined;
@@ -82,6 +83,15 @@ function changeList(h: HtmlBuilder<Message>, model: Model): Html {
   );
 }
 
+// PROTOTYPE（Issue #1282）: ?variant= があれば 3 段にする。無ければ今のまま
+function sections(h: HtmlBuilder<Message>, model: Model): ReadonlyArray<Html> {
+  const variant = variantOf();
+  if (variant === null) return [evidencePanel(h, model), changeList(h, model)];
+  return LAYOUT[variant].map(([part, grow]) =>
+    part === "todo" ? todoPanel(h, model, variant, grow) : h.div([h.Class("flex flex-col min-h-0"), h.Style({ flex: `${grow} 1 0` })], [part === "evidence" ? evidencePanel(h, model) : changeList(h, model)]),
+  );
+}
+
 export const view = Submodel.defineView<Model, Message>((model, h): Html | null =>
   Disclosure.view(
     {
@@ -90,7 +100,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html | null 
       onToggle: (isOpen) => Message.ToggledSide({ isOpen }),
       // 隠していて選んでいないときは .side ごと描かない（animatePanel は使わない）。
       // 隠していて選んでいるときは side--hidden を付けて描く（狭い幅の会議中だけ、根拠のシートとして出す）
-      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], [evidencePanel(h, model), changeList(h, model)])),
+      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], sections(h, model))),
     },
     h,
   ),
