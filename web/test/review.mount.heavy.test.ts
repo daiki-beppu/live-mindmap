@@ -423,6 +423,19 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
     { label: "右の列", align: "end" },
   ] as const;
   const shownTip = '.review-tip[data-open]';
+  const settledRects = async (page: Page, tipSelector: string, triggerSelector: string): Promise<{ tip: Box; button: Box }> => {
+    const read = async () => ({ tip: await rectOf(page, tipSelector), button: await rectOf(page, triggerSelector) });
+    let last = await read();
+    const deadline = Date.now() + 5_000;
+    for (let stable = 0; stable < 3; ) {
+      if (Date.now() > deadline) throw new Error(`${triggerSelector} と吹き出しの位置が落ち着きません`);
+      await page.waitForTimeout(50);
+      const now = await read();
+      stable = JSON.stringify(now) === JSON.stringify(last) ? stable + 1 : 0;
+      last = now;
+    }
+    return last;
+  };
 
   for (const viewport of [PAGE_VIEWPORT, { width: 390, height: 844 }]) {
     it(
@@ -463,8 +476,8 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
         for (const { label, align, trigger } of targets) {
           await page.locator(trigger).first().hover();
           await page.waitForFunction((selector) => { const tip = document.querySelector(selector); return tip !== null && getComputedStyle(tip).visibility === "visible"; }, shownTip, { timeout: 10_000 });
-          const tip = await rectOf(page, shownTip);
-          const button = await rectOf(page, trigger);
+          // ミュートにポインタを乗せると音量のスライダーが transition で広がり、帯の中のボタンが動く。ボタンと吹き出しの位置が止まってから測る
+          const { tip, button } = await settledRects(page, shownTip, trigger);
           const clipped = await page.locator(shownTip).evaluate((el) => el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
           // 1 行（leading-[16px]）＋ 上下の余白（py-[4px]）
           near(tip.height, 24, `${label} のツールチップの高さ`);
