@@ -50,7 +50,10 @@ import {
   PUBLISH_DEFAULT_DAYS,
   PUBLISH_MAX_ASSET_BYTES,
   PUBLISH_MAX_DAYS,
+  generatePassphrase,
+  lockedPublishPage,
   publishWorkerScript,
+  sealWithPassphrase,
   replaceHeadForPublish,
   VocabEvent,
   SessionLog,
@@ -1183,11 +1186,10 @@ const publish = Command.make(
       Argument.withDescription("置くセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）"),
       Argument.optional,
     ),
-    anyone: Flag.Boolean("anyone").pipe(Flag.withDescription("リンクを知る誰でも見られてよいと確認する（この段では必須。付けないと何も置かずに止まる）"), Flag.withDefault(false)),
+    anyone: Flag.Boolean("anyone").pipe(Flag.withDescription("合言葉なしで、リンクを知る誰でも見られる形で置く（付けないと、製品が作った合言葉で暗号化して置き、URL と合言葉を出す）"), Flag.withDefault(false)),
     days: Flag.String("days").pipe(Flag.withDescription(`置く期間の日数（1〜${PUBLISH_MAX_DAYS}）。省略すると ${PUBLISH_DEFAULT_DAYS} 日`), Flag.withDefault(String(PUBLISH_DEFAULT_DAYS))),
   },
   Effect.fn("publish")(function* ({ session, anyone, days }) {
-    if (!anyone) return yield* new CommandFailed({ message: "--anyone が必要です。リンクを知る誰でも見られる形で置くので、確認として --anyone を付けてください" });
     const dayCount = /^\d+$/.test(days) ? Number(days) : Number.NaN;
     if (!(dayCount >= 1 && dayCount <= PUBLISH_MAX_DAYS)) return yield* new CommandFailed({ message: `--days は 1〜${PUBLISH_MAX_DAYS} の整数で指定してください: ${days}` });
     const dir = Option.isSome(session)
@@ -1210,7 +1212,7 @@ const publish = Command.make(
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: MISSING_CREDENTIALS_MESSAGE });
     const credentials: CloudflareCredentials = { accountId, token };
 
-    const html = yield* Effect.scoped(Effect.gen(function* () {
+    const mapHtml = yield* Effect.scoped(Effect.gen(function* () {
       const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "live-mindmap-publish-" });
       const { paths } = yield* writeReviewPages(tmp, logPath, [{ file: "index.html", audio: false, mapOnly: true }]);
       return replaceHeadForPublish(yield* fs.readFileString(paths[0]!));
@@ -1219,6 +1221,11 @@ const publish = Command.make(
       Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
       Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
     );
+    // 合言葉が既定。暗号化は資格情報の確認の後、Cloudflare への最初の要求（accountSubdomain）の前に行う
+    const passphrase = anyone ? undefined : generatePassphrase();
+    const html = passphrase === undefined
+      ? mapHtml
+      : lockedPublishPage(yield* Effect.tryPromise({ try: () => sealWithPassphrase(mapHtml, passphrase), catch: (e) => new CommandFailed({ message: `暗号化に失敗しました: ${describe(e)}` }) }));
     if (Buffer.byteLength(html, "utf8") > PUBLISH_MAX_ASSET_BYTES) {
       return yield* new CommandFailed({ message: `見返しの HTML が Cloudflare の上限（25 MiB）を超えています: ${Buffer.byteLength(html, "utf8")} バイト` });
     }
@@ -1235,16 +1242,17 @@ const publish = Command.make(
       Effect.gen(function* () {
         yield* deployWorker(credentials, name, html, publishWorkerScript(expiresAt)).pipe(Effect.mapError(cloudflareFailed));
         yield* appendPublishRecord({
-          name, url, accountId, dir, level: "map", anyone: true,
+          name, url, accountId, dir, level: "map", anyone,
+          ...(passphrase === undefined ? {} : { passphrase }),
           publishedAt: new Date(publishedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(), status: "published",
         }).pipe(Effect.mapError((e) => new CommandFailed({ message: `公開の記録を書けませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}` })));
       }),
     );
-    yield* write(`${url}\n期限: ${new Date(expiresAt).toISOString()}（${dayCount} 日後。期限の後は 410 を返します）\nURL にはアカウントのサブドメイン（${subdomain}）が出ます\n`);
+    yield* write(`${url}\n期限: ${new Date(expiresAt).toISOString()}（${dayCount} 日後。期限の後は 410 を返します）\nURL にはアカウントのサブドメイン（${subdomain}）が出ます\n${passphrase === undefined ? "" : `合言葉: ${passphrase}\nURL と合言葉は別々に渡してください（合言葉は公開の記録 ~/.live-mindmap/publish/records.jsonl にも残ります）\n`}`);
   }),
 ).pipe(
   Command.withDescription(
-    `セッションの見返しをマップだけの段（発言の文字・共有画面の文字は含めない）で、あなたの Cloudflare アカウントの workers.dev に期限つきで置き、URL・期限・URL に出るアカウントのサブドメインを出す。リンクを知る誰でも見られるので --anyone が必須（付けないと何も置かずに止まる）。期限は既定 ${PUBLISH_DEFAULT_DAYS} 日、--days で 1〜${PUBLISH_MAX_DAYS}。`
+    `セッションの見返しをマップだけの段（発言の文字・共有画面の文字は含めない）で、あなたの Cloudflare アカウントの workers.dev に期限つきで置き、URL・期限・URL に出るアカウントのサブドメイン（合言葉つきなら合言葉も）を出す。既定では製品が作った合言葉で暗号化して置き（置いた中身は Cloudflare からも読めない）、URL と合言葉を出す。--anyone を付けると合言葉なしで、リンクを知る誰でも見られる。期限は既定 ${PUBLISH_DEFAULT_DAYS} 日、--days で 1〜${PUBLISH_MAX_DAYS}。`
       + "CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN（Workers Admin の権限 1 つ）が要る。ローカルモードのセッションは拒む。サーバーは要らない",
   ),
 );
