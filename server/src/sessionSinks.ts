@@ -35,6 +35,13 @@ export type SessionSink = {
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
   // 確定結果に覆われなかった最後の発話を発言にする
   drain: Effect.Effect<void>;
+  // 起動し直すヘルパーの前の準備。drain と同じく残りの発言を作るが、2 本の録画の並べ替えで保留中の発言は吐き出さず（トラックごとに読み直した発言が end の順に並ぶよう保つ）、
+  // 全トラックの end の最大値以降の先読みの共有画面は溜まりへ入れず捨てる
+  // （起動し直したヘルパーがその位置から映像を読み直して流し直すので、入れると重複し、続きの発言より未来の画面が先に入る）
+  drainForRestart: Effect.Effect<void>;
+  // トラックごとの、いままでに作った（settling が締めた）発言の end の最大値。まだ作っていないトラックのキーは無い。
+  // 溜まりでセッションに入れていない発言も、2 本の録画の並べ替えで保留中の発言も数える（起動し直すヘルパーが、トラックごとに読み始める位置になる）
+  lastRemarkEnds: Effect.Effect<Partial<Readonly<Record<Track, number>>>>;
   // 利用者が足した語（cli start --vocab）を語彙に入れる。開始のときにだけ呼ぶ。
   // 読みは返った後に非同期で作る（開始を待たせない）。読みができた後に締めた発言から、その語で直る（すでに締めた発言は直し直さない。録画の等速でも、入れる時刻を待つ間に届いた語では直さない）。
   // 英字の語（略語でないもの）はモデルにカタカナの読みを聞いてから読みを作る。
@@ -241,10 +248,14 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const offerRemarks = (corrected: ReadonlyArray<CorrectedRemark>) =>
             Effect.forEach(corrected, (c) =>
               Effect.andThen(flushScreens(c.rest.end), backlog === undefined ? Effect.void : backlog.offer({ kind: "remark", corrected: c })), { discard: true });
+          const madeEnd = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
           const settling = yield* createRemarkSettling({
-            emit: backlog === undefined
-              ? (settled) => Effect.flatMap(correct(settled), admit)
-              : (settled) => Effect.flatMap(correct(settled), (corrected) => offerRemarks(merge === undefined ? [corrected] : merge.offer(corrected))),
+            emit: (settled) => Effect.andThen(
+              Ref.update(madeEnd, (current) => ({ ...current, [settled.track]: Math.max(current[settled.track] ?? settled.end, settled.end) })),
+              backlog === undefined
+                ? Effect.flatMap(correct(settled), admit)
+                : Effect.flatMap(correct(settled), (corrected) => offerRemarks(merge === undefined ? [corrected] : merge.offer(corrected))),
+            ),
           });
           // 画面から語彙の候補を取るための状態。短い行が出た画面の数と、読みを頼んだ語（利用者の語・画面の語）。
           // 並んで届いた画面で同じ語を二重に頼まないよう、1 回の Ref.modify で更新する
@@ -344,6 +355,14 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             },
             // 自然な終わり: 残りの発言を出してから、どの発言にも覆われなかった画面の変化を溜まりへ入れる
             drain: Effect.andThen(settling.drain, Effect.suspend(() => Effect.andThen(offerRemarks(merge?.drain() ?? []), flushScreens()))),
+            // 並べ替えで保留中の発言は吐き出さず残す（読み直した回の、もう片方のトラックの発言と end の順に並べる）。
+            // 画面は、全トラックの end の最大値より前に始まるものだけ待ち列に残す（読み直した回は、その位置から映像を流し直す）。
+            // 画面が読めない知らせ（screen-off）は流し直しを受け付けない（ログに 1 回だけ）ので、待ち列に残す
+            drainForRestart: Effect.andThen(settling.drain, Effect.suspend(() => Effect.flatMap(Ref.get(madeEnd), (ends) => {
+              const limit = Math.max(-Infinity, ...Object.values(ends));
+              return Ref.update(screenQueue, (queue) => queue.filter((item) => item.kind === "screen-off" || timeOf(item) < limit));
+            }))),
+            lastRemarkEnds: Ref.get(madeEnd),
             finishBacklog: backlog === undefined ? Effect.void : backlog.finish,
             discardBacklog: backlog === undefined ? Effect.void : Effect.andThen(Effect.sync(() => { merge?.drain(); }), backlog.discard),
             clearSpeaking: relay.clear,

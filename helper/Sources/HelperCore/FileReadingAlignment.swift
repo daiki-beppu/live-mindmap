@@ -65,15 +65,17 @@ public actor FileReadingAlignment {
     public init() {}
 
     /// 読み手を 1 本足す。読み手は、すべて足してから読み始める（足す前に読み始めた読み手は、足されていない相手を待たない）。
-    public func addReader() -> Reader {
+    /// `from` は読み始める音声の時刻（起動し直し）。読み手の位置が 0 のままだと、2 本とも途中から読むときに互いを待って止まるので、開始位置から始める。
+    public func addReader(from: Double = 0) -> Reader {
         let id = positions.count
-        positions[id] = 0
+        positions[id] = from
         return Reader(id: id, alignment: self)
     }
 
     /// 映像の読み手を足す。読み手と同じく、読み始める前に足す。
-    public func addScreen() -> Screen {
+    public func addScreen(from: Double = 0) -> Screen {
         screenRegistered = true
+        screenTime = from
         return Screen(alignment: self)
     }
 

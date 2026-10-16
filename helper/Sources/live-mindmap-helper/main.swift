@@ -18,7 +18,7 @@ usage:
   live-mindmap-helper install-speaker-models
   live-mindmap-helper list
   live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <seconds>]
-  live-mindmap-helper transcribe-file --file <path> [--self-file <path>] [--port <n>] [--audio-dir <dir>]
+  live-mindmap-helper transcribe-file --file <path> [--self-file <path>] [--port <n>] [--audio-dir <dir>] [--from <秒>] [--self-from <秒>]
   live-mindmap-helper creation-date --file <path>
   live-mindmap-helper mix --session <dir> --out <path> [--track 自分]
   live-mindmap-helper readings <語>...
@@ -244,7 +244,8 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
 /// `自分` は `DuplicateMarker` に通して重複の印を付ける（保留は読んだ位置の時計で測る）。映像は、メインにあればメインの、なければ自分用の映像を使う。
 /// 流れ: 読めるかを確かめる → 音声を書く → 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ →
 /// 文字にして流す → 最後のフレームを送り終えるのを待つ → 止める。時刻はファイルの音声の時刻（先頭が 0 秒）。
-private func transcribeFile(file: String, selfFile: String?, port: UInt16, audioDir: String?) async throws {
+/// `from` があれば `file`（相手）を、`selfFrom` があれば `selfFile`（自分）を、その時刻（秒）から読む（サーバーの起動し直し。トラックごとの位置。時刻はファイルの時刻のまま）。起動し直しでは `audioDir` を渡さない（書き出し先が既にある）。
+private func transcribeFile(file: String, selfFile: String?, port: UInt16, audioDir: String?, from: Double?, selfFrom: Double?) async throws {
     let url = URL(fileURLWithPath: file)
     let selfURL = selfFile.map { URL(fileURLWithPath: $0) }
     // 読めないファイルは、待ち受けを始める前にここで失敗する
@@ -271,13 +272,13 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
         // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
         await server.waitForClient()
         guard let selfURL, let selfTranscriber else {
-            for try await event in try await fileSessionEvents(at: url, with: transcriber) {
+            for try await event in try await fileSessionEvents(at: url, with: transcriber, from: from ?? 0) {
                 await server.broadcast(try event.jsonString())
             }
             return
         }
         try await relayFilePair(
-            theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server)
+            theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server, theirsFrom: from ?? 0, mineFrom: selfFrom ?? 0)
     }
     // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
@@ -346,7 +347,7 @@ private func main() async -> Int32 {
                 printError("\(error.message)\n\(usage)")
                 return 2
             case .success(let args):
-                try await transcribeFile(file: args.file, selfFile: args.selfFile, port: args.port, audioDir: args.audioDir)
+                try await transcribeFile(file: args.file, selfFile: args.selfFile, port: args.port, audioDir: args.audioDir, from: args.from, selfFrom: args.selfFrom)
             }
         case "creation-date":
             switch parseCreationDateArguments(Array(arguments.dropFirst())) {

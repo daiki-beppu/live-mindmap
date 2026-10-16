@@ -144,6 +144,41 @@ struct FileReadingAlignmentITTests {
         #expect(abs(log.maxEnd(of: "相手") - 30) < 0.01)
     }
 
+    @Test("開始位置（from）から読み始める読み手は、位置が 0 のままではなく開始位置から始まる。2 本とも開始位置から始めると、互いを待ち続けて止まらず、どちらも開始位置から最後まで読み切る")
+    func readersStartingAtFromDoNotStall() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (theirs, mine) = try writeWAVs(in: dir, theirsSeconds: 20, mineSeconds: 20)
+        let alignment = FileReadingAlignment()
+        let theirsReader = await alignment.addReader(from: 10)
+        let mineReader = await alignment.addReader(from: 10)
+        // 読み始める前の時計は開始位置（0 だと、互いに 10 秒の位置の入力を待ち続けて止まる）
+        #expect(abs(await alignment.now() - 10) < 0.001)
+        let log = PullLog()
+        let theirsDone = Flag()
+        let mineDone = Flag()
+
+        let theirsTask = Task {
+            try await drain(try await transcribeFile(at: theirs, with: PacedFileTranscriber("相手", log: log), alignment: theirsReader, from: 10))
+            theirsDone.raise()
+        }
+        let mineTask = Task {
+            try await drain(try await transcribeFile(at: mine, with: PacedFileTranscriber("自分", log: log), alignment: mineReader, from: 10))
+            mineDone.raise()
+        }
+        defer {
+            theirsTask.cancel()
+            mineTask.cancel()
+        }
+        try await waitUntil("2 本とも読み切る") { theirsDone.isRaised && mineDone.isRaised }
+
+        for reader in ["相手", "自分"] {
+            let starts = log.values.filter { $0.reader == reader }.map(\.start)
+            #expect(abs((starts.min() ?? -1) - 10) < 0.001, "\(reader) は開始位置の 10 秒から読み始める")
+            #expect(abs(log.maxEnd(of: reader) - 20) < 0.01)
+        }
+    }
+
     @Test("速さの違う 2 本を並べて引いても、どの時点でも 2 本の読み終えた位置の差は 1 つの入力ぶんを超えない。両方とも最後まで読み切る")
     func readersStayWithinOneBufferOfEachOther() async throws {
         let dir = try Support.temporaryDirectory()

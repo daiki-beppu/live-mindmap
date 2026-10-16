@@ -21,7 +21,7 @@ cd helper
 swift run live-mindmap-helper list                         # 音を出している会議アプリを JSON で出す
 swift run live-mindmap-helper check                        # モデル・マイク・画面収録の状態を JSON で出す
 swift run live-mindmap-helper run --app <bundle id> [--port <n>] [--audio-dir <dir>] [--origin <host time>] [--audio-index <n>] [--no-screen] [--self-manual pause|take] [--self-basis using|idle] [--self-last-known using|idle] [--self-idle-for <秒>]   # 既定のポートは 8765
-swift run live-mindmap-helper transcribe-file --file <path> [--self-file <path>] [--port <n>] [--audio-dir <dir>]   # 音声（動画）ファイル 1 本を文字にして、相手の partial・remark として流し、映像があれば共有画面の screen も流す（cli recorded が起動する）。--self-file があれば自分用の録音も読み、相手・自分の 2 トラックで流す。--audio-dir を渡すと、待ち受けの前にファイルの音声を <dir>/相手.m4a に書く（--self-file があれば 自分.m4a も）
+swift run live-mindmap-helper transcribe-file --file <path> [--self-file <path>] [--port <n>] [--audio-dir <dir>] [--from <秒>] [--self-from <秒>]   # 音声（動画）ファイル 1 本を文字にして、相手の partial・remark として流し、映像があれば共有画面の screen も流す（cli recorded が起動する）。--self-file があれば自分用の録音も読み、相手・自分の 2 トラックで流す。--audio-dir を渡すと、待ち受けの前にファイルの音声を <dir>/相手.m4a に書く（--self-file があれば 自分.m4a も）。--from を渡すと、--file（相手）をその音声の時刻（0 以上の有限の秒）から読み、--self-from を渡すと --self-file（自分）をその時刻から読む（--self-from は --self-file があるときだけ。サーバーが落ちたヘルパーを起動し直すとき、トラックごとに最後に作った発言の end を渡す。映像は 2 本の位置の大きい方から読み、結果の時刻はファイルの時刻のまま。起動し直しでは --audio-dir を渡さない）
 swift run live-mindmap-helper creation-date --file <path>  # ファイルに記録された作成日時を {"creationDate":"<ISO8601>"|null} で出す（記録が無い・読めないときは null。終了コード 0）
 swift run live-mindmap-helper mix --session <dir> --out <path> [--track 自分]   # セッションの録音を 0 秒から重ねて 1 本の 32 kbps・24 kHz モノラル m4a にする
 swift run live-mindmap-helper readings <語>...             # 語ごとのローマ字の読みを JSON で出す
