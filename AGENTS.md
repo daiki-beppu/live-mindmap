@@ -20,6 +20,10 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 
 `web` builds on Effect 4 through Foldkit; read `web/AGENTS.md` before writing Foldkit code.
 
+### README
+
+When a PR adds, removes or changes what a user can do, update README's `できること` in the same PR. Plans and progress live in issues; README's `ロードマップ` only links to them.
+
 ### Checks
 
 SDK または `playwright-core` の固定版を更新するときは、[Claude の更新手順](server/managed-deps/claude/README.md) または [Chromium の更新手順](server/managed-deps/chromium/README.md) を読む。
