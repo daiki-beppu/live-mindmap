@@ -1,6 +1,7 @@
 // 見返し用の HTML（map.html）の、Node に依存しない部分。サーバー（書き出し）とブラウザ（表示）の両方が読む。
-import { Effect } from "effect";
-import { restoreState, snapshotOf } from "./session.ts";
+import { Effect, Predicate, Schema } from "effect";
+import { DiffUpdatePausedEvent, DiffUpdateResumedEvent } from "./diffUpdate.ts";
+import { DiffEvent, RemarkEvent, restoreState, ScreenEvent, ScreenInputSkippedEvent, snapshotOf, StartEvent } from "./session.ts";
 import type { Snapshot } from "./snapshot.ts";
 
 // ログ（log.jsonl の出来事）を埋め込む <script type="application/json"> の id
@@ -49,4 +50,48 @@ export function embedReviewLicenses(html: string, licenses: string): string {
 // web の入口が同期で呼ぶので Effect にしない（Service も待ちも要らない）。壊れたログでは例外を投げる
 export function reviewSnapshot(events: readonly unknown[]): Snapshot {
   return Effect.runSync(Effect.map(restoreState(events), snapshotOf));
+}
+
+const decodeRemark = Schema.decodeUnknownSync(RemarkEvent);
+const decodeScreen = Schema.decodeUnknownSync(ScreenEvent);
+
+// マップの復元と時間軸が読む行のうち、文字を持たずそのまま残す type
+const KEPT_AS_IS: ReadonlySet<unknown> = new Set([
+  StartEvent.fields.type.literal,
+  DiffEvent.fields.type.literal,
+  ScreenInputSkippedEvent.fields.type.literal,
+  DiffUpdatePausedEvent.fields.type.literal,
+  DiffUpdateResumedEvent.fields.type.literal,
+]);
+
+// 発言の行: 復元と時間軸が読む id・track・start・end・duplicate・speaker・noContent だけを残し、本文（text は空文字）・raw・words・wordTimes は持たせない
+function withoutRemarkText(event: unknown): unknown {
+  const { remark: r, noContent } = decodeRemark(event);
+  return {
+    type: RemarkEvent.fields.type.literal,
+    remark: { id: r.id, track: r.track, start: r.start, end: r.end, text: "", ...(r.duplicate === undefined ? {} : { duplicate: r.duplicate }), ...(r.speaker === undefined ? {} : { speaker: r.speaker }) },
+    ...(noContent === undefined ? {} : { noContent }),
+  };
+}
+
+// 共有画面の行: 復元が数える start と image だけを残し、OCR の行（lines）は持たせない
+function withoutScreenLines(event: unknown): unknown {
+  const { start, image } = decodeScreen(event);
+  return { type: ScreenEvent.fields.type.literal, start, image };
+}
+
+// ログの出来事から、発言の文字と共有画面から読んだ文字を抜いた「マップだけ」の見返し用の出来事を作る。引数は書き換えない。
+// 発言の行は残す（diff の fresh の参照・反映の時刻・根拠の発言の start が復元に要る）。画面の行も残す（diff の screenCount の検査が要る）。
+// 復元と時間軸が読まない type（vocab など）は落とす。壊れた発言・画面の行は、文字を残さないよう throw する
+export function mapOnlyReviewEvents(events: readonly unknown[]): unknown[] {
+  return events.flatMap((event, index): unknown[] => {
+    const type = Predicate.isObject(event) && "type" in event ? event.type : undefined;
+    try {
+      if (type === RemarkEvent.fields.type.literal) return [withoutRemarkText(event)];
+      if (type === ScreenEvent.fields.type.literal) return [withoutScreenLines(event)];
+      return KEPT_AS_IS.has(type) ? [event] : [];
+    } catch (error) {
+      throw new Error(`出来事 ${index} 行目を読めません: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
 }
