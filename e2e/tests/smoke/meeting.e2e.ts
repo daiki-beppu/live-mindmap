@@ -47,6 +47,14 @@ test("会議中: start で届いた発言が字幕とノードになり、stop �
     await expect(browser.locator(".captions__name").filter({ hasText: /\S/ })).toHaveCount(1);
   }
 
+  // 全件の台本は、相手の発言「来週のリリースは」の後に、同じ区切りが「来週のリリースは金曜に」へ延びた途中結果で終わる（Issue #1222）。
+  // 字幕には発言になった分を除いた「金曜に」だけが出て、発言になった「来週のリリースは」を含む吹き出しは出ない（発言はノードになる）
+  if (runInfo.events === script.events.length) {
+    await expect(browser.locator(".captions__bubble").filter({ hasText: "金曜に" })).toBeVisible(WAIT);
+    await expect(browser.locator(".captions__bubble").filter({ hasText: "来週のリリースは" })).toHaveCount(0);
+    await expect(browser.locator(".map-node__text").filter({ hasText: "来週のリリースは" })).toBeVisible(WAIT);
+  }
+
   const nodes = screen.getByRole("button", { pressed: false }).filter({ has: browser.locator(".map-node__text") });
   await expect(nodes.first()).toBeVisible(WAIT);
 

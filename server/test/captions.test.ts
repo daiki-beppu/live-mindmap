@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { continuesAfter, createCaptionBoard, type CaptionBubble, type HelperPartial, type Replacement, type SettledRemark, type Track, type WordTime } from "../src/core/index.ts";
+import { continuesAfter, createCaptionBoard, createRemarkSettler, SETTLE_QUIET_MS, type CaptionBubble, type HelperPartial, type Replacement, type SettledRemark, type Track, type WordTime } from "../src/core/index.ts";
 
 // Issue #1022: 字幕のフレーム（CaptionsFrame）の吹き出しを作る盤。
 // 盤は純粋（時計もタイマーも持たない。ADR 0003）。盤への入力は「いまの状態」の全体で、盤は送った吹き出しの境目と id を覚える。
@@ -488,5 +488,75 @@ describe("補正つきの未反映の発言（replacements）の字幕用の本�
 
     expect(first.map((b) => b.text)).toEqual(["𠮷野家", "や"]);
     expect(second.map((b) => [b.id, b.text])).toEqual(first.map((b) => [b.id, b.text]));
+  });
+});
+
+// Issue #1222: 発言にした後に、STT が同じ区切りを延ばした途中結果。字幕へ渡す途中結果は、settler が出した分を除いた後ろだけにする（settler.unemittedTail）。
+// 盤は変えない。発言と、その後ろの途中結果は、別の吹き出しになってよい（並べると 1 回ずつ）
+describe("発言になった分を除いた途中結果（settler.unemittedTail）を盤へ渡す", () => {
+  // 相手の途中結果を settler へ入れ、自分の途中結果で音声の時計を 1 秒進めて、発言にする
+  const settle = (settler: ReturnType<typeof createRemarkSettler>, p: HelperPartial): SettledRemark[] => [
+    ...settler.partial(p),
+    ...settler.partial({ track: "自分", start: 0, end: p.end + SETTLE_QUIET_MS / 1000, text: "時計", duplicate: false }),
+  ];
+  // 相手の吹き出しの本文（話し始めの順）
+  const texts = (bubbles: readonly CaptionBubble[]) => bubbles.filter((b) => b.track === "相手").map((b) => b.text);
+
+  it("発言「来週のリリースは」の後に、同じ区切りが「来週のリリースは金曜に」へ延びても、字幕は「来週のリリースは」「金曜に」で、同じ文字が二重に出ない", () => {
+    const settler = createRemarkSettler();
+    const board = createCaptionBoard();
+    const [remark] = settle(settler, partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2]]));
+    expect(remark?.text).toBe("来週のリリースは");
+    frameOf(board, { unreflected: [{ id: "r1", remark: remark! }] });
+
+    const extended = partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2], ["金曜に", 1.3, 2.0]]);
+    settler.partial(extended);
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unemittedTail(extended)] });
+
+    expect(texts(bubbles)).toEqual(["来週のリリースは", "金曜に"]);
+  });
+
+  it("延びた途中結果の語の時刻が、出した分の語より揺れの幅（0.5 秒）を超えてずれていても、出した分の文字は別の吹き出しに出ない", () => {
+    const settler = createRemarkSettler();
+    const board = createCaptionBoard();
+    const [remark] = settle(settler, partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2]]));
+    frameOf(board, { unreflected: [{ id: "r1", remark: remark! }] });
+
+    const shifted = partialOf([["来週の", 0.7, 1.2], ["リリースは", 1.2, 1.9], ["金曜に", 2.0, 2.6]]);
+    settler.partial(shifted);
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unemittedTail(shifted)] });
+
+    expect(texts(bubbles)).toEqual(["来週のリリースは", "金曜に"]);
+  });
+
+  it("途中結果の全部が出した分と同じなら、途中結果の吹き出しは増えず、発言の吹き出しの id と本文は変わらない", () => {
+    const settler = createRemarkSettler();
+    const board = createCaptionBoard();
+    const [remark] = settle(settler, partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2]]));
+    const shown = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }] });
+
+    const same = partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2]]);
+    settler.partial(same);
+    expect(settler.unemittedTail(same).text).toBe("");
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [settler.unemittedTail(same)] });
+
+    expect(bubbles.map((b) => [b.id, b.text])).toEqual(shown.map((b) => [b.id, b.text]));
+  });
+
+  it("頭に挿入が入った途中結果（出した本文が新しい本文の途中に現れる）は、settler が次の発言にするのと同じ位置で切った後ろだけが字幕に入る", () => {
+    const settler = createRemarkSettler();
+    const board = createCaptionBoard();
+    const [remark] = settle(settler, partialOf([["来週の", 0, 0.5], ["リリースは", 0.5, 1.2]]));
+    frameOf(board, { unreflected: [{ id: "r1", remark: remark! }] });
+
+    const inserted = partialOf([["えっと、", 0, 0.3], ["来週の", 0.3, 0.8], ["リリースは", 0.8, 1.4], ["金曜に", 1.5, 2.2]]);
+    settler.partial(inserted);
+    const caption = settler.unemittedTail(inserted);
+    const bubbles = frameOf(board, { unreflected: [{ id: "r1", remark: remark! }], partials: [caption] });
+    const [next] = settle(settler, inserted);
+
+    expect(caption.text).toBe(next?.text);
+    expect(caption.wordTimes).toEqual(next?.wordTimes);
+    expect(texts(bubbles)).toEqual(["来週のリリースは", "金曜に"]);
   });
 });

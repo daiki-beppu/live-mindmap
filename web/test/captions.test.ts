@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Clock, Effect, Option } from "effect";
 import { TestClock } from "effect/testing";
-import { CAPTION_CONTINUE_GAP_S, createCaptionBoard, type CaptionBubble, type CaptionsFrame, type HelperPartial, type Segment } from "../../server/src/core/index.ts";
+import { CAPTION_CONTINUE_GAP_S, createCaptionBoard, createRemarkSettler, SETTLE_QUIET_MS, type CaptionBubble, type CaptionsFrame, type HelperPartial, type Segment } from "../../server/src/core/index.ts";
 import { createSpeakingRelay } from "../../server/src/speakingRelay.ts";
 import {
   advanceCaptions,
@@ -259,6 +259,28 @@ describe("会議中の字幕（吹き出し）", () => {
       const state = receiveCaptions(createCaptionState(), bubbles, 0);
 
       expect(view(state, WAIT).map((b) => b.text)).toEqual(["あい"]);
+    });
+  });
+
+  // Issue #1222: 「相手 A」の発言の後に、同じ区切りが延びた途中結果が届く。サーバーは出した分を除いた後ろだけを盤へ渡すので、後ろは別の吹き出し（ラベルなし）で届く。
+  // 画面では、待ちの上限の後に「相手 A」の吹き出しの続きとして出て、別の「相手」の吹き出しは立たない
+  describe("発言の後に延びた途中結果（settler から盤・表示まで）", () => {
+    it("「相手 A」の発言「来週のリリースは」の後に「来週のリリースは金曜に」が届くと、待ちの上限の後に「相手 A」の吹き出し 1 つに「来週のリリースは金曜に」と出る", () => {
+      const settler = createRemarkSettler();
+      const board = createCaptionBoard();
+      const wordTimes = [{ location: 0, length: 3, start: 0, end: 0.5 }, { location: 3, length: 5, start: 0.5, end: 1.2 }];
+      const first: HelperPartial = { track: "相手", duplicate: false, start: 0, end: 1.2, text: "来週のリリースは", wordTimes };
+      settler.partial(first);
+      const [remark] = settler.partial({ track: "自分", duplicate: false, start: 0, end: 1.2 + SETTLE_QUIET_MS / 1000, text: "時計" });
+      const unreflected = [{ id: "r1", remark: { ...remark!, speaker: "相手 A" } }];
+      const input = { unreflected, held: [], intervals: [], previewLabel: () => undefined };
+      let state = receiveCaptions(createCaptionState(), board.build({ ...input, partials: [] }), 0);
+
+      const extended: HelperPartial = { ...first, end: 2, text: "来週のリリースは金曜に", wordTimes: [...wordTimes, { location: 8, length: 3, start: 1.3, end: 2 }] };
+      settler.partial(extended);
+      state = receiveCaptions(state, board.build({ ...input, partials: [settler.unemittedTail(extended)] }), 100);
+
+      expect(view(state, 100 + WAIT).map((b) => [nameOf(b), b.text])).toEqual([["相手 A", "来週のリリースは金曜に"]]);
     });
   });
 
