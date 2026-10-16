@@ -31,7 +31,7 @@ func onFileScreenQueue<T: Sendable>(_ body: @escaping @Sendable () -> T) async -
 }
 
 /// 動画の最初の映像トラックを読み、変化した画面のイベントにする。`next()` は `fileScreenQueue` の上でだけ呼ぶ。
-/// AVAssetReader には `fileScreenQueue` の上（と `deinit`）でだけ触れる。読み出し中に別のスレッドから `cancelReading` が入ると落ちる（Issue #1198）。
+/// AVAssetReader の読み出しと停止（`copyNextSampleBuffer`・`cancelReading`）は `fileScreenQueue` の上（と `deinit`）でだけ行う。読み出し中に別のスレッドから `cancelReading` が入ると落ちる（Issue #1198）。
 final class FileScreenReading: @unchecked Sendable {
     enum Opened {
         /// 映像のトラックが無い（音声だけのファイル）。「読めない」とは別。
@@ -92,11 +92,14 @@ final class FileScreenReading: @unchecked Sendable {
 
     /// 読むのをやめる。どのスレッドから呼んでもよい。読み出し中の `next()` は次のフレームで抜け、読み手は `fileScreenQueue` の上で止める。
     func cancel() {
-        cancelLock.withLock { cancelled = true }
-        fileScreenQueue.async { self.reader.cancelReading() }
+        let first = cancelLock.withLock { () -> Bool in
+            defer { cancelled = true }
+            return !cancelled
+        }
+        if first { fileScreenQueue.async { self.reader.cancelReading() } }
     }
 
-    /// 読み手の状態（テストで、取り消しが AVAssetReader に触れた時機を見る）。
+    /// 読み手の状態（テストで、取り消しが AVAssetReader に触れた時機を見る）。`fileScreenQueue` の上か、キューを塞いでいる間にだけ読む。
     var readerStatus: AVAssetReader.Status { reader.status }
 
     /// 次のイベントを読む（出るまでフレームを進める）。映像を読み終えたら nil。
