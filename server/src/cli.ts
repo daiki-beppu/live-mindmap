@@ -4,13 +4,13 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
-import { Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
+import { Clock, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 import { Argument, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
 import { MapCapture } from "./capture.ts";
 import { Playwright } from "./playwright.ts";
-import { depsDirConfig, portConfig, sessionsDirConfig, shareAllowConfig } from "./config.ts";
+import { cloudflareAccountIdConfig, cloudflareApiTokenConfig, depsDirConfig, portConfig, sessionsDirConfig, shareAllowConfig } from "./config.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { StdoutIsTty, withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
@@ -47,6 +47,11 @@ import {
   ScreenEvent,
   ScreenOffEvent,
   StartEvent,
+  PUBLISH_DEFAULT_DAYS,
+  PUBLISH_MAX_ASSET_BYTES,
+  PUBLISH_MAX_DAYS,
+  publishWorkerScript,
+  replaceHeadForPublish,
   VocabEvent,
   SessionLog,
   playback,
@@ -67,6 +72,8 @@ import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { BrokenLogLine, readLogLines } from "./logLines.ts";
 import { poolUnavailableMessage, readPool, updatePoolFromLog, vocabularyPoolPath, writePool } from "./vocabularyPool.ts";
+import { accountSubdomain, CloudflareFailed, deleteWorker, deployWorker, describeCloudflareFailure, newWorkerName, workerUrl, type CloudflareCredentials } from "./cloudflareWorkers.ts";
+import { appendPublishRecord } from "./publishRecords.ts";
 import { ReviewBuild, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
@@ -1141,12 +1148,113 @@ const vocab = Command.make("vocab").pipe(Command.withSubcommands([
   ).pipe(Command.withDescription("語を語彙の溜まりから消す（表記の完全一致）。効くのは次のセッションから。今のセッションの語彙と字幕は変わらない。サーバーは要らない。消した語も、次のセッションで話されるか --vocab で足されれば溜まりに戻る")),
 ]));
 
+const MISSING_CREDENTIALS_MESSAGE = [
+  "CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN の両方を環境変数に設定してください。",
+  "API トークンは Cloudflare のダッシュボードで、Workers Admin（Workers の編集）の権限を 1 つだけ付けて作ります。",
+  "アカウントが要る理由: アカウント無しの一時の置き場は 60 分・5 MiB までで使えないので、あなた自身のアカウントの workers.dev に置きます。",
+].join("\n");
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// 置く途中で失敗・中断（Ctrl-C など）されたら、作りかけの Worker を消す。失敗のときは消してから元の失敗で返し、消すのも失敗したら、元の失敗の文に残っているかもしれない旨を足す（元の失敗は置き換えない）。中断は catch に届かず、記録の無い Worker が残るので onInterrupt でも消す。消す処理自体は中断されない
+const withWorkerRollback = <A, R>(credentials: CloudflareCredentials, name: string, place: Effect.Effect<A, CommandFailed, R>) =>
+  place.pipe(
+    Effect.onInterrupt(() =>
+      deleteWorker(credentials, name).pipe(
+        Effect.catch((cleanup) => Console.error(`Worker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）`)),
+        Effect.uninterruptible,
+      ),
+    ),
+    Effect.catch((failure) =>
+      deleteWorker(credentials, name).pipe(
+        Effect.uninterruptible,
+        Effect.match({
+          onSuccess: () => failure,
+          onFailure: (cleanup) => new CommandFailed({ message: `${failure.message}\nWorker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）` }),
+        }),
+        Effect.flatMap((failed) => Effect.fail(failed)),
+      ),
+    ),
+  );
+
+const publish = Command.make(
+  "publish",
+  {
+    session: Argument.String("session").pipe(
+      Argument.withDescription("置くセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）"),
+      Argument.optional,
+    ),
+    anyone: Flag.Boolean("anyone").pipe(Flag.withDescription("リンクを知る誰でも見られてよいと確認する（この段では必須。付けないと何も置かずに止まる）"), Flag.withDefault(false)),
+    days: Flag.String("days").pipe(Flag.withDescription(`置く期間の日数（1〜${PUBLISH_MAX_DAYS}）。省略すると ${PUBLISH_DEFAULT_DAYS} 日`), Flag.withDefault(String(PUBLISH_DEFAULT_DAYS))),
+  },
+  Effect.fn("publish")(function* ({ session, anyone, days }) {
+    if (!anyone) return yield* new CommandFailed({ message: "--anyone が必要です。リンクを知る誰でも見られる形で置くので、確認として --anyone を付けてください" });
+    const dayCount = /^\d+$/.test(days) ? Number(days) : Number.NaN;
+    if (!(dayCount >= 1 && dayCount <= PUBLISH_MAX_DAYS)) return yield* new CommandFailed({ message: `--days は 1〜${PUBLISH_MAX_DAYS} の整数で指定してください: ${days}` });
+    const dir = Option.isSome(session)
+      ? resolve(session.value)
+      : yield* Effect.gen(function* () {
+          const sessionsDir = yield* sessionsDirConfig;
+          return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE).pipe(Effect.catchTag("NoSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) })))));
+        });
+    const logPath = join(dir, LOG_FILE);
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
+    const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
+    const start = events.find(hasLoggedType(new Set(["start"])));
+    const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
+    if (decodedStart !== undefined && Result.isSuccess(decodedStart) && decodedStart.success.model?.local === true) {
+      return yield* new CommandFailed({ message: "ローカルモードのセッションは公開できません。会議の中身を Mac の外に出さないためです" });
+    }
+    const accountId = yield* cloudflareAccountIdConfig;
+    const token = yield* cloudflareApiTokenConfig;
+    if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: MISSING_CREDENTIALS_MESSAGE });
+    const credentials: CloudflareCredentials = { accountId, token };
+
+    const html = yield* Effect.scoped(Effect.gen(function* () {
+      const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "live-mindmap-publish-" });
+      const { paths } = yield* writeReviewPages(tmp, logPath, [{ file: "index.html", audio: false, mapOnly: true }]);
+      return replaceHeadForPublish(yield* fs.readFileString(paths[0]!));
+    })).pipe(
+      Effect.catchIf(PlatformError.isPlatformError, (e) => Effect.fail(fileFailed(e))),
+      Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+      Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
+    );
+    if (Buffer.byteLength(html, "utf8") > PUBLISH_MAX_ASSET_BYTES) {
+      return yield* new CommandFailed({ message: `見返しの HTML が Cloudflare の上限（25 MiB）を超えています: ${Buffer.byteLength(html, "utf8")} バイト` });
+    }
+
+    const cloudflareFailed = (e: CloudflareFailed) => new CommandFailed({ message: describeCloudflareFailure(e) });
+    const subdomain = yield* accountSubdomain(credentials).pipe(Effect.mapError(cloudflareFailed));
+    const name = newWorkerName();
+    const publishedAt = yield* Clock.currentTimeMillis;
+    const expiresAt = publishedAt + dayCount * DAY_MS;
+    const url = workerUrl(name, subdomain);
+    yield* withWorkerRollback(
+      credentials,
+      name,
+      Effect.gen(function* () {
+        yield* deployWorker(credentials, name, html, publishWorkerScript(expiresAt)).pipe(Effect.mapError(cloudflareFailed));
+        yield* appendPublishRecord({
+          name, url, accountId, dir, level: "map", anyone: true,
+          publishedAt: new Date(publishedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(), status: "published",
+        }).pipe(Effect.mapError((e) => new CommandFailed({ message: `公開の記録を書けませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}` })));
+      }),
+    );
+    yield* write(`${url}\n期限: ${new Date(expiresAt).toISOString()}（${dayCount} 日後。期限の後は 410 を返します）\nURL にはアカウントのサブドメイン（${subdomain}）が出ます\n`);
+  }),
+).pipe(
+  Command.withDescription(
+    `セッションの見返しをマップだけの段（発言の文字・共有画面の文字は含めない）で、あなたの Cloudflare アカウントの workers.dev に期限つきで置き、URL・期限・URL に出るアカウントのサブドメインを出す。リンクを知る誰でも見られるので --anyone が必須（付けないと何も置かずに止まる）。期限は既定 ${PUBLISH_DEFAULT_DAYS} 日、--days で 1〜${PUBLISH_MAX_DAYS}。`
+      + "CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN（Workers Admin の権限 1 つ）が要る。ローカルモードのセッションは拒む。サーバーは要らない",
+  ),
+);
+
 const root = Command.make("live-mindmap").pipe(
   Command.withDescription(
     "会議の文字起こし・ライブのセッションから、議論のマインドマップを組み立てる（ADR 0003）。"
       + "exit code 3 = 開始に要るものが未導入",
   ),
-  Command.withSubcommands([login, logout, vocab, play, apps, start, recorded, stop, status, share, resume, exportCommand, restore, review, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
+  Command.withSubcommands([login, logout, vocab, play, apps, start, recorded, stop, status, share, resume, exportCommand, restore, review, publish, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
 );
 
 // argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
