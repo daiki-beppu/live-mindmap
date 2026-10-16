@@ -256,8 +256,14 @@ struct SlotMixTrackerTests {
         _ = tracker.update(finalized: run(slot: 1, from: 50, count: 10) + run(slot: 1, from: 70, count: 4))
 
         let timeline = DiarizerTimeline(config: SortformerSpeakerDiarizer.timelineConfig)
-        let predictions: [Float] = (0..<60).flatMap { frame in
-            (0..<4).map { slot in (slot == 1 && (0..<28).contains(frame)) || (slot == 3 && (30..<58).contains(frame)) ? Float(1) : Float(0) }
+        // Why: 1 つの式にまとめると、CI のランナーでは型の推論が時間内に終わらずコンパイルが落ちた
+        func active(_ slot: Int, _ frame: Int) -> Bool {
+            if slot == 1 { return (0..<28).contains(frame) }
+            if slot == 3 { return (30..<58).contains(frame) }
+            return false
+        }
+        let predictions: [Float] = (0..<60).flatMap { (frame: Int) -> [Float] in
+            (0..<4).map { (slot: Int) -> Float in active(slot, frame) ? 1 : 0 }
         }
         let update = try timeline.addPredictions(finalizedPredictions: predictions, tentativePredictions: [])
         #expect(update.finalizedSegments.count == 2)
