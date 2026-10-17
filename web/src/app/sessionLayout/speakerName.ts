@@ -18,7 +18,7 @@ export const SPEAKER_NAME_COLORS = [
   "text-[#8a4fb3]",
 ] as const;
 
-type NameEdit = { readonly bubbleId: string; readonly label: string; readonly draft: string };
+type NameEdit = { readonly bubble: DisplayBubble; readonly label: string; readonly draft: string };
 
 // 入力の id。押したときのフォーカス（update が出す FocusSpeakerNameInput）が使う
 export const NAME_INPUT_ID = "speaker-name-input";
@@ -59,23 +59,20 @@ const nameInputView = (h: H, bubble: DisplayBubble, edit: NameEdit): Html =>
 // 名前が無い吹き出し（自分・同じ人が続くとき）でも欄は残す。欄が消えると吹き出しの位置が動く
 export const speakerNameCell = (h: H, bubble: DisplayBubble, nameEdit: Option.Option<NameEdit>): Html => {
   const text = Option.match(bubble.name, { onNone: () => [], onSome: (name) => [name] });
+  // 入力中の欄は、字幕の更新で label が None になっても入力を残す
+  const editing = Option.filter(nameEdit, (edit) => edit.bubble.id === bubble.id);
+  if (Option.isSome(editing)) return nameInputView(h, bubble, editing.value);
   return Option.match(bubble.label, {
     onNone: () => h.div([h.Class(cellClass(bubble))], text),
-    onSome: (label) => {
-      const editing = Option.filter(nameEdit, (edit) => edit.bubbleId === bubble.id);
-      return Option.match(editing, {
-        onNone: () =>
-          h.button(
-            [
-              h.Type("button"),
-              h.Class(`${cellClass(bubble)} pointer-events-auto m-0 p-0 bg-transparent border-0 text-left cursor-pointer hover:underline`),
-              h.AriaLabel(`${label}に名前を付ける`),
-              h.OnClick(Message.PressedSpeakerName({ bubbleId: bubble.id, label })),
-            ],
-            text,
-          ),
-        onSome: (edit) => nameInputView(h, bubble, edit),
-      });
-    },
+    onSome: (label) =>
+      h.button(
+        [
+          h.Type("button"),
+          h.Class(`${cellClass(bubble)} pointer-events-auto m-0 p-0 bg-transparent border-0 text-left cursor-pointer hover:underline`),
+          h.AriaLabel(`${label}に名前を付ける`),
+          h.OnClick(Message.PressedSpeakerName({ bubbleId: bubble.id, label })),
+        ],
+        text,
+      ),
   });
 };

@@ -6,7 +6,7 @@ import { Submodel, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { DiffUpdateState, SelfPaused } from "../../../../server/src/core/index.ts";
-import { CAPTION_BUBBLE_WIDTH, captionsOf, Captions, NO_CAPTIONS, type DisplayBubble } from "../../captions.ts";
+import { CAPTION_BUBBLE_WIDTH, captionsOf, Captions, DisplayBubble, NO_CAPTIONS } from "../../captions.ts";
 import { intakeNoticeText, RESUMED_NOTICE_MS } from "../../intake.ts";
 import { FocusSpeakerNameInput, RequestSpeakerName } from "./command.ts";
 import { IntakeStatus, Message } from "./message.ts";
@@ -14,8 +14,8 @@ import { CAPTION_ID_KEY, SlideCaptions } from "./mount.ts";
 import { NAME_INPUT_ID, SPEAKER_NAME_COLORS, speakerNameCell } from "./speakerName.ts";
 import { Notice, shownText, type NoticeModel } from "./toast.ts";
 
-// 開いている名前の入力（Issue #1026）。押した吹き出しの id・サーバーに送るラベル・入力中の文字
-const NameEdit = Schema.Struct({ bubbleId: Schema.String, label: Schema.String, draft: Schema.String });
+// 開いている名前の入力（Issue #1026）。押した時点の吹き出しの行の写し（字幕から外れても入力を残すため）・サーバーに送るラベル・入力中の文字
+const NameEdit = Schema.Struct({ bubble: DisplayBubble, label: Schema.String, draft: Schema.String });
 type NameEdit = typeof NameEdit.Type;
 
 export const Model = Schema.Struct({
@@ -126,7 +126,13 @@ export const update = (model: Model, message: Message): Return =>
     },
     ReceivedScreenNotice: ({ text }) => noticeOf(model, foldScreenToast, shownText(model.screenToast), text, { sticky: true }),
     ReceivedTapNotice: ({ text }) => noticeOf(model, foldTapToast, shownText(model.tapToast), text, { sticky: true }),
-    PressedSpeakerName: ({ bubbleId, label }) => ({ model: modifyFields(model, { nameEdit: () => Option.some({ bubbleId, label, draft: "" }) }), commands: [FocusSpeakerNameInput({ id: NAME_INPUT_ID })] }),
+    // 押した欄がもう字幕に無ければ開かない
+    PressedSpeakerName: ({ bubbleId, label }) => {
+      const bubble = model.captions._tag === "Bubbles" ? model.captions.bubbles.find((b) => b.id === bubbleId) : undefined;
+      return bubble === undefined
+        ? { model }
+        : { model: modifyFields(model, { nameEdit: () => Option.some({ bubble, label, draft: "" }) }), commands: [FocusSpeakerNameInput({ id: NAME_INPUT_ID })] };
+    },
     ChangedSpeakerNameDraft: ({ draft }) => ({ model: modifyFields(model, { nameEdit: Option.map((edit: NameEdit) => ({ ...edit, draft })) }) }),
     // 確定: 空のままなら何も送らず閉じる（名前は外せない）。送った後は閉じ、名前は frame が届いてから出す（楽観的に出さない）
     SubmittedSpeakerName: () =>
@@ -229,9 +235,19 @@ const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"])
     ],
   );
 
+// 描く吹き出しの行。入力中の欄が字幕から外れても、押した時点の行を先頭に足して入力を残す（先頭に置くと、keyed の差分で行が動かず input とフォーカスが保たれる）
+function bubbleRowsOf(model: Model): ReadonlyArray<DisplayBubble> {
+  if (model.captions._tag !== "Bubbles") return [];
+  const { bubbles } = model.captions;
+  return Option.match(model.nameEdit, {
+    onNone: () => bubbles,
+    onSome: ({ bubble }) => (bubbles.some((b) => b.id === bubble.id) ? bubbles : [bubble, ...bubbles]),
+  });
+}
+
 function captionsView(h: H, model: Model): Html | null {
   const lines = model.captions._tag === "Lines" ? linesView(h, model.captions.speaking) : [];
-  const bubbles = model.captions._tag === "Bubbles" ? model.captions.bubbles : [];
+  const bubbles = bubbleRowsOf(model);
   if (lines.length === 0 && bubbles.length === 0) return null;
   return Disclosure.view(
     {

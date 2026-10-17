@@ -1266,4 +1266,89 @@ describe("sessionLayout の Scene: 名前の欄の入力", () => {
       tap((s) => expect(findAll(".captions__name input")(s.html)).toHaveLength(1)),
     );
   });
+
+  // 押して「田」と入力したあと、字幕の更新 next を流す
+  const typedThen = (next: DisplayBubble[]) => [
+    click(selector("button.captions__name")),
+    focused,
+    typeInto(selector(".captions__name input"), "田"),
+    Subscription.emit(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: next } })),
+  ] as const;
+
+  it("入力中に対象の吹き出しが字幕から消えても、入力と下書きは残り、確定でラベルと下書きが送られる", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      ...typedThen([cell("b", "相手 C")]),
+      tap((s) => {
+        const inputs = findAll(".captions__name input")(s.html);
+        expect(inputs).toHaveLength(1);
+        expect(inputs[0]!.data?.props?.value).toBe("田");
+        expect(findAll(".captions__row")(s.html)).toHaveLength(2);
+      }),
+      submit(selector(".captions form")),
+      tap((s) => {
+        expect(requests(s)).toEqual([{ label: "相手 B", name: "田" }]);
+        expect(findAll(".captions input")(s.html)).toHaveLength(0);
+        expect(findAll(".captions__row")(s.html)).toHaveLength(1);
+      }),
+      Command.resolveAll([RequestSpeakerName, Message.CompletedRequestSpeakerName()]),
+    );
+  });
+
+  it("字幕が空になっても、入力は残る", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      ...typedThen([]),
+      tap((s) => {
+        expect(findAll(".captions")(s.html)).toHaveLength(1);
+        expect(findAll(".captions__name input")(s.html)).toHaveLength(1);
+      }),
+    );
+  });
+
+  it("末尾 3 件から外れても、入力は残り、押した行が先頭に置かれる", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      ...typedThen([cell("x", "相手 C"), cell("y", "相手 D"), cell("z", "相手 E")]),
+      tap((s) => {
+        expect(findAll(".captions__name input")(s.html)).toHaveLength(1);
+        expect(findAll(".captions__row")(s.html)).toHaveLength(4);
+        expect(findAll("input")(findAll(".captions__row")(s.html)[0]!)).toHaveLength(1);
+      }),
+    );
+  });
+
+  it("同じ id のまま label が無くなっても、入力は残り、行は増えない", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      ...typedThen([cell("a", undefined, { name: Option.none() })]),
+      tap((s) => {
+        expect(findAll(".captions__name input")(s.html)).toHaveLength(1);
+        expect(findAll(".captions__row")(s.html)).toHaveLength(1);
+      }),
+    );
+  });
+
+  it("字幕から消えたあとに Esc で取り消すと、何も送らず、押した行も消える", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      ...typedThen([cell("b", "相手 C")]),
+      keydown(selector(".captions__name input"), "Escape"),
+      tap((s) => {
+        expect(requests(s)).toEqual([]);
+        expect(findAll(".captions input")(s.html)).toHaveLength(0);
+        expect(findAll(".captions__row")(s.html)).toHaveLength(1);
+      }),
+    );
+  });
 });
