@@ -81,6 +81,9 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .evidence h2 { margin: 0 0 8px; font-size: 14px; }
 .evidence p { margin: 0 0 6px; }
 .evidence ul { margin: 0; padding: 0; list-style: none; }
+.todos h2 { margin: 0 0 8px; font-size: 14px; }
+.todos ul { margin: 0; padding: 0; list-style: none; }
+.todos p { margin: 0; }
 .changes h2 { margin: 0 0 8px; font-size: 14px; }
 .changes ul { margin: 0; padding: 0; list-style: none; }
 
@@ -166,7 +169,7 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
   .meeting .intake-notice { grid-column: 2; grid-row: 3; }
   .meeting .self-pause-notice { grid-column: 2; grid-row: 4; }
   .meeting .screen-notice, .meeting .layout--local > .screen-notice { grid-column: 2; grid-row: 2; }
-  .meeting .changes, .meeting .key-list__anchor, .meeting .side { display: none; }
+  .meeting .changes, .meeting .todos, .meeting .key-list__anchor, .meeting .side { display: none; }
   .meeting .side--selected {
     display: flex; position: absolute; left: 0; right: 0; bottom: 0; width: auto; height: auto; max-height: 50%;
     box-sizing: border-box; background: var(--color-white); border: 0; border-top: 1px solid var(--color-gray-200); border-radius: 12px 12px 0 0; box-shadow: none; z-index: 6;

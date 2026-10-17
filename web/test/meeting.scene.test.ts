@@ -1030,6 +1030,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
   const names = (...rows: Array<[string, string]>) => frame({ type: "speaker-names", names: rows.map(([label, name]) => ({ label, name })) });
   const captionNames = (sim: Sim) => texts(sim.html, ".captions__name");
   const personLines = (sim: Sim) => [texts(sim.html, '[data-node-id="A1"] .map-node__person'), texts(sim.html, '[data-node-id="B"] .map-node__person')];
+  const todoAssignees = (sim: Sim) => texts(sim.html, ".todos__assignee"); // 右の列の TODO の段（Issue #1287）
 
   it("名前が付くと、それまでの字幕の名前の欄・案の出した人・TODO の担当者が、次のスナップショットを待たずに名前になる。同じ名前を 2 つのラベルに付けても別のラベルのまま。空の表でラベルに戻る", () => {
     meetingScene(init(false),
@@ -1038,21 +1039,25 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "相手 B"]);
         expect(personLines(sim)).toEqual([["— 相手 A"], ["→ 相手 B · 10/15"]]);
+        expect(todoAssignees(sim)).toEqual(["相手 B"]);
       }),
       names(["相手 B", "田中"]),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "田中"]);
         expect(personLines(sim)).toEqual([["— 相手 A"], ["→ 田中 · 10/15"]]);
+        expect(todoAssignees(sim)).toEqual(["田中"]);
       }),
       names(["相手 A", "田中"], ["相手 B", "田中"]),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["田中", "田中"]); // 別のラベルの吹き出しは、同じ名前でも両方に出る
         expect(personLines(sim)).toEqual([["— 田中"], ["→ 田中 · 10/15"]]);
+        expect(todoAssignees(sim)).toEqual(["田中"]);
       }),
       names(),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "相手 B"]);
         expect(personLines(sim)).toEqual([["— 相手 A"], ["→ 相手 B · 10/15"]]);
+        expect(todoAssignees(sim)).toEqual(["相手 B"]);
       }),
     );
   });

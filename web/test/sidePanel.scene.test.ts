@@ -61,6 +61,8 @@ const toggleSide = (isOpen: boolean) => Subscription.emit(Message.ToggledSide({ 
 
 const EVIDENCE = selector("section.evidence");
 const CHANGE_LIST = selector("aside.changes");
+const TODO_LIST = selector("section.todos");
+const TODO_BUTTON = selector("button.todos__button");
 const CHANGE_BUTTON = selector("button.changes__button");
 const textOf = (vnode: VNode, css: string): string[] => findAll(css)(vnode).map(textContent);
 const evidenceOf = (html: VNode): VNode => Option.getOrThrow(find("section.evidence")(html));
@@ -375,8 +377,150 @@ describe("sidePanel の Scene: 変わったことの項目を押すと、その�
   });
 });
 
+// TODO の段（Issue #1287）。専用のスナップショットで見る（NODES に足すと根拠の Scene の前提が変わる）
+const TODO_NODES: SnapshotNode[] = [
+  node("root", null, "会議"),
+  node("A", "root", "議題", { talkStatus: "済み", text: "採用" }),
+  node("A1", "A", "論点", { text: "面接は何回か", pointStatus: "未決" }),
+  node("T1", "A1", "TODO", { text: "<b>求人を出す</b>", assignee: "佐藤", due: "来週", evidence: ["r1"] }),
+  node("A2", "A1", "課題", { text: "人が足りない" }),
+  node("B", "root", "議題", { text: "報告" }),
+  node("T2", "B", "TODO", { text: "日程を決める", assigneeSpeaker: "相手 B" }),
+  node("T3", "B", "TODO", { text: "担当も期限も無い" }),
+  node("T4", "B", "TODO", { text: "相手に任せる", assigneeSpeaker: "相手" }),
+];
+const TODO_CHANGES: ChangeEntry[] = [
+  { round: 1, at: 10, change: "追加", node: "T1", kind: "TODO", text: "<b>求人を出す</b>" },
+  { round: 2, at: 3725, change: "追加", node: "T2", kind: "TODO", text: "日程を決める" },
+  { round: 3, at: 3730, change: "追加", node: "T4", kind: "TODO", text: "相手に任せる" },
+  { round: 4, at: 4000, change: "追加", node: "A", kind: "議題", text: "採用" },
+];
+const todoSnap = (nodes: SnapshotNode[] = TODO_NODES, changes: ChangeEntry[] = TODO_CHANGES): Snapshot => ({ nodes, round: 4, changes, remarks: REMARKS, currentTopic: "B", now: 5000 });
+const todoModel = (snapshot: Snapshot = todoSnap(), speakerNames: Record<string, string> = {}): MapSurfaceModel => ({ ...modelOf(snapshot), speakerNames });
+const todosOf = (html: VNode): VNode => Option.getOrThrow(find("section.todos")(html));
+const itemsOf = (html: VNode): readonly VNode[] => findAll("li.todos__item")(todosOf(html));
+
+describe("sidePanel の Scene: TODO の段（Issue #1287）", () => {
+  it("段は見出し「TODO」の section で、右の列の中の 根拠・TODO・変わったこと の順に並び、見出しの文字もその順", () => {
+    scene(
+      app,
+      given(todoModel()),
+      mounted,
+      expectScene(selector("section.todos h2")).toHaveText("TODO"),
+      tap((s) => {
+        expect(attr(todosOf(s.html), "aria-labelledby")).toEqual(Option.some("todos-heading"));
+        expect(attr(Option.getOrThrow(find("section.todos h2")(s.html)), "id")).toEqual(Option.some("todos-heading"));
+        expect(elements(sideOf(s.html)).map((e) => textOf(e, "h2")[0])).toEqual(["根拠", "TODO", "変わったこと"]);
+      }),
+    );
+  });
+
+  it("スナップショットの TODO がすべて、ノードの並び（作られた順）で出る。畳まれた議題の下の TODO も含み、TODO 以外の種別は出ない", () => {
+    scene(
+      app,
+      given(todoModel()),
+      mounted,
+      // 議題 A は済みで畳まれ、T1 はマップに描かれない
+      expectScene(selector(`[data-node-id="T1"]`)).toBeAbsent(),
+      tap((s) => {
+        expect(textOf(todosOf(s.html), ".todos__text")).toEqual(["<b>求人を出す</b>", "日程を決める", "担当も期限も無い", "相手に任せる"]);
+        expect(findAll("b")(todosOf(s.html))).toHaveLength(0);
+      }),
+      expectScene(selector("p.todos__empty")).toBeAbsent(),
+    );
+  });
+
+  it("1 件に 時刻（mm:ss、60 分を超えても分は 60 以上）・担当者・期限・本文 を、ある要素だけ出す", () => {
+    scene(
+      app,
+      given(todoModel(todoSnap(), { "相手 B": "田中" })),
+      mounted,
+      tap((s) => {
+        const [t1, t2, t3, t4] = itemsOf(s.html);
+        expect(attr(findAll("button.todos__button")(t1!)[0]!, "type")).toEqual(Option.some("button"));
+        expect(textOf(t1!, ".todos__time")).toEqual(["00:10"]);
+        expect(textOf(t1!, ".todos__assignee")).toEqual(["佐藤"]);
+        expect(textOf(t1!, ".todos__due")).toEqual(["来週"]);
+        // 担当者の名前が無く担当の話者があるときは、表示名（speakerNames を通した名前）
+        expect(textOf(t2!, ".todos__time")).toEqual(["62:05"]);
+        expect(textOf(t2!, ".todos__assignee")).toEqual(["田中"]);
+        expect(findAll(".todos__due")(t2!)).toHaveLength(0);
+        // 担当者・期限・追加の記録が無い TODO は、本文だけ
+        expect(findAll(".todos__time")(t3!)).toHaveLength(0);
+        expect(findAll(".todos__assignee")(t3!)).toHaveLength(0);
+        expect(findAll(".todos__due")(t3!)).toHaveLength(0);
+        expect(textOf(t3!, ".todos__text")).toEqual(["担当も期限も無い"]);
+        // 話者なしの相手は担当者として出さない
+        expect(findAll(".todos__assignee")(t4!)).toHaveLength(0);
+        expect(textOf(t4!, ".todos__time")).toEqual(["62:10"]);
+      }),
+    );
+  });
+
+  it("統合で残った TODO の時刻は残った側の「追加」の時刻のまま（消えた側は出ない）。同じ画面の上でスナップショットが新しくなっても追従する", () => {
+    const before = todoSnap(
+      [node("root", null, "会議"), node("B", "root", "議題"), node("T1", "B", "TODO", { text: "求人を出す" }), node("T2", "B", "TODO", { text: "求人を出す（重複）" })],
+      [
+        { round: 1, at: 10, change: "追加", node: "T1", kind: "TODO", text: "求人を出す" },
+        { round: 2, at: 50, change: "追加", node: "T2", kind: "TODO", text: "求人を出す（重複）" },
+      ],
+    );
+    const merged = todoSnap(
+      [node("root", null, "会議"), node("B", "root", "議題"), node("T1", "B", "TODO", { text: "求人を出す" })],
+      [...before.changes, { round: 3, at: 90, change: "統合", node: "T1", kind: "TODO", text: "求人を出す" }],
+    );
+    scene(
+      app,
+      given(modelOf(before)),
+      mounted,
+      tap((s) => {
+        expect(textOf(todosOf(s.html), ".todos__text")).toEqual(["求人を出す", "求人を出す（重複）"]);
+        expect(textOf(todosOf(s.html), ".todos__time")).toEqual(["00:10", "00:50"]);
+      }),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: merged })),
+      tap((s) => {
+        expect(textOf(todosOf(s.html), ".todos__text")).toEqual(["求人を出す"]);
+        expect(textOf(todosOf(s.html), ".todos__time")).toEqual(["00:10"]);
+      }),
+    );
+  });
+
+  it("TODO が 1 件も無いときは、見出し「TODO」と「TODO はまだありません」の 1 行で、項目は無い。TODO が現れると同じ画面の上で一覧に替わる", () => {
+    const none = todoSnap(NODES.filter((n) => n.kind !== "TODO"), []);
+    scene(
+      app,
+      given(modelOf(none)),
+      mounted,
+      expectScene(selector("section.todos h2")).toHaveText("TODO"),
+      expectScene(selector("section.todos p.todos__empty")).toHaveText("TODO はまだありません"),
+      expectScene(selector("li.todos__item")).toBeAbsent(),
+      expectScene(selector("section.todos ul")).toBeAbsent(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: todoSnap() })),
+      expectScene(selector("p.todos__empty")).toBeAbsent(),
+      tap((s) => expect(itemsOf(s.html)).toHaveLength(4)),
+    );
+  });
+
+  it("畳まれた議題の下の TODO の項目を押すと、その議題が開いて TODO が選ばれ、根拠のパネルにその本文と根拠の発言が出る", () => {
+    scene(
+      app,
+      given(modelOf(todoSnap())),
+      mounted,
+      expectScene(selector(`[data-node-id="T1"]`)).toBeAbsent(),
+      expectScene(selector("section.evidence p.evidence__empty")).toHaveText(EMPTY_NOT_SELECTED),
+      click(TODO_BUTTON),
+      expectScene(selector(`[data-node-id="T1"] .map-node`)).toHaveClass("map-node--selected"),
+      expectScene(selector("section.evidence .evidence__kind")).toHaveText("TODO"),
+      expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>求人を出す</b>"),
+      tap((s) => expect(textOf(evidenceOf(s.html), ".evidence__remark-text")).toEqual(["<i>二回で</i>いきます"])),
+      // 押した後も一覧は残る
+      tap((s) => expect(itemsOf(s.html)).toHaveLength(4)),
+    );
+  });
+});
+
 describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の panel）", () => {
-  it("出している間は .side の中に section.evidence → aside.changes の順で並び、Disclosure の panel の id と data-open が付き、出入りの動き・インラインの style は付かない", () => {
+  it("出している間は .side の中に section.evidence → section.todos → aside.changes の順で並び、Disclosure の panel の id と data-open が付き、出入りの動き・インラインの style は付かない", () => {
     scene(
       app,
       given(modelOf()),
@@ -387,7 +531,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
         expect(semanticClassesOf(classOf(side))).toEqual(["side"]);
         expect(Option.isSome(attr(side, "id"))).toBe(true);
         expect(Option.isSome(attr(side, "data-open"))).toBe(true);
-        expect(elements(side).map(named)).toEqual(["section.evidence", "aside.changes"]);
+        expect(elements(side).map(named)).toEqual(["section.evidence", "section.todos", "aside.changes"]);
         const data = side.data ?? {};
         expect(data.style ?? {}).toEqual({});
         expect(Object.keys(data.on ?? {})).toEqual([]);
@@ -407,11 +551,13 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
       expectScene(selector(".side")).toBeAbsent(),
       expectScene(EVIDENCE).toBeAbsent(),
       expectScene(CHANGE_LIST).toBeAbsent(),
+      expectScene(TODO_LIST).toBeAbsent(),
       expectScene(selector("section.evidence h2")).toBeAbsent(),
       toggleSide(true),
       expectScene(selector(".side")).toExist(),
-      tap((s) => expect(elements(sideOf(s.html)).map(named)).toEqual(["section.evidence", "aside.changes"])),
+      tap((s) => expect(elements(sideOf(s.html)).map(named)).toEqual(["section.evidence", "section.todos", "aside.changes"])),
       expectScene(EVIDENCE).toExist(),
+      expectScene(TODO_LIST).toExist(),
       expectScene(CHANGE_LIST).toExist(),
     );
   });
