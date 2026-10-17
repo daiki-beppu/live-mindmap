@@ -239,7 +239,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     if let failure { throw failure }
 }
 
-/// 動画・音声ファイルを文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。映像があれば共有画面（`screen`）も流す（読めなければ `screen-off`）。音声の取り込みと話者分離は扱わない。
+/// 動画・音声ファイルを文字にして、`相手` の `partial`・`remark` として流す（`cli recorded`）。映像があれば共有画面（`screen`）も流す（読めなければ `screen-off`）。音声の取り込みは扱わない。
 /// `selfFile` があるときは、自分用の録音も読み、ライブと同じ 2 トラック（`相手`・`自分`）で流す。2 本の読み手は同じ音声の時刻に揃え、
 /// `自分` は `DuplicateMarker` に通して重複の印を付ける（保留は読んだ位置の時計で測る）。映像は、メインにあればメインの、なければ自分用の映像を使う。
 /// 流れ: 読めるかを確かめる → 音声を書く → 待ち受けを始める → 全体の長さ（`file-duration`）と音声トラックの本数（`file-audio-tracks`）を保持して流す → 最初のクライアントを待つ →
@@ -267,6 +267,15 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
     try await broadcastFileHeader(header, on: server)
+    // `相手` に話者分離をかける。使えなければ、ここで `speaker-off` を保持して流し（接続前でも後から接続したクライアントに届く）、読む速さは抑えない
+    let diarization = await FileDiarization.prepare(SortformerSpeakerDiarizer(), from: from ?? 0) { event in
+        guard let json = try? event.jsonString() else { return }
+        if case .speakerOff = event {
+            await server.broadcastRetained(json, key: "speaker-off")
+        } else {
+            await server.broadcast(json)
+        }
+    }
 
     // 差分更新が一時停止している間、サーバーは読み取りの停止を指示する（reading-pause）。止められている間は、ファイルを読み進めない。
     // 指示は、server が起動時に環境変数で渡したトークンを持つものだけ受け付ける。無ければ指示を処理しない
@@ -283,15 +292,18 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     let work = Task {
         // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
         await server.waitForClient()
-        guard let selfURL, let selfTranscriber else {
-            for try await event in try await fileSessionEvents(at: url, with: transcriber, from: from ?? 0, gate: gate) {
-                await server.broadcast(try event.jsonString())
+        // 文字起こしと話者分離を並べて動かす。両方が終わる（話者分離が最後の区間と `settled` を流し切る）まで待つ
+        try await diarization.run {
+            guard let selfURL, let selfTranscriber else {
+                for try await event in try await fileSessionEvents(at: url, with: transcriber, from: from ?? 0, gate: gate, diarization: diarization.feed) {
+                    await server.broadcast(try event.jsonString())
+                }
+                return
             }
-            return
+            try await relayFilePair(
+                theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server,
+                theirsFrom: from ?? 0, mineFrom: selfFrom ?? 0, gate: gate, theirsDiarization: diarization.feed)
         }
-        try await relayFilePair(
-            theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server,
-            theirsFrom: from ?? 0, mineFrom: selfFrom ?? 0, gate: gate)
     }
     // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
     let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in

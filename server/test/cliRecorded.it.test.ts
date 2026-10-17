@@ -12,7 +12,7 @@ import { vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
-import { DiffUpdatePaused, formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, type DiffInput } from "../src/core/index.ts";
+import { DiffUpdatePaused, formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, formatSpeakerOffNotice, type DiffInput } from "../src/core/index.ts";
 import { AudioMix } from "../src/audioMix.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -339,7 +339,7 @@ describe("cli recorded <file>", () => {
     const lines = logLines(dir);
     // 発言を入れる → その差分更新の終わり → 次の発言、の順
     expect(lines.filter((l) => l.type === "remark" || l.type === "diff").map((l) => l.type)).toEqual(["remark", "diff", "remark", "diff", "remark", "diff"]);
-    // 話者は分けない
+    // 話者分離の speaker 系のイベントを流さない台本（話者なしの 相手）
     expect(remarksOf(lines).map((x) => ({ id: x.id, track: x.track, end: x.end, text: x.text }))).toEqual([
       { id: "r1", track: "相手", end: 600, text: "最初の発言です" },
       { id: "r2", track: "相手", end: 660, text: "次の発言です" },
@@ -1786,5 +1786,99 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
     yield* r.cli(["recorded", r.file]);
     expect(readingPauses(r)).toEqual([]);
     expect(stderrLines(r).some((line) => line.includes("利用上限"))).toBe(false);
+  }).pipe(Effect.scoped));
+});
+
+// Issue #1094: 録画の `相手` を話者分離にかける。ヘルパーの speaker 系のイベントを話者の付与へ渡し、speaker-off では保留せず話者なしで出す
+describe("cli recorded <file> 話者分離（Issue #1094）", () => {
+  const stderrLines = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((l) => l.trim() !== "");
+  const eventually = (assertion: () => void) => Effect.promise(() => vi.waitFor(assertion, { timeout: 10_000 }));
+  const remarkLines = (sessionsDir: string) => sessionLog(sessionsDir).filter((l) => l.type === "remark").map((l) => l.remark as { text: string; speaker?: string });
+  const speakerSegment = (start: number, end: number, slot = 0) => ({ type: "speaker", track: "相手", start, end, slot, final: true });
+  const settled = (to: number) => ({ type: "speaker-settled", track: "相手", to });
+
+  it.live("ヘルパーの speaker・speaker-settled の台本から、1 本の録音の `相手` の発言に話者のラベル（相手 A）が付く。自分の声も特別に扱わない（`自分` にならない）", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const r = yield* resource({ remarks: [], events: [{ type: "file-duration", duration: 20 }, speakerSegment(0, 2), settled(2.5), ...remarkEvents(first)] });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(remarksOf(logLines(onlySession(r.sessionsDir))).map((x) => ({ track: x.track, text: x.text }))).toEqual([{ track: "相手", text: "最初の発言です" }]);
+    expect(remarkLines(r.sessionsDir)).toEqual([expect.objectContaining({ text: "最初の発言です", speaker: "相手 A" })]);
+  }).pipe(Effect.scoped));
+
+  it.live("別の枠（slot 1）の区間に重なる発言には、別のラベル（相手 B）が付く", () => Effect.gen(function* () {
+    const a = { start: 0, end: 2, text: "一人目の発言です" };
+    const b = { start: 2, end: 4, text: "二人目の発言です" };
+    const r = yield* resource({
+      remarks: [],
+      events: [{ type: "file-duration", duration: 20 }, speakerSegment(0, 2, 0), speakerSegment(2, 4, 1), settled(4.5), ...remarkEvents(a), ...remarkEvents(b)],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(remarkLines(r.sessionsDir).map((x) => [x.text, x.speaker])).toEqual([["一人目の発言です", "相手 A"], ["二人目の発言です", "相手 B"]]);
+  }).pipe(Effect.scoped));
+
+  it.live("speaker-off では、`相手` の発言を 3 秒保留せずに（ヘルパーが動いている間に）話者なしで出し、端末に「話者分離なしで続ける」知らせを 1 回だけ出す", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const second = { start: 2, end: 4, text: "二つ目の発言です" };
+    const r = yield* resource({ remarks: [], hold: true, events: [{ type: "file-duration", duration: 20 }, { type: "speaker-off", start: 0, reason: "モデルなし" }, ...remarkEvents(first)] });
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
+    // ヘルパーは終わらない。drain（終わり）まで待たずに、発言がセッションに入る
+    yield* waitForRemarks(r.sessionsDir, 1);
+    expect(remarkLines(r.sessionsDir)).toEqual([expect.objectContaining({ text: "最初の発言です" })]);
+    expect(remarkLines(r.sessionsDir)[0]!.speaker).toBeUndefined();
+    // 2 回目の speaker-off（起動し直しの流し直しなど）が来ても、知らせは増えない
+    r.helpers.feed({ type: "speaker-off", start: 0, reason: "モデルなし" });
+    for (const event of remarkEvents(second)) r.helpers.feed(event);
+    yield* waitForRemarks(r.sessionsDir, 2);
+    yield* eventually(() => { expect(stderrLines(r).filter((l) => l === formatSpeakerOffNotice("モデルなし"))).toHaveLength(1); });
+    expect(stderrLines(r).filter((l) => l.includes("話者分離なしで続け"))).toHaveLength(1);
+    expect(remarkLines(r.sessionsDir).map((x) => x.speaker)).toEqual([undefined, undefined]);
+
+    yield* r.cli(["stop"]);
+    yield* Fiber.join(running).pipe(Effect.ignore);
+  }).pipe(Effect.scoped));
+
+  it.live("話者分離が使えるときは、`話者分離なしで続ける` 知らせを出さない", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const r = yield* resource({ remarks: [], events: [{ type: "file-duration", duration: 20 }, speakerSegment(0, 2), settled(2.5), ...remarkEvents(first)] });
+    yield* r.cli(["recorded", r.file]);
+    expect(stderrLines(r).some((l) => l.includes("話者分離なしで続け"))).toBe(false);
+  }).pipe(Effect.scoped));
+
+  it.live("録画からのセッションでも、ライブと同じ POST /session/speaker-name で振られたラベルに名前を付けられる（204）。log.jsonl に手入力の名前が残る", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "最初の発言です" };
+    const r = yield* resource({ remarks: [], hold: true, events: [{ type: "file-duration", duration: 20 }, speakerSegment(0, 2), settled(2.5), ...remarkEvents(first)] });
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
+    yield* waitForRemarks(r.sessionsDir, 1);
+    expect(remarkLines(r.sessionsDir)[0]!.speaker).toBe("相手 A");
+
+    const post = () => fetch(`http://127.0.0.1:${r.server.port}/session/speaker-name`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "相手 A", name: "田中" }),
+    });
+    const response = yield* Effect.promise(post);
+    expect(response.status).toBe(204);
+    expect(sessionLog(r.sessionsDir).filter((l) => l.type === "speaker-name").map((l) => [l.label, l.name, l.source])).toEqual([["相手 A", "田中", "手入力"]]);
+
+    yield* r.cli(["stop"]);
+    yield* Fiber.join(running).pipe(Effect.ignore);
+  }).pipe(Effect.scoped));
+
+  it.live("ヘルパーを起動し直した後の新しい世代の slot 0 に、前のラベル（相手 A）を引き継がない（重心で照らし合わせるまで話者なし）。起動し直す前の世代の発言は 相手 A のまま", () => Effect.gen(function* () {
+    const first = { start: 0, end: 2, text: "起動し直す前の発言です" };
+    const second = { start: 3, end: 5, text: "起動し直した後の発言です" };
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        { duration: 20, remarks: [], events: [speakerSegment(0, 2), settled(2.5), ...remarkEvents(first)], exit: { code: 1, signal: null } },
+        { duration: 20, remarks: [], events: [speakerSegment(3, 5), settled(5.5), ...remarkEvents(second)] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(remarkLines(r.sessionsDir).map((x) => [x.text, x.speaker])).toEqual([
+      ["起動し直す前の発言です", "相手 A"],
+      ["起動し直した後の発言です", undefined],
+    ]);
   }).pipe(Effect.scoped));
 });

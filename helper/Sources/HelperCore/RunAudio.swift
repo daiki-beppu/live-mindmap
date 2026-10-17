@@ -65,7 +65,7 @@ public final class RunAudio {
                 try await candidate.prepare()
                 diarizer = candidate
             } catch {
-                if case SpeakerDiarizerError.modelMissing = error { diarizerFailure = .モデルなし } else { diarizerFailure = .読み込みに失敗 }
+                diarizerFailure = speakerOffReason(for: error)
                 FileHandle.standardError.write(Data("speaker diarization: 使えない（認識は続ける）: \(error)\n".utf8))
             }
         }

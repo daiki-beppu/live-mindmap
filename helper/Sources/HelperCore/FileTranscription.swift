@@ -195,16 +195,19 @@ public struct FileAudioInputs: AsyncSequence {
     let from: Double
     /// サーバーの指示で読み手を止める門（`FileReadingGate`）。nil なら止めない。
     let gate: FileReadingGate?
+    /// 話者分離へ同じ音声を渡す口（`相手` の読み手だけ）。nil なら渡さない。渡す間は、話者分離が引き取るまで読み進めない。
+    let diarization: FileDiarizationFeed?
 
-    init(url: URL, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0, gate: FileReadingGate? = nil) {
+    init(url: URL, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0, gate: FileReadingGate? = nil, diarization: FileDiarizationFeed? = nil) {
         self.url = url
         self.alignment = alignment
         self.from = from
         self.gate = gate
+        self.diarization = diarization
     }
 
     public func makeAsyncIterator() -> Iterator {
-        Iterator(url: url, alignment: alignment, from: from, gate: gate)
+        Iterator(url: url, alignment: alignment, from: from, gate: gate, diarization: diarization)
     }
 
     public struct Iterator: AsyncIteratorProtocol {
@@ -212,14 +215,16 @@ public struct FileAudioInputs: AsyncSequence {
         let alignment: FileReadingAlignment.Reader?
         let from: Double
         let gate: FileReadingGate?
+        let diarization: FileDiarizationFeed?
         private var reading: Reading?
         private var finished = false
 
-        init(url: URL, alignment: FileReadingAlignment.Reader?, from: Double, gate: FileReadingGate?) {
+        init(url: URL, alignment: FileReadingAlignment.Reader?, from: Double, gate: FileReadingGate?, diarization: FileDiarizationFeed?) {
             self.url = url
             self.alignment = alignment
             self.from = from
             self.gate = gate
+            self.diarization = diarization
         }
 
         public mutating func next() async throws -> AnalyzerInput? {
@@ -235,9 +240,15 @@ public struct FileAudioInputs: AsyncSequence {
                 let input = try await onFileReadingQueue { try reading.nextInput() }
                 // 渡す入力の終わりまで、映像の判定が済むのを待つ（`onFileReadingQueue` の外）
                 if input != nil { try await alignment?.waitScreen(through: reading.position) }
+                // STT に渡す前に、話者分離が引き取るまで待つ（読む速さは遅いほうに揃う）。話者分離を外した後は待たない
+                if let input, let diarization {
+                    let buffer = input.buffer
+                    try await diarization.send(buffer: buffer, start: reading.position - Double(buffer.frameLength) / buffer.format.sampleRate)
+                }
                 if input == nil {
                     finished = true
                     await alignment?.finish()
+                    await diarization?.finish()
                 } else {
                     await alignment?.advance(to: reading.position)
                 }
@@ -247,6 +258,7 @@ public struct FileAudioInputs: AsyncSequence {
                 finished = true
                 reading?.reader.cancelReading()
                 await alignment?.finish()
+                await diarization?.finish()
                 throw error
             }
         }
@@ -361,11 +373,13 @@ final class FileLoudness {
 /// `alignment` があれば、もう一方のファイルの読み手と同じ音声の時刻に揃えて読む（`cli recorded --self`）。
 /// `from` があれば、その音声の時刻（秒）から読む（サーバーの起動し直し）。結果の時刻は、途中から読んでもファイルの時刻のまま。
 /// `gate` があれば、サーバーの指示で止められている間は、ファイルを読み進めない。
+/// `diarization` があれば、読んだ音声を STT と同じ読み手で話者分離にも渡し、話者分離が受け取れる速さに抑えて読む（`FileDiarization`）。
 public func transcribeFile(
-    at url: URL, with transcriber: any FileTranscriber, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0, gate: FileReadingGate? = nil
+    at url: URL, with transcriber: any FileTranscriber, alignment: FileReadingAlignment.Reader? = nil, from: Double = 0, gate: FileReadingGate? = nil,
+    diarization: FileDiarizationFeed? = nil
 ) async throws -> AsyncThrowingStream<TranscriptionResult, Error> {
     let loudness = FileLoudness(source: try await FileAudioSource.open(url))
-    let results = try await transcriber.transcribe(FileAudioInputs(url: url, alignment: alignment, from: from, gate: gate))
+    let results = try await transcriber.transcribe(FileAudioInputs(url: url, alignment: alignment, from: from, gate: gate, diarization: diarization))
     let (stream, continuation) = AsyncThrowingStream.makeStream(of: TranscriptionResult.self, throwing: Error.self)
     let task = Task {
         do {

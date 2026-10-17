@@ -19,6 +19,8 @@ export const RecordedEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("audio-tracks"), count: Schema.Int }),
   // 動画の映像が読めなかった。共有画面なしで、音声だけで続けた
   Schema.Struct({ type: Schema.Literal("screen-off") }),
+  // 話者分離が使えなかった（モデルが無い・読み込みに失敗・途中で停止）。話者なしで続けた。reason はヘルパーの speaker-off と同じ
+  Schema.Struct({ type: Schema.Literal("speaker-off"), reason: Schema.Literals(["モデルなし", "読み込みに失敗", "途中で停止"]) }),
   Schema.Struct({
     type: Schema.Literal("finished"),
     paths: Schema.Array(Schema.String),
@@ -49,6 +51,10 @@ export const formatAudioTracksNotice = (count: number): string =>
 
 // 録画で screen-off が届くのは、動画の映像が読めなかったときだけ
 export const formatScreenOffNotice = (): string => "動画の映像を読めませんでした。共有画面なしで、音声だけで続けました";
+
+// 例: 話者分離を使えません（モデルなし）。話者分離なしで続けます
+export const formatSpeakerOffNotice = (reason: Extract<RecordedEvent, { type: "speaker-off" }>["reason"]): string =>
+  `話者分離を使えません（${reason}）。話者分離なしで続けます`;
 
 // 次に試す時刻（エポックミリ秒）を地方時の時:分にする
 const formatRetryAt = (retryAt: number): string => {
