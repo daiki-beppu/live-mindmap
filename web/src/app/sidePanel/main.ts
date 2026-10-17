@@ -6,7 +6,7 @@ import { Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { formatClock } from "../../changes.ts";
 import { evidenceOf, type Evidence } from "../../evidence.ts";
-import { todoAssignee } from "../../people.ts";
+import { todoAssignee } from "../../../../server/src/core/index.ts";
 import { humanSetsOf } from "../../viewing.ts";
 import type { Model } from "../mapSurface/main.ts";
 import { Message } from "../mapSurface/message.ts";

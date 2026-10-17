@@ -452,7 +452,7 @@ const recordPlayback = Effect.fn("recordPlayback")(function* (
         appendLog,
       });
   yield* playback(replaying, input.remarks, { ...(input.realtime ? { sleep: (ms: number) => Effect.sleep(ms) } : {}), screens: input.screens });
-  const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe).pipe(
+  const paths = yield* writeExportsAndCapture(dir, yield* session.snapshot, describe, new Map()).pipe(
     Effect.mapError((e) => new CommandFailed({ message: e.message })),
   );
   return { dir, paths };

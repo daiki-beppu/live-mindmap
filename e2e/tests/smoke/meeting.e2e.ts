@@ -67,6 +67,7 @@ test("会議中: start で届いた発言が字幕とノードになり、stop �
   const exported = [
     ["map.md", "## アウトライン"],
     ["map.json", '"root"'],
+    ["map.json", '"speaker": "相手 A"'],
     ["map.drawnix", '"type": "drawnix"'],
   ] as const;
   for (const [name, marker] of exported) {

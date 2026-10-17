@@ -125,17 +125,21 @@ describe("セッション: 案の出した人と TODO の担当の話者", () =>
       expect(ups.find((op) => op.op === "update" && op.node === "n3")).not.toHaveProperty("proposer"); // 更新には出した人が載らない
     }));
 
-  it.effect("書き出し（map.json の形）は変えない: 出した人も担当の話者も出ない。担当の名前は今までどおり出る", () =>
+  it.effect("書き出し（export.json の形）には、出した人も担当の話者もラベルのまま載る。担当の名前は今までどおり出る（Issue #1028）", () =>
     Effect.gen(function* () {
       const { session } = yield* play();
       const walk = (n: { id: string; children: unknown[] }): { id: string; children: unknown[] }[] => [n, ...n.children.flatMap((c) => walk(c as typeof n))];
-      const all = walk((yield* session.exportJson).root as never);
+      const exp = yield* session.exportJson;
+      const all = walk(exp.root as never);
       expect(all.length).toBeGreaterThan(10);
+      const snapshot = yield* session.snapshot;
       for (const n of all) {
-        expect(n, n.id).not.toHaveProperty("proposer");
-        expect(n, n.id).not.toHaveProperty("assigneeSpeaker");
+        const node = byId(snapshot.nodes, n.id);
+        expect(n, n.id).toMatchObject({ ...(node.proposer === undefined ? {} : { proposer: node.proposer }), ...(node.assigneeSpeaker === undefined ? {} : { assigneeSpeaker: node.assigneeSpeaker }) });
       }
+      expect(all.some((n) => (n as { proposer?: string }).proposer !== undefined)).toBe(true);
       expect(all.find((n) => n.id === "n7")).toMatchObject({ assignee: "鈴木" });
+      expect(exp).not.toHaveProperty("speakerNames");
     }));
 
   it.effect("ログから復元すると、出した人も担当の話者も、同じ値で元のセッションと一致する（計算し直さない）", () =>

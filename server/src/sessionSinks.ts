@@ -8,7 +8,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
+import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -171,7 +171,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const namedUpdater = DiffUpdater.of({
             ...baseUpdater,
             update: (input) => Effect.flatMap(Ref.get(names), (table) =>
-              baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: new Map([...table].map(([label, { name }]) => [label, name] as const)) })),
+              baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: speakerNameMap(table) })),
           });
           // 名前を付ける 1 つの口（手入力も AI の推定も通る）。規則は nameSpeaker にある。
           // Why: 要求が途中で中断されると、表・ログの行・フレームの一部だけが更新され、同じ名前の再送では直らない（同じ値は何もしない）ため、ロック取得後は中断させない
@@ -466,7 +466,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             // 読み取得中の語彙追加は vocab の行を書き終えてから溜まりに入れる（待たないと、足した語・画面の語が溜まりに入らない）
             exports: Effect.andThen(
               Effect.andThen(FiberSet.awaitEmpty(vocabularyAdds), updatePoolFromSession(dir, dirname(dir))),
-              Effect.flatMap(session.snapshot, (snapshot) => writeExportsAndCapture(dir, snapshot, errorMessage)),
+              Effect.flatMap(Effect.all([session.snapshot, Ref.get(names)]), ([snapshot, table]) => writeExportsAndCapture(dir, snapshot, errorMessage, speakerNameMap(table))),
             ).pipe(
               Effect.provideContext(exportServices),
               Effect.orDie,

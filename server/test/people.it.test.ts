@@ -133,3 +133,62 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });
 });
+
+// Issue #1028: 書き出し（map.md・map.json）に人と名前が載る。偽の AI の台本で案・TODO を作り、本物の sink で名前を付けてから書き出す。
+describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）", () => {
+  it.effect("map.md と map.json に出した人・担当の話者・名前が載り、名前は書き出しの時点の最後の名前になる", () => {
+    const { updaterLayer } = scripted([
+      [{ op: "add", ref: "t1", parent: "root", kind: "案", text: "週 1", evidence: ["r1"] }], // n1: 相手 A の案
+      [{ op: "add", ref: "t2", parent: "root", kind: "TODO", text: "資料を送る", evidence: ["r2"], assigneeSpeaker: "相手 B", due: "10/15" }], // n2
+      [{ op: "add", ref: "t3", parent: "root", kind: "案", text: "隔週", evidence: ["r3"] }], // n3: 自分の案
+    ]);
+    return Effect.scoped(Effect.gen(function* () {
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "people-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
+      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次",
+        publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
+      const say = (n: number, slot: number, start: number, track: "相手" | "自分" = "相手") => Effect.gen(function* () {
+        if (track === "相手") { yield* sink.speaker(segment(slot, start, start + 2)); yield* sink.speaker(settledAt(start + 2)); }
+        yield* sink.final({ track, start, end: start + 2, text: `発言${n}です` });
+        yield* settleUntil(() => logEvents(dir).filter((e) => e.type === "diff").length === n);
+      });
+      yield* say(1, 5, 10); // 相手 A
+      yield* say(2, 6, 20); // 相手 B
+      yield* say(3, 0, 30, "自分");
+      yield* settle;
+      const md = () => readFileSync(join(dir, "map.md"), "utf8");
+      const json = () => JSON.parse(readFileSync(join(dir, "map.json"), "utf8"));
+
+      // 名前を付ける前: ラベルで出る。json はラベルを持ち、対応表は無い
+      yield* sink.exports;
+      expect(md()).toContain("- 週 1 — 相手 A（00:10）");
+      expect(md()).toContain("- 隔週 — 自分（00:30）");
+      expect(md()).toContain("- 資料を送る（担当：相手 B・期限：10/15）（00:20）");
+      expect(json()).not.toHaveProperty("speakerNames");
+
+      // 相手 B に名前を付けてから書き出す（TODO は名前を付ける前にできている）
+      yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
+      yield* sink.exports;
+      expect(md()).toContain("- 資料を送る（担当：田中・期限：10/15）（00:20）");
+      expect(md().match(/資料を送る（担当：田中・期限：10\/15）（00:20）/g)).toHaveLength(2); // 冒頭の TODO 一覧とアウトライン
+      expect(md()).toContain("- 週 1 — 相手 A（00:10）"); // 名前の無いラベルはそのまま
+      expect(json().speakerNames).toEqual({ "相手 B": "田中" });
+
+      // 付け替えた後に書き出せば、最後の名前になる。json のノードはラベルのまま
+      yield* sink.nameSpeaker({ label: "相手 B", name: "高橋" });
+      yield* sink.nameSpeaker({ label: "相手 A", name: "佐藤" });
+      yield* sink.exports;
+      expect(md()).toContain("- 資料を送る（担当：高橋・期限：10/15）（00:20）");
+      expect(md()).not.toContain("田中");
+      expect(md()).toContain("- 週 1 — 佐藤（00:10）");
+      expect(md()).toContain("- 隔週 — 自分（00:30）");
+      const out = json();
+      expect(out.speakerNames).toEqual({ "相手 B": "高橋", "相手 A": "佐藤" });
+      const byText = (text: string) => out.root.children.find((c: { text: string }) => c.text === text);
+      expect(byText("週 1")).toMatchObject({ proposer: "相手 A", evidence: [{ id: "r1", speaker: "相手 A" }] });
+      expect(byText("資料を送る")).toMatchObject({ assigneeSpeaker: "相手 B", due: "10/15", evidence: [{ id: "r2", speaker: "相手 B" }] });
+      expect(byText("隔週")).toMatchObject({ proposer: "自分" });
+      expect(readFileSync(join(dir, "map.drawnix"), "utf8")).toContain(" → 高橋 · 10/15");
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+});

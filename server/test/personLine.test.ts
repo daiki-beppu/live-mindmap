@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SnapshotNode } from "../../server/src/core/index.ts";
-import { personLine, speakerName } from "../src/people.ts";
+import { personLine, speakerName, type SnapshotNode } from "../src/core/index.ts";
 
 // Issue #1023: 案の出した人と TODO の担当者を、ノードの本文の後ろに出す 1 行。表示名は speakerName の 1 か所で決める（後の名前の sub-issue はここだけを変える）。
 
