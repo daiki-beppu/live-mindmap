@@ -1882,3 +1882,61 @@ describe("cli recorded <file> 話者分離（Issue #1094）", () => {
     ]);
   }).pipe(Effect.scoped));
 });
+
+// Issue #1095: 録画でヘルパーが落ちて読み直したとき、話者のラベルをライブと同じつなぎ直し（Issue #1025）でつなぐ。
+// 同じ cli recorded の 1 回の中で「落ちる前 → 落ちる → 読み直した後」を続けて見る
+describe("cli recorded <file> 起動し直しをまたいだ話者のつなぎ直し（Issue #1095）", () => {
+  const remarkLines = (sessionsDir: string) => sessionLog(sessionsDir).filter((l) => l.type === "remark").map((l) => l.remark as { text: string; speaker?: string });
+  const speakerSegment = (start: number, end: number, slot: number) => ({ type: "speaker", track: "相手", start, end, slot, final: true });
+  const settled = (to: number) => ({ type: "speaker-settled", track: "相手", to });
+  const centroid = (slot: number, vector: readonly number[]) => ({ type: "speaker-centroid", track: "相手", slot, centroid: [...vector] });
+  // 4 次元の単位ベクトル 4 本。互いの cos は 0
+  const UNIT = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] as const;
+  // UNIT[i] と cos 0.95、ほかの UNIT とは 0.6 未満になる重心
+  const near = (i: number): number[] => UNIT[i]!.map((v, k) => (k === i ? 0.95 : k === (i + 1) % 4 ? Math.sqrt(1 - 0.95 ** 2) : 0));
+  const speak = (slot: number, start: number, text: string) => [speakerSegment(start, start + 2, slot), settled(start + 2.5), ...remarkEvents({ start, end: start + 2, text })];
+
+  it.live("落ちる前にラベルが付いた 2 人は、読み直した後に枠の番号が入れ替わっても同じラベルで出る。重心が届くまでの発言は話者なしで、起動し直す前の発言のラベルは変わらない", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        // 1 回目: 枠 0 = 相手 A の声、枠 1 = 相手 B の声。重心は発言より前に届く
+        { duration: 40, remarks: [], events: [centroid(0, UNIT[0]), centroid(1, UNIT[1]), ...speak(0, 0, "一人目の発言です"), ...speak(1, 2, "二人目の発言です")], exit: { code: 1, signal: null } },
+        // 2 回目: 枠の番号が逆。重心が届く前の枠 1 の発言は話者なし。届いた後は、枠 1 = A の声、枠 0 = B の声
+        { duration: 40, remarks: [], events: [...speak(1, 4, "分かる前の発言です"), centroid(1, near(0)), centroid(0, near(1)), ...speak(1, 6, "A に戻った発言です"), ...speak(0, 8, "B に戻った発言です")] },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(r.helpers.calls).toHaveLength(2);
+    expect(remarkLines(r.sessionsDir).map((x) => [x.text, x.speaker])).toEqual([
+      ["一人目の発言です", "相手 A"],
+      ["二人目の発言です", "相手 B"],
+      ["分かる前の発言です", undefined],
+      ["A に戻った発言です", "相手 A"],
+      ["B に戻った発言です", "相手 B"],
+    ]);
+  }).pipe(Effect.scoped));
+
+  it.live("4 人が枠を入れ替えて戻っても、会議全体のラベルは 相手 A〜D のまま増えない（相手 E は出ない）。各発言は声に対応するラベルで出る", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), {
+      attempts: [
+        {
+          duration: 40, remarks: [], exit: { code: 1, signal: null },
+          events: [...UNIT.map((v, slot) => centroid(slot, v)), ...speak(0, 0, "一"), ...speak(1, 2, "二"), ...speak(2, 4, "三"), ...speak(3, 6, "四")],
+        },
+        {
+          duration: 40, remarks: [],
+          // 枠 0 = D、枠 1 = A、枠 2 = B、枠 3 = C の声
+          events: [centroid(0, near(3)), centroid(1, near(0)), centroid(2, near(1)), centroid(3, near(2)), ...speak(0, 8, "五"), ...speak(1, 10, "六"), ...speak(2, 12, "七"), ...speak(3, 14, "八")],
+        },
+      ],
+    });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(remarkLines(r.sessionsDir).map((x) => [x.text, x.speaker])).toEqual([
+      ["一", "相手 A"], ["二", "相手 B"], ["三", "相手 C"], ["四", "相手 D"],
+      ["五", "相手 D"], ["六", "相手 A"], ["七", "相手 B"], ["八", "相手 C"],
+    ]);
+    expect([...new Set(remarkLines(r.sessionsDir).map((x) => x.speaker))].sort()).toEqual(["相手 A", "相手 B", "相手 C", "相手 D"]);
+  }).pipe(Effect.scoped));
+});
