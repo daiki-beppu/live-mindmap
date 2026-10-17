@@ -14,10 +14,18 @@ const EPSILON = 1e-6;
 export type Segment = { readonly start: number; readonly end: number; readonly slot: number };
 export type SpeakerCut = { remark: SettledRemark; slot: number | undefined };
 
+// 規則を 1 つずつ外して測り直すための切り替え（Issue #1030）。ライブは渡さず、既定はすべて有効。
+// longestOverlap: 語（発言）に最も長く重なる枠を採る。外すと、重なる区間のうち start が最も早い枠（同じなら小さい枠）
+// fillUnassigned: 誰もいない語を前後の枠に寄せる。外すと、その語は話者なし
+// minRun: 0.5 秒未満の区間を長い方の隣へ寄せる。外すと、区間をそのまま使う
+// waitLimit: 揃わない保留を SPEAKER_WAIT_MS で諦めて話者なしにする。外すと、揃う・speaker-off・起動し直し・drain まで待つ
+export type SpeakerRules = { readonly longestOverlap: boolean; readonly fillUnassigned: boolean; readonly minRun: boolean; readonly waitLimit: boolean };
+const DEFAULT_RULES: SpeakerRules = Object.freeze({ longestOverlap: true, fillUnassigned: true, minRun: true, waitLimit: true });
+
 // 判定の単位。語の区間（wordTimes）の 1 つ。location は本文の位置
 type Unit = { location: number; start: number; end: number; slot: number | undefined };
 // 同じ話者が続く単位の並び。first / last は units の添字
-type Run = { slot: number; first: number; last: number };
+type Run = { slot: number | undefined; first: number; last: number };
 
 const overlap = (aStart: number, aEnd: number, bStart: number, bEnd: number) => Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
 
@@ -59,9 +67,19 @@ const toRuns = (units: readonly Unit[]): Run[] => {
   units.forEach((u, i) => {
     const last = runs.at(-1);
     if (last !== undefined && last.slot === u.slot) last.last = i;
-    else runs.push({ slot: u.slot!, first: i, last: i });
+    else runs.push({ slot: u.slot, first: i, last: i });
   });
   return runs;
+};
+
+// longestOverlap の規則を外したときの決め方。重なる区間のうち start が最も早い枠、同じなら小さい枠。重なりが無ければ undefined
+const earliestOverlap = (start: number, end: number, segments: readonly Segment[]): number | undefined => {
+  let best: Segment | undefined;
+  for (const s of segments) {
+    if (overlap(start, end, s.start, s.end) <= EPSILON) continue;
+    if (best === undefined || s.start < best.start || (s.start === best.start && s.slot < best.slot)) best = s;
+  }
+  return best?.slot;
 };
 
 const lengthOf = (s: Segment) => s.end - s.start;
@@ -110,7 +128,7 @@ const foldShortSegments = (segments: readonly Segment[], start: number, end: num
   }
 };
 
-type Piece = { slot: number; textStart: number; timeStart: number };
+type Piece = { slot: number | undefined; textStart: number; timeStart: number };
 
 // 区間の境目で切る。start < end を保ち、隣どうしで時刻が重ならないようにする。退化する区間は前の区間へ寄せる
 const piecesOf = (remark: SettledRemark, units: readonly Unit[], runs: readonly Run[]): Piece[] => {
@@ -137,13 +155,14 @@ const sliceRemark = (r: SettledRemark, from: number, to: number, start: number, 
 // 発言を、話者が替わる所で切る。確定した区間（segments）だけを渡す。
 // 0.5 秒未満の話者の区間を長い方の隣へ寄せてから、語の区間ごとに最も長く重なる枠を採り、誰もいない語は前後に寄せる。
 // 発言全体で誰もいなければ話者なし。語の区間が無い発言は、発言全体を 1 つの単位にして切らない
-export function splitBySpeaker(remark: SettledRemark, segments: readonly Segment[]): SpeakerCut[] {
-  const folded = foldShortSegments(segments, remark.start, remark.end);
+export function splitBySpeaker(remark: SettledRemark, segments: readonly Segment[], rules: SpeakerRules = DEFAULT_RULES): SpeakerCut[] {
+  const folded = rules.minRun ? foldShortSegments(segments, remark.start, remark.end) : segments;
+  const pick = rules.longestOverlap ? longestOverlap : earliestOverlap;
   const times = remark.wordTimes === undefined || remark.wordTimes.length === 0 ? undefined : [...remark.wordTimes].sort((a, b) => a.location - b.location);
-  if (times === undefined) return [{ remark, slot: longestOverlap(remark.start, remark.end, folded) }];
-  const units: Unit[] = times.map((w) => ({ location: w.location, start: w.start, end: w.end, slot: longestOverlap(w.start, w.end, folded) }));
+  if (times === undefined) return [{ remark, slot: pick(remark.start, remark.end, folded) }];
+  const units: Unit[] = times.map((w) => ({ location: w.location, start: w.start, end: w.end, slot: pick(w.start, w.end, folded) }));
   if (units.every((u) => u.slot === undefined)) return [{ remark, slot: undefined }];
-  fillSlots(units);
+  if (rules.fillUnassigned) fillSlots(units);
   const runs = toRuns(units);
   const pieces = piecesOf(remark, units, runs);
   if (pieces.length === 1) return [{ remark, slot: pieces[0]!.slot }];
@@ -171,6 +190,12 @@ const cosine = (a: readonly number[], b: readonly number[]): number | undefined 
   return a.reduce((sum, x, i) => sum + x * b[i]!, 0) / denominator;
 };
 
+// 判定の記録（Issue #1030）。決まらなかった判定は知らせない
+export type SpeakerRecord =
+  | { type: "mixed"; slot: number; label?: string }
+  | { type: "link"; slot: number; result: "linked" | "new" | "reverted"; label?: string };
+export type SpeakerAttributionOptions = { rules?: SpeakerRules; observe?: (record: SpeakerRecord) => void };
+
 type Held = { remark: SettledRemark; heldAt: number };
 // 起動し直した後の世代の枠の状態。linked: 前のラベルにつないだ。new: どのラベルとも遠い（初めて話したときにラベルを振る）。無ければ照らし合わせが済むまで（話者なし）
 type SlotState = "linked" | "new";
@@ -181,7 +206,7 @@ type SlotState = "linked" | "new";
 // ヘルパーを起動し直すと Sortformer の枠は振り直される。restart() 以降の世代では、枠の重心（speaker-centroid）を、
 // セッションの間持つラベルごとの重心と照らし合わせるまで、その枠の発言に話者を付けない（Issue #1025）。
 // 状態は 2 つ。ラベル単位（採番した数・ラベルの重心・戻したラベル。起動し直しをまたいで残す）と、世代の枠単位（restart で捨てる）
-export function createSpeakerAttribution() {
+export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: SpeakerAttributionOptions = {}) {
   let off = false;
   let clock = 0; // 音声の時計（ミリ秒）。戻らない
   const held: Held[] = [];
@@ -247,12 +272,18 @@ export function createSpeakerAttribution() {
     if (similar.length > 1) return;
     const linked = similar[0];
     if (linked !== undefined) {
-      if (revertedLabels.has(linked)) revertedSlots.add(slot);
-      else {
+      if (revertedLabels.has(linked)) {
+        revertedSlots.add(slot);
+        observe?.({ type: "link", slot, result: "reverted", label: linked });
+      } else {
         slotLabels.set(slot, linked);
         slotStates.set(slot, "linked");
+        observe?.({ type: "link", slot, result: "linked", label: linked });
       }
-    } else if (farFromAll) slotStates.set(slot, "new");
+    } else if (farFromAll) {
+      slotStates.set(slot, "new");
+      observe?.({ type: "link", slot, result: "new" });
+    }
   };
 
   const onCentroid = (slot: number, centroid: readonly number[]): void => {
@@ -269,14 +300,14 @@ export function createSpeakerAttribution() {
 
   // 規則を当てて出す。先に話した順にラベルを振る。ラベルを付けない枠の区間は、切り方には使い（隣の枠に寄せない）、ラベルだけ付けない
   const attribute = (r: SettledRemark): SettledRemark[] =>
-    splitBySpeaker(r, segments).map(({ remark, slot }) => (slot === undefined || isUnlabeled(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
+    splitBySpeaker(r, segments, rules).map(({ remark, slot }) => (slot === undefined || isUnlabeled(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
 
   // 保留の先頭から、揃った発言か時間切れの発言を出す
   const release = (): SettledRemark[] => {
     const out: SettledRemark[] = [];
     for (let head = held[0]; head !== undefined; head = held[0]) {
       if (isSettled(head.remark)) out.push(...attribute(head.remark));
-      else if (head.heldAt + SPEAKER_WAIT_MS <= clock) out.push(head.remark);
+      else if (rules.waitLimit && head.heldAt + SPEAKER_WAIT_MS <= clock) out.push(head.remark);
       else break;
       held.shift();
     }
@@ -319,6 +350,7 @@ export function createSpeakerAttribution() {
         revertedSlots.add(event.slot);
         const label = slotLabels.get(event.slot);
         if (label !== undefined) revertedLabels.add(label);
+        observe?.({ type: "mixed", slot: event.slot, ...(label === undefined ? {} : { label }) });
         return [];
       }
       if (event.type === "speaker-centroid") {
