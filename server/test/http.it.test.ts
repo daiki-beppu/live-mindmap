@@ -3,7 +3,7 @@ import claudeManifest from "../managed-deps/claude/package.json" with { type: "j
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
-import { DiffUpdatePaused, type DiffUpdateFrame, type DiffUpdater } from "../src/core/index.ts";
+import { DiffUpdatePaused, type DiffUpdateFrame, type DiffUpdater, type Op } from "../src/core/index.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -556,6 +556,40 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(reconnected.frames).at(-1)).toEqual([{ label: "相手 B", name: "田中" }])));
         // resume の後も、振ったラベルには名前を付けられる（ラベルの状態も残っている）
         expect((yield* speakerName(r, nameBody("相手 A", "鈴木"))).status).toBe(204);
+      }));
+
+    // Issue #1028 AC4: 偽のヘルパー＋偽の AI で、HTTP の start → 名前付け → stop を通し、書き出した map.md / map.json に人と名前が載る
+    it.live("start → 名前付け → stop の後、map.md は名前を付けたラベルを名前で・付けないラベルをラベルのまま出し、map.json のノードはラベルのまま、ルートに対応表が載る", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }], { updaterLayer: () => updaterLayer((input) => Effect.sync(() => ({
+          ops: input.fresh.flatMap((remark): Op[] => {
+            if (remark.text.includes("発言1です")) return [{ op: "add", ref: "p1", parent: "root", kind: "案", text: "週 1", evidence: [remark.id] }];
+            if (remark.text.includes("発言2です")) return [
+              { op: "add", ref: "p2", parent: "root", kind: "案", text: "隔週", evidence: [remark.id] },
+              { op: "add", ref: "p3", parent: "root", kind: "TODO", text: "資料を送る", evidence: [remark.id], assigneeSpeaker: "相手 B" },
+            ];
+            return [];
+          }),
+        }))) });
+        const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        expect(started.status).toBe(200);
+        const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+        yield* nameWhenLabeled(r, "相手 B", "田中"); // 相手 A には名前を付けない
+
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
+
+        const md = yield* Effect.tryPromise(() => readFile(join(dir, "map.md"), "utf8"));
+        const lines = md.split("\n");
+        expect(lines).toContain("- 週 1 — 相手 A（00:00）");
+        expect(lines).toContain("- 隔週 — 田中（00:02）");
+        expect(lines.filter((l) => l === "- 資料を送る（担当：田中）（00:02）")).toHaveLength(2); // 冒頭の TODO 一覧とアウトライン
+        expect(md).not.toContain("相手 B");
+        const out = JSON.parse(yield* Effect.tryPromise(() => readFile(join(dir, "map.json"), "utf8"))) as { speakerNames?: unknown; root: { children: Array<{ text: string }> } };
+        expect(out.speakerNames).toEqual({ "相手 B": "田中" });
+        const byText = (text: string) => out.root.children.find((c) => c.text === text);
+        expect(byText("週 1")).toMatchObject({ proposer: "相手 A" });
+        expect(byText("隔週")).toMatchObject({ proposer: "相手 B" });
+        expect(byText("資料を送る")).toMatchObject({ assigneeSpeaker: "相手 B" });
       }));
 
     it.live("セッションを終えて新しく start すると、名前は持ち越されない（画面へ届く表は空）", () =>
