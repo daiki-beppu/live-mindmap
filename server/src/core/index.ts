@@ -19,6 +19,7 @@ export * from "./map.ts";
 export * from "./groupSize.ts";
 export * from "./markdown.ts";
 export * from "./pacing.ts";
+export * from "./personLine.ts";
 export * from "./playback.ts";
 export { generatePassphrase, openSealed, sealWithPassphrase } from "./passphrase.ts";
 export * from "./publish.ts";

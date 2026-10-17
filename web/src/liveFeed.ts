@@ -1,7 +1,6 @@
-import type { CaptionsFrame, DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SelfPaused, SessionModeFrame, Snapshot, SpeakerNamesFrame, TapNoticeFrame } from "../../server/src/core/index.ts";
+import type { CaptionsFrame, DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SelfPaused, SessionModeFrame, Snapshot, SpeakerNames, SpeakerNamesFrame, TapNoticeFrame } from "../../server/src/core/index.ts";
 import { advanceCaptions, createCaptionState, receiveCaptions, type CaptionState } from "./captions.ts";
 import type { IntakeStatus } from "./intake.ts";
-import type { SpeakerNames } from "./people.ts";
 
 // /ws から届く frame（Issue #161）の分類と、それによる状態の更新を担う、純粋なモジュール。
 // WebSocket の接続・再接続・購読は app/liveFeed/subscription.ts が担い、分類と状態更新はここに置く

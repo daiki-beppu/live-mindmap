@@ -5,8 +5,7 @@ import { HashMap, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
-import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
-import { personLine, type SpeakerNames } from "../../people.ts";
+import { personLine, Snapshot, type SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
 import {
   anchoredViewport,
   cameraFocus,

@@ -2,6 +2,7 @@
 // Drawnix が読み込みで確かめるのは type・elements が配列・viewport がオブジェクトの 3 点だけ。
 import type { ExportNode, JsonExport } from "./export.ts";
 import type { Kind } from "./map.ts";
+import { personLine, speakerName, type SpeakerNames } from "./personLine.ts";
 
 // 種別ごとに 1 色。ノードの淡い塗り・枠・親からの枝をこの色で揃える（表示の色もこれに合わせる）。
 // 色相は 議題=青、論点=黄、課題=赤、案=紫、決定=緑。TODO は資料に定めがないので橙、要点=桃。
@@ -18,7 +19,7 @@ export const KIND_COLORS: Record<Kind, { fill: string; stroke: string }> = {
 export type DrawnixElement = {
   id: string;
   type: "mindmap" | "mind_child";
-  data: { topic: { children: { text: string }[] } };
+  data: { topic: { children: { text: string; color?: string }[] } };
   children: DrawnixElement[];
   points?: [number, number][];
   layout?: "right";
@@ -35,13 +36,29 @@ export type DrawnixFile = {
   viewport: { zoom: number };
 };
 
-function toElement(node: ExportNode, isRoot: boolean): DrawnixElement {
+// 人の行の薄い文字（画面の text-gray-500）
+const PERSON_COLOR = "#6b7280";
+
+// 話者を持つ（人を出す）セッションのエクスポートか。古いセッションの書き出しを変えないための印。
+// 根拠発言の話者、担当の話者、人を表す案の出した人（話者なしの "相手" は人ではない）のどれかが木にあれば true
+function hasSpeakers(node: ExportNode): boolean {
+  return (
+    node.evidence.some((r) => r.speaker !== undefined) ||
+    node.assigneeSpeaker !== undefined ||
+    (node.proposer !== undefined && speakerName(node.proposer) !== null) ||
+    node.children.some(hasSpeakers)
+  );
+}
+
+function toElement(node: ExportNode, isRoot: boolean, names: SpeakerNames, speakers: boolean): DrawnixElement {
   const el: DrawnixElement = {
     id: node.id,
     type: isRoot ? "mindmap" : "mind_child",
     data: { topic: { children: [{ text: node.text }] } },
-    children: node.children.map((c) => toElement(c, false)),
+    children: node.children.map((c) => toElement(c, false, names, speakers)),
   };
+  const person = speakers ? personLine(node, names) : null;
+  if (person !== null) el.data.topic.children.push({ text: ` ${person}`, color: PERSON_COLOR });
   if (isRoot) {
     el.points = [[0, 0]];
     el.layout = "right";
@@ -56,5 +73,5 @@ function toElement(node: ExportNode, isRoot: boolean): DrawnixElement {
 }
 
 export function toDrawnix(exp: JsonExport): DrawnixFile {
-  return { type: "drawnix", version: 1, source: "web", elements: [toElement(exp.root, true)], viewport: { zoom: 1 } };
+  return { type: "drawnix", version: 1, source: "web", elements: [toElement(exp.root, true, exp.speakerNames ?? {}, hasSpeakers(exp.root))], viewport: { zoom: 1 } };
 }

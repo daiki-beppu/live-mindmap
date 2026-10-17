@@ -63,3 +63,7 @@ export const acceptInferredNames = (names: readonly InferredSpeakerName[] | unde
     const remark = remarks.get(n.evidence);
     return remark !== undefined && remark.track === "相手" && remark.speaker === n.label;
   });
+
+// 名前の表から、ラベル → 名前だけの Map を作る（差分更新の入力と書き出しの対応表が使う。出どころは持ち込まない）
+export const speakerNameMap = (table: SpeakerNameTable): ReadonlyMap<string, string> =>
+  new Map([...table].map(([label, { name }]) => [label, name] as const));

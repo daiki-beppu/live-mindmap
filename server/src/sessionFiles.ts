@@ -29,10 +29,10 @@ export const LOG_FILE = "log.jsonl";
 export const SCREENS_DIR = "screens"; // 共有画面の画像（JPEG）を置く、セッションのフォルダの下のフォルダ
 
 // テキストの 3 形式（map.md・map.json・map.drawnix）を書き、書いたパスを順に返す
-export const writeExportFiles = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot) {
+export const writeExportFiles = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, names: ReadonlyMap<string, string>) {
   const fs = yield* FileSystem.FileSystem;
   const paths: string[] = [];
-  for (const [name, content] of Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks)))) {
+  for (const [name, content] of Object.entries(exportFiles(toJsonExport(snapshot, snapshot.remarks, names)))) {
     const path = join(dir, name);
     yield* fs.writeFileString(path, content.endsWith("\n") ? content : content + "\n");
     paths.push(path);
@@ -94,8 +94,8 @@ export const writeReviews = (dir: string) =>
 // 撮影・HTML・mix と FileSystem は文脈から受け取る。テキストの 3 形式を先に書く。撮影・HTML の書き出しは互いに独立で、
 // 失敗したもの（Chromium が無い等。型付きの失敗も、中断以外の defect も）だけ諦めて、標準エラー（Console）に理由を残し、書けたもののパスを返す。
 // 中断は警告にせず伝える。理由の整形（formatReason）は入口が決める（cli は 1 行にし、サーバーは元の理由のまま）
-export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, formatReason: (e: unknown) => string) {
-  const paths = yield* writeExportFiles(dir, snapshot).pipe(Effect.mapError((e) => new ExportFilesFailed({ message: formatReason(e) })));
+export const writeExportsAndCapture = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, formatReason: (e: unknown) => string, names: ReadonlyMap<string, string>) {
+  const paths = yield* writeExportFiles(dir, snapshot, names).pipe(Effect.mapError((e) => new ExportFilesFailed({ message: formatReason(e) })));
   // 中断以外の失敗（型付きの失敗も defect も）は、警告にして undefined を返す
   const orWarn = <A, E, R>(effect: Effect.Effect<A, E, R>, warning: (reason: string) => string) =>
     Effect.catchCauseIf(

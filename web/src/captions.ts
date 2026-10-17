@@ -1,6 +1,5 @@
 import { Option, Schema } from "effect";
-import { CaptionBubble, continuesAfter, type Track } from "../../server/src/core/index.ts";
-import { speakerName, type SpeakerNames } from "./people.ts";
+import { CaptionBubble, continuesAfter, speakerName, type SpeakerNames, type Track } from "../../server/src/core/index.ts";
 
 // 見返しの字幕に使う、トラックごとの文字
 export type Speaking = Record<Track, string>;
