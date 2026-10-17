@@ -97,7 +97,7 @@ export default {
 `;
 }
 
-// 公開の記録（~/.live-mindmap/publish/records.jsonl の 1 行）。状態は published（置き場にある）と withdrawn（取り下げた）の 2 つ
+// 公開の記録（~/.live-mindmap/publish/records.jsonl の 1 行）。状態は published（置き場にある）・expired（期限が過ぎて後片付けで消した）・withdrawn（取り下げた）の 3 つ
 export const PublishRecord = Schema.Struct({
   name: Schema.String,
   url: Schema.String,
@@ -111,7 +111,7 @@ export const PublishRecord = Schema.Struct({
   passphrase: Schema.optionalKey(Schema.String),
   publishedAt: Schema.String,
   expiresAt: Schema.String,
-  status: Schema.Literals(["published", "withdrawn"]),
+  status: Schema.Literals(["published", "withdrawn", "expired"]),
 });
 export type PublishRecord = typeof PublishRecord.Type;
 
@@ -122,9 +122,20 @@ export function selectListedRecords(records: ReadonlyArray<PublishRecord>, all: 
 
 const LEVEL_LABELS = { map: "マップだけ", remarks: "発言の文字も", audio: "録音も" } as const satisfies Record<PublishContent, string>;
 
+// Worker の Date.now() >= EXPIRES_AT と同じ境界
+function isPastExpiry(record: PublishRecord, nowMs: number): boolean {
+  return Date.parse(record.expiresAt) <= nowMs;
+}
+
+// 期限切れの後片付けの対象: 公開中のまま期限が過ぎた記録
+export function expiredPublishedRecords(records: ReadonlyArray<PublishRecord>, nowMs: number): ReadonlyArray<PublishRecord> {
+  return records.filter((record) => record.status === "published" && isPastExpiry(record, nowMs));
+}
+
 function statusLabel(record: PublishRecord, nowMs: number): string {
   if (record.status === "withdrawn") return "取り下げた";
-  return Date.parse(record.expiresAt) <= nowMs ? "期限切れ（置き場に残っている）" : "公開中";
+  if (record.status === "expired") return "期限切れで消した";
+  return isPastExpiry(record, nowMs) ? "期限切れ（置き場に残っている）" : "公開中";
 }
 
 export function formatPublishList(records: ReadonlyArray<PublishRecord>, nowMs: number, all: boolean): string {

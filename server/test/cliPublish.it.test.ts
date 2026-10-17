@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, ConfigProvider, Console, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Result } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { afterEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
@@ -45,6 +45,8 @@ type Call = { method: string; path: string; search: string; headers: Record<stri
 type ApiBehavior = {
   // 要求ごとの上書き。null を返すと既定の成功応答にする
   respond?: (call: Call) => { status: number; body: unknown } | null;
+  // true を返した要求は、応答を得られない通信の失敗（TransportError）にする
+  transportFailure?: (call: Call) => boolean;
 };
 
 const ok = (result: unknown) => ({ status: 200, body: { success: true, errors: [], messages: [], result } });
@@ -71,10 +73,13 @@ function fakeCloudflare(behavior: ApiBehavior = {}) {
     }
     const call: Call = { method: request.method, path: url.pathname, search: url.search, headers, form, json, text };
     calls.push(call);
+    if (behavior.transportFailure?.(call)) return null;
     const custom = behavior.respond?.(call);
     const response = custom ?? defaultResponse(call);
     return HttpClientResponse.fromWeb(request, new Response(JSON.stringify(response.body), { status: response.status, headers: { "content-type": "application/json" } }));
-  }));
+  }).pipe(Effect.flatMap((response) => response === null
+    ? Effect.fail(new HttpClientError.HttpClientError({ reason: new HttpClientError.TransportError({ request, description: "connection refused" }) }))
+    : Effect.succeed(response))));
   return { calls, client };
 }
 
@@ -893,6 +898,14 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
   const scriptsPath = `/client/v4/accounts/${ACCOUNT}/workers/scripts`;
   const deletes = (s: Setup) => s.api.calls.filter(isScriptDelete);
   const statusOf = (s: Setup, name: string) => recordRows(s).find((r) => r.name === name)?.status;
+  const revoked = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null } };
+  const notFound = { status: 404, body: { success: false, errors: [{ code: 10007, message: "workers.api.error.script_not_found" }], messages: [], result: null } };
+  // 時計を指定の時刻にして実行する（publish は NOW 固定）
+  const publishAt = (s: Setup, at: number, argv: string[]) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(at);
+      return yield* Effect.result(runCli(["publish", ...argv]).pipe(Effect.provide(layerOf(s))));
+    });
   const A = "lmm-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const B = "lmm-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const C = "lmm-cccccccccccccccccccccccccccccccc";
@@ -919,9 +932,9 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
       expect(s.api.calls).toHaveLength(0);
     }));
 
-    it.effect("既定は公開中だけ。期限切れで未削除の物は含め、取り下げた物は出さない", () => Effect.gen(function* () {
+    it.effect("既定は公開中だけ。期限切れで未削除の物（後片付けで消せなかった物）は含め、取り下げた物は出さない", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
-      const s = setup(root);
+      const s = setup(root, { respond: (call) => (isScriptDelete(call) && scriptName(call) === B ? revoked : null) });
       seed(s, [rowOf(A), rowOf(B, { expiresAt: hour(-1) }), rowOf(C, { status: "withdrawn" })]);
 
       const result = yield* publish(s, ["list"]);
@@ -1063,7 +1076,7 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
       expect(statusOf(s, A)).toBe("withdrawn");
     }));
 
-    it.effect("期限切れで未削除の物も取り下げられる", () => Effect.gen(function* () {
+    it.effect("期限切れで未削除の物を名指しすると、最初の後片付けで消えて expired になり、取り下げで上書きしない。成功で返り、DELETE は 1 回、「既に消してあります」を出す", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const s = setup(root);
       seed(s, [rowOf(A, { expiresAt: hour(-5) })]);
@@ -1072,7 +1085,9 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
 
       expect(Result.isSuccess(result), failureText(result)).toBe(true);
       expect(deletes(s)).toHaveLength(1);
-      expect(statusOf(s, A)).toBe("withdrawn");
+      expect(statusOf(s, A)).toBe("expired");
+      expect(s.stdout.join("")).toContain("既に消してあります");
+      expect(s.stdout.join("")).toContain(rowOf(A).url);
     }));
 
     it.effect("記録に無い名前だけを渡すと、DELETE せず 0 以外で返し、「まだ置き場にある」と --anyone の旨を出す。記録は変わらない", () => Effect.gen(function* () {
@@ -1192,6 +1207,212 @@ describe("cli publish list / withdraw（Issue #1253）", () => {
       expect(Result.isSuccess(result), failureText(result)).toBe(true);
       expect(deletes(s)).toHaveLength(1);
       expect(statusOf(s, A)).toBe("withdrawn");
+    }));
+  });
+
+  describe("期限切れの後片付け（Issue #1254）: 公開・一覧・取り下げの最初に、期限切れで公開中の物の Worker を消して expired にする", () => {
+    const X = "lmm-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    const Y = "lmm-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy";
+    const AFTER = NOW + 25 * 60 * 60 * 1000; // X(24h) の期限の後、Y(72h) の期限の前
+    const expiredX = () => rowOf(X, { accountId: OTHER_ACCOUNT, expiresAt: hour(24) });
+    const noCredentials = { CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_API_TOKEN: "" };
+    const urlOf = (name: string) => rowOf(name).url;
+
+    it.effect("list: 記録のアカウントの X を DELETE し、その行だけ expired にする（行は残り、ほかの項目は同じ）。既定の一覧には出ず、--all には「期限切れで消した」と出る", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root, undefined, { env: { CLOUDFLARE_ACCOUNT_ID: ACCOUNT } });
+      const x = expiredX();
+      const y = rowOf(Y, { expiresAt: hour(72) });
+      seed(s, [x, y]);
+
+      const result = yield* publishAt(s, AFTER, ["list"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(deletes(s)).toHaveLength(1);
+      expect(deletes(s)[0]!.path).toBe(`/client/v4/accounts/${OTHER_ACCOUNT}/workers/scripts/${X}`);
+      expect(deletes(s)[0]!.headers["authorization"]).toBe(`Bearer ${TOKEN}`);
+      expect(recordRows(s)).toEqual([{ ...x, status: "expired" }, y]);
+      expect(s.stdout.join("")).not.toContain(X);
+      expect(s.stdout.join("")).toContain(Y);
+
+      s.stdout.length = 0;
+      const all = yield* publishAt(s, AFTER, ["list", "--all"]);
+      expect(Result.isSuccess(all), failureText(all)).toBe(true);
+      const line = s.stdout.join("").split("\n").find((l) => l.includes(X))!;
+      expect(line).toContain("期限切れで消した");
+      expect(deletes(s)).toHaveLength(1);
+    }));
+
+    it.effect("publish: 新しい Worker を置くより前に、期限切れの X を DELETE して expired にする。行は消えず 2 行になり、X のほかの項目は変わらない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+      const first = yield* publish(s, ["--anyone"]);
+      expect(Result.isSuccess(first), failureText(first)).toBe(true);
+      const x = scriptName(s.api.calls.find(isScriptPut)!);
+      const before = recordRows(s)[0]!;
+      s.api.calls.length = 0;
+
+      const second = yield* publishAt(s, NOW + 8 * DAY, ["--anyone"]);
+
+      expect(Result.isSuccess(second), failureText(second)).toBe(true);
+      const deleteIndex = s.api.calls.findIndex((c) => isScriptDelete(c) && scriptName(c) === x);
+      const putIndex = s.api.calls.findIndex(isScriptPut);
+      expect(deleteIndex).toBeGreaterThanOrEqual(0);
+      expect(putIndex).toBeGreaterThan(deleteIndex);
+      expect(s.api.calls[deleteIndex]!.path).toBe(`/client/v4/accounts/${ACCOUNT}/workers/scripts/${x}`);
+      const rows = recordRows(s);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toEqual({ ...before, status: "expired" });
+      expect(rows[1]!.status).toBe("published");
+      expect(rows[1]!.name).not.toBe(x);
+    }));
+
+    it.effect("withdraw: 別の物を名指ししても、最初に期限切れの X を消して expired にする。名指しの Y は withdrawn、X が先に DELETE される", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      const x = expiredX();
+      const y = rowOf(Y, { expiresAt: hour(72) });
+      seed(s, [x, y]);
+
+      const result = yield* publishAt(s, AFTER, ["withdraw", Y]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(deletes(s).map(scriptName)).toEqual([X, Y]);
+      expect(recordRows(s)).toEqual([{ ...x, status: "expired" }, { ...y, status: "withdrawn" }]);
+    }));
+
+    it.effect("対象は「公開中で、期限を過ぎた」物だけ: expiresAt ちょうどは消し、1 ミリ秒後は消さない。withdrawn・expired の行は、期限を過ぎていても消さず変えない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      const at = NOW + 30 * 60 * 1000;
+      const iso = (ms: number) => new Date(ms).toISOString();
+      const rows = [
+        rowOf("lmm-exact", { expiresAt: iso(at) }),
+        rowOf("lmm-just-before", { expiresAt: iso(at + 1) }),
+        rowOf("lmm-withdrawn", { expiresAt: iso(at - DAY), status: "withdrawn" }),
+        rowOf("lmm-expired", { expiresAt: iso(at - DAY), status: "expired" }),
+      ];
+      seed(s, rows);
+
+      const result = yield* publishAt(s, at, ["list", "--all"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(deletes(s).map(scriptName)).toEqual(["lmm-exact"]);
+      expect(recordRows(s)).toEqual([{ ...rows[0], status: "expired" }, rows[1], rows[2], rows[3]]);
+    }));
+
+    it.effect("404（Cloudflare 側に既に無い）は消せたものとして expired にし、失敗は知らせない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root, { respond: (call) => (isScriptDelete(call) ? notFound : null) });
+      seed(s, [expiredX()]);
+
+      const result = yield* publishAt(s, AFTER, ["list"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(deletes(s)).toHaveLength(1);
+      expect(statusOf(s, X)).toBe("expired");
+      expect(s.stderr.join("")).not.toContain("失敗");
+      expect(s.stderr.join("")).not.toContain("権限");
+    }));
+
+    it.effect("資格情報が無ければ list は成功で返り、Cloudflare を呼ばず、標準エラーで知らせ、X は published のまま。既定の一覧に「期限切れ」で出る", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root, undefined, { env: noCredentials });
+      const x = expiredX();
+      seed(s, [x]);
+
+      const result = yield* publishAt(s, AFTER, ["list"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(s.api.calls).toHaveLength(0);
+      expect(s.stderr.join("")).toContain("後片付け");
+      expect(recordRows(s)).toEqual([x]);
+      expect(s.stdout.join("").split("\n").find((l) => l.includes(X))!).toContain("期限切れ");
+    }));
+
+    for (const command of ["publish", "list", "withdraw"] as const) {
+      it.effect(`失効（403）で消せなくても ${command} は成功で返り、標準エラーに X の URL と失敗を出し、X は published のまま`, () => Effect.gen(function* () {
+        const root = yield* temporaryDirectory;
+        const s = setup(root, { respond: (call) => (isScriptDelete(call) && scriptName(call) === X ? revoked : null) });
+        writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+        const x = expiredX();
+        const y = rowOf(Y, { expiresAt: hour(72) });
+        seed(s, [x, y]);
+        const argv = command === "publish" ? ["--anyone"] : command === "list" ? ["list"] : ["withdraw", Y];
+
+        const result = yield* publishAt(s, AFTER, argv);
+
+        expect(Result.isSuccess(result), failureText(result)).toBe(true);
+        expect(statusOf(s, X)).toBe("published");
+        const warned = s.stderr.join("");
+        expect(warned).toContain(urlOf(X));
+        expect(warned).toContain("権限が足りません");
+        if (command === "publish") expect(s.api.calls.some(isScriptPut)).toBe(true);
+        if (command === "withdraw") expect(statusOf(s, Y)).toBe("withdrawn");
+      }));
+    }
+
+    it.effect("通信の失敗でも list は成功で返り、標準エラーに X の URL と失敗を出し、X は published のまま", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root, { transportFailure: (call) => isScriptDelete(call) });
+      const x = expiredX();
+      seed(s, [x]);
+
+      const result = yield* publishAt(s, AFTER, ["list"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(deletes(s)).toHaveLength(1);
+      expect(s.stderr.join("")).toContain(urlOf(X));
+      expect(s.stderr.join("")).toContain("失敗");
+      expect(recordRows(s)).toEqual([x]);
+    }));
+
+    it.effect("次の機会に消し直す: 1 回目の 403 で published のまま残り、応答を成功に戻した 2 回目で DELETE が出て expired になる", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      let failing = true;
+      const s = setup(root, { respond: (call) => (failing && isScriptDelete(call) ? revoked : null) });
+      seed(s, [expiredX()]);
+
+      const first = yield* publishAt(s, AFTER, ["list"]);
+      expect(Result.isSuccess(first), failureText(first)).toBe(true);
+      expect(statusOf(s, X)).toBe("published");
+      expect(deletes(s)).toHaveLength(1);
+
+      failing = false;
+      const second = yield* publishAt(s, AFTER, ["list"]);
+      expect(Result.isSuccess(second), failureText(second)).toBe(true);
+      expect(deletes(s)).toHaveLength(2);
+      expect(statusOf(s, X)).toBe("expired");
+    }));
+
+    it.effect("withdraw で、既に期限切れで消した物を名指しすると、成功で返り、DELETE も書き換えもしない（withdrawn に上書きしない）", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      const x = expiredX();
+      seed(s, [{ ...x, status: "expired" }]);
+
+      const result = yield* publishAt(s, AFTER, ["withdraw", X]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(deletes(s)).toHaveLength(0);
+      expect(statusOf(s, X)).toBe("expired");
+      expect(s.stdout.join("")).toContain("既に消してあります");
+    }));
+
+    it.effect("--confirmed が無い remarks は、期限切れの記録があっても Cloudflare への要求 0 件で ConfirmationRequired になり、記録は変わらない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+      seed(s, [expiredX()]);
+      const before = readFileSync(recordPath(s), "utf8");
+
+      const result = yield* publishAt(s, AFTER, ["--content", "remarks", "--anyone"]);
+
+      expect(Result.isFailure(result)).toBe(true);
+      expect((Result.isFailure(result) ? (result.failure as { _tag?: string }) : null)?._tag).toBe("ConfirmationRequired");
+      expect(s.api.calls).toEqual([]);
+      expect(readFileSync(recordPath(s), "utf8")).toBe(before);
     }));
   });
 
