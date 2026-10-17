@@ -1,29 +1,5 @@
 import { Option, Schema } from "effect";
-import { CaptionBubble, continuesAfter, speakerName, type SpeakerNames, type Track } from "../../server/src/core/index.ts";
-
-// 見返しの字幕に使う、トラックごとの文字
-export type Speaking = Record<Track, string>;
-
-// 字幕に残す文の数（トラックごと）。古い文は文ごとまとめて消す（文字単位で前から削ると目が滑る）
-export const CAPTION_LINES = 2;
-
-// 文の区切り（句点・疑問符・感嘆符の後ろ）で分ける。区切りの後ろの空白は捨てる
-export function sentencesOf(text: string): string[] {
-  return text
-    .split(/(?<=[。？！?!])\s*/)
-    .map((s) => s.trim())
-    .filter((s) => s !== "");
-}
-
-export type Caption = { track: Track; lines: string[] };
-
-// 字幕。トラックごとに 1 ブロック（相手 → 自分）で、文ごとに 1 行、末尾の CAPTION_LINES 文だけを出す。文字が空のトラックは出さない
-export function captionsOf(speaking: Speaking): Caption[] {
-  return (["相手", "自分"] as const).flatMap((track) => {
-    const lines = sentencesOf(speaking[track]).slice(-CAPTION_LINES);
-    return lines.length === 0 ? [] : [{ track, lines }];
-  });
-}
+import { CaptionBubble, continuesAfter, speakerName, type SpeakerNames } from "../../server/src/core/index.ts";
 
 // ここから会議中の字幕（Issue #1022）。サーバーの吹き出し（CaptionBubble）を、表示の吹き出しに直す純粋な状態。時計は持たず、時刻（ミリ秒）は引数で受ける。
 
@@ -58,6 +34,12 @@ export const CaptionState = Schema.Struct({
   clock: Schema.Finite,
 });
 export type CaptionState = typeof CaptionState["Type"];
+
+// 見返しの吹き出しの状態。ラベルを待たず、全部をその場で出す（話者なしは「相手」、話者ありは確定。仮のラベルは作らない）
+export const settledCaptions = (bubbles: readonly CaptionBubble[]): CaptionState => ({
+  entries: bubbles.map((bubble) => ({ bubble, receivedAt: 0, placement: Option.some({ kind: "own" as const }) })),
+  clock: 0,
+});
 
 export const createCaptionState = (): CaptionState => ({ entries: [], clock: 0 });
 
@@ -147,11 +129,8 @@ export const DisplayBubble = Schema.Struct({
 });
 export type DisplayBubble = typeof DisplayBubble["Type"];
 
-// セッションの画面に渡す字幕。会議中は話者つきの吹き出し、見返しはトラックごとの文（見返しの吹き出しは後の sub-issue）
-export const Captions = Schema.Union([
-  Schema.TaggedStruct("Lines", { speaking: Schema.Struct({ 相手: Schema.String, 自分: Schema.String }) }),
-  Schema.TaggedStruct("Bubbles", { bubbles: Schema.Array(DisplayBubble) }),
-]);
+// セッションの画面に渡す字幕。会議中も見返しも、話者つきの吹き出し
+export const Captions = Schema.TaggedStruct("Bubbles", { bubbles: Schema.Array(DisplayBubble) });
 export type Captions = typeof Captions["Type"];
 export const NO_CAPTIONS: Captions = { _tag: "Bubbles", bubbles: [] };
 

@@ -6,7 +6,7 @@ import { Submodel, Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { DiffUpdateState, SelfPaused } from "../../../../server/src/core/index.ts";
-import { CAPTION_BUBBLE_WIDTH, captionsOf, Captions, DisplayBubble, NO_CAPTIONS } from "../../captions.ts";
+import { CAPTION_BUBBLE_WIDTH, Captions, DisplayBubble, NO_CAPTIONS } from "../../captions.ts";
 import { intakeNoticeText, RESUMED_NOTICE_MS } from "../../intake.ts";
 import { FocusSpeakerNameInput, RequestSpeakerName } from "./command.ts";
 import { IntakeStatus, Message } from "./message.ts";
@@ -128,7 +128,7 @@ export const update = (model: Model, message: Message): Return =>
     ReceivedTapNotice: ({ text }) => noticeOf(model, foldTapToast, shownText(model.tapToast), text, { sticky: true }),
     // 押した欄がもう字幕に無ければ開かない
     PressedSpeakerName: ({ bubbleId, label }) => {
-      const bubble = model.captions._tag === "Bubbles" ? model.captions.bubbles.find((b) => b.id === bubbleId) : undefined;
+      const bubble = model.captions.bubbles.find((b) => b.id === bubbleId);
       return bubble === undefined
         ? { model }
         : { model: modifyFields(model, { nameEdit: () => Option.some({ bubble, label, draft: "" }) }), commands: [FocusSpeakerNameInput({ id: NAME_INPUT_ID })] };
@@ -197,18 +197,6 @@ type Slots = { readonly map: Html; readonly keyList?: Html | null; readonly side
 const noticeView = (h: H, className: string, toast: NoticeModel): Html | null =>
   Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.div([h.Class(className), h.AriaLive("polite")], [text]) });
 
-const LINES_BLOCK_CLASS = "captions__block flex gap-[10px] items-baseline px-[12px] py-[6px] text-[16px] leading-[1.5] text-gray-700 bg-[rgb(255_255_255/0.88)] [border:1px_solid_var(--color-gray-200)] rounded-[6px] [box-shadow:none]";
-
-// 見返しの字幕: トラックごとに 1 ブロック
-const linesView = (h: H, speaking: { 相手: string; 自分: string }): ReadonlyArray<Html> =>
-  captionsOf(speaking).map((c) =>
-    h.keyed("div")(
-      c.track,
-      [h.Class(LINES_BLOCK_CLASS)],
-      [h.span([h.Class("captions__track flex-none text-[12px] text-gray-400")], [c.track]), h.div([h.Class("captions__lines min-w-0")], c.lines.map((line) => h.p([h.Class("captions__line m-0 wrap-anywhere")], [line])))],
-    ),
-  );
-
 // 吹き出しの文字。確定の分はそのまま、途中の分だけ別の要素にして不透明度 0.5（色は親の話者の色を受け継ぐ）にし、末尾に点滅するカーソルを置く
 const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | string> => {
   const settled = bubble.text.slice(0, bubble.settledLength);
@@ -237,7 +225,6 @@ const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"])
 
 // 描く吹き出しの行。入力中の欄が字幕から外れても、押した時点の行を先頭に足して入力を残す（先頭に置くと、keyed の差分で行が動かず input とフォーカスが保たれる）
 function bubbleRowsOf(model: Model): ReadonlyArray<DisplayBubble> {
-  if (model.captions._tag !== "Bubbles") return [];
   const { bubbles } = model.captions;
   return Option.match(model.nameEdit, {
     onNone: () => bubbles,
@@ -246,9 +233,8 @@ function bubbleRowsOf(model: Model): ReadonlyArray<DisplayBubble> {
 }
 
 function captionsView(h: H, model: Model): Html | null {
-  const lines = model.captions._tag === "Lines" ? linesView(h, model.captions.speaking) : [];
   const bubbles = bubbleRowsOf(model);
-  if (lines.length === 0 && bubbles.length === 0) return null;
+  if (bubbles.length === 0) return null;
   return Disclosure.view(
     {
       id: "captions",
@@ -263,10 +249,11 @@ function captionsView(h: H, model: Model): Html | null {
                 h.Class("captions"),
                 h.AriaLive("polite"),
                 // 吹き出しの幅（名前の欄を除いた列に対する割合）は定数から渡す。幅の式は styles.css の .captions__bubble
-                ...(bubbles.length === 0 ? [] : [h.Style({ "--caption-bubble-ratio": String(CAPTION_BUBBLE_WIDTH) }), h.OnMount(SlideCaptions())]),
+                h.Style({ "--caption-bubble-ratio": String(CAPTION_BUBBLE_WIDTH) }),
+                h.OnMount(SlideCaptions()),
                 ...panel,
               ],
-              bubbles.length === 0 ? lines : bubbles.map((bubble) => bubbleRowView(h, bubble, model.nameEdit)),
+              bubbles.map((bubble) => bubbleRowView(h, bubble, model.nameEdit)),
             ),
     },
     h,

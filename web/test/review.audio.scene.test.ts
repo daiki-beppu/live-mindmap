@@ -2,6 +2,7 @@ import { Option } from "effect";
 import { Command, expect as expectScene, given, Mount, scene, selector, tap } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
+import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { PauseAudio } from "../src/app/review/command.ts";
 import { makeContext } from "../src/app/review/context.ts";
@@ -48,7 +49,7 @@ describe("見返しの Scene: 録音つきの <audio> と Mount", () => {
     scene(
       audioApp,
       given(stoppedAt(10)),
-      Mount.expectExact(ObserveMapSurface, ObserveAudio, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_AUDIO)),
+      Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveAudio, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_AUDIO)),
       expectScene(selector("audio")).toHaveAttr("src", URL),
       measuredAll(10),
       Mount.resolve(ObserveAudio, Message.UpdatedAudioTime({ time: 10 })),
@@ -60,7 +61,7 @@ describe("見返しの Scene: 録音つきの <audio> と Mount", () => {
     scene(
       plainApp,
       given(init(plainContext)),
-      Mount.expectExact(ObserveMapSurface, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)),
+      Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)),
       expectScene(selector("audio")).toBeAbsent(),
       measuredAll(30),
       settle,

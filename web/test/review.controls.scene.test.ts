@@ -7,6 +7,7 @@ import { makeContext } from "../src/app/review/context.ts";
 import { snapshotOf } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
 import { ObserveAudio, ObserveSeekPointer } from "../src/app/review/mount.ts";
+import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { KIND_COLOR } from "../src/kinds.ts";
 import { AUDIO_RATES, PLAYBACK_RATES, rateItemLabel } from "../src/reviewPlayback.ts";
@@ -182,7 +183,7 @@ describe("操作の行の並び・名前・class（styles.css が当たる形）
     scene(
       appOf(singleRateContext),
       given(stateAt(singleRateContext, 100)),
-      Mount.expectExact(ObserveMapSurface, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN - 1)),
+      Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN - 1)),
       settle,
       expectScene(rateButton).not.toExist(),
       expectScene(selector(".review-rate")).not.toExist(),
@@ -212,8 +213,8 @@ describe("操作の行の並び・名前・class（styles.css が当たる形）
   });
 
   it("起動時の Mount は 表示面・シークバーのポインタ・ボタンごとのツールチップ（録音つきはさらに <audio>）", () => {
-    scene(audioApp, given(stateAt(audioContext, 100)), Mount.expectExact(ObserveMapSurface, ObserveAudio, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_AUDIO)), settle);
-    scene(plainApp, given(stateAt(plainContext, 100)), Mount.expectExact(ObserveMapSurface, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)), settle);
+    scene(audioApp, given(stateAt(audioContext, 100)), Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveAudio, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_AUDIO)), settle);
+    scene(plainApp, given(stateAt(plainContext, 100)), Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)), settle);
   });
 });
 
@@ -737,6 +738,8 @@ describe("ボタンのツールチップ（@foldkit/ui の Tooltip）", () => {
         expect(textOf(tipPanelOf(sim.html, "止める"))).toBe("止める（Space・K）");
         expect(textOf(tipPanelOf(sim.html, "ミュートを戻す"))).toBe("ミュートを戻す（M）");
       }),
+      // 再生中の Scene の終わりに、消えた字幕の Mount（SlideCaptions）を受け取る
+      Mount.expectEnded(SlideCaptions),
     );
   });
 

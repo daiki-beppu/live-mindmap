@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
 import type { CaptionsFrame, Snapshot } from "../../server/src/core/index.ts";
 import { spokenBubble } from "./fixtures/captions.ts";
-import { buildReviewTimeline, snapshotAt, speakingAt } from "../src/reviewTimeline.ts";
+import { buildReviewTimeline, CAPTION_SECONDS, snapshotAt } from "../src/reviewTimeline.ts";
 import { LOG_PATH, PAGE_VIEWPORT, readFoldkitViewport } from "./reviewPage.ts";
 import type { Browser, Page } from "./screenCompare.ts";
 
@@ -42,7 +42,12 @@ export async function meetingFrames(): Promise<MeetingFrames> {
   const lastAt = times[times.length - 1];
   if (firstAt === undefined || lastAt === undefined) throw new Error("照合の例のログに反映が 2 回以上ありません");
   const framesAt = (t: number): unknown[] => {
-    const speaking = speakingAt(timeline, t);
+    // トラックごとに、end ≤ t で最も遅い発言の本文を、end から CAPTION_SECONDS 未満の間だけ出す（会議中の画面の照合の題材。frame は変えない）
+    const speakingOf = (track: "相手" | "自分"): string => {
+      const latest = timeline.remarks.map((r) => r.remark).filter((r) => r.track === track && r.end <= t).reduce<(typeof timeline.remarks)[number]["remark"] | undefined>((best, r) => (!best || r.end >= best.end ? r : best), undefined);
+      return latest && t - latest.end < CAPTION_SECONDS ? latest.text : "";
+    };
+    const speaking = { 相手: speakingOf("相手"), 自分: speakingOf("自分") };
     return [
       // 見返しの時刻の字幕の文字を、確定したラベルつきの吹き出しにして流す（空のトラックは吹き出しにしない）
       { type: "captions", bubbles: [...(speaking.相手 === "" ? [] : [spokenBubble(speaking.相手, "相手")]), ...(speaking.自分 === "" ? [] : [spokenBubble(speaking.自分, "自分")])] } satisfies CaptionsFrame,

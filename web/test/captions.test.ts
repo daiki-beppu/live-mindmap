@@ -6,51 +6,48 @@ import { createSpeakingRelay } from "../../server/src/speakingRelay.ts";
 import {
   advanceCaptions,
   CAPTION_LABEL_WAIT_MS,
-  CAPTION_LINES,
   CAPTION_PROVISIONAL_LIMIT_MS,
   CAPTION_SLIDE_MS,
   CAPTION_VISIBLE_BUBBLES,
-  captionsOf,
   createCaptionState,
   displayBubbles,
   nextCaptionDeadline,
   receiveCaptions,
-  sentencesOf,
+  settledCaptions,
   slideDeltas,
   type CaptionState,
   type DisplayBubble,
 } from "../src/captions.ts";
 
-describe("sentencesOf（文ごとに分ける）", () => {
-  it("句点・疑問符・感嘆符の後ろで分け、区切りの後ろの空白は捨てる", () => {
-    expect(sentencesOf("今日は採用です。 どうしますか？ はい！")).toEqual(["今日は採用です。", "どうしますか？", "はい！"]);
+describe("settledCaptions（見返しの字幕。ラベルの待ちも仮の名前も通さない）", () => {
+  const bubble = (id: string, extra: Partial<CaptionBubble> = {}): CaptionBubble => ({ id, track: "相手", label: "なし", start: 0, end: 1, text: id, settledLength: id.length, ...extra });
+
+  it("話者なし（ラベル「なし」）の吹き出しも、待たずにその場で出る。名前の欄は「相手」で、薄くしない", () => {
+    const [shown] = displayBubbles(settledCaptions([bubble("x", { text: "古いログ" })]), 0);
+    expect(shown).toMatchObject({ id: "x", side: "left", text: "古いログ", nameState: "settled" });
+    expect(shown!.name).toEqual(Option.some("相手"));
   });
 
-  it("話している途中（区切りのない末尾）も 1 文として残す", () => {
-    expect(sentencesOf("決めました。次は求人の")).toEqual(["決めました。", "次は求人の"]);
+  it("次に状態が変わる時刻は無い（待ちの期限も 3 秒の規則も持たない）", () => {
+    expect(nextCaptionDeadline(settledCaptions([bubble("x"), bubble("y", { label: "確定", speaker: "相手 A" })]))).toBeUndefined();
   });
 
-  it("空の文字は文にならない", () => {
-    expect(sentencesOf("")).toEqual([]);
-    expect(sentencesOf("  ")).toEqual([]);
-  });
-});
-
-describe("captionsOf（字幕）", () => {
-  it("相手 → 自分の順に、文字のあるトラックだけを出す", () => {
-    expect(captionsOf({ 相手: "", 自分: "" })).toEqual([]);
-    expect(captionsOf({ 相手: "今日は。", 自分: "はい" })).toEqual([
-      { track: "相手", lines: ["今日は。"] },
-      { track: "自分", lines: ["はい"] },
+  it("話者つきの吹き出しは、名前の表の名前で出る。start の順・相手は左・自分は右はライブと同じ", () => {
+    const shown = displayBubbles(
+      settledCaptions([
+        bubble("c", { start: 5, speaker: "相手 A", label: "確定" }),
+        bubble("a", { start: 1, speaker: "相手 B", label: "確定" }),
+        bubble("b", { start: 3, track: "自分", speaker: "自分", label: "確定" }),
+      ]),
+      0,
+      { "相手 B": "田中" },
+    );
+    expect(shown.map((b) => [b.id, b.side, Option.getOrElse(b.name, () => "")])).toEqual([
+      ["a", "left", "田中"],
+      ["b", "right", ""],
+      ["c", "left", "相手 A"],
     ]);
-  });
-
-  it("末尾の CAPTION_LINES 文だけを、文を割らずに出す（古い文は文ごと消える）", () => {
-    const text = "一つ目です。二つ目です。三つ目の途中";
-    const lines = captionsOf({ 相手: text, 自分: "" })[0]!.lines;
-    expect(lines).toHaveLength(CAPTION_LINES);
-    expect(lines.at(-1)).toBe("三つ目の途中");
-    for (const line of lines) expect(sentencesOf(text)).toContain(line);
+    expect(shown.every((b) => b.nameState === "settled")).toBe(true);
   });
 });
 

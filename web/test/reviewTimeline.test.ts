@@ -1,15 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { mapOnlyReviewEvents, reviewSnapshot } from "../../server/src/core/index.ts";
-import { captionsOf } from "../src/captions.ts";
-import { buildReviewTimeline, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, speakingAt, topicNameOf } from "../src/reviewTimeline.ts";
+import { buildReviewTimeline, captionBubblesAt, chapterNameAt, formatHms, reviewChapters, reviewMarks, snapshotAt, topicNameOf } from "../src/reviewTimeline.ts";
 
 // 見返しの時間軸（純粋なモジュール）。ログ（log.jsonl の行）の配列だけを入れて確かめる。
 // 時刻の軸は発言の end（会議の中の秒）で、ログの at は使わない（at はわざと逆順・無関係な値にしてある）。
 
-const remark = (id: string, track: "自分" | "相手", start: number, end: number, text: string) => ({
+const remark = (id: string, track: "自分" | "相手", start: number, end: number, text: string, speaker?: string) => ({
   at: `2099-01-01T00:00:${String(90 - end).padStart(2, "0")}.000Z`,
   type: "remark",
-  remark: { id, track, start, end, text },
+  remark: { id, track, start, end, text, ...(speaker !== undefined ? { speaker } : {}) },
 });
 const add = (ref: string, text: string, evidence: string[]) => ({ op: "add", ref, parent: "root", kind: "議題", text, evidence });
 const diff = (fresh: string[], ops: unknown[], error?: string) => ({
@@ -191,28 +190,67 @@ describe("snapshotAt（時刻 t のスナップショット）", () => {
   });
 });
 
-describe("speakingAt（字幕）", () => {
+const idsAt = (tl: ReturnType<typeof buildReviewTimeline>, t: number) => captionBubblesAt(tl, t).map((b) => b.id);
+
+describe("captionBubblesAt（見返しの字幕の吹き出し）", () => {
   const tl = buildReviewTimeline(events);
 
-  it("トラックごとに、end が t 以下で最も遅い発言の本文を、end から 8 秒未満の間だけ出す（end ちょうどは出す）", () => {
-    expect(speakingAt(tl, 5)).toEqual({ 相手: "採用の話をします。", 自分: "" });
-    expect(speakingAt(tl, 12.9)).toEqual({ 相手: "採用の話をします。", 自分: "はい。" }); // 相手 +7.9、自分 +2.9
+  it("end が t 以下で、t − end が 8 秒未満の発言を、1 発言 1 吹き出しで出す（end ちょうどは出す）", () => {
+    expect(idsAt(tl, 5)).toEqual(["r1"]);
+    expect(idsAt(tl, 12.9)).toEqual(["r1", "r2"]); // 相手 +7.9、自分 +2.9
   });
 
-  it("t − end が 8 秒ちょうどなら空文字（消える）", () => {
-    expect(speakingAt(tl, 13)).toEqual({ 相手: "", 自分: "はい。" });
-    expect(speakingAt(tl, 18)).toEqual({ 相手: "", 自分: "" });
+  it("t − end が 8 秒ちょうどなら消える", () => {
+    expect(idsAt(tl, 13)).toEqual(["r2"]);
+    expect(idsAt(tl, 18)).toEqual([]);
   });
 
-  it("end が t より後の発言は選ばない。t に着く前は両方空", () => {
-    expect(speakingAt(tl, 4.9)).toEqual({ 相手: "", 自分: "" });
-    expect(speakingAt(tl, 19.9)).toEqual({ 相手: "", 自分: "" }); // r3（end 20）はまだ選ばない
+  it("end が t より後の発言は出さない。t に着く前は空", () => {
+    expect(idsAt(tl, 4.9)).toEqual([]);
+    expect(idsAt(tl, 19.9)).toEqual([]); // r3（end 20）はまだ出さない
   });
 
-  it("トラックごとに独立していて、新しい発言に切り替わる。直近の発言が古ければ、さらに前の発言へは戻らない", () => {
-    expect(speakingAt(tl, 20)).toEqual({ 相手: "予算です。", 自分: "" }); // 自分 r2 は +10 で消えている、r4 は未到達
-    expect(speakingAt(tl, 30)).toEqual({ 相手: "", 自分: "了解。" }); // 相手 r3 は +10
-    expect(speakingAt(tl, 40)).toEqual({ 相手: "最後の発言。", 自分: "" });
+  it("同じトラックの古い発言も、8 秒の窓の中なら残す（トラックごとの最新 1 件にしない）", () => {
+    const log = [remark("a", "相手", 1, 3, "Aです。"), remark("b", "相手", 4, 6, "Bです。")];
+    expect(idsAt(buildReviewTimeline(log), 6)).toEqual(["a", "b"]);
+  });
+
+  it("吹き出しは start の順に並ぶ（ログの順ではない）", () => {
+    const log = [remark("late", "相手", 5, 6, "後。"), remark("early", "自分", 1, 4, "先。")];
+    expect(idsAt(buildReviewTimeline(log), 6)).toEqual(["early", "late"]);
+  });
+
+  it("吹き出しの中身は、発言の id・トラック・start・end・本文で、本文は全部確定として渡す", () => {
+    expect(captionBubblesAt(tl, 12.9)).toMatchObject([
+      { id: "r1", track: "相手", start: 0, end: 5, text: "採用の話をします。", settledLength: "採用の話をします。".length },
+      { id: "r2", track: "自分", start: 5, end: 10, text: "はい。", settledLength: "はい。".length },
+    ]);
+  });
+
+  it("発言に話者があれば、その話者を持つ確定の吹き出し。話者が無い（古いログ）なら speaker を持たない「なし」の吹き出し", () => {
+    const log = [remark("a", "相手", 1, 3, "新。", "相手 B"), remark("b", "相手", 4, 6, "古。")];
+    const [withSpeaker, legacy] = captionBubblesAt(buildReviewTimeline(log), 6);
+    expect(withSpeaker).toMatchObject({ id: "a", speaker: "相手 B", label: "確定" });
+    expect(legacy).toMatchObject({ id: "b", label: "なし" });
+    expect(legacy).not.toHaveProperty("speaker");
+  });
+
+  it("本文が空（空白だけを含む）の発言は吹き出しにしない", () => {
+    const log = [remark("empty", "相手", 1, 3, ""), remark("blank", "相手", 3, 4, "  "), remark("ok", "相手", 4, 6, "あります。")];
+    expect(idsAt(buildReviewTimeline(log), 6)).toEqual(["ok"]);
+  });
+});
+
+describe("speakerNames（見返しの名前の表）", () => {
+  const nameRow = (label: string, name: string, source = "推定") => ({ at: "x", type: "speaker-name", label, name, source });
+
+  it("ラベルごとに、ログで最後に付いた名前になる（途中の名前や、時刻には左右されない）", () => {
+    const log = [remark("r1", "相手", 0, 3, "一。", "相手 B"), nameRow("相手 B", "鈴木"), remark("r2", "相手", 4, 6, "二。", "相手 B"), nameRow("相手 A", "佐藤"), nameRow("相手 B", "田中", "手入力")];
+    expect(buildReviewTimeline(log).speakerNames).toEqual({ "相手 B": "田中", "相手 A": "佐藤" });
+  });
+
+  it("名前の行が無ければ空の表", () => {
+    expect(buildReviewTimeline(events).speakerNames).toEqual({});
   });
 });
 
@@ -435,14 +473,14 @@ describe("マップだけの版の出来事（字幕が出ない）", () => {
 
   it("元の出来事では、発言の end と end + 1 の時刻に字幕が出る（比べる対象が空ではない）", () => {
     const tl = buildReviewTimeline(events);
-    for (const t of remarkEnds) expect(captionsOf(speakingAt(tl, t)), `t=${t}`).not.toEqual([]);
+    for (const t of remarkEnds) expect(captionBubblesAt(tl, t), `t=${t}`).not.toEqual([]);
   });
 
   it("マップだけの出来事では、すべての発言の end と end + 1 の時刻で、字幕が出ない", () => {
     const tl = buildReviewTimeline(mapOnlyReviewEvents(events));
     for (const t of remarkEnds) {
-      expect(captionsOf(speakingAt(tl, t)), `t=${t}`).toEqual([]);
-      expect(captionsOf(speakingAt(tl, t + 1)), `t=${t + 1}`).toEqual([]);
+      expect(captionBubblesAt(tl, t), `t=${t}`).toEqual([]);
+      expect(captionBubblesAt(tl, t + 1), `t=${t + 1}`).toEqual([]);
     }
   });
 
