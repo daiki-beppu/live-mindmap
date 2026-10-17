@@ -31,3 +31,13 @@ CI (`.github/workflows/check.yml`) runs the same checks split into parallel jobs
 `main` requires the `check` job to pass (ruleset). It is the final job and passes only if every job in its `needs` ended `success` or `skipped` (any other result, such as `failure`, `cancelled`, or a job no runner picked up, fails it), so keep every new job in its `needs`.
 
 actionlint runs as its own workflow (`.github/workflows/actionlint.yml`) on PRs and main pushes that change `.github/**`, so it still reports red when `check.yml` fails to load and no `check` jobs run. It is not a required check.
+
+### When main goes red
+
+When the `check` that runs on a push to `main` goes red, recover by hand. This is a manual procedure and is not automated:
+
+1. Re-run the failed jobs once (re-run failed jobs only, one time).
+2. If the re-run passes, treat the failure as a flake: open a bug issue and fix-forward. Do not revert.
+3. If the re-run fails again, treat it as real breakage: revert the PR that caused it.
+
+Do not stop the takt skill's `align-behind.mjs`, which runs resident on a local machine and brings BEHIND PRs up to date with `main`, while `main` is red. A PR it aligns runs only the jobs chosen by its changed paths, so only a PR that touches the broken path fails and stops there; other PRs keep passing.
