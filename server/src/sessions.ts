@@ -42,6 +42,7 @@ import {
   SessionBusy,
   SessionTransition,
   type SessionFailure,
+  type SpeakerNameRejected,
 } from "./sessionFailure.ts";
 import { SessionSinks, type SessionSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
@@ -155,6 +156,9 @@ export class Sessions extends Context.Service<Sessions, {
   liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure>;
   // 自分の休止・再開を求める（paused が求める状態。Issue #1069）。いま接続している helper へ指示を送る。live でなければ失敗する（録画からのセッションは NotForRecordedSession）
   setSelfPause: (paused: boolean) => Effect.Effect<void, SessionFailure>;
+  // 話者のラベル（相手 B）に名前を手で付ける（Issue #1026）。live のときだけ。録画からのセッションはラベルを持たないので NotForRecordedSession。
+  // 付けられないラベル・空の名前は SpeakerNameRejected
+  setSpeakerName: (speaker: { label: string; name: string }) => Effect.Effect<void, SessionFailure | SpeakerNameRejected>;
 }>()("live-mindmap/server/Sessions") {
   static readonly layer: Layer.Layer<Sessions, never, Helpers | SessionSinks | SessionsDir | Viewers | ManagedDeps> = Layer.effect(Sessions)(
     Effect.gen(function* () {
@@ -449,7 +453,7 @@ export class Sessions extends Context.Service<Sessions, {
             );
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
-          const sink = yield* sinks.open({ dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
+          const sink = yield* sinks.open({ dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
           if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
@@ -705,7 +709,7 @@ export class Sessions extends Context.Service<Sessions, {
           const readingTarget = yield* SynchronizedRef.make(attempt);
           const sink = yield* sinks.open({
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-            model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, diffUpdate: viewers.diffUpdate,
+            model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
             recorded: {
               realtime: input.realtime,
               selfTrack: input.selfFile !== undefined,
@@ -890,7 +894,15 @@ export class Sessions extends Context.Service<Sessions, {
             link.kind === "connected" ? Effect.as(link.attempt.send({ type: "self-pause", paused }), link) : Effect.succeed({ kind: "waiting", pending: paused }));
         });
 
-      return Sessions.of({ apps: helpers.apps, start, startRecorded, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause });
+      const setSpeakerName = (speaker: { label: string; name: string }): Effect.Effect<void, SessionFailure | SpeakerNameRejected> =>
+        Effect.gen(function* () {
+          const current = yield* Ref.get(state);
+          if (current.kind === "recorded") return yield* new NotForRecordedSession();
+          if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
+          yield* current.live.sink.nameSpeaker(speaker);
+        });
+
+      return Sessions.of({ apps: helpers.apps, start, startRecorded, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause, setSpeakerName });
     }),
   );
 }

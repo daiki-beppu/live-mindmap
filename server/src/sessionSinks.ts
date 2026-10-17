@@ -8,7 +8,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
+import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNamesFrame, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -16,6 +16,7 @@ import { createRecordedBacklog } from "./recordedBacklog.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
 import { createSpeakingRelay, type CaptionContext } from "./speakingRelay.ts";
+import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage } from "./truthFile.ts";
 
 // 開いたセッション 1 つ。ヘルパーに依らず、起動し直しをまたいで 1 つを使い続ける
@@ -57,6 +58,10 @@ export type SessionSink = {
   // ヘルパーを起動し直して接続できた（Sortformer の枠が振り直された）。新しいヘルパーのイベントを読み始める前に呼ぶ（Issue #1025）。
   // 前の世代の保留を話者の判定を済ませて出し切り、以後の新しい枠は、重心をラベルに照らし合わせるまで話者なしで出す。ログには書かない
   speakersRenumbered: Effect.Effect<void>;
+  // 話者のラベル（相手 B）に名前を手で付ける（Issue #1026）。付けられるのは発言に振ったラベルだけで、自分・まだ振っていないラベル・ラベルの無い「相手」・空の名前は SpeakerNameRejected。
+  // 表が変わるときだけ、log.jsonl に speaker-name の行を残し、名前の表のフレームを送る。以後の差分更新の入力に載る。名前は外れない。
+  // 表はこの sink（セッションにつき 1 つ）が持つので、ヘルパーの起動し直し・resume をまたいで残り、新しいセッションには持ち越さない
+  nameSpeaker: (speaker: { label: string; name: string }) => Effect.Effect<void, SpeakerNameRejected>;
   // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する（話者の記録は speaker が行う）
   appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void>;
   // 録画からのセッションで、溜まっている発言をすべて入れ終えるまで待つ（ライブでは何もしない）。drain の後に呼ぶ
@@ -83,6 +88,8 @@ export type OpenSessionSink = {
   logShiftMs?: number; // log.jsonl の時刻に足す幅（録画からのセッションが作成日時へそろえる）。省略は 0
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   speak: (frame: CaptionsFrame) => Effect.Effect<void>;
+  // 話者の名前の表（全体）を送る。開いた直後に空の表を 1 回送り、前のセッションの名前を消す
+  speakerNames: (frame: SpeakerNamesFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   // 録画からのセッションのとき（cli recorded）だけ渡す。締めた発言はすぐ入れず溜め、1 発言入れて差分更新が終わるたびに progress を呼ぶ。
   // いま話している文字（字幕）はヘルパーの途中結果ではなく、入れた位置で出す
@@ -150,10 +157,22 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           return yield* prepareUpdater(model, judge).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
         }),
         createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, logShiftMs, publish, speak, diffUpdate, model, updaterLayer, recorded }) {
+        open: Effect.fnUntraced(function* ({ dir, title, logShiftMs, publish, speak, speakerNames, diffUpdate, model, updaterLayer, recorded }) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
+          // 話者の名前の表（ラベル → 名前）。セッションにつき 1 つで、ヘルパーの起動し直しでは作り直さない（Issue #1026）。
+          // 開いた直後に空の表を送り、前のセッションの名前を画面から消す
+          const names = yield* Ref.make<SpeakerNameTable>(new Map());
+          const namesLock = yield* Semaphore.make(1);
+          yield* speakerNames(speakerNamesFrame(new Map()));
+          // 差分更新を呼ぶたびに、そのときの名前の表を入力に載せる（名前が無いときはキーごと付けない）。katakana などは保つ
+          const baseUpdater = Context.get(updaterContext, DiffUpdater);
+          const namedUpdater = DiffUpdater.of({
+            ...baseUpdater,
+            update: (input) => Effect.flatMap(Ref.get(names), (table) =>
+              baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: new Map([...table].map(([label, { name }]) => [label, name] as const)) })),
+          });
           // relay を先に作る。context は session と settling ができた後（onDiff・途中結果が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
           // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
           // 字幕用の表（発言の id → 補正前の本文・補正前の位置の wordTimes・置き換え）。Remark には入れず、未反映の発言を盤へ渡すときだけ上書きする。
@@ -225,7 +244,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             publish,
             diffUpdate: (frame) => Effect.andThen(diffUpdate(frame), followPause(frame)),
             onDiff: relay.flushAll,
-          }).pipe(Effect.provideService(DiffUpdater, Context.get(updaterContext, DiffUpdater)), Effect.provideContext(exportServices));
+          }).pipe(Effect.provideService(DiffUpdater, namedUpdater), Effect.provideContext(exportServices));
           // 語彙追加（読み取得つき）の処理の集まり。ログを開いた後に作るので、後始末（登録の逆順）ではログを閉じる前に中断される。
           // exports が溜まりを更新する前に、書き終わるのを待つために使う
           const vocabularyAdds = yield* FiberSet.make();
@@ -332,11 +351,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop, settling.stop));
 
           // 足した語の読みを作り、vocab の行を書いてから語彙に足す（直した発言の行が、必ず vocab の行より後ろに並ぶ）。
-          // 英字の語（略語でないもの）は、まとめて 1 度だけ updater.katakana にカタカナの読みを聞き、返ったカタカナを読みのサブコマンドでローマ字にする。
+          // 英字の語（略語でないもの）は、まとめて 1 度だけ baseUpdater.katakana にカタカナの読みを聞き、返ったカタカナを読みのサブコマンドでローマ字にする。
           // 英字でない語と略語は、そのまま読みのサブコマンドへ渡す。モデルが失敗した語・読みを返さない語は読みなし（直接読んで補わない）。
           // 読み取得の待ち（モデル・読みのサブコマンド）だけが中断できる。停止（Scope の閉鎖）で中断されても、足した語の記録は失いたくないので、
           // 中断のときは読みなし（全語 romaji: null）で vocab の行を 1 行書く。読み取得が返った後の処理は中断されない
-          const updater = Context.get(updaterContext, DiffUpdater);
           const addVocabulary = (surfaces: ReadonlyArray<string>, source: "user" | "screen", from?: number) =>
             Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
@@ -345,8 +363,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 const askedSet = new Set(asked);
                 const found = yield* restore(
                   Effect.gen(function* () {
-                    const answered = asked.length > 0 && updater.katakana !== undefined
-                      ? yield* updater.katakana(asked).pipe(Effect.catch(() => Effect.succeed([])))
+                    const answered = asked.length > 0 && baseUpdater.katakana !== undefined
+                      ? yield* baseUpdater.katakana(asked).pipe(Effect.catch(() => Effect.succeed([])))
                       : [];
                     const katakana = katakanaTable(asked, answered);
                     const toRead = [...new Set([...surfaces.filter((surface) => !askedSet.has(surface)), ...katakana.values()])];
@@ -397,6 +415,17 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             final: (r) => settling.final(r),
             speaker: (event) => Effect.andThen(Effect.andThen(appendRecordedLog(event), settling.speaker(event)), backlog === undefined ? relay.speaker(event) : Effect.void),
             speakersRenumbered: settling.renumbered,
+            nameSpeaker: ({ label, name }) =>
+              // Why: 要求が途中で中断されると、表・ログの行・フレームの一部だけが更新され、同じ名前の再送では直らない（同じ値は何もしない）ため、ロック取得後は中断させない
+              namesLock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+                if (!settling.labels().includes(label)) return yield* new SpeakerNameRejected({ reason: "ラベルがない" });
+                if (name.trim() === "") return yield* new SpeakerNameRejected({ reason: "名前が空" });
+                const next = nameSpeaker(yield* Ref.get(names), { label, name, source: "手入力" });
+                if (next === undefined) return;
+                yield* appendRecordedLog({ type: "speaker-name", label, name: next.get(label)!.name, source: "手入力" });
+                yield* Ref.set(names, next);
+                yield* speakerNames(speakerNamesFrame(next));
+              }))),
             screen: (change) => backlog === undefined
               ? Effect.andThen(pushScreenChange(change), requestScreenVocabulary(change.lines))
               : Effect.andThen(requestScreenVocabulary(change.lines, change.start), enqueueScreen({ kind: "screen", change })),

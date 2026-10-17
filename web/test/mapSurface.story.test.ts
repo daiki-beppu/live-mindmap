@@ -34,6 +34,7 @@ const MODEL_FIELDS = [
   "scrollAxisLock",
   "size",
   "snapshot",
+  "speakerNames",
   "viewing",
   "viewport",
 ];
@@ -95,7 +96,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     );
   });
 
-  it("update の後も Model の欄は決まった 16 個だけ（配置・畳んだ後の木・カメラの目標を足さない。pan・zoomScale は無い）", () => {
+  it("update の後も Model の欄は決まった 17 個だけ（配置・畳んだ後の木・カメラの目標を足さない。pan・zoomScale は無い）", () => {
     story(
       update,
       given(initial()),
@@ -108,7 +109,7 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
 });
 
 describe("mapSurface の Model: 本物の Schema", () => {
-  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの gestureScale と、カメラの viewport・placedRound・keepAnchor・pendingShift・idleStamp の 16 個だけ", () => {
+  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの gestureScale と、カメラの viewport・placedRound・keepAnchor・pendingShift・idleStamp と、話者の名前の表 speakerNames（Issue #1026）の 17 個だけ", () => {
     expect(Object.keys(Model.fields).sort()).toEqual(MODEL_FIELDS);
   });
 

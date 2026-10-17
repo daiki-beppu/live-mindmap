@@ -1,7 +1,7 @@
 import * as Popover from "@foldkit/ui/popover";
-import { click, expect as expectScene, findAll, Mount, selector, tap } from "foldkit/scene";
+import { click, expect as expectScene, findAll, Mount, selector, submit, tap, type as typeInto } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
-import type { Snapshot } from "../../server/src/core/index.ts";
+import type { CaptionBubble, Snapshot } from "../../server/src/core/index.ts";
 import { keyListRows, type KeyId } from "../src/app/keys/table.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import {
@@ -39,6 +39,7 @@ import {
   selectedIds,
   settle,
   settleCommands,
+  speakerNameRequests,
   shapeOf,
   speak,
   STOPPED,
@@ -1008,5 +1009,104 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
 describe("会議中の Scene: 題材の前提", () => {
   it("題材の全ノードの高さが測定の入力に入っている（増えるノードも最初の測定で測れる）", () => {
     for (const snapshot of [FIRST, SECOND]) for (const n of snapshot.nodes) expect(HEIGHTS[n.id], n.id).toBeGreaterThan(0);
+  });
+});
+
+// Issue #1026: 話者の名前。名前の表は /ws の speaker-names の frame でだけ変わる。同じ画面（1 つの Model）の上で 前 → frame → 後 を続けて見る。
+describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
+  const node = (id: string, parent: string | null, kind: Snapshot["nodes"][number]["kind"], text: string, extra: Partial<Snapshot["nodes"][number]> = {}): Snapshot["nodes"][number] => ({ id, parent, kind, text, evidence: [], ...extra });
+  // 案 A1 は相手 A が出し、TODO B は相手 B が担当（期限 10/15）。高さの分かるノード id（HEIGHTS）だけを使う
+  const PEOPLE: Snapshot = {
+    nodes: [node("root", null, "会議", "定例"), node("A", "root", "議題", "採用"), node("A1", "A", "案", "週 1", { proposer: "相手 A" }), node("B", "root", "TODO", "見積もり", { assigneeSpeaker: "相手 B", due: "10/15" })],
+    round: 1,
+    changes: [],
+    remarks: [],
+    currentTopic: "A",
+    now: 12,
+  };
+  const said = (id: string, speaker: string, start: number): CaptionBubble => ({ ...spokenBubble("こんにちは", "相手", start), id, speaker });
+  const heard = (...bubbles: CaptionBubble[]) => frame({ type: "captions", bubbles });
+  const mine: CaptionBubble = { ...spokenBubble("はい", "自分", 3), id: "m" };
+  const names = (...rows: Array<[string, string]>) => frame({ type: "speaker-names", names: rows.map(([label, name]) => ({ label, name })) });
+  const captionNames = (sim: Sim) => texts(sim.html, ".captions__name");
+  const personLines = (sim: Sim) => [texts(sim.html, '[data-node-id="A1"] .map-node__person'), texts(sim.html, '[data-node-id="B"] .map-node__person')];
+
+  it("名前が付くと、それまでの字幕の名前の欄・案の出した人・TODO の担当者が、次のスナップショットを待たずに名前になる。同じ名前を 2 つのラベルに付けても別のラベルのまま。空の表でラベルに戻る", () => {
+    meetingScene(init(false),
+      frame(PEOPLE),
+      heard(said("a", "相手 A", 1), said("b", "相手 B", 2)),
+      tap((sim) => {
+        expect(captionNames(sim)).toEqual(["相手 A", "相手 B"]);
+        expect(personLines(sim)).toEqual([["— 相手 A"], ["→ 相手 B · 10/15"]]);
+      }),
+      names(["相手 B", "田中"]),
+      tap((sim) => {
+        expect(captionNames(sim)).toEqual(["相手 A", "田中"]);
+        expect(personLines(sim)).toEqual([["— 相手 A"], ["→ 田中 · 10/15"]]);
+      }),
+      names(["相手 A", "田中"], ["相手 B", "田中"]),
+      tap((sim) => {
+        expect(captionNames(sim)).toEqual(["田中", "田中"]); // 別のラベルの吹き出しは、同じ名前でも両方に出る
+        expect(personLines(sim)).toEqual([["— 田中"], ["→ 田中 · 10/15"]]);
+      }),
+      names(),
+      tap((sim) => {
+        expect(captionNames(sim)).toEqual(["相手 A", "相手 B"]);
+        expect(personLines(sim)).toEqual([["— 相手 A"], ["→ 相手 B · 10/15"]]);
+      }),
+    );
+  });
+
+  it("名前を付けた後に届いた吹き出しも、前から出ていた吹き出しも、同じ表で名前になる。自分の欄は名前を出さない", () => {
+    meetingScene(init(false),
+      frame(PEOPLE),
+      names(["相手 B", "田中"]),
+      heard(said("a", "相手 A", 1), mine),
+      tap((sim) => expect(captionNames(sim)).toEqual(["相手 A", ""])),
+      heard(said("a", "相手 A", 1), said("b", "相手 B", 2), mine),
+      tap((sim) => expect(captionNames(sim)).toEqual(["相手 A", "田中", ""])),
+    );
+  });
+
+  // 見せる吹き出しは末尾の 3 個。押せる欄の数は、見せている吹き出しの中で数える
+  it("確定した相手のラベルの欄だけが押せる要素。自分の欄・同じ人が続く欄は押せない", () => {
+    meetingScene(init(false),
+      frame(PEOPLE),
+      heard(said("a1", "相手 A", 1), said("a2", "相手 A", 2), mine),
+      tap((sim) => {
+        expect(captionNames(sim)).toEqual(["相手 A", "", ""]);
+        expect(findAll(sim.html, "button.captions__name")).toHaveLength(1); // 押せるのは先頭の 相手 A だけ
+        expect(findAll(sim.html, ".captions__name")).toHaveLength(3);
+      }),
+      heard(said("a2", "相手 A", 2), mine, said("b", "相手 B", 4)),
+      tap((sim) => {
+        expect(captionNames(sim)).toEqual(["相手 A", "", "相手 B"]);
+        expect(findAll(sim.html, "button.captions__name")).toHaveLength(2); // 押せるのは 相手 A と 相手 B の 2 つ
+        expect(findAll(sim.html, ".captions__name")).toHaveLength(3);
+      }),
+    );
+  });
+
+  it("欄を押す → 欄の中で入力 → 送信で POST の Command（label はサーバーに送るラベル、name は入力）。送った直後は名前を出さず（楽観的に出さない）、frame が届いてから名前になる", () => {
+    meetingScene(init(false),
+      frame(PEOPLE),
+      heard(said("a", "相手 A", 1), said("b", "相手 B", 2), mine),
+      click(selector("button.captions__name")), // 先頭の押せる欄 = 相手 A
+      settle, // 入力へのフォーカスの Command を解く
+      tap((sim) => {
+        expect(findAll(sim.html, ".captions__name input")).toHaveLength(1);
+        expect(speakerNameRequests(sim)).toEqual([]);
+      }),
+      typeInto(selector(".captions__name input"), "田中"),
+      submit(selector(".captions form")),
+      tap((sim) => {
+        expect(speakerNameRequests(sim)).toEqual([{ label: "相手 A", name: "田中" }]);
+        expect(findAll(sim.html, ".captions input")).toHaveLength(0); // 送った後は入力を閉じる
+        expect(captionNames(sim)).toEqual(["相手 A", "相手 B", ""]); // まだ名前は出ない
+      }),
+      settle,
+      names(["相手 A", "田中"]),
+      tap((sim) => expect(captionNames(sim)).toEqual(["田中", "相手 B", ""])),
+    );
   });
 });

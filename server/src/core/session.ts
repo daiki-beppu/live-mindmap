@@ -28,6 +28,7 @@ export type DiffInput = {
   screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
   previousScreens?: readonly ScreenChange[]; // この呼び出しより前に最後に添えた共有画面（古い順・最大 2 件）。query を開き直したときの最初のメッセージに送り直す。無ければキーごと付けない
   previousResponse?: PreviousResponse; // 直前に適用した応答の、仮 ID の対応と捨てた操作。直前の差分更新が失敗した回と、どちらも空の回にはキーごと付けない
+  speakerNames?: ReadonlyMap<string, string>; // 話者のラベル → 名前（Issue #1026）。サーバーが呼ぶたびにそのときの表を載せる。core は付けない。名前の無いときはキーごと付けない
 };
 // 直前に適用した応答。refs は適用できた add の仮 ID → n の ID、dropped はその応答で捨てた操作と理由
 export type PreviousResponse = {

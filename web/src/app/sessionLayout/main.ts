@@ -8,10 +8,15 @@ import { modifyFields } from "foldkit/struct";
 import { DiffUpdateState, SelfPaused } from "../../../../server/src/core/index.ts";
 import { CAPTION_BUBBLE_WIDTH, captionsOf, Captions, NO_CAPTIONS, type DisplayBubble } from "../../captions.ts";
 import { intakeNoticeText, RESUMED_NOTICE_MS } from "../../intake.ts";
+import { FocusSpeakerNameInput, RequestSpeakerName } from "./command.ts";
 import { IntakeStatus, Message } from "./message.ts";
 import { CAPTION_ID_KEY, SlideCaptions } from "./mount.ts";
-import { SPEAKER_NAME_COLORS, speakerNameCell } from "./speakerName.ts";
+import { NAME_INPUT_ID, SPEAKER_NAME_COLORS, speakerNameCell } from "./speakerName.ts";
 import { Notice, shownText, type NoticeModel } from "./toast.ts";
+
+// 開いている名前の入力（Issue #1026）。押した吹き出しの id・サーバーに送るラベル・入力中の文字
+const NameEdit = Schema.Struct({ bubbleId: Schema.String, label: Schema.String, draft: Schema.String });
+type NameEdit = typeof NameEdit.Type;
 
 export const Model = Schema.Struct({
   // 字幕。会議中は話者つきの吹き出し（Bubbles）、見返しはトラックごとの文（Lines）。どちらも外から導いた値を受ける
@@ -27,6 +32,8 @@ export const Model = Schema.Struct({
   // 自分を休止中か（Issue #1069）と、その理由（Issue #1071）。/ws の frame だけで変わる。M が送る値の基準にもなる（画面に見えている状態）
   selfPaused: SelfPaused,
   local: Schema.Boolean,
+  // 開いている名前の入力。無ければ閉じている
+  nameEdit: Schema.Option(NameEdit),
 });
 export type Model = typeof Model.Type;
 
@@ -41,6 +48,7 @@ export const init = (): Model => ({
   diffUpdate: Option.none(),
   selfPaused: false,
   local: false,
+  nameEdit: Option.none(),
 });
 
 type Return = Update.Return<Model, Message>;
@@ -118,6 +126,20 @@ export const update = (model: Model, message: Message): Return =>
     },
     ReceivedScreenNotice: ({ text }) => noticeOf(model, foldScreenToast, shownText(model.screenToast), text, { sticky: true }),
     ReceivedTapNotice: ({ text }) => noticeOf(model, foldTapToast, shownText(model.tapToast), text, { sticky: true }),
+    PressedSpeakerName: ({ bubbleId, label }) => ({ model: modifyFields(model, { nameEdit: () => Option.some({ bubbleId, label, draft: "" }) }), commands: [FocusSpeakerNameInput({ id: NAME_INPUT_ID })] }),
+    ChangedSpeakerNameDraft: ({ draft }) => ({ model: modifyFields(model, { nameEdit: Option.map((edit: NameEdit) => ({ ...edit, draft })) }) }),
+    // 確定: 空のままなら何も送らず閉じる（名前は外せない）。送った後は閉じ、名前は frame が届いてから出す（楽観的に出さない）
+    SubmittedSpeakerName: () =>
+      Option.match(model.nameEdit, {
+        onNone: () => ({ model }),
+        onSome: ({ label, draft }) => {
+          const closed = modifyFields(model, { nameEdit: () => Option.none() });
+          return draft.trim() === "" ? { model: closed } : { model: closed, commands: [RequestSpeakerName({ label, name: draft })] };
+        },
+      }),
+    CancelledSpeakerName: () => ({ model: modifyFields(model, { nameEdit: () => Option.none() }) }),
+    CompletedRequestSpeakerName: () => ({ model }),
+    CompletedFocusSpeakerNameInput: () => ({ model }),
     ChangedViewingMode: ({ mode }) =>
       noticeOf(model, foldViewingToast, shownText(model.viewingToast), viewingText(mode), { sticky: true }),
     GotIntakeToastMessage: ({ message }) => foldIntakeToast(model, (toast) => Notice.update(toast, message)),
@@ -191,7 +213,7 @@ const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | strin
 };
 
 // 会議中の字幕: 吹き出しの行。名前の欄（固定幅）+ 吹き出し（幅は固定）。相手は左、自分は右に寄せる。吹き出しの枠は styles.css の .captions__bubble。影・バッジは付けない
-const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
+const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"]): Html =>
   h.keyed("div")(
     bubble.id,
     [
@@ -199,7 +221,7 @@ const bubbleRowView = (h: H, bubble: DisplayBubble): Html =>
       h.DataAttribute(CAPTION_ID_KEY, bubble.id),
     ],
     [
-      speakerNameCell(h, bubble),
+      speakerNameCell(h, bubble, nameEdit),
       h.p(
         [h.Class(`captions__bubble ${bubble.side === "right" ? "captions__bubble--right " : ""}m-0 flex-none text-[16px] leading-[1.5] wrap-anywhere ${bubble.side === "right" ? "text-right" : "text-left"} ${SPEAKER_NAME_COLORS[bubble.colorIndex] ?? SPEAKER_NAME_COLORS[0]}`)],
         bubbleTextView(h, bubble),
@@ -228,7 +250,7 @@ function captionsView(h: H, model: Model): Html | null {
                 ...(bubbles.length === 0 ? [] : [h.Style({ "--caption-bubble-ratio": String(CAPTION_BUBBLE_WIDTH) }), h.OnMount(SlideCaptions())]),
                 ...panel,
               ],
-              bubbles.length === 0 ? lines : bubbles.map((bubble) => bubbleRowView(h, bubble)),
+              bubbles.length === 0 ? lines : bubbles.map((bubble) => bubbleRowView(h, bubble, model.nameEdit)),
             ),
     },
     h,

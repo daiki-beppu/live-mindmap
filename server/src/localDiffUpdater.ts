@@ -43,7 +43,7 @@ function toOps(raw: Classification, sentences: readonly Sentence[], nextRef: () 
 }
 
 export const localUpdaterLayer = ({ classify, katakana }: LocalModel) => Layer.succeed(DiffUpdater, DiffUpdater.of({
-  update: Effect.fnUntraced(function* ({ map, recent, fresh }: DiffInput): Effect.fn.Return<DiffOutput, DiffUpdateError> {
+  update: Effect.fnUntraced(function* ({ map, recent, fresh, speakerNames }: DiffInput): Effect.fn.Return<DiffOutput, DiffUpdateError> {
     let processedRemarks = 0;
     const selected: Sentence[] = [];
     for (const remark of fresh) {
@@ -57,7 +57,7 @@ export const localUpdaterLayer = ({ classify, katakana }: LocalModel) => Layer.s
     let sequence = 0;
     for (let offset = 0; offset < selected.length; offset += SENTENCE_LIMIT) {
       const sentences = selected.slice(offset, offset + SENTENCE_LIMIT);
-      const raw = yield* classify(classificationRequest(map, recent, sentences));
+      const raw = yield* classify(classificationRequest(map, recent, sentences, speakerNames));
       ops.push(...toOps(raw, sentences, () => `新${++sequence}`));
     }
     return { ops, processedRemarks };

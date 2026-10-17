@@ -87,7 +87,7 @@ const volumeSliderInit = (): Slider.Model => Slider.init({ id: VOLUME_SLIDER_ID,
 
 // 狭い幅で開いたら、右の列と字幕を隠して始める（startFlags.ts）
 export const init = (context: Context, flags: Flags = WIDE): Model => {
-  const { mode: _mode, snapshot: _snapshot, ...surface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac);
+  const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...surface } = MapSurface.init(snapshotAt(context.timeline, context.playback.duration), "review", context.isMac);
   const mapSurface = startingSurface(surface, flags);
   // ツールチップは、ポインタを乗せたらすぐ出す（今の CSS の :hover と同じ）。フォーカスでは Tooltip が遅れずに出す
   const tooltip = (key: keyof Model["tooltips"]) => Tooltip.init({ id: tooltipId(key), showDelay: 0 });
@@ -109,7 +109,7 @@ export const init = (context: Context, flags: Flags = WIDE): Model => {
 
 export const snapshotOf = (context: Context, model: Model): Snapshot => snapshotAt(context.timeline, model.playback.time);
 
-export const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(context, model), ...model.mapSurface });
+export const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(context, model), speakerNames: {}, ...model.mapSurface });
 
 // 字幕の部品の Model。字幕の文はその時刻の発言から毎回導き、字幕を隠しているかは見返しの Model の欄から渡す
 const layoutOf = (context: Context, model: Model): SessionLayout.Model => ({
@@ -117,6 +117,7 @@ const layoutOf = (context: Context, model: Model): SessionLayout.Model => ({
   captions: { _tag: "Lines", speaking: speakingAt(context.timeline, model.playback.time) },
   captionsHidden: model.captionsHidden,
   selfPaused: false, // 見返しに自分の休止の一言は出ない
+  nameEdit: Option.none(), // 見返しの字幕は Lines で、名前の欄が無い
 });
 
 type Return = Update.Return<Model, Message>;
@@ -124,7 +125,7 @@ type Return = Update.Return<Model, Message>;
 export const makeUpdate = (context: Context) => {
   // 表示面の状態のうち、見返しが導く mode・snapshot を除いて保存する（補間 motion も保存し、補間の Subscription が進める）
   const storeSurface = (model: Model, surface: MapSurface.Model): Model => {
-    const { mode: _mode, snapshot: _snapshot, ...next } = surface;
+    const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...next } = surface;
     return modifyFields(model, { mapSurface: () => next });
   };
   // 選択は表示面の viewing が持つので、ノードが選ばれたこと（SelectedNode）は見返しでは受け流す（配線は surfaceFolds）。キーの事実は、表示面の入口（pressViewKey など）で渡す

@@ -8,6 +8,7 @@
 //   GET  /session/status  取り込みの状態を返す
 //   POST /session/resume  止まった状態から起動し直す
 //   POST /session/self-pause  { paused: boolean } で自分の休止（true）・再開（false）を求める。成功は 204、本文が違えば 400、セッションが無ければ 409
+//   POST /session/speaker-name  { label: string, name: string } で、話者のラベル（相手 B）に名前を手で付ける（Issue #1026）。成功は 204、本文が違う・名前を付けられないラベル・空の名前は 400、セッションが無ければ 409
 //   POST /share/open      { anyone: true } か { mails: [メール・ドメイン...] } で閲覧の共有を開く（すでに開いていれば今の状態を返す）
 //                         ローカルモードのセッションは 409、cloudflared が無いときは 503（入れ方を示す）、範囲が空（{}）は 400 で、どれも開かない
 //   POST /share/close     閲覧の共有を閉じる（開いていなくても成功する）
@@ -25,7 +26,7 @@ import { Cause, Context, Effect, Layer, Option, Ref, Schema, Stream, type Scope 
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
 import { SHARE_OPEN_OUTCOME_HEADER, ShareMail, type RecordedEvent } from "./core/index.ts";
-import type { SessionFailure } from "./sessionFailure.ts";
+import type { SessionFailure, SpeakerNameRejected } from "./sessionFailure.ts";
 import { Sessions, type RecordedStart, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import type { CloudflaredMissing } from "./tunnel.ts";
@@ -105,10 +106,11 @@ class InvalidBody extends Schema.TaggedError<InvalidBody>()("InvalidBody", {
 
 // タグ付きの失敗からステータスへの対応。タグが増えたら、ここに足すまで型エラーになる。
 // HttpServerError は、上のルート・本文の変換で拾いきれなかったサーバー側の失敗（応答の書き出し等）
-type HandledFailure = SessionFailure | ShareOpenFailed | ShareRefusedLocalMode | ShareScopeEmpty | CloudflaredMissing | ForbiddenOrigin | ForbiddenModelTransfer | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
+type HandledFailure = SessionFailure | SpeakerNameRejected | ShareOpenFailed | ShareRefusedLocalMode | ShareScopeEmpty | CloudflaredMissing | ForbiddenOrigin | ForbiddenModelTransfer | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
 
 const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
   InvalidBody: 400,
+  SpeakerNameRejected: 400,
   ForbiddenOrigin: 403,
   ForbiddenModelTransfer: 403,
   UnsupportedRequest: 404,
@@ -213,6 +215,9 @@ const ShareOpenBody = Schema.Union([
 // /session/self-pause の本文。状態を指定する形（トグルではない）なので、同じ指示を重ねても結果が変わらない
 const SelfPauseBody = Schema.Struct({ paused: Schema.Boolean });
 
+// /session/speaker-name の本文。ラベルに付ける名前（付けられるラベルかどうか・名前が空かどうかはサーバーが決める）
+const SpeakerNameBody = Schema.Struct({ label: Schema.String, name: Schema.String });
+
 const SessionRoutes = HttpRouter.addAll([
   HttpRouter.route("GET", "/apps", Effect.gen(function* () {
     const sessions = yield* Sessions;
@@ -238,6 +243,14 @@ const SessionRoutes = HttpRouter.addAll([
     );
     const sessions = yield* Sessions;
     yield* sessions.setSelfPause(body.paused);
+    return HttpServerResponse.empty({ status: 204 });
+  })),
+  HttpRouter.route("POST", "/session/speaker-name", Effect.gen(function* () {
+    const body = yield* HttpServerRequest.schemaBodyJson(SpeakerNameBody, { onExcessProperty: "error" }).pipe(
+      Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
+    );
+    const sessions = yield* Sessions;
+    yield* sessions.setSpeakerName(body);
     return HttpServerResponse.empty({ status: 204 });
   })),
   HttpRouter.route("POST", "/share/open", Effect.gen(function* () {

@@ -1,5 +1,6 @@
 import { Option, Schema } from "effect";
 import { CaptionBubble, continuesAfter, type Track } from "../../server/src/core/index.ts";
+import { speakerName, type SpeakerNames } from "./people.ts";
 
 // 見返しの字幕に使う、トラックごとの文字
 export type Speaking = Record<Track, string>;
@@ -133,8 +134,11 @@ export function nextCaptionDeadline(state: CaptionState): number | undefined {
 export const DisplayBubble = Schema.Struct({
   id: Schema.String,
   side: Schema.Literals(["left", "right"]),
-  // 名前の欄の文字。自分と、同じ人が続くときの 2 つ目以降は無い
+  // 名前の欄の文字（名前が付いていれば名前）。自分と、同じ人が続くときの 2 つ目以降は無い
   name: Schema.Option(Schema.String),
+  // 名前を付けられる欄のとき、サーバーへ送る話者のラベル（Issue #1026）。値があるのは、確定した相手のラベルの欄だけ
+  // （自分・同じ人が続くときの 2 つ目以降・仮のラベル・「相手」だけの欄・話者なしは無い）。名前が付いていても、ここはラベルのまま
+  label: Schema.Option(Schema.String),
   nameState: Schema.Literals(["provisional", "settled"]),
   // 名前ごとの色の番号（0 〜 CAPTION_PALETTE_SIZE - 1）。同じ名前は同じ色
   colorIndex: Schema.Int,
@@ -160,8 +164,10 @@ const colorIndexOf = (name: string): number => {
 
 const joinText = (left: string, right: string) => (/[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right) ? `${left} ${right}` : left + right);
 
-// 表示する吹き出し。start の順に 1 列に並べ、末尾の CAPTION_VISIBLE_BUBBLES 個だけを出す。相手は左、自分は右
-export function displayBubbles(state: CaptionState, now: number): DisplayBubble[] {
+// 表示する吹き出し。start の順に 1 列に並べ、末尾の CAPTION_VISIBLE_BUBBLES 個だけを出す。相手は左、自分は右。
+// 名前の欄の文字は、状態に入れず、表示のたびに名前の表（names）から導く（名前が付いたら、それまでの吹き出しも名前になる）。
+// 色と、同じ人が続くときの省略は、名前ではなくラベルで決める（同じ名前が 2 つのラベルに付いても、まとめない）
+export function displayBubbles(state: CaptionState, now: number, names: SpeakerNames = {}): DisplayBubble[] {
   const ordered = [...state.entries].sort((a, b) => a.bubble.start - b.bubble.start);
   const ids = new Set(ordered.map((e) => e.bubble.id));
   const continuedInto = (e: Entry): string | undefined =>
@@ -189,10 +195,13 @@ export function displayBubbles(state: CaptionState, now: number): DisplayBubble[
     const name = track === "自分" ? undefined : ((label !== "なし" && !limited ? speaker : undefined) ?? UNKNOWN_SPEAKER);
     const shown = name !== previousName ? name : undefined;
     previousName = name;
+    // 名前を付けられるのは、確定した相手のラベルの欄（ラベルの無い「相手」には付けない）
+    const nameable = shown !== undefined && label === "確定" && name !== UNKNOWN_SPEAKER ? shown : undefined;
     return {
       id: head.bubble.id,
       side: track === "自分" ? "right" : "left",
-      name: Option.fromNullishOr(shown),
+      name: Option.fromNullishOr(shown === undefined ? undefined : (speakerName(shown, names) ?? shown)),
+      label: Option.fromNullishOr(nameable),
       nameState: label === "仮" && !limited ? "provisional" : "settled",
       colorIndex: name === undefined ? 0 : colorIndexOf(name),
       text,

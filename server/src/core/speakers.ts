@@ -373,6 +373,10 @@ export function createSpeakerAttribution() {
       return `相手 ${letters(labelCount + (rank < 0 ? unassigned.length : rank))}`;
     },
 
+    // 発言に振ったラベル（名前を付けられるのはこれだけ。Issue #1026）。振った順。混入で戻したラベルも、起動し直しの後も含む。
+    // previewLabel の予想や、区間が届いただけの枠は含めない
+    labels: (): string[] => Array.from({ length: labelCount }, (_, n) => `相手 ${letters(n)}`),
+
     // 停止時。保留を待たずにすべて出す。揃っていれば規則を当て、揃っていなければ話者なし。状態は捨てない
     drain: flush,
   };

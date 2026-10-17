@@ -1106,3 +1106,41 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     expect([0, 1, 2].map((slot) => attribution.previewLabel(slot))).toEqual(["相手 A", undefined, undefined]);
   });
 });
+
+// Issue #1026: 名前を付けられるのは、発言に振ったラベルだけ。サーバーが受け付ける範囲は labels() で読む
+describe("createSpeakerAttribution: 振ったラベルを読む（labels）", () => {
+  const speakInOrder = (attribution: ReturnType<typeof createSpeakerAttribution>, slot: number, at: number) => {
+    attribution.speaker(speakerEvent(slot, at, at + 1));
+    attribution.speaker(settledEvent(at + 1));
+    attribution.remarks([heard(`slot${slot}`, at, at + 1)], (at + 1) * 1000);
+  };
+
+  it("何も振っていなければ空。発言に振った順にラベルを返す", () => {
+    const attribution = createSpeakerAttribution();
+    expect(attribution.labels()).toEqual([]);
+
+    speakInOrder(attribution, 2, 0);
+    speakInOrder(attribution, 0, 10);
+
+    expect(attribution.labels()).toEqual(["相手 A", "相手 B"]);
+  });
+
+  it("字幕の予想のラベル（previewLabel）や、区間が届いただけの枠は含めない（まだ振っていないラベルに名前を付けさせない）", () => {
+    const attribution = createSpeakerAttribution();
+    speakInOrder(attribution, 0, 0);
+    attribution.speaker(speakerEvent(1, 10, 12, false));
+
+    expect(attribution.previewLabel(1)).toBe("相手 B");
+    expect(attribution.labels()).toEqual(["相手 A"]);
+  });
+
+  it("混入で戻したラベルも含む。起動し直しの後も残る", () => {
+    const attribution = createSpeakerAttribution();
+    speakInOrder(attribution, 0, 0);
+    speakInOrder(attribution, 1, 10);
+    attribution.speaker(mixedEvent(1));
+    attribution.restart();
+
+    expect(attribution.labels()).toEqual(["相手 A", "相手 B"]);
+  });
+});

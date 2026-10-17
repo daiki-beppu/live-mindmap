@@ -17,6 +17,8 @@ export const Model = Schema.Struct({
   diffUpdate: Schema.Option(DiffUpdateState),
   local: Schema.Boolean,
   selfPaused: SelfPaused,
+  // 話者の名前の表（ラベル → 名前。Issue #1026）
+  speakerNames: Schema.Record(Schema.String, Schema.String),
 });
 export type Model = typeof Model.Type;
 
@@ -29,6 +31,7 @@ const toModel = (feed: FeedState): Model => ({
   diffUpdate: Option.fromNullishOr(feed.diffUpdate),
   local: feed.local,
   selfPaused: feed.selfPaused,
+  speakerNames: feed.speakerNames,
 });
 
 const toFeed = (model: Model): FeedState => ({
@@ -40,6 +43,7 @@ const toFeed = (model: Model): FeedState => ({
   diffUpdate: Option.getOrNull(model.diffUpdate),
   local: model.local,
   selfPaused: model.selfPaused,
+  speakerNames: model.speakerNames,
 });
 
 export const init = (): Model => toModel(createFeedState());
@@ -58,6 +62,7 @@ const apply = (model: Model, step: (feed: FeedState) => FeedState): Return => {
       diffUpdate: () => next.diffUpdate,
       local: () => next.local,
       selfPaused: () => next.selfPaused,
+      speakerNames: () => next.speakerNames,
     }),
   };
 };

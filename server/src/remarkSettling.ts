@@ -35,6 +35,8 @@ export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: Remar
       segments: attribution.previewSegments,
       label: attribution.previewLabel,
     },
+    // 発言に振ったラベル。名前を付けられるのはこれだけ（Issue #1026）
+    labels: attribution.labels,
     // 以後の入力は無視する
     stop: gate.stop,
   };

@@ -6,7 +6,7 @@ import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { Snapshot, type SnapshotNode } from "../../../../server/src/core/index.ts";
-import { personLine } from "../../people.ts";
+import { personLine, type SpeakerNames } from "../../people.ts";
 import {
   anchoredViewport,
   cameraFocus,
@@ -75,6 +75,8 @@ export const Model = Schema.Struct({
   keepAnchor: Schema.Option(Schema.Struct({ id: Schema.String, point: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }) })),
   pendingShift: Schema.Boolean,
   idleStamp: Schema.Finite,
+  // 話者の名前の表（ラベル → 名前。Issue #1026）。案の出した人・TODO の担当者の表示名を導く。サーバーの表を毎回写して渡す（会議中は feed から、見返しは空）
+  speakerNames: Schema.Record(Schema.String, Schema.String),
 });
 export type Model = typeof Model.Type;
 
@@ -97,6 +99,7 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   keepAnchor: Option.none(),
   pendingShift: false,
   idleStamp: 0,
+  speakerNames: {},
 });
 
 // 補間の長さ（ms）。React 版（useAnimatedPositions、Issue #829 で削除）から引き継いだ値
@@ -503,10 +506,10 @@ const classes = (...names: ReadonlyArray<string | false>): string => names.filte
 type H = HtmlBuilder<Message>;
 
 // selected・toggle・opened は live のときだけ意味を持つ（still は選択も丸も描かない）。toggle は foldToggle の結果（null は開閉できない）
-function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, toggle: ReturnType<typeof foldToggle>, opened: boolean): Html {
+function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, toggle: ReturnType<typeof foldToggle>, opened: boolean, speakerNames: SpeakerNames): Html {
   const fold = view?.folds[node.id] ?? null;
   const mark = markOf(node);
-  const person = personLine(node);
+  const person = personLine(node, speakerNames);
   return h.div(
     [
       h.Class(
@@ -556,7 +559,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
         h.DataAttribute("node-id", node.id),
         h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
       ],
-      [nodeBody(h, node, view_, node.id === selectedId, tree === null ? null : foldToggle(tree, node.id), view_ !== null && opened.has(node.id))],
+      [nodeBody(h, node, view_, node.id === selectedId, tree === null ? null : foldToggle(tree, node.id), view_ !== null && opened.has(node.id), model.speakerNames)],
     ),
   );
 

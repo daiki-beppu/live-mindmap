@@ -2,12 +2,13 @@ import { Duration, Option } from "effect";
 import * as Animation from "@foldkit/ui/animation";
 import * as Toast from "@foldkit/ui/toast";
 import type { HtmlBuilder } from "foldkit/html";
-import { attr, Command, expect as expectScene, find, findAll, given, Mount, scene, selector, Subscription, tap, textContent, type SceneSimulation } from "foldkit/scene";
-import { describe, expect, it } from "vitest";
+import { attr, blur, click, Command, expect as expectScene, find, findAll, given, keydown, Mount, scene, selector, submit, Subscription, tap, textContent, type as typeInto, type SceneSimulation } from "foldkit/scene";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CAPTION_BUBBLE_WIDTH, CAPTION_PALETTE_SIZE, type DisplayBubble } from "../src/captions.ts";
 import { RESUMED_NOTICE_MS } from "../src/intake.ts";
 import { init, update, view } from "../src/app/sessionLayout/main.ts";
 import { Message } from "../src/app/sessionLayout/message.ts";
+import { FocusSpeakerNameInput, RequestSpeakerName } from "../src/app/sessionLayout/command.ts";
 import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { SPEAKER_NAME_COLORS } from "../src/app/sessionLayout/speakerName.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
@@ -198,7 +199,7 @@ describe("sessionLayout の Scene: 字幕", () => {
 
 // Issue #1022: 会議中の字幕（話者つきの吹き出し）。名前の欄は 1 つの部品（speakerName.ts）から作る
 describe("sessionLayout の Scene: 字幕の吹き出し", () => {
-  const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), nameState: "settled", colorIndex: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
+  const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
   const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
   const rows = (html: VNode) => findAll(".captions__row")(html);
@@ -1141,6 +1142,128 @@ describe("sessionLayout の Scene: キーの一覧の差し込み口（#826）",
       app,
       given(init()),
       tap((s) => expect(mapOutline(s.html)).toEqual(["div.map-surface"])),
+    );
+  });
+});
+
+// Issue #1026: 名前の欄を押して、その欄の中で名前を入れる。確定したラベルの相手の欄（label が Some）だけが押せる。
+// 入力は同じ欄の中に出て、吹き出しの本文は変わらない（寸法は meeting.mount.heavy.test.ts が測る）
+describe("sessionLayout の Scene: 名前の欄の入力", () => {
+  // blur の step は relatedTarget の型を調べるのに Element を参照する（node の unit 環境には無い。review.controls.scene.test.ts と同じ）
+  beforeEach(() => vi.stubGlobal("Element", class {}));
+  afterEach(() => vi.unstubAllGlobals());
+  const cell = (id: string, label: string | undefined, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({
+    id, side: "left", name: Option.some(label ?? "相手"), label: Option.fromNullishOr(label), nameState: "settled", colorIndex: 1, text: id, settledLength: id.length, ...extra,
+  });
+  const mineCell = (id: string): DisplayBubble => ({ id, side: "right", name: Option.none(), label: Option.none(), nameState: "settled", colorIndex: 0, text: id, settledLength: id.length });
+  const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
+  const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
+  // 欄を押すと出るフォーカスの Command（入力へフォーカスを移す。Model は変えない）
+  const focused = Command.resolveAll([FocusSpeakerNameInput, Message.CompletedFocusSpeakerNameInput()]);
+  const nameCells = (html: VNode) => findAll(".captions__name")(html);
+  const requests = (s: Sim) => s.commands.filter((c) => c.name === "RequestSpeakerName").map((c) => c.args);
+
+  it("押せる欄は button、押せない欄（自分・同じ人が続く・仮・「相手」だけ）は button ではない", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 A"), cell("a2", undefined, { name: Option.none() }), mineCell("m"), cell("p", undefined, { nameState: "provisional" }), cell("n", undefined))),
+      settled,
+      tap((s) => {
+        const cells = nameCells(s.html);
+        expect(cells.map((c) => c.sel?.split(/[.#]/)[0])).toEqual(["button", "div", "div", "div", "div"]);
+      }),
+    );
+  });
+
+  it("自分の欄を押しても入力は出ない（押せる要素ではなく、クリックの受け口を持たない）", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 A"), mineCell("m"))),
+      settled,
+      tap((s) => {
+        const mineName = nameCells(s.html)[1]!;
+        expect(Object.keys(mineName.data?.on ?? {})).toEqual([]);
+        expect(findAll(".captions input")(s.html)).toHaveLength(0);
+      }),
+    );
+  });
+
+  it("押すと、同じ欄の中に入力が出る。吹き出しの本文は押す前と同じ", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B", { text: "こんにちは" }), mineCell("m"))),
+      settled,
+      click(selector("button.captions__name")),
+      focused,
+      tap((s) => {
+        const [first] = nameCells(s.html);
+        expect(findAll("input")(first!)).toHaveLength(1);
+        expect(findAll(".captions__bubble")(s.html).map(textContent)).toEqual(["こんにちは", "m"]);
+        expect(requests(s)).toEqual([]);
+      }),
+    );
+  });
+
+  it("入力して送ると、押した欄のラベルと入力した名前で RequestSpeakerName が出て、入力は閉じる（表示は変えない）", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      click(selector("button.captions__name")),
+      focused,
+      typeInto(selector(".captions__name input"), "田中"),
+      submit(selector(".captions form")),
+      tap((s) => {
+        expect(requests(s)).toEqual([{ label: "相手 B", name: "田中" }]);
+        expect(findAll(".captions input")(s.html)).toHaveLength(0);
+        expect(nameCells(s.html).map(textContent)).toEqual(["相手 B"]); // 名前が付いた表示は、サーバーから表が届いてから
+      }),
+      Command.resolveAll([RequestSpeakerName, Message.CompletedRequestSpeakerName()]),
+    );
+  });
+
+  it("Esc で取り消すと、何も送らずに閉じる", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      click(selector("button.captions__name")),
+      focused,
+      typeInto(selector(".captions__name input"), "田中"),
+      keydown(selector(".captions__name input"), "Escape"),
+      tap((s) => {
+        expect(requests(s)).toEqual([]);
+        expect(findAll(".captions input")(s.html)).toHaveLength(0);
+      }),
+    );
+  });
+
+  it("フォーカスを外すと、何も送らずに閉じる", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      click(selector("button.captions__name")),
+      focused,
+      typeInto(selector(".captions__name input"), "田中"),
+      blur(selector(".captions__name input")),
+      tap((s) => {
+        expect(requests(s)).toEqual([]);
+        expect(findAll(".captions input")(s.html)).toHaveLength(0);
+      }),
+    );
+  });
+
+  it("入力中に吹き出しの並びが更新されても（同じ id が残る間は）入力は残る", () => {
+    scene(
+      app,
+      given(withBubbles(cell("a", "相手 B"))),
+      settled,
+      click(selector("button.captions__name")),
+      focused,
+      typeInto(selector(".captions__name input"), "田"),
+      Subscription.emit(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [cell("a", "相手 B", { text: "続きの文字" })] } })),
+      tap((s) => expect(findAll(".captions__name input")(s.html)).toHaveLength(1)),
     );
   });
 });
