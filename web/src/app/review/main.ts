@@ -9,7 +9,8 @@ import { modifyFields } from "foldkit/struct";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
 import { AUDIO_RATE, initialPlayback, PlaybackState, playbackReducer, type PlaybackEvent } from "../../reviewPlayback.ts";
 import { reviewKeyEvent, type ReviewKeyAction } from "../../reviewKeys.ts";
-import { snapshotAt, speakingAt, topicNameOf } from "../../reviewTimeline.ts";
+import { displayBubbles, settledCaptions } from "../../captions.ts";
+import { captionBubblesAt, snapshotAt, topicNameOf } from "../../reviewTimeline.ts";
 import { initKeyList, keyListFolds, keyListView } from "../keys/keyList.ts";
 import type { KeyId } from "../keys/table.ts";
 import * as MapSurface from "../mapSurface/main.ts";
@@ -111,13 +112,13 @@ export const snapshotOf = (context: Context, model: Model): Snapshot => snapshot
 
 export const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(context, model), speakerNames: {}, ...model.mapSurface });
 
-// 字幕の部品の Model。字幕の文はその時刻の発言から毎回導き、字幕を隠しているかは見返しの Model の欄から渡す
+// 字幕の部品の Model。字幕の吹き出しはその時刻の発言から毎回導く（ライブと同じ displayBubbles。名前はログで最後に付いたもの）。見返しは名前を変えないので、押せる欄にしない（label を空にする）。字幕を隠しているかは見返しの Model の欄から渡す
 const layoutOf = (context: Context, model: Model): SessionLayout.Model => ({
   ...model.sessionLayout,
-  captions: { _tag: "Lines", speaking: speakingAt(context.timeline, model.playback.time) },
+  captions: { _tag: "Bubbles", bubbles: displayBubbles(settledCaptions(captionBubblesAt(context.timeline, model.playback.time)), model.playback.time, context.timeline.speakerNames).map((b) => ({ ...b, label: Option.none() })) },
   captionsHidden: model.captionsHidden,
   selfPaused: false, // 見返しに自分の休止の一言は出ない
-  nameEdit: Option.none(), // 見返しの字幕は Lines で、名前の欄が無い
+  nameEdit: Option.none(), // 見返しは名前を入力しない
 });
 
 type Return = Update.Return<Model, Message>;

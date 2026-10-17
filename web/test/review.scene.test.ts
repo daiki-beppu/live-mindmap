@@ -2,6 +2,7 @@ import { HashMap, Option } from "effect";
 import { expect as expectScene, given, Mount, scene, selector, tap } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
+import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { makeContext } from "../src/app/review/context.ts";
 import { init, type Model, makeUpdate, makeView, snapshotOf } from "../src/app/review/main.ts";
@@ -46,7 +47,7 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
       app,
       given(at(10)),
       // 操作の行（#825）の Mount: シークバーのポインタと、ボタンごとのツールチップ
-      Mount.expectExact(ObserveMapSurface, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)),
+      Mount.expectExact(ObserveMapSurface, SlideCaptions, ObserveSeekPointer, ...tooltipMounts(TOOLTIPS_PLAIN)),
       tap((simulation) => expect(renderedIds(simulation.html).sort()).toEqual(expectedIds(10).sort())),
       measuredAll(10),
       expectScene(selector(`[data-node-id="${expectedIds(10)[0]}"]`)).not.toHaveStyle("visibility", "hidden"),

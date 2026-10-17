@@ -554,10 +554,10 @@ describe("sessionLayout の update: 字幕・Toast に載せない知らせ", ()
     story(
       update,
       given(init()),
-      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。", 自分: "はい" } } })),
-      model((m) => expect(m.captions).toEqual({ _tag: "Lines", speaking: { 相手: "議題は採用です。", 自分: "はい" } })),
-      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "", 自分: "" } } })),
-      model((m) => expect(m.captions).toEqual({ _tag: "Lines", speaking: { 相手: "", 自分: "" } })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [{ id: "a", side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: "議題は採用です。", settledLength: 8 }] } })),
+      model((m) => expect(m.captions).toEqual({ _tag: "Bubbles", bubbles: [{ id: "a", side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: "議題は採用です。", settledLength: 8 }] })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [] } })),
+      model((m) => expect(m.captions).toEqual({ _tag: "Bubbles", bubbles: [] })),
       Command.expectNone(),
     );
   });
@@ -578,10 +578,10 @@ describe("sessionLayout の update: 字幕・Toast に載せない知らせ", ()
     story(
       update,
       given(init()),
-      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。", 自分: "" } } })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [{ id: "a", side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: "議題は採用です。", settledLength: 8 }] } })),
       message(Message.ToggledCaptions({ isOpen: false })),
-      message(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。次へ。", 自分: "" } } })),
-      model((m) => expect(m.captions).toEqual({ _tag: "Lines", speaking: { 相手: "議題は採用です。次へ。", 自分: "" } })),
+      message(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: [{ id: "a", side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: "議題は採用です。次へ。", settledLength: 11 }] } })),
+      model((m) => expect(m.captions).toEqual({ _tag: "Bubbles", bubbles: [{ id: "a", side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: "議題は採用です。次へ。", settledLength: 11 }] })),
     );
   });
 

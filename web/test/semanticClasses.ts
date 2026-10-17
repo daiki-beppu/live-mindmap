@@ -4,14 +4,10 @@
 // 一覧は、替える前の web/src の h.Class と CSS のクラス名から作った（unit はファイルを読まない）。
 export const SEMANTIC_CLASSES: ReadonlySet<string> = new Set([
   "captions",
-  "captions__block",
   "captions__bubble",
   "captions__bubble--right",
-  "captions__line",
   "captions__name",
   "captions__row",
-  "captions__lines",
-  "captions__track",
   "capture",
   "changes",
   "changes__button",

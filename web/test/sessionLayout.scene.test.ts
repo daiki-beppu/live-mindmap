@@ -101,52 +101,30 @@ const screen = (text: string | null) => emit(Message.ReceivedScreenNotice({ text
 const tapNotice = (text: string | null) => emit(Message.ReceivedTapNotice({ text: Option.fromNullishOr(text) }));
 const selfPause = (paused: boolean, reason: "手動" | "自動" = "手動") => emit(Message.ReceivedSelfPause({ selfPaused: paused ? reason : false }));
 const viewing = (mode: "auto" | "manual" | "overview" | "diff") => emit(Message.ChangedViewingMode({ mode }));
-const speak = (相手: string, 自分 = "") => emit(Message.ChangedCaptions({ captions: { _tag: "Lines", speaking: { 相手, 自分 } } }));
+const displayBubble = (id: string, text: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text, settledLength: text.length, ...extra });
+const speak = (text: string) => emit(Message.ChangedCaptions({ captions: { _tag: "Bubbles", bubbles: text === "" ? [] : [displayBubble("a", text)] } }));
 
 let stableBefore: ReturnType<typeof stableParts>;
-const withSpeaking = { ...init(), captions: { _tag: "Lines" as const, speaking: { 相手: "議題は採用です。", 自分: "はい" } } };
+const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
+const withSpeaking = { ...init(), captions: { _tag: "Bubbles" as const, bubbles: [displayBubble("a", "議題は採用です。"), displayBubble("m", "はい", { side: "right", name: Option.none(), colorIndex: 0 })] } };
 
 describe("sessionLayout の Scene: 字幕", () => {
   it("話している文字がなければ .captions を描かない", () => {
     scene(app, given(init()), expectScene(selector(".captions")).toBeAbsent());
   });
 
-  it("文ごとに 1 行（p.captions__line）、トラックごとに 1 ブロック（相手 → 自分）で、aria-live=polite の .captions に描く", () => {
-    scene(
-      app,
-      given({ ...init(), captions: { _tag: "Lines", speaking: { 相手: "議題は採用です。まず面接の", 自分: "はい" } } }),
-      expectScene(selector(".captions")).toExist(),
-      expectScene(selector(".captions")).toHaveAttr("aria-live", "polite"),
-      tap((s) => {
-        expect(findAll(".captions__block")(s.html)).toHaveLength(2);
-        expect(findAll(".captions__track")(s.html).map(textContent)).toEqual(["相手", "自分"]);
-        expect(findAll(".captions__lines")(s.html)).toHaveLength(2);
-        expect(findAll("p.captions__line")(s.html).map(textContent)).toEqual(["議題は採用です。", "まず面接の", "はい"]);
-      }),
-    );
-  });
-
-  it("末尾の 2 文だけを出す。古い文は行ごと消える（captionsOf と同じ）", () => {
-    scene(
-      app,
-      given({ ...init(), captions: { _tag: "Lines", speaking: { 相手: "一つ目です。二つ目です。三つ目です。", 自分: "" } } }),
-      tap((s) => {
-        expect(findAll(".captions__track")(s.html).map(textContent)).toEqual(["相手"]);
-        expect(findAll("p.captions__line")(s.html).map(textContent)).toEqual(["二つ目です。", "三つ目です。"]);
-      }),
-    );
-  });
-
-  it("話す文字が変わると、同じ部品の上で行が増え、古い文は消える。空に戻ると .captions ごと消える", () => {
+  it("話す文字が変わると、同じ部品の上で吹き出しの文が替わる。空に戻ると .captions ごと消える", () => {
     scene(
       app,
       given(init()),
       expectScene(selector(".captions")).toBeAbsent(),
       speak("一つ目です。"),
-      tap((s) => expect(findAll("p.captions__line")(s.html).map(textContent)).toEqual(["一つ目です。"])),
-      speak("一つ目です。二つ目です。三つ目です。"),
-      tap((s) => expect(findAll("p.captions__line")(s.html).map(textContent)).toEqual(["二つ目です。", "三つ目です。"])),
+      settled,
+      tap((s) => expect(findAll(".captions__bubble")(s.html).map(textContent)).toEqual(["一つ目です。"])),
+      speak("一つ目です。二つ目です。"),
+      tap((s) => expect(findAll(".captions__bubble")(s.html).map(textContent)).toEqual(["一つ目です。二つ目です。"])),
       speak(""),
+      Mount.expectEnded(SlideCaptions),
       expectScene(selector(".captions")).toBeAbsent(),
     );
   });
@@ -155,6 +133,7 @@ describe("sessionLayout の Scene: 字幕", () => {
     scene(
       app,
       given(withSpeaking),
+      settled,
       tap((s) => {
         expect(directChild(s.html, "captions")).toBeDefined();
         expect(findAll(".captions")(mapOf(s.html))).toHaveLength(0);
@@ -166,17 +145,20 @@ describe("sessionLayout の Scene: 字幕", () => {
     scene(
       app,
       given(withSpeaking),
+      settled,
       tap((s) => {
         const captions = directChild(s.html, "captions")!;
         expect(Option.isSome(attr(captions, "id"))).toBe(true);
         expect(Option.isSome(attr(captions, "data-open"))).toBe(true);
       }),
       emit(Message.ToggledCaptions({ isOpen: false })),
+      Mount.expectEnded(SlideCaptions),
       expectScene(selector(".captions")).toBeAbsent(),
-      tap((s) => expect(findAll("p.captions__line")(s.html)).toHaveLength(0)),
+      tap((s) => expect(findAll(".captions__bubble")(s.html)).toHaveLength(0)),
       emit(Message.ToggledCaptions({ isOpen: true })),
+      settled,
       expectScene(selector(".captions")).toExist(),
-      expectScene(selector("p.captions__line")).toExist(),
+      expectScene(selector(".captions__bubble")).toExist(),
     );
   });
 
@@ -184,11 +166,14 @@ describe("sessionLayout の Scene: 字幕", () => {
     scene(
       app,
       given(withSpeaking),
+      settled,
       emit(Message.ToggledCaptions({ isOpen: false })),
+      Mount.expectEnded(SlideCaptions),
       speak("議題は採用です。次へ進みます。"),
       expectScene(selector(".captions")).toBeAbsent(),
       emit(Message.ToggledCaptions({ isOpen: true })),
-      tap((s) => expect(findAll("p.captions__line")(s.html).map(textContent)).toEqual(["議題は採用です。", "次へ進みます。"])),
+      settled,
+      tap((s) => expect(findAll(".captions__bubble")(s.html).map(textContent)).toEqual(["議題は採用です。次へ進みます。"])),
     );
   });
 
@@ -201,7 +186,6 @@ describe("sessionLayout の Scene: 字幕", () => {
 describe("sessionLayout の Scene: 字幕の吹き出し", () => {
   const bubble = (id: string, extra: Partial<DisplayBubble> = {}): DisplayBubble => ({ id, side: "left", name: Option.some("相手 A"), label: Option.none(), nameState: "settled", colorIndex: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
   const withBubbles = (...bubbles: DisplayBubble[]) => ({ ...init(), captions: { _tag: "Bubbles" as const, bubbles } });
-  const settled = Mount.resolve(SlideCaptions, Message.CompletedSlideCaptions());
   const rows = (html: VNode) => findAll(".captions__row")(html);
 
   it("吹き出しが無ければ .captions を描かない", () => {
@@ -590,6 +574,7 @@ describe("sessionLayout の Scene: 相手の音声が届いていない知らせ
     scene(
       app,
       given({ ...withSpeaking }),
+      settled,
       tap((s) => {
         stableBefore = stableParts(s.html);
       }),
@@ -792,6 +777,7 @@ describe("sessionLayout の Scene: 並び順（今の SessionView の .layout �
     scene(
       app,
       given({ ...withSpeaking, local: true, diffUpdate: Option.some(PAUSED) }),
+      settled,
       intake("interrupted"),
       settle,
       screen(SCREEN),
@@ -861,6 +847,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       expectNoWrapper,
       tap((s) => expect(outline(s.html)).toEqual(["div.map", "div.captions", "div.side"])),
     );
@@ -870,6 +857,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       intake("interrupted"),
       settle,
@@ -891,6 +879,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       selfPause(true),
       settle,
@@ -919,6 +908,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       intake("interrupted"),
       settle,
@@ -944,6 +934,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       selfPause(true, "手動"),
       settle,
@@ -972,6 +963,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       screen(SCREEN),
       settle,
@@ -988,6 +980,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       viewing("manual"),
       settle,
@@ -1006,6 +999,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       intake("stopped"),
       settle,
@@ -1029,6 +1023,7 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       emit(Message.ReceivedDiffUpdate({ state: Option.some(PAUSED) })),
       emit(Message.ReceivedSessionMode({ local: true })),
@@ -1046,14 +1041,17 @@ describe("sessionLayout の Scene: 知らせが出る・消えるとき、マッ
     scene(
       app,
       given(base),
+      settled,
       remember,
       emit(Message.ToggledCaptions({ isOpen: false })),
+      Mount.expectEnded(SlideCaptions),
       tap((s) => {
         const now = stableParts(s.html);
         expect({ ...now, parts: [] }).toEqual({ ...before, parts: [] });
         expect(now.parts).toEqual(before.parts.filter((p) => p !== "div.captions"));
       }),
       emit(Message.ToggledCaptions({ isOpen: true })),
+      settled,
       expectUnchanged,
     );
   });
@@ -1096,6 +1094,7 @@ describe("sessionLayout の Scene: 出入りの動き・スワイプ・ホバー
     scene(
       app,
       given(withSpeaking),
+      settled,
       intake("interrupted"),
       settle,
       screen(SCREEN),

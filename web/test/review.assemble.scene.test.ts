@@ -1,12 +1,13 @@
 import { click, expect as expectScene, findAll, given, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
-import { captionsOf } from "../src/captions.ts";
+import { mapOnlyReviewEvents } from "../../server/src/core/index.ts";
+import { makeContext } from "../src/app/review/context.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { Message } from "../src/app/review/message.ts";
 
-import { speakingAt } from "../src/reviewTimeline.ts";
+import { captionBubblesAt } from "../src/reviewTimeline.ts";
 import { snapshotOf } from "../src/app/review/main.ts";
-import { audioApp, audioContext, hasClass, plainApp, plainContext, settle, stateAt, type Sim } from "./reviewHarness.ts";
+import { appOf, audioApp, audioContext, hasClass, plainApp, plainContext, settle, stateAt, tagOf, type Sim } from "./reviewHarness.ts";
 import { attrOf, elementsOf, one, type VNode } from "./sceneTree.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
 
@@ -26,10 +27,10 @@ const OVERVIEW = "全体を見ています・F で変わったところへ・Esc
 const classesOf = (vnode: VNode): string[] => elementsOf(vnode).map((v) => attrOf(v, "class") ?? "");
 const orderOf = (vnode: VNode, names: readonly string[]): string[] =>
   elementsOf(vnode).flatMap((child) => names.filter((name) => hasClass(child, name)));
-const texts = (sim: Sim, css: string): string[] => findAll(sim.html, css).map(textContent);
+const textsIn = (vnode: VNode, css: string): string[] => findAll(vnode, css).map(textContent);
+const texts = (sim: Sim, css: string): string[] => textsIn(sim.html, css);
 
-const captionLines = (context: typeof plainContext, time: number): string[] =>
-  captionsOf(speakingAt(context.timeline, time)).flatMap((caption) => caption.lines);
+const captionLines = (context: typeof plainContext, time: number): string[] => captionBubblesAt(context.timeline, time).map((bubble) => bubble.text);
 
 describe("見返しの Scene: 画面の並び", () => {
   it.each([
@@ -79,7 +80,7 @@ describe("見返しの Scene: 画面の並び", () => {
 });
 
 describe("見返しの Scene: 字幕は時刻の発言に追従し、C と字幕のボタンで出し入れできる", () => {
-  it("その時刻の発言（speakingAt）の文を描く。時刻が動くと文が替わり、発言が無い時刻では .captions ごと描かない", () => {
+  it("その時刻の発言（captionBubblesAt）の文を描く。時刻が動くと文が替わり、発言が無い時刻では .captions ごと描かない", () => {
     expect(captionLines(plainContext, 105)).not.toEqual([]);
     expect(captionLines(plainContext, 200)).not.toEqual(captionLines(plainContext, 105));
     expect(captionLines(plainContext, 0)).toEqual([]);
@@ -87,10 +88,10 @@ describe("見返しの Scene: 字幕は時刻の発言に追従し、C と字幕
       plainApp,
       given(stateAt(plainContext, 105)),
       settle,
-      tap((sim) => expect(texts(sim, ".captions__line")).toEqual(captionLines(plainContext, 105))),
+      tap((sim) => expect(texts(sim, ".captions__bubble")).toEqual(captionLines(plainContext, 105))),
       press("End"),
       settle,
-      tap((sim) => expect(texts(sim, ".captions__line")).toEqual(captionLines(plainContext, 200))),
+      tap((sim) => expect(texts(sim, ".captions__bubble")).toEqual(captionLines(plainContext, 200))),
       press("Home"),
       settle,
       expectScene(selector(".captions")).toBeAbsent(),
@@ -118,6 +119,95 @@ describe("見返しの Scene: 字幕は時刻の発言に追従し、C と字幕
       expectScene(selector(".captions")).toExist(),
       expectScene(labelSel("字幕")).toHaveAttr("aria-pressed", "true"),
     );
+  });
+});
+
+// 話者と名前の入ったログ。名前の行は、字幕に出る発言よりログの後ろにある（最後に付いた名前は、名前が付く前の時刻にも出る）
+const spoken = (id: string, track: "相手" | "自分", start: number, end: number, text: string, speaker?: string) => ({ at: "x", type: "remark", remark: { id, track, start, end, text, ...(speaker !== undefined ? { speaker } : {}) } });
+const nameRow = (label: string, name: string, source: string) => ({ at: "x", type: "speaker-name", label, name, source });
+const speakerEvents: unknown[] = [
+  { at: "a", type: "start", title: "定例" },
+  spoken("r1", "相手", 1, 3, "最初の話です。", "相手 B"),
+  nameRow("相手 B", "鈴木", "推定"),
+  spoken("r2", "自分", 2, 4, "はい。", "自分"),
+  spoken("r3", "相手", 5, 6, "続きです。", "相手 A"),
+  nameRow("相手 B", "田中", "手入力"),
+];
+const speakerContext = makeContext(speakerEvents);
+const speakerApp = appOf(speakerContext);
+
+const rowsOf = (sim: Sim): readonly VNode[] => findAll(sim.html, ".captions__row");
+const nameOf = (row: VNode): string => textsIn(row, ".captions__name").join("");
+
+describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最後に付いた名前で出る", () => {
+  it("話し始めの順に、相手は左（justify-start）・自分は右（justify-end）の行が並び、名前の欄は名前（最後に付いた名前）・空・ラベルのまま", () => {
+    scene(
+      speakerApp,
+      given(stateAt(speakerContext, 6)),
+      settle,
+      tap((sim) => {
+        const rows = rowsOf(sim);
+        expect(rows.map((row) => textsIn(row, ".captions__bubble").join(""))).toEqual(["最初の話です。", "はい。", "続きです。"]);
+        expect(rows.map((row) => hasClass(row, "justify-start") ? "left" : hasClass(row, "justify-end") ? "right" : "?")).toEqual(["left", "right", "left"]);
+        expect(rows.map(nameOf)).toEqual(["田中", "", "相手 A"]);
+      }),
+    );
+  });
+
+  it("名前の行がどの発言より後ろにあっても、名前が付く前の時刻（r1 だけが出ている t=3）から、最後の名前（田中）で出る", () => {
+    scene(
+      speakerApp,
+      given(stateAt(speakerContext, 3)),
+      settle,
+      tap((sim) => {
+        expect(rowsOf(sim).map(nameOf)).toEqual(["田中"]);
+        expect(rowsOf(sim)).toHaveLength(1);
+      }),
+    );
+  });
+
+  it("名前の欄は押せる欄（button）ではなく、名前を付ける入力も開かない。どの欄にも薄い表示（opacity-50）は付かない", () => {
+    scene(
+      speakerApp,
+      given(stateAt(speakerContext, 6)),
+      settle,
+      tap((sim) => {
+        expect(findAll(sim.html, "button.captions__name")).toHaveLength(0);
+        expect(findAll(sim.html, ".captions button")).toHaveLength(0);
+        expect(findAll(sim.html, 'input[aria-label="話者の名前"]')).toHaveLength(0);
+        const cells = findAll(sim.html, ".captions__name");
+        expect(cells).toHaveLength(3);
+        for (const cell of cells) {
+          expect(tagOf(cell)).toBe("div");
+          expect(hasClass(cell, "opacity-50")).toBe(false);
+        }
+      }),
+    );
+  });
+
+  it("話者を持たない古いログでも見返せる。相手は左で名前の欄は「相手」、自分は右。ラベルの待ちなしに、その時刻で出る", () => {
+    const legacyEvents = [{ at: "a", type: "start", title: "古い会議" }, spoken("o1", "相手", 1, 3, "古い発言です。"), spoken("o2", "自分", 2, 4, "了解です。")];
+    const legacyContext = makeContext(legacyEvents);
+    scene(
+      appOf(legacyContext),
+      given(stateAt(legacyContext, 4)),
+      settle,
+      tap((sim) => {
+        const rows = rowsOf(sim);
+        expect(rows.map((row) => textsIn(row, ".captions__bubble").join(""))).toEqual(["古い発言です。", "了解です。"]);
+        expect(rows.map((row) => hasClass(row, "justify-end"))).toEqual([false, true]);
+        expect(rows.map(nameOf)).toEqual(["相手", ""]);
+        expect(findAll(sim.html, "button.captions__name")).toHaveLength(0);
+        expect(findAll(sim.html, ".captions__name").some((cell) => hasClass(cell, "opacity-50"))).toBe(false);
+      }),
+    );
+  });
+
+  it("マップだけの版（本文が空）では、どの時刻でも字幕を描かない", () => {
+    const mapOnlyContext = makeContext(mapOnlyReviewEvents(speakerEvents));
+    for (const t of [3, 4, 6]) {
+      scene(appOf(mapOnlyContext), given(stateAt(mapOnlyContext, t)), settle, expectScene(selector(".captions")).toBeAbsent());
+    }
   });
 });
 
@@ -256,7 +346,7 @@ describe("見返しの Scene: 見る状態を動かす操作で、同じ画面�
       press("End"),
       settle,
       expectScene(selector(".viewing-notice")).toBeAbsent(),
-      tap((sim) => expect(texts(sim, ".captions__line")).toEqual(captionLines(plainContext, 200))),
+      tap((sim) => expect(texts(sim, ".captions__bubble")).toEqual(captionLines(plainContext, 200))),
     );
   });
 });

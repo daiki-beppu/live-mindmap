@@ -15,6 +15,8 @@ import { makeContext, type Context } from "../src/app/review/context.ts";
 import { init, makeUpdate, makeView, snapshotOf, type Model } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
 import { ObserveAudio, ObserveSeekPointer } from "../src/app/review/mount.ts";
+import { Message as SessionLayoutMessage } from "../src/app/sessionLayout/message.ts";
+import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import { foldView } from "../src/folding.ts";
 import { resolveNoticeMotion } from "./noticeMotion.ts";
 import { attrOf, elementsOf, one, type VNode } from "./sceneTree.ts";
@@ -112,6 +114,17 @@ const mountSteps: Record<string, Step> = {
   PortalMenuBackdrop: resolveMount(Menu.PortalMenuBackdrop, Menu.Message.CompletedPortalMenuBackdrop()),
   // キーの一覧（#822）の Popover のパネル。開いている間だけ描かれる
   AnchorPopover: resolveMount(Popover.AnchorPopover, Popover.Message.CompletedAnchorPopover()),
+  // 字幕の吹き出しを滑らせる Mount（見返しの字幕もライブと同じ吹き出し）。字幕が描かれている間だけある
+  SlideCaptions: resolveMount(SlideCaptions, SessionLayoutMessage.CompletedSlideCaptions()),
+};
+
+// 字幕を隠す・空にするなどで .captions ごと消えた SlideCaptions の Mount を、消えたものとして受け取る（受け取らないと、次の操作の Message が落ちる）
+const endedSlides = <Model, Message, OutMessage>(simulation: SceneSimulation<Model, Message, OutMessage>): SceneSimulation<Model, Message, OutMessage> => {
+  try {
+    return endedSlides(Mount.expectEnded(SlideCaptions)(simulation));
+  } catch {
+    return simulation; // 消えた Mount が無い
+  }
 };
 
 export const settle = <Model, Message, OutMessage>(simulation: SceneSimulation<Model, Message, OutMessage>): SceneSimulation<Model, Message, OutMessage> => {
@@ -121,6 +134,8 @@ export const settle = <Model, Message, OutMessage>(simulation: SceneSimulation<M
     if (step === undefined) throw new Error(`settle: 解き方を決めていない Mount "${mount.name}"（保留: ${simulation.mounts.map((m) => m.name).join(", ")}）`);
     return settle(step(simulation));
   }
+  const ended = endedSlides(simulation);
+  if (ended !== simulation) return settle(ended);
   const command = simulation.commands[0];
   if (command !== undefined) {
     const step = commandSteps[command.name];

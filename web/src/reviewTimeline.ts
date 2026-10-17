@@ -1,5 +1,5 @@
-import { reviewSnapshot, topicOf, type LogEvent, type Remark, type Snapshot } from "../../server/src/core/index.ts";
-import type { Speaking } from "./captions.ts";
+import { reviewSnapshot, SpeakerNameLogEvent, topicOf, type CaptionBubble, type LogEvent, type Remark, type Snapshot, type SpeakerNames } from "../../server/src/core/index.ts";
+import { Schema } from "effect";
 
 // 見返しの時間軸（純粋なモジュール）。ログの出来事の配列から、時刻 t のスナップショット・字幕・反映の時刻を導く。
 // 時刻の軸は発言の end（会議の中の秒）。ログの at は使わない。
@@ -14,16 +14,24 @@ export type ReviewTimeline = {
   remarks: readonly { remark: Remark; index: number }[];
   reflections: readonly Reflection[];
   reflectionTimes: readonly number[]; // 反映の時刻。同じ時刻は 1 つにまとめた昇順
+  speakerNames: SpeakerNames; // ラベルごとに、ログで最後に付いた名前（どの時刻でも同じ）
   duration: number;
   cache: Map<string, Snapshot>;
 };
+
+const isSpeakerNameLog = Schema.is(SpeakerNameLogEvent);
 
 // 出来事を 1 回だけ順に見る。反映に数えるのは、restoreSession が round を進める条件と同じ error の無い diff だけ
 export function buildReviewTimeline(events: readonly unknown[]): ReviewTimeline {
   const remarks: { remark: Remark; index: number }[] = [];
   const reflections: Reflection[] = [];
   const byId = new Map<string, Remark>();
+  let speakerNames: SpeakerNames = {};
   events.forEach((event, index) => {
+    if (isSpeakerNameLog(event)) {
+      speakerNames = { ...speakerNames, [event.label]: event.name };
+      return;
+    }
     const e = event as LogEvent;
     if (e.type === "remark") {
       remarks.push({ remark: e.remark, index });
@@ -35,7 +43,7 @@ export function buildReviewTimeline(events: readonly unknown[]): ReviewTimeline 
   });
   const reflectionTimes = [...new Set(reflections.map((r) => r.at))].sort((a, b) => a - b);
   const duration = Math.max(0, ...remarks.map((r) => r.remark.end), ...reflections.map((r) => r.at));
-  return { events, remarks, reflections, reflectionTimes, duration, cache: new Map() };
+  return { events, remarks, reflections, reflectionTimes, speakerNames, duration, cache: new Map() };
 }
 
 // 時刻が t を超える最初の反映（ログの順）より前にある出来事で、発言は end ≤ t のものだけ。
@@ -65,14 +73,23 @@ export function topicNameOf(snapshot: Snapshot): string {
   return snapshot.nodes.find((n) => n.id === snapshot.currentTopic)?.text ?? "";
 }
 
-// トラックごとに、end ≤ t で最も遅い発言の本文を、t − end が CAPTION_SECONDS 未満の間だけ出す
-export function speakingAt(timeline: ReviewTimeline, t: number): Speaking {
-  const latest = (track: Remark["track"]) => {
-    let best: Remark | undefined;
-    for (const { remark } of timeline.remarks) if (remark.track === track && remark.end <= t && (!best || remark.end >= best.end)) best = remark;
-    return best && t - best.end < CAPTION_SECONDS ? best.text : "";
-  };
-  return { 相手: latest("相手"), 自分: latest("自分") };
+// 時刻 t に字幕に出す吹き出し。end ≤ t かつ t − end が CAPTION_SECONDS 未満の、本文が空でない発言を 1 発言 1 吹き出しにして start の順に並べる。
+// 発言に話者があれば確定、無い（古いログ）なら話者なし。待ちも仮のラベルも使わない
+export function captionBubblesAt(timeline: ReviewTimeline, t: number): CaptionBubble[] {
+  return timeline.remarks
+    .map(({ remark }) => remark)
+    .filter((r) => r.end <= t && t - r.end < CAPTION_SECONDS && r.text.trim() !== "")
+    .map((r): CaptionBubble => ({
+      id: r.id,
+      track: r.track,
+      ...(r.speaker === undefined ? {} : { speaker: r.speaker }),
+      label: r.speaker === undefined ? "なし" : "確定",
+      start: r.start,
+      end: r.end,
+      text: r.text,
+      settledLength: r.text.length,
+    }))
+    .sort((a, b) => a.start - b.start);
 }
 
 export function formatHms(sec: number): string {

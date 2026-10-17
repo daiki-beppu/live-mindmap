@@ -19,7 +19,13 @@ export const SpeakerNamesFrame = Schema.Struct({
 export type SpeakerNamesFrame = typeof SpeakerNamesFrame["Type"];
 
 // log.jsonl に残す記録。付いた時刻は全行に付く at で表す。知らない種類として復元と cli play に読み飛ばされる
-export type SpeakerNameLogEvent = { type: "speaker-name"; label: string; name: string; source: SpeakerNameSource };
+export const SpeakerNameLogEvent = Schema.Struct({
+  type: Schema.Literal("speaker-name"),
+  label: Schema.String,
+  name: Schema.String,
+  source: Schema.Literals(["推定", "手入力"]),
+});
+export type SpeakerNameLogEvent = typeof SpeakerNameLogEvent["Type"];
 
 export const speakerNamesFrame = (table: SpeakerNameTable): SpeakerNamesFrame => ({
   type: "speaker-names",
