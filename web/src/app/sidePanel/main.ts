@@ -1,4 +1,4 @@
-// 右の列（Issue #821）: 選んだノードの根拠のパネルと、変わったことの列。出す・隠すは Disclosure。
+// 右の列（Issue #821）: 選んだノードの根拠のパネルと、TODO の一覧と、変わったことの列（上からこの順）。出す・隠すは Disclosure。
 // Model と update は持たない。見る状態（選択・人の開閉・sideHidden）は表示面の Model が持つので、その Model から毎回導いて描く。
 // 要素・class・文言は React 版（EvidencePanel・ChangeList・SessionView、Issue #829 で削除）から変えない
 import { Disclosure } from "@foldkit/ui";
@@ -6,6 +6,7 @@ import { Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { formatClock } from "../../changes.ts";
 import { evidenceOf, type Evidence } from "../../evidence.ts";
+import { todoAssignee } from "../../people.ts";
 import { humanSetsOf } from "../../viewing.ts";
 import type { Model } from "../mapSurface/main.ts";
 import { Message } from "../mapSurface/message.ts";
@@ -52,6 +53,41 @@ function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
   );
 }
 
+// スナップショットの TODO を、ノードの並び（作られた順）で出す。畳まれた議題の下も含む。時刻は、そのノードの「追加」の変わったことの時刻
+function todoList(h: HtmlBuilder<Message>, model: Model): Html {
+  const todos = model.snapshot.nodes.filter((n) => n.kind === "TODO");
+  return h.section(
+    [h.Class("todos flex-1 min-h-0 box-border p-[12px] overflow-y-auto [border-bottom:1px_solid_var(--color-gray-200)]"), h.AriaLabelledBy("todos-heading")],
+    [
+      h.h2([h.Id("todos-heading")], ["TODO"]),
+      todos.length === 0
+        ? h.p([h.Class("todos__empty text-gray-500")], ["TODO はまだありません"])
+        : h.ul(
+            [],
+            todos.map((node) => {
+              const at = model.snapshot.changes.find((c) => c.node === node.id && c.change === "追加")?.at;
+              const who = todoAssignee(node, model.speakerNames);
+              return h.keyed("li")(
+                node.id,
+                [h.Class("todos__item [border-bottom:1px_solid_var(--color-gray-100)]")],
+                [
+                  h.button(
+                    [h.Type("button"), h.Class("todos__button flex flex-wrap gap-x-[8px] gap-y-[4px] w-full px-0 py-[6px] [border:0] bg-transparent text-inherit [font:inherit] text-left cursor-pointer"), h.OnClick(Message.ClickedChangeItem({ nodeId: node.id }))],
+                    [
+                      at === undefined ? null : h.time([h.Class("todos__time text-gray-500 [font-variant-numeric:tabular-nums]")], [formatClock(at)]),
+                      who === null ? null : h.span([h.Class("todos__assignee font-semibold")], [who]),
+                      node.due === undefined ? null : h.span([h.Class("todos__due text-gray-500")], [node.due]),
+                      h.span([h.Class("todos__text basis-full wrap-anywhere")], [node.text]),
+                    ],
+                  ),
+                ],
+              );
+            }),
+          ),
+    ],
+  );
+}
+
 // 新しい順（積んだ順の逆）。Snapshot の並びは書き換えない
 function changeList(h: HtmlBuilder<Message>, model: Model): Html {
   return h.aside(
@@ -90,7 +126,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html | null 
       onToggle: (isOpen) => Message.ToggledSide({ isOpen }),
       // 隠していて選んでいないときは .side ごと描かない（animatePanel は使わない）。
       // 隠していて選んでいるときは side--hidden を付けて描く（狭い幅の会議中だけ、根拠のシートとして出す）
-      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], [evidencePanel(h, model), changeList(h, model)])),
+      toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], [evidencePanel(h, model), todoList(h, model), changeList(h, model)])),
     },
     h,
   ),

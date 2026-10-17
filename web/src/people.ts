@@ -10,6 +10,11 @@ export function speakerName(speaker: string, names: SpeakerNames = {}): string |
   return speaker === "相手" ? null : (Object.hasOwn(names, speaker) ? names[speaker]! : speaker);
 }
 
+// TODO の担当者。名前（assignee）があればそれ、無ければ担当の話者の表示名。無ければ null（話者なしの相手も null）
+export function todoAssignee(node: SnapshotNode, names: SpeakerNames = {}): string | null {
+  return node.assignee ?? (node.assigneeSpeaker === undefined ? null : speakerName(node.assigneeSpeaker, names));
+}
+
 // 案は「— 出した人」、TODO は「→ 担当者 · 期限」。出すものが無ければ null。案と TODO 以外には出さない
 export function personLine(node: SnapshotNode, names: SpeakerNames = {}): string | null {
   if (node.kind === "案") {
@@ -17,7 +22,7 @@ export function personLine(node: SnapshotNode, names: SpeakerNames = {}): string
     return name === null ? null : `— ${name}`;
   }
   if (node.kind === "TODO") {
-    const who = node.assignee ?? (node.assigneeSpeaker === undefined ? null : speakerName(node.assigneeSpeaker, names));
+    const who = todoAssignee(node, names);
     const parts = [who, node.due].filter((part): part is string => part !== null && part !== undefined);
     return parts.length === 0 ? null : `→ ${parts.join(" · ")}`;
   }
