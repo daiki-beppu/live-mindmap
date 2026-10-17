@@ -54,6 +54,7 @@ import {
   formatPublishList,
   type PublishRecord,
   selectListedRecords,
+  expiredPublishedRecords,
   publishConfirmationMessage,
   generatePassphrase,
   lockedPublishPage,
@@ -81,7 +82,7 @@ import { resolveHelperPath } from "./helperPath.ts";
 import { BrokenLogLine, readLogLines } from "./logLines.ts";
 import { poolUnavailableMessage, readPool, updatePoolFromLog, vocabularyPoolPath, writePool } from "./vocabularyPool.ts";
 import { accountSubdomain, CloudflareFailed, deleteWorker, deployWorker, describeCloudflareFailure, listWorkerNames, newWorkerName, workerUrl, type CloudflareCredentials } from "./cloudflareWorkers.ts";
-import { appendPublishRecord, markWithdrawn, readPublishRecords } from "./publishRecords.ts";
+import { appendPublishRecord, markRecordStatus, readPublishRecords } from "./publishRecords.ts";
 import { renderReviewPages, ReviewBuild, type ReviewVariant, writeReviewPages } from "./review.ts";
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
@@ -1195,16 +1196,52 @@ const WORKER_PREFIX = "lmm-";
 
 const readRecords = readPublishRecords().pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
 
+// 記録の 1 件の Worker を消す。消すのは記録のアカウントの Worker。環境変数のアカウントで消すと、別のアカウントの物は 404（成功扱い）になり、消えていないのに消せた扱いになる
+const deleteRecordedWorker = (record: PublishRecord, token: string) =>
+  deleteWorker({ accountId: record.accountId, token }, record.name).pipe(Effect.match({ onSuccess: () => undefined, onFailure: (e) => e }));
+
+// publish・list・withdraw の最初に、期限が過ぎても公開中のままの Worker を消して「期限切れで消した」にする（行は残す）。
+// 失敗（記録が読めない・資格情報が無い・失効・通信・書き換え）は標準エラーに出すだけで本来のコマンドを止めず、公開中のまま残して次の機会に消し直す
+const sweepExpiredPublishes = (token: string | undefined) =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const records = yield* readPublishRecords();
+    const expired = expiredPublishedRecords(records, now);
+    if (expired.length === 0) return;
+    if (token === undefined) {
+      yield* Console.error(`期限切れの後片付けができませんでした: 期限が過ぎた公開が ${expired.length} 件、置き場に残っています。資格情報が無いので消していません。次の公開・一覧・取り下げで消し直します。期限の後は 410 を返すので中身は見えません`);
+      return;
+    }
+    const deleted: string[] = [];
+    for (const record of expired) {
+      const outcome = yield* deleteRecordedWorker(record, token);
+      if (outcome === undefined) {
+        deleted.push(record.name);
+        yield* Console.error(`期限が過ぎたので置き場から消しました: ${record.url}`);
+      } else {
+        yield* Console.error(`期限切れの後片付けができませんでした: ${record.url}（${describeCloudflareFailure(outcome, "期限切れの後片付け")}）。次の公開・一覧・取り下げで消し直します`);
+      }
+    }
+    if (deleted.length > 0) {
+      yield* markRecordStatus(deleted, "expired").pipe(
+        Effect.catch((e) => Console.error(`Worker は消しましたが、公開の記録を書き換えられませんでした。次の機会に直します: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}`)),
+      );
+    }
+  }).pipe(
+    Effect.catch((e) => Console.error(`期限切れの後片付けができませんでした: ${describe(e)}`)),
+  );
+
 // 手元の記録だけから作る。資格情報があるときだけ、記録に無い lmm- の Worker を知らせる（消さない）
 const publishList = Command.make(
   "list",
   { all: Flag.Boolean("all").pipe(Flag.withDescription("取り下げた物も含めて全部出す（既定は公開中だけ）"), Flag.withDefault(false)) },
   Effect.fn("publish list")(function* ({ all }) {
+    const token = yield* cloudflareApiTokenConfig;
+    yield* sweepExpiredPublishes(token);
     const records = yield* readRecords;
     const now = yield* Clock.currentTimeMillis;
     yield* write(formatPublishList(selectListedRecords(records, all), now, all));
     const accountId = yield* cloudflareAccountIdConfig;
-    const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return;
     const known = new Set(records.map((record) => record.name));
     yield* listWorkerNames({ accountId, token }).pipe(
@@ -1234,10 +1271,7 @@ const deletePublishedWorkers = Effect.fnUntraced(function* (records: ReadonlyArr
   const withdrawn: string[] = [];
   let failed = 0;
   for (const record of records) {
-    // 消すのは記録のアカウントの Worker。環境変数のアカウントで消すと、別のアカウントの物は 404（成功扱い）になり、消えていないのに取り下げた扱いになる
-    const outcome = yield* deleteWorker({ accountId: record.accountId, token }, record.name).pipe(
-      Effect.match({ onSuccess: () => undefined, onFailure: (e) => e }),
-    );
+    const outcome = yield* deleteRecordedWorker(record, token);
     if (outcome === undefined) {
       withdrawn.push(record.name);
       yield* write(`取り下げました: ${record.url}`);
@@ -1257,13 +1291,19 @@ const publishWithdraw = Command.make(
     const accountId = yield* cloudflareAccountIdConfig;
     const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: `${MISSING_CREDENTIALS_MESSAGE}\n${STILL_THERE}` });
+    yield* sweepExpiredPublishes(token);
     const records = yield* readRecords;
-    const { found, unmatched } = yield* matchWithdrawTargets(records, targets);
+    const { found: matched, unmatched } = yield* matchWithdrawTargets(records, targets);
+    // 期限が過ぎて後片付けで消した物は、取り下げ（利用者がやめる操作）に書き換えない
+    const found = matched.filter((record) => record.status !== "expired");
+    for (const record of matched) {
+      if (record.status === "expired") yield* write(`期限が過ぎたので既に消してあります: ${record.url}`);
+    }
     const { withdrawn, failed } = yield* deletePublishedWorkers(found, token);
     if (withdrawn.length > 0) {
       // 残る物があるときは、記録の書き換えに失敗しても「まだ置き場にある」旨を落とさない
       const remaining = unmatched > 0 || failed > 0 ? `\n${STILL_THERE}` : "";
-      yield* markWithdrawn(withdrawn).pipe(
+      yield* markRecordStatus(withdrawn, "withdrawn").pipe(
         Effect.mapError((e) => new CommandFailed({ message: `Worker は消しましたが、公開の記録を書き換えられませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}${remaining}` })),
       );
     }
@@ -1333,6 +1373,7 @@ const publish = Command.make(
     const credentials: CloudflareCredentials = { accountId, token };
     // 手元で分かる失敗を出した後、ビルド・mix・Cloudflare への要求の前に止める。入口の teardown が終了コード 4 にする
     if (content !== "map" && !confirmed) return yield* new ConfirmationRequired({ content, anyone });
+    yield* sweepExpiredPublishes(token);
 
     const mapHtml = yield* publishedMapHtml(dir, logPath, content);
     // 合言葉が既定。暗号化は資格情報の確認の後、Cloudflare への最初の要求（accountSubdomain）の前に行う

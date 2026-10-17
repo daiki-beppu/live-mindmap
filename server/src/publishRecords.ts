@@ -1,5 +1,5 @@
 // 公開の記録。~/.live-mindmap/publish/records.jsonl に 1 公開 1 行で追記する（利用者だけが読める権限）。
-// 読み込みと、取り下げでの状態の書き換え（行は消さない）もここだけが持つ。期限切れの後片付けは後のチケット
+// 読み込みと、取り下げ・期限切れの後片付けでの状態の書き換え（行は消さない）もここだけが持つ
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -43,9 +43,9 @@ export const readPublishRecords = Effect.fnUntraced(function* () {
   return records;
 });
 
-// 名前が一致する行の状態を withdrawn にする。行は消さず、ほかの項目・行は生の JSON のまま残す（decode し直さない）。
+// 名前が一致する行の状態を書き換える。expired への書き換えは、今も published の行だけ（別プロセスが取り下げた行を上書きしない）。行は消さず、ほかの項目・行は生の JSON のまま残す（decode し直さない）。
 // 途中で落ちても記録が半端に残らないよう、一時ファイルに書いてから置き換える
-export const markWithdrawn = Effect.fnUntraced(function* (names: ReadonlyArray<string>) {
+export const markRecordStatus = Effect.fnUntraced(function* (names: ReadonlyArray<string>, status: "withdrawn" | "expired") {
   const { path } = yield* recordPaths();
   const fs = yield* FileSystem.FileSystem;
   // 読込から置換までの間に別プロセスの追記や取り下げが入ると、その変更が消えるため排他する
@@ -55,7 +55,8 @@ export const markWithdrawn = Effect.fnUntraced(function* (names: ReadonlyArray<s
       if (line.trim() === "") return line;
       const raw: unknown = JSON.parse(line);
       if (typeof raw !== "object" || raw === null || !("name" in raw) || typeof raw.name !== "string" || !names.includes(raw.name)) return line;
-      return JSON.stringify({ ...raw, status: "withdrawn" });
+      if (status === "expired" && !("status" in raw && raw.status === "published")) return line;
+      return JSON.stringify({ ...raw, status });
     });
     const temporary = `${path}.${randomUUID()}.tmp`;
     // 書込が途中で失敗しても残った一時ファイルを消す
