@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { children, emptyMap, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
+import { children, emptyMap, InferredSpeakerName, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
 import { nameOfSpeaker, remarkLine } from "./remarkLine.ts";
 
 export const SYSTEM = `あなたは会議のマインドマップに、新しい発言の内容を書き足す係です。
@@ -17,7 +17,16 @@ export const SYSTEM = `あなたは会議のマインドマップに、新しい
 
 なし以外ではtextに40字以内で中身を要約する。合意では答えている論点のidを選び、無ければ「新しい論点」を選んで論点の文に問いを書く。
 議題: 話し中の議題のidを選ぶ。話題が変わったら「新しい議題」を選び、題に20字以内の議題名を書く。
-済み: 話が終わって戻らない議題・論点のidを1つ。ほとんどの回は「なし」。`;
+済み: 話が終わって戻らない議題・論点のidを1つ。ほとんどの回は「なし」。
+
+名前: 行頭の「相手 A」「相手 B」のラベルに付けられる名前。確かなときだけ配列に入れる。名前がない回は空配列。誤った名前は、名前がないより悪い。
+- 根拠にしてよいのは次の2つだけ。basisに種類を書く。
+  - 名乗り: そのラベル本人が名乗った発言（「田中です」）。
+  - 呼びかけへの応答: 名前での呼びかけ（「田中さん、どうですか」）の直後に、そのラベルが応じた発言。呼びかけの次に話したラベルだけが対象。
+- evidenceには、そのラベルが話した名乗りまたは応答の発言の行のid（「r4」。文の番号ではない）を書く。labelには行頭の「相手 X」を書く（「（名前）」の部分は除く）。
+- 次のときは入れない: 複数人への呼びかけ、呼ばれた人と別の人が答えたとき、推測、話題に出ただけの名前、仮の名前（「田中?」）、画面に出ている名前。
+- 「自分」と、ラベルの無い「相手」には入れない。
+- 名前が付いているラベル（「相手 B（田中）」）は、本人が別の名前を名乗ったときだけ付け替える。`;
 
 // 元の発言（ID・話者・時刻）と、その発言の 1 文
 export type Sentence = { readonly remark: Remark; readonly text: string };
@@ -35,6 +44,7 @@ export type Classification = {
   readonly 議題: { readonly id: string; readonly 題: string };
   readonly 文: readonly ReturnType<typeof sentenceSchema>["Type"][];
   readonly 済み: string;
+  readonly 名前: readonly InferredSpeakerName[];
 };
 
 export function classificationRequest(map: MeetingMap, recent: DiffInput["recent"], sentences: readonly Sentence[], speakerNames?: DiffInput["speakerNames"]) {
@@ -54,6 +64,7 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
     議題: Schema.Struct({ id: Schema.Literals([...topics, "新しい議題"]), 題: Schema.String.check(Schema.isMaxLength(20)) }),
     文: Schema.Array(sentenceSchema(points)).check(Schema.isMinLength(sentences.length), Schema.isMaxLength(sentences.length)),
     済み: Schema.Literals(["なし", ...closable]),
+    名前: Schema.Array(InferredSpeakerName),
   });
   const prompt = [
     "## 現在のマップ（話し中の部分）", lines.join("\n"), "",

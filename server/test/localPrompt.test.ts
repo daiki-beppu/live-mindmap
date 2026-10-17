@@ -79,7 +79,7 @@ describe("localUpdaterLayer: DiffInput.speakerNames の受け渡し", () => {
     const layer = localUpdaterLayer({
       classify: (request) => Effect.sync(() => {
         prompts.push(request.prompt);
-        return { 議題: { id: "新しい議題", 題: "" }, 文: [{ text: "x", 種類: "なし" }], 済み: "なし" } as unknown as Classification;
+        return { 議題: { id: "新しい議題", 題: "" }, 文: [{ text: "x", 種類: "なし" }], 済み: "なし", 名前: [] } as unknown as Classification;
       }),
       katakana: () => Effect.succeed([]),
     });
@@ -97,5 +97,38 @@ describe("localUpdaterLayer: DiffInput.speakerNames の受け渡し", () => {
     expect(lineOf(named, "直前の発言（処理済み・文脈用）")).toEqual(["r1 [00:01] 相手 B（田中）: 前"]);
     expect(lineOf(named, "新しい発言（1 文）")).toEqual(["1. r2 [00:05] 相手 B（田中）: 今"]);
     expect(lineOf(await run(undefined), "新しい発言（1 文）")).toEqual(["1. r2 [00:05] 相手 B: 今"]);
+  });
+});
+
+// Issue #1027: 分類経路の名前。スキーマに必須の名前の配列が出て、分類結果の名前は DiffOutput.names になる（空なら付かない）
+describe("分類経路の名前", () => {
+  const name = { label: "相手 B", name: "田中", evidence: "r2", basis: "名乗り" } as const;
+  const classification = (名前: Classification["名前"]) => ({ 議題: { id: "新しい議題", 題: "" }, 文: [{ 種類: "なし" }], 済み: "なし", 名前 }) as unknown as Classification;
+  const run = (text: string, replies: Classification["名前"][]) => {
+    let n = 0;
+    const layer = localUpdaterLayer({ classify: () => Effect.sync(() => classification(replies[n++] ?? [])), katakana: () => Effect.succeed([]) });
+    const input: DiffInput = { map: emptyMap("定例"), recent: [], fresh: [remark({ id: "r2", start: 5, speaker: "相手 B", text })] };
+    return Effect.runPromise(Effect.flatMap(DiffUpdater, (updater) => updater.update(input)).pipe(Effect.provide(layer)));
+  };
+
+  it("JSON Schema の最上位で名前が必須の配列になり、項目は label・name・evidence・basis（2値）", () => {
+    const schema = classificationRequest(emptyMap("定例"), [], [{ remark: remark({ id: "r1", start: 0 }), text: "x" }]).jsonSchema as unknown as {
+      required: string[]; properties: Record<string, { type: string; items: { required: string[]; properties: { basis: { enum: string[] } } } }>;
+    };
+    expect(schema.required).toContain("名前");
+    expect(schema.properties["名前"]!.type).toBe("array");
+    expect(schema.properties["名前"]!.items.required).toEqual(["label", "name", "evidence", "basis"]);
+    expect(schema.properties["名前"]!.items.properties.basis.enum).toEqual(["名乗り", "呼びかけへの応答"]);
+  });
+
+  it("分類結果の名前は names として返り、空なら names は付かない", async () => {
+    expect((await run("田中です。", [[name]])).names).toEqual([name]);
+    expect(await run("田中です。", [[]])).not.toHaveProperty("names");
+  });
+
+  it("4文の発言（分類が2回）では、全チャンクの名前をつなげる（どちらのチャンクの名前も落ちない）", async () => {
+    const text = "一。二。三。田中です。";
+    expect((await run(text, [[], [name]])).names).toEqual([name]);
+    expect((await run(text, [[name], []])).names).toEqual([name]);
   });
 });

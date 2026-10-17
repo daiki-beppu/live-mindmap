@@ -2,6 +2,7 @@
 // 型は Schema を正本にして導き、値は普通のオブジェクトのままにする（ADR 0007）。
 import { Schema } from "effect";
 import { earliestRemark, type Remark } from "./remark.ts";
+import { InferredSpeakerName } from "./speakerNames.ts";
 
 export const KINDS = ["議題", "論点", "案", "決定", "課題", "TODO", "要点"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -94,7 +95,8 @@ const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   ...rest,
 ]);
-export const DiffOperations = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)) });
+// names は名前の無い回には省く。サーバーが根拠を確かめてから使う（speakerNames.ts）
+export const DiffOperations = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)), names: Schema.optionalKey(Schema.mutable(Schema.Array(InferredSpeakerName))) });
 export const DiffOutput = Schema.Struct({ ...DiffOperations.fields, processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))) });
 export type DiffOutput = typeof DiffOutput["Type"];
 

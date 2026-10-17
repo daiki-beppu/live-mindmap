@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { exportFiles, hasContent, makeSession, restoreSession, type DiffInput, type DiffOutput, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
+import { exportFiles, hasContent, makeSession, restoreSession, type DiffInput, type DiffOutput, type InferredSpeakerName, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
@@ -1822,5 +1822,184 @@ describe("差分更新の入力に載せる前回の応答（仮 ID の対応と
       const [a, b, c, d] = [...pair(), ...pair()];
       const { calls } = yield* playBatches([[a!, b!], [c!, d!]], [[{ op: "noop", reason: "雑談" }], []]);
       expect("previousResponse" in calls[1]!).toBe(false);
+    }));
+});
+
+// Issue #1027: AI が返した話者の名前（names）は、ノードの根拠と同じ消費済みの発言（known）で確かめ、通った名前だけをコールバックで返す。
+// 差分更新の応答は names を持ってよい（省略できる）。コールバックは core の外（sink）が名前の表と log.jsonl を更新するための口
+describe("話者の名前の確認", () => {
+  const spoken = (text: string, speaker: string | undefined, track: "自分" | "相手" = "相手"): Remark => remark(text, { track, ...(speaker !== undefined ? { speaker } : {}) });
+  const name = (label: string, evidence: string, who = "田中", basis: InferredSpeakerName["basis"] = "名乗り"): InferredSpeakerName => ({ label, name: who, evidence, basis });
+
+  // 台本の i 番目の応答（ops なしで names だけ）を返す偽の差分更新。processedRemarks も台本で決める
+  const withNames = (...script: { names?: InferredSpeakerName[]; processedRemarks?: number }[]) => {
+    const calls: DiffInput[] = [];
+    const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
+      Effect.sync(() => {
+        calls.push(input);
+        const step = script[calls.length - 1] ?? {};
+        return { ops: [], ...(step.names ? { names: step.names } : {}), ...(step.processedRemarks ? { processedRemarks: step.processedRemarks } : {}) };
+      });
+    return { calls, update };
+  };
+  // 応答をテストの側から返せる偽の差分更新。i 番目の呼び出しに answers[i] を返す
+  const held = (answers: DiffOutput[]) => {
+    const calls: DiffInput[] = [];
+    const replies: (() => void)[] = [];
+    const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> =>
+      Effect.callback<DiffOutput, UpdateFailure>((resume) => {
+        const answer = answers[calls.length] ?? { ops: [] };
+        calls.push(input);
+        replies.push(() => resume(Effect.succeed(answer)));
+      });
+    return { calls, replies, update };
+  };
+  const received = () => {
+    const batches: (readonly InferredSpeakerName[])[] = [];
+    return { batches, onSpeakerNames: (names: readonly InferredSpeakerName[]) => Effect.sync(() => void batches.push(names)) };
+  };
+  const openWith = (update: (input: DiffInput) => Effect.Effect<DiffOutput, UpdateFailure>, onSpeakerNames: (names: readonly InferredSpeakerName[]) => Effect.Effect<void>, events: LogEvent[] = []) =>
+    makeSession({ title: "定例", onSpeakerNames }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
+
+  it.effect("その回で消費した発言を根拠にし、話者がラベルと一致する名前は、コールバックに渡る（基準の種類も渡る）", () =>
+    Effect.gen(function* () {
+      const intro = spoken("田中です", "相手 B");
+      const { update } = withNames({ names: [name("相手 B", intro.id)] });
+      const { batches, onSpeakerNames } = received();
+      const session = yield* openWith(update, onSpeakerNames);
+
+      yield* session.push(intro);
+      yield* session.idle;
+
+      expect(batches).toEqual([[name("相手 B", intro.id)]]);
+    }));
+
+  it.effect("前の回で消費した発言を根拠にした名前も通る（known は過去の回の分も含む）", () =>
+    Effect.gen(function* () {
+      const intro = spoken("田中です", "相手 B");
+      const next = spoken("そうですね", "相手 B");
+      const { update } = withNames({}, { names: [name("相手 B", intro.id, "田中", "呼びかけへの応答")] });
+      const { batches, onSpeakerNames } = received();
+      const session = yield* openWith(update, onSpeakerNames);
+
+      yield* session.push(intro);
+      yield* session.idle;
+      yield* session.push(next);
+      yield* session.idle;
+
+      expect(batches).toEqual([[name("相手 B", intro.id, "田中", "呼びかけへの応答")]]);
+    }));
+
+  it.effect("根拠の発言が無い・話者がラベルと合わない・自分の発言・ラベルの無い相手の発言を根拠にした名前は捨てる。通る名前だけが渡る", () =>
+    Effect.gen(function* () {
+      const warmup = spoken("始めます", "相手 A");
+      const a = spoken("お願いします", "相手 A");
+      const b = spoken("田中です", "相手 B");
+      const mine = spoken("田中さんですね", "自分", "自分");
+      const bare = spoken("それは来週にしましょう", undefined);
+      const { batches, onSpeakerNames } = received();
+      const { calls, replies, update } = held([{ ops: [] }, { ops: [], names: [
+        name("相手 B", "r999"), // 根拠が無い
+        name("相手 B", a.id), // 話者が合わない
+        name("自分", mine.id), // 自分には付けない
+        name("相手 B", mine.id), // 自分の発言は根拠にならない
+        name("相手", bare.id), // ラベルが無い
+        name("相手 B", b.id), // 通る
+      ] }]);
+      const session = yield* openWith(update, onSpeakerNames);
+
+      // 1 件目で呼び出しが始まり、残りは呼び出し中に届いて次の回にまとまる
+      yield* session.push(warmup);
+      for (const r of [a, b, mine, bare]) yield* session.push(r);
+      replies[0]!();
+      yield* settleUntil(() => calls.length === 2);
+      expect(freshIds(calls[1]!)).toEqual([a.id, b.id, mine.id, bare.id]);
+      replies[1]!();
+      yield* session.idle;
+
+      expect(batches.flat()).toEqual([name("相手 B", b.id)]);
+    }));
+
+  it.effect("まだ消費していない発言（processedRemarks を超えた分）を根拠にした名前は捨てる。話者が合っていても通らない", () =>
+    Effect.gen(function* () {
+      // 1 件目は単独で呼び出しが始まり、2・3 件目は呼び出し中に届いて次の回にまとまる。次の回は 1 件目（r2）だけ反映する
+      const first = spoken("よろしく", "相手 A");
+      const second = spoken("佐藤です", "相手 A");
+      const third = spoken("田中です", "相手 B");
+      const { calls, replies, update } = held([
+        { ops: [] },
+        { ops: [], processedRemarks: 1, names: [name("相手 A", second.id, "佐藤"), name("相手 B", third.id)] },
+      ]);
+      const { batches, onSpeakerNames } = received();
+      const session = yield* openWith(update, onSpeakerNames);
+
+      yield* session.push(first);
+      yield* session.push(second);
+      yield* session.push(third);
+      replies[0]!();
+      yield* settleUntil(() => calls.length === 2);
+      expect(freshIds(calls[1]!)).toEqual([second.id, third.id]);
+      replies[1]!();
+      yield* settleUntil(() => batches.length === 1);
+
+      expect(batches.flat()).toEqual([name("相手 A", second.id, "佐藤")]);
+    }));
+
+  it.effect("名前が無い回・通る名前が無い回には、コールバックを呼ばない", () =>
+    Effect.gen(function* () {
+      const a = spoken("お願いします", "相手 A");
+      const b = spoken("はい", "相手 B");
+      const { update } = withNames({}, { names: [name("相手 B", a.id)] });
+      const { batches, onSpeakerNames } = received();
+      const session = yield* openWith(update, onSpeakerNames);
+
+      yield* session.push(a);
+      yield* session.idle;
+      yield* session.push(b);
+      yield* session.idle;
+
+      expect(batches).toEqual([]);
+    }));
+
+  it.effect("反映数が不正で失敗した回（processedRemarks が入力の発言数を超える）は、応答に名前があっても使わない", () =>
+    Effect.gen(function* () {
+      const intro = spoken("田中です", "相手 B");
+      const events: LogEvent[] = [];
+      const { update } = withNames({ names: [name("相手 B", intro.id)], processedRemarks: 5 });
+      const { batches, onSpeakerNames } = received();
+      const session = yield* openWith(update, onSpeakerNames, events);
+
+      yield* session.push(intro);
+      yield* session.idle;
+
+      expect(events.some((e) => e.type === "diff" && e.error !== undefined)).toBe(true);
+      expect(batches).toEqual([]);
+    }));
+
+  it.effect("コールバックは diff の行をログに書いた後で呼ぶ（根拠の発言は diff の行より前の remark の行にある）", () =>
+    Effect.gen(function* () {
+      const intro = spoken("田中です", "相手 B");
+      const events: LogEvent[] = [];
+      const { update } = withNames({ names: [name("相手 B", intro.id)] });
+      const order: string[] = [];
+      const session = yield* openWith(update, () => Effect.sync(() => void order.push(`callback after ${events.filter((e) => e.type === "diff").length} diff`)), events);
+
+      yield* session.push(intro);
+      yield* session.idle;
+
+      expect(order).toEqual(["callback after 1 diff"]);
+    }));
+
+  it.effect("コールバックを渡さないセッション（cli play・復元）では、names を含む応答でも通常どおり反映される", () =>
+    Effect.gen(function* () {
+      const intro = spoken("田中です", "相手 B");
+      const { update } = withNames({ names: [name("相手 B", intro.id)] });
+      const events: LogEvent[] = [];
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
+
+      yield* session.push(intro);
+      yield* session.idle;
+
+      expect(events.filter((e) => e.type === "diff")).toHaveLength(1);
     }));
 });

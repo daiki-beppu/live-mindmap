@@ -15,6 +15,7 @@ import {
   type SpeakerNameLogEvent,
   type DiffUpdateFrame,
   type LogEvent,
+  type OnSpeakerNames,
   type Session,
   type Snapshot,
 } from "./core/index.ts";
@@ -140,6 +141,7 @@ export type RecordedSessionOptions = {
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   onDiff?: Effect.Effect<void>; // 差分更新の 1 回が終わった（成功の publish の後・失敗のとき）。未反映の発言が変わったことを知らせる
   diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>;
+  onSpeakerNames?: OnSpeakerNames; // 差分更新の応答の名前のうち、根拠の確かめを通ったもの（diff の行を書いた後）。cli play は渡さない
 };
 
 // 作成済みのセッションのフォルダに、ログと export.json を書きながら、マップが変わるたびに publish する。
@@ -147,7 +149,7 @@ export type RecordedSessionOptions = {
 // appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
 // session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
 // ログが書けないとき（FileSystem の失敗）は、そのまま defect にする。
-export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, model }: RecordedSessionOptions) {
+export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, onSpeakerNames, model }: RecordedSessionOptions) {
   // SessionLog のメソッドの R は空なので、FileSystem はここで 1 回だけ受け取ってクロージャで使う
   const fs = yield* FileSystem.FileSystem;
   // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。
@@ -195,7 +197,7 @@ export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, lo
   );
   const images = model.route !== "apple" && model.images !== false;
   if (diffUpdate) yield* Effect.addFinalizer(() => diffUpdate({ type: "diff-update", state: null }));
-  const session = yield* makeSession({ title: title ?? basename(dir), images, logShiftMs }).pipe(Effect.provide(log));
+  const session = yield* makeSession({ title: title ?? basename(dir), images, logShiftMs, ...(onSpeakerNames ? { onSpeakerNames } : {}) }).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
   if (diffUpdate) {
     yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });

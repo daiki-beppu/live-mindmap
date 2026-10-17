@@ -10,6 +10,7 @@ import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutpu
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
 import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
 import { Remark } from "./remark.ts";
+import { acceptInferredNames, type InferredSpeakerName } from "./speakerNames.ts";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "./snapshot.ts";
 import { Word, WordTime } from "./words.ts";
 
@@ -449,11 +450,16 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
 type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly last: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
 const noScreens: InitialScreens = { unsent: [], last: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
 
-function openSession(initial: SessionState, screens: InitialScreens, images: boolean, logShiftMs = 0): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+// 確かめを通った AI の名前を受け取る（diff の行を書いた後に呼ぶ）。cli play・復元は渡さない
+export type OnSpeakerNames = (names: readonly InferredSpeakerName[]) => Effect.Effect<void>;
+
+function openSession(initial: SessionState, screens: InitialScreens, images: boolean, logShiftMs = 0, onSpeakerNames?: OnSpeakerNames): Effect.Effect<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   return Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const updater = yield* DiffUpdater;
     const log = yield* SessionLog;
+    // 通った名前が 1 件以上あるときだけ、受け取る側（あれば）へ渡す
+    const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
     const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
 
     const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
@@ -589,11 +595,11 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             ),
             Effect.flatMap(({ exit, call }) =>
               exit.pipe(
-                Effect.flatMap(({ ops, usage, judge, processedRemarks }) => {
+                Effect.flatMap(({ ops, usage, judge, processedRemarks, names }) => {
                   const count = processedRemarks ?? fresh.length;
                   return !Number.isInteger(count) || count <= 0 || count > fresh.length
                     ? Effect.fail({ _tag: "InvalidProcessedRemarks", message: "反映数が入力の発言数に対して不正です", judge })
-                    : Effect.succeed({ ok: true as const, ops, usage, judge, processedRemarks, count, call: call as CallTimes | undefined });
+                    : Effect.succeed({ ok: true as const, ops, names, usage, judge, processedRemarks, count, call: call as CallTimes | undefined });
                 }),
                 Effect.catchCause((cause) => Effect.map(classifyUnlessInterrupt(cause), (failure) => ({ ...failure, call: call as CallTimes | undefined }))),
               ),
@@ -626,7 +632,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             return;
           }
           // ログへ書く（SessionLog.write）より先に状態へ反映する。write の中で読むスナップショットに今回分が載る
-          const { dropped, ops } = yield* Ref.modify(ref, (s) => {
+          const { dropped, ops, accepted } = yield* Ref.modify(ref, (s) => {
             const consumed = fresh.slice(0, outcome.count);
             const known = new Set([...s.known, ...consumed.map((r) => r.id)]);
             const stamp = stampOf(s, consumed);
@@ -634,13 +640,16 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const byId = new Map(s.remarks.map((r) => [r.id, r]));
             const ops = attributePeople(outcome.ops, byId);
             const applied = applyOps(s.map, ops, known, stamp, byId);
-            return [{ dropped: applied.dropped, ops }, {
+            // 名前の根拠は、ノードの根拠と同じ known と byId で確かめる
+            const accepted = acceptInferredNames(outcome.names, known, byId);
+            return [{ dropped: applied.dropped, ops, accepted }, {
               ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.map, reflecting: [], previousResponse: previousResponseOf(applied),
               known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
           yield* log.write({ type: "diff", input, ops, dropped, ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) });
           if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
+          yield* notifySpeakerNames(accepted);
         }),
       );
     }
@@ -705,7 +714,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
 }
 
 // 新しいセッションを開く。最初に start をログへ書く。差分更新の呼び出しはこの Scope の Fiber で、Scope を閉じると中断される
-export const makeSession = Effect.fnUntraced(function* ({ title, images = true, logShiftMs = 0 }: { readonly title: string; readonly images?: boolean; readonly logShiftMs?: number }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
+export const makeSession = Effect.fnUntraced(function* ({ title, images = true, logShiftMs = 0, onSpeakerNames }: { readonly title: string; readonly images?: boolean; readonly logShiftMs?: number; readonly onSpeakerNames?: OnSpeakerNames }): Effect.fn.Return<Session, never, Scope.Scope | DiffUpdater | SessionLog> {
   const log = yield* SessionLog;
   yield* log.write({ type: "start", title });
   if (!images) yield* log.write({
@@ -724,7 +733,7 @@ export const makeSession = Effect.fnUntraced(function* ({ title, images = true, 
     lastChanged: undefined,
     previousResponse: undefined,
     diffUpdate: { status: "running" },
-  }, noScreens, images, logShiftMs);
+  }, noScreens, images, logShiftMs, onSpeakerNames);
 });
 
 // ログのイベントから、セッションを元の状態に戻す。差分更新は呼ばず、イベントも log し直さない。

@@ -21,7 +21,7 @@ export const encodedRequestBody = (request: HttpClientRequest.HttpClientRequest)
   if (request.body._tag === "Raw" && typeof request.body.body === "string") return request.body.body;
   throw new Error("文字列 body がありません");
 };
-export const classification = (sentences: readonly object[]) => ({ 議題: { id: "新しい議題", 題: "採用" }, 文: sentences, 済み: "なし" });
+export const classification = (sentences: readonly object[]) => ({ 議題: { id: "新しい議題", 題: "採用" }, 文: sentences, 済み: "なし", 名前: [] });
 export const sseEvent = (event: object) => `data: ${JSON.stringify(event)}\n\n`;
 export const completedSse = (answer: unknown) => sseEvent({ type: "response.output_text.delta", delta: JSON.stringify(answer) })
   + sseEvent({ type: "response.completed", response: { id: "synthetic-response", status: "completed" } });

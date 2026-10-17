@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect";
-import { DiffUpdater, ROOT_ID, type DiffInput, type DiffOutput, type DiffUpdateError, type KatakanaAsk, type Op } from "./core/index.ts";
+import { DiffUpdater, ROOT_ID, type DiffInput, type DiffOutput, type DiffUpdateError, type InferredSpeakerName, type KatakanaAsk, type Op } from "./core/index.ts";
 import { classificationRequest, splitSentences, type Classification, type Sentence } from "./localPrompt.ts";
 
 // 40字の要約3文と合意・作業の追加欄を600トークンで返す初期上限。
@@ -54,13 +54,15 @@ export const localUpdaterLayer = ({ classify, katakana }: LocalModel) => Layer.s
       if (selected.length >= SENTENCE_LIMIT) break;
     }
     const ops: Op[] = [];
+    const names: InferredSpeakerName[] = [];
     let sequence = 0;
     for (let offset = 0; offset < selected.length; offset += SENTENCE_LIMIT) {
       const sentences = selected.slice(offset, offset + SENTENCE_LIMIT);
       const raw = yield* classify(classificationRequest(map, recent, sentences, speakerNames));
       ops.push(...toOps(raw, sentences, () => `新${++sequence}`));
+      names.push(...raw.名前);
     }
-    return { ops, processedRemarks };
+    return { ops, processedRemarks, ...(names.length > 0 ? { names } : {}) };
   }),
   katakana,
 }));
