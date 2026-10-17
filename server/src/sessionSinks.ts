@@ -8,7 +8,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNamesFrame, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
+import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -173,6 +173,16 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             update: (input) => Effect.flatMap(Ref.get(names), (table) =>
               baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: new Map([...table].map(([label, { name }]) => [label, name] as const)) })),
           });
+          // 名前を付ける 1 つの口（手入力も AI の推定も通る）。規則は nameSpeaker にある。
+          // Why: 要求が途中で中断されると、表・ログの行・フレームの一部だけが更新され、同じ名前の再送では直らない（同じ値は何もしない）ため、ロック取得後は中断させない
+          const applyName = (change: SpeakerNameChange): Effect.Effect<void> =>
+            namesLock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+              const next = nameSpeaker(yield* Ref.get(names), change);
+              if (next === undefined) return;
+              yield* appendRecordedLog({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
+              yield* Ref.set(names, next);
+              yield* speakerNames(speakerNamesFrame(next));
+            })));
           // relay を先に作る。context は session と settling ができた後（onDiff・途中結果が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
           // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
           // 字幕用の表（発言の id → 補正前の本文・補正前の位置の wordTimes・置き換え）。Remark には入れず、未反映の発言を盤へ渡すときだけ上書きする。
@@ -244,6 +254,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             publish,
             diffUpdate: (frame) => Effect.andThen(diffUpdate(frame), followPause(frame)),
             onDiff: relay.flushAll,
+            // 根拠の確かめは core が済ませている。1 件ずつ順に、規則（付け替えは名乗りのときだけ）を通して入れる
+            onSpeakerNames: (inferred) => Effect.forEach(inferred, ({ label, name, basis }) => applyName({ label, name, source: "推定", basis }), { discard: true }),
           }).pipe(Effect.provideService(DiffUpdater, namedUpdater), Effect.provideContext(exportServices));
           // 語彙追加（読み取得つき）の処理の集まり。ログを開いた後に作るので、後始末（登録の逆順）ではログを閉じる前に中断される。
           // exports が溜まりを更新する前に、書き終わるのを待つために使う
@@ -416,16 +428,11 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             speaker: (event) => Effect.andThen(Effect.andThen(appendRecordedLog(event), settling.speaker(event)), backlog === undefined ? relay.speaker(event) : Effect.void),
             speakersRenumbered: settling.renumbered,
             nameSpeaker: ({ label, name }) =>
-              // Why: 要求が途中で中断されると、表・ログの行・フレームの一部だけが更新され、同じ名前の再送では直らない（同じ値は何もしない）ため、ロック取得後は中断させない
-              namesLock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+              Effect.gen(function* () {
                 if (!settling.labels().includes(label)) return yield* new SpeakerNameRejected({ reason: "ラベルがない" });
                 if (name.trim() === "") return yield* new SpeakerNameRejected({ reason: "名前が空" });
-                const next = nameSpeaker(yield* Ref.get(names), { label, name, source: "手入力" });
-                if (next === undefined) return;
-                yield* appendRecordedLog({ type: "speaker-name", label, name: next.get(label)!.name, source: "手入力" });
-                yield* Ref.set(names, next);
-                yield* speakerNames(speakerNamesFrame(next));
-              }))),
+                yield* applyName({ label, name, source: "手入力" });
+              }),
             screen: (change) => backlog === undefined
               ? Effect.andThen(pushScreenChange(change), requestScreenVocabulary(change.lines))
               : Effect.andThen(requestScreenVocabulary(change.lines, change.start), enqueueScreen({ kind: "screen", change })),

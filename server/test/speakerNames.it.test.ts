@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, FileSystem, Layer } from "effect";
 import { buildPrompt } from "../src/claudePrompt.ts";
-import { DiffUpdater, restoreState, type DiffInput, type SpeakerNamesFrame } from "../src/core/index.ts";
+import { DiffUpdater, restoreState, type DiffInput, type InferredSpeakerName, type SpeakerNamesFrame } from "../src/core/index.ts";
+import { localUpdaterLayer, type LocalModel } from "../src/localDiffUpdater.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -40,6 +41,21 @@ const recordingAi = () => {
   }) }));
   return { prompts, updaterLayer };
 };
+
+// Issue #1027: n 回目の呼び出しに、台本の n 番目の names を返す偽の AI。呼ばれた入力の speakerNames（ラベル → 名前）も、呼ばれた時点のコピーで記録する
+const namingAi = (...script: (InferredSpeakerName[] | undefined)[]) => {
+  const prompts: string[][] = [];
+  const tables: Array<Record<string, string> | undefined> = [];
+  const updaterLayer = Layer.succeed(DiffUpdater, DiffUpdater.of({ update: (input: DiffInput) => Effect.sync(() => {
+    const n = prompts.length;
+    prompts.push(buildPrompt(input).split("\n").filter((line) => /^r\d+ /.test(line)));
+    tables.push(input.speakerNames === undefined ? undefined : Object.fromEntries(input.speakerNames));
+    const names = script[n];
+    return names ? { ops: [], names } : { ops: [] };
+  }) }));
+  return { prompts, tables, updaterLayer };
+};
+const claim = (label: string, name: string, evidence: string, basis: InferredSpeakerName["basis"] = "名乗り"): InferredSpeakerName => ({ label, name, evidence, basis });
 
 // 名前を付けられなかった（型付きの失敗。defect や中断ではない）
 const rejected = <A, E>(effect: Effect.Effect<A, E>) => Effect.exit(effect).pipe(Effect.map((exit) => Exit.isFailure(exit) && Cause.hasFails(exit.cause) && !Cause.hasDies(exit.cause)));
@@ -331,5 +347,207 @@ describe("名前の更新は、要求の中断から保護される", () => {
       expect(frames).toHaveLength(framesBefore);
       expect(frames.at(-1)).toEqual({ type: "speaker-names", names: named });
     })).pipe(Effect.provide(layer));
+  });
+});
+
+// Issue #1027: 名乗り・呼びかけへの応答から AI が推定した名前（出どころ「推定」）。偽の AI が names を返し、サーバーが根拠の発言を確かめる。
+// 発言 n は r{n}。say(n, slot, start) は slot の相手の n 番目の発言（相手 A = slot 5、相手 B = slot 6）
+describe("話者の名前の推定（実物の SessionSinks + 偽の AI が names を返す）", () => {
+  it.effect("名乗りの発言を根拠にした名前が付き、log.jsonl に at・出どころ（推定）で残る。同じ sink の上で、付く前の入力は名前なし、付いた後のフレーム・入力・直前の発言の行が名前になる", () => {
+    const { prompts, tables, updaterLayer } = namingAi(undefined, [claim("相手 B", "田中", "r2")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10); // 相手 A
+      expect(frames).toEqual([{ type: "speaker-names", names: [] }]);
+
+      yield* say(2, 6, 20); // 相手 B の名乗り。この回の応答が名前を返す
+      yield* settleUntil(() => frames.length === 2);
+      yield* say(3, 6, 30);
+      yield* settle;
+
+      // 付く前の 2 回には名前が混ざらない。付いた後（3 回目）は、直前の発言の行（r2）も名前つき
+      expect(tables.slice(0, 2)).toEqual([undefined, undefined]);
+      expect(prompts[2]).toEqual([
+        "r1 [00:10] 相手 A: 発言1です",
+        "r2 [00:20] 相手 B（田中）: 発言2です",
+        "r3 [00:30] 相手 B（田中）: 発言3です",
+      ]);
+      expect(tables[2]).toEqual({ "相手 B": "田中" });
+      expect(frames).toEqual([
+        { type: "speaker-names", names: [] },
+        { type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] },
+      ]);
+      const lines = nameLines(dir);
+      expect(lines).toHaveLength(1);
+      const { at, ...rest } = lines[0];
+      expect(Number.isNaN(Date.parse(at))).toBe(false);
+      expect(rest).toEqual({ type: "speaker-name", label: "相手 B", name: "田中", source: "推定" });
+      // 名前を付けても発言の話者はラベルのまま。名前の行は、根拠を消費した diff の行の後ろにある
+      expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => e.remark.speaker)).toEqual(["相手 A", "相手 B", "相手 B"]);
+      const types = logEvents(dir).map((e) => e.type);
+      expect(types.indexOf("speaker-name")).toBeGreaterThan(types.indexOf("diff", types.indexOf("diff") + 1));
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("推定の名前を含む log.jsonl は、restoreState がこれまでどおり読める（行が無いときと同じマップ・発言になる）", () => {
+    const { updaterLayer } = namingAi([claim("相手 A", "田中", "r1")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* sink.flush;
+      yield* settle;
+
+      const events = logEvents(dir);
+      expect(events.some((e) => e.type === "speaker-name")).toBe(true);
+      expect(yield* restoreState(events)).toEqual(yield* restoreState(events.filter((e) => e.type !== "speaker-name")));
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("根拠の発言が無い名前・根拠の発言の話者がラベルと合わない名前は捨てられる（行もフレームも増えず、入力にも名前が載らない）", () => {
+    const { prompts, tables, updaterLayer } = namingAi(undefined, [claim("相手 B", "田中", "r99"), claim("相手 B", "鈴木", "r1")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10); // 相手 A（r1）
+      yield* say(2, 6, 20); // 相手 B。応答は、存在しない根拠の名前と、相手 A の発言を根拠にした「相手 B」の名前
+      yield* say(3, 6, 30);
+      yield* settle;
+
+      expect(nameLines(dir)).toEqual([]);
+      expect(frames).toEqual([{ type: "speaker-names", names: [] }]);
+      expect(tables).toEqual([undefined, undefined, undefined]);
+      expect(prompts[2]).toEqual(["r1 [00:10] 相手 A: 発言1です", "r2 [00:20] 相手 B: 発言2です", "r3 [00:30] 相手 B: 発言3です"]);
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("自分には名前を付けない。自分の発言を根拠にした名前も、ラベル「自分」の名前も捨てられる", () => {
+    const { tables, updaterLayer } = namingAi(undefined, undefined, [claim("自分", "田中", "r2"), claim("相手 A", "田中", "r2")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say, sink } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* sink.final({ track: "自分", start: 20, end: 22, text: "発言2です" });
+      yield* settleUntil(() => tables.length === 2);
+      yield* sink.final({ track: "自分", start: 30, end: 32, text: "発言3です" });
+      yield* settleUntil(() => tables.length === 3);
+      yield* settle;
+
+      expect(nameLines(dir)).toEqual([]);
+      expect(frames).toEqual([{ type: "speaker-names", names: [] }]);
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("手入力の名前は、AI が名乗りを根拠に別の名前を出しても変わらない（表・ログ・フレーム・次の入力）", () => {
+    const { prompts, tables, updaterLayer } = namingAi(undefined, undefined, [claim("相手 B", "鈴木", "r2")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
+      yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
+      const framesBefore = frames.length;
+
+      yield* say(3, 6, 30); // この回の応答が、相手 B=鈴木 を返す
+      yield* say(4, 6, 40);
+      yield* settle;
+
+      expect(nameLines(dir).map((e) => [e.label, e.name, e.source])).toEqual([["相手 B", "田中", "手入力"]]);
+      expect(frames).toHaveLength(framesBefore);
+      expect(frames.at(-1)).toEqual({ type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] });
+      expect(tables[3]).toEqual({ "相手 B": "田中" });
+      expect(prompts[3]!.at(-1)).toBe("r4 [00:40] 相手 B（田中）: 発言4です");
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("AI の名前は、呼びかけへの応答を根拠にした別の名前では付け替わらず、名乗りを根拠にした別の名前では付け替わる（出どころは推定のまま、行とフレームが増える）", () => {
+    const { prompts, tables, updaterLayer } = namingAi(
+      undefined,
+      [claim("相手 B", "田中", "r2", "呼びかけへの応答")], // 呼びかけへの応答で最初の名前が付く
+      [claim("相手 B", "鈴木", "r3", "呼びかけへの応答")], // 付け替えない
+      [claim("相手 B", "佐藤", "r4", "名乗り")], // 名乗りなので付け替える
+    );
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
+      yield* say(3, 6, 30);
+      yield* settle;
+      expect(frames.at(-1)).toEqual({ type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] }); // r3 の応答（鈴木）は付け替えなかった
+      expect(nameLines(dir)).toHaveLength(1);
+      yield* say(4, 6, 40);
+      yield* say(5, 6, 50);
+      yield* settle;
+
+      expect(nameLines(dir).map((e) => [e.label, e.name, e.source])).toEqual([["相手 B", "田中", "推定"], ["相手 B", "佐藤", "推定"]]);
+      expect(frames.at(-1)).toEqual({ type: "speaker-names", names: [{ label: "相手 B", name: "佐藤" }] });
+      expect(tables.slice(2)).toEqual([{ "相手 B": "田中" }, { "相手 B": "田中" }, { "相手 B": "佐藤" }]);
+      expect(prompts[4]!.at(-1)).toBe("r5 [00:50] 相手 B（佐藤）: 発言5です");
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("手入力は、AI が付けた名前を替える。その後は AI の名乗りでも戻らない", () => {
+    const { tables, updaterLayer } = namingAi(undefined, [claim("相手 B", "たなか", "r2")], undefined, [claim("相手 B", "佐藤", "r4")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { sink, dir, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
+      yield* settle;
+      expect(nameLines(dir).map((e) => [e.name, e.source])).toEqual([["たなか", "推定"]]);
+
+      yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
+      yield* say(3, 6, 30);
+      yield* say(4, 6, 40);
+      yield* say(5, 6, 50);
+      yield* settle;
+
+      expect(nameLines(dir).map((e) => [e.name, e.source])).toEqual([["たなか", "推定"], ["田中", "手入力"]]);
+      expect(tables.at(-1)).toEqual({ "相手 B": "田中" });
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("1 回の応答の複数の名前は、別のラベルならすべて付く", () => {
+    const { updaterLayer } = namingAi(undefined, [claim("相手 A", "山田", "r1"), claim("相手 B", "田中", "r2")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
+      yield* settle;
+
+      expect(nameLines(dir).map((e) => [e.label, e.name, e.source])).toEqual([["相手 A", "山田", "推定"], ["相手 B", "田中", "推定"]]);
+      expect([...frames.at(-1)!.names].sort((a, b) => a.label.localeCompare(b.label))).toEqual([{ label: "相手 A", name: "山田" }, { label: "相手 B", name: "田中" }]);
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+});
+
+// Issue #1027: 分類経路（ChatGPT・OpenAI互換・Apple が通る localUpdaterLayer）も、分類結果の名前を DiffOutput.names として core へ渡す
+describe("話者の名前の推定（実物の SessionSinks + localUpdaterLayer + 偽の classify）", () => {
+  // n 回目の分類に、台本の n 番目の名前を返す偽の classify
+  const classifyingAi = (...script: InferredSpeakerName[][]) => {
+    let n = 0;
+    const classify: LocalModel["classify"] = () => Effect.sync(() => ({ 議題: { id: "新しい議題", 題: "" }, 文: [{ 種類: "なし" as const }], 済み: "なし", 名前: script[n++] ?? [] }));
+    return localUpdaterLayer({ classify, katakana: () => Effect.succeed([]) });
+  };
+
+  it.effect("分類結果の名前が core の確認を通れば、出どころ（推定）で log.jsonl に残り、名前のフレームが出る", () => {
+    const updaterLayer = classifyingAi([], [claim("相手 B", "田中", "r2")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10); // 相手 A
+      yield* say(2, 6, 20); // 相手 B の名乗り
+      yield* settleUntil(() => frames.length === 2);
+
+      expect(nameLines(dir).map(({ at: _at, ...rest }) => rest)).toEqual([{ type: "speaker-name", label: "相手 B", name: "田中", source: "推定" }]);
+      expect(frames.at(-1)).toEqual({ type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] });
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
+  });
+
+  it.effect("根拠の発言が無い名前・話者がラベルと合わない名前は捨てられる（行もフレームも増えない）", () => {
+    const updaterLayer = classifyingAi([], [claim("相手 B", "田中", "r99"), claim("相手 B", "鈴木", "r1")]);
+    return Effect.scoped(Effect.gen(function* () {
+      const { dir, frames, say } = yield* openSession(updaterLayer);
+      yield* say(1, 5, 10);
+      yield* say(2, 6, 20);
+      yield* settle;
+
+      expect(nameLines(dir)).toEqual([]);
+      expect(frames).toEqual([{ type: "speaker-names", names: [] }]);
+    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });
 });

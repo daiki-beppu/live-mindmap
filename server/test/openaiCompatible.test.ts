@@ -15,8 +15,8 @@ const prepareUpdaterLayer: (selected: CompatibleModel) => Effect.Effect<Layer.La
   (selected) => prepare(selected).pipe(Effect.provide(forbiddenManagedDeps), Effect.provide(unusedApple), Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})));
 const remark = (text: string, id = "r1"): Remark => ({ id, track: "相手", start: 0, end: 10, text });
 const input = (text: string): DiffInput => ({ map: emptyMap("定例"), recent: [], fresh: [remark(text)] });
-type Classification = { 議題: { id: string; 題: string }; 文: readonly object[]; 済み: string };
-const classified = (sentences: readonly object[]): Classification => ({ 議題: { id: "新しい議題", 題: "採用" }, 文: sentences, 済み: "なし" });
+type Classification = { 議題: { id: string; 題: string }; 文: readonly object[]; 済み: string; 名前: readonly object[] };
+const classified = (sentences: readonly object[]): Classification => ({ 議題: { id: "新しい議題", 題: "採用" }, 文: sentences, 済み: "なし", 名前: [] });
 const none = classified([{ 種類: "なし" }]);
 type SchemaNode = { enum?: string[]; properties?: Record<string, SchemaNode>; items?: SchemaNode; anyOf?: SchemaNode[]; minItems?: number; maxItems?: number };
 type Body = {
@@ -111,7 +111,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
     ], new Set(["old"]), { round: 1, at: 1 }, new Map()).map;
     map.nodes.n4!.talkStatus = "済み";
     const fake = fakeClient((_body, call) => call === 1 ? none : {
-      議題: { id: "n1", 題: "" }, 文: [{ 種類: "合意", 論点: "n2", 論点の文: "", text: "2回にする" }], 済み: "n6",
+      議題: { id: "n1", 題: "" }, 文: [{ 種類: "合意", 論点: "n2", 論点の文: "", text: "2回にする" }], 済み: "n6", 名前: [],
     });
     const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
     const result = yield* updater.update({ ...input("2回にしましょう。"), map });

@@ -82,7 +82,7 @@ describe("互換モデルと拒否表示の CLI プロセス入口", () => {
       req.on("end", () => {
         requests.push({ path: req.url!, authorization: req.headers.authorization, body: JSON.parse(text) });
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "採用の進め方" }], 済み: "なし" }) } }] }));
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "採用の進め方" }], 済み: "なし", 名前: [] }) } }] }));
       });
     });
     // 発言は、設定を書き換えた後に流す。差分更新は発言が届いたらすぐ呼ぶので、先に流すと書き換えより前に呼ばれてしまう

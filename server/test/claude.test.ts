@@ -10,6 +10,7 @@ import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange }
 //   ok: success の result（structured_output つき） / fail: success 以外の result / throw: iterator が例外 / end: result を出さずにストリームが終わる
 //   missing: success だが structured_output が無い / invalid: success だが structured_output が DiffOutput の形に合わない
 //   extra: success で、structured_output の操作に余分なキーがある
+//   names: success で、話者の名前（Issue #1027。label・name・evidence・basis）を持つ structured_output / badBasis: 同じで basis が 2 値の外
 //   hang: 何も返さない（Scope を閉じても待ち続ける偽物。呼び出し側が中断で離れられることを確かめる）
 //   retried: success。構造化出力のやり直しで要求が 2 回。同じ message.id の assistant が 2 つ、別の id の assistant が 1 つ流れ、result の usage がその turn の全要求分を持つ
 //   nullcache: success。result の usage の cache_creation_input_tokens が null（SDK の型では number | null）、cache_read_input_tokens は欠けている
@@ -18,7 +19,7 @@ import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange }
 //   readings: success で、英字の語のカタカナの読み（Issue #642）の structured_output を返す
 //   limit: rate_limit_event（rejected、resetsAt あり）の後に失敗の result / limitNoReset: 同じで resetsAt が無い
 //   warned: allowed_warning と allowed の rate_limit_event を流してから success の result
-type Behavior = "limit" | "limitNoReset" | "warned" | "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "hang" | "retried" | "nullcache";
+type Behavior = "limit" | "limitNoReset" | "warned" | "readings" | "ok" | "fail" | "throw" | "end" | "missing" | "invalid" | "extra" | "names" | "badBasis" | "hang" | "retried" | "nullcache";
 type Message = { type: string; message?: { role?: string; content?: unknown }; parent_tool_use_id?: unknown };
 
 // assistant メッセージ 1 つ分（内容のブロックごとに 1 つ）。SDK では message が BetaMessage で、id・usage・model を持つ
@@ -35,6 +36,7 @@ type Options = { model: string; systemPrompt: string; effort?: string; outputFor
 
 // SDK の resetsAt はエポック秒
 const RESETS_AT_SECONDS = 1791316800;
+const NAME = { label: "相手 B", name: "田中", evidence: "r1", basis: "名乗り" };
 const noopOutput = (reason: string) => ({ ops: [{ op: "noop", reason }] });
 
 // 1 つの user メッセージに対して流す応答の列（hang・throw・end は流さないので、ここには来ない）
@@ -77,6 +79,8 @@ function responsesFor(behavior: Behavior, queryIndex: number, messageIndex: numb
   if (behavior === "readings") return [first, { ...result, subtype: "success", structured_output: { readings: [{ word: "Notion", katakana: "ノーション" }, { word: "Figma", katakana: "フィグマ" }] } }];
   if (behavior === "missing") return [first, { ...result, subtype: "success" }];
   if (behavior === "invalid") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "add", evidence: [] }] } }];
+  if (behavior === "names") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "noop", reason: "名乗り" }], names: [NAME] } }];
+  if (behavior === "badBasis") return [first, { ...result, subtype: "success", structured_output: { ops: [], names: [{ ...NAME, basis: "推測" }] } }];
   if (behavior === "extra") return [first, { ...result, subtype: "success", structured_output: { ops: [{ op: "noop", reason: "extra", unknown: 1 }], note: "x" } }];
   return [first, second, { ...result, subtype: "success", structured_output: noopOutput(`q${queryIndex}-m${messageIndex}`) }];
 }
@@ -291,6 +295,29 @@ describe("structured_output の検証（Schema で decode）", () => {
     }));
 });
 
+describe("話者の名前の出力（Issue #1027）", () => {
+  it.effect("structured_output の names（label・name・evidence・basis）は decode を通って update の結果に届く。names の無い応答には names のキーが付かない", () =>
+    Effect.gen(function* () {
+      const { updater: withNames } = yield* setup(() => "names");
+      const { updater: plain } = yield* setup(() => "ok");
+
+      const named = yield* withNames.update(input(1));
+      const unnamed = yield* plain.update(input(1));
+
+      expect(named.names).toEqual([NAME]);
+      expect("names" in unnamed).toBe(false);
+    }));
+
+  it.effect("basis が 名乗り・呼びかけへの応答 以外の names は DiffOutputInvalid になる（自由な文字列を通さない）", () =>
+    Effect.gen(function* () {
+      const { updater } = yield* setup(() => "badBasis");
+
+      const error = yield* Effect.flip(updater.update(input(1)));
+
+      expect(error).toMatchObject({ _tag: "DiffOutputInvalid" });
+    }));
+});
+
 describe("トークン数の数え方（result の usage）", () => {
   const OK_USAGE = { input: 100, cacheWrite: 20, cacheRead: 3000, output: 520, model: "claude-haiku-5-5" };
   const RETRIED_USAGE = { input: 230, cacheWrite: 45, cacheRead: 6100, output: 1040, model: "claude-haiku-5-5" };
@@ -361,6 +388,22 @@ describe("outputFormat の JSON Schema（DiffOutput から作る）", () => {
       expect(format.type).toBe("json_schema");
       expect(objects.length).toBeGreaterThanOrEqual(7); // 最上位 1 つと 7 操作
       for (const object of objects) expect(object.additionalProperties).toBe(false);
+    }));
+
+  it.effect("names（省略できる）の要素は label・name・evidence・basis を全部要求し、basis は 名乗り / 呼びかけへの応答 の 2 値で、各フィールドに説明が付く", () =>
+    Effect.gen(function* () {
+      const { schema } = yield* schemaOf();
+      const top = schema as { properties: Record<string, { items?: { properties: Record<string, { enum?: string[]; const?: string; anyOf?: { const?: string }[]; description?: string }>; required?: string[]; additionalProperties?: boolean } }>; required?: string[] };
+      const item = top.properties.names!.items!;
+
+      expect(top.required ?? []).not.toContain("names");
+      expect(Object.keys(item.properties).sort()).toEqual(["basis", "evidence", "label", "name"]);
+      expect([...(item.required ?? [])].sort()).toEqual(["basis", "evidence", "label", "name"]);
+      expect(item.additionalProperties).toBe(false);
+      const basis = item.properties.basis!;
+      const values = basis.enum ?? basis.anyOf?.map((m) => m.const) ?? [];
+      expect([...values].sort()).toEqual(["名乗り", "呼びかけへの応答"].sort());
+      for (const key of ["label", "name", "evidence", "basis"]) expect([key, (item.properties[key]!.description ?? "") !== ""]).toEqual([key, true]);
     }));
 
   it.effect("$ref が無い（参照は展開されている）", () =>

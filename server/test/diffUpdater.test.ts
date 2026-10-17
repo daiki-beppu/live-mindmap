@@ -66,7 +66,7 @@ const localPreparation = (status: number) => {
   const client = HttpClient.make((request) => Effect.sync(() => {
     requests.push(request.url);
     return HttpClientResponse.fromWeb(request, new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
-      議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "面接官は3人" }], 済み: "なし",
+      議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "面接官は3人" }], 済み: "なし", 名前: [],
     }) } }] }), { status, headers: { "content-type": "application/json" } }));
   }));
   const prepare = prepareUpdaterLayer(localModel).pipe(Effect.provide(apple),

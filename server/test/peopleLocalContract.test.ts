@@ -27,7 +27,7 @@ describe("ローカルの分類の契約", () => {
   });
 
   const opsOf = (work: { 担当: string; 担当の話者: string; 期限: string }) => {
-    const raw: Classification = { 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "作業", text: "求人票を直す", ...work }], 済み: "なし" };
+    const raw: Classification = { 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "作業", text: "求人票を直す", ...work }], 済み: "なし", 名前: [] };
     const input: DiffInput = { map: emptyMap("定例"), recent: [], fresh: [{ id: "r1", track: "相手", start: 0, end: 1, text: "私がやります。", speaker: "相手 A" }] };
     return Effect.runPromise(Effect.gen(function* () {
       const updater = yield* DiffUpdater;

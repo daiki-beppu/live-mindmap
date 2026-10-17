@@ -60,7 +60,7 @@ const loopback = Effect.fnUntraced(function* (afterRequest: (call: number) => vo
         choices: [{ message: { role: "assistant", content: JSON.stringify({
           議題: { id: "新しい議題", 題: "採用" },
           文: Array.from({ length: body.response_format.json_schema.schema.properties.文.maxItems }, () => ({ 種類: "説明", text: "採用の進め方" })),
-          済み: "なし",
+          済み: "なし", 名前: [],
         }) } }],
       }));
     });

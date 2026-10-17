@@ -105,7 +105,7 @@ describe("同じSessionでの一時停止と再開", () => {
         const sentences = [...request.prompt.matchAll(/^\d+\. (r\d+) \[\d+:\d+\] [^:]+: (.+)$/gm)];
         requests.push(sentences.map((s) => s[1]!));
         return requests.length <= 2 ? Effect.fail(failure) : Effect.succeed({
-          議題: { id: "新しい議題", 題: "採用" }, 文: sentences.map((s) => ({ 種類: "説明" as const, text: s[2]! })), 済み: "なし",
+          議題: { id: "新しい議題", 題: "採用" }, 文: sentences.map((s) => ({ 種類: "説明" as const, text: s[2]! })), 済み: "なし", 名前: [],
         });
       }) }), silentLog,
     )));
