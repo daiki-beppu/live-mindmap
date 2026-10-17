@@ -1,7 +1,7 @@
 // Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
 import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MapNode, type MeetingMap, type PreviousResponse } from "./core/index.ts";
-import { remarkLine } from "./remarkLine.ts";
+import { nameOfSpeaker, remarkLine } from "./remarkLine.ts";
 
 // noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
@@ -330,14 +330,14 @@ function renderTopicList(map: MeetingMap): string {
 
 // previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
 // 前回の応答の仮 ID と捨てた操作（previousResponse）は、変更を載せる回にだけ出す
-export function buildPrompt({ map, recent, fresh, previousResponse }: DiffInput, previous?: MeetingMap): string {
+export function buildPrompt({ map, recent, fresh, previousResponse, speakerNames }: DiffInput, previous?: MeetingMap): string {
   return [
     renderTopicList(map), "",
     ...(previous
       ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map, previousResponse)]
       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
-    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r)).join("\n") : "（なし）", "",
-    "## 新しい発言", fresh.map((r) => remarkLine(r)).join("\n"),
+    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r, { name: nameOfSpeaker(r, speakerNames) })).join("\n") : "（なし）", "",
+    "## 新しい発言", fresh.map((r) => remarkLine(r, { name: nameOfSpeaker(r, speakerNames) })).join("\n"),
   ].join("\n");
 }
 

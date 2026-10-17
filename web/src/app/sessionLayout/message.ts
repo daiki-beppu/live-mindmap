@@ -17,6 +17,15 @@ export const Message = defineMessageUnion({
   ReceivedSelfPause: { selfPaused: SelfPaused },
   ReceivedDiffUpdate: { state: Schema.Option(DiffUpdateState) },
   ReceivedSessionMode: { local: Schema.Boolean },
+  // 名前の欄の入力（Issue #1026）。欄を押した（bubbleId は押した吹き出し、label はサーバーに送る話者のラベル）・入力が変わった・確定した・取り消した（Esc・フォーカスが外れた）
+  PressedSpeakerName: { bubbleId: Schema.String, label: Schema.String },
+  ChangedSpeakerNameDraft: { draft: Schema.String },
+  SubmittedSpeakerName: {},
+  CancelledSpeakerName: {},
+  // 名前の送信が終わった。Model は変えない（名前は /ws の frame でだけ変わる）
+  CompletedRequestSpeakerName: {},
+  // 名前の入力へのフォーカスが済んだ。Model は変えない
+  CompletedFocusSpeakerNameInput: {},
   ChangedViewingMode: { mode: Schema.Literals(["auto", "manual", "overview", "diff"]) },
   // Disclosure の onToggle が運ぶ「次に開くか」
   ToggledCaptions: { isOpen: Schema.Boolean },

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { children, emptyMap, ROOT_ID, type DiffInput, type MeetingMap, type Remark } from "./core/index.ts";
-import { remarkLine } from "./remarkLine.ts";
+import { nameOfSpeaker, remarkLine } from "./remarkLine.ts";
 
 export const SYSTEM = `あなたは会議のマインドマップに、新しい発言の内容を書き足す係です。
 新しい発言は文に切って、番号付きで並べてあります。文ごとに種類を1つ選び、並べた順に返してください。
@@ -37,7 +37,7 @@ export type Classification = {
   readonly 済み: string;
 };
 
-export function classificationRequest(map: MeetingMap, recent: DiffInput["recent"], sentences: readonly Sentence[]) {
+export function classificationRequest(map: MeetingMap, recent: DiffInput["recent"], sentences: readonly Sentence[], speakerNames?: DiffInput["speakerNames"]) {
   const topics: string[] = [], points: string[] = [], closable: string[] = [];
   const lines = [`- root 会議: ${map.nodes[ROOT_ID]!.text}`];
   const walk = (id: string, depth: number) => {
@@ -57,8 +57,8 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
   });
   const prompt = [
     "## 現在のマップ（話し中の部分）", lines.join("\n"), "",
-    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r)).join("\n") : "（なし）", "",
-    `## 新しい発言（${sentences.length} 文）`, sentences.map((s, i) => `${i + 1}. ${remarkLine(s.remark, { text: s.text })}`).join("\n"),
+    "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r, { name: nameOfSpeaker(r, speakerNames) })).join("\n") : "（なし）", "",
+    `## 新しい発言（${sentences.length} 文）`, sentences.map((s, i) => `${i + 1}. ${remarkLine(s.remark, { text: s.text, name: nameOfSpeaker(s.remark, speakerNames) })}`).join("\n"),
   ].join("\n");
   return { prompt, schema, jsonSchema: Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" }).schema };
 }

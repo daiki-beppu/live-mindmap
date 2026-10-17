@@ -9,6 +9,7 @@ export * from "./latinWords.ts";
 export * from "./screenNotice.ts";
 export * from "./screenVocabulary.ts";
 export * from "./selfPause.ts";
+export * from "./speakerNames.ts";
 export * from "./tapNotice.ts";
 export * from "./trackMerge.ts";
 export * from "./sessionMode.ts";

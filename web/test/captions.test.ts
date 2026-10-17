@@ -587,3 +587,70 @@ describe("送信側の間引きを通した字幕（実際の relay → receiveC
       }),
     ));
 });
+
+// Issue #1026: 話者の名前。名前はラベルに付く表示名で、表示（名前の欄の文字）だけを変える。
+// 名前の表（ラベル → 名前）は displayBubbles の第 3 引数。受けた状態（receiveCaptions）には名前を入れず、表示のたびに表から導く。
+// 色・同じ人が続くときの省略・押せる欄かどうか（label）は、名前ではなくラベルで決める
+describe("会議中の字幕: 話者の名前（Issue #1026）", () => {
+  const bubble = (id: string, extra: Partial<CaptionBubble> = {}): CaptionBubble => ({ id, track: "相手", label: "確定", speaker: "相手 A", start: 0, end: 1, text: id, settledLength: (extra.text ?? id).length, ...extra });
+  const from = (speaker: string, id: string, start: number, extra: Partial<CaptionBubble> = {}) => bubble(id, { speaker, start, end: start + 1, ...extra });
+  const mine = (id: string, start: number) => bubble(id, { track: "自分", speaker: "自分", start, end: start + 1 });
+  const nameOf = (b: DisplayBubble) => Option.getOrUndefined(b.name);
+  const labelOf = (b: DisplayBubble) => Option.getOrUndefined(b.label);
+
+  it("同じ状態のまま名前の表だけを替えると、受けた時点からあった吹き出しの名前の欄も名前になる（それまでの分も含む）。名前の無いラベルはラベルのまま", () => {
+    const state = receiveCaptions(createCaptionState(), [from("相手 A", "a", 1), from("相手 B", "b", 2)], 0);
+
+    expect(displayBubbles(state, 0, {}).map(nameOf)).toEqual(["相手 A", "相手 B"]);
+    expect(displayBubbles(state, 0, { "相手 B": "田中" }).map(nameOf)).toEqual(["相手 A", "田中"]);
+    expect(displayBubbles(state, 0, { "相手 A": "佐藤", "相手 B": "田中" }).map(nameOf)).toEqual(["佐藤", "田中"]);
+  });
+
+  it("同じ名前が 2 つのラベルに付いても、まとめない: 別のラベルの吹き出しは両方とも名前を出し（省かない）、色はラベルごとに別のまま", () => {
+    const state = receiveCaptions(createCaptionState(), [from("相手 A", "a", 1), from("相手 B", "b", 2)], 0);
+    const names = { "相手 A": "田中", "相手 B": "田中" };
+
+    const named = displayBubbles(state, 0, names);
+    const plain = displayBubbles(state, 0, {});
+
+    expect(named.map(nameOf)).toEqual(["田中", "田中"]);
+    expect(named.map(labelOf)).toEqual(["相手 A", "相手 B"]);
+    expect(named[0]!.colorIndex).not.toBe(named[1]!.colorIndex);
+    expect(named.map((b) => b.colorIndex)).toEqual(plain.map((b) => b.colorIndex)); // 名前が付いても色は変わらない
+  });
+
+  // 見せる吹き出しは末尾の CAPTION_VISIBLE_BUBBLES（3）個。省略は見せる吹き出しの並びの中で決まるので、3 個ずつ見る
+  it("同じラベルが続くときの名前の省略は、名前が付いても変わらない（2 つ目以降は省く）。間に別のラベルが入れば、また出す", () => {
+    const names = { "相手 A": "田中" };
+    const continued = receiveCaptions(createCaptionState(), [from("相手 A", "a1", 1), from("相手 A", "a2", 2), from("相手 B", "b", 3)], 0);
+    const interleaved = receiveCaptions(createCaptionState(), [from("相手 A", "a1", 1), from("相手 B", "b", 2), from("相手 A", "a3", 3)], 0);
+
+    expect(displayBubbles(continued, 0, names).map(nameOf)).toEqual(["田中", undefined, "相手 B"]);
+    expect(displayBubbles(interleaved, 0, names).map(nameOf)).toEqual(["田中", "相手 B", "田中"]);
+  });
+
+  it("名前を付けられる欄（押せる欄）は、名前を出している確定の相手のラベルの欄だけ。値はサーバーに送るラベル（名前ではない）", () => {
+    const state = receiveCaptions(createCaptionState(), [from("相手 A", "a1", 1), from("相手 A", "a2", 2), mine("m", 3)], 0);
+    const next = receiveCaptions(createCaptionState(), [mine("m", 3), from("相手 B", "b", 4)], 0);
+
+    expect(displayBubbles(state, 0, {}).map((b) => [b.id, labelOf(b)])).toEqual([["a1", "相手 A"], ["a2", undefined], ["m", undefined]]); // 同じ人が続く欄・自分の欄は押せない
+    expect(displayBubbles(next, 0, { "相手 B": "田中" }).map((b) => [b.id, labelOf(b)])).toEqual([["m", undefined], ["b", "相手 B"]]); // 名前が付いても、値はラベル
+  });
+
+  it("仮のラベルの欄・3 秒たって「相手」だけになった欄・話者なしの「相手」の欄は押せない（付ける先のラベルが無い・まだ振っていないかもしれない）", () => {
+    const provisional = receiveCaptions(createCaptionState(), [from("相手 B", "p", 1, { label: "仮" })], 0);
+    expect(displayBubbles(provisional, 0, {}).map(labelOf)).toEqual([undefined]);
+    expect(displayBubbles(provisional, CAPTION_PROVISIONAL_LIMIT_MS, {}).map((b) => [nameOf(b), labelOf(b)])).toEqual([["相手", undefined]]);
+
+    const unlabeled = receiveCaptions(createCaptionState(), [bubble("n", { label: "なし", speaker: undefined, start: 1 })], 0);
+    expect(displayBubbles(advanceCaptions(unlabeled, CAPTION_LABEL_WAIT_MS), CAPTION_LABEL_WAIT_MS, { "相手": "誰か" }).map((b) => [nameOf(b), labelOf(b)])).toEqual([["相手", undefined]]);
+  });
+
+  it("自分には名前が付かない（表に自分があっても、自分の欄は空のまま・押せない）", () => {
+    const state = receiveCaptions(createCaptionState(), [mine("m", 1)], 0);
+
+    const [only] = displayBubbles(state, 0, { "自分": "誰か" });
+
+    expect([nameOf(only!), labelOf(only!), only!.side]).toEqual([undefined, undefined, "right"]);
+  });
+});

@@ -22,7 +22,7 @@ const feed = Subscription.lift({ liveFeed: LiveFeed.subscriptions.liveFeed, capt
   toParentMessage: (message) => Message.GotLiveFeedMessage({ message }),
 });
 const surface = Subscription.lift({ mapSurfaceAnimationFrame: mapSurfaceSubscriptions.animationFrame, mapSurfacePointer: mapSurfaceSubscriptions.pointer })<Model, Message>({
-  read: (model) => Option.flatMap(model.session, (s) => Option.map(model.feed.snapshot, (snapshot) => ({ mode: "live" as const, snapshot, ...s.mapSurface }))),
+  read: (model) => Option.flatMap(model.session, (s) => Option.map(model.feed.snapshot, (snapshot) => ({ mode: "live" as const, snapshot, speakerNames: {}, ...s.mapSurface }))),
   toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
 });
 export const subscriptions = Subscription.aggregate(own, feed, surface);

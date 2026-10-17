@@ -19,6 +19,7 @@ import { RestartBlink } from "../src/app/mapSurface/command.ts";
 import * as MapSurface from "../src/app/mapSurface/main.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
+import { FocusSpeakerNameInput, RequestSpeakerName } from "../src/app/sessionLayout/command.ts";
 import { Message as SessionLayoutMessage } from "../src/app/sessionLayout/message.ts";
 import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
 import type { KeyId } from "../src/app/keys/table.ts";
@@ -211,6 +212,10 @@ const mountStep = (name: string): Step | undefined =>
 const commandStep = (name: string, args: unknown): Step | undefined => {
   // M が送る休止・再開の指示（Issue #1069）。結果は Model を変えない（状態は /ws の frame でだけ変わる）ので、完了で閉じる
   if (name === "RequestSelfPause") return Command.resolveAll([RequestSelfPause, Message.CompletedRequestSelfPause()]);
+  // 名前の欄の確定が送る名前（Issue #1026）。結果は Model を変えない（名前は /ws の frame でだけ変わる）ので、完了で閉じる
+  if (name === "RequestSpeakerName") return Command.resolveAll([RequestSpeakerName, SessionLayoutMessage.CompletedRequestSpeakerName()]);
+  // 名前の入力へのフォーカス（欄を押したとき）。Model は変えない
+  if (name === "FocusSpeakerNameInput") return Command.resolveAll([FocusSpeakerNameInput, SessionLayoutMessage.CompletedFocusSpeakerNameInput()]);
   if (name === "RestartBlink") return Command.resolveAll([RestartBlink, MapSurfaceMessage.CompletedRestartBlink()]);
   // キーの一覧（Popover）を閉じたときにフォーカスを戻す・開いたときにパネルへフォーカスを移す
   if (name === "FocusButton") return Command.resolveAll([Popover.FocusButton, Popover.Message.CompletedFocusButton()]);
@@ -258,6 +263,9 @@ export const commandNames = (simulation: { commands: ReadonlyArray<{ name: strin
 // 保留の休止・再開の指示（M を押して出た Command）が送る paused の値を、出た順に返す
 export const selfPauseRequests = (simulation: { commands: ReadonlyArray<{ name: string; args?: unknown }> }): boolean[] =>
   simulation.commands.filter((c) => c.name === "RequestSelfPause").map((c) => (c.args as { paused: boolean }).paused);
+// 保留の名前の送信（名前の欄を確定して出た Command）の引数を、出た順に返す
+export const speakerNameRequests = (simulation: { commands: ReadonlyArray<{ name: string; args?: unknown }> }): Array<{ label: string; name: string }> =>
+  simulation.commands.filter((c) => c.name === "RequestSpeakerName").map((c) => c.args as { label: string; name: string });
 export const timers = (simulation: { commands: ReadonlyArray<{ name: string; args?: unknown }> }) => simulation.commands.filter((c) => c.name === "WaitBeforeDismissal");
 // 保留の時間切れ（先頭）を、いま来たものとして解く
 export const expire = (simulation: Sim): Sim => {
