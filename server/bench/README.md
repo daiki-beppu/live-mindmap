@@ -1,6 +1,6 @@
 # bench: eval の道具
 
-eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
+eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds`・`speakerReplay` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
 
 実会議の録音・文字起こしなどの素材はリポジトリの外にある。置き場所と中身は `~/live-mindmap-samples/README.md` を参照。リポジトリ内には `server/bench/meetings/`（正解・文字起こしの JSON と `lecture.timeline.tsv`）がある。
 
@@ -246,6 +246,46 @@ pnpm --filter @live-mindmap/server exec node bench/mapShape.ts <セッション�
 | 子の数の分布（0/1/2/3/4/5/6+） | 子の数ごとのノード数。6 以上は最後へまとめる |
 
 大きさはプロンプトと共通の core の `groupSize` で数える。起点自身は含めない。議題・案・課題・要点では論点を 1 と数え、その配下は除く。論点では派生の論点自身を 1 と数えて配下は除き、済みの論点を起点にした大きさは 0。どの起点でも子の議題自身とその配下は除く。決定済みと済みは別の状態であり、決定を持つだけでは計測を打ち切らない。一番近い祖先の議題は親から探索し、なければルートを返す。
+
+## speakerReplay（話者の結び付けの流し直し）
+
+録音からやり直さずに、発言への話者の結び付けを測り直す（Issue #1030）。入力を届いた順に、本番の中核（`createRemarkSettling` → `createSpeakerAttribution`）へ流し直す。規則は中核だけが持ち、この道具は写さない。`cli play`（締めた後の発言を流す）とは別の経路。認証・サーバー・モデルは不要。
+
+```sh
+cd server
+node bench/speakerReplay.ts [旗] <セッションフォルダ か log.jsonl>
+node bench/speakerReplay.ts --offline [旗] <オフライン出力の JSONL>
+```
+
+入力は 2 通り。
+
+- `log.jsonl`（既定）: ライブが残した `remark` 行（話者の段を通った後の断片）と、話者のイベント 5 種、`intake-restarted`。行の順を届いた順として、`remark` 行は話者の段へ直接入れる。`remark.speaker` は使わず、流し直しで決め直す。話者を持たない古いログも流せる（相手の発言は話者なし）。
+- `--offline`: ヘルパーのイベント（helper/README の「イベントの形」）に、届いた時刻 `arrival`（秒）を足した 1 行 1 JSON。ファイル上の順は問わず、`arrival` の順（同じ値はファイルの順）に `partial`・`remark`・話者のイベントを settler から流す。知らない種類と使わない種類（`origin`・`screen` など）は読み飛ばす。`stt-bench run` と `--diarize` の出力は `speaker-settled`・`wordTimes`・重心を持たないので、そのままは流せない。
+
+旗:
+
+| 旗 | 外す規則 |
+| --- | --- |
+| `--without-longest-overlap` | 最も長い重なり。代わりに、重なる区間のうち `start` が最も早い枠（同じなら小さい枠） |
+| `--without-fill` | 誰もいない語を前後に寄せる。その語は話者なし |
+| `--without-min-run` | 0.5 秒の下限（短い区間を長い隣へ寄せる） |
+| `--without-wait` | 3 秒の待ち。揃う・`speaker-off`・起動し直し・最後まで待つ（「すぐ出す」ではない） |
+| `--restart-at <秒>` | 届いた時刻（最初の入力からの秒）以降の最初の入力の直前で、話者分離の枠の状態を捨てて重心でつなぎ直す。ラベルと重心は残す。ログの `intake-restarted` は旗がなくても起動し直しとして扱う |
+
+出力は標準出力に JSON 1 つ。発言の本文・`raw`・`words` は出さない。
+
+- `remarks`: 出した順の `{ source, track, start, end, speaker? }`。`source` は log では元の `remark.id`、offline では出した順の `r1…`
+- `labels`: 振ったラベル
+- `mixed`: 混入（`speaker-mixed`）の記録 `{ slot, label? }`
+- `links`: 起動し直し後のつなぎ直しの判定 `{ slot, result: "linked" | "new" | "reverted", label? }`。迷って決まらなかった判定は出ない
+- `restarts`: 起動し直した届いた時刻 `{ at, source: "flag" | "log" }`
+
+不正な行は行番号だけを診断にして非ゼロ終了する（JSON の原文は出さない）。
+
+`log.jsonl` には、締める前の `partial` と確定結果が残っていない。そのため log の入力では、次の 2 点は測り直せない。測るには `--offline` を使う。
+
+- 断片をまたぐ切り方の変化（0.5 秒の下限による寄せなど）
+- 3 秒の待ちの長さそのもの（待ちを外すことはできる）。各 `remark` 行は、ライブがその発言を出した時点にあるとみなす。入れた直後に時計を 3 秒進め、揃っていればその場で規則を当て、揃っていなければ話者なしで出す
 
 ## eval ではないもの
 

@@ -3,16 +3,18 @@
 // settler の戻り値（4 つの出口は、どれもここを通る）の後ろに、話者を決める段（core/speakers.ts）を 1 段だけ置く（Issue #1021）。
 // 相手の発言は、確定した話者の区間が揃うまで保留される（最大 SPEAKER_WAIT_MS）。段の状態（枠とラベルの対応）は、この settling と同じ寿命で 1 つ
 import { Effect } from "effect";
-import { createRemarkSettler, createSpeakerAttribution, type HelperPartial, type SettledRemark, type SpeakerLogEvent } from "./core/index.ts";
+import { createRemarkSettler, createSpeakerAttribution, type HelperPartial, type SettledRemark, type SpeakerAttributionOptions, type SpeakerLogEvent } from "./core/index.ts";
 import { createStopGate } from "./stopGate.ts";
 
 export type RemarkSettlingOptions = {
   emit: (remark: SettledRemark) => Effect.Effect<void>;
+  // 話者の段の規則の切り替えと判定の記録（Issue #1030）。ライブは渡さない
+  speakers?: SpeakerAttributionOptions;
 };
 
-export const createRemarkSettling = Effect.fnUntraced(function* ({ emit }: RemarkSettlingOptions) {
+export const createRemarkSettling = Effect.fnUntraced(function* ({ emit, speakers }: RemarkSettlingOptions) {
   const settler = createRemarkSettler();
-  const attribution = createSpeakerAttribution();
+  const attribution = createSpeakerAttribution(speakers);
   const gate = yield* createStopGate;
   const { unlessStopped } = gate;
 

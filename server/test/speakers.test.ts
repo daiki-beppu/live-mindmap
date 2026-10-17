@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSpeakerAttribution, SPEAKER_WAIT_MS, splitBySpeaker, type SettledRemark, type SpeakerLogEvent, type WordTime } from "../src/core/index.ts";
+import { createSpeakerAttribution, SPEAKER_WAIT_MS, splitBySpeaker, type SettledRemark, type SpeakerLogEvent, type SpeakerRecord, type WordTime } from "../src/core/index.ts";
 
 // Issue #1021: 相手の発言の話者を決める規則（ADR 0013、GLOSSARY「発言」「話者」）。
 // 規則は時刻を引数に取る純粋な関数（splitBySpeaker）と、時刻を引数に取りタイマーを持たない状態つきの段（createSpeakerAttribution）。
@@ -940,6 +940,27 @@ describe("createSpeakerAttribution: 起動し直しをまたぐつなぎ直し�
     expect(spokenBy(attribution, 0, 20)).toEqual([undefined]);
     expect(spokenBy(attribution, 0, 30)).toEqual([undefined]);
     expect(spokenBy(attribution, 1, 40)).toEqual(["相手 A"]);
+  });
+
+  it("observe: 混入で戻したラベルに一致する新しい枠は、slot・reverted・戻したラベルを知らせる。他のラベルに一致した枠は linked", () => {
+    const records: SpeakerRecord[] = [];
+    const attribution = createSpeakerAttribution({ observe: (r) => records.push(r) });
+    attribution.speaker(speakerEvent(0, 10, 12));
+    attribution.speaker(centroidEvent(0, A));
+    attribution.speaker(speakerEvent(1, 12, 14));
+    attribution.speaker(centroidEvent(1, B));
+    attribution.speaker(settledEvent(14));
+    attribution.remarks([heard("あ", 10, 12), heard("い", 12, 14)], 14_000);
+    attribution.speaker(mixedEvent(1));
+    attribution.restart();
+    attribution.speaker(centroidEvent(0, NEAR_B));
+    attribution.speaker(centroidEvent(1, NEAR_A));
+
+    expect(records).toEqual([
+      { type: "mixed", slot: 1, label: "相手 B" },
+      { type: "link", slot: 0, result: "reverted", label: "相手 B" },
+      { type: "link", slot: 1, result: "linked", label: "相手 A" },
+    ]);
   });
 
   it("戻したラベルには、起動し直した後の別の枠も、後から届く近い重心も、ラベルを付けない。戻したラベルを新しいラベルとして使い回さない", () => {
