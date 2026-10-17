@@ -62,6 +62,57 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
     ]);
   });
 
+  // Issue #1026: 名前が付いたラベルの相手の発言は「相手 B（田中）: 本文」。新しい発言も直前の発言も同じ。ラベルは変えず、名前を添えるだけ
+  it("speakerNames があれば、ラベルのある相手の発言の行が 相手 B（田中） になる。新しい発言と直前の発言の両方。名前の無いラベル・話者なし・自分は今の形のまま", async () => {
+    const { buildPrompt } = await import("../src/claudePrompt.ts");
+    const lines = (prompt: string, section: string) => {
+      const body = prompt.split(`## ${section}`)[1]!.split("\n\n## ")[0]!;
+      return body.split("\n").filter((line) => /^r\d+ /.test(line));
+    };
+
+    const prompt = buildPrompt({
+      map: emptyMap("定例"),
+      recent: [
+        { id: "r10", track: "相手", start: 194, end: 196, text: "前の発言", speaker: "相手 A" },
+        { id: "r11", track: "相手", start: 197, end: 198, text: "名前つき", speaker: "相手 B" },
+        { id: "r12", track: "自分", start: 199, end: 200, text: "うん", speaker: "自分" },
+      ],
+      fresh: [
+        { id: "r13", track: "相手", start: 194.9, end: 196, text: "名前つき", speaker: "相手 B" },
+        { id: "r14", track: "相手", start: 200, end: 201, text: "話者なし" },
+        { id: "r15", track: "自分", start: 202, end: 203, text: "自分です", speaker: "自分" },
+      ],
+      speakerNames: new Map([["相手 B", "田中"]]),
+    });
+
+    expect(lines(prompt, "直前の発言（処理済み・文脈用）")).toEqual([
+      "r10 [03:14] 相手 A: 前の発言",
+      "r11 [03:17] 相手 B（田中）: 名前つき",
+      "r12 [03:19] 自分: うん",
+    ]);
+    expect(lines(prompt, "新しい発言")).toEqual([
+      "r13 [03:14] 相手 B（田中）: 名前つき",
+      "r14 [03:20] 相手: 話者なし",
+      "r15 [03:22] 自分: 自分です",
+    ]);
+  });
+
+  it("同じ名前を 2 つのラベルに付けても、行はラベルごとに別（相手 A（田中） と 相手 B（田中））", async () => {
+    const { buildPrompt } = await import("../src/claudePrompt.ts");
+
+    const prompt = buildPrompt({
+      map: emptyMap("定例"),
+      recent: [],
+      fresh: [
+        { id: "r1", track: "相手", start: 0, end: 1, text: "あ", speaker: "相手 A" },
+        { id: "r2", track: "相手", start: 1, end: 2, text: "い", speaker: "相手 B" },
+      ],
+      speakerNames: new Map([["相手 A", "田中"], ["相手 B", "田中"]]),
+    });
+
+    expect(prompt.split("\n").filter((line) => /^r\d+ /.test(line))).toEqual(["r1 [00:00] 相手 A（田中）: あ", "r2 [00:01] 相手 B（田中）: い"]);
+  });
+
   it("論点の配下を件数から除いても、その下の議題を全体・変更メッセージの一覧に残す", async () => {
     const { buildPrompt } = await import("../src/claudePrompt.ts");
     const previous = emptyMap("合成会議");

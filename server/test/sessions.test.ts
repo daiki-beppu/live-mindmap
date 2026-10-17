@@ -180,6 +180,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),
           speaker: (event: SpeakerLine) => Effect.sync(() => { speakers.push(event); speakerCalls.push(`speaker:${event.type}`); }),
           speakersRenumbered: Effect.sync(() => { speakerCalls.push("renumbered"); }),
+          nameSpeaker: () => Effect.void,
           flush: Effect.sync(() => { order.push("flush"); }),
           exports: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => { order.push("exports"); return [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`]; }),
           audioFileNames: (attempt: number) => (attempt > 1 ? [`相手-${attempt}.m4a`, `自分-${attempt}.m4a`] : ["相手.m4a", "自分.m4a"]),

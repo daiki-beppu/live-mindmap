@@ -4,11 +4,17 @@ import { createServer } from "vite";
 import { describe, expect, it } from "vitest";
 
 // Issue #1069: ライブ画面の M が送る POST /session/self-pause は、開発用サーバー（Vite）の proxy で、操作用ポート（LIVE_MINDMAP_PORT）へ届く。
+// Issue #1026: 字幕の名前の欄が送る POST /session/speaker-name も同じ。
 const root = join(import.meta.dirname, "..");
 const configFile = join(root, "vite.config.ts");
 
+const proxied = [
+  { path: "/session/self-pause", body: { paused: true } },
+  { path: "/session/speaker-name", body: { label: "相手 B", name: "田中" } },
+] as const;
+
 describe("開発用サーバーの proxy", () => {
-  it("POST /session/self-pause を、LIVE_MINDMAP_PORT の操作用ポートへ同じパス・同じ本文で渡す", async () => {
+  it.each(proxied)("POST $path を、LIVE_MINDMAP_PORT の操作用ポートへ同じパス・同じ本文で渡す", async ({ path, body: sent }) => {
     const received: { method?: string; url?: string; body: string }[] = [];
     const target = createHttpServer((request, response) => {
       let body = "";
@@ -30,13 +36,13 @@ describe("開発用サーバーの proxy", () => {
         await server.listen();
         const web = server.httpServer!.address();
         if (!web || typeof web === "string") throw new Error("web のポートを取得できません");
-        const response = await fetch(`http://127.0.0.1:${web.port}/session/self-pause`, {
+        const response = await fetch(`http://127.0.0.1:${web.port}${path}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ paused: true }),
+          body: JSON.stringify(sent),
         });
         expect(response.status).toBe(204);
-        expect(received).toEqual([{ method: "POST", url: "/session/self-pause", body: '{"paused":true}' }]);
+        expect(received).toEqual([{ method: "POST", url: path, body: JSON.stringify(sent) }]);
       } finally {
         await server.close();
       }

@@ -36,6 +36,16 @@ export class NotForRecordedSession extends Schema.TaggedError<NotForRecordedSess
   }
 }
 
+// 話者に名前を付けられない（Issue #1026）。付けられるのは、発言に振った「相手 X」のラベルだけ。
+// 自分・まだ振っていないラベル・ラベルの無い「相手」・空の名前は付けない。セッションの状態に依らない依頼の誤りなので SessionFailure には含めない
+export class SpeakerNameRejected extends Schema.TaggedError<SpeakerNameRejected>()("SpeakerNameRejected", {
+  reason: Schema.Literals(["ラベルがない", "名前が空"]),
+}) {
+  override get message(): string {
+    return this.reason === "名前が空" ? "名前が空です" : "名前を付けられる話者のラベルではありません";
+  }
+}
+
 // stop・サーバーの終了に中断された（起動・起動し直し自体は成立していない）
 export class Aborted extends Schema.TaggedError<Aborted>()("Aborted", {}) {
   override get message(): string {

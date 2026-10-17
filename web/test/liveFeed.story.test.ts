@@ -32,6 +32,7 @@ describe("初期値", () => {
       diffUpdate: Option.none(),
       local: false,
       selfPaused: false,
+      speakerNames: {},
     } satisfies Model);
   });
 });
@@ -225,6 +226,7 @@ describe("つないだときの値（server が、つないだら保持してい
           diffUpdate: Option.some({ status: "paused", reason: "ChatGPT の利用上限" }),
           local: true,
           selfPaused: false,
+          speakerNames: {},
         } satisfies Model);
       }),
     );

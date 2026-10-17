@@ -279,7 +279,7 @@ describe("見返しの update: 表示面のカメラ", () => {
   // 時刻の変更で Snapshot が別のものになったら、表示面へ ChangedSnapshot を渡して補間が終わった（Tick 500 の後の）最終配置が viewport になる
   const expectedAfter = (before: Model, to: number) =>
     MapSurface.update(
-      MapSurface.update({ mode: "review", snapshot: snapshotAt(context.timeline, before.playback.time), ...before.mapSurface }, MapSurfaceMessage.ChangedSnapshot({ snapshot: snapshotAt(context.timeline, to) })).model,
+      MapSurface.update({ mode: "review", snapshot: snapshotAt(context.timeline, before.playback.time), speakerNames: {}, ...before.mapSurface }, MapSurfaceMessage.ChangedSnapshot({ snapshot: snapshotAt(context.timeline, to) })).model,
       MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 500 }),
     ).model;
   const expectFollowed = (before: Model, after: Model, to: number) => {
@@ -337,7 +337,7 @@ describe("見返しの update: 開閉の後の最終配置とカメラ", () => {
     diff(["r2"], [add("t2", "root", "議題", "予算", ["r2"]), add("p1", "t2", "論点", "上限をどうするか", ["r2"])]),
   ]);
   const upd = makeUpdate(ctx);
-  const surfaceOf = (m: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(ctx, m), ...m.mapSurface });
+  const surfaceOf = (m: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(ctx, m), speakerNames: {}, ...m.mapSurface });
   const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const idOf = (text: string): string => snapshotAt(ctx.timeline, 30).nodes.find((n) => n.text === text)!.id;
   const T1 = idOf("採用");
@@ -447,7 +447,7 @@ describe("見返しの update: 今の議題が無い自動のカメラ", () => {
     diff(["r1"], [add("x1", "root", "論点", "天気", ["r1"]), add("x2", "root", "論点", "移動", ["r1"])]),
   ]);
   const upd = makeUpdate(ctx);
-  const surfaceOf = (m: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(ctx, m), ...m.mapSurface });
+  const surfaceOf = (m: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(ctx, m), speakerNames: {}, ...m.mapSurface });
   const got = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
   const start = init(ctx);
   const ids = snapshotAt(ctx.timeline, start.playback.time).nodes.map((n) => n.id);
@@ -485,8 +485,8 @@ describe("見返しの update: 反映をまたぐ移動の補間", () => {
     const m = at(time);
     return update(m, got(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40, t1: 40, t2: 40, p1: 200 } }))).model;
   };
-  const displayed = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), ...m.mapSurface });
-  const finalPositions = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), ...m.mapSurface, motion: Option.none() });
+  const displayed = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), speakerNames: {}, ...m.mapSurface });
+  const finalPositions = (m: Model) => MapSurface.displayedPositions({ mode: "review", snapshot: snapshotOf(context, m), speakerNames: {}, ...m.mapSurface, motion: Option.none() });
   const tick = (deltaMs: number) => got(MapSurfaceMessage.TickedAnimationFrame({ deltaMs }));
 
   it("ClickedNext で目標の位置が変わると motion が保存され、Tick 250 で途中、Tick 500 で最終位置に止まる", () => {

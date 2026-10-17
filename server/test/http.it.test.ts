@@ -20,6 +20,7 @@ import type { ServerLayers } from "../src/server.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import { buildPrompt } from "../src/claudePrompt.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -424,6 +425,153 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         const response = yield* Effect.tryPromise(() => r.request("POST", "/session/self-pause", '{"paused":true}', "https://evil.example"));
         expect(response.status).toBe(403);
         expect(r.sent).toEqual([]);
+      }));
+  });
+
+  // Issue #1026: 話者の名前（POST /session/speaker-name）。ラベルは、ヘルパーの speaker と発言で振られたものだけ
+  describe("話者の名前（POST /session/speaker-name）", () => {
+    type Requester = { request: (m: string, p: string, b: string | undefined, o: string | undefined) => Promise<Response> };
+    const START = '{"app":"us.zoom.xos","audio":false}';
+    const speakerName = (r: Requester, body: string | undefined, origin?: string) => Effect.tryPromise(() => r.request("POST", "/session/speaker-name", body, origin));
+    const nameBody = (label: string, name: string) => JSON.stringify({ label, name });
+    // 相手の 2 人が 1 発言ずつ話す台本（相手 A・相手 B が振られる）。start で一度に流れる
+    const twoSpeakers = (start: number): unknown[] => [0, 1].flatMap((slot) => [
+      { type: "speaker", track: "相手", start: start + slot * 2, end: start + slot * 2 + 2, slot, final: true },
+      { type: "speaker-settled", track: "相手", to: start + slot * 2 + 2 },
+      { type: "remark", track: "相手", start: start + slot * 2, end: start + slot * 2 + 2, text: `発言${slot + 1}です` },
+    ]);
+    // 振られるまで待って名前を付ける（振る前は 4xx で断られるので、204 になるまで繰り返す）
+    const nameWhenLabeled = (r: Requester, label: string, name: string) => Effect.tryPromise(() => vi.waitFor(async () => {
+      expect((await r.request("POST", "/session/speaker-name", nameBody(label, name), undefined)).status).toBe(204);
+    }, { timeout: 10_000 }));
+    const names = (frames: unknown[]) => frames
+      .filter((f): f is { type: "speaker-names"; names: Array<{ label: string; name: string }> } => typeof f === "object" && f !== null && "type" in f && f.type === "speaker-names")
+      .map((f) => f.names);
+    const logLines = (dir: string) => Effect.tryPromise(async () => (await readFile(join(dir, "log.jsonl"), "utf8")).split("\n").filter((l) => l !== "").map((l) => JSON.parse(l) as { type: string; label?: string; name?: string; source?: string; at?: string }));
+
+    it.live("振られたラベルに {label,name} を送ると 204 になり、log.jsonl に手入力の名前が残り、つないでいる画面へ名前のフレームが届く", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
+        const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+        const viewer = yield* connect(r.server.port, "/ws", undefined);
+
+        yield* nameWhenLabeled(r, "相手 B", "田中");
+
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(viewer.frames).at(-1)).toEqual([{ label: "相手 B", name: "田中" }])));
+        const lines = (yield* logLines(dir)).filter((l) => l.type === "speaker-name");
+        expect(lines.map(({ at, ...rest }) => ({ hasAt: typeof at === "string", rest }))).toEqual([{ hasAt: true, rest: { type: "speaker-name", label: "相手 B", name: "田中", source: "手入力" } }]);
+      }));
+
+    it.live("後からつないだ画面にも、いまの名前が（最初のフレームとして）届く", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
+        yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        yield* nameWhenLabeled(r, "相手 A", "鈴木");
+
+        const late = yield* connect(r.server.port, "/ws", undefined);
+
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(late.frames)).toEqual([[{ label: "相手 A", name: "鈴木" }]])));
+      }));
+
+    it.live("自分・まだ振られていないラベル・ラベルの無い「相手」・空の名前は 4xx で断り、log.jsonl にも画面のフレームにも何も出ない", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
+        const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+        const viewer = yield* connect(r.server.port, "/ws", undefined);
+        yield* nameWhenLabeled(r, "相手 A", "鈴木"); // 振られた後の状態で、断られることを示す
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(viewer.frames).at(-1)).toEqual([{ label: "相手 A", name: "鈴木" }])));
+        const before = names(viewer.frames).length;
+
+        for (const [label, name] of [["自分", "田中"], ["相手 C", "田中"], ["相手", "田中"], ["相手 A", ""], ["相手 A", "   "]] as const) {
+          const response = yield* speakerName(r, nameBody(label, name));
+          expect([label, name, response.status >= 400 && response.status < 500]).toEqual([label, name, true]);
+        }
+
+        expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name").map((l) => [l.label, l.name])).toEqual([["相手 A", "鈴木"]]); // 最初に付けた 1 件だけ
+        yield* Effect.tryPromise(() => new Promise<void>((resolve) => setTimeout(resolve, 100)));
+        expect(names(viewer.frames)).toHaveLength(before);
+        expect(names(viewer.frames).at(-1)).toEqual([{ label: "相手 A", name: "鈴木" }]); // 空の名前で外れていない
+      }));
+
+    for (const body of ['{}', '{"label":"相手 A"}', '{"name":"田中"}', '{"label":1,"name":"田中"}', '{"label":"相手 A","name":2}', '{"label":"相手 A","name":"田中","extra":1}', "not json", undefined]) {
+      it.live(`本文が ${String(body)} なら 400 で拒否し、名前を付けない`, () =>
+        Effect.gen(function* () {
+          const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
+          const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+          const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+          yield* nameWhenLabeled(r, "相手 B", "先に付けた名前"); // 振られた後でも、本文が違えば 400（振られていないことによる 4xx と区別する）
+
+          expect((yield* speakerName(r, body)).status).toBe(400);
+
+          expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name")).toHaveLength(1);
+        }));
+    }
+
+    it.live("セッションが無いときは 409", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        expect((yield* speakerName(r, nameBody("相手 A", "田中"))).status).toBe(409);
+      }));
+
+    it.live("非ローカル Origin からは 403 で拒否し、名前を付けない", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
+        const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+        yield* nameWhenLabeled(r, "相手 A", "先に付けた名前");
+
+        expect((yield* speakerName(r, nameBody("相手 B", "田中"), "https://evil.example")).status).toBe(403);
+
+        expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name").map((l) => l.label)).toEqual(["相手 A"]);
+      }));
+
+    // cli resume は同じセッションのヘルパーを起動し直すだけ。名前はサーバーのメモリに残り、起動し直した後の差分更新にも使われる
+    it.live("取り込みが止まって resume しても名前が残る。resume の後の差分更新の直前の発言の行は 相手 B（田中）、新しくつないだ画面にも名前が届く", () =>
+      Effect.gen(function* () {
+        const prompts: string[][] = [];
+        const r = yield* resourceWithFakeHelpers([
+          { events: twoSpeakers(0), unexpectedExit: { afterMs: 1500, exit: { code: 1, signal: null } } },
+          { connect: false }, { connect: false }, // 2・3 回目の失敗で諦めて止まる
+          { events: [{ type: "speaker-off", start: 0, reason: "モデルなし" }, { type: "remark", track: "相手", start: 10, end: 12, text: "再開後の発言です" }] },
+        ], { updaterLayer: () => updaterLayer((input) => Effect.sync(() => {
+          prompts.push(buildPrompt(input).split("\n").filter((line) => /^r\d+ /.test(line)));
+          return { ops: [] };
+        })) });
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined))).status).toBe(200);
+        yield* nameWhenLabeled(r, "相手 B", "田中");
+        yield* Effect.tryPromise(() => vi.waitFor(async () => {
+          expect(await (await r.request("GET", "/session/status", undefined, undefined)).json()).toMatchObject({ status: "stopped" });
+        }, { timeout: 10_000 }));
+
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/resume", undefined, undefined))).status).toBe(200);
+
+        yield* Effect.tryPromise(() => vi.waitFor(() => {
+          expect(prompts.flat().some((line) => line.includes("再開後の発言です"))).toBe(true);
+        }, { timeout: 10_000 }));
+        const afterResume = prompts.find((lines) => lines.some((line) => line.includes("再開後の発言です")))!;
+        expect(afterResume.filter((line) => line.includes("発言2です"))).toEqual(["r2 [00:02] 相手 B（田中）: 発言2です"]);
+        const reconnected = yield* connect(r.server.port, "/ws", undefined);
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(reconnected.frames).at(-1)).toEqual([{ label: "相手 B", name: "田中" }])));
+        // resume の後も、振ったラベルには名前を付けられる（ラベルの状態も残っている）
+        expect((yield* speakerName(r, nameBody("相手 A", "鈴木"))).status).toBe(204);
+      }));
+
+    it.live("セッションを終えて新しく start すると、名前は持ち越されない（画面へ届く表は空）", () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }, { events: twoSpeakers(0) }]);
+        yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        yield* nameWhenLabeled(r, "相手 A", "田中");
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, undefined))).status).toBe(200);
+
+        const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
+        expect(started.status).toBe(200);
+        const viewer = yield* connect(r.server.port, "/ws", undefined);
+
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(names(viewer.frames).at(-1)).toEqual([])));
+        const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
+        expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name")).toEqual([]);
       }));
   });
 

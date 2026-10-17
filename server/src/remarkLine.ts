@@ -14,3 +14,7 @@ export const remarkLine = (r: Remark, { text = r.text, name }: RemarkLineOptions
   const who = name !== undefined && r.speaker !== undefined && r.track === "相手" ? `${speaker}（${name}）` : speaker;
   return `${r.id} [${fmtTime(r.start)}] ${who}: ${text}`;
 };
+
+// 発言の話者のラベルに付いた名前（Issue #1026）。話者なしの発言と、名前の表が無い呼び出しは undefined
+export const nameOfSpeaker = (r: Remark, names: ReadonlyMap<string, string> | undefined): string | undefined =>
+  r.speaker === undefined ? undefined : names?.get(r.speaker);

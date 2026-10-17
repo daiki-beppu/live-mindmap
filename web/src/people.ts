@@ -1,20 +1,23 @@
 // 案の出した人と TODO の担当者を、ノードの本文の後ろに出す 1 行（Issue #1023）。純粋な関数だけで、view が毎回ここから導く。
 import type { SnapshotNode } from "../../server/src/core/index.ts";
 
-// 話者の表示名。表示名を決めるのはここだけ（話者の名前が付いたら、ここだけを変える）。
-// 話者なしの相手（"相手"）は出さないので null
-export function speakerName(speaker: string): string | null {
-  return speaker === "相手" ? null : speaker;
+// 話者の名前の表（話者のラベル → 名前。Issue #1026）。サーバーの speaker-names フレームの全体で、ブラウザは持ち替えずに毎回ここから表示名を導く
+export type SpeakerNames = Readonly<Record<string, string>>;
+
+// 話者の表示名。表示名を決めるのはここだけ。名前が付いたラベルは名前、付いていなければラベルのまま。
+// 話者なしの相手（"相手"）は出さないので null。名前は表示だけを変え、ノードの話者（ラベル）は変えない
+export function speakerName(speaker: string, names: SpeakerNames = {}): string | null {
+  return speaker === "相手" ? null : (Object.hasOwn(names, speaker) ? names[speaker]! : speaker);
 }
 
 // 案は「— 出した人」、TODO は「→ 担当者 · 期限」。出すものが無ければ null。案と TODO 以外には出さない
-export function personLine(node: SnapshotNode): string | null {
+export function personLine(node: SnapshotNode, names: SpeakerNames = {}): string | null {
   if (node.kind === "案") {
-    const name = node.proposer === undefined ? null : speakerName(node.proposer);
+    const name = node.proposer === undefined ? null : speakerName(node.proposer, names);
     return name === null ? null : `— ${name}`;
   }
   if (node.kind === "TODO") {
-    const who = node.assignee ?? (node.assigneeSpeaker === undefined ? null : speakerName(node.assigneeSpeaker));
+    const who = node.assignee ?? (node.assigneeSpeaker === undefined ? null : speakerName(node.assigneeSpeaker, names));
     const parts = [who, node.due].filter((part): part is string => part !== null && part !== undefined);
     return parts.length === 0 ? null : `→ ${parts.join(" · ")}`;
   }

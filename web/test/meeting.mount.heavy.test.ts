@@ -3,7 +3,7 @@ import { CAPTION_SLIDE_MS } from "../src/captions.ts";
 import { scrollPanDelta } from "../src/camera.ts";
 import { keyListRows } from "../src/app/keys/table.ts";
 import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
-import { spokenFrame } from "./fixtures/captions.ts";
+import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { mapPoint, near, rectOf, styleOf } from "./reviewPage.ts";
 import { withBrowser, type Page } from "./screenCompare.ts";
 
@@ -602,6 +602,77 @@ describe("会議中（Foldkit 版）の寸法", () => {
       await page.locator(".map-node__button").first().click();
       await page.waitForFunction(() => document.querySelector(".map-node--selected") !== null, undefined, { timeout: 10_000 });
       expect((await styleOf(page, ".map-node--selected", ["background-color"]))["background-color"]).toBe("rgb(243, 244, 246)");
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  // Issue #1026: 名前の欄を押して名前を入れる。欄は固定幅で、押す前・入力中・名前が付いた後で、欄の幅と吹き出しの位置が動かない（実ブラウザで測る）。
+  // pointer-events: none の字幕の中でも、押せる欄と入力だけがクリックを受ける。入力中のキー（M など）は文書のキーとして働かない
+  it(
+    "名前の欄: 押すと同じ固定幅の欄の中で入力でき、吹き出しの位置が動かない。確定で POST /session/speaker-name を送り、名前が付くと（長い名前でも）欄の幅は同じ。自分の欄は押せない",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      const posted: unknown[] = [];
+      const selfPaused: unknown[] = [];
+      await page.route("**/session/speaker-name", async (route) => {
+        posted.push(JSON.parse(route.request().postData() ?? "null"));
+        await route.fulfill({ status: 204 });
+      });
+      await page.route("**/session/self-pause", async (route) => {
+        selfPaused.push(route.request().postData());
+        await route.fulfill({ status: 204 });
+      });
+      await sendFrame(page, { type: "captions", bubbles: [spokenBubble("こんにちは", "相手", 1), spokenBubble("はい", "自分", 2)] });
+      await expect.poll(() => page.locator(".captions__bubble").count(), { timeout: 10_000 }).toBe(2);
+      await page.evaluate(() => document.getAnimations().forEach((animation) => animation.finish()));
+      const geometry = async () => ({ name: await rectOf(page, ".captions__name", 0), bubble: await rectOf(page, ".captions__bubble", 0), mineName: await rectOf(page, ".captions__name", 1), mineBubble: await rectOf(page, ".captions__bubble", 1) });
+      const before = await geometry();
+      near(before.name.width, 72, "名前の欄の幅");
+      // 1px 以内で同じ（欄の幅・高さと、吹き出しの位置・大きさが動かない）
+      const expectSame = async (label: string) => {
+        const now = await geometry();
+        for (const part of ["name", "bubble", "mineName", "mineBubble"] as const) {
+          for (const side of ["left", "top", "width", "height"] as const) near(now[part][side], before[part][side], `${label}: ${part}.${side}`);
+        }
+      };
+
+      // 押せるのは確定した相手のラベルの欄だけ
+      expect(await page.locator("button.captions__name").count()).toBe(1);
+      expect(await page.locator(".captions__name").nth(1).evaluate((element) => element.tagName)).not.toBe("BUTTON");
+
+      await page.locator("button.captions__name").click();
+      const input = page.locator(".captions__name input");
+      await input.waitFor({ timeout: 10_000 });
+      await expect.poll(() => input.evaluate((element) => document.activeElement === element), { timeout: 5_000 }).toBe(true); // 押したら、そのまま打てる
+      await expectSame("入力中");
+
+      // 長い名前を打っても欄は伸びない。M・E のキーは文書のキー（休止・右の列）として働かない
+      await page.keyboard.type("MEとても長い名前のひと");
+      expect(await input.inputValue()).toBe("MEとても長い名前のひと");
+      await expectSame("長い入力");
+      expect(selfPaused).toEqual([]);
+
+      // Esc で取り消すと何も送らずに閉じ、元の欄に戻る
+      await page.keyboard.press("Escape");
+      await expect.poll(() => page.locator(".captions__name input").count(), { timeout: 5_000 }).toBe(0);
+      expect(posted).toEqual([]);
+      await expectSame("取り消した後");
+
+      // もう一度押して確定する
+      await page.locator("button.captions__name").click();
+      await input.waitFor({ timeout: 10_000 });
+      await page.keyboard.type("田中");
+      await page.keyboard.press("Enter");
+      await expect.poll(() => posted.length, { timeout: 10_000 }).toBe(1);
+      expect(posted).toEqual([{ label: "相手 A", name: "田中" }]);
+      await expect.poll(() => page.locator(".captions__name input").count(), { timeout: 5_000 }).toBe(0);
+      expect(await page.locator(".captions__name").first().textContent()).toBe("相手 A"); // 名前が付いた表示は、サーバーの frame が届いてから
+
+      // 名前が付く。長い名前でも欄は同じ固定幅で、吹き出しは動かない
+      await sendFrame(page, { type: "speaker-names", names: [{ label: "相手 A", name: "とても長い名前の田中さん" }] });
+      await expect.poll(() => page.locator(".captions__name").first().textContent(), { timeout: 10_000 }).toBe("とても長い名前の田中さん");
+      await expectSame("名前が付いた後");
       await page.context().close();
     }),
     MEETING_TIMEOUT,

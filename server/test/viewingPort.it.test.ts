@@ -68,6 +68,7 @@ describe("閲覧の口（Issue #832）", () => {
     const refused = [
       ...["start", "stop", "status", "resume"].flatMap((name) => ["GET", "POST"].map((m) => [m, `/session/${name}`] as const)),
       ["POST", "/session/self-pause"], ["GET", "/session/self-pause"],
+      ["POST", "/session/speaker-name"], ["GET", "/session/speaker-name"],
       ["GET", "/apps"], ["GET", "/check"], ["GET", "/deps/check"], ["POST", "/deps/install"], ["POST", "/update"],
       ["POST", "/"], ["GET", "/index.html"], ["POST", "/ws"],
     ] as const;
