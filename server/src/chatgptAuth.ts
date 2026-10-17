@@ -5,7 +5,8 @@ import { Clock, Context, Deferred, Duration, Effect, FileSystem, Schema } from "
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
-import { authPath, chatgptRefusal, readCredentials, withAuthLock, writeAuthFile, ChatgptUnavailable, type Credentials } from "./chatgptAuthStore.ts";
+import { authPath, chatgptRefusal, readCredentials, writeAuthFile, ChatgptUnavailable, type Credentials } from "./chatgptAuthStore.ts";
+import { withFileLock } from "./fileLock.ts";
 
 export const ChatgptEndpoints = Context.Reference("live-mindmap/ChatgptEndpoints", {
   defaultValue: () => ({
@@ -51,7 +52,7 @@ const renewed = Effect.fnUntraced(function* (previous: Credentials, token: typeo
 export const accessToken = Effect.fnUntraced(function* (path: string) {
   const endpoints = yield* ChatgptEndpoints;
   if ((yield* readCredentials(path)) === undefined) return yield* chatgptRefusal("ChatGPT にサインインしていません");
-  return yield* withAuthLock(path, Effect.gen(function* () {
+  return yield* withFileLock(path, Effect.gen(function* () {
     const previous = yield* readCredentials(path);
     if (previous === undefined) return yield* chatgptRefusal("ChatGPT にサインインしていません");
     if (!previous.scopes.includes("chatgpt.tokens.use.direct")) return yield* chatgptRefusal("ChatGPT のプラン利用が許可されていません");
@@ -70,7 +71,7 @@ type Registration = { readonly host: string; readonly previous: Credentials | un
 
 // 認証ファイルのロックの中で、この Mac の host id（無ければ作る）と前回の資格情報を読む
 const hostRegistration = Effect.fnUntraced(function* (path: string, fs: FileSystem.FileSystem) {
-  return yield* withAuthLock(path, Effect.gen(function* () {
+  return yield* withFileLock(path, Effect.gen(function* () {
     const hostPath = join(dirname(path), "chatgpt-host-id");
     let host = yield* fs.readFileString(hostPath).pipe(Effect.catchReason("PlatformError", "NotFound", () => Effect.void));
     if (host === undefined) {
@@ -171,5 +172,5 @@ export const loginChatgpt = Effect.gen(function* () {
   const now = yield* Clock.currentTimeMillis;
   const claims = yield* verifiedClaims(id_token, clientId, nonce, now);
   const credentials = loginCredentials({ clientId, host: registration.host, claims, now, token: { ...token, id_token, refresh_token, scope } });
-  yield* withAuthLock(path, writeAuthFile(path, JSON.stringify(credentials)));
+  yield* withFileLock(path, writeAuthFile(path, JSON.stringify(credentials)));
 }).pipe(Effect.scoped, Effect.timeout("5 minutes"), Effect.catchIf((error) => !(error instanceof ChatgptUnavailable), () => Effect.fail(chatgptRefusal("ChatGPT のサインインを完了できません"))));

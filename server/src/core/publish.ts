@@ -6,6 +6,8 @@ export const PUBLISH_MAX_DAYS = 30;
 // Cloudflare の静的アセット 1 ファイルの上限
 export const PUBLISH_MAX_ASSET_BYTES = 25 * 1024 * 1024;
 
+import { Schema } from "effect";
+import { escapeCell } from "./markdownTable.ts";
 // 中身の段（積み上げ式）。map = マップだけ、remarks = 発言の文字・共有画面の文字も（map.html と同じ中身）、audio = 録音も（map-audio.html と同じ中身）
 export const PUBLISH_CONTENTS = ["map", "remarks", "audio"] as const;
 export type PublishContent = (typeof PUBLISH_CONTENTS)[number];
@@ -93,4 +95,42 @@ export default {
   },
 };
 `;
+}
+
+// 公開の記録（~/.live-mindmap/publish/records.jsonl の 1 行）。状態は published（置き場にある）と withdrawn（取り下げた）の 2 つ
+export const PublishRecord = Schema.Struct({
+  name: Schema.String,
+  url: Schema.String,
+  accountId: Schema.String,
+  // 元のセッションのフォルダ
+  dir: Schema.String,
+  // 中身の段（map・remarks・audio）。実際に置いた段
+  level: Schema.Literals(PUBLISH_CONTENTS),
+  anyone: Schema.Boolean,
+  // 合言葉つき（anyone: false）のときだけ入る
+  passphrase: Schema.optionalKey(Schema.String),
+  publishedAt: Schema.String,
+  expiresAt: Schema.String,
+  status: Schema.Literals(["published", "withdrawn"]),
+});
+export type PublishRecord = typeof PublishRecord.Type;
+
+// cli publish list の対象。既定は公開中（期限が過ぎてもまだ消していない物を含む）だけ、all なら全部
+export function selectListedRecords(records: ReadonlyArray<PublishRecord>, all: boolean): ReadonlyArray<PublishRecord> {
+  return all ? records : records.filter((record) => record.status === "published");
+}
+
+const LEVEL_LABELS = { map: "マップだけ", remarks: "発言の文字も", audio: "録音も" } as const satisfies Record<PublishContent, string>;
+
+function statusLabel(record: PublishRecord, nowMs: number): string {
+  if (record.status === "withdrawn") return "取り下げた";
+  return Date.parse(record.expiresAt) <= nowMs ? "期限切れ（置き場に残っている）" : "公開中";
+}
+
+export function formatPublishList(records: ReadonlyArray<PublishRecord>, nowMs: number, all: boolean): string {
+  if (records.length === 0) return all ? "公開の記録はありません\n" : "公開中の物はありません\n";
+  const line = (cells: string[]) => `| ${cells.map(escapeCell).join(" | ")} |`;
+  const header = ["URL", "合言葉", "期限", "中身の段", "元のセッション", "状態"];
+  const rows = records.map((r) => [r.url, r.passphrase ?? "なし（--anyone）", r.expiresAt, LEVEL_LABELS[r.level], r.dir, statusLabel(r, nowMs)]);
+  return [line(header), line(header.map(() => "---")), ...rows.map(line)].join("\n") + "\n";
 }
