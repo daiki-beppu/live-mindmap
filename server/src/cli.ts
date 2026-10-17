@@ -41,6 +41,7 @@ import {
   RemarkEvent,
   formatAudioTracksNotice,
   formatScreenOffNotice,
+  formatSpeakerOffNotice,
   formatRecordedPosition,
   formatRecordedProgress,
   type RecordedProgress,
@@ -657,6 +658,9 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
       case "screen-off":
         yield* notify(formatScreenOffNotice());
         break;
+      case "speaker-off":
+        yield* notify(formatSpeakerOffNotice(event.reason));
+        break;
       case "finished":
         finished = event;
         break;
@@ -737,7 +741,9 @@ const recorded = Command.make(
 ).pipe(
   Command.withDescription(
     "音声 1 本（--self で自分用の 2 本目も）の録画から、常駐サーバーでセッションを組む。終わるまで待ち、進み具合（入れた位置 / 全体の長さ・マップの更新回数）を標準エラーに出す。"
-      + "終わったらセッションのフォルダと map.* のパスを出す。Ctrl-C ではそこまでの分で終える。同時に 1 つだけ",
+      + "終わったらセッションのフォルダと map.* のパスを出す。Ctrl-C ではそこまでの分で終える。同時に 1 つだけ。"
+      + "<file> の 相手 は話者を分けて「相手 A」のようなラベルで呼ぶ（話者分離のモデルが無いときは、話者を分けずに続けると標準エラーに知らせる）。"
+      + "話者のラベルは会議全体で 4 人（自分を含む）まで。1 本の録音では自分も 1 人に数える。確実に分けたいときは --self で自分用の録音を足す",
   ),
 );
 

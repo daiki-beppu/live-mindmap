@@ -58,7 +58,7 @@ private final class ReaderCount: @unchecked Sendable {
 }
 
 /// バッファの中身ごと複製する。複製のバッファを作れなければ（確保の失敗など）、元をそのまま返す。
-private func copyCaptured(_ audio: CapturedAudio) -> CapturedAudio {
+func copyCaptured(_ audio: CapturedAudio) -> CapturedAudio {
     let source = audio.buffer
     guard let copy = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: max(source.frameLength, 1)) else { return audio }
     copy.frameLength = source.frameLength

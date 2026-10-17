@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { formatRecordedPosition, formatRecordedProgress, RecordedEvent, type RecordedProgress } from "../src/core/index.ts";
+import { formatRecordedPosition, formatRecordedProgress, formatSpeakerOffNotice, RecordedEvent, type RecordedProgress } from "../src/core/index.ts";
 
 // 録画からのセッションで進んだ位置の表示。諦めたときの終わりの知らせ（どこまで組めたか）と、進み具合の行が同じ書き方を使う
 
@@ -61,5 +61,21 @@ describe("RecordedEvent の progress（一時停止）", () => {
     expect(rejected._tag).toBe("Failure");
     const missingTime = yield* Effect.result(decode({ ...base, paused: { reason: "Claude の利用上限" } }));
     expect(missingTime._tag).toBe("Failure");
+  }));
+});
+
+describe("speaker-off（話者分離が使えず、話者なしで続けた。Issue #1094）", () => {
+  it("知らせの文は「話者分離なしで続け」を含み、理由（モデルなし・読み込みに失敗・途中で停止）ごとに違う", () => {
+    const notices = (["モデルなし", "読み込みに失敗", "途中で停止"] as const).map(formatSpeakerOffNotice);
+    for (const notice of notices) expect(notice).toContain("話者分離なしで続け");
+    expect(new Set(notices).size).toBe(3);
+  });
+
+  it.effect("RecordedEvent に speaker-off があり、理由を持つ。理由の無い値・知らない理由は受け付けない", () => Effect.gen(function* () {
+    const decode = Schema.decodeUnknownEffect(RecordedEvent);
+    const event = { type: "speaker-off", reason: "モデルなし" };
+    expect(yield* decode(event)).toEqual(event);
+    expect((yield* Effect.result(decode({ type: "speaker-off" })))._tag).toBe("Failure");
+    expect((yield* Effect.result(decode({ type: "speaker-off", reason: "知らない理由" })))._tag).toBe("Failure");
   }));
 });

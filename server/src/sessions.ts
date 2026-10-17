@@ -127,7 +127,7 @@ type Recorded = {
   announced: Ref.Ref<Announced>; // 端末へ知らせた印。起動し直したヘルパーが流し直しても、セッションにつき 1 回だけ知らせる
 };
 
-type Announced = { audioTracks: boolean; screenOff: boolean };
+type Announced = { audioTracks: boolean; screenOff: boolean; speakerOff: boolean };
 
 // ヘルパー 1 回分の終わり方
 type AttemptEnd = { exit: HelperExitInfo; stderrTail: ReadonlyArray<string> };
@@ -156,7 +156,7 @@ export class Sessions extends Context.Service<Sessions, {
   liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure>;
   // 自分の休止・再開を求める（paused が求める状態。Issue #1069）。いま接続している helper へ指示を送る。live でなければ失敗する（録画からのセッションは NotForRecordedSession）
   setSelfPause: (paused: boolean) => Effect.Effect<void, SessionFailure>;
-  // 話者のラベル（相手 B）に名前を手で付ける（Issue #1026）。live のときだけ。録画からのセッションはラベルを持たないので NotForRecordedSession。
+  // 話者のラベル（相手 B）に名前を手で付ける（Issue #1026）。ライブも録画からのセッションも同じ（録画も話者分離でラベルを振る。Issue #1094）。
   // 付けられないラベル・空の名前は SpeakerNameRejected
   setSpeakerName: (speaker: { label: string; name: string }) => Effect.Effect<void, SessionFailure | SpeakerNameRejected>;
 }>()("live-mindmap/server/Sessions") {
@@ -519,12 +519,12 @@ export class Sessions extends Context.Service<Sessions, {
           yield* viewers.selfPause({ type: "self-pause", paused: false });
         }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 })));
 
-      // 録画の文字起こしのイベントを、セッションへつなぐ。話者は分けないので、使うのは発言・途中結果・全体の長さだけ
+      // 録画の文字起こしのイベントを、セッションへつなぐ。ヘルパーは `相手` に話者分離をかけ、話者の区間（speaker 系）も流す
       const publishProgress = ({ progress, events }: Pick<Recorded, "progress" | "events">) =>
         Effect.flatMap(Ref.get(progress), (current) => Queue.offer(events, { type: "progress", ...current }));
 
       // 1 回だけ端末へ知らせる印を立てる。立てたのがこの呼び出しなら true
-      const announceOnce = (recorded: Recorded, key: "audioTracks" | "screenOff") =>
+      const announceOnce = (recorded: Recorded, key: "audioTracks" | "screenOff" | "speakerOff") =>
         Ref.modify(recorded.announced, (announced): [boolean, Announced] => [!announced[key], { ...announced, [key]: true }]);
 
       const applyRecordedEvent = (recorded: Recorded, event: HelperEvent): Effect.Effect<void> => {
@@ -551,6 +551,16 @@ export class Sessions extends Context.Service<Sessions, {
             // 起動し直した回が流し直しても、ログにも端末にも 1 回）
             return Effect.flatMap(announceOnce(recorded, "screenOff"), (first) =>
               first ? Effect.andThen(recorded.sink.screenOff({ start: event.start, reason: event.reason }), Queue.offer(recorded.events, { type: "screen-off" })) : Effect.void);
+          case "speaker":
+          case "speaker-settled":
+          case "speaker-mixed":
+          case "speaker-centroid":
+            // ライブと同じ。受け取った値のまま log.jsonl へ残し、`相手` の発言の話者を決める段へ渡す（Issue #1094）
+            return recorded.sink.speaker(event);
+          case "speaker-off":
+            // 話者分離が使えない。待たずに話者なしで出す段へ渡し、端末へも知らせる（起動し直した回が流し直しても、端末には 1 回）
+            return Effect.flatMap(announceOnce(recorded, "speakerOff"), (first) =>
+              Effect.andThen(recorded.sink.speaker(event), first ? Queue.offer(recorded.events, { type: "speaker-off", reason: event.reason }) : Effect.void));
           default:
             return Effect.void;
         }
@@ -617,6 +627,8 @@ export class Sessions extends Context.Service<Sessions, {
             if ((yield* Ref.get(recorded.progress)).paused !== undefined) yield* launched.attempt.send({ type: "reading-pause", paused: true });
             return launched.attempt;
           }));
+        // 新しいヘルパーの話者分離の枠は振り直されている。そのイベントを読み始める前に、sink へ知らせる（ライブの起動し直しと同じ）
+        yield* recorded.sink.speakersRenumbered;
         // 接続成功と stop が競合したときは、起動し直しとは数えず、届いていたイベントを読み終えてから止まる
         if (!(yield* Deferred.isDone(recorded.stopRequested))) {
           yield* recorded.sink.appendLog({ type: "intake-restarted", trigger: "auto" });
@@ -752,7 +764,7 @@ export class Sessions extends Context.Service<Sessions, {
             attemptStartedAt: yield* Ref.make(startedAt),
             failures: yield* Ref.make(0),
             configurationChanges: yield* Ref.make<ReadonlyArray<number>>([]),
-            announced: yield* Ref.make({ audioTracks: false, screenOff: false }),
+            announced: yield* Ref.make({ audioTracks: false, screenOff: false, speakerOff: false }),
           };
           // 状態を recorded にしてから読み始める（ヘルパーがすぐ終わっても、終わらせる側が状態を取れるように）
           const ready = yield* Deferred.make<void>();
@@ -897,7 +909,7 @@ export class Sessions extends Context.Service<Sessions, {
       const setSpeakerName = (speaker: { label: string; name: string }): Effect.Effect<void, SessionFailure | SpeakerNameRejected> =>
         Effect.gen(function* () {
           const current = yield* Ref.get(state);
-          if (current.kind === "recorded") return yield* new NotForRecordedSession();
+          if (current.kind === "recorded") return yield* current.recorded.sink.nameSpeaker(speaker);
           if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
           yield* current.live.sink.nameSpeaker(speaker);
         });

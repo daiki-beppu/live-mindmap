@@ -156,10 +156,11 @@ final class FileScreenReading: @unchecked Sendable {
 /// 映像が読めなければ `screen-off`（許可なし）を流して、音声の結果は続く。映像のトラックが無ければ画面のイベントは出ない。
 /// `from` は読み始める音声・映像の時刻（秒。サーバーの起動し直しのとき）。結果の時刻はファイルの時刻のまま。
 /// `gate` があれば、サーバーの指示で止められている間は読み進めない。
+/// `diarization` があれば、音声を話者分離にも渡し、その速さで読む（話者分離の結果はここでは流さない）。
 public func fileSessionEvents(
-    at url: URL, with transcriber: any FileTranscriber, from: Double = 0, gate: FileReadingGate? = nil
+    at url: URL, with transcriber: any FileTranscriber, from: Double = 0, gate: FileReadingGate? = nil, diarization: FileDiarizationFeed? = nil
 ) async throws -> AsyncThrowingStream<HelperEvent, Error> {
-    let results = try await transcribeFile(at: url, with: transcriber, from: from, gate: gate)
+    let results = try await transcribeFile(at: url, with: transcriber, from: from, gate: gate, diarization: diarization)
     let (stream, continuation) = AsyncThrowingStream.makeStream(of: HelperEvent.self, throwing: Error.self)
     let task = Task {
         var reading: FileScreenReading?
