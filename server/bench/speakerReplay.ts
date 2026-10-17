@@ -8,8 +8,8 @@ import { NodeRuntime } from "@effect/platform-node";
 import { Effect, FileSystem, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import {
-  createSpeakerAttribution, decodeHelperEvent, HelperEvent, RemarkEvent, SPEAKER_WAIT_MS,
-  type SettledRemark, type SpeakerLogEvent, type SpeakerRecord, type SpeakerRules,
+  createSpeakerAttribution, decodeHelperEvent, HelperEvent, longestOverlap, RemarkEvent, SPEAKER_WAIT_MS,
+  type Segment, type SettledRemark, type SpeakerLogEvent, type SpeakerRecord, type SpeakerRules,
 } from "../src/core/index.ts";
 import { exitNaturally } from "../src/exitNaturally.ts";
 import { createRemarkSettling } from "../src/remarkSettling.ts";
@@ -22,22 +22,29 @@ export type ReplayOptions = {
   restartAt?: number;
   // 失敗の診断に載せるパス
   path?: string;
+  // true で、--offline の流し直しが各発言に tentative（字幕に見えていた仮のラベル）を付ける。省略は付けない（CLI の JSON は変わらない）。log の経路では使わない
+  tentativeLabels?: boolean;
 };
 
-export type ReplayRemark = { source: string; track: string; start: number; end: number; speaker?: string };
+// tentative は tentativeLabels を有効にしたときだけ、その発言を出した更新の 1 つ前の時点の字幕（中核の preview）で、発言の区間と最も長く重なる枠の仮のラベル。決まらなければ付けない
+export type ReplayRemark = { source: string; track: string; start: number; end: number; speaker?: string; tentative?: string };
 export type ReplayResult = {
   remarks: ReplayRemark[];
   labels: string[];
   mixed: Array<{ slot: number; label?: string }>;
   links: Array<{ slot: number; result: "linked" | "new" | "reverted"; label?: string }>;
   restarts: Array<{ at: number; source: "flag" | "log" }>;
+  // 規則の効き目の数。0 でも常に出す。cuts は話者の替わり目で切った数（断片の数 − 1 の合計）、timeouts は 3 秒の時間切れで話者なしになった数
+  cuts: number;
+  timeouts: number;
 };
 
 // 入力ファイルの 1 行。no は空行も数えた物理的な行番号（1 始まり）、value は読み込み済みの JSON
 export type InputLine = { no: number; value: unknown };
 
 // 流し込む 1 件。at は最初の入力からの届いた時刻（秒）
-type Step = { at: number; run: Effect.Effect<void> };
+// settled は speaker-settled の 1 件（仮の区間が入れ替わる更新の終わり）
+type Step = { at: number; run: Effect.Effect<void>; settled?: true };
 type Hooks = { restart: Effect.Effect<void>; drain: Effect.Effect<void> };
 
 const ruleSet = (rules: Partial<SpeakerRules> | undefined): SpeakerRules => ({
@@ -49,17 +56,34 @@ const ruleSet = (rules: Partial<SpeakerRules> | undefined): SpeakerRules => ({
 
 // 出した発言と判定の記録を溜める。source は出した発言ごとの出どころ（log は元の remark.id、offline は出した順の連番）
 function createCollector(sourceOf: (remark: SettledRemark, index: number) => string) {
-  const result: ReplayResult = { remarks: [], labels: [], mixed: [], links: [], restarts: [] };
+  const result: ReplayResult = { remarks: [], labels: [], mixed: [], links: [], restarts: [], cuts: 0, timeouts: 0 };
   return {
     result,
-    add: (remarks: readonly SettledRemark[]) => {
+    add: (remarks: readonly SettledRemark[], tentativeOf?: (remark: SettledRemark) => string | undefined) => {
       for (const r of remarks) {
-        result.remarks.push({ source: sourceOf(r, result.remarks.length), track: r.track, start: r.start, end: r.end, ...(r.speaker === undefined ? {} : { speaker: r.speaker }) });
+        const tentative = tentativeOf?.(r);
+        result.remarks.push({
+          source: sourceOf(r, result.remarks.length), track: r.track, start: r.start, end: r.end,
+          ...(r.speaker === undefined ? {} : { speaker: r.speaker }),
+          ...(tentative === undefined ? {} : { tentative }),
+        });
       }
     },
     observe: (record: SpeakerRecord) => {
-      if (record.type === "mixed") result.mixed.push({ slot: record.slot, ...(record.label === undefined ? {} : { label: record.label }) });
-      else result.links.push({ slot: record.slot, result: record.result, ...(record.label === undefined ? {} : { label: record.label }) });
+      switch (record.type) {
+        case "mixed":
+          result.mixed.push({ slot: record.slot, ...(record.label === undefined ? {} : { label: record.label }) });
+          break;
+        case "link":
+          result.links.push({ slot: record.slot, result: record.result, ...(record.label === undefined ? {} : { label: record.label }) });
+          break;
+        case "cut":
+          result.cuts += record.pieces - 1;
+          break;
+        case "timeout":
+          result.timeouts += 1;
+          break;
+      }
     },
   };
 }
@@ -159,11 +183,20 @@ export const replayLog = Effect.fn("replayLog")(function* (lines: readonly Input
 const OfflineArrival = Schema.Struct({ arrival: Schema.Finite });
 const decodeArrival = Schema.decodeUnknownEffect(OfflineArrival);
 
+// 1 件のイベントを、settling へ流す Step の中身にする。話者以外・知らない種類は undefined
+type Settling = Effect.Success<ReturnType<typeof createRemarkSettling>>;
+const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at"> | undefined => {
+  if (event.type === "partial") return { run: settling.partial(event) };
+  if (event.type === "remark") return { run: settling.final({ track: event.track, start: event.start, end: event.end, text: event.text, ...(event.words === undefined ? {} : { words: event.words }), ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }) }) };
+  if (!isSpeakerEvent(event)) return undefined;
+  return { run: settling.speaker(event), ...(event.type === "speaker-settled" ? { settled: true as const } : {}) };
+};
+
 // オフライン出力の各行を、arrival の順（同じ値はファイルの順）に並べた Step にする。
 // settling に入れる。時計（end × 1000）・出し切り・起動し直しは、ライブと同じ createRemarkSettling が持つ
-const offlineSteps = (lines: readonly InputLine[], path: string | undefined, settling: Effect.Success<ReturnType<typeof createRemarkSettling>>) =>
+const offlineSteps = (lines: readonly InputLine[], path: string | undefined, settling: Settling) =>
   Effect.gen(function* () {
-    const rows: Array<{ arrival: number; index: number; run: Effect.Effect<void> | undefined }> = [];
+    const rows: Array<{ arrival: number; index: number; step: Omit<Step, "at"> }> = [];
     // 時刻の原点は、読み飛ばす行（origin・知らない種類）も含めた全入力の最小の arrival
     let first = Number.POSITIVE_INFINITY;
     for (const [index, { no: n, value: line }] of lines.entries()) {
@@ -171,29 +204,43 @@ const offlineSteps = (lines: readonly InputLine[], path: string | undefined, set
       const decoded = yield* decodeHelperEvent(JSON.stringify(line)).pipe(Effect.mapError(() => invalid(path, n, "イベント")));
       first = Math.min(first, arrival);
       if (decoded.kind === "unknown") continue;
-      const event = decoded.event;
-      if (event.type === "partial") rows.push({ arrival, index, run: settling.partial(event) });
-      else if (event.type === "remark") rows.push({ arrival, index, run: settling.final({ track: event.track, start: event.start, end: event.end, text: event.text, ...(event.words === undefined ? {} : { words: event.words }), ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }) }) });
-      else if (isSpeakerEvent(event)) rows.push({ arrival, index, run: settling.speaker(event) });
+      const step = runOf(settling, decoded.event);
+      if (step !== undefined) rows.push({ arrival, index, step });
     }
     rows.sort((a, b) => a.arrival - b.arrival || a.index - b.index);
-    return rows.map((row): Step => ({ at: row.arrival - first, run: row.run! }));
+    return rows.map((row): Step => ({ at: row.arrival - first, ...row.step }));
   });
+
+// 字幕と同じ公開の覗き窓（preview）の写し。区間と、そこに現れる枠のラベルを、写した時点で解決する（後で呼ぶと、その間に振られたラベルで値が変わる）
+type PreviewSnapshot = { segments: readonly Segment[]; labels: ReadonlyMap<number, string | undefined> };
 
 export const replayOffline = Effect.fn("replayOffline")(function* (lines: readonly InputLine[], options: ReplayOptions = {}) {
   const collector = createCollector((_, index) => `r${index + 1}`);
+  // 発言は、流し込みの 1 件の中で出る。その 1 件を適用する前の写し（直前の更新の後に字幕に見えていた仮のラベル）で決める
+  let snapshot: PreviewSnapshot = { segments: [], labels: new Map() };
+  const tentativeOf = options.tentativeLabels !== true ? undefined : (remark: SettledRemark): string | undefined => {
+    if (remark.track !== "相手") return undefined;
+    const slot = longestOverlap(remark.start, remark.end, snapshot.segments);
+    return slot === undefined ? undefined : snapshot.labels.get(slot);
+  };
   const settling = yield* createRemarkSettling({
-    emit: (r) => Effect.sync(() => collector.add([r])),
+    emit: (r) => Effect.sync(() => collector.add([r], tentativeOf)),
     speakers: { rules: ruleSet(options.rules), observe: collector.observe },
   });
-  const steps = yield* offlineSteps(lines, options.path, settling);
-  yield* runSteps(steps, { restart: settling.renumbered, drain: settling.drain }, collector.result, options.restartAt);
+  // 区間の写しは、仮の区間が入れ替わる speaker-settled の後と、起動し直した後だけ取る（確定区間は speaker の届いた時点で中核に入るので、更新の途中では写さない）。
+  // ラベルは、どの 1 件の後も写した区間の枠で解き直す（発言を出すと振られたラベルが増え、残る枠の予想が変わる。字幕は発言を出した後にも読み直す）
+  const resolve = (segments: readonly Segment[]): PreviewSnapshot => ({ segments, labels: new Map(segments.map((s) => [s.slot, settling.preview.label(s.slot)])) });
+  const track = options.tentativeLabels === true;
+  const afterStep = (run: Effect.Effect<void>, recapture: boolean) =>
+    track ? Effect.andThen(run, Effect.sync(() => { snapshot = resolve(recapture ? settling.preview.segments() : snapshot.segments); })) : run;
+  const steps = (yield* offlineSteps(lines, options.path, settling)).map((step): Step => ({ at: step.at, run: afterStep(step.run, step.settled !== undefined) }));
+  yield* runSteps(steps, { restart: afterStep(settling.renumbered, true), drain: settling.drain }, collector.result, options.restartAt);
   collector.result.labels = settling.labels();
   return collector.result;
 });
 
 // 1 行 1 JSON の読み込み。空行は読み飛ばすが、行番号には数える。壊れた行は行番号だけを診断にする（JSON の原文は載せない）
-const readLines = Effect.fn("readLines")(function* (path: string) {
+export const readLines = Effect.fn("readLines")(function* (path: string) {
   const text = yield* readInputText(path);
   const lines: InputLine[] = [];
   const rows = text.split("\n");
@@ -221,30 +268,45 @@ const resolveInput = Effect.fn("resolveInput")(function* (input: string, offline
   return path;
 });
 
-export const command = Command.make("speakerReplay", {
-  input: Argument.String("input").pipe(Argument.withDescription("log.jsonl のあるセッションフォルダか log.jsonl。--offline ではオフライン出力のファイル")),
-  offline: Flag.Boolean("offline").pipe(Flag.withDescription("入力を、arrival（秒）つきのヘルパーのイベントの JSONL として読む"), Flag.withDefault(false)),
+// 規則を 1 つずつ外す旗と起動し直しの旗。speakerAccuracy も同じ旗を受け取り、同じ ReplayOptions にして流し直しへ渡す
+export const ruleFlags = {
   withoutLongestOverlap: Flag.Boolean("without-longest-overlap").pipe(Flag.withDescription("「最も長い重なり」の規則を外す（先に始まる区間の枠にする）"), Flag.withDefault(false)),
   withoutFill: Flag.Boolean("without-fill").pipe(Flag.withDescription("「誰もいない語を前後に寄せる」規則を外す"), Flag.withDefault(false)),
   withoutMinRun: Flag.Boolean("without-min-run").pipe(Flag.withDescription("「0.5 秒の下限」の規則を外す"), Flag.withDefault(false)),
   withoutWait: Flag.Boolean("without-wait").pipe(Flag.withDescription("「3 秒の待ち」を外す（揃うまで待つ）"), Flag.withDefault(false)),
   restartAt: Flag.Finite("restart-at").pipe(Flag.withDescription("届いた時刻（最初の入力からの秒）。この時刻以降の最初の入力の直前に、話者分離の枠の状態を捨てる"), Flag.optional),
+};
+
+export type RuleFlagValues = {
+  withoutLongestOverlap: boolean;
+  withoutFill: boolean;
+  withoutMinRun: boolean;
+  withoutWait: boolean;
+  restartAt: Option.Option<number>;
+};
+
+export const replayOptionsOf = (args: RuleFlagValues, path: string): ReplayOptions => ({
+  path,
+  rules: {
+    longestOverlap: !args.withoutLongestOverlap,
+    fillUnassigned: !args.withoutFill,
+    minRun: !args.withoutMinRun,
+    waitLimit: !args.withoutWait,
+  },
+  ...(Option.isSome(args.restartAt) ? { restartAt: args.restartAt.value } : {}),
+});
+
+export const command = Command.make("speakerReplay", {
+  input: Argument.String("input").pipe(Argument.withDescription("log.jsonl のあるセッションフォルダか log.jsonl。--offline ではオフライン出力のファイル")),
+  offline: Flag.Boolean("offline").pipe(Flag.withDescription("入力を、arrival（秒）つきのヘルパーのイベントの JSONL として読む"), Flag.withDefault(false)),
+  ...ruleFlags,
 }, Effect.fn("speakerReplay")(function* (args) {
   const path = yield* resolveInput(args.input, args.offline);
   const lines = yield* readLines(path);
-  const options: ReplayOptions = {
-    path,
-    rules: {
-      longestOverlap: !args.withoutLongestOverlap,
-      fillUnassigned: !args.withoutFill,
-      minRun: !args.withoutMinRun,
-      waitLimit: !args.withoutWait,
-    },
-    ...(Option.isSome(args.restartAt) ? { restartAt: args.restartAt.value } : {}),
-  };
+  const options = replayOptionsOf(args, path);
   const result = yield* (args.offline ? replayOffline(lines, options) : replayLog(lines, options));
   yield* write(JSON.stringify(result));
-})).pipe(Command.withDescription("log.jsonl かオフライン出力を、届いた順に話者の結び付けへ流し直し、発言・ラベル・混入・つなぎ直しの記録を本文なしで JSON に出す"));
+})).pipe(Command.withDescription("log.jsonl かオフライン出力を、届いた順に話者の結び付けへ流し直し、発言・ラベル・混入・つなぎ直し・規則の効き目の数を本文なしで JSON に出す"));
 
 if (import.meta.main) {
   benchProgram(command).pipe(

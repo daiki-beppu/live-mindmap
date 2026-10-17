@@ -147,11 +147,15 @@ cd helper
 swift run -c release stt-bench synth <台本.json> <出力フォルダ> [--only <名前>] [--gap <秒>]
 swift run -c release stt-bench variants
 swift run -c release stt-bench run --variant <名前> <音声.wav> [--load <音声2.wav>] [--vocab <語彙.txt>] [--vocab-at <秒>] > <results>.jsonl
+swift run -c release stt-bench tracks <会議フォルダ> <出力フォルダ> --self <話者>
+swift run -c release stt-bench run --variant baseline <相手.wav> --events [--self <自分.wav>] > <events>.jsonl
 ```
 
 - `synth` は `<名前>.wav`・`<名前>.lines.json`（行の時刻）・`<名前>.truth.json` を書く。台本は `helper/bench/scenarios/`。
 - `variants` は候補の設定の一覧を出す。
 - `run` は 1 行 1 結果の JSONL を標準出力に出す。キーは `arrival`・`end`・`isFinal`・`start`・`text`・`track`。
+- `tracks` は合成会議のフォルダ（`timeline.tsv`・`voices.json`・`lines/`）を、`--self` の話者の行だけの `自分.wav` と、残りの `相手.wav` に分ける（speakerAccuracy 用）。各行は `lines/<sha1(声 + 改行 + 文)の先頭 16 桁>.wav`（1 行 1 本）を読み、`synth.mjs` と同じ末尾の雑音の無音化をして、`timeline.tsv` の `start` の位置に置く。2 本の長さは最後の行の `end` + 3 秒で同じ。`meeting.m4a` は使わない。標準出力は行数と秒数だけ。lines/ が無い・`--self` が台本にいない・声が `voices.json` にないときは、行番号と数だけを出して失敗する（本文は出さない）。
+- `run --events` は、既定の出力（上の ResultLine）の代わりに、ヘルパーのイベントに届いた時刻 `arrival`（流し始めからの秒）を足した 1 行 1 JSON を出す。相手の `remark`・`partial`（`words`・`wordTimes` つき）と、同じ音声に Sortformer を掛けた `speaker`・`speaker-settled`・`speaker-mixed`・`speaker-centroid`。`--self <自分.wav>` があれば、自分の `remark`・`partial`（`track: "自分"`）も同じ起点から並行して流す。認識はライブと同じ `SilenceFilteringTranscriber` で包む。話者分離を準備できなければ失敗する（話者なしで続けない）。`--vocab`・`--load`・`--diarize` とは併用しない。事前に `bash helper/scripts/fetch-speaker-models.sh`。出力は `speakerReplay --offline` と `speakerAccuracy` がそのまま読める。
 - 合成した音声と計測の出力は、リポジトリの外（`/tmp` など）に置く。
 
 ## sttLatency（確定の遅れ）
@@ -260,7 +264,7 @@ node bench/speakerReplay.ts --offline [旗] <オフライン出力の JSONL>
 入力は 2 通り。
 
 - `log.jsonl`（既定）: ライブが残した `remark` 行（話者の段を通った後の断片）と、話者のイベント 5 種、`intake-restarted`。行の順を届いた順として、`remark` 行は話者の段へ直接入れる。`remark.speaker` は使わず、流し直しで決め直す。話者を持たない古いログも流せる（相手の発言は話者なし）。
-- `--offline`: ヘルパーのイベント（helper/README の「イベントの形」）に、届いた時刻 `arrival`（秒）を足した 1 行 1 JSON。ファイル上の順は問わず、`arrival` の順（同じ値はファイルの順）に `partial`・`remark`・話者のイベントを settler から流す。知らない種類と使わない種類（`origin`・`screen` など）は読み飛ばす。`stt-bench run` と `--diarize` の出力は `speaker-settled`・`wordTimes`・重心を持たないので、そのままは流せない。
+- `--offline`: ヘルパーのイベント（helper/README の「イベントの形」）に、届いた時刻 `arrival`（秒）を足した 1 行 1 JSON。ファイル上の順は問わず、`arrival` の順（同じ値はファイルの順）に `partial`・`remark`・話者のイベントを settler から流す。知らない種類と使わない種類（`origin`・`screen` など）は読み飛ばす。`stt-bench run`（既定の出力）と `--diarize` の出力は `speaker-settled`・`wordTimes`・重心を持たないので、そのままは流せない。`stt-bench run --events` の出力はそのまま流せる。
 
 旗:
 
@@ -279,6 +283,8 @@ node bench/speakerReplay.ts --offline [旗] <オフライン出力の JSONL>
 - `mixed`: 混入（`speaker-mixed`）の記録 `{ slot, label? }`
 - `links`: 起動し直し後のつなぎ直しの判定 `{ slot, result: "linked" | "new" | "reverted", label? }`。迷って決まらなかった判定は出ない
 - `restarts`: 起動し直した届いた時刻 `{ at, source: "flag" | "log" }`
+- `cuts`: 話者の替わり目で発言を切った数（断片の数 − 1 の合計）。0 でも出す
+- `timeouts`: 区間が揃わないまま 3 秒の時間切れで話者なしになった発言の数。0 でも出す
 
 不正な行は行番号だけを診断にして非ゼロ終了する（JSON の原文は出さない）。
 
@@ -286,6 +292,57 @@ node bench/speakerReplay.ts --offline [旗] <オフライン出力の JSONL>
 
 - 断片をまたぐ切り方の変化（0.5 秒の下限による寄せなど）
 - 3 秒の待ちの長さそのもの（待ちを外すことはできる）。各 `remark` 行は、ライブがその発言を出した時点にあるとみなす。入れた直後に時計を 3 秒進め、揃っていればその場で規則を当て、揃っていなければ話者なしで出す
+
+## speakerAccuracy（話者分離の精度）
+
+話者分離のモデル・発言への対応付けの規則・基準値を変えたときに、合成会議で発言ごとの 正解 / 取り違え / 話者なし の割合を測る（Issue #1031）。手で回し、合否は出さない。PR には同じ素材での before/after の表を載せる。
+
+素材 → `stt-bench tracks` → `stt-bench run --events` → `speakerAccuracy`（中の流し直しは `speakerReplay --offline` と同じ `replayOffline`）。
+
+```sh
+bash helper/scripts/build-webrtc-apm.sh && bash helper/scripts/fetch-speaker-models.sh   # 事前に 1 回
+M=~/live-mindmap-samples/synth/facilitators       # lines/ を Drive から戻してある会議のフォルダ
+cd helper
+swift run -c release stt-bench tracks $M /tmp/sa --self 森川
+swift run -c release stt-bench run --variant baseline /tmp/sa/相手.wav --self /tmp/sa/自分.wav --events > /tmp/sa/events.jsonl
+cd ../server
+node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events.jsonl
+```
+
+- 素材は今ある合成会議 4 本（基準値を選んだ素材）。`--self` は、台本（`cast.json`）で進行役の人。
+
+  | 会議 | `--self` | 長さ |
+  | --- | --- | --- |
+  | `synth/facilitators/` | 森川（ファシリテーター） | 55 分 |
+  | `synth/silly/` | マキ（司会） | 75 分 |
+  | `synth/parnassus/` | ハル（進行役） | 約 161 分 |
+  | `synth/screen/` | 大河内（進行役） | 約 23 分 |
+
+- 素材の `lines/` は Drive へ退避してある。流す前に、`~/live-mindmap-samples/README.md` の手順で、Drive の同じ相対パスからそのフォルダへ戻す（`tracks` は `lines/` の 1 行 1 本の音声を読む）。
+- `run --events` は実時間で流すので、会議の長さと同じ時間がかかる（parnassus は約 161 分）。会議ごとの実行は、別々のプロセスで並べて流せる（認識の採点は、4 本を同時に流した結果が単独で流し直した結果と一致した。`docs/devlog/2026-10-08.md` の「実時間で流す計測を並べるなら」。話者分離を並べたときの違いは未確認）。
+- `自分` の発言は中核が常に「自分」にするので、話者分離の物差しにならない。採点は 相手 の発言だけ。`--self` の行は正解の人にも DER の参照にも入れない。
+- 旗は speakerReplay と同じ（`--without-longest-overlap`・`--without-fill`・`--without-min-run`・`--without-wait`・`--restart-at <秒>`）。規則を 1 つずつ外して、同じ events で結果を比べる。旗は発言への対応付けにだけ効く。DER は確定区間（話者分離のモデルの出力）の物差しなので、旗では変わらない。
+
+出力は標準出力に Markdown の表 1 つ（見出し 1 行 + 値 1 行）。数とラベルだけで、発言の本文は出さない。
+
+| 列 | 定義 |
+| --- | --- |
+| 発言数 | 採点した 相手 の発言（中核が出した断片）の数 |
+| 正解 | 話者のラベルが付き、そのラベルに対応する人が正解の人である発言の割合 |
+| 取り違え | 話者のラベルが付いたが、対応する人が正解の人でない発言の割合。人と対応できなかったラベルもここに入る |
+| 話者なし | ラベルを付けなかった発言の割合。取り違えとは別に数える（意図してラベルなしにした分を悪化と取り違えないため） |
+| 採点対象外 | 正解の人がいない発言の数（`--self` の行にしか重ならない・どの行にも重ならない）。割合の分母に入れない |
+| DER | collar 0.25 秒の DER。参照は `--self` を除く台本の行、仮説は確定した区間 |
+| 仮→確定 | 仮のラベル（字幕に見えていたラベル）が、発言に付いた確定のラベルへ替わった発言の割合 |
+| 切った | 話者の替わり目で切った数（断片の数 − 1 の合計） |
+| 3秒で話者なし | 区間が揃わないまま 3 秒の時間切れで話者なしになった数 |
+| 切れなかった | 正解では `--self` 以外の 2 人以上と重なるのに、1 つの発言として出た数（重なりの長さに下限は設けない。本番の 0.5 秒の下限が短い交替を潰した影響も数える） |
+
+- 正解の人: 発言の区間と最も長く重なる人（同じ人の複数の行は重なりを足す）。`timeline.tsv` の話者（列 0）を使う。
+- 推定のラベルと正解の人: 会議全体で 1 対 1 に、重なり（ラベルが付いた発言の区間と、その人の行の区間の重なりの合計）が最大になるように対応させる（ハンガリアン法）。重なりが 0 のラベルは、人と対応しない。
+- DER: 参照の区間の境の前後 0.25 秒を採点から外し、取りこぼし・余計な検出・付け間違いの合計を、参照の長さで割る。枠と人の対応も同じ 1 対 1 で取る。
+- 仮→確定: 各発言について、仮のラベルと確定のラベル（出た発言の話者）を比べる（枠ではなくラベルで比べる）。区間（中核の `preview` の確定区間と仮の区間）は、`speaker-settled` の後と起動し直しの後にだけ写す。ラベルは、写した区間に現れる枠について、入力の 1 行ごとに `preview` で解き直す（発言を出すと振られたラベルが増え、残る枠の予想が変わるため）。仮のラベルは、発言を出した行を適用する直前の写しで、発言の区間と最も長く重なる枠のラベル。まだラベルを振っていない枠は、区間に初めて現れた順の予想になる。1 つ前の更新が無い・区間が発言と重ならない・話者なしで出た発言は、両方が決まっていないので分母に入れない。
+- 不正な行・台本にない `--self`・無いファイルは、行番号やパスだけを診断にして非ゼロ終了する。
 
 ## eval ではないもの
 

@@ -193,7 +193,11 @@ const cosine = (a: readonly number[], b: readonly number[]): number | undefined 
 // 判定の記録（Issue #1030）。決まらなかった判定は知らせない
 export type SpeakerRecord =
   | { type: "mixed"; slot: number; label?: string }
-  | { type: "link"; slot: number; result: "linked" | "new" | "reverted"; label?: string };
+  | { type: "link"; slot: number; result: "linked" | "new" | "reverted"; label?: string }
+  // 話者の替わり目で発言を pieces 個の断片に切った（2 以上）
+  | { type: "cut"; pieces: number }
+  // 区間が揃わないまま SPEAKER_WAIT_MS の時間切れで、話者なしで出した
+  | { type: "timeout" };
 export type SpeakerAttributionOptions = { rules?: SpeakerRules; observe?: (record: SpeakerRecord) => void };
 
 type Held = { remark: SettledRemark; heldAt: number };
@@ -299,16 +303,21 @@ export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: Spe
   const isSettled = (r: SettledRemark) => settledTo >= r.end - EPSILON;
 
   // 規則を当てて出す。先に話した順にラベルを振る。ラベルを付けない枠の区間は、切り方には使い（隣の枠に寄せない）、ラベルだけ付けない
-  const attribute = (r: SettledRemark): SettledRemark[] =>
-    splitBySpeaker(r, segments, rules).map(({ remark, slot }) => (slot === undefined || isUnlabeled(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
+  const attribute = (r: SettledRemark): SettledRemark[] => {
+    const cuts = splitBySpeaker(r, segments, rules);
+    if (cuts.length > 1) observe?.({ type: "cut", pieces: cuts.length });
+    return cuts.map(({ remark, slot }) => (slot === undefined || isUnlabeled(slot) ? remark : { ...remark, speaker: labelOf(slot) }));
+  };
 
   // 保留の先頭から、揃った発言か時間切れの発言を出す
   const release = (): SettledRemark[] => {
     const out: SettledRemark[] = [];
     for (let head = held[0]; head !== undefined; head = held[0]) {
       if (isSettled(head.remark)) out.push(...attribute(head.remark));
-      else if (rules.waitLimit && head.heldAt + SPEAKER_WAIT_MS <= clock) out.push(head.remark);
-      else break;
+      else if (rules.waitLimit && head.heldAt + SPEAKER_WAIT_MS <= clock) {
+        observe?.({ type: "timeout" });
+        out.push(head.remark);
+      } else break;
       held.shift();
     }
     return out;

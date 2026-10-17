@@ -1,0 +1,320 @@
+// 話者分離の精度の計測（Issue #1031）。話者分離のモデル・発言への対応付けの規則・基準値を変えたときに、合成会議で発言ごとに
+// 正解 / 取り違え / 話者なしの割合を測る。手で回し、合否は出さない。
+// 入力は台本 timeline.tsv と、`stt-bench run --events` の出力（届いた時刻 arrival つきのヘルパーのイベントの JSONL）。
+// イベントは speakerReplay --offline と同じ経路（replayOffline）で中核に通す。規則は中核だけが持ち、ここでは写さない。
+// 出力は標準出力に Markdown の表 1 つ（数とラベルだけ。発言の本文は出さない）
+import { NodeRuntime } from "@effect/platform-node";
+import { Effect, Schema } from "effect";
+import { Argument, Command, Flag } from "effect/cli";
+import { decodeHelperEvent } from "../src/core/index.ts";
+import { exitNaturally } from "../src/exitNaturally.ts";
+import { benchProgram, InvalidInputFile, readInputText, write } from "./entry.ts";
+import { type InputLine, readLines, replayOffline, type ReplayResult, replayOptionsOf, ruleFlags } from "./speakerReplay.ts";
+import { parseTimeline } from "./sttAccuracy.ts";
+
+const EPSILON = 1e-6;
+// 正解では話者が替わっているとみなす、1 人あたりの重なりの下限（秒）。中核の 0.5 秒の下限と同じ値
+const DER_COLLAR_SECONDS = 0.25;
+
+type Span = { start: number; end: number };
+type TruthRow = Span & { speaker: string };
+type Scored = Span & { track: string; speaker?: string };
+type Segment = Span & { slot: number };
+
+const overlap = (a: Span, b: Span) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
+
+// 発言ごとの、人ごとの重なりの合計（秒）。重ならない人は入れない
+function overlapByPerson(span: Span, timeline: readonly TruthRow[]): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const row of timeline) {
+    const o = overlap(span, row);
+    if (o > EPSILON) totals.set(row.speaker, (totals.get(row.speaker) ?? 0) + o);
+  }
+  return totals;
+}
+
+// 正解の人: 発言の区間と最も長く重なる人（同じ人の複数の行は重なりを足す）。重なる行がなければ undefined
+export function groundTruthSpeaker(remark: Span, timeline: readonly TruthRow[]): string | undefined {
+  let best: string | undefined;
+  let bestSeconds = 0;
+  for (const [speaker, seconds] of overlapByPerson(remark, timeline)) {
+    if (seconds > bestSeconds) {
+      best = speaker;
+      bestSeconds = seconds;
+    }
+  }
+  return best;
+}
+
+// ハンガリアン法の状態（1 始まり。0 は番兵）。u・v は行と列の電位、matchedRow[j] は列 j に割り当てた行（0 は未割り当て）、way は増加路の 1 つ前の列
+type Assignment = { n: number; u: number[]; v: number[]; matchedRow: number[]; way: number[] };
+
+// 行 i0 から、使っていない列へ緩和し、最小の増分 delta とその列 next を返す
+function relax(cost: (i: number, j: number) => number, state: Assignment, i0: number, j0: number, used: readonly boolean[], minv: number[]) {
+  let delta = Number.POSITIVE_INFINITY;
+  let next = 0;
+  for (let j = 1; j <= state.n; j++) {
+    if (used[j]) continue;
+    const current = cost(i0, j) - state.u[i0]! - state.v[j]!;
+    if (current < minv[j]!) {
+      minv[j] = current;
+      state.way[j] = j0;
+    }
+    if (minv[j]! < delta) {
+      delta = minv[j]!;
+      next = j;
+    }
+  }
+  return { delta, next };
+}
+
+// 使った列に増分を足し引きして電位を更新し、使っていない列の候補の値を詰める
+function shiftPotentials(state: Assignment, used: readonly boolean[], minv: number[], delta: number): void {
+  for (let j = 0; j <= state.n; j++) {
+    if (used[j]) {
+      state.u[state.matchedRow[j]!] = state.u[state.matchedRow[j]!]! + delta;
+      state.v[j] = state.v[j]! - delta;
+    } else minv[j] = minv[j]! - delta;
+  }
+}
+
+// 行 i を、増加路を 1 本見つけて割り当てに足す
+function addRow(cost: (i: number, j: number) => number, state: Assignment, i: number): void {
+  state.matchedRow[0] = i;
+  let j0 = 0;
+  const minv = new Array<number>(state.n + 1).fill(Number.POSITIVE_INFINITY);
+  const used = new Array<boolean>(state.n + 1).fill(false);
+  do {
+    used[j0] = true;
+    const { delta, next } = relax(cost, state, state.matchedRow[j0]!, j0, used, minv);
+    shiftPotentials(state, used, minv, delta);
+    j0 = next;
+  } while (state.matchedRow[j0] !== 0);
+  for (let j1 = state.way[j0]!; ; j1 = state.way[j0]!) {
+    state.matchedRow[j0] = state.matchedRow[j1]!;
+    j0 = j1;
+    if (j0 === 0) break;
+  }
+}
+
+// 重みの合計が最大になる 1 対 1 の割り当て（ハンガリアン法）。行 = ラベル、列 = 人。重みが 0 の組は対応なし（undefined）
+export function assignOneToOne(weights: readonly (readonly number[])[]): (number | undefined)[] {
+  const rows = weights.length;
+  const n = Math.max(rows, ...weights.map((row) => row.length));
+  if (rows === 0) return [];
+  const weight = (i: number, j: number) => weights[i - 1]?.[j - 1] ?? 0;
+  // 最小化の形にする（重みの符号を反転。足りない分は重み 0 の行・列で埋める）
+  const cost = (i: number, j: number) => -weight(i, j);
+  const state: Assignment = { n, u: new Array<number>(n + 1).fill(0), v: new Array<number>(n + 1).fill(0), matchedRow: new Array<number>(n + 1).fill(0), way: new Array<number>(n + 1).fill(0) };
+  for (let i = 1; i <= n; i++) addRow(cost, state, i);
+  const result: (number | undefined)[] = new Array<number | undefined>(rows).fill(undefined);
+  for (let j = 1; j <= n; j++) {
+    const i = state.matchedRow[j]!;
+    if (i >= 1 && i <= rows && weight(i, j) > 0) result[i - 1] = j - 1;
+  }
+  return result;
+}
+
+// 採点の対象は 相手 の発言だけ。自分 の発言は中核が常に「自分」にするので、話者分離の物差しにならない
+const heardRemarks = (remarks: readonly Scored[]) => remarks.filter((r) => r.track === "相手");
+const otherRows = (self: string, timeline: readonly TruthRow[]) => timeline.filter((row) => row.speaker !== self);
+
+export type Attribution = {
+  correct: number;
+  wrong: number;
+  none: number;
+  // 正解の人がいない発言（--self の行にしか重ならない・どの行にも重ならない）。割合の分母に入れない
+  noTruth: number;
+  rates: { correct: number; wrong: number; none: number };
+};
+
+// 各発言を 正解 / 取り違え / 話者なし に分ける。ラベルと人の対応は会議全体で 1 つ（重なりの合計が最大）
+export function scoreAttribution({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): Attribution {
+  const rows = otherRows(self, timeline);
+  const heard = heardRemarks(remarks);
+  const people = [...new Set(rows.map((row) => row.speaker))];
+  const labels = [...new Set(heard.flatMap((r) => (r.speaker === undefined ? [] : [r.speaker])))];
+  const weights = labels.map(() => people.map(() => 0));
+  for (const r of heard) {
+    if (r.speaker === undefined) continue;
+    const label = labels.indexOf(r.speaker);
+    for (const [person, seconds] of overlapByPerson(r, rows)) weights[label]![people.indexOf(person)]! += seconds;
+  }
+  const assignment = assignOneToOne(weights);
+  let correct = 0;
+  let wrong = 0;
+  let none = 0;
+  let noTruth = 0;
+  for (const r of heard) {
+    const truth = groundTruthSpeaker(r, rows);
+    if (truth === undefined) noTruth++;
+    else if (r.speaker === undefined) none++;
+    else {
+      const mapped = assignment[labels.indexOf(r.speaker)];
+      if (mapped !== undefined && people[mapped] === truth) correct++;
+      else wrong++;
+    }
+  }
+  const total = correct + wrong + none;
+  const rate = (n: number) => (total === 0 ? 0 : n / total);
+  return { correct, wrong, none, noTruth, rates: { correct: rate(correct), wrong: rate(wrong), none: rate(none) } };
+}
+
+export type Der = { der: number; referenceSeconds: number; missedSeconds: number; falseAlarmSeconds: number; confusionSeconds: number };
+
+type DerSpan = { duration: number; speakers: string[]; slots: number[] };
+
+// 参照と仮説の区間を、状態が変わる時刻で区切る。collar（参照の区間の境の前後）の中は採点から外す
+function derSpans(reference: readonly TruthRow[], hypothesis: readonly Segment[]): DerSpan[] {
+  const events: Array<{ at: number; speaker?: string; slot?: number; collar?: boolean; delta: 1 | -1 }> = [];
+  for (const row of reference) {
+    events.push({ at: row.start, speaker: row.speaker, delta: 1 }, { at: row.end, speaker: row.speaker, delta: -1 });
+    for (const boundary of [row.start, row.end]) {
+      events.push({ at: boundary - DER_COLLAR_SECONDS, collar: true, delta: 1 }, { at: boundary + DER_COLLAR_SECONDS, collar: true, delta: -1 });
+    }
+  }
+  for (const seg of hypothesis) events.push({ at: seg.start, slot: seg.slot, delta: 1 }, { at: seg.end, slot: seg.slot, delta: -1 });
+  events.sort((a, b) => a.at - b.at);
+  const speakers = new Map<string, number>();
+  const slots = new Map<number, number>();
+  let collar = 0;
+  const spans: DerSpan[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    if (e.speaker !== undefined) speakers.set(e.speaker, (speakers.get(e.speaker) ?? 0) + e.delta);
+    else if (e.slot !== undefined) slots.set(e.slot, (slots.get(e.slot) ?? 0) + e.delta);
+    else collar += e.delta;
+    const next = events[i + 1];
+    if (next === undefined || next.at <= e.at || collar > 0) continue;
+    const active = <K>(counts: Map<K, number>) => [...counts].filter(([, n]) => n > 0).map(([key]) => key);
+    spans.push({ duration: next.at - e.at, speakers: active(speakers), slots: active(slots) });
+  }
+  return spans;
+}
+
+// DER（collar 0.25 秒）。参照の人と仮説の枠の対応は、重なりの合計が最大になる 1 対 1 で取る
+export function computeDer({ reference, hypothesis }: { reference: readonly TruthRow[]; hypothesis: readonly Segment[] }): Der {
+  const spans = derSpans(reference, hypothesis);
+  const people = [...new Set(reference.map((row) => row.speaker))];
+  const slots = [...new Set(hypothesis.map((seg) => seg.slot))];
+  const weights = slots.map(() => people.map(() => 0));
+  for (const span of spans) {
+    for (const slot of span.slots) for (const speaker of span.speakers) weights[slots.indexOf(slot)]![people.indexOf(speaker)]! += span.duration;
+  }
+  const assignment = assignOneToOne(weights);
+  const personOf = new Map(slots.map((slot, i) => [slot, assignment[i] === undefined ? undefined : people[assignment[i]!]]));
+  let referenceSeconds = 0;
+  let missedSeconds = 0;
+  let falseAlarmSeconds = 0;
+  let confusionSeconds = 0;
+  for (const { duration, speakers, slots: active } of spans) {
+    const correct = active.filter((slot) => {
+      const person = personOf.get(slot);
+      return person !== undefined && speakers.includes(person);
+    }).length;
+    referenceSeconds += duration * speakers.length;
+    missedSeconds += duration * Math.max(0, speakers.length - active.length);
+    falseAlarmSeconds += duration * Math.max(0, active.length - speakers.length);
+    confusionSeconds += duration * (Math.min(speakers.length, active.length) - correct);
+  }
+  return {
+    der: referenceSeconds > 0 ? (missedSeconds + falseAlarmSeconds + confusionSeconds) / referenceSeconds : Number.NaN,
+    referenceSeconds, missedSeconds, falseAlarmSeconds, confusionSeconds,
+  };
+}
+
+// 仮のラベルが確定で替わった割合。対象は 相手 の発言。仮のラベルは、発言が出た更新の 1 つ前の字幕で見えていたラベル（replayOffline の tentative）、
+// 確定のラベルは出た発言の speaker。比べるのはラベルで、枠ではない。両方が決まった発言を分母にする
+export function tentativeChangeRate({ remarks }: { remarks: ReadonlyArray<{ speaker?: string; tentative?: string }> }): { changed: number; total: number } {
+  let changed = 0;
+  let total = 0;
+  for (const r of remarks) {
+    if (r.tentative === undefined || r.speaker === undefined) continue;
+    total++;
+    if (r.tentative !== r.speaker) changed++;
+  }
+  return { changed, total };
+}
+
+// 正解では --self 以外の 2 人以上と重なるのに、1 つの発言として出た数（切れなかった発言）。本番の 0.5 秒の下限は採点側に持ち込まない（下限が短い交替を潰した影響を隠さないため）
+export function countUnsplit({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): number {
+  const rows = otherRows(self, timeline);
+  return heardRemarks(remarks).filter((r) => overlapByPerson(r, rows).size >= 2).length;
+}
+
+const Arrival = Schema.Struct({ arrival: Schema.Finite });
+const decodeArrival = Schema.decodeUnknownEffect(Arrival);
+
+// 相手の確定した区間（仮説。DER の入力）
+const finalSegments = (lines: readonly InputLine[], path: string) =>
+  Effect.gen(function* () {
+    const segments: Segment[] = [];
+    for (const { no, value } of lines) {
+      const bad = (what: string) => new InvalidInputFile({ path, reason: `${no} 行目の${what}が不正です` });
+      yield* decodeArrival(value).pipe(Effect.mapError(() => bad("arrival")));
+      const decoded = yield* decodeHelperEvent(JSON.stringify(value)).pipe(Effect.mapError(() => bad("イベント")));
+      if (decoded.kind === "unknown") continue;
+      const event = decoded.event;
+      if (event.type === "speaker" && event.track === "相手" && event.final) segments.push({ slot: event.slot, start: event.start, end: event.end });
+    }
+    return segments;
+  });
+
+const percent = (value: number) => (Number.isNaN(value) ? "n/a" : `${(value * 100).toFixed(1)}%`);
+
+// 数とラベルだけの表（見出し 1 行 + 値 1 行）。発言の本文は載せない
+function renderTable(attribution: Attribution, der: Der, tentative: { changed: number; total: number }, replay: Pick<ReplayResult, "cuts" | "timeouts">, unsplit: number): string {
+  const { correct, wrong, none, noTruth, rates } = attribution;
+  // 割合の分母（正解の人がいない発言は入れない）。0 件なら割合は出せない
+  const judged = correct + wrong + none === 0;
+  const columns: Array<[string, string]> = [
+    ["発言数", String(correct + wrong + none + noTruth)],
+    ["正解", percent(judged ? Number.NaN : rates.correct)],
+    ["取り違え", percent(judged ? Number.NaN : rates.wrong)],
+    ["話者なし", percent(judged ? Number.NaN : rates.none)],
+    ["採点対象外", String(noTruth)],
+    ["DER", percent(der.der)],
+    ["仮→確定", percent(tentative.total === 0 ? Number.NaN : tentative.changed / tentative.total)],
+    ["切った", String(replay.cuts)],
+    ["3秒で話者なし", String(replay.timeouts)],
+    ["切れなかった", String(unsplit)],
+  ];
+  return [
+    `| ${columns.map(([name]) => name).join(" | ")} |`,
+    `| ${columns.map(() => "---").join(" | ")} |`,
+    `| ${columns.map(([, value]) => value).join(" | ")} |`,
+  ].join("\n");
+}
+
+export const command = Command.make("speakerAccuracy", {
+  self: Flag.String("self").pipe(Flag.withDescription("進行役（自分 トラックに入れた話者）。台本のこの話者の行は採点しない")),
+  ...ruleFlags,
+  timeline: Argument.String("timeline").pipe(Argument.withDescription("合成会議の timeline.tsv（話者・開始秒・終了秒・文）")),
+  events: Argument.String("events").pipe(Argument.withDescription("stt-bench run --events の出力（arrival つきのヘルパーのイベントの JSONL）")),
+}, Effect.fn("speakerAccuracy")(function* (args) {
+  const timelineText = yield* readInputText(args.timeline);
+  const timeline = parseTimeline(timelineText).map(({ speaker, start, end }) => ({ speaker, start, end }));
+  if (!timeline.some((row) => row.speaker === args.self)) {
+    return yield* new InvalidInputFile({ path: args.timeline, reason: `--self の話者「${args.self}」が台本にありません` });
+  }
+  const lines = yield* readLines(args.events);
+  const replay = yield* replayOffline(lines, { ...replayOptionsOf(args, args.events), tentativeLabels: true });
+  const scored = replay.remarks;
+  const rows = otherRows(args.self, timeline);
+  const hypothesis = yield* finalSegments(lines, args.events);
+  const heard = heardRemarks(scored);
+  const table = renderTable(
+    scoreAttribution({ self: args.self, timeline, remarks: scored }),
+    computeDer({ reference: rows, hypothesis }),
+    tentativeChangeRate({ remarks: heard }),
+    replay,
+    countUnsplit({ self: args.self, timeline, remarks: scored }),
+  );
+  yield* write(table);
+})).pipe(Command.withDescription("合成会議の発言を、正解・取り違え・話者なしに分けた割合と、DER・仮から確定で替わった割合・規則の効き目の数を、本文なしの表で出す"));
+
+if (import.meta.main) {
+  benchProgram(command).pipe(
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
+  );
+}
