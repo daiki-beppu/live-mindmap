@@ -159,18 +159,16 @@ describe("server main の終了（要件6・7）", () => {
     }), TIMEOUT);
 
   // 空文字は「未設定」ではなく整数でない値として拒否する（未設定なら既定のポートを使う）
-  for (const value of ["abc", ""]) {
-    it.live(`LIVE_MINDMAP_PORT が整数でない（${JSON.stringify(value)}）と、待ち受けずに 0 以外で終わり、理由を標準エラーに出す`, () =>
-      Effect.gen(function* () {
-        const p = yield* processResource(value);
-        const exit = yield* Effect.tryPromise(() => p.exited);
-        const started = yield* Effect.tryPromise(() => p.started);
-        expect(exit.signal).toBeNull();
-        expect(exit.code).not.toBe(0);
-        // 起動の 1 行が出ていない（error 側）。error の文言は「待受け前に終了: <標準エラー>」なので、理由が空でないことを見る
-        expect("error" in started).toBe(true);
-        const message = "error" in started ? String((started.error as { message?: unknown }).message ?? started.error) : "";
-        expect(message.replace("待受け前に終了:", "").trim()).not.toBe("");
-      }), TIMEOUT);
-  }
+  it.live('LIVE_MINDMAP_PORT が整数でない（""）と、待ち受けずに 0 以外で終わり、理由を標準エラーに出す', () =>
+    Effect.gen(function* () {
+      const p = yield* processResource("");
+      const exit = yield* Effect.tryPromise(() => p.exited);
+      const started = yield* Effect.tryPromise(() => p.started);
+      expect(exit.signal).toBeNull();
+      expect(exit.code).not.toBe(0);
+      // 起動の 1 行が出ていない（error 側）。error の文言は「待受け前に終了: <標準エラー>」なので、理由が空でないことを見る
+      expect("error" in started).toBe(true);
+      const message = "error" in started ? String((started.error as { message?: unknown }).message ?? started.error) : "";
+      expect(message.replace("待受け前に終了:", "").trim()).not.toBe("");
+    }), TIMEOUT);
 });

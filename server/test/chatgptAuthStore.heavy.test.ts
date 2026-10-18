@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -18,7 +18,7 @@ type Worker = {
   error: Error | undefined;
 };
 
-// このITが所有する資源は、テスト本体と終了フックで同じcleanupを待つ。
+// このテストが所有する資源は、テスト本体と終了フックで同じcleanupを待つ。
 class AuthResources {
   readonly changes = new EventEmitter();
   readonly workers: Worker[] = [];
@@ -205,8 +205,10 @@ async function expectReleased(resources: AuthResources) {
   await expect(readFile(resources.home)).rejects.toMatchObject({ code: "ENOENT" });
 }
 
+// 契約の正本は C02（認証ストアのプロセス間排他）。偽の FileSystem・同一プロセスの chatgptAuthStore.test.ts では、
+// 別プロセスの更新が直列化されないこと、SIGKILL の後に lock が残ることを捕まえられない。
 describe("認証ストアのプロセス間排他（C02）", () => {
-  it("別プロセスの更新を直列化し、強制終了後の lock を勝手に奪わない", async (context) => {
+  it("別プロセスの更新を直列化し、強制終了の後に lock が残る", async (context) => {
     const resources = new AuthResources(context, context.signal);
     try {
       await resources.ready;
@@ -224,16 +226,14 @@ describe("認証ストアのプロセス間排他（C02）", () => {
       expect(resources.events).toEqual(["request", "contended", "release", "close", "close"]);
       expect(resources.forms).toHaveLength(1);
       expect(new URLSearchParams(resources.forms[0]).get("refresh_token")).toBe("synthetic-refresh");
-      expect(JSON.parse(await readFile(resources.path, "utf8"))).toMatchObject({ refresh_token: "rotated-refresh" });
+      const rotated = await readFile(resources.path, "utf8");
+      expect(JSON.parse(rotated)).toMatchObject({ refresh_token: "rotated-refresh" });
       const holder = resources.worker("hold");
       await resources.wait("locked", () => holder.output.includes("locked\n") ? true : undefined, [holder]);
       holder.child.kill("SIGKILL");
       expect((await resources.ended(holder)).signal).toBe("SIGKILL");
-      const leftover = await readFile(resources.path, "utf8");
-      // 残存lockは、全workerの終了確認後にだけ手動回収する。
-      await rm(resources.path + ".lock", { recursive: true });
-      expect((await resources.ended(resources.worker("refresh"))).code).toBe(0);
-      expect(await readFile(resources.path, "utf8")).toBe(leftover);
+      expect((await stat(resources.path + ".lock")).isDirectory()).toBe(true);
+      expect(await readFile(resources.path, "utf8")).toBe(rotated);
     } finally {
       await resources.cleanup();
     }

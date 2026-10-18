@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Result } from "effect";
-import { ScreenJpeg, ScreenJpegFailed } from "../src/screenJpeg.ts";
+import { Effect, Layer } from "effect";
+import { ScreenJpeg } from "../src/screenJpeg.ts";
 
 // 本物の ScreenJpeg（macOS の sips）が、PNG を 1280×720 に収まる JPEG にすること。
 // sips は macOS にしか無く、CI は ubuntu なので、macOS のときだけ走らせる（それ以外は skip）。
+// 縮める大きさの計算（fitSize）と、sips が失敗したときの ScreenJpegFailed への写像は screenJpeg.test.ts（偽の ChildProcessSpawner）。
 // CI で走るテストは偽の ScreenJpeg を使う（fixtures/screenJpeg.ts）。
 
 const chunk = (type: string, data: Buffer) => {
@@ -65,34 +66,16 @@ const toJpeg = (path: string) =>
   }).pipe(Effect.provide(ScreenJpeg.layer.pipe(Layer.provide(NodeServices.layer))));
 
 describe.skipIf(process.platform !== "darwin")("ScreenJpeg の実物の Layer（sips）", () => {
-  const cases: [name: string, width: number, height: number][] = [
-    ["16:9 で大きい PNG は 1280×720 に縮む", 2560, 1440],
-    ["4:3 の PNG も高さが 720 を超えない（幅だけで縮めない）", 2000, 1500],
-    ["縦長の PNG も 1280×720 に収まる", 1000, 1800],
-    ["小さい PNG はそのまま収まる", 640, 360],
-  ];
-  for (const [name, width, height] of cases) {
-    it.live(name, () =>
-      Effect.gen(function* () {
-        const dir = yield* directory;
-        const path = join(dir, "s.png");
-        writeFileSync(path, png(width, height));
-        const bytes = yield* toJpeg(path);
-        const size = jpegSize(bytes);
-        expect(size.width).toBeLessThanOrEqual(1280);
-        expect(size.height).toBeLessThanOrEqual(720);
-        // 縦横の比は保つ（丸めの 1 ピクセル分は許す）
-        expect(Math.abs(size.width / size.height - width / height)).toBeLessThan(0.02);
-      }).pipe(Effect.scoped));
-  }
-
-  it.live("画像が読めなければ ScreenJpegFailed で失敗する（defect ではない）", () =>
+  it.live("16:9 で大きい PNG は、本物の sips で 1280×720 に縮んだ JPEG になる", () =>
     Effect.gen(function* () {
       const dir = yield* directory;
-      const result = yield* Effect.result(toJpeg(join(dir, "無い.png")));
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isSuccess(result)) return;
-      expect(result.failure).toBeInstanceOf(ScreenJpegFailed);
-      expect(result.failure.message).not.toBe("");
+      const path = join(dir, "s.png");
+      writeFileSync(path, png(2560, 1440));
+      const bytes = yield* toJpeg(path);
+      const size = jpegSize(bytes);
+      expect(size.width).toBeLessThanOrEqual(1280);
+      expect(size.height).toBeLessThanOrEqual(720);
+      // 縦横の比は保つ（丸めの 1 ピクセル分は許す）
+      expect(Math.abs(size.width / size.height - 2560 / 1440)).toBeLessThan(0.02);
     }).pipe(Effect.scoped));
 });

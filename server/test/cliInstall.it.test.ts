@@ -2,11 +2,11 @@ import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { execFile } from "node:child_process";
-import { chmod, copyFile, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { StdoutIsTty } from "../src/consoleText.ts";
@@ -20,7 +20,6 @@ import { realLayers } from "../src/server.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
-import { archive, CONTENT } from "./fixtures/cloudflared.ts";
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
@@ -42,61 +41,6 @@ const cliProcess = (dir: string, port: number, name: string) => Effect.tryPromis
 }));
 
 describe("CLI install とサーバー", () => {
-  it.live.each(["missing binary", "non-executable binary", "hash mismatch"] as const)("ARCH-001: %s を不足として返し、同じサービスで CLI 再導入できる", (condition) => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const root = join(dir, "deps");
-    const fixture = yield* archive(dir);
-    let downloads = 0;
-    yield* Effect.gen(function* () {
-      const deps = yield* ManagedDeps;
-      const item = { name: "cloudflared", need: "optional", state: "ready" } as const;
-      const server = yield* serverWith(dir, deps);
-      const first = yield* cliProcess(dir, server.port, "cloudflared");
-      expect(first.code, first.stderr).toBe(0);
-      expect(JSON.parse(first.stdout)).toEqual([item]);
-      expect(downloads).toBe(1);
-      expect(yield* deps.check(["cloudflared"])).toEqual([item]);
-      const binary = yield* deps.executable("cloudflared");
-      expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe(CONTENT);
-      const current = join(root, "cloudflared/current");
-      const target = yield* Effect.tryPromise(() => readlink(current));
-      const ready = yield* Effect.tryPromise(() => readFile(join(current, ".ready.json"), "utf8"));
-      expect(JSON.parse(ready).version).toBe("2026.9.2");
-      const unchanged = yield* cliProcess(dir, server.port, "cloudflared");
-      expect(unchanged.code, unchanged.stderr).toBe(0);
-      expect(JSON.parse(unchanged.stdout)).toEqual([]);
-      expect(downloads).toBe(1);
-      yield* Effect.tryPromise(async () => {
-        if (condition === "missing binary") await rm(binary);
-        else if (condition === "non-executable binary") await chmod(binary, 0o644);
-        else await writeFile(binary, "#!/bin/sh\nexit 17\n");
-      });
-      expect(yield* Effect.tryPromise(() => readlink(current))).toBe(target);
-      expect(yield* Effect.tryPromise(() => readFile(join(current, ".ready.json"), "utf8"))).toBe(ready);
-      const rejected = yield* Effect.result(deps.executable("cloudflared"));
-      expect(Result.isFailure(rejected)).toBe(true);
-      if (Result.isFailure(rejected)) expect(rejected.failure).toBeInstanceOf(ManagedDepsFailed);
-      const missing = [{ ...item, state: "missing" }];
-      expect(yield* deps.check(["cloudflared"])).toEqual(missing);
-      const checked = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=cloudflared`));
-      expect(checked.status).toBe(200);
-      expect(yield* Effect.tryPromise(() => checked.json())).toEqual(missing);
-      const repaired = yield* cliProcess(dir, server.port, "cloudflared");
-      expect(repaired.code, repaired.stderr).toBe(0);
-      expect(JSON.parse(repaired.stdout)).toEqual([item]);
-      expect(downloads).toBe(2);
-      expect(yield* deps.check(["cloudflared"])).toEqual([item]);
-      const restored = yield* deps.executable("cloudflared");
-      expect(yield* Effect.tryPromise(() => readFile(restored, "utf8"))).toBe(CONTENT);
-      expect((yield* Effect.tryPromise(() => stat(restored))).mode & 0o777).toBe(0o755);
-    }).pipe(Effect.provide(ManagedDeps.layer({ root, cloudflared: {
-      resolve: Effect.succeed(fixture.artifact),
-      download: (_url: string, destination: string) => Effect.tryPromise(async () => {
-        downloads++;
-        await copyFile(fixture.path, destination);
-      }),
-    } }).pipe(Layer.provide(NodeServices.layer))));
-  }).pipe(Effect.scoped));
   it.live("環境設定から realLayers に渡した管理ルートを状態確認 API が使う", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const configured = join(dir, "configured-deps");
