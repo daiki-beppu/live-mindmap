@@ -1,4 +1,4 @@
-import { defaultClaude } from "../src/modelSelection.ts";
+import { defaultClaude, type ExecutableModel } from "../src/modelSelection.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,11 +24,11 @@ const allBytes = new Uint8Array(Array.from({ length: 256 }, (_, i) => i));
 const shot = (start: number, bytes: Uint8Array, id = `s${start}`): ScreenChange => ({ start, image: { id, bytes } });
 const remark = (id: string, end: number): Remark => ({ id, track: "相手", start: end - 1, end, text: "発言" });
 
-const open = Effect.fn("open")(function* () {
+const open = Effect.fn("open")(function* (model: ExecutableModel = defaultClaude) {
   const root = yield* sessionsDir;
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
-  const { session } = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", publish: () => Effect.void }).pipe(
+  const { session } = yield* openLoggedSession({ model, dir, title: "定例", publish: () => Effect.void }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -96,6 +96,27 @@ describe("openLoggedSession の共有画面", () => {
       const diff = lines().find((l) => l.type === "diff") as { input: { screens?: unknown } };
       expect(diff.input.screens).toEqual([{ start: 5, image: "0005.0.jpg" }]);
       expect(existsSync(join(dir, "screens", "0005.0.jpg"))).toBe(true);
+    }).pipe(Effect.scoped));
+
+  it.effect("images:false のモデルを渡しても screen は保存され、発言だけが updater に届く（Issue #665）", () =>
+    Effect.gen(function* () {
+      const { dir, session, inputs, lines } = yield* open({ ...defaultClaude, images: false });
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00, 0x80]);
+
+      yield* session.pushScreen(shot(1, bytes));
+      yield* session.pushScreen({ start: 2, image: null });
+      yield* session.push({ id: "r1", track: "相手", start: 3, end: 4, text: "採用について" });
+      yield* session.idle;
+
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]!.fresh.map((r) => r.text)).toEqual(["採用について"]);
+      const screens = lines().filter((l) => l.type === "screen");
+      expect(screens).toHaveLength(2);
+      expect(screens[0]).toMatchObject({ start: 1, image: expect.any(String) });
+      expect(new Uint8Array(readFileSync(join(dir, "screens", screens[0]!.image as string)))).toEqual(bytes);
+      expect(screens[1]).toMatchObject({ start: 2, image: null });
+      expect("screens" in inputs[0]!).toBe(false);
+      expect("previousScreens" in inputs[0]!).toBe(false);
     }).pipe(Effect.scoped));
 
   it.effect("画面を 1 件も受けないセッションは screens/ を作らず、screen の行も無い", () =>

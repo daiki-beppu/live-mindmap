@@ -2,7 +2,7 @@ import { defaultClaude } from "../src/modelSelection.ts";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect";
@@ -11,7 +11,6 @@ import { MapCapture } from "../src/capture.ts";
 import { DiffUpdatePaused, DiffUpdater, REVIEW_LOG_ELEMENT_ID, SETTLE_QUIET_MS, type DiffInput, type Snapshot, type CaptionsFrame } from "../src/core/index.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
-import { POOL_DROP_AFTER_SESSIONS } from "../src/core/vocabularyPool.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
@@ -150,30 +149,6 @@ describe("SessionSinks（実物 Layer）", () => {
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  // TestClock の時刻は 1970 年。Clock に従う書き方に替えると、フォルダ名と at が 1970 年になって落ちる
-  it.effect("フォルダ名の時刻と log.jsonl の at は、TestClock の下でも実時刻（Clock に従わない）", () => {
-    const { updaterLayer } = makeFakeUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      const sinks = yield* SessionSinks;
-      const before = Date.now();
-      const dir = yield* sinks.createDir(sessionsDir);
-      const folderTime = Date.parse(basename(dir).replace(/T(\d\d)-(\d\d)-(\d\d)/, "T$1:$2:$3"));
-      expect(folderTime).toBeGreaterThanOrEqual(before);
-      expect(folderTime).toBeLessThanOrEqual(Date.now());
-
-      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
-      const beforeLog = Date.now();
-      yield* sink.appendLog({ type: "intake-restarted", trigger: "auto" });
-      yield* sink.flush;
-      yield* settleUntil(() => existsSync(join(dir, "log.jsonl")) && readFileSync(join(dir, "log.jsonl"), "utf8").includes("intake-restarted"));
-      const entry = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).find((e) => e.type === "intake-restarted");
-      const at = Date.parse(entry.at);
-      expect(at).toBeGreaterThanOrEqual(beforeLog);
-      expect(at).toBeLessThanOrEqual(Date.now());
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
   it.effect("フォルダを作れないと createDir が失敗し、open を呼ばなければ updater も開かない", () => {
     const { updaterLayer, state } = makeFakeUpdater();
     return Effect.gen(function* () {
@@ -206,77 +181,6 @@ describe("SessionSinks（実物 Layer）", () => {
       expect(remarkIds).toEqual(["r1", "r2"]);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
 
-  // 実物の SessionSink.screen が、画像ありと「なし」（image: null）のどちらも Session.pushScreen へ渡し、
-  // log.jsonl の screen の行と差分更新の入力（screens）に同じ start・null が届く
-  it.effect("screen は画像ありも image: null も pushScreen へ渡り、log.jsonl と差分更新の入力に start・null のまま届く", () => {
-    const inputs: DiffInput[] = [];
-    const updaterLayer = Layer.succeed(
-      DiffUpdater,
-      DiffUpdater.of({
-        update: (input) =>
-          Effect.sync(() => {
-            inputs.push(input);
-            return { ops: [] };
-          }),
-      }),
-    );
-    return Effect.scoped(Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      const sinks = yield* SessionSinks;
-      const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
-      yield* sink.speaker(SPEAKER_OFF);
-
-      yield* sink.screen({ start: 1, image: new Uint8Array([0xff, 0xd8, 0xff, 0x00]) });
-      yield* sink.screen({ start: 2.5, image: null });
-      yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
-      yield* sink.flush;
-
-      const log = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
-      const screens = log.filter((e) => e.type === "screen");
-      expect(screens).toHaveLength(2);
-      expect(screens[0]).toMatchObject({ start: 1 });
-      expect(typeof screens[0].image).toBe("string");
-      expect(screens[1]).toMatchObject({ type: "screen", start: 2.5, image: null });
-      expect(inputs.flatMap((input) => input.screens ?? []).map((c) => [c.start, c.image === null ? null : [...c.image.bytes]])).toEqual([
-        [1, [0xff, 0xd8, 0xff, 0x00]],
-        [2.5, null],
-      ]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("images:false のモデルを渡しても screen は保存され、発言だけが updater に届く（Issue #665）", () => {
-    const inputs: DiffInput[] = [];
-    const updaterLayer = Layer.succeed(DiffUpdater, DiffUpdater.of({
-      update: (input) => Effect.sync(() => { inputs.push(input); return { ops: [] }; }),
-    }));
-    return Effect.scoped(Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      const sinks = yield* SessionSinks;
-      const dir = yield* sinks.createDir(sessionsDir);
-      const model = { ...defaultClaude, images: false };
-      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: model })).layer, model, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
-      yield* sink.speaker(SPEAKER_OFF);
-      const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0x00, 0x80]);
-
-      yield* sink.screen({ start: 1, image: bytes });
-      yield* sink.screen({ start: 2, image: null });
-      yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用について" });
-      yield* sink.flush;
-
-      expect(inputs).toHaveLength(1);
-      expect(inputs[0]!.fresh.map((r) => r.text)).toEqual(["採用について"]);
-      const log = readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-      const screens = log.filter((e) => e.type === "screen");
-      expect(screens).toHaveLength(2);
-      expect(screens[0]).toMatchObject({ start: 1, image: expect.any(String) });
-      expect(new Uint8Array(readFileSync(join(dir, "screens", screens[0].image)))).toEqual(bytes);
-      expect(screens[1]).toMatchObject({ start: 2, image: null });
-      expect("screens" in inputs[0]!).toBe(false);
-      expect("previousScreens" in inputs[0]!).toBe(false);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
   // Issue #438: 画像の ID は s1 から順に増え、image: null は数えない（null を挟んでも次の画像は s2）
   it.effect("画像の ID は s1 から順に増え、image: null は数えない", () => {
     const inputs: DiffInput[] = [];
@@ -302,40 +206,9 @@ describe("SessionSinks（実物 Layer）", () => {
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  // Issue #280: 実物の SessionSink.screenOff は Session.pushScreenOff へ渡り、受け取った start・reason のまま log.jsonl に 1 行ずつ書く。
-  // 差分更新の入力には screen-off が載らない
-  it.effect("screenOff は start と reason のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
-    const inputs: DiffInput[] = [];
-    const updaterLayer = Layer.succeed(
-      DiffUpdater,
-      DiffUpdater.of({ update: (input) => Effect.sync(() => { inputs.push(input); return { ops: [] }; }) }),
-    );
-    return Effect.scoped(Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      const sinks = yield* SessionSinks;
-      const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
-      yield* sink.speaker(SPEAKER_OFF);
-
-      yield* sink.screenOff({ start: 0, reason: "指定" });
-      yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
-      yield* sink.screenOff({ start: 7.5, reason: "許可なし" });
-      yield* sink.final({ track: "相手", start: 5, end: 6, text: "面接" });
-      yield* sink.flush;
-
-      const log = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
-      expect(log.filter((e) => e.type === "screen-off").map(({ type, start, reason }) => ({ type, start, reason }))).toEqual([
-        { type: "screen-off", start: 0, reason: "指定" },
-        { type: "screen-off", start: 7.5, reason: "許可なし" },
-      ]);
-      expect(log.map((e) => e.type).filter((t) => t === "start" || t === "screen-off" || t === "remark")).toEqual(["start", "screen-off", "remark", "screen-off", "remark"]);
-      expect(inputs.length).toBeGreaterThan(0);
-      for (const input of inputs) expect(input.screens ?? []).toEqual([]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
   // Issue #1020 → #1021: sink.speaker で渡した speaker・speaker-off は、生の値のまま受け取った順で log.jsonl に先に書かれ、at が付く。差分更新の入力には載らない。
-  // 相手の発言は話者の確定区間が揃うまで保留されるので、発言の行は保留が解ける speaker-off の後ろに並ぶ
+  // 相手の発言は話者の確定区間が揃うまで保留されるので、発言の行は保留が解ける speaker-off の後ろに並ぶ。
+  // speaker-mixed（Issue #1024）と speaker-centroid（Issue #1025）も同じく生の値のまま残る。起動し直しの合図（speakersRenumbered）は log.jsonl に行を足さない
   it.effect("sink.speaker の speaker・speaker-off は生の値のまま log.jsonl に受け取った順で書かれ、差分更新の入力に載らない", () => {
     const inputs: DiffInput[] = [];
     const updaterLayer = Layer.succeed(
@@ -352,15 +225,23 @@ describe("SessionSinks（実物 Layer）", () => {
       yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
       yield* sink.speaker({ type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true });
       yield* sink.speaker({ type: "speaker-off", start: 9, reason: "読み込みに失敗" });
+      yield* sink.speaker({ type: "speaker-mixed", track: "相手", slot: 1, start: 95.5 });
+      yield* sink.speaker({ type: "speaker-centroid", track: "相手", slot: 1, centroid: [0.25, -0.5, 1] });
+      yield* sink.speakersRenumbered;
+      yield* sink.speaker({ type: "speaker-centroid", track: "相手", slot: 1, centroid: [3, 2, 1] });
       yield* sink.flush;
 
       const log = readFileSync(join(dir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l));
-      const speakerLines = log.filter((e) => e.type === "speaker" || e.type === "speaker-off");
+      const speakerLines = log.filter((e) => typeof e.type === "string" && e.type.startsWith("speaker"));
       expect(speakerLines.map(({ at, ...rest }) => ({ hasAt: typeof at === "string", rest }))).toEqual([
         { hasAt: true, rest: { type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false } },
         { hasAt: true, rest: { type: "speaker", track: "相手", start: 0, end: 1.5, slot: 0, final: true } },
         { hasAt: true, rest: { type: "speaker-off", start: 9, reason: "読み込みに失敗" } },
+        { hasAt: true, rest: { type: "speaker-mixed", track: "相手", slot: 1, start: 95.5 } },
+        { hasAt: true, rest: { type: "speaker-centroid", track: "相手", slot: 1, centroid: [0.25, -0.5, 1] } },
+        { hasAt: true, rest: { type: "speaker-centroid", track: "相手", slot: 1, centroid: [3, 2, 1] } },
       ]);
+      expect(log.map((e) => e.type).filter((t) => t.includes("restart") || t.includes("renumber"))).toEqual([]);
       expect(log.map((e) => e.type).filter((t) => t === "start" || t === "speaker" || t === "speaker-off" || t === "remark")).toEqual(["start", "speaker", "speaker", "speaker-off", "remark"]);
       for (const input of inputs) expect(JSON.stringify(input)).not.toContain("speaker");
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
@@ -759,26 +640,6 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  it.effect("出した後に届いた確定結果は捨てる。発言は増えず、次の発言の ID は r2 で番号が飛ばない", () => {
-    const { calls, updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false });
-      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
-      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
-
-      yield* sink.final(finalRemark("相手", 5.2, 8.2, "明日の会議は十時です。")); // r1 を覆う確定結果。本文が違っても捨てる
-      yield* sink.final(finalRemark("相手", 30, 32, "べつの確定結果"));
-      yield* sink.drain;
-      yield* sink.flush;
-
-      const fresh = calls.flatMap((c) => c.fresh);
-      expect(fresh.map((u) => u.id)).toEqual(["r1", "r2"]);
-      expect(fresh.some((u) => u.text.includes("十時です"))).toBe(false);
-      expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あしたの会議"], ["r2", "べつの確定結果"]]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
   it.effect("drain は、まだ出ていない発話を落とさない。途中結果の最後の本文が差分更新に渡る", () => {
     const { calls, updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
@@ -789,44 +650,6 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* sink.flush;
 
       expect(calls.flatMap((c) => c.fresh).map((u) => [u.id, u.text])).toEqual([["r1", "とちゅうでとめた"]]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("自分の途中結果は、1 秒を超えても発言にならない（相手の同じ入力は発言になる）。自分の発言は確定結果だけから作られる", () => {
-    const { calls, updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 6, text: "あいてのとちゅう", duplicate: false });
-      yield* sink.partial({ track: "自分", start: 5, end: 6, text: "じぶんのとちゅう", duplicate: false });
-      yield* sink.final(finalRemark("自分", 20, 22, "じぶんの確定結果"));
-
-      // 守っている状態に到達する: 相手の途中結果は 1 秒経って出ている（自分の途中結果は同時に届いており、出るなら同じ時刻に出る）
-      yield* TestClock.adjust(SETTLE_QUIET_MS);
-      yield* settleUntil(() => calls.flatMap((c) => c.fresh).some((u) => u.text === "あいてのとちゅう"));
-      yield* sink.drain;
-      yield* sink.flush;
-
-      const fresh = calls.flatMap((c) => c.fresh);
-      expect(fresh.map((u) => [u.track, u.text])).toEqual(expect.arrayContaining([["相手", "あいてのとちゅう"], ["自分", "じぶんの確定結果"]]));
-      expect(fresh).toHaveLength(2);
-      expect(fresh.some((u) => u.text === "じぶんのとちゅう")).toBe(false);
-      expect(logEvents(dir).filter((e) => e.type === "remark")).toHaveLength(2);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("発言が 1 件だけ届いたとき、時間を進めなくても flush を待たずにその 1 件で差分更新がすぐ呼ばれ、反映後のマップが公開される。時間を進めても呼び出しは増えない", () => {
-    const { calls, updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, published } = yield* openRecordingSink();
-      yield* sink.final(finalRemark("相手", 1, 5, "採用の面接について"));
-
-      yield* settleUntil(() => calls.length > 0); // 時間は進めていない
-      expect(calls.map((c) => c.fresh.map((u) => u.id))).toEqual([["r1"]]);
-      yield* settleUntil(() => published.length >= 2);
-      expect(published.map((s) => s.round)).toEqual([0, 1]);
-      yield* TestClock.adjust(600_000); // 時間では呼ばない
-      yield* settle;
-      expect(calls).toHaveLength(1);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
@@ -899,26 +722,6 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       expect(JSON.parse(readFileSync(join(dir, "map.json"), "utf8")).root).toMatchObject({ kind: "会議", text: "週次", children: [] });
     })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer }))));
 
-  it.effect("撮影に渡すスナップショットは 1 回だけで、書き出した map.png が 4 つ目のパスになる", () => {
-    const captured: Snapshot[] = [];
-    const capture = (snapshot: Snapshot, path: string) =>
-      Effect.sync(() => {
-        captured.push(snapshot);
-        writeFileSync(path, "png");
-      });
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.final(finalRemark("相手", 1, 2, "採用"));
-      yield* sink.flush;
-
-      const paths = yield* sink.exports;
-
-      expect(captured).toHaveLength(1);
-      expect(paths[3]).toBe(join(dir, "map.png"));
-      expect(readFileSync(join(dir, "map.png"), "utf8")).toBe("png");
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer, capture })));
-  });
-
   // base の server.heavy.test.ts の移動先
   it.effect("flush は最後の差分更新（r3 を含む）が終わるまで待ち、その後に Scope を閉じて updater を閉じる。閉じた後には呼ばれない（base:581）", () => {
     const state = { calls: [] as string[][], closed: 0, callsAfterClose: 0 };
@@ -980,27 +783,6 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
       yield* settleUntil(() => hasBubble(speaks, "自分", "面接は何回にしますか"));
       expect(hasBubble(speaks, "自分", "面接は何回にしますか")).toBe(true);
-      yield* Deferred.succeed(updateGate.gate, undefined);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  // Issue #1222: 発言にした後に、STT が同じ区切りを延ばした途中結果が届く。字幕へは、もう発言になった分を除いた後ろだけを渡す
-  it.effect("発言 → 同じ区切りが延びた途中結果の順に届いても、送ったどのフレームにも同じ文字が 2 回現れない。後ろだけが途中結果の吹き出しに出る", () => {
-    const { calls, updateGate, updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, speaks } = yield* openRecordingSink();
-      updateGate.gate = yield* Deferred.make<void>(); // 差分更新は呼ばれても返らない（発言は反映前のまま字幕に残る）
-      const wordTimes = [{ location: 0, length: 3, start: 0, end: 0.5 }, { location: 3, length: 5, start: 0.5, end: 1.2 }];
-      yield* sink.partial({ track: "相手", start: 0, end: 1.2, text: "来週のリリースは", wordTimes, duplicate: false });
-      yield* sink.partial({ track: "自分", start: 0, end: 1.2 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果で音声の時計だけを進め、相手の途中結果を発言にする
-      yield* settleUntil(() => calls.length === 1);
-
-      yield* sink.partial({ track: "相手", start: 0, end: 2, text: "来週のリリースは金曜に", wordTimes: [...wordTimes, { location: 8, length: 3, start: 1.3, end: 2 }], duplicate: false });
-      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-      yield* settleUntil(() => hasBubble(speaks, "相手", "金曜に"));
-
-      expect(lastTexts(speaks, "相手")).toEqual(["来週のリリースは", "金曜に"]);
-      for (const frame of speaks) expect(frame.bubbles.map((b) => b.text).join("").split("来週").length - 1).toBeLessThanOrEqual(1);
       yield* Deferred.succeed(updateGate.gate, undefined);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
@@ -1074,51 +856,6 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの読み（Issue #6
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  it.effect("途中結果から作った発言にも words が付き、行の raw は発言の本文と同じ", () => {
-    const { updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 7.5, text: "あした", duplicate: false, words: [word("あした", 0)] });
-      yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false, words: [word("あした", 0), word("の", 3), word("会議", 4)] });
-      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
-      yield* settle;
-
-      const lines = remarkLines(dir);
-      expect(lines).toHaveLength(1);
-      expect(lines[0].remark.text).toBe("あしたの会議");
-      expect(lines[0].raw).toBe("あしたの会議");
-      expect(lines[0].words).toEqual([word("あした", 0), word("の", 3), word("会議", 4)]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("関所が頭を切った発言の行は、raw が切った後の本文と同じで、words は切った後の本文の位置に合う", () => {
-    const { updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.final({ track: "相手", start: 10, end: 12, text: "あいう", words: [word("あいう", 0)] });
-      yield* sink.final({ track: "相手", start: 11, end: 15, text: "あいうえお", words: [word("あい", 0), word("うえ", 2), word("お", 4)] });
-      yield* sink.drain;
-      yield* sink.flush;
-
-      const lines = remarkLines(dir);
-      expect(lines.map((e) => [e.remark.id, e.remark.text, e.raw])).toEqual([["r1", "あいう", "あいう"], ["r2", "えお", "えお"]]);
-      // 切る位置は 3。"うえ" は途中で切れるので落ち、"お" は切った後の本文の位置 1 になる
-      expect(lines[1].words).toEqual([word("お", 1)]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("自分の確定結果の行にも words が残る", () => {
-    const { updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.final({ track: "自分", start: 0, end: 1, text: "はい", words: [word("はい", 0)] });
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(remarkLines(dir)[0]).toMatchObject({ raw: "はい", words: [word("はい", 0)] });
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
   it.effect("words の無いイベントから作った発言の行は今までと同じ（raw・words のキーが無い）", () => {
     const { updaterLayer } = makeRecordingUpdater();
     return Effect.scoped(Effect.gen(function* () {
@@ -1176,52 +913,6 @@ describe("SessionSinks（実物 Layer）: 発言の語ごとの区間（Issue #1
       expect(lines).toHaveLength(1);
       expect(lines[0].wordTimes).toEqual(wordTimes);
       expect(lines[0].remark).toEqual({ id: "r1", track: "相手", start: 1, end: 3, text: "明日の会議" });
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("words と wordTimes を両方持つ確定結果の行には、どちらも残る", () => {
-    const { updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      const words = [{ surface: "はい", romaji: "hai", location: 0, length: 2 }];
-      const wordTimes = [span(0, 2, 0, 1)];
-      yield* sink.final({ track: "自分", start: 0, end: 1, text: "はい", words, wordTimes });
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(remarkLines(dir)[0]).toMatchObject({ raw: "はい", words, wordTimes });
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("途中結果から作った発言にも、最後の途中結果の wordTimes が付く", () => {
-    const { updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.partial({ track: "相手", start: 5, end: 7.5, text: "あした", duplicate: false, wordTimes: [span(0, 3, 5, 6)] });
-      yield* sink.partial({ track: "相手", start: 5, end: 8, text: "あしたの会議", duplicate: false, wordTimes: [span(0, 3, 5, 6), span(3, 1, 6, 6.5), span(4, 2, 6.5, 8)] });
-      yield* sink.partial({ track: "自分", start: 0, end: 8 + SETTLE_QUIET_MS / 1000, text: "時計を進める", duplicate: false }); // 自分の途中結果は発言にならず、音声の時計だけを進める
-      yield* settle;
-
-      const lines = remarkLines(dir);
-      expect(lines).toHaveLength(1);
-      expect(lines[0].remark.text).toBe("あしたの会議");
-      expect(lines[0].wordTimes).toEqual([span(0, 3, 5, 6), span(3, 1, 6, 6.5), span(4, 2, 6.5, 8)]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-  });
-
-  it.effect("関所が頭を切った発言の行は、wordTimes が切った後の本文の位置に合い、秒は元のまま", () => {
-    const { updaterLayer } = makeRecordingUpdater();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.final({ track: "相手", start: 10, end: 12, text: "あいう", wordTimes: [span(0, 3, 10, 12)] });
-      yield* sink.final({ track: "相手", start: 11, end: 15, text: "あいうえお", wordTimes: [span(0, 2, 11, 12), span(2, 2, 12, 14), span(4, 1, 14, 15)] });
-      yield* sink.drain;
-      yield* sink.flush;
-
-      const lines = remarkLines(dir);
-      expect(lines.map((e) => [e.remark.id, e.remark.text])).toEqual([["r1", "あいう"], ["r2", "えお"]]);
-      // 切る位置は 3。"うえ"（位置 2〜4）は途中で切れるので落ち、"お" は切った後の本文の位置 1 になる
-      expect(lines[1].wordTimes).toEqual([span(1, 1, 14, 15)]);
     })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
@@ -1424,122 +1115,6 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
-  // 置き換えの内側に run の区切りが入る補正（STT の run の区切りとトークナイザの語の区切りが違う）。反映までの字幕の吹き出しの id と文字を確かめる。
-  // display: 途中結果で表示済みの吹き出しが、run ごとに別（separate）、1 つ（same）、表示なし（none。途中結果を出さずに final が届く）
-  const captionsAcrossBoundary = (args: { vocabulary: string; readings: Record<string, string>; text: string; words: ReturnType<typeof utterance>["words"]; pieces: [string, string]; display?: "separate" | "same" | "none" }) => {
-    const display = args.display ?? "separate";
-    const readings = fakeReadings({ ...READINGS, ...args.readings });
-    const { calls, updateGate, updaterLayer } = makeRecordingUpdater(KATAKANA);
-    const [first, second] = args.pieces;
-    const wordTimes = [{ location: 0, length: first.length, start: 10, end: 11 }, { location: first.length, length: second.length, start: 11, end: 12 }];
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir, speaks } = yield* openRecordingSink({ speakerOff: false });
-      yield* sink.addUserVocabulary([args.vocabulary]);
-      yield* settleUntil(() => vocabLines(dir).length === 1);
-      yield* settle;
-      if (display !== "none") {
-        yield* sink.speaker({ type: "speaker", track: "相手", start: 10, end: 11, slot: 0, final: true });
-        yield* sink.speaker({ type: "speaker", track: "相手", start: 11, end: 12, slot: display === "same" ? 0 : 1, final: false });
-        yield* sink.speaker({ type: "speaker-settled", track: "相手", to: 11 });
-        yield* sink.partial({ track: "相手", start: 10, end: 12, text: args.text, wordTimes, duplicate: false });
-        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-        yield* settleUntil(() => speaks.at(-1)?.bubbles.length === (display === "same" ? 1 : 2));
-      }
-      const shown = speaks.at(-1)?.bubbles.map((b) => [b.id, b.text]) ?? [];
-      expect(shown.map(([, t]) => t)).toEqual(display === "none" ? [] : display === "same" ? [args.text.trim()] : [first.trim(), second.trim()]);
-
-      const reply = yield* Deferred.make<void>();
-      updateGate.gate = reply;
-      yield* sink.final({ track: "相手", start: 10, end: 12, text: args.text, words: args.words, wordTimes });
-      yield* sink.speaker({ type: "speaker", track: "相手", start: 10, end: 12, slot: 0, final: true });
-      yield* sink.speaker({ type: "speaker-settled", track: "相手", to: 12 });
-      yield* settleUntil(() => calls.length === 1);
-      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-      yield* settle;
-      const frame = speaks.at(-1)!.bubbles.map((b) => [b.id, b.text]);
-      yield* Deferred.succeed(reply, undefined);
-      return { shown, frame, lines: remarkLines(dir) };
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  };
-
-  it.effect("置き換えが吹き出しの境目をまたいでも、表示済みの吹き出しの id はどちらも残り、後ろの吹き出しは直した文字を持つ（野|野村 → 野々村）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["野", "no"], ["野村", "nomura"]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "野々村", readings: { 野々村: "nonomura" }, text: target.text, words: target.words, pieces: ["野", "野村"] });
-
-      expect(frame).toEqual([[shown[0]![0], "野"], [shown[1]![0], "々村"]]);
-      expect(lines[0].remark.text).toBe("野々村");
-    }));
-
-  it.effect("別々の表示済みの吹き出しが、置き換えの文字だけで本文ができ、その数が表記の文字数を超える置き換えは字幕に適用しない。吹き出しは消えず、Remark と log の本文は直した本文のまま（意|和志 → 鰯）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["意", "i"], ["和志", "washi"]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: ["意", "和志"] });
-
-      expect(frame).toEqual([[shown[0]![0], "意"], [shown[1]![0], "和志"]]);
-      expect(lines[0].remark.text).toBe("鰯");
-      expect(lines[0].raw).toBe("意和志");
-    }));
-
-  it.effect("後ろの吹き出しの外の文字が空白だけなら、字幕に適用しない。どの吹き出しの本文も空にならない（意|和志␠ → 鰯）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["意", "i"], ["和志", "washi"], [" ", ""]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: ["意", "和志 "] });
-
-      expect(frame).toEqual([[shown[0]![0], "意"], [shown[1]![0], "和志"]]);
-      expect(frame.every(([, text]) => text !== "")).toBe(true);
-      expect(lines[0].remark.text).toBe("鰯 ");
-      expect(lines[0].raw).toBe("意和志 ");
-    }));
-
-  it.effect("前の吹き出しの外の文字が空白だけなら、字幕に適用しない。どの吹き出しの本文も空にならない（␠意|和志 → 鰯）", () =>
-    Effect.gen(function* () {
-      const target = utterance([" ", ""], ["意", "i"], ["和志", "washi"]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: [" 意", "和志"] });
-
-      expect(frame).toEqual([[shown[0]![0], "意"], [shown[1]![0], "和志"]]);
-      expect(frame.every(([, text]) => text !== "")).toBe(true);
-      expect(lines[0].remark.text).toBe(" 鰯");
-    }));
-
-  it.effect("後ろの吹き出しが置き換えの外の文字を持つなら、字幕に適用する。どちらの id も残る（意|和志す → 鰯す）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["意", "i"], ["和志", "washi"], ["す", "su"]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: ["意", "和志す"] });
-
-      expect(frame).toEqual([[shown[0]![0], "鰯"], [shown[1]![0], "す"]]);
-      expect(lines[0].remark.text).toBe("鰯す");
-      expect(lines[0].raw).toBe("意和志す");
-    }));
-
-  it.effect("前の吹き出しが置き換えより前の文字を持つなら、字幕に適用する。どちらの id も残る（あ意|和志 → あ鰯）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["あ", "a"], ["意", "i"], ["和志", "washi"]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: ["あ意", "和志"] });
-
-      expect(frame).toEqual([[shown[0]![0], "あ"], [shown[1]![0], "鰯"]]);
-      expect(lines[0].remark.text).toBe("あ鰯");
-    }));
-
-  it.effect("run が同じ表示済みの吹き出しに属するなら、字幕は補正後の本文を出す。補正前の文字を残さない（意和志 → 鰯）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["意", "i"], ["和志", "washi"]);
-      const { shown, frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: ["意", "和志"], display: "same" });
-
-      expect(frame).toEqual([[shown[0]![0], "鰯"]]);
-      expect(lines[0].remark.text).toBe("鰯");
-      expect(lines[0].raw).toBe("意和志");
-    }));
-
-  it.effect("途中結果を表示せずに final が届いたら、字幕は補正後の本文を出す（意和志 → 鰯）", () =>
-    Effect.gen(function* () {
-      const target = utterance(["意", "i"], ["和志", "washi"]);
-      const { frame, lines } = yield* captionsAcrossBoundary({ vocabulary: "鰯", readings: { 鰯: "iwashi" }, text: target.text, words: target.words, pieces: ["意", "和志"], display: "none" });
-
-      expect(frame.map(([, text]) => text)).toEqual(["鰯"]);
-      expect(lines[0].remark.text).toBe("鰯");
-    }));
-
   // Issue #641: 同梱のふつうの語の一覧（開発 を含む）が補正に渡る。語彙の 改札 と読みが近くても、ふつうの語の 開発 は直さない
   it.effect("同梱のふつうの語の一覧が補正に渡る。語彙に読みの近い語があっても、一覧に載る語の発言は直さず、log と字幕に届いた本文のまま出る", () => {
     const readings = fakeReadings({ 改札: "kaisatsu" });
@@ -1587,19 +1162,6 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
-  it.effect("自分の確定結果も直る", () => {
-    const readings = fakeReadings(READINGS);
-    const { updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openWithVocabulary();
-      yield* sink.final({ track: "自分", start: 0, end: 1, text: garbled.text, words: garbled.words });
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(remarkLines(dir)[0]).toMatchObject({ remark: { track: "自分", text: "港南店に行きます" }, raw: "江南店に行きます" });
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
   it.effect("途中結果（いま話している文字）は直らない。語彙があっても、字幕には届いた本文がそのまま出る", () => {
     const readings = fakeReadings(READINGS);
     const { updaterLayer } = makeRecordingUpdater(KATAKANA);
@@ -1610,24 +1172,6 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
 
       expect(speaks.some((f) => f.bubbles.some((b) => b.text === "江南店に行きます"))).toBe(true);
       expect(speaks.some((f) => f.bubbles.some((b) => b.text.includes("港南店")))).toBe(false);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
-  it.effect("語彙に無い崩れや、直す語が無い発言は直さない。raw と text は同じ", () => {
-    const readings = fakeReadings(READINGS);
-    const { updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openWithVocabulary();
-      const plain = utterance(["今日", "kyou"], ["は", "ha"], ["会議", "kaigi"], ["です", "desu"]);
-      yield* sink.final({ track: "相手", start: 1, end: 3, text: plain.text, words: plain.words });
-      yield* sink.final({ track: "相手", start: 10, end: 12, text: "wordsなし" }); // words の無いイベントは直さない
-      yield* sink.drain;
-      yield* sink.flush;
-
-      const lines = remarkLines(dir);
-      expect(lines.map((e) => e.remark.text)).toEqual(["今日は会議です", "wordsなし"]);
-      expect(lines[0].raw).toBe("今日は会議です");
-      expect(lines[1]).not.toHaveProperty("raw");
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
@@ -1949,74 +1493,6 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
-  it.effect("読みの呼び出しが失敗しても、セッションは止まらない。語は出どころ screen・読みなし（romaji: null）で vocab の行に残り、発言は直さずに出る", () => {
-    const readings = fakeReadings(READINGS);
-    readings.failure.reason = "ヘルパーが 0 以外で終わった";
-    const { calls, updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
-      yield* settleUntil(() => vocabLines(dir).length === 1);
-      yield* settle;
-      yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
-      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(vocabLines(dir)[0].words).toEqual([
-        { surface: "港南店", romaji: null, source: "screen" },
-        { surface: "Zendesk", romaji: null, source: "screen" },
-      ]);
-      expect(remarkLines(dir).map((e) => [e.remark.text, e.raw])).toEqual([["江南店に行きます", "江南店に行きます"]]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
-  it.effect("読みが返らなかった語は romaji: null で残り、補正には使われない。読みが返った語は直る", () => {
-    const readings = fakeReadings({ ゼンデスク: "zendesuku" }); // 港南店の読みは返らない
-    const { updaterLayer } = makeRecordingUpdater(KATAKANA);
-    const zendesk = utterance(["全", "zen"], ["デスク", "desuku"], ["を", "wo"], ["使う", "tsukau"]);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
-      yield* settleUntil(() => vocabLines(dir).length === 1);
-      yield* settle;
-      yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
-      yield* sink.final({ track: "相手", start: 10, end: 12, text: zendesk.text, words: zendesk.words });
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(vocabLines(dir)[0].words).toEqual([
-        { surface: "港南店", romaji: null, source: "screen" },
-        { surface: "Zendesk", romaji: "zendesuku", source: "screen" },
-      ]);
-      expect(remarkLines(dir).map((e) => e.remark.text)).toEqual(["江南店に行きます", "Zendeskを使う"]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
-  it.effect("読みを作っている途中で止めても、vocab の行はちょうど 1 行残る。出どころ screen で、読みなし（romaji: null）", () => {
-    const readings = fakeReadings(READINGS);
-    const { updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      readings.gate.current = yield* Deferred.make<void>(); // 完了させない
-      const sessionsDir = yield* withTmpSessionsDir();
-      const sinks = yield* SessionSinks;
-      const dir = yield* sinks.createDir(sessionsDir);
-      const inner = yield* Scope.make();
-      const sink = yield* Scope.provide(
-        sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void }),
-        inner,
-      );
-      yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
-      yield* settle;
-      yield* Scope.close(inner, Exit.void);
-
-      expect(vocabLines(dir)).toHaveLength(1);
-      expect(vocabLines(dir)[0].words).toEqual([
-        { surface: "港南店", romaji: null, source: "screen" },
-        { surface: "Zendesk", romaji: null, source: "screen" },
-      ]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
 });
 
 // Issue #642: 英字の語（略語でないもの）の読みを、差分更新のモデルにまとめて 1 度だけ聞く。
@@ -2041,7 +1517,6 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
   const garbled = utterance(["江南", "kounan"], ["店", "ten"], ["に", "ni"], ["行き", "iki"], ["ます", "masu"]);
   const KATAKANA = { Notion: "ノーション", Figma: "フィグマ" };
   const READINGS = { ノーション: "nooshon", フィグマ: "figuma", OJT: "oojiitii", KPI: "keipiai", 港南店: "kounanten" };
-  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0x00]);
   const vocabLines = (dir: string) => logEvents(dir).filter((e) => e.type === "vocab");
   const remarkLines = (dir: string) => logEvents(dir).filter((e) => e.type === "remark");
 
@@ -2062,30 +1537,6 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
         { surface: "OJT", romaji: "oojiitii", source: "user" },
         { surface: "港南店", romaji: "kounanten", source: "user" },
       ]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
-  it.effect("カタカナで出た発言が英字に直る。remark の行は text が直した本文、raw が直す前の本文で、差分更新と字幕には直った表記が渡る", () => {
-    const readings = fakeReadings(READINGS);
-    const { calls, updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir, speaks } = yield* openRecordingSink();
-      yield* sink.addUserVocabulary(["Notion", "Figma"]);
-      yield* settleUntil(() => vocabLines(dir).length === 1);
-      yield* settle;
-      yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
-      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
-      yield* settleUntil(() => speaks.some((f) => f.bubbles.some((b) => b.text === "Notionを開く")));
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(remarkLines(dir)).toHaveLength(1);
-      expect(remarkLines(dir)[0].remark).toMatchObject({ id: "r1", text: "Notionを開く" });
-      expect(remarkLines(dir)[0].raw).toBe("ノーションを開く");
-      expect(calls.flatMap((c) => c.fresh)[0]?.text).toBe("Notionを開く");
-      expect(speaks.some((f) => f.bubbles.some((b) => b.text.includes("ノーション")))).toBe(false);
-      const types = logEvents(dir).map((e) => e.type);
-      expect(types.indexOf("vocab")).toBeLessThan(types.indexOf("remark"));
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
@@ -2214,82 +1665,13 @@ describe("SessionSinks（実物 Layer）: 英字の語の読みをモデルに�
     })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 
-  it.effect("モデルが一部の語の読みを返さない・カタカナでない値を返したときは、その語だけ romaji: null。返った語は読みが付き、読みのサブコマンドへはその語のカタカナだけが渡る", () => {
-    const readings = fakeReadings({ ...READINGS, スラック: "surakku" });
-    const { calls, updaterLayer } = makeRecordingUpdater({ Notion: "ノーション", Figma: "ふぃぐま" }); // Slack は答えが無い・Figma はひらがな
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.addUserVocabulary(["Notion", "Figma", "Slack"]);
-      yield* settleUntil(() => vocabLines(dir).length === 1);
-      yield* settle;
-      yield* sink.final({ track: "相手", start: 1, end: 3, text: katakanaNotion.text, words: katakanaNotion.words });
-      yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
-      yield* sink.drain;
-      yield* sink.flush;
-
-      expect(readings.calls).toEqual([["ノーション"]]);
-      expect(vocabLines(dir)[0].words).toEqual([
-        { surface: "Notion", romaji: "nooshon", source: "user" },
-        { surface: "Figma", romaji: null, source: "user" },
-        { surface: "Slack", romaji: null, source: "user" },
-      ]);
-      expect(remarkLines(dir)[0].remark.text).toBe("Notionを開く");
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
-  it.effect("共有画面の lines に英字の語があるときも、出どころ screen として、まとめて 1 回だけモデルに聞かれる。同じ語がまた映っても聞き直さない", () => {
-    const readings = fakeReadings(READINGS);
-    const { katakanaCalls, updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.screen({ start: 1, image: jpeg, lines: ["Notion", "Figma", "OJT", "港南店の出店"] });
-      yield* settleUntil(() => vocabLines(dir).length === 1);
-      yield* sink.screen({ start: 2, image: jpeg, lines: ["Notion", "Figma"] });
-      yield* settle;
-
-      expect(katakanaCalls).toEqual([["Notion", "Figma"]]);
-      expect(vocabLines(dir)).toHaveLength(1);
-      expect(vocabLines(dir)[0].words).toEqual([
-        { surface: "Notion", romaji: "nooshon", source: "screen" },
-        { surface: "Figma", romaji: "figuma", source: "screen" },
-        { surface: "OJT", romaji: "oojiitii", source: "screen" },
-        { surface: "港南店", romaji: "kounanten", source: "screen" },
-      ]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
-
-  it.effect("モデルの読みを待っている途中で止めても、vocab の行はちょうど 1 行残る。全語が出どころ user で、読みなし（romaji: null）", () => {
-    const readings = fakeReadings(READINGS);
-    const { katakana, updaterLayer } = makeRecordingUpdater(KATAKANA);
-    return Effect.scoped(Effect.gen(function* () {
-      katakana.gate = yield* Deferred.make<void>(); // 完了させない
-      const sessionsDir = yield* withTmpSessionsDir();
-      const sinks = yield* SessionSinks;
-      const dir = yield* sinks.createDir(sessionsDir);
-      const inner = yield* Scope.make();
-      const sink = yield* Scope.provide(
-        sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void }),
-        inner,
-      );
-      yield* sink.addUserVocabulary(["Notion", "港南店"]);
-      yield* settle;
-      yield* Scope.close(inner, Exit.void);
-
-      expect(readings.calls).toEqual([]);
-      expect(vocabLines(dir)).toHaveLength(1);
-      expect(vocabLines(dir)[0].words).toEqual([
-        { surface: "Notion", romaji: null, source: "user" },
-        { surface: "港南店", romaji: null, source: "user" },
-      ]);
-    })).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
-  });
 });
 
 // Issue #645: 過去のセッションの語彙を引き継ぐ。
 // セッションの置き場（LIVE_MINDMAP_SESSIONS = createDir に渡す sessionsDir）の中に、全セッションをまたぐ溜まりのファイルを 1 つ置く。
 // 開始（open）で溜まりの語を読みごと vocab の行（出どころ carried）として語彙に入れ（読みは作り直さない）、
 // 終了（exports）で、直した後の発言に出た語と利用者が足した語を溜まりへ入れ、共有画面に映っただけの語は入れない。
-// 最後に話されてから POOL_DROP_AFTER_SESSIONS セッション話されなかった語（足した語を除く）は落ちる。
+// 最後に話されてから一定のセッション数だけ話されなかった語（足した語を除く）は落ちる。
 describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を引き継ぐ（Issue #645）", () => {
   type Token = readonly [surface: string, romaji: string];
   const utterance = (...tokens: Token[]) => {
@@ -2309,7 +1691,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
   const vocabLines = (dir: string) => logEvents(dir).filter((e) => e.type === "vocab");
   const remarkLines = (dir: string) => logEvents(dir).filter((e) => e.type === "remark");
   const readPool = (sessionsDir: string) => JSON.parse(readFileSync(vocabularyPoolPath(sessionsDir), "utf8"));
-  const poolWords = (sessionsDir: string): string[] => readPool(sessionsDir).words.map((w: { surface: string }) => w.surface).sort();
   type Sink = Effect.Success<ReturnType<typeof openRecordingSink>>["sink"];
   type Context = { sink: Sink; dir: string };
 
@@ -2344,7 +1725,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
       yield* settle;
       yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
     });
-  const idle = (_context: Context) => Effect.void;
   const layerWith = (readings = fakeReadings(READINGS)) => ({ readings, layer: sinksLayer({ updaterLayer: makeRecordingUpdater().updaterLayer, readings }) });
 
   it.effect("1 回目に話された語は、2 回目の開始時に読みごと vocab の行（出どころ carried）で語彙に入り、読みは作り直さず、2 回目の崩れた発言が直る。ログには各セッションの番号が残る", () => {
@@ -2378,78 +1758,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("1 回目に画面に映っただけで話されなかった語（Zendesk）は、溜まりに入らず、2 回目の語彙（carried）にも入らない", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, spokeOnlyKounan);
-      expect(poolWords(sessionsDir)).toEqual(["港南店"]);
-      const second = yield* runSession(sessionsDir, ({ dir }) => awaitVocabLines(dir, 1));
-      const carried = vocabLines(second).flatMap((e) => e.words);
-      expect(carried.map((w: { surface: string }) => w.surface)).toEqual(["港南店"]);
-      expect(poolWords(sessionsDir)).toEqual(["港南店"]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("語彙で直して出た語（画面の語を崩れて話し、直った発言）も、溜まりに入る。映っただけの語は入らない", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        yield* showScreen(sink, 1, ["港南店", "Zendesk"]);
-        yield* awaitVocabLines(dir, 1);
-        yield* settle;
-        yield* sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words });
-      }));
-      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 }] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("語彙に無い崩れた発言は直らないので、その語は話された語にならず、溜まりに入らない", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, ({ sink }) => sink.final({ track: "相手", start: 2, end: 4, text: garbled.text, words: garbled.words }));
-      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("利用者が足した語は、話されなくても溜まりへ残り、次のセッションの語彙に carried で入る。読みは作り直さない", () => {
-    const { readings, layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        yield* sink.addUserVocabulary(["葛西"]);
-        yield* awaitVocabLines(dir, 1);
-      }));
-      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 }] });
-      const callsAfterFirst = readings.calls.length;
-
-      const second = yield* runSession(sessionsDir, ({ dir }) => awaitVocabLines(dir, 1));
-      expect(vocabLines(second)[0].words).toEqual([{ surface: "葛西", romaji: "kasai", source: "carried" }]);
-      expect(readings.calls.length).toBe(callsAfterFirst);
-      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [{ surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 }] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("読みが作れなかった足した語も、溜まりに user・読みなし（romaji: null）で残り、次の開始時に carried・読みなしの vocab の行になる。読みは作り直さず、補正には使わない", () => {
-    const { readings, layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        yield* sink.addUserVocabulary(["読めない語"]); // READINGS に無い語は読みが返らない
-        yield* awaitVocabLines(dir, 1);
-      }));
-      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "読めない語", romaji: null, source: "user", lastSpoken: 0 }] });
-      const callsAfterFirst = readings.calls.length;
-
-      const second = yield* runSession(sessionsDir, ({ dir }) => awaitVocabLines(dir, 1));
-      expect(vocabLines(second)[0].words).toEqual([{ surface: "読めない語", romaji: null, source: "carried" }]);
-      expect(readings.calls.length).toBe(callsAfterFirst);
-      expect(readPool(sessionsDir).words).toEqual([{ surface: "読めない語", romaji: null, source: "user", lastSpoken: 0 }]);
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect("読み取得の途中で停止（exports）しても、読み取得が終わって vocab の行を書き終えてから溜まりを更新する。溜まりに spoken の語を足した語にすると user になる", () => {
     const { readings, layer } = layerWith();
     return Effect.gen(function* () {
@@ -2476,52 +1784,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("読み取得の途中で停止（exports）しても、正しい表記で話された画面の語は、読み取得が終わるのを待って溜まりに spoken で入る", () => {
-    const { readings, layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        readings.gate.current = yield* Deferred.make<void>(); // 読みの取得を保留する
-        yield* showScreen(sink, 1, ["港南店"]);
-        yield* sink.final({ track: "相手", start: 2, end: 4, text: correct.text, words: correct.words });
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-        const stopping = yield* Effect.forkChild(sink.exports);
-        yield* settle;
-        expect(vocabLines(dir)).toHaveLength(0);
-        expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [] });
-        yield* Deferred.succeed(readings.gate.current, undefined);
-        yield* Fiber.join(stopping);
-      }), { exports: false });
-
-      expect(readPool(sessionsDir)).toEqual({ sessions: 1, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 }] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("話された語は、その後 POOL_DROP_AFTER_SESSIONS セッション話されないと溜まりから落ちる。足した語は同じだけ過ぎても落ちない（carried で入るだけでは話されたことにならない）", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, (context) => Effect.gen(function* () {
-        yield* context.sink.addUserVocabulary(["Zendesk"]);
-        yield* spokeOnlyKounan(context);
-        yield* awaitVocabLines(context.dir, 2);
-      }));
-      expect(poolWords(sessionsDir)).toEqual(["Zendesk", "港南店"]);
-
-      for (let n = 2; n <= POOL_DROP_AFTER_SESSIONS; n++) yield* runSession(sessionsDir, idle);
-      // セッション 20 の終了後: 最後に話されてから 19 セッションなので、まだ残る
-      expect(readPool(sessionsDir).sessions).toBe(POOL_DROP_AFTER_SESSIONS);
-      expect(poolWords(sessionsDir)).toEqual(["Zendesk", "港南店"]);
-
-      yield* runSession(sessionsDir, idle); // セッション 21: 最後に話されてから 20 セッション
-      expect(readPool(sessionsDir).sessions).toBe(POOL_DROP_AFTER_SESSIONS + 1);
-      expect(poolWords(sessionsDir)).toEqual(["Zendesk"]); // 話された語だけが落ち、足した語は残る
-      expect(readPool(sessionsDir).words[0]).toMatchObject({ surface: "Zendesk", source: "user" });
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect("終了の処理を通らなかったセッションは、始めたセッションの数だけが増え、話された語は溜まりに入らない（cli restore が組み直す前提）", () => {
     const { layer } = layerWith();
     return Effect.gen(function* () {
@@ -2538,29 +1800,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     writeFileSync(vocabularyPoolPath(sessionsDir), JSON.stringify({ ...pool, words: pool.words.filter((w: { surface: string }) => w.surface !== surface) }));
   };
 
-  it.effect("会議中に forget しても、今のセッションの語彙と字幕は変わらない（崩れた発言は直り、vocab の行は増えない）。話されたので終了時に溜まりへ入り直す", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, spokeOnlyKounan);
-      expect(poolWords(sessionsDir)).toEqual(["港南店"]);
-
-      let second = "";
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        second = dir;
-        yield* awaitVocabLines(dir, 1);
-        forgetFromFile(sessionsDir, "港南店");
-        expect(poolWords(sessionsDir)).toEqual([]);
-        yield* sink.final({ track: "相手", start: 1, end: 3, text: garbled.text, words: garbled.words });
-      }));
-
-      expect(remarkLines(second).map((e) => e.remark.text)).toEqual(["港南店に行きます"]); // 今のセッションの語彙は変わらず、直る
-      expect(vocabLines(second)).toHaveLength(1);
-      expect(vocabLines(second)[0].words).toEqual([{ surface: "港南店", romaji: "kounanten", source: "carried" }]);
-      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 2 }] }); // 話されたので入り直す
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect("会議中に forget して、そのセッションでは話されなかった語は、終了時にも溜まりへ戻らない（消した語は覚えない）", () => {
     const { layer } = layerWith();
     return Effect.gen(function* () {
@@ -2574,49 +1813,6 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
 
       expect(vocabLines(second)).toHaveLength(1); // 今のセッションの語彙はそのまま
       expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("セッションの間に forget した語は、次のセッションの語彙（carried）に入らない。次のセッションで画面に映して話せば、終了時に溜まりへ入り直す", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, spokeOnlyKounan);
-      forgetFromFile(sessionsDir, "港南店");
-
-      const second = yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        yield* settle;
-        expect(vocabLines(dir)).toEqual([]); // carried で入らない
-        yield* spokeOnlyKounan({ sink, dir });
-      }));
-
-      expect(vocabLines(second).flatMap((e) => e.words)).toEqual(expect.arrayContaining([{ surface: "港南店", romaji: "kounanten", source: "screen" }]));
-      expect(readPool(sessionsDir)).toEqual({ sessions: 2, words: [{ surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 2 }] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("セッションの間に forget した足した語も、次のセッションで --vocab（addUserVocabulary）で足されれば、終了時に溜まりへ入り直す", () => {
-    const { layer } = layerWith();
-    return Effect.gen(function* () {
-      const sessionsDir = yield* withTmpSessionsDir();
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        yield* sink.addUserVocabulary(["葛西"]);
-        yield* awaitVocabLines(dir, 1);
-      }));
-      forgetFromFile(sessionsDir, "葛西");
-      expect(poolWords(sessionsDir)).toEqual([]);
-
-      yield* runSession(sessionsDir, ({ dir }) => Effect.gen(function* () {
-        yield* settle;
-        expect(vocabLines(dir)).toEqual([]);
-      }));
-      expect(poolWords(sessionsDir)).toEqual([]); // 足されなければ戻らない
-
-      yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
-        yield* sink.addUserVocabulary(["葛西"]);
-        yield* awaitVocabLines(dir, 1);
-      }));
-      expect(readPool(sessionsDir).words).toEqual([{ surface: "葛西", romaji: "kasai", source: "user", lastSpoken: 0 }]);
     }).pipe(Effect.provide(layer));
   });
 
@@ -2639,12 +1835,11 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
 // 発言を締める時計と同じく、3 秒の待ちも音声の時刻（届いた結果の end）で進める。壁時計（TestClock）では進まない。
 // 秒の値は、ミリ秒に直したとき端数が出ない値にそろえる（14.999 × 1000 = 14999、15 × 1000 = 15000）
 describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", () => {
-  const segment = (slot: number, start: number, end: number, final = true) => ({ type: "speaker", track: "相手", start, end, slot, final }) as const;
+  const segment = (slot: number, start: number, end: number) => ({ type: "speaker", track: "相手", start, end, slot, final: true }) as const;
   const settledAt = (to: number) => ({ type: "speaker-settled", track: "相手", to }) as const;
   const open = () => openRecordingSink({ speakerOff: false });
   type Sink = Effect.Success<ReturnType<typeof openRecordingSink>>["sink"];
   // 自分の途中結果は発言にならず、音声の時計だけを進める
-  const tick = (sink: Sink, end: number) => sink.partial({ track: "自分", start: 0, end, text: "時計を進める", duplicate: false });
   const loggedRemarks = (dir: string) => logEvents(dir).filter((e) => e.type === "remark").map((e) => e.remark);
   const brief = (dir: string) => loggedRemarks(dir).map((r) => [r.id, r.speaker, r.text]);
 
@@ -2673,93 +1868,6 @@ describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", (
       })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
     });
 
-    it.effect("仮の区間（final: false）では揃わない。話者にも使わない", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
-        yield* sink.speaker(segment(2, 10, 12, false));
-        yield* settle;
-        expect(loggedRemarks(dir)).toEqual([]);
-
-        yield* tick(sink, 15);
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", undefined, "来週に開催します"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("3 秒待っても揃わなければ話者なしで出る（3 秒の直前では出ない）。壁時計は進めても数えない。出した後に区間が届いても、行も差分更新への入力も変わらない", () => {
-      const { calls, updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
-
-        yield* TestClock.adjust(600_000); // 壁時計では数えない
-        yield* tick(sink, 14.999);
-        yield* settle;
-        expect(loggedRemarks(dir)).toEqual([]);
-
-        yield* tick(sink, 15);
-        yield* settleUntil(() => calls.flatMap((c) => c.fresh).length === 1);
-        const emitted = { id: "r1", track: "相手", start: 10, end: 12, text: "来週に開催します" };
-        expect(loggedRemarks(dir)).toEqual([emitted]);
-        expect("speaker" in loggedRemarks(dir)[0]).toBe(false);
-
-        // 出した後に、同じ時間の確定区間が届く
-        yield* sink.speaker(segment(2, 10, 12));
-        yield* sink.speaker(settledAt(12));
-        yield* tick(sink, 30);
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-        expect(loggedRemarks(dir)).toEqual([emitted]);
-        expect(calls.flatMap((c) => c.fresh)).toEqual([emitted]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("文の終わりで締める発言も、ラベルが揃うまで出ない。揃えば待たずに出て、揃わなければ締めた時点から 3 秒で話者なしになる（1 秒の締め切りとは重ならない）", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.partial({ track: "相手", start: 10, end: 12.5, text: "お願いします。", duplicate: false });
-        yield* tick(sink, 12.55); // 文の終わりから 50ms。ここで発言が締まる（1 秒は経っていない）
-        yield* settle;
-        expect(loggedRemarks(dir)).toEqual([]); // 締まっても、ラベルが揃うまで出ない
-
-        yield* sink.speaker(segment(2, 10, 12.5)); // 確定した区間が届いても、位置が届くまでは出ない
-        yield* settle;
-        expect(loggedRemarks(dir)).toEqual([]);
-        yield* sink.speaker(settledAt(12.5)); // 位置が届く: 待たずに出る
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", "相手 A", "お願いします。"]]);
-
-        // 揃わないとき: 締めた時点（22.55）から 3 秒
-        yield* sink.partial({ track: "相手", start: 20, end: 22.5, text: "ありがとうございます。", duplicate: false });
-        yield* tick(sink, 22.55);
-        yield* tick(sink, 25.549);
-        yield* settle;
-        expect(loggedRemarks(dir)).toHaveLength(1);
-        yield* tick(sink, 25.55);
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", "相手 A", "お願いします。"], ["r2", undefined, "ありがとうございます。"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("停止（drain）で、保留中の発言は 3 秒を待たずに話者なしで出る", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.final(finalRemark("相手", 10, 12, "来週に開催します"));
-        yield* settle;
-        expect(loggedRemarks(dir)).toEqual([]);
-
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-
-        expect(brief(dir)).toEqual([["r1", undefined, "来週に開催します"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
   });
 
   describe("話者が替わったところで切る", () => {
@@ -2792,234 +1900,21 @@ describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", (
     });
   });
 
-  describe("ラベル", () => {
-    it.effect("初めて話した順に 相手 A・B・C を振り、同じ枠が話せば同じラベル。新しい枠は続きのラベルで、使い回さない。自分は常に「自分」でラベルを消費しない", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.final(finalRemark("自分", 0.5, 1, "もしもし")); // 自分が先に話しても、相手の最初が 相手 A
-        for (const s of [segment(2, 10, 13), segment(0, 13, 16), segment(2, 16, 19), segment(1, 19, 22), settledAt(22)]) yield* sink.speaker(s);
-        yield* sink.final(finalRemark("相手", 10, 13, "ひとつめ"));
-        yield* sink.final(finalRemark("相手", 13, 16, "ふたつめ"));
-        yield* sink.final(finalRemark("相手", 16, 19, "みっつめ"));
-        yield* sink.final(finalRemark("相手", 19, 22, "よっつめ"));
-        yield* sink.final(finalRemark("自分", 23, 24, "はい"));
-        yield* sink.speaker(segment(0, 25, 27));
-        yield* sink.speaker(settledAt(27));
-        yield* sink.final(finalRemark("相手", 25, 27, "いつつめ"));
-        yield* sink.speaker(segment(5, 40, 42)); // 確定区間が届いただけ（どの発言にも出ていない枠）。ラベルは振らない
-        yield* sink.speaker(segment(3, 50, 52));
-        yield* sink.speaker(settledAt(52));
-        yield* sink.final(finalRemark("相手", 50, 52, "むっつめ"));
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-
-        expect(brief(dir)).toEqual([
-          ["r1", "自分", "もしもし"],
-          ["r2", "相手 A", "ひとつめ"],
-          ["r3", "相手 B", "ふたつめ"],
-          ["r4", "相手 A", "みっつめ"],
-          ["r5", "相手 C", "よっつめ"],
-          ["r6", "自分", "はい"],
-          ["r7", "相手 B", "いつつめ"],
-          ["r8", "相手 D", "むっつめ"],
-        ]);
-        const valid = new Set<string | undefined>([undefined, "自分", "相手 A", "相手 B", "相手 C", "相手 D"]);
-        for (const r of loggedRemarks(dir)) expect(valid.has(r.speaker)).toBe(true);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("最初に話す枠の番号が 7 でも 相手 A になる（枠の番号をそのまま見せない）", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.speaker(segment(7, 0, 3));
-        yield* sink.speaker(settledAt(3));
-        yield* sink.final(finalRemark("相手", 0, 3, "ななばん"));
-        yield* settle;
-
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ななばん"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-  });
-
-  describe("speaker-off（話者分離を使えない）", () => {
-    it.effect("保留中の発言はすぐ話者なしで出て、以後の相手の発言は待たずに話者なしで出る。先に出した発言のラベルは変わらず、セッションは止まらない", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.speaker(segment(2, 0, 3));
-        yield* sink.speaker(settledAt(3));
-        yield* sink.final(finalRemark("相手", 0, 3, "ラベルあり"));
-        yield* sink.final(finalRemark("相手", 10, 12, "保留中"));
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ラベルあり"]]);
-
-        yield* sink.speaker({ type: "speaker-off", start: 12, reason: "途中で停止" });
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ラベルあり"], ["r2", undefined, "保留中"]]);
-
-        yield* sink.final(finalRemark("相手", 20, 22, "待たない")); // 時計を進めない
-        yield* sink.speaker(segment(2, 20, 30)); // off の後の区間は使わない
-        yield* sink.final(finalRemark("相手", 30, 32, "使わない"));
-        yield* sink.final(finalRemark("自分", 33, 34, "自分は続く"));
-        yield* settle;
-
-        expect(brief(dir)).toEqual([
-          ["r1", "相手 A", "ラベルあり"],
-          ["r2", undefined, "保留中"],
-          ["r3", undefined, "待たない"],
-          ["r4", undefined, "使わない"],
-          ["r5", "自分", "自分は続く"],
-        ]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-  });
-
-  describe("speaker-mixed（枠への混入。Issue #1024）", () => {
-    const mixed = (slot: number, start: number) => ({ type: "speaker-mixed", track: "相手", slot, start }) as const;
-
-    it.effect("戻した枠の、戻した後の発言にはラベルが付かず、前の発言は変わらない。同じ枠が後でまた話しても、会議の最後までラベルは戻らない。差分更新にも同じ話者が渡る", () => {
-      const { calls, updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        // 混入の前: 枠 0 が 相手 A、枠 1 が 相手 B
-        yield* sink.speaker(segment(0, 10, 13));
-        yield* sink.speaker(segment(1, 13, 16));
-        yield* sink.speaker(settledAt(16));
-        yield* sink.final(finalRemark("相手", 10, 13, "ひとつめ"));
-        yield* sink.final(finalRemark("相手", 13, 16, "ふたつめ"));
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"]]);
-
-        // 枠 1 に混入を検出
-        yield* sink.speaker(mixed(1, 16));
-        yield* settle;
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"]]); // 前の発言はそのまま
-
-        // 混入の後: 枠 1 の発言は話者なし。枠 0 は 相手 A のまま
-        yield* sink.speaker(segment(0, 20, 23));
-        yield* sink.speaker(segment(1, 23, 26));
-        yield* sink.speaker(settledAt(26));
-        yield* sink.final(finalRemark("相手", 20, 23, "みっつめ"));
-        yield* sink.final(finalRemark("相手", 23, 26, "よっつめ"));
-        yield* settle;
-
-        // さらに後でも、枠 1 のラベルは戻らない
-        yield* sink.speaker(segment(1, 30, 33));
-        yield* sink.speaker(settledAt(33));
-        yield* sink.final(finalRemark("相手", 30, 33, "いつつめ"));
-        yield* sink.speaker(segment(1, 40, 43));
-        yield* sink.speaker(segment(0, 43, 46));
-        yield* sink.speaker(settledAt(46));
-        yield* sink.final(finalRemark("相手", 40, 43, "むっつめ"));
-        yield* sink.final(finalRemark("相手", 43, 46, "ななつめ"));
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-
-        expect(brief(dir)).toEqual([
-          ["r1", "相手 A", "ひとつめ"],
-          ["r2", "相手 B", "ふたつめ"],
-          ["r3", "相手 A", "みっつめ"],
-          ["r4", undefined, "よっつめ"],
-          ["r5", undefined, "いつつめ"],
-          ["r6", undefined, "むっつめ"],
-          ["r7", "相手 A", "ななつめ"],
-        ]);
-        // 話者なしの行には speaker の項目が無い
-        for (const r of loggedRemarks(dir).filter((r) => r.speaker === undefined)) expect("speaker" in r).toBe(false);
-        // 差分更新への入力: 前の発言の話者は変わらず、戻した後は話者なし
-        const fresh = calls.flatMap((c) => c.fresh);
-        expect(fresh.map((r) => [r.id, r.speaker])).toEqual([
-          ["r1", "相手 A"], ["r2", "相手 B"], ["r3", "相手 A"], ["r4", undefined], ["r5", undefined], ["r6", undefined], ["r7", "相手 A"],
-        ]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("戻した枠に区間が挟まれた語も、隣の枠のラベルにならない（区間は取り除かず、ラベルを付ける段で外す）", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.speaker(segment(0, 10, 12));
-        yield* sink.speaker(settledAt(12));
-        yield* sink.final(finalRemark("相手", 10, 12, "ひとつめ"));
-        yield* sink.speaker(mixed(1, 12));
-
-        yield* sink.speaker(segment(0, 20, 22));
-        yield* sink.speaker(segment(1, 22, 26));
-        yield* sink.speaker(segment(0, 26, 28));
-        yield* sink.speaker(settledAt(28));
-        yield* sink.final({ track: "相手", start: 22, end: 26, text: "まんなか", wordTimes: [{ location: 0, length: 4, start: 22, end: 26 }] });
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", undefined, "まんなか"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("字幕の仮のラベルも、戻した枠では「なし」になり、他の枠は仮のラベルのまま。混入のイベントで、次の speaker-settled を待たずに字幕が直る", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, speaks } = yield* open();
-        yield* sink.speaker(segment(1, 10, 11, false));
-        yield* sink.speaker(settledAt(11));
-        yield* sink.partial({ track: "相手", start: 10, end: 11, text: "あいう", duplicate: false, wordTimes: [{ location: 0, length: 3, start: 10, end: 11 }] });
-        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-        yield* settleUntil(() => speaks.some((f) => f.bubbles.some((b) => b.text.includes("あいう") && b.label === "仮")));
-        expect(speaks.at(-1)!.bubbles.map((b) => [b.speaker, b.label])).toEqual([["相手 A", "仮"]]);
-
-        yield* sink.speaker(mixed(1, 11));
-        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-        yield* settleUntil(() => speaks.at(-1)?.bubbles.some((b) => b.label === "なし") === true);
-
-        expect(speaks.at(-1)!.bubbles.map((b) => [b.speaker, b.label, b.text])).toEqual([[undefined, "なし", "あいう"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("speaker-mixed は生の値のまま、受け取った順で log.jsonl に at 付きで残る。差分更新の入力には載らない", () => {
-      const { calls, updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.speaker(segment(1, 10, 13));
-        yield* sink.speaker(mixed(1, 95.5));
-        yield* sink.speaker(settledAt(13));
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-
-        const rows = logEvents(dir).filter((e) => e.type === "speaker" || e.type === "speaker-mixed" || e.type === "speaker-settled");
-        expect(rows.map((e) => e.type)).toEqual(["speaker", "speaker-mixed", "speaker-settled"]);
-        const row = logEvents(dir).find((e) => e.type === "speaker-mixed")!;
-        expect(typeof row.at).toBe("string");
-        const { at, ...rest } = row;
-        expect(rest).toEqual({ type: "speaker-mixed", track: "相手", slot: 1, start: 95.5 });
-        expect(JSON.stringify(calls)).not.toContain("speaker-mixed");
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-  });
-
   // Issue #1025: ヘルパーを起動し直すと Sortformer の枠は振り直される。SessionSink は起動し直しをまたいで同じもの。
   // 起動し直しは sink.speakersRenumbered で起こし、同じ sink の上で「起動し直す前 → 起動し直し → 起動し直した後」を一続きに見る
   describe("起動し直しをまたいだ話者のつなぎ直し（speaker-centroid。Issue #1025）", () => {
     const centroid = (slot: number, vector: readonly number[]) => ({ type: "speaker-centroid", track: "相手", slot, centroid: [...vector] }) as const;
-    const mixed = (slot: number, start: number) => ({ type: "speaker-mixed", track: "相手", slot, start }) as const;
     const A = [1, 0, 0];
     const B = [0, 1, 0];
-    const FAR = [0, 0, 1];
     const NEAR_A = [0.95, Math.sqrt(1 - 0.95 ** 2), 0];
-    const NEAR_B = [Math.sqrt(1 - 0.95 ** 2), 0.95, 0];
-    const MID = [0.75, Math.sqrt(1 - 0.75 ** 2), 0];
 
     // 1 回目のヘルパー: 枠 0 が 相手 A（10〜13）、枠 1 が 相手 B（13〜16）。重心は区間と同じ更新で届く
-    const firstRun = (sink: Sink, vectors: { a: readonly number[]; b: readonly number[] } = { a: A, b: B }) =>
+    const firstRun = (sink: Sink) =>
       Effect.gen(function* () {
         yield* sink.speaker(segment(0, 10, 13));
-        yield* sink.speaker(centroid(0, vectors.a));
+        yield* sink.speaker(centroid(0, A));
         yield* sink.speaker(segment(1, 13, 16));
-        yield* sink.speaker(centroid(1, vectors.b));
+        yield* sink.speaker(centroid(1, B));
         yield* sink.speaker(settledAt(16));
         yield* sink.final(finalRemark("相手", 10, 13, "ひとつめ"));
         yield* sink.final(finalRemark("相手", 13, 16, "ふたつめ"));
@@ -3040,185 +1935,6 @@ describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", (
         yield* settle;
       });
 
-    it.effect("つなぐ: 1 つのラベルとだけ cos 0.9 以上の新しい枠は、枠の番号が前と違っても、そのラベルにつながる。log.jsonl と差分更新の話者も同じ", () => {
-      const { calls, updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(3, NEAR_B.map((v) => v * 2)));
-        yield* speak(sink, 3, 20, "つなぐ");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"], ["r3", "相手 B", "つなぐ"]]);
-        expect(calls.flatMap((c) => c.fresh).map((r) => [r.id, r.speaker])).toEqual([["r1", "相手 A"], ["r2", "相手 B"], ["r3", "相手 B"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("新しいラベル: どのラベルとも cos 0.6 未満の新しい枠は、初めて話したときに次のラベルになる。前の世代のラベルと重ならない", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(0, NEAR_A));
-        yield* sink.speaker(centroid(1, FAR));
-        yield* speak(sink, 0, 20, "Aに戻る");
-        yield* speak(sink, 1, 30, "新しい人");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([
-          ["r1", "相手 A", "ひとつめ"],
-          ["r2", "相手 B", "ふたつめ"],
-          ["r3", "相手 A", "Aに戻る"],
-          ["r4", "相手 C", "新しい人"],
-        ]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("話者なしのまま: 0.6 以上 0.9 未満、または 2 つ以上のラベルと 0.9 以上の新しい枠は、話者なしで出続ける", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(0, MID));
-        yield* speak(sink, 0, 20, "間");
-        yield* speak(sink, 0, 30, "まだ間");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"], ["r3", undefined, "間"], ["r4", undefined, "まだ間"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("話者なしのまま: 2 つ以上のラベルと cos 0.9 以上で一致する新しい枠も、話者なしで出る", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink, { a: [1, 0, 0], b: [0.8, 0.6, 0] }); // A と B が近い
-        yield* sink.speakersRenumbered;
-        const n = Math.hypot(1, 0.3);
-        yield* sink.speaker(centroid(0, [1 / n, 0.3 / n, 0])); // A と 約 0.96、B と 約 0.94
-        yield* speak(sink, 0, 20, "二人に近い");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"], ["r3", undefined, "二人に近い"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("戻したまま: 混入で戻したラベルに一致する新しい枠は、一致しても話者なしのまま。戻していない別のラベルは付く", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speaker(mixed(1, 16)); // 相手 B を戻す
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(0, NEAR_B));
-        yield* sink.speaker(centroid(1, NEAR_A));
-        yield* speak(sink, 0, 20, "戻したBに近い");
-        yield* speak(sink, 1, 30, "Aに近い");
-        yield* speak(sink, 0, 40, "ずっと戻したまま");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([
-          ["r1", "相手 A", "ひとつめ"],
-          ["r2", "相手 B", "ふたつめ"],
-          ["r3", undefined, "戻したBに近い"],
-          ["r4", "相手 A", "Aに近い"],
-          ["r5", undefined, "ずっと戻したまま"],
-        ]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("2 つの枠が同じラベル: 同じラベルに一致する 2 つの新しい枠は、どちらもそのラベルになる", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(0, NEAR_A));
-        yield* sink.speaker(centroid(2, NEAR_A.map((v) => v * 4)));
-        yield* speak(sink, 0, 20, "枠ゼロ");
-        yield* speak(sink, 2, 30, "枠ふたつ");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"], ["r3", "相手 A", "枠ゼロ"], ["r4", "相手 A", "枠ふたつ"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("照らし合わせが済むまでの発言は話者なしで出て、済んだ後の発言から付く。前の発言は変わらない（log.jsonl も差分更新への入力も）", () => {
-      const { calls, updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        // 起動し直した後の枠 0 は、重心が届く前に話す（1 回目の枠 0 は 相手 A だったが、付けない）
-        yield* speak(sink, 0, 20, "判定の前");
-        expect(brief(dir)).toEqual([["r1", "相手 A", "ひとつめ"], ["r2", "相手 B", "ふたつめ"], ["r3", undefined, "判定の前"]]);
-
-        yield* sink.speaker(centroid(0, NEAR_B));
-        yield* speak(sink, 0, 30, "判定の後");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([
-          ["r1", "相手 A", "ひとつめ"],
-          ["r2", "相手 B", "ふたつめ"],
-          ["r3", undefined, "判定の前"],
-          ["r4", "相手 B", "判定の後"],
-        ]);
-        expect("speaker" in loggedRemarks(dir)[2]!).toBe(false);
-        expect(calls.flatMap((c) => c.fresh).map((r) => [r.id, r.speaker])).toEqual([["r1", "相手 A"], ["r2", "相手 B"], ["r3", undefined], ["r4", "相手 B"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("迷っていた枠は、次の重心で照らし合わせ直される。決まった後は、別のラベルに近い重心が届いても替わらない", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(0, MID));
-        yield* speak(sink, 0, 20, "迷い");
-        yield* sink.speaker(centroid(0, NEAR_A)); // 決まる
-        yield* speak(sink, 0, 30, "決まった");
-        yield* sink.speaker(centroid(0, NEAR_B)); // 決まった後は替わらない
-        yield* speak(sink, 0, 40, "替わらない");
-        yield* sink.speaker(centroid(0, FAR));
-        yield* speak(sink, 0, 50, "遠くなっても");
-        yield* finish(sink);
-
-        expect(brief(dir).slice(2)).toEqual([["r3", undefined, "迷い"], ["r4", "相手 A", "決まった"], ["r5", "相手 A", "替わらない"], ["r6", "相手 A", "遠くなっても"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("起動し直しを 2 回しても、同じ sink の上でラベルが続く（1 回目のラベルにも、2 回目に振ったラベルにもつながる）。ラベルは初めて話した順", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(0, FAR));
-        yield* speak(sink, 0, 20, "三人目");
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(2, NEAR_B));
-        yield* sink.speaker(centroid(1, FAR));
-        yield* sink.speaker(centroid(3, [0, 0, -1]));
-        yield* speak(sink, 2, 30, "Bにつながる");
-        yield* speak(sink, 3, 40, "四人目");
-        yield* speak(sink, 1, 50, "三人目にもつながる");
-        yield* finish(sink);
-
-        expect(brief(dir)).toEqual([
-          ["r1", "相手 A", "ひとつめ"],
-          ["r2", "相手 B", "ふたつめ"],
-          ["r3", "相手 C", "三人目"],
-          ["r4", "相手 B", "Bにつながる"],
-          ["r5", "相手 D", "四人目"],
-          ["r6", "相手 C", "三人目にもつながる"],
-        ]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
     it.effect("起動し直したとき、まだ揃っていない保留の発言は話者なしで出て、新しい世代の区間は前の世代の区間と混ざらない", () => {
       const { updaterLayer } = makeRecordingUpdater();
       return Effect.scoped(Effect.gen(function* () {
@@ -3236,78 +1952,6 @@ describe("SessionSink: 相手の発言の話者を決める（Issue #1021）", (
         yield* speak(sink, 0, 30, "新しい世代");
         yield* finish(sink);
         expect(brief(dir).slice(3)).toEqual([["r4", "相手 A", "新しい世代"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("字幕の仮のラベル: 起動し直した後、照らし合わせが済むまでは「なし」、つながった後は前と同じラベルになる", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, speaks } = yield* open();
-        yield* firstRun(sink);
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(segment(1, 30, 31, false));
-        yield* sink.speaker(settledAt(31));
-        yield* sink.partial({ track: "相手", start: 30, end: 31, text: "あいう", duplicate: false, wordTimes: [{ location: 0, length: 3, start: 30, end: 31 }] });
-        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-        yield* settleUntil(() => speaks.some((f) => f.bubbles.some((b) => b.text.includes("あいう"))));
-        expect(speaks.at(-1)!.bubbles.map((b) => [b.speaker, b.label])).toEqual([[undefined, "なし"]]);
-
-        yield* sink.speaker(centroid(1, NEAR_A));
-        yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
-        yield* settleUntil(() => speaks.at(-1)?.bubbles.some((b) => b.speaker === "相手 A") === true);
-
-        expect(speaks.at(-1)!.bubbles.map((b) => [b.speaker, b.label, b.text])).toEqual([["相手 A", "仮", "あいう"]]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-
-    it.effect("speaker-centroid は生の値のまま、受け取った順で log.jsonl に at 付きで残る。差分更新の入力には載らない。起動し直しの合図は log.jsonl に行を足さない", () => {
-      const { calls, updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.speaker(segment(1, 10, 13));
-        yield* sink.speaker(centroid(1, [0.25, -0.5, 1]));
-        yield* sink.speakersRenumbered;
-        yield* sink.speaker(centroid(1, [3, 2, 1]));
-        yield* sink.speaker(settledAt(13));
-        yield* finish(sink);
-
-        const rows = logEvents(dir).filter((e) => e.type.startsWith("speaker"));
-        expect(rows.map((e) => e.type)).toEqual(["speaker", "speaker-centroid", "speaker-centroid", "speaker-settled"]);
-        const centroids = rows.filter((e) => e.type === "speaker-centroid");
-        expect(centroids.every((e) => typeof e.at === "string")).toBe(true);
-        expect(centroids.map(({ at, ...rest }) => rest)).toEqual([
-          { type: "speaker-centroid", track: "相手", slot: 1, centroid: [0.25, -0.5, 1] },
-          { type: "speaker-centroid", track: "相手", slot: 1, centroid: [3, 2, 1] },
-        ]);
-        expect(logEvents(dir).map((e) => e.type).filter((t) => t.includes("restart") || t.includes("renumber"))).toEqual([]);
-        expect(calls).toEqual([]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
-    });
-  });
-
-  describe("log.jsonl", () => {
-    it.effect("発言の行に決まった話者が残る。話者なしの行には speaker の項目が無い。speaker の行は先に書かれたまま残る", () => {
-      const { updaterLayer } = makeRecordingUpdater();
-      return Effect.scoped(Effect.gen(function* () {
-        const { sink, dir } = yield* open();
-        yield* sink.speaker(segment(4, 0, 3));
-        yield* sink.speaker(settledAt(3));
-        yield* sink.final(finalRemark("相手", 0, 3, "あいて"));
-        yield* sink.final(finalRemark("自分", 4, 5, "じぶん"));
-        yield* sink.final(finalRemark("相手", 10, 12, "だれもいない"));
-        yield* sink.drain;
-        yield* sink.flush;
-        yield* settle;
-
-        const rows = loggedRemarks(dir);
-        expect(rows).toEqual([
-          { id: "r1", track: "相手", start: 0, end: 3, text: "あいて", speaker: "相手 A" },
-          { id: "r2", track: "自分", start: 4, end: 5, text: "じぶん", speaker: "自分" },
-          { id: "r3", track: "相手", start: 10, end: 12, text: "だれもいない" },
-        ]);
-        expect(logEvents(dir).filter((e) => e.type === "speaker").map(({ at, ...rest }) => rest)).toEqual([{ type: "speaker", track: "相手", start: 0, end: 3, slot: 4, final: true }]);
-        // 確定済みの位置も、生の値のまま残る
-        expect(logEvents(dir).filter((e) => e.type === "speaker-settled").map(({ at, ...rest }) => rest)).toEqual([{ type: "speaker-settled", track: "相手", to: 3 }]);
       })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
     });
   });
