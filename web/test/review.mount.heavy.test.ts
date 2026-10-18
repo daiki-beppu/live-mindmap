@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { scrollPanDelta } from "../src/camera.ts";
 import { join } from "node:path";
 import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, readFoldkitViewport, rectOf, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
-import { withBrowser, type Browser, type Page } from "./screenCompare.ts";
+import { withBrowser, type Browser, type Page } from "./browser.ts";
 
 // 見返し（Foldkit 版）の Mount の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #826）。React 版が無くなった後も残す。
 // ResizeObserver（画面の大きさ・ノードの高さ）・wheel・gesture（Safari のピンチ）・<audio> の時刻は、DOM が無い unit では確かめられない（偽の要素では実際の通知が起きない）。

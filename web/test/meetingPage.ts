@@ -5,9 +5,9 @@ import type { CaptionsFrame, Snapshot } from "../../server/src/core/index.ts";
 import { spokenBubble } from "./fixtures/captions.ts";
 import { buildReviewTimeline, CAPTION_SECONDS, snapshotAt } from "../src/reviewTimeline.ts";
 import { LOG_PATH, PAGE_VIEWPORT, readFoldkitViewport } from "./reviewPage.ts";
-import type { Browser, Page } from "./screenCompare.ts";
+import type { Browser, Page } from "./browser.ts";
 
-// 会議中の画面の heavy IT（Issue #829。meeting.mount.heavy.test.ts と、React を消す前の照合 meetingCompare.heavy.test.ts）が共有する道具。
+// 会議中の画面の heavy IT（Issue #829。meeting.mount.heavy.test.ts）が共有する道具。
 // テストではなく、web の Vite の開発サーバーの起動・`/ws` の frame を送るページの開き方・ビューポートの読み方・題材の frame だけを置く。
 // 会議中の画面は `/ws` の WebSocket から frame を受けるので、page.routeWebSocket("**/ws") で本物の server の代わりに frame を送る（server/test/diffUpdateNotice.heavy.test.ts と同じ手法）。
 
@@ -25,7 +25,7 @@ export async function startMeetingServer(): Promise<MeetingServer> {
   return { url, close: () => vite.close() };
 }
 
-// ---- 題材: 照合の例のログ（screenCompare.log.jsonl）から作る frame ----
+// ---- 題材: 題材のログ（sampleMeeting.log.jsonl）から作る frame ----
 export type MeetingFrames = {
   // 最初に送る frame（字幕・スナップショット）。「開く」の丸（畳まれた議題）が出る時点のスナップショット
   first: unknown[];
@@ -40,9 +40,9 @@ export async function meetingFrames(): Promise<MeetingFrames> {
   // 最後から 2 番目の反映（議題が済みになって畳まれた後）→ 最後の反映
   const firstAt = times[times.length - 2];
   const lastAt = times[times.length - 1];
-  if (firstAt === undefined || lastAt === undefined) throw new Error("照合の例のログに反映が 2 回以上ありません");
+  if (firstAt === undefined || lastAt === undefined) throw new Error("題材のログに反映が 2 回以上ありません");
   const framesAt = (t: number): unknown[] => {
-    // トラックごとに、end ≤ t で最も遅い発言の本文を、end から CAPTION_SECONDS 未満の間だけ出す（会議中の画面の照合の題材。frame は変えない）
+    // トラックごとに、end ≤ t で最も遅い発言の本文を、end から CAPTION_SECONDS 未満の間だけ出す（会議中の画面の題材。frame は変えない）
     const speakingOf = (track: "相手" | "自分"): string => {
       const latest = timeline.remarks.map((r) => r.remark).filter((r) => r.track === track && r.end <= t).reduce<(typeof timeline.remarks)[number]["remark"] | undefined>((best, r) => (!best || r.end >= best.end ? r : best), undefined);
       return latest && t - latest.end < CAPTION_SECONDS ? latest.text : "";

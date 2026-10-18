@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // 見返しの操作の行（Issue #825）の、ファイルとして確かめるもの: Menu・Tooltip の状態の規則（素の CSS に残す）、video.js のアイコンの出どころとライセンスの表示（icons.NOTICE.md）。
 // Slider・Tooltip・Menu と見た目のぶつかりを直す値（つまみの margin-left、包み要素の絶対配置、外側の fixed など）は、Tailwind に替えた後（Issue #830）は
 // ユーティリティと素の CSS のどちらにも置けるので、置き場に依らない実ブラウザの computed style で確かめる（review.mount.heavy.test.ts の寸法）。
-// 実ブラウザでの見た目（位置・重なり・スクリーンショットの差）は、画面の照合の heavy IT（screenCompare.heavy.test.ts、#826）が見る
+// 実ブラウザでの位置と重なりは、review.mount.heavy.test.ts の「見返し（Foldkit 版）の寸法」「見返し（Foldkit 版）の速さのメニューとツールチップの位置」が見る
 
 const webRoot = join(import.meta.dirname, "..");
 const reviewDir = join(webRoot, "src/app/review");
