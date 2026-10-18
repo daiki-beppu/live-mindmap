@@ -1,4 +1,11 @@
-import { execFile } from "node:child_process";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
+import { ConfigProvider, Effect, Layer } from "effect";
+import { StdoutIsTty } from "../src/consoleText.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { fakeExportServices } from "./fixtures/exportServices.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -6,17 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const cli = join(import.meta.dirname, "../src/cli.ts");
-
-const cliProcess = (dir: string, port: number, args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(process.execPath, [cli, ...args], {
-    timeout: 10_000,
-    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: dir, LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
-  }, (error, stdout, stderr) => {
-    if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-    resolve({ code: error ? error.code as number : 0, stdout, stderr });
-  });
-});
+const runInstallStream = (dir: string, port: number, args: string[]) => Effect.runPromise(runCliEntry(args, Layer.mergeAll(
+  forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  Layer.succeed(StdoutIsTty, false),
+  ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+    HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_SESSIONS: dir,
+    LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "",
+  })),
+)));
 
 describe("CLI install のストリーム受信", () => {
   it.each([
@@ -51,7 +55,7 @@ describe("CLI install のストリーム受信", () => {
     try {
       await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
       const port = (server.address() as AddressInfo).port;
-      const result = await cliProcess(dir, port, args);
+      const result = await runInstallStream(dir, port, args);
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({ method: "POST", url: path });
       if (path === "/deps/install") expect(JSON.parse(requests[0]!.body)).toEqual({ names: ["chromium"] });
@@ -70,7 +74,7 @@ describe("CLI install のストリーム受信", () => {
   it("stop の接続不能は指定文面と空 stdout、exit 1 を返す", async () => {
     const dir = await mkdtemp(join(tmpdir(), "live-mindmap-unreachable-"));
     try {
-      const result = await cliProcess(dir, 0, ["stop"]);
+      const result = await runInstallStream(dir, 0, ["stop"]);
       expect(result.code).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");

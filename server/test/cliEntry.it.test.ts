@@ -9,10 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Console, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
-import { reportFailure, runCli, teardown } from "../src/cli.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
@@ -33,37 +33,19 @@ const temporaryDirectory = Effect.acquireRelease(
   (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
 );
 
-// 入口（cli.ts の import.meta.main）と同じ順に、実行 → 失敗の表示（reportFailure）→ 終了コード（teardown）を通す。
-// 返す code は teardown が process.exitCode に置いた値（成功なら 0）。process.exitCode は呼び出し前の値に戻す
 const runEntry = Effect.fnUntraced(function* (argv: string[], sessionsDir: string, env: Record<string, string> = {}) {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const consoleService: Console.Console = {
-    ...console,
-    log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
-    error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); },
-  };
   const layer = Layer.mergeAll(
     NodeServices.layer, unusedApple, readyManagedDeps, NodeHttpClient.layerUndici,
     ConfigProvider.layer(ConfigProvider.fromEnvRecord({
       HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "",
       LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", ...env,
     })),
-    Layer.succeed(Console.Console, consoleService),
     Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed("<!doctype html><html><body></body></html>") })),
     fakeAudioMix().layer,
     fakeScreenJpeg().layer,
   );
-  const exit = yield* runCli(argv).pipe(Effect.tapCause(reportFailure), Effect.provide(layer), Effect.exit);
-  const saved = process.exitCode;
-  process.exitCode = undefined;
-  try {
-    teardown(exit, () => { throw new Error("自然終了する必要があります"); });
-    return { code: Number(process.exitCode ?? 0), stdout: stdout.join(""), stderr: stderr.join("") };
-  } finally {
-    process.exitCode = saved;
-  }
+  return yield* runCliEntry(argv, layer);
 });
 
 // 127.0.0.1 で待ち受けて塞いだポートを返す（play も 127.0.0.1 で待ち受けるので、同じアドレスでないと衝突しない）
