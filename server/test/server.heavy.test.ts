@@ -72,7 +72,7 @@ const setup = (initial: Partial<Script> = {}) =>
     port: 0,
     depsDir: join(dir, "deps"),
     sessionsDir,
-    prepareUpdater: () => Effect.succeed(updaterLayer(updater)),
+    prepareUpdater: () => Effect.succeed({ layer: updaterLayer(updater) }),
     helper: { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] },
   };
   // サーバーの標準エラー（Console.error）は、差し替えた Console に集める。ヘルパーを読むループは、start を受ける HTTP の fiber の

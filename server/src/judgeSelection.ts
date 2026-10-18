@@ -131,6 +131,10 @@ export const judgeCandidate = (input: JudgeInput): Refusal | Chosen => {
   return input.local ? localChoice(judge, explicit) : { ok: true, judge };
 };
 
+// 判定の鍵が足りないときの知らせ（1 行）。selectJudge と planLayer が同じ文言を使う
+export const missingKeyNotice = (judge: Pick<JudgeModel, "name">, missing: readonly string[]): string =>
+  oneLine(`判定のモデル ${judge.name} の鍵がありません（環境変数 ${missing.join("・")}）。判定なしで始めます`);
+
 export const selectJudge = (input: JudgeInput & { readonly apiKeys: Readonly<Record<string, string | undefined>> }):
   Refusal | (Chosen & { readonly notice?: string }) => {
   const candidate = judgeCandidate(input);
@@ -139,6 +143,6 @@ export const selectJudge = (input: JudgeInput & { readonly apiKeys: Readonly<Rec
   if (missing.length === 0) return candidate;
   return {
     ok: true, judge: undefined,
-    notice: oneLine(`判定のモデル ${candidate.judge.name} の鍵がありません（環境変数 ${missing.join("・")}）。判定なしで始めます`),
+    notice: missingKeyNotice(candidate.judge, missing),
   };
 };

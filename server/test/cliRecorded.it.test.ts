@@ -29,6 +29,7 @@ import { advanceTo, eventually, runToEnd, trackingClock, virtualNow } from "./fi
 import { FAKE_TUNNEL_HOST, fakeTunnel } from "./fixtures/tunnel.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import type { ExecutableModel } from "../src/modelSelection.ts";
+import { planModel } from "../src/updatePlan.ts";
 
 // cli recorded <file> を、CLI の入口から常駐サーバー・偽の Helpers（台本のイベント）・偽の差分更新まで通して確かめる。
 // 試すシームは CLI の recorded コマンドと、サーバーの Helpers.launch・DiffUpdater.update の 2 つ。
@@ -255,7 +256,7 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const helpers = fakeHelpers(script, options.attempts);
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: (model) => { models.push(model); return Effect.succeed(updater.layer); } }).pipe(Layer.provide(fakeExportServices({ ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }), ...(options.mix === undefined ? {} : { mix: options.mix }), ...(options.readings === undefined ? {} : { readings: options.readings }) }))),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: (plan) => { models.push(planModel(plan)); return Effect.succeed({ layer: updater.layer }); } }).pipe(Layer.provide(fakeExportServices({ ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }), ...(options.mix === undefined ? {} : { mix: options.mix }), ...(options.readings === undefined ? {} : { readings: options.readings }) }))),
   });
   const deps = cliDependencies(sessionsDir, server.port, unusedApple, options.cli);
   const cli = (argv: string[]) => runCli(argv).pipe(Effect.provide(deps.layer));

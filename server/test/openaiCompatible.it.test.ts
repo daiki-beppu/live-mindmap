@@ -14,7 +14,7 @@ import { ConfigProvider, Console, Deferred, Effect, FileSystem, Layer, Queue, Re
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { JsonExport, type ExportNode } from "../src/core/index.ts";
-import { prepareUpdaterLayer as prepare } from "../src/diffUpdater.ts";
+import { planLayer, type UpdatePlan } from "../src/updatePlan.ts";
 import type { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { DiffUpdater } from "../src/core/index.ts";
 import type { ExecutableModel } from "../src/modelSelection.ts";
@@ -29,7 +29,7 @@ import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTrans
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 
 const listener = vi.hoisted(() => ({ open: vi.fn() }));
-const prepareUpdaterLayer: (model: ExecutableModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | Scope.Scope> = (model) => prepare(model).pipe(Effect.provide(forbiddenManagedDeps));
+const prepareUpdaterLayer: (plan: UpdatePlan) => Effect.Effect<{ layer: Layer.Layer<DiffUpdater, UpdaterUnavailable> }, UpdaterUnavailable, HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | Scope.Scope> = (plan) => planLayer(plan).pipe(Effect.provide(forbiddenManagedDeps));
 vi.mock("../src/http.ts", async (original) => {
   const { fakeListener } = await import("./fakeListener.ts");
   const actual = await original<typeof import("../src/http.ts")>();

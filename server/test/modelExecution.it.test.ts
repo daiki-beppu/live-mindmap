@@ -11,7 +11,7 @@ import { beforeEach, vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import type { DiffOutput } from "../src/core/index.ts";
-import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { planLayer } from "../src/updatePlan.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { EXPORT_FILE } from "../src/sessionFiles.ts";
@@ -125,7 +125,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     }));
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer, managedDeps: deps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
+      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(
         Layer.provide(Layer.mergeAll(fakeExportServices(), deps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const post = () => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
@@ -158,7 +158,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const deps = dependencies(root, { LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_MODEL: "careful" });
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--model", "fast"]).pipe(Effect.provide(deps.layer));
@@ -177,7 +177,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const post = (model: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json" },

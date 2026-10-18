@@ -39,7 +39,7 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     managedDeps: Layer.succeed(ManagedDeps, deps),
     helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.die("apps は対象外"), launch: () => Effect.die("開始は対象外") })),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
 });
 
@@ -89,7 +89,7 @@ describe("712: 管理実体の削除", () => {
       await symlink("missing-entity", join(root, "chromium/current"));
     });
     const output = collectingConsole();
-    const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
+    const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) };
     const server = yield* startedServer(options, realLayers(options, fakeExportServices())).pipe(Effect.provideService(Console.Console, output.service));
     expect((yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/status`))).status).toBe(200);
     expect(existsSync(join(root, "chromium", names[0]!))).toBe(true);
@@ -271,7 +271,7 @@ describe("712: 管理実体の削除", () => {
       yield* Effect.tryPromise(() => publish(root, names[1]!));
       expect(existsSync(join(root, "chromium", names[0]!))).toBe(true);
       yield* first.close;
-      const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
+      const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) };
       const second = yield* startedServer(options, realLayers(options, fakeExportServices()));
       const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${second.port}/deps/check?names=chromium`));
       expect(response.status).toBe(200);
@@ -290,7 +290,7 @@ describe("712: 管理実体の削除", () => {
       await writeFile(join(root, "chromium/install.lock"), String(process.pid));
     });
     const output = collectingConsole();
-    const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
+    const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) };
     const server = yield* startedServer(options, realLayers(options, fakeExportServices())).pipe(Effect.provideService(Console.Console, output.service));
     const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=chromium`));
     expect(response.status).toBe(200);

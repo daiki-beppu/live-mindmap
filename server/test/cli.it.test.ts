@@ -18,7 +18,7 @@ import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { CHATGPT_MODEL, chatgptAuthPath, chatgptCredentials, classification, completedSse, fakeChatgptHttp, jsonRequestBody } from "./fixtures/chatgpt.ts";
 import { fakeChatgptOAuth, type InvalidOAuth } from "./fixtures/chatgptOAuth.ts";
-import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { planLayer } from "../src/updatePlan.ts";
 import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -299,7 +299,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     const preparation = Layer.mergeAll(deps.layer, Layer.succeed(HttpClient.HttpClient, oauth.client));
     const server = yield* startedServer({ port: 0, sessionsDir: sessions }, {
       helpers, managedDeps: readyManagedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(preparation, fakeReadings().layer))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(preparation, fakeReadings().layer))),
     });
     const snapshots: Snapshot[] = [];
     yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<WebSocket>((resolve, reject) => {
@@ -366,11 +366,11 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: Layer.succeed(Helpers, Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") })),
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({
+      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({
         update: () => Effect.succeed({ ops: [] }),
         // 英字の語のカタカナの読み（Issue #642）。Zendesk だけ答える
         katakana: (words) => Effect.succeed(words.filter((w) => w === "Zendesk").map((surface) => ({ surface, katakana: "ゼンデスク" }))),
-      }))) }).pipe(Layer.provide(fakeExportServices({ readings }))),
+      })) }) }).pipe(Layer.provide(fakeExportServices({ readings }))),
     });
     const deps = dependencies(sessionsDir, String(server.port));
     return { checks, launches, deps, sessionsDir };

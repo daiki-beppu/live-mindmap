@@ -50,7 +50,7 @@ describe("管理 Chromium と stop", () => {
       yield* Effect.tryPromise(() => writeFile(script, JSON.stringify({ apps: [], events: [] })));
       const options = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root,
         helper: { command: process.execPath, args: [join(import.meta.dirname, "fixtures/fake-helper.ts"), script, join(dir, "helper.log")] },
-        prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
+        prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) };
       const capture = MapCapture.layer.pipe(Layer.provide(Playwright.layer));
       const exports = Layer.mergeAll(
         available ? capture.pipe(Layer.provide(loadChromium)) : capture,

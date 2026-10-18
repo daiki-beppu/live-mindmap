@@ -6,7 +6,7 @@ import { NodeChildProcessSpawner, NodeHttpClient, NodeServices } from "@effect/p
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { vi } from "vitest";
-import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { planLayer } from "../src/updatePlan.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo, type HelperCheck } from "../src/helpers.ts";
 import { readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
@@ -72,7 +72,7 @@ const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingH
   const sessionsDir = join(root, "sessions");
   const deps = controlledDeps();
   const helpers = controlledHelpers();
-  const sinks = SessionSinks.layer({ prepareUpdater: realPreparation ? prepareUpdaterLayer : () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) })
+  const sinks = SessionSinks.layer({ prepareUpdater: realPreparation ? planLayer : () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) })
     .pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), deps.layer, unusedApple, NodeHttpClient.layerUndici)));
   const helpersLayer = missingHelper
     ? Helpers.layer({ command: join(root, "absent-helper"), args: [] }).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer))
@@ -88,10 +88,10 @@ const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingH
   return { root, sessionsDir, deps, helpers, server, request, status };
 });
 
-const cli = (root: string, port: number, args: string[], model: string, extraEnv: Record<string, string> = {}) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+const cli = (root: string, port: number, args: string[], model: string | undefined, extraEnv: Record<string, string> = {}) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
   execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...args], {
     timeout: 15_000,
-    env: { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: model,
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "LIVE_MINDMAP_MODEL")), HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", ...(model === undefined ? {} : { LIVE_MINDMAP_MODEL: model }),
       LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_DEPS: join(root, "deps"), LIVE_MINDMAP_PORT: String(port), NO_COLOR: "1", ...extraEnv },
   }, (error, stdout, stderr) => {
     if (error && (error.killed || typeof error.code !== "number")) return reject(error);
@@ -110,8 +110,11 @@ const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typ
 });
 
 describe("ライブの開始前の確かめ", () => {
-  it.live("Issue #983: start --judge は知らない名前をサーバーへの要求より前に断り、鍵が無ければ 1 行知らせて判定なしで開始する", () => Effect.gen(function* () {
-    const r = yield* resource(false);
+  it.live("Issue #983: start --judge は知らない名前をサーバーへの要求より前に断り、鍵が無ければ server が 1 行知らせて判定なしで開始する", () => Effect.gen(function* () {
+    // 鍵は layer を作る server のプロセスで確かめる。名指ししない start は routed になる
+    vi.stubEnv("TYPESAFE_AI_API_KEY", "");
+    yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+    const r = yield* resource(true);
     const args = ["start", "--app", "us.zoom.xos", "--no-audio"];
     const refused = yield* cli(r.root, r.server.port, [...args, "--judge", "missing"], "claude");
     expect(refused.code).not.toBe(0);
@@ -120,7 +123,7 @@ describe("ライブの開始前の確かめ", () => {
     expect(yield* r.status).toEqual({ status: "none" });
     expect(r.helpers.calls).toEqual([]);
 
-    const noKey = yield* cli(r.root, r.server.port, [...args, "--judge", "jev"], "claude", { TYPESAFE_AI_API_KEY: "" });
+    const noKey = yield* cli(r.root, r.server.port, [...args, "--judge", "jev"], undefined);
     expect(noKey.code).toBe(0);
     expect(noKey.stderr).toBe("判定のモデル jev の鍵がありません（環境変数 TYPESAFE_AI_API_KEY）。判定なしで始めます\n");
     expect(yield* r.status).toMatchObject({ status: "running" });

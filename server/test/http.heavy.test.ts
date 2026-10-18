@@ -16,7 +16,7 @@ import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 
 const apps = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
-const resource = Effect.fnUntraced(function* (options: { updaterLayer?: (model: import("../src/modelSelection.ts").ExecutableModel) => Layer.Layer<DiffUpdater> } & Pick<ExportServicesOptions, "capture"> = {}) {
+const resource = Effect.fnUntraced(function* (options: { updaterLayer?: () => Layer.Layer<DiffUpdater> } & Pick<ExportServicesOptions, "capture"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -29,7 +29,7 @@ const resource = Effect.fnUntraced(function* (options: { updaterLayer?: (model: 
   const serverOptions: ServerOptions = {
     port: 0, sessionsDir, depsDir: join(dir, "deps"),
     helper: { command: process.execPath, args: [fakeHelper, script, record] },
-    prepareUpdater: (model) => Effect.succeed(options.updaterLayer ? options.updaterLayer(model) : updaterLayer(() => Effect.succeed({ ops: [] }))),
+    prepareUpdater: () => Effect.succeed({ layer: options.updaterLayer ? options.updaterLayer() : updaterLayer(() => Effect.succeed({ ops: [] })) }),
   };
   const layers = realLayers(serverOptions, fakeExportServices({ capture: options.capture }));
   // 差分更新は偽物なので、Claude SDK の確かめは ready に見せる（Chromium は実物）
