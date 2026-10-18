@@ -138,7 +138,7 @@ const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
   let seconds = 0;
   let meanDb: number | null = null;
   for (const f of files) {
-    const log = yield* runFfmpeg(join(dir, f));
+    const log = yield* recordingLog(join(dir, f));
     const dur = /Duration: (\d+):(\d+):([\d.]+)/.exec(log);
     const mean = /mean_volume: (-?[\d.]+) dB/.exec(log);
     if (!dur || !mean) continue;
@@ -150,7 +150,7 @@ const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
 
 // ffmpeg は長さと音量を stderr に出すので、stdout と stderr をまとめて受け取る。
 // ffmpeg が無い・失敗したときは空の出力として扱う（呼び出し側が、読めない録音として飛ばす）
-const runFfmpeg = Effect.fnUntraced(function* (file: string) {
+export const recordingLog = Effect.fnUntraced(function* (file: string) {
   return (yield* runFfmpegFilter(file, "volumedetect")).output;
 }, Effect.catchTag("PlatformError", () => Effect.succeed("")));
 
