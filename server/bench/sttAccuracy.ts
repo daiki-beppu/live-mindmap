@@ -14,12 +14,12 @@ import { parseResults, type SttResult } from "./sttLatency.ts";
 export type TimedText = { start: number; end: number; text: string };
 
 // timeline.tsv（synth.mjs の出力）。#MARK の行は時刻だけなので飛ばす
-export function parseTimeline(text: string): TimedText[] {
+export function parseTimeline(text: string): Array<TimedText & { speaker: string }> {
   return text
     .split("\n")
     .map((line) => line.split("\t"))
     .filter((cols) => cols.length === 4 && !cols[0]!.startsWith("#"))
-    .map(([, start, end, body]) => ({ start: Number(start), end: Number(end), text: body! }));
+    .map(([speaker, start, end, body]) => ({ speaker: speaker!, start: Number(start), end: Number(end), text: body! }));
 }
 
 const DIGITS = "〇一二三四五六七八九";
