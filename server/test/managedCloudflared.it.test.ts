@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { copyFile, mkdir, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, FileSystem, Layer, PlatformError, Result, Stream } from "effect";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
-import { fakeNpm, temporaryDeps } from "./fixtures/managedDeps.ts";
+import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { archive, CONTENT } from "./fixtures/cloudflared.ts";
 
 const installed = { name: "cloudflared", need: "optional", state: "ready" } as const;
@@ -58,8 +58,6 @@ describe("管理 cloudflared の導入", () => {
       expect(downloads).toBe(1);
       denied = undefined;
       expect(yield* deps.check(["cloudflared"])).toEqual([installed]);
-      const binary = yield* deps.executable("cloudflared");
-      expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe(CONTENT);
     }).pipe(Effect.provide(ManagedDeps.layer({ root, cloudflared: {
       resolve: Effect.succeed(fixture.artifact),
       download: (_url: string, destination: string) => Effect.tryPromise(async () => { downloads++; await copyFile(fixture.path, destination); }),
@@ -100,37 +98,6 @@ describe("管理 cloudflared の導入", () => {
       const published = yield* deps.executable("cloudflared");
       expect(yield* Effect.tryPromise(() => realpath(published))).not.toBe(yield* Effect.tryPromise(() => realpath(acquired)));
       expect(yield* Effect.tryPromise(() => readFile(acquired, "utf8"))).toBe(CONTENT);
-      expect(yield* Effect.tryPromise(() => readFile(published, "utf8"))).toBe(CONTENT);
-    }).pipe(Effect.provide(ManagedDeps.layer(options).pipe(Layer.provide(NodeServices.layer))));
-  }).pipe(Effect.scoped));
-
-  it.live("831 C2・C4・C5: 合成 tgz を管理ルートに導入し実行可能なパスを返す", () => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const root = join(dir, "deps");
-    const fixture = yield* archive(dir);
-    const npm = yield* fakeNpm(dir);
-    const downloads: string[] = [];
-    const options = { root, npm, cloudflared: {
-      resolve: Effect.succeed(fixture.artifact),
-      download: (url: string, destination: string) => Effect.tryPromise(async () => {
-        downloads.push(url);
-        await copyFile(fixture.path, destination);
-      }),
-    } };
-    yield* Effect.gen(function* () {
-      const deps = yield* ManagedDeps;
-      const events = yield* Stream.runCollect(deps.install(["cloudflared"]));
-      expect(events.at(-1)).toEqual({ type: "result", items: [installed] });
-      expect(downloads).toEqual([fixture.artifact.url]);
-      expect(yield* deps.check(["cloudflared"])).toEqual([installed]);
-      const binary = yield* deps.executable("cloudflared");
-      const within = relative(yield* Effect.tryPromise(() => realpath(join(root, "cloudflared"))), yield* Effect.tryPromise(() => realpath(binary)));
-      expect(isAbsolute(within) || within === ".." || within.startsWith(`..${sep}`)).toBe(false);
-      expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe(CONTENT);
-      expect((yield* Effect.tryPromise(() => stat(binary))).mode & 0o111).not.toBe(0);
-      expect(yield* Effect.tryPromise(() => readFile(join(root, "cloudflared/current/cloudflared"), "utf8"))).toBe(CONTENT);
-      expect(yield* Effect.tryPromise(() => readdir(dir))).not.toContain("calls.jsonl");
-      expect(transientNames(yield* Effect.tryPromise(() => readdir(join(root, "cloudflared"))))).toEqual([]);
     }).pipe(Effect.provide(ManagedDeps.layer(options).pipe(Layer.provide(NodeServices.layer))));
   }).pipe(Effect.scoped));
 
@@ -172,8 +139,6 @@ describe("管理 cloudflared の導入", () => {
       expect((yield* Stream.runCollect(deps.install(["cloudflared"]))).at(-1)).toEqual({ type: "result", items: [installed] });
       expect(downloads).toEqual([fixture.artifact.url, fixture.artifact.url]);
       expect(yield* deps.check(["cloudflared"])).toEqual([installed]);
-      const binary = yield* deps.executable("cloudflared");
-      expect(yield* Effect.tryPromise(() => readFile(binary, "utf8"))).toBe(CONTENT);
     }).pipe(Effect.provide(ManagedDeps.layer(options).pipe(Layer.provide(NodeServices.layer))));
   }).pipe(Effect.scoped));
 

@@ -1,22 +1,24 @@
+// CLI をプロセスとして起動して、プロセスでしか見えないもの（終了コード・stdout と stderr の実バイト・1 行にまとまること）だけを確かめる。
+// help の文面・失敗の文面の中身・優先順は cliEntry.it.test.ts（runCli の軽い IT）が持つ。ここに残すのは代表 4 件
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { createServer } from "node:net";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 const cli = join(import.meta.dirname, "../src/cli.ts");
-// HOME を差し替える前に解決し、子プロセスも親と同じ管理の依存を読むようにする
-const depsDir = process.env.LIVE_MINDMAP_DEPS ?? join(homedir(), ".live-mindmap", "deps");
+const repositoryRoot = join(import.meta.dirname, "../..");
 
-function runProcess(argv: string[], sessionsDir: string, env: Record<string, string> = {}) {
-  return Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(process.execPath, [cli, ...argv], {
+type Result = { code: number; stdout: string; stderr: string };
+
+function execute(command: string, args: string[], cwd: string | undefined, sessionsDir: string) {
+  return Effect.tryPromise(() => new Promise<Result>((resolve, reject) => {
+    execFile(command, args, {
       encoding: "utf8",
-      timeout: 10_000,
-      env: { ...process.env, HOME: join(sessionsDir, "home"), LIVE_MINDMAP_DEPS: depsDir, LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1", ...env },
+      timeout: 20_000,
+      ...(cwd === undefined ? {} : { cwd }),
+      env: { ...process.env, HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: "0", NO_COLOR: "1" },
     }, (error, stdout, stderr) => {
       if (error) {
         if (error.killed || typeof error.code !== "number") {
@@ -31,32 +33,16 @@ function runProcess(argv: string[], sessionsDir: string, env: Record<string, str
   }));
 }
 
+const runProcess = (argv: string[], sessionsDir: string) => execute(process.execPath, [cli, ...argv], undefined, sessionsDir);
+// リポジトリのルートの package.json の cli スクリプト（pnpm cli）を通して起動する
+const runPnpmCli = (argv: string[], sessionsDir: string) => execute("pnpm", ["cli", ...argv], repositoryRoot, sessionsDir);
+
 const temporaryDirectory = Effect.acquireRelease(
   Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-cli-"))),
   (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
 );
 
-// 127.0.0.1 で待ち受けて塞いだポートを返す（play も 127.0.0.1 で待ち受けるので、同じアドレスでないと衝突しない）
-const occupiedPort = Effect.acquireRelease(
-  Effect.tryPromise(() => new Promise<{ port: number; close: () => Promise<void> }>((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("ポートを取得できない"));
-        return;
-      }
-      resolve({ port: address.port, close: () => new Promise<void>((done) => server.close(() => done())) });
-    });
-  })),
-  (held) => Effect.promise(() => held.close()),
-);
-
 const emptyExport = { root: { id: "root", kind: "会議", text: "定例", evidence: [], children: [] } };
-
-// 期待値は core/evaluate.ts の文面の写しではなく、CLI が出す契約として書く（Schema を使う前の実装と同じ文面）
-const KEYWORDS_RULE = "keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）";
 
 describe("CLI のプロセス入口", () => {
   it.live("--help は全サブコマンド・グローバルフラグと exit code 3 の意味を表示して成功する", () => Effect.gen(function* () {
@@ -74,72 +60,9 @@ describe("CLI のプロセス入口", () => {
     expect(result.stdout).toContain("exit code 3 = 開始に要るものが未導入");
   }).pipe(Effect.scoped));
 
-  it.live.each(["play", "apps", "start", "stop", "status", "resume", "export", "restore", "review", "eval", "install", "check"])(
-    "%s --help は処理本体を実行せず成功する",
-    (command) => Effect.gen(function* () {
-      const sessionsDir = yield* temporaryDirectory;
-      const result = yield* runProcess([command, "--help"], sessionsDir);
-
-      expect(result.code).toBe(0);
-      expect(result.stderr).toBe("");
-      expect(result.stdout).toMatch(/Usage/i);
-      expect(result.stdout).toContain(command);
-      if (["start", "resume", "play", "install", "check"].includes(command)) {
-        expect(result.stdout).toContain("入れる前に利用者に確認する");
-      }
-    }).pipe(Effect.scoped),
-  );
-
-  it.live("start --help は --no-screen とその説明（共有画面を AI に渡さない（取り込まない））を表示する", () => Effect.gen(function* () {
+  it.live("引数の誤りは help と ERROR を一度だけ表示して exit 1", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess(["start", "--help"], sessionsDir);
-
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain("--no-screen");
-    expect(result.stdout).toContain("共有画面を AI に渡さない（取り込まない）");
-  }).pipe(Effect.scoped));
-
-  it.live("--version は成功して標準出力にバージョンを表示する", () => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess(["--version"], sessionsDir);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout.trim()).not.toBe("");
-  }).pipe(Effect.scoped));
-
-  it.live("--completions bash は補完スクリプトを出して成功する", () => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess(["--completions", "bash"], sessionsDir);
-
-    expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout.trim()).not.toBe("");
-    expect(result.stdout).toContain("play");
-    expect(result.stdout).toContain("export");
-  }).pipe(Effect.scoped));
-
-  it.live("--log-level none を付けても正常な export の stdout は変わらない", () => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const run = join(sessionsDir, "run");
-    yield* Effect.tryPromise(async () => {
-      await mkdir(run);
-      await writeFile(join(run, "export.json"), JSON.stringify(emptyExport));
-    });
-    const result = yield* runProcess(["export", "--format", "json", "--log-level", "none"], sessionsDir);
-
-    expect(result).toEqual({ code: 0, stderr: "", stdout: JSON.stringify(emptyExport, null, 2) + "\n" });
-  }).pipe(Effect.scoped));
-
-  it.live.each([
-    { argv: ["play"] },
-    { argv: ["start"] },
-    { argv: ["eval"] },
-    { argv: ["export", "--format", "xml"] },
-    { argv: ["export", "--unknown-flag"] },
-  ])("引数の誤り $argv は help と ERROR を一度だけ表示して exit 1", ({ argv }) => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess(argv, sessionsDir);
+    const result = yield* runProcess(["export", "--format", "xml"], sessionsDir);
 
     expect(result.code).toBe(1);
     expect(result.stdout).toMatch(/Usage/i);
@@ -150,237 +73,23 @@ describe("CLI のプロセス入口", () => {
     for (const detail of errors.slice(1)) expect(detail).toMatch(/^\s+\S/);
   }).pipe(Effect.scoped));
 
-  // JSON の構文エラーだけは理由が effect の文面になる（正解の形まで進めない）。枠・1 行・exit 1 を固定する
-  it.live.each([
-    { name: "JSON 構文不正", content: "{ not json" },
-  ])("不正な正解ファイル（$name）は日本語の一行だけを stderr に出して exit 1", ({ content }) => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const truth = join(dir, "invalid.truth.json");
-    yield* Effect.tryPromise(() => writeFile(truth, content));
-    const result = yield* runProcess(["eval", "--truth", truth, dir], dir);
-
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    const errors = result.stderr.trimEnd().split("\n");
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatch(/^正解ファイルが不正です: /);
-    expect(errors[0]).toContain(`${truth}（`);
-    expect(errors[0]).toMatch(/）$/);
-    expect(result.stderr).toBe(`${errors[0]}\n`);
-  }).pipe(Effect.scoped));
-
-  // 理由の文面は、人が正解ファイルを直せる日本語（CLI の出力契約）。期待値は Truth の Schema を使う前の実装と同じ
-  it.live.each([
-    { name: "入れ物が配列", content: JSON.stringify([]), reason: "正解はオブジェクトで書く" },
-    { name: "種別のキーが無い", content: JSON.stringify({ TODO: [] }), reason: "「決定」は配列で書く" },
-    { name: "種別が配列でない", content: JSON.stringify({ 決定: {}, TODO: [] }), reason: "「決定」は配列で書く" },
-    {
-      name: "from が数でない",
-      content: JSON.stringify({ 決定: [{ text: "x", from: "1", to: 2, keywords: ["x"] }], TODO: [] }),
-      reason: "「決定」の 1 件目: from / to は秒の数値で書く",
-    },
-    {
-      name: "to が無い",
-      content: JSON.stringify({ 決定: [], TODO: [{ text: "x", from: 1, keywords: ["x"] }] }),
-      reason: "「TODO」の 1 件目: from / to は秒の数値で書く",
-    },
-    {
-      name: "from が to より大きい",
-      content: JSON.stringify({ 決定: [{ text: "x", from: 5, to: 2, keywords: ["x"] }], TODO: [] }),
-      reason: "「決定」の 1 件目: from が to より大きい",
-    },
-    {
-      name: "keywords が無い",
-      content: JSON.stringify({ 決定: [{ text: "x", from: 1, to: 2 }], TODO: [] }),
-      reason: `「決定」の 1 件目: ${KEYWORDS_RULE}`,
-    },
-    {
-      name: "keywords が空",
-      content: JSON.stringify({ 決定: [{ text: "x", from: 1, to: 2, keywords: [] }], TODO: [] }),
-      reason: `「決定」の 1 件目: ${KEYWORDS_RULE}`,
-    },
-    {
-      name: "keywords の要素が数",
-      content: JSON.stringify({ 決定: [{ text: "x", from: 1, to: 2, keywords: [1] }], TODO: [] }),
-      reason: `「決定」の 1 件目: ${KEYWORDS_RULE}`,
-    },
-    {
-      name: "2 件目の keywords が無い",
-      content: JSON.stringify({ 決定: [], TODO: [{ text: "x", from: 1, to: 2, keywords: ["x"] }, { text: "y", from: 1, to: 2 }] }),
-      reason: `「TODO」の 2 件目: ${KEYWORDS_RULE}`,
-    },
-    // 1 つの項目に複数の誤りがあるときに選ぶ理由。Schema を使う前の実装は from / to の型 → from が to より大きい →
-    // keywords の順に止めたので、その順を保つ（keywords の誤りが時刻の誤りを隠さない）
-    {
-      name: "from が to より大きく keywords も無い",
-      content: JSON.stringify({ 決定: [{ text: "x", from: 5, to: 2 }], TODO: [] }),
-      reason: "「決定」の 1 件目: from が to より大きい",
-    },
-    {
-      name: "from が to より大きく keywords が空",
-      content: JSON.stringify({ 決定: [{ text: "x", from: 5, to: 2, keywords: [] }], TODO: [] }),
-      reason: "「決定」の 1 件目: from が to より大きい",
-    },
-    {
-      name: "from が数でなく keywords も無い",
-      content: JSON.stringify({ 決定: [{ text: "x", from: "5", to: 2 }], TODO: [] }),
-      reason: "「決定」の 1 件目: from / to は秒の数値で書く",
-    },
-  ])("不正な正解ファイル（$name）は $reason を stderr の一行に出して exit 1", ({ content, reason }) => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const truth = join(dir, "invalid.truth.json");
-    yield* Effect.tryPromise(() => writeFile(truth, content));
-    const result = yield* runProcess(["eval", "--truth", truth, dir], dir);
-
-    expect(result).toEqual({ code: 1, stdout: "", stderr: `正解ファイルが不正です: ${truth}（${reason}）\n` });
-  }).pipe(Effect.scoped));
-
-  it.live("正常な正解ファイルは eval の表へ届き、出力の書式と改行を保持する", () => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const run = join(dir, "run");
-    const truth = join(dir, "valid.truth.json");
-    yield* Effect.tryPromise(async () => {
-      await mkdir(run);
-      await writeFile(join(run, "export.json"), JSON.stringify(emptyExport));
-      await writeFile(truth, JSON.stringify({ 決定: [], TODO: [] }));
-    });
-    const result = yield* runProcess(["eval", "--truth", truth, run], dir);
-
-    expect(result).toEqual({
-      code: 0,
-      stderr: "",
-      stdout: "| ラン | 会議 | ノード | 深さ | 議題 | 論点 | 案 | 決定 | 課題 | TODO | 要点 | 書き換え/発言 | 1 ノードの書き換えの最多 | 話し中の兄弟の最多 | 入力トークン | キャッシュ書き込みトークン | キャッシュ読み出しトークン | 出力トークン | 決定の再現率 | TODO の再現率 | 決定の種別違い | TODO の種別違い |\n"
-        + "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-        + "| run | 定例 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | - | - | - | - | - | - | - | 0/0 | 0/0 | 0 | 0 |\n",
-    });
-  }).pipe(Effect.scoped));
-
-  it.live.each(["export", "restore"])("%s のセッションなしは既存の日本語一行と exit 1", (command) => Effect.gen(function* () {
+  it.live("export のセッションなしは既存の日本語一行と exit 1", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess([command], sessionsDir);
+    const result = yield* runProcess(["export"], sessionsDir);
 
     expect(result).toEqual({ code: 1, stdout: "", stderr: `セッションがありません: ${sessionsDir}\n` });
   }).pipe(Effect.scoped));
 
-  it.live("apps の接続失敗は既存の日本語一行と exit 1", () => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess(["apps"], sessionsDir);
-
-    expect(result).toEqual({ code: 1, stdout: "", stderr: "サーバーにつながりません（pnpm dev で起動）\n" });
-  }).pipe(Effect.scoped));
-
-  it.live("restore の不正 JSON は空行を含む元の行番号と日本語一行を出して exit 1", () => Effect.gen(function* () {
+  it.live("pnpm cli 経由でも export の JSON を stdout に出して exit 0", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const run = join(sessionsDir, "run");
-    yield* Effect.tryPromise(async () => {
-      await mkdir(run);
-      await writeFile(join(run, "log.jsonl"), '{"type":"start","title":"定例"}\n\n{ not json\n');
-    });
-    const result = yield* runProcess(["restore"], sessionsDir);
-
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toMatch(/^log\.jsonl の 3 行目が JSON として読めません: [^\n]+\n$/);
-  }).pipe(Effect.scoped));
-
-  it.live.each([
-    { name: "JSON として不正な行", log: '{"type":"start","title":"定例"}\n\n{ not json\n', reason: "が JSON として読めません: " },
-    { name: "既知の type で項目が不正な行", log: '{"type":"start","title":"定例"}\n\n{"type":"remark"}\n', reason: "が読めません: " },
-  ])("eval の不正ログ（$name）は、パスと空行を除く前の行番号を含む 1 行と exit 1", ({ log, reason }) => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const run = join(sessionsDir, "run");
-    const logPath = join(run, "log.jsonl");
     yield* Effect.tryPromise(async () => {
       await mkdir(run);
       await writeFile(join(run, "export.json"), JSON.stringify(emptyExport));
-      await writeFile(logPath, log);
     });
-    const result = yield* runProcess(["eval", run], sessionsDir);
+    const result = yield* runPnpmCli(["export", "--format", "json"], sessionsDir);
 
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
-    expect(result.stderr.startsWith(`${logPath} の 3 行目${reason}`)).toBe(true);
-  }).pipe(Effect.scoped));
-
-  it.live("review の log.jsonl なしは、パスに改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const missing = join(dir, "review\nmissing");
-    const result = yield* runProcess(["review", missing], dir);
-
-    expect(result).toEqual({
-      code: 1,
-      stdout: "",
-      stderr: `log.jsonl がありません: ${join(missing, "log.jsonl").replaceAll("\n", " ")}\n`,
-    });
-    expect(existsSync(missing)).toBe(false);
-  }).pipe(Effect.scoped));
-
-  it.live("review のセッションなしは、保存先に改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const sessionsDir = join(dir, "sessions\nroot");
-    const result = yield* runProcess(["review"], sessionsDir);
-
-    expect(result).toEqual({
-      code: 1,
-      stdout: "",
-      stderr: `セッションがありません: ${sessionsDir.replaceAll("\n", " ")}\n`,
-    });
-    expect(existsSync(sessionsDir)).toBe(false);
-  }).pipe(Effect.scoped));
-
-  it.live("play --help は、文字起こしのほかにセッションのフォルダ（log.jsonl を持つフォルダ）も受けられることと、--screen と一緒に使えないことを説明する", () => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runProcess(["play", "--help"], sessionsDir);
-
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain("セッションのフォルダ");
-    expect(result.stdout).toContain("log.jsonl");
-    expect(result.stdout).toContain("一緒に使えない");
-  }).pipe(Effect.scoped));
-
-  it.live("play にセッションのフォルダと --screen を一緒に渡すと、理由の標準エラー 1 行と 0 以外の終了で、セッションのフォルダを作らない", () => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const folder = join(dir, "original");
-    const tsv = join(dir, "slides.tsv");
-    const sessionsDir = join(dir, "sessions");
-    yield* Effect.tryPromise(async () => {
-      await mkdir(folder);
-      await writeFile(join(folder, "log.jsonl"), '{"type":"start","title":"定例"}\n');
-      await writeFile(tsv, "start\tend\tslide\timage\n");
-    });
-    const result = yield* runProcess(["play", folder, "--screen", tsv], sessionsDir);
-
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
-    expect(result.stderr).toContain("--screen");
-    expect(existsSync(sessionsDir)).toBe(false);
-  }).pipe(Effect.scoped));
-
-  it.live("play は待ち受けるポートが使用中なら、ポート番号と LIVE_MINDMAP_PORT を含む標準エラー 1 行と 0 以外の終了で、セッションのフォルダを作らない", () => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    const held = yield* occupiedPort;
-    const transcript = join(dir, "small.transcript.json");
-    const sessionsDir = join(dir, "sessions");
-    yield* Effect.tryPromise(() => writeFile(transcript, JSON.stringify({
-      schema_version: 1,
-      duration: 10,
-      source_path: "small.m4a",
-      transcript: {
-        tracks: ["speaker"],
-        diagnostics: {},
-        segments: [{ track: "speaker", start_seconds: 0.5, end_seconds: 9.5, text: "ポートが使用中の確認です", confidence: 0.9 }],
-      },
-    })));
-    const result = yield* runProcess(["play", transcript], sessionsDir, { LIVE_MINDMAP_PORT: String(held.port) });
-
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
-    expect(result.stderr).toContain(String(held.port));
-    expect(result.stderr).toContain("別のプロセス");
-    expect(result.stderr).toContain("LIVE_MINDMAP_PORT");
-    expect(existsSync(sessionsDir)).toBe(false);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(emptyExport);
   }).pipe(Effect.scoped));
 });
