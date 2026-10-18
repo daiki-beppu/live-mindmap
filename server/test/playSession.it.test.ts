@@ -286,6 +286,29 @@ describe("play <セッションのフォルダ>", () => {
       expect(deps.convert.calls).toEqual([]);
     }));
 
+  it.effect("話者のラベルつきの発言は、差分更新へ送るメッセージに「相手 A:」で届き、ラベルの無い発言は「相手:」のまま。新しいログの remark にもラベルが残る", () =>
+    Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const original = sessionFolder(root, [
+        { type: "start", title: "話者つき" },
+        { ...remarkLine("r1", 0, 5), remark: { ...remarkLine("r1", 0, 5).remark, speaker: "相手 A" } },
+        remarkLine("r2", 6, 9),
+      ]);
+      const replay = yield* played(dependencies(join(root, "sessions")), [original]);
+
+      const sent = external.created
+        .flatMap((c) => c.messages)
+        .flatMap((m) => (typeof m.message.content === "string" ? [m.message.content] : m.message.content.map((b) => b.text ?? "")))
+        .join("\n");
+      expect(sent).toContain("r1 [00:00] 相手 A: 発言r1");
+      expect(sent).toContain("r2 [00:06] 相手: 発言r2");
+      expect(sent).not.toContain("r2 [00:06] 相手 A");
+      // 新しいログの remark にも speaker が残る（再生し直しても同じ経路を通る）
+      const remarks = logLines(replay).filter((l) => l.type === "remark").map((l) => l.remark as { id: string; speaker?: string });
+      expect(remarks.find((r) => r.id === "r1")?.speaker).toBe("相手 A");
+      expect(remarks.find((r) => r.id === "r2")).not.toHaveProperty("speaker");
+    }));
+
   it.effect("元のフォルダの screens/ の画像が読めないときは CommandFailed で失敗する", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
