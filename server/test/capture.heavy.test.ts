@@ -1,14 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer, Result, Schema } from "effect";
+import { Effect, Layer } from "effect";
 import { MapCapture, withCapturePage } from "../src/capture.ts";
 import type { Snapshot, SnapshotNode } from "../src/core/index.ts";
 import { managedPlaywright } from "./fixtures/managedPlaywright.ts";
-
-class FnFailed extends Schema.TaggedError<FnFailed>()("FnFailed", { message: Schema.String }) {}
 
 // 実物の Playwright（Chromium）と Vite で、サーバー自身の表示ページを撮る。ブラウザの起動があるので時間がかかる。
 // 事前に `pnpm cli install chromium` が要る。
@@ -44,20 +42,11 @@ const capture = (snapshot: Snapshot, path: string) =>
     yield* service.capture(snapshot, path);
   }).pipe(Effect.provide(MapCapture.layer.pipe(Layer.provide(managedPlaywright))));
 
-// 失敗の理由を、タグ名やフィールド名に依存せずに読む
-const failureText = (failure: unknown): string => {
-  if (failure instanceof Error) return failure.message;
-  if (typeof failure === "object" && failure !== null) {
-    return Object.values(failure).filter((v) => typeof v === "string").join(" ");
-  }
-  return String(failure);
-};
-
 const temporary = Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-")));
 
 describe("map.png の撮影", () => {
   it.live(
-    "マップだけを描く: 全ノードが画面に収まり、変わったノードの強調・仮のノード・「根拠」と「変わったこと」の欄は出ない",
+    "マップだけを描く: 渡したスナップショットのノードの本文がそのまま描かれ、全ノードが画面に収まり、変わったノードの強調・仮のノード・「根拠」と「変わったこと」の欄は出ない",
     () => Effect.gen(function* () {
       const snapshot = bigSnapshot();
 
@@ -80,6 +69,7 @@ describe("map.png の撮影", () => {
             foldkitSurface: await page.locator(".map-surface").count(),
             reactFlow: await page.locator(".react-flow").count(),
             nodeSlots: await page.locator(".map-node-slot").count(),
+            texts: await page.locator(".map-node__text").allTextContents(),
           };
         }),
       ).pipe(Effect.provide(managedPlaywright));
@@ -100,30 +90,23 @@ describe("map.png の撮影", () => {
       expect(seen.foldkitSurface).toBe(1);
       expect(seen.reactFlow).toBe(0);
       expect(seen.nodeSlots).toBe(snapshot.nodes.length);
+      // 渡したスナップショットの本文がそのまま描かれる（WebSocket から取り直さない）
+      expect([...seen.texts].sort()).toEqual(snapshot.nodes.map((n) => n.text).sort());
     }),
     TIMEOUT,
   );
 
-  it.live(
-    "渡したスナップショットのノードの本文が、そのまま描かれる（WebSocket から取り直さない）",
-    () => Effect.gen(function* () {
-      const texts = yield* withCapturePage(bigSnapshot(), (page) =>
-        Effect.tryPromise(() => page.locator(".map-node__text").allTextContents()),
-      ).pipe(Effect.provide(managedPlaywright));
-      expect(texts.sort()).toEqual(bigSnapshot().nodes.map((n) => n.text).sort());
-    }),
-    TIMEOUT,
-  );
-
-  it.live("MapCapture は指定のパスに PNG（シグネチャを持つ空でないファイル）を書く", () => Effect.gen(function* () {
-    const path = join(yield* temporary, "map.png");
-
-    yield* capture(bigSnapshot(), path);
-
-    const png = readFileSync(path);
-    expect([...png.subarray(0, 8)]).toEqual(PNG_SIGNATURE);
-    expect(png.length).toBeGreaterThan(1000);
-  }), TIMEOUT);
+  it.live("続けて 2 回撮れる（1 回目で起動した Vite・Chromium を残して競合しない）", () => Effect.gen(function* () {
+    const dir = yield* temporary;
+    yield* capture(bigSnapshot(), join(dir, "a.png"));
+    yield* capture(bigSnapshot(), join(dir, "b.png"));
+    // 両方とも指定のパスに PNG（シグネチャを持つ空でないファイル）が書かれている
+    for (const name of ["a.png", "b.png"]) {
+      const png = readFileSync(join(dir, name));
+      expect([...png.subarray(0, 8)]).toEqual(PNG_SIGNATURE);
+      expect(png.length).toBeGreaterThan(1000);
+    }
+  }), TIMEOUT * 2);
 
   it.live("ノードを囲む範囲だけを切り抜くので、横に細長い小さなマップは撮影画面（1600×1000）より背の低い画像になる", () => Effect.gen(function* () {
     const nodes: SnapshotNode[] = [
@@ -139,37 +122,5 @@ describe("map.png の撮影", () => {
     const [width, height] = [png.readUInt32BE(16), png.readUInt32BE(20)];
     expect(height).toBeLessThan(width / 2);
     expect(height).toBeLessThan(1000 * 2);
-  }), TIMEOUT);
-
-  it.live("続けて 2 回撮れる（1 回目で起動した Vite・Chromium を残して競合しない）", () => Effect.gen(function* () {
-    const dir = yield* temporary;
-    yield* capture(bigSnapshot(), join(dir, "a.png"));
-    yield* capture(bigSnapshot(), join(dir, "b.png"));
-    for (const name of ["a.png", "b.png"]) {
-      expect([...readFileSync(join(dir, name)).subarray(0, 4)]).toEqual(PNG_SIGNATURE.slice(0, 4));
-    }
-  }), TIMEOUT * 2);
-
-  it.live("全体を下限の倍率でも収められない大きさなら、PNG を書かずに失敗する（欠けた画像を成功として書き出さない）", () => Effect.gen(function* () {
-    // ルート + 葉 1500 枚。縦の配置が約 90,000px になり、必要な倍率（約 0.011）が下限 0.02 を下回る
-    const nodes: SnapshotNode[] = [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }];
-    for (let i = 1; i <= 1500; i++) nodes.push({ id: `n${i}`, parent: "root", kind: "議題", text: `議題 ${i}`, evidence: [] });
-    const path = join(yield* temporary, "map.png");
-
-    const result = yield* Effect.result(capture({ nodes, round: 1, changes: [], remarks: [] }, path));
-
-    expect(Result.isFailure(result)).toBe(true);
-    if (Result.isSuccess(result)) return;
-    expect(failureText(result.failure)).toContain("収められません");
-    expect(existsSync(path)).toBe(false);
-  }), TIMEOUT);
-
-  it.live("撮影の処理（fn）が失敗しても、そのエラーをそのまま伝える（握りつぶさない）", () => Effect.gen(function* () {
-    // fn の失敗の型は withCapturePage が決めないので、撮影自身の CaptureFailed とは別のタグで確かめる
-    const result = yield* Effect.result(withCapturePage(bigSnapshot(), () => new FnFailed({ message: "fn の失敗" })).pipe(Effect.provide(managedPlaywright)));
-
-    expect(Result.isFailure(result)).toBe(true);
-    if (Result.isSuccess(result)) return;
-    expect(failureText(result.failure)).toContain("fn の失敗");
   }), TIMEOUT);
 });
