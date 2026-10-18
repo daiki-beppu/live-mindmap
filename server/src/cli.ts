@@ -26,9 +26,7 @@ import {
   formatShareOpened,
   formatShareStatus,
   SHARE_OPEN_OUTCOME_HEADER,
-  ShareAllow,
   ShareOpenOutcome,
-  ShareStatus,
   formatPoolTable,
   formatTable,
   forgetPoolWord,
@@ -101,7 +99,8 @@ import {
 } from "./sessionFiles.ts";
 import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
-import { CheckReport, InstallEvent, Item, StartupRefusal, StartupWarnings } from "./managedDepsProtocol.ts";
+import { StartupRefusal } from "./managedDepsProtocol.ts";
+import { ServerRoutes, type ServerRoute } from "./serverProtocol.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
 import { exitCodeTeardown, reportEntryFailure } from "./entryFailure.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
@@ -242,25 +241,24 @@ const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string,
  * -------------------------------------------------------------------------- */
 
 const ServerErrorBody = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
-const StartedSession = Schema.Struct({ dir: Schema.String, ...StartupWarnings.fields });
-const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String) });
-const IntakeStatus = Schema.Struct({
-  status: Schema.Literals(["none", "running", "interrupted", "stopped"]),
-  dir: Schema.optionalKey(Schema.String),
-  restarts: Schema.optionalKey(Schema.Finite),
-  lastInterruptedAt: Schema.optionalKey(Schema.String),
-});
+// 要求に添えるもの。本文は、記述が本文の Schema を持つ経路でだけ必須で、その Encoded 型で書く（欄を書き間違えると型エラー）。
+// query は URL の ? 以降、headers は要求のヘッダー
+type ServerRequestOptions<R extends ServerRoute> =
+  & (R extends { readonly body: infer B extends Schema.Top } ? { readonly body: B["Encoded"] } : { readonly body?: never })
+  & { readonly query?: Record<string, string>; readonly headers?: Record<string, string> };
 
-const executeServerRequest = Effect.fnUntraced(function* (
+// 本文を持つ経路では options を省けない（本文の型保証を、引数の省略で迂回させない）
+type ServerRequestArgs<R extends ServerRoute> = R extends { readonly body: Schema.Top } ? [options: ServerRequestOptions<R>] : [options?: ServerRequestOptions<R>];
+
+const executeServerRequest = Effect.fnUntraced(function* <R extends ServerRoute>(
   port: number,
-  method: "GET" | "POST",
-  path: string,
-  body?: object,
-  headers?: Record<string, string>,
+  route: R,
+  ...[options]: ServerRequestArgs<NoInfer<R>>
 ) {
   const client = yield* HttpClient.HttpClient;
-  const base = HttpClientRequest.make(method)(`http://127.0.0.1:${port}${path}`, { headers });
-  const request = body ? HttpClientRequest.bodyJsonUnsafe(base, body) : base;
+  const query = options?.query === undefined ? "" : `?${new URLSearchParams(options.query).toString()}`;
+  const base = HttpClientRequest.make(route.method)(`http://127.0.0.1:${port}${route.path}${query}`, { headers: options?.headers });
+  const request = options?.body === undefined ? base : HttpClientRequest.bodyJsonUnsafe(base, options.body);
   const response = yield* client.execute(request).pipe(Effect.mapError(() => new ServerUnreachable()));
   if (response.status < 200 || response.status >= 300) {
     // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする
@@ -276,7 +274,7 @@ const executeServerRequest = Effect.fnUntraced(function* (
 });
 
 // 成功応答の本文を各コマンドの Schema で読む
-const decodeServerBody = Effect.fnUntraced(function* <A>(response: HttpClientResponse.HttpClientResponse, schema: Schema.Decoder<A>) {
+const decodeServerBody = Effect.fnUntraced(function* <S extends Schema.Decoder<unknown>>(response: HttpClientResponse.HttpClientResponse, schema: S): Effect.fn.Return<S["Type"], ServerFailed, S["DecodingServices"]> {
   // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
   const parsed = yield* response.text.pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
@@ -287,29 +285,24 @@ const decodeServerBody = Effect.fnUntraced(function* <A>(response: HttpClientRes
   );
 });
 
-// 常駐サーバーへ依頼を送り、成功応答を各コマンドの Schema で読む
-const requestServer = Effect.fnUntraced(function* <A>(
+// 常駐サーバーへ経路の記述で依頼を送り、成功応答を記述の response の Schema で読む
+const requestServer = <R extends ServerRoute & { readonly response: Schema.Decoder<unknown> }>(
   port: number,
-  method: "GET" | "POST",
-  path: string,
-  schema: Schema.Decoder<A>,
-  body?: object,
-  headers?: Record<string, string>,
-) {
-  const response = yield* executeServerRequest(port, method, path, body, headers);
-  return yield* decodeServerBody(response, schema);
-});
+  route: R,
+  ...args: ServerRequestArgs<NoInfer<R>>
+): Effect.Effect<R["response"]["Type"], ServerUnreachable | ServerFailed | StartupDepsMissing, HttpClient.HttpClient> =>
+  executeServerRequest(port, route, ...args).pipe(Effect.flatMap((response) => decodeServerBody(response, route.response)));
 
 // 常駐サーバーが NDJSON で流す経過（1 行 1 イベント）を、届いた順に 1 件ずつ handle へ渡す。読めない行は ServerFailed、通信の失敗は ServerStreamClosed
 const forEachServerEvent = <A, R>(
   response: HttpClientResponse.HttpClientResponse,
-  schema: Schema.Decoder<A>,
+  route: { readonly response: Schema.Decoder<A> },
   handle: (event: A) => Effect.Effect<void, ServerFailed, R>,
 ) =>
   response.stream.pipe(
     Stream.decodeText,
     Stream.splitLines,
-    Stream.runForEach((line) => Schema.decodeEffect(Schema.fromJsonString(schema))(line).pipe(
+    Stream.runForEach((line) => Schema.decodeEffect(Schema.fromJsonString(route.response))(line).pipe(
       Effect.mapError((error) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(error)}` })),
       Effect.flatMap(handle),
     )),
@@ -550,7 +543,7 @@ const apps = Command.make(
   Effect.fn("apps")(function* () {
     const port = yield* portConfig;
     // 一覧の中身は CLI が使わないので、形を決めずにそのまま出す
-    const list = yield* requestServer(port, "GET", "/apps", Schema.Unknown);
+    const list = yield* requestServer(port, ServerRoutes.apps);
     yield* write(JSON.stringify(list, null, 2) + "\n");
   }),
 ).pipe(Command.withDescription("会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む"));
@@ -602,7 +595,7 @@ const start = Command.make(
     const chosenJudge = yield* resolveRoutingJudge(judge, model, selected);
     const port = yield* portConfig;
     const headers = yield* modelTransferHeaders(selected, port, chosenJudge !== undefined);
-    const { dir, warnings } = yield* requestServer(port, "POST", "/session/start", StartedSession, {
+    const { dir, warnings } = yield* requestServer(port, ServerRoutes.sessionStart, { body: {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
@@ -610,7 +603,7 @@ const start = Command.make(
       ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
       model: selected,
       ...(chosenJudge ? { judge: chosenJudge } : {}),
-    }, headers);
+    }, headers });
     yield* writeWarnings(warnings ?? []);
     yield* write(`${dir}\n`);
   }),
@@ -635,7 +628,7 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
       process.stderr.write(`\r\x1b[K${text}\n`);
     })
     : Console.error(text);
-  yield* forEachServerEvent(response, RecordedEvent, (event) => Effect.gen(function* () {
+  yield* forEachServerEvent(response, ServerRoutes.sessionRecorded, (event) => Effect.gen(function* () {
     switch (event.type) {
       case "started":
         onStarted(event.dir);
@@ -708,20 +701,20 @@ const recorded = Command.make(
     // Ctrl-C は、そこまでに入れた分で終えて map.* を書き出す（stop と同じ）。サーバーは接続が切れても書き出しを最後まで続ける。
     // 開始の応答（2xx）を受け取った後なら、started を読む前の中断でも止める
     const stopOnInterrupt = Effect.gen(function* () {
-      const { paths } = yield* requestServer(port, "POST", "/session/stop", StoppedSession);
+      const { paths } = yield* requestServer(port, ServerRoutes.sessionStop);
       yield* write([...(dir === undefined ? [] : [dir]), ...paths].map((line) => `${line}\n`).join(""));
     }).pipe(Effect.ignore);
     // 開始の要求が断られた（2xx 以外）ときは中断の対象に入れない。既存のセッションを止めないため
     const finished = yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        const response = yield* restore(executeServerRequest(port, "POST", "/session/recorded", {
+        const response = yield* restore(executeServerRequest(port, ServerRoutes.sessionRecorded, { body: {
           file: resolve(file),
           ...(Option.isSome(self) ? { selfFile: resolve(self.value) } : {}),
           title: Option.getOrUndefined(title),
           ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
           ...(realtime ? { realtime } : {}),
           model: selected,
-        }, headers));
+        }, headers }));
         return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
       }),
     ).pipe(
@@ -752,7 +745,7 @@ const stop = Command.make(
   {},
   Effect.fn("stop")(function* () {
     const port = yield* portConfig;
-    const { paths } = yield* requestServer(port, "POST", "/session/stop", StoppedSession);
+    const { paths } = yield* requestServer(port, ServerRoutes.sessionStop);
     yield* write(paths.map((path) => `${path}\n`).join(""));
   }),
 ).pipe(
@@ -766,8 +759,8 @@ const status = Command.make(
   {},
   Effect.fn("status")(function* () {
     const port = yield* portConfig;
-    const report: IntakeStatusReport = yield* requestServer(port, "GET", "/session/status", IntakeStatus);
-    const share = yield* requestServer(port, "GET", "/share/status", ShareStatus);
+    const report: IntakeStatusReport = yield* requestServer(port, ServerRoutes.sessionStatus);
+    const share = yield* requestServer(port, ServerRoutes.shareStatus);
     yield* write(formatIntakeStatus(report) + formatShareStatus(share));
   }),
 ).pipe(
@@ -778,7 +771,7 @@ const status = Command.make(
 );
 
 // 許す範囲は 既定の許可 + 引数（重複は除く）。--anyone のときだけ「誰でも」。範囲が空なら {}（空の拒否はサーバーの判定順に任せる）
-const shareOpenBody = (anyone: boolean, mails: readonly string[]) =>
+const shareOpenBody = (anyone: boolean, mails: readonly string[]): typeof ServerRoutes.shareOpen.body["Encoded"] =>
   anyone ? { anyone: true } : mails.length > 0 ? { mails: [...new Set(mails)] } : {};
 
 const share = Command.make(
@@ -804,16 +797,16 @@ const share = Command.make(
     const port = yield* portConfig;
     const defaults = yield* shareAllowConfig;
     if (stop) {
-      yield* requestServer(port, "POST", "/share/close", ShareStatus);
+      yield* requestServer(port, ServerRoutes.shareClose);
       return;
     }
     // 拒否の判定順（共有中・セッション無し・ローカル・cloudflared 無し・範囲が空）はサーバーが持つ。
     // 新しく開いたか既存を返したかは、サーバーがロックの中で決めてヘッダーで返す
-    const response = yield* executeServerRequest(port, "POST", "/share/open", shareOpenBody(anyone, [...defaults, ...mails]));
+    const response = yield* executeServerRequest(port, ServerRoutes.shareOpen, { body: shareOpenBody(anyone, [...defaults, ...mails]) });
     const outcome = yield* Schema.decodeUnknownEffect(ShareOpenOutcome)(response.headers[SHARE_OPEN_OUTCOME_HEADER]).pipe(
       Effect.mapError(() => new ServerFailed({ message: "サーバーの応答が読めません: 共有の結果を示すヘッダーがありません" })),
     );
-    const status = yield* decodeServerBody(response, Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: ShareAllow }));
+    const status = yield* decodeServerBody(response, ServerRoutes.shareOpen.response);
     if (outcome === "already-open") return yield* new CommandFailed({ message: formatShareAlreadyOpen(status).trimEnd() });
     yield* write(formatShareOpened(status));
   }),
@@ -828,7 +821,7 @@ const resume = Command.make(
   {},
   Effect.fn("resume")(function* () {
     const port = yield* portConfig;
-    const { warnings } = yield* requestServer(port, "POST", "/session/resume", StartupWarnings);
+    const { warnings } = yield* requestServer(port, ServerRoutes.sessionResume);
     yield* writeWarnings(warnings ?? []);
   }),
 ).pipe(
@@ -1021,10 +1014,10 @@ const checkCommand = Command.make(
   { for: Flag.Literals("for", ["start", "resume", "play"]).pipe(Flag.withDefault("start")), noScreen: Flag.Boolean("no-screen").pipe(Flag.withDefault(false)) },
   Effect.fn("check")(function* ({ for: entry, noScreen }) {
     const report = yield* Effect.gen(function* () {
-      if (entry === "resume") return yield* requestServer(yield* portConfig, "GET", "/check?for=resume", CheckReport);
+      if (entry === "resume") return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: "resume" } });
       const model = yield* resolveModelCandidate({});
       if (entry === "play") return yield* checkManagedDeps(entry, model.route);
-      return yield* requestServer(yield* portConfig, "GET", `/check?for=${entry}&route=${model.route}&screen=${!noScreen}`, CheckReport);
+      return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: entry, route: model.route, screen: String(!noScreen) } });
     });
     yield* write(JSON.stringify(report));
     if (report.items.some((item) => item.need === "required" && item.state !== "ready" && item.state !== "outdated")) return yield* new RequiredDepsMissing();
@@ -1034,12 +1027,13 @@ const checkCommand = Command.make(
     + "管理依存は入れる前に利用者に確認する",
 ));
 
-const installFromServer = Effect.fnUntraced(function* (port: number, path: "/deps/install" | "/update", names: ReadonlyArray<string>) {
+// /deps/install と /update は、同じ InstallEvent の NDJSON を流す。要求は呼び出し側が記述で組み、ここは経過を読む
+const installFromServer = Effect.fnUntraced(function* (send: ReturnType<typeof executeServerRequest>) {
     // エージェント（標準出力が端末でない）にだけ出す。人の端末には要らない文
     if (!(yield* StdoutIsTty)) yield* Console.error("時間がかかるので run_in_background で呼んでよい");
-    const response = yield* executeServerRequest(port, "POST", path, { names });
-    let result: Extract<typeof InstallEvent["Type"], { type: "result" }> | undefined;
-    yield* forEachServerEvent(response, InstallEvent, (event) => Effect.gen(function* () {
+    const response = yield* send;
+    let result: Extract<typeof ServerRoutes.depsInstall.response.Type, { type: "result" }> | undefined;
+    yield* forEachServerEvent(response, ServerRoutes.depsInstall, (event) => Effect.gen(function* () {
       if (result !== undefined) return yield* new ServerFailed({ message: "完了後にイベントを受信しました" });
       switch (event.type) {
         case "progress": yield* Console.error(oneLine(event.message)); break;
@@ -1051,11 +1045,12 @@ const installFromServer = Effect.fnUntraced(function* (port: number, path: "/dep
     yield* write(JSON.stringify(result.items));
 });
 
+// 名前の検証は server（400）に任せる。引数は利用者の入力なので、ここだけ本文の型へ読み替える（CLI の拒否の経路を変えない）
 const installCommand = Command.make(
   "install",
   { names: Argument.String("name").pipe(Argument.atLeast(1)) },
   Effect.fn("install")(function* ({ names }) {
-    yield* installFromServer(yield* portConfig, "/deps/install", names);
+    yield* installFromServer(executeServerRequest(yield* portConfig, ServerRoutes.depsInstall, { body: { names: names as typeof ServerRoutes.depsInstall.body["Encoded"]["names"] } }));
   }),
 ).pipe(Command.withDescription(
   "常駐サーバーに chromium・claude・cloudflared・speech-ja の導入を依頼し、進捗と導入した items を出す。"
@@ -1070,11 +1065,11 @@ const updateCommand = Command.make(
     const managed = names.length === 0 ? ["chromium", "claude"] : names.filter((name) => name !== "speech-ja");
     if (managed.length > 0) {
       const port = yield* portConfig;
-      const items = yield* requestServer(port, "GET", `/deps/check?names=${managed.join(",")}`, Schema.Array(Item));
+      const items = yield* requestServer(port, ServerRoutes.depsCheck, { query: { names: managed.join(",") } });
       const missing = names.length === 0 ? [] : items.filter((item) => item.state === "missing");
       if (missing.length > 0) return yield* new CommandFailed({ message: missing.map((item) => `未導入です。cli install ${item.name} で入れる`).join("\n") });
-      const outdated = items.filter((item) => item.state === "outdated").map((item) => item.name);
-      if (outdated.length > 0) yield* installFromServer(port, "/update", outdated);
+      const outdated = items.flatMap((item) => item.state === "outdated" && (item.name === "chromium" || item.name === "claude") ? [item.name] : []);
+      if (outdated.length > 0) yield* installFromServer(executeServerRequest(port, ServerRoutes.update, { body: { names: outdated } }));
       else yield* write("[]");
     }
     if (speech) yield* Console.error("OS が更新するので不要");
@@ -1084,7 +1079,6 @@ const updateCommand = Command.make(
 // サーバーが SIGTERM の後に終わるのを待つ上限と、確かめる間隔
 const SERVER_EXIT_TIMEOUT_MS = 15_000;
 const SERVER_EXIT_POLL_MS = 100;
-const ServerIdentity = Schema.Struct({ pid: Schema.Int.check(Schema.isGreaterThan(0)) });
 
 const serverStop = Command.make(
   "stop",
@@ -1096,7 +1090,7 @@ const serverStop = Command.make(
     const recorded = yield* orFileFailed(readServerPid(sessionsDir, port)).pipe(
       Effect.catchTag("BrokenServerPid", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
     );
-    const reported = yield* requestServer(port, "GET", "/server", ServerIdentity).pipe(
+    const reported = yield* requestServer(port, ServerRoutes.server).pipe(
       Effect.map((identity): number | undefined => identity.pid),
       Effect.catchTags({
         ServerUnreachable: () => Effect.succeed(undefined),
@@ -1116,7 +1110,7 @@ const serverStop = Command.make(
         });
       case "terminate": {
         // 止めるとセッションは書き出されずに終わるので、進行中なら断る
-        const { status } = yield* requestServer(port, "GET", "/session/status", IntakeStatus);
+        const { status } = yield* requestServer(port, ServerRoutes.sessionStatus);
         if (status !== "none") return yield* new CommandFailed({ message: "セッションが進行中です。先に cli stop で書き出してから、もう一度 server stop を打ってください" });
         yield* processes.terminate(plan.pid);
         const exited = yield* processes.alive(plan.pid).pipe(

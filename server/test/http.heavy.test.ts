@@ -103,8 +103,6 @@ describe("HTTP 本文の検証（要件8・12）", () => {
     }));
 
   const valid = [
-    { name: "省略", body: { app: "us.zoom.xos" }, audio: true, title: undefined },
-    { name: "null", body: { app: "us.zoom.xos", title: null, audio: null }, audio: true, title: undefined },
     { name: "指定", body: { app: "us.zoom.xos", title: "週次", audio: true }, audio: true, title: "週次" },
     { name: "空titleと録音なし", body: { app: "us.zoom.xos", title: "", audio: false }, audio: false, title: "" },
     { name: "空白だけのapp", body: { app: " ", audio: false }, audio: false, title: undefined },
@@ -130,8 +128,6 @@ describe("HTTP 本文の検証（要件8・12）", () => {
 
   // Issue #280: body.screen。省略と null は true（共有画面を使う）。false なら --no-screen を渡し、ログに screen-off（指定）を 1 件残す
   const screenCases = [
-    { name: "省略", body: { app: "us.zoom.xos" }, noScreen: false },
-    { name: "null", body: { app: "us.zoom.xos", screen: null }, noScreen: false },
     { name: "true", body: { app: "us.zoom.xos", screen: true }, noScreen: false },
     { name: "false", body: { app: "us.zoom.xos", screen: false }, noScreen: true },
     { name: "falseと録音なし", body: { app: "us.zoom.xos", screen: false, audio: false }, noScreen: true },

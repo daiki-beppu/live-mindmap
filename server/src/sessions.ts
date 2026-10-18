@@ -876,14 +876,16 @@ export class Sessions extends Context.Service<Sessions, {
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         // 録画からのセッションは、ヘルパーが読み終えるまで動いていて、途切れも起動し直しもない
-        if (current.kind === "recorded") return { status: "running", dir: current.recorded.dir, restarts: 0, lastInterruptedAt: undefined };
+        if (current.kind === "recorded") return { status: "running", dir: current.recorded.dir, restarts: 0 };
         if (current.kind !== "live") return { status: "none" };
         const { live } = current;
+        const lastInterruptedAt = yield* Ref.get(live.lastInterruptedAt);
+        // 応答の Schema は値の無い欄を null にして書き出すので、途切れていなければ欄ごと付けない
         return {
           status: yield* Ref.get(live.intake),
           dir: live.dir,
           restarts: yield* Ref.get(live.restarts),
-          lastInterruptedAt: yield* Ref.get(live.lastInterruptedAt),
+          ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),
         };
       });
 
