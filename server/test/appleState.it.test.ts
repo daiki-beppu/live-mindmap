@@ -5,7 +5,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Exit, Layer, Schema, Scope } from "effect";
 import { LogEvent, restoreState, type DiffUpdateFrame } from "../src/core/index.ts";
-import { EXPORT_FILE, LOG_FILE, openRecordedSession } from "../src/sessionFiles.ts";
+import { EXPORT_FILE, LOG_FILE, openLoggedSession } from "../src/sessionFiles.ts";
 import { appleModel, fakeAppleLifecycle, waitForDiffState, waitUntil } from "./fixtures/appleLifecycle.ts";
 
 describe("Apple の状態遷移と保存ログ", () => {
@@ -16,7 +16,7 @@ describe("Apple の状態遷移と保存ログ", () => {
     const fake = yield* fakeAppleLifecycle([{}, { holdReady: true }]);
     const layer = yield* fake.prepare.pipe(Scope.provide(scope));
     const frames: DiffUpdateFrame[] = [];
-    const { session } = yield* openRecordedSession({ dir, model: appleModel, title: "定例", publish: () => Effect.void,
+    const { session } = yield* openLoggedSession({ dir, model: appleModel, title: "定例", publish: () => Effect.void,
       diffUpdate: (frame) => Effect.sync(() => { frames.push(frame); }),
     }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, layer)), Scope.provide(scope));
     const readLines = Effect.promise(() => readFile(join(dir, LOG_FILE), "utf8")).pipe(

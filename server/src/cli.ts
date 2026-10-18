@@ -89,7 +89,7 @@ import {
   createSessionDir,
   EXPORT_FILE,
   LOG_FILE,
-  openRecordedSession,
+  openLoggedSession,
   SCREENS_DIR,
   reviewVariants,
   reviewWarning,
@@ -132,7 +132,7 @@ const typesOf = (events: readonly { readonly fields: { readonly type: { readonly
 const hasLoggedType = (types: ReadonlySet<string>) => (event: unknown): event is { readonly type: string } =>
   Predicate.isObject(event) && "type" in event && Predicate.isString(event.type) && types.has(event.type);
 // 録音済みセッションを読むとき（題名・発言・画面）
-const isRecordedEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]));
+const isReplayedEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]));
 // evaluate が読むとき（題名・発言・差分）
 const isEvalEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, DiffEvent]));
 
@@ -359,7 +359,7 @@ const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof
 // セッションのフォルダ（log.jsonl を持つフォルダ）のログから、再生に渡す題名・発言・共有画面の変化を読む。
 // 流すのは start（題名）・remark・screen・screen-off だけで、ほかの行（intake-*・diff など）は読み飛ばす。
 // 画像は元のフォルダの screens/ から、入れる直前に読む。変化の時刻はログの start をそのまま使う
-const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: string) {
+const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
   const logPath = join(dir, LOG_FILE);
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
@@ -369,7 +369,7 @@ const loadRecordedSession = Effect.fn("loadRecordedSession")(function* (dir: str
   const vocabulary: (typeof VocabEvent)["Type"][] = [];
   const screens: PlaybackScreen<CommandFailed>[] = [];
   for (const [i, event] of events.entries()) {
-    if (!isRecordedEvent(event)) continue;
+    if (!isReplayedEvent(event)) continue;
     const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(
       Effect.mapError((e) => new BrokenLogLine({ line: lines[i]?.no ?? 1, reason: decodeReason(e) })),
     );
@@ -426,8 +426,8 @@ const recordPlayback = Effect.fn("recordPlayback")(function* (
 ) {
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-  const { session, appendLog } = yield* openRecordedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
-  // 記録したセッションのフォルダを再生するときだけ、今の規則で直し直す（読みのサブコマンドもモデルも呼ばない）
+  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
+  // 過去のセッションのフォルダを再生するときだけ、今の規則で直し直す（読みのサブコマンドもモデルも呼ばない）
   const replaying = input.vocabulary === undefined
     ? session
     : yield* withReplayCorrection(session, {
@@ -482,7 +482,7 @@ const play = Command.make(
           return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
         }
         // セッションのフォルダはログを再生の前にすべて読む。壊れていれば何も始めずに失敗する（画像は入れる直前に読む）
-        const recorded = folder ? yield* loadRecordedSession(resolve(transcript)) : undefined;
+        const recorded = folder ? yield* loadSessionLog(resolve(transcript)) : undefined;
         // 共有画面は再生を始める前にすべて読み、JPEG にする。読めなければ何も始めずに失敗する
         const screens: Iterable<PlaybackScreen<CommandFailed>> = recorded
           ? recorded.screens
@@ -928,7 +928,7 @@ const review = Command.make(
 
 // 元ログを選んだモデルで再生し、新しいランのフォルダを返す（updater の layer などは呼び出し側の Scope が持つ）
 const replayedRunDir = Effect.fnUntraced(function* (source: string, plan: UpdatePlan) {
-  const recorded = yield* loadRecordedSession(resolve(source));
+  const recorded = yield* loadSessionLog(resolve(source));
   const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
   yield* writeWarnings(notice === undefined ? [] : [notice]);
   return (yield* recordPlayback({ ...recorded, realtime: false }, planModel(plan), () => Effect.void).pipe(

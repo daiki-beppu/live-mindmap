@@ -507,7 +507,7 @@ describe("play --realtime で変化を時刻どおりに待つ", () => {
     }), 30_000);
 });
 
-// Issue #644: 記録したセッションを再生すると、ログの vocab の行・screen の lines・remark の raw と words から、今の規則で発言を直し直す。
+// Issue #644: 過去のセッションのフォルダを再生すると、ログの vocab の行・screen の lines・remark の raw と words から、今の規則で発言を直し直す。
 // 読みのサブコマンド（Readings）も読みを聞くモデルも呼ばない。words の無い古い発言は直さない。
 describe("play <セッションのフォルダ>: 今の規則で発言を直し直す", () => {
   type Token = readonly [surface: string, romaji: string];

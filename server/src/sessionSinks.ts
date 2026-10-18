@@ -7,7 +7,7 @@ import { MapCapture } from "./capture.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
-import { createSessionDir, openRecordedSession, writeExportsAndCapture } from "./sessionFiles.ts";
+import { createSessionDir, openLoggedSession, writeExportsAndCapture } from "./sessionFiles.ts";
 import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
@@ -185,7 +185,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               yield* speakerNames(speakerNamesFrame(next));
             })));
           // relay を先に作る。context は session と settling ができた後（onDiff・途中結果が走るとき）にだけ評価されるので、Effect.suspend で遅らせる
-          // （onDiff は diff の反映後にしか呼ばれず、openRecordedSession が返る前には呼ばれない）
+          // （onDiff は diff の反映後にしか呼ばれず、openLoggedSession が返る前には呼ばれない）
           // 字幕用の表（発言の id → 補正前の本文・補正前の位置の wordTimes・置き換え）。Remark には入れず、未反映の発言を盤へ渡すときだけ上書きする。
           // 字幕用の本文と位置は、表示済みの吹き出しの境目を持つ盤が作る
           const captionTexts = yield* Ref.make<ReadonlyMap<string, { readonly text: string; readonly wordTimes: readonly WordTime[]; readonly replacements: readonly Replacement[] }>>(new Map());
@@ -236,7 +236,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               : Effect.andThen(notifyFrame, frame.state === null ? Effect.void : pauseLock.withPermit(
                   Effect.gen(function* () {
                     const state = frame.state;
-                    // session は openRecordedSession が返した後に決まる。一時停止の状態が書かれるのは、返った後だけ（開いた直後は running）
+                    // session は openLoggedSession が返した後に決まる。一時停止の状態が書かれるのは、返った後だけ（開いた直後は running）
                     const retryAt = state?.status === "paused" ? yield* Effect.suspend(() => session.nextRetryAt) : undefined;
                     const before = yield* Ref.get(pauseState);
                     const next = state?.status === "paused" && retryAt !== undefined ? { reason: state.reason, retryAt } : undefined;
@@ -246,8 +246,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                     yield* recorded.paused(next);
                   }),
                 ));
-          // 記録つきセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
-          const { session, appendLog: appendRecordedLog } = yield* openRecordedSession({
+          // ログを書くセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
+          const { session, appendLog: appendRecordedLog } = yield* openLoggedSession({
             dir,
             title,
             logShiftMs,

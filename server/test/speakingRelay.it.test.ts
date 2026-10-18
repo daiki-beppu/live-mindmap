@@ -8,7 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { type DiffInput, type DiffOutput, type Op, type Remark, type Session, type CaptionsFrame, type Track } from "../src/core/index.ts";
-import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
+import { createSessionDir, openLoggedSession } from "../src/sessionFiles.ts";
 import { createSpeakingRelay, SPEAKING_INTERVAL_MS } from "../src/speakingRelay.ts";
 import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 import { partialOf, remark } from "./fixtures/speakingRelay.ts";
@@ -27,7 +27,7 @@ const settleUntil = (condition: () => boolean) =>
     while (!condition() && Date.now() < deadline) yield* Effect.yieldNow;
   });
 
-// 同じ Session・同じ relay・同じ記録つきセッションの配線（openRecordedSession の onDiff）の上で、変化の前後を続けて観測する
+// 同じ Session・同じ relay・同じログを書くセッションの配線（openLoggedSession の onDiff）の上で、変化の前後を続けて観測する
 describe("仮の文字（未反映の発言 + 途中結果）が、反映で消える範囲", () => {
   type Call = { input: DiffInput; resolve: (ops: Op[]) => void; reject: (e: Error) => void };
 
@@ -48,7 +48,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
     let relay: Effect.Success<ReturnType<typeof createSpeakingRelay>> | undefined;
     const sessionsDir = yield* Effect.promise(() => mktempSessionsDir());
     const dir = yield* createSessionDir(sessionsDir).pipe(Effect.provide(NodeFileSystem.layer));
-    const started = yield* openRecordedSession({ model: defaultClaude,
+    const started = yield* openLoggedSession({ model: defaultClaude,
       dir,
       title: "定例",
       publish: () =>

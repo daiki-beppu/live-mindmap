@@ -7,7 +7,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, DateTime, Effect, Exit, Layer } from "effect";
 import type { DiffInput, IntakeLogEvent, Remark } from "../src/core/index.ts";
-import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
+import { createSessionDir, openLoggedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 // セッションのフォルダへの書き込み（log.jsonl の追記・export.json・フォルダ名）の契約。
@@ -29,7 +29,7 @@ const open = Effect.fn("open")(function* () {
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
   const published: number[] = [];
-  const opened = yield* openRecordedSession({ model: defaultClaude, dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot.nodes.length)) }).pipe(
+  const opened = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot.nodes.length)) }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -92,7 +92,7 @@ describe("createSessionDir", () => {
     }).pipe(Effect.scoped));
 });
 
-describe("openRecordedSession のログと export.json", () => {
+describe("openLoggedSession のログと export.json", () => {
   it.effect("作成直後に、start の行（at・type・title）と、そのセッションのマップの export.json がある", () =>
     Effect.gen(function* () {
       const before = Date.now();
@@ -113,7 +113,7 @@ describe("openRecordedSession のログと export.json", () => {
       const shift = -3 * 24 * 3_600_000;
       const root = yield* sessionsDir;
       const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
-      const open = yield* openRecordedSession({ model: defaultClaude, dir, title: "定例", logShiftMs: shift, publish: () => Effect.void }).pipe(
+      const open = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", logShiftMs: shift, publish: () => Effect.void }).pipe(
         Effect.provide(Layer.mergeAll(updaterLayer(() => Effect.succeed({ ops: [] })), NodeFileSystem.layer)),
       );
       const before = Date.now();
