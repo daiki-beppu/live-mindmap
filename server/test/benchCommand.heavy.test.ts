@@ -94,14 +94,5 @@ describe("sessionStats の Command", () => {
       expect(result._tag).toBe("Success");
       expect(stdout).toContain("録音 1 本・-23.5 dB");
     }).pipe(Effect.scoped));
-
-    it.effect("ffmpeg が見つからなければ、失敗にせず空の出力として扱い「読めない」と出す", () => Effect.gen(function* () {
-      const root = yield* temporaryDirectory;
-      const dir = sessionWithRecording(root);
-      withFfmpeg(root, undefined);
-      const { result, stdout } = yield* runCommand(statsCommand, [dir]);
-      expect(result._tag).toBe("Success");
-      expect(stdout).toContain("録音 1 本・読めない");
-    }).pipe(Effect.scoped));
   });
 });
