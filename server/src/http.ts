@@ -343,8 +343,8 @@ export const portOf = (address: NetAddress.SocketAddress): Effect.Effect<number>
 // close() の所要時間がその接続に縛られる（ISSUE-2）。close ハンドシェイクは同一プロセス内の 1 往復
 // （数十 ms 未満）で終わるのが通常なので、ヘルパーの SIGTERM→SIGKILL の猶予
 // （helpers.ts の HELPER_STOP_TIMEOUT_MS=5,000ms）と同程度を上限にすれば、正常系を妨げずに
-// 応答しない接続を打ち切れる
-const WS_CLOSE_TIMEOUT_MS = 3_000;
+// 応答しない接続を打ち切れる。既定は 3,000ms で、テストだけが短い値を与える（layerNodeServer が構築時に 1 回読む）
+export const WS_CLOSE_TIMEOUT_MS = Context.Reference("live-mindmap/WsCloseTimeoutMs", { defaultValue: (): number => 3_000 });
 
 // /ws の配信への ping の間隔の既定（ms）。tunnel の無通信の切断より十分短い
 export const FEED_PING_INTERVAL_MS = 30_000;
@@ -368,8 +368,8 @@ const pingingWebSocket = (intervalMs: number) =>
 // WebSocketServer のオプションとしてそのまま受け取り、各サーバー側 WebSocket の _closeTimeout へ伝える
 // （ws/lib/websocket-server.js の completeUpgrade → new this.options.WebSocket(...) で options ごと渡る）。
 // 型定義の遅れを、この 1 フィールドだけの型アサーションで補う（any にはしない）
-const websocketOptions = (pingIntervalMs: number) =>
-  ({ closeTimeout: WS_CLOSE_TIMEOUT_MS, WebSocket: pingingWebSocket(pingIntervalMs) }) as NodeHttpServer.Options["websocket"];
+const websocketOptions = (pingIntervalMs: number, closeTimeoutMs: number) =>
+  ({ closeTimeout: closeTimeoutMs, WebSocket: pingingWebSocket(pingIntervalMs) }) as NodeHttpServer.Options["websocket"];
 
 // 127.0.0.1 で待ち受ける。port が 0 なら空きポート。
 // NodeHttpServer は Node の http.Server を引数に取るので、node:http への参照はここ 1 か所に閉じる。
@@ -377,7 +377,10 @@ const websocketOptions = (pingIntervalMs: number) =>
 // その後に待受けを閉じる。既定の猶予つき停止は、接続が残っている間 20 秒待ってから諦めるため、
 // 終了が 20 秒遅れる（close() は時間内に戻ることを既存のテストが確かめている）
 const layerNodeServer = (port: number, pingIntervalMs: number) =>
-  NodeHttpServer.layer(createServer, { port, host: "127.0.0.1", disablePreemptiveShutdown: true, websocket: websocketOptions(pingIntervalMs) });
+  Layer.unwrap(
+    Effect.map(WS_CLOSE_TIMEOUT_MS, (closeTimeoutMs) =>
+      NodeHttpServer.layer(createServer, { port, host: "127.0.0.1", disablePreemptiveShutdown: true, websocket: websocketOptions(pingIntervalMs, closeTimeoutMs) })),
+  );
 
 // 配信（Viewers）と待受け（HttpServer）の Layer。Scope を閉じると待受けが閉じる
 export const layerListener = (port: number, pingIntervalMs: number = FEED_PING_INTERVAL_MS): Layer.Layer<Viewers | HttpServer.HttpServer, HttpServerError.ServeError> =>

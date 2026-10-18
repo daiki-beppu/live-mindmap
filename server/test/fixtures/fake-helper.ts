@@ -42,7 +42,7 @@ type Script = {
 const script = JSON.parse(readFileSync(scriptPath, "utf8")) as Script;
 // 書き終わった録音の内容。テストは、これが全部入っていることで「最後まで書かれた」と判断する
 const AUDIO_COMPLETE = "complete";
-const AUDIO_FLUSH_MS = 300;
+const AUDIO_FLUSH_MS = 50;
 // `mix` が --out に書く小さなバイト列（m4a ではないが、呼び出し側は中身を見ない）
 const MIX_OUTPUT = "fake-mix-output";
 const record = (entry: object) => appendFileSync(recordPath, JSON.stringify(entry) + "\n");

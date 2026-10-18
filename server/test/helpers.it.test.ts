@@ -8,7 +8,7 @@ import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { ChildProcessSpawner, type ChildProcess } from "effect/process";
 import { TestClock } from "effect/testing";
 import { WebSocketServer } from "ws";
-import { HELPER_CONTROL_TOKEN_ENV, Helpers } from "../src/helpers.ts";
+import { HELPER_CONTROL_TOKEN_ENV, HELPER_STOP_TIMEOUT_MS, Helpers } from "../src/helpers.ts";
 
 describe("E2E と IT 用の fake-helper", () => {
   it.live("C7: check はマイク・画面収録が許可済みの一行 JSON を返し正常終了する", () => Effect.gen(function* () {
@@ -33,7 +33,7 @@ describe("E2E と IT 用の fake-helper", () => {
   }).pipe(Effect.scoped));
 });
 
-// 接続の再試行は Schedule.spaced("200 millis")（CT-RESTART-DECISION）。
+// 接続の再試行は 10ms から始めて 2 倍ずつ伸び、200ms で頭打ちになる指数の Schedule（CT-RESTART-DECISION）。
 // 子プロセスだけを偽物にし、ヘルパーが待ち受けるはずのポートに「接続を数えて切る」サーバーを置いて、再試行の間隔を TestClock で観測する
 const realDelay = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -75,8 +75,8 @@ const countingSpawner = (counter: { connections: number; spawned?: ChildProcess.
     ),
   );
 
-describe("Helpers の接続の再試行（Schedule.spaced 200ms）", () => {
-  it.effect("接続できない間は、200ms 刻みで再試行する", () =>
+describe("Helpers の接続の再試行（10ms から 200ms で頭打ちになる指数）", () => {
+  it.effect("接続できない間は、10・20・40・80・160ms と伸ばし、200ms で頭打ちにして再試行する", () =>
     Effect.gen(function* () {
       const counter = { connections: 0 };
       const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(countingSpawner(counter)))));
@@ -91,16 +91,49 @@ describe("Helpers の接続の再試行（Schedule.spaced 200ms）", () => {
       const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run"], stopRequested)));
       yield* waitFor(1);
 
-      yield* TestClock.adjust(199);
-      yield* realDelay(100);
-      expect(counter.connections).toBe(1); // 200ms 未満では再試行しない
-
-      yield* TestClock.adjust(1);
-      yield* waitFor(2);
-      yield* TestClock.adjust(200);
-      yield* waitFor(3);
+      // 各間隔の 1ms 前では再試行せず、ちょうどで 1 回だけ再試行する。
+      // 200ms を 2 回続けるのは、320ms へ伸びる（頭打ちがない）誤りと、200ms の後に止まる誤りを落とすため
+      let connections = 1;
+      for (const interval of [10, 20, 40, 80, 160, 200, 200, 200]) {
+        yield* TestClock.adjust(interval - 1);
+        yield* realDelay(50);
+        expect(counter.connections).toBe(connections);
+        yield* TestClock.adjust(1);
+        connections++;
+        yield* waitFor(connections);
+      }
 
       yield* Fiber.interrupt(fiber);
+    }));
+});
+
+describe("Helpers の停止の上限（HELPER_STOP_TIMEOUT_MS）", () => {
+  const launchAndStop = (limit: number) =>
+    Effect.gen(function* () {
+      const counter = { connections: 0, spawned: [] as ChildProcess.StandardCommand[], kills: [] as unknown[] };
+      const layer = Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(countingSpawner(counter)));
+            const helpers = yield* Helpers.pipe(Effect.provide(layer), Effect.provideService(HELPER_STOP_TIMEOUT_MS, limit));
+      const stopRequested = yield* Deferred.make<void>();
+      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run"], stopRequested)));
+      for (let i = 0; i < 100 && counter.connections < 1; i++) yield* realDelay(20);
+      yield* Deferred.succeed(stopRequested, undefined);
+      for (let i = 0; i < 100 && counter.kills.length < 1; i++) yield* realDelay(20);
+      yield* Fiber.interrupt(fiber);
+      return { spawnedWith: (counter.spawned[0]!.options as { forceKillAfter?: number }).forceKillAfter, kills: counter.kills };
+    });
+
+  it.effect("上限を与えると、起動と停止の kill の forceKillAfter がその値になる", () =>
+    Effect.gen(function* () {
+      const result = yield* launchAndStop(1_234);
+
+      expect(result.spawnedWith).toBe(1_234);
+      expect(result.kills).toEqual([{ forceKillAfter: 1_234 }]);
+    }));
+
+  // 上書きしない構築で spawn と kill が 5_000 になることは、下の「stop は、まず SIGTERM…」が見ている
+  it.effect("上書きしない（製品と同じ）と、Reference の既定値は 5_000ms", () =>
+    Effect.gen(function* () {
+      expect(yield* HELPER_STOP_TIMEOUT_MS).toBe(5_000);
     }));
 });
 

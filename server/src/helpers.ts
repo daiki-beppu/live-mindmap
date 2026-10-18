@@ -9,8 +9,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HELPER_RUN_STDERR_TAIL_LINES, STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
 import { openHelperSocket } from "./helperSocket.ts";
 
-// SIGTERM を送ってから、SIGKILL に切り替えるまでの待ち時間
-export const HELPER_STOP_TIMEOUT_MS = 5_000;
+// SIGTERM を送ってから、SIGKILL に切り替えるまでの待ち時間（ms。既定 5,000。テストだけが短い値を与える）。Layer の構築時に 1 回読む
+export const HELPER_STOP_TIMEOUT_MS = Context.Reference("live-mindmap/HelperStopTimeoutMs", { defaultValue: (): number => 5_000 });
 
 // ヘルパーの終わり方。code で終われば signal は null、シグナルで落ちれば code が null
 export type HelperExitInfo = { code: number | null; signal: string | null };
@@ -145,8 +145,11 @@ const freePort = Effect.callback<number, HelperLaunchFailure>((resume) => {
   });
 });
 
+const connectRetry = Schedule.min([Schedule.exponential("10 millis"), Schedule.spaced("200 millis")]);
+
 const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const stopTimeoutMs = yield* HELPER_STOP_TIMEOUT_MS;
 
   // ヘルパーの list の失敗は予期しない失敗（500）。HTTP の側が文面を伏せずに返す
   const listFailed = (reason: string) => Effect.die(new HelperListFailure({ message: reason }));
@@ -161,13 +164,13 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   ).pipe(Effect.catchTag("PlatformError", (error) => listFailed(`ヘルパーの list が失敗しました: ${error.message}`)));
 
   const check = Effect.fnUntraced(function* (noScreen: boolean) {
-    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["check", ...(noScreen ? ["--no-screen"] : [])], { forceKillAfter: HELPER_STOP_TIMEOUT_MS });
+    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["check", ...(noScreen ? ["--no-screen"] : [])], { forceKillAfter: stopTimeoutMs });
     if (code !== 0) return yield* new HelperCheckFailure({ message: `ヘルパーの check が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
     return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(noScreen ? HelperCheckNoScreenSchema : HelperCheckSchema))(stdout);
   }, Effect.scoped, Effect.mapError((error) => new HelperCheckFailure({ message: error.message })));
 
   const creationDate = Effect.fnUntraced(function* (file: string) {
-    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["creation-date", "--file", file], { forceKillAfter: HELPER_STOP_TIMEOUT_MS });
+    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["creation-date", "--file", file], { forceKillAfter: stopTimeoutMs });
     if (code !== 0) return yield* new HelperCreationDateFailure({ message: `ヘルパーの creation-date が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
     const decoded = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(HelperCreationDateSchema))(stdout);
     return decoded.creationDate;
@@ -175,7 +178,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
 
   const installSpeechJa = Stream.unwrap(Effect.gen(function* () {
     const handle = yield* spawner.spawn(ChildProcess.make(helper.command, [...helper.args, "install-speech-ja"], {
-      stdin: "ignore", stdout: "ignore", forceKillAfter: HELPER_STOP_TIMEOUT_MS,
+      stdin: "ignore", stdout: "ignore", forceKillAfter: stopTimeoutMs,
     }));
     const scope = yield* Effect.scope;
     const exited = yield* Effect.forkIn(handle.exitCode, scope);
@@ -208,7 +211,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
           stdout: "ignore",
           env: { [HELPER_CONTROL_TOKEN_ENV]: controlToken },
           extendEnv: true,
-          forceKillAfter: HELPER_STOP_TIMEOUT_MS,
+          forceKillAfter: stopTimeoutMs,
         }),
       )
       .pipe(Effect.mapError((error) => new HelperLaunchFailure({ stderrTail: [error.message], exit: { code: null, signal: null } })));
@@ -243,13 +246,14 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       scope,
     );
 
-    const stop = handle.kill({ forceKillAfter: HELPER_STOP_TIMEOUT_MS }).pipe(Effect.ignore);
+    const stop = handle.kill({ forceKillAfter: stopTimeoutMs }).pipe(Effect.ignore);
     // 「止めて」の印が立ったら、接続待ちの間でも止める。止まれば下の接続待ちは HelperLaunchFailure で終わる
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), stop), scope);
 
-    // ヘルパーの準備（モデルやマイクの許可）には時間がかかることがあるので、子プロセスが生きている間は時間切れなしで再試行する
+    // ヘルパーの準備（モデルやマイクの許可）には時間がかかることがあるので、子プロセスが生きている間は時間切れなしで再試行する。
+    // 間隔は 10ms から倍々に伸ばし、200ms で頭打ちにする（Schedule.min は短い方の待ちを使い、spaced が止まらないので終わらない）
     const connect = openHelperSocket(`ws://127.0.0.1:${port}`).pipe(
-      Effect.retry(Schedule.spaced("200 millis")),
+      Effect.retry(connectRetry),
       Effect.catchTag("HelperSocketError", (error) => Effect.die(error)),
     );
     const helperEnded = Effect.gen(function* () {

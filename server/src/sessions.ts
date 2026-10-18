@@ -170,6 +170,7 @@ export class Sessions extends Context.Service<Sessions, {
       const sessionsDir = yield* SessionsDir;
       const deps = yield* ManagedDeps;
       const serverScope = yield* Effect.scope;
+      const stopTimeoutMs = yield* HELPER_STOP_TIMEOUT_MS;
       const state = yield* Ref.make<State>({ kind: "idle", installations: 0 });
       const reserveDeps = Effect.acquireRelease(
         Effect.gen(function* () {
@@ -803,7 +804,7 @@ export class Sessions extends Context.Service<Sessions, {
           // 連鎖の終わりを待つ。close の前に届いた発言は、すべて読み終えて push 済みになる
           const end = fiber === undefined ? { exit: undefined } : yield* Fiber.join(fiber);
           if (end.exit?.signal === "SIGKILL") {
-            yield* note(`ヘルパーが SIGTERM から ${HELPER_STOP_TIMEOUT_MS}ms 経っても終了しないので、SIGKILL で止めます\n`);
+            yield* note(`ヘルパーが SIGTERM から ${stopTimeoutMs}ms 経っても終了しないので、SIGKILL で止めます\n`);
             if (live.audio) {
               // その時点で動いていた起動回の録音ファイル名を示す。起動し直していれば相手-2.m4a 等になる
               const names = live.sink.audioFileNames(yield* Ref.get(live.attempt)).join("・");

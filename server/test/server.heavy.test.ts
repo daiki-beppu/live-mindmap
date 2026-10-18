@@ -44,7 +44,7 @@ type HelperRecord =
   | { type: "signal"; signal: string }
   | { type: "unexpectedExit"; code?: number; signal?: string };
 
-const setup = (initial: Partial<Script> = {}) =>
+const setup = (initial: Partial<Script> = {}, stopTimeoutMs?: number) =>
   Effect.gen(function* () {
   const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-")));
   const sessionsDir = join(dir, "sessions");
@@ -80,7 +80,11 @@ const setup = (initial: Partial<Script> = {}) =>
   const stderr: string[] = [];
   const stderrConsole: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
   const layers = realLayers(options, fakeExportServices());
-  const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) }).pipe(Effect.provideService(Console.Console, stderrConsole));
+  const server = yield* startedServer(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) }).pipe(
+    Effect.provideService(Console.Console, stderrConsole),
+    // 停止の上限を短く与えるのは、時間切れを確かめるテストだけ。与えなければ製品と同じ既定値
+    (e) => (stopTimeoutMs === undefined ? e : Effect.provideService(e, HELPER_STOP_TIMEOUT_MS, stopTimeoutMs)),
+  );
 
   const out: string[] = [];
   const consoleService: Console.Console = {
@@ -172,13 +176,15 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
       expect(JSON.parse(yield* cli("export", "--format", "json"))).toEqual(JSON.parse(readFileSync(paths[1]!, "utf8")));
     }));
 
-  // 実時間で HELPER_STOP_TIMEOUT_MS（5 秒）待つ唯一の本物の時間のテスト（order.md:47, 65。forceKillAfter は
-  // Node のタイマーで測るので TestClock では進まない）。stop・close の両方の経路を 1 本にまとめる（order.md:42）
+  // 実時間で HELPER_STOP_TIMEOUT_MS を待つ唯一の本物の時間のテスト（forceKillAfter は Node のタイマーで測るので
+  // TestClock では進まない）。上限はテストだけ短い値を与え、経過時間を「上限以上」（待たずに kill する誤りを落とす）と
+  // 「上限 + 2 秒未満」（既定の 5 秒のまま待つ誤りを落とす）で挟む。stop・close の両方の経路を 1 本にまとめる
+  const STOP_LIMIT_MS = 400;
   it.live(
-    "SIGTERM を無視するヘルパーを、stop でも close でも 5 秒後に SIGKILL で止める",
+    "SIGTERM を無視するヘルパーを、stop でも close でも与えた上限の後に SIGKILL で止める",
     () =>
       Effect.gen(function* () {
-        const { cli, calls, records, stderr } = yield* setup({ ignoreSigterm: true });
+        const { cli, calls, records, stderr } = yield* setup({ ignoreSigterm: true }, STOP_LIMIT_MS);
         yield* cli("start", "--app", "us.zoom.xos", "--title", "週次");
         yield* waitFor(() => expect(calls.flatMap((c) => c.fresh)).toHaveLength(1));
         const run = records().find((r) => r.type === "run");
@@ -186,15 +192,18 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
 
         const startedAt = Date.now();
         const stdout = yield* cli("stop");
-        expect(Date.now() - startedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
+        const stopElapsed = Date.now() - startedAt;
+        expect(stopElapsed).toBeGreaterThanOrEqual(STOP_LIMIT_MS);
+        expect(stopElapsed).toBeLessThan(STOP_LIMIT_MS + 2_000);
         expect(stdout.split("\n").filter((l) => l !== "")).toHaveLength(5);
         expect(() => process.kill(run.pid, 0)).toThrow(); // SIGKILL で止まっている
-        expect(stderr.some((line) => line.includes("SIGKILL"))).toBe(true);
+        // 標準エラーの文面が示す上限は、実際に使われた上限と同じ
+        expect(stderr.some((line) => line.includes("SIGKILL") && line.includes(`${STOP_LIMIT_MS}ms`))).toBe(true);
         // 録音していたので、録音の書き終わりを確認できなかったことも標準エラーに残す
         expect(stderr.some((line) => line.includes("録音の書き終わりを確認できない"))).toBe(true);
 
-        // close の経路も同じ時間内に戻り、子プロセスを残さない
-        const { server: server2, cli: cli2, records: records2 } = yield* setup({ ignoreSigterm: true });
+        // close の経路も同じ上限で戻り、子プロセスを残さない
+        const { server: server2, cli: cli2, records: records2 } = yield* setup({ ignoreSigterm: true }, STOP_LIMIT_MS);
         yield* cli2("start", "--app", "us.zoom.xos");
         yield* waitFor(() => expect(records2().filter((r) => r.type === "connection")).toHaveLength(1));
         const run2 = records2().find((r) => r.type === "run");
@@ -203,10 +212,12 @@ describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・
 
         yield* server2.close;
 
-        expect(Date.now() - closeStartedAt).toBeLessThan(HELPER_STOP_TIMEOUT_MS + 3_000);
+        const closeElapsed = Date.now() - closeStartedAt;
+        expect(closeElapsed).toBeGreaterThanOrEqual(STOP_LIMIT_MS);
+        expect(closeElapsed).toBeLessThan(STOP_LIMIT_MS + 2_000);
         expect(() => process.kill(run2.pid, 0)).toThrow();
       }),
-    2 * HELPER_STOP_TIMEOUT_MS + 10_000,
+    20_000,
   );
 
   it.live("サーバーが終わるとき、起動していたヘルパーの子プロセスを（プロセスグループごと）残さない", () =>
