@@ -4,8 +4,8 @@ import { createServer, type ViteDevServer } from "vite";
 import type { CaptionsFrame, Snapshot } from "../../server/src/core/index.ts";
 import { spokenBubble } from "./fixtures/captions.ts";
 import { buildReviewTimeline, CAPTION_SECONDS, snapshotAt } from "../src/reviewTimeline.ts";
-import { LOG_PATH, PAGE_VIEWPORT, readFoldkitViewport } from "./reviewPage.ts";
-import type { Browser, Page } from "./browser.ts";
+import { LOG_PATH, readFoldkitViewport } from "./reviewPage.ts";
+import type { BrowserContext, Page } from "./browser.ts";
 
 // 会議中の画面の heavy IT（Issue #829。meeting.mount.heavy.test.ts）が共有する道具。
 // テストではなく、web の Vite の開発サーバーの起動・`/ws` の frame を送るページの開き方・ビューポートの読み方・題材の frame だけを置く。
@@ -96,13 +96,11 @@ export async function connectFrames(page: Page, frames: readonly unknown[]): Pro
 export type OpenMeetingOptions = {
   // 接続した時点で server が先に送る frame
   frames: readonly unknown[];
-  // ページの大きさ。省略すると PAGE_VIEWPORT（1280×801、Mac の幅）
-  viewport?: { width: number; height: number };
 };
 
 // 会議中の画面を開き、ノードが出て画面が使える状態になるまで待って返す
-export async function openMeetingPage(browser: Browser, server: MeetingServer, { frames, viewport = PAGE_VIEWPORT }: OpenMeetingOptions): Promise<Page> {
-  const context = await browser.newContext({ viewport });
+// ページの大きさは context の viewport（withContext に渡す）で決まる
+export async function openMeetingPage(context: BrowserContext, server: MeetingServer, { frames }: OpenMeetingOptions): Promise<Page> {
   const page = await context.newPage();
   await connectFrames(page, frames);
   await page.goto(server.url);
