@@ -133,7 +133,7 @@ export const createSessionDir = Effect.fnUntraced(function* (sessionsDir: string
   }
 });
 
-export type RecordedSessionOptions = {
+export type LoggedSessionOptions = {
   model: ExecutableModel;
   dir: string; // createSessionDir で作ったセッションのフォルダ
   title?: string; // 省略したときは、セッションのフォルダ名（開始時刻）
@@ -149,7 +149,7 @@ export type RecordedSessionOptions = {
 // appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
 // session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
 // ログが書けないとき（FileSystem の失敗）は、そのまま defect にする。
-export const openRecordedSession = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, onSpeakerNames, model }: RecordedSessionOptions) {
+export const openLoggedSession = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, onSpeakerNames, model }: LoggedSessionOptions) {
   // SessionLog のメソッドの R は空なので、FileSystem はここで 1 回だけ受け取ってクロージャで使う
   const fs = yield* FileSystem.FileSystem;
   // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。

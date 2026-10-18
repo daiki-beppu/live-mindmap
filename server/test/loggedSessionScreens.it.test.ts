@@ -7,10 +7,10 @@ import { describe, expect, it } from "@effect/vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 import type { DiffInput, Remark, ScreenChange } from "../src/core/index.ts";
-import { createSessionDir, openRecordedSession } from "../src/sessionFiles.ts";
+import { createSessionDir, openLoggedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
-// ログを書く配線（openRecordedSession。play もライブも同じ）が、共有画面の画像をセッションのフォルダの screens/ に、
+// ログを書く配線（openLoggedSession。play もライブも同じ）が、共有画面の画像をセッションのフォルダの screens/ に、
 // 受け取ったバイト列のまま書き、log.jsonl に screen の行を { at, type, start, image } で書くこと。
 // 中核（Session）はファイルに書かない（ADR 0003）ので、書くのはこの配線だけ。
 
@@ -28,14 +28,14 @@ const open = Effect.fn("open")(function* () {
   const root = yield* sessionsDir;
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
-  const { session } = yield* openRecordedSession({ model: defaultClaude, dir, title: "定例", publish: () => Effect.void }).pipe(
+  const { session } = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", publish: () => Effect.void }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   return { dir, session, inputs, lines };
 });
 
-describe("openRecordedSession の共有画面", () => {
+describe("openLoggedSession の共有画面", () => {
   it.effect("画像を screens/<時刻から付いた名前> に受け取ったバイト列のまま書き、log.jsonl には at 付きの screen の行を書く", () =>
     Effect.gen(function* () {
       const { dir, session, lines } = yield* open();

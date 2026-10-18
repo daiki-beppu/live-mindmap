@@ -93,7 +93,7 @@ export const command = Command.make(
     const spokenLines = Option.isNone(lines) ? undefined : yield* readJsonFile(lines.value, Schema.Array(SpokenLine));
 
     // sessionFiles.ts は capture.ts・review.ts（vite と playwright）を読み込むので、再生を始めるときだけ読む
-    const { createSessionDir, openRecordedSession } = yield* Effect.tryPromise({
+    const { createSessionDir, openLoggedSession } = yield* Effect.tryPromise({
       try: () => import("../src/sessionFiles.ts"),
       catch: (e) => new ReplaySessionFailed({ path: join(import.meta.dirname, "../src/sessionFiles.ts"), reason: describe(e) }),
     });
@@ -104,7 +104,7 @@ export const command = Command.make(
     });
     const dir = yield* createSessionDir(tmp).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: tmp, reason: fileReason(e) })));
     const diffEndsMs: number[] = [];
-    const { session } = yield* openRecordedSession({
+    const { session } = yield* openLoggedSession({
       model: defaultClaude,
       dir,
       title,
