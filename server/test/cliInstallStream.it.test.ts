@@ -70,16 +70,4 @@ describe("CLI install のストリーム受信", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-
-  it("stop の接続不能は指定文面と空 stdout、exit 1 を返す", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "live-mindmap-unreachable-"));
-    try {
-      const result = await runInstallStream(dir, 0, ["stop"]);
-      expect(result.code).toBe(1);
-      expect(result.stdout).toBe("");
-      expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
 });

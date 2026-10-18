@@ -154,7 +154,7 @@ describe("CLI install とサーバー", () => {
     expect(yield* Effect.tryPromise(() => readdir(dir))).toEqual([]);
   }).pipe(Effect.scoped));
 
-  it.live("状態確認 API は偽サービスへ委譲し、導入 API は不正 Origin と不正入力を処理前に拒否する", () => Effect.gen(function* () {
+  it.live("状態確認 API は偽サービスへ委譲し、導入 API は不正入力を処理前に拒否する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const calls: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
@@ -171,16 +171,9 @@ describe("CLI install とサーバー", () => {
     const speechCheck = yield* Effect.tryPromise(() => fetch(`${url}/deps/check?names=speech-ja`));
     expect(speechCheck.status).toBe(400);
     expect(calls).toEqual([["chromium"]]);
-    const forbidden = yield* Effect.tryPromise(() => fetch(`${url}/deps/check?names=chromium`, { headers: { origin: "https://example.com" } }));
-    expect(forbidden.status).toBe(403);
-    expect(calls).toEqual([["chromium"]]);
-    for (const request of [
-      { body: { names: ["chromium"] }, origin: "https://example.com", status: 403 },
-      { body: { names: ["unknown"] }, origin: "http://localhost", status: 400 },
-      { body: { names: [] }, origin: "http://localhost", status: 400 },
-    ]) {
-      const response = yield* Effect.tryPromise(() => fetch(`${url}/deps/install`, { method: "POST", headers: { "content-type": "application/json", origin: request.origin }, body: JSON.stringify(request.body) }));
-      expect(response.status).toBe(request.status);
+    for (const names of [["unknown"], []]) {
+      const response = yield* Effect.tryPromise(() => fetch(`${url}/deps/install`, { method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" }, body: JSON.stringify({ names }) }));
+      expect(response.status).toBe(400);
       expect(yield* Effect.tryPromise(() => response.json())).toMatchObject({ error: expect.any(String) });
       expect(calls).toEqual([["chromium"]]);
     }

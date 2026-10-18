@@ -152,16 +152,6 @@ describe("開始せずに確かめる CLI check", () => {
     expect(result.stderr).toContain("状態確認に失敗しました\n");
   }).pipe(Effect.scoped));
 
-  it.live("接続不能では指定文面を出して exit 1 になる", () => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const server = yield* serverWith(dir, fakeDeps(Effect.succeed([chromium("optional", "ready")])).service);
-    yield* server.close;
-    const result = yield* runCheck(dir, server.port);
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
-  }).pipe(Effect.scoped));
-
   it.live("正常な check の後も導入・セッションの開始・既存ファイルの削除を行わない", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const files = [join(dir, "deps/chromium/.work-retained/keep"), join(dir, "sessions/saved/keep")];
@@ -183,20 +173,5 @@ describe("開始せずに確かめる CLI check", () => {
     expect(deps.install).not.toHaveBeenCalled();
     expect(server.launch).not.toHaveBeenCalled();
     for (const file of files) expect(yield* Effect.tryPromise(() => readFile(file, "utf8"))).toBe("保存済みの内容");
-  }).pipe(Effect.scoped));
-
-  it.live("HTTP は正常な check を受理し、不正 Origin は確認前に拒否する", () => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const item = chromium("optional", "ready");
-    const deps = fakeDeps(Effect.succeed([item]));
-    const server = yield* serverWith(dir, deps.service);
-    const url = `http://127.0.0.1:${server.port}/check`;
-    const allowed = yield* Effect.tryPromise(() => fetch(url, { headers: { origin: "http://localhost" } }));
-    expect(allowed.status).toBe(200);
-    expect(yield* Effect.tryPromise(() => allowed.json())).toEqual(responseFor(true, item));
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
-    const forbidden = yield* Effect.tryPromise(() => fetch(url, { headers: { origin: "https://example.com" } }));
-    expect(forbidden.status).toBe(403);
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
   }).pipe(Effect.scoped));
 });

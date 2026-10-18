@@ -1,10 +1,9 @@
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Queue, Ref, Stream, type Cause } from "effect";
+import { ConfigProvider, Deferred, Effect, Fiber, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { vi } from "vitest";
 import { planLayer } from "../src/updatePlan.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo, type HelperCheck } from "../src/helpers.ts";
@@ -14,6 +13,9 @@ import { defaultClaude, type ExecutableModel } from "../src/modelSelection.ts";
 import { readModelTransferToken, MODEL_TRANSFER_HEADER } from "../src/modelTransferToken.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -88,16 +90,14 @@ const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingH
   return { root, sessionsDir, deps, helpers, server, request, status };
 });
 
-const cli = (root: string, port: number, args: string[], model: string | undefined, extraEnv: Record<string, string> = {}) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...args], {
-    timeout: 15_000,
-    env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "LIVE_MINDMAP_MODEL")), HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off", ...(model === undefined ? {} : { LIVE_MINDMAP_MODEL: model }),
-      LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_DEPS: join(root, "deps"), LIVE_MINDMAP_PORT: String(port), NO_COLOR: "1", ...extraEnv },
-  }, (error, stdout, stderr) => {
-    if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-    resolve({ code: error ? error.code as number : 0, stdout, stderr });
-  });
-}));
+const cli = (root: string, port: number, args: string[], model: string | undefined) => runCliEntry(args, Layer.mergeAll(
+  forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+    HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_JUDGE: "off",
+    ...(model === undefined ? {} : { LIVE_MINDMAP_MODEL: model }),
+    LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_DEPS: join(root, "deps"), LIVE_MINDMAP_PORT: String(port),
+  })),
+));
 
 const startBody = { app: "us.zoom.xos", audio: false, model: defaultClaude };
 const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typeof resource>>) {
