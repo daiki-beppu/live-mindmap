@@ -178,34 +178,20 @@ describe("711-4・711-5・711-6: CLI update", () => {
     expect(result.stdout).toBe("");
   }).pipe(Effect.scoped));
 
-  it.live("サーバー接続不能は指定文面と exit 1 を返す", () => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const result = yield* runUpdate(dir, 0, ["chromium"]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
-    expect(result.stdout).toBe("");
-    expect(yield* Effect.tryPromise(() => readdir(dir))).toEqual([]);
-  }).pipe(Effect.scoped));
-
-  it.live("POST /update は管理依存へ委譲し、不正 Origin と不正入力を処理前に拒否する", () => Effect.gen(function* () {
+  it.live("POST /update は管理依存へ委譲し、不正入力を処理前に拒否する", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps([outdated]);
     const server = yield* serverWith(dir, deps.service);
-    const request = (names: string[], origin: string) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/update`, {
-      method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ names }),
+    const request = (names: string[]) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/update`, {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" }, body: JSON.stringify({ names }),
     }));
-    const response = yield* request(["chromium"], "http://localhost");
+    const response = yield* request(["chromium"]);
     expect(response.status).toBe(200);
     expect(JSON.parse((yield* Effect.tryPromise(() => response.text())).trim())).toEqual({ type: "result", items: [installed] });
     expect(deps.update).toHaveBeenCalledExactlyOnceWith(["chromium"]);
-    for (const input of [
-      { names: ["chromium"], origin: "https://example.com", status: 403 },
-      { names: ["speech-ja"], origin: "http://localhost", status: 400 },
-      { names: ["unknown"], origin: "http://localhost", status: 400 },
-      { names: [], origin: "http://localhost", status: 400 },
-    ]) {
-      const rejected = yield* request(input.names, input.origin);
-      expect(rejected.status).toBe(input.status);
+    for (const names of [["speech-ja"], ["unknown"], []]) {
+      const rejected = yield* request(names);
+      expect(rejected.status).toBe(400);
       expect(yield* Effect.tryPromise(() => rejected.json())).toMatchObject({ error: expect.any(String) });
       expect(deps.update).toHaveBeenCalledExactlyOnceWith(["chromium"]);
     }

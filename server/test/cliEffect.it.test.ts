@@ -126,31 +126,6 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("CLI の Effect 境界", () => {
-  it.effect("ConfigProvider の保存先と MapCapture の Layer が play の最終出力へ届く", () => Effect.gen(function* () {
-    const dir = yield* directory;
-    const deps = dependencies(dir);
-    const calls: string[][] = [];
-    external.openClaudeUpdater.mockReturnValue({
-      update: (input: DiffInput) => Effect.sync(() => {
-        calls.push(input.fresh.map((remark) => remark.id));
-        return { ops: [] };
-      }),
-      close: () => {},
-    });
-    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
-
-    expect(calls).toEqual([["r1"], ["r2"], ["r3"]]);
-    expect(external.openListener.mock.calls[0]?.[0]).toBe(12345);
-    expect(deps.captures).toHaveLength(1);
-    expect(deps.captures[0]?.nodes.map((node) => node.text)).toEqual(["short"]);
-    const paths = deps.stdout.join("").trimEnd().split("\n");
-    expect(paths).toHaveLength(5);
-    const session = join(paths[0]!, "..");
-    expect(session.startsWith(dir + "/")).toBe(true);
-    expect(paths).toEqual(["map.md", "map.json", "map.drawnix", "map.png", "map.html"].map((name) => join(session, name)));
-    expect(deps.stdout.join("")).toBe(paths.map((path) => path + "\n").join(""));
-  }));
-
   it.effect("ConfigProvider のポートへ start を送り、no-audio の省略は録音ありになる", () => Effect.gen(function* () {
     const dir = yield* directory;
     const server = yield* fakeServer({ status: 200, contentType: "application/json", body: JSON.stringify({ dir: join(dir, "run") }) });

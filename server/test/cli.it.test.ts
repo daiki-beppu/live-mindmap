@@ -803,10 +803,15 @@ describe("CLI", () => {
 
   it.effect("再生が終わると、ログと同じフォルダに map.md・map.json・map.drawnix・map.png・map.html を書き出し、そのパスを順に出力する", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    const deps = dependencies(dir);
-    const { paths, session } = yield* played(deps);
+    const deps = dependencies(dir, "12345");
+    yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer));
+    const paths = deps.stdout.join("").trimEnd().split("\n");
+    const session = dirname(paths[0]!);
 
+    expect(external.openListener.mock.calls[0]?.[0]).toBe(12345);
+    expect(session.startsWith(dir + "/")).toBe(true);
     expect(paths).toEqual([join(session, "map.md"), join(session, "map.json"), join(session, "map.drawnix"), join(session, "map.png"), join(session, "map.html")]);
+    expect(deps.stdout.join("")).toBe(paths.map((path) => path + "\n").join(""));
     const files = yield* Effect.tryPromise(() => readdir(session));
     expect(files.sort()).toEqual(expect.arrayContaining(["log.jsonl", "map.md", "map.json", "map.drawnix", "map.png", "map.html"]));
     const md = yield* Effect.tryPromise(() => readFile(join(session, "map.md"), "utf8"));

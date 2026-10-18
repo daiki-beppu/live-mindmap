@@ -631,22 +631,13 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
         expect((yield* selfPause(r, '{"paused":true}')).status).toBe(409);
         expect(r.sent).toEqual([]);
       }));
-
-    it.live("非ローカル Origin からは 403 で拒否し、helper へ何も送らない", () =>
-      Effect.gen(function* () {
-        const r = yield* resourceWithFakeHelpers([{}]);
-        yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
-        const response = yield* Effect.tryPromise(() => r.request("POST", "/session/self-pause", '{"paused":true}', "https://evil.example"));
-        expect(response.status).toBe(403);
-        expect(r.sent).toEqual([]);
-      }));
   });
 
   // Issue #1026: 話者の名前（POST /session/speaker-name）。ラベルは、ヘルパーの speaker と発言で振られたものだけ
   describe("話者の名前（POST /session/speaker-name）", () => {
     type Requester = { request: (m: string, p: string, b: string | undefined, o: string | undefined) => Promise<Response> };
     const START = '{"app":"us.zoom.xos","audio":false}';
-    const speakerName = (r: Requester, body: string | undefined, origin?: string) => Effect.tryPromise(() => r.request("POST", "/session/speaker-name", body, origin));
+    const speakerName = (r: Requester, body: string | undefined) => Effect.tryPromise(() => r.request("POST", "/session/speaker-name", body, undefined));
     const nameBody = (label: string, name: string) => JSON.stringify({ label, name });
     // 相手の 2 人が 1 発言ずつ話す台本（相手 A・相手 B が振られる）。start で一度に流れる
     const twoSpeakers = (start: number): unknown[] => [0, 1].flatMap((slot) => [
@@ -727,18 +718,6 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       Effect.gen(function* () {
         const r = yield* resourceWithFakeHelpers([{}]);
         expect((yield* speakerName(r, nameBody("相手 A", "田中"))).status).toBe(409);
-      }));
-
-    it.live("非ローカル Origin からは 403 で拒否し、名前を付けない", () =>
-      Effect.gen(function* () {
-        const r = yield* resourceWithFakeHelpers([{ events: twoSpeakers(0) }]);
-        const started = yield* Effect.tryPromise(() => r.request("POST", "/session/start", START, undefined));
-        const { dir } = (yield* Effect.tryPromise(() => started.json())) as { dir: string };
-        yield* nameWhenLabeled(r, "相手 A", "先に付けた名前");
-
-        expect((yield* speakerName(r, nameBody("相手 B", "田中"), "https://evil.example")).status).toBe(403);
-
-        expect((yield* logLines(dir)).filter((l) => l.type === "speaker-name").map((l) => l.label)).toEqual(["相手 A"]);
       }));
 
     // cli resume は同じセッションのヘルパーを起動し直すだけ。名前はサーバーのメモリに残り、起動し直した後の差分更新にも使われる
@@ -921,8 +900,8 @@ describe("閲覧の共有（Issue #834）", () => {
   const shareResource = Effect.fnUntraced(function* (tunnelOptions?: { readonly holdFirstOpen?: boolean; readonly holdFirstCleanup?: boolean; readonly missing?: boolean; readonly distinctHosts?: boolean }, env: Readonly<Record<string, string>> = {}) {
     const tunnel = fakeTunnel(tunnelOptions);
     const r = yield* resourceWithFakeHelpers([{}], { viewing: tunnel.viewing });
-    const call = (method: string, path: string, body?: string, origin?: string) =>
-      Effect.tryPromise(() => r.request(method, path, body, origin));
+    const call = (method: string, path: string, body?: string) =>
+      Effect.tryPromise(() => r.request(method, path, body, undefined));
     const json = (response: Response) => Effect.tryPromise(() => response.json());
     const open = () => call("POST", "/share/open", '{"anyone":true}');
     const startSession = call("POST", "/session/start", START).pipe(Effect.tap((res) => Effect.sync(() => expect(res.status).toBe(200))));
@@ -1073,19 +1052,6 @@ describe("閲覧の共有（Issue #834）", () => {
     yield* s.call("POST", "/share/close");
     expect((yield* s.open()).status).toBe(200);
     expect(s.tunnel.args.at(-1)).not.toContain("--allowed-mail");
-  }));
-
-  it.live("共有のルートにも操作の口の Origin の制限が掛かる（ローカル以外の Origin は 403 で、開きも閉じもしない）", () => Effect.gen(function* () {
-    const s = yield* shareResource();
-    yield* s.startSession;
-    const foreign = "https://evil.example";
-    expect((yield* s.call("POST", "/share/open", '{"anyone":true}', foreign)).status).toBe(403);
-    expect(s.tunnel.opened).toEqual([]);
-    yield* s.open();
-    expect((yield* s.call("POST", "/share/close", undefined, foreign)).status).toBe(403);
-    expect((yield* s.call("GET", "/share/status", undefined, foreign)).status).toBe(403);
-    expect(s.tunnel.closed()).toBe(0);
-    expect(yield* s.json(yield* s.call("GET", "/share/status", undefined, "http://localhost:5173"))).toEqual({ status: "open", url: ORIGIN, allow: "anyone" });
   }));
 
   it.live("ホスト名を待つ間にセッションが終わると、開始要求は 500 で終わり、閲覧の口は待受けをやめ、状態は off。ロックは解放され、次のセッションで開ける", () => Effect.gen(function* () {

@@ -1,10 +1,9 @@
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { NodeServices } from "@effect/platform-node";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Console, Deferred, Effect, Fiber, FileSystem, Layer, PlatformError, Stream } from "effect";
+import { ConfigProvider, Console, Deferred, Effect, Fiber, FileSystem, Layer, PlatformError, Stream } from "effect";
 import { afterEach, vi } from "vitest";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { Helpers } from "../src/helpers.ts";
@@ -15,6 +14,10 @@ import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { fakeNpm, installed, managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -43,15 +46,13 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   });
 });
 
-const cliProcess = (dir: string, port: number, command: "install" | "update" | "check") => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), command, ...(command === "check" ? [] : ["chromium"])], {
-    timeout: 15_000,
-    env: { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
-  }, (error, stdout, stderr) => {
-    if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-    resolve({ code: error ? error.code as number : 0, stdout, stderr });
-  });
-}));
+const cli = (dir: string, port: number, command: "install" | "update" | "check") => runCliEntry([command, ...(command === "check" ? [] : ["chromium"])], Layer.mergeAll(
+  forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+    HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"),
+    LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_MODEL: "", LIVE_MINDMAP_JUDGE: "off",
+  })),
+));
 
 describe("712: 管理実体の削除", () => {
   it.live("正式実体以外と外向き symlink を保持し、サイズ集計もリンク先を走査しない", () => Effect.gen(function* () {
@@ -147,7 +148,7 @@ describe("712: 管理実体の削除", () => {
       const events: string[] = [];
       const observed = ManagedDeps.of({ ...deps, [operation]: (requested: ReadonlyArray<string>) => deps[operation](requested).pipe(Stream.tap((event) => Effect.sync(() => { events.push(event.type); }))) });
       const server = yield* serverWith(dir, observed);
-      const result = yield* cliProcess(dir, server.port, operation);
+      const result = yield* cli(dir, server.port, operation);
       expect.soft(result.code).toBe(0);
       expect.soft(JSON.parse(result.stdout)).toEqual([installed]);
       expect.soft(events.at(-1)).toBe("result");
@@ -187,7 +188,7 @@ describe("712: 管理実体の削除", () => {
     yield* Effect.gen(function* () {
       const deps = yield* ManagedDeps;
       const server = yield* serverWith(dir, deps);
-      const result = yield* cliProcess(dir, server.port, "install");
+      const result = yield* cli(dir, server.port, "install");
       expect.soft(result.code).toBe(0);
       expect.soft(JSON.parse(result.stdout)).toEqual([installed]);
       expect.soft(existsSync(target)).toBe(true);
@@ -248,7 +249,7 @@ describe("712: 管理実体の削除", () => {
     yield* Effect.gen(function* () {
       const server = yield* serverWith(dir, yield* ManagedDeps);
       const before = yield* Effect.tryPromise(() => readdir(join(root, "chromium")));
-      const result = yield* cliProcess(dir, server.port, "check");
+      const result = yield* cli(dir, server.port, "check");
       expect(JSON.parse(result.stdout).items.find((item: { name: string }) => item.name === "chromium")).toMatchObject({ state: "outdated" });
       expect(yield* Effect.tryPromise(() => readdir(join(root, "chromium")))).toEqual(before);
     }).pipe(Effect.provide(managedLayer(root)));

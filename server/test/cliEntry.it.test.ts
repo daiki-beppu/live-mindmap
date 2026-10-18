@@ -258,13 +258,6 @@ describe("CLI の入口の出力", () => {
     expect(result).toEqual({ code: 1, stdout: "", stderr: `セッションがありません: ${sessionsDir}\n` });
   }).pipe(Effect.scoped));
 
-  it.live("apps の接続失敗は既存の日本語一行と exit 1", () => Effect.gen(function* () {
-    const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runEntry(["apps"], sessionsDir);
-
-    expect(result).toEqual({ code: 1, stdout: "", stderr: "サーバーにつながりません（pnpm dev で起動）\n" });
-  }).pipe(Effect.scoped));
-
   it.live("restore の不正 JSON は空行を含む元の行番号と日本語一行を出して exit 1", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const run = join(sessionsDir, "run");

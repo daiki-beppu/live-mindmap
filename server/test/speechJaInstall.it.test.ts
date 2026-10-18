@@ -1,9 +1,11 @@
-import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Layer, Stream } from "effect";
+import { ConfigProvider, Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { vi } from "vitest";
+import { runCli } from "../src/cli.ts";
+import { StdoutIsTty } from "../src/consoleText.ts";
 import { Helpers, HelperCheckFailure, type HelperCheck } from "../src/helpers.ts";
 import * as HelperServices from "../src/helpers.ts";
 import { ManagedDeps, type DepItem } from "../src/managedDeps.ts";
@@ -12,6 +14,11 @@ import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
+import { consoleCapture } from "./benchRun.ts";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
+import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const speechItem = { name: "speech-ja", need: "required", state: "ready", install: "pnpm cli install speech-ja" };
 const claudeItem: DepItem = { name: "claude", need: "required", state: "ready" };
@@ -56,15 +63,16 @@ const resource = Effect.fnUntraced(function* () {
     helpers: Layer.succeed(Helpers, Helpers.of(helpers)), managedDeps: Layer.succeed(ManagedDeps, deps),
     sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
-  const env = { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: join(root, "deps"),
-    LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_CONFIG: join(root, "absent.json"), LIVE_MINDMAP_MODEL: "claude", NO_COLOR: "1" };
-  const cli = (args: string[]) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), ...args], { env, timeout: 15_000 }, (error, stdout, stderr) => {
-      if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-      resolve({ code: error ? error.code as number : 0, stdout, stderr });
-    });
-  }));
-  return { root, state, managedRequests, server, release, cli, env };
+  const cliLayer = Layer.mergeAll(
+    forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+    Layer.succeed(StdoutIsTty, false),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+      HOME: join(root, "home"), LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: join(root, "deps"),
+      LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_CONFIG: join(root, "absent.json"), LIVE_MINDMAP_MODEL: "claude", LIVE_MINDMAP_JUDGE: "off",
+    })),
+  );
+  const cli = (args: string[]) => runCliEntry(args, cliLayer);
+  return { root, state, managedRequests, server, release, cli, cliLayer };
 });
 
 describe("speech-ja のサーバー経由の導入", () => {
@@ -103,23 +111,19 @@ describe("speech-ja のサーバー経由の導入", () => {
     expect(r.state.installs).toBe(1);
   }).pipe(Effect.scoped));
 
-  it.live("710-4: プロセス入口は取得中の stderr を流し、stdout と終了を保留し、競合は待たず exit 1 で拒否する", () => Effect.gen(function* () {
+  it.live("710-4: CLI は取得中の stderr を流し、stdout と終了を保留し、競合は待たず exit 1 で拒否する", () => Effect.gen(function* () {
     const r = yield* resource();
-    const child = yield* Effect.acquireRelease(Effect.sync(() => spawn(process.execPath,
-      [join(import.meta.dirname, "../src/cli.ts"), "install", "speech-ja"], { env: r.env, stdio: ["ignore", "pipe", "pipe"] })),
-      (process) => Effect.promise(async () => {
-        if (process.exitCode !== null || process.signalCode !== null) return;
-        await new Promise<void>((resolve) => { process.once("close", () => resolve()); process.kill("SIGKILL"); });
-      }));
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-    const exited = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    const captured = consoleCapture();
+    const completed = yield* Deferred.make<void>();
+    const fiber = yield* runCli(["install", "speech-ja"]).pipe(
+      Effect.provide(Layer.merge(r.cliLayer, captured.layer)),
+      Effect.onExit(() => Deferred.succeed(completed, undefined)),
+      Effect.forkChild,
+    );
     try {
-      yield* Effect.tryPromise(() => vi.waitFor(() => expect(stderr).toContain("日本語モデルを取得中\n")));
-      expect(stdout).toBe("");
-      expect(child.exitCode).toBeNull();
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(captured.stderr.join("")).toContain("日本語モデルを取得中\n")));
+      expect(captured.stdout).toEqual([]);
+      expect(yield* Deferred.isDone(completed)).toBe(false);
       expect(r.state.installs).toBe(1);
       const competitor = yield* r.cli(["install", "speech-ja"]);
       expect(competitor.code).toBe(1);
@@ -129,8 +133,9 @@ describe("speech-ja のサーバー経由の導入", () => {
     } finally {
       yield* Deferred.succeed(r.release, undefined);
     }
-    expect(yield* Effect.tryPromise(() => exited)).toBe(0);
-    expect(JSON.parse(stdout)).toEqual([speechItem]);
+    yield* Fiber.join(fiber);
+    expect(yield* Deferred.isDone(completed)).toBe(true);
+    expect(JSON.parse(captured.stdout.join(""))).toEqual([speechItem]);
     expect((yield* r.cli(["install", "speech-ja"])).code).toBe(0);
     expect(r.state.installs).toBe(2);
   }).pipe(Effect.scoped));

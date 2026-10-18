@@ -1,9 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Cause, Effect, Result } from "effect";
+import { command } from "../bench/mapShape.ts";
+import { reportFailure } from "../bench/entry.ts";
 import { type LogEvent } from "../src/core/index.ts";
-import { runScript, temporaryDirectory } from "./benchRun.ts";
+import { consoleCapture, runCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 
 const privateText = ["TITLEPRIVATEALPHA TITLEPRIVATEOMEGA", "REMARKPRIVATEALPHA REMARKPRIVATEOMEGA", "NODEPRIVATEALPHA NODEPRIVATEOMEGA"];
 const log = (): LogEvent[] => [
@@ -18,6 +20,13 @@ const log = (): LogEvent[] => [
 const logText = (events: readonly unknown[]) => events.map((event) => JSON.stringify(event)).join("\n") + "\n";
 const cells = (line: string) => line.split("|").slice(1, -1).map((cell) => cell.trim());
 const tableLines = (stdout: string) => stdout.split("\n").filter((line) => line.startsWith("|"));
+
+const runMapShape = Effect.fnUntraced(function* (args: string[]) {
+  const captured = consoleCapture();
+  const { result } = yield* runCommand(command, args, captured);
+  if (Result.isFailure(result)) yield* reportFailure(Cause.fail(result.failure)).pipe(Effect.provide(captured.layer));
+  return { result, stdout: captured.stdout.join(""), stderr: captured.stderr.join("") };
+});
 
 function expectNoBody(stdout: string, stderr: string) {
   for (const line of [...stdout.split("\n"), ...stderr.split("\n")]) {
@@ -38,9 +47,9 @@ describe("mapShape の CLI（light IT）", () => {
     writeFileSync(join(a, "log.jsonl"), logText(log()));
     writeFileSync(join(b, "log.jsonl"), logText(log().slice(0, 2)));
 
-    const { code, stdout, stderr } = yield* runScript("mapShape.ts", [a, b]);
+    const { result, stdout, stderr } = yield* runMapShape([a, b]);
 
-    expect(code).toBe(0);
+    expect(Result.isSuccess(result)).toBe(true);
     expect(stderr).toBe("");
     const lines = tableLines(stdout);
     expect(lines).toHaveLength(4);
@@ -58,39 +67,40 @@ describe("mapShape の CLI（light IT）", () => {
     { name: "不正 JSON", text: `{"text":"${privateText[2]}",BROKEN}\n` },
     { name: "形が不正な既知イベント", text: logText([{ type: "start", title: privateText[0]! }, { type: "remark", remark: { id: "r1", track: "invalid", start: 0, end: 1, text: privateText[1]! } }]) },
     { name: "復元できない発言参照", text: logText([{ type: "start", title: privateText[0]! }, { type: "diff", input: { recent: [], fresh: [privateText[1]!], nodeCount: 0 }, ops: [], dropped: [] }]) },
-  ])("$name で非ゼロ終了し、本文を診断にも出さない", ({ text }) => Effect.gen(function* () {
+  ])("$name でコマンドが失敗し、本文を診断にも出さない", ({ text }) => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const path = join(dir, "log.jsonl");
     writeFileSync(path, text);
 
-    const { code, stdout, stderr } = yield* runScript("mapShape.ts", [dir]);
+    const { result, stdout, stderr } = yield* runMapShape([dir]);
 
-    expect(code).not.toBe(0);
+    expect(taggedFailure(result)).toMatchObject({ _tag: "InvalidInputFile", path, reason: expect.any(String) });
     expect(stderr).not.toBe("");
     expect(stderr).toContain(path);
     expect(tableLines(stdout).slice(2)).toEqual([]);
+    expectNoBody("", JSON.stringify(taggedFailure(result)));
     expectNoBody(stdout, stderr);
   }).pipe(Effect.scoped));
 
-  it.effect("セッションフォルダが無いと非ゼロ終了する", () => Effect.gen(function* () {
+  it.effect("セッションフォルダが無いとコマンドが失敗する", () => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
     const missing = join(root, "missing");
 
-    const { code, stdout, stderr } = yield* runScript("mapShape.ts", [missing]);
+    const { result, stdout, stderr } = yield* runMapShape([missing]);
 
-    expect(code).not.toBe(0);
+    expect(taggedFailure(result)).toMatchObject({ _tag: "MissingSessionDir", path: missing, reason: expect.any(String) });
     expect(stderr).toContain(missing);
     expect(tableLines(stdout).slice(2)).toEqual([]);
   }).pipe(Effect.scoped));
 
-  it.effect("log.jsonl が通常ファイルでなければ非ゼロ終了する", () => Effect.gen(function* () {
+  it.effect("log.jsonl が通常ファイルでなければコマンドが失敗する", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const path = join(dir, "log.jsonl");
     mkdirSync(path);
 
-    const { code, stdout, stderr } = yield* runScript("mapShape.ts", [dir]);
+    const { result, stdout, stderr } = yield* runMapShape([dir]);
 
-    expect(code).not.toBe(0);
+    expect(taggedFailure(result)).toMatchObject({ _tag: "InvalidInputFile", path, reason: expect.any(String) });
     expect(stderr).toContain(path);
     expect(tableLines(stdout).slice(2)).toEqual([]);
   }).pipe(Effect.scoped));
