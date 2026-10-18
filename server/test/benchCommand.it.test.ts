@@ -6,7 +6,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import type { NodeServices } from "@effect/platform-node";
+import type { Command } from "effect/cli";
 import { formatRow, parseLog, command as statsCommand, sessionStats } from "../bench/sessionStats.ts";
+import { command as speechEndsCommand } from "../bench/speechEnds.ts";
 import { command as latencyCommand, finalRemarks, settledRemarks, summarize, type SttResult } from "../bench/sttLatency.ts";
 import { runCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 import { logText } from "./fixtures/benchCommand.ts";
@@ -192,3 +195,26 @@ describe("sessionStats の Command", () => {
     expect(stdout).toBe("");
   }).pipe(Effect.scoped));
 });
+
+// プロセスの入口（bench/*.ts の実行）が使う Command の、--help と位置引数の欠落。実プロセスの代表は benchProcess.heavy.test.ts
+const describeEntry = <Name extends string, Input, ContextInput, E>(script: string, command: Command.Command<Name, Input, ContextInput, E, NodeServices.NodeServices>) => describe(`bench/${script} の Command の help と引数の誤り`, () => {
+  it.effect("--help は使い方を stdout に出して成功する（stderr は空）", () => Effect.gen(function* () {
+    const { result, stdout, stderr } = yield* runCommand(command, ["--help"]);
+    expect(result._tag).toBe("Success");
+    expect(stderr).toBe("");
+    expect(stdout).toMatch(/Usage|USAGE/);
+  }));
+
+  it.effect("位置引数が無ければ、help を stdout に、ERROR を stderr に一度だけ出して CliError で失敗する（stack trace は出さない）", () => Effect.gen(function* () {
+    const { result, stdout, stderr } = yield* runCommand(command, []);
+    expect(result._tag).toBe("Failure");
+    expect(taggedFailure(result)).toBeUndefined();
+    expect(stdout).toMatch(/Usage|USAGE/);
+    expect(stderr.split("\n").filter((l) => /^ERROR\b/.test(l))).toHaveLength(1);
+    expect(stderr).not.toMatch(/\n\s+at /);
+  }));
+});
+
+describeEntry("sttLatency.ts", latencyCommand);
+describeEntry("sessionStats.ts", statsCommand);
+describeEntry("speechEnds.ts", speechEndsCommand);

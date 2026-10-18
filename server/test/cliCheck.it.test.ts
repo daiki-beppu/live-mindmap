@@ -36,10 +36,10 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   return { ...server, launch };
 });
 
-const cliProcess = (dir: string, port: number, rootScript: boolean, model: string | null = "claude") => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+const cliProcess = (dir: string, port: number, model: string | null = "claude") => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
   const env = { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: model ?? "", NO_COLOR: "1" };
   if (model === null) delete (env as NodeJS.ProcessEnv).LIVE_MINDMAP_MODEL;
-  execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "check"] : [join(import.meta.dirname, "../src/cli.ts"), "check"], {
+  execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), "check"], {
     cwd: join(import.meta.dirname, "../.."),
     timeout: 15_000,
     env,
@@ -79,7 +79,7 @@ describe("開始せずに確かめる CLI check", () => {
     yield* Effect.tryPromise(() => writeFile(join(dir, "absent.config.json"), JSON.stringify({ default: defaultModel, models: { remote: { route: "claude", model: "synthetic-model" } } })));
     const deps = fakeDeps(Effect.succeed([chromium("optional", "missing"), claudeMissing]));
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, false, selected);
+    const result = yield* cliProcess(dir, server.port, selected);
     expect(result.code).toBe(code);
     const report = JSON.parse(result.stdout);
     expect(report.items.find((item: { name: string }) => item.name === "claude")).toMatchObject({ name: "claude", state: "missing", need });
@@ -97,7 +97,7 @@ describe("開始せずに確かめる CLI check", () => {
     yield* Effect.tryPromise(() => writeFile(join(dir, "absent.config.json"), JSON.stringify(config)));
     const deps = fakeDeps(Effect.succeed([chromium("optional", "missing"), { ...claudeMissing, state }]));
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, false, model);
+    const result = yield* cliProcess(dir, server.port, model);
     expect(result.code).toBe(code);
     expect(JSON.parse(result.stdout)).toEqual({ ready, items: [
       { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
@@ -133,29 +133,18 @@ describe("開始せずに確かめる CLI check", () => {
     const item = { name: need === "required" ? "claude" as const : "chromium" as const, need, state, ...(state === "outdated" ? { version: "0.0.0" } : {}) };
     const deps = fakeDeps(Effect.succeed([item]));
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, false);
+    const result = yield* cliProcess(dir, server.port);
     expect(result.code).toBe(code);
     expect(JSON.parse(result.stdout)).toEqual(responseFor(ready, item));
     expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
     expect(result.stderr).toBe("");
   }).pipe(Effect.scoped));
 
-  it.live("pnpm cli check もサーバーの任意不足を JSON と exit 0 で返す", () => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const item = chromium("optional", "missing");
-    const deps = fakeDeps(Effect.succeed([item]));
-    const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, true);
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual(responseFor(true, item));
-    expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
-  }).pipe(Effect.scoped));
-
   it.live("ManagedDepsFailed は成功 JSON を出さず exit 1 になる", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps(Effect.fail(new ManagedDepsFailed({ message: "状態確認に失敗しました" })));
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, false);
+    const result = yield* cliProcess(dir, server.port);
     expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
@@ -166,7 +155,7 @@ describe("開始せずに確かめる CLI check", () => {
     const dir = yield* temporaryDeps;
     const server = yield* serverWith(dir, fakeDeps(Effect.succeed([chromium("optional", "ready")])).service);
     yield* server.close;
-    const result = yield* cliProcess(dir, server.port, false);
+    const result = yield* cliProcess(dir, server.port);
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
@@ -186,7 +175,7 @@ describe("開始せずに確かめる CLI check", () => {
     const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check`));
     expect(response.status).toBe(200);
     expect(yield* Effect.tryPromise(() => response.json())).toEqual(responseFor(true, item));
-    const result = yield* cliProcess(dir, server.port, false);
+    const result = yield* cliProcess(dir, server.port);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual(responseFor(true, item));
     expect(deps.check.mock.calls).toEqual([[["chromium", "claude"]], [["chromium", "claude"]]]);
