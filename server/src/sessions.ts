@@ -44,6 +44,7 @@ import {
   type SessionFailure,
   type SpeakerNameRejected,
 } from "./sessionFailure.ts";
+import { planModel } from "./updatePlan.ts";
 import { SessionSinks, type SessionSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 import { ManagedDeps } from "./managedDeps.ts";
@@ -52,7 +53,8 @@ import type { CheckReport } from "./managedDepsProtocol.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
 // vocab は利用者が足した語（cli start --vocab。1 語ずつ。足さなければ空）。開始のときにだけ受け取る
-export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; model: import("./modelSelection.ts").ExecutableModel; judge?: import("./judgeSelection.ts").JudgeModel };
+// 差分更新の計画 plan は CLI が決め、server が検めたもの。モデルは planModel(plan)
+export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; plan: import("./updatePlan.ts").UpdatePlan };
 
 // 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる。
 // selfFile は自分用の録音のファイル（絶対パス。cli recorded --self）。あれば、file を 相手、selfFile を 自分 の 2 トラックで組む
@@ -80,7 +82,7 @@ type Launched = { attempt: HelperAttempt; scope: Scope.Closeable };
 type SelfPauseLink = { kind: "connected"; attempt: HelperAttempt } | { kind: "waiting"; pending: boolean | undefined };
 
 type Live = {
-  model: SessionStart["model"];
+  model: import("./modelSelection.ts").ExecutableModel;
   app: string;
   dir: string;
   audio: boolean;
@@ -432,10 +434,12 @@ export class Sessions extends Context.Service<Sessions, {
       }, (effect, _live, _initial, _trigger, outcome) => effect.pipe(Effect.ensuring(Deferred.succeed(outcome, { kind: "aborted" }))));
 
       const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
+        const model = planModel(input.plan);
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
-          const warnings = yield* requireStartupDeps("start", input.model.route, { screen: input.screen, check: input.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-          const updaterLayer = yield* sinks.prepare(input.model, input.judge).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const startupWarnings = yield* requireStartupDeps("start", model.route, { screen: input.screen, check: input.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+          const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const warnings = notice === undefined ? startupWarnings : [...startupWarnings, notice];
           const dir = yield* sinks.createDir(sessionsDir);
           // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
           // 接続はマイクの許可待ち等で時間がかかることがあり、ここを接続成功後にすると、長く待ってから
@@ -453,12 +457,12 @@ export class Sessions extends Context.Service<Sessions, {
             );
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
-          const sink = yield* sinks.open({ dir, title: input.title, model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
+          const sink = yield* sinks.open({ dir, title: input.title, model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
           if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
           const live: Live = {
-            model: input.model,
+            model,
             app: input.app,
             dir,
             audio: input.audio,
@@ -485,7 +489,7 @@ export class Sessions extends Context.Service<Sessions, {
           yield* Ref.set(live.chain, fiber);
           yield* Ref.set(state, { kind: "live", live });
           yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
-          yield* viewers.sessionMode({ type: "session-mode", local: input.model.local });
+          yield* viewers.sessionMode({ type: "session-mode", local: model.local });
           return { dir, warnings };
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
@@ -693,7 +697,7 @@ export class Sessions extends Context.Service<Sessions, {
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
           const warnings = yield* requireStartupDeps("recorded", input.model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-          const updaterLayer = yield* sinks.prepare(input.model).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const { layer: updaterLayer } = yield* sinks.prepare({ kind: "single", model: input.model }).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
           // 基準の時刻は、ファイルの作成日時。取れないとき（記録が無い・聞けなかった）は、流し始めた今の時刻。
           // フォルダ名と log.jsonl の時刻は、この 1 つの基準から決める（ずらし幅 = 基準 − 今）
           const now = DateTime.nowUnsafe();

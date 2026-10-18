@@ -23,7 +23,7 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
     return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(ended), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }) }));
   const speaking = yield* Deferred.make<(frame: CaptionsFrame) => Effect.Effect<void>>();
-  const realSinks = SessionSinks.layer<never>({ prepareUpdater: () => fake.prepare }).pipe(Layer.provide(fakeExportServices()));
+  const realSinks = SessionSinks.layer<never>({ prepareUpdater: () => Effect.map(fake.prepare, (layer) => ({ layer })) }).pipe(Layer.provide(fakeExportServices()));
   const sinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
     const service = yield* SessionSinks;
     return SessionSinks.of({ ...service, open: (args) => service.open(args).pipe(

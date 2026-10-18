@@ -35,9 +35,9 @@ const helperLayer = Layer.succeed(Helpers, Helpers.of({
   }),
 }));
 const realSinks = SessionSinks.layer({
-  prepareUpdater: () => Effect.succeed(Layer.succeed(DiffUpdater, DiffUpdater.of({
+  prepareUpdater: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({
     update: (input) => Effect.succeed({ ops: [], processedRemarks: input.fresh.length }),
-  }))),
+  })) }),
 }).pipe(Layer.provide(fakeExportServices()));
 const sessionSinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
   const sinks = yield* SessionSinks;

@@ -30,7 +30,7 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   const launch = vi.fn(() => Effect.die("check はセッションを開始しない"));
   const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.die("apps は対象外"), launch })),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });
   return { ...server, launch };

@@ -2,7 +2,7 @@
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
 import { Context, DateTime, Deferred, Effect, FiberSet, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
 import { dirname } from "node:path";
-import type { JudgeModel } from "./judgeSelection.ts";
+import type { UpdatePlan } from "./updatePlan.ts";
 import { MapCapture } from "./capture.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
@@ -77,7 +77,8 @@ export type SessionSink = {
 };
 
 export type SessionSinksDeps<R = never> = {
-  prepareUpdater: (model: ExecutableModel, judge?: JudgeModel) => Effect.Effect<Layer.Layer<DiffUpdater, UpdaterUnavailable>, UpdaterUnavailable, R | Scope.Scope>;
+  // 計画から差分更新の layer を作る。notice は routed で判定の鍵が無く、判定なしで始めるときの知らせ
+  prepareUpdater: (plan: UpdatePlan) => Effect.Effect<{ readonly layer: Layer.Layer<DiffUpdater, UpdaterUnavailable>; readonly notice?: string }, UpdaterUnavailable, R | Scope.Scope>;
 };
 
 export type OpenSessionSink = {
@@ -152,9 +153,9 @@ export class SessionSinks extends Context.Service<SessionSinks, {
         // ふつうの語の一覧は、Layer を作るときに 1 回だけ読む（同梱のファイルなので、読めないのは予期しない失敗）
         const commonWords = yield* loadCommonWords(COMMON_WORDS_PATH).pipe(Effect.provideContext(exportServices), Effect.orDie);
         return SessionSinks.of({
-        prepare: (model, judge) => Effect.gen(function* () {
+        prepare: (plan) => Effect.gen(function* () {
           const scope = yield* Effect.scope;
-          return yield* prepareUpdater(model, judge).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
+          return yield* prepareUpdater(plan).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
         }),
         createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
         open: Effect.fnUntraced(function* ({ dir, title, logShiftMs, publish, speak, speakerNames, diffUpdate, model, updaterLayer, recorded }) {

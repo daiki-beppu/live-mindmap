@@ -67,6 +67,16 @@ describe("/session/recorded の本文の decode", () => {
     });
   });
 
+  it("judge は省略でき、あれば decode した値のまま持つ（鍵は持たず環境変数の名前だけ）", () => {
+    const judge = { name: "clef", route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model: "clef", timeoutMs: 2000 };
+    expect(decodeRecorded({ file: "/tmp/a.m4a", judge })).toEqual({ file: "/tmp/a.m4a", vocab: [], realtime: false, judge });
+    expect(decodeRecorded({ file: "/tmp/a.m4a" })).not.toHaveProperty("judge");
+  });
+
+  it("形が合わない judge は decode に失敗する", () => {
+    expect(() => decodeRecorded({ file: "/tmp/a.m4a", judge: { name: "jev" } })).toThrow();
+  });
+
   it("null の realtime は既定値に読み替えず、decode に失敗する", () => {
     expect(() => decodeRecorded({ file: "/tmp/a.m4a", realtime: null })).toThrow();
   });

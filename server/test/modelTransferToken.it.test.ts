@@ -20,7 +20,7 @@ const directory = Effect.acquireRelease(
 );
 const layers = {
   helpers: Layer.succeed(Helpers, Helpers.of({ ...forbiddenHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
-  sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+  sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   managedDeps: readyManagedDeps,
 };
 
@@ -84,9 +84,9 @@ describe("モデル転送トークンのサーバー Scope", () => {
     const root = yield* directory;
     const sessionsDir = join(root, "sessions");
     const prepared: (JudgeModel | undefined)[] = [];
-    const sessionSinks = SessionSinks.layer({ prepareUpdater: (_model, chosen) => Effect.sync(() => {
-      prepared.push(chosen);
-      return updaterLayer(() => Effect.succeed({ ops: [] }));
+    const sessionSinks = SessionSinks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
+      prepared.push(plan.kind === "routed" ? plan.judge : undefined);
+      return { layer: updaterLayer(() => Effect.succeed({ ops: [] })) };
     }) }).pipe(Layer.provide(fakeExportServices()));
     const server = yield* startedServer({ port: 0, sessionsDir }, { ...layers, sessionSinks, helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("準備の届き先だけを確かめる") })) });
     const start = (headers: Record<string, string>) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {

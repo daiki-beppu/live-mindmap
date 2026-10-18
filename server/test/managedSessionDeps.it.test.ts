@@ -8,7 +8,7 @@ import { vi } from "vitest";
 import { ManagedDeps, ManagedDepsFailed, type DepEvent } from "../src/managedDeps.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
-import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { planLayer } from "../src/updatePlan.ts";
 import { realLayers, type ServerOptions } from "../src/server.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
@@ -106,7 +106,7 @@ const sessionServer = Effect.fnUntraced(function* (dir: string, deps: ManagedDep
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     managedDeps: Layer.succeed(ManagedDeps, deps),
     helpers: helperLayer(launches, beforeLaunch),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
 });
 const fakeDeps = (source: Stream.Stream<DepEvent, ManagedDepsFailed>, calls: string[]) => ManagedDeps.of({
@@ -130,7 +130,7 @@ describe("712: セッションと管理実体の寿命", () => {
       const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
         managedDeps: Layer.succeed(ManagedDeps, deps),
         helpers: helperLayer(launches, Effect.void),
-        sessionSinks: SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), Layer.succeed(ManagedDeps, deps), unusedApple, NodeHttpClient.layerUndici))),
+        sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), Layer.succeed(ManagedDeps, deps), unusedApple, NodeHttpClient.layerUndici))),
       });
       const first = yield* accepted(yield* start(server.port));
       yield* accepted(yield* stop(server.port));
@@ -150,7 +150,7 @@ describe("712: セッションと管理実体の寿命", () => {
       expect(existsSync(current)).toBe(true);
       expect(existsSync(join(first.dir, "map.json"))).toBe(true);
       yield* server.close;
-      const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: prepareUpdaterLayer };
+      const options: ServerOptions = { port: 0, sessionsDir: join(dir, "sessions"), depsDir: root, helper: { command: process.execPath, args: [] }, prepareUpdater: planLayer };
       const restarted = yield* startedServer(options, realLayers(options, fakeExportServices()));
       expect(yield* status(restarted.port)).toEqual({ status: "none" });
       expect.soft(existsSync(current)).toBe(true);
@@ -185,7 +185,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
       managedDeps: Layer.succeed(ManagedDeps, fakeDeps(Stream.succeed(result), calls)),
       helpers: helperLayer(launches, Effect.void),
-      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices({ capture: () => Effect.andThen(Deferred.succeed(entered, undefined), Deferred.await(release)) }))),
+      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices({ capture: () => Effect.andThen(Deferred.succeed(entered, undefined), Deferred.await(release)) }))),
     });
     yield* accepted(yield* start(server.port));
     const stopping = yield* stop(server.port).pipe(Effect.forkChild);

@@ -11,7 +11,7 @@ import { vi } from "vitest";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { runCli } from "../src/cli.ts";
 import { JsonExport } from "../src/core/index.ts";
-import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
+import { planLayer } from "../src/updatePlan.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
@@ -121,7 +121,7 @@ describe("apple を使う開始・再生の配線", () => {
     const root = yield* temporaryDirectory;
     const process = yield* appleProcess();
     const helper = audioHelper();
-    const sinks = SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
+    const sinks = SessionSinks.layer({ prepareUpdater: planLayer }).pipe(
       Layer.provide(Layer.mergeAll(readyManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, process.layer)),
     );
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, { helpers: helper.layer, sessionSinks: sinks, managedDeps: readyManagedDeps });

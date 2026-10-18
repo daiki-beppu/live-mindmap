@@ -15,9 +15,9 @@ import { ManagedDeps } from "./managedDeps.ts";
 import { StdoutIsTty, withoutFinalNewline } from "./consoleText.ts";
 import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
-import { prepareUpdaterLayer } from "./diffUpdater.ts";
+import { needsTransferToken, planBody, planLayer, planModel, resolvePlan, type UpdatePlan } from "./updatePlan.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
-import { configuredModels, ModelRefused, modelChosenByUser, resolveJudge, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
+import { configuredModels, ModelRefused, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
@@ -415,16 +415,6 @@ const judgeFlag = Flag.String("judge").pipe(
   Flag.withDescription("判定のモデルの名前、または off（判定を使わない）。環境変数 LIVE_MINDMAP_JUDGE・設定の judge より優先。開始時に決め、途中で変えない"),
   Flag.optional,
 );
-const resolveJudgeNotice = Effect.fn("resolveJudgeNotice")(function* (judge: Option.Option<string>, selected: { readonly local: boolean }) {
-  const { notice, judge: chosen } = yield* resolveJudge({ judge: Option.getOrUndefined(judge) }, selected.local);
-  yield* writeWarnings(notice === undefined ? [] : [notice]);
-  return chosen;
-});
-// 振り分けに使う判定。差分更新のモデルを利用者が名指ししたときは、選んだモデルだけを使うので判定を渡さない（判定の選択の断りと知らせは出す）
-const resolveRoutingJudge = Effect.fn("resolveRoutingJudge")(function* (judge: Option.Option<string>, model: Option.Option<string>, selected: { readonly local: boolean }) {
-  const resolved = yield* resolveJudgeNotice(judge, selected);
-  return (yield* modelChosenByUser({ model: Option.getOrUndefined(model) })) ? undefined : resolved;
-});
 const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した差分更新モデルの名前（環境変数・設定の既定値より優先）"), Flag.optional);
 const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（Apple Intelligence の子プロセスだけを使い、会議の中身を Mac の外に出さない。--model は apple だけ組み合わせられる）"), Flag.withDefault(false));
 
@@ -480,11 +470,11 @@ const play = Command.make(
   },
   Effect.fn("play")(
     function* ({ realtime, screen, transcript, model, judge, local }) {
-      const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
-      const chosenJudge = yield* resolveRoutingJudge(judge, model, selected);
+      const plan = yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
+      const selected = planModel(plan);
       const warnings = yield* requireStartupDeps("play", selected.route);
-      const updaterLayer = yield* prepareUpdaterLayer(selected, chosenJudge).pipe(Effect.mapError(startupPreparationFailure));
-      yield* writeWarnings(warnings);
+      const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
+      yield* writeWarnings(notice === undefined ? warnings : [...warnings, notice]);
       return yield* Effect.gen(function* () {
         const port = yield* portConfig;
         const folder = yield* isDirectory(transcript);
@@ -560,9 +550,9 @@ const readVocabulary = Effect.fnUntraced(function* (vocab: Option.Option<string>
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
 });
 
-// 互換モデル（openai-compatible・chatgpt）か判定をサーバーへ渡すときだけ、転送用トークンを読んで要求のヘッダーにする。start と recorded が共有する
-const modelTransferHeaders = Effect.fnUntraced(function* (selected: { readonly route: string }, port: number, withJudge = false) {
-  if (selected.route !== "openai-compatible" && selected.route !== "chatgpt" && !withJudge) return undefined;
+// 転送用トークンが要る計画（needsTransferToken）のときだけ、トークンを読んで要求のヘッダーにする。start と recorded が共有する
+const modelTransferHeaders = Effect.fnUntraced(function* (plan: UpdatePlan, port: number) {
+  if (!needsTransferToken(plan)) return undefined;
   const sessionsDir = yield* sessionsDirConfig;
   const token = yield* readModelTransferToken(sessionsDir, port).pipe(
     Effect.mapError(() => new ServerFailed({ message: "モデル・判定の転送用トークンを読めません\nサーバーを起動し、保存先設定が CLI と同じか確かめてください" })),
@@ -591,18 +581,16 @@ const start = Command.make(
   },
   Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, judge, local, vocab }) {
     const vocabulary = yield* readVocabulary(vocab);
-    const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
-    const chosenJudge = yield* resolveRoutingJudge(judge, model, selected);
+    const plan = yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
     const port = yield* portConfig;
-    const headers = yield* modelTransferHeaders(selected, port, chosenJudge !== undefined);
+    const headers = yield* modelTransferHeaders(plan, port);
     const { dir, warnings } = yield* requestServer(port, ServerRoutes.sessionStart, { body: {
       app,
       title: Option.getOrUndefined(title),
       audio: !noAudio,
       screen: !noScreen,
       ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
-      model: selected,
-      ...(chosenJudge ? { judge: chosenJudge } : {}),
+      ...planBody(plan),
     }, headers });
     yield* writeWarnings(warnings ?? []);
     yield* write(`${dir}\n`);
@@ -696,7 +684,7 @@ const recorded = Command.make(
     const vocabulary = yield* readVocabulary(vocab);
     const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
     const port = yield* portConfig;
-    const headers = yield* modelTransferHeaders(selected, port);
+    const headers = yield* modelTransferHeaders({ kind: "single", model: selected }, port);
     let dir: string | undefined;
     // Ctrl-C は、そこまでに入れた分で終えて map.* を書き出す（stop と同じ）。サーバーは接続が切れても書き出しを最後まで続ける。
     // 開始の応答（2xx）を受け取った後なら、started を読む前の中断でも止める
@@ -939,10 +927,11 @@ const review = Command.make(
 );
 
 // 元ログを選んだモデルで再生し、新しいランのフォルダを返す（updater の layer などは呼び出し側の Scope が持つ）
-const replayedRunDir = Effect.fnUntraced(function* (source: string, selected: ExecutableModel) {
+const replayedRunDir = Effect.fnUntraced(function* (source: string, plan: UpdatePlan) {
   const recorded = yield* loadRecordedSession(resolve(source));
-  const updaterLayer = yield* prepareUpdaterLayer(selected).pipe(Effect.mapError(startupPreparationFailure));
-  return (yield* recordPlayback({ ...recorded, realtime: false }, selected, () => Effect.void).pipe(
+  const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
+  yield* writeWarnings(notice === undefined ? [] : [notice]);
+  return (yield* recordPlayback({ ...recorded, realtime: false }, planModel(plan), () => Effect.void).pipe(
     Effect.provide(updaterLayer),
   )).dir;
 });
@@ -986,14 +975,14 @@ const evaluate = Command.make(
     ),
   },
   Effect.fn("eval")(function* ({ sessions, truth, screenTruth, model }) {
-    const selected = Option.isSome(model) ? yield* resolveModel({ model: model.value }) : undefined;
+    const plan = Option.isSome(model) ? yield* resolvePlan({ model: model.value }) : undefined;
     // 正解ファイルの検証は共有の readTruthFile（段 1 の Truth の Schema）が持つ（Flag 側では検証しない）
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const screen = Option.isNone(screenTruth) ? undefined : yield* readScreenTruthFile(screenTruth.value);
     const fs = yield* FileSystem.FileSystem;
     const runs: Run[] = [];
     for (const source of sessions) {
-      const dir = selected === undefined ? source : yield* replayedRunDir(source, selected).pipe(Effect.scoped);
+      const dir = plan === undefined ? source : yield* replayedRunDir(source, plan).pipe(Effect.scoped);
       runs.push(yield* evaluatedRun(fs, dir));
     }
     const table = yield* formatTable(runs, expected, screen).pipe(

@@ -23,7 +23,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 const fileIo = trackedFileSystem();
 const { settle, settleUntil } = fileIo;
 const sinksLayer = (updaterLayer: Layer.Layer<DiffUpdater>) =>
-  SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer })));
+  SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer })));
 
 const segment = (slot: number, start: number, end: number) => ({ type: "speaker", track: "相手", start, end, slot, final: true }) as const;
 const settledAt = (to: number) => ({ type: "speaker-settled", track: "相手", to }) as const;
@@ -64,7 +64,7 @@ const openSession = Effect.fnUntraced(function* (updaterLayer: Layer.Layer<DiffU
   const sinks = yield* SessionSinks;
   const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "speaker-names-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
   const frames: SpeakerNamesFrame[] = [];
-  const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: yield* sinks.prepare(defaultClaude), model: defaultClaude, dir, title: "週次",
+  const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
     publish: () => Effect.void, speak: () => Effect.void, speakerNames: (frame) => Effect.sync(() => void frames.push(frame)) });
   if (options.speakerOff) yield* sink.speaker(SPEAKER_OFF);
   const diffs = () => logEvents(dir).filter((e) => e.type === "diff").length;
@@ -315,7 +315,7 @@ describe("名前の更新は、要求の中断から保護される", () => {
   it.effect("別のログ書き込みがログのロックを持つ間に要求が中断されても、表・ログ・フレームはすべて更新される。同じ名前の再送は 3 つが一致したまま成功する", () => {
     const { prompts, updaterLayer } = recordingAi();
     const gate = { entered: Deferred.makeUnsafe<void>(), release: Deferred.makeUnsafe<void>(), armed: false };
-    const layer = SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer) }).pipe(Layer.provide(fakeExportServices({ fileSystem: gatedFileSystem(gate) })));
+    const layer = SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) }).pipe(Layer.provide(fakeExportServices({ fileSystem: gatedFileSystem(gate) })));
     return Effect.scoped(Effect.gen(function* () {
       const { sink, dir, frames, say } = yield* openSession(updaterLayer);
       yield* say(1, 5, 10); // 相手 A

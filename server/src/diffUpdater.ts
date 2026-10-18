@@ -1,12 +1,12 @@
 // 差分更新の準備。経路ごとの設定と接続検査は core の外で解決する。
 // claude.ts は Claude Agent SDK を読み込むので、使うコマンドの handler が動くときだけ開く（import も遅らせる）。
-import { Config, Context, Effect, Layer, Option } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { AppleIntelligence } from "./appleIntelligence.ts";
 import { prepareAppleUpdater } from "./appleDiffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import { DiffUpdater } from "./core/index.ts";
-import { defaultClaude, type ExecutableModel } from "./modelSelection.ts";
-import { judgeEnvs, type JudgeModel } from "./judgeSelection.ts";
+import { type ExecutableModel } from "./modelSelection.ts";
+import { type JudgeModel } from "./judgeSelection.ts";
 import { HAIKU, routedUpdater, SONNET } from "./routedDiffUpdater.ts";
 import { makeSystemOne } from "./systemOne.ts";
 import { localUpdaterLayer } from "./localDiffUpdater.ts";
@@ -29,20 +29,9 @@ const prepareClaude = Effect.fnUntraced(function* (model: ClaudeModel) {
   return (yield* loadClaude())(model.model);
 });
 
-// 振り分けが効くのは、組み込みの claude（設定で中身を変えていない）で、利用者が差分更新のモデルを替えていないときだけ
-const isBuiltInClaude = (model: ExecutableModel): model is ClaudeModel =>
-  model.route === "claude" && model.name === defaultClaude.name && model.model === defaultClaude.model
-  && model.images === undefined && model.maxTokens === undefined && model.extraBody === undefined;
-
-// Sonnet 5.5 用と Haiku 5.5 用の query を 1 本ずつ持つ振り分け。判定の鍵が無いときは undefined（判定なしで始める）
-const prepareRouted = Effect.fnUntraced(function* (judge: JudgeModel) {
-  const values: string[] = [];
-  for (const name of judgeEnvs(judge)) {
-    const value = yield* Config.option(Config.String(name)).pipe(Effect.orElseSucceed(() => Option.none<string>()));
-    if (Option.isNone(value) || value.value.trim() === "") return undefined;
-    values.push(value.value);
-  }
-  const ask = yield* makeSystemOne(judge, { apiKey: values[0]!, ...(judge.accountIdEnv === undefined ? {} : { accountId: values[1]! }) });
+// Sonnet 5.5 用と Haiku 5.5 用の query を 1 本ずつ持つ振り分け。keys は judgeEnvs(judge) の順の値（鍵の有無は planLayer が確かめ済み）
+export const prepareRoutedLayer = Effect.fnUntraced(function* (judge: JudgeModel, keys: readonly string[]) {
+  const ask = yield* makeSystemOne(judge, { apiKey: keys[0]!, ...(judge.accountIdEnv === undefined ? {} : { accountId: keys[1]! }) });
   const claude = yield* loadClaude();
   return Layer.effect(DiffUpdater, Effect.gen(function* () {
     // それぞれの Layer は自分の Service を提供するので、別々に build して取り出す（セッションの Scope が閉じると両方閉じる）
@@ -54,11 +43,8 @@ const prepareRouted = Effect.fnUntraced(function* (judge: JudgeModel) {
 
 export const claudeUpdaterLayer = (model: Extract<ExecutableModel, { route: "claude" }>) => Layer.unwrap(prepareClaude(model));
 
-export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: ExecutableModel, judge?: JudgeModel) {
-  if (model.route === "claude") {
-    const routed = judge !== undefined && isBuiltInClaude(model) ? yield* prepareRouted(judge) : undefined;
-    return routed ?? (yield* prepareClaude(model));
-  }
+export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: ExecutableModel) {
+  if (model.route === "claude") return yield* prepareClaude(model);
   if (model.route === "apple") {
     const state = yield* (yield* AppleIntelligence).availability;
     const refusal = appleRefusal(state);

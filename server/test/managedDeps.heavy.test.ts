@@ -40,7 +40,7 @@ describe("管理 Chromium の実導入", () => {
   it.live("本物の npm ci と Playwright で一時ルートに固定版と headless shell を入れ、同じサーバーの stop で PNG を撮る", () => Effect.gen(function* () {
     const root = yield* temporaryDeps;
     const options = { port: 0, sessionsDir: join(root, "sessions"), depsDir: root,
-      helper: { command: process.execPath, args: [join(import.meta.dirname, "fixtures/fake-helper.ts"), join(root, "helper.json"), join(root, "helper.log")] }, prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) };
+      helper: { command: process.execPath, args: [join(import.meta.dirname, "fixtures/fake-helper.ts"), join(root, "helper.json"), join(root, "helper.log")] }, prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) };
     yield* Effect.tryPromise(() => writeFile(join(root, "helper.json"), JSON.stringify({ apps: [], events: [] })));
     const exportServices = Layer.mergeAll(
       MapCapture.layer.pipe(Layer.provide(Playwright.layer)),

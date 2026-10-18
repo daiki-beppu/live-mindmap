@@ -54,7 +54,7 @@ const resource = Effect.fnUntraced(function* () {
   };
   const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
     helpers: Layer.succeed(Helpers, Helpers.of(helpers)), managedDeps: Layer.succeed(ManagedDeps, deps),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer(() => Effect.succeed({ ops: [] }))) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
   const env = { ...process.env, HOME: join(root, "home"), LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: join(root, "deps"),
     LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_CONFIG: join(root, "absent.json"), LIVE_MINDMAP_MODEL: "claude", NO_COLOR: "1" };

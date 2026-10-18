@@ -14,7 +14,7 @@ import { Playwright } from "./playwright.ts";
 import { depsDirConfig, portConfig, sessionsDirConfig } from "./config.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
-import { prepareUpdaterLayer } from "./diffUpdater.ts";
+import { planLayer } from "./updatePlan.ts";
 import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
@@ -136,7 +136,7 @@ if (import.meta.main) {
         port,
         sessionsDir,
         depsDir,
-        prepareUpdater: prepareUpdaterLayer,
+        prepareUpdater: planLayer,
         helper: helperCommand,
         onListening: (port) => console.error(`live-mindmap サーバーを起動しました: http://127.0.0.1:${port}`),
       };

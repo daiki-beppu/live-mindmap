@@ -36,7 +36,7 @@ const openRecorded = Effect.fn("openRecorded")(function* (updaterLayer: Layer.La
   const sinks = yield* SessionSinks;
   const dir = yield* sinks.createDir(root);
   const sink = yield* sinks.open({
-    dir, title: "録画", model: defaultClaude, updaterLayer: yield* sinks.prepare(defaultClaude),
+    dir, title: "録画", model: defaultClaude, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer,
     publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void, diffUpdate: () => Effect.void,
     recorded: { realtime: false, selfTrack, progress: () => Effect.void, paused: () => Effect.void },
   });
@@ -45,7 +45,7 @@ const openRecorded = Effect.fn("openRecorded")(function* (updaterLayer: Layer.La
 });
 
 const layerFor = (updaterLayer: Layer.Layer<DiffUpdater>) =>
-  SessionSinks.layer({ prepareUpdater: () => Effect.succeed(updaterLayer) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer })));
+  SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer })));
 
 describe("SessionSink.lastRemarkEnds（録画: 最後に作った発言の end）", () => {
   it.effect("作った発言が無いうちは空（途中結果だけでは、まだ発言を作っていない）", () => {

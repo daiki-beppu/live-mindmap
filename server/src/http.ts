@@ -31,7 +31,9 @@ import { Sessions, type RecordedStart, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import type { CloudflaredMissing } from "./tunnel.ts";
 import { ViewingShare, ShareOpenFailed, ShareRefusedLocalMode, ShareScopeEmpty, type ViewingPort } from "./viewingShare.ts";
-import { acceptTransferredModel, defaultClaude, type TransferredModel } from "./modelSelection.ts";
+import type { TransferredModel } from "./modelSelection.ts";
+import type { JudgeModel } from "./judgeSelection.ts";
+import { acceptPlan, needsTransferToken, planModel, type UpdatePlan } from "./updatePlan.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
@@ -50,14 +52,13 @@ class ForbiddenModelTransfer extends Schema.TaggedError<ForbiddenModelTransfer>(
 }
 
 // 本文は decode で既定値が補われているので、実行に渡す形へ詰め替えるだけにする
-const toSessionStart = (body: typeof SessionStartBody["Type"], model: SessionStart["model"]): SessionStart => ({
-  ...(body.judge ? { judge: body.judge } : {}),
+const toSessionStart = (body: typeof SessionStartBody["Type"], plan: UpdatePlan): SessionStart => ({
   app: body.app,
   title: body.title,
   audio: body.audio,
   screen: body.screen,
   vocab: body.vocab,
-  model,
+  plan,
 });
 
 class ForbiddenOrigin extends Schema.TaggedError<ForbiddenOrigin>()("ForbiddenOrigin", {}) {
@@ -129,17 +130,16 @@ const OriginRestriction = HttpRouter.middleware((httpEffect) =>
     return yield* httpEffect;
   }), { global: true });
 
-// 本文のモデルを検証して実行できる形にする。互換モデルは、転送用トークンが合うときだけ受ける（/session/start と /session/recorded が共有する）
-const acceptBodyModel = Effect.fnUntraced(function* (model: typeof TransferredModel["Type"] | undefined, withJudge = false) {
-  const result = acceptTransferredModel(model ?? defaultClaude);
+// 本文から差分更新の計画を検める。転送用トークンが要る計画は、トークンが合うときだけ受ける（/session/start と /session/recorded が共有する）
+const acceptBodyPlan = Effect.fnUntraced(function* (body: { readonly model?: typeof TransferredModel["Type"]; readonly judge?: JudgeModel }) {
+  const result = acceptPlan(body);
   if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
-  // 判定は環境変数の鍵を、本文で指定できる url へ送る。互換モデルと同じ危険があるので、転送用トークンを求める
-  if (model?.route === "openai-compatible" || model?.route === "chatgpt" || withJudge) {
+  if (needsTransferToken(result.plan)) {
     const token = yield* ModelTransferToken;
     const request = yield* HttpServerRequest.HttpServerRequest;
     if (!matchesModelTransferToken(token, request.headers[MODEL_TRANSFER_HEADER])) return yield* new ForbiddenModelTransfer();
   }
-  return result.model;
+  return result.plan;
 });
 
 // 記述の本文の Schema で本文を読む。本文が違えば 400
@@ -152,25 +152,25 @@ const jsonOf = <A>(schema: Schema.ConstraintCodec<A, unknown, unknown, never>) =
   return (body: A, options?: Parameters<typeof encode>[1]) => encode(body, options).pipe(Effect.orDie);
 };
 
-// セッションを始める本文を読み、そのモデルを検証する。本文が違えば 400
-const acceptedBody = Effect.fnUntraced(function* <A extends { readonly model?: typeof TransferredModel["Type"]; readonly judge?: unknown }, R>(
+// セッションを始める本文を読み、その計画を検める。本文が違えば 400
+const acceptedBody = Effect.fnUntraced(function* <A extends { readonly model?: typeof TransferredModel["Type"]; readonly judge?: JudgeModel }, R>(
   decode: Effect.Effect<A, InvalidBody, R>,
 ) {
   const body = yield* decode;
-  return { body, model: yield* acceptBodyModel(body.model, body.judge !== undefined) };
+  return { body, plan: yield* acceptBodyPlan(body) };
 });
 
 const startSession = Effect.gen(function* () {
-  const { body, model } = yield* acceptedBody(bodyOf(ServerRoutes.sessionStart.body));
+  const { body, plan } = yield* acceptedBody(bodyOf(ServerRoutes.sessionStart.body));
   const sessions = yield* Sessions;
-  return yield* jsonOf(ServerRoutes.sessionStart.response)(yield* sessions.start(toSessionStart(body, model)));
+  return yield* jsonOf(ServerRoutes.sessionStart.response)(yield* sessions.start(toSessionStart(body, plan)));
 });
 
 // 録画からのセッション。始められたら NDJSON の stream で経過を流す。始められなかったら（ライブの最中など）通常の失敗の応答
 const startRecordedSession = Effect.gen(function* () {
-  const { body, model } = yield* acceptedBody(bodyOf(ServerRoutes.sessionRecorded.body));
+  const { body, plan } = yield* acceptedBody(bodyOf(ServerRoutes.sessionRecorded.body));
   const sessions = yield* Sessions;
-  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, model };
+  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, model: planModel(plan) };
   const { dir, warnings, events } = yield* sessions.startRecorded(input);
   return HttpServerResponse.stream(
     Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(

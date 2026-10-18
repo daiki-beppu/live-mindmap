@@ -50,6 +50,8 @@ export const SessionRecordedBody = Schema.Struct({
   vocab: Vocabulary,
   realtime: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   model: Schema.optionalKey(TransferredModel),
+  // 判定のモデル。本文として受けるところまで（録画のセッションで振り分ける配線は #1310）
+  judge: Schema.optionalKey(TransferredJudge),
 });
 
 // /share/open の本文。範囲は { anyone: true } か { mails: [1 件以上] }、範囲なしの {}（範囲が空の拒否はサーバーが判定順の最後で決める）。
