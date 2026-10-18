@@ -8,15 +8,19 @@ eval は、本物のモデル・音声認識の出力を数字で測るもので
 
 ## cli eval（マップの質）
 
-素材 → `play` → `eval`。
+素材の作り方は「`cli recorded` → `play <セッションのフォルダ>` → `eval`」。録音を `cli recorded` に通すとセッションのフォルダができ、そのフォルダを `play` に渡して流す。
 
 ```sh
 cd server
-node src/cli.ts play <文字起こし.transcript.json> [--model <設定名>] [--local] [--realtime] [--screen <slides.tsv>]   # pnpm cli play ... でも同じ
+node src/cli.ts recorded <録音> [--title <題名>]   # セッションのフォルダ（log.jsonl と screens/）を作る。パスは最初の行に出る
+node src/cli.ts play <セッションのフォルダ | 文字起こし.transcript.json> [--model <設定名>] [--local] [--realtime] [--screen <slides.tsv>]   # pnpm cli play ... でも同じ
 node src/cli.ts eval [--model <設定名>] [--truth <正解.json>] [--screen-truth <画面の正解.json>] <セッションのフォルダ>...
 ```
 
-- 素材は `*.transcript.json`（kanary transcribe の JSON）と、`*.truth.json`（`server/bench/meetings/` に例がある）。
+- 素材は次の 2 つ。
+  - `cli recorded` が書くセッションのフォルダ（中身は `log.jsonl` と `screens/`）。新しい素材はこの作り方で取る。`相手` の発言には「相手 A」のような話者のラベルが付き、`play <フォルダ>` でそのまま差分更新に渡る。フォルダと `--screen` は一緒に使えない（共有画面は `screens/` から流れる）。
+  - `*.truth.json`（正解。`server/bench/meetings/` に例がある）。
+- 既存の `*.transcript.json`（kanary transcribe で作った JSON）は取り直さない。`play <ファイル>` でこれまでどおり流せる。
 - `play` の認証・準備は選んだ経路による。ClaudeはAPIキー、ChatGPTは `login chatgpt`、AppleはこのMacの可用性、互換モデルは外部ランタイムの準備が要る。[README](../../README.md#差分更新のモデルを選ぶ) の設定・選択順を参照。`--local` はAppleを選ぶ（ほかの `--model` と併用しない）。セッションは `LIVE_MINDMAP_SESSIONS` の下に作られる（既定 `~/.live-mindmap/sessions`）。待受けのポートは `LIVE_MINDMAP_PORT`（既定 4319）。
 - `play` は終わると、`map.md`・`map.json`・`map.drawnix`・`map.png`・`map.html` のパスを 1 行ずつ出す。
 - `--screen` は共有画面の `slides.tsv`（1 行目は見出し、列は `start end slide image`）。
