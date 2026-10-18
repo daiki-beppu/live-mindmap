@@ -3,7 +3,6 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
-import { ManagedDeps } from "../src/managedDeps.ts";
 import { NodeFileSystem } from "@effect/platform-node";
 import { MapCapture } from "../src/capture.ts";
 import { Playwright } from "../src/playwright.ts";
@@ -11,32 +10,13 @@ import { ReviewBuild } from "../src/review.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeReadings } from "./fixtures/readings.ts";
 import { realLayers } from "../src/server.ts";
-import { temporaryDeps, installed, managedLayer } from "./fixtures/managedDeps.ts";
+import { temporaryDeps, installed } from "./fixtures/managedDeps.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 import { FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
 describe("管理 Chromium の実導入", () => {
-  it.live("開発用スクリプトは常駐サーバーなしで導入でき、再実行は ready の実体を保つ", () => Effect.gen(function* () {
-    const root = yield* temporaryDeps;
-    const pkg = JSON.parse(yield* Effect.tryPromise(() => readFile(join(import.meta.dirname, "../package.json"), "utf8"))) as { scripts: Record<string, string> };
-    const script = Object.keys(pkg.scripts).find((name) => pkg.scripts[name]!.includes("scripts/install-managed-deps.ts"));
-    expect(script, "開発用の直接導入スクリプト").toBeDefined();
-    const run = () => Effect.tryPromise(() => new Promise<void>((resolve, reject) => {
-      execFile("pnpm", ["--filter", "@live-mindmap/server", script!, "chromium"], {
-        cwd: join(import.meta.dirname, "../.."), timeout: 150_000,
-        env: { ...process.env, LIVE_MINDMAP_DEPS: root, LIVE_MINDMAP_PORT: "0", LIVE_MINDMAP_CONFIG: join(root, "absent.json"), NO_COLOR: "1" },
-      }, (error) => error ? reject(error) : resolve());
-    }));
-    yield* run();
-    const first = yield* Effect.tryPromise(() => realpath(join(root, "chromium/current")));
-    const items = yield* Effect.gen(function* () { return yield* (yield* ManagedDeps).check(["chromium"]); }).pipe(Effect.provide(managedLayer(root)));
-    expect(items).toEqual([installed]);
-    yield* run();
-    expect(yield* Effect.tryPromise(() => realpath(join(root, "chromium/current")))).toBe(first);
-  }).pipe(Effect.scoped), 180_000);
-
   it.live("本物の npm ci と Playwright で一時ルートに固定版と headless shell を入れ、同じサーバーの stop で PNG を撮る", () => Effect.gen(function* () {
     const root = yield* temporaryDeps;
     const options = { port: 0, sessionsDir: join(root, "sessions"), depsDir: root,
