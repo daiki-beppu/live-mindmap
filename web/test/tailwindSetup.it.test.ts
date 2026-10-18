@@ -22,12 +22,13 @@ describe("web の Tailwind 依存", () => {
 });
 
 describe("web の Vite の設定", () => {
-  it("開発サーバーとビルドの両方で @tailwindcss/vite の plugin が入る（見返しのビルド・撮影・会議中の dev サーバーが同じ設定を使う）", async () => {
+  it("開発サーバーとビルドの両方で Tailwind・Foldkit の plugin が入り、React の plugin は無い（見返しのビルド・撮影・会議中の dev サーバーが同じ設定を使う）", async () => {
     for (const command of ["serve", "build"] as const) {
       const config = await resolveConfig({ root: webRoot, configFile: join(webRoot, "vite.config.ts") }, command);
       const names = config.plugins.map((plugin) => plugin.name);
       expect(names.some((name) => /tailwindcss/i.test(name)), `${command}: ${names.join(", ")}`).toBe(true);
       expect(names.some((name) => /foldkit/i.test(name)), command).toBe(true);
+      expect(names.filter((name) => /react/i.test(name)), command).toEqual([]);
     }
   });
 

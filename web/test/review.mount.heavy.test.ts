@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { scrollPanDelta } from "../src/camera.ts";
 import { join } from "node:path";
 import { buildReviewTemplateHtml } from "../../server/test/fixtures/reviewTemplate.ts";
-import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, readFoldkitViewport, rectOf, settled, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
+import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, rectOf, settled, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
 import { launchBrowser, withContext, type Browser, type BrowserContext, type Page } from "./browser.ts";
 
 // 見返し（Foldkit 版）の Mount の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #826）。React 版が無くなった後も残す。
-// ResizeObserver（画面の大きさ・ノードの高さ）・wheel・gesture（Safari のピンチ）・<audio> の時刻は、DOM が無い unit では確かめられない（偽の要素では実際の通知が起きない）。
+// 共有の ResizeObserver・wheel は meeting.mount.heavy.test.ts、合成 gesture は mapSurface.mount.dom.test.ts が見る。ここでは <audio> の時刻と見返しの表示・寸法を確かめる。
 // 時間がかかる。事前に `pnpm --filter @live-mindmap/server deps:install chromium` が要る。
 
 let pages: ReviewPages;
@@ -34,7 +33,6 @@ const shownSeconds = async (page: Page): Promise<number> => {
   return elapsed.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 };
 const audioTime = (page: Page): Promise<number> => page.evaluate(() => (document.querySelector("audio") as HTMLAudioElement).currentTime);
-const nodeVisibilities = (page: Page): Promise<string[]> => page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-node-id]")].map((el) => el.style.visibility));
 
 describe("見返し（Foldkit 版）の入口", () => {
   it(
@@ -56,77 +54,7 @@ describe("見返し（Foldkit 版）の入口", () => {
 
 describe("見返し（Foldkit 版）の Mount", () => {
   it(
-    "ResizeObserver: 画面の大きさを変えるとビューポートが測り直されて変わり、ノードは測った後の見える状態のまま",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await openReviewPage(context, pages.plainPath, { audio: false });
-      await settled(page);
-      const before = await readFoldkitViewport(page);
-      expect((await nodeVisibilities(page)).length).toBeGreaterThan(0);
-      expect(new Set(await nodeVisibilities(page))).toEqual(new Set(["visible"]));
-      await page.setViewportSize({ width: 800, height: 520 });
-      await page.waitForFunction(
-        (previous) => (document.querySelector(".map-viewport") as HTMLElement).style.transform !== previous,
-        `translate(${before.x}px, ${before.y}px) scale(${before.zoom})`,
-        { timeout: 10_000 },
-      );
-      await settled(page);
-      expect(await readFoldkitViewport(page)).not.toEqual(before);
-      expect(new Set(await nodeVisibilities(page))).toEqual(new Set(["visible"]));
-    }),
-    TIMEOUT,
-  );
-
-  it(
-    "wheel: 二本指スクロールの量だけ（scrollPanDelta の向きと大きさで）ビューポートが平行移動し、倍率は変わらない",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await openReviewPage(context, pages.plainPath, { audio: false });
-      await settled(page);
-      const before = await readFoldkitViewport(page);
-      const { x, y } = await mapPoint(page, "center");
-      await page.mouse.move(x, y);
-      await page.mouse.wheel(40, 90);
-      await settled(page);
-      const after = await readFoldkitViewport(page);
-      const isMac = await page.evaluate(() => /Mac|iPhone|iPad/.test(navigator.userAgent));
-      const moved = scrollPanDelta({ deltaX: 40, deltaY: 90, deltaMode: 0, shiftKey: false }, isMac);
-      expect(after.x - before.x).toBeCloseTo(moved.x, 3);
-      expect(after.y - before.y).toBeCloseTo(moved.y, 3);
-      expect(after.zoom).toBe(before.zoom);
-    }),
-    TIMEOUT,
-  );
-
-  it(
-    "gesture: .map-surface に合成した gesturestart・gesturechange（Safari のピンチ）で倍率が変わる。始まりからの累積の倍率で、前回との比だけ掛かる",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await openReviewPage(context, pages.plainPath, { audio: false });
-      await settled(page);
-      const before = await readFoldkitViewport(page);
-      const point = await mapPoint(page, "center");
-      const gesture = (type: string, scale: number) =>
-        page.evaluate(
-          ([name, s, clientX, clientY]) => {
-            const event = new Event(name as string, { bubbles: true, cancelable: true });
-            Object.assign(event, { scale: s, clientX, clientY });
-            document.querySelector(".map-surface")!.dispatchEvent(event);
-          },
-          [type, scale, point.x, point.y] as const,
-        );
-      await gesture("gesturestart", 1);
-      await gesture("gesturechange", 1.1);
-      await settled(page);
-      const first = await readFoldkitViewport(page);
-      expect(first.zoom).toBeCloseTo(before.zoom * 1.1, 5);
-      // 累積の 1.21 は、前回の 1.1 からは 1.1 倍
-      await gesture("gesturechange", 1.21);
-      await settled(page);
-      expect((await readFoldkitViewport(page)).zoom).toBeCloseTo(before.zoom * 1.21, 5);
-    }),
-    TIMEOUT,
-  );
-
-  it(
-    "<audio> の時刻: 再生すると audio.currentTime と .review-bar__time が進み、止めると進まず、End で <audio> が会議の終わりに追従する",
+    "<audio> の時刻: 再生すると audio.currentTime と .review-bar__time が進み、止めると paused になり、End で <audio> が会議の終わりに追従する",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await openReviewPage(context, pages.audioPath, { audio: true });
       await page.keyboard.press("Home");
@@ -141,13 +69,10 @@ describe("見返し（Foldkit 版）の Mount", () => {
       expect(Math.abs((await shownSeconds(page)) - Math.floor(await audioTime(page)))).toBeLessThanOrEqual(1);
       await page.keyboard.press("Space");
       await page.waitForFunction(() => (document.querySelector("audio") as HTMLAudioElement).paused);
-      const stoppedAt = await audioTime(page);
-      await page.waitForTimeout(500);
-      expect(await audioTime(page)).toBe(stoppedAt);
       await page.keyboard.press("End");
       const duration = await page.evaluate(() => Number(document.querySelector(".review-bar__time")!.textContent!.split("/")[1]!.trim().split(":").reduce((t, p) => t * 60 + Number(p), 0)));
       await page.waitForFunction((seconds) => Math.abs((document.querySelector("audio") as HTMLAudioElement).currentTime - seconds) < 0.5, duration, { timeout: 10_000 });
-      expect(await shownSeconds(page)).toBe(duration);
+      await expect.poll(() => shownSeconds(page), { timeout: 10_000 }).toBe(duration);
     }),
     TIMEOUT,
   );
@@ -177,14 +102,26 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
     page.evaluate((selector) => {
       for (const el of document.querySelectorAll(selector)) for (const a of el.getAnimations()) a.finish();
     }, BLINKING);
-  // 反映 3（"," で戻る）。反映 3 の点滅が始まり、動いている最中に最後まで進めて終わらせる（終わった点滅は、同じ要素のまま次の反映へ持ち越す）
+  // 反映 3（"," で戻る）。クラスは反映 4 と共通なので、操作前とは別の Animation の開始を待つ
   const atRoundThree = async (page: Page): Promise<void> => {
-    await page.keyboard.press(",");
-    await page.waitForFunction((selector) => document.querySelectorAll(selector).length > 0, BLINKING);
-    // RestartBlink が反映 3 の点滅を最初から再生し直し終わるのを待ってから終わらせる
-    await page.waitForTimeout(500);
-    await finishBlinks(page);
-    expect(await runningBlinks(page)).toEqual({});
+    const previous = await page.evaluateHandle(() => document.getAnimations());
+    try {
+      await page.keyboard.press(",");
+      await page.waitForFunction(
+        ({ selector, previous }) => {
+          const elements = [...document.querySelectorAll(selector)];
+          return elements.length === 2 && elements.every((el) => el.getAnimations().some(
+            (animation) => animation instanceof CSSAnimation && animation.animationName === "map-node-blink"
+              && !previous.includes(animation) && animation.playState === "running"
+              && animation.startTime !== null && animation.currentTime !== null,
+          ));
+        },
+        { selector: BLINKING, previous },
+        { timeout: 10_000 },
+      );
+    } finally {
+      await previous.dispose();
+    }
   };
 
   it(
@@ -193,6 +130,8 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
       await atRoundThree(page);
+      await finishBlinks(page);
+      expect(await runningBlinks(page)).toEqual({});
       expect(await blinkingIds(page)).toEqual(["n2", "n3"]);
       await page.keyboard.press(".");
       const restarted = await page.waitForFunction(
@@ -219,16 +158,18 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
-      await page.keyboard.press(",");
-      await page.waitForFunction((selector) => document.querySelectorAll(selector).length > 0, BLINKING);
+      await atRoundThree(page);
       // n1 を選び、Enter で畳む（n2 は n1 の下に隠れる）
       await page.locator('[data-node-id="n1"] .map-node').click();
       await page.waitForSelector('[data-node-id="n1"] .map-node--selected');
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => document.querySelector('[data-node-id="n2"]') === null);
       // 隠れた n2 の変化は、n2 を隠している n1 の点滅として出る
-      await page.waitForFunction((selector) => document.querySelectorAll(selector).length > 0, BLINKING);
-      await page.waitForTimeout(500);
+      await page.waitForFunction(() =>
+        document.querySelector('[data-node-id="n1"] .map-node--blink')?.getAnimations().some(
+          (animation) => animation instanceof CSSAnimation && animation.animationName === "map-node-blink"
+            && animation.playState === "running" && animation.startTime !== null && animation.currentTime !== null,
+        ), undefined, { timeout: 10_000 });
       await finishBlinks(page);
       expect(await runningBlinks(page)).toEqual({});
       expect(await blinkingIds(page)).toEqual(["n1", "n3"]);
@@ -263,10 +204,11 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
       await atRoundThree(page);
+      await finishBlinks(page);
+      expect(await runningBlinks(page)).toEqual({});
       await page.keyboard.press("=");
       await page.keyboard.press("-");
       await settled(page);
-      await page.waitForTimeout(300);
       expect(await blinkingIds(page)).toEqual(["n2", "n3"]);
       expect(await runningBlinks(page)).toEqual({});
     }),

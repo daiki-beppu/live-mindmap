@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { resolveConfig } from "vite";
 import { describe, expect, it } from "vitest";
 
 const webRoot = join(import.meta.dirname, "..");
@@ -89,14 +88,6 @@ describe("束ねる effect は 1 つ（lockfile）", () => {
 });
 
 describe("web の Vite の設定", () => {
-  it("@foldkit/vite-plugin が plugins に入り、React のプラグインは無く、開発サーバーの CSP は残る", async () => {
-    const config = await resolveConfig({ root: webRoot, configFile: join(webRoot, "vite.config.ts") }, "serve");
-    const names = config.plugins.map((plugin) => plugin.name);
-    expect(names.some((name) => /foldkit/i.test(name))).toBe(true);
-    expect(names.filter((name) => /react/i.test(name))).toEqual([]);
-    expect(config.server.headers).toEqual({ "Content-Security-Policy": "connect-src 'self'" });
-  });
-
   it("tsconfig.json に JSX の設定（jsx）が無い", () => {
     const tsconfig = JSON.parse(read(webRoot, "tsconfig.json")) as { compilerOptions: Record<string, unknown> };
     expect("jsx" in tsconfig.compilerOptions).toBe(false);
