@@ -13,7 +13,7 @@ import { semanticClassesOf } from "./semanticClasses.ts";
 
 // 見返しを 1 つのプログラムに組み上げた（Issue #826）Scene。描いた view から入り、
 // .review > .review__session > .layout > [.map > [.map-surface, 見る状態の知らせ, キーの一覧], 字幕, .side]、.review-controls、<audio> の並びで、
-// 字幕・右の列・見る状態の知らせが時刻と見る状態に追従することを見る。並びは React の版と同じ（画面の照合のスクリーンショットに要る）。
+// 字幕・右の列・見る状態の知らせが時刻と見る状態に追従することを見る。並びは React の版と同じ。
 // キー・時刻の動きは文書の keydown（描いた木の外）から届くので Subscription.emit で流す。会議の長さは 200 秒
 
 const NO_MODIFIERS = { metaKey: false, ctrlKey: false, altKey: false };

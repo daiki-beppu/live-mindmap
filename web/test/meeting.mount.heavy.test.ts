@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CAPTION_SLIDE_MS } from "../src/captions.ts";
-import { scrollPanDelta } from "../src/camera.ts";
+import { CLICK_ZOOM_FACTOR, scrollPanDelta, zoomAtPoint } from "../src/camera.ts";
 import { keyListRows } from "../src/app/keys/table.ts";
 import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
 import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { mapPoint, near, rectOf, styleOf } from "./reviewPage.ts";
-import { withBrowser, type Page } from "./screenCompare.ts";
+import { withBrowser, type Page } from "./browser.ts";
 
 // 会議中（Foldkit 版）の Mount と Subscription の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #829）。React 版が無くなった後も残す。
 // ResizeObserver（画面の大きさ・ノードの高さ）・wheel・gesture（Safari のピンチ）・WebSocket（`/ws`）・文書の keydown は、DOM が無い unit では確かめられない（偽の要素では実際の通知が起きない）。
@@ -166,6 +166,32 @@ describe("会議中（Foldkit 版）の Mount", () => {
       await page.keyboard.up("Control");
       await settled(page);
       expect((await readMeetingViewport(page)).zoom).toBeGreaterThan(before.zoom);
+      await page.context().close();
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "⌘＋クリック（修飾付きの click の capture）: 押した点を中心に CLICK_ZOOM_FACTOR 倍に拡大する",
+    () => withBrowser(async (browser) => {
+      const page = await open(browser);
+      await settled(page);
+      const before = await readMeetingViewport(page);
+      const surface = await page.locator(".map-surface").boundingBox();
+      if (surface === null) throw new Error(".map-surface の位置を読めません");
+      const { x, y } = await mapPoint(page, "center");
+      await page.mouse.move(x, y);
+      await page.keyboard.down("Meta");
+      await page.mouse.click(x, y);
+      await page.keyboard.up("Meta");
+      await settled(page);
+      const after = await readMeetingViewport(page);
+      // click の clientX・clientY は整数に切り捨てられて届く
+      const expected = zoomAtPoint(before, { x: Math.trunc(x) - surface.x, y: Math.trunc(y) - surface.y }, CLICK_ZOOM_FACTOR);
+      expect(after.zoom).toBeGreaterThan(before.zoom);
+      expect(after.zoom).toBeCloseTo(expected.zoom, 3);
+      expect(after.x).toBeCloseTo(expected.x, 3);
+      expect(after.y).toBeCloseTo(expected.y, 3);
       await page.context().close();
     }),
     MEETING_TIMEOUT,
