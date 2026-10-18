@@ -1,7 +1,7 @@
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { execFile } from "node:child_process";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
@@ -29,16 +29,14 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   });
 });
 
-const cliProcess = (dir: string, port: number, name: string) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), "install", name], {
-    cwd: join(import.meta.dirname, "../.."),
-    timeout: 15_000,
-    env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
-  }, (error, stdout, stderr) => {
-    if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-    resolve({ code: error ? error.code as number : 0, stdout, stderr });
-  });
-}));
+const runInstall = (dir: string, port: number, name: string) => runCliEntry(["install", name], Layer.mergeAll(
+  forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  Layer.succeed(StdoutIsTty, false),
+  ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+    HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"),
+    LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "",
+  })),
+));
 
 describe("CLI install とサーバー", () => {
   it.live("環境設定から realLayers に渡した管理ルートを状態確認 API が使う", () => Effect.gen(function* () {
@@ -108,7 +106,7 @@ describe("CLI install とサーバー", () => {
     expect(ended).toBe(true);
   }).pipe(Effect.scoped));
 
-  it.live("プロセス入口から偽 ManagedDeps に届き、items と exit 0 を返す", () => Effect.gen(function* () {
+  it.live("CLI 入口から偽 ManagedDeps に届き、items と exit 0 を返す", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
@@ -120,7 +118,7 @@ describe("CLI install とサーバー", () => {
         Stream.succeed({ type: "result" as const, items: [installed] }),
       ),
     }));
-    const result = yield* cliProcess(dir, server.port, "chromium");
+    const result = yield* runInstall(dir, server.port, "chromium");
     expect(result.code).toBe(0);
     expect(requests).toEqual([["chromium"]]);
     expect(JSON.parse(result.stdout)).toEqual([installed]);
@@ -139,7 +137,7 @@ describe("CLI install とサーバー", () => {
         Stream.fail(new ManagedDepsFailed({ message: "導入に失敗しました: 最終行" })),
       ),
     }));
-    const result = yield* cliProcess(dir, server.port, "chromium");
+    const result = yield* runInstall(dir, server.port, "chromium");
     expect(requests).toEqual([["chromium"]]);
     expect(result.stderr).toContain("ダウンロード\n");
     expect(result.stderr).toContain("導入に失敗しました: 最終行\n");
@@ -149,7 +147,7 @@ describe("CLI install とサーバー", () => {
 
   it.live("サーバー接続不能では指定文面と exit 1 を返し、管理導入へフォールバックしない", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const result = yield* cliProcess(dir, 0, "chromium");
+    const result = yield* runInstall(dir, 0, "chromium");
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");

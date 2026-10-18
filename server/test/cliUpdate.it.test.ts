@@ -1,7 +1,7 @@
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { execFile } from "node:child_process";
+import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { createServer } from "node:http";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,16 +28,14 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   });
 });
 
-const cliProcess = (dir: string, port: number, names: string[]) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), "update", ...names], {
-    cwd: join(import.meta.dirname, "../.."),
-    timeout: 15_000,
-    env: { ...process.env, HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
-  }, (error, stdout, stderr) => {
-    if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-    resolve({ code: error ? error.code as number : 0, stdout, stderr });
-  });
-}));
+const runUpdate = (dir: string, port: number, names: string[]) => runCliEntry(["update", ...names], Layer.mergeAll(
+  forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
+  Layer.succeed(StdoutIsTty, false),
+  ConfigProvider.layer(ConfigProvider.fromEnvRecord({
+    HOME: join(dir, "home"), LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"),
+    LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "",
+  })),
+));
 
 const outdated = { ...installed, state: "outdated", version: "0.0.0" } as const;
 const claudeMissing = { name: "claude", need: "optional", state: "missing" } as const;
@@ -86,7 +84,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     })));
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("TCP の待受けがありません");
-    const result = yield* cliProcess(dir, address.port, ["chromium"]);
+    const result = yield* runUpdate(dir, address.port, ["chromium"]);
     expect(requests).toEqual(["GET /deps/check", "POST /update"]);
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
@@ -101,7 +99,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     const results = items.filter((item) => updated.includes(item.name)).map((item) => ({ name: item.name, need: "optional" as const, state: "ready" as const }));
     const deps = fakeDeps(items, Stream.succeed({ type: "result", items: results }));
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, names);
+    const result = yield* runUpdate(dir, server.port, names);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual(results);
     expect(deps.update.mock.calls).toEqual(updated.length === 0 ? [] : [[updated]]);
@@ -111,7 +109,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps([outdated, claudeMissing]);
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, ["chromium", "claude"]);
+    const result = yield* runUpdate(dir, server.port, ["chromium", "claude"]);
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/未導入です。.*cli install claude.*で入れる/);
     expect(result.stdout).toBe("");
@@ -121,7 +119,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
 
   it.live("speech-ja 単独はサーバー不要で一行を出して exit 0", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const result = yield* cliProcess(dir, 0, ["speech-ja"]);
+    const result = yield* runUpdate(dir, 0, ["speech-ja"]);
     expect(result.code).toBe(0);
     expect(result.stderr).toBe("OS が更新するので不要\n");
     expect(yield* Effect.tryPromise(() => readdir(dir))).toEqual([]);
@@ -131,7 +129,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps([outdated]);
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, ["speech-ja", "chromium"]);
+    const result = yield* runUpdate(dir, server.port, ["speech-ja", "chromium"]);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([installed]);
     expect(result.stderr.split("\n").filter((line) => line === "OS が更新するので不要")).toHaveLength(1);
@@ -172,7 +170,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
     const dir = yield* temporaryDeps;
     const deps = fakeDeps([outdated], Stream.concat(Stream.succeed({ type: "progress" as const, message: "ダウンロード" }), Stream.fail(new ManagedDepsFailed({ message: "更新に失敗しました" }))));
     const server = yield* serverWith(dir, deps.service);
-    const result = yield* cliProcess(dir, server.port, ["chromium"]);
+    const result = yield* runUpdate(dir, server.port, ["chromium"]);
     expect(deps.update).toHaveBeenCalledExactlyOnceWith(["chromium"]);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("ダウンロード\n");
@@ -182,7 +180,7 @@ describe("711-4・711-5・711-6: CLI update", () => {
 
   it.live("サーバー接続不能は指定文面と exit 1 を返す", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const result = yield* cliProcess(dir, 0, ["chromium"]);
+    const result = yield* runUpdate(dir, 0, ["chromium"]);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
     expect(result.stdout).toBe("");
