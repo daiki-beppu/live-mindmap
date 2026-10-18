@@ -15,9 +15,12 @@ export const ShareAllow = Schema.Union([
 ]);
 export type ShareAllow = typeof ShareAllow.Type;
 
+// 共有中の状態。POST /share/open の応答はこの形だけ
+export const OpenShareStatus = Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: ShareAllow });
+
 export const ShareStatus = Schema.Union([
   Schema.Struct({ status: Schema.Literal("off") }),
-  Schema.Struct({ status: Schema.Literal("open"), url: Schema.NonEmptyString, allow: ShareAllow }),
+  OpenShareStatus,
   Schema.Struct({ status: Schema.Literal("broken"), allow: ShareAllow }),
 ]);
 export type ShareStatus = typeof ShareStatus.Type;

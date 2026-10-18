@@ -92,12 +92,14 @@ export function tailLines(text: string, n: number): string[] {
   return lines.slice(-n);
 }
 
-export type IntakeStatusReport = {
-  status: SessionIntakeStatus;
-  dir?: string;
-  restarts?: number; // 起動し直した回数
-  lastInterruptedAt?: string; // 最後の途切れの時刻（ISO）
-};
+// GET /session/status の応答（cli status が読む）。server が書き出し、CLI が読む同じ Schema
+export const IntakeStatusReport = Schema.Struct({
+  status: SessionIntakeStatus,
+  dir: Schema.optionalKey(Schema.String),
+  restarts: Schema.optionalKey(Schema.Finite), // 起動し直した回数
+  lastInterruptedAt: Schema.optionalKey(Schema.String), // 最後の途切れの時刻（ISO）。途切れていなければ無し
+});
+export type IntakeStatusReport = typeof IntakeStatusReport["Type"];
 
 const STATUS_WORDS: Record<SessionIntakeStatus, string> = {
   none: "セッションなし",

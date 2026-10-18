@@ -1,5 +1,7 @@
 # HTTP とブラウザ向けの WebSocket は effect/http で受け、失敗からステータスへの対応は 1 つの表に置く
 
+> ADR 0023 で、「依頼の本文の Schema は HTTP のモジュールに置く」を、本文と応答の Schema を CLI と server が import する 1 つのモジュールに置くことへ置き換えた。それ以外は、この ADR のまま。
+
 server を Effect 4 へ置き換える（[#193](https://github.com/daiki-beppu/live-mindmap/issues/193)）にあたって、HTTP の受け口（`/apps`・`/session/*`）とブラウザ向けの WebSocket（`/ws`、今の `ws.ts`）を次の形で書く（[#204](https://github.com/daiki-beppu/live-mindmap/issues/204)）。
 
 - **`effect/http` の `HttpRouter` と、`@effect/platform-node` の `NodeHttpServer` で受ける**。`/ws` は同じサーバー・同じポートで `HttpServerRequest.upgrade` を受け、`Socket` で送る。`node:http` と `ws` には直接依存せず、`RequestError` もやめる
@@ -12,7 +14,7 @@ server を Effect 4 へ置き換える（[#193](https://github.com/daiki-beppu/l
 ## Considered Options
 
 - **`node:http` と `ws` を安定した API（`acquireRelease`・`Effect.callback`・`FiberSet.makeRuntime`）で包む**: 安定した API だけで済む。ただし unstable を受け入れる判断は ADR 0008 で済んでいて、HTTP だけ包んでも安定性は増えない
-- **`effect/http-api`（`HttpApi`）で宣言的に書く**: エンドポイントと失敗を型で宣言でき、OpenAPI も出せる。エンドポイントは 5 本、呼び出し元は自分の cli だけで、重すぎる
+- **`effect/http-api`（`HttpApi`）で宣言的に書く**: エンドポイントと失敗を型で宣言でき、OpenAPI も出せる。エンドポイントは 5 本、呼び出し元は自分の cli だけで、重すぎる（ADR 0023 で、採らない理由を書き直した）
 - **失敗のクラスごとに `HttpServerRespondable` を実装する**: ステータスが失敗の定義の横に来る。ただしドメインの失敗が HTTP に依存する
 
 ## Consequences

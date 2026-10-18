@@ -1,5 +1,5 @@
-// ブラウザと CLI からの受け口（ADR 0009）。ルート・本文の Schema・Origin の制限・
-// タグ付きの失敗からステータスへの対応表・失敗から応答への変換を、この 1 か所に置く。
+// ブラウザと CLI からの受け口（ADR 0009）。Origin の制限・タグ付きの失敗からステータスへの対応表・失敗から応答への変換を、この 1 か所に置く。
+// 経路の method・path と、本文・応答の Schema は serverProtocol.ts の記述（CLI と共有。ADR 0023）から取る。
 //   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
 //   POST /session/start   { app, title?, audio?, screen? } でセッションを開始する
 //   POST /session/recorded { file, selfFile?, title?, vocab?, realtime?, model? } で、音声 1 本（selfFile があれば自分用の 2 本目も）から録画からのセッションを始める。応答は NDJSON の stream
@@ -25,19 +25,19 @@ import { WebSocket } from "ws";
 import { Cause, Context, Effect, Layer, Option, Ref, Schema, Stream, type Scope } from "effect";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { NetAddress } from "effect/net";
-import { SHARE_OPEN_OUTCOME_HEADER, ShareMail, type RecordedEvent } from "./core/index.ts";
+import { SHARE_OPEN_OUTCOME_HEADER, type RecordedEvent } from "./core/index.ts";
 import type { SessionFailure, SpeakerNameRejected } from "./sessionFailure.ts";
 import { Sessions, type RecordedStart, type SessionStart } from "./sessions.ts";
 import { Viewers } from "./viewers.ts";
 import type { CloudflaredMissing } from "./tunnel.ts";
 import { ViewingShare, ShareOpenFailed, ShareRefusedLocalMode, ShareScopeEmpty, type ViewingPort } from "./viewingShare.ts";
-import { TransferredJudge } from "./judgeSelection.ts";
-import { acceptTransferredModel, defaultClaude, TransferredModel } from "./modelSelection.ts";
+import { acceptTransferredModel, defaultClaude, type TransferredModel } from "./modelSelection.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
 import { Helpers } from "./helpers.ts";
-import { CheckFor, ModelRoute, CheckDepNames, InstallBody, UpdateBody, type InstallEvent } from "./managedDepsProtocol.ts";
+import { CheckFor, ModelRoute, CheckDepNames } from "./managedDepsProtocol.ts";
+import { ServerRoutes, type SessionRecordedBody, type SessionStartBody } from "./serverProtocol.ts";
 import { ReviewBuild, type ReviewPageFailed } from "./review.ts";
 import { matchesModelTransferToken, MODEL_TRANSFER_HEADER } from "./modelTransferToken.ts";
 
@@ -49,35 +49,14 @@ class ForbiddenModelTransfer extends Schema.TaggedError<ForbiddenModelTransfer>(
   }
 }
 
-// /session/start の本文。app は空でない文字列、title は文字列か null か無し、audio・screen は真偽値か null か無し（screen の省略と null は true）。
-// trim・形式・長さの制限は足さない（空白だけの app も、今まで通り受理する）
-const SessionStartBody = Schema.Struct({
-  app: Schema.NonEmptyString,
-  title: Schema.optional(Schema.NullOr(Schema.String)),
-  audio: Schema.optional(Schema.NullOr(Schema.Boolean)),
-  screen: Schema.optional(Schema.NullOr(Schema.Boolean)),
-  vocab: Schema.optionalKey(Schema.Array(Schema.String)), // 利用者が足した語（cli start --vocab）。1 語ずつ
-  model: Schema.optionalKey(TransferredModel),
-  judge: Schema.optionalKey(TransferredJudge), // 開始時に決めた判定のモデル（cli start）。鍵は送らず、環境変数の名前だけを送る
-});
-
-// /session/recorded の本文。file は録画の音声の絶対パス（CLI が解決して渡す）。title・vocab・model は /session/start と同じ意味。realtime は音声の時刻どおりに等速で入れる（省略は待ち時間なし）
-const SessionRecordedBody = Schema.Struct({
-  file: Schema.NonEmptyString,
-  selfFile: Schema.optionalKey(Schema.NonEmptyString), // 自分用の録音の絶対パス（cli recorded --self）。省略は 1 本だけ
-  title: Schema.optional(Schema.NullOr(Schema.String)),
-  vocab: Schema.optionalKey(Schema.Array(Schema.String)),
-  realtime: Schema.optionalKey(Schema.Boolean),
-  model: Schema.optionalKey(TransferredModel),
-});
-
+// 本文は decode で既定値が補われているので、実行に渡す形へ詰め替えるだけにする
 const toSessionStart = (body: typeof SessionStartBody["Type"], model: SessionStart["model"]): SessionStart => ({
   ...(body.judge ? { judge: body.judge } : {}),
   app: body.app,
-  title: body.title ?? undefined,
-  audio: body.audio ?? true,
-  screen: body.screen ?? true,
-  vocab: body.vocab ?? [],
+  title: body.title,
+  audio: body.audio,
+  screen: body.screen,
+  vocab: body.vocab,
   model,
 });
 
@@ -163,25 +142,35 @@ const acceptBodyModel = Effect.fnUntraced(function* (model: typeof TransferredMo
   return result.model;
 });
 
+// 記述の本文の Schema で本文を読む。本文が違えば 400
+const bodyOf = <A, RD>(schema: Schema.ConstraintDecoder<A, RD>, options?: Parameters<typeof HttpServerRequest.schemaBodyJson>[1]) =>
+  HttpServerRequest.schemaBodyJson(schema, options).pipe(Effect.mapError((failure) => new InvalidBody({ detail: failure.message })));
+
+// 記述の response の Schema で成功応答を書き出す。書き出せない（応答の値が Schema に合わない）のは server 側の不具合なので defect にする（500）
+const jsonOf = <A>(schema: Schema.ConstraintCodec<A, unknown, unknown, never>) => {
+  const encode = HttpServerResponse.schemaJson(schema);
+  return (body: A, options?: Parameters<typeof encode>[1]) => encode(body, options).pipe(Effect.orDie);
+};
+
 // セッションを始める本文を読み、そのモデルを検証する。本文が違えば 400
 const acceptedBody = Effect.fnUntraced(function* <A extends { readonly model?: typeof TransferredModel["Type"]; readonly judge?: unknown }, R>(
-  decode: Effect.Effect<A, { readonly message: string }, R>,
+  decode: Effect.Effect<A, InvalidBody, R>,
 ) {
-  const body = yield* decode.pipe(Effect.mapError((failure) => new InvalidBody({ detail: failure.message })));
+  const body = yield* decode;
   return { body, model: yield* acceptBodyModel(body.model, body.judge !== undefined) };
 });
 
 const startSession = Effect.gen(function* () {
-  const { body, model } = yield* acceptedBody(HttpServerRequest.schemaBodyJson(SessionStartBody));
+  const { body, model } = yield* acceptedBody(bodyOf(ServerRoutes.sessionStart.body));
   const sessions = yield* Sessions;
-  return HttpServerResponse.jsonUnsafe(yield* sessions.start(toSessionStart(body, model)));
+  return yield* jsonOf(ServerRoutes.sessionStart.response)(yield* sessions.start(toSessionStart(body, model)));
 });
 
 // 録画からのセッション。始められたら NDJSON の stream で経過を流す。始められなかったら（ライブの最中など）通常の失敗の応答
 const startRecordedSession = Effect.gen(function* () {
-  const { body, model } = yield* acceptedBody(HttpServerRequest.schemaBodyJson(SessionRecordedBody));
+  const { body, model } = yield* acceptedBody(bodyOf(ServerRoutes.sessionRecorded.body));
   const sessions = yield* Sessions;
-  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title ?? undefined, vocab: body.vocab ?? [], realtime: body.realtime ?? false, model };
+  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, model };
   const { dir, warnings, events } = yield* sessions.startRecorded(input);
   return HttpServerResponse.stream(
     Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(
@@ -205,84 +194,64 @@ const feed = Effect.gen(function* () {
   return HttpServerResponse.empty();
 });
 
-// /share/open の本文。範囲は { anyone: true } か { mails: [1 件以上] }、範囲なしの {}（範囲が空の拒否はサーバーが判定順の最後で決める）。
-// 両方を持つ本文は、どの形にも当たらず 400
-const ShareOpenBody = Schema.Union([
-  Schema.Struct({ anyone: Schema.optionalKey(Schema.Literal(true)) }),
-  Schema.Struct({ mails: Schema.Array(ShareMail).check(Schema.isMinLength(1)) }),
-]);
-
-// /session/self-pause の本文。状態を指定する形（トグルではない）なので、同じ指示を重ねても結果が変わらない
-const SelfPauseBody = Schema.Struct({ paused: Schema.Boolean });
-
-// /session/speaker-name の本文。ラベルに付ける名前（付けられるラベルかどうか・名前が空かどうかはサーバーが決める）
-const SpeakerNameBody = Schema.Struct({ label: Schema.String, name: Schema.String });
-
 const SessionRoutes = HttpRouter.addAll([
-  HttpRouter.route("GET", "/apps", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.apps.method, ServerRoutes.apps.path, Effect.gen(function* () {
     const sessions = yield* Sessions;
-    return HttpServerResponse.jsonUnsafe(yield* sessions.apps);
+    return yield* jsonOf(ServerRoutes.apps.response)(yield* sessions.apps);
   })),
-  HttpRouter.route("POST", "/session/start", startSession),
-  HttpRouter.route("POST", "/session/recorded", startRecordedSession),
-  HttpRouter.route("POST", "/session/stop", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.sessionStart.method, ServerRoutes.sessionStart.path, startSession),
+  HttpRouter.route(ServerRoutes.sessionRecorded.method, ServerRoutes.sessionRecorded.path, startRecordedSession),
+  HttpRouter.route(ServerRoutes.sessionStop.method, ServerRoutes.sessionStop.path, Effect.gen(function* () {
     const sessions = yield* Sessions;
-    return HttpServerResponse.jsonUnsafe(yield* sessions.stop);
+    return yield* jsonOf(ServerRoutes.sessionStop.response)(yield* sessions.stop);
   })),
-  HttpRouter.route("GET", "/session/status", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.sessionStatus.method, ServerRoutes.sessionStatus.path, Effect.gen(function* () {
     const sessions = yield* Sessions;
-    return HttpServerResponse.jsonUnsafe(yield* sessions.status);
+    return yield* jsonOf(ServerRoutes.sessionStatus.response)(yield* sessions.status);
   })),
-  HttpRouter.route("POST", "/session/resume", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.sessionResume.method, ServerRoutes.sessionResume.path, Effect.gen(function* () {
     const sessions = yield* Sessions;
-    return HttpServerResponse.jsonUnsafe(yield* sessions.resume);
+    return yield* jsonOf(ServerRoutes.sessionResume.response)(yield* sessions.resume);
   })),
-  HttpRouter.route("POST", "/session/self-pause", Effect.gen(function* () {
-    const body = yield* HttpServerRequest.schemaBodyJson(SelfPauseBody, { onExcessProperty: "error" }).pipe(
-      Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
-    );
+  HttpRouter.route(ServerRoutes.sessionSelfPause.method, ServerRoutes.sessionSelfPause.path, Effect.gen(function* () {
+    const body = yield* bodyOf(ServerRoutes.sessionSelfPause.body, { onExcessProperty: "error" });
     const sessions = yield* Sessions;
     yield* sessions.setSelfPause(body.paused);
     return HttpServerResponse.empty({ status: 204 });
   })),
-  HttpRouter.route("POST", "/session/speaker-name", Effect.gen(function* () {
-    const body = yield* HttpServerRequest.schemaBodyJson(SpeakerNameBody, { onExcessProperty: "error" }).pipe(
-      Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
-    );
+  HttpRouter.route(ServerRoutes.sessionSpeakerName.method, ServerRoutes.sessionSpeakerName.path, Effect.gen(function* () {
+    const body = yield* bodyOf(ServerRoutes.sessionSpeakerName.body, { onExcessProperty: "error" });
     const sessions = yield* Sessions;
     yield* sessions.setSpeakerName(body);
     return HttpServerResponse.empty({ status: 204 });
   })),
-  HttpRouter.route("POST", "/share/open", Effect.gen(function* () {
-    const body = yield* HttpServerRequest.schemaBodyJson(ShareOpenBody, { onExcessProperty: "error" }).pipe(
-      Effect.mapError((failure) => new InvalidBody({ detail: failure.message })),
-    );
+  HttpRouter.route(ServerRoutes.shareOpen.method, ServerRoutes.shareOpen.path, Effect.gen(function* () {
+    const body = yield* bodyOf(ServerRoutes.shareOpen.body, { onExcessProperty: "error" });
     const share = yield* ViewingShare;
     const { outcome, status } = yield* share.open("anyone" in body ? "anyone" : "mails" in body ? { mails: body.mails } : undefined);
-    return HttpServerResponse.jsonUnsafe(status, { headers: { [SHARE_OPEN_OUTCOME_HEADER]: outcome } });
+    return yield* jsonOf(ServerRoutes.shareOpen.response)(status, { headers: { [SHARE_OPEN_OUTCOME_HEADER]: outcome } });
   })),
-  HttpRouter.route("POST", "/share/close", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.shareClose.method, ServerRoutes.shareClose.path, Effect.gen(function* () {
     const share = yield* ViewingShare;
     yield* share.close;
-    return HttpServerResponse.jsonUnsafe(yield* share.status);
+    return yield* jsonOf(ServerRoutes.shareClose.response)(yield* share.status);
   })),
-  HttpRouter.route("GET", "/share/status", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.shareStatus.method, ServerRoutes.shareStatus.path, Effect.gen(function* () {
     const share = yield* ViewingShare;
-    return HttpServerResponse.jsonUnsafe(yield* share.status);
+    return yield* jsonOf(ServerRoutes.shareStatus.response)(yield* share.status);
   })),
 ]);
 
-// 待ち受けているサーバー自身の PID。cli server stop は、記録の PID ではなくこれにだけシグナルを送る（serverProcess.ts）
-const ServerRoutes = HttpRouter.addAll([
-  HttpRouter.route("GET", "/server", Effect.sync(() => HttpServerResponse.jsonUnsafe({ pid: process.pid }))),
+const ServerIdentityRoutes = HttpRouter.addAll([
+  HttpRouter.route(ServerRoutes.server.method, ServerRoutes.server.path, Effect.suspend(() => jsonOf(ServerRoutes.server.response)({ pid: process.pid }))),
 ]);
 
 const FeedRoutes = HttpRouter.addAll([
-  HttpRouter.route("GET", "/ws", feed),
+  HttpRouter.route(ServerRoutes.feed.method, ServerRoutes.feed.path, feed),
   HttpRouter.route("GET", "/", feed),
 ]);
 
-const depResponse = Effect.fnUntraced(function* <E>(source: Stream.Stream<typeof InstallEvent.Type, E>) {
+const depResponse = Effect.fnUntraced(function* <E>(source: Stream.Stream<typeof ServerRoutes.depsInstall.response.Type, E>) {
   const sessions = yield* Sessions;
   return HttpServerResponse.stream(Stream.unwrap(Effect.gen(function* () {
     yield* sessions.reserveDeps;
@@ -296,43 +265,40 @@ const depResponse = Effect.fnUntraced(function* <E>(source: Stream.Stream<typeof
 });
 
 const DepRoutes = HttpRouter.addAll([
-  HttpRouter.route("GET", "/check", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.check.method, ServerRoutes.check.path, Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const params = new URL(request.url, "http://127.0.0.1").searchParams;
     const entry = yield* Schema.decodeUnknownEffect(CheckFor)(params.get("for") ?? "start").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    if (entry === "resume") return HttpServerResponse.jsonUnsafe(yield* (yield* Sessions).checkResume);
+    const respondCheck = jsonOf(ServerRoutes.check.response);
+    if (entry === "resume") return yield* respondCheck(yield* (yield* Sessions).checkResume);
     const route = yield* Schema.decodeUnknownEffect(ModelRoute)(params.get("route") ?? "claude").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    if (entry === "play") return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps(entry, route));
+    if (entry === "play") return yield* respondCheck(yield* checkManagedDeps(entry, route));
     const screen = yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(params.get("screen") ?? "true").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const helpers = yield* Helpers;
-    return HttpServerResponse.jsonUnsafe(yield* checkManagedDeps(entry, route, { screen: screen === "true", check: screen === "true" ? helpers.check : helpers.checkNoScreen }));
+    return yield* respondCheck(yield* checkManagedDeps(entry, route, { screen: screen === "true", check: screen === "true" ? helpers.check : helpers.checkNoScreen }));
   })),
-  HttpRouter.route("GET", "/deps/check", Effect.gen(function* () {
+  HttpRouter.route(ServerRoutes.depsCheck.method, ServerRoutes.depsCheck.path, Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const raw = new URL(request.url, "http://127.0.0.1").searchParams.get("names");
     const names = yield* Schema.decodeUnknownEffect(CheckDepNames)(raw === null ? [] : raw.split(",")).pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const deps = yield* ManagedDeps;
-    return HttpServerResponse.jsonUnsafe(yield* deps.check(names).pipe(Effect.orDie));
+    return yield* jsonOf(ServerRoutes.depsCheck.response)(yield* deps.check(names).pipe(Effect.orDie));
   })),
-  HttpRouter.route("POST", "/deps/install", Effect.gen(function* () {
-    const body = yield* HttpServerRequest.schemaBodyJson(InstallBody).pipe(
-      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
-    );
+  HttpRouter.route(ServerRoutes.depsInstall.method, ServerRoutes.depsInstall.path, Effect.gen(function* () {
+    const body = yield* bodyOf(ServerRoutes.depsInstall.body);
     const deps = yield* InstallDeps;
     return yield* depResponse(deps.install(body.names));
   })),
-  HttpRouter.route("POST", "/update", Effect.gen(function* () {
-    const body = yield* HttpServerRequest.schemaBodyJson(UpdateBody).pipe(
-      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
-    );
+  HttpRouter.route(ServerRoutes.update.method, ServerRoutes.update.path, Effect.gen(function* () {
+    const body = yield* bodyOf(ServerRoutes.update.body);
     const deps = yield* ManagedDeps;
     return yield* depResponse(deps.update(body.names));
   })),
@@ -429,7 +395,7 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
 
 // セッションの操作と配信を受ける（常駐サーバー）
 export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ViewingShare | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
-  HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, ServerRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
+  HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, ServerIdentityRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));
 
