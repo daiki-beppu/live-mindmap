@@ -7,7 +7,7 @@ import { plainApp, plainContext, stateAt } from "./reviewHarness.ts";
 
 // 見返しの表示面のポインタ（Issue #826）。何も無い所を押して動かすパンは、押している間だけ文書全体の pointermove・pointerup・pointercancel を受ける Subscription が要る。
 // 見返しの Subscription に表示面の pointer が組み込まれていないと、押しても動かせない（stream の中身は mapSurface 側の Subscription が持つ）。
-// 開く条件は modelToDependencies で確かめる。ドラッグでビューポートが実際に動くことは、画面の照合の heavy IT（screenCompare.heavy.test.ts）が見る
+// 開く条件は modelToDependencies で確かめる。ドラッグでビューポートが実際に動くことは、同じ表示面の部品を使う会議中の画面の heavy IT（meeting.mount.heavy.test.ts の「ポインタ（文書全体の pointermove・pointerup）: 何も無い所のドラッグ…」）が見る
 
 const subscriptions = makeSubscriptions(plainContext);
 const surface = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });

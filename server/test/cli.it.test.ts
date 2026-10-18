@@ -562,6 +562,23 @@ describe("CLI", () => {
       expect(existsSync(sessions)).toBe(false);
     }));
 
+    it.effect("スキーマ違反の設定で start すると、設定パス・モデル名・項目を含む 1 行で拒み、セッションのフォルダを作らない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const sessions = join(root, "sessions");
+      const config = join(root, "config.json");
+      writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "qwen" } } }));
+      const deps = dependencies(sessions, "0", { LIVE_MINDMAP_CONFIG: config });
+      const result = yield* Effect.result(runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(deps.layer)));
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        const message = String(result.failure);
+        expect(message).toMatch(/設定ファイルが不正です: [^\n]+（「models\.compatible」の url:[^\n]+）$/);
+        expect(message).toContain(config);
+      }
+      expect(deps.stdout).toEqual([]);
+      expect(existsSync(sessions)).toBe(false);
+    }));
+
     it.effect("設定パスがディレクトリなら読込失敗を拒み、ファイルに直せば同じ入口で読める", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
       const config = join(root, "config.json");
@@ -1061,7 +1078,7 @@ describe("CLI", () => {
       if (Result.isSuccess(result)) return;
       expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
       expect(CliError.isCliError(result.failure)).toBe(false);
-      // 行番号付きの日本語 1 行は、入口の表を通す cliProcess.heavy.test.ts で観測する
+      // 行番号付きの日本語 1 行は、入口の表を通す cliEntry.it.test.ts で観測する
       expect(deps.stdout).toEqual([]);
       expect(deps.stderr).toEqual([]);
     }));
@@ -1223,7 +1240,7 @@ describe("CLI", () => {
       if (Result.isSuccess(result)) return;
       expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
       expect(CliError.isCliError(result.failure)).toBe(false);
-      // 「セッションがありません: <パス>」の 1 行は cliProcess.heavy.test.ts で観測する
+      // 「セッションがありません: <パス>」の 1 行は cliEntry.it.test.ts（restore）と cliProcess.heavy.test.ts（export）で観測する
       expect(deps.stdout).toEqual([]);
       expect(deps.stderr).toEqual([]);
     }));

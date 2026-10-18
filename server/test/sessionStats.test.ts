@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { formatRow, overlapRatio, parseLog, sessionStats, type LogLine } from "../bench/sessionStats.ts";
+import { formatRow, overlapRatio, parseLog, recordingLog, sessionStats, type LogLine } from "../bench/sessionStats.ts";
+import { fakeSpawner } from "./fixtures/fakeSpawner.ts";
 
 const remark = (id: string, track: "相手" | "自分", start: number, end: number) =>
   JSON.stringify({ type: "remark", remark: { id, track, start, end, text: "本文" } });
@@ -117,4 +118,19 @@ describe("1 行ずつの数え方（型ごとの集計）", () => {
       lastEnd: 0, diffs: 0, diffErrors: 0, ops: 0, intake: { stopped: 0, restarted: 0, gaveUp: 0 }, tapSilent: 0,
     });
   });
+});
+
+describe("録音の読み取り（偽の ChildProcessSpawner）", () => {
+  it.effect("ffmpeg を起動できなければ、失敗にせず空の出力にする", () => Effect.gen(function* () {
+    const spawner = fakeSpawner({ spawnFailure: "NotFound" });
+    const log = yield* recordingLog("/会議/相手.m4a").pipe(Effect.provide(spawner.layer));
+    expect(log).toBe("");
+    expect(spawner.commands.map(({ command }) => command)).toEqual(["ffmpeg"]);
+  }));
+
+  it.effect("空の出力で音量が取れなかった録音は、録音の列で「読めない」と出す", () => Effect.gen(function* () {
+    const s = sessionStats(yield* parseLog(remark("r1", "相手", 0, 2)));
+    const audio = { 相手: { files: 1, seconds: 0, meanDb: null }, 自分: { files: 0, seconds: 0, meanDb: null } };
+    expect(formatRow("s", s, audio).join("\n")).toContain("録音 1 本・読めない");
+  }));
 });

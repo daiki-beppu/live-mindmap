@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { scrollPanDelta } from "../src/camera.ts";
 import { join } from "node:path";
-import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, readFoldkitViewport, rectOf, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
-import { withBrowser, type Browser, type Page } from "./screenCompare.ts";
+import { buildReviewTemplateHtml } from "../../server/test/fixtures/reviewTemplate.ts";
+import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, readFoldkitViewport, rectOf, settled, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
+import { launchBrowser, withContext, type Browser, type BrowserContext, type Page } from "./browser.ts";
 
 // 見返し（Foldkit 版）の Mount の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #826）。React 版が無くなった後も残す。
 // ResizeObserver（画面の大きさ・ノードの高さ）・wheel・gesture（Safari のピンチ）・<audio> の時刻は、DOM が無い unit では確かめられない（偽の要素では実際の通知が起きない）。
@@ -11,28 +12,20 @@ import { withBrowser, type Browser, type Page } from "./screenCompare.ts";
 let pages: ReviewPages;
 // 点滅の再始動用の例（反映 3・4 で、論点 n2 と今の議題 n3 が続けて変わる）
 let blinkPages: ReviewPages;
+// Chromium はファイルで 1 つ。テストは withContext で自分の context を持ち、独立を保つ
+let browser: Browser;
 beforeAll(async () => {
-  pages = await prepareReviewPages();
-  blinkPages = await prepareReviewPages(join(import.meta.dirname, "fixtures/reviewBlink.log.jsonl"));
+  // single-file ビルドは 1 回。同じテンプレートから 2 つのログのページを書き出す
+  const template = await buildReviewTemplateHtml();
+  pages = await prepareReviewPages(template);
+  blinkPages = await prepareReviewPages(template, join(import.meta.dirname, "fixtures/reviewBlink.log.jsonl"));
+  browser = await launchBrowser();
 }, TIMEOUT);
 afterAll(async () => {
+  await browser?.close();
   await pages.dispose();
   await blinkPages.dispose();
 });
-
-// 補間と測り直しが落ち着くまで待つ（ビューポートが続けて変わらなくなるまで）
-async function settled(page: Page): Promise<void> {
-  let last = JSON.stringify(await readFoldkitViewport(page));
-  let stable = 0;
-  const deadline = Date.now() + 8_000;
-  while (stable < 4) {
-    if (Date.now() > deadline) throw new Error("ビューポートが落ち着きません");
-    await page.waitForTimeout(50);
-    const now = JSON.stringify(await readFoldkitViewport(page));
-    stable = now === last ? stable + 1 : 0;
-    last = now;
-  }
-}
 
 // .review-bar__time の「経過 / 全体」の経過（h:mm:ss か mm:ss）を秒にする
 const shownSeconds = async (page: Page): Promise<number> => {
@@ -46,16 +39,15 @@ const nodeVisibilities = (page: Page): Promise<string[]> => page.evaluate(() => 
 describe("見返し（Foldkit 版）の入口", () => {
   it(
     "録音つき・録音なしのどちらも Foldkit の画面が出て、React の root も React Flow も無い。録音つきだけ <audio> が 1 つある",
-    () => withBrowser(async (browser) => {
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       for (const [path, audio] of [[pages.audioPath, true], [pages.plainPath, false]] as const) {
-        const page = await openReviewPage(browser, path, { audio });
+        const page = await openReviewPage(context, path, { audio });
         expect(await page.locator(".map-viewport").count()).toBe(1);
         expect(await page.locator(".react-flow").count()).toBe(0);
         // React 19 は root の要素に __reactContainer$… を付ける。付いていなければ createRoot をしていない
         expect(await page.evaluate(() => Object.keys(document.getElementById("root")!).filter((key) => key.startsWith("__reactContainer")))).toEqual([]);
         expect(await page.locator("audio").count()).toBe(audio ? 1 : 0);
         expect(await page.locator(".intake-notice").count()).toBe(0);
-        await page.context().close();
       }
     }),
     TIMEOUT,
@@ -65,8 +57,8 @@ describe("見返し（Foldkit 版）の入口", () => {
 describe("見返し（Foldkit 版）の Mount", () => {
   it(
     "ResizeObserver: 画面の大きさを変えるとビューポートが測り直されて変わり、ノードは測った後の見える状態のまま",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, pages.plainPath, { audio: false });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, pages.plainPath, { audio: false });
       await settled(page);
       const before = await readFoldkitViewport(page);
       expect((await nodeVisibilities(page)).length).toBeGreaterThan(0);
@@ -80,15 +72,14 @@ describe("見返し（Foldkit 版）の Mount", () => {
       await settled(page);
       expect(await readFoldkitViewport(page)).not.toEqual(before);
       expect(new Set(await nodeVisibilities(page))).toEqual(new Set(["visible"]));
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "wheel: 二本指スクロールの量だけ（scrollPanDelta の向きと大きさで）ビューポートが平行移動し、倍率は変わらない",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, pages.plainPath, { audio: false });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, pages.plainPath, { audio: false });
       await settled(page);
       const before = await readFoldkitViewport(page);
       const { x, y } = await mapPoint(page, "center");
@@ -101,15 +92,14 @@ describe("見返し（Foldkit 版）の Mount", () => {
       expect(after.x - before.x).toBeCloseTo(moved.x, 3);
       expect(after.y - before.y).toBeCloseTo(moved.y, 3);
       expect(after.zoom).toBe(before.zoom);
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "gesture: .map-surface に合成した gesturestart・gesturechange（Safari のピンチ）で倍率が変わる。始まりからの累積の倍率で、前回との比だけ掛かる",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, pages.plainPath, { audio: false });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, pages.plainPath, { audio: false });
       await settled(page);
       const before = await readFoldkitViewport(page);
       const point = await mapPoint(page, "center");
@@ -131,15 +121,14 @@ describe("見返し（Foldkit 版）の Mount", () => {
       await gesture("gesturechange", 1.21);
       await settled(page);
       expect((await readFoldkitViewport(page)).zoom).toBeCloseTo(before.zoom * 1.21, 5);
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "<audio> の時刻: 再生すると audio.currentTime と .review-bar__time が進み、止めると進まず、End で <audio> が会議の終わりに追従する",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, pages.audioPath, { audio: true });
       await page.keyboard.press("Home");
       await page.waitForFunction(() => (document.querySelector("audio") as HTMLAudioElement).currentTime === 0);
       await page.keyboard.press("Space");
@@ -159,7 +148,6 @@ describe("見返し（Foldkit 版）の Mount", () => {
       const duration = await page.evaluate(() => Number(document.querySelector(".review-bar__time")!.textContent!.split("/")[1]!.trim().split(":").reduce((t, p) => t * 60 + Number(p), 0)));
       await page.waitForFunction((seconds) => Math.abs((document.querySelector("audio") as HTMLAudioElement).currentTime - seconds) < 0.5, duration, { timeout: 10_000 });
       expect(await shownSeconds(page)).toBe(duration);
-      await page.context().close();
     }),
     TIMEOUT,
   );
@@ -201,8 +189,8 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
 
   it(
     "反映 3 の点滅が終わった後に反映 4 へ移ると、直接変わったノード n2・n3 の点滅が最初から再生し直される",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, blinkPages.plainPath, { audio: false });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
       await atRoundThree(page);
       expect(await blinkingIds(page)).toEqual(["n2", "n3"]);
@@ -222,15 +210,14 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       const times = (await restarted.jsonValue()) as Record<string, number>;
       expect(Object.keys(times).sort()).toEqual(["n2", "n3"]);
       for (const time of Object.values(times)) expect(time).toBeLessThan(1000);
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "畳んだノード（shownAs）: 人が畳んだ議題 n1 の中の n2 が変わると、畳んだ n1 が点滅し、反映 3 の点滅が終わった後に反映 4 へ移ると同じ要素で最初から再生し直される",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, blinkPages.plainPath, { audio: false });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
       await page.keyboard.press(",");
       await page.waitForFunction((selector) => document.querySelectorAll(selector).length > 0, BLINKING);
@@ -266,15 +253,14 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       expect(Object.keys(times).sort()).toEqual(["n1", "n3"]);
       for (const time of Object.values(times)) expect(time).toBeLessThan(1000);
       expect(await page.evaluate(() => (document.querySelector('[data-node-id="n1"] .map-node') as (HTMLElement & { __same?: boolean }) | null)?.__same)).toBe(true);
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "反映番号が変わらない操作（ズームのキー）では、終わった点滅は再生し直されない",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, blinkPages.plainPath, { audio: false });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, blinkPages.plainPath, { audio: false });
       await settled(page);
       await atRoundThree(page);
       await page.keyboard.press("=");
@@ -283,7 +269,6 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
       await page.waitForTimeout(300);
       expect(await blinkingIds(page)).toEqual(["n2", "n3"]);
       expect(await runningBlinks(page)).toEqual({});
-      await page.context().close();
     }),
     TIMEOUT,
   );
@@ -292,12 +277,12 @@ describe("見返し（Foldkit 版）の点滅の再始動", () => {
 // ユーティリティへ移した値は、素の CSS の文面では確かめられない。実ブラウザの computed style と位置で確かめる（Issue #1008: 替える前の CSS との照合は外し、今の値を期待値にする）。
 // 値は animation・transition が終わった後に読む（styleOf・rectOf が最後まで進める）。操作の後に変わる値は、決め打ちの待ちではなく、値に届くまで待つ
 describe("見返し（Foldkit 版）の寸法", () => {
-  const open = (browser: Browser) => openReviewPage(browser, pages.audioPath, { audio: true });
+  const open = (context: BrowserContext) => openReviewPage(context, pages.audioPath, { audio: true });
 
   it(
     "レイアウト・操作の行の部品: 重ね方と寸法・色・影なし。つまみは Slider の translateX(-50%) と二重にずれない（margin-left 0）。吹き出しは閉じている間は出ない",
-    () => withBrowser(async (browser) => {
-      const page = await open(browser);
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await open(context);
       expect(await styleOf(page, ".layout", ["position", "display"])).toEqual({ position: "relative", display: "flex" });
       expect((await styleOf(page, ".map", ["position"])).position).toBe("relative");
       const hit = await rectOf(page, ".review-slider-hit");
@@ -311,15 +296,14 @@ describe("見返し（Foldkit 版）の寸法", () => {
       expect(await styleOf(page, ".review-controls", ["background-color", "color", "box-shadow"])).toEqual({ "background-color": "rgb(55, 65, 81)", color: "rgb(249, 250, 251)", "box-shadow": "none" });
       expect((await styleOf(page, ".review-tip", ["display"])).display).toBe("none");
       expect(await styleOf(page, ".review-bar__button", ["width", "height", "border-radius"])).toEqual({ width: "32px", height: "32px", "border-radius": "6px" });
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "速さのメニューを開く: 外側（backdrop）は画面いっぱいの fixed で z-index がある。メニューは濃い灰色で影が無く、位置は Floating UI の left/top",
-    () => withBrowser(async (browser) => {
-      const page = await open(browser);
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await open(context);
       await page.locator(".review-rate__button").first().click();
       await page.locator(".review-rate__menu").waitFor({ timeout: 10_000 });
       const backdrop = await styleOf(page, ".review-rate__backdrop", ["position", "z-index"]);
@@ -329,15 +313,14 @@ describe("見返し（Foldkit 版）の寸法", () => {
       near(box.width, PAGE_VIEWPORT.width, "backdrop の幅");
       near(box.height, PAGE_VIEWPORT.height, "backdrop の高さ");
       expect(await styleOf(page, ".review-rate__menu", ["position", "background-color", "box-shadow", "min-width", "display"])).toEqual({ position: "absolute", "background-color": "rgb(55, 65, 81)", "box-shadow": "none", "min-width": "220px", display: "flex" });
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "吹き出し: ボタンにポインタを乗せると出て、濃い灰色で影が無い。離すと消える",
-    () => withBrowser(async (browser) => {
-      const page = await open(browser);
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await open(context);
       await page.locator(".review-bar__button").nth(1).hover();
       await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].some((tip) => getComputedStyle(tip).display !== "none"), undefined, { timeout: 10_000 });
       const tips = await page.locator(".review-tip").evaluateAll((all) => all.filter((tip) => getComputedStyle(tip).display !== "none").map((tip) => { const s = getComputedStyle(tip); return { background: s.backgroundColor, shadow: s.boxShadow, position: s.position, nowrap: s.whiteSpace }; }));
@@ -346,15 +329,14 @@ describe("見返し（Foldkit 版）の寸法", () => {
       const { x, y } = await mapPoint(page, "corner");
       await page.mouse.move(x, y);
       await page.waitForFunction(() => [...document.querySelectorAll(".review-tip")].every((tip) => getComputedStyle(tip).display === "none"), undefined, { timeout: 10_000 });
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "畳んだノードの隠れた数の丸（押せる）と、開いたノードの畳む丸: 寸法・位置・色・ボタンの既定の打ち消し。畳む丸は普段は透明",
-    () => withBrowser(async (browser) => {
-      const page = await open(browser);
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await open(context);
       const count = 'button[aria-label="開く"]';
       const parentFont = await page.locator(count).first().evaluate((el) => getComputedStyle(el.closest(".map-node__button") ?? el.parentElement!).fontFamily);
       const c = await styleOf(page, count, ["position", "border-top-width", "margin-top", "margin-left", "font-family", "min-width", "height", "padding-left", "padding-right", "padding-top", "background-color", "color", "font-size", "line-height", "text-align", "pointer-events", "cursor", "border-radius", "box-sizing"]);
@@ -381,22 +363,20 @@ describe("見返し（Foldkit 版）の寸法", () => {
           position: "absolute", opacity: "0", display: "block", width: "12px", height: "12px", "padding-top": "0px", "margin-top": "0px", "border-top-width": "1px", "border-radius": "50%",
           "background-color": "rgb(229, 231, 235)", "pointer-events": "all", cursor: "pointer", right: "6px", transform: "matrix(1, 0, 0, 1, 0, -6)",
         });
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "キー一覧（?）: 細い枠だけで、影が無く、ポインタを奪わず、白地",
-    () => withBrowser(async (browser) => {
-      const page = await open(browser);
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await open(context);
       await page.keyboard.press("?");
       await page.locator(".key-list").waitFor({ timeout: 10_000 });
       expect(await styleOf(page, ".key-list", ["position", "border-top-width", "border-top-style", "border-top-color", "pointer-events", "box-shadow", "background-color", "padding-top", "padding-left", "font-size", "color", "z-index"])).toEqual({
         position: "absolute", "border-top-width": "1px", "border-top-style": "solid", "border-top-color": "rgb(229, 231, 235)", "pointer-events": "none", "box-shadow": "none",
         "background-color": "rgb(255, 255, 255)", "padding-top": "8px", "padding-left": "12px", "font-size": "13px", color: "rgb(17, 24, 39)", "z-index": "5",
       });
-      await page.context().close();
     }),
     TIMEOUT,
   );
@@ -440,8 +420,8 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
   for (const viewport of [PAGE_VIEWPORT, { width: 390, height: 844 }]) {
     it(
       `${viewport.width}×${viewport.height}: 速さのメニューはボタンの上に右端を揃えて出て、項目が全部見え、各項目の点で一番上に来る`,
-      () => withBrowser(async (browser) => {
-        const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+      () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+        const page = await openReviewPage(context, pages.audioPath, { audio: true });
         await page.setViewportSize(viewport);
         await page.locator(".review-rate__button").first().click();
         // anchor の位置が付く（visibility が外れる）まで待つ
@@ -462,15 +442,14 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
           }),
         );
         expect(hits, "各項目の中心で一番上に来るのは、外側（backdrop）でなくその項目").toEqual(items.map(() => true));
-        await page.context().close();
       }),
       TIMEOUT,
     );
 
     it(
       `${viewport.width}×${viewport.height}: ボタンのツールチップはボタンの上に指定の向きで出て、文字が 1 行すべて見える`,
-      () => withBrowser(async (browser) => {
-        const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+      () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+        const page = await openReviewPage(context, pages.audioPath, { audio: true });
         await page.setViewportSize(viewport);
         const targets = [...tipped.map(({ label, align }) => ({ label, align, trigger: `button[aria-label="${label}"]` })), { label: "速さ", align: "end" as const, trigger: ".review-rate__button" }];
         for (const { label, align, trigger } of targets) {
@@ -490,7 +469,6 @@ describe("見返し（Foldkit 版）の速さのメニューとツールチッ�
           await page.mouse.move(x, y);
           await page.locator(shownTip).waitFor({ state: "detached", timeout: 10_000 });
         }
-        await page.context().close();
       }),
       TIMEOUT,
     );
@@ -507,26 +485,24 @@ describe("見返し（Foldkit 版）の開いたときの右の列と字幕", ()
 
   it(
     "390×844 で開くと、右の列と字幕が隠れていて、字幕・右の列のボタンで出せる",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, pages.audioPath, { audio: true, viewport: { width: 390, height: 844 } });
+    () => withContext(browser, { viewport: { width: 390, height: 844 } }, async (context) => {
+      const page = await openReviewPage(context, pages.audioPath, { audio: true });
       expect(await shown(page)).toEqual(HIDDEN);
       await page.locator('button[aria-label="字幕"]').first().click();
       await page.locator('button[aria-label="右の列"]').first().click();
       await expect.poll(() => shown(page), { timeout: 10_000 }).toEqual(SHOWN);
-      await page.context().close();
     }),
     TIMEOUT,
   );
 
   it(
     "1280×801 で開くと、右の列と字幕は今までどおり出ている。開いた後に 390 へ狭めても隠れない",
-    () => withBrowser(async (browser) => {
-      const page = await openReviewPage(browser, pages.audioPath, { audio: true });
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, pages.audioPath, { audio: true });
       expect(await shown(page)).toEqual(SHOWN);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.waitForTimeout(300);
       expect(await shown(page)).toEqual(SHOWN);
-      await page.context().close();
     }),
     TIMEOUT,
   );

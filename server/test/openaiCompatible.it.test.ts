@@ -3,7 +3,7 @@ import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import type { AppleIntelligence } from "../src/appleIntelligence.ts";
 import type { Scope } from "effect";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Console, Deferred, Effect, FileSystem, Layer, Queue, Result, Schema, Stream, type Cause } from "effect";
 import { vi } from "vitest";
-import { runCli } from "../src/cli.ts";
+import { reportFailure, runCli, teardown } from "../src/cli.ts";
 import { JsonExport, type ExportNode } from "../src/core/index.ts";
 import { planLayer, type UpdatePlan } from "../src/updatePlan.ts";
 import type { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
@@ -76,14 +76,46 @@ const loopback = Effect.fnUntraced(function* (afterRequest: (call: number) => vo
   if (!address || typeof address === "string") throw new Error("ループバックのポートを取得できません");
   return { url: `http://127.0.0.1:${address.port}/v1`, requests };
 });
-const dependencies = (root: string) => {
+const dependencies = (root: string, port = 0) => {
   const stdout: string[] = [];
+  const stderr: string[] = [];
   const layer = Layer.mergeAll(readyManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: "0" })),
-    Layer.succeed(Console.Console, { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } }),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: join(root, "home"), LIVE_MINDMAP_CONFIG: join(root, "config.json"), LIVE_MINDMAP_SESSIONS: join(root, "sessions"), LIVE_MINDMAP_PORT: String(port) })),
+    Layer.succeed(Console.Console, {
+      ...console,
+      log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); },
+      error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); },
+    }),
   );
-  return { stdout, layer };
+  return { stdout, stderr, layer };
 };
+// 入口（cli.ts の import.meta.main）と同じ順に、実行 → 失敗の表示（reportFailure）→ 終了コード（teardown）を通す。process.exitCode は呼び出し前の値に戻す
+const runEntry = Effect.fnUntraced(function* (root: string, port: number, argv: string[]) {
+  const deps = dependencies(root, port);
+  const exit = yield* runCli(argv).pipe(Effect.tapCause(reportFailure), Effect.provide(deps.layer), Effect.exit);
+  const saved = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    teardown(exit, () => { throw new Error("自然終了する必要があります"); });
+    return { code: Number(process.exitCode ?? 0), stdout: deps.stdout.join(""), stderr: deps.stderr.join("") };
+  } finally {
+    process.exitCode = saved;
+  }
+});
+// CLI の HTTP クライアントの相手（常駐サーバー）の代わりに、依頼ごとに handler で応える
+const listening = Effect.fnUntraced(function* (handler: (req: IncomingMessage, res: ServerResponse) => void) {
+  const server = createServer(handler);
+  yield* Effect.acquireRelease(
+    Effect.tryPromise(() => new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    })),
+    () => Effect.promise(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); })),
+  );
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("ポートを取得できません");
+  return address.port;
+});
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
 
 describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
@@ -229,6 +261,74 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     expect(diffs[0]).toMatchObject({ processedRemarks: 1, dropped: [] });
     expect(diffs[0].error).toBeUndefined();
     expect(readFileSync(join(dir, "map.md"), "utf8")).toContain("採用の進め方");
+    yield* server.close;
+  }));
+
+  it.live("start の HTTP 拒否2行を stderr に保持して exit 1、200 の正常応答では dir を表示して exit 0", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    let status = 503;
+    const error = "モデルを開始できません\n実行環境を確認してください";
+    const port = yield* listening((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(status === 503 ? { error } : { dir: "/synthetic/session" }));
+      });
+    });
+    const argv = ["start", "--app", "us.zoom.xos", "--model", "claude"];
+    expect(yield* runEntry(root, port, argv)).toEqual({ code: 1, stdout: "", stderr: `${error}\n` });
+    status = 200;
+    expect(yield* runEntry(root, port, argv)).toEqual({ code: 0, stdout: "/synthetic/session\n", stderr: "" });
+  }));
+
+  it.live("実 CLI start がトークンを取得し、指定宛先・認証・追加 body・モデルを会議終了まで保持する", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const requests: { path: string; authorization: string | undefined; body: Record<string, unknown> }[] = [];
+    const port = yield* listening((req, res) => {
+      let text = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk: string) => { text += chunk; });
+      req.on("end", () => {
+        requests.push({ path: req.url!, authorization: req.headers.authorization, body: JSON.parse(text) });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ 議題: { id: "新しい議題", 題: "採用" }, 文: [{ 種類: "説明", text: "採用の進め方" }], 済み: "なし", 名前: [] }) } }] }));
+      });
+    });
+    // 発言は、設定を書き換えた後に流す。差分更新は発言が届いたらすぐ呼ぶので、先に流すと書き換えより前に呼ばれてしまう
+    let sayRemark: (() => void) | undefined;
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
+      const queue = yield* Queue.make<string, Cause.Done>();
+      // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
+      sayRemark = () => {
+        Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" }));
+        Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));
+      };
+      const exited = yield* Deferred.make<HelperExitInfo>();
+      const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
+      yield* Effect.addFinalizer(() => stop);
+      return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]), send: () => Effect.void };
+    }) }));
+    const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
+      helpers,
+      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(forbiddenManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
+      managedDeps: readyManagedDeps,
+    }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({ SYNTHETIC_PROCESS_KEY: "synthetic-key" })));
+    const config = join(root, "config.json");
+    writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "synthetic-model", url: `http://127.0.0.1:${port}/v1`, apiKeyEnv: "SYNTHETIC_PROCESS_KEY", maxTokens: 321, extraBody: { seed: 17 } } } }));
+    const started = yield* runEntry(root, server.port, ["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--model", "compatible"]);
+    expect(started.code).toBe(0);
+    expect(started.stderr).toBe("");
+    expect(requests).toHaveLength(1);
+    writeFileSync(config, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "replacement", url: "http://127.0.0.1:1/v1" } } }));
+    sayRemark!();
+    for (let i = 0; i < 500 && requests.length < 2; i++) yield* Effect.sleep(10);
+    const stopped = yield* runEntry(root, server.port, ["stop"]);
+    expect(stopped.code).toBe(0);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request).toMatchObject({ path: "/v1/chat/completions", authorization: "Bearer synthetic-key", body: { model: "synthetic-model", max_tokens: 321, seed: 17 } });
+    }
+    expect(readFileSync(join(started.stdout.trim(), "map.md"), "utf8")).toContain("採用の進め方");
     yield* server.close;
   }));
 });

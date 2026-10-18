@@ -4,8 +4,7 @@
 //   node fake-helper.ts <台本JSON> <記録ファイル> run --app <id> --port <n> ...
 //   node fake-helper.ts <台本JSON> <記録ファイル> mix --session <dir> --out <path> [--track 自分]
 // 台本: {
-//   apps, events, failRun?, failMix?, ignoreSigterm?,
-//   failMix: 実物の `mix` の失敗（標準エラーに理由を出して 0 以外で終わる）を真似る。出力は書かない
+//   apps, events, failRun?, ignoreSigterm?,
 //   unexpectedExit?: { afterMs, code?, signal? }
 //     code 指定: 実物の「エラーで終わる」（order.md の 2 つ目の止まり方）を真似る。録音は閉じてから、その code で終了する
 //     signal 指定: 実物の「落ちる」（SIGSEGV 等）を真似る。後片付けなしに自分へ signal を送って即座に終わる（録音は閉じない）
@@ -33,7 +32,6 @@ type Script = {
   apps: unknown;
   events: unknown[];
   failRun?: { stderr: string; code: number };
-  failMix?: { stderr: string; code: number };
   ignoreSigterm?: boolean;
   unexpectedExit?: { afterMs: number; code?: number; signal?: NodeJS.Signals };
   stderrLines?: string[];
@@ -70,10 +68,6 @@ if (command === "check") {
   console.log(JSON.stringify(script.apps));
 } else if (command === "mix") {
   record({ type: "mix", argv: [command, ...rest] });
-  if (script.failMix) {
-    process.stderr.write(script.failMix.stderr);
-    process.exit(script.failMix.code);
-  }
   writeFileSync(rest[rest.indexOf("--out") + 1]!, MIX_OUTPUT);
 } else if (command === "run") {
   record({ type: "run", argv: [command, ...rest], pid: process.pid });

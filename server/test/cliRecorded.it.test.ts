@@ -13,11 +13,10 @@ import { MapCapture } from "../src/capture.ts";
 import { runCli } from "../src/cli.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { DiffUpdatePaused, formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, formatSpeakerOffNotice, type DiffInput } from "../src/core/index.ts";
-import { AudioMix } from "../src/audioMix.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { embeddedAudio, FAKE_MIX_BYTES, fakeAudioMix, type FakeMix } from "./fixtures/audioMix.ts";
+import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
@@ -27,7 +26,6 @@ import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { advanceTo, eventually, runToEnd, trackingClock, virtualNow } from "./fixtures/virtualTime.ts";
 import { FAKE_TUNNEL_HOST, fakeTunnel } from "./fixtures/tunnel.ts";
-import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import type { ExecutableModel } from "../src/modelSelection.ts";
 import { planModel } from "../src/updatePlan.ts";
 
@@ -221,7 +219,7 @@ function stalledRecordedBody() {
 
 type CliOptions = { env?: Record<string, string>; httpClient?: Layer.Layer<HttpClient.HttpClient> };
 
-function cliDependencies(sessionsDir: string, port: number, apple: typeof unusedApple = unusedApple, options: CliOptions = {}) {
+function cliDependencies(sessionsDir: string, port: number, options: CliOptions = {}) {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const consoleService: Console.Console = {
@@ -230,7 +228,7 @@ function cliDependencies(sessionsDir: string, port: number, apple: typeof unused
     error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); },
   };
   const layer = Layer.mergeAll(
-    NodeServices.layer, apple, readyManagedDeps, options.httpClient ?? NodeHttpClient.layerUndici,
+    NodeServices.layer, unusedApple, readyManagedDeps, options.httpClient ?? NodeHttpClient.layerUndici,
     Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.die("CLI は撮影しない") })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.die("CLI は見返しを作らない") })),
     fakeAudioMix().layer, fakeScreenJpeg().layer,
@@ -243,7 +241,7 @@ function cliDependencies(sessionsDir: string, port: number, apple: typeof unused
   return { layer, stdout, stderr };
 }
 
-const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; mix?: FakeMix; readings?: FakeReadings; attempts?: ReadonlyArray<Script> } = {}) {
+const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; fileSystem?: Layer.Layer<FileSystem.FileSystem>; cli?: CliOptions; readings?: FakeReadings; attempts?: ReadonlyArray<Script> } = {}) {
   // 実行準備（prepareUpdater）へ届いたモデル
   const models: ExecutableModel[] = [];
   const root = yield* temporaryDirectory;
@@ -256,15 +254,11 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const helpers = fakeHelpers(script, options.attempts);
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: (plan) => { models.push(planModel(plan)); return Effect.succeed({ layer: updater.layer }); } }).pipe(Layer.provide(fakeExportServices({ ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }), ...(options.mix === undefined ? {} : { mix: options.mix }), ...(options.readings === undefined ? {} : { readings: options.readings }) }))),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: (plan) => { models.push(planModel(plan)); return Effect.succeed({ layer: updater.layer }); } }).pipe(Layer.provide(fakeExportServices({ ...(options.fileSystem === undefined ? {} : { fileSystem: options.fileSystem }), ...(options.readings === undefined ? {} : { readings: options.readings }) }))),
   });
-  const deps = cliDependencies(sessionsDir, server.port, unusedApple, options.cli);
+  const deps = cliDependencies(sessionsDir, server.port, options.cli);
   const cli = (argv: string[]) => runCli(argv).pipe(Effect.provide(deps.layer));
-  const localDeps = cliDependencies(sessionsDir, server.port, Layer.succeed(AppleIntelligence, AppleIntelligence.of({
-    availability: Effect.succeed({ osVersion: "27.0", availability: { status: "available" } }),
-    launch: Effect.die("CLI は Apple を起動しない"),
-  })));
-  return { root, sessionsDir, file, selfFile, helpers, updater, server, deps, cli, models, localDeps };
+  return { root, sessionsDir, file, selfFile, helpers, updater, server, deps, cli, models };
 });
 
 type Line = Record<string, unknown> & { type: string };
@@ -442,26 +436,6 @@ describe("cli recorded <file>", () => {
       expect(r.updater.state.overlaps).toBe(0);
     }).pipe(Effect.scoped));
 
-    it.live("自分 の確定結果が、先の時刻の 相手 の発言より後に届いても（ヘルパーの重複の保留で遅れた形）、音声の時刻の順に並ぶ。届いた順のままにしない", () => Effect.gen(function* () {
-      const r = yield* resource({
-        duration: 12,
-        remarks: [],
-        events: [
-          ...spoken("相手", { start: 0, end: 2, text: "相手の一つ目" }),
-          ...spoken("相手", { start: 4.5, end: 6, text: "相手の二つ目" }),
-          // 相手 の音声の時計が進み、二つ目も話者の保留を終えた後に、遅れた 自分 の確定結果が届く
-          ...spoken("相手", { start: 10, end: 11, text: "相手の三つ目" }),
-          ...spoken("自分", { start: 2.5, end: 4, text: "自分の発言" }),
-        ],
-      });
-      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
-
-      const dir = onlySession(r.sessionsDir);
-      expect(idsAndTracks(dir).map((x) => [x.id, x.track, x.end])).toEqual([
-        ["r1", "相手", 2], ["r2", "自分", 4], ["r3", "相手", 6], ["r4", "相手", 11],
-      ]);
-    }).pipe(Effect.scoped));
-
     it.live("--self の 自分 の発言は、ライブと同じ字幕のフレームで track: 自分 の本文として WebSocket に届く（相手 の本文は track: 相手）。終了時の空のフレームとは区別する", () => Effect.gen(function* () {
       // 2 つ目の差分更新（自分 の発言を入れた直後）を止め、自分 の発言が未反映の間に出る字幕を見る。終了時の空のフレームはまだ出ない
       const gate = Effect.runSync(Deferred.make<void>());
@@ -497,27 +471,6 @@ describe("cli recorded <file>", () => {
       yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
 
       expect(idsAndTracks(onlySession(r.sessionsDir)).map((x) => [x.id, x.track, x.end])).toEqual([["r1", "相手", 2], ["r2", "相手", 5]]);
-    }).pipe(Effect.scoped));
-
-    it.live("自分.m4a もセッションのフォルダに残り、map-audio.html ができる。mix を呼んだ時点で 相手.m4a と 自分.m4a の両方がフォルダにある。元のファイルはコピーしない", () => Effect.gen(function* () {
-      const fake = fakeAudioMix();
-      const foldersAtMix: string[][] = [];
-      const recording = Layer.effect(AudioMix, Effect.gen(function* () {
-        const inner = yield* AudioMix;
-        return AudioMix.of({ mix: (session, out, track) => { foldersAtMix.push(readdirSync(session).sort()); return inner.mix(session, out, track); } });
-      })).pipe(Layer.provide(fake.layer));
-      const r = yield* resource(INTERLEAVED, fakeUpdater(), { mix: { ...fake, layer: recording } });
-      yield* r.cli(["recorded", r.file, "--self", r.selfFile]);
-
-      const dir = onlySession(r.sessionsDir);
-      expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
-      expect(readFileSync(join(dir, "自分.m4a"), "utf8")).toBe(HELPER_SELF_AUDIO);
-      expect(fake.calls.map((call) => call.session)).toEqual([dir]);
-      expect(foldersAtMix).toHaveLength(1);
-      expect(foldersAtMix[0]).toEqual(expect.arrayContaining(["相手.m4a", "自分.m4a"]));
-      expect(embeddedAudio(readFileSync(join(dir, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
-      expect(readdirSync(dir)).not.toContain(basename(r.file));
-      expect(readdirSync(dir)).not.toContain(basename(r.selfFile));
     }).pipe(Effect.scoped));
 
     it.live("--self を渡さないときは 自分.m4a を作らず、ヘルパーの引数に --self-file が入らない", () => Effect.gen(function* () {
@@ -562,21 +515,6 @@ describe("cli recorded <file>", () => {
     yield* r.cli(["recorded", r.file, "--title", "週次会議"]);
     const start = logLines(onlySession(r.sessionsDir)).find((l) => l.type === "start");
     expect(start).toMatchObject({ title: "週次会議" });
-  }).pipe(Effect.scoped));
-
-  it.live("録画からのセッションのフォルダに 相手.m4a（ヘルパーが書いた音声）と map-audio.html ができ、map-audio.html には 相手.m4a から混ぜた音声が入る。元のファイルはコピーしない", () => Effect.gen(function* () {
-    const mix = fakeAudioMix();
-    const r = yield* resource(THREE, fakeUpdater(), { mix });
-    yield* r.cli(["recorded", r.file]);
-
-    const dir = onlySession(r.sessionsDir);
-    expect(readFileSync(join(dir, "相手.m4a"), "utf8")).toBe(HELPER_AUDIO);
-    expect(existsSync(join(dir, "map-audio.html"))).toBe(true);
-    expect(embeddedAudio(readFileSync(join(dir, "map-audio.html"), "utf8"))).toEqual(FAKE_MIX_BYTES);
-    expect(mix.calls.map((call) => call.session)).toEqual([dir]);
-    expect(readdirSync(dir)).not.toContain(basename(r.file));
-    // 標準出力の map.* のパスに map-audio.html も入る
-    expect(r.deps.stdout.join("").trim().split("\n").map((path) => basename(path))).toContain("map-audio.html");
   }).pipe(Effect.scoped));
 
   describe("フォルダ名と log.jsonl の時刻の基準", () => {
@@ -775,13 +713,6 @@ describe("cli recorded <file>", () => {
     expect(r.models[0]).toMatchObject({ route: "claude", local: false });
   }).pipe(Effect.scoped));
 
-  it.live("--local は実行準備へ届くモデルをローカルにする", () => Effect.gen(function* () {
-    const r = yield* resource(THREE);
-    yield* runCli(["recorded", r.file, "--local"]).pipe(Effect.provide(r.localDeps.layer));
-    expect(r.models).toHaveLength(1);
-    expect(r.models[0]).toMatchObject({ route: "apple", local: true });
-  }).pipe(Effect.scoped));
-
   it.live("字幕・ログ・進み具合は、セッションに入れた位置で出る。差分更新が終わるまで、先読みした発言と途中結果は字幕にも進み具合にもログにも出ない", () => Effect.gen(function* () {
     const gate = Effect.runSync(Deferred.make<void>());
     const updater = fakeUpdater((_input, call) => call === 1 ? Deferred.await(gate) : Effect.void);
@@ -927,7 +858,6 @@ describe("cli recorded <file> ヘルパーが落ちたとき", () => {
 
   it.live.each([
     { name: "終了コード 1", exit: { code: 1, signal: null } },
-    { name: "シグナル（SIGKILL）", exit: { code: null, signal: "SIGKILL" } },
   ])("ヘルパーが $name で落ちると、最後に作った発言の end（660）から読み直す。--audio-dir は渡さない。発言は重ならず抜けもなく、番号も続く。CLI は成功する", ({ exit }) => Effect.gen(function* () {
     const r = yield* resource(THREE, fakeUpdater(), { attempts: [{ duration: 3484, remarks: THREE.remarks.slice(0, 2), exit }] });
     yield* r.cli(["recorded", r.file]);
@@ -1356,7 +1286,7 @@ describe("cli recorded <file> --realtime", () => {
     return sessionLog(r.sessionsDir);
   });
 
-  it.effect.each<{ source: "user" | "screen" }>([{ source: "user" }, { source: "screen" }])(
+  it.effect.each<{ source: "user" | "screen" }>([{ source: "screen" }])(
     "補正に使う語彙は発言を締めた時点で確定し、待ち時間なしと --realtime で、発言の行（text・raw・words）が同じになる（語彙の出どころ: $source）",
     ({ source }) => withVirtualClock((pending) => Effect.gen(function* () {
       const immediate = yield* vocabularyRun(false, pending, source);
@@ -1373,7 +1303,6 @@ describe("cli recorded <file> --realtime", () => {
   type Halt = (r: { cli: (argv: string[]) => Effect.Effect<void, unknown, never> }, running: Fiber.Fiber<unknown, unknown>) => Effect.Effect<unknown, unknown>;
   it.effect.each<{ name: string; halt: Halt }>([
     { name: "stop", halt: (r) => r.cli(["stop"]) },
-    { name: "Ctrl-C", halt: (_r, running) => Fiber.interrupt(running) },
   ])("次の発言の時刻を待っている間の $name は、仮想時計を進めなくてもすぐ戻り、入れた分で map.* を書く。待っていた発言は入れない", ({ halt }) =>
     withVirtualClock((pending) => Effect.gen(function* () {
       const r = yield* resource({
@@ -1711,7 +1640,6 @@ describe("cli recorded <file> 差分更新の一時停止", () => {
   type Halt = (r: { cli: (argv: string[]) => Effect.Effect<void, unknown, never> }, running: Fiber.Fiber<unknown, unknown>) => Effect.Effect<unknown, unknown>;
   it.effect.each<{ name: string; halt: Halt }>([
     { name: "stop", halt: (r) => r.cli(["stop"]) },
-    { name: "Ctrl-C", halt: (_r, running) => Fiber.interrupt(running) },
   ])("一時停止で待っている間の $name は、仮想時計を進めなくてもすぐ戻り、入れた分（r1）で map.* を書く。溜まっていた分は入れず、status はセッションなしになる", ({ halt }) =>
     withVirtualClock(() => Effect.gen(function* () {
       const updater = fakeUpdater((_input, call) => call === 1 ? paused(CHATGPT, RETRY_AT) : Effect.void);

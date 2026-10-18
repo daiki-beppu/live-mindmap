@@ -25,18 +25,6 @@ const runProcess = (root: string, argv: string[]) => Effect.tryPromise(() =>
 );
 
 describe("モデル選択のプロセス入口（Issue #663）", () => {
-  it.live("不正設定はパス・モデル名・項目・理由を含む 1 行で終了する", () => Effect.gen(function* () {
-    const root = yield* directory;
-    const path = join(root, "config.json");
-    yield* Effect.tryPromise(() => writeFile(path, JSON.stringify({ models: { compatible: { route: "openai-compatible", model: "qwen" } } })));
-    const result = yield* runProcess(root, ["start", "--app", "us.zoom.xos"]);
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toMatch(/^設定ファイルが不正です: [^\n]+（「models\.compatible」の url: [^\n]+）\n$/);
-    expect(result.stderr).toContain(path);
-    expect(existsSync(join(root, "sessions"))).toBe(false);
-  }).pipe(Effect.scoped));
-
   it.live("未知名は理由と候補・設定パスの 2 行を潰さずに表示する", () => Effect.gen(function* () {
     const root = yield* directory;
     yield* Effect.tryPromise(() => writeFile(join(root, "config.json"), JSON.stringify({ models: { fast: { route: "claude", model: "claude-haiku-5-5" } } })));

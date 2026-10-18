@@ -1,17 +1,19 @@
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeFileSystem, NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Console, Effect, Layer } from "effect";
+import { ConfigProvider, Console, Effect, Exit, Layer } from "effect";
 import { beforeEach, vi } from "vitest";
 import { MapCapture } from "../src/capture.ts";
+import { runCli } from "../src/cli.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { Playwright } from "../src/playwright.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { realLayers } from "../src/server.ts";
+import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
+import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeReadings } from "./fixtures/readings.ts";
 import { collectingConsole, FAKE_TEMPLATE } from "./fixtures/exportServices.ts";
 import { temporaryDeps } from "./fixtures/managedDeps.ts";
@@ -65,15 +67,23 @@ describe("管理 Chromium と stop", () => {
       }));
       expect(started.status).toBe(200);
       const { dir: sessionDir } = yield* Effect.tryPromise(() => started.json() as Promise<{ dir: string }>);
-      const stopped = yield* Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-        execFile("pnpm", ["cli", "stop"], { cwd: join(import.meta.dirname, "../.."), timeout: 15_000,
-          env: { ...process.env, LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: root, LIVE_MINDMAP_SESSIONS: options.sessionsDir, LIVE_MINDMAP_CONFIG: join(dir, "absent.json"), NO_COLOR: "1" },
-        }, (error, stdout, stderr) => {
-          if (error && (error.killed || typeof error.code !== "number")) return reject(error);
-          resolve({ code: error ? error.code as number : 0, stdout, stderr });
-        });
-      }));
-      expect(stopped.code, stopped.stderr).toBe(0);
+      // stop は CLI の HTTP クライアントだけを使う。標準出力は Console で集め、終了は Exit で見る（サーバーの警告を集める Console とは別）
+      const stdout: string[] = [];
+      const cliConsole: Console.Console = { ...console, log: (...args: unknown[]) => { stdout.push(args.map(String).join(" ") + "\n"); } };
+      const stopExit = yield* runCli(["stop"]).pipe(
+        Effect.provide(Layer.mergeAll(
+          NodeServices.layer, unusedApple, readyManagedDeps, NodeHttpClient.layerUndici,
+          ConfigProvider.layer(ConfigProvider.fromEnvRecord({ LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_DEPS: root, LIVE_MINDMAP_SESSIONS: options.sessionsDir, LIVE_MINDMAP_CONFIG: join(dir, "absent.json") })),
+          Layer.succeed(Console.Console, cliConsole),
+          Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.void })),
+          Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(FAKE_TEMPLATE) })),
+          fakeAudioMix().layer,
+          fakeScreenJpeg().layer,
+        )),
+        Effect.exit,
+      );
+      expect(Exit.isSuccess(stopExit), String(stopExit)).toBe(true);
+      const stopped = { stdout: stdout.join("") };
       const expected = ["map.md", "map.json", "map.drawnix", "map.html"];
       for (const file of expected) {
         expect(existsSync(join(sessionDir, file)), file).toBe(true);

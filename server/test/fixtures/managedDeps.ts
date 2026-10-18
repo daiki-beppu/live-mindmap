@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -73,3 +73,15 @@ export const install = Effect.fnUntraced(function* () {
   const deps = yield* ManagedDeps;
   return yield* Stream.runCollect(deps.install(["chromium"]));
 });
+
+export const check = Effect.gen(function* () { return yield* (yield* ManagedDeps).check(["chromium"]); });
+
+export const calls = async (dir: string) => (await readFile(join(dir, "calls.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+
+export const oldCurrent = async (root: string) => {
+  const dir = join(root, "chromium");
+  await mkdir(join(dir, "0.0.0-old"), { recursive: true });
+  await writeFile(join(dir, "0.0.0-old", ".ready.json"), JSON.stringify({ version: "0.0.0", installedAt: "2026-01-01T00:00:00Z", hashes: {} }));
+  await symlink("0.0.0-old", join(dir, "current"));
+  return join(dir, "current");
+};

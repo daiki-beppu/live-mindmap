@@ -1,12 +1,12 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer, Result } from "effect";
+import { Deferred, Effect, Fiber, Layer, Result, Schema } from "effect";
 import { beforeEach, vi } from "vitest";
 import type { Browser } from "playwright-core";
-import { CaptureFailed, MapCapture } from "../src/capture.ts";
+import { CaptureFailed, MapCapture, withCapturePage } from "../src/capture.ts";
 import type { Snapshot } from "../src/core/index.ts";
 import { Playwright } from "../src/playwright.ts";
 import { ManagedDepsFailed } from "../src/managedDeps.ts";
@@ -21,6 +21,8 @@ vi.mock("vite", () => ({ createServer: resources.createServer }));
 const playwright = Layer.succeed(Playwright, Playwright.of({
   launch: () => Effect.tryPromise({ try: () => resources.launch() as Promise<Browser>, catch: (error) => new ManagedDepsFailed({ message: String(error) }) }),
 }));
+
+class FnFailed extends Schema.TaggedError<FnFailed>()("FnFailed", { message: Schema.String }) {}
 
 const snapshot: Snapshot = {
   nodes: [{ id: "root", parent: null, kind: "会議", text: "定例", evidence: [] }],
@@ -132,6 +134,39 @@ describe("撮影 scope の資源所有権", () => {
     expect(resources.closeBrowser).not.toHaveBeenCalled();
     expect(resources.closeVite).not.toHaveBeenCalled();
     yield* Fiber.interrupt(fiber).pipe(Effect.ensuring(Effect.sync(release)));
+    expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
+    expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
+    expect(resources.closeVite).toHaveBeenCalledTimes(1);
+  }));
+
+  it.effect("撮影の処理（fn）が失敗しても、そのエラーをそのまま伝える（握りつぶさない・CaptureFailed に包まない）", () => Effect.gen(function* () {
+    // fn の失敗の型は withCapturePage が決めないので、撮影自身の CaptureFailed とは別のタグで確かめる
+    const result = yield* Effect.result(withCapturePage(snapshot, () => new FnFailed({ message: "fn の失敗" })).pipe(Effect.provide(playwright)));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) return;
+    expect(result.failure).toBeInstanceOf(FnFailed);
+    expect(result.failure).not.toBeInstanceOf(CaptureFailed);
+    expect(result.failure.message).toBe("fn の失敗");
+    expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
+    expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
+    expect(resources.closeVite).toHaveBeenCalledTimes(1);
+  }));
+
+  it.effect("全体を撮影画面に収められない（overflow）ときは、PNG を書かずに CaptureFailed で失敗し、browser と Vite を閉じる", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const path = join(dir, "map.png");
+    resources.newPage.mockResolvedValue({
+      addInitScript: resources.addInitScript, goto: resources.goto,
+      waitForSelector: resources.waitForSelector, screenshot: resources.screenshot,
+      locator: () => ({ count: async () => 1, all: async () => [] }),
+    });
+    const result = yield* Effect.result(capture(path));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) return;
+    expect(result.failure).toBeInstanceOf(CaptureFailed);
+    expect(result.failure.message).toContain("収められません");
+    expect(resources.screenshot).not.toHaveBeenCalled();
+    expect(existsSync(path)).toBe(false);
     expect(events.slice(-2)).toEqual(["browser.close", "vite.close"]);
     expect(resources.closeBrowser).toHaveBeenCalledTimes(1);
     expect(resources.closeVite).toHaveBeenCalledTimes(1);
