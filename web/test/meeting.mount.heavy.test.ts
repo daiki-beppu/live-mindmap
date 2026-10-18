@@ -218,7 +218,9 @@ describe("会議中（Foldkit 版）の Mount", () => {
       await settled(fresh);
       await waitForMeasuredNodes(fresh, await nodeCount(fresh));
       await waitForMeasuredNodes(moved, await nodeCount(fresh));
-      expect(await positionsOf(moved)).toEqual(await positionsOf(fresh));
+      // 補間（500ms）が終わるまで、期限付きで moved の位置が fresh と一致するのを待つ
+      const expected = await positionsOf(fresh);
+      await expect.poll(() => positionsOf(moved), { timeout: 10_000 }).toEqual(expected);
     }),
     MEETING_TIMEOUT,
   );
