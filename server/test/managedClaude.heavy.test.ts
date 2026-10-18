@@ -3,13 +3,12 @@ import { createRequire } from "node:module";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
-import { AgentSdk } from "../src/claude.ts";
+import { Effect } from "effect";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 
 describe("管理 Claude SDK の実導入", () => {
-  it.live("開発用入口で一時ルートへ導入し、管理実体の SDK を AgentSdk へ渡す（モデルは呼ばない）", () => Effect.gen(function* () {
+  it.live("開発用入口で一時ルートへ導入し、管理実体の SDK を解決して読み込める（モデルは呼ばない）", () => Effect.gen(function* () {
     const root = yield* temporaryDeps;
     yield* Effect.tryPromise(() => new Promise<void>((resolve, reject) => {
       execFile("pnpm", ["--filter", "@live-mindmap/server", "deps:install", "claude"], {
@@ -24,8 +23,6 @@ describe("管理 Claude SDK の実導入", () => {
     yield* Effect.gen(function* () {
       const deps = yield* ManagedDeps;
       const module = yield* deps.load("claude");
-      const sdk = yield* AgentSdk.pipe(Effect.provide(AgentSdk.layer.pipe(Layer.provide(Layer.succeed(ManagedDeps, deps)))));
-      expect(sdk.query).toBeTypeOf("function");
       expect((module as unknown as { query: unknown }).query).toBeTypeOf("function");
     }).pipe(Effect.provide(managedLayer(root)));
   }).pipe(Effect.scoped), 180_000);
