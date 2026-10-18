@@ -44,6 +44,7 @@ Evals measure real model and speech-recognition output by hand. They are not par
 - `mapShape`・`edgeJudge`・`siblingJudge`: 差分更新のプロンプトを変えたら、形と意味の物差しとして回す。
 - `sttAccuracy`: the recognition engine, language, or vocabulary hints.
 - `sttLatency`: how finals are handled, or how the helper feeds recognition.
+- `speakerAccuracy`: the speaker-diarization model, the rules that attribute remarks to speakers, or their reference values.
 
 CI does not enforce them; agents may run them too. Record the result in the PR body as a before/after table taken on the same samples. There is no baseline value. Procedures, which samples each one takes, and input/output shapes are in `server/bench/README.md`. The samples (synthetic meetings: audio, transcript, truth, how to make new ones) live outside the repo; start from `~/live-mindmap-samples/README.md`.
 

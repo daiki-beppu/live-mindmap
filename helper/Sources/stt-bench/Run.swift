@@ -88,15 +88,85 @@ extension Duration {
 
 private let outputLock = NSLock()
 
+/// JSON の 1 行を標準出力に書く（並行して呼ばれても行が混ざらない）。
+func printJSON(_ json: String) {
+    outputLock.lock()
+    print(json)
+    fflush(stdout)
+    outputLock.unlock()
+}
+
 /// 結果の JSON を 1 行ずつ標準出力に書く。
 func printLine(_ line: ResultLine) {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     guard let data = try? encoder.encode(line), let json = String(data: data, encoding: .utf8) else { return }
-    outputLock.lock()
-    print(json)
-    fflush(stdout)
-    outputLock.unlock()
+    printJSON(json)
+}
+
+// MARK: --events（Issue #1031）
+
+/// ヘルパーのイベントの JSON に、届いた時刻 `arrival`（`start` を 0 とする秒）を足した 1 行。speakerReplay --offline がそのまま読める形。
+func eventLine(_ event: HelperEvent, arrival: Double) throws -> String {
+    let object = try JSONSerialization.jsonObject(with: Data(event.jsonString().utf8))
+    guard var fields = object as? [String: Any] else { throw EventLineError.notObject }
+    fields["arrival"] = arrival
+    let data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes])
+    guard let json = String(data: data, encoding: .utf8) else { throw EventLineError.notObject }
+    return json
+}
+
+private enum EventLineError: Error { case notObject }
+
+/// `url` の音声を認識し、結果（remark / partial。語・語の区間つき）を `track` のイベントとして届いた時刻つきで `emit` に渡す。
+private func recognizeEvents(_ audio: URL, with transcriber: any Transcriber, track: Track, start: ContinuousClock.Instant, emit: @escaping @Sendable (String) -> Void) async throws {
+    let origin = AudioGetCurrentHostTime()
+    let results = try await transcriber.transcribe(try pacedAudio(from: audio, origin: origin), origin: origin)
+    for try await result in results {
+        emit(try eventLine(event(from: result, track: track), arrival: (ContinuousClock.now - start).seconds))
+    }
+}
+
+/// 同じ音声に話者分離を掛け、区間・確定済みの位置・混入・重心のすべてを 相手 のイベントとして届いた時刻つきで `emit` に渡す。
+private func diarizeEvents(_ audio: URL, with diarizer: any SpeakerDiarizer, start: ContinuousClock.Instant, emit: @escaping @Sendable (String) -> Void) async throws {
+    let origin = AudioGetCurrentHostTime()
+    let items = try await diarizer.diarize(try pacedAudio(from: audio, origin: origin), origin: origin)
+    for try await item in items {
+        emit(try eventLine(event(from: item, track: .相手), arrival: (ContinuousClock.now - start).seconds))
+    }
+}
+
+/// 相手の音声の認識と話者分離、あれば 自分 の音声の認識を、同じ起点から実時間のペースで並行して流し、
+/// 届いた時刻 arrival つきのイベントを 1 行 1 イベントで `emit` に渡す。どれかが失敗したら全体を失敗にする（話者なしで黙って続けない）。
+func streamEvents(
+    audio: URL, selfAudio: URL?,
+    transcriber: any Transcriber, selfTranscriber: (any Transcriber)?,
+    diarizer: any SpeakerDiarizer, start: ContinuousClock.Instant,
+    emit: @escaping @Sendable (String) -> Void
+) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask { try await recognizeEvents(audio, with: transcriber, track: .相手, start: start, emit: emit) }
+        group.addTask { try await diarizeEvents(audio, with: diarizer, start: start, emit: emit) }
+        if let selfAudio, let selfTranscriber {
+            group.addTask { try await recognizeEvents(selfAudio, with: selfTranscriber, track: .自分, start: start, emit: emit) }
+        }
+        try await group.waitForAll()
+    }
+}
+
+/// `run --events` の本体。認識はライブと同じ `SilenceFilteringTranscriber` で包む。モデルの準備は計測に含めない。
+func runEvents(variant: Variant, audio: URL, selfAudio: URL?, vocabulary: Vocabulary? = nil) async throws {
+    let transcriber = SilenceFilteringTranscriber(wrapping: makeTranscriber(variant, vocabulary: vocabulary))
+    try await transcriber.prepare()
+    var selfTranscriber: SilenceFilteringTranscriber?
+    if selfAudio != nil {
+        let t = SilenceFilteringTranscriber(wrapping: makeTranscriber(variant, vocabulary: vocabulary))
+        try await t.prepare()
+        selfTranscriber = t
+    }
+    let diarizer = SortformerSpeakerDiarizer()
+    try await diarizer.prepare()
+    try await streamEvents(audio: audio, selfAudio: selfAudio, transcriber: transcriber, selfTranscriber: selfTranscriber, diarizer: diarizer, start: ContinuousClock.now) { printJSON($0) }
 }
 
 /// 計測の 1 回分。`load` があれば、2 本目を並行して認識に流す（2 本同時の負荷。2 本目の結果は出さない）。

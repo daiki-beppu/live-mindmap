@@ -237,3 +237,115 @@ describe("オフライン出力の流し直し（arrival の順に settler と�
     expect(pieces(yield* replayOffline(numbered(events), { rules: only("waitLimit") })).slice(0, 1)).toEqual([["相手 A", 0, 2]]);
   }));
 });
+
+// Issue #1031: 発言への対応付けの規則の効き目。中核の話者の段が「切った」「3 秒で諦めた」を知らせ、流し直しの結果が数を持つ。
+// 数は規則を 1 つずつ外した結果と比べるために常に出す（0 でも省かない）。cut と timeout は混入・つなぎ直しの記録（mixed / links）には混ざらない
+describe("規則の効き目の数（cuts: 切った数、timeouts: 3 秒で話者なしになった数）", () => {
+  const counts = (result: { cuts: number; timeouts: number }) => [result.cuts, result.timeouts];
+
+  it.effect.each([
+    { name: "誰もいない語を寄せる規則があると 3 断片が 2 断片になる", log: fillLog, on: 1, off: { fillUnassigned: false }, offCuts: 2 },
+    { name: "0.5 秒の下限があると 3 断片が 1 断片になる", log: minRunLog, on: 0, off: { minRun: false }, offCuts: 2 },
+  ])("cuts: $name（切った数は断片の数 − 1 の合計）", ({ log, on, off, offCuts }) => Effect.gen(function* () {
+    expect((yield* replayLog(numbered(log))).cuts).toBe(on);
+    expect((yield* replayLog(numbered(log), { rules: off })).cuts).toBe(offCuts);
+  }));
+
+  it.effect("cuts: 切れなかった発言（1 断片のまま出た発言）は数えない", () => Effect.gen(function* () {
+    const result = yield* replayLog(numbered(overlapLog));
+
+    expect(result.remarks).toHaveLength(3);
+    expect(result.cuts).toBe(0);
+  }));
+
+  it.effect("timeouts: 区間が揃わないまま 3 秒の時間切れで話者なしになった発言を数え、3 秒の待ちを外すと 0 になる", () => Effect.gen(function* () {
+    expect(counts(yield* replayLog(numbered(waitLog)))).toEqual([0, 1]);
+    expect(counts(yield* replayLog(numbered(waitLog), { rules: only("waitLimit") }))).toEqual([0, 0]);
+  }));
+
+  it.effect("timeouts: 揃っていた発言は時間切れに数えない", () => Effect.gen(function* () {
+    expect((yield* replayLog(numbered(fillLog))).timeouts).toBe(0);
+  }));
+
+  it.effect("0 のときも cuts・timeouts のキーを出す（常に出す）", () => Effect.gen(function* () {
+    const result = yield* replayLog(numbered(overlapLog));
+
+    expect(result).toMatchObject({ cuts: 0, timeouts: 0 });
+  }));
+
+  it.effect("切った・時間切れの記録は links・mixed に混ざらない", () => Effect.gen(function* () {
+    const cut = yield* replayLog(numbered(fillLog));
+    const timedOut = yield* replayLog(numbered(waitLog));
+
+    expect([cut.links, cut.mixed, timedOut.links, timedOut.mixed]).toEqual([[], [], [], []]);
+  }));
+
+  it.effect("オフラインの経路でも数える（確定結果が 2 人に切れる = cuts 1、3 秒の時間切れ = timeouts 1、3 秒の待ちを外すと 0）", () => Effect.gen(function* () {
+    expect((yield* replayOffline(numbered(offlineLog))).cuts).toBe(1);
+    const events: Line[] = [
+      { arrival: 1, type: "remark", track: "相手", start: 0, end: 2, text: "あいう", duplicate: false },
+      { arrival: 2, type: "partial", track: "自分", start: 10, end: 11, text: "", duplicate: false },
+      { arrival: 3, type: "speaker", track: "相手", start: 0, end: 2, slot: 0, final: true },
+      { arrival: 3, type: "speaker-settled", track: "相手", to: 2 },
+    ];
+
+    expect((yield* replayOffline(numbered(events))).timeouts).toBe(1);
+    expect((yield* replayOffline(numbered(events), { rules: only("waitLimit") })).timeouts).toBe(0);
+  }));
+});
+
+// 字幕に見えていた仮のラベル（tentativeLabels）。発言が出た更新の 1 つ前の speaker-settled の後の、中核の preview で決める
+describe("仮のラベル（replayOffline の tentativeLabels）", () => {
+  const seg = (arrival: number, slot: number, start: number, end: number, final: boolean): Line => ({ arrival, type: "speaker", track: "相手", start, end, slot, final });
+  const settled = (arrival: number, to: number): Line => ({ arrival, type: "speaker-settled", track: "相手", to });
+  const said = (arrival: number, start: number, end: number): Line => ({ arrival, type: "remark", track: "相手", start, end, text: "あい", duplicate: false });
+  const tentatives = (result: { remarks: ReadonlyArray<{ speaker?: string; tentative?: string }> }) => result.remarks.map((r) => [r.tentative, r.speaker]);
+
+  // SCN-SA-TENT-P1
+  it.effect("1 つ前の更新の仮のラベルと、出た発言のラベルが同じ", () => Effect.gen(function* () {
+    const lines = [seg(1, 0, 0, 4, false), settled(1, 0), said(2, 0, 4), seg(3, 0, 0, 4, true), settled(3, 4)];
+
+    const result = yield* replayOffline(numbered(lines), { tentativeLabels: true });
+
+    expect(tentatives(result)).toEqual([["相手 A", "相手 A"]]);
+  }));
+
+  // SCN-SA-TENT-N1: 枠で比べると同じ（枠 2）だが、予想は初めて現れた順（枠 1 が先で、枠 2 は 相手 B）、実際は発言の出た順（枠 2 の発言が最初で 相手 A）
+  it.effect("枠が同じでも、予想した順と振られた順が違えば、仮のラベルと確定のラベルが違う", () => Effect.gen(function* () {
+    const lines = [seg(1, 1, 0, 2, false), seg(1, 2, 3, 5, false), settled(1, 0), said(2, 3, 5), seg(3, 2, 3, 5, true), settled(3, 5)];
+
+    const result = yield* replayOffline(numbered(lines), { tentativeLabels: true });
+
+    expect(tentatives(result)).toEqual([["相手 B", "相手 A"]]);
+  }));
+
+  // SCN-SA-TENT-N2
+  it.effect("発言が揃った更新の区間では仮のラベルを決めない（それより前に写しが無ければ付けない）", () => Effect.gen(function* () {
+    const lines = [said(1, 0, 2), seg(2, 0, 0, 2, true), seg(2, 1, 0, 10, false), settled(2, 2)];
+
+    const result = yield* replayOffline(numbered(lines), { tentativeLabels: true });
+
+    expect(tentatives(result)).toEqual([[undefined, "相手 A"]]);
+  }));
+
+  // 未割当の 2 枠の予想順（枠 1 が先）と発言順（枠 2 が先）が逆。最初の発言に 相手 A が振られると、枠 1 の字幕のラベルは 相手 A → 相手 B に変わる（次の発言にも 相手 B が振られ、替わっていない）
+  it.effect("発言を出した後に変わった字幕のラベルを、次の発言の仮のラベルにする（変わっていないラベルを替わったに数えない）", () => Effect.gen(function* () {
+    const lines = [
+      seg(1, 1, 0, 2, false), seg(1, 2, 3, 5, false), settled(1, 0),
+      said(2, 3, 5), seg(3, 2, 3, 5, true), seg(3, 1, 6, 8, false), settled(3, 5),
+      said(4, 6, 8), seg(5, 1, 6, 8, true), settled(5, 8),
+    ];
+
+    const result = yield* replayOffline(numbered(lines), { tentativeLabels: true });
+
+    expect(tentatives(result)).toEqual([["相手 B", "相手 A"], ["相手 B", "相手 B"]]);
+  }));
+
+  it.effect("tentativeLabels がなければ、結果に仮のラベルは現れない（CLI の JSON は変わらない）", () => Effect.gen(function* () {
+    const lines = [seg(1, 0, 0, 4, false), settled(1, 0), said(2, 0, 4), seg(3, 0, 0, 4, true), settled(3, 4)];
+
+    const result = yield* replayOffline(numbered(lines));
+
+    expect(JSON.stringify(result)).not.toContain("tentative");
+  }));
+});

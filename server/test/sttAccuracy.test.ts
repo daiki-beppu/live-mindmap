@@ -77,6 +77,10 @@ describe("採点", () => {
   });
 
   it("timeline.tsv の #MARK の行は台本に入れない", () => {
-    expect(parseTimeline("#MARK\tslide:a\t2.00\n大河内\t2.00\t5.88\tはい。\n")).toEqual([line(2, 5.88, "はい。")]);
+    expect(parseTimeline("#MARK\tslide:a\t2.00\n大河内\t2.00\t5.88\tはい。\n")).toEqual([{ speaker: "大河内", ...line(2, 5.88, "はい。") }]);
+  });
+
+  it("timeline.tsv の各行は、話者（列 0）を捨てずに返す", () => {
+    expect(parseTimeline("森川\t0.00\t2.00\tあ\n田中\t3.00\t4.50\tい\n").map((l) => [l.speaker, l.start, l.end])).toEqual([["森川", 0, 2], ["田中", 3, 4.5]]);
   });
 });
