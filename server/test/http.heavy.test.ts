@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { WebSocket } from "ws";
+import { WS_CLOSE_TIMEOUT_MS } from "../src/http.ts";
 import { realLayers, type ServerOptions } from "../src/server.ts";
 import { DiffUpdater } from "../src/core/index.ts";
 import { fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
@@ -252,15 +253,19 @@ describe("HTTP と両upgradeの共通Origin制限（要件2・13・24）", () =>
       expect(c.frames).toEqual([]);
     }));
   // close フレームに応答しない接続が 1 本残っていても、close() の所要時間はその接続の応答に依存しない有界な
-  // 値になる（coding-001）。ws の既定の CLOSE_TIMEOUT（応答を待つ上限）は 30,000ms で、これを無界側の根拠として、
-  // 十分小さい上限内に戻ることを確かめる
-  it.live("close フレームに応答しない接続があっても、closeは有界時間で解決する（ISSUE-2）", () =>
+  // 値になる（coding-001）。上限（WS_CLOSE_TIMEOUT_MS。既定 3 秒）はテストだけ短い値を与え、経過時間を
+  // 「上限以上」（応答を待たずに切る誤りを落とす）と「上限 + 2 秒未満」（与えた上限が効かず既定の 3 秒や
+  // ws の既定 30 秒まで待つ誤りを落とす）で挟む
+  const WS_CLOSE_LIMIT_MS = 500;
+  it.live("close フレームに応答しない接続があっても、closeは与えた上限で解決する（ISSUE-2）", () =>
     Effect.gen(function* () {
-      const r = yield* resource();
+      const r = yield* resource().pipe(Effect.provideService(WS_CLOSE_TIMEOUT_MS, WS_CLOSE_LIMIT_MS));
       yield* connectUnresponsive(r.server.port);
       const startedAt = Date.now();
       yield* r.server.close;
-      expect(Date.now() - startedAt).toBeLessThan(10_000);
+      const elapsed = Date.now() - startedAt;
+      expect(elapsed).toBeGreaterThanOrEqual(WS_CLOSE_LIMIT_MS);
+      expect(elapsed).toBeLessThan(WS_CLOSE_LIMIT_MS + 2_000);
     }), 15_000);
 });
 

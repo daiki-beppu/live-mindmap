@@ -16,6 +16,7 @@ import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { reportFailure, runCli } from "../src/cli.ts";
+import { WS_CLOSE_TIMEOUT_MS } from "../src/http.ts";
 import type { ServerLayers } from "../src/server.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
@@ -1449,4 +1450,11 @@ describe("閲覧の共有（Issue #834）", () => {
       expect(s.tunnel.opened).toHaveLength(1);
     }));
   });
+});
+
+describe("WS の close の上限（WS_CLOSE_TIMEOUT_MS）", () => {
+  it.effect("上書きしない製品の構築では、既定の 3_000ms", () =>
+    Effect.gen(function* () {
+      expect(yield* WS_CLOSE_TIMEOUT_MS).toBe(3_000);
+    }));
 });
