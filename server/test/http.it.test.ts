@@ -1,10 +1,13 @@
+import { randomBytes } from "node:crypto";
+import { connect as netConnect } from "node:net";
+import { WebSocket } from "ws";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
-import { DiffUpdatePaused, type DiffUpdateFrame, type DiffUpdater, type Op } from "../src/core/index.ts";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { DiffUpdatePaused, type DiffUpdateFrame, DiffUpdater, type Op } from "../src/core/index.ts";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "@effect/vitest";
@@ -24,7 +27,7 @@ import { SessionSinks } from "../src/sessionSinks.ts";
 import { buildPrompt } from "../src/claudePrompt.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
-import { fakeExportServices } from "./fixtures/exportServices.ts";
+import { fakeExportServices, type ExportServicesOptions } from "./fixtures/exportServices.ts";
 import { allowedMails } from "./fixtures/allowedMail.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { fakeTunnel, FAKE_TUNNEL_HOST } from "./fixtures/tunnel.ts";
@@ -96,7 +99,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks, sent };
 };
 
-const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } = {}) {
+const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } & Pick<ExportServicesOptions, "capture"> = {}) {
   const dir = yield* Effect.acquireRelease(
     Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-http-fake-"))),
     (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
@@ -105,7 +108,7 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   const fakeHelpers = makeFakeHelpers(attempts, options.permission);
   const sessionSinksLayer = SessionSinks.layer({
     prepareUpdater: () => Effect.succeed({ layer: options.updaterLayer ? options.updaterLayer() : updaterLayer(() => Effect.succeed({ ops: [] })) }),
-  }).pipe(Layer.provide(fakeExportServices()));
+  }).pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
     { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
@@ -117,6 +120,224 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
     ),
   };
+});
+
+// ws は close に自動応答するため、非応答の接続は生 TCP で再現する。
+const connectUnresponsive = Effect.fnUntraced(function* (port: number) {
+  const socket = yield* Effect.acquireRelease(
+    Effect.sync(() => netConnect(port, "127.0.0.1")),
+    (connection) => Effect.sync(() => connection.destroy()),
+  );
+  let response = "";
+  socket.on("data", (data) => { response += data.toString(); });
+  const upgraded = new Promise<void>((resolve, reject) => {
+    socket.once("connect", () => {
+      const key = randomBytes(16).toString("base64");
+      socket.write(`GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+    });
+    socket.once("error", reject);
+    socket.on("data", () => { if (response.includes("\r\n\r\n")) resolve(); });
+  });
+  yield* Effect.tryPromise(() => upgraded).pipe(Effect.timeout("5 seconds"));
+  expect(response).toMatch(/^HTTP\/1\.1 101 /);
+});
+
+describe("HTTP 本文の検証（要件8・12）", () => {
+  const invalid = [
+    { name: "app欠落", body: {} },
+    { name: "app空文字列", body: { app: "" } },
+    { name: "appが数値", body: { app: 1 } },
+    { name: "titleが真偽値", body: { app: "us.zoom.xos", title: false, audio: false } },
+    // audio が boolean 以外（"no"・0・"false" を含む）のケースは、新しい入口（偽の Helpers）を使う
+    // 「新しい入口（...）」describe の方で、より網羅的に確かめる（要件98。重複させない）
+    { name: "本文がnull", body: null },
+    { name: "本文が配列", body: [] },
+  ];
+  for (const { name, body } of invalid) {
+    it.live(`${name}なら400のerror JSONで拒否し、開始しない。修正した本文なら開始できる`, () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify(body), undefined));
+        expect(response.status).toBe(400);
+        expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: expect.any(String) });
+        expect(r.calls).toEqual([]);
+        expect(yield* Effect.tryPromise(() => readdir(r.sessionsDir).catch((e: NodeJS.ErrnoException) => {
+          if (e.code === "ENOENT") return [];
+          throw e;
+        }))).toEqual([]);
+        const valid = yield* Effect.tryPromise(() => r.request("POST", "/session/start", JSON.stringify({ app: "us.zoom.xos", title: "週次", audio: false }), undefined));
+        expect(valid.status).toBe(200);
+        expect(yield* Effect.tryPromise(() => valid.json())).toEqual({ dir: expect.any(String), warnings: [] });
+      }));
+  }
+
+  it.live("不正なJSONは400のerror JSONで拒否する", () =>
+    Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}]);
+      const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", "{", undefined));
+      expect(response.status).toBe(400);
+      expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: expect.any(String) });
+      expect(r.calls).toEqual([]);
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+    }));
+
+});
+
+describe("HTTP の失敗応答（要件8〜11）", () => {
+  for (const path of ["/session/stop", "/session/resume"]) {
+    it.live(`${path}: セッションなしは409と既存の文面を返す`, () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        const response = yield* Effect.tryPromise(() => r.request("POST", path, undefined, undefined));
+        expect(response.status).toBe(409);
+        expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: "進行中のセッションがありません" });
+      }));
+  }
+  it.live("進行中のstartと動作中のresumeは409と各条件の文面を返す", () =>
+    Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}]);
+      const body = '{"app":"us.zoom.xos","audio":false}';
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", body, undefined))).status).toBe(200);
+      const busy = yield* Effect.tryPromise(() => r.request("POST", "/session/start", body, undefined));
+      expect(busy.status).toBe(409);
+      expect(yield* Effect.tryPromise(() => busy.json())).toEqual({ error: "セッションが進行中です（先に stop）" });
+      const resume = yield* Effect.tryPromise(() => r.request("POST", "/session/resume", undefined, undefined));
+      expect(resume.status).toBe(409);
+      expect(yield* Effect.tryPromise(() => resume.json())).toEqual({ error: "取り込みは止まっていません（動いているか、起動し直しの最中です）" });
+    }));
+  it.live("未知のルートは404と既存の文面を返す", () =>
+    Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}]);
+      const response = yield* Effect.tryPromise(() => r.request("GET", "/missing", undefined, undefined));
+      expect(response.status).toBe(404);
+      expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: "未対応のリクエスト: GET /missing" });
+    }));
+  for (const failure of [new Error("updaterの取得失敗"), "タグのない失敗"]) {
+    it.live(`予期しない失敗の文面を伏せず500のerror JSONで返す: ${String(failure)}`, () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}], { updaterLayer: () => Layer.effect(DiffUpdater, Effect.die(failure)) });
+        const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+        expect(response.status).toBe(500);
+        expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: failure instanceof Error ? failure.message : failure });
+      }));
+  }
+});
+
+
+describe("HTTP と両upgradeの共通Origin制限（要件2・13・24）", () => {
+  const allowed = [undefined, "http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"];
+  for (const origin of allowed) {
+    it.live(`Origin ${String(origin)} はHTTP、/、/wsで受理され同じ最新マップが届く`, () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        const response = yield* Effect.tryPromise(() => r.request("GET", "/apps", undefined, origin));
+        expect(response.status).toBe(200);
+        expect(yield* Effect.tryPromise(() => response.json())).toEqual(apps);
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', origin))).status).toBe(200);
+        const clients = [yield* connect(r.server.port, "/", origin), yield* connect(r.server.port, "/ws", origin)];
+        // マップのほかに、差分更新の状態（type: "diff-update"）も接続時に届く。ここで確かめるのはマップだけ
+        const map = { nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }], round: 0, changes: [], remarks: [] };
+        for (const c of clients) {
+          yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual(map), { timeout: 10_000 }));
+          expect(c.frames.filter((frame) => !(typeof frame === "object" && frame !== null && "type" in frame))).toEqual([map]);
+        }
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, origin))).status).toBe(200);
+        for (const c of clients) yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "intake", status: "none" }), { timeout: 10_000 }));
+      }));
+  }
+  for (const origin of ["https://evil.example", "null", "http://localhost.evil.example"]) {
+    it.live(`Origin ${origin} はHTTPと両upgradeで403になり、配信されない`, () =>
+      Effect.gen(function* () {
+        const r = yield* resourceWithFakeHelpers([{}]);
+        const body = '{"app":"us.zoom.xos","audio":false}';
+        const deniedStart = yield* Effect.tryPromise(() => r.request("POST", "/session/start", body, origin));
+        expect(deniedStart.status).toBe(403);
+        expect(yield* Effect.tryPromise(() => deniedStart.json())).toEqual({ error: "許可されていない Origin です" });
+        expect(r.calls).toEqual([]);
+        expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", body, undefined))).status).toBe(200);
+        for (const path of ["/", "/ws"]) {
+          const allowed = yield* connect(r.server.port, path, undefined);
+          yield* Effect.tryPromise(() => vi.waitFor(() => expect(allowed.frames).toContainEqual(expect.objectContaining({ round: 0 }))));
+          const ws = yield* Effect.acquireRelease(
+            Effect.sync(() => new WebSocket(`ws://127.0.0.1:${r.server.port}${path}`, { origin })),
+            (socket) => Effect.sync(() => socket.terminate()),
+          );
+          const frames: unknown[] = [];
+          ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+          const status = yield* Effect.tryPromise(() => new Promise<number | undefined>((resolve, reject) => {
+            ws.on("error", reject);
+            ws.on("open", () => reject(new Error("許可していないOriginがupgradeされた")));
+            ws.on("unexpected-response", (_req, response) => {
+              response.resume();
+              ws.terminate();
+              resolve(response.statusCode);
+            });
+          }));
+          expect(status).toBe(403);
+          expect(frames).toEqual([]);
+        }
+      }));
+  }
+  it.live("closeで接続中のクライアントが切断され、同じポートは新しい接続を受け付けない（要件7）", () =>
+    Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}]);
+      const c = yield* connect(r.server.port, "/ws", undefined);
+      expect((yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined))).status).toBe(200);
+      yield* r.server.close;
+      yield* Effect.tryPromise(() => c.closed);
+      yield* Effect.tryPromise(() => expect(fetch(`http://127.0.0.1:${r.server.port}/session/status`)).rejects.toThrow());
+      expect(c.frames).toEqual([]);
+    }));
+  // close フレームに応答しない接続が 1 本残っていても、close() の所要時間はその接続の応答に依存しない有界な
+  // 値になる（coding-001）。上限（WS_CLOSE_TIMEOUT_MS。既定 3 秒）はテストだけ短い値を与え、経過時間を
+  // 「上限以上」（応答を待たずに切る誤りを落とす）と「上限 + 2 秒未満」（与えた上限が効かず既定の 3 秒や
+  // ws の既定 30 秒まで待つ誤りを落とす）で挟む
+  const WS_CLOSE_LIMIT_MS = 500;
+  it.live("close フレームに応答しない接続があっても、closeは与えた上限で解決する（ISSUE-2）", () =>
+    Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}]).pipe(Effect.provideService(WS_CLOSE_TIMEOUT_MS, WS_CLOSE_LIMIT_MS));
+      yield* connectUnresponsive(r.server.port);
+      const startedAt = Date.now();
+      yield* r.server.close;
+      const elapsed = Date.now() - startedAt;
+      expect(elapsed).toBeGreaterThanOrEqual(WS_CLOSE_LIMIT_MS);
+      expect(elapsed).toBeLessThan(WS_CLOSE_LIMIT_MS + 2_000);
+    }), 15_000);
+});
+
+describe("セッションの開始・終了の処理中の保護（要件8・testing-001）", () => {
+  // 開始・終了の処理中（starting/stopping）に別の操作が来ると、SessionTransition として 409 になる
+  // （http.ts の STATUS・sessionFailure.ts の文面）。この経路は、stop の処理中に capture（MapCapture の Service。
+  // 終了時の書き出しが文脈から受け取る）へ到達するまで待ち、確実に stopping のままの状態で start を送ることで再現する。
+  // SessionBusy（live 中の start、既存テストで検証済み）と同じ 409 でも文面が異なるため、文面まで確認する
+  it.live("stopの処理中にstartすると409と専用の文面を返す（SessionTransition）", () => {
+    let releaseCapture: (() => void) | undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseCapture = resolve;
+    });
+    let notifyReachedCapture: (() => void) | undefined;
+    const reachedCapture = new Promise<void>((resolve) => {
+      notifyReachedCapture = resolve;
+    });
+    return Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}], {
+        capture: (_snapshot, path) =>
+          Effect.promise(async () => {
+            notifyReachedCapture!(); // ここに来た時点で state は確実に "stopping"（stop() が同期的に遷移させた後）
+            await released; // テストが 409 を確認するまで、stop の応答をここで止めておく
+            await writeFile(path, "");
+          }),
+      });
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+      const stopping = r.request("POST", "/session/stop", undefined, undefined); // await しない。処理中に start を送る
+      yield* Effect.tryPromise(() => reachedCapture).pipe(Effect.timeout("5 seconds"));
+      const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
+      expect(response.status).toBe(409);
+      expect(yield* Effect.tryPromise(() => response.json())).toEqual({ error: "セッションの開始・終了の処理中です" });
+      releaseCapture!();
+      expect((yield* Effect.tryPromise(() => stopping)).status).toBe(200);
+    }).pipe(Effect.ensuring(Effect.sync(() => releaseCapture!()))); // assert が失敗しても stop を解放する
+  });
 });
 
 describe("HTTP の失敗応答（要件8〜11）", () => {
@@ -297,14 +518,6 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
     expect(yield* poolSessions()).toBe(2);
     expect((yield* post("/session/stop")).status).toBe(200);
   }));
-
-  it.live("非ローカル Origin の start は403で拒否され、ヘルパーを起動しない", () =>
-    Effect.gen(function* () {
-      const r = yield* resourceWithFakeHelpers([{}]);
-      const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos"}', "https://evil.example"));
-      expect(response.status).toBe(403);
-      expect(r.calls).toHaveLength(0);
-    }));
 
   it.live("ヘルパーが接続する前に終わると start は500で、終わった理由の文面を返し、セッションは開始されない（HelperExited）", () =>
     Effect.gen(function* () {
