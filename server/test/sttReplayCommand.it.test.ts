@@ -217,4 +217,24 @@ describe("sttReplay の Command", () => {
     const { result } = yield* runCommand([file]);
     expect(result._tag).toBe("Success");
   }).pipe(Effect.scoped));
+
+  // プロセスの入口（bench/sttReplay.ts の実行）が使う Command の、--help と位置引数の欠落。処理本体（SDK の確認）は走らない
+  it.effect("--help は使い方を stdout に出して成功する（stderr は空。管理 SDK は確認しない）", () => Effect.gen(function* () {
+    const { result, stdout, stderr } = yield* runCommand(["--help"]);
+    expect(result._tag).toBe("Success");
+    expect(stderr).toBe("");
+    expect(stdout).toMatch(/Usage|USAGE/);
+    expect(managed.check).not.toHaveBeenCalled();
+    expect(managed.load).not.toHaveBeenCalled();
+  }));
+
+  it.effect("位置引数が無ければ、help を stdout に、ERROR を stderr に一度だけ出して CliError で失敗する（stack trace は出さない）", () => Effect.gen(function* () {
+    const { result, stdout, stderr } = yield* runCommand([]);
+    expect(result._tag).toBe("Failure");
+    expect(taggedFailure(result)).toBeUndefined();
+    expect(stdout).toMatch(/Usage|USAGE/);
+    expect(stderr.split("\n").filter((l) => /^ERROR\b/.test(l))).toHaveLength(1);
+    expect(stderr).not.toMatch(/\n\s+at /);
+    expect(managed.load).not.toHaveBeenCalled();
+  }));
 });

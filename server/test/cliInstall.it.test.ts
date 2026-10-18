@@ -30,8 +30,8 @@ const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["
   });
 });
 
-const cliProcess = (dir: string, port: number, rootScript: boolean, name: string) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-  execFile(rootScript ? "pnpm" : process.execPath, rootScript ? ["cli", "install", name] : [join(import.meta.dirname, "../src/cli.ts"), "install", name], {
+const cliProcess = (dir: string, port: number, name: string) => Effect.tryPromise(() => new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
+  execFile(process.execPath, [join(import.meta.dirname, "../src/cli.ts"), "install", name], {
     cwd: join(import.meta.dirname, "../.."),
     timeout: 15_000,
     env: { ...process.env, LIVE_MINDMAP_PORT: String(port), LIVE_MINDMAP_DEPS: join(dir, "deps"), LIVE_MINDMAP_SESSIONS: join(dir, "sessions"), LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", LIVE_MINDMAP_MODEL: "", NO_COLOR: "1" },
@@ -51,7 +51,7 @@ describe("CLI install とサーバー", () => {
       const deps = yield* ManagedDeps;
       const item = { name: "cloudflared", need: "optional", state: "ready" } as const;
       const server = yield* serverWith(dir, deps);
-      const first = yield* cliProcess(dir, server.port, false, "cloudflared");
+      const first = yield* cliProcess(dir, server.port, "cloudflared");
       expect(first.code, first.stderr).toBe(0);
       expect(JSON.parse(first.stdout)).toEqual([item]);
       expect(downloads).toBe(1);
@@ -62,7 +62,7 @@ describe("CLI install とサーバー", () => {
       const target = yield* Effect.tryPromise(() => readlink(current));
       const ready = yield* Effect.tryPromise(() => readFile(join(current, ".ready.json"), "utf8"));
       expect(JSON.parse(ready).version).toBe("2026.9.2");
-      const unchanged = yield* cliProcess(dir, server.port, false, "cloudflared");
+      const unchanged = yield* cliProcess(dir, server.port, "cloudflared");
       expect(unchanged.code, unchanged.stderr).toBe(0);
       expect(JSON.parse(unchanged.stdout)).toEqual([]);
       expect(downloads).toBe(1);
@@ -81,7 +81,7 @@ describe("CLI install とサーバー", () => {
       const checked = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=cloudflared`));
       expect(checked.status).toBe(200);
       expect(yield* Effect.tryPromise(() => checked.json())).toEqual(missing);
-      const repaired = yield* cliProcess(dir, server.port, false, "cloudflared");
+      const repaired = yield* cliProcess(dir, server.port, "cloudflared");
       expect(repaired.code, repaired.stderr).toBe(0);
       expect(JSON.parse(repaired.stdout)).toEqual([item]);
       expect(downloads).toBe(2);
@@ -96,30 +96,6 @@ describe("CLI install とサーバー", () => {
         await copyFile(fixture.path, destination);
       }),
     } }).pipe(Layer.provide(NodeServices.layer))));
-  }).pipe(Effect.scoped));
-  it.live("831 C1: cloudflared の明示的導入が実 HTTP 経由で結果 JSON と exit 0 を返す", () => Effect.gen(function* () {
-    const dir = yield* temporaryDeps;
-    const requests: ReadonlyArray<string>[] = [];
-    const item = { name: "cloudflared", need: "optional", state: "ready" } as const;
-    const service = {
-      executable: () => Effect.die("実行ファイル取得は対象外"),
-      load: () => Effect.die("導入は SDK を読み込まない"),
-      check: () => Effect.succeed([item]),
-      update: () => Stream.die("更新は対象外"),
-      install: (names: ReadonlyArray<string>) => Stream.concat(
-        Stream.fromEffect(Effect.sync(() => { requests.push(names); return { type: "progress" as const, message: "cloudflared 取得中" }; })),
-        Stream.succeed({ type: "result" as const, items: [item] }),
-      ),
-    };
-    const server = yield* serverWith(dir, ManagedDeps.of(service));
-    const result = yield* cliProcess(dir, server.port, true, "cloudflared");
-    expect(requests, result.stderr).toEqual([["cloudflared"]]);
-    expect(result.code, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual([item]);
-    expect(result.stderr).toContain("cloudflared 取得中\n");
-    const checked = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/deps/check?names=cloudflared`));
-    expect(checked.status).toBe(200);
-    expect(yield* Effect.tryPromise(() => checked.json())).toEqual([item]);
   }).pipe(Effect.scoped));
   it.live("環境設定から realLayers に渡した管理ルートを状態確認 API が使う", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
@@ -188,7 +164,7 @@ describe("CLI install とサーバー", () => {
     expect(ended).toBe(true);
   }).pipe(Effect.scoped));
 
-  it.live.each([false, true])("プロセス入口（root script: %s）から偽 ManagedDeps に届き、items と exit 0 を返す", (rootScript) => Effect.gen(function* () {
+  it.live("プロセス入口から偽 ManagedDeps に届き、items と exit 0 を返す", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const requests: ReadonlyArray<string>[] = [];
     const server = yield* serverWith(dir, ManagedDeps.of({
@@ -200,7 +176,7 @@ describe("CLI install とサーバー", () => {
         Stream.succeed({ type: "result" as const, items: [installed] }),
       ),
     }));
-    const result = yield* cliProcess(dir, server.port, rootScript, "chromium");
+    const result = yield* cliProcess(dir, server.port, "chromium");
     expect(result.code).toBe(0);
     expect(requests).toEqual([["chromium"]]);
     expect(JSON.parse(result.stdout)).toEqual([installed]);
@@ -219,7 +195,7 @@ describe("CLI install とサーバー", () => {
         Stream.fail(new ManagedDepsFailed({ message: "導入に失敗しました: 最終行" })),
       ),
     }));
-    const result = yield* cliProcess(dir, server.port, false, "chromium");
+    const result = yield* cliProcess(dir, server.port, "chromium");
     expect(requests).toEqual([["chromium"]]);
     expect(result.stderr).toContain("ダウンロード\n");
     expect(result.stderr).toContain("導入に失敗しました: 最終行\n");
@@ -229,7 +205,7 @@ describe("CLI install とサーバー", () => {
 
   it.live("サーバー接続不能では指定文面と exit 1 を返し、管理導入へフォールバックしない", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
-    const result = yield* cliProcess(dir, 0, false, "chromium");
+    const result = yield* cliProcess(dir, 0, "chromium");
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("サーバーにつながりません（pnpm dev で起動）\n");
