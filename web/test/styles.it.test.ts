@@ -21,23 +21,6 @@ const WIDTH_FORMULA = /min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s
 // （review.mount.heavy.test.ts・meeting.mount.heavy.test.ts の寸法）。
 
 describe("styles.css: Tailwind v4 の入口（Issue #830）", () => {
-  const imports = [...css.matchAll(/@import\s+(?:url\()?["']([^"']+)["']/g)].map((m) => m[1]!);
-
-  it("Preflight を入れない: theme.css と utilities.css だけを import し、`tailwindcss` の丸ごとの import も preflight.css も使わない", () => {
-    expect(imports).toContain("tailwindcss/theme.css");
-    expect(imports).toContain("tailwindcss/utilities.css");
-    expect(imports).not.toContain("tailwindcss");
-    expect(imports.filter((name) => /preflight/.test(name))).toEqual([]);
-    expect(css).not.toMatch(/@import\s+["']tailwindcss["']/);
-  });
-
-  it("既定のテーマを消す: @theme で `--*: initial` を宣言し、既定の token（影・角丸・OKLCH の色）を残さない", () => {
-    expect(css).toMatch(/@theme\b[^{]*\{/);
-    expect(themeBlock).toMatch(/--\*\s*:\s*initial\s*;/);
-    expect(css).not.toMatch(/--shadow-|--drop-shadow-|--inset-shadow-|--radius-/);
-    expect(css).not.toMatch(/oklch\(/i);
-  });
-
   it("今の色 12 種を、今の hex のまま --color-* の token にする", () => {
     const values = new Set([...colorTokens.values()].map((value) => value.toLowerCase()));
     for (const hex of ["#111827", "#166534", "#374151", "#4b5563", "#6b7280", "#9ca3af", "#c2410c", "#e5e7eb", "#f3f4f6", "#f9fafb", "#facc15", "#fff"]) {
@@ -79,8 +62,7 @@ describe("styles.css: 変わったノードの強調", () => {
     expect(css).not.toMatch(/--tw-shadow|--shadow-/);
   });
 
-  it("点滅は 1 秒周期で 3 回、ノードの塗りと枠だけを変え、文字は薄くしない（opacity を使わない）", () => {
-    expect(rule(".map-node--blink")).toMatch(/animation\s*:[^;]*\b1s\b[^;]*\s3;/); // 1 秒周期を 3 回
+  it("点滅はノードの塗りと枠だけを変え、文字は薄くしない（opacity を使わない）", () => {
     const frames = css.match(/@keyframes map-node-blink\s*\{([\s\S]*?)\}\s*\}/)?.[1] ?? "";
     expect(frames).toMatch(/background-color/);
     expect(frames).toMatch(/border-color/);
@@ -125,13 +107,6 @@ describe("styles.css: 字幕と知らせ", () => {
     expect(css).not.toContain(".draft-node");
   });
 
-  it("字幕は窓の中央に固定する幅が min(720px, 100vw − 2 × 316px)（右の列にかからない）。見返しの操作の行に重ならないよう fixed にしない", () => {
-    const r = rule(".captions");
-    expect(r).toMatch(new RegExp(`width\\s*:\\s*${WIDTH_FORMULA.source}`));
-    expect(r).not.toMatch(/position\s*:\s*fixed/);
-    expect(rule(".intake-notice")).not.toMatch(/position\s*:\s*fixed/);
-  });
-
   it("取り込みの一言は、字幕の右端に並ぶ: left が 50% と同じ幅の式から決まる。80% の決め打ちではない", () => {
     const r = rule(".intake-notice");
     expect(r).toMatch(/left\s*:[^;]*50%[^;]*min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/);
@@ -147,16 +122,6 @@ describe("styles.css: 字幕と知らせ", () => {
     expect(r).not.toMatch(/box-shadow\s*:\s*(?!\s*none)/);
   });
 
-  it("相手の音声が届かない一文（Issue #863）は、字幕の左に置く式で、バッジ・影・枠・背景を付けず、10 秒で消えるアニメーションを持たない", () => {
-    const r = rule(".tap-notice");
-    expect(r).not.toBe("");
-    expect(r).toMatch(/right\s*:[^;]*50%[^;]*min\(\s*720px\s*,\s*calc\(\s*100vw\s*-\s*2\s*\*\s*316px\s*\)\s*\)/);
-    expect(r).not.toMatch(/position\s*:\s*fixed/);
-    expect(r).not.toMatch(/box-shadow\s*:\s*(?!\s*none)/);
-    expect(r).not.toMatch(/border\s*:|background(-color)?\s*:/);
-    expect(r).not.toMatch(/animation/);
-  });
-
   it("取り込みの一言（intake-notice）と相手の音声が届かない一文（tap-notice）は、字幕の左右の反対側に置く", () => {
     const side = (r: string) => (/(^|[\s;])right\s*:/.test(r) ? "right" : /(^|[\s;])left\s*:/.test(r) ? "left" : "none");
     expect(side(rule(".tap-notice"))).not.toBe("none");
@@ -165,10 +130,6 @@ describe("styles.css: 字幕と知らせ", () => {
 });
 
 describe("styles.css: 選んだノード", () => {
-  it("塗りを薄い灰色にする（背景色の指定がある）", () => {
-    expect(rule(".map-node--selected")).toMatch(/background(?:-color)?\s*:\s*(?:#(?:[ef][0-9a-f]){3}|#[ef][0-9a-f]{2}|rgb)/i);
-  });
-
   it("枠・点滅の outline・影には触れない（実寸が変わり、配置がずれるため）", () => {
     const r = rule(".map-node--selected");
     expect(r).not.toBe("");

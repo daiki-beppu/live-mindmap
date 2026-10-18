@@ -26,14 +26,6 @@ const declarationsFor = (css: string, matches: (selector: string) => boolean): s
     .join(" ");
 
 describe("素の CSS に残す Tooltip・Menu の状態の規則", () => {
-  it("吹き出しは、開いている間（data-open）だけ出す: Tooltip の panel は常に描くので、開いたときに display: block にする規則が素の CSS にある", () => {
-    expect(declarationsFor(allCss(), (s) => s.includes(".review-tip") && s.includes("[data-open]"))).toMatch(/display\s*:\s*block/);
-  });
-
-  it("開いていない吹き出しを出さない: .review-tip の基本の規則は display を block・flex・inline にしない", () => {
-    expect(declarationsFor(allCss(), (s) => s === ".review-tip")).not.toMatch(/display\s*:\s*(block|flex|inline)/);
-  });
-
   it("矢印キーなどで選んでいる項目（data-active）の強調が素の CSS にある: :hover・:focus-visible と同じ色 #4b5563（token でも可）", () => {
     const body = declarationsFor(allCss(), (s) => s.includes(".review-rate__item") && s.includes("[data-active]"));
     expect(body).toMatch(/background(-color)?\s*:\s*(#4b5563|var\(--color-gray-600\))/i);

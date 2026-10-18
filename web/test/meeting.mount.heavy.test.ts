@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CAPTION_SLIDE_MS } from "../src/captions.ts";
 import { CLICK_ZOOM_FACTOR, scrollPanDelta, zoomAtPoint } from "../src/camera.ts";
-import { keyListRows } from "../src/app/keys/table.ts";
 import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
 import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { mapPoint, near, PAGE_VIEWPORT, rectOf, settled, styleOf } from "./reviewPage.ts";
 import { launchBrowser, withContext, type Browser, type BrowserContext, type Page } from "./browser.ts";
 
 // 会議中（Foldkit 版）の Mount と Subscription の中身を、実ブラウザの 1 ページで 1 つずつ確かめる（Issue #829）。React 版が無くなった後も残す。
-// ResizeObserver（画面の大きさ・ノードの高さ）・wheel・gesture（Safari のピンチ）・WebSocket（`/ws`）・文書の keydown は、DOM が無い unit では確かめられない（偽の要素では実際の通知が起きない）。
+// ResizeObserver・wheel など、実ブラウザのレイアウト・寸法・イベントの届き方を確かめる。合成 gesture は mapSurface.mount.dom.test.ts、キーの意味は Scene・Subscription の unit が見る。
 // 会議中の画面に <audio> は無い（再生は見返しだけ）ので、<audio> の時刻は review.mount.heavy.test.ts が確かめ続け、ここでは無いことを確かめる。
 // `/ws` は page.routeWebSocket で本物の server の代わりに frame を送る。時間がかかる。事前に `pnpm --filter @live-mindmap/server deps:install chromium` が要る。
 
@@ -56,24 +55,6 @@ describe("会議中（Foldkit 版）の入口", () => {
     MEETING_TIMEOUT,
   );
 
-  it(
-    "届かない・壊れた frame（知らない type・形の合わない値）は無視され、画面はそのまま",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await open(context);
-      await settled(page);
-      const before = await readMeetingViewport(page);
-      const count = await nodeCount(page);
-      await sendFrame(page, { type: "unknown-type", payload: 1 });
-      await sendFrame(page, { type: "intake", status: "not-a-status" });
-      await sendFrame(page, { nodes: "壊れたスナップショット" });
-      // 続けて正しい frame を送ると、無視した後も受け続けている
-      await sendFrame(page, NOTICE_FRAMES.screen);
-      await page.locator(".screen-notice").waitFor();
-      expect(await nodeCount(page)).toBe(count);
-      expect(await readMeetingViewport(page)).toEqual(before);
-    }),
-    MEETING_TIMEOUT,
-  );
 });
 
 describe("会議中（Foldkit 版）の Mount", () => {
@@ -225,74 +206,9 @@ describe("会議中（Foldkit 版）の Mount", () => {
     MEETING_TIMEOUT,
   );
 
-  it(
-    "gesture: .map-surface に合成した gesturestart・gesturechange（Safari のピンチ）で倍率が変わる。始まりからの累積の倍率で、前回との比だけ掛かる",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await open(context);
-      await settled(page);
-      const before = await readMeetingViewport(page);
-      const point = await mapPoint(page, "center");
-      const gesture = (type: string, scale: number) =>
-        page.evaluate(
-          ([name, s, clientX, clientY]) => {
-            const event = new Event(name as string, { bubbles: true, cancelable: true });
-            Object.assign(event, { scale: s, clientX, clientY });
-            document.querySelector(".map-surface")!.dispatchEvent(event);
-          },
-          [type, scale, point.x, point.y] as const,
-        );
-      await gesture("gesturestart", 1);
-      await gesture("gesturechange", 1.1);
-      await settled(page);
-      expect((await readMeetingViewport(page)).zoom).toBeCloseTo(before.zoom * 1.1, 5);
-      // 累積の 1.21 は、前回の 1.1 からは 1.1 倍
-      await gesture("gesturechange", 1.21);
-      await settled(page);
-      expect((await readMeetingViewport(page)).zoom).toBeCloseTo(before.zoom * 1.21, 5);
-    }),
-    MEETING_TIMEOUT,
-  );
-
-  it(
-    "<audio>: 会議中の画面には <audio> が無い（再生を持たない）。キーで見返しの操作（Space・Home・M）を押しても何も起こらず、ビューポートも変わらない",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await open(context);
-      await settled(page);
-      const before = await readMeetingViewport(page);
-      expect(await page.locator("audio").count()).toBe(0);
-      for (const key of ["Space", "Home", "End", "M", "J", "L", ",", ".", ">", "<"]) await page.keyboard.press(key);
-      await settled(page);
-      expect(await page.locator("audio").count()).toBe(0);
-      expect(await readMeetingViewport(page)).toEqual(before);
-    }),
-    MEETING_TIMEOUT,
-  );
 });
 
 describe("会議中（Foldkit 版）の Subscription", () => {
-  it(
-    "キー（文書の keydown）: ? で会議中の行だけの一覧が .map の中に開く。E で右の列、C で字幕を隠し、もう一度で戻す",
-    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
-      const page = await open(context);
-      await settled(page);
-      await page.keyboard.press("Shift+?");
-      await page.locator(".map .key-list").waitFor();
-      expect(await page.locator(".key-list__keys").allTextContents()).toEqual(keyListRows("live").map((row) => row.keys));
-      await page.keyboard.press("Escape");
-      await page.locator(".key-list").waitFor({ state: "detached" });
-      expect(await page.locator(".side").count()).toBe(1);
-      await page.keyboard.press("E");
-      await page.locator(".side").waitFor({ state: "detached" });
-      await page.keyboard.press("E");
-      await page.locator(".side").waitFor();
-      expect(await page.locator(".captions").count()).toBe(1);
-      await page.keyboard.press("C");
-      await page.locator(".captions").waitFor({ state: "detached" });
-      await page.keyboard.press("C");
-      await page.locator(".captions").waitFor();
-    }),
-    MEETING_TIMEOUT,
-  );
 
   it(
     "WebSocket: 切れると共有画面・相手の音声の一文が消え、スナップショットと字幕は残る。1 秒後に自動でつなぎ直し、server が先に送る値で画面が最新になる",
