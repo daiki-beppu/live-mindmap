@@ -9,7 +9,7 @@ import { TestClock } from "effect/testing";
 import { emptyMap, LogEvent, restoreState, type Snapshot } from "../src/core/index.ts";
 import { prepareChatgpt } from "../src/chatgptResponses.ts";
 import { classificationRequest } from "../src/localPrompt.ts";
-import { LOG_FILE, openRecordedSession } from "../src/sessionFiles.ts";
+import { LOG_FILE, openLoggedSession } from "../src/sessionFiles.ts";
 import { CHATGPT_HOME, CHATGPT_MODEL, chatgptCredentials, classification, completedSse, fakeChatgptFiles, fakeChatgptHttp } from "./fixtures/chatgpt.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
@@ -31,7 +31,7 @@ describe("一時停止の保存ログ", () => {
     if (Result.isSuccess(failed)) return yield* Effect.die("429が成功として返りました");
     let calls = 0;
     const published: Snapshot[] = [];
-    const { session } = yield* openRecordedSession({ model: CHATGPT_MODEL, dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot)) }).pipe(
+    const { session } = yield* openLoggedSession({ model: CHATGPT_MODEL, dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot)) }).pipe(
       Effect.provide(Layer.merge(NodeFileSystem.layer, updaterLayer((input) => Effect.suspend(() => {
         calls++;
         return calls === 1 ? Effect.fail(failed.failure) : Effect.succeed({ ops: input.fresh.map((r) => ({ op: "add" as const, ref: r.id, parent: "root", kind: "議題" as const, text: r.text, evidence: [r.id] })) });
