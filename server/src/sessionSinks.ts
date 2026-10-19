@@ -186,7 +186,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             log: appendRecordedLog,
             carried: started?.words ?? [],
           });
-          yield* vocabulary.addUser(vocab ?? []);
+          yield* vocabulary.addUser(vocab ?? []).pipe(Effect.asVoid);
           const flow = yield* makeRemarkFlow({
             session, correct: vocabulary.correct, speak,
             captions,
@@ -209,7 +209,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 yield* applyName({ label, name, source: "手入力" });
               }),
             screen: (change) => captions === "途中結果から"
-              ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines))
+              ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines)).pipe(Effect.asVoid)
               : Effect.andThen(vocabulary.addScreen(change.lines, change.start), flow.screen(change)),
             screenOff: flow.screenOff,
             drain: flow.drain,

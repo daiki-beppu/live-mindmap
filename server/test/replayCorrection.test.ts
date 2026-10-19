@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { makeSession, type DiffInput, type LogEvent, type Remark, type Session } from "../src/core/index.ts";
 import { logReadings, withReplayCorrection } from "../src/replayCorrection.ts";
@@ -57,6 +57,24 @@ describe("logReadings", () => {
 });
 
 describe("replayCorrection", () => {
+  it.effect("初期user語彙のログ失敗をdecoratorの初期化へ伝える", () => Effect.gen(function* () {
+    const h = yield* setup([{ type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "user" }] }]);
+    const defect = new Error("vocab write failed");
+    const exit = yield* h.wrap((event) => event.type === "vocab" ? Effect.die(defect) : h.appendLog(event)).pipe(Effect.exit);
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(defect);
+  }));
+
+  it.effect("screen保存後の語彙ログ失敗をpushScreenへ伝える", () => Effect.gen(function* () {
+    const h = yield* setup([{ type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "screen" }] }]);
+    const defect = new Error("vocab write failed");
+    const replay = yield* h.wrap((event) => event.type === "vocab" ? Effect.die(defect) : h.appendLog(event));
+    const exit = yield* replay.pushScreen({ start: 6, image: null }, ["Zendesk 導入"]).pipe(Effect.exit);
+    expect(h.events.find((event) => event.type === "screen")).toEqual({ type: "screen", start: 6, image: null, lines: ["Zendesk 導入"] });
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(defect);
+  }));
+
   it.effect("screen の lines から今の規則で候補を取り直す。screen より前の発言・今の規則で取れない語は直らない", () => Effect.gen(function* () {
     const h = yield* setup([{ type: "vocab", words: [
       { surface: "Zendesk", romaji: "zendesuku", source: "screen" }, { surface: "notion", romaji: "noshon", source: "screen" },

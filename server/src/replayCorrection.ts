@@ -34,8 +34,9 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
     read, commonWords, log: appendLog,
     carried: carriedSurfaces.map((surface) => ({ surface, romaji: carriedReadings.get(surface) ?? null })),
   });
-  yield* vocabulary.addUser(words.filter((word) => word.source === "user").map((word) => word.surface));
+  const userAdded = yield* vocabulary.addUser(words.filter((word) => word.source === "user").map((word) => word.surface));
   yield* vocabulary.settled;
+  yield* userAdded;
 
   return {
     ...session,
@@ -48,8 +49,9 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
     pushScreen: (change, lines) =>
       Effect.gen(function* () {
         yield* session.pushScreen(change, lines);
-        yield* vocabulary.addScreen(lines);
+        const screenAdded = yield* vocabulary.addScreen(lines);
         yield* vocabulary.settled;
+        yield* screenAdded;
       }),
   } satisfies Session;
 });

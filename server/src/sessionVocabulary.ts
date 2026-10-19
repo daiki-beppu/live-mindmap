@@ -1,4 +1,4 @@
-import { Context, Effect, FiberSet, Ref, type Scope } from "effect";
+import { Context, Effect, Fiber, FiberSet, Ref, type Scope } from "effect";
 import {
   correctRemark, katakanaTable, requestScreenWords, wordsForKatakana,
   type DiffUpdater, type LogEvent, type PoolWord, type Replacement,
@@ -43,8 +43,8 @@ export const modelReadings = (katakana: DiffUpdater["Service"]["katakana"], read
 
 export type SessionVocabulary = {
   correct: (settled: SettledRemark) => Effect.Effect<CorrectedRemark>;
-  addUser: (words: ReadonlyArray<string>) => Effect.Effect<void>;
-  addScreen: (lines: ReadonlyArray<string> | undefined, from?: number) => Effect.Effect<void>;
+  addUser: (words: ReadonlyArray<string>) => Effect.Effect<Effect.Effect<void>>;
+  addScreen: (lines: ReadonlyArray<string> | undefined, from?: number) => Effect.Effect<Effect.Effect<void>>;
   settled: Effect.Effect<void>;
 };
 
@@ -96,12 +96,14 @@ export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
         const surfaces = [...new Set(words.filter((w) => w !== "" && !state.requested.has(w)))];
         return [surfaces, { ...state, requested: new Set([...state.requested, ...surfaces]) }] as const;
       });
-      if (fresh.length > 0) yield* FiberSet.run(adds, add(fresh, "user"), { startImmediately: true });
+      if (fresh.length === 0) return Effect.void;
+      return Fiber.join(yield* FiberSet.run(adds, add(fresh, "user"), { startImmediately: true }));
     })),
     addScreen: (lines, from) => Effect.uninterruptible(Effect.gen(function* () {
-      if (lines === undefined || lines.length === 0) return;
+      if (lines === undefined || lines.length === 0) return Effect.void;
       const fresh = yield* Ref.modify(screenState, (state) => requestScreenWords(state, lines));
-      if (fresh.length > 0) yield* FiberSet.run(adds, add(fresh, "screen", from), { startImmediately: true });
+      if (fresh.length === 0) return Effect.void;
+      return Fiber.join(yield* FiberSet.run(adds, add(fresh, "screen", from), { startImmediately: true }));
     })),
     settled: FiberSet.awaitEmpty(adds),
   };
