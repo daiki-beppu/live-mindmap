@@ -1,5 +1,5 @@
 import { Effect, Ref, type Scope } from "effect";
-import type { CaptionsFrame, HelperPartial, Replacement, Session, SpeakerLogEvent, Track, WordTime } from "./core/index.ts";
+import type { CaptionsFrame, HelperPartial, Replacement, Session, SpeakerLogEvent, WordTime } from "./core/index.ts";
 import type { CorrectedRemark, SessionVocabulary } from "./sessionVocabulary.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { createSpeakingRelay, type CaptionContext } from "./speakingRelay.ts";
@@ -62,12 +62,8 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
     screenOff: session.pushScreenOff,
   };
   const feed = yield* options.feed(inlet);
-  const madeEnd = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
   const settling = yield* createRemarkSettling({
-    emit: (settled) => Effect.andThen(
-      Ref.update(madeEnd, (current) => ({ ...current, [settled.track]: Math.max(current[settled.track] ?? settled.end, settled.end) })),
-      Effect.flatMap(correct(settled), feed.remark),
-    ),
+    emit: (settled) => Effect.flatMap(correct(settled), feed.remark),
   });
   const stop = Effect.andThen(relay.stop, settling.stop);
   yield* Effect.addFinalizer(() => stop);
@@ -82,7 +78,6 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
     drain: Effect.andThen(settling.drain, feed.drain),
     // 再起動ではfeedの並べ替え待ちを出さない。
     drainForRestart: settling.drain,
-    lastRemarkEnds: Ref.get(madeEnd),
     captionsChanged: relay.flushAll,
     clearSpeaking: relay.clear,
     stop,

@@ -8,7 +8,7 @@ import { TestClock } from "effect/testing";
 import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
-import { SessionSinks, type SessionSink } from "../src/sessionSinks.ts";
+import { SessionSinks, type OpenSessionSink, type SessionSink } from "../src/sessionSinks.ts";
 import { Sessions, SessionsDir, type SessionStart } from "../src/sessions.ts";
 import { Viewers } from "../src/viewers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
@@ -202,6 +202,186 @@ const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Laye
     const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(readyManagedDeps, helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
     return { sessions: Context.get(context, Sessions), viewers: Context.get(context, Viewers), closeServer: () => Scope.close(scope, Exit.void) };
   });
+
+describe("録画の引数と終了処理", () => {
+  it.effect("閲覧の共有が使う録画のScopeは、録画の終了で1回だけ閉じる", () => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const consuming = yield* Stream.runDrain(run.events).pipe(Effect.forkChild);
+    const session = yield* sessions.liveSession;
+    const sharing = yield* Scope.fork(session.scope, "sequential");
+    let closed = 0;
+    yield* Scope.addFinalizer(sharing, Effect.sync(() => { closed++; }));
+    expect(session.local).toBe(false);
+    expect(closed).toBe(0);
+    yield* sessions.stop;
+    yield* Fiber.join(consuming);
+    expect(closed).toBe(1);
+    yield* Scope.close(sharing, Exit.void);
+    expect(closed).toBe(1);
+  }).pipe(Effect.scoped));
+
+  it.effect.each([
+    { ends: {}, selfFile: undefined, flags: [] },
+    { ends: { 相手: 10 }, selfFile: undefined, flags: ["--from", "10"] },
+    { ends: { 相手: 10 }, selfFile: "/self.m4a", flags: ["--self-file", "/self.m4a", "--from", "10"] },
+    { ends: { 相手: 10, 自分: 6 }, selfFile: "/self.m4a", flags: ["--self-file", "/self.m4a", "--from", "10", "--self-from", "6"] },
+  ])("再起動はsinkのトラック別endを渡し、音声の書き出し先は初回だけ渡す（$flags）", ({ ends, selfFile, flags }) => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {}]);
+    const fake = yield* makeFakeSessionSinks();
+    let prepared = 0;
+    const sinks = SessionSinks.of({ ...fake.sinks, open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({
+      ...sink, drainForRestart: Effect.sync(() => { prepared++; }), lastRemarkEnds: Effect.succeed(ends),
+    })) });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", selfFile, title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    yield* TestClock.adjust(1);
+    expect(prepared).toBe(1);
+    expect(helpers.calls).toEqual([
+      ["transcribe-file", "--file", "/meeting.m4a", ...(selfFile === undefined ? [] : ["--self-file", selfFile]), "--audio-dir", run.dir],
+      ["transcribe-file", "--file", "/meeting.m4a", ...flags],
+    ]);
+    expect(fake.opened.count).toBe(1);
+    yield* sessions.stop;
+  }).pipe(Effect.scoped));
+
+  it.effect("録画の題名・語彙・モデルをsinkへ渡す", () => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const opened: OpenSessionSink[] = [];
+    const prepared: Parameters<SessionSinks["Service"]["prepare"]>[0][] = [];
+    const sinks = SessionSinks.of({ ...fake.sinks,
+      open: (args) => Effect.andThen(Effect.sync(() => { opened.push(args); }), fake.sinks.open(args)),
+      prepare: (plan) => Effect.andThen(Effect.sync(() => { prepared.push(plan); }), fake.sinks.prepare(plan)),
+    });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    const model = { ...defaultClaude, name: "fast", model: "claude-haiku-5-5" };
+    yield* sessions.startRecorded({ file: "/meeting.m4a", title: "週次会議", vocab: ["ヤマダ商事", "アルファ"], realtime: false, model });
+    expect(prepared).toEqual([{ kind: "single", model }]);
+    expect(opened).toEqual([expect.objectContaining({ title: "週次会議", model })]);
+    expect(fake.vocabAdded).toEqual([["ヤマダ商事", "アルファ"]]);
+    const result = yield* Effect.exit(sessions.startRecorded({ file: "/other.m4a", title: undefined, vocab: [], realtime: false, model }));
+    expect(result._tag).toBe("Failure");
+    expect(helpers.calls).toHaveLength(1);
+    yield* sessions.stop;
+  }).pipe(Effect.scoped));
+
+  it.effect("録画の初回起動に失敗したら起動し直さず、次の録画を始められる", () => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{ connect: false }, {}]);
+    const fake = yield* makeFakeSessionSinks();
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
+    const input = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude };
+    const result = yield* Effect.exit(sessions.startRecorded(input));
+    expect(result._tag).toBe("Failure");
+    expect(helpers.calls).toHaveLength(1);
+    expect(fake.opened.count).toBe(0);
+    yield* sessions.startRecorded(input);
+    expect(helpers.calls).toHaveLength(2);
+    yield* sessions.stop;
+  }).pipe(Effect.scoped));
+});
+
+describe("録画のscreen-offの再送", () => {
+  it.effect("再起動後のscreen-offも同じsinkへ渡し、端末への知らせは1回だけにする", () => Effect.gen(function* () {
+    const fakeHelpers = yield* makeFakeHelpers([
+      { unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {},
+    ]);
+    const fakeSinks = yield* makeFakeSessionSinks();
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, fakeHelpers.helpers), Layer.succeed(SessionSinks, fakeSinks.sinks));
+    const run = yield* sessions.startRecorded({ file: "/recording.mp4", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const firstRead = yield* Deferred.make<void>();
+    const replayRead = yield* Deferred.make<void>();
+    const notices: string[] = [];
+    const consuming = yield* Stream.runForEach(run.events, (event) => Effect.gen(function* () {
+      if (event.type === "screen-off") notices.push(event.type);
+      if (event.type === "progress" && event.duration === 77) yield* Deferred.succeed(firstRead, undefined);
+      if (event.type === "progress" && event.duration === 78) yield* Deferred.succeed(replayRead, undefined);
+    })).pipe(Effect.forkChild);
+    fakeHelpers.send(0, { type: "screen-off", start: 11, reason: "許可なし" });
+    fakeHelpers.send(0, { type: "file-duration", duration: 77 });
+    yield* Deferred.await(firstRead);
+    expect(fakeSinks.screenOffs).toEqual([{ start: 11, reason: "許可なし" }]);
+    yield* TestClock.adjust(1);
+    expect(fakeHelpers.calls).toHaveLength(2);
+    fakeHelpers.send(1, { type: "screen-off", start: 11, reason: "許可なし" });
+    fakeHelpers.send(1, { type: "file-duration", duration: 78 });
+    yield* Deferred.await(replayRead);
+    expect(fakeSinks.opened.count).toBe(1);
+    expect(fakeSinks.screenOffs).toEqual([{ start: 11, reason: "許可なし" }, { start: 11, reason: "許可なし" }]);
+    expect(notices).toEqual(["screen-off"]);
+    yield* sessions.stop;
+    yield* Fiber.join(consuming);
+  }).pipe(Effect.scoped));
+});
+
+describe("録画の停止と一時停止の配線", () => {
+  it.effect("stopは溜まりを捨ててからヘルパーを止め、finish後に書き出す", () => Effect.gen(function* () {
+    const fakeHelpers = yield* makeFakeHelpers([{}]);
+    const fakeSinks = yield* makeFakeSessionSinks();
+    const order: string[] = [];
+    const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: Effect.fnUntraced(function* (args, stop) {
+      const attempt = yield* fakeHelpers.helpers.launch(args, stop);
+      return { ...attempt, stop: Effect.andThen(Effect.sync(() => { order.push("helper-stop"); }), attempt.stop) };
+    }) });
+    const sinks = SessionSinks.of({ ...fakeSinks.sinks, open: (args) => Effect.map(fakeSinks.sinks.open(args), (sink) => ({
+      ...sink,
+      discardBacklog: Effect.sync(() => { order.push("discard"); }),
+      finishBacklog: Effect.sync(() => { order.push("finish"); }),
+      flush: Effect.sync(() => { order.push("flush"); }),
+      exports: Effect.andThen(Effect.sync(() => { order.push("exports"); }), sink.exports),
+    })) });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
+    const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: true, model: defaultClaude });
+    const consuming = yield* Stream.runDrain(run.events).pipe(Effect.forkChild);
+    yield* sessions.stop;
+    yield* Fiber.join(consuming);
+    expect(order).toEqual(["discard", "helper-stop", "finish", "flush", "exports"]);
+    expect(yield* sessions.status).toEqual({ status: "none" });
+  }).pipe(Effect.scoped));
+
+  it.effect.each([true, false])("一時停止の理由を更新しても再開せず、再起動後のヘルパーへ停止と再開を送る（再起動前に停止: %s）", (pauseBeforeRestart) => Effect.gen(function* () {
+    const fakeHelpers = yield* makeFakeHelpers([
+      { unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {},
+    ]);
+    const fakeSinks = yield* makeFakeSessionSinks();
+    const callbacks = yield* Deferred.make<NonNullable<OpenSessionSink["recorded"]>>();
+    const sent: { attempt: number; paused: boolean }[] = [];
+    const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: Effect.fnUntraced(function* (args, stop) {
+      const attempt = yield* fakeHelpers.helpers.launch(args, stop);
+      const index = fakeHelpers.calls.length - 1;
+      return { ...attempt, send: (instruction) => Effect.andThen(attempt.send(instruction), Effect.sync(() => {
+        if (instruction.type === "reading-pause") sent.push({ attempt: index, paused: instruction.paused });
+      })) };
+    }) });
+    const sinks = SessionSinks.of({ ...fakeSinks.sinks, open: (args) =>
+      Effect.andThen(Deferred.succeed(callbacks, args.recorded!), fakeSinks.sinks.open(args)) });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
+    const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const events: { type: string; paused?: { reason: string; retryAt: number } }[] = [];
+    const consuming = yield* Stream.runForEach(run.events, (e) => Effect.sync(() => { events.push(e); })).pipe(Effect.forkChild);
+    const control = yield* Deferred.await(callbacks);
+    if (!pauseBeforeRestart) {
+      yield* TestClock.adjust(1);
+      expect(sent).toEqual([]);
+    }
+    yield* control.paused({ reason: "ChatGPT の利用上限", retryAt: 100_000 });
+    yield* control.paused({ reason: "Claude の利用上限", retryAt: 400_000 });
+    expect(sent).toEqual([{ attempt: pauseBeforeRestart ? 0 : 1, paused: true }]);
+    if (pauseBeforeRestart) yield* TestClock.adjust(1);
+    expect(fakeHelpers.calls).toHaveLength(2);
+    const stopped = pauseBeforeRestart ? [{ attempt: 0, paused: true }, { attempt: 1, paused: true }] : [{ attempt: 1, paused: true }];
+    expect(sent).toEqual(stopped);
+    yield* control.paused(undefined);
+    yield* sessions.stop;
+    yield* Fiber.join(consuming);
+    expect(sent).toEqual([...stopped, { attempt: 1, paused: false }]);
+    expect(events.filter((e) => e.type === "progress").map((e) => e.paused)).toEqual([
+      { reason: "ChatGPT の利用上限", retryAt: 100_000 }, { reason: "Claude の利用上限", retryAt: 400_000 }, undefined,
+    ]);
+  }).pipe(Effect.scoped));
+});
 
 describe("推論プロセスの準備をセッションが所有する", () => {
   const preparation = Effect.fnUntraced(function* (fake: FakeSinksHandle) {

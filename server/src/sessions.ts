@@ -555,7 +555,7 @@ export class Sessions extends Context.Service<Sessions, {
             // ライブと違い、画面の一文（showScreenNotice）は出さない。代わりに端末へ知らせる（録画で screen-off が出るのは映像が読めないときだけ。
             // 起動し直した回が流し直しても、ログにも端末にも 1 回）
             return Effect.flatMap(announceOnce(recorded, "screenOff"), (first) =>
-              first ? Effect.andThen(recorded.sink.screenOff({ start: event.start, reason: event.reason }), Queue.offer(recorded.events, { type: "screen-off" })) : Effect.void);
+              Effect.andThen(recorded.sink.screenOff({ start: event.start, reason: event.reason }), first ? Queue.offer(recorded.events, { type: "screen-off" }) : Effect.void));
           case "speaker":
           case "speaker-settled":
           case "speaker-mixed":
