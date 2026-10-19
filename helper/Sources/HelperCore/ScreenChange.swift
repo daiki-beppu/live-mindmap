@@ -77,12 +77,25 @@ public enum ScreenDecision: Sendable, Equatable {
     case nothing
 }
 
-/// ブラウザは、タイトルに「Meet」を含むタブだけを会議として扱う。ブラウザの一覧に無いアプリ（会議アプリ本体）はタイトルを見ない。
+/// 照合では先頭の通知数と末尾の再生印だけを除き、本文中の数字や記号は保持する。
+func normalizedScreenTabTitle(_ title: String) -> String {
+    title
+        .replacingOccurrences(of: #"^\([0-9]+\)\s+"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"\s*🔊\s*$"#, with: "", options: .regularExpression)
+}
+
+private func canRememberScreenTabTitle(_ title: String) -> Bool {
+    let normalized = normalizedScreenTabTitle(title)
+    return !normalized.isEmpty && !["live-mindmap", "about:blank", "新しいタブ", "New Tab"].contains(normalized)
+}
+
+/// ブラウザは、タイトルに「Meet」を含むタブと記憶したタブを会議として扱う。ブラウザの一覧に無いアプリ（会議アプリ本体）はタイトルを見ない。
 /// タイトルが読めない（nil・空）ときは会議のタブとして扱う（読めないことは会議以外の証拠にならない）。
-public func screenShowsMeeting(bundleID: String, title: String?) -> Bool {
+public func screenShowsMeeting(bundleID: String, title: String?, rememberedTitle: String? = nil) -> Bool {
     guard screenBrowserBundleIDs.contains(bundleID) else { return true }
     guard let title, !title.isEmpty else { return true }
     return screenMeetingTabTitleKeywords.contains { title.contains($0) }
+        || rememberedTitle.map { normalizedScreenTabTitle(title) == normalizedScreenTabTitle($0) } == true
 }
 
 /// 取り込んだフレームの中身。OS のフレームの状態（ScreenCaptureKit）から、取り込み側で変換する。
@@ -130,6 +143,7 @@ public struct ScreenShot: Sendable, Equatable {
 /// 動いている場所（スクロール・動画・顔の小窓）は比べる対象から外し、話している人の枠の移動は送らない。
 public struct ScreenChangeDetector: Sendable {
     private let bundleID: String
+    private(set) var rememberedTabTitle: String?
     private var lastSent: [UInt8]?
     /// 最後に送ると決めたフレームの時刻。
     private var lastSentTime = 0.0
@@ -161,7 +175,7 @@ public struct ScreenChangeDetector: Sendable {
     /// `encode` が nil を返したら、送っていない画面を「最後に送った画面」にしないよう、基準を判定の前へ戻して nil を返す。
     /// 「なし」のときは画像を作らず、`image: null` のイベントにする。
     public mutating func screenEvent(for frame: ScreenFrame, encode: () -> ScreenShot?) -> HelperEvent? {
-        let before = self
+        var before = self
         switch next(.frame(frame)) {
         case .nothing:
             return nil
@@ -169,6 +183,8 @@ public struct ScreenChangeDetector: Sendable {
             return .screen(start: start, image: nil, lines: nil)
         case .send(let start):
             guard let shot = encode() else {
+                // 画像比較の基準だけを戻し、取り込み中に決まった対象タブは保持する。
+                before.rememberedTabTitle = rememberedTabTitle
                 self = before
                 return nil
             }
@@ -194,7 +210,11 @@ public struct ScreenChangeDetector: Sendable {
     }
 
     private mutating func judge(_ frame: ScreenFrame) -> ScreenDecision {
-        guard screenShowsMeeting(bundleID: bundleID, title: frame.title) else {
+        if rememberedTabTitle == nil, screenBrowserBundleIDs.contains(bundleID),
+           let title = frame.title, canRememberScreenTabTitle(title) {
+            rememberedTabTitle = title
+        }
+        guard screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) else {
             let hadSent = lastSent != nil
             reset()
             return hadSent ? .none(start: frame.time) : .nothing
