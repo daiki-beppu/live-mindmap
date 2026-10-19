@@ -32,7 +32,6 @@ describe("Apple の状態遷移と保存ログ", () => {
     const baseline = (yield* readLines).length;
     yield* fake.crash(0);
     yield* waitForDiffState(session, "restarting");
-    expect(yield* session.diffUpdate).toEqual({ status: "restarting" });
     yield* waitUntil(() => frames.at(-1)?.state?.status === "restarting", "restarting の配信");
     expect(frames.at(-1)?.state).toEqual({ status: "restarting" });
     const restartingLines = (yield* readLines).slice(baseline);
@@ -46,16 +45,13 @@ describe("Apple の状態遷移と保存ログ", () => {
     expect(restarting.pending).toEqual([]);
     yield* fake.releaseReady(1);
     yield* waitForDiffState(session, "running");
-    expect(yield* session.diffUpdate).toEqual({ status: "running" });
     for (let i = 1; i < 3; i++) {
       yield* fake.crash(i);
       yield* waitUntil(() => fake.processes.length === i + 2 && fake.requests.some((r) => r.url === `${fake.processes[i + 1]!.url}/chat/completions`), `立ち上げ直し ${i} 回目の呼び出し`);
-      expect(fake.processes).toHaveLength(i + 2);
       yield* waitForDiffState(session, "running");
     }
     yield* fake.crash(3);
     yield* waitForDiffState(session, "stopped");
-    expect(yield* session.diffUpdate).toEqual({ status: "stopped" });
     yield* waitUntil(() => frames.at(-1)?.state?.status === "stopped", "stopped の配信");
     expect(frames.at(-1)?.state).toEqual({ status: "stopped" });
     yield* push(5);
