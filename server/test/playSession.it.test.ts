@@ -584,7 +584,7 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
 
   it.effect("補正の部品を差し替えて再生すると、直した結果が差し替えた部品のとおりに変わる", () =>
     Effect.gen(function* () {
-      const { RemarkCorrection } = yield* Effect.promise(() => import("../src/replayCorrection.ts"));
+      const { RemarkCorrection } = yield* Effect.promise(() => import("../src/sessionVocabulary.ts"));
       const root = yield* temporaryDirectory;
       // ライブで直した後の本文（text）と、直す前の本文（raw）を変えて記録する。補正は raw から行う
       const recorded = recordedRemark("r1", 0, 5, ZENDESK_UTTERANCE);

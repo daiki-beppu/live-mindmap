@@ -1,9 +1,8 @@
 // 再生での発言の補正（Issue #644）。記録したログの vocab の行（読み）・screen の lines・remark の raw と words から、
 // 今の規則（correctRemark・requestScreenWords）で発言を直し直す。読みのサブコマンドもモデルも呼ばない（読みは vocab の行から同期で引く）。
 // ライブの語彙の扱い（sessionSinks.ts）と同じ規則: 語彙は読みのある語だけ、画面の語は規則で取った候補のうち未要求の語だけ。
-import { Context, Effect, Ref } from "effect";
+import { Effect, Ref } from "effect";
 import {
-  correctRemark,
   requestScreenWords,
   type ScreenVocabularyState,
   type LogEvent,
@@ -11,10 +10,7 @@ import {
   type VocabularyWord,
 } from "./core/index.ts";
 
-// 補正の部品。テストで差し替えて、規則を変えると再生の結果が変わることを確かめる
-export const RemarkCorrection = Context.Reference("live-mindmap/RemarkCorrection", {
-  defaultValue: (): typeof correctRemark => correctRemark,
-});
+import { RemarkCorrection } from "./sessionVocabulary.ts";
 
 type VocabLine = Extract<LogEvent, { type: "vocab" }>;
 
