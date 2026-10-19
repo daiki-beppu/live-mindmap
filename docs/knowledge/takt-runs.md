@@ -21,11 +21,20 @@ heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/
 
 #1287 の run では、ルートの `pnpm typecheck` で server と helper が SIGKILL で終わり、それぞれを単体で流すと通った。テストの型エラー（TS4104）を直して同じ 1 コマンドを流し直すと、終了コード 0 で SIGKILL は出なかった。原因は確かめていない。並列 3 の takt で Swift のビルドが同時に走り、同じ SIGKILL で実装をやり直した前例がある（[2026-10-08 の開発ログ](../devlog/2026-10-08.md)）。完了条件はルートの 1 コマンドの終了コードなので、単体で通ったことを代わりにせず、流し直した結果で判断する。
 
-## テストは行番号でなくテスト名で指す。行番号は先に入った子の PR でずれる
+## テストは行番号でなくテスト名で指す。行番号も、置き場のファイルも、先に入った子の PR で変わる
 
 #1147 の振り分けの表は 2026-10-15 時点の行番号でテストを指していた。同じ親の子が先に何本もマージされると、同じファイルの行番号はずれる。後から流した子の run は、行番号の指す先が別のテストになっていても気づけない。issue に写すときは、ファイル名とテスト名（`describe` と `it` の文字列）で指す。
+
+ファイルも動く。仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324) は `cliRecorded.it` のテストを消すと書いていた。けれども、先に入った [#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323) が、そのテストを新しい `sessionsRecorded.it` へ移していた。#1324 の run はテスト名で探し直して、移った先から消した（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362) の報告）。子の issue には、テスト名で探させる一文を入れておく。
+
+## `.each` の片方だけを動かす指示は、残す側の引数の値で書く。「〜の側と 1 件」は逆にも読める
+
+[#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320) は、`.each` のうち 1 行だけを外すテストを 4 つ含んでいた。そのうちの 1 つは「1358 の user の側と 1 件」と書かれていて、user の側を消すのか、user の側にまとめて残すのか、どちらにも読めた。takt の run は実装まで済んだが、査読がどちらを外すかを決められずに BLOCKED で止まった。結局、手で引き取って出どころ user の側を外した（[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)）。
+
+`.each` の一部を消す・下ろす行は、「`source: "user"` の行を外し、`source: "screen"` の行を残す」のように、外す値と残す値の両方を書く。
 
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
 - #1287 の takt の run（`20261017-060712-implement-using-only-the-files-sugyi4`）の計画・2 回の実装の報告と決定ログ
+- 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)
