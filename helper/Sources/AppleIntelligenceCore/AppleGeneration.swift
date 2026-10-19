@@ -76,14 +76,16 @@ public enum AppleGeneration {
         #else
         let usage: (input: Int?, cached: Int?, output: Int?) = (nil, nil, nil)
         #endif
+        let (content, repaired) = try repairAppleResponse(response.content.jsonString, schema: original)
+        if repaired { FileHandle.standardError.write(Data("Apple generation: repaired\n".utf8)) }
         do {
-            try validateAppleResponse(response.content.jsonString, schema: original)
+            try validateAppleResponse(content, schema: original)
         } catch AppleError.invalid(let reason) {
             FileHandle.standardError.write(Data("Apple generation: validation failed: \(reason); outputTokens=\(usage.output.map(String.init) ?? "unknown"), maximumResponseTokens=\(maximumResponseTokens)\n".utf8))
             throw AppleError.invalid(reason)
         }
         FileHandle.standardError.write(Data("Apple generation: validation complete\n".utf8))
-        return AppleGenerationResult(content: response.content.jsonString, inputTokens: usage.input, cachedTokens: usage.cached, outputTokens: usage.output)
+        return AppleGenerationResult(content: content, inputTokens: usage.input, cachedTokens: usage.cached, outputTokens: usage.output)
     }
 }
 
