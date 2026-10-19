@@ -45,7 +45,7 @@ import {
   type SpeakerNameRejected,
 } from "./sessionFailure.ts";
 import { planModel } from "./updatePlan.ts";
-import { SessionSinks, type SessionSink } from "./sessionSinks.ts";
+import { audioFileNames, SessionSinks, type LiveSink, type RecordedSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
@@ -88,7 +88,7 @@ type Live = {
   audio: boolean;
   screen: boolean; // false なら共有画面を取り込まない（ヘルパーに --no-screen を渡す。起動し直し・resume でも引き継ぐ）
   noticeShown: Ref.Ref<boolean>; // 許可なしの一文を出したか。セッションにつき 1 回だけ（起動し直しをまたぐ）
-  sink: SessionSink;
+  sink: LiveSink;
   scope: Scope.Closeable; // セッションの Scope。サーバーの Scope の子
   stopRequested: Deferred.Deferred<void>; // 「止めて」の印
   chain: Ref.Ref<Fiber.Fiber<ChainEnd> | undefined>; // いまの起動し直しの連鎖
@@ -115,7 +115,7 @@ type Recorded = {
   dir: string;
   file: string;
   selfFile: string | undefined;
-  sink: SessionSink;
+  sink: RecordedSink;
   scope: Scope.Closeable; // セッションの Scope。サーバーの Scope の子
   stopRequested: Deferred.Deferred<void>; // 「止めて」の印
   run: Ref.Ref<Fiber.Fiber<void> | undefined>; // ヘルパーの出力を読む fiber
@@ -213,7 +213,7 @@ export class Sessions extends Context.Service<Sessions, {
       // 1 回の起動（起動し直しを含む）の終わりを、記録 → 判断の順で扱う。ログ・標準エラーは必ず書く。
       // 終わり方（終了コード・シグナル）は decideIntakeRestart に渡し、構成の変化による終了は failures に数えず別の窓で数える。
       // 続けるか諦めるか（action）を返し、状態の更新は呼び出し側が行う
-      const finishAttempt = Effect.fnUntraced(function* (live: Pick<Live, "sink" | "failures" | "configurationChanges" | "attemptStartedAt">, info: HelperExitInfo, stderrTail: ReadonlyArray<string>) {
+      const finishAttempt = Effect.fnUntraced(function* (live: Pick<Live, "failures" | "configurationChanges" | "attemptStartedAt"> & { sink: Pick<LiveSink, "appendLog"> }, info: HelperExitInfo, stderrTail: ReadonlyArray<string>) {
         yield* live.sink.appendLog({ type: "intake-stopped", code: info.code, signal: info.signal, stderrTail: [...stderrTail] });
         yield* note(`取り込みが止まった（${info.code ?? info.signal ?? "不明"}）\n`);
         const now = yield* Clock.currentTimeMillis;
@@ -458,10 +458,9 @@ export class Sessions extends Context.Service<Sessions, {
             );
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
-          const sink = yield* sinks.open({ dir, title: input.title, model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
+          const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
           // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
           if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
-          if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
           const live: Live = {
             model,
             app: input.app,
@@ -509,7 +508,7 @@ export class Sessions extends Context.Service<Sessions, {
 
       // セッションを閉じて idle に戻す（ライブの stop と録画からのセッションの終わりが共有する）。
       // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
-      const closeSession = (sink: SessionSink, scope: Scope.Closeable) =>
+      const closeSession = (sink: Pick<LiveSink, "stopRelays">, scope: Scope.Closeable) =>
         Effect.gen(function* () {
           yield* sink.stopRelays;
           // session.flush() で最後の差分更新が終わっているので、ここで閉じる（updater・ヘルパーの後始末）
@@ -682,8 +681,7 @@ export class Sessions extends Context.Service<Sessions, {
           if (served.exit.code === 0) return yield* concludeRecorded(recorded, Effect.andThen(recorded.sink.drain, recorded.sink.finishBacklog), undefined);
           // 確定結果に覆われなかった最後の発話を発言にしてから、読み直す位置を決める（締めていない途中結果を残すと、読み直した回の結果で締まって重なる）。
           // 先読みした共有画面は入れずに捨てる（読み直した回が開始位置から流し直す）
-          yield* recorded.sink.drainForRestart;
-          yield* Ref.set(recorded.from, yield* recorded.sink.lastRemarkEnds);
+          yield* Ref.set(recorded.from, yield* recorded.sink.drainForRestart);
           const next = yield* restartRecorded(recorded, current, served);
           if (next.kind === "stopped") return;
           if (next.kind === "giveup") {
@@ -724,9 +722,9 @@ export class Sessions extends Context.Service<Sessions, {
           const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
           const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
           const readingTarget = yield* SynchronizedRef.make(attempt);
-          const sink = yield* sinks.open({
+          const sink = yield* sinks.openRecorded({
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-            model: input.model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
+            model: input.model, vocab: input.vocab, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
             recorded: {
               realtime: input.realtime,
               selfTrack: input.selfFile !== undefined,
@@ -752,7 +750,6 @@ export class Sessions extends Context.Service<Sessions, {
                 }),
             },
           }).pipe(Scope.provide(scope));
-          if (input.vocab.length > 0) yield* sink.addUserVocabulary(input.vocab);
           const recorded: Recorded = {
             model: input.model,
             dir,
@@ -807,7 +804,7 @@ export class Sessions extends Context.Service<Sessions, {
             yield* note(`ヘルパーが SIGTERM から ${stopTimeoutMs}ms 経っても終了しないので、SIGKILL で止めます\n`);
             if (live.audio) {
               // その時点で動いていた起動回の録音ファイル名を示す。起動し直していれば相手-2.m4a 等になる
-              const names = live.sink.audioFileNames(yield* Ref.get(live.attempt)).join("・");
+              const names = audioFileNames(yield* Ref.get(live.attempt)).join("・");
               yield* note(`録音の書き終わりを確認できないまま、セッションを閉じます。${live.dir} の ${names} が不完全なことがあります\n`);
             }
           }

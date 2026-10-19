@@ -13,14 +13,15 @@ import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
 import { makeSessionVocabulary, modelReadings } from "./sessionVocabulary.ts";
-import { recordedFeed, type RecordedFeed } from "./recordedFeed.ts";
-import { directFeed, makeRemarkFlow } from "./remarkFlow.ts";
+import { recordedFeed, type RecordedFeed, type TrackEnds } from "./recordedFeed.ts";
+import { directFeed, makeRemarkFlow, type Feed, type Inlet } from "./remarkFlow.ts";
+import type { Session } from "./core/index.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage } from "./truthFile.ts";
 
 // 開いたセッション 1 つ。ヘルパーに依らず、起動し直しをまたいで 1 つを使い続ける
-export type SessionSink = {
+type SinkBase = {
   dir: string;
   // ヘルパーの途中結果。いま話している文字（speaking）と、1 秒更新されなかった発話の発言化（settling）へ渡す
   partial: (p: HelperPartial) => Effect.Effect<void>;
@@ -36,20 +37,6 @@ export type SessionSink = {
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
   // 確定結果に覆われなかった最後の発話を発言にする
   drain: Effect.Effect<void>;
-  // 起動し直すヘルパーの前の準備。drain と同じく残りの発言を作るが、2 本の録画の並べ替えで保留中の発言は吐き出さず（トラックごとに読み直した発言が end の順に並ぶよう保つ）、
-  // 全トラックの end の最大値以降の先読みの共有画面は溜まりへ入れず捨てる
-  // （起動し直したヘルパーがその位置から映像を読み直して流し直すので、入れると重複し、続きの発言より未来の画面が先に入る）
-  drainForRestart: Effect.Effect<void>;
-  // トラックごとの、いままでに作った（settling が締めた）発言の end の最大値。まだ作っていないトラックのキーは無い。
-  // 溜まりでセッションに入れていない発言も、2 本の録画の並べ替えで保留中の発言も数える（起動し直すヘルパーが、トラックごとに読み始める位置になる）
-  lastRemarkEnds: Effect.Effect<Partial<Readonly<Record<Track, number>>>>;
-  // 利用者が足した語（cli start --vocab）を語彙に入れる。開始のときにだけ呼ぶ。
-  // 読みは返った後に非同期で作る（開始を待たせない）。読みができた後に締めた発言から、その語で直る（すでに締めた発言は直し直さない。録画の等速でも、入れる時刻を待つ間に届いた語では直さない）。
-  // 英字の語（略語でないもの）はモデルにカタカナの読みを聞いてから読みを作る。
-  // 読みが作れなかった語・読みの取得（モデルを含む）に失敗した語は補正に使わない（セッションは止めない）。足した語は読みの有無によらず vocab の行に残す
-  addUserVocabulary: (words: ReadonlyArray<string>) => Effect.Effect<void>;
-  // いま話している文字を空にする（以後も送れる。取り込みの途切れの瞬間に使う）
-  clearSpeaking: Effect.Effect<void>;
   // 予約を取り消し、いま話している文字を空にして、以後は何も送らない
   stopRelays: Effect.Effect<void>;
   // ヘルパーの話者の区間と使えないこと。受け取った値のまま、届いた順に log.jsonl へ残してから、相手の発言の話者を決める段へ渡す（確定した区間が揃った保留を出す）。
@@ -64,16 +51,24 @@ export type SessionSink = {
   nameSpeaker: (speaker: { label: string; name: string }) => Effect.Effect<void, SpeakerNameRejected>;
   // log.jsonl へ、取り込みの途切れ・自分の休止等の記録を追記する（話者の記録は speaker が行う）
   appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void>;
-  // 録画からのセッションで、溜まっている発言をすべて入れ終えるまで待つ（ライブでは何もしない）。drain の後に呼ぶ
-  finishBacklog: Effect.Effect<void>;
-  // 録画からのセッションで、溜まっている発言を捨てる。入れている途中の 1 件は待たない（入れ終えるのは finishBacklog が待つ。ライブでは何もしない）
-  discardBacklog: Effect.Effect<void>;
   // 差分更新の結果を待つ
   flush: Effect.Effect<void>;
   // map.md・map.json・map.drawnix（と撮影できれば map.png、書き出せれば map.html）を書き出し、パスを返す
   exports: Effect.Effect<string[]>;
-  // 起動回 attempt（1 始まり）のヘルパーが書く録音ファイルの名前
-  audioFileNames: (attempt: number) => string[];
+};
+
+export type LiveSink = SinkBase & {
+  // いま話している文字を空にする（以後も送れる。取り込みの途切れの瞬間に使う）
+  clearSpeaking: Effect.Effect<void>;
+};
+
+export type RecordedSink = SinkBase & {
+  // settling を締めてから、作った発言のトラック別 end を返す。並べ替え待ちは出さず、先読み画面は再読込に任せる。
+  drainForRestart: Effect.Effect<TrackEnds>;
+  // drain の後、溜まっている発言をすべて入れ終えるまで待つ
+  finishBacklog: Effect.Effect<void>;
+  // 入れている途中の 1 件は待たず、残りの溜まりを捨てる
+  discardBacklog: Effect.Effect<void>;
 };
 
 export type SessionSinksDeps<R = never> = {
@@ -86,24 +81,27 @@ export type OpenSessionSink = {
   updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable>;
   dir: string; // createDir で作ったセッションのフォルダ
   title: string | undefined; // 省略したときは、セッションのフォルダ名（開始時刻）
+  // 読みは非同期で作り、開始を待たせない。取得後に締めた発言から補正し、取得失敗でも語をログへ残す。
+  vocab?: ReadonlyArray<string> | undefined;
   logShiftMs?: number; // log.jsonl の時刻に足す幅（録画からのセッションが作成日時へそろえる）。省略は 0
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
   speak: (frame: CaptionsFrame) => Effect.Effect<void>;
   // 話者の名前の表（全体）を送る。開いた直後に空の表を 1 回送り、前のセッションの名前を消す
   speakerNames: (frame: SpeakerNamesFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
+};
+
+export type RecordedOptions = {
   // 録画からのセッションのとき（cli recorded）だけ渡す。締めた発言はすぐ入れず溜め、1 発言入れて差分更新が終わるたびに progress を呼ぶ。
   // いま話している文字（字幕）はヘルパーの途中結果ではなく、入れた位置で出す
   // realtime なら、音声の時刻（発言は end、共有画面の変化は start）まで待ってから入れる。差分更新の終わりは待たない（play --realtime と同じ意味）
   // selfTrack は 2 本の録画（cli recorded --self）。相手と自分の発言を、トラックをまたいで音声の時刻（end）の順にして溜める（ヘルパーの保留や話者を決める段の保留で、届く順が時刻の順と前後するため）
   // paused は、差分更新の一時停止に入ったとき・理由か次に試す時刻が変わったとき・戻ったとき（undefined）に呼ぶ。
   // 一時停止の間は、溜まりから発言を入れない（戻るまで待つ。いくらでも待ち、自動では諦めない）。ヘルパーに読み取りを止めさせるのは呼び出し側
-  recorded?: {
-    realtime: boolean;
-    selfTrack?: boolean;
-    progress: (progress: { position: number; rounds: number }) => Effect.Effect<void>;
-    paused: (pause: { reason: DiffUpdatePauseReason; retryAt: number } | undefined) => Effect.Effect<void>;
-  };
+  realtime: boolean;
+  selfTrack?: boolean;
+  progress: (progress: { position: number; rounds: number }) => Effect.Effect<void>;
+  paused: (pause: { reason: DiffUpdatePauseReason; retryAt: number } | undefined) => Effect.Effect<void>;
 };
 
 type DiffUpdatePauseReason = typeof DiffUpdateReason["Type"];
@@ -113,7 +111,7 @@ const TRACKS: Track[] = ["相手", "自分"];
 // ヘルパー（--audio-index として渡される起動回）が書く録音ファイルの名前。
 // helper/Sources/HelperCore/Recording.swift の recordingFileName と同じ規則（1 回目は番号を付けない）。
 // 採番規則の所有者をここに 1 つ置き、警告文もここから組み立てる（固定文字列をファイル名として埋め込まない）
-const audioFileNames = (attempt: number): string[] => TRACKS.map((track) => (attempt > 1 ? `${track}-${attempt}.m4a` : `${track}.m4a`));
+export const audioFileNames = (attempt: number): string[] => TRACKS.map((track) => (attempt > 1 ? `${track}-${attempt}.m4a` : `${track}.m4a`));
 
 export class SessionSinks extends Context.Service<SessionSinks, {
   prepare: SessionSinksDeps["prepareUpdater"];
@@ -121,7 +119,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
   // at は録画からのセッションが渡す基準の時刻（ファイルの作成日時）。省略すると今の時刻
   createDir: (sessionsDir: string, at?: DateTime.DateTime) => Effect.Effect<string>;
   // セッションの Scope の中で 1 回開く。Scope を閉じると updater が閉じ、予約が止まる
-  open: (args: OpenSessionSink) => Effect.Effect<SessionSink, never, Scope.Scope>;
+  open: (args: OpenSessionSink) => Effect.Effect<LiveSink, never, Scope.Scope>;
+  openRecorded: (args: OpenSessionSink & { recorded: RecordedOptions }) => Effect.Effect<RecordedSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
   // 終了時の書き出しが使う撮影・見返し用の HTML のビルド・mix・FileSystem 、足した語の読みを作る Readings、ふつうの語の一覧は、Layer を作るときに文脈から 1 回だけ受け取る
   static readonly layer = <R>({ prepareUpdater }: SessionSinksDeps<R>): Layer.Layer<SessionSinks, never, R | MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem> =>
@@ -134,13 +133,11 @@ export class SessionSinks extends Context.Service<SessionSinks, {
         const readings = yield* Readings;
         // ふつうの語の一覧は、Layer を作るときに 1 回だけ読む（同梱のファイルなので、読めないのは予期しない失敗）
         const commonWords = yield* loadCommonWords(COMMON_WORDS_PATH).pipe(Effect.provideContext(exportServices), Effect.orDie);
-        return SessionSinks.of({
-        prepare: (plan) => Effect.gen(function* () {
-          const scope = yield* Effect.scope;
-          return yield* prepareUpdater(plan).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
-        }),
-        createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
-        open: Effect.fnUntraced(function* ({ dir, title, logShiftMs, publish, speak, speakerNames, diffUpdate, model, updaterLayer, recorded }) {
+        const openSink = Effect.fnUntraced(function* <F extends Feed & { observe?: RecordedFeed["observe"] }>(
+          { dir, title, vocab, logShiftMs, publish, speak, speakerNames, diffUpdate, model, updaterLayer }: OpenSessionSink,
+          captions: "途中結果から" | "入れた発言だけ",
+          makeFeed: (session: Session, inlet: Inlet) => Effect.Effect<F, never, Scope.Scope>,
+        ) {
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           // 最後の消費者は session.flush の差分更新で、Scope の後始末はそれより後に走る。開けなければ defect
           const updaterContext = yield* Layer.build(Layer.fresh(updaterLayer)).pipe(Effect.orDie);
@@ -189,33 +186,17 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             log: appendRecordedLog,
             carried: started?.words ?? [],
           });
+          yield* vocabulary.addUser(vocab ?? []);
           const flow = yield* makeRemarkFlow({
             session, correct: vocabulary.correct, speak,
-            captions: recorded === undefined ? "途中結果から" : "入れた発言だけ",
+            captions,
             feed: (inlet) => Effect.gen(function* () {
-              if (recorded === undefined) return {
-                ...yield* directFeed(inlet),
-                finish: Effect.void, discard: Effect.void,
-                prepareRestart: Effect.succeed({}), lastRemarkEnds: Effect.succeed({}),
-              };
-              const feed = yield* recordedFeed({
-                realtime: recorded.realtime,
-                selfTrack: recorded.selfTrack === true,
-                session: {
-                  diffUpdate: session.diffUpdate,
-                  nextRetryAt: session.nextRetryAt,
-                  unreflectedCount: Effect.map(session.unreflectedRemarks, (remarks) => remarks.length),
-                  idle: session.idle,
-                  round: Effect.map(session.snapshot, (snapshot) => snapshot.round),
-                },
-                progress: recorded.progress,
-                paused: recorded.paused,
-              })(inlet);
+              const feed = yield* makeFeed(session, inlet);
               observe = feed.observe;
               return feed;
             }),
           });
-          return {
+          const sink: SinkBase = {
             dir,
             partial: flow.partial,
             final: flow.final,
@@ -227,17 +208,11 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 if (name.trim() === "") return yield* new SpeakerNameRejected({ reason: "名前が空" });
                 yield* applyName({ label, name, source: "手入力" });
               }),
-            screen: (change) => recorded === undefined
+            screen: (change) => captions === "途中結果から"
               ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines))
               : Effect.andThen(vocabulary.addScreen(change.lines, change.start), flow.screen(change)),
             screenOff: flow.screenOff,
-            addUserVocabulary: vocabulary.addUser,
             drain: flow.drain,
-            drainForRestart: Effect.andThen(flow.drainForRestart, Effect.asVoid(flow.feed.prepareRestart)),
-            lastRemarkEnds: flow.feed.lastRemarkEnds,
-            finishBacklog: flow.feed.finish,
-            discardBacklog: flow.feed.discard,
-            clearSpeaking: flow.clearSpeaking,
             stopRelays: flow.stop,
             appendLog: appendRecordedLog,
             flush: session.flush,
@@ -251,9 +226,40 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               Effect.provideContext(exportServices),
               Effect.orDie,
             ),
-            audioFileNames,
-          } satisfies SessionSink;
-        }),
+          };
+          return { sink, flow };
+        });
+        return SessionSinks.of({
+          prepare: (plan) => Effect.gen(function* () {
+            const scope = yield* Effect.scope;
+            return yield* prepareUpdater(plan).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
+          }),
+          createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
+          open: Effect.fnUntraced(function* (args) {
+            const { sink, flow } = yield* openSink(args, "途中結果から", (_session, inlet) => directFeed(inlet));
+            return { ...sink, clearSpeaking: flow.clearSpeaking };
+          }),
+          openRecorded: Effect.fnUntraced(function* ({ recorded, ...args }) {
+            const { sink, flow } = yield* openSink(args, "入れた発言だけ", (session, inlet) => recordedFeed({
+              realtime: recorded.realtime,
+              selfTrack: recorded.selfTrack === true,
+              session: {
+                diffUpdate: session.diffUpdate,
+                nextRetryAt: session.nextRetryAt,
+                unreflectedCount: Effect.map(session.unreflectedRemarks, (remarks) => remarks.length),
+                idle: session.idle,
+                round: Effect.map(session.snapshot, (snapshot) => snapshot.round),
+              },
+              progress: recorded.progress,
+              paused: recorded.paused,
+            })(inlet));
+            return {
+              ...sink,
+              drainForRestart: Effect.andThen(flow.drainForRestart, flow.feed.prepareRestart),
+              finishBacklog: flow.feed.finish,
+              discardBacklog: flow.feed.discard,
+            };
+          }),
         });
       }),
     );

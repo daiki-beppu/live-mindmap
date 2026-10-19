@@ -198,23 +198,6 @@ describe("Sessions と録画 sink の保存・再起動", () => {
     expect(remarksOf(logLines(onlySession(r.sessionsDir))).map((x) => x.id)).toEqual(["r1", "r2", "r3"]);
   }).pipe(Effect.scoped));
 
-  it.live("確定していない途中結果も、起動し直す前に発言にしてから開始位置を決める。落ちる直前の途中結果（760〜770）の end 770 から読み直し、その発言は 1 件だけ", () => Effect.gen(function* () {
-    const unsettled = { start: 760, end: 770, text: "確定していない発言です" };
-    const r = yield* resource(THREE, {
-      attempts: [
-        { duration: 3484, remarks: [], events: [...remarkEvents(THREE.remarks[0]!), { type: "partial", track: "相手", ...unsettled }], exit: { code: 1, signal: null } },
-        // 頭から読み直した結果: 最初の発言と、落ちる前の途中結果の確定結果、その後の発言
-        { duration: 3484, remarks: [], events: [...remarkEvents(THREE.remarks[0]!), ...remarkEvents(unsettled), ...remarkEvents({ start: 800, end: 810, text: "続きの発言です" })] },
-      ],
-    });
-    yield* r.run();
-
-    expect(fromOf(r.helpers.calls[1]!)).toBe("770");
-    const remarks = remarksOf(logLines(onlySession(r.sessionsDir)));
-    expect(remarks.map((x) => [x.id, x.text])).toEqual([["r1", "最初の発言です"], ["r2", "確定していない発言です"], ["r3", "続きの発言です"]]);
-    expectNoOverlap(remarks);
-  }).pipe(Effect.scoped));
-
   it.live("--self の 2 トラックでは、トラックごとに最後に作った発言の end（相手 10・自分 6）から読み直す（--from と --self-from）。--self-file も渡し、--audio-dir は渡さない", () => Effect.gen(function* () {
     const mine = { start: 5, end: 6, text: "自分の発言です" };
     const theirs = { start: 8, end: 10, text: "相手の発言です" };

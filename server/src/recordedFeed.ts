@@ -4,7 +4,7 @@ import { createRecordedBacklog } from "./recordedBacklog.ts";
 import type { Feed, Inlet } from "./remarkFlow.ts";
 import type { CorrectedRemark } from "./sessionVocabulary.ts";
 
-type TrackEnds = Partial<Readonly<Record<Track, number>>>;
+export type TrackEnds = Partial<Readonly<Record<Track, number>>>;
 type Pause = { reason: Extract<DiffUpdateState, { status: "paused" }>["reason"]; retryAt: number };
 type RecordedItem =
   | { kind: "remark"; corrected: CorrectedRemark }
@@ -16,7 +16,6 @@ const timeOf = (item: RecordedItem): number => item.kind === "remark" ? item.cor
 export type RecordedFeed = Feed & {
   observe: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   prepareRestart: Effect.Effect<TrackEnds>;
-  lastRemarkEnds: Effect.Effect<TrackEnds>;
   discard: Effect.Effect<void>;
   finish: Effect.Effect<void>;
 };
@@ -108,7 +107,6 @@ export const recordedFeed = (options: {
       yield* Ref.update(screenQueue, (queue) => queue.filter((item) => timeOf(item) < limit));
       return ends;
     }),
-    lastRemarkEnds: Ref.get(madeEnd),
     finish: Effect.andThen(drain, backlog.finish),
     discard: Effect.andThen(Effect.sync(() => { merge?.drain(); }), Effect.andThen(Ref.set(screenQueue, []), backlog.discard)),
   };
