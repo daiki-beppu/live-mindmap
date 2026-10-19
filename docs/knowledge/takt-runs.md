@@ -11,6 +11,12 @@ takt が作る worktree（`takt-worktrees/` の下）は Orca の worktree で�
 
 チケットの完了条件にルートの層を書くときは、依存を入れることも作業に含まれると読ませる。
 
+## 仕様はリンク先に置かず、issue の本文かコメントに写す。takt のエージェントはリンク先の issue を読めない
+
+heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/issues/1151) の子は、本文に「テストごとの振り分けの一次資料: #1147 の解決コメント」とだけ書いていた。#1155・#1160・#1161 の run は振り分けの表を読めないまま実装し、移す先を取り違えたり、残すはずのテストを落としたりして、レビューで止まった（手で引き取り、[PR #1337](https://github.com/daiki-beppu/live-mindmap/pull/1337)・[#1338](https://github.com/daiki-beppu/live-mindmap/pull/1338)・[#1339](https://github.com/daiki-beppu/live-mindmap/pull/1339) で直した）。残りの子に「## 一次資料の写し（takt 用）」のコメントで表を写してから流すと、#1153〜#1158・#1165〜#1168 は止まらずにマージまで進んだ。
+
+積む前に takt スキルの `lint-issue.mjs` を流すと、「一次資料」「解決コメント」のようなリンク頼みの書き方を警告する。写しの節の見出しに「写し」を入れると、写した issue 番号は警告から外れる。
+
 ## ルートの `pnpm typecheck` の SIGKILL は環境の側。同じコマンドを 1 回流し直してから原因を探す
 
 #1287 の run では、ルートの `pnpm typecheck` で server と helper が SIGKILL で終わり、それぞれを単体で流すと通った。テストの型エラー（TS4104）を直して同じ 1 コマンドを流し直すと、終了コード 0 で SIGKILL は出なかった。原因は確かめていない。並列 3 の takt で Swift のビルドが同時に走り、同じ SIGKILL で実装をやり直した前例がある（[2026-10-08 の開発ログ](../devlog/2026-10-08.md)）。完了条件はルートの 1 コマンドの終了コードなので、単体で通ったことを代わりにせず、流し直した結果で判断する。
