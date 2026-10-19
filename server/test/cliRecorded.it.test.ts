@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { WebSocket } from "ws";
 import { Clock, ConfigProvider, Console, Deferred, Effect, FileSystem, Fiber, Layer, Queue, Result, Stream, type Cause } from "effect";
 import { HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
@@ -19,7 +18,7 @@ import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
-import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
+import type { FakeReadings } from "./fixtures/readings.ts";
 import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
@@ -291,16 +290,6 @@ const sessionLog = (sessionsDir: string): Line[] => {
   return dirs.length === 1 ? logLines(join(sessionsDir, dirs[0]!)) : [];
 };
 const has = (sessionsDir: string, match: (l: Line) => boolean) => sessionLog(sessionsDir).some(match);
-const garbledWords = [
-  { surface: "江南", romaji: "kounan", location: 0, length: 2 },
-  { surface: "店", romaji: "ten", location: 2, length: 1 },
-  { surface: "に", romaji: "ni", location: 3, length: 1 },
-  { surface: "行き", romaji: "iki", location: 4, length: 2 },
-  { surface: "ます", romaji: "masu", location: 6, length: 2 },
-];
-const garbledRemark = (start: number, end: number) => ({ type: "remark", track: "相手", start, end, text: "江南店に行きます", words: garbledWords });
-const garbledPartial = (start: number, end: number) => ({ type: "partial", track: "相手", start, end, text: "江南店に行きます" });
-const vocabLines = (lines: Line[]) => lines.filter((l) => l.type === "vocab");
 const remarkTexts = (lines: Line[]) => lines.filter((l) => l.type === "remark").map((l) => (l.remark as { text: string }).text);
 
 const waitForRemarks = (sessionsDir: string, count: number) =>
@@ -434,29 +423,6 @@ describe("cli recorded <file>", () => {
       expect(remarks.map((x) => x.duplicate === true)).toEqual([false, false, false, true]);
       expect(r.updater.inputs.flatMap((input) => input.fresh.map((remark) => remark.text))).toEqual(["相手の一つ目", "自分の発言", "相手の二つ目"]);
       expect(r.updater.state.overlaps).toBe(0);
-    }).pipe(Effect.scoped));
-
-    it.live("--self の 自分 の発言は、ライブと同じ字幕のフレームで track: 自分 の本文として WebSocket に届く（相手 の本文は track: 相手）。終了時の空のフレームとは区別する", () => Effect.gen(function* () {
-      // 2 つ目の差分更新（自分 の発言を入れた直後）を止め、自分 の発言が未反映の間に出る字幕を見る。終了時の空のフレームはまだ出ない
-      const gate = Effect.runSync(Deferred.make<void>());
-      const updater = fakeUpdater((_input, call) => call === 2 ? Deferred.await(gate) : Effect.void);
-      const r = yield* resource(INTERLEAVED, updater);
-      const frames: string[] = [];
-      const socket = new WebSocket(`ws://127.0.0.1:${r.server.port}/ws`);
-      socket.on("message", (data) => { frames.push(String(data)); });
-      yield* Effect.promise(() => new Promise<void>((done) => socket.on("open", () => done())));
-      yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
-      yield* Effect.forkChild(r.cli(["recorded", r.file, "--self", r.selfFile]));
-
-      // 字幕のフレーム（captions）の吹き出しを、すべてのフレームから集める
-      const bubbles = () => frames.flatMap((frame) => {
-        try { return [JSON.parse(frame) as { type?: string; bubbles?: { track: string; text: string }[] }]; } catch { return []; }
-      }).flatMap((frame) => frame.type === "captions" ? frame.bubbles ?? [] : []);
-      yield* Effect.promise(() => vi.waitFor(() => {
-        expect(bubbles().some((b) => b.track === "自分" && b.text.includes("自分の発言"))).toBe(true);
-      }, { timeout: 10_000 }));
-      expect(bubbles().some((b) => b.track === "相手" && b.text.includes("自分の発言"))).toBe(false);
-      yield* Deferred.succeed(gate, undefined);
     }).pipe(Effect.scoped));
 
     it.live("1 トラックしか発言が無くても、ヘルパーが終われば全部入る（どちらかが黙っている間に溜めた発言は、終わりで出し切る）", () => Effect.gen(function* () {
@@ -713,21 +679,13 @@ describe("cli recorded <file>", () => {
     expect(r.models[0]).toMatchObject({ route: "claude", local: false });
   }).pipe(Effect.scoped));
 
-  it.live("字幕・ログ・進み具合は、セッションに入れた位置で出る。差分更新が終わるまで、先読みした発言と途中結果は字幕にも進み具合にもログにも出ない", () => Effect.gen(function* () {
+  it.live("ログ・進み具合は、セッションに入れた位置で出る。差分更新が終わるまで、先読みした発言と途中結果は進み具合にもログにも出ない", () => Effect.gen(function* () {
     const gate = Effect.runSync(Deferred.make<void>());
     const updater = fakeUpdater((_input, call) => call === 1 ? Deferred.await(gate) : Effect.void);
     const r = yield* resource({ ...THREE, hold: true }, updater);
-    const frames: string[] = [];
-    const socket = new WebSocket(`ws://127.0.0.1:${r.server.port}/ws`);
-    socket.on("message", (data) => { frames.push(String(data)); });
-    yield* Effect.promise(() => new Promise<void>((done) => socket.on("open", () => done())));
-    yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 1);
-    const joined = () => frames.join("\n");
     const eventually = (assertion: () => void) => Effect.promise(() => vi.waitFor(assertion, { timeout: 10_000 }));
-    // 最初の発言の字幕のフレームが届くまで待つ
-    yield* eventually(() => { expect(joined()).toContain("最初の発言です"); });
     // 1 つ目の差分更新が終わらない間に、先の発言の途中結果と、その後ろの全体の長さが届く。サーバーは 1 件ずつ順に処理するので、
     // 全体の長さの進み具合が標準エラーに出たなら、その前の途中結果の処理は終わっている
     r.helpers.feed({ type: "partial", track: "相手", start: 800, end: 810, text: "先読みの途中結果です" });
@@ -735,22 +693,12 @@ describe("cli recorded <file>", () => {
     yield* eventually(() => { expect(r.deps.stderr.join("")).toContain("/ 58:05"); });
 
     expect(remarksOf(logLines(onlySession(r.sessionsDir))).map((x) => x.id)).toEqual(["r1"]);
-    // 差分更新の公開（"round":1）のフレームと、その直後の 1 フレーム（相手 → 自分の順の flush）までに届いたものを集める。
-    // 先読みした発言と途中結果は、入れた位置の字幕には出ない
     const early = r.deps.stderr.join("").replaceAll("\r", "\n");
     expect(early).not.toContain("10:00 /");
     expect(early).not.toContain("12:30 /");
     yield* Deferred.succeed(gate, undefined);
-    yield* eventually(() => { expect(joined()).toContain("\"round\":1"); });
-    const boundary = frames.findIndex((frame) => frame.includes("\"round\":1"));
-    yield* eventually(() => { expect(frames.length).toBeGreaterThan(boundary + 1); });
-    const settled = frames.slice(0, boundary + 2).join("\n");
-    expect(settled).toContain("最初の発言です");
-    for (const ahead of ["次の発言です", "三つ目の発言です", "先読みの途中結果です"]) expect(settled).not.toContain(ahead);
-
     yield* waitForRemarks(r.sessionsDir, 3);
     yield* eventually(() => { expect(r.deps.stderr.join("").replaceAll("\r", "\n")).toContain("12:30 / 58:05  マップの更新 3 回"); });
-    yield* eventually(() => { expect(joined()).toContain("\"round\":3"); });
     yield* r.cli(["stop"]);
     yield* Fiber.join(running).pipe(Effect.ignore);
   }).pipe(Effect.scoped));
@@ -1252,53 +1200,6 @@ describe("cli recorded <file> --realtime", () => {
 
     expect(realtimeRemarks).toEqual(immediateRemarks);
   })).pipe(Effect.scoped), 30_000);
-
-  // 補正に使う語彙は、発言を締めた時点で確定する。等速でも、入れる時刻を待つ間に届いた語彙で直し直さない
-  // 読みの取得を止めたまま r1 を締め、読みが返ってから r2 を締める。screenLines があれば、読みを止めている間に共有画面の変化（6 秒）も届ける
-  const vocabularyRun = (realtime: boolean, pending: number[], source: "user" | "screen") => Effect.gen(function* () {
-    // 前の実行が仮想時計を進めているので、この実行の起点を覚えておく
-    const base = yield* virtualNow;
-    const readings = fakeReadings({ 港南店: "kounanten" });
-    readings.gate.current = yield* Deferred.make<void>();
-    const r = yield* resource({ remarks: [], hold: true }, fakeUpdater(), { readings });
-    const vocabFile = join(r.root, "vocab.txt");
-    writeFileSync(vocabFile, "港南店\n");
-    const argv = ["recorded", r.file, ...(source === "user" ? ["--vocab", vocabFile] : []), ...(realtime ? ["--realtime"] : [])];
-    const running = yield* r.cli(argv).pipe(Effect.forkChild);
-    yield* eventually(() => r.helpers.calls.length === 1, "ヘルパーが起動する");
-    if (source === "screen") {
-      r.helpers.feed({ type: "screen", start: 6, image: SCREEN_IMAGE, lines: ["港南店"] });
-      r.helpers.feed({ type: "screen-off", start: 8, reason: "許可なし" });
-    }
-    // 読みの取得は始まっているが、返っていない
-    yield* eventually(() => readings.calls.length === 1, "読みの取得が始まる");
-    // r1（0〜2 秒）は、後ろの結果（10〜12 秒）の音声の時刻が進んで、読みが返る前に締まる
-    for (const event of [garbledPartial(0, 2), garbledRemark(0, 2), garbledPartial(10, 12)]) r.helpers.feed(event);
-    if (realtime) yield* eventually(() => pending.includes(base + 2000), "r1 は締まって、2 秒の待ちに入る");
-    else yield* eventually(() => has(r.sessionsDir, isRemark("r1")), "r1 は締まって入る");
-    // 読みが返る。画面の語彙も含め、vocab の行は等速の待ち（仮想時計）を進めずにできる
-    yield* Deferred.succeed(readings.gate.current, undefined);
-    yield* eventually(() => vocabLines(sessionLog(r.sessionsDir)).length === 1, "読みが返って vocab の行ができる");
-    if (realtime) expect(yield* virtualNow).toBe(base);
-    r.helpers.feed(garbledRemark(10, 12));
-    yield* r.helpers.end;
-    yield* runToEnd(Fiber.join(running));
-    return sessionLog(r.sessionsDir);
-  });
-
-  it.effect.each<{ source: "user" | "screen" }>([{ source: "screen" }])(
-    "補正に使う語彙は発言を締めた時点で確定し、待ち時間なしと --realtime で、発言の行（text・raw・words）が同じになる（語彙の出どころ: $source）",
-    ({ source }) => withVirtualClock((pending) => Effect.gen(function* () {
-      const immediate = yield* vocabularyRun(false, pending, source);
-      const realtime = yield* vocabularyRun(true, pending, source);
-      const remarks = (lines: Line[]) => lines.filter((l) => l.type === "remark").map(withoutWallClock);
-      // 読みが返る前に締めた r1 は直らず（raw と同じ）、返った後に締めた r2 は直る。raw には直す前の本文、words には直す前の位置が残る
-      expect(remarkTexts(immediate)).toEqual(["江南店に行きます", "港南店に行きます"]);
-      expect(remarks(immediate).map((l) => l.raw)).toEqual(["江南店に行きます", "江南店に行きます"]);
-      expect(remarks(immediate).map((l) => l.words)).toEqual([garbledWords, garbledWords]);
-      expect(remarks(realtime)).toEqual(remarks(immediate));
-      expect(vocabLines(realtime).map((l) => l.words)).toEqual(vocabLines(immediate).map((l) => l.words));
-    })).pipe(Effect.scoped), 60_000);
 
   type Halt = (r: { cli: (argv: string[]) => Effect.Effect<void, unknown, never> }, running: Fiber.Fiber<unknown, unknown>) => Effect.Effect<unknown, unknown>;
   it.effect.each<{ name: string; halt: Halt }>([

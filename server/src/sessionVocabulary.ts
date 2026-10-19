@@ -41,7 +41,7 @@ export const modelReadings = (katakana: DiffUpdater["Service"]["katakana"], read
     }));
   });
 
-type SessionVocabulary = {
+export type SessionVocabulary = {
   correct: (settled: SettledRemark) => Effect.Effect<CorrectedRemark>;
   addUser: (words: ReadonlyArray<string>) => Effect.Effect<void>;
   addScreen: (lines: ReadonlyArray<string> | undefined, from?: number) => Effect.Effect<void>;
