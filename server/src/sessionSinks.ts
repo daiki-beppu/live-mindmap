@@ -1,6 +1,6 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, DateTime, Deferred, Effect, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
+import { Context, DateTime, Effect, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
 import { dirname } from "node:path";
 import type { UpdatePlan } from "./updatePlan.ts";
 import { MapCapture } from "./capture.ts";
@@ -8,13 +8,13 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openLoggedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { CATCH_UP_REMARKS, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track } from "./core/index.ts";
+import { DiffUpdater, DiffUpdateReason, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
-import { makeSessionVocabulary, modelReadings, type CorrectedRemark } from "./sessionVocabulary.ts";
-import { createRecordedBacklog } from "./recordedBacklog.ts";
-import { directFeed, makeRemarkFlow, type Inlet } from "./remarkFlow.ts";
+import { makeSessionVocabulary, modelReadings } from "./sessionVocabulary.ts";
+import { recordedFeed, type RecordedFeed } from "./recordedFeed.ts";
+import { directFeed, makeRemarkFlow } from "./remarkFlow.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage } from "./truthFile.ts";
@@ -106,16 +106,6 @@ export type OpenSessionSink = {
   };
 };
 
-// 録画からのセッションの溜まりの要素。発言と共有画面の変化は、同じ列に音声の時刻の順で並べて同じ時計で入れる。
-// 発言は、締めた時点の語彙で直した後の形で溜める
-type RecordedItem =
-  | { kind: "remark"; corrected: CorrectedRemark }
-  | { kind: "screen"; change: Parameters<SessionSink["screen"]>[0] }
-  | { kind: "screen-off"; off: Parameters<SessionSink["screenOff"]>[0] };
-
-// 録画の要素を入れる音声の時刻（秒）。発言は end、共有画面の変化は start。待つ時刻と、画面の変化を発言の前後へ並べる基準は、これ 1 つ
-const timeOf = (item: RecordedItem): number => item.kind === "remark" ? item.corrected.rest.end : item.kind === "screen" ? item.change.start : item.off.start;
-
 type DiffUpdatePauseReason = typeof DiffUpdateReason["Type"];
 
 const TRACKS: Track[] = ["相手", "自分"];
@@ -176,48 +166,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               yield* Ref.set(names, next);
               yield* speakerNames(speakerNamesFrame(next));
             })));
-          // 録画からのセッションは、差分更新の一時停止の間、溜まりから発言を入れない。
-          // 止めるかどうかは、core の差分更新の状態（session.diffUpdate）で決める。ログと表示の書き込みを待たずに、遷移の時点から効く。
-          // 状態が変わったかもしれない合図（frameChanged）は、差分更新の frame ごとに完了させ、次の合図に差し替える。
-          // hold は、合図を先に取ってから状態を読み、paused ならその合図を待つ（読んだ後に起きた変化を取りこぼさない）
-          const frameChanged = yield* Ref.make(yield* Deferred.make<void>());
-          const notifyFrame = Effect.flatMap(Deferred.make<void>(), (next) => Effect.flatMap(Ref.getAndSet(frameChanged, next), (current) => Deferred.succeed(current, undefined)));
-          const hold = Effect.gen(function* () {
-            for (;;) {
-              const changed = yield* Ref.get(frameChanged);
-              if ((yield* Effect.suspend(() => session.diffUpdate)).status !== "paused") return;
-              yield* Deferred.await(changed);
-            }
-          });
-          // 等速で発言を入れる前の待ち。処理を待つ発言（反映中と未反映）が 1 回分（CATCH_UP_REMARKS 件）に達している間は、減るまで入れない。
-          // 差分更新が止まった（stopped）後は待たない。hold と同じく、合図を先に取ってから状態を読む
-          const roomForRemark = Effect.gen(function* () {
-            for (;;) {
-              const changed = yield* Ref.get(frameChanged);
-              const stopped = (yield* Effect.suspend(() => session.diffUpdate)).status === "stopped";
-              if (stopped || (yield* Effect.suspend(() => session.unreflectedRemarks)).length < CATCH_UP_REMARKS) return;
-              yield* Deferred.await(changed);
-            }
-          });
-          // 最後に呼び出し側へ知らせた一時停止の理由と次に試す時刻。同じ状態を重ねて知らせないために持つ
-          const pauseLock = yield* Semaphore.make(1);
-          const pauseState = yield* Ref.make<{ readonly reason: DiffUpdatePauseReason; readonly retryAt: number } | undefined>(undefined);
-          const followPause = (frame: DiffUpdateFrame): Effect.Effect<void> =>
-            recorded === undefined
-              ? Effect.void
-              : Effect.andThen(notifyFrame, frame.state === null ? Effect.void : pauseLock.withPermit(
-                  Effect.gen(function* () {
-                    const state = frame.state;
-                    // session は openLoggedSession が返した後に決まる。一時停止の状態が書かれるのは、返った後だけ（開いた直後は running）
-                    const retryAt = state?.status === "paused" ? yield* Effect.suspend(() => session.nextRetryAt) : undefined;
-                    const before = yield* Ref.get(pauseState);
-                    const next = state?.status === "paused" && retryAt !== undefined ? { reason: state.reason, retryAt } : undefined;
-                    if (before?.reason === next?.reason && before?.retryAt === next?.retryAt) return;
-                    // 戻ったときは、待っている溜まりを（合図で）先に動かしてあるので、その後で呼び出し側へ知らせる
-                    yield* Ref.set(pauseState, next);
-                    yield* recorded.paused(next);
-                  }),
-                ));
+          // openLoggedSession は初期 frame も送るため、feed の構築後だけ observe へ接続する。
+          let observe: RecordedFeed["observe"] | undefined;
           // ログを書くセッションは、反映が終わるたびに onDiff を知らせる。未反映の発言が変わるので、いま話している文字を送り直す
           const { session, appendLog: appendRecordedLog } = yield* openLoggedSession({
             dir,
@@ -225,7 +175,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             logShiftMs,
             model,
             publish,
-            diffUpdate: (frame) => Effect.andThen(diffUpdate(frame), followPause(frame)),
+            diffUpdate: (frame) => Effect.andThen(diffUpdate(frame), Effect.suspend(() => observe === undefined ? Effect.void : observe(frame))),
             onDiff: Effect.suspend((): Effect.Effect<void> => flow.captionsChanged),
             // 根拠の確かめは core が済ませている。1 件ずつ順に、規則（付け替えは名乗りのときだけ）を通して入れる
             onSpeakerNames: (inferred) => Effect.forEach(inferred, ({ label, name, basis }) => applyName({ label, name, source: "推定", basis }), { discard: true }),
@@ -246,56 +196,23 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               if (recorded === undefined) return {
                 ...yield* directFeed(inlet),
                 finish: Effect.void, discard: Effect.void,
-                restart: (_ends: Partial<Readonly<Record<Track, number>>>) => Effect.void,
+                prepareRestart: Effect.succeed({}), lastRemarkEnds: Effect.succeed({}),
               };
-              // 録画からのセッションは、溜めた順に入れる。待ち時間なしは、発言を入れたあと差分更新の終わりを待ってから次を入れる。
-              // 等速は音声の時刻まで待って入れ、差分更新の終わりは待たない。ただし処理を待つ発言が 1 回分に達したときだけ、減るまで次の発言を入れない（発言を作る段 settling は、どちらでも同じ）
-              const pacer = recorded.realtime ? createPacer((ms) => Effect.sleep(ms)) : undefined;
-              const backlog = yield* createRecordedBacklog<RecordedItem>({
-                hold,
-                ...(pacer === undefined ? {} : { pace: (item: RecordedItem) => Effect.andThen(pacer.waitUntil(timeOf(item)), item.kind === "remark" ? roomForRemark : Effect.void) }),
-                deliver: (item) =>
-                  Effect.gen(function* () {
-                    if (item.kind === "screen") return yield* inlet.screen(item.change);
-                    if (item.kind === "screen-off") return yield* inlet.screenOff(item.off);
-                    yield* inlet.remark(item.corrected);
-                    if (pacer === undefined) yield* session.idle;
-                    yield* recorded.progress({ position: item.corrected.rest.end, rounds: (yield* session.snapshot).round });
-                  }),
-              });
-              // 録画の共有画面の変化の待ち列。発言を締めるまで、変化は溜めておき、発言の end より前の start の変化だけを、その発言の前に溜まりへ入れる。
-              // 話者を決める段は相手の発言を最大 3 秒の音声の時刻まで保留するので、変化を届いた順にすぐ溜まりへ入れると、変化が先の時刻の発言より前に並ぶ。
-              const screenQueue = yield* Ref.make<ReadonlyArray<RecordedItem>>([]);
-              const enqueueScreen = (item: RecordedItem) => Ref.update(screenQueue, (queue) => [...queue, item]);
-              // 待ち列から、音声の時刻が limit 秒より前の要素を届いた順のまま取り出して溜まりへ入れる（limit が無ければ残りをすべて）
-              const flushScreens = (limit?: number) =>
-                Effect.flatMap(
-                  Ref.modify(screenQueue, (queue) => {
-                    const due = limit === undefined ? queue : queue.filter((item) => timeOf(item) < limit);
-                    return [due, limit === undefined ? [] : queue.filter((item) => timeOf(item) >= limit)] as const;
-                  }),
-                  (due) => Effect.forEach(due, backlog.offer, { discard: true }),
-                );
-              // 2 本の録画だけ、発言を端から時刻の順にまとめる（固定の待ち時間は持たない。片方が黙っている間は、そのトラックの次の発言か drain まで溜める）。
-              // 1 本のときは通さない（ヘルパーが続いている間に、最後の発言が溜まったままにならない）
-              const merge = recorded.selfTrack === true
-                ? createTrackMerge<CorrectedRemark>({ tracks: TRACKS, trackOf: (c) => c.rest.track, timeOf: (c) => c.rest.end })
-                : undefined;
-              const offerRemarks = (corrected: ReadonlyArray<CorrectedRemark>) =>
-                Effect.forEach(corrected, (c) =>
-                  Effect.andThen(flushScreens(c.rest.end), backlog.offer({ kind: "remark", corrected: c })), { discard: true });
-              return {
-                remark: (corrected: CorrectedRemark) => Effect.suspend(() => offerRemarks(merge === undefined ? [corrected] : merge.offer(corrected))),
-                screen: (change: Parameters<Inlet["screen"]>[0]) => enqueueScreen({ kind: "screen", change }),
-                screenOff: (off: Parameters<Inlet["screenOff"]>[0]) => enqueueScreen({ kind: "screen-off", off }),
-                drain: Effect.suspend(() => Effect.andThen(offerRemarks(merge?.drain() ?? []), flushScreens())),
-                restart: (ends: Partial<Readonly<Record<Track, number>>>) => {
-                  const limit = Math.max(-Infinity, ...Object.values(ends));
-                  return Ref.update(screenQueue, (queue) => queue.filter((item) => item.kind === "screen-off" || timeOf(item) < limit));
+              const feed = yield* recordedFeed({
+                realtime: recorded.realtime,
+                selfTrack: recorded.selfTrack === true,
+                session: {
+                  diffUpdate: session.diffUpdate,
+                  nextRetryAt: session.nextRetryAt,
+                  unreflectedCount: Effect.map(session.unreflectedRemarks, (remarks) => remarks.length),
+                  idle: session.idle,
+                  round: Effect.map(session.snapshot, (snapshot) => snapshot.round),
                 },
-                finish: backlog.finish,
-                discard: Effect.andThen(Effect.sync(() => { merge?.drain(); }), backlog.discard),
-              };
+                progress: recorded.progress,
+                paused: recorded.paused,
+              })(inlet);
+              observe = feed.observe;
+              return feed;
             }),
           });
           return {
@@ -316,8 +233,8 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             screenOff: flow.screenOff,
             addUserVocabulary: vocabulary.addUser,
             drain: flow.drain,
-            drainForRestart: Effect.andThen(flow.drainForRestart, Effect.flatMap(flow.lastRemarkEnds, flow.feed.restart)),
-            lastRemarkEnds: flow.lastRemarkEnds,
+            drainForRestart: Effect.andThen(flow.drainForRestart, Effect.asVoid(flow.feed.prepareRestart)),
+            lastRemarkEnds: flow.feed.lastRemarkEnds,
             finishBacklog: flow.feed.finish,
             discardBacklog: flow.feed.discard,
             clearSpeaking: flow.clearSpeaking,
