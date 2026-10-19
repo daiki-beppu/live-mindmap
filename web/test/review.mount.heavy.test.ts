@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { embedReviewLog } from "../../server/src/core/index.ts";
 import { buildReviewTemplateHtml } from "../../server/test/fixtures/reviewTemplate.ts";
 import { mapPoint, near, openReviewPage, PAGE_VIEWPORT, prepareReviewPages, rectOf, settled, styleOf, TIMEOUT, type ReviewPages } from "./reviewPage.ts";
 import { launchBrowser, withContext, type Browser, type BrowserContext, type Page } from "./browser.ts";
@@ -11,6 +13,7 @@ import { launchBrowser, withContext, type Browser, type BrowserContext, type Pag
 let pages: ReviewPages;
 // 点滅の再始動用の例（反映 3・4 で、論点 n2 と今の議題 n3 が続けて変わる）
 let blinkPages: ReviewPages;
+let longReviewPath: string;
 // Chromium はファイルで 1 つ。テストは withContext で自分の context を持ち、独立を保つ
 let browser: Browser;
 beforeAll(async () => {
@@ -18,6 +21,12 @@ beforeAll(async () => {
   const template = await buildReviewTemplateHtml();
   pages = await prepareReviewPages(template);
   blinkPages = await prepareReviewPages(template, join(import.meta.dirname, "fixtures/reviewBlink.log.jsonl"));
+  longReviewPath = join(pages.plainPath, "..", "long-map.html");
+  await writeFile(longReviewPath, embedReviewLog(template, [
+    { type: "start", at: "2026-10-01T00:00:00.000Z", title: "長い会議" },
+    { type: "remark", at: "2026-10-01T00:58:55.000Z", remark: { id: "r1", track: "相手", start: 3532, end: 3535, text: "次回の打ち合わせはオンラインで開きます" } },
+    { type: "diff", at: "2026-10-01T00:58:55.000Z", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "次回の打ち合わせの日程と参加方法を決める", evidence: ["r1"] }], dropped: [] },
+  ]));
   browser = await launchBrowser();
 }, TIMEOUT);
 afterAll(async () => {
@@ -426,13 +435,42 @@ describe("見返し（Foldkit 版）の開いたときの右の列と字幕", ()
   const SHOWN = { side: 1, captions: 1, sideButton: "true", captionsButton: "true" };
 
   it(
-    "390×844 で開くと、右の列と字幕が隠れていて、字幕・右の列のボタンで出せる",
+    "390×844 ではマップが全幅で、右の列を開くと下のシートで根拠と変わったことが読める",
     () => withContext(browser, { viewport: { width: 390, height: 844 } }, async (context) => {
-      const page = await openReviewPage(context, pages.audioPath, { audio: true });
+      const page = await openReviewPage(context, pages.plainPath, { audio: false });
       expect(await shown(page)).toEqual(HIDDEN);
+      near((await rectOf(page, ".map")).width, 390, "閉じたときのマップ幅");
       await page.locator('button[aria-label="字幕"]').first().click();
+      await settled(page);
+      await page.locator('[data-node-id="n4"] .map-node').click();
       await page.locator('button[aria-label="右の列"]').first().click();
       await expect.poll(() => shown(page), { timeout: 10_000 }).toEqual(SHOWN);
+      const layout = await rectOf(page, ".layout");
+      const sheet = await rectOf(page, ".side");
+      expect.soft((await rectOf(page, ".map")).width, "開いたときのマップ幅").toBe(390);
+      expect.soft(sheet.left, "シートの左端").toBe(0);
+      expect.soft(sheet.right, "シートの右端").toBe(390);
+      expect.soft(Math.abs(sheet.bottom - layout.bottom), "シートは操作帯の上に出る").toBeLessThanOrEqual(1);
+      expect(sheet.height).toBeGreaterThan(0);
+      expect.soft(sheet.height).toBeLessThan(layout.height);
+      const evidence = page.locator(".evidence__remark-text").filter({ hasText: "次に日程の話をします" });
+      await evidence.scrollIntoViewIfNeeded();
+      expect(await evidence.innerText()).toBe("次に日程の話をします");
+      const evidenceBox = await evidence.boundingBox();
+      expect(evidenceBox).not.toBeNull();
+      expect(evidenceBox!.y).toBeGreaterThanOrEqual(sheet.top);
+      expect(evidenceBox!.y + evidenceBox!.height).toBeLessThanOrEqual(sheet.bottom + 1);
+      const change = page.getByRole("button", { name: "00:11 追加 要点 オンラインで開く", exact: true });
+      await change.scrollIntoViewIfNeeded();
+      expect(await change.isVisible()).toBe(true);
+      const changeBox = await change.boundingBox();
+      expect(changeBox).not.toBeNull();
+      expect(changeBox!.y).toBeGreaterThanOrEqual(sheet.top);
+      expect(changeBox!.y + changeBox!.height).toBeLessThanOrEqual(sheet.bottom + 1);
+      await page.getByRole("button", { name: "右の列", exact: true }).click();
+      await expect.poll(() => pressed(page, "右の列")).toBe("false");
+      expect(await page.locator(".side").isVisible()).toBe(false);
+      near((await rectOf(page, ".map")).width, 390, "閉じ直したマップ幅");
     }),
     TIMEOUT,
   );
@@ -448,4 +486,130 @@ describe("見返し（Foldkit 版）の開いたときの右の列と字幕", ()
     }),
     TIMEOUT,
   );
+});
+
+
+describe("見返し（Foldkit 版）のスマホ表示", () => {
+  it(
+    "390×844 の字幕は左右の余白内に広がり、本文が横に並び、操作帯には重ならない",
+    () => withContext(browser, { viewport: { width: 390, height: 844 } }, async (context) => {
+      const page = await openReviewPage(context, longReviewPath, { audio: false });
+      await page.getByRole("button", { name: "字幕", exact: true }).click();
+      await page.locator(".captions__bubble").waitFor();
+      const captions = await rectOf(page, ".captions");
+      const bubble = await rectOf(page, ".captions__bubble");
+      expect.soft(Math.abs(captions.left - 12), "字幕の左余白").toBeLessThanOrEqual(1);
+      expect.soft(Math.abs(captions.right - 378), "字幕の右余白").toBeLessThanOrEqual(1);
+      expect.soft(Math.abs(bubble.width - captions.width), "吹き出しは字幕領域の幅を使う").toBeLessThanOrEqual(1);
+      expect.soft(bubble.left).toBeGreaterThanOrEqual(captions.left - 1);
+      expect.soft(bubble.right).toBeLessThanOrEqual(captions.right + 1);
+      const text = await page.locator(".captions__bubble").evaluate((element) => {
+        const node = element.firstChild!;
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, 2);
+        return { content: element.textContent, lines: range.getClientRects().length, width: range.getBoundingClientRect().width };
+      });
+      expect(text.content).toBe("次回の打ち合わせはオンラインで開きます");
+      expect.soft(text.lines, "最初の2文字は同じ行に並ぶ").toBe(1);
+      expect.soft(text.width).toBeGreaterThan(16);
+      expect(captions.bottom).toBeLessThanOrEqual((await rectOf(page, ".review-controls")).top);
+      for (const name of await page.locator(".captions__name").all()) {
+        const box = await name.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+      }
+    }),
+    TIMEOUT,
+  );
+
+  for (const audio of [false, true]) {
+    it(
+      `390×844・録音${audio ? "つき" : "なし"}: 現在時刻だけを1行に出し、主操作は32pxで帯の中に収まる`,
+      () => withContext(browser, { viewport: { width: 390, height: 844 } }, async (context) => {
+        const page = await openReviewPage(context, audio ? pages.audioPath : longReviewPath, { audio });
+        const checkBar = async () => {
+          const time = await page.locator(".review-bar__time").innerText();
+          expect.soft(time.trim(), "現在時刻だけを表示").toBe(audio ? "0:00:11" : "0:58:55");
+          const timeBox = await rectOf(page, ".review-bar__time");
+          const textLayout = await page.locator(".review-bar__time").evaluate((element) => {
+            const bounds = element.getBoundingClientRect();
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            const rects: DOMRect[] = [];
+            for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+              for (let offset = 0; offset < node.textContent!.length; offset++) {
+                if (node.textContent![offset]!.trim() === "") continue;
+                const range = document.createRange();
+                range.setStart(node, offset);
+                range.setEnd(node, offset + 1);
+                rects.push(...[...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0));
+              }
+            }
+            return {
+              lines: new Set(rects.map((r) => Math.round(r.top))).size,
+              clipped: rects.some((r) => r.left < bounds.left - 1 || r.right > bounds.right + 1 || r.top < bounds.top - 1 || r.bottom > bounds.bottom + 1),
+            };
+          });
+          expect.soft(textLayout.lines, "時刻は1行").toBe(1);
+          expect.soft(textLayout.clipped, "時刻を切り詰めない").toBe(false);
+          const bar = await rectOf(page, ".review-bar");
+          near(bar.left, 0, "操作帯の左端");
+          near(bar.right, 390, "操作帯の右端");
+          const labels = ["反映 1 つ戻る", "再生", "反映 1 つ進む", "字幕", "再生の速さ", "右の列", ...(audio ? ["ミュート"] : [])];
+          const play = await page.getByRole("button", { name: "再生", exact: true }).boundingBox();
+          for (const label of labels) {
+            const box = await page.getByRole("button", { name: label, exact: true }).boundingBox();
+            expect(box, label).not.toBeNull();
+            if (["反映 1 つ戻る", "再生", "反映 1 つ進む"].includes(label)) expect.soft(box!.width, `${label}の幅`).toBe(32);
+            expect.soft(box!.x, `${label}の左端`).toBeGreaterThanOrEqual(0);
+            expect.soft(box!.x + box!.width, `${label}の右端`).toBeLessThanOrEqual(390);
+            expect.soft(Math.abs(box!.y - play!.y), `${label}は同じ行`).toBeLessThanOrEqual(1);
+          }
+          expect.soft(timeBox.top).toBeGreaterThanOrEqual(bar.top);
+          expect.soft(timeBox.bottom).toBeLessThanOrEqual(bar.bottom);
+          expect.soft(timeBox.left).toBeGreaterThanOrEqual(play!.x + play!.width);
+          expect.soft(timeBox.right).toBeLessThanOrEqual(390);
+          expect.soft(await page.locator(".review-bar").evaluate((element) => element.scrollWidth <= element.clientWidth), "帯の横スクロールを要しない").toBe(true);
+        };
+        await checkBar();
+        if (audio) {
+          await page.getByRole("button", { name: "右の列", exact: true }).click();
+          await page.getByRole("button", { name: "ミュート", exact: true }).hover();
+          await expect.poll(async () => (await rectOf(page, ".review-volume__slider")).width).toBeGreaterThan(0);
+          await checkBar();
+          const slider = await rectOf(page, ".review-volume__slider");
+          await page.mouse.click(slider.left + slider.width / 2, slider.top + slider.height / 2);
+          await expect.poll(() => page.getByRole("slider", { name: "音量", exact: true }).getAttribute("aria-valuenow")).toBe("0.5");
+        }
+      }),
+      TIMEOUT,
+    );
+  }
+
+  for (const width of [600, 1280]) {
+    it(
+      `${width}px の見返しでは右の列は300pxで横に並び、現在時刻と全長を表示する`,
+      () => withContext(browser, { viewport: { width, height: 844 } }, async (context) => {
+        const page = await openReviewPage(context, longReviewPath, { audio: false });
+        if (width === 600) await page.getByRole("button", { name: "右の列", exact: true }).click();
+        const layout = await rectOf(page, ".layout");
+        const side = await rectOf(page, ".side");
+        const map = await rectOf(page, ".map");
+        near(side.width, 300, "右の列の幅");
+        near(side.top, layout.top, "右の列の上端");
+        near(side.bottom, layout.bottom, "右の列の下端");
+        near(map.right, side.left, "マップの隣に右の列が並ぶ");
+        expect((await page.locator(".review-bar__time").innerText()).replace(/\s+/g, " ").trim()).toBe("0:58:55 / 0:58:55");
+        if (width === 1280) {
+          near((await rectOf(page, ".captions")).width, 648, "従来の字幕幅");
+          const bubble = await rectOf(page, ".captions__bubble");
+          near(bubble.width, 0.8 * (648 - 72 - 8), "従来の吹き出し幅");
+          expect(await page.locator(".review-bar__topic").innerText()).toBe("次回の打ち合わせの日程と参加方法を決める");
+          expect(await page.locator(".review-bar__topic").isVisible()).toBe(true);
+        }
+      }),
+      TIMEOUT,
+    );
+  }
 });
