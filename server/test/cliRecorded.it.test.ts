@@ -1379,13 +1379,23 @@ describe("cli recorded <file> --realtime", () => {
     const running = yield* r.cli(["recorded", r.file, "--realtime"]).pipe(Effect.forkChild);
 
     yield* reachThirdRemark(r, pending);
+    expect(remarksOf(sessionLog(r.sessionsDir)).map((x) => x.id)).toEqual(["r1", "r2"]);
+    expect(r.updater.inputs).toHaveLength(1);
+    const beforeStop = yield* virtualNow;
     yield* Fiber.interrupt(running).pipe(Effect.forkChild);
     let ended = false;
     yield* Fiber.await(running).pipe(Effect.ensuring(Effect.sync(() => { ended = true; })), Effect.forkChild);
-    // 差分更新の応答はまだ終わっていない。終えると書き出しが進む
-    yield* Deferred.succeed(gate, undefined);
+    // backlog の破棄より先に更新を解放すると、停止要求が届く前に r3 が入る。
+    yield* Effect.gen(function* () {
+      const deadline = Date.now() + 5000;
+      while (!Deferred.isDoneUnsafe(r.helpers.stopSeen)) {
+        if (Date.now() >= deadline) throw new Error("backlog 破棄後の helper 停止通知が届かない");
+        yield* realDelay(5);
+      }
+    }).pipe(Effect.ensuring(Deferred.succeed(gate, undefined)));
     yield* eventually(() => ended, "recorded の CLI が戻る");
 
+    expect(yield* virtualNow).toBe(beforeStop);
     const dir = onlySession(r.sessionsDir);
     expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1", "r2"]);
     for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(dir, name))).toBe(true);
@@ -1467,23 +1477,6 @@ describe("cli recorded <file> 動画の映像", () => {
     expect(stderrLines(r).filter((l) => l === formatScreenOffNotice())).toHaveLength(0);
   }).pipe(Effect.scoped));
 
-  // 画面（6 秒）の語彙は、読みが返った後でも、その画面より前に終わる発言（0〜2 秒）は直さず、後に終わる発言（10〜12 秒）から直す
-  it.live("画面の OCR の語彙は、画面が映った後に終わる発言だけを直す。映る前に終わった発言は、語彙が先に届いていても直さない", () => Effect.gen(function* () {
-    const readings = fakeReadings({ 港南店: "kounanten" });
-    const r = yield* resource({ remarks: [], hold: true }, fakeUpdater(), { readings });
-    const running = yield* r.cli(["recorded", r.file]).pipe(Effect.forkChild);
-    yield* eventually(() => r.helpers.calls.length === 1, "ヘルパーが起動する");
-    // 画面が先に届き、読みが返って vocab の行ができてから、発言を流す
-    r.helpers.feed({ type: "screen", start: 6, image: SCREEN_IMAGE, lines: ["港南店"] });
-    yield* eventually(() => has(r.sessionsDir, (l) => l.type === "vocab"), "読みが返って vocab の行ができる");
-    expect(readings.calls).toHaveLength(1);
-    for (const event of [garbledPartial(0, 2), garbledRemark(0, 2), garbledPartial(10, 12), garbledRemark(10, 12)]) r.helpers.feed(event);
-    yield* r.helpers.end;
-    yield* Fiber.join(running);
-
-    const lines = sessionLog(r.sessionsDir);
-    expect(remarkTexts(lines)).toEqual(["江南店に行きます", "港南店に行きます"]);
-  }).pipe(Effect.scoped), 30_000);
 });
 
 // 差分更新が利用上限で一時停止している間（Issue #1092）、録画からのセッションは溜まっている発言をセッションへ入れず、ヘルパーにもファイルを読み進めさせない。

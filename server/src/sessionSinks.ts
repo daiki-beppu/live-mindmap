@@ -1,6 +1,6 @@
 // セッションの中身（updater・ログ・いま話している文字・書き出し）を開く（ADR 0008）。
 // core のセッションを直接使う。updater はセッションの Scope の資源で、Scope を閉じると閉じる。
-import { Context, DateTime, Deferred, Effect, FiberSet, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
+import { Context, DateTime, Deferred, Effect, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
 import { dirname } from "node:path";
 import type { UpdatePlan } from "./updatePlan.ts";
 import { MapCapture } from "./capture.ts";
@@ -8,10 +8,11 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openLoggedSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { CATCH_UP_REMARKS, correctRemark, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, requestScreenWords, wordsForKatakana, katakanaTable, type DiffUpdateFrame, type HelperPartial, type ScreenVocabularyState, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type VocabularyWord, type Replacement, type WordTime } from "./core/index.ts";
+import { CATCH_UP_REMARKS, createPacer, createTrackMerge, DiffUpdater, DiffUpdateReason, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type CaptionsFrame, type Track, type Replacement, type WordTime } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
+import { makeSessionVocabulary, modelReadings, type CorrectedRemark } from "./sessionVocabulary.ts";
 import { createRecordedBacklog } from "./recordedBacklog.ts";
 import { createRemarkSettling } from "./remarkSettling.ts";
 import { ReviewBuild } from "./review.ts";
@@ -104,14 +105,6 @@ export type OpenSessionSink = {
     progress: (progress: { position: number; rounds: number }) => Effect.Effect<void>;
     paused: (pause: { reason: DiffUpdatePauseReason; retryAt: number } | undefined) => Effect.Effect<void>;
   };
-};
-
-// 語彙で直した後の発言（セッションへ入れる直前の形）。words と wordTimes は Remark に入れず、ログの行にだけ残す
-type CorrectedRemark = {
-  rest: Omit<SettledRemark, "words" | "wordTimes">;
-  original: { raw: string; words: NonNullable<SettledRemark["words"]> } | undefined;
-  wordTimes: SettledRemark["wordTimes"];
-  replacements: readonly Replacement[]; // 語彙で直した置き換え（字幕の表へ入れる）。直さなかった発言は空
 };
 
 // 録画からのセッションの溜まりの要素。発言と共有画面の変化は、同じ列に音声の時刻の順で並べて同じ時計で入れる。
@@ -258,25 +251,17 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             // 根拠の確かめは core が済ませている。1 件ずつ順に、規則（付け替えは名乗りのときだけ）を通して入れる
             onSpeakerNames: (inferred) => Effect.forEach(inferred, ({ label, name, basis }) => applyName({ label, name, source: "推定", basis }), { discard: true }),
           }).pipe(Effect.provideService(DiffUpdater, namedUpdater), Effect.provideContext(exportServices));
-          // 語彙追加（読み取得つき）の処理の集まり。ログを開いた後に作るので、後始末（登録の逆順）ではログを閉じる前に中断される。
-          // exports が溜まりを更新する前に、書き終わるのを待つために使う
-          const vocabularyAdds = yield* FiberSet.make();
+          // ログを開いた後に作り、Scope 閉鎖ではログを閉じる前に読み待ちを中断する。
+          const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
+          if (started !== undefined) yield* appendRecordedLog({ type: "vocab-pool", session: started.session });
+          const vocabulary = yield* makeSessionVocabulary({
+            read: modelReadings(baseUpdater.katakana, readings),
+            commonWords,
+            log: appendRecordedLog,
+            carried: started?.words ?? [],
+          });
           // ID の採番はセッションにつき 1 回だけ作る。起動し直しでは作り直さない
           const count = yield* Ref.make(0);
-          // 語彙（読みのある語だけ）。セッションの中では減らさない。出口は発言を締めるたびにその時点の語彙を読む。
-          // from があるのは録画の画面の語彙だけ。その画面が映り始めた秒で、音声の時刻でそれより後に終わる発言だけを直す（ライブは受け取ってすぐ効くので持たない）
-          const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord & { readonly from?: number }>>([]);
-          // 締めた発言を、その時点の語彙で直す。ライブは締めた直後、録画は溜める前（入れる時刻を待つ前）に呼ぶので、等速でも待ち時間なしと同じ語彙で直る。
-          // 関所を通った後の本文を語彙で直し、直した本文を発言の本文にする（ログの raw には直す前の本文、words には直す前の位置のままを残す）。words が無い発言は直さない
-          // wordTimes（Issue #1019）も Remark に入れず、ログの行にだけ残す（本文の位置は直す前のまま）
-          const correct = (settled: SettledRemark) =>
-            Effect.gen(function* () {
-              const { words, wordTimes, ...rest } = settled;
-              if (words === undefined) return { rest, original: undefined, wordTimes, replacements: [] } satisfies CorrectedRemark;
-              const effective = (yield* Ref.get(vocabulary)).filter((w) => w.from === undefined || w.from < rest.end);
-              const { text, replacements } = correctRemark(effective, rest.text, words, commonWords);
-              return { rest: { ...rest, text }, original: { raw: rest.text, words }, wordTimes, replacements } satisfies CorrectedRemark;
-            });
           // 直した発言を、採番してセッションへ入れる（ログの remark の行・差分更新・字幕）
           const admit = ({ rest, original, wordTimes, replacements }: CorrectedRemark) =>
             Effect.gen(function* () {
@@ -337,66 +322,14 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             emit: (settled) => Effect.andThen(
               Ref.update(madeEnd, (current) => ({ ...current, [settled.track]: Math.max(current[settled.track] ?? settled.end, settled.end) })),
               backlog === undefined
-                ? Effect.flatMap(correct(settled), admit)
-                : Effect.flatMap(correct(settled), (corrected) => offerRemarks(merge === undefined ? [corrected] : merge.offer(corrected))),
+                ? Effect.flatMap(vocabulary.correct(settled), admit)
+                : Effect.flatMap(vocabulary.correct(settled), (corrected) => offerRemarks(merge === undefined ? [corrected] : merge.offer(corrected))),
             ),
           });
-          // 画面から語彙の候補を取るための状態。短い行が出た画面の数と、読みを頼んだ語（利用者の語・画面の語）。
-          // 並んで届いた画面で同じ語を二重に頼まないよう、1 回の Ref.modify で更新する
-          const screenVocabulary = yield* Ref.make<ScreenVocabularyState>({ seen: new Map(), requested: new Set() });
           // 画像の ID も、セッションにつき 1 回だけ作るクロージャで採番する
           const screenCount = yield* Ref.make(0);
-
-          // 開始時に、全セッションをまたぐ溜まり（セッションの置き場の直下）の語を読みごと語彙に入れる（Issue #645）。読みは作り直さない。
-          // 番号の行（終了時と cli restore がこのセッションの番号を知る）→ carried の vocab の行の順に書き、open が返る前に語彙へ足す
-          // （最初の発言から効く。直した発言の行は必ず vocab の行より後ろに並ぶ）。溜まりが使えないときは警告だけ出して何もしない
-          const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
-          if (started !== undefined) {
-            yield* appendRecordedLog({ type: "vocab-pool", session: started.session });
-            if (started.words.length > 0) {
-              const carried = started.words.map((w) => ({ surface: w.surface, romaji: w.romaji, source: "carried" as const }));
-              yield* appendRecordedLog({ type: "vocab", words: carried });
-              yield* Ref.set(vocabulary, started.words.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji }])));
-              yield* Ref.update(screenVocabulary, (state) => ({ ...state, requested: new Set([...state.requested, ...started.words.map((w) => w.surface)]) }));
-            }
-          }
           // 登録の逆順に走る: 予約を止めてから updater を閉じる
           yield* Effect.addFinalizer(() => Effect.andThen(relay.stop, settling.stop));
-
-          // 足した語の読みを作り、vocab の行を書いてから語彙に足す（直した発言の行が、必ず vocab の行より後ろに並ぶ）。
-          // 英字の語（略語でないもの）は、まとめて 1 度だけ baseUpdater.katakana にカタカナの読みを聞き、返ったカタカナを読みのサブコマンドでローマ字にする。
-          // 英字でない語と略語は、そのまま読みのサブコマンドへ渡す。モデルが失敗した語・読みを返さない語は読みなし（直接読んで補わない）。
-          // 読み取得の待ち（モデル・読みのサブコマンド）だけが中断できる。停止（Scope の閉鎖）で中断されても、足した語の記録は失いたくないので、
-          // 中断のときは読みなし（全語 romaji: null）で vocab の行を 1 行書く。読み取得が返った後の処理は中断されない
-          const addVocabulary = (surfaces: ReadonlyArray<string>, source: "user" | "screen", from?: number) =>
-            Effect.uninterruptibleMask((restore) =>
-              Effect.gen(function* () {
-                const noReadings = surfaces.map((surface) => ({ surface, romaji: null, source }));
-                const asked = wordsForKatakana(surfaces);
-                const askedSet = new Set(asked);
-                const found = yield* restore(
-                  Effect.gen(function* () {
-                    const answered = asked.length > 0 && baseUpdater.katakana !== undefined
-                      ? yield* baseUpdater.katakana(asked).pipe(Effect.catch(() => Effect.succeed([])))
-                      : [];
-                    const katakana = katakanaTable(asked, answered);
-                    const toRead = [...new Set([...surfaces.filter((surface) => !askedSet.has(surface)), ...katakana.values()])];
-                    const read = toRead.length === 0
-                      ? []
-                      : yield* readings.readings(toRead).pipe(Effect.catchTag("ReadingsFailed", () => Effect.succeed([])));
-                    const romajiOf = new Map(read.map((r) => [r.surface, r.romaji] as const));
-                    return new Map(surfaces.map((surface) => {
-                      const key = askedSet.has(surface) ? katakana.get(surface) : surface;
-                      return [surface, key === undefined ? undefined : romajiOf.get(key)] as const;
-                    }));
-                  }).pipe(Effect.onInterrupt(() => appendRecordedLog({ type: "vocab", words: noReadings }))),
-                );
-                const added = surfaces.map((surface) => ({ surface, romaji: found.get(surface) || null, source }));
-                yield* appendRecordedLog({ type: "vocab", words: added });
-                const usable = added.flatMap((w) => (w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji, ...(from === undefined ? {} : { from }) }]));
-                yield* Ref.update(vocabulary, (current) => [...current, ...usable.filter((u) => !current.some((c) => c.surface === u.surface))]);
-              }),
-            );
 
           // 共有画面の変化をセッションへ入れる（画像の採番・pushScreen）。ライブは直接、録画は溜まりの deliver から呼ぶ
           const pushScreenChange = ({ start, image, lines }: Parameters<SessionSink["screen"]>[0]) =>
@@ -408,16 +341,6 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 yield* session.pushScreen({ start, image: { id: `s${n}`, bytes: image } }, lines);
               }
             });
-          // 画面の語彙を頼む。規則で取った候補のうち、まだ読みを頼んでいない語だけを、まとめて 1 度だけ語彙に入れる。
-          // ライブはセッションへ入れた後、録画は受け取った時点（入れる時刻を待たない）で呼ぶ。
-          // 録画は from（画面が映り始めた秒）を渡し、語彙が効き始める時刻にする（映る前に終わった発言は直さない。溜まりに並べる規則 start < end と同じ）
-          const requestScreenVocabulary = (lines: ReadonlyArray<string> | undefined, from?: number) =>
-            Effect.gen(function* () {
-              if (lines === undefined || lines.length === 0) return;
-              const news = yield* Ref.modify(screenVocabulary, (state) => requestScreenWords(state, lines));
-              if (news.length > 0) yield* FiberSet.run(vocabularyAdds, addVocabulary(news, "screen", from), { startImmediately: true });
-            });
-
           return {
             dir,
             // 字幕へは、settling が当てはめた後の、もう発言になった分を除いた途中結果を渡す（この結果で出た発言も除く。Issue #1222）
@@ -435,17 +358,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
                 yield* applyName({ label, name, source: "手入力" });
               }),
             screen: (change) => backlog === undefined
-              ? Effect.andThen(pushScreenChange(change), requestScreenVocabulary(change.lines))
-              : Effect.andThen(requestScreenVocabulary(change.lines, change.start), enqueueScreen({ kind: "screen", change })),
+              ? Effect.andThen(pushScreenChange(change), vocabulary.addScreen(change.lines))
+              : Effect.andThen(vocabulary.addScreen(change.lines, change.start), enqueueScreen({ kind: "screen", change })),
             screenOff: (off) => backlog === undefined ? session.pushScreenOff(off) : enqueueScreen({ kind: "screen-off", off }),
-            addUserVocabulary: (words) => {
-              const surfaces = [...new Set(words.filter((w) => w !== ""))];
-              if (surfaces.length === 0) return Effect.void;
-              return Effect.andThen(
-                Ref.update(screenVocabulary, (state) => ({ ...state, requested: new Set([...state.requested, ...surfaces]) })),
-                Effect.asVoid(FiberSet.run(vocabularyAdds, addVocabulary(surfaces, "user"), { startImmediately: true })),
-              );
-            },
+            addUserVocabulary: vocabulary.addUser,
             // 自然な終わり: 残りの発言を出してから、どの発言にも覆われなかった画面の変化を溜まりへ入れる
             drain: Effect.andThen(settling.drain, Effect.suspend(() => Effect.andThen(offerRemarks(merge?.drain() ?? []), flushScreens()))),
             // 並べ替えで保留中の発言は吐き出さず残す（読み直した回の、もう片方のトラックの発言と end の順に並べる）。
@@ -466,7 +382,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             // 先に溜まりを更新する（ログから導くので、log.jsonl・export.json は書き換えない）。
             // 読み取得中の語彙追加は vocab の行を書き終えてから溜まりに入れる（待たないと、足した語・画面の語が溜まりに入らない）
             exports: Effect.andThen(
-              Effect.andThen(FiberSet.awaitEmpty(vocabularyAdds), updatePoolFromSession(dir, dirname(dir))),
+              Effect.andThen(vocabulary.settled, updatePoolFromSession(dir, dirname(dir))),
               Effect.flatMap(Effect.all([session.snapshot, Ref.get(names)]), ([snapshot, table]) => writeExportsAndCapture(dir, snapshot, errorMessage, speakerNameMap(table))),
             ).pipe(
               Effect.provideContext(exportServices),
