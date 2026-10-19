@@ -119,4 +119,36 @@ struct AppleResponseValidationTests {
     func malformedResponse() throws {
         #expect(throws: (any Error).self) { try validate("{", schema: classification) }
     }
+    private func repair(_ response: String) throws -> (sentence: [String: Any], repaired: Bool) {
+        let object = try #require(JSONSerialization.jsonObject(with: Data(classification.utf8)) as? [String: Any])
+        let (content, repaired) = try repairAppleResponse(response, schema: object)
+        try validateAppleResponse(content, schema: object)
+        let root = try #require(JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any])
+        let sentences = try #require(root["文"] as? [[String: Any]])
+        return (sentences[0], repaired)
+    }
+
+    // Issue #795: 文字列の終わりで `"` の代わりに `」` を出し、`}], ` まで文字列の中に書いた形
+    @Test("「」}」から後ろを捨てて受理する")
+    func repairsBrokenClosing() throws {
+        let (sentence, repaired) = try repair(response(title: "題", sentences: [["種類": "説明", "text": "最初から試す」}], "]]))
+        #expect(repaired)
+        #expect(sentence["text"] as? String == "最初から試す")
+    }
+
+    @Test("maxLength を超えた文字列を code point で切り詰めて受理する")
+    func truncatesOverlong() throws {
+        let (sentence, repaired) = try repair(response(title: "題", sentences: [["種類": "説明", "text": String(repeating: "あ", count: 45)]]))
+        #expect(repaired)
+        #expect(sentence["text"] as? String == String(repeating: "あ", count: 40))
+    }
+
+    @Test("直すところが無ければ内容をそのまま返す")
+    func keepsValid() throws {
+        let original = try response(title: "題", sentences: [["種類": "説明", "text": "面接官は3人です"]])
+        let object = try #require(JSONSerialization.jsonObject(with: Data(classification.utf8)) as? [String: Any])
+        let (content, repaired) = try repairAppleResponse(original, schema: object)
+        #expect(!repaired)
+        #expect(content == original)
+    }
 }

@@ -60,11 +60,12 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
     }
   };
   walk(ROOT_ID, 1);
+  // 文を最後に生成させる（Issue #795）。Apple は最後の文の text で崩れると上限まで出し続けるので、その後ろに必須の項目を置かない
   const schema = Schema.Struct({
     議題: Schema.Struct({ id: Schema.Literals([...topics, "新しい議題"]), 題: Schema.String.check(Schema.isMaxLength(20)) }),
-    文: Schema.Array(sentenceSchema(points)).check(Schema.isMinLength(sentences.length), Schema.isMaxLength(sentences.length)),
     済み: Schema.Literals(["なし", ...closable]),
     名前: Schema.Array(InferredSpeakerName),
+    文: Schema.Array(sentenceSchema(points)).check(Schema.isMinLength(sentences.length), Schema.isMaxLength(sentences.length)),
   });
   const prompt = [
     "## 現在のマップ（話し中の部分）", lines.join("\n"), "",
