@@ -9,7 +9,7 @@ import type { BrowserContext, Page } from "./browser.ts";
 
 // 会議中の画面の heavy IT（Issue #829。meeting.mount.heavy.test.ts）が共有する道具。
 // テストではなく、web の Vite の開発サーバーの起動・`/ws` の frame を送るページの開き方・ビューポートの読み方・題材の frame だけを置く。
-// 会議中の画面は `/ws` の WebSocket から frame を受けるので、page.routeWebSocket("**/ws") で本物の server の代わりに frame を送る（server/test/diffUpdateNotice.heavy.test.ts と同じ手法）。
+// 会議中の画面は `/ws` の WebSocket から frame を受けるので、page.routeWebSocket("**/ws") で本物の server の代わりに frame を送る。
 
 export const MEETING_TIMEOUT = 180_000;
 
