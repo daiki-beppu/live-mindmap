@@ -11,8 +11,12 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     private var detector: ScreenChangeDetector
     private var closed = false
     private var captureStopped = false
+    private let writeStderr: (String) -> Void
 
-    public init(bundleID: String) {
+    public init(bundleID: String, writeStderr: @escaping (String) -> Void = {
+        FileHandle.standardError.write(Data($0.utf8))
+    }) {
+        self.writeStderr = writeStderr
         detector = ScreenChangeDetector(bundleID: bundleID)
         (events, continuation) = AsyncStream<HelperEvent>.makeStream()
     }
@@ -21,8 +25,12 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     public func emit(_ frame: ScreenFrame, encode: () -> ScreenShot?) {
         lock.withLock {
             if closed { return }
+            let hadRememberedTab = detector.rememberedTabTitle != nil
             if let event = detector.screenEvent(for: frame, encode: encode) {
                 continuation.yield(event)
+            }
+            if !hadRememberedTab, let title = detector.rememberedTabTitle {
+                writeStderr("会議のタブ: \(title)\n")
             }
         }
     }
