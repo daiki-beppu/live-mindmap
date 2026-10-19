@@ -1,6 +1,54 @@
 import Foundation
 import CoreFoundation
 
+// Apple の生成が壊す 2 つの形を、検証の前に直す（Issue #795）。
+// - 文字列の終わりで `"` の代わりに `」` を出し、続けて `}], ` などを文字列の中に書く。`」}` から後ろを捨てる
+// - maxLength を超える。超えた分を Unicode code point で切り詰める（途中で切れた文が出るのは受け入れる）
+// 直した文字列が無ければ、内容をそのまま返す。
+func repairAppleResponse(_ content: String, schema: [String: Any]) throws -> (content: String, repaired: Bool) {
+    let value = try JSONSerialization.jsonObject(with: Data(content.utf8), options: .fragmentsAllowed)
+    var repaired = false
+    let result = repairResponseValue(value, schema: schema, repaired: &repaired)
+    guard repaired else { return (content, false) }
+    let data = try JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])
+    return (String(decoding: data, as: UTF8.self), true)
+}
+
+private func repairResponseValue(_ value: Any, schema: [String: Any], repaired: inout Bool) -> Any {
+    if let branches = schema["anyOf"] as? [[String: Any]] {
+        for branch in branches {
+            var changed = false
+            let candidate = repairResponseValue(value, schema: branch, repaired: &changed)
+            if (try? validateResponseValue(candidate, schema: branch, path: "$")) != nil {
+                if changed { repaired = true }
+                return candidate
+            }
+        }
+        return value
+    }
+    switch schema["type"] as? String {
+    case "object":
+        guard var object = value as? [String: Any], let properties = schema["properties"] as? [String: [String: Any]] else { return value }
+        for (key, child) in properties {
+            if let field = object[key] { object[key] = repairResponseValue(field, schema: child, repaired: &repaired) }
+        }
+        return object
+    case "array":
+        guard let array = value as? [Any], let items = schema["items"] as? [String: Any] else { return value }
+        return array.map { repairResponseValue($0, schema: items, repaired: &repaired) }
+    case "string", nil:
+        guard var string = value as? String, schema["const"] == nil, schema["enum"] == nil else { return value }
+        if let broken = string.range(of: "」}") { string = String(string[..<broken.lowerBound]) }
+        if let max = schema["maxLength"] as? Int, string.unicodeScalars.count > max {
+            string = String(String.UnicodeScalarView(string.unicodeScalars.prefix(max)))
+        }
+        if string != value as? String { repaired = true }
+        return string
+    default:
+        return value
+    }
+}
+
 // 入力 schema は appleGenerationSchemaJSON が受理した範囲に限る。
 func validateAppleResponse(_ content: String, schema: [String: Any]) throws {
     let value = try JSONSerialization.jsonObject(with: Data(content.utf8), options: .fragmentsAllowed)
