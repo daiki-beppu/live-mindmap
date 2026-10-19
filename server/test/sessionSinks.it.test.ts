@@ -19,7 +19,7 @@ import { collectingConsole, failingBuild, failingCapture, FAKE_TEMPLATE, fakeExp
 import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 
 // Issue #240 段 3（ADR 0008）→ Issue #243 段 6: SessionSinks の実物 Layer を、実 tmpdir + 偽の DiffUpdater／capture で確かめる。
-// updater・ログ・いま話している文字・書き出しを開く契約（CT-SINK-SCOPE）と、録音ファイル名の採番（要件117,127）
+// updater・ログ・いま話している文字・書き出しを開く契約（CT-SINK-SCOPE）
 // がこのファイルの対象。段 6 で、SessionSinks は新しいセッション（makeSession）を直接使う。
 // 1 秒の途中結果（SETTLE_QUIET_MS）の待ちは、音声の時刻（後続の結果の end）で進める（壁時計では進まない。本物の時間では待たない）。
 //
@@ -28,7 +28,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 //   updaterLayer は core の Service DiffUpdater を作る Layer で、セッションごとに Layer.build(Layer.fresh(...)) して使う
 // - `createDir(sessionsDir)` がセッションのフォルダを作る（失敗すれば以後 open を呼ばない。要件3の前提）
 // - `open({ dir, title, publish, speak })` がセッションの Scope の中で 1 回呼ばれ、updater をそのセッションの Scope で開き、
-//   `SessionSink`（partial・final・drain・clearSpeaking・stopRelays・appendLog・flush・exports・audioFileNames）を返す。
+//   `LiveSink`（partial・final・drain・clearSpeaking・stopRelays・appendLog・flush・exports）を返す。
 //   Scope を閉じると updater が閉じる
 
 // 開いた数・閉じた数・呼ばれた数を数える偽の DiffUpdater の Layer。開くたびに別の実体（id）を作る
@@ -502,26 +502,13 @@ describe("SessionSinks（実物 Layer）", () => {
     }).pipe(Effect.provide(sinksLayer({ updaterLayer })));
   });
 
-  describe("録音ファイルの番号（audioFileNames。要件117,127）", () => {
-    it.effect("1 回目の名前（相手.m4a・自分.m4a）は変えず、2 回目以降は -2・-3 の番号が付く", () =>
-      Effect.scoped(Effect.gen(function* () {
-        const sessionsDir = yield* withTmpSessionsDir();
-        const sinks = yield* SessionSinks;
-        const dir = yield* sinks.createDir(sessionsDir);
-        const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
-
-        expect(sink.audioFileNames(1)).toEqual(["相手.m4a", "自分.m4a"]);
-        expect(sink.audioFileNames(2)).toEqual(["相手-2.m4a", "自分-2.m4a"]);
-        expect(sink.audioFileNames(3)).toEqual(["相手-3.m4a", "自分-3.m4a"]);
-      })).pipe(Effect.provide(sinksLayer({ updaterLayer: makeFakeUpdater().updaterLayer }))));
-  });
 });
 
 // 送った字幕のフレームの読み取り
 const lastTexts = (speaks: readonly CaptionsFrame[], track: "相手" | "自分") => speaks.at(-1)?.bubbles.filter((b) => b.track === track).map((b) => b.text);
 
 // 公開したスナップショット・送った captions を記録する Sink の組み立て
-const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff = true }: { speakerOff?: boolean } = {}) {
+const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff = true, vocab = [] }: { speakerOff?: boolean; vocab?: ReadonlyArray<string> } = {}) {
   const sessionsDir = yield* withTmpSessionsDir();
   const sinks = yield* SessionSinks;
   const dir = yield* sinks.createDir(sessionsDir);
@@ -530,6 +517,7 @@ const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff
   const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude,
     dir,
     title: "週次",
+    vocab,
     publish: (snapshot) => Effect.sync(() => void published.push(snapshot)),
     speak: (frame) => Effect.sync(() => void speaks.push(frame)),
     speakerNames: () => Effect.void,
@@ -671,9 +659,9 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
 });
 
 // Issue #640: 利用者が足した語で発言を直す。
-// SessionSink の addUserVocabulary(words) が、語を Readings（読みのサブコマンド）にまとめて 1 回渡して読みを作り、
+// open の vocab が、語を Readings（読みのサブコマンド）にまとめて 1 回渡して読みを作り、
 // log.jsonl に vocab の行（表記・読み・出どころ user。読みが無い語は romaji: null）を書いてから、語彙に読みのある語を足す。
-// 開始を待たせないため、読みは addUserVocabulary が返った後に非同期で作られる。
+// 開始を待たせないため、読みは open が返った後に非同期で作られる。
 // 関所を通った後の本文を補正して発言にする（確定結果・1 秒更新されなかった途中結果・drain のどの出口でも）。途中結果（captions）は直さない。
 // 読みの語は実際のトークナイザの出力。remark の行の text は直した本文、raw は直す前の本文、words は直す前の本文の位置のまま
 describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を直す（Issue #640）", () => {
@@ -700,8 +688,7 @@ describe("SessionSinks（実物 Layer）: 利用者が足した語で発言を�
     const { updaterLayer } = makeRecordingUpdater(KATAKANA);
     return Effect.scoped(Effect.gen(function* () {
       readings.gate.current = yield* Deferred.make<void>();
-      const { sink, dir } = yield* openRecordingSink();
-      yield* sink.addUserVocabulary(["港南店", "Zendesk"]); // 読みが返るまで待たずに返る
+      const { sink, dir } = yield* openRecordingSink({ vocab: ["港南店", "Zendesk"] });
       yield* settle;
       expect(vocabLines(dir)).toEqual([]); // まだ読みができていない
 
@@ -784,32 +771,49 @@ describe("SessionSinks（実物 Layer）: 共有画面の文字から語彙に�
 
 });
 
-describe("SessionSinks（実物 Layer）: 録画の画面語彙の組み立て", () => {
-  it.effect("画面を投入する前に読みを取得し画面のstartを補正のfromへ渡す", () => {
+describe("SessionSinks（実物 Layer）: 録画の組み立て", () => {
+  it.effect("再起動準備は途中結果を締めてendを返し、画面のstart以降だけ補正し、投入した発言だけ字幕へ出す", () => {
     const readings = fakeReadings({ 港南店: "kounanten" });
-    const { updaterLayer } = makeRecordingUpdater();
+    const { updaterLayer, updateGate, calls } = makeRecordingUpdater();
     return Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      updateGate.gate = gate;
+      const speaks: CaptionsFrame[] = [];
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(yield* withTmpSessionsDir());
-      const sink = yield* sinks.open({
+      const sink = yield* sinks.openRecorded({
         dir, title: "録画", model: defaultClaude, updaterLayer,
-        diffUpdate: () => Effect.void, publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void,
+        diffUpdate: () => Effect.void, publish: () => Effect.void, speak: (frame: CaptionsFrame) => Effect.sync(() => { speaks.push(frame); }), speakerNames: () => Effect.void,
         recorded: { realtime: false, selfTrack: false, progress: () => Effect.void, paused: () => Effect.void },
       });
       yield* sink.speaker(SPEAKER_OFF);
-      yield* sink.screen({ start: 6, image: new Uint8Array([0xff, 0xd8, 0xff, 0x00]), lines: ["港南店"] });
+      const words = [{ surface: "江南", romaji: "kounan", location: 0, length: 2 }, { surface: "店", romaji: "ten", location: 2, length: 1 }];
+      yield* sink.final({ track: "相手", start: 590, end: 600, text: "江南店", words });
+      yield* settleUntil(() => calls.length === 1 && lastTexts(speaks, "相手")?.[0] === "江南店");
+      expect(yield* sink.drainForRestart).toEqual({ 相手: 600 });
+      yield* sink.screen({ start: 650, image: new Uint8Array([0xff, 0xd8, 0xff, 0x00]), lines: ["港南店"] });
       yield* settleUntil(() => logEvents(dir).some((e) => e.type === "vocab"));
       yield* settle;
       expect(readings.calls).toEqual([["港南店"]]);
       expect(logEvents(dir).filter((e) => e.type === "screen")).toEqual([]);
-      const words = [{ surface: "江南", romaji: "kounan", location: 0, length: 2 }, { surface: "店", romaji: "ten", location: 2, length: 1 }];
-      yield* sink.final({ track: "相手", start: 0, end: 2, text: "江南店", words });
-      yield* sink.final({ track: "相手", start: 10, end: 12, text: "江南店", words });
+      yield* sink.final({ track: "相手", start: 610, end: 620, text: "江南店", words });
+      yield* sink.partial({ track: "相手", start: 760, end: 770, text: "江南店", words, duplicate: false });
+      expect(yield* sink.drainForRestart).toEqual({ 相手: 770 });
+      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+      yield* settle;
+      expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => e.remark.end)).toEqual([600]);
+      expect(speaks.flatMap((frame) => frame.bubbles).every((bubble) => bubble.end <= 600)).toBe(true);
+      expect(lastTexts(speaks, "相手")).toEqual(["江南店"]);
+      yield* sink.final({ track: "相手", start: 760, end: 770, text: "江南店", words });
+      yield* sink.final({ track: "相手", start: 800, end: 810, text: "続きの発言です" });
+      yield* Deferred.succeed(gate, undefined);
       yield* sink.drain;
       yield* sink.finishBacklog;
       yield* sink.flush;
-      expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => e.remark.text)).toEqual(["江南店", "港南店"]);
-      expect(logEvents(dir).filter((e) => e.type === "screen").map((e) => e.start)).toEqual([6]);
+      expect(logEvents(dir).filter((e) => e.type === "remark").map((e) => [e.remark.id, e.remark.start, e.remark.end, e.remark.text])).toEqual([
+        ["r1", 590, 600, "江南店"], ["r2", 610, 620, "江南店"], ["r3", 760, 770, "港南店"], ["r4", 800, 810, "続きの発言です"],
+      ]);
+      expect(logEvents(dir).filter((e) => e.type === "screen").map((e) => e.start)).toEqual([650]);
     }).pipe(Effect.provide(sinksLayer({ updaterLayer, readings })));
   });
 });
@@ -843,13 +847,13 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
 
   // セッションを 1 つ流す: 開く → script → 発言を締める → 書き出し（終了の処理）→ 閉じる。同じ sessionsDir で続けて呼ぶと、前のセッションの溜まりを引き継ぐ。
   // exports: false は、終了の処理を通らなかったセッション（書き出しを呼ばずに閉じる）
-  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void>, options: { exports?: boolean } = {}) {
+  const runSession = Effect.fn("runSession")(function* (sessionsDir: string, script: (context: Context) => Effect.Effect<void>, options: { exports?: boolean; vocab?: ReadonlyArray<string> } = {}) {
     // セッションのフォルダ名は開始時刻（ミリ秒）。続けて開いても重ならないよう実時間で少し待つ
     yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 3)));
     return yield* Effect.scoped(Effect.gen(function* () {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
+      const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", vocab: options.vocab, publish: () => Effect.void, speak: () => Effect.void, speakerNames: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* script({ sink, dir });
       yield* sink.drain;
@@ -895,10 +899,10 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
       yield* runSession(sessionsDir, spokeOnlyKounan);
       expect(readPool(sessionsDir).words[0]).toMatchObject({ surface: "港南店", source: "spoken" });
 
+      const readingGate = yield* Deferred.make<void>();
+      readings.gate.current = readingGate;
       yield* runSession(sessionsDir, ({ sink, dir }) => Effect.gen(function* () {
         yield* awaitVocabLines(dir, 1);
-        readings.gate.current = yield* Deferred.make<void>(); // 読みの取得を保留する
-        yield* sink.addUserVocabulary(["葛西"]);
         yield* settleUntil(() => readings.calls.some((c) => c.includes("葛西")));
         expect(readings.calls.at(-1)).toEqual(["葛西"]);
         yield* sink.drain;
@@ -916,10 +920,10 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
         expect(readPool(sessionsDir).words[0]).toMatchObject({ source: "spoken" }); // 溜まりは記録を待っている
         expect(readPool(sessionsDir).words.map((w: { surface: string }) => w.surface)).toEqual(["港南店"]);
         expect(yield* Deferred.isDone(finished)).toBe(false);
-        yield* Deferred.succeed(readings.gate.current, undefined);
+        yield* Deferred.succeed(readingGate, undefined);
         yield* Fiber.join(stopping);
         expect(vocabLines(dir).flatMap((e) => e.words)).toContainEqual({ surface: "葛西", romaji: "kasai", source: "user" });
-      }), { exports: false });
+      }), { exports: false, vocab: ["葛西"] });
 
       expect(readPool(sessionsDir).words).toEqual([
         { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 },

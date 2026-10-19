@@ -8,7 +8,7 @@ import { TestClock } from "effect/testing";
 import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
-import { SessionSinks, type OpenSessionSink, type SessionSink } from "../src/sessionSinks.ts";
+import { SessionSinks, type OpenSessionSink, type LiveSink, type RecordedSink } from "../src/sessionSinks.ts";
 import { Sessions, SessionsDir, type SessionStart } from "../src/sessions.ts";
 import { Viewers } from "../src/viewers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
@@ -23,8 +23,7 @@ import { settleUntil } from "./fixtures/sessionLayers.ts";
 // - `Helpers.launch(args)` は 1 回分の起動を表す `HelperAttempt`（events の Stream・stop・exit・stderrTail）を
 //   `Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope>` で返す（Scope を閉じると後始末が走る。要件10,24,27,39,40）。
 //   `events` はヘルパーが送った JSON 文字列を届いた順に流す Stream（helperSocket.ts の Queue を経由する想定）。
-// - `SessionSinks.open(args)` はセッションの Scope の中で 1 回だけ呼ばれ、`SessionSink`
-//   （partial・final・drain・clearSpeaking・stopRelays・appendLog・flush・exports・audioFileNames）を返す
+// - ライブの open と録画の openRecorded は、それぞれの sink をセッションの Scope で 1 回開く
 //   （要件3,68,117,125）。Scope を閉じると updater が閉じる（CT-SINK-SCOPE）。
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
@@ -119,8 +118,8 @@ function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHa
 }
 
 // sink の appendLog が受け取る型（intake の記録・自分の休止の記録）。speaker の記録は sink.speaker が受け取る（Issue #1021）
-type LogLineEvent = Parameters<SessionSink["appendLog"]>[0];
-type SpeakerLine = Parameters<SessionSink["speaker"]>[0];
+type LogLineEvent = Parameters<LiveSink["appendLog"]>[0];
+type SpeakerLine = Parameters<LiveSink["speaker"]>[0];
 
 type FakeSinksHandle = {
   readonly sinks: SessionSinks["Service"];
@@ -135,7 +134,7 @@ type FakeSinksHandle = {
   readonly appended: LogLineEvent[];
   readonly speakers: SpeakerLine[]; // sink.speaker へ届いた speaker・speaker-off（届いた順）
   readonly speakerCalls: string[]; // sink.speaker（speaker:<type>）と sink.speakersRenumbered（renumbered）が呼ばれた順（Issue #1025）
-  readonly vocabAdded: string[][]; // addUserVocabulary へ届いた語（呼び出しごと）
+  readonly vocabAdded: string[][]; // 開始引数で受け取った語（空でない呼び出しごと）
   readonly order: string[]; // flush・exports・close が起きた順
   readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
 };
@@ -158,24 +157,19 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const speakerCalls: string[] = [];
     const order: string[] = [];
     const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
-    const open = (args: { dir: string }): Effect.Effect<SessionSink, never, Scope.Scope> =>
+    const openBase = (args: OpenSessionSink) =>
       Effect.gen(function* () {
         opened.count++;
+        if (args.vocab !== undefined && args.vocab.length > 0) vocabAdded.push([...args.vocab]);
         let count = 0;
         yield* Effect.addFinalizer(() => Effect.sync(() => { opened.closed++; order.push("close"); }));
-        const sink: SessionSink = {
+        const sink = {
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.suspend(() => r.text === control.finalDiesOn ? Effect.die(new Error("ログに書けません")) : Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); })),
-          screen: (s) => Effect.sync(() => { screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
-          addUserVocabulary: (words) => Effect.sync(() => { vocabAdded.push([...words]); }),
-          screenOff: (e) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
+          screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
+          screenOff: (e: Parameters<LiveSink["screenOff"]>[0]) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
-          drainForRestart: Effect.void,
-          lastRemarkEnds: Effect.succeed({}),
-          finishBacklog: Effect.void,
-          discardBacklog: Effect.void,
-          clearSpeaking: Effect.sync(() => { relayStats.cleared++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
           appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),
           speaker: (event: SpeakerLine) => Effect.sync(() => { speakers.push(event); speakerCalls.push(`speaker:${event.type}`); }),
@@ -183,13 +177,16 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           nameSpeaker: () => Effect.void,
           flush: Effect.sync(() => { order.push("flush"); }),
           exports: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => { order.push("exports"); return [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`]; }),
-          audioFileNames: (attempt: number) => (attempt > 1 ? [`相手-${attempt}.m4a`, `自分-${attempt}.m4a`] : ["相手.m4a", "自分.m4a"]),
         };
         return sink;
       });
+    const open = (args: OpenSessionSink): Effect.Effect<LiveSink, never, Scope.Scope> =>
+      Effect.map(openBase(args), (sink) => ({ ...sink, clearSpeaking: Effect.sync(() => { relayStats.cleared++; }) }));
+    const openRecorded: SessionSinks["Service"]["openRecorded"] = (args) =>
+      Effect.map(openBase(args), (sink): RecordedSink => ({ ...sink, drainForRestart: Effect.succeed({}), finishBacklog: Effect.void, discardBacklog: Effect.void }));
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, createDir, prepare: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) }) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, speakers, speakerCalls, vocabAdded, order, control };
+    return { sinks: SessionSinks.of({ open, openRecorded, createDir, prepare: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) }) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, speakers, speakerCalls, vocabAdded, order, control };
   });
 }
 
@@ -232,8 +229,8 @@ describe("録画の引数と終了処理", () => {
     const helpers = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {}]);
     const fake = yield* makeFakeSessionSinks();
     let prepared = 0;
-    const sinks = SessionSinks.of({ ...fake.sinks, open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({
-      ...sink, drainForRestart: Effect.sync(() => { prepared++; }), lastRemarkEnds: Effect.succeed(ends),
+    const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({
+      ...sink, drainForRestart: Effect.sync(() => { prepared++; return ends; }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/meeting.m4a", selfFile, title: undefined, vocab: [], realtime: false, model: defaultClaude });
@@ -250,17 +247,17 @@ describe("録画の引数と終了処理", () => {
   it.effect("録画の題名・語彙・モデルをsinkへ渡す", () => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
-    const opened: OpenSessionSink[] = [];
+    const opened: Parameters<SessionSinks["Service"]["openRecorded"]>[0][] = [];
     const prepared: Parameters<SessionSinks["Service"]["prepare"]>[0][] = [];
     const sinks = SessionSinks.of({ ...fake.sinks,
-      open: (args) => Effect.andThen(Effect.sync(() => { opened.push(args); }), fake.sinks.open(args)),
+      openRecorded: (args) => Effect.andThen(Effect.sync(() => { opened.push(args); }), fake.sinks.openRecorded(args)),
       prepare: (plan) => Effect.andThen(Effect.sync(() => { prepared.push(plan); }), fake.sinks.prepare(plan)),
     });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const model = { ...defaultClaude, name: "fast", model: "claude-haiku-5-5" };
     yield* sessions.startRecorded({ file: "/meeting.m4a", title: "週次会議", vocab: ["ヤマダ商事", "アルファ"], realtime: false, model });
     expect(prepared).toEqual([{ kind: "single", model }]);
-    expect(opened).toEqual([expect.objectContaining({ title: "週次会議", model })]);
+    expect(opened).toEqual([expect.objectContaining({ title: "週次会議", model, vocab: ["ヤマダ商事", "アルファ"] })]);
     expect(fake.vocabAdded).toEqual([["ヤマダ商事", "アルファ"]]);
     const result = yield* Effect.exit(sessions.startRecorded({ file: "/other.m4a", title: undefined, vocab: [], realtime: false, model }));
     expect(result._tag).toBe("Failure");
@@ -325,7 +322,7 @@ describe("録画の停止と一時停止の配線", () => {
       const attempt = yield* fakeHelpers.helpers.launch(args, stop);
       return { ...attempt, stop: Effect.andThen(Effect.sync(() => { order.push("helper-stop"); }), attempt.stop) };
     }) });
-    const sinks = SessionSinks.of({ ...fakeSinks.sinks, open: (args) => Effect.map(fakeSinks.sinks.open(args), (sink) => ({
+    const sinks = SessionSinks.of({ ...fakeSinks.sinks, openRecorded: (args) => Effect.map(fakeSinks.sinks.openRecorded(args), (sink) => ({
       ...sink,
       discardBacklog: Effect.sync(() => { order.push("discard"); }),
       finishBacklog: Effect.sync(() => { order.push("finish"); }),
@@ -346,7 +343,7 @@ describe("録画の停止と一時停止の配線", () => {
       { unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {},
     ]);
     const fakeSinks = yield* makeFakeSessionSinks();
-    const callbacks = yield* Deferred.make<NonNullable<OpenSessionSink["recorded"]>>();
+    const callbacks = yield* Deferred.make<Parameters<SessionSinks["Service"]["openRecorded"]>[0]["recorded"]>();
     const sent: { attempt: number; paused: boolean }[] = [];
     const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: Effect.fnUntraced(function* (args, stop) {
       const attempt = yield* fakeHelpers.helpers.launch(args, stop);
@@ -355,8 +352,8 @@ describe("録画の停止と一時停止の配線", () => {
         if (instruction.type === "reading-pause") sent.push({ attempt: index, paused: instruction.paused });
       })) };
     }) });
-    const sinks = SessionSinks.of({ ...fakeSinks.sinks, open: (args) =>
-      Effect.andThen(Deferred.succeed(callbacks, args.recorded!), fakeSinks.sinks.open(args)) });
+    const sinks = SessionSinks.of({ ...fakeSinks.sinks, openRecorded: (args) =>
+      Effect.andThen(Deferred.succeed(callbacks, args.recorded), fakeSinks.sinks.openRecorded(args)) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
     const events: { type: string; paused?: { reason: string; retryAt: number } }[] = [];
@@ -482,8 +479,8 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     expect(fake.opened.count).toBe(0);
   }));
 
-  // Issue #640: 開始の要求の vocab は、セッションを開いた直後に 1 回だけ sink へ渡す。無ければ渡さない
-  it.effect("開始の要求の vocab は sink の addUserVocabulary へ 1 回で渡す。空なら渡さない", () => Effect.gen(function* () {
+  // Issue #640: 開始時の語彙は open の引数へ渡す。読み取得は sink が所有する。
+  it.effect("開始の要求の vocab はライブの open の引数へ渡し、空の語彙でも開始できる", () => Effect.gen(function* () {
     const withVocab = yield* makeFakeSessionSinks();
     const prepWith = yield* preparation(withVocab);
     yield* Deferred.succeed(prepWith.ready, undefined);
