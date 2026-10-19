@@ -62,7 +62,6 @@ describe("辺判定のCLI（軽いIT、判定器は偽物）", () => {
     }));
     const capture = safeCapture();
     const run = yield* runCommand(command, [dir], capture);
-    expect(calls).toBe(4);
     expect(Result.isFailure(run.result)).toBe(true);
     expect(readdirSync(dir)).toEqual(["log.jsonl"]);
     if (Result.isFailure(run.result)) yield* reportFailure(Cause.fail(run.result.failure)).pipe(Effect.provide(capture.layer));

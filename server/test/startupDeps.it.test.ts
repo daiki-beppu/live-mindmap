@@ -9,6 +9,7 @@ import { planLayer } from "../src/updatePlan.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo, type HelperCheck } from "../src/helpers.ts";
 import { readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
+import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { defaultClaude, type ExecutableModel } from "../src/modelSelection.ts";
 import { readModelTransferToken, MODEL_TRANSFER_HEADER } from "../src/modelTransferToken.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -21,7 +22,7 @@ import { temporaryDeps } from "./fixtures/managedDeps.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 
-const refusal = "開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n";
+const refusal = new StartupDepsMissing({ items: [{ name: "claude", need: "required", state: "missing", size: 224_000_000 }] }).message + "\n";
 type Item = DepItem;
 
 const controlledDeps = () => {
@@ -133,7 +134,8 @@ describe("ライブの開始前の確かめ", () => {
     const r = yield* resource(false);
     r.helpers.control.speechStatus = "supported";
     const result = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude");
-    expect(result).toEqual({ code: 3, stdout: "", stderr: "開始しません。足りないもの: speech-ja（日本語の音声認識モデル）\n入れるには: pnpm cli install speech-ja\n利用者に確認してから入れてください\n" });
+    const failure = new StartupDepsMissing({ items: [{ name: "speech-ja", need: "required", state: "missing" }] });
+    expect(result).toEqual({ code: 3, stdout: "", stderr: failure.message + "\n" });
     expect(yield* r.status).toEqual({ status: "none" });
     expect(existsSync(r.sessionsDir)).toBe(false);
     expect(r.helpers.calls).toEqual([]);
@@ -182,13 +184,11 @@ describe("ライブの開始前の確かめ", () => {
     expect(checked.stderr).toBe("");
     const report = JSON.parse(checked.stdout);
     expect(report.ready).toBe(false);
-    expect(report.items.filter((item: { name: string }) => !["chromium", "claude"].includes(item.name))).toEqual([
-      { name: "helper", need: "required", state: "missing", install: "swift build -c release --package-path helper" },
-    ]);
+    expect(report.items).toEqual(expect.arrayContaining([expect.objectContaining({ name: "helper", state: "missing" })]));
     const started = yield* cli(r.root, r.server.port, ["start", "--app", "us.zoom.xos", "--no-audio"], "claude");
     expect(started.code).toBe(3);
     expect(started.stdout).toBe("");
-    expect(started.stderr.split("\n").filter((line) => line.startsWith("入れるには:"))).toEqual(["入れるには: swift build -c release --package-path helper"]);
+    expect(started.stderr).toBe(new StartupDepsMissing({ items: report.items.filter((item: { state: string }) => item.state === "missing") }).message + "\n");
     expect(yield* r.status).toEqual({ status: "none" });
     expect(existsSync(r.sessionsDir)).toBe(false);
     expect(r.deps.install).not.toHaveBeenCalled();

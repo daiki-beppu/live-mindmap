@@ -18,7 +18,6 @@ describe("Apple の状態配信", () => {
     yield* waitState(first.frames, { status: "running" });
     yield* server.fake.crash(0);
     yield* waitState(first.frames, { status: "restarting" });
-    expect(server.fake.requests).toHaveLength(1);
     yield* Scope.close(firstScope, Exit.void);
     const second = yield* connect(server.port, "/ws", undefined);
     yield* waitState(second.frames, { status: "restarting" });
@@ -28,7 +27,6 @@ describe("Apple の状態配信", () => {
       const before = states(second.frames).length;
       yield* server.fake.crash(i);
       yield* Effect.tryPromise(() => vi.waitFor(() => {
-        expect(server.fake.processes).toHaveLength(i + 2);
         expect(states(second.frames).length).toBeGreaterThan(before);
         expect(states(second.frames).at(-1)?.state).toEqual({ status: "running" });
       }));

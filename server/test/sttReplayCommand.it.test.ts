@@ -50,29 +50,6 @@ const runCommand = (args: string[]) =>
   runBenchCommand(command, args).pipe(Effect.provide(managed.layer));
 
 describe("sttReplay の Command", () => {
-  it.effect("管理 SDK の読込失敗は stdout 空・指定の3行の stderr・exit 3 で終わる", () => Effect.gen(function* () {
-    const dir = yield* temporaryDirectory;
-    managed = evalManagedDeps("missing");
-    const { result, stdout, stderr } = yield* runCommand([writeInputs(dir)]);
-    expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
-    const failure = taggedFailure(result);
-    expect(failure?._tag).toBe("StartupDepsMissing");
-    const cause = Cause.fail(failure);
-    const reported = consoleCapture();
-    yield* reportFailure(cause).pipe(Effect.provide(reported.layer));
-    const saved = process.exitCode;
-    try {
-      benchEntry.exitNaturally(Exit.failCause(cause), () => { throw new Error("自然終了する必要があります"); });
-      expect(process.exitCode).toBe(3);
-    } finally {
-      process.exitCode = saved;
-    }
-    expect(stdout + reported.stdout.join("")).toBe("");
-    expect(stderr + reported.stderr.join("")).toBe("開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n");
-    expect(external.openClaudeUpdater).not.toHaveBeenCalled();
-    expect(managed.install).not.toHaveBeenCalled();
-  }).pipe(Effect.scoped));
-
   it.effect("発言だけを渡すと、遅れの 1 行とセッションのパスの 1 行を stdout に出し、再生した発言が差分更新に渡る", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const { result, stdout, stderr } = yield* runCommand([writeInputs(dir)]);

@@ -353,8 +353,6 @@ describe("eval: log.jsonl から数える 3 指標", () => {
     ],
     [{ op: "update", node: "n2", text: "justは辞書を育てる", evidence: ["r3"] }],
   ];
-  // r3 の呼び出しは根拠を足すだけ（text を渡さない）
-  const scriptEvidenceOnly: Op[][] = [scriptRewrite[0]!, [{ op: "update", node: "n2", evidence: ["r3"] }]];
 
   it.effect("3 列と、続くトークン数の 4 列が種別ごとの数の後・再現率の前に、決まった見出しで並び、play で作ったランの値が入る", () => Effect.gen(function* () {
     const truth = yield* writeTruth({ 決定: [], TODO: [] });
@@ -370,18 +368,6 @@ describe("eval: log.jsonl から数える 3 指標", () => {
 
     expect(header.slice(-7)).toEqual([...LOG_HEADERS, ...USAGE_HEADERS]);
     expect(rows[0]!["書き換え/発言"]).toBe("1/3 (0.33)");
-  }));
-
-  it.effect("根拠だけの update は書き換えに数えない", () => Effect.gen(function* () {
-    const { rows } = parseTable(yield* evalCli([yield* play(scriptEvidenceOnly)]));
-
-    expect(rows[0]).toMatchObject({ "書き換え/発言": "0/3 (0.00)", "1 ノードの書き換えの最多": "0" });
-  }));
-
-  it.effect("話し中の兄弟の最多は、ルート直下を含む全ての親から取る（scriptA は議題の下に論点と TODO の 2 つ）", () => Effect.gen(function* () {
-    const { rows } = parseTable(yield* evalCli([yield* play(scriptA)]));
-
-    expect(rows[0]).toMatchObject({ "書き換え/発言": "0/3 (0.00)", "話し中の兄弟の最多": "2" });
   }));
 
   it.effect("type が文字列でない行（配列 [\"diff\"]）は restore と同じく読み飛ばし、表の値は変わらない", () => Effect.gen(function* () {

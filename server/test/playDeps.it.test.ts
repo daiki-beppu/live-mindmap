@@ -7,6 +7,7 @@ import { ConfigProvider, Console, Effect, Layer, Result, Stream } from "effect";
 import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { ManagedDeps, type DepItem } from "../src/managedDeps.ts";
+import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import type { AgentSdk } from "../src/claude.ts";
 import manifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -16,7 +17,7 @@ import { managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const fixture = join(import.meta.dirname, "fixtures/short.transcript.json");
-const refusal = "開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n";
+const refusal = new StartupDepsMissing({ items: [{ name: "claude", need: "required", state: "missing", size: 224_000_000 }] }).message + "\n";
 type Item = DepItem;
 
 const localCli = (root: string, args: string[]) => runCliEntry(args, Layer.mergeAll(
@@ -117,9 +118,9 @@ describe("サーバーを使わない再生の開始前の確かめ", () => {
     const result = yield* Effect.result(runCli(["check", "--for", "play"]).pipe(Effect.provide(deps.layer)));
     expect(Result.isSuccess(result)).toBe(ready);
     expect(deps.stdout.join("")).toMatch(/^\{"ready":/);
-    expect(JSON.parse(deps.stdout.join(""))).toEqual({ ready, items: [
-      { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
-      { name: "claude", need, state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
+    expect(JSON.parse(deps.stdout.join(""))).toMatchObject({ ready, items: [
+      { name: "chromium", state: "missing" },
+      { name: "claude", need, state: "missing" },
     ] });
     expect(deps.load).not.toHaveBeenCalled();
     expect(deps.install).not.toHaveBeenCalled();

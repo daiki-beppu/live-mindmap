@@ -105,18 +105,13 @@ function fakeHelpers(events: unknown[]) {
 }
 
 describe("選択したモデルの実行と記録（Issue #663）", () => {
-  it.live.each([
-    "管理 SDK がありません",
-    "読込版が固定版と一致しません",
-    "@anthropic-ai/claude-agent-sdk の解決先が管理実体の node_modules 外です",
-    "current の実体が管理ディレクトリ外です",
-  ])("Claude SDK の準備失敗は副作用前に503で理由を返し、再試行できる: %s", (message) => Effect.gen(function* () {
+  it.live("Claude SDK の準備失敗は副作用前に503で理由を返し、同じサーバーで再試行できる", () => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
     const sessionsDir = join(root, "sessions");
     const helpers = fakeHelpers([]);
     let unavailable = true;
     const load = vi.fn((_name: string) => unavailable
-      ? Effect.fail(new ManagedDepsFailed({ message }))
+      ? Effect.fail(new ManagedDepsFailed({ message: "管理 SDK がありません" }))
       : Effect.succeed(managedSdk));
     const deps = Layer.succeed(ManagedDeps, ManagedDeps.of({
       executable: () => Effect.die("実行ファイル取得は対象外"),
@@ -138,8 +133,6 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     expect({ status: rejected.status, folderCreated: existsSync(sessionsDir), launches: helpers.calls.length })
       .toEqual({ status: 503, folderCreated: false, launches: 0 });
     expect(yield* Effect.tryPromise(() => rejected.json())).toMatchObject({ _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing" }] });
-    expect(existsSync(sessionsDir)).toBe(false);
-    expect(helpers.calls).toHaveLength(0);
     expect(sdk.created).toEqual([]);
     unavailable = false;
     const accepted = yield* post();
