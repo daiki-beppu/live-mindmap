@@ -41,4 +41,4 @@ When the `check` that runs on a push to `main` goes red, recover by hand. This i
 2. If the re-run passes, treat the failure as a flake: open a bug issue and fix-forward. Do not revert.
 3. If the re-run fails again, treat it as real breakage: revert the PR that caused it.
 
-Do not stop the takt skill's `align-behind.mjs`, which runs resident on a local machine and brings BEHIND PRs up to date with `main`, while `main` is red. A PR it aligns runs only the jobs chosen by its changed paths, so only a PR that touches the broken path fails and stops there; other PRs keep passing.
+Do not stop the takt skill's `align-behind.mjs`, which runs resident on a local machine and brings BEHIND PRs up to date with `main`, while `main` is red. A PR it aligns runs only the jobs chosen by its changed paths, so only a PR that touches the broken path fails and stops there; other PRs keep passing (alignment check, not for merge).
