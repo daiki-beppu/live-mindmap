@@ -55,7 +55,7 @@ describe("sessionVocabulary", () => {
   it.effect("足した語を重複なしでまとめて読み、読めない語はnullで記録する", () => Effect.gen(function* () {
     const reading = source({ 港南店: "kounanten", Zendesk: "zendesuku" });
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addUser(["港南店", "Zendesk", "読めない語", "港南店"]);
+    yield* vocabulary.addUser(["港南店", "Zendesk", "読めない語", "港南店"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["港南店", "Zendesk", "読めない語"]]);
     expect(lines).toEqual([{ type: "vocab", words: [
@@ -68,7 +68,7 @@ describe("sessionVocabulary", () => {
   it.effect("user入力には画面候補の制限をかけず小文字と1文字も記録する", () => Effect.gen(function* () {
     const reading = source({ notion: "nooshon", a: "e" });
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addUser(["notion", "a"]);
+    yield* vocabulary.addUser(["notion", "a"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["notion", "a"]]);
     expect(lines.flatMap((l) => l.words)).toEqual([
@@ -79,8 +79,8 @@ describe("sessionVocabulary", () => {
   it.effect("空の追加では読みもvocabの記録も行わず発言を変えない", () => Effect.gen(function* () {
     const reading = source({ 港南店: "kounanten" });
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addUser([]);
-    yield* vocabulary.addUser([""]);
+    yield* vocabulary.addUser([]).pipe(Effect.asVoid);
+    yield* vocabulary.addUser([""]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect((yield* vocabulary.correct(remark(3))).rest.text).toBe(garbled.text);
     expect(reading.calls).toEqual([]);
@@ -89,7 +89,7 @@ describe("sessionVocabulary", () => {
 
   it.effect("読みがある語だけで発言を直す", () => Effect.gen(function* () {
     const { vocabulary, lines } = yield* open(source({ Zendesk: "zendesuku" }).read);
-    yield* vocabulary.addUser(["港南店", "Zendesk"]);
+    yield* vocabulary.addUser(["港南店", "Zendesk"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     const zendesk = utterance(["全", "zen"], ["デスク", "desuku"], ["を", "wo"], ["使う", "tsukau"]);
     expect(lines.flatMap((l) => l.words)).toEqual([
@@ -101,7 +101,7 @@ describe("sessionVocabulary", () => {
 
   it.effect("渡されたcommonWordsを補正へ渡し通常語を置き換えない", () => Effect.gen(function* () {
     const { vocabulary } = yield* open(source({ 改札: "kaisatsu" }).read, { commonWords: new Set(["開発"]) });
-    yield* vocabulary.addUser(["改札"]);
+    yield* vocabulary.addUser(["改札"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     const corrected = yield* vocabulary.correct({ track: "相手", start: 1, end: 2, ...utterance(["開発", "kaihatsu"]) });
     expect(corrected.rest.text).toBe("開発");
@@ -116,7 +116,7 @@ describe("sessionVocabulary", () => {
     };
     return Effect.gen(function* () {
       const { vocabulary } = yield* open(source({ 港南店: "kounanten" }).read, { commonWords: new Set(["開発"]) });
-      yield* vocabulary.addUser(["港南店"]);
+      yield* vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
       yield* vocabulary.settled;
       const wordTimes = [{ location: 0, length: 3, start: 1, end: 2 }];
       const input = { ...remark(3), wordTimes };
@@ -141,7 +141,7 @@ describe("sessionVocabulary", () => {
         events.push("vocab");
       }),
     });
-    yield* vocabulary.addUser(["港南店"]);
+    yield* vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
     yield* Deferred.await(logging);
     yield* Effect.forkChild(Effect.andThen(vocabulary.settled, Deferred.succeed(finished, undefined)));
     yield* Effect.gen(function* () {
@@ -160,7 +160,7 @@ describe("sessionVocabulary", () => {
     const outputs: string[] = [];
     const settling = yield* createRemarkSettling({ emit: (r) => Effect.flatMap(vocabulary.correct(r), (c) => Effect.sync(() => { outputs.push(c.rest.text); })) });
     yield* settling.speaker({ type: "speaker-off", start: 0, reason: "モデルなし" });
-    yield* vocabulary.addScreen(["港南店"]);
+    yield* vocabulary.addScreen(["港南店"]).pipe(Effect.asVoid);
     yield* reading.started;
     yield* settling.final(remark(3));
     expect(outputs).toEqual([garbled.text]);
@@ -174,7 +174,7 @@ describe("sessionVocabulary", () => {
 
   it.effect("fromより前と一致するendは直さず後に終わる発言だけを直す", () => Effect.gen(function* () {
     const { vocabulary } = yield* open(source({ 港南店: "kounanten" }).read);
-    yield* vocabulary.addScreen(["港南店"], 6);
+    yield* vocabulary.addScreen(["港南店"], 6).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     const texts = yield* Effect.forEach([2, 6, 12], (end) => Effect.map(vocabulary.correct(remark(end)), (c) => c.rest.text));
     expect(texts).toEqual([garbled.text, garbled.text, "港南店に行きます"]);
@@ -183,7 +183,7 @@ describe("sessionVocabulary", () => {
   it.effect("画面候補をまとめて読みscreenとして記録する", () => Effect.gen(function* () {
     const reading = source({ 港南店: "kounanten", Zendesk: "zendesuku" });
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addScreen(["港南店の出店", "Zendesk", "1on1", "ひらがなだけ"]);
+    yield* vocabulary.addScreen(["港南店の出店", "Zendesk", "1on1", "ひらがなだけ"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["港南店", "Zendesk"]]);
     expect(lines).toEqual([{ type: "vocab", words: [
@@ -194,14 +194,14 @@ describe("sessionVocabulary", () => {
   it.effect("短い名前の画面数を引き継ぎ3画面目で一度取得する", () => Effect.gen(function* () {
     const reading = source({ 港南店: "kounanten", Zendesk: "zendesuku", 葛西: "kasai" });
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addScreen(["港南店でZendeskを使う", "葛西", "葛西"]);
+    yield* vocabulary.addScreen(["港南店でZendeskを使う", "葛西", "葛西"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
-    yield* vocabulary.addScreen([" 葛西 "]);
+    yield* vocabulary.addScreen([" 葛西 "]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["港南店", "Zendesk"]]);
-    yield* vocabulary.addScreen(["葛西"]);
+    yield* vocabulary.addScreen(["葛西"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
-    yield* vocabulary.addScreen(["葛西"]);
+    yield* vocabulary.addScreen(["葛西"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["港南店", "Zendesk"], ["葛西"]]);
     expect(lines.flatMap((l) => l.words).map((w) => [w.surface, w.source])).toEqual([["港南店", "screen"], ["Zendesk", "screen"], ["葛西", "screen"]]);
@@ -210,7 +210,7 @@ describe("sessionVocabulary", () => {
   it.effect("短い名前の条件を満たさない行は3画面でも取得しない", () => Effect.gen(function* () {
     const reading = source({});
     const { vocabulary, lines } = yield* open(reading.read);
-    for (let i = 0; i < 3; i++) yield* vocabulary.addScreen(["1on1", "さくら", "田中 a", "会・議", "あいうえお会議"]);
+    for (let i = 0; i < 3; i++) yield* vocabulary.addScreen(["1on1", "さくら", "田中 a", "会・議", "あいうえお会議"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([]);
     expect(lines).toEqual([]);
@@ -219,9 +219,9 @@ describe("sessionVocabulary", () => {
   it.effect("小文字だけの語と空とundefinedの画面からは語を要求しない", () => Effect.gen(function* () {
     const reading = source({});
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addScreen(["notion", "a"]);
-    yield* vocabulary.addScreen([]);
-    yield* vocabulary.addScreen(undefined);
+    yield* vocabulary.addScreen(["notion", "a"]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen([]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(undefined).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([]);
     expect(lines).toEqual([]);
@@ -231,11 +231,11 @@ describe("sessionVocabulary", () => {
   it.effect("画面変更後も前の語を保持し再要求しない", () => Effect.gen(function* () {
     const reading = source({ 港南店: "kounanten" });
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addScreen(["港南店"]);
+    yield* vocabulary.addScreen(["港南店"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
-    yield* vocabulary.addScreen(["別の内容"]);
-    yield* vocabulary.addScreen(undefined);
-    yield* vocabulary.addScreen(["港南店"]);
+    yield* vocabulary.addScreen(["別の内容"]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(undefined).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(["港南店"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect((yield* vocabulary.correct(remark(12))).rest.text).toBe("港南店に行きます");
     expect(reading.calls.flat().filter((s) => s === "港南店")).toEqual(["港南店"]);
@@ -245,14 +245,14 @@ describe("sessionVocabulary", () => {
   it.effect("userとscreenは読み待ち中も要求済み集合を共有する", () => Effect.gen(function* () {
     const reading = yield* heldSource();
     const { vocabulary, lines } = yield* open(reading.read);
-    yield* vocabulary.addUser(["港南店"]);
-    yield* vocabulary.addScreen(["港南店", "Zendesk"]);
-    yield* vocabulary.addUser(["港南店", "Zendesk"]);
-    yield* vocabulary.addScreen(["Zendesk", "港南店"]);
+    yield* vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(["港南店", "Zendesk"]).pipe(Effect.asVoid);
+    yield* vocabulary.addUser(["港南店", "Zendesk"]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(["Zendesk", "港南店"]).pipe(Effect.asVoid);
     yield* Deferred.succeed(reading.result, new Map([["港南店", "kounanten"], ["Zendesk", "zendesuku"]]));
     yield* vocabulary.settled;
-    yield* vocabulary.addUser(["港南店", "Zendesk"]);
-    yield* vocabulary.addScreen(["港南店", "Zendesk"]);
+    yield* vocabulary.addUser(["港南店", "Zendesk"]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(["港南店", "Zendesk"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["港南店"], ["Zendesk"]]);
     expect(lines.flatMap((l) => l.words).sort((a, b) => a.surface.localeCompare(b.surface))).toEqual([
@@ -263,12 +263,12 @@ describe("sessionVocabulary", () => {
   it.effect("carriedの読みで補正しuserやscreenからも再取得も再記録もしない", () => Effect.gen(function* () {
     const reading = source({});
     const { vocabulary, lines } = yield* open(reading.read, { carried: [
-      { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 },
-      { surface: "読めない語", romaji: null, source: "user", lastSpoken: 0 },
+      { surface: "港南店", romaji: "kounanten" },
+      { surface: "読めない語", romaji: null },
     ] });
     expect((yield* vocabulary.correct(remark(3))).rest.text).toBe("港南店に行きます");
-    yield* vocabulary.addUser(["港南店", "読めない語"]);
-    yield* vocabulary.addScreen(["港南店", "読めない語"]);
+    yield* vocabulary.addUser(["港南店", "読めない語"]).pipe(Effect.asVoid);
+    yield* vocabulary.addScreen(["港南店", "読めない語"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([]);
     expect(lines).toEqual([{ type: "vocab", words: [
@@ -280,9 +280,9 @@ describe("sessionVocabulary", () => {
     const reading = yield* heldSource();
     const scope = yield* Effect.acquireRelease(Scope.make(), (s) => Scope.close(s, Exit.void));
     const { vocabulary, lines } = yield* Scope.provide(open(reading.read), scope);
-    yield* vocabulary.addUser(["港南店", "Zendesk"]);
+    yield* vocabulary.addUser(["港南店", "Zendesk"]).pipe(Effect.asVoid);
     yield* reading.started;
-    yield* vocabulary.addScreen(["Figma", "港南店"]);
+    yield* vocabulary.addScreen(["Figma", "港南店"]).pipe(Effect.asVoid);
     yield* Scope.close(scope, Exit.void);
     expect(lines.flatMap((l) => l.words).sort((a, b) => a.surface.localeCompare(b.surface))).toEqual([
       { surface: "Figma", romaji: null, source: "screen" }, { surface: "Zendesk", romaji: null, source: "user" }, { surface: "港南店", romaji: null, source: "user" },
@@ -292,7 +292,7 @@ describe("sessionVocabulary", () => {
   it.effect("読み完了後の中断ではvocabを追記しない", () => Effect.gen(function* () {
     const scope = yield* Effect.acquireRelease(Scope.make(), (s) => Scope.close(s, Exit.void));
     const { vocabulary, lines } = yield* Scope.provide(open(source({ 港南店: "kounanten" }).read), scope);
-    yield* vocabulary.addUser(["港南店"]);
+    yield* vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     yield* Scope.close(scope, Exit.void);
     expect(lines).toEqual([{ type: "vocab", words: [{ surface: "港南店", romaji: "kounanten", source: "user" }] }]);
@@ -354,7 +354,7 @@ describe("modelReadings", () => {
       return [{ surface: "Notion", katakana: "ノーション" }];
     });
     const { vocabulary, lines } = yield* open(modelReadings(katakana, reader({ ノーション: "nooshon" }).readings));
-    yield* vocabulary.addUser(["Notion"]);
+    yield* vocabulary.addUser(["Notion"]).pipe(Effect.asVoid);
     yield* Deferred.await(started);
     const before = yield* vocabulary.correct({ track: "相手", start: 1, end: 3, ...notion });
     expect(before.rest.text).toBe(notion.text);
@@ -369,7 +369,7 @@ describe("modelReadings", () => {
     const katakana: NonNullable<DiffUpdater["Service"]["katakana"]> = () => Effect.fail({ _tag: "FakeKatakanaFailed", message: "モデル失敗" });
     const reading = reader({ Notion: "nooshon", 港南店: "kounanten", OJT: "oojiitii" });
     const { vocabulary, lines } = yield* open(modelReadings(katakana, reading.readings));
-    yield* vocabulary.addUser(["Notion", "OJT", "港南店"]);
+    yield* vocabulary.addUser(["Notion", "OJT", "港南店"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([["OJT", "港南店"]]);
     expect(lines.flatMap((l) => l.words)).toEqual([
@@ -383,7 +383,7 @@ describe("modelReadings", () => {
     const katakana: NonNullable<DiffUpdater["Service"]["katakana"]> = () => Effect.fail({ _tag: "FakeKatakanaFailed", message: "モデル失敗" });
     const reading = reader({ Notion: "nooshon", Figma: "figuma" });
     const { vocabulary, lines } = yield* open(modelReadings(katakana, reading.readings));
-    yield* vocabulary.addUser(["Notion", "Figma"]);
+    yield* vocabulary.addUser(["Notion", "Figma"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(reading.calls).toEqual([]);
     expect(lines).toEqual([{ type: "vocab", words: [
@@ -395,7 +395,7 @@ describe("modelReadings", () => {
     const model = models({ Notion: "ノーション" });
     const readings = Readings.of({ readings: () => Effect.fail(new ReadingsFailed({ message: "読み取得失敗" })) });
     const { vocabulary, lines } = yield* open(modelReadings(model.katakana, readings));
-    yield* vocabulary.addUser(["Notion", "港南店"]);
+    yield* vocabulary.addUser(["Notion", "港南店"]).pipe(Effect.asVoid);
     yield* vocabulary.settled;
     expect(lines).toEqual([{ type: "vocab", words: [
       { surface: "Notion", romaji: null, source: "user" }, { surface: "港南店", romaji: null, source: "user" },

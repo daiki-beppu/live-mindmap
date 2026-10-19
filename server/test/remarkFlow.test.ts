@@ -93,7 +93,7 @@ describe("remarkFlow", () => {
     const h = yield* setup({ captions: "入れた発言だけ", feed: feed.factory });
     yield* h.flow.final({ track: "相手", start: 1, end: 3, ...garbled });
     expect(h.lines()).toEqual([]);
-    yield* h.vocabulary.addUser(["港南店"]);
+    yield* h.vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
     yield* h.vocabulary.settled;
     yield* feed.release;
     yield* h.session.idle;
@@ -276,7 +276,7 @@ describe("remarkFlow", () => {
 
   it.effect("全ての締め口で補正され、ログと差分更新と字幕へ届く", () => Effect.gen(function* () {
     const h = yield* setup({ block: true, speakerOff: false });
-    yield* h.vocabulary.addUser(["港南店"]);
+    yield* h.vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
     yield* h.vocabulary.settled;
     yield* h.flow.speaker(segment(0, 1, 3));
     yield* h.flow.speaker(settled(3));
@@ -296,7 +296,7 @@ describe("remarkFlow", () => {
 
   it.effect("補正で長さが変わっても後ろの語は同じ吹き出しに残る", () => Effect.gen(function* () {
     const h = yield* setup({ speakerOff: false, block: true });
-    yield* h.vocabulary.addUser(["Zendesk"]);
+    yield* h.vocabulary.addUser(["Zendesk"]).pipe(Effect.asVoid);
     yield* h.vocabulary.settled;
     const raw = utterance(["はい", "hai"], ["、", ""], ["全", "zen"], ["デスク", "desuku"], ["を", "wo"]);
     const wordTimes = [{ location: 0, length: 3, start: 10, end: 12 }, { location: 3, length: 4, start: 12, end: 14 }, { location: 7, length: 1, start: 14, end: 15 }];
@@ -316,7 +316,7 @@ describe("remarkFlow", () => {
 
   it.effect("途中結果の字幕は語彙で補正しない", () => Effect.gen(function* () {
     const h = yield* setup();
-    yield* h.vocabulary.addUser(["港南店"]);
+    yield* h.vocabulary.addUser(["港南店"]).pipe(Effect.asVoid);
     yield* h.vocabulary.settled;
     yield* h.flow.partial({ ...partial("相手", 5, 6, garbled.text), words: garbled.words });
     expect(bubbles(h.frames).map((b) => b.text)).toEqual([garbled.text]);

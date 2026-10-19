@@ -1,18 +1,21 @@
-// 再生での発言の補正（Issue #644）。記録したログの vocab の行（読み）・screen の lines・remark の raw と words から、
-// 今の規則（correctRemark・requestScreenWords）で発言を直し直す。読みのサブコマンドもモデルも呼ばない（読みは vocab の行から同期で引く）。
-// ライブの語彙の扱い（sessionSinks.ts）と同じ規則: 語彙は読みのある語だけ、画面の語は規則で取った候補のうち未要求の語だけ。
-import { Effect, Ref } from "effect";
-import {
-  requestScreenWords,
-  type ScreenVocabularyState,
-  type LogEvent,
-  type Session,
-  type VocabularyWord,
-} from "./core/index.ts";
-
-import { RemarkCorrection } from "./sessionVocabulary.ts";
+import { Effect } from "effect";
+import type { LogEvent, Session } from "./core/index.ts";
+import { makeSessionVocabulary, type ReadingSource } from "./sessionVocabulary.ts";
 
 type VocabLine = Extract<LogEvent, { type: "vocab" }>;
+
+export const logReadings = (vocab: ReadonlyArray<VocabLine>): ReadingSource => {
+  const readingOf = new Map<string, string>();
+  for (const line of vocab) {
+    for (const word of line.words) {
+      if (word.romaji !== null && !readingOf.has(word.surface)) readingOf.set(word.surface, word.romaji);
+    }
+  }
+  return (surfaces) => Effect.sync(() => new Map(surfaces.flatMap((surface) => {
+    const romaji = readingOf.get(surface);
+    return romaji === undefined ? [] : [[surface, romaji] as const];
+  })));
+};
 
 export const withReplayCorrection = Effect.fnUntraced(function* (
   session: Session,
@@ -22,53 +25,33 @@ export const withReplayCorrection = Effect.fnUntraced(function* (
     readonly appendLog: (event: LogEvent) => Effect.Effect<void>;
   },
 ) {
-  const correct = yield* RemarkCorrection;
-  const { commonWords, appendLog } = options;
-  const words = options.vocab.flatMap((line) => line.words);
-
-  // 表記 → 読み（最初に出た null でない値）
-  const readingOf = new Map<string, string>();
-  for (const w of words) if (w.romaji !== null && !readingOf.has(w.surface)) readingOf.set(w.surface, w.romaji);
-
-  // 最初の語彙は、記録した利用者の語と引き継いだ語（Issue #645）。画面の語は screen の lines から取り直す
-  const sourceSurfaces = (source: "user" | "carried") => [...new Set(words.filter((w) => w.source === source).map((w) => w.surface))];
-  const userSurfaces = sourceSurfaces("user");
-  const carriedSurfaces = sourceSurfaces("carried");
-  const initialSurfaces = [...new Set([...carriedSurfaces, ...userSurfaces])];
-  const usable = (surfaces: ReadonlyArray<string>): VocabularyWord[] =>
-    surfaces.flatMap((surface) => {
-      const romaji = readingOf.get(surface);
-      return romaji === undefined ? [] : [{ surface, romaji }];
-    });
-
-  const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord>>(usable(initialSurfaces));
-  const screenState = yield* Ref.make<ScreenVocabularyState>({
-    seen: new Map(),
-    requested: new Set(initialSurfaces),
+  const { vocab, commonWords, appendLog } = options;
+  const read = logReadings(vocab);
+  const words = vocab.flatMap((line) => line.words);
+  const carriedSurfaces = [...new Set(words.filter((word) => word.source === "carried").map((word) => word.surface))];
+  const carriedReadings = yield* read(carriedSurfaces);
+  const vocabulary = yield* makeSessionVocabulary({
+    read, commonWords, log: appendLog,
+    carried: carriedSurfaces.map((surface) => ({ surface, romaji: carriedReadings.get(surface) ?? null })),
   });
-
-  const record = (surfaces: ReadonlyArray<string>, source: "user" | "screen" | "carried") =>
-    appendLog({ type: "vocab", words: surfaces.map((surface) => ({ surface, romaji: readingOf.get(surface) ?? null, source })) });
-  if (carriedSurfaces.length > 0) yield* record(carriedSurfaces, "carried");
-  if (userSurfaces.length > 0) yield* record(userSurfaces, "user");
+  const userAdded = yield* vocabulary.addUser(words.filter((word) => word.source === "user").map((word) => word.surface));
+  yield* vocabulary.settled;
+  yield* userAdded;
 
   return {
     ...session,
     push: (remark, original) =>
       Effect.gen(function* () {
         if (original === undefined) return yield* session.push(remark);
-        const text = correct(yield* Ref.get(vocabulary), original.raw, original.words, commonWords).text;
-        yield* session.push({ ...remark, text }, original);
+        const { rest } = yield* vocabulary.correct({ ...remark, text: original.raw, words: original.words });
+        yield* session.push({ ...remark, text: rest.text }, original);
       }),
     pushScreen: (change, lines) =>
       Effect.gen(function* () {
         yield* session.pushScreen(change, lines);
-        if (lines === undefined || lines.length === 0) return;
-        const news = yield* Ref.modify(screenState, (state) => requestScreenWords(state, lines));
-        if (news.length === 0) return;
-        yield* record(news, "screen");
-        const added = usable(news);
-        yield* Ref.update(vocabulary, (current) => [...current, ...added.filter((a) => !current.some((c) => c.surface === a.surface))]);
+        const screenAdded = yield* vocabulary.addScreen(lines);
+        yield* vocabulary.settled;
+        yield* screenAdded;
       }),
   } satisfies Session;
 });
