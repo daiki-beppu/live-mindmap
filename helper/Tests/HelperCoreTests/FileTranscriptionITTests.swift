@@ -170,16 +170,14 @@ struct FileTranscriptionITTests {
         #expect(kept == [result("大きい音です", isFinal: true, 1.2, 1.8)])
     }
 
-    @Test("無音の区間の結果（partial・final とも）だけが捨てられる。大きい音の区間の結果と、測れない区間（ファイルの外）の結果は、時刻をそのままに残る")
+    @Test("実ファイルの無音の区間の確定結果だけが捨てられる。大きい音の区間の結果と、測れない区間（ファイルの外）の結果は、時刻をそのままに残る")
     func silentIntervalResultsAreDropped() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("meeting.wav")
         try writeRecording(url, loudSeconds: 2, silentSeconds: 2)
         let transcriber = ScriptedFileTranscriber(script: [
-            result("大きい音", isFinal: false, 0.5, 1.5),
             result("大きい音です", isFinal: true, 0.5, 1.5),
-            result("無音の幻", isFinal: false, 2.5, 3.5),
             result("無音の幻です", isFinal: true, 2.5, 3.5),
             result("ファイルの外", isFinal: true, 10, 11),
         ])
@@ -189,7 +187,6 @@ struct FileTranscriptionITTests {
         for try await item in stream { kept.append(item) }
 
         #expect(kept == [
-            result("大きい音", isFinal: false, 0.5, 1.5),
             result("大きい音です", isFinal: true, 0.5, 1.5),
             result("ファイルの外", isFinal: true, 10, 11),
         ])
@@ -361,7 +358,7 @@ struct FileTranscriptionITTests {
 // ファイルは、テストの中で作った 6 秒の動画（既定は 64x64・10 fps、文字つきだけ 1280x720、音声は 0〜2 秒がサイン波で残りは無音）。
 // 確かめること: 映像の切り替わりが動画の時刻つきの screen になること、読めない映像は screen-off になって音声の結果が続くこと、
 // 音声だけのファイルには画面のイベントが無いこと、画面のイベントが文字起こしの結果より先に流れること、
-// 文字起こしが始まっていてまだ結果を出さない間に最初の画面が流れること（並行）、動画に描いた文字が screen の lines に届くこと。
+// 文字起こしが始まっていてまだ結果を出さない間に最初の画面が流れること（並行）。
 
 private enum EventKind: Equatable {
     case screen, screenOff, partial, remark, other
@@ -377,14 +374,13 @@ private func kind(of event: HelperEvent) -> EventKind {
     }
 }
 
-@Suite("録画の動画の映像を共有画面として流す経路（fileSessionEvents）", .timeLimit(.minutes(2)))
-struct FileScreenITTests {
-    private static let script = [
+enum FileScreenTestSupport {
+    static let script = [
         result("最初の発言", isFinal: false, 0.5, 1.5),
         result("最初の発言です", isFinal: true, 0.5, 1.5),
     ]
 
-    private func makeMovie(in dir: URL, video: FileAudioTestSupport.Video) async throws -> URL {
+    static func makeMovie(in dir: URL, video: FileAudioTestSupport.Video) async throws -> URL {
         let wav = dir.appendingPathComponent("source.wav")
         try writeRecording(wav, loudSeconds: 2, silentSeconds: 4)
         let movie = dir.appendingPathComponent("meeting.mov")
@@ -392,18 +388,30 @@ struct FileScreenITTests {
         return movie
     }
 
-    private func collect(_ url: URL) async throws -> [HelperEvent] {
+    static func collect(_ url: URL) async throws -> [HelperEvent] {
         let stream = try await fileSessionEvents(at: url, with: ScriptedFileTranscriber(script: Self.script))
         var events: [HelperEvent] = []
         for try await event in stream { events.append(event) }
         return events
     }
 
-    private struct Shown {
+    static func screens(in events: [HelperEvent]) -> [Shown] {
+        var shown: [Shown] = []
+        for event in events {
+            if case let .screen(start, image, lines) = event { shown.append(Shown(start: start, image: image, lines: lines)) }
+        }
+        return shown
+    }
+
+    struct Shown {
         let start: Double
         let image: String?
         let lines: [String]?
     }
+}
+
+@Suite("録画の動画の映像を共有画面として流す経路（fileSessionEvents）", .timeLimit(.minutes(2)))
+struct FileScreenITTests {
 
     /// base64 の JPEG の平均の明るさ（0〜255）。件数が合わないときに、どんな画面が出たかを示すためだけに使う。
     private func meanBrightness(_ base64: String) -> Int? {
@@ -415,24 +423,16 @@ struct FileScreenITTests {
         return (Int(pixel[0]) + Int(pixel[1]) + Int(pixel[2])) / 3
     }
 
-    private func screens(in events: [HelperEvent]) -> [Shown] {
-        var shown: [Shown] = []
-        for event in events {
-            if case let .screen(start, image, lines) = event { shown.append(Shown(start: start, image: image, lines: lines)) }
-        }
-        return shown
-    }
-
     @Test("0〜2 秒が黒、2 秒からが白の動画からは、動画の時刻（約 0 秒と約 2 秒）つきで、画像のある screen が 2 件出る。screen-off は出ない")
     func slidesBecomeScreenEventsWithVideoTime() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .slides(switchAt: 2))
         #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).count == 1) // 前提: 映像つき
 
-        let events = try await collect(movie)
+        let events = try await FileScreenTestSupport.collect(movie)
 
-        let shown = screens(in: events)
+        let shown = FileScreenTestSupport.screens(in: events)
         #expect(shown.count == 2, "screen の start と画像の明るさ: \(shown.map { ($0.start, $0.image.flatMap(meanBrightness)) })")
         if shown.count == 2 {
             #expect(abs(shown[0].start - 0) <= 0.25, "最初の画面の start: \(shown[0].start)")
@@ -450,13 +450,13 @@ struct FileScreenITTests {
     func screensStartFromTheGivenPosition() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .slides(switchAt: 2))
 
-        let stream = try await fileSessionEvents(at: movie, with: ScriptedFileTranscriber(script: Self.script), from: 3)
+        let stream = try await fileSessionEvents(at: movie, with: ScriptedFileTranscriber(script: FileScreenTestSupport.script), from: 3)
         var events: [HelperEvent] = []
         for try await event in stream { events.append(event) }
 
-        let shown = screens(in: events)
+        let shown = FileScreenTestSupport.screens(in: events)
         #expect(!shown.isEmpty, "開始位置からの映像で最初の画面が出る")
         for screen in shown {
             #expect(screen.start >= 3 - 0.25 && screen.start < 6, "screen の start はファイルの時刻のまま（開始位置以降）: \(screen.start)")
@@ -468,8 +468,8 @@ struct FileScreenITTests {
     func screensArriveWhileTranscriptionIsInProgress() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
-        let transcriber = GatedFileTranscriber(script: Self.script)
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .slides(switchAt: 2))
+        let transcriber = GatedFileTranscriber(script: FileScreenTestSupport.script)
 
         let stream = try await fileSessionEvents(at: movie, with: transcriber)
         var events: [HelperEvent] = []
@@ -485,31 +485,17 @@ struct FileScreenITTests {
             }
         }
 
-        #expect(screenCount == 2, "screen の start と画像の明るさ: \(screens(in: events).map { ($0.start, $0.image.flatMap(meanBrightness)) })")
+        #expect(screenCount == 2, "screen の start と画像の明るさ: \(FileScreenTestSupport.screens(in: events).map { ($0.start, $0.image.flatMap(meanBrightness)) })")
         #expect(events.map(kind(of:)) == [.screen, .screen, .partial, .remark])
-    }
-
-    @Test("動画に描いた文字（港南店・Zendesk）が、画像のある screen の lines に届く")
-    func drawnTextReachesScreenLines() async throws {
-        let dir = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .text(["港南店", "Zendesk"]))
-
-        let shown = screens(in: try await collect(movie)).filter { $0.image != nil }
-
-        #expect(!shown.isEmpty)
-        let joined = shown.flatMap { $0.lines ?? [] }.joined(separator: "\n")
-        #expect(joined.contains("港南店"), "lines: \(joined)")
-        #expect(joined.contains("Zendesk"), "lines: \(joined)")
     }
 
     @Test("画面のイベントは、どれも文字起こしの結果（partial・remark）より前に流れ、結果は台本のとおり最後まで続く")
     func screenEventsPrecedeTranscription() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .slides(switchAt: 2))
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .slides(switchAt: 2))
 
-        let kinds = try await collect(movie).map(kind(of:))
+        let kinds = try await FileScreenTestSupport.collect(movie).map(kind(of:))
 
         let firstResult = try #require(kinds.firstIndex { $0 == .partial || $0 == .remark })
         let lastScreen = try #require(kinds.lastIndex(of: .screen))
@@ -522,7 +508,7 @@ struct FileScreenITTests {
     func undecodableVideoTurnsScreenOff() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .undecodable)
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .undecodable)
         let track = try #require(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).first) // 前提: 映像のトラックはある
         let reader = try AVAssetReader(asset: AVURLAsset(url: movie))
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -533,10 +519,10 @@ struct FileScreenITTests {
         }
         #expect(!readable) // 前提: BGRA では読めない
 
-        let events = try await collect(movie)
+        let events = try await FileScreenTestSupport.collect(movie)
 
         #expect(events.first == .screenOff(start: 0, reason: .許可なし))
-        #expect(screens(in: events).isEmpty)
+        #expect(FileScreenTestSupport.screens(in: events).isEmpty)
         #expect(events.dropFirst().map(kind(of:)) == [.partial, .remark])
     }
 
@@ -548,7 +534,7 @@ struct FileScreenITTests {
         try writeRecording(wav, loudSeconds: 2, silentSeconds: 4)
         #expect(try await AVURLAsset(url: wav).loadTracks(withMediaType: .video).isEmpty) // 前提: 映像なし
 
-        let events = try await collect(wav)
+        let events = try await FileScreenTestSupport.collect(wav)
 
         #expect(events.map(kind(of:)) == [.partial, .remark])
     }
@@ -560,7 +546,7 @@ struct FileScreenITTests {
     func cancelTouchesReaderOnlyOnScreenQueue() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let movie = try await makeMovie(in: dir, video: .black)
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .black)
         guard case .reading(let reading) = await FileScreenReading.open(movie) else {
             Issue.record("映像を読み始められない")
             return

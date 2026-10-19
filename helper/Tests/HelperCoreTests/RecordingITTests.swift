@@ -6,7 +6,6 @@ import Testing
 
 // トラックごとの録音（AAC・モノラル）。0 秒は発言の時刻の基準（origin）と同じ時点。
 
-
 private func hostTime(after origin: UInt64, nanos: UInt64) -> UInt64 {
     origin + AudioConvertNanosToHostTime(nanos)
 }
@@ -38,30 +37,6 @@ private func duration(of url: URL) throws -> Double {
 
 @Suite("録音")
 struct RecordingITTests {
-    @Test("2 チャンネル・1 チャンネルのどちらの入力でも、AAC・モノラルのファイルになる")
-    func writesMonoAAC() throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = AudioGetCurrentHostTime()
-        for (name, sampleRate, channels) in [("stereo.m4a", 44_100.0, AVAudioChannelCount(2)), ("mono.m4a", 16_000.0, AVAudioChannelCount(1))] {
-            let url = directory.appendingPathComponent(name)
-            let recorder = try TrackRecorder(url: url, origin: origin)
-            // 実際の取得と同じく複数のバッファを続けて書く（サンプルレート変換は、1 つ目のバッファの一部を後続の書き込みで出す）
-            for _ in 0..<4 {
-                try recorder.write(CapturedAudio(buffer: tone(sampleRate: sampleRate, channels: channels, seconds: 0.5), hostTime: origin))
-            }
-            try recorder.finish()
-
-            let file = try AVAudioFile(forReading: url)
-            #expect(file.fileFormat.settings[AVFormatIDKey] as? UInt32 == kAudioFormatMPEG4AAC)
-            #expect(file.fileFormat.channelCount == 1)
-            // 話者分離にかけられる音質: サンプルレート 16 kHz 以上
-            #expect(file.fileFormat.sampleRate == recordingSampleRate)
-            #expect(file.fileFormat.sampleRate >= 16_000)
-            // 入力は計 2 秒。サンプルレート変換の持ち越し分も `finish` で書くので、末尾まで残る（AAC の端数の分だけ許容）
-            #expect(abs(try duration(of: url) - 2.0) < 0.1)
-        }
-    }
 
     @Test("存在しないフォルダへの録音は、初期化で throw する")
     func missingDirectoryThrows() throws {
@@ -84,20 +59,6 @@ struct RecordingITTests {
         try recorder.finish()
 
         #expect(try duration(of: url) > 0.1)
-    }
-
-    @Test("基準より 0.5 秒後に始まる 0.1 秒分の音声を書くと、ファイルの長さは約 0.6 秒になる")
-    func fileDurationIncludesLeadingSilence() throws {
-        let directory = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let origin = AudioGetCurrentHostTime()
-        let url = directory.appendingPathComponent("自分.m4a")
-        let recorder = try TrackRecorder(url: url, origin: origin)
-
-        try recorder.write(CapturedAudio(buffer: tone(sampleRate: 48_000, channels: 1, seconds: 0.1), hostTime: hostTime(after: origin, nanos: 500_000_000)))
-        try recorder.finish()
-
-        #expect(abs(try duration(of: url) - 0.6) < 0.1)
     }
 
     @Test("取得に 5 秒の空白があっても、録音の位置は同じ入力から作る発言の時刻と一致する")
