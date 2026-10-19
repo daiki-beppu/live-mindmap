@@ -29,7 +29,7 @@ private func drawnImage(_ lines: [String], width: Int = 1280, height: Int = 720)
 }
 
 @Suite("共有画面の文字の OCR")
-struct ScreenTextITTests {
+struct ScreenTextHeavyTests {
     @Test("描いた日本語と英字の行を読み、行に含まれる（港南店・Zendesk）")
     func readsDrawnJapaneseAndLatinLines() async throws {
         let image = try drawnImage(["港南店", "Zendesk"])
