@@ -14,7 +14,7 @@ public func echoCancelled(
     microphone: AsyncThrowingStream<CapturedAudio, Error>,
     reference: AsyncThrowingStream<CapturedAudio, Error>
 ) throws -> AsyncThrowingStream<CapturedAudio, Error> {
-    echoCancelledStream(microphone: microphone, reference: reference, canceller: try WebRTCEchoCanceller())
+    echoCancelledStream(microphone: microphone, reference: reference, canceller: try WebRTCEchoCanceller(settings: .production))
 }
 
 private enum EchoEvent: Sendable {

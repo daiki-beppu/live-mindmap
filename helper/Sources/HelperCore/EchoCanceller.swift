@@ -44,7 +44,7 @@ public struct EchoCancellerSettings: Equatable, Sendable {
 public final class WebRTCEchoCanceller: EchoCanceller, @unchecked Sendable {
     private let handle: ApmRef
 
-    public init(settings: EchoCancellerSettings = .production) throws {
+    public init(settings: EchoCancellerSettings) throws {
         var raw = ApmEchoSettings(ep_strength_default_gain: settings.epStrengthDefaultGain)
         guard let handle = apm_create(Int32(echoSampleRate), 1, &raw) else { throw EchoCancellationError.createFailed }
         self.handle = handle
