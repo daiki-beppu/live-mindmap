@@ -13,6 +13,7 @@ private let echoDelaySamples = 1_920  // 40 ms
 private let echoGain: Float = 0.5  // −6 dB
 private let evaluationStart = 3 * sampleRate
 private let maximumOutputDelaySamples = 960  // 20 ms
+private let outputDelay: Result<Int, Error> = Result { try measureOutputDelay() }
 
 /// 決定的な擬似乱数（SplitMix64）。範囲は −1〜1。
 private struct DeterministicNoise {
@@ -62,7 +63,7 @@ private func measureOutputDelay() throws -> Int {
     let count = 2 * sampleRate
     let input = bandLimitedNoise(count: count, seed: 9, rms: 0.1)
     let silence = [Float](repeating: 0, count: echoTestFrameSamples)
-    let canceller = try WebRTCEchoCanceller()
+    let canceller = try WebRTCEchoCanceller(settings: .production)
     var output = input
     for start in stride(from: 0, to: count, by: echoTestFrameSamples) {
         silence.withUnsafeBufferPointer { canceller.processReverse($0.baseAddress!) }
@@ -100,14 +101,14 @@ struct EchoCancellerHeavyTests {
         let echo = (0..<count).map { $0 >= echoDelaySamples ? echoGain * reference[$0 - echoDelaySamples] : 0 }
         let microphone = (0..<count).map { echo[$0] + unrelated[$0] }
 
-        let canceller = try WebRTCEchoCanceller()
+        let canceller = try WebRTCEchoCanceller(settings: .production)
         var output = microphone
         for start in stride(from: 0, to: count, by: echoTestFrameSamples) {
             reference.withUnsafeBufferPointer { canceller.processReverse($0.baseAddress! + start) }
             output.withUnsafeMutableBufferPointer { canceller.processCapture($0.baseAddress! + start) }
         }
 
-        let delay = try measureOutputDelay()
+        let delay = try outputDelay.get()
         let processed = (0..<count).map { $0 + delay < count ? output[$0 + delay] : 0 }
         let range = evaluationStart..<(count - maximumOutputDelaySamples)
         let echoReduction = decibels(
@@ -119,12 +120,13 @@ struct EchoCancellerHeavyTests {
     }
 }
 
-/// 漏れの無い条件（参照は流れるが、マイクには発話だけが入る）で、20 秒を 1 つの canceller に連続して流し、
+/// 漏れの無い条件（参照は流れるが、マイクには発話だけが入る）で、16 秒＋最大出力遅延を 1 つの canceller に連続して流し、
 /// `windows` の各秒から 1 秒の窓の残り方（出力と入力のエネルギー比、dB。0 なら全部残る）を返す。
 /// マイクには `speechStartSeconds` 秒まで何も入らず（参照だけが流れる）、そこから発話が始まる。
-private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [Int], speechStartSeconds: Int = 0) throws -> [Int: Double] {
-    let count = sampleRate * 20
-    let reference = bandLimitedNoise(count: count, seed: 1, rms: 0.1)
+private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [Int], speechStartSeconds: Int) throws -> [Int: Double] {
+    let count = 16 * sampleRate + maximumOutputDelaySamples
+    // 全区間の RMS で正規化するので、従来の20秒分を生成して評価窓の入力を保つ。
+    let reference = bandLimitedNoise(count: sampleRate * 20, seed: 1, rms: 0.1)
     var microphone = harmonicBursts(count: count, scale: 0.05)
     for index in 0..<(speechStartSeconds * sampleRate) { microphone[index] = 0 }
     var output = microphone
@@ -132,7 +134,7 @@ private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [In
         reference.withUnsafeBufferPointer { canceller.processReverse($0.baseAddress! + start) }
         output.withUnsafeMutableBufferPointer { canceller.processCapture($0.baseAddress! + start) }
     }
-    let delay = try measureOutputDelay()
+    let delay = try outputDelay.get()
     var result: [Int: Double] = [:]
     for from in windows {
         var inputEnergy = 0.0
@@ -148,21 +150,12 @@ private func retentionWithoutLeak(_ canceller: WebRTCEchoCanceller, windows: [In
 
 @Suite("エコーキャンセルの開始直後（実際の WebRTC AEC3）", .timeLimit(.minutes(2)))
 struct EchoCancellerStartupHeavyTests {
-    @Test("漏れの無い条件で、発話が開始 1・2・3・5 秒に始まっても、その 1 秒の残り方が定常（15 秒）との差 3 dB 未満")
-    func startupRetentionMatchesSteadyState() throws {
-        for from in [1, 2, 3, 5] {
-            let retention = try retentionWithoutLeak(WebRTCEchoCanceller(), windows: [from, 15], speechStartSeconds: from)
-            let startup = try #require(retention[from])
-            let steady = try #require(retention[15])
-            #expect(abs(startup - steady) < 3, "発話の開始 \(from) 秒: \(startup) dB、定常（15 秒）: \(steady) dB")
-        }
-    }
-
-    @Test("引数なしの初期化は production の設定と同じ出力を返す（本番の経路が production に届く）")
-    func defaultInitUsesProductionSettings() throws {
-        let byDefault = try retentionWithoutLeak(WebRTCEchoCanceller(), windows: [1, 5, 15])
-        let production = try retentionWithoutLeak(WebRTCEchoCanceller(settings: .production), windows: [1, 5, 15])
-        #expect(byDefault == production)
+    @Test("漏れの無い条件で、発話が開始 1・2・3・5 秒に始まっても、その 1 秒の残り方が定常（15 秒）との差 3 dB 未満", arguments: [1, 2, 3, 5])
+    func startupRetentionMatchesSteadyState(from: Int) throws {
+        let retention = try retentionWithoutLeak(WebRTCEchoCanceller(settings: .production), windows: [from, 15], speechStartSeconds: from)
+        let startup = try #require(retention[from])
+        let steady = try #require(retention[15])
+        #expect(abs(startup - steady) < 3, "発話の開始 \(from) 秒: \(startup) dB、定常（15 秒）: \(steady) dB")
     }
 
     @Test("baseline の設定で作った canceller は、#118 の AEC3 の既定の挙動を保つ（開始 2 秒に始まる発話が定常より 3 dB 以上多く削られる）")
