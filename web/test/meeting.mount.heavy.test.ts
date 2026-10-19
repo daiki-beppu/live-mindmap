@@ -418,9 +418,10 @@ describe("会議中（Foldkit 版）の寸法", () => {
       near(screen.width, CAPTIONS_WIDTH, "共有画面の一文の幅");
       expect(await styleOf(page, ".screen-notice", ["position", "pointer-events", "text-align", "box-shadow", "line-height"])).toEqual({ position: "absolute", "pointer-events": "none", "text-align": "center", "box-shadow": "none", "line-height": "19.5px" });
 
-      // ローカルモード: 線は上端 2px の帯、知らせは左上。共有画面の一文は 36px 下へ、幅は layout − 24px（上限 720px）。線の色は server/test/localModeView.heavy.test.ts が running を見る
+      // ローカルモード: 線は上端 2px の帯、知らせは左上。共有画面の一文は 36px 下へ、幅は layout − 24px（上限 720px）
       await sendFrames(page, [{ type: "session-mode", local: true }, { type: "diff-update", state: { status: "running" } }]);
       await page.locator(".layout--local .local-mode-line").waitFor({ timeout: 10_000 });
+      await expect.poll(async () => (await styleOf(page, ".local-mode-line", ["background-color"]))["background-color"], { timeout: 10_000 }).toBe("rgb(22, 101, 52)");
       await expect.poll(async () => Math.abs((await rectOf(page, ".local-mode-line")).height - 2) <= 1, { timeout: 10_000 }).toBe(true);
       const line = await rectOf(page, ".local-mode-line");
       near(line.height, 2, "ローカルモードの線の高さ");
@@ -434,6 +435,44 @@ describe("会議中（Foldkit 版）の寸法", () => {
       await expect.poll(async () => (await styleOf(page, ".local-mode-line", ["background-color"]))["background-color"], { timeout: 10_000 }).toBe("rgb(194, 65, 12)");
       await sendFrame(page, { type: "diff-update", state: { status: "stopped" } });
       await expect.poll(async () => (await styleOf(page, ".local-mode-line", ["background-color"]))["background-color"], { timeout: 10_000 }).toBe("rgb(107, 114, 128)");
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
+    "同じ画面で差分更新の一時停止通知を出し入れしてもマップ・字幕・右の列を動かさず、左上の小さな文字だけを表示する",
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openMeetingPage(context, server, { frames: frames.first });
+      await sendFrames(page, [spokenFrame("保持している字幕"), { type: "diff-update", state: { status: "running" } }]);
+      const caption = page.getByText("保持している字幕", { exact: true });
+      await caption.waitFor();
+      await waitForMeasuredNodes(page, await nodeCount(page));
+      await settled(page);
+      const boxes = () => Promise.all([".map", ".captions", ".side"].map((selector) => rectOf(page, selector)));
+      const before = await boxes();
+      const nodesBefore = await page.locator(".map-node__text").allTextContents();
+      const layout = await rectOf(page, ".layout");
+      const notice = page.locator(".diff-update-notice");
+
+      for (const state of [{ status: "running" } as const, null]) {
+        await sendFrame(page, { type: "diff-update", state: { status: "paused", reason: "ChatGPT の利用上限" } });
+        await notice.waitFor();
+        expect(await styleOf(page, ".diff-update-notice", ["position", "font-size", "border-top-width", "box-shadow", "background-color"])).toEqual({
+          position: "absolute", "font-size": "12px", "border-top-width": "0px", "box-shadow": "none", "background-color": "rgba(0, 0, 0, 0)",
+        });
+        const box = await rectOf(page, ".diff-update-notice");
+        near(box.left, layout.left + 12, "一時停止通知の左端");
+        near(box.top, layout.top + 8, "一時停止通知の上端");
+        expect(await boxes()).toEqual(before);
+        expect(await caption.isVisible()).toBe(true);
+        expect(await page.locator(".map-node__text").allTextContents()).toEqual(nodesBefore);
+
+        await sendFrame(page, { type: "diff-update", state });
+        await notice.waitFor({ state: "detached" });
+        expect(await boxes()).toEqual(before);
+        expect(await caption.isVisible()).toBe(true);
+        expect(await page.locator(".map-node__text").allTextContents()).toEqual(nodesBefore);
+      }
     }),
     MEETING_TIMEOUT,
   );
