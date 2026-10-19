@@ -263,8 +263,8 @@ describe("sessionVocabulary", () => {
   it.effect("carriedの読みで補正しuserやscreenからも再取得も再記録もしない", () => Effect.gen(function* () {
     const reading = source({});
     const { vocabulary, lines } = yield* open(reading.read, { carried: [
-      { surface: "港南店", romaji: "kounanten", source: "spoken", lastSpoken: 1 },
-      { surface: "読めない語", romaji: null, source: "user", lastSpoken: 0 },
+      { surface: "港南店", romaji: "kounanten" },
+      { surface: "読めない語", romaji: null },
     ] });
     expect((yield* vocabulary.correct(remark(3))).rest.text).toBe("港南店に行きます");
     yield* vocabulary.addUser(["港南店", "読めない語"]);

@@ -52,7 +52,7 @@ export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
   read: ReadingSource;
   commonWords: ReadonlySet<string>;
   log: (line: VocabLogLine) => Effect.Effect<void>;
-  carried: ReadonlyArray<PoolWord>;
+  carried: ReadonlyArray<Pick<PoolWord, "surface" | "romaji">>;
 }): Effect.fn.Return<SessionVocabulary, never, Scope.Scope> {
   const { read, commonWords, log, carried } = options;
   const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord & { readonly from?: number }>>([]);

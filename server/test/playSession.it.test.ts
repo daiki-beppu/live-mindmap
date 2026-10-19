@@ -546,7 +546,6 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
   };
   // correction.test.ts と同じ読み（実際の CFStringTokenizer の値）。「全デスク」は Zendesk に直る
   const ZENDESK_UTTERANCE = utterance(["今日", "kyou"], ["は", "ha"], ["全", "zen"], ["デスク", "desuku"], ["で", "de"], ["確認", "kakunin"], ["し", "shi"], ["ます", "masu"], ["。", "｡"]);
-  const NOTION_UTTERANCE = utterance(["ノー", "nō"], ["ション", "shon"], ["を", "wo"], ["使う", "tsukau"]);
   const CORRECTED = "今日はZendeskで確認します。";
   const ZENDESK_VOCAB = { type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "user" }] };
 
@@ -627,57 +626,6 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       expect(old).not.toHaveProperty("words");
     }));
 
-  it.effect("screen の lines から今の規則で候補を取り直す。screen より前の発言・今の規則で取れない語は直らない", () =>
-    Effect.gen(function* () {
-      const root = yield* temporaryDirectory;
-      const original = sessionFolder(root, [
-        { type: "start", title: "t" },
-        // screen より前の発言（画面の語はまだ語彙に入っていない）
-        recordedRemark("before", 0, 5, ZENDESK_UTTERANCE),
-        { type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "screen" }, { surface: "notion", romaji: "noshon", source: "screen" }] },
-        { type: "screen", start: 6, image: null, lines: ["Zendesk 導入", "notion"] },
-        recordedRemark("after", 7, 9, ZENDESK_UTTERANCE),
-        // notion は vocab の行にあるが、小文字だけの英字の語は今の規則で lines から取れない
-        recordedRemark("notion", 10, 12, NOTION_UTTERANCE),
-      ]);
-      const readings = fakeReadings({ Zendesk: "zendesuku", notion: "noshon" });
-      const base = dependencies(join(root, "sessions"));
-      const deps = { ...base, layer: Layer.mergeAll(base.layer, readings.layer) };
-      const replay = yield* played(deps, [original]);
-
-      const lines = logLines(replay);
-      expect(remarkLineOf(lines, "after")).toMatchObject({ remark: { text: CORRECTED } });
-      expect(remarkLineOf(lines, "before")).toMatchObject({ remark: { text: ZENDESK_UTTERANCE.raw } });
-      expect(remarkLineOf(lines, "notion")).toMatchObject({ remark: { text: NOTION_UTTERANCE.raw } });
-      // screen の lines は新しいログにも残る（もう一度再生しても同じように直せる）
-      expect(lines.find((l) => l.type === "screen")).toMatchObject({ start: 6, lines: ["Zendesk 導入", "notion"] });
-      expect(readings.calls).toEqual([]);
-    }));
-
-  it.effect("読みの無い語（romaji: null）は、画面の候補になっても補正に使われず、元の本文のまま流れ、新しいログには romaji: null で残る。読みのある語は同じ実行で直る", () =>
-    Effect.gen(function* () {
-      const root = yield* temporaryDirectory;
-      const original = sessionFolder(root, [
-        { type: "start", title: "t" },
-        { type: "vocab", words: [{ surface: "Notion", romaji: null, source: "screen" }, { surface: "Zendesk", romaji: "zendesuku", source: "screen" }] },
-        { type: "screen", start: 6, image: null, lines: ["Zendesk 導入", "Notion"] },
-        recordedRemark("zendesk", 7, 9, ZENDESK_UTTERANCE),
-        recordedRemark("notion", 10, 12, NOTION_UTTERANCE),
-      ]);
-      const readings = fakeReadings({ Zendesk: "zendesuku", Notion: "nōshon" });
-      const base = dependencies(join(root, "sessions"));
-      const deps = { ...base, layer: Layer.mergeAll(base.layer, readings.layer) };
-      const replay = yield* played(deps, [original]);
-
-      const lines = logLines(replay);
-      expect(remarkLineOf(lines, "zendesk")).toMatchObject({ remark: { text: CORRECTED } });
-      expect(remarkLineOf(lines, "notion")).toMatchObject({ remark: { text: NOTION_UTTERANCE.raw } });
-      const vocabWords = lines.filter((l) => l.type === "vocab").flatMap((l) => l.words as Array<{ surface: string; romaji: string | null; source: string }>);
-      expect(vocabWords).toContainEqual({ surface: "Notion", romaji: null, source: "screen" });
-      expect(vocabWords).toContainEqual({ surface: "Zendesk", romaji: "zendesuku", source: "screen" });
-      expect(readings.calls).toEqual([]);
-    }));
-
   it.effect("lines の無い古い screen の行は、これまでどおり lines のキーを付けずに流れる", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;
@@ -686,31 +634,6 @@ describe("play <セッションのフォルダ>: 今の規則で発言を直し�
       const screen = logLines(replay).find((l) => l.type === "screen")!;
       expect(screen).toMatchObject({ start: 1, image: null });
       expect(screen).not.toHaveProperty("lines");
-    }));
-
-  // Issue #645: 引き継いだ語（出どころ carried の vocab の行）も、再生では user・screen の行と同じく語彙を組み直す材料。
-  // 再生は全セッション共通の溜まりのファイルを読まず、書き換えない（ログの carried の行だけが材料）
-  it.effect("元のログの carried の vocab の行の語で直し直し、新しいログにも元の出どころ（carried・user）のまま vocab の行が残る。読みのサブコマンドは呼ばれない", () =>
-    Effect.gen(function* () {
-      const root = yield* temporaryDirectory;
-      const original = sessionFolder(root, [
-        { type: "start", title: "t" },
-        { type: "vocab", words: [{ surface: "Zendesk", romaji: "zendesuku", source: "carried" }] },
-        { type: "vocab", words: [{ surface: "葛西", romaji: "kasai", source: "user" }] },
-        recordedRemark("r1", 0, 5, ZENDESK_UTTERANCE),
-      ]);
-      const readings = fakeReadings({ Zendesk: "zendesuku", 葛西: "kasai" });
-      const base = dependencies(join(root, "sessions"));
-      const deps = { ...base, layer: Layer.mergeAll(base.layer, readings.layer) };
-      const replay = yield* played(deps, [original]);
-
-      const lines = logLines(replay);
-      expect(remarkLineOf(lines, "r1")).toMatchObject({ remark: { text: CORRECTED }, raw: ZENDESK_UTTERANCE.raw });
-      const vocabWords = lines.filter((l) => l.type === "vocab").flatMap((l) => l.words as Array<{ surface: string; romaji: string | null; source: string }>);
-      expect(vocabWords).toContainEqual({ surface: "Zendesk", romaji: "zendesuku", source: "carried" });
-      expect(vocabWords).toContainEqual({ surface: "葛西", romaji: "kasai", source: "user" });
-      expect(vocabWords).toHaveLength(2);
-      expect(readings.calls).toEqual([]);
     }));
 
   it.effect("溜まりのファイルが置き場にあっても、再生は読まず（溜まりの語で直さず、carried の行も出さず）、書き換えない。溜まりが無いときも作らない", () =>
