@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runScriptOf } from "./fixtures/checkWorkflow.ts";
+import { jobLines, runScriptOf } from "./fixtures/checkWorkflow.ts";
 
 // check.yml の jq が値を決める 2 つの契約の代表。jq は OS のコマンドなので heavy に置く。
 
@@ -32,13 +32,37 @@ describe("check ジョブの判定", () => {
   });
 });
 
-// Issue #562: 重い IT は `vitest list --project heavy --json` から file:line のまとまりごとに 4 つの runner へ割る。
+// Issue #562: each の同じ行を別 runner に分けると、同じテストを重複して実行してしまう。
 // heavy ジョブの run を取り出し、`pnpm` を偽物に差し替えて、list の出力に見立てた JSON を渡して割り振りを確かめる
 type Listed = { name: string; file: string; location?: { line: number; column: number } };
 
 type RunnerResult = { status: number | null; output: string; runArgs: string[] | undefined };
 
-const runRunner = (shard: number, build: (cwd: string) => Listed[]): RunnerResult => {
+type HeavyRunner = { package: string; shard: number; shards: number };
+
+const heavyRunners = (): HeavyRunner[] => {
+  const lines = jobLines("heavy");
+  const start = lines.findIndex((line) => line.trim() === "include:");
+  expect(start, "package ごとの runner を matrix.include から読む").toBeGreaterThanOrEqual(0);
+  const entries = lines.slice(start + 1).join("\n").matchAll(
+    /^\s+- package: (\w+)\n\s+shard: (\d+)\n\s+shards: (\d+)\s*$/gm,
+  );
+  return [...entries].map((match) => ({
+    package: match[1]!, shard: Number(match[2]), shards: Number(match[3]),
+  }));
+};
+
+const runnerEnv = (runner: HeavyRunner): Record<string, string> => {
+  const lines = jobLines("heavy");
+  return Object.fromEntries(["SHARD", "SHARDS"].map((name) => {
+    const line = lines.find((line) => line.trim().startsWith(`${name}:`));
+    const expression = line?.match(/\$\{\{ matrix\.(shard|shards) \}\}/);
+    expect(expression, `${name} を matrix から実行環境へ渡す`).toBeDefined();
+    return [name, String(runner[expression![1] as "shard" | "shards"])];
+  }));
+};
+
+const runRunner = (runner: HeavyRunner): RunnerResult => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "heavy-split-")));
   try {
     const bin = join(dir, "bin");
@@ -59,14 +83,14 @@ const runRunner = (shard: number, build: (cwd: string) => Listed[]): RunnerResul
     );
     chmodSync(pnpm, 0o755);
     const fakeList = join(dir, "list.json");
-    writeFileSync(fakeList, JSON.stringify(build(work)));
+    writeFileSync(fakeList, JSON.stringify(mixed(work)));
     const runLog = join(dir, "run.log");
     const r = spawnSync("bash", ["-e", "-o", "pipefail", "-c", runScriptOf("heavy")], {
       cwd: work,
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH}`,
-        SHARD: String(shard),
+        ...runnerEnv(runner),
         FAKE_LIST: fakeList,
         RUN_LOG: runLog,
       },
@@ -93,8 +117,6 @@ const entry = (cwd: string, file: string, line: number, name: string): Listed =>
 
 const targetsOf = (r: RunnerResult): string[] => (r.runArgs ?? []).filter((a) => /\.test\.ts:\d+$/.test(a));
 
-const SHARDS = [0, 1, 2, 3];
-
 // 同じ行から複数のテストができる（each）ものと、check.yml に名前の無い新しいファイルを含む。順番はばらばら
 const mixed = (cwd: string): Listed[] => [
   entry(cwd, "test/b.heavy.test.ts", 30, "b30"),
@@ -116,8 +138,14 @@ const mixedGroups = [
 ];
 
 describe("heavy ジョブの割り振り", () => {
-  it("4 つの runner の file:line を合わせると入力のまとまりと一致し、重複も漏れも無い", () => {
-    const results = SHARDS.map((s) => runRunner(s, mixed));
+  it.each([
+    { package: "server", shards: [0] },
+    { package: "web", shards: [0, 1] },
+  ])("$package の runner の file:line を合わせると入力のまとまりと一致し、重複も漏れも無い", ({ package: pkg, shards }) => {
+    const runners = heavyRunners().filter((runner) => runner.package === pkg);
+    expect(runners.map((runner) => runner.shard).sort()).toEqual(shards);
+    for (const runner of runners) expect(runner.shards).toBe(shards.length);
+    const results = runners.map(runRunner);
     for (const r of results) expect(r.status, r.output).toBe(0);
     const all = results.flatMap(targetsOf);
     expect([...all].sort()).toEqual(mixedGroups);

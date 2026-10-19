@@ -55,7 +55,7 @@ jobs:
       # 落ちても前のステップの結果を隠さないよう最後に置く。github-annotations は --fail-on-issues が無いと指摘があっても 0 で終わる
       - run: pnpm fallow --format github-annotations --fail-on-issues
 
-  # 重い IT（--project heavy）全体を、server と web のそれぞれ 4 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
+  # 重い IT（--project heavy）全体を、server は 1 つ、web は 2 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
   # vitest list で一覧を取り、file:line ごとにまとめて配る（each やループの同じ行のテストは 1 つの runner に入り、重複して走らない）。
   # 新しく足した重い IT も、設定を書き換えずにどれかの runner に入る。Chromium を入れるのはこのジョブと e2e ジョブだけ
   heavy:
@@ -65,9 +65,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [server, web]
-        shard: [0, 1, 2, 3]
-    name: heavy IT (${{ matrix.package }} ${{ matrix.shard }}/4)
+        include:
+          - package: server
+            shard: 0
+            shards: 1
+          - package: web
+            shard: 0
+            shards: 2
+          - package: web
+            shard: 1
+            shards: 2
+    name: heavy IT (${{ matrix.package }} ${{ matrix.shard }}/${{ matrix.shards }})
     steps:
       - uses: actions/checkout@v7
       # ジョブの env では runner.temp を使えないので、ステップで管理ディレクトリの置き場所を決める
@@ -102,11 +110,12 @@ jobs:
       - working-directory: ${{ matrix.package }}
         env:
           SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
         run: |
           tests=$(pnpm exec vitest list --project heavy --json \
             | jq -r --arg root "$PWD/" '.[] | "\(.file | ltrimstr($root)):\(.location.line // error("location.line が無いテスト: \(.file) \(.name)"))"')
           total=$(printf '%s\n' "$tests" | grep -c . || true)
-          mine=$(printf '%s\n' "$tests" | jq -R -s -r --argjson n 4 --argjson i "$SHARD" 'split("\n") | map(select(. != "")) | group_by(.) | to_entries[] | select(.key % $n == $i) | .value[]')
+          mine=$(printf '%s\n' "$tests" | jq -R -s -r --argjson n "$SHARDS" --argjson i "$SHARD" 'split("\n") | map(select(. != "")) | group_by(.) | to_entries[] | select(.key % $n == $i) | .value[]')
           count=$(printf '%s\n' "$mine" | grep -c . || true)
           echo "runner $SHARD: $count of $total tests"
           targets=$(printf '%s\n' "$mine" | sort -u | grep . || true)
