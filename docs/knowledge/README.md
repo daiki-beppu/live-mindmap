@@ -8,6 +8,7 @@
 - [取り込みの試行](intake-attempts.md): ヘルパーの起動・起動し直し・停止・試行中の指令（`intakeAttempts`）と、それを呼ぶ `Sessions` の配線を触るとき
 - [更新の計画](update-plan.md): 差分更新のモデルと判定のモデルの選び方（`updatePlan`）と、それを呼ぶ CLI と server の配線を触るとき
 - [CLI と server の受け渡し](server-protocol.md): CLI と server の間の経路・本文・応答（`serverProtocol`）と、web が送る本文を触るとき
+- [差分更新の問い合わせの続き](diff-continuation.md): 直前の応答・送り直す共有画面と、それを持つ core・Claude の adapter・振り分け・復元を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -47,3 +48,9 @@
 - 仕様 [#1386](https://github.com/daiki-beppu/live-mindmap/issues/1386) → [README の 2 つの版](readme-versions.md)。用語は捨てた: 新しい語が無い。ADR は捨てた: 日本語版を正本・英語版を要約とする同期の決まりは AGENTS.md の「README」節にあり、覆しやすい。Formal Spec の「対象外」のコメントは捨てた: 新しい学びが無い
 - 親 [#1387](https://github.com/daiki-beppu/live-mindmap/issues/1387) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い。マージ後に人が行うリポジトリの説明の変更は、作業の手順で学びではない
 - チケット [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388)・[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392) の差分と本文 → [README の 2 つの版](readme-versions.md)、[takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった。本文の「squash だと `git log --follow` で辿れない」は手元で確かめて誤りと分かり、`git blame` の違いとして書き直した
+- 仕様 [#1303](https://github.com/daiki-beppu/live-mindmap/issues/1303)（Formal Spec のコメントを含む） → [差分更新の問い合わせの続き](diff-continuation.md)。用語は捨てた: `DiffInput` は外へ出していない内部の interface で、GLOSSARY を変えないと仕様が決めている。ADR は捨てた: 続きの状態の持ち主と復元で戻さない判断は内側の構造で覆しやすく、理由は #1241 の解決コメントと仕様にある
+- 親 [#1311](https://github.com/daiki-beppu/live-mindmap/issues/1311) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312)・[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385) の差分と本文、本文の編集の前後 → [差分更新の問い合わせの続き](diff-continuation.md)、[takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった。定数の値を確かめるテストを消し `ROUTE_THRESHOLD` の export を外した件は捨てた: `CODING_STANDARDS.md` の Contracts, not structure にある。README の `できること` を直した件は捨てた: AGENTS.md の README 節にある
+- [#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296) と triage のコメント → [差分更新の問い合わせの続き](diff-continuation.md)、[takt の run](takt-runs.md)。#1312 の重複として閉じた経緯は捨てた: 作業の判断に使わない
+- チケット [#1313](https://github.com/daiki-beppu/live-mindmap/issues/1313)・[PR #1389](https://github.com/daiki-beppu/live-mindmap/pull/1389) の差分と本文 → [差分更新の問い合わせの続き](diff-continuation.md)。sub-issue に resolution コメントは無かった。検証の証跡を takt の worktree の `.takt/verification-pr1389/` に置いた件は捨てた: worktree ごと消え、作業の判断に使わない
+- チケット [#1314](https://github.com/daiki-beppu/live-mindmap/issues/1314)・[PR #1394](https://github.com/daiki-beppu/live-mindmap/pull/1394) の差分 → [差分更新の問い合わせの続き](diff-continuation.md)。sub-issue に resolution コメントは無かった。PR の本文の報告が 1 行だけだった件は捨てた: [takt の run](takt-runs.md) の「1 回で通った run の PR の本文には、実装の報告が写らない」にある
