@@ -376,6 +376,36 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     return { checks, launches, deps, sessionsDir };
   });
 
+  it.live.each([
+    { app: "com.google.Chrome", noScreen: false, browser: true },
+    { app: "com.microsoft.edgemac", noScreen: false, browser: true },
+    { app: "com.apple.Safari", noScreen: false, browser: true },
+    { app: "company.thebrowser.Browser", noScreen: false, browser: true },
+    { app: "com.brave.Browser", noScreen: false, browser: true },
+    { app: "org.mozilla.firefox", noScreen: false, browser: true },
+    { app: "com.google.Chrome", noScreen: true, browser: true },
+    { app: "us.zoom.xos", noScreen: false, browser: false },
+  ])("start の $app / noScreen:$noScreen はブラウザだけに別ウィンドウの案内を一行出し、stdout はフォルダだけに保つ", ({ app, noScreen, browser }) => Effect.gen(function* () {
+    const r = yield* resource("authorized", true);
+    yield* runCli(["start", "--app", app, "--no-audio", ...(noScreen ? ["--no-screen"] : [])]).pipe(Effect.provide(r.deps.layer));
+    expect(r.launches).toHaveLength(1);
+    expect(r.launches[0]).toEqual(expect.arrayContaining(["--app", app]));
+    expect(r.launches[0]!.includes("--no-screen")).toBe(noScreen);
+    expect(r.deps.stdout).toHaveLength(1);
+    const dir = r.deps.stdout[0]!.trim();
+    expect(dirname(dir)).toBe(r.sessionsDir);
+    expect(existsSync(join(dir, "log.jsonl"))).toBe(true);
+    if (browser) {
+      const lines = r.deps.stderr.join("").trim().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("マップ");
+      expect(lines[0]).toContain("会議");
+      expect(lines[0]).toContain("別のウィンドウ");
+    } else {
+      expect(r.deps.stderr).toEqual([]);
+    }
+  }).pipe(Effect.scoped));
+
   it.live("711-2: 必須 Claude と任意 Chromium の版違いを stderr に警告して開始する", () => Effect.gen(function* () {
     const service = {
       executable: () => Effect.die("実行ファイル取得は対象外"),

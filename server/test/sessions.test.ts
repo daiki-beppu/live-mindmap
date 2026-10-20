@@ -790,6 +790,150 @@ const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>)
 
 const start = (input: Partial<SessionStart> = {}): SessionStart => ({ app: "us.zoom.xos", title: undefined, audio: true, screen: true, vocab: [], plan: { kind: "single", model: defaultClaude }, ...input });
 
+describe("ブラウザの会議タブの端末通知", () => {
+  const warning = "会議のタブが前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）\n";
+  const restored = "会議のタブが前面に戻りました。共有画面の取り込みを再開しました\n";
+  const boot = Effect.fnUntraced(function* (attempts: AttemptScript[]) {
+    const helpers = yield* makeFakeHelpers(attempts);
+    const fake = yield* makeFakeSessionSinks();
+    const server = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
+    const screen = Effect.fnUntraced(function* (image: string | null, at: number, attempt: number) {
+      const count = fake.screens.length;
+      helpers.send(attempt, { type: "screen", start: at, image, lines: image === null ? [] : ["会議資料"] });
+      yield* TestClock.adjust(0);
+      expect(fake.screens).toHaveLength(count + 1);
+    });
+    return { helpers, fake, screen, ...server };
+  });
+
+  it.effect.each([
+    "com.google.Chrome", "com.microsoft.edgemac", "com.apple.Safari",
+    "company.thebrowser.Browser", "com.brave.Browser", "org.mozilla.firefox",
+  ])("%s は最初の null の受信から60秒で一行だけ通知し、後続イベントを必要としない", (app) => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, viewers, screen, fake } = yield* boot([{}]);
+    const watcher = yield* viewerClient();
+    yield* Effect.forkChild(viewers.connect(watcher.socket));
+    yield* sessions.start(start({ app }));
+    yield* TestClock.adjust(300_000);
+    expect(stderr).toEqual([]);
+    yield* screen("/9j/2Q==", 1, 0);
+    yield* screen(null, 999_999, 0);
+    yield* TestClock.adjust(30_000);
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(29_999);
+    expect(stderr).toEqual([]);
+    yield* TestClock.adjust(1);
+    expect(stderr).toEqual([warning]);
+    yield* screen(null, 2, 0);
+    yield* TestClock.adjust(180_000);
+    expect(stderr).toEqual([warning]);
+    expect(fake.screens).toEqual([
+      { start: 1, image: Uint8Array.from([255, 216, 255, 217]), lines: ["会議資料"] },
+      { start: 999_999, image: null, lines: [] },
+      { start: 0, image: null, lines: [] },
+      { start: 2, image: null, lines: [] },
+    ]);
+    expect(yield* watcher.screenNotices).toEqual([]);
+    expect(fake.appended).toEqual([]);
+    expect((yield* sessions.status).status).toBe("running");
+  }).pipe(Effect.scoped)));
+
+  it.effect("同じセッションで警告後の復帰を一度知らせ、次の離脱から60秒で再通知する", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual([warning]);
+    yield* screen("/9j/2Q==", 61, 0);
+    yield* screen("/9j/2Q==", 62, 0);
+    expect(stderr).toEqual([warning, restored]);
+    yield* screen(null, 63, 0);
+    yield* TestClock.adjust(59_999);
+    expect(stderr).toEqual([warning, restored]);
+    yield* TestClock.adjust(1);
+    expect(stderr).toEqual([warning, restored, warning]);
+  }).pipe(Effect.scoped)));
+
+  it.effect("60秒未満で戻ると無通知で、取り消した期限が次の離脱を早めない", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(59_000);
+    yield* screen("/9j/2Q==", 59, 0);
+    yield* TestClock.adjust(2_000);
+    expect(stderr).toEqual([]);
+    yield* screen(null, 61, 0);
+    yield* TestClock.adjust(59_999);
+    expect(stderr).toEqual([]);
+    yield* TestClock.adjust(1);
+    expect(stderr).toEqual([warning]);
+  }).pipe(Effect.scoped)));
+
+  it.effect.each([
+    { app: "us.zoom.xos", screen: true },
+    { app: "com.google.Chrome", screen: false },
+  ])("$app / screen:$screen は画面イベントが届いても端末通知しない", (input) => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, screen } = yield* boot([{}]);
+    yield* sessions.start(start(input));
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(120_000);
+    yield* screen("/9j/2Q==", 120, 0);
+    expect(stderr).toEqual([]);
+  }).pipe(Effect.scoped)));
+
+  it.effect.each(["stop", "server", "screen-off"] as const)("待機中の %s で古い警告を取り消す", (end) => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, closeServer, helpers, fake, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(59_000);
+    if (end === "stop") {
+      yield* sessions.stop;
+      expect(helpers.stops).toEqual([0]);
+    } else if (end === "server") {
+      yield* closeServer();
+      expect(helpers.stops).toEqual([0]);
+    } else {
+      helpers.send(0, { type: "screen-off", start: 59, reason: "許可なし" });
+      yield* TestClock.adjust(0);
+      expect(fake.screenOffs).toEqual([{ start: 59, reason: "許可なし" }]);
+    }
+    yield* TestClock.adjust(120_000);
+    expect(stderr).toEqual([]);
+  }).pipe(Effect.scoped)));
+
+  it.effect("stop がヘルパー終了を待つ間も警告せず、その間の null で監視を再開しない", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, screen } = yield* boot([{ stopDelayMs: 120_000 }]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(59_000);
+    const stopping = yield* Effect.forkChild(sessions.stop);
+    yield* TestClock.adjust(0);
+    expect(helpers.stops).toEqual([0]);
+    yield* screen(null, 59, 0);
+    yield* TestClock.adjust(120_000);
+    yield* Fiber.join(stopping);
+    expect(stderr).toEqual([]);
+  }).pipe(Effect.scoped)));
+
+  it.effect("ヘルパー終了で待機を取り消し、再接続の画像を復帰通知にせず新たな離脱を監視する", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, screen } = yield* boot([
+      { unexpectedExit: { afterMs: 59_000, exit: { code: 1, signal: null } } }, {},
+    ]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(59_000);
+    expect(helpers.calls).toHaveLength(2);
+    const restartOutput = [...stderr];
+    expect(restartOutput.join("")).toContain("ヘルパーを起動し直しました");
+    yield* screen("/9j/2Q==", 59, 1);
+    yield* TestClock.adjust(2_000);
+    expect(stderr).toEqual(restartOutput);
+    yield* screen(null, 61, 1);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual([...restartOutput, warning]);
+  }).pipe(Effect.scoped)));
+});
+
 describe("依存導入の予約", () => {
   it.effect("複数の導入の全予約が解放されるまで開始せず、会議中は予約を拒否する", () => Effect.gen(function* () {
     const helper = yield* makeFakeHelpers([{}]);

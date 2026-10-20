@@ -7,6 +7,7 @@ export * from "./export.ts";
 export * from "./intake.ts";
 export * from "./latinWords.ts";
 export * from "./screenNotice.ts";
+export * from "./meetingTabNotice.ts";
 export * from "./screenVocabulary.ts";
 export * from "./selfPause.ts";
 export * from "./speakerNames.ts";

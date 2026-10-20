@@ -22,6 +22,7 @@ import type { ExecutableModel } from "./modelSelection.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
   formatIntakeStatus,
+  isScreenBrowser,
   formatShareAlreadyOpen,
   formatShareOpened,
   formatShareStatus,
@@ -593,6 +594,7 @@ const start = Command.make(
       ...planBody(plan),
     }, headers });
     yield* writeWarnings(warnings ?? []);
+    if (isScreenBrowser(app)) yield* Console.error("マップの表示は、会議のページと別のウィンドウで開いてください");
     yield* write(`${dir}\n`);
   }),
 ).pipe(

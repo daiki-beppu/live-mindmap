@@ -15,6 +15,8 @@ import { parse } from "node:path";
 import {
   type RecordedEvent,
   type RecordedProgress,
+  isScreenBrowser,
+  makeMeetingTabNotice,
   SCREEN_NOTICE_MS,
   SCREEN_NOTICE_TEXT,
   INITIAL_SELF_PAUSE_STATE,
@@ -70,6 +72,7 @@ type Live = {
   audio: boolean;
   screen: boolean; // false なら共有画面を取り込まない（ヘルパーに --no-screen を渡す。起動し直し・resume でも引き継ぐ）
   noticeShown: Ref.Ref<boolean>; // 許可なしの一文を出したか。セッションにつき 1 回だけ（起動し直しをまたぐ）
+  meetingTabNotice: Effect.Success<ReturnType<typeof makeMeetingTabNotice>>;
   sink: LiveSink;
   controller: Intake;
   running: Ref.Ref<IntakeRun | undefined>;
@@ -192,11 +195,15 @@ export class Sessions extends Context.Service<Sessions, {
           }
           case "screen":
             // 画面が取れないことは取り込みの途切れではないので、取り込みの記録（appendLog）や状態には触れない
-            return live.sink.screen({ start: event.start, image: event.image, lines: event.lines });
+            return Effect.andThen(
+              live.meetingTabNotice.screen(event.image !== null),
+              live.sink.screen({ start: event.start, image: event.image, lines: event.lines }),
+            );
           case "screen-off":
             // 共有画面だけが取れないことは取り込みの途切れではないので、appendLog・intake・起動し直しには触れない。
             // ログには届くたびに残し、画面の一文はセッションにつき 1 回だけ出す
-            return Effect.andThen(live.sink.screenOff({ start: event.start, reason: event.reason }), showScreenNotice(live));
+            return Effect.andThen(live.meetingTabNotice.reset,
+              Effect.andThen(live.sink.screenOff({ start: event.start, reason: event.reason }), showScreenNotice(live)));
           case "tap-silent":
             // 音声が届かないことは取り込みの途切れではないので、intake・起動し直しには触れない。
             // ログには届くたびに残し、一文は届くたびに出す（起動し直した回でも出し直す）。消すのは新しい origin かセッションの終わり
@@ -262,6 +269,7 @@ export class Sessions extends Context.Service<Sessions, {
               if ((yield* live.controller.stats).attempt > 1) yield* live.sink.speakersRenumbered;
               break;
             case "crashed":
+              yield* live.meetingTabNotice.reset;
               yield* live.sink.drain;
               yield* live.sink.clearSpeaking;
               yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
@@ -303,6 +311,7 @@ export class Sessions extends Context.Service<Sessions, {
             audio: input.audio,
             screen: input.screen,
             noticeShown: yield* Ref.make(false),
+            meetingTabNotice: yield* makeMeetingTabNotice({ enabled: input.screen && isScreenBrowser(input.app), notify: note }).pipe(Scope.provide(scope)),
             sink,
             scope,
             controller,
@@ -541,6 +550,7 @@ export class Sessions extends Context.Service<Sessions, {
       // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
       const stopLive = (live: Live) =>
         Effect.gen(function* () {
+          yield* live.meetingTabNotice.stop;
           yield* live.controller.stop;
           const running = yield* Ref.get(live.running);
           const end = running === undefined ? { kind: "stopped" as const, exit: undefined } : yield* running.end;
