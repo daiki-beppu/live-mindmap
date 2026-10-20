@@ -36,6 +36,7 @@ export {
   LogEvent,
   logTimestamp,
   makeSession,
+  makeTranscriptSession,
   RemarkEvent,
   restoreSession,
   restoreState,

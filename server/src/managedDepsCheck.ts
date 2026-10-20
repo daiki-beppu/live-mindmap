@@ -106,6 +106,13 @@ export const requireStartupDeps = Effect.fnUntraced(function* (...args: CheckArg
   return warnings;
 });
 
+export const requireRecordedTranscriptDeps = Effect.fnUntraced(function* (check: Effect.Effect<HelperCheck, HelperCheckFailure>): Effect.fn.Return<string[], StartupDepsMissing> {
+  const items = recordedItems(yield* Effect.result(check));
+  const missing = items.filter((item) => item.state !== "ready");
+  if (missing.length > 0) return yield* new StartupDepsMissing({ items: missing });
+  return [];
+});
+
 export const startupPreparationFailure = (failure: UpdaterUnavailable): UpdaterUnavailable | StartupDepsMissing =>
   failure.dependency === undefined ? failure : new StartupDepsMissing({
     items: [reportItem({ name: failure.dependency, need: "required", state: "missing" }, [failure.dependency])],

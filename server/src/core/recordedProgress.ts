@@ -6,6 +6,7 @@ import { DiffUpdateReason } from "./diffUpdate.ts";
 // 録画からのセッションの経過を伝える 1 行。started の次から progress が続き、finished で終わる。
 // finished の failure は、ヘルパーの起動し直しを諦めたとき（入れた分で終えた）の最後の終わり方と標準エラーの末尾
 export const RecordedEvent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("vocabulary-excluded"), surfaces: Schema.Array(Schema.String) }),
   Schema.Struct({ type: Schema.Literal("started"), dir: Schema.String, warnings: Schema.Array(Schema.String) }),
   Schema.Struct({
     type: Schema.Literal("progress"),

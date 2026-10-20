@@ -53,6 +53,7 @@ export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
   commonWords: ReadonlySet<string>;
   log: (line: VocabLogLine) => Effect.Effect<void>;
   carried: ReadonlyArray<Pick<PoolWord, "surface" | "romaji">>;
+  excluded?: (surfaces: ReadonlyArray<string>) => Effect.Effect<void>;
 }): Effect.fn.Return<SessionVocabulary, never, Scope.Scope> {
   const { read, commonWords, log, carried } = options;
   const vocabulary = yield* Ref.make<ReadonlyArray<VocabularyWord & { readonly from?: number }>>([]);
@@ -75,6 +76,8 @@ export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
       );
       const words = surfaces.map((surface) => ({ surface, romaji: found.get(surface) || null, source }));
       yield* log({ type: "vocab", words });
+      const excluded = words.filter((word) => word.romaji === null).map((word) => word.surface);
+      if (options.excluded !== undefined && excluded.length > 0) yield* options.excluded(excluded);
       const usable = words.flatMap((w) => w.romaji === null ? [] : [{ surface: w.surface, romaji: w.romaji, ...(from === undefined ? {} : { from }) }]);
       yield* Ref.update(vocabulary, (current) => [...current, ...usable]);
     }));

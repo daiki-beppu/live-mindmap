@@ -29,7 +29,7 @@ type Arrival =
   | { kind: "screen-off"; value: Parameters<Inlet["screenOff"]>[0] };
 
 const makeFeed = Effect.fnUntraced(function* (options: {
-  realtime?: boolean; selfTrack?: boolean; idle?: Effect.Effect<void>;
+  realtime?: boolean; noMap?: boolean; selfTrack?: boolean; idle?: Effect.Effect<void>;
   afterRemark?: (r: CorrectedRemark, state: Ref.Ref<DiffUpdateState>) => Effect.Effect<void>;
   onPaused?: Effect.Effect<void>;
 } = {}) {
@@ -55,7 +55,7 @@ const makeFeed = Effect.fnUntraced(function* (options: {
     screenOff: (value) => record({ kind: "screen-off", value }),
   };
   const feed = yield* recordedFeed({
-    realtime: options.realtime ?? false, selfTrack: options.selfTrack ?? false,
+    realtime: options.realtime ?? false, noMap: options.noMap, selfTrack: options.selfTrack ?? false,
     session: {
       diffUpdate: Effect.tap(Ref.get(state), (s) => Effect.sync(() => { reads.push(s); })),
       nextRetryAt: Ref.get(retryAt),
@@ -112,6 +112,15 @@ describe("recordedFeed", () => {
     yield* finish(r);
     expect(labels(r)).toEqual(["screen@1", "相手@2", "screen@2", "screen@3", "screen-off@3.5", "相手@4"]);
     expect(r.arrivals.filter((a) => a.kind === "screen").map((a) => a.value)).toEqual([screen(1), screen(2), screen(3)]);
+  }).pipe(Effect.scoped));
+
+  it.effect("文字のみは更新完了を待たず、保存した順にprogressを知らせる", () => Effect.gen(function* () {
+    const r = yield* makeFeed({ noMap: true, idle: Effect.die("文字のみで更新完了を待った") });
+    for (const end of [2, 4, 6]) yield* r.feed.remark(remark(end));
+    yield* finish(r);
+    expect(labels(r)).toEqual(["相手@2", "相手@4", "相手@6"]);
+    expect(r.order).toEqual(["remark", "progress", "remark", "progress", "remark", "progress"]);
+    expect(r.progress).toEqual([{ position: 2, rounds: 0 }, { position: 4, rounds: 0 }, { position: 6, rounds: 0 }]);
   }).pipe(Effect.scoped));
 
   it.effect("待ち時間なしは1件ずつidleを待ってからprogressを知らせる", () => Effect.gen(function* () {

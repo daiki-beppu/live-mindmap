@@ -638,6 +638,9 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
       case "audio-tracks":
         yield* notify(formatAudioTracksNotice(event.count));
         break;
+      case "vocabulary-excluded":
+        yield* notify(`語彙「${event.surfaces.join("、")}」はモデルなしでは読みを作れないため、今回の補正対象から除外します`);
+        break;
       case "screen-off":
         yield* notify(formatScreenOffNotice());
         break;
@@ -673,6 +676,7 @@ const recorded = Command.make(
       Flag.withDescription("自分用の録音のファイル（音声または動画）。足すと、file を 相手、これを 自分 の 2 トラックで組む"),
       Flag.optional,
     ),
+    noMap: Flag.Boolean("no-map").pipe(Flag.withDescription("モデルを使わず、補正・話者付きの発言だけを log.jsonl に保存する"), Flag.withDefault(false)),
     model: modelFlag,
     local: localFlag,
     title: recordedTitleFlag,
@@ -683,13 +687,16 @@ const recorded = Command.make(
       Flag.withDefault(false),
     ),
   },
-  Effect.fn("recorded")(function* ({ file, self, model, judge, local, title, vocab, realtime }) {
+  Effect.fn("recorded")(function* ({ file, self, model, judge, local, title, vocab, realtime, noMap }) {
+    if (noMap && (Option.isSome(model) || Option.isSome(judge) || local || realtime)) {
+      return yield* new CommandFailed({ message: "--no-map と --model・--judge・--local・--realtime は併用できません" });
+    }
     const vocabulary = yield* readVocabulary(vocab);
-    const plan = yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
+    const plan = noMap ? undefined : yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
     const port = yield* portConfig;
-    const headers = yield* modelTransferHeaders(plan, port);
+    const headers = plan === undefined ? undefined : yield* modelTransferHeaders(plan, port);
     let dir: string | undefined;
-    // Ctrl-C は、そこまでに入れた分で終えて map.* を書き出す（stop と同じ）。サーバーは接続が切れても書き出しを最後まで続ける。
+    // Ctrl-C は、そこまでに入れた分で終える（stop と同じ。--no-map では map.* を書かない）。サーバーは接続が切れても書き出しを最後まで続ける。
     // 開始の応答（2xx）を受け取った後なら、started を読む前の中断でも止める
     const stopOnInterrupt = Effect.gen(function* () {
       const { paths } = yield* requestServer(port, ServerRoutes.sessionStop);
@@ -704,7 +711,7 @@ const recorded = Command.make(
           title: Option.getOrUndefined(title),
           ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
           ...(realtime ? { realtime } : {}),
-          ...planBody(plan),
+          ...(plan === undefined ? { noMap: true } : planBody(plan)),
         }, headers }));
         return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
       }),
@@ -724,8 +731,9 @@ const recorded = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "音声 1 本（--self で自分用の 2 本目も）の録画から、常駐サーバーでセッションを組む。終わるまで待ち、進み具合（入れた位置 / 全体の長さ・マップの更新回数）を標準エラーに出す。"
-      + "終わったらセッションのフォルダと map.* のパスを出す。Ctrl-C ではそこまでの分で終える。同時に 1 つだけ。"
+    "--no-map はモデルの準備・鍵確認・呼び出しをせず、発言を log.jsonl に保存し、フォルダだけを出す。マップは後から cli play <フォルダ> で作れる。--model・--judge・--local・--realtime とは併用できない。日本語・略語・保存済みの読みは補正に使う。新しい英単語は読みなしで記録し、補正対象から外したことを知らせる。"
+      + "音声 1 本（--self で自分用の 2 本目も）の録画から、常駐サーバーでセッションを組む。終わるまで待ち、進み具合（入れた位置 / 全体の長さ・マップの更新回数）を標準エラーに出す。"
+      + "通常は、終わったらセッションのフォルダと map.* のパスを出す。Ctrl-C ではそこまでの分で終える。同時に 1 つだけ。"
       + "<file> の 相手 は話者を分けて「相手 A」のようなラベルで呼ぶ（話者分離のモデルが無いときは、話者を分けずに続けると標準エラーに知らせる）。"
       + "話者のラベルは会議全体で 4 人（自分を含む）まで。1 本の録音では自分も 1 人に数える。確実に分けたいときは --self で自分用の録音を足す",
   ),

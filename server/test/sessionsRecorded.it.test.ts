@@ -30,7 +30,7 @@ const resource = Effect.fnUntraced(function* (script: Script, options: { attempt
   )));
   const context = yield* Layer.build(layer);
   const sessions = Context.get(context, Sessions);
-  const run = Effect.fnUntraced(function* (input: Partial<RecordedStart> = {}) {
+  const run = Effect.fnUntraced(function* (input: Partial<Extract<RecordedStart, { plan: unknown }>> = {}) {
     const started = yield* sessions.startRecorded({ file, title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude }, ...input });
     const events = yield* Stream.runCollect(started.events);
     expect(events.at(-1)?.type).toBe("finished");

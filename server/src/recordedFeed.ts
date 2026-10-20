@@ -22,6 +22,7 @@ export type RecordedFeed = Feed & {
 
 export const recordedFeed = (options: {
   realtime: boolean;
+  noMap?: boolean;
   selfTrack: boolean;
   session: Pick<Session, "diffUpdate" | "nextRetryAt" | "idle"> & {
     unreflectedCount: Effect.Effect<number>;
@@ -72,7 +73,7 @@ export const recordedFeed = (options: {
         return;
       }
       yield* inlet.remark(item.corrected);
-      if (pacer === undefined) yield* session.idle;
+      if (pacer === undefined && options.noMap !== true) yield* session.idle;
       yield* options.progress({ position: item.corrected.rest.end, rounds: yield* session.round });
     }),
   });
