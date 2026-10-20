@@ -9,10 +9,12 @@ import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, t
 import { Helpers, HelperCreationDateFailure } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type OpenSessionSink, type LiveSink, type RecordedSink } from "../src/sessionSinks.ts";
-import { Sessions, SessionsDir, type SessionStart } from "../src/sessions.ts";
+import { Sessions, SessionsDir, type SessionStart, type RecordedStart } from "../src/sessions.ts";
 import { Viewers } from "../src/viewers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
+import { missingKeyNotice, type JudgeModel } from "../src/judgeSelection.ts";
+import type { UpdatePlan } from "../src/updatePlan.ts";
 
 // Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と種類別の配線を、
 // 偽の Helpers・SessionSinks の Layer と TestClock で確かめる（order.md:39）。本物の子プロセスは使わない。
@@ -116,7 +118,7 @@ describe("録画の引数と終了処理", () => {
     const helpers = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runDrain(run.events).pipe(Effect.forkChild);
     const session = yield* sessions.liveSession;
     const sharing = yield* Scope.fork(session.scope, "sequential");
@@ -144,7 +146,7 @@ describe("録画の引数と終了処理", () => {
       ...sink, drainForRestart: Effect.sync(() => { prepared++; return ends; }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", selfFile, title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", selfFile, title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     yield* TestClock.adjust(1);
     expect(prepared).toBe(1);
     expect(helpers.calls).toEqual([
@@ -166,13 +168,46 @@ describe("録画の引数と終了処理", () => {
     });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const model = { ...defaultClaude, name: "fast", model: "claude-haiku-5-5" };
-    yield* sessions.startRecorded({ file: "/meeting.m4a", title: "週次会議", vocab: ["ヤマダ商事", "アルファ"], realtime: false, model });
+    yield* sessions.startRecorded({ file: "/meeting.m4a", title: "週次会議", vocab: ["ヤマダ商事", "アルファ"], realtime: false, plan: { kind: "single", model } });
     expect(prepared).toEqual([{ kind: "single", model }]);
     expect(opened).toEqual([expect.objectContaining({ title: "週次会議", model, vocab: ["ヤマダ商事", "アルファ"] })]);
     expect(fake.vocabAdded).toEqual([["ヤマダ商事", "アルファ"]]);
-    const result = yield* Effect.exit(sessions.startRecorded({ file: "/other.m4a", title: undefined, vocab: [], realtime: false, model }));
+    const result = yield* Effect.exit(sessions.startRecorded({ file: "/other.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model } }));
     expect(result._tag).toBe("Failure");
     expect(helpers.calls).toHaveLength(1);
+    yield* sessions.stop;
+  }).pipe(Effect.scoped));
+
+  it.effect("録画の判定を含む計画をそのまま sink の準備へ渡す", () => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const judge: JudgeModel = { name: "clef", route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model: "clef", timeoutMs: 2000 };
+    const plan: UpdatePlan = { kind: "routed", judge };
+    const prepared: UpdatePlan[] = [];
+    const sinks = SessionSinks.of({ ...fake.sinks, prepare: (received) => Effect.andThen(
+      Effect.sync(() => { prepared.push(received); }), fake.sinks.prepare(received),
+    ) });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    const input = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan };
+    yield* sessions.startRecorded(input);
+
+    expect(prepared).toEqual([{ kind: "routed", judge }]);
+    expect(fake.opened.count).toBe(1);
+    yield* sessions.stop;
+  }).pipe(Effect.scoped));
+
+  it.effect("録画の開始応答は準備の通知をライブと同じ warnings で返す", () => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const notice = missingKeyNotice({ name: "jev" }, ["TYPESAFE_AI_API_KEY"]);
+    const sinks = SessionSinks.of({ ...fake.sinks, prepare: (plan) => Effect.map(fake.sinks.prepare(plan), (prepared) => ({ ...prepared, notice })) });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    const live = yield* sessions.start(start({ screen: false }));
+    yield* sessions.stop;
+    const recorded = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
+
+    expect(recorded.warnings).toEqual(live.warnings);
+    expect(recorded.warnings.filter((line) => line === notice)).toHaveLength(1);
     yield* sessions.stop;
   }).pipe(Effect.scoped));
 
@@ -180,7 +215,7 @@ describe("録画の引数と終了処理", () => {
     const helpers = yield* makeFakeHelpers([{ connect: false }, {}]);
     const fake = yield* makeFakeSessionSinks();
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
-    const input = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude };
+    const input: RecordedStart = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } };
     const result = yield* Effect.exit(sessions.startRecorded(input));
     expect(result._tag).toBe("Failure");
     expect(fake.opened.count).toBe(0);
@@ -214,7 +249,7 @@ describe("録画の開始と再送の配線", () => {
     });
     const before = DateTime.toEpochMillis(DateTime.nowUnsafe());
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/main/meeting.m4a", selfFile: "/mine/other.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude }).pipe(
+    const run = yield* sessions.startRecorded({ file: "/main/meeting.m4a", selfFile: "/mine/other.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } }).pipe(
       Effect.provideService(Console.Console, { ...console, error: (...args) => { warnings.push(args.join(" ")); } }),
     );
     const after = DateTime.toEpochMillis(DateTime.nowUnsafe());
@@ -250,7 +285,7 @@ describe("録画の開始と再送の配線", () => {
     const fake = yield* makeFakeSessionSinks();
     const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({ ...sink, drainForRestart: Effect.succeed(ends) })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", selfFile: "/self.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", selfFile: "/self.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consumed = yield* Deferred.make<void>();
     const consuming = yield* Stream.runForEach(run.events, (event) => event.type === "progress" && event.duration === 99 ? Deferred.succeed(consumed, undefined) : Effect.void).pipe(Effect.forkChild);
     helpers.send(0, { type: "remark", track: "相手", start: 8, end: 10, text: "再起動前" });
@@ -278,7 +313,7 @@ describe("録画の開始と再送の配線", () => {
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
     yield* sessions.start(start());
     expect(helpers.calls).toHaveLength(1);
-    const result = yield* Effect.exit(sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude }));
+    const result = yield* Effect.exit(sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } }));
     expect(Exit.isFailure(result) && Cause.hasFails(result.cause)).toBe(true);
     if (Exit.isFailure(result)) expect(Cause.squash(result.cause)).toBeInstanceOf(SessionBusy);
     expect(helpers.calls).toHaveLength(1);
@@ -292,7 +327,7 @@ describe("録画の開始と再送の配線", () => {
     ]);
     const fakeSinks = yield* makeFakeSessionSinks();
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, fakeHelpers.helpers), Layer.succeed(SessionSinks, fakeSinks.sinks));
-    const run = yield* sessions.startRecorded({ file: "/recording.mp4", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/recording.mp4", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const firstRead = yield* Deferred.make<void>();
     const replayRead = yield* Deferred.make<void>();
     const initialRead = yield* Deferred.make<void>();
@@ -334,7 +369,7 @@ describe("録画の停止と一時停止の配線", () => {
     }]);
     const fake = yield* makeFakeSessionSinks();
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     yield* TestClock.adjust(1);
     const events = yield* Fiber.join(consuming);
@@ -356,7 +391,7 @@ describe("録画の停止と一時停止の配線", () => {
       finishBacklog: Effect.gen(function* () { order.push("finish"); yield* Deferred.succeed(entered, undefined); yield* Deferred.await(release); }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     yield* TestClock.adjust(1);
     yield* Deferred.await(entered);
@@ -384,7 +419,7 @@ describe("録画の停止と一時停止の配線", () => {
       exports: Effect.andThen(Effect.sync(() => { order.push("exports"); }), sink.exports),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     yield* TestClock.adjust(3);
     const events = yield* Fiber.join(consuming);
@@ -425,7 +460,7 @@ describe("録画の停止と一時停止の配線", () => {
       }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     yield* TestClock.adjust(1);
     yield* Deferred.await(entered);
@@ -456,7 +491,7 @@ describe("録画の停止と一時停止の配線", () => {
       ...sink, finishBacklog: Effect.suspend(() => fail ? Effect.die(new Error("書き込みに失敗")) : Effect.void),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const input = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude };
+    const input: RecordedStart = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } };
     const run = yield* sessions.startRecorded(input);
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     if (stopping) {
@@ -499,7 +534,7 @@ describe("録画の停止と一時停止の配線", () => {
       exports: Effect.andThen(Effect.sync(() => { order.push("exports"); }), sink.exports),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: true, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: true, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runDrain(run.events).pipe(Effect.forkChild);
     const stopping = yield* sessions.stop.pipe(Effect.forkChild);
     yield* Deferred.await(stopRequested);
@@ -518,7 +553,7 @@ describe("録画の停止と一時停止の配線", () => {
     const sinks = SessionSinks.of({ ...fakeSinks.sinks, openRecorded: (args) =>
       Effect.andThen(Deferred.succeed(callbacks, args.recorded), fakeSinks.sinks.openRecorded(args)) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, fakeHelpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
+    const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const events: { type: string; paused?: { reason: string; retryAt: number } }[] = [];
     const consuming = yield* Stream.runForEach(run.events, (e) => Effect.sync(() => { events.push(e); })).pipe(Effect.forkChild);
     const control = yield* Deferred.await(callbacks);

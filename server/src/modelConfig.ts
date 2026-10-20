@@ -38,9 +38,6 @@ export const resolveModelFrom = Effect.fn("resolveModelFrom")(function* (loaded:
   const result = selectModel({ ...input, macState });
   return result.ok ? result.model : yield* reject(result.lines);
 });
-export const resolveModel = Effect.fn("resolveModel")(function* (flags: ModelFlags) {
-  return yield* resolveModelFrom(yield* loadModelConfig(), flags);
-});
 export const configuredModels = Effect.fn("configuredModels")(function* () {
   const input = yield* loadModelConfig();
   const definitions = listModels(input);

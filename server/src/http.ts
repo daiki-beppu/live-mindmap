@@ -33,7 +33,7 @@ import type { CloudflaredMissing } from "./tunnel.ts";
 import { ViewingShare, ShareOpenFailed, ShareRefusedLocalMode, ShareScopeEmpty, type ViewingPort } from "./viewingShare.ts";
 import type { TransferredModel } from "./modelSelection.ts";
 import type { JudgeModel } from "./judgeSelection.ts";
-import { acceptPlan, needsTransferToken, planModel, type UpdatePlan } from "./updatePlan.ts";
+import { acceptPlan, needsTransferToken, type UpdatePlan } from "./updatePlan.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
 import { checkManagedDeps } from "./managedDepsCheck.ts";
@@ -170,7 +170,7 @@ const startSession = Effect.gen(function* () {
 const startRecordedSession = Effect.gen(function* () {
   const { body, plan } = yield* acceptedBody(bodyOf(ServerRoutes.sessionRecorded.body));
   const sessions = yield* Sessions;
-  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, model: planModel(plan) };
+  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, plan };
   const { dir, warnings, events } = yield* sessions.startRecorded(input);
   return HttpServerResponse.stream(
     Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(
