@@ -49,9 +49,11 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
   position: relative;
 }
 /* 余白・並びは内側のボタンが持つ（外側は枠と塗りだけ。実寸は変えない） */
-.map-node__button { display: flex; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; position: relative; }
+.map-node__button { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; pointer-events: all; position: relative; }
 .map-node__mark { flex: none; font-weight: 600; color: var(--kind-color); }
-.map-node__text { overflow-wrap: anywhere; }
+.map-node__text { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+/* 案の出した人・TODO の担当者の行は、本文の下に 1 行で出す（本文と横に並べると、本文に幅を取られて 1 字ずつ縦に折れる） */
+.map-node__person { flex-basis: 100%; }
 /* 今回の反映で変わったノードは、ノードの塗りと枠だけを 1 秒周期で 3 回ゆっくり薄くして戻す。
    文字は薄くしない（opacity はノード全体にかかるので使わない）。影・バッジは足さない。
    色の塗りで知らせる案・ノード全体の opacity で点滅する案は、実機で違和感があったため取りやめた（2026-10-01）。
