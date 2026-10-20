@@ -5,6 +5,7 @@
 - [エクスポートの公開](export-publish.md): 会議の後にエクスポートを期限つきで外に置く機能の仕様・実装・見直し
 - [右の列](side-panel.md): 根拠・TODO・変わったことの段を足す・変える・テストするとき
 - [セッションの sink](session-sink.md): server のセッションの sink と、語彙・発言の流れ・録画の feed・再生の補正を触るとき
+- [取り込みの試行](intake-attempts.md): ヘルパーの起動・起動し直し・停止・試行中の指令（`intakeAttempts`）と、それを呼ぶ `Sessions` の配線を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 
 ## 取り込み済み
@@ -26,3 +27,9 @@
 - チケット [#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323)・[PR #1360](https://github.com/daiki-beppu/live-mindmap/pull/1360) の差分（と、閉じた [#1273](https://github.com/daiki-beppu/live-mindmap/issues/1273)） → [セッションの sink](session-sink.md)
 - チケット [#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362) の差分と実行報告 → [セッションの sink](session-sink.md)、[takt の run](takt-runs.md)
 - チケット [#1325](https://github.com/daiki-beppu/live-mindmap/issues/1325)・[PR #1363](https://github.com/daiki-beppu/live-mindmap/pull/1363) の差分（takt のレビューの修正を含む） → [セッションの sink](session-sink.md)
+- 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305)（Formal Spec のコメントを含む） → [取り込みの試行](intake-attempts.md)。用語は捨てた: 「取り込みの試行」は実装の言葉で、利用者に見える言葉は今ある「取り込みの途切れ」で足りると仕様が決めている。ADR は捨てた: 新しい ADR を作らず、ADR 0008 の Considered Options への一文で足りると仕様が決め、#1316 が足した
+- 親 [#1315](https://github.com/daiki-beppu/live-mindmap/issues/1315) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) の差分と「今の場所」のコメント → [取り込みの試行](intake-attempts.md)、[takt の run](takt-runs.md)
+- #1316 の takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）の trace と reports → [取り込みの試行](intake-attempts.md)、[takt の run](takt-runs.md)。`decodeHelperEvent` が省いた `duplicate` を `false` に直すので fixture に明示した件は捨てた: decoder の型を見れば分かる。トークンの量は捨てた: 作業の判断に使わない
+- チケット [#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368) の差分と「今の場所」のコメント → [取り込みの試行](intake-attempts.md)、[セッションの sink](session-sink.md)
+- #1317 の takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）の trace と reports → [取り込みの試行](intake-attempts.md)、[takt の run](takt-runs.md)。否定の assert を処理の終わりの合図と組にする件は捨てた: `CODING_STANDARDS.md` の Negative tests にある。本文の `recordedSessionLog.it` が実在せず `loggedSessionLog.it` だった件は捨てた: その場限りの書き誤り

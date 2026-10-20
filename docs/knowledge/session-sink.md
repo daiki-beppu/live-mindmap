@@ -89,14 +89,14 @@ sink の側にも、遅い束縛がもう 1 つある。`openLoggedSession` は�
 
 `RecordedSink.drainForRestart` は、settling だけを締め（`flow.drainForRestart`）、続けて `recordedFeed.prepareRestart` を呼ぶ。返すのは、トラックごとの作った発言の end。並べ替えの保留も溜まりの未反映の分も、作った発言として数える。先読みの画面のうち、その end の最大より後のものは刈る。刈った画面は、ヘルパーが読み直したときにもう一度届く。前は「drain → `lastRemarkEnds` の読み取り」の 2 回を sessions が順に呼んでいて、その順の約束を呼ぶ側が覚えておく必要があった（[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)）。
 
-起動し直した後の screen-off も、同じ sink へ渡す。同じ印が二度入らないようにするのは `recordedFeed` の役目で、端末への知らせは sessions の側が 1 回だけにしている（[#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323)、`sessions.test` の「再起動後のscreen-offも同じsinkへ渡し、端末への知らせは1回だけにする」）。
+起動し直した後の screen-off も、同じ sink へ渡す。同じ印が二度入らないようにするのは `recordedFeed` の役目で、端末への知らせは sessions の側が 1 回だけにしている（[#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323)、`sessions.test` の「音声1本とscreen-off不在では通知せず、複数音声とscreen-offは再起動をまたいで1回だけ通知する」）。
 
 ## IT は、値がその境界を越えた後で決まるものだけにする。CLI を通すのは CLI が決める値だけ
 
-線引きは [#1118](https://github.com/daiki-beppu/live-mindmap/issues/1118) に従い、同じ契約を 2 つの層で確かめていたら低い層を残す。この仕様の後、IT に残っているものは次のとおり（件数は 2026-10-20 の main）。
+線引きは [#1118](https://github.com/daiki-beppu/live-mindmap/issues/1118) に従い、同じ契約を 2 つの層で確かめていたら低い層を残す。仕様 #1304 と [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の後、IT に残っているものは次のとおり（件数は 2026-10-20 の main で、`.each` を 1 件と数える）。
 
 - **`cliRecorded.it`（33 件）**: CLI が NDJSON を受けてから決める値（標準出力のパス・進み具合の行・知らせの行・失敗の文面・Ctrl-C で `/session/stop` を送ること・引数の誤り）
-- **`sessionsRecorded.it`（14 件）**: `Sessions` と本物の録画の sink を、偽のヘルパー（`test/fixtures/recordedHelper.ts`）でつないだもの。フォルダ名と時刻の基準・起動し直しの `--from`・書き込みの失敗。CLI のプロセスは通さない（[#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323) が `cliRecorded.it` から移した）
+- **`sessionsRecorded.it`（4 件）**: `Sessions` と本物の録画の sink を、偽のヘルパー（`test/fixtures/recordedHelper.ts`）でつないだもの。ファイルを書くことだけを見る（録音のファイル・題名と語彙のログ・諦めたときと接続待ちで止めたときの書き出し）。CLI のプロセスは通さない。[#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323) が `cliRecorded.it` から移した 14 件のうち、フォルダ名と時刻の基準・起動し直しの `--from`・書き込みの失敗などの配線は、[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317) が `sessions.test` の「録画の開始と再送の配線」へ下ろした（[取り込みの試行](intake-attempts.md)）
 - **`sessionSinks.it`（32 件）**: log.jsonl の行の並び（vocab の行が remark の行より前）・書き出し・溜まりのファイルの往復・Scope とフォルダ、それとライブと録画の組み立ての代表
 
 `audioFileNames`（録音のファイル名の採番）は、sink に依らない関数として `sessionSinks.test` で試している。
@@ -108,3 +108,4 @@ sink の側にも、遅い束縛がもう 1 つある。`openLoggedSession` は�
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304)（Formal Spec のコメントを含む）、親 [#1318](https://github.com/daiki-beppu/live-mindmap/issues/1318)
 - チケット [#1319](https://github.com/daiki-beppu/live-mindmap/issues/1319)・[PR #1327](https://github.com/daiki-beppu/live-mindmap/pull/1327)、[#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1321](https://github.com/daiki-beppu/live-mindmap/issues/1321)・[PR #1358](https://github.com/daiki-beppu/live-mindmap/pull/1358)、[#1322](https://github.com/daiki-beppu/live-mindmap/issues/1322)・[PR #1359](https://github.com/daiki-beppu/live-mindmap/pull/1359)、[#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323)・[PR #1360](https://github.com/daiki-beppu/live-mindmap/pull/1360)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)、[#1325](https://github.com/daiki-beppu/live-mindmap/issues/1325)・[PR #1363](https://github.com/daiki-beppu/live-mindmap/pull/1363)
 - [#1273](https://github.com/daiki-beppu/live-mindmap/issues/1273)（停止と待ちの解除の競合）
+- 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の子 [#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368)（IT の件数と、知らせのテストの名前）

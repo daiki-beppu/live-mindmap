@@ -11,6 +11,8 @@ takt が作る worktree（`takt-worktrees/` の下）は Orca の worktree で�
 
 チケットの完了条件にルートの層を書くときは、依存を入れることも作業に含まれると読ませる。
 
+計画の段も同じ影響を受ける。AGENTS.md が読ませる `server/node_modules/effect/AGENTS.md` は依存を入れるまで無いので、[#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317) の計画は「未確認」と書いて先へ進み、テストを書く段で依存を入れてから読んだ。別の checkout の資料で代わりにしない。
+
 ## 仕様はリンク先に置かず、issue の本文かコメントに写す。takt のエージェントはリンク先の issue を読めない
 
 heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/issues/1151) の子は、本文に「テストごとの振り分けの一次資料: #1147 の解決コメント」とだけ書いていた。#1155・#1160・#1161 の run は振り分けの表を読めないまま実装し、移す先を取り違えたり、残すはずのテストを落としたりして、レビューで止まった（手で引き取り、[PR #1337](https://github.com/daiki-beppu/live-mindmap/pull/1337)・[#1338](https://github.com/daiki-beppu/live-mindmap/pull/1338)・[#1339](https://github.com/daiki-beppu/live-mindmap/pull/1339) で直した）。残りの子に「## 一次資料の写し（takt 用）」のコメントで表を写してから流すと、#1153〜#1158・#1165〜#1168 は止まらずにマージまで進んだ。
@@ -33,8 +35,31 @@ heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/
 
 `.each` の一部を消す・下ろす行は、「`source: "user"` の行を外し、`source: "screen"` の行を残す」のように、外す値と残す値の両方を書く。
 
+## 起票の後に main が動いたチケットは、積む前に「今の場所（takt 用）」のコメントを足す。計画が食い違いを見つけると ABORT する
+
+[#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316) の 1 本目の run は、計画の段だけで 5 分で ABORT した（`[PLAN:3] 要件が不明確`）。チケットの表は録画の `observe(connected)` を「何もしない」としていたが、今の main は話者の枠を振り直していた。下ろすはずの 5 件のテストも、先にマージされた [#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323) が動かしていた。自動の requeue で始まった 2 本目も、同じ点を選択肢つきで問い返した。利用者が「本文のテスト → 今の main の場所」の表と、扱い（消えたものも移ったものも新しい unit に書く、重なる分だけ消す、今のコードの振る舞いを保つ）をコメントに書いてからは、どの段も迷わず、12 イテレーション・69 分で通った。#1317 も同じ形のコメントを積む前に足し、1 周・33 分で通った。
+
+同じ親の子が並んでいて、前の子がテストやコードを動かすとき、後の子を積む前に main と本文を照らす。ずれていれば「## 下ろすテストの今の場所（takt 用、日付）」のように、表と扱いをコメントに写す。
+
+## companion の findings 0 も、レビューの APPROVE も、テストを流し直した証拠ではない
+
+#1316 の実装の後の companion レビュー（ai-antipattern と testing）は、1674 行の変更に findings 0 を返した。その後の本番のレビュー（architecture・backend・ai-antipattern）が、録画の正常完了の取り違えとライブの途切れの時刻の上書きの 2 つの退行を見つけた（[取り込みの試行](intake-attempts.md)）。testing のレビューは初めは APPROVE で、裁定役がテストの不足を同じ指摘にまとめた。#1317 では、レビューはテストを流し直さず、実装の段の証跡（`command-results.json`）と最終の差分の SHA-256 が合うことだけを見て APPROVE した。
+
+run の報告を読むときは、どの段が実際にコマンドを流したかを証跡のログで見る。レビューの件数が 0 でも、まとめた経路の後処理の取り違えのような、テストが元々見ていない退行は残りうる。
+
+## 隔離コピーで `pnpm` を流すと、リンク先の依存が入れ直される。`verifyDepsBeforeRun` を切る
+
+#1317 の破壊検証は、`server/` の下を隔離コピーし、`node_modules` をシンボリックリンクにして、コピーの `sessions.ts` だけを壊した。そのコピーで `pnpm test` を流すと、pnpm の実行前の依存の確認が依存を入れ直し、リンク先の worktree の Vitest が 5.0.3 から 5.0.5 に変わった。直後の IT は 3 ファイルとも `SyntaxError: The requested module 'effect/Path' does not provide an export named 'make'` で読み込めず、0 件で終わった。`pnpm install --frozen-lockfile --force` で lockfile どおりに戻し、隔離の側の実行に `--config.verifyDepsBeforeRun=false` を付けてから、壊す検証と層をやり直した。
+
+テストが 0 件で終わった実行は、通ったことにも落ちたことにも数えない。
+
+## 準備のスクリプトは順に流す。並べると Swift のビルドが落ちる
+
+#1316 の run は `build-webrtc-apm.sh` と `fetch-speaker-models.sh` を並べて流し、後者が Swift の `error: Build failed` で落ちた。APM のビルドが済んだ後に流し直すと通った。原因は確かめていない。AGENTS.md の Checks の順（APM → 話者のモデル → `pnpm typecheck`）で 1 つずつ流す。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
 - #1287 の takt の run（`20261017-060712-implement-using-only-the-files-sugyi4`）の計画・2 回の実装の報告と決定ログ
+- 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の子 [#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) とその takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）、[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368) とその takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)
