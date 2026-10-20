@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -19,6 +20,7 @@ struct ApmHandle {
     webrtc::StreamConfig config;
     // reverse の出力先。呼び出し側の const な参照を書き換えないための作業領域。
     std::vector<float> reverseScratch;
+    int streamDelayMs;
 };
 
 namespace {
@@ -43,9 +45,14 @@ extern "C" {
 
 ApmRef apm_create(int sample_rate, int channels, const ApmEchoSettings *settings) {
     if (sample_rate <= 0 || channels <= 0 || !settings) return nullptr;
+    if (settings->stream_delay_ms < -1 || settings->stream_delay_ms > 500) return nullptr;
+    if (!std::isfinite(settings->ep_strength_default_gain) ||
+        !std::isfinite(settings->suppressor_normal_mask_lf_enr_suppress)) return nullptr;
 
     webrtc::EchoCanceller3Config aec3;
     aec3.ep_strength.default_gain = settings->ep_strength_default_gain;
+    aec3.suppressor.normal_tuning.mask_lf.enr_suppress = settings->suppressor_normal_mask_lf_enr_suppress;
+    if (aec3.suppressor.normal_tuning.mask_lf.enr_suppress <= aec3.suppressor.normal_tuning.mask_lf.enr_transparent) return nullptr;
     if (!webrtc::EchoCanceller3Config::Validate(&aec3)) return nullptr;
 
     webrtc::AudioProcessing::Config config;
@@ -61,7 +68,7 @@ ApmRef apm_create(int sample_rate, int channels, const ApmEchoSettings *settings
                    .SetEchoControlFactory(std::make_unique<ConfiguredEchoControlFactory>(aec3))
                    .Create();
     if (!apm) return nullptr;
-    return new ApmHandle{apm, webrtc::StreamConfig(sample_rate, static_cast<size_t>(channels)), {}};
+    return new ApmHandle{apm, webrtc::StreamConfig(sample_rate, static_cast<size_t>(channels)), {}, settings->stream_delay_ms};
 }
 
 int apm_process_reverse(ApmRef handle, const float *frame, int frames) {
@@ -75,6 +82,10 @@ int apm_process_reverse(ApmRef handle, const float *frame, int frames) {
 
 int apm_process_capture(ApmRef handle, float *frame, int frames) {
     if (!handle || !frame || frames != static_cast<int>(handle->config.num_frames())) return -1;
+    if (handle->streamDelayMs >= 0) {
+        const int status = handle->apm->set_stream_delay_ms(handle->streamDelayMs);
+        if (status != 0) return status;
+    }
     const float *input[1] = {frame};
     float *output[1] = {frame};
     return handle->apm->ProcessStream(input, handle->config, handle->config, output);

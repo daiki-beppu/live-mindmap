@@ -188,6 +188,44 @@ swift run -c release stt-bench echo /tmp/aec118/meeting.wav /tmp/aec118/self.wav
 - `--candidate`: `baseline`（#118 の設定 = AEC3 の既定値）、`production`（本番の設定）、`bypass-<秒>`（開始から N 秒は AEC の出力を使わない。AEC には通し続ける）
 - `--at` の窓は発話の長さ（約 11 秒）なので、近い時刻は別の実行に分ける。`--out` は `stt-bench run` に渡せる 48 kHz の wav を書く
 
+## AEC3 の実録音での比較
+
+`stt-bench echo --microphone` は、同期済みの参照と AEC3 前のマイクに同じ処理をかけ、設定候補を比較する。通常セッションの設定は変更しない。
+
+入力には、同じ開始時刻・時間軸を持つ参照（例: `相手.m4a`）と AEC3 前のマイクを使う。本人が話していない録音を選ぶ。通常の `--audio-dir` の `自分.m4a` は AEC 後なので使えない。参照とマイクは 48 kHz・mono に変換するが、個別の音量正規化、合成漏れ、音声のシフトは行わない。変換後のサンプル数が違えば拒否する。長さの一致だけでは録音中の欠損や時刻ずれを検出できないため、入力の同期は録音側で保証する。欠損した録音の修復は行わない。
+
+リポジトリのルートから、既知の二文を作って比較する。
+
+```sh
+bash helper/scripts/build-webrtc-apm.sh
+swift run --package-path helper -c release stt-bench synth helper/bench/scenarios/echo.json /tmp/aec1391 --only self
+swift run --package-path helper -c release stt-bench echo /path/to/相手.m4a /tmp/aec1391/self.wav \
+	--self-lines /tmp/aec1391/self.lines.json --microphone /path/to/自分-raw.m4a \
+	--at 5,30,60 --candidate production,suppress-lf-0.6,delay-hint-40,ep-gain-0.1 \
+	--out /tmp/aec1391/out > /tmp/aec1391/results.jsonl
+```
+
+`echo.json` の `self` は「来週の金曜日までに見積もりを先方へ送ります。」「予算は三百万円で、来月から着手したいと考えています。」の二文。別の音声を使う場合も二文の `start`・`end` を秒で記した `self.lines.json` を渡す。二文の最初の開始から最後の終了まで（文間の無音を含む）の RMS を −20 dBFS と −30 dBFS にそろえ、二文の相対音量と間隔を保持する。`--at` は最初の文の開始秒。録音外にはみ出す配置と、末尾の最大 0.2 秒の無音を含めた評価窓が重なる配置は拒否する。短い録音では `--at` を録音内に収める。`--delays` と `--leak-gain-db` の明示指定は `--microphone` と併用できない。マイク未指定時は従来の合成計測になる。
+
+候補は `--candidate` で指定する。既定は従来どおり `baseline`。新しい三候補は推奨値ではなく、一項目ずつ試すための値である。
+
+| 候補 | production から変える項目 | 比較元 → 候補値 |
+|------|----------------------------|----------------|
+| `suppress-lf-0.6` | `suppressor.normal_tuning.mask_lf.enr_suppress` | 0.4 → 0.6 |
+| `delay-hint-40` | capture 直前の `set_stream_delay_ms` | 未指定 → 40 ms |
+| `ep-gain-0.1` | `ep_strength.default_gain` | 0.01 → 0.1 |
+
+`baseline`、`production`、`bypass-<秒>` も使用できる。遅延ヒントは内部遅延推定を置き換えず、音声配列もシフトしない。native 境界ではヒントの未指定を −1 とし、0〜500 ms 以外は拒否する。各候補で発話なし・−20・−30 dBFS を順次処理し、それぞれ録音全体を一つの canceller に連続して通す。集計窓ごとの再初期化はしない。
+
+JSONL は次の二種類。全レコードに `candidate`、実行に使った `settings`、測定した内部出力遅延 `outputDelaySamples` を付ける。
+
+- `type: "minute"`: 発話なしの録音について、60 秒ごとと最後の端数の `startSeconds`・`endSeconds`、`inputRmsDbfs`・`outputRmsDbfs`、低下量 `leakReductionDb` を出す。正の低下量は出力が小さくなったことを示す。
+- `type: "retention"`: 注入音量 `voiceRmsDbfs`、配置 `atSeconds`、評価区間 `startSeconds`・`endSeconds`、発話保持率 `retentionDb` を出す。発話あり出力から発話なし出力を引き、注入発話へ射影したエネルギーを比べる。0 dB は保持、負の値は減衰を示す。
+
+両指標は内部出力遅延を補正し、対応する実サンプルだけを集計する。無音などの非有限値は JSON の `null`。`--out` は候補ごとに `echo-<候補>-no-voice.wav`、`echo-<候補>-voice-20.wav`、`echo-<候補>-voice-30.wav` を保存する。保存音声は元の長さを保ち、遅延補正で不足する末尾だけ無音にする。
+
+マイクの RMS には雑音も含まれるので、純粋なエコーの大きさではない。発話保持率も、別々の適応処理の応答の差であり、厳密な成分分離ではない。内蔵スピーカーでの録音と設定の採否判断は #916 の 2 節で行う。
+
 ## テスト
 
 ```sh

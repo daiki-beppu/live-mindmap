@@ -23,9 +23,11 @@ public let echoFrameSamples = 480
 public let echoSampleRate = 48_000
 
 /// AEC3（`EchoCanceller3Config`）の設定。項目は同名の AEC3 の設定項目に写す。
-public struct EchoCancellerSettings: Equatable, Sendable {
+public struct EchoCancellerSettings: Equatable, Sendable, Encodable {
     /// `ep_strength.default_gain`: エコー経路の強さの初期値。
     public var epStrengthDefaultGain: Float
+    public var suppressorNormalMaskLfEnrSuppress: Float = 0.4
+    public var streamDelayMs: Int32?
 
     public init(epStrengthDefaultGain: Float) {
         self.epStrengthDefaultGain = epStrengthDefaultGain
@@ -45,7 +47,10 @@ public final class WebRTCEchoCanceller: EchoCanceller, @unchecked Sendable {
     private let handle: ApmRef
 
     public init(settings: EchoCancellerSettings) throws {
-        var raw = ApmEchoSettings(ep_strength_default_gain: settings.epStrengthDefaultGain)
+        var raw = ApmEchoSettings(
+            ep_strength_default_gain: settings.epStrengthDefaultGain,
+            suppressor_normal_mask_lf_enr_suppress: settings.suppressorNormalMaskLfEnrSuppress,
+            stream_delay_ms: settings.streamDelayMs ?? -1)
         guard let handle = apm_create(Int32(echoSampleRate), 1, &raw) else { throw EchoCancellationError.createFailed }
         self.handle = handle
     }

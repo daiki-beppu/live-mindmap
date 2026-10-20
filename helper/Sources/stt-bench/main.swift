@@ -7,8 +7,8 @@ import Foundation
 //     --vocab は 1 行 1 語。語彙を使う候補（vocab・vocab-init・dictation-vocab）のときだけ contextualStrings に渡す。--vocab-at を付けると、その秒まで流してから渡す
 //     --diarize は同じ音声に Sortformer の話者分離も並行して掛け、区間（到着時刻・start・end・slot・isFinal）を 1 行 1 区間の JSONL でそのファイルに書く（標準出力の形は変えない）。事前に bash helper/scripts/fetch-speaker-models.sh
 //   stt-bench run --variant <名前> <相手.wav> --events [--self <自分.wav>]   （認識と話者分離のイベントを arrival つきの JSONL で標準出力へ。speakerAccuracy が読む。--vocab・--load・--diarize とは併用しない）
-//   stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]
-//     AEC3 が開始直後に話者の声を削るかを測る（結果は 1 行 1 結果の JSONL）。候補: baseline、production、bypass-<秒>
+//   stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--microphone <AEC3前の録音>] [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]
+//     AEC3 の漏れと発話の残り方を測る（JSONL）。候補: baseline、production、bypass-<秒>、suppress-lf-0.6、delay-hint-40、ep-gain-0.1
 //   stt-bench variants
 // 合成した音声・計測の出力はリポジトリの外に置く。
 
@@ -84,9 +84,13 @@ do {
         if selfAudio != nil { fail("--self は --events のときだけ使える") }
         try await runBench(variant: variant, audio: URL(fileURLWithPath: args[0]), load: load, vocabulary: vocabulary, diarizeTo: diarizeTo)
     case "echo":
-        let usage = "usage: stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]"
+        let usage = "usage: stt-bench echo <meeting.wav> <self.wav> --self-lines <self.lines.json> [--microphone <AEC3前の録音>] [--delays 40,200,300] [--at 5,30,60] [--leak-gain-db -10] [--candidate <名前,…>] [--out <フォルダ>]"
         guard let selfLines = option("--self-lines", in: &args) else { fail("--self-lines が要る\n\(usage)") }
         var options = EchoOptions(meeting: URL(fileURLWithPath: ""), selfVoice: URL(fileURLWithPath: ""), selfLines: URL(fileURLWithPath: selfLines))
+        options.microphone = option("--microphone", in: &args).map { URL(fileURLWithPath: $0) }
+        if options.microphone != nil, args.contains("--delays") || args.contains("--leak-gain-db") {
+            fail("--microphone は --delays・--leak-gain-db と併用できない")
+        }
         if let value = option("--delays", in: &args) {
             guard let delays = try? value.split(separator: ",").map({ try Int(String($0)).orThrow() }), !delays.isEmpty, delays.allSatisfy({ $0 >= 0 }) else { fail("--delays は 0 以上の ms のカンマ区切り") }
             options.delaysMs = delays
@@ -101,7 +105,7 @@ do {
         }
         if let value = option("--candidate", in: &args) {
             guard let candidates = try? value.split(separator: ",").map({ try EchoCandidate(String($0)).orThrow() }), !candidates.isEmpty else {
-                fail("--candidate は baseline、production、bypass-<秒> のカンマ区切り")
+                fail("--candidate は baseline、production、bypass-<秒>、suppress-lf-0.6、delay-hint-40、ep-gain-0.1 のカンマ区切り")
             }
             options.candidates = candidates
         }

@@ -141,7 +141,7 @@ struct RunCancellerTests {
 
 @Suite("エコー計測: 候補と wav")
 struct EchoCandidateTests {
-    @Test("候補名は baseline、production、bypass-<有限な 0 以上の秒> だけ")
+    @Test("既存候補名を解決し、不正な bypass 秒数と未知の候補名を拒否する")
     func parsesCandidates() {
         #expect(EchoCandidate("baseline") == .baseline)
         #expect(EchoCandidate("bypass-3") == .bypass(seconds: 3))

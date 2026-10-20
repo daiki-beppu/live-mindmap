@@ -36,7 +36,7 @@ Read the [full descriptions in Japanese](README.ja.md#できること).
 - **Build from a recording** (`cli recorded`). Turn a recorded meeting into a session, or save corrected, speaker-labelled remarks without a model using `--no-map` and build the map later with `cli play`.
 - **Replay** (`cli play`, `cli restore`). Replay transcripts or past sessions, or restore the map from its log.
 - **Choose the model.** Use Claude (your Anthropic API key), a ChatGPT subscription, or Apple Intelligence in local mode; judges (Jev or Clef) route updates by complexity.
-- **Evaluate** (`cli eval`). Measure map shape, recognition accuracy and latency.
+- **Evaluate** (`cli eval` and bench tools). Measure map shape, recognition accuracy and latency, and compare AEC3 settings on recorded audio. See [評価](README.ja.md#できること).
 
 ## Getting started
 
