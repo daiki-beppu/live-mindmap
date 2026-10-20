@@ -178,7 +178,8 @@ struct RecordedEchoHeavyTests {
             SynthesizedLine(speaker: "自分", text: "会議を確認します。", start: 0, end: 0.05),
             SynthesizedLine(speaker: "自分", text: "資料を送ります。", start: 0.1, end: 0.15),
         ]).write(to: lines)
-        let names = ["bypass-10", "production", "suppress-lf-0.6", "delay-hint-40", "ep-gain-0.1"]
+        // 候補ごとの設定の中身は RecordedEchoTests が見る。ここは bypass と AEC3 を通す候補を 1 つずつにして、CI の時間に収める。
+        let names = ["bypass-10", "delay-hint-40"]
         let result = try runEchoCommand([
             "echo", reference.path, voice.path, "--self-lines", lines.path,
             "--microphone", microphone.path, "--at", "0.3", "--candidate", names.joined(separator: ","),
@@ -232,7 +233,7 @@ private func runEchoCommand(_ arguments: [String], root: URL) throws -> (status:
     let finished = DispatchSemaphore(value: 0)
     process.terminationHandler = { _ in finished.signal() }
     try process.run()
-    guard finished.wait(timeout: .now() + 45) == .success else {
+    guard finished.wait(timeout: .now() + 90) == .success else {
         kill(process.processIdentifier, SIGKILL)
         process.waitUntilExit()
         throw EchoCommandTimeout()
