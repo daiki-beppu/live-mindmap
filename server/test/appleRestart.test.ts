@@ -1,12 +1,83 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Layer, Result, Scope } from "effect";
-import { DiffUpdater, emptyMap, makeSession } from "../src/core/index.ts";
+import { Effect, Exit, Layer, Result, Schema, Scope } from "effect";
+import { DiffUpdater, emptyMap, makeSession, type LogEvent } from "../src/core/index.ts";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeAppleLifecycle, waitForDiffState } from "./fixtures/appleLifecycle.ts";
-import { settleUntil, silentLog } from "./fixtures/sessionLayers.ts";
+import { collectLog, settleUntil, silentLog } from "./fixtures/sessionLayers.ts";
+import { jsonRequestBody } from "./fixtures/chatgpt.ts";
 
 const input = { map: emptyMap("定例"), recent: [], fresh: [{ id: "r1", track: "相手" as const, start: 0, end: 1, text: "面接官は3人です。" }] };
+
+const compatibleRequest = Schema.Struct({
+  messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.String })),
+  response_format: Schema.Struct({ json_schema: Schema.Struct({ schema: Schema.Struct({
+    properties: Schema.Struct({ 文: Schema.Struct({ minItems: Schema.Number, maxItems: Schema.Number }) }),
+  }) }) }),
+});
+
+describe("互換経路と Apple の通常失敗・文数上限", () => {
+  it.effect.each(["openai-compatible", "apple"] as const)("%s の429は発言を消費し、一時停止せず running を維持する", (route) => Effect.gen(function* () {
+    const fake = yield* fakeAppleLifecycle(route === "apple" ? [{}] : []);
+    const layer = route === "apple" ? yield* fake.prepare : yield* prepareUpdaterLayer({
+      name: "compatible", route, model: "synthetic", local: false, url: "http://compatible.invalid/v1",
+    }).pipe(Effect.provide(Layer.merge(fake.deps, unusedApple)));
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(layer, collectLog(events))));
+    yield* session.push(input.fresh[0]!);
+    yield* session.idle;
+    const initialDiffs = events.filter((event) => event.type === "diff");
+    expect(initialDiffs).toHaveLength(1);
+    expect(initialDiffs[0]!.ops.length).toBeGreaterThan(0);
+    expect(yield* session.diffUpdate).toEqual({ status: "running" });
+    const before = fake.requests.length;
+    fake.control.status = 429;
+    yield* session.push({ ...input.fresh[0]!, id: "r2", text: "次の発言です。" });
+    yield* session.idle;
+    expect(fake.requests).toHaveLength(before + 1);
+    const body = Schema.decodeUnknownSync(compatibleRequest)(jsonRequestBody(fake.requests.at(-1)!));
+    expect(body.messages.find((message) => message.role === "user")!.content).toContain("次の発言です。");
+    const diffs = events.filter((event) => event.type === "diff");
+    expect(diffs).toHaveLength(2);
+    expect(diffs[1]).toMatchObject({ ops: [], error: expect.stringContaining("429") });
+    expect(yield* session.unreflectedRemarks).toEqual([]);
+    expect(yield* session.diffUpdate).toEqual({ status: "running" });
+    expect(events.filter((event) => event.type.startsWith("diff-update-"))).toEqual([]);
+    expect(fake.processes).toHaveLength(route === "apple" ? 1 : 0);
+    expect(fake.processes.every((process) => !process.closed)).toBe(true);
+  }));
+
+  it.effect("Apple は長い1発言を3文以内に分け、各文を一度ずつ送る", () => Effect.gen(function* () {
+    const fake = yield* fakeAppleLifecycle([{}]);
+    const updater = yield* DiffUpdater.pipe(Effect.provide(yield* fake.prepare));
+    const sentences = ["第一文。", "第二文？", "第三文！", "第四文?", "第五文!", "第六文。", "第七文。"];
+    const result = yield* updater.update({ ...input, fresh: [{ ...input.fresh[0]!, text: sentences.join("") }] });
+    const bodies = fake.requests.slice(1).map((request) => Schema.decodeUnknownSync(compatibleRequest)(jsonRequestBody(request)));
+    expect(bodies.map((body) => body.response_format.json_schema.schema.properties.文)).toEqual([
+      { minItems: 3, maxItems: 3 }, { minItems: 3, maxItems: 3 }, { minItems: 1, maxItems: 1 },
+    ]);
+    const batches = bodies.map((body) => body.messages.find((message) => message.role === "user")!.content
+      .split("\n").filter((line) => /^\d+\. /.test(line)).map((line) => line.split(": ")[1]));
+    expect(batches.map((batch) => batch.length)).toEqual([3, 3, 1]);
+    expect(batches.flat()).toEqual(sentences);
+    expect(result.processedRemarks).toBe(1);
+  }));
+
+  it.effect("Apple は3文に収まる発言の先頭部分だけを送り、その処理済み件数を返す", () => Effect.gen(function* () {
+    const fake = yield* fakeAppleLifecycle([{}]);
+    const updater = yield* DiffUpdater.pipe(Effect.provide(yield* fake.prepare));
+    const result = yield* updater.update({ ...input, fresh: [
+      { ...input.fresh[0]!, text: "第一文。第二文。" },
+      { ...input.fresh[0]!, id: "r2", text: "第三文。" },
+      { ...input.fresh[0]!, id: "r3", text: "第四文。" },
+    ] });
+    expect(fake.requests).toHaveLength(2);
+    const body = Schema.decodeUnknownSync(compatibleRequest)(jsonRequestBody(fake.requests[1]!));
+    const lines = body.messages.find((message) => message.role === "user")!.content.split("\n").filter((line) => /^\d+\. /.test(line));
+    expect(lines.map((line) => line.split(": ")[1])).toEqual(["第一文。", "第二文。", "第三文。"]);
+    expect(result.processedRemarks).toBe(2);
+  }));
+});
 
 describe("Apple の会議中の再起動", () => {
   it.effect("準備後から Session の購読開始前に終了しても、現在の再起動状態を失わない", () => Effect.gen(function* () {

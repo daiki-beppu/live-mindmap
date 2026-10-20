@@ -1,13 +1,14 @@
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, ConfigProvider, Context, Effect, FileSystem, Result } from "effect";
+import { Clock, ConfigProvider, Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import { HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
-import { applyOps, DiffUpdater, emptyMap, type DiffInput } from "../src/core/index.ts";
+import { applyOps, DiffUpdater, emptyMap, makeSession, type DiffInput, type LogEvent } from "../src/core/index.ts";
 import { prepareUpdaterLayer } from "../src/diffUpdater.ts";
 import { classificationRequest, SYSTEM } from "../src/localPrompt.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { CHATGPT_HOME, CHATGPT_MODEL, chatgptCredentials, classification, completedSse, encodedRequestBody, fakeChatgptFiles, fakeChatgptHttp, jsonRequestBody, sseEvent } from "./fixtures/chatgpt.ts";
+import { collectLog } from "./fixtures/sessionLayers.ts";
 
 const input: DiffInput = { map: emptyMap("定例"), recent: [], fresh: [{ id: "r1", track: "相手", start: 0, end: 1, text: "面接官は3人です。求人票を直します！" }] };
 const probe = classification([{ 種類: "なし" }]);
@@ -20,6 +21,88 @@ const provide = <A, E, R>(effect: Effect.Effect<A, E, R>, files: ReturnType<type
   Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnvRecord({ HOME: CHATGPT_HOME }))), Effect.provide(unusedApple), Effect.provide(forbiddenManagedDeps),
 );
 const response = (text: string) => new Response(text, { headers: { "content-type": "text/event-stream" } });
+
+const responsesRequest = Schema.Struct({
+  input: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.String })),
+  text: Schema.Struct({ format: Schema.Struct({ schema: Schema.Struct({
+    properties: Schema.Struct({ 文: Schema.Struct({ minItems: Schema.Number, maxItems: Schema.Number }) }),
+  }) }) }),
+});
+
+describe("ChatGPT の文数上限と通常失敗後の状態", () => {
+  it.effect("長い1発言を3文以内の Responses 要求に分け、各文を一度ずつ送る", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const http = fakeChatgptHttp((request) => {
+      const body = Schema.decodeUnknownSync(responsesRequest)(jsonRequestBody(request));
+      return response(completedSse(classification(Array.from({ length: body.text.format.schema.properties.文.maxItems }, () => ({ 種類: "なし" })))));
+    });
+    yield* provide(Effect.gen(function* () {
+      const updater = yield* open({});
+      const sentences = ["第一文。", "第二文？", "第三文！", "第四文?", "第五文!", "第六文。", "第七文。"];
+      const result = yield* updater.update({ ...input, fresh: [{ ...input.fresh[0]!, text: sentences.join("") }] });
+      const bodies = http.requests.slice(1).map((request) => Schema.decodeUnknownSync(responsesRequest)(jsonRequestBody(request)));
+      expect(bodies.map((body) => body.text.format.schema.properties.文)).toEqual([
+        { minItems: 3, maxItems: 3 }, { minItems: 3, maxItems: 3 }, { minItems: 1, maxItems: 1 },
+      ]);
+      const batches = bodies.map((body) => body.input[0]!.content.split("\n")
+        .filter((line) => /^\d+\. /.test(line)).map((line) => line.split(": ")[1]));
+      expect(batches.map((batch) => batch.length)).toEqual([3, 3, 1]);
+      expect(batches.flat()).toEqual(sentences);
+      expect(result.processedRemarks).toBe(1);
+    }), files, http);
+  }));
+
+  it.effect("3文に収まる発言の先頭部分だけを Responses に送り、その処理済み件数を返す", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const http = fakeChatgptHttp((request) => {
+      const body = Schema.decodeUnknownSync(responsesRequest)(jsonRequestBody(request));
+      return response(completedSse(classification(Array.from({ length: body.text.format.schema.properties.文.maxItems }, () => ({ 種類: "なし" })))));
+    });
+    yield* provide(Effect.gen(function* () {
+      const updater = yield* open({});
+      const result = yield* updater.update({ ...input, fresh: [
+        { ...input.fresh[0]!, text: "第一文。第二文。" },
+        { ...input.fresh[0]!, id: "r2", text: "第三文。" },
+        { ...input.fresh[0]!, id: "r3", text: "第四文。" },
+      ] });
+      expect(http.requests).toHaveLength(2);
+      const body = Schema.decodeUnknownSync(responsesRequest)(jsonRequestBody(http.requests[1]!));
+      const lines = body.input[0]!.content.split("\n").filter((line) => /^\d+\. /.test(line));
+      expect(lines.map((line) => line.split(": ")[1])).toEqual(["第一文。", "第二文。", "第三文。"]);
+      expect(result.processedRemarks).toBe(2);
+    }), files, http);
+  }));
+
+  it.effect("同じ Session の正常更新後に500が返っても restarting・stopped にならない", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const http = fakeChatgptHttp((_request, call) => call === 3
+      ? new Response(JSON.stringify({ error: { code: "server_error" } }), { status: 500 })
+      : response(completedSse(call === 1 ? probe : classification([{ 種類: "説明", text: "面接官は3人" }]))));
+    yield* provide(Effect.gen(function* () {
+      const layer = yield* prepareUpdaterLayer(CHATGPT_MODEL);
+      const events: LogEvent[] = [];
+      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(layer, collectLog(events))));
+      const first = { ...input.fresh[0]!, text: "面接官は3人です。" };
+      yield* session.push(first);
+      yield* session.idle;
+      const initialDiffs = events.filter((event) => event.type === "diff");
+      expect(initialDiffs).toHaveLength(1);
+      expect(initialDiffs[0]!.ops.length).toBeGreaterThan(0);
+      expect(yield* session.diffUpdate).toEqual({ status: "running" });
+      yield* session.push({ ...first, id: "r2", text: "次の発言です。" });
+      yield* session.idle;
+      expect(http.requests).toHaveLength(3);
+      const body = Schema.decodeUnknownSync(responsesRequest)(jsonRequestBody(http.requests[2]!));
+      expect(body.input[0]!.content).toContain("次の発言です。");
+      const diffs = events.filter((event) => event.type === "diff");
+      expect(diffs).toHaveLength(2);
+      expect(diffs[1]).toMatchObject({ ops: [], error: expect.stringContaining("500") });
+      expect(yield* session.unreflectedRemarks).toEqual([]);
+      expect(yield* session.diffUpdate).toEqual({ status: "running" });
+      expect(events.filter((event) => event.type.startsWith("diff-update-"))).toEqual([]);
+    }), files, http);
+  }));
+});
 
 describe("ChatGPT Responses（C03）", () => {
   it.effect("strict な分類要求を Responses に送り、UTF-8・イベント境界をまたぐ SSE から操作へ届く", () => Effect.gen(function* () {
