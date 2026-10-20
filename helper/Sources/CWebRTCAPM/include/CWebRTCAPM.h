@@ -14,6 +14,9 @@ typedef struct ApmHandle *ApmRef;
 typedef struct {
     /// `ep_strength.default_gain`: エコー経路の強さの初期値（AEC3 の既定は 1）
     float ep_strength_default_gain;
+    float suppressor_normal_mask_lf_enr_suppress;
+    /// capture ごとに渡す遅延ヒント（0〜500 ms）。未指定は -1。
+    int stream_delay_ms;
 } ApmEchoSettings;
 
 /// 指定のサンプルレート・チャンネル数・AEC3 の設定で APM を作る。`settings` が NULL か、設定が AEC3 の検証を通らなければ NULL。

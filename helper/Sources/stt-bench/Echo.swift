@@ -156,3 +156,67 @@ func windowResults(built: EchoMicrophone, output: [Float], outputDelay: Int, ref
             referenceRmsDbfs: decibels(referenceEnergy / Double(range.count)))
     }
 }
+
+struct RecordedEchoMicrophone {
+    var microphone: [Float]
+    var utterance: [Float]
+    var insertAt: [Int]
+}
+
+func buildMicrophone(reference: [Float], microphone: [Float], utterance: [Float], insertAt: [Int]) throws -> RecordedEchoMicrophone {
+    guard !reference.isEmpty, reference.count == microphone.count else {
+        throw SynthError.badScenario("参照と実マイクは空でない同じ長さの同期済み録音が必要")
+    }
+    let starts = insertAt.sorted()
+    guard starts.allSatisfy({ $0 >= 0 && $0 <= microphone.count && utterance.count <= microphone.count - $0 }),
+          zip(starts, starts.dropFirst()).allSatisfy({ $1 - $0 >= utterance.count }) else {
+        throw SynthError.badScenario("発話の配置が録音の範囲外、または評価窓が重なっている")
+    }
+    var mixed = microphone
+    for start in insertAt {
+        for i in utterance.indices { mixed[start + i] += utterance[i] }
+    }
+    return RecordedEchoMicrophone(microphone: mixed, utterance: utterance, insertAt: insertAt)
+}
+
+/// 短い発話を range.lowerBound に置き、発話あり・なしの応答の差を射影する。
+func recordedRetentionDb(utterance: [Float], outputWithVoice: [Float], outputWithoutVoice: [Float], range: Range<Int>, outputDelay: Int) -> Double {
+    let end = min(range.upperBound, outputWithVoice.count - outputDelay, outputWithoutVoice.count - outputDelay)
+    guard end > range.lowerBound else { return .nan }
+    var dot = 0.0
+    var energy = 0.0
+    for i in range.lowerBound..<end {
+        let basis = Double(utterance[i - range.lowerBound])
+        dot += (Double(outputWithVoice[i + outputDelay]) - Double(outputWithoutVoice[i + outputDelay])) * basis
+        energy += basis * basis
+    }
+    return energy > 0 ? decibels(dot * dot / (energy * energy)) : .nan
+}
+
+struct EchoMinuteResult {
+    var startSeconds: Double
+    var endSeconds: Double
+    var inputRmsDbfs: Double
+    var outputRmsDbfs: Double
+    var leakReductionDb: Double
+}
+
+func minuteResults(microphone: [Float], output: [Float], outputDelay: Int) -> [EchoMinuteResult] {
+    let count = min(microphone.count, output.count - outputDelay)
+    guard count > 0 else { return [] }
+    return stride(from: 0, to: count, by: 60 * echoSampleRate).map { start in
+        let end = min(start + 60 * echoSampleRate, count)
+        var inputEnergy = 0.0
+        var outputEnergy = 0.0
+        for i in start..<end {
+            inputEnergy += Double(microphone[i]) * Double(microphone[i])
+            outputEnergy += Double(output[i + outputDelay]) * Double(output[i + outputDelay])
+        }
+        return EchoMinuteResult(
+            startSeconds: Double(start) / Double(echoSampleRate),
+            endSeconds: Double(end) / Double(echoSampleRate),
+            inputRmsDbfs: decibels(inputEnergy / Double(end - start)),
+            outputRmsDbfs: decibels(outputEnergy / Double(end - start)),
+            leakReductionDb: decibels(inputEnergy / outputEnergy))
+    }
+}
