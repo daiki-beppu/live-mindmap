@@ -580,7 +580,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
 
   // 元のセッション: 2 回目の呼び出しは失敗。最後の呼び出しの後に、まだ添えていない変化が 3 件残る（F は最後の diff の区切りより前の時刻だが、行は diff より後）
   // 発言 1 件ごとに 1 回呼ぶ。
-  //   call 1 (cutoff 10): A@1 を添え、B@2 は 10 秒未満なので持ち越す / call 2 (cutoff 40, 失敗): 持ち越した B と C@15 → 最後に添えた 2 件は B, C
+  //   call 1 (cutoff 10): A@1 を添え、B@2 は 10 秒未満なので持ち越す / call 2 (cutoff 40, 失敗): 持ち越した B と C@15 を添える
   //   diff より後に受けた: F@28（区切り 40 以下）, D@100, E(なし)@120
   const original = Effect.gen(function* () {
     const events: LogEvent[] = [];
@@ -600,7 +600,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
     return { session, live, events, screens };
   });
 
-  it.effect("続きの呼び出しに添える画面（まだ添えていなかった変化）と、送り直す 2 件が、元のセッションと一致する", () =>
+  it.effect("続きの呼び出しに添える未送画面が、元のセッションと一致する", () =>
     Effect.gen(function* () {
       const { session, live, events: logged, screens } = yield* original;
       const events = [...logged]; // 続きを入れる前までのログ
@@ -608,9 +608,8 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       for (const r of next) yield* session.push(r);
       yield* session.idle;
       const expected = live.calls[2]!;
-      // 元のセッションの続きで、3 件添える（F・D・E）と、2 件送り直す（B・C）ことが前提
+      // 元のセッションの続きで、未送の F・D・E を添えることが前提
       expect(view(expected.screens)!.map((s) => s.start)).toEqual([28, 100, 120]);
-      expect(view(expected.previousScreens)!.map((s) => s.start)).toEqual([2, 15]);
 
       const cont = scripted([]);
       const { log } = reader(screens);
@@ -620,12 +619,11 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
 
       expect(cont.calls).toHaveLength(1);
       expect(view(cont.calls[0]!.screens)).toEqual(view(expected.screens));
-      expect(view(cont.calls[0]!.previousScreens)).toEqual(view(expected.previousScreens));
       // 画面以外の入力も元と同じ
       expect(cont.calls[0]!.fresh).toEqual(expected.fresh);
     }));
 
-  it.effect("復元では画像を読まない。続きの呼び出しで読むのは、添える変化と送り直す 2 件の画像だけ（「なし」と古い画面は読まない）", () =>
+  it.effect("復元では画像を読まず、続きでは新しく添える未送画面だけを読む", () =>
     Effect.gen(function* () {
       const { events, screens } = yield* original;
       const { log, reads } = reader(screens);
@@ -634,7 +632,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       expect(reads).toEqual([]);
       yield* restored.push(spoken("a3", 200));
       yield* restored.idle;
-      expect([...reads].sort()).toEqual(["0002.0.jpg", "0015.0.jpg", "0028.0.jpg", "0100.0.jpg"]);
+      expect([...reads].sort()).toEqual(["0028.0.jpg", "0100.0.jpg"]);
     }));
 
   it.effect("復元した後に同じ時刻の画面を受けても、前の画像を上書きしない（ファイル名は -2 から番号が付く）", () =>
@@ -646,7 +644,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(forbiddenUpdater, log)));
       yield* restored.pushScreen(shot(2, "again")); // B と同じ秒
       yield* restored.pushScreen(shot(28, "again2")); // 添えていない F と同じ秒
-      yield* restored.pushScreen(shot(1, "old")); // 最後に添えた 2 件には入らない A と同じ秒
+      yield* restored.pushScreen(shot(1, "old")); // 過去の A と同じ秒
       expect(written.map((w) => w.file)).toEqual(["0002.0-2.jpg", "0028.0-2.jpg", "0001.0-2.jpg"]);
       expect(lines.filter((l) => l.type === "screen")).toEqual([
         { type: "screen", start: 2, image: "0002.0-2.jpg" },
@@ -690,7 +688,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
           expect(calls).toHaveLength(2);
           const expected = calls[1]!;
           expect(view(expected.screens)!.map((x) => x.start)).toEqual([23, 24]);
-          expect(view(expected.previousScreens)!.map((x) => x.start)).toEqual([1, 12]);
 
           const cont = scripted([]);
           const restored = yield* restoreSession(viaJsonl(logged)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(screens).log)));
@@ -698,7 +695,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
           yield* restored.idle;
           expect(cont.calls).toHaveLength(1);
           expect(view(cont.calls[0]!.screens)).toEqual(view(expected.screens));
-          expect(view(cont.calls[0]!.previousScreens)).toEqual(view(expected.previousScreens));
           expect(cont.calls[0]!.fresh).toEqual(expected.fresh);
         }));
     }
@@ -727,7 +723,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         return { liveCalls: live.calls.slice(before), restoredCalls: cont.calls };
       });
     const startsOfCall = (c: DiffInput) => view(c.screens)?.map((x) => x.start);
-    const previousOfCall = (c: DiffInput) => view(c.previousScreens)?.map((x) => x.start);
 
     it.effect("持ち越している変化は、復元した後も、10 秒が過ぎるまで添えず、過ぎたら添える（復元しなかった場合と同じ）", () =>
       Effect.gen(function* () {
@@ -747,11 +742,10 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         // 前提: 元のセッションは Z を 10 秒が過ぎた呼び出しで 1 度だけ添える
         expect(liveCalls.map(startsOfCall)).toEqual([undefined, [8], undefined]);
         expect(restoredCalls.map(startsOfCall)).toEqual(liveCalls.map(startsOfCall));
-        expect(restoredCalls.map(previousOfCall)).toEqual(liveCalls.map(previousOfCall));
         expect(liveCalls.map((c) => view(c.screens))).toEqual(restoredCalls.map((c) => view(c.screens)));
       }));
 
-    it.effect("10 秒の起点は、送り直す 2 件（最後に添えた画面）から画像が押し出されても、復元後に失われない", () =>
+    it.effect("10 秒の起点は、共有終了が続いた後も復元後に失われない", () =>
       Effect.gen(function* () {
         const { liveCalls, restoredCalls } = yield* compare(
           (s) =>
@@ -764,7 +758,7 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
                 yield* s.push(spoken(`q${i}`, t + 0.5));
                 yield* s.idle;
               }
-              yield* s.pushScreen(shot(8, "Z")); // X から 10 秒未満。最後に添えた 2 件は「なし」だけ
+              yield* s.pushScreen(shot(8, "Z")); // X から 10 秒未満。共有終了が続いた後
             }),
           [9, 10],
         );
@@ -884,8 +878,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         );
         expect(liveCalls.map(startsOfCall)).toEqual([undefined, [4]]);
         expect(restoredCalls.map(startsOfCall)).toEqual(liveCalls.map(startsOfCall));
-        expect(restoredCalls.map(previousOfCall)).toEqual(liveCalls.map(previousOfCall));
-        expect(restoredCalls.map(previousOfCall)).toEqual([[0], [0]]);
       }));
 
     it.effect("一時停止した回で、それまでの持ち越しが添える対象に選ばれても、復元と元のセッションの続きは一致する（選んだ画面は戻る）", () =>
@@ -904,8 +896,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         );
         expect(liveCalls.map(startsOfCall)).toEqual([[8]]);
         expect(restoredCalls.map(startsOfCall)).toEqual([[8]]);
-        expect(liveCalls.map(previousOfCall)).toEqual([[0]]);
-        expect(restoredCalls.map(previousOfCall)).toEqual([[0]]);
       }));
 
     it.effect("一時停止した回の応答待ちの間に受けた画面は、選ぶ前に戻した後も失われず、復元と元のセッションの続きは一致する", () =>
@@ -924,7 +914,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
         );
         expect(liveCalls.map(startsOfCall)).toEqual([[8], [25]]);
         expect(restoredCalls.map(startsOfCall)).toEqual([[8], [25]]);
-        expect(restoredCalls.map(previousOfCall)).toEqual(liveCalls.map(previousOfCall));
       }));
   });
 
@@ -938,28 +927,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
       ];
       const error = yield* Effect.flip(restore(events));
       expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 3 });
-    }));
-
-  it.effect("1 回の呼び出しで 3 件添えていたログは、その中の新しい 2 件を送り直す", () =>
-    Effect.gen(function* () {
-      const files = ["0001.0.jpg", "0002.0.jpg", "0004.0.jpg"];
-      const stored: Screens = files.map((file) => ({ file, bytes: bytesOf(`bytes:${file}`) }));
-      const events: unknown[] = [
-        { type: "start", title: "定例" },
-        { type: "screen", start: 1, image: files[0] },
-        { type: "screen", start: 2, image: files[1] },
-        { type: "screen", start: 3, image: null },
-        { type: "screen", start: 4, image: files[2] },
-        { type: "remark", remark: spoken("r1", 10) },
-        { type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0, screenCount: 4, screens: [{ start: 2, image: files[1] }, { start: 3, image: null }, { start: 4, image: files[2] }] }, ops: [], dropped: [] },
-      ];
-      const cont = scripted([]);
-      const restored = yield* restoreSession(events).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), reader(stored).log)));
-      yield* restored.push(spoken("r2", 20));
-      yield* restored.idle;
-      // 区切りは 10: 映り始めが 1〜4 の変化はすべて添え済み
-      expect("screens" in cont.calls[0]!).toBe(false);
-      expect(view(cont.calls[0]!.previousScreens)).toEqual([{ start: 3, bytes: null }, { start: 4, bytes: Array.from(bytesOf("bytes:0004.0.jpg")) }]);
     }));
 
   it.effect("画像を読めなくても復元はでき、続きの呼び出しは差分更新を呼ばずに失敗として diff の行に残る", () =>
