@@ -196,7 +196,7 @@ describe("Claude の利用上限で止まったログからの復元", () => {
       const state = yield* restoreState(rows);
       expect(ids(state.pending)).toEqual(["r2"]);
       expect(state.round).toBe(1);
-      expect(state.previousResponse).toBeUndefined();
+      expect(state).not.toHaveProperty("previousResponse");
       const restored = yield* restoreSession(rows).pipe(Effect.provide(Layer.merge(forbiddenUpdater, silentLog)));
       expect(ids(yield* restored.unreflectedRemarks)).toEqual(["r2"]);
     }));

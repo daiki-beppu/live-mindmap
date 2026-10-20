@@ -1,6 +1,6 @@
 // 振り分け（DiffUpdater の口の 1 段）。差分更新を呼ぶたびに判定へ「新しい発言に決定・TODO が含まれるか」を聞き、
 // 確からしさが ROUTE_THRESHOLD 以上（または判定できなかった回）なら Sonnet 5.5、未満なら Haiku 5.5 の差分更新を呼ぶ。
-// query はモデルごとに 1 本。セッションの previousResponse は持ち主を区別しないので、ここで持ち主ごとに仕分ける。
+// この DiffUpdater が直前に返した応答を当てた結果を、その応答を返した内側の updater へ回す。
 import { Clock, Effect } from "effect";
 import { DiffUpdater, type DiffInput, type PreviousResponse, type Remark, type ScreenChange } from "./core/index.ts";
 import type { JudgeAsk, JudgeQuestion } from "./systemOne.ts";
@@ -30,7 +30,8 @@ type Parts = { readonly ask: JudgeAsk; readonly sonnet: DiffUpdater["Service"]; 
 
 export const routedUpdater = (parts: Parts) => Effect.sync(() => {
   let retained: readonly Remark[] = []; // 受け取った発言の、直前の発言の候補（DiffInput.recent は 3 件までなので自前で保つ）
-  let last: Destination | undefined; // 前回の呼び出しで回した先。入力の previousResponse の持ち主
+  let last: Destination | undefined; // 直前の応答を返した内側の updater。次の入力の previousResponse を回す先
+  // 各 updater が直前に返した応答を当てた結果を、その updater を次に呼ぶまで保つ
   const own: Record<Destination, PreviousResponse | undefined> = { [SONNET]: undefined, [HAIKU]: undefined };
   // 共有画面の変化は core が 1 度しか添えない。各 query が、自分がまだ受け取っていない変化を受け取れるように、query ごとに溜める
   const unseen: Record<Destination, readonly ScreenChange[]> = { [SONNET]: [], [HAIKU]: [] };

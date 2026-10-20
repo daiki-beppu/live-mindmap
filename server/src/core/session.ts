@@ -27,10 +27,10 @@ export type DiffInput = {
   recent: Remark[]; // 直前に処理済みの発言（文脈用）
   fresh: Remark[]; // 新しい発言
   screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
-  previousResponse?: PreviousResponse; // 直前に適用した応答の、仮 ID の対応と捨てた操作。直前の差分更新が失敗した回と、どちらも空の回にはキーごと付けない
+  previousResponse?: PreviousResponse; // この DiffUpdater が直前に返した応答を当てた結果（仮 ID の対応と捨てた操作）で、直前の差分更新が失敗した回と、どちらも空の回にはキーごと付けない
   speakerNames?: ReadonlyMap<string, string>; // 話者のラベル → 名前（Issue #1026）。サーバーが呼ぶたびにそのときの表を載せる。core は付けない。名前の無いときはキーごと付けない
 };
-// 直前に適用した応答。refs は適用できた add の仮 ID → n の ID、dropped はその応答で捨てた操作と理由
+// この DiffUpdater が直前に返した応答を当てた結果。refs は適用できた add の仮 ID → n の ID、dropped はその応答で捨てた操作と理由
 export type PreviousResponse = {
   readonly refs: Readonly<Record<string, string>>;
   readonly dropped: readonly Dropped[];
@@ -175,7 +175,6 @@ export type SessionState = {
   readonly changes: readonly ChangeEntry[]; // 反映ごとに積む、変わったことの履歴
   readonly currentTopic: string | undefined; // 今の議題の ID。変わったノードのある反映で更新する
   readonly lastChanged: string | undefined; // 直近の反映で最後に変わったノードの ID。変わったノードが無ければ undefined
-  readonly previousResponse: PreviousResponse | undefined; // 最後に適用した応答の対応と捨てた操作。差分更新の失敗の後と、どちらも空の応答の後は undefined
   readonly diffUpdate: DiffUpdateState; // 差分更新の状態。paused の行で一時停止（reason つき）、resumed の行・paused の後の diff の行で running に戻る
 };
 
@@ -210,7 +209,6 @@ function recordRound(history: History, before: MeetingMap, applied: { map: Meeti
 }
 
 // 適用した応答から、次の差分更新の入力に載せる値を作る。対応も捨てた操作も無ければ載せるものが無い
-// ライブ（callUpdater）と復元（replayDiff）が同じ関数を通す
 const previousResponseOf = (applied: { refs: Record<string, string>; dropped: Dropped[] }): PreviousResponse | undefined =>
   Object.keys(applied.refs).length || applied.dropped.length ? { refs: applied.refs, dropped: applied.dropped } : undefined;
 
@@ -238,7 +236,6 @@ type Replay = {
   readonly anchor: number | undefined;
   readonly imagesSkipped: boolean; // screen-input-skipped の行を読んだ（画像を添えない会議）。10 秒の規則による保留は無いので持ち越しを作らない
   readonly files: Set<string>;
-  readonly previousResponse: PreviousResponse | undefined;
   readonly diffUpdate: DiffUpdateState;
 };
 
@@ -285,18 +282,18 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
   const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
   // ライブ（callUpdater）と同じく、一時停止からの再試行で届いた diff の行（失敗も含む）で running に戻る
   const diffUpdate = replay.diffUpdate.status === "paused" ? { status: "running" as const } : replay.diffUpdate;
-  return { ...replay, diffUpdate, map: applied.map, unsent, carried: fresh.length ? carried : replay.carried, anchor, history, previousResponse: e.error === undefined ? previousResponseOf(applied) : undefined };
+  return { ...replay, diffUpdate, map: applied.map, unsent, carried: fresh.length ? carried : replay.carried, anchor, history };
 });
 
 // ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
-// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff・screen-input-skipped（画像を添えない会議の印として、持ち越しの判定に使う）・diff-update-paused（前回の応答をなくす）を読む。screen-off・intake-*・知らない type は読み飛ばす。
+// 行ごとに type を見分けてから、その type の Schema で decode する。start・remark・screen・diff・screen-input-skipped（画像を添えない会議の印として、持ち越しの判定に使う）・diff-update-paused（一時停止の理由を戻す）を読む。screen-off・intake-*・知らない type は読み飛ばす。
 // まだ添えていない変化は、screen の行を受け取り順に積み、後ろの diff で、その diff の screenCount より前に受け取った画面のうち、
 // 区切り（渡した新しい発言の end の最大値）以下に映り始めたものを外して求める（選んだ後に受け取った画面は、時刻が区切り以下でも残す）。
 // 10 秒未満で添えなかった変化の最新の 1 件（持ち越し）は外さず残し、起点（直前に添えた画像の start）とともに、ログの input.screens から求める。
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
   let replay: Replay = {
     map: undefined, remarks: [], byId: new Map(), processed: [], known: new Set(), history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
-    unsent: [], received: 0, carried: undefined, anchor: undefined, imagesSkipped: false, files: new Set(), previousResponse: undefined, diffUpdate: { status: "running" },
+    unsent: [], received: 0, carried: undefined, anchor: undefined, imagesSkipped: false, files: new Set(), diffUpdate: { status: "running" },
   };
   let index = -1;
   for (const event of events) {
@@ -323,15 +320,15 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       replay = { ...replay, imagesSkipped: true };
     } else if (type === DiffUpdatePausedEvent.fields.type.literal) {
       const e = yield* decodePaused(event).pipe(failed);
-      replay = { ...replay, previousResponse: undefined, diffUpdate: { status: "paused", reason: e.reason } };
+      replay = { ...replay, diffUpdate: { status: "paused", reason: e.reason } };
     } else if (type === DiffUpdateResumedEvent.fields.type.literal) {
       replay = { ...replay, diffUpdate: { status: "running" } };
     }
   }
-  const { map, remarks, processed, known, history, unsent, files, received, previousResponse, carried, anchor, diffUpdate } = replay;
+  const { map, remarks, processed, known, history, unsent, files, received, carried, anchor, diffUpdate } = replay;
   if (!map) return yield* new InvalidLogEvent({ index: 0, reason: "ログに start がありません" });
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map, pending, processed, remarks, known, ...history, previousResponse, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), files, received, carried, anchor } };
+  return { map, pending, processed, remarks, known, ...history, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), files, received, carried, anchor } };
 });
 
 // 状態からスナップショットを作る（純粋）
@@ -383,6 +380,7 @@ type Reservation = { readonly kind: "reserved" };
 type InFlight = Reservation | { readonly kind: "running"; readonly fiber: Fiber.Fiber<void> };
 
 type Runtime = {
+  readonly previousResponse: PreviousResponse | undefined; // この DiffUpdater が直前に返した応答を当てた結果。失敗の後と、対応も捨てた操作も空の応答の後は undefined
   readonly retryEnabled: boolean; // 終了のflushが始まったら、書き出し中も再試行を起動しない
   readonly nextRetryAt: number | undefined; // 一時停止から次に再試行する時刻（エポックからのミリ秒）。一時停止の間だけ持つ
   readonly inFlight: InFlight | undefined;
@@ -454,7 +452,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     const log = yield* SessionLog;
     // 通った名前が 1 件以上あるときだけ、受け取る側（あれば）へ渡す
     const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
 
     const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
       const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -716,7 +714,6 @@ export const makeSession = Effect.fnUntraced(function* ({ title, images = true, 
     changes: [],
     currentTopic: undefined,
     lastChanged: undefined,
-    previousResponse: undefined,
     diffUpdate: { status: "running" },
   }, noScreens, images, logShiftMs, onSpeakerNames);
 });

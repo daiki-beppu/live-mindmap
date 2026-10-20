@@ -340,7 +340,7 @@ describe("ログからの復元", () => {
 
   it.effect("続きの差分更新が受け取る直前の発言・マップは、元のセッションが続けた場合と同じ", () =>
     Effect.gen(function* () {
-      // 元のセッションをそのまま続けた場合と、復元して続けた場合で、差分更新への入力が一致する
+      // 元のセッションをそのまま続けた場合と、復元して続けた場合で、差分更新へ渡すマップと発言が一致する
       const p = [remark("一"), remark("二"), remark("三"), remark("四")];
       const first: Op[] = [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [p[0]!.id] }];
       // 元のセッション: 1 回目の呼び出し中に p[1]〜p[3] が届き、2 回目の呼び出しに 3 件まとめて渡る
@@ -357,7 +357,9 @@ describe("ログからの復元", () => {
       yield* restored.idle;
 
       expect(restoredScript.calls).toHaveLength(1);
-      expect(restoredScript.calls[0]).toEqual(calls[1]);
+      expect(restoredScript.calls[0]!.map).toEqual(calls[1]!.map);
+      expect(restoredScript.calls[0]!.recent).toEqual(calls[1]!.recent);
+      expect(restoredScript.calls[0]!.fresh).toEqual(calls[1]!.fresh);
       expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
     }));
 
@@ -967,8 +969,6 @@ describe("共有画面の復元（復元はファイル名だけを戻し、画�
 });
 
 describe("復元して続けた差分更新の入力: 前回の応答", () => {
-  const failure = (message: string): UpdateFailure => ({ _tag: "UpdateFailed", message });
-
   const continued = (events: LogEvent[], next: Remark) =>
     Effect.gen(function* () {
       const cont = scripted([]);
@@ -978,7 +978,7 @@ describe("復元して続けた差分更新の入力: 前回の応答", () => {
       return cont.calls;
     });
 
-  it.effect("最後の差分更新が成功したログから続けると、その応答の対応と捨てた操作が入力に載り、元のセッションの続きと一致する", () =>
+  it.effect("復元した続きの入力には前回の応答が載らない", () =>
     Effect.gen(function* () {
       const p = [remark("一"), remark("二"), remark("三")];
       const dropOp: Op = { op: "add", ref: "u9", parent: "n99", kind: "課題", text: "親が無い", evidence: [p[0]!.id] };
@@ -987,20 +987,13 @@ describe("復元して続けた差分更新の入力: 前回の応答", () => {
       const secondDiff = events.findIndex((e, i) => e.type === "diff" && events.slice(0, i).some((x) => x.type === "diff"));
       const logged = events.slice(0, secondDiff).filter((e) => !(e.type === "remark" && e.remark.id === p[2]!.id));
 
+      expect(calls).toHaveLength(2);
+      expect(calls[1]!.previousResponse).toEqual({ refs: { u1: "n1" }, dropped: [{ op: dropOp, reason: "親が存在しない" }] });
       const got = yield* continued(logged, p[2]!);
-      expect(got[0]!.previousResponse).toEqual({ refs: { u1: "n1" }, dropped: [{ op: dropOp, reason: "親が存在しない" }] });
-      expect(got[0]).toEqual(calls[1]);
-    }));
-
-  it.effect("最後の差分更新が失敗したログから続けると、続きの入力に前回の応答は載らない", () =>
-    Effect.gen(function* () {
-      const p = [remark("一"), remark("二"), remark("三")];
-      const { events } = yield* playBatches(
-        [[p[0]!], [p[1]!]],
-        [[{ op: "add", ref: "u1", parent: "root", kind: "議題", text: "採用", evidence: [p[0]!.id] }], failure("timeout")],
-      );
-      const got = yield* continued(events, p[2]!);
       expect(got).toHaveLength(1);
-      expect("previousResponse" in got[0]!).toBe(false);
+      expect(got[0]!.map).toEqual(calls[1]!.map);
+      expect(got[0]!.recent).toEqual([p[0]!]);
+      expect(got[0]!.fresh).toEqual([p[1]!, p[2]!]);
+      expect(got[0]).not.toHaveProperty("previousResponse");
     }));
 });
