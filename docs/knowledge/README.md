@@ -6,6 +6,8 @@
 - [右の列](side-panel.md): 根拠・TODO・変わったことの段を足す・変える・テストするとき
 - [セッションの sink](session-sink.md): server のセッションの sink と、語彙・発言の流れ・録画の feed・再生の補正を触るとき
 - [取り込みの試行](intake-attempts.md): ヘルパーの起動・起動し直し・停止・試行中の指令（`intakeAttempts`）と、それを呼ぶ `Sessions` の配線を触るとき
+- [更新の計画](update-plan.md): 差分更新のモデルと判定のモデルの選び方（`updatePlan`）と、それを呼ぶ CLI と server の配線を触るとき
+- [CLI と server の受け渡し](server-protocol.md): CLI と server の間の経路・本文・応答（`serverProtocol`）と、web が送る本文を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 
 ## 取り込み済み
@@ -33,3 +35,11 @@
 - #1316 の takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）の trace と reports → [取り込みの試行](intake-attempts.md)、[takt の run](takt-runs.md)。`decodeHelperEvent` が省いた `duplicate` を `false` に直すので fixture に明示した件は捨てた: decoder の型を見れば分かる。トークンの量は捨てた: 作業の判断に使わない
 - チケット [#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368) の差分と「今の場所」のコメント → [取り込みの試行](intake-attempts.md)、[セッションの sink](session-sink.md)
 - #1317 の takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）の trace と reports → [取り込みの試行](intake-attempts.md)、[takt の run](takt-runs.md)。否定の assert を処理の終わりの合図と組にする件は捨てた: `CODING_STANDARDS.md` の Negative tests にある。本文の `recordedSessionLog.it` が実在せず `loggedSessionLog.it` だった件は捨てた: その場限りの書き誤り
+- 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306)（Formal Spec のコメントを含む） → [更新の計画](update-plan.md)、[CLI と server の受け渡し](server-protocol.md)。用語は捨てた: 「更新の計画」は #1297 で足してあり、ほかは足さないと仕様が決めている。ADR は捨てた: 受け渡しの置き場所は #1308 が [ADR 0023](../adr/0023-cli-and-server-share-one-protocol-module.md) で書き、更新の計画のモジュールの切り方は内側の構造で覆しやすい
+- 親 [#1307](https://github.com/daiki-beppu/live-mindmap/issues/1307) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)・[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326) の差分 → [CLI と server の受け渡し](server-protocol.md)。ADR 0023 に書かれた置き場所・defect の 500・`HttpApi` を採らない理由は、知識文書に写さず捨てた
+- チケット [#1309](https://github.com/daiki-beppu/live-mindmap/issues/1309)・[PR #1328](https://github.com/daiki-beppu/live-mindmap/pull/1328) の差分 → [更新の計画](update-plan.md)
+- チケット [#1310](https://github.com/daiki-beppu/live-mindmap/issues/1310)・[PR #1370](https://github.com/daiki-beppu/live-mindmap/pull/1370) の差分 → [更新の計画](update-plan.md)
+- #1308〜#1310 の PR の本文と resolution コメント → [takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった
+- #1310 の takt の run（`takt-worktrees/20261020T0215-1310-issue-1310-cli-recorded-ni-jud-8dd3338e9a116999/.takt/runs`） → [takt の run](takt-runs.md)。worktree はマージの後に消えていて、trace と reports は読めなかった。#1308・#1309 の実装の run も同じ
+- PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`・`20261018-022556-evaluate-pull-request-1328-usi`・`20261020-025344-evaluate-pull-request-1370-usi`）の trace と reports → [更新の計画](update-plan.md)、[CLI と server の受け渡し](server-protocol.md)、[takt の run](takt-runs.md)。#1328 のレビューで main との衝突を解く段が入ったことは捨てた: 作業の判断に使わない。run ごとの所要時間は捨てた: 作業の判断に使わない

@@ -47,6 +47,18 @@ heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/
 
 run の報告を読むときは、どの段が実際にコマンドを流したかを証跡のログで見る。レビューの件数が 0 でも、まとめた経路の後処理の取り違えのような、テストが元々見ていない退行は残りうる。
 
+## 1 回で通った run の PR の本文には、実装の報告が写らない。層の結果は CI の check で見る
+
+仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 3 本（[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)・[#1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)・[#1370](https://github.com/daiki-beppu/live-mindmap/pull/1370)）は、どれも PR の本文の `## Execution Report` が「Workflow `default` completed successfully.」の 1 行だけだった。チケットの完了条件には「実行した層と結果を実装の報告に書く（PR の本文へ写される）」があり、#1309 には `cli eval` の前後の表も求めていた。どちらも PR からは辿れない。本文に報告が載ったのは、修正や検証の段が報告を書いた run だけだった（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362) の「P1: 必須検証の実行報告」、[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) の破壊検証の結果）。
+
+PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「機械ゲートは審査しない」と書いて APPROVE する。#1370 のコーディングレビューは、GitHub の CI の check（型検査・unit・IT・heavy IT・E2E）の成功を見て、それを根拠にした。層が通ったかは CI の check で見る。PR の本文に結果を残させたいなら、報告を本文に書く手順をチケットの完了条件とは別に用意する。
+
+## 実装の run の trace と reports は takt の worktree の中にあり、マージの後に消える
+
+実装の run は、`takt-worktrees/<run>/.takt/runs/` に trace と reports を書く。その worktree はマージの後に片付けられる。#1310 の run（`takt-worktrees/20261020T0215-1310-…/.takt/runs`）は、学びをまとめる前に消えていた。#1308・#1309 の worktree も残っていなかった。本体の `.takt/runs/` に残るのは、PR のレビューの run（trace・`coding-review.md`・`review-resolution.md`）と、実装の run の `interventions.jsonl`（終わった時刻と状態だけ）だけだった。
+
+実装の段の計画・決定ログ・層の結果を学びにしたいときは、マージを予約する前に worktree の `.takt/runs/` を読むか、どこかへ写しておく。消えた後に読めるのは、PR の差分とレビューの報告だけになる。
+
 ## 隔離コピーで `pnpm` を流すと、リンク先の依存が入れ直される。`verifyDepsBeforeRun` を切る
 
 #1317 の破壊検証は、`server/` の下を隔離コピーし、`node_modules` をシンボリックリンクにして、コピーの `sessions.ts` だけを壊した。そのコピーで `pnpm test` を流すと、pnpm の実行前の依存の確認が依存を入れ直し、リンク先の worktree の Vitest が 5.0.3 から 5.0.5 に変わった。直後の IT は 3 ファイルとも `SyntaxError: The requested module 'effect/Path' does not provide an export named 'make'` で読み込めず、0 件で終わった。`pnpm install --frozen-lockfile --force` で lockfile どおりに戻し、隔離の側の実行に `--config.verifyDepsBeforeRun=false` を付けてから、壊す検証と層をやり直した。
@@ -62,4 +74,5 @@ run の報告を読むときは、どの段が実際にコマンドを流した�
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
 - #1287 の takt の run（`20261017-060712-implement-using-only-the-files-sugyi4`）の計画・2 回の実装の報告と決定ログ
 - 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の子 [#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) とその takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）、[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368) とその takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）
+- 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 [#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)・[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)、[#1309](https://github.com/daiki-beppu/live-mindmap/issues/1309)・[PR #1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)、[#1310](https://github.com/daiki-beppu/live-mindmap/issues/1310)・[PR #1370](https://github.com/daiki-beppu/live-mindmap/pull/1370) と、その PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`・`20261018-022556-evaluate-pull-request-1328-usi`・`20261020-025344-evaluate-pull-request-1370-usi`）
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)
