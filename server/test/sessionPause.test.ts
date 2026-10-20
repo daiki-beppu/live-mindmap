@@ -305,7 +305,7 @@ describe("同じSessionでの一時停止と再開", () => {
     expect(calls[1]!.previousResponse?.refs).toEqual({ u1: "n1" });
     expect(calls[1]!.previousResponse?.dropped.map((d) => d.reason)).toEqual(["親が存在しない"]);
     const restoredState = yield* restoreState(events.map((e) => JSON.parse(JSON.stringify(e)) as unknown));
-    expect(restoredState.previousResponse).toBeUndefined();
+    expect(restoredState).not.toHaveProperty("previousResponse");
     yield* TestClock.adjust(FIVE_MINUTES);
     yield* settleUntil(() => calls.length === 3);
     yield* session.idle;
