@@ -8,9 +8,9 @@ import type { JudgeAsk, JudgeQuestion } from "./systemOne.ts";
 export const SONNET = "claude-sonnet-5-5";
 export const HAIKU = "claude-haiku-5-5";
 // 「含む」の確からしさ（distribution.yes）がこの値以上なら Sonnet。比べる対象は yes の確率で、選んだ側の確からしさではない
-export const ROUTE_THRESHOLD = 0.3;
+const ROUTE_THRESHOLD = 0.3;
 const CONTEXT_REMARKS = 6;
-const SCREENS_MAX = 3; // core が 1 回の呼び出しに添える共有画面の上限（core/session.ts と同じ）
+const UNSEEN_SCREENS_MAX = 3; // 使わない会話のために費用が膨らまないよう、未送画面の保持を制限する
 const QUESTION_NAME = "route";
 const QUESTION: JudgeQuestion = {
   type: "noul",
@@ -51,10 +51,10 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
     last = destination;
 
     const arrived = input.screens ?? [];
-    unseen[SONNET] = [...unseen[SONNET], ...arrived].slice(-SCREENS_MAX);
-    unseen[HAIKU] = [...unseen[HAIKU], ...arrived].slice(-SCREENS_MAX);
-    const screens = unseen[destination];
+    const screens = [...unseen[destination], ...arrived];
     unseen[destination] = [];
+    const other = destination === SONNET ? HAIKU : SONNET;
+    unseen[other] = [...unseen[other], ...arrived].slice(-UNSEEN_SCREENS_MAX);
     // 開き直した query に送り直す画面は、この呼び出しで添える画面と重ならないものだけにする
     const starts = new Set(screens.map((c) => c.start));
     const previousScreens = (input.previousScreens ?? []).filter((c) => !starts.has(c.start));

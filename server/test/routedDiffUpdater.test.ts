@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { DiffUpdater, emptyMap, type DiffInput, type DiffResult, type DiffUpdateError, type KatakanaAnswer, type PreviousResponse, type Remark } from "../src/core/index.ts";
-import { HAIKU, ROUTE_THRESHOLD, routedUpdater, SONNET } from "../src/routedDiffUpdater.ts";
+import { HAIKU, routedUpdater, SONNET } from "../src/routedDiffUpdater.ts";
 import type { JudgeAsk, JudgeOutcome } from "../src/systemOne.ts";
 
 // 振り分け（DiffUpdater の口の 1 段）。偽の判定と偽の Sonnet / Haiku の差分更新で、行き先・質問・state・
@@ -58,12 +58,6 @@ const setup = (script: readonly Scripted[], options: { sonnetFails?: Set<number>
 const input = (fresh: readonly Remark[], extra: Partial<DiffInput> = {}): DiffInput => ({ map: emptyMap("定例"), recent: [], fresh: [...fresh], ...extra });
 
 describe("振り分け: 行き先（しきい値 0.3）", () => {
-  it("しきい値は 0.3 の定数で、モデル名は Sonnet 5.5 と Haiku 5.5", () => {
-    expect(ROUTE_THRESHOLD).toBe(0.3);
-    expect(SONNET).toBe("claude-sonnet-5-5");
-    expect(HAIKU).toBe("claude-haiku-5-5");
-  });
-
   it.effect("確からしさが 0.3 ちょうど・0.9 なら Sonnet だけを呼ぶ", () => Effect.gen(function* () {
     const { router, sonnet, haiku, judge } = yield* setup([0.3, 0.9]);
     yield* router.update(input([remark(1)]));
@@ -262,6 +256,33 @@ describe("振り分け: 判定の記録", () => {
 describe("振り分け: 共有画面", () => {
   const shot = (start: number, id = `img${start}`) => ({ start, image: { id, bytes: new Uint8Array([start]) } });
   const starts = (screens: DiffInput["screens"]) => screens?.map((c) => c.start);
+
+  for (const destination of ["sonnet", "haiku"] satisfies ReadonlyArray<"sonnet" | "haiku">) {
+    const likelihood = destination === "sonnet" ? 0.9 : 0.1;
+    const otherLikelihood = destination === "sonnet" ? 0.1 : 0.9;
+
+    it.effect(`今回の共有画面が4件あっても、${destination} に全件を順序どおり渡す`, () => Effect.gen(function* () {
+      const ctx = yield* setup([likelihood]);
+      const screens = [shot(10), shot(20), shot(30), shot(40)];
+
+      yield* ctx.router.update(input([remark(1)], { screens }));
+
+      expect(ctx[destination].inputs[0]?.screens).toEqual(screens);
+    }));
+
+    it.effect(`${destination} に戻ると、未送の最新3件の後に今回の4件を全件渡す`, () => Effect.gen(function* () {
+      const ctx = yield* setup([likelihood, otherLikelihood, otherLikelihood, likelihood]);
+      yield* ctx.router.update(input([remark(1)], { screens: [shot(0)] }));
+      expect(ctx[destination].inputs[0]?.screens).toEqual([shot(0)]);
+      yield* ctx.router.update(input([remark(2)], { screens: [shot(10), shot(20)] }));
+      yield* ctx.router.update(input([remark(3)], { screens: [shot(30), shot(40)] }));
+      const screens = [shot(50), shot(60), shot(70), shot(80)];
+
+      yield* ctx.router.update(input([remark(4)], { screens }));
+
+      expect(ctx[destination].inputs[1]?.screens).toEqual([shot(20), shot(30), shot(40), ...screens]);
+    }));
+  }
 
   it.effect("core が 1 度しか添えない画面の変化も、各 query が自分の未受信分を受け取る（Sonnet に A → Haiku に B → 画面なしで Sonnet）", () => Effect.gen(function* () {
     const { router, sonnet, haiku } = yield* setup([0.9, 0.1, 0.9]);
