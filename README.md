@@ -33,7 +33,7 @@ Read the [full descriptions in Japanese](README.ja.md#できること).
 - **Publish the review page** (`cli publish`). Use your own Cloudflare account, with an expiry and a passphrase by default.
 - **List and withdraw publications** (`cli publish list`, `cli publish withdraw`). Inspect publication records or remove a published page before it expires.
 - **Export and review** (`cli stop`, `cli review`). Export Markdown, JSON, Drawnix, PNG, and a seekable `map.html` (with audio: `map-audio.html`).
-- **Build from a recording** (`cli recorded`). Turn a recorded meeting into a session.
+- **Build from a recording** (`cli recorded`). Turn a recorded meeting into a session, or save corrected, speaker-labelled remarks without a model using `--no-map` and build the map later with `cli play`.
 - **Replay** (`cli play`, `cli restore`). Replay transcripts or past sessions, or restore the map from its log.
 - **Choose the model.** Use Claude (your Anthropic API key), a ChatGPT subscription, or Apple Intelligence in local mode; judges (Jev or Clef) route updates by complexity.
 - **Evaluate** (`cli eval`). Measure map shape, recognition accuracy and latency.

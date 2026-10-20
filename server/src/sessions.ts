@@ -45,7 +45,7 @@ import { planModel } from "./updatePlan.ts";
 import { audioFileNames, SessionSinks, type LiveSink, type RecordedSink } from "./sessionSinks.ts";
 import { Viewers } from "./viewers.ts";
 import { ManagedDeps } from "./managedDeps.ts";
-import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
+import { checkManagedDeps, requireRecordedTranscriptDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
 import type { CheckReport } from "./managedDepsProtocol.ts";
 
 // セッションの開始に渡す値。null と省略はどちらも「指定なし」で、既定は title がフォルダ名・audio が録音する
@@ -55,7 +55,7 @@ export type SessionStart = { app: string; title: string | undefined; audio: bool
 
 // 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・plan は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる。
 // selfFile は自分用の録音のファイル（絶対パス。cli recorded --self）。あれば、file を 相手、selfFile を 自分 の 2 トラックで組む
-export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean; plan: import("./updatePlan.ts").UpdatePlan };
+export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean } & ({ noMap: true; plan?: never } | { noMap?: false; plan: import("./updatePlan.ts").UpdatePlan });
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -90,7 +90,7 @@ type RecordedPause = NonNullable<RecordedProgress["paused"]>;
 
 // 録画からのセッション。ヘルパーが落ちたら、ライブと同じ判断（ADR 0008）で、最後に作った発言の end から読み直す
 type Recorded = {
-  model: import("./modelSelection.ts").ExecutableModel;
+  local: boolean;
   dir: string;
   file: string;
   selfFile: string | undefined;
@@ -457,12 +457,17 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       const beginRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
-        const model = planModel(input.plan);
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
-          const startupWarnings = yield* requireStartupDeps("recorded", model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-          const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
-          const warnings = notice === undefined ? startupWarnings : [...startupWarnings, notice];
+          const prepared = input.noMap === true
+            ? { noMap: true as const, warnings: yield* requireRecordedTranscriptDeps(helpers.checkNoScreen) }
+            : yield* Effect.gen(function* () {
+              const model = planModel(input.plan);
+              const startupWarnings = yield* requireStartupDeps("recorded", model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+              const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+              return { noMap: false as const, model, updaterLayer, warnings: notice === undefined ? startupWarnings : [...startupWarnings, notice] };
+            });
+          const { warnings } = prepared;
           // 基準の時刻は、ファイルの作成日時。取れないとき（記録が無い・聞けなかった）は、流し始めた今の時刻。
           // フォルダ名と log.jsonl の時刻は、この 1 つの基準から決める（ずらし幅 = 基準 − 今）
           const now = DateTime.nowUnsafe();
@@ -482,9 +487,10 @@ export class Sessions extends Context.Service<Sessions, {
           const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
           const sink = yield* sinks.openRecorded({
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-            model, vocab: input.vocab, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
+            ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
             recorded: {
               realtime: input.realtime,
+              excluded: (surfaces) => Effect.asVoid(Queue.offer(events, { type: "vocabulary-excluded", surfaces })),
               selfTrack: input.selfFile !== undefined,
               progress: ({ position, rounds }) =>
                 Effect.andThen(
@@ -504,7 +510,7 @@ export class Sessions extends Context.Service<Sessions, {
             },
           }).pipe(Scope.provide(scope));
           const recorded: Recorded = {
-            model,
+            local: prepared.noMap ? false : prepared.model.local,
             dir,
             file: input.file,
             selfFile: input.selfFile,
@@ -534,7 +540,7 @@ export class Sessions extends Context.Service<Sessions, {
               : concludeRecorded(recorded, Effect.andThen(sink.discardBacklog, sink.finishBacklog), { ...end.last.exit, stderrTail: end.last.stderrTail });
           }), scope);
           yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
-          yield* viewers.sessionMode({ type: "session-mode", local: model.local });
+          yield* viewers.sessionMode({ type: "session-mode", local: recorded.local });
           return { dir, warnings, events: Stream.fromQueue(events) };
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
@@ -651,7 +657,7 @@ export class Sessions extends Context.Service<Sessions, {
       const liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure> = Effect.gen(function* () {
         const current = yield* Ref.get(state);
         if (current.kind === "live") return { scope: current.live.scope, local: current.live.model.local };
-        if (current.kind === "recorded") return { scope: current.recorded.scope, local: current.recorded.model.local };
+        if (current.kind === "recorded") return { scope: current.recorded.scope, local: current.recorded.local };
         return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
       });
 

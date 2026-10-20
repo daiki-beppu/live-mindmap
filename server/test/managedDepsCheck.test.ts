@@ -3,7 +3,7 @@ import { Effect, Layer, Stream } from "effect";
 import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
-import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "../src/managedDepsCheck.ts";
+import { checkManagedDeps, requireRecordedTranscriptDeps, requireStartupDeps, startupPreparationFailure } from "../src/managedDepsCheck.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { HelperCheckFailure } from "../src/helpers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
@@ -148,4 +148,18 @@ describe("入口とモデル経路による管理依存の必要度", () => {
       "入れるには: swift build -c release --package-path helper",
     ]);
   });
+});
+
+describe("文字のみの録画の開始依存", () => {
+  it.effect("モデル依存を提供せず、helperと日本語音声認識だけで開始できる", () => Effect.gen(function* () {
+    expect(yield* requireRecordedTranscriptDeps(readyHelperChecks.checkNoScreen)).toEqual([]);
+  }));
+  it.effect("helperを確認できないときは開始を断る", () => Effect.gen(function* () {
+    const result = yield* Effect.result(requireRecordedTranscriptDeps(Effect.fail(new HelperCheckFailure({ message: "確認失敗" }))));
+    expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "StartupDepsMissing", items: [{ name: "helper", state: "missing" }] } });
+  }));
+  it.effect("日本語音声認識が未導入なら開始を断る", () => Effect.gen(function* () {
+    const result = yield* Effect.result(requireRecordedTranscriptDeps(Effect.succeed({ microphone: "authorized", speechJa: { status: "supported", installedLocales: [] } })));
+    expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "StartupDepsMissing", items: [{ name: "speech-ja", state: "missing" }] } });
+  }));
 });

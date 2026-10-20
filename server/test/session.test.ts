@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { DateTime, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { exportFiles, hasContent, makeSession, restoreSession, type DiffInput, type DiffOutput, type InferredSpeakerName, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
+import { exportFiles, hasContent, makeSession, makeTranscriptSession, restoreSession, type DiffInput, type DiffOutput, type InferredSpeakerName, type LogEvent, type Op, type Remark, type Session, type Snapshot, type SnapshotNode } from "../src/core/index.ts";
 import { playBatches } from "./fixtures/batches.ts";
 import { collectLog, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
@@ -2002,4 +2002,23 @@ describe("話者の名前の確認", () => {
 
       expect(events.filter((e) => e.type === "diff")).toHaveLength(1);
     }));
+});
+
+describe("文字のみのセッション", () => {
+  it.effect("updaterを提供せず発言と画面を記録し、未反映の発言があってもflushを終える", () => Effect.gen(function* () {
+    const events: LogEvent[] = [];
+    const session = yield* makeTranscriptSession({ title: "文字だけ" }).pipe(Effect.provide(collectLog(events)));
+    const first = remark("保存する発言");
+    yield* session.push(first);
+    yield* session.pushScreen({ start: 1, image: null }, ["画面の語"]);
+    yield* session.flush;
+    expect(events).toEqual([
+      { type: "start", title: "文字だけ" },
+      { type: "remark", remark: first },
+      { type: "screen", start: 1, image: null, lines: ["画面の語"] },
+    ]);
+    expect(yield* session.unreflectedRemarks).toEqual([first]);
+    expect((yield* session.snapshot).round).toBe(0);
+    yield* session.idle;
+  }).pipe(Effect.scoped));
 });

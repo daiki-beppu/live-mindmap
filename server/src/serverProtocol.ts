@@ -45,6 +45,7 @@ export const SessionStartBody = Schema.Struct({
 // realtime は音声の時刻どおりに等速で入れる（省略は待ち時間なしの false）
 export const SessionRecordedBody = Schema.Struct({
   file: Schema.NonEmptyString,
+  noMap: Schema.optionalKey(Schema.Boolean),
   selfFile: Schema.optionalKey(Schema.NonEmptyString), // 自分用の録音の絶対パス（cli recorded --self）。省略は 1 本だけ
   title: OptionalTitle,
   vocab: Vocabulary,

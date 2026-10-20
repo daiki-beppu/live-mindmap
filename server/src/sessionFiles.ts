@@ -5,9 +5,11 @@ import { Cause, Console, DateTime, Effect, FileSystem, Layer, Ref, Schema, Semap
 import { MapCapture } from "./capture.ts";
 import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
+  DiffUpdater,
   exportFiles,
   logTimestamp,
   makeSession,
+  makeTranscriptSession,
   SessionLog,
   toJsonExport,
   type IntakeLogEvent,
@@ -149,7 +151,7 @@ export type LoggedSessionOptions = {
 // appendLog は、サーバーが取り込みの途切れ等（LogEvent ではない独自の種類）を log.jsonl へ追記するための口。
 // session のログと同じ書き先・同じ at 付きの形を共有するが、export.json は書き直さない（マップを変えない記録のため）。
 // ログが書けないとき（FileSystem の失敗）は、そのまま defect にする。
-export const openLoggedSession = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, onSpeakerNames, model }: LoggedSessionOptions) {
+const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, onSpeakerNames, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
   // SessionLog のメソッドの R は空なので、FileSystem はここで 1 回だけ受け取ってクロージャで使う
   const fs = yield* FileSystem.FileSystem;
   // 書き先（log.jsonl）と at 付きの形は、session のログ（LogEvent）とサーバーの独自の記録（IntakeLogEvent）で共有する。
@@ -172,7 +174,7 @@ export const openLoggedSession = Effect.fnUntraced(function* ({ dir, title, logS
         Effect.gen(function* () {
           const session = yield* serialized(
             Effect.gen(function* () {
-              yield* writeLogLine(event.type === "start" ? { ...event, model: { name: model.name, route: model.route, local: model.local } } : event);
+              yield* writeLogLine(event.type === "start" && model !== undefined ? { ...event, model: { name: model.name, route: model.route, local: model.local } } : event);
               const session = yield* Ref.get(current);
               if (session) yield* writeExport(session);
               return session;
@@ -195,9 +197,10 @@ export const openLoggedSession = Effect.fnUntraced(function* ({ dir, title, logS
       readScreen: (file) => fs.readFile(join(dir, SCREENS_DIR, file)).pipe(Effect.orDie),
     }),
   );
-  const images = model.route !== "apple" && model.images !== false;
+  const images = model === undefined || (model.route !== "apple" && model.images !== false);
   if (diffUpdate) yield* Effect.addFinalizer(() => diffUpdate({ type: "diff-update", state: null }));
-  const session = yield* makeSession({ title: title ?? basename(dir), images, logShiftMs, ...(onSpeakerNames ? { onSpeakerNames } : {}) }).pipe(Effect.provide(log));
+  const options = { title: title ?? basename(dir), images, logShiftMs, ...(onSpeakerNames ? { onSpeakerNames } : {}) };
+  const session = yield* (updater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, updater))).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
   if (diffUpdate) {
     yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });
@@ -207,3 +210,9 @@ export const openLoggedSession = Effect.fnUntraced(function* ({ dir, title, logS
   yield* Effect.flatMap(session.snapshot, publish); // 最初のルート
   return { session, appendLog: (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) => serialized(writeLogLine(event)) };
 });
+
+export const openLoggedSession = Effect.fnUntraced(function* (options: LoggedSessionOptions) {
+  return yield* openLogged(options, yield* DiffUpdater);
+});
+
+export const openLoggedTranscriptSession = (options: Omit<LoggedSessionOptions, "model">) => openLogged({ ...options, model: undefined }, undefined);

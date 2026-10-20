@@ -317,6 +317,25 @@ const reader = (table: Readonly<Record<string, string>>) => {
 };
 
 describe("modelReadings", () => {
+  it.effect("モデルなしでは日本語と略語だけを読み、保存済みの英単語は補正し、新しい英単語はnullで残す", () => Effect.gen(function* () {
+    const reading = reader({ 港南店: "kounanten", OJT: "oojiitii", Notion: "nooshon" });
+    const { vocabulary, lines } = yield* open(modelReadings(undefined, reading.readings), {
+      carried: [{ surface: "Zendesk", romaji: "zendesuku" }],
+    });
+    yield* vocabulary.addUser(["港南店", "OJT", "Notion"]).pipe(Effect.asVoid);
+    yield* vocabulary.settled;
+    expect(reading.calls).toEqual([["港南店", "OJT"]]);
+    expect(lines.flatMap((line) => line.words)).toEqual([
+      { surface: "Zendesk", romaji: "zendesuku", source: "carried" },
+      { surface: "港南店", romaji: "kounanten", source: "user" },
+      { surface: "OJT", romaji: "oojiitii", source: "user" },
+      { surface: "Notion", romaji: null, source: "user" },
+    ]);
+    const tokens: ReadonlyArray<readonly [string, string]> = [["江南", "kounan"], ["店", "ten"], ["オージェーティー", "oojiitii"], ["全", "zen"], ["デスク", "desuku"], ["ノーション", "nooshon"]];
+    const corrected = yield* vocabulary.correct({ track: "相手", start: 0, end: 2, ...utterance(...tokens) });
+    expect(corrected.rest.text).toBe("港南店OJTZendeskノーション");
+  }));
+
   it.effect("英字だけをモデルにまとめて聞き直接読む語と合わせて一度読む", () => Effect.gen(function* () {
     const model = models({ Notion: "ノーション", Figma: "フィグマ" });
     const reading = reader({ ノーション: "nooshon", フィグマ: "figuma", OJT: "oojiitii", 港南店: "kounanten" });

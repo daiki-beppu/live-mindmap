@@ -168,9 +168,15 @@ const startSession = Effect.gen(function* () {
 
 // 録画からのセッション。始められたら NDJSON の stream で経過を流す。始められなかったら（ライブの最中など）通常の失敗の応答
 const startRecordedSession = Effect.gen(function* () {
-  const { body, plan } = yield* acceptedBody(bodyOf(ServerRoutes.sessionRecorded.body));
+  const body = yield* bodyOf(ServerRoutes.sessionRecorded.body);
+  if (body.noMap === true && (body.model !== undefined || body.judge !== undefined || body.realtime)) {
+    return yield* new InvalidBody({ detail: "noMap と model・judge・realtime は併用できません" });
+  }
+  const mode = body.noMap === true
+    ? { noMap: true as const }
+    : { plan: yield* acceptBodyPlan(body) };
   const sessions = yield* Sessions;
-  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, plan };
+  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, ...mode };
   const { dir, warnings, events } = yield* sessions.startRecorded(input);
   return HttpServerResponse.stream(
     Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(
