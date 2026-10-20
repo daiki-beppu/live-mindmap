@@ -399,18 +399,30 @@ describe("録画の停止と一時停止の配線", () => {
     const fake = yield* makeFakeSessionSinks();
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
+    const concluding = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
+    const exporting = yield* Deferred.make<void>();
+    const releaseExport = yield* Deferred.make<void>();
     let finishes = 0;
     const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({
       ...sink,
       finishBacklog: Effect.gen(function* () {
         finishes++;
-        if (owner === "stop" && finishes === 1) { yield* Deferred.succeed(entered, undefined); yield* Deferred.await(release); }
+        if (owner === "stop" && finishes === 1) {
+          yield* Deferred.succeed(concluding, yield* Effect.fiber);
+          yield* Deferred.succeed(entered, undefined);
+          yield* Deferred.await(release);
+        }
       }),
-      exports: owner === "自然終了" ? Effect.gen(function* () {
-        yield* Deferred.succeed(entered, undefined);
-        yield* Deferred.await(release);
+      exports: Effect.gen(function* () {
+        if (owner === "自然終了") {
+          yield* Deferred.succeed(entered, undefined);
+          yield* Deferred.await(release);
+        } else {
+          yield* Deferred.succeed(exporting, undefined);
+          yield* Deferred.await(releaseExport);
+        }
         return yield* sink.exports;
-      }) : sink.exports,
+      }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
@@ -418,11 +430,16 @@ describe("録画の停止と一時停止の配線", () => {
     yield* TestClock.adjust(1);
     yield* Deferred.await(entered);
     if (owner === "stop") {
-      yield* sessions.stop;
+      const stopping = yield* sessions.stop.pipe(Effect.forkChild);
+      yield* Deferred.await(exporting);
       yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(yield* Deferred.await(concluding));
+      yield* Deferred.succeed(releaseExport, undefined);
+      yield* Fiber.join(stopping);
     } else {
-      expect(Exit.isFailure(yield* Effect.exit(sessions.stop))).toBe(true);
+      const stopping = yield* Effect.exit(sessions.stop).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.succeed(release, undefined);
+      expect(Exit.isFailure(yield* Fiber.join(stopping))).toBe(true);
     }
     const events = yield* Fiber.join(consuming);
     expect(events.filter((event) => event.type === "finished")).toHaveLength(1);
