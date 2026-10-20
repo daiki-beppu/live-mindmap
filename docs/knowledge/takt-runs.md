@@ -75,6 +75,12 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 
 takt の PR は squash で予約されるので、run がコミットを分けても main では 1 つになる。コミットの並びや rebase でのマージが要る作業（履歴を残す移動など。[README の 2 つの版](readme-versions.md)）は、起票の時点で手で行う作業として書き、takt-sequence に積む並びから外す。
 
+## 実モデルの eval は完了条件に入れない。「マージ後に人が確かめること」の節に分ける
+
+[#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) は起票の時点で、完了条件に「`cli eval` を同じサンプルで前後に回し、前後の表を実装の報告に書く」を入れていた。2026-10-18 の takt の run は、コードの直しとテストを済ませたが、この表が作れずに BLOCKED で止まり、案内役が判断依頼を出した。evals は鍵と費用の要る手作業で（AGENTS.md の Evals）、takt の run は回さない。2026-10-20 に、この行を完了条件から外して「## マージ後に人が確かめること」の節へ移すと、流し直した run はマージまで進んだ（[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)）。同じ親の [#1313](https://github.com/daiki-beppu/live-mindmap/issues/1313) も同じ形で流れた。
+
+完了条件に残すのは、エージェントが自分で満たせるもの（ルートの層の終了コード、テスト、grep で確かめられる残りの無さ）だけにする。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -83,3 +89,4 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 - 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 [#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)・[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)、[#1309](https://github.com/daiki-beppu/live-mindmap/issues/1309)・[PR #1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)、[#1310](https://github.com/daiki-beppu/live-mindmap/issues/1310)・[PR #1370](https://github.com/daiki-beppu/live-mindmap/pull/1370) と、その PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`・`20261018-022556-evaluate-pull-request-1328-usi`・`20261020-025344-evaluate-pull-request-1370-usi`）
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)
 - 仕様 [#1386](https://github.com/daiki-beppu/live-mindmap/issues/1386) の子 [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388)・[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392) の本文と、#1386 の案内役のコメント
+- 仕様 [#1303](https://github.com/daiki-beppu/live-mindmap/issues/1303) の子 [#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) の本文の編集の前後と、[#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296) の triage のコメント、[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)
