@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { assignOneToOne, computeDer, countUnsplit, groundTruthSpeaker, scoreAttribution, tentativeChangeRate } from "../bench/speakerAccuracy.ts";
+import { assignSpeakers, assignOneToOne, computeDer, countUnsplit, groundTruthSpeaker, scoreAttribution, tentativeChangeRate } from "../bench/speakerAccuracy.ts";
 
 // Issue #1031: Eval speakerAccuracy の計算（純関数）。
 // 正解の人の決め方、ラベルと人の 1 対 1 の対応、分類（正解 / 取り違え / 話者なし）、DER（collar 0.25 秒）、
@@ -60,69 +60,77 @@ describe("分類（正解 / 取り違え / 話者なし）", () => {
   const timeline = [truth("森川", 0, 2), truth("甲", 3, 5), truth("乙", 6, 8)];
 
   it("対応したラベルが正解の人なら正解。--self の発言と 自分 トラックの発言は採点しない", () => {
-    const result = scoreAttribution({ self: "森川", timeline, remarks: [said(0, 2, "自分", "自分"), said(3, 5, "相手 A"), said(6, 8, "相手 B")] });
+    const input = { self: "森川", timeline, remarks: [said(0, 2, "自分", "自分"), said(3, 5, "相手 A"), said(6, 8, "相手 B")] };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.none, result.noTruth]).toEqual([2, 0, 0, 0]);
     expect(result.rates).toEqual({ correct: 1, wrong: 0, none: 0 });
   });
 
   it("ラベルの名前ではなく会議全体の対応で比べる（相手 A が乙、相手 B が甲に当たっていても、一貫していれば正解）", () => {
-    const result = scoreAttribution({
+    const input = {
       self: "森川",
       timeline: [truth("森川", 0, 1), truth("甲", 3, 5), truth("乙", 6, 8), truth("甲", 10, 12), truth("乙", 14, 16)],
       remarks: [said(3, 5, "相手 B"), said(6, 8, "相手 A"), said(10, 12, "相手 B"), said(14, 16, "相手 A")],
-    });
+    };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong]).toEqual([4, 0]);
   });
 
   it("1 発言ごとに対応を取り直さない: 対応は会議全体で 1 つ。合計が最大の対応で数える（貪欲な対応は 正解 1・取り違え 2）", () => {
     // 相手 X: 甲 3 秒 + 乙 2 秒、相手 Y: 甲 3 秒。X→乙・Y→甲（合計 5）が最大
-    const result = scoreAttribution({
+    const input = {
       self: "森川",
       timeline: [truth("森川", 100, 101), truth("甲", 0, 3), truth("乙", 10, 12), truth("甲", 20, 23)],
       remarks: [said(0, 3, "相手 X"), said(10, 12, "相手 X"), said(20, 23, "相手 Y")],
-    });
+    };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.none]).toEqual([2, 1, 0]);
   });
 
   it("話者なしは取り違えに数えず、別に数える", () => {
-    const result = scoreAttribution({ self: "森川", timeline, remarks: [said(3, 5, "相手 A"), said(6, 8)] });
+    const input = { self: "森川", timeline, remarks: [said(3, 5, "相手 A"), said(6, 8)] };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.none]).toEqual([1, 0, 1]);
     expect(result.rates).toEqual({ correct: 0.5, wrong: 0, none: 0.5 });
   });
 
   it("人と対応できなかったラベル（ラベルが人より多い）の発言は取り違え", () => {
-    const result = scoreAttribution({
+    const input = {
       self: "森川",
       timeline: [truth("森川", 100, 101), truth("甲", 0, 3), truth("乙", 10, 13), truth("甲", 20, 21)],
       remarks: [said(0, 3, "相手 A"), said(10, 13, "相手 B"), said(20, 21, "相手 C")],
-    });
+    };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.none]).toEqual([2, 1, 0]);
   });
 
   it("別の人と対応したラベルの発言は取り違え", () => {
-    const result = scoreAttribution({ self: "森川", timeline, remarks: [said(3, 5, "相手 A"), said(6, 7, "相手 A")] });
+    const input = { self: "森川", timeline, remarks: [said(3, 5, "相手 A"), said(6, 7, "相手 A")] };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.none]).toEqual([1, 1, 0]);
   });
 
   it("正解の人なしの発言（--self の行にしか重ならない・どの行にも重ならない）は、数えた上で割合の分母から外す。話者なしでも同じ", () => {
-    const result = scoreAttribution({ self: "森川", timeline, remarks: [said(3, 5, "相手 A"), said(0.5, 1.5, "相手 B"), said(20, 21, "相手 A"), said(30, 31)] });
+    const input = { self: "森川", timeline, remarks: [said(3, 5, "相手 A"), said(0.5, 1.5, "相手 B"), said(20, 21, "相手 A"), said(30, 31)] };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.none, result.noTruth]).toEqual([1, 0, 0, 3]);
     expect(result.rates).toEqual({ correct: 1, wrong: 0, none: 0 });
   });
 
   it("正解の人なしの発言のラベルは、ラベルと人の対応に影響しない", () => {
-    const result = scoreAttribution({
+    const input = {
       self: "森川",
       timeline,
       remarks: [said(3, 5, "相手 A"), said(20, 30, "相手 B"), said(6, 8, "相手 B")],
-    });
+    };
+    const result = scoreAttribution({ ...input, personOf: assignSpeakers(input) });
 
     expect([result.correct, result.wrong, result.noTruth]).toEqual([2, 0, 1]);
   });

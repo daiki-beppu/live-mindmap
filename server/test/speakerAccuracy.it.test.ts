@@ -1,9 +1,10 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
-import { runScript, temporaryDirectory } from "./benchRun.ts";
-import { logText, type Line } from "./speakerReplayFixtures.ts";
+import { Effect, Result } from "effect";
+import { command } from "../bench/speakerAccuracy.ts";
+import { runCommand, runScript, temporaryDirectory } from "./benchRun.ts";
+import { logText, offlineMixedRestartLog, type Line } from "./speakerReplayFixtures.ts";
 
 // Issue #1031: bench/speakerAccuracy.ts の CLI（light IT）。
 // 呼び方: node bench/speakerAccuracy.ts --self <話者> [--without-* の旗] <timeline.tsv> <events.jsonl>
@@ -11,7 +12,7 @@ import { logText, type Line } from "./speakerReplayFixtures.ts";
 // 標準出力は Markdown の表 1 つ（見出し + 1 行）。割合の列は百分率（66.7% のように）、数の列は整数。
 // 列（見出しの先頭の語）: 正解・取り違え・話者なし・DER・仮→確定 / 規則の効き目: 切った・3秒で話者なし・切れなかった。発言の本文は出さない
 
-const BODY = ["TIMELINESECRETALPHA", "EVENTSSECRETBETA", "EVENTSSECRETGAMMA", "EVENTSSECRETDELTA", "SELFSECRETOMEGA"];
+const BODY = ["TIMELINESECRETALPHA", "EVENTSSECRETBETA", "EVENTSSECRETGAMMA", "EVENTSSECRETDELTA", "SELFSECRETOMEGA", "EVENTSSECRETALPHA"];
 
 const timelineText = (rows: ReadonlyArray<readonly [string, number, number, string]>) =>
   ["#MARK\tslide:a\t2.50", ...rows.map(([speaker, start, end, text]) => `${speaker}\t${start.toFixed(2)}\t${end.toFixed(2)}\t${text}`)].join("\n") + "\n";
@@ -76,7 +77,7 @@ function expectNoBody(stdout: string, stderr: string) {
     expect(stderr).not.toContain(body);
   }
   // 標準出力は表の行だけで、セルは百分率・n/a・整数・見出しの語・区切りのどれか（本文の断片が混ざれば外れる）
-  const known = /^(\d+(\.\d+)?%|n\/a|\d+|-+|発言数|正解|取り違え|話者なし|採点対象外|DER|仮→確定|切った|3秒で話者なし|切れなかった)$/;
+  const known = /^(\d+(\.\d+)?%?|n\/a|—|-+|発言数|正解|取り違え|話者なし|採点対象外|DER|仮→確定|切った|3秒で話者なし|切れなかった|相手の人数|混入の検出|当たり|誤検出|検出まで|誤ってつないだ|正しくつないだ|新しいラベル)$/;
   for (const line of stdout.split("\n").filter((l) => l.trim() !== "")) {
     expect(line.trim().startsWith("|") && line.trim().endsWith("|"), "表の行").toBe(true);
     for (const c of line.trim().replace(/^\||\|$/g, "").split("|").map((x) => x.trim())) expect(c).toMatch(known);
@@ -93,6 +94,41 @@ const setup = (timeline: string, events: readonly Line[]) => Effect.gen(function
 });
 
 describe("speakerAccuracy の CLI（light IT）", () => {
+  it.effect("混入と再起動を含むeventsから追加9列を同じ行へ出し、本文と合否を出さない", () => Effect.gen(function* () {
+    const timeline = timelineText([
+      ["森川", 90, 91, BODY[4]!], ["甲", 0, 4, BODY[0]!], ["乙", 4, 6, BODY[0]!], ["甲", 6, 7, BODY[0]!],
+      ["甲", 20, 22, BODY[0]!], ["乙", 22, 24, BODY[0]!], ["丙", 24, 26, BODY[0]!], ["丁", 26, 28, BODY[0]!],
+    ]);
+    const { timelinePath, eventsPath } = yield* setup(timeline, offlineMixedRestartLog);
+
+    const { result, stdout, stderr } = yield* runCommand(command, ["--self", "森川", "--restart-at", "10", timelinePath, eventsPath]);
+
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(stderr).toBe("");
+    const table = parseTable(stdout);
+    const added = ["相手の人数", "混入の検出", "当たり", "誤検出", "検出まで", "誤ってつないだ", "正しくつないだ", "新しいラベル", "話者なし"];
+    expect(table.header).toHaveLength(19);
+    expect(table.row).toHaveLength(19);
+    expect(table.header.slice(-9)).toEqual(added);
+    expect(table.row.slice(-9)).toEqual(["4", "1", "1", "0", "2.0", "0", "1", "1", "2"]);
+    expectNoBody(stdout, stderr);
+  }).pipe(Effect.scoped));
+
+  it.effect.each([
+    { name: "旗なし", flags: [] },
+    { name: "最後の入力より後のrestart-at", flags: ["--restart-at", "1000"] },
+  ])("$name ではつなぎ直し4列と当たりのない遅延を — で出す", ({ flags }) => Effect.gen(function* () {
+    const { timelinePath, eventsPath } = yield* setup(basicTimeline, basicEvents);
+
+    const { result, stdout, stderr } = yield* runCommand(command, ["--self", "森川", ...flags, timelinePath, eventsPath]);
+
+    expect(Result.isSuccess(result)).toBe(true);
+    const table = parseTable(stdout);
+    expect(table.header.slice(-9)).toEqual(["相手の人数", "混入の検出", "当たり", "誤検出", "検出まで", "誤ってつないだ", "正しくつないだ", "新しいラベル", "話者なし"]);
+    expect(table.row.slice(-9)).toEqual(["2", "0", "0", "0", "—", "—", "—", "—", "—"]);
+    expectNoBody(stdout, stderr);
+  }).pipe(Effect.scoped));
+
   it.effect("--self の行を除いた台本と、オフライン出力を採点し、正解・取り違え・話者なし・DER・仮→確定・規則の効き目の表を 1 つ出し、本文を出さない", () => Effect.gen(function* () {
     const { timelinePath, eventsPath } = yield* setup(basicTimeline, basicEvents);
 

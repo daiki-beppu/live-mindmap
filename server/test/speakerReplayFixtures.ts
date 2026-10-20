@@ -119,6 +119,29 @@ export const offlineRestartLog: Line[] = [
   { arrival: 16, type: "remark", track: "相手", start: 30, end: 32, text: "ええ", duplicate: false },
 ];
 
+export const offlineMixedRestartLog: Line[] = [
+  { arrival: 2, type: "origin", hostTime: "123456" },
+  { arrival: 3, type: "speaker-centroid", track: "相手", slot: 0, centroid: [1, 0] },
+  { arrival: 3, type: "speaker-centroid", track: "相手", slot: 1, centroid: [0, 1] },
+  { arrival: 3.5, type: "speaker", track: "相手", slot: 1, start: 0, end: 4, final: false },
+  { arrival: 4, type: "speaker", track: "相手", slot: 0, start: 0, end: 4, final: true },
+  { arrival: 4, type: "speaker", track: "相手", slot: 1, start: 4, end: 6, final: true },
+  { arrival: 4, type: "speaker-settled", track: "相手", to: 6 },
+  { arrival: 5, type: "remark", track: "相手", start: 0, end: 4, text: "EVENTSSECRETALPHA", duplicate: false },
+  { arrival: 5, type: "remark", track: "相手", start: 4, end: 6, text: "EVENTSSECRETBETA", duplicate: false },
+  { arrival: 7, type: "speaker", track: "相手", slot: 1, start: 6, end: 7, final: true },
+  { arrival: 8, type: "speaker-mixed", track: "相手", slot: 1, start: 7 },
+  { arrival: 14, type: "speaker", track: "相手", slot: 0, start: 20, end: 22, final: true },
+  { arrival: 14, type: "speaker", track: "相手", slot: 1, start: 22, end: 24, final: true },
+  { arrival: 14, type: "speaker", track: "相手", slot: 2, start: 24, end: 26, final: true },
+  { arrival: 14, type: "speaker", track: "相手", slot: 3, start: 26, end: 28, final: true },
+  { arrival: 15, type: "speaker-centroid", track: "相手", slot: 0, centroid: [1, 0] },
+  { arrival: 15, type: "speaker-centroid", track: "相手", slot: 1, centroid: [0, 1] },
+  { arrival: 15, type: "speaker-centroid", track: "相手", slot: 2, centroid: [-1, 0] },
+  { arrival: 16, type: "speaker-settled", track: "相手", to: 28 },
+  { arrival: 17, type: "remark", track: "相手", start: 20, end: 22, text: "EVENTSSECRETGAMMA", duplicate: false },
+];
+
 export const textsOf = (lines: readonly Line[]): string[] =>
   lines.flatMap((line) => {
     const remark = line.remark as { text?: string } | undefined;

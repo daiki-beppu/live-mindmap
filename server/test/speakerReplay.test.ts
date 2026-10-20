@@ -76,6 +76,21 @@ describe("log.jsonl の流し直し（ライブで決まった話者の再現）
 });
 
 describe("log.jsonl の流し直しの時計", () => {
+  it.effect("log の混入とつなぎ直しには、最初の入力からの経過秒を付ける", () => Effect.gen(function* () {
+    const lines: Line[] = [
+      ...restartLog,
+      { ...startLine(19), type: "speaker-mixed", track: "相手", slot: 2, start: 90 },
+    ];
+
+    const result = yield* replayLog(numbered(lines), { restartAt: 10 });
+
+    expect(result.links).toEqual([
+      { at: 14, slot: 2, result: "linked", label: "相手 A" },
+      { at: 17, slot: 3, result: "new" },
+    ]);
+    expect(result.mixed).toEqual([{ at: 19, slot: 2, label: "相手 A" }]);
+  }));
+
   it.effect("話者なしで出た発言が続いても、2 件目以降も時間切れで話者なしになる（進めた時計を次の入力に引き継ぐ）", () => Effect.gen(function* () {
     const lines: Line[] = [
       remarkLine(1, "r1", "相手", 0, 1, "あ"), remarkLine(2, "r2", "相手", 1, 2, "い"), remarkLine(3, "r3", "相手", 2, 3, "う"),
@@ -183,6 +198,21 @@ describe("起動し直しの旗（--restart-at。同じ話者の段の上で、�
 });
 
 describe("オフライン出力の流し直し（arrival の順に settler と話者の段を通す）", () => {
+  it.effect("混入とつなぎ直しに、音声時刻や相対秒ではなく発生元入力の arrival を付ける", () => Effect.gen(function* () {
+    const lines: Line[] = [
+      { arrival: 119, type: "speaker-mixed", track: "相手", slot: 2, start: 99 },
+      ...offlineRestartLog.map((line) => ({ ...line, arrival: Number(line.arrival) + 100 })).toSorted((a, b) => b.arrival - a.arrival),
+      { arrival: 90, type: "origin", hostTime: "123456" },
+      { arrival: 121, type: "speaker-mixed", track: "相手", slot: 3, start: 200 },
+    ];
+
+    const result = yield* replayOffline(numbered(lines), { restartAt: 20 });
+
+    expect(result.restarts).toEqual([{ at: 22, source: "flag" }]);
+    expect(result.links).toEqual([{ at: 114, slot: 2, result: "linked", label: "相手 A" }]);
+    expect(result.mixed).toEqual([{ at: 119, slot: 2, label: "相手 A" }, { at: 121, slot: 3 }]);
+  }));
+
   it.effect("ファイルでは順不同の行を arrival の順に流し、確定結果が相手 A・相手 B に切れ、残った途中結果は drain で話者なしの発言になる", () => Effect.gen(function* () {
     const result = yield* replayOffline(numbered(offlineLog));
 
