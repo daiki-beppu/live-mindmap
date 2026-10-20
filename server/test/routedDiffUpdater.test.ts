@@ -1,5 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber } from "effect";
+import { Context, Effect, Fiber, Layer, Scope } from "effect";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { TestClock } from "effect/testing";
 import { DiffUpdater, emptyMap, type DiffInput, type DiffResult, type DiffUpdateError, type KatakanaAnswer, type PreviousResponse, type Remark } from "../src/core/index.ts";
 import { HAIKU, routedUpdater, SONNET } from "../src/routedDiffUpdater.ts";
@@ -257,6 +259,48 @@ describe("振り分け: 共有画面", () => {
   const shot = (start: number, id = `img${start}`) => ({ start, image: { id, bytes: new Uint8Array([start]) } });
   const starts = (screens: DiffInput["screens"]) => screens?.map((c) => c.start);
 
+  it.effect("振り分け先を往復して開き直すと、各adapterの保持画面と未送画面が実メッセージにそろう", () => Effect.gen(function* () {
+    const queries: { model: string; messages: SDKUserMessage[] }[] = [];
+    const query = ((params: { prompt: AsyncIterable<SDKUserMessage>; options: { model: string } }) => {
+      const record: typeof queries[number] = { model: params.options.model, messages: [] };
+      const first = !queries.some((q) => q.model === record.model);
+      queries.push(record);
+      const stream = (async function* () {
+        for await (const message of params.prompt) {
+          record.messages.push(message);
+          yield first
+            ? { type: "result", subtype: "error_during_execution" }
+            : { type: "result", subtype: "success", structured_output: { ops: [] } };
+        }
+      })();
+      return Object.assign(stream, { close: () => {} });
+    }) as unknown as AgentSdk["Service"]["query"];
+    const sdk = Layer.succeed(AgentSdk, AgentSdk.of({ query }));
+    const scope = yield* Scope.Scope;
+    const sonnet = Context.get(yield* Layer.buildWithScope(layerClaude(SONNET).pipe(Layer.provide(sdk)), scope), DiffUpdater);
+    const haiku = Context.get(yield* Layer.buildWithScope(layerClaude(HAIKU).pipe(Layer.provide(sdk)), scope), DiffUpdater);
+    const { ask } = fakeAsk([0.9, 0.1, 0.9, 0.1]);
+    const router = yield* routedUpdater({ ask, sonnet, haiku });
+
+    yield* Effect.flip(router.update(input([remark(1)], { screens: [shot(10), shot(20)] })));
+    yield* Effect.flip(router.update(input([remark(2)], { screens: [shot(30), shot(40)] })));
+    yield* router.update(input([remark(3)], { screens: [shot(50)] }));
+    yield* router.update(input([remark(4)]));
+
+    expect(queries.map((q) => q.model)).toEqual([SONNET, HAIKU, SONNET, HAIKU]);
+    const imageData = (q: typeof queries[number]) => {
+      const content = q.messages[0]!.message.content;
+      expect(Array.isArray(content)).toBe(true);
+      if (typeof content === "string") throw new Error("共有画面のブロックが無い");
+      return content.filter((b) => b.type === "image").map((b) => b.source.type === "base64" ? b.source.data : undefined);
+    };
+    const encoded = (starts: number[]) => starts.map((start) => Buffer.from([start]).toString("base64"));
+    expect(imageData(queries[0]!)).toEqual(encoded([10, 20]));
+    expect(imageData(queries[1]!)).toEqual(encoded([10, 20, 30, 40]));
+    expect(imageData(queries[2]!)).toEqual(encoded([10, 20, 30, 40, 50]));
+    expect(imageData(queries[3]!)).toEqual(encoded([30, 40, 50]));
+  }));
+
   for (const destination of ["sonnet", "haiku"] satisfies ReadonlyArray<"sonnet" | "haiku">) {
     const likelihood = destination === "sonnet" ? 0.9 : 0.1;
     const otherLikelihood = destination === "sonnet" ? 0.1 : 0.9;
@@ -287,14 +331,11 @@ describe("振り分け: 共有画面", () => {
   it.effect("core が 1 度しか添えない画面の変化も、各 query が自分の未受信分を受け取る（Sonnet に A → Haiku に B → 画面なしで Sonnet）", () => Effect.gen(function* () {
     const { router, sonnet, haiku } = yield* setup([0.9, 0.1, 0.9]);
     yield* router.update(input([remark(1)], { screens: [shot(10)] }));
-    yield* router.update(input([remark(2)], { screens: [shot(20)], previousScreens: [shot(10)] }));
-    yield* router.update(input([remark(3)], { previousScreens: [shot(10), shot(20)] }));
-    // Haiku の最初の回: A と B の両方（A は previousScreens と重ならない）
+    yield* router.update(input([remark(2)], { screens: [shot(20)] }));
+    yield* router.update(input([remark(3)]));
     expect(starts(haiku.inputs[0]!.screens)).toEqual([10, 20]);
-    expect(haiku.inputs[0]!.previousScreens).toBeUndefined();
-    // Sonnet の 2 回目: 自分がまだ受け取っていない B。送り直しの A・B のうち、B は重ねない
+    // Sonnet の 2 回目: 自分がまだ受け取っていない B
     expect(starts(sonnet.inputs[1]!.screens)).toEqual([20]);
-    expect(starts(sonnet.inputs[1]!.previousScreens)).toEqual([10]);
   }));
 
   it.effect("画面が変わらない同じ query の続きには、画面を渡さない", () => Effect.gen(function* () {
@@ -303,7 +344,6 @@ describe("振り分け: 共有画面", () => {
     yield* router.update(input([remark(2)]));
     expect(starts(sonnet.inputs[0]!.screens)).toEqual([10]);
     expect(sonnet.inputs[1]).not.toHaveProperty("screens");
-    expect(sonnet.inputs[1]).not.toHaveProperty("previousScreens");
   }));
 
   it.effect("共有終了（image が null）の変化も、もう一方の query へ届く", () => Effect.gen(function* () {
