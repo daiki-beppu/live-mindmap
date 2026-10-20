@@ -1,0 +1,2 @@
+{"mode":"none","model":"x","min":0,"nth":0,"attachedWin":451,"attachedAll":451,"judged":0,"errors":0,"late":0,"dropped":0,"imageUsdPerH":0.071,"judgeUsdPerH":0,"totalUsdPerH":0.071,"p50":null,"p90":null,"max":null}
+{"mode":"all","model":"jev-1.13.0","min":0.3,"nth":0,"attachedWin":370,"attachedAll":370,"judged":1254,"errors":0,"late":284,"dropped":408,"imageUsdPerH":0.059,"judgeUsdPerH":0.009,"totalUsdPerH":0.068,"p50":249,"p90":309,"max":549}

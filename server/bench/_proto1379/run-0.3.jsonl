@@ -1,0 +1,4 @@
+{"mode":"all","model":"jev-1.13.0","min":0.3,"nth":0,"attachedWin":36,"attachedAll":429,"judged":159,"errors":0,"late":32,"dropped":101,"imageUsdPerH":1.188,"judgeUsdPerH":0.24,"totalUsdPerH":1.428,"p50":257,"p90":304,"max":397}
+{"mode":"gated","model":"jev-1.13.0","min":0.3,"nth":0,"attachedWin":34,"attachedAll":427,"judged":144,"errors":0,"late":31,"dropped":91,"imageUsdPerH":1.122,"judgeUsdPerH":0.217,"totalUsdPerH":1.339,"p50":257,"p90":305,"max":397}
+{"mode":"all","model":"jev-1.14.0","min":0.3,"nth":0,"attachedWin":34,"attachedAll":427,"judged":159,"errors":0,"late":33,"dropped":107,"imageUsdPerH":1.122,"judgeUsdPerH":0.24,"totalUsdPerH":1.362,"p50":253,"p90":304,"max":462}
+{"mode":"gated","model":"jev-1.14.0","min":0.3,"nth":0,"attachedWin":31,"attachedAll":424,"judged":144,"errors":0,"late":32,"dropped":95,"imageUsdPerH":1.023,"judgeUsdPerH":0.217,"totalUsdPerH":1.24,"p50":253,"p90":303,"max":432}
