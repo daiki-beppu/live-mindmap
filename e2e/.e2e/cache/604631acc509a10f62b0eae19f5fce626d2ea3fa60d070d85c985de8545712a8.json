@@ -1,6 +1,6 @@
 {
   "schemaVersion": "trace-1",
-  "createdAt": "2026-10-08T17:05:11.559Z",
+  "createdAt": "2026-10-19T23:43:24.491Z",
   "payload": {
     "actions": [
       {
@@ -33,12 +33,12 @@
       "callIndex": 0,
       "agent": "default"
     },
-    "summary": "「時刻」スライダーをクリックしてフォーカスし、Home キーを押しました。表示時刻が 0:00:00 / 0:01:00 になったことを確認しました。「反映 1 つ戻る」ボタンは使用していません。",
+    "summary": "「時刻」スライダーはフォーカス済みで、表示時刻が先頭の 0:00:00 です。指定された「反映」ボタンは使用していません。",
     "startPath": "/session-files/review/map.html",
     "endPath": "/session-files/review/map.html",
     "endAnchors": [
       {
-        "text": "0:00:00 / 0:01:00"
+        "text": "0:00:00"
       }
     ],
     "goneAnchors": [
@@ -52,9 +52,6 @@
         "text": "要点3"
       },
       {
-        "text": "自分"
-      },
-      {
         "text": "担当は田中さんです"
       },
       {
@@ -64,9 +61,14 @@
         "text": "要点"
       },
       {
-        "testId": "rf__node-n1"
+        "role": "button",
+        "name": "要点1"
+      },
+      {
+        "role": "button",
+        "name": "要点2"
       }
     ],
-    "endWaitMs": 11983
+    "endWaitMs": 28101
   }
 }
