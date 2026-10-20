@@ -17,7 +17,7 @@ import { loginChatgpt } from "./chatgptAuth.ts";
 import { logoutChatgpt, ChatgptUnavailable } from "./chatgptAuthStore.ts";
 import { needsTransferToken, planBody, planLayer, planModel, resolvePlan, type UpdatePlan } from "./updatePlan.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
-import { configuredModels, ModelRefused, resolveModel, resolveModelCandidate } from "./modelConfig.ts";
+import { configuredModels, ModelRefused, resolveModelCandidate } from "./modelConfig.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { MODEL_TRANSFER_HEADER, readModelTransferToken } from "./modelTransferToken.ts";
 import {
@@ -674,17 +674,18 @@ const recorded = Command.make(
     model: modelFlag,
     local: localFlag,
     title: recordedTitleFlag,
+    judge: judgeFlag,
     vocab: vocabFlag,
     realtime: Flag.Boolean("realtime").pipe(
       Flag.withDescription("発言と共有画面の変化を、音声の時刻どおりに等速で入れる（既定は待ち時間なし）"),
       Flag.withDefault(false),
     ),
   },
-  Effect.fn("recorded")(function* ({ file, self, model, local, title, vocab, realtime }) {
+  Effect.fn("recorded")(function* ({ file, self, model, judge, local, title, vocab, realtime }) {
     const vocabulary = yield* readVocabulary(vocab);
-    const selected = yield* resolveModel({ model: Option.getOrUndefined(model), local });
+    const plan = yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
     const port = yield* portConfig;
-    const headers = yield* modelTransferHeaders({ kind: "single", model: selected }, port);
+    const headers = yield* modelTransferHeaders(plan, port);
     let dir: string | undefined;
     // Ctrl-C は、そこまでに入れた分で終えて map.* を書き出す（stop と同じ）。サーバーは接続が切れても書き出しを最後まで続ける。
     // 開始の応答（2xx）を受け取った後なら、started を読む前の中断でも止める
@@ -701,7 +702,7 @@ const recorded = Command.make(
           title: Option.getOrUndefined(title),
           ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
           ...(realtime ? { realtime } : {}),
-          model: selected,
+          ...planBody(plan),
         }, headers }));
         return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
       }),

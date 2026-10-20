@@ -50,7 +50,7 @@ export const SessionRecordedBody = Schema.Struct({
   vocab: Vocabulary,
   realtime: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   model: Schema.optionalKey(TransferredModel),
-  // 判定のモデル。本文として受けるところまで（録画のセッションで振り分ける配線は #1310）
+  // 判定のモデル。省略すれば single、あれば routed の計画として受ける
   judge: Schema.optionalKey(TransferredJudge),
 });
 

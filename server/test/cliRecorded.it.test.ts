@@ -14,7 +14,10 @@ import { ReviewBuild } from "../src/review.ts";
 import { DiffUpdatePaused, formatAudioTracksNotice, formatRecordedPosition, formatScreenOffNotice, formatSpeakerOffNotice, type DiffInput } from "../src/core/index.ts";
 import { fakeHelpers, remarkEvents, type Script } from "./fixtures/recordedHelper.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
-import { unusedApple } from "./fixtures/appleIntelligence.ts";
+import { availableApple, unusedApple } from "./fixtures/appleIntelligence.ts";
+import { missingKeyNotice, type JudgeModel } from "../src/judgeSelection.ts";
+import { defaultClaude } from "../src/modelSelection.ts";
+import type { UpdatePlan } from "../src/updatePlan.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -66,9 +69,17 @@ function stalledRecordedBody() {
   return { bodyRequested, layer };
 }
 
-type CliOptions = { env?: Record<string, string>; httpClient?: Layer.Layer<HttpClient.HttpClient> };
+type CliOptions = { env?: Record<string, string | undefined>; httpClient?: Layer.Layer<HttpClient.HttpClient>; apple?: typeof unusedApple };
 
 function cliDependencies(sessionsDir: string, port: number, options: CliOptions = {}) {
+  const env: Record<string, string> = {
+    HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off",
+    LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: String(port),
+  };
+  for (const [name, value] of Object.entries(options.env ?? {})) {
+    if (value === undefined) delete env[name];
+    else env[name] = value;
+  }
   const stdout: string[] = [];
   const stderr: string[] = [];
   const consoleService: Console.Console = {
@@ -77,20 +88,17 @@ function cliDependencies(sessionsDir: string, port: number, options: CliOptions 
     error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); },
   };
   const layer = Layer.mergeAll(
-    NodeServices.layer, unusedApple, readyManagedDeps, options.httpClient ?? NodeHttpClient.layerUndici,
+    NodeServices.layer, options.apple ?? unusedApple, readyManagedDeps, options.httpClient ?? NodeHttpClient.layerUndici,
     Layer.succeed(MapCapture, MapCapture.of({ capture: () => Effect.die("CLI は撮影しない") })),
     Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.die("CLI は見返しを作らない") })),
     fakeAudioMix().layer, fakeScreenJpeg().layer,
-    ConfigProvider.layer(ConfigProvider.fromEnvRecord({
-      HOME: join(sessionsDir, "home"), LIVE_MINDMAP_CONFIG: join(sessionsDir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off",
-      LIVE_MINDMAP_SESSIONS: sessionsDir, LIVE_MINDMAP_PORT: String(port), ...options.env,
-    })),
+    ConfigProvider.layer(ConfigProvider.fromEnvRecord(env)),
     Layer.succeed(Console.Console, consoleService),
   );
   return { layer, stdout, stderr };
 }
 
-const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; cli?: CliOptions; attempts?: ReadonlyArray<Script> } = {}) {
+const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; cli?: CliOptions; attempts?: ReadonlyArray<Script>; notice?: string } = {}) {
   const root = yield* temporaryDirectory;
   const sessionsDir = join(root, "sessions");
   const file = join(root, options.fileName ?? "meeting.m4a");
@@ -99,9 +107,13 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const selfFile = join(root, "me.m4a");
   writeFileSync(selfFile, "self audio");
   const helpers = fakeHelpers(script, options.attempts);
+  const prepared: UpdatePlan[] = [];
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updater.layer }) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
+      prepared.push(plan);
+      return { layer: updater.layer, ...(options.notice === undefined ? {} : { notice: options.notice }) };
+    }) }).pipe(Layer.provide(fakeExportServices())),
   });
   const requests: { url: string; body: unknown }[] = [];
   const requestClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
@@ -110,7 +122,7 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
     })))).pipe(Layer.provide(options.cli?.httpClient ?? NodeHttpClient.layerUndici));
   const deps = cliDependencies(sessionsDir, server.port, { ...options.cli, httpClient: requestClient });
   const cli = (argv: string[]) => runCli(argv).pipe(Effect.provide(deps.layer));
-  return { root, sessionsDir, file, selfFile, helpers, server, deps, cli, requests };
+  return { root, sessionsDir, file, selfFile, helpers, server, deps, cli, requests, prepared };
 });
 
 type Line = Record<string, unknown> & { type: string };
@@ -409,6 +421,67 @@ describe("cli recorded <file>", () => {
     const r = yield* resource(THREE, fakeUpdater(), { cli: { env: { LIVE_MINDMAP_CONFIG: config } } });
     yield* r.cli(["recorded", r.file, "--model", "fast"]);
     expect(r.requests.find((request) => request.url.endsWith("/session/recorded"))?.body).toMatchObject({ model: { name: "fast", route: "claude", model: "claude-haiku-5-5", local: false } });
+  }).pipe(Effect.scoped));
+
+  it.live("--judge は環境変数と設定より優先され、解決した判定のモデルを HTTP 越しに準備へ渡す", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const config = join(root, "judge.config.json");
+    const judge: JudgeModel = { name: "meeting-judge", route: "system-one", apiKeyEnv: "MEETING_JUDGE_KEY", url: "https://judge.invalid/systemone", model: "meeting", timeoutMs: 3500 };
+    const { name, ...definition } = judge;
+    writeFileSync(config, JSON.stringify({ judge: "jev", judges: { [name]: definition } }));
+    const r = yield* resource(THREE, fakeUpdater(), { cli: { env: { LIVE_MINDMAP_CONFIG: config, LIVE_MINDMAP_JUDGE: "clef" } } });
+    yield* r.cli(["recorded", r.file, "--judge", name]);
+
+    expect(r.requests.filter((request) => request.url.endsWith("/session/recorded")).map((request) => request.body)).toEqual([
+      expect.objectContaining({ model: defaultClaude, judge }),
+    ]);
+    expect(r.prepared).toEqual([{ kind: "routed", judge }]);
+  }).pipe(Effect.scoped));
+
+  it.live("--judge off は環境変数の判定を使わず、judge の無い本文で録画を完了する", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), { cli: { env: { LIVE_MINDMAP_JUDGE: "clef" } } });
+    yield* r.cli(["recorded", r.file, "--judge", "off"]);
+
+    const bodies = r.requests.filter((request) => request.url.endsWith("/session/recorded")).map((request) => request.body);
+    expect(bodies).toEqual([expect.objectContaining({ model: defaultClaude })]);
+    expect(bodies[0]).not.toHaveProperty("judge");
+    expect(r.prepared).toEqual([{ kind: "single", model: defaultClaude }]);
+    expect(r.deps.stdout.join("")).toContain(join(onlySession(r.sessionsDir), "map.md"));
+  }).pipe(Effect.scoped));
+
+  it.live("判定を省くと jev を送り、準備の鍵なし通知を開始時に 1 行だけ表示して録画を完了する", () => Effect.gen(function* () {
+    const notice = missingKeyNotice({ name: "jev" }, ["TYPESAFE_AI_API_KEY"]);
+    const r = yield* resource(THREE, fakeUpdater(), { notice, cli: { env: { LIVE_MINDMAP_JUDGE: undefined } } });
+    yield* r.cli(["recorded", r.file]);
+
+    expect(r.requests.filter((request) => request.url.endsWith("/session/recorded")).map((request) => request.body)).toEqual([
+      expect.objectContaining({ judge: { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 } }),
+    ]);
+    const lines = r.deps.stderr.join("").replaceAll("\r", "\n").split("\n").filter((line) => line.trim() !== "");
+    expect(lines.filter((line) => line === notice)).toHaveLength(1);
+    expect(lines[0]).toBe(notice);
+    expect(r.deps.stdout.join("")).toContain(join(onlySession(r.sessionsDir), "map.md"));
+  }).pipe(Effect.scoped));
+
+  it.live("ローカルモードで環境変数にクラウドの判定を明示すると、録画の開始要求を送る前に断る", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), { cli: { apple: availableApple, env: { LIVE_MINDMAP_JUDGE: "jev" } } });
+    const result = yield* Effect.result(r.cli(["recorded", r.file, "--local"]));
+
+    expect(Result.isFailure(result)).toBe(true);
+    expect(r.requests.filter((request) => request.url.endsWith("/session/recorded"))).toEqual([]);
+    expect(r.prepared).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.live("ローカルモードで判定を省くと、Apple の single で録画を完了する", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), { cli: { apple: availableApple, env: { LIVE_MINDMAP_JUDGE: undefined } } });
+    yield* r.cli(["recorded", r.file, "--local"]);
+
+    const model = { name: "apple", route: "apple", local: true };
+    const bodies = r.requests.filter((request) => request.url.endsWith("/session/recorded")).map((request) => request.body);
+    expect(bodies).toEqual([expect.objectContaining({ model })]);
+    expect(bodies[0]).not.toHaveProperty("judge");
+    expect(r.prepared).toEqual([{ kind: "single", model }]);
+    expect(r.deps.stdout.join("")).toContain(join(onlySession(r.sessionsDir), "map.md"));
   }).pipe(Effect.scoped));
 
   it.live("share は録画からのセッションの最中も URL を出す", () => Effect.gen(function* () {

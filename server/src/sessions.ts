@@ -51,9 +51,9 @@ import type { CheckReport } from "./managedDepsProtocol.ts";
 // 差分更新の計画 plan は CLI が決め、server が検めたもの。モデルは planModel(plan)
 export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; plan: import("./updatePlan.ts").UpdatePlan };
 
-// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・model は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる。
+// 録画からのセッション（cli recorded）の開始に渡す値。file は絶対パス。title・vocab・plan は SessionStart と同じ意味。realtime は音声の時刻どおりに等速で入れる。
 // selfFile は自分用の録音のファイル（絶対パス。cli recorded --self）。あれば、file を 相手、selfFile を 自分 の 2 トラックで組む
-export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean; model: import("./modelSelection.ts").ExecutableModel };
+export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean; plan: import("./updatePlan.ts").UpdatePlan };
 
 // セッションのフォルダを作る親のフォルダ
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
@@ -87,7 +87,7 @@ type RecordedPause = NonNullable<RecordedProgress["paused"]>;
 
 // 録画からのセッション。ヘルパーが落ちたら、ライブと同じ判断（ADR 0008）で、最後に作った発言の end から読み直す
 type Recorded = {
-  model: RecordedStart["model"];
+  model: import("./modelSelection.ts").ExecutableModel;
   dir: string;
   file: string;
   selfFile: string | undefined;
@@ -448,10 +448,12 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       const beginRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
+        const model = planModel(input.plan);
         const scope = yield* Scope.fork(serverScope, "sequential");
         return yield* Effect.gen(function* () {
-          const warnings = yield* requireStartupDeps("recorded", input.model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-          const { layer: updaterLayer } = yield* sinks.prepare({ kind: "single", model: input.model }).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const startupWarnings = yield* requireStartupDeps("recorded", model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+          const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+          const warnings = notice === undefined ? startupWarnings : [...startupWarnings, notice];
           // 基準の時刻は、ファイルの作成日時。取れないとき（記録が無い・聞けなかった）は、流し始めた今の時刻。
           // フォルダ名と log.jsonl の時刻は、この 1 つの基準から決める（ずらし幅 = 基準 − 今）
           const now = DateTime.nowUnsafe();
@@ -471,7 +473,7 @@ export class Sessions extends Context.Service<Sessions, {
           const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
           const sink = yield* sinks.openRecorded({
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-            model: input.model, vocab: input.vocab, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
+            model, vocab: input.vocab, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
             recorded: {
               realtime: input.realtime,
               selfTrack: input.selfFile !== undefined,
@@ -493,7 +495,7 @@ export class Sessions extends Context.Service<Sessions, {
             },
           }).pipe(Scope.provide(scope));
           const recorded: Recorded = {
-            model: input.model,
+            model,
             dir,
             file: input.file,
             selfFile: input.selfFile,
@@ -523,7 +525,7 @@ export class Sessions extends Context.Service<Sessions, {
               : concludeRecorded(recorded, Effect.andThen(sink.discardBacklog, sink.finishBacklog), { ...end.last.exit, stderrTail: end.last.stderrTail });
           }), scope);
           yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
-          yield* viewers.sessionMode({ type: "session-mode", local: input.model.local });
+          yield* viewers.sessionMode({ type: "session-mode", local: model.local });
           return { dir, warnings, events: Stream.fromQueue(events) };
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
