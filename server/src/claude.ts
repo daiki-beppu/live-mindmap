@@ -28,6 +28,7 @@ function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
 // 1 つの query を開いたまま使い回す回数。会話の履歴がたまり続けないよう、この回数ごとに開き直す。
 // 14 は、計測（#75）で品質を確かめた最長の回数
 export const QUERY_RENEW_CALLS = 14;
+const RETAINED_SCREENS_MAX = 2;
 
 // Haiku 5.5 のときだけ SYSTEM の末尾に足す念押し（#719）
 const HAIKU_DECISION_APPEND = [
@@ -95,6 +96,7 @@ export const layerClaude = (model: string) => Layer.effect(
     const diffSystem = tuning.systemAppend ? `${SYSTEM}\n\n${tuning.systemAppend}` : SYSTEM;
     const sessionScope = yield* Scope.Scope;
     const current = yield* Ref.make(Option.none<Open>());
+    const retainedScreens = yield* Ref.make<readonly ScreenChange[]>([]);
     const closed = yield* Ref.make(false);
     yield* Effect.addFinalizer(() => Ref.set(closed, true));
 
@@ -203,10 +205,14 @@ export const layerClaude = (model: string) => Layer.effect(
       return yield* Effect.gen(function* () {
         yield* advance(o, (x) => ({ ...x, calls: x.calls + 1 }));
         const prompt = buildPrompt(input, o.sent);
-        // 開き直した query の最初のメッセージ（o.sent が未設定）にだけ、core が載せた送り直す画面を、新しく添える画面の前に付ける。
-        // 画面のブロックが無い呼び出しは、今までどおり文字列のまま
-        const blocks = [...(o.sent === undefined ? screenBlocks(input.previousScreens ?? []) : []), ...screenBlocks(input.screens ?? [])];
+        const screens = input.screens ?? [];
+        const retained = yield* Ref.get(retainedScreens);
+        const starts = new Set(screens.map((screen) => screen.start));
+        const resend = o.sent === undefined ? retained.filter((screen) => !starts.has(screen.start)) : [];
+        const blocks = screenBlocks([...resend, ...screens]);
         const content = blocks.length ? [...blocks, { type: "text" as const, text: prompt }] : prompt;
+        // 応答が失敗しても、載せた画面は次の query へ持ち越す。再送だけでは履歴を進めない。
+        if (screens.length) yield* Ref.set(retainedScreens, [...retained, ...screens].slice(-RETAINED_SCREENS_MAX));
         yield* Queue.offer(o.input, { type: "user", message: { role: "user", content }, parent_tool_use_id: null });
         yield* advance(o, (x) => ({ ...x, sent: input.map }));
         return yield* awaitResult(o);

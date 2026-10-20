@@ -27,7 +27,6 @@ export type DiffInput = {
   recent: Remark[]; // 直前に処理済みの発言（文脈用）
   fresh: Remark[]; // 新しい発言
   screens?: readonly ScreenChange[]; // 添える共有画面（時刻順）。添えるものが無い呼び出しではキーごと付けない
-  previousScreens?: readonly ScreenChange[]; // この呼び出しより前に最後に添えた共有画面（古い順・最大 2 件）。query を開き直したときの最初のメッセージに送り直す。無ければキーごと付けない
   previousResponse?: PreviousResponse; // 直前に適用した応答の、仮 ID の対応と捨てた操作。直前の差分更新が失敗した回と、どちらも空の回にはキーごと付けない
   speakerNames?: ReadonlyMap<string, string>; // 話者のラベル → 名前（Issue #1026）。サーバーが呼ぶたびにそのときの表を載せる。core は付けない。名前の無いときはキーごと付けない
 };
@@ -184,7 +183,6 @@ export type SessionState = {
 type ScreenRefs = { readonly start: number; readonly image: string | null };
 export type RestoredScreens = {
   readonly unsent: readonly ScreenRefs[]; // まだ添えていない変化
-  readonly last: readonly ScreenRefs[]; // 最後に添えた画面（新しい最大 2 件）
   readonly files: ReadonlySet<string>; // 使ったファイル名
   readonly received: number; // 受け取った共有画面の総数（screen の行の数）
   readonly carried: string | undefined; // 持ち越している変化の画像のファイル名（10 秒未満で添えなかった変化の最新の 1 件）
@@ -226,7 +224,7 @@ const decodeScreen = Schema.decodeUnknownEffect(ScreenEvent);
 
 type UnsentScreen = ScreenRefs & { readonly seq: number };
 // 復元の途中の状態。remarks・processed・known・files・unsent（screen の行で追記）は復元が所有する蓄積用で、行ごとに全コピーしないよう追記する。
-// それ以外（map・history・received・attached）は、diff の反映が新しい値で返す
+// それ以外（map・history・received）は、diff の反映が新しい値で返す
 type Replay = {
   readonly map: MeetingMap | undefined;
   readonly remarks: Remark[];
@@ -236,7 +234,6 @@ type Replay = {
   readonly history: History;
   readonly unsent: UnsentScreen[];
   readonly received: number;
-  readonly attached: readonly ScreenRefs[];
   readonly carried: string | undefined;
   readonly anchor: number | undefined;
   readonly imagesSkipped: boolean; // screen-input-skipped の行を読んだ（画像を添えない会議）。10 秒の規則による保留は無いので持ち越しを作らない
@@ -283,13 +280,12 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
   const carried = replay.imagesSkipped ? undefined : carriedOf(candidates, new Set(added.flatMap((h) => (h.image === null ? [] : [h.image]))));
   const anchor = anchorAfter(added, replay.anchor);
   const unsent = fresh.length ? replay.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff || (h.image !== null && h.image === carried)) : replay.unsent;
-  const attached = [...replay.attached, ...added].slice(-LAST_SCREENS);
   const stamp = stampOf(replay.history, consumed);
   const applied = applyOps(map, e.ops, replay.known, stamp, replay.byId);
   const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
   // ライブ（callUpdater）と同じく、一時停止からの再試行で届いた diff の行（失敗も含む）で running に戻る
   const diffUpdate = replay.diffUpdate.status === "paused" ? { status: "running" as const } : replay.diffUpdate;
-  return { ...replay, diffUpdate, map: applied.map, unsent, attached, carried: fresh.length ? carried : replay.carried, anchor, history, previousResponse: e.error === undefined ? previousResponseOf(applied) : undefined };
+  return { ...replay, diffUpdate, map: applied.map, unsent, carried: fresh.length ? carried : replay.carried, anchor, history, previousResponse: e.error === undefined ? previousResponseOf(applied) : undefined };
 });
 
 // ログのイベントを順に適用関数へ流して、状態を元に戻す。差分更新は呼ばない。
@@ -300,7 +296,7 @@ const replayDiff = Effect.fnUntraced(function* (replay: Replay, e: typeof DiffEv
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
   let replay: Replay = {
     map: undefined, remarks: [], byId: new Map(), processed: [], known: new Set(), history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
-    unsent: [], received: 0, attached: [], carried: undefined, anchor: undefined, imagesSkipped: false, files: new Set(), previousResponse: undefined, diffUpdate: { status: "running" },
+    unsent: [], received: 0, carried: undefined, anchor: undefined, imagesSkipped: false, files: new Set(), previousResponse: undefined, diffUpdate: { status: "running" },
   };
   let index = -1;
   for (const event of events) {
@@ -332,10 +328,10 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       replay = { ...replay, diffUpdate: { status: "running" } };
     }
   }
-  const { map, remarks, processed, known, history, unsent, attached, files, received, previousResponse, carried, anchor, diffUpdate } = replay;
+  const { map, remarks, processed, known, history, unsent, files, received, previousResponse, carried, anchor, diffUpdate } = replay;
   if (!map) return yield* new InvalidLogEvent({ index: 0, reason: "ログに start がありません" });
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map, pending, processed, remarks, known, ...history, previousResponse, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), last: attached, files, received, carried, anchor } };
+  return { map, pending, processed, remarks, known, ...history, previousResponse, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), files, received, carried, anchor } };
 });
 
 // 状態からスナップショットを作る（純粋）
@@ -395,16 +391,14 @@ type Runtime = {
   readonly unsentScreens: readonly HeldScreen[]; // まだ差分更新に添えていない共有画面の変化（受け取った順）
   readonly catchUpScreen: HeldScreen | undefined; // 一時停止の間にたまった共有画面のうち start が最も遅い 1 件（同じ start なら後に受け取った方。要素の同一性で照合する）。これが unsentScreens に残っている間は SCREENS_MAX で切らない
   readonly screenFiles: ReadonlySet<string>; // 画像に付けたファイル名
-  readonly lastScreens: readonly HeldScreen[]; // 最後に添えた共有画面（古い順・最大 LAST_SCREENS 件）。失敗した回に選んだ画面も数える（一時停止の回は数えない）。画像はファイル名だけで、送るときに読み戻す
   readonly receivedScreens: number; // 受け取った共有画面の総数。diff の行の screenCount に使う
   readonly carriedScreen: string | undefined; // 持ち越している変化の画像のファイル名。10 秒未満で添えなかった変化の最新の 1 件
-  readonly lastImageStart: number | undefined; // 10 秒を測る起点。直前に添えた画像の start（lastScreens から導かない: 画像が押し出されることがある）
+  readonly lastImageStart: number | undefined; // 10 秒を測る起点。直前に添えた画像の start
 };
 
 // 差分更新に添えるまで持つのは、画像のバイト列ではなく、書いたファイル名（file）だけ
 type HeldScreen = { readonly start: number; readonly image: { readonly id: string; readonly file: string } | null };
 
-const LAST_SCREENS = 2; // query を開き直したときに送り直す、最後に添えた共有画面の件数
 // Why: 一時停止から戻ったとき、たまった発言を 1 回に全部渡すと、共有画面の境目（渡した発言の end の最大値）が先へ進み、間に映った画面が捨てられる。
 // 1 回の量は、待ち時間なしで流したときに 1 回で渡る発言の数（2 件）に合わせる。
 // 録画のセッションが等速で入れるときの、処理を待つ発言（unreflectedRemarks）の上限にも同じ値を使う
@@ -447,8 +441,8 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
   return { fresh: pending.slice(0, CATCH_UP_REMARKS), rest: pending.slice(CATCH_UP_REMARKS), catchUpUntil };
 }
 
-type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly last: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
-const noScreens: InitialScreens = { unsent: [], last: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
+type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
+const noScreens: InitialScreens = { unsent: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
 
 // 確かめを通った AI の名前を受け取る（diff の行を書いた後に呼ぶ）。cli play・復元は渡さない
 export type OnSpeakerNames = (names: readonly InferredSpeakerName[]) => Effect.Effect<void>;
@@ -460,7 +454,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
     const log = yield* SessionLog;
     // 通った名前が 1 件以上あるときだけ、受け取る側（あれば）へ渡す
     const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
-    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, lastScreens: screens.last, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
+    const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
 
     const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
       const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -532,7 +526,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         Effect.gen(function* () {
           const state = (yield* Ref.get(ref)).diffUpdate;
           if (state.status === "paused") yield* log.write({ type: "diff-update-retry", reason: state.reason });
-          const { map, recent, input, attached, previous, previousResponse, before, keptUnsent } = yield* Ref.modify(ref, (s) => {
+          const { map, recent, input, selectedScreens, previousResponse, before, keptUnsent } = yield* Ref.modify(ref, (s) => {
             const recent = s.processed.slice(-RECENT);
             // 添える共有画面: 新しい発言の end の最大値以下に映り始めた、まだ添えていない変化（と持ち越し）を時刻順に並べ、
             // 直前に添えた画像から 10 秒以上離れたものを選び、新しい SCREENS_MAX 件。選び方は screenSelection.ts（復元と共通）。
@@ -543,20 +537,20 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
             const selected = images ? selectScreens(keyed, s.carriedScreen, s.lastImageStart, cutoff) : [];
             const catchingUp = s.catchUpScreen !== undefined && s.unsentScreens.includes(s.catchUpScreen);
             const chosen = catchingUp ? selected : selected.slice(-SCREENS_MAX);
-            const attached = chosen.map((c) => c.held);
+            const selectedScreens = chosen.map((c) => c.held);
             const carriedScreen = images ? carriedOf(keyed, new Set(chosen.flatMap((c) => (c.image === null ? [] : [c.image])))) : undefined;
             const input = {
               recent: recent.map((u) => u.id),
               fresh: fresh.map((u) => u.id),
               nodeCount: s.map.order.length - 1,
-              ...(attached.length ? { screens: attached.map((h) => ({ start: h.start, image: h.image?.file ?? null })) } : {}),
+              ...(selectedScreens.length ? { screens: selectedScreens.map((h) => ({ start: h.start, image: h.image?.file ?? null })) } : {}),
               ...(s.receivedScreens > 0 ? { screenCount: s.receivedScreens } : {}),
             };
             const keptUnsent = s.unsentScreens.filter((h) => h.start > cutoff || (carriedScreen !== undefined && h.image?.file === carriedScreen));
-            const before = { unsentScreens: s.unsentScreens, carriedScreen: s.carriedScreen, lastImageStart: s.lastImageStart, lastScreens: s.lastScreens };
+            const before = { unsentScreens: s.unsentScreens, carriedScreen: s.carriedScreen, lastImageStart: s.lastImageStart };
             const catchUpScreen = s.catchUpScreen !== undefined && keptUnsent.includes(s.catchUpScreen) ? s.catchUpScreen : undefined;
             return [
-              { map: s.map, recent, input, attached, previous: images ? s.lastScreens : [], previousResponse: s.previousResponse, before, keptUnsent: keptUnsent.length },
+              { map: s.map, recent, input, selectedScreens, previousResponse: s.previousResponse, before, keptUnsent: keptUnsent.length },
               {
                 ...s,
                 reflecting: fresh,
@@ -564,31 +558,22 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
                 catchUpScreen,
                 carriedScreen,
                 lastImageStart: anchorAfter(chosen, s.lastImageStart),
-                lastScreens: [...s.lastScreens, ...attached].slice(-LAST_SCREENS),
               },
             ];
           });
-          // 添える画像と送り直す画像だけを、ここで読み戻す（画像のバイト列はメモリに持たない）
+          // 新しく添える画像だけを、ここで読み戻す（画像のバイト列はメモリに持たない）
           const readBack = (h: HeldScreen): Effect.Effect<ScreenChange> => {
             const held = h.image;
             return held ? Effect.map(log.readScreen(held.file), (bytes) => ({ start: h.start, image: { id: held.id, bytes } })) : Effect.succeed({ start: h.start, image: null });
           };
-          // 送り直す画面は、読めなかったものを外して送る。送り直しは文脈の補いなので、読めない画像で呼び出しを失敗させない
-          // （添えた回に読めず失敗した画面も「最後に添えた」に数えるため、失敗させると以後の呼び出しがすべて失敗する）
-          const readPrevious = Effect.map(
-            Effect.forEach(previous, (h) =>
-              readBack(h).pipe(Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.void))),
-            ),
-            (list) => list.filter((c): c is ScreenChange => c !== undefined),
-          );
           // 失敗は、添える画像の読み戻しと update の、中断以外を defect も含めて受け止める。中断のときは受け止めずに伝える
           type CallTimes = { startedAt: string; endedAt: string };
           const classifyUnlessInterrupt = (cause: Cause.Cause<DiffUpdateFailure>) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)));
-          const outcome = yield* Effect.all([Effect.forEach(attached, readBack), readPrevious]).pipe(
-            Effect.flatMap(([screens, previousScreens]) =>
+          const outcome = yield* Effect.forEach(selectedScreens, readBack).pipe(
+            Effect.flatMap((screens) =>
               Effect.suspend(() => {
                 const startedAt = logTimestamp(logShiftMs);
-                return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousScreens.length ? { previousScreens } : {}), ...(previousResponse ? { previousResponse } : {}) }))).pipe(
+                return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousResponse ? { previousResponse } : {}) }))).pipe(
                   Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp(logShiftMs) } as CallTimes })),
                 );
               }),
@@ -737,10 +722,10 @@ export const makeSession = Effect.fnUntraced(function* ({ title, images = true, 
 });
 
 // ログのイベントから、セッションを元の状態に戻す。差分更新は呼ばず、イベントも log し直さない。
-// 共有画面は、まだ添えていない変化と最後に添えた 2 件・持ち越しと起点を、screens/ のファイル名だけで戻す（復元した画像の id はファイル名）。
-// 画像のバイト列は、ライブと同じく、続きの呼び出しで添える・送り直すときに SessionLog.readScreen で読み戻す（core はファイルを読まない）
+// 共有画面は、まだ添えていない変化・持ち越しと起点を、screens/ のファイル名だけで戻す（復元した画像の id はファイル名）。
+// 画像のバイト列は、ライブと同じく、続きの呼び出しで新しく添えるときに SessionLog.readScreen で読み戻す（core はファイルを読まない）
 export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
   const { screens, ...state } = yield* restoreState(events);
   const hold = (ref: ScreenRefs): HeldScreen => ({ start: ref.start, image: ref.image === null ? null : { id: ref.image, file: ref.image } });
-  return yield* openSession(state, { unsent: screens.unsent.map(hold), last: screens.last.map(hold), files: screens.files, received: screens.received, carried: screens.carried, anchor: screens.anchor }, true);
+  return yield* openSession(state, { unsent: screens.unsent.map(hold), files: screens.files, received: screens.received, carried: screens.carried, anchor: screens.anchor }, true);
 });

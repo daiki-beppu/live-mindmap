@@ -55,11 +55,7 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
     unseen[destination] = [];
     const other = destination === SONNET ? HAIKU : SONNET;
     unseen[other] = [...unseen[other], ...arrived].slice(-UNSEEN_SCREENS_MAX);
-    // 開き直した query に送り直す画面は、この呼び出しで添える画面と重ならないものだけにする
-    const starts = new Set(screens.map((c) => c.start));
-    const previousScreens = (input.previousScreens ?? []).filter((c) => !starts.has(c.start));
-
-    const { previousResponse: _dropped, screens: _screens, previousScreens: _previous, ...rest } = input;
+    const { previousResponse: _dropped, screens: _screens, ...rest } = input;
     const handed = own[destination];
     const judge = outcome.ok
       ? { model: destination, ms, ...(likelihood !== undefined ? { confidence: likelihood } : {}) }
@@ -67,7 +63,6 @@ export const routedUpdater = (parts: Parts) => Effect.sync(() => {
     const result = yield* (destination === HAIKU ? parts.haiku : parts.sonnet).update({
       ...rest,
       ...(screens.length ? { screens } : {}),
-      ...(previousScreens.length ? { previousScreens } : {}),
       ...(handed ? { previousResponse: handed } : {}),
     }).pipe(Effect.mapError((error) => ({ _tag: error._tag, message: error.message, judge })));
     return { ...result, judge };
