@@ -69,6 +69,12 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 
 #1316 の run は `build-webrtc-apm.sh` と `fetch-speaker-models.sh` を並べて流し、後者が Swift の `error: Build failed` で落ちた。APM のビルドが済んだ後に流し直すと通った。原因は確かめていない。AGENTS.md の Checks の順（APM → 話者のモデル → `pnpm typecheck`）で 1 つずつ流す。
 
+## コミットの分け方やマージの仕方を完了条件にしたチケットは、takt に流さず手で引き取る
+
+[#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388) は、「`git mv` だけのコミットを先に置き、英語版の新規作成とは別のコミットにする」を完了条件にしていた。takt の run はこれを満たせず、計画のやり直し（replan）で止まり、takt-sequence のセッションも止まって案内役が判断依頼を出した。結局、run が書いた文面を使って手でコミットを 2 つに分け、rebase でマージした（[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392)）。
+
+takt の PR は squash で予約されるので、run がコミットを分けても main では 1 つになる。コミットの並びや rebase でのマージが要る作業（履歴を残す移動など。[README の 2 つの版](readme-versions.md)）は、起票の時点で手で行う作業として書き、takt-sequence に積む並びから外す。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -76,3 +82,4 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 - 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の子 [#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) とその takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）、[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368) とその takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）
 - 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 [#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)・[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)、[#1309](https://github.com/daiki-beppu/live-mindmap/issues/1309)・[PR #1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)、[#1310](https://github.com/daiki-beppu/live-mindmap/issues/1310)・[PR #1370](https://github.com/daiki-beppu/live-mindmap/pull/1370) と、その PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`・`20261018-022556-evaluate-pull-request-1328-usi`・`20261020-025344-evaluate-pull-request-1370-usi`）
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)
+- 仕様 [#1386](https://github.com/daiki-beppu/live-mindmap/issues/1386) の子 [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388)・[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392) の本文と、#1386 の案内役のコメント

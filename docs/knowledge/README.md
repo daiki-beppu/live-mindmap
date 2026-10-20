@@ -9,6 +9,7 @@
 - [更新の計画](update-plan.md): 差分更新のモデルと判定のモデルの選び方（`updatePlan`）と、それを呼ぶ CLI と server の配線を触るとき
 - [CLI と server の受け渡し](server-protocol.md): CLI と server の間の経路・本文・応答（`serverProtocol`）と、web が送る本文を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
+- [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
 ## 取り込み済み
 
@@ -43,3 +44,6 @@
 - #1308〜#1310 の PR の本文と resolution コメント → [takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった
 - #1310 の takt の run（`takt-worktrees/20261020T0215-1310-issue-1310-cli-recorded-ni-jud-8dd3338e9a116999/.takt/runs`） → [takt の run](takt-runs.md)。worktree はマージの後に消えていて、trace と reports は読めなかった。#1308・#1309 の実装の run も同じ
 - PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`・`20261018-022556-evaluate-pull-request-1328-usi`・`20261020-025344-evaluate-pull-request-1370-usi`）の trace と reports → [更新の計画](update-plan.md)、[CLI と server の受け渡し](server-protocol.md)、[takt の run](takt-runs.md)。#1328 のレビューで main との衝突を解く段が入ったことは捨てた: 作業の判断に使わない。run ごとの所要時間は捨てた: 作業の判断に使わない
+- 仕様 [#1386](https://github.com/daiki-beppu/live-mindmap/issues/1386) → [README の 2 つの版](readme-versions.md)。用語は捨てた: 新しい語が無い。ADR は捨てた: 日本語版を正本・英語版を要約とする同期の決まりは AGENTS.md の「README」節にあり、覆しやすい。Formal Spec の「対象外」のコメントは捨てた: 新しい学びが無い
+- 親 [#1387](https://github.com/daiki-beppu/live-mindmap/issues/1387) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い。マージ後に人が行うリポジトリの説明の変更は、作業の手順で学びではない
+- チケット [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388)・[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392) の差分と本文 → [README の 2 つの版](readme-versions.md)、[takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった。本文の「squash だと `git log --follow` で辿れない」は手元で確かめて誤りと分かり、`git blame` の違いとして書き直した
