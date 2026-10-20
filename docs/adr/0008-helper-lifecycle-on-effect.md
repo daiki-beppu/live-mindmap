@@ -15,7 +15,7 @@ server を Effect 4 へ置き換える（[#193](https://github.com/daiki-beppu/l
 ## Considered Options
 
 - **stop も中断で止める**: 中断が 1 種類で済む。ただし後始末は逆順に走るので、発言を落とさないには、ヘルパーの後始末の中で「止める → Queue を読み切る」まで行うことになり、発言を読む処理が後始末に入る
-- **起動し直しのループを別の Service にする**: ループだけを単体で試せる。ただし Service が増え、今の段階で単体で試す理由が無い
+- **起動し直しのループを別の Service にする**: ループだけを単体で試せる。ただし Service が増え、今の段階で単体で試す理由が無い。複製と試験の穴のため、Service にはせず、内側のモジュール `intakeAttempts` として切り出した
 - **`node:child_process` を自分で包む**: 安定した API だけで済み、依存も増えない。SIGKILL までを TestClock で試せる
 - **起動は `effect/process`、止め方は本体に書く**: SIGKILL を送ったかどうかがわかり、TestClock で試せる。ただし `effect/process` に任せられる止め方を自分で書き直すことになる
 - **ループだけが書く数は普通のフィールドにする**: 書くのは同時に 1 本のループだけで競合しないが、Effect の作法からはずれる

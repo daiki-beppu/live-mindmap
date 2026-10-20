@@ -21,6 +21,7 @@ export type Script = {
   blockLaunch?: boolean;
   // true なら、この回の起動は接続できず、すぐ失敗する（HelperLaunchFailure）
   failLaunch?: boolean;
+  launchExit?: HelperExitInfo;
 };
 
 // 偽のヘルパーが --audio-dir へ書く音声（相手.m4a）の中身
@@ -59,7 +60,7 @@ export function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []
     calls.push([...args]);
     const attemptIndex = calls.length - 1;
     const current = attempts[attemptIndex] ?? script;
-    if (current.failLaunch === true) return yield* new HelperLaunchFailure({ stderrTail: ["起動できない"], exit: { code: 1, signal: null } });
+    if (current.failLaunch === true) return yield* new HelperLaunchFailure({ stderrTail: ["起動できない"], exit: current.launchExit ?? { code: 1, signal: null } });
     if (current.blockLaunch === true) {
       yield* Deferred.await(stopRequested);
       return yield* new HelperLaunchFailure({ stderrTail: [], exit: { code: null, signal: "SIGTERM" } });
@@ -74,7 +75,7 @@ export function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []
     const exited = yield* Deferred.make<HelperExitInfo>();
     const finish = (info: HelperExitInfo) => Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, info)));
     live.end = finish({ code: 0, signal: null });
-    const stop = finish({ code: null, signal: "SIGTERM" });
+    const stop = Effect.andThen(Deferred.succeed(stopSeen, undefined), finish({ code: null, signal: "SIGTERM" }));
     yield* Effect.addFinalizer(() => stop);
     yield* Effect.forkScoped(Effect.andThen(Deferred.await(stopRequested), Deferred.succeed(stopSeen, undefined)));
     for (const event of events(current)) Queue.offerUnsafe(queue, JSON.stringify(event));

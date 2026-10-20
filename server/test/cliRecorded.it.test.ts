@@ -265,33 +265,38 @@ describe("cli recorded <file>", () => {
     expect(body).not.toHaveProperty("selfFile");
   }).pipe(Effect.scoped));
 
-  it.live.each(["helper stderr", "起動できない"])("録画の終了失敗は進んだ位置と最後の標準エラーを出して失敗する（%s）", (stderr) => Effect.gen(function* () {
-    const root = yield* temporaryDirectory;
-    writeFileSync(join(root, "meeting.m4a"), "audio");
-    const dir = join(root, "recorded");
-    const events = [
-      { type: "started", dir, warnings: [] },
-      { type: "progress", position: 660, duration: 3484, rounds: 2 },
-      { type: "finished", paths: [join(dir, "map.md")], failure: { code: 1, signal: null, stderrTail: [stderr] } },
-    ];
-    const client = HttpClient.make((request) => Effect.succeed(HttpClientResponse.fromWeb(request, new Response(events.map((event) => JSON.stringify(event)).join("\n") + "\n"))));
-    const deps = cliDependencies(root, 0, { httpClient: Layer.succeed(HttpClient.HttpClient, client) });
-    const result = yield* Effect.result(runCli(["recorded", join(root, "meeting.m4a")]).pipe(Effect.provide(deps.layer)));
+  it.live.each([0, 1])("ヘルパーが接続前コード%sで落ち続けて諦めると、CLIは進んだ位置と最後の標準エラーを出して失敗する", (code) => Effect.gen(function* () {
+    const updating = yield* Deferred.make<void>();
+    const releaseUpdate = yield* Deferred.make<void>();
+    const first: Script = { ...THREE, remarks: THREE.remarks.slice(0, 2), exit: { code: 1, signal: null } };
+    const r = yield* resource(first, fakeUpdater(() => Effect.andThen(Deferred.succeed(updating, undefined), Deferred.await(releaseUpdate))), {
+      attempts: [first, { remarks: [], failLaunch: true, launchExit: { code, signal: null } }, { remarks: [], failLaunch: true, launchExit: { code, signal: null } }],
+    });
+    const running = yield* Effect.forkChild(Effect.result(r.cli(["recorded", r.file])));
+    yield* Deferred.await(updating);
+    yield* Effect.promise(() => vi.waitFor(() => expect(sessionLog(r.sessionsDir).some((line) => line.type === "intake-gave-up")).toBe(true)));
+    yield* Deferred.succeed(releaseUpdate, undefined);
+    const result = yield* Fiber.join(running);
+    const dir = onlySession(r.sessionsDir);
     expect(Result.isFailure(result)).toBe(true);
-    expect(deps.stdout.join("")).toContain(join(dir, "map.md"));
-    expect(deps.stderr.join("")).toContain(stderr);
-    expect(failureText(result)).toContain(formatRecordedPosition(660, 3484));
+    expect(r.deps.stdout.join("")).toContain(join(dir, "map.md"));
+    expect(r.deps.stderr.join("")).toContain("起動できない");
+    expect(failureText(result)).toContain(`（${code}）`);
+    expect(failureText(result)).toContain(formatRecordedPosition(600, 3484));
+    expect(failureText(result)).toContain("文字起こしのヘルパーが落ち続け、起動し直しを諦めました");
   }).pipe(Effect.scoped));
 
   it.live("Ctrl-Cで/session/stopを送り、map.*のパスを出し、statusはセッションなしになる", () => Effect.gen(function* () {
     const requests: string[] = [];
+    const stopRequested = yield* Deferred.make<void>();
     const client = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (http) =>
-      HttpClient.tapRequest(http, (request) => Effect.sync(() => { requests.push(request.url); })))).pipe(Layer.provide(NodeHttpClient.layerUndici));
+      HttpClient.tapRequest(http, (request) => Effect.gen(function* () {
+        requests.push(request.url);
+        if (request.url.endsWith("/session/stop")) yield* Deferred.succeed(stopRequested, undefined);
+      })))).pipe(Layer.provide(NodeHttpClient.layerUndici));
     // 2 回目の差分更新は、stop の印が立つまで終わらない。3 発言目は溜まったまま
-    const stopSeen = { current: undefined as Deferred.Deferred<void> | undefined };
-    const updater = fakeUpdater((_input, call) => call === 2 ? Effect.suspend(() => Deferred.await(stopSeen.current!)) : Effect.void);
+    const updater = fakeUpdater((_input, call) => call === 2 ? Effect.suspend(() => Deferred.await(stopRequested)) : Effect.void);
     const r = yield* resource(THREE, updater, { cli: { httpClient: client } });
-    stopSeen.current = r.helpers.stopSeen;
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 2);
     // 実行中のセッションは status に出る（フォルダつき）
@@ -324,7 +329,7 @@ describe("cli recorded <file>", () => {
     const stopSeen = { current: undefined as Deferred.Deferred<void> | undefined };
     // 最初の差分更新が終わらず、セッションが続いている間に別の入口を試す
     const updater = fakeUpdater(() => Effect.suspend(() => Deferred.await(stopSeen.current!)));
-    const r = yield* resource(THREE, updater);
+    const r = yield* resource({ ...THREE, hold: true }, updater);
     stopSeen.current = r.helpers.stopSeen;
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 1);
@@ -410,7 +415,7 @@ describe("cli recorded <file>", () => {
     const tunnel = fakeTunnel();
     const stopSeen = { current: undefined as Deferred.Deferred<void> | undefined };
     const updater = fakeUpdater(() => Effect.suspend(() => Deferred.await(stopSeen.current!)));
-    const r = yield* resource(THREE, updater, { viewing: tunnel.viewing });
+    const r = yield* resource({ ...THREE, hold: true }, updater, { viewing: tunnel.viewing });
     stopSeen.current = r.helpers.stopSeen;
     const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
     yield* waitForRemarks(r.sessionsDir, 1);

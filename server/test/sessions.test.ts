@@ -1,12 +1,12 @@
 import { defaultClaude } from "../src/modelSelection.ts";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { makeFakeHelpers, type AttemptScript } from "./fixtures/intakeHelpers.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Queue, Ref, Scope, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
 import { DiffUpdater, TAP_NOTICE_TEXT, type HelperPartial, type SettledRemark, type Track } from "../src/core/index.ts";
-import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers } from "../src/helpers.ts";
 import { HelperExited, NoSession, SessionBusy } from "../src/sessionFailure.ts";
 import { SessionSinks, type OpenSessionSink, type LiveSink, type RecordedSink } from "../src/sessionSinks.ts";
 import { Sessions, SessionsDir, type SessionStart } from "../src/sessions.ts";
@@ -14,7 +14,7 @@ import { Viewers } from "../src/viewers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 
-// Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と起動し直しのループを、
+// Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と種類別の配線を、
 // 偽の Helpers・SessionSinks の Layer と TestClock で確かめる（order.md:39）。本物の子プロセスは使わない。
 // 本物の子プロセスのテストは server/test/server.heavy.test.ts の契約 6 本、SessionSinks 自身の実物 Layer の契約は
 // server/test/sessionSinks.it.test.ts が確かめる（このファイルでは SessionSinks も偽物）。
@@ -27,95 +27,6 @@ import { settleUntil } from "./fixtures/sessionLayers.ts";
 //   （要件3,68,117,125）。Scope を閉じると updater が閉じる（CT-SINK-SCOPE）。
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
-
-type AttemptScript = {
-  connect?: boolean; // 既定 true。false なら接続失敗（HelperLaunchFailure）
-  launchExit?: HelperExitInfo; // connect: false のとき、接続する前にヘルパーが終わった終わり方（HelperLaunchFailure.exit）。省略すると exit なし
-  stderrTail?: string[];
-  unexpectedExit?: { afterMs: number; exit: HelperExitInfo }; // 自発的な予期せぬ終了
-  stopExit?: HelperExitInfo; // stop が呼ばれたときの終わり方（既定 SIGTERM）
-  stopDelayMs?: number; // stop が呼ばれてから終わるまでの時間（既定 0）
-  connectGate?: Deferred.Deferred<void>; // 解放されるまで接続しない（launch が待つ。解放すると接続できる）
-  hold?: boolean; // 接続待ちのまま保つ。stopRequested が立つと止めて、stopExit（既定 SIGTERM）の HelperLaunchFailure で終わる
-};
-
-type FakeHelpersHandle = {
-  readonly helpers: Helpers["Service"];
-  readonly calls: ReadonlyArray<ReadonlyArray<string>>; // launch に渡された argv（起動した回数も分かる）
-  readonly send: (attemptIndex: number, event: unknown) => void; // 指定した起動回の events へ 1 件流す
-  readonly stops: number[]; // stop が実際に走った起動回（0 始まり）。ヘルパーが止められたことを観測する
-  readonly sentPauses: { attempt: number; paused: boolean }[]; // HelperAttempt.send で helper へ送られた休止の指示（起動回ごと。Issue #1069）
-};
-
-// 偽の Helpers。台本（attempts）の数を超えたら最後の台本を使い回す
-function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHandle, never, Scope.Scope> {
-  return Effect.gen(function* () {
-    const calls: string[][] = [];
-    const queues: Queue.Queue<unknown, Cause.Done>[] = [];
-    const stops: number[] = [];
-    const sentPauses: { attempt: number; paused: boolean }[] = [];
-    const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>): Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope> =>
-      Effect.gen(function* () {
-        const index = calls.length;
-        calls.push([...args]);
-        const script = attempts[Math.min(index, attempts.length - 1)] ?? {};
-        if (script.connect === false) {
-          // 起動し直しの接続は、試みて失敗するまでに少し時間がかかる（失敗が同じ瞬間に連鎖して、途切れの状態を飛ばさない）
-          if (index > 0) yield* Effect.sleep(1);
-          return yield* new HelperLaunchFailure({ stderrTail: script.stderrTail ?? [], exit: script.launchExit });
-        }
-        if (script.hold) {
-          // 接続待ちのまま、印か Scope の終了を待つ。止められたら 1 回だけ stops に記録する
-          let stopped = false;
-          const recordStop = Effect.sync(() => {
-            if (stopped) return;
-            stopped = true;
-            stops.push(index);
-          });
-          yield* Effect.addFinalizer(() => recordStop);
-          yield* Deferred.await(stopRequested);
-          yield* recordStop;
-          return yield* new HelperLaunchFailure({ stderrTail: script.stderrTail ?? [], exit: script.stopExit ?? { code: null, signal: "SIGTERM" } });
-        }
-        if (script.connectGate) yield* Deferred.await(script.connectGate);
-        const queue = yield* Queue.make<unknown, Cause.Done>();
-        queues[index] = queue;
-        const exitDeferred = yield* Deferred.make<HelperExitInfo>();
-        const stoppedRef = yield* Ref.make(false);
-        if (script.unexpectedExit) {
-          yield* Effect.forkScoped(Effect.gen(function* () {
-            yield* Effect.sleep(script.unexpectedExit!.afterMs);
-            const already = yield* Ref.getAndSet(stoppedRef, true);
-            if (already) return;
-            yield* Queue.end(queue);
-            yield* Deferred.succeed(exitDeferred, script.unexpectedExit!.exit);
-          }));
-        }
-        const stop = Effect.gen(function* () {
-          const already = yield* Ref.getAndSet(stoppedRef, true);
-          if (already) return;
-          stops.push(index);
-          if (script.stopDelayMs) yield* Effect.sleep(script.stopDelayMs);
-          yield* Queue.end(queue);
-          yield* Deferred.succeed(exitDeferred, script.stopExit ?? { code: null, signal: "SIGTERM" });
-        });
-        yield* Effect.addFinalizer(() => Effect.ignore(stop));
-        return {
-          events: Stream.fromQueue(queue) as Stream.Stream<string>,
-          stop,
-          exit: Deferred.await(exitDeferred),
-          stderrTail: Effect.succeed(script.stderrTail ?? []),
-          send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sentPauses.push({ attempt: index, paused: instruction.paused }); }),
-        };
-      });
-    const send = (attemptIndex: number, event: unknown) => {
-      const queue = queues[attemptIndex];
-      if (!queue) throw new Error(`起動回 ${attemptIndex} はまだ接続していない`);
-      Queue.offerUnsafe(queue, JSON.stringify(event));
-    };
-    return { helpers: Helpers.of({ ...readyHelperChecks, apps: Effect.succeed(APPS), launch }), calls, send, stops, sentPauses };
-  });
-}
 
 // sink の appendLog が受け取る型（intake の記録・自分の休止の記録）。speaker の記録は sink.speaker が受け取る（Issue #1021）
 type LogLineEvent = Parameters<LiveSink["appendLog"]>[0];
@@ -136,7 +47,7 @@ type FakeSinksHandle = {
   readonly speakerCalls: string[]; // sink.speaker（speaker:<type>）と sink.speakersRenumbered（renumbered）が呼ばれた順（Issue #1025）
   readonly vocabAdded: string[][]; // 開始引数で受け取った語（空でない呼び出しごと）
   readonly order: string[]; // flush・exports・close が起きた順
-  readonly control: { createDirFails: boolean; finalDiesOn: string | undefined }; // finalDiesOn: この text の remark を final に渡すと defect になる
+  readonly control: { createDirFails: boolean };
 };
 
 // 偽の SessionSinks。ID の採番だけ本物の規則（セッションにつき 1 回のクロージャ、r1 から）を真似る。
@@ -156,7 +67,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const vocabAdded: string[][] = [];
     const speakerCalls: string[] = [];
     const order: string[] = [];
-    const control: { createDirFails: boolean; finalDiesOn: string | undefined } = { createDirFails: false, finalDiesOn: undefined };
+    const control = { createDirFails: false };
     const openBase = (args: OpenSessionSink) =>
       Effect.gen(function* () {
         opened.count++;
@@ -166,7 +77,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
         const sink = {
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
-          final: (r: SettledRemark) => Effect.suspend(() => r.text === control.finalDiesOn ? Effect.die(new Error("ログに書けません")) : Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); })),
+          final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); }),
           screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
           screenOff: (e: Parameters<LiveSink["screenOff"]>[0]) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
@@ -265,17 +176,15 @@ describe("録画の引数と終了処理", () => {
     yield* sessions.stop;
   }).pipe(Effect.scoped));
 
-  it.effect("録画の初回起動に失敗したら起動し直さず、次の録画を始められる", () => Effect.gen(function* () {
+  it.effect("録画の開始に失敗してもsinkを開かず、次の録画を始められる", () => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{ connect: false }, {}]);
     const fake = yield* makeFakeSessionSinks();
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
     const input = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude };
     const result = yield* Effect.exit(sessions.startRecorded(input));
     expect(result._tag).toBe("Failure");
-    expect(helpers.calls).toHaveLength(1);
     expect(fake.opened.count).toBe(0);
     yield* sessions.startRecorded(input);
-    expect(helpers.calls).toHaveLength(2);
     yield* sessions.stop;
   }).pipe(Effect.scoped));
 });
@@ -338,42 +247,27 @@ describe("録画の停止と一時停止の配線", () => {
     expect(yield* sessions.status).toEqual({ status: "none" });
   }).pipe(Effect.scoped));
 
-  it.effect.each([true, false])("一時停止の理由を更新しても再開せず、再起動後のヘルパーへ停止と再開を送る（再起動前に停止: %s）", (pauseBeforeRestart) => Effect.gen(function* () {
-    const fakeHelpers = yield* makeFakeHelpers([
-      { unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {},
-    ]);
+  it.effect("一時停止の理由と再開をprogressへ渡し、状態が変わったときだけ読み取りの指令を送る", () => Effect.gen(function* () {
+    const fakeHelpers = yield* makeFakeHelpers([{}]);
     const fakeSinks = yield* makeFakeSessionSinks();
     const callbacks = yield* Deferred.make<Parameters<SessionSinks["Service"]["openRecorded"]>[0]["recorded"]>();
-    const sent: { attempt: number; paused: boolean }[] = [];
-    const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: Effect.fnUntraced(function* (args, stop) {
-      const attempt = yield* fakeHelpers.helpers.launch(args, stop);
-      const index = fakeHelpers.calls.length - 1;
-      return { ...attempt, send: (instruction) => Effect.andThen(attempt.send(instruction), Effect.sync(() => {
-        if (instruction.type === "reading-pause") sent.push({ attempt: index, paused: instruction.paused });
-      })) };
-    }) });
     const sinks = SessionSinks.of({ ...fakeSinks.sinks, openRecorded: (args) =>
       Effect.andThen(Deferred.succeed(callbacks, args.recorded), fakeSinks.sinks.openRecorded(args)) });
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, fakeHelpers.helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: false, model: defaultClaude });
     const events: { type: string; paused?: { reason: string; retryAt: number } }[] = [];
     const consuming = yield* Stream.runForEach(run.events, (e) => Effect.sync(() => { events.push(e); })).pipe(Effect.forkChild);
     const control = yield* Deferred.await(callbacks);
-    if (!pauseBeforeRestart) {
-      yield* TestClock.adjust(1);
-      expect(sent).toEqual([]);
-    }
     yield* control.paused({ reason: "ChatGPT の利用上限", retryAt: 100_000 });
     yield* control.paused({ reason: "Claude の利用上限", retryAt: 400_000 });
-    expect(sent).toEqual([{ attempt: pauseBeforeRestart ? 0 : 1, paused: true }]);
-    if (pauseBeforeRestart) yield* TestClock.adjust(1);
-    expect(fakeHelpers.calls).toHaveLength(2);
-    const stopped = pauseBeforeRestart ? [{ attempt: 0, paused: true }, { attempt: 1, paused: true }] : [{ attempt: 1, paused: true }];
-    expect(sent).toEqual(stopped);
+    expect(fakeHelpers.sentInstructions).toEqual([{ attempt: 0, instruction: { type: "reading-pause", paused: true } }]);
     yield* control.paused(undefined);
     yield* sessions.stop;
     yield* Fiber.join(consuming);
-    expect(sent).toEqual([...stopped, { attempt: 1, paused: false }]);
+    expect(fakeHelpers.sentInstructions).toEqual([
+      { attempt: 0, instruction: { type: "reading-pause", paused: true } },
+      { attempt: 0, instruction: { type: "reading-pause", paused: false } },
+    ]);
     expect(events.filter((e) => e.type === "progress").map((e) => e.paused)).toEqual([
       { reason: "ChatGPT の利用上限", retryAt: 100_000 }, { reason: "Claude の利用上限", retryAt: 400_000 }, undefined,
     ]);
@@ -520,7 +414,6 @@ describe("推論プロセスの準備をセッションが所有する", () => {
   }));
 });
 
-
 // ブラウザ側のクライアントの代わり。Viewers.connect に渡す Socket で、届いたフレームを溜める（server/test/ws.test.ts の client と同じ作り）
 const viewerClient = Effect.fnUntraced(function* () {
   const frames = yield* Queue.make<unknown>();
@@ -590,15 +483,6 @@ const collectingStderr = () => {
   const service: Console.Console = { ...console, error: (...args: unknown[]) => { stderr.push(args.map(String).join(" ") + "\n"); } };
   return { stderr, service };
 };
-
-// run の間に Console.error へ渡された文字列を集める（サーバーの標準エラーへの記録を観測する）。
-// start を呼ぶ fiber の context を、ヘルパーを読むループが受け継ぐので、start を含む Effect 全体を渡す
-const captureStderr = <A, E, R>(run: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const { stderr, service } = collectingStderr();
-    yield* Effect.provideService(run, Console.Console, service);
-    return stderr;
-  });
 
 const withStderr = <A, E, R>(body: (stderr: string[]) => Effect.Effect<A, E, R>) => {
   const { stderr, service } = collectingStderr();
@@ -746,75 +630,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.finals.map((r) => r.text)).toEqual(["かくてい", "むき"]);
       }));
 
-    it.effect("知らない type は読み飛ばされ、stderr に何も出さずセッションが続く", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([{}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const { stderr, service } = collectingStderr();
-        yield* Effect.gen(function* () {
-          yield* sessions.start(start());
-          fakeHelpers.send(0, { type: "heartbeat" });
-          fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
-          yield* TestClock.adjust(1);
-
-          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" });
-          expect(stderr).toEqual([]);
-        }).pipe(Effect.provideService(Console.Console, service));
-      }));
-
-    it.effect("知っている type で項目が壊れていれば、今の文面で stderr に 1 行出して読み続ける", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([{}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const { stderr, service } = collectingStderr();
-        yield* Effect.gen(function* () {
-          yield* sessions.start(start());
-          fakeHelpers.send(0, { type: "remark", track: "司会", start: 0, end: 1, text: "あ" }); // 不正な track
-          fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "つづく" });
-          yield* TestClock.adjust(1);
-
-          expect(stderr.some((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toBe(true);
-          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
-        }).pipe(Effect.provideService(Console.Console, service));
-      }));
-
-    it.effect("受け渡しの途中で defect になれば、読み飛ばしとは別の文面で stderr に 1 行出して読み続ける", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([{}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        fakeSinks.control.finalDiesOn = "こわれる";
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const { stderr, service } = collectingStderr();
-        yield* Effect.gen(function* () {
-          yield* sessions.start(start());
-          fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "こわれる" }); // 形は正しいが、sink.final が defect になる
-          fakeHelpers.send(0, { type: "remark", track: "相手", start: 1, end: 2, text: "つづく" });
-          yield* TestClock.adjust(1);
-
-          expect(stderr.filter((s) => s.includes("ヘルパーのイベントの処理に失敗しました"))).toHaveLength(1);
-          expect(stderr.filter((s) => s.includes("ログに書けません"))).toHaveLength(1); // 理由が付く
-          expect(stderr.some((s) => s.includes("読み飛ばしました"))).toBe(false); // decode の失敗の文面は出ない
-          expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "つづく" }); // セッションは止まらず続く
-        }).pipe(Effect.provideService(Console.Console, service));
-      }));
-
-    it.effect("形が読めない失敗には「処理に失敗しました」の文面を使わない", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([{}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const { stderr, service } = collectingStderr();
-        yield* Effect.gen(function* () {
-          yield* sessions.start(start());
-          fakeHelpers.send(0, { type: "remark", track: "司会", start: 0, end: 1, text: "あ" });
-          yield* TestClock.adjust(1);
-
-          expect(stderr.filter((s) => s.includes("ヘルパーのイベントを読み飛ばしました"))).toHaveLength(1);
-          expect(stderr.some((s) => s.includes("処理に失敗しました"))).toBe(false);
-        }).pipe(Effect.provideService(Console.Console, service));
-      }));
   });
 
   // 共有画面の変化（Issue #278）。screen は sink.screen（Session.pushScreen への口）へ届く。原点・取り込みの状態・ログには触れない
@@ -1882,65 +1697,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   });
 
   describe("起動し直し・諦め・resume（CT-RESTART-DECISION / CT-REF-STATE）", () => {
-    it.effect("予期せず終了すると自動で起動し直し、起動の回数は Ref で保たれる", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([
-          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
-          {},
-        ]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        yield* TestClock.adjust(500);
-        yield* TestClock.adjust(1); // 起動し直しのループが次の launch を行うための 1 tick
-
-        expect(fakeHelpers.calls).toHaveLength(2);
-        const status = yield* sessions.status;
-        expect(status.restarts).toBe(1);
-      }));
-
-    it.effect("60 秒以内の終了が 3 回続くと諦めて止まった状態になる。4 回目は起動しない", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([
-          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
-          { connect: false, stderrTail: ["起動に失敗"] },
-          { connect: false, stderrTail: ["起動に失敗"] },
-        ]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        yield* TestClock.adjust(500);
-        yield* TestClock.adjust(10);
-
-        expect(fakeHelpers.calls).toHaveLength(3); // 4 回目は起動しない
-        const status = yield* sessions.status;
-        expect(status.status).toBe("stopped");
-      }));
-
-    it.effect("60 秒を超えて動いた回は失敗に数えない", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([
-          { unexpectedExit: { afterMs: 61_000, exit: { code: 1, signal: null } } },
-          { unexpectedExit: { afterMs: 61_000, exit: { code: 1, signal: null } } },
-          { unexpectedExit: { afterMs: 61_000, exit: { code: 1, signal: null } } },
-          {},
-        ]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        for (let i = 0; i < 3; i++) {
-          yield* TestClock.adjust(61_000);
-          yield* TestClock.adjust(10);
-        }
-
-        // 3 回とも 60 秒を超えて動いたので、1 本も「続けて失敗」に数えず、4 回目も起動する（諦めない）
-        expect(fakeHelpers.calls).toHaveLength(4);
-        const status = yield* sessions.status;
-        expect(status.status).toBe("running");
-      }));
 
     it.effect("途切れた瞬間に drain と字幕のクリアが走る（CT-DRAIN / CT-SPEAKING-CLEAR）。stopRelays はまだ呼ばない", () =>
       Effect.gen(function* () {
@@ -1976,38 +1732,13 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.calls).toHaveLength(1);
       }));
 
-    it.effect("止まった状態から resume すると、失敗の数を 0 から数え直して起動し直す", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([
-          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } }, // start の初回。すぐ終わる（失敗 1）
-          { connect: false, stderrTail: ["失敗2"] },
-          { connect: false, stderrTail: ["失敗3"] },
-          { unexpectedExit: { afterMs: 200, exit: { code: 1, signal: null } } }, // resume による 1 回目。すぐ終わる
-          {}, // 自動の起動し直し。そのまま動き続ける
-        ]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-        yield* TestClock.adjust(10);
-        expect((yield* sessions.status).status).toBe("stopped");
-
-        // resume は 1 回目の起動し直しが接続した時点で戻る（時計は要らない）。そのヘルパーが 200ms 後に終わるので、
-        // 起動し直しが終わって戻ってから時計を進める（resume が起動を始める前に時計を進めると、終わる時刻がずれる）
-        yield* sessions.resume;
-        yield* TestClock.adjust(200);
-        yield* TestClock.adjust(10);
-
-        expect(fakeHelpers.calls).toHaveLength(5); // 1 回の失敗だけで再度諦めていれば 4 回で止まる
-        expect((yield* sessions.status).status).toBe("running");
-      }));
-
-    it.effect("resume した後に 3 回続けて失敗すると、諦めて stderr 末尾付きの失敗を返す", () =>
+    it.effect.each([false, true])("resume後、接続失敗では途切れ時刻を保持し、接続後の終了で更新する（接続成功=%s）", (connected) =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
           { connect: false, stderrTail: ["失敗2"] },
           { connect: false, stderrTail: ["失敗3"] },
-          { connect: false, stderrTail: ["失敗4"] },
+          connected ? { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } } : { connect: false, stderrTail: ["失敗4"] },
           { connect: false, stderrTail: ["失敗5"] },
           { connect: false, stderrTail: ["最後の失敗"] },
         ]);
@@ -2016,14 +1747,26 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.start(start());
         yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
-        expect((yield* sessions.status).status).toBe("stopped");
+        const before = yield* sessions.status;
+        expect(before.status).toBe("stopped");
+        expect(before.lastInterruptedAt).toMatch(/^1970-01-01T00:00:00\.500Z$/);
+        yield* TestClock.adjust(1_000);
 
         const resumeFiber = yield* Effect.forkChild(Effect.exit(sessions.resume));
         yield* TestClock.adjust(10);
         const result = yield* Fiber.join(resumeFiber);
 
-        expect(Exit.isFailure(result)).toBe(true);
-        expect((yield* sessions.status).status).toBe("stopped");
+        expect(Exit.isSuccess(result)).toBe(connected);
+        expect(fakeHelpers.calls.length).toBeGreaterThan(3);
+        expect((yield* sessions.status).lastInterruptedAt).toBe(before.lastInterruptedAt);
+        if (connected) {
+          yield* TestClock.adjust(500);
+          yield* TestClock.adjust(10);
+        }
+        const after = yield* sessions.status;
+        expect(after.status).toBe("stopped");
+        if (connected) expect(after.lastInterruptedAt! > before.lastInterruptedAt!).toBe(true);
+        else expect(after.lastInterruptedAt).toBe(before.lastInterruptedAt);
       }));
   });
 
@@ -2031,28 +1774,12 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   // 失敗の連続には数えず、別の歯止め（60 秒に 10 回を超えたら諦める）で数える。
   describe("構成の変化による終了（終了コード 75）は諦める回数に数えない", () => {
     const configChange = (afterMs = 500): AttemptScript => ({ unexpectedExit: { afterMs, exit: { code: 75, signal: null } } });
-    const crash = (afterMs = 500): AttemptScript => ({ unexpectedExit: { afterMs, exit: { code: 1, signal: null } } });
     const repeat = <T>(n: number, value: T): T[] => Array.from({ length: n }, () => value);
     // 終了が 1 回起きて、起動し直しのループが次の launch まで進むための時間（時計は 500ms 進めたあとに少し進める）
     const cycle = Effect.gen(function* () {
       yield* TestClock.adjust(500);
       yield* TestClock.adjust(10);
     });
-    const gaveUp = (appended: ReadonlyArray<LogLineEvent>) => appended.filter((e) => e.type === "intake-gave-up");
-
-    it.effect("60 秒以内に 5 回続けて届いても止まった状態にならず、次の起動が行われ、最後は running。intake-gave-up は書かれない", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([...repeat(5, configChange()), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        for (let i = 0; i < 5; i++) yield* cycle;
-
-        expect(fakeHelpers.calls).toHaveLength(6); // 3 回で諦める規則なら 3 回で止まる
-        expect((yield* sessions.status).status).toBe("running");
-        expect(gaveUp(fakeSinks.appended)).toHaveLength(0);
-      }));
 
     it.effect("構成の変化の終了も途切れとして扱う（drain・字幕のクリア・interrupted のフレーム・起動し直した回数・intake-stopped の code 75）", () =>
       Effect.gen(function* () {
@@ -2074,66 +1801,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.appended.some((e) => e.type === "intake-restarted" && e.trigger === "auto")).toBe(true);
       }));
 
-    it.effect("壊れて落ちる場合: 構成の変化を挟んでも、コード 1 の 3 回目で止まった状態になる。intake-gave-up の reason は failures", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([crash(), configChange(), crash(), configChange(), crash(), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        for (let i = 0; i < 5; i++) yield* cycle;
-
-        expect(fakeHelpers.calls).toHaveLength(5); // 6 回目は起動しない
-        expect((yield* sessions.status).status).toBe("stopped");
-        expect(gaveUp(fakeSinks.appended)).toEqual([{ type: "intake-gave-up", reason: "failures" }]);
-      }));
-
-    it.effect("壊れて落ちる場合: 構成の変化が失敗の数を 0 に戻さない（1 → 75 → 1 → 75 → 1 でも、1 が 3 回で止まる）。シグナル終了も数える", () =>
-      Effect.gen(function* () {
-        const signalExit: AttemptScript = { unexpectedExit: { afterMs: 500, exit: { code: null, signal: "SIGKILL" } } };
-        const fakeHelpers = yield* makeFakeHelpers([configChange(), crash(), configChange(), signalExit, configChange(), crash(), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        for (let i = 0; i < 6; i++) yield* cycle;
-
-        expect(fakeHelpers.calls).toHaveLength(6);
-        expect((yield* sessions.status).status).toBe("stopped");
-        expect(gaveUp(fakeSinks.appended)).toEqual([{ type: "intake-gave-up", reason: "failures" }]);
-      }));
-
-    it.effect("歯止め: 60 秒以内に 10 回までは止まらない（10 回目の後に 11 回目の起動が行われ、running）", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([...repeat(10, configChange()), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        for (let i = 0; i < 10; i++) yield* cycle;
-
-        expect(fakeHelpers.calls).toHaveLength(11);
-        expect((yield* sessions.status).status).toBe("running");
-        expect(gaveUp(fakeSinks.appended)).toHaveLength(0);
-      }));
-
-    it.effect("歯止め: 60 秒以内に 11 回続くと止まった状態になり、12 回目は起動しない。reason は configuration-changes で、標準エラーに歯止めの文言が出る", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([...repeat(11, configChange()), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr = yield* captureStderr(Effect.gen(function* () {
-          yield* sessions.start(start());
-          for (let i = 0; i < 11; i++) yield* cycle;
-          yield* TestClock.adjust(1_000); // 12 回目の起動がないことを確かめるための余分な時間
-        }));
-
-        expect(fakeHelpers.calls).toHaveLength(11);
-        expect((yield* sessions.status).status).toBe("stopped");
-        expect(gaveUp(fakeSinks.appended)).toEqual([{ type: "intake-gave-up", reason: "configuration-changes" }]);
-        expect(stderr.join("")).toContain("マイクの入力の構成の変化が 60 秒に 10 回を超えて続いたため、起動し直しを諦めました。取り込みは止まった状態です");
-      }));
-
     it.effect("歯止めで止まったとき、ブラウザへのフレームは今までどおり stopped（理由で分けない）", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([...repeat(11, configChange()), {}]);
@@ -2148,91 +1815,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(yield* client.intakeStatuses).toEqual(["stopped"]);
       }));
 
-    it.effect("窓が進む場合: 10 回届いた後に 60 秒を超えて動いてから届き、さらに続いても止まらない", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([...repeat(10, configChange()), configChange(62_000), ...repeat(5, configChange()), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        for (let i = 0; i < 10; i++) yield* cycle;
-        yield* TestClock.adjust(62_000);
-        yield* TestClock.adjust(10);
-        for (let i = 0; i < 5; i++) yield* cycle;
-
-        // 窓が進まず通算で数えていれば、11 回目（62 秒後の終了）で止まる
-        expect(fakeHelpers.calls).toHaveLength(17);
-        expect((yield* sessions.status).status).toBe("running");
-        expect(gaveUp(fakeSinks.appended)).toHaveLength(0);
-      }));
-
-    it.effect("resume: 歯止めで止まった後の resume で、構成の変化の数も空から数え直す（10 回続いても止まらない）", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([...repeat(21, configChange()), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-        for (let i = 0; i < 11; i++) yield* cycle;
-        expect((yield* sessions.status).status).toBe("stopped");
-        expect(fakeHelpers.calls).toHaveLength(11);
-
-        // 同じセッションのまま resume する。数えた記録が残っていれば、最初の終了で止まる
-        yield* sessions.resume;
-        for (let i = 0; i < 10; i++) yield* cycle;
-
-        expect(fakeHelpers.calls).toHaveLength(22);
-        expect((yield* sessions.status).status).toBe("running");
-        expect(gaveUp(fakeSinks.appended)).toHaveLength(1); // 最初の歯止めの 1 件だけ
-      }));
-
-    it.effect("接続する前に終わる場合: 終了コード 75 は、接続前の経路でも失敗に数えない（3 回を超えて続いても止まらない）", () =>
-      Effect.gen(function* () {
-        const beforeConnect: AttemptScript = { connect: false, launchExit: { code: 75, signal: null }, stderrTail: ["構成の変化"] };
-        const fakeHelpers = yield* makeFakeHelpers([crash(), ...repeat(4, beforeConnect), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        yield* TestClock.adjust(500);
-        yield* TestClock.adjust(50);
-
-        // 接続前の 75 を失敗に数えていれば、コード 1（1 回目）と合わせて 3 回目で止まる
-        expect(fakeHelpers.calls).toHaveLength(6);
-        expect((yield* sessions.status).status).toBe("running");
-        expect(gaveUp(fakeSinks.appended)).toHaveLength(0);
-      }));
-
-    it.effect("接続する前に終わる場合: 終了コード 75 が 11 回続くと、接続前の経路でも歯止めで止まる", () =>
-      Effect.gen(function* () {
-        const beforeConnect: AttemptScript = { connect: false, launchExit: { code: 75, signal: null }, stderrTail: ["構成の変化"] };
-        const fakeHelpers = yield* makeFakeHelpers([crash(), ...repeat(11, beforeConnect), {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        yield* TestClock.adjust(500);
-        yield* TestClock.adjust(100);
-
-        expect(fakeHelpers.calls).toHaveLength(12); // 最初の 1 回と接続前の 11 回。13 回目は起動しない
-        expect((yield* sessions.status).status).toBe("stopped");
-        expect(gaveUp(fakeSinks.appended)).toEqual([{ type: "intake-gave-up", reason: "configuration-changes" }]);
-      }));
-
-    it.effect("接続する前に終わる場合: コード 75 でもシグナルが付いた終了は失敗に数える（3 回で止まる）", () =>
-      Effect.gen(function* () {
-        const withSignal: AttemptScript = { connect: false, launchExit: { code: 75, signal: "SIGKILL" }, stderrTail: ["kill"] };
-        const fakeHelpers = yield* makeFakeHelpers([crash(), withSignal, withSignal, {}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-
-        yield* TestClock.adjust(500);
-        yield* TestClock.adjust(50);
-
-        expect(fakeHelpers.calls).toHaveLength(3);
-        expect((yield* sessions.status).status).toBe("stopped");
-        expect(gaveUp(fakeSinks.appended)).toEqual([{ type: "intake-gave-up", reason: "failures" }]);
-      }));
   });
 
   describe("起動し直しの最中に stop・close が来る場合（CT-CLOSE-ONLY-INTERRUPT）", () => {
@@ -2568,7 +2150,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(running.lastInterruptedAt).toBeUndefined();
 
         yield* TestClock.adjust(500);
-        yield* TestClock.adjust(1);
         const interrupted = yield* sessions.status;
         expect(interrupted.status).toBe("interrupted");
         expect(interrupted.lastInterruptedAt).toMatch(/^1970-01-01T00:00:00\.50[01]Z$/); // Clock（TestClock）の時刻を ISO 形式で書く
@@ -2578,6 +2159,34 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(stopped.status).toBe("stopped");
         expect(stopped.dir).toBe("/tmp/live-mindmap-fake/1"); // 止まった後もセッションのフォルダは引き続き出る
         expect(stopped.restarts).toBe(0); // 起動し直しに成功した回がない
+        expect(stopped.lastInterruptedAt).toBe(interrupted.lastInterruptedAt);
+      }));
+
+    it.effect("自動再接続に成功した後の途切れは、新しい時刻としてstatusに出る", () =>
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>();
+        const fakeHelpers = yield* makeFakeHelpers([
+          { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
+          { connectGate: gate, unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
+          { hold: true },
+        ]);
+        const fakeSinks = yield* makeFakeSessionSinks();
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
+        yield* sessions.start(start());
+        yield* TestClock.adjust(500);
+        const before = yield* sessions.status;
+        expect(before.status).toBe("interrupted");
+        expect(before.lastInterruptedAt).toBe("1970-01-01T00:00:00.500Z");
+        yield* TestClock.adjust(1_000);
+        yield* Deferred.succeed(gate, undefined);
+        yield* TestClock.adjust(1);
+        expect((yield* sessions.status).status).toBe("running");
+        expect((yield* sessions.status).lastInterruptedAt).toBe(before.lastInterruptedAt);
+        yield* TestClock.adjust(500);
+        const after = yield* sessions.status;
+        expect(after.status).toBe("interrupted");
+        expect(after.lastInterruptedAt! > before.lastInterruptedAt!).toBe(true);
+        yield* sessions.stop;
       }));
   });
 
@@ -2758,41 +2367,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 0 }); // 起動し直しで開き直さず、閉じない
         expect(yield* client.intakeStatuses).toEqual(["interrupted", "running"]);
-      }));
-
-    it.effect("途切れ・起動し直し・諦めは log に残り（intake-stopped・intake-restarted の trigger・intake-gave-up）、諦めたときは stderr に出る（base:1076, 1112, 1154）", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([
-          { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } },
-          { connect: false, stderrTail: ["失敗2"] },
-          { connect: false, stderrTail: ["失敗3"] },
-          { unexpectedExit: { afterMs: 200, exit: { code: 1, signal: null } } }, // resume による 1 回目
-          {}, // 自動の起動し直し
-        ]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        const stderr = yield* captureStderr(Effect.gen(function* () {
-          yield* sessions.start(start());
-          yield* TestClock.adjust(10);
-          expect((yield* sessions.status).status).toBe("stopped");
-        }));
-        expect(stderr.join("")).toMatch(/諦め|止まっ/);
-        expect(fakeSinks.appended.filter((e) => e.type === "intake-gave-up")).toEqual([{ type: "intake-gave-up", reason: "failures" }]);
-        expect(stderr.join("")).toContain("起動し直しを諦めました。取り込みは止まった状態です");
-        // 出力のバイト列は今のまま: 1 行ごとに改行がちょうど 1 つ（note が渡す末尾の改行と Console.error が足す改行が重ならない）
-        expect(stderr).toContain("取り込みが止まった（1）\n");
-        expect(stderr).toContain("起動し直しを諦めました。取り込みは止まった状態です\n");
-        expect(stderr.every((line) => line.endsWith("\n") && !line.endsWith("\n\n"))).toBe(true);
-        expect(stderr.join("")).not.toContain("構成の変化");
-        expect(fakeSinks.appended.some((e) => e.type === "intake-stopped" && e.stderrTail.includes("失敗3"))).toBe(true);
-
-        yield* sessions.resume;
-        yield* TestClock.adjust(200);
-        yield* TestClock.adjust(10);
-
-        const restarted = fakeSinks.appended.filter((e) => e.type === "intake-restarted").map((e) => (e as { trigger: string }).trigger);
-        expect(restarted.filter((t) => t === "resume")).toHaveLength(1);
-        expect(restarted.filter((t) => t === "auto")).toHaveLength(1);
       }));
 
     it.effect("起動し直しの最中に stop すると、起動中のヘルパー（2 回目）の stop が走る（base:1190）", () =>

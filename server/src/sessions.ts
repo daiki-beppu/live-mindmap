@@ -10,13 +10,9 @@
 // ヘルパーを止め、ヘルパーが終われば読み取りがほどける。stop は起動し直しのループの終わりを Fiber.join で待ってから書き出す。
 // 中断はサーバーの終了だけ。セッションの Scope はサーバーの Scope の子で、サーバーの Scope を閉じるとループも
 // 1 回分の起動の Scope（ヘルパーの停止）も SessionSink（updater）も後始末される。
-import { Cause, Clock, Console, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
+import { Cause, Clock, Console, Context, DateTime, Effect, Exit, Fiber, Layer, Option, Queue, Ref, Result, Scope, Stream } from "effect";
 import { parse } from "node:path";
 import {
-  CONFIGURATION_CHANGE_WINDOW_MS,
-  decideIntakeRestart,
-  decodeHelperEvent,
-  MAX_CONFIGURATION_CHANGES,
   type RecordedEvent,
   type RecordedProgress,
   SCREEN_NOTICE_MS,
@@ -24,17 +20,16 @@ import {
   INITIAL_SELF_PAUSE_STATE,
   TAP_NOTICE_TEXT,
   type HelperEvent,
-  type IntakeGiveUpReason,
   type IntakeStatusReport,
   type SelfPauseFrame,
   type SelfPauseState,
   type Track,
 } from "./core/index.ts";
+import { openIntake } from "./intakeAttempts.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
-import { Helpers, HELPER_STOP_TIMEOUT_MS, type HelperAttempt, type HelperExitInfo } from "./helpers.ts";
+import { Helpers, HELPER_STOP_TIMEOUT_MS } from "./helpers.ts";
 import {
   Aborted,
-  HelperExited,
   IntakeNotStopped,
   NoSession,
   NotForRecordedSession,
@@ -65,21 +60,8 @@ export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mi
 
 type IntakeKind = "running" | "interrupted" | "stopped";
 
-// 起動し直しの連鎖が到達した結果。resume の応答・ログ・フレームの基準（複数失敗を集約する境界）。
-// running: 動いている状態へ戻った。stopped: 続けて失敗して諦めた（stderrTail は最後の失敗の標準エラー末尾）。
-// aborted: stop・サーバーの終了に中断された（起動し直し自体は成立していない）
-type RestartOutcome = { kind: "running" } | { kind: "stopped"; stderrTail: ReadonlyArray<string> } | { kind: "aborted" };
-
-// 連鎖の終わり。exit は、stop で止めたヘルパーの終わり方（止めたヘルパーが無ければ undefined）
-type ChainEnd = { exit: HelperExitInfo | undefined };
-
-// 接続済みのヘルパー 1 回分と、その Scope
-type Launched = { attempt: HelperAttempt; scope: Scope.Closeable };
-
-// ヘルパーに依らない、セッションの寿命ぶんだけ存在するもの（起動し直しをまたいで引き継ぐ）。状態はすべて Ref
-// 休止の指示の送り先。connected: いま接続している起動回（指示をすぐ送る）。waiting: 起動し直しの途中（接続待ち）。
-// pending は、接続待ちの間に求められた状態で、接続した回へ送って消す。helper が受け付けたかどうかは self-pause イベントだけが決める（起動の引数には使わない）
-type SelfPauseLink = { kind: "connected"; attempt: HelperAttempt } | { kind: "waiting"; pending: boolean | undefined };
+type Intake = Effect.Success<ReturnType<typeof openIntake>>;
+type IntakeRun = Effect.Success<ReturnType<Intake["run"]>>;
 
 type Live = {
   model: import("./modelSelection.ts").ExecutableModel;
@@ -89,20 +71,14 @@ type Live = {
   screen: boolean; // false なら共有画面を取り込まない（ヘルパーに --no-screen を渡す。起動し直し・resume でも引き継ぐ）
   noticeShown: Ref.Ref<boolean>; // 許可なしの一文を出したか。セッションにつき 1 回だけ（起動し直しをまたぐ）
   sink: LiveSink;
+  controller: Intake;
+  running: Ref.Ref<IntakeRun | undefined>;
   scope: Scope.Closeable; // セッションの Scope。サーバーの Scope の子
-  stopRequested: Deferred.Deferred<void>; // 「止めて」の印
-  chain: Ref.Ref<Fiber.Fiber<ChainEnd> | undefined>; // いまの起動し直しの連鎖
   intake: Ref.Ref<IntakeKind>;
   origin: Ref.Ref<string | undefined>; // 最初のヘルパーから受け取った原点。一度決まったら上書きしない
-  attempt: Ref.Ref<number>; // 直近に起動した回数（1 始まり。--audio-index にそのまま使う）
-  attemptStartedAt: Ref.Ref<number>; // 直近の起動を始めた時刻（Clock）。60 秒の判断の基準
-  failures: Ref.Ref<number>; // 続けて失敗した回数（decideIntakeRestart が進める。構成の変化による終了は数えない）
-  configurationChanges: Ref.Ref<ReadonlyArray<number>>; // 構成の変化（終了コード 75）で終わった時刻（Clock）。窓の外は decideIntakeRestart が除く
-  restarts: Ref.Ref<number>; // 成功した起動し直しの回数（cli status の「起動し直した回数」）
   lastInterruptedAt: Ref.Ref<string | undefined>; // 最後に途切れた時刻（ISO）
   selfPauseFrame: Ref.Ref<SelfPauseFrame>; // helper が報告した自分の休止の状態と理由（Issue #1069・#1071）。paused が変わったときだけログとフレームを出し、休止中に理由だけが変わったときはフレームだけ出す
   selfPauseState: Ref.Ref<SelfPauseState>; // helper が知らせた休止の規則の状態。起動し直しをまたいで続き、次の起動の引数になる（server は覚えるだけ）
-  selfPauseLink: SynchronizedRef.SynchronizedRef<SelfPauseLink>; // 休止の指示の送り先。送信と切り替えを 1 つずつ行う
 };
 
 // セッションに入れた位置（秒）・録画の全体の長さ（届く前は null）・マップの更新回数・差分更新の一時停止（一時停止の間だけ。理由と次に試す時刻）
@@ -116,23 +92,16 @@ type Recorded = {
   file: string;
   selfFile: string | undefined;
   sink: RecordedSink;
+  controller: Intake;
+  running: Ref.Ref<IntakeRun | undefined>;
   scope: Scope.Closeable; // セッションの Scope。サーバーの Scope の子
-  stopRequested: Deferred.Deferred<void>; // 「止めて」の印
-  run: Ref.Ref<Fiber.Fiber<void> | undefined>; // ヘルパーの出力を読む fiber
   events: Queue.Queue<RecordedEvent, Cause.Done>; // 開始の応答の stream へ流す進み具合・終わり
   progress: Ref.Ref<RecordedProgressState>;
-  readingTarget: SynchronizedRef.SynchronizedRef<HelperAttempt>; // 読み取りの停止・再開の指示の送り先（いま動いているヘルパー）。progress の更新と送信・起動し直しでの切り替えを 1 つずつ行う
   from: Ref.Ref<Partial<Readonly<Record<Track, number>>>>; // いまの回のヘルパーがトラックごとに読み始める音声の時刻（秒）。無いトラックは頭から。そのトラックでこれより前に始まる発言・途中結果は捨てる
-  attemptStartedAt: Ref.Ref<number>; // 直近の起動を始めた時刻（Clock）。60 秒の判断の基準
-  failures: Ref.Ref<number>; // 続けて失敗した回数
-  configurationChanges: Ref.Ref<ReadonlyArray<number>>;
   announced: Ref.Ref<Announced>; // 端末へ知らせた印。起動し直したヘルパーが流し直しても、セッションにつき 1 回だけ知らせる
 };
 
 type Announced = { audioTracks: boolean; screenOff: boolean; speakerOff: boolean };
-
-// ヘルパー 1 回分の終わり方
-type AttemptEnd = { exit: HelperExitInfo; stderrTail: ReadonlyArray<string> };
 
 type State =
   | { kind: "idle"; installations: number }
@@ -201,41 +170,6 @@ export class Sessions extends Context.Service<Sessions, {
         ...(selfPause.lastKnown !== INITIAL_SELF_PAUSE_STATE.lastKnown ? ["--self-last-known", selfPause.lastKnown] : []),
         ...(selfPause.idleFor !== INITIAL_SELF_PAUSE_STATE.idleFor ? ["--self-idle-for", String(selfPause.idleFor)] : []),
       ];
-
-      // 諦めたときの標準エラーの 1 行。理由は decideIntakeRestart の判断から作る（ログと同じ理由）
-      const gaveUpNote = (reason: IntakeGiveUpReason) =>
-        note(
-          reason === "configuration-changes"
-            ? `マイクの入力の構成の変化が ${CONFIGURATION_CHANGE_WINDOW_MS / 1000} 秒に ${MAX_CONFIGURATION_CHANGES} 回を超えて続いたため、起動し直しを諦めました。取り込みは止まった状態です\n`
-            : "起動し直しを諦めました。取り込みは止まった状態です\n",
-        );
-
-      // 1 回の起動（起動し直しを含む）の終わりを、記録 → 判断の順で扱う。ログ・標準エラーは必ず書く。
-      // 終わり方（終了コード・シグナル）は decideIntakeRestart に渡し、構成の変化による終了は failures に数えず別の窓で数える。
-      // 続けるか諦めるか（action）を返し、状態の更新は呼び出し側が行う
-      const finishAttempt = Effect.fnUntraced(function* (live: Pick<Live, "failures" | "configurationChanges" | "attemptStartedAt"> & { sink: Pick<LiveSink, "appendLog"> }, info: HelperExitInfo, stderrTail: ReadonlyArray<string>) {
-        yield* live.sink.appendLog({ type: "intake-stopped", code: info.code, signal: info.signal, stderrTail: [...stderrTail] });
-        yield* note(`取り込みが止まった（${info.code ?? info.signal ?? "不明"}）\n`);
-        const now = yield* Clock.currentTimeMillis;
-        const decision = decideIntakeRestart({
-          failures: yield* Ref.get(live.failures),
-          configurationChanges: yield* Ref.get(live.configurationChanges),
-          ranMs: now - (yield* Ref.get(live.attemptStartedAt)),
-          exit: info,
-          now,
-        });
-        yield* Ref.set(live.failures, decision.failures);
-        yield* Ref.set(live.configurationChanges, decision.configurationChanges);
-        if (decision.action === "giveup") {
-          yield* live.sink.appendLog({ type: "intake-gave-up", reason: decision.reason });
-          yield* gaveUpNote(decision.reason);
-        }
-        return decision.action;
-      });
-
-      const defectReason = (defect: unknown) => (defect instanceof Error ? defect.message : String(defect));
-      const skipped = (reason: string) => note(`ヘルパーのイベントを読み飛ばしました: ${reason}\n`);
-      const applyFailed = (reason: string) => note(`ヘルパーのイベントの処理に失敗しました: ${reason}\n`);
 
       // ヘルパーからのイベントを、ヘルパーに依らないもの（SessionSink・原点）へつなぐ。
       // 知らない type は何も出さずに読み飛ばし、壊れたイベントと処理の失敗は文面を分けて 1 行出して読み続ける（セッションは止めない）
@@ -319,120 +253,27 @@ export class Sessions extends Context.Service<Sessions, {
         );
       });
 
-      const handleEventWith = (apply: (event: HelperEvent) => Effect.Effect<void>) => (data: string) =>
-        decodeHelperEvent(data).pipe(
-          Effect.map((decoded) => (decoded.kind === "unknown" ? undefined : decoded.event)),
-          Effect.catchTag("SchemaError", (error) => Effect.as(skipped(error.message), undefined)),
-          Effect.catchDefect((defect) => Effect.as(skipped(defectReason(defect)), undefined)),
-          Effect.flatMap((event) =>
-            event === undefined ? Effect.void : apply(event).pipe(Effect.catchDefect((defect) => applyFailed(defectReason(defect)))),
-          ),
-        );
-      const handleEvent = (live: Live) => handleEventWith((event) => applyEvent(live, event));
-
-      // 接続済みのヘルパー 1 回分を、終わるまで読む。ヘルパーが終われば接続が閉じて読み取りが終わり、
-      // 標準エラーを読み終えた終わり方が確定する。終わったら 1 回分の Scope を閉じる
-      const serve = Effect.fnUntraced(function* (live: Live, { attempt, scope }: Launched) {
-        // 「止めて」の印が立ったら、その回のヘルパーを止める
-        yield* Effect.forkIn(Effect.andThen(Deferred.await(live.stopRequested), attempt.stop), scope);
-        yield* Stream.runForEach(attempt.events, handleEvent(live)).pipe(
-          Effect.ensuring(SynchronizedRef.set(live.selfPauseLink, { kind: "waiting", pending: undefined })),
-        );
-        const exit = yield* attempt.exit;
-        const stderrTail = yield* attempt.stderrTail;
-        yield* Scope.close(scope, Exit.void);
-        return { exit, stderrTail };
-      });
-
-      const markStopped = (live: Live) => Effect.andThen(Ref.set(live.intake, "stopped"), intakeFrame("stopped"));
-
-      // 次のヘルパーを 1 回起動する。end は連鎖を終える（exit は stop へ渡す終わり方）、retry は続けて起動し直す、
-      // launched は接続できたもの。restarted は、起動し直しとして数えた（以後の途切れは自動になる）ときだけ true
-      const relaunch = Effect.fnUntraced(function* (live: Live, reason: "auto" | "resume", outcome: Deferred.Deferred<RestartOutcome>) {
-        if (yield* Deferred.isDone(live.stopRequested)) return { kind: "end" as const, exit: undefined };
-        const attemptNo = yield* Ref.updateAndGet(live.attempt, (n) => n + 1);
-        yield* Ref.set(live.attemptStartedAt, yield* Clock.currentTimeMillis);
-        const scope = yield* Scope.fork(live.scope, "sequential");
-        // 休止の規則の状態は、helper が知らせた最新のものを引き継ぐ。接続待ちの間に求められた状態は、接続した回へ送る
-        const result = yield* helpers.launch(runArgs(live, attemptNo, yield* Ref.get(live.origin), yield* Ref.get(live.selfPauseState)), live.stopRequested).pipe(
-          Scope.provide(scope),
-          Effect.result,
-        );
-        if (Result.isFailure(result)) {
-          yield* Scope.close(scope, Exit.void);
-          if (yield* Deferred.isDone(live.stopRequested)) return { kind: "end" as const, exit: result.failure.exit }; // 中断。stop が後片付けを引き継ぐ（止めたヘルパーの終わり方を stop へ渡す）
-          const failure = result.failure;
-          const action = yield* finishAttempt(live, failure.exit ?? { code: null, signal: null }, failure.stderrTail);
-          if (action === "giveup") {
-            yield* markStopped(live);
-            yield* Deferred.succeed(outcome, { kind: "stopped", stderrTail: failure.stderrTail });
-            return { kind: "end" as const, exit: undefined };
+      const runLive = (live: Live, trigger: "auto" | "resume") => live.controller.run({
+        trigger, exitZero: "restart", log: live.sink.appendLog,
+        apply: (event) => applyEvent(live, event),
+        observe: (transition) => Effect.gen(function* () {
+          switch (transition.kind) {
+            case "connected":
+              if ((yield* live.controller.stats).attempt > 1) yield* live.sink.speakersRenumbered;
+              break;
+            case "crashed":
+              yield* live.sink.drain;
+              yield* live.sink.clearSpeaking;
+              yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
+              break;
+            case "running":
+            case "interrupted":
+            case "stopped":
+              yield* Ref.set(live.intake, transition.kind);
+              yield* intakeFrame(transition.kind);
           }
-          return { kind: "retry" as const }; // 続けて起動し直す
-        }
-        const launched: Launched = { attempt: result.success, scope };
-        // 起動の引数を決めた後に求められた状態は、接続できた回へ送る（落とさない）
-        yield* SynchronizedRef.updateEffect(live.selfPauseLink, (link) =>
-          Effect.as(
-            link.kind === "waiting" && link.pending !== undefined ? result.success.send({ type: "self-pause", paused: link.pending }) : Effect.void,
-            { kind: "connected", attempt: result.success } as SelfPauseLink,
-          ),
-        );
-        // 新しいヘルパーの枠は振り直されている。そのイベントを読み始める前に、sink へ知らせる（stop と競合した接続でも、届いていたイベントを読むので知らせる）
-        yield* live.sink.speakersRenumbered;
-        // 中断された後に接続が追いついた（接続成功と stop が競合した）。起動し直しとは数えず、届いていたイベントを
-        // 読み終えてから止まる
-        if (yield* Deferred.isDone(live.stopRequested)) return { kind: "launched" as const, launched, restarted: false };
-        yield* Ref.update(live.restarts, (n) => n + 1);
-        yield* live.sink.appendLog({ type: "intake-restarted", trigger: reason });
-        yield* note("ヘルパーを起動し直しました\n");
-        yield* Ref.set(live.intake, "running");
-        yield* intakeFrame("running");
-        yield* Deferred.succeed(outcome, { kind: "running" });
-        return { kind: "launched" as const, launched, restarted: true };
+        }),
       });
-
-      // 接続済みのヘルパー 1 回分を読み終えた後を扱う。end は連鎖を終える、continue は次の起動し直しへ進む
-      const afterServe = Effect.fnUntraced(function* (live: Live, launched: Launched) {
-        const { exit, stderrTail } = yield* serve(live, launched);
-        // stop・サーバーの終了による意図した終了。届いていた最後の発話を落とさず、起動し直さない
-        if (yield* Deferred.isDone(live.stopRequested)) {
-          yield* live.sink.drain;
-          return { kind: "end" as const, exit };
-        }
-        yield* live.sink.drain; // 確定結果に覆われなかった最後の発話を発言にする
-        yield* live.sink.clearSpeaking; // いま話している文字を空にする（永久停止はしない）
-        yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
-        const action = yield* finishAttempt(live, exit, stderrTail);
-        if (action === "giveup") {
-          yield* markStopped(live);
-          return { kind: "end" as const, exit: undefined };
-        }
-        yield* Ref.set(live.intake, "interrupted");
-        yield* intakeFrame("interrupted");
-        return { kind: "continue" as const };
-      });
-
-      // 起動し直しの連鎖。成功するまで（または諦めるまで）、decideIntakeRestart の判断に従って繰り返す。
-      // initial があれば最初の 1 回は起動済みのもの（start の初回起動）。trigger は、最初の起動し直しの成功をログに残す
-      // 「自動か resume か」の区別（以後の途切れは自動）。outcome は、最初の成功か諦めか中断で解決する（resume の応答の基準）
-      const chain = Effect.fnUntraced(function* (live: Live, initial: Launched | undefined, trigger: "auto" | "resume", outcome: Deferred.Deferred<RestartOutcome>) {
-        let current = initial;
-        let reason = trigger;
-        for (;;) {
-          if (current === undefined) {
-            const step = yield* relaunch(live, reason, outcome);
-            if (step.kind === "end") return { exit: step.exit };
-            if (step.kind === "retry") continue;
-            if (step.restarted) reason = "auto";
-            current = step.launched;
-          }
-          const launched = current;
-          current = undefined;
-          const after = yield* afterServe(live, launched);
-          if (after.kind === "end") return { exit: after.exit };
-        }
-      }, (effect, _live, _initial, _trigger, outcome) => effect.pipe(Effect.ensuring(Deferred.succeed(outcome, { kind: "aborted" }))));
 
       const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
         const model = planModel(input.plan);
@@ -442,20 +283,14 @@ export class Sessions extends Context.Service<Sessions, {
           const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
           const warnings = notice === undefined ? startupWarnings : [...startupWarnings, notice];
           const dir = yield* sinks.createDir(sessionsDir);
-          // 60 秒の判断の基準は、接続が成功した時刻ではなく、起動（接続待ちを含む）を始めた時刻にする。
-          // 接続はマイクの許可待ち等で時間がかかることがあり、ここを接続成功後にすると、長く待ってから
-          // 短時間で終わった回を「続けて失敗した」と誤って数えてしまう（起動し直しと同じ基準にそろえる）
-          const startedAt = yield* Clock.currentTimeMillis;
-          const stopRequested = yield* Deferred.make<void>();
-          const attemptScope = yield* Scope.fork(scope, "sequential");
-          const attempt = yield* helpers
-            .launch(runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, 1, undefined, INITIAL_SELF_PAUSE_STATE), stopRequested)
-            .pipe(
-              Scope.provide(attemptScope),
-              Effect.catchTag("HelperLaunchFailure", (failure) =>
-                Effect.fail(new HelperExited({ code: failure.exit?.code ?? null, signal: failure.exit?.signal ?? null, stderrTail: failure.stderrTail })),
-              ),
-            );
+          const origin = yield* Ref.make<string | undefined>(undefined);
+          const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
+          const controller = yield* openIntake({
+            scope, commands: { "self-pause": "pending-once" },
+            argv: (attemptNo) => Effect.gen(function* () {
+              return runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, attemptNo, yield* Ref.get(origin), yield* Ref.get(selfPauseState));
+            }),
+          }).pipe(Effect.provideService(Helpers, helpers));
           // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
           // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
           const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
@@ -470,23 +305,15 @@ export class Sessions extends Context.Service<Sessions, {
             noticeShown: yield* Ref.make(false),
             sink,
             scope,
-            stopRequested,
-            chain: yield* Ref.make<Fiber.Fiber<ChainEnd> | undefined>(undefined),
+            controller,
+            running: yield* Ref.make<IntakeRun | undefined>(undefined),
             intake: yield* Ref.make<IntakeKind>("running"),
-            origin: yield* Ref.make<string | undefined>(undefined),
-            attempt: yield* Ref.make(1),
-            attemptStartedAt: yield* Ref.make(startedAt),
-            failures: yield* Ref.make(0),
-            configurationChanges: yield* Ref.make<ReadonlyArray<number>>([]),
-            restarts: yield* Ref.make(0),
+            origin,
             lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
             selfPauseFrame: yield* Ref.make<SelfPauseFrame>({ type: "self-pause", paused: false }),
-            selfPauseState: yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE),
-            selfPauseLink: yield* SynchronizedRef.make<SelfPauseLink>({ kind: "connected", attempt }),
+            selfPauseState,
           };
-          const outcome = yield* Deferred.make<RestartOutcome>();
-          const fiber = yield* Effect.forkIn(chain(live, { attempt, scope: attemptScope }, "auto", outcome), scope);
-          yield* Ref.set(live.chain, fiber);
+          yield* Ref.set(live.running, yield* runLive(live, "auto"));
           yield* Ref.set(state, { kind: "live", live });
           yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
           yield* viewers.sessionMode({ type: "session-mode", local: model.local });
@@ -494,13 +321,17 @@ export class Sessions extends Context.Service<Sessions, {
         }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
       });
 
-      const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
+      const claimStart = Effect.gen(function* () {
         const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
           current.kind === "idle" && current.installations === 0
             ? [Option.none(), { kind: "starting" }]
             : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current],
         );
         if (Option.isSome(refusal)) return yield* refusal.value;
+      });
+
+      const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
+        yield* claimStart;
         return yield* begin(input).pipe(
           Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void)),
         );
@@ -601,46 +432,6 @@ export class Sessions extends Context.Service<Sessions, {
         ...(audioDir === undefined ? [] : ["--audio-dir", audioDir]),
       ];
 
-      // 接続済みのヘルパー 1 回分を、終わるまで読む。その回の Scope は閉じない（起動し直すときは runRecorded が閉じ、そうでなければセッションの Scope が閉じるときに後始末される）
-      const serveRecorded = Effect.fnUntraced(function* (recorded: Recorded, { attempt, scope }: Launched) {
-        yield* Effect.forkIn(Effect.andThen(Deferred.await(recorded.stopRequested), attempt.stop), scope);
-        yield* Stream.runForEach(attempt.events, handleEventWith((event) => applyRecordedEventFrom(recorded, event)));
-        const exit = yield* attempt.exit;
-        const stderrTail = yield* attempt.stderrTail;
-        return { exit, stderrTail } satisfies AttemptEnd;
-      });
-
-      // 次のヘルパーを 1 回起動する。stopped は stop に止められた（以後は stop が後片付けを引き継ぐ）、failed は接続できなかった
-      const relaunchRecorded = Effect.fnUntraced(function* (recorded: Recorded) {
-        if (yield* Deferred.isDone(recorded.stopRequested)) return { kind: "stopped" as const };
-        yield* Ref.set(recorded.attemptStartedAt, yield* Clock.currentTimeMillis);
-        const scope = yield* Scope.fork(recorded.scope, "sequential");
-        const result = yield* helpers.launch(transcribeArgs(recorded, yield* Ref.get(recorded.from), undefined), recorded.stopRequested).pipe(
-          Scope.provide(scope),
-          Effect.result,
-        );
-        if (Result.isFailure(result)) {
-          yield* Scope.close(scope, Exit.void);
-          if (yield* Deferred.isDone(recorded.stopRequested)) return { kind: "stopped" as const };
-          return { kind: "failed" as const, end: { exit: result.failure.exit ?? { code: null, signal: null }, stderrTail: result.failure.stderrTail } satisfies AttemptEnd };
-        }
-        const launched: Launched = { attempt: result.success, scope };
-        // 送り先を新しい回へ切り替える。一時停止の間に起動し直したなら、読み始める前の回へ停止を伝える（一時停止中かどうかは progress.paused だけが持つ）
-        yield* SynchronizedRef.updateEffect(recorded.readingTarget, () =>
-          Effect.gen(function* () {
-            if ((yield* Ref.get(recorded.progress)).paused !== undefined) yield* launched.attempt.send({ type: "reading-pause", paused: true });
-            return launched.attempt;
-          }));
-        // 新しいヘルパーの話者分離の枠は振り直されている。そのイベントを読み始める前に、sink へ知らせる（ライブの起動し直しと同じ）
-        yield* recorded.sink.speakersRenumbered;
-        // 接続成功と stop が競合したときは、起動し直しとは数えず、届いていたイベントを読み終えてから止まる
-        if (!(yield* Deferred.isDone(recorded.stopRequested))) {
-          yield* recorded.sink.appendLog({ type: "intake-restarted", trigger: "auto" });
-          yield* note("ヘルパーを起動し直しました\n");
-        }
-        return { kind: "launched" as const, launched };
-      });
-
       // 終わらせる。prepare（溜まりを入れ切る・捨てる）の後、止められていなければ（stop と取り合って先に取れたら）書き出して終える。
       // 入れている間、状態は recorded のまま（status・share が効き、別のセッションは始められない）。入れ切る前に stop が状態を取れば、溜まりが捨てられて早く戻る
       // prepare が失敗（defect を含む）しても、所有権を取って後始末（イベント列を終える・Scope を閉じる・idle に戻す）まで進める。
@@ -654,42 +445,6 @@ export class Sessions extends Context.Service<Sessions, {
           ? Effect.andThen(note(`録画の取り込みの終了処理に失敗した: ${Cause.pretty(prepared.cause)}\n`), Effect.failCause(prepared.cause))
           : finishRecorded(recorded, failure === undefined ? undefined : { code: failure.code, signal: failure.signal, stderrTail: [...failure.stderrTail] });
         yield* Effect.forkIn(finishing.pipe(Effect.ensuring(closeRecorded(recorded))), serverScope);
-      });
-
-      // 落ちた回の後を決める。起動し直しの判断（finishAttempt）が諦めなら giveup、stop に止められたら stopped、
-      // 接続できた次の回があれば launched。接続できなかった回は、それも 1 回の失敗として判断し直す
-      const restartRecorded = Effect.fnUntraced(function* (recorded: Recorded, ended: Launched, served: AttemptEnd) {
-        let failure: AttemptEnd = served;
-        for (;;) {
-          const action = yield* finishAttempt(recorded, failure.exit, failure.stderrTail);
-          if (action === "giveup") return { kind: "giveup" as const, failure };
-          yield* Scope.close(ended.scope, Exit.void); // 起動し直すので、終わった回の後始末を済ませる（閉じ済みなら何もしない）
-          const next = yield* relaunchRecorded(recorded);
-          if (next.kind !== "failed") return next;
-          failure = next.end;
-        }
-      });
-
-      // ヘルパーの出力を、終わるまで読む。0 で終われば、そこまでの分を入れ切って終える。
-      // 0 以外（シグナルを含む）で終われば、ライブと同じ判断（decideIntakeRestart）で、サーバーが最後に作った発言の end から読み直す。
-      // 起動し直しを諦めたら、stop と同じく溜まりは捨てて、入れている途中の 1 件だけ入れ終えて書き出す
-      const runRecorded = Effect.fnUntraced(function* (recorded: Recorded, first: Launched) {
-        let current = first;
-        let served = yield* serveRecorded(recorded, current);
-        for (;;) {
-          if (yield* Deferred.isDone(recorded.stopRequested)) return;
-          if (served.exit.code === 0) return yield* concludeRecorded(recorded, Effect.andThen(recorded.sink.drain, recorded.sink.finishBacklog), undefined);
-          // 確定結果に覆われなかった最後の発話を発言にしてから、読み直す位置を決める（締めていない途中結果を残すと、読み直した回の結果で締まって重なる）。
-          // 先読みした共有画面は入れずに捨てる（読み直した回が開始位置から流し直す）
-          yield* Ref.set(recorded.from, yield* recorded.sink.drainForRestart);
-          const next = yield* restartRecorded(recorded, current, served);
-          if (next.kind === "stopped") return;
-          if (next.kind === "giveup") {
-            return yield* concludeRecorded(recorded, Effect.andThen(recorded.sink.discardBacklog, recorded.sink.finishBacklog), { ...next.failure.exit, stderrTail: next.failure.stderrTail });
-          }
-          current = next.launched;
-          served = yield* serveRecorded(recorded, current);
-        }
       });
 
       const beginRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
@@ -707,21 +462,13 @@ export class Sessions extends Context.Service<Sessions, {
           const createdAt = created === null ? Option.none() : DateTime.make(created);
           const base = Option.getOrElse(createdAt, () => now);
           const dir = yield* sinks.createDir(sessionsDir, base);
-          const stopRequested = yield* Deferred.make<void>();
-          // 60 秒の判断の基準は、接続を待つ時間を含めて、起動を始めた時刻にする（ライブと同じ）
-          const startedAt = yield* Clock.currentTimeMillis;
-          const attemptScope = yield* Scope.fork(scope, "sequential");
-          const attempt = yield* helpers
-            .launch(transcribeArgs({ file: input.file, selfFile: input.selfFile }, {}, dir), stopRequested)
-            .pipe(
-              Scope.provide(attemptScope),
-              Effect.catchTag("HelperLaunchFailure", (failure) =>
-                Effect.fail(new HelperExited({ code: failure.exit?.code ?? null, signal: failure.exit?.signal ?? null, stderrTail: failure.stderrTail })),
-              ),
-            );
+          const from = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
+          const controller = yield* openIntake({
+            scope, commands: { "reading-pause": "sticky" },
+            argv: (attemptNo) => Effect.map(Ref.get(from), (position) => transcribeArgs({ file: input.file, selfFile: input.selfFile }, position, attemptNo === 1 ? dir : undefined)),
+          }).pipe(Effect.provideService(Helpers, helpers));
           const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
           const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
-          const readingTarget = yield* SynchronizedRef.make(attempt);
           const sink = yield* sinks.openRecorded({
             dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
             model: input.model, vocab: input.vocab, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
@@ -736,16 +483,11 @@ export class Sessions extends Context.Service<Sessions, {
               // 差分更新の一時停止に入る・理由か時刻が変わる・戻る。ヘルパーには停止か再開を（状態が変わったときだけ）送り、進み具合の行に理由と時刻を載せる
               paused: (pause) =>
                 Effect.gen(function* () {
-                  // 状態の更新と送信は、起動し直しでの送り先の切り替えと同じ排他区間で行う（送り先が古い回のまま送られない）
-                  yield* SynchronizedRef.updateEffect(readingTarget, (target) =>
-                    Effect.gen(function* () {
-                      const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
-                        const { paused: before, ...rest } = p;
-                        return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
-                      });
-                      if (changedState) yield* target.send({ type: "reading-pause", paused: pause !== undefined });
-                      return target;
-                    }));
+                  const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
+                    const { paused: before, ...rest } = p;
+                    return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
+                  });
+                  if (changedState) yield* controller.send({ type: "reading-pause", paused: pause !== undefined });
                   yield* publishProgress({ progress, events });
                 }),
             },
@@ -757,23 +499,29 @@ export class Sessions extends Context.Service<Sessions, {
             selfFile: input.selfFile,
             sink,
             scope,
-            stopRequested,
-            run: yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined),
+            controller,
+            running: yield* Ref.make<IntakeRun | undefined>(undefined),
             events,
             progress,
-            readingTarget,
-            from: yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({}),
-            attemptStartedAt: yield* Ref.make(startedAt),
-            failures: yield* Ref.make(0),
-            configurationChanges: yield* Ref.make<ReadonlyArray<number>>([]),
+            from,
             announced: yield* Ref.make({ audioTracks: false, screenOff: false, speakerOff: false }),
           };
-          // 状態を recorded にしてから読み始める（ヘルパーがすぐ終わっても、終わらせる側が状態を取れるように）
-          const ready = yield* Deferred.make<void>();
-          const run = yield* Effect.forkIn(Effect.andThen(Deferred.await(ready), runRecorded(recorded, { attempt, scope: attemptScope })), scope);
-          yield* Ref.set(recorded.run, run);
+          const running = yield* controller.run({
+            trigger: "auto", exitZero: "finish", log: sink.appendLog,
+            apply: (event) => applyRecordedEventFrom(recorded, event),
+            observe: (transition) => Effect.gen(function* () {
+              if (transition.kind === "crashed") yield* Ref.set(from, yield* sink.drainForRestart);
+              if (transition.kind === "connected" && (yield* controller.stats).attempt > 1) yield* sink.speakersRenumbered;
+            }),
+          });
+          yield* Ref.set(recorded.running, running);
           yield* Ref.set(state, { kind: "recorded", recorded });
-          yield* Deferred.succeed(ready, undefined);
+          yield* Effect.forkIn(Effect.flatMap(running.end, (end) => {
+            if (end.kind === "stopped") return Effect.void;
+            return end.kind === "finished"
+              ? concludeRecorded(recorded, Effect.andThen(sink.drain, sink.finishBacklog), undefined)
+              : concludeRecorded(recorded, Effect.andThen(sink.discardBacklog, sink.finishBacklog), { ...end.last.exit, stderrTail: end.last.stderrTail });
+          }), scope);
           yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
           yield* viewers.sessionMode({ type: "session-mode", local: input.model.local });
           return { dir, warnings, events: Stream.fromQueue(events) };
@@ -781,12 +529,7 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       const startRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
-        const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
-          current.kind === "idle" && current.installations === 0
-            ? [Option.none(), { kind: "starting" }]
-            : [Option.some(current.kind === "live" || current.kind === "recorded" ? new SessionBusy() : new SessionTransition()), current],
-        );
-        if (Option.isSome(refusal)) return yield* refusal.value;
+        yield* claimStart;
         return yield* beginRecorded(input).pipe(
           Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void)),
         );
@@ -796,15 +539,15 @@ export class Sessions extends Context.Service<Sessions, {
       // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
       const stopLive = (live: Live) =>
         Effect.gen(function* () {
-          yield* Deferred.succeed(live.stopRequested, undefined);
-          const fiber = yield* Ref.get(live.chain);
-          // 連鎖の終わりを待つ。close の前に届いた発言は、すべて読み終えて push 済みになる
-          const end = fiber === undefined ? { exit: undefined } : yield* Fiber.join(fiber);
-          if (end.exit?.signal === "SIGKILL") {
+          yield* live.controller.stop;
+          const running = yield* Ref.get(live.running);
+          const end = running === undefined ? { kind: "stopped" as const, exit: undefined } : yield* running.end;
+          yield* live.sink.drain;
+          if (end.kind === "stopped" && end.exit?.signal === "SIGKILL") {
             yield* note(`ヘルパーが SIGTERM から ${stopTimeoutMs}ms 経っても終了しないので、SIGKILL で止めます\n`);
             if (live.audio) {
               // その時点で動いていた起動回の録音ファイル名を示す。起動し直していれば相手-2.m4a 等になる
-              const names = audioFileNames(yield* Ref.get(live.attempt)).join("・");
+              const names = audioFileNames((yield* live.controller.stats).attempt).join("・");
               yield* note(`録音の書き終わりを確認できないまま、セッションを閉じます。${live.dir} の ${names} が不完全なことがあります\n`);
             }
           }
@@ -817,9 +560,9 @@ export class Sessions extends Context.Service<Sessions, {
         Effect.gen(function* () {
           // 溜まりを捨ててから止めの印を立てる（印で差分更新の待ちがほどけても、次の発言を取らせない）
           yield* recorded.sink.discardBacklog;
-          yield* Deferred.succeed(recorded.stopRequested, undefined);
-          const fiber = yield* Ref.get(recorded.run);
-          if (fiber !== undefined) yield* Fiber.join(fiber);
+          yield* recorded.controller.stop;
+          const running = yield* Ref.get(recorded.running);
+          if (running !== undefined) yield* running.end;
           yield* recorded.sink.finishBacklog;
           return yield* finishRecorded(recorded, undefined);
         }).pipe(Effect.ensuring(closeRecorded(recorded)));
@@ -852,18 +595,20 @@ export class Sessions extends Context.Service<Sessions, {
         if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
         const warnings = yield* requireStartupDeps("resume", live.model.route, { screen: live.screen, check: live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
         const afterCheck = yield* Ref.get(state);
-        if (afterCheck.kind !== "live" || afterCheck.live !== live || (yield* Deferred.isDone(live.stopRequested))) return yield* new Aborted();
+        if (afterCheck.kind !== "live" || afterCheck.live !== live) return yield* new Aborted();
         // 取り込みの状態は、確かめてから書き換える（自動の起動し直しと取り合うので 1 つの操作にする）
         const taken = yield* Ref.modify(live.intake, (kind): [boolean, IntakeKind] => (kind === "stopped" ? [true, "interrupted"] : [false, kind]));
         if (!taken) return yield* new IntakeNotStopped();
-        yield* Ref.set(live.failures, 0); // 失敗の数を 0 から数え直す
-        yield* Ref.set(live.configurationChanges, []); // 構成の変化の数も空から数え直す
-        const outcome = yield* Deferred.make<RestartOutcome>();
-        const fiber = yield* Effect.forkIn(chain(live, undefined, "resume", outcome), live.scope);
-        yield* Ref.set(live.chain, fiber);
+        const previous = yield* Ref.get(live.running);
+        if (previous !== undefined) yield* previous.end;
+        // stop が前回の終了待ちを追い越した場合は、新しい run を開始しない。
+        const beforeRun = yield* Ref.get(state);
+        if (beforeRun.kind !== "live" || beforeRun.live !== live) return yield* new Aborted();
+        const running = yield* runLive(live, "resume");
+        yield* Ref.set(live.running, running);
         yield* intakeFrame("interrupted");
-        const result = yield* Deferred.await(outcome);
-        if (result.kind === "stopped") return yield* new RestartGaveUp({ stderrTail: result.stderrTail });
+        const result = yield* running.reached;
+        if (result.kind === "gaveUp") return yield* new RestartGaveUp({ stderrTail: result.stderrTail });
         if (result.kind === "aborted") return yield* new Aborted();
         return { warnings };
       });
@@ -886,7 +631,7 @@ export class Sessions extends Context.Service<Sessions, {
         return {
           status: yield* Ref.get(live.intake),
           dir: live.dir,
-          restarts: yield* Ref.get(live.restarts),
+          restarts: (yield* live.controller.stats).restarts,
           ...(lastInterruptedAt === undefined ? {} : { lastInterruptedAt }),
         };
       });
@@ -906,8 +651,7 @@ export class Sessions extends Context.Service<Sessions, {
           const current = yield* Ref.get(state);
           if (current.kind === "recorded") return yield* new NotForRecordedSession();
           if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
-          yield* SynchronizedRef.updateEffect(current.live.selfPauseLink, (link): Effect.Effect<SelfPauseLink> =>
-            link.kind === "connected" ? Effect.as(link.attempt.send({ type: "self-pause", paused }), link) : Effect.succeed({ kind: "waiting", pending: paused }));
+          yield* current.live.controller.send({ type: "self-pause", paused });
         });
 
       const setSpeakerName = (speaker: { label: string; name: string }): Effect.Effect<void, SessionFailure | SpeakerNameRejected> =>
