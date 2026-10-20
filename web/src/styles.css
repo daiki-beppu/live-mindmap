@@ -154,6 +154,26 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 /* 右の列を隠していて、ノードを選んでいる状態の .side: 広い幅と見返しでは見せない。狭い幅の会議中だけ、下の @media の .meeting .side--selected が出す */
 .side--hidden { display: none; }
 
+/* 見返しだけの狭幅配置。開閉状態は変えず、開いた右列はマップの幅を消費しない。 */
+@media (width < 600px) {
+  .review .side {
+    position: absolute; left: 0; right: 0; bottom: 0; width: auto; height: 50%; box-sizing: border-box;
+    background: var(--color-white); border: 0; border-top: 1px solid var(--color-gray-200); border-radius: 12px 12px 0 0; box-shadow: none; z-index: 6;
+    overflow-y: auto;
+  }
+  .review .side > .evidence, .review .side > .todos, .review .side > .changes { flex: none; overflow-y: visible; }
+  .review .captions { left: 12px; right: 12px; width: auto; transform: none; }
+  .review .captions__row { flex-direction: column; gap: 4px; }
+  .review .captions__row:has(.captions__bubble--right) { align-items: flex-end; }
+  .review .captions__bubble { width: 100%; }
+  .review .review-bar { gap: 4px; padding-left: 8px; padding-right: 8px; }
+  .review .review-bar__button, .review .review-bar__anchor, .review .review-bar__time { flex-shrink: 0; }
+  .review .review-bar__time { white-space: nowrap; }
+  .review .review-bar__duration, .review .review-bar__topic { display: none; }
+  .review .review-volume { position: relative; }
+  .review .review-volume__slider { position: absolute; bottom: 100%; left: 0; background: var(--color-gray-700); border-radius: 4px; }
+}
+
 /* 狭い幅（スマホ・縦向きの iPad。Issue #969）: 幅 768px 以下の会議中の画面（.meeting。見返しには付かない）だけ並べ方を替える。見る人かどうかは区別しない。
    DOM は変えず、.layout を CSS グリッドにする。列は左右 12px の余白と中身、行は下から 24px の余白・字幕・取り込みの知らせ・共有画面の知らせ（空の行は高さ 0）。
    .map は全てのマスに広げる（右の列は絶対配置なので .map の大きさは変わらず、カメラが動き直さない）。シートは淡い塗り・枠・角丸だけで、影は付けない。

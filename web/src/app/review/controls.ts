@@ -237,7 +237,7 @@ export const controlsView = (context: Context, model: Model, topicName: string, 
           barButton(h, model, "toggle", "top-start", playLabel, Message.ClickedToggle(), playing ? PauseIcon(h) : PlayIcon(h), `${playLabel}（Space・K）`),
           barButton(h, model, "next", "top-start", "反映 1 つ進む", Message.ClickedNext(), StepIcon(h, "next"), "反映 1 つ進む（.）"),
           ...(Option.isSome(context.maybeAudioUrl) ? [volumeControl(model, h)] : []),
-          h.span([h.Class("review-bar__time [font-variant-numeric:tabular-nums]")], [`${formatHms(time)} / ${formatHms(duration)}`]),
+          h.span([h.Class("review-bar__time [font-variant-numeric:tabular-nums]")], [formatHms(time), h.span([h.Class("review-bar__duration")], [` / ${formatHms(duration)}`])]),
           h.span([h.Class("review-bar__topic min-w-0 ml-[8px] truncate")], [topicName]),
           h.div(
             [h.Class("review-bar__end flex items-center gap-[4px] ml-auto flex-none")],
