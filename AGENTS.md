@@ -22,7 +22,14 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 
 ### README
 
-When a PR adds, removes or changes what a user can do, update README's `できること` in the same PR. Plans and progress live in issues; README's `ロードマップ` only links to them.
+`README.ja.md` is the source of truth for `できること` and detailed setup instructions. The corresponding English sections in `README.md` contain one-line summaries and links to `README.ja.md#<見出し>`.
+
+- When a PR adds, removes or changes what a user can do, including a takt PR, update `README.ja.md`'s `できること` in the same PR.
+- Update `README.md`'s `What you can do` in the same PR only when an item is added or removed, or its one-line summary changes. Changes to details such as flags, defaults or limits need only the Japanese update.
+- When requirements (such as the macOS version) or setup commands change, update both the relevant section in `README.ja.md` and `README.md`'s `Getting started` in the same PR.
+- When a Japanese heading changes the target of an English link (`#できること`, `#差分更新のモデルを選ぶ`, `#claude-の認証`, `#ローカルモード`, `#ライブのセッション`), update the English anchor in the same PR.
+- Plans and progress live in issues. Both `README.ja.md`'s `ロードマップ` and `README.md`'s `Roadmap` only link to issues.
+- Do not add CI checks or tests for README synchronization. See `CODING_STANDARDS.md` → `Contracts, not structure`.
 
 ### Checks
 
