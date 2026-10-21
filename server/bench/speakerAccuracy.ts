@@ -130,18 +130,30 @@ export type Attribution = {
 
 // 発言分類とつなぎ直しで共有する、会議全体で重なりの合計が最大の対応。
 export function assignSpeakers({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): ReadonlyMap<string, string | undefined> {
+  const assignment = createSpeakerAssignment({ self, timeline });
+  for (const remark of remarks) assignment.add(remark);
+  return assignment.finish();
+}
+
+export function createSpeakerAssignment({ self, timeline }: { self: string; timeline: readonly TruthRow[] }) {
   const rows = otherRows(self, timeline);
-  const heard = heardRemarks(remarks);
   const people = [...new Set(rows.map((row) => row.speaker))];
-  const labels = [...new Set(heard.flatMap((r) => (r.speaker === undefined ? [] : [r.speaker])))];
-  const weights = labels.map(() => people.map(() => 0));
-  for (const r of heard) {
-    if (r.speaker === undefined) continue;
-    const label = labels.indexOf(r.speaker);
-    for (const [person, seconds] of overlapByPerson(r, rows)) weights[label]![people.indexOf(person)]! += seconds;
-  }
-  const assignment = assignOneToOne(weights);
-  return new Map(labels.map((label, i) => [label, assignment[i] === undefined ? undefined : people[assignment[i]!]]));
+  const weights = new Map<string, number[]>();
+  return {
+    add(remark: Scored): void {
+      if (remark.track !== "相手" || remark.speaker === undefined) return;
+      let row = weights.get(remark.speaker);
+      if (row === undefined) {
+        row = people.map(() => 0);
+        weights.set(remark.speaker, row);
+      }
+      for (const [person, seconds] of overlapByPerson(remark, rows)) row[people.indexOf(person)]! += seconds;
+    },
+    finish(): ReadonlyMap<string, string | undefined> {
+      const assignment = assignOneToOne([...weights.values()]);
+      return new Map([...weights.keys()].map((label, i) => [label, assignment[i] === undefined ? undefined : people[assignment[i]!]]));
+    },
+  };
 }
 
 // 各発言を 正解 / 取り違え / 話者なし に分ける。

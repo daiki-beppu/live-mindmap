@@ -144,8 +144,8 @@ const matches = (node: ExportNode, { from, to, keywords }: Pick<TruthItem, "from
   return node.evidence.some((r) => r.start <= to && r.end >= from) && keywords.every((k) => containsKeyword(body, k));
 };
 
-// 当たる件数が最大になる割り当ての件数（二部グラフの最大マッチング、増加路法）。candidates[i] は正解 i に当たるノードの番号
-function maxMatching(candidates: number[][], nodeCount: number): number {
+// 当たる件数が最大になる最終割り当て（二部グラフの最大マッチング、増加路法）。candidates[i] は正解 i に当たるノードの番号
+function maxMatching(candidates: number[][], nodeCount: number): Array<{ truth: number; node: number }> {
   const owner: number[] = Array.from({ length: nodeCount }, () => -1);
   const assign = (t: number, visited: boolean[]): boolean =>
     (candidates[t] ?? []).some((n) => {
@@ -156,7 +156,8 @@ function maxMatching(candidates: number[][], nodeCount: number): number {
       owner[n] = t;
       return true;
     });
-  return candidates.filter((_, t) => assign(t, Array.from({ length: nodeCount }, () => false))).length;
+  candidates.forEach((_, t) => assign(t, Array.from({ length: nodeCount }, () => false)));
+  return owner.flatMap((truth, node) => truth === -1 ? [] : [{ truth, node }]);
 }
 
 const allNodes = (exp: JsonExport): ExportNode[] => {
@@ -165,14 +166,17 @@ const allNodes = (exp: JsonExport): ExportNode[] => {
   return nodes;
 };
 
+export function matchTruth<T extends TruthItem>(exp: JsonExport, kind: Kind, items: readonly T[]): Array<{ truth: T; node: ExportNode }> {
+  const nodes = allNodes(exp).filter((n) => n.kind === kind);
+  const candidates = items.map((item) => nodes.flatMap((n, i) => matches(n, item) ? [i] : []));
+  return maxMatching(candidates, nodes.length).map(({ truth, node }) => ({ truth: items[truth]!, node: nodes[node]! }));
+}
+
 // 同じ種別のノードと正解を 1 対 1 で対応させ、当たる件数が最大になる割り当ての件数を再現できた数とする（当たる条件は matches）
 export function recall(exp: JsonExport, truth: Truth): Record<TruthKind, Recall> {
-  const nodes = allNodes(exp);
   return Object.fromEntries(
     TRUTH_KINDS.map((kind) => {
-      const sameKind = nodes.filter((n) => n.kind === kind);
-      const candidates = truth[kind].map((item) => sameKind.flatMap((n, i) => (matches(n, item) ? [i] : [])));
-      return [kind, { hit: maxMatching(candidates, sameKind.length), total: truth[kind].length }];
+      return [kind, { hit: matchTruth(exp, kind, truth[kind]).length, total: truth[kind].length }];
     }),
   ) as Record<TruthKind, Recall>;
 }
@@ -185,7 +189,7 @@ export function wrongKind(exp: JsonExport, truth: Truth): Record<TruthKind, numb
   return Object.fromEntries(
     TRUTH_KINDS.map((kind) => {
       const candidates = truth[kind].map((item) => nodes.flatMap((n, i) => (matches(n, item) ? [i] : [])));
-      return [kind, maxMatching(candidates, nodes.length) - same[kind].hit];
+      return [kind, maxMatching(candidates, nodes.length).length - same[kind].hit];
     }),
   ) as Record<TruthKind, number>;
 }
@@ -212,9 +216,9 @@ export function screenScore(exp: JsonExport, screen: ScreenTruth): ScreenScore {
     bodies.some((body) => keywords.some((k) => containsKeyword(body, k)))
   ).length;
   return {
-    pointing: { hit: maxMatching(pointing, nodes.length), total: pointing.length },
-    memory: { hit: maxMatching(memoryCandidates, nodes.length), total: memoryCandidates.length },
-    talkOnly: { hit: maxMatching(talkOnly, nodes.length), total: talkOnly.length },
+    pointing: { hit: maxMatching(pointing, nodes.length).length, total: pointing.length },
+    memory: { hit: maxMatching(memoryCandidates, nodes.length).length, total: memoryCandidates.length },
+    talkOnly: { hit: maxMatching(talkOnly, nodes.length).length, total: talkOnly.length },
     leaked: { hit: leaked, total: screen.出てはいけない.length },
   };
 }

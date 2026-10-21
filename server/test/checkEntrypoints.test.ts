@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { findEntrypointViolations } from "../scripts/check-entrypoints.ts";
 import type { SourceFile } from "../scripts/sourceFiles.ts";
 
-const BENCH = ["bench/sessionStats.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/speechEnds.ts", "bench/edgeJudge.ts", "bench/mapShape.ts", "bench/siblingJudge.ts", "bench/speakerReplay.ts", "bench/speakerAccuracy.ts"];
+const BENCH = ["bench/sessionStats.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/speechEnds.ts", "bench/edgeJudge.ts", "bench/mapShape.ts", "bench/siblingJudge.ts", "bench/speakerReplay.ts", "bench/speakerAccuracy.ts", "bench/timelineReplay.ts", "bench/peopleAccuracy.ts"];
 const BENCH_BODY = "NodeRuntime.runMain({ teardown: exitNaturally })(main);\n";
 
 const validTree = (): SourceFile[] => [
@@ -132,6 +132,8 @@ describe("findEntrypointViolations", () => {
         { path: "bench/siblingJudge.ts", content: BENCH_BODY },
         { path: "bench/speakerReplay.ts", content: BENCH_BODY },
         { path: "bench/speakerAccuracy.ts", content: BENCH_BODY },
+        { path: "bench/timelineReplay.ts", content: BENCH_BODY },
+        { path: "bench/peopleAccuracy.ts", content: BENCH_BODY },
         { path: "src/other.ts", content: "NodeRuntime.runMain(x);\nEffect.runSync(y);\nEffect.runPromise(z);\n" },
       ];
       const violations = findEntrypointViolations(files);
