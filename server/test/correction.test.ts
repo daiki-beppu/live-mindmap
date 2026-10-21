@@ -209,6 +209,20 @@ describe("correctRemark: 直さない（守り）", () => {
     expect(result).toEqual({ text: "出店の候補", replacements: [] });
   });
 
+  // Issue #1348: 送り仮名の「び」は運び の語の一部で、ひらがなだけの語ではない。キーは hakobizu で完全一致
+  it("漢字の語の送り仮名は、置き換え先に無くても直す（運び図→ハコビズ）", () => {
+    const result = correct([vocab("ハコビズ", "hakobizu")], ["運び", "hakobi"], ["図", "zu"], ["の", "no"], ["画面", "gamen"]);
+    expect(result.text).toBe("ハコビズの画面");
+    expect(result.replacements).toEqual([{ location: 0, length: 3, span: "運び図", surface: "ハコビズ", score: 1 }]);
+  });
+
+  // Issue #1348: 過ご楽 は 過・ご・楽 に区切られる。キーは kagoraku で完全一致なので、間のひらがなだけの語を落としても直す
+  it("読みが完全一致なら、置き換え先に無いひらがなだけの語を間に含む区間も直す（過ご楽→カゴラク）", () => {
+    const result = correct([vocab("カゴラク", "kagoraku")], ["過", "ka"], ["ご", "go"], ["楽", "raku"], ["の", "no"], ["アプリ", "apuri"]);
+    expect(result.text).toBe("カゴラクのアプリ");
+    expect(result.replacements).toEqual([{ location: 0, length: 3, span: "過ご楽", surface: "カゴラク", score: 1 }]);
+  });
+
   // (合成) 公報→候補 の読み違い。キーは同じで、置き換え先に「の」が残る
   it("置き換え先がそのひらがなを含むなら、ひらがなを含む区間も直せる", () => {
     const result = correct([vocab("出店の候補", "shuttennokouho")], ["出店", "shutten"], ["の", "no"], ["公報", "kouhou"]);
