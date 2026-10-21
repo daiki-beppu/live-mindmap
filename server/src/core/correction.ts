@@ -68,7 +68,6 @@ function similarity(a: string, b: string): number {
 }
 
 const HIRAGANA = /^[ぁ-ゟ]+$/;
-const HIRAGANA_RUN = /[ぁ-ゟ]+/g;
 const PUNCTUATION_OR_SPACE = /^[\p{P}\s]*$/u;
 export const normalizeSurface = (s: string): string => s.normalize("NFKC").toLowerCase();
 const isHiraganaOnly = (s: string): boolean => HIRAGANA.test(s);
@@ -105,8 +104,9 @@ function scoreOf(term: Term, spanKey: string, isCommon: boolean): number | undef
   return score < MIN_SCORE ? undefined : score;
 }
 
-// 区間に一番近い語を選ぶ（同じ点なら先に出た語）。区間の中のひらがなを置き換え先が落とすなら選ばない
-function bestTerm(terms: readonly Term[], span: string, spanKey: string, commonWords: ReadonlySet<string>): { term: Term; score: number } | undefined {
+// 区間に一番近い語を選ぶ（同じ点なら先に出た語）。区間の中のひらがなだけの語（助詞など）を置き換え先が落とすなら、読みが完全一致のときだけ選ぶ。
+// 漢字の語の送り仮名（運び図 の「び」）は語の一部なので、置き換え先に無くてもよい
+function bestTerm(terms: readonly Term[], span: string, spanKey: string, kanaWords: readonly string[], commonWords: ReadonlySet<string>): { term: Term; score: number } | undefined {
   let best: { term: Term; score: number } | undefined;
   const isCommon = commonWords.has(span);
   for (const term of terms) {
@@ -114,8 +114,7 @@ function bestTerm(terms: readonly Term[], span: string, spanKey: string, commonW
     if (score !== undefined && (best === undefined || score > best.score)) best = { term, score };
   }
   if (best === undefined) return undefined;
-  const hiraganaRuns = span.match(HIRAGANA_RUN) ?? [];
-  return hiraganaRuns.some((run) => !best.term.surface.includes(run)) ? undefined : best;
+  return best.score < 1 && kanaWords.some((word) => !best.term.surface.includes(word)) ? undefined : best;
 }
 
 // 語 i から始まる区間の候補。句読点・空白・語の間の隙間のところで打ち切る
@@ -131,7 +130,8 @@ function candidatesFrom(terms: readonly Term[], text: string, words: readonly Wo
     const spanKey = matchKey(romaji);
     if (spanKey.length < MIN_SPAN_KEY_LENGTH) continue;
     const area = spanOf(terms, text, words, i, j);
-    const best = area && bestTerm(terms, area.span, spanKey, commonWords);
+    const kanaWords = words.slice(i, j + 1).map((w) => w.surface).filter(isHiraganaOnly);
+    const best = area && bestTerm(terms, area.span, spanKey, kanaWords, commonWords);
     if (area && best) found.push({ ...area, term: best.term, score: best.score });
   }
   return found;
