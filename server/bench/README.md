@@ -1,6 +1,6 @@
 # bench: eval の道具
 
-eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds`・`speakerReplay` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
+eval は、本物のモデル・音声認識の出力を数字で測るもので、合否は出さず、手で回す。CI のチェックには含まれない。ここには `cli eval`・`edgeJudge`・`siblingJudge`・`mapShape`・`sttAccuracy`・`sttLatency`・`sttReplay`・`speechEnds`・`speakerReplay`・`speakerAccuracy`・`timelineReplay`・`peopleAccuracy` の手順と入出力の形を書く。使い方の細部（フラグの説明）は各コマンドの `--help` が正本。
 
 実会議の録音・文字起こしなどの素材はリポジトリの外にある。置き場所と中身は `~/live-mindmap-samples/README.md` を参照。リポジトリ内には `server/bench/meetings/`（正解・文字起こしの JSON と `lecture.timeline.tsv`）がある。
 
@@ -186,10 +186,80 @@ cd server
 node bench/sttReplay.ts <items.json> [--lines <lines.json>] [--truth <正解.json>] [--title <題名>]
 ```
 
-- `<items.json>`: `sttLatency.ts --emit` の出力。
+- `<items.json>`: `sttLatency.ts --emit` または `timelineReplay.ts` の出力。任意の `speaker` は本番のセッションへそのまま渡し、`log.jsonl` の `remark` に残る。`at`・`source` は発言へ渡さない。
+- 差分更新が返した推定名は、本番と同じ根拠・付け替えの規則を通し、受け入れた変化だけを `speaker-name` として記録する。以後の差分更新にも現在の名前を渡す。`peopleAccuracy` はこの記録から名前を採点する。
 - 流し方: 流し始めを基準に、各発言を自分の `at` の時刻に本番のセッションへ届ける。等速で流し、最後に flush する。差分更新が混んで push が遅れても、後ろの発言に遅れを足さない。push が `at` を過ぎて終わったら、次の発言は待たずにすぐ流す。
 - 出力の「話し終わり → ノード」は、別の道具で差し引かずに、そのまま PR 本文の表に書ける。遅れを差し引いて数えた過去の値（#878・#880・#881）と同じ物差しで並べられる。
 - `--lines` を渡すと各文の話し終わりから、なければノードに反映された発言の `end` から数える。`--truth` を渡すと再現率を 1 行で出す。
+
+## peopleAccuracy（出した人・担当・推定名）
+
+話者の名前の推定や、人の欄のプロンプト・規則を変えたときに回す。同じ合成会議・正解を二段で流し、AI の誤りと認識・話者分離の誤りを切り分ける。実モデルでの計測は #1032 で人が行う。
+
+### 二段のセッションを作る
+
+以下はリポジトリルートから実行する。`timelineReplay` と `peopleAccuracy` はモデルを呼ばず、認証も不要。`sttReplay` は既存の Claude の準備・認証を使い、差分更新を等速で実行する。`cli recorded` は常駐サーバー・認識・話者分離の準備と、選んだモデルの認証が必要。
+
+1. 正しい話者を渡す段では、台本を再生入力へ変換して流す。
+
+   ```sh
+   pnpm --filter @live-mindmap/server exec node bench/timelineReplay.ts <timeline.tsv> --self <人> > <items.json>
+   pnpm --filter @live-mindmap/server exec node bench/sttReplay.ts <items.json> --truth <正解.json>
+   ```
+
+   `timeline.tsv` はタブ区切りの四列 `speaker start end text`。時刻は会議内の秒。`#` で始まる行は飛ばす。`--self` の人は `track: "自分"`、残りは `track: "相手"` として、初出順に `speaker: "相手 A"`・`"相手 B"`…を付ける。同じ人のラベルは再利用し、自分には `speaker` を付けない。本文と時刻を保ち、`id` は `r1` からの連番、`at` は `end`。出力は JSON 配列。`sttReplay` の最後の行に出るセッションのパスを控える。
+
+2. 全部を通す段では、同じ台本の音声を自分・相手に分けて取り込む。
+
+   ```sh
+   pnpm --filter @live-mindmap/helper exec swift run -c release stt-bench tracks <会議フォルダ> <トラック出力フォルダ> --self <人>
+   pnpm cli recorded <トラック出力フォルダ>/相手.wav --self <トラック出力フォルダ>/自分.wav --model <設定名>
+   ```
+
+   `tracks` の素材と前準備は [speakerAccuracy](#speakeraccuracy話者分離の精度) と同じ。`recorded` は認識・話者分離・差分更新を通す。出力のセッションパスを控える。`--no-map` で取り込んだ素材なら、先に `pnpm cli play <フォルダ> --model <設定名>` でマップを作り、そのランを採点する。
+
+3. 両段のセッションを同じ採点器へ渡す。採点は保存済みの `export.json` と `log.jsonl` を読み、ファイルを書き換えない。
+
+   ```sh
+   pnpm --filter @live-mindmap/server exec node bench/peopleAccuracy.ts --self <人> <timeline.tsv> <正解.json> <正しい話者のセッション> <全部を通したセッション>
+   ```
+
+### 正解ファイル
+
+`決定`・`TODO` は必須。`TODO` の `担当` は任意で、台本の人名か `"なし"`。`案` は省略でき、各項目の `出した人` は台本の人名。時刻・keywords の照合規則は `cli eval --truth` と同じで、`text` は照合に使わない。拡張したファイルを既存の `cli eval --truth` へ渡しても、決定・TODO の表は変わらない。
+
+```json
+{
+	"決定": [],
+	"TODO": [
+		{ "from": 10, "to": 20, "keywords": ["見積"], "担当": "甲" },
+		{ "from": 20, "to": 30, "keywords": ["調査"], "担当": "なし" }
+	],
+	"案": [
+		{ "from": 0, "to": 10, "keywords": ["試作"], "出した人": "乙" }
+	]
+}
+```
+
+### 列の定義
+
+表は一セッション一行。タイトル・ノード・発言の本文は出さない。相手のラベルと人の対応は、ログの話者付き `remark` と自分以外の台本の区間の重なりから、会議全体で一対一に決める。推定名や `export.speakerNames` はこの対応の根拠にしない。`自分` は `--self` の人へ対応する。
+
+| 列 | 定義 |
+| --- | --- |
+| セッション | 入力フォルダの末尾の名前 |
+| 案 再現 | 同じ種別・時刻・keywords による最大マッチングの最終組数 / 案の正解数 |
+| 出した人 合う | proposer を人へ対応させて出した人と一致した組数 / 案の組数 |
+| 出した人 人なし | proposer がない・相手・対応しないラベルである組数 / 案の組数 |
+| TODO 再現 | 担当指定のある正解だけの最終組数 / 担当指定のある正解数 |
+| 担当 合う | 担当が一致した組数 / TODO の組数。assignee を優先し、なければ assigneeSpeaker を人へ対応させる。正解が「なし」なら両属性がない場合だけ一致 |
+| 担当 人なし | 正解が人なのに両属性がない組数 / TODO の組数。属性はあるが人へ対応しないものは人なしへ数えない |
+| 誤った名前 | 最後の推定名が対応する人と一致しないラベル数。人へ対応しないラベルも含む |
+| 名前 付いたラベル | source が「推定」の speaker-name があるラベル数。変更回数ではない |
+| 名前 正しい | 最後の推定名が対応する人と一致したラベル数 / 名前が付いたラベル数 |
+| 名前まで | ラベルごとの最初の推定 speaker-name の at − 最初の remark の at の中央値。秒、小数一桁。両方あるラベルだけが対象。偶数件は中央二値の平均。対象なしは `—` |
+
+割合は小数一桁の %、分母ゼロは `n/a`。再現は件数の分数で示す。未再現の項目は人の一致・人なしの分母へ含めない。手入力の名前は推定名の件数・正誤・時間の対象外。不正な JSON や必要なイベント・export の形が違う場合は、本文を含まない診断で失敗する。
 
 ## speechEnds（実会議の話し終わり）
 

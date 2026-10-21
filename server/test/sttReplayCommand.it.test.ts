@@ -2,12 +2,14 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { beforeEach, vi } from "vitest";
 import { reportFailure } from "../bench/entry.ts";
 import * as benchEntry from "../bench/entry.ts";
 import { command } from "../bench/sttReplay.ts";
-import type { DiffInput } from "../src/core/index.ts";
+import { command as peopleAccuracy } from "../bench/peopleAccuracy.ts";
+import { LogEvent, type DiffInput } from "../src/core/index.ts";
+import { SpeakerNameLogEvent } from "../src/core/speakerNames.ts";
 import { evalManagedDeps } from "./fixtures/evalManagedDeps.ts";
 import { consoleCapture, runCommand as runBenchCommand, taggedFailure, temporaryDirectory } from "./benchRun.ts";
 
@@ -50,6 +52,74 @@ const runCommand = (args: string[]) =>
   runBenchCommand(command, args).pipe(Effect.provide(managed.layer));
 
 describe("sttReplay の Command", () => {
+  it.effect("推定名を本番の規則で受け入れて記録し、後続の差分入力と採点へ渡す", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const file = join(dir, "named.json");
+    const inputs: DiffInput[] = [];
+    external.openClaudeUpdater.mockImplementation(() => ({
+      update: (input: DiffInput) => Effect.sync(() => {
+        inputs.push(input);
+        const name = inputs.length === 1 ? "乙" : inputs.length === 2 ? "丙" : "甲";
+        return {
+          ops: [], processedRemarks: 1,
+          names: [{
+            label: "相手 A", name, evidence: input.fresh[0]!.id,
+            basis: inputs.length === 2 ? "呼びかけへの応答" : "名乗り",
+          }],
+        };
+      }),
+      close,
+    }));
+    writeFileSync(file, JSON.stringify(Array.from({ length: 4 }, (_, i) => ({
+      id: `r${i + 1}`, track: "相手", start: i, end: i + 1, text: "名乗り", speaker: "相手 A", at: 0,
+    }))));
+    const { result, stdout } = yield* runCommand([file]);
+    expect(result._tag).toBe("Success");
+    expect(inputs.map((input) => input.speakerNames?.get("相手 A"))).toEqual([undefined, "乙", "乙", "甲"]);
+    const sessionDir = stdout.trimEnd().split("\n").at(-1)!.slice("セッション: ".length);
+    const decode = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Union([
+      LogEvent, Schema.Struct({ ...SpeakerNameLogEvent.fields, at: Schema.String }),
+    ])));
+    const names = readFileSync(join(sessionDir, "log.jsonl"), "utf8").trim().split("\n")
+      .map((line) => decode(line)).filter((event) => event.type === "speaker-name");
+    expect(names.map(({ label, name, source }) => ({ label, name, source }))).toEqual([
+      { label: "相手 A", name: "乙", source: "推定" },
+      { label: "相手 A", name: "甲", source: "推定" },
+    ]);
+    expect(names.every((event) => Number.isFinite(Date.parse(event.at)))).toBe(true);
+    const timeline = join(dir, "timeline.tsv");
+    const truth = join(dir, "truth.json");
+    writeFileSync(timeline, "甲\t0\t4\t名乗り\n");
+    writeFileSync(truth, JSON.stringify({ 決定: [], TODO: [] }));
+    const scored = yield* runBenchCommand(peopleAccuracy, ["--self", "司会", timeline, truth, sessionDir]);
+    expect(scored.result._tag).toBe("Success");
+    const cells = scored.stdout.trimEnd().split("\n").map((line) => line.slice(1, -1).split("|").map((cell) => cell.trim()));
+    const column = (name: string) => cells[2]![cells[0]!.indexOf(name)]!;
+    expect(column("名前 付いたラベル")).toBe("1");
+    expect(column("誤った名前")).toBe("0");
+    expect(column("名前 正しい")).toBe("100.0%");
+    expect(column("名前まで")).toMatch(/^\d+\.\d$/);
+    expect(close).toHaveBeenCalledTimes(1);
+  }).pipe(Effect.scoped));
+
+  it.effect("入力の話者を本番セッションのremarkログへ保存する", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const file = join(dir, "speakers.json");
+    const spoken = [
+      { id: "r1", track: "相手", start: 0, end: 1, text: "提案", speaker: "相手 B" },
+      { id: "r2", track: "自分", start: 1, end: 2, text: "確認" },
+      { id: "r3", track: "相手", start: 2, end: 3, text: "話者なし" },
+    ];
+    writeFileSync(file, JSON.stringify(spoken.map((r) => ({ ...r, at: 0, source: "final" }))));
+    const { result, stdout } = yield* runCommand([file]);
+    expect(result._tag).toBe("Success");
+    const sessionDir = stdout.trimEnd().split("\n").at(-1)!.slice("セッション: ".length);
+    const decode = Schema.decodeUnknownSync(Schema.fromJsonString(LogEvent));
+    const remarks = readFileSync(join(sessionDir, "log.jsonl"), "utf8").trim().split("\n")
+      .map((line) => decode(line)).flatMap((event) => event.type === "remark" ? [event.remark] : []);
+    expect(remarks).toEqual(spoken);
+  }).pipe(Effect.scoped));
+
   it.effect("発言だけを渡すと、遅れの 1 行とセッションのパスの 1 行を stdout に出し、再生した発言が差分更新に渡る", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const { result, stdout, stderr } = yield* runCommand([writeInputs(dir)]);

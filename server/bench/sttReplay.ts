@@ -5,9 +5,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Clock, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Effect, Layer, Option, Ref, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { LogEvent, recall, Remark, type Session } from "../src/core/index.ts";
+import { DiffUpdater, LogEvent, nameSpeaker, recall, Remark, SpeakerNameLogEvent, speakerNameMap, type SpeakerNameTable, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { depsDirConfig } from "../src/config.ts";
@@ -35,8 +35,8 @@ export const replayByArrival = Effect.fnUntraced(function* (
   for (const item of items) {
     const wait = t0 + item.at * 1000 - (yield* Clock.currentTimeMillis);
     if (wait > 0) yield* Effect.sleep(wait);
-    const { id, track, start, end, text } = item;
-    yield* session.push({ id, track, start, end, text });
+    const { id, track, start, end, text, speaker } = item;
+    yield* session.push({ id, track, start, end, text, ...(speaker === undefined ? {} : { speaker }) });
   }
   yield* session.flush;
 });
@@ -69,7 +69,7 @@ export function reflectedArrivals(diffs: readonly DiffLogEntry[], doneAts: reado
 }
 
 type DiffEvent = Extract<LogEvent, { type: "diff" }>;
-const decodeLogEvent = Schema.decodeEffect(Schema.fromJsonString(LogEvent));
+const decodeLogEvent = Schema.decodeEffect(Schema.fromJsonString(Schema.Union([LogEvent, SpeakerNameLogEvent])));
 
 // 使い方は各 Command・Flag の withDescription が正本で、`node bench/sttReplay.ts --help` で読む
 export const command = Command.make(
@@ -104,13 +104,28 @@ export const command = Command.make(
     });
     const dir = yield* createSessionDir(tmp).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: tmp, reason: fileReason(e) })));
     const diffEndsMs: number[] = [];
-    const { session } = yield* openLoggedSession({
+    const names = yield* Ref.make<SpeakerNameTable>(new Map());
+    const baseUpdater = yield* DiffUpdater;
+    const namedUpdater = DiffUpdater.of({
+      ...baseUpdater,
+      update: (input) => Effect.flatMap(Ref.get(names), (table) =>
+        baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: speakerNameMap(table) })),
+    });
+    const { session, appendLog } = yield* openLoggedSession({
       model: defaultClaude,
       dir,
       title,
       publish: () => Effect.void,
       onDiff: Effect.sync(() => diffEndsMs.push(performance.now())),
-    });
+      // core が根拠を確かめた名前だけを通知する。名前の受入規則はライブ・recorded と共有する。
+      onSpeakerNames: (inferred): Effect.Effect<void> => Effect.forEach(inferred, ({ label, name, basis }) =>
+        Effect.uninterruptible(Effect.gen(function* () {
+          const next = nameSpeaker(yield* Ref.get(names), { label, name, basis, source: "推定" });
+          if (next === undefined) return;
+          yield* appendLog({ type: "speaker-name", label, name: next.get(label)!.name, source: "推定" });
+          yield* Ref.set(names, next);
+        })), { discard: true }),
+    }).pipe(Effect.provideService(DiffUpdater, namedUpdater));
     const t0 = performance.now();
     yield* replayByArrival(session, items);
     // 差分更新ごとの終わりの時刻と、その呼び出しに渡した発言を、ログから引く

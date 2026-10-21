@@ -388,6 +388,23 @@ describe("eval: log.jsonl から数える 3 指標", () => {
 });
 
 describe("eval: 正解との再現率（時刻の重なり）", () => {
+  it.effect("案と担当を含む拡張正解でも、同じ保存済みセッションの表は変わらない", () => Effect.gen(function* () {
+    const dir = yield* play(scriptA);
+    const plain = {
+      決定: [{ from: 20, to: 25, keywords: ["2回"] }],
+      TODO: [{ from: 10, to: 15, keywords: ["求人票"] }],
+    };
+    const extended = {
+      ...plain,
+      TODO: [{ ...plain.TODO[0]!, 担当: "甲" }],
+      案: [{ from: 10, to: 15, keywords: ["1回"], 出した人: "乙" }],
+    };
+    const before = yield* evalCli(["--truth", yield* writeTruth(plain), dir]);
+    const after = yield* evalCli(["--truth", yield* writeTruth(extended), dir]);
+    expect(parseTable(before).rows[0]).toMatchObject({ 決定の再現率: "1/1 (100%)", "TODO の再現率": "1/1 (100%)" });
+    expect(after).toBe(before);
+  }));
+
   // 決定のノード「2 回にする」の根拠は r1 [0.5, 9.8] と r3 [19.2, 28.0]、TODO のノード「求人票を直す」の根拠は r2 [9.8, 19.2]。
   // 1 つのノードは正解 1 件にしか当たらないので、正解は 1 件ずつ評価する。
   const decision = ["2回"];
