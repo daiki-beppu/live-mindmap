@@ -31,8 +31,8 @@ export type ReplayRemark = { source: string; track: string; start: number; end: 
 export type ReplayResult = {
   remarks: ReplayRemark[];
   labels: string[];
-  mixed: Array<{ slot: number; label?: string }>;
-  links: Array<{ slot: number; result: "linked" | "new" | "reverted"; label?: string }>;
+  mixed: Array<{ at: number; slot: number; label?: string }>;
+  links: Array<{ at: number; slot: number; result: "linked" | "new" | "reverted"; label?: string }>;
   restarts: Array<{ at: number; source: "flag" | "log" }>;
   // 規則の効き目の数。0 でも常に出す。cuts は話者の替わり目で切った数（断片の数 − 1 の合計）、timeouts は 3 秒の時間切れで話者なしになった数
   cuts: number;
@@ -44,7 +44,7 @@ export type InputLine = { no: number; value: unknown };
 
 // 流し込む 1 件。at は最初の入力からの届いた時刻（秒）
 // settled は speaker-settled の 1 件（仮の区間が入れ替わる更新の終わり）
-type Step = { at: number; run: Effect.Effect<void>; settled?: true };
+type Step = { at: number; inputAt: number; run: Effect.Effect<void>; settled?: true };
 type Hooks = { restart: Effect.Effect<void>; drain: Effect.Effect<void> };
 
 const ruleSet = (rules: Partial<SpeakerRules> | undefined): SpeakerRules => ({
@@ -57,8 +57,11 @@ const ruleSet = (rules: Partial<SpeakerRules> | undefined): SpeakerRules => ({
 // 出した発言と判定の記録を溜める。source は出した発言ごとの出どころ（log は元の remark.id、offline は出した順の連番）
 function createCollector(sourceOf: (remark: SettledRemark, index: number) => string) {
   const result: ReplayResult = { remarks: [], labels: [], mixed: [], links: [], restarts: [], cuts: 0, timeouts: 0 };
+  // runSteps が入力を実行する直前に設定する。中核の記録形式には時計を持ち込まない。
+  let inputAt: number;
   return {
     result,
+    setInputAt: (at: number) => { inputAt = at; },
     add: (remarks: readonly SettledRemark[], tentativeOf?: (remark: SettledRemark) => string | undefined) => {
       for (const r of remarks) {
         const tentative = tentativeOf?.(r);
@@ -72,10 +75,10 @@ function createCollector(sourceOf: (remark: SettledRemark, index: number) => str
     observe: (record: SpeakerRecord) => {
       switch (record.type) {
         case "mixed":
-          result.mixed.push({ slot: record.slot, ...(record.label === undefined ? {} : { label: record.label }) });
+          result.mixed.push({ at: inputAt, slot: record.slot, ...(record.label === undefined ? {} : { label: record.label }) });
           break;
         case "link":
-          result.links.push({ slot: record.slot, result: record.result, ...(record.label === undefined ? {} : { label: record.label }) });
+          result.links.push({ at: inputAt, slot: record.slot, result: record.result, ...(record.label === undefined ? {} : { label: record.label }) });
           break;
         case "cut":
           result.cuts += record.pieces - 1;
@@ -89,13 +92,14 @@ function createCollector(sourceOf: (remark: SettledRemark, index: number) => str
 }
 
 // 届いた順に流す。起動し直しの旗は、指定した時刻以降の最初の入力の直前に 1 回だけ差し込む
-const runSteps = (steps: readonly Step[], hooks: Hooks, result: ReplayResult, restartAt: number | undefined) =>
+const runSteps = (steps: readonly Step[], hooks: Hooks, collector: ReturnType<typeof createCollector>, restartAt: number | undefined) =>
   Effect.gen(function* () {
     let pending = restartAt !== undefined;
     for (const step of steps) {
+      collector.setInputAt(step.inputAt);
       if (pending && restartAt !== undefined && step.at >= restartAt) {
         pending = false;
-        result.restarts.push({ at: step.at, source: "flag" });
+        collector.result.restarts.push({ at: step.at, source: "flag" });
         yield* hooks.restart;
       }
       yield* step.run;
@@ -147,7 +151,7 @@ function logSteps(lines: readonly InputLine[], path: string | undefined, attribu
       if (head.type === "remark") {
         const event = yield* decodeRemarkEvent(line).pipe(Effect.mapError(() => invalid(path, n, "remark")));
         const input = toInput(event);
-        steps.push({ at, run: Effect.sync(() => {
+        steps.push({ at, inputAt: at, run: Effect.sync(() => {
           clock = Math.max(clock, input.end * 1000);
           collector.add(attribution.remarks([input], clock));
           // 進めた時計は次の投入にも引き継ぐ（中核の時計は戻らない。引き継がないと、次の発言の保留の起点だけが先に進み、期限が来ない）
@@ -156,9 +160,9 @@ function logSteps(lines: readonly InputLine[], path: string | undefined, attribu
         }) });
       } else if (SPEAKER_TYPES.has(head.type)) {
         const event = yield* decodeHelper(line).pipe(Effect.mapError(() => invalid(path, n, "話者のイベント")));
-        if (isSpeakerEvent(event)) steps.push({ at, run: Effect.sync(() => collector.add(attribution.speaker(event))) });
+        if (isSpeakerEvent(event)) steps.push({ at, inputAt: at, run: Effect.sync(() => collector.add(attribution.speaker(event))) });
       } else if (head.type === "intake-restarted") {
-        steps.push({ at, run: Effect.sync(() => {
+        steps.push({ at, inputAt: at, run: Effect.sync(() => {
           collector.result.restarts.push({ at, source: "log" });
           collector.add(attribution.restart());
         }) });
@@ -175,7 +179,7 @@ export const replayLog = Effect.fn("replayLog")(function* (lines: readonly Input
   yield* runSteps(steps, {
     restart: Effect.sync(() => collector.add(attribution.restart())),
     drain: Effect.sync(() => collector.add(attribution.drain())),
-  }, collector.result, options.restartAt);
+  }, collector, options.restartAt);
   collector.result.labels = attribution.labels();
   return collector.result;
 });
@@ -185,7 +189,7 @@ const decodeArrival = Schema.decodeUnknownEffect(OfflineArrival);
 
 // 1 件のイベントを、settling へ流す Step の中身にする。話者以外・知らない種類は undefined
 type Settling = Effect.Success<ReturnType<typeof createRemarkSettling>>;
-const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at"> | undefined => {
+const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at" | "inputAt"> | undefined => {
   if (event.type === "partial") return { run: settling.partial(event) };
   if (event.type === "remark") return { run: settling.final({ track: event.track, start: event.start, end: event.end, text: event.text, ...(event.words === undefined ? {} : { words: event.words }), ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }) }) };
   if (!isSpeakerEvent(event)) return undefined;
@@ -196,7 +200,7 @@ const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at"> | undef
 // settling に入れる。時計（end × 1000）・出し切り・起動し直しは、ライブと同じ createRemarkSettling が持つ
 const offlineSteps = (lines: readonly InputLine[], path: string | undefined, settling: Settling) =>
   Effect.gen(function* () {
-    const rows: Array<{ arrival: number; index: number; step: Omit<Step, "at"> }> = [];
+    const rows: Array<{ arrival: number; index: number; step: Omit<Step, "at" | "inputAt"> }> = [];
     // 時刻の原点は、読み飛ばす行（origin・知らない種類）も含めた全入力の最小の arrival
     let first = Number.POSITIVE_INFINITY;
     for (const [index, { no: n, value: line }] of lines.entries()) {
@@ -208,7 +212,7 @@ const offlineSteps = (lines: readonly InputLine[], path: string | undefined, set
       if (step !== undefined) rows.push({ arrival, index, step });
     }
     rows.sort((a, b) => a.arrival - b.arrival || a.index - b.index);
-    return rows.map((row): Step => ({ at: row.arrival - first, ...row.step }));
+    return rows.map((row): Step => ({ at: row.arrival - first, inputAt: row.arrival, ...row.step }));
   });
 
 // 字幕と同じ公開の覗き窓（preview）の写し。区間と、そこに現れる枠のラベルを、写した時点で解決する（後で呼ぶと、その間に振られたラベルで値が変わる）
@@ -233,8 +237,8 @@ export const replayOffline = Effect.fn("replayOffline")(function* (lines: readon
   const track = options.tentativeLabels === true;
   const afterStep = (run: Effect.Effect<void>, recapture: boolean) =>
     track ? Effect.andThen(run, Effect.sync(() => { snapshot = resolve(recapture ? settling.preview.segments() : snapshot.segments); })) : run;
-  const steps = (yield* offlineSteps(lines, options.path, settling)).map((step): Step => ({ at: step.at, run: afterStep(step.run, step.settled !== undefined) }));
-  yield* runSteps(steps, { restart: afterStep(settling.renumbered, true), drain: settling.drain }, collector.result, options.restartAt);
+  const steps = (yield* offlineSteps(lines, options.path, settling)).map((step): Step => ({ ...step, run: afterStep(step.run, step.settled !== undefined) }));
+  yield* runSteps(steps, { restart: afterStep(settling.renumbered, true), drain: settling.drain }, collector, options.restartAt);
   collector.result.labels = settling.labels();
   return collector.result;
 });

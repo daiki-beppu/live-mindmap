@@ -128,8 +128,8 @@ export type Attribution = {
   rates: { correct: number; wrong: number; none: number };
 };
 
-// 各発言を 正解 / 取り違え / 話者なし に分ける。ラベルと人の対応は会議全体で 1 つ（重なりの合計が最大）
-export function scoreAttribution({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): Attribution {
+// 発言分類とつなぎ直しで共有する、会議全体で重なりの合計が最大の対応。
+export function assignSpeakers({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): ReadonlyMap<string, string | undefined> {
   const rows = otherRows(self, timeline);
   const heard = heardRemarks(remarks);
   const people = [...new Set(rows.map((row) => row.speaker))];
@@ -141,23 +141,89 @@ export function scoreAttribution({ self, timeline, remarks }: { self: string; ti
     for (const [person, seconds] of overlapByPerson(r, rows)) weights[label]![people.indexOf(person)]! += seconds;
   }
   const assignment = assignOneToOne(weights);
+  return new Map(labels.map((label, i) => [label, assignment[i] === undefined ? undefined : people[assignment[i]!]]));
+}
+
+// 各発言を 正解 / 取り違え / 話者なし に分ける。
+export function scoreAttribution({ self, timeline, remarks, personOf }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[]; personOf: ReadonlyMap<string, string | undefined> }): Attribution {
+  const rows = otherRows(self, timeline);
   let correct = 0;
   let wrong = 0;
   let none = 0;
   let noTruth = 0;
-  for (const r of heard) {
+  for (const r of heardRemarks(remarks)) {
     const truth = groundTruthSpeaker(r, rows);
     if (truth === undefined) noTruth++;
     else if (r.speaker === undefined) none++;
-    else {
-      const mapped = assignment[labels.indexOf(r.speaker)];
-      if (mapped !== undefined && people[mapped] === truth) correct++;
-      else wrong++;
-    }
+    else if (personOf.get(r.speaker) === truth) correct++;
+    else wrong++;
   }
   const total = correct + wrong + none;
   const rate = (n: number) => (total === 0 ? 0 : n / total);
   return { correct, wrong, none, noTruth, rates: { correct: rate(correct), wrong: rate(wrong), none: rate(none) } };
+}
+
+type ArrivedSegment = Segment & { arrival: number };
+type RecoveryInput = { self: string; timeline: readonly TruthRow[]; segments: readonly ArrivedSegment[]; origin: number; restarts: ReplayResult["restarts"] };
+type Mixing = { people: number; detected: number; hits: number; falsePositives: number; medianDelay: number | undefined };
+type Relinking = { correct: number; wrong: number; new: number; none: number };
+
+// restart は最初の入力からの相対秒、区間と検出の時刻は arrival。境界上の入力は再起動後に属する。
+const generationAt = (arrival: number, origin: number, restarts: ReplayResult["restarts"]) => restarts.filter((restart) => origin + restart.at <= arrival).length;
+
+function slotOverlaps(segments: readonly ArrivedSegment[], rows: readonly TruthRow[]): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const seg of segments) {
+    for (const [person, seconds] of overlapByPerson(seg, rows)) totals.set(person, (totals.get(person) ?? 0) + seconds);
+  }
+  return totals;
+}
+
+export function scoreMixing({ self, timeline, segments, origin, restarts, mixed }: RecoveryInput & { mixed: ReplayResult["mixed"] }): Mixing {
+  const rows = otherRows(self, timeline);
+  const delays: number[] = [];
+  for (const detection of mixed) {
+    const generation = generationAt(detection.at, origin, restarts);
+    const arrived = segments.filter((seg) => seg.slot === detection.slot && seg.arrival <= detection.at && generationAt(seg.arrival, origin, restarts) === generation);
+    const overlaps = [...slotOverlaps(arrived, rows)].sort((a, b) => b[1] - a[1]);
+    const second = overlaps[1];
+    if (second === undefined || second[1] / overlaps.reduce((sum, [, seconds]) => sum + seconds, 0) < 0.1) continue;
+    const firstStart = Math.min(...arrived.filter((seg) => overlapByPerson(seg, rows).has(second[0])).map((seg) => seg.start));
+    delays.push(detection.at - firstStart);
+  }
+  delays.sort((a, b) => a - b);
+  const middle = Math.floor(delays.length / 2);
+  const medianDelay = delays.length === 0 ? undefined : delays.length % 2 === 0 ? (delays[middle - 1]! + delays[middle]!) / 2 : delays[middle]!;
+  return { people: new Set(rows.map((row) => row.speaker)).size, detected: mixed.length, hits: delays.length, falsePositives: mixed.length - delays.length, medianDelay };
+}
+
+function restartedSlots({ segments, origin, restarts }: Pick<RecoveryInput, "segments" | "origin" | "restarts">) {
+  const slots = new Map<string, { generation: number; slot: number; spans: ArrivedSegment[] }>();
+  for (const seg of segments) {
+    const generation = generationAt(seg.arrival, origin, restarts);
+    if (generation === 0) continue;
+    const key = `${generation}:${seg.slot}`;
+    const group = slots.get(key);
+    if (group === undefined) slots.set(key, { generation, slot: seg.slot, spans: [seg] });
+    else group.spans.push(seg);
+  }
+  return slots.values();
+}
+
+export function scoreRelinking({ self, timeline, segments, origin, restarts, links, personOf }: RecoveryInput & { links: ReplayResult["links"]; personOf: ReadonlyMap<string, string | undefined> }): Relinking | undefined {
+  if (restarts.length === 0) return undefined;
+  const rows = otherRows(self, timeline);
+  const counts: Relinking = { correct: 0, wrong: 0, new: 0, none: 0 };
+  for (const { generation, slot, spans } of restartedSlots({ segments, origin, restarts })) {
+    const person = [...slotOverlaps(spans, rows)].sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (person === undefined) continue;
+    const link = links.findLast((record) => record.slot === slot && generationAt(record.at, origin, restarts) === generation);
+    if (link === undefined || link.result === "reverted") counts.none++;
+    else if (link.result === "new") counts.new++;
+    else if (link.label !== undefined && personOf.get(link.label) === person) counts.correct++;
+    else counts.wrong++;
+  }
+  return counts;
 }
 
 export type Der = { der: number; referenceSeconds: number; missedSeconds: number; falseAlarmSeconds: number; confusionSeconds: number };
@@ -248,22 +314,24 @@ const decodeArrival = Schema.decodeUnknownEffect(Arrival);
 // 相手の確定した区間（仮説。DER の入力）
 const finalSegments = (lines: readonly InputLine[], path: string) =>
   Effect.gen(function* () {
-    const segments: Segment[] = [];
+    const segments: ArrivedSegment[] = [];
+    let origin = Number.POSITIVE_INFINITY;
     for (const { no, value } of lines) {
       const bad = (what: string) => new InvalidInputFile({ path, reason: `${no} 行目の${what}が不正です` });
-      yield* decodeArrival(value).pipe(Effect.mapError(() => bad("arrival")));
+      const { arrival } = yield* decodeArrival(value).pipe(Effect.mapError(() => bad("arrival")));
+      origin = Math.min(origin, arrival);
       const decoded = yield* decodeHelperEvent(JSON.stringify(value)).pipe(Effect.mapError(() => bad("イベント")));
       if (decoded.kind === "unknown") continue;
       const event = decoded.event;
-      if (event.type === "speaker" && event.track === "相手" && event.final) segments.push({ slot: event.slot, start: event.start, end: event.end });
+      if (event.type === "speaker" && event.track === "相手" && event.final) segments.push({ arrival, slot: event.slot, start: event.start, end: event.end });
     }
-    return segments;
+    return { segments, origin };
   });
 
 const percent = (value: number) => (Number.isNaN(value) ? "n/a" : `${(value * 100).toFixed(1)}%`);
 
 // 数とラベルだけの表（見出し 1 行 + 値 1 行）。発言の本文は載せない
-function renderTable(attribution: Attribution, der: Der, tentative: { changed: number; total: number }, replay: Pick<ReplayResult, "cuts" | "timeouts">, unsplit: number): string {
+function renderTable(attribution: Attribution, der: Der, tentative: { changed: number; total: number }, replay: Pick<ReplayResult, "cuts" | "timeouts">, unsplit: number, mixing: Mixing, relinking: Relinking | undefined): string {
   const { correct, wrong, none, noTruth, rates } = attribution;
   // 割合の分母（正解の人がいない発言は入れない）。0 件なら割合は出せない
   const judged = correct + wrong + none === 0;
@@ -278,6 +346,15 @@ function renderTable(attribution: Attribution, der: Der, tentative: { changed: n
     ["切った", String(replay.cuts)],
     ["3秒で話者なし", String(replay.timeouts)],
     ["切れなかった", String(unsplit)],
+    ["相手の人数", String(mixing.people)],
+    ["混入の検出", String(mixing.detected)],
+    ["当たり", String(mixing.hits)],
+    ["誤検出", String(mixing.falsePositives)],
+    ["検出まで", mixing.medianDelay === undefined ? "—" : mixing.medianDelay.toFixed(1)],
+    ["誤ってつないだ", relinking === undefined ? "—" : String(relinking.wrong)],
+    ["正しくつないだ", relinking === undefined ? "—" : String(relinking.correct)],
+    ["新しいラベル", relinking === undefined ? "—" : String(relinking.new)],
+    ["話者なし", relinking === undefined ? "—" : String(relinking.none)],
   ];
   return [
     `| ${columns.map(([name]) => name).join(" | ")} |`,
@@ -301,14 +378,19 @@ export const command = Command.make("speakerAccuracy", {
   const replay = yield* replayOffline(lines, { ...replayOptionsOf(args, args.events), tentativeLabels: true });
   const scored = replay.remarks;
   const rows = otherRows(args.self, timeline);
-  const hypothesis = yield* finalSegments(lines, args.events);
+  const { segments, origin } = yield* finalSegments(lines, args.events);
   const heard = heardRemarks(scored);
+  const input = { self: args.self, timeline, remarks: scored };
+  const personOf = assignSpeakers(input);
+  const recovery = { self: args.self, timeline, segments, origin, restarts: replay.restarts };
   const table = renderTable(
-    scoreAttribution({ self: args.self, timeline, remarks: scored }),
-    computeDer({ reference: rows, hypothesis }),
+    scoreAttribution({ ...input, personOf }),
+    computeDer({ reference: rows, hypothesis: segments }),
     tentativeChangeRate({ remarks: heard }),
     replay,
     countUnsplit({ self: args.self, timeline, remarks: scored }),
+    scoreMixing({ ...recovery, mixed: replay.mixed }),
+    scoreRelinking({ ...recovery, links: replay.links, personOf }),
   );
   yield* write(table);
 })).pipe(Command.withDescription("合成会議の発言を、正解・取り違え・話者なしに分けた割合と、DER・仮から確定で替わった割合・規則の効き目の数を、本文なしの表で出す"));
