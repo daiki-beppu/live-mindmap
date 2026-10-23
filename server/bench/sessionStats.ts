@@ -27,6 +27,7 @@ export type SessionStats = {
   diffErrors: number;
   ops: number;
   intake: { stopped: number; restarted: number; gaveUp: number };
+  ocrFailed: number;
   tapSilent: number; // helper が、相手のタップに音声が届かないと流した回数（tap-silent の行。Issue #863）
 };
 
@@ -39,6 +40,7 @@ const LogLine = Schema.Struct({
   remark: Schema.optionalKey(Schema.Struct({ track: Track, start: Schema.Finite, end: Schema.Finite })),
   ops: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   error: Schema.optionalKey(Schema.Unknown),
+  ocrFailed: Schema.optionalKey(Schema.Literal(true)),
 });
 export type LogLine = typeof LogLine["Type"];
 
@@ -100,6 +102,9 @@ function countLine(stats: SessionStats, intervals: Record<Track, Interval[]>, e:
     case "intake-gave-up":
       stats.intake.gaveUp += 1;
       break;
+    case "screen":
+      if (e.ocrFailed === true) stats.ocrFailed += 1;
+      break;
     case "tap-silent":
       stats.tapSilent += 1;
       break;
@@ -116,6 +121,7 @@ export function sessionStats(events: readonly LogLine[]): SessionStats {
     ops: 0,
     intake: { stopped: 0, restarted: 0, gaveUp: 0 },
     tapSilent: 0,
+    ocrFailed: 0,
   };
   for (const e of events) countLine(stats, intervals, e);
   for (const track of TRACKS) stats.tracks[track].overlap = overlapRatio(intervals[track]);
@@ -158,7 +164,7 @@ const pct = (x: number) => `${Math.round(x * 100)}%`;
 
 export function formatRow(name: string, s: SessionStats, audio: Record<Track, Audio> | null): string[] {
   const length = Math.max(s.lastEnd, audio ? Math.max(audio.相手.seconds, audio.自分.seconds) : 0);
-  const head = `${name}\t長さ ${Math.round(length)}s\t差分更新 ${s.diffs}（失敗 ${s.diffErrors}）\t操作 ${s.ops}\t途切れ ${s.intake.stopped}・再開 ${s.intake.restarted}・断念 ${s.intake.gaveUp}\t無音 ${s.tapSilent}`;
+  const head = `${name}\t長さ ${Math.round(length)}s\t差分更新 ${s.diffs}（失敗 ${s.diffErrors}）\t操作 ${s.ops}\t途切れ ${s.intake.stopped}・再開 ${s.intake.restarted}・断念 ${s.intake.gaveUp}\t無音 ${s.tapSilent}\tOCR失敗 ${s.ocrFailed}`;
   const rows = TRACKS.map((track) => {
     const t = s.tracks[track];
     const a = audio?.[track];

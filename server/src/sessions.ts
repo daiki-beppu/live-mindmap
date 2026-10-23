@@ -121,7 +121,7 @@ export class Sessions extends Context.Service<Sessions, {
   start: (input: SessionStart) => Effect.Effect<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure>;
   // 録画からのセッションを始める。ヘルパーが読み終えるか stop されるまで続き、その経過を events で流す
   startRecorded: (input: RecordedStart) => Effect.Effect<RecordedRun, SessionFailure>;
-  stop: Effect.Effect<{ paths: string[] }, SessionFailure>;
+  stop: Effect.Effect<{ paths: string[]; ocrSummary: typeof import("./core/recordedProgress.ts").OcrSummary.Type; kind: "live" | "recorded" }, SessionFailure>;
   status: Effect.Effect<IntakeStatusReport>;
   resume: Effect.Effect<{ warnings: ReadonlyArray<string> }, SessionFailure>;
   checkResume: Effect.Effect<typeof CheckReport.Type, SessionFailure>;
@@ -197,7 +197,7 @@ export class Sessions extends Context.Service<Sessions, {
             // 画面が取れないことは取り込みの途切れではないので、取り込みの記録（appendLog）や状態には触れない
             return Effect.andThen(
               live.meetingTabNotice.screen({ start: event.start, hasImage: event.image !== null, meetingTabTitle: event.meetingTabTitle }),
-              live.sink.screen({ start: event.start, image: event.image, lines: event.lines }),
+              live.sink.screen({ start: event.start, image: event.image, lines: event.lines, ...(event.ocrFailed === true ? { ocrFailed: event.ocrFailed } : {}) }),
             );
           case "screen-off":
             // 共有画面だけが取れないことは取り込みの途切れではないので、appendLog・intake・起動し直しには触れない。
@@ -389,7 +389,7 @@ export class Sessions extends Context.Service<Sessions, {
               ? Effect.flatMap(announceOnce(recorded, "audioTracks"), (first) => first ? Queue.offer(recorded.events, { type: "audio-tracks", count: event.count }) : Effect.void)
               : Effect.void;
           case "screen":
-            return recorded.sink.screen({ start: event.start, image: event.image, lines: event.lines });
+            return recorded.sink.screen({ start: event.start, image: event.image, lines: event.lines, ...(event.ocrFailed === true ? { ocrFailed: event.ocrFailed } : {}) });
           case "screen-off":
             // ライブと違い、画面の一文（showScreenNotice）は出さない。代わりに端末へ知らせる（録画で screen-off が出るのは映像が読めないときだけ。
             // 起動し直した回が流し直しても、ログにも端末にも 1 回）
@@ -425,8 +425,9 @@ export class Sessions extends Context.Service<Sessions, {
         Effect.gen(function* () {
           yield* recorded.sink.flush;
           const paths = yield* recorded.sink.exports;
-          yield* Queue.offer(recorded.events, { type: "finished", paths, ...(failure === undefined ? {} : { failure }) });
-          return { paths };
+          const ocrSummary = yield* recorded.sink.ocrSummary;
+          yield* Queue.offer(recorded.events, { type: "finished", paths, ocrSummary, ...(failure === undefined ? {} : { failure }) });
+          return { paths, ocrSummary };
         });
 
       // transcribe-file の argv。from があれば、トラックごとにその音声の時刻（秒）から読む（相手は --from、自分は --self-from。自分は --self-file があるときだけ）。audioDir は最初の起動だけ渡す
@@ -570,7 +571,7 @@ export class Sessions extends Context.Service<Sessions, {
             }
           }
           yield* live.sink.flush;
-          return { paths: yield* live.sink.exports };
+          return { paths: yield* live.sink.exports, ocrSummary: yield* live.sink.ocrSummary };
         }).pipe(Effect.ensuring(closeSession(live.sink, live.scope)));
 
       // 録画からのセッションの stop。溜まっている発言は入れず、入れている途中の 1 件だけ入れ終えて、そこまでの分で書き出す
@@ -600,7 +601,7 @@ export class Sessions extends Context.Service<Sessions, {
           // 中断されても、読み終える・書き出す・状態を idle に戻すまで続ける。中断はサーバーの終了（serverScope を閉じる）だけ
           const body = target.kind === "live" ? stopLive(target.live) : stopRecorded(target.recorded);
           const running = yield* Effect.forkIn(Effect.interruptible(body), serverScope);
-          return yield* Effect.interruptible(Fiber.join(running));
+          return { ...yield* Effect.interruptible(Fiber.join(running)), kind: target.kind };
         }),
       );
 

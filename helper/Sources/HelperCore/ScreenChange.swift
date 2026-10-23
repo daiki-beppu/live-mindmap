@@ -125,19 +125,19 @@ func screenFrameToJudge<Image>(
     }
 }
 
-/// 送ると決めた画面の中身。`image` は JPEG の base64、`lines` は OCR で読んだ行（失敗したときは空）。
+/// 送ると決めた画面の中身。`image` は JPEG の base64、`lines` は OCR で読んだ行（失敗したときは nil）。
 public struct ScreenShot: Sendable, Equatable {
     public var image: String
-    public var lines: [String]
+    public var lines: [String]?
 
-    public init(image: String, lines: [String]) {
+    public init(image: String, lines: [String]?) {
         self.image = image
         self.lines = lines
     }
 
-    /// JPEG と OCR の結果から作る。OCR が失敗した（nil）ときも画像は送り、`lines` は空にする。
+    /// JPEG と OCR の結果から作る。OCR が失敗した（nil）ときも画像は送り、`lines` は nil にする。
     init(jpeg: Data, recognizedLines: [String]?) {
-        self.init(image: jpeg.base64EncodedString(), lines: recognizedLines ?? [])
+        self.init(image: jpeg.base64EncodedString(), lines: recognizedLines)
     }
 }
 
@@ -276,7 +276,7 @@ public struct ScreenChangeDetector: Sendable {
             if buffering {
                 buffered.append((start, shot))
             } else {
-                events.append(.screen(start: start, image: shot.image, lines: shot.lines))
+                events.append(.screen(start: start, image: shot.image, lines: shot.lines, ocrFailed: shot.lines == nil))
                 outputHasImage = true
             }
         }
@@ -300,7 +300,7 @@ public struct ScreenChangeDetector: Sendable {
     private mutating func flushConfirmedImages() -> [HelperEvent] {
         guard confirmedTabTitle != nil, !buffered.isEmpty else { return [] }
         var events = buffered.sorted { $0.start < $1.start }.map {
-            HelperEvent.screen(start: $0.start, image: $0.shot.image, lines: $0.shot.lines)
+            HelperEvent.screen(start: $0.start, image: $0.shot.image, lines: $0.shot.lines, ocrFailed: $0.shot.lines == nil)
         }
         buffered.removeAll()
         outputHasImage = true

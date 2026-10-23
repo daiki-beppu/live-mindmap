@@ -90,7 +90,7 @@ export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remar
 // ログの中の共有画面の参照。image は screens/ のファイル名、null は何も映らない
 const ScreenRef = Schema.Struct({ start: Schema.Finite, image: Schema.NullOr(Schema.String) });
 // lines は受け取った OCR の行（Issue #643）。受け取らなかった画面と古いログには付かない
-export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.String), lines: Schema.optionalKey(Schema.Array(Schema.String)) });
+export const ScreenEvent = Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.String), lines: Schema.optionalKey(Schema.Array(Schema.String)), ocrFailed: Schema.optionalKey(Schema.Literal(true)) });
 // 共有画面を見ていない印。reason は 指定（--no-screen）か 許可なし（画面収録の許可が無い）。画像の送受信とは別の行で、差分更新・Claude へのメッセージには載らない
 export const ScreenOffEvent = Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literals(["指定", "許可なし"]) });
 export const ScreenInputSkippedEvent = Schema.Struct({
@@ -359,7 +359,7 @@ export type Session = {
   // 共有画面の変化を受ける。差分更新は呼ばない。画像は writeScreen に渡し、変化ごとに screen の行を書く。
   // 差分更新に添える画面は、次の呼び出しの中で選ぶ
   // lines は OCR の行で、screen の行にだけ残す（ScreenChange・差分更新の入力には載せない）
-  readonly pushScreen: (change: ScreenChange, lines?: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly pushScreen: (change: ScreenChange & Pick<typeof ScreenEvent.Type, "ocrFailed">, lines?: ReadonlyArray<string>) => Effect.Effect<void>;
   // 共有画面を見ていない印を受ける。受け取った start・reason のまま screen-off の行を 1 行書くだけで、
   // 差分更新・添える画面・受け取った画面の数は変えない（Claude へのメッセージに載らない）
   readonly pushScreenOff: (off: Pick<typeof ScreenOffEvent["Type"], "start" | "reason">) => Effect.Effect<void>;
@@ -674,7 +674,7 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
           const held: HeldScreen = { start: change.start, image: change.image && file ? { id: change.image.id, file } : null };
           // 受け取った数（diff の行の screenCount）は、候補に載せるのと同時に数える。数えたのに候補に無い画面を、復元が処理済みにしないため
           yield* Ref.update(ref, (s) => ({ ...s, receivedScreens: s.receivedScreens + 1, unsentScreens: [...s.unsentScreens, held], catchUpScreen: s.diffUpdate.status === "paused" && (s.catchUpScreen === undefined || held.start >= s.catchUpScreen.start) ? held : s.catchUpScreen }));
-          yield* log.write({ type: "screen", start: change.start, image: file, ...(lines === undefined ? {} : { lines }) });
+          yield* log.write({ type: "screen", start: change.start, image: file, ...(change.ocrFailed === true ? { ocrFailed: true } : lines === undefined ? {} : { lines }) });
         }),
       pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),
       flush: Effect.gen(function* () {

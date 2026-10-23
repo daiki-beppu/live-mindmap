@@ -31,7 +31,8 @@ type SinkBase = {
   // セッションの pushScreen へ渡す。log.jsonl の記録・screens/ への書き出し・Claude へのメッセージはセッションが行う。
   // lines はヘルパーが Vision で読んだ文字の行（無い旧ヘルパーと、画像が null のときは undefined）。screen の行に残し、規則で取った候補を語彙に入れる
   // （録画では語彙は受け取った時点で頼み、変化そのものは発言との時刻の順を保って入れる）
-  screen: (change: { start: number; image: Uint8Array | null; lines?: ReadonlyArray<string> | undefined }) => Effect.Effect<void>;
+  screen: Inlet["screen"];
+  ocrSummary: Effect.Effect<typeof import("./core/recordedProgress.ts").OcrSummary.Type>;
   // 共有画面を見ていない印（start は発言と同じ原点からの秒。指定はサーバーが開始時に、許可なしはヘルパーが流す）。
   // セッションの pushScreenOff へ渡す。log.jsonl に 1 行書くだけで、差分更新・Claude へのメッセージには載らない
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
@@ -222,6 +223,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             screen: (change) => captions === "途中結果から"
               ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines)).pipe(Effect.asVoid)
               : Effect.andThen(vocabulary.addScreen(change.lines, change.start), flow.screen(change)),
+            ocrSummary: flow.ocrSummary,
             screenOff: flow.screenOff,
             drain: flow.drain,
             stopRelays: flow.stop,

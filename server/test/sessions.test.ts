@@ -75,12 +75,14 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
         opened.count++;
         if (args.vocab !== undefined && args.vocab.length > 0) vocabAdded.push([...args.vocab]);
         let count = 0;
+        const savedScreens: Parameters<LiveSink["screen"]>[0][] = [];
         yield* Effect.addFinalizer(() => Effect.sync(() => { opened.closed++; order.push("close"); }));
         const sink = {
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); }),
-          screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
+          ocrSummary: Effect.sync(() => ({ images: savedScreens.filter((s) => s.image !== null).length, failed: savedScreens.filter((s) => s.image !== null && s.ocrFailed === true).length })),
+          screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { savedScreens.push(s); screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
           screenOff: (e: Parameters<LiveSink["screenOff"]>[0]) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
           drain: Effect.sync(() => { relayStats.drained++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),

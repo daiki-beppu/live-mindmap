@@ -215,7 +215,7 @@ struct EventsTests {
         #expect(json["lines"] as? [String] == ["港南店", "Zendesk"])
     }
 
-    @Test("OCR が失敗した screen は lines を空の配列として明示する（キーを省かない）")
+    @Test("OCR が成功して文字が無い screen は lines を空の配列として明示する（キーを省かない）")
     func screenWithEmptyLinesWritesEmptyArray() throws {
         let json = try decode(.screen(start: 1, image: "AA==", lines: []))
         #expect(Set(json.keys) == ["type", "start", "image", "lines"])

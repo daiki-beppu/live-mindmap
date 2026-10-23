@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { ScreenOffEvent, Session } from "./session.ts";
+import type { ScreenEvent, ScreenOffEvent, Session } from "./session.ts";
 import { createPacer } from "./pacing.ts";
 import type { Remark } from "./remark.ts";
 import type { Word } from "./words.ts";
@@ -12,6 +12,7 @@ export type PlaybackScreen<E> =
       readonly image: { readonly id: string; readonly load: Effect.Effect<Uint8Array, E> } | null;
       // 記録したログの screen の行の lines。あれば pushScreen へ渡す
       readonly lines?: ReadonlyArray<string>;
+      readonly ocrFailed?: (typeof ScreenEvent.Type)["ocrFailed"];
     }
   | { readonly start: number; readonly reason: (typeof ScreenOffEvent)["Type"]["reason"] };
 
@@ -50,8 +51,8 @@ export const playback = Effect.fnUntraced(function* <E = never>(
       yield* session.pushScreenOff({ start: change.start, reason: change.reason });
       return;
     }
-    const { start, image, lines } = change;
-    yield* session.pushScreen({ start, image: image === null ? null : { id: image.id, bytes: yield* image.load } }, lines);
+    const { start, image, lines, ocrFailed } = change;
+    yield* session.pushScreen({ start, image: image === null ? null : { id: image.id, bytes: yield* image.load }, ...(ocrFailed === true ? { ocrFailed } : {}) }, lines);
   });
   for (const item of remarks) {
     const { raw, words, ...r } = item;

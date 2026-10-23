@@ -4,7 +4,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
-import { Clock, Console, Effect, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
+import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 import { Argument, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
@@ -38,6 +38,7 @@ import {
   LogEvent,
   RecordedEvent,
   RemarkEvent,
+  formatOcrSummary,
   formatAudioTracksNotice,
   formatScreenOffNotice,
   formatSpeakerOffNotice,
@@ -338,7 +339,7 @@ const replayableRemark = (decoded: (typeof RemarkEvent)["Type"]): PlaybackRemark
 
 const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof ScreenEvent)["Type"], lineNo: number): Effect.Effect<PlaybackScreen<CommandFailed>, CommandFailed> => {
   const { start, image } = decoded;
-  const recordedLines = decoded.lines === undefined ? {} : { lines: decoded.lines };
+  const recordedLines = decoded.ocrFailed === true ? { ocrFailed: decoded.ocrFailed } : decoded.lines === undefined ? {} : { lines: decoded.lines };
   if (image === null) return Effect.succeed({ start, image: null, ...recordedLines });
   // ログ由来の image は、screens/ 直下の単一のファイル名だけを認める（外のファイルを読まない）
   const screensDir = resolve(dir, SCREENS_DIR);
@@ -666,6 +667,22 @@ const disconnectedFailure = (dir: string | undefined, reason: string | undefined
     ].join("\n"),
   });
 
+const writeRecordedResult = Effect.fnUntraced(function* (
+  dir: string | undefined,
+  finished: Extract<RecordedEvent, { type: "finished" }>,
+  lastProgress: RecordedProgress | undefined,
+) {
+  if (finished.ocrSummary.failed > 0) yield* Console.error(formatOcrSummary(finished.ocrSummary));
+  yield* write([...(dir === undefined ? [] : [dir]), ...finished.paths].map((line) => `${line}\n`).join(""));
+  if (finished.failure !== undefined) {
+    // ヘルパーの起動し直しを諦めて、入れた分で終えた。どこまで組めたかと、ヘルパーの標準エラーの末尾を出す
+    const { code, signal, stderrTail } = finished.failure;
+    const position = formatRecordedPosition(lastProgress?.position ?? 0, lastProgress?.duration ?? null);
+    yield* Console.error(stderrTail.join("\n"));
+    return yield* new CommandFailed({ message: `文字起こしのヘルパーが落ち続け、起動し直しを諦めました（${code ?? signal ?? "不明"}）。${position} まで組めたところで終えました` });
+  }
+});
+
 const recordedTitleFlag = Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとファイル名。拡張子は除く）"), Flag.optional);
 
 const recorded = Command.make(
@@ -696,14 +713,8 @@ const recorded = Command.make(
     const port = yield* portConfig;
     const headers = plan === undefined ? undefined : yield* modelTransferHeaders(plan, port);
     let dir: string | undefined;
-    // Ctrl-C は、そこまでに入れた分で終える（stop と同じ。--no-map では map.* を書かない）。サーバーは接続が切れても書き出しを最後まで続ける。
-    // 開始の応答（2xx）を受け取った後なら、started を読む前の中断でも止める
-    const stopOnInterrupt = Effect.gen(function* () {
-      const { paths } = yield* requestServer(port, ServerRoutes.sessionStop);
-      yield* write([...(dir === undefined ? [] : [dir]), ...paths].map((line) => `${line}\n`).join(""));
-    }).pipe(Effect.ignore);
     // 開始の要求が断られた（2xx 以外）ときは中断の対象に入れない。既存のセッションを止めないため
-    const finished = yield* Effect.uninterruptibleMask((restore) =>
+    yield* Effect.scoped(Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const response = yield* restore(executeServerRequest(port, ServerRoutes.sessionRecorded, { body: {
           file: resolve(file),
@@ -713,21 +724,31 @@ const recorded = Command.make(
           ...(realtime ? { realtime } : {}),
           ...(plan === undefined ? { noMap: true } : planBody(plan)),
         }, headers }));
-        return yield* restore(followRecorded(response, (started) => { dir = started; })).pipe(Effect.onInterrupt(() => stopOnInterrupt));
+        // 待機の中断で受信を失わないよう、受信の寿命はコマンドの Scope に結ぶ。
+        const receiving = yield* Effect.forkScoped(Effect.interruptible(followRecorded(response, (started) => { dir = started; })));
+        const waited = yield* Effect.exit(restore(Fiber.join(receiving)));
+        let result: Effect.Success<ReturnType<typeof followRecorded>>;
+        if (Exit.isSuccess(waited)) {
+          result = waited.value;
+        } else {
+          if (!Cause.hasInterruptsOnly(waited.cause)) return yield* Effect.failCause(waited.cause);
+          const stopped = yield* Effect.result(requestServer(port, ServerRoutes.sessionStop));
+          if (Result.isSuccess(stopped)) {
+            yield* Fiber.interrupt(receiving);
+            result = { finished: { type: "finished", ...stopped.success }, lastProgress: undefined };
+          } else {
+            // 終了処理を既に別の経路が所有していれば、その処理の finished を待つ。
+            result = yield* Fiber.join(receiving);
+          }
+        }
+        if (result.finished === undefined || (dir === undefined && Exit.isSuccess(waited))) return yield* disconnectedFailure(dir, undefined);
+        yield* writeRecordedResult(dir, result.finished, result.lastProgress);
+        if (Exit.isFailure(waited)) return yield* Effect.failCause(waited.cause);
       }),
-    ).pipe(
+    )).pipe(
       // サーバーが落ちた・接続が切れた。続けない（待ち続けない）。途中までのセッションのフォルダと、組み直し方を知らせて失敗にする
       Effect.catchTag("ServerStreamClosed", (closed) => Effect.fail(disconnectedFailure(dir, closed.reason))),
     );
-    if (dir === undefined || finished.finished === undefined) return yield* disconnectedFailure(dir, undefined);
-    yield* write([dir, ...finished.finished.paths].map((line) => `${line}\n`).join(""));
-    if (finished.finished.failure !== undefined) {
-      // ヘルパーの起動し直しを諦めて、入れた分で終えた。どこまで組めたかと、ヘルパーの標準エラーの末尾を出す
-      const { code, signal, stderrTail } = finished.finished.failure;
-      const position = formatRecordedPosition(finished.lastProgress?.position ?? 0, finished.lastProgress?.duration ?? null);
-      yield* Console.error(stderrTail.join("\n"));
-      return yield* new CommandFailed({ message: `文字起こしのヘルパーが落ち続け、起動し直しを諦めました（${code ?? signal ?? "不明"}）。${position} まで組めたところで終えました` });
-    }
   }),
 ).pipe(
   Command.withDescription(
@@ -744,7 +765,8 @@ const stop = Command.make(
   {},
   Effect.fn("stop")(function* () {
     const port = yield* portConfig;
-    const { paths } = yield* requestServer(port, ServerRoutes.sessionStop);
+    const { paths, ocrSummary, kind } = yield* requestServer(port, ServerRoutes.sessionStop);
+    if (kind === "live" && ocrSummary.failed > 0) yield* Console.error(formatOcrSummary(ocrSummary));
     yield* write(paths.map((path) => `${path}\n`).join(""));
   }),
 ).pipe(
