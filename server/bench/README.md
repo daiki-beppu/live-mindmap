@@ -216,7 +216,7 @@ node bench/sttReplay.ts <items.json> [--lines <lines.json>] [--truth <正解.jso
    pnpm cli recorded <トラック出力フォルダ>/相手.wav --self <トラック出力フォルダ>/自分.wav --model <設定名>
    ```
 
-   `tracks` の素材と前準備は [speakerAccuracy](#speakeraccuracy話者分離の精度) と同じ。`recorded` は認識・話者分離・差分更新を通す。出力のセッションパスを控える。`--no-map` で取り込んだ素材なら、先に `pnpm cli play <フォルダ> --model <設定名>` でマップを作り、そのランを採点する。
+   `tracks` の素材と前準備は [speakerAccuracy](#speakeraccuracy話者分離の精度) と同じ（`overlap-1` は `tracks` を流さず、`synth/overlap-1/tracks/` を渡す）。正解に `案`・`担当` があるのは `synth/facilitators/` と `synth/overlap-1/`。`recorded` は認識・話者分離・差分更新を通す。出力のセッションパスを控える。`--no-map` で取り込んだ素材なら、先に `pnpm cli play <フォルダ> --model <設定名>` でマップを作り、そのランを採点する。
 
 3. 両段のセッションを同じ採点器へ渡す。採点は保存済みの `export.json` と `log.jsonl` を読み、ファイルを書き換えない。
 
@@ -384,7 +384,7 @@ cd ../server
 node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events.jsonl
 ```
 
-- 素材は今ある合成会議 4 本（基準値を選んだ素材）。`--self` は、台本（`cast.json`）で進行役の人。
+- 素材は合成会議 5 本。上の 4 本は基準値を選んだ素材、`overlap-1` は選んだ基準値を確かめる素材で、基準値を選ぶのには使わない。`--self` は、台本（`cast.json`）で進行役の人。
 
   | 会議 | `--self` | 長さ |
   | --- | --- | --- |
@@ -392,7 +392,9 @@ node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events
   | `synth/silly/` | マキ（司会） | 75 分 |
   | `synth/parnassus/` | ハル（進行役） | 約 161 分 |
   | `synth/screen/` | 大河内（進行役） | 約 23 分 |
+  | `synth/overlap-1/` | 高嶺（進行役） | 約 9 分 |
 
+- `overlap-1` は 4 人の会議で、割り込みと相づちの重なり（17 か所）と、行ごとの読み方の違いがある。`tracks` は済ませてあり、雑音と Opus 24 kbps を通した `synth/overlap-1/tracks/` の `相手.wav`・`自分.wav` を `run --events` に渡す（`tracks` を流し直すと加工前の音になる）。
 - 素材の `lines/` は Drive へ退避してある。流す前に、`~/live-mindmap-samples/README.md` の手順で、Drive の同じ相対パスからそのフォルダへ戻す（`tracks` は `lines/` の 1 行 1 本の音声を読む）。
 - `run --events` は実時間で流すので、会議の長さと同じ時間がかかる（parnassus は約 161 分）。会議ごとの実行は、別々のプロセスで並べて流せる（認識の採点は、4 本を同時に流した結果が単独で流し直した結果と一致した。`docs/devlog/2026-10-08.md` の「実時間で流す計測を並べるなら」。話者分離を並べたときの違いは未確認）。
 - `自分` の発言は中核が常に「自分」にするので、話者分離の物差しにならない。採点は 相手 の発言だけ。`--self` の行は正解の人にも DER の参照にも入れない。
@@ -424,7 +426,7 @@ node bench/speakerAccuracy.ts --self 森川 [旗] $M/timeline.tsv /tmp/sa/events
 
 混入の列は相手5人以上の会議で意味を持つ。`synth/facilitators/` 以外には5人以上の会議がある（silly は14人、parnassus は6人）。相手4人以下で誤検出が0かどうかは人が表を見て判断し、ツールは合否を出さない。
 
-つなぎ直しは `--restart-at <秒>` を付け、実際に起動し直したときだけ値を出す。旗がない場合や指定時刻まで入力が届かない場合は4列とも `—`。起動し直し後の世代・枠ごとに確定区間の重なりを合計し、最も長く重なる `--self` 以外の人を「枠の人」とする。重なる人がいない枠は数えず、対象枠がなければ4列とも0。再利用された同じ枠番号を前の世代と合算しない。ラベルと人の対応は、発言の分類に使う会議全体の1対1対応をそのまま共有する。
+つなぎ直しは `--restart-at <秒>` を付け、実際に起動し直したときだけ値を出す。時刻は会議の真ん中あたりを選ぶ（#1032 の計測では facilitators 1650・silly 2250・parnassus 4830・screen 690・overlap-1 270）。旗がない場合や指定時刻まで入力が届かない場合は4列とも `—`。起動し直し後の世代・枠ごとに確定区間の重なりを合計し、最も長く重なる `--self` 以外の人を「枠の人」とする。重なる人がいない枠は数えず、対象枠がなければ4列とも0。再利用された同じ枠番号を前の世代と合算しない。ラベルと人の対応は、発言の分類に使う会議全体の1対1対応をそのまま共有する。
 
 - 正解の人: 発言の区間と最も長く重なる人（同じ人の複数の行は重なりを足す）。`timeline.tsv` の話者（列 0）を使う。
 - 推定のラベルと正解の人: 会議全体で 1 対 1 に、重なり（ラベルが付いた発言の区間と、その人の行の区間の重なりの合計）が最大になるように対応させる（ハンガリアン法）。重なりが 0 のラベルは、人と対応しない。
