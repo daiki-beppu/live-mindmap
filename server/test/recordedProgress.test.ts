@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { formatRecordedPosition, formatRecordedProgress, formatSpeakerOffNotice, RecordedEvent, type RecordedProgress } from "../src/core/index.ts";
+import { formatOcrSummary, formatRecordedPosition, formatRecordedProgress, formatSpeakerOffNotice, RecordedEvent, type RecordedProgress } from "../src/core/index.ts";
 
 // 録画からのセッションで進んだ位置の表示。諦めたときの終わりの知らせ（どこまで組めたか）と、進み具合の行が同じ書き方を使う
 
@@ -78,4 +78,9 @@ describe("speaker-off（話者分離が使えず、話者なしで続けた。Is
     expect((yield* Effect.result(decode({ type: "speaker-off" })))._tag).toBe("Failure");
     expect((yield* Effect.result(decode({ type: "speaker-off", reason: "知らない理由" })))._tag).toBe("Failure");
   }));
+});
+
+
+it("OCR 失敗の終了通知は失敗数と画像数を一行で示す", () => {
+  expect(formatOcrSummary({ failed: 13, images: 14 })).toBe("共有画面の文字を読めなかった画面: 13 / 14 枚");
 });

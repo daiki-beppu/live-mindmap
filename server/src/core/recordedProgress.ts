@@ -3,6 +3,11 @@
 import { Schema } from "effect";
 import { DiffUpdateReason } from "./diffUpdate.ts";
 
+export const OcrSummary = Schema.Struct({ failed: Schema.Int, images: Schema.Int });
+
+export const formatOcrSummary = (summary: typeof OcrSummary.Type): string =>
+  `共有画面の文字を読めなかった画面: ${summary.failed} / ${summary.images} 枚`;
+
 // 録画からのセッションの経過を伝える 1 行。started の次から progress が続き、finished で終わる。
 // finished の failure は、ヘルパーの起動し直しを諦めたとき（入れた分で終えた）の最後の終わり方と標準エラーの末尾
 export const RecordedEvent = Schema.Union([
@@ -25,6 +30,7 @@ export const RecordedEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("finished"),
     paths: Schema.Array(Schema.String),
+    ocrSummary: OcrSummary,
     failure: Schema.optionalKey(Schema.Struct({
       code: Schema.NullOr(Schema.Finite),
       signal: Schema.NullOr(Schema.String),

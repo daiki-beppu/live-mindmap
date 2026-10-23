@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Clock, ConfigProvider, Console, Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
+import { Clock, ConfigProvider, Console, Context, Deferred, Effect, Fiber, Layer, Result, Stream, type Scope } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { vi } from "vitest";
@@ -98,7 +98,9 @@ function cliDependencies(sessionsDir: string, port: number, options: CliOptions 
   return { layer, stdout, stderr };
 }
 
-const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; cli?: CliOptions; attempts?: ReadonlyArray<Script>; notice?: string } = {}) {
+type RecordedSink = Effect.Success<ReturnType<SessionSinks["Service"]["openRecorded"]>>;
+
+const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnType<typeof fakeUpdater> = fakeUpdater(), options: { fileName?: string; viewing?: ReturnType<typeof fakeTunnel>["viewing"]; cli?: CliOptions; attempts?: ReadonlyArray<Script>; notice?: string; wrapRecorded?: (sink: RecordedSink) => Effect.Effect<RecordedSink, never, Scope.Scope> } = {}) {
   const root = yield* temporaryDirectory;
   const sessionsDir = join(root, "sessions");
   const file = join(root, options.fileName ?? "meeting.m4a");
@@ -113,7 +115,15 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
     sessionSinks: SessionSinks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
       prepared.push(plan);
       return { layer: updater.layer, ...(options.notice === undefined ? {} : { notice: options.notice }) };
-    }) }).pipe(Layer.provide(fakeExportServices())),
+    }) }).pipe(
+      Layer.provide(fakeExportServices()),
+      Layer.flatMap((context) => {
+        const sinks = Context.get(context, SessionSinks);
+        return Layer.succeed(SessionSinks, SessionSinks.of({ ...sinks, openRecorded: (args) =>
+          Effect.flatMap(sinks.openRecorded(args), (sink) => options.wrapRecorded === undefined ? Effect.succeed(sink) : options.wrapRecorded(sink)),
+        }));
+      }),
+    ),
   });
   const requests: { url: string; body: unknown }[] = [];
   const requestClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>
@@ -169,6 +179,137 @@ const withVirtualClock = <A, E, R>(body: (pending: number[]) => Effect.Effect<A,
     const clock = yield* trackingClock(pending);
     return yield* body(pending).pipe(Effect.provideService(Clock.Clock, clock));
   });
+
+describe("共有画面の OCR 失敗の終了通知", () => {
+  const notices = (r: { deps: { stderr: string[] } }) => r.deps.stderr.join("").replaceAll("\r", "\n").split("\n")
+    .filter((line) => line.startsWith("共有画面の文字を読めなかった画面:"));
+  const screens = [
+    { type: "screen", start: 1, image: SCREEN_IMAGE, ocrFailed: true },
+    { type: "screen", start: 2, image: SCREEN_IMAGE, lines: [] },
+    { type: "screen", start: 3, image: null },
+  ];
+  const first = { start: 4, end: 6, text: "共有画面を確認します" };
+
+  it.live.each([
+    ["自然終了", false], ["自然終了", true],
+    ["再起動断念", false], ["再起動断念", true],
+    ["別CLI stop", false], ["別CLI stop", true],
+  ] as const)("%s が終了処理を所有した後も終了通知を一度受け取る（Ctrl-C=%s）", ([owner, interrupt]) => Effect.gen(function* () {
+    const exporting = yield* Deferred.make<void>();
+    const releaseExport = yield* Deferred.make<void>();
+    const stopRejected = yield* Deferred.make<void>();
+    let exports = 0;
+    let closes = 0;
+    const client = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (http) =>
+      HttpClient.tap(http, (response) => response.request.url.endsWith("/session/stop") && response.status === 409
+        ? Effect.asVoid(Deferred.succeed(stopRejected, undefined)) : Effect.void))).pipe(Layer.provide(NodeHttpClient.layerUndici));
+    const script: Script = { remarks: [], events: [...screens, ...remarkEvents(first), ...remarkEvents({ start: 10, end: 12, text: "次の発言です" })], hold: owner === "別CLI stop",
+      ...(owner === "再起動断念" ? { exit: { code: 1, signal: null } } : {}) };
+    const r = yield* resource(script, fakeUpdater(), {
+      cli: { httpClient: client },
+      ...(owner === "再起動断念" ? { attempts: [script, { remarks: [], failLaunch: true }, { remarks: [], failLaunch: true }] } : {}),
+      wrapRecorded: (sink) => Effect.gen(function* () {
+        yield* Effect.addFinalizer(() => Effect.sync(() => { closes++; }));
+        return { ...sink,
+          drainForRestart: Effect.tap(sink.drainForRestart, () => Effect.promise(() => vi.waitFor(() =>
+            expect(logLines(sink.dir).filter((line) => line.type === "screen")).toHaveLength(3), { timeout: 10_000 }))),
+          exports: Effect.gen(function* () {
+            exports++;
+            yield* Deferred.succeed(exporting, undefined);
+            yield* Deferred.await(releaseExport);
+            return yield* sink.exports;
+          }),
+        };
+      }),
+    });
+    const running = yield* Effect.forkChild(Effect.result(r.cli(["recorded", r.file])));
+    yield* Effect.promise(() => vi.waitFor(() => expect(sessionLog(r.sessionsDir).filter((line) => line.type === "screen")).toHaveLength(3), { timeout: 10_000 }));
+    const stopping = owner === "別CLI stop" ? yield* Effect.forkChild(r.cli(["stop"])) : undefined;
+    yield* Deferred.await(exporting);
+    expect(sessionLog(r.sessionsDir).filter((line) => line.type === "screen")).toHaveLength(3);
+    expect(notices(r)).toEqual([]);
+    const interrupted = interrupt ? yield* Effect.forkChild(Fiber.interrupt(running)) : undefined;
+    if (interrupt) yield* Deferred.await(stopRejected);
+    yield* Deferred.succeed(releaseExport, undefined);
+    if (interrupted !== undefined) yield* Fiber.join(interrupted);
+    else {
+      const result = yield* Fiber.join(running);
+      expect(Result.isFailure(result)).toBe(owner === "再起動断念");
+    }
+    if (stopping !== undefined) yield* Fiber.join(stopping);
+    expect(notices(r)).toEqual(["共有画面の文字を読めなかった画面: 1 / 2 枚"]);
+    expect(exports).toBe(1);
+    yield* Effect.promise(() => vi.waitFor(() => expect(closes).toBe(1)));
+  }).pipe(Effect.scoped));
+
+  it.live("録画の自然終了で失敗数と画像数を一度だけ知らせ、失敗画像も保存する", () => Effect.gen(function* () {
+    const r = yield* resource({ remarks: [], events: screens });
+    yield* r.cli(["recorded", r.file]);
+    const dir = onlySession(r.sessionsDir);
+    const saved = logLines(dir).filter((line) => line.type === "screen");
+    expect(saved).toHaveLength(3);
+    expect.soft(saved[0]).toMatchObject({ start: 1, ocrFailed: true });
+    expect(saved[0]).not.toHaveProperty("lines");
+    expect(saved[1]).toMatchObject({ start: 2, lines: [] });
+    expect(saved[1]).not.toHaveProperty("ocrFailed");
+    const name = saved[0]!.image;
+    if (typeof name !== "string") throw new Error("画像の保存先が必要");
+    expect(readFileSync(join(dir, "screens", name))).toEqual(Buffer.from("jpeg-bytes"));
+    expect(notices(r)).toEqual(["共有画面の文字を読めなかった画面: 1 / 2 枚"]);
+  }).pipe(Effect.scoped));
+
+  it.live("ライブの stop で失敗数を知らせ、新しいセッションへ数を持ち越さない", () => Effect.gen(function* () {
+    const script: Script = { remarks: [], hold: true, events: screens };
+    const r = yield* resource(script, fakeUpdater(), { attempts: [script, { remarks: [], hold: true }] });
+    yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio"]);
+    yield* Effect.promise(() => vi.waitFor(() => expect(sessionLog(r.sessionsDir).filter((line) => line.type === "screen")).toHaveLength(3)));
+    yield* r.cli(["stop"]);
+    expect.soft(notices(r)).toEqual(["共有画面の文字を読めなかった画面: 1 / 2 枚"]);
+    r.deps.stderr.length = 0;
+    yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]);
+    yield* r.cli(["stop"]);
+    expect(notices(r)).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.live.each(["stop", "Ctrl-C"] as const)("録画を %s で終えると保存前の先読み画像を数えず、一度だけ知らせる", (ending) => Effect.gen(function* () {
+    const updating = yield* Deferred.make<void>();
+    const stopRequested = yield* Deferred.make<void>();
+    const client = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (http) =>
+      HttpClient.tapRequest(http, (request) => request.url.endsWith("/session/stop")
+        ? Effect.asVoid(Deferred.succeed(stopRequested, undefined)) : Effect.void))).pipe(Layer.provide(NodeHttpClient.layerUndici));
+    const r = yield* resource({
+      remarks: [], hold: true,
+      events: [...screens, { type: "screen", start: 100, image: SCREEN_IMAGE, ocrFailed: true },
+        ...remarkEvents(first), ...remarkEvents({ start: 10, end: 12, text: "次の発言です" })],
+    }, fakeUpdater(() => Effect.gen(function* () {
+      yield* Deferred.succeed(updating, undefined);
+      yield* Deferred.await(stopRequested);
+    })), { cli: { httpClient: client } });
+    const running = yield* Effect.forkChild(r.cli(["recorded", r.file]));
+    yield* Deferred.await(updating);
+    if (ending === "stop") {
+      yield* r.cli(["stop"]);
+      yield* Fiber.join(running);
+    } else {
+      yield* Fiber.interrupt(running);
+    }
+    expect(sessionLog(r.sessionsDir).filter((line) => line.type === "screen").map((line) => line.start)).toEqual([1, 2, 3]);
+    expect(notices(r)).toEqual(["共有画面の文字を読めなかった画面: 1 / 2 枚"]);
+  }).pipe(Effect.scoped));
+
+  it.live.each(["recorded", "live"] as const)("%s で OCR 失敗が無ければ終了通知を出さない", (mode) => Effect.gen(function* () {
+    const events = [{ type: "screen", start: 1, image: SCREEN_IMAGE, lines: [] }];
+    const r = yield* resource({ remarks: [], events, hold: mode === "live" });
+    if (mode === "recorded") yield* r.cli(["recorded", r.file]);
+    else {
+      yield* r.cli(["start", "--app", "us.zoom.xos", "--no-audio"]);
+      yield* Effect.promise(() => vi.waitFor(() => expect(sessionLog(r.sessionsDir).filter((line) => line.type === "screen")).toHaveLength(1)));
+      yield* r.cli(["stop"]);
+    }
+    expect(sessionLog(r.sessionsDir).filter((line) => line.type === "screen")).toHaveLength(1);
+    expect(notices(r)).toEqual([]);
+  }).pipe(Effect.scoped));
+});
 
 describe("cli recorded <file>", () => {
   it.live("ファイルを渡すと、進み具合の行と、フォルダとmap.*のパスが出る", () => Effect.gen(function* () {

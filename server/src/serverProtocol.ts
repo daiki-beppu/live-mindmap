@@ -6,7 +6,7 @@
 // ドメインの値である応答（取り込みの状態・共有の状態・録画の経過）の Schema は core にあり、ここから参照する。
 import { Effect, Option, Schema, SchemaGetter } from "effect";
 import { IntakeStatusReport } from "./core/intake.ts";
-import { RecordedEvent } from "./core/recordedProgress.ts";
+import { OcrSummary, RecordedEvent } from "./core/recordedProgress.ts";
 import { OpenShareStatus, ShareMail, ShareStatus } from "./core/viewingShare.ts";
 import { TransferredJudge } from "./judgeSelection.ts";
 import { CheckReport, InstallBody, InstallEvent, Item, StartupWarnings, UpdateBody } from "./managedDepsProtocol.ts";
@@ -69,7 +69,7 @@ export const SelfPauseBody = Schema.Struct({ paused: Schema.Boolean });
 export const SpeakerNameBody = Schema.Struct({ label: Schema.String, name: Schema.String });
 
 const StartedSession = Schema.Struct({ dir: Schema.String, ...StartupWarnings.fields });
-const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String) });
+const StoppedSession = Schema.Struct({ paths: Schema.Array(Schema.String), ocrSummary: OcrSummary, kind: Schema.Literals(["live", "recorded"]) });
 // 待ち受けているサーバー自身の PID。cli server stop は、記録の PID ではなくこれにだけシグナルを送る（serverProcess.ts）
 const ServerIdentity = Schema.Struct({ pid: Schema.Int.check(Schema.isGreaterThan(0)) });
 
