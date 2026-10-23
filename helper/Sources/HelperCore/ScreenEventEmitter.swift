@@ -11,6 +11,8 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     private var detector: ScreenChangeDetector
     private var closed = false
     private var captureStopped = false
+    private var announcedTitle: String?
+    private var announcedConfirmation = false
     private let writeStderr: (String) -> Void
 
     public init(bundleID: String, writeStderr: @escaping (String) -> Void = {
@@ -25,13 +27,7 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     public func emit(_ frame: ScreenFrame, encode: () -> ScreenShot?) {
         lock.withLock {
             if closed { return }
-            let hadRememberedTab = detector.rememberedTabTitle != nil
-            if let event = detector.screenEvent(for: frame, encode: encode) {
-                continuation.yield(event)
-            }
-            if !hadRememberedTab, let title = detector.rememberedTabTitle {
-                writeStderr("会議のタブ: \(title)\n")
-            }
+            publish(detector.screenEvent(for: frame, encode: encode))
         }
     }
 
@@ -39,9 +35,7 @@ public final class ScreenEventEmitter: @unchecked Sendable {
     public func emitWindowGone(at time: Double) {
         lock.withLock {
             if closed { return }
-            if let event = detector.screenEvent(windowGoneAt: time) {
-                continuation.yield(event)
-            }
+            publish(detector.screenEvent(windowGoneAt: time))
         }
     }
 
@@ -51,9 +45,7 @@ public final class ScreenEventEmitter: @unchecked Sendable {
         lock.withLock {
             if closed || captureStopped { return }
             captureStopped = true
-            if let event = detector.screenEvent(windowGoneAt: time) {
-                continuation.yield(event)
-            }
+            publish(detector.screenEvent(windowGoneAt: time))
             continuation.yield(.screenOff(start: time, reason: .許可なし))
         }
     }
@@ -63,7 +55,20 @@ public final class ScreenEventEmitter: @unchecked Sendable {
         lock.withLock {
             if closed { return }
             closed = true
+            publish(detector.finish())
             continuation.finish()
         }
+    }
+
+    private func publish(_ events: [HelperEvent]) {
+        if let title = detector.rememberedTabTitle, title != announcedTitle {
+            announcedTitle = title
+            writeStderr("会議のタブ: \(title)\n")
+        }
+        if let title = detector.confirmedTabTitle, !announcedConfirmation {
+            announcedConfirmation = true
+            writeStderr("会議のタブを確定しました: \(title)\n")
+        }
+        for event in events { continuation.yield(event) }
     }
 }

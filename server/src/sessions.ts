@@ -196,7 +196,7 @@ export class Sessions extends Context.Service<Sessions, {
           case "screen":
             // 画面が取れないことは取り込みの途切れではないので、取り込みの記録（appendLog）や状態には触れない
             return Effect.andThen(
-              live.meetingTabNotice.screen(event.image !== null),
+              live.meetingTabNotice.screen({ start: event.start, hasImage: event.image !== null, meetingTabTitle: event.meetingTabTitle }),
               live.sink.screen({ start: event.start, image: event.image, lines: event.lines }),
             );
           case "screen-off":

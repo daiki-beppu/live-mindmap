@@ -47,7 +47,7 @@ public enum HelperEvent: Sendable, Equatable {
     /// 共有画面の変化（Issue #278）。`start` は `origin` と同じ原点からの秒。
     /// `image` は JPEG の base64。映していたウィンドウが無くなったときは nil で、JSON では `null` を明示する。
     /// `lines` は Vision で読んだ文字の行（Issue #643）。OCR に失敗したときは空の配列。画像が nil のときは nil で、キーを付けない。
-    case screen(start: Double, image: String?, lines: [String]?)
+    case screen(start: Double, image: String?, lines: [String]?, meetingTabTitle: String? = nil)
     /// 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。音声は続ける。`start` は `origin` と同じ原点からの秒。
     case screenOff(start: Double, reason: ScreenOffReason)
     /// 相手のタップから、フレーム数 1 以上のバッファが 10 秒届かなかった。`start` は `origin` と同じ原点からの秒。1 回だけ流す。
@@ -91,7 +91,7 @@ public enum HelperEvent: Sendable, Equatable {
 extension HelperEvent: Encodable {
     private enum CodingKeys: String, CodingKey {
         case type, track, start, end, text, duplicate, words, wordTimes, hostTime, image, lines, reason, paused, slot, final, duration, to, count
-        case manual, basis, lastKnown, idleFor, centroid
+        case manual, basis, lastKnown, idleFor, centroid, meetingTabTitle
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -119,7 +119,7 @@ extension HelperEvent: Encodable {
             try container.encode("origin", forKey: .type)
             // 64 bit の値は JSON の number では桁が落ちるので、文字列として積む。
             try container.encode(String(hostTime), forKey: .hostTime)
-        case let .screen(start, image, lines):
+        case let .screen(start, image, lines, meetingTabTitle):
             try container.encode("screen", forKey: .type)
             try container.encode(start, forKey: .start)
             // nil でもキーを省かず、JSON の null として出す（`encodeIfPresent` は使わない）。
@@ -131,6 +131,7 @@ extension HelperEvent: Encodable {
             if let lines {
                 try container.encode(lines, forKey: .lines)
             }
+            try container.encodeIfPresent(meetingTabTitle, forKey: .meetingTabTitle)
         case let .screenOff(start, reason):
             try container.encode("screen-off", forKey: .type)
             try container.encode(start, forKey: .start)

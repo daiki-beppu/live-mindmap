@@ -196,6 +196,19 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
     const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
     const base64 = Buffer.from(jpeg).toString("base64");
 
+    it.effect("覚えた会議タブの題名を画像と不在イベントの両方で保つ", () =>
+      Effect.gen(function* () {
+        for (const image of [base64, null]) {
+          const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({
+            type: "screen", start: 61, image, meetingTabTitle: "配信 - YouTube",
+          })));
+          const expected = {
+            kind: "known", event: { type: "screen", start: 61, image: image === null ? null : jpeg, meetingTabTitle: "配信 - YouTube" },
+          } as const;
+          assert.deepStrictEqual(decoded, expected);
+        }
+      }));
+
     it.effect("image は base64 を元のバイト列に戻し、start を保つ", () =>
       Effect.gen(function* () {
         const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "screen", start: 1.5, image: base64 })));

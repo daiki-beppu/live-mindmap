@@ -191,17 +191,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         if let screen {
             screenTasks = [
                 Task { await screen.run() },
-                Task {
-                    for await event in screen.events {
-                        guard let json = try? event.jsonString() else { continue }
-                        // `screen-off` は `screen` の最新の 1 件を置き換えないよう、別の key で保持する。
-                        if case .screenOff = event {
-                            await server.broadcastRetained(json, key: "screen-off")
-                        } else {
-                            await server.broadcastRetained(json, key: "screen")
-                        }
-                    }
-                },
+                Task { await relayScreenEvents(screen.events, to: server) },
             ]
         }
         if screenPlan == .denied {

@@ -20,22 +20,31 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
 }) {
   const scope = yield* Effect.scope;
   const state = yield* Ref.make<NoticeState>({ kind: options.enabled ? "idle" : "closed" });
+  const latestStart = yield* Ref.make<number | undefined>(undefined);
   const lock = yield* Semaphore.make(1);
 
   const clear = Effect.fnUntraced(function* (kind: "idle" | "closed") {
     const waiting = yield* lock.withPermit(Effect.gen(function* () {
       const current = yield* Ref.get(state);
       if (current.kind !== "closed") yield* Ref.set(state, { kind });
+      yield* Ref.set(latestStart, undefined);
       return current.kind === "waiting" ? current.fiber : undefined;
     }));
     // タイマーも同じ排他区間を使うため、終了待ちは区間を出てから行う。
     if (waiting !== undefined) yield* Fiber.interrupt(waiting);
   }, Effect.uninterruptible);
 
-  const screen = Effect.fnUntraced(function* (hasImage: boolean) {
+  const screen = Effect.fnUntraced(function* ({ start, hasImage, meetingTabTitle }: {
+    start: number;
+    hasImage: boolean;
+    meetingTabTitle: string | undefined;
+  }) {
     const waiting = yield* lock.withPermit(Effect.gen(function* () {
       const current = yield* Ref.get(state);
       if (current.kind === "closed") return;
+      const previousStart = yield* Ref.get(latestStart);
+      if (previousStart !== undefined && start < previousStart) return;
+      yield* Ref.set(latestStart, start);
       if (hasImage) {
         yield* Ref.set(state, { kind: "idle" });
         if (current.kind === "notified") yield* options.notify(RESTORED_MEETING_TAB);
@@ -49,7 +58,8 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
           const latest = yield* Ref.get(state);
           if (latest.kind !== "waiting" || latest.token !== token) return;
           yield* Ref.set(state, { kind: "notified" });
-          yield* options.notify(MISSING_MEETING_TAB);
+          yield* options.notify(meetingTabTitle === undefined ? MISSING_MEETING_TAB
+            : `会議のタブ（${meetingTabTitle}）が前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）`);
         }).pipe(Effect.uninterruptible));
       });
       const fiber = yield* Effect.forkIn(Effect.interruptible(timer), scope);

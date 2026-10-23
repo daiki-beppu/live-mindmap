@@ -121,14 +121,13 @@ final class FileScreenReading: @unchecked Sendable {
             guard time.isFinite, thinner.admits(time), let rendered = render(sample) else { return .frame }
             lastTime = time
             let frame = ScreenFrame(luma: rendered.luma, time: time, title: nil)
-            if let event = detector.screenEvent(for: frame, encode: { screenShot(of: rendered.image) }) { return .events([event]) }
-            return .frame
+            let events = detector.screenEvent(for: frame, encode: { screenShot(of: rendered.image) })
+            return events.isEmpty ? .frame : .events(events)
         }
         finished = true
         guard !isCancelled, reader.status == .failed else { return .end }
         printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
-        var events: [HelperEvent] = []
-        if let event = detector.screenEvent(windowGoneAt: lastTime) { events.append(event) }
+        var events = detector.screenEvent(windowGoneAt: lastTime)
         events.append(.screenOff(start: lastTime, reason: .許可なし))
         return .events(events)
     }
