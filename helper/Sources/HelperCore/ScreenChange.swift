@@ -122,19 +122,19 @@ func screenFrameToJudge<Image>(
     }
 }
 
-/// 送ると決めた画面の中身。`image` は JPEG の base64、`lines` は OCR で読んだ行（失敗したときは空）。
+/// 送ると決めた画面の中身。`image` は JPEG の base64、`lines` は OCR で読んだ行（失敗したときは nil）。
 public struct ScreenShot: Sendable, Equatable {
     public var image: String
-    public var lines: [String]
+    public var lines: [String]?
 
-    public init(image: String, lines: [String]) {
+    public init(image: String, lines: [String]?) {
         self.image = image
         self.lines = lines
     }
 
-    /// JPEG と OCR の結果から作る。OCR が失敗した（nil）ときも画像は送り、`lines` は空にする。
+    /// JPEG と OCR の結果から作る。OCR が失敗した（nil）ときも画像は送り、`lines` は nil にする。
     init(jpeg: Data, recognizedLines: [String]?) {
-        self.init(image: jpeg.base64EncodedString(), lines: recognizedLines ?? [])
+        self.init(image: jpeg.base64EncodedString(), lines: recognizedLines)
     }
 }
 
@@ -188,7 +188,7 @@ public struct ScreenChangeDetector: Sendable {
                 self = before
                 return nil
             }
-            return .screen(start: start, image: shot.image, lines: shot.lines)
+            return .screen(start: start, image: shot.image, lines: shot.lines, ocrFailed: shot.lines == nil)
         }
     }
 

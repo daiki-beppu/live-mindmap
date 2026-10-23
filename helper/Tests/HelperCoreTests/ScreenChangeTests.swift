@@ -1258,10 +1258,15 @@ struct ScreenCapturePlanTests {
 struct ScreenShotAssemblyTests {
     private let jpeg = Data([0xFF, 0xD8, 0xFF])
 
-    @Test("OCR が失敗した（nil）ときも画像は base64 のまま残り、lines は空")
-    func keepsImageWhenRecognitionFails() {
+    @Test("OCR が失敗した（nil）ときも画像を送り、JSON は失敗印を持ち lines を省く")
+    func keepsImageWhenRecognitionFails() throws {
         let shot = ScreenShot(jpeg: jpeg, recognizedLines: nil)
-        #expect(shot == ScreenShot(image: "/9j/", lines: []))
+        var detector = makeDetector()
+        let event = try #require(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 20), time: 1, title: nil)) { shot })
+        let json = try #require(JSONSerialization.jsonObject(with: Data(event.jsonString().utf8)) as? [String: Any])
+        #expect(json["image"] as? String == "/9j/")
+        #expect(json["ocrFailed"] as? Bool == true)
+        #expect(json["lines"] == nil)
     }
 
     @Test("OCR が行を返したら、その行がそのまま lines に載る")
@@ -1269,6 +1274,17 @@ struct ScreenShotAssemblyTests {
         let shot = ScreenShot(jpeg: jpeg, recognizedLines: ["港南店", "Zendesk"])
         #expect(shot.image == "/9j/")
         #expect(shot.lines == ["港南店", "Zendesk"])
+    }
+
+    @Test("正常な OCR の行と空配列は JSON でも成功として運ぶ", arguments: [["港南店", "Zendesk"], []])
+    func successJSON(lines: [String]) throws {
+        let shot = ScreenShot(jpeg: jpeg, recognizedLines: lines)
+        var detector = makeDetector()
+        let event = try #require(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 20), time: 1, title: nil)) { shot })
+        let json = try #require(JSONSerialization.jsonObject(with: Data(event.jsonString().utf8)) as? [String: Any])
+        #expect(json["image"] as? String == "/9j/")
+        #expect(json["lines"] as? [String] == lines)
+        #expect(json["ocrFailed"] == nil)
     }
 }
 

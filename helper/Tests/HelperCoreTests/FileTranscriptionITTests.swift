@@ -398,7 +398,7 @@ enum FileScreenTestSupport {
     static func screens(in events: [HelperEvent]) -> [Shown] {
         var shown: [Shown] = []
         for event in events {
-            if case let .screen(start, image, lines) = event { shown.append(Shown(start: start, image: image, lines: lines)) }
+            if case let .screen(start, image, lines, _) = event { shown.append(Shown(start: start, image: image, lines: lines)) }
         }
         return shown
     }

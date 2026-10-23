@@ -161,6 +161,28 @@ const ROWS: [number, number, string, string][] = [
 ];
 
 describe("play --screen", () => {
+  it.effect("保存ログの OCR 失敗印を再生先へ残し、失敗画像もコピーする", () => Effect.gen(function* () {
+    const root = yield* temporaryDirectory;
+    const source = join(root, "source");
+    mkdirSync(join(source, "screens"), { recursive: true });
+    const image = Buffer.from([0xff, 0xd8, 0xff, 1]);
+    writeFileSync(join(source, "screens", "0001.0.jpg"), image);
+    writeFileSync(join(source, "log.jsonl"), [
+      { type: "start", title: "OCR" },
+      { type: "screen", start: 1, image: "0001.0.jpg", ocrFailed: true },
+      { type: "remark", remark: { id: "r1", track: "相手", start: 2, end: 3, text: "共有画面を確認します" } },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+    const deps = dependencies(join(root, "sessions"));
+    const session = yield* played(deps, [source]);
+    const screens = logLines(session).filter((event) => event.type === "screen");
+    expect(screens).toHaveLength(1);
+    expect.soft(screens[0]).toMatchObject({ start: 1, ocrFailed: true });
+    expect(screens[0]).not.toHaveProperty("lines");
+    const name = screens[0]!.image;
+    if (typeof name !== "string") throw new Error("screen の画像ファイル名が必要");
+    expect(readFileSync(join(session, "screens", name))).toEqual(image);
+  }));
+
   it.effect("共有画面の節が、見出しと画像のブロックとして、マップと発言より前に、時刻順に載る。「なし」は見出しだけ。gallery の行も画像", () =>
     Effect.gen(function* () {
       const root = yield* temporaryDirectory;

@@ -7,6 +7,31 @@ const remark = (id: string, track: "相手" | "自分", start: number, end: numb
   JSON.stringify({ type: "remark", remark: { id, track, start, end, text: "本文" } });
 
 describe("セッションの数だけの集計", () => {
+  it.effect("失敗した screen の行を数えて表示する", () => Effect.gen(function* () {
+    const s = sessionStats(yield* parseLog([
+      { type: "screen", ocrFailed: true },
+      { type: "screen", lines: [] },
+      { type: "screen", ocrFailed: true },
+    ].map((event) => JSON.stringify(event)).join("\n")));
+    expect.soft(s).toMatchObject({ ocrFailed: 2 });
+    expect(formatRow("s", s, null).join("\n")).toMatch(/OCR[^\n\t]*2/);
+  }));
+
+  it.effect("別種別や発言本文の失敗印を数えず、本文も表示しない", () => Effect.gen(function* () {
+    const text = "ocrFailed: true 非公開の発言";
+    const s = sessionStats(yield* parseLog([
+      { type: "remark", ocrFailed: true, remark: { track: "相手", start: 0, end: 1, text } },
+      { type: "screen", lines: [] },
+    ].map((event) => JSON.stringify(event)).join("\n")));
+    expect.soft(s).toMatchObject({ ocrFailed: 0 });
+    expect(s.tracks.相手.remarks).toBe(1);
+    const rows = formatRow("s", s, null);
+    expect.soft(rows.join("\n")).toMatch(/OCR[^\n\t]*0/);
+    for (const row of rows) {
+      expect(row).not.toContain("ocrFailed");
+      expect(row).not.toContain("非公開の発言");
+    }
+  }));
   it.effect("相手と自分を別々に数える（ロケールによっては uniq -c が 2 つを同じ行にまとめる）", () => Effect.gen(function* () {
     const s = sessionStats(yield* parseLog([remark("r1", "相手", 0, 2), remark("r2", "自分", 2, 3), remark("r3", "相手", 3, 6)].join("\n")));
     expect(s.tracks.相手).toMatchObject({ remarks: 2, duration: 5 });
@@ -116,6 +141,7 @@ describe("1 行ずつの数え方（型ごとの集計）", () => {
     expect(sessionStats([])).toEqual({
       tracks: { 相手: { remarks: 0, duration: 0, overlap: 0 }, 自分: { remarks: 0, duration: 0, overlap: 0 } },
       lastEnd: 0, diffs: 0, diffErrors: 0, ops: 0, intake: { stopped: 0, restarted: 0, gaveUp: 0 }, tapSilent: 0,
+      ocrFailed: 0,
     });
   });
 });
