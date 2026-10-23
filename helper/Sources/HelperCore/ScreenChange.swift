@@ -89,6 +89,9 @@ private func canRememberScreenTabTitle(_ title: String) -> Bool {
     return !normalized.isEmpty && !["live-mindmap", "about:blank", "新しいタブ", "New Tab"].contains(normalized)
 }
 
+private let screenProvisionalSeconds = 60.0
+private let screenRetargetSeconds = 10.0
+
 /// ブラウザは、タイトルに「Meet」を含むタブと記憶したタブを会議として扱う。ブラウザの一覧に無いアプリ（会議アプリ本体）はタイトルを見ない。
 /// タイトルが読めない（nil・空）ときは会議のタブとして扱う（読めないことは会議以外の証拠にならない）。
 public func screenShowsMeeting(bundleID: String, title: String?, rememberedTitle: String? = nil) -> Bool {
@@ -143,8 +146,179 @@ public struct ScreenShot: Sendable, Equatable {
 /// 動いている場所（スクロール・動画・顔の小窓）は比べる対象から外し、話している人の枠の移動は送らない。
 public struct ScreenChangeDetector: Sendable {
     private let bundleID: String
-    private(set) var rememberedTabTitle: String?
+    private enum Tab: Sendable {
+        case unknown
+        case provisional(title: String, since: Double, candidate: Candidate?)
+        case confirmed(title: String)
+    }
+    private struct Candidate: Sendable {
+        let title: String
+        let since: Double
+    }
+    private var tab: Tab = .unknown
+    var rememberedTabTitle: String? {
+        switch tab {
+        case .unknown: nil
+        case .provisional(let title, _, _), .confirmed(let title): title
+        }
+    }
+    var confirmedTabTitle: String? {
+        if case .confirmed(let title) = tab { return title }
+        return nil
+    }
+    private var comparison = ScreenImageComparison()
+    private var provisionalComparison = ScreenImageComparison()
+    private var buffered: [(start: Double, shot: ScreenShot)] = []
+    private var outputHasImage = false
+    private var absentSince: Double?
+
+    public init(bundleID: String) {
+        self.bundleID = bundleID
+    }
+
+    public mutating func next(_ input: ScreenInput) -> ScreenDecision {
+        switch input {
+        case .windowGone(let time):
+            confirmTab()
+            return clearComparisons(at: time)
+        case .frame(let frame):
+            updateTab(for: frame)
+            return judge(frame)
+        }
+    }
+
+    private mutating func updateTab(for frame: ScreenFrame) {
+        guard screenBrowserBundleIDs.contains(bundleID) else { return }
+        switch tab {
+        case .unknown:
+            if let title = frame.title, canRememberScreenTabTitle(title) {
+                tab = .provisional(title: title, since: frame.time, candidate: nil)
+                provisionalComparison = comparison
+            }
+        case .confirmed:
+            break
+        case .provisional(let title, let since, let candidate):
+            if frame.time - since >= screenProvisionalSeconds {
+                confirmTab()
+                return
+            }
+            guard let proposed = frame.title, canRememberScreenTabTitle(proposed),
+                  !isMeet(proposed), normalizedScreenTabTitle(proposed) != normalizedScreenTabTitle(title) else {
+                tab = .provisional(title: title, since: since, candidate: nil)
+                return
+            }
+            if let candidate, normalizedScreenTabTitle(candidate.title) == normalizedScreenTabTitle(proposed) {
+                if frame.time - candidate.since >= screenRetargetSeconds {
+                    tab = .provisional(title: proposed, since: since, candidate: nil)
+                    buffered.removeAll()
+                    comparison = ScreenImageComparison()
+                    provisionalComparison = ScreenImageComparison()
+                }
+            } else {
+                tab = .provisional(title: title, since: since, candidate: Candidate(title: proposed, since: frame.time))
+            }
+        }
+    }
+
+    private func isMeet(_ title: String?) -> Bool {
+        title.map { title in screenMeetingTabTitleKeywords.contains { title.contains($0) } } == true
+    }
+
+    private func shouldBuffer(_ frame: ScreenFrame) -> Bool {
+        if case .provisional = tab { return !isMeet(frame.title) }
+        return false
+    }
+
+    private mutating func confirmTab() {
+        guard case .provisional(let title, _, _) = tab else { return }
+        // 遅れて配送する保留画像より新しい即時画像があれば、その比較履歴を維持する。
+        if let start = provisionalComparison.lastSentStart,
+           comparison.lastSentStart.map({ start >= $0 }) ?? true {
+            comparison = provisionalComparison
+        }
+        provisionalComparison = ScreenImageComparison()
+        tab = .confirmed(title: title)
+    }
+
+    private mutating func judge(_ frame: ScreenFrame) -> ScreenDecision {
+        guard screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) else {
+            if absentSince == nil { absentSince = frame.time }
+            return clearComparisons(at: frame.time)
+        }
+        absentSince = nil
+        if shouldBuffer(frame) { return provisionalComparison.judge(frame) }
+        return comparison.judge(frame)
+    }
+
+    private mutating func clearComparisons(at time: Double) -> ScreenDecision {
+        let sent = comparison.windowGone(at: time)
+        let pending = provisionalComparison.windowGone(at: time)
+        return sent == .nothing ? pending : sent
+    }
+
+    /// 画像生成の失敗は比較情報だけを戻し、対象の変更・確定と旧画像の破棄は保持する。
+    public mutating func screenEvent(for frame: ScreenFrame, encode: () -> ScreenShot?) -> [HelperEvent] {
+        updateTab(for: frame)
+        let buffering = shouldBuffer(frame)
+        let before = buffering ? provisionalComparison : comparison
+        let decision = judge(frame)
+        var events = flushConfirmedImages()
+        switch decision {
+        case .nothing:
+            break
+        case .none(let start):
+            events += clearOutput(at: start)
+        case .send(let start):
+            guard let shot = encode() else {
+                if buffering { provisionalComparison = before } else { comparison = before }
+                return events
+            }
+            if buffering {
+                buffered.append((start, shot))
+            } else {
+                events.append(.screen(start: start, image: shot.image, lines: shot.lines, ocrFailed: shot.lines == nil))
+                outputHasImage = true
+            }
+        }
+        return events
+    }
+
+    public mutating func screenEvent(windowGoneAt time: Double) -> [HelperEvent] {
+        var events = finish()
+        _ = clearComparisons(at: time)
+        absentSince = time
+        events += clearOutput(at: time)
+        return events
+    }
+
+    /// 終了時にも元のstartを維持するため、新しい時刻を作らず確定する。
+    public mutating func finish() -> [HelperEvent] {
+        confirmTab()
+        return flushConfirmedImages()
+    }
+
+    private mutating func flushConfirmedImages() -> [HelperEvent] {
+        guard confirmedTabTitle != nil, !buffered.isEmpty else { return [] }
+        var events = buffered.sorted { $0.start < $1.start }.map {
+            HelperEvent.screen(start: $0.start, image: $0.shot.image, lines: $0.shot.lines, ocrFailed: $0.shot.lines == nil)
+        }
+        buffered.removeAll()
+        outputHasImage = true
+        // 遅れて届く画像で、現在の不在状態を上書きさせない。
+        if let absentSince { events += clearOutput(at: absentSince) }
+        return events
+    }
+
+    private mutating func clearOutput(at time: Double) -> [HelperEvent] {
+        guard outputHasImage else { return [] }
+        outputHasImage = false
+        return [.screen(start: time, image: nil, lines: nil, meetingTabTitle: rememberedTabTitle)]
+    }
+}
+
+private struct ScreenImageComparison: Sendable {
     private var lastSent: [UInt8]?
+    private(set) var lastSentStart: Double?
     /// 最後に送ると決めたフレームの時刻。
     private var lastSentTime = 0.0
     /// 前に送った画面（古い順、`screenSentHistoryCount` 枚まで）。
@@ -156,50 +330,15 @@ public struct ScreenChangeDetector: Sendable {
     private var remembered: [UInt8] = []
     private var rememberedTime: [Double] = []
 
-    public init(bundleID: String) {
-        self.bundleID = bundleID
-    }
-
-    public mutating func next(_ input: ScreenInput) -> ScreenDecision {
-        switch input {
-        case .windowGone(let time):
-            guard lastSent != nil else { return .nothing }
-            reset()
-            return .none(start: time)
-        case .frame(let frame):
-            return judge(frame)
-        }
-    }
-
-    /// フレームを判定し、送るときだけ `encode` で画像（base64）と OCR の行を作ってイベントにする。
-    /// `encode` が nil を返したら、送っていない画面を「最後に送った画面」にしないよう、基準を判定の前へ戻して nil を返す。
-    /// 「なし」のときは画像を作らず、`image: null` のイベントにする。
-    public mutating func screenEvent(for frame: ScreenFrame, encode: () -> ScreenShot?) -> HelperEvent? {
-        var before = self
-        switch next(.frame(frame)) {
-        case .nothing:
-            return nil
-        case .none(let start):
-            return .screen(start: start, image: nil, lines: nil)
-        case .send(let start):
-            guard let shot = encode() else {
-                // 画像比較の基準だけを戻し、取り込み中に決まった対象タブは保持する。
-                before.rememberedTabTitle = rememberedTabTitle
-                self = before
-                return nil
-            }
-            return .screen(start: start, image: shot.image, lines: shot.lines, ocrFailed: shot.lines == nil)
-        }
-    }
-
-    /// ウィンドウが無くなったとき、画像を送った後なら `image: null` のイベントにする。それ以外は nil。
-    public mutating func screenEvent(windowGoneAt time: Double) -> HelperEvent? {
-        guard case .none(let start) = next(.windowGone(time: time)) else { return nil }
-        return .screen(start: start, image: nil, lines: nil)
+    mutating func windowGone(at time: Double) -> ScreenDecision {
+        guard lastSent != nil else { return .nothing }
+        reset()
+        return .none(start: time)
     }
 
     private mutating func reset() {
         lastSent = nil
+        lastSentStart = nil
         lastSentTime = 0
         sentHistory = []
         previous = nil
@@ -209,16 +348,7 @@ public struct ScreenChangeDetector: Sendable {
         rememberedTime = []
     }
 
-    private mutating func judge(_ frame: ScreenFrame) -> ScreenDecision {
-        if rememberedTabTitle == nil, screenBrowserBundleIDs.contains(bundleID),
-           let title = frame.title, canRememberScreenTabTitle(title) {
-            rememberedTabTitle = title
-        }
-        guard screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) else {
-            let hadSent = lastSent != nil
-            reset()
-            return hadSent ? .none(start: frame.time) : .nothing
-        }
+    mutating func judge(_ frame: ScreenFrame) -> ScreenDecision {
         let luma = frame.luma
         if remembered.count != luma.count { reset(trackingFor: luma.count) }
         updateMotion(luma, at: frame.time)
@@ -250,6 +380,7 @@ public struct ScreenChangeDetector: Sendable {
 
     private mutating func send(_ luma: [UInt8], decidedAt time: Double, start: Double) -> ScreenDecision {
         lastSent = luma
+        lastSentStart = start
         lastSentTime = time
         sentHistory.append(luma)
         if sentHistory.count > screenSentHistoryCount { sentHistory.removeFirst(sentHistory.count - screenSentHistoryCount) }

@@ -950,10 +950,10 @@ struct ScreenEventTests {
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
         let moving = ScreenFrame(luma: luma(fill: 200), time: 1.25, title: nil)
         let b = ScreenFrame(luma: luma(fill: 200), time: 2.25, title: nil)
-        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
-        #expect(detector.screenEvent(for: moving) { shot("動いている間は作らない") } == nil)
-        #expect(detector.screenEvent(for: b) { nil } == nil)
-        #expect(detector.screenEvent(for: b) { shot("B") } == .screen(start: 1.25, image: "B", lines: []))
+        #expect(detector.screenEvent(for: a) { shot("A") } == [.screen(start: 0, image: "A", lines: [])])
+        #expect(detector.screenEvent(for: moving) { shot("動いている間は作らない") } == [])
+        #expect(detector.screenEvent(for: b) { nil } == [])
+        #expect(detector.screenEvent(for: b) { shot("B") } == [.screen(start: 1.25, image: "B", lines: [])])
     }
 
     @Test("「なし」のときは画像を作らず、image: null のイベントを 1 回だけ返す（ブラウザの会議以外のタブ）")
@@ -962,10 +962,10 @@ struct ScreenEventTests {
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: meetTitle)
         let gone = ScreenFrame(luma: luma(fill: 20), time: 0.25, title: otherTabTitle)
         var encodeCount = 0
-        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
-        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return shot("X") } == .screen(start: 0.25, image: nil, lines: nil))
-        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return shot("X") } == nil)
-        #expect(detector.screenEvent(windowGoneAt: 1) == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == [.screen(start: 0, image: "A", lines: [])])
+        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return shot("X") } == [.screen(start: 0.25, image: nil, lines: nil, meetingTabTitle: meetTitle)])
+        #expect(detector.screenEvent(for: gone) { encodeCount += 1; return shot("X") } == [])
+        #expect(detector.screenEvent(windowGoneAt: 1) == [])
         #expect(encodeCount == 0)
     }
 
@@ -976,9 +976,9 @@ struct ScreenEventTests {
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
         let moving = ScreenFrame(luma: luma(fill: 200), time: 1, title: nil)
         let b = ScreenFrame(luma: luma(fill: 200), time: 2.25, title: nil)
-        #expect(detector.screenEvent(for: a) { shot("A", lines: ["港南店", "Zendesk"]) } == .screen(start: 0, image: "A", lines: ["港南店", "Zendesk"]))
-        #expect(detector.screenEvent(for: moving) { shot("動いている間は読まない", lines: ["読まない"]) } == nil)
-        #expect(detector.screenEvent(for: b) { shot("B", lines: []) } == .screen(start: 1, image: "B", lines: []))
+        #expect(detector.screenEvent(for: a) { shot("A", lines: ["港南店", "Zendesk"]) } == [.screen(start: 0, image: "A", lines: ["港南店", "Zendesk"])])
+        #expect(detector.screenEvent(for: moving) { shot("動いている間は読まない", lines: ["読まない"]) } == [])
+        #expect(detector.screenEvent(for: b) { shot("B", lines: []) } == [.screen(start: 1, image: "B", lines: [])])
     }
 
     @Test("image: null の screen には lines を付けない（nil）")
@@ -986,9 +986,9 @@ struct ScreenEventTests {
         var detector = makeDetector(chromeBundleID)
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: meetTitle)
         let gone = ScreenFrame(luma: luma(fill: 20), time: 0.25, title: otherTabTitle)
-        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
-        #expect(detector.screenEvent(for: gone) { shot("X", lines: ["読まない"]) } == .screen(start: 0.25, image: nil, lines: nil))
-        #expect(detector.screenEvent(windowGoneAt: 1) == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == [.screen(start: 0, image: "A", lines: [])])
+        #expect(detector.screenEvent(for: gone) { shot("X", lines: ["読まない"]) } == [.screen(start: 0.25, image: nil, lines: nil, meetingTabTitle: meetTitle)])
+        #expect(detector.screenEvent(windowGoneAt: 1) == [])
     }
 
     @Test("送らないフレームでは画像を作らない")
@@ -996,8 +996,8 @@ struct ScreenEventTests {
         var detector = makeDetector()
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
         var encodeCount = 0
-        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
-        #expect(detector.screenEvent(for: a) { encodeCount += 1; return shot("A") } == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == [.screen(start: 0, image: "A", lines: [])])
+        #expect(detector.screenEvent(for: a) { encodeCount += 1; return shot("A") } == [])
         #expect(encodeCount == 0)
     }
 
@@ -1005,18 +1005,18 @@ struct ScreenEventTests {
     func failedFirstEncodeKeepsNoBaseline() {
         var detector = makeDetector()
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
-        #expect(detector.screenEvent(for: a) { nil } == nil)
-        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
+        #expect(detector.screenEvent(for: a) { nil } == [])
+        #expect(detector.screenEvent(for: a) { shot("A") } == [.screen(start: 0, image: "A", lines: [])])
     }
 
     @Test("ウィンドウが無くなったら image: null のイベントを 1 回だけ返す。重複した通知や、何も送っていないときは nil")
     func windowGoneEventIsEmittedOnce() {
         var detector = makeDetector()
-        #expect(detector.screenEvent(windowGoneAt: 1) == nil)
+        #expect(detector.screenEvent(windowGoneAt: 1) == [])
         let a = ScreenFrame(luma: luma(fill: 20), time: 0, title: nil)
-        #expect(detector.screenEvent(for: a) { shot("A") } == .screen(start: 0, image: "A", lines: []))
-        #expect(detector.screenEvent(windowGoneAt: 3) == .screen(start: 3, image: nil, lines: nil))
-        #expect(detector.screenEvent(windowGoneAt: 3.25) == nil)
+        #expect(detector.screenEvent(for: a) { shot("A") } == [.screen(start: 0, image: "A", lines: [])])
+        #expect(detector.screenEvent(windowGoneAt: 3) == [.screen(start: 3, image: nil, lines: nil)])
+        #expect(detector.screenEvent(windowGoneAt: 3.25) == [])
     }
 }
 
@@ -1078,7 +1078,7 @@ struct ScreenEventEmitterTests {
         emitter.emit(ScreenFrame(luma: page, time: 0.5, title: otherTabTitle)) { shot("画像は作らない") }
         emitter.emit(ScreenFrame(luma: page, time: 0.75, title: meetTitle)) { shot("A2") }
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 0.25, image: nil, lines: nil), .screen(start: 0.75, image: "A2", lines: [])])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 0.25, image: nil, lines: nil, meetingTabTitle: meetTitle), .screen(start: 0.75, image: "A2", lines: [])])
     }
 
     @Test("除外タブでは画像を作らず、その後の対象タブでは画像を送る")
@@ -1114,7 +1114,7 @@ struct ScreenEventEmitterTests {
         emitter.emit(ScreenFrame(luma: page, time: 1, title: otherTabTitle)) { shot("画像は作らない") }
         emitter.emitCaptureStopped(at: 2)
         let events = await collect(emitter)
-        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 1, image: nil, lines: nil), .screenOff(start: 2, reason: .許可なし)])
+        #expect(events == [.screen(start: 0, image: "A", lines: []), .screen(start: 1, image: nil, lines: nil, meetingTabTitle: meetTitle), .screenOff(start: 2, reason: .許可なし)])
     }
 
     // Issue #421: 撮っていたウィンドウが無くなっても終わらずに探し直し、見つけ直したウィンドウの最初の画面を送る。
@@ -1262,7 +1262,7 @@ struct ScreenShotAssemblyTests {
     func keepsImageWhenRecognitionFails() throws {
         let shot = ScreenShot(jpeg: jpeg, recognizedLines: nil)
         var detector = makeDetector()
-        let event = try #require(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 20), time: 1, title: nil)) { shot })
+        let event = try #require(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 20), time: 1, title: nil)) { shot }.first)
         let json = try #require(JSONSerialization.jsonObject(with: Data(event.jsonString().utf8)) as? [String: Any])
         #expect(json["image"] as? String == "/9j/")
         #expect(json["ocrFailed"] as? Bool == true)
@@ -1280,7 +1280,7 @@ struct ScreenShotAssemblyTests {
     func successJSON(lines: [String]) throws {
         let shot = ScreenShot(jpeg: jpeg, recognizedLines: lines)
         var detector = makeDetector()
-        let event = try #require(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 20), time: 1, title: nil)) { shot })
+        let event = try #require(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 20), time: 1, title: nil)) { shot }.first)
         let json = try #require(JSONSerialization.jsonObject(with: Data(event.jsonString().utf8)) as? [String: Any])
         #expect(json["image"] as? String == "/9j/")
         #expect(json["lines"] as? [String] == lines)
@@ -1305,23 +1305,23 @@ struct ScreenRememberedTabTests {
         #expect(normalizedScreenTabTitle(input) == expected)
     }
 
-    @Test("除外タブから配信を覚え、タイトルの揺れと別タブへの往復に追従する")
-    func remembersFirstEligibleTabAcrossSwitches() {
-        var detector = makeDetector(chromeBundleID)
-        let titles = ["live-mindmap", "about:blank", "(3) 配信 - YouTube", "(4) 配信 - YouTube 🔊", otherTabTitle, otherTabTitle, "(5) 配信 - YouTube"]
+    @Test("除外タブから配信を覚え、確定後もタイトルの揺れと別タブへの往復に追従する")
+    func remembersFirstEligibleTabAcrossSwitches() async throws {
+        let emitter = ScreenEventEmitter(bundleID: chromeBundleID, writeStderr: { _ in })
+        let frames: [(Double, String)] = [(0, "live-mindmap"), (1, "about:blank"), (2, "(3) 配信 - YouTube"), (62, "(4) 配信 - YouTube 🔊"), (63, otherTabTitle), (64, otherTabTitle), (65, "(5) 配信 - YouTube")]
         var encoded: [String] = []
-        let events = titles.enumerated().compactMap { index, title in
-            detector.screenEvent(for: ScreenFrame(luma: luma(fill: 100), time: Double(index), title: title)) {
+        for (time, title) in frames {
+            emitter.emit(ScreenFrame(luma: luma(fill: 100), time: time, title: title)) {
                 encoded.append(title)
                 return shot(title)
             }
         }
-        #expect(encoded == [titles[2], titles[6]])
-        #expect(events == [
-            .screen(start: 2, image: titles[2], lines: []),
-            .screen(start: 4, image: nil, lines: nil),
-            .screen(start: 6, image: titles[6], lines: []),
-        ])
+        let events = try await drainTabs(emitter)
+        #expect(encoded == [frames[2].1, frames[6].1])
+        #expect(events.map(\.type) == ["screen", "screen", "screen"])
+        #expect(events.map(\.start) == [2, 63, 65])
+        #expect(events.map(\.image) == [frames[2].1, nil, frames[6].1])
+        #expect(events.map(\.lines) == [[], nil, []])
     }
 
     @Test("新しいタブと自身の画面は記憶せず、後から来る配信を記憶する", arguments: ["live-mindmap", "about:blank", "新しいタブ", "New Tab"])
@@ -1332,25 +1332,12 @@ struct ScreenRememberedTabTests {
         #expect(detector.next(frame(luma(fill: 100), at: 2, title: title)) == .none(start: 2))
     }
 
-    @Test("本文の数字と記号を削除して別のタブを許可しない", arguments: ["配信 (4) - YouTube", "🔊 配信 - YouTube", "(LIVE) 配信 - YouTube", "(4 配信 - YouTube"])
-    func distinctTitleIsNotNormalizedIntoRememberedTab(_ title: String) {
-        var detector = makeDetector(chromeBundleID)
-        #expect(detector.screenEvent(for: ScreenFrame(luma: luma(fill: 100), time: 0, title: "配信 - YouTube")) { shot("A") } == .screen(start: 0, image: "A", lines: []))
-        var encoded = false
-        let event = detector.screenEvent(for: ScreenFrame(luma: luma(fill: 100), time: 1, title: title)) {
-            encoded = true
-            return shot("禁止")
-        }
-        #expect(event == .screen(start: 1, image: nil, lines: nil))
-        #expect(!encoded)
-    }
-
     @Test("配信を覚えた後も別の Meet タブを許可し、元の記憶を保持する")
     func meetRemainsAllowedWithoutReplacingRememberedTab() {
         var detector = makeDetector(chromeBundleID)
         let page = luma(fill: 100)
         #expect(detector.next(frame(page, at: 0, title: "配信")) == .send(start: 0))
-        #expect(detector.next(frame(page, at: 1, title: meetTitle)) == .nothing)
+        #expect(detector.next(frame(page, at: 1, title: meetTitle)) == .send(start: 1))
         #expect(detector.next(frame(page, at: 2, title: otherTabTitle)) == .none(start: 2))
         #expect(detector.next(frame(page, at: 3, title: "配信")) == .send(start: 3))
     }
@@ -1377,18 +1364,19 @@ struct ScreenRememberedTabTests {
     }
 
     @Test("最初の画像生成に失敗しても記憶を保持し、元のタブで再試行する")
-    func failedEncodeDoesNotForgetTab() {
-        var detector = makeDetector(chromeBundleID)
+    func failedEncodeDoesNotForgetTab() async throws {
+        let emitter = ScreenEventEmitter(bundleID: chromeBundleID, writeStderr: { _ in })
         var encoded: [String] = []
         let titles = ["配信", otherTabTitle, "配信"]
-        let events = titles.enumerated().compactMap { index, title in
-            detector.screenEvent(for: ScreenFrame(luma: luma(fill: 100), time: Double(index), title: title)) {
+        for (index, title) in titles.enumerated() {
+            emitter.emit(ScreenFrame(luma: luma(fill: 100), time: Double(index), title: title)) {
                 encoded.append(title)
                 return index == 0 ? nil : shot(title)
             }
         }
+        let events = try await drainTabs(emitter)
         #expect(encoded == ["配信", "配信"])
-        #expect(events == [.screen(start: 2, image: "配信", lines: [])])
+        #expect(events == [TabScreen(type: "screen", start: 2, image: "配信", lines: [], reason: nil)])
     }
 }
 
@@ -1443,11 +1431,11 @@ struct ScreenRememberedTabNoticeTests {
             .screen(start: 0, image: "A", lines: []),
             .screen(start: 2, image: nil, lines: nil),
             .screen(start: 6, image: "A", lines: []),
-            .screen(start: 7, image: nil, lines: nil),
+            .screen(start: 7, image: nil, lines: nil, meetingTabTitle: "(3) 配信 - YouTube"),
             .screen(start: 9, image: "復帰", lines: []),
         ])
         emitter.emit(ScreenFrame(luma: luma(fill: 100), time: 10, title: "配信 - YouTube")) { shot("終了後") }
-        #expect(writes == ["会議のタブ: (3) 配信 - YouTube\n"])
+        #expect(writes == ["会議のタブ: (3) 配信 - YouTube\n", "会議のタブを確定しました: (3) 配信 - YouTube\n"])
     }
 
     @Test("新しい送出器は前の記憶を引き継がず、別のタブを記憶して再通知する")
@@ -1459,7 +1447,7 @@ struct ScreenRememberedTabNoticeTests {
             let events = await collect(emitter)
             #expect(events == [.screen(start: 0, image: title, lines: [])])
         }
-        #expect(writes == ["会議のタブ: 配信A\n", "会議のタブ: 配信B\n"])
+        #expect(writes == ["会議のタブ: 配信A\n", "会議のタブを確定しました: 配信A\n", "会議のタブ: 配信B\n", "会議のタブを確定しました: 配信B\n"])
     }
 
     @Test("会議アプリ本体はタイトルを記憶せず通知もしない")

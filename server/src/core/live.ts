@@ -29,6 +29,7 @@ export const HelperEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("screen"), start: Schema.Finite, image: Schema.NullOr(Schema.Uint8ArrayFromBase64),
     // Vision で読んだ文字の行（Issue #643）。無い旧ヘルパーのイベントも受け付ける
     lines: Schema.optionalKey(Schema.Array(Schema.String)),
+    meetingTabTitle: Schema.optionalKey(Schema.String),
     ocrFailed: Schema.optionalKey(Schema.Literal(true)) }),
   // 共有画面を取り込めない（画面収録の許可が無い・断られた・途中で取れなくなった）。ヘルパーが流す reason は許可なしだけ（指定はサーバーが書く）
   Schema.Struct({ type: Schema.Literal("screen-off"), start: Schema.Finite, reason: Schema.Literal("許可なし") }),

@@ -808,6 +808,98 @@ describe("ブラウザの会議タブの端末通知", () => {
     return { helpers, fake, screen, ...server };
   });
 
+  it.effect.each([0, 60])("受信60秒の画像start=%sでは過去画像だけを通知から除き、保存には渡す", (imageStart) => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, fake, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* TestClock.adjust(1_000);
+    yield* screen("/9j/2Q==", 1, 0);
+    yield* TestClock.adjust(1_000);
+    yield* screen("/9j/2Q==", 2, 0);
+    yield* TestClock.adjust(1_000);
+    helpers.send(0, { type: "screen", start: 3, image: null, meetingTabTitle: "Gmail" });
+    yield* TestClock.adjust(0);
+    expect(fake.screens).toHaveLength(3);
+    yield* TestClock.adjust(57_000);
+    yield* screen("/9j/2Q==", imageStart, 0);
+    helpers.send(0, { type: "screen", start: 3, image: null, meetingTabTitle: "Gmail" });
+    yield* TestClock.adjust(0);
+    expect(fake.screens).toHaveLength(5);
+    expect(fake.screens[3]).toEqual({ start: imageStart, image: Uint8Array.from([255, 216, 255, 217]), lines: ["会議資料"] });
+    yield* TestClock.adjust(2_999);
+    expect(stderr).toEqual([]);
+    yield* TestClock.adjust(1);
+    const expected = imageStart === 0 ? ["会議のタブ（Gmail）が前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）\n"] : [];
+    expect(stderr).toEqual(expected);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual(expected);
+  }).pipe(Effect.scoped)));
+
+  it.effect("同時刻の復帰画像は受理し、古いnullは新たな不在待機を始めない", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 3, 0);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual([warning]);
+    yield* screen("/9j/2Q==", 3, 0);
+    expect(stderr).toEqual([warning, restored]);
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual([warning, restored]);
+    yield* screen(null, 3, 0);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual([warning, restored, warning]);
+  }).pipe(Effect.scoped)));
+
+  it.effect("screen-offで時刻の比較も初期化し、その後の不在を新しく監視する", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, fake, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    yield* screen(null, 100, 0);
+    yield* TestClock.adjust(59_000);
+    helpers.send(0, { type: "screen-off", start: 101, reason: "許可なし" });
+    yield* TestClock.adjust(0);
+    expect(fake.screenOffs).toEqual([{ start: 101, reason: "許可なし" }]);
+    const before = [...stderr];
+    yield* screen(null, 0, 0);
+    yield* TestClock.adjust(59_999);
+    expect(stderr).toEqual(before);
+    yield* TestClock.adjust(1);
+    expect(stderr).toEqual([...before, warning]);
+  }).pipe(Effect.scoped)));
+
+  it.effect("受信JSONの会議タブの題名を不在通知に載せ、復帰後は覚え直した題名を使う", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, fake, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    for (const [index, title] of ["Gmail - Inbox", "配信 - YouTube"].entries()) {
+      if (index > 0) yield* screen("/9j/2Q==", 63, 0);
+      const count = fake.screens.length;
+      helpers.send(0, { type: "screen", start: 62 + index, image: null, meetingTabTitle: title });
+      yield* TestClock.adjust(0);
+      expect(fake.screens).toHaveLength(count + 1);
+      const before = [...stderr];
+      yield* TestClock.adjust(59_999);
+      expect(stderr).toEqual(before);
+      yield* TestClock.adjust(1);
+      expect(stderr).toEqual([...before, `会議のタブ（${title}）が前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）\n`]);
+    }
+    expect(stderr).toHaveLength(3);
+    expect(stderr[1]).toBe(restored);
+  }).pipe(Effect.scoped)));
+
+  it.effect("既知の題名の通知後でも、題名のない次の不在イベントは従来の文面に戻る", () => withStderr((stderr) => Effect.gen(function* () {
+    const { sessions, helpers, fake, screen } = yield* boot([{}]);
+    yield* sessions.start(start({ app: "com.google.Chrome" }));
+    helpers.send(0, { type: "screen", start: 0, image: null, meetingTabTitle: "配信 - YouTube" });
+    yield* TestClock.adjust(0);
+    expect(fake.screens).toHaveLength(1);
+    yield* TestClock.adjust(60_000);
+    const titledWarning = "会議のタブ（配信 - YouTube）が前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）\n";
+    expect(stderr).toEqual([titledWarning]);
+    yield* screen("/9j/2Q==", 61, 0);
+    yield* screen(null, 62, 0);
+    yield* TestClock.adjust(60_000);
+    expect(stderr).toEqual([titledWarning, restored, warning]);
+  }).pipe(Effect.scoped)));
+
   it.effect.each([
     "com.google.Chrome", "com.microsoft.edgemac", "com.apple.Safari",
     "company.thebrowser.Browser", "com.brave.Browser", "org.mozilla.firefox",
@@ -922,7 +1014,7 @@ describe("ブラウザの会議タブの端末通知", () => {
       { unexpectedExit: { afterMs: 59_000, exit: { code: 1, signal: null } } }, {},
     ]);
     yield* sessions.start(start({ app: "com.google.Chrome" }));
-    yield* screen(null, 0, 0);
+    yield* screen(null, 100, 0);
     yield* TestClock.adjust(59_000);
     expect(helpers.calls).toHaveLength(2);
     const restartOutput = [...stderr];

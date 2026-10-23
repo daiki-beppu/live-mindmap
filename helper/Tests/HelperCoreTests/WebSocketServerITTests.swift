@@ -35,6 +35,110 @@ private actor Completion {
 
 @Suite("localhost の WebSocket", .timeLimit(.minutes(1)))
 struct WebSocketServerITTests {
+    @Test("closeで確定した保留画像は、配送タスク完了直後にサーバーを止めても最後まで届く")
+    func closingRelayFinishesPendingScreenSends() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let emitter = ScreenEventEmitter(bundleID: "com.google.Chrome", writeStderr: { _ in })
+        let relay = Task { await relayScreenEvents(emitter.events, to: server) }
+        defer { emitter.close() }
+        let client = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        client.maximumMessageSize = 2 * 1024 * 1024
+        client.resume()
+        defer { client.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+        let receiving = Task {
+            var received: [String] = []
+            for _ in 0..<4 { received.append(try await receiveText(client)) }
+            return received
+        }
+        defer { receiving.cancel() }
+
+        // 小さいフレームだけでは、送信登録とstopの間に送信が完了してしまう。
+        let image = String(repeating: "A", count: 1024 * 1024)
+        for (time, value) in [(0.0, UInt8(30)), (1, 200), (15, 200), (16, 30), (30, 30), (31, 200), (45, 200)] {
+            emitter.emit(ScreenFrame(luma: [UInt8](repeating: value, count: screenGridWidth * screenGridHeight), time: time, title: "Gmail")) {
+                ScreenShot(image: image, lines: ["Gmail OCR"])
+            }
+        }
+        emitter.close()
+        await relay.value
+        await server.stop()
+        let expected = try [0.0, 1, 16, 31].map { try HelperEvent.screen(start: $0, image: image, lines: ["Gmail OCR"]).jsonString() }
+        #expect(try await receiving.value == expected)
+    }
+
+    @Test("仮画像は接続中へ配送し、後続接続には復帰または継続中の最新画面を再送する", arguments: [false, true])
+    func delayedProvisionalImageKeepsLatestRetainedScreen(_ returnsToGmail: Bool) async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let emitter = ScreenEventEmitter(bundleID: "com.google.Chrome", writeStderr: { _ in })
+        let relay = Task { await relayScreenEvents(emitter.events, to: server) }
+        defer { emitter.close() }
+        let url = URL(string: "ws://127.0.0.1:\(port)")!
+        let first = URLSession.shared.webSocketTask(with: url)
+        first.resume()
+        defer { first.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+        for (time, title, value, image) in [(0.0, "Gmail", UInt8(30), "gmail"), (1, "Meet - abc", 200, "meet"), (2, "Meet - abc", 200, "unused")] {
+            emitter.emit(ScreenFrame(luma: [UInt8](repeating: value, count: screenGridWidth * screenGridHeight), time: time, title: title)) {
+                ScreenShot(image: image, lines: [image + " OCR"])
+            }
+        }
+        for time in stride(from: 60.0, through: 80, by: 0.25) {
+            emitter.emit(ScreenFrame(luma: [UInt8](repeating: returnsToGmail ? 30 : 200, count: screenGridWidth * screenGridHeight), time: time, title: returnsToGmail ? "Gmail" : "Meet - abc")) {
+                ScreenShot(image: "gmail-return", lines: ["gmail-return OCR"])
+            }
+        }
+        emitter.close()
+        await relay.value
+        let meet = try HelperEvent.screen(start: 1, image: "meet", lines: ["meet OCR"]).jsonString()
+        #expect(try await receiveText(first) == meet)
+        #expect(try await receiveText(first) == HelperEvent.screen(start: 0, image: "gmail", lines: ["gmail OCR"]).jsonString())
+        let latest = try returnsToGmail ? HelperEvent.screen(start: 60, image: "gmail-return", lines: ["gmail-return OCR"]).jsonString() : meet
+        if returnsToGmail { #expect(try await receiveText(first) == latest) }
+        let late = URLSession.shared.webSocketTask(with: url)
+        late.resume()
+        defer { late.cancel(with: .goingAway, reason: nil) }
+        #expect(try await receiveText(late) == latest)
+        try await waitForClients(server, count: 2)
+        await server.broadcast("marker")
+        #expect(try await receiveText(first) == "marker")
+        #expect(try await receiveText(late) == "marker")
+    }
+
+    @Test("画像とnullはstartで保持を選び、同時刻は到着順、他の保持keyは維持する", arguments: [0.0, 1, 2], [false, true])
+    func screenRetentionUsesStart(_ start: Double, _ absent: Bool) async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let (events, continuation) = AsyncStream<HelperEvent>.makeStream()
+        let origin = try HelperEvent.origin(hostTime: 42).jsonString()
+        await server.broadcastRetained(origin, key: "origin")
+        let old = HelperEvent.screen(start: 1, image: "first", lines: ["first OCR"])
+        let arriving = HelperEvent.screen(start: start, image: absent ? nil : "arriving", lines: absent ? nil : ["arriving OCR"])
+        let off = HelperEvent.screenOff(start: 3, reason: .許可なし)
+        continuation.yield(old)
+        continuation.yield(arriving)
+        if absent && start >= 1 {
+            continuation.yield(.screen(start: 0, image: "delayed", lines: ["delayed OCR"]))
+        }
+        continuation.yield(off)
+        continuation.finish()
+        await relayScreenEvents(events, to: server)
+        let late = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        late.resume()
+        defer { late.cancel(with: .goingAway, reason: nil) }
+        #expect(try await receiveText(late) == origin)
+        #expect(try await receiveText(late) == (start < 1 ? old : arriving).jsonString())
+        #expect(try await receiveText(late) == off.jsonString())
+        try await waitForClients(server, count: 1)
+        await server.broadcast("marker")
+        #expect(try await receiveText(late) == "marker")
+    }
+
     @Test("接続したクライアントが broadcast したテキストをテキストフレームで受け取る")
     func clientReceivesBroadcast() async throws {
         let server = WebSocketServer(port: 0)
