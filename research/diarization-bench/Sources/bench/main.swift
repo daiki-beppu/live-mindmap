@@ -11,10 +11,11 @@ func cpuSeconds() -> Double {
         + Double(u.ru_stime.tv_usec) / 1e6
 }
 
-// フレームの確率から、0.5 を超える中で最も高い話者（いなければ -1）
+// フレームの確率から、区切りの値（既定 0.5、環境変数 DIAR_THRESHOLD で変える）を超える中で最も高い話者（いなければ -1）
+let threshold = Float(ProcessInfo.processInfo.environment["DIAR_THRESHOLD"] ?? "") ?? 0.5
 func dominant(_ preds: [Float], frame: Int, numSpeakers: Int) -> Int {
     var best = -1
-    var bestP: Float = 0.5
+    var bestP: Float = threshold
     for s in 0..<numSpeakers where preds[frame * numSpeakers + s] > bestP {
         best = s
         bestP = preds[frame * numSpeakers + s]
@@ -57,6 +58,40 @@ if method.hasPrefix("pyannote") {
             frameLines.append("\(s.speakerId)\t\(s.startTimeSeconds)\t\(s.endTimeSeconds)\t\(fed)")
         }
     }
+} else if method.hasPrefix("nemotron3-") {
+    // Nemotron 3 Diarization（枠 8 つ、Issue #1413）: 方式名の後ろはプリセット名（low / fast / fast32 など）。
+    // 確定した確率だけを返し、仮のラベルは無い
+    let preset = String(method.dropFirst("nemotron3-".count))
+    let config = Nemotron3Config.preset(named: preset)!
+    let t0 = Date()
+    let d = Nemotron3Diarizer(config: config, models: try await Nemotron3Models.loadFromHuggingFace(config: config))
+    loadSeconds = Date().timeIntervalSince(t0)
+    let n = config.numSpeakers
+    var probs: [Float] = []
+    var frameCount = 0
+    wallStart = Date()
+    cpuStart = cpuSeconds()
+    let step = Int(feedSeconds * 16_000)
+    func record(_ results: [Nemotron3ChunkResult], fed: Double) {
+        for c in results {
+            for i in 0..<c.frameCount {
+                frameLines.append("\(frameCount + i)\t\(dominant(c.probabilities, frame: i, numSpeakers: n))\t\t\(fed)")
+            }
+            probs += c.probabilities
+            frameCount += c.frameCount
+        }
+    }
+    for start in stride(from: 0, to: audio.count, by: step) {
+        let end = min(start + step, audio.count)
+        d.appendAudio(Array(audio[start..<end]))
+        record(try d.processBufferedAudio(), fed: Double(end) / 16_000)
+    }
+    record(try d.finishStream(), fed: audioSeconds)
+    for s in Nemotron3Diarizer.segments(
+        probabilities: probs, frameCount: frameCount, numSpeakers: n, threshold: threshold) {
+        segs.append((String(s.speakerIndex), Double(s.startSeconds), Double(s.endSeconds)))
+    }
+    frameLines.insert("# frameSeconds=\(config.outputFrameSeconds)", at: 0)
 } else {
     let t0 = Date()
     let diarizer: any Diarizer
