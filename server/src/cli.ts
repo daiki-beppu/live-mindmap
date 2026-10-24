@@ -240,12 +240,11 @@ const executeServerRequest = Effect.fnUntraced(function* <R extends ServerRoute>
 });
 
 const decodeServerBody = Effect.fnUntraced(function* <S extends Schema.Decoder<unknown>>(response: HttpClientResponse.HttpClientResponse, schema: S): Effect.fn.Return<S["Type"], ServerFailed, S["DecodingServices"]> {
-  const parsed = yield* response.text.pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
-    Effect.orElseSucceed((): unknown => ({})),
-  );
-  return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
-    Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })),
+  const unreadable = (reason: string) => new ServerFailed({ message: `サーバーの応答が読めません: ${reason}` });
+  const text = yield* response.text.pipe(Effect.mapError((e) => unreadable(e.message)));
+  return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+    Effect.mapError((e) => unreadable(decodeReason(e))),
   );
 });
 
