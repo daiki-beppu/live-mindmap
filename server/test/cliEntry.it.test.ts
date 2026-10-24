@@ -292,6 +292,29 @@ describe("CLI の入口の出力", () => {
     expect(result.stderr.startsWith(`${logPath} の 3 行目${reason}`)).toBe(true);
   }).pipe(Effect.scoped));
 
+  it.live.each([
+    { command: "review --self-only", argv: ["review", "--self-only"], prefix: "map-audio-自分.html を書き出せませんでした: ", includePath: true },
+    { command: "publish", argv: ["publish"], prefix: "", includePath: false },
+  ])("$command の不正 JSON は既存の前置き・空行込みの行番号を stderr 1 行に出して exit 1", ({ argv, prefix, includePath }) => Effect.gen(function* () {
+    const sessionsDir = yield* temporaryDirectory;
+    const run = join(sessionsDir, "run");
+    const logPath = join(run, "log.jsonl");
+    yield* Effect.tryPromise(async () => {
+      await mkdir(run);
+      await writeFile(logPath, '{"type":"start","title":"定例"}\n\n{ not json\n');
+      await writeFile(join(run, "自分.m4a"), "録音");
+    });
+
+    const result = yield* runEntry(argv, sessionsDir);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    const expectedPrefix = `${prefix}${includePath ? logPath : "log.jsonl"} の 3 行目が JSON として読めません: `;
+    expect(result.stderr.startsWith(expectedPrefix)).toBe(true);
+    expect(result.stderr.slice(expectedPrefix.length)).toMatch(/^[^\n]+\n$/);
+    expect(existsSync(join(run, "map-audio-自分.html"))).toBe(false);
+  }).pipe(Effect.scoped));
+
   it.live("review の log.jsonl なしは、パスに改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const missing = join(dir, "review\nmissing");

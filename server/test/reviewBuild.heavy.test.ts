@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,11 +48,9 @@ describe("map.html の本物のビルド", () => {
         Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-review-real-"))),
         (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
       );
-      const logPath = join(dir, "log.jsonl");
-      writeFileSync(logPath, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
 
       // 本物のビルドは 1 回だけ。音声つきの版には、偽の mix の出力（小さなバイト列）を埋め込む
-      const { paths: [path, audioPath], skipped } = yield* writeReviewPages(dir, logPath, [{ file: "map.html", audio: false }, { file: "map-audio.html", audio: true }]).pipe(
+      const { paths: [path, audioPath], skipped } = yield* writeReviewPages(dir, events, [{ file: "map.html", audio: false }, { file: "map-audio.html", audio: true }]).pipe(
         Effect.provide(Layer.mergeAll(ReviewBuild.layer, fakeAudioMix().layer).pipe(Layer.provideMerge(NodeFileSystem.layer))),
       );
 
