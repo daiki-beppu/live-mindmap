@@ -56,6 +56,27 @@ describe("正解ファイルを読む（cli と bench の共有）", () => {
     expect(failure.reason).toBe("「決定」の 1 件目: from が to より大きい");
   }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
+  it.effect.each([
+    { name: "決定のキーが無い", truth: { TODO: [] }, reason: "「決定」は配列で書く" },
+    { name: "TODO のキーが無い", truth: { 決定: [] }, reason: "「TODO」は配列で書く" },
+    { name: "決定が配列でない", truth: { 決定: null, TODO: [] }, reason: "「決定」は配列で書く" },
+    { name: "TODO が配列でない", truth: { 決定: [], TODO: 1 }, reason: "「TODO」は配列で書く" },
+    { name: "どちらのキーも無い", truth: {}, reason: "「決定」は配列で書く" },
+  ])("種別のキーが無い・配列でない理由は、その種別を主語にした 1 文（$name）", ({ truth, reason }) => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const path = join(dir, "bad.truth.json");
+    writeFileSync(path, JSON.stringify(truth));
+    const failure = yield* Effect.flip(readTruthFile(path));
+    expect(failure.reason).toBe(reason);
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
+
+  it.effect("種別でないキーは読み捨てる", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const path = join(dir, "extra.truth.json");
+    writeFileSync(path, JSON.stringify({ 決定: [], TODO: [], メモ: 1 }));
+    expect(yield* readTruthFile(path)).toStrictEqual({ 決定: [], TODO: [] });
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
+
   it.effect("読めないファイル（無い）も InvalidTruthFile で、理由に読めなかった原因が入る", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const path = join(dir, "missing.truth.json");
@@ -111,6 +132,28 @@ describe("共有画面の正解ファイルを読む", () => {
     writeFileSync(path, JSON.stringify(truth));
     const failure = yield* Effect.flip(readScreenTruthFile(path));
     expect(failure.reason).toBe(reason);
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
+
+  it.effect.each([
+    { name: "指す発言のキーが無い", truth: { 話だけ: [], 出てはいけない: [] }, reason: "「指す発言」は配列で書く" },
+    { name: "話だけのキーが無い", truth: { 指す発言: [], 出てはいけない: [] }, reason: "「話だけ」は配列で書く" },
+    { name: "出てはいけないのキーが無い", truth: { 指す発言: [], 話だけ: [] }, reason: "「出てはいけない」は配列で書く" },
+    { name: "指す発言が配列でない", truth: { 指す発言: {}, 話だけ: [], 出てはいけない: [] }, reason: "「指す発言」は配列で書く" },
+    { name: "出てはいけないが配列でない", truth: { 指す発言: [], 話だけ: [], 出てはいけない: 3 }, reason: "「出てはいけない」は配列で書く" },
+    { name: "どのキーも無い", truth: {}, reason: "「指す発言」は配列で書く" },
+  ])("種別のキーが無い・配列でない理由は、その種別を主語にした 1 文（$name）", ({ truth, reason }) => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const path = join(dir, "bad.screen.truth.json");
+    writeFileSync(path, JSON.stringify(truth));
+    const failure = yield* Effect.flip(readScreenTruthFile(path));
+    expect(failure.reason).toBe(reason);
+  }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
+
+  it.effect("種別でないキーは読み捨てる", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const path = join(dir, "extra.screen.truth.json");
+    writeFileSync(path, JSON.stringify({ 指す発言: [], 話だけ: [], 出てはいけない: [], メモ: 1 }));
+    expect(yield* readScreenTruthFile(path)).toStrictEqual({ 指す発言: [], 話だけ: [], 出てはいけない: [] });
   }).pipe(Effect.scoped, Effect.provide(NodeFileSystem.layer)));
 
   it.effect("読めないファイル（無い）も InvalidTruthFile で、理由に読めなかった原因が入る", () => Effect.gen(function* () {
