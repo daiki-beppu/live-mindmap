@@ -27,7 +27,7 @@ export const appleLiveServer = Effect.fnUntraced(function* () {
   const sinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
     const service = yield* SessionSinks;
     return SessionSinks.of({ ...service, open: (args) => service.open(args).pipe(
-      Effect.tap(() => Deferred.succeed(speaking, args.speak)),
+      Effect.tap(() => Deferred.succeed(speaking, args.send)),
     ) });
   })).pipe(Layer.provide(realSinks));
   const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers, sessionSinks: sinks, managedDeps: readyManagedDeps });

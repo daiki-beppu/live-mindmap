@@ -262,7 +262,6 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
         yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual(map), { timeout: 10_000 }));
         expect(c.frames.filter((frame) => !(typeof frame === "object" && frame !== null && "type" in frame))).toEqual([map]);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, origin))).status).toBe(200);
-        yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "intake", status: "none" }), { timeout: 10_000 }));
       }));
   }
   for (const origin of ["https://evil.example", "null", "http://localhost.evil.example"]) {

@@ -6,7 +6,7 @@ const FEED_END = Symbol("live-mindmap/server/Viewers/end");
 type Feed = string | typeof FEED_END;
 
 export type ViewerFrame = Snapshot | CaptionsFrame | IntakeFrame | ScreenNoticeFrame | TapNoticeFrame | SelfPauseFrame | DiffUpdateFrame | SessionModeFrame | SpeakerNamesFrame;
-type SendFrame = (frame: ViewerFrame) => Effect.Effect<void>;
+export type SendFrame = (frame: ViewerFrame) => Effect.Effect<void>;
 
 const END_FRAMES: {
   readonly [F in ViewerFrame as F extends { type: string } ? F["type"] : "snapshot"]: F | "keep";
@@ -31,15 +31,6 @@ const retainedFrames = (retained: ReadonlyMap<string, string>): string[] => Obje
 
 export class Viewers extends Context.Service<Viewers, {
   forSession: Effect.Effect<SendFrame, never, Scope.Scope>;
-  publish: (snapshot: Snapshot) => Effect.Effect<void>;
-  speak: (frame: CaptionsFrame) => Effect.Effect<void>;
-  intake: (frame: IntakeFrame) => Effect.Effect<void>;
-  diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
-  screenNotice: (frame: ScreenNoticeFrame) => Effect.Effect<void>;
-  tapNotice: (frame: TapNoticeFrame) => Effect.Effect<void>;
-  selfPause: (frame: SelfPauseFrame) => Effect.Effect<void>;
-  sessionMode: (frame: SessionModeFrame) => Effect.Effect<void>;
-  speakerNames: (frame: SpeakerNamesFrame) => Effect.Effect<void>;
   connect: (socket: Socket.Socket) => Effect.Effect<void, Socket.SocketError>;
   drained: Effect.Effect<void>;
 }>()("live-mindmap/server/Viewers") {
@@ -90,6 +81,6 @@ export class Viewers extends Context.Service<Viewers, {
 
     const drained = Effect.andThen(PubSub.end(updates, FEED_END), FiberSet.awaitEmpty(connections));
 
-    return Viewers.of({ forSession, publish: send, speak: send, intake: send, diffUpdate: send, screenNotice: send, tapNotice: send, selfPause: send, sessionMode: send, speakerNames: send, connect, drained });
+    return Viewers.of({ forSession, connect, drained });
   }));
 }

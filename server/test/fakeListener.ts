@@ -3,7 +3,7 @@ import { HttpServer } from "effect/http";
 import { NetAddress } from "effect/net";
 import type { DiffUpdateFrame, SessionModeFrame, Snapshot } from "../src/core/index.ts";
 import type { openListener } from "../src/http.ts";
-import { Viewers } from "../src/viewers.ts";
+import { Viewers, type ViewerFrame } from "../src/viewers.ts";
 
 export type OpenListener = typeof openListener;
 
@@ -18,19 +18,26 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
       ports.push(port);
       yield* Effect.addFinalizer(() => Effect.sync(() => { events.push("closed"); }));
       const viewers = Viewers.of({
-        forSession: Effect.die("この偽listenerではセッション用の送り口を使用しません"),
-        publish: (snapshot) => Effect.sync(() => {
-          published.push(snapshot);
-          onPublish(snapshot);
+        forSession: Effect.gen(function* () {
+          let sentMode = false;
+          let sentDiff = false;
+          yield* Effect.addFinalizer(() => Effect.sync(() => {
+            if (sentDiff) diffUpdates.push({ type: "diff-update", state: null });
+            if (sentMode) modes.push({ type: "session-mode", local: false });
+          }));
+          return (frame: ViewerFrame) => Effect.sync(() => {
+            if (!("type" in frame)) {
+              published.push(frame);
+              onPublish(frame);
+            } else if (frame.type === "diff-update") {
+              sentDiff = true;
+              diffUpdates.push(frame);
+            } else if (frame.type === "session-mode") {
+              sentMode = true;
+              modes.push(frame);
+            }
+          });
         }),
-        speak: () => Effect.void,
-        intake: () => Effect.void,
-        diffUpdate: (frame) => Effect.sync(() => { diffUpdates.push(frame); }),
-        screenNotice: () => Effect.void,
-        tapNotice: () => Effect.void,
-        selfPause: () => Effect.void,
-        sessionMode: (frame) => Effect.sync(() => { modes.push(frame); }),
-        speakerNames: () => Effect.void,
         connect: () => Effect.void,
         drained: Effect.sync(() => { events.push("drained"); }),
       });

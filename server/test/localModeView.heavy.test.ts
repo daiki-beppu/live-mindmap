@@ -74,7 +74,7 @@ const realSinks = SessionSinks.layer({
 const sessionSinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
   const sinks = yield* SessionSinks;
   return SessionSinks.of({ ...sinks, open: (args) => sinks.open(args).pipe(
-    Effect.tap(() => args.speak({ type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "確定", start: 0, end: 1, text: "位置を確かめる字幕です。", settledLength: 12 }] })),
+    Effect.tap(() => args.send({ type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "確定", start: 0, end: 1, text: "位置を確かめる字幕です。", settledLength: 12 }] })),
   ) });
 })).pipe(Layer.provide(realSinks));
 

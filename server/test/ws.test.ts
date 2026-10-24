@@ -109,7 +109,8 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       yield* Effect.forkChild(viewers.connect(after.socket));
       yield* after.ready;
       expect(yield* receivedFrames(after.frames)).toEqual([]);
-      yield* viewers.publish(snap("接続の確認"));
+      const send = yield* viewers.forSession;
+      yield* send(snap("接続の確認"));
       expect(yield* Queue.take(connected.frames)).toEqual(snap("接続の確認"));
       expect(yield* Queue.take(after.frames)).toEqual(snap("接続の確認"));
     }).pipe(Effect.provide(Viewers.layer)));
@@ -129,7 +130,8 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       yield* Effect.scoped(viewers.forSession);
       yield* TestClock.adjust(1);
       expect(yield* receivedFrames(connected.frames)).toEqual([]);
-      yield* viewers.publish(snap("継続"));
+      const send = yield* viewers.forSession;
+      yield* send(snap("継続"));
       expect(yield* Queue.take(connected.frames)).toEqual(snap("継続"));
     }).pipe(Effect.provide(Viewers.layer)));
 
@@ -183,11 +185,12 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       const sending = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       const c = yield* client(Deferred.succeed(sending, undefined).pipe(Effect.andThen(Deferred.await(release))));
-      yield* viewers.publish(snap("初回"));
+      const send = yield* viewers.forSession;
+      yield* send(snap("初回"));
       yield* Effect.forkChild(viewers.connect(c.socket));
       yield* Deferred.await(sending);
-      yield* viewers.publish(snap("更新1"));
-      yield* viewers.publish(snap("更新2"));
+      yield* send(snap("更新1"));
+      yield* send(snap("更新2"));
       yield* Deferred.succeed(release, undefined);
       expect(yield* Queue.take(c.frames)).toEqual(snap("初回"));
       expect(yield* Queue.takeN(c.frames, 2)).toEqual([snap("更新1"), snap("更新2")]);
@@ -196,7 +199,8 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
   it.effect("切断で配信Fiberとwriterを終了し、残った接続へは更新が届く（要件17）", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
-      yield* viewers.publish(snap("前"));
+      const send = yield* viewers.forSession;
+      yield* send(snap("前"));
       const a = yield* client(Effect.void);
       const b = yield* client(Effect.void);
       const fiber = yield* Effect.forkChild(viewers.connect(a.socket));
@@ -206,7 +210,7 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       yield* a.disconnect;
       yield* Effect.exit(Fiber.join(fiber));
       yield* Deferred.await(a.writerReleased);
-      yield* viewers.publish(snap("後"));
+      yield* send(snap("後"));
       expect(yield* Queue.take(b.frames)).toEqual(snap("後"));
       expect(yield* Queue.size(a.frames)).toBe(0);
     }).pipe(Effect.provide(Viewers.layer)));

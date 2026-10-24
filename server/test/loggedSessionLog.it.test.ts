@@ -9,6 +9,7 @@ import { Cause, DateTime, Effect, Exit, Layer } from "effect";
 import type { DiffInput, IntakeLogEvent, Remark } from "../src/core/index.ts";
 import { createSessionDir, openLoggedSession } from "../src/sessionFiles.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
+import type { ViewerFrame } from "../src/viewers.ts";
 
 // セッションのフォルダへの書き込み（log.jsonl の追記・export.json・フォルダ名）の契約。
 // 書き込みは FileSystem 経由の非同期になるので、同期の書き込みで自然に成り立っていた次の性質を固定する:
@@ -29,12 +30,16 @@ const open = Effect.fn("open")(function* () {
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
   const published: number[] = [];
-  const opened = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", publish: (snapshot) => Effect.sync(() => void published.push(snapshot.nodes.length)) }).pipe(
+  const frames: ViewerFrame[] = [];
+  const opened = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", send: (frame) => Effect.sync(() => {
+    frames.push(frame);
+    if (!("type" in frame)) published.push(frame.nodes.length);
+  }) }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
   const exported = () => JSON.parse(readFileSync(join(dir, "export.json"), "utf8")) as unknown;
-  return { root, dir, ...opened, inputs, published, lines, exported };
+  return { root, dir, ...opened, inputs, published, frames, lines, exported };
 });
 
 describe("createSessionDir", () => {
@@ -96,7 +101,7 @@ describe("openLoggedSession のログと export.json", () => {
   it.effect("作成直後に、start の行（at・type・title）と、そのセッションのマップの export.json がある", () =>
     Effect.gen(function* () {
       const before = Date.now();
-      const { lines, exported, session, published } = yield* open();
+      const { lines, exported, session, published, frames } = yield* open();
 
       const [first] = lines();
       expect(first).toMatchObject({ type: "start", title: "定例" });
@@ -106,6 +111,12 @@ describe("openLoggedSession のログと export.json", () => {
       expect(Date.parse(first!.at as string)).toBeLessThanOrEqual(Date.now() + 1);
       expect(exported()).toEqual(JSON.parse(JSON.stringify(yield* session.exportJson)));
       expect(published).toHaveLength(1); // 最初のルート
+      expect(frames.filter((frame) => "type" in frame && frame.type === "speaker-names")).toEqual([
+        { type: "speaker-names", names: [] },
+      ]);
+      expect(frames.filter((frame) => "type" in frame && frame.type === "diff-update")).toEqual([
+        { type: "diff-update", state: { status: "running" } },
+      ]);
     }).pipe(Effect.scoped));
 
   it.effect("logShiftMs を渡すと、log.jsonl の at と diff の call の時刻が、実時刻にそのずらし幅を足した値になる", () =>
@@ -113,7 +124,7 @@ describe("openLoggedSession のログと export.json", () => {
       const shift = -3 * 24 * 3_600_000;
       const root = yield* sessionsDir;
       const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
-      const open = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", logShiftMs: shift, publish: () => Effect.void }).pipe(
+      const open = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", logShiftMs: shift }).pipe(
         Effect.provide(Layer.mergeAll(updaterLayer(() => Effect.succeed({ ops: [] })), NodeFileSystem.layer)),
       );
       const before = Date.now();

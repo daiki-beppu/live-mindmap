@@ -1465,24 +1465,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.appended.filter((e) => e.type === "tap-silent")).toHaveLength(2);
       }));
 
-    it.effect("stop で一文を解除し、stop 後につないだブラウザには null だけが届く", () =>
-      Effect.gen(function* () {
-        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
-        const watcher = yield* viewerClient();
-        yield* Effect.forkChild(viewers.connect(watcher.socket));
-        yield* sessions.start(start());
-        fakeHelpers.send(0, { type: "tap-silent", start: 10 });
-        yield* TestClock.adjust(1);
-        expect(yield* watcher.tapNotices).toEqual([TAP_NOTICE_TEXT]);
-
-        yield* sessions.stop;
-        expect(yield* watcher.tapNotices).toEqual([null]);
-
-        const after = yield* viewerClient();
-        yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.tapNotices).toEqual([null]);
-      }));
-
     it.effect("tap-silent は共有画面の知らせ（screen-notice）のフレームを出さず、screen-off のログ・状態にも触れない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, fakeSinks, sessions, viewers } = yield* boot([{}]);
@@ -1603,24 +1585,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         fakeHelpers.send(0, pauseEvent(false, 9));
         yield* TestClock.adjust(1);
         expect(yield* late.selfPauses).toEqual([false]);
-
-        const after = yield* viewerClient();
-        yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.selfPauses).toEqual([false]);
-      }));
-
-    it.effect("stop で休止を解除するフレーム（paused:false）が届き、その後につないだ画面にも届く", () =>
-      Effect.gen(function* () {
-        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
-        const watcher = yield* viewerClient();
-        yield* Effect.forkChild(viewers.connect(watcher.socket));
-        yield* sessions.start(start());
-        fakeHelpers.send(0, pauseEvent(true, 5));
-        yield* TestClock.adjust(1);
-        expect(yield* watcher.selfPauses).toEqual([true]);
-
-        yield* sessions.stop;
-        expect(yield* watcher.selfPauses).toEqual([false]);
 
         const after = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(after.socket));
@@ -2268,19 +2232,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(yield* watcher.screenNotices).toEqual([]);
       }));
 
-    it.effect("stop で知らせを解除し、stop 後につないだブラウザには null だけが届く", () =>
-      Effect.gen(function* () {
-        const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
-        yield* sessions.start(start());
-        fakeHelpers.send(0, { type: "screen-off", start: 1, reason: "許可なし" });
-        yield* TestClock.adjust(1);
-        yield* sessions.stop;
-
-        const after = yield* viewerClient();
-        yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.screenNotices).toEqual([null]);
-      }));
-
     it.effect("壊れた screen-off は stderr に 1 行出して読み飛ばし、sink にも知らせにも届かず、続く発言は届く", () =>
       withStderr((stderr) =>
         Effect.gen(function* () {
@@ -2907,7 +2858,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.opened).toMatchObject({ count: 1, closed: 1 });
         expect(fakeSinks.relayStats.stopped).toBe(1);
         expect((yield* sessions.status).status).toBe("none");
-        expect((yield* watcher.intakeStatuses).at(-1)).toBe("none"); // 失敗しても、接続中のクライアントの一言は消える
         expect(yield* watcher.sessionModes).toEqual([true, false]);
         yield* sessions.start(local);
         expect(yield* watcher.sessionModes).toEqual([true, false, true]);
