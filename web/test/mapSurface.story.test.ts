@@ -555,6 +555,24 @@ describe("mapSurface の update: クリックとドラッグの見分け（MapNo
     story(update, given(initial("still")), pressNode("A", 50, 50), message(release()), clickNode("A", 60, 50), expectNoOutMessage());
   });
 
+  describe("押した後に click が届かなかったノードを、キーボードの click で選ぶ（ブラウザが出す順の Message）", () => {
+    const keyboardClick = clickNode("A", 0, 0);
+    const zoomClick = Message.ClickedMapSurfaceWithModifier({ x: 50, y: 50, ctrlKey: false, metaKey: true, altKey: false });
+    it.each([
+      ["macOS の Ctrl＋左（contextmenu になり click は出ない）", [release({ ctrlKey: true })]],
+      ["⌘＋左（click は拡大に使われる）", [release({ metaKey: true }), zoomClick]],
+      ["Ctrl＋右（auxclick だけ）", [release({ ctrlKey: true })]],
+      ["⌘＋右", [release({ metaKey: true })]],
+      ["Ctrl＋中", [release({ ctrlKey: true })]],
+      ["⌘＋中", [release({ metaKey: true })]],
+    ])("%s の後は選ぶ", (_, afterPress) => {
+      story(update, given(initial("live")), pressNode("A", 50, 50), ...afterPress.map((m) => message(m)), keyboardClick, selected("A"));
+    });
+    it("修飾なしの右クリック（auxclick だけ）の後は、押した記録が残るので選ばない", () => {
+      story(update, given(initial("live")), pressNode("A", 50, 50), message(release()), keyboardClick, expectNoOutMessage());
+    });
+  });
+
   it("Message を受けるだけでは OutMessage は出ない（押した・動いた・離した）", () => {
     story(update, given(initial("live")), pressNode("A", 50, 50), expectNoOutMessage(), message(movePointer(53, 50)), expectNoOutMessage(), message(release()), expectNoOutMessage());
   });
