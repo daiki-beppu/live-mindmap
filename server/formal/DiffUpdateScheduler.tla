@@ -245,7 +245,7 @@ SleeperSwap(s) ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, calls, nextCall, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-(* flush（:680–690）。取り込みを止めて読み終えた後（sessions.ts stopLive の drain の後）に呼ばれる。
+(* flush（:680–692）。取り込みを止めて読み終えた後（sessions.ts stopLive の drain の後）に呼ばれる。
    idle（:640–648）: 印が無ければ抜け、予約の印だけなら順番を譲り、running なら Fiber の終わりを待つ。 *)
 FlushUnchanged == UNCHANGED <<pending, known, reflecting, inFlight, status, calls, nextCall, sleepers, nextSleeper, pusher, starts, lifecycleN, pauses>>
 
@@ -265,10 +265,11 @@ FlushIdle ==
         /\ flusher' = "idle"
   /\ UNCHANGED retryEnabled /\ FlushUnchanged
 
-\* :686–687 たまりが無いか、一時停止・停止なら抜ける。そうでなければ startDiffIfReady() を呼んで idle に戻る
+\* :686–691 呼び出し中の印があれば idle に戻る。たまりが無いか、一時停止・停止なら抜ける。そうでなければ startDiffIfReady() を呼んで idle に戻る
 FlushCheck ==
   /\ flusher = "check"
-  /\ flusher' = IF Len(pending) = 0 \/ status \in {"paused", "stopped"} THEN "returned" ELSE "start"
+  /\ flusher' = IF inFlight.kind # "none" THEN "idle"
+                ELSE IF Len(pending) = 0 \/ status \in {"paused", "stopped"} THEN "returned" ELSE "start"
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, calls, nextCall, sleepers, nextSleeper, pusher, starts, lifecycleN, pauses>>
 
 FlushStart ==
