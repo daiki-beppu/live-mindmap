@@ -144,6 +144,32 @@ export class Sessions extends Context.Service<Sessions, {
       const serverScope = yield* Effect.scope;
       const stopTimeoutMs = yield* HELPER_STOP_TIMEOUT_MS;
       const state = yield* Ref.make<State>({ kind: "idle", installations: 0 });
+      type Active = Extract<State, { kind: "live" | "recorded" }>;
+      function current(need: "live", claim?: "stopping"): Effect.Effect<Live, NoSession | SessionTransition | NotForRecordedSession>;
+      function current(need: "any", claim?: "stopping"): Effect.Effect<Active, NoSession | SessionTransition>;
+      function current(need: "live" | "any", claim?: "stopping"): Effect.Effect<Live | Active, NoSession | SessionTransition | NotForRecordedSession> {
+        return Effect.gen(function* () {
+          const claimed = yield* Ref.modify(state, (value): [Result.Result<Active, NoSession | SessionTransition | NotForRecordedSession>, State] => {
+            switch (value.kind) {
+              case "idle":
+                return [Result.fail(new NoSession()), value];
+              case "starting":
+              case "stopping":
+                return [Result.fail(new SessionTransition()), value];
+              case "recorded":
+                if (need === "live") return [Result.fail(new NotForRecordedSession()), value];
+                break;
+              case "live":
+                break;
+            }
+            return [Result.succeed(value), claim === "stopping" ? { kind: "stopping" } : value];
+          });
+          if (Result.isFailure(claimed)) return yield* claimed.failure;
+          const target = claimed.success;
+          return need === "live" && target.kind === "live" ? target.live : target;
+        });
+      }
+
       const reserveDeps = Effect.acquireRelease(
         Effect.gen(function* () {
           const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
@@ -405,7 +431,10 @@ export class Sessions extends Context.Service<Sessions, {
             // 話者分離が使えない。待たずに話者なしで出す段へ渡し、端末へも知らせる（起動し直した回が流し直しても、端末には 1 回）
             return Effect.flatMap(announceOnce(recorded, "speakerOff"), (first) =>
               Effect.andThen(recorded.sink.speaker(event), first ? Queue.offer(recorded.events, { type: "speaker-off", reason: event.reason }) : Effect.void));
-          default:
+          case "origin":
+          case "tap-silent":
+          case "self-pause":
+          case "self-pause-state":
             return Effect.void;
         }
       };
@@ -590,13 +619,7 @@ export class Sessions extends Context.Service<Sessions, {
       // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
       const stop = Effect.uninterruptible(
         Effect.gen(function* () {
-          const claimed = yield* Ref.modify(state, (current): [Result.Result<Extract<State, { kind: "live" | "recorded" }>, SessionFailure>, State] =>
-            current.kind === "live" || current.kind === "recorded"
-              ? [Result.succeed(current), { kind: "stopping" }]
-              : [Result.fail(current.kind === "idle" ? new NoSession() : new SessionTransition()), current],
-          );
-          if (Result.isFailure(claimed)) return yield* claimed.failure;
-          const target = claimed.success;
+          const target = yield* current("any", "stopping");
           // 本体は呼び出し側（HTTP 要求の fiber）ではなくサーバーの Scope の fiber で動かす。要求の切断で呼び出し側が
           // 中断されても、読み終える・書き出す・状態を idle に戻すまで続ける。中断はサーバーの終了（serverScope を閉じる）だけ
           const body = target.kind === "live" ? stopLive(target.live) : stopRecorded(target.recorded);
@@ -607,10 +630,7 @@ export class Sessions extends Context.Service<Sessions, {
 
       // 応答は、起動し直しの連鎖が実際に到達した状態（RestartOutcome）から作る
       const resume = Effect.gen(function* () {
-        const current = yield* Ref.get(state);
-        if (current.kind === "recorded") return yield* new NotForRecordedSession();
-        if (current.kind !== "live") return yield* new NoSession();
-        const { live } = current;
+        const live = yield* current("live");
         if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
         const warnings = yield* requireStartupDeps("resume", live.model.route, { screen: live.screen, check: live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
         const afterCheck = yield* Ref.get(state);
@@ -633,10 +653,8 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       const checkResume = Effect.gen(function* () {
-        const current = yield* Ref.get(state);
-        if (current.kind === "recorded") return yield* new NotForRecordedSession();
-        if (current.kind !== "live") return yield* new NoSession();
-        return yield* checkManagedDeps("resume", current.live.model.route, { screen: current.live.screen, check: current.live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+        const live = yield* current("live");
+        return yield* checkManagedDeps("resume", live.model.route, { screen: live.screen, check: live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
       });
 
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
@@ -656,10 +674,10 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       const liveSession: Effect.Effect<{ readonly scope: Scope.Scope; readonly local: boolean }, SessionFailure> = Effect.gen(function* () {
-        const current = yield* Ref.get(state);
-        if (current.kind === "live") return { scope: current.live.scope, local: current.live.model.local };
-        if (current.kind === "recorded") return { scope: current.recorded.scope, local: current.recorded.local };
-        return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
+        const target = yield* current("any");
+        return target.kind === "live"
+          ? { scope: target.live.scope, local: target.live.model.local }
+          : { scope: target.recorded.scope, local: target.recorded.local };
       });
 
       // 求める状態を、いま接続している helper へ指示として送る（同じ状態の指示でも送る。何も変えないかどうかは helper の側が決める）。
@@ -667,18 +685,15 @@ export class Sessions extends Context.Service<Sessions, {
       // 受け付けたかどうかは helper の self-pause イベントだけが決める（無視された要求は残らない）
       const setSelfPause = (paused: boolean): Effect.Effect<void, SessionFailure> =>
         Effect.gen(function* () {
-          const current = yield* Ref.get(state);
-          if (current.kind === "recorded") return yield* new NotForRecordedSession();
-          if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
-          yield* current.live.controller.send({ type: "self-pause", paused });
+          const live = yield* current("live");
+          yield* live.controller.send({ type: "self-pause", paused });
         });
 
       const setSpeakerName = (speaker: { label: string; name: string }): Effect.Effect<void, SessionFailure | SpeakerNameRejected> =>
         Effect.gen(function* () {
-          const current = yield* Ref.get(state);
-          if (current.kind === "recorded") return yield* current.recorded.sink.nameSpeaker(speaker);
-          if (current.kind !== "live") return yield* (current.kind === "idle" ? new NoSession() : new SessionTransition());
-          yield* current.live.sink.nameSpeaker(speaker);
+          const target = yield* current("any");
+          const sink = target.kind === "live" ? target.live.sink : target.recorded.sink;
+          yield* sink.nameSpeaker(speaker);
         });
 
       return Sessions.of({ apps: helpers.apps, start, startRecorded, stop, status, resume, checkResume, reserveDeps, liveSession, setSelfPause, setSpeakerName });
