@@ -249,8 +249,11 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
     namesLock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
       const next = updateSpeakerName(yield* Ref.get(names), change);
       if (next === undefined) return;
-      yield* appendLog({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
-      yield* Ref.set(names, next);
+      yield* serialized(Effect.gen(function* () {
+        yield* writeLogLine({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
+        yield* Ref.set(names, next);
+        yield* writeExport(session);
+      }));
       if (send) yield* send(speakerNamesFrame(next));
     })));
   const namedUpdater = updater === undefined ? undefined : DiffUpdater.of({

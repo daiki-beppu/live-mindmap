@@ -7,7 +7,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer } from "effect";
 import { DiffUpdater, type DiffInput, type IntakeLogEvent, type Remark, type SpeakerNamesFrame, type OnSpeakerNames } from "../src/core/index.ts";
-import { createSessionDir, LOG_FILE, openLoggedSession, openLoggedTranscriptSession } from "../src/sessionFiles.ts";
+import { createSessionDir, EXPORT_FILE, LOG_FILE, openLoggedSession, openLoggedTranscriptSession } from "../src/sessionFiles.ts";
 import { buildPrompt } from "../src/claudePrompt.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import type { ViewerFrame } from "../src/viewers.ts";
@@ -98,6 +98,9 @@ describe("ログを開いたセッションの名前", () => {
       yield* Fiber.join(other);
     }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
 
+    const expectedNames = { "相手 A": "田中", "相手 B": "鈴木" };
+    expect(yield* session.exportJson).toHaveProperty("speakerNames", expectedNames);
+    expect(JSON.parse(readFileSync(join(dir, EXPORT_FILE), "utf8"))).toHaveProperty("speakerNames", expectedNames);
     yield* session.push(namedRemark(3));
     yield* session.flush;
     expect(inputs).toHaveLength(3);
@@ -130,35 +133,66 @@ describe("ログを開いたセッションの名前", () => {
     const { session } = yield* openLoggedSession({ model: defaultClaude, dir }).pipe(
       Effect.provide(Layer.merge(NodeFileSystem.layer, updaterLayer((input) => Effect.sync(() => {
         inputs.push(input);
-        return { ops: [], names: [inferredName] };
+        return { ops: [], names: [{ ...inferredName, name: inputs.length === 1 ? "たなか" : "田中" }] };
       })))),
     );
     for (const n of [1, 2]) {
       yield* session.push(namedRemark(n));
       yield* session.flush;
+      const expectedNames = { "相手 A": n === 1 ? "たなか" : "田中" };
+      expect(yield* session.exportJson).toHaveProperty("speakerNames", expectedNames);
+      expect(JSON.parse(readFileSync(join(dir, EXPORT_FILE), "utf8"))).toHaveProperty("speakerNames", expectedNames);
     }
     expect(inputs.map((input) => input.speakerNames?.get("相手 A"))).toEqual([undefined, "たなか"]);
     const lines = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line): Record<string, unknown> => JSON.parse(line));
     expect(lines.filter((line) => line.type === "speaker-name")).toEqual([
       expect.objectContaining({ label: "相手 A", name: "たなか", source: "推定" }),
+      expect.objectContaining({ label: "相手 A", name: "田中", source: "推定" }),
     ]);
   }).pipe(Effect.scoped));
 
-  it.effect("地図なしでも返された操作で手入力を保存し、変化したときだけ名前の全体を送る", () => Effect.gen(function* () {
+  for (const noMap of [false, true]) {
+    it.effect(`${noMap ? "地図なし" : "モデル付き"}でも手入力の初回設定・変更を追加発言なしで保存し、変化したときだけ名前を送る`, () => Effect.gen(function* () {
+      const dir = yield* sessionsDir;
+      const frames: SpeakerNamesFrame[] = [];
+      const options = { dir,
+        send: (frame) => Effect.sync(() => { if (frame.type === "speaker-names") frames.push(frame); }),
+      } satisfies Parameters<typeof openLoggedTranscriptSession>[0];
+      const { session, nameSpeaker } = yield* (noMap
+        ? openLoggedTranscriptSession(options)
+        : openLoggedSession({ ...options, model: defaultClaude }).pipe(Effect.provide(updaterLayer(() => Effect.succeed({ ops: [] }))))
+      ).pipe(Effect.provide(NodeFileSystem.layer));
+      yield* session.push(namedRemark(1));
+      yield* session.flush;
+      for (const name of ["田中", "鈴木"]) {
+        yield* nameSpeaker({ label: "相手 A", name, source: "手入力" });
+        expect(yield* session.exportJson).toHaveProperty("speakerNames", { "相手 A": name });
+        expect(JSON.parse(readFileSync(join(dir, EXPORT_FILE), "utf8"))).toHaveProperty("speakerNames", { "相手 A": name });
+        yield* nameSpeaker({ label: "相手 A", name, source: "手入力" });
+      }
+      expect(frames).toEqual([
+        { type: "speaker-names", names: [] },
+        { type: "speaker-names", names: [{ label: "相手 A", name: "田中" }] },
+        { type: "speaker-names", names: [{ label: "相手 A", name: "鈴木" }] },
+      ]);
+      const lines = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line): Record<string, unknown> => JSON.parse(line));
+      expect(lines.filter((line) => line.type === "speaker-name")).toEqual([
+        expect.objectContaining({ label: "相手 A", name: "田中", source: "手入力", at: expect.any(String) }),
+        expect.objectContaining({ label: "相手 A", name: "鈴木", source: "手入力", at: expect.any(String) }),
+      ]);
+    }).pipe(Effect.scoped));
+  }
+
+  it.effect("名前変更時にexportだけ保存できないときはdefectになる", () => Effect.gen(function* () {
     const dir = yield* sessionsDir;
-    const frames: SpeakerNamesFrame[] = [];
-    const { session, nameSpeaker } = yield* openLoggedTranscriptSession({ dir,
-      send: (frame) => Effect.sync(() => { if (frame.type === "speaker-names") frames.push(frame); }),
-    }).pipe(Effect.provide(NodeFileSystem.layer));
+    const { session, nameSpeaker } = yield* openLoggedTranscriptSession({ dir }).pipe(Effect.provide(NodeFileSystem.layer));
     yield* session.push(namedRemark(1));
-    yield* nameSpeaker({ label: "相手 A", name: "田中", source: "手入力" });
-    yield* nameSpeaker({ label: "相手 A", name: "田中", source: "手入力" });
-    expect(frames).toEqual([{ type: "speaker-names", names: [] }, { type: "speaker-names", names: [{ label: "相手 A", name: "田中" }] }]);
-    const lines = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line): Record<string, unknown> => JSON.parse(line));
-    expect(lines.filter((line) => line.type === "speaker-name")).toEqual([
-      expect.objectContaining({ label: "相手 A", name: "田中", source: "手入力", at: expect.any(String) }),
-    ]);
-  }).pipe(Effect.scoped));
+    rmSync(join(dir, EXPORT_FILE));
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(join(dir, EXPORT_FILE));
+    const exit = yield* Effect.exit(nameSpeaker({ label: "相手 A", name: "田中", source: "手入力" }));
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause) && !Cause.hasFails(exit.cause)).toBe(true);
+  }).pipe(Effect.provide(NodeFileSystem.layer), Effect.scoped));
 
   it.effect("明示された推定名のcallbackだけへ通知し、内部では名前の行やframeを重ねない", () => Effect.gen(function* () {
     const dir = yield* sessionsDir;

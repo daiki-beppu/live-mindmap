@@ -190,7 +190,7 @@ describe("再生で推定した名前", () => {
       external.openClaudeUpdater.mockReturnValue({
         update: (input: DiffInput) => Effect.sync(() => {
           inputs.push(input);
-          return { ops: [], names: [{ label: "相手 A", name: "新しい推定名", evidence: "r1", basis: "名乗り" }] };
+          return { ops: [], names: [{ label: "相手 A", name: inputs.length === 1 ? "新しい推定名" : "最後の推定名", evidence: "r1", basis: "名乗り" }] };
         }),
         close: () => {},
       });
@@ -206,7 +206,11 @@ describe("再生で推定した名前", () => {
         .map((line): Record<string, unknown> => JSON.parse(line));
       expect(lines.filter((line) => line.type === "speaker-name")).toEqual([
         expect.objectContaining({ label: "相手 A", name: "新しい推定名", source: "推定" }),
+        expect.objectContaining({ label: "相手 A", name: "最後の推定名", source: "推定" }),
       ]);
+      deps.stdout.length = 0;
+      yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+      expect(JSON.parse(deps.stdout.join(""))).toHaveProperty("speakerNames", { "相手 A": "最後の推定名" });
     }).pipe(Effect.scoped));
   }
 });
