@@ -10,7 +10,7 @@ import type { BrowserContext, Page } from "./browser.ts";
 export const LOG_PATH = join(import.meta.dirname, "fixtures/sampleMeeting.log.jsonl");
 export const TIMEOUT = 180_000;
 
-export const PAGE_VIEWPORT = { width: 1280, height: 801 } as const;
+export const PAGE_VIEWPORT = { width: 1280, height: 800 } as const;
 
 export function silentWav(seconds: number): Buffer {
   const rate = 8000;

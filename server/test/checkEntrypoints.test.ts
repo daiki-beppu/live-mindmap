@@ -3,12 +3,14 @@ import { findEntrypointViolations } from "../scripts/check-entrypoints.ts";
 import type { SourceFile } from "../scripts/sourceFiles.ts";
 
 const BENCH = ["bench/sessionStats.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/speechEnds.ts", "bench/edgeJudge.ts", "bench/mapShape.ts", "bench/siblingJudge.ts", "bench/speakerReplay.ts", "bench/speakerAccuracy.ts", "bench/timelineReplay.ts", "bench/peopleAccuracy.ts"];
-const BENCH_BODY = "NodeRuntime.runMain({ teardown: exitNaturally })(main);\n";
+const teardownOf = (path: string) => (path === "bench/sttReplay.ts" ? "exitNaturallyForManagedDeps" : "exitNaturally");
+const benchBody = (path: string) => `NodeRuntime.runMain({ teardown: ${teardownOf(path)} })(main);\n`;
+const BENCH_BODY = benchBody("bench/sttLatency.ts");
 
 const validTree = (): SourceFile[] => [
   { path: "src/server.ts", content: "NodeRuntime.runMain(program);\n" },
   { path: "src/cli.ts", content: "NodeRuntime.runMain(program);\n" },
-  ...BENCH.map((path) => ({ path, content: BENCH_BODY })),
+  ...BENCH.map((path) => ({ path, content: benchBody(path) })),
   { path: "src/core/review.ts", content: "const r = Effect.runSync(x);\n" },
   { path: "src/other.ts", content: "export const a = 1;\n" },
 ];
@@ -87,21 +89,33 @@ describe("findEntrypointViolations", () => {
 
   describe.each(BENCH)("%s", (path) => {
     it("process.exit を行番号つきで報告する", () => {
-      const violations = findEntrypointViolations(withFile(path, `${BENCH_BODY}process.exit(1);\n`));
+      const violations = findEntrypointViolations(withFile(path, `${benchBody(path)}process.exit(1);\n`));
       expect(violations).toHaveLength(1);
       expect(violations[0]).toMatchObject({ path, line: 2 });
     });
 
-    it("runMain に teardown: exitNaturally を渡していないと報告する", () => {
+    it("runMain に決めた teardown を渡していないと報告する", () => {
       const violations = findEntrypointViolations(withFile(path, "NodeRuntime.runMain({})(main);\n"));
       expect(violations.map((v) => v.path)).toEqual([path]);
     });
 
-    it("runMain の引数が複数行でも teardown: exitNaturally を認める", () => {
+    it("runMain の引数が複数行でも決めた teardown を認める", () => {
       const violations = findEntrypointViolations(
-        withFile(path, "NodeRuntime.runMain({\n  teardown: exitNaturally,\n})(main);\n"),
+        withFile(path, `NodeRuntime.runMain({\n  teardown: ${teardownOf(path)},\n})(main);\n`),
       );
       expect(violations).toEqual([]);
+    });
+  });
+
+  describe("bench の入口ごとの teardown", () => {
+    it("sttReplay が teardown: exitNaturally を渡すと、exitNaturallyForManagedDeps を求めて報告する", () => {
+      const violations = findEntrypointViolations(withFile("bench/sttReplay.ts", "NodeRuntime.runMain({ teardown: exitNaturally })(main);\n"));
+      expect(violations).toEqual([{ path: "bench/sttReplay.ts", message: "runMain に teardown: exitNaturallyForManagedDeps を渡す" }]);
+    });
+
+    it("sttReplay 以外が teardown: exitNaturallyForManagedDeps を渡すと、exitNaturally を求めて報告する", () => {
+      const violations = findEntrypointViolations(withFile("bench/edgeJudge.ts", "NodeRuntime.runMain({ teardown: exitNaturallyForManagedDeps })(main);\n"));
+      expect(violations).toEqual([{ path: "bench/edgeJudge.ts", message: "runMain に teardown: exitNaturally を渡す" }]);
     });
   });
 
@@ -126,7 +140,7 @@ describe("findEntrypointViolations", () => {
         { path: "bench/mapShape.ts", content: BENCH_BODY },
         { path: "bench/sttAccuracy.ts", content: BENCH_BODY },
         { path: "bench/sttLatency.ts", content: BENCH_BODY },
-        { path: "bench/sttReplay.ts", content: BENCH_BODY },
+        { path: "bench/sttReplay.ts", content: benchBody("bench/sttReplay.ts") },
         { path: "bench/speechEnds.ts", content: BENCH_BODY },
         { path: "bench/edgeJudge.ts", content: BENCH_BODY },
         { path: "bench/siblingJudge.ts", content: BENCH_BODY },
