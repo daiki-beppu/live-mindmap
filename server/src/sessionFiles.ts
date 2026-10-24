@@ -84,6 +84,7 @@ export type SessionLogRead = {
   readonly path: string;
   readonly events: ReadonlyArray<unknown>;
   readonly select: (schemas: ReadonlyArray<(typeof LogEvent.members)[number]>) => Effect.Effect<LogEvent[], BrokenLogLine>;
+  readonly lineOf: (event: LogEvent) => number;
   readonly brokenAt: (error: InvalidLogEvent) => BrokenLogLine;
 };
 
@@ -105,18 +106,21 @@ export const readSessionLog = Effect.fn("readSessionLog")(function* (dir: string
     kind: "event",
     reason,
   });
+  const selectedLines = new Map<LogEvent, number>();
   const select = Effect.fnUntraced(function* (schemas: ReadonlyArray<(typeof LogEvent.members)[number]>) {
     const selected = Schema.is(Schema.Struct({ type: Schema.Literals(schemas.map((schema) => schema.fields.type.literal)) }));
     const decoded: LogEvent[] = [];
     for (const [index, event] of events.entries()) {
       if (!selected(event)) continue;
-      decoded.push(yield* decodeEvent(event).pipe(
+      const value = yield* decodeEvent(event).pipe(
         Effect.mapError((error) => eventFailure(index, schemaReason(error))),
-      ));
+      );
+      selectedLines.set(value, lines[index]!.no);
+      decoded.push(value);
     }
     return decoded;
   });
-  return { dir, path, events, select, brokenAt: (error) => eventFailure(error.index, error.reason) };
+  return { dir, path, events, select, lineOf: (event) => selectedLines.get(event)!, brokenAt: (error) => eventFailure(error.index, error.reason) };
 });
 
 export const startOf = Effect.fn("startOf")(function* (log: SessionLogRead) {
@@ -178,12 +182,7 @@ export class ExportFilesFailed extends Schema.TaggedError<ExportFilesFailed>()("
 
 export const writeReviews = Effect.fnUntraced(function* (dir: string) {
   const variants = yield* reviewVariants(dir).pipe(Effect.mapError((e) => new ReviewPageFailed({ message: errorMessage(e) })));
-  const logPath = join(dir, LOG_FILE);
-  const { events } = yield* readLogLines(logPath).pipe(
-    Effect.mapError((e) => new ReviewPageFailed({
-      message: e._tag === "BrokenLogLine" ? `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` : errorMessage(e),
-    })),
-  );
+  const { events } = yield* readSessionLog(dir);
   return yield* writeReviewPages(dir, events, variants);
 });
 

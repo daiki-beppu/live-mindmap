@@ -33,7 +33,6 @@ import {
   DiffUpdater,
   fromTranscript,
   JsonExport,
-  LogEvent,
   RecordedEvent,
   RemarkEvent,
   formatOcrSummary,
@@ -87,17 +86,22 @@ import {
   createSessionDir,
   EXPORT_FILE,
   LOG_FILE,
+  isLocal,
+  latestSessionDir,
+  MissingSessionLog,
+  MissingStartLine,
   NoSavedSession,
   openLoggedSession,
   SCREENS_DIR,
   reviewVariants,
-  readLogLines,
+  readSessionLog,
+  startOf,
+  type SessionLogRead,
   reviewWarning,
   selfReviewVariants,
   writeExportsAndCapture,
-  writeReviews,
 } from "./sessionFiles.ts";
-import { describe, errorMessage, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
+import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers, type SendFrame } from "./viewers.ts";
 import { StartupRefusal } from "./managedDepsProtocol.ts";
 import { ServerRoutes, type ServerRoute } from "./serverProtocol.ts";
@@ -119,16 +123,12 @@ class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()(
 }) {}
 class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", { message: Schema.String }) {}
 
-const typesOf = (events: readonly { readonly fields: { readonly type: { readonly literal: string } } }[]): ReadonlySet<string> => new Set(events.map((event) => event.fields.type.literal));
-const hasLoggedType = (types: ReadonlySet<string>) => (event: unknown): event is { readonly type: string } =>
-  Predicate.isObject(event) && "type" in event && Predicate.isString(event.type) && types.has(event.type);
-const isReplayedEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]));
-const isEvalEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, DiffEvent]));
-
 const CLI_FAILURES = [
   ServerUnreachable,
   ServerFailed,
   NoSavedSession,
+  MissingSessionLog,
+  MissingStartLine,
   MissingRunExport,
   InvalidTruthFile,
   InvalidTranscriptFile,
@@ -147,6 +147,10 @@ const failureLine = (failure: CliFailure): string => {
       return failure.message;
     case "NoSavedSession":
       return `セッションがありません: ${failure.sessionsDir}`;
+    case "MissingSessionLog":
+      return `${LOG_FILE} がありません: ${failure.path}`;
+    case "MissingStartLine":
+      return `${LOG_FILE} に start の行がありません: ${failure.path}`;
     case "MissingRunExport":
       return `セッションのマップがありません: ${failure.path}`;
     case "InvalidTruthFile":
@@ -154,7 +158,9 @@ const failureLine = (failure: CliFailure): string => {
     case "InvalidTranscriptFile":
       return `文字起こしファイルが不正です: ${failure.path}（${failure.reason}）`;
     case "BrokenLogLine":
-      return `${LOG_FILE} の ${failure.line} 行目が JSON として読めません: ${failure.reason}`;
+      return failure.kind === "json"
+        ? `${failure.path} の ${failure.line} 行目が JSON として読めません: ${failure.reason}`
+        : `${failure.path} の ${failure.line} 行目が読めません: ${failure.reason}`;
     case "CommandFailed":
     case "UpdaterUnavailable":
     case "ChatgptUnavailable":
@@ -200,14 +206,6 @@ const pathExists = (fs: FileSystem.FileSystem, path: string) =>
       () => Effect.succeed(false),
     ),
   );
-
-const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string, file: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const latest = (yield* pathExists(fs, sessionsDir))
-    ? (yield* Effect.filter(yield* fs.readDirectory(sessionsDir), (d) => pathExists(fs, join(sessionsDir, d, file)))).sort().at(-1)
-    : undefined;
-  return latest === undefined ? yield* new NoSavedSession({ sessionsDir }) : latest;
-}, orFileFailed);
 
 const ServerErrorBody = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
 type ServerRequestOptions<R extends ServerRoute> =
@@ -308,23 +306,14 @@ const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof
 };
 
 const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
-  const logPath = join(dir, LOG_FILE);
+  const log = yield* readSessionLog(dir).pipe(orFileFailed);
+  const { title } = yield* startOf(log);
   const fs = yield* FileSystem.FileSystem;
-  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
-  const { lines, events } = yield* readLogLines(logPath).pipe(orFileFailed);
-  let title: string | undefined;
   const remarks: PlaybackRemark[] = [];
   const vocabulary: (typeof VocabEvent)["Type"][] = [];
   const screens: PlaybackScreen<CommandFailed>[] = [];
-  for (const [i, event] of events.entries()) {
-    if (!isReplayedEvent(event)) continue;
-    const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(
-      Effect.mapError((e) => new BrokenLogLine({ path: logPath, line: lines[i]?.no ?? 1, kind: "event", reason: decodeReason(e) })),
-    );
+  for (const decoded of yield* log.select([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent])) {
     switch (decoded.type) {
-      case "start":
-        title ??= decoded.title;
-        break;
       case "remark":
         remarks.push(replayableRemark(decoded));
         break;
@@ -332,16 +321,13 @@ const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
         vocabulary.push(decoded);
         break;
       case "screen":
-        screens.push(yield* recordedScreen(fs, dir, decoded, lines[i]?.no ?? 1));
+        screens.push(yield* recordedScreen(fs, dir, decoded, log.lineOf(decoded)));
         break;
       case "screen-off":
         screens.push({ start: decoded.start, reason: decoded.reason });
         break;
-      case "diff":
-        break;
     }
   }
-  if (title === undefined) return yield* new CommandFailed({ message: `${LOG_FILE} に start の行がありません: ${logPath}` });
   return { title, remarks, screens, vocabulary };
 });
 
@@ -785,8 +771,8 @@ const exportCommand = Command.make(
   },
   Effect.fn("export")(function* ({ format }) {
     const sessionsDir = yield* sessionsDirConfig;
-    const latest = yield* latestSession(sessionsDir, EXPORT_FILE);
-    const path = join(sessionsDir, latest, EXPORT_FILE);
+    const latest = yield* latestSessionDir(sessionsDir, EXPORT_FILE).pipe(orFileFailed);
+    const path = join(latest, EXPORT_FILE);
     const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
     if (format === "json") {
       const raw = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
@@ -807,8 +793,9 @@ const restore = Command.make(
   {},
   Effect.fn("restore")(function* () {
     const sessionsDir = yield* sessionsDirConfig;
-    const dir = join(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
-    const { lines, events } = yield* readLogLines(join(dir, LOG_FILE)).pipe(orFileFailed);
+    const dir = yield* latestSessionDir(sessionsDir, LOG_FILE).pipe(orFileFailed);
+    const log = yield* readSessionLog(dir).pipe(orFileFailed);
+    const { events } = log;
     const session = yield* restoreSession(events).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -816,7 +803,7 @@ const restore = Command.make(
           Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void, readScreen: () => Effect.die("restore は共有画面を読まない") })),
         ),
       ),
-      Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new BrokenLogLine({ path: join(dir, LOG_FILE), line: lines[e.index]?.no ?? 1, kind: "event", reason: e.reason }))),
+      Effect.mapError(log.brokenAt),
     );
     const exported = yield* session.exportJson;
     const fs = yield* FileSystem.FileSystem;
@@ -831,12 +818,9 @@ const sessionLog = Effect.fnUntraced(function* (session: Option.Option<string>) 
     ? resolve(session.value)
     : yield* Effect.gen(function* () {
         const sessionsDir = yield* sessionsDirConfig;
-        return resolve(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
+        return resolve(yield* latestSessionDir(sessionsDir, LOG_FILE).pipe(orFileFailed));
       });
-  const logPath = join(dir, LOG_FILE);
-  const fs = yield* FileSystem.FileSystem;
-  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return yield* new CommandFailed({ message: `${LOG_FILE} がありません: ${logPath}` });
-  return { dir, logPath };
+  return yield* readSessionLog(dir).pipe(orFileFailed);
 });
 
 const review = Command.make(
@@ -852,15 +836,10 @@ const review = Command.make(
     ),
   },
   Effect.fn("review")(function* ({ session, selfOnly }) {
-    const { dir, logPath } = yield* sessionLog(session);
+    const { dir, events } = yield* sessionLog(session);
     if (selfOnly) {
       const variants = yield* selfReviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
-      const { events } = yield* readLogLines(logPath).pipe(
-        Effect.mapError((e) => new CommandFailed({
-          message: reviewWarning("map-audio-自分.html", describe(e._tag === "BrokenLogLine" ? `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` : e)),
-        })),
-      );
       const self = yield* writeReviewPages(dir, events, variants).pipe(
         Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map-audio-自分.html", describe(e)) })),
       );
@@ -868,7 +847,10 @@ const review = Command.make(
       yield* write(self.paths.map((path) => `${path}\n`).join(""));
       return;
     }
-    const { paths, skipped } = yield* writeReviews(dir).pipe(
+    const { paths, skipped } = yield* Effect.gen(function* () {
+      const variants = yield* reviewVariants(dir);
+      return yield* writeReviewPages(dir, events, variants);
+    }).pipe(
       Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map.html", describe(e)) })),
     );
     for (const { file, reason } of skipped) yield* Console.error(reviewWarning(file, reason));
@@ -896,16 +878,13 @@ const evaluatedRun = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, dir
   const exp = yield* Schema.decodeEffect(Schema.fromJsonString(JsonExport))(text).pipe(
     Effect.mapError((e) => new CommandFailed({ message: `${path} が読めません: ${decodeReason(e)}` })),
   );
-  const logPath = join(dir, LOG_FILE);
-  if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return { name: basename(dir), title: exp.root.text, exp };
-  const { lines, events } = yield* readLogLines(logPath).pipe(
+  const saved = yield* readSessionLog(dir).pipe(
     orFileFailed,
-    Effect.catchTag("BrokenLogLine", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` }))),
+    Effect.catchTag("MissingSessionLog", () => Effect.succeed(undefined)),
   );
-  yield* restoreState(events).pipe(
-    Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${lines[e.index]?.no ?? 1} 行目が読めません: ${e.reason}` }))),
-  );
-  const log = yield* Effect.forEach(events.filter(isEvalEvent), (event) => Schema.decodeUnknownEffect(LogEvent)(event).pipe(Effect.orDie));
+  if (saved === undefined) return { name: basename(dir), title: exp.root.text, exp };
+  yield* restoreState(saved.events).pipe(Effect.mapError(saved.brokenAt));
+  const log = yield* saved.select([StartEvent, RemarkEvent, DiffEvent]);
   return { name: basename(dir), title: exp.root.text, exp, log };
 });
 
@@ -1244,27 +1223,20 @@ const publishVariant = (content: (typeof PUBLISH_CONTENTS)[number]): ReviewVaria
   content === "map" ? { file: "index.html", audio: false, mapOnly: true } : { file: "index.html", audio: content === "audio" };
 
 const publishableSession = Effect.fnUntraced(function* (session: Option.Option<string>, content: (typeof PUBLISH_CONTENTS)[number]) {
-  const { dir, logPath } = yield* sessionLog(session).pipe(Effect.catchTag("NoSavedSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) }))));
-  const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
-  const start = events.find(hasLoggedType(new Set(["start"])));
-  const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
-  if (decodedStart !== undefined && Result.isSuccess(decodedStart) && decodedStart.success.model?.local === true) {
+  const log = yield* sessionLog(session);
+  if (isLocal(log)) {
     return yield* new CommandFailed({ message: "ローカルモードのセッションは公開できません。会議の中身を Mac の外に出さないためです" });
   }
   if (content === "audio") {
-    const variants = yield* reviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-    if (!variants.some((variant) => variant.audio)) return yield* new CommandFailed({ message: `録音がありません: ${dir}` });
+    const variants = yield* reviewVariants(log.dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
+    if (!variants.some((variant) => variant.audio)) return yield* new CommandFailed({ message: `録音がありません: ${log.dir}` });
   }
-  return { dir, logPath };
+  return log;
 });
 
-const publishedMapHtml = Effect.fnUntraced(function* (dir: string, logPath: string, content: (typeof PUBLISH_CONTENTS)[number]) {
-  const { events } = yield* readLogLines(logPath).pipe(
-    Effect.mapError((e) => new CommandFailed({
-      message: e._tag === "BrokenLogLine" ? `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` : errorMessage(e),
-    })),
-  );
-  const rendered = yield* renderReviewPages(dir, events, [publishVariant(content)]).pipe(
+const publishedMapHtml = Effect.fnUntraced(function* (log: SessionLogRead, content: (typeof PUBLISH_CONTENTS)[number]) {
+  if (content === "map") yield* log.select([RemarkEvent, ScreenEvent]);
+  const rendered = yield* renderReviewPages(log.dir, log.events, [publishVariant(content)]).pipe(
     Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
     Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
   );
@@ -1287,7 +1259,8 @@ const publish = Command.make(
   Effect.fn("publish")(function* ({ session, anyone, content, confirmed, days }) {
     const dayCount = /^\d+$/.test(days) ? Number(days) : Number.NaN;
     if (!(dayCount >= 1 && dayCount <= PUBLISH_MAX_DAYS)) return yield* new CommandFailed({ message: `--days は 1〜${PUBLISH_MAX_DAYS} の整数で指定してください: ${days}` });
-    const { dir, logPath } = yield* publishableSession(session, content);
+    const log = yield* publishableSession(session, content);
+    const { dir } = log;
     const accountId = yield* cloudflareAccountIdConfig;
     const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: MISSING_CREDENTIALS_MESSAGE });
@@ -1295,7 +1268,7 @@ const publish = Command.make(
     if (content !== "map" && !confirmed) return yield* new ConfirmationRequired({ content, anyone });
     yield* sweepExpiredPublishes(token);
 
-    const mapHtml = yield* publishedMapHtml(dir, logPath, content);
+    const mapHtml = yield* publishedMapHtml(log, content);
     const passphrase = anyone ? undefined : generatePassphrase();
     const html = passphrase === undefined
       ? mapHtml

@@ -1101,45 +1101,6 @@ describe("CLI", () => {
       expect(readFileSync(join(session, "log.jsonl"), "utf8")).toBe(logBefore);
     }));
 
-    it.effect("ログの行が JSON として壊れていれば、タグ付きの失敗にする", () => Effect.gen(function* () {
-      const dir = yield* temporaryDirectory;
-      const deps = dependencies(dir);
-      const { session } = yield* playInto(deps, adoptionScript);
-      const lines = readFileSync(join(session, "log.jsonl"), "utf8").split("\n");
-      lines.splice(1, 0, "{壊れた行");
-      writeFileSync(join(session, "log.jsonl"), lines.join("\n"));
-
-      const result = yield* Effect.result(runCli(["restore"]).pipe(Effect.provide(deps.layer)));
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isSuccess(result)) return;
-      expect(Predicate.hasProperty(result.failure, "_tag")).toBe(true);
-      expect(CliError.isCliError(result.failure)).toBe(false);
-      // 行番号付きの日本語 1 行は、入口の表を通す cliEntry.it.test.ts で観測する
-      expect(deps.stdout).toEqual([]);
-      expect(deps.stderr).toEqual([]);
-    }));
-
-    // JSON としては読めるが、type が remark の項目が壊れた行（InvalidLogEvent）は、空行を除く前の行番号の BrokenLogLine にする
-    it.effect("JSON としては正しいが Schema として壊れた行は、空行を含む元の行番号の BrokenLogLine にする。差分更新は開かない", () => Effect.gen(function* () {
-      const dir = yield* temporaryDirectory;
-      const deps = dependencies(dir);
-      const { session } = yield* playInto(deps, adoptionScript);
-      const lines = readFileSync(join(session, "log.jsonl"), "utf8").split("\n");
-      lines.splice(1, 0, "", "", JSON.stringify({ type: "remark", at: "2026-10-01T00:00:00.000Z" })); // 空行 2 つの後の 4 行目
-      writeFileSync(join(session, "log.jsonl"), lines.join("\n"));
-      external.openClaudeUpdater.mockReset();
-
-      const result = yield* Effect.result(runCli(["restore"]).pipe(Effect.provide(deps.layer)));
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "BrokenLogLine", line: 4 });
-      expect(CliError.isCliError(result.failure)).toBe(false);
-      expect(external.openClaudeUpdater).not.toHaveBeenCalled();
-      expect(deps.stdout).toEqual([]);
-    }));
-
     it.effect("セッションが複数あれば最新のものを復元し、export がその最新のマップを出す", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
@@ -1550,7 +1511,7 @@ describe("CLI", () => {
       expect(embedded(readFileSync(join(session, "map.html"), "utf8"))).toEqual(logOf(session));
     }));
 
-    it.effect("存在しないフォルダは、何も書かず、そのパスを含む CommandFailed で失敗する", () => Effect.gen(function* () {
+    it.effect("存在しないフォルダは、何も書かず、そのパスを含む MissingSessionLog で失敗する", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       const missing = join(dir, "ない");
@@ -1559,13 +1520,12 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
-      expect((result.failure as { message: string }).message).toContain(missing);
+      expect(result.failure).toMatchObject({ _tag: "MissingSessionLog", path: join(missing, "log.jsonl") });
       expect(deps.stdout).toEqual([]);
       expect(existsSync(missing)).toBe(false);
     }));
 
-    it.effect("log.jsonl が無いフォルダは、何も書かず、そのパスを含む CommandFailed で失敗する", () => Effect.gen(function* () {
+    it.effect("log.jsonl が無いフォルダは、何も書かず、そのパスを含む MissingSessionLog で失敗する", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       const { session } = yield* played(deps);
@@ -1576,8 +1536,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
-      expect((result.failure as { message: string }).message).toContain(session);
+      expect(result.failure).toMatchObject({ _tag: "MissingSessionLog", path: join(session, "log.jsonl") });
       expect(deps.stdout).toEqual([]);
       expect(existsSync(join(session, "map.html"))).toBe(false);
     }));
@@ -1598,7 +1557,7 @@ describe("CLI", () => {
       expect(existsSync(join(session, "map.html"))).toBe(false);
     }));
 
-    it.effect("ログに壊れた行があれば、map.html を書き出せませんでした: で始まる CommandFailed で失敗し、前の map.html を変えない", () => Effect.gen(function* () {
+    it.effect("ログに壊れた行があれば、BrokenLogLine を伝播し、前の map.html を変えない", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       const { session } = yield* played(deps);
@@ -1609,8 +1568,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
-      expect((result.failure as { message: string }).message).toMatch(/^map\.html を書き出せませんでした: /);
+      expect(result.failure).toMatchObject({ _tag: "BrokenLogLine", path: join(session, "log.jsonl"), kind: "json" });
       expect(deps.stdout).toEqual([]);
       expect(readFileSync(join(session, "map.html"), "utf8")).toBe("前の内容");
     }));
@@ -1726,7 +1684,8 @@ describe("CLI", () => {
 
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isSuccess(result)) return;
-        expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+        expect(result.failure).toMatchObject({ _tag: "BrokenLogLine", path: join(session, "log.jsonl"), kind: "json" });
+        expect(deps.mix.calls).toEqual([]);
         expect(deps.stdout).toEqual([]);
         expect(existsSync(join(session, "map.html"))).toBe(false);
         expect(existsSync(join(session, "map-audio.html"))).toBe(false);
@@ -1923,7 +1882,7 @@ describe("CLI", () => {
       expect(deps.stdout).toEqual([]);
     }));
 
-    it.effect("保存先そのものが通常ファイルなら、export は defect ではなく CommandFailed になる", () => Effect.gen(function* () {
+    it.effect("保存先そのものが通常ファイルなら、export は NoSavedSession になる", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const file = join(dir, "sessions-file");
       writeFileSync(file, "");
@@ -1933,11 +1892,11 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "CommandFailed" });
+      expect(result.failure).toMatchObject({ _tag: "NoSavedSession", sessionsDir: file });
       expect(deps.stdout).toEqual([]);
     }));
 
-    it.effect("review に通常ファイルを渡すと、log.jsonl がありません の CommandFailed になる", () => Effect.gen(function* () {
+    it.effect("review に通常ファイルを渡すと、MissingSessionLog になる", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const file = join(dir, "plain-file");
       writeFileSync(file, "");
@@ -1947,7 +1906,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "CommandFailed", message: `log.jsonl がありません: ${join(file, "log.jsonl")}` });
+      expect(result.failure).toMatchObject({ _tag: "MissingSessionLog", path: join(file, "log.jsonl") });
     }));
 
     it.effect("eval に通常ファイルを渡すと、MissingRunExport になる", () => Effect.gen(function* () {

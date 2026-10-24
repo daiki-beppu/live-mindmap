@@ -39,7 +39,7 @@ server のセッションの sink（`server/src/sessionSinks.ts`）と、その�
 
 ## `recorded` の名前は録画からのセッションだけに使う。ログを書くセッションは `logged`
 
-ライブ・再生・録画からのセッションが共通で通る「ログを書きながら動くセッション」は、`openLoggedSession`・`LoggedSessionOptions` と呼ぶ。テストは `loggedSession*.it` にある。過去のセッションのフォルダからログを読む CLI の関数は `loadSessionLog`、再生で流す行の判定は `isReplayedEvent` という名前になっている（[#1319](https://github.com/daiki-beppu/live-mindmap/issues/1319)）。`recorded` の付く名前（`RecordedSink`・`recordedFeed`・`/session/recorded`・`cliRecorded.it`・`sessionsRecorded.it`）は、どれも [録画からのセッション](../../GLOSSARY.md) を指す。
+ライブ・再生・録画からのセッションが共通で通る「ログを書きながら動くセッション」は、`openLoggedSession`・`LoggedSessionOptions` と呼ぶ。テストは `loggedSession*.it` にある。過去のセッションのフォルダからログを読んで再生に渡す CLI の関数は `loadSessionLog` という名前になっている（[#1319](https://github.com/daiki-beppu/live-mindmap/issues/1319)）。流す行の種類は `sessionFiles` の `select` で選ぶ（[過去のセッションのフォルダの読み側](session-folder-reading.md)）。`recorded` の付く名前（`RecordedSink`・`recordedFeed`・`/session/recorded`・`cliRecorded.it`・`sessionsRecorded.it`）は、どれも [録画からのセッション](../../GLOSSARY.md) を指す。
 
 新しい名前を付けるときも、ログを書くことを指すなら `logged`、録画のファイルから組み立てることを指すなら `recorded` を使う。注に「記録したセッション」と書くと、どちらの意味か読み分けられない。「ログを書くセッション」か「過去のセッションのフォルダ」と書く。
 
