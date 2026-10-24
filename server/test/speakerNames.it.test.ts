@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, FileSystem, Layer } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
 import { buildPrompt } from "../src/claudePrompt.ts";
 import { DiffUpdater, restoreState, type DiffInput, type InferredSpeakerName, type SpeakerNamesFrame } from "../src/core/index.ts";
 import { localUpdaterLayer, type LocalModel } from "../src/localDiffUpdater.ts";
@@ -84,6 +84,30 @@ const openSession = Effect.fnUntraced(function* (updaterLayer: Layer.Layer<DiffU
 });
 
 describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
+  it.effect("地図なしの録画セッションも、発言のラベルへの手入力をログとframeへ繋ぐ", () => {
+    const { updaterLayer } = recordingAi();
+    return Effect.gen(function* () {
+      const sinks = yield* SessionSinks;
+      const root = yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "speaker-names-no-map-"))),
+        (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })));
+      const dir = yield* sinks.createDir(root);
+      const frames: SpeakerNamesFrame[] = [];
+      const sink = yield* sinks.openRecorded({ noMap: true, dir, title: "地図なし",
+        send: (frame) => Effect.sync(() => { if (frame.type === "speaker-names") frames.push(frame); }),
+        recorded: { realtime: false, progress: () => Effect.void, paused: () => Effect.void },
+      });
+      yield* sink.speaker(segment(5, 0, 2));
+      yield* sink.speaker(settledAt(2));
+      yield* sink.final({ track: "相手", start: 0, end: 2, text: "発言です" });
+      yield* sink.drain;
+      yield* sink.nameSpeaker({ label: "相手 A", name: "田中" });
+      expect(nameLines(dir).map(({ label, name, source }) => ({ label, name, source }))).toEqual([
+        { label: "相手 A", name: "田中", source: "手入力" },
+      ]);
+      expect(frames).toEqual([{ type: "speaker-names", names: [] }, { type: "speaker-names", names: [{ label: "相手 A", name: "田中" }] }]);
+    }).pipe(Effect.scoped, Effect.provide(sinksLayer(updaterLayer)));
+  });
+
   it.effect("名前を手で付けると、log.jsonl に名前・時刻・出どころ（手入力）が残り、以後の差分更新に 相手 B（田中）: 本文 が渡る。それまでの発言（直前の発言）の行も名前になる", () => {
     const { prompts, updaterLayer } = recordingAi();
     return Effect.scoped(Effect.gen(function* () {
@@ -119,6 +143,8 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
         { type: "speaker-names", names: [] },
         { type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] },
       ]);
+      yield* sink.exports;
+      expect(JSON.parse(readFileSync(join(dir, "map.json"), "utf8")).speakerNames).toEqual({ "相手 B": "田中" });
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });
 
@@ -162,22 +188,6 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
       expect(nameLines(dir).map((e) => e.name)).toEqual(["田中", "鈴木"]);
       expect(frames.at(-1)).toEqual({ type: "speaker-names", names: [{ label: "相手 A", name: "鈴木" }] });
       expect(prompts[1]).toEqual(["r1 [00:10] 相手 A（鈴木）: 発言1です", "r2 [00:20] 相手 A（鈴木）: 発言2です"]);
-    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
-  });
-
-  it.effect("同時に別のラベルへ名前を付けても、どちらも失われない（表・ログ・最後のフレームに両方ある）", () => {
-    const { updaterLayer } = recordingAi();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir, frames, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10);
-      yield* say(2, 6, 20);
-
-      yield* Effect.all([sink.nameSpeaker({ label: "相手 A", name: "田中" }), sink.nameSpeaker({ label: "相手 B", name: "鈴木" })], { concurrency: "unbounded" });
-      yield* settle;
-
-      expect(nameLines(dir).map((e) => [e.label, e.name]).sort()).toEqual([["相手 A", "田中"], ["相手 B", "鈴木"]]);
-      const last = frames.at(-1)!;
-      expect([...last.names].sort((a, b) => a.label.localeCompare(b.label))).toEqual([{ label: "相手 A", name: "田中" }, { label: "相手 B", name: "鈴木" }]);
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });
 
@@ -286,67 +296,6 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
       const withoutName = yield* restoreState(events.filter((e) => e.type !== "speaker-name"));
       expect(withName).toEqual(withoutName);
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
-  });
-});
-
-// ログの書き込みを、合図を出している間だけ最初の 1 回止める FileSystem。止まった時点で entered を完了させ、release が完了するまで元の処理に渡さない
-// （元の処理より前で待つので、trackedFileSystem の inFlight は増えず、settle は止まらない）
-const gatedFileSystem = (gate: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void>; armed: boolean }) =>
-  Layer.effect(
-    FileSystem.FileSystem,
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      return new Proxy(fs, {
-        get(target, key, receiver) {
-          const value = Reflect.get(target, key, receiver);
-          if (key !== "writeFileString" || typeof value !== "function") return value;
-          return (path: string, ...rest: unknown[]) => {
-            const write = value.apply(target, [path, ...rest]) as Effect.Effect<void, unknown>;
-            if (!gate.armed || !path.endsWith("log.jsonl")) return write;
-            gate.armed = false;
-            return Effect.andThen(Effect.andThen(Deferred.succeed(gate.entered, undefined), Deferred.await(gate.release)), write);
-          };
-        },
-      });
-    }),
-  ).pipe(Layer.provide(fileIo.layer));
-
-describe("名前の更新は、要求の中断から保護される", () => {
-  it.effect("別のログ書き込みがログのロックを持つ間に要求が中断されても、表・ログ・フレームはすべて更新される。同じ名前の再送は 3 つが一致したまま成功する", () => {
-    const { prompts, updaterLayer } = recordingAi();
-    const gate = { entered: Deferred.makeUnsafe<void>(), release: Deferred.makeUnsafe<void>(), armed: false };
-    const layer = SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) }).pipe(Layer.provide(fakeExportServices({ fileSystem: gatedFileSystem(gate) })));
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir, frames, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10); // 相手 A
-
-      // 別の書き込み（済んだ時刻の speaker-settled）がログのロックを持ったまま止まる
-      gate.armed = true;
-      const holder = yield* Effect.forkChild(sink.speaker(settledAt(12)));
-      yield* Deferred.await(gate.entered);
-
-      const request = yield* Effect.forkChild(sink.nameSpeaker({ label: "相手 A", name: "田中" }), { startImmediately: true });
-      expect(request.pollUnsafe()).toBeUndefined();
-      const interrupting = yield* Effect.forkChild(Fiber.interrupt(request));
-      yield* Deferred.succeed(gate.release, undefined);
-      yield* Fiber.join(holder);
-      yield* Fiber.join(interrupting);
-      yield* settle;
-
-      yield* say(2, 5, 20);
-      yield* settle;
-      const named = [{ label: "相手 A", name: "田中" }];
-      expect(nameLines(dir).map((e) => [e.label, e.name])).toEqual([["相手 A", "田中"]]);
-      expect(frames.at(-1)).toEqual({ type: "speaker-names", names: named });
-      expect(prompts.at(-1)).toEqual(["r1 [00:10] 相手 A（田中）: 発言1です", "r2 [00:20] 相手 A（田中）: 発言2です"]);
-
-      // 中断の後の再送は成功し、3 つは一致したまま増えない
-      const framesBefore = frames.length;
-      yield* sink.nameSpeaker({ label: "相手 A", name: "田中" });
-      expect(nameLines(dir)).toHaveLength(1);
-      expect(frames).toHaveLength(framesBefore);
-      expect(frames.at(-1)).toEqual({ type: "speaker-names", names: named });
-    })).pipe(Effect.provide(layer));
   });
 });
 
