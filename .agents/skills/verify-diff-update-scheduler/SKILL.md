@@ -37,9 +37,9 @@ description: 差分更新の呼び出しの段取り（server/src/core/session.t
 
 ## 範囲
 
-最後に合わせた PR: #1458（2026-10-24）
+最後に合わせた PR: #1501（2026-10-24）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#1458)` が付くので、`git log "$(git log -1 --format=%H --grep='(#1458)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#1501)` が付くので、`git log "$(git log -1 --format=%H --grep='(#1501)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
 - `server/src/core/session.ts`: `openSession` の中の `setLifecycleState`・lifecycle の購読・`takeStep`・`startDiffIfReady`・`scheduleRetry`・`runCall`・`callUpdater`（状態を変える `Ref` の操作の部分）・`idle`・`push`（`pending` に足す歩）・`flush`、と `takeFresh`・`PACED_CALL_REMARKS`
 - `server/src/appleDiffUpdater.ts`: lifecycle に流す通知（`restarting`・`running`・`DiffUpdateStopped`）
