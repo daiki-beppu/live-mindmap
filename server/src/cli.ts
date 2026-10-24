@@ -99,7 +99,7 @@ import {
   writeExportsAndCapture,
   writeReviews,
 } from "./sessionFiles.ts";
-import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
+import { describe, errorMessage, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
 import { Viewers } from "./viewers.ts";
 import { StartupRefusal } from "./managedDepsProtocol.ts";
 import { ServerRoutes, type ServerRoute } from "./serverProtocol.ts";
@@ -938,7 +938,12 @@ const review = Command.make(
     if (selfOnly) {
       const variants = yield* selfReviewVariants(dir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
       if (variants.length === 0) return yield* new CommandFailed({ message: `自分の録音がありません: ${dir}` });
-      const self = yield* writeReviewPages(dir, logPath, variants).pipe(
+      const { events } = yield* readLogLines(logPath).pipe(
+        Effect.mapError((e) => new CommandFailed({
+          message: reviewWarning("map-audio-自分.html", describe(e._tag === "BrokenLogLine" ? `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` : e)),
+        })),
+      );
+      const self = yield* writeReviewPages(dir, events, variants).pipe(
         Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map-audio-自分.html", describe(e)) })),
       );
       // 見返し用に 自分 だけの版を頼まれているので、mix の失敗は警告で済ませず失敗にする
@@ -1364,7 +1369,12 @@ const publishableSession = Effect.fnUntraced(function* (session: Option.Option<s
 
 // 置く中身の段の見返しを作り、公開用の head にする（暗号化の前）
 const publishedMapHtml = Effect.fnUntraced(function* (dir: string, logPath: string, content: (typeof PUBLISH_CONTENTS)[number]) {
-  const rendered = yield* renderReviewPages(dir, logPath, [publishVariant(content)]).pipe(
+  const { events } = yield* readLogLines(logPath).pipe(
+    Effect.mapError((e) => new CommandFailed({
+      message: e._tag === "BrokenLogLine" ? `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` : errorMessage(e),
+    })),
+  );
+  const rendered = yield* renderReviewPages(dir, events, [publishVariant(content)]).pipe(
     Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
     Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
   );

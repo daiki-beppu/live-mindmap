@@ -6,7 +6,6 @@ import { build } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
 import { AudioMix } from "./audioMix.ts";
 import { embedReviewAudio, embedReviewLicenses, embedReviewLog, mapOnlyReviewEvents } from "./core/index.ts";
-import { readLogLines } from "./logLines.ts";
 
 const WEB_ROOT = join(import.meta.dirname, "../../web");
 // 見返しの操作の行が写した video.js のアイコンの出どころとライセンス（Apache-2.0）。Vite の build.license はパッケージ単位で、写したファイルは載らないので、ここで足す
@@ -80,18 +79,11 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
   ).pipe(Effect.mapError((e) => e.message));
 });
 
-// log.jsonl の出来事を、版ごとに 1 つの HTML へ埋め込んで返す（何も書かない）。ビルドは 1 回だけ。音声の mix の入力は sessionDir。
-// ログが読めない・ビルドに失敗したら、ReviewPageFailed で終わる。
+// 読み込み済みの出来事を、版ごとに 1 つの HTML へ埋め込んで返す（何も書かない）。ビルドは 1 回だけ。音声の mix の入力は sessionDir。
+// ビルドや埋め込みに失敗したら、ReviewPageFailed で終わる。
 // マップだけの版の埋め込みは mapOnlyReviewEvents（壊れた発言・画面の行では ReviewPageFailed）。
 // 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は返す）
-export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string, logPath: string, variants: readonly ReviewVariant[]) {
-  const { events } = yield* readLogLines(logPath).pipe(
-    Effect.mapError((e) =>
-      e._tag === "BrokenLogLine"
-        ? new ReviewPageFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` })
-        : failed(e),
-    ),
-  );
+export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string, events: readonly unknown[], variants: readonly ReviewVariant[]) {
   const { build } = yield* ReviewBuild;
   const template = yield* build;
   const pages: { file: string; html: string }[] = [];
@@ -115,9 +107,9 @@ export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string
 });
 
 // renderReviewPages の結果を dir に書き、書いたパスを版の順に返す。全部作ってから書く（途中で失敗したら何も書かない）。mix の入力も dir
-export const writeReviewPages = Effect.fnUntraced(function* (dir: string, logPath: string, variants: readonly ReviewVariant[]) {
+export const writeReviewPages = Effect.fnUntraced(function* (dir: string, events: readonly unknown[], variants: readonly ReviewVariant[]) {
   const fs = yield* FileSystem.FileSystem;
-  const { pages, skipped } = yield* renderReviewPages(dir, logPath, variants);
+  const { pages, skipped } = yield* renderReviewPages(dir, events, variants);
   const written = pages.map((page) => ({ path: join(dir, page.file), html: page.html }));
   for (const page of written) yield* fs.writeFileString(page.path, page.html).pipe(Effect.mapError(failed));
   return { paths: written.map((page) => page.path), skipped } satisfies ReviewPagesResult;
