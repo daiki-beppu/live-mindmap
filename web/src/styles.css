@@ -38,7 +38,6 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 /* 淡い塗り・枠・角丸だけ。影・バッジ・色帯は付けない */
 .map-node {
   box-sizing: border-box;
-  width: 200px;
   font-size: 14px;
   line-height: 1.4;
   color: var(--color-gray-900);
