@@ -115,6 +115,122 @@ const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Laye
     return { sessions: Context.get(context, Sessions), viewers: Context.get(context, Viewers), closeServer: () => Scope.close(scope, Exit.void) };
   });
 
+describe("現在のセッションの状態による操作の許可", () => {
+  it.effect.each([
+    { operation: "resume", state: "idle", expected: "NoSession" },
+    { operation: "checkResume", state: "idle", expected: "NoSession" },
+    { operation: "setSelfPause", state: "idle", expected: "NoSession" },
+    { operation: "liveSession", state: "idle", expected: "NoSession" },
+    { operation: "setSpeakerName", state: "idle", expected: "NoSession" },
+    { operation: "resume", state: "starting", expected: "SessionTransition" },
+    { operation: "checkResume", state: "starting", expected: "SessionTransition" },
+    { operation: "setSelfPause", state: "starting", expected: "SessionTransition" },
+    { operation: "liveSession", state: "starting", expected: "SessionTransition" },
+    { operation: "setSpeakerName", state: "starting", expected: "SessionTransition" },
+    { operation: "resume", state: "stopping", expected: "SessionTransition" },
+    { operation: "checkResume", state: "stopping", expected: "SessionTransition" },
+    { operation: "setSelfPause", state: "stopping", expected: "SessionTransition" },
+    { operation: "liveSession", state: "stopping", expected: "SessionTransition" },
+    { operation: "setSpeakerName", state: "stopping", expected: "SessionTransition" },
+    { operation: "resume", state: "recorded", expected: "NotForRecordedSession" },
+    { operation: "checkResume", state: "recorded", expected: "NotForRecordedSession" },
+    { operation: "setSelfPause", state: "recorded", expected: "NotForRecordedSession" },
+    { operation: "liveSession", state: "recorded", expected: "Success" },
+    { operation: "setSpeakerName", state: "recorded", expected: "Success" },
+  ] as const)("$state の $operation は $expected を返す", ({ operation, state, expected }) => Effect.gen(function* () {
+    const launchEntered = yield* Deferred.make<void>();
+    const releaseLaunch = yield* Deferred.make<void>();
+    const flushEntered = yield* Deferred.make<void>();
+    const releaseFlush = yield* Deferred.make<void>();
+    const fakeHelpers = yield* makeFakeHelpers([{ connectGate: releaseLaunch }]);
+    const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: (args, stopRequested) => Effect.andThen(
+      Deferred.succeed(launchEntered, undefined), fakeHelpers.helpers.launch(args, stopRequested),
+    ) });
+    const fake = yield* makeFakeSessionSinks();
+    const named: Parameters<RecordedSink["nameSpeaker"]>[0][] = [];
+    const sinks = SessionSinks.of({ ...fake.sinks,
+      open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({ ...sink,
+        flush: Effect.andThen(Deferred.succeed(flushEntered, undefined), Effect.andThen(Deferred.await(releaseFlush), sink.flush)),
+      })),
+      openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({ ...sink,
+        nameSpeaker: (speaker) => Effect.sync(() => { named.push(speaker); }),
+      })),
+    });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
+    const invoke = Effect.gen(function* () {
+      switch (operation) {
+        case "resume": return yield* sessions.resume.pipe(Effect.asVoid);
+        case "checkResume": return yield* sessions.checkResume.pipe(Effect.asVoid);
+        case "setSelfPause": return yield* sessions.setSelfPause(true);
+        case "liveSession": {
+          const session = yield* sessions.liveSession;
+          expect(session.local).toBe(false);
+          expect(session.scope).toBeDefined();
+          return;
+        }
+        case "setSpeakerName": return yield* sessions.setSpeakerName({ label: "相手 A", name: "山田" });
+      }
+    });
+
+    const result = yield* Effect.gen(function* () {
+      if (state === "idle") return yield* Effect.exit(invoke);
+      if (state === "recorded") {
+        yield* Deferred.succeed(releaseLaunch, undefined);
+        yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
+        const result = yield* Effect.exit(invoke);
+        yield* sessions.stop;
+        return result;
+      }
+      const starting = yield* sessions.start(start()).pipe(Effect.forkChild);
+      yield* Deferred.await(launchEntered);
+      const duringStart = state === "starting" ? yield* Effect.exit(invoke) : undefined;
+      yield* Deferred.succeed(releaseLaunch, undefined);
+      yield* Fiber.join(starting);
+      expect((yield* sessions.status).status).toBe("running");
+      const stopping = yield* sessions.stop.pipe(Effect.forkChild);
+      yield* Deferred.await(flushEntered);
+      const result = duringStart ?? (yield* Effect.exit(invoke));
+      yield* Deferred.succeed(releaseFlush, undefined);
+      yield* Fiber.join(stopping);
+      expect(yield* sessions.status).toEqual({ status: "none" });
+      return result;
+    });
+
+    expect(Exit.isFailure(result) ? Cause.squash(result.cause) : { _tag: "Success" }).toMatchObject({ _tag: expected });
+    expect(fakeHelpers.sentPauses).toEqual([]);
+    expect(named).toEqual(state === "recorded" && operation === "setSpeakerName" ? [{ label: "相手 A", name: "山田" }] : []);
+  }).pipe(Effect.scoped));
+
+  it.effect.each(["live", "recorded"] as const)("%s の flush 待機中の二重 stop は拒否し、書き出しと close は1回だけ行う", (kind) => Effect.gen(function* () {
+    const helpers = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const holdFlush = (flush: Effect.Effect<void>) => Effect.andThen(
+      Deferred.succeed(entered, undefined), Effect.andThen(Deferred.await(release), flush),
+    );
+    const sinks = SessionSinks.of({ ...fake.sinks,
+      open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({ ...sink, flush: holdFlush(sink.flush) })),
+      openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({ ...sink, flush: holdFlush(sink.flush) })),
+    });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    if (kind === "live") yield* sessions.start(start());
+    else yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
+    const stopping = yield* sessions.stop.pipe(Effect.forkChild);
+    yield* Deferred.await(entered);
+    const second = yield* Effect.exit(sessions.stop);
+    yield* Deferred.succeed(release, undefined);
+    const result = yield* Fiber.join(stopping);
+
+    expect(Exit.isFailure(second) && Cause.squash(second.cause)).toMatchObject({ _tag: "SessionTransition" });
+    expect(result.kind).toBe(kind);
+    expect(result.paths).toHaveLength(4);
+    expect(fake.order).toEqual(["flush", "exports", "close"]);
+    expect(fake.opened.closed).toBe(1);
+    expect(yield* sessions.status).toEqual({ status: "none" });
+  }).pipe(Effect.scoped));
+});
+
 describe("録画の引数と終了処理", () => {
   it.effect("閲覧の共有が使う録画のScopeは、録画の終了で1回だけ閉じる", () => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{}]);
@@ -1400,15 +1516,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }]);
         yield* sessions.setSelfPause(false);
         expect(fakeHelpers.sentPauses).toEqual([{ attempt: 0, paused: true }, { attempt: 0, paused: false }]);
-      }));
-
-    it.effect("セッションが無いときの setSelfPause は NoSession で失敗し、helper へ何も送らない", () =>
-      Effect.gen(function* () {
-        const { fakeHelpers, sessions } = yield* boot([{}]);
-        const exit = yield* Effect.exit(sessions.setSelfPause(true));
-        expect(Exit.isFailure(exit)).toBe(true);
-        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(NoSession);
-        expect(fakeHelpers.sentPauses).toEqual([]);
       }));
 
     it.effect("helper の休止イベントは self-paused / self-resumed の組として start・reason のままログ（sink）に残り、画面へフレームが届く。セッションは running のまま", () =>
