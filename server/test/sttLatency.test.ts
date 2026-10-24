@@ -95,6 +95,11 @@ describe("途中結果を本番の区切り方で発言にする", () => {
     near(remarks[0]!.at, at);
   });
 
+  it("期限が時計の刻みにちょうど重なれば、その刻みで出す（静かな間 1.01 秒なら 2.01 秒ちょうど。秒への丸めで 1 刻み遅れて 2.02 秒にならない）", () => {
+    const remarks = settledRemarks([partial(1.0, 0, 1.0, "はい"), final(20, 19, 19.5, "うん", "自分")], 1.01);
+    expect(atsOf(remarks)).toEqual([2.01, 20]);
+  });
+
   it("時計は途中結果の届いた時刻で進む: end が 5 で arrival が 8 の途中結果は、end から数えた 6 ではなく、arrival から数えた 9 に出る", () => {
     const remarks = settledRemarks([partial(8, 0, 5, "はい")], 1);
     expect(remarks).toHaveLength(1);

@@ -259,8 +259,8 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
         const c = yield* connect(r.server.port, "/ws", origin);
         // マップのほかに、差分更新の状態（type: "diff-update"）も接続時に届く。ここで確かめるのはマップだけ
         const map = { nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }], round: 0, changes: [], remarks: [] };
-        yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual(map), { timeout: 10_000 }));
-        expect(c.frames.filter((frame) => !(typeof frame === "object" && frame !== null && "type" in frame))).toEqual([map]);
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "snapshot", snapshot: map }), { timeout: 10_000 }));
+        expect(c.frames.filter((frame) => typeof frame === "object" && frame !== null && "type" in frame && frame.type === "snapshot")).toEqual([{ type: "snapshot", snapshot: map }]);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, origin))).status).toBe(200);
       }));
   }
@@ -275,7 +275,7 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
         expect(r.calls).toEqual([]);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", body, undefined))).status).toBe(200);
         const allowed = yield* connect(r.server.port, "/ws", undefined);
-        yield* Effect.tryPromise(() => vi.waitFor(() => expect(allowed.frames).toContainEqual(expect.objectContaining({ round: 0 }))));
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(allowed.frames).toContainEqual({ type: "snapshot", snapshot: expect.objectContaining({ round: 0 }) })));
         expect(yield* rejectedUpgrade(r.server.port, "/ws", origin)).toEqual({ status: 403, frames: [] });
       }));
   }
@@ -285,7 +285,7 @@ describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () 
       expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
       expect(yield* rejectedUpgrade(r.server.port, "/", undefined)).toEqual({ status: 404, frames: [] });
       const feed = yield* connect(r.server.port, "/ws", undefined);
-      yield* Effect.tryPromise(() => vi.waitFor(() => expect(feed.frames).toContainEqual(expect.objectContaining({ round: 0 }))));
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(feed.frames).toContainEqual({ type: "snapshot", snapshot: expect.objectContaining({ round: 0 }) })));
     }));
   it.live("closeで接続中のクライアントが切断され、同じポートは新しい接続を受け付けない（要件7）", () =>
     Effect.gen(function* () {
@@ -549,7 +549,7 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       const r = yield* resourceWithFakeHelpers([{}, { connect: false, stderrTail: ["マイクが許可されていません"] }, {}]);
       const post = (path: string, body?: string) => Effect.tryPromise(() => r.request("POST", path, body, undefined));
       type Snap = { nodes: { text: string }[] };
-      const snapshots = (frames: unknown[]) => frames.filter((f) => !(typeof f === "object" && f !== null && "type" in f)) as Snap[];
+      const snapshots = (frames: unknown[]) => (frames.filter((f) => typeof f === "object" && f !== null && "type" in f && f.type === "snapshot") as { snapshot: Snap }[]).map((f) => f.snapshot);
       const waitCount = (frames: unknown[], n: number) => Effect.tryPromise(() => vi.waitFor(() => expect(snapshots(frames)).toHaveLength(n)));
 
       expect((yield* post("/session/start", '{"app":"us.zoom.xos","title":"前","audio":false}')).status).toBe(200);

@@ -53,7 +53,7 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
       const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "people-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
       const published: Snapshot[] = [];
       const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
-        send: (frame) => Effect.sync(() => { if (!("type" in frame)) published.push(frame); }) });
+        send: (frame) => Effect.sync(() => { if (frame.type === "snapshot") published.push(frame.snapshot); }) });
       const say = (n: number, slot: number, start: number, track: "相手" | "自分" = "相手") => Effect.gen(function* () {
         if (track === "相手") { yield* sink.speaker(segment(slot, start, start + 2)); yield* sink.speaker(settledAt(start + 2)); }
         yield* sink.final({ track, start, end: start + 2, text: `発言${n}です` });
@@ -89,7 +89,7 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
       const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "people-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
       const published: Snapshot[] = [];
       const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
-        send: (frame) => Effect.sync(() => { if (!("type" in frame)) published.push(frame); }) });
+        send: (frame) => Effect.sync(() => { if (frame.type === "snapshot") published.push(frame.snapshot); }) });
       yield* sink.speaker({ type: "speaker-off", start: 0, reason: "モデルなし" });
       yield* sink.final({ track: "相手", start: 10, end: 12, text: "話者を取れない発言です" });
       yield* settleUntil(() => logEvents(dir).some((e) => e.type === "diff"));
@@ -111,7 +111,7 @@ describe("案の出した人と TODO の担当の話者（実物の SessionSinks
       const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "people-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
       const published: Snapshot[] = [];
       const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
-        send: (frame) => Effect.sync(() => { if (!("type" in frame)) published.push(frame); }) });
+        send: (frame) => Effect.sync(() => { if (frame.type === "snapshot") published.push(frame.snapshot); }) });
       yield* sink.speaker(segment(5, 10, 12));
       yield* sink.speaker(settledAt(12));
       yield* sink.final({ track: "相手", start: 10, end: 12, text: "私がやります" });

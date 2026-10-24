@@ -31,24 +31,30 @@ const EPSILON = 1e-6;
 
 const CLOCK_STEP_MS = 10;
 
+type RemarkSettler = ReturnType<typeof createRemarkSettler>;
+
+function secondsReaching(ms: number): number {
+  let end = ms / 1000;
+  while (end * 1000 < ms) end *= 1 + Number.EPSILON;
+  return end;
+}
+
+const releaseDueAt = (settler: RemarkSettler, ms: number) =>
+  settler.partial({ track: "自分", start: 0, end: secondsReaching(ms), text: "", duplicate: false });
+
 export function settledRemarks(results: readonly SttResult[], quietSeconds: number): SettledRemark[] {
   const settler = createRemarkSettler(quietSeconds * 1000);
   const out: SettledRemark[] = [];
   const keep = (remarks: readonly { track: Track; start: number; end: number; text: string }[], atMs: number) => {
     for (const r of remarks) out.push({ id: `r${out.length + 1}`, track: r.track, start: r.start, end: r.end, text: r.text, at: atMs / 1000 });
   };
-  const tick = (ms: number) => {
-    let end = ms / 1000;
-    while (end * 1000 < ms) end *= 1 + Number.EPSILON;
-    return settler.partial({ track: "自分", start: 0, end, text: "", duplicate: false });
-  };
   const ordered = results.map((r, i) => ({ r, i })).sort((a, b) => a.r.arrival - b.r.arrival || a.i - b.i).map(({ r }) => r);
   let clockMs = ordered.length === 0 ? 0 : Math.round(ordered[0]!.arrival * 1000);
-  tick(clockMs);
+  releaseDueAt(settler, clockMs);
   const advanceTo = (targetMs: number) => {
     while (clockMs < targetMs) {
       clockMs = Math.min(clockMs + CLOCK_STEP_MS, targetMs);
-      keep(tick(clockMs), clockMs);
+      keep(releaseDueAt(settler, clockMs), clockMs);
     }
   };
   for (const r of ordered) {

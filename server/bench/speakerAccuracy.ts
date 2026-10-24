@@ -38,17 +38,21 @@ export function groundTruthSpeaker(remark: Span, timeline: readonly TruthRow[]):
   return best;
 }
 
-type Assignment = { n: number; u: number[]; v: number[]; matchedRow: number[]; way: number[] };
+const SENTINEL_COLUMN = 0;
+const NO_ROW = 0;
+
+type OneBased = number[];
+type Assignment = { n: number; rowPotential: OneBased; columnPotential: OneBased; matchedRow: OneBased; previousColumn: OneBased };
 
 function relax(cost: (i: number, j: number) => number, state: Assignment, i0: number, j0: number, used: readonly boolean[], minv: number[]) {
   let delta = Number.POSITIVE_INFINITY;
   let next = 0;
   for (let j = 1; j <= state.n; j++) {
     if (used[j]) continue;
-    const current = cost(i0, j) - state.u[i0]! - state.v[j]!;
+    const current = cost(i0, j) - state.rowPotential[i0]! - state.columnPotential[j]!;
     if (current < minv[j]!) {
       minv[j] = current;
-      state.way[j] = j0;
+      state.previousColumn[j] = j0;
     }
     if (minv[j]! < delta) {
       delta = minv[j]!;
@@ -61,15 +65,15 @@ function relax(cost: (i: number, j: number) => number, state: Assignment, i0: nu
 function shiftPotentials(state: Assignment, used: readonly boolean[], minv: number[], delta: number): void {
   for (let j = 0; j <= state.n; j++) {
     if (used[j]) {
-      state.u[state.matchedRow[j]!] = state.u[state.matchedRow[j]!]! + delta;
-      state.v[j] = state.v[j]! - delta;
+      state.rowPotential[state.matchedRow[j]!] = state.rowPotential[state.matchedRow[j]!]! + delta;
+      state.columnPotential[j] = state.columnPotential[j]! - delta;
     } else minv[j] = minv[j]! - delta;
   }
 }
 
 function addRow(cost: (i: number, j: number) => number, state: Assignment, i: number): void {
-  state.matchedRow[0] = i;
-  let j0 = 0;
+  state.matchedRow[SENTINEL_COLUMN] = i;
+  let j0 = SENTINEL_COLUMN;
   const minv = new Array<number>(state.n + 1).fill(Number.POSITIVE_INFINITY);
   const used = new Array<boolean>(state.n + 1).fill(false);
   do {
@@ -77,11 +81,11 @@ function addRow(cost: (i: number, j: number) => number, state: Assignment, i: nu
     const { delta, next } = relax(cost, state, state.matchedRow[j0]!, j0, used, minv);
     shiftPotentials(state, used, minv, delta);
     j0 = next;
-  } while (state.matchedRow[j0] !== 0);
-  for (let j1 = state.way[j0]!; ; j1 = state.way[j0]!) {
+  } while (state.matchedRow[j0] !== NO_ROW);
+  for (let j1 = state.previousColumn[j0]!; ; j1 = state.previousColumn[j0]!) {
     state.matchedRow[j0] = state.matchedRow[j1]!;
     j0 = j1;
-    if (j0 === 0) break;
+    if (j0 === SENTINEL_COLUMN) break;
   }
 }
 
@@ -91,7 +95,7 @@ export function assignOneToOne(weights: readonly (readonly number[])[]): (number
   if (rows === 0) return [];
   const weight = (i: number, j: number) => weights[i - 1]?.[j - 1] ?? 0;
   const cost = (i: number, j: number) => -weight(i, j);
-  const state: Assignment = { n, u: new Array<number>(n + 1).fill(0), v: new Array<number>(n + 1).fill(0), matchedRow: new Array<number>(n + 1).fill(0), way: new Array<number>(n + 1).fill(0) };
+  const state: Assignment = { n, rowPotential: new Array<number>(n + 1).fill(0), columnPotential: new Array<number>(n + 1).fill(0), matchedRow: new Array<number>(n + 1).fill(NO_ROW), previousColumn: new Array<number>(n + 1).fill(SENTINEL_COLUMN) };
   for (let i = 1; i <= n; i++) addRow(cost, state, i);
   const result: (number | undefined)[] = new Array<number | undefined>(rows).fill(undefined);
   for (let j = 1; j <= n; j++) {

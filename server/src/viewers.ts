@@ -1,15 +1,15 @@
 import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref, type Scope } from "effect";
 import { Socket } from "effect/socket";
-import type { CaptionsFrame, DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, Snapshot, SpeakerNamesFrame, TapNoticeFrame } from "./core/index.ts";
+import type { CaptionsFrame, DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, SnapshotFrame, SpeakerNamesFrame, TapNoticeFrame } from "./core/index.ts";
 
 const FEED_END = Symbol("live-mindmap/server/Viewers/end");
 type Feed = string | typeof FEED_END;
 
-export type ViewerFrame = Snapshot | CaptionsFrame | IntakeFrame | ScreenNoticeFrame | TapNoticeFrame | SelfPauseFrame | DiffUpdateFrame | SessionModeFrame | SpeakerNamesFrame;
+export type ViewerFrame = SnapshotFrame | CaptionsFrame | IntakeFrame | ScreenNoticeFrame | TapNoticeFrame | SelfPauseFrame | DiffUpdateFrame | SessionModeFrame | SpeakerNamesFrame;
 export type SendFrame = (frame: ViewerFrame) => Effect.Effect<void>;
 
 const END_FRAMES: {
-  readonly [F in ViewerFrame as F extends { type: string } ? F["type"] : "snapshot"]: F | "keep";
+  readonly [F in ViewerFrame as F["type"]]: F | "keep";
 } = {
   snapshot: "keep",
   captions: { type: "captions", bubbles: [] },
@@ -21,8 +21,6 @@ const END_FRAMES: {
   "session-mode": { type: "session-mode", local: false },
   "speaker-names": "keep",
 };
-
-const frameKind = (frame: ViewerFrame): keyof typeof END_FRAMES => "type" in frame ? frame.type : "snapshot";
 
 const retainedFrames = (retained: ReadonlyMap<string, string>): string[] => Object.keys(END_FRAMES).flatMap((kind) => {
   const data = retained.get(kind);
@@ -41,7 +39,7 @@ export class Viewers extends Context.Service<Viewers, {
 
     const send = Effect.fnUntraced(function* (frame: ViewerFrame) {
       const data = JSON.stringify(frame);
-      yield* Ref.update(retained, (current) => new Map(current).set(frameKind(frame), data));
+      yield* Ref.update(retained, (current) => new Map(current).set(frame.type, data));
       yield* PubSub.publish(updates, data);
     });
 
@@ -54,7 +52,7 @@ export class Viewers extends Context.Service<Viewers, {
         }
       }));
       return Effect.fnUntraced(function* (frame: ViewerFrame) {
-        yield* Ref.update(sent, (current) => new Set(current).add(frameKind(frame)));
+        yield* Ref.update(sent, (current) => new Set(current).add(frame.type));
         yield* send(frame);
       }, Effect.uninterruptible);
     });

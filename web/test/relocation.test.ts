@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
+import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { foldView } from "../src/folding.ts";
 import { relocations } from "../src/relocation.ts";
 import type { VisibleTree } from "../src/viewing.ts";
@@ -13,13 +13,14 @@ const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], evi
   ...extra,
 });
 const root = node("root", null, "会議", []);
-const snap = (nodes: SnapshotNode[], round: number, currentTopic?: string): Snapshot => ({
+const snap = (nodes: SnapshotNode[], round: number, currentTopic?: string, changes: ChangeEntry[] = []): Snapshot => ({
   nodes,
   round,
-  changes: [],
+  changes,
   remarks: [],
   ...(currentTopic !== undefined ? { currentTopic } : {}),
 });
+const combined = (round: number, into: SnapshotNode, from: string[]): ChangeEntry => ({ change: "統合", node: into.id, kind: into.kind, text: into.text, from, round, at: round });
 const NONE: ReadonlySet<string> = new Set();
 
 // 本番と同じく、畳む見せ方の結果から見えている木を組み立てる（位置は使わない）
@@ -55,34 +56,35 @@ describe("relocations: 見えている木から消えたノードの移り先", 
     expect(relocations(stateOf(before()), stateOf(snap(before().nodes, 5, "A")))).toEqual({});
   });
 
-  it("統合: 消えたノードの根拠をすべて持ち、新しく得た同じ種別のノードへ移る。子を引き取っただけでも統合", () => {
-    const after = snap(
-      [root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r2"]), node("X", "P1", "案", ["r2"])],
-      5,
-      "A",
-    );
+  it("統合: 反映の統合の記録にある統合先へ移る。子は統合先の下に残る", () => {
+    const P1 = node("P1", "A", "論点", ["r1", "r2"]);
+    const after = snap([root, node("A", "root", "議題", ["r1"]), P1, node("X", "P1", "案", ["r2"])], 5, "A", [combined(5, P1, ["P2"])]);
     expect(relocations(stateOf(before()), stateOf(after))).toEqual({ P2: "P1" });
   });
 
-  it("統合: 根拠を得ていなくても子を引き取っていれば統合先になる", () => {
-    const b = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r2"]), node("P2", "A", "論点", ["r2"]), node("X", "P2", "案", ["r2"])], 4, "A");
-    const after = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r2"]), node("X", "P1", "案", ["r2"])], 5, "A");
-    expect(relocations(stateOf(b), stateOf(after))).toEqual({ P2: "P1" });
+  it("統合: 統合の記録が無ければ、消えたノードの根拠を持つノードがあっても祖先へ移る", () => {
+    const after = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r2"])], 5, "A");
+    expect(relocations(stateOf(before()), stateOf(after))).toEqual({ P2: "A", X: "A" });
   });
 
-  it("統合: 種別が違う・根拠が足りないノードは統合先にならない（削除として親へ）", () => {
-    const wrongKind = snap([root, node("A", "root", "議題", ["r1", "r2"]), node("P1", "A", "論点", ["r1"])], 5, "A");
-    expect(relocations(stateOf(before()), stateOf(wrongKind))).toMatchObject({ P2: "A" });
-    const shortEvidence = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"])], 5, "A");
-    expect(relocations(stateOf(before()), stateOf(shortEvidence))).toMatchObject({ P2: "A" });
+  it("統合: 何 round か飛んだら、間の統合の記録を round 順にたどる（A → B が round 3、B → C が round 5 なら A は C へ）", () => {
+    const b = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("P2", "A", "論点", ["r2"]), node("P3", "A", "論点", ["r3"])], 2, "A");
+    const P1 = node("P1", "A", "論点", ["r1", "r2", "r3"]);
+    const P3 = node("P3", "A", "論点", ["r2", "r3"]);
+    const after = snap([root, node("A", "root", "議題", ["r1"]), P1], 5, "A", [combined(3, P3, ["P2"]), combined(5, P1, ["P3"])]);
+    expect(relocations(stateOf(b), stateOf(after))).toEqual({ P2: "P1", P3: "P1" });
   });
 
-  it("統合: 統合先が複数あれば、反映後のマップの並びで最初のもの", () => {
-    const b = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("P3", "A", "論点", ["r1"]), node("P2", "A", "論点", ["r2"])], 4, "A");
-    const after = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r2"]), node("P3", "A", "論点", ["r1", "r2"])], 5, "A");
-    expect(relocations(stateOf(b), stateOf(after))).toEqual({ P2: "P1" });
-    const reordered = snap([root, node("A", "root", "議題", ["r1"]), node("P3", "A", "論点", ["r1", "r2"]), node("P1", "A", "論点", ["r1", "r2"])], 5, "A");
-    expect(relocations(stateOf(b), stateOf(reordered))).toEqual({ P2: "P3" });
+  it("統合: 前の時点までの統合の記録は使わない", () => {
+    const P1 = node("P1", "A", "論点", ["r1", "r2"]);
+    const after = snap([root, node("A", "root", "議題", ["r1"]), P1], 5, "A", [combined(4, P1, ["P2"])]);
+    expect(relocations(stateOf(before()), stateOf(after))).toEqual({ P2: "A", X: "A" });
+  });
+
+  it("統合: 統合先が反映の後に無ければ、いちばん近い現存の祖先へ移る", () => {
+    const P1 = node("P1", "A", "論点", ["r1", "r2"]);
+    const after = snap([root, node("A", "root", "議題", ["r1"])], 6, "A", [combined(5, P1, ["P2"])]);
+    expect(relocations(stateOf(before()), stateOf(after))).toEqual({ P1: "A", P2: "A", X: "A" });
   });
 
   it("削除: 消えたノードは親へ。子もまとめて消えたら、残っているいちばん近い祖先へ", () => {
@@ -106,7 +108,8 @@ describe("relocations: 見えている木から消えたノードの移り先", 
 
   it("移り先が畳んだ中にあっても、スナップショットにあれば移り先になる", () => {
     const b = snap([root, node("A", "root", "議題", ["r1"]), node("A1", "A", "論点", ["r1"]), node("A2", "A", "論点", ["r2"])], 4, "root");
-    const after = snap([root, node("A", "root", "議題", ["r1"], { talkStatus: "済み" }), node("A1", "A", "論点", ["r1", "r2"])], 5, "root");
+    const A1 = node("A1", "A", "論点", ["r1", "r2"]);
+    const after = snap([root, node("A", "root", "議題", ["r1"], { talkStatus: "済み" }), A1], 5, "root", [combined(5, A1, ["A2"])]);
     const a = stateOf(after);
     expect(a.tree.ids).not.toContain("A1");
     expect(relocations(stateOf(b), a)).toEqual({ A2: "A1" });
@@ -121,10 +124,11 @@ describe("relocations: 見えている木から消えたノードの移り先", 
     expect(relocations(sb, stateOf(after))).toEqual({ "run:A": "root" });
   });
 
-  it("見返しで時刻を戻して、まだ無い時点になったノードは、統合に見える並びでも、その時点にあるいちばん近い祖先へ移る", () => {
-    // 前（round 5）の P3 は、戻った先（round 3）の P1 が根拠 r3 を持っていても、統合ではなく「まだ無い」だけ
+  it("見返しで時刻を戻して、まだ無い時点になったノードは、統合の記録があっても、その時点にあるいちばん近い祖先へ移る", () => {
+    // 前（round 5）の P3 は、戻った先（round 3）に P1 への統合の記録があっても、統合ではなく「まだ無い」だけ
     const later = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1"]), node("P3", "A", "論点", ["r3"]), node("Y", "P3", "案", ["r3"])], 5, "A");
-    const earlier = snap([root, node("A", "root", "議題", ["r1"]), node("P1", "A", "論点", ["r1", "r3"])], 3, "A");
+    const P1 = node("P1", "A", "論点", ["r1", "r3"]);
+    const earlier = snap([root, node("A", "root", "議題", ["r1"]), P1], 3, "A", [combined(3, P1, ["P3"])]);
     expect(relocations(stateOf(later), stateOf(earlier))).toEqual({ P3: "A", Y: "A" });
   });
 

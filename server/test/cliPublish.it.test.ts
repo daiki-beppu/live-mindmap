@@ -695,10 +695,7 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       expect(s.stdout.join("")).not.toContain("workers.dev");
     }));
 
-    it.effect("script PUT の後、記録を書く前に中断されても、同じ名前の Worker を DELETE する。記録は無い", () => Effect.gen(function* () {
-      const root = yield* temporaryDirectory;
-      const s = setup(root);
-      writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+    const interruptBeforeRecord = (s: Setup) => Effect.gen(function* () {
       const reached = yield* Deferred.make<void>();
       const inner = s.api.client;
       // workers.dev の有効化の要求だけ、到達を知らせて止める（PUT は済み、記録はまだ）
@@ -713,12 +710,31 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       const fiber = yield* Effect.forkChild(publish(s, ["--anyone"]));
       yield* Deferred.await(reached);
       yield* Fiber.interrupt(fiber);
+    });
+
+    it.effect("script PUT の後、記録を書く前に中断されても、同じ名前の Worker を DELETE する。記録は無い", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+
+      yield* interruptBeforeRecord(s);
 
       const put = s.api.calls.find(isScriptPut);
       expect(put).toBeDefined();
       expect(s.api.calls.filter(isScriptDelete).map(scriptName)).toEqual([scriptName(put!)]);
       expect(s.stdout.join("")).not.toContain("workers.dev");
       expect(recordRows(s)).toEqual([]);
+    }));
+
+    it.effect("中断の後の DELETE も失敗すると、Worker 名と残っているかもしれない旨を stderr に出す", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root, { respond: (c) => (isScriptDelete(c) ? { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null } } : null) });
+      writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+
+      yield* interruptBeforeRecord(s);
+
+      const name = scriptName(s.api.calls.find(isScriptPut)!);
+      expect(s.stderr.join("")).toContain(`Worker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください`);
     }));
   });
 

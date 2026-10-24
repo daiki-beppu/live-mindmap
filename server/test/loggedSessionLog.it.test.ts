@@ -33,7 +33,7 @@ const open = Effect.fn("open")(function* () {
   const frames: ViewerFrame[] = [];
   const opened = yield* openLoggedSession({ model: defaultClaude, dir, title: "定例", send: (frame) => Effect.sync(() => {
     frames.push(frame);
-    if (!("type" in frame)) published.push(frame.nodes.length);
+    if (frame.type === "snapshot") published.push(frame.snapshot.nodes.length);
   }) }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );

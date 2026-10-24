@@ -1,10 +1,13 @@
+import { Schema } from "effect";
+import { escapeCell } from "./markdownTable.ts";
+import { SEALED_SCRIPT_ID, unlockPageScript } from "./passphrase.ts";
+import type { Sealed } from "./passphrase.ts";
+
 export const PUBLISH_DEFAULT_DAYS = 7;
 export const PUBLISH_MAX_DAYS = 30;
 // Cloudflare の静的アセット 1 ファイルの上限
 export const PUBLISH_MAX_ASSET_BYTES = 25 * 1024 * 1024;
 
-import { Schema } from "effect";
-import { escapeCell } from "./markdownTable.ts";
 export const PUBLISH_CONTENTS = ["map", "remarks", "audio"] as const;
 export type PublishContent = (typeof PUBLISH_CONTENTS)[number];
 
@@ -17,9 +20,6 @@ export function publishConfirmationMessage(input: { readonly content: "remarks" 
     ...(input.anyone ? ["--anyone について: URL を知る誰でも見られる＝公衆への送信に当たる"] : []),
   ].join("\n");
 }
-
-import { SEALED_SCRIPT_ID, unlockPageScript } from "./passphrase.ts";
-import type { Sealed } from "./passphrase.ts";
 
 export const PUBLISH_TITLE = "共有されたマインドマップ";
 const PUBLISH_DESCRIPTION = "期限つきで共有されたマインドマップです";
@@ -53,7 +53,7 @@ export function replaceHeadForPublish(html: string): string {
 export function lockedPublishPage(sealed: Sealed): string {
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FIXED_HEAD}</head>`
     + `<body><form><label>合言葉 <input type="text" autocomplete="off" autocapitalize="off" spellcheck="false" autofocus></label> <button type="submit">開く</button></form><p role="alert"></p>`
-    + `<script type="application/json" id="${SEALED_SCRIPT_ID}">${JSON.stringify(sealed)}</script><script>${unlockPageScript()}</script></body></html>`;
+    + `<script type="application/json" id="${SEALED_SCRIPT_ID}">${JSON.stringify(sealed).replaceAll("<", "\\u003c")}</script><script>${unlockPageScript()}</script></body></html>`;
 }
 
 // 文面を toString() で Worker に埋め込むので、外の名前を参照しない

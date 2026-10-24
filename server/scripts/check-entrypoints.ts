@@ -3,7 +3,21 @@ import { readSources, reportViolations, type SourceFile } from "./sourceFiles.ts
 
 export type Violation = { path: string; line?: number; message: string };
 
-const BENCH_SCRIPTS = ["bench/sessionStats.ts", "bench/mapShape.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/speechEnds.ts", "bench/edgeJudge.ts", "bench/siblingJudge.ts", "bench/speakerReplay.ts", "bench/speakerAccuracy.ts", "bench/timelineReplay.ts", "bench/peopleAccuracy.ts"];
+const BENCH_TEARDOWNS = {
+  "bench/sessionStats.ts": "exitNaturally",
+  "bench/mapShape.ts": "exitNaturally",
+  "bench/sttAccuracy.ts": "exitNaturally",
+  "bench/sttLatency.ts": "exitNaturally",
+  "bench/sttReplay.ts": "exitNaturallyForManagedDeps",
+  "bench/speechEnds.ts": "exitNaturally",
+  "bench/edgeJudge.ts": "exitNaturally",
+  "bench/siblingJudge.ts": "exitNaturally",
+  "bench/speakerReplay.ts": "exitNaturally",
+  "bench/speakerAccuracy.ts": "exitNaturally",
+  "bench/timelineReplay.ts": "exitNaturally",
+  "bench/peopleAccuracy.ts": "exitNaturally",
+} as const satisfies Record<string, "exitNaturally" | "exitNaturallyForManagedDeps">;
+const BENCH_SCRIPTS = Object.keys(BENCH_TEARDOWNS);
 const RUN_MAIN_ALLOWED = ["src/server.ts", "src/cli.ts", ...BENCH_SCRIPTS];
 const RUN_SYNC_ALLOWED = ["src/core/review.ts"];
 
@@ -12,7 +26,7 @@ const RUN_PROMISE = /\.runPromise(Exit)?\s*\(/;
 const RUN_SYNC = /\.runSync(Exit)?\s*\(/;
 const PROCESS_EXIT = /process\.exit\s*\(/;
 const ON_EXIT = /\bonExit\s*\(/;
-const RUN_MAIN_EXIT_NATURALLY = /\.runMain\s*\(\s*\{[^}]*\bteardown:\s*exitNaturally\b[^}]*\}\s*\)/;
+const runMainWithTeardown = (name: string) => new RegExp(String.raw`\.runMain\s*\(\s*\{[^}]*\bteardown:\s*${name}\b[^}]*\}\s*\)`);
 
 const matchingLines = (content: string, pattern: RegExp): number[] =>
   content
@@ -74,14 +88,14 @@ const checkServerEntry = (server: string | undefined): Violation[] => {
 
 const checkBenchEntries = (byPath: ReadonlyMap<string, string>): Violation[] => {
   const violations: Violation[] = [];
-  for (const path of BENCH_SCRIPTS) {
+  for (const [path, teardown] of Object.entries(BENCH_TEARDOWNS)) {
     const content = byPath.get(path);
     if (content === undefined) continue;
     for (const line of matchingLinesInCode(content, PROCESS_EXIT)) {
       violations.push({ path, line, message: "process.exit を呼ばない" });
     }
-    if (!RUN_MAIN_EXIT_NATURALLY.test(codeOf(content))) {
-      violations.push({ path, message: "runMain に teardown: exitNaturally を渡す" });
+    if (!runMainWithTeardown(teardown).test(codeOf(content))) {
+      violations.push({ path, message: `runMain に teardown: ${teardown} を渡す` });
     }
   }
   return violations;

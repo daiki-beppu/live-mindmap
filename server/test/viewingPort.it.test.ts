@@ -18,6 +18,7 @@ const HOST = "abc-def.trycloudflare.com";
 const ALLOWED = `https://${HOST}`;
 const fakeBuild = Layer.succeed(ReviewBuild, ReviewBuild.of({ build: Effect.succeed(TEMPLATE) }));
 const snapshot = { nodes: [], round: 1, changes: [], remarks: [] };
+const snapshotFrame = (s: typeof snapshot) => ({ type: "snapshot", snapshot: s } as const);
 const intakeFrame = { type: "intake", status: "running" } as const;
 const modeFrame = { type: "session-mode", local: false } as const;
 
@@ -117,25 +118,25 @@ describe("閲覧の口（Issue #832）", () => {
 
   it.live("つないだら保持している値が先に届き、その後の publish は操作の口と閲覧の口の両方へ届く（同じ Viewers）", () => Effect.gen(function* () {
     const p = yield* ports();
-    yield* p.send(snapshot);
+    yield* p.send(snapshotFrame(snapshot));
     yield* p.send(intakeFrame);
     yield* p.send(modeFrame);
     const viewing = yield* connect(p.viewingPort, "/ws", ALLOWED);
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames).toHaveLength(3)));
-    expect(viewing.frames).toEqual([snapshot, intakeFrame, modeFrame]);
+    expect(viewing.frames).toEqual([snapshotFrame(snapshot), intakeFrame, modeFrame]);
     const operation = yield* connect(p.operationPort, "/ws", undefined);
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(operation.frames).toHaveLength(3)));
     const next = { ...snapshot, round: 2 };
-    yield* p.send(next);
+    yield* p.send(snapshotFrame(next));
     yield* Effect.tryPromise(() => vi.waitFor(() => {
-      expect(viewing.frames.at(-1)).toEqual(next);
-      expect(operation.frames.at(-1)).toEqual(next);
+      expect(viewing.frames.at(-1)).toEqual(snapshotFrame(next));
+      expect(operation.frames.at(-1)).toEqual(snapshotFrame(next));
     }));
   }));
 
   it.live("ブラウザから届くメッセージは解釈しない（コマンドに見える JSON・不正な文字列・バイナリを送っても、接続も保持値も変わらない）", () => Effect.gen(function* () {
     const p = yield* ports();
-    yield* p.send(snapshot);
+    yield* p.send(snapshotFrame(snapshot));
     const viewing = yield* connect(p.viewingPort, "/ws", ALLOWED);
     yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames).toHaveLength(1)));
     viewing.send(JSON.stringify({ type: "session-mode", local: true }));
@@ -143,14 +144,14 @@ describe("閲覧の口（Issue #832）", () => {
     viewing.send("{not json");
     viewing.send(new Uint8Array([0, 255, 1]));
     const next = { ...snapshot, round: 2 };
-    yield* p.send(next);
-    yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames.at(-1)).toEqual(next)));
+    yield* p.send(snapshotFrame(next));
+    yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames.at(-1)).toEqual(snapshotFrame(next))));
     // 送ったものは何も返ってこず、閉じられない
-    expect(viewing.frames).toEqual([snapshot, next]);
+    expect(viewing.frames).toEqual([snapshotFrame(snapshot), snapshotFrame(next)]);
     expect(viewing.isOpen()).toBe(true);
     // 新しく繋いだクライアントには、送ったメッセージの影響のない保持値が届く
     const later = yield* connect(p.viewingPort, "/ws", ALLOWED);
-    yield* Effect.tryPromise(() => vi.waitFor(() => expect(later.frames).toEqual([next])));
+    yield* Effect.tryPromise(() => vi.waitFor(() => expect(later.frames).toEqual([snapshotFrame(next)])));
   }));
 
   it.live("Scope を閉じると閲覧の口は閉じ、操作の口は動き続ける", () => Effect.gen(function* () {
@@ -159,9 +160,9 @@ describe("閲覧の口（Issue #832）", () => {
     yield* Scope.close(p.viewingScope, Exit.void);
     yield* Effect.tryPromise(() => expect(get(p.viewingPort, "/", undefined)).rejects.toThrow());
     // 操作の口の保持値は閲覧の口を閉じても消えない
-    yield* p.send(snapshot);
+    yield* p.send(snapshotFrame(snapshot));
     const operation = yield* connect(p.operationPort, "/ws", undefined);
-    yield* Effect.tryPromise(() => vi.waitFor(() => expect(operation.frames).toEqual([snapshot])));
+    yield* Effect.tryPromise(() => vi.waitFor(() => expect(operation.frames).toEqual([snapshotFrame(snapshot)])));
   }));
 
   describe("ping（Issue #833）", () => {
@@ -185,12 +186,12 @@ describe("閲覧の口（Issue #832）", () => {
 
     it.live("ping が流れても保持値と publish は今のまま届く", () => Effect.gen(function* () {
       const p = yield* ports(SHORT_MS);
-      yield* p.send(snapshot);
+      yield* p.send(snapshotFrame(snapshot));
       const viewing = yield* connect(p.viewingPort, "/ws", ALLOWED);
       yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.pings()).toBeGreaterThanOrEqual(1)));
       const next = { ...snapshot, round: 2 };
-      yield* p.send(next);
-      yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames).toEqual([snapshot, next])));
+      yield* p.send(snapshotFrame(next));
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(viewing.frames).toEqual([snapshotFrame(snapshot), snapshotFrame(next)])));
     }));
 
     it.live("クライアントが切れた後も、別の接続には ping が届き続ける", () => Effect.gen(function* () {

@@ -53,7 +53,7 @@ describe("仮の文字（未反映の発言 + 途中結果）が、反映で消�
       title: "定例",
       send: (frame) =>
         Effect.gen(function* () {
-          if (!("type" in frame) && session) unreflectedAtPublish.push((yield* session.unreflectedRemarks).map((r) => r.id));
+          if (frame.type === "snapshot" && session) unreflectedAtPublish.push((yield* session.unreflectedRemarks).map((r) => r.id));
         }),
       onDiff: Effect.suspend(() => relay!.flushAll),
     }).pipe(Effect.provide(Layer.mergeAll(updaterLayer(update), NodeFileSystem.layer)));

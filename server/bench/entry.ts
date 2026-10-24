@@ -42,7 +42,7 @@ const failureLine = (failure: BenchFailure): string => {
 
 export const reportFailure = reportEntryFailure((failure) => Console.error(isBenchFailure(failure) ? failureLine(failure) : describe(failure)));
 
-export const exitNaturally: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof StartupDepsMissing ? 3 : undefined));
+export const exitNaturallyForManagedDeps: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof StartupDepsMissing ? 3 : undefined));
 
 export const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
 

@@ -25,6 +25,14 @@ export function gatedScripted(...script: BatchStep[]) {
   return { calls, update, replies };
 }
 
+type FirstCall = { readonly held: readonly Remark[]; readonly trigger: Remark };
+
+const firstCallOf = (batches: readonly (readonly Remark[])[]): FirstCall => {
+  const first = batches[0];
+  if (!first || first.length === 0) throw new Error("最初の組には発言が要る");
+  return { held: first.slice(0, -1), trigger: first.at(-1)! };
+};
+
 const openHolding = (title: string, held: readonly Remark[], events: LogEvent[]) => {
   if (held.length === 0) return makeSession({ title });
   const log: LogEvent[] = [{ type: "start", title }, ...held.map((remark): LogEvent => ({ type: "remark", remark }))];
@@ -44,10 +52,9 @@ export const playBatches = Effect.fn("playBatches")(function* (
   const events = options.events ?? [];
   const { calls, update, replies } = gatedScripted(...script);
   const layer = Layer.merge(updaterLayer(update), collectLog(events));
-  const first = batches[0];
-  if (!first || first.length === 0) throw new Error("最初の組には発言が要る");
-  const session = yield* openHolding(title, first.slice(0, -1), events).pipe(Effect.provide(layer));
-  yield* session.push(first.at(-1)!);
+  const { held, trigger } = firstCallOf(batches);
+  const session = yield* openHolding(title, held, events).pipe(Effect.provide(layer));
+  yield* session.push(trigger);
   for (const [k] of batches.entries()) {
     const following = batches[k + 1];
     if (following) for (const r of following) yield* session.push(r);

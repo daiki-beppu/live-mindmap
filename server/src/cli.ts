@@ -1107,25 +1107,18 @@ const MISSING_CREDENTIALS_MESSAGE = [
 ].join("\n");
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const withWorkerRollback = <A, R>(credentials: CloudflareCredentials, name: string, place: Effect.Effect<A, CommandFailed, R>) =>
-  place.pipe(
-    Effect.onInterrupt(() =>
-      deleteWorker(credentials, name).pipe(
-        Effect.catch((cleanup) => Console.error(`Worker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）`)),
-        Effect.uninterruptible,
-      ),
-    ),
-    Effect.catch((failure) =>
-      deleteWorker(credentials, name).pipe(
-        Effect.uninterruptible,
-        Effect.match({
-          onSuccess: () => failure,
-          onFailure: (cleanup) => new CommandFailed({ message: `${failure.message}\nWorker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）` }),
-        }),
-        Effect.flatMap((failed) => Effect.fail(failed)),
-      ),
+const workerMayRemain = (name: string, cleanup: CloudflareFailed) =>
+  `Worker ${name} が残っているかもしれません。Cloudflare のダッシュボードで消してください（削除の失敗: ${cleanup.detail}）`;
+
+const withWorkerRollback = <A, R>(credentials: CloudflareCredentials, name: string, place: Effect.Effect<A, CommandFailed, R>) => {
+  const rollback = deleteWorker(credentials, name).pipe(Effect.uninterruptible);
+  return place.pipe(
+    Effect.onInterrupt(() => rollback.pipe(Effect.catch((cleanup) => Console.error(workerMayRemain(name, cleanup))))),
+    Effect.tapError((failure) =>
+      rollback.pipe(Effect.mapError((cleanup) => new CommandFailed({ message: `${failure.message}\n${workerMayRemain(name, cleanup)}` }))),
     ),
   );
+};
 
 const STILL_THERE = "取り下げられなかった物は、まだ置き場にあります。--anyone で置いた物は、期限まで URL を知る誰でも見られます";
 const WORKER_PREFIX = "lmm-";

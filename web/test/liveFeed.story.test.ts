@@ -43,7 +43,7 @@ describe("受信（frame を受けた）", () => {
       update,
       given(init()),
       received({ type: "screen-notice", text: NOTICE }),
-      received(snapshot),
+      received({ type: "snapshot", snapshot }),
       model((m) => {
         expect(m.snapshot).toEqual(Option.some(snapshot));
         expect(m.screenNotice).toEqual(Option.some(NOTICE));
@@ -55,7 +55,7 @@ describe("受信（frame を受けた）", () => {
     story(
       update,
       given(init()),
-      received(snapshot),
+      received({ type: "snapshot", snapshot }),
       received({ type: "screen-notice", text: NOTICE }),
       received({ type: "intake", status: "interrupted" }),
       model((m) => {
@@ -138,7 +138,7 @@ describe("切れた", () => {
     story(
       update,
       given(init()),
-      received(snapshot),
+      received({ type: "snapshot", snapshot }),
       received(spokenFrame("こんにち", "相手")),
       received({ type: "intake", status: "interrupted" }),
       received({ type: "screen-notice", text: NOTICE }),
@@ -164,7 +164,7 @@ describe("つなぎ直した（切れた後に、つながった）", () => {
     story(
       update,
       given(init()),
-      received(snapshot),
+      received({ type: "snapshot", snapshot }),
       received(spokenFrame("はい", "自分")),
       received({ type: "intake", status: "stopped" }),
       received({ type: "screen-notice", text: NOTICE }),
@@ -210,7 +210,7 @@ describe("つないだときの値（server が、つないだら保持してい
       update,
       given(init()),
       connected(),
-      received(snapshot),
+      received({ type: "snapshot", snapshot }),
       received({ type: "intake", status: "interrupted" }),
       received({ type: "screen-notice", text: NOTICE }),
       received({ type: "tap-notice", text: TAP_NOTICE }),
@@ -237,11 +237,11 @@ describe("つないだときの値（server が、つないだら保持してい
     story(
       update,
       given(init()),
-      received(snapshot),
+      received({ type: "snapshot", snapshot }),
       received({ type: "intake", status: "interrupted" }),
       disconnected(),
       connected(),
-      received(newer),
+      received({ type: "snapshot", snapshot: newer }),
       received({ type: "intake", status: "running" }),
       received({ type: "session-mode", local: true }),
       model((m) => {

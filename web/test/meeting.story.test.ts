@@ -12,6 +12,7 @@ import {
   disconnectedMessage,
   FIRST,
   frameMessage,
+  snapshotMessage,
   HEIGHTS,
   init,
   keyMessage,
@@ -50,11 +51,11 @@ describe("会議中の update: Model は本物の Schema に通る", () => {
       frameMessage({ type: "tap-notice", text: TAP }),
       frameMessage({ type: "diff-update", state: { status: "paused", reason: "ChatGPT の利用上限" } }),
       frameMessage({ type: "session-mode", local: true }),
-      frameMessage(FIRST),
+      snapshotMessage(FIRST),
       measured,
       keyMessage("="),
       keyMessage("?"),
-      frameMessage(SECOND),
+      snapshotMessage(SECOND),
       disconnectedMessage(),
       connectedMessage(),
     ]);
@@ -73,7 +74,7 @@ describe("会議中の update: Model は本物の Schema に通る", () => {
 
 describe("会議中の update: キー（会議中の行だけ。見返しのキーは効かない）", () => {
   const REVIEW_ONLY = ["Space", "K", "J", "L", ",", ".", "<", ">", "Home", "End"] as const satisfies ReadonlyArray<typeof KeyId.Type>;
-  const shown = run([frameMessage(SECOND), measured]).model;
+  const shown = run([snapshotMessage(SECOND), measured]).model;
 
   it("見返しのキーを押しても Model は変わらず、Command も出ない（スナップショットの前でも後でも）", () => {
     for (const key of REVIEW_ONLY) {
@@ -124,29 +125,29 @@ describe("会議中の update: 狭い幅で開いたときの右の列と字幕"
   const hidden = (m: Model) => ({ side: sessionOf(m).mapSurface.viewing.sideHidden === true, captions: sessionOf(m).sessionLayout.captionsHidden });
 
   it("狭い幅で開くと、最初のスナップショットで右の列と字幕を隠して始め、E・C で出せる", () => {
-    const opened = run([frameMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
+    const opened = run([snapshotMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
     expect(Schema.is(MeetingModel)(opened)).toBe(true);
     expect(hidden(opened)).toEqual({ side: true, captions: true });
     expect(hidden(run([keyMessage("E"), keyMessage("C")], opened).model)).toEqual({ side: false, captions: false });
   });
 
   it("広い幅で開くと、今までどおり両方出して始める", () => {
-    expect(hidden(run([frameMessage(FIRST), measured], init(false, { startsNarrow: false })).model)).toEqual({ side: false, captions: false });
+    expect(hidden(run([snapshotMessage(FIRST), measured], init(false, { startsNarrow: false })).model)).toEqual({ side: false, captions: false });
   });
 
   it("開いた後は、次のスナップショットでも画面の大きさが変わっても、隠す・出すは変わらない（人の操作を上書きしない）", () => {
     const resized = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ width: 390, height: 844, nodeHeights: HEIGHTS }));
-    const hiddenAtStart = run([frameMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
-    expect(hidden(run([frameMessage(SECOND), resized], hiddenAtStart).model)).toEqual({ side: true, captions: true });
+    const hiddenAtStart = run([snapshotMessage(FIRST), measured], init(false, { startsNarrow: true })).model;
+    expect(hidden(run([snapshotMessage(SECOND), resized], hiddenAtStart).model)).toEqual({ side: true, captions: true });
     const shownByHand = run([keyMessage("E"), keyMessage("C")], hiddenAtStart).model;
-    expect(hidden(run([frameMessage(SECOND), resized], shownByHand).model)).toEqual({ side: false, captions: false });
-    const shownAtStart = run([frameMessage(FIRST), measured], init(false, { startsNarrow: false })).model;
+    expect(hidden(run([snapshotMessage(SECOND), resized], shownByHand).model)).toEqual({ side: false, captions: false });
+    const shownAtStart = run([snapshotMessage(FIRST), measured], init(false, { startsNarrow: false })).model;
     expect(hidden(run([resized], shownAtStart).model)).toEqual({ side: false, captions: false });
   });
 });
 
 describe("会議中の update: M（自分の休止・再開。Issue #1069）", () => {
-  const shown = run([frameMessage(SECOND), measured]).model;
+  const shown = run([snapshotMessage(SECOND), measured]).model;
   const requested = (result: { commands?: ReadonlyArray<{ name: string }> }) =>
     (result.commands ?? []).filter((c) => c.name === "RequestSelfPause").map((c) => (c as unknown as { args: { paused: boolean } }).args.paused);
 
@@ -182,19 +183,19 @@ describe("会議中の update: M（自分の休止・再開。Issue #1069）", (
 });
 
 describe("会議中の update: 反映で点滅の再生し直し（RestartBlink）を出す", () => {
-  const first = run([frameMessage(FIRST), measured]).model;
+  const first = run([snapshotMessage(FIRST), measured]).model;
 
   it("測定済みで、反映の番号が変わり、変わったノードがある反映のときだけ出る", () => {
-    expect(names(update(first, frameMessage(SECOND)))).toEqual(["RestartBlink"]);
+    expect(names(update(first, snapshotMessage(SECOND)))).toEqual(["RestartBlink"]);
   });
 
   it("最初のスナップショット（まだ表示面が無い）・測る前の反映・変わったこと無しの反映・同じ反映の再送・字幕や知らせの frame では出ない", () => {
-    expect(names(update(init(false), frameMessage(FIRST)))).not.toContain("RestartBlink");
-    const unmeasured = run([frameMessage(FIRST)]).model;
-    expect(names(update(unmeasured, frameMessage(SECOND)))).not.toContain("RestartBlink");
-    const second = run([frameMessage(SECOND), measured]).model;
-    expect(names(update(second, frameMessage(THIRD_QUIET)))).not.toContain("RestartBlink");
-    expect(names(update(second, frameMessage(SECOND)))).not.toContain("RestartBlink");
+    expect(names(update(init(false), snapshotMessage(FIRST)))).not.toContain("RestartBlink");
+    const unmeasured = run([snapshotMessage(FIRST)]).model;
+    expect(names(update(unmeasured, snapshotMessage(SECOND)))).not.toContain("RestartBlink");
+    const second = run([snapshotMessage(SECOND), measured]).model;
+    expect(names(update(second, snapshotMessage(THIRD_QUIET)))).not.toContain("RestartBlink");
+    expect(names(update(second, snapshotMessage(SECOND)))).not.toContain("RestartBlink");
     expect(names(update(first, frameMessage(spokenFrame("字幕。", "相手"))))).not.toContain("RestartBlink");
     expect(names(update(first, frameMessage({ type: "intake", status: "running" })))).not.toContain("RestartBlink");
   });
@@ -203,12 +204,12 @@ describe("会議中の update: 反映で点滅の再生し直し（RestartBlink�
     story(
       update,
       given(init(false)),
-      message(frameMessage(FIRST)),
+      message(snapshotMessage(FIRST)),
       message(measured),
-      message(frameMessage(SECOND)),
+      message(snapshotMessage(SECOND)),
       Command.expectExact(RestartBlink),
       settleStory,
-      message(frameMessage({ ...SECOND, round: 3, changes: [...SECOND.changes, { round: 3, at: 40, change: "更新", node: "A", kind: "議題", text: "採用" }] })),
+      message(snapshotMessage({ ...SECOND, round: 3, changes: [...SECOND.changes, { round: 3, at: 40, change: "更新", node: "A", kind: "議題", text: "採用" }] })),
       Command.expectExact(RestartBlink),
       settleStory,
       model((m) => expect(Schema.is(MeetingModel)(m)).toBe(true)),
@@ -218,9 +219,9 @@ describe("会議中の update: 反映で点滅の再生し直し（RestartBlink�
 
 describe("会議中の update: 取り込みの知らせの時間（RESUMED_NOTICE_MS）", () => {
   it("途切れ・止まったは時間では消えない。『再開しました』だけが RESUMED_NOTICE_MS の時間切れの Command を持つ", () => {
-    const interrupted = run([frameMessage(FIRST), frameMessage({ type: "intake", status: "interrupted" })]);
+    const interrupted = run([snapshotMessage(FIRST), frameMessage({ type: "intake", status: "interrupted" })]);
     expect(names(interrupted).filter((n) => n === "WaitBeforeDismissal")).toEqual([]);
-    const stopped = run([frameMessage({ type: "intake", status: "stopped" })], run([frameMessage(FIRST)]).model);
+    const stopped = run([frameMessage({ type: "intake", status: "stopped" })], run([snapshotMessage(FIRST)]).model);
     expect(names(stopped).filter((n) => n === "WaitBeforeDismissal")).toEqual([]);
     const settled = settleThrough(interrupted.model);
     const resumed = update(settled, frameMessage({ type: "intake", status: "running" }));
@@ -246,7 +247,7 @@ const settleThrough = (from: Model): Model => {
 
 describe("会議中の update: 受信の事実の順に依らず、画面が出た後は最新の値になる", () => {
   it("つながった・切れた を繰り返しても Model は Schema に通り、スナップショットは保たれる（切れても画面は消えない）", () => {
-    const result = run([frameMessage(FIRST), connectedMessage(), disconnectedMessage(), connectedMessage(), disconnectedMessage()]);
+    const result = run([snapshotMessage(FIRST), connectedMessage(), disconnectedMessage(), connectedMessage(), disconnectedMessage()]);
     expect(Schema.is(MeetingModel)(result.model)).toBe(true);
     // 画面が出ている（待ち表示に戻らない）ことは、最初のスナップショットの前の Model と違うことで見る
     expect(result.model).not.toEqual(init(false));

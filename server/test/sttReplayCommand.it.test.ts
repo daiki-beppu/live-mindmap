@@ -219,7 +219,7 @@ describe("sttReplay の Command", () => {
     yield* reportFailure(Cause.fail(failure)).pipe(Effect.provide(reported.layer));
     const saved = process.exitCode;
     try {
-      benchEntry.exitNaturally(Exit.fail(failure), () => { throw new Error("自然終了する必要があります"); });
+      benchEntry.exitNaturallyForManagedDeps(Exit.fail(failure), () => { throw new Error("自然終了する必要があります"); });
       expect(process.exitCode).toBe(1);
     } finally {
       process.exitCode = saved;

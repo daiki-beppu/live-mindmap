@@ -18,10 +18,10 @@ describe("applyFrame（frame の分類と状態更新）", () => {
     expect(next.captions).toEqual(spoken("あ", ""));
   });
 
-  it("[SCN-U-D-N1] type を持たないフレームはスナップショットとして反映される", () => {
+  it("[SCN-U-D-N1] type が snapshot のフレームはスナップショットとして反映される", () => {
     const state: FeedState = { diffUpdate: null, snapshot: null, captions: spoken("", ""), intake: "interrupted", screenNotice: null, tapNotice: null, local: false, selfPaused: false, speakerNames: {} };
     const incoming: Snapshot = { nodes: [{ id: "n1", parent: null, kind: "会議", text: "x", evidence: [] }], round: 1, changes: [], remarks: [] };
-    const next = applyFrame(state, incoming, 0);
+    const next = applyFrame(state, { type: "snapshot", snapshot: incoming }, 0);
     expect(next.snapshot).toEqual(incoming);
     expect(next.intake).toBe("interrupted");
   });
@@ -81,7 +81,7 @@ describe("screen-notice（共有画面を使っていないことの一文。Iss
     let state: FeedState = { ...createFeedState(), screenNotice: "共有画面は使っていません", tapNotice: null, local: false, selfPaused: false, speakerNames: {} };
     state = applyFrame(state, spokenFrame("あ", "相手"), 0);
     state = applyFrame(state, { type: "intake", status: "interrupted" }, 0);
-    state = applyFrame(state, snapshot, 0);
+    state = applyFrame(state, { type: "snapshot", snapshot }, 0);
     expect(state.screenNotice).toBe("共有画面は使っていません");
   });
 
@@ -174,7 +174,7 @@ describe("applyFrame: self-pause（自分の休止）", () => {
     expect(applyFrame(state, { type: "intake", status: "interrupted" }, 0).selfPaused).toBe("自動");
     expect(applyFrame(state, { type: "tap-notice", text: null }, 0).selfPaused).toBe("自動");
     expect(applyFrame(state, spokenFrame("は", "自分"), 0).selfPaused).toBe("自動");
-    expect(applyFrame(state, snapshot, 0).selfPaused).toBe("自動");
+    expect(applyFrame(state, { type: "snapshot", snapshot }, 0).selfPaused).toBe("自動");
   });
 
   it("つなぎ直し（close・open）で false に戻る。つなぎ直せば server が保持値を送り直す", () => {

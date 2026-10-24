@@ -846,7 +846,7 @@ describe("会議中（Foldkit 版）の開いたときの字幕と右の列", ()
   );
 
   it(
-    "1280×801 で開くと字幕と右の列が出ていて、開いた後に 390 へ狭めても字幕は隠れない",
+    "1280×800 で開くと字幕と右の列が出ていて、開いた後に 390 へ狭めても字幕は隠れない",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await openMeetingPage(context, server, { frames: frames.first });
       await page.locator(".captions").waitFor({ timeout: 10_000 });
@@ -861,7 +861,7 @@ describe("会議中（Foldkit 版）の開いたときの字幕と右の列", ()
 
 describe("会議中（Foldkit 版）の広い幅: 769px 以上は今の並べ方のまま", () => {
   it(
-    "1280×801（Mac の幅）: 何も選ばなくても右の列が幅 300px で見え、ノードを選んでも右の列のまま。閉じるボタンは出ない。字幕は幅 648px。? でキーの一覧が出る",
+    "1280×800（Mac の幅）: 何も選ばなくても右の列が幅 300px で見え、ノードを選んでも右の列のまま。閉じるボタンは出ない。字幕は幅 648px。? でキーの一覧が出る",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await openMeetingPage(context, server, { frames: frames.first });
       await settled(page);
@@ -886,7 +886,7 @@ describe("会議中（Foldkit 版）の広い幅: 769px 以上は今の並べ方
   );
 
   it(
-    "1280×801: ノードを選んでから E で右の列を隠すと .side は見えず、.map は .layout と同じ幅。もう一度 E で幅 300px の右の列が戻る",
+    "1280×800: ノードを選んでから E で右の列を隠すと .side は見えず、.map は .layout と同じ幅。もう一度 E で幅 300px の右の列が戻る",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await openMeetingPage(context, server, { frames: frames.first });
       await settled(page);

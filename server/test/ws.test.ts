@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Exit, Fiber, Queue, Scope } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
-import type { CaptionsFrame, IntakeFrame, Snapshot } from "../src/core/index.ts";
+import type { CaptionsFrame, IntakeFrame, Snapshot, SnapshotFrame } from "../src/core/index.ts";
 import { Viewers, type ViewerFrame } from "../src/viewers.ts";
 
 const snap = (...texts: string[]): Snapshot => ({
@@ -12,6 +12,7 @@ const snap = (...texts: string[]): Snapshot => ({
   ],
   round: 0, changes: [], remarks: [],
 });
+const snapFrame = (...texts: string[]): SnapshotFrame => ({ type: "snapshot", snapshot: snap(...texts) });
 // 吹き出し 1 つの字幕のフレーム。texts が空なら空の並び
 const captions = (...texts: string[]): CaptionsFrame => ({
   type: "captions",
@@ -55,7 +56,7 @@ const receivedFrames = Effect.fnUntraced(function* (frames: Queue.Queue<unknown>
 
 describe("Viewers の配信と保持（要件14〜18・25）", () => {
   const cases = [
-    { name: "snapshot", first: snap("採用"), latest: snap("採用", "予算"), clear: "keep" },
+    { name: "snapshot", first: snapFrame("採用"), latest: snapFrame("採用", "予算"), clear: "keep" },
     { name: "captions", first: captions("あ"), latest: captions("あ", "い"), clear: captions() },
     { name: "intake", first: intake("interrupted"), latest: intake("stopped"), clear: intake("none") },
     { name: "screen-notice", first: { type: "screen-notice", text: "最初の知らせ" }, latest: { type: "screen-notice", text: "次の知らせ" }, clear: { type: "screen-notice", text: null } },
@@ -110,9 +111,9 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       yield* after.ready;
       expect(yield* receivedFrames(after.frames)).toEqual([]);
       const send = yield* viewers.forSession;
-      yield* send(snap("接続の確認"));
-      expect(yield* Queue.take(connected.frames)).toEqual(snap("接続の確認"));
-      expect(yield* Queue.take(after.frames)).toEqual(snap("接続の確認"));
+      yield* send(snapFrame("接続の確認"));
+      expect(yield* Queue.take(connected.frames)).toEqual(snapFrame("接続の確認"));
+      expect(yield* Queue.take(after.frames)).toEqual(snapFrame("接続の確認"));
     }).pipe(Effect.provide(Viewers.layer)));
 
   it.effect("前の口の送信履歴は次の空の口へ引き継がない", () =>
@@ -131,8 +132,8 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       yield* TestClock.adjust(1);
       expect(yield* receivedFrames(connected.frames)).toEqual([]);
       const send = yield* viewers.forSession;
-      yield* send(snap("継続"));
-      expect(yield* Queue.take(connected.frames)).toEqual(snap("継続"));
+      yield* send(snapFrame("継続"));
+      expect(yield* Queue.take(connected.frames)).toEqual(snapFrame("継続"));
     }).pipe(Effect.provide(Viewers.layer)));
 
   it.effect("保持値と解除は送信順によらず種類の表の順に届く", () =>
@@ -186,32 +187,32 @@ describe("Viewers の配信と保持（要件14〜18・25）", () => {
       const release = yield* Deferred.make<void>();
       const c = yield* client(Deferred.succeed(sending, undefined).pipe(Effect.andThen(Deferred.await(release))));
       const send = yield* viewers.forSession;
-      yield* send(snap("初回"));
+      yield* send(snapFrame("初回"));
       yield* Effect.forkChild(viewers.connect(c.socket));
       yield* Deferred.await(sending);
-      yield* send(snap("更新1"));
-      yield* send(snap("更新2"));
+      yield* send(snapFrame("更新1"));
+      yield* send(snapFrame("更新2"));
       yield* Deferred.succeed(release, undefined);
-      expect(yield* Queue.take(c.frames)).toEqual(snap("初回"));
-      expect(yield* Queue.takeN(c.frames, 2)).toEqual([snap("更新1"), snap("更新2")]);
+      expect(yield* Queue.take(c.frames)).toEqual(snapFrame("初回"));
+      expect(yield* Queue.takeN(c.frames, 2)).toEqual([snapFrame("更新1"), snapFrame("更新2")]);
     }).pipe(Effect.provide(Viewers.layer)));
 
   it.effect("切断で配信Fiberとwriterを終了し、残った接続へは更新が届く（要件17）", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
       const send = yield* viewers.forSession;
-      yield* send(snap("前"));
+      yield* send(snapFrame("前"));
       const a = yield* client(Effect.void);
       const b = yield* client(Effect.void);
       const fiber = yield* Effect.forkChild(viewers.connect(a.socket));
       yield* Effect.forkChild(viewers.connect(b.socket));
-      expect(yield* Queue.take(a.frames)).toEqual(snap("前"));
-      expect(yield* Queue.take(b.frames)).toEqual(snap("前"));
+      expect(yield* Queue.take(a.frames)).toEqual(snapFrame("前"));
+      expect(yield* Queue.take(b.frames)).toEqual(snapFrame("前"));
       yield* a.disconnect;
       yield* Effect.exit(Fiber.join(fiber));
       yield* Deferred.await(a.writerReleased);
-      yield* send(snap("後"));
-      expect(yield* Queue.take(b.frames)).toEqual(snap("後"));
+      yield* send(snapFrame("後"));
+      expect(yield* Queue.take(b.frames)).toEqual(snapFrame("後"));
       expect(yield* Queue.size(a.frames)).toBe(0);
     }).pipe(Effect.provide(Viewers.layer)));
 });

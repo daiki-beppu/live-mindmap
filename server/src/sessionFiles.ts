@@ -257,7 +257,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
             yield* send({ type: "diff-update", state: yield* session.diffUpdate });
           }
           if (event.type !== "diff") return;
-          if (!event.error && send) yield* Effect.flatMap(session.snapshot, send);
+          if (!event.error && send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
           if (onDiff) yield* onDiff;
         }),
       writeScreen: (file, bytes) =>
@@ -277,7 +277,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
     yield* send({ type: "diff-update", state: yield* session.diffUpdate });
   }
   yield* serialized(writeExport(session));
-  if (send) yield* Effect.flatMap(session.snapshot, send);
+  if (send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
   return { session, appendLog: (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) => serialized(writeLogLine(event)) };
 });
 

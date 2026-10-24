@@ -1,11 +1,12 @@
 import { basename, join } from "node:path";
-import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect, FileSystem } from "effect";
 import { Argument, Command } from "effect/cli";
+import { exitNaturally } from "../src/exitNaturally.ts";
 import { readLogLines } from "../src/sessionFiles.ts";
 import { claudeJudge, type Judge } from "./claudeJudge.ts";
+import { benchProgram, InvalidInputFile, write } from "./entry.ts";
 import { formatRow, judgeEdges } from "./edgeJudgement.ts";
-import { BENCH_VERSION, exitNaturally, InvalidInputFile, reportFailure, write } from "./entry.ts";
 
 const OUTPUT = "edgeJudge.json";
 
@@ -38,9 +39,7 @@ export function createEdgeJudgeCommand<E, R>(judge: Judge<E, R>) {
 }
 
 if (import.meta.main) {
-  Command.run(createEdgeJudgeCommand(claudeJudge), { version: BENCH_VERSION }).pipe(
-    Effect.tapCause(reportFailure),
-    Effect.provide(NodeServices.layer),
+  benchProgram(createEdgeJudgeCommand(claudeJudge)).pipe(
     NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
   );
 }

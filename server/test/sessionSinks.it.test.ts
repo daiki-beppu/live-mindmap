@@ -113,7 +113,7 @@ describe("SessionSinks（実物 Layer）", () => {
     yield* Effect.gen(function* () {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(yield* withTmpSessionsDir());
-      const sink = yield* sinks.open({ dir, title: "終了", model: defaultClaude, updaterLayer, send: (frame) => Effect.sync(() => { if (!("type" in frame)) published.push(frame); }) });
+      const sink = yield* sinks.open({ dir, title: "終了", model: defaultClaude, updaterLayer, send: (frame) => Effect.sync(() => { if (frame.type === "snapshot") published.push(frame.snapshot); }) });
       yield* sink.speaker(SPEAKER_OFF);
       for (const n of [1, 2]) yield* sink.final({ track: "相手", start: n, end: n + 1, text: `発言${n}` });
       yield* sink.drain;
@@ -519,7 +519,7 @@ const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff
     title: "週次",
     vocab,
     send: (frame) => Effect.sync(() => {
-      if (!("type" in frame)) published.push(frame);
+      if (frame.type === "snapshot") published.push(frame.snapshot);
       else if (frame.type === "captions") speaks.push(frame);
     }),
   });

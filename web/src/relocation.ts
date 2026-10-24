@@ -1,40 +1,35 @@
-import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
+import type { ChangeEntry, Snapshot } from "../../server/src/core/index.ts";
 import type { VisibleTree } from "./viewing.ts";
 
 export type ViewState = { tree: VisibleTree; snapshot: Snapshot };
 
-function mergedInto(removed: SnapshotNode, before: Snapshot, after: Snapshot): string | undefined {
-  const beforeById = new Map(before.nodes.map((n) => [n.id, n]));
-  const kidIds = before.nodes.filter((n) => n.parent === removed.id).map((n) => n.id);
-  const afterById = new Map(after.nodes.map((n) => [n.id, n]));
-  for (const t of after.nodes) {
-    const prev = beforeById.get(t.id);
-    if (!prev || t.parent === null || t.kind !== removed.kind) continue;
-    if (!removed.evidence.every((u) => t.evidence.includes(u))) continue;
-    const gained = removed.evidence.some((u) => !prev.evidence.includes(u));
-    const tookKids = kidIds.some((k) => afterById.get(k)?.parent === t.id);
-    if (gained || tookKids) return t.id;
+function combineTargets(changes: readonly ChangeEntry[], since: number, until: number): ReadonlyMap<string, string> {
+  const step = new Map<string, string>();
+  for (const c of changes) if (c.change === "統合" && since < c.round && c.round <= until) for (const f of c.from) step.set(f, c.node);
+  const resolved = new Map<string, string>();
+  for (const [from, into] of step) {
+    let target = into;
+    for (let hops = 0; step.has(target) && hops < step.size; hops++) target = step.get(target)!;
+    resolved.set(from, target);
   }
-  return undefined;
+  return resolved;
 }
 
 export type PreviousView = ViewState & { selectedId: string | null };
 
 export function relocations(before: PreviousView, after: ViewState): Record<string, string> {
   const exists = new Set([...after.snapshot.nodes.map((n) => n.id), ...after.tree.ids]);
-  const beforeById = new Map(before.snapshot.nodes.map((n) => [n.id, n]));
   const parents = new Map<string, string | null>(before.snapshot.nodes.map((n) => [n.id, n.parent]));
   for (const [id, parent] of Object.entries(before.tree.parents)) parents.set(id, parent);
-  const advanced = after.snapshot.round > before.snapshot.round;
+  const into = combineTargets(after.snapshot.changes, before.snapshot.round, after.snapshot.round);
   const out: Record<string, string> = {};
   const candidates = new Set(before.tree.ids);
   if (before.selectedId !== null) candidates.add(before.selectedId);
   for (const id of candidates) {
     if (exists.has(id)) continue;
-    const removed = beforeById.get(id);
-    const into = advanced && removed ? mergedInto(removed, before.snapshot, after.snapshot) : undefined;
-    if (into) {
-      out[id] = into;
+    const target = into.get(id);
+    if (target !== undefined && exists.has(target)) {
+      out[id] = target;
       continue;
     }
     for (let cur = parents.get(id); cur != null; cur = parents.get(cur)) {

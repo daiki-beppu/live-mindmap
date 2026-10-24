@@ -26,9 +26,9 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
             if (sentMode) modes.push({ type: "session-mode", local: false });
           }));
           return (frame: ViewerFrame) => Effect.sync(() => {
-            if (!("type" in frame)) {
-              published.push(frame);
-              onPublish(frame);
+            if (frame.type === "snapshot") {
+              published.push(frame.snapshot);
+              onPublish(frame.snapshot);
             } else if (frame.type === "diff-update") {
               sentDiff = true;
               diffUpdates.push(frame);
