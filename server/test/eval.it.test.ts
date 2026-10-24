@@ -14,7 +14,7 @@ import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
 import * as cliEntry from "../src/cli.ts";
-import { type DiffInput, type DiffUsage, type Op, type Snapshot, Truth } from "../src/core/index.ts";
+import { type DiffInput, type DiffResult, type DiffUsage, type Op, type Snapshot, Truth } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -182,35 +182,50 @@ describe("再生で推定した名前", () => {
       );
       const events = [
         { type: "start", title: "名前の再生" },
-        { type: "speaker-name", label: "相手 A", name: "保存済みの名前", source: "手入力" },
-        ...[1, 2].map((n) => ({ type: "remark", remark: { id: `r${n}`, track: "相手", start: n, end: n + 1, text: `発言${n}`, speaker: "相手 A" } })),
+        { type: "speaker-name", label: "相手 A", name: "保存済みの推定名", source: "推定" },
+        { type: "speaker-name", label: "相手 A", name: "保存済みの手入力名", source: "手入力" },
+        ...["田中です", "田中太郎です"].map((text, i) => ({ type: "remark", remark: { id: `r${i + 1}`, track: "相手", start: i + 1, end: i + 2, text, speaker: "相手 A" } })),
       ];
       writeFileSync(join(source, "log.jsonl"), events.map((event) => JSON.stringify({ at: "2026-10-01T00:00:00Z", ...event })).join("\n") + "\n");
       const inputs: DiffInput[] = [];
       external.openClaudeUpdater.mockReturnValue({
-        update: (input: DiffInput) => Effect.sync(() => {
+        update: (input: DiffInput) => Effect.sync((): DiffResult => {
           inputs.push(input);
-          return { ops: [], names: [{ label: "相手 A", name: inputs.length === 1 ? "新しい推定名" : "最後の推定名", evidence: "r1", basis: "名乗り" }] };
+          return { ops: [], names: input.fresh.filter((remark) => remark.text.endsWith("です")).map((remark) => ({
+            label: remark.speaker!, name: remark.text.slice(0, -2), evidence: remark.id, basis: "名乗り",
+          })) };
         }),
         close: () => {},
       });
       const sessionsDir = join(source, "runs");
       const deps = dependencies(sessionsDir);
+      const listener = fakeListener();
+      external.openListener.mockImplementation(listener.open);
       yield* runCli([command, source, "--model", "claude"]).pipe(Effect.provide(deps.layer));
       expect(inputs).toHaveLength(2);
       expect(inputs[0]).not.toHaveProperty("speakerNames");
-      expect(inputs[1]!.speakerNames).toEqual(new Map([["相手 A", "新しい推定名"]]));
+      expect(inputs[1]!.speakerNames).toEqual(new Map([["相手 A", "田中"]]));
       const runs = yield* Effect.promise(() => readdir(sessionsDir));
       expect(runs).toHaveLength(1);
       const lines = readFileSync(join(sessionsDir, runs[0]!, "log.jsonl"), "utf8").trim().split("\n")
         .map((line): Record<string, unknown> => JSON.parse(line));
       expect(lines.filter((line) => line.type === "speaker-name")).toEqual([
-        expect.objectContaining({ label: "相手 A", name: "新しい推定名", source: "推定" }),
-        expect.objectContaining({ label: "相手 A", name: "最後の推定名", source: "推定" }),
+        expect.objectContaining({ label: "相手 A", name: "田中", source: "推定" }),
+        expect.objectContaining({ label: "相手 A", name: "田中太郎", source: "推定" }),
       ]);
+      if (command === "play") {
+        expect(listener.speakerNames).toEqual([
+          { type: "speaker-names", names: [] },
+          { type: "speaker-names", names: [{ label: "相手 A", name: "田中" }] },
+          { type: "speaker-names", names: [{ label: "相手 A", name: "田中太郎" }] },
+        ]);
+      } else {
+        expect(external.openListener).not.toHaveBeenCalled();
+        expect(listener.speakerNames).toEqual([]);
+      }
       deps.stdout.length = 0;
       yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
-      expect(JSON.parse(deps.stdout.join(""))).toHaveProperty("speakerNames", { "相手 A": "最後の推定名" });
+      expect(JSON.parse(deps.stdout.join(""))).toHaveProperty("speakerNames", { "相手 A": "田中太郎" });
     }).pipe(Effect.scoped));
   }
 });
