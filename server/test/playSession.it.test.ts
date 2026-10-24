@@ -330,10 +330,12 @@ describe("play <セッションのフォルダ>", () => {
         writeFileSync(join(root, "outside.jpg"), "secret");
         const image = imageOf(root);
         const original = sessionFolder(root, [{ type: "start", title: "t" }, remarkLine("r1", 0, 5), { type: "screen", start: 1, image }], { "inside.jpg": "secret" });
+        const logPath = join(original, "log.jsonl");
+        writeFileSync(logPath, readFileSync(logPath, "utf8").replace("\n", "\n\n\n"));
         const sessionsDir = join(root, "sessions");
         const error = yield* failure(dependencies(sessionsDir), [original]);
         expect(error).toMatchObject({ _tag: "CommandFailed" });
-        expect(error!.message).toContain(image);
+        expect(error!.message).toBe(`log.jsonl 5 行目の image が screens/ 直下のファイル名ではありません: ${image}`);
         expect(external.openListener).not.toHaveBeenCalled();
         expect(sessionFolders(sessionsDir)).toEqual([]);
         expect(external.created).toEqual([]);
@@ -341,7 +343,7 @@ describe("play <セッションのフォルダ>", () => {
   }
 
   describe("ログの読み方", () => {
-    it.effect("流さない行（intake-*・diff・知らない type）は、中身が壊れていても読み飛ばす", () =>
+    it.effect("トップレベルの remark だけを流し、壊れた対象外の行・入れ子や配列の type は読み飛ばす", () =>
       Effect.gen(function* () {
         const root = yield* temporaryDirectory;
         const original = sessionFolder(root, [
@@ -350,10 +352,17 @@ describe("play <セッションのフォルダ>", () => {
           { type: "diff", input: 5 },
           remarkLine("r1", 0, 5),
           { type: "future-event", payload: 1 },
+          { payload: remarkLine("nested", 5, 6, "入れ子の発言") },
+          { type: 7, remark: remarkLine("numeric", 5, 6).remark },
           remarkLine("r2", 6, 9),
         ]);
+        const logPath = join(original, "log.jsonl");
+        writeFileSync(logPath, readFileSync(logPath, "utf8") + JSON.stringify([remarkLine("array", 10, 11, "配列の発言")]) + "\n");
         const replay = yield* played(dependencies(join(root, "sessions")), [original]);
-        expect(logLines(replay).filter((l) => l.type === "remark")).toHaveLength(2);
+        expect(logLines(replay).filter((l) => l.type === "remark").map((l) => l.remark)).toEqual([
+          expect.objectContaining({ text: "発言r1" }),
+          expect.objectContaining({ text: "発言r2" }),
+        ]);
       }));
 
     it.effect("自分の休止の行（self-paused・self-resumed）は、中身が壊れていても読み飛ばし、流し直したログにも写さない", () =>
@@ -409,24 +418,23 @@ describe("play <セッションのフォルダ>", () => {
         }));
     }
 
-    it.effect("start の行が無いログは CommandFailed で失敗する（題名が取れない）", () =>
+    it.effect("start の行が無いログは MissingStartLine で失敗する（題名が取れない）", () =>
       Effect.gen(function* () {
         const root = yield* temporaryDirectory;
         const original = sessionFolder(root, [remarkLine("r1", 0, 5)]);
         const sessionsDir = join(root, "sessions");
-        expect(yield* failure(dependencies(sessionsDir), [original])).toMatchObject({ _tag: "CommandFailed" });
+        expect(yield* failure(dependencies(sessionsDir), [original])).toMatchObject({ _tag: "MissingStartLine", path: join(original, "log.jsonl") });
         expect(sessionFolders(sessionsDir)).toEqual([]);
       }));
 
-    it.effect("log.jsonl が無いフォルダは CommandFailed で失敗する（log.jsonl がありません）", () =>
+    it.effect("log.jsonl が無いフォルダは MissingSessionLog で失敗する", () =>
       Effect.gen(function* () {
         const root = yield* temporaryDirectory;
         const empty = join(root, "empty");
         mkdirSync(empty);
         const sessionsDir = join(root, "sessions");
         const error = yield* failure(dependencies(sessionsDir), [empty]);
-        expect(error).toMatchObject({ _tag: "CommandFailed" });
-        expect(error!.message).toContain("log.jsonl");
+        expect(error).toMatchObject({ _tag: "MissingSessionLog", path: join(empty, "log.jsonl") });
         expect(sessionFolders(sessionsDir)).toEqual([]);
       }));
   });
