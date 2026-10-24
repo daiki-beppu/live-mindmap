@@ -11,6 +11,7 @@
 - [差分更新の問い合わせの続き](diff-continuation.md): 直前の応答・送り直す共有画面と、それを持つ core・Claude の adapter・振り分け・復元を触るとき
 - [途中結果から発言を作る段](remark-settling.md): 確定の段（`settle`）と出す直前の関所（`remarkGate`）、特に本文どうしの比べ方を触るとき
 - [セッションの開始とブラウザへの送り口](session-start-and-viewers.md): `Sessions` の開始の括弧・状態の門番と、`Viewers` の送り口・frame の種類ごとの表を触るとき
+- [過去のセッションのフォルダの読み側](session-folder-reading.md): `log.jsonl` などを読む CLI のコマンドや bench を足す・変えるとき、壊れた行の失敗の文を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -71,3 +72,10 @@
 - #1453 の takt の run（`20261024-085250-issue-1453-viewers-ni-sesshonn-km6w3y`）の trace と reports → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。対象を絞った vitest の指定が効かず server の unit 全体が流れた件は捨てた: どの指定で外れたかがログに残っておらず、手順にできない
 - チケット [#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)・[PR #1507](https://github.com/daiki-beppu/live-mindmap/pull/1507) の差分 → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。sub-issue に resolution コメントは無かった
 - #1454 の takt の run（`20261024-110450-issue-1454-sesshonto-cli-play-lrmuz3`）の trace と reports → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)、[takt の run](takt-runs.md)。E2E の smoke がキャッシュの再生で通り `REPLAY_STALE` が出なかった件は捨てた: e2e/README.md の手順どおりで、新しい学びが無い
+- [保存したセッションのログの読み側を 1 つの module にまとめたとき](../devlog/2026-10-25.md#session-log-reader) → [過去のセッションのフォルダの読み側](session-folder-reading.md)、[takt の run](takt-runs.md)。循環を解く段を先に切ると間の段が重複を増やす件は捨てた: 段の切り方の一般論で、この領域の作業の基準にならない
+- 仕様 [#1438](https://github.com/daiki-beppu/live-mindmap/issues/1438)（Formal Spec の「対象外」のコメントを含む）と決定の一次資料 [#1427](https://github.com/daiki-beppu/live-mindmap/issues/1427) の解決コメント → [過去のセッションのフォルダの読み側](session-folder-reading.md)。用語は捨てた: 新しい module を作らず、GLOSSARY に足さないと仕様が決めている。ADR は捨てた: 内部の構造だけで元に戻せると仕様が決めている。Formal Spec の「対象外」は捨てた: 新しい学びが無い
+- 親 [#1440](https://github.com/daiki-beppu/live-mindmap/issues/1440) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1444](https://github.com/daiki-beppu/live-mindmap/issues/1444)・[PR #1463](https://github.com/daiki-beppu/live-mindmap/pull/1463) の差分 → [過去のセッションのフォルダの読み側](session-folder-reading.md)。sub-issue に resolution コメントは無かった。壊れた行の文を呼び出し側 3 か所へ一時的に写した件は捨てた: #1446 で消え、今の状態に残っていない
+- チケット [#1445](https://github.com/daiki-beppu/live-mindmap/issues/1445)・[PR #1466](https://github.com/daiki-beppu/live-mindmap/pull/1466) の差分 → [過去のセッションのフォルダの読み側](session-folder-reading.md)。sub-issue に resolution コメントは無かった。PR が main に追いつくのを 3 時間待った件は捨てた: 作業の判断に使わない。takt の run は worktree ごと消えていて読めなかった
+- チケット [#1446](https://github.com/daiki-beppu/live-mindmap/issues/1446)・[PR #1515](https://github.com/daiki-beppu/live-mindmap/pull/1515) の差分 → [過去のセッションのフォルダの読み側](session-folder-reading.md)、[セッションの sink](session-sink.md)（消えた `isReplayedEvent` の記述を直した）。sub-issue に resolution コメントは無かった
+- #1446 の takt の run（`20261024-133903-issue-1446-cli-no-mi-wo-sessio-ruhfky`）の trace と reports → [過去のセッションのフォルダの読み側](session-folder-reading.md)、[takt の run](takt-runs.md)。`readLogLines` の公開を bench のために残した判断は捨てた: コードの import を見れば分かる。#1414 と隣り合わせない並びの確認が持ち越された件は捨てた: その場限りの段取り
