@@ -1421,7 +1421,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(yield* late.tapNotices).toEqual([TAP_NOTICE_TEXT]);
       }));
 
-    it.effect("同じセッションで、tap-silent の後に新しい origin が届くと、一文を消すフレーム（null）が届き、その後につないだブラウザには出ない", () =>
+    it.effect("同じセッションで、tap-silent の後に新しい origin が届くと、一文を消すフレーム（null）が届き、その後につないだブラウザには解除のフレームだけが届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
         const watcher = yield* viewerClient();
@@ -1437,7 +1437,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const late = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(late.socket));
-        expect(yield* late.tapNotices).toEqual([]);
+        expect(yield* late.tapNotices).toEqual([null]);
       }));
 
     it.effect("起動し直した回でも tap-silent がまた届けば、一文を出し直し、ログにも届くたびに残る", () =>
@@ -1465,7 +1465,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.appended.filter((e) => e.type === "tap-silent")).toHaveLength(2);
       }));
 
-    it.effect("stop で一文の保持も消える（stop 後につないだブラウザには出ない）", () =>
+    it.effect("stop で一文を解除し、stop 後につないだブラウザには null だけが届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
         const watcher = yield* viewerClient();
@@ -1480,7 +1480,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const after = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.tapNotices).toEqual([]);
+        expect(yield* after.tapNotices).toEqual([null]);
       }));
 
     it.effect("tap-silent は共有画面の知らせ（screen-notice）のフレームを出さず、screen-off のログ・状態にも触れない", () =>
@@ -1589,7 +1589,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(yield* watcher.selfPauses).toEqual([]);
       }));
 
-    it.effect("休止中に後からつないだ画面にも休止のフレームが届く。再開した後につないだ画面には届かない", () =>
+    it.effect("休止中に後からつないだ画面にも休止のフレームが届く。再開した後につないだ画面には false が届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
         yield* sessions.start(start());
@@ -1606,10 +1606,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const after = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.selfPauses).toEqual([]);
+        expect(yield* after.selfPauses).toEqual([false]);
       }));
 
-    it.effect("stop で休止の保持を消すフレーム（paused:false）が届き、その後につないだ画面には出ない", () =>
+    it.effect("stop で休止を解除するフレーム（paused:false）が届き、その後につないだ画面にも届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
         const watcher = yield* viewerClient();
@@ -1624,7 +1624,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const after = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.selfPauses).toEqual([]);
+        expect(yield* after.selfPauses).toEqual([false]);
       }));
 
     it.effect("壊れた self-pause（paused が真偽値でない・reason が手動・自動・判定できないのどれでもない・start が数でない）はログにも画面にも届かない", () =>
@@ -2221,7 +2221,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect((yield* sessions.status).status).toBe("running");
       }));
 
-    it.effect("知らせは届いてから約 10 秒で消すフレーム（text: null）が届き、その後につないだブラウザには出ない", () =>
+    it.effect("知らせは届いてから約 10 秒で消すフレーム（text: null）が届き、その後につないだブラウザには解除のフレームだけが届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
         const early = yield* viewerClient();
@@ -2244,7 +2244,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const late = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(late.socket));
-        expect(yield* late.screenNotices).toEqual([]); // 期限後は再び出さない
+        expect(yield* late.screenNotices).toEqual([null]); // 期限後は再び出さない
       }));
 
     it.effect("10 秒たった後に起動し直しで screen-off がまた届いても、一文は出し直さない", () =>
@@ -2268,7 +2268,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(yield* watcher.screenNotices).toEqual([]);
       }));
 
-    it.effect("stop で知らせの保持も消える（stop 後につないだブラウザには出ない）", () =>
+    it.effect("stop で知らせを解除し、stop 後につないだブラウザには null だけが届く", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions, viewers } = yield* boot([{}]);
         yield* sessions.start(start());
@@ -2278,7 +2278,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         const after = yield* viewerClient();
         yield* Effect.forkChild(viewers.connect(after.socket));
-        expect(yield* after.screenNotices).toEqual([]);
+        expect(yield* after.screenNotices).toEqual([null]);
       }));
 
     it.effect("壊れた screen-off は stderr に 1 行出して読み飛ばし、sink にも知らせにも届かず、続く発言は届く", () =>

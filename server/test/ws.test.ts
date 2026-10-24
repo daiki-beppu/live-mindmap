@@ -1,9 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Exit, Fiber, Queue, Scope } from "effect";
 import { Socket } from "effect/socket";
 import { TestClock } from "effect/testing";
 import type { CaptionsFrame, IntakeFrame, Snapshot } from "../src/core/index.ts";
-import { Viewers } from "../src/viewers.ts";
+import { Viewers, type ViewerFrame } from "../src/viewers.ts";
 
 const snap = (...texts: string[]): Snapshot => ({
   nodes: [
@@ -23,6 +23,7 @@ const intake = (status: IntakeFrame["status"]): IntakeFrame => ({ type: "intake"
 const client = Effect.fnUntraced(function* (beforeWrite: Effect.Effect<void>) {
   const frames = yield* Queue.make<unknown>();
   const closed = yield* Deferred.make<never, Socket.SocketError>();
+  const reading = yield* Deferred.make<void>();
   const writerReleased = yield* Deferred.make<void>();
   const write: Socket.Writer["write"] = (chunk) => Effect.gen(function* () {
     if (Socket.isCloseEvent(chunk)) return;
@@ -34,7 +35,7 @@ const client = Effect.fnUntraced(function* (beforeWrite: Effect.Effect<void>) {
     [Socket.TypeId]: Socket.TypeId,
     reader: Effect.succeed({
       // ブラウザ向けの配信は送信だけなので、pull は切断まで値を出さない（Socket はクリーンな close も失敗で表す）
-      pull: Deferred.await(closed),
+      pull: Deferred.succeed(reading, undefined).pipe(Effect.andThen(Deferred.await(closed))),
       upgrade: Socket.SocketUpgradeError.unsupported,
     }),
     writer: Effect.acquireRelease(
@@ -43,177 +44,137 @@ const client = Effect.fnUntraced(function* (beforeWrite: Effect.Effect<void>) {
     ),
   });
   return {
-    socket, frames, writerReleased,
+    socket, frames, writerReleased, ready: Deferred.await(reading),
     disconnect: Deferred.fail(closed, new Socket.SocketError({ reason: new Socket.SocketCloseError({ code: 1000 }) })),
   };
 });
 
+const receivedFrames = Effect.fnUntraced(function* (frames: Queue.Queue<unknown>) {
+  return yield* Queue.takeN(frames, yield* Queue.size(frames));
+});
+
 describe("Viewers の配信と保持（要件14〜18・25）", () => {
-  it.effect("local の通知は接続中と途中接続へ届き、終了後の再接続へは解除を送る", () =>
-    Effect.gen(function* () {
-      const viewers = yield* Viewers;
-      const mode = { type: "session-mode" as const, local: true };
-      yield* viewers.sessionMode(mode);
-      const first = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(first.socket));
-      expect(yield* Queue.take(first.frames)).toEqual(mode);
-      const late = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(late.socket));
-      expect(yield* Queue.take(late.frames)).toEqual(mode);
-      const ended = { type: "session-mode" as const, local: false };
-      yield* viewers.sessionMode(ended);
-      expect(yield* Queue.take(first.frames)).toEqual(ended);
-      expect(yield* Queue.take(late.frames)).toEqual(ended);
-      const reconnected = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(reconnected.socket));
-      expect(yield* Queue.take(reconnected.frames)).toEqual(ended);
-    }).pipe(Effect.provide(Viewers.layer)));
+  const cases = [
+    { name: "snapshot", first: snap("採用"), latest: snap("採用", "予算"), clear: "keep" },
+    { name: "captions", first: captions("あ"), latest: captions("あ", "い"), clear: captions() },
+    { name: "intake", first: intake("interrupted"), latest: intake("stopped"), clear: intake("none") },
+    { name: "screen-notice", first: { type: "screen-notice", text: "最初の知らせ" }, latest: { type: "screen-notice", text: "次の知らせ" }, clear: { type: "screen-notice", text: null } },
+    { name: "tap-notice", first: { type: "tap-notice", text: "最初の一文" }, latest: { type: "tap-notice", text: "次の一文" }, clear: { type: "tap-notice", text: null } },
+    { name: "self-pause", first: { type: "self-pause", paused: true, reason: "自動" }, latest: { type: "self-pause", paused: true, reason: "手動" }, clear: { type: "self-pause", paused: false } },
+    { name: "diff-update", first: { type: "diff-update", state: { status: "running" } }, latest: { type: "diff-update", state: { status: "paused", reason: "Claude の利用上限" } }, clear: { type: "diff-update", state: null } },
+    { name: "session-mode", first: { type: "session-mode", local: false }, latest: { type: "session-mode", local: true }, clear: { type: "session-mode", local: false } },
+    { name: "speaker-names", first: { type: "speaker-names", names: [{ label: "相手 A", name: "佐藤" }] }, latest: { type: "speaker-names", names: [{ label: "相手 A", name: "鈴木" }] }, clear: "keep" },
+  ] satisfies ReadonlyArray<{ name: string; first: ViewerFrame; latest: ViewerFrame; clear: ViewerFrame | "keep" }>;
 
-  // Issue #1069: 自分の休止は、休止中だけ最後の値を保持して新しい接続へ送り、false で保持を消す
-  it.effect("自分の休止は接続中へ届き、休止中の途中接続にも届く。false を送ると、その後の接続には届かない", () =>
+  it.effect.each(cases)("$name は接続中と途中接続へ最新値を送り、Scope 終了後も最後の値を保持する", ({ first, latest, clear }) =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
-      const first = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(first.socket));
-      yield* viewers.selfPause({ type: "self-pause", paused: true, reason: "自動" });
-      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: true, reason: "自動" });
+      const connected = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(connected.socket));
+      yield* connected.ready;
+      const scope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void));
+      const send = yield* Scope.provide(scope)(viewers.forSession);
+      yield* send(first);
+      expect(yield* Queue.take(connected.frames)).toEqual(first);
+      yield* send(latest);
+      expect(yield* Queue.take(connected.frames)).toEqual(latest);
 
       const late = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(late.socket));
-      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: true, reason: "自動" });
+      yield* late.ready;
+      expect(yield* receivedFrames(late.frames)).toEqual([latest]);
 
-      // 休止中に理由だけが変わったら、保持も置き換わる（後からつないだ画面には最新の理由が届く）
-      yield* viewers.selfPause({ type: "self-pause", paused: true, reason: "手動" });
-      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: true, reason: "手動" });
-      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: true, reason: "手動" });
-      const replaced = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(replaced.socket));
-      expect(yield* Queue.take(replaced.frames)).toEqual({ type: "self-pause", paused: true, reason: "手動" });
-      expect(yield* Queue.size(replaced.frames)).toBe(0);
-
-      yield* viewers.selfPause({ type: "self-pause", paused: false });
-      expect(yield* Queue.take(first.frames)).toEqual({ type: "self-pause", paused: false });
-      expect(yield* Queue.take(late.frames)).toEqual({ type: "self-pause", paused: false });
+      yield* Scope.close(scope, Exit.void);
+      yield* TestClock.adjust(1);
+      const ending = clear === "keep" ? [] : [clear];
+      expect(yield* receivedFrames(connected.frames)).toEqual(ending);
+      expect(yield* receivedFrames(late.frames)).toEqual(ending);
 
       const after = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(after.socket));
-      yield* Effect.yieldNow;
-      expect(yield* Queue.size(after.frames)).toBe(0);
+      yield* after.ready;
+      expect(yield* receivedFrames(after.frames)).toEqual([clear === "keep" ? latest : clear]);
     }).pipe(Effect.provide(Viewers.layer)));
 
-  it.effect("自分の休止の保持は取り込みの状態・一言の保持と独立している（休止を解いても他の保持は残る）", () =>
+  it.effect("何も送らない口は取得時も Scope 終了時も何も送らない", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
-      yield* viewers.intake(intake("running"));
-      yield* viewers.selfPause({ type: "self-pause", paused: true, reason: "手動" });
-      yield* viewers.selfPause({ type: "self-pause", paused: false });
+      const connected = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(connected.socket));
+      yield* connected.ready;
+      yield* Effect.scoped(viewers.forSession);
+      yield* TestClock.adjust(1);
+      expect(yield* receivedFrames(connected.frames)).toEqual([]);
+      const after = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(after.socket));
+      yield* after.ready;
+      expect(yield* receivedFrames(after.frames)).toEqual([]);
+      yield* viewers.publish(snap("接続の確認"));
+      expect(yield* Queue.take(connected.frames)).toEqual(snap("接続の確認"));
+      expect(yield* Queue.take(after.frames)).toEqual(snap("接続の確認"));
+    }).pipe(Effect.provide(Viewers.layer)));
+
+  it.effect("前の口の送信履歴は次の空の口へ引き継がない", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const connected = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(connected.socket));
+      yield* connected.ready;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const send = yield* viewers.forSession;
+        yield* send(intake("running"));
+        expect(yield* Queue.take(connected.frames)).toEqual(intake("running"));
+      }));
+      expect(yield* Queue.take(connected.frames)).toEqual(intake("none"));
+      yield* Effect.scoped(viewers.forSession);
+      yield* TestClock.adjust(1);
+      expect(yield* receivedFrames(connected.frames)).toEqual([]);
+      yield* viewers.publish(snap("継続"));
+      expect(yield* Queue.take(connected.frames)).toEqual(snap("継続"));
+    }).pipe(Effect.provide(Viewers.layer)));
+
+  it.effect("保持値と解除は送信順によらず種類の表の順に届く", () =>
+    Effect.gen(function* () {
+      const viewers = yield* Viewers;
+      const connected = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(connected.socket));
+      yield* connected.ready;
+      const scope = yield* Effect.acquireRelease(Scope.make(), (scope) => Scope.close(scope, Exit.void));
+      const send = yield* Scope.provide(scope)(viewers.forSession);
+      for (const { latest } of cases.toReversed()) {
+        yield* send(latest);
+        expect(yield* Queue.take(connected.frames)).toEqual(latest);
+      }
       const late = yield* client(Effect.void);
       yield* Effect.forkChild(viewers.connect(late.socket));
-      expect(yield* Queue.take(late.frames)).toEqual(intake("running"));
-      yield* Effect.yieldNow;
-      expect(yield* Queue.size(late.frames)).toBe(0);
-    }).pipe(Effect.provide(Viewers.layer)));
-
-  it.effect("初回の最新全体、接続中の更新、再接続の最新全体が届く", () =>
-    Effect.gen(function* () {
-      const viewers = yield* Viewers;
-      const first = yield* client(Effect.void);
-      yield* viewers.publish(snap("採用"));
-      const fiber = yield* Effect.forkChild(viewers.connect(first.socket));
-      expect(yield* Queue.take(first.frames)).toEqual(snap("採用"));
-      yield* viewers.publish(snap("採用", "予算"));
-      expect(yield* Queue.take(first.frames)).toEqual(snap("採用", "予算"));
-      yield* first.disconnect;
-      yield* Effect.exit(Fiber.join(fiber));
-      yield* viewers.publish(snap("採用", "予算", "日程"));
-      const second = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(second.socket));
-      expect(yield* Queue.take(second.frames)).toEqual(snap("採用", "予算", "日程"));
+      yield* late.ready;
+      expect(yield* receivedFrames(late.frames)).toEqual(cases.map(({ latest }) => latest));
+      yield* Scope.close(scope, Exit.void);
       yield* TestClock.adjust(1);
-      expect(yield* Queue.size(second.frames)).toBe(0);
+      const cleared = cases.flatMap<ViewerFrame>(({ clear }) => clear === "keep" ? [] : [clear]);
+      expect(yield* receivedFrames(connected.frames)).toEqual(cleared);
+      expect(yield* receivedFrames(late.frames)).toEqual(cleared);
+      const after = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(after.socket));
+      yield* after.ready;
+      expect(yield* receivedFrames(after.frames)).toEqual(cases.map(({ latest, clear }) => clear === "keep" ? latest : clear));
     }).pipe(Effect.provide(Viewers.layer)));
 
-  it.effect("接続中のすべてのクライアントへ同じ更新が届く", () =>
+  it.effect("forSession の後に登録した finalizer の送信が終わってから解除する", () =>
     Effect.gen(function* () {
       const viewers = yield* Viewers;
-      yield* viewers.publish(snap());
-      const clients = [yield* client(Effect.void), yield* client(Effect.void)];
-      for (const c of clients) {
-        yield* Effect.forkChild(viewers.connect(c.socket));
-        expect(yield* Queue.take(c.frames)).toEqual(snap());
-      }
-      yield* viewers.publish(snap("採用"));
-      for (const c of clients) expect(yield* Queue.take(c.frames)).toEqual(snap("採用"));
-    }).pipe(Effect.provide(Viewers.layer)));
-
-  it.effect("未公開なら何も送らず、その後の最初の公開は届く", () =>
-    Effect.gen(function* () {
-      const viewers = yield* Viewers;
-      const c = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(c.socket));
+      const connected = yield* client(Effect.void);
+      yield* Effect.forkChild(viewers.connect(connected.socket));
+      yield* connected.ready;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const send = yield* viewers.forSession;
+        yield* send(intake("running"));
+        expect(yield* Queue.take(connected.frames)).toEqual(intake("running"));
+        yield* Effect.addFinalizer(() => send(intake("stopped")));
+      }));
+      expect(yield* Queue.takeN(connected.frames, 2)).toEqual([intake("stopped"), intake("none")]);
       yield* TestClock.adjust(1);
-      expect(yield* Queue.size(c.frames)).toBe(0);
-      yield* viewers.publish(snap("採用"));
-      expect(yield* Queue.take(c.frames)).toEqual(snap("採用"));
-    }).pipe(Effect.provide(Viewers.layer)));
-
-  it.effect("snapshot、最後の非空captions、最後のintakeの順に送る", () =>
-    Effect.gen(function* () {
-      const viewers = yield* Viewers;
-      yield* viewers.publish(snap("採用"));
-      yield* viewers.speak(captions("あ"));
-      yield* viewers.speak(captions("あ", "い"));
-      yield* viewers.intake(intake("interrupted"));
-      yield* viewers.intake(intake("stopped"));
-      const c = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(c.socket));
-      expect(yield* Queue.takeN(c.frames, 3)).toEqual([snap("採用"), captions("あ", "い"), intake("stopped")]);
-      yield* TestClock.adjust(1);
-      expect(yield* Queue.size(c.frames)).toBe(0);
-    }).pipe(Effect.provide(Viewers.layer)));
-
-  it.effect("空のcaptionsは接続中に送り、保持から除く。つなぎ直したクライアントには送らない", () =>
-    Effect.gen(function* () {
-      const viewers = yield* Viewers;
-      yield* viewers.speak(captions("あ"));
-      const first = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(first.socket));
-      expect(yield* Queue.take(first.frames)).toEqual(captions("あ"));
-      yield* viewers.speak(captions());
-      expect(yield* Queue.take(first.frames)).toEqual(captions());
-      const second = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(second.socket));
-      yield* TestClock.adjust(1);
-      expect(yield* Queue.size(second.frames)).toBe(0);
-    }).pipe(Effect.provide(Viewers.layer)));
-
-  for (const status of ["running", "interrupted", "stopped", "none"] as const) {
-    it.effect(`intake ${status} は後から接続しても届く`, () =>
-      Effect.gen(function* () {
-        const viewers = yield* Viewers;
-        yield* viewers.intake(intake(status));
-        const c = yield* client(Effect.void);
-        yield* Effect.forkChild(viewers.connect(c.socket));
-        expect(yield* Queue.take(c.frames)).toEqual(intake(status));
-        yield* TestClock.adjust(1);
-        expect(yield* Queue.size(c.frames)).toBe(0);
-      }).pipe(Effect.provide(Viewers.layer)));
-  }
-
-  it.effect("runningからnoneへの変更は同じ接続へ届き、後から接続するとnoneだけが届く", () =>
-    Effect.gen(function* () {
-      const viewers = yield* Viewers;
-      yield* viewers.intake(intake("running"));
-      const first = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(first.socket));
-      expect(yield* Queue.take(first.frames)).toEqual(intake("running"));
-      yield* viewers.intake(intake("none"));
-      expect(yield* Queue.take(first.frames)).toEqual(intake("none"));
-      const second = yield* client(Effect.void);
-      yield* Effect.forkChild(viewers.connect(second.socket));
-      expect(yield* Queue.take(second.frames)).toEqual(intake("none"));
-      yield* TestClock.adjust(1);
-      expect(yield* Queue.size(second.frames)).toBe(0);
+      expect(yield* receivedFrames(connected.frames)).toEqual([]);
     }).pipe(Effect.provide(Viewers.layer)));
 
   it.effect("初回送信中の更新を、保持値送信後に取りこぼさず届ける（要件16）", () =>

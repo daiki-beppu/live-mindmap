@@ -18,6 +18,7 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
       ports.push(port);
       yield* Effect.addFinalizer(() => Effect.sync(() => { events.push("closed"); }));
       const viewers = Viewers.of({
+        forSession: Effect.die("この偽listenerではセッション用の送り口を使用しません"),
         publish: (snapshot) => Effect.sync(() => {
           published.push(snapshot);
           onPublish(snapshot);
