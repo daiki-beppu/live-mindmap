@@ -87,11 +87,12 @@ describe("Sessions と録画 sink の保存・再起動", () => {
     });
     const running = yield* Effect.forkChild(r.run());
     yield* Effect.promise(() => vi.waitFor(() => expect(r.helpers.calls).toHaveLength(2)));
+    const dir = onlySession(r.sessionsDir);
+    yield* Effect.promise(() => vi.waitFor(() => expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1", "r2"])));
     yield* r.sessions.stop;
     const result = yield* Effect.result(Fiber.join(running));
 
     expect(Result.isSuccess(result)).toBe(true);
-    const dir = onlySession(r.sessionsDir);
     expect(remarksOf(logLines(dir)).map((x) => x.id)).toEqual(["r1", "r2"]);
     expect(existsSync(join(dir, "map.md"))).toBe(true);
   }).pipe(Effect.scoped));
