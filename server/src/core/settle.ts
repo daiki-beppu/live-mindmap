@@ -5,7 +5,7 @@
 // 加えて、文の終わり（。？！ ? !）までの本文が SETTLE_SENTENCE_MS 変わらなければ、そこまでを発言にする（Issue #996）。
 // 途中結果から作る発言は、出した分（同じ発話、無ければ同じトラック）の記録と突き合わせ、出した分の後ろだけを次の発言にする。
 import type { HelperPartial } from "./live.ts";
-import { createRemarkGate } from "./remarkGate.ts";
+import { compact, createRemarkGate, overlapEnd } from "./remarkGate.ts";
 import type { Remark } from "./remark.ts";
 import { cutWords, keepWordsBefore, type Word, type WordTime } from "./words.ts";
 
@@ -36,25 +36,11 @@ type Utterance = {
 
 const SENTENCE_END = /[。？！?!]/;
 
-// 比較のとき無視する文字。remarkGate.ts の IGNORED と同じ集合（関所は変えないので export を共有できず、ここに複製する。
-// 食い違うと、挿入の検出と関所で比べ方がずれる）
-const IGNORED = /[、。，．,.!?！？「」\s]/u;
-
 // 出した本文 emitted（句読点・空白を除いた形）が text（同じ形）の途中（先頭以外）に最初に現れるとき、
 // その出現の先頭の文字の text 上の位置（UTF-16）を返す。先頭に現れる・現れないときは 0。数え方は remarkGate.ts の compact・overlapEnd と同じ
 const insertionEnd = (text: string, emitted: string): number => {
-  const compactOf = (t: string) => Array.from(t).filter((c) => !IGNORED.test(c)).join("");
-  const p = compactOf(text).indexOf(compactOf(emitted));
-  if (p <= 0) return 0;
-  let kept = 0;
-  let i = 0;
-  for (const c of text) {
-    const keep = !IGNORED.test(c);
-    if (keep && kept === p) break;
-    if (keep) kept += c.length;
-    i += c.length;
-  }
-  return i;
+  const p = compact(text).indexOf(compact(emitted));
+  return p <= 0 ? 0 : overlapEnd(text, p);
 };
 
 const keyOf = (track: string, start: number) => `${track}\u0000${start}`;
