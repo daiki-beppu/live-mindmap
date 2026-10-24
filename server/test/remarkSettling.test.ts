@@ -22,7 +22,7 @@ const SPEAKER_OFF: SpeakerLogEvent = { type: "speaker-off", start: 0, reason: "ã
 
 const setup = Effect.fn("setup")(function* ({ speakerOff = true }: { speakerOff?: boolean } = {}) {
   const emitted: SettledRemark[] = [];
-  const settling = yield* createRemarkSettling({ emit: (r) => Effect.sync(() => emitted.push(r)) });
+  const settling = (yield* createRemarkSettling()).emitTo((r) => Effect.sync(() => emitted.push(r)));
   if (speakerOff) yield* settling.speaker(SPEAKER_OFF);
   return { settling, emitted };
 });
