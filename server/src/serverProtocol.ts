@@ -1,4 +1,4 @@
-import { Effect, Option, Schema, SchemaGetter } from "effect";
+import { Effect, Schema } from "effect";
 import { IntakeStatusReport } from "./core/intake.ts";
 import { OcrSummary, RecordedEvent } from "./core/recordedProgress.ts";
 import { OpenShareStatus, ShareMail, ShareStatus } from "./core/viewingShare.ts";
@@ -6,23 +6,13 @@ import { TransferredJudge } from "./judgeSelection.ts";
 import { CheckReport, InstallBody, InstallEvent, Item, StartupWarnings, UpdateBody } from "./managedDepsProtocol.ts";
 import { TransferredModel } from "./modelSelection.ts";
 
-const TrueByDefault = Schema.NullOr(Schema.Boolean).pipe(
-  Schema.decodeTo(Schema.Boolean, { decode: SchemaGetter.transform((value) => value ?? true), encode: SchemaGetter.passthrough() }),
-  Schema.withDecodingDefaultKey(Effect.succeed(true)),
-);
-
-const OptionalTitle = Schema.optionalKey(Schema.NullOr(Schema.String)).pipe(
-  Schema.decodeTo(Schema.optionalKey(Schema.String), {
-    decode: SchemaGetter.transformOptional((title) => Option.filter(title, (value) => value !== null)),
-    encode: SchemaGetter.passthrough(),
-  }),
-);
+const TrueByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true)));
 
 const Vocabulary = Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed<ReadonlyArray<string>>([])));
 
 export const SessionStartBody = Schema.Struct({
   app: Schema.NonEmptyString,
-  title: OptionalTitle,
+  title: Schema.optionalKey(Schema.String),
   audio: TrueByDefault,
   screen: TrueByDefault,
   vocab: Vocabulary,
@@ -34,7 +24,7 @@ export const SessionRecordedBody = Schema.Struct({
   file: Schema.NonEmptyString,
   noMap: Schema.optionalKey(Schema.Boolean),
   selfFile: Schema.optionalKey(Schema.NonEmptyString),
-  title: OptionalTitle,
+  title: Schema.optionalKey(Schema.String),
   vocab: Vocabulary,
   realtime: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   model: Schema.optionalKey(TransferredModel),

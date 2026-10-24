@@ -1891,7 +1891,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "NoSession" });
+      expect(result.failure).toMatchObject({ _tag: "NoSavedSession" });
       expect(deps.stdout).toEqual([]);
       expect(readdirSync(dir)).toEqual([]);
     }));
@@ -1909,7 +1909,7 @@ describe("CLI", () => {
       expect(deps.stdout.join("")).toContain(session);
     }));
 
-    it.effect("保存先の直下が通常ファイルだけなら、export は NoSession になる", () => Effect.gen(function* () {
+    it.effect("保存先の直下が通常ファイルだけなら、export は NoSavedSession になる", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       writeFileSync(join(dir, "9999-12-31T00-00-00.000Z"), "");
@@ -1918,7 +1918,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "NoSession" });
+      expect(result.failure).toMatchObject({ _tag: "NoSavedSession" });
       expect(deps.stdout).toEqual([]);
     }));
 
@@ -1988,7 +1988,7 @@ describe("CLI", () => {
 
       const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
       const port = yield* Deferred.await(listening);
-      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       ws.addEventListener("message", (e) => {
         const frame = JSON.parse(String(e.data)) as Snapshot | { type: string };
         if (!("type" in frame)) {

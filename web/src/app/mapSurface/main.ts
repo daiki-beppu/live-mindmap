@@ -95,15 +95,16 @@ const foldViewOf = (model: Model): FoldView | null => {
   return foldView(model.snapshot, opened, model.viewing.selection?.id ?? null, folded, unbundled);
 };
 const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
-const heightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
-const dimsOf = (model: Model): Record<string, { height: number }> => Object.fromEntries(Object.entries(heightsOf(model)).map(([id, height]) => [id, { height }]));
-const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), heightsOf(model));
+const layoutHeightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
+const drawnHeightOf = (model: Model, id: string): number => Option.getOrThrow(HashMap.get(model.nodeHeights, id));
+const dimsOf = (model: Model): Record<string, { height: number }> => Object.fromEntries(Object.entries(layoutHeightsOf(model)).map(([id, height]) => [id, { height }]));
+const targetOf = (model: Model): Record<string, Position> => layout(shownNodesOf(model), layoutHeightsOf(model));
 
 const treeOf = (model: Model, view: FoldView | null = foldViewOf(model)): VisibleTree => {
   const shown = view?.nodes ?? model.snapshot.nodes;
   return {
     ids: shown.map((n) => n.id),
-    targets: layout(shown, heightsOf(model)),
+    targets: layout(shown, layoutHeightsOf(model)),
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
     foldState: view
       ? Object.fromEntries(shown.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"]))
@@ -145,7 +146,7 @@ const setViewport = (model: Model, viewport: Viewport): Model => modifyFields(mo
 const minZoomOf = (model: Model): number => (model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM);
 
 const fittedOf = (model: Model, size: Size): Viewport => {
-  const heights = heightsOf(model);
+  const heights = layoutHeightsOf(model);
   const positions = displayedPositions(model);
   const rects = shownNodesOf(model)
     .filter((n) => HashMap.has(model.nodeHeights, n.id))
@@ -159,7 +160,7 @@ export const fitsAllOf = (model: Model): Option.Option<boolean> => {
   const shown = shownNodesOf(model);
   if (!shown.every((n) => HashMap.has(model.nodeHeights, n.id))) return Option.none();
   if (shown.length === 0) return Option.some(true);
-  const heights = heightsOf(model);
+  const heights = layoutHeightsOf(model);
   const positions = displayedPositions(model);
   const { x, y, zoom } = model.viewport;
   const left = Math.min(...shown.map((n) => positions[n.id]!.x));
@@ -315,6 +316,9 @@ export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => upda
 
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
+const clickedNode = (model: Model, nodeId: string): Return =>
+  foldViewOf(model)?.summaries.has(nodeId) === true ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     MeasuredMapSurface: ({ width, height, nodeHeights }) => {
@@ -373,17 +377,15 @@ export const update = (model: Model, message: Message): Return =>
           : model;
       return { model: modifyFields(panned, { nodePress: Option.map((press) => (awayFrom(press, clientX, clientY) ? { ...press, dragged: true } : press)) }) };
     },
-    ReleasedPointer: ({ ctrlKey, metaKey }) => ({
-      model: modifyFields(model, { pointer: () => Option.none(), nodePress: (press) => (ctrlKey || metaKey ? Option.none() : press) }),
-    }),
+    ReleasedPointer: () => ({ model: modifyFields(model, { pointer: () => Option.none() }) }),
     CanceledPointer: () => ({ model: modifyFields(model, { pointer: () => Option.none() }) }),
     ClickedNodeButton: ({ nodeId, clientX, clientY }) => {
       const press = Option.filter(model.nodePress, (p) => p.nodeId === nodeId);
       const consumed = Option.isNone(press) ? model : modifyFields(model, { nodePress: () => Option.none() });
       const dragged = Option.isSome(press) && (press.value.dragged || awayFrom(press.value, clientX, clientY));
-      if (dragged || foldViewOf(model)?.summaries.has(nodeId) === true) return { model: consumed };
-      return { model: applyViewing(consumed, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+      return dragged ? { model: consumed } : clickedNode(consumed, nodeId);
     },
+    ClickedNodeButtonWithoutPointer: ({ nodeId }) => clickedNode(model, nodeId),
     ClickedFoldDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "foldDot", id: nodeId }) }),
     ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
     ClickedChangeItem: ({ nodeId }) => {
@@ -460,7 +462,6 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const selectedId = view_ === null ? null : (model.viewing.selection?.id ?? null);
   const { opened } = humanSetsOf(model.viewing);
   const shown = view_?.nodes ?? model.snapshot.nodes;
-  const exactHeight = (id: string): number => Option.getOrThrow(HashMap.get(model.nodeHeights, id));
   const positions = displayedPositions(model);
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
   const viewport = model.viewport;
@@ -468,8 +469,8 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const edges = measured.flatMap((child) => {
     const parent = child.parent === null ? undefined : measured.find((n) => n.id === child.parent);
     if (parent === undefined) return [];
-    const source = { x: positions[parent.id]!.x + NODE_WIDTH + HANDLE_OUTSET, y: positions[parent.id]!.y + exactHeight(parent.id) / 2 };
-    const target = { x: positions[child.id]!.x - HANDLE_OUTSET, y: positions[child.id]!.y + exactHeight(child.id) / 2 };
+    const source = { x: positions[parent.id]!.x + NODE_WIDTH + HANDLE_OUTSET, y: positions[parent.id]!.y + drawnHeightOf(model, parent.id) / 2 };
+    const target = { x: positions[child.id]!.x - HANDLE_OUTSET, y: positions[child.id]!.y + drawnHeightOf(model, child.id) / 2 };
     return [h.keyed("path")(`${parent.id}->${child.id}`, [h.D(bezier(source, target)), h.Stroke(KIND_COLOR[child.kind]), h.StrokeWidth("2"), h.Fill("none")])];
   });
   const nodes = shown.map((node) =>

@@ -2,7 +2,7 @@ import { basename, join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, FileSystem, Option } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { readLogLines } from "../src/logLines.ts";
+import { readLogLines } from "../src/sessionFiles.ts";
 import { claudeJudge, type Judge } from "./claudeJudge.ts";
 import { BENCH_VERSION, exitNaturally, InvalidInputFile, reportFailure, write } from "./entry.ts";
 import { formatRow, HEADER, judgeSiblings } from "./siblingJudgement.ts";

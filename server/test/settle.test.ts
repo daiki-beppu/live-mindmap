@@ -516,6 +516,7 @@ describe("出した発言と重なる発言", () => {
     it.each([
       { name: "不対サロゲートとの重なりで空になる本文は出さず、直前状態を保持する", first: "\uD842", second: "𠮷野", out: [], nextStart: 14, nextText: "野山" },
       { name: "正常なサロゲートペアとの重なりは残りの本文を出す", first: "𠮷", second: "𠮷野", out: [final("相手", 12, 15, "野")], nextStart: 15, nextText: "山" },
+      { name: "サロゲートペアの後半だけと重なる本文は、重なった後半を除いて出す", first: "𠮷", second: "\uDFB7野", out: [final("相手", 12, 15, "野")], nextStart: 15, nextText: "山" },
       { name: "重ならない本文が通過したときは直前状態を更新する", first: "\uD842", second: "花", out: [final("相手", 12, 15, "花")], nextStart: 15, nextText: "野山" },
     ])("$name", ({ first, second, out, nextStart, nextText }) => {
       const s = createRemarkSettler();
@@ -1096,10 +1097,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
       expect(brief(tick(s, 15000 + S))).toEqual([["相手", 10, 14, "あいう。"]]);
       s.partial(partial("相手", 10, 15.25, "あいう。え。おかきく"));
 
-      const out = tick(s, 15250 + S);
-      expect(texts(out)).toEqual(["え。"]);
-      expect(out[0]!.start).toBe(14);
-      expect(out[0]!.end).toBeGreaterThan(14);
+      expect(rounded(tick(s, 15250 + S))).toEqual([["相手", 14, 14.417, "え。"]]);
     });
 
     it("文の終わりの文字は 。？！ と半角の ? !。読点・半角ピリオドでは出ない", () => {
@@ -1195,9 +1193,7 @@ describe("文の終わりが落ち着いたら出す（Issue #996）", () => {
 
       s.partial(partial("相手", 10, 14.25, "あい。うえお。")); // 区間は、間に出た発言（〜14.1）の end より後ろまで延びる
 
-      const out = [...tick(s, 14250 + S), ...tick(s, 14250 + T)].map((r) => r.text);
-      expect(out.join("")).not.toContain("あい。"); // 出した文を含まない
-      expect(out.join("")).toContain("うえお。");
+      expect(brief([...tick(s, 14250 + S), ...tick(s, 14250 + T)])).toEqual([["相手", 14.1, 14.25, "うえお。"]]);
     });
 
     it("先頭が書き換わった全文を送り直しても、書き換えずに延びた分だけが出る", () => {

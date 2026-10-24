@@ -161,6 +161,20 @@ describe("会議中（Foldkit 版）の Mount", () => {
   );
 
   it(
+    "右クリック（click は出ない）で押したノードも、続けてキーボードの Enter で選べる",
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await open(context);
+      await settled(page);
+      const button = await visibleNodeButton(page);
+      await button.click({ button: "right" });
+      await button.focus();
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(() => document.querySelector(".map-node--selected") !== null, undefined, { timeout: 10_000 });
+    }),
+    MEETING_TIMEOUT,
+  );
+
+  it(
     "ポインタ（文書全体の pointermove・pointerup）: 何も無い所のドラッグで、動かした分だけビューポートが平行移動する。離すと止まる",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await open(context);
@@ -645,8 +659,8 @@ const showCaptions = async (page: Page): Promise<void> => {
   await page.locator(".captions").waitFor({ timeout: 10_000 });
 };
 
-const selectFirstNode = async (page: Page): Promise<void> => {
-  // 自動のカメラは今の議題を追うので、狭い幅では先頭のノードが画面の外にあることがある。画面の中にある最初のノードを押す
+// 自動のカメラは今の議題を追うので、狭い幅では先頭のノードが画面の外にあることがある。画面の中にある最初のノードを使う
+const visibleNodeButton = async (page: Page) => {
   const index = await page.evaluate(() =>
     [...document.querySelectorAll(".map-node__button")].findIndex((el) => {
       const r = el.getBoundingClientRect();
@@ -654,7 +668,11 @@ const selectFirstNode = async (page: Page): Promise<void> => {
     }),
   );
   expect(index, "画面の中にあるノードがある").toBeGreaterThanOrEqual(0);
-  await page.locator(".map-node__button").nth(index).click();
+  return page.locator(".map-node__button").nth(index);
+};
+
+const selectFirstNode = async (page: Page): Promise<void> => {
+  await (await visibleNodeButton(page)).click();
   await page.waitForFunction(() => document.querySelector(".map-node--selected") !== null, undefined, { timeout: 10_000 });
 };
 

@@ -1,31 +1,130 @@
 import { basename, join } from "node:path";
-import { Cause, Console, DateTime, Effect, FileSystem, Layer, Ref, Schema, Semaphore } from "effect";
+import { Cause, Console, DateTime, Effect, FileSystem, Layer, PlatformError, Predicate, Ref, Result, Schema, Semaphore } from "effect";
 import { MapCapture } from "./capture.ts";
-import { readLogLines } from "./logLines.ts";
 import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
   DiffUpdater,
   exportFiles,
+  LogEvent,
   logTimestamp,
   makeSession,
   makeTranscriptSession,
   SessionLog,
+  StartEvent,
   toJsonExport,
   type IntakeLogEvent,
   type SelfPauseLogEvent,
   type SpeakerNameLogEvent,
   type DiffUpdateFrame,
-  type LogEvent,
+  type InvalidLogEvent,
   type OnSpeakerNames,
   type Session,
   type Snapshot,
 } from "./core/index.ts";
-import { errorMessage } from "./truthFile.ts";
+import { errorMessage, formatIssues, oneLine } from "./truthFile.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 
 export const EXPORT_FILE = "export.json";
 export const LOG_FILE = "log.jsonl";
 export const SCREENS_DIR = "screens";
+
+export class NoSavedSession extends Schema.TaggedError<NoSavedSession>()("NoSavedSession", { sessionsDir: Schema.String }) {}
+export class MissingSessionLog extends Schema.TaggedError<MissingSessionLog>()("MissingSessionLog", { path: Schema.String }) {}
+export class MissingStartLine extends Schema.TaggedError<MissingStartLine>()("MissingStartLine", { path: Schema.String }) {}
+export class BrokenLogLine extends Schema.TaggedError<BrokenLogLine>()("BrokenLogLine", {
+  path: Schema.String,
+  line: Schema.Finite,
+  kind: Schema.Literals(["json", "event"]),
+  reason: Schema.String,
+}) {}
+
+const isNotDirectory = (error: PlatformError.PlatformError): boolean =>
+  Predicate.hasProperty(error.cause, "code") && error.cause.code === "ENOTDIR";
+
+const pathExists = (fs: FileSystem.FileSystem, path: string) =>
+  fs.exists(path).pipe(Effect.catchIf(isNotDirectory, () => Effect.succeed(false)));
+
+export const latestSessionDir = Effect.fn("latestSessionDir")(function* (sessionsDir: string, file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* pathExists(fs, sessionsDir))) return yield* new NoSavedSession({ sessionsDir });
+  const names = yield* fs.readDirectory(sessionsDir).pipe(
+    Effect.catchIf((error) => error.reason._tag === "NotFound" || isNotDirectory(error), () => Effect.fail(new NoSavedSession({ sessionsDir }))),
+  );
+  const latest = (yield* Effect.filter(names, (name) => pathExists(fs, join(sessionsDir, name, file)))).sort().at(-1);
+  return latest === undefined ? yield* new NoSavedSession({ sessionsDir }) : join(sessionsDir, latest);
+});
+
+const decodeLine = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeEvent = Schema.decodeUnknownEffect(LogEvent);
+const schemaReason = (error: Schema.SchemaError): string =>
+  oneLine(formatIssues(error.issue).issues.map(({ message }) => message).join(" / "));
+
+export const readLogLines = Effect.fn("readLogLines")(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const text = yield* fs.readFileString(path);
+  const lines = text.split("\n")
+    .map((line, i) => ({ text: line, no: i + 1 }))
+    .filter((line) => line.text.trim() !== "");
+  const events: unknown[] = [];
+  for (const line of lines) {
+    events.push(yield* decodeLine(line.text).pipe(
+      Effect.mapError((error) => new BrokenLogLine({ path, line: line.no, kind: "json", reason: schemaReason(error) })),
+    ));
+  }
+  return { lines, events };
+});
+
+export type SessionLogRead = {
+  readonly dir: string;
+  readonly path: string;
+  readonly events: ReadonlyArray<unknown>;
+  readonly select: (schemas: ReadonlyArray<(typeof LogEvent.members)[number]>) => Effect.Effect<LogEvent[], BrokenLogLine>;
+  readonly brokenAt: (error: InvalidLogEvent) => BrokenLogLine;
+};
+
+const isStart = Schema.is(Schema.Struct({ type: StartEvent.fields.type }));
+
+export const readSessionLog = Effect.fn("readSessionLog")(function* (dir: string): Effect.fn.Return<SessionLogRead, MissingSessionLog | BrokenLogLine | PlatformError.PlatformError, FileSystem.FileSystem> {
+  const fs = yield* FileSystem.FileSystem;
+  const path = join(dir, LOG_FILE);
+  if (!(yield* pathExists(fs, path))) return yield* new MissingSessionLog({ path });
+  const { lines, events } = yield* readLogLines(path).pipe(
+    Effect.catchIf(
+      (error) => PlatformError.isPlatformError(error) && error.reason._tag === "NotFound",
+      () => Effect.fail(new MissingSessionLog({ path })),
+    ),
+  );
+  const eventFailure = (index: number, reason: string) => new BrokenLogLine({
+    path,
+    line: lines.length === 0 ? 1 : lines[index]!.no,
+    kind: "event",
+    reason,
+  });
+  const select = Effect.fnUntraced(function* (schemas: ReadonlyArray<(typeof LogEvent.members)[number]>) {
+    const selected = Schema.is(Schema.Struct({ type: Schema.Literals(schemas.map((schema) => schema.fields.type.literal)) }));
+    const decoded: LogEvent[] = [];
+    for (const [index, event] of events.entries()) {
+      if (!selected(event)) continue;
+      decoded.push(yield* decodeEvent(event).pipe(
+        Effect.mapError((error) => eventFailure(index, schemaReason(error))),
+      ));
+    }
+    return decoded;
+  });
+  return { dir, path, events, select, brokenAt: (error) => eventFailure(error.index, error.reason) };
+});
+
+export const startOf = Effect.fn("startOf")(function* (log: SessionLogRead) {
+  const start = (yield* log.select([StartEvent])).find((event) => event.type === "start");
+  return start === undefined ? yield* new MissingStartLine({ path: log.path }) : start;
+});
+
+export const isLocal = (log: SessionLogRead): boolean => {
+  const start = log.events.find(isStart);
+  if (start === undefined) return false;
+  const decoded = Schema.decodeUnknownResult(StartEvent)(start);
+  return Result.isSuccess(decoded) && decoded.success.model?.local === true;
+};
 
 export const writeExportFiles = Effect.fnUntraced(function* (dir: string, snapshot: Snapshot, names: ReadonlyMap<string, string>) {
   const fs = yield* FileSystem.FileSystem;
