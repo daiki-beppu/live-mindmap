@@ -8,7 +8,7 @@ import type { Message } from "../src/app/mapSurface/message.ts";
 // DOM が無い unit 環境なので偽の要素で capture → bubble の順に届ける。実ブラウザでの動作は未確認
 
 type Listener = { handler: (event: unknown) => void; capture: boolean };
-type ClickInit = { metaKey: boolean; ctrlKey: boolean; altKey: boolean };
+type ClickInit = { metaKey: boolean; ctrlKey: boolean; altKey: boolean; detail: number };
 
 class FakeElement {}
 
@@ -91,7 +91,7 @@ describe("ObserveMapSurface（Mount）: ノードのボタン上の click", () =
     const { got, close } = await observe(surface);
     try {
       const before = got.length;
-      surface.click(new FakeButton("A"), { metaKey: false, ctrlKey: false, altKey: false, ...init });
+      surface.click(new FakeButton("A"), { metaKey: false, ctrlKey: false, altKey: false, detail: 1, ...init });
       await expect.poll(() => got.length).toBeGreaterThan(before);
       return got.slice(before).map((m) => m._tag);
     } finally {
@@ -107,6 +107,9 @@ describe("ObserveMapSurface（Mount）: ノードのボタン上の click", () =
   });
   it("Ctrl 付き: ⌘ 付きと同じ", async () => {
     expect(await tagsAfterClick({ ctrlKey: true })).toEqual(["ClickedMapSurfaceWithModifier"]);
+  });
+  it("修飾キーなし・detail 0（ポインタの無い click）: ClickedNodeButtonWithoutPointer だけが出る", async () => {
+    expect(await tagsAfterClick({ detail: 0 })).toEqual(["ClickedNodeButtonWithoutPointer"]);
   });
 });
 

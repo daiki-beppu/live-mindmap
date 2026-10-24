@@ -517,7 +517,7 @@ describe("mapSurface の Scene: パン（ビューポートの transform が、�
       tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 30, -10))),
       Subscription.emit(moved(140, 95)),
       tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 40, -5))),
-      Subscription.emit(Message.ReleasedPointer({ ctrlKey: false, metaKey: false })),
+      Subscription.emit(Message.ReleasedPointer()),
       Subscription.emit(moved(300, 300)),
       tap((simulation) => expectNumbers(viewportTransform(simulation.html), at("live", 40, -5))),
     );

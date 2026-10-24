@@ -316,6 +316,9 @@ export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => upda
 
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
+const clickedNode = (model: Model, nodeId: string): Return =>
+  foldViewOf(model)?.summaries.has(nodeId) === true ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
     MeasuredMapSurface: ({ width, height, nodeHeights }) => {
@@ -374,17 +377,15 @@ export const update = (model: Model, message: Message): Return =>
           : model;
       return { model: modifyFields(panned, { nodePress: Option.map((press) => (awayFrom(press, clientX, clientY) ? { ...press, dragged: true } : press)) }) };
     },
-    ReleasedPointer: ({ ctrlKey, metaKey }) => ({
-      model: modifyFields(model, { pointer: () => Option.none(), nodePress: (press) => (ctrlKey || metaKey ? Option.none() : press) }),
-    }),
+    ReleasedPointer: () => ({ model: modifyFields(model, { pointer: () => Option.none() }) }),
     CanceledPointer: () => ({ model: modifyFields(model, { pointer: () => Option.none() }) }),
     ClickedNodeButton: ({ nodeId, clientX, clientY }) => {
       const press = Option.filter(model.nodePress, (p) => p.nodeId === nodeId);
       const consumed = Option.isNone(press) ? model : modifyFields(model, { nodePress: () => Option.none() });
       const dragged = Option.isSome(press) && (press.value.dragged || awayFrom(press.value, clientX, clientY));
-      if (dragged || foldViewOf(model)?.summaries.has(nodeId) === true) return { model: consumed };
-      return { model: applyViewing(consumed, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+      return dragged ? { model: consumed } : clickedNode(consumed, nodeId);
     },
+    ClickedNodeButtonWithoutPointer: ({ nodeId }) => clickedNode(model, nodeId),
     ClickedFoldDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "foldDot", id: nodeId }) }),
     ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
     ClickedChangeItem: ({ nodeId }) => {
