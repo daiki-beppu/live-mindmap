@@ -1,5 +1,3 @@
-// 状態に合わない依頼や、起動し直しに失敗した結果の失敗。HTTP のステータスは持たない
-// （タグからステータスへの対応は http.ts の表 1 つが決める）。文面はこのモジュールが持つ。
 import { Schema } from "effect";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { StartupDepsMissing } from "./startupDepsMissing.ts";
@@ -29,15 +27,12 @@ export class IntakeNotStopped extends Schema.TaggedError<IntakeNotStopped>()("In
   }
 }
 
-// 録画からのセッション（cli recorded）では使えない操作（resume・自分の休止）。ヘルパーは起動し直さない
 export class NotForRecordedSession extends Schema.TaggedError<NotForRecordedSession>()("NotForRecordedSession", {}) {
   override get message(): string {
     return "録画からのセッションでは使えません";
   }
 }
 
-// 話者に名前を付けられない（Issue #1026）。付けられるのは、発言に振った「相手 X」のラベルだけ。
-// 自分・まだ振っていないラベル・ラベルの無い「相手」・空の名前は付けない。セッションの状態に依らない依頼の誤りなので SessionFailure には含めない
 export class SpeakerNameRejected extends Schema.TaggedError<SpeakerNameRejected>()("SpeakerNameRejected", {
   reason: Schema.Literals(["ラベルがない", "名前が空"]),
 }) {
@@ -46,14 +41,12 @@ export class SpeakerNameRejected extends Schema.TaggedError<SpeakerNameRejected>
   }
 }
 
-// stop・サーバーの終了に中断された（起動・起動し直し自体は成立していない）
 export class Aborted extends Schema.TaggedError<Aborted>()("Aborted", {}) {
   override get message(): string {
     return "中断されました";
   }
 }
 
-// 続けて失敗して起動し直しを諦めた。stderrTail は最後の失敗の標準エラーの末尾
 export class RestartGaveUp extends Schema.TaggedError<RestartGaveUp>()("RestartGaveUp", {
   stderrTail: Schema.Array(Schema.String),
 }) {
@@ -62,8 +55,6 @@ export class RestartGaveUp extends Schema.TaggedError<RestartGaveUp>()("RestartG
   }
 }
 
-// セッションの開始で、ヘルパーが接続する前に終わった。code・signal は終わり方（どちらも無ければ null）、
-// stderrTail は標準エラーの末尾
 export class HelperExited extends Schema.TaggedError<HelperExited>()("HelperExited", {
   code: Schema.NullOr(Schema.Finite),
   signal: Schema.NullOr(Schema.String),

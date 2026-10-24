@@ -1,10 +1,3 @@
-// e2e の対象アプリを 1 つのプロセスで立てる（e2e.config.ts の app.command）。
-// - server: 本体の startup / realLayers をそのまま使い、helper を fake-helper に、差分更新を偽の updater に差し替える。
-//   ポートは空きポート、セッションのフォルダは一時フォルダ。本体にテスト用の口は足さない。
-// - web: Vite の開発サーバー。/ws は LIVE_MINDMAP_PORT（この server のポート）へ proxy される（web/vite.config.ts）。
-// - ファイル配信（別ポートと、web の /session-files/）: セッションのフォルダの下を返す、読み取り専用の小さな HTTP サーバー。.html だけ text/html、ほかは text/plain。書き出しのファイルと見返しの map.html を、テストが画面（locator）で判定するための口。
-// - run-info（.run/<web のポート>.json）: テストが CLI を呼ぶための server のポートとセッションのフォルダ、ファイル配信のポート。target ごとに別ファイル（並行する起動が上書きし合わない）。
-// 使い方: node scripts/serve.ts --web-port <n> --events <台本の先頭から流す発言の件数>
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -35,7 +28,6 @@ if (!Number.isInteger(webPort) || webPort <= 0 || !Number.isInteger(eventCount) 
 }
 const runInfoPath = join(e2eDir, ".run", `${webPort}.json`);
 
-// 新しく来た発言 1 件ごとに、ルート直下へノードを 1 つ足す。文言は発言そのまま
 const update = (input: DiffInput) =>
   Effect.succeed({
     ops: input.fresh.map((remark): Op => ({ op: "add", ref: `n-${remark.id}`, parent: "root", kind: "要点", text: remark.text, evidence: [remark.id] })),
@@ -44,7 +36,6 @@ const update = (input: DiffInput) =>
 const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)));
 
 const program = Effect.gen(function* () {
-  // 一時フォルダ（セッション・台本・fake-helper の記録）と run-info は、Scope を閉じるときに消す
   const root = yield* Effect.acquireRelease(
     Effect.sync(() => mkdtempSync(join(tmpdir(), "live-mindmap-e2e-"))),
     (dir) => Effect.sync(() => rmSync(dir, { recursive: true, force: true })),
@@ -55,9 +46,6 @@ const program = Effect.gen(function* () {
   const scriptPath = join(root, "script.json");
   const recordPath = join(root, "record.jsonl");
   const fixture = JSON.parse(readFileSync(join(e2eDir, "fixtures/meeting.json"), "utf8")) as { apps: unknown; events: unknown[]; speakers: { before: number; [key: string]: unknown }[] };
-  // 話者のイベント（speaker / speaker-settled）は、台本の発言（remark / partial）の前に挟む。before はその発言の番号（先頭から数える）。
-  // 流す範囲（先頭から eventCount 件）の発言に掛かるものだけを入れる。話者の区間が揃わない相手の発言は保留され（Issue #1021）、
-  // 後ろに結果が届かない最後の発言が字幕に出ないので、台本の相手の発言には必ず区間を付けてある
   const playedEvents = fixture.events.slice(0, eventCount).flatMap((event, index) =>
     [...fixture.speakers.filter((speaker) => speaker.before === index).map(({ before: _before, ...speaker }) => speaker), event],
   );
@@ -66,7 +54,6 @@ const program = Effect.gen(function* () {
 
   const helper = { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };
   const options: ServerOptions = { port: 0, sessionsDir, depsDir: join(sessionsDir, "../deps"), prepareUpdater: () => Effect.succeed({ layer: updaterLayer(update) }), helper };
-  // server.ts の import.meta.main と同じ組み方。AudioMix は fake-helper の mix を呼ぶ。Readings も同じ組み方で渡す（--vocab を使わないので呼ばれない）
   const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helper).pipe(Layer.provide(layerChildProcessSpawner)), Readings.layer(helper).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
     Layer.provideMerge(NodeFileSystem.layer),
   );
@@ -74,7 +61,6 @@ const program = Effect.gen(function* () {
   const layers = realLayers(options, exportServices);
   const port = yield* startup(options, { ...layers, managedDeps: withFakeClaude(layers.managedDeps) });
 
-  // sessionsDir の外は読ませない。無いファイルは本文なしの 404 にする（ブラウザの本文に <pre> が出ない）
   const serveFile = (urlPath: string, res: ServerResponse) => {
     const path = normalize(join(sessionsDir, decodeURIComponent(urlPath)));
     try {
@@ -100,7 +86,6 @@ const program = Effect.gen(function* () {
   mkdirSync(join(e2eDir, ".run"), { recursive: true });
   writeFileSync(runInfoPath, JSON.stringify({ port, sessionsDir, filesPort, events: eventCount }));
 
-  // web/vite.config.ts は LIVE_MINDMAP_PORT を読んで /ws の proxy 先にする
   process.env.LIVE_MINDMAP_PORT = String(port);
   yield* Effect.acquireRelease(
     Effect.promise(async () => {

@@ -1,12 +1,7 @@
-// 発言の補正（Issue #640、仕様 #633「照合と置き換え」）。I/O を持たない純粋な部品。
-// 語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
-// ふつうの語の一覧（Issue #641）に載る区間は、英字の語への書き換え（ズーム→Zoom）を除いて直さない。一覧は呼び出し側が渡す。
 import type { Word, WordTime } from "./words.ts";
 
-// 語彙の語。romaji は読み（照合のキーの元になるローマ字）。読みが無い語は語彙に入れない（呼び出し側で除く）
 export type VocabularyWord = { readonly surface: string; readonly romaji: string };
 
-// 置き換え 1 件。location / length は元の本文の UTF-16 コード単位、span は置き換えた区間の元の表記、score は近さ
 export type Replacement = {
   readonly location: number;
   readonly length: number;
@@ -22,14 +17,12 @@ const MIN_SPAN_KEY_LENGTH = 3;
 const MIN_SCORE = 0.8;
 const MIN_LENGTH_RATIO = 0.6;
 const MAX_LENGTH_RATIO = 1.6;
-// 読みのキーがこの長さ以下の語は、キーの完全一致でだけ置き換える
 const EXACT_ONLY_KEY_LENGTH = 5;
 
 const SPELLING_VARIANTS: ReadonlyArray<readonly [string, string]> = [
   ["sh", "s"], ["ch", "t"], ["ts", "t"], ["j", "z"], ["dz", "z"], ["f", "h"], ["l", "r"], ["v", "b"], ["-", ""], ["'", ""],
 ];
 
-// 照合のキー。ローマ字の揺れ（shi/si、tsu/tu、ou/o、小さいカナ）をそろえ、長音・促音を潰す
 function matchKey(romaji: string): string {
   let s = romaji.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
   // 小さいカナ: ~tsu を落とし、残る ~ を外す（ts→t の寄せより前に行う）
@@ -39,9 +32,9 @@ function matchKey(romaji: string): string {
   for (const c of s) {
     if (!/[\p{L}\p{N}]/u.test(c)) continue;
     const last = out[out.length - 1];
-    if (last === c) continue; // 長音・促音
-    if (c === "u" && last === "o") continue; // ou → o
-    if (c === "i" && last === "e") continue; // ei → e
+    if (last === c) continue;
+    if (c === "u" && last === "o") continue;
+    if (c === "i" && last === "e") continue;
     out.push(c);
   }
   return out.join("");
@@ -73,11 +66,9 @@ export const normalizeSurface = (s: string): string => s.normalize("NFKC").toLow
 const isHiraganaOnly = (s: string): boolean => HIRAGANA.test(s);
 const isLatinOnly = (s: string): boolean => /^[A-Za-z]+$/.test(s.normalize("NFKC"));
 
-// latin は表記が英字だけの語（NFKC にした値で判定）。ふつうの語の区間でも、英字の語への書き換えは通す
 type Term = { readonly surface: string; readonly key: string; readonly latin: boolean };
 type Candidate = { readonly location: number; readonly length: number; readonly span: string; readonly term: Term; readonly score: number };
 
-// 区間の検査。語彙の表記を含む区間や、端がひらがなの区間は直さない
 function spanOf(terms: readonly Term[], text: string, words: readonly Word[], i: number, j: number): { location: number; length: number; span: string } | undefined {
   const first = words[i]!;
   const word = words[j]!;
@@ -87,15 +78,12 @@ function spanOf(terms: readonly Term[], text: string, words: readonly Word[], i:
   const span = text.slice(location, location + length);
   const chars = [...span];
   if (chars.length < 2 || isHiraganaOnly(chars[0]!) || isHiraganaOnly(chars[chars.length - 1]!)) return undefined;
-  // 区間が語彙のどれかの語の表記を含むなら、候補の絞り込みとは関係なく直さない
   const normalizedSpan = normalizeSurface(span);
   if (terms.some((term) => normalizedSpan.includes(normalizeSurface(term.surface)))) return undefined;
   return { location, length, span };
 }
 
-// 区間の表記に対する語の近さ。この語を候補にしないなら undefined
 function scoreOf(term: Term, spanKey: string, isCommon: boolean): number | undefined {
-  // 区間の表記がふつうの語の一覧に載っていれば、英字の語への書き換えだけを候補に残す
   if (isCommon && !term.latin) return undefined;
   const ratio = spanKey.length / term.key.length;
   if (ratio < MIN_LENGTH_RATIO || ratio > MAX_LENGTH_RATIO) return undefined;
@@ -104,8 +92,6 @@ function scoreOf(term: Term, spanKey: string, isCommon: boolean): number | undef
   return score < MIN_SCORE ? undefined : score;
 }
 
-// 区間に一番近い語を選ぶ（同じ点なら先に出た語）。区間の中のひらがなだけの語（助詞など）を置き換え先が落とすなら、読みが完全一致のときだけ選ぶ。
-// 漢字の語の送り仮名（運び図 の「び」）は語の一部なので、置き換え先に無くてもよい
 function bestTerm(terms: readonly Term[], span: string, spanKey: string, kanaWords: readonly string[], commonWords: ReadonlySet<string>): { term: Term; score: number } | undefined {
   let best: { term: Term; score: number } | undefined;
   const isCommon = commonWords.has(span);
@@ -117,14 +103,12 @@ function bestTerm(terms: readonly Term[], span: string, spanKey: string, kanaWor
   return best.score < 1 && kanaWords.some((word) => !best.term.surface.includes(word)) ? undefined : best;
 }
 
-// 語 i から始まる区間の候補。句読点・空白・語の間の隙間のところで打ち切る
 function candidatesFrom(terms: readonly Term[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>, i: number): Candidate[] {
   const found: Candidate[] = [];
   let romaji = "";
   for (let j = i; j < Math.min(i + MAX_SPAN_WORDS, words.length); j++) {
     const word = words[j]!;
     if (word.romaji === "" || PUNCTUATION_OR_SPACE.test(word.surface)) break;
-    // 前の語との間に本文がある（空白など）ときは、またがない
     if (j > i && text.slice(words[j - 1]!.location + words[j - 1]!.length, word.location) !== "") break;
     romaji += word.romaji;
     const spanKey = matchKey(romaji);
@@ -137,13 +121,10 @@ function candidatesFrom(terms: readonly Term[], text: string, words: readonly Wo
   return found;
 }
 
-// 区間（句読点・空白をまたがない連続する 1〜5 語）ごとに、一番近い語を 1 つ選んで守りを当てる
 function findCandidates(terms: readonly Term[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>): Candidate[] {
   return words.flatMap((_, i) => candidatesFrom(terms, text, words, commonWords, i));
 }
 
-// 語彙と、語ごとの読みつきの発言から、直した本文と置き換えの一覧を返す。
-// 重なる区間は近さの高い方を採り、同じなら長い方を採る（それも同じなら先に出る区間）
 export function correctRemark(vocabulary: readonly VocabularyWord[], text: string, words: readonly Word[], commonWords: ReadonlySet<string>): Correction {
   const terms: Term[] = vocabulary.flatMap((v) => {
     const key = matchKey(v.romaji);
@@ -168,27 +149,15 @@ export function correctRemark(vocabulary: readonly VocabularyWord[], text: strin
   };
 }
 
-// 字幕用の補正。直す前の本文と語の時刻（wordTimes）から、字幕が語ごとに分けるための本文と時刻を作る。
-// 置き換えの区間はトークナイザの語で決まり、wordTimes（STT の run）の区切りとは無関係なので、置き換えの内側から始まる run がある。
-// bubbleOf は run が属する表示済みの吹き出しの id（表示されていない run は undefined）。
-// 内側から始まる run のうち、表示済みで、位置の順で直前の run と別の吹き出しに属するもの（吹き出しの境目を作る run）は残し、境目を保つ。
-// それ以外の内側の run は出力から除き、その文字と終わりの時刻は直前に残る run が引き継ぐ。
-// 置き換えの区間（head の区間と、残す run から始まる区間）のうち、持ち主の吹き出しが置き換えの外の文字（空白を除く。盤の trim で消えない文字）を持たないものには、
-// 直した表記のコードポイントを 1 文字ずつ割り当てる（比例で配り、順序と最小の文字数を守る）。外の文字を持つ吹き出しは 0 文字でもよい。
-// 必要な文字数の合計が表記のコードポイント数を超える置き換えは、字幕用には適用しない（その区間は直す前の本文と位置のまま）。
-// 置き換えより後ろの run は、適用した置き換えの長さの差だけずらす
 export type CaptionCorrection = { readonly text: string; readonly wordTimes: readonly WordTime[] };
 
 type AppliedReplacement = {
   readonly r: Replacement;
   readonly size: number;
-  // 表記の k コードポイント目の UTF-16 位置（0〜size）
   readonly cumulative: readonly number[];
-  // 残す run の元の位置 → 表記の中のコードポイント位置（位置の順）
   readonly innerOffsets: ReadonlyMap<number, number>;
 };
 
-// 残す run のコードポイント位置。区間 j（0 は head の区間）に必要な文字数 required[j] を、前から・後ろから守る
 function innerOffsets(r: Replacement, size: number, kept: readonly WordTime[], required: readonly number[]): Map<number, number> {
   const values = kept.map((w) => Math.round(((w.location - r.location) * size) / r.length));
   let floor = 0;
@@ -206,7 +175,6 @@ function innerOffsets(r: Replacement, size: number, kept: readonly WordTime[], r
 
 type BubbleOf = (w: WordTime) => string | undefined;
 
-// 実効の所属。表示されていない run が置き換えの内側から始まるなら、直前の run の所属を引き継ぐ
 function effectiveOwners(sorted: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: BubbleOf): (string | undefined)[] {
   const isInside = (position: number) => replacements.some((r) => r.location < position && position < r.location + r.length);
   const effective: (string | undefined)[] = [];
@@ -214,8 +182,6 @@ function effectiveOwners(sorted: readonly WordTime[], replacements: readonly Rep
   return effective;
 }
 
-// 置き換えの外の文字を持つ吹き出し（run の文字の範囲は wordUnits と同じ規則）。
-// 盤は本文を trim するので、空白だけの外の文字は表示に残らない。空白は外の文字に数えない
 function ownersWithOutsideText(text: string, sorted: readonly WordTime[], replacements: readonly Replacement[], effective: readonly (string | undefined)[]): Set<string> {
   const isCovered = (position: number) => replacements.some((r) => r.location <= position && position < r.location + r.length);
   const hasOutside = new Set<string>();
@@ -232,7 +198,6 @@ function ownersWithOutsideText(text: string, sorted: readonly WordTime[], replac
   return hasOutside;
 }
 
-// 字幕用に適用する置き換えと、出力から除く run を決める。必要な文字数が表記に足りない置き換えは適用しない
 function planReplacements(sorted: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: BubbleOf, needsChar: (owner: string | undefined) => number) {
   const applied: AppliedReplacement[] = [];
   const dropped = new Set<WordTime>();
@@ -254,7 +219,6 @@ function planReplacements(sorted: readonly WordTime[], replacements: readonly Re
   return { applied, dropped };
 }
 
-// 除く run は、直前の run に取り込む（直前の run が無いときは残す）
 function mergeDropped(sorted: readonly WordTime[], dropped: ReadonlySet<WordTime>): WordTime[] {
   const runs: WordTime[] = [];
   for (const w of sorted) {
@@ -265,7 +229,6 @@ function mergeDropped(sorted: readonly WordTime[], dropped: ReadonlySet<WordTime
   return runs;
 }
 
-// 直す前の位置を、適用した置き換えの後の位置にする
 function placeAfter(applied: readonly AppliedReplacement[], position: number): number {
   let shift = 0;
   for (const { r, size, cumulative, innerOffsets: offsets } of applied) {

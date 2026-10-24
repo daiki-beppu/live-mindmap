@@ -1,5 +1,3 @@
-// 見返し用の HTML（map.html）の書き出し。書き出しの時点で web を Vite の single-file ビルドにかけ、
-// ログを差し込む（ビルド済みのテンプレートは持たない）。ビルドは MapCapture と同じ形の Service にして、テストで差し替える。
 import { join } from "node:path";
 import { Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import { build } from "vite";
@@ -11,24 +9,18 @@ const WEB_ROOT = join(import.meta.dirname, "../../web");
 // 見返しの操作の行が写した video.js のアイコンの出どころとライセンス（Apache-2.0）。Vite の build.license はパッケージ単位で、写したファイルは載らないので、ここで足す
 const ICONS_NOTICE_PATH = join(WEB_ROOT, "src/app/review/icons.NOTICE.md");
 
-// 見返し用の HTML の書き出しの失敗。呼び出し側（CLI・server）は message をそのまま「map.html を書き出せませんでした: …」の理由に使う
 export class ReviewPageFailed extends Schema.TaggedError<ReviewPageFailed>()("ReviewPageFailed", { message: Schema.String }) {}
 
 const failed = (e: unknown) => new ReviewPageFailed({ message: e instanceof Error ? e.message : String(e) });
 
-// 書き出す版。audio が true なら、録音を mix して埋め込む。track が `自分` なら、その声だけを混ぜる（省略すると全トラック）。
-// mapOnly が true なら、発言の文字と共有画面から読んだ文字を抜いた出来事を埋め込む（録音つきとは組み合わせない）
 export type ReviewVariant =
   | { readonly file: string; readonly audio: false; readonly mapOnly?: true }
   | { readonly file: string; readonly audio: true; readonly track?: "自分" };
 
-// 書き出さなかった版と、その理由
 export type SkippedReviewVariant = { readonly file: string; readonly reason: string };
 
-// 書き出した結果。paths は書けた版のパス（版の順）、skipped は諦めた版（呼び出し側が理由を標準エラーに出す）
 export type ReviewPagesResult = { readonly paths: string[]; readonly skipped: SkippedReviewVariant[] };
 
-// web を single-file の HTML 1 つにビルドして、その文字列を返す。出力は一時フォルダに書き、Scope を閉じると必ず消える。
 // Why: Vite の build は中断できず、中断されたファイバーは完了を待たない。中断可能のままだと、ビルドが使っている outDir を先に消してしまうため、
 // 一時フォルダを使う処理（ビルドと読み取り）が終わるまで中断を遅らせる
 const buildReviewTemplate = Effect.fnUntraced(function* (fs: FileSystem.FileSystem) {
@@ -51,7 +43,6 @@ const buildReviewTemplate = Effect.fnUntraced(function* (fs: FileSystem.FileSyst
   return yield* Effect.try({ try: () => embedReviewLicenses(html, `${bundledLicenses.trimEnd()}\n\n${iconsNotice.trim()}\n`), catch: failed });
 }, Effect.scoped, Effect.uninterruptible);
 
-// 見返し用の HTML のテンプレート（ログを差し込む前）をビルドする
 export class ReviewBuild extends Context.Service<ReviewBuild, {
   readonly build: Effect.Effect<string, ReviewPageFailed>;
 }>()("live-mindmap/server/ReviewBuild") {
@@ -63,8 +54,6 @@ export class ReviewBuild extends Context.Service<ReviewBuild, {
   );
 }
 
-// mix の出力を一時フォルダに書き、base64 にして返す。mix は既にある出力を上書きしないので、出力先は新しい一時フォルダで、Scope を閉じると必ず消える。
-// 失敗は理由（mix の AudioMixFailed か、一時フォルダ・読み取りの PlatformError の message）を文字列で返す（版を諦めるだけで、全体の失敗にはしない）
 const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
   const { mix } = yield* AudioMix;
   const fs = yield* FileSystem.FileSystem;
@@ -79,10 +68,6 @@ const mixedAudio = Effect.fnUntraced(function* (dir: string, track?: "自分") {
   ).pipe(Effect.mapError((e) => e.message));
 });
 
-// 読み込み済みの出来事を、版ごとに 1 つの HTML へ埋め込んで返す（何も書かない）。ビルドは 1 回だけ。音声の mix の入力は sessionDir。
-// ビルドや埋め込みに失敗したら、ReviewPageFailed で終わる。
-// マップだけの版の埋め込みは mapOnlyReviewEvents（壊れた発言・画面の行では ReviewPageFailed）。
-// 音声つきの版で mix が失敗したら、その版だけを諦めて skipped に理由を返す（ほかの版は返す）
 export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string, events: readonly unknown[], variants: readonly ReviewVariant[]) {
   const { build } = yield* ReviewBuild;
   const template = yield* build;
@@ -106,7 +91,6 @@ export const renderReviewPages = Effect.fnUntraced(function* (sessionDir: string
   return { pages, skipped };
 });
 
-// renderReviewPages の結果を dir に書き、書いたパスを版の順に返す。全部作ってから書く（途中で失敗したら何も書かない）。mix の入力も dir
 export const writeReviewPages = Effect.fnUntraced(function* (dir: string, events: readonly unknown[], variants: readonly ReviewVariant[]) {
   const fs = yield* FileSystem.FileSystem;
   const { pages, skipped } = yield* renderReviewPages(dir, events, variants);

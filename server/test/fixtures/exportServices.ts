@@ -7,17 +7,14 @@ import { ReviewBuild, ReviewPageFailed } from "../../src/review.ts";
 import { fakeAudioMix, type FakeMix } from "./audioMix.ts";
 import { fakeReadings, type FakeReadings } from "./readings.ts";
 
-// 見返し用の HTML は、書き出し（ログの読み込み・埋め込み・書き込み）は本物で、Vite のビルドだけ偽物にする
 export const FAKE_TEMPLATE = "<!doctype html><html><body></body></html>";
 
-// 終了時の書き出しが文脈から受け取る Service（MapCapture・ReviewBuild・AudioMix・FileSystem）と、利用者が足した語の読みを作る Readings の偽物の Layer。
-// 通常のテストでは、テストごとに Chromium を起動しないよう、撮影は空のファイルを書くだけにする
 export type ExportServicesOptions = {
   capture?: (snapshot: Snapshot, path: string) => Effect.Effect<void, CaptureFailed>;
   build?: Effect.Effect<string, ReviewPageFailed>;
   mix?: FakeMix;
-  readings?: FakeReadings; // 省略時は、どの語も読みが返らない偽物
-  fileSystem?: Layer.Layer<FileSystem.FileSystem>; // 省略時は実物（NodeFileSystem）
+  readings?: FakeReadings;
+  fileSystem?: Layer.Layer<FileSystem.FileSystem>;
 };
 
 export const fakeExportServices = ({ capture, build, mix = fakeAudioMix(), readings = fakeReadings(), fileSystem = NodeFileSystem.layer }: ExportServicesOptions = {}) =>
@@ -28,11 +25,9 @@ export const fakeExportServices = ({ capture, build, mix = fakeAudioMix(), readi
     readings.layer,
   ).pipe(Layer.provideMerge(fileSystem));
 
-// 失敗の文面は、警告の「…を書き出せませんでした: <理由>」にそのまま出る
 export const failingCapture = (message = "撮影に失敗") => () => Effect.fail(new CaptureFailed({ message }));
 export const failingBuild = (message = "ビルドに失敗") => Effect.fail(new ReviewPageFailed({ message }));
 
-// Console.error に出た行をためる Console（警告の観測）。Layer ではなく Service の値で返し、Effect.provideService(Console.Console, …) で渡す
 export const collectingConsole = () => {
   const errors: string[] = [];
   const service: Console.Console = { ...console, error: (...args: unknown[]) => { errors.push(args.map(String).join(" ")); } };

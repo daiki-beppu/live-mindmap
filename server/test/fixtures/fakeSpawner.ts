@@ -1,5 +1,3 @@
-// 子プロセスを起動せずに、決めた終了コード・出力、または起動の失敗を返す偽の ChildProcessSpawner。
-// 起動された単一のコマンドを commands に記録する。unit が「境界の手前で決まる値」（argv・失敗の写像）を見るために使う
 import { Effect, Layer, PlatformError, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 

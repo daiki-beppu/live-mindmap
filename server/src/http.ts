@@ -1,24 +1,3 @@
-// ブラウザと CLI からの受け口（ADR 0009）。Origin の制限・タグ付きの失敗からステータスへの対応表・失敗から応答への変換を、この 1 か所に置く。
-// 経路の method・path と、本文・応答の Schema は serverProtocol.ts の記述（CLI と共有。ADR 0023）から取る。
-//   GET  /apps            ヘルパーの `list` の結果（会議アプリの一覧）を返す
-//   POST /session/start   { app, title?, audio?, screen? } でセッションを開始する
-//   POST /session/recorded { file, selfFile?, title?, vocab?, realtime?, model? } で、音声 1 本（selfFile があれば自分用の 2 本目も）から録画からのセッションを始める。応答は NDJSON の stream
-//                         （started → progress... → finished。読み終えるか stop されると finished で終わる）。ライブの最中は 409
-//   POST /session/stop    セッションを終了し、書き出したパスを返す
-//   GET  /session/status  取り込みの状態を返す
-//   POST /session/resume  止まった状態から起動し直す
-//   POST /session/self-pause  { paused: boolean } で自分の休止（true）・再開（false）を求める。成功は 204、本文が違えば 400、セッションが無ければ 409
-//   POST /session/speaker-name  { label: string, name: string } で、話者のラベル（相手 B）に名前を手で付ける（Issue #1026）。成功は 204、本文が違う・名前を付けられないラベル・空の名前は 400、セッションが無ければ 409
-//   POST /share/open      { anyone: true } か { mails: [メール・ドメイン...] } で閲覧の共有を開く（すでに開いていれば今の状態を返す）
-//                         ローカルモードのセッションは 409、cloudflared が無いときは 503（入れ方を示す）、範囲が空（{}）は 400 で、どれも開かない
-//   POST /share/close     閲覧の共有を閉じる（開いていなくても成功する）
-//   GET  /share/status    閲覧の共有の状態（無し・共有中・切れた）を返す
-//   GET  /・/ws           ブラウザへの配信（同じポートで upgrade する）
-// 閲覧の口（openViewingPort）は、操作の口とは別の 127.0.0.1 の待受けで、GET /（ログを埋め込まない single-file の画面）と
-// /ws の配信だけを受ける。Origin は allow で決めたホスト名の https:// だけを通し、/session/* などの操作は受けない。
-// /ws の配信には、server から WebSocket の制御フレームの ping を一定の間隔で送る（Issue #833）。tunnel が無通信の接続を切ることへの備えで、
-// アプリの JSON フレームは増やさない。間隔の既定は 30 秒で、テストは短い間隔を渡して縮める。
-// セッションの操作は sessions.ts の Sessions から受け取り、server.ts の実装は読み込まない（循環依存を作らない）。
 import { createServer } from "node:http";
 import { NodeHttpServer } from "@effect/platform-node";
 import { WebSocket } from "ws";
@@ -51,7 +30,6 @@ class ForbiddenModelTransfer extends Schema.TaggedError<ForbiddenModelTransfer>(
   }
 }
 
-// 本文は decode で既定値が補われているので、実行に渡す形へ詰め替えるだけにする
 const toSessionStart = (body: typeof SessionStartBody["Type"], plan: UpdatePlan): SessionStart => ({
   app: body.app,
   title: body.title,
@@ -75,7 +53,6 @@ class UnsupportedRequest extends Schema.TaggedError<UnsupportedRequest>()("Unsup
   }
 }
 
-// 本文の検証に落ちた。文面は Schema（または本文の読み取り）の既定のもの
 class InvalidBody extends Schema.TaggedError<InvalidBody>()("InvalidBody", {
   detail: Schema.String,
 }) {
@@ -84,8 +61,6 @@ class InvalidBody extends Schema.TaggedError<InvalidBody>()("InvalidBody", {
   }
 }
 
-// タグ付きの失敗からステータスへの対応。タグが増えたら、ここに足すまで型エラーになる。
-// HttpServerError は、上のルート・本文の変換で拾いきれなかったサーバー側の失敗（応答の書き出し等）
 type HandledFailure = SessionFailure | SpeakerNameRejected | ShareOpenFailed | ShareRefusedLocalMode | ShareScopeEmpty | CloudflaredMissing | ForbiddenOrigin | ForbiddenModelTransfer | UnsupportedRequest | InvalidBody | HttpServerError.HttpServerError;
 
 const STATUS: { readonly [Tag in HandledFailure["_tag"]]: number } = {
@@ -122,7 +97,6 @@ const routeOf = (request: HttpServerRequest.HttpServerRequest): string =>
   `${request.method} ${new URL(request.url, "http://127.0.0.1").pathname}`;
 
 // 127.0.0.1 で待ち受けても、ブラウザ上の任意の Web ページからは接続できてしまう。Origin がローカルのものだけ受理する。
-// HTTP と `/`・`/ws` の upgrade の両方に掛ける 1 つのミドルウェア。操作にも upgrade にも進む前に断る
 const OriginRestriction = HttpRouter.middleware((httpEffect) =>
   Effect.gen(function* () {
     const { origin } = (yield* HttpServerRequest.HttpServerRequest).headers;
@@ -130,7 +104,6 @@ const OriginRestriction = HttpRouter.middleware((httpEffect) =>
     return yield* httpEffect;
   }), { global: true });
 
-// 本文から差分更新の計画を検める。転送用トークンが要る計画は、トークンが合うときだけ受ける（/session/start と /session/recorded が共有する）
 const acceptBodyPlan = Effect.fnUntraced(function* (body: { readonly model?: typeof TransferredModel["Type"]; readonly judge?: JudgeModel }) {
   const result = acceptPlan(body);
   if (!result.ok) return yield* new InvalidBody({ detail: result.lines.join("\n") });
@@ -142,17 +115,14 @@ const acceptBodyPlan = Effect.fnUntraced(function* (body: { readonly model?: typ
   return result.plan;
 });
 
-// 記述の本文の Schema で本文を読む。本文が違えば 400
 const bodyOf = <A, RD>(schema: Schema.ConstraintDecoder<A, RD>, options?: Parameters<typeof HttpServerRequest.schemaBodyJson>[1]) =>
   HttpServerRequest.schemaBodyJson(schema, options).pipe(Effect.mapError((failure) => new InvalidBody({ detail: failure.message })));
 
-// 記述の response の Schema で成功応答を書き出す。書き出せない（応答の値が Schema に合わない）のは server 側の不具合なので defect にする（500）
 const jsonOf = <A>(schema: Schema.ConstraintCodec<A, unknown, unknown, never>) => {
   const encode = HttpServerResponse.schemaJson(schema);
   return (body: A, options?: Parameters<typeof encode>[1]) => encode(body, options).pipe(Effect.orDie);
 };
 
-// セッションを始める本文を読み、その計画を検める。本文が違えば 400
 const acceptedBody = Effect.fnUntraced(function* <A extends { readonly model?: typeof TransferredModel["Type"]; readonly judge?: JudgeModel }, R>(
   decode: Effect.Effect<A, InvalidBody, R>,
 ) {
@@ -166,7 +136,6 @@ const startSession = Effect.gen(function* () {
   return yield* jsonOf(ServerRoutes.sessionStart.response)(yield* sessions.start(toSessionStart(body, plan)));
 });
 
-// 録画からのセッション。始められたら NDJSON の stream で経過を流す。始められなかったら（ライブの最中など）通常の失敗の応答
 const startRecordedSession = Effect.gen(function* () {
   const body = yield* bodyOf(ServerRoutes.sessionRecorded.body);
   if (body.noMap === true && (body.model !== undefined || body.judge !== undefined || body.realtime)) {
@@ -187,15 +156,12 @@ const startRecordedSession = Effect.gen(function* () {
   );
 });
 
-// ブラウザへの配信。`/ws`（ブラウザ）と `/`（既存のテスト・Vite の proxy の書き換え先）を同じ Viewers で受ける。
-// upgrade ではないリクエストは、ルートが無いのと同じ扱いにする
 const feed = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const viewers = yield* Viewers;
   const socket = yield* request.upgrade.pipe(
     Effect.mapError(() => new UnsupportedRequest({ route: routeOf(request) })),
   );
-  // 切断は配信の終わりで、応答に変える失敗ではない（upgrade 済みなので HTTP の本文は書かれない）
   yield* viewers.connect(socket).pipe(Effect.ignore);
   return HttpServerResponse.empty();
 });
@@ -310,7 +276,6 @@ const DepRoutes = HttpRouter.addAll([
   })),
 ]);
 
-// どのルートにも当たらなかったときの応答。ルートが無い場合の文面を 1 か所で持つ
 const UnsupportedRoute = HttpRouter.addAll([
   HttpRouter.route("*", "*", Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -320,9 +285,6 @@ const UnsupportedRoute = HttpRouter.addAll([
 
 const failureMessage = (value: unknown): string => (value instanceof Error ? value.message : String(value));
 
-// 失敗を応答に変える 1 か所。タグ付きの失敗は上の表のステータスと文面、表にない失敗と defect は
-// causeResponse のステータス（500）で、文面は伏せずに返す。中断はこの変換に持ち込まず、
-// サーバー側の既定の扱いへ渡す
 const respond = <R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, HandledFailure, R>) =>
   Effect.catchCauseIf(
     handler,
@@ -346,18 +308,14 @@ export const portOf = (address: NetAddress.SocketAddress): Effect.Effect<number>
 
 // close フレームを送った接続が応答しない場合、ws の既定（CLOSE_TIMEOUT）は 30,000ms 待ってから
 // raw socket を切断する。これは終了処理にとって実質無期限で、応答しない接続が 1 本でもあると
-// close() の所要時間がその接続に縛られる（ISSUE-2）。close ハンドシェイクは同一プロセス内の 1 往復
-// （数十 ms 未満）で終わるのが通常なので、ヘルパーの SIGTERM→SIGKILL の猶予
-// （helpers.ts の HELPER_STOP_TIMEOUT_MS=5,000ms）と同程度を上限にすれば、正常系を妨げずに
-// 応答しない接続を打ち切れる。既定は 3,000ms で、テストだけが短い値を与える（layerNodeServer が構築時に 1 回読む）
+// close() の所要時間がその接続に縛られる（ISSUE-2）。
 export const WS_CLOSE_TIMEOUT_MS = Context.Reference("live-mindmap/WsCloseTimeoutMs", { defaultValue: (): number => 3_000 });
 
 // /ws の配信への ping の間隔の既定（ms）。tunnel の無通信の切断より十分短い
 export const FEED_PING_INTERVAL_MS = 30_000;
 
-// 接続ごとに、一定の間隔で制御フレームの ping を送るサーバー側 WebSocket のクラス。
 // effect の Socket は制御フレームを送る手段を持たず、生の ws に手が届くのは WebSocketServer の WebSocket オプションだけなので、
-// ws の WebSocket を継承してここで差し込む。タイマーは接続の寿命に結び、close で止める（unref で、タイマーだけがプロセスを生かさない）
+// ws の WebSocket を継承して ping を差し込む。
 const pingingWebSocket = (intervalMs: number) =>
   class PingingWebSocket extends WebSocket {
     readonly #pinger = (() => {
@@ -373,46 +331,33 @@ const pingingWebSocket = (intervalMs: number) =>
 // @types/ws@8.18 の ServerOptions は closeTimeout を宣言していないが、ws@8.22 のランタイムは
 // WebSocketServer のオプションとしてそのまま受け取り、各サーバー側 WebSocket の _closeTimeout へ伝える
 // （ws/lib/websocket-server.js の completeUpgrade → new this.options.WebSocket(...) で options ごと渡る）。
-// 型定義の遅れを、この 1 フィールドだけの型アサーションで補う（any にはしない）
 const websocketOptions = (pingIntervalMs: number, closeTimeoutMs: number) =>
   ({ closeTimeout: closeTimeoutMs, WebSocket: pingingWebSocket(pingIntervalMs) }) as NodeHttpServer.Options["websocket"];
 
-// 127.0.0.1 で待ち受ける。port が 0 なら空きポート。
-// NodeHttpServer は Node の http.Server を引数に取るので、node:http への参照はここ 1 か所に閉じる。
 // disablePreemptiveShutdown: Scope を閉じたら、まず要求の処理を止めて接続中の Fiber を終わらせ、
 // その後に待受けを閉じる。既定の猶予つき停止は、接続が残っている間 20 秒待ってから諦めるため、
-// 終了が 20 秒遅れる（close() は時間内に戻ることを既存のテストが確かめている）
+// 終了が 20 秒遅れる
 const layerNodeServer = (port: number, pingIntervalMs: number) =>
   Layer.unwrap(
     Effect.map(WS_CLOSE_TIMEOUT_MS, (closeTimeoutMs) =>
       NodeHttpServer.layer(createServer, { port, host: "127.0.0.1", disablePreemptiveShutdown: true, websocket: websocketOptions(pingIntervalMs, closeTimeoutMs) })),
   );
 
-// 配信（Viewers）と待受け（HttpServer）の Layer。Scope を閉じると待受けが閉じる
 export const layerListener = (port: number, pingIntervalMs: number = FEED_PING_INTERVAL_MS): Layer.Layer<Viewers | HttpServer.HttpServer, HttpServerError.ServeError> =>
   Layer.mergeAll(Viewers.layer, layerNodeServer(port, pingIntervalMs));
 
-// layerListener を、いまの Scope に結び付けて作る。serveFeed・serveSessions へ渡す Viewers と HttpServer の Context を返す
-// （port は HttpServer の address から portOf で読む）
 export const openListener = (port: number, pingIntervalMs: number = FEED_PING_INTERVAL_MS) => Layer.build(layerListener(port, pingIntervalMs));
 
-// ブラウザへの配信だけを受ける（CLI の再生）。待ち受けているポートは HttpServer の address から読む
 export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewers | Scope.Scope> = Effect.flatMap(
   HttpRouter.toHttpEffect(Layer.mergeAll(FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 );
 
-// セッションの操作と配信を受ける（常駐サーバー）
 export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ViewingShare | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
   HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, ServerIdentityRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));
 
-// 閲覧の口。操作の口とは別の 127.0.0.1 の待受け（port 0 で空きポート）で、GET /（ログを埋め込まない single-file の画面）と
-// /ws の配信だけを受ける。配信は呼び出し側の Viewers を使う（保持値と PubSub を複製しない）。待受けは呼び出し側の Scope で閉じる。
-// Origin は allow で決めた `https://<hostname>` との完全一致だけを通す。決まる前は、Origin のある要求と /ws をすべて断る。
-// Origin の無い GET / は通し、/ws は Origin が無くても断る。
-// 画面のビルドは開くときに 1 回だけ行う（Vite の開発用サーバーは使わない）
 export const openViewingPort = (pingIntervalMs: number = FEED_PING_INTERVAL_MS): Effect.Effect<ViewingPort, HttpServerError.ServeError | ReviewPageFailed, Viewers | ReviewBuild | Scope.Scope> =>
   Effect.gen(function* () {
     const { build } = yield* ReviewBuild;

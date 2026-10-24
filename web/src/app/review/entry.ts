@@ -1,6 +1,3 @@
-// 見返しの入口（Issue #826）: map.html・map-audio.html の見返しを Foldkit の Runtime で #root に描く。
-// 起動時に決まる値（ログの出来事・録音の URL・Mac かどうか）を受けて Context を作り、開いた時点の幅は Flags で init へ渡す。Model・update・view・Subscription をつなぐ。
-// freezeModel は切らない（既定のまま）
 import { Option } from "effect";
 import { Runtime } from "foldkit";
 import { Flags, readFlags } from "../startFlags.ts";
@@ -13,9 +10,7 @@ const ROOT_ID = "root";
 
 export type ReviewInput = {
   container: HTMLElement;
-  // ログの出来事（map.html に埋め込んだ JSON を読み戻したもの）
   events: readonly unknown[];
-  // 録音つき（map-audio.html）なら、Blob の URL。<audio> 1 つに渡す
   maybeAudioUrl: Option.Option<string>;
   isMac: boolean;
 };

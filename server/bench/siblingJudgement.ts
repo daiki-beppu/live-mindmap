@@ -13,7 +13,6 @@ const ATTEMPTS = 5;
 const BIG_GROUP = 40;
 const RUNS = 5;
 
-// 指定スクリプト siblingJudge.ts と同じプロンプト。
 const PROMPT = `会議のマインドマップで、1 つの親の下に並んだ兄弟（子）を判定してください。最初の行が親、続く各行が「番号. [種別] 本文」の子です。
 兄弟は「同じ親について並ぶ、別々の中身（同じ論点への別の案、同じ議題の別の紹介、同じ要点の別の具体例）」であるべきです。
 各子が次のどれに当たるかを、1 つだけ選んでください。
@@ -54,7 +53,6 @@ function tally(children: readonly Child[]): Tally {
   return { total: children.length, counts, notSeparate, notSeparateRatio: children.length === 0 ? 0 : notSeparate / children.length };
 }
 
-// 断り書きではなく最後の配列を読む。「外」は「外れ」として扱い、形が合わなければ undefined。
 function parseLabels(out: string, want: number): Label[] | undefined {
   const array = out.match(/\[[^\[\]]*\]/g)?.at(-1);
   if (array === undefined) return undefined;
@@ -110,7 +108,6 @@ const judgeTarget = Effect.fnUntraced(function* <E, R>(
   return { parent: target.id, children, ...tally(children) } satisfies NonNullable<SiblingJudgement["target"]>;
 });
 
-// 最大のまとまりの合否。境目ちょうどでも浮動小数の誤差で合否がずれないよう、整数で比べる。
 function checkOf(runs: Check["runs"], overall: Tally, childCount: number): Check {
   const mid = median(runs.map((run) => run.notSeparate));
   const pass = overall.total === 0

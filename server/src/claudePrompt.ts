@@ -1,9 +1,7 @@
-// Claude の差分更新プロンプト。Agent SDK に依存せず、文と出力の形を所有する。
 import { Schema } from "effect";
 import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MapNode, type MeetingMap, type PreviousResponse } from "./core/index.ts";
 import { nameOfSpeaker, remarkLine } from "./remarkLine.ts";
 
-// noop にしてよい発言の範囲。noop の条件の定義はここだけに書く（SYSTEM の「# noop にする範囲」に 1 回埋め込む）。
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
 - 相づち: 内容を足さない短い応答。賛否や理由を述べていれば相づちではない。
 - 進行の段取り: 会議の運び方についての発言（開始・終了・次の話への切り替え・順番・時間・画面共有や接続の操作）。話題の中身は含まない。
@@ -11,12 +9,9 @@ export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の
 - 同じ内容の言い直し: 直前の発言やマップにすでにある内容を、新しい情報を足さずに繰り返す発言。
 これ以外（紹介、説明、体験談、おすすめ、質問と答え、脱線した話題など）は noop にせず、マップに残す。新しい発言に 4 つ以外の部分があれば、その部分を反映する。`;
 
-// 目安の数字。SYSTEM と議題の一覧の両方に出すので、ここに 1 つだけ置く
 const TOPIC_NODES = "15〜20";
-// 議題の一覧で、子の議題を立てるよう名指しする境目（目安の上限）
 const TOPIC_NODES_MAX = 20;
 const SIBLINGS_MAX = 5;
-// 議題の一覧で名指しする親の境目。合図を超えてからでは遅く、合図ちょうどの親が評価の 1 再生に 9〜12 個あったので、合図ちょうどから出す
 const SIBLINGS_NEAR = SIBLINGS_MAX;
 
 // system は毎回同じ文字列にして、前置きをキャッシュに乗せる
@@ -135,7 +130,6 @@ ${NOOP_SCOPE}
 - 参加者の顔の一覧だけが映っているときは、共有画面は無いものとして扱う。`;
 
 
-// 1 ノードの書式（ID・種別・状態・本文・TODO の担当と期限）。アウトラインと変更で共有する。根拠は渡さない
 function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): string {
   const n = map.nodes[id]!;
   const status = n.kind === "論点" ? `(${pointStatus(map, id)})`
@@ -143,31 +137,25 @@ function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): str
   return `${n.id} ${n.kind}${status}: ${n.text}${n.kind === "TODO" ? todoSuffix(n) : ""}`;
 }
 
-// TODO の担当（名前、無ければ担当の話者）と期限。どちらも無ければ空
 function todoSuffix(n: MapNode): string {
   const who = n.assignee ?? (n.assigneeSpeaker ? `担当の話者 ${n.assigneeSpeaker}` : undefined);
   const parts = [who, n.due].filter(Boolean);
   return parts.length ? ` [${parts.join(" / ")}]` : "";
 }
 
-// アウトラインの 1 行（字下げ・ID・種別・状態・本文・「（済み）」）。全体のアウトラインと、開き直した配下の出力で共有する
 function outlineLine(map: MeetingMap, id: string, depth: number): string {
   return `${"  ".repeat(depth)}- ${nodeLabel(map, id)}${map.nodes[id]!.talkStatus ? "（済み）" : ""}`;
 }
 
-// 済みの議題・論点の配下は、案・課題・要点の行を省く（その下の論点・決定・TODO などはたどって出す）
 const FOLDED_KINDS = new Set(["案", "課題", "要点"]);
 
-// ID・種別・状態・本文だけを字下げした木で出す
 function renderOutline(map: MeetingMap): string {
   return foldedOutlineLines(map, ROOT_ID, 0).join("\n");
 }
 
-// id 自身を畳まない状態の起点として、その下を済みの畳み方でたどった行を返す。全体のアウトラインと、畳んだ中から出たノードの中身で共有する
 function foldedOutlineLines(map: MeetingMap, id: string, depth: number): string[] {
   const lines: string[] = [];
   const walk = (nid: string, d: number, folded: boolean) => {
-    // 省いた段も字下げに数える（元の木の深さを保つ）
     if (!(folded && FOLDED_KINDS.has(map.nodes[nid]!.kind))) lines.push(outlineLine(map, nid, d));
     const nextFolded = folded || !!map.nodes[nid]!.talkStatus;
     for (const c of children(map, nid)) walk(c.id, d + 1, nextFolded);
@@ -176,7 +164,6 @@ function foldedOutlineLines(map: MeetingMap, id: string, depth: number): string[
   return lines;
 }
 
-// 自分を除く祖先に、済みのものがあるか
 function underClosed(map: MeetingMap, id: string): boolean {
   for (let p = map.nodes[id]!.parent; p !== null; p = map.nodes[p]!.parent) {
     if (map.nodes[p]!.talkStatus) return true;
@@ -189,8 +176,6 @@ const changeIds = (m: MeetingMap) => m.order.filter((id) => id !== ROOT_ID && m.
 const removedLines = (prev: MeetingMap, cur: MeetingMap): string[] =>
   changeIds(prev).filter((id) => !cur.nodes[id]).map((id) => `- 削除 ${id}: 削除（統合された場合は統合先に子と根拠が移った）`);
 
-// 前回は済みの下で畳まれていて、今回は畳まれない場所へ親が変わったノード。AI はまだ中身を知らない
-// cur で済みの下に留まった移動は、まだ畳まれているので含めない
 function surfacedIds(prev: MeetingMap, cur: MeetingMap): Set<string> {
   return new Set(changeIds(cur).filter((id) => {
     const old = prev.nodes[id];
@@ -198,11 +183,8 @@ function surfacedIds(prev: MeetingMap, cur: MeetingMap): Set<string> {
   }));
 }
 
-// ノードごとの行。追加、または 更新 → 移動 → 畳んだ中から出た の順
-// refIds は、前回の応答で作られたノードの n の ID → その応答での仮 ID。追加の行に添える
 function nodeChangeLines(prev: MeetingMap, cur: MeetingMap, refIds: ReadonlyMap<string, string>): string[] {
   const surfaced = surfacedIds(prev, cur);
-  // 祖先が出るなら、子孫はその中身に含まれる
   const hasSurfacedAncestor = (id: string) => {
     for (let p = cur.nodes[id]!.parent; p !== null; p = cur.nodes[p]!.parent) if (surfaced.has(p)) return true;
     return false;
@@ -228,7 +210,6 @@ function nodeChangeLines(prev: MeetingMap, cur: MeetingMap, refIds: ReadonlyMap<
   return lines;
 }
 
-// 済みにした / 話し中に戻った（配下を全部出す）ノードの行
 function talkStatusLines(prev: MeetingMap, cur: MeetingMap): string[] {
   const lines: string[] = [];
   const walk = (pid: string, depth: number) => {
@@ -249,8 +230,6 @@ function talkStatusLines(prev: MeetingMap, cur: MeetingMap): string[] {
   return lines;
 }
 
-// 前回送ったマップ prev から今のマップ cur への変更を行ごとに出す。操作ではなくマップ同士を比べるので、変更の行には適用できなかった操作は出ない。
-// 前回の応答で捨てた操作は、末尾の節に JSON と理由を 1 行ずつ出す（無ければ節ごと出さない）
 function renderChanges(prev: MeetingMap, cur: MeetingMap, previousResponse?: PreviousResponse): string {
   const refIds = new Map(Object.entries(previousResponse?.refs ?? {}).map(([ref, id]) => [id, ref]));
   const lines = [...removedLines(prev, cur), ...nodeChangeLines(prev, cur, refIds), ...talkStatusLines(prev, cur)];
@@ -261,7 +240,6 @@ function renderChanges(prev: MeetingMap, cur: MeetingMap, previousResponse?: Pre
   ].join("\n");
 }
 
-// 計測では除く論点の配下でも、子の議題の表示は残すので探索を分ける。
 function childTopics(map: MeetingMap, id: string): string[] {
   const topics: string[] = [];
   const walk = (pid: string) => {
@@ -274,7 +252,6 @@ function childTopics(map: MeetingMap, id: string): string[] {
   return topics;
 }
 
-// 話し中の子が境目以上の親を、種別によらず 1 行ずつ出す。行頭を「- n12 」にしない（議題の行と区別するため）
 function renderCrowdedParents(map: MeetingMap): string[] {
   const counts = openChildCounts(map);
   return map.order
@@ -286,7 +263,6 @@ function renderCrowdedParents(map: MeetingMap): string[] {
     });
 }
 
-// 配下が目安を超えた話し中の案・課題・要点を名指しする（入れ子の山は超えたものすべて）。数と一番近い議題は groupSize から得る
 function renderBigPiles(map: MeetingMap, groupNodes: readonly GroupNode[]): string[] {
   return map.order
     .filter((id) => FOLDED_KINDS.has(map.nodes[id]?.kind ?? "") && !underClosed(map, id))
@@ -295,7 +271,6 @@ function renderBigPiles(map: MeetingMap, groupNodes: readonly GroupNode[]): stri
     .map(([id, g]) => `- ${map.nodes[id]!.kind} ${id}「${map.nodes[id]!.text}」: 話し中の配下 ${g.size} ノード（目安 ${TOPIC_NODES} を超えた。この下には新しいノードを足さず、続きの具体化は一番近い議題 ${g.topicId} の下に、元のノードと焦点が分かる名前の子の議題を立てて置く）`);
 }
 
-// 話し中の部分が目安を超えた話し中の論点を名指しする
 function renderBigPoints(map: MeetingMap, groupNodes: readonly GroupNode[]): string[] {
   return map.order
     .filter((id) => map.nodes[id]?.kind === "論点" && !map.nodes[id]!.talkStatus)
@@ -304,8 +279,6 @@ function renderBigPoints(map: MeetingMap, groupNodes: readonly GroupNode[]): str
     .map(([id, n]) => `- 論点 ${id}「${map.nodes[id]!.text}」: 話し中 ${n} ノード（目安 ${TOPIC_NODES} を超えた。派生の問いがあれば、次の答えは派生の論点として立てる）`);
 }
 
-// 話し中の議題を木のまま字下げした一覧。済みの議題と、済みの議題の下の議題は出さず、件数だけを見出しに出す。
-// 毎回、その時点のマップから作り直す（状態は持たない）
 function renderTopicList(map: MeetingMap): string {
   const rows: string[] = [];
   const big: string[] = [];
@@ -338,8 +311,6 @@ function renderTopicList(map: MeetingMap): string {
   ].join("\n");
 }
 
-// previous（その query に前回送ったマップ）が無ければ全体のアウトライン、あれば前回からの変更を載せる
-// 前回の応答の仮 ID と捨てた操作（previousResponse）は、変更を載せる回にだけ出す
 export function buildPrompt({ map, recent, fresh, previousResponse, speakerNames }: DiffInput, previous?: MeetingMap): string {
   return [
     renderTopicList(map), "",
@@ -351,6 +322,4 @@ export function buildPrompt({ map, recent, fresh, previousResponse, speakerNames
   ].join("\n");
 }
 
-// Claude の出力は操作だけで、core の反映数を生成させない。
-// 余分なキーは JSON Schema の上では禁止（additionalProperties: false）にし、decode では黙って落とす。文字列の長さなどの検査は足さない
 export const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOperations, { onExcessProperty: "error" }).schema;

@@ -1,5 +1,3 @@
-// マップの表示面の要素の Mount。画面の大きさ（ResizeObserver）とノードの高さ（ResizeObserver）を測り、生のイベント（押した・ノードの click・wheel・修飾付きの click・gesture）とあわせて、起きた事実だけを Message にして届ける。
-// パンの量・軸・クリックかドラッグかの判定はここでしない（update が行う）。1 つの要素に OnMount は 1 つだけなので、ズーム（Issue #816）も同じ Mount で受け、倍率・比は計算しない
 import { Effect, Option, Queue, Stream } from "effect";
 import { Dom, Mount } from "foldkit";
 import { MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
@@ -21,7 +19,6 @@ type Emitted =
 // Safari の gesture のイベント（TS のイベント表に無い）。scale は始まりからの累積の倍率
 type GestureEvent = Event & { scale: number; clientX: number; clientY: number };
 
-// イベントの対象になったノードのボタンと、そのノードの id。ノードのボタンの上でなければ null
 const nodeButtonOf = (target: EventTarget | null): { button: HTMLElement; nodeId: string } | null => {
   const button = target instanceof Element ? target.closest<HTMLElement>(NODE_BUTTON_SELECTOR) : null;
   const nodeId = button?.closest<HTMLElement>(NODE_SELECTOR)?.dataset.nodeId;
@@ -64,7 +61,6 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
         const emit = (nodeHeights: Record<string, number>) => {
           Queue.offerUnsafe(queue, Message.MeasuredMapSurface({ width: surface.offsetWidth, height: surface.offsetHeight, nodeHeights }));
         };
-        // 大きさは React Flow と同じく offsetWidth・offsetHeight（倍率の影響を受けない）
         const sizeObserver = new ResizeObserver(() => emit({}));
         sizeObserver.observe(surface);
         const nodeObserver = new ResizeObserver((entries) => {
@@ -77,7 +73,6 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           }
           if (Object.keys(nodeHeights).length > 0) emit(nodeHeights);
         });
-        // 増えた・減ったノードの要素に合わせて、測る対象を入れ替える
         const observed = new Set<Element>();
         const reconcile = () => {
           const present = new Set(surface.querySelectorAll(NODE_SELECTOR));
@@ -111,7 +106,6 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
           const clicked = nodeButtonOf(event.target);
           if (clicked !== null) Queue.offerUnsafe(queue, Message.ClickedNodeButton({ nodeId: clicked.nodeId, clientX: event.clientX, clientY: event.clientY }));
         };
-        // ⌘/Ctrl＋click は capture で受け、ノードの選択に届かないよう同期して止める
         const onClickCapture = (event: MouseEvent) => {
           if (!event.metaKey && !event.ctrlKey) return;
           event.stopPropagation();

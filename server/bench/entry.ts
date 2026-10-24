@@ -1,5 +1,3 @@
-// bench の 4 本のスクリプトが共有する入口の部品。runMain は各スクリプトの入口だけが呼ぶ（ここでは呼ばない）。
-// 引数の誤りは effect/cli の既定の Formatter が出力し、中身の失敗はタグ付きにして、入口で日本語の説明付きの 1 行（<パス>: <説明>（<理由>））にする。
 import { Console, Effect, type Runtime, Schema } from "effect";
 import { Command } from "effect/cli";
 import { NodeServices } from "@effect/platform-node";
@@ -7,34 +5,28 @@ import { exitCodeTeardown, reportEntryFailure } from "../src/entryFailure.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
 import { describe, fileReason, InvalidTruthFile, oneLine, readTextFile } from "../src/truthFile.ts";
 
-// server/package.json は private で version を持たない。--version の正本はここ
 export const BENCH_VERSION = "0.1.0";
 
-// 発言・結果・行の時刻のファイルが読めない、または形が違う
 export class InvalidInputFile extends Schema.TaggedError<InvalidInputFile>()("InvalidInputFile", {
   path: Schema.String,
   reason: Schema.String,
 }) {}
 
-// セッションのフォルダが無い（読めない）
 export class MissingSessionDir extends Schema.TaggedError<MissingSessionDir>()("MissingSessionDir", {
   path: Schema.String,
   reason: Schema.String,
 }) {}
 
-// 再生用のセッションを作れない、またはそのログを読めない
 export class ReplaySessionFailed extends Schema.TaggedError<ReplaySessionFailed>()("ReplaySessionFailed", {
   path: Schema.String,
   reason: Schema.String,
 }) {}
 
-// 入口で 1 行にする失敗の class
 const BENCH_FAILURES = [InvalidInputFile, InvalidTruthFile, MissingSessionDir, ReplaySessionFailed] as const;
 type BenchFailure = InstanceType<(typeof BENCH_FAILURES)[number]>;
 
 const isBenchFailure = (failure: unknown): failure is BenchFailure => BENCH_FAILURES.some((C) => failure instanceof C);
 
-// 入口の表。タグ付きの失敗を「<パス>: <日本語の説明>（<詳細な理由>）」の 1 行にする（表示はここだけが持つ）
 const failureLine = (failure: BenchFailure): string => {
   switch (failure._tag) {
     case "InvalidInputFile":
@@ -48,13 +40,10 @@ const failureLine = (failure: BenchFailure): string => {
   }
 };
 
-// 失敗の表示はここだけ。共通の前半（entryFailure）で済まないものを、この表で 1 行にする
 export const reportFailure = reportEntryFailure((failure) => Console.error(isBenchFailure(failure) ? failureLine(failure) : describe(failure)));
 
 export const exitNaturally: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof StartupDepsMissing ? 3 : undefined));
 
-// 標準出力。Console.log が末尾に改行を足すので、改行で終わる文字列はその 1 つを外して渡す
-// （出力のバイト列を今と同じに保つ。改行の規則はこの 1 か所だけが持つ）
 export const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
 
 export const readInputText = (path: string) =>
@@ -63,7 +52,6 @@ export const readInputText = (path: string) =>
 export const inputFileError = (path: string) => (error: Schema.SchemaError) =>
   new InvalidInputFile({ path, reason: oneLine(error.message) });
 
-// JSON のファイルを Schema で decode して読む
 export const readJsonFile = <S extends Schema.Decoder<unknown>>(path: string, schema: S) =>
   readInputText(path).pipe(
     Effect.flatMap((text) =>
@@ -71,7 +59,6 @@ export const readJsonFile = <S extends Schema.Decoder<unknown>>(path: string, sc
     ),
   );
 
-// 4 本のスクリプトの入口で、runMain の手前までをそろえる。runMain は teardown を literal で渡す規則（check-entrypoints）のため、各スクリプトの入口に残す
 export const benchProgram = <Name extends string, Input, Config, E, R>(command: Command.Command<Name, Input, Config, E, R>) =>
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),

@@ -1,4 +1,3 @@
-// bench のスクリプトを Command として走らせるテスト用の補助。stdout は Console を差し替えて集める。
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +11,6 @@ export const temporaryDirectory = Effect.acquireRelease(
   (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
 );
 
-// Console.log に渡された引数を、末尾の改行込みの 1 行として stdout に集める（本物の Console.log と同じ区切り）
 export function consoleCapture() {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -24,7 +22,6 @@ export function consoleCapture() {
   return { layer: Layer.mergeAll(NodeServices.layer, Layer.succeed(Console.Console, service)), stdout, stderr };
 }
 
-// 走らせて、成功か失敗かを Result で返す（失敗は表示せず、タグ付きの失敗のまま観測する）
 export function runCommand<Name extends string, Input, ContextInput, E, R>(
   command: Command.Command<Name, Input, ContextInput, E, R>,
   argv: string[],
@@ -37,7 +34,6 @@ export function runCommand<Name extends string, Input, ContextInput, E, R>(
   );
 }
 
-// タグ付きの失敗（CliError ではない）の _tag と全体を取り出す
 export function taggedFailure(result: Result.Result<unknown, unknown>): { _tag: string; [key: string]: unknown } | undefined {
   if (Result.isSuccess(result)) return undefined;
   const failure = result.failure;

@@ -1,6 +1,3 @@
-// 保存したセッションを、発言の本文を読まずに数だけで調べる（Issue #186）。
-// 第三者の会議のログは中身を表示しない決まりなので、出すのは件数・長さ・割合・音量だけにする。
-// 使い方は各 Command・Flag の withDescription が正本で、`node bench/sessionStats.ts --help` で読む。
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 import { NodeRuntime } from "@effect/platform-node";
@@ -16,25 +13,23 @@ const TRACKS: readonly Track[] = ["相手", "自分"];
 
 export type TrackStats = {
   remarks: number;
-  duration: number; // 発言の長さ（end - start）の合計。秒
-  overlap: number; // 発言のある時間のうち、2 つ以上の発言が重なっている時間の割合（0〜1）。1 人分のトラックなら小さい
+  duration: number;
+  overlap: number;
 };
 
 export type SessionStats = {
   tracks: Record<Track, TrackStats>;
-  lastEnd: number; // 発言の end の最大値。秒
+  lastEnd: number;
   diffs: number;
   diffErrors: number;
   ops: number;
   intake: { stopped: number; restarted: number; gaveUp: number };
   ocrFailed: number;
-  tapSilent: number; // helper が、相手のタップに音声が届かないと流した回数（tap-silent の行。Issue #863）
+  tapSilent: number;
 };
 
 type Interval = { start: number; end: number };
 
-// ログの 1 行。数える欄だけを任意で持つ緩い形（古いログ・intake-*・tap-silent の行・input の無い diff の行も数える）。
-// 段 1 の LogEvent は start・remark・diff の 3 種で必須欄が厳しいので、ここでは使わない
 const LogLine = Schema.Struct({
   type: Schema.String,
   remark: Schema.optionalKey(Schema.Struct({ track: Track, start: Schema.Finite, end: Schema.Finite })),
@@ -46,7 +41,6 @@ export type LogLine = typeof LogLine["Type"];
 
 const decodeLogLine = Schema.decodeEffect(Schema.fromJsonString(LogLine));
 
-// ログの 1 行 1 イベントを読む。壊れた行（書きかけの末尾など）と形が合わない行は飛ばす
 export function parseLog(text: string) {
   return Effect.forEach(
     text.split("\n").filter((line) => line.trim() !== ""),
@@ -54,10 +48,9 @@ export function parseLog(text: string) {
   ).pipe(Effect.map((lines) => lines.flat()));
 }
 
-// 2 つ以上の発言が重なっている時間 / 1 つ以上の発言がある時間
 export function overlapRatio(intervals: readonly Interval[]): number {
   const edges = intervals.flatMap((r) => (r.end > r.start ? [{ at: r.start, d: 1 }, { at: r.end, d: -1 }] : []));
-  edges.sort((a, b) => a.at - b.at || a.d - b.d); // 同じ時刻では閉じるほうを先に（接しているだけは重なりにしない）
+  edges.sort((a, b) => a.at - b.at || a.d - b.d);
   let depth = 0;
   let prev = 0;
   let covered = 0;
@@ -82,7 +75,6 @@ function countRemark(stats: SessionStats, intervals: Record<Track, Interval[]>, 
   stats.lastEnd = Math.max(stats.lastEnd, r.end);
 }
 
-// ログの 1 行を種別ごとに stats へ足す。remark の欄が無い remark 行と、未知の種別は数えない
 function countLine(stats: SessionStats, intervals: Record<Track, Interval[]>, e: LogLine): void {
   switch (e.type) {
     case "remark":
@@ -128,7 +120,6 @@ export function sessionStats(events: readonly LogLine[]): SessionStats {
   return stats;
 }
 
-// セッションのフォルダ（log.jsonl がある）を集める。並べたフォルダを渡されたら、その下を全部
 export function sessionDirs(path: string): string[] {
   if (existsSync(join(path, "log.jsonl"))) return [path];
   return readdirSync(path, { withFileTypes: true })
@@ -137,7 +128,6 @@ export function sessionDirs(path: string): string[] {
     .sort();
 }
 
-// 録音（相手.m4a・相手-2.m4a …）の長さの最大と、平均音量。読めないファイル（強制終了で閉じていない録音）は飛ばす
 type Audio = { files: number; seconds: number; meanDb: number | null };
 const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
   const files = readdirSync(dir).filter((f) => f === `${track}.m4a` || (f.startsWith(`${track}-`) && f.endsWith(".m4a")));
@@ -154,8 +144,6 @@ const trackAudio = Effect.fnUntraced(function* (dir: string, track: Track) {
   return { files: files.length, seconds, meanDb } satisfies Audio;
 });
 
-// ffmpeg は長さと音量を stderr に出すので、stdout と stderr をまとめて受け取る。
-// ffmpeg が無い・失敗したときは空の出力として扱う（呼び出し側が、読めない録音として飛ばす）
 export const recordingLog = Effect.fnUntraced(function* (file: string) {
   return (yield* runFfmpegFilter(file, "volumedetect")).output;
 }, Effect.catchTag("PlatformError", () => Effect.succeed("")));
@@ -187,7 +175,6 @@ export const command = Command.make(
     ),
   },
   Effect.fn("sessionStats")(function* ({ noAudio, paths }) {
-    // 出力の前に全てのパスを解決する（途中のパスが無ければ、何も出さずに失敗する）
     const dirs = (yield* Effect.forEach(paths, (path) =>
       Effect.try({ try: () => sessionDirs(path), catch: (e) => new MissingSessionDir({ path, reason: describe(e) }) }),
     )).flat();

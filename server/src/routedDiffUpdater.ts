@@ -1,16 +1,12 @@
-// 振り分け（DiffUpdater の口の 1 段）。差分更新を呼ぶたびに判定へ「新しい発言に決定・TODO が含まれるか」を聞き、
-// 確からしさが ROUTE_THRESHOLD 以上（または判定できなかった回）なら Sonnet 5.5、未満なら Haiku 5.5 の差分更新を呼ぶ。
-// この DiffUpdater が直前に返した応答を当てた結果を、その応答を返した内側の updater へ回す。
 import { Clock, Effect } from "effect";
 import { DiffUpdater, type DiffInput, type PreviousResponse, type Remark, type ScreenChange } from "./core/index.ts";
 import type { JudgeAsk, JudgeQuestion } from "./systemOne.ts";
 
 export const SONNET = "claude-sonnet-5-5";
 export const HAIKU = "claude-haiku-5-5";
-// 「含む」の確からしさ（distribution.yes）がこの値以上なら Sonnet。比べる対象は yes の確率で、選んだ側の確からしさではない
 const ROUTE_THRESHOLD = 0.3;
 const CONTEXT_REMARKS = 6;
-const UNSEEN_SCREENS_MAX = 3; // 使わない会話のために費用が膨らまないよう、未送画面の保持を制限する
+const UNSEEN_SCREENS_MAX = 3;
 const QUESTION_NAME = "route";
 const QUESTION: JudgeQuestion = {
   type: "noul",
@@ -29,15 +25,12 @@ type Destination = typeof SONNET | typeof HAIKU;
 type Parts = { readonly ask: JudgeAsk; readonly sonnet: DiffUpdater["Service"]; readonly haiku: DiffUpdater["Service"] };
 
 export const routedUpdater = (parts: Parts) => Effect.sync(() => {
-  let retained: readonly Remark[] = []; // 受け取った発言の、直前の発言の候補（DiffInput.recent は 3 件までなので自前で保つ）
-  let last: Destination | undefined; // 直前の応答を返した内側の updater。次の入力の previousResponse を回す先
-  // 各 updater が直前に返した応答を当てた結果を、その updater を次に呼ぶまで保つ
+  let retained: readonly Remark[] = [];
+  let last: Destination | undefined;
   const own: Record<Destination, PreviousResponse | undefined> = { [SONNET]: undefined, [HAIKU]: undefined };
-  // 共有画面の変化は core が 1 度しか添えない。各 query が、自分がまだ受け取っていない変化を受け取れるように、query ごとに溜める
   const unseen: Record<Destination, readonly ScreenChange[]> = { [SONNET]: [], [HAIKU]: [] };
 
   const update = Effect.fnUntraced(function* (input: DiffInput) {
-    // 呼ぶ前に確定させる（失敗・中断の後の回でも持ち主が正しく残る）
     if (last !== undefined) own[last] = input.previousResponse;
     const freshIds = new Set(input.fresh.map((r) => r.id));
     const history = dedupById([...retained, ...input.recent]).filter((r) => !freshIds.has(r.id));

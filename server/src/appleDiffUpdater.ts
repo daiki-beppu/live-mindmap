@@ -52,7 +52,6 @@ export const prepareAppleUpdater = Effect.fnUntraced(function* (model: Extract<E
       }
     }
   }), meetingScope, { startImmediately: true });
-  // 分類も読みの要求も、いまの状態を確かめてから送る（再起動中の子プロセスへは送らない）
   const running = Effect.fnUntraced(function* () {
     const state = yield* Ref.get(available);
     if (state instanceof DiffUpdateStopped) return yield* state;

@@ -36,7 +36,6 @@ export const fakeChatgptHttp = (reply: (request: HttpClientRequest.HttpClientReq
   return { client, requests };
 };
 
-// FileSystem の境界で mode と rename を観測する。未定義の操作は makeNoop が失敗させる。
 export const fakeChatgptFiles = (initial: ReturnType<typeof chatgptCredentials>) => {
   const authPath = chatgptAuthPath(CHATGPT_HOME);
   const files = new Map<string, { text: string; mode: number }>([[authPath, { text: JSON.stringify(initial), mode: 0o600 }]]);

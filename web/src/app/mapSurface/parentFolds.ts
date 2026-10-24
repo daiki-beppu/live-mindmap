@@ -1,7 +1,3 @@
-// 親（会議・見返し）が表示面（MapSurface）を子として組み込む配線のうち、2 つの親で同じものを置く。
-// 親ごとに違うのは、表示面を Model のどこから読み、どこへ書き戻し、親の Message に包むか（read・write・toParentMessage）だけ。
-// 表示面の OutMessage（ノードが選ばれたこと）は表示面の viewing が持つので、親では受け流す。
-// キーは、意味が表示面の見る状態だけで決まるもの（F・=・-・0・Z・Shift+矢印・矢印・Enter・E）の handler をここで作る。親ごとに意味が違うキー（Esc・C・?・再生のキーなど）は親が決める。
 import type { Option } from "effect";
 import { Update } from "foldkit";
 import type { ArrowDir, ViewKey } from "../../viewing.ts";
@@ -16,7 +12,6 @@ type SurfaceKeyId =
   | "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown"
   | "Enter" | "E";
 
-// ⌘・Ctrl・Option と一緒なら何もしない
 export const plainKey =
   <Model, Message>(handler: (model: Model) => Update.Return<Model, Message>): KeyHandler<Model, Message> =>
   (model, { metaKey, ctrlKey, altKey }) =>

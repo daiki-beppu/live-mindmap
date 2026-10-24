@@ -9,7 +9,6 @@ export const runCliEntry = Effect.fnUntraced(function* <R, E, RIn>(argv: string[
     Effect.provide(Layer.mergeAll(layer, captured.layer)),
     Effect.exit,
   );
-  // teardown は同期処理なので、他の呼び出しが終了コードを使う前に復元できる。
   const saved = process.exitCode;
   process.exitCode = undefined;
   try {
