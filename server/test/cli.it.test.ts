@@ -1967,7 +1967,7 @@ describe("CLI", () => {
   describe("ブラウザへの配信", () => {
     // 本物の WebSocket 越しに観測するのは、このファイルで 1 本だけ（正本 22 行）。
     // 「失敗した反映では送らない」「終わると閉じる」は、偽の待受け（fakeListener）で同じ契約を観測する
-    it.live("反映のたびに、マップ全体のスナップショットが WebSocket で届く（初期のルート＋反映ごとに 1 つ）。標準出力は変わらない", () => Effect.gen(function* () {
+    it.live("反映のたびに WebSocket へマップが届き、再生の終了で差分更新とローカルモードが解除される。標準出力は変わらない", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       const listening = yield* Deferred.make<number>();
@@ -1976,6 +1976,7 @@ describe("CLI", () => {
         Effect.tap(http.openListener(port), (context) => Effect.flatMap(portOf(Context.get(context, HttpServer.HttpServer).address), (p) => Deferred.succeed(listening, p))));
 
       const received: Snapshot[] = [];
+      const frames: ViewerFrame[] = [];
       let firstReceived: () => void = () => {};
       const first = new Promise<void>((resolve) => (firstReceived = resolve));
       let n = 0;
@@ -1990,16 +1991,28 @@ describe("CLI", () => {
       const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
       const port = yield* Deferred.await(listening);
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      yield* Effect.addFinalizer(() => Effect.sync(() => ws.close()));
       ws.addEventListener("message", (e) => {
         const frame = JSON.parse(String(e.data)) as ViewerFrame;
+        frames.push(frame);
         if (frame.type === "snapshot") {
           received.push(frame.snapshot);
           firstReceived();
         }
       });
       yield* Fiber.join(playing);
-      yield* Effect.sleep(100); // close 前に送られたものが届くのを待つ
-      ws.close();
+      const deadline = Date.now() + 5_000;
+      while (!frames.some((f) => "type" in f && f.type === "diff-update" && f.state === null)
+        || frames.filter((f) => "type" in f && f.type === "session-mode").length < 2) {
+        if (Date.now() >= deadline) return yield* Effect.die("再生終了時の diff-update と session-mode の解除が届きません");
+        yield* Effect.sleep(10);
+      }
+      const diffs = frames.filter((f) => "type" in f && f.type === "diff-update");
+      expect(diffs[0]?.state).toEqual({ status: "running" });
+      expect(diffs.at(-1)?.state).toBe(null);
+      expect(frames.filter((f) => "type" in f && f.type === "session-mode")).toEqual([
+        { type: "session-mode", local: false }, { type: "session-mode", local: false },
+      ]);
 
       expect(received.map((s) => s.nodes.length)).toEqual([1, 2, 3, 4]);
       expect(received[0]!.nodes.map((x) => x.kind)).toEqual(["会議"]);

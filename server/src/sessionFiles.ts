@@ -10,12 +10,12 @@ import {
   makeSession,
   makeTranscriptSession,
   SessionLog,
+  speakerNamesFrame,
   StartEvent,
   toJsonExport,
   type IntakeLogEvent,
   type SelfPauseLogEvent,
   type SpeakerNameLogEvent,
-  type DiffUpdateFrame,
   type InvalidLogEvent,
   type OnSpeakerNames,
   type Session,
@@ -23,6 +23,7 @@ import {
 } from "./core/index.ts";
 import { errorMessage, formatIssues, oneLine } from "./truthFile.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
+import type { SendFrame } from "./viewers.ts";
 
 export const EXPORT_FILE = "export.json";
 export const LOG_FILE = "log.jsonl";
@@ -223,13 +224,12 @@ export type LoggedSessionOptions = {
   dir: string;
   title?: string;
   logShiftMs?: number;
-  publish: (snapshot: Snapshot) => Effect.Effect<void>;
+  send?: SendFrame;
   onDiff?: Effect.Effect<void>;
-  diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   onSpeakerNames?: OnSpeakerNames;
 };
 
-const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, publish, onDiff, diffUpdate, onSpeakerNames, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
+const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, send, onDiff, onSpeakerNames, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
   const fs = yield* FileSystem.FileSystem;
   const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) =>
     Effect.suspend(() =>
@@ -253,11 +253,11 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, pu
             }),
           );
           if (!session) return;
-          if (diffUpdate && (event.type === "diff" || event.type === "diff-update-paused" || event.type === "diff-update-state")) {
-            yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });
+          if (send && (event.type === "diff" || event.type === "diff-update-paused" || event.type === "diff-update-state")) {
+            yield* send({ type: "diff-update", state: yield* session.diffUpdate });
           }
           if (event.type !== "diff") return;
-          if (!event.error) yield* Effect.flatMap(session.snapshot, publish);
+          if (!event.error && send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
           if (onDiff) yield* onDiff;
         }),
       writeScreen: (file, bytes) =>
@@ -269,15 +269,15 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, pu
     }),
   );
   const images = model === undefined || (model.route !== "apple" && model.images !== false);
-  if (diffUpdate) yield* Effect.addFinalizer(() => diffUpdate({ type: "diff-update", state: null }));
   const options = { title: title ?? basename(dir), images, logShiftMs, ...(onSpeakerNames ? { onSpeakerNames } : {}) };
   const session = yield* (updater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, updater))).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
-  if (diffUpdate) {
-    yield* diffUpdate({ type: "diff-update", state: yield* session.diffUpdate });
+  if (send) {
+    yield* send(speakerNamesFrame(new Map()));
+    yield* send({ type: "diff-update", state: yield* session.diffUpdate });
   }
   yield* serialized(writeExport(session));
-  yield* Effect.flatMap(session.snapshot, publish);
+  if (send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
   return { session, appendLog: (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) => serialized(writeLogLine(event)) };
 });
 

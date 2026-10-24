@@ -16,8 +16,7 @@ describe("Apple の状態遷移と保存ログ", () => {
     const fake = yield* fakeAppleLifecycle([{}, { holdReady: true }]);
     const layer = yield* fake.prepare.pipe(Scope.provide(scope));
     const frames: DiffUpdateFrame[] = [];
-    const { session } = yield* openLoggedSession({ dir, model: appleModel, title: "定例", publish: () => Effect.void,
-      diffUpdate: (frame) => Effect.sync(() => { frames.push(frame); }),
+    const { session } = yield* openLoggedSession({ dir, model: appleModel, title: "定例", send: (frame) => Effect.sync(() => { if ("type" in frame && frame.type === "diff-update") frames.push(frame); }),
     }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, layer)), Scope.provide(scope));
     const readLines = Effect.promise(() => readFile(join(dir, LOG_FILE), "utf8")).pipe(
       Effect.map((text) => text.trim().split("\n").map((line): unknown => JSON.parse(line))),
@@ -71,6 +70,5 @@ describe("Apple の状態遷移と保存ログ", () => {
     expect(restored.map.order.map((id) => restored.map.nodes[id]!.text)).toEqual(before.nodes.map((n) => n.text));
     expect(JSON.parse(yield* Effect.promise(() => readFile(join(dir, EXPORT_FILE), "utf8")))).toEqual(yield* session.exportJson);
     yield* Scope.close(scope, Exit.void);
-    expect(frames.at(-1)).toEqual({ type: "diff-update", state: null });
   }));
 });

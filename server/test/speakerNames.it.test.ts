@@ -64,8 +64,8 @@ const openSession = Effect.fnUntraced(function* (updaterLayer: Layer.Layer<DiffU
   const sinks = yield* SessionSinks;
   const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "speaker-names-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
   const frames: SpeakerNamesFrame[] = [];
-  const sink = yield* sinks.open({ diffUpdate: () => Effect.void, updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
-    publish: () => Effect.void, speak: () => Effect.void, speakerNames: (frame) => Effect.sync(() => void frames.push(frame)) });
+  const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
+    send: (frame) => Effect.sync(() => { if ("type" in frame && frame.type === "speaker-names") frames.push(frame); }) });
   if (options.speakerOff) yield* sink.speaker(SPEAKER_OFF);
   const diffs = () => logEvents(dir).filter((e) => e.type === "diff").length;
   // slot の相手が start から 2 秒話し、n 番目の発言（発言 n です）になる。差分更新が n 回目まで済むのを待つ
