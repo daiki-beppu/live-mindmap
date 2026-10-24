@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import HelperCore
 
@@ -7,6 +8,28 @@ private struct DownloadFailure: Error, CustomStringConvertible {
 
 @Suite("話者分離モデルの取得")
 struct SpeakerModelInstallationTests {
+    @Test("保存先の環境変数があれば、そのディレクトリを使う")
+    func modelDirectoryOverride() {
+        let path = "/isolated speaker models/話者分離"
+
+        let directory = resolveSpeakerModelDirectory(environment: [
+            "LIVE_MINDMAP_HELPER_SPEAKER_MODEL_DIR": path,
+        ])
+
+        #expect(directory == URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    @Test("保存先の環境変数がなければ、Foundation の既定の保存先を使う")
+    func modelDirectoryDefault() {
+        let expected = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FluidAudio/Models", isDirectory: true)
+
+        let directory = resolveSpeakerModelDirectory(environment: [:])
+
+        #expect(directory == expected)
+    }
+
     @Test("install-speaker-models は引数なしを受理する")
     func noArguments() throws {
         _ = try parseInstallSpeakerModelsArguments([]).get()
