@@ -1,5 +1,3 @@
-// 差分更新の準備。経路ごとの設定と接続検査は core の外で解決する。
-// claude.ts は Claude Agent SDK を読み込むので、使うコマンドの handler が動くときだけ開く（import も遅らせる）。
 import { Context, Effect, Layer } from "effect";
 import { AppleIntelligence } from "./appleIntelligence.ts";
 import { prepareAppleUpdater } from "./appleDiffUpdater.ts";
@@ -29,12 +27,10 @@ const prepareClaude = Effect.fnUntraced(function* (model: ClaudeModel) {
   return (yield* loadClaude())(model.model);
 });
 
-// Sonnet 5.5 用と Haiku 5.5 用の query を 1 本ずつ持つ振り分け。keys は judgeEnvs(judge) の順の値（鍵の有無は planLayer が確かめ済み）
 export const prepareRoutedLayer = Effect.fnUntraced(function* (judge: JudgeModel, keys: readonly string[]) {
   const ask = yield* makeSystemOne(judge, { apiKey: keys[0]!, ...(judge.accountIdEnv === undefined ? {} : { accountId: keys[1]! }) });
   const claude = yield* loadClaude();
   return Layer.effect(DiffUpdater, Effect.gen(function* () {
-    // それぞれの Layer は自分の Service を提供するので、別々に build して取り出す（セッションの Scope が閉じると両方閉じる）
     const sonnet = Context.get(yield* Layer.build(claude(SONNET)), DiffUpdater);
     const haiku = Context.get(yield* Layer.build(claude(HAIKU)), DiffUpdater);
     return yield* routedUpdater({ ask, sonnet, haiku });

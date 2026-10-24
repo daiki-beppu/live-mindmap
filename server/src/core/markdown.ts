@@ -1,11 +1,8 @@
-// エクスポート（Markdown）: 人が読む議事録。冒頭に決定・TODO・未決の論点の一覧、その後にアウトライン。
-// 根拠は、根拠の発言のうち最も早い時刻だけを（mm:ss）で示す。
 import type { ExportNode, JsonExport } from "./export.ts";
 import { personLine, todoAssignee, type SpeakerNames } from "./personLine.ts";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-// 60 分を超えても、分は 60 以上のまま出す
 function stamp(node: ExportNode): string {
   if (node.evidence.length === 0) return "";
   const sec = Math.floor(Math.min(...node.evidence.map((r) => r.start)));
@@ -18,7 +15,6 @@ function todoLabel(node: ExportNode, names: SpeakerNames): string {
   return meta.length > 0 ? `${node.text}（${meta.join("・")}）` : node.text;
 }
 
-// 深さ優先の順に、親を添えて平らにする
 function walk(node: ExportNode, parent: ExportNode | null = null): { node: ExportNode; parent: ExportNode | null }[] {
   return [{ node, parent }, ...node.children.flatMap((c) => walk(c, node))];
 }

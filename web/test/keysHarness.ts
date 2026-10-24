@@ -1,6 +1,3 @@
-// キー（Issue #822）の Subscription と Story が共有する道具。テストではなく、偽の document・キーイベントと、stream を走らせて届いた Message を集める関数だけを置く。
-// document は addEventListener / removeEventListener / defaultView を持つ最小の代役（foldkit の streamFromKeyBindings が target に求める形）。
-// 偽のイベントは composedPath と preventDefault（呼ぶと defaultPrevented になる）を持つ。dispatchEvent と stopImmediatePropagation は呼ばれたかを見るために spy にしてある
 import { Effect, Fiber, Stream } from "effect";
 import { vi } from "vitest";
 
@@ -14,7 +11,6 @@ export type FakeElement = {
   dispatchEvent: ReturnType<typeof vi.fn>;
 };
 
-// closest が読む selector は、class（.foo）・タグ名（button）・a[href] をカンマで並べたものだけ（enterFold.ts・reviewKeys.ts が使う形）
 export const element = (tag: string, classes: readonly string[] = [], isContentEditable = false): FakeElement => {
   const self: FakeElement = {
     tagName: tag.toUpperCase(),
@@ -75,7 +71,6 @@ export const keydown = (init: KeyInit = {}): FakeKeyEvent => {
   return event;
 };
 
-// 表（keyListRows / bindingsOf）のバインディングの書き方（"Shift+=" "Shift+Plus" "Space" "^" など）から、それを押したときのイベントを作る
 const KEY_NAMES: Readonly<Record<string, string>> = { Plus: "+", Space: " " };
 export const eventOfBinding = (keys: string, over: KeyInit = {}): FakeKeyEvent => {
   const parts = keys.split("+");
@@ -119,8 +114,6 @@ export const fakeDocument = (): FakeDocument => {
 
 export const settleKeyEvents = Effect.forEach(Array.from({ length: 20 }), () => Effect.yieldNow, { discard: true });
 
-// stream を走らせ、イベントを 1 つずつ document に流して、イベントごとに届いた Message の並びを返す（届かなければ空）。走り終えたら listener が残っていないことも返す。
-// makeStream は偽の document を target として受ける（target を取らない stream を使うときは、呼び出し側が document をグローバルに差し替える）
 export const pressEach = <A>(makeStream: (target: EventTarget) => Stream.Stream<A>, events: readonly FakeKeyEvent[]): Promise<{ perEvent: A[][]; doc: FakeDocument; listenersAfter: number }> =>
   Effect.runPromise(
     Effect.gen(function* () {

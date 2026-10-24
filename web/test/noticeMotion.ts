@@ -1,4 +1,3 @@
-// Story 用: 見る状態の知らせ（sessionLayout の Toast）の出入りの動きの保留 1 件を解く。WaitForPaint は描画の完了、WaitForAnimationSettled はアニメーションの終了を届ける
 import * as Animation from "@foldkit/ui/animation";
 import { Command as StoryCommand, type StorySimulation } from "foldkit/story";
 

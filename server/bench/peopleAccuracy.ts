@@ -102,7 +102,6 @@ function scorePeople({ self, personOf, exp, truth }: {
   };
 }
 
-// schema の診断には入力の実値が入るので、採点の入口では本文を持たない理由へ変える。
 const readPeopleJson = <S extends Schema.Decoder<unknown>>(path: string, schema: S) =>
   readInputText(path).pipe(Effect.flatMap((text) =>
     Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(

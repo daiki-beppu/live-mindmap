@@ -6,7 +6,6 @@ import { join } from "node:path";
 export const DEFAULT_HELPER_PATH = join(import.meta.dirname, "../../helper/.build/release/live-mindmap-helper");
 export const HELPER_BUILD_COMMAND = "swift build -c release --package-path helper";
 
-// LIVE_MINDMAP_HELPER があればそれを使う。既定の実行ファイルが無いときは debug に黙って戻らず、ビルドのコマンドを示して失敗する
 export function resolveHelperPath(
   env: Readonly<Record<string, string | undefined>>,
   exists: (path: string) => boolean = existsSync,

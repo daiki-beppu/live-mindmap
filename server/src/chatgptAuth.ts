@@ -43,7 +43,6 @@ const renewed = Effect.fnUntraced(function* (previous: Credentials, token: typeo
   return {
     ...previous, access_token: token.access_token,
     refresh_token: token.refresh_token ?? previous.refresh_token,
-    // 更新応答の ID token は認証済み identity の代わりに使わない。
     scopes: token.scope === undefined ? previous.scopes : token.scope.split(" ").filter(Boolean),
     expires_at: now + token.expires_in * 1000, saved_at: new Date(now).toISOString(),
   } satisfies Credentials;
@@ -69,7 +68,6 @@ export const accessToken = Effect.fnUntraced(function* (path: string) {
 
 type Registration = { readonly host: string; readonly previous: Credentials | undefined };
 
-// 認証ファイルのロックの中で、この Mac の host id（無ければ作る）と前回の資格情報を読む
 const hostRegistration = Effect.fnUntraced(function* (path: string, fs: FileSystem.FileSystem) {
   return yield* withFileLock(path, Effect.gen(function* () {
     const hostPath = join(dirname(path), "chatgpt-host-id");
@@ -83,7 +81,6 @@ const hostRegistration = Effect.fnUntraced(function* (path: string, fs: FileSyst
   }));
 });
 
-// ループバックの待受けを Scope に開き（閉じるのは Scope の終わり）、callback の URL を返す
 const callbackServer = Effect.fnUntraced(function* (callback: Deferred.Deferred<URLSearchParams>) {
   const server = yield* Effect.acquireRelease(Effect.sync(() => createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");

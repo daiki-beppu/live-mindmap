@@ -1,5 +1,3 @@
-// ライブの受信（Issue #828）の Foldkit のプログラムの状態と update。状態の更新の規則は web/src/liveFeed.ts（applyFrame / applyOpen / applyClose）を使う。
-// Model は「無い」を Option で持ち、update の中で FeedState と移し替えて、その規則に通す
 import { Option, Schema } from "effect";
 import type { Update } from "foldkit";
 import { modifyFields } from "foldkit/struct";
@@ -17,7 +15,6 @@ export const Model = Schema.Struct({
   diffUpdate: Schema.Option(DiffUpdateState),
   local: Schema.Boolean,
   selfPaused: SelfPaused,
-  // 話者の名前の表（ラベル → 名前。Issue #1026）
   speakerNames: Schema.Record(Schema.String, Schema.String),
 });
 export type Model = typeof Model.Type;

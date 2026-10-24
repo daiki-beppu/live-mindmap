@@ -15,7 +15,6 @@ const ModelDefinition = Schema.Union([ClaudeDefinition, CompatibleDefinition, Ch
 const ModelConfig = Schema.Struct({
   default: Schema.optionalKey(Schema.NonEmptyString),
   models: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, ModelDefinition)),
-  // 判定のモデルの設定は judgeSelection.ts が検証する。ここでは差分更新のモデルの選択が断らないよう受け流す。
   judge: Schema.optionalKey(Schema.Unknown),
   judges: Schema.optionalKey(Schema.Unknown),
 });
@@ -39,7 +38,6 @@ export const configDiagnostic = (path: string, where: string, field: string, rea
   ok: false, lines: [oneLine(`設定ファイルが不正です: ${path}（「${where}」の ${field}: ${reason}）`)],
 });
 
-// Schema の誤りを「場所・項目・理由」の 1 行診断へ変える。section は定義を並べる設定のキー（models / judges）。
 export const schemaDiagnostic = (path: string, issue: SchemaIssue.Issue, section: "models" | "judges"): Refusal => {
   const first = SchemaIssue.makeFormatterStandardSchemaV1()(issue).issues[0]!;
   const keys = (first.path ?? []).map((segment) => Predicate.isObject(segment) ? segment.key : segment).map(String);
@@ -115,7 +113,6 @@ export const selectModel = (input: ModelInput): ReturnType<typeof modelCandidate
   return lines === undefined ? candidate : { ok: false, lines };
 };
 
-// HTTP は CLI から解決済みの値を受ける。設定を読み直さず、転送された構造と実行条件だけを検証する。
 export const TransferredModel = Schema.Union([
   Schema.Struct({ name: Schema.NonEmptyString, ...ClaudeDefinition.fields, local: Schema.Boolean }),
   Schema.Struct({ name: Schema.NonEmptyString, ...CompatibleDefinition.fields, local: Schema.Boolean }),

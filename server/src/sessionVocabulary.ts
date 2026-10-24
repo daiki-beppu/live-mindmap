@@ -24,7 +24,6 @@ export const modelReadings = (katakana: DiffUpdater["Service"]["katakana"], read
   Effect.fnUntraced(function* (surfaces) {
     const asked = wordsForKatakana(surfaces);
     const askedSet = new Set(asked);
-    // モデルが失敗した英字は直接読まず、読みなしとして記録する。
     const answered = asked.length > 0 && katakana !== undefined
       ? yield* katakana(asked).pipe(Effect.catch(() => Effect.succeed([])))
       : [];
@@ -70,7 +69,6 @@ export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
 
   const add = (surfaces: ReadonlyArray<string>, source: "user" | "screen", from?: number) =>
     Effect.uninterruptible(Effect.gen(function* () {
-      // Scope 閉鎖で中断するのは読み待ちだけ。記録と有効化は分断しない。
       const found = yield* Effect.interruptible(read(surfaces)).pipe(
         Effect.onInterrupt(() => log({ type: "vocab", words: surfaces.map((surface) => ({ surface, romaji: null, source })) })),
       );
@@ -93,7 +91,6 @@ export const makeSessionVocabulary = Effect.fnUntraced(function* (options: {
 
   return {
     correct,
-    // 要求の確保と FiberSet への登録の間で中断すると、語の記録を失う。
     addUser: (words) => Effect.uninterruptible(Effect.gen(function* () {
       const fresh = yield* Ref.modify(screenState, (state) => {
         const surfaces = [...new Set(words.filter((w) => w !== "" && !state.requested.has(w)))];

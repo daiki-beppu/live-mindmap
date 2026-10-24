@@ -1,6 +1,3 @@
-// ヘルパー（Swift の子プロセス）という外の世界。子プロセス・空きポート・ヘルパーへの WebSocket を受け持つ（ADR 0008）。
-// 子プロセスは effect/process（Node では NodeChildProcessSpawner）で起動する。1 回分の起動は呼び出し側の Scope 1 つで、
-// ヘルパーの停止はその Scope の後始末。SIGTERM から SIGKILL へ上げる待ちは forceKillAfter に任せる。
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { Context, Deferred, Effect, Fiber, Layer, Predicate, Schedule, Schema, Stream, type Scope } from "effect";
@@ -9,13 +6,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HELPER_RUN_STDERR_TAIL_LINES, STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
 import { openHelperSocket } from "./helperSocket.ts";
 
-// SIGTERM を送ってから、SIGKILL に切り替えるまでの待ち時間（ms。既定 5,000。テストだけが短い値を与える）。Layer の構築時に 1 回読む
 export const HELPER_STOP_TIMEOUT_MS = Context.Reference("live-mindmap/HelperStopTimeoutMs", { defaultValue: (): number => 5_000 });
 
-// ヘルパーの終わり方。code で終われば signal は null、シグナルで落ちれば code が null
 export type HelperExitInfo = { code: number | null; signal: string | null };
 
-// 起動（接続まで）が成り立たなかった。ヘルパーが終わっていれば exit に終わり方が入る
 export class HelperLaunchFailure extends Schema.TaggedError<HelperLaunchFailure>()("HelperLaunchFailure", {
   stderrTail: Schema.Array(Schema.String),
   exit: Schema.optional(Schema.Struct({ code: Schema.NullOr(Schema.Finite), signal: Schema.NullOr(Schema.String) })),
@@ -25,32 +19,22 @@ export class HelperLaunchFailure extends Schema.TaggedError<HelperLaunchFailure>
   }
 }
 
-// helper が休止の指示を認証するトークンを受け取る環境変数名（helper/README.md「サーバーからの指示」）。起動ごとに作った値を渡し、指示の JSON の token で返す
 export const HELPER_CONTROL_TOKEN_ENV = "LIVE_MINDMAP_HELPER_CONTROL_TOKEN";
 
-// 接続できたヘルパー 1 回分
 export type HelperAttempt = {
-  // ヘルパーが WebSocket で送ったテキストを届いた順に流す。ヘルパーとの接続が閉じると終わる
   events: Stream.Stream<string>;
-  // ヘルパーを止める（SIGTERM。HELPER_STOP_TIMEOUT_MS 経っても終わらなければ SIGKILL）。終わるまで戻らない
   stop: Effect.Effect<void>;
-  // ヘルパーの終わり方。標準エラーを読み終えてから返す
   exit: Effect.Effect<HelperExitInfo>;
-  // 標準エラーの末尾（exit が返った後の値が確定した値）
   stderrTail: Effect.Effect<ReadonlyArray<string>>;
-  // ヘルパーへ指示を送る。paused は求める状態。helper に届かなくても失敗にしない
-  // self-pause: 自分の休止・再開（Issue #1069）。reading-pause: 録画のファイルの読み取りの停止・再開（Issue #1092。transcribe-file だけ）
   send: (instruction: HelperInstruction) => Effect.Effect<void>;
 };
 
 export type HelperInstruction = { type: "self-pause" | "reading-pause"; paused: boolean };
 
-export type HelperCommand = { command: string; args: string[] }; // 実行ファイルと、サブコマンドの前に付ける引数
+export type HelperCommand = { command: string; args: string[] };
 
 const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
 
-// ヘルパーを 1 回起動して終わりを待ち、標準出力・標準エラー・終了コードを返す（呼び出し側の Scope の中で動く）。stdin は常に閉じる。
-// options.stdout が "ignore" のときは標準出力を読まず、stdout は ""
 export const runHelperCommand = Effect.fnUntraced(function* (
   spawner: ChildProcessSpawner.ChildProcessSpawner["Service"],
   helper: HelperCommand,
@@ -65,7 +49,6 @@ export const runHelperCommand = Effect.fnUntraced(function* (
   return { stdout, stderr, code };
 });
 
-// ヘルパーの標準エラーから失敗の理由を作る。標準エラーが空なら終了コード
 export const stderrReason = (stderr: string, code: number): string =>
   tailLines(stderr, STDERR_TAIL_LINES).join("\n").trim() || `終了コード ${code}`;
 
@@ -98,12 +81,8 @@ export class Helpers extends Context.Service<Helpers, {
   check: Effect.Effect<HelperCheck, HelperCheckFailure>;
   checkNoScreen: Effect.Effect<HelperCheck, HelperCheckFailure>;
   installSpeechJa: Stream.Stream<string, HelperInstallFailure>;
-  // 録画のファイルに記録された作成日時（ISO8601）。記録が無いファイルは null。ヘルパーの `creation-date` を 1 回だけ起動して聞く
   creationDate: (file: string) => Effect.Effect<string | null, HelperCreationDateFailure>;
-  // 会議アプリの一覧（ヘルパーの `list` の結果）。失敗は予期しない失敗（defect）
   apps: Effect.Effect<unknown>;
-  // ヘルパーを 1 回起動して接続する。args は `run` から始まるヘルパーの引数（--port は付けなくてよい）。
-  // 返ったヘルパーは Scope を閉じると止まる。stopRequested が立つと、接続待ちの間でもヘルパーを止める
   launch: (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope>;
 }>()("live-mindmap/server/Helpers") {
   static readonly layer = (helper: HelperCommand): Layer.Layer<Helpers, never, ChildProcessSpawner.ChildProcessSpawner> =>
@@ -118,27 +97,23 @@ const exitInfoOfFailure = (error: PlatformError.PlatformError): HelperExitInfo =
   return { code: null, signal: SIGNAL_PATTERN.exec(text)?.[1] ?? null };
 };
 
-// ヘルパーの list が成り立たなかった（defect として扱う）
 class HelperListFailure extends Schema.TaggedError<HelperListFailure>()("HelperListFailure", {
   message: Schema.String,
 }) {}
 
 const decodeJsonText = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
-// 空きポートを選ぶ（listen(0) で割り当てを受けてから閉じる）
 const freePort = Effect.callback<number, HelperLaunchFailure>((resume) => {
   const fail = (reason: string) => resume(Effect.fail(new HelperLaunchFailure({ stderrTail: [reason] })));
   const probe = createServer();
   let closed = false;
   probe.once("error", (error) => fail(error.message));
   probe.listen(0, "127.0.0.1", () => {
-    // 中断で閉じた後に割り当てが届いた場合、待受けを残さない
     if (closed) return probe.close();
     const address = probe.address();
     if (!address || typeof address === "string") return fail("空きポートを取得できません");
     probe.close(() => resume(Effect.succeed(address.port)));
   });
-  // 中断されたら探索用の待受けを閉じる
   return Effect.sync(() => {
     closed = true;
     probe.close();
@@ -151,7 +126,6 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const stopTimeoutMs = yield* HELPER_STOP_TIMEOUT_MS;
 
-  // ヘルパーの list の失敗は予期しない失敗（500）。HTTP の側が文面を伏せずに返す
   const listFailed = (reason: string) => Effect.die(new HelperListFailure({ message: reason }));
   const apps = Effect.scoped(
     Effect.gen(function* () {
@@ -201,7 +175,6 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   ): Effect.fn.Return<HelperAttempt, HelperLaunchFailure, Scope.Scope> {
     const scope = yield* Effect.scope;
     const port = yield* freePort;
-    // この起動回の指示用トークン。環境変数で helper にだけ渡す（引数・ログ・標準エラーには出さない）
     const controlToken = randomBytes(32).toString("hex");
     // 既定の detached: true のまま起動し、プロセスグループごと止める。forceKillAfter は Scope の後始末（kill を通らない）にも効かせる
     const handle = yield* spawner
@@ -216,7 +189,6 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       )
       .pipe(Effect.mapError((error) => new HelperLaunchFailure({ stderrTail: [error.message], exit: { code: null, signal: null } })));
 
-    // 標準エラーはサーバーの標準エラーへ素通ししながら溜める
     const stderrChunks: Uint8Array[] = [];
     const stderrFiber = yield* Effect.forkIn(
       handle.stderr.pipe(
@@ -226,7 +198,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
             stderrChunks.push(chunk);
           }),
         ),
-        Effect.ignore,
+        Effect.ignore({ log: "Debug", message: "ヘルパーの標準エラーを読み切れない" }),
       ),
       scope,
     );
@@ -246,11 +218,9 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       scope,
     );
 
-    const stop = handle.kill({ forceKillAfter: stopTimeoutMs }).pipe(Effect.ignore);
-    // 「止めて」の印が立ったら、接続待ちの間でも止める。止まれば下の接続待ちは HelperLaunchFailure で終わる
+    const stop = handle.kill({ forceKillAfter: stopTimeoutMs }).pipe(Effect.ignore({ log: "Debug", message: "ヘルパーを止められない" }));
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), stop), scope);
 
-    // ヘルパーの準備（モデルやマイクの許可）には時間がかかることがあるので、子プロセスが生きている間は時間切れなしで再試行する。
     // 間隔は 10ms から倍々に伸ばし、200ms で頭打ちにする（Schedule.min は短い方の待ちを使い、spaced が止まらないので終わらない）
     const connect = openHelperSocket(`ws://127.0.0.1:${port}`).pipe(
       Effect.retry(connectRetry),
@@ -261,7 +231,6 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       return yield* new HelperLaunchFailure({ stderrTail: yield* stderrTail, exit });
     });
     const socket = yield* Effect.raceFirst(connect, helperEnded);
-    // server から helper への指示は、type 付きの JSON 1 件（helper/README.md「サーバーからの指示」）。組み立てはここ 1 か所
     const send = (instruction: HelperInstruction) => socket.send(JSON.stringify({ ...instruction, token: controlToken }));
 
     return { events: socket.events, stop, exit: Deferred.await(exited), stderrTail, send };

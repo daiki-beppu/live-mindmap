@@ -4,7 +4,6 @@ import { ManagedDeps, ManagedDepsFailed } from "../../src/managedDeps.ts";
 import { Playwright } from "../../src/playwright.ts";
 import { managedLayer } from "./managedDeps.ts";
 
-// heavy IT は利用者と同じ管理ルートを使う。未導入を画像や DOM の失敗として扱わない。
 export const managedPlaywright = Layer.unwrap(Effect.gen(function* () {
   const root = yield* depsDirConfig;
   return Playwright.layer.pipe(Layer.provide(Layer.unwrap(Effect.gen(function* () {

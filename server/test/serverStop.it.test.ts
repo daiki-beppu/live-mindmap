@@ -35,27 +35,48 @@ describe("サーバーの PID の記録", () => {
   }).pipe(Effect.scoped));
 });
 
+const fakeServerPort = (respond: (url: string) => { readonly status: number; readonly body: unknown }) => Effect.gen(function* () {
+  const server = yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<Server>((resolve, reject) => {
+    const server = createServer((request, response) => {
+      const { status, body } = respond(request.url ?? "");
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    });
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  })), (server) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("TCP の待受けがありません");
+  return address.port;
+});
+
+const stopWithoutSignal = (sessionsDir: string, port: number) => Effect.gen(function* () {
+  const signalled: number[] = [];
+  const result = yield* serverStop(sessionsDir, port).pipe(Effect.provideService(ServerProcess, {
+    alive: () => Effect.succeed(true),
+    terminate: (pid) => Effect.sync(() => { signalled.push(pid); }),
+  }));
+  return { ...result, signalled };
+});
+
 describe("cli server stop", () => {
   it.live("セッションが進行中なら断り、シグナルを送らない", () => Effect.gen(function* () {
     const sessionsDir = join(yield* directory, "sessions");
-    const server = yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<Server>((resolve, reject) => {
-      const server = createServer((request, response) => {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify(request.url === "/server" ? { pid: 424242 } : { status: "running", dir: "/tmp/x" }));
-      });
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve(server));
-    })), (server) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))));
-    const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("TCP の待受けがありません");
-    const signalled: number[] = [];
-    const result = yield* serverStop(sessionsDir, address.port).pipe(Effect.provideService(ServerProcess, {
-      alive: () => Effect.succeed(true),
-      terminate: (pid) => Effect.sync(() => { signalled.push(pid); }),
-    }));
+    const port = yield* fakeServerPort((url) => ({ status: 200, body: url === "/server" ? { pid: 424242 } : { status: "running", dir: "/tmp/x" } }));
+    const result = yield* stopWithoutSignal(sessionsDir, port);
     expect(result.failed).toBe(true);
     expect(result.message).toContain("セッションが進行中です。先に cli stop で書き出してから");
-    expect(signalled).toEqual([]);
+    expect(result.signalled).toEqual([]);
+  }).pipe(Effect.scoped));
+
+  it.live("/server が 404 を返す server（/server より前の版）には、Ctrl-C で止めるよう案内して断り、シグナルを送らない", () => Effect.gen(function* () {
+    const sessionsDir = join(yield* directory, "sessions");
+    const port = yield* fakeServerPort(() => ({ status: 404, body: { error: "未対応のリクエスト: GET /server" } }));
+    yield* writePid(sessionsDir, port, 424242);
+    const result = yield* stopWithoutSignal(sessionsDir, port);
+    expect(result.failed).toBe(true);
+    expect(result.message).toBe(`ポート ${port} のサーバーは server stop に対応していない版です。起動した端末で Ctrl-C で止めてください`);
+    expect(result.signalled).toEqual([]);
   }).pipe(Effect.scoped));
 
   it.live("応答が無く、記録の PID のプロセスがもう無いなら、古い記録を消して動いていないと出す", () => Effect.gen(function* () {

@@ -1,6 +1,5 @@
 import type { SnapshotNode } from "../../server/src/core/index.ts";
 
-// 種別の色。淡い塗りと枠は、この色から CSS で作る。
 export const KIND_COLOR: Record<SnapshotNode["kind"], string> = {
   会議: "#6b7280",
   議題: "#3b82f6",
@@ -9,10 +8,9 @@ export const KIND_COLOR: Record<SnapshotNode["kind"], string> = {
   案: "#a855f7",
   決定: "#22c55e",
   TODO: "#14b8a6",
-  要点: "#94a3b8", // 数が一番多くなる種別なので、1 段薄いグレーにして決定や TODO を目立たせる
+  要点: "#94a3b8",
 };
 
-// 印は 論点 ?、決定済みの論点と決定 ✓、TODO ☐ だけ。
 export function markOf(node: SnapshotNode): string | null {
   switch (node.kind) {
     case "論点":

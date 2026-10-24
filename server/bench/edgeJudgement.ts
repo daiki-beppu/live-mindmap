@@ -33,7 +33,6 @@ const judgeBatch = Effect.fnUntraced(function* <E, R>(prompt: string, want: numb
     const out = yield* judge(prompt).pipe(
       Effect.mapError(() => new EdgeJudgementFailed({ message: `バッチ ${batch} の判定器が失敗しました` })),
     );
-    // 指定スクリプトと同じく、断り書きではなく最後の配列を検証する。
     const array = out.match(/\[[^\[\]]*\]/g)?.at(-1);
     if (array === undefined) continue;
     const decoded = yield* Effect.result(decodeLabels(array));

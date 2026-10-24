@@ -1,8 +1,6 @@
-// 録音サンプルの文字起こしファイル（kanary transcribe の JSON）を発言の流れに変える
 import { Schema } from "effect";
 import type { Remark, Track } from "./remark.ts";
 
-// 読み込む側（cli play）がこの Schema で decode する。使うのは segments の 4 項目だけで、ほかのキーは見ない
 export const TranscriptFile = Schema.Struct({
   transcript: Schema.Struct({
     segments: Schema.Array(

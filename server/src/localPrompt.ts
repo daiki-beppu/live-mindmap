@@ -28,7 +28,6 @@ export const SYSTEM = `あなたは会議のマインドマップに、新しい
 - 「自分」と、ラベルの無い「相手」には入れない。
 - 名前が付いているラベル（「相手 B（田中）」）は、本人が別の名前を名乗ったときだけ付け替える。`;
 
-// 元の発言（ID・話者・時刻）と、その発言の 1 文
 export type Sentence = { readonly remark: Remark; readonly text: string };
 export const splitSentences = (remark: Remark): Sentence[] =>
   remark.text.split(/(?<=[。？！?!])/).map((text) => text.trim()).filter(Boolean).map((text) => ({ remark, text }));
@@ -75,7 +74,6 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
   return { prompt, schema, jsonSchema: Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" }).schema };
 }
 
-// 開始検査（接続確認）の分類リクエスト。本番と同じ形式で、会議の状態には適用しない
 export const probeRequest = () => {
   const text = "接続を確認します。";
   return classificationRequest(emptyMap("接続確認"), [], [{ remark: { id: "probe", track: "相手", start: 0, end: 1, text }, text }]);

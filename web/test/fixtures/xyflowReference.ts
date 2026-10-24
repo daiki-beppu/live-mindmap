@@ -1,8 +1,5 @@
-// @xyflow/system 0.0.83 の関数のうち、Foldkit の表示面の式の「写す元」にする 3 つ（Issue #829）。
 // 出どころ: @xyflow/system 0.0.83 の dist/esm/index.js の getViewportForBounds（と parsePadding(s)・calculateAppliedPaddings・rendererPointToPoint・clamp）、getBezierPath（と getBezierEdgeCenter・calculateControlOffset・getControlWithCurvature）、Position。
 // ライセンス: MIT（Copyright (c) 2019-2025 webkid GmbH）。下に全文。
-// React と @xyflow を web の依存から消した後も、描いたマップの式（全体を収めるビューポート・エッジのベジェ）が React Flow と同じ値になることを、このテストの正解として比べ続けるために写した。
-// 値の式は原本のままで、描き直していない（型の注釈だけを足した）。実装が式を変えたら、これと比べるテストが落ちる。
 //
 // MIT License
 //
@@ -36,7 +33,6 @@ const clamp = (val: number, min = 0, max = 1): number => Math.min(Math.max(val, 
 
 const rendererPointToPoint = ({ x, y }: { x: number; y: number }, [tx, ty, tScale]: [number, number, number]) => ({ x: x * tScale + tx, y: y * tScale + ty });
 
-// padding は数値（割合）だけを使う（fitView の padding 0.1）
 const parsePadding = (padding: number, viewport: number): number => Math.floor((viewport - viewport / (1 + padding)) * 0.5);
 
 const parsePaddings = (padding: number, width: number, height: number) => {
@@ -54,20 +50,16 @@ const calculateAppliedPaddings = (bounds: Bounds, x: number, y: number, zoom: nu
 };
 
 export const getViewportForBounds = (bounds: Bounds, width: number, height: number, minZoom: number, maxZoom: number, padding: number): Viewport => {
-  // First we resolve all the paddings to actual pixel values
   const p = parsePaddings(padding, width, height);
   const xZoom = (width - p.x) / bounds.width;
   const yZoom = (height - p.y) / bounds.height;
-  // We calculate the new x, y, zoom for a centered view
   const zoom = Math.min(xZoom, yZoom);
   const clampedZoom = clamp(zoom, minZoom, maxZoom);
   const boundsCenterX = bounds.x + bounds.width / 2;
   const boundsCenterY = bounds.y + bounds.height / 2;
   const x = width / 2 - boundsCenterX * clampedZoom;
   const y = height / 2 - boundsCenterY * clampedZoom;
-  // Then we calculate the minimum padding, to respect asymmetric paddings
   const newPadding = calculateAppliedPaddings(bounds, x, y, clampedZoom, width, height);
-  // We only want to have an offset if the newPadding is smaller than the required padding
   const offset = {
     left: Math.min(newPadding.left - p.left, 0),
     top: Math.min(newPadding.top - p.top, 0),

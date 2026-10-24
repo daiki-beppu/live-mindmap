@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// live-mindmap の CLI。AI エージェントが Bash から呼ぶ（ADR 0003）。
-// 使い方は各 Command・Flag の withDescription が正本で、`live-mindmap --help` で読む（ADR 0010）。
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
@@ -110,16 +108,10 @@ import { exitCodeTeardown, reportEntryFailure } from "./entryFailure.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
 import { planServerStop, readServerPid, removeServerPid, ServerProcess } from "./serverProcess.ts";
 
-// server/package.json は private で version を持たないので、--version の正本はここに置く
 const VERSION = "0.1.0";
-
-/* ----------------------------------------------------------------------------
- * 失敗: サブコマンドの中身の失敗はタグ付きにし、入口の表 1 つで日本語の 1 行に変える
- * -------------------------------------------------------------------------- */
 
 class ServerUnreachable extends Schema.TaggedError<ServerUnreachable>()("ServerUnreachable", {}) {}
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", { message: Schema.String }) {}
-// NDJSON を読んでいる最中に、サーバーとの接続が失われた。入口の失敗の表には載せず、読んだ側（recorded・install）が自分の失敗に変える
 class ServerStreamClosed extends Schema.TaggedError<ServerStreamClosed>()("ServerStreamClosed", { reason: Schema.String }) {}
 class RequiredDepsMissing extends Schema.TaggedError<RequiredDepsMissing>()("RequiredDepsMissing", {}) {}
 class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
@@ -127,19 +119,14 @@ class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()(
   path: Schema.String,
   reason: Schema.String,
 }) {}
-// 下位のモジュール（配信・再生・ファイルの読み書き）の失敗。message はそのまま入口の 1 行になる
 class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", { message: Schema.String }) {}
 
-// ログの行を type で選ぶ集合（decode は LogEvent のまま）
 const typesOf = (events: readonly { readonly fields: { readonly type: { readonly literal: string } } }[]): ReadonlySet<string> => new Set(events.map((event) => event.fields.type.literal));
 const hasLoggedType = (types: ReadonlySet<string>) => (event: unknown): event is { readonly type: string } =>
   Predicate.isObject(event) && "type" in event && Predicate.isString(event.type) && types.has(event.type);
-// 録音済みセッションを読むとき（題名・発言・画面）
 const isReplayedEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, VocabEvent, ScreenEvent, ScreenOffEvent]));
-// evaluate が読むとき（題名・発言・差分）
 const isEvalEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, DiffEvent]));
 
-// 入口で 1 行にする失敗の class
 const CLI_FAILURES = [
   ServerUnreachable,
   ServerFailed,
@@ -154,7 +141,6 @@ const CLI_FAILURES = [
 ] as const;
 type CliFailure = InstanceType<(typeof CLI_FAILURES)[number]>;
 
-// 入口の表。タグ付きの失敗を、今までと同じ日本語の 1 行にする（表示はここだけが持つ）
 const failureLine = (failure: CliFailure): string => {
   switch (failure._tag) {
     case "ServerUnreachable":
@@ -180,8 +166,6 @@ const failureLine = (failure: CliFailure): string => {
 
 const isCliFailure = (failure: unknown): failure is CliFailure => CLI_FAILURES.some((C) => failure instanceof C);
 
-// decode の失敗を 1 行の理由にする。stop の paths のように [配列の名前, 件目, ...] の形で場所が分かるときは
-// 「<名前>」の <n> 件目 を先頭に置く（人が直す場所を日本語で示す）
 const decodeReason = (error: Schema.SchemaError): string =>
   oneLine(
     formatIssues(error.issue)
@@ -196,15 +180,9 @@ const decodeReason = (error: Schema.SchemaError): string =>
       .join(" / "),
   );
 
-/* ----------------------------------------------------------------------------
- * 境界: 設定・標準出力・ファイル読み込み
- * -------------------------------------------------------------------------- */
-
-// 標準出力。Console.log が末尾に改行を足すので、改行の規則（withoutFinalNewline）で末尾の 1 つを外して渡す
 const write = (text: string) => Console.log(withoutFinalNewline(text));
 const writeWarnings = (warnings: ReadonlyArray<string>) => Effect.forEach(warnings, (warning) => Console.error(warning), { discard: true });
 
-// ファイル操作の失敗（PlatformError）を入口の 1 行にする。理由は OS のエラー（ENOENT など）の文面
 const fileFailed = (e: PlatformError.PlatformError) => new CommandFailed({ message: fileReason(e) });
 const orFileFailed = <A, E, R>(effect: Effect.Effect<A, E | PlatformError.PlatformError, R>) =>
   effect.pipe(Effect.catchIf(PlatformError.isPlatformError, (e) => Effect.fail(fileFailed(e))));
@@ -217,7 +195,6 @@ const listenFailed = (port: number, e: { readonly cause: unknown }) =>
       : `ポート ${port} で待ち受けられません: ${describe(e.cause)}`,
   });
 
-// パスの存在判定。親が通常ファイル（ENOTDIR）のときは「存在しない」。それ以外の失敗は PlatformError のまま返す
 const pathExists = (fs: FileSystem.FileSystem, path: string) =>
   fs.exists(path).pipe(
     Effect.catchIf(
@@ -226,7 +203,6 @@ const pathExists = (fs: FileSystem.FileSystem, path: string) =>
     ),
   );
 
-// セッションのフォルダ（名前は開始時刻）のうち、file を持つ最新のもの
 const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string, file: string) {
   const fs = yield* FileSystem.FileSystem;
   const latest = (yield* pathExists(fs, sessionsDir))
@@ -235,22 +211,11 @@ const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string,
   return latest === undefined ? yield* new NoSavedSession({ sessionsDir }) : latest;
 }, orFileFailed);
 
-/* ----------------------------------------------------------------------------
- * セッションの保存・公開（ライブのセッションとも共有する）
- * -------------------------------------------------------------------------- */
-
-/* ----------------------------------------------------------------------------
- * 常駐サーバーへの依頼（HTTP の境界）
- * -------------------------------------------------------------------------- */
-
 const ServerErrorBody = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
-// 要求に添えるもの。本文は、記述が本文の Schema を持つ経路でだけ必須で、その Encoded 型で書く（欄を書き間違えると型エラー）。
-// query は URL の ? 以降、headers は要求のヘッダー
 type ServerRequestOptions<R extends ServerRoute> =
   & (R extends { readonly body: infer B extends Schema.Top } ? { readonly body: B["Encoded"] } : { readonly body?: never })
   & { readonly query?: Record<string, string>; readonly headers?: Record<string, string> };
 
-// 本文を持つ経路では options を省けない（本文の型保証を、引数の省略で迂回させない）
 type ServerRequestArgs<R extends ServerRoute> = R extends { readonly body: Schema.Top } ? [options: ServerRequestOptions<R>] : [options?: ServerRequestOptions<R>];
 
 const executeServerRequest = Effect.fnUntraced(function* <R extends ServerRoute>(
@@ -264,7 +229,6 @@ const executeServerRequest = Effect.fnUntraced(function* <R extends ServerRoute>
   const request = options?.body === undefined ? base : HttpClientRequest.bodyJsonUnsafe(base, options.body);
   const response = yield* client.execute(request).pipe(Effect.mapError(() => new ServerUnreachable()));
   if (response.status < 200 || response.status >= 300) {
-    // 応答の本文が JSON でなくても、状態コードから作る 1 行で伝えられるようにする
     const raw = yield* response.json.pipe(Effect.orElseSucceed((): unknown => ({})));
     const refusal = Schema.decodeUnknownResult(StartupRefusal)(raw);
     if (Result.isSuccess(refusal)) return yield* new StartupDepsMissing({ items: refusal.success.items });
@@ -276,19 +240,15 @@ const executeServerRequest = Effect.fnUntraced(function* <R extends ServerRoute>
   return response;
 });
 
-// 成功応答の本文を各コマンドの Schema で読む
 const decodeServerBody = Effect.fnUntraced(function* <S extends Schema.Decoder<unknown>>(response: HttpClientResponse.HttpClientResponse, schema: S): Effect.fn.Return<S["Type"], ServerFailed, S["DecodingServices"]> {
-  // 2xx でも、本文が JSON として読めなければ {} として各コマンドの Schema で読む（変更前の規則）。JSON の null は null のまま
-  const parsed = yield* response.text.pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))),
-    Effect.orElseSucceed((): unknown => ({})),
-  );
-  return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
-    Effect.mapError((e) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(e)}` })),
+  const unreadable = (reason: string) => new ServerFailed({ message: `サーバーの応答が読めません: ${reason}` });
+  const text = yield* response.text.pipe(Effect.mapError((e) => unreadable(e.message)));
+  return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+    Effect.mapError((e) => unreadable(decodeReason(e))),
   );
 });
 
-// 常駐サーバーへ経路の記述で依頼を送り、成功応答を記述の response の Schema で読む
 const requestServer = <R extends ServerRoute & { readonly response: Schema.Decoder<unknown> }>(
   port: number,
   route: R,
@@ -296,7 +256,6 @@ const requestServer = <R extends ServerRoute & { readonly response: Schema.Decod
 ): Effect.Effect<R["response"]["Type"], ServerUnreachable | ServerFailed | StartupDepsMissing, HttpClient.HttpClient> =>
   executeServerRequest(port, route, ...args).pipe(Effect.flatMap((response) => decodeServerBody(response, route.response)));
 
-// 常駐サーバーが NDJSON で流す経過（1 行 1 イベント）を、届いた順に 1 件ずつ handle へ渡す。読めない行は ServerFailed、通信の失敗は ServerStreamClosed
 const forEachServerEvent = <A, R>(
   response: HttpClientResponse.HttpClientResponse,
   route: { readonly response: Schema.Decoder<A> },
@@ -312,12 +271,6 @@ const forEachServerEvent = <A, R>(
     Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerStreamClosed({ reason: String(error) }))),
   );
 
-/* ----------------------------------------------------------------------------
- * サブコマンド
- * -------------------------------------------------------------------------- */
-
-// slides.tsv を読み、行ごとの画像を JPEG にして play の Scope の一時フォルダへ 1 件ずつ書く。
-// 変化の列は、再生が入れる直前にその一時ファイルを読む形で返す（全画像のバイト列を再生の終わりまで持たない）
 const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
   const text = yield* readTextFile(tsv).pipe(Effect.mapError((e) => new CommandFailed({ message: `${tsv} が読めません: ${fileReason(e)}` })));
   const rows = yield* Effect.fromResult(parseSlides(text)).pipe(Effect.mapError((reason) => new CommandFailed({ message: `${tsv} が不正です: ${reason}` })));
@@ -334,7 +287,6 @@ const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
   return slideChanges(rows, (i) => fs.readFile(jpegPath(i)).pipe(Effect.mapError((e) => new CommandFailed({ message: `${jpegPath(i)} が読めません: ${e.message}` }))));
 });
 
-// raw と words が両方そろう行だけ、直し直す元として運ぶ（無い古い行は直さずに流す）
 const replayableRemark = (decoded: (typeof RemarkEvent)["Type"]): PlaybackRemark =>
   decoded.raw !== undefined && decoded.words !== undefined ? { ...decoded.remark, raw: decoded.raw, words: decoded.words } : decoded.remark;
 
@@ -342,10 +294,8 @@ const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof
   const { start, image } = decoded;
   const recordedLines = decoded.ocrFailed === true ? { ocrFailed: decoded.ocrFailed } : decoded.lines === undefined ? {} : { lines: decoded.lines };
   if (image === null) return Effect.succeed({ start, image: null, ...recordedLines });
-  // ログ由来の image は、screens/ 直下の単一のファイル名だけを認める（外のファイルを読まない）
   const screensDir = resolve(dir, SCREENS_DIR);
   const path = resolve(screensDir, image);
-  // basename 比較で区切り文字を含む値（絶対パス・../・./）を、dirname 比較で ""・.・.. を拒否する
   if (basename(image) !== image || dirname(path) !== screensDir) {
     return Effect.fail(new CommandFailed({ message: `${LOG_FILE} ${lineNo} 行目の image が screens/ 直下のファイル名ではありません: ${image}` }));
   }
@@ -359,9 +309,6 @@ const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof
   });
 };
 
-// セッションのフォルダ（log.jsonl を持つフォルダ）のログから、再生に渡す題名・発言・共有画面の変化を読む。
-// 流すのは start（題名）・remark・screen・screen-off だけで、ほかの行（intake-*・diff など）は読み飛ばす。
-// 画像は元のフォルダの screens/ から、入れる直前に読む。変化の時刻はログの start をそのまま使う
 const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
   const logPath = join(dir, LOG_FILE);
   const fs = yield* FileSystem.FileSystem;
@@ -408,7 +355,6 @@ const readTranscriptRemarks = Effect.fn("readTranscriptRemarks")(function* (tran
   return [...fromTranscript(file)];
 });
 
-// 無いパスは false（ファイルを渡す play の入口でも失敗にしない）
 const isDirectory = Effect.fn("isDirectory")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   return (yield* fs.exists(path)) && (yield* fs.stat(path)).type === "Directory";
@@ -430,7 +376,6 @@ const recordPlayback = Effect.fn("recordPlayback")(function* (
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
   const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
-  // 過去のセッションのフォルダを再生するときだけ、今の規則で直し直す（読みのサブコマンドもモデルも呼ばない）
   const replaying = input.vocabulary === undefined
     ? session
     : yield* withReplayCorrection(session, {
@@ -484,17 +429,13 @@ const play = Command.make(
         if (folder && Option.isSome(screen)) {
           return yield* new CommandFailed({ message: "セッションのフォルダと --screen は一緒に使えません" });
         }
-        // セッションのフォルダはログを再生の前にすべて読む。壊れていれば何も始めずに失敗する（画像は入れる直前に読む）
         const recorded = folder ? yield* loadSessionLog(resolve(transcript)) : undefined;
-        // 共有画面は再生を始める前にすべて読み、JPEG にする。読めなければ何も始めずに失敗する
         const screens: Iterable<PlaybackScreen<CommandFailed>> = recorded
           ? recorded.screens
           : Option.isSome(screen) ? yield* loadScreens(screen.value) : [];
-        // 配信は play の Scope が持つ。再生と書き出しが終わって Scope を閉じるときに、待受けも閉じる
         const listener = yield* openListener(port).pipe(
           Effect.mapError((e) => listenFailed(port, e)),
         );
-        // 配信の開始と、待受けを閉じる前に最後のスナップショットを接続中のクライアントへ渡し切る登録を、受け取った Context への 1 回の provide で行う
         const viewers = yield* Effect.gen(function* () {
           yield* serveFeed;
           const viewers = yield* Viewers;
@@ -535,13 +476,11 @@ const apps = Command.make(
   {},
   Effect.fn("apps")(function* () {
     const port = yield* portConfig;
-    // 一覧の中身は CLI が使わないので、形を決めずにそのまま出す
     const list = yield* requestServer(port, ServerRoutes.apps);
     yield* write(JSON.stringify(list, null, 2) + "\n");
   }),
 ).pipe(Command.withDescription("会議アプリの一覧（JSON）を出す。常駐サーバー（pnpm dev）に頼む"));
 
-// --vocab のファイル（1 行に 1 語、空行は無視）を語の一覧にする。足さなければ空。start と recorded が共有する
 const vocabFlag = Flag.File("vocab", { mustExist: true }).pipe(
   Flag.withDescription("利用者が足す語のファイル（1 行に 1 語、空行は無視）。この語で発言を直す。足せるのは開始時だけ（resume では受け取らない）"),
   Flag.optional,
@@ -553,7 +492,6 @@ const readVocabulary = Effect.fnUntraced(function* (vocab: Option.Option<string>
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
 });
 
-// 転送用トークンが要る計画（needsTransferToken）のときだけ、トークンを読んで要求のヘッダーにする。start と recorded が共有する
 const modelTransferHeaders = Effect.fnUntraced(function* (plan: UpdatePlan, port: number) {
   if (!needsTransferToken(plan)) return undefined;
   const sessionsDir = yield* sessionsDirConfig;
@@ -606,14 +544,11 @@ const start = Command.make(
   ),
 );
 
-// 録画からのセッションの経過（NDJSON）を読んで、進み具合を標準エラーに出し、終わりを返す。
-// 端末なら同じ行を書き換え、端末でないときは変わるたびに 1 行出す
 const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse.HttpClientResponse, onStarted: (dir: string) => void) {
   const tty = yield* StdoutIsTty;
   let finished: Extract<RecordedEvent, { type: "finished" }> | undefined;
   let lastProgress: RecordedProgress | undefined;
   let drawing = false;
-  // 知らせを 1 行出す。端末で進み具合を描いている最中なら、その行を消してから出す（次の進み具合は新しい行から描き直す）
   const notify = (text: string) => tty && drawing
     ? Effect.sync(() => {
       drawing = false;
@@ -657,8 +592,6 @@ const followRecorded = Effect.fnUntraced(function* (response: HttpClientResponse
   return { finished, lastProgress };
 });
 
-// 録画からのセッションの途中で、サーバーとの接続が切れた。途中までのセッションのフォルダ（開始の応答を受け取っていれば）と、
-// もう一度 cli recorded を呼べば頭から組み直せることを知らせる
 const disconnectedFailure = (dir: string | undefined, reason: string | undefined) =>
   new ServerFailed({
     message: [
@@ -676,7 +609,6 @@ const writeRecordedResult = Effect.fnUntraced(function* (
   if (finished.ocrSummary.failed > 0) yield* Console.error(formatOcrSummary(finished.ocrSummary));
   yield* write([...(dir === undefined ? [] : [dir]), ...finished.paths].map((line) => `${line}\n`).join(""));
   if (finished.failure !== undefined) {
-    // ヘルパーの起動し直しを諦めて、入れた分で終えた。どこまで組めたかと、ヘルパーの標準エラーの末尾を出す
     const { code, signal, stderrTail } = finished.failure;
     const position = formatRecordedPosition(lastProgress?.position ?? 0, lastProgress?.duration ?? null);
     yield* Console.error(stderrTail.join("\n"));
@@ -714,7 +646,6 @@ const recorded = Command.make(
     const port = yield* portConfig;
     const headers = plan === undefined ? undefined : yield* modelTransferHeaders(plan, port);
     let dir: string | undefined;
-    // 開始の要求が断られた（2xx 以外）ときは中断の対象に入れない。既存のセッションを止めないため
     yield* Effect.scoped(Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const response = yield* restore(executeServerRequest(port, ServerRoutes.sessionRecorded, { body: {
@@ -725,7 +656,6 @@ const recorded = Command.make(
           ...(realtime ? { realtime } : {}),
           ...(plan === undefined ? { noMap: true } : planBody(plan)),
         }, headers }));
-        // 待機の中断で受信を失わないよう、受信の寿命はコマンドの Scope に結ぶ。
         const receiving = yield* Effect.forkScoped(Effect.interruptible(followRecorded(response, (started) => { dir = started; })));
         const waited = yield* Effect.exit(restore(Fiber.join(receiving)));
         let result: Effect.Success<ReturnType<typeof followRecorded>>;
@@ -738,7 +668,6 @@ const recorded = Command.make(
             yield* Fiber.interrupt(receiving);
             result = { finished: { type: "finished", ...stopped.success }, lastProgress: undefined };
           } else {
-            // 終了処理を既に別の経路が所有していれば、その処理の finished を待つ。
             result = yield* Fiber.join(receiving);
           }
         }
@@ -747,7 +676,6 @@ const recorded = Command.make(
         if (Exit.isFailure(waited)) return yield* Effect.failCause(waited.cause);
       }),
     )).pipe(
-      // サーバーが落ちた・接続が切れた。続けない（待ち続けない）。途中までのセッションのフォルダと、組み直し方を知らせて失敗にする
       Effect.catchTag("ServerStreamClosed", (closed) => Effect.fail(disconnectedFailure(dir, closed.reason))),
     );
   }),
@@ -792,7 +720,6 @@ const status = Command.make(
   ),
 );
 
-// 許す範囲は 既定の許可 + 引数（重複は除く）。--anyone のときだけ「誰でも」。範囲が空なら {}（空の拒否はサーバーの判定順に任せる）
 const shareOpenBody = (anyone: boolean, mails: readonly string[]): typeof ServerRoutes.shareOpen.body["Encoded"] =>
   anyone ? { anyone: true } : mails.length > 0 ? { mails: [...new Set(mails)] } : {};
 
@@ -822,8 +749,6 @@ const share = Command.make(
       yield* requestServer(port, ServerRoutes.shareClose);
       return;
     }
-    // 拒否の判定順（共有中・セッション無し・ローカル・cloudflared 無し・範囲が空）はサーバーが持つ。
-    // 新しく開いたか既存を返したかは、サーバーがロックの中で決めてヘッダーで返す
     const response = yield* executeServerRequest(port, ServerRoutes.shareOpen, { body: shareOpenBody(anyone, [...defaults, ...mails]) });
     const outcome = yield* Schema.decodeUnknownEffect(ShareOpenOutcome)(response.headers[SHARE_OPEN_OUTCOME_HEADER]).pipe(
       Effect.mapError(() => new ServerFailed({ message: "サーバーの応答が読めません: 共有の結果を示すヘッダーがありません" })),
@@ -867,7 +792,6 @@ const exportCommand = Command.make(
     const path = join(sessionsDir, latest, EXPORT_FILE);
     const text = yield* readTextFile(path).pipe(Effect.mapError(fileFailed));
     if (format === "json") {
-      // json はマップの形を使わないので、保存した値をそのまま出す（宣言していないキーも落とさない）
       const raw = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
         Effect.mapError((e) => new CommandFailed({ message: `${path} が JSON として読めません: ${decodeReason(e)}` })),
       );
@@ -888,7 +812,6 @@ const restore = Command.make(
     const sessionsDir = yield* sessionsDirConfig;
     const dir = join(sessionsDir, yield* latestSession(sessionsDir, LOG_FILE));
     const { lines, events } = yield* readLogLines(join(dir, LOG_FILE)).pipe(orFileFailed);
-    // 復元では差分更新を呼ばない。呼ばれたら defect にする。ログは書き直さない。画像は差分更新に添えるときにだけ読むので、ここでは読まない
     const session = yield* restoreSession(events).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -896,19 +819,16 @@ const restore = Command.make(
           Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void, readScreen: () => Effect.die("restore は共有画面を読まない") })),
         ),
       ),
-      // 壊れた行は、空行を除く前の行番号の BrokenLogLine にする
       Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new BrokenLogLine({ path: join(dir, LOG_FILE), line: lines[e.index]?.no ?? 1, kind: "event", reason: e.reason }))),
     );
     const exported = yield* session.exportJson;
     const fs = yield* FileSystem.FileSystem;
     yield* fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(exported)).pipe(orFileFailed);
-    // 終了の処理を通らなかったセッションも、組み直した語を語彙の溜まりの更新に含める（ログの番号の行が無いセッションは何もしない）
     yield* updatePoolFromLog(sessionsDir, events);
     yield* write(`${dir}\n`);
   }, Effect.scoped),
 ).pipe(Command.withDescription("最新のセッションのログから、差分更新を呼ばずにマップを戻す。終了の処理を通らなかったセッションの語は、語彙の溜まりにも入れる"));
 
-// 渡されたセッションのフォルダ（省略すると log.jsonl を持つ最新のセッション）と、その log.jsonl。log.jsonl が無ければ失敗にする
 const sessionLog = Effect.fnUntraced(function* (session: Option.Option<string>) {
   const dir = Option.isSome(session)
     ? resolve(session.value)
@@ -947,7 +867,6 @@ const review = Command.make(
       const self = yield* writeReviewPages(dir, events, variants).pipe(
         Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map-audio-自分.html", describe(e)) })),
       );
-      // 見返し用に 自分 だけの版を頼まれているので、mix の失敗は警告で済ませず失敗にする
       for (const { file, reason } of self.skipped) return yield* new CommandFailed({ message: reviewWarning(file, reason) });
       yield* write(self.paths.map((path) => `${path}\n`).join(""));
       return;
@@ -955,7 +874,6 @@ const review = Command.make(
     const { paths, skipped } = yield* writeReviews(dir).pipe(
       Effect.mapError((e) => new CommandFailed({ message: reviewWarning("map.html", describe(e)) })),
     );
-    // mix だけの失敗は、map.html を書いて成功のまま終える。書けなかった理由は標準エラーに出す
     for (const { file, reason } of skipped) yield* Console.error(reviewWarning(file, reason));
     yield* write(paths.map((path) => `${path}\n`).join(""));
   }),
@@ -965,7 +883,6 @@ const review = Command.make(
   ),
 );
 
-// 元ログを選んだモデルで再生し、新しいランのフォルダを返す（updater の layer などは呼び出し側の Scope が持つ）
 const replayedRunDir = Effect.fnUntraced(function* (source: string, plan: UpdatePlan) {
   const recorded = yield* loadSessionLog(resolve(source));
   const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
@@ -984,7 +901,6 @@ const evaluatedRun = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, dir
   );
   const logPath = join(dir, LOG_FILE);
   if (!(yield* pathExists(fs, logPath).pipe(orFileFailed))) return { name: basename(dir), title: exp.root.text, exp };
-  // 検証は restore と同じ restoreState で行う。壊れた行は、どのランか分かるようにパスと行番号を添えて失敗にする
   const { lines, events } = yield* readLogLines(logPath).pipe(
     orFileFailed,
     Effect.catchTag("BrokenLogLine", (e) => Effect.fail(new CommandFailed({ message: `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` }))),
@@ -1015,7 +931,6 @@ const evaluate = Command.make(
   },
   Effect.fn("eval")(function* ({ sessions, truth, screenTruth, model }) {
     const plan = Option.isSome(model) ? yield* resolvePlan({ model: model.value }) : undefined;
-    // 正解ファイルの検証は共有の readTruthFile（段 1 の Truth の Schema）が持つ（Flag 側では検証しない）
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const screen = Option.isNone(screenTruth) ? undefined : yield* readScreenTruthFile(screenTruth.value);
     const fs = yield* FileSystem.FileSystem;
@@ -1055,9 +970,7 @@ const checkCommand = Command.make(
     + "管理依存は入れる前に利用者に確認する",
 ));
 
-// /deps/install と /update は、同じ InstallEvent の NDJSON を流す。要求は呼び出し側が記述で組み、ここは経過を読む
 const installFromServer = Effect.fnUntraced(function* (send: ReturnType<typeof executeServerRequest>) {
-    // エージェント（標準出力が端末でない）にだけ出す。人の端末には要らない文
     if (!(yield* StdoutIsTty)) yield* Console.error("時間がかかるので run_in_background で呼んでよい");
     const response = yield* send;
     let result: Extract<typeof ServerRoutes.depsInstall.response.Type, { type: "result" }> | undefined;
@@ -1073,7 +986,6 @@ const installFromServer = Effect.fnUntraced(function* (send: ReturnType<typeof e
     yield* write(JSON.stringify(result.items));
 });
 
-// 名前の検証は server（400）に任せる。引数は利用者の入力なので、ここだけ本文の型へ読み替える（CLI の拒否の経路を変えない）
 const installCommand = Command.make(
   "install",
   { names: Argument.String("name").pipe(Argument.atLeast(1)) },
@@ -1104,9 +1016,11 @@ const updateCommand = Command.make(
   }),
 ).pipe(Command.withDescription("常駐サーバーに版違いの管理依存だけの更新を依頼する。名前を省くと全対象。speech-ja は OS が更新するので不要"));
 
-// サーバーが SIGTERM の後に終わるのを待つ上限と、確かめる間隔
 const SERVER_EXIT_TIMEOUT_MS = 15_000;
 const SERVER_EXIT_POLL_MS = 100;
+
+const predatesServerRoute = (port: number) =>
+  new CommandFailed({ message: `ポート ${port} のサーバーは server stop に対応していない版です。起動した端末で Ctrl-C で止めてください` });
 
 const serverStop = Command.make(
   "stop",
@@ -1122,8 +1036,7 @@ const serverStop = Command.make(
       Effect.map((identity): number | undefined => identity.pid),
       Effect.catchTags({
         ServerUnreachable: () => Effect.succeed(undefined),
-        // PID を名乗る口が無いのは、この口より前の版のサーバー
-        ServerFailed: () => Effect.fail(new CommandFailed({ message: `ポート ${port} のサーバーは server stop に対応していない版です。起動した端末で Ctrl-C で止めてください` })),
+        ServerFailed: () => Effect.fail(predatesServerRoute(port)),
       }),
     );
     const plan = planServerStop({ reported, recorded, recordedAlive: recorded === undefined ? false : yield* processes.alive(recorded) });
@@ -1137,7 +1050,6 @@ const serverStop = Command.make(
           message: `ポート ${port} のサーバーが応答しません。記録の pid ${plan.pid} が live-mindmap のサーバーか確かめてから止めてください（ps -p ${plan.pid} -o command=）`,
         });
       case "terminate": {
-        // 止めるとセッションは書き出されずに終わるので、進行中なら断る
         const { status } = yield* requestServer(port, ServerRoutes.sessionStatus);
         if (status !== "none") return yield* new CommandFailed({ message: "セッションが進行中です。先に cli stop で書き出してから、もう一度 server stop を打ってください" });
         yield* processes.terminate(plan.pid);
@@ -1198,7 +1110,6 @@ const MISSING_CREDENTIALS_MESSAGE = [
 ].join("\n");
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// 置く途中で失敗・中断（Ctrl-C など）されたら、作りかけの Worker を消す。失敗のときは消してから元の失敗で返し、消すのも失敗したら、元の失敗の文に残っているかもしれない旨を足す（元の失敗は置き換えない）。中断は catch に届かず、記録の無い Worker が残るので onInterrupt でも消す。消す処理自体は中断されない
 const withWorkerRollback = <A, R>(credentials: CloudflareCredentials, name: string, place: Effect.Effect<A, CommandFailed, R>) =>
   place.pipe(
     Effect.onInterrupt(() =>
@@ -1228,8 +1139,6 @@ const readRecords = readPublishRecords().pipe(Effect.mapError((e) => new Command
 const deleteRecordedWorker = (record: PublishRecord, token: string) =>
   deleteWorker({ accountId: record.accountId, token }, record.name).pipe(Effect.match({ onSuccess: () => undefined, onFailure: (e) => e }));
 
-// publish・list・withdraw の最初に、期限が過ぎても公開中のままの Worker を消して「期限切れで消した」にする（行は残す）。
-// 失敗（記録が読めない・資格情報が無い・失効・通信・書き換え）は標準エラーに出すだけで本来のコマンドを止めず、公開中のまま残して次の機会に消し直す
 const sweepExpiredPublishes = (token: string | undefined) =>
   Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
@@ -1259,7 +1168,6 @@ const sweepExpiredPublishes = (token: string | undefined) =>
     Effect.catch((e) => Console.error(`期限切れの後片付けができませんでした: ${describe(e)}`)),
   );
 
-// 手元の記録だけから作る。資格情報があるときだけ、記録に無い lmm- の Worker を知らせる（消さない）
 const publishList = Command.make(
   "list",
   { all: Flag.Boolean("all").pipe(Flag.withDescription("取り下げた物も含めて全部出す（既定は公開中だけ）"), Flag.withDefault(false)) },
@@ -1279,7 +1187,6 @@ const publishList = Command.make(
   }),
 ).pipe(Command.withDescription("公開の記録（~/.live-mindmap/publish/records.jsonl）から、公開中の物を表で出す（URL・合言葉・期限・中身の段・元のセッション・状態）。--all で取り下げた物も出す。資格情報があれば、記録に無い lmm- の Worker を知らせるだけで消さない。サーバーもローカルモードも関係しない"));
 
-// 引数の名前・URL を記録に突き合わせる。記録に無い物は stderr に出して数える
 const matchWithdrawTargets = Effect.fnUntraced(function* (records: ReadonlyArray<PublishRecord>, targets: ReadonlyArray<string>) {
   const found = new Map<string, PublishRecord>();
   let unmatched = 0;
@@ -1294,7 +1201,6 @@ const matchWithdrawTargets = Effect.fnUntraced(function* (records: ReadonlyArray
   return { found: [...found.values()], unmatched };
 });
 
-// 記録の Worker を 1 つずつ消す。消せた物の名前と、消せなかった数を返す
 const deletePublishedWorkers = Effect.fnUntraced(function* (records: ReadonlyArray<PublishRecord>, token: string) {
   const withdrawn: string[] = [];
   let failed = 0;
@@ -1311,7 +1217,6 @@ const deletePublishedWorkers = Effect.fnUntraced(function* (records: ReadonlyArr
   return { withdrawn, failed };
 });
 
-// 引数は名前か URL。まとめて取り下げる口・セッション単位の口は持たない
 const publishWithdraw = Command.make(
   "withdraw",
   { targets: Argument.String("target").pipe(Argument.withDescription("取り下げる Worker の名前か URL（1 つ以上）"), Argument.atLeast(1)) },
@@ -1322,14 +1227,12 @@ const publishWithdraw = Command.make(
     yield* sweepExpiredPublishes(token);
     const records = yield* readRecords;
     const { found: matched, unmatched } = yield* matchWithdrawTargets(records, targets);
-    // 期限が過ぎて後片付けで消した物は、取り下げ（利用者がやめる操作）に書き換えない
     const found = matched.filter((record) => record.status !== "expired");
     for (const record of matched) {
       if (record.status === "expired") yield* write(`期限が過ぎたので既に消してあります: ${record.url}`);
     }
     const { withdrawn, failed } = yield* deletePublishedWorkers(found, token);
     if (withdrawn.length > 0) {
-      // 残る物があるときは、記録の書き換えに失敗しても「まだ置き場にある」旨を落とさない
       const remaining = unmatched > 0 || failed > 0 ? `\n${STILL_THERE}` : "";
       yield* markRecordStatus(withdrawn, "withdrawn").pipe(
         Effect.mapError((e) => new CommandFailed({ message: `Worker は消しましたが、公開の記録を書き換えられませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}${remaining}` })),
@@ -1338,7 +1241,6 @@ const publishWithdraw = Command.make(
     if (unmatched > 0 || failed > 0) return yield* new CommandFailed({ message: STILL_THERE });
   }),
 ).pipe(Command.withDescription("公開した Worker を、期限の前にすぐ消す（引数は名前か URL。1 つ以上）。記録の行は残し、状態を「取り下げた」にする。Cloudflare 側に既に無い（404）物は成功。記録に無い名前・URL や消せなかった物があれば 0 以外で返す。まとめて取り下げる口・セッション単位の口は無い。CLOUDFLARE_ACCOUNT_ID と CLOUDFLARE_API_TOKEN が要る。サーバーもローカルモードも関係しない"));
-// remarks・audio の公開を、利用者の確認（--confirmed）なしに置こうとした。Cloudflare に何も送らずに止め、エージェントに利用者へ確かめさせる（終了コード 4）
 export class ConfirmationRequired extends Schema.TaggedError<ConfirmationRequired>()("ConfirmationRequired", {
   content: Schema.Literals(["remarks", "audio"]),
   anyone: Schema.Boolean,
@@ -1348,11 +1250,9 @@ export class ConfirmationRequired extends Schema.TaggedError<ConfirmationRequire
   }
 }
 
-// 中身の段ごとの版。mix の入力はセッションのフォルダ、置く HTML は index.html の名前で作る（どこにも書かない）
 const publishVariant = (content: (typeof PUBLISH_CONTENTS)[number]): ReviewVariant =>
   content === "map" ? { file: "index.html", audio: false, mapOnly: true } : { file: "index.html", audio: content === "audio" };
 
-// 置くセッションを決め、手元で分かる理由（log.jsonl が無い・ローカルモード・audio なのに録音が無い）で置けなければ失敗にする
 const publishableSession = Effect.fnUntraced(function* (session: Option.Option<string>, content: (typeof PUBLISH_CONTENTS)[number]) {
   const { dir, logPath } = yield* sessionLog(session).pipe(Effect.catchTag("NoSavedSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) }))));
   const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
@@ -1368,7 +1268,6 @@ const publishableSession = Effect.fnUntraced(function* (session: Option.Option<s
   return { dir, logPath };
 });
 
-// 置く中身の段の見返しを作り、公開用の head にする（暗号化の前）
 const publishedMapHtml = Effect.fnUntraced(function* (dir: string, logPath: string, content: (typeof PUBLISH_CONTENTS)[number]) {
   const { events } = yield* readLogLines(logPath).pipe(
     Effect.mapError((e) => new CommandFailed({
@@ -1379,7 +1278,6 @@ const publishedMapHtml = Effect.fnUntraced(function* (dir: string, logPath: stri
     Effect.catchTag("ReviewPageFailed", (e) => Effect.fail(new CommandFailed({ message: e.message }))),
     Effect.catchIf((e) => e instanceof Error, (e) => Effect.fail(new CommandFailed({ message: e.message }))),
   );
-  // 公開する中身の音声を作れなかったときは、音声なしで置かずに失敗にする（--self-only と同じ）
   for (const { file, reason } of rendered.skipped) return yield* new CommandFailed({ message: reviewWarning(file, reason) });
   return yield* Effect.try({ try: () => replaceHeadForPublish(rendered.pages[0]!.html), catch: (e) => new CommandFailed({ message: e instanceof Error ? e.message : String(e) }) });
 });
@@ -1404,12 +1302,10 @@ const publish = Command.make(
     const token = yield* cloudflareApiTokenConfig;
     if (accountId === undefined || token === undefined) return yield* new CommandFailed({ message: MISSING_CREDENTIALS_MESSAGE });
     const credentials: CloudflareCredentials = { accountId, token };
-    // 手元で分かる失敗を出した後、ビルド・mix・Cloudflare への要求の前に止める。入口の teardown が終了コード 4 にする
     if (content !== "map" && !confirmed) return yield* new ConfirmationRequired({ content, anyone });
     yield* sweepExpiredPublishes(token);
 
     const mapHtml = yield* publishedMapHtml(dir, logPath, content);
-    // 合言葉が既定。暗号化は資格情報の確認の後、Cloudflare への最初の要求（accountSubdomain）の前に行う
     const passphrase = anyone ? undefined : generatePassphrase();
     const html = passphrase === undefined
       ? mapHtml
@@ -1457,14 +1353,8 @@ const root = Command.make("live-mindmap").pipe(
   Command.withSubcommands([login, logout, vocab, play, apps, start, recorded, stop, status, share, resume, exportCommand, restore, review, publish, evaluate, models, checkCommand, installCommand, updateCommand, serverCommand]),
 );
 
-// argv を受けて走らせるだけ。失敗の表示はしない（入口の reportFailure が 1 か所で持つ）
 export const runCli = Command.runWith(root, { version: VERSION });
 
-/* ----------------------------------------------------------------------------
- * 入口
- * -------------------------------------------------------------------------- */
-
-// 失敗の表示はここだけ。共通の前半（entryFailure）で済まないものを、この表で表示する
 export const reportFailure = reportEntryFailure((failure) => {
   if (failure instanceof RequiredDepsMissing) return Effect.void;
   if (failure instanceof ModelRefused || failure instanceof ConfirmationRequired) return Console.error(failure.message);
@@ -1474,7 +1364,6 @@ export const reportFailure = reportEntryFailure((failure) => {
 export const teardown: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof RequiredDepsMissing || failure instanceof StartupDepsMissing ? 3 : failure instanceof ConfirmationRequired ? 4 : undefined));
 
 if (import.meta.main) {
-  // ヘルパーが見つからないときは、その文を理由に失敗する mix の Layer を渡す（map-audio.html だけを諦める。録音の無いセッションや map.html には影響しない）
   const helper = resolveHelperPath(process.env);
   const screenJpegLayer = ScreenJpeg.layer.pipe(Layer.provide(NodeServices.layer));
   const audioMixLayer = "error" in helper

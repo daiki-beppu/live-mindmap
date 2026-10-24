@@ -1,9 +1,4 @@
 #!/usr/bin/env node
-// 常駐サーバー（pnpm dev）。ADR 0003: ヘルパーはこのサーバーの子プロセスで、セッションの開始・終了は CLI から頼まれる。
-// 受け口（ルート・本文の検証・Origin の制限・失敗から応答への変換）は http.ts、ブラウザへの配信は viewers.ts。
-// ヘルパーの寿命とセッションの状態は sessions.ts（外の世界は helpers.ts、セッションの中身は sessionSinks.ts）が持つ。
-// このモジュールが持つのは、それらの Layer を組み立てて待受けにつなぐ、起動・終了の入口。
-// ブラウザへの WebSocket は HTTP と同じポートで待ち受ける。同時に扱うセッションは 1 つ。
 import { NodeChildProcessSpawner, NodeFileSystem, NodeHttpClient, NodePath, NodeRuntime } from "@effect/platform-node";
 import { Cause, ConfigProvider, Effect, Exit, type FileSystem, Layer, Logger, Runtime } from "effect";
 import { HttpServer, type HttpClient } from "effect/http";
@@ -19,7 +14,8 @@ import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import { ReviewBuild } from "./review.ts";
-import { layerListener, openViewingPort, portOf, serveSessions } from "./http.ts";
+import { layerListener, serveSessions } from "./http.ts";
+import { portOf } from "./httpServing.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
 import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
 import { Tunnel } from "./tunnel.ts";
@@ -30,7 +26,7 @@ import { publishServerPid } from "./serverProcess.ts";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
 
 export type ListenOptions = {
-  port: number; // 0 なら空きポート
+  port: number;
   sessionsDir: string;
   onListening?: (port: number) => void;
 };
@@ -38,21 +34,18 @@ export type ListenOptions = {
 export type ServerOptions = ListenOptions & {
   depsDir: string;
   prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | ManagedDeps>["prepareUpdater"];
-  helper: HelperCommand; // 実行ファイルと、サブコマンドの前に付ける引数
+  helper: HelperCommand;
 };
 
-// 外の世界（子プロセス・空きポート・ヘルパーへの WebSocket）とセッションの中身の Layer。テストは偽物を渡す
 export type ServerLayers = {
   managedDeps: Layer.Layer<ManagedDeps>;
   helpers: Layer.Layer<Helpers>;
   sessionSinks: Layer.Layer<SessionSinks>;
-  viewing: Layer.Layer<Tunnel | ReviewBuild>; // 閲覧の共有の外の世界（cloudflared の tunnel と、閲覧の口の画面のビルド）
+  viewing: Layer.Layer<Tunnel | ReviewBuild>;
 };
 
-// 子プロセスの起動に、FileSystem と Path が要る
 const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)));
 
-// 終了時の書き出しが使う Service（撮影・見返し用の HTML のビルド・mix と、その FileSystem）と、利用者が足した語の読みを作る Readings
 export type ExportServices = Layer.Layer<MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem, never, ManagedDeps>;
 
 export const realLayers = (options: ServerOptions, exportServices: ExportServices): ServerLayers => {
@@ -66,30 +59,23 @@ export const realLayers = (options: ServerOptions, exportServices: ExportService
   };
 };
 
-// サーバーの資源（配信・セッションの状態・待受け）を Scope に結び付けて起動し、待ち受けているポートを返す。
-// 止める順（登録の逆）: PID の記録を消す → 転送用トークンを消す → 配信を渡し切る（drained）→ 配信の停止・接続の Fiber の終了 → Sessions
-// （進行中のセッションのヘルパー・updater の後始末）→ 待受けを閉じる
 export const startup = Effect.fnUntraced(function* (options: ListenOptions, layers: ServerLayers) {
   const token = makeModelTransferToken();
-  // 待受け・Viewers・Sessions を 1 つの Layer に組む（依存を先に build するので、止めるときは Sessions が待受けより先）
   const context = yield* Layer.build(
     Layer.merge(Sessions.layer, InstallDeps.layer).pipe(
       Layer.provide(Layer.mergeAll(layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
       Layer.provideMerge(layers.helpers),
       Layer.provideMerge(layerListener(options.port)),
       Layer.provideMerge(layers.managedDeps),
-      // 閲覧の共有は、Sessions（セッションの Scope）・Viewers の上に載せる。止めるときは Sessions より先
-      (base) => ViewingShare.layer(openViewingPort()).pipe(Layer.provide(layers.viewing), Layer.provideMerge(base)),
+      (base) => ViewingShare.layer.pipe(Layer.provide(layers.viewing), Layer.provideMerge(base)),
     ),
   );
   return yield* Effect.gen(function* () {
     yield* serveSessions(token);
-    // 配信の停止・Sessions・待受けを閉じるより先に、最後のフレームを接続中のクライアントへ渡し切る
     const viewers = yield* Viewers;
     yield* Effect.addFinalizer(() => viewers.drained);
     const port = yield* portOf((yield* HttpServer.HttpServer).address);
     yield* publishModelTransferToken(options.sessionsDir, port, token).pipe(Effect.provide(NodeFileSystem.layer));
-    // cli server stop が止める相手を確かめるための記録。Scope を閉じると消す
     yield* publishServerPid(options.sessionsDir, port, process.pid).pipe(Effect.provide(NodeFileSystem.layer));
     options.onListening?.(port);
     return port;
@@ -114,12 +100,9 @@ if (import.meta.main) {
   } else {
     const helperPath = helper.path;
     const helperCommand = { command: helperPath, args: [] };
-    // 終了時の書き出しの Service は、ここで 1 回だけ組む（書き出しのたびに Layer を作り直さない）
     const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner)), Readings.layer(helperCommand).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
       Layer.provideMerge(NodeFileSystem.layer),
     );
-    // runMain は SIGINT・SIGTERM でルートのファイバーを中断する。中断で Scope が閉じ、ヘルパー・配信・
-    // 待受けが後片付けされる（process.exit で finalizer を迂回しない）。runMain はこの入口にだけ置く
     // 設定（ポートとフォルダ）の解決に失敗したときだけ、理由を標準エラーに出す。Effect の既定のロガーは標準出力に書くので、
     // ここだけ LogToStderr を立てる。待受けの失敗などほかの失敗は、runMain の自動報告（既定のロガー）のまま変えない。
     // 出した失敗には errorReported=false を付け、runMain が同じ失敗を標準出力へもう一度報告しないようにする

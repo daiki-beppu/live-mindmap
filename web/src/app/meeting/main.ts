@@ -50,7 +50,6 @@ const Session = Schema.Struct({
   keyList: Popover.Model,
 });
 
-// startsNarrow: 開いた時点で幅が狭かったか（startFlags.ts）。画面の部品はスナップショットが届いてから作るので、そのときに右の列と字幕を隠して始めるために覚えておく
 export const Model = Schema.Struct({ feed: LiveFeed.Model, isMac: Schema.Boolean, startsNarrow: Schema.Boolean, session: Schema.Option(Session) });
 export type Model = typeof Model.Type;
 type SessionModel = typeof Session.Type;
@@ -65,7 +64,6 @@ const stripSurface = (surface: MapSurface.Model): SessionModel["mapSurface"] => 
   const { mode: _mode, snapshot: _snapshot, speakerNames: _speakerNames, ...rest } = surface;
   return rest;
 };
-// 字幕は feed の吹き出しと名前の表から導く（保存しない。名前が付いたら、それまでの吹き出しも名前になる）。時刻は状態が最後に受けた時刻で、view は時刻を読まない
 const layoutOf = (feed: LiveFeed.Model, session: SessionModel): SessionLayout.Model => ({ ...session.sessionLayout, captions: { _tag: "Bubbles", bubbles: displayBubbles(feed.captions, feed.captions.clock, feed.speakerNames) } });
 const stripLayout = (layout: SessionLayout.Model): SessionModel["sessionLayout"] => {
   const { captions: _captions, ...rest } = layout;
@@ -151,7 +149,6 @@ const KEY_HANDLERS: Record<KeyId, KeyHandler<Model, Message>> = {
   C: plainKey((model) => ({ model: toggledCaptions(model) })),
   "?": plainKey((model) => toggledKeyList(keyListOpen(model) ? foldKeyListClose(model) : foldKeyListOpen(model))),
   Space: inert, K: inert, J: inert, L: inert, ",": inert, ".": inert, "<": inert, ">": inert, Home: inert, End: inert,
-  // 画面に見えている状態（休止の一言が出ているか）の逆を、状態を指定する形で server へ送る。Model は変えない（切り替わるのは /ws の frame が届いたとき）
   M: plainKey((model) => ({ model, commands: [RequestSelfPause({ paused: !Option.exists(model.session, (s) => s.sessionLayout.selfPaused !== false) })] })),
 };
 

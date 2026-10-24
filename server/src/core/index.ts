@@ -50,6 +50,7 @@ export { CATCH_UP_REMARKS } from "./session.ts";
 export type { OnSpeakerNames } from "./session.ts";
 export type { DiffInput, DiffResult, DiffUpdateError, KatakanaAsk, PreviousResponse, ScreenChange, Session } from "./session.ts";
 export * from "./settle.ts";
+export type { SettledRemark } from "./remarkGate.ts";
 export * from "./captions.ts";
 export * from "./speakers.ts";
 export * from "./topic.ts";

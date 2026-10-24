@@ -1,5 +1,3 @@
-// 撮影の入口（Issue #827）: map.png の撮影ページ（サーバーがスナップショットを入れて開く）を Foldkit の Runtime で #root に描く。
-// Subscription は置かない（still は補間が始まらず、ヘッドレスの撮影には人のポインタ操作も無い）
 import { Runtime } from "foldkit";
 import type { Snapshot } from "../../../../server/src/core/index.ts";
 import { init, Model, update, view } from "./main.ts";

@@ -1,6 +1,3 @@
-// 実会議の録音から、話し終わりの時刻（--lines と同じ形の行）を作る。
-// 録音の無音区間（ffmpeg の silencedetect）の始まりを話し終わりとする。ffmpeg は PATH 上のものを使う。
-// 使い方は各 Command・Flag の withDescription が正本で、`node bench/speechEnds.ts --help` で読む。
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -28,8 +25,6 @@ export function parseSilenceDetect(text: string): { duration: number | undefined
   return { duration, silences };
 }
 
-// 無音の始まりを話し終わり（end）、無音の終わりを次の話し始め（start）とする。
-// 先頭の無音の前と末尾の無音の後ろには行を作らない。minSpeechSeconds より短い話している区間（雑音の一瞬）は捨てる
 export function speechLines(silences: readonly Silence[], duration: number, minSpeechSeconds: number): SpokenLine[] {
   const lines: SpokenLine[] = [];
   let speechStart = 0;
@@ -45,10 +40,8 @@ export function speechLines(silences: readonly Silence[], duration: number, minS
   return lines;
 }
 
-// ffmpeg は結果を stderr に出すので、stdout と stderr をまとめて受け取る。起動できない（ffmpeg が無い）ときは失敗する
 const runSilenceDetect = Effect.fnUntraced(function* (file: string, noise: number, minSilence: number) {
   const { exitCode, output } = yield* runFfmpegFilter(file, `silencedetect=noise=${noise}dB:d=${minSilence}`);
-  // 失敗した ffmpeg の出力から行を作らない（無音を検出できていないのに、全体を発話として成功させない）
   if (exitCode !== 0) return yield* new InvalidInputFile({ path: file, reason: `ffmpeg が失敗した（終了コード ${exitCode}）` });
   return output;
 }, Effect.catchTag("PlatformError", (e) => Effect.fail(new InvalidInputFile({ path: "ffmpeg", reason: describe(e) }))));

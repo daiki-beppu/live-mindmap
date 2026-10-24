@@ -1,5 +1,3 @@
-// セッションの画面の部品（Issue #820）: 字幕・取り込みの途切れ・共有画面・見る状態の知らせ。見返しと会議中で共通に使う。
-// 知らせは Toast（headless）で持ち、消えるまでの時間は Toast の duration で持つ。位置・要素・文言は React 版（SessionView、Issue #829 で削除）から変えない
 import { Option, Schema } from "effect";
 import { Disclosure } from "@foldkit/ui";
 import { Submodel, Update } from "foldkit";
@@ -14,14 +12,11 @@ import { CAPTION_ID_KEY, SlideCaptions } from "./mount.ts";
 import { NAME_INPUT_ID, SPEAKER_NAME_COLORS, speakerNameCell } from "./speakerName.ts";
 import { Notice, shownText, type NoticeModel } from "./toast.ts";
 
-// 開いている名前の入力（Issue #1026）。押した時点の吹き出しの行の写し（字幕から外れても入力を残すため）・サーバーに送るラベル・入力中の文字
 const NameEdit = Schema.Struct({ bubble: DisplayBubble, label: Schema.String, draft: Schema.String });
 type NameEdit = typeof NameEdit.Type;
 
 export const Model = Schema.Struct({
-  // 字幕。会議中は話者つきの吹き出し（Bubbles）、見返しはトラックごとの文（Lines）。どちらも外から導いた値を受ける
   captions: Captions,
-  // 字幕を隠しているか。Disclosure は状態を持たないので、開閉の状態はここの 1 か所だけ
   captionsHidden: Schema.Boolean,
   intake: Schema.Option(IntakeStatus),
   intakeToast: Notice.Model,
@@ -29,10 +24,8 @@ export const Model = Schema.Struct({
   tapToast: Notice.Model,
   viewingToast: Notice.Model,
   diffUpdate: Schema.Option(DiffUpdateState),
-  // 自分を休止中か（Issue #1069）と、その理由（Issue #1071）。/ws の frame だけで変わる。M が送る値の基準にもなる（画面に見えている状態）
   selfPaused: SelfPaused,
   local: Schema.Boolean,
-  // 開いている名前の入力。無ければ閉じている
   nameEdit: Schema.Option(NameEdit),
 });
 export type Model = typeof Model.Type;
@@ -91,7 +84,6 @@ type ShowOptions = { readonly duration: number } | { readonly sticky: true };
 const hideAll: NoticeAction = (toast) => Notice.dismissAll(toast);
 const show = (text: string, options: ShowOptions): NoticeAction => (toast) => Notice.show(toast, { payload: { text }, ...options });
 
-// 出ている文を入れ替える。前の entry は先に消し始め（描かれなくなる）、新しい文を足す
 const swapNotice =
   (fold: ToastFold, text: string, options: ShowOptions): Update.Step<Model, Message> =>
   Update.combine([fold(hideAll), fold(show(text, options))]);
@@ -116,17 +108,14 @@ export const update = (model: Model, message: Message): Return =>
     ReceivedSelfPause: ({ selfPaused }) => ({ model: modifyFields(model, { selfPaused: () => selfPaused }) }),
     ReceivedDiffUpdate: ({ state }) => ({ model: modifyFields(model, { diffUpdate: () => state }) }),
     ReceivedSessionMode: ({ local }) => ({ model: modifyFields(model, { local: () => local }) }),
-    // 変わらない状態は何もしない。変わったら intakeNoticeText が文を決める（届いた時点が変わった時点なので経過時間は 0）
     ReceivedIntakeStatus: ({ status }) => {
       if (Option.contains(model.intake, status)) return { model };
       const text = intakeNoticeText({ previous: Option.getOrNull(model.intake), current: status, msSinceChange: 0 });
       const next = modifyFields(model, { intake: () => Option.some(status) });
-      // 「再開しました」だけが Toast の duration で消える。途切れ・止まったは状態が変わるまで残る
       return noticeOf(next, foldIntakeToast, Option.none(), Option.fromNullishOr(text), status === "running" ? { duration: RESUMED_NOTICE_MS } : { sticky: true });
     },
     ReceivedScreenNotice: ({ text }) => noticeOf(model, foldScreenToast, shownText(model.screenToast), text, { sticky: true }),
     ReceivedTapNotice: ({ text }) => noticeOf(model, foldTapToast, shownText(model.tapToast), text, { sticky: true }),
-    // 押した欄がもう字幕に無ければ開かない
     PressedSpeakerName: ({ bubbleId, label }) => {
       const bubble = model.captions.bubbles.find((b) => b.id === bubbleId);
       return bubble === undefined
@@ -134,7 +123,6 @@ export const update = (model: Model, message: Message): Return =>
         : { model: modifyFields(model, { nameEdit: () => Option.some({ bubble, label, draft: "" }) }), commands: [FocusSpeakerNameInput({ id: NAME_INPUT_ID })] };
     },
     ChangedSpeakerNameDraft: ({ draft }) => ({ model: modifyFields(model, { nameEdit: Option.map((edit: NameEdit) => ({ ...edit, draft })) }) }),
-    // 確定: 空のままなら何も送らず閉じる（名前は外せない）。送った後は閉じ、名前は frame が届いてから出す（楽観的に出さない）
     SubmittedSpeakerName: () =>
       Option.match(model.nameEdit, {
         onNone: () => ({ model }),
@@ -154,7 +142,6 @@ export const update = (model: Model, message: Message): Return =>
     GotViewingToastMessage: ({ message }) => foldViewingToast(model, (toast) => Notice.update(toast, message)),
   });
 
-// 親（会議中）が、WebSocket の frame から届いた事実を伝える入口（子の Message を親が組み立てずに済む）
 export const receiveIntakeStatus = (model: Model, status: typeof IntakeStatus.Type): Return => update(model, Message.ReceivedIntakeStatus({ status }));
 export const receiveScreenNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedScreenNotice({ text }));
 export const receiveTapNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedTapNotice({ text }));
@@ -162,10 +149,8 @@ export const receiveSelfPause = (model: Model, selfPaused: SelfPaused): Return =
 export const receiveDiffUpdate = (model: Model, state: Model["diffUpdate"]): Return => update(model, Message.ReceivedDiffUpdate({ state }));
 export const receiveSessionMode = (model: Model, local: boolean): Return => update(model, Message.ReceivedSessionMode({ local }));
 
-// 親（見返し）が、見る状態の mode が変わったことを伝える入口（子の Message を親が組み立てずに済む）
 export const changeViewingMode = (model: Model, mode: "auto" | "manual" | "overview" | "diff"): Return => update(model, Message.ChangedViewingMode({ mode }));
 
-// 親が字幕の部品を子として組み込む配線。親ごとに違うのは、Model のどこから読み、どこへ書き戻し、親の Message に包むか（read・write・toParentMessage）だけ
 export const sessionLayoutFolds = <ParentModel, ParentMessage>(parent: {
   readonly read: (model: ParentModel) => Option.Option<Model>;
   readonly write: (model: ParentModel, layout: Model) => ParentModel;
@@ -191,13 +176,11 @@ const viewingText = (mode: "auto" | "manual" | "overview" | "diff"): Option.Opti
   mode === "manual" ? Option.some(MANUAL_TEXT) : mode === "overview" ? Option.some(OVERVIEW_TEXT) : mode === "diff" ? Option.some(DIFF_TEXT) : Option.none();
 
 type H = HtmlBuilder<Message>;
-// keyList は、キーの一覧（見返しだけ。閉じていれば null）。省略すれば何も描かない
 type Slots = { readonly map: Html; readonly keyList?: Html | null; readonly side: Html | null };
 
 const noticeView = (h: H, className: string, toast: NoticeModel): Html | null =>
   Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.div([h.Class(className), h.AriaLive("polite")], [text]) });
 
-// 吹き出しの文字。確定の分はそのまま、途中の分だけ別の要素にして不透明度 0.5（色は親の話者の色を受け継ぐ）にし、末尾に点滅するカーソルを置く
 const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | string> => {
   const settled = bubble.text.slice(0, bubble.settledLength);
   const pending = bubble.text.slice(bubble.settledLength);
@@ -206,7 +189,6 @@ const bubbleTextView = (h: H, bubble: DisplayBubble): ReadonlyArray<Html | strin
     : [settled, h.span([h.Class("captions__pending opacity-50")], [pending, h.span([h.Class("captions__cursor")], [])])];
 };
 
-// 会議中の字幕: 吹き出しの行。名前の欄（固定幅）+ 吹き出し（幅は固定）。相手は左、自分は右に寄せる。吹き出しの枠は styles.css の .captions__bubble。影・バッジは付けない
 const bubbleRowView = (h: H, bubble: DisplayBubble, nameEdit: Model["nameEdit"]): Html =>
   h.keyed("div")(
     bubble.id,
@@ -240,7 +222,6 @@ function captionsView(h: H, model: Model): Html | null {
       id: "captions",
       isOpen: !model.captionsHidden,
       onToggle: (isOpen) => Message.ToggledCaptions({ isOpen }),
-      // 隠しているときは .captions ごと描かない（animatePanel は使わない）
       toView: ({ panel }) =>
         model.captionsHidden
           ? null
@@ -248,7 +229,6 @@ function captionsView(h: H, model: Model): Html | null {
               [
                 h.Class("captions"),
                 h.AriaLive("polite"),
-                // 吹き出しの幅（名前の欄を除いた列に対する割合）は定数から渡す。幅の式は styles.css の .captions__bubble
                 h.Style({ "--caption-bubble-ratio": String(CAPTION_BUBBLE_WIDTH) }),
                 h.OnMount(SlideCaptions()),
                 ...panel,
@@ -274,8 +254,6 @@ function localModeViews(h: H, model: Model): ReadonlyArray<Html> {
   ];
 }
 
-// 自分を休止中の間だけ出し続ける一言（Toast ではなく、状態に応じて出す要素。時間では消えない）。位置は styles.css の .self-pause-notice
-// 理由で文言が変わる。手動はいつでも M で戻せる。自動は会議アプリがマイクを使い始めると戻る
 const SELF_PAUSE_TEXT = { 手動: "自分を休止中（M で再開）", 自動: "自分を休止中（会議アプリがマイクを使っていない）" } as const;
 const selfPauseView = (h: H, model: Model): Html | null =>
   model.selfPaused ? h.div([h.Class("self-pause-notice"), h.AriaLive("polite")], [SELF_PAUSE_TEXT[model.selfPaused]]) : null;
@@ -289,8 +267,6 @@ const diffUpdateView = (h: H, model: Model): Html | null =>
         : null,
   });
 
-// `.map`・キーの一覧・`.side` は別の部品が持つので、差し込み口で受け取る（`.side` は包まずそのまま置く。右の列を隠しているときは null）。並びは SessionView の .layout の直下と同じ。
-// キーの一覧は `.map` の中の最後に置く（表示面 → 見る状態の知らせ → キーの一覧）
 export const view = (model: Model, h: H, slots: Slots): Html =>
   h.div(
     [h.Class(model.local ? "layout layout--local flex w-full h-full relative" : "layout flex w-full h-full relative")],
@@ -311,7 +287,6 @@ function noticeViewP(h: H, toast: NoticeModel): Html | null {
   return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice absolute left-[16px] bottom-[4px] m-0 text-[13px] leading-[16px] whitespace-nowrap text-gray-500 pointer-events-none z-5")], [text]) });
 }
 
-// 親が h.submodel で組み込むための view。差し込み口は、親の builder で作る Html を返す関数（親の境界で実行される）で受ける
 type SlotViews = { readonly map: () => Html; readonly keyList: () => Html | null; readonly side: () => Html | null };
 export const submodelView = Submodel.defineView<Model, Message, SlotViews>((model, slots, h) =>
   view(model, h, { map: slots.map(), keyList: slots.keyList(), side: slots.side() }),

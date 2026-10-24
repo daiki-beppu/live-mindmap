@@ -1,17 +1,10 @@
 import { join } from "node:path";
 import { readSources, reportViolations, type SourceFile } from "./sourceFiles.ts";
 
-// Issue #237・#236: NodeRuntime.runMain（SIGINT・SIGTERM でルートのファイバーを中断する）と runPromise は
-// 入口（server.ts・cli.ts・bench の各スクリプト）でだけ呼ぶ。それ以外のモジュールは Effect のまま返し、
-// 古いコードから runPromise で新しいコードを呼ぶ形を取らない。runPromise は src・bench のどこにも無い
-// （Issue #436: server.ts の終了時の書き出しと startServer* の Promise の口を消した）。
-// runSync は web の同期の入口から呼ぶ境界（core/review.ts の reviewSnapshot）だけに残す。ソースを読んで呼び出しの場所を確かめる
 export type Violation = { path: string; line?: number; message: string };
 
 const BENCH_SCRIPTS = ["bench/sessionStats.ts", "bench/mapShape.ts", "bench/sttAccuracy.ts", "bench/sttLatency.ts", "bench/sttReplay.ts", "bench/speechEnds.ts", "bench/edgeJudge.ts", "bench/siblingJudge.ts", "bench/speakerReplay.ts", "bench/speakerAccuracy.ts", "bench/timelineReplay.ts", "bench/peopleAccuracy.ts"];
 const RUN_MAIN_ALLOWED = ["src/server.ts", "src/cli.ts", ...BENCH_SCRIPTS];
-const RUN_PROMISE_ALLOWED: string[] = [];
-// reviewSnapshot（web/src/reviewTimeline.ts から同期で呼ぶ。R = never・非同期なしなので必ず同期で終わる）
 const RUN_SYNC_ALLOWED = ["src/core/review.ts"];
 
 const RUN_MAIN = /\.runMain\s*\(/;
@@ -26,7 +19,6 @@ const matchingLines = (content: string, pattern: RegExp): number[] =>
     .split("\n")
     .flatMap((text, index) => (!text.trimStart().startsWith("//") && pattern.test(text) ? [index + 1] : []));
 
-// コメント行を除いた本文全体に当てる（`process.exit\n(1)` のような改行をまたぐ呼び出しも拾う）。行番号は元の行番号で返す
 const matchingLinesInCode = (content: string, pattern: RegExp): number[] => {
   const kept = content
     .split("\n")
@@ -46,7 +38,6 @@ const codeOf = (content: string): string =>
     .filter((line) => !line.trimStart().startsWith("//"))
     .join("\n");
 
-// Issue #237・#236: 呼び出しの場所の集合が許可リストとちょうど一致する
 const checkCallers = (files: ReadonlyArray<SourceFile>, byPath: ReadonlyMap<string, string>, pattern: RegExp, allowed: readonly string[], label: string): Violation[] => {
   const violations: Violation[] = [];
   for (const { path, content } of files) {
@@ -66,7 +57,6 @@ const checkCallers = (files: ReadonlyArray<SourceFile>, byPath: ReadonlyMap<stri
 const checkRunPromise = (files: ReadonlyArray<SourceFile>): Violation[] => {
   const violations: Violation[] = [];
   for (const { path, content } of files) {
-    if (RUN_PROMISE_ALLOWED.includes(path)) continue;
     for (const line of matchingLines(content, RUN_PROMISE)) {
       violations.push({ path, line, message: "Effect.runPromise（runPromiseExit を含む）は呼ばない" });
     }
@@ -74,7 +64,6 @@ const checkRunPromise = (files: ReadonlyArray<SourceFile>): Violation[] => {
   return violations;
 };
 
-// Issue #449: サーバーの入口は process.exit も、既定で process.exit を呼ぶ teardown の onExit も呼ばない
 const checkServerEntry = (server: string | undefined): Violation[] => {
   if (server === undefined) return [];
   return [
@@ -83,7 +72,6 @@ const checkServerEntry = (server: string | undefined): Violation[] => {
   ];
 };
 
-// Issue #561: bench の各入口も process.exit を呼ばず、exitNaturally で自然に終わる
 const checkBenchEntries = (byPath: ReadonlyMap<string, string>): Violation[] => {
   const violations: Violation[] = [];
   for (const path of BENCH_SCRIPTS) {
