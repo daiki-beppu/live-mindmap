@@ -22,7 +22,6 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
     if (control.holdResponse) yield* Deferred.await(control.holdResponse);
     const body = jsonRequestBody(request) as { response_format: { json_schema: { schema: { properties: { 文?: { maxItems: number }; readings?: unknown } } } } };
     const properties = body.response_format.json_schema.schema.properties;
-    // 英字の語のカタカナの読み（Issue #642）の要求には、読みの形で答える
     const content = properties.文 === undefined
       ? { readings: [{ word: "Notion", katakana: "ノーション" }] }
       : classification(Array.from({ length: properties.文.maxItems }, () => ({ 種類: "説明", text: "面接官は3人" })));
@@ -59,7 +58,6 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
     });
   })));
   const apple = AppleIntelligence.layer({ command: "fake-apple", args: [] }).pipe(Layer.provide(spawner));
-  // Apple の経路は Claude の SDK を読まないので、管理依存は読み込もうとしたら落ちる偽物にする
   const deps = Layer.mergeAll(apple, Layer.succeed(HttpClient.HttpClient, http.client),
     Layer.succeed(FileSystem.FileSystem, FileSystem.makeNoop({})), forbiddenManagedDeps);
   return {
@@ -70,8 +68,6 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
   };
 });
 
-// 条件がそろうまで待つ。そろわなければ黙って戻らず失敗する（CI の負荷では 200 回の yield で状態や配信が届き切らないことがあった）。
-// 実ファイルの書き込みや配信を挟む IT もあるので、yield の後は実時間（TestClock に依らない setTimeout）で最大 5 秒待つ
 export const waitUntil = Effect.fnUntraced(function* (condition: () => boolean | Effect.Effect<boolean>, label: string) {
   const check = () => { const result = condition(); return typeof result === "boolean" ? Effect.succeed(result) : result; };
   for (let i = 0; i < 200; i++) {

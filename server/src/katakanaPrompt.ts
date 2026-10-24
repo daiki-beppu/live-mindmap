@@ -1,5 +1,3 @@
-// 英字の語のカタカナの読みを聞く要求（Issue #642）。全経路（claude・openai-compatible・chatgpt・apple）が同じ文面・Schema を使う。
-// 差分更新の会話とは別の、1 回きりの要求に使う。strict な json_schema は根がオブジェクトである必要があるので、出力は { readings: [...] } にする。
 import { Schema } from "effect";
 import type { KatakanaAnswer } from "./core/index.ts";
 
@@ -9,6 +7,7 @@ export const KATAKANA_SYSTEM = `あなたは日本語の会議の音声認識を
 - 読みが分からない語は、その語を返さない
 - 渡された語だけに答える。語を足さない`;
 
+// strict な json_schema は根がオブジェクトである必要があるので、出力は { readings: [...] } にする。
 export const KatakanaOutput = Schema.Struct({
   readings: Schema.Array(Schema.Struct({ word: Schema.String, katakana: Schema.String })),
 });

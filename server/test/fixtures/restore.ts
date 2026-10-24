@@ -10,7 +10,6 @@ export const remark = (text: string, extra: Partial<Remark> = {}): Remark => {
 
 export type Step = Op[] | UpdateFailure;
 
-// 台本どおりに差分操作を返す（UpdateFailure なら失敗する）偽物の差分更新。呼ばれた入力を記録する。
 export function scripted(...script: Step[]) {
   const calls: DiffInput[] = [];
   const update = (input: DiffInput): Effect.Effect<DiffOutput, UpdateFailure> => {
@@ -21,5 +20,4 @@ export function scripted(...script: Step[]) {
   return { calls, update };
 }
 
-// 復元したセッションを、偽物の差分更新・何も書かないログで開く
 export const restore = (events: Iterable<unknown>) => restoreSession(events).pipe(Effect.provide(Layer.merge(forbiddenUpdater, silentLog)));

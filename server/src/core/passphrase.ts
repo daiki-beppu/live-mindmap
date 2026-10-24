@@ -1,14 +1,3 @@
-// 合言葉の生成と、暗号化・復号（Issue #1251）。Node に依存しない（WebCrypto・atob・btoa は globalThis のものを使う）。
-// 鍵の導出は PBKDF2-SHA256（回数が多く、1 回に時間がかかる）、暗号は AES-256-GCM（認証つき。合言葉が違えば復号が失敗する）。
-//
-// 置く側（Node）と、置いた HTML の中のスクリプトが「同じ実装」を使うために、復号の関数をこのモジュールに 1 つだけ書き、
-// ページのスクリプトは同じ関数の toString() から作る（unlockPageScript）。ページ側に写した別の実装を持たない。
-// そのため、下の「ページに入る関数」は次の規則を守る:
-//   - すべて function 宣言にする（アロー関数を const に入れない）
-//   - 本文から参照するのは、引数・globalThis の API・unlockPageScript が先頭に置く定数（下の PAGE_CONSTANTS）だけ
-//   - import した識別子を参照しない（テスト・ビルドの変換が識別子を書き換えるため、文字列にすると壊れる）
-
-// 32 文字。紛らわしい 0 o 1 l を除く
 const PASSPHRASE_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 const PASSPHRASE_GROUPS = 4;
 const PASSPHRASE_GROUP_LENGTH = 5;
@@ -27,8 +16,6 @@ export function generatePassphrase(): string {
   for (let at = 0; at < chars.length; at += PASSPHRASE_GROUP_LENGTH) groups.push(chars.slice(at, at + PASSPHRASE_GROUP_LENGTH).join(""));
   return groups.join("-");
 }
-
-/* ---- ここから下の function 宣言は、ページのスクリプトにそのまま入る ---- */
 
 function bytesToBase64(bytes: Uint8Array): string {
   // 25 MiB 近い入力もあるので、String.fromCharCode(...bytes) を一度に呼ばず、分けて変換する
@@ -70,7 +57,6 @@ export async function openSealed(sealed: Sealed, passphrase: string): Promise<st
   return new TextDecoder().decode(decrypted);
 }
 
-// ページの入口。入力を読み、復号できたらマップのページに置き換える。違えば「合言葉が違います」を出す
 function bootUnlockPage(): void {
   const form = document.querySelector("form") as HTMLFormElement;
   const input = form.querySelector("input") as HTMLInputElement;
@@ -93,9 +79,6 @@ function bootUnlockPage(): void {
   });
 }
 
-/* ---- ページに入る関数ここまで ---- */
-
-// 先頭に置く定数。関数の本文はこれらの名前を参照する
 function pageConstants(): string {
   return [
     `const PBKDF2_ITERATIONS = ${JSON.stringify(PBKDF2_ITERATIONS)};`,
@@ -103,7 +86,6 @@ function pageConstants(): string {
   ].join("\n");
 }
 
-// 外側のページに置くスクリプト（<script> の中身）。SEALED_ELEMENT_ID は暗号文の script 要素の id
 export function unlockPageScript(): string {
   const functions = [bytesToBase64, base64ToBytes, deriveKey, openSealed, bootUnlockPage].map((fn) => fn.toString());
   return `${pageConstants()}\n${functions.join("\n")}\nbootUnlockPage();\n`;

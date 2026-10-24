@@ -1,5 +1,3 @@
-// 判定の口（System One API の形）。state と質問の束を送り、質問ごとの確率の分布・選んだもの・確からしさ・usage を返す。
-// 失敗・時間切れ・形の合わない応答は例外にせず「判定できなかった」（ok:false）として返す。中断だけは伝える。
 import { Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import type { JudgeModel } from "./judgeSelection.ts";
@@ -9,12 +7,11 @@ const SYSTEM_ONE_MODEL = "jev-latest";
 const workersAiUrl = (accountId: string, model: string) =>
   `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/run/@cf/cloudflare/${model}`;
 
-// 今使う質問の型は noul（「含む」の確率）だけ
 export type JudgeQuestion = { readonly type: "noul"; readonly instructions: string };
 export type JudgeAnswer = {
   readonly distribution: { readonly yes: number; readonly no: number };
   readonly chosen: "yes" | "no";
-  readonly confidence: number; // 選んだ側の確からしさ
+  readonly confidence: number;
 };
 export type JudgeOutcome =
   | { readonly ok: true; readonly answers: Readonly<Record<string, JudgeAnswer>>; readonly usage?: Readonly<Record<string, number>> }

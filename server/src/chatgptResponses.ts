@@ -48,7 +48,6 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
   const endpoints = yield* ChatgptEndpoints;
   const services = yield* Effect.context<import("effect").FileSystem.FileSystem | HttpClient.HttpClient>();
   const client = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
-  // 1 回きりの要求を送り、応答の本文（JSON の文字列）を返す。instructions・prompt・JSON Schema だけが用途ごとに変わる
   const exchange = Effect.fnUntraced(function* (instructions: string, prompt: string, jsonSchema: object) {
     const token = yield* accessToken(path).pipe(Effect.provideContext(services), Effect.provideService(ChatgptEndpoints, endpoints));
     const response = yield* HttpClientRequest.post(endpoints.responses).pipe(
@@ -76,7 +75,6 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
   const classify: Classify = (input) => refuse(exchange(SYSTEM, input.prompt, input.jsonSchema).pipe(
     Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(text)),
   ));
-  // 開始検査は分類だけ。読みの要求は足さない（開始時の通信の回数を変えない）
   yield* classify(probeRequest());
   const katakana: LocalModel["katakana"] = (words) => refuse(exchange(KATAKANA_SYSTEM, katakanaPrompt(words), KATAKANA_JSON_SCHEMA).pipe(
     Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(text)),

@@ -7,17 +7,11 @@ import { embedReviewAudio, embedReviewLog } from "../../server/src/core/index.ts
 import type { Viewport } from "../src/camera.ts";
 import type { BrowserContext, Page } from "./browser.ts";
 
-// 見返し（map.html・map-audio.html）の heavy IT が共有する道具（Issue #826）。テストではなく、
-// テストの中で作る WAV・ビルドしたテンプレートへのログと音声の埋め込み・ページの開き方・ビューポートの読み方だけを置く。
-// 音声のファイルはリポジトリに足さない（WAV は silentWav が作る）。
-
 export const LOG_PATH = join(import.meta.dirname, "fixtures/sampleMeeting.log.jsonl");
 export const TIMEOUT = 180_000;
 
-// 画面の大きさ。高さ 801: 寸法の期待値（meeting.mount.heavy.test.ts の CAPTIONS_WIDTH など）が、この大きさで測った値のため
 export const PAGE_VIEWPORT = { width: 1280, height: 801 } as const;
 
-// テストの中で作る無音の WAV（PCM 16bit・モノラル）。会議の長さ（11 秒）より少し長くする
 export function silentWav(seconds: number): Buffer {
   const rate = 8000;
   const data = Buffer.alloc(rate * seconds * 2);
@@ -39,7 +33,6 @@ export function silentWav(seconds: number): Buffer {
 
 export type ReviewPages = { audioPath: string; plainPath: string; dispose: () => Promise<void> };
 
-// 呼び出し側で 1 回だけ流した本物のビルド（template）から map-audio.html（録音つき）と map.html（録音なし）を書き出す。ログは既定で題材のログ（LOG_PATH）で、別の例を使うときは logPath で渡す
 export async function prepareReviewPages(template: string, logPath: string = LOG_PATH): Promise<ReviewPages> {
   const dir = await mkdtemp(join(tmpdir(), "live-mindmap-review-pages-"));
   const events = (await readFile(logPath, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown);
@@ -51,12 +44,9 @@ export async function prepareReviewPages(template: string, logPath: string = LOG
 }
 
 export type OpenOptions = {
-  // 録音つきなら、<audio> が読み込めるまで待つ（読み込めなければ、前提が崩れている）
   audio: boolean;
 };
 
-// ページを開き、ノードが出て（録音つきなら <audio> が読み込めて）画面が使える状態になるまで待って返す
-// 画面の大きさは context の viewport（withContext に渡す）で決まる
 export async function openReviewPage(context: BrowserContext, htmlPath: string, { audio }: OpenOptions): Promise<Page> {
   const page = await context.newPage();
   await page.goto(pathToFileURL(htmlPath).href);
@@ -81,16 +71,13 @@ const parseTransform = (transform: string | null, source: string): Viewport => {
   return { x: Number(match[1]), y: Number(match[2]), zoom: Number(match[3]) };
 };
 
-// ビューポートは .map-viewport の style.transform（translate(xpx, ypx) scale(z)）
 export const readFoldkitViewport = async (page: Page): Promise<Viewport> =>
   parseTransform(await page.evaluate(() => (document.querySelector(".map-viewport") as HTMLElement | null)?.style.transform ?? null), ".map-viewport");
 
-// ビューポートが落ち着くまで待つ。補間は requestAnimationFrame の Subscription で進む（web/src/app/mapSurface/subscription.ts）ので、
-// 壁時計の間隔ではなく、フレームごとに transform を比べ、SETTLED_FRAMES フレーム続けて同じなら落ち着いたとする
 const SETTLED_FRAMES = 3;
 const SETTLED_TIMEOUT_MS = 8_000;
 export async function settled(page: Page): Promise<void> {
-  await readFoldkitViewport(page); // .map-viewport が無い・transform を読めないときは、ここで失敗させる
+  await readFoldkitViewport(page);
   const ok = await page.evaluate(
     ({ frames, timeoutMs }) =>
       new Promise<boolean>((resolve) => {
@@ -113,15 +100,12 @@ export async function settled(page: Page): Promise<void> {
   if (!ok) throw new Error("ビューポートが落ち着きません");
 }
 
-// .map の中の、ノードの無い所（右下の隅）と、中央
 export const mapPoint = async (page: Page, where: "center" | "corner") => {
   const box = await page.locator(".map").boundingBox();
   if (box === null) throw new Error(".map の位置を読めません");
   return where === "center" ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : { x: box.x + box.width - 40, y: box.y + box.height - 40 };
 };
 
-// ---- 寸法の確認 ----
-// 動いている animation・transition は読む前に最後まで進めて終わらせる（途中の値を読んで揺れるのを避ける）
 export const styleOf = <K extends string>(page: Page, selector: string, props: readonly K[], nth = 0): Promise<Record<K, string>> =>
   page.locator(selector).nth(nth).evaluate((element, names) => {
     for (const animation of element.getAnimations()) animation.finish();

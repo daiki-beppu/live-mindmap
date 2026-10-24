@@ -42,7 +42,6 @@ const LOCK = "install.lock";
 const READY = ".ready.json";
 const MARKER = "INSTALLATION_COMPLETE";
 const CLOUDFLARED_BINARY = "cloudflared";
-// hashes: cloudflared では使うとき（validateExecutable）の照合に使う。Chromium と Claude では導入時の記録だけで照合しない。
 const ReadyRecord = Schema.Struct({
   version: Schema.String,
   installedAt: Schema.String,
@@ -61,9 +60,7 @@ const BrowserRecord = Schema.Struct({
     revisionOverrides: Schema.optionalKey(Schema.Record(Schema.String, Schema.String.check(Schema.isPattern(/^\d+$/)))),
   })),
 });
-// 相対パスが基準の外へ出ている（絶対パス・`..` で始まる）
 const escapes = (path: string): boolean => isAbsolute(path) || path === ".." || path.startsWith(`..${sep}`);
-// package.json の exports から、`import` で "." を読むときの入口を選ぶ（require・types は選ばない）
 const IMPORT_CONDITIONS = new Set(["node", "import", "module-sync", "default"]);
 const exportTarget = (target: unknown): string | undefined => {
   if (typeof target === "string") return target;
@@ -125,13 +122,11 @@ const executionsFinishedIn = (directory: string) => {
   return true;
 };
 
-// 既存の guard ディレクトリの所有者ファイルを確かめ、生きていなければ消す。ディレクトリが消えていたら何もしない（呼び出し側が rename を再試行する）
 const clearStaleGuard = (directory: string) => {
   try {
     for (const name of readdirSync(directory)) {
       const file = join(directory, name);
       if (pidAlive(readPid(file))) throw new ManagedDepsFailed({ message: "導入中です" });
-      // 古い回収処理は確認した UUID だけを削除し、交代後の所有者には触れない。
       removeOwner(file);
     }
   } catch (error) {
@@ -167,7 +162,6 @@ const acquireLock = (path: string) => {
   const owner = join(directory, uuid);
   const executionsFinished = () => executionsFinishedIn(directory);
   const releaseGuard = () => {
-    // UUID の削除後は PID lock や作業実体を操作しない。新所有者の非空ディレクトリは残す。
     removeOwner(owner);
     removeEmptyDirectory(directory);
   };
@@ -178,7 +172,6 @@ const acquireLock = (path: string) => {
     publishGuard(candidate, directory);
     guarded = true;
     reclaimPidLock(path);
-    // 所有者ファイルへの hard link により、空の PID lock を公開しない。
     linkSync(owner, path);
     return {
       owner, executionsFinished,
@@ -223,7 +216,6 @@ const validateNames = (names: ReadonlyArray<string>): Effect.Effect<DepName[], M
 const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
   const fs = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  // 動的 import の遅延読込先も、サーバーの終了までは保持する。
   const loadedEntities = new Set<string>();
   const entityAccess = yield* Semaphore.make(1);
   const metadata = (path: string) => Effect.tryPromise({
@@ -253,7 +245,6 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
     const removeOldEntities = Stream.unwrap(Effect.gen(function* () {
       const current = join(dir, CURRENT);
       const protectedEntities = new Set<string>();
-      // 壊れた current は未導入と区別し、保持先が解決できない場合は削除を始めない。
       const currentExists = yield* metadata(current).pipe(Effect.as(true), Effect.catch((error) => {
         if (error.reason._tag === "NotFound") return Effect.succeed(false);
         return Effect.fail(error);
@@ -310,7 +301,6 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const shell = yield* shellInfo(current);
       return { ...missing, state: (yield* isFile(shell.marker)) ? "ready" as const : "missing" as const };
     });
-    // current の実体と、管理ディレクトリからの相対パス
     const currentEntity = Effect.gen(function* () {
       const entity = yield* fs.realPath(join(dir, CURRENT));
       const managedDir = yield* fs.realPath(dir);
@@ -352,7 +342,6 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
           cwd, env: name === "chromium" ? { PLAYWRIGHT_BROWSERS_PATH: browsers, PLAYWRIGHT_SKIP_BROWSER_GC: browserGc ? undefined : "1" } : {}, extendEnv: true,
           stdin: "ignore", forceKillAfter: 5_000,
         }));
-        // 大きい出力を溜めず、失敗表示に必要な末尾だけを保持する。
         let tail = "";
         const consume = (source: typeof handle.stdout) => Stream.runForEach(Stream.decodeText(source), (text) =>
           Effect.sync(() => { tail = (tail + text).slice(-8192); }));
@@ -416,7 +405,6 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
       const pkg = yield* readJson(join(work, "node_modules", packageName, "package.json"), PackageRecord);
       if (pkg.version !== version) return yield* new ManagedDepsFailed({ message: "導入版が固定版と一致しません" });
       const binary = yield* installedBinary(work);
-      // Chromium と Claude は導入時点のハッシュを記録するだけで、後から照合しない。
       // Claude は npm ci が lock の integrity で照合済み、headless shell は Playwright が取得するため期待値を持たない。
       const recorded = yield* hash(binary);
       const now = yield* DateTime.now;
@@ -475,7 +463,6 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
             yield* Effect.acquireRelease(entityAccess.take(1), () => entityAccess.release(1));
             yield* fs.rename(work, entity).pipe(Effect.uninterruptible);
             yield* fs.symlink(basename(entity), link);
-            // 公開の確定点と published の更新を中断で分離しない。
             yield* fs.rename(link, join(dir, CURRENT)).pipe(Effect.andThen(Effect.sync(() => { published = true; })), Effect.uninterruptible);
             const browserCleanup = name === "chromium" ? step(run(lock,
               { command: process.execPath, args: [join(dir, CURRENT, "node_modules/playwright-core/cli.js")] },

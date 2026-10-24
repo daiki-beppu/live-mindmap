@@ -29,7 +29,6 @@ export const readCredentials = Effect.fnUntraced(function* (path: string) {
 export const writeAuthFile = Effect.fnUntraced(function* (path: string, text: string) {
   const fs = yield* FileSystem.FileSystem;
   const pending = `${path}.${randomUUID()}.tmp`;
-  // 書込が途中で失敗しても残った一時ファイルを消す。
   yield* Effect.addFinalizer(() => fs.remove(pending, { force: true }).pipe(Effect.orDie));
   yield* fs.writeFileString(pending, text, { mode: 0o600, flag: "wx" });
   yield* fs.rename(pending, path);

@@ -1,5 +1,3 @@
-// play の配信（http.ts の openListener。Viewers と HttpServer の Context を返す）の偽物。待ち受けずに、受け取ったポート・公開したスナップショット・
-// 渡し切り（drained）と待受けを閉じた順番を記録する。本物の WebSocket 越しに観測するテストは actualListener を使う
 import { Context, Effect } from "effect";
 import { HttpServer } from "effect/http";
 import { NetAddress } from "effect/net";
@@ -14,12 +12,10 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
   const published: Snapshot[] = [];
   const diffUpdates: DiffUpdateFrame[] = [];
   const modes: SessionModeFrame[] = [];
-  // 「drained」「closed」を起きた順に積む。渡し切ってから閉じることを順番で観測する
   const events: Array<"drained" | "closed"> = [];
   const open = (port: number) =>
     Effect.gen(function* () {
       ports.push(port);
-      // 本物と同じく、いまの Scope を閉じると待受けが閉じる
       yield* Effect.addFinalizer(() => Effect.sync(() => { events.push("closed"); }));
       const viewers = Viewers.of({
         publish: (snapshot) => Effect.sync(() => {

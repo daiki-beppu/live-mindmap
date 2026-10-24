@@ -17,7 +17,6 @@ export const directory = Effect.acquireRelease(
   (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),
 );
 
-// cli server stop を同じプロセスで走らせ、標準出力・標準エラー・失敗したかを返す
 export const serverStop = (sessionsDir: string, port: number) => Effect.gen(function* () {
   const out: string[] = [];
   const err: string[] = [];
@@ -34,7 +33,6 @@ export const serverStop = (sessionsDir: string, port: number) => Effect.gen(func
   return { out: out.join(""), failed: Exit.isFailure(exit), message: failure instanceof Error ? failure.message : String(failure) };
 });
 
-// 何も待ち受けていないポート（いったん待ち受けて閉じる）
 export const unusedPort = Effect.tryPromise(() => new Promise<number>((resolve, reject) => {
   const server = createServer();
   server.once("error", reject);

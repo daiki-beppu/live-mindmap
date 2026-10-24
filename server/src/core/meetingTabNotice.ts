@@ -1,6 +1,5 @@
 import { Effect, Fiber, Ref, Scope, Semaphore } from "effect";
 
-// 短いタブの切り替えで騒がないよう、最初の null の受信から60秒待つ。
 const MEETING_TAB_NOTICE_DELAY_MS = 60_000;
 const MISSING_MEETING_TAB = "会議のタブが前面にありません。共有画面を取り込めていません（マップは別のウィンドウで開いてください）";
 const RESTORED_MEETING_TAB = "会議のタブが前面に戻りました。共有画面の取り込みを再開しました";
@@ -30,7 +29,6 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
       yield* Ref.set(latestStart, undefined);
       return current.kind === "waiting" ? current.fiber : undefined;
     }));
-    // タイマーも同じ排他区間を使うため、終了待ちは区間を出てから行う。
     if (waiting !== undefined) yield* Fiber.interrupt(waiting);
   }, Effect.uninterruptible);
 

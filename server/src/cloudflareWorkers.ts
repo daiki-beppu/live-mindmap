@@ -1,5 +1,3 @@
-// Cloudflare Workers の Direct Upload を、Effect の HttpClient で直接叩く（Issue #1250。Alchemy・wrangler は使わない）。
-// 手順は assets-upload-session → assets/upload → script PUT → workers.dev の有効化。Cloudflare の応答の分類は classifyFailure の 1 か所だけが持つ。
 import { createHash, randomBytes } from "node:crypto";
 import { Effect, Predicate, Schema } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
@@ -10,7 +8,6 @@ const ASSET_PATH = "/index.html";
 
 export type CloudflareCredentials = { readonly accountId: string; readonly token: string };
 
-// kind: permission = 権限不足、noSubdomain = アカウントに workers.dev のサブドメインが無い、workerLimit = Worker の数の上限、other = それ以外
 export class CloudflareFailed extends Schema.TaggedError<CloudflareFailed>()("CloudflareFailed", {
   kind: Schema.Literals(["permission", "noSubdomain", "workerLimit", "other"]),
   detail: Schema.String,
@@ -28,7 +25,6 @@ const detailOf = (status: number, envelope: Envelope): string => {
   return messages.length > 0 ? messages.join(" / ") : `HTTP ${status}`;
 };
 
-// Cloudflare の失敗の応答を分類する（CLI の文はこの結果だけから作る）
 export const classifyFailure = (status: number, envelope: Envelope): CloudflareFailed => {
   const errors = envelope.errors ?? [];
   const detail = detailOf(status, envelope);
@@ -40,7 +36,6 @@ export const classifyFailure = (status: number, envelope: Envelope): CloudflareF
   return new CloudflareFailed({ kind: "other", detail });
 };
 
-// 分類の結果を、利用者向けの 1 行（以上）にする。トークンは文に入れない
 export const describeCloudflareFailure = (failure: CloudflareFailed, operation = "公開"): string => {
   switch (failure.kind) {
     case "permission":
@@ -56,7 +51,6 @@ export const describeCloudflareFailure = (failure: CloudflareFailed, operation =
 
 type Call = { readonly method: "GET" | "POST" | "PUT" | "DELETE"; readonly path: string; readonly bearer: string; readonly search?: string; readonly json?: object; readonly form?: FormData };
 
-// 1 回の要求。成功（2xx）は status と result を返し、失敗は分類して CloudflareFailed にする。404 を呼び出し側が扱えるよう、受け付ける status を渡せる
 const send = Effect.fnUntraced(function* (call: Call, accepted: readonly number[] = []) {
   const client = yield* HttpClient.HttpClient;
   const base = HttpClientRequest.make(call.method)(`${API}${call.path}${call.search ?? ""}`, { headers: { authorization: `Bearer ${call.bearer}` } });
@@ -78,7 +72,6 @@ const UploadSession = Schema.Struct({ jwt: Schema.String, buckets: Schema.option
 const UploadDone = Schema.Struct({ jwt: Schema.String });
 const malformed = (what: string) => new CloudflareFailed({ kind: "other", detail: `${what}の応答が読めません` });
 
-// アカウントの workers.dev のサブドメイン。無ければ noSubdomain
 export const accountSubdomain = Effect.fnUntraced(function* (credentials: CloudflareCredentials) {
   const { result } = yield* send({ method: "GET", path: accountPath(credentials, "/workers/subdomain"), bearer: credentials.token });
   const decoded = yield* Schema.decodeUnknownEffect(SubdomainResult)(result).pipe(
@@ -87,13 +80,11 @@ export const accountSubdomain = Effect.fnUntraced(function* (credentials: Cloudf
   return decoded.subdomain;
 });
 
-// 公開する Worker の名前。会議名から作らず、乱数だけにする
 export const newWorkerName = (): string => `lmm-${randomBytes(16).toString("hex")}`;
 
 // Direct Upload の hash は、base64 の中身と拡張子から作る 32 桁の 16 進
 const assetHash = (base64: string): string => createHash("sha256").update(base64 + "html").digest("hex").slice(0, 32);
 
-// HTML 1 枚と Worker のスクリプトを、名前の Worker として置き、workers.dev を有効にする。途中で失敗しても、作りかけの後片付けは呼び出し側が deleteWorker で行う
 export const deployWorker = Effect.fnUntraced(function* (credentials: CloudflareCredentials, name: string, html: string, workerSource: string) {
   const content = Buffer.from(html, "utf8").toString("base64");
   const hash = assetHash(content);
@@ -125,13 +116,11 @@ export const deployWorker = Effect.fnUntraced(function* (credentials: Cloudflare
   yield* send({ method: "POST", path: `${scriptPath(credentials, name)}/subdomain`, bearer: credentials.token, json: { enabled: true, previews_enabled: false } });
 });
 
-// Worker を消す。まだ無い（404）なら成功として扱う
 export const deleteWorker = (credentials: CloudflareCredentials, name: string) =>
   send({ method: "DELETE", path: scriptPath(credentials, name), search: "?force=true", bearer: credentials.token }, [404]).pipe(Effect.asVoid);
 
 const WorkerList = Schema.Array(Schema.Struct({ id: Schema.String }));
 
-// アカウントにある Worker の名前の一覧（1 回の応答で全件が返る前提）
 export const listWorkerNames = Effect.fnUntraced(function* (credentials: CloudflareCredentials) {
   const { result } = yield* send({ method: "GET", path: accountPath(credentials, "/workers/scripts"), bearer: credentials.token });
   const workers = yield* Schema.decodeUnknownEffect(WorkerList)(result).pipe(Effect.mapError(() => malformed("Worker の一覧")));

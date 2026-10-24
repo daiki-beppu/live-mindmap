@@ -1,19 +1,13 @@
 import { parseSync, Visitor, type ESTree } from "vite";
 import { readSources, reportViolations, type SourceFile } from "./sourceFiles.ts";
 
-// Issue #557: テストの層はファイル名の接尾辞で決まる（foo.test.ts = unit、foo.it.test.ts = 軽い IT、foo.heavy.test.ts = 重い IT）。
-// unit は偽物の Layer で組み、本物の資源（子プロセス・ファイル・ソケット・WebSocket・ブラウザ）を直接 import しない。
-// 本物の資源が要るテストは .it.test.ts か .heavy.test.ts へ移す。import の推移はたどらない（偽物の Layer 経由や補助ファイル経由の利用は拾わない）。
 export type Violation = { path: string; line: number; message: string };
 
-// node: の付く書き方も付かない書き方も、同じ資源として扱う
 const REAL_RESOURCES = new Set(["child_process", "fs", "fs/promises", "http", "net", "ws", "playwright", "playwright-core", "@anthropic-ai/claude-agent-sdk"]);
 
 const isUnit = (path: string): boolean =>
   /\.test\.tsx?$/.test(path) && !path.includes(".it.test.") && !path.includes(".heavy.test.");
 
-// 型の位置の `typeof import("x")` と式の位置のものは字面では区別できない（`): typeof import(…)` は返り値の型注釈にも三項演算子にも現れる）ので、
-// 構文木で実行時に評価される import だけを集める。型の位置のものは別種のノード（TSImportType）になるので集まらない。`vi.mock("x", …)` も import 構文ではない
 const specifiersIn = (path: string, content: string): Array<{ spec: string; line: number }> => {
   const { program, errors } = parseSync(path, content, { sourceType: "module" });
   const failure = errors.find((e) => e.severity === "Error");

@@ -32,7 +32,6 @@ type LiveCheck = { screen: boolean; check: Effect.Effect<HelperCheck, HelperChec
 type CheckArgs =
   | [entry: "play", route: typeof ModelRoute.Type]
   | [entry: "start" | "resume", route: typeof ModelRoute.Type, live: LiveCheck]
-  // 録画からのセッション（cli recorded）。helper と speech-ja だけを見る（マイク・画面収録はファイルの取り込みに関わらない）
   | [entry: "recorded", route: typeof ModelRoute.Type, helper: { check: Effect.Effect<HelperCheck, HelperCheckFailure> }];
 
 export const speechJaItem = (status: HelperCheck["speechJa"]): typeof Item.Type => ({
@@ -53,7 +52,6 @@ const microphoneWarnings = (microphone: HelperCheck["microphone"]): string[] => 
   ...(microphone === "notDetermined" ? ["マイクの許可が未決定です。開始時に許可のダイアログが出ます"] : []),
 ];
 
-// 画面収録は、共有画面を読む入口（screen）のときだけ報告に載せる
 const screenCaptureReport = (status: HelperCheck, screen: boolean): { items: Array<typeof Item.Type>; warnings: string[] } => screen
   ? {
       items: [{ name: "screen-capture", need: "optional", state: status.screenCapture ? "ready" : "absent" }],
