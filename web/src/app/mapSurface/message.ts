@@ -9,6 +9,7 @@ export const Message = defineMessageUnion({
   PressedMapSurface: { clientX: Schema.Finite, clientY: Schema.Finite, button: Schema.Finite, ctrlKey: Schema.Boolean, insideNoPan: Schema.Boolean },
   PressedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },
   ClickedNodeButton: { nodeId: Schema.String, clientX: Schema.Finite, clientY: Schema.Finite },
+  ClickedNodeButtonWithoutPointer: { nodeId: Schema.String },
   ClickedFoldDot: { nodeId: Schema.String },
   ClickedEdgeDot: { nodeId: Schema.String },
   WheeledMapSurface: {
@@ -41,7 +42,7 @@ export const Message = defineMessageUnion({
   ElapsedIdleTime: {},
   TickedAnimationFrame: { deltaMs: Schema.Finite },
   MovedPointer: { clientX: Schema.Finite, clientY: Schema.Finite, buttons: Schema.Finite },
-  ReleasedPointer: { ctrlKey: Schema.Boolean, metaKey: Schema.Boolean },
+  ReleasedPointer: {},
   CanceledPointer: {},
 });
 export type Message = typeof Message.Type;

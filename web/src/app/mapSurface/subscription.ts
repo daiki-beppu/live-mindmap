@@ -20,7 +20,7 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
           Stream.merge(
             Stream.merge(
               Dom.streamFromEvent({ target: document, type: "pointermove", mapEvent: (event) => Message.MovedPointer({ clientX: event.clientX, clientY: event.clientY, buttons: event.buttons }) }),
-              Dom.streamFromEvent({ target: document, type: "pointerup", mapEvent: (event) => Message.ReleasedPointer({ ctrlKey: event.ctrlKey, metaKey: event.metaKey }) }),
+              Dom.streamFromEvent({ target: document, type: "pointerup", mapEvent: () => Message.ReleasedPointer() }),
             ),
             Dom.streamFromEvent({ target: document, type: "pointercancel", mapEvent: () => Message.CanceledPointer() }),
           ),
