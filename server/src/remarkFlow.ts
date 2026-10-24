@@ -25,7 +25,6 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
   const { session, correct, speak, captions } = options;
   const captionTexts = yield* Ref.make<ReadonlyMap<string, { readonly text: string; readonly wordTimes: readonly WordTime[]; readonly replacements: readonly Replacement[] }>>(new Map());
   const relay = yield* createSpeakingRelay({
-    // contextは送信時にだけ評価される。工場の構築中には入力を投入しない。
     context: Effect.zipWith(session.unreflectedRemarks, Ref.get(captionTexts), (remarks, texts): CaptionContext => ({
         unreflected: remarks.map(({ id, ...remark }) => {
           const caption = texts.get(id);
@@ -79,7 +78,6 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
     screen: feed.screen,
     screenOff: feed.screenOff,
     drain: Effect.andThen(settling.drain, feed.drain),
-    // 再起動ではfeedの並べ替え待ちを出さない。
     drainForRestart: settling.drain,
     captionsChanged: relay.flushAll,
     clearSpeaking: relay.clear,

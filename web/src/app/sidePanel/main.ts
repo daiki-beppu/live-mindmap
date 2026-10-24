@@ -1,6 +1,3 @@
-// 右の列（Issue #821）: 選んだノードの根拠のパネルと、TODO の一覧と、変わったことの列（上からこの順）。出す・隠すは Disclosure。
-// Model と update は持たない。見る状態（選択・人の開閉・sideHidden）は表示面の Model が持つので、その Model から毎回導いて描く。
-// 要素・class・文言は React 版（EvidencePanel・ChangeList・SessionView、Issue #829 で削除）から変えない
 import { Disclosure } from "@foldkit/ui";
 import { Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
@@ -53,7 +50,6 @@ function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
   );
 }
 
-// スナップショットの TODO を、ノードの並び（作られた順）で出す。畳まれた議題の下も含む。時刻は、そのノードの「追加」の変わったことの時刻
 function todoList(h: HtmlBuilder<Message>, model: Model): Html {
   const todos = model.snapshot.nodes.filter((n) => n.kind === "TODO");
   return h.section(
@@ -88,7 +84,6 @@ function todoList(h: HtmlBuilder<Message>, model: Model): Html {
   );
 }
 
-// 新しい順（積んだ順の逆）。Snapshot の並びは書き換えない
 function changeList(h: HtmlBuilder<Message>, model: Model): Html {
   return h.aside(
     [h.Class("changes flex-1 min-h-0 box-border p-[12px] overflow-y-auto"), h.AriaLabelledBy("changes-heading")],
@@ -124,8 +119,6 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html | null 
       id: "side",
       isOpen: model.viewing.sideHidden !== true,
       onToggle: (isOpen) => Message.ToggledSide({ isOpen }),
-      // 隠していて選んでいないときは .side ごと描かない（animatePanel は使わない）。
-      // 隠していて選んでいるときは side--hidden を付けて描く（狭い幅の会議中だけ、根拠のシートとして出す）
       toView: ({ panel }) => (model.viewing.sideHidden === true && model.viewing.selection === undefined ? null : h.div([h.Class(`side${model.viewing.selection === undefined ? "" : " side--selected"}${model.viewing.sideHidden === true ? " side--hidden" : ""} flex-none w-[300px] h-full flex flex-col [border-left:1px_solid_var(--color-gray-200)] text-[13px] text-gray-900`), ...panel], [evidencePanel(h, model), todoList(h, model), changeList(h, model)])),
     },
     h,

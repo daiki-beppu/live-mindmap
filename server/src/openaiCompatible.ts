@@ -26,7 +26,6 @@ export const prepareCompatible = Effect.fnUntraced(function* (model: Extract<Exe
   const client = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
   const url = `${model.url.replace(/\/$/, "")}/chat/completions`;
   const maxTokens = model.maxTokens ?? 600;
-  // 1 回きりの要求を送り、応答の本文（JSON の文字列）を返す。system・prompt・JSON Schema だけが用途ごとに変わる
   const exchange = Effect.fnUntraced(function* (system: string, prompt: string, jsonSchema: object) {
     const body = {
       temperature: 0.2, ...model.extraBody,
@@ -56,7 +55,6 @@ export const prepareCompatible = Effect.fnUntraced(function* (model: Extract<Exe
       Effect.mapError(() => new CompatibleFailed({ message: "互換モデルの文分類が不正です" })),
     )),
   );
-  // 開始検査も本番と同じ通信口・分類形式を使い、会議の状態には適用しない。読みの要求は足さない（開始時の通信の回数を変えない）。
   yield* classify(probeRequest());
   const katakana: LocalModel["katakana"] = (words) => exchange(KATAKANA_SYSTEM, katakanaPrompt(words), KATAKANA_JSON_SCHEMA).pipe(
     Effect.flatMap((content) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(content)),

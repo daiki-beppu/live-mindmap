@@ -1,28 +1,19 @@
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { changedNodeIds } from "./changes.ts";
 
-// 話し中の議題を畳む、最後に触れてからの秒数（15 分）
 export const STALE_SECONDS = 900;
 
-// 畳んだノード（まとめのノードを含む）の描き方に使う値
 export type Fold = { hint: string | null; hidden: number };
 
 export type FoldView = {
-  // 見せるノードの並び（まとめのノードを含む）
   nodes: SnapshotNode[];
-  // 見せる畳んだノード・まとめのノードごとの手がかりと隠れた数
   folds: Record<string, Fold>;
-  // まとめのノードの ID
   summaries: ReadonlySet<string>;
-  // 点滅させるノード（見せるノードのうち、今回変わったもの。中が変わった畳んだノード・まとめのノードを含む）
   blink: ReadonlySet<string>;
-  // 見せないノード → それを隠している見せるノード（畳んだノードかまとめのノード）
   shownAs: Record<string, string>;
-  // まとめのノードの ID → まとめに入っている議題の ID（並び順）
   runs: Record<string, readonly string[]>;
 };
 
-// まとめのノード（run:X）の最初の議題の ID。まとめでなければ null
 export function runStartOf(id: string): string | null {
   return id.startsWith("run:") ? id.slice("run:".length) : null;
 }
@@ -60,7 +51,6 @@ function isFolded(n: SnapshotNode, rule: FoldRule): boolean {
   return n.kind === "議題" && rule.now !== undefined && n.touchedAt !== undefined && rule.now - n.touchedAt >= STALE_SECONDS;
 }
 
-// 親が畳まれているか隠れているノードは隠す。移動で親が子より後ろに並ぶことがあるので、木を上から辿る
 function foldAndHide(nodes: readonly SnapshotNode[], index: NodeIndex, rule: FoldRule): { folded: Set<string>; hidden: Set<string> } {
   const folded = new Set<string>();
   const hidden = new Set<string>();
@@ -88,7 +78,6 @@ function runsUnder(kids: readonly SnapshotNode[], cond: RunCondition): SnapshotN
     run = [];
   };
   for (const kid of kids) {
-    // 選んだまとめ（run:X）は、X から始まるまとめとして切り直す（選んだ前後の分かれ目が消えても、同じ ID のまとめが残る）
     if (kid.id === cond.selectedRunStart) close();
     if (cond.folded.has(kid.id) && kid.kind === "議題" && kid.id !== cond.selectedId && !cond.unbundled.has(kid.id)) run.push(kid);
     else close();
@@ -98,13 +87,12 @@ function runsUnder(kids: readonly SnapshotNode[], cond: RunCondition): SnapshotN
 }
 
 type Bundles = {
-  runOf: Map<string, string>; // まとめた議題 → まとめのノードの ID
-  summaryNodes: Map<string, SnapshotNode>; // 最初の議題の ID → まとめのノード
+  runOf: Map<string, string>;
+  summaryNodes: Map<string, SnapshotNode>;
   folds: Record<string, Fold>;
   runs: Record<string, readonly string[]>;
 };
 
-// 同じ親の下で続く、畳んだ議題の並び（2 つ以上）をまとめる
 function bundleRuns(
   nodes: readonly SnapshotNode[],
   index: NodeIndex,
@@ -171,11 +159,6 @@ function blinkOf(snapshot: Snapshot, shownIds: ReadonlySet<string>, shownAs: Rea
   return blink;
 }
 
-// 見せ方を決める。純粋な関数: snapshot を変えず、opened（人が開いたもの）に入れたノードは畳まず、humanFolded（人が畳んだもの）に入れた議題・論点は畳む。
-// 畳む集合 =（済みの議題・論点 ∪ 15 分触れていない話し中の議題 ∪ 人が畳んだもの）−（人が開いたもの ∪ 今の議題と祖先 ∪ 選んだノードの祖先）。
-// ただし人が畳んだものは、選んだノードの祖先でも畳む（今の議題と祖先は、人が畳んでも畳まない）。
-// 選んだノード（selectedId）の祖先は畳まない（選んだノード自身は、畳む条件に当たれば畳む）。選んだ畳んだ議題は「議題 N 件」にまとめない。選んだまとめ（run:X）は X から始まるまとめとして残し、X の祖先も畳まない。
-// unbundled（人が解いた「議題 N 件」に入っていた議題）に入れた議題は、畳んだまま「議題 N 件」にまとめない
 export function foldView(
   snapshot: Snapshot,
   opened: ReadonlySet<string>,
@@ -186,10 +169,7 @@ export function foldView(
   const { nodes, now, currentTopic } = snapshot;
   const index = indexNodes(nodes);
 
-  // 今の議題とその祖先は、何があっても畳まない
   const currentChain = chainIds(index.byId, currentTopic === undefined ? undefined : index.byId.get(currentTopic));
-  // 選んだノードの祖先は、人が畳んでいなければ畳まない
-  // 選んだまとめ（run:X）は X として扱い、X の祖先を畳まない（まとめはスナップショットに無いので、ID のままでは引けない）
   const selectedRunStart = selectedId === null ? null : runStartOf(selectedId);
   const selected = selectedId === null ? undefined : index.byId.get(selectedRunStart ?? selectedId);
   const selectionAncestors = chainIds(index.byId, selected?.parent ? index.byId.get(selected.parent) : undefined);
@@ -211,15 +191,11 @@ export function foldView(
   };
 }
 
-// 位置を保つ基準にするノード: 見せないノードは隠している見せるノードに、解いて無くなったまとめ（run:X）は最初の議題 X に置き換える
 export function keepTargetOf(view: Pick<FoldView, "nodes" | "shownAs"> | null, id: string): string {
   if (view === null) return id;
   return view.shownAs[id] ?? (view.nodes.some((n) => n.id === id) ? id : (runStartOf(id) ?? id));
 }
 
-// 「変わったこと」から指したノードの、見せるために解く祖先と、人が開いた集合に足すか。
-// 指したノードの祖先は選択の保護で開くが、人が畳んだ祖先は保護より強いので、ancestors を人が畳んだ集合から外して見せる。
-// open: その状態で指したノード自身が畳まれているか（畳む条件は foldView に任せる）。スナップショットに無い ID は null
 export function pointedNode(
   snapshot: Snapshot,
   id: string,
@@ -237,7 +213,6 @@ export function pointedNode(
   return { ancestors, open: id in foldView(snapshot, opened, id, folded, unbundled).folds };
 }
 
-// 手がかりの文字。0 の項目は書かず、3 つとも 0 なら null
 function hintOf(below: SnapshotNode[]): string | null {
   const parts = [
     ["決定", below.filter((n) => n.kind === "決定").length],

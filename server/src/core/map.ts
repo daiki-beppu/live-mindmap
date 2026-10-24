@@ -1,5 +1,3 @@
-// マップと差分操作。語彙と規則は GLOSSARY.md / docs/adr/0001-map-is-a-tree.md に従う。
-// 型は Schema を正本にして導き、値は普通のオブジェクトのままにする（ADR 0007）。
 import { Schema } from "effect";
 import { earliestRemark, type Remark } from "./remark.ts";
 import { InferredSpeakerName } from "./speakerNames.ts";
@@ -10,35 +8,28 @@ const KindSchema = Schema.Literals(KINDS);
 
 export const PLAN_STATUSES = ["検討中", "却下"] as const;
 const PlanStatusSchema = Schema.Literals(PLAN_STATUSES);
-export const PointStatus = Schema.Literals(["未決", "決定済み"]); // 論点の状態（保存せず導く）
+export const PointStatus = Schema.Literals(["未決", "決定済み"]);
 export type PointStatus = typeof PointStatus["Type"];
 
 export const ROOT_ID = "root";
 
 export const MapNode = Schema.Struct({
   id: Schema.String,
-  parent: Schema.mutableKey(Schema.NullOr(Schema.String)), // null はルート（会議）だけ
+  parent: Schema.mutableKey(Schema.NullOr(Schema.String)),
   kind: Schema.Literals([...KINDS, "会議"]),
   text: Schema.mutableKey(Schema.String),
-  planStatus: Schema.optionalKey(Schema.mutableKey(PlanStatusSchema)), // 案だけ
-  assignee: Schema.optionalKey(Schema.mutableKey(Schema.String)), // TODO だけ。会話に出た名前
-  // 名前が出ないまま話者が自分から引き受けたときの担当の話者（"自分" か振ったラベル）。TODO だけ。名前が分かったら消す
+  planStatus: Schema.optionalKey(Schema.mutableKey(PlanStatusSchema)),
+  assignee: Schema.optionalKey(Schema.mutableKey(Schema.String)),
   assigneeSpeaker: Schema.optionalKey(Schema.mutableKey(Schema.String)),
-  // 案を最初に言った話者。案だけ。サーバーが根拠の発言から決める（AI は書かない）。話者なしの相手は "相手"
   proposer: Schema.optionalKey(Schema.mutableKey(Schema.String)),
-  due: Schema.optionalKey(Schema.String), // TODO だけ
-  // 発言の ID。ルート以外は 1 つ以上（ルートは emptyMap が空で作るので、要素数は検査しない）
+  due: Schema.optionalKey(Schema.String),
   evidence: Schema.mutable(Schema.Array(Schema.String)),
-  // 最後に触れた時刻（その反映に渡した新しい発言の end の最大値）。触れたノードとルートを除く祖先に付く
   touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
-  // 最後に根拠が足された反映の番号。根拠が足されたノード自身だけに付く
   evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
-  // 議題・論点が済みのときだけ付く。キーが無ければ話し中（作られたときも付けない）
   talkStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literal("済み"))),
 });
 export type MapNode = typeof MapNode["Type"];
 
-// ノードは作られた順に order に並ぶ。兄弟の並びはこの順で決まる。
 export const MeetingMap = Schema.Struct({
   nodes: Schema.mutableKey(Schema.Record(Schema.String, Schema.mutableKey(MapNode))),
   order: Schema.mutableKey(Schema.mutable(Schema.Array(Schema.String))),
@@ -46,15 +37,10 @@ export const MeetingMap = Schema.Struct({
 });
 export type MeetingMap = typeof MeetingMap["Type"];
 
-// 根拠とノード参照の説明はドメインの説明なので Schema の注釈に置く（claude.ts がここから Claude に渡す JSON Schema を作る）。
-// 要素数は検査しない: ログの保存形式（Op・Dropped・LogEvent）は、根拠が空のまま捨てた add / update も
-// 元の形で残す（session.ts の log）。根拠 1 件以上という制約は Claude への出力契約（DiffOutput）だけが持つ。
 const Evidence = Schema.mutable(Schema.Array(Schema.String)).annotate({ description: "根拠の発言 id（例 r12）" });
-// TODO の担当の話者の説明（claude.ts がここから Claude に渡す JSON Schema を作る）
 const AssigneeSpeaker = Schema.String.annotate({ description: "担当の話者（例 相手 A / 自分）。名前が出ないまま、話者が自分から引き受けたとき（「私がやります」）だけ書く。頼まれた側を話者から推し量って書かない" });
 const NodeRef = Schema.String.annotate({ description: "既存ノードの id（例 n3）か、同じ応答で add した ref" });
 
-// AI が出す差分操作。`ref` は、同じ応答の後続の操作から親として指すための仮 ID。
 export const Op = Schema.Union([
   Schema.Struct({
     op: Schema.Literal("add"),
@@ -64,8 +50,8 @@ export const Op = Schema.Union([
     text: Schema.String,
     evidence: Evidence,
     assignee: Schema.optionalKey(Schema.String),
-    assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker), // サーバーがセッションの話者か確かめる
-    proposer: Schema.optionalKey(Schema.String), // サーバーが決める出した人（ログに残す）。AI の出力の契約には出さない（DiffOps で外す）
+    assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker),
+    proposer: Schema.optionalKey(Schema.String),
     due: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
@@ -81,21 +67,18 @@ export const Op = Schema.Union([
   Schema.Struct({ op: Schema.Literal("move"), node: NodeRef, parent: NodeRef }),
   Schema.Struct({ op: Schema.Literal("delete"), node: NodeRef }),
   Schema.Struct({ op: Schema.Literal("noop"), reason: Schema.String }),
-  Schema.Struct({ op: Schema.Literal("close"), node: NodeRef }), // 議題か論点を済みにする。根拠は持たない
+  Schema.Struct({ op: Schema.Literal("close"), node: NodeRef }),
 ]);
 export type Op = typeof Op["Type"];
 
 export const Dropped = Schema.Struct({ op: Op, reason: Schema.String });
 export type Dropped = typeof Dropped["Type"];
 
-// Claude の structured_output の形。claude.ts がここから Claude に渡す JSON Schema を作り、受け取った値を検証する。
-// add / update の根拠だけ、Op の構造定義を再利用したまま 1 件以上を要求する（Claude に渡す JSON Schema では minItems: 1 になる）。
 const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
   add.mapFields(({ proposer: _proposer, ...fields }) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   ...rest,
 ]);
-// names は名前の無い回には省く。サーバーが根拠を確かめてから使う（speakerNames.ts）
 export const DiffOperations = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)), names: Schema.optionalKey(Schema.mutable(Schema.Array(InferredSpeakerName))) });
 export const DiffOutput = Schema.Struct({ ...DiffOperations.fields, processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))) });
 export type DiffOutput = typeof DiffOutput["Type"];
@@ -108,7 +91,6 @@ export function emptyMap(title: string): MeetingMap {
   };
 }
 
-// 中核は Node の実行環境に依存しない（ADR 0003）ので structuredClone を使わない
 export const cloneNode = (n: MapNode): MapNode => ({ ...n, evidence: [...n.evidence] });
 
 function cloneMap(map: MeetingMap): MeetingMap {
@@ -121,7 +103,6 @@ export function children(map: MeetingMap, id: string): MapNode[] {
   return map.order.map((k) => map.nodes[k]!).filter((n) => n.parent === id);
 }
 
-// 論点の状態は保存せず、子に決定を持つかで導く
 export function pointStatus(map: MeetingMap, id: string): PointStatus {
   return children(map, id).some((c) => c.kind === "決定") ? "決定済み" : "未決";
 }
@@ -133,10 +114,8 @@ function isDescendant(map: MeetingMap, id: string, ancestor: string): boolean {
   return false;
 }
 
-// 木の制約: 決定と TODO は子を持たない。
 const isLeafKind = (kind: MapNode["kind"]) => kind === "決定" || kind === "TODO";
 
-// 木の制約: 決定の親は論点だけ。決定と TODO は子を持たない。
 function parentError(parent: MapNode | undefined, kind: MapNode["kind"]): string | null {
   if (!parent) return "親が存在しない";
   if (isLeafKind(parent.kind)) return `${parent.kind} は子を持てない`;
@@ -144,7 +123,6 @@ function parentError(parent: MapNode | undefined, kind: MapNode["kind"]): string
   return null;
 }
 
-// id のノードから親をたどり、ルートを除く各ノードに触れた時刻を書く。id が null・存在しないときは何もしない。
 function touchUp(map: MeetingMap, id: string | null, at: number) {
   for (let cur = id ? map.nodes[id] : undefined; cur && cur.id !== ROOT_ID; cur = cur.parent ? map.nodes[cur.parent] : undefined) {
     cur.touchedAt = at;
@@ -162,7 +140,6 @@ function removeNode(map: MeetingMap, id: string) {
   map.order = map.order.filter((k) => k !== id);
 }
 
-// 1 回の反映の間だけ使う状態。仮 ID は refs で実 ID に解決する。
 type ApplyState = {
   map: MeetingMap;
   refs: Map<string, string>;
@@ -175,12 +152,10 @@ type ApplyState = {
 
 type OpOf<K extends Op["op"]> = Extract<Op, { op: K }>;
 
-// 捨てるときは理由を、適用したときは null を返す。
 type Applied = string | null;
 
 const resolveId = (s: ApplyState, id: string) => s.refs.get(id) ?? id;
 
-// 対象のノード。無いかルートなら undefined。
 function target(s: ApplyState, id: string): MapNode | undefined {
   const n = s.map.nodes[resolveId(s, id)];
   return n && n.id !== ROOT_ID ? n : undefined;
@@ -221,7 +196,6 @@ function applyAdd(s: ApplyState, op: OpOf<"add">): Applied {
   return null;
 }
 
-// update の担当者。TODO だけが持つ。名前が来たら名前を置いて担当の話者は消し、名前が無いときだけ担当の話者を置く
 function assignmentOf(n: MapNode, op: OpOf<"update">): { changed: boolean; apply: () => void } {
   if (n.kind !== "TODO") return { changed: false, apply: () => {} };
   if (op.assignee) {
@@ -285,14 +259,11 @@ function combineError(map: MeetingMap, from: MapNode | undefined, into: MapNode 
   return null;
 }
 
-// 統合元と統合先の evidenceRound の大きい方（片方が無ければもう片方）
 function mergedEvidenceRound(a: number | undefined, b: number | undefined): number | undefined {
   if (a === undefined || b === undefined) return a ?? b;
   return Math.max(a, b);
 }
 
-// 統合後の出した人。根拠の最も早い発言が早いほうの値を残す（同じなら統合先。比べられなければ統合先）。
-// 早いほうが出した人を持たなければ、持たない（後の人を残さない）
 function mergedProposer(s: ApplyState, src: MapNode, dst: MapNode): string | undefined {
   const from = earliestRemark(src.evidence, s.remarks);
   const into = earliestRemark(dst.evidence, s.remarks);
@@ -303,7 +274,6 @@ function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
   const from = target(s, op.from), into = target(s, op.into);
   const err = combineError(s.map, from, into);
   if (err) return err;
-  // combineError が通ったので、どちらも存在する
   const src = from!, dst = into!;
   touchUp(s.map, src.parent, s.at);
   for (const k of children(s.map, src.id)) k.parent = dst.id;
@@ -361,18 +331,6 @@ function applyOp(s: ApplyState, op: Op): Applied {
 }
 
 
-// マップの変更はすべてここを通す。操作は適用する時点のマップに対して検証し、
-// 成り立たない操作は捨てて理由を返し、残りは適用を続ける。
-// known は根拠に使える発言の ID。知らない発言を根拠に挙げた操作は捨てる。
-// stamp は、この反映の番号（round）と、渡した新しい発言の end の最大値（at）。触れたノードの touchedAt と、根拠が足されたノードの evidenceRound に使う。
-// combine の統合先は evidenceRound を進めず、統合元と統合先の大きい方を引き継ぐ（片方が無ければもう片方）。
-// close は議題か論点を済みにする。対象かその子孫に同じ応答か直前の反映（round - 1 以降）で根拠が足されていれば捨てる。
-// add・update・combine の統合先・move の移したノードは、そのノードと祖先の済みを話し中に戻す（delete・移動元・統合元では戻さない）。
-// close と開き直しは changeOrder・touchedAt に影響しない。
-// changeOrder は、値が実際に変わったノードの ID を操作の適用順に並べたもの（重複あり。捨てた操作・値を変えない操作・delete は含まない）。
-// remarks は発言の表（id → 発言）。統合で根拠の最も早い発言を比べるのに使う。
-// proposer は add の値をそのまま持たせる（案だけ）。update は変えず、combine は根拠の最も早い発言が早いほうを残す。
-// refs は、適用できた add の仮 ID → 作られた n の ID（捨てた add は含まない。同じ応答で後から削除・統合されたノードの add は含む）。
 export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }, remarks: ReadonlyMap<string, Remark>): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string> } {
   const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [], remarks };
   const dropped: Dropped[] = [];

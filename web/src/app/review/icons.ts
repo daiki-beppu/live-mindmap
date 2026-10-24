@@ -1,13 +1,10 @@
-// 見返しの操作の行のアイコン（Issue #825）: インライン SVG。
 // video.js のアイコン 9 種は、@videojs/react 10.0.1 の default アイコンの SVG を写したもの（座標・属性は原本のまま。描き直していない）。
 // 出どころとライセンス（Apache-2.0）は icons.NOTICE.md にあり、見返しの HTML のライセンスの表示に残る。React の部品（@videojs/react）は import しない。
-// StepIcon・SideIcon は自前のアイコン
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { Message } from "./message.ts";
 
 type H = HtmlBuilder<Message>;
 
-// 18×18 の video.js のアイコンのルート。ルートの属性は 9 種で共通（fill だけが違う）
 const root = (h: H, fill: "currentColor" | "none", children: ReadonlyArray<Html>): Html =>
   h.svg([h.Xmlns("http://www.w3.org/2000/svg"), h.Width("18"), h.Height("18"), h.Fill(fill), h.AriaHidden(true), h.ViewBox("0 0 18 18")], children);
 
@@ -85,14 +82,12 @@ export const CaptionsOffIcon = (h: H): Html =>
     captionsLine(h, "7", "3", "11"),
   ]);
 
-// 戻る・進む
 export const StepIcon = (h: H, direction: "prev" | "next"): Html =>
   h.svg(
     [h.ViewBox("0 0 16 16"), h.Width("16"), h.Height("16"), h.AriaHidden(true), h.Fill("currentColor")],
     [direction === "prev" ? h.path([h.D("M3 3h2v10H3zM13 3v10L6 8z")]) : h.path([h.D("M11 3h2v10h-2zM3 3l7 5-7 5z")])],
   );
 
-// 右の列（変わったこと・根拠）のアイコン。隠しているときは右の列を塗らない（今の SideIcon と同じ形）
 export const SideIcon = (h: H, hidden: boolean): Html =>
   h.svg(
     [h.ViewBox("0 0 16 16"), h.Width("16"), h.Height("16"), h.AriaHidden(true), h.Fill("none"), h.Stroke("currentColor"), h.StrokeWidth("1.5")],

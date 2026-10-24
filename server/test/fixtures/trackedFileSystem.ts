@@ -27,10 +27,7 @@ export const trackedFileSystem = () => {
     }),
   ).pipe(Layer.provide(NodeFileSystem.layer));
 
-  // 実時間で 1 tick 待つ（libuv の I/O のコールバックを走らせる）
   const tick = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
-  // 時間を進めた後に、起こるはずの更新が走り切るまで譲る。実行中のファイル操作があれば、終わるのを実時間で待ってから譲り直す。
-  // 「まだ起きない」ことの確認の前にも使う。TestClock は進めない
   const settle = Effect.gen(function* () {
     const deadline = Date.now() + 5000;
     for (;;) {
@@ -39,7 +36,6 @@ export const trackedFileSystem = () => {
       while (io.inFlight > 0 && Date.now() <= deadline) yield* tick;
     }
   });
-  // 条件が成り立つまで settle を繰り返す。上限（実時間 5 秒）を超えたら成り立っていないままにして、呼び出し側の expect で落とす
   const settleUntil = (condition: () => boolean) =>
     Effect.gen(function* () {
       const deadline = Date.now() + 5000;

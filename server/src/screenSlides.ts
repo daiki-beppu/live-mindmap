@@ -1,12 +1,10 @@
-// 共有画面の一覧 slides.tsv（start end slide image）を読む。1 行目は見出しで読み飛ばす。
-// image は tsv のあるフォルダからの相対パス。画像の変換とファイル読み込みはここではしない
 import { Result } from "effect";
 import type { Effect } from "effect";
 import type { PlaybackScreen } from "./core/index.ts";
 
 export type SlideRow = {
-  readonly start: number; // 映り始めた会議の秒
-  readonly end: number; // 映り終わった会議の秒
+  readonly start: number;
+  readonly end: number;
   readonly slide: string;
   readonly image: string;
 };
@@ -35,9 +33,6 @@ export function parseSlides(text: string): Result.Result<SlideRow[], string> {
   return Result.succeed(rows);
 }
 
-// 行番号から、その行の変換済み画像を読む Effect を受け取り、共有画面の変化の列を作る（画像は再生が入れる直前に読む）。
-// 行の start に画像の変化を、end に「なし」の変化を入れる。ただし次の行が end ちょうど（以前）に始まるなら、その end には入れない。
-// gallery（顔だけ）の行も、ほかの行と同じく画像の変化にする
 export function slideChanges<E>(rows: readonly SlideRow[], loadImage: (index: number) => Effect.Effect<Uint8Array, E>): PlaybackScreen<E>[] {
   return rows.flatMap((row, i): PlaybackScreen<E>[] => {
     const next = rows[i + 1];

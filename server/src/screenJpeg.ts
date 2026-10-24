@@ -1,6 +1,3 @@
-// 共有画面の PNG を、1280×720 に収まる JPEG のバイト列にする Service。
-// 本物は macOS の `sips` を ChildProcessSpawner で呼ぶ（audioMix.ts と同じ作り）。sips は ubuntu の CI に無いので、
-// テストは偽の Layer に差し替える（test/fixtures/screenJpeg.ts）
 import { Context, Effect, FileSystem, Layer, Schema, Stream } from "effect";
 import type { PlatformError } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -9,14 +6,12 @@ import { STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
 export const SCREEN_MAX_WIDTH = 1280;
 export const SCREEN_MAX_HEIGHT = 720;
 
-// ScreenJpeg.layer がクラスの定義時に make() を評価するので、make はクラスより前に置く
 const make = Effect.fnUntraced(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
 
   const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
 
-  // sips を 1 回走らせて、標準出力を返す。0 以外で終わったら標準エラーの末尾を理由に失敗する
   const sips = (args: readonly string[]): Effect.Effect<string, ScreenJpegFailed | PlatformError.PlatformError> =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -52,17 +47,14 @@ const make = Effect.fnUntraced(function* () {
   return ScreenJpeg.of({ toJpeg });
 });
 
-// 変換が成り立たなかった（画像が読めない・sips が起きない・0 以外で終わる）。message は理由
 export class ScreenJpegFailed extends Schema.TaggedError<ScreenJpegFailed>()("ScreenJpegFailed", { message: Schema.String }) {}
 
 export class ScreenJpeg extends Context.Service<ScreenJpeg, {
-  // path の画像（PNG）を JPEG にする。縦横の比を保ったまま 1280×720 に収まるよう縮める（小さければ縮めない）
   readonly toJpeg: (path: string) => Effect.Effect<Uint8Array, ScreenJpegFailed>;
 }>()("live-mindmap/server/ScreenJpeg") {
   static readonly layer: Layer.Layer<ScreenJpeg, never, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> = Layer.effect(ScreenJpeg)(make());
 }
 
-// 収まる大きさ。縮める倍率は幅と高さの小さい方で、拡大はしない。切り捨てて上限を超えないようにする
 export function fitSize(width: number, height: number): { width: number; height: number } {
   const scale = Math.min(1, SCREEN_MAX_WIDTH / width, SCREEN_MAX_HEIGHT / height);
   return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.floor(height * scale)) };

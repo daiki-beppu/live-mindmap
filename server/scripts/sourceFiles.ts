@@ -1,7 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// check-entrypoints と check-test-layers が共有する、ソースを読んで違反を出す部分。違うのは対象の拡張子だけ。
 export type SourceFile = { path: string; content: string };
 type ReportedViolation = { path: string; line?: number; message: string };
 

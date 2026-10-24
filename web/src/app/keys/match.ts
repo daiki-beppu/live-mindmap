@@ -1,5 +1,4 @@
 // 日本語入力の道が、Dom.streamFromKeyBindings と同じ規則で表を照合する純粋な関数（streamFromKeyBindings の照合は内部にあって外から使えない）。
-// key は大文字・小文字を区別しない（Space・Plus は名前）。修飾キーは Shift を含めて厳密に照合する
 import type { HalfWidthKey } from "../../imeKey.ts";
 import type { Binding } from "./table.ts";
 

@@ -1,26 +1,17 @@
 import type { SnapshotNode } from "../../server/src/core/index.ts";
 
-// ノードの幅は固定（CSS の .map-node と同じ）。幅を実寸にすると、広いノードが 1 つ増えるだけで右の列が全部動く。
 export const NODE_WIDTH = 200;
 export const GAP_X = 60;
 export const GAP_Y = 12;
-// まだ測っていないノードの仮の高さ
 export const DEFAULT_HEIGHT = 40;
 
 export type Position = { x: number; y: number };
 
-// 左 → 右の木の配置。
-// - x は深さだけで決まる
-// - 兄弟は nodes の並び（作られた順）に上から積む
-// - 親は子の範囲（最初の子の上端〜最後の子の下端）の上下中央に置く
-// - 末尾に子を足しても、それより上にある既存ノードは動かない
-// heights は 表示面が測った実寸の高さ。
 export function layout(nodes: SnapshotNode[], heights: Record<string, number>): Record<string, Position> {
   const children = new Map<string | null, SnapshotNode[]>();
   for (const n of nodes) children.set(n.parent, [...(children.get(n.parent) ?? []), n]);
   const heightOf = (id: string) => heights[id] ?? DEFAULT_HEIGHT;
 
-  // 部分木を、自分の上端を 0 とした相対位置で配置する
   function place(node: SnapshotNode, depth: number): { pos: Record<string, Position>; height: number } {
     const h = heightOf(node.id);
     const x = depth * (NODE_WIDTH + GAP_X);
@@ -28,8 +19,6 @@ export function layout(nodes: SnapshotNode[], heights: Record<string, number>): 
     if (kids.length === 0) return { pos: { [node.id]: { x, y: 0 } }, height: h };
 
     const pos: Record<string, Position> = {};
-    // 親が最初の子より高いと、親の上端が部分木の上にはみ出す。はみ出し分を後から全体に足すと、
-    // 子を追加するたびに既存の子が動くので、最初の子の開始位置を先に決めておく（最初の子の高さだけで決まる）。
     const firstKidHeight = heightOf(kids[0]!.id);
     let offset = Math.max(0, (h - firstKidHeight) / 2);
     let firstTop = 0;

@@ -1,7 +1,6 @@
 import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-// 辺・兄弟のどちらもプロンプトと応答の文字列だけを受け渡す。ラベルの検証は各判定処理が所有する。
 export type Judge<E, R> = (prompt: string) => Effect.Effect<string, E, R>;
 
 class ClaudeJudgeFailed extends Schema.TaggedError<ClaudeJudgeFailed>()("ClaudeJudgeFailed", {

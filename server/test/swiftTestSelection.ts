@@ -1,7 +1,3 @@
-// helper の `swift test` が層（unit・軽い IT・重い IT）をどう選ぶかを、結果で確かめるための共有の補助。
-// helperScripts.it.test.ts（package.json の scripts）と checkWorkflow.it.test.ts（check.yml の helper ジョブ）が使う。
-
-// テスト ID は `<ターゲット>.<型名>/<関数名>()`。層は型名の接尾辞で決まる
 export const testIds = {
   unit: ["HelperCoreTests.StreamSplitTests/split()", "SttBenchTests.SynthTimelineTests/build()"],
   it: ["HelperCoreTests.RelayITTests/relay()", "SttBenchTests.BuildMicrophoneITTests/build()"],
@@ -11,7 +7,6 @@ export const testIds = {
   ],
 };
 
-// swift test のコマンドから --skip / --filter を 1 つだけ取り出し、テスト ID が実行されるかを返す述語にする
 export const selectionOf = (command: string): ((id: string) => boolean) => {
   const options = [...command.matchAll(/--(skip|filter)\s+(?:'([^']*)'|"([^"]*)"|(\S+))/g)];
   if (options.length !== 1) {

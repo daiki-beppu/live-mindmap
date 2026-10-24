@@ -1,4 +1,3 @@
-// 素の Node プロセスで ManagedDeps.load("chromium") → launch → close を通す。
 // vitest のモジュール実行は CJS の default を名前つき export として補うため、不具合は vitest の中では隠れる。
 import { Effect } from "effect";
 import { depsDirConfig } from "../../src/config.ts";

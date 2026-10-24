@@ -1,6 +1,3 @@
-// 字幕の精度の計測（Issue #390）。発言（確定した文字起こし）を、合成会議の台本（timeline.tsv）と突き合わせ、
-// 文字誤り率（CER）と、固有名詞・略語の正解率を出す。
-// 発言は `stt-bench run` の出力（1 行 1 結果の JSONL。確定結果だけを使う）か、kanary transcribe の JSON（拡張子 .json）。
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -10,10 +7,8 @@ import { exitNaturally } from "../src/exitNaturally.ts";
 import { benchProgram, InvalidInputFile, inputFileError, readInputText, write } from "./entry.ts";
 import { parseResults, type SttResult } from "./sttLatency.ts";
 
-// 台本の 1 行（話者・開始秒・終了秒・文）。発言は区間と本文だけを見る
 export type TimedText = { start: number; end: number; text: string };
 
-// timeline.tsv（synth.mjs の出力）。#MARK の行は時刻だけなので飛ばす
 export function parseTimeline(text: string): Array<TimedText & { speaker: string }> {
   return text
     .split("\n")
@@ -25,8 +20,6 @@ export function parseTimeline(text: string): Array<TimedText & { speaker: string
 const DIGITS = "〇一二三四五六七八九";
 const UNITS: Record<string, number> = { 十: 10, 百: 100, 千: 1000, 万: 10000 };
 
-// 漢数字の並びを算用数字にする（「九十日」→「90日」、「三四半期」→「34半期」）。台本は漢数字、確定結果は算用数字で書くことが多く、
-// この違いを誤りに数えると CER が表記の違いで埋まる。両側に同じ変換をかけるので、「一緒」→「1緒」のような語の中の漢字もそろう
 export function kanjiToDigits(text: string): string {
   return text.replace(/[〇一二三四五六七八九十百千万]+/g, (run) => {
     if (!/[十百千万]/.test(run)) return Array.from(run, (c) => DIGITS.indexOf(c)).join("");
@@ -47,14 +40,12 @@ export function kanjiToDigits(text: string): string {
   });
 }
 
-// 比べる前に、全角・半角と大文字・小文字、漢数字をそろえ、句読点・記号の括弧・空白を外す（確定結果は句読点の付け方が台本と違う）
 export const normalize = (text: string) => kanjiToDigits(text.normalize("NFKC").toLowerCase()).replace(/[\s\p{P}]/gu, "");
 
 type Op = "eq" | "sub" | "del" | "ins";
 
 const substitutionCost = (a: string | undefined, b: string | undefined) => (a === b ? 0 : 1);
 
-// 編集距離の表。d[i * (h.length + 1) + j] は、ref の先頭 i 文字と hyp の先頭 j 文字の距離
 function distanceTable(r: readonly string[], h: readonly string[]): Uint32Array {
   const w = h.length + 1;
   const d = new Uint32Array((r.length + 1) * w);
@@ -69,7 +60,6 @@ function distanceTable(r: readonly string[], h: readonly string[]): Uint32Array 
   return d;
 }
 
-// 表を後ろからたどる。同じ距離の手順が複数あるときは、斜め（一致・置換）→ 脱落 → 挿入の順に選ぶ
 function backtrace(d: Uint32Array, r: readonly string[], h: readonly string[]): Op[] {
   const w = h.length + 1;
   const ops: Op[] = [];
@@ -90,16 +80,12 @@ function backtrace(d: Uint32Array, r: readonly string[], h: readonly string[]): 
   return ops.reverse();
 }
 
-// 編集距離の最短の手順。ref の各文字が eq・sub・del のどれか 1 つ、hyp の余りが ins になる
 export function align(ref: string, hyp: string): Op[] {
   const r = Array.from(ref);
   const h = Array.from(hyp);
   return backtrace(distanceTable(r, h), r, h);
 }
 
-// 長い会議を 1 回で突き合わせると表が大きすぎるので、区切りで分けてから突き合わせる。
-// 区切りは台本の行の間（前の行の終わりと次の行の始まりの中点）で、どの発言の区間もまたがない所だけにする。
-// 発言は区間の中央が入る区切りに入れる
 export function chunk(lines: readonly TimedText[], remarks: readonly TimedText[], seconds: number): { ref: string; hyp: string }[] {
   const cuts: number[] = [];
   let from = lines[0]?.start ?? 0;
@@ -117,7 +103,6 @@ export function chunk(lines: readonly TimedText[], remarks: readonly TimedText[]
   return chunks;
 }
 
-// kanaOnly は、正しい表記ではないが、ひらがな・カタカナの違いだけのもの（「ユズ」→「ゆず」）。correct には入れない
 export type TermScore = { term: string; total: number; correct: number; kanaOnly: number; misses: Map<string, number> };
 export type AccuracyScore = {
   refChars: number;
@@ -125,18 +110,15 @@ export type AccuracyScore = {
   del: number;
   ins: number;
   terms: TermScore[];
-  confusions: Map<string, number>; // 「台本の文字列→発言の文字列」の食い違いの件数
+  confusions: Map<string, number>;
 };
 
-// カタカナをひらがなにそろえる（長音はそのまま）
 const toHiragana = (text: string) => text.replace(/[\u30a1-\u30f6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
 
-// 語の前後にこれだけの文字のずれを許して、正しい表記が発言に出たかを見る（近くの誤りで並びが 1〜2 文字ずれるため）
 const TERM_SLACK = 2;
 
 const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
 
-// 続いている誤りの、台本側と発言側の文字列（eq で閉じる）
 type ErrorRun = { ref: string; hyp: string };
 
 function closeError(confusions: Map<string, number>, run: ErrorRun): void {
@@ -149,8 +131,6 @@ function extendError(run: ErrorRun, op: "sub" | "del" | "ins", refChar: string |
   if (op === "sub" || op === "ins") run.hyp += hypChar;
 }
 
-// 1 区切り分の手順 ops から、置換・脱落・挿入の数と食い違い（confusions）を result に足す。
-// 返す cursor[p] は、台本の p 文字目を見る直前までに使った発言の文字数（p = r.length は末尾）
 function countErrors(result: AccuracyScore, ops: readonly Op[], r: readonly string[], h: readonly string[]): number[] {
   const cursor: number[] = [];
   const run: ErrorRun = { ref: "", hyp: "" };
@@ -171,7 +151,6 @@ function countErrors(result: AccuracyScore, ops: readonly Op[], r: readonly stri
   return cursor;
 }
 
-// 台本の p 文字目から始まる語 1 件が、発言に正しい表記で出たかを数える
 function countOccurrence(t: TermScore, key: string, h: readonly string[], from: number, to: number): void {
   t.total++;
   const said = h.slice(from, to).join("");
@@ -231,13 +210,10 @@ export function summarize(s: AccuracyScore, confusions = 15): string {
   return out.join("\n") + "\n";
 }
 
-// 途中結果と確定結果を、本番の createRemarkSettler（関所つき）へ到着の順に通して出た発言。
-// 時計は届いた結果の end の最大値（音声の時刻）で、到着の時刻は並び順にだけ使う。最後に drain
 export function settleResults(results: readonly SttResult[]): TimedText[] {
   const settler = createRemarkSettler();
   const out: TimedText[] = [];
   const keep = (rs: readonly TimedText[]) => out.push(...rs.map(({ start, end, text }) => ({ start, end, text })));
-  // Array.prototype.sort は安定。同じ到着の時刻はファイルの行の順を保つ
   for (const r of [...results].sort((a, b) => a.arrival - b.arrival)) {
     if (r.isFinal) keep(settler.final({ track: r.track, start: r.start, end: r.end, text: r.text }));
     else keep(settler.partial({ track: r.track, start: r.start, end: r.end, text: r.text, duplicate: false }));
@@ -246,11 +222,9 @@ export function settleResults(results: readonly SttResult[]): TimedText[] {
   return out;
 }
 
-// 発言のファイル。.json なら kanary transcribe の出力、それ以外は stt-bench run の JSONL（settle なら settleResults、なければ確定結果だけ）
 const readRemarks = Effect.fnUntraced(function* (path: string, settle: boolean) {
   const text = yield* readInputText(path);
   if (path.endsWith(".json")) {
-    // 途中結果も到着の時刻もない入力で、黙って確定結果だけの採点に戻ると、数字の意味を取り違える
     if (settle) return yield* Effect.fail(new InvalidInputFile({ path, reason: "--settle は stt-bench run の JSONL にだけ使えます" }));
     const file = yield* Schema.decodeEffect(Schema.fromJsonString(TranscriptFile))(text).pipe(Effect.mapError(inputFileError(path)));
     return file.transcript.segments.map((s) => ({ start: s.start_seconds, end: s.end_seconds, text: s.text }));
