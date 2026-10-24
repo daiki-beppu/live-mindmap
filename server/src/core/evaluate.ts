@@ -1,4 +1,4 @@
-import { Effect, Predicate, Schema } from "effect";
+import { Effect, Predicate, Record as Rec, Schema, Struct } from "effect";
 import type { ExportNode, JsonExport } from "./export.ts";
 import { logMetrics } from "./logMetrics.ts";
 import { KINDS, type Kind } from "./map.ts";
@@ -10,7 +10,7 @@ const normalize = (s: string) => s.normalize("NFKC").replace(/\s/g, "");
 const isWord = (v: unknown): v is string => typeof v === "string" && normalize(v) !== "";
 
 const TRUTH_OBJECT_RULE = "正解はオブジェクトで書く";
-const KIND_LIST_RULE = "は配列で書く";
+const kindListRule = (kind: string) => `「${kind}」は配列で書く`;
 const TIME_RULE = "from / to は秒の数値で書く";
 const TIME_ORDER_RULE = "from が to より大きい";
 const KEYWORDS_RULE = "keywords は 1 件以上の配列で書く（要素は文字列か、文字列の配列）";
@@ -55,12 +55,18 @@ export type TruthItem = typeof TruthItem["Type"];
 export const TRUTH_KINDS = ["決定", "TODO"] as const satisfies readonly Kind[];
 export type TruthKind = (typeof TRUTH_KINDS)[number];
 
-export const Truth = Schema.Record(
-  Schema.Literals(TRUTH_KINDS),
-  Schema.mutableKey(Schema.mutable(Schema.Array(TruthItem)).annotate({ message: KIND_LIST_RULE })).annotateKey({
-    messageMissingKey: KIND_LIST_RULE,
-  }),
-).annotate({ message: TRUTH_OBJECT_RULE });
+const kindList = <S extends Schema.Top>(item: S, kind: string) =>
+  Schema.mutableKey(Schema.mutable(Schema.Array(item)).annotate({ message: kindListRule(kind) })).annotateKey({
+    messageMissingKey: kindListRule(kind),
+  });
+type KindList<S extends Schema.Top> = ReturnType<typeof kindList<S>>;
+
+const kindLists = <F extends { readonly [kind: string]: Schema.Top }>(items: F) =>
+  Rec.map(items, kindList) as { readonly [K in keyof F]: KindList<F[K]> };
+
+export const Truth = Schema.Struct(kindLists(Struct.Record(TRUTH_KINDS, TruthItem))).annotate({
+  message: TRUTH_OBJECT_RULE,
+});
 export type Truth = typeof Truth["Type"];
 
 export const ScreenTruthItem = itemTimeOrder.pipe(
@@ -84,16 +90,9 @@ export const ForbiddenItem = Schema.Struct({
 }).annotate({ message: KEYWORDS_RULE });
 export type ForbiddenItem = typeof ForbiddenItem["Type"];
 
-const screenList = <S extends Schema.Top>(item: S) =>
-  Schema.mutableKey(Schema.mutable(Schema.Array(item)).annotate({ message: KIND_LIST_RULE })).annotateKey({
-    messageMissingKey: KIND_LIST_RULE,
-  });
-
-export const ScreenTruth = Schema.Struct({
-  指す発言: screenList(ScreenTruthItem),
-  話だけ: screenList(ScreenTruthItem),
-  出てはいけない: screenList(ForbiddenItem),
-}).annotate({ message: TRUTH_OBJECT_RULE });
+export const ScreenTruth = Schema.Struct(
+  kindLists({ 指す発言: ScreenTruthItem, 話だけ: ScreenTruthItem, 出てはいけない: ForbiddenItem }),
+).annotate({ message: TRUTH_OBJECT_RULE });
 export type ScreenTruth = typeof ScreenTruth["Type"];
 
 export type Metrics = { nodes: number; depth: number; byKind: Record<Kind, number> };

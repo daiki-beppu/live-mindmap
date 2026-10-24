@@ -27,8 +27,7 @@ const truthReason = (error: Schema.SchemaError): string =>
       ...new Set(
         formatIssues(error.issue).issues.map(({ message, path }) => {
           const [kind, index] = (path ?? []).map((segment) => (Predicate.isObject(segment) ? segment.key : segment));
-          if (!Predicate.isString(kind)) return message;
-          return Predicate.isNumber(index) ? `「${kind}」の ${index + 1} 件目: ${message}` : `「${kind}」${message}`;
+          return Predicate.isString(kind) && Predicate.isNumber(index) ? `「${kind}」の ${index + 1} 件目: ${message}` : message;
         }),
       ),
     ].join(" / "),
