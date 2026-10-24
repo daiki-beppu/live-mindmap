@@ -22,6 +22,7 @@ import { planLayer } from "../src/updatePlan.ts";
 import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
 import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
+import type { ViewerFrame } from "../src/viewers.ts";
 import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTransferToken.ts";
 import { vocabularyPoolPath } from "../src/vocabularyPool.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
@@ -305,7 +306,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     const snapshots: Snapshot[] = [];
     yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<WebSocket>((resolve, reject) => {
       const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
-      socket.addEventListener("message", (event) => { const frame = JSON.parse(String(event.data)); if (Array.isArray(frame.nodes)) snapshots.push(frame); });
+      socket.addEventListener("message", (event) => { const frame = JSON.parse(String(event.data)); if (frame.type === "snapshot") snapshots.push(frame.snapshot); });
       socket.addEventListener("open", () => resolve(socket), { once: true });
       socket.addEventListener("error", reject, { once: true });
     })), (socket) => Effect.sync(() => socket.close()));
@@ -1990,9 +1991,9 @@ describe("CLI", () => {
       const port = yield* Deferred.await(listening);
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       ws.addEventListener("message", (e) => {
-        const frame = JSON.parse(String(e.data)) as Snapshot | { type: string };
-        if (!("type" in frame)) {
-          received.push(frame);
+        const frame = JSON.parse(String(e.data)) as ViewerFrame;
+        if (frame.type === "snapshot") {
+          received.push(frame.snapshot);
           firstReceived();
         }
       });

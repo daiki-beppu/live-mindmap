@@ -199,7 +199,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     const ws = yield* Effect.acquireRelease(
       Effect.tryPromise(() => new Promise<InstanceType<typeof WebSocket>>((resolve, reject) => {
         const socket = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
-        socket.on("message", (raw) => { const frame = JSON.parse(raw.toString()); if (Array.isArray(frame.nodes)) snapshots.push(frame); });
+        socket.on("message", (raw) => { const frame = JSON.parse(raw.toString()); if (frame.type === "snapshot") snapshots.push(frame.snapshot); });
         socket.once("open", () => resolve(socket));
         socket.once("error", reject);
       })), (socket) => Effect.sync(() => socket.terminate()),

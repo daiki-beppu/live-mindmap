@@ -96,9 +96,9 @@ describe("事実を Message にする", () => {
     );
   });
 
-  it("server が送る 8 種類の frame（snapshot と 7 つの type）を decode して ReceivedLiveFrame にする", async () => {
+  it("server が送る 8 種類の type の frame を decode して ReceivedLiveFrame にする", async () => {
     const frames = [
-      snapshot,
+      { type: "snapshot", snapshot },
       { type: "captions", bubbles: [{ id: "c1", track: "相手", speaker: "相手 A", label: "仮", start: 1, end: 2, text: "こんにち", settledLength: 0 }] },
       { type: "intake", status: "interrupted" },
       { type: "screen-notice", text: "共有画面は使っていません" },
@@ -136,19 +136,19 @@ describe("事実を Message にする", () => {
     );
   });
 
-  it("type を持つ frame は、スナップショットの必須フィールドを持っていても、スナップショットとして扱わない（知らない type・不正な payload）", async () => {
+  it("type が snapshot でない frame は、スナップショットを持っていても、スナップショットとして扱わない（知らない type・不正な payload）", async () => {
     await run((collected) =>
       Effect.gen(function* () {
         const ws = sockets()[0]!;
         ws.open();
-        ws.receive(JSON.stringify(snapshot));
-        ws.receive(JSON.stringify({ type: "future-frame", ...snapshot }));
-        ws.receive(JSON.stringify({ type: "captions", bubbles: "x", ...snapshot }));
+        ws.receive(JSON.stringify({ type: "snapshot", snapshot }));
+        ws.receive(JSON.stringify({ type: "future-frame", snapshot }));
+        ws.receive(JSON.stringify({ type: "captions", bubbles: "x", snapshot }));
         ws.receive(JSON.stringify({ type: "intake", status: "stopped" }));
         yield* settle;
         expect(collected).toEqual([
           Message.ConnectedLiveFeed(),
-          Message.ReceivedLiveFrame({ frame: snapshot, receivedAt: 0 }),
+          Message.ReceivedLiveFrame({ frame: { type: "snapshot", snapshot }, receivedAt: 0 }),
           Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 0 }),
         ]);
         expect(sockets()).toHaveLength(1);

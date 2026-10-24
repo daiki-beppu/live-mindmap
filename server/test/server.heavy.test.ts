@@ -130,7 +130,7 @@ const connect = (port: number) =>
   ws.addEventListener("message", (e) => {
     const frame = JSON.parse(String(e.data));
     if (frame.type === "captions") captions.push(frame);
-    else if (!("type" in frame)) received.push(frame);
+    else if (frame.type === "snapshot") received.push(frame.snapshot);
   });
   yield* Effect.acquireRelease(Effect.void, () => Effect.sync(() => ws.close()));
   yield* Effect.promise(

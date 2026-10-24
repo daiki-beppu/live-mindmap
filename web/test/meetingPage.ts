@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
-import type { CaptionsFrame, Snapshot } from "../../server/src/core/index.ts";
+import type { CaptionsFrame, SnapshotFrame } from "../../server/src/core/index.ts";
 import { spokenBubble } from "./fixtures/captions.ts";
 import { buildReviewTimeline, CAPTION_SECONDS, snapshotAt } from "../src/reviewTimeline.ts";
 import { LOG_PATH, readFoldkitViewport } from "./reviewPage.ts";
@@ -40,7 +40,7 @@ export async function meetingFrames(): Promise<MeetingFrames> {
     const speaking = { 相手: speakingOf("相手"), 自分: speakingOf("自分") };
     return [
       { type: "captions", bubbles: [...(speaking.相手 === "" ? [] : [spokenBubble(speaking.相手, "相手")]), ...(speaking.自分 === "" ? [] : [spokenBubble(speaking.自分, "自分")])] } satisfies CaptionsFrame,
-      snapshotAt(timeline, t) satisfies Snapshot,
+      { type: "snapshot", snapshot: snapshotAt(timeline, t) } satisfies SnapshotFrame,
     ];
   };
   return { first: framesAt(firstAt), reflected: framesAt(lastAt) };

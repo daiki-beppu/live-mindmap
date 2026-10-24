@@ -4,7 +4,7 @@ import { bindingsOf } from "../src/app/keys/table.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { subscriptions } from "../src/app/meeting/subscription.ts";
 import { element, eventOfBinding, fakeDocument, keydown, settleKeyEvents, type KeyInit } from "./keysHarness.ts";
-import { FIRST, frameMessage, HEIGHTS, init, Message, SIZE, surfaceMessage, update, type MeetingMessage, type Model } from "./meetingHarness.ts";
+import { FIRST, HEIGHTS, init, Message, SIZE, snapshotMessage, surfaceMessage, update, type MeetingMessage, type Model } from "./meetingHarness.ts";
 
 // 会議中の Subscription のうち、キー（文書の keydown。Issue #829）。画面は会議中の表（"live"）で決まり、スナップショットが届くまで（表示面が無い間）は流れを空にする。
 // 依存は選択の有無（Enter を開閉に使うかの判断に要る）。意味は update が決める（meeting.story.test.ts・meeting.scene.test.ts）。
@@ -15,8 +15,8 @@ const pressed = (key: string) => Message.PressedKey({ key: key as never, ...NO_M
 
 const run = (messages: ReadonlyArray<MeetingMessage>): Model => messages.reduce((model, next) => update(model, next).model, init(false));
 const measured = surfaceMessage(MapSurfaceMessage.MeasuredMapSurface({ ...SIZE, nodeHeights: HEIGHTS }));
-const shown = (): Model => run([frameMessage(FIRST), measured]);
-const selected = (): Model => run([frameMessage(FIRST), measured, surfaceMessage(MapSurfaceMessage.ClickedNodeButton({ nodeId: "A", clientX: 0, clientY: 0 }))]);
+const shown = (): Model => run([snapshotMessage(FIRST), measured]);
+const selected = (): Model => run([snapshotMessage(FIRST), measured, surfaceMessage(MapSurfaceMessage.ClickedNodeButton({ nodeId: "A", clientX: 0, clientY: 0 }))]);
 
 afterEach(() => vi.unstubAllGlobals());
 
