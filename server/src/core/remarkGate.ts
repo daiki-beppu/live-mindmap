@@ -48,6 +48,14 @@ function fuzzyOverlap(prev: readonly string[], next: readonly string[]): number 
   return best;
 }
 
+function loneSurrogateOverlap(prev: string, next: string): number {
+  if (prev.isWellFormed() && next.isWellFormed()) return 0;
+  for (let n = Math.min(prev.length, next.length); n >= 1; n--) {
+    if (prev.endsWith(next.slice(0, n))) return n;
+  }
+  return 0;
+}
+
 export function createRemarkGate() {
   const last = new Map<SettledRemark["track"], { end: number; text: string }>();
 
@@ -60,16 +68,9 @@ export function createRemarkGate() {
     const newBody = compact(r.text);
     if (prevBody.includes(newBody)) return undefined;
 
-    let k = 0;
-    for (let candidate = Math.min(prevBody.length, newBody.length); candidate >= 1; candidate--) {
-      if (prevBody.endsWith(newBody.slice(0, candidate))) {
-        k = candidate;
-        break;
-      }
-    }
     const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
     const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
-    k = Math.max(k, fuzzy);
+    const k = Math.max(loneSurrogateOverlap(prevBody, newBody), fuzzy);
     const at = k === 0 ? 0 : overlapEnd(r.text, k);
     const text = r.text.slice(at);
     if (compact(text) === "") return undefined;
