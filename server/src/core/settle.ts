@@ -1,5 +1,5 @@
 import type { HelperPartial } from "./live.ts";
-import { compact, createRemarkGate, overlapEnd, type SettledRemark } from "./remarkGate.ts";
+import { compact, createRemarkGate, endsAfter, overlapEnd, passAfter, type Emitted, type SettledRemark } from "./remarkGate.ts";
 import type { Remark } from "./remark.ts";
 import { cutWords, keepWordsBefore, type Word, type WordTime } from "./words.ts";
 
@@ -63,16 +63,19 @@ const settledPosition = (u: Utterance, now: number): number | undefined => {
   return best;
 };
 
-const cutEnd = (u: Utterance, pos: number, emittedEnd: number): number => {
-  const proportional = u.start + ((u.end - u.start) * pos) / u.text.length;
-  if (proportional > emittedEnd || u.end <= emittedEnd) return proportional;
-  return emittedEnd + ((u.end - emittedEnd) * (pos - u.cutPos)) / (u.text.length - u.cutPos);
+const proportionalEnd = (u: Utterance, from: number, fromPos: number, pos: number): number =>
+  from + ((u.end - from) * (pos - fromPos)) / (u.text.length - fromPos);
+
+const endPassingGate = (u: Utterance, pos: number, emittedEnd: number): number => {
+  const end = proportionalEnd(u, u.start, 0, pos);
+  if (endsAfter(end, emittedEnd) || !endsAfter(u.end, emittedEnd)) return end;
+  return proportionalEnd(u, emittedEnd, u.cutPos, pos);
 };
 
 const toCutRemark = (u: Utterance, pos: number, emittedEnd: number): SettledRemark => ({
   track: u.track,
   start: u.start,
-  end: cutEnd(u, pos, emittedEnd),
+  end: endPassingGate(u, pos, emittedEnd),
   text: u.text.slice(0, pos),
   ...(u.words === undefined ? {} : { words: keepWordsBefore(u.words, pos) }),
   ...(u.wordTimes === undefined ? {} : { wordTimes: keepWordsBefore(u.wordTimes, pos) }),
@@ -89,18 +92,13 @@ export function createRemarkSettler(quietMs: number = SETTLE_QUIET_MS) {
   const latest = new Map<string, Utterance>();
   const gate = createRemarkGate();
 
-  type Emitted = { end: number; text: string };
   const emittedByKey = new Map<string, Emitted>();
   const emittedByTrack = new Map<Remark["track"], Emitted>();
 
   const afterEmitted = (key: string, r: SettledRemark): SettledRemark | undefined => {
     const sameUtterance = emittedByKey.get(key);
-    const prev = sameUtterance ?? emittedByTrack.get(r.track);
-    if (prev === undefined) return r;
     const at = sameUtterance === undefined ? 0 : insertionEnd(r.text, sameUtterance.text);
-    const carry = createRemarkGate();
-    carry.pass({ track: r.track, start: prev.end, end: prev.end, text: prev.text });
-    return carry.pass(at === 0 ? r : cutHead(r, at));
+    return passAfter(sameUtterance ?? emittedByTrack.get(r.track), at === 0 ? r : cutHead(r, at));
   };
 
   const passCarried = (key: string, r: SettledRemark): SettledRemark[] => {
