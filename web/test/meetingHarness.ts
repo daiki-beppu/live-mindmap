@@ -76,6 +76,7 @@ export const SELF_PAUSE_AUTO_TEXT = "自分を休止中（会議アプリがマ�
 export const PAUSED_TEXT = "マップの更新が止まっています（ChatGPT の利用上限）";
 
 export const frameMessage = (frame: LiveFrame, receivedAt = 0) => Message.GotLiveFeedMessage({ message: LiveFeedMessage.ReceivedLiveFrame({ frame, receivedAt }) });
+export const snapshotMessage = (snapshot: Snapshot, receivedAt = 0) => frameMessage({ type: "snapshot", snapshot }, receivedAt);
 export const connectedMessage = () => Message.GotLiveFeedMessage({ message: LiveFeedMessage.ConnectedLiveFeed() });
 export const disconnectedMessage = () => Message.GotLiveFeedMessage({ message: LiveFeedMessage.DisconnectedLiveFeed() });
 export const surfaceMessage = (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message });
@@ -83,6 +84,7 @@ export const keyMessage = (key: KeyId, mods: Partial<{ metaKey: boolean; ctrlKey
   Message.PressedKey({ key, metaKey: false, ctrlKey: false, altKey: false, ...mods });
 
 export const frame = (f: LiveFrame) => Subscription.emit(frameMessage(f));
+export const snapshotFrame = (snapshot: Snapshot) => Subscription.emit(snapshotMessage(snapshot));
 export const connected = () => Subscription.emit(connectedMessage());
 export const disconnected = () => Subscription.emit(disconnectedMessage());
 export const press = (key: KeyId, mods: Partial<{ metaKey: boolean; ctrlKey: boolean; altKey: boolean }> = {}) => Subscription.emit(keyMessage(key, mods));
@@ -96,6 +98,7 @@ type AnyEmit = ReturnType<typeof press> | ReturnType<typeof surface> | EmitStep;
 type Raw = { readonly _tag: "Raw"; readonly step: AnyEmit };
 export const raw = (step: AnyEmit): Raw => ({ _tag: "Raw", step });
 export const frameRaw = (f: LiveFrame): Raw => raw(frame(f));
+export const snapshotFrameRaw = (snapshot: Snapshot): Raw => raw(snapshotFrame(snapshot));
 type MeetingStep = SceneStep<Model, MeetingMessage, undefined> | Raw;
 const expand = (step: MeetingStep): SceneStep<Model, MeetingMessage, undefined>[] =>
   "_tag" in step && step._tag === "Raw" ? [quiet, (step as Raw).step] : "_tag" in step && step._tag === "SubscriptionMessageStep" ? [quiet, step as EmitStep, settle] : [step as SceneStep<Model, MeetingMessage, undefined>];

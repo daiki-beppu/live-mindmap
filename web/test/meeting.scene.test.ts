@@ -13,6 +13,8 @@ import {
   FIRST,
   frame,
   frameRaw,
+  snapshotFrame,
+  snapshotFrameRaw,
   HEIGHTS,
   init,
   INTERRUPTED,
@@ -105,7 +107,7 @@ describe("会議中の Scene: 最初のスナップショットで画面が出�
       frame({ type: "tap-notice", text: TAP }),
       frame({ type: "diff-update", state: PAUSED }),
       frame({ type: "session-mode", local: true }),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => {
         expect(findAll(sim.html, "p.waiting")).toHaveLength(0);
@@ -124,7 +126,7 @@ describe("会議中の Scene: 最初のスナップショットで画面が出�
 
   it("スナップショットだけなら、.layout の直下は .map → 字幕なし → .side だけ。ノードは反映 1 の内容（root・A）で、取り込みの知らせは出ない（動いている）", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => {
         expect(layoutOutline(sim.html)).toEqual(["map", "side"]);
@@ -139,7 +141,7 @@ describe("会議中の Scene: 最初のスナップショットで画面が出�
     const wheel = surface(MapSurfaceMessage.WheeledMapSurface({ x: 0, y: 0, deltaX: 0, deltaY: 100, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: true, timeStamp: 1 }));
     let atMac: ReturnType<typeof viewportOf>;
     meetingScene(init(true),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => (atMac = viewportOf(sim.html))),
       wheel,
@@ -147,7 +149,7 @@ describe("会議中の Scene: 最初のスナップショットで画面が出�
     );
     let atOther: ReturnType<typeof viewportOf>;
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => (atOther = viewportOf(sim.html))),
       wheel,
@@ -159,7 +161,7 @@ describe("会議中の Scene: 最初のスナップショットで画面が出�
 describe("会議中の Scene: frame が画面まで届く（受けると出て、null や切れたことで消える）", () => {
   it("共有画面の一文: 受けると .layout の直下に出て、null の frame でその場で消える。もう一度受けると出る", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       frame({ type: "screen-notice", text: SCREEN }),
       settle,
@@ -176,7 +178,7 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
 
   it("相手の音声が届いていない一文（Issue #863）: 受けると共有画面の一文の後ろに出て、null の frame で消える。共有画面の一文には触れない", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       frame({ type: "screen-notice", text: SCREEN }),
       frame({ type: "tap-notice", text: TAP }),
@@ -195,7 +197,7 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
   it("差分更新の状態: 一時停止（ChatGPT の利用上限）の間だけ指定文が role=status で出る。動作中・再開・null では出ない。マップと字幕は残る", () => {
     meetingScene(init(false),
       speak("続いている字幕。"),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       frame({ type: "diff-update", state: { status: "running" } }),
       expectScene(selector(".diff-update-notice")).toBeAbsent(),
@@ -214,7 +216,7 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
 
   it("ローカルモード: session-mode で線と文が出て .layout--local になり、差分更新の状態で文言が変わる。false で消える", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       frame({ type: "session-mode", local: true }),
       expectScene(selector(".layout--local")).toExist(),
@@ -236,7 +238,7 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
 
   it("字幕: captions の frame に追従し（吹き出しを話し始めの順に 1 列に出す）、空の並びにすると .captions ごと消える", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".captions")).toBeAbsent(),
       speak("一つ目です。二つ目です。"),
@@ -255,7 +257,7 @@ describe("会議中の Scene: frame が画面まで届く（受けると出て�
 describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開しました）", () => {
   it("動いている間は出ない。途切れると出て、動き出すと『再開しました』に変わり、時間切れで消える", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".intake-notice")).toBeAbsent(),
       intake("running"),
@@ -278,7 +280,7 @@ describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開し
 
   it("止まった（stopped）は状態が変わるまで残り、動き出すと『再開しました』。none（セッションが終わった）では出ない", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       intake("stopped"),
       settle,
@@ -298,7 +300,7 @@ describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開し
   it("最初のスナップショットの前に途切れていた状態も、スナップショットが来た時点から出る。その後 running で『再開しました』になる", () => {
     meetingScene(init(false),
       intake("interrupted"),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".intake-notice")).toHaveText(INTERRUPTED),
       intake("running"),
@@ -313,7 +315,7 @@ describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開し
   it("同じ状態をもう一度受けても、知らせは作り直さない（時間切れのタイマーが新しく増えない）", () => {
     meetingScene(
       init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       intake("interrupted"),
       intake("running"),
       tap((sim) => expect(timers(sim)).toHaveLength(1)),
@@ -328,7 +330,7 @@ describe("会議中の Scene: 取り込みの知らせ（途切れ → 再開し
 describe("会議中の Scene: 自分の休止（M・休止中の一言）", () => {
   it("休止の frame で一言が出て（aria-live: polite）、再開の frame で消える。時間では消えない", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".self-pause-notice")).toBeAbsent(),
       selfPause(true),
@@ -349,7 +351,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
   // Issue #1071: 理由で一言が変わる。同じ画面（同じ Model）の上で、手動 → 自動 → 再開 → 自動と続けて観測する
   it("休止の理由で一言の文言が変わる。休止中に理由だけ変わっても、一言は 1 つのまま置き換わり、再開で消える", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       selfPause(true, "自動"),
       settle,
@@ -374,7 +376,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
 
   it("自動の休止中の M は、手動のときと同じく逆の状態（paused:false）を指示に載せる。M の動きは理由で変わらない", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       selfPause(true, "自動"),
       settle,
@@ -388,7 +390,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
   it("最初のスナップショットの前に届いていた休止も、スナップショットが来た時点から出る", () => {
     meetingScene(init(false),
       selfPause(true),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
     );
@@ -398,7 +400,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
     let before: { map: unknown; captions: unknown };
     meetingScene(init(false),
       speak("字幕です。"),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => (before = { map: shapeOf(one(sim.html, ".map")), captions: shapeOf(one(sim.html, ".captions")) })),
       selfPause(true),
@@ -416,7 +418,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
 
   it("取り込みの一言（途切れ）と同時に出ても、どちらも別の要素として残り、片方が消えても他方は残る", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       intake("interrupted"),
       selfPause(true),
       settle,
@@ -435,7 +437,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
 
   it("M: 画面に見えている状態の逆を指示に載せる。押しただけでは一言を出さず、frame が届いて初めて切り替わる（休止中の M は paused:false）", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       raw(press("M")),
       tap((sim) => expect(selfPauseRequests(sim)).toEqual([true])),
@@ -460,7 +462,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
   it("M: 切れると見えている状態が空に戻るので次の M は paused:true。つなぎ直して server が休止を送り直すと、また paused:false", () => {
     meetingScene(init(false),
       connected(),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       selfPause(true),
       settle,
       expectScene(selector(".self-pause-notice")).toExist(),
@@ -471,7 +473,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
       tap((sim) => expect(selfPauseRequests(sim)).toEqual([true])),
       settle,
       connected(),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       selfPause(true),
       settle,
       expectScene(selector(".self-pause-notice")).toHaveText(SELF_PAUSE_TEXT),
@@ -485,7 +487,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
     meetingScene(init(false),
       raw(press("M")),
       tap((sim) => expect(selfPauseRequests(sim)).toEqual([])),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       raw(press("M", { metaKey: true })),
       raw(press("M", { ctrlKey: true })),
@@ -499,7 +501,7 @@ describe("会議中の Scene: 自分の休止（M・休止中の一言）", () =
     let before: unknown;
     meetingScene(init(false),
       speak("字幕です。"),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => (before = shapeOf(sim.html))),
       raw(press("M")),
@@ -517,7 +519,7 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
     let reference = referenceOf(FIRST);
     meetingScene(init(false),
       connected(),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       speak("途中の字幕。"),
       intake("interrupted"),
@@ -559,7 +561,7 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
         expect(selectedIds(sim.html)).toEqual(["A"]);
       }),
       // server が、つないだら保持している値を先に送り直す
-      frame(FIRST),
+      snapshotFrame(FIRST),
       frame({ type: "screen-notice", text: SCREEN }),
       frame({ type: "session-mode", local: true }),
       speak("つなぎ直した後の字幕。"),
@@ -579,7 +581,7 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
 
   it("切れて・つなぎ直した後の取り込み: 途切れのまま→サーバーが running を送ると『再開しました』が出る（つなぎ直しだけでは出ない）", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       intake("interrupted"),
       settle,
@@ -598,7 +600,7 @@ describe("会議中の Scene: 切れる・つなぎ直すをまたいで、同�
   it("切れる・つなぎ直す を繰り返しても、そのつど最新の値に追従する（共有画面の一文が出る → 切れて消える → 別の一文が出る）", () => {
     meetingScene(init(false),
       connected(),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       frame({ type: "screen-notice", text: SCREEN }),
       settle,
       expectScene(selector(".screen-notice")).toHaveText(SCREEN),
@@ -625,7 +627,7 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
   it("ノード・変わったこと・点滅の Command が新しい内容になる。選択と人が動かしたカメラは保たれ、表示面は作り直されない", () => {
     let reference = referenceOf(FIRST);
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => expect(commandNames(sim)).toEqual([])),
       // 人が選んで拡大した状態（manual）にしてから反映を受ける
@@ -641,7 +643,7 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
         expect(r.selected).toEqual(r.expectedSelected);
         expect(texts(sim.html, ".viewing-notice")).toEqual([MANUAL]);
       }),
-      frameRaw(SECOND),
+      snapshotFrameRaw(SECOND),
       tap((sim) => {
         // 反映で、点滅を最初から再生し直す Command が出る（測定済みで、反映の番号が変わり、変わったノードがあるため）
         expect(commandNames(sim)).toContain("RestartBlink");
@@ -666,9 +668,9 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
   it("補間: 反映で位置が動く間は、フレームを進めると表示面（MapSurface）と同じ位置になり、補間が終わると目標の位置に着く", () => {
     let reference = referenceOf(FIRST);
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
-      frame(SECOND),
+      snapshotFrame(SECOND),
       settle,
       surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 100 })),
       tap((sim) => {
@@ -689,13 +691,13 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
     let reference = referenceOf(FIRST);
     let atFirst: ReturnType<typeof viewportOf>;
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       tap((sim) => {
         atFirst = viewportOf(sim.html);
         matchesReference(sim.html, reference);
       }),
-      frame(SECOND),
+      snapshotFrame(SECOND),
       settle,
       surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 2000 })),
       tap((sim) => {
@@ -710,12 +712,12 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
 
   it("変わったことの無い反映（round だけ進む）では、点滅の再生し直しの Command は出ない。同じ round の再送でも出ない", () => {
     meetingScene(init(false),
-      frame(SECOND),
+      snapshotFrame(SECOND),
       settle,
-      frameRaw(THIRD_QUIET),
+      snapshotFrameRaw(THIRD_QUIET),
       tap((sim) => expect(commandNames(sim)).not.toContain("RestartBlink")),
       settle,
-      frameRaw(THIRD_QUIET),
+      snapshotFrameRaw(THIRD_QUIET),
       tap((sim) => expect(commandNames(sim)).not.toContain("RestartBlink")),
       settle,
     );
@@ -723,7 +725,7 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
 
   it("最初のスナップショットでは点滅の再生し直しは出ない。字幕・知らせの frame でも出ない", () => {
     meetingScene(init(false),
-      frameRaw(FIRST),
+      snapshotFrameRaw(FIRST),
       tap((sim) => expect(commandNames(sim)).not.toContain("RestartBlink")),
       settle,
       frameRaw(spokenFrame("字幕。", "相手")),
@@ -737,12 +739,12 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
 
   it("右の列は反映に追従し、選んだノードの根拠も新しい内容になる", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       click(selector("button.changes__button")),
       settle,
       tap((sim) => expect(texts(sim.html, ".evidence__text")).toEqual(["採用"])),
-      frame({ ...FIRST, nodes: FIRST.nodes.map((n) => (n.id === "A" ? { ...n, text: "採用（更新）" } : n)), round: 2, changes: [...FIRST.changes, { round: 2, at: 20, change: "更新", node: "A", kind: "議題", text: "採用（更新）" }] }),
+      snapshotFrame({ ...FIRST, nodes: FIRST.nodes.map((n) => (n.id === "A" ? { ...n, text: "採用（更新）" } : n)), round: 2, changes: [...FIRST.changes, { round: 2, at: 20, change: "更新", node: "A", kind: "議題", text: "採用（更新）" }] }),
       settle,
       tap((sim) => {
         expect(texts(sim.html, ".evidence__text")).toEqual(["採用（更新）"]);
@@ -767,13 +769,13 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
         expect(texts(sim.html, ".viewing-notice"), key).toEqual(noticeTextOf(reference));
       }),
     ]);
-    meetingScene(init(false), frame(SECOND), settle, ...steps);
+    meetingScene(init(false), snapshotFrame(SECOND), settle, ...steps);
   });
 
   it("⌘・Ctrl・Option と一緒のキー（表示面のキー）は、表示面には届かない形で渡されても、表示面の規則（修飾キー付きは無視）に従う", () => {
     let reference = referenceOf(SECOND);
     meetingScene(init(false),
-      frame(SECOND),
+      snapshotFrame(SECOND),
       settle,
       press("=", { metaKey: true }),
       settle,
@@ -792,7 +794,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
   it("E: 右の列を隠し、もう一度の E で戻す。字幕には触らない。⌘・Ctrl・Option と一緒では隠さない", () => {
     meetingScene(init(false),
       speak("字幕です。"),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".side")).toExist(),
       press("E", { metaKey: true }),
@@ -814,7 +816,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
   it("C: 字幕を隠し、もう一度の C で戻す。右の列には触らない。⌘・Ctrl・Option と一緒では隠さない。隠している間に来た字幕は、戻すと見える", () => {
     meetingScene(init(false),
       speak("字幕です。"),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       press("C", { metaKey: true }),
       press("C", { ctrlKey: true }),
@@ -836,7 +838,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
 
   it("?: キーの一覧は .map の中に、会議中の行だけで開く。見返しのキー（Space・K / J / L / Home / End）は載らず、M は自分の休止・再開の行として載る。もう一度の ? で閉じる", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".key-list")).toBeAbsent(),
       press("?"),
@@ -860,7 +862,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
 
   it("Esc: キーの一覧が開いているときは一覧を閉じるだけで、見る状態（拡大して止めた状態）は戻さない。もう一度の Esc で戻る", () => {
     meetingScene(init(false),
-      frame(SECOND),
+      snapshotFrame(SECOND),
       settle,
       press("="),
       settle,
@@ -889,7 +891,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
     ]);
     meetingScene(init(false),
       speak("字幕です。"),
-      frame(SECOND),
+      snapshotFrame(SECOND),
       settle,
       tap((sim) => (before = shapeOf(sim.html))),
       ...steps,
@@ -900,7 +902,7 @@ describe("会議中の Scene: キー（会議中の行だけ。見返しのキ�
 describe("会議中の Scene: 変わったことの列と根拠のパネル", () => {
   it("変わったことの項目を押すと、そのノードが選ばれ、根拠のパネルに根拠の発言が出る（pointChange）", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       expectScene(selector(".evidence__empty")).toHaveText("ノードを選ぶと、根拠の発言が出ます"),
       click(selector("button.changes__button")),
@@ -920,7 +922,7 @@ describe("会議中の Scene: 変わったことの列と根拠のパネル", ()
     const withGone: Snapshot = { ...FIRST, changes: [{ round: 1, at: 12, change: "却下", node: "gone", kind: "議題", text: "消えた議題" }] };
     let atStart: ReturnType<typeof viewportOf>;
     meetingScene(init(false),
-      frame(withGone),
+      snapshotFrame(withGone),
       settle,
       tap((sim) => (atStart = viewportOf(sim.html))),
       click(selector("button.changes__button")),
@@ -938,7 +940,7 @@ describe("会議中の Scene: 変わったことの列と根拠のパネル", ()
 
   it("右の列を隠すと、選択は残ったまま .side に side--hidden が付き（広い幅では見えない）、戻すと根拠がそのまま出る", () => {
     meetingScene(init(false),
-      frame(FIRST),
+      snapshotFrame(FIRST),
       settle,
       click(selector("button.changes__button")),
       settle,
@@ -963,7 +965,7 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
   const NO_TOPIC_NEXT: Snapshot = { ...NO_TOPIC, round: 2 };
   // 測定・補間を終え、E で右の列を隠して幅を測り直した、自動の見る状態の画面
   const remeasured = [
-    frame(NO_TOPIC),
+    snapshotFrame(NO_TOPIC),
     settle,
     surface(MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 2000 })),
     // 測り直した後は settle しない（settle は保留の Mount を最初の測定（800 の幅）で解き直してしまう）
@@ -996,7 +998,7 @@ describe("会議中の Scene: 自動のカメラは、スナップショット�
     meetingScene(init(false),
       ...remeasured,
       tap((sim) => (atRemeasured = viewportOf(sim.html))),
-      frameRaw(NO_TOPIC_NEXT),
+      snapshotFrameRaw(NO_TOPIC_NEXT),
       tap((sim) => {
         const reference = referenceUpdate(remeasuredReference(), MapSurfaceMessage.ChangedSnapshot({ snapshot: NO_TOPIC_NEXT }));
         matchesReference(sim.html, reference);
@@ -1034,7 +1036,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
 
   it("名前が付くと、それまでの字幕の名前の欄・案の出した人・TODO の担当者が、次のスナップショットを待たずに名前になる。同じ名前を 2 つのラベルに付けても別のラベルのまま。空の表でラベルに戻る", () => {
     meetingScene(init(false),
-      frame(PEOPLE),
+      snapshotFrame(PEOPLE),
       heard(said("a", "相手 A", 1), said("b", "相手 B", 2)),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "相手 B"]);
@@ -1064,7 +1066,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
 
   it("名前を付けた後に届いた吹き出しも、前から出ていた吹き出しも、同じ表で名前になる。自分の欄は名前を出さない", () => {
     meetingScene(init(false),
-      frame(PEOPLE),
+      snapshotFrame(PEOPLE),
       names(["相手 B", "田中"]),
       heard(said("a", "相手 A", 1), mine),
       tap((sim) => expect(captionNames(sim)).toEqual(["相手 A", ""])),
@@ -1076,7 +1078,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
   // 見せる吹き出しは末尾の 3 個。押せる欄の数は、見せている吹き出しの中で数える
   it("確定した相手のラベルの欄だけが押せる要素。自分の欄・同じ人が続く欄は押せない", () => {
     meetingScene(init(false),
-      frame(PEOPLE),
+      snapshotFrame(PEOPLE),
       heard(said("a1", "相手 A", 1), said("a2", "相手 A", 2), mine),
       tap((sim) => {
         expect(captionNames(sim)).toEqual(["相手 A", "", ""]);
@@ -1094,7 +1096,7 @@ describe("会議中の Scene: 話者の名前（Issue #1026）", () => {
 
   it("欄を押す → 欄の中で入力 → 送信で POST の Command（label はサーバーに送るラベル、name は入力）。送った直後は名前を出さず（楽観的に出さない）、frame が届いてから名前になる", () => {
     meetingScene(init(false),
-      frame(PEOPLE),
+      snapshotFrame(PEOPLE),
       heard(said("a", "相手 A", 1), said("b", "相手 B", 2), mine),
       click(selector("button.captions__name")), // 先頭の押せる欄 = 相手 A
       settle, // 入力へのフォーカスの Command を解く

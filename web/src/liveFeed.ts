@@ -1,4 +1,4 @@
-import type { CaptionsFrame, DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SelfPaused, SessionModeFrame, Snapshot, SpeakerNames, SpeakerNamesFrame, TapNoticeFrame } from "../../server/src/core/index.ts";
+import type { CaptionsFrame, DiffUpdateFrame, DiffUpdateState, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SelfPaused, SessionModeFrame, Snapshot, SnapshotFrame, SpeakerNames, SpeakerNamesFrame, TapNoticeFrame } from "../../server/src/core/index.ts";
 import { advanceCaptions, createCaptionState, receiveCaptions, type CaptionState } from "./captions.ts";
 import type { IntakeStatus } from "./intake.ts";
 
@@ -10,8 +10,8 @@ export function createFeedState(): FeedState {
   return { snapshot: null, captions: createCaptionState(), intake: DEFAULT_INTAKE, screenNotice: null, tapNotice: null, diffUpdate: null, selfPaused: false, local: false, speakerNames: {} };
 }
 
-export function applyFrame(state: FeedState, frame: Snapshot | CaptionsFrame | IntakeFrame | ScreenNoticeFrame | TapNoticeFrame | SelfPauseFrame | DiffUpdateFrame | SessionModeFrame | SpeakerNamesFrame, now: number): FeedState {
-  if (!("type" in frame)) return { ...state, snapshot: frame };
+export function applyFrame(state: FeedState, frame: SnapshotFrame | CaptionsFrame | IntakeFrame | ScreenNoticeFrame | TapNoticeFrame | SelfPauseFrame | DiffUpdateFrame | SessionModeFrame | SpeakerNamesFrame, now: number): FeedState {
+  if (frame.type === "snapshot") return { ...state, snapshot: frame.snapshot };
   if (frame.type === "captions") return { ...state, captions: receiveCaptions(state.captions, frame.bubbles, now) };
   if (frame.type === "intake") return { ...state, intake: frame.status };
   if (frame.type === "screen-notice") return { ...state, screenNotice: frame.text };

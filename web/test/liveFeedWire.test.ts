@@ -42,7 +42,11 @@ describe("/ws のスナップショットのフレーム", () => {
     expect(update(init(), Message.ReceivedLiveFrame({ frame, receivedAt: 0 })).model.snapshot).toEqual(Option.some(snapshot));
   });
 
-  it("未知の type を持つフレームは decode で失敗する（スナップショットとして通らない）", () => {
-    expect(decodeFrame(JSON.stringify({ ...snapshot, type: "unknown" }))).toEqual(Option.none());
+  it.each([
+    ["未知の type を持つ", { type: "unknown", snapshot }],
+    ["未知の type とスナップショットの中身を並べた", { ...snapshot, type: "unknown" }],
+    ["type の無い", snapshot],
+  ])("%sフレームは decode で失敗する（スナップショットとして通らない）", (_, frame) => {
+    expect(decodeFrame(JSON.stringify(frame))).toEqual(Option.none());
   });
 });

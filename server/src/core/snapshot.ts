@@ -23,4 +23,6 @@ export const Snapshot = Schema.Struct({
   now: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
 });
 export type Snapshot = typeof Snapshot["Type"];
+export const SnapshotFrame = Schema.Struct({ type: Schema.Literal("snapshot"), snapshot: Snapshot });
+export type SnapshotFrame = typeof SnapshotFrame["Type"];
 
