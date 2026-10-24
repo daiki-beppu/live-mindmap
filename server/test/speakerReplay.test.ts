@@ -371,6 +371,12 @@ describe("仮のラベル（replayOffline の tentativeLabels）", () => {
     expect(tentatives(result)).toEqual([["相手 B", "相手 A"], ["相手 B", "相手 B"]]);
   }));
 
+  it.effect("起動し直しの旗と併せても、仮のラベルは起動し直しの後の区間で決める（照らし合わせ前の枠は仮も確定も話者なし）", () => Effect.gen(function* () {
+    const result = yield* replayOffline(numbered(offlineRestartLog), { tentativeLabels: true, restartAt: 10 });
+
+    expect(tentatives(result)).toEqual([["相手 A", "相手 A"], ["相手 B", "相手 B"], [undefined, undefined], ["相手 A", "相手 A"]]);
+  }));
+
   it.effect("tentativeLabels がなければ、結果に仮のラベルは現れない（CLI の JSON は変わらない）", () => Effect.gen(function* () {
     const lines = [seg(1, 0, 0, 4, false), settled(1, 0), said(2, 0, 4), seg(3, 0, 0, 4, true), settled(3, 4)];
 
