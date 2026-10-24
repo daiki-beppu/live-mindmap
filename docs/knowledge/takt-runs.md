@@ -13,6 +13,8 @@ takt が作る worktree（`takt-worktrees/` の下）は Orca の worktree で�
 
 チケットの完了条件にルートの層を書くときは、依存を入れることも作業に含まれると読ませる。
 
+依存が無いまま fallow まで届くと、偽の dead-code が出る。#1452 の run の `fallow.log` は `Failed: dead-code (6 issues)` で落ちた。中身は、使っている依存（`@ai-sdk/openai`・`ai`・`@effect/platform-browser`・`tailwindcss`）を「使われていない」とし、`web/src/styles.css` の `tailwindcss/theme.css` などを「解決できない import」とするものだった。依存を入れた後には消えた。依存の名前が並ぶ fallow の失敗は、コードを直す前に `node_modules` があるかを見る。
+
 計画の段も同じ影響を受ける。AGENTS.md が読ませる `server/node_modules/effect/AGENTS.md` は依存を入れるまで無いので、[#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317) の計画は「未確認」と書いて先へ進み、テストを書く段で依存を入れてから読んだ。別の checkout の資料で代わりにしない。
 
 ## 仕様はリンク先に置かず、issue の本文かコメントに写す。takt のエージェントはリンク先の issue を読めない
@@ -21,9 +23,13 @@ heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/
 
 積む前に takt スキルの `lint-issue.mjs` を流すと、「一次資料」「解決コメント」のようなリンク頼みの書き方を警告する。写しの節の見出しに「写し」を入れると、写した issue 番号は警告から外れる。
 
-## ルートの `pnpm typecheck` の SIGKILL は環境の側。同じコマンドを 1 回流し直してから原因を探す
+## ルートの層の SIGKILL は、先に出た最初の失敗を見る。それが無ければ、同じコマンドを 1 回流し直す
 
-#1287 の run では、ルートの `pnpm typecheck` で server と helper が SIGKILL で終わり、それぞれを単体で流すと通った。テストの型エラー（TS4104）を直して同じ 1 コマンドを流し直すと、終了コード 0 で SIGKILL は出なかった。原因は確かめていない。並列 3 の takt で Swift のビルドが同時に走り、同じ SIGKILL で実装をやり直した前例がある（[2026-10-08 の開発ログ](../devlog/2026-10-08.md)）。完了条件はルートの 1 コマンドの終了コードなので、単体で通ったことを代わりにせず、流し直した結果で判断する。
+ルートの `pnpm typecheck` は workspace を並べて流し、1 つが落ちると pnpm が走っている残りを止める。#1452 の run の `root-typecheck.log` では、web と e2e が `tsc: command not found`（exit 127）で落ち、その後に server と helper が `Command failed with signal SIGKILL`、最後に `ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL` が出ていた。この SIGKILL は、依存が無いことの巻き添えで止められた跡で、`pnpm install --frozen-lockfile` の後に流し直すと 0 で通った。#1461 のマージの run でも、CI の直しの報告は「server 側は pnpm に停止された」と書いている。
+
+#1287 の run でも、ルートの `pnpm typecheck` で server と helper が SIGKILL で終わり、それぞれを単体で流すと通った。テストの型エラー（TS4104）を直して同じ 1 コマンドを流し直すと、終了コード 0 で SIGKILL は出なかった。原因は確かめていないが、型エラーの巻き添えだった形と合う。
+
+先に落ちた workspace が無く、SIGKILL だけが出ているときは環境の側を疑い、同じコマンドを 1 回流し直す。並列 3 の takt で Swift のビルドが同時に走り、SIGKILL で実装をやり直した前例がある（[2026-10-08 の開発ログ](../devlog/2026-10-08.md)）。どちらの場合も、完了条件はルートの 1 コマンドの終了コードなので、単体で通ったことを代わりにせず、流し直した結果で判断する。
 
 ## テストは行番号でなくテスト名で指す。行番号も、置き場のファイルも、先に入った子の PR で変わる
 
@@ -67,9 +73,13 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 
 テストが 0 件で終わった実行は、通ったことにも落ちたことにも数えない。
 
-## 準備のスクリプトは順に流す。並べると Swift のビルドが落ちる
+## 準備のスクリプトも、ルートの層も、1 つずつ順に流す。並べると helper の Swift のビルドを取り合って落ちる
 
-#1316 の run は `build-webrtc-apm.sh` と `fetch-speaker-models.sh` を並べて流し、後者が Swift の `error: Build failed` で落ちた。APM のビルドが済んだ後に流し直すと通った。原因は確かめていない。AGENTS.md の Checks の順（APM → 話者のモデル → `pnpm typecheck`）で 1 つずつ流す。
+#1316 の run は `build-webrtc-apm.sh` と `fetch-speaker-models.sh` を並べて流し、後者が Swift の `error: Build failed` で落ちた。APM のビルドが済んだ後に流し直すと通った。
+
+ルートの層どうしでも同じことが起きる。#1454 の run は `pnpm test` と `pnpm test:it` を 2 分ずらして重ねて流し、ログに「Another instance of SwiftPM … is already running using '…/helper/.build'」が出た。helper の IT の `FileTranscriptionITTests` の 1 件（0〜2 秒が黒、2 秒からが白の動画）が `screen.lines != nil` の期待外れ（`CRImageReaderError 1`）で落ちた。コードを変えずに helper の IT を単独で流すと 150 件通り、ルートの `pnpm test:it` を流し直すと 0 になった。#1461 のマージの run でも、helper の初めてのビルドと並んで走った web の IT 3 件がタイムアウトで落ち、workspace ごとに順に流し直すと通った。どちらも原因は確かめていない。
+
+AGENTS.md の Checks の順（APM → 話者のモデル → `pnpm typecheck` → `pnpm test` → `pnpm test:it`）で、前のコマンドが終わってから次を流す。
 
 ## コミットの分け方やマージの仕方を完了条件にしたチケットは、takt に流さず手で引き取る
 
@@ -83,6 +93,18 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 
 完了条件に残すのは、エージェントが自分で満たせるもの（ルートの層の終了コード、テスト、grep で確かめられる残りの無さ）だけにする。
 
+## 挙動を変えるチケットには、先に赤くなるテストを書いておく。振る舞いを変えない作り替えは、test-first の段で赤くならない
+
+[#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451) の本文は、5 操作 × 4 状態の表のテストについて「今の食い違い（resume・checkResume）は、この表で最初に赤くなる」と書いていた。run の write_tests の段では、その 4 行（期待 `SessionTransition`、実際 `NoSession`）だけが落ちた。175 件のうち 171 件が通り、テストが狙いを捉えていることを実装の前に確かめられた。
+
+[#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452) は、利用者に見える振る舞いを変えない作り替えだった。足した 4 条件のテストは、実装の前から全部通った。実装の担当は「失敗を作るために契約を広げない」と書いて先へ進み、レビューもそれを認めた。test-first の段で赤が出ないことを不備と読まない。代わりに、何が壊れたら落ちるテストかを本文に書いておく（[セッションの開始とブラウザへの送り口](session-start-and-viewers.md) の括弧の失敗のテスト）。
+
+## マージの run の「fix: apply TAKT PR review changes」は、CI の直しのことがある。中身は本体の `.takt/runs/` の報告で見る
+
+[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461) には「fix: apply TAKT PR review changes」のコミットがある。けれども PR のレビューは APPROVE で、指摘は無かった。このコミットは、マージの run（`20261024-052049-merge-pr-1461-4jlyjc`）が CI の light IT の失敗を調べて直したものだった。直したのは、PR が持ち込んだのではないテストの待ちの不足だった（[セッションの sink](session-sink.md) の録画の stop の節）。run は、CI の失敗 → `investigate_ci`（判定 `defect`）→ `fix_ci` → 直しのレビュー → push → CI が緑、の順に進んだ。
+
+このコミットの中身を知るには、PR の画面ではなく、本体の checkout の `.takt/runs/<日時>-merge-pr-<番号>-*/reports/` にある `ci-investigation.md`・`ci-fix.md`・`ci-fix-review.md` を読む。実装の run と違い、マージの run の報告はマージの後も残る。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -93,3 +115,4 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 - 仕様 [#1386](https://github.com/daiki-beppu/live-mindmap/issues/1386) の子 [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388)・[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392) の本文と、#1386 の案内役のコメント
 - 仕様 [#1439](https://github.com/daiki-beppu/live-mindmap/issues/1439) の子 [#1442](https://github.com/daiki-beppu/live-mindmap/issues/1442) の takt の run（`20261024-042021-issue-1442-no-no-be-no-wo-shi-hj3cz3`）の実装の報告と決定ログ
 - 仕様 [#1303](https://github.com/daiki-beppu/live-mindmap/issues/1303) の子 [#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) の本文の編集の前後と、[#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296) の triage のコメント、[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)
+- 仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) の子 [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461)、[#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452)・[PR #1465](https://github.com/daiki-beppu/live-mindmap/pull/1465)、[#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)・[PR #1507](https://github.com/daiki-beppu/live-mindmap/pull/1507) の takt の run（`20261024-044654-issue-1451-sessions-no-no-wo-1-c3mkub`・`20261024-062211-issue-1452-raibuto-karanosessh-vmobcg`・`20261024-110450-issue-1454-sesshonto-cli-play-lrmuz3`）のログと報告、#1461 のマージの run（`20261024-052049-merge-pr-1461-4jlyjc`）の報告
