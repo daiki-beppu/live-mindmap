@@ -1,4 +1,4 @@
-import { HashMap, Option, Schema } from "effect";
+import { HashMap, Match, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
@@ -222,34 +222,36 @@ const applyPendingShift = (before: Model, after: Model): Model => {
 };
 
 type CommandContext = { size: Size; previous: Model };
-type CommandHandlers = { [K in CameraCommand["type"]]: (model: Model, command: Extract<CameraCommand, { type: K }>, context: CommandContext) => Model };
+type CommandStep = (model: Model, context: CommandContext) => Model;
 
 const clampedViewport = (viewport: Viewport, size: Size): Viewport => zoomAroundCenter(viewport, clampUserZoom(viewport.zoom), size);
 
-const commandHandlers: CommandHandlers = {
-  follow: (model) => model,
-  hold: (model) => model,
-  fitAll: (model) => model,
-  fitChanged: (model) => model,
-  shiftIntoView: (model) => model,
-  refocus: (model) => modifyFields(model, { placedRound: () => Option.none() }),
-  zoomBy: (model, { factor }, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(model.viewport.zoom * factor), size)),
-  zoomTo: (model, { zoom }, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(zoom), size)),
-  pan: (model, { dx, dy }, { size }) => setViewport(model, panViewport(clampedViewport(model.viewport, size), { dx, dy }, size)),
-  focusNode: (model, { id }, { size }) => setViewport(model, nodeFocusViewport(nodeRect(id, targetOf(model), dimsOf(model)), model.viewport.zoom, size)),
-  revealNode: (model, { id }, { size }) => setViewport(model, revealViewport(clampedViewport(model.viewport, size), nodeRect(id, targetOf(model), dimsOf(model)), size)),
-  fitSubtree: (model, { id }, { size }) => setViewport(model, subtreeViewport(id, treeOf(model), targetOf(model), dimsOf(model), size)),
-  keepNode: (model, { id }, { previous }) => {
-    const at = displayedPositions(previous)[id] ?? displayedPositions(model)[id];
-    return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: keepTargetOf(foldViewOf(model), id), point: screenPoint(model.viewport, at) }) });
-  },
-};
+const commandStepOf = Match.type<CameraCommand>().pipe(
+  Match.withReturnType<CommandStep>(),
+  Match.discriminatorsExhaustive("type")({
+    follow: () => (model) => model,
+    hold: () => (model) => model,
+    fitAll: () => (model) => model,
+    fitChanged: () => (model) => model,
+    shiftIntoView: () => (model) => model,
+    refocus: () => (model) => modifyFields(model, { placedRound: () => Option.none() }),
+    zoomBy: ({ factor }) => (model, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(model.viewport.zoom * factor), size)),
+    zoomTo: ({ zoom }) => (model, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(zoom), size)),
+    pan: ({ dx, dy }) => (model, { size }) => setViewport(model, panViewport(clampedViewport(model.viewport, size), { dx, dy }, size)),
+    focusNode: ({ id }) => (model, { size }) => setViewport(model, nodeFocusViewport(nodeRect(id, targetOf(model), dimsOf(model)), model.viewport.zoom, size)),
+    revealNode: ({ id }) => (model, { size }) => setViewport(model, revealViewport(clampedViewport(model.viewport, size), nodeRect(id, targetOf(model), dimsOf(model)), size)),
+    fitSubtree: ({ id }) => (model, { size }) => setViewport(model, subtreeViewport(id, treeOf(model), targetOf(model), dimsOf(model), size)),
+    keepNode: ({ id }) => (model, { previous }) => {
+      const at = displayedPositions(previous)[id] ?? displayedPositions(model)[id];
+      return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: keepTargetOf(foldViewOf(model), id), point: screenPoint(model.viewport, at) }) });
+    },
+  }),
+);
 
 const applyCommand = (model: Model, command: CameraCommand, previous: Model): Model => {
   const reset = modifyFields(model, { pendingShift: () => command.type === "shiftIntoView", keepAnchor: () => Option.none() });
   if (Option.isNone(model.size)) return reset;
-  const handle = commandHandlers[command.type] as (model: Model, command: CameraCommand, context: CommandContext) => Model;
-  return handle(reset, command, { size: model.size.value, previous });
+  return commandStepOf(command)(reset, { size: model.size.value, previous });
 };
 
 const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select" || event.type === "deselect";
