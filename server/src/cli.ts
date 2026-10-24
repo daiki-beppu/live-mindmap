@@ -1019,6 +1019,9 @@ const updateCommand = Command.make(
 const SERVER_EXIT_TIMEOUT_MS = 15_000;
 const SERVER_EXIT_POLL_MS = 100;
 
+const predatesServerRoute = (port: number) =>
+  new CommandFailed({ message: `ポート ${port} のサーバーは server stop に対応していない版です。起動した端末で Ctrl-C で止めてください` });
+
 const serverStop = Command.make(
   "stop",
   {},
@@ -1033,7 +1036,7 @@ const serverStop = Command.make(
       Effect.map((identity): number | undefined => identity.pid),
       Effect.catchTags({
         ServerUnreachable: () => Effect.succeed(undefined),
-        ServerFailed: () => Effect.fail(new CommandFailed({ message: `ポート ${port} のサーバーは server stop に対応していない版です。起動した端末で Ctrl-C で止めてください` })),
+        ServerFailed: () => Effect.fail(predatesServerRoute(port)),
       }),
     );
     const plan = planServerStop({ reported, recorded, recordedAlive: recorded === undefined ? false : yield* processes.alive(recorded) });
