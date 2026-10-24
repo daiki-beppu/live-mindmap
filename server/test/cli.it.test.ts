@@ -1890,7 +1890,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "NoSession" });
+      expect(result.failure).toMatchObject({ _tag: "NoSavedSession" });
       expect(deps.stdout).toEqual([]);
       expect(readdirSync(dir)).toEqual([]);
     }));
@@ -1908,7 +1908,7 @@ describe("CLI", () => {
       expect(deps.stdout.join("")).toContain(session);
     }));
 
-    it.effect("保存先の直下が通常ファイルだけなら、export は NoSession になる", () => Effect.gen(function* () {
+    it.effect("保存先の直下が通常ファイルだけなら、export は NoSavedSession になる", () => Effect.gen(function* () {
       const dir = yield* temporaryDirectory;
       const deps = dependencies(dir);
       writeFileSync(join(dir, "9999-12-31T00-00-00.000Z"), "");
@@ -1917,7 +1917,7 @@ describe("CLI", () => {
 
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isSuccess(result)) return;
-      expect(result.failure).toMatchObject({ _tag: "NoSession" });
+      expect(result.failure).toMatchObject({ _tag: "NoSavedSession" });
       expect(deps.stdout).toEqual([]);
     }));
 
