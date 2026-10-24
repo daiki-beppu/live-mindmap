@@ -12,6 +12,7 @@ type Emitted =
   | typeof Message.PressedMapSurface.Type
   | typeof Message.PressedNodeButton.Type
   | typeof Message.ClickedNodeButton.Type
+  | typeof Message.ClickedNodeButtonWithoutPointer.Type
   | typeof Message.ClickedMapSurfaceWithModifier.Type
   | typeof Message.StartedMapSurfaceGesture.Type
   | typeof Message.ChangedMapSurfaceGesture.Type;
@@ -26,7 +27,7 @@ const nodeButtonOf = (target: EventTarget | null): { button: HTMLElement; nodeId
 };
 
 export const ObserveMapSurface = Mount.defineStream("ObserveMapSurface", {
-  messages: [Message.MeasuredMapSurface, Message.PressedMapSurface, Message.PressedNodeButton, Message.ClickedNodeButton, Message.WheeledMapSurface, Message.ClickedMapSurfaceWithModifier, Message.StartedMapSurfaceGesture, Message.ChangedMapSurfaceGesture],
+  messages: [Message.MeasuredMapSurface, Message.PressedMapSurface, Message.PressedNodeButton, Message.ClickedNodeButton, Message.ClickedNodeButtonWithoutPointer, Message.WheeledMapSurface, Message.ClickedMapSurfaceWithModifier, Message.StartedMapSurfaceGesture, Message.ChangedMapSurfaceGesture],
   execute: ({ element }) =>
     Stream.merge(
       // wheel は preventDefault を効かせるため、リスナーの中で同期して行う（passive: false）。ノードの上でも受ける
@@ -104,7 +105,11 @@ const observeSurface = (surface: HTMLElement): Stream.Stream<Emitted> =>
         };
         const onClick = (event: MouseEvent) => {
           const clicked = nodeButtonOf(event.target);
-          if (clicked !== null) Queue.offerUnsafe(queue, Message.ClickedNodeButton({ nodeId: clicked.nodeId, clientX: event.clientX, clientY: event.clientY }));
+          if (clicked === null) return;
+          Queue.offerUnsafe(
+            queue,
+            event.detail === 0 ? Message.ClickedNodeButtonWithoutPointer({ nodeId: clicked.nodeId }) : Message.ClickedNodeButton({ nodeId: clicked.nodeId, clientX: event.clientX, clientY: event.clientY }),
+          );
         };
         const onClickCapture = (event: MouseEvent) => {
           if (!event.metaKey && !event.ctrlKey) return;

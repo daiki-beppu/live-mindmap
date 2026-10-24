@@ -27,7 +27,7 @@ describe("見返しの表示面のポインタの Subscription", () => {
     const pressed = plainApp.update(start, surface(MapSurfaceMessage.PressedMapSurface({ clientX: 100, clientY: 100, button: 0, ctrlKey: false, insideNoPan: false }))).model;
     expect(pressing(pressed)).toHaveLength(1);
     expect(pressing(pressed)).not.toContain("sliderRelease");
-    const released = plainApp.update(pressed, surface(MapSurfaceMessage.ReleasedPointer({ ctrlKey: false, metaKey: false }))).model;
+    const released = plainApp.update(pressed, surface(MapSurfaceMessage.ReleasedPointer())).model;
     expect(pressing(released)).toEqual([]);
   });
 

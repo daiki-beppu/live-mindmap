@@ -184,7 +184,7 @@ const wheel = (over: Partial<typeof Message.WheeledMapSurface.Type> = {}) =>
   Message.WheeledMapSurface({ deltaX: 0, deltaY: 0, deltaMode: 0, shiftKey: false, ctrlKey: false, metaKey: false, timeStamp: 0, x: 0, y: 0, ...over });
 const pressPane = (over: Partial<typeof Message.PressedMapSurface.Type> = {}) => Message.PressedMapSurface({ clientX: 100, clientY: 100, button: 0, ctrlKey: false, insideNoPan: false, ...over });
 const movePointer = (clientX: number, clientY: number, buttons = 1) => Message.MovedPointer({ clientX, clientY, buttons });
-const release = (over: Partial<typeof Message.ReleasedPointer.Type> = {}) => Message.ReleasedPointer({ ctrlKey: false, metaKey: false, ...over });
+const release = () => Message.ReleasedPointer();
 
 describe("mapSurface の update: 二本指スクロールでパン（live）", () => {
   it("pixel 単位は、画面が delta × 0.5 だけ逆向きに動く。deltaX 40・deltaY 100 で pan (-20, -50)", () => {
@@ -533,13 +533,7 @@ describe("mapSurface の update: クリックとドラッグの見分け（MapNo
   });
 
   it("⑤ 押した記録の無い click（キーボード）は選ぶ", () => {
-    story(update, given(initial("live")), clickNode("A", 0, 0), selected("A"));
-  });
-
-  it("③ ⌘ か Ctrl 付きで離したら記録を消すので、後のキーボードの click は選ぶ。付いていなければ記録が残るので選ばない", () => {
-    story(update, given(initial("live")), pressNode("A", 50, 50), message(movePointer(80, 50)), message(release({ metaKey: true })), clickNode("A", 0, 0), selected("A"));
-    story(update, given(initial("live")), pressNode("A", 50, 50), message(movePointer(80, 50)), message(release({ ctrlKey: true })), clickNode("A", 0, 0), selected("A"));
-    story(update, given(initial("live")), pressNode("A", 50, 50), message(movePointer(80, 50)), message(release()), clickNode("A", 0, 0), expectNoOutMessage());
+    story(update, given(initial("live")), message(Message.ClickedNodeButtonWithoutPointer({ nodeId: "A" })), selected("A"));
   });
 
   it("click は記録を使い切る。続く 2 回目の click は記録が無いので選ぶ", () => {
@@ -556,21 +550,28 @@ describe("mapSurface の update: クリックとドラッグの見分け（MapNo
   });
 
   describe("押した後に click が届かなかったノードを、キーボードの click で選ぶ（ブラウザが出す順の Message）", () => {
-    const keyboardClick = clickNode("A", 0, 0);
+    const keyboardClick = message(Message.ClickedNodeButtonWithoutPointer({ nodeId: "A" }));
     const zoomClick = Message.ClickedMapSurfaceWithModifier({ x: 50, y: 50, ctrlKey: false, metaKey: true, altKey: false });
     it.each([
-      ["macOS の Ctrl＋左（contextmenu になり click は出ない）", [release({ ctrlKey: true })]],
-      ["⌘＋左（click は拡大に使われる）", [release({ metaKey: true }), zoomClick]],
-      ["Ctrl＋右（auxclick だけ）", [release({ ctrlKey: true })]],
-      ["⌘＋右", [release({ metaKey: true })]],
-      ["Ctrl＋中", [release({ ctrlKey: true })]],
-      ["⌘＋中", [release({ metaKey: true })]],
+      ["click が出ない押下（macOS の Ctrl＋左・Ctrl/⌘＋右・中・修飾なしの右）", [release()]],
+      ["⌘＋左（click は拡大に使われる）", [release(), zoomClick]],
     ])("%s の後は選ぶ", (_, afterPress) => {
       story(update, given(initial("live")), pressNode("A", 50, 50), ...afterPress.map((m) => message(m)), keyboardClick, selected("A"));
     });
-    it("修飾なしの右クリック（auxclick だけ）の後は、押した記録が残るので選ばない", () => {
-      story(update, given(initial("live")), pressNode("A", 50, 50), message(release()), keyboardClick, expectNoOutMessage());
-    });
+  });
+
+  it("修飾キーつきでノードをクリックした後、ふつうにクリックすると選べる", () => {
+    story(
+      update,
+      given(initial("live")),
+      pressNode("A", 50, 50),
+      message(release()),
+      message(Message.ClickedMapSurfaceWithModifier({ x: 50, y: 50, ctrlKey: false, metaKey: true, altKey: false })),
+      pressNode("A", 50, 50),
+      message(release()),
+      clickNode("A", 50, 50),
+      selected("A"),
+    );
   });
 
   it("Message を受けるだけでは OutMessage は出ない（押した・動いた・離した）", () => {

@@ -145,7 +145,7 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
       given(measuredModel(single())),
       message(Message.PressedNodeButton({ nodeId: "B", clientX: 50, clientY: 50 })),
       message(Message.MovedPointer({ clientX: 80, clientY: 50, buttons: 1 })),
-      message(Message.ReleasedPointer({ ctrlKey: false, metaKey: false })),
+      message(Message.ReleasedPointer()),
       message(Message.ClickedNodeButton({ nodeId: "B", clientX: 80, clientY: 50 })),
       model((m) => expect(m.viewing).toEqual(INITIAL_VIEWING)),
       expectNoOutMessage(),
@@ -156,7 +156,7 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
     story(
       update,
       given(measuredModel(single())),
-      clickNode("B"),
+      message(Message.ClickedNodeButtonWithoutPointer({ nodeId: "B" })),
       model((m) => expect(m.viewing.selection).toEqual({ id: "B", byKey: false })),
     );
   });
@@ -176,7 +176,7 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
       update,
       given(measuredModel(bundled())),
       message(Message.PressedNodeButton({ nodeId: "run:A", clientX: 50, clientY: 50 })),
-      message(Message.ReleasedPointer({ ctrlKey: false, metaKey: false })),
+      message(Message.ReleasedPointer()),
       message(Message.ClickedNodeButton({ nodeId: "run:A", clientX: 50, clientY: 50 })),
       model((m) => expect(Option.isNone(m.nodePress)).toBe(true)),
       expectNoOutMessage(),
