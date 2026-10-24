@@ -53,6 +53,16 @@ describe("セッションのログの読み込み", () => {
     expect(yield* log.select([StartEvent, ScreenEvent])).toEqual(events);
   }));
 
+  it.effect("lineOf は選択外の行と空行を数え、繰り返し選択した各イベントの物理行番号を返す", () => Effect.gen(function* () {
+    const log = yield* readSessionLog(dir).pipe(Effect.provide(logFile('\n{"type":"start","title":"t"}\n\n{"type":"diff","input":5}\n \t\n{"type":"screen","start":1,"image":null}\n')));
+    const first = yield* log.select([StartEvent, ScreenEvent]);
+    const second = yield* log.select([ScreenEvent]);
+
+    expect(first.map(log.lineOf)).toEqual([2, 6]);
+    expect(second.map(log.lineOf)).toEqual([6]);
+    expect(first.map(log.lineOf)).toEqual([2, 6]);
+  }));
+
   it.effect("log.jsonl が無ければ MissingSessionLog になる", () => Effect.gen(function* () {
     const error = yield* Effect.flip(readSessionLog(dir).pipe(Effect.provide(fileSystem({}))));
     expect(error).toMatchObject({ _tag: "MissingSessionLog" });

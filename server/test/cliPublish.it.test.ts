@@ -15,9 +15,11 @@ import { runCli } from "../src/cli.ts";
 import { openSealed, PUBLISH_TITLE, REVIEW_LOG_ELEMENT_ID } from "../src/core/index.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
 import { ReviewBuild, ReviewPageFailed } from "../src/review.ts";
+import { BrokenLogLine } from "../src/sessionFiles.ts";
 import { embeddedAudio, FAKE_MIX_BYTES, fakeAudioMix, type FakeMix } from "./fixtures/audioMix.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
+import { embeddedText } from "./fixtures/review.ts";
 
 // cli publish（Issue #1250 の --anyone と、Issue #1251 の既定の合言葉）。runCli を、偽の Cloudflare API・一時フォルダの HOME・偽の ReviewBuild・止めた時計で呼ぶ。
 // 偽の API が受け取った Worker のスクリプトは、実際に import して Request を渡す
@@ -225,6 +227,57 @@ async function uploadedWorker(s: Setup) {
 }
 
 describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉）", () => {
+  describe("map のイベント検証", () => {
+    const invalidEvents = [
+      { name: "remark", event: { type: "remark" } },
+      { name: "screen", event: { type: "screen", start: "x", image: null } },
+    ];
+
+    for (const explicit of [true, false]) {
+      it.effect.each(invalidEvents)(`不正な $name は物理4行目の失敗を入口へ伝播する（${explicit ? "明示パス" : "最新探索"}）`, ({ event }) => Effect.gen(function* () {
+        const s = setup(yield* temporaryDirectory);
+        const dir = writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+        const path = join(dir, "log.jsonl");
+        writeFileSync(path, JSON.stringify(startLine("t")) + "\n\n\n" + JSON.stringify(event) + "\n");
+
+        const result = yield* publish(s, [...(explicit ? [dir] : []), "--content", "map", "--anyone"]);
+
+        if (!Result.isFailure(result)) throw new Error("不正なイベントが公開された");
+        expect(result.failure).toBeInstanceOf(BrokenLogLine);
+        if (!(result.failure instanceof BrokenLogLine)) throw new Error("行情報付きの失敗ではない");
+        const failure = result.failure;
+        expect(failure).toMatchObject({ path, line: 4, kind: "event" });
+        expect(failure.reason).toMatch(/\S/);
+        yield* cliEntry.reportFailure(Cause.fail(failure)).pipe(Effect.provide(layerOf(s)));
+        const stderr = s.stderr.join("");
+        const prefix = `${path} の 4 行目が読めません: `;
+        expect(stderr.startsWith(prefix)).toBe(true);
+        expect(stderr.slice(prefix.length)).toMatch(/^[^\r\n]+\n$/);
+        const saved = process.exitCode;
+        process.exitCode = undefined;
+        try {
+          cliEntry.teardown(Exit.fail(failure), () => { throw new Error("自然終了してはならない"); });
+          expect(process.exitCode).toBe(1);
+        } finally {
+          process.exitCode = saved;
+        }
+      }));
+    }
+
+    it.effect.each(invalidEvents)("入れ子の不正な $name は map の対象イベントとして検証しない", ({ event }) => Effect.gen(function* () {
+      const s = setup(yield* temporaryDirectory);
+      const dir = writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+      writeFileSync(join(dir, "log.jsonl"), JSON.stringify(startLine("t")) + "\n\n\n" + JSON.stringify({ payload: event }) + "\n");
+
+      const result = yield* publish(s, [dir, "--content", "map", "--anyone"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(recordRows(s)[0]).toMatchObject({ dir, status: "published" });
+      const html = yield* Effect.promise(() => uploadedHtml(s));
+      expect(JSON.parse(embeddedText(html))).toEqual([startLine("t")]);
+    }));
+  });
+
   describe("成功の通し", () => {
     it.effect("セッションを省くと log.jsonl を持つ最新のセッションをマップだけの段で置き、URL・期限・サブドメインの旨を出す。記録は 1 か所に 0o600 で書く", () => Effect.gen(function* () {
       const root = yield* temporaryDirectory;
@@ -295,6 +348,24 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
 
       expect(Result.isSuccess(result), failureText(result)).toBe(true);
       expect(recordRows(s)[0]).toMatchObject({ dir: older });
+    }));
+
+    it.effect.each([
+      { name: "start が無い", start: [] },
+      { name: "start を decode できない", start: [{ type: "start", title: 5, model: { name: "m", route: "apple", local: true } }] },
+    ])("$name ログはローカルモードとして拒まず、出来事を描画へ渡して公開する", ({ start }) => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      const dir = writeSession(s.sessions, "2026-10-01T00-00-00.000Z");
+      const events = [...start, ...bodyLines(MEETING)];
+      writeFileSync(join(dir, "log.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+
+      const result = yield* publish(s, [dir, "--anyone", "--content", "remarks", "--confirmed"]);
+
+      expect(Result.isSuccess(result), failureText(result)).toBe(true);
+      expect(recordRows(s)[0]).toMatchObject({ dir, status: "published" });
+      const html = yield* Effect.promise(() => uploadedHtml(s));
+      expect(JSON.parse(embeddedText(html))).toEqual(events);
     }));
 
     it.effect("置く HTML はマップだけの段で、Direct Upload の manifest は /index.html 1 件（大きさは HTML のバイト数）", () => Effect.gen(function* () {
@@ -545,7 +616,18 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
     refused("--days が整数でない", ["--anyone", "--days", "1.5"], normal, /1.*30|--days/);
     refused("--days が数でない", ["--anyone", "--days", "abc"], normal, /1.*30|--days/);
     refused("ローカルモードのセッション（start の model.local）は拒む", ["--anyone"], (s) => { writeSession(s.sessions, "2026-10-01T00-00-00.000Z", MEETING, { local: true }); }, /ローカル/);
-    refused("log.jsonl のあるセッションが無い", ["--anyone"], (s) => { mkdirSync(s.sessions, { recursive: true }); }, /セッションがありません/);
+    it.effect("log.jsonl のあるセッションが無ければ NoSavedSession を伝播し、何も公開しない", () => Effect.gen(function* () {
+      const root = yield* temporaryDirectory;
+      const s = setup(root);
+      mkdirSync(s.sessions, { recursive: true });
+
+      const result = yield* publish(s, ["--anyone"]);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) expect(result.failure).toMatchObject({ _tag: "NoSavedSession", sessionsDir: s.sessions });
+      expect(s.api.calls).toEqual([]);
+      expect(recordFiles(s)).toEqual([]);
+    }));
     refused("見返しのビルドが失敗した", ["--anyone"], normal, /ビルドに失敗/, { buildFailure: new ReviewPageFailed({ message: "ビルドに失敗" }) });
     refused("HTML が 25 MiB を 1 バイト超える（文字数でなくバイト数で数える）", ["--anyone"], normal, /25|MiB|大き/, {
       // 「あ」は UTF-8 で 3 バイト。文字数では 25 MiB 未満、バイト数では超える

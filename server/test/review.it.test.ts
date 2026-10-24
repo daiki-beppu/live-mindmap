@@ -7,7 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { mapOnlyReviewEvents } from "../src/core/index.ts";
 import { renderReviewPages, ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
-import { reviewVariants, selfReviewVariants, writeReviews } from "../src/sessionFiles.ts";
+import { BrokenLogLine, reviewVariants, selfReviewVariants, writeReviews } from "../src/sessionFiles.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 
@@ -81,7 +81,7 @@ describe("review の書き出し", () => {
     expect(existsSync(join(dir, "map.html"))).toBe(false);
   }));
 
-  it.effect("writeReviews は読めない行を ReviewPageFailed にし、「<path> の <n> 行目が JSON として読めません: <1 行の理由>」とする。行番号は空行を除く前に数え、録音があっても HTML は書かず mix しない", () => Effect.gen(function* () {
+  it.effect("writeReviews は BrokenLogLine を伝播し、録音があっても HTML は書かず mix しない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const logPath = join(dir, "log.jsonl");
     writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n\n{broken\n`);
@@ -92,10 +92,8 @@ describe("review の書き出し", () => {
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) {
-      expect(result.failure).toBeInstanceOf(ReviewPageFailed);
-      const prefix = `${logPath} の 3 行目が JSON として読めません: `;
-      expect(result.failure.message.startsWith(prefix)).toBe(true);
-      expect(result.failure.message.slice(prefix.length)).toMatch(/^[^\n]+$/);
+      expect(result.failure).toBeInstanceOf(BrokenLogLine);
+      expect(result.failure).toMatchObject({ _tag: "BrokenLogLine", path: logPath, kind: "json" });
     }
     expect(existsSync(join(dir, "map.html"))).toBe(false);
     expect(existsSync(join(dir, "map-audio.html"))).toBe(false);

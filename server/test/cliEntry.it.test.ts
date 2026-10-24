@@ -251,9 +251,9 @@ describe("CLI の入口の出力", () => {
     });
   }).pipe(Effect.scoped));
 
-  it.live("restore のセッションなしは既存の日本語一行と exit 1", () => Effect.gen(function* () {
+  it.live.each(["restore", "publish"])("%s のセッションなしは既存の日本語一行と exit 1", (command) => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
-    const result = yield* runEntry(["restore"], sessionsDir);
+    const result = yield* runEntry([command], sessionsDir);
 
     expect(result).toEqual({ code: 1, stdout: "", stderr: `セッションがありません: ${sessionsDir}\n` });
   }).pipe(Effect.scoped));
@@ -269,33 +269,33 @@ describe("CLI の入口の出力", () => {
 
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
-    expect(result.stderr).toMatch(/^log\.jsonl の 3 行目が JSON として読めません: [^\n]+\n$/);
+    const reason = result.stderr.match(/: ([^\n]+)\n$/)?.[1];
+    expect(reason).toBeTruthy();
+    expect(result.stderr).toBe(`${join(run, "log.jsonl")} の 3 行目が JSON として読めません: ${reason}\n`);
   }).pipe(Effect.scoped));
 
-  it.live.each([
-    { name: "JSON として不正な行", log: '{"type":"start","title":"定例"}\n\n{ not json\n', reason: "が JSON として読めません: " },
-    { name: "既知の type で項目が不正な行", log: '{"type":"start","title":"定例"}\n\n{"type":"remark"}\n', reason: "が読めません: " },
-  ])("eval の不正ログ（$name）は、パスと空行を除く前の行番号を含む 1 行と exit 1", ({ log, reason }) => Effect.gen(function* () {
+  it.live("eval の不正イベントは、パスと空行を含む元の行番号の日本語一行を出して exit 1", () => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const run = join(sessionsDir, "run");
     const logPath = join(run, "log.jsonl");
     yield* Effect.tryPromise(async () => {
       await mkdir(run);
       await writeFile(join(run, "export.json"), JSON.stringify(emptyExport));
-      await writeFile(logPath, log);
+      await writeFile(logPath, '{"type":"start","title":"定例"}\n\n{"type":"remark"}\n');
     });
     const result = yield* runEntry(["eval", run], sessionsDir);
 
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
-    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
-    expect(result.stderr.startsWith(`${logPath} の 3 行目${reason}`)).toBe(true);
+    const detail = result.stderr.match(/: ([^\n]+)\n$/)?.[1];
+    expect(detail).toBeTruthy();
+    expect(result.stderr).toBe(`${logPath} の 3 行目が読めません: ${detail}\n`);
   }).pipe(Effect.scoped));
 
   it.live.each([
-    { command: "review --self-only", argv: ["review", "--self-only"], prefix: "map-audio-自分.html を書き出せませんでした: ", includePath: true },
-    { command: "publish", argv: ["publish"], prefix: "", includePath: false },
-  ])("$command の不正 JSON は既存の前置き・空行込みの行番号を stderr 1 行に出して exit 1", ({ argv, prefix, includePath }) => Effect.gen(function* () {
+    { command: "review --self-only", argv: ["review", "--self-only"] },
+    { command: "publish", argv: ["publish"] },
+  ])("$command の不正 JSON は書き出し失敗に言い換えず、ログのパスを含む stderr 1 行と exit 1", ({ argv }) => Effect.gen(function* () {
     const sessionsDir = yield* temporaryDirectory;
     const run = join(sessionsDir, "run");
     const logPath = join(run, "log.jsonl");
@@ -309,9 +309,9 @@ describe("CLI の入口の出力", () => {
 
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
-    const expectedPrefix = `${prefix}${includePath ? logPath : "log.jsonl"} の 3 行目が JSON として読めません: `;
-    expect(result.stderr.startsWith(expectedPrefix)).toBe(true);
-    expect(result.stderr.slice(expectedPrefix.length)).toMatch(/^[^\n]+\n$/);
+    expect(result.stderr).toContain(logPath);
+    expect(result.stderr.trimEnd().split("\n")).toHaveLength(1);
+    expect(result.stderr).not.toContain("を書き出せませんでした");
     expect(existsSync(join(run, "map-audio-自分.html"))).toBe(false);
   }).pipe(Effect.scoped));
 
@@ -326,6 +326,19 @@ describe("CLI の入口の出力", () => {
       stderr: `log.jsonl がありません: ${join(missing, "log.jsonl").replaceAll("\n", " ")}\n`,
     });
     expect(existsSync(missing)).toBe(false);
+  }).pipe(Effect.scoped));
+
+  it.live("play の start なしは既存の日本語一行と exit 1", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    const run = join(dir, "run");
+    yield* Effect.tryPromise(async () => {
+      await mkdir(run);
+      await writeFile(join(run, "log.jsonl"), '{"type":"diff","input":5}\n');
+    });
+
+    const result = yield* runEntry(["play", run], dir);
+
+    expect(result).toEqual({ code: 1, stdout: "", stderr: `log.jsonl に start の行がありません: ${join(run, "log.jsonl")}\n` });
   }).pipe(Effect.scoped));
 
   it.live("review のセッションなしは、保存先に改行があっても標準エラー 1 行と exit 1", () => Effect.gen(function* () {
