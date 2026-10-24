@@ -24,7 +24,7 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const external = vi.hoisted(() => ({ openClaudeUpdater: vi.fn(), openListener: vi.fn() }));
 vi.mock("../src/claude.ts", async () => (await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()));
-// 配信の待受け（openListener）だけを偽物にする。serveFeed・portOf は本物のまま
+// 配信の待受け（openListener）だけを偽物にする。serveFeed は本物のまま
 vi.mock("../src/http.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../src/http.ts")>(),
   openListener: external.openListener,

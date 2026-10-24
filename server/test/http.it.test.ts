@@ -19,7 +19,7 @@ import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
 import { reportFailure, runCli } from "../src/cli.ts";
-import { WS_CLOSE_TIMEOUT_MS } from "../src/http.ts";
+import { WS_CLOSE_TIMEOUT_MS } from "../src/httpServing.ts";
 import type { ServerLayers } from "../src/server.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";

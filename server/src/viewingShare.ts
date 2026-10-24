@@ -5,6 +5,7 @@ import type { SessionFailure } from "./sessionFailure.ts";
 import { Sessions } from "./sessions.ts";
 import { CloudflaredMissing, Tunnel } from "./tunnel.ts";
 import { Viewers } from "./viewers.ts";
+import { openViewingPort } from "./viewingPort.ts";
 
 export class ShareOpenFailed extends Schema.TaggedError<ShareOpenFailed>()("ShareOpenFailed", { message: Schema.String }) {}
 
@@ -13,10 +14,6 @@ export class ShareRefusedLocalMode extends Schema.TaggedError<ShareRefusedLocalM
 }) {}
 
 export class ShareScopeEmpty extends Schema.TaggedError<ShareScopeEmpty>()("ShareScopeEmpty", { message: Schema.String }) {}
-
-export type ViewingPort = { readonly port: number; readonly allow: (hostname: string) => Effect.Effect<void> };
-
-export type OpenViewingPort = Effect.Effect<ViewingPort, { readonly message: string }, Viewers | ReviewBuild | Scope.Scope>;
 
 type Current =
   | { readonly phase: "opening"; readonly id: object; readonly scope: Scope.Closeable }
@@ -28,7 +25,7 @@ export class ViewingShare extends Context.Service<ViewingShare, {
   close: Effect.Effect<void>;
   status: Effect.Effect<ShareStatus>;
 }>()("live-mindmap/server/ViewingShare") {
-  static readonly layer = (openViewingPort: OpenViewingPort): Layer.Layer<ViewingShare, never, Sessions | Tunnel | Viewers | ReviewBuild> =>
+  static readonly layer: Layer.Layer<ViewingShare, never, Sessions | Tunnel | Viewers | ReviewBuild> =
     Layer.effect(ViewingShare)(Effect.gen(function* () {
       const sessions = yield* Sessions;
       const tunnel = yield* Tunnel;
@@ -64,7 +61,7 @@ export class ViewingShare extends Context.Service<ViewingShare, {
         }));
         const failed = (message: string) => new ShareOpenFailed({ message });
         const body = Effect.gen(function* () {
-          const view = yield* openViewingPort.pipe(Scope.provide(connection), Effect.provideService(Viewers, viewers), Effect.provideService(ReviewBuild, build));
+          const view = yield* openViewingPort().pipe(Scope.provide(connection), Effect.provideService(Viewers, viewers), Effect.provideService(ReviewBuild, build));
           const opened = yield* tunnel.open(view.port, allow).pipe(Scope.provide(connection));
           yield* view.allow(opened.hostname);
           const status = { status: "open", url: `https://${opened.hostname}`, allow } as const;

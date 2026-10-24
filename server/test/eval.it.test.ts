@@ -25,7 +25,7 @@ vi.mock("../src/claude.ts", async (importOriginal) => ({
   ...(await import("./fixtures/claudeModule.ts")).fakeClaudeModule(() => external.openClaudeUpdater()),
   AgentSdk: (await importOriginal<typeof import("../src/claude.ts")>()).AgentSdk,
 }));
-// 配信の待受け（openListener）だけを偽物にする。serveFeed・portOf は本物のまま
+// 配信の待受け（openListener）だけを偽物にする。serveFeed は本物のまま
 vi.mock("../src/http.ts", async (importOriginal) => ({
   ...await importOriginal<typeof import("../src/http.ts")>(),
   openListener: external.openListener,
