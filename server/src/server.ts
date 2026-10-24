@@ -14,7 +14,8 @@ import { exitNaturally } from "./exitNaturally.ts";
 import { resolveHelperPath } from "./helperPath.ts";
 import { Helpers, type HelperCommand } from "./helpers.ts";
 import { ReviewBuild } from "./review.ts";
-import { layerListener, openViewingPort, portOf, serveSessions } from "./http.ts";
+import { layerListener, serveSessions } from "./http.ts";
+import { portOf } from "./httpServing.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
 import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
 import { Tunnel } from "./tunnel.ts";
@@ -66,7 +67,7 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
       Layer.provideMerge(layers.helpers),
       Layer.provideMerge(layerListener(options.port)),
       Layer.provideMerge(layers.managedDeps),
-      (base) => ViewingShare.layer(openViewingPort()).pipe(Layer.provide(layers.viewing), Layer.provideMerge(base)),
+      (base) => ViewingShare.layer.pipe(Layer.provide(layers.viewing), Layer.provideMerge(base)),
     ),
   );
   return yield* Effect.gen(function* () {

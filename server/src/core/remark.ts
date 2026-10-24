@@ -14,6 +14,8 @@ export const Remark = Schema.Struct({
 });
 export type Remark = typeof Remark["Type"];
 
+export const speakerOf = (r: Remark): string => r.speaker ?? r.track;
+
 
 export function earliestRemark(ids: readonly string[], remarks: ReadonlyMap<string, Remark>): Remark | undefined {
   let earliest: Remark | undefined;

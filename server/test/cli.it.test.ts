@@ -33,6 +33,7 @@ import { readyHelperChecks } from "./fixtures/helperCheck.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
+import { portOf } from "../src/httpServing.ts";
 
 // play の updater（claude.ts）と配信の待受け（http.ts の openListener）を差し替える。待受けは既定で偽物にし、
 // 本物の WebSocket 越しに観測する 1 本だけ、実物の openListener に戻す
@@ -1971,7 +1972,7 @@ describe("CLI", () => {
       const listening = yield* Deferred.make<number>();
       const http = external.realHttp.current!;
       external.openListener.mockImplementation((port: number) =>
-        Effect.tap(http.openListener(port), (context) => Effect.flatMap(http.portOf(Context.get(context, HttpServer.HttpServer).address), (p) => Deferred.succeed(listening, p))));
+        Effect.tap(http.openListener(port), (context) => Effect.flatMap(portOf(Context.get(context, HttpServer.HttpServer).address), (p) => Deferred.succeed(listening, p))));
 
       const received: Snapshot[] = [];
       let firstReceived: () => void = () => {};
@@ -1987,7 +1988,7 @@ describe("CLI", () => {
 
       const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
       const port = yield* Deferred.await(listening);
-      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       ws.addEventListener("message", (e) => {
         const frame = JSON.parse(String(e.data)) as Snapshot | { type: string };
         if (!("type" in frame)) {

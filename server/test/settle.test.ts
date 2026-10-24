@@ -516,6 +516,7 @@ describe("出した発言と重なる発言", () => {
     it.each([
       { name: "不対サロゲートとの重なりで空になる本文は出さず、直前状態を保持する", first: "\uD842", second: "𠮷野", out: [], nextStart: 14, nextText: "野山" },
       { name: "正常なサロゲートペアとの重なりは残りの本文を出す", first: "𠮷", second: "𠮷野", out: [final("相手", 12, 15, "野")], nextStart: 15, nextText: "山" },
+      { name: "サロゲートペアの後半だけと重なる本文は、重なった後半を除いて出す", first: "𠮷", second: "\uDFB7野", out: [final("相手", 12, 15, "野")], nextStart: 15, nextText: "山" },
       { name: "重ならない本文が通過したときは直前状態を更新する", first: "\uD842", second: "花", out: [final("相手", 12, 15, "花")], nextStart: 15, nextText: "野山" },
     ])("$name", ({ first, second, out, nextStart, nextText }) => {
       const s = createRemarkSettler();

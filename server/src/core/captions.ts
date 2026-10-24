@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import type { HelperPartial } from "./live.ts";
 import { placeCorrectionForCaptions, type CaptionCorrection, type Replacement } from "./correction.ts";
 import { Track } from "./remark.ts";
-import type { SettledRemark } from "./settle.ts";
+import type { SettledRemark } from "./remarkGate.ts";
 import { longestOverlap, type Segment } from "./speakers.ts";
 
 export const CaptionLabel = Schema.Literals(["仮", "確定", "なし"]);
