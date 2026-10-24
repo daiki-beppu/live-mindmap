@@ -160,20 +160,18 @@ export const liveLog = Effect.gen(function* () {
   const liveSpeakers: LiveLog["liveSpeakers"] = [];
   let n = 0;
   const next = () => iso(n++);
-  const settling = yield* createRemarkSettling({
-    emit: (r) => Effect.sync(() => {
-      const id = `r${liveSpeakers.length + 1}`;
-      liveSpeakers.push([id, r.speaker]);
-      const { wordTimes, speaker, ...rest } = r;
-      lines.push({
-        at: next(),
-        type: "remark",
-        remark: { id, ...rest, ...(speaker === undefined ? {} : { speaker }) },
-        raw: r.text,
-        ...(wordTimes === undefined ? {} : { wordTimes }),
-      });
-    }),
-  });
+  const settling = (yield* createRemarkSettling()).emitTo((r) => Effect.sync(() => {
+    const id = `r${liveSpeakers.length + 1}`;
+    liveSpeakers.push([id, r.speaker]);
+    const { wordTimes, speaker, ...rest } = r;
+    lines.push({
+      at: next(),
+      type: "remark",
+      remark: { id, ...rest, ...(speaker === undefined ? {} : { speaker }) },
+      raw: r.text,
+      ...(wordTimes === undefined ? {} : { wordTimes }),
+    });
+  }));
   for (const step of LIVE_STEPS) {
     if ("speaker" in step) {
       lines.push({ at: next(), ...step.speaker });
