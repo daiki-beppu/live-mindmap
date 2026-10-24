@@ -9,6 +9,8 @@ takt でチケットを実装させるとき、その run の報告を読むと�
 
 takt が作る worktree（`takt-worktrees/` の下）は Orca の worktree ではないので、`orca.yaml` の setup（`vp install`）が走らない。[#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287) の run の 1 回目の実装は、server と e2e の `node_modules` が無いまま層を回し、ルートの `pnpm test` は server の `vitest` が無くて落ち、`pnpm typecheck` は exit 127 で落ち、`pnpm test:it` と smoke は回せなかった。実装の担当は「依存を入れるのは要求の範囲外」と判断して層を未実証のまま返し、2 回目の計画が `pnpm install --frozen-lockfile`（`e2e/README.md` の回し方の最初の手順）を採ってから、すべての層が通った。lockfile は変わらない。
 
+2026-10-24 の [#1442](https://github.com/daiki-beppu/live-mindmap/issues/1442) の run でも同じで、最初のルートの `pnpm typecheck` は web と e2e の `tsc: command not found` で落ち、実装の担当が `pnpm install --frozen-lockfile` を入れてから同じコマンドが通った。この run は依存を入れる判断を自分でしたので、止まらずに 1 周で通った。
+
 チケットの完了条件にルートの層を書くときは、依存を入れることも作業に含まれると読ませる。
 
 計画の段も同じ影響を受ける。AGENTS.md が読ませる `server/node_modules/effect/AGENTS.md` は依存を入れるまで無いので、[#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317) の計画は「未確認」と書いて先へ進み、テストを書く段で依存を入れてから読んだ。別の checkout の資料で代わりにしない。
@@ -89,4 +91,5 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 - 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 [#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)・[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)、[#1309](https://github.com/daiki-beppu/live-mindmap/issues/1309)・[PR #1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)、[#1310](https://github.com/daiki-beppu/live-mindmap/issues/1310)・[PR #1370](https://github.com/daiki-beppu/live-mindmap/pull/1370) と、その PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`・`20261018-022556-evaluate-pull-request-1328-usi`・`20261020-025344-evaluate-pull-request-1370-usi`）
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304) の子 [#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)
 - 仕様 [#1386](https://github.com/daiki-beppu/live-mindmap/issues/1386) の子 [#1388](https://github.com/daiki-beppu/live-mindmap/issues/1388)・[PR #1392](https://github.com/daiki-beppu/live-mindmap/pull/1392) の本文と、#1386 の案内役のコメント
+- 仕様 [#1439](https://github.com/daiki-beppu/live-mindmap/issues/1439) の子 [#1442](https://github.com/daiki-beppu/live-mindmap/issues/1442) の takt の run（`20261024-042021-issue-1442-no-no-be-no-wo-shi-hj3cz3`）の実装の報告と決定ログ
 - 仕様 [#1303](https://github.com/daiki-beppu/live-mindmap/issues/1303) の子 [#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) の本文の編集の前後と、[#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296) の triage のコメント、[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)

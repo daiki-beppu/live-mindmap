@@ -12,3 +12,6 @@ helper/.deps/webrtc-apm/
 
 # playwright-cli が録画・操作のたびに書く作業ファイル
 .playwright-cli/
+
+# TLC（server/formal/check.sh が取る）
+server/formal/.tla/
