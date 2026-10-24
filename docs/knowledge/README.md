@@ -9,6 +9,7 @@
 - [更新の計画](update-plan.md): 差分更新のモデルと判定のモデルの選び方（`updatePlan`）と、それを呼ぶ CLI と server の配線を触るとき
 - [CLI と server の受け渡し](server-protocol.md): CLI と server の間の経路・本文・応答（`serverProtocol`）と、web が送る本文を触るとき
 - [差分更新の問い合わせの続き](diff-continuation.md): 直前の応答・送り直す共有画面と、それを持つ core・Claude の adapter・振り分け・復元を触るとき
+- [途中結果から発言を作る段](remark-settling.md): 確定の段（`settle`）と出す直前の関所（`remarkGate`）、特に本文どうしの比べ方を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -54,3 +55,7 @@
 - [#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296) と triage のコメント → [差分更新の問い合わせの続き](diff-continuation.md)、[takt の run](takt-runs.md)。#1312 の重複として閉じた経緯は捨てた: 作業の判断に使わない
 - チケット [#1313](https://github.com/daiki-beppu/live-mindmap/issues/1313)・[PR #1389](https://github.com/daiki-beppu/live-mindmap/pull/1389) の差分と本文 → [差分更新の問い合わせの続き](diff-continuation.md)。sub-issue に resolution コメントは無かった。検証の証跡を takt の worktree の `.takt/verification-pr1389/` に置いた件は捨てた: worktree ごと消え、作業の判断に使わない
 - チケット [#1314](https://github.com/daiki-beppu/live-mindmap/issues/1314)・[PR #1394](https://github.com/daiki-beppu/live-mindmap/pull/1394) の差分 → [差分更新の問い合わせの続き](diff-continuation.md)。sub-issue に resolution コメントは無かった。PR の本文の報告が 1 行だけだった件は捨てた: [takt の run](takt-runs.md) の「1 回で通った run の PR の本文には、実装の報告が写らない」にある
+- 仕様 [#1439](https://github.com/daiki-beppu/live-mindmap/issues/1439)（Formal Spec の「対象外」のコメントを含む） → [途中結果から発言を作る段](remark-settling.md)。用語は捨てた: 新しい module を作らず、GLOSSARY を変えないと仕様が決めている。ADR は捨てた: 比べ方を関所に置く判断は内側の構造で覆しやすく、理由は #1429 の解決コメントと仕様にある。Formal Spec の「対象外」は捨てた: 新しい学びが無い
+- 親 [#1441](https://github.com/daiki-beppu/live-mindmap/issues/1441) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1442](https://github.com/daiki-beppu/live-mindmap/issues/1442)・[PR #1455](https://github.com/daiki-beppu/live-mindmap/pull/1455) の差分と本文 → [途中結果から発言を作る段](remark-settling.md)。sub-issue に resolution コメントは無かった。PR の本文の報告が 1 行だけだった件は捨てた: [takt の run](takt-runs.md) の「1 回で通った run の PR の本文には、実装の報告が写らない」にある
+- #1442 の takt の run（`20261024-042021-issue-1442-no-no-be-no-wo-shi-hj3cz3`）の trace と reports → [途中結果から発言を作る段](remark-settling.md)、[takt の run](takt-runs.md)。レビューがコマンドを流し直さず実装の段のログで APPROVE した件は捨てた: [takt の run](takt-runs.md) の「companion の findings 0 も、レビューの APPROVE も、テストを流し直した証拠ではない」にある。#1441 の takt-sequence のセッションが止まって案内役が判断依頼を出した件は捨てた: PR はマージまで進んでいて、止まった原因を確かめていない
