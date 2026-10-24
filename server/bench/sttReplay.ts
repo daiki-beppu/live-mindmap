@@ -104,7 +104,6 @@ export const command = Command.make(
       model: defaultClaude,
       dir,
       title,
-      publish: () => Effect.void,
       onDiff: Effect.sync(() => diffEndsMs.push(performance.now())),
       onSpeakerNames: (inferred): Effect.Effect<void> => Effect.forEach(inferred, ({ label, name, basis }) =>
         Effect.uninterruptible(Effect.gen(function* () {

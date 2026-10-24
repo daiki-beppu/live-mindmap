@@ -6,7 +6,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openLoggedSession, openLoggedTranscriptSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { DiffUpdater, DiffUpdateReason, type DiffUpdateFrame, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SpeakerNamesFrame, type SettledRemark, type SpeakerLogEvent, type Snapshot, type OnSpeakerNames, wordsForKatakana, type CaptionsFrame, type Track } from "./core/index.ts";
+import { DiffUpdater, DiffUpdateReason, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SettledRemark, type SpeakerLogEvent, type OnSpeakerNames, wordsForKatakana, type Track } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -17,6 +17,7 @@ import type { Session } from "./core/index.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage } from "./truthFile.ts";
+import type { SendFrame, ViewerFrame } from "./viewers.ts";
 
 type SinkBase = {
   dir: string;
@@ -58,10 +59,7 @@ export type OpenSessionSink = SinkMode & {
   title: string | undefined;
   vocab?: ReadonlyArray<string> | undefined;
   logShiftMs?: number;
-  publish: (snapshot: Snapshot) => Effect.Effect<void>;
-  speak: (frame: CaptionsFrame) => Effect.Effect<void>;
-  speakerNames: (frame: SpeakerNamesFrame) => Effect.Effect<void>;
-  diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
+  send: SendFrame;
 };
 
 export type RecordedOptions = {
@@ -99,12 +97,11 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           makeFeed: (session: Session, inlet: Inlet) => Effect.Effect<F, never, Scope.Scope>,
           excluded?: RecordedOptions["excluded"],
         ) {
-          const { dir, title, vocab, logShiftMs, publish, speak, speakerNames, diffUpdate } = args;
+          const { dir, title, vocab, logShiftMs, send } = args;
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           const updaterContext = args.noMap === true ? undefined : yield* Layer.build(Layer.fresh(args.updaterLayer)).pipe(Effect.orDie);
           const names = yield* Ref.make<SpeakerNameTable>(new Map());
           const namesLock = yield* Semaphore.make(1);
-          yield* speakerNames(speakerNamesFrame(new Map()));
           const baseUpdater = updaterContext === undefined ? undefined : Context.get(updaterContext, DiffUpdater);
           const namedUpdater = baseUpdater === undefined ? undefined : DiffUpdater.of({
             ...baseUpdater,
@@ -117,15 +114,17 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               if (next === undefined) return;
               yield* appendRecordedLog({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
               yield* Ref.set(names, next);
-              yield* speakerNames(speakerNamesFrame(next));
+              yield* send(speakerNamesFrame(next));
             })));
           let observe: RecordedFeed["observe"] | undefined;
           const loggedOptions = {
             dir,
             title,
             logShiftMs,
-            publish,
-            diffUpdate: (frame: DiffUpdateFrame) => Effect.andThen(diffUpdate(frame), Effect.suspend(() => observe === undefined ? Effect.void : observe(frame))),
+            send: (frame: ViewerFrame) => Effect.gen(function* () {
+              yield* send(frame);
+              if ("type" in frame && frame.type === "diff-update" && observe !== undefined) yield* observe(frame);
+            }),
             onDiff: Effect.suspend((): Effect.Effect<void> => flow.captionsChanged),
             onSpeakerNames: (inferred: Parameters<OnSpeakerNames>[0]) => Effect.forEach(inferred, ({ label, name, basis }) => applyName({ label, name, source: "推定", basis }), { discard: true }),
           };
@@ -146,7 +145,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           });
           yield* vocabulary.addUser(vocab ?? []).pipe(Effect.asVoid);
           const flow = yield* makeRemarkFlow({
-            session, correct: vocabulary.correct, speak,
+            session, correct: vocabulary.correct, speak: send,
             captions,
             feed: (inlet) => Effect.gen(function* () {
               const feed = yield* makeFeed(session, inlet);
