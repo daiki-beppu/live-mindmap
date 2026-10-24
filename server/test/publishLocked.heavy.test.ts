@@ -36,9 +36,7 @@ describe("合言葉で暗号化した外側のページ", () => {
         Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-locked-"))),
         (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
       );
-      const logPath = join(dir, "log.jsonl");
-      writeFileSync(logPath, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
-      const { paths: [mapPath] } = yield* writeReviewPages(dir, logPath, [{ file: "index.html", audio: false, mapOnly: true }]).pipe(
+      const { paths: [mapPath] } = yield* writeReviewPages(dir, events, [{ file: "index.html", audio: false, mapOnly: true }]).pipe(
         Effect.provide(Layer.mergeAll(ReviewBuild.layer, fakeAudioMix().layer).pipe(Layer.provideMerge(NodeFileSystem.layer))),
       );
       const inner = replaceHeadForPublish(yield* Effect.tryPromise(() => readFile(mapPath!, "utf8")));

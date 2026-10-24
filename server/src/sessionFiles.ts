@@ -3,6 +3,7 @@
 import { basename, join } from "node:path";
 import { Cause, Console, DateTime, Effect, FileSystem, Layer, Ref, Schema, Semaphore } from "effect";
 import { MapCapture } from "./capture.ts";
+import { readLogLines } from "./logLines.ts";
 import { ReviewPageFailed, writeReviewPages, type ReviewVariant } from "./review.ts";
 import {
   DiffUpdater,
@@ -85,11 +86,16 @@ export const reviewVariants = Effect.fnUntraced(function* (dir: string) {
 export class ExportFilesFailed extends Schema.TaggedError<ExportFilesFailed>()("ExportFilesFailed", { message: Schema.String }) {}
 
 // 見返し用の HTML を書く。版の一覧は録音の有無で決める（reviewVariants）。mix だけの失敗は結果の skipped に入り、ここでは失敗にしない
-export const writeReviews = (dir: string) =>
-  reviewVariants(dir).pipe(
-    Effect.mapError((e) => new ReviewPageFailed({ message: errorMessage(e) })),
-    Effect.flatMap((variants) => writeReviewPages(dir, join(dir, LOG_FILE), variants)),
+export const writeReviews = Effect.fnUntraced(function* (dir: string) {
+  const variants = yield* reviewVariants(dir).pipe(Effect.mapError((e) => new ReviewPageFailed({ message: errorMessage(e) })));
+  const logPath = join(dir, LOG_FILE);
+  const { events } = yield* readLogLines(logPath).pipe(
+    Effect.mapError((e) => new ReviewPageFailed({
+      message: e._tag === "BrokenLogLine" ? `${logPath} の ${e.line} 行目が JSON として読めません: ${e.reason}` : errorMessage(e),
+    })),
   );
+  return yield* writeReviewPages(dir, events, variants);
+});
 
 // セッション終了時の書き出し。スナップショットは 1 回だけ取り、5 形式（md・json・drawnix・png・html。録音があれば map-audio.html も）を書く。
 // play（cli.ts）とライブのセッションの終了処理（sessionSinks.ts）が、この関数を呼ぶ。書いたファイルのパスを順に返す。

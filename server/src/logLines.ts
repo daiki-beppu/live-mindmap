@@ -1,5 +1,4 @@
-// log.jsonl を 1 行ずつ JSON として読む。cli（play・restore・eval）と review が共有する。
-// sessionFiles.ts は review.ts を import しているので、循環を避けるためここに置く。
+// log.jsonl を 1 行ずつ JSON として読む。cli（play・restore・eval・review・publish）と sessionFiles が共有する。
 import { Effect, FileSystem, Schema } from "effect";
 import { formatIssues, oneLine } from "./truthFile.ts";
 

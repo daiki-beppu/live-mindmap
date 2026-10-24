@@ -6,8 +6,8 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { mapOnlyReviewEvents } from "../src/core/index.ts";
-import { ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
-import { reviewVariants, selfReviewVariants } from "../src/sessionFiles.ts";
+import { renderReviewPages, ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
+import { reviewVariants, selfReviewVariants, writeReviews } from "../src/sessionFiles.ts";
 import { embeddedAudio, fakeAudioMix, FAKE_MIX_BYTES } from "./fixtures/audioMix.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 
@@ -18,7 +18,7 @@ const temporaryDirectory = Effect.acquireRelease(
   (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
 );
 
-// 書き出し（ログの読み込み・HTML の書き込み・mix の一時フォルダ）は本物の FileSystem で、ビルドだけ偽物にする
+// HTML の書き込み・mix の一時フォルダと、writeReviews が読むログには本物の FileSystem を使う
 const fakeBuild = (build: Effect.Effect<string, ReviewPageFailed>) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
     self.pipe(Effect.provideService(ReviewBuild, ReviewBuild.of({ build })), Effect.provide(NodeFileSystem.layer));
@@ -27,16 +27,30 @@ const PLAIN = { file: "map.html", audio: false } as const;
 const MAP_ONLY = { file: "map-only.html", audio: false, mapOnly: true } as const;
 const WITH_AUDIO = { file: "map-audio.html", audio: true } as const;
 
-describe("writeReviewPages", () => {
-  it.effect("log.jsonl の出来事（空行は除く・行末の改行あり）を、版ごとに 1 つの HTML へ埋め込んで書き、パスを版の順に返す。ビルドは 1 回だけ", () => Effect.gen(function* () {
+describe("review の書き出し", () => {
+  it.effect("renderReviewPages はフォルダのログを読まず、渡された出来事を埋め込んだ HTML を返し、ファイルは書かない", () => Effect.gen(function* () {
+    const dir = yield* temporaryDirectory;
+    writeFileSync(join(dir, "log.jsonl"), "{broken\n");
+    const events: readonly unknown[] = [{ type: "start", title: "渡した会議" }, { type: "intake", note: "渡した出来事" }];
+
+    const { pages, skipped } = yield* renderReviewPages(dir, events, [PLAIN]).pipe(
+      fakeBuild(Effect.succeed(TEMPLATE)),
+      Effect.provide(fakeAudioMix().layer),
+    );
+
+    expect(skipped).toEqual([]);
+    expect(pages.map((page) => page.file)).toEqual(["map.html"]);
+    expect(JSON.parse(embeddedText(pages[0]!.html))).toEqual(events);
+    expect(existsSync(join(dir, "map.html"))).toBe(false);
+  }));
+
+  it.effect("渡された出来事を、ログファイルのないフォルダで版ごとに 1 つの HTML へ埋め込んで書き、パスを版の順に返す。ビルドは 1 回だけ", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const events = [{ at: "a", type: "start", title: "定例" }, { at: "b", type: "intake", note: "x" }];
-    const logPath = join(dir, "log.jsonl");
-    writeFileSync(logPath, `${JSON.stringify(events[0])}\n\n${JSON.stringify(events[1])}\n`);
     let builds = 0;
 
     const mix = fakeAudioMix();
-    const { paths, skipped } = yield* writeReviewPages(dir, logPath, [PLAIN, { file: "second.html", audio: false }]).pipe(
+    const { paths, skipped } = yield* writeReviewPages(dir, events, [PLAIN, { file: "second.html", audio: false }]).pipe(
       fakeBuild(Effect.sync(() => { builds++; return TEMPLATE; })),
       Effect.provide(mix.layer),
     );
@@ -53,11 +67,10 @@ describe("writeReviewPages", () => {
 
   it.effect("ビルドが失敗したら ReviewPageFailed になり、何も書かない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    const logPath = join(dir, "log.jsonl");
-    writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n`);
+    const events = [{ type: "start", title: "t" }];
 
     const result = yield* Effect.result(
-      writeReviewPages(dir, logPath, [PLAIN]).pipe(fakeBuild(Effect.fail(new ReviewPageFailed({ message: "ビルドに失敗" }))), Effect.provide(fakeAudioMix().layer)),
+      writeReviewPages(dir, events, [PLAIN]).pipe(fakeBuild(Effect.fail(new ReviewPageFailed({ message: "ビルドに失敗" }))), Effect.provide(fakeAudioMix().layer)),
     );
 
     expect(Result.isFailure(result)).toBe(true);
@@ -68,12 +81,14 @@ describe("writeReviewPages", () => {
     expect(existsSync(join(dir, "map.html"))).toBe(false);
   }));
 
-  it.effect("読めない行があれば ReviewPageFailed にし、「<path> の <n> 行目が JSON として読めません: <1 行の理由>」とする。行番号は空行を除く前に数える。HTML は書かない", () => Effect.gen(function* () {
+  it.effect("writeReviews は読めない行を ReviewPageFailed にし、「<path> の <n> 行目が JSON として読めません: <1 行の理由>」とする。行番号は空行を除く前に数え、録音があっても HTML は書かず mix しない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
     const logPath = join(dir, "log.jsonl");
     writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n\n{broken\n`);
 
-    const result = yield* Effect.result(writeReviewPages(dir, logPath, [PLAIN]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(fakeAudioMix().layer)));
+    writeFileSync(join(dir, "自分.m4a"), "録音");
+    const mix = fakeAudioMix();
+    const result = yield* Effect.result(writeReviews(dir).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(mix.layer)));
 
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) {
@@ -83,14 +98,15 @@ describe("writeReviewPages", () => {
       expect(result.failure.message.slice(prefix.length)).toMatch(/^[^\n]+$/);
     }
     expect(existsSync(join(dir, "map.html"))).toBe(false);
+    expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
+    expect(mix.calls).toEqual([]);
   }));
 
   it.effect("テンプレートに </body> が無ければ ReviewPageFailed になる", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    const logPath = join(dir, "log.jsonl");
-    writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n`);
+    const events = [{ type: "start", title: "t" }];
 
-    const result = yield* Effect.result(writeReviewPages(dir, logPath, [PLAIN]).pipe(fakeBuild(Effect.succeed("<html></html>")), Effect.provide(fakeAudioMix().layer)));
+    const result = yield* Effect.result(writeReviewPages(dir, events, [PLAIN]).pipe(fakeBuild(Effect.succeed("<html></html>")), Effect.provide(fakeAudioMix().layer)));
 
     expect(Result.isFailure(result) && result.failure instanceof ReviewPageFailed).toBe(true);
     expect(existsSync(join(dir, "map.html"))).toBe(false);
@@ -101,19 +117,17 @@ describe("writeReviewPages", () => {
 describe("writeReviewPages の音声つきの版", () => {
   const prepare = Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    const logPath = join(dir, "log.jsonl");
     const events = [{ at: "a", type: "start", title: "定例" }];
-    writeFileSync(logPath, `${JSON.stringify(events[0])}\n`);
-    return { dir, logPath, events };
+    return { dir, events };
   });
   const read = (path: string) => Effect.tryPromise(() => readFile(path, "utf8"));
 
   it.effect("音声つきの版には mix の出力を base64 で埋め込む。ログも入り、音声なしの版には音声を入れない。パスは版の順", () => Effect.gen(function* () {
-    const { dir, logPath, events } = yield* prepare;
+    const { dir, events } = yield* prepare;
     const mix = fakeAudioMix();
     let builds = 0;
 
-    const { paths, skipped } = yield* writeReviewPages(dir, logPath, [PLAIN, WITH_AUDIO]).pipe(
+    const { paths, skipped } = yield* writeReviewPages(dir, events, [PLAIN, WITH_AUDIO]).pipe(
       fakeBuild(Effect.sync(() => { builds++; return TEMPLATE; })),
       Effect.provide(mix.layer),
     );
@@ -130,10 +144,10 @@ describe("writeReviewPages の音声つきの版", () => {
   }));
 
   it.effect("mix の出力は一時フォルダに書かれ、セッションのフォルダには残らず、書き出しの後に一時フォルダも残らない", () => Effect.gen(function* () {
-    const { dir, logPath } = yield* prepare;
+    const { dir, events } = yield* prepare;
     const mix = fakeAudioMix();
 
-    yield* writeReviewPages(dir, logPath, [WITH_AUDIO]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(mix.layer));
+    yield* writeReviewPages(dir, events, [WITH_AUDIO]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(mix.layer));
 
     const out = mix.calls[0]!.out;
     expect(dirname(out)).not.toBe(dir);
@@ -142,11 +156,11 @@ describe("writeReviewPages の音声つきの版", () => {
   }));
 
   it.effect("mix が失敗したら、その版だけを諦める。map.html は書いてパスを返し、諦めた版と理由を skipped に返す（失敗にはしない）。一時フォルダは残らない", () => Effect.gen(function* () {
-    const { dir, logPath } = yield* prepare;
+    const { dir, events } = yield* prepare;
     const mix = fakeAudioMix();
     mix.failure.reason = "録音を混ぜられない";
 
-    const { paths, skipped } = yield* writeReviewPages(dir, logPath, [PLAIN, WITH_AUDIO]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(mix.layer));
+    const { paths, skipped } = yield* writeReviewPages(dir, events, [PLAIN, WITH_AUDIO]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(mix.layer));
 
     expect(paths).toEqual([join(dir, "map.html")]);
     expect(skipped).toEqual([{ file: "map-audio.html", reason: "録音を混ぜられない" }]);
@@ -156,28 +170,16 @@ describe("writeReviewPages の音声つきの版", () => {
   }));
 
   it.effect("ビルドが失敗したら、音声つきの版があっても何も書かず ReviewPageFailed になり、mix は呼ばない", () => Effect.gen(function* () {
-    const { dir, logPath } = yield* prepare;
+    const { dir, events } = yield* prepare;
     const mix = fakeAudioMix();
 
     const result = yield* Effect.result(
-      writeReviewPages(dir, logPath, [PLAIN, WITH_AUDIO]).pipe(fakeBuild(Effect.fail(new ReviewPageFailed({ message: "ビルドに失敗" }))), Effect.provide(mix.layer)),
+      writeReviewPages(dir, events, [PLAIN, WITH_AUDIO]).pipe(fakeBuild(Effect.fail(new ReviewPageFailed({ message: "ビルドに失敗" }))), Effect.provide(mix.layer)),
     );
 
     expect(Result.isFailure(result) && result.failure instanceof ReviewPageFailed).toBe(true);
     expect(existsSync(join(dir, "map.html"))).toBe(false);
     expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
-    expect(mix.calls).toEqual([]);
-  }));
-
-  it.effect("ログが読めなければ、音声つきの版があっても何も書かず ReviewPageFailed になり、mix は呼ばない", () => Effect.gen(function* () {
-    const { dir, logPath } = yield* prepare;
-    writeFileSync(logPath, "{broken\n");
-    const mix = fakeAudioMix();
-
-    const result = yield* Effect.result(writeReviewPages(dir, logPath, [PLAIN, WITH_AUDIO]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(mix.layer)));
-
-    expect(Result.isFailure(result) && result.failure instanceof ReviewPageFailed).toBe(true);
-    expect(existsSync(join(dir, "map.html"))).toBe(false);
     expect(mix.calls).toEqual([]);
   }));
 });
@@ -248,11 +250,9 @@ describe("selfReviewVariants（自分の声だけの版）", () => {
       { at: "a", type: "screen", start: 3, image: "s1.jpg", lines: ["社外秘 売上 12 億"] },
       { at: "b", type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 5, text: "給与は九百万です" }, raw: "きゅうよは九百万です" },
     ];
-    const logPath = join(dir, "log.jsonl");
-    writeFileSync(logPath, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
     let builds = 0;
 
-    const { paths, skipped } = yield* writeReviewPages(dir, logPath, [PLAIN, MAP_ONLY]).pipe(
+    const { paths, skipped } = yield* writeReviewPages(dir, events, [PLAIN, MAP_ONLY]).pipe(
       fakeBuild(Effect.sync(() => { builds++; return TEMPLATE; })),
       Effect.provide(fakeAudioMix().layer),
     );
@@ -272,11 +272,10 @@ describe("selfReviewVariants（自分の声だけの版）", () => {
 
   it.effect("mapOnly の版で、壊れた発言の行があれば ReviewPageFailed になり、何も書かない", () => Effect.gen(function* () {
     const dir = yield* temporaryDirectory;
-    const logPath = join(dir, "log.jsonl");
-    writeFileSync(logPath, `${JSON.stringify({ type: "start", title: "t" })}\n${JSON.stringify({ type: "remark", note: "給与は九百万です" })}\n`);
+    const events = [{ type: "start", title: "t" }, { type: "remark", note: "給与は九百万です" }];
 
     const result = yield* Effect.result(
-      writeReviewPages(dir, logPath, [PLAIN, MAP_ONLY]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(fakeAudioMix().layer)),
+      writeReviewPages(dir, events, [PLAIN, MAP_ONLY]).pipe(fakeBuild(Effect.succeed(TEMPLATE)), Effect.provide(fakeAudioMix().layer)),
     );
 
     expect(Result.isFailure(result) && result.failure).toBeInstanceOf(ReviewPageFailed);
