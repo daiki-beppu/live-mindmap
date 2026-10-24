@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { NARROW_QUERY } from "../src/app/startFlags.ts";
 
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
@@ -173,5 +174,11 @@ describe("styles.css: 人が開いたノードの小さな丸と、畳んだノ�
     }
     expect(rule(".map-node__fold-dot:focus")).toBe("");
     expect(rule(".map-node__count--pressable:focus")).toBe("");
+  });
+});
+
+describe("styles.css: 狭い幅", () => {
+  it("狭い幅: 会議中の画面を並べ替える @media の条件は NARROW_QUERY と同じ（Issue #1470）", () => {
+    expect([...css.matchAll(/@media\s*([^{]+?)\s*\{\s*\.meeting \.layout\s*\{/g)].map((m) => m[1])).toEqual([NARROW_QUERY]);
   });
 });
