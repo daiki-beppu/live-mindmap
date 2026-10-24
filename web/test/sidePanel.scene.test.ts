@@ -467,7 +467,7 @@ describe("sidePanel の Scene: TODO の段（Issue #1287）", () => {
     );
     const merged = todoSnap(
       [node("root", null, "会議"), node("B", "root", "議題"), node("T1", "B", "TODO", { text: "求人を出す" })],
-      [...before.changes, { round: 3, at: 90, change: "統合", node: "T1", kind: "TODO", text: "求人を出す" }],
+      [...before.changes, { round: 3, at: 90, change: "統合", node: "T1", kind: "TODO", text: "求人を出す", from: ["T2"] }],
     );
     scene(
       app,

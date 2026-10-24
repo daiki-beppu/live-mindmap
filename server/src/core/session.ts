@@ -4,7 +4,7 @@ import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpda
 import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { attributePeople } from "./people.ts";
-import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
+import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type AppliedOps, type DiffOutput, type MeetingMap } from "./map.ts";
 import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
 import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
 import { Remark } from "./remark.ts";
@@ -149,9 +149,9 @@ type History = Pick<SessionState, "round" | "changes" | "currentTopic" | "lastCh
 
 export const stampOf = (history: { round: number }, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
 
-function recordRound(history: History, before: MeetingMap, applied: { map: MeetingMap; changeOrder: string[] }, stamp: { round: number; at: number }): History {
+function recordRound(history: History, before: MeetingMap, applied: Pick<AppliedOps, "map" | "changeOrder" | "combined">, stamp: { round: number; at: number }): History {
   const { round, at } = stamp;
-  const added = diffMaps(before, applied.map).map((c): ChangeEntry => ({ ...c, round, at }));
+  const added = diffMaps(before, applied).map((c): ChangeEntry => ({ ...c, round, at }));
   const lastChanged = lastChangedNode(applied.map, applied.changeOrder);
   return {
     round,

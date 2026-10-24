@@ -148,6 +148,7 @@ type ApplyState = {
   at: number;
   changeOrder: string[];
   remarks: ReadonlyMap<string, Remark>;
+  combined: Map<string, string[]>;
 };
 
 type OpOf<K extends Op["op"]> = Extract<Op, { op: K }>;
@@ -284,6 +285,8 @@ function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
   for (const u of src.evidence) if (!dst.evidence.includes(u)) dst.evidence.push(u);
   const fromRound = src.evidenceRound;
   removeNode(s.map, src.id);
+  s.combined.set(dst.id, [...(s.combined.get(dst.id) ?? []), ...(s.combined.get(src.id) ?? []), src.id]);
+  s.combined.delete(src.id);
   s.changeOrder.push(dst.id);
   const merged = mergedEvidenceRound(fromRound, dst.evidenceRound);
   if (merged !== undefined) dst.evidenceRound = merged;
@@ -298,6 +301,7 @@ function applyDelete(s: ApplyState, op: OpOf<"delete">): Applied {
   if (children(s.map, n.id).length) return "子を持つノードは削除できない";
   touchUp(s.map, n.parent, s.at);
   removeNode(s.map, n.id);
+  s.combined.delete(n.id);
   return null;
 }
 
@@ -331,12 +335,14 @@ function applyOp(s: ApplyState, op: Op): Applied {
 }
 
 
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }, remarks: ReadonlyMap<string, Remark>): { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string> } {
-  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [], remarks };
+export type AppliedOps = { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string>; combined: ReadonlyMap<string, readonly string[]> };
+
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }, remarks: ReadonlyMap<string, Remark>): AppliedOps {
+  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [], remarks, combined: new Map() };
   const dropped: Dropped[] = [];
   for (const op of ops) {
     const reason = applyOp(s, op);
     if (reason) dropped.push({ op, reason });
   }
-  return { map: s.map, dropped, changeOrder: s.changeOrder, refs: Object.fromEntries(s.refs) };
+  return { map: s.map, dropped, changeOrder: s.changeOrder, refs: Object.fromEntries(s.refs), combined: s.combined };
 }

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, Tuple } from "effect";
 import { Change } from "./changes.ts";
 import { MapNode, PointStatus } from "./map.ts";
 import { Remark } from "./remark.ts";
@@ -8,11 +8,10 @@ export const SnapshotNode = Schema.Struct({
   pointStatus: Schema.optionalKey(Schema.mutableKey(PointStatus)),
 });
 export type SnapshotNode = typeof SnapshotNode["Type"];
-export const ChangeEntry = Schema.Struct({
-  ...Change.fields,
+export const ChangeEntry = Change.mapMembers(Tuple.map(Schema.fieldsAssign({
   round: Schema.mutableKey(Schema.Finite),
   at: Schema.mutableKey(Schema.Finite),
-});
+})));
 export type ChangeEntry = typeof ChangeEntry["Type"];
 export const Snapshot = Schema.Struct({
   nodes: Schema.mutableKey(Schema.mutable(Schema.Array(SnapshotNode))),

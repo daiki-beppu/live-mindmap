@@ -1299,7 +1299,10 @@ describe("reduceViewing: 選んだノードが統合・削除・時刻の巻き�
     4,
     "A",
   );
-  const merged = fsnap([froot, fnode("A", "root", "議題", ["r1"]), fnode("P1", "A", "論点", ["r1", "r2"]), fnode("X", "P1", "案", ["r2"])], 5, "A");
+  const merged: Snapshot = {
+    ...fsnap([froot, fnode("A", "root", "議題", ["r1"]), fnode("P1", "A", "論点", ["r1", "r2"]), fnode("X", "P1", "案", ["r2"])], 5, "A"),
+    changes: [{ change: "統合", node: "P1", kind: "論点", text: "P1", from: ["P2"], round: 5, at: 10 }],
+  };
   const deleted = fsnap([froot, fnode("A", "root", "議題", ["r1"]), fnode("P1", "A", "論点", ["r1"])], 5, "A");
 
   const reflectFrom = (b: Snapshot, a: Snapshot, state: ViewingState, scope: "live" | "review" = "live") => {
@@ -1308,7 +1311,7 @@ describe("reduceViewing: 選んだノードが統合・削除・時刻の巻き�
   };
 
   // 今の議題は B。人の畳み（A）で選択ノード P2 が前の木から隠れた状態で、反映が起きる。選択は移り先へ移り、根拠欄も移り先を出す
-  const withB = (nodes: SnapshotNode[], round: number) => fsnap([...nodes, fnode("B", "root", "議題", ["r3"])], round, "B");
+  const withB = (nodes: SnapshotNode[], round: number, changes: Snapshot["changes"] = []): Snapshot => ({ ...fsnap([...nodes, fnode("B", "root", "議題", ["r3"])], round, "B"), changes });
   const reflectHidden = (b: Snapshot, a: Snapshot) => {
     const folded = set("A");
     const state: ViewingState = { mode: "manual", topic: "B", humanFolded: folded, selection: { id: "P2", byKey: true } };
@@ -1327,13 +1330,13 @@ describe("reduceViewing: 選んだノードが統合・削除・時刻の巻き�
   });
 
   it("人の畳みで隠れた選択ノードが統合されたら、統合先 P1 へ移り、根拠欄も P1 を出す", () => {
-    const { out, evidence } = reflectHidden(hiddenBefore, withB(merged.nodes, 5));
+    const { out, evidence } = reflectHidden(hiddenBefore, withB(merged.nodes, 5, merged.changes));
     expect(out.state.selection).toEqual({ id: "P1", byKey: true });
     expect(evidence?.node.id).toBe("P1");
   });
 
   it("人の畳みで隠れた選択ノードが、巻き戻しで無い時点になったら、統合先ではなく祖先 A へ移り、根拠欄も A を出す", () => {
-    const { out, evidence } = reflectHidden(hiddenBefore, withB(merged.nodes, 3));
+    const { out, evidence } = reflectHidden(hiddenBefore, withB(merged.nodes, 3, merged.changes));
     expect(out.state.selection).toEqual({ id: "A", byKey: true });
     expect(evidence?.node.id).toBe("A");
   });

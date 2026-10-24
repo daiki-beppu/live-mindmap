@@ -21,10 +21,10 @@ const before = (): MeetingMap =>
     { op: "add", ref: "t6", parent: "t5", kind: "案", text: "若手も面接に入る", evidence: ["r3"] },
   ]);
 
-// 前のマップに ops を反映した後のマップとの比較
-const changesOf = (ops: Op[], base: MeetingMap = before()): Change[] => diffMaps(base, step(base, ops));
+// 前のマップに ops を反映した結果（反映後のマップと統合の記録）との比較
+const changesOf = (ops: Op[], base: MeetingMap = before()): Change[] => diffMaps(base, applyOps(base, ops, known, { round: 1, at: 0 }, new Map()));
 
-describe("diffMaps: 反映の前後のマップの比較から変わったことを導く", () => {
+describe("diffMaps: 反映の前後のマップと、反映で記録した統合から変わったことを導く", () => {
   it("何も変わらない反映（noop）では記録がない", () => {
     expect(changesOf([{ op: "noop", reason: "雑談" }])).toEqual([]);
     expect(changesOf([])).toEqual([]);
@@ -165,7 +165,7 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
   it("統合: 統合先にだけ「統合」を出す（統合先の種別と本文）。統合元の記録はなく、引き取った子は「移動」にならず、根拠の増加は「更新」にならない", () => {
     // n5 を n4 へ。n5 の根拠 r3 が n4 に入り、n5 の子 n6 が n4 の子になる
     const got = changesOf([{ op: "combine", from: "n5", into: "n4" }]);
-    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない" }]);
+    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない", from: ["n5"] }]);
   });
 
   it("統合: 統合先の本文も同時に変われば「更新」と「統合」の両方を、この順で出す", () => {
@@ -175,17 +175,29 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
     ]);
     expect(got).toEqual([
       { change: "更新", node: "n4", kind: "課題", text: "面接官が足りず担当も偏る" },
-      { change: "統合", node: "n4", kind: "課題", text: "面接官が足りず担当も偏る" },
+      { change: "統合", node: "n4", kind: "課題", text: "面接官が足りず担当も偏る", from: ["n5"] },
     ]);
   });
 
   it("統合: 子を持たない統合元でも、根拠を統合先が新しく得れば統合先に「統合」を出す", () => {
     const base = step(before(), [{ op: "add", ref: "t7", parent: "root", kind: "課題", text: "採用の窓口がない", evidence: ["r4"] }]);
     const got = changesOf([{ op: "combine", from: "n7", into: "n4" }], base);
-    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない" }]);
+    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない", from: ["n7"] }]);
   });
 
-  it("統合: 同じ反映で A → B、B → C と続けて統合されても、C の「統合」は 1 件だけ", () => {
+  it("統合: 統合先が統合元の根拠をすでに全部持ち、統合元に子が無くても、統合先に「統合」を出す", () => {
+    const base = step(before(), [{ op: "add", ref: "t7", parent: "root", kind: "課題", text: "面接官が少ない", evidence: ["r2"] }]);
+    const got = changesOf([{ op: "combine", from: "n7", into: "n4" }], base);
+    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない", from: ["n7"] }]);
+  });
+
+  it("統合: 同じ反映で削除したノードの根拠を別のノードが得ても、統合ではなく「更新」になる", () => {
+    const base = step(before(), [{ op: "add", ref: "t7", parent: "root", kind: "課題", text: "採用の窓口がない", evidence: ["r4"] }]);
+    const got = changesOf([{ op: "delete", node: "n7" }, { op: "update", node: "n4", evidence: ["r4"] }], base);
+    expect(got).toEqual([{ change: "更新", node: "n4", kind: "課題", text: "面接官が足りない" }]);
+  });
+
+  it("統合: 同じ反映で A → B、B → C と続けて統合されても、C の「統合」は 1 件だけで、A と B の両方を統合元に載せる", () => {
     const base = step(before(), [{ op: "add", ref: "t7", parent: "root", kind: "課題", text: "採用の窓口がない", evidence: ["r4"] }]);
     const got = changesOf(
       [
@@ -194,7 +206,7 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
       ],
       base,
     );
-    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない" }]);
+    expect(got).toEqual([{ change: "統合", node: "n4", kind: "課題", text: "面接官が足りない", from: ["n7", "n5"] }]);
   });
 
   it("削除: 削除されたノードの記録は出ない（種類にない）", () => {
@@ -217,14 +229,14 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
     ]);
   });
 
-  it("入力の 2 つのマップを変更しない", () => {
+  it("入力のマップと反映の結果を変更しない", () => {
     const b = before();
-    const a = step(b, [
+    const a = applyOps(b, [
       { op: "update", node: "n3", text: "3 回にする", evidence: ["r4"], planStatus: "却下" },
       { op: "combine", from: "n5", into: "n4" },
-    ]);
-    const bSnapshot = JSON.parse(JSON.stringify(b));
-    const aSnapshot = JSON.parse(JSON.stringify(a));
+    ], known, { round: 1, at: 0 }, new Map());
+    const bSnapshot = structuredClone(b);
+    const aSnapshot = structuredClone(a);
     diffMaps(b, a);
     expect(b).toEqual(bSnapshot);
     expect(a).toEqual(aSnapshot);

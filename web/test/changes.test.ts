@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChangeEntry, Snapshot } from "../../server/src/core/index.ts";
 import { changedNodeIds, formatClock } from "../src/changes.ts";
 
-const entry = (round: number, node: string, change: ChangeEntry["change"] = "追加", at = round * 10): ChangeEntry => ({
+const entry = (round: number, node: string, change: Exclude<ChangeEntry["change"], "統合"> = "追加", at = round * 10): ChangeEntry => ({
   round,
   at,
   change,
