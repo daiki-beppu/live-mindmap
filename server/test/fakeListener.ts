@@ -1,7 +1,7 @@
 import { Context, Effect } from "effect";
 import { HttpServer } from "effect/http";
 import { NetAddress } from "effect/net";
-import type { DiffUpdateFrame, SessionModeFrame, Snapshot } from "../src/core/index.ts";
+import type { DiffUpdateFrame, SessionModeFrame, Snapshot, SpeakerNamesFrame } from "../src/core/index.ts";
 import type { openListener } from "../src/http.ts";
 import { Viewers, type ViewerFrame } from "../src/viewers.ts";
 
@@ -12,6 +12,7 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
   const published: Snapshot[] = [];
   const diffUpdates: DiffUpdateFrame[] = [];
   const modes: SessionModeFrame[] = [];
+  const speakerNames: SpeakerNamesFrame[] = [];
   const events: Array<"drained" | "closed"> = [];
   const open = (port: number) =>
     Effect.gen(function* () {
@@ -35,6 +36,8 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
             } else if (frame.type === "session-mode") {
               sentMode = true;
               modes.push(frame);
+            } else if (frame.type === "speaker-names") {
+              speakerNames.push(frame);
             }
           });
         }),
@@ -47,5 +50,5 @@ export function fakeListener(onPublish: (snapshot: Snapshot) => void = () => {})
       });
       return Context.make(Viewers, viewers).pipe(Context.add(HttpServer.HttpServer, httpServer));
     });
-  return { open: open satisfies OpenListener, ports, published, diffUpdates, modes, events };
+  return { open: open satisfies OpenListener, ports, published, diffUpdates, modes, speakerNames, events };
 }
