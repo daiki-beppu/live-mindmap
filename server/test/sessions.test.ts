@@ -328,18 +328,6 @@ describe("録画の引数と終了処理", () => {
     expect(recorded.warnings.filter((line) => line === notice)).toHaveLength(1);
     yield* sessions.stop;
   }).pipe(Effect.scoped));
-
-  it.effect("録画の開始に失敗してもsinkを開かず、次の録画を始められる", () => Effect.gen(function* () {
-    const helpers = yield* makeFakeHelpers([{ connect: false }, {}]);
-    const fake = yield* makeFakeSessionSinks();
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks));
-    const input: RecordedStart = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } };
-    const result = yield* Effect.exit(sessions.startRecorded(input));
-    expect(result._tag).toBe("Failure");
-    expect(fake.opened.count).toBe(0);
-    yield* sessions.startRecorded(input);
-    yield* sessions.stop;
-  }).pipe(Effect.scoped));
 });
 
 describe("録画の開始と再送の配線", () => {
@@ -762,18 +750,47 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     expect(prep.state).toMatchObject({ opened: 2, closed: 2 });
   }));
 
-  it.effect("準備完了後に音声ヘルパーの起動が失敗しても推論子を閉じる", () => Effect.gen(function* () {
-    const helper = yield* makeFakeHelpers([{ connect: false }]);
+  it.effect.each([
+    { kind: "live", failure: "フォルダ作成" },
+    { kind: "live", failure: "ヘルパー起動" },
+    { kind: "recorded", failure: "フォルダ作成" },
+    { kind: "recorded", failure: "ヘルパー起動" },
+  ] as const)("$kind の $failure 失敗で準備資源を閉じ、modeを送らず、同じサーバーで再開始できる", ({ kind, failure }) => Effect.gen(function* () {
+    const launchFails = failure === "ヘルパー起動";
+    const helper = yield* makeFakeHelpers(launchFails ? [{ connect: false }, {}] : [{}]);
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
     yield* Deferred.succeed(prep.ready, undefined);
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
-    const result = yield* Effect.exit(sessions.start({ app: "us.zoom.xos", plan: { kind: "single", model: defaultClaude }, audio: false, screen: false, title: undefined, vocab: [] }));
+    fake.control.createDirFails = !launchFails;
+    const { sessions, viewers } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const client = yield* viewerClient();
+    yield* Effect.forkChild(viewers.connect(client.socket));
+    const begin = kind === "live"
+      ? sessions.start(start({ audio: false, screen: false }))
+      : sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
+
+    const result = yield* Effect.exit(begin);
+
     expect(Exit.isFailure(result)).toBe(true);
-    expect(helper.calls).toHaveLength(1);
-    expect(prep.state).toMatchObject({ opened: 1, closed: 1 });
+    expect(prep.state).toMatchObject({ opened: 1, closed: 1, createdDirs: 1 });
+    expect(helper.calls).toHaveLength(launchFails ? 1 : 0);
     expect(fake.opened.count).toBe(0);
-  }));
+    expect(yield* sessions.status).toEqual({ status: "none" });
+    expect(yield* client.sessionModes).toEqual([]);
+
+    fake.control.createDirFails = false;
+    yield* begin;
+    expect((yield* sessions.status).status).toBe("running");
+    expect(prep.state).toMatchObject({ opened: 2, closed: 1, createdDirs: 2 });
+    expect(fake.opened.count).toBe(1);
+    expect(yield* client.sessionModes).toEqual([false]);
+    yield* sessions.stop;
+    expect(yield* sessions.status).toEqual({ status: "none" });
+    expect(prep.state.closed).toBe(2);
+    expect(fake.opened.closed).toBe(1);
+    expect(helper.calls).toHaveLength(launchFails ? 2 : 1);
+    expect(yield* client.sessionModes).toEqual([false, false]);
+  }).pipe(Effect.scoped));
 
   it.effect("取得済みの推論子の準備待ちを中断したら閉じ、会議を始めない", () => Effect.gen(function* () {
     const helper = yield* makeFakeHelpers([{}]);
@@ -2948,28 +2965,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeSinks.order.indexOf("flush")).toBeGreaterThanOrEqual(0);
         expect(fakeSinks.order.indexOf("flush")).toBeLessThan(fakeSinks.order.indexOf("close"));
         expect(fakeSinks.order.at(-1)).toBe("close"); // 閉じた後に flush などが呼ばれない
-      }));
-
-    it.effect("セッションのフォルダを作れず start が失敗しても、ヘルパーも SessionSinks も起動せず、直せば続けて start・stop できる（base:591）", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([{}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        fakeSinks.control.createDirFails = true;
-
-        const failed = yield* Effect.exit(sessions.start(start()));
-
-        expect(Exit.isFailure(failed)).toBe(true);
-        expect(fakeHelpers.calls).toHaveLength(0);
-        expect(fakeSinks.opened.count).toBe(0);
-        expect((yield* sessions.status).status).toBe("none");
-
-        fakeSinks.control.createDirFails = false;
-        yield* sessions.start(start());
-        expect((yield* sessions.status).status).toBe("running");
-        yield* sessions.stop;
-        expect((yield* sessions.status).status).toBe("none");
-        expect(fakeHelpers.calls).toHaveLength(1);
       }));
 
     it.effect("--audio-dir の値は、SessionSinks が作ったセッションのフォルダで、起動し直しでも変わらない（base:733）", () =>
