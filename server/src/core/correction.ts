@@ -151,87 +151,128 @@ export function correctRemark(vocabulary: readonly VocabularyWord[], text: strin
 
 export type CaptionCorrection = { readonly text: string; readonly wordTimes: readonly WordTime[] };
 
-type AppliedReplacement = {
-  readonly r: Replacement;
-  readonly size: number;
-  readonly cumulative: readonly number[];
-  readonly innerOffsets: ReadonlyMap<number, number>;
+type BubbleId = string;
+type DisplayedBubbleOf = (run: WordTime) => BubbleId | undefined;
+type MinCharsOf = (bubble: BubbleId | undefined) => number;
+
+type CoveredRuns = {
+  readonly replacement: Replacement;
+  readonly head: WordTime | undefined;
+  readonly boundaryRuns: readonly WordTime[];
+  readonly absorbedRuns: readonly WordTime[];
 };
 
-function innerOffsets(r: Replacement, size: number, kept: readonly WordTime[], required: readonly number[]): Map<number, number> {
-  const values = kept.map((w) => Math.round(((w.location - r.location) * size) / r.length));
-  let floor = 0;
-  for (let i = 0; i < values.length; i++) {
-    values[i] = Math.max(values[i]!, floor + required[i]!);
-    floor = values[i]!;
-  }
-  let ceiling = size;
-  for (let i = values.length - 1; i >= 0; i--) {
-    values[i] = Math.min(values[i]!, ceiling - required[i + 1]!);
-    ceiling = values[i]!;
-  }
-  return new Map(kept.map((w, i) => [w.location, values[i]!]));
+type ApplicableReplacement = CoveredRuns & {
+  readonly surfaceChars: readonly string[];
+  readonly minChars: readonly number[];
+};
+
+type PlacedReplacement = {
+  readonly replacement: Replacement;
+  readonly absorbedRuns: readonly WordTime[];
+  readonly size: number;
+  readonly codeUnitsBefore: readonly number[];
+  readonly boundaryOffsets: ReadonlyMap<number, number>;
+};
+
+function opensBubble(run: WordTime, runs: readonly WordTime[], bubbleOf: DisplayedBubbleOf): boolean {
+  const bubble = bubbleOf(run);
+  const before = runs[runs.indexOf(run) - 1];
+  return bubble !== undefined && bubble !== (before === undefined ? undefined : bubbleOf(before));
 }
 
-type BubbleOf = (w: WordTime) => string | undefined;
+function runsCoveredBy(replacement: Replacement, runs: readonly WordTime[], bubbleOf: DisplayedBubbleOf): CoveredRuns {
+  const end = replacement.location + replacement.length;
+  const inner = runs.filter((run) => replacement.location < run.location && run.location < end);
+  const boundaryRuns = inner.filter((run) => opensBubble(run, runs, bubbleOf));
+  return {
+    replacement,
+    head: runs.findLast((run) => run.location <= replacement.location),
+    boundaryRuns,
+    absorbedRuns: inner.filter((run) => !boundaryRuns.includes(run)),
+  };
+}
 
-function effectiveOwners(sorted: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: BubbleOf): (string | undefined)[] {
+function bubbleHoldingEachRun(runs: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: DisplayedBubbleOf): (BubbleId | undefined)[] {
   const isInside = (position: number) => replacements.some((r) => r.location < position && position < r.location + r.length);
-  const effective: (string | undefined)[] = [];
-  for (const [i, w] of sorted.entries()) effective.push(bubbleOf(w) ?? (i > 0 && isInside(w.location) ? effective[i - 1] : undefined));
-  return effective;
+  const holders: (BubbleId | undefined)[] = [];
+  for (const [i, run] of runs.entries()) holders.push(bubbleOf(run) ?? (i > 0 && isInside(run.location) ? holders[i - 1] : undefined));
+  return holders;
 }
 
-function ownersWithOutsideText(text: string, sorted: readonly WordTime[], replacements: readonly Replacement[], effective: readonly (string | undefined)[]): Set<string> {
+function bubblesWithTextOutside(text: string, runs: readonly WordTime[], replacements: readonly Replacement[], holders: readonly (BubbleId | undefined)[]): Set<BubbleId> {
   const isCovered = (position: number) => replacements.some((r) => r.location <= position && position < r.location + r.length);
-  const hasOutside = new Set<string>();
-  for (const [i, w] of sorted.entries()) {
-    const owner = effective[i];
-    if (owner === undefined) continue;
-    for (let p = i === 0 ? 0 : w.location; p < (sorted[i + 1]?.location ?? text.length); p++) {
+  const withOutside = new Set<BubbleId>();
+  for (const [i, run] of runs.entries()) {
+    const bubble = holders[i];
+    if (bubble === undefined) continue;
+    for (let p = i === 0 ? 0 : run.location; p < (runs[i + 1]?.location ?? text.length); p++) {
       if (!isCovered(p) && text[p]!.trim() !== "") {
-        hasOutside.add(owner);
+        withOutside.add(bubble);
         break;
       }
     }
   }
-  return hasOutside;
+  return withOutside;
 }
 
-function planReplacements(sorted: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: BubbleOf, needsChar: (owner: string | undefined) => number) {
-  const applied: AppliedReplacement[] = [];
-  const dropped = new Set<WordTime>();
-  for (const r of replacements) {
-    const chars = [...r.surface];
-    const inner = sorted.filter((w) => r.location < w.location && w.location < r.location + r.length);
-    const kept = inner.filter((w) => {
-      const owner = bubbleOf(w);
-      const before = sorted[sorted.indexOf(w) - 1];
-      return owner !== undefined && owner !== (before === undefined ? undefined : bubbleOf(before));
-    });
-    const head = sorted.findLast((w) => w.location <= r.location);
-    const required = [needsChar(head === undefined ? undefined : bubbleOf(head)), ...kept.map((w) => needsChar(bubbleOf(w)))];
-    if (required.reduce((sum, n) => sum + n, 0) > chars.length) continue;
-    for (const w of inner) if (!kept.includes(w)) dropped.add(w);
-    const cumulative = chars.reduce<number[]>((acc, c) => [...acc, acc[acc.length - 1]! + c.length], [0]);
-    applied.push({ r, size: chars.length, cumulative, innerOffsets: innerOffsets(r, chars.length, kept, required) });
+function minCharsPerBubble(text: string, runs: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: DisplayedBubbleOf): MinCharsOf {
+  const withOutside = bubblesWithTextOutside(text, runs, replacements, bubbleHoldingEachRun(runs, replacements, bubbleOf));
+  return (bubble) => (bubble === undefined || withOutside.has(bubble) ? 0 : 1);
+}
+
+function fitSurface(covered: CoveredRuns, minCharsOf: MinCharsOf, bubbleOf: DisplayedBubbleOf): ApplicableReplacement | undefined {
+  const surfaceChars = [...covered.replacement.surface];
+  const minChars = [covered.head, ...covered.boundaryRuns].map((run) => minCharsOf(run === undefined ? undefined : bubbleOf(run)));
+  return minChars.reduce((sum, n) => sum + n, 0) > surfaceChars.length ? undefined : { ...covered, surfaceChars, minChars };
+}
+
+function boundaryOffsets(replacement: Replacement, size: number, boundaryRuns: readonly WordTime[], minChars: readonly number[]): Map<number, number> {
+  const values = boundaryRuns.map((run) => Math.round(((run.location - replacement.location) * size) / replacement.length));
+  let floor = 0;
+  for (let i = 0; i < values.length; i++) {
+    values[i] = Math.max(values[i]!, floor + minChars[i]!);
+    floor = values[i]!;
   }
-  return { applied, dropped };
-}
-
-function mergeDropped(sorted: readonly WordTime[], dropped: ReadonlySet<WordTime>): WordTime[] {
-  const runs: WordTime[] = [];
-  for (const w of sorted) {
-    const last = runs.at(-1);
-    if (last !== undefined && dropped.has(w)) runs[runs.length - 1] = { ...last, length: Math.max(last.length, w.location + w.length - last.location), end: Math.max(last.end, w.end) };
-    else runs.push(w);
+  let ceiling = size;
+  for (let i = values.length - 1; i >= 0; i--) {
+    values[i] = Math.min(values[i]!, ceiling - minChars[i + 1]!);
+    ceiling = values[i]!;
   }
-  return runs;
+  return new Map(boundaryRuns.map((run, i) => [run.location, values[i]!]));
 }
 
-function placeAfter(applied: readonly AppliedReplacement[], position: number): number {
+function distributeSurface({ replacement, boundaryRuns, absorbedRuns, surfaceChars, minChars }: ApplicableReplacement): PlacedReplacement {
+  const size = surfaceChars.length;
+  return {
+    replacement,
+    absorbedRuns,
+    size,
+    codeUnitsBefore: surfaceChars.reduce<number[]>((acc, c) => [...acc, acc[acc.length - 1]! + c.length], [0]),
+    boundaryOffsets: boundaryOffsets(replacement, size, boundaryRuns, minChars),
+  };
+}
+
+function applyToText(text: string, placed: readonly PlacedReplacement[]): string {
+  let corrected = text;
+  for (const { replacement: r } of [...placed].reverse()) corrected = corrected.slice(0, r.location) + r.surface + corrected.slice(r.location + r.length);
+  return corrected;
+}
+
+function absorbRuns(runs: readonly WordTime[], placed: readonly PlacedReplacement[]): WordTime[] {
+  const absorbed = new Set(placed.flatMap((p) => p.absorbedRuns));
+  const kept: WordTime[] = [];
+  for (const run of runs) {
+    const last = kept.at(-1);
+    if (last !== undefined && absorbed.has(run)) kept[kept.length - 1] = { ...last, length: Math.max(last.length, run.location + run.length - last.location), end: Math.max(last.end, run.end) };
+    else kept.push(run);
+  }
+  return kept;
+}
+
+function positionAfter(placed: readonly PlacedReplacement[], position: number): number {
   let shift = 0;
-  for (const { r, size, cumulative, innerOffsets: offsets } of applied) {
+  for (const { replacement: r, size, codeUnitsBefore, boundaryOffsets: offsets } of placed) {
     if (position >= r.location + r.length) {
       shift += r.surface.length - r.length;
       continue;
@@ -241,25 +282,23 @@ function placeAfter(applied: readonly AppliedReplacement[], position: number): n
     const lower = entries.findLast(([location]) => location <= position)?.[1] ?? 0;
     const upper = entries.find(([location]) => location >= position)?.[1] ?? size;
     const offset = offsets.get(position) ?? Math.min(Math.max(Math.round(((position - r.location) * size) / r.length), lower), upper);
-    return r.location + shift + cumulative[offset]!;
+    return r.location + shift + codeUnitsBefore[offset]!;
   }
   return position + shift;
 }
 
-export function placeCorrectionForCaptions(text: string, wordTimes: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: BubbleOf): CaptionCorrection {
-  const sorted = [...wordTimes].sort((a, b) => a.location - b.location);
-  const effective = effectiveOwners(sorted, replacements, bubbleOf);
-  const hasOutside = ownersWithOutsideText(text, sorted, replacements, effective);
-  const needsChar = (owner: string | undefined): number => (owner === undefined || hasOutside.has(owner) ? 0 : 1);
-  const { applied, dropped } = planReplacements(sorted, replacements, bubbleOf, needsChar);
+function shiftRun(run: WordTime, placed: readonly PlacedReplacement[]): WordTime {
+  const location = positionAfter(placed, run.location);
+  return { ...run, location, length: positionAfter(placed, run.location + run.length) - location };
+}
 
-  let corrected = text;
-  for (const { r } of [...applied].reverse()) corrected = corrected.slice(0, r.location) + r.surface + corrected.slice(r.location + r.length);
+export function placeCorrectionForCaptions(text: string, wordTimes: readonly WordTime[], replacements: readonly Replacement[], bubbleOf: DisplayedBubbleOf): CaptionCorrection {
+  const runs = [...wordTimes].sort((a, b) => a.location - b.location);
+  const covered = replacements.map((replacement) => runsCoveredBy(replacement, runs, bubbleOf));
+  const minCharsOf = minCharsPerBubble(text, runs, replacements, bubbleOf);
+  const placed = covered.flatMap((c) => fitSurface(c, minCharsOf, bubbleOf) ?? []).map(distributeSurface);
   return {
-    text: corrected,
-    wordTimes: mergeDropped(sorted, dropped).map((w) => {
-      const location = placeAfter(applied, w.location);
-      return { ...w, location, length: placeAfter(applied, w.location + w.length) - location };
-    }),
+    text: applyToText(text, placed),
+    wordTimes: absorbRuns(runs, placed).map((run) => shiftRun(run, placed)),
   };
 }
