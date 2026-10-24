@@ -55,21 +55,21 @@ function rewrittenIds(start: MeetingMap, ops: DiffLogEvent["ops"], known: Readon
   return ids;
 }
 
-type Progress = { readonly map: MeetingMap; readonly round: number; readonly known: Set<string> };
+type Progress = { readonly map: MeetingMap; readonly round: number };
 
 const applyDiff = Effect.fnUntraced(function* (
   progress: Progress,
   event: DiffLogEvent,
   byId: ReadonlyMap<string, Remark>,
+  known: Set<string>,
   invalid: (reason: string) => InvalidLogEvent,
 ): Effect.fn.Return<Progress & { readonly rewritten: string[] }, InvalidLogEvent> {
   const fresh = yield* freshOf(event, byId, invalid);
-  const known = progress.known;
   for (const r of fresh) known.add(r.id);
   const stamp = stampOf({ round: progress.round }, fresh);
   const rewritten = rewrittenIds(progress.map, event.ops, known, stamp, byId);
   const applied = applyOps(progress.map, event.ops, known, stamp, byId);
-  return { map: applied.map, round: event.error === undefined ? stamp.round : progress.round, known, rewritten };
+  return { map: applied.map, round: event.error === undefined ? stamp.round : progress.round, rewritten };
 });
 
 export const logMetrics = Effect.fnUntraced(function* (events: readonly LogEvent[]): Effect.fn.Return<LogMetrics, InvalidLogEvent> {
@@ -79,18 +79,19 @@ export const logMetrics = Effect.fnUntraced(function* (events: readonly LogEvent
   let index = -1;
   const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
   const byId = new Map<string, Remark>();
+  const known = new Set<string>();
   const rewritesOf = new Map<string, number>();
 
   for (const event of events) {
     index++;
     if (event.type === "start") {
-      progress = { map: emptyMap(event.title), round: progress?.round ?? 0, known: progress?.known ?? new Set() };
+      progress = { map: emptyMap(event.title), round: progress?.round ?? 0 };
     } else if (event.type === "remark") {
       remarks++;
       byId.set(event.remark.id, event.remark);
     } else if (event.type === "diff") {
       if (!progress) return yield* invalid("ログの diff より前に start がありません");
-      const next = yield* applyDiff(progress, event, byId, invalid);
+      const next = yield* applyDiff(progress, event, byId, known, invalid);
       for (const id of next.rewritten) rewritesOf.set(id, (rewritesOf.get(id) ?? 0) + 1);
       progress = next;
       maxOpenSiblings = Math.max(maxOpenSiblings, openSiblings(next.map));

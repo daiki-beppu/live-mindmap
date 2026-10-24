@@ -37,11 +37,11 @@ description: 差分更新の呼び出しの段取り（server/src/core/session.t
 
 ## 範囲
 
-最後に合わせた PR: #1458（2026-10-24）
+最後に合わせた PR: #1501（2026-10-24）
 
-この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#1458)` が付くので、`git log "$(git log -1 --format=%H --grep='(#1458)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
+この PR が main に入った後に次のファイルが変わっていたら、手順 2 から見直します。PR の squash コミットは件名の末尾に `(#1501)` が付くので、`git log "$(git log -1 --format=%H --grep='(#1501)$' origin/main)"..origin/main -- <ファイル>` で後の変更を出せます。
 
-- `server/src/core/session.ts`: `openSession` の中の `setLifecycleState`・lifecycle の購読・`takeStep`・`startDiffIfReady`・`scheduleRetry`・`runCall`・`callUpdater`（状態を変える `Ref` の操作の部分）・`idle`・`push`（`pending` に足す歩）・`flush`、と `takeFresh`・`CATCH_UP_REMARKS`
+- `server/src/core/session.ts`: `openSession` の中の `setLifecycleState`・lifecycle の購読・`takeStep`・`startDiffIfReady`・`scheduleRetry`・`runCall`・`callUpdater`（状態を変える `Ref` の操作の部分）・`idle`・`push`（`pending` に足す歩）・`flush`、と `takeFresh`・`PACED_CALL_REMARKS`
 - `server/src/appleDiffUpdater.ts`: lifecycle に流す通知（`restarting`・`running`・`DiffUpdateStopped`）
 - `server/src/core/diffUpdate.ts`: `DiffUpdateState`・`DiffUpdateLifecycle`
 - `server/src/sessions.ts`: `stopLive` で `drain` の後に `flush` を呼ぶ順番（モデルは、flush が始まる前に push が終わっている前提です）
@@ -51,6 +51,6 @@ description: 差分更新の呼び出しの段取り（server/src/core/session.t
 - 構成は 2 つです（`server/formal/cloud.cfg`・`apple.cfg`）。cloud は一時停止と再試行があり lifecycle が無い（ChatGPT・Claude）。apple は lifecycle と停止があり一時停止が無い（Apple Intelligence）。本番に無い組み合わせ（同じ updater が一時停止と停止の両方を返す）は調べていません。
 - 発言は 3 件、一時停止は 2 回まで、lifecycle の running / restarting の通知は 2 回までです。それを超える振る舞いは調べ切れていません。
 - 呼び出しの結果は、成功（1 件から全件までのどれだけを反映してもよい）・失敗・一時停止・停止のどれでもよいとしています。
-- `takeFresh` は、全件を取るか、先頭 `CATCH_UP_REMARKS` 件を取るかを、たまりの印に関わらず両方許しています（実際より広く調べます）。
+- `takeFresh` は、全件を取るか、先頭 `PACED_CALL_REMARKS` 件を取るかを、たまりの印に関わらず両方許しています（実際より広く調べます）。
 - 含めていないもの: 共有画面の選び方、マップの中身、Scope を閉じたときの中断、時刻（再試行の待ちは「いつか起きる」とする）、`restoreSession` からの再開、push の中の `remarks` への追加とログ。
 - 通ったときに言えるのは、この範囲のモデルで成り立つということだけです。システム全体で成り立つとまでは言えません。

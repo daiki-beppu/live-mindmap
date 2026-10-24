@@ -11,7 +11,7 @@ CONSTANTS
   Kind,         \* "cloud"（ChatGPT・Claude: 一時停止がある）か "apple"（Apple Intelligence: lifecycle と停止がある）
   MaxPauses,    \* 状態空間を有限にするための、一時停止で終わる呼び出しの数の上限
   MaxLifecycle, \* 同じく、lifecycle の running / restarting の通知の数の上限
-  CatchUp       \* CATCH_UP_REMARKS（session.ts:403）
+  CatchUp       \* PACED_CALL_REMARKS（session.ts:334）
 
 \* 成功・失敗の呼び出しは 1 件以上を処理済みにし、停止の後は呼び出しが始まらないので、呼び出しの数は次で足りる
 MaxCalls == Cardinality(Remarks) + MaxPauses + 1
@@ -28,7 +28,7 @@ VARIABLES
   status,       \* diffUpdate.status
   retryEnabled, \* Runtime.retryEnabled
   calls,        \* 呼び出しの Fiber（runCall）ごとの pc と、渡した発言（fresh）
-  nextCall,     \* 次に作る呼び出しの番号（Reservation の同一性の代わり）
+  nextCall,     \* Runtime.nextCall（次に作る呼び出しの番号。予約の照合に使う）
   sleepers,     \* 再試行の待ちの Fiber（scheduleRetry が fork する）ごとの pc
   nextSleeper,
   pusher,       \* push を呼ぶ側（取り込み）。[pc, i |-> 次に入れる発言の番号]
@@ -65,16 +65,16 @@ Init ==
   /\ pauses = 0
 
 -----------------------------------------------------------------------------
-(* startDiffIfReady（session.ts:473–487）。2 歩に分かれる。
-   1 歩目（:478）: 条件を見て、たまった発言を取り、予約の印を置く。fork した呼び出しはすぐ動き出せる（startImmediately）。
-   2 歩目（:484）: 印が自分のものなら、running に置き換える。 *)
+(* startDiffIfReady（session.ts:393–409）。2 歩に分かれる。
+   1 歩目（:397）: 条件を見て、たまった発言を取り、予約の印を置く。fork した呼び出しはすぐ動き出せる（startImmediately）。
+   2 歩目（:405）: 印が自分のものなら、running に置き換える。 *)
 Ready(retry) ==
   /\ inFlight.kind = "none"
   /\ Len(pending) > 0
   /\ IF retry THEN retryEnabled /\ status = "paused"
               ELSE status \notin {"paused", "stopped"}
 
-\* takeFresh（:435）: たまりの印があれば先頭 CatchUp 件、無ければ全部。どちらになるかは印の有無で決まるが、ここでは両方を許す
+\* takeFresh（:360）: たまりの印があれば先頭 CatchUp 件、無ければ全部。どちらになるかは印の有無で決まるが、ここでは両方を許す
 TakeSizes == {Len(pending)} \cup {IF Len(pending) < CatchUp THEN Len(pending) ELSE CatchUp}
 
 \* base は、呼び出す者が呼び出しの Fiber のとき、その pc を進めた calls
@@ -98,7 +98,7 @@ StartSwap(a) ==
   /\ starts' = [starts EXCEPT ![a] = NoCall]
 
 -----------------------------------------------------------------------------
-\* 取り込み: 発言を 1 件ずつ pending に足し（:662）、続けて startDiffIfReady を呼ぶ（:663）
+\* 取り込み: 発言を 1 件ずつ pending に足し（:566）、続けて startDiffIfReady を呼ぶ（:567）
 PushAppend ==
   /\ pusher.pc = "append"
   /\ pusher.i <= Cardinality(Remarks)
@@ -127,10 +127,10 @@ PushNext ==
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, calls, nextCall, sleepers, nextSleeper, flusher, starts, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-(* 呼び出しの Fiber（runCall :503 と callUpdater :522）。 *)
+(* 呼び出しの Fiber（runCall :422 と callUpdater :440）。 *)
 CallUnchanged == UNCHANGED <<nextCall, sleepers, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
-\* :527 結果待ちの発言に載せる
+\* :445 結果待ちの発言に載せる
 CallBegin(c) ==
   /\ calls[c].pc = "begin"
   /\ reflecting' = calls[c].fresh
@@ -139,7 +139,7 @@ CallBegin(c) ==
 
 ResumeIfPaused == IF status = "paused" THEN "running" ELSE status
 
-\* :618–632 成功。processedRemarks（1..fresh の件数）件を反映し、残りを pending の先頭へ戻す
+\* :526–538 成功。processedRemarks（1..fresh の件数）件を反映し、残りを pending の先頭へ戻す
 CallSucceed(c) ==
   /\ calls[c].pc = "update"
   /\ \E k \in 1..Len(calls[c].fresh) :
@@ -150,7 +150,7 @@ CallSucceed(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :613 失敗（一時停止・停止以外。Apple の再起動中も含む）。渡した発言は処理済みにして進む
+\* :522 失敗（一時停止・停止以外。Apple の再起動中も含む）。渡した発言は処理済みにして進む
 CallFail(c) ==
   /\ calls[c].pc = "update"
   /\ known' = known \cup Range(calls[c].fresh)
@@ -159,7 +159,7 @@ CallFail(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<pending, inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :598–610 一時停止（cloud だけ）。渡した発言を pending の先頭へ戻す
+\* :510–520 一時停止（cloud だけ）。渡した発言を pending の先頭へ戻す
 CallPause(c) ==
   /\ Kind = "cloud"
   /\ calls[c].pc = "update"
@@ -171,7 +171,7 @@ CallPause(c) ==
   /\ pauses' = pauses + 1
   /\ UNCHANGED <<known, inFlight, retryEnabled, starts, nextCall, sleepers, nextSleeper, pusher, flusher, lifecycleN>>
 
-\* :593–596 停止（apple だけ）。発言を戻す歩（:594）と、状態を stopped にする歩（:595 setLifecycleState）に分かれる
+\* :505–508 停止（apple だけ）。発言を戻す歩（:506）と、状態を stopped にする歩（:507 setLifecycleState）に分かれる
 CallStop(c) ==
   /\ Kind = "apple"
   /\ calls[c].pc = "update"
@@ -180,7 +180,7 @@ CallStop(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "stopping"]
   /\ UNCHANGED <<known, inFlight, status, retryEnabled, starts>> /\ CallUnchanged
 
-\* setLifecycleState（:456–461）: stopped か同じ状態なら変えない
+\* setLifecycleState（:377–382）: stopped か同じ状態なら変えない
 SetLifecycle(s) == IF status = "stopped" \/ status = s THEN status ELSE s
 
 CallStopped(c) ==
@@ -189,20 +189,20 @@ CallStopped(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<pending, known, reflecting, inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :507 印を外す
+\* :426 印を外す
 CallExitClear(c) ==
   /\ calls[c].pc = "exitClear"
   /\ inFlight' = [kind |-> "none", id |-> NoCall]
   /\ calls' = [calls EXCEPT ![c].pc = "exitRead"]
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, starts>> /\ CallUnchanged
 
-\* :509–514 状態を読み、一時停止なら再試行を予約し、そうでなければ続きを呼ぶ
+\* :428–433 状態を読み、一時停止なら再試行を予約し、そうでなければ続きを呼ぶ
 CallExitRead(c) ==
   /\ calls[c].pc = "exitRead"
   /\ calls' = [calls EXCEPT ![c].pc = IF status = "paused" THEN "schedule" ELSE "start"]
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, starts>> /\ CallUnchanged
 
-\* scheduleRetry（:491–499）: retryEnabled を読む歩で、許されていれば待ちの Fiber を fork する
+\* scheduleRetry（:411–419）: retryEnabled を読む歩で、許されていれば待ちの Fiber を fork する
 CallSchedule(c) ==
   /\ calls[c].pc = "schedule"
   /\ IF retryEnabled
@@ -212,7 +212,7 @@ CallSchedule(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "done"]
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, nextCall, pusher, flusher, starts, lifecycleN, pauses>>
 
-\* :514 続きを呼ぶ（startDiffIfReady()）
+\* :433 続きを呼ぶ（startDiffIfReady()）
 CallStart(c) ==
   /\ calls[c].pc = "start"
   /\ \/ StartTake(<<"call", c>>, FALSE, [calls EXCEPT ![c].pc = "swap"])
@@ -228,7 +228,7 @@ CallSwap(c) ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, nextCall, sleepers, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-\* 再試行の待ち（:498）: 待ち終えたら startDiffIfReady(true) を呼ぶ
+\* 再試行の待ち（:418）: 待ち終えたら startDiffIfReady(true) を呼ぶ
 SleeperWake(s) ==
   /\ sleepers[s] = "sleeping"
   /\ \/ /\ StartTake(<<"sleeper", s>>, TRUE, calls)
@@ -245,8 +245,8 @@ SleeperSwap(s) ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, calls, nextCall, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-(* flush（:680–692）。取り込みを止めて読み終えた後（sessions.ts stopLive の drain の後）に呼ばれる。
-   idle（:640–648）: 印が無ければ抜け、予約の印だけなら順番を譲り、running なら Fiber の終わりを待つ。 *)
+(* flush（:582–588）。取り込みを止めて読み終えた後（sessions.ts stopLive の drain の後）に呼ばれる。
+   idle（:546–553）: 印が無ければ抜け、予約の印だけなら順番を譲り、running なら Fiber の終わりを待つ。 *)
 FlushUnchanged == UNCHANGED <<pending, known, reflecting, inFlight, status, calls, nextCall, sleepers, nextSleeper, pusher, starts, lifecycleN, pauses>>
 
 FlushBegin ==
@@ -259,25 +259,24 @@ FlushBegin ==
 FlushIdle ==
   /\ flusher = "idle"
   /\ \/ /\ inFlight.kind = "none"
-        /\ flusher' = "check"
+        /\ flusher' = "start"
      \/ /\ inFlight.kind = "running"
         /\ calls[inFlight.id].pc = "done"
         /\ flusher' = "idle"
   /\ UNCHANGED retryEnabled /\ FlushUnchanged
 
-\* :686–691 呼び出し中の印があれば idle に戻る。たまりが無いか、一時停止・停止なら抜ける。そうでなければ startDiffIfReady() を呼んで idle に戻る
-FlushCheck ==
-  /\ flusher = "check"
-  /\ flusher' = IF inFlight.kind # "none" THEN "idle"
-                ELSE IF Len(pending) = 0 \/ status \in {"paused", "stopped"} THEN "returned" ELSE "start"
-  /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, calls, nextCall, sleepers, nextSleeper, pusher, starts, lifecycleN, pauses>>
-
+\* :586 startDiffIfReady() の答えで決める。呼び出し中の印があれば（callInFlight）idle に戻る。取れたら（callInFlight）置き換えてから idle に戻る。
+\* 取れなければ（nothingToStart: たまりが無いか、一時停止・停止）抜ける。印とたまりを同じ 1 歩で見る
 FlushStart ==
   /\ flusher = "start"
-  /\ \/ /\ StartTake(<<"flush", 0>>, FALSE, calls)
-        /\ flusher' = "swap"
-     \/ /\ StartSkip(FALSE)
+  /\ \/ /\ inFlight.kind # "none"
         /\ flusher' = "idle"
+        /\ UNCHANGED <<pending, calls, inFlight, starts, nextCall>>
+     \/ /\ StartTake(<<"flush", 0>>, FALSE, calls)
+        /\ flusher' = "swap"
+     \/ /\ inFlight.kind = "none"
+        /\ StartSkip(FALSE)
+        /\ flusher' = "returned"
         /\ UNCHANGED <<pending, calls, inFlight, starts, nextCall>>
   /\ UNCHANGED <<known, reflecting, status, retryEnabled, sleepers, nextSleeper, pusher, lifecycleN, pauses>>
 
@@ -288,7 +287,7 @@ FlushSwap ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, calls, nextCall, sleepers, nextSleeper, pusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-\* lifecycle（:462–464、apple だけ）: Apple Intelligence の子プロセスの再起動（appleDiffUpdater.ts:36–52）。どの時点にも割り込む
+\* lifecycle（:383–385、apple だけ）: Apple Intelligence の子プロセスの再起動（appleDiffUpdater.ts:36–52）。どの時点にも割り込む
 Lifecycle ==
   /\ Kind = "apple"
   /\ \/ /\ lifecycleN < MaxLifecycle
@@ -306,7 +305,7 @@ Next ==
        \/ CallBegin(c) \/ CallSucceed(c) \/ CallFail(c) \/ CallPause(c) \/ CallStop(c) \/ CallStopped(c)
        \/ CallExitClear(c) \/ CallExitRead(c) \/ CallSchedule(c) \/ CallStart(c) \/ CallSwap(c)
   \/ \E s \in SleeperIds : SleeperWake(s) \/ SleeperSwap(s)
-  \/ FlushBegin \/ FlushIdle \/ FlushCheck \/ FlushStart \/ FlushSwap
+  \/ FlushBegin \/ FlushIdle \/ FlushStart \/ FlushSwap
   \/ Lifecycle
 
 \* 差分更新の外の世界（API・子プロセス）は止まらず、どの Fiber もいつかは動く。呼び出しの結果は何でもよい
@@ -316,7 +315,7 @@ Fairness ==
        /\ WF_vars(CallBegin(c) \/ CallSucceed(c) \/ CallFail(c) \/ CallPause(c) \/ CallStop(c) \/ CallStopped(c))
        /\ WF_vars(CallExitClear(c) \/ CallExitRead(c) \/ CallSchedule(c) \/ CallStart(c) \/ CallSwap(c))
   /\ \A s \in SleeperIds : WF_vars(SleeperWake(s) \/ SleeperSwap(s))
-  /\ WF_vars(FlushBegin \/ FlushIdle \/ FlushCheck \/ FlushStart \/ FlushSwap)
+  /\ WF_vars(FlushBegin \/ FlushIdle \/ FlushStart \/ FlushSwap)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
