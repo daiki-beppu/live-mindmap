@@ -21,10 +21,10 @@ const before = (): MeetingMap =>
     { op: "add", ref: "t6", parent: "t5", kind: "案", text: "若手も面接に入る", evidence: ["r3"] },
   ]);
 
-// 前のマップに ops を反映した後のマップとの比較
-const changesOf = (ops: Op[], base: MeetingMap = before()): Change[] => diffMaps(base, step(base, ops));
+// 前のマップに ops を反映した結果（反映後のマップと統合の記録）との比較
+const changesOf = (ops: Op[], base: MeetingMap = before()): Change[] => diffMaps(base, applyOps(base, ops, known, { round: 1, at: 0 }, new Map()));
 
-describe("diffMaps: 反映の前後のマップの比較から変わったことを導く", () => {
+describe("diffMaps: 反映の前後のマップと、反映で記録した統合から変わったことを導く", () => {
   it("何も変わらない反映（noop）では記録がない", () => {
     expect(changesOf([{ op: "noop", reason: "雑談" }])).toEqual([]);
     expect(changesOf([])).toEqual([]);
@@ -229,14 +229,14 @@ describe("diffMaps: 反映の前後のマップの比較から変わったこと
     ]);
   });
 
-  it("入力の 2 つのマップを変更しない", () => {
+  it("入力のマップと反映の結果を変更しない", () => {
     const b = before();
-    const a = step(b, [
+    const a = applyOps(b, [
       { op: "update", node: "n3", text: "3 回にする", evidence: ["r4"], planStatus: "却下" },
       { op: "combine", from: "n5", into: "n4" },
-    ]);
-    const bSnapshot = JSON.parse(JSON.stringify(b));
-    const aSnapshot = JSON.parse(JSON.stringify(a));
+    ], known, { round: 1, at: 0 }, new Map());
+    const bSnapshot = structuredClone(b);
+    const aSnapshot = structuredClone(a);
     diffMaps(b, a);
     expect(b).toEqual(bSnapshot);
     expect(a).toEqual(aSnapshot);
