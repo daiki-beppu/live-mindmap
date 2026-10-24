@@ -51,6 +51,26 @@ describe("ラベルと人の 1 対 1 の対応（重なりの合計が最大）"
     expect(assignOneToOne([[0, 0], [2, 0]])).toEqual([undefined, 0]);
   });
 
+  it("どの表でも、重なりの合計はすべての 1 対 1 の割り当てを試した最大と同じ", () => {
+    const permutations = (n: number): number[][] => (n === 0 ? [[]] : permutations(n - 1).flatMap((p) => Array.from({ length: n }, (_, i) => [...p.slice(0, i), n - 1, ...p.slice(i)])));
+    const best = (weights: number[][], n: number) => Math.max(...permutations(n).map((p) => weights.reduce((sum, row, i) => sum + (row[p[i]!] ?? 0), 0)));
+    let seed = 11;
+    const next = () => { seed = (seed * 48271) % 2147483647; return seed % 5; };
+    for (let k = 0; k < 200; k++) {
+      const rows = 1 + (next() % 5);
+      const cols = 1 + (next() % 5);
+      const weights = Array.from({ length: rows }, () => Array.from({ length: cols }, next));
+      const total = assignOneToOne(weights).reduce<number>((sum, col, i) => sum + (col === undefined ? 0 : weights[i]![col]!), 0);
+      expect(total).toBe(best(weights, Math.max(rows, cols)));
+    }
+  });
+
+  it("合計が同じ割り当てが複数あれば、ラベルを順に若い人へ対応させる", () => {
+    expect(assignOneToOne([[1, 1], [1, 1]])).toEqual([0, 1]);
+    expect(assignOneToOne([[2, 2, 2], [2, 2, 2]])).toEqual([0, 1]);
+    expect(assignOneToOne([[1, 1], [1, 1], [1, 1]])).toEqual([0, 1, undefined]);
+  });
+
   it("空の表は空の対応", () => {
     expect(assignOneToOne([])).toEqual([]);
   });

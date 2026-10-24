@@ -476,7 +476,7 @@ describe("見返し（Foldkit 版）の開いたときの右の列と字幕", ()
   );
 
   it(
-    "1280×801 で開くと、右の列と字幕は今までどおり出ている。開いた後に 390 へ狭めても隠れない",
+    "1280×800 で開くと、右の列と字幕は今までどおり出ている。開いた後に 390 へ狭めても隠れない",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
       const page = await openReviewPage(context, pages.audioPath, { audio: true });
       expect(await shown(page)).toEqual(SHOWN);

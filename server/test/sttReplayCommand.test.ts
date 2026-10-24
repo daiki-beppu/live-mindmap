@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit } from "effect";
-import { exitNaturally, reportFailure } from "../bench/entry.ts";
+import { exitNaturallyForManagedDeps, reportFailure } from "../bench/entry.ts";
 import { command } from "../bench/sttReplay.ts";
 import { consoleCapture, runCommand, taggedFailure } from "./benchRun.ts";
 import { evalManagedDeps } from "./fixtures/evalManagedDeps.ts";
@@ -23,7 +23,7 @@ describe("sttReplay の Command: SDK の準備失敗", () => {
 
     const saved = process.exitCode;
     try {
-      exitNaturally(Exit.failCause(cause), () => { throw new Error("自然終了する必要があります"); });
+      exitNaturallyForManagedDeps(Exit.failCause(cause), () => { throw new Error("自然終了する必要があります"); });
       expect(process.exitCode).toBe(3);
     } finally {
       process.exitCode = saved;

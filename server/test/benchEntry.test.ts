@@ -25,7 +25,7 @@ describe("sttReplay の終了処理: 既存の自然終了を保持する", () =
     { name: "中断", exit: Exit.failCause(Cause.interrupt()), code: 130 },
   ])("$name は終了コード $code で自然に終わる", ({ exit, code }) => {
     const processExit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
-    benchEntry.exitNaturally(exit, () => { throw new Error("onExit を呼んではならない"); });
+    benchEntry.exitNaturallyForManagedDeps(exit, () => { throw new Error("onExit を呼んではならない"); });
     expect(process.exitCode).toBe(code);
     expect(processExit).not.toHaveBeenCalled();
   });

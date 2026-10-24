@@ -11,7 +11,7 @@ import { ManagedDeps } from "../src/managedDeps.ts";
 import { depsDirConfig } from "../src/config.ts";
 import { startupPreparationFailure } from "../src/managedDepsCheck.ts";
 import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../src/truthFile.ts";
-import { BENCH_VERSION, exitNaturally, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
+import { BENCH_VERSION, exitNaturallyForManagedDeps, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
 
 export const ReplayItem = Remark.mapFields((fields) => ({
@@ -62,6 +62,11 @@ export function reflectedArrivals(diffs: readonly DiffLogEntry[], doneAts: reado
 type DiffEvent = Extract<LogEvent, { type: "diff" }>;
 const decodeLogEvent = Schema.decodeEffect(Schema.fromJsonString(Schema.Union([LogEvent, SpeakerNameLogEvent])));
 
+const importSessionFilesWithVite = Effect.tryPromise({
+  try: () => import("../src/sessionFiles.ts"),
+  catch: (e) => new ReplaySessionFailed({ path: join(import.meta.dirname, "../src/sessionFiles.ts"), reason: describe(e) }),
+});
+
 export const command = Command.make(
   "sttReplay",
   {
@@ -81,10 +86,7 @@ export const command = Command.make(
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const spokenLines = Option.isNone(lines) ? undefined : yield* readJsonFile(lines.value, Schema.Array(SpokenLine));
 
-    const { createSessionDir, openLoggedSession } = yield* Effect.tryPromise({
-      try: () => import("../src/sessionFiles.ts"),
-      catch: (e) => new ReplaySessionFailed({ path: join(import.meta.dirname, "../src/sessionFiles.ts"), reason: describe(e) }),
-    });
+    const { createSessionDir, openLoggedSession } = yield* importSessionFilesWithVite;
     const tmp = yield* Effect.try({
       try: () => mkdtempSync(join(tmpdir(), "stt-replay-")),
       catch: (e) => new ReplaySessionFailed({ path: tmpdir(), reason: describe(e) }),
@@ -147,6 +149,6 @@ if (import.meta.main) {
   Command.run(command, { version: BENCH_VERSION }).pipe(
     Effect.tapCause(reportFailure),
     Effect.provide(Layer.mergeAll(managedDeps, NodeServices.layer)),
-    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturally }),
+    NodeRuntime.runMain({ disableErrorReporting: true, teardown: exitNaturallyForManagedDeps }),
   );
 }

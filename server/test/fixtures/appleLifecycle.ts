@@ -68,16 +68,24 @@ export const fakeAppleLifecycle = Effect.fnUntraced(function* (scripts: readonly
   };
 });
 
+const YIELD_ROUNDS = 200;
+const REAL_TIME_ROUNDS = 1000;
+const REAL_TIME_INTERVAL_MS = 5;
+
+const sleepOutsideTestClock = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+const untilWithin = Effect.fnUntraced(function* (check: () => Effect.Effect<boolean>, rounds: number, pause: Effect.Effect<void>) {
+  for (let i = 0; i < rounds; i++) {
+    if (yield* check()) return true;
+    yield* pause;
+  }
+  return false;
+});
+
 export const waitUntil = Effect.fnUntraced(function* (condition: () => boolean | Effect.Effect<boolean>, label: string) {
   const check = () => { const result = condition(); return typeof result === "boolean" ? Effect.succeed(result) : result; };
-  for (let i = 0; i < 200; i++) {
-    if (yield* check()) return;
-    yield* Effect.yieldNow;
-  }
-  for (let i = 0; i < 1000; i++) {
-    if (yield* check()) return;
-    yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
-  }
+  if (yield* untilWithin(check, YIELD_ROUNDS, Effect.yieldNow)) return;
+  if (yield* untilWithin(check, REAL_TIME_ROUNDS, sleepOutsideTestClock(REAL_TIME_INTERVAL_MS))) return;
   return yield* Effect.die(new Error(`待っていた状態になりませんでした: ${label}`));
 });
 

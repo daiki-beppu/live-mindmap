@@ -22,22 +22,26 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
   const latestStart = yield* Ref.make<number | undefined>(undefined);
   const lock = yield* Semaphore.make(1);
 
-  const clear = Effect.fnUntraced(function* (kind: "idle" | "closed") {
-    const waiting = yield* lock.withPermit(Effect.gen(function* () {
+  const transition = (change: Effect.Effect<Fiber.Fiber<void> | undefined>) =>
+    lock.withPermit(change).pipe(
+      Effect.flatMap((stopped) => stopped === undefined ? Effect.void : Fiber.interrupt(stopped)),
+      Effect.uninterruptible,
+    );
+
+  const clear = (kind: "idle" | "closed") =>
+    transition(Effect.gen(function* () {
       const current = yield* Ref.get(state);
       if (current.kind !== "closed") yield* Ref.set(state, { kind });
       yield* Ref.set(latestStart, undefined);
       return current.kind === "waiting" ? current.fiber : undefined;
     }));
-    if (waiting !== undefined) yield* Fiber.interrupt(waiting);
-  }, Effect.uninterruptible);
 
-  const screen = Effect.fnUntraced(function* ({ start, hasImage, meetingTabTitle }: {
+  const screen = ({ start, hasImage, meetingTabTitle }: {
     start: number;
     hasImage: boolean;
     meetingTabTitle: string | undefined;
-  }) {
-    const waiting = yield* lock.withPermit(Effect.gen(function* () {
+  }) =>
+    transition(Effect.gen(function* () {
       const current = yield* Ref.get(state);
       if (current.kind === "closed") return;
       const previousStart = yield* Ref.get(latestStart);
@@ -63,8 +67,6 @@ export const makeMeetingTabNotice = Effect.fnUntraced(function* (options: {
       const fiber = yield* Effect.forkIn(Effect.interruptible(timer), scope);
       yield* Ref.set(state, { kind: "waiting", token, fiber });
     }));
-    if (waiting !== undefined) yield* Fiber.interrupt(waiting);
-  }, Effect.uninterruptible);
 
   const stop = clear("closed");
   yield* Scope.addFinalizer(scope, stop);
