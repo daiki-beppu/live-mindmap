@@ -30,7 +30,7 @@ export type ReplayResult = {
 
 export type InputLine = { no: number; value: unknown };
 
-type Step = { at: number; inputAt: number; run: Effect.Effect<void>; settled?: true };
+type Step = { at: number; inputAt: number; run: Effect.Effect<void>; recapturesSegments?: true };
 type Hooks = { restart: Effect.Effect<void>; drain: Effect.Effect<void> };
 
 const ruleSet = (rules: Partial<SpeakerRules> | undefined): SpeakerRules => ({
@@ -112,10 +112,26 @@ const toInput = (event: typeof RemarkEvent["Type"]): Tagged => ({
   ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }),
 });
 
+function liveEmitter(attribution: ReturnType<typeof createSpeakerAttribution>, collector: ReturnType<typeof createCollector>) {
+  let clockMs = 0;
+  const offer = (input: SettledRemark) => {
+    clockMs = Math.max(clockMs, input.end * 1000);
+    return attribution.remarks([input], clockMs);
+  };
+  const expireSpeakerWait = () => {
+    clockMs += SPEAKER_WAIT_MS;
+    return attribution.remarks([], clockMs);
+  };
+  return (input: SettledRemark) => {
+    collector.add(offer(input));
+    collector.add(expireSpeakerWait());
+  };
+}
+
 function logSteps(lines: readonly InputLine[], path: string | undefined, attribution: ReturnType<typeof createSpeakerAttribution>, collector: ReturnType<typeof createCollector>) {
   return Effect.gen(function* () {
     const steps: Step[] = [];
-    let clock = 0;
+    const emitLive = liveEmitter(attribution, collector);
     let firstMs: number | undefined;
     let lastMs = 0;
     for (const { no: n, value: line } of lines) {
@@ -127,12 +143,7 @@ function logSteps(lines: readonly InputLine[], path: string | undefined, attribu
       if (head.type === "remark") {
         const event = yield* decodeRemarkEvent(line).pipe(Effect.mapError(() => invalid(path, n, "remark")));
         const input = toInput(event);
-        steps.push({ at, inputAt: at, run: Effect.sync(() => {
-          clock = Math.max(clock, input.end * 1000);
-          collector.add(attribution.remarks([input], clock));
-          clock += SPEAKER_WAIT_MS;
-          collector.add(attribution.remarks([], clock));
-        }) });
+        steps.push({ at, inputAt: at, run: Effect.sync(() => emitLive(input)) });
       } else if (SPEAKER_TYPES.has(head.type)) {
         const event = yield* decodeHelper(line).pipe(Effect.mapError(() => invalid(path, n, "話者のイベント")));
         if (isSpeakerEvent(event)) steps.push({ at, inputAt: at, run: Effect.sync(() => collector.add(attribution.speaker(event))) });
@@ -167,7 +178,7 @@ const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at" | "input
   if (event.type === "partial") return { run: settling.partial(event) };
   if (event.type === "remark") return { run: settling.final({ track: event.track, start: event.start, end: event.end, text: event.text, ...(event.words === undefined ? {} : { words: event.words }), ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }) }) };
   if (!isSpeakerEvent(event)) return undefined;
-  return { run: settling.speaker(event), ...(event.type === "speaker-settled" ? { settled: true as const } : {}) };
+  return { run: settling.speaker(event), ...(event.type === "speaker-settled" ? { recapturesSegments: true as const } : {}) };
 };
 
 const offlineSteps = (lines: readonly InputLine[], path: string | undefined, settling: Settling) =>
@@ -187,25 +198,34 @@ const offlineSteps = (lines: readonly InputLine[], path: string | undefined, set
   });
 
 type PreviewSnapshot = { segments: readonly Segment[]; labels: ReadonlyMap<number, string | undefined> };
+type SegmentRefresh = "recapture" | "keep";
+
+function createTentativeLabels() {
+  let snapshot: PreviewSnapshot = { segments: [], labels: new Map() };
+  return {
+    labelOf: (remark: SettledRemark): string | undefined => {
+      if (remark.track !== "相手") return undefined;
+      const slot = longestOverlap(remark.start, remark.end, snapshot.segments);
+      return slot === undefined ? undefined : snapshot.labels.get(slot);
+    },
+    refresh: (preview: Settling["preview"], segments: SegmentRefresh) => Effect.sync(() => {
+      const next = segments === "recapture" ? preview.segments() : snapshot.segments;
+      snapshot = { segments: next, labels: new Map(next.map((s) => [s.slot, preview.label(s.slot)])) };
+    }),
+  };
+}
 
 export const replayOffline = Effect.fn("replayOffline")(function* (lines: readonly InputLine[], options: ReplayOptions = {}) {
   const collector = createCollector((_, index) => `r${index + 1}`);
-  let snapshot: PreviewSnapshot = { segments: [], labels: new Map() };
-  const tentativeOf = options.tentativeLabels !== true ? undefined : (remark: SettledRemark): string | undefined => {
-    if (remark.track !== "相手") return undefined;
-    const slot = longestOverlap(remark.start, remark.end, snapshot.segments);
-    return slot === undefined ? undefined : snapshot.labels.get(slot);
-  };
+  const tentative = options.tentativeLabels === true ? createTentativeLabels() : undefined;
   const settling = yield* createRemarkSettling({
-    emit: (r) => Effect.sync(() => collector.add([r], tentativeOf)),
+    emit: (r) => Effect.sync(() => collector.add([r], tentative?.labelOf)),
     speakers: { rules: ruleSet(options.rules), observe: collector.observe },
   });
-  const resolve = (segments: readonly Segment[]): PreviewSnapshot => ({ segments, labels: new Map(segments.map((s) => [s.slot, settling.preview.label(s.slot)])) });
-  const track = options.tentativeLabels === true;
-  const afterStep = (run: Effect.Effect<void>, recapture: boolean) =>
-    track ? Effect.andThen(run, Effect.sync(() => { snapshot = resolve(recapture ? settling.preview.segments() : snapshot.segments); })) : run;
-  const steps = (yield* offlineSteps(lines, options.path, settling)).map((step): Step => ({ ...step, run: afterStep(step.run, step.settled !== undefined) }));
-  yield* runSteps(steps, { restart: afterStep(settling.renumbered, true), drain: settling.drain }, collector, options.restartAt);
+  const afterStep = (run: Effect.Effect<void>, segments: SegmentRefresh) =>
+    tentative === undefined ? run : Effect.andThen(run, tentative.refresh(settling.preview, segments));
+  const steps = (yield* offlineSteps(lines, options.path, settling)).map((step): Step => ({ ...step, run: afterStep(step.run, step.recapturesSegments ? "recapture" : "keep") }));
+  yield* runSteps(steps, { restart: afterStep(settling.renumbered, "recapture"), drain: settling.drain }, collector, options.restartAt);
   collector.result.labels = settling.labels();
   return collector.result;
 });
