@@ -3,6 +3,8 @@ packages:
   - server
   - helper
   - e2e
+# bootstrap runs install alongside AEC3 and Swift resolution.
+verifyDepsBeforeRun: false
 ignoredOptionalDependencies:
   - '@anthropic-ai/claude-agent-sdk-*'
 # Foldkit の peer は effect / @effect/platform-browser を 4.0.0 の exact で要求する。server と web を 4.0.1 にそろえるため許可する（Foldkit の peer が追いついたら外す）

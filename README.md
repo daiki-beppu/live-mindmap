@@ -52,15 +52,14 @@ For Claude, set your API key in the terminal that starts the server:
 export ANTHROPIC_API_KEY=sk-ant-...
 git clone https://github.com/daiki-beppu/live-mindmap
 cd live-mindmap
-pnpm install
-bash helper/scripts/build-webrtc-apm.sh        # once: WebRTC audio-processing library
-bash helper/scripts/fetch-speaker-models.sh    # once: speaker-diarization models
-pnpm dev                                     # builds the helper, starts the server and the view
+pnpm bootstrap      # once: installs packages, builds the WebRTC audio-processing library, fetches Swift packages
+pnpm dev            # builds the helper, starts the server and the view
 ```
 
 In another terminal, from the same repository directory:
 
 ```sh
+bash helper/scripts/fetch-speaker-models.sh    # once: speaker-diarization models
 pnpm cli install claude
 pnpm cli install speech-ja       # Japanese speech recognition
 pnpm cli install chromium        # optional: map.png
