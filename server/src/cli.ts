@@ -78,7 +78,6 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import { withReplayCorrection } from "./replayCorrection.ts";
 import { openListener, serveFeed } from "./http.ts";
 import { resolveHelperPath } from "./helperPath.ts";
-import { BrokenLogLine, readLogLines } from "./logLines.ts";
 import { poolUnavailableMessage, readPool, updatePoolFromLog, vocabularyPoolPath, writePool } from "./vocabularyPool.ts";
 import { accountSubdomain, CloudflareFailed, deleteWorker, deployWorker, describeCloudflareFailure, listWorkerNames, newWorkerName, workerUrl, type CloudflareCredentials } from "./cloudflareWorkers.ts";
 import { appendPublishRecord, markRecordStatus, readPublishRecords } from "./publishRecords.ts";
@@ -86,12 +85,15 @@ import { renderReviewPages, ReviewBuild, type ReviewVariant, writeReviewPages } 
 import { ScreenJpeg } from "./screenJpeg.ts";
 import { parseSlides, slideChanges } from "./screenSlides.ts";
 import {
+  BrokenLogLine,
   createSessionDir,
   EXPORT_FILE,
   LOG_FILE,
+  NoSavedSession,
   openLoggedSession,
   SCREENS_DIR,
   reviewVariants,
+  readLogLines,
   reviewWarning,
   selfReviewVariants,
   writeExportsAndCapture,
@@ -112,7 +114,6 @@ class ServerUnreachable extends Schema.TaggedError<ServerUnreachable>()("ServerU
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", { message: Schema.String }) {}
 class ServerStreamClosed extends Schema.TaggedError<ServerStreamClosed>()("ServerStreamClosed", { reason: Schema.String }) {}
 class RequiredDepsMissing extends Schema.TaggedError<RequiredDepsMissing>()("RequiredDepsMissing", {}) {}
-class NoSession extends Schema.TaggedError<NoSession>()("NoSession", { sessionsDir: Schema.String }) {}
 class MissingRunExport extends Schema.TaggedError<MissingRunExport>()("MissingRunExport", { path: Schema.String }) {}
 class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()("InvalidTranscriptFile", {
   path: Schema.String,
@@ -129,7 +130,7 @@ const isEvalEvent = hasLoggedType(typesOf([StartEvent, RemarkEvent, DiffEvent]))
 const CLI_FAILURES = [
   ServerUnreachable,
   ServerFailed,
-  NoSession,
+  NoSavedSession,
   MissingRunExport,
   InvalidTruthFile,
   InvalidTranscriptFile,
@@ -146,7 +147,7 @@ const failureLine = (failure: CliFailure): string => {
       return "サーバーにつながりません（pnpm dev で起動）";
     case "ServerFailed":
       return failure.message;
-    case "NoSession":
+    case "NoSavedSession":
       return `セッションがありません: ${failure.sessionsDir}`;
     case "MissingRunExport":
       return `セッションのマップがありません: ${failure.path}`;
@@ -207,7 +208,7 @@ const latestSession = Effect.fn("latestSession")(function* (sessionsDir: string,
   const latest = (yield* pathExists(fs, sessionsDir))
     ? (yield* Effect.filter(yield* fs.readDirectory(sessionsDir), (d) => pathExists(fs, join(sessionsDir, d, file)))).sort().at(-1)
     : undefined;
-  return latest === undefined ? yield* new NoSession({ sessionsDir }) : latest;
+  return latest === undefined ? yield* new NoSavedSession({ sessionsDir }) : latest;
 }, orFileFailed);
 
 const ServerErrorBody = Schema.Struct({ error: Schema.optionalKey(Schema.String) });
@@ -320,7 +321,7 @@ const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
   for (const [i, event] of events.entries()) {
     if (!isReplayedEvent(event)) continue;
     const decoded = yield* Schema.decodeUnknownEffect(LogEvent)(event).pipe(
-      Effect.mapError((e) => new BrokenLogLine({ line: lines[i]?.no ?? 1, reason: decodeReason(e) })),
+      Effect.mapError((e) => new BrokenLogLine({ path: logPath, line: lines[i]?.no ?? 1, kind: "event", reason: decodeReason(e) })),
     );
     switch (decoded.type) {
       case "start":
@@ -818,7 +819,7 @@ const restore = Command.make(
           Layer.succeed(SessionLog)(SessionLog.of({ write: () => Effect.void, writeScreen: () => Effect.void, readScreen: () => Effect.die("restore は共有画面を読まない") })),
         ),
       ),
-      Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new BrokenLogLine({ line: lines[e.index]?.no ?? 1, reason: e.reason }))),
+      Effect.catchTag("InvalidLogEvent", (e) => Effect.fail(new BrokenLogLine({ path: join(dir, LOG_FILE), line: lines[e.index]?.no ?? 1, kind: "event", reason: e.reason }))),
     );
     const exported = yield* session.exportJson;
     const fs = yield* FileSystem.FileSystem;
@@ -1253,7 +1254,7 @@ const publishVariant = (content: (typeof PUBLISH_CONTENTS)[number]): ReviewVaria
   content === "map" ? { file: "index.html", audio: false, mapOnly: true } : { file: "index.html", audio: content === "audio" };
 
 const publishableSession = Effect.fnUntraced(function* (session: Option.Option<string>, content: (typeof PUBLISH_CONTENTS)[number]) {
-  const { dir, logPath } = yield* sessionLog(session).pipe(Effect.catchTag("NoSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) }))));
+  const { dir, logPath } = yield* sessionLog(session).pipe(Effect.catchTag("NoSavedSession", (e) => Effect.fail(new CommandFailed({ message: failureLine(e) }))));
   const { events } = yield* readLogLines(logPath).pipe(orFileFailed);
   const start = events.find(hasLoggedType(new Set(["start"])));
   const decodedStart = start === undefined ? undefined : Schema.decodeUnknownResult(StartEvent)(start);
