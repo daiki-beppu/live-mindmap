@@ -197,6 +197,16 @@ describe("applyOps: combine", () => {
     expect(reasons([{ op: "combine", from: "n4", into: "n7" }], map)).toEqual(["決定 は子を持てない"]);
   });
 
+  it("いくつも当てはまるときは、種別が違う → 子孫へ → 子を持てない種別 の順に先の理由で捨てる", () => {
+    expect(reasons([{ op: "combine", from: "n1", into: "n2" }])).toEqual(["統合は同じ種別どうしに限る"]);
+    expect(reasons([{ op: "combine", from: "n2", into: "n4" }])).toEqual(["統合は同じ種別どうしに限る"]);
+    const withKids = base();
+    node(withKids, "n3").parent = "n4";
+    const map = stamped(withKids, [{ op: "add", ref: "t7", parent: "n2", kind: "決定", text: "もう一つの決定", evidence: ["r2"] }]).map;
+    node(map, "n7").parent = "n4";
+    expect(reasons([{ op: "combine", from: "n4", into: "n7" }], map)).toEqual(["子孫へは統合できない"]);
+  });
+
   it("統合先が changeOrder に入り、統合元は消えて子と根拠が統合先に移る", () => {
     const map = withTwoIssues(3);
     const got = stamped(map, [{ op: "combine", from: "n6", into: "n7" }]);

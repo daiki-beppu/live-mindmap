@@ -252,8 +252,7 @@ function applyMove(s: ApplyState, op: OpOf<"move">): Applied {
   return null;
 }
 
-function combineError(map: MeetingMap, from: MapNode | undefined, into: MapNode | undefined): string | null {
-  if (!from || !into || from.id === into.id) return "対象が無い";
+function combineError(map: MeetingMap, from: MapNode, into: MapNode): string | null {
   if (from.kind !== into.kind) return "統合は同じ種別どうしに限る";
   if (isDescendant(map, into.id, from.id)) return "子孫へは統合できない";
   if (isLeafKind(into.kind) && children(map, from.id).length) return `${into.kind} は子を持てない`;
@@ -272,10 +271,10 @@ function mergedProposer(s: ApplyState, src: MapNode, dst: MapNode): string | und
 }
 
 function applyCombine(s: ApplyState, op: OpOf<"combine">): Applied {
-  const from = target(s, op.from), into = target(s, op.into);
-  const err = combineError(s.map, from, into);
+  const src = target(s, op.from), dst = target(s, op.into);
+  if (!src || !dst || src.id === dst.id) return "対象が無い";
+  const err = combineError(s.map, src, dst);
   if (err) return err;
-  const src = from!, dst = into!;
   touchUp(s.map, src.parent, s.at);
   for (const k of children(s.map, src.id)) k.parent = dst.id;
   if (dst.kind === "案") {
