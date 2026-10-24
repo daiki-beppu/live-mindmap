@@ -69,6 +69,7 @@ Evals measure real model and speech-recognition output by hand. They are not par
 - `sttLatency`: how finals are handled, or how the helper feeds recognition.
 - `speakerAccuracy`: the speaker-diarization model, the rules that attribute remarks to speakers, or their reference values.
 - `peopleAccuracy`: prompts or rules for inferred speaker names, proposers, or assignees.
+- `bash scripts/measure-bootstrap.sh [commit]`（既定 `HEAD`）: 初回の時間に効く `helper/Package.swift`・`helper/Package.resolved` の依存追加・更新や製品の増減、`scripts/bootstrap.sh`・`helper/scripts/build-webrtc-apm.sh`・`helper/scripts/fetch-speaker-models.sh`、server の dev の helper ビルド、README の初回準備手順を変えたら実行する。main とブランチを同じ時間帯に続けて測り、PR 本文に before/after の表を書く。ビルド140秒・初回240秒の目標を揺れ（±20%）より大きく超えたら、その PR で直すか issue を立てる。時間による合否は出さず、CI では監視しない。
 
 CI does not enforce them; agents may run them too. Record the result in the PR body as a before/after table taken on the same samples. There is no baseline value. Procedures, which samples each one takes, and input/output shapes are in `server/bench/README.md`. The samples (synthetic meetings: audio, transcript, truth, how to make new ones) live outside the repo; start from `~/live-mindmap-samples/README.md`.
 
