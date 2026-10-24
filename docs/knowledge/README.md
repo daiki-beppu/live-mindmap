@@ -10,6 +10,7 @@
 - [CLI と server の受け渡し](server-protocol.md): CLI と server の間の経路・本文・応答（`serverProtocol`）と、web が送る本文を触るとき
 - [差分更新の問い合わせの続き](diff-continuation.md): 直前の応答・送り直す共有画面と、それを持つ core・Claude の adapter・振り分け・復元を触るとき
 - [途中結果から発言を作る段](remark-settling.md): 確定の段（`settle`）と出す直前の関所（`remarkGate`）、特に本文どうしの比べ方を触るとき
+- [セッションの開始とブラウザへの送り口](session-start-and-viewers.md): `Sessions` の開始の括弧・状態の門番と、`Viewers` の送り口・frame の種類ごとの表を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -59,3 +60,14 @@
 - 親 [#1441](https://github.com/daiki-beppu/live-mindmap/issues/1441) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
 - チケット [#1442](https://github.com/daiki-beppu/live-mindmap/issues/1442)・[PR #1455](https://github.com/daiki-beppu/live-mindmap/pull/1455) の差分と本文 → [途中結果から発言を作る段](remark-settling.md)。sub-issue に resolution コメントは無かった。PR の本文の報告が 1 行だけだった件は捨てた: [takt の run](takt-runs.md) の「1 回で通った run の PR の本文には、実装の報告が写らない」にある
 - #1442 の takt の run（`20261024-042021-issue-1442-no-no-be-no-wo-shi-hj3cz3`）の trace と reports → [途中結果から発言を作る段](remark-settling.md)、[takt の run](takt-runs.md)。レビューがコマンドを流し直さず実装の段のログで APPROVE した件は捨てた: [takt の run](takt-runs.md) の「companion の findings 0 も、レビューの APPROVE も、テストを流し直した証拠ではない」にある。#1441 の takt-sequence のセッションが止まって案内役が判断依頼を出した件は捨てた: PR はマージまで進んでいて、止まった原因を確かめていない
+- 仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436)（Formal Spec のコメントを含む） → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。用語は捨てた: `openSession`・`current`・`forSession` などは内側の名前で、GLOSSARY に足さないと仕様が決めている。ADR は捨てた: どれも内側の形で元に戻せると仕様が決めている。Formal Spec の Quint のモデルは捨てた: 性質は仕様の User Stories の写しで、新しい学びが無い
+- 親 [#1450](https://github.com/daiki-beppu/live-mindmap/issues/1450) → 捨てた: 仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461) の差分 → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)、[セッションの sink](session-sink.md)。sub-issue に resolution コメントは無かった。README の `できること` を直した件は捨てた: AGENTS.md の README 節にある
+- #1451 の takt の run（`20261024-044654-issue-1451-sessions-no-no-wo-1-c3mkub`）の trace と reports → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)、[takt の run](takt-runs.md)。HTTP 経由の確かめをレビューが読むだけで済ませた件は捨てた: [takt の run](takt-runs.md) の「companion の findings 0 も、レビューの APPROVE も、テストを流し直した証拠ではない」にある
+- #1461 のマージの run（`20261024-052049-merge-pr-1461-4jlyjc`）の reports → [セッションの sink](session-sink.md)、[takt の run](takt-runs.md)
+- チケット [#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452)・[PR #1465](https://github.com/daiki-beppu/live-mindmap/pull/1465) の差分 → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。sub-issue に resolution コメントは無かった。PR が main と衝突（DIRTY）して手で解いた件は捨てた: 衝突の相手を確かめられず、作業の基準にならない
+- #1452 の takt の run（`20261024-062211-issue-1452-raibuto-karanosessh-vmobcg`）の trace と reports → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)、[takt の run](takt-runs.md)。マージの run（`20261024-065736-merge-pr-1465-cj3mvo`）は捨てた: 一直線に通り、新しい学びが無い
+- チケット [#1453](https://github.com/daiki-beppu/live-mindmap/issues/1453)・[PR #1495](https://github.com/daiki-beppu/live-mindmap/pull/1495) の差分 → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。sub-issue に resolution コメントは無かった。PR に後から付いた「`pnpm test:it` が終了コード 1（helper の IT 9 件と server の SIGKILL）」の補完報告は捨てた: run の中の層と CI の check はどちらも通っていて、失敗の原因は確かめられておらず、作業の基準にならない
+- #1453 の takt の run（`20261024-085250-issue-1453-viewers-ni-sesshonn-km6w3y`）の trace と reports → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。対象を絞った vitest の指定が効かず server の unit 全体が流れた件は捨てた: どの指定で外れたかがログに残っておらず、手順にできない
+- チケット [#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)・[PR #1507](https://github.com/daiki-beppu/live-mindmap/pull/1507) の差分 → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)。sub-issue に resolution コメントは無かった
+- #1454 の takt の run（`20261024-110450-issue-1454-sesshonto-cli-play-lrmuz3`）の trace と reports → [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)、[takt の run](takt-runs.md)。E2E の smoke がキャッシュの再生で通り `REPLAY_STALE` が出なかった件は捨てた: e2e/README.md の手順どおりで、新しい学びが無い

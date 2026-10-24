@@ -103,9 +103,16 @@ sink の側にも、遅い束縛がもう 1 つある。`openLoggedSession` は�
 
 重なりを消すだけでも速くなる。[#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)（[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)）は、触った 3 ファイルの軽い IT を 226 件から 154 件に減らし、同じマシンで 9.4 秒から 8.2 秒になった。テストを unit へ下ろすときは、それが置き換える IT のテストを同じ PR で消す（[CODING_STANDARDS.md](../../CODING_STANDARDS.md) の Tests の replace, don't layer）。
 
+## 録画の stop を IT で呼ぶ前に、ログに残った発言を待つ。ヘルパーの起動の回数だけを待たない
+
+録画からのセッションの stop は、まだ入れていない発言を捨てる（`discardBacklog`）。入れる段は別の fiber で動いているので、「ヘルパーが起動し直した」ことだけを待って stop すると、2 件目を入れる前に捨てることがある。`sessionsRecorded.it` の「接続待ちでstopしても、入れた発言でmap.*を書き出す」は、2 回目の launch を待つだけで stop していた。[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461) の CI では `expected [ 'r1' ] to deeply equal [ 'r1', 'r2' ]` で落ちた。手元の run では 6 件とも通っていた。PR のマージの takt の run が、stop の前に `log.jsonl` の発言が `[r1, r2]` になるまで待つ 1 行を足して直した。製品の約束（入れていない発言は捨て、入れている 1 件は終えて書き出す）は変えていない。
+
+stop で「入れた発言」を確かめる IT は、入ったことの証拠（ログの行）を待ってから stop を呼ぶ。
+
 ## 出典
 
 - 仕様 [#1304](https://github.com/daiki-beppu/live-mindmap/issues/1304)（Formal Spec のコメントを含む）、親 [#1318](https://github.com/daiki-beppu/live-mindmap/issues/1318)
 - チケット [#1319](https://github.com/daiki-beppu/live-mindmap/issues/1319)・[PR #1327](https://github.com/daiki-beppu/live-mindmap/pull/1327)、[#1320](https://github.com/daiki-beppu/live-mindmap/issues/1320)・[PR #1340](https://github.com/daiki-beppu/live-mindmap/pull/1340)、[#1321](https://github.com/daiki-beppu/live-mindmap/issues/1321)・[PR #1358](https://github.com/daiki-beppu/live-mindmap/pull/1358)、[#1322](https://github.com/daiki-beppu/live-mindmap/issues/1322)・[PR #1359](https://github.com/daiki-beppu/live-mindmap/pull/1359)、[#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323)・[PR #1360](https://github.com/daiki-beppu/live-mindmap/pull/1360)、[#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)・[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)、[#1325](https://github.com/daiki-beppu/live-mindmap/issues/1325)・[PR #1363](https://github.com/daiki-beppu/live-mindmap/pull/1363)
 - [#1273](https://github.com/daiki-beppu/live-mindmap/issues/1273)（停止と待ちの解除の競合）
 - 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の子 [#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368)（IT の件数と、知らせのテストの名前）
+- 仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) の子 [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461) のマージの takt の run（`20261024-052049-merge-pr-1461-4jlyjc` の `ci-investigation.md`・`ci-fix.md`）
