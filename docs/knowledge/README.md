@@ -12,6 +12,7 @@
 - [途中結果から発言を作る段](remark-settling.md): 確定の段（`settle`）と出す直前の関所（`remarkGate`）、特に本文どうしの比べ方を触るとき
 - [セッションの開始とブラウザへの送り口](session-start-and-viewers.md): `Sessions` の開始の括弧・状態の門番と、`Viewers` の送り口・frame の種類ごとの表を触るとき
 - [過去のセッションのフォルダの読み側](session-folder-reading.md): `log.jsonl` などを読む CLI のコマンドや bench を足す・変えるとき、壊れた行の失敗の文を触るとき
+- [話者の名前の包み](speaker-names.md): 話者の名前を持つ・出す処理（`openLogged` の `nameSpeaker`）と、それを通るライブ・再生・評価・bench を触るとき、名前の推定のプロンプトを変えて前後を比べるとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -79,3 +80,13 @@
 - チケット [#1445](https://github.com/daiki-beppu/live-mindmap/issues/1445)・[PR #1466](https://github.com/daiki-beppu/live-mindmap/pull/1466) の差分 → [過去のセッションのフォルダの読み側](session-folder-reading.md)。sub-issue に resolution コメントは無かった。PR が main に追いつくのを 3 時間待った件は捨てた: 作業の判断に使わない。takt の run は worktree ごと消えていて読めなかった
 - チケット [#1446](https://github.com/daiki-beppu/live-mindmap/issues/1446)・[PR #1515](https://github.com/daiki-beppu/live-mindmap/pull/1515) の差分 → [過去のセッションのフォルダの読み側](session-folder-reading.md)、[セッションの sink](session-sink.md)（消えた `isReplayedEvent` の記述を直した）。sub-issue に resolution コメントは無かった
 - #1446 の takt の run（`20261024-133903-issue-1446-cli-no-mi-wo-sessio-ruhfky`）の trace と reports → [過去のセッションのフォルダの読み側](session-folder-reading.md)、[takt の run](takt-runs.md)。`readLogLines` の公開を bench のために残した判断は捨てた: コードの import を見れば分かる。#1414 と隣り合わせない並びの確認が持ち越された件は捨てた: その場限りの段取り
+- [話者の名前の包みをログを開く口に集めたとき](../devlog/2026-10-25.md#speaker-name-wrap) → [話者の名前の包み](speaker-names.md)、[takt の run](takt-runs.md)。callback を渡されたらそちらだけに知らせて口を expand → contract した件は捨てた: `onSpeakerNames` は #1449 で消え、今の状態に残っていない。理由の無い「しない」を配線漏れと読んだ件は [話者の名前の包み](speaker-names.md) の 1 節目に含めた
+- 仕様 [#1437](https://github.com/daiki-beppu/live-mindmap/issues/1437)（Formal Spec のコメントを含む）と決定の一次資料 [#1425](https://github.com/daiki-beppu/live-mindmap/issues/1425) → [話者の名前の包み](speaker-names.md)。用語は捨てた: 名前の付いた新しい概念が増えないと仕様が決めている。ADR は捨てた: `openLogged` の中の配線で後から戻せると仕様が決めている
+- 親 [#1443](https://github.com/daiki-beppu/live-mindmap/issues/1443) → [takt の run](takt-runs.md)（完了条件の「before/after が PR の本文に残っている」が満たされていないこと）。ほかは仕様と完了条件の写しで、新しい学びが無い
+- チケット [#1447](https://github.com/daiki-beppu/live-mindmap/issues/1447)・[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517) の差分（マージの run の修正を含む） → [話者の名前の包み](speaker-names.md)、[takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった。README の `できること` を 1 本目で直した件は捨てた: AGENTS.md の README 節にある
+- #1447 の takt の run（`20261024-150123-issue-1447-no-no-miworoguwo-ku-yghm6h`）の trace と reports、`.takt/issue1447-validation/evals/` → [話者の名前の包み](speaker-names.md)、[takt の run](takt-runs.md)。移し元のテストが仕様の指す `sessionSinks.it.test` ではなく `speakerNames.it.test` にあった件は捨てた: [takt の run](takt-runs.md) の「テストは行番号でなくテスト名で指す」で足りる
+- #1447 のマージの run（`20261024-160015-merge-pr-1517-obxbck`）の reports → [話者の名前の包み](speaker-names.md)、[takt の run](takt-runs.md)
+- チケット [#1448](https://github.com/daiki-beppu/live-mindmap/issues/1448)・[PR #1520](https://github.com/daiki-beppu/live-mindmap/pull/1520) の差分 → [話者の名前の包み](speaker-names.md)、[takt の run](takt-runs.md)。sub-issue に resolution コメントは無かった
+- #1448 の takt の run（`20261024-181251-issue-1448-cli-play-de-shita-n-zxileb`）の trace と reports → [takt の run](takt-runs.md)。対象の IT の起動の手順逸脱は捨てた: 裁定で済んだとだけ記録され、中身が残っていない。マージの run（`20261024-184416-merge-pr-1520-kspqhg`）は捨てた: 一直線に通り、新しい学びが無い
+- チケット [#1449](https://github.com/daiki-beppu/live-mindmap/issues/1449)・[PR #1521](https://github.com/daiki-beppu/live-mindmap/pull/1521) の差分 → [話者の名前の包み](speaker-names.md)。sub-issue に resolution コメントは無かった
+- #1449 の takt の run（`20261024-185745-issue-1449-bench-no-sttreplay-93spin`）の trace と reports → 捨てた: 計画どおり 1 周で通り、消えた口の契約のテスト 1 本を消した件も今の状態に残らない。マージの run（`20261024-192400-merge-pr-1521-llximw`）も同じく一直線で、新しい学びが無い

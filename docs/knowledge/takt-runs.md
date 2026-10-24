@@ -47,17 +47,21 @@ heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/
 
 [#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316) の 1 本目の run は、計画の段だけで 5 分で ABORT した（`[PLAN:3] 要件が不明確`）。チケットの表は録画の `observe(connected)` を「何もしない」としていたが、今の main は話者の枠を振り直していた。下ろすはずの 5 件のテストも、先にマージされた [#1323](https://github.com/daiki-beppu/live-mindmap/issues/1323) が動かしていた。自動の requeue で始まった 2 本目も、同じ点を選択肢つきで問い返した。利用者が「本文のテスト → 今の main の場所」の表と、扱い（消えたものも移ったものも新しい unit に書く、重なる分だけ消す、今のコードの振る舞いを保つ）をコメントに書いてからは、どの段も迷わず、12 イテレーション・69 分で通った。#1317 も同じ形のコメントを積む前に足し、1 周・33 分で通った。
 
+前の子が後の子の作業を済ませてしまうこともある。仕様 [#1437](https://github.com/daiki-beppu/live-mindmap/issues/1437) の 2 本目 [#1448](https://github.com/daiki-beppu/live-mindmap/issues/1448) は「`cli play` のときだけ送り口を渡す」を作るものにしていたが、送り口は前提の仕様 #1436 で渡されていて、1 本目の #1447 で名前の frame も送るようになっていた。計画の段がそれをコードで確かめ、本番コードの差分は 0 行、テスト 2 ファイルと README だけで通った（[PR #1520](https://github.com/daiki-beppu/live-mindmap/pull/1520)）。ABORT しなかったのは、受け入れ条件が「`cli play` の最中に `speaker-names` の frame が送り口に届く」という見える結果で書かれていて、配線の有無に依らず満たし方を決められたからだ。子の本文の「作るもの」には配線より見える結果を書いておく。
+
 同じ親の子が並んでいて、前の子がテストやコードを動かすとき、後の子を積む前に main と本文を照らす。ずれていれば「## 下ろすテストの今の場所（takt 用、日付）」のように、表と扱いをコメントに写す。
 
 ## companion の findings 0 も、レビューの APPROVE も、テストを流し直した証拠ではない
 
-#1316 の実装の後の companion レビュー（ai-antipattern と testing）は、1674 行の変更に findings 0 を返した。その後の本番のレビュー（architecture・backend・ai-antipattern）が、録画の正常完了の取り違えとライブの途切れの時刻の上書きの 2 つの退行を見つけた（[取り込みの試行](intake-attempts.md)）。testing のレビューは初めは APPROVE で、裁定役がテストの不足を同じ指摘にまとめた。#1446 でも同じ形になった。5 人のレビューのうち ai-antipattern だけが `cli publish --content map` の壊れた行の文の漏れを REJECT で挙げ、architecture・backend・security・testing は APPROVE だった。裁定役が testing の見落としを同じ指摘にまとめ、run は 11 段のうち 7 段をこの直しに使った（[過去のセッションのフォルダの読み側](session-folder-reading.md)）。#1317 では、レビューはテストを流し直さず、実装の段の証跡（`command-results.json`）と最終の差分の SHA-256 が合うことだけを見て APPROVE した。
+#1316 の実装の後の companion レビュー（ai-antipattern と testing）は、1674 行の変更に findings 0 を返した。その後の本番のレビュー（architecture・backend・ai-antipattern）が、録画の正常完了の取り違えとライブの途切れの時刻の上書きの 2 つの退行を見つけた（[取り込みの試行](intake-attempts.md)）。testing のレビューは初めは APPROVE で、裁定役がテストの不足を同じ指摘にまとめた。#1446 でも同じ形になった。5 人のレビューのうち ai-antipattern だけが `cli publish --content map` の壊れた行の文の漏れを REJECT で挙げ、architecture・backend・security・testing は APPROVE だった。裁定役が testing の見落としを同じ指摘にまとめ、run は 11 段のうち 7 段をこの直しに使った（[過去のセッションのフォルダの読み側](session-folder-reading.md)）。#1447 では run の中の 5 人がみな APPROVE し、PR を作った後のマージの run のコーディングレビュー（1 人）が、名前を変えても `export.json` が書き直されない漏れを REJECT で挙げた（[話者の名前の包み](speaker-names.md)）。#1317 では、レビューはテストを流し直さず、実装の段の証跡（`command-results.json`）と最終の差分の SHA-256 が合うことだけを見て APPROVE した。
 
 run の報告を読むときは、どの段が実際にコマンドを流したかを証跡のログで見る。レビューの件数が 0 でも、まとめた経路の後処理の取り違えのような、テストが元々見ていない退行は残りうる。
 
 ## 1 回で通った run の PR の本文には、実装の報告が写らない。層の結果は CI の check で見る
 
 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306) の子 3 本（[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)・[#1328](https://github.com/daiki-beppu/live-mindmap/pull/1328)・[#1370](https://github.com/daiki-beppu/live-mindmap/pull/1370)）は、どれも PR の本文の `## Execution Report` が「Workflow `default` completed successfully.」の 1 行だけだった。チケットの完了条件には「実行した層と結果を実装の報告に書く（PR の本文へ写される）」があり、#1309 には `cli eval` の前後の表も求めていた。どちらも PR からは辿れない。本文に報告が載ったのは、修正や検証の段が報告を書いた run だけだった（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362) の「P1: 必須検証の実行報告」、[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367) の破壊検証の結果）。
+
+マージの run が修正を積んだ PR でも同じだった。[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517)（#1447）は、マージの run が `export.json` の漏れを直してから入ったが、本文は 1 行のままだった。チケットが求めた `cli eval`・`peopleAccuracy`・`mapShape` の前後の表は、run の `implementation-report.md` にあるだけで、マージのレビューも「before/after 比較表は確認できず」と書いた。親 [#1443](https://github.com/daiki-beppu/live-mindmap/issues/1443) の完了条件「before/after が PR の本文に残っている」は、この形では満たせない。
 
 PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「機械ゲートは審査しない」と書いて APPROVE する。#1370 のコーディングレビューは、GitHub の CI の check（型検査・unit・IT・heavy IT・E2E）の成功を見て、それを根拠にした。層が通ったかは CI の check で見る。PR の本文に結果を残させたいなら、報告を本文に書く手順をチケットの完了条件とは別に用意する。
 
@@ -77,7 +81,7 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 
 #1316 の run は `build-webrtc-apm.sh` と `fetch-speaker-models.sh` を並べて流し、後者が Swift の `error: Build failed` で落ちた。APM のビルドが済んだ後に流し直すと通った。
 
-ルートの層どうしでも同じことが起きる。#1454 の run は `pnpm test` と `pnpm test:it` を 2 分ずらして重ねて流し、ログに「Another instance of SwiftPM … is already running using '…/helper/.build'」が出た。helper の IT の `FileTranscriptionITTests` の 1 件（0〜2 秒が黒、2 秒からが白の動画）が `screen.lines != nil` の期待外れ（`CRImageReaderError 1`）で落ちた。コードを変えずに helper の IT を単独で流すと 150 件通り、ルートの `pnpm test:it` を流し直すと 0 になった。#1461 のマージの run でも、helper の初めてのビルドと並んで走った web の IT 3 件がタイムアウトで落ち、workspace ごとに順に流し直すと通った。どちらも原因は確かめていない。
+ルートの層どうしでも同じことが起きる。#1454 の run は `pnpm test` と `pnpm test:it` を 2 分ずらして重ねて流し、ログに「Another instance of SwiftPM … is already running using '…/helper/.build'」が出た。helper の IT の `FileTranscriptionITTests` の 1 件（0〜2 秒が黒、2 秒からが白の動画）が `screen.lines != nil` の期待外れ（`CRImageReaderError 1`）で落ちた。コードを変えずに helper の IT を単独で流すと 150 件通り、ルートの `pnpm test:it` を流し直すと 0 になった。#1461 のマージの run でも、helper の初めてのビルドと並んで走った web の IT 3 件がタイムアウトで落ち、workspace ごとに順に流し直すと通った。#1447 の run も、ビルドとテストを並べた中で web の IT 3 件が 5 秒で時間切れになり、コードを変えずに `VITEST_MAX_WORKERS=2` を付けたルートの `pnpm test:it` で全件通った。そのマージの run は、並べた `pnpm test:it` が helper の映像・音声の同期のテストで 2 回落ち、`pnpm -r --workspace-concurrency=1 run test:it` で通した。どちらも原因は確かめていない。
 
 AGENTS.md の Checks の順（APM → 話者のモデル → `pnpm typecheck` → `pnpm test` → `pnpm test:it`）で、前のコマンドが終わってから次を流す。
 
@@ -89,7 +93,9 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 
 ## 実モデルの eval は完了条件に入れない。「マージ後に人が確かめること」の節に分ける
 
-[#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) は起票の時点で、完了条件に「`cli eval` を同じサンプルで前後に回し、前後の表を実装の報告に書く」を入れていた。2026-10-18 の takt の run は、コードの直しとテストを済ませたが、この表が作れずに BLOCKED で止まり、案内役が判断依頼を出した。evals は鍵と費用の要る手作業で（AGENTS.md の Evals）、takt の run は回さない。2026-10-20 に、この行を完了条件から外して「## マージ後に人が確かめること」の節へ移すと、流し直した run はマージまで進んだ（[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)）。同じ親の [#1313](https://github.com/daiki-beppu/live-mindmap/issues/1313) も同じ形で流れた。
+[#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) は起票の時点で、完了条件に「`cli eval` を同じサンプルで前後に回し、前後の表を実装の報告に書く」を入れていた。2026-10-18 の takt の run は、コードの直しとテストを済ませたが、この表が作れずに BLOCKED で止まり、案内役が判断依頼を出した。evals は鍵と費用の要る手作業で（AGENTS.md の Evals）、run が回せるとは限らない。2026-10-20 に、この行を完了条件から外して「## マージ後に人が確かめること」の節へ移すと、流し直した run はマージまで進んだ（[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)）。同じ親の [#1313](https://github.com/daiki-beppu/live-mindmap/issues/1313) も同じ形で流れた。
+
+回せる run もある。2026-10-24 の #1447 の run は、Claude で `cli eval --model`・`peopleAccuracy`・`mapShape` を変更前の main と変更後で同時に流し、表を `implementation-report.md` に書いた。それでも表は PR の本文に届かなかった（上の「1 回で通った run の PR の本文には、実装の報告が写らない」）。回せても回せなくても、表を PR に残すのは人の手になる。
 
 完了条件に残すのは、エージェントが自分で満たせるもの（ルートの層の終了コード、テスト、grep で確かめられる残りの無さ）だけにする。
 
@@ -116,4 +122,5 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 - 仕様 [#1439](https://github.com/daiki-beppu/live-mindmap/issues/1439) の子 [#1442](https://github.com/daiki-beppu/live-mindmap/issues/1442) の takt の run（`20261024-042021-issue-1442-no-no-be-no-wo-shi-hj3cz3`）の実装の報告と決定ログ
 - 仕様 [#1303](https://github.com/daiki-beppu/live-mindmap/issues/1303) の子 [#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) の本文の編集の前後と、[#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296) の triage のコメント、[PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385)
 - 仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) の子 [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461)、[#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452)・[PR #1465](https://github.com/daiki-beppu/live-mindmap/pull/1465)、[#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)・[PR #1507](https://github.com/daiki-beppu/live-mindmap/pull/1507) の takt の run（`20261024-044654-issue-1451-sessions-no-no-wo-1-c3mkub`・`20261024-062211-issue-1452-raibuto-karanosessh-vmobcg`・`20261024-110450-issue-1454-sesshonto-cli-play-lrmuz3`）のログと報告、#1461 のマージの run（`20261024-052049-merge-pr-1461-4jlyjc`）の報告
+- 仕様 [#1437](https://github.com/daiki-beppu/live-mindmap/issues/1437) の子 [#1447](https://github.com/daiki-beppu/live-mindmap/issues/1447)・[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517)、[#1448](https://github.com/daiki-beppu/live-mindmap/issues/1448)・[PR #1520](https://github.com/daiki-beppu/live-mindmap/pull/1520) の takt の run（`20261024-150123-issue-1447-no-no-miworoguwo-ku-yghm6h`・`20261024-181251-issue-1448-cli-play-de-shita-n-zxileb`）の報告と、#1447 のマージの run（`20261024-160015-merge-pr-1517-obxbck`）の報告。[開発ログ](../devlog/2026-10-25.md#speaker-name-wrap)
 - 仕様 [#1438](https://github.com/daiki-beppu/live-mindmap/issues/1438) の子 [#1446](https://github.com/daiki-beppu/live-mindmap/issues/1446)・[PR #1515](https://github.com/daiki-beppu/live-mindmap/pull/1515) の takt の run（`20261024-133903-issue-1446-cli-no-mi-wo-sessio-ruhfky`）のレビューと裁定の報告。[開発ログ](../devlog/2026-10-25.md#session-log-reader)
