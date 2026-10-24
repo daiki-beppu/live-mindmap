@@ -13,7 +13,7 @@ const IGNORED = /[、。，．,.!?！？「」\s]/u;
 
 // 比べるための本文（句読点・空白を除いたもの）。出す本文の切り出し位置はこれから導かず、
 // 同じ数え方で元の本文を走査して決める（dropOverlap）。位置を 2 つの単位で持たない
-function compact(text: string): string {
+export function compact(text: string): string {
   let body = "";
   for (const c of text) if (!IGNORED.test(c)) body += c;
   return body;
@@ -22,7 +22,7 @@ function compact(text: string): string {
 // 元の本文から、頭の重なり分を落とす切る位置（UTF-16 コード単位）。overlap の単位は呼び出し側の k と同じ。
 // 残りは「残す文字が overlap 分たまった次の残す文字」から始まるので、その手前の句読点・空白は残りに入らない。
 // 本文と words は、この位置で同じように切る
-function overlapEnd(text: string, overlap: number): number {
+export function overlapEnd(text: string, overlap: number): number {
   let kept = 0;
   let i = 0;
   for (const c of text) {
