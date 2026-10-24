@@ -1,8 +1,8 @@
-// portOf（http.ts）: 待受けのアドレスからポートを読む。throw せず Effect を返し、TCP でないときは defect にする
+// portOf（httpServing.ts）: 待受けのアドレスからポートを読む。throw せず Effect を返し、TCP でないときは defect にする
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Result } from "effect";
 import { NetAddress } from "effect/net";
-import { portOf } from "../src/http.ts";
+import { portOf } from "../src/httpServing.ts";
 
 describe("portOf", () => {
   it.effect("TCP のアドレスなら、そのポートで成功する", () => Effect.gen(function* () {
