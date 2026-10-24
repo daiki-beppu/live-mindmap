@@ -309,53 +309,6 @@ export class Sessions extends Context.Service<Sessions, {
         }),
       });
 
-      const begin = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
-        const model = planModel(input.plan);
-        const scope = yield* Scope.fork(serverScope, "sequential");
-        return yield* Effect.gen(function* () {
-          const startupWarnings = yield* requireStartupDeps("start", model.route, { screen: input.screen, check: input.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-          const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
-          const warnings = notice === undefined ? startupWarnings : [...startupWarnings, notice];
-          const dir = yield* sinks.createDir(sessionsDir);
-          const origin = yield* Ref.make<string | undefined>(undefined);
-          const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
-          const controller = yield* openIntake({
-            scope, commands: { "self-pause": "pending-once" },
-            argv: (attemptNo) => Effect.gen(function* () {
-              return runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, attemptNo, yield* Ref.get(origin), yield* Ref.get(selfPauseState));
-            }),
-          }).pipe(Effect.provideService(Helpers, helpers));
-          // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
-          // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
-          const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate }).pipe(Scope.provide(scope));
-          // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
-          if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
-          const live: Live = {
-            model,
-            app: input.app,
-            dir,
-            audio: input.audio,
-            screen: input.screen,
-            noticeShown: yield* Ref.make(false),
-            meetingTabNotice: yield* makeMeetingTabNotice({ enabled: input.screen && isScreenBrowser(input.app), notify: note }).pipe(Scope.provide(scope)),
-            sink,
-            scope,
-            controller,
-            running: yield* Ref.make<IntakeRun | undefined>(undefined),
-            intake: yield* Ref.make<IntakeKind>("running"),
-            origin,
-            lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
-            selfPauseFrame: yield* Ref.make<SelfPauseFrame>({ type: "self-pause", paused: false }),
-            selfPauseState,
-          };
-          yield* Ref.set(live.running, yield* runLive(live, "auto"));
-          yield* Ref.set(state, { kind: "live", live });
-          yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
-          yield* viewers.sessionMode({ type: "session-mode", local: model.local });
-          return { dir, warnings };
-        }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
-      });
-
       const claimStart = Effect.gen(function* () {
         const refusal = yield* Ref.modify(state, (current): [Option.Option<SessionFailure>, State] =>
           current.kind === "idle" && current.installations === 0
@@ -365,12 +318,79 @@ export class Sessions extends Context.Service<Sessions, {
         if (Option.isSome(refusal)) return yield* refusal.value;
       });
 
-      const start = Effect.fnUntraced(function* (input: SessionStart): Effect.fn.Return<{ dir: string; warnings: ReadonlyArray<string> }, SessionFailure> {
+      const ports = { publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate };
+      // claimから後片付けの確保までに中断されても、startingや取得済みscopeを残さない。
+      const openSession = <A>(body: (scope: Scope.Closeable, send: typeof ports) => Effect.Effect<{
+        active: Active;
+        local: boolean;
+        result: A;
+        afterPublish?: Effect.Effect<void>;
+      }, SessionFailure>): Effect.Effect<A, SessionFailure> => Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
         yield* claimStart;
-        return yield* begin(input).pipe(
-          Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void)),
-        );
+        return yield* Effect.gen(function* () {
+          const scope = yield* Scope.fork(serverScope, "sequential");
+          return yield* restore(Effect.gen(function* () {
+            const opened = yield* body(scope, ports);
+            yield* Ref.set(state, opened.active);
+            if (opened.afterPublish !== undefined) yield* opened.afterPublish;
+            yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
+            yield* viewers.sessionMode({ type: "session-mode", local: opened.local });
+            return opened.result;
+          })).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
+        }).pipe(Effect.onExit((exit) => Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void));
+      }));
+
+      const prepareMap = Effect.fnUntraced(function* (
+        plan: SessionStart["plan"],
+        options: { mode: "start"; screen: boolean } | { mode: "recorded" },
+        scope: Scope.Closeable,
+      ) {
+        const model = planModel(plan);
+        const checkArgs: Parameters<typeof requireStartupDeps> = options.mode === "start"
+          ? ["start", model.route, { screen: options.screen, check: options.screen ? helpers.check : helpers.checkNoScreen }]
+          : ["recorded", model.route, { check: helpers.checkNoScreen }];
+        const startupWarnings = yield* requireStartupDeps(...checkArgs).pipe(Effect.provideService(ManagedDeps, deps));
+        const { layer: updaterLayer, notice } = yield* sinks.prepare(plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
+        return { model, updaterLayer, warnings: notice === undefined ? startupWarnings : [...startupWarnings, notice] };
       });
+
+      const start = (input: SessionStart) => openSession((scope, send) => Effect.gen(function* () {
+        const { model, updaterLayer, warnings } = yield* prepareMap(input.plan, { mode: "start", screen: input.screen }, scope);
+        const dir = yield* sinks.createDir(sessionsDir);
+        const origin = yield* Ref.make<string | undefined>(undefined);
+        const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
+        const controller = yield* openIntake({
+          scope, commands: { "self-pause": "pending-once" },
+          argv: (attemptNo) => Effect.gen(function* () {
+            return runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, attemptNo, yield* Ref.get(origin), yield* Ref.get(selfPauseState));
+          }),
+        }).pipe(Effect.provideService(Helpers, helpers));
+        // 初期ルートの公開は、ヘルパーへの接続が成功した後にする。公開したフレームは取り消せないので、
+        // 開始に失敗するときに、接続中のクライアントへ空のマップを送らない
+        const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, ...send }).pipe(Scope.provide(scope));
+        // 指定のログは、セッションを開いた直後（start の行の後、最初の発言より前）に 1 回だけ。applyEvent は経由しない（知らせは出さない）
+        if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
+        const live: Live = {
+          model,
+          app: input.app,
+          dir,
+          audio: input.audio,
+          screen: input.screen,
+          noticeShown: yield* Ref.make(false),
+          meetingTabNotice: yield* makeMeetingTabNotice({ enabled: input.screen && isScreenBrowser(input.app), notify: note }).pipe(Scope.provide(scope)),
+          sink,
+          scope,
+          controller,
+          running: yield* Ref.make<IntakeRun | undefined>(undefined),
+          intake: yield* Ref.make<IntakeKind>("running"),
+          origin,
+          lastInterruptedAt: yield* Ref.make<string | undefined>(undefined),
+          selfPauseFrame: yield* Ref.make<SelfPauseFrame>({ type: "self-pause", paused: false }),
+          selfPauseState,
+        };
+        yield* Ref.set(live.running, yield* runLive(live, "auto"));
+        return { active: { kind: "live", live } satisfies Active, local: model.local, result: { dir, warnings } };
+      }));
 
       // セッションを閉じて idle に戻す（ライブの stop と録画からのセッションの終わりが共有する）。
       // 停止の成否に関係なく、予約を取り消して両トラックの仮の文字を空にする（失敗しても、古い文字が新規接続へ再送されない）
@@ -486,101 +506,87 @@ export class Sessions extends Context.Service<Sessions, {
         yield* Effect.forkIn(finishing.pipe(Effect.ensuring(closeRecorded(recorded))), serverScope);
       });
 
-      const beginRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
-        const scope = yield* Scope.fork(serverScope, "sequential");
-        return yield* Effect.gen(function* () {
-          const prepared = input.noMap === true
-            ? { noMap: true as const, warnings: yield* requireRecordedTranscriptDeps(helpers.checkNoScreen) }
-            : yield* Effect.gen(function* () {
-              const model = planModel(input.plan);
-              const startupWarnings = yield* requireStartupDeps("recorded", model.route, { check: helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
-              const { layer: updaterLayer, notice } = yield* sinks.prepare(input.plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
-              return { noMap: false as const, model, updaterLayer, warnings: notice === undefined ? startupWarnings : [...startupWarnings, notice] };
-            });
-          const { warnings } = prepared;
-          // 基準の時刻は、ファイルの作成日時。取れないとき（記録が無い・聞けなかった）は、流し始めた今の時刻。
-          // フォルダ名と log.jsonl の時刻は、この 1 つの基準から決める（ずらし幅 = 基準 − 今）
-          const now = DateTime.nowUnsafe();
-          const created = yield* helpers.creationDate(input.file).pipe(
-            Effect.catchTag("HelperCreationDateFailure", (failure) =>
-              Effect.as(note(`作成日時を読めないので、今の時刻でセッションを作ります: ${failure.message}\n`), null)),
-          );
-          const createdAt = created === null ? Option.none() : DateTime.make(created);
-          const base = Option.getOrElse(createdAt, () => now);
-          const dir = yield* sinks.createDir(sessionsDir, base);
-          const from = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
-          const controller = yield* openIntake({
-            scope, commands: { "reading-pause": "sticky" },
-            argv: (attemptNo) => Effect.map(Ref.get(from), (position) => transcribeArgs({ file: input.file, selfFile: input.selfFile }, position, attemptNo === 1 ? dir : undefined)),
-          }).pipe(Effect.provideService(Helpers, helpers));
-          const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
-          const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
-          const sink = yield* sinks.openRecorded({
-            dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-            ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate,
-            recorded: {
-              realtime: input.realtime,
-              excluded: (surfaces) => Effect.asVoid(Queue.offer(events, { type: "vocabulary-excluded", surfaces })),
-              selfTrack: input.selfFile !== undefined,
-              progress: ({ position, rounds }) =>
-                Effect.andThen(
-                  Ref.update(progress, (p) => ({ ...p, position: Math.max(p.position, position), rounds })),
-                  publishProgress({ progress, events }),
-                ),
-              // 差分更新の一時停止に入る・理由か時刻が変わる・戻る。ヘルパーには停止か再開を（状態が変わったときだけ）送り、進み具合の行に理由と時刻を載せる
-              paused: (pause) =>
-                Effect.gen(function* () {
-                  const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
-                    const { paused: before, ...rest } = p;
-                    return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
-                  });
-                  if (changedState) yield* controller.send({ type: "reading-pause", paused: pause !== undefined });
-                  yield* publishProgress({ progress, events });
-                }),
-            },
-          }).pipe(Scope.provide(scope));
-          const recorded: Recorded = {
-            local: prepared.noMap ? false : prepared.model.local,
-            dir,
-            file: input.file,
-            selfFile: input.selfFile,
-            sink,
-            scope,
-            controller,
-            running: yield* Ref.make<IntakeRun | undefined>(undefined),
-            events,
-            progress,
-            from,
-            announced: yield* Ref.make({ audioTracks: false, screenOff: false, speakerOff: false }),
-          };
-          const running = yield* controller.run({
-            trigger: "auto", exitZero: "finish", log: sink.appendLog,
-            apply: (event) => applyRecordedEventFrom(recorded, event),
-            observe: (transition) => Effect.gen(function* () {
-              if (transition.kind === "crashed") yield* Ref.set(from, yield* sink.drainForRestart);
-              if (transition.kind === "connected" && (yield* controller.stats).attempt > 1) yield* sink.speakersRenumbered;
-            }),
-          });
-          yield* Ref.set(recorded.running, running);
-          yield* Ref.set(state, { kind: "recorded", recorded });
-          yield* Effect.forkIn(Effect.flatMap(running.end, (end) => {
+      const startRecorded = (input: RecordedStart) => openSession((scope, send) => Effect.gen(function* () {
+        const prepared = input.noMap === true
+          ? { noMap: true as const, warnings: yield* requireRecordedTranscriptDeps(helpers.checkNoScreen) }
+          : { noMap: false as const, ...yield* prepareMap(input.plan, { mode: "recorded" }, scope) };
+        const { warnings } = prepared;
+        // 基準の時刻は、ファイルの作成日時。取れないとき（記録が無い・聞けなかった）は、流し始めた今の時刻。
+        // フォルダ名と log.jsonl の時刻は、この 1 つの基準から決める（ずらし幅 = 基準 − 今）
+        const now = DateTime.nowUnsafe();
+        const created = yield* helpers.creationDate(input.file).pipe(
+          Effect.catchTag("HelperCreationDateFailure", (failure) =>
+            Effect.as(note(`作成日時を読めないので、今の時刻でセッションを作ります: ${failure.message}\n`), null)),
+        );
+        const createdAt = created === null ? Option.none() : DateTime.make(created);
+        const base = Option.getOrElse(createdAt, () => now);
+        const dir = yield* sinks.createDir(sessionsDir, base);
+        const from = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
+        const controller = yield* openIntake({
+          scope, commands: { "reading-pause": "sticky" },
+          argv: (attemptNo) => Effect.map(Ref.get(from), (position) => transcribeArgs({ file: input.file, selfFile: input.selfFile }, position, attemptNo === 1 ? dir : undefined)),
+        }).pipe(Effect.provideService(Helpers, helpers));
+        const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
+        const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
+        const sink = yield* sinks.openRecorded({
+          dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
+          ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, ...send,
+          recorded: {
+            realtime: input.realtime,
+            excluded: (surfaces) => Effect.asVoid(Queue.offer(events, { type: "vocabulary-excluded", surfaces })),
+            selfTrack: input.selfFile !== undefined,
+            progress: ({ position, rounds }) =>
+              Effect.andThen(
+                Ref.update(progress, (p) => ({ ...p, position: Math.max(p.position, position), rounds })),
+                publishProgress({ progress, events }),
+              ),
+            // 差分更新の一時停止に入る・理由か時刻が変わる・戻る。ヘルパーには停止か再開を（状態が変わったときだけ）送り、進み具合の行に理由と時刻を載せる
+            paused: (pause) =>
+              Effect.gen(function* () {
+                const changedState = yield* Ref.modify(progress, (p): [boolean, RecordedProgressState] => {
+                  const { paused: before, ...rest } = p;
+                  return [(before !== undefined) !== (pause !== undefined), pause === undefined ? rest : { ...rest, paused: pause }];
+                });
+                if (changedState) yield* controller.send({ type: "reading-pause", paused: pause !== undefined });
+                yield* publishProgress({ progress, events });
+              }),
+          },
+        }).pipe(Scope.provide(scope));
+        const recorded: Recorded = {
+          local: prepared.noMap ? false : prepared.model.local,
+          dir,
+          file: input.file,
+          selfFile: input.selfFile,
+          sink,
+          scope,
+          controller,
+          running: yield* Ref.make<IntakeRun | undefined>(undefined),
+          events,
+          progress,
+          from,
+          announced: yield* Ref.make({ audioTracks: false, screenOff: false, speakerOff: false }),
+        };
+        const running = yield* controller.run({
+          trigger: "auto", exitZero: "finish", log: sink.appendLog,
+          apply: (event) => applyRecordedEventFrom(recorded, event),
+          observe: (transition) => Effect.gen(function* () {
+            if (transition.kind === "crashed") yield* Ref.set(from, yield* sink.drainForRestart);
+            if (transition.kind === "connected" && (yield* controller.stats).attempt > 1) yield* sink.speakersRenumbered;
+          }),
+        });
+        yield* Ref.set(recorded.running, running);
+        return {
+          active: { kind: "recorded", recorded } satisfies Active,
+          local: recorded.local,
+          result: { dir, warnings, events: Stream.fromQueue(events) },
+          afterPublish: Effect.asVoid(Effect.forkIn(Effect.flatMap(running.end, (end) => {
             if (end.kind === "stopped") return Effect.void;
             return end.kind === "finished"
               ? concludeRecorded(recorded, Effect.andThen(sink.drain, sink.finishBacklog), undefined)
               : concludeRecorded(recorded, Effect.andThen(sink.discardBacklog, sink.finishBacklog), { ...end.last.exit, stderrTail: end.last.stderrTail });
-          }), scope);
-          yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
-          yield* viewers.sessionMode({ type: "session-mode", local: recorded.local });
-          return { dir, warnings, events: Stream.fromQueue(events) };
-        }).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
-      });
-
-      const startRecorded = Effect.fnUntraced(function* (input: RecordedStart): Effect.fn.Return<RecordedRun, SessionFailure> {
-        yield* claimStart;
-        return yield* beginRecorded(input).pipe(
-          Effect.onExit((exit) => (Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void)),
-        );
-      });
+          }), scope)),
+        };
+      }));
 
       // 止めて書き出す。順番の要る停止（ヘルパーを止める → 読み終える → 書き出す）は本体に書き、
       // Scope の後始末（updater を閉じる等）は、途中で失敗・中断されたときの安全網にもなる
