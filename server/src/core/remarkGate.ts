@@ -1,7 +1,7 @@
 import type { Remark } from "./remark.ts";
 import { cutWords, type Word, type WordTime } from "./words.ts";
 
-type GatedRemark = Omit<Remark, "id"> & { words?: readonly Word[]; wordTimes?: readonly WordTime[] };
+export type SettledRemark = Omit<Remark, "id"> & { words?: readonly Word[]; wordTimes?: readonly WordTime[] };
 
 const IGNORED = /[、。，．,.!?！？「」\s]/u;
 
@@ -49,9 +49,9 @@ function fuzzyOverlap(prev: readonly string[], next: readonly string[]): number 
 }
 
 export function createRemarkGate() {
-  const last = new Map<GatedRemark["track"], { end: number; text: string }>();
+  const last = new Map<SettledRemark["track"], { end: number; text: string }>();
 
-  const judge = (r: GatedRemark): { emitted: GatedRemark; remembered: { end: number; text: string } } | undefined => {
+  const judge = (r: SettledRemark): { emitted: SettledRemark; remembered: { end: number; text: string } } | undefined => {
     const prev = last.get(r.track);
     if (prev === undefined || r.start >= prev.end) {
       return { emitted: r, remembered: { end: r.end, text: r.text } };
@@ -76,7 +76,7 @@ export function createRemarkGate() {
     const start = prev.end;
     if (r.end <= start) return undefined;
 
-    const emitted: GatedRemark = {
+    const emitted: SettledRemark = {
       ...r, start, text,
       ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }),
       ...(r.wordTimes === undefined || at === 0 ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
@@ -85,13 +85,13 @@ export function createRemarkGate() {
   };
 
   return {
-    pass(r: GatedRemark): GatedRemark | undefined {
+    pass(r: SettledRemark): SettledRemark | undefined {
       const judged = judge(r);
       if (judged === undefined) return undefined;
       last.set(r.track, judged.remembered);
       return judged.emitted;
     },
-    preview(r: GatedRemark): GatedRemark | undefined {
+    preview(r: SettledRemark): SettledRemark | undefined {
       return judge(r)?.emitted;
     },
   };

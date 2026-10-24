@@ -1,5 +1,5 @@
 import type { SpeakerLogEvent } from "./live.ts";
-import type { SettledRemark } from "./settle.ts";
+import type { SettledRemark } from "./remarkGate.ts";
 import { cutWords, keepWordsBefore } from "./words.ts";
 
 export const SPEAKER_WAIT_MS = 3000;

@@ -10,12 +10,12 @@ export const RequestSpeakerName = Command.define("RequestSpeakerName", {
     Effect.tryPromise({
       try: () => fetch("/session/speaker-name", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label, name } satisfies typeof SpeakerNameBody["Encoded"]) }),
       catch: (error) => error,
-    }).pipe(Effect.ignore, Effect.as(Message.CompletedRequestSpeakerName())),
+    }).pipe(Effect.ignore({ log: "Debug", message: "話者の名前を server に送れない" }), Effect.as(Message.CompletedRequestSpeakerName())),
 });
 
 // autofocus は文書で最初の 1 回しか効かないので、押すたびにフォーカスを移す
 export const FocusSpeakerNameInput = Command.define("FocusSpeakerNameInput", {
   args: { id: Schema.String },
   messages: [Message.CompletedFocusSpeakerNameInput],
-  execute: ({ id }) => Dom.focus(`#${id}`).pipe(Effect.ignore, Effect.as(Message.CompletedFocusSpeakerNameInput())),
+  execute: ({ id }) => Dom.focus(`#${id}`).pipe(Effect.ignore({ log: "Debug", message: "名前の入力欄にフォーカスできない" }), Effect.as(Message.CompletedFocusSpeakerNameInput())),
 });

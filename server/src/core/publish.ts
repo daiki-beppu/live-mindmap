@@ -56,8 +56,12 @@ export function lockedPublishPage(sealed: Sealed): string {
     + `<script type="application/json" id="${SEALED_SCRIPT_ID}">${JSON.stringify(sealed)}</script><script>${unlockPageScript()}</script></body></html>`;
 }
 
+// 文面を toString() で Worker に埋め込むので、外の名前を参照しない
+const isPastExpiryAt = (expiresAtMs: number, nowMs: number): boolean => expiresAtMs <= nowMs;
+
 export function publishWorkerScript(expiresAtMs: number): string {
   return `const EXPIRES_AT = ${JSON.stringify(expiresAtMs)};
+const isPastExpiryAt = ${isPastExpiryAt.toString()};
 const AI_CRAWLERS = ${JSON.stringify(AI_CRAWLER_USER_AGENTS)};
 const ROBOTS_TAG = ${JSON.stringify(ROBOTS_TAG)};
 
@@ -70,7 +74,7 @@ const respond = (body, init) => {
 
 export default {
   async fetch(request, env) {
-    if (Date.now() >= EXPIRES_AT) return respond("このリンクは期限が切れました\\n", { status: 410 });
+    if (isPastExpiryAt(EXPIRES_AT, Date.now())) return respond("このリンクは期限が切れました\\n", { status: 410 });
     const url = new URL(request.url);
     if (url.pathname === "/robots.txt") return respond("User-agent: *\\nDisallow: /\\n", { status: 200 });
     const userAgent = (request.headers.get("user-agent") ?? "").toLowerCase();
@@ -104,18 +108,14 @@ export function selectListedRecords(records: ReadonlyArray<PublishRecord>, all: 
 
 const LEVEL_LABELS = { map: "マップだけ", remarks: "発言の文字も", audio: "録音も" } as const satisfies Record<PublishContent, string>;
 
-function isPastExpiry(record: PublishRecord, nowMs: number): boolean {
-  return Date.parse(record.expiresAt) <= nowMs;
-}
-
 export function expiredPublishedRecords(records: ReadonlyArray<PublishRecord>, nowMs: number): ReadonlyArray<PublishRecord> {
-  return records.filter((record) => record.status === "published" && isPastExpiry(record, nowMs));
+  return records.filter((record) => record.status === "published" && isPastExpiryAt(Date.parse(record.expiresAt), nowMs));
 }
 
 function statusLabel(record: PublishRecord, nowMs: number): string {
   if (record.status === "withdrawn") return "取り下げた";
   if (record.status === "expired") return "期限切れで消した";
-  return isPastExpiry(record, nowMs) ? "期限切れ（置き場に残っている）" : "公開中";
+  return isPastExpiryAt(Date.parse(record.expiresAt), nowMs) ? "期限切れ（置き場に残っている）" : "公開中";
 }
 
 export function formatPublishList(records: ReadonlyArray<PublishRecord>, nowMs: number, all: boolean): string {

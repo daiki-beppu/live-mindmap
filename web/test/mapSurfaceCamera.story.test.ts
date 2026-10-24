@@ -1017,6 +1017,20 @@ describe("キーの指示: その場で適用する（seq を介さない）", (
     }
   });
 
+  it("画面の大きさを測る前は、キーの指示で viewport を動かさない。E の保留は立ち、次の指示で消える", () => {
+    const unmeasured = init(tree(), "live", false);
+    for (const input of [key("="), key("0"), key("Shift+ArrowRight"), Message.PressedEscapeKey({ ...mods })]) {
+      const m = update(unmeasured, input).model;
+      expect(m.viewport).toEqual(unmeasured.viewport);
+      expect(m.pendingShift).toBe(false);
+      expect(Option.isNone(m.keepAnchor)).toBe(true);
+    }
+    const shifted = update(unmeasured, Message.PressedSideKey({ ...mods })).model;
+    expect(shifted.viewport).toEqual(unmeasured.viewport);
+    expect(shifted.pendingShift).toBe(true);
+    expect(update(shifted, key("=")).model.pendingShift).toBe(false);
+  });
+
   it("live と見返し（review）のどちらでも同じように動く", () => {
     const review = settle(tree(), "review");
     expectViewport(update(review, key("=")).model.viewport, zoomAroundCenter(review.viewport, clampUserZoom(review.viewport.zoom * 1.25), size));

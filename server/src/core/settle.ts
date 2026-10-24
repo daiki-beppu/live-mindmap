@@ -1,12 +1,10 @@
 import type { HelperPartial } from "./live.ts";
-import { compact, createRemarkGate, overlapEnd } from "./remarkGate.ts";
+import { compact, createRemarkGate, overlapEnd, type SettledRemark } from "./remarkGate.ts";
 import type { Remark } from "./remark.ts";
 import { cutWords, keepWordsBefore, type Word, type WordTime } from "./words.ts";
 
 export const SETTLE_QUIET_MS = 1000;
 export const SETTLE_SENTENCE_MS = 50;
-
-export type SettledRemark = Omit<Remark, "id"> & { words?: readonly Word[]; wordTimes?: readonly WordTime[] };
 
 const EPSILON = 1e-6;
 

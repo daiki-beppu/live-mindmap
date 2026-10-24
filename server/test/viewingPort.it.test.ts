@@ -1,4 +1,4 @@
-// 閲覧の口（http.ts の openViewingPort。Issue #832）の IT。本物のソケットで、127.0.0.1 の別の待受けが
+// 閲覧の口（viewingPort.ts の openViewingPort。Issue #832）の IT。本物のソケットで、127.0.0.1 の別の待受けが
 // 静的な画面（ログを埋め込まない single-file ビルド）と /ws の配信だけを、与えたホスト名の Origin にだけ通すことを確かめる。
 // 配信は操作の口（serveFeed）と同じ Viewers の実体を使う。本物の tunnel・PIN・iPad は使わない。
 // /ws の配信が WebSocket の制御フレーム ping を一定の間隔で送ること（Issue #833。間隔はテストで縮める）も、同じ待受けで確かめる。
@@ -6,7 +6,9 @@ import { describe, expect, it, vi } from "@effect/vitest";
 import { Context, Effect, Exit, Layer, Scope } from "effect";
 import { HttpServer } from "effect/http";
 import { WebSocket } from "ws";
-import { openListener, openViewingPort, portOf, serveFeed } from "../src/http.ts";
+import { openListener, serveFeed } from "../src/http.ts";
+import { portOf } from "../src/httpServing.ts";
+import { openViewingPort } from "../src/viewingPort.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { Viewers } from "../src/viewers.ts";
 import { TEMPLATE } from "./fixtures/review.ts";

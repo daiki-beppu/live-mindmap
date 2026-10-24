@@ -6,6 +6,14 @@ import { STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
 export const SCREEN_MAX_WIDTH = 1280;
 export const SCREEN_MAX_HEIGHT = 720;
 
+export class ScreenJpegFailed extends Schema.TaggedError<ScreenJpegFailed>()("ScreenJpegFailed", { message: Schema.String }) {}
+
+export class ScreenJpeg extends Context.Service<ScreenJpeg, {
+  readonly toJpeg: (path: string) => Effect.Effect<Uint8Array, ScreenJpegFailed>;
+}>()("live-mindmap/server/ScreenJpeg") {
+  static readonly layer: Layer.Layer<ScreenJpeg, never, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> = Layer.effect(ScreenJpeg)(Effect.suspend(() => make()));
+}
+
 const make = Effect.fnUntraced(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
@@ -46,14 +54,6 @@ const make = Effect.fnUntraced(function* () {
 
   return ScreenJpeg.of({ toJpeg });
 });
-
-export class ScreenJpegFailed extends Schema.TaggedError<ScreenJpegFailed>()("ScreenJpegFailed", { message: Schema.String }) {}
-
-export class ScreenJpeg extends Context.Service<ScreenJpeg, {
-  readonly toJpeg: (path: string) => Effect.Effect<Uint8Array, ScreenJpegFailed>;
-}>()("live-mindmap/server/ScreenJpeg") {
-  static readonly layer: Layer.Layer<ScreenJpeg, never, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> = Layer.effect(ScreenJpeg)(make());
-}
 
 export function fitSize(width: number, height: number): { width: number; height: number } {
   const scale = Math.min(1, SCREEN_MAX_WIDTH / width, SCREEN_MAX_HEIGHT / height);
