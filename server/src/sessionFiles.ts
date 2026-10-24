@@ -9,13 +9,17 @@ import {
   logTimestamp,
   makeSession,
   makeTranscriptSession,
+  nameSpeaker as updateSpeakerName,
   SessionLog,
+  speakerNameMap,
   speakerNamesFrame,
   StartEvent,
   toJsonExport,
   type IntakeLogEvent,
   type SelfPauseLogEvent,
   type SpeakerNameLogEvent,
+  type SpeakerNameChange,
+  type SpeakerNameTable,
   type InvalidLogEvent,
   type OnSpeakerNames,
   type Session,
@@ -239,6 +243,22 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
     Effect.flatMap(session.exportJson, (json) => fs.writeFileString(join(dir, EXPORT_FILE), JSON.stringify(json))).pipe(Effect.orDie);
   const lock = yield* Semaphore.make(1);
   const serialized = <A>(effect: Effect.Effect<A>) => lock.withPermit(Effect.uninterruptible(effect));
+  const appendLog = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) => serialized(writeLogLine(event));
+  const names = yield* Ref.make<SpeakerNameTable>(new Map());
+  const namesLock = yield* Semaphore.make(1);
+  const nameSpeaker = (change: SpeakerNameChange): Effect.Effect<void> =>
+    namesLock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+      const next = updateSpeakerName(yield* Ref.get(names), change);
+      if (next === undefined) return;
+      yield* appendLog({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
+      yield* Ref.set(names, next);
+      if (send) yield* send(speakerNamesFrame(next));
+    })));
+  const namedUpdater = updater === undefined ? undefined : DiffUpdater.of({
+    ...updater,
+    update: (input) => Effect.flatMap(Ref.get(names), (table) =>
+      updater.update(table.size === 0 ? input : { ...input, speakerNames: speakerNameMap(table) })),
+  });
   const current = yield* Ref.make<Session | undefined>(undefined);
   const log = Layer.succeed(SessionLog)(
     SessionLog.of({
@@ -269,8 +289,15 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
     }),
   );
   const images = model === undefined || (model.route !== "apple" && model.images !== false);
-  const options = { title: title ?? basename(dir), images, logShiftMs, ...(onSpeakerNames ? { onSpeakerNames } : {}) };
-  const session = yield* (updater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, updater))).pipe(Effect.provide(log));
+  const receiveNames: OnSpeakerNames = onSpeakerNames ?? ((inferred) =>
+    Effect.forEach(inferred, ({ label, name, basis }) => nameSpeaker({ label, name, source: "推定", basis }), { discard: true }));
+  const options = { title: title ?? basename(dir), images, logShiftMs, onSpeakerNames: receiveNames };
+  const coreSession = yield* (namedUpdater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, namedUpdater))).pipe(Effect.provide(log));
+  const session: Session = {
+    ...coreSession,
+    exportJson: Effect.flatMap(coreSession.exportJson, (json) => Effect.map(Ref.get(names), (table) =>
+      table.size === 0 ? json : { ...json, speakerNames: Object.fromEntries(speakerNameMap(table)) })),
+  };
   yield* Ref.set(current, session);
   if (send) {
     yield* send(speakerNamesFrame(new Map()));
@@ -278,7 +305,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
   }
   yield* serialized(writeExport(session));
   if (send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
-  return { session, appendLog: (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) => serialized(writeLogLine(event)) };
+  return { session, appendLog, nameSpeaker };
 });
 
 export const openLoggedSession = Effect.fnUntraced(function* (options: LoggedSessionOptions) {
