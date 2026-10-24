@@ -225,7 +225,8 @@ describe("cli recorded --no-map", () => {
     { model: defaultClaude },
     { judge: { name: "jev", route: "system-one", apiKeyEnv: "TYPESAFE_AI_API_KEY", timeoutMs: 1000 } },
     { realtime: true },
-  ])("HTTPへの直接の併用指定 %j も開始前に拒否する", (extra) => Effect.gen(function* () {
+    { title: null },
+  ])("HTTPへの直接の本文 %j（併用指定・null の title）も開始前に400で拒否する", (extra) => Effect.gen(function* () {
     const r = yield* resource(THREE);
     const response = yield* Effect.promise(() => fetch(`http://127.0.0.1:${r.server.port}/session/recorded`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: r.file, noMap: true, ...extra }),

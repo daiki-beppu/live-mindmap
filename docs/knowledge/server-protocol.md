@@ -6,13 +6,17 @@ CLI と server の間の経路・本文・応答（`server/src/serverProtocol.ts
 - ADR: [0023 本文と応答の Schema は、CLI と server が import する 1 つのモジュールに置く](../adr/0023-cli-and-server-share-one-protocol-module.md)、[0009 HTTP とブラウザ向けの WebSocket は effect/http で受け、失敗からステータスへの対応は 1 つの表に置く](../adr/0009-http-and-browser-socket-on-effect-http.md)
 - 関連する知識文書: [更新の計画](update-plan.md)（`/session/start`・`/session/recorded` の `model`・`judge`）
 
-## 本文の既定値と null は、本文の Schema の decode でだけ補う。確かめるのは `serverProtocol.test`
+## 本文の既定値は、本文の Schema の decode でだけ補う。null は受けない。確かめるのは `serverProtocol.test`
 
-`audio`・`screen` の省略と null は true、`vocab` の省略は空、`realtime` の省略は false、`title` の null は無し。どれも `SessionStartBody`・`SessionRecordedBody` の decode が補う。`http.ts` と `sessions.ts` には補完を書かない。[#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)（[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)）の前は、`toSessionStart` と `startRecordedSession` の 2 か所で補っていた。
+`audio`・`screen` の省略は true、`vocab` の省略は空、`realtime` の省略は false、`title` の省略は無し。どれも `SessionStartBody`・`SessionRecordedBody` の decode が補う。`http.ts` と `sessions.ts` には補完を書かない。[#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)（[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326)）の前は、`toSessionStart` と `startRecordedSession` の 2 か所で補っていた。
 
-null を受けるのは `title`・`audio`・`screen` だけで、`realtime` の null は decode に失敗する（「null の realtime は既定値に読み替えず、decode に失敗する」）。前の `realtime` も null を受けていなかった（`Schema.optionalKey(Schema.Boolean)`）。null は手で送る本文の互換を保つためのものなので、前に受けていなかった欄まで広げない。
+どの欄も null は decode に失敗し、400 になる。本文を組むのは CLI だけで、CLI は null を送らない。[#1471](https://github.com/daiki-beppu/live-mindmap/issues/1471) の前は、手で組んで送る本文のために `title`・`audio`・`screen` の null を省略と同じに読み替えていたが、手で組んだ本文は支えないと決めて消した。版をまたぐ組み合わせ（古い CLI と新しい server）は、wire の形（パス・本文の欄・応答）を変えないことで保つ。null の受け入れを足し戻さない。
 
-補完の規則は `serverProtocol.test` の unit で見る。#1308 は、`http.heavy` にあった省略と null の行をここへ移して消した。HTTP を通す本文と応答の往復は `http.it` に残っている。
+補完の規則は `serverProtocol.test` の unit で見る。#1308 は、`http.heavy` にあった省略と null の行をここへ移して消した。HTTP を通す本文と応答の往復と、null の本文が 400 になることは `http.it` に残っている。
+
+## CLI は 2xx の本文を JSON として読めなければ失敗にする
+
+`requestServer` は 2xx の本文を JSON として読み、経路の `response` の Schema にかける。JSON として読めない本文（空の本文を含む）は、どの経路でも「サーバーの応答が読めません: …」の `ServerFailed` になる。#1471 の前は `{}` に読み替えてから Schema にかけていたので、`response` が `Schema.Unknown` の `apps` は JSON でない 2xx を `{}` として出して成功していた。JSON の null は null のまま Schema にかける。
 
 ## 応答を Schema で書き出すときは、無い欄を `undefined` で持たせず、欄ごと付けない
 

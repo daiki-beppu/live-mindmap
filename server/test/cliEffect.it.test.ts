@@ -180,31 +180,35 @@ describe("CLI の Effect 境界", () => {
     expect(failure).toMatchObject({ _tag: "ServerFailed", message: "サーバーがエラーを返しました: 503" });
   }));
 
-  for (const [label, body, expected] of [
-    ["JSON でない本文", "not json", "{}\n"],
-    ["空本文", "", "{}\n"],
-    ["JSON の null", "null", "null\n"],
-  ] as const) {
-    it.effect(`2xx で ${label} のとき、apps は {} 相当（null は null のまま）を出して成功する`, () => Effect.gen(function* () {
+  for (const [label, body] of [["JSON でない本文", "not json"], ["空本文", ""]] as const) {
+    it.effect(`2xx で ${label} のとき、apps は「サーバーの応答が読めません: 」の ServerFailed で失敗する`, () => Effect.gen(function* () {
       const dir = yield* directory;
       const server = yield* fakeServer({ status: 200, contentType: "text/plain", body });
       const deps = dependencies(dir, String(server.port));
-      yield* runCli(["apps"]).pipe(Effect.provide(deps.layer));
+      const failure = yield* runCli(["apps"]).pipe(Effect.provide(deps.layer), Effect.flip);
 
-      expect(deps.stdout.join("")).toBe(expected);
+      expect(failure).toMatchObject({ _tag: "ServerFailed" });
+      expect((failure as { message: string }).message.startsWith("サーバーの応答が読めません: ")).toBe(true);
+      expect(deps.stdout).toEqual([]);
     }));
   }
 
-  it.effect("2xx で JSON でない本文の start は、{} のときと同じ文面の ServerFailed になる", () => Effect.gen(function* () {
+  it.effect("2xx で JSON の null のとき、apps は null をそのまま出して成功する", () => Effect.gen(function* () {
     const dir = yield* directory;
-    const notJson = yield* fakeServer({ status: 200, contentType: "text/plain", body: "not json" });
-    const empty = yield* fakeServer({ status: 200, contentType: "application/json", body: "{}" });
-    const first = yield* runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(dependencies(dir, String(notJson.port)).layer), Effect.flip);
-    const second = yield* runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(dependencies(dir, String(empty.port)).layer), Effect.flip);
+    const server = yield* fakeServer({ status: 200, contentType: "application/json", body: "null" });
+    const deps = dependencies(dir, String(server.port));
+    yield* runCli(["apps"]).pipe(Effect.provide(deps.layer));
 
-    expect(first).toMatchObject({ _tag: "ServerFailed" });
-    expect((first as { message: string }).message.startsWith("サーバーの応答が読めません: ")).toBe(true);
-    expect(first).toEqual(second);
+    expect(deps.stdout.join("")).toBe("null\n");
+  }));
+
+  it.effect("2xx で JSON でない本文の start は、「サーバーの応答が読めません: 」の ServerFailed になる", () => Effect.gen(function* () {
+    const dir = yield* directory;
+    const server = yield* fakeServer({ status: 200, contentType: "text/plain", body: "not json" });
+    const failure = yield* runCli(["start", "--app", "us.zoom.xos"]).pipe(Effect.provide(dependencies(dir, String(server.port)).layer), Effect.flip);
+
+    expect(failure).toMatchObject({ _tag: "ServerFailed" });
+    expect((failure as { message: string }).message.startsWith("サーバーの応答が読めません: ")).toBe(true);
   }));
 
   it.effect("Console と ConfigProvider を提供した export は余分なデータも改行も保持する", () => Effect.gen(function* () {

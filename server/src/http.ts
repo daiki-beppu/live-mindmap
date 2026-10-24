@@ -190,7 +190,6 @@ const ServerIdentityRoutes = HttpRouter.addAll([
 
 const FeedRoutes = HttpRouter.addAll([
   HttpRouter.route(ServerRoutes.feed.method, ServerRoutes.feed.path, feed),
-  HttpRouter.route("GET", "/", feed),
 ]);
 
 const depResponse = Effect.fnUntraced(function* <E>(source: Stream.Stream<typeof ServerRoutes.depsInstall.response.Type, E>) {

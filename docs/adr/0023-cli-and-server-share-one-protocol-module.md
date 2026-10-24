@@ -7,7 +7,7 @@ CLI と server の間の要求・応答の形を、両側が import する 1 つ
 - **経路ごとに `{ method, path, body?, response }` を 1 つの値にして並べる**。17 本（`/apps`・`/session/*`・`/share/*`・`/server`・`/check`・`/deps/*`・`/update`・`/ws`）が対象。CLI の `requestServer` は経路の記述と、その `body` の Schema の `Encoded` 型の値を受け取り、server の `HttpRouter.route` は同じ記述の `method`・`path`・`body` を使う。本文の欄を書き間違えると `pnpm typecheck` が落ちる
 - **server は成功応答を、記述の `response` の Schema で書き出す**（`HttpServerResponse.schemaJson`）。CLI は同じ Schema で読む。書き出せない（応答の値が Schema に合わない）のは server 側の不具合なので defect とし、表にない失敗と同じく 500 で返す
 - **ドメインの値である応答（取り込みの状態・共有の状態・録画の経過）の Schema は core に置き**、TS の型はそこから導く。ADR 0009 の「運び方の都合なので core には置かない」は、本文と経路の記述についてだけ保つ
-- **nullable と省略の既定値は、本文の Schema の decode で 1 回だけ補う**。`audio`・`screen` は true、`vocab` は空、`realtime` は false、`title` の null は無し。null は今まで通り受ける（手で送った本文の互換）
+- **省略の既定値は、本文の Schema の decode で 1 回だけ補う**。`audio`・`screen` は true、`vocab` は空、`realtime` は false、`title` は無し。null は受けず、400 で断る。本文を組むのは CLI だけで、手で組んで送る本文は server の受け口として支えない（[#1471](https://github.com/daiki-beppu/live-mindmap/issues/1471)。それまでは `title`・`audio`・`screen` の null を省略と同じに読み替えていた）。版をまたぐ互換は、次の項の wire の形で保つ
 - **失敗は経路の記述に宣言しない**。失敗からステータスへの対応は、ADR 0009 の表 1 つのまま
 - **wire の形は変えない**。パス・本文・応答・ステータス・ヘッダー・NDJSON の stream・204 は今のままで、古い CLI と新しい server の組み合わせ（またはその逆）でも動く
 - **web は型だけを import する**。自分のミュート・話者の名前の本文に、共有モジュールの `Encoded` 型を付ける（`import type` なので bundle は増えない）。web を `HttpClient` に置き換えることはしない

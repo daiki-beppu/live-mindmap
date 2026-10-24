@@ -30,7 +30,7 @@ let wsProxyOptions: ProxyOptions;
 beforeAll(async () => {
   web = await createServer({ root: webRoot, configFile: join(webRoot, "vite.config.ts"), server: {
     host: "127.0.0.1", port: 0, hmr: false,
-    proxy: { "/ws": { ws: true, rewrite: () => "/", configure: (_proxy, options) => { wsProxyOptions = options; } } },
+    proxy: { "/ws": { ws: true, configure: (_proxy, options) => { wsProxyOptions = options; } } },
   } });
   try {
     await web.listen();
