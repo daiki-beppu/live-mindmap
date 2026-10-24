@@ -1,8 +1,8 @@
 // Issue #1308: CLI と server の受け渡しを 1 つの共有モジュール（serverProtocol）にする。
 //
 // ここでは共有モジュールだけを直接見る（Schema の decode と経路の記述の値）。HTTP の往復は http.it / http.heavy が持つ。
-//   - 本文の既定値の補完は本文の Schema の decode で 1 回だけ行う（audio・screen は true、vocab は空、realtime は false、title の null は無し）。
-//     null は今まで通り受ける（手で送った本文の互換）。
+//   - 本文の既定値の補完は本文の Schema の decode で 1 回だけ行う（audio・screen は true、vocab は空、realtime は false、title は無し）。
+//     補うのは欄を省略したときだけで、null は受けない（手で組んだ本文は支えない。Issue #1471）。
 //   - 経路は 17 本が { method, path, body?, response } の値として並ぶ。
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
@@ -12,14 +12,11 @@ const decodeStart = Schema.decodeUnknownSync(SessionStartBody);
 const decodeRecorded = Schema.decodeUnknownSync(SessionRecordedBody);
 
 describe("/session/start の本文の decode", () => {
-  it("title・audio・screen が null のとき、audio と screen は true、vocab は空、title は無しになる", () => {
-    expect(decodeStart({ app: "us.zoom.xos", title: null, audio: null, screen: null })).toEqual({
-      app: "us.zoom.xos",
-      audio: true,
-      screen: true,
-      vocab: [],
+  for (const key of ["title", "audio", "screen"]) {
+    it(`${key} が null のとき、既定値に読み替えず、decode に失敗する`, () => {
+      expect(() => decodeStart({ app: "us.zoom.xos", [key]: null })).toThrow();
     });
-  });
+  }
 
   it("欄を省略したとき、audio と screen は true、vocab は空、title は無しになる", () => {
     expect(decodeStart({ app: "us.zoom.xos" })).toEqual({ app: "us.zoom.xos", audio: true, screen: true, vocab: [] });
@@ -39,7 +36,7 @@ describe("/session/start の本文の decode", () => {
     expect(decodeStart({ app: "us.zoom.xos", title: "週次" }).title).toBe("週次");
   });
 
-  it("真偽値でも null でもない screen は既定値に読み替えず、decode に失敗する", () => {
+  it("真偽値でない screen は既定値に読み替えず、decode に失敗する", () => {
     expect(() => decodeStart({ app: "us.zoom.xos", screen: "true" })).toThrow();
   });
 
@@ -53,8 +50,8 @@ describe("/session/recorded の本文の decode", () => {
     expect(decodeRecorded({ file: "/tmp/a.m4a" })).toEqual({ file: "/tmp/a.m4a", vocab: [], realtime: false });
   });
 
-  it("title が null のとき、title は無しになる", () => {
-    expect(decodeRecorded({ file: "/tmp/a.m4a", title: null })).toEqual({ file: "/tmp/a.m4a", vocab: [], realtime: false });
+  it("title が null のとき、無しに読み替えず、decode に失敗する", () => {
+    expect(() => decodeRecorded({ file: "/tmp/a.m4a", title: null })).toThrow();
   });
 
   it("指定した値は既定値で上書きしない（title・vocab・realtime・selfFile）", () => {

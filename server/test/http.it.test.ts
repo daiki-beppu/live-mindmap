@@ -150,6 +150,9 @@ describe("HTTP 本文の検証（要件8・12）", () => {
     { name: "titleが真偽値", body: { app: "us.zoom.xos", title: false, audio: false } },
     // audio が boolean 以外（"no"・0・"false" を含む）のケースは、新しい入口（偽の Helpers）を使う
     // 「新しい入口（...）」describe の方で、より網羅的に確かめる（要件98。重複させない）
+    { name: "titleがnull", body: { app: "us.zoom.xos", title: null, audio: false } },
+    { name: "audioがnull", body: { app: "us.zoom.xos", audio: null } },
+    { name: "screenがnull", body: { app: "us.zoom.xos", audio: false, screen: null } },
     { name: "本文がnull", body: null },
     { name: "本文が配列", body: [] },
   ];
