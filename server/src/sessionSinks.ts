@@ -1,4 +1,4 @@
-import { Context, DateTime, Effect, FileSystem, Layer, Ref, Scope, Semaphore } from "effect";
+import { Context, DateTime, Effect, FileSystem, Layer, Scope } from "effect";
 import { dirname } from "node:path";
 import type { UpdatePlan } from "./updatePlan.ts";
 import { MapCapture } from "./capture.ts";
@@ -6,7 +6,7 @@ import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
 import type { ExecutableModel } from "./modelSelection.ts";
 import { createSessionDir, openLoggedSession, openLoggedTranscriptSession, writeExportsAndCapture } from "./sessionFiles.ts";
-import { DiffUpdater, DiffUpdateReason, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, nameSpeaker, speakerNameMap, speakerNamesFrame, type SpeakerNameChange, type SpeakerNameTable, type SettledRemark, type SpeakerLogEvent, type OnSpeakerNames, wordsForKatakana, type Track } from "./core/index.ts";
+import { DiffUpdater, DiffUpdateReason, type HelperPartial, type IntakeLogEvent, type SelfPauseLogEvent, type SettledRemark, type SpeakerLogEvent, wordsForKatakana, type Track } from "./core/index.ts";
 import { startPoolSession, updatePoolFromSession } from "./vocabularyPool.ts";
 import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
@@ -100,22 +100,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const { dir, title, vocab, logShiftMs, send } = args;
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           const updaterContext = args.noMap === true ? undefined : yield* Layer.build(Layer.fresh(args.updaterLayer)).pipe(Effect.orDie);
-          const names = yield* Ref.make<SpeakerNameTable>(new Map());
-          const namesLock = yield* Semaphore.make(1);
           const baseUpdater = updaterContext === undefined ? undefined : Context.get(updaterContext, DiffUpdater);
-          const namedUpdater = baseUpdater === undefined ? undefined : DiffUpdater.of({
-            ...baseUpdater,
-            update: (input) => Effect.flatMap(Ref.get(names), (table) =>
-              baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: speakerNameMap(table) })),
-          });
-          const applyName = (change: SpeakerNameChange): Effect.Effect<void> =>
-            namesLock.withPermit(Effect.uninterruptible(Effect.gen(function* () {
-              const next = nameSpeaker(yield* Ref.get(names), change);
-              if (next === undefined) return;
-              yield* appendRecordedLog({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
-              yield* Ref.set(names, next);
-              yield* send(speakerNamesFrame(next));
-            })));
           let observe: RecordedFeed["observe"] | undefined;
           const loggedOptions = {
             dir,
@@ -126,11 +111,10 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               if ("type" in frame && frame.type === "diff-update" && observe !== undefined) yield* observe(frame);
             }),
             onDiff: Effect.suspend((): Effect.Effect<void> => flow.captionsChanged),
-            onSpeakerNames: (inferred: Parameters<OnSpeakerNames>[0]) => Effect.forEach(inferred, ({ label, name, basis }) => applyName({ label, name, source: "推定", basis }), { discard: true }),
           };
-          const { session, appendLog: appendRecordedLog } = yield* (args.noMap === true
+          const { session, appendLog: appendRecordedLog, nameSpeaker } = yield* (args.noMap === true
             ? openLoggedTranscriptSession(loggedOptions)
-            : openLoggedSession({ ...loggedOptions, model: args.model }).pipe(Effect.provideService(DiffUpdater, namedUpdater!))).pipe(Effect.provideContext(exportServices));
+            : openLoggedSession({ ...loggedOptions, model: args.model }).pipe(Effect.provideService(DiffUpdater, baseUpdater!))).pipe(Effect.provideContext(exportServices));
           const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
           if (started !== undefined) yield* appendRecordedLog({ type: "vocab-pool", session: started.session });
           const vocabulary = yield* makeSessionVocabulary({
@@ -163,7 +147,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               Effect.gen(function* () {
                 if (!flow.labels().includes(label)) return yield* new SpeakerNameRejected({ reason: "ラベルがない" });
                 if (name.trim() === "") return yield* new SpeakerNameRejected({ reason: "名前が空" });
-                yield* applyName({ label, name, source: "手入力" });
+                yield* nameSpeaker({ label, name, source: "手入力" });
               }),
             screen: (change) => captions === "途中結果から"
               ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines)).pipe(Effect.asVoid)
@@ -176,7 +160,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             flush: session.flush,
             exports: Effect.andThen(
               Effect.andThen(vocabulary.settled, updatePoolFromSession(dir, dirname(dir))),
-              args.noMap === true ? Effect.succeed<string[]>([]) : Effect.flatMap(Effect.all([session.snapshot, Ref.get(names)]), ([snapshot, table]) => writeExportsAndCapture(dir, snapshot, errorMessage, speakerNameMap(table))),
+              args.noMap === true ? Effect.succeed<string[]>([]) : Effect.flatMap(Effect.all([session.snapshot, session.exportJson]), ([snapshot, json]) => writeExportsAndCapture(dir, snapshot, errorMessage, new Map(Object.entries(json.speakerNames ?? {})))),
             ).pipe(
               Effect.provideContext(exportServices),
               Effect.orDie,

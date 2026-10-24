@@ -173,6 +173,48 @@ const writeTruth = (truth: unknown) =>
     return path;
   });
 
+describe("再生で推定した名前", () => {
+  for (const command of ["play", "eval"] as const) {
+    it.effect(`${command} は保存済みの名前を持ち越さず、新しい推定名をログと後続入力へ渡す`, () => Effect.gen(function* () {
+      const source = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-replay-names-"))),
+        (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+      );
+      const events = [
+        { type: "start", title: "名前の再生" },
+        { type: "speaker-name", label: "相手 A", name: "保存済みの名前", source: "手入力" },
+        ...[1, 2].map((n) => ({ type: "remark", remark: { id: `r${n}`, track: "相手", start: n, end: n + 1, text: `発言${n}`, speaker: "相手 A" } })),
+      ];
+      writeFileSync(join(source, "log.jsonl"), events.map((event) => JSON.stringify({ at: "2026-10-01T00:00:00Z", ...event })).join("\n") + "\n");
+      const inputs: DiffInput[] = [];
+      external.openClaudeUpdater.mockReturnValue({
+        update: (input: DiffInput) => Effect.sync(() => {
+          inputs.push(input);
+          return { ops: [], names: [{ label: "相手 A", name: inputs.length === 1 ? "新しい推定名" : "最後の推定名", evidence: "r1", basis: "名乗り" }] };
+        }),
+        close: () => {},
+      });
+      const sessionsDir = join(source, "runs");
+      const deps = dependencies(sessionsDir);
+      yield* runCli([command, source, "--model", "claude"]).pipe(Effect.provide(deps.layer));
+      expect(inputs).toHaveLength(2);
+      expect(inputs[0]).not.toHaveProperty("speakerNames");
+      expect(inputs[1]!.speakerNames).toEqual(new Map([["相手 A", "新しい推定名"]]));
+      const runs = yield* Effect.promise(() => readdir(sessionsDir));
+      expect(runs).toHaveLength(1);
+      const lines = readFileSync(join(sessionsDir, runs[0]!, "log.jsonl"), "utf8").trim().split("\n")
+        .map((line): Record<string, unknown> => JSON.parse(line));
+      expect(lines.filter((line) => line.type === "speaker-name")).toEqual([
+        expect.objectContaining({ label: "相手 A", name: "新しい推定名", source: "推定" }),
+        expect.objectContaining({ label: "相手 A", name: "最後の推定名", source: "推定" }),
+      ]);
+      deps.stdout.length = 0;
+      yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
+      expect(JSON.parse(deps.stdout.join(""))).toHaveProperty("speakerNames", { "相手 A": "最後の推定名" });
+    }).pipe(Effect.scoped));
+  }
+});
+
 describe("eval: 管理 SDK の不足（Issue #707）", () => {
   it.effect("--model claude の読込失敗は stdout 空・指定の3行の stderr・exit 3 で終わる", () => Effect.gen(function* () {
     const source = yield* play(scriptA);
