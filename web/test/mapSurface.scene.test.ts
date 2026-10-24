@@ -194,6 +194,32 @@ describe("mapSurface の Scene: ノードとエッジの位置は layout の値�
       }),
     );
   });
+
+  it("測った高さが小数のとき、ノードの位置と収める箱は offsetHeight と同じく整数に丸めた高さで、エッジの端の y だけは小数のままの高さで決まる", () => {
+    const all = nodes();
+    const exact = { root: 40.4, A: 63.6, P: 88.5, D: 52.49 };
+    const rounded = { root: 40, A: 64, P: 89, D: 52 };
+    const positions = layout(all, rounded);
+    expect(layout(all, exact)["D"]!.y).not.toBe(positions["D"]!.y);
+    const rects = all.map((n) => ({ x: positions[n.id]!.x, y: positions[n.id]!.y, width: NODE_WIDTH, height: rounded[n.id as keyof typeof rounded] }));
+    const fitted = getViewportForBounds(fitBounds(rects), SIZE.width, SIZE.height, 0.02, 2, 0.1);
+    const byId = new Map(all.map((n) => [n.id, n]));
+    scene(
+      app,
+      given(modelOf(snap(all), "still")),
+      measured(exact),
+      tap((simulation) => {
+        for (const n of all) expectNumbers(nodeTranslate(simulation.html, n.id), [positions[n.id]!.x, positions[n.id]!.y]);
+        expectNumbers(viewportTransform(simulation.html), [fitted.x, fitted.y, fitted.zoom]);
+        const drawn = edges(simulation.html);
+        for (const child of all.filter((n) => n.parent !== null)) {
+          const edge = drawn.find((e) => e.stroke === KIND_COLOR[child.kind]);
+          expect(edge, `edge to ${child.id}`).toBeDefined();
+          expectNumbers(numbers(edge!.d), numbers(edgePath(positions, exact, byId.get(child.parent!)!, child)));
+        }
+      }),
+    );
+  });
 });
 
 describe("mapSurface の Scene: 全体を収める（fitView の式）", () => {
