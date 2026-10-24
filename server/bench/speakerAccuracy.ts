@@ -1,8 +1,3 @@
-// 話者分離の精度の計測（Issue #1031）。話者分離のモデル・発言への対応付けの規則・基準値を変えたときに、合成会議で発言ごとに
-// 正解 / 取り違え / 話者なしの割合を測る。手で回し、合否は出さない。
-// 入力は台本 timeline.tsv と、`stt-bench run --events` の出力（届いた時刻 arrival つきのヘルパーのイベントの JSONL）。
-// イベントは speakerReplay --offline と同じ経路（replayOffline）で中核に通す。規則は中核だけが持ち、ここでは写さない。
-// 出力は標準出力に Markdown の表 1 つ（数とラベルだけ。発言の本文は出さない）
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
@@ -13,7 +8,6 @@ import { type InputLine, readLines, replayOffline, type ReplayResult, replayOpti
 import { parseTimeline } from "./sttAccuracy.ts";
 
 const EPSILON = 1e-6;
-// 正解では話者が替わっているとみなす、1 人あたりの重なりの下限（秒）。中核の 0.5 秒の下限と同じ値
 const DER_COLLAR_SECONDS = 0.25;
 
 type Span = { start: number; end: number };
@@ -23,7 +17,6 @@ type Segment = Span & { slot: number };
 
 const overlap = (a: Span, b: Span) => Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start));
 
-// 発言ごとの、人ごとの重なりの合計（秒）。重ならない人は入れない
 function overlapByPerson(span: Span, timeline: readonly TruthRow[]): Map<string, number> {
   const totals = new Map<string, number>();
   for (const row of timeline) {
@@ -33,7 +26,6 @@ function overlapByPerson(span: Span, timeline: readonly TruthRow[]): Map<string,
   return totals;
 }
 
-// 正解の人: 発言の区間と最も長く重なる人（同じ人の複数の行は重なりを足す）。重なる行がなければ undefined
 export function groundTruthSpeaker(remark: Span, timeline: readonly TruthRow[]): string | undefined {
   let best: string | undefined;
   let bestSeconds = 0;
@@ -46,10 +38,8 @@ export function groundTruthSpeaker(remark: Span, timeline: readonly TruthRow[]):
   return best;
 }
 
-// ハンガリアン法の状態（1 始まり。0 は番兵）。u・v は行と列の電位、matchedRow[j] は列 j に割り当てた行（0 は未割り当て）、way は増加路の 1 つ前の列
 type Assignment = { n: number; u: number[]; v: number[]; matchedRow: number[]; way: number[] };
 
-// 行 i0 から、使っていない列へ緩和し、最小の増分 delta とその列 next を返す
 function relax(cost: (i: number, j: number) => number, state: Assignment, i0: number, j0: number, used: readonly boolean[], minv: number[]) {
   let delta = Number.POSITIVE_INFINITY;
   let next = 0;
@@ -68,7 +58,6 @@ function relax(cost: (i: number, j: number) => number, state: Assignment, i0: nu
   return { delta, next };
 }
 
-// 使った列に増分を足し引きして電位を更新し、使っていない列の候補の値を詰める
 function shiftPotentials(state: Assignment, used: readonly boolean[], minv: number[], delta: number): void {
   for (let j = 0; j <= state.n; j++) {
     if (used[j]) {
@@ -78,7 +67,6 @@ function shiftPotentials(state: Assignment, used: readonly boolean[], minv: numb
   }
 }
 
-// 行 i を、増加路を 1 本見つけて割り当てに足す
 function addRow(cost: (i: number, j: number) => number, state: Assignment, i: number): void {
   state.matchedRow[0] = i;
   let j0 = 0;
@@ -97,13 +85,11 @@ function addRow(cost: (i: number, j: number) => number, state: Assignment, i: nu
   }
 }
 
-// 重みの合計が最大になる 1 対 1 の割り当て（ハンガリアン法）。行 = ラベル、列 = 人。重みが 0 の組は対応なし（undefined）
 export function assignOneToOne(weights: readonly (readonly number[])[]): (number | undefined)[] {
   const rows = weights.length;
   const n = Math.max(rows, ...weights.map((row) => row.length));
   if (rows === 0) return [];
   const weight = (i: number, j: number) => weights[i - 1]?.[j - 1] ?? 0;
-  // 最小化の形にする（重みの符号を反転。足りない分は重み 0 の行・列で埋める）
   const cost = (i: number, j: number) => -weight(i, j);
   const state: Assignment = { n, u: new Array<number>(n + 1).fill(0), v: new Array<number>(n + 1).fill(0), matchedRow: new Array<number>(n + 1).fill(0), way: new Array<number>(n + 1).fill(0) };
   for (let i = 1; i <= n; i++) addRow(cost, state, i);
@@ -115,7 +101,6 @@ export function assignOneToOne(weights: readonly (readonly number[])[]): (number
   return result;
 }
 
-// 採点の対象は 相手 の発言だけ。自分 の発言は中核が常に「自分」にするので、話者分離の物差しにならない
 const heardRemarks = (remarks: readonly Scored[]) => remarks.filter((r) => r.track === "相手");
 const otherRows = (self: string, timeline: readonly TruthRow[]) => timeline.filter((row) => row.speaker !== self);
 
@@ -123,12 +108,10 @@ export type Attribution = {
   correct: number;
   wrong: number;
   none: number;
-  // 正解の人がいない発言（--self の行にしか重ならない・どの行にも重ならない）。割合の分母に入れない
   noTruth: number;
   rates: { correct: number; wrong: number; none: number };
 };
 
-// 発言分類とつなぎ直しで共有する、会議全体で重なりの合計が最大の対応。
 export function assignSpeakers({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): ReadonlyMap<string, string | undefined> {
   const assignment = createSpeakerAssignment({ self, timeline });
   for (const remark of remarks) assignment.add(remark);
@@ -156,7 +139,6 @@ export function createSpeakerAssignment({ self, timeline }: { self: string; time
   };
 }
 
-// 各発言を 正解 / 取り違え / 話者なし に分ける。
 export function scoreAttribution({ self, timeline, remarks, personOf }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[]; personOf: ReadonlyMap<string, string | undefined> }): Attribution {
   const rows = otherRows(self, timeline);
   let correct = 0;
@@ -180,7 +162,6 @@ type RecoveryInput = { self: string; timeline: readonly TruthRow[]; segments: re
 type Mixing = { people: number; detected: number; hits: number; falsePositives: number; medianDelay: number | undefined };
 type Relinking = { correct: number; wrong: number; new: number; none: number };
 
-// restart は最初の入力からの相対秒、区間と検出の時刻は arrival。境界上の入力は再起動後に属する。
 const generationAt = (arrival: number, origin: number, restarts: ReplayResult["restarts"]) => restarts.filter((restart) => origin + restart.at <= arrival).length;
 
 function slotOverlaps(segments: readonly ArrivedSegment[], rows: readonly TruthRow[]): Map<string, number> {
@@ -242,7 +223,6 @@ export type Der = { der: number; referenceSeconds: number; missedSeconds: number
 
 type DerSpan = { duration: number; speakers: string[]; slots: number[] };
 
-// 参照と仮説の区間を、状態が変わる時刻で区切る。collar（参照の区間の境の前後）の中は採点から外す
 function derSpans(reference: readonly TruthRow[], hypothesis: readonly Segment[]): DerSpan[] {
   const events: Array<{ at: number; speaker?: string; slot?: number; collar?: boolean; delta: 1 | -1 }> = [];
   for (const row of reference) {
@@ -270,7 +250,6 @@ function derSpans(reference: readonly TruthRow[], hypothesis: readonly Segment[]
   return spans;
 }
 
-// DER（collar 0.25 秒）。参照の人と仮説の枠の対応は、重なりの合計が最大になる 1 対 1 で取る
 export function computeDer({ reference, hypothesis }: { reference: readonly TruthRow[]; hypothesis: readonly Segment[] }): Der {
   const spans = derSpans(reference, hypothesis);
   const people = [...new Set(reference.map((row) => row.speaker))];
@@ -301,8 +280,6 @@ export function computeDer({ reference, hypothesis }: { reference: readonly Trut
   };
 }
 
-// 仮のラベルが確定で替わった割合。対象は 相手 の発言。仮のラベルは、発言が出た更新の 1 つ前の字幕で見えていたラベル（replayOffline の tentative）、
-// 確定のラベルは出た発言の speaker。比べるのはラベルで、枠ではない。両方が決まった発言を分母にする
 export function tentativeChangeRate({ remarks }: { remarks: ReadonlyArray<{ speaker?: string; tentative?: string }> }): { changed: number; total: number } {
   let changed = 0;
   let total = 0;
@@ -314,7 +291,6 @@ export function tentativeChangeRate({ remarks }: { remarks: ReadonlyArray<{ spea
   return { changed, total };
 }
 
-// 正解では --self 以外の 2 人以上と重なるのに、1 つの発言として出た数（切れなかった発言）。本番の 0.5 秒の下限は採点側に持ち込まない（下限が短い交替を潰した影響を隠さないため）
 export function countUnsplit({ self, timeline, remarks }: { self: string; timeline: readonly TruthRow[]; remarks: readonly Scored[] }): number {
   const rows = otherRows(self, timeline);
   return heardRemarks(remarks).filter((r) => overlapByPerson(r, rows).size >= 2).length;
@@ -323,7 +299,6 @@ export function countUnsplit({ self, timeline, remarks }: { self: string; timeli
 const Arrival = Schema.Struct({ arrival: Schema.Finite });
 const decodeArrival = Schema.decodeUnknownEffect(Arrival);
 
-// 相手の確定した区間（仮説。DER の入力）
 const finalSegments = (lines: readonly InputLine[], path: string) =>
   Effect.gen(function* () {
     const segments: ArrivedSegment[] = [];
@@ -342,10 +317,8 @@ const finalSegments = (lines: readonly InputLine[], path: string) =>
 
 const percent = (value: number) => (Number.isNaN(value) ? "n/a" : `${(value * 100).toFixed(1)}%`);
 
-// 数とラベルだけの表（見出し 1 行 + 値 1 行）。発言の本文は載せない
 function renderTable(attribution: Attribution, der: Der, tentative: { changed: number; total: number }, replay: Pick<ReplayResult, "cuts" | "timeouts">, unsplit: number, mixing: Mixing, relinking: Relinking | undefined): string {
   const { correct, wrong, none, noTruth, rates } = attribution;
-  // 割合の分母（正解の人がいない発言は入れない）。0 件なら割合は出せない
   const judged = correct + wrong + none === 0;
   const columns: Array<[string, string]> = [
     ["発言数", String(correct + wrong + none + noTruth)],

@@ -1,7 +1,4 @@
-// 見返しの操作の行が使う video.js のアイコン 9 種の「写す元」（Issue #825）。
 // 出どころ: @videojs/react 10.0.1 の default アイコン（Apache-2.0。ライセンスの表示は web/src/app/review/icons.NOTICE.md）。
-// 各アイコンの SVG を、要素の木（タグ・属性・子）に直したもの。ルートの xmlns・width・height・aria-hidden は比べない（大きさは CSS が決め、aria-hidden は別に確かめる）。
-// 数値の属性は Number を通した文字列（.5 → 0.5）にそろえてある。描き直した（座標や色が違う）アイコンを見つけるための正解で、実装が写し間違えたら落ちる
 export type IconNode = { readonly tag: string; readonly attrs: Readonly<Record<string, string>>; readonly children: readonly IconNode[] };
 
 export const VIDEOJS_ICONS: Readonly<Record<"CaptionsOffIcon" | "CaptionsOnIcon" | "CheckIcon" | "PauseIcon" | "PlayIcon" | "SpeedIcon" | "VolumeHighIcon" | "VolumeLowIcon" | "VolumeOffIcon", IconNode>> = {

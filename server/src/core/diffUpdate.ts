@@ -14,7 +14,7 @@ export type DiffUpdateFrame = typeof DiffUpdateFrame["Type"];
 export class DiffUpdatePaused extends Schema.TaggedError<DiffUpdatePaused>()("DiffUpdatePaused", {
   reason: DiffUpdateReason,
   message: Schema.String,
-  retryAt: Schema.optionalKey(Schema.Finite), // 再試行する時刻（エポックからのミリ秒）。無ければ DIFF_UPDATE_RETRY_MS ごと
+  retryAt: Schema.optionalKey(Schema.Finite),
 }) {}
 
 export class DiffUpdateStopped extends Schema.TaggedError<DiffUpdateStopped>()("DiffUpdateStopped", {

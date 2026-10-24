@@ -1,5 +1,3 @@
-// 差分更新（Claude）。開始時に選んだモデルを Agent SDK で呼ぶ。認証は利用者の ANTHROPIC_API_KEY（ADR 0004）。
-// Claude の呼び出しはこの関数の後ろに閉じる（ADR 0003）。
 import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
 import { DiffOperations, DiffUpdatePaused, DiffUpdater, type DiffInput, type KatakanaAnswer, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
@@ -13,7 +11,6 @@ export { buildPrompt, NOOP_SCOPE } from "./claudePrompt.ts";
 
 type ContentBlockParam = Exclude<SDKUserMessage["message"]["content"], string>[number];
 
-// 入力に来た共有画面の列を、そのままの順で見出し（text）と画像のブロックにする。「なし」は見出しだけ。どれを添えるかは core が決める
 function screenBlocks(screens: readonly ScreenChange[]): ContentBlockParam[] {
   return screens.flatMap((s): ContentBlockParam[] =>
     s.image === null
@@ -38,13 +35,11 @@ const HAIKU_DECISION_APPEND = [
   "- その作業は、決定とは別に TODO として add する。決定と TODO の両方を残す。",
 ].join("\n");
 
-// モデル名ごとの調整はここだけで決める（#615/#656/#686/#719）。設定の項目にはしない。
 export const claudeTuning = (model: string): { readonly effort: "low" | "medium"; readonly systemAppend: string } =>
   model === "claude-haiku-5-5"
     ? { effort: "low", systemAppend: HAIKU_DECISION_APPEND }
     : { effort: "medium", systemAppend: "" };
 
-// Agent SDK の query。テストでは偽物の Layer に替える
 export class AgentSdk extends Context.Service<AgentSdk, {
   readonly query: typeof import("@anthropic-ai/claude-agent-sdk")["query"];
 }>()("live-mindmap/server/AgentSdk") {
@@ -54,19 +49,16 @@ export class AgentSdk extends Context.Service<AgentSdk, {
   }));
 }
 
-// SDK が例外を投げた、または result の前にストリームが終わった
 export class ClaudeQueryFailed extends Schema.TaggedError<ClaudeQueryFailed>()("ClaudeQueryFailed", {
   message: Schema.String,
   cause: Schema.Defect(),
 }) {}
 
-// result の subtype が success ではない
 export class ClaudeResultFailed extends Schema.TaggedError<ClaudeResultFailed>()("ClaudeResultFailed", {
   message: Schema.String,
   subtype: Schema.String,
 }) {}
 
-// structured_output が無い、または DiffOutput の形に合わない
 export class DiffOutputInvalid extends Schema.TaggedError<DiffOutputInvalid>()("DiffOutputInvalid", {
   message: Schema.String,
   issue: Schema.Defect(),
@@ -74,24 +66,19 @@ export class DiffOutputInvalid extends Schema.TaggedError<DiffOutputInvalid>()("
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-// 開いている query。子の Scope を閉じると、入力の Queue を終えて query.close() を呼ぶ
 type Open = {
   readonly scope: Scope.Closeable;
   readonly input: Queue.Queue<SDKUserMessage, Cause.Done>;
   readonly query: Query;
   readonly output: AsyncIterator<SDKMessage>;
   readonly calls: number;
-  readonly sent?: MeetingMap; // この query に前回送ったマップ。開き直しで Open ごと捨てられ、次の最初のメッセージで再び全体を送る
+  readonly sent?: MeetingMap;
 };
 
-// 1 つのセッション（会議）で、開いたままの query を使い回す差分更新。
-// 最初の呼び出しで開き、回数・失敗・ストリームの終わりで開き直し、セッションの Scope を閉じると閉じる。
-// 呼び出しは同時に 1 つしか走らない前提（core の session が直列に呼ぶ）。
 export const layerClaude = (model: string) => Layer.effect(
   DiffUpdater,
   Effect.gen(function* () {
     const sdk = yield* AgentSdk;
-    // 調整は初期化で一度だけ決める。query を開き直しても同じ値になる
     const tuning = claudeTuning(model);
     const diffSystem = tuning.systemAppend ? `${SYSTEM}\n\n${tuning.systemAppend}` : SYSTEM;
     const sessionScope = yield* Scope.Scope;
@@ -100,7 +87,6 @@ export const layerClaude = (model: string) => Layer.effect(
     const closed = yield* Ref.make(false);
     yield* Effect.addFinalizer(() => Ref.set(closed, true));
 
-    // query を 1 本開く。system と出力の schema だけが用途（差分更新・読み）で変わる。閉じるのは呼び出し側（Scope）
     const acquireQuery = (systemPrompt: string, schema: Record<string, unknown>) => Effect.acquireRelease(
       Effect.gen(function* () {
         const input = yield* Queue.unbounded<SDKUserMessage, Cause.Done>();
@@ -132,13 +118,11 @@ export const layerClaude = (model: string) => Layer.effect(
       );
     });
 
-    // 使っている query を捨てる。Ref を空にしてから子の Scope を閉じる
     const discard = (o: Open) =>
       Ref.update(current, (c) => (Option.isSome(c) && c.value.scope === o.scope ? Option.none() : c)).pipe(
         Effect.andThen(Scope.close(o.scope, Exit.void)),
       );
 
-    // 今の query が o と同じ（scope が同じ）ときだけ、Open を新しい値に置き換える。discard した後の query は戻さない
     const advance = (o: Open, f: (x: Open) => Open) =>
       Ref.update(current, (c) => (Option.isSome(c) && c.value.scope === o.scope ? Option.some(f(c.value)) : c));
 
@@ -177,7 +161,6 @@ export const layerClaude = (model: string) => Layer.effect(
           model = m.message.model;
           continue;
         }
-        // 利用上限（rejected）は失敗ではなく一時停止
         if (m.type === "rate_limit_event" && m.rate_limit_info.status === "rejected") return yield* pausedByLimit(m.rate_limit_info.resetsAt);
         if (m.type !== "result") continue;
         if (m.subtype !== "success") return yield* new ClaudeResultFailed({ message: `${label}に失敗: ${m.subtype}`, subtype: m.subtype });
@@ -211,19 +194,15 @@ export const layerClaude = (model: string) => Layer.effect(
         const resend = o.sent === undefined ? retained.filter((screen) => !starts.has(screen.start)) : [];
         const blocks = screenBlocks([...resend, ...screens]);
         const content = blocks.length ? [...blocks, { type: "text" as const, text: prompt }] : prompt;
-        // 応答が失敗しても、載せた画面は次の query へ持ち越す。再送だけでは履歴を進めない。
         if (screens.length) yield* Ref.set(retainedScreens, [...retained, ...screens].slice(-RETAINED_SCREENS_MAX));
         yield* Queue.offer(o.input, { type: "user", message: { role: "user", content }, parent_tool_use_id: null });
         yield* advance(o, (x) => ({ ...x, sent: input.map }));
         return yield* awaitResult(o);
       }).pipe(
-        // 失敗・defect・中断のどれでも、その query は使い続けず、次の呼び出しで開き直す
         Effect.onError(() => discard(o)),
       );
     });
 
-    // 英字の語のカタカナの読み（Issue #642）。差分の会話（current・calls・sent）とは別の、1 回きりの query を開いて閉じる。
-    // 差分の query の使い回しにも開き直しの回数にも影響しない
     const katakana = Effect.fn("DiffUpdater.katakana")(function* (words: ReadonlyArray<string>) {
       if (yield* Ref.get(closed)) return yield* Effect.die(new Error("差分更新の updater は閉じています"));
       return yield* Effect.scoped(Effect.gen(function* () {

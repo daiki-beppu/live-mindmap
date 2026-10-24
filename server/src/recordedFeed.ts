@@ -34,7 +34,6 @@ export const recordedFeed = (options: {
   const { session } = options;
   const frameChanged = yield* Ref.make(yield* Deferred.make<void>());
   const notifyFrame = Effect.flatMap(Deferred.make<void>(), (next) => Effect.flatMap(Ref.getAndSet(frameChanged, next), (current) => Deferred.succeed(current, undefined)));
-  // 状態を読む前に合図を取ることで、読取り直後の変化も取りこぼさない。
   const hold = Effect.gen(function* () {
     for (;;) {
       const changed = yield* Ref.get(frameChanged);

@@ -1,39 +1,19 @@
-// マップ全体のスナップショットをブラウザへ送る。差分は送らない（ブラウザは受け取ったものを描くだけ）。
-// つないだクライアントには、その時点の最新をすぐ送る。つなぎ直しても最新に追いつく。
-// 最後に送った値は Ref に持ち、新しい値は PubSub へ流す。接続ごとに Fiber を 1 本立て、
-// 先に購読してから保持している値を送る（逆にすると、保持値を送っている間に来た値を取りこぼす）。切れたら Fiber ごと終わる。
 import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref } from "effect";
 import { Socket } from "effect/socket";
 import type { CaptionsFrame, DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, Snapshot, SpeakerNamesFrame, TapNoticeFrame } from "./core/index.ts";
 
-// 配信の終わり。これを受け取った接続は、先に届いていたフレームを書いてから終わる（drained が使う）
 const FEED_END = Symbol("live-mindmap/server/Viewers/end");
 type Feed = string | typeof FEED_END;
 
-// 保持している最後の値。送る形（JSON 文字列）のまま持ち、接続ごとに組み立て直さない
 type Retained = {
   readonly diffUpdate: string | undefined;
   readonly snapshot: string | undefined;
-  // いま話している文字（字幕の吹き出しの並び）は、最後に送った frame だけを持ち、吹き出しが 1 つでもあれば、つないだ直後に送り直す
-  // （スナップショットには入れない）
   readonly captions: string | undefined;
-  // 取り込みの状態（途切れている／止まった／動いている／セッションが終わった）。最後に送った状態は status に
-  // 関わらず保持し、後から接続した（再接続を含む）クライアントにも今の状態が届く（CT-LATE-JOIN）。
-  // 「今の取り込み状態」の正本はサーバーにあり、途中から・再接続で繋いだブラウザが実フレームを受け取るまで
-  // 状態を知らない空白を作らない（ブラウザ側が frame の無さを「running」として代用する二重所有をやめる。Issue #161 U-A）。
-  // none も保持対象に含める理由: 切断中にセッションが終わった場合、再接続したブラウザへ none を届けないと、
-  // 途切れ・止まったの一言が無期限に残ってしまう（Issue #161 U-G）。none は途切れ・止まったの文を出さない値なので、
-  // 新規接続へ送っても CT-NOTICE-CLEAR は破れない（web/src/intake.ts の遷移規則で確認済み）
   readonly intake: string | undefined;
-  // 共有画面を使っていないことの一文。届いてから約 10 秒の間だけ保持し、消すフレーム（text が null）で保持も消す。
-  // 期限後につないだクライアントには送らない（Issue #280）
   readonly screenNotice: string | undefined;
-  // 相手の音声が届いていないことの一文。新しい origin かセッションの終わりで消すフレーム（text が null）が届くまで保持する
   readonly tapNotice: string | undefined;
-  // 自分を休止中であること（Issue #1069）。休止の間だけ保持し、再開のフレーム（paused が false）かセッションの終わりで保持も消す
   readonly selfPause: string | undefined;
   readonly sessionMode: string | undefined;
-  // 話者の名前の表（Issue #1026）。最後に送った全体を、空の表も含めて保持する（セッションを開いた直後に空を送るので、前のセッションの名前は残らない）
   readonly speakerNames: string | undefined;
 };
 
@@ -53,30 +33,20 @@ const retainedFrames = (retained: Retained): string[] => [
 
 export class Viewers extends Context.Service<Viewers, {
   publish: (snapshot: Snapshot) => Effect.Effect<void>;
-  // いま話している文字（吹き出しの並び）を、つないでいるクライアントへ送る。空の並びは送るが保持しない（つなぎ直したときに送り返さない）
   speak: (frame: CaptionsFrame) => Effect.Effect<void>;
   intake: (frame: IntakeFrame) => Effect.Effect<void>;
   diffUpdate: (frame: DiffUpdateFrame) => Effect.Effect<void>;
-  // 共有画面を使っていないことの一文を送る。text が null なら一文を消し、保持も消す（消した後につないだクライアントには送らない）
   screenNotice: (frame: ScreenNoticeFrame) => Effect.Effect<void>;
-  // 相手の音声が届いていないことの一文を送る。text が null なら一文を消し、保持も消す
   tapNotice: (frame: TapNoticeFrame) => Effect.Effect<void>;
-  // 自分を休止中であることを送る。paused が false なら一言を消し、保持も消す（消した後につないだクライアントには送らない）
   selfPause: (frame: SelfPauseFrame) => Effect.Effect<void>;
   sessionMode: (frame: SessionModeFrame) => Effect.Effect<void>;
-  // 話者の名前の表（全体）を送る。最後の1件を保持し、後からつないだクライアントにも届ける
   speakerNames: (frame: SpeakerNamesFrame) => Effect.Effect<void>;
-  // 1 つのクライアントへ配信し続ける。切れるか、配信が終わるまで終わらない
   connect: (socket: Socket.Socket) => Effect.Effect<void, Socket.SocketError>;
-  // 配信を終える。ここまでに publish したフレームを、接続中のクライアントへ渡し切ってから戻る。
-  // 待受けを閉じる前に呼ぶので、終了の直前のフレーム（再生の最後のスナップショット・stop の none）が落ちない
   drained: Effect.Effect<void>;
 }>()("live-mindmap/server/Viewers") {
   static readonly layer: Layer.Layer<Viewers> = Layer.effect(Viewers)(Effect.gen(function* () {
     const retained = yield* Ref.make(NOTHING_RETAINED);
-    // 溢れない PubSub にする。差分更新やヘルパーからの通知は、受け取りの遅いブラウザを待たずに進む
     const updates = yield* PubSub.unbounded<Feed>();
-    // 接続ごとの配信 Fiber。drained が、全部の Fiber が書き終えて終わるのを待つ
     const connections = yield* FiberSet.make();
 
     const send = Effect.fnUntraced(function* (data: string, retain: (current: Retained) => Retained) {
@@ -118,7 +88,6 @@ export class Viewers extends Context.Service<Viewers, {
       return send(data, (current) => ({ ...current, speakerNames: data }));
     };
 
-    // 届いた分をまとめて書き、配信の終わりを受け取ったらそこで終わる
     const deliver = Effect.fnUntraced(function* (subscription: PubSub.Subscription<Feed>, writer: Socket.Writer) {
       for (;;) {
         const taken = yield* PubSub.takeAll(subscription);
@@ -134,7 +103,6 @@ export class Viewers extends Context.Service<Viewers, {
       const reader = yield* socket.reader;
       const writer = yield* socket.writer;
       const subscription = yield* PubSub.subscribe(updates);
-      // 購読できてから数える。ここより前で止まった接続には、渡し切るフレームがない
       yield* Effect.withFiber((fiber) => FiberSet.add(connections, fiber));
       for (const data of retainedFrames(yield* Ref.get(retained))) yield* writer.write(data);
       return yield* Effect.raceFirst(deliver(subscription, writer), Effect.forever(reader.pull));

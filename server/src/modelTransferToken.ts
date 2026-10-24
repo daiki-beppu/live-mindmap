@@ -21,7 +21,6 @@ export const publishModelTransferToken = Effect.fnUntraced(function* (sessionsDi
   const directory = dirname(path);
   yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
   yield* fs.chmod(directory, 0o700);
-  // rename まで読取側に見せず、古い起動のファイルが残っていても完全な値だけを公開する。
   const temporary = yield* fs.makeTempDirectoryScoped({ directory, prefix: "publish-" });
   const pending = join(temporary, "token");
   yield* fs.writeFileString(pending, token, { mode: 0o600, flag: "wx" });

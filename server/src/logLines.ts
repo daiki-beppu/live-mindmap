@@ -1,4 +1,3 @@
-// log.jsonl を 1 行ずつ JSON として読む。cli（play・restore・eval・review・publish）と sessionFiles が共有する。
 import { Effect, FileSystem, Schema } from "effect";
 import { formatIssues, oneLine } from "./truthFile.ts";
 
@@ -9,7 +8,6 @@ export class BrokenLogLine extends Schema.TaggedError<BrokenLogLine>()("BrokenLo
 
 const decodeLine = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
-// 行番号は空行を除く前に採る（人がログを開いたときの行と合わせる）。読めない行は BrokenLogLine、ファイルが読めなければ PlatformError
 export const readLogLines = Effect.fn("readLogLines")(function* (path: string) {
   const fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(path);

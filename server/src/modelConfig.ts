@@ -28,7 +28,6 @@ export const resolveModelCandidate = Effect.fn("resolveModelCandidate")(function
   const candidate = modelCandidate({ ...(yield* loadModelConfig()), flags });
   return candidate.ok ? candidate.model : yield* reject(candidate.lines);
 });
-// 読み込み済みの設定から差分更新のモデルを選ぶ。apple を選んだときだけ Mac の利用可否を問い合わせる
 export const resolveModelFrom = Effect.fn("resolveModelFrom")(function* (loaded: LoadedModelConfig, flags: ModelFlags) {
   const input = { ...loaded, flags };
   const candidate = modelCandidate(input);

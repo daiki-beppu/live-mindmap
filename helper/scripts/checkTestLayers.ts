@@ -1,8 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-// unit の Swift テストファイルに置いてはいけない、本物の資源を使う文字列。
-// Swift の import はモジュール単位なので、ソースの文字列で近い判定をする。
 const REAL_RESOURCE_PATTERNS = [
   "WebRTCEchoCanceller(",
   "SpeechAnalyzerTranscriber(",
@@ -16,7 +14,6 @@ const NON_UNIT_SUFFIXES = ["ITTests.swift", "HeavyTests.swift"] as const;
 
 export type Violation = { path: string; line: number; pattern: string };
 
-// 識別子の途中（MockSpeechAnalyzerTranscriber( など）に現れる一致は、別の型名なので除く。
 function containsAtWordStart(text: string, pattern: string): boolean {
   for (let from = text.indexOf(pattern); from !== -1; from = text.indexOf(pattern, from + 1)) {
     if (from === 0 || !/[A-Za-z0-9_]/.test(text[from - 1] ?? "")) return true;
@@ -44,11 +41,9 @@ function layerOf(name: string): "unit" | "it" | "heavy" {
   return "unit";
 }
 
-// 行頭の @Suite だけを起点にする。コメント内の言及と、@Suite の付かない補助の型を除くため。
 const SUITE_ATTRIBUTE = /^[ \t]*@Suite\b/gm;
 const TYPE_DECLARATION = /\b(?:struct|class|enum|actor)\s+([A-Za-z_]\w*)/y;
 
-// 表示名の文字列に型宣言風の語が入っていても拾わないよう、引数の括弧は文字列ごと読み飛ばす。
 function skipArguments(content: string, from: number): number {
   let i = from;
   while (/\s/.test(content[i] ?? "")) i++;
@@ -64,7 +59,6 @@ function skipArguments(content: string, from: number): number {
   return content.length;
 }
 
-// コメントと属性の引数にある型宣言風の語を型名にしないよう、それらを読み飛ばしながら最初の宣言を探す。
 function findDeclaredTypeName(content: string, from: number): string | undefined {
   for (let i = from; i < content.length; i++) {
     if (content.startsWith("//", i)) {

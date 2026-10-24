@@ -18,7 +18,6 @@ const pause = (operation, path) => {
   paused = true;
   fs.writeFileSync(join(control, `${id}.reached`), String(path));
   const signal = new Int32Array(new SharedArrayBuffer(4));
-  // FS 操作の結果を変えずに、親が指定した交差位置で停止する。
   while (!fs.existsSync(join(control, `${id}.resume`))) Atomics.wait(signal, 0, 0, 10);
 };
 fs.readFileSync = function (path, ...args) {

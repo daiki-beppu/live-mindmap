@@ -9,7 +9,6 @@ import { classification, completedSse } from "./chatgpt.ts";
 export type InvalidOAuth = "state" | "signature" | "issuer" | "audience" | "nonce" | "expired";
 type OAuthOptions = { invalid?: InvalidOAuth; holdCallback?: boolean; afterResponse?: (call: number) => void };
 
-// 偽サーバーが持つ状態。記録の配列と control は fakeChatgptOAuth の返り値として呼び出し側にも渡る
 type OAuthState = {
   options: OAuthOptions;
   key: { privateKey: KeyObject };
@@ -35,7 +34,6 @@ function handleAuthorize(state: OAuthState, url: URL, res: ServerResponse): void
   res.writeHead(302, { location: callback.href }).end();
 }
 
-// authorization_code の交換が、直近の認可要求と合っているか（checks に積む）
 function exchangeMatches(form: URLSearchParams, authorization: URL): boolean {
   return form.get("client_id") === "synthetic-client"
     && form.get("code") === "synthetic-code"
@@ -43,7 +41,6 @@ function exchangeMatches(form: URLSearchParams, authorization: URL): boolean {
     && createHash("sha256").update(form.get("code_verifier")!).digest("base64url") === authorization.searchParams.get("code_challenge");
 }
 
-// 署名つきの id_token。invalid に応じて、1 つの欄だけ（または署名鍵）を壊す
 function idToken(state: OAuthState, authorization: URL): string {
   const { invalid } = state.options;
   const now = Math.floor(Date.now() / 1000);

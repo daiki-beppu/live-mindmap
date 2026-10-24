@@ -1,6 +1,4 @@
-// <audio> の要素の Mount（Issue #824）。時刻（timeupdate と、鳴っている間の毎フレームの currentTime）と終わり（ended）を Message にするだけ。
-// args は固定なので、<audio> への操作は Mount ではなく update が返す Command で行う。
-// 背景のタブでは rAF が止まるので timeupdate も聞く。rAF は要素の play/playing で始め、pause/ended/release で止める
+// 背景のタブでは rAF が止まるので timeupdate も聞く
 import { Effect, Queue, Stream } from "effect";
 import { Mount } from "foldkit";
 import { Message } from "./message.ts";
@@ -51,8 +49,7 @@ export const ObserveAudio = Mount.defineStream("ObserveAudio", {
     ),
 });
 
-// シークバーの上のポインタの位置（Issue #825）。属性のハンドラ（OnPointerMove）は client の座標を渡さないので、要素の Mount で受ける。
-// 起きた事実だけを Message にする: 要素の左端から右端までを 0〜1 にした割合（幅が 0 なら 0）。位置から章名と時刻を導くのは view
+// 属性のハンドラ（OnPointerMove）は client の座標を渡さないので、要素の Mount で受ける
 const fractionAt = (element: HTMLElement, clientX: number): number => {
   const { left, width } = element.getBoundingClientRect();
   return width > 0 ? Math.min(Math.max((clientX - left) / width, 0), 1) : 0;

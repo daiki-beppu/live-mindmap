@@ -1,9 +1,5 @@
-// キーの表（Issue #822）。Subscription が受けるバインディングと、キーの一覧の行を、この 1 つの表から画面で絞って作る。
-// 行を 1 つ足し引きすれば、登録と一覧が同時に変わる（片方だけを変えられない）。
-// 一覧の文言と順はReact 版（KeyList、Issue #829 で削除）から変えない。「マウス・トラックパッド」の行は、キーの行と同じ形の静的な表（POINTER_ROWS）で、受けるバインディングを持たない
 import { Schema } from "effect";
 
-// 押されたキーの種類。バインディングが複数あっても（= と ^ など）、同じ意味なら同じ KeyId にする。意味は update が決める
 export const KeyId = Schema.Literals([
   "Escape",
   "F",
@@ -37,7 +33,6 @@ export const KeyId = Schema.Literals([
 ]);
 export type KeyId = typeof KeyId.Type;
 
-// 会議中・見返し（音声なし）・見返し（音声つき）。M は会議中（自分の休止）と音声つきの見返し（ミュート）だけで、意味が別
 export type Screen = "live" | "review" | "reviewAudio";
 
 // keys は foldkit の書き方（"Shift+=" "Shift+Plus" "Space" など。+ のキーは Plus）。Shift は厳密に照合されるので、Shift が要る字（JIS の =・US の +・? < >）は Shift 付きの行を別に持つ
@@ -112,8 +107,6 @@ export const POINTER_ROWS: readonly KeyRow[] = [
   pointer("縁の点", "そのノードへ寄る"),
 ];
 
-// 一覧の行: その画面で効くキーの行 → マウス・トラックパッドの行
 export const keyListRows = (screen: Screen): readonly KeyRow[] => [...KEY_ROWS, ...POINTER_ROWS].filter((row) => row.screens.includes(screen));
 
-// Subscription が受けるバインディング: 一覧の行と同じ行から導く
 export const bindingsOf = (screen: Screen): readonly Binding[] => keyListRows(screen).flatMap((row) => row.bindings);

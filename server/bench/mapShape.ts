@@ -23,7 +23,6 @@ export type MapShape = {
   childDistribution: number[];
 };
 
-// 最大のまとまり（#840 の数え方。議題・論点・案・課題・要点が対象）。同じ大きさなら snapshot で先のノード。
 export function largestGroup(nodes: readonly SnapshotNode[]): { id: string; size: number } | undefined {
   let best: { id: string; size: number } | undefined;
   for (const n of nodes) {
@@ -34,7 +33,6 @@ export function largestGroup(nodes: readonly SnapshotNode[]): { id: string; size
   return best;
 }
 
-// 最後の発言の end（秒）。発言が無ければ 0
 function lastRemarkEnd(events: readonly unknown[]): number {
   let end = 0;
   for (const event of events) {
@@ -43,7 +41,6 @@ function lastRemarkEnd(events: readonly unknown[]): number {
   return end;
 }
 
-// 子が 1 つだけの鎖をたどった長さ(chain)と、そのうち親と同じ種別が続く長さ(same)
 function singleChildChain(n: SnapshotNode, kids: Map<string, SnapshotNode[]>): { chain: number; same: number } {
   let chain = 0, same = 0;
   let current = n;
@@ -146,7 +143,6 @@ export const command = Command.make("mapShape", {
   yield* write(tableRow(columns.map(() => "---")));
   for (const { dir, path } of inputs) {
     const events = yield* readEvents(path);
-    // 復元エラーには発言参照や schema の実値が含まれるので、本文を持たない診断へ変換する。
     const shape = yield* Effect.try({ try: () => mapShape(events), catch: () => new InvalidInputFile({ path, reason: "イベントの形が不正か、マップを復元できません" }) });
     yield* write(formatRow(dir, shape));
   }

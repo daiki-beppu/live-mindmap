@@ -1,6 +1,4 @@
 import { defaultClaude } from "../src/modelSelection.ts";
-// 発言を、認識結果が届いた時刻（at）で本番のセッションに流す（Issue #97）。
-// end の時刻で流すと認識の遅れが消えるので、流し始めからの at の時刻まで待って流す。
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +14,6 @@ import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../s
 import { BENCH_VERSION, exitNaturally, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
 
-// at / source は計測用の項目で、セッションには渡さない
 export const ReplayItem = Remark.mapFields((fields) => ({
   ...fields,
   at: Schema.Finite,
@@ -24,9 +21,6 @@ export const ReplayItem = Remark.mapFields((fields) => ({
 }));
 export type ReplayItem = typeof ReplayItem["Type"];
 
-// 本番の playback と同じ流し方（等速）。待ち時間だけが、発言の end ではなく at になる。
-// 各発言は、流し始めを基準に自分の at の時刻まで待ってから push する。push が遅れても後ろの発言に遅れを足さず、
-// push が at を過ぎて終わったら、次の発言は待たずにすぐ push する
 export const replayByArrival = Effect.fnUntraced(function* (
   session: Session,
   items: readonly ReplayItem[],
@@ -44,15 +38,12 @@ export const replayByArrival = Effect.fnUntraced(function* (
 type LoggedOp = { op: string; evidence?: string[] };
 export type DiffLogEntry = { ops: LoggedOp[]; dropped?: { op: LoggedOp }[]; error?: string };
 
-// ノードに反映された発言の時刻。成功した差分更新のうち、ノードを足す・更新する操作（add / update）の根拠に挙がった発言だけを、
-// その差分更新が終わった時刻（doneAts[i] は i 番目の差分更新の終わり）の到着として数える。ops が空・noop だけの更新はノードを出していない
 export function reflectedArrivals(diffs: readonly DiffLogEntry[], doneAts: readonly number[], items: readonly Remark[]): Arrival[] {
   const byId = indexRemarks(items);
   const arrivals: Arrival[] = [];
   const seen = new Set<string>();
   diffs.forEach((diff, i) => {
     if (diff.error) return;
-    // 適用されなかった操作も ops には残る（session.ts の diff ログ）。dropped に載った操作は、ノードに反映されていない
     const dropped = new Set((diff.dropped ?? []).map((d) => JSON.stringify(d.op)));
     for (const op of diff.ops) {
       if (op.op !== "add" && op.op !== "update") continue;
@@ -71,7 +62,6 @@ export function reflectedArrivals(diffs: readonly DiffLogEntry[], doneAts: reado
 type DiffEvent = Extract<LogEvent, { type: "diff" }>;
 const decodeLogEvent = Schema.decodeEffect(Schema.fromJsonString(Schema.Union([LogEvent, SpeakerNameLogEvent])));
 
-// 使い方は各 Command・Flag の withDescription が正本で、`node bench/sttReplay.ts --help` で読む
 export const command = Command.make(
   "sttReplay",
   {
@@ -87,17 +77,14 @@ export const command = Command.make(
     title: Flag.String("title").pipe(Flag.withDescription("セッションの題名"), Flag.withDefault("bench")),
   },
   Effect.fn("sttReplay")(function* ({ file, lines, title, truth }) {
-    // 入力は再生の前にまとめて読む。壊れていれば、再生せずにすぐ失敗する
     const items = yield* readJsonFile(file, Schema.Array(ReplayItem));
     const expected = Option.isNone(truth) ? undefined : yield* readTruthFile(truth.value);
     const spokenLines = Option.isNone(lines) ? undefined : yield* readJsonFile(lines.value, Schema.Array(SpokenLine));
 
-    // sessionFiles.ts は capture.ts・review.ts（vite と playwright）を読み込むので、再生を始めるときだけ読む
     const { createSessionDir, openLoggedSession } = yield* Effect.tryPromise({
       try: () => import("../src/sessionFiles.ts"),
       catch: (e) => new ReplaySessionFailed({ path: join(import.meta.dirname, "../src/sessionFiles.ts"), reason: describe(e) }),
     });
-    // セッションのフォルダは一時領域に作る
     const tmp = yield* Effect.try({
       try: () => mkdtempSync(join(tmpdir(), "stt-replay-")),
       catch: (e) => new ReplaySessionFailed({ path: tmpdir(), reason: describe(e) }),
@@ -117,7 +104,6 @@ export const command = Command.make(
       title,
       publish: () => Effect.void,
       onDiff: Effect.sync(() => diffEndsMs.push(performance.now())),
-      // core が根拠を確かめた名前だけを通知する。名前の受入規則はライブ・recorded と共有する。
       onSpeakerNames: (inferred): Effect.Effect<void> => Effect.forEach(inferred, ({ label, name, basis }) =>
         Effect.uninterruptible(Effect.gen(function* () {
           const next = nameSpeaker(yield* Ref.get(names), { label, name, basis, source: "推定" });
@@ -128,7 +114,6 @@ export const command = Command.make(
     }).pipe(Effect.provideService(DiffUpdater, namedUpdater));
     const t0 = performance.now();
     yield* replayByArrival(session, items);
-    // 差分更新ごとの終わりの時刻と、その呼び出しに渡した発言を、ログから引く
     const logPath = join(dir, "log.jsonl");
     const log = yield* readTextFile(logPath).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: logPath, reason: fileReason(e) })));
     const events = yield* Effect.forEach(log.trim().split("\n"), (line) => decodeLogEvent(line)).pipe(
@@ -136,10 +121,8 @@ export const command = Command.make(
     );
     const diffs = events.filter((e): e is DiffEvent => e.type === "diff");
     const arrivals = reflectedArrivals(diffs, diffEndsMs.map((ms) => (ms - t0) / 1000), items);
-    // 各文の話し終わりから、その文を含む発言が差分更新に反映されるまで（--lines がなければ、ノードに反映された発言の end から）
     const delays = lineDelays(spokenLines ?? arrivals, arrivals);
     yield* write(`話し終わり → ノード p50 ${percentile(delays, 0.5).toFixed(1)} 秒 / p90 ${percentile(delays, 0.9).toFixed(1)} 秒（${delays.length} 件）\n`);
-    // 正解があれば、eval --truth と同じ数え方（core の recall）で再現率を 1 行にして出す。表は runCli eval で見られる
     if (expected) {
       const r = recall(yield* session.exportJson, expected);
       yield* write(`再現率 決定 ${r["決定"].hit}/${r["決定"].total} TODO ${r["TODO"].hit}/${r["TODO"].total}\n`);
@@ -151,7 +134,6 @@ export const command = Command.make(
     "発言を、認識結果が届いた時刻（at）で本番のセッションに流し、遅れ（差分更新が返った時刻 − 流し始め − 発言の end）と再現率を出す（Issue #97）。"
       + "end の時刻で流すと認識の遅れが消えるので、流し始めからの at の時刻どおりに届ける（push が遅れても後ろの発言に遅れを足さず、at を過ぎていれば次はすぐ流す）",
   ),
-  // 差分更新は Layer が取得と解放を持ち、出力の後に 1 回だけ閉じる
   Command.provide(Layer.effectContext(Layer.build(claudeUpdaterLayer(defaultClaude)).pipe(
     Effect.mapError(startupPreparationFailure),
   ))),
