@@ -38,7 +38,7 @@ checks=(
 
 # 既知の発見（.agents/skills/verify-diff-update-scheduler/SKILL.md の「既知の発見」）。破れても KNOWN と出し、終了コードを 1 にしない。
 # 通るようになったら PASS? と出すので、ここから外して、スキルの節も消す
-known=(InvQuietAfterFlush)
+known=()
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -64,7 +64,7 @@ for entry in "${checks[@]}"; do
     (cd "$work" && java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -metadir "$work/states-$name-$kind" -config "$name-$kind.cfg" "$module.tla") >"$out" 2>&1
     set -e
     is_known=false
-    [[ " ${known[*]} " =~ " $name " ]] && is_known=true
+    [[ " ${known[*]-} " =~ " $name " ]] && is_known=true
     if grep -q "No error has been found" "$out"; then
       if $is_known; then label="PASS?"; else label="pass "; fi
       echo "$label $name ($kind) $(grep -o '[0-9]* distinct states found' "$out" | tail -1)"

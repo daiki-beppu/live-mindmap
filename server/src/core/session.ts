@@ -684,6 +684,8 @@ function openSession(initial: SessionState, screens: InitialScreens, images: boo
         for (;;) {
           yield* idle;
           const state = yield* Ref.get(ref);
+          // idle を抜けてからここで読むまでの間に、終わった呼び出しの onExit が続きを始めていることがある。印とたまりは同じ 1 回の読み取りで見る
+          if (state.inFlight) continue;
           if (state.pending.length === 0 || state.diffUpdate.status === "paused" || state.diffUpdate.status === "stopped") return;
           yield* startDiffIfReady();
         }
