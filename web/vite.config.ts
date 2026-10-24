@@ -20,6 +20,6 @@ export default defineConfig(({ mode }) => ({
       { extends: true, test: { name: "heavy", include: [HEAVY] } },
     ],
   },
-  server: { headers, proxy: { "/ws": { target: `ws://127.0.0.1:${port}`, ws: true, rewrite: () => "/" }, "/session/self-pause": { target: `http://127.0.0.1:${port}` }, "/session/speaker-name": { target: `http://127.0.0.1:${port}` } } },
+  server: { headers, proxy: { "/ws": { target: `ws://127.0.0.1:${port}`, ws: true }, "/session/self-pause": { target: `http://127.0.0.1:${port}` }, "/session/speaker-name": { target: `http://127.0.0.1:${port}` } } },
   preview: { headers },
 }));
