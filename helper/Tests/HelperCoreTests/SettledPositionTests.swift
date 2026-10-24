@@ -206,6 +206,27 @@ struct SettledPositionTests {
         #expect(orderViolations(received).isEmpty, "位置の後に、start がその位置より前の確定区間が届いた: \(received)")
     }
 
+    @Test("本番の流し方は、1 回の更新で確定区間、仮の区間、位置の順に流す")
+    func yieldEmitsFinalThenTentativeThenPosition() async throws {
+        let timeline = DiarizerTimeline(config: plain)
+        let truth = merged(frames(2..<10, slot: 0), frames(15..<25, slot: 1))
+        let update = try timeline.addPredictions(
+            finalizedPredictions: predictions(slice(truth, 0, 20)), tentativePredictions: predictions(slice(truth, 20, 25)))
+        #expect(update.finalizedSegments.map(\.speakerIndex) == [0])
+        #expect(update.tentativeSegments.map(\.speakerIndex) == [1])
+
+        let received = try await streamed([(update, false)], shift: 0)
+        let kinds = received.map { element -> String in
+            switch element {
+            case .segment(let segment): segment.isFinal ? "final" : "tentative"
+            case .settled: "settled"
+            case .mixed: "mixed"
+            case .centroid: "centroid"
+            }
+        }
+        #expect(kinds == ["final", "tentative", "settled"])
+    }
+
     @Test("本番の流し方は、どの更新の並びでも位置の後に start がその位置より前の確定区間を流さない", arguments: [1, 2, 3, 5])
     func yieldNeverEmitsFinalSegmentBehindPosition(seed: Int) async throws {
         var state = UInt64(seed) &* 6_364_136_223_846_793_005 &+ 1

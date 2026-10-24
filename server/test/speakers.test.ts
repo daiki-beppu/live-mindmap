@@ -613,11 +613,16 @@ describe("createSpeakerAttribution: 字幕のための覗き（previewLabel / pr
     const attribution = createSpeakerAttribution();
     attribution.speaker(speakerEvent(0, 0, 4)); // 確定
     attribution.speaker(speakerEvent(1, 8, 8.5, false));
+    expect(attribution.previewSegments()).toEqual([seg(0, 0, 4)]);
+
     attribution.speaker(settledEvent(8.5));
     expect(attribution.previewSegments()).toEqual(expect.arrayContaining([seg(0, 0, 4), seg(1, 8, 8.5)]));
     expect(attribution.previewSegments()).toHaveLength(2);
 
     attribution.speaker(speakerEvent(2, 8, 9, false));
+    expect(attribution.previewSegments()).toHaveLength(2);
+    expect(attribution.previewSegments()).toEqual(expect.arrayContaining([seg(0, 0, 4), seg(1, 8, 8.5)]));
+
     attribution.speaker(settledEvent(9));
 
     expect(attribution.previewSegments()).toHaveLength(2);
