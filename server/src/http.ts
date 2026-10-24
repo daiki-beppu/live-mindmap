@@ -162,7 +162,7 @@ const feed = Effect.gen(function* () {
   const socket = yield* request.upgrade.pipe(
     Effect.mapError(() => new UnsupportedRequest({ route: routeOf(request) })),
   );
-  yield* viewers.connect(socket).pipe(Effect.ignore);
+  yield* viewers.connect(socket).pipe(Effect.ignore({ log: "Debug", message: "閲覧の WebSocket が切れた" }));
   return HttpServerResponse.empty();
 });
 

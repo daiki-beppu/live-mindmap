@@ -10,5 +10,5 @@ export const RequestSelfPause = Command.define("RequestSelfPause", {
     Effect.tryPromise({
       try: () => fetch("/session/self-pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paused } satisfies typeof SelfPauseBody["Encoded"]) }),
       catch: (error) => error,
-    }).pipe(Effect.ignore, Effect.as(Message.CompletedRequestSelfPause())),
+    }).pipe(Effect.ignore({ log: "Debug", message: "自分の一時停止を server に送れない" }), Effect.as(Message.CompletedRequestSelfPause())),
 });
