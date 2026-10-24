@@ -6,6 +6,10 @@
 set -euo pipefail
 
 HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$HELPER_DIR"
+HELPER="$HELPER_DIR/.build/release/live-mindmap-helper"
 
-swift run --quiet live-mindmap-helper install-speaker-models
+if [ ! -x "$HELPER" ]; then
+  swift build -c release --package-path "$HELPER_DIR"
+fi
+
+"$HELPER" install-speaker-models

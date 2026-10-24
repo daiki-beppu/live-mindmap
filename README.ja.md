@@ -139,7 +139,7 @@ pnpm cli install speech-ja                # ライブの日本語音声認識を
 pnpm cli install cloudflared              # 閲覧の共有を使う場合
 ```
 
-話者分離のモデル（Sortformer と WeSpeaker）は CLI ではなく、リポジトリのルートで `bash helper/scripts/fetch-speaker-models.sh` を一度だけ実行して取得します（入っていれば何もしません）。保存先は `~/Library/Application Support/FluidAudio/Models` です。会議中にはモデルを取りに行かず、無ければ話者を分けずに続けます。
+話者分離のモデル（Sortformer と WeSpeaker）は CLI ではなく、`pnpm dev` を起動したまま、別のターミナルでリポジトリのルートから `bash helper/scripts/fetch-speaker-models.sh` を一度だけ実行して取得します（入っていれば何もしません）。保存先は `~/Library/Application Support/FluidAudio/Models` です。会議中にはモデルを取りに行かず、無ければ話者を分けずに続けます。
 
 開始時に必須の依存が足りないときは、CLI は不足内容と導入コマンドを表示し、終了コード3（exit 3）で止まります。エージェントはこの案内を受けたら利用者に確認し、同意を得てから導入してください。Chromium は任意の依存なので、未導入でも開始でき、撮影時には上記のとおり map.png だけが省略されます。
 
