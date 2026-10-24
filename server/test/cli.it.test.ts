@@ -1988,7 +1988,7 @@ describe("CLI", () => {
 
       const playing = yield* runCli(["play", fixture]).pipe(Effect.provide(deps.layer), Effect.forkChild);
       const port = yield* Deferred.await(listening);
-      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       ws.addEventListener("message", (e) => {
         const frame = JSON.parse(String(e.data)) as Snapshot | { type: string };
         if (!("type" in frame)) {

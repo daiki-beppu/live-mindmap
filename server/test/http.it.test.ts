@@ -227,29 +227,46 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
 });
 
 
-describe("HTTP と両upgradeの共通Origin制限（要件2・13・24）", () => {
+const rejectedUpgrade = Effect.fnUntraced(function* (port: number, path: string, origin: string | undefined) {
+  const ws = yield* Effect.acquireRelease(
+    Effect.sync(() => new WebSocket(`ws://127.0.0.1:${port}${path}`, origin === undefined ? {} : { origin })),
+    (socket) => Effect.sync(() => socket.terminate()),
+  );
+  const frames: unknown[] = [];
+  ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+  const status = yield* Effect.tryPromise(() => new Promise<number | undefined>((resolve, reject) => {
+    ws.on("error", reject);
+    ws.on("open", () => reject(new Error(`${path} がupgradeされた`)));
+    ws.on("unexpected-response", (_req, response) => {
+      response.resume();
+      ws.terminate();
+      resolve(response.statusCode);
+    });
+  }));
+  return { status, frames };
+});
+
+describe("HTTP と /ws upgradeの共通Origin制限（要件2・13・24）", () => {
   const allowed = [undefined, "http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"];
   for (const origin of allowed) {
-    it.live(`Origin ${String(origin)} はHTTP、/、/wsで受理され同じ最新マップが届く`, () =>
+    it.live(`Origin ${String(origin)} はHTTPと/wsで受理され最新マップが届く`, () =>
       Effect.gen(function* () {
         const r = yield* resourceWithFakeHelpers([{}]);
         const response = yield* Effect.tryPromise(() => r.request("GET", "/apps", undefined, origin));
         expect(response.status).toBe(200);
         expect(yield* Effect.tryPromise(() => response.json())).toEqual(apps);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","title":"週次","audio":false}', origin))).status).toBe(200);
-        const clients = [yield* connect(r.server.port, "/", origin), yield* connect(r.server.port, "/ws", origin)];
+        const c = yield* connect(r.server.port, "/ws", origin);
         // マップのほかに、差分更新の状態（type: "diff-update"）も接続時に届く。ここで確かめるのはマップだけ
         const map = { nodes: [{ id: "root", parent: null, kind: "会議", text: "週次", evidence: [] }], round: 0, changes: [], remarks: [] };
-        for (const c of clients) {
-          yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual(map), { timeout: 10_000 }));
-          expect(c.frames.filter((frame) => !(typeof frame === "object" && frame !== null && "type" in frame))).toEqual([map]);
-        }
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual(map), { timeout: 10_000 }));
+        expect(c.frames.filter((frame) => !(typeof frame === "object" && frame !== null && "type" in frame))).toEqual([map]);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/stop", undefined, origin))).status).toBe(200);
-        for (const c of clients) yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "intake", status: "none" }), { timeout: 10_000 }));
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(c.frames).toContainEqual({ type: "intake", status: "none" }), { timeout: 10_000 }));
       }));
   }
   for (const origin of ["https://evil.example", "null", "http://localhost.evil.example"]) {
-    it.live(`Origin ${origin} はHTTPと両upgradeで403になり、配信されない`, () =>
+    it.live(`Origin ${origin} はHTTPと/wsのupgradeで403になり、配信されない`, () =>
       Effect.gen(function* () {
         const r = yield* resourceWithFakeHelpers([{}]);
         const body = '{"app":"us.zoom.xos","audio":false}';
@@ -258,29 +275,19 @@ describe("HTTP と両upgradeの共通Origin制限（要件2・13・24）", () =>
         expect(yield* Effect.tryPromise(() => deniedStart.json())).toEqual({ error: "許可されていない Origin です" });
         expect(r.calls).toEqual([]);
         expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", body, undefined))).status).toBe(200);
-        for (const path of ["/", "/ws"]) {
-          const allowed = yield* connect(r.server.port, path, undefined);
-          yield* Effect.tryPromise(() => vi.waitFor(() => expect(allowed.frames).toContainEqual(expect.objectContaining({ round: 0 }))));
-          const ws = yield* Effect.acquireRelease(
-            Effect.sync(() => new WebSocket(`ws://127.0.0.1:${r.server.port}${path}`, { origin })),
-            (socket) => Effect.sync(() => socket.terminate()),
-          );
-          const frames: unknown[] = [];
-          ws.on("message", (data) => frames.push(JSON.parse(String(data))));
-          const status = yield* Effect.tryPromise(() => new Promise<number | undefined>((resolve, reject) => {
-            ws.on("error", reject);
-            ws.on("open", () => reject(new Error("許可していないOriginがupgradeされた")));
-            ws.on("unexpected-response", (_req, response) => {
-              response.resume();
-              ws.terminate();
-              resolve(response.statusCode);
-            });
-          }));
-          expect(status).toBe(403);
-          expect(frames).toEqual([]);
-        }
+        const allowed = yield* connect(r.server.port, "/ws", undefined);
+        yield* Effect.tryPromise(() => vi.waitFor(() => expect(allowed.frames).toContainEqual(expect.objectContaining({ round: 0 }))));
+        expect(yield* rejectedUpgrade(r.server.port, "/ws", origin)).toEqual({ status: 403, frames: [] });
       }));
   }
+  it.live("ライブ配信は/wsだけで、/ へのupgradeは404で接続されない（#1471）", () =>
+    Effect.gen(function* () {
+      const r = yield* resourceWithFakeHelpers([{}]);
+      expect((yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined))).status).toBe(200);
+      expect(yield* rejectedUpgrade(r.server.port, "/", undefined)).toEqual({ status: 404, frames: [] });
+      const feed = yield* connect(r.server.port, "/ws", undefined);
+      yield* Effect.tryPromise(() => vi.waitFor(() => expect(feed.frames).toContainEqual(expect.objectContaining({ round: 0 }))));
+    }));
   it.live("closeで接続中のクライアントが切断され、同じポートは新しい接続を受け付けない（要件7）", () =>
     Effect.gen(function* () {
       const r = yield* resourceWithFakeHelpers([{}]);

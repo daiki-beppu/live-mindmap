@@ -124,7 +124,7 @@ const setup = (initial: Partial<Script> = {}, stopTimeoutMs?: number) =>
 
 const connect = (port: number) =>
   Effect.gen(function* () {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   const received: Snapshot[] = [];
   const captions: CaptionsFrame[] = [];
   ws.addEventListener("message", (e) => {
