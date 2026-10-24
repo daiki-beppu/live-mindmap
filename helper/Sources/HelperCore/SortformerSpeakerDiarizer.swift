@@ -148,7 +148,16 @@ public final class SortformerSpeakerDiarizer: SpeakerDiarizer, @unchecked Sendab
     }
 }
 
-/// FluidAudio の既定の保存先（`~/Library/Application Support/FluidAudio/Models`）。取得するスクリプトと `run` が同じ場所を見る。
-public let defaultSpeakerModelDirectory: URL = FileManager.default
-    .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    .appendingPathComponent("FluidAudio/Models", isDirectory: true)
+/// 取得するスクリプトと `run` が共有する保存先。開発時は利用者のモデルから隔離できる。
+public var defaultSpeakerModelDirectory: URL {
+    resolveSpeakerModelDirectory(environment: ProcessInfo.processInfo.environment)
+}
+
+func resolveSpeakerModelDirectory(environment: [String: String]) -> URL {
+    if let path = environment["LIVE_MINDMAP_HELPER_SPEAKER_MODEL_DIR"], !path.isEmpty {
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+    return FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("FluidAudio/Models", isDirectory: true)
+}
