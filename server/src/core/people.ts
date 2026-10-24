@@ -1,7 +1,5 @@
 import type { Op } from "./map.ts";
-import { earliestRemark, type Remark } from "./remark.ts";
-
-const speakerOf = (r: Remark): string => r.speaker ?? r.track;
+import { earliestRemark, speakerOf, type Remark } from "./remark.ts";
 
 export function attributePeople(ops: readonly Op[], remarks: ReadonlyMap<string, Remark>): Op[] {
   const inSession = new Set<string>(["自分"]);

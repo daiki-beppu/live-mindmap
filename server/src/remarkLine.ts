@@ -1,4 +1,4 @@
-import type { Remark } from "./core/index.ts";
+import { speakerOf, type Remark } from "./core/index.ts";
 
 export const fmtTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -8,7 +8,7 @@ export type RemarkLineOptions = {
 };
 
 export const remarkLine = (r: Remark, { text = r.text, name }: RemarkLineOptions = {}): string => {
-  const speaker = r.speaker ?? r.track;
+  const speaker = speakerOf(r);
   const who = name !== undefined && r.speaker !== undefined && r.track === "相手" ? `${speaker}（${name}）` : speaker;
   return `${r.id} [${fmtTime(r.start)}] ${who}: ${text}`;
 };
