@@ -173,7 +173,7 @@ export const replayLog = Effect.fn("replayLog")(function* (lines: readonly Input
 const OfflineArrival = Schema.Struct({ arrival: Schema.Finite });
 const decodeArrival = Schema.decodeUnknownEffect(OfflineArrival);
 
-type Settling = Effect.Success<ReturnType<typeof createRemarkSettling>>;
+type Settling = ReturnType<Effect.Success<ReturnType<typeof createRemarkSettling>>["emitTo"]>;
 const runOf = (settling: Settling, event: HelperEvent): Omit<Step, "at" | "inputAt"> | undefined => {
   if (event.type === "partial") return { run: settling.partial(event) };
   if (event.type === "remark") return { run: settling.final({ track: event.track, start: event.start, end: event.end, text: event.text, ...(event.words === undefined ? {} : { words: event.words }), ...(event.wordTimes === undefined ? {} : { wordTimes: event.wordTimes }) }) };
@@ -218,10 +218,9 @@ function createTentativeLabels() {
 export const replayOffline = Effect.fn("replayOffline")(function* (lines: readonly InputLine[], options: ReplayOptions = {}) {
   const collector = createCollector((_, index) => `r${index + 1}`);
   const tentative = options.tentativeLabels === true ? createTentativeLabels() : undefined;
-  const settling = yield* createRemarkSettling({
-    emit: (r) => Effect.sync(() => collector.add([r], tentative?.labelOf)),
+  const settling = (yield* createRemarkSettling({
     speakers: { rules: ruleSet(options.rules), observe: collector.observe },
-  });
+  })).emitTo((r) => Effect.sync(() => collector.add([r], tentative?.labelOf)));
   const afterStep = (run: Effect.Effect<void>, segments: SegmentRefresh) =>
     tentative === undefined ? run : Effect.andThen(run, tentative.refresh(settling.preview, segments));
   const steps = (yield* offlineSteps(lines, options.path, settling)).map((step): Step => ({ ...step, run: afterStep(step.run, step.recapturesSegments ? "recapture" : "keep") }));

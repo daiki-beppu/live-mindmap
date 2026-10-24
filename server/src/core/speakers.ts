@@ -189,8 +189,8 @@ export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: Spe
   let slotStates = new Map<number, SlotState>();
   let slotCentroids = new Map<number, readonly number[]>();
   let revertedSlots = new Set<number>();
-  let provisional: Segment[] = [];
-  let incoming: Segment[] = [];
+  let provisionalShown: Segment[] = [];
+  let provisionalAwaitingSettled: Segment[] = [];
   let seenSlots: number[] = [];
   const see = (slot: number) => {
     if (!seenSlots.includes(slot)) seenSlots.push(slot);
@@ -291,8 +291,8 @@ export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: Spe
       if (off) return [];
       if (event.type === "speaker-off") {
         off = true;
-        provisional = [];
-        incoming = [];
+        provisionalShown = [];
+        provisionalAwaitingSettled = [];
         return held.splice(0).map((h) => h.remark);
       }
       if (event.track !== "相手") return [];
@@ -309,13 +309,13 @@ export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: Spe
       }
       if (event.type === "speaker-settled") {
         settledTo = Math.max(settledTo, event.to);
-        provisional = incoming;
-        incoming = [];
+        provisionalShown = provisionalAwaitingSettled;
+        provisionalAwaitingSettled = [];
         return release();
       }
       see(event.slot);
       if (event.final) segments.push({ start: event.start, end: event.end, slot: event.slot });
-      else incoming.push({ start: event.start, end: event.end, slot: event.slot });
+      else provisionalAwaitingSettled.push({ start: event.start, end: event.end, slot: event.slot });
       return [];
     },
 
@@ -328,15 +328,15 @@ export function createSpeakerAttribution({ rules = DEFAULT_RULES, observe }: Spe
       slotStates = new Map();
       slotCentroids = new Map();
       revertedSlots = new Set();
-      provisional = [];
-      incoming = [];
+      provisionalShown = [];
+      provisionalAwaitingSettled = [];
       seenSlots = [];
       return out;
     },
 
     heldRemarks: (): SettledRemark[] => held.map((h) => h.remark),
 
-    previewSegments: (): Segment[] => [...segments, ...provisional],
+    previewSegments: (): Segment[] => [...segments, ...provisionalShown],
 
     previewLabel(slot: number): string | undefined {
       if (isUnlabeled(slot)) return undefined;
