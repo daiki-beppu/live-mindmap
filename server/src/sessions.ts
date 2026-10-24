@@ -31,7 +31,7 @@ import {
 } from "./sessionFailure.ts";
 import { planModel } from "./updatePlan.ts";
 import { audioFileNames, SessionSinks, type LiveSink, type RecordedSink } from "./sessionSinks.ts";
-import { Viewers } from "./viewers.ts";
+import { Viewers, type SendFrame } from "./viewers.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { checkManagedDeps, requireRecordedTranscriptDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
 import type { CheckReport } from "./managedDepsProtocol.ts";
@@ -56,6 +56,7 @@ type Live = {
   noticeShown: Ref.Ref<boolean>;
   meetingTabNotice: Effect.Success<ReturnType<typeof makeMeetingTabNotice>>;
   sink: LiveSink;
+  send: SendFrame;
   controller: Intake;
   running: Ref.Ref<IntakeRun | undefined>;
   scope: Scope.Closeable;
@@ -156,7 +157,6 @@ export class Sessions extends Context.Service<Sessions, {
       );
 
       const note = (text: string) => Console.error(withoutFinalNewline(text));
-      const intakeFrame = (status: "running" | "interrupted" | "stopped" | "none") => viewers.intake({ type: "intake", status });
 
       const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined, selfPause: SelfPauseState): string[] => [
         "run",
@@ -176,7 +176,7 @@ export class Sessions extends Context.Service<Sessions, {
           case "origin":
             return Effect.andThen(
               Ref.update(live.origin, (origin) => origin ?? event.hostTime),
-              viewers.tapNotice({ type: "tap-notice", text: null }),
+              live.send({ type: "tap-notice", text: null }),
             );
           case "remark": {
             const { type: _type, ...settled } = event;
@@ -197,7 +197,7 @@ export class Sessions extends Context.Service<Sessions, {
           case "tap-silent":
             return Effect.andThen(
               live.sink.appendLog({ type: "tap-silent", start: event.start }),
-              viewers.tapNotice({ type: "tap-notice", text: TAP_NOTICE_TEXT }),
+              live.send({ type: "tap-notice", text: TAP_NOTICE_TEXT }),
             );
           case "self-pause": {
             const frame: SelfPauseFrame = event.paused ? { type: "self-pause", paused: true, reason: event.reason } : { type: "self-pause", paused: false };
@@ -210,9 +210,9 @@ export class Sessions extends Context.Service<Sessions, {
                 change === "transition"
                   ? Effect.andThen(
                       live.sink.appendLog({ type: event.paused ? "self-paused" : "self-resumed", reason: event.reason, start: event.start }),
-                      viewers.selfPause(frame),
+                      live.send(frame),
                     )
-                  : change === "reason" ? viewers.selfPause(frame) : Effect.void,
+                  : change === "reason" ? live.send(frame) : Effect.void,
             );
           }
           case "self-pause-state": {
@@ -234,9 +234,9 @@ export class Sessions extends Context.Service<Sessions, {
       const showScreenNotice = Effect.fnUntraced(function* (live: Live) {
         const first = yield* Ref.modify(live.noticeShown, (shown): [boolean, boolean] => [!shown, true]);
         if (!first) return;
-        yield* viewers.screenNotice({ type: "screen-notice", text: SCREEN_NOTICE_TEXT });
+        yield* live.send({ type: "screen-notice", text: SCREEN_NOTICE_TEXT });
         yield* Effect.forkIn(
-          Effect.sleep(SCREEN_NOTICE_MS).pipe(Effect.ensuring(viewers.screenNotice({ type: "screen-notice", text: null }))),
+          Effect.andThen(Effect.sleep(SCREEN_NOTICE_MS), live.send({ type: "screen-notice", text: null })),
           live.scope,
         );
       });
@@ -259,7 +259,7 @@ export class Sessions extends Context.Service<Sessions, {
             case "interrupted":
             case "stopped":
               yield* Ref.set(live.intake, transition.kind);
-              yield* intakeFrame(transition.kind);
+              yield* live.send({ type: "intake", status: transition.kind });
           }
         }),
       });
@@ -273,8 +273,7 @@ export class Sessions extends Context.Service<Sessions, {
         if (Option.isSome(refusal)) return yield* refusal.value;
       });
 
-      const ports = { publish: viewers.publish, speak: viewers.speak, speakerNames: viewers.speakerNames, diffUpdate: viewers.diffUpdate };
-      const openSession = <A>(body: (scope: Scope.Closeable, send: typeof ports) => Effect.Effect<{
+      const openSession = <A>(body: (scope: Scope.Closeable, send: SendFrame) => Effect.Effect<{
         active: Active;
         local: boolean;
         result: A;
@@ -283,12 +282,12 @@ export class Sessions extends Context.Service<Sessions, {
         yield* claimStart;
         return yield* Effect.gen(function* () {
           const scope = yield* Scope.fork(serverScope, "sequential");
+          const send = yield* viewers.forSession.pipe(Scope.provide(scope));
           return yield* restore(Effect.gen(function* () {
-            const opened = yield* body(scope, ports);
+            const opened = yield* body(scope, send);
             yield* Ref.set(state, opened.active);
             if (opened.afterPublish !== undefined) yield* opened.afterPublish;
-            yield* Scope.addFinalizer(scope, viewers.sessionMode({ type: "session-mode", local: false }));
-            yield* viewers.sessionMode({ type: "session-mode", local: opened.local });
+            yield* send({ type: "session-mode", local: opened.local });
             return opened.result;
           })).pipe(Effect.onError(() => Scope.close(scope, Exit.void)));
         }).pipe(Effect.onExit((exit) => Exit.isFailure(exit) ? Ref.set(state, { kind: "idle", installations: 0 }) : Effect.void));
@@ -319,7 +318,7 @@ export class Sessions extends Context.Service<Sessions, {
             return runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, attemptNo, yield* Ref.get(origin), yield* Ref.get(selfPauseState));
           }),
         }).pipe(Effect.provideService(Helpers, helpers));
-        const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, ...send }).pipe(Scope.provide(scope));
+        const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, send }).pipe(Scope.provide(scope));
         if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
         const live: Live = {
           model,
@@ -330,6 +329,7 @@ export class Sessions extends Context.Service<Sessions, {
           noticeShown: yield* Ref.make(false),
           meetingTabNotice: yield* makeMeetingTabNotice({ enabled: input.screen && isScreenBrowser(input.app), notify: note }).pipe(Scope.provide(scope)),
           sink,
+          send,
           scope,
           controller,
           running: yield* Ref.make<IntakeRun | undefined>(undefined),
@@ -347,9 +347,6 @@ export class Sessions extends Context.Service<Sessions, {
         Effect.gen(function* () {
           yield* sink.stopRelays;
           yield* Scope.close(scope, Exit.void);
-          yield* intakeFrame("none");
-          yield* viewers.tapNotice({ type: "tap-notice", text: null });
-          yield* viewers.selfPause({ type: "self-pause", paused: false });
         }).pipe(Effect.ensuring(Ref.set(state, { kind: "idle", installations: 0 })));
 
       const publishProgress = ({ progress, events }: Pick<Recorded, "progress" | "events">) =>
@@ -454,7 +451,7 @@ export class Sessions extends Context.Service<Sessions, {
         const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
         const sink = yield* sinks.openRecorded({
           dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-          ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, ...send,
+          ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, send,
           recorded: {
             realtime: input.realtime,
             excluded: (surfaces) => Effect.asVoid(Queue.offer(events, { type: "vocabulary-excluded", surfaces })),
@@ -562,7 +559,7 @@ export class Sessions extends Context.Service<Sessions, {
         if (beforeRun.kind !== "live" || beforeRun.live !== live) return yield* new Aborted();
         const running = yield* runLive(live, "resume");
         yield* Ref.set(live.running, running);
-        yield* intakeFrame("interrupted");
+        yield* live.send({ type: "intake", status: "interrupted" });
         const result = yield* running.reached;
         if (result.kind === "gaveUp") return yield* new RestartGaveUp({ stderrTail: result.stderrTail });
         if (result.kind === "aborted") return yield* new Aborted();

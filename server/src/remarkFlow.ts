@@ -24,15 +24,16 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
 }) {
   const { session, correct, speak, captions } = options;
   const captionTexts = yield* Ref.make<ReadonlyMap<string, { readonly text: string; readonly wordTimes: readonly WordTime[]; readonly replacements: readonly Replacement[] }>>(new Map());
+  const { preview, emitTo } = yield* createRemarkSettling();
   const relay = yield* createSpeakingRelay({
     context: Effect.zipWith(session.unreflectedRemarks, Ref.get(captionTexts), (remarks, texts): CaptionContext => ({
         unreflected: remarks.map(({ id, ...remark }) => {
           const caption = texts.get(id);
           return caption === undefined ? { id, remark } : { id, remark: { ...remark, text: caption.text, wordTimes: caption.wordTimes }, replacements: caption.replacements };
         }),
-        held: captions === "途中結果から" ? settling.preview.heldRemarks() : [],
-        intervals: captions === "途中結果から" ? settling.preview.segments() : [],
-        previewLabel: captions === "途中結果から" ? settling.preview.label : () => undefined,
+        held: captions === "途中結果から" ? preview.heldRemarks() : [],
+        intervals: captions === "途中結果から" ? preview.segments() : [],
+        previewLabel: captions === "途中結果から" ? preview.label : () => undefined,
     })),
     send: speak,
   });
@@ -63,14 +64,12 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
     screenOff: session.pushScreenOff,
   };
   const feed = yield* options.feed(inlet);
-  const settling = yield* createRemarkSettling({
-    emit: (settled) => Effect.flatMap(correct(settled), feed.remark),
-  });
+  const settling = emitTo((settled) => Effect.flatMap(correct(settled), feed.remark));
   const stop = Effect.andThen(relay.stop, settling.stop);
   yield* Effect.addFinalizer(() => stop);
   return {
     partial: (p: HelperPartial) => Effect.andThen(settling.partial(p), captions === "途中結果から"
-      ? Effect.suspend(() => relay.partial(settling.preview.unemittedTail(p))) : Effect.void),
+      ? Effect.suspend(() => relay.partial(preview.unemittedTail(p))) : Effect.void),
     final: settling.final,
     speaker: (event: SpeakerLogEvent) => Effect.andThen(settling.speaker(event), captions === "途中結果から" ? relay.speaker(event) : Effect.void),
     renumbered: settling.renumbered,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { generatePassphrase, openSealed, sealWithPassphrase } from "../src/core/index.ts";
+import { SEALED_SCRIPT_ID, type Sealed, unlockPageScript } from "../src/core/passphrase.ts";
 
 // 合言葉の生成と、暗号化・復号（Issue #1251）。往復、認証つき暗号であること、時間のかかる鍵の導出であること。鍵の導出は 1 回に数百 ms かかるので、暗号化・復号の回数は絞る
 
@@ -105,5 +106,57 @@ describe("sealWithPassphrase / openSealed", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+// new Function は大域で評価するので、モジュールの束縛（import・定数）や const に入れた関数を参照すると ReferenceError になる
+function bootUnlockPage(sealed: Sealed) {
+  let submit: ((event: { preventDefault(): void }) => void) | undefined;
+  const { promise: settled, resolve: settle } = Promise.withResolvers<{ written: string } | { alert: string }>();
+  const input = { value: "" };
+  const alert = {
+    set textContent(text: string) {
+      if (text === "合言葉が違います") settle({ alert: text });
+    },
+  };
+  const form = {
+    querySelector: () => input,
+    addEventListener: (_type: string, handler: typeof submit) => (submit = handler),
+  };
+  const document = {
+    querySelector: (selector: string) => (selector === "form" ? form : alert),
+    getElementById: (id: string) => (id === SEALED_SCRIPT_ID ? { textContent: JSON.stringify(sealed) } : null),
+    open() {},
+    write: (html: string) => settle({ written: html }),
+    close() {},
+  };
+  const scope = new Function("document", `${unlockPageScript()}\nreturn { bytesToBase64, base64ToBytes };`)(document) as {
+    bytesToBase64(bytes: Uint8Array): string;
+    base64ToBytes(value: string): Uint8Array;
+  };
+  return {
+    scope,
+    async enter(passphrase: string) {
+      let prevented = false;
+      input.value = passphrase;
+      submit!({ preventDefault: () => (prevented = true) });
+      let timer: NodeJS.Timeout | undefined;
+      const deadline = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("unlock page: deadline exceeded waiting for document.write or the wrong-passphrase alert")), 10_000)));
+      try {
+        return { prevented, outcome: await Promise.race([settled, deadline]) };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+describe("unlockPageScript", () => {
+  it("モジュールの外で評価しても、前後に空白の付いた合言葉で元の HTML を書き出す", async () => {
+    const passphrase = generatePassphrase();
+    const page = bootUnlockPage(await sealWithPassphrase(SECRET, passphrase));
+
+    expect(await page.enter(`  ${passphrase}\n`)).toEqual({ prevented: true, outcome: { written: SECRET } });
+    expect(Array.from(page.scope.base64ToBytes(page.scope.bytesToBase64(new Uint8Array([0, 1, 254, 255]))))).toEqual([0, 1, 254, 255]);
   });
 });

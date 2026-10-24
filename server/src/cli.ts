@@ -71,8 +71,6 @@ import {
   TranscriptFile,
   type IntakeStatusReport,
   type Run,
-  type Snapshot,
-  type DiffUpdateFrame,
 } from "./core/index.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import { withReplayCorrection } from "./replayCorrection.ts";
@@ -100,7 +98,7 @@ import {
   writeReviews,
 } from "./sessionFiles.ts";
 import { describe, errorMessage, fileReason, formatIssues, InvalidTruthFile, oneLine, readScreenTruthFile, readTextFile, readTruthFile } from "./truthFile.ts";
-import { Viewers } from "./viewers.ts";
+import { Viewers, type SendFrame } from "./viewers.ts";
 import { StartupRefusal } from "./managedDepsProtocol.ts";
 import { ServerRoutes, type ServerRoute } from "./serverProtocol.ts";
 import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
@@ -370,12 +368,11 @@ const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカル�
 const recordPlayback = Effect.fn("recordPlayback")(function* (
   input: { title: string; remarks: Iterable<PlaybackRemark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean; vocabulary?: ReadonlyArray<(typeof VocabEvent)["Type"]> },
   model: ExecutableModel,
-  publish: (snapshot: Snapshot) => Effect.Effect<void>,
-  diffUpdate?: (frame: DiffUpdateFrame) => Effect.Effect<void>,
+  send?: SendFrame,
 ) {
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, publish, model, ...(diffUpdate ? { diffUpdate } : {}) });
+  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, send, model });
   const replaying = input.vocabulary === undefined
     ? session
     : yield* withReplayCorrection(session, {
@@ -436,18 +433,18 @@ const play = Command.make(
         const listener = yield* openListener(port).pipe(
           Effect.mapError((e) => listenFailed(port, e)),
         );
-        const viewers = yield* Effect.gen(function* () {
+        const send = yield* Effect.gen(function* () {
           yield* serveFeed;
           const viewers = yield* Viewers;
           yield* Effect.addFinalizer(() => viewers.drained);
-          return viewers;
+          return yield* viewers.forSession;
         }).pipe(Effect.provide(listener));
         const remarks = recorded ? recorded.remarks : yield* readTranscriptRemarks(transcript);
-        yield* viewers.sessionMode({ type: "session-mode", local: selected.local });
+        yield* send({ type: "session-mode", local: selected.local });
         const { paths } = yield* recordPlayback({
           title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
           remarks, screens, realtime, ...(recorded ? { vocabulary: recorded.vocabulary } : {}),
-        }, selected, viewers.publish, viewers.diffUpdate).pipe(Effect.ensuring(viewers.sessionMode({ type: "session-mode", local: false })));
+        }, selected, send);
         yield* write(paths.map((path) => `${path}\n`).join(""));
       }).pipe(Effect.provide(updaterLayer));
     },
@@ -887,7 +884,7 @@ const replayedRunDir = Effect.fnUntraced(function* (source: string, plan: Update
   const recorded = yield* loadSessionLog(resolve(source));
   const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
   yield* writeWarnings(notice === undefined ? [] : [notice]);
-  return (yield* recordPlayback({ ...recorded, realtime: false }, planModel(plan), () => Effect.void).pipe(
+  return (yield* recordPlayback({ ...recorded, realtime: false }, planModel(plan)).pipe(
     Effect.provide(updaterLayer),
   )).dir;
 });

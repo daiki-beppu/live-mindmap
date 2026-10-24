@@ -28,7 +28,7 @@ const open = Effect.fn("open")(function* (model: ExecutableModel = defaultClaude
   const root = yield* sessionsDir;
   const dir = yield* createSessionDir(root).pipe(Effect.provide(NodeFileSystem.layer));
   const inputs: DiffInput[] = [];
-  const { session } = yield* openLoggedSession({ model, dir, title: "定例", publish: () => Effect.void }).pipe(
+  const { session } = yield* openLoggedSession({ model, dir, title: "定例" }).pipe(
     Effect.provide(Layer.mergeAll(updaterLayer((input) => Effect.sync(() => (inputs.push(input), { ops: [] }))), NodeFileSystem.layer)),
   );
   const lines = () => readFileSync(join(dir, "log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);

@@ -1,4 +1,4 @@
-import { Effect, Fiber, Option, Queue, Schema } from "effect";
+import { Effect, Fiber, Option, Queue, Schema, type Scope } from "effect";
 import { Socket } from "effect/socket";
 import { describe, expect, it } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
@@ -18,7 +18,7 @@ const snapshot: Snapshot = {
 
 const decodeFrame = Schema.decodeUnknownOption(Schema.fromJsonString(LiveFrame));
 
-const publishedData = (publish: (viewers: typeof Viewers.Service) => Effect.Effect<void>) =>
+const publishedData = (publish: (viewers: typeof Viewers.Service) => Effect.Effect<void, never, Scope.Scope>) =>
   Effect.runPromise(Effect.gen(function* () {
     const viewers = yield* Viewers;
     const written = yield* Queue.make<string>();
@@ -33,11 +33,11 @@ const publishedData = (publish: (viewers: typeof Viewers.Service) => Effect.Effe
     const data = yield* Queue.take(written);
     yield* Fiber.interrupt(connection);
     return data;
-  }).pipe(Effect.provide(Viewers.layer)));
+  }).pipe(Effect.provide(Viewers.layer), Effect.scoped));
 
 describe("/ws のスナップショットのフレーム", () => {
   it("server が送ったスナップショットは、web の受信を通ると同じ Snapshot として Model に入る", async () => {
-    const data = await publishedData((viewers) => viewers.publish(snapshot));
+    const data = await publishedData((viewers) => Effect.flatMap(viewers.forSession, (send) => send({ type: "snapshot", snapshot })));
     const frame = Option.getOrThrow(decodeFrame(data));
     expect(update(init(), Message.ReceivedLiveFrame({ frame, receivedAt: 0 })).model.snapshot).toEqual(Option.some(snapshot));
   });

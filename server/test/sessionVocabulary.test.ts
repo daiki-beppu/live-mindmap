@@ -158,7 +158,7 @@ describe("sessionVocabulary", () => {
     const reading = yield* heldSource();
     const { vocabulary, lines } = yield* open(reading.read);
     const outputs: string[] = [];
-    const settling = yield* createRemarkSettling({ emit: (r) => Effect.flatMap(vocabulary.correct(r), (c) => Effect.sync(() => { outputs.push(c.rest.text); })) });
+    const settling = (yield* createRemarkSettling()).emitTo((r) => Effect.flatMap(vocabulary.correct(r), (c) => Effect.sync(() => { outputs.push(c.rest.text); })));
     yield* settling.speaker({ type: "speaker-off", start: 0, reason: "モデルなし" });
     yield* vocabulary.addScreen(["港南店"]).pipe(Effect.asVoid);
     yield* reading.started;
