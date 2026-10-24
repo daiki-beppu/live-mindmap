@@ -42,7 +42,7 @@ export class AppleIntelligence extends Context.Service<AppleIntelligence, {
       const launch = Effect.gen(function* () {
         const scope = yield* Effect.scope;
         const child = yield* spawn("serve");
-        yield* Effect.forkIn(Stream.runForEach(child.stderr, (chunk) => Effect.sync(() => { process.stderr.write(chunk); })).pipe(Effect.ignore), scope);
+        yield* Effect.forkIn(Stream.runForEach(child.stderr, (chunk) => Effect.sync(() => { process.stderr.write(chunk); })).pipe(Effect.ignore({ log: "Debug", message: "Apple Intelligence の標準エラーを転送できない" })), scope);
         const ready = child.stdout.pipe(Stream.decodeText, Stream.splitLines, Stream.take(1), Stream.runHead,
           Effect.mapError((error) => failed(error.message)),
           Effect.flatMap((line) => Option.isSome(line) ? decode(Schema.Union([Ready, MacState]), line.value) : Effect.fail(failed("Apple の準備情報を受け取る前に出力が閉じました"))),

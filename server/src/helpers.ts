@@ -198,7 +198,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
             stderrChunks.push(chunk);
           }),
         ),
-        Effect.ignore,
+        Effect.ignore({ log: "Debug", message: "ヘルパーの標準エラーを読み切れない" }),
       ),
       scope,
     );
@@ -218,7 +218,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
       scope,
     );
 
-    const stop = handle.kill({ forceKillAfter: stopTimeoutMs }).pipe(Effect.ignore);
+    const stop = handle.kill({ forceKillAfter: stopTimeoutMs }).pipe(Effect.ignore({ log: "Debug", message: "ヘルパーを止められない" }));
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), stop), scope);
 
     // 間隔は 10ms から倍々に伸ばし、200ms で頭打ちにする（Schedule.min は短い方の待ちを使い、spaced が止まらないので終わらない）

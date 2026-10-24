@@ -43,6 +43,22 @@ When fallow fails, the default fix is to rewrite the code; suppress only as `COD
 
 Read [`docs/agents/checks.md`](docs/agents/checks.md) (what each command runs, test layers, CI jobs) when you add or change a test, when a check fails, or when you change CI. When you add a test, also read the Tests section of `CODING_STANDARDS.md`.
 
+### Rules and what enforces them
+
+Reviewers keep catching these. When a rule here is broken again, add the check that stops it, not more prose. Rows marked "review only" have nothing that fails yet.
+
+| Rule | Enforced by |
+|---|---|
+| Use Effect 4 APIs, not v3 names | `effect-tsgo` `outdatedApi` in `pnpm typecheck` |
+| No unused exports, duplicated blocks or over-complex functions | `pnpm fallow` (end of `pnpm typecheck`, CI `ts` job) |
+| `runMain`・`runSync`・`runPromise` only at the entrypoints | `server/scripts/check-entrypoints.ts` |
+| Unit tests don't open real resources | `server/scripts/check-test-layers.ts` |
+| Don't drop a failure silently: return it, or `Effect.ignore({ log, message })` naming what is given up; cleanup goes in `ensuring`・`onExit`・`acquireRelease` so it also runs on interruption | `server/scripts/check-ignored-failures.ts` (catches `Effect.ignore`; a swallowing `Effect.catch` or `FiberSet.awaitEmpty` is review only) |
+| A PR targets an up-to-date `main` | the `main` ruleset |
+| The PR body states the check layers run and their results, and every deliverable the issue asks for (Closes, before/after, screenshots) | review only |
+| Tests check contracts through the public entry point, not internal structure or current behaviour; waits use a deadline on the real condition | review only (`CODING_STANDARDS.md` → Tests) |
+| State tied to a session, attempt or input is reset or re-read when that owner changes | review only |
+
 ### Evals
 
 Evals measure real model and speech-recognition output by hand. They are not part of Checks and give no pass/fail. Run the one that matches what you changed:

@@ -14,7 +14,7 @@
     "test:it:heavy": "vitest run --project heavy",
     "test:it:all": "vitest run --project it --project heavy",
     "deps:install": "node scripts/install-managed-deps.ts",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && effect-tsgo diagnostics --project tsconfig.json && node scripts/check-entrypoints.ts && node scripts/check-test-layers.ts && node scripts/check-managed-lock.ts"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json && effect-tsgo diagnostics --project tsconfig.json && node scripts/check-entrypoints.ts && node scripts/check-ignored-failures.ts && node scripts/check-test-layers.ts && node scripts/check-managed-lock.ts"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.1",

@@ -13,7 +13,7 @@ export const publishServerPid = Effect.fnUntraced(function* (sessionsDir: string
     () => Effect.gen(function* () {
       const current = yield* fs.readFileString(path);
       if (current.trim() === String(pid)) yield* fs.remove(path);
-    }).pipe(Effect.ignore),
+    }).pipe(Effect.ignore({ log: "Debug", message: "サーバーの PID の記録を消せない" })),
   );
 });
 

@@ -42,9 +42,9 @@ export class Tunnel extends Context.Service<Tunnel, {
         );
         yield* Effect.forkIn(
           reading.pipe(
-            Effect.ignore,
+            Effect.ignore({ log: "Debug", message: "cloudflared の標準出力を読み切れない" }),
             Effect.andThen(handle.exitCode),
-            Effect.ignore,
+            Effect.ignore({ log: "Debug", message: "cloudflared の終了コードが取れない" }),
             Effect.andThen(Deferred.fail(found, new TunnelFailed({ message: "cloudflared がホスト名を出す前に終了しました" }))),
             Effect.andThen(Deferred.succeed(ended, undefined)),
           ),
