@@ -229,10 +229,9 @@ export type LoggedSessionOptions = {
   logShiftMs?: number;
   send?: SendFrame;
   onDiff?: Effect.Effect<void>;
-  onSpeakerNames?: OnSpeakerNames;
 };
 
-const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, send, onDiff, onSpeakerNames, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
+const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, send, onDiff, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
   const fs = yield* FileSystem.FileSystem;
   const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent | SpeakerNameLogEvent) =>
     Effect.suspend(() =>
@@ -291,8 +290,8 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
     }),
   );
   const images = model === undefined || (model.route !== "apple" && model.images !== false);
-  const receiveNames: OnSpeakerNames = onSpeakerNames ?? ((inferred) =>
-    Effect.forEach(inferred, ({ label, name, basis }) => nameSpeaker({ label, name, source: "推定", basis }), { discard: true }));
+  const receiveNames: OnSpeakerNames = (inferred) =>
+    Effect.forEach(inferred, ({ label, name, basis }) => nameSpeaker({ label, name, source: "推定", basis }), { discard: true });
   const options = { title: title ?? basename(dir), images, logShiftMs, onSpeakerNames: receiveNames };
   const coreSession = yield* (namedUpdater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, namedUpdater))).pipe(Effect.provide(log));
   const session: Session = {

@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, FileSystem, Layer } from "effect";
-import { DiffUpdater, type DiffInput, type IntakeLogEvent, type Remark, type SpeakerNamesFrame, type OnSpeakerNames } from "../src/core/index.ts";
+import type { DiffInput, IntakeLogEvent, Remark, SpeakerNamesFrame } from "../src/core/index.ts";
 import { createSessionDir, EXPORT_FILE, LOG_FILE, openLoggedSession, openLoggedTranscriptSession } from "../src/sessionFiles.ts";
 import { buildPrompt } from "../src/claudePrompt.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -193,29 +193,6 @@ describe("ログを開いたセッションの名前", () => {
     const exit = yield* Effect.exit(nameSpeaker({ label: "相手 A", name: "田中", source: "手入力" }));
     expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause) && !Cause.hasFails(exit.cause)).toBe(true);
   }).pipe(Effect.provide(NodeFileSystem.layer), Effect.scoped));
-
-  it.effect("明示された推定名のcallbackだけへ通知し、内部では名前の行やframeを重ねない", () => Effect.gen(function* () {
-    const dir = yield* sessionsDir;
-    const notified: Parameters<OnSpeakerNames>[0][] = [];
-    const inputs: DiffInput[] = [];
-    const frames: SpeakerNamesFrame[] = [];
-    const { session } = yield* openLoggedSession({ model: defaultClaude, dir,
-      onSpeakerNames: (names) => Effect.sync(() => { notified.push(names); }),
-      send: (frame) => Effect.sync(() => { if (frame.type === "speaker-names") frames.push(frame); }),
-    }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, Layer.succeed(DiffUpdater, DiffUpdater.of({
-      update: (input) => Effect.sync(() => {
-        inputs.push(input);
-        return { ops: [], names: [inferredName] };
-      }),
-    })))));
-    yield* session.push(namedRemark(1));
-    yield* session.flush;
-    expect(notified).toEqual([[inferredName]]);
-    expect(inputs).toHaveLength(1);
-    expect(frames).toEqual([{ type: "speaker-names", names: [] }]);
-    const lines = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line): Record<string, unknown> => JSON.parse(line));
-    expect(lines.filter((line) => line.type === "speaker-name")).toEqual([]);
-  }).pipe(Effect.scoped));
 });
 
 describe("createSessionDir", () => {

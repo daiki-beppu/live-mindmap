@@ -3,9 +3,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Clock, Effect, Layer, Option, Ref, Schema } from "effect";
+import { Clock, Effect, Layer, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import { DiffUpdater, LogEvent, nameSpeaker, recall, Remark, SpeakerNameLogEvent, speakerNameMap, type SpeakerNameTable, type Session } from "../src/core/index.ts";
+import { LogEvent, recall, Remark, SpeakerNameLogEvent, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { depsDirConfig } from "../src/config.ts";
@@ -93,26 +93,12 @@ export const command = Command.make(
     });
     const dir = yield* createSessionDir(tmp).pipe(Effect.mapError((e) => new ReplaySessionFailed({ path: tmp, reason: fileReason(e) })));
     const diffEndsMs: number[] = [];
-    const names = yield* Ref.make<SpeakerNameTable>(new Map());
-    const baseUpdater = yield* DiffUpdater;
-    const namedUpdater = DiffUpdater.of({
-      ...baseUpdater,
-      update: (input) => Effect.flatMap(Ref.get(names), (table) =>
-        baseUpdater.update(table.size === 0 ? input : { ...input, speakerNames: speakerNameMap(table) })),
-    });
-    const { session, appendLog } = yield* openLoggedSession({
+    const { session } = yield* openLoggedSession({
       model: defaultClaude,
       dir,
       title,
       onDiff: Effect.sync(() => diffEndsMs.push(performance.now())),
-      onSpeakerNames: (inferred): Effect.Effect<void> => Effect.forEach(inferred, ({ label, name, basis }) =>
-        Effect.uninterruptible(Effect.gen(function* () {
-          const next = nameSpeaker(yield* Ref.get(names), { label, name, basis, source: "推定" });
-          if (next === undefined) return;
-          yield* appendLog({ type: "speaker-name", label, name: next.get(label)!.name, source: "推定" });
-          yield* Ref.set(names, next);
-        })), { discard: true }),
-    }).pipe(Effect.provideService(DiffUpdater, namedUpdater));
+    });
     const t0 = performance.now();
     yield* replayByArrival(session, items);
     const logPath = join(dir, "log.jsonl");
