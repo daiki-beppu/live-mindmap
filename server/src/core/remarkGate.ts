@@ -56,44 +56,43 @@ function loneSurrogateOverlap(prev: string, next: string): number {
   return 0;
 }
 
-export function createRemarkGate() {
-  const last = new Map<SettledRemark["track"], { end: number; text: string }>();
+export type Emitted = { readonly end: number; readonly text: string };
 
-  const judge = (r: SettledRemark): { emitted: SettledRemark; remembered: { end: number; text: string } } | undefined => {
-    const prev = last.get(r.track);
-    if (prev === undefined || r.start >= prev.end) {
-      return { emitted: r, remembered: { end: r.end, text: r.text } };
-    }
-    const prevBody = compact(prev.text);
-    const newBody = compact(r.text);
-    if (prevBody.includes(newBody)) return undefined;
+export const endsAfter = (end: number, emittedEnd: number): boolean => end > emittedEnd;
 
-    const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
-    const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
-    const k = Math.max(loneSurrogateOverlap(prevBody, newBody), fuzzy);
-    const at = k === 0 ? 0 : overlapEnd(r.text, k);
-    const text = r.text.slice(at);
-    if (compact(text) === "") return undefined;
-    const start = prev.end;
-    if (r.end <= start) return undefined;
+export function passAfter(emitted: Emitted | undefined, r: SettledRemark): SettledRemark | undefined {
+  if (emitted === undefined || r.start >= emitted.end) return r;
+  const prevBody = compact(emitted.text);
+  const newBody = compact(r.text);
+  if (prevBody.includes(newBody)) return undefined;
 
-    const emitted: SettledRemark = {
-      ...r, start, text,
-      ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }),
-      ...(r.wordTimes === undefined || at === 0 ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
-    };
-    return { emitted, remembered: { end: emitted.end, text: r.text } };
+  const j = fuzzyOverlap(Array.from(prevBody), Array.from(newBody));
+  const fuzzy = Array.from(newBody).slice(0, j).reduce((n, c) => n + c.length, 0);
+  const k = Math.max(loneSurrogateOverlap(prevBody, newBody), fuzzy);
+  const at = k === 0 ? 0 : overlapEnd(r.text, k);
+  const text = r.text.slice(at);
+  if (compact(text) === "") return undefined;
+  const start = emitted.end;
+  if (!endsAfter(r.end, start)) return undefined;
+
+  return {
+    ...r, start, text,
+    ...(r.words === undefined || at === 0 ? {} : { words: cutWords(r.words, at) }),
+    ...(r.wordTimes === undefined || at === 0 ? {} : { wordTimes: cutWords(r.wordTimes, at) }),
   };
+}
+
+export function createRemarkGate() {
+  const last = new Map<SettledRemark["track"], Emitted>();
 
   return {
     pass(r: SettledRemark): SettledRemark | undefined {
-      const judged = judge(r);
-      if (judged === undefined) return undefined;
-      last.set(r.track, judged.remembered);
-      return judged.emitted;
+      const out = passAfter(last.get(r.track), r);
+      if (out !== undefined) last.set(r.track, { end: out.end, text: r.text });
+      return out;
     },
     preview(r: SettledRemark): SettledRemark | undefined {
-      return judge(r)?.emitted;
+      return passAfter(last.get(r.track), r);
     },
   };
 }
