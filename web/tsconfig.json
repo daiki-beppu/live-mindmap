@@ -19,6 +19,8 @@
         "name": "@effect/language-service",
         "diagnosticSeverity": {
           "outdatedApi": "error",
+          "unknownInEffectCatch": "error",
+          "anyUnknownInErrorContext": "error",
           "unstableApiUsage": "off"
         }
       }

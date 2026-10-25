@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runCollectingLogs } from "./debugLogs.ts";
 import { RequestSelfPause } from "../src/app/meeting/command.ts";
 import { Message } from "../src/app/meeting/message.ts";
 
@@ -28,5 +29,21 @@ describe("RequestSelfPause の実行", () => {
     expect(await run(true)).toEqual(Message.CompletedRequestSelfPause());
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 409 })));
     expect(await run(false)).toEqual(Message.CompletedRequestSelfPause());
+  });
+
+  // Issue #1576: server が 4xx/5xx で断ったら、送れなかったときと同じ失敗の道（Debug ログ）を通る
+  for (const status of [409, 500]) {
+    it(`status ${status} の応答は失敗として Debug ログに残し、完了の Message を返す`, async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status })));
+      const { result, logs } = await runCollectingLogs((RequestSelfPause({ paused: false }) as unknown as { effect: Effect.Effect<unknown> }).effect);
+      expect(result).toEqual(Message.CompletedRequestSelfPause());
+      expect(logs).toContainEqual({ level: "Debug", message: "自分の一時停止を server に送れない" });
+    });
+  }
+
+  it("2xx の応答では失敗のログを出さない", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+    const { logs } = await runCollectingLogs((RequestSelfPause({ paused: false }) as unknown as { effect: Effect.Effect<unknown> }).effect);
+    expect(logs).not.toContainEqual(expect.objectContaining({ message: "自分の一時停止を server に送れない" }));
   });
 });
