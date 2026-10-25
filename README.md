@@ -7,7 +7,7 @@ A mind map that AI builds in real time from what is said in Japanese meetings.
 > [!NOTE]
 > **Built for meetings held in Japanese.** Speech recognition is Apple's on-device recognizer with the Japanese (ja-JP) locale only, on macOS 26 or later. The map, captions and CLI messages are in Japanese.
 
-live-mindmap listens to your meeting app (Zoom, Google Meet, a webinar in the browser), transcribes it on your Mac, and keeps updating a mind map while people talk. Instead of reading AI minutes after the meeting, everyone discusses while looking at a map that keeps itself organized.
+live-mindmap listens to your meeting app (Zoom, Google Meet, a webinar in the browser), transcribes it on your Mac, and keeps updating a mind map while people talk. Instead of reading AI minutes after the meeting, everyone discusses while looking at a map the AI updates after each remark.
 
 ## How it works
 
@@ -19,7 +19,7 @@ live-mindmap listens to your meeting app (Zoom, Google Meet, a webinar in the br
 
 Read the [full descriptions in Japanese](README.ja.md#できること).
 
-- **Map a meeting live** (`cli start`). [Details in Japanese](README.ja.md#できること).
+- **Map a meeting live** (`cli start`).
 - **Tell speakers apart.** Your microphone is a separate track with echo cancellation; others are split into 相手 A–D on the Mac.
 - **Name speakers.** Type a name on the caption, or let the AI infer it from self-introductions and replies to direct address.
 - **Pause your microphone.** Capture pauses when the meeting app is not using the microphone; you can also toggle it with M.
