@@ -2,7 +2,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { NodeChildProcessSpawner, NodeHttpClient, NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AppleIntelligence, appleCommand } from "./appleIntelligence.ts";
-import { Cause, Clock, Console, Effect, Exit, Fiber, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
+import { Cause, Clock, Console, DateTime, Effect, Exit, Fiber, FileSystem, Layer, Option, PlatformError, Predicate, Result, Schedule, Schema, Stream, type Runtime } from "effect";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
 import { Argument, Command, Flag } from "effect/cli";
 import { AudioMix } from "./audioMix.ts";
@@ -1291,11 +1291,11 @@ const publish = Command.make(
         yield* appendPublishRecord({
           name, url, accountId, dir, level: content, anyone,
           ...(passphrase === undefined ? {} : { passphrase }),
-          publishedAt: new Date(publishedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(), status: "published",
+          publishedAt: DateTime.formatIso(DateTime.makeUnsafe(publishedAt)), expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)), status: "published",
         }).pipe(Effect.mapError((e) => new CommandFailed({ message: `公開の記録を書けませんでした: ${PlatformError.isPlatformError(e) ? fileReason(e) : describe(e)}` })));
       }),
     );
-    yield* write(`${url}\n期限: ${new Date(expiresAt).toISOString()}（${dayCount} 日後。期限の後は 410 を返します）\nURL にはアカウントのサブドメイン（${subdomain}）が出ます\n${passphrase === undefined ? "" : `合言葉: ${passphrase}\nURL と合言葉は別々に渡してください（合言葉は公開の記録 ~/.live-mindmap/publish/records.jsonl にも残ります）\n`}`);
+    yield* write(`${url}\n期限: ${DateTime.formatIso(DateTime.makeUnsafe(expiresAt))}（${dayCount} 日後。期限の後は 410 を返します）\nURL にはアカウントのサブドメイン（${subdomain}）が出ます\n${passphrase === undefined ? "" : `合言葉: ${passphrase}\nURL と合言葉は別々に渡してください（合言葉は公開の記録 ~/.live-mindmap/publish/records.jsonl にも残ります）\n`}`);
   }),
 ).pipe(
   Command.withDescription(
