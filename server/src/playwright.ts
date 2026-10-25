@@ -9,7 +9,7 @@ export class ChromiumMissing extends Schema.TaggedError<ChromiumMissing>()("Chro
 }
 
 export class Playwright extends Context.Service<Playwright, {
-  readonly launch: () => Effect.Effect<Browser, ChromiumMissing | ManagedDepsFailed>;
+  readonly launch: Effect.Effect<Browser, ChromiumMissing | ManagedDepsFailed>;
 }>()("live-mindmap/server/Playwright") {
   static readonly layer = Layer.effect(Playwright)(Effect.gen(function* () {
     const deps = yield* ManagedDeps;
@@ -18,7 +18,7 @@ export class Playwright extends Context.Service<Playwright, {
       Effect.flatMap(([item]): Effect.Effect<never, ChromiumMissing | ManagedDepsFailed> => Effect.fail(item?.state === "missing" ? new ChromiumMissing() : error)),
     );
     return Playwright.of({
-      launch: Effect.fnUntraced(function* () {
+      launch: Effect.gen(function* () {
         const module = yield* deps.load("chromium").pipe(Effect.catchTag("ManagedDepsFailed", missingOr));
         return yield* Effect.tryPromise({
           try: () => module.chromium.launch(),

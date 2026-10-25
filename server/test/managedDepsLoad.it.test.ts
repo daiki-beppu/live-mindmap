@@ -76,10 +76,10 @@ describe("管理 Chromium の読み込み", () => {
     yield* Effect.gen(function* () {
       yield* (yield* ManagedDeps).load("chromium");
       const playwright = yield* Playwright;
-      const first = yield* Effect.acquireRelease(playwright.launch(), (browser) => Effect.promise(() => browser.close()));
+      const first = yield* Effect.acquireRelease(playwright.launch, (browser) => Effect.promise(() => browser.close()));
       expect(JSON.parse(first.version()).entity).toBe("a");
       yield* Effect.tryPromise(() => publish(root, "b"));
-      const second = yield* Effect.acquireRelease(playwright.launch(), (browser) => Effect.promise(() => browser.close()));
+      const second = yield* Effect.acquireRelease(playwright.launch, (browser) => Effect.promise(() => browser.close()));
       expect(JSON.parse(second.version())).toEqual({ entity: "b", browsers: join(root, "chromium/browsers") });
       expect(JSON.parse(first.version()).entity).toBe("a");
     }).pipe(Effect.provide(Playwright.layer.pipe(Layer.provideMerge(managedLayer(root)))));
