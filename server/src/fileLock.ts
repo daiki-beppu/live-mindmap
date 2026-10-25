@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import { Effect, FileSystem, type PlatformError } from "effect";
 
-export const withFileLock = <A, E, R>(path: string, action: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+export const withFileLock = Effect.fnUntraced(function* <A, E, R>(path: string, action: Effect.Effect<A, E, R>) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(dirname(path), { recursive: true, mode: 0o700 });
   const lock = `${path}.lock`;
@@ -14,4 +14,4 @@ export const withFileLock = <A, E, R>(path: string, action: Effect.Effect<A, E, 
     () => fs.remove(lock, { recursive: true }).pipe(Effect.orDie),
   );
   return yield* action;
-}).pipe(Effect.scoped);
+}, Effect.scoped);
