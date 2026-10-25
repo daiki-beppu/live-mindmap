@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { join, dirname } from "node:path";
-import { Clock, Context, Deferred, Duration, Effect, FileSystem, Schema } from "effect";
+import { Clock, Context, DateTime, Deferred, Duration, Effect, FileSystem, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
@@ -44,7 +44,7 @@ const renewed = Effect.fnUntraced(function* (previous: Credentials, token: typeo
     ...previous, access_token: token.access_token,
     refresh_token: token.refresh_token ?? previous.refresh_token,
     scopes: token.scope === undefined ? previous.scopes : token.scope.split(" ").filter(Boolean),
-    expires_at: now + token.expires_in * 1000, saved_at: new Date(now).toISOString(),
+    expires_at: now + token.expires_in * 1000, saved_at: DateTime.formatIso(DateTime.makeUnsafe(now)),
   } satisfies Credentials;
 });
 
@@ -143,7 +143,7 @@ const loginCredentials = (input: {
   client_id: input.clientId, ext_agent_host_id: input.host, subject: input.claims.sub,
   ...(input.claims.email === undefined ? {} : { email: input.claims.email }), id_token: input.token.id_token,
   access_token: input.token.access_token, refresh_token: input.token.refresh_token,
-  scopes: input.token.scope.split(" ").filter(Boolean), expires_at: input.now + input.token.expires_in * 1000, saved_at: new Date(input.now).toISOString(),
+  scopes: input.token.scope.split(" ").filter(Boolean), expires_at: input.now + input.token.expires_in * 1000, saved_at: DateTime.formatIso(DateTime.makeUnsafe(input.now)),
 });
 
 export const loginChatgpt = Effect.gen(function* () {
