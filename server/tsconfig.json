@@ -18,7 +18,8 @@
         "name": "@effect/language-service",
         "diagnosticSeverity": {
           "outdatedApi": "error",
-          "unstableApiUsage": "off"
+          "unstableApiUsage": "off",
+          "lazyEffect": "error"
         }
       }
     ]

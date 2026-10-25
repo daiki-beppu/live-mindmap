@@ -19,7 +19,7 @@ const resources = vi.hoisted(() => ({
 vi.mock("vite", () => ({ createServer: resources.createServer }));
 
 const playwright = Layer.succeed(Playwright, Playwright.of({
-  launch: () => Effect.tryPromise({ try: () => resources.launch() as Promise<Browser>, catch: (error) => new ManagedDepsFailed({ message: String(error) }) }),
+  launch: Effect.tryPromise({ try: () => resources.launch() as Promise<Browser>, catch: (error) => new ManagedDepsFailed({ message: String(error) }) }),
 }));
 
 class FnFailed extends Schema.TaggedError<FnFailed>()("FnFailed", { message: Schema.String }) {}

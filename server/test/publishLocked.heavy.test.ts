@@ -45,7 +45,7 @@ describe("合言葉で暗号化した外側のページ", () => {
       writeFileSync(outerPath, lockedPublishPage(yield* Effect.tryPromise(() => sealWithPassphrase(inner, passphrase))));
 
       const seen = yield* Effect.acquireUseRelease(
-        (yield* Playwright).launch(),
+        (yield* Playwright).launch,
         (browser) => Effect.tryPromise(async () => {
           const page = await browser.newPage();
           await page.goto(pathToFileURL(outerPath).href);

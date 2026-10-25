@@ -6,7 +6,21 @@ import { PublishRecord } from "./core/index.ts";
 import { withFileLock } from "./fileLock.ts";
 
 const homeConfig = Config.String("HOME").pipe(Config.withDefault(homedir()));
-const decodeRecord = Schema.decodeUnknownEffect(Schema.fromJsonString(PublishRecord));
+const recordJson = Schema.fromJsonString(PublishRecord);
+const decodeRecord = Schema.decodeUnknownEffect(recordJson);
+const encodeRecord = Schema.encodeSync(recordJson);
+
+class UnreadablePublishRecord extends Schema.TaggedError<UnreadablePublishRecord>()("UnreadablePublishRecord", {
+  path: Schema.String,
+  line: Schema.Finite,
+}) {
+  override get message(): string {
+    return `公開の記録 ${this.path} の ${this.line} 行目が読めません`;
+  }
+}
+
+const decodeLine = (path: string, line: string, index: number) =>
+  decodeRecord(line).pipe(Effect.mapError(() => new UnreadablePublishRecord({ path, line: index + 1 })));
 
 const recordPaths = Effect.fnUntraced(function* () {
   const home = yield* homeConfig;
@@ -35,7 +49,7 @@ export const readPublishRecords = Effect.fnUntraced(function* () {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]!;
     if (line.trim() === "") continue;
-    records.push(yield* decodeRecord(line).pipe(Effect.mapError(() => new Error(`公開の記録 ${path} の ${index + 1} 行目が読めません`))));
+    records.push(yield* decodeLine(path, line, index));
   }
   return records;
 });
@@ -45,13 +59,8 @@ export const markRecordStatus = Effect.fnUntraced(function* (names: ReadonlyArra
   const fs = yield* FileSystem.FileSystem;
   yield* withFileLock(path, Effect.gen(function* () {
     const text = yield* fs.readFileString(path);
-    const rewritten = text.split("\n").map((line) => {
-      if (line.trim() === "") return line;
-      const raw: unknown = JSON.parse(line);
-      if (typeof raw !== "object" || raw === null || !("name" in raw) || typeof raw.name !== "string" || !names.includes(raw.name)) return line;
-      if (status === "expired" && !("status" in raw && raw.status === "published")) return line;
-      return JSON.stringify({ ...raw, status });
-    });
+    const rewritten = yield* Effect.forEach(text.split("\n"), (line, index) => line.trim() === "" ? Effect.succeed(line) : decodeLine(path, line, index).pipe(Effect.map((record) =>
+      names.includes(record.name) && (status !== "expired" || record.status === "published") ? encodeRecord({ ...record, status }) : line)));
     const temporary = `${path}.${randomUUID()}.tmp`;
     yield* Effect.addFinalizer(() => fs.remove(temporary, { force: true }).pipe(Effect.orDie));
     yield* fs.writeFileString(temporary, rewritten.join("\n"), { mode: 0o600, flag: "wx" });

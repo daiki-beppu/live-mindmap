@@ -438,7 +438,7 @@ const make = Effect.fnUntraced(function* (options: ManagedDepsOptions) {
         })),
       );
       const progress = (message: string) => Stream.succeed<DepEvent>({ type: "progress", message });
-      const step = (effect: Effect.Effect<void, unknown>) => Stream.drain(Stream.fromEffect(effect));
+      const step = <E>(effect: Effect.Effect<void, E>) => Stream.drain(Stream.fromEffect(effect));
       const acquireArtifact = Effect.gen(function* () {
         if (artifact !== undefined) {
           const archive = join(work, "cloudflared.tgz");

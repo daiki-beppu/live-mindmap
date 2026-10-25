@@ -16,7 +16,7 @@ Single-context: one root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md
 
 ### Effect
 
-`server` builds on Effect 4. Read `server/node_modules/effect/AGENTS.md` before writing Effect code: the v4 API names differ from v3 (`Effect.catch`, not `Effect.catchAll`), and that file is the installed version's own reference. `server`'s `typecheck` runs `effect-tsgo diagnostics --project tsconfig.json` after the two `tsc` passes; its `outdatedApi` rule is set to `error` in `server/tsconfig.json`, so v3 APIs fail the check. `unstableApiUsage` is `off` there because `effect/process`, `effect/http`, `effect/socket` and `effect/cli` are `@stability unstable` and we use them on purpose (ADR 0008, 0009, 0010); `effect` and `@effect/*` are therefore exact-pinned, and upgrading them means checking those modules for changes.
+`server` builds on Effect 4. Read `server/node_modules/effect/AGENTS.md` before writing Effect code: the v4 API names differ from v3 (`Effect.catch`, not `Effect.catchAll`), and that file is the installed version's own reference. `server`'s `typecheck` runs `effect-tsgo diagnostics --project tsconfig.json` after the two `tsc` passes, and `web`'s after its `tsc`; the `outdatedApi` rule is set to `error` in both `server/tsconfig.json` and `web/tsconfig.json`, so v3 APIs fail the check. `unstableApiUsage` is `off` in both; `web` sets it only to match `server`, which needs it because `effect/process`, `effect/http`, `effect/socket` and `effect/cli` are `@stability unstable` and we use them on purpose (ADR 0008, 0009, 0010); `effect` and `@effect/*` are therefore exact-pinned, and upgrading them means checking those modules for changes.
 
 `web` builds on Effect 4 through Foldkit; read `web/AGENTS.md` before writing Foldkit code.
 
@@ -49,7 +49,7 @@ Reviewers keep catching these. When a rule here is broken again, add the check t
 
 | Rule | Enforced by |
 |---|---|
-| Use Effect 4 APIs, not v3 names | `effect-tsgo` `outdatedApi` in `pnpm typecheck` |
+| Use Effect 4 APIs, not v3 names | `effect-tsgo` `outdatedApi` in `server`'s and `web`'s `pnpm typecheck` |
 | No unused exports, duplicated blocks or over-complex functions | `pnpm fallow` (end of `pnpm typecheck`, CI `ts` job) |
 | `runMain`・`runSync`・`runPromise` only at the entrypoints | `server/scripts/check-entrypoints.ts` |
 | Unit tests don't open real resources | `server/scripts/check-test-layers.ts` |

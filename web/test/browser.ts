@@ -2,14 +2,14 @@ import { Effect } from "effect";
 import { Playwright } from "../../server/src/playwright.ts";
 import { managedPlaywright } from "../../server/test/fixtures/managedPlaywright.ts";
 
-export type Browser = Effect.Success<ReturnType<(typeof Playwright)["Service"]["launch"]>>;
+export type Browser = Effect.Success<(typeof Playwright)["Service"]["launch"]>;
 export type BrowserContext = Awaited<ReturnType<Browser["newContext"]>>;
 export type Page = Awaited<ReturnType<Browser["newPage"]>>;
 
 export const launchBrowser = (): Promise<Browser> =>
   Effect.runPromise(
     Effect.gen(function* () {
-      return yield* (yield* Playwright).launch();
+      return yield* (yield* Playwright).launch;
     }).pipe(Effect.provide(managedPlaywright), Effect.scoped),
   );
 

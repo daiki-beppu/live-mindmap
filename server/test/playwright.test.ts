@@ -20,9 +20,9 @@ describe("Playwright の管理依存", () => {
     });
     yield* Effect.gen(function* () {
       const service = yield* Playwright;
-      expect((yield* service.launch()).version()).toBe("a");
+      expect((yield* service.launch).version()).toBe("a");
       browser = second;
-      expect((yield* service.launch()).version()).toBe("b");
+      expect((yield* service.launch).version()).toBe("b");
     }).pipe(Effect.provide(Playwright.layer.pipe(Layer.provide(Layer.succeed(ManagedDeps, deps)))));
   }));
 
@@ -36,7 +36,7 @@ describe("Playwright の管理依存", () => {
       } as typeof PlaywrightModule)) as ManagedDeps["Service"]["load"],
     });
     yield* Effect.gen(function* () {
-      const result = yield* Effect.result((yield* Playwright).launch());
+      const result = yield* Effect.result((yield* Playwright).launch);
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
         expect(result.failure).toBeInstanceOf(ManagedDepsFailed);
@@ -59,7 +59,7 @@ describe("Playwright の管理依存", () => {
     });
     yield* Effect.gen(function* () {
       const service = yield* Playwright;
-      const result = yield* Effect.result(service.launch());
+      const result = yield* Effect.result(service.launch);
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
         expect(result.failure._tag).toBe(expected);

@@ -38,7 +38,7 @@ export const withCapturePage = Effect.fnUntraced(function* <A, E, R>(
   const url = vite.resolvedUrls?.local[0];
   if (!url) return yield* new CaptureFailed({ message: "撮影用の表示ページの URL を取得できません" });
   const browser = yield* Effect.acquireRelease(
-    playwright.launch().pipe(
+    playwright.launch.pipe(
       Effect.mapError((e) =>
         new CaptureFailed({ message: e._tag === "ChromiumMissing" ? e.message : `Chromium を起動できません（${e.message}）` }),
       ),
