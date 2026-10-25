@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Schema, type Cause } from "effect";
 
 export const CLOUDFLARED_VERSION = "2026.9.2";
 export type CloudflaredArtifact = {
@@ -7,8 +7,8 @@ export type CloudflaredArtifact = {
   readonly sha256: string;
 };
 export type CloudflaredSource = {
-  readonly resolve: Effect.Effect<CloudflaredArtifact, unknown>;
-  readonly download: (url: string, destination: string) => Effect.Effect<void, unknown>;
+  readonly resolve: Effect.Effect<CloudflaredArtifact, Cause.YieldableError>;
+  readonly download: (url: string, destination: string) => Effect.Effect<void, Cause.YieldableError>;
 };
 
 class UnsupportedCloudflaredPlatform extends Schema.TaggedError<UnsupportedCloudflaredPlatform>()("UnsupportedCloudflaredPlatform", {
