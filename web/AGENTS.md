@@ -58,7 +58,7 @@ Foldkit の公式の規約に従う。公式の AGENTS.md のうちアプリ向�
 
 ## 版
 
-- web も `effect` を server と同じ版（今は 4.0.1）で exact に持つ。Foldkit の peer（4.0.0 の exact）は、`pnpm-workspace.yaml` の `peerDependencyRules.allowedVersions` で許す。束ねられる effect は 1 つにする。
+- web も `effect` を server と同じ版で exact に持つ。Foldkit の peer（4.0.0 の exact）は、`pnpm-workspace.yaml` の `peerDependencyRules.allowedVersions` で許す。束ねられる effect は 1 つにする。
 - `foldkit`・`@foldkit/ui`・`@foldkit/vite-plugin`・`@foldkit/oxlint-plugin` は exact で固定する。上げるのは、要る修正があるときか Effect を上げるときだけ。
 
 ### 版の上げ方

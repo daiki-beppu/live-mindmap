@@ -11,10 +11,10 @@
   "dependencies": {
     "@ai-sdk/openai": "^4.0.0",
     "@e2e-dev/web": "^0.13.0",
-    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node": "4.0.6",
     "ai": "^7.0.0",
     "e2e": "0.18.0",
-    "effect": "4.0.1"
+    "effect": "4.0.6"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

@@ -7,10 +7,10 @@ packages:
 verifyDepsBeforeRun: false
 ignoredOptionalDependencies:
   - '@anthropic-ai/claude-agent-sdk-*'
-# Foldkit の peer は effect / @effect/platform-browser を 4.0.0 の exact で要求する。server と web を 4.0.1 にそろえるため許可する（Foldkit の peer が追いついたら外す）
+# Foldkit の peer は effect / @effect/platform-browser を 4.0.0 の exact で要求する。server と web を同じ新しい版にそろえるため許可する（Foldkit の peer が追いついたら外す）
 peerDependencyRules:
   allowedVersions:
-    foldkit>effect: 4.0.1
-    foldkit>@effect/platform-browser: 4.0.1
-    '@foldkit/ui>effect': 4.0.1
-    '@foldkit/vite-plugin>effect': 4.0.1
+    foldkit>effect: 4.0.6
+    foldkit>@effect/platform-browser: 4.0.6
+    '@foldkit/ui>effect': 4.0.6
+    '@foldkit/vite-plugin>effect': 4.0.6

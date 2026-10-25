@@ -27,7 +27,7 @@ export type Keyword = typeof Keyword["Type"];
 const seconds = Schema.Union([Schema.Finite]).annotate({ message: TIME_RULE }).annotateKey({ messageMissingKey: TIME_RULE });
 
 // 時刻の前後だけを、下の Struct より前に見る段。struct の check は全プロパティが通ったときにだけ走るので
-// （effect 4.0.1 の interpreter）、ここを struct の check にすると同じ項目の keywords の失敗が先に出てしまい、
+// （effect 4.0.6 の interpreter）、ここを struct の check にすると同じ項目の keywords の失敗が先に出てしまい、
 // 失敗の理由の順（from / to の型 → from <= to → keywords）が入れ替わる。
 // from / to が数でない間はここを通し、型の文面は下の Struct（seconds）に任せる
 const itemTimeOrder = Schema.Unknown.check(
