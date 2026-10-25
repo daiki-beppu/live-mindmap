@@ -21,7 +21,8 @@
           "outdatedApi": "error",
           "unknownInEffectCatch": "error",
           "anyUnknownInErrorContext": "error",
-          "unstableApiUsage": "off"
+          "unstableApiUsage": "off",
+          "instanceOfSchema": "error"
         }
       }
     ]

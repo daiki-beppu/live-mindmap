@@ -19,7 +19,8 @@
         "diagnosticSeverity": {
           "outdatedApi": "error",
           "unstableApiUsage": "off",
-          "lazyEffect": "error"
+          "lazyEffect": "error",
+          "instanceOfSchema": "error"
         }
       }
     ]
