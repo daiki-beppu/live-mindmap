@@ -36,7 +36,7 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 結果の `start` / `end` は、ファイルの音声の先頭を 0 とする秒数（壁時計ではない）。ほぼ無音の区間の結果は、ライブと同じ基準（−70 dBFS）で捨てる。ライブの音量の記録は直近 30 秒しか持たないので、ここではファイルから区間の音量を読み直して判定する（ファイルと重ならない区間など、測れない区間の結果は捨てない）。SIGINT / SIGTERM で読むのをやめて終わる。終了コード: 0 は正常、1 はエラー、2 は使い方の誤り。
 `run` の終了コード: 0 は正常、1 はエラー、2 は使い方の誤り、75 はマイクの入力の構成の変化（sysexits.h の `EX_TEMPFAIL`。サーバーは失敗に数えずに起動し直す）。
 
-`check` は状態の照会だけを行い、ダイアログ、モデルのダウンロード・予約、音声・画面の取り込みを行わない。成功時は標準出力に次の形の JSON を出して終了コード 0 で終わる。失敗時は標準エラーに理由を出して終了コード 1 で終わる。
+`check` は状態を照会するだけで、ダイアログを出さず、モデルのダウンロード・予約も、音声・画面の取り込みもしない。成功時は標準出力に次の形の JSON を出して終了コード 0 で終わる。失敗時は標準エラーに理由を出して終了コード 1 で終わる。
 
 ```json
 {"microphone":"authorized","screenCapture":true,"speechJa":{"installedLocales":["ja_JP"],"status":"installed"}}
@@ -44,7 +44,7 @@ swift run live-mindmap-helper readings <語>...             # 語ごとのロー
 
 `speechJa.status` は ja-JP のモジュールに対する `AssetInventory.status(forModules:)` の結果で、`unsupported`・`supported`・`downloading`・`installed` を区別する。`installedLocales` は `SpeechTranscriber.installedLocales` が返す全 locale の識別子一覧（空の場合もある）で、モデル状態から推測せず、日本語だけに絞らない。`microphone` は `notDetermined`・`denied`・`authorized` の三分類（restricted は denied）。`screenCapture` は画面収録の preflight 結果の Bool。未知のモデル・マイク状態はエラーにする。
 
-権限は起動元に付き、モデルの予約は実行ファイルの識別子ごとなので、サーバーで使う状態を確かめるときはサーバーが起動したヘルパーで `check` を行う。
+権限は起動元に付き、モデルの予約は実行ファイルの識別子ごとなので、サーバーで使う状態を確かめるときはサーバーが起動したヘルパーで `check` を実行する。
 
 `--audio-dir <dir>` を付けると、トラックごとの録音を、既存のフォルダ `<dir>` の `相手.m4a`・`自分.m4a`（AAC・48 kHz・モノラル）に書く。録音の 0 秒は、発言の `start` / `end` の 0 秒（音声取得を始める直前）と同じ。書き込みに失敗したときは、そのトラックをエラーで終わらせる。終了時は、タップとマイクを止めて録音ファイルを閉じてからプロセスが終わる（呼び出し側は、プロセスの終了で書き終わりを知る）。付けなければ録音しない。
 

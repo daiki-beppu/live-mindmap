@@ -2,7 +2,7 @@
 
 ## 固定版を更新する
 
-コマンドはリポジトリルートで実行する。この package は pnpm workspace の外にあり、同梱 lock の生成には package.json の `packageManager` に指定した npm（現在は `npm@11.19.1`）を使う。実行時の導入は、発見した npm でこの lock に対して `npm ci` を行う。
+コマンドはリポジトリルートで実行する。この package は pnpm workspace の外にあり、同梱 lock の生成には package.json の `packageManager` に指定した npm（現在は `npm@11.19.1`）を使う。実行時の導入は、発見した npm でこの lock で `npm ci` を実行する。
 
 開始前に、常駐サーバー（`pnpm dev`）へ `pnpm cli install chromium` と `pnpm cli check` を実行し、旧版の `chromium` が `state: "ready"` であることを確認する。以下の更新前後で同じ管理ルートを使う。
 
