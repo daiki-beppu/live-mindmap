@@ -299,7 +299,7 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       const out = s.stdout.join("");
       const url = `https://${name}.${SUBDOMAIN}.workers.dev`;
       expect(out).toContain(url);
-      expect(out).toContain("7");
+      expect(out).toContain("期限: 2026-10-24T00:00:00.000Z（7 日後。");
       expect(out).toContain(SUBDOMAIN);
       expect(out).not.toContain(MEETING);
       // 記録
@@ -311,8 +311,8 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ name, accountId: ACCOUNT, dir: latest, level: "map", anyone: true, status: "published" });
       expect(String(rows[0]!.url)).toContain(url);
-      expect(asMs(rows[0]!.publishedAt)).toBe(NOW);
-      expect(asMs(rows[0]!.expiresAt)).toBe(NOW + 7 * DAY);
+      expect(rows[0]!.publishedAt).toBe("2026-10-17T00:00:00.000Z");
+      expect(rows[0]!.expiresAt).toBe("2026-10-24T00:00:00.000Z");
       expect(JSON.stringify(rows[0])).not.toContain(TOKEN);
       // 元のログの「古い方」は使わない
       expect(JSON.stringify(rows[0])).not.toContain("2026-09-01");

@@ -31,6 +31,16 @@ describe("認証ストア（C02）", () => {
     expect(files.writes).toEqual([]);
   }));
 
+  it.effect("期限切れのトークンを更新すると、saved_at に更新した時刻を UTC の ISO 8601（ミリ秒つき）で保存する", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials(0));
+    const http = fakeChatgptHttp(() => new Response(JSON.stringify({ access_token: "rotated-access", expires_in: 3600 })));
+    yield* TestClock.setTime(Date.parse("2026-10-25T01:02:03.456Z"));
+    yield* accessToken(files.authPath).pipe(
+      Effect.provideService(FileSystem.FileSystem, files.fs), Effect.provideService(HttpClient.HttpClient, http.client),
+    );
+    expect(JSON.parse(files.files.get(files.authPath)!.text).saved_at).toBe("2026-10-25T01:02:03.456Z");
+  }));
+
   it.effect("logout は進行中の更新の保存を待って削除し、更新が資格情報を復活させない", () => Effect.gen(function* () {
     const files = fakeChatgptFiles(chatgptCredentials(0));
     const entered = yield* Deferred.make<void>();
