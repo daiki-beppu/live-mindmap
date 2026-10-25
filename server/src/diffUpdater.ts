@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import { AppleIntelligence } from "./appleIntelligence.ts";
 import { prepareAppleUpdater } from "./appleDiffUpdater.ts";
 import { UpdaterUnavailable } from "./updaterUnavailable.ts";
@@ -49,4 +49,4 @@ export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: Executabl
   }
   const local = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
   return localUpdaterLayer(local);
-}, Effect.mapError((failure) => failure instanceof UpdaterUnavailable ? failure : new UpdaterUnavailable({ message: failure.message })));
+}, Effect.mapError((failure) => Schema.is(UpdaterUnavailable)(failure) ? failure : new UpdaterUnavailable({ message: failure.message })));

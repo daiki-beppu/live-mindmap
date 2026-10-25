@@ -85,7 +85,7 @@ const importEntry = (exports: unknown, main: string | undefined): string | undef
     && Object.keys(exports).length > 0 && Object.keys(exports).every((key) => key.startsWith("."));
   return exportTarget(subpaths ? (exports as Record<string, unknown>)["."] : exports);
 };
-const failed = (error: unknown) => error instanceof ManagedDepsFailed
+const failed = (error: unknown) => Schema.is(ManagedDepsFailed)(error)
   ? error : new ManagedDepsFailed({ message: error instanceof Error ? error.message : String(error) });
 const codeIs = (error: unknown, code: string): boolean =>
   Predicate.hasProperty(error, "code") && error.code === code;

@@ -1,6 +1,6 @@
 // 入口（cli.ts・bench/entry.ts）が共有する、失敗の表示と終了コード。個別の失敗の文面は呼び出し側が持つ。
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { CliError } from "effect/cli";
 import { afterEach, beforeEach, vi } from "vitest";
 import { exitCodeTeardown, reportEntryFailure } from "../src/entryFailure.ts";
@@ -49,7 +49,7 @@ describe("exitCodeTeardown", () => {
   afterEach(() => { process.exitCode = saved; vi.restoreAllMocks(); });
 
   class NeedsConfirmation extends Error {}
-  const codeOf = (failure: unknown) => (failure instanceof StartupDepsMissing ? 3 : failure instanceof NeedsConfirmation ? 4 : undefined);
+  const codeOf = (failure: unknown) => (Schema.is(StartupDepsMissing)(failure) ? 3 : failure instanceof NeedsConfirmation ? 4 : undefined);
 
   const run = (exit: Exit.Exit<unknown, unknown>) => {
     const processExit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);

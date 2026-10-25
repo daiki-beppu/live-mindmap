@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Cause, ConfigProvider, Console, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Result } from "effect";
+import { Cause, ConfigProvider, Console, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Result, Schema } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { afterEach, vi } from "vitest";
@@ -244,7 +244,7 @@ describe("cli publish（Issue #1250: --anyone / Issue #1251: 既定は合言葉�
 
         if (!Result.isFailure(result)) throw new Error("不正なイベントが公開された");
         expect(result.failure).toBeInstanceOf(BrokenLogLine);
-        if (!(result.failure instanceof BrokenLogLine)) throw new Error("行情報付きの失敗ではない");
+        if (!Schema.is(BrokenLogLine)(result.failure)) throw new Error("行情報付きの失敗ではない");
         const failure = result.failure;
         expect(failure).toMatchObject({ path, line: 4, kind: "event" });
         expect(failure.reason).toMatch(/\S/);

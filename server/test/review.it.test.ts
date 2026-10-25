@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { mapOnlyReviewEvents } from "../src/core/index.ts";
 import { renderReviewPages, ReviewBuild, ReviewPageFailed, writeReviewPages } from "../src/review.ts";
 import { BrokenLogLine, reviewVariants, selfReviewVariants, writeReviews } from "../src/sessionFiles.ts";
@@ -106,7 +106,7 @@ describe("review の書き出し", () => {
 
     const result = yield* Effect.result(writeReviewPages(dir, events, [PLAIN]).pipe(fakeBuild(Effect.succeed("<html></html>")), Effect.provide(fakeAudioMix().layer)));
 
-    expect(Result.isFailure(result) && result.failure instanceof ReviewPageFailed).toBe(true);
+    expect(Result.isFailure(result) && Schema.is(ReviewPageFailed)(result.failure)).toBe(true);
     expect(existsSync(join(dir, "map.html"))).toBe(false);
   }));
 });
@@ -175,7 +175,7 @@ describe("writeReviewPages の音声つきの版", () => {
       writeReviewPages(dir, events, [PLAIN, WITH_AUDIO]).pipe(fakeBuild(Effect.fail(new ReviewPageFailed({ message: "ビルドに失敗" }))), Effect.provide(mix.layer)),
     );
 
-    expect(Result.isFailure(result) && result.failure instanceof ReviewPageFailed).toBe(true);
+    expect(Result.isFailure(result) && Schema.is(ReviewPageFailed)(result.failure)).toBe(true);
     expect(existsSync(join(dir, "map.html"))).toBe(false);
     expect(existsSync(join(dir, "map-audio.html"))).toBe(false);
     expect(mix.calls).toEqual([]);
