@@ -352,7 +352,7 @@ const classifyFailure = (cause: Cause.Cause<DiffUpdateFailure>) => {
     judge,
     ok: false as const,
     error: Result.isSuccess(failure) ? `${failure.success._tag}: ${failure.success.message}` : `defect: ${String(Cause.squash(cause))}`,
-    pause: Result.isSuccess(failure) && failure.success instanceof DiffUpdatePaused ? failure.success : undefined,
+    pause: Result.isSuccess(failure) && Schema.is(DiffUpdatePaused)(failure.success) ? failure.success : undefined,
     stopped: Result.isSuccess(failure) && failure.success._tag === "DiffUpdateStopped",
   };
 };

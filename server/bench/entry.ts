@@ -22,10 +22,10 @@ export class ReplaySessionFailed extends Schema.TaggedError<ReplaySessionFailed>
   reason: Schema.String,
 }) {}
 
-const BENCH_FAILURES = [InvalidInputFile, InvalidTruthFile, MissingSessionDir, ReplaySessionFailed] as const;
-type BenchFailure = InstanceType<(typeof BENCH_FAILURES)[number]>;
+const BenchFailure = Schema.Union([InvalidInputFile, InvalidTruthFile, MissingSessionDir, ReplaySessionFailed]);
+type BenchFailure = typeof BenchFailure.Type;
 
-const isBenchFailure = (failure: unknown): failure is BenchFailure => BENCH_FAILURES.some((C) => failure instanceof C);
+const isBenchFailure = Schema.is(BenchFailure);
 
 const failureLine = (failure: BenchFailure): string => {
   switch (failure._tag) {
@@ -42,7 +42,7 @@ const failureLine = (failure: BenchFailure): string => {
 
 export const reportFailure = reportEntryFailure((failure) => Console.error(isBenchFailure(failure) ? failureLine(failure) : describe(failure)));
 
-export const exitNaturallyForManagedDeps: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof StartupDepsMissing ? 3 : undefined));
+export const exitNaturallyForManagedDeps: Runtime.Teardown = exitCodeTeardown((failure) => (Schema.is(StartupDepsMissing)(failure) ? 3 : undefined));
 
 export const write = (text: string) => Console.log(text.endsWith("\n") ? text.slice(0, -1) : text);
 

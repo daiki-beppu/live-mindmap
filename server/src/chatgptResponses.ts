@@ -70,7 +70,7 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
     return yield* readSse(response.stream);
   }, Effect.scoped, Effect.timeout("5 minutes"));
   const refuse = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(
-    Effect.mapError((error) => error instanceof ChatgptUnavailable || error instanceof DiffUpdatePaused ? error : chatgptRefusal("ChatGPT の応答を取得・検証できません")),
+    Effect.mapError((error) => Schema.is(ChatgptUnavailable)(error) || Schema.is(DiffUpdatePaused)(error) ? error : chatgptRefusal("ChatGPT の応答を取得・検証できません")),
   );
   const classify: Classify = (input) => refuse(exchange(SYSTEM, input.prompt, input.jsonSchema).pipe(
     Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(input.schema), { onExcessProperty: "error" })(text)),
@@ -81,4 +81,4 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
     Effect.map(toAnswers),
   ));
   return { classify, katakana } satisfies LocalModel;
-}, Effect.mapError((error) => error instanceof ChatgptUnavailable ? error : chatgptRefusal("ChatGPT の資格情報を読み込めません")));
+}, Effect.mapError((error) => Schema.is(ChatgptUnavailable)(error) ? error : chatgptRefusal("ChatGPT の資格情報を読み込めません")));

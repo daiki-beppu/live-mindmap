@@ -59,7 +59,7 @@ export const prepareCompatible = Effect.fnUntraced(function* (model: Extract<Exe
   const katakana: LocalModel["katakana"] = (words) => exchange(KATAKANA_SYSTEM, katakanaPrompt(words), KATAKANA_JSON_SCHEMA).pipe(
     Effect.flatMap((content) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(content)),
     Effect.map(toAnswers),
-    Effect.mapError((error) => error instanceof CompatibleUnavailable ? error : new CompatibleFailed({ message: "互換モデルの読みの応答が不正です" })),
+    Effect.mapError((error) => Schema.is(CompatibleUnavailable)(error) ? error : new CompatibleFailed({ message: "互換モデルの読みの応答が不正です" })),
   );
   return { classify, katakana } satisfies LocalModel;
 });

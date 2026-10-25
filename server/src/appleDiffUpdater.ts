@@ -30,7 +30,7 @@ export const prepareAppleUpdater = Effect.fnUntraced(function* (model: Extract<E
   const restarts = yield* Ref.make(0);
   const notify = Effect.fnUntraced(function* (state: Availability) {
     yield* Ref.set(available, state);
-    yield* Queue.offer(notifications, state instanceof DiffUpdateStopped ? state : { status: state.status });
+    yield* Queue.offer(notifications, Schema.is(DiffUpdateStopped)(state) ? state : { status: state.status });
   });
   yield* Effect.forkIn(Effect.gen(function* () {
     let current = initial;
@@ -54,7 +54,7 @@ export const prepareAppleUpdater = Effect.fnUntraced(function* (model: Extract<E
   }), meetingScope, { startImmediately: true });
   const running = Effect.fnUntraced(function* () {
     const state = yield* Ref.get(available);
-    if (state instanceof DiffUpdateStopped) return yield* state;
+    if (Schema.is(DiffUpdateStopped)(state)) return yield* state;
     if (state.status === "restarting") return yield* new AppleRestarting({ message: "Apple Intelligence を再起動しています" });
     return state.model;
   });

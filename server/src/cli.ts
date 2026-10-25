@@ -123,7 +123,7 @@ class InvalidTranscriptFile extends Schema.TaggedError<InvalidTranscriptFile>()(
 }) {}
 class CommandFailed extends Schema.TaggedError<CommandFailed>()("CommandFailed", { message: Schema.String }) {}
 
-const CLI_FAILURES = [
+const CliFailure = Schema.Union([
   ServerUnreachable,
   ServerFailed,
   NoSavedSession,
@@ -136,8 +136,8 @@ const CLI_FAILURES = [
   CommandFailed,
   UpdaterUnavailable,
   ChatgptUnavailable,
-] as const;
-type CliFailure = InstanceType<(typeof CLI_FAILURES)[number]>;
+]);
+type CliFailure = typeof CliFailure.Type;
 
 const failureLine = (failure: CliFailure): string => {
   switch (failure._tag) {
@@ -168,7 +168,7 @@ const failureLine = (failure: CliFailure): string => {
   }
 };
 
-const isCliFailure = (failure: unknown): failure is CliFailure => CLI_FAILURES.some((C) => failure instanceof C);
+const isCliFailure = Schema.is(CliFailure);
 
 const decodeReason = (error: Schema.SchemaError): string =>
   oneLine(
@@ -264,7 +264,7 @@ const forEachServerEvent = <A, R>(
       Effect.mapError((error) => new ServerFailed({ message: `サーバーの応答が読めません: ${decodeReason(error)}` })),
       Effect.flatMap(handle),
     )),
-    Effect.catchIf((error) => !(error instanceof ServerFailed), (error) => Effect.fail(new ServerStreamClosed({ reason: String(error) }))),
+    Effect.catchIf((error) => !Schema.is(ServerFailed)(error), (error) => Effect.fail(new ServerStreamClosed({ reason: String(error) }))),
   );
 
 const loadScreens = Effect.fn("loadScreens")(function* (tsv: string) {
@@ -1319,12 +1319,12 @@ const root = Command.make("live-mindmap").pipe(
 export const runCli = Command.runWith(root, { version: VERSION });
 
 export const reportFailure = reportEntryFailure((failure) => {
-  if (failure instanceof RequiredDepsMissing) return Effect.void;
-  if (failure instanceof ModelRefused || failure instanceof ConfirmationRequired) return Console.error(failure.message);
+  if (Schema.is(RequiredDepsMissing)(failure)) return Effect.void;
+  if (Schema.is(ModelRefused)(failure) || Schema.is(ConfirmationRequired)(failure)) return Console.error(failure.message);
   return Console.error(isCliFailure(failure) ? (failure._tag === "UpdaterUnavailable" || failure._tag === "ChatgptUnavailable" || failure._tag === "ServerFailed" ? failureLine(failure) : oneLine(failureLine(failure))) : describe(failure));
 });
 
-export const teardown: Runtime.Teardown = exitCodeTeardown((failure) => (failure instanceof RequiredDepsMissing || failure instanceof StartupDepsMissing ? 3 : failure instanceof ConfirmationRequired ? 4 : undefined));
+export const teardown: Runtime.Teardown = exitCodeTeardown((failure) => (Schema.is(RequiredDepsMissing)(failure) || Schema.is(StartupDepsMissing)(failure) ? 3 : Schema.is(ConfirmationRequired)(failure) ? 4 : undefined));
 
 if (import.meta.main) {
   const helper = resolveHelperPath(process.env);
