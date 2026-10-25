@@ -11,6 +11,7 @@ const manifest = (dir: string) => JSON.parse(read(dir, "package.json")) as {
 };
 const web = manifest(webRoot);
 const all = { ...web.dependencies, ...web.devDependencies };
+const serverEffect = manifest(join(repoRoot, "server")).dependencies?.effect;
 
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
@@ -26,7 +27,6 @@ describe("web の Foldkit 依存（exact 固定）", () => {
   });
 
   it("effect と @effect/platform-browser を server の effect と同じ版の exact で持つ", () => {
-    const serverEffect = manifest(join(repoRoot, "server")).dependencies?.effect;
     expect(serverEffect).toMatch(EXACT_VERSION);
     expect(web.dependencies?.effect).toBe(serverEffect);
     expect(web.dependencies?.["@effect/platform-browser"]).toBe(serverEffect);
@@ -36,7 +36,7 @@ describe("web の Foldkit 依存（exact 固定）", () => {
 describe("Foldkit の peer（effect 4.0.0）の許可", () => {
   const workspace = read(repoRoot, "pnpm-workspace.yaml");
 
-  it("peerDependencyRules.allowedVersions で 4 つの peer を 4.0.1 に許す", () => {
+  it("peerDependencyRules.allowedVersions で 4 つの peer を server の effect の版に許す", () => {
     const lines = workspace.split("\n").map((line) => line.trimEnd());
     const rootIndex = lines.indexOf("peerDependencyRules:");
     expect(rootIndex, "peerDependencyRules:").toBeGreaterThanOrEqual(0);
@@ -57,10 +57,10 @@ describe("Foldkit の peer（effect 4.0.0）の許可", () => {
       if (key !== undefined && value !== undefined) allowed[key] = value;
     }
     expect(allowed).toEqual({
-      "foldkit>effect": "4.0.1",
-      "foldkit>@effect/platform-browser": "4.0.1",
-      "@foldkit/ui>effect": "4.0.1",
-      "@foldkit/vite-plugin>effect": "4.0.1",
+      "foldkit>effect": serverEffect,
+      "foldkit>@effect/platform-browser": serverEffect,
+      "@foldkit/ui>effect": serverEffect,
+      "@foldkit/vite-plugin>effect": serverEffect,
     });
   });
 
@@ -73,16 +73,16 @@ describe("Foldkit の peer（effect 4.0.0）の許可", () => {
 describe("束ねる effect は 1 つ（lockfile）", () => {
   const lock = read(repoRoot, "pnpm-lock.yaml");
 
-  it("解決された effect の実体は 4.0.1 だけ", () => {
+  it("解決された effect の実体は server の effect の版だけ", () => {
     const entries = [...lock.matchAll(/^ {2}'?(effect@[^:'\s]+)'?:/gm)].map((m) => m[1]);
-    expect(new Set(entries)).toEqual(new Set(["effect@4.0.1"]));
+    expect(new Set(entries)).toEqual(new Set([`effect@${serverEffect}`]));
   });
 
-  it("Foldkit 一式の peer の effect も 4.0.1 に解決される", () => {
+  it("Foldkit 一式の peer の effect も server の effect の版に解決される", () => {
     for (const name of ["foldkit", "@foldkit/ui", "@foldkit/vite-plugin"]) {
       const resolved = [...lock.matchAll(new RegExp(`^ {2}'?${name}@[^:'\\s]+\\(.*:$`, "gm"))].map((m) => m[0]);
       expect(resolved.length, name).toBeGreaterThan(0);
-      for (const entry of resolved) expect(entry, name).toContain("effect@4.0.1");
+      for (const entry of resolved) expect(entry, name).toContain(`effect@${serverEffect}`);
     }
   });
 });
