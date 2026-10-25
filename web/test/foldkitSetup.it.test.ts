@@ -89,8 +89,8 @@ describe("束ねる effect は 1 つ（lockfile）", () => {
 
 describe("web の Vite の設定", () => {
   it("tsconfig.json に JSX の設定（jsx）が無い", () => {
-    const tsconfig = JSON.parse(read(webRoot, "tsconfig.json")) as { compilerOptions: Record<string, unknown> };
-    expect("jsx" in tsconfig.compilerOptions).toBe(false);
+    // tsconfig.json は JSONC（コメントあり）なので JSON.parse せず、本文に jsx のキーが無いことを見る
+    expect(read(webRoot, "tsconfig.json")).not.toMatch(/"jsx"\s*:/);
   });
 });
 
