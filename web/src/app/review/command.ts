@@ -6,15 +6,20 @@ export const REVIEW_AUDIO_ID = "review-audio";
 
 const audioElement = Effect.sync(() => document.getElementById(REVIEW_AUDIO_ID) as HTMLAudioElement | null);
 
+class AudioNotPlayed extends Schema.TaggedError<AudioNotPlayed>()("AudioNotPlayed", { isAborted: Schema.Boolean }) {}
+
 // AbortError は別の play()/pause() に割り込まれただけで、鳴らせなかったのではない
 export const PlayAudio = Command.define("PlayAudio", {
   messages: [Message.SucceededPlayAudio, Message.FailedPlayAudio],
   execute: Effect.flatMap(audioElement, (audio) =>
     audio === null
       ? Effect.succeed(Message.FailedPlayAudio({ isAborted: false }))
-      : Effect.tryPromise({ try: () => audio.play(), catch: (error) => error }).pipe(
+      : Effect.tryPromise({
+          try: () => audio.play(),
+          catch: (error) => new AudioNotPlayed({ isAborted: error instanceof DOMException && error.name === "AbortError" }),
+        }).pipe(
           Effect.as(Message.SucceededPlayAudio()),
-          Effect.catch((error) => Effect.succeed(Message.FailedPlayAudio({ isAborted: error instanceof DOMException && error.name === "AbortError" }))),
+          Effect.catch(({ isAborted }) => Effect.succeed(Message.FailedPlayAudio({ isAborted }))),
         ),
   ),
 });
