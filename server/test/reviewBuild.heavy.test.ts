@@ -98,7 +98,7 @@ describe("map.html の本物のビルド", () => {
       for (const gone of ["react", "react-dom", "@xyflow/react", "@videojs/react", "@tanstack/react-hotkeys"]) expect(html, gone).not.toContain(`## ${gone} - `);
 
       const seen = yield* Effect.acquireUseRelease(
-        (yield* Playwright).launch(),
+        (yield* Playwright).launch,
         (browser) => Effect.tryPromise(async () => {
           const page = await browser.newPage();
           await page.goto(pathToFileURL(path!).href);

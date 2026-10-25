@@ -38,7 +38,7 @@ beforeAll(async () => {
     if (!address || typeof address === "string") throw new Error("web のポートを取得できません");
     url = `http://127.0.0.1:${address.port}/`;
     browser = await Effect.runPromise(Effect.gen(function* () {
-      return yield* (yield* Playwright).launch();
+      return yield* (yield* Playwright).launch;
     }).pipe(Effect.provide(managedPlaywright), Effect.scoped));
   } catch (error) {
     await web.close();
