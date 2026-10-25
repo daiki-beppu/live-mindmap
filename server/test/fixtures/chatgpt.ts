@@ -93,7 +93,7 @@ export const fakeChatgptFiles = (initial: ReturnType<typeof chatgptCredentials>)
       if (!file && !directories.has(path)) return Effect.fail(failure("stat", path, "NotFound"));
       return Effect.succeed({
         type: file ? "File" as const : "Directory" as const, mode: file?.mode ?? 0o700,
-        mtime: Option.some(new Date(0)), atime: Option.none(), birthtime: Option.none(), dev: 1,
+        mtime: Option.some(new Date(0)), atime: Option.none(), birthtime: Option.none(), dev: 1n,
         ino: Option.none(), nlink: Option.none(), uid: Option.none(), gid: Option.none(), rdev: Option.none(),
         size: ByteSize.bytes(file ? new TextEncoder().encode(file.text).length : 0), blksize: Option.none(), blocks: Option.none(),
       });
