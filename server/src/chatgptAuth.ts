@@ -170,4 +170,4 @@ export const loginChatgpt = Effect.gen(function* () {
   const claims = yield* verifiedClaims(id_token, clientId, nonce, now);
   const credentials = loginCredentials({ clientId, host: registration.host, claims, now, token: { ...token, id_token, refresh_token, scope } });
   yield* withFileLock(path, writeAuthFile(path, JSON.stringify(credentials)));
-}).pipe(Effect.scoped, Effect.timeout("5 minutes"), Effect.catchIf((error) => !(error instanceof ChatgptUnavailable), () => Effect.fail(chatgptRefusal("ChatGPT のサインインを完了できません"))));
+}).pipe(Effect.scoped, Effect.timeout("5 minutes"), Effect.catchIf((error) => !Schema.is(ChatgptUnavailable)(error), () => Effect.fail(chatgptRefusal("ChatGPT のサインインを完了できません"))));

@@ -1,4 +1,4 @@
-import { Cause, Console, Effect, Exit, Result, type Runtime } from "effect";
+import { Cause, Console, Effect, Exit, Result, Schema, type Runtime } from "effect";
 import { CliError } from "effect/cli";
 import { exitNaturally } from "./exitNaturally.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
@@ -8,7 +8,7 @@ export const reportEntryFailure = (rest: (failure: unknown) => Effect.Effect<voi
   const error = Cause.findError(cause);
   if (Result.isFailure(error)) return Console.error(describe(Cause.squash(cause)));
   const failure = error.success;
-  if (failure instanceof StartupDepsMissing) return Console.error(failure.message);
+  if (Schema.is(StartupDepsMissing)(failure)) return Console.error(failure.message);
   if (CliError.isCliError(failure)) return Effect.void;
   return rest(failure);
 };
