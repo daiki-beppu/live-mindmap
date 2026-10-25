@@ -264,6 +264,9 @@ importers:
         specifier: 0.167.0
         version: 0.167.0(@effect/platform-browser@4.0.1(effect@4.0.1))(effect@4.0.1)
     devDependencies:
+      '@effect/tsgo':
+        specifier: 0.48.1
+        version: 0.48.1
       '@foldkit/oxlint-plugin':
         specifier: 0.15.3
         version: 0.15.3(effect@4.0.1)
