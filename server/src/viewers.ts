@@ -1,11 +1,11 @@
 import { Array as Arr, Context, Effect, FiberSet, Layer, PubSub, Ref, type Scope } from "effect";
 import { Socket } from "effect/socket";
-import type { CaptionsFrame, DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, SnapshotFrame, SpeakerNamesFrame, TapNoticeFrame } from "./core/index.ts";
+import type { ViewerFrame as ViewerFrameSchema } from "./core/index.ts";
 
 const FEED_END = Symbol("live-mindmap/server/Viewers/end");
 type Feed = string | typeof FEED_END;
 
-export type ViewerFrame = SnapshotFrame | CaptionsFrame | IntakeFrame | ScreenNoticeFrame | TapNoticeFrame | SelfPauseFrame | DiffUpdateFrame | SessionModeFrame | SpeakerNamesFrame;
+export type ViewerFrame = typeof ViewerFrameSchema.Type;
 export type SendFrame = (frame: ViewerFrame) => Effect.Effect<void>;
 
 const END_FRAMES: {
