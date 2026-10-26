@@ -5,7 +5,7 @@ import Foundation
 // 録画の動画の映像を共有画面として流す経路（`transcribe-file`、Issue #1090）。
 //   動画 → AVAssetReader（最初の映像トラック、BGRA） → 4 fps に間引く → 1280×720 に収める → ScreenChangeDetector → screen
 // 判定器・送る画像（JPEG 0.8）・OCR はライブ（`ScreenCapture`）と同じ。時刻は動画の時刻（PTS、先頭が 0 秒）で、音声の時刻と同じ。
-// ブラウザのタブの判定はかけない（bundle id を空に、タイトルを nil にする）。顔だけの画面も特別扱いしない。
+// ScreenChangeDetector.withoutTabDetection() でブラウザのタブの判定はかけない。顔だけの画面も特別扱いしない。
 // 映像のトラックが無いファイルは何も流さない。映像が読めなければ `screen-off` で知らせて、音声だけで続ける。
 
 /// ライブと同じ 4 fps（`screenFramesPerSecond`）に間引く。時刻を 1/4 秒の枠に分け、前に通した枠より後ろの枠のフレームだけを通す。
@@ -45,7 +45,7 @@ final class FileScreenReading: @unchecked Sendable {
     private let output: AVAssetReaderTrackOutput
     private let imageContext = CIContext()
     private var thinner = ScreenFrameThinner()
-    private var detector = ScreenChangeDetector(bundleID: "")
+    private var detector = ScreenChangeDetector.withoutTabDetection()
     /// 最後に読んだフレームの時刻（途中で読めなくなったときの `screen-off` の時刻。`--self-file` の 2 トラックでは映像の判定の進み）。
     private(set) var lastTime: Double
     private var finished = false
@@ -125,11 +125,15 @@ final class FileScreenReading: @unchecked Sendable {
             return events.isEmpty ? .frame : .events(events)
         }
         finished = true
-        guard !isCancelled, reader.status == .failed else { return .end }
-        printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
-        var events = detector.screenEvent(windowGoneAt: lastTime)
-        events.append(.screenOff(start: lastTime, reason: .許可なし))
-        return .events(events)
+        guard !isCancelled else { return .end }
+        if reader.status == .failed {
+            printScreenError("動画の映像を最後まで読めなかった（音声だけで続ける）: \(reader.error?.localizedDescription ?? "不明")")
+            var events = detector.screenEvent(windowGoneAt: lastTime)
+            events.append(.screenOff(start: lastTime, reason: .許可なし))
+            return .events(events)
+        }
+        let events = detector.finish()
+        return events.isEmpty ? .end : .events(events)
     }
 
     /// フレームを 1280×720 に収めた画像にして、輝度の画像と一緒に返す。作れなければ nil（そのフレームは判定に入れない）。
