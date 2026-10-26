@@ -13,6 +13,7 @@
 - [セッションの開始とブラウザへの送り口](session-start-and-viewers.md): `Sessions` の開始の括弧・状態の門番と、`Viewers` の送り口・frame の種類ごとの表を触るとき
 - [過去のセッションのフォルダの読み側](session-folder-reading.md): `log.jsonl` などを読む CLI のコマンドや bench を足す・変えるとき、壊れた行の失敗の文を触るとき
 - [話者の名前の包み](speaker-names.md): 話者の名前を持つ・出す処理（`openLogged` の `nameSpeaker`）と、それを通るライブ・再生・評価・bench を触るとき、名前の推定のプロンプトを変えて前後を比べるとき
+- [差分更新の反映](reflection.md): ログの `diff` の行をセッションの状態に当てる `reflectDiff` と、それを呼ぶライブ・復元・計測を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -90,3 +91,4 @@
 - #1448 の takt の run（`20261024-181251-issue-1448-cli-play-de-shita-n-zxileb`）の trace と reports → [takt の run](takt-runs.md)。対象の IT の起動の手順逸脱は捨てた: 裁定で済んだとだけ記録され、中身が残っていない。マージの run（`20261024-184416-merge-pr-1520-kspqhg`）は捨てた: 一直線に通り、新しい学びが無い
 - チケット [#1449](https://github.com/daiki-beppu/live-mindmap/issues/1449)・[PR #1521](https://github.com/daiki-beppu/live-mindmap/pull/1521) の差分 → [話者の名前の包み](speaker-names.md)。sub-issue に resolution コメントは無かった
 - #1449 の takt の run（`20261024-185745-issue-1449-bench-no-sttreplay-93spin`）の trace と reports → 捨てた: 計画どおり 1 周で通り、消えた口の契約のテスト 1 本を消した件も今の状態に残らない。マージの run（`20261024-192400-merge-pr-1521-llximw`）も同じく一直線で、新しい学びが無い
+- [差分更新の結果を状態に当てる手順を 1 つの純粋な畳み込みにまとめたとき](../devlog/2026-10-26.md#reflect-fold) → [ADR 0024](../adr/0024-reflect-diff-row-in-one-pure-fold.md)、[差分更新の反映](reflection.md)、[takt の run](takt-runs.md)。用語は足さなかった: 「反映」は #1595 で用語集に入っている。仕様を書く前の写しの食い違い（16 回一緒に変わった）は ADR の Considered Options に寄せた
