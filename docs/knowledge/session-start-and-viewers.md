@@ -54,11 +54,13 @@
 
 戻り値の型 `Effect.Effect<void>` は関数に明示しておく。switch の後ろに無条件の `return Effect.void` を置くと、網羅の検査が効かなくなる。HelperEvent の振り分けを sink へ移す（`sink.accept`）ことはしないと決めている（#1426）。
 
-## frame の種類を足すときは、`ViewerFrame` の union と `END_FRAMES` の 1 行だけを書く
+## frame の種類を足すときは、core の `ViewerFrame` の Schema・`END_FRAMES` の 1 行・web の `applyFrame` の case を書く
 
 `Viewers` が持つ口は `forSession`・`connect`・`drained` の 3 つだけになった（[#1453](https://github.com/daiki-beppu/live-mindmap/issues/1453)・[#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)）。前は種類ごとの送りのメソッドが 9 個あり、それぞれが「後からつないだ画面のために残すか」の規則を持っていた。種類を 1 つ足すには、メソッド・`Retained` の項目・`NOTHING_RETAINED`・`retainedFrames`・終わりの解除を、別々の場所でそろえる必要があった。
 
 今は `END_FRAMES` が、frame の `type` をキーにした mapped type になっている。値は、セッションの終わりに送る解除の frame か `"keep"`（`snapshot`・`speaker-names`）のどちらか。union に種類を足して表の行を書かなければ、`pnpm typecheck` が落ちる。#1453 の run は、union に試しの種類を 1 つ足して `TS2741` で落ちることを確かめてから戻した。ソースの文字列を固定するテストは作っていない。
+
+frame の union は `server/src/core/viewerFrame.ts` の `ViewerFrame` Schema 1 か所に置く。server の送信型と web の受信型は、この Schema から導く。種類を足すときは core の union の Schema に追加し、`END_FRAMES` に 1 行を書く。web の `applyFrame` も `Match.discriminatorsExhaustive("type")` で網羅しているので、case を書き忘れると `pnpm typecheck` が落ちる。送信は `JSON.stringify` のままにし、union の Schema で encode しない。
 
 後からつないだクライアントに保持値を送る順は、`END_FRAMES` のキーの順になる。行を足す位置で、つないだ直後に届く順が決まる。
 

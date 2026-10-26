@@ -1,8 +1,8 @@
 import { Schema } from "effect";
 import { defineMessageUnion } from "foldkit/message";
-import { CaptionsFrame, DiffUpdateFrame, IntakeFrame, ScreenNoticeFrame, SelfPauseFrame, SessionModeFrame, SnapshotFrame, SpeakerNamesFrame, TapNoticeFrame } from "../../../../server/src/core/index.ts";
+import { ViewerFrame } from "../../../../server/src/core/index.ts";
 
-export const LiveFrame = Schema.Union([SnapshotFrame, CaptionsFrame, IntakeFrame, ScreenNoticeFrame, TapNoticeFrame, SelfPauseFrame, DiffUpdateFrame, SessionModeFrame, SpeakerNamesFrame]);
+export const LiveFrame = ViewerFrame;
 export type LiveFrame = typeof LiveFrame.Type;
 
 export const Message = defineMessageUnion({
