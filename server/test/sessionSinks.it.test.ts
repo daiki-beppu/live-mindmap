@@ -1,3 +1,4 @@
+import { TestUpdaterLayer } from "./fixtures/sessionLayers.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -24,7 +25,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 // 1 秒の途中結果（SETTLE_QUIET_MS）の待ちは、音声の時刻（後続の結果の end）で進める（壁時計では進まない。本物の時間では待たない）。
 //
 // 想定する契約（server/src/sessionSinks.ts）:
-// - `SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) })` が実物の Layer を作る。撮影・見返し用の HTML のビルド・mix・FileSystem は Layer の文脈から受け取る（テストの sinksLayer が偽物を渡す）。
+// - `SessionSinks.layer` が実物の Layer を作る。撮影・見返し用の HTML のビルド・mix・FileSystem は Layer の文脈から受け取る（テストの sinksLayer が偽物を渡す）。
 //   updaterLayer は core の Service DiffUpdater を作る Layer で、セッションごとに Layer.build(Layer.fresh(...)) して使う
 // - `createDir(sessionsDir)` がセッションのフォルダを作る（失敗すれば以後 open を呼ばない。要件3の前提）
 // - `open({ dir, title, send })` がセッションの Scope の中で 1 回呼ばれ、updater をそのセッションの Scope で開き、
@@ -64,7 +65,7 @@ function makeFakeUpdater() {
 const fileIo = trackedFileSystem();
 const { settle, settleUntil } = fileIo;
 const sinksLayer = ({ updaterLayer, ...services }: { updaterLayer: Layer.Layer<DiffUpdater> } & ExportServicesOptions) =>
-  SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer, ...services })));
+  Layer.merge(SessionSinks.layer, Layer.succeed(TestUpdaterLayer, updaterLayer)).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer, ...services })));
 
 // Issue #1021: 相手の発言は話者の確定区間が揃うまで（最大 3 秒）出ない。話者に関係しない観測のテストは、始めに speaker-off を渡して、相手の発言を待たずに話者なしで出す。
 // 話者の決定と待ちは、末尾の describe（speakerOff: false で開く）が対象にする
@@ -78,26 +79,6 @@ const withTmpSessionsDir = Effect.fn("withTmpSessionsDir")(function* () {
 });
 
 describe("SessionSinks（実物 Layer）", () => {
-  it.effect("準備で取得する推論子はサービス構築時ではなく準備を呼ぶ Scope で閉じる", () => Effect.gen(function* () {
-    const state = { opened: 0, closed: 0 };
-    const sinks = yield* SessionSinks.pipe(Effect.provide(SessionSinks.layer({
-      prepareUpdater: () => Effect.acquireRelease(
-        Effect.sync(() => {
-          state.opened++;
-          return { layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) };
-        }),
-        () => Effect.sync(() => { state.closed++; }),
-      ),
-    }).pipe(Layer.provide(fakeExportServices()))));
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const scope = yield* Effect.acquireRelease(Scope.make(), (made) => Scope.close(made, Exit.void));
-      yield* Scope.provide(sinks.prepare({ kind: "single", model: defaultClaude }), scope);
-      expect(state).toMatchObject({ opened: attempt, closed: attempt - 1 });
-      yield* Scope.close(scope, Exit.void);
-      expect(state).toMatchObject({ opened: attempt, closed: attempt });
-    }
-  }));
-
   it.effect("一時停止中に終了し、書き出しが5分を越えても保存ログと取得済みマップを変えない", () => Effect.gen(function* () {
     let calls = 0;
     const published: Snapshot[] = [];
@@ -139,7 +120,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       const scope = yield* Scope.make();
       yield* Scope.provide(
-        sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void }),
+        sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void }),
         scope,
       );
       expect(state).toMatchObject({ opened: 1, closed: 0 });
@@ -177,7 +158,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
 
       yield* sink.speaker({ type: "speaker", track: "相手", start: 1.5, end: 2.5, slot: 1, final: false });
       yield* sink.final({ track: "相手", start: 3, end: 4, text: "採用" });
@@ -210,7 +191,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -227,7 +208,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -250,7 +231,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -271,7 +252,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -292,7 +273,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -310,7 +291,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -326,7 +307,7 @@ describe("SessionSinks（実物 Layer）", () => {
     const sessionsDir = yield* withTmpSessionsDir();
     const sinks = yield* SessionSinks;
     const dir = yield* sinks.createDir(sessionsDir);
-    const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+    const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
     yield* sink.speaker(SPEAKER_OFF);
     yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
     yield* sink.flush;
@@ -425,14 +406,14 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       expect(state).toEqual({ captureBuilt: 1, captured: 0 }); // 開いた時点で受け取り済み
 
       yield* sink.exports;
       yield* sink.exports;
 
       expect(state).toEqual({ captureBuilt: 1, captured: 2 });
-    })).pipe(Effect.provide(SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: makeFakeUpdater().updaterLayer }) }).pipe(Layer.provide(services))));
+    })).pipe(Effect.provide(Layer.merge(SessionSinks.layer, Layer.succeed(TestUpdaterLayer, makeFakeUpdater().updaterLayer)).pipe(Layer.provide(services))));
   });
 
   it.effect("テキストの 3 形式を書けないときは、失敗の値ではなく defect になる（撮影・HTML の失敗のように諦めない）", () =>
@@ -441,7 +422,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       rmSync(dir, { recursive: true, force: true }); // 書き先のフォルダが無くなる
 
       const exit = yield* sink.exports.pipe(Effect.provideService(Console.Console, warnings.service), Effect.exit);
@@ -455,7 +436,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const sessionsDir = yield* withTmpSessionsDir();
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final({ track: "相手", start: 0, end: 1, text: "採用" });
       yield* sink.flush;
@@ -480,7 +461,7 @@ describe("SessionSinks（実物 Layer）", () => {
       const noop = { send: () => Effect.void };
 
       const firstScope = yield* Scope.make();
-      const first = yield* Scope.provide(sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "一つ目", ...noop }), firstScope);
+      const first = yield* Scope.provide(sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "一つ目", ...noop }), firstScope);
       yield* first.speaker(SPEAKER_OFF);
       expect(state).toMatchObject({ opened: 1, closed: 0 });
       yield* first.final({ track: "相手", start: 0, end: 1, text: "ひとつめの発言" });
@@ -490,7 +471,7 @@ describe("SessionSinks（実物 Layer）", () => {
 
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5))); // フォルダ名は開始時刻（実時間のミリ秒）
       const secondScope = yield* Scope.make();
-      const second = yield* Scope.provide(sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "二つ目", ...noop }), secondScope);
+      const second = yield* Scope.provide(sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir: yield* sinks.createDir(sessionsDir), title: "二つ目", ...noop }), secondScope);
       yield* second.speaker(SPEAKER_OFF);
       expect(state).toMatchObject({ opened: 2, closed: 1 }); // 2 つ目は 1 つ目を使い回さず、新しく開く
       yield* second.final({ track: "相手", start: 0, end: 1, text: "ふたつめの発言" });
@@ -514,7 +495,7 @@ const openRecordingSink = Effect.fn("openRecordingSink")(function* ({ speakerOff
   const dir = yield* sinks.createDir(sessionsDir);
   const speaks: CaptionsFrame[] = [];
   const published: Snapshot[] = [];
-  const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude,
+  const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude,
     dir,
     title: "週次",
     vocab,
@@ -592,7 +573,7 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
       const scope = yield* Scope.make();
-      const sink = yield* Scope.provide(sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", send: () => Effect.void }), scope);
+      const sink = yield* Scope.provide(sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", send: () => Effect.void }), scope);
       yield* sink.speaker(SPEAKER_OFF);
       yield* sink.final(finalRemark("相手", 1, 2, "ひとつめ"));
       yield* sink.final(finalRemark("自分", 3, 4, "ふたつめ"));
@@ -643,14 +624,14 @@ describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書�
       const sinks = yield* SessionSinks;
       const noop = { send: () => Effect.void };
       const firstDir = yield* sinks.createDir(sessionsDir);
-      const first = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir: firstDir, title: "前", ...noop });
+      const first = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir: firstDir, title: "前", ...noop });
       yield* first.speaker(SPEAKER_OFF);
       yield* first.final(finalRemark("相手", 1, 2, "前の発言"));
       yield* first.flush;
       yield* first.exports;
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
       const secondDir = yield* sinks.createDir(sessionsDir);
-      yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir: secondDir, title: "今", ...noop });
+      yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir: secondDir, title: "今", ...noop });
 
       expect(secondDir).not.toBe(firstDir);
       const exported = JSON.parse(readFileSync(join(secondDir, "export.json"), "utf8"));
@@ -854,7 +835,7 @@ describe("SessionSinks（実物 Layer）: 過去のセッションの語彙を�
     return yield* Effect.scoped(Effect.gen(function* () {
       const sinks = yield* SessionSinks;
       const dir = yield* sinks.createDir(sessionsDir);
-      const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次", vocab: options.vocab, send: () => Effect.void });
+      const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次", vocab: options.vocab, send: () => Effect.void });
       yield* sink.speaker(SPEAKER_OFF);
       yield* script({ sink, dir });
       yield* sink.drain;

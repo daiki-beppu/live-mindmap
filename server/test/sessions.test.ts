@@ -1,3 +1,4 @@
+import { StartupChecks, type StartupChecksDeps } from "../src/startupChecks.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { makeFakeHelpers, type AttemptScript } from "./fixtures/intakeHelpers.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
@@ -13,7 +14,7 @@ import { Sessions, SessionsDir, type SessionStart, type RecordedStart } from "..
 import { Viewers } from "../src/viewers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
-import { missingKeyNotice, type JudgeModel } from "../src/judgeSelection.ts";
+import type { JudgeModel } from "../src/judgeSelection.ts";
 import type { UpdatePlan } from "../src/updatePlan.ts";
 
 // Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と種類別の配線を、
@@ -101,17 +102,19 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
       Effect.map(openBase(args), (sink): RecordedSink => ({ ...sink, drainForRestart: Effect.succeed({}), finishBacklog: Effect.void, discardBacklog: Effect.void }));
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, openRecorded, createDir, prepare: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) }) }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, speakers, speakerCalls, vocabAdded, order, control };
+    return { sinks: SessionSinks.of({ open, openRecorded, createDir }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, speakers, speakerCalls, vocabAdded, order, control };
   });
 }
 
 // 本物の startup と同じ形（Layer.build + Context.get。server/src/http.ts:214-217 が手本）で Sessions を取り出す。
 // scope を自分で持つことで、「サーバーの Scope を閉じる」を明示的なタイミングで起こせる（CT-CLOSE-ONLY-INTERRUPT）
-const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Layer<SessionSinks>) =>
+const defaultPreparation = () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) });
+
+const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Layer<SessionSinks>, prepareUpdater: StartupChecksDeps["prepareUpdater"] = defaultPreparation) =>
   Effect.gen(function* () {
     // テストの終了で必ず解放する（closeServer で先に閉じても、二重の close は何もしない）
     const scope = yield* Effect.acquireRelease(Scope.make(), (made) => Scope.close(made, Exit.void));
-    const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(readyManagedDeps, helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
+    const context = yield* Scope.provide(Layer.build(Sessions.layer.pipe(Layer.provideMerge(Layer.mergeAll(StartupChecks.layer({ prepareUpdater }).pipe(Layer.provide(readyManagedDeps)), helpersLayer, sinksLayer, Layer.succeed(SessionsDir)("/tmp/live-mindmap-fake"), Viewers.layer)))), scope);
     return { sessions: Context.get(context, Sessions), viewers: Context.get(context, Viewers), closeServer: () => Scope.close(scope, Exit.void) };
   });
 
@@ -279,12 +282,11 @@ describe("録画の引数と終了処理", () => {
     const helpers = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const opened: Parameters<SessionSinks["Service"]["openRecorded"]>[0][] = [];
-    const prepared: Parameters<SessionSinks["Service"]["prepare"]>[0][] = [];
+    const prepared: UpdatePlan[] = [];
     const sinks = SessionSinks.of({ ...fake.sinks,
       openRecorded: (args) => Effect.andThen(Effect.sync(() => { opened.push(args); }), fake.sinks.openRecorded(args)),
-      prepare: (plan) => Effect.andThen(Effect.sync(() => { prepared.push(plan); }), fake.sinks.prepare(plan)),
     });
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks), (plan) => Effect.andThen(Effect.sync(() => { prepared.push(plan); }), defaultPreparation()));
     const model = { ...defaultClaude, name: "fast", model: "claude-haiku-5-5" };
     yield* sessions.startRecorded({ file: "/meeting.m4a", title: "週次会議", vocab: ["ヤマダ商事", "アルファ"], realtime: false, plan: { kind: "single", model } });
     expect(prepared).toEqual([{ kind: "single", model }]);
@@ -296,36 +298,20 @@ describe("録画の引数と終了処理", () => {
     yield* sessions.stop;
   }).pipe(Effect.scoped));
 
-  it.effect("録画の判定を含む計画をそのまま sink の準備へ渡す", () => Effect.gen(function* () {
+  it.effect("録画の判定を含む計画をそのまま updater の準備へ渡す", () => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const judge: JudgeModel = { name: "clef", route: "system-one", apiKeyEnv: "CLOUDFLARE_API_TOKEN", accountIdEnv: "CLOUDFLARE_ACCOUNT_ID", model: "clef", timeoutMs: 2000 };
     const plan: UpdatePlan = { kind: "routed", judge };
     const prepared: UpdatePlan[] = [];
-    const sinks = SessionSinks.of({ ...fake.sinks, prepare: (received) => Effect.andThen(
-      Effect.sync(() => { prepared.push(received); }), fake.sinks.prepare(received),
-    ) });
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, fake.sinks), (received) => Effect.andThen(
+      Effect.sync(() => { prepared.push(received); }), defaultPreparation(),
+    ));
     const input = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan };
     yield* sessions.startRecorded(input);
 
     expect(prepared).toEqual([{ kind: "routed", judge }]);
     expect(fake.opened.count).toBe(1);
-    yield* sessions.stop;
-  }).pipe(Effect.scoped));
-
-  it.effect("録画の開始応答は準備の通知をライブと同じ warnings で返す", () => Effect.gen(function* () {
-    const helpers = yield* makeFakeHelpers([{}]);
-    const fake = yield* makeFakeSessionSinks();
-    const notice = missingKeyNotice({ name: "jev" }, ["TYPESAFE_AI_API_KEY"]);
-    const sinks = SessionSinks.of({ ...fake.sinks, prepare: (plan) => Effect.map(fake.sinks.prepare(plan), (prepared) => ({ ...prepared, notice })) });
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
-    const live = yield* sessions.start(start({ screen: false }));
-    yield* sessions.stop;
-    const recorded = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
-
-    expect(recorded.warnings).toEqual(live.warnings);
-    expect(recorded.warnings.filter((line) => line === notice)).toHaveLength(1);
     yield* sessions.stop;
   }).pipe(Effect.scoped));
 });
@@ -685,31 +671,31 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const control = { ready };
     const state = { opened: 0, closed: 0, createdDirs: 0, flushAlive: false, exportsAlive: false };
     const original = fake.sinks;
-    const sinks = SessionSinks.of({
-      ...original,
-      createDir: (dir, at) => Effect.andThen(Effect.sync(() => { state.createdDirs++; }), original.createDir(dir, at)),
-      prepare: () => Effect.gen(function* () {
+    const prepareUpdater: StartupChecksDeps["prepareUpdater"] = () => Effect.gen(function* () {
         yield* Effect.acquireRelease(
           Effect.sync(() => { state.opened++; }),
           () => Effect.sync(() => { state.closed++; }),
         );
         yield* Deferred.await(control.ready);
         return { layer: Layer.succeed(DiffUpdater, DiffUpdater.of({ update: () => Effect.succeed({ ops: [] }) })) };
-      }),
+      });
+    const sinks = SessionSinks.of({
+      ...original,
+      createDir: (dir, at) => Effect.andThen(Effect.sync(() => { state.createdDirs++; }), original.createDir(dir, at)),
       open: (args) => original.open(args).pipe(Effect.map((sink) => ({
         ...sink,
         flush: Effect.andThen(Effect.sync(() => { state.flushAlive = state.opened > state.closed; }), sink.flush),
         exports: Effect.andThen(Effect.sync(() => { state.exportsAlive = state.opened > state.closed; }), sink.exports),
       }))),
     });
-    return { ready, control, state, layer: Layer.succeed(SessionSinks, sinks) };
+    return { ready, control, state, prepareUpdater, layer: Layer.succeed(SessionSinks, sinks) };
   });
 
   it.effect("準備完了まではフォルダと取り込みを始めず、最後の更新と書き出しの後に推論子を閉じる", () => Effect.gen(function* () {
     const helper = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer, prep.prepareUpdater);
     const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", plan: { kind: "single", model: defaultClaude }, audio: false, screen: false, title: undefined, vocab: [] }));
     yield* settleUntil(() => prep.state.opened === 1);
     expect(prep.state).toMatchObject({ opened: 1, closed: 0 });
@@ -730,7 +716,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const helper = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer, prep.prepareUpdater);
     const input: SessionStart = { app: "us.zoom.xos", plan: { kind: "single", model: defaultClaude }, audio: false, screen: false, title: undefined, vocab: [] };
     const starting = yield* Effect.forkChild(Effect.exit(sessions.start(input)));
     yield* settleUntil(() => prep.state.opened === 1);
@@ -762,7 +748,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const prep = yield* preparation(fake);
     yield* Deferred.succeed(prep.ready, undefined);
     fake.control.createDirFails = !launchFails;
-    const { sessions, viewers } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const { sessions, viewers } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer, prep.prepareUpdater);
     const client = yield* viewerClient();
     yield* Effect.forkChild(viewers.connect(client.socket));
     const begin = kind === "live"
@@ -796,7 +782,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const helper = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
-    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer, prep.prepareUpdater);
     const starting = yield* Effect.forkChild(sessions.start({ app: "us.zoom.xos", plan: { kind: "single", model: defaultClaude }, audio: false, screen: false, title: undefined, vocab: [] }));
     yield* settleUntil(() => prep.state.opened === 1);
     expect(prep.state.opened).toBe(1);
@@ -833,7 +819,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     const fake = yield* makeFakeSessionSinks();
     const prep = yield* preparation(fake);
     yield* Deferred.succeed(prep.ready, undefined);
-    const { sessions, closeServer } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer);
+    const { sessions, closeServer } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), prep.layer, prep.prepareUpdater);
     yield* sessions.start({ app: "us.zoom.xos", plan: { kind: "single", model: defaultClaude }, audio: false, screen: false, title: undefined, vocab: [] });
     helper.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "最初の発言" });
     yield* TestClock.adjust(500);

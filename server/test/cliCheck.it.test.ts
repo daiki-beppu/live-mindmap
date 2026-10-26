@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { vi } from "vitest";
 import { Helpers } from "../src/helpers.ts";
-import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
+import { helperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -34,8 +35,8 @@ const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFai
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   const launch = vi.fn(() => Effect.die("check はセッションを開始しない"));
   const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
-    helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.die("apps は対象外"), launch })),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    helpers: Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.die("apps は対象外"), launch })),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });
   return { ...server, launch };
@@ -127,7 +128,7 @@ describe("開始せずに確かめる CLI check", () => {
     { need: "optional", state: "absent", ready: true, code: 0 },
     { need: "required", state: "ready", ready: true, code: 0 },
     { need: "required", state: "missing", ready: false, code: 3 },
-    { need: "required", state: "outdated", ready: false, code: 0 },
+    { need: "required", state: "outdated", ready: true, code: 0 },
     { need: "required", state: "absent", ready: false, code: 3 },
   ] as const)("CLI は $need / $state の JSON を出して exit $code を返す", ({ need, state, ready, code }) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;

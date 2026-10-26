@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { DiffUpdater, SessionLog, type DiffInput, type DiffResult, type LogEvent } from "../../src/core/index.ts";
 
 export type UpdateFailure = { readonly _tag: string; readonly message: string; readonly judge?: { readonly model: string; readonly ms: number; readonly confidence?: number; readonly failure?: string } };
@@ -41,3 +41,5 @@ export const settleUntil = (condition: () => boolean) =>
   Effect.gen(function* () {
     for (let i = 0; i < 200 && !condition(); i++) yield* Effect.yieldNow;
   });
+
+export class TestUpdaterLayer extends Context.Service<TestUpdaterLayer, Layer.Layer<DiffUpdater>>()("live-mindmap/test/TestUpdaterLayer") {}

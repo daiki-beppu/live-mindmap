@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, rename, symlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -10,7 +11,7 @@ import { Helpers } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { realLayers, type ServerOptions } from "../src/server.ts";
 import { collectingConsole, fakeExportServices } from "./fixtures/exportServices.ts";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { fakeNpm, installed, managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -41,8 +42,8 @@ const publish = async (root: string, name: string) => {
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     managedDeps: Layer.succeed(ManagedDeps, deps),
-    helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.die("apps は対象外"), launch: () => Effect.die("開始は対象外") })),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    helpers: Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.die("apps は対象外"), launch: () => Effect.die("開始は対象外") })),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
 });
 

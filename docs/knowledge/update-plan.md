@@ -29,16 +29,16 @@ server の側で黙って読み替えると、CLI が知らせた計画と実際
 
 ## 判定の鍵は `planLayer` だけが見る。効くのは layer を作るプロセスの環境
 
-`planLayer` は、セッションを動かすプロセスで呼ぶ。`start`・`recorded` は server（`server.ts` が `SessionSinks` の `prepareUpdater` に渡す）、`play`・`eval` は CLI。`routed` で鍵が足りなければ、判定なしの組み込みの claude で始め、`missingKeyNotice` の 1 行を `notice` で返す。
+`planLayer` は、セッションを動かすプロセスで呼ぶ。`start`・`recorded` は server（`server.ts` が `StartupChecks.layer` の `prepareUpdater` に渡す）、`play`・`eval` は CLI。`routed` で鍵が足りなければ、判定なしの組み込みの claude で始め、`missingKeyNotice` の 1 行を `notice` で返す。
 
-- **`start`・`recorded`**: `sessions.ts` が `requireStartupDeps` の知らせの後ろに `notice` を足し、開始の応答の `warnings` で CLI へ返す
+- **`start`・`recorded`**: `StartupChecks.prepare` が確認の警告の後ろに `notice` を一度だけ足す。`sessions.ts` は、その `warnings` を開始の応答で CLI へ返す
 - **`play`・`eval`**: CLI が `writeWarnings` で出す
 
 前は、CLI の `selectJudge` が CLI の環境で鍵を確かめて知らせを出し、server の `prepareRouted` は server の環境に鍵が無いと黙って振り分けなしにしていた。CLI の環境にだけ鍵があると、CLI は鍵が無いという知らせを出さず、server は振り分けずに組んでいた。利用者には振り分けているように見えていた。鍵を見るのを 1 か所にしたので、知らせは実際に layer を作った環境の結果だけになる。鍵を見る処理を足すときも、`planLayer` の外には置かない。
 
 ## セッションに渡すのは計画だけ。モデルが要るところは `planModel` で導く
 
-`SessionStart` と `RecordedStart` は `plan` を持ち、`model` の欄を持たない。ログ・`requireStartupDeps` の経路・`sessionMode` の `local` に要るモデルは、`planModel(plan)` で導く（`routed` なら組み込みの claude）。`model` を `plan` と並べて持たせると、2 つが食い違う形をまた作ることになる。
+`SessionStart` と `RecordedStart` は `plan` を持ち、`model` の欄を持たない。ログ・`StartupChecks` に渡す経路・`sessionMode` の `local` に要るモデルは、`planModel(plan)` で導く（`routed` なら組み込みの claude）。`model` を `plan` と並べて持たせると、2 つが食い違う形をまた作ることになる。
 
 [#1310](https://github.com/daiki-beppu/live-mindmap/issues/1310)（[PR #1370](https://github.com/daiki-beppu/live-mindmap/pull/1370)）の前は、`RecordedStart` だけが `model` を持ち、`sessions.ts` が `{ kind: "single", model }` を組んで `sinks.prepare` に渡していた。録画からのセッションで判定が届かなかったのは、この形のせいだった。
 
@@ -48,8 +48,11 @@ server の側で黙って読み替えると、CLI が知らせた計画と実際
 |---|---|
 | `single` / `routed` の分かれ方、判定の選択順、ローカルモードの拒否、`acceptPlan` の断り、`planBody` との往復、転送用トークンの規則 | `updatePlan.test`（test ConfigProvider とメモリ上の設定） |
 | 鍵が無い・空・空白のときの `notice`、Cloudflare の 2 つの鍵 | `judgeRouting.test`（偽の SDK で `planLayer` を呼ぶ） |
-| 計画が `sinks.prepare` まで届くこと、`notice` が `warnings` に 1 回だけ入ること | `sessions.test`（「録画の判定を含む計画をそのまま sink の準備へ渡す」など） |
+| 計画が `StartupChecks` の `prepareUpdater` まで届くこと | `sessions.test`（録画の判定を含む計画をそのまま渡す） |
+| `notice` が確認の警告の末尾に一度だけ入ること | `startupChecks.test`（公開の準備操作） |
 | CLI の引数が本文の `judge` になること、ローカルモードで要求を送る前に断ること | `cliRecorded.it` |
+
+`ServerOptions.prepareUpdater` は `StartupChecks.layer` に渡す。`SessionSinks` は準備の依存を持たず、準備済みの `updaterLayer` を受け取ってセッションの Scope で開く。
 
 配線の層では、環境変数に鍵を置いて分岐させない。偽の `prepareUpdater` に受けた計画を記録させ（`prepared`）、知らせが要るテストでは `notice` を返させる。鍵の有無で分かれる規則は `planLayer` の unit だけが見る。
 

@@ -1,5 +1,6 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import type { AppleIntelligence } from "../src/appleIntelligence.ts";
 import type { Scope } from "effect";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
@@ -172,7 +173,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     const root = yield* temporaryDirectory;
     const http = yield* loopback(() => {});
     const launches: string[][] = [];
-    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
       launches.push([...args]);
       const queue = yield* Queue.make<string, Cause.Done>();
       Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
@@ -188,11 +189,14 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
       keyReads.push(path);
       return ConfigProvider.fromEnvRecord({ SYNTHETIC_TRANSFER_KEY: "synthetic-key" }).load(path);
     });
-    const sinks = SessionSinks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
+    const startupChecks = StartupChecks.layer({ prepareUpdater: prepareUpdaterLayer }).pipe(
+      Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, unusedApple)),
+    );
+    const sinks = SessionSinks.layer.pipe(
       Layer.provide(Layer.mergeAll(fakeExportServices(), NodeHttpClient.layerUndici, unusedApple)),
     );
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
-      helpers, sessionSinks: sinks, managedDeps: readyManagedDeps,
+      helpers, startupChecks, sessionSinks: sinks, managedDeps: readyManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, provider));
     const token = readFileSync(modelTransferTokenPath(join(root, "sessions"), server.port), "utf8");
     const { WebSocket } = yield* Effect.promise(() => import("ws"));
@@ -296,7 +300,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     });
     // 発言は、設定を書き換えた後に流す。差分更新は発言が届いたらすぐ呼ぶので、先に流すと書き換えより前に呼ばれてしまう
     let sayRemark: (() => void) | undefined;
-    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: () => Effect.gen(function* () {
       const queue = yield* Queue.make<string, Cause.Done>();
       // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
       sayRemark = () => {
@@ -310,7 +314,7 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
     }) }));
     const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
       helpers,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(forbiddenManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
+      sessionSinks: SessionSinks.layer.pipe(Layer.provide(Layer.mergeAll(forbiddenManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))), startupChecks: StartupChecks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(readyManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, unusedApple))),
       managedDeps: readyManagedDeps,
     }).pipe(Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord({ SYNTHETIC_PROCESS_KEY: "synthetic-key" })));
     const config = join(root, "config.json");

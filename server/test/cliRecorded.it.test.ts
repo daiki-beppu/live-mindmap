@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -112,10 +113,7 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
   const prepared: UpdatePlan[] = [];
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
-      prepared.push(plan);
-      return { layer: updater.layer, ...(options.notice === undefined ? {} : { notice: options.notice }) };
-    }) }).pipe(
+    sessionSinks: SessionSinks.layer.pipe(
       Layer.provide(fakeExportServices()),
       Layer.flatMap((context) => {
         const sinks = Context.get(context, SessionSinks);
@@ -123,7 +121,10 @@ const resource = Effect.fnUntraced(function* (script: Script, updater: ReturnTyp
           Effect.flatMap(sinks.openRecorded(args), (sink) => options.wrapRecorded === undefined ? Effect.succeed(sink) : options.wrapRecorded(sink)),
         }));
       }),
-    ),
+    ), startupChecks: StartupChecks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
+      prepared.push(plan);
+      return { layer: updater.layer, ...(options.notice === undefined ? {} : { notice: options.notice }) };
+    }) }),
   });
   const requests: { url: string; body: unknown }[] = [];
   const requestClient = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (client) =>

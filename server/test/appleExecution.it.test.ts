@@ -1,5 +1,6 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { createServer, type Server } from "node:http";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -81,7 +82,7 @@ const appleProcess = Effect.fnUntraced(function* () {
 });
 const audioHelper = () => {
   const launches: string[][] = [];
-  const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+  const layer = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
     launches.push([...args]);
     const queue = yield* Queue.make<string, Cause.Done>();
     Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
@@ -121,10 +122,13 @@ describe("apple を使う開始・再生の配線", () => {
     const root = yield* temporaryDirectory;
     const process = yield* appleProcess();
     const helper = audioHelper();
-    const sinks = SessionSinks.layer({ prepareUpdater: planLayer }).pipe(
+    const startupChecks = StartupChecks.layer({ prepareUpdater: planLayer }).pipe(
       Layer.provide(Layer.mergeAll(readyManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, process.layer)),
     );
-    const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, { helpers: helper.layer, sessionSinks: sinks, managedDeps: readyManagedDeps });
+    const sinks = SessionSinks.layer.pipe(
+      Layer.provide(Layer.mergeAll(readyManagedDeps, fakeExportServices(), NodeHttpClient.layerUndici, process.layer)),
+    );
+    const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, { helpers: helper.layer, startupChecks, sessionSinks: sinks, managedDeps: readyManagedDeps });
     const start = () => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ app: "us.zoom.xos", audio: false, screen: false, model: { name: "apple", route: "apple", local: true } }),

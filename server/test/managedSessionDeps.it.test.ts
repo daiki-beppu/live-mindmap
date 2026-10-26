@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -11,7 +12,7 @@ import { SessionSinks } from "../src/sessionSinks.ts";
 import { planLayer } from "../src/updatePlan.ts";
 import { realLayers, type ServerOptions } from "../src/server.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { managedLayer, temporaryDeps } from "./fixtures/managedDeps.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -66,7 +67,7 @@ fs.writeFileSync(path.join(binary, process.platform === 'win32' ? 'claude.exe' :
 });
 
 const helperLayer = (launches: string[][], beforeLaunch: Effect.Effect<void>) => Layer.succeed(Helpers, Helpers.of({
-  ...readyHelperChecks,
+  ...helperChecks(),
   apps: Effect.succeed([]),
   launch: (args) => Effect.gen(function* () {
     launches.push([...args]);
@@ -106,7 +107,7 @@ const sessionServer = Effect.fnUntraced(function* (dir: string, deps: ManagedDep
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     managedDeps: Layer.succeed(ManagedDeps, deps),
     helpers: helperLayer(launches, beforeLaunch),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
 });
 const fakeDeps = (source: Stream.Stream<DepEvent, ManagedDepsFailed>, calls: string[]) => ManagedDeps.of({
@@ -130,7 +131,7 @@ describe("712: セッションと管理実体の寿命", () => {
       const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
         managedDeps: Layer.succeed(ManagedDeps, deps),
         helpers: helperLayer(launches, Effect.void),
-        sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), Layer.succeed(ManagedDeps, deps), unusedApple, NodeHttpClient.layerUndici))),
+        sessionSinks: SessionSinks.layer.pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), Layer.succeed(ManagedDeps, deps), unusedApple, NodeHttpClient.layerUndici))), startupChecks: StartupChecks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), Layer.succeed(ManagedDeps, deps), unusedApple, NodeHttpClient.layerUndici))),
       });
       const first = yield* accepted(yield* start(server.port));
       yield* accepted(yield* stop(server.port));
@@ -185,7 +186,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
       managedDeps: Layer.succeed(ManagedDeps, fakeDeps(Stream.succeed(result), calls)),
       helpers: helperLayer(launches, Effect.void),
-      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices({ capture: () => Effect.andThen(Deferred.succeed(entered, undefined), Deferred.await(release)) }))),
+      sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: () => Effect.andThen(Deferred.succeed(entered, undefined), Deferred.await(release)) }))), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices({ capture: () => Effect.andThen(Deferred.succeed(entered, undefined), Deferred.await(release)) }))),
     });
     yield* accepted(yield* start(server.port));
     const stopping = yield* stop(server.port).pipe(Effect.forkChild);

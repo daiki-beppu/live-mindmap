@@ -40,9 +40,13 @@
 
 ライブと録画からのセッションの違いは、`body` の中の種類ごとの段（準備・取り込みの引数・イベントの振り分け・終わり方）にだけ書く。種類ごとの内側の記録（`SessionKind`）は作らないと決めている（#1426）。
 
-## `prepareMap` で検査の引数を組むときは、`Parameters<typeof requireStartupDeps>` から種類ごとに組む
+## `prepareMap` は入口別の入力で `StartupChecks.prepare` を一回呼ぶ
 
-仕様の案では、`prepareMap` の引数を `{ mode: "start" | "recorded"; screen?: boolean }` の 1 つのレコードにしていた。けれども `requireStartupDeps` の引数は、`["recorded", route, { check }]` と `["start" | "resume", route, { screen, check }]` の判別付きタプルの union になっている。レコードから組むと `TS2345: Type '"recorded"' is not assignable to type '"resume" | "start"'` で落ちる。#1452 の run は、`options` を `{ mode: "start"; screen: boolean } | { mode: "recorded" }` にし、`Parameters<typeof requireStartupDeps>` 型の引数を種類ごとに組んで通した。型の断定（キャスト）はしていない。
+`prepareMap` は Sessions の中に残る。`options` は `{ mode: "start"; screen: boolean } | { mode: "recorded" }` で受け、開始時の経路と計画を `StartupChecks.prepare` に渡す。`start` だけが `screen` を持ち、`recorded` は `noMap: false` を持つ。helper の確認方法を選ぶのは `StartupChecks` で、呼ぶ側から確認 Effect を渡さない。
+
+`StartupChecks` は必須不足をまとめて停止し、そろえば `prepareUpdater(plan)` を呼ぶ。依存付きの準備失敗を `StartupDepsMissing` に変換し、準備の `notice` を確認警告の末尾へ一度だけ追加する。呼び出し元のセッション Scope は `prepareMap` から渡す。
+
+録画の `noMap` と resume も同じ準備操作を一回呼ぶが、updater を組まず `warnings` だけを受け取る。resume と `checkResume` は、同じ Live に保持した開始時の経路・screen を使う。確認後の同一 Live の検証と、開始失敗・中断時に Scope を閉じる括弧の規則は維持する。
 
 ## HelperEvent を足したら、ライブの `applyEvent` と録画の `applyRecordedEvent` の両方に case を書く。`default` は置かない
 

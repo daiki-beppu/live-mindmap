@@ -1,5 +1,6 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
-import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { createServer } from "node:http";
@@ -12,7 +13,7 @@ import { vi } from "vitest";
 import { runCli } from "../src/cli.ts";
 import { StdoutIsTty } from "../src/consoleText.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem, type DepEvent } from "../src/managedDeps.ts";
-import { Helpers } from "../src/helpers.ts";
+import { Helpers, HelperCheckFailure } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { installed, temporaryDeps } from "./fixtures/managedDeps.ts";
@@ -22,8 +23,8 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 
 const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
-    helpers: Layer.succeed(Helpers, Helpers.of({ ...forbiddenHelperChecks, apps: Effect.die("apps は対象外"), launch: () => Effect.die("launch は対象外") })),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    helpers: Layer.succeed(Helpers, Helpers.of({ ...helperChecks(new HelperCheckFailure({ message: "helper がない" })), apps: Effect.die("apps は対象外"), launch: () => Effect.die("launch は対象外") })),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });
 });
