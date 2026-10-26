@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
@@ -65,7 +66,7 @@ const resource = Effect.fnUntraced(function* () {
   };
   const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
     helpers: Layer.succeed(Helpers, Helpers.of(helpers)), managedDeps: Layer.succeed(ManagedDeps, deps),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
   const cliLayer = Layer.mergeAll(
     forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,

@@ -12,7 +12,7 @@ import type { JudgeModel } from "./judgeSelection.ts";
 import { acceptPlan, needsTransferToken, type UpdatePlan } from "./updatePlan.ts";
 import { ManagedDeps } from "./managedDeps.ts";
 import { InstallDeps } from "./installDeps.ts";
-import { checkManagedDeps } from "./managedDepsCheck.ts";
+import { StartupChecks } from "./startupChecks.ts";
 import { Helpers } from "./helpers.ts";
 import { CheckFor, ModelRoute, CheckDepNames } from "./managedDepsProtocol.ts";
 import { ServerRoutes, type SessionRecordedBody, type SessionStartBody } from "./serverProtocol.ts";
@@ -217,12 +217,11 @@ const DepRoutes = HttpRouter.addAll([
     const route = yield* Schema.decodeUnknownEffect(ModelRoute)(params.get("route") ?? "claude").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    if (entry === "play") return yield* respondCheck(yield* checkManagedDeps(entry, route));
+    if (entry === "play") return yield* respondCheck(yield* (yield* StartupChecks).report({ entry, route }));
     const screen = yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(params.get("screen") ?? "true").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
-    const helpers = yield* Helpers;
-    return yield* respondCheck(yield* checkManagedDeps(entry, route, { screen: screen === "true", check: helpers.check({ screen: screen === "true" }) }));
+    return yield* respondCheck(yield* (yield* StartupChecks).report({ entry, route, screen: screen === "true" }));
   })),
   HttpRouter.route(ServerRoutes.depsCheck.method, ServerRoutes.depsCheck.path, Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -255,7 +254,7 @@ export const serveFeed: Effect.Effect<void, never, HttpServer.HttpServer | Viewe
   (handler) => HttpServer.serveEffect(respond(handler)),
 );
 
-export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ViewingShare | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
+export const serveSessions = (token: string): Effect.Effect<void, never, HttpServer.HttpServer | Sessions | ViewingShare | StartupChecks | Helpers | ManagedDeps | InstallDeps | Viewers | Scope.Scope> => Effect.flatMap(
   HttpRouter.toHttpEffect(Layer.mergeAll(SessionRoutes, ServerIdentityRoutes, DepRoutes, FeedRoutes, UnsupportedRoute, OriginRestriction)),
   (handler) => HttpServer.serveEffect(respond(handler)),
 ).pipe(Effect.provideService(ModelTransferToken, token));

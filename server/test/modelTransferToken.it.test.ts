@@ -1,12 +1,13 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
-import { forbiddenHelperChecks, readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Result } from "effect";
-import { Helpers } from "../src/helpers.ts";
+import { Helpers, HelperCheckFailure } from "../src/helpers.ts";
 import type { JudgeModel } from "../src/judgeSelection.ts";
 import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTransferToken.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -19,8 +20,8 @@ const directory = Effect.acquireRelease(
   (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),
 );
 const layers = {
-  helpers: Layer.succeed(Helpers, Helpers.of({ ...forbiddenHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
-  sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+  helpers: Layer.succeed(Helpers, Helpers.of({ ...helperChecks(new HelperCheckFailure({ message: "helper がない" })), apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
+  sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   managedDeps: readyManagedDeps,
 };
 
@@ -84,11 +85,12 @@ describe("モデル転送トークンのサーバー Scope", () => {
     const root = yield* directory;
     const sessionsDir = join(root, "sessions");
     const prepared: (JudgeModel | undefined)[] = [];
-    const sessionSinks = SessionSinks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
+    const startupChecks = StartupChecks.layer({ prepareUpdater: (plan) => Effect.sync(() => {
       prepared.push(plan.kind === "routed" ? plan.judge : undefined);
       return { layer: updaterLayer(() => Effect.succeed({ ops: [] })) };
     }) }).pipe(Layer.provide(fakeExportServices()));
-    const server = yield* startedServer({ port: 0, sessionsDir }, { ...layers, sessionSinks, helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("準備の届き先だけを確かめる") })) });
+    const sessionSinks = SessionSinks.layer.pipe(Layer.provide(fakeExportServices()));
+    const server = yield* startedServer({ port: 0, sessionsDir }, { ...layers, startupChecks, sessionSinks, helpers: Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: () => Effect.die("準備の届き先だけを確かめる") })) });
     const start = (headers: Record<string, string>) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({ app: "us.zoom.xos", audio: false, screen: false, judge }),

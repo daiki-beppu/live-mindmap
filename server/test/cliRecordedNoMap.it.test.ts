@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,7 +69,7 @@ const resource = Effect.fnUntraced(function* (script: Script, options: { missing
     : readyManagedDeps;
   const server = yield* startedServer({ port: 0, sessionsDir }, {
     helpers: helpers.layer, managedDeps: managed,
-    sessionSinks: SessionSinks.layer({ prepareUpdater }).pipe(Layer.provide(exports)),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(exports)), startupChecks: StartupChecks.layer({ prepareUpdater }).pipe(Layer.provide(exports)),
   });
   const requests: { url: string; body: unknown }[] = [];
   const client = Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, (http) =>

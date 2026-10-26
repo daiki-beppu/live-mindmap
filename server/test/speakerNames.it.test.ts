@@ -1,3 +1,4 @@
+import { TestUpdaterLayer } from "./fixtures/sessionLayers.ts";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +24,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 const fileIo = trackedFileSystem();
 const { settle, settleUntil } = fileIo;
 const sinksLayer = (updaterLayer: Layer.Layer<DiffUpdater>) =>
-  SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer }) }).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer })));
+  Layer.merge(SessionSinks.layer, Layer.succeed(TestUpdaterLayer, updaterLayer)).pipe(Layer.provide(fakeExportServices({ fileSystem: fileIo.layer })));
 
 const segment = (slot: number, start: number, end: number) => ({ type: "speaker", track: "相手", start, end, slot, final: true }) as const;
 const settledAt = (to: number) => ({ type: "speaker-settled", track: "相手", to }) as const;
@@ -64,7 +65,7 @@ const openSession = Effect.fnUntraced(function* (updaterLayer: Layer.Layer<DiffU
   const sinks = yield* SessionSinks;
   const dir = yield* sinks.createDir(yield* Effect.acquireRelease(Effect.promise(() => mkdtemp(join(tmpdir(), "speaker-names-it-"))), (d) => Effect.promise(() => rm(d, { recursive: true, force: true }))));
   const frames: SpeakerNamesFrame[] = [];
-  const sink = yield* sinks.open({ updaterLayer: (yield* sinks.prepare({ kind: "single", model: defaultClaude })).layer, model: defaultClaude, dir, title: "週次",
+  const sink = yield* sinks.open({ updaterLayer: (yield* TestUpdaterLayer), model: defaultClaude, dir, title: "週次",
     send: (frame) => Effect.sync(() => { if ("type" in frame && frame.type === "speaker-names") frames.push(frame); }) });
   if (options.speakerOff) yield* sink.speaker(SPEAKER_OFF);
   const diffs = () => logEvents(dir).filter((e) => e.type === "diff").length;

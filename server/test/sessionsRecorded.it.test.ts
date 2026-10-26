@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,7 +27,7 @@ const resource = Effect.fnUntraced(function* (script: Script, options: { attempt
   const updater = updaterLayer(() => Effect.succeed({ ops: [] }));
   const layer = Sessions.layer.pipe(Layer.provide(Layer.mergeAll(
     readyManagedDeps, helpers.layer, Viewers.layer, Layer.succeed(SessionsDir, sessionsDir),
-    SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updater }) }).pipe(Layer.provide(fakeExportServices())),
+    SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updater }) }).pipe(Layer.provide(readyManagedDeps)),
   )));
   const context = yield* Layer.build(layer);
   const sessions = Context.get(context, Sessions);
