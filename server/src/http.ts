@@ -222,7 +222,7 @@ const DepRoutes = HttpRouter.addAll([
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     const helpers = yield* Helpers;
-    return yield* respondCheck(yield* checkManagedDeps(entry, route, { screen: screen === "true", check: screen === "true" ? helpers.check : helpers.checkNoScreen }));
+    return yield* respondCheck(yield* checkManagedDeps(entry, route, { screen: screen === "true", check: helpers.check({ screen: screen === "true" }) }));
   })),
   HttpRouter.route(ServerRoutes.depsCheck.method, ServerRoutes.depsCheck.path, Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;

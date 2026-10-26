@@ -31,7 +31,7 @@ export class InstallDeps extends Context.Service<InstallDeps, {
       const speechEvents = speech ? Stream.concat(
         helpers.installSpeechJa.pipe(Stream.map((message) => ({ type: "progress" as const, message }))),
         Stream.drain(Stream.fromEffect(Effect.gen(function* () {
-          const status = yield* helpers.checkNoScreen;
+          const status = yield* helpers.check({ screen: false });
           const item = speechJaItem(status.speechJa);
           if (item.state !== "ready") return yield* new InstallationFailed({ message: "日本語の音声認識モデルを導入できませんでした" });
           items.push(item);

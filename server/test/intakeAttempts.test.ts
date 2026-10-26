@@ -387,10 +387,9 @@ describe("取り込みの試行", () => {
     yield* resumed.end;
   }));
 
-  it.effect("未知typeは診断せず、項目の壊れた既知typeは読み飛ばしの文面で一行記録する", () => Effect.gen(function* () {
-    const r = yield* setup([{ events: ['{"type":"heartbeat"}', JSON.stringify(remark)] }]);
-    yield* waitFor(() => r.events.length === 1, "未知type後の発言");
-    expect(yield* TestConsole.errorLines).toEqual([]);
+  it.effect("項目の壊れた既知typeは読み飛ばしの文面で一行記録し、後続の発言を処理する", () => Effect.gen(function* () {
+    const r = yield* setup([{ events: [JSON.stringify(remark)] }]);
+    yield* waitFor(() => r.events.length === 1, "最初の発言");
     r.fake.send(0, { ...remark, track: "司会" });
     r.fake.send(0, { ...remark, start: 1, end: 2 });
     yield* waitFor(() => r.events.length === 2, "壊れた既知type後の発言");

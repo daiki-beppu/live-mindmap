@@ -6,7 +6,7 @@ import { decodeHelperEvent } from "../src/core/index.ts";
 // 段 3（Issue #240）で remarkFromHelper・partialFromHelper・originFromHelper を decodeHelperEvent に
 // まとめた（order.md:34, 47, 61）。期待値は、置き換え前のこのファイルが固定していたものと同じにする
 // （order.md:61「期待値は同じ」）。戻り値の形だけが変わる: 知っているイベントは { kind: "known", event }、
-// 知らない type は失敗ではなく { kind: "unknown" }、壊れた入力（不正な JSON を含む）はタグ付きの失敗になる。
+// 知らない type は失敗ではなく { kind: "unknown", type }、壊れた入力（不正な JSON を含む）はタグ付きの失敗になる。
 
 // decode の成功を主張し、decode した値を返す。失敗していれば SchemaError の message を示して落ちる
 // （fixtures/coreSchema.ts の expectDecodeSuccess と同じ idiom）
@@ -22,7 +22,8 @@ function expectDecodeSuccess<A, R>(effect: Effect.Effect<A, Schema.SchemaError, 
 function expectDecodeFailure<A, R>(effect: Effect.Effect<A, Schema.SchemaError, R>) {
   return Effect.gen(function* () {
     const result = yield* Effect.result(effect);
-    assert.isTrue(Result.isFailure(result), "decode が成功してしまった（壊れた入力のはずが通った）");
+    if (Result.isSuccess(result)) return assert.fail("decode が成功してしまった（壊れた入力のはずが通った）");
+    assert.strictEqual(result.failure._tag, "SchemaError");
   });
 }
 
@@ -415,11 +416,20 @@ describe("decodeHelperEvent（ヘルパーのイベント文字列 → 知って
   });
 
   describe("知らない type・壊れた入力", () => {
-    it.effect("知らない type は失敗にならず、「知らないイベント」として返る", () =>
+    it.effect("知らない type は失敗にならず、ルートの type を保って返る", () =>
       Effect.gen(function* () {
-        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "heartbeat" })));
-        assert.deepStrictEqual(decoded, { kind: "unknown" });
+        const decoded = yield* expectDecodeSuccess(decodeHelperEvent(JSON.stringify({ type: "heartbeat", payload: { type: "remark" } })));
+        const expected = { kind: "unknown", type: "heartbeat" } as const;
+        assert.deepStrictEqual(decoded, expected);
       }));
+
+    it.effect.each([
+      { payload: { type: "heartbeat" } },
+      [{ type: "heartbeat" }],
+      '{"type":"heartbeat"}',
+      { type: 1 },
+    ])("ルートに文字列の type がない入力は SchemaError になる（%j）", (input) =>
+      expectDecodeFailure(decodeHelperEvent(JSON.stringify(input))));
 
     it.effect("不正な JSON はタグ付きの失敗になる", () => expectDecodeFailure(decodeHelperEvent("{")));
 

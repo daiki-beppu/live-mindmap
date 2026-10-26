@@ -300,8 +300,8 @@ export class Sessions extends Context.Service<Sessions, {
       ) {
         const model = planModel(plan);
         const checkArgs: Parameters<typeof requireStartupDeps> = options.mode === "start"
-          ? ["start", model.route, { screen: options.screen, check: options.screen ? helpers.check : helpers.checkNoScreen }]
-          : ["recorded", model.route, { check: helpers.checkNoScreen }];
+          ? ["start", model.route, { screen: options.screen, check: helpers.check({ screen: options.screen }) }]
+          : ["recorded", model.route, { check: helpers.check({ screen: false }) }];
         const startupWarnings = yield* requireStartupDeps(...checkArgs).pipe(Effect.provideService(ManagedDeps, deps));
         const { layer: updaterLayer, notice } = yield* sinks.prepare(plan).pipe(Scope.provide(scope), Effect.mapError(startupPreparationFailure));
         return { model, updaterLayer, warnings: notice === undefined ? startupWarnings : [...startupWarnings, notice] };
@@ -431,7 +431,7 @@ export class Sessions extends Context.Service<Sessions, {
 
       const startRecorded = (input: RecordedStart) => openSession((scope, send) => Effect.gen(function* () {
         const prepared = input.noMap === true
-          ? { noMap: true as const, warnings: yield* requireRecordedTranscriptDeps(helpers.checkNoScreen) }
+          ? { noMap: true as const, warnings: yield* requireRecordedTranscriptDeps(helpers.check({ screen: false })) }
           : { noMap: false as const, ...yield* prepareMap(input.plan, { mode: "recorded" }, scope) };
         const { warnings } = prepared;
         const now = DateTime.nowUnsafe();
@@ -548,7 +548,7 @@ export class Sessions extends Context.Service<Sessions, {
       const resume = Effect.gen(function* () {
         const live = yield* current("live");
         if ((yield* Ref.get(live.intake)) !== "stopped") return yield* new IntakeNotStopped();
-        const warnings = yield* requireStartupDeps("resume", live.model.route, { screen: live.screen, check: live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+        const warnings = yield* requireStartupDeps("resume", live.model.route, { screen: live.screen, check: helpers.check({ screen: live.screen }) }).pipe(Effect.provideService(ManagedDeps, deps));
         const afterCheck = yield* Ref.get(state);
         if (afterCheck.kind !== "live" || afterCheck.live !== live) return yield* new Aborted();
         const taken = yield* Ref.modify(live.intake, (kind): [boolean, IntakeKind] => (kind === "stopped" ? [true, "interrupted"] : [false, kind]));
@@ -568,7 +568,7 @@ export class Sessions extends Context.Service<Sessions, {
 
       const checkResume = Effect.gen(function* () {
         const live = yield* current("live");
-        return yield* checkManagedDeps("resume", live.model.route, { screen: live.screen, check: live.screen ? helpers.check : helpers.checkNoScreen }).pipe(Effect.provideService(ManagedDeps, deps));
+        return yield* checkManagedDeps("resume", live.model.route, { screen: live.screen, check: helpers.check({ screen: live.screen }) }).pipe(Effect.provideService(ManagedDeps, deps));
       });
 
       const status: Effect.Effect<IntakeStatusReport> = Effect.gen(function* () {
