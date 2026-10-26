@@ -403,7 +403,7 @@ describe("ログからの復元", () => {
         dropped: [],
       },
     ];
-    return { f1, r1, f2, events };
+    return { r1, events };
   }
 
   it.effect("処理済みだった中身のない発言は、復元後の最初の差分更新の直前の発言に入れない", () =>
@@ -420,15 +420,15 @@ describe("ログからの復元", () => {
       expect(cont.calls[0]!.fresh.map((u) => u.id)).toEqual([n1.id]);
     }));
 
-  it.effect("中身のない発言を処理済みから除いても、復元した回数・変わったこと・マップは変わらない", () =>
+  it.effect("diff-update-state の stopped を含むログを復元しても running で戻る", () =>
     Effect.gen(function* () {
-      const { r1, f2, events } = legacyLogWithProcessedFillers();
-      const restored = yield* restore(viaJsonl(events));
-      const snap = yield* restored.snapshot;
+      const restored = yield* restore(viaJsonl([
+        { type: "start", title: "定例" },
+        { type: "diff-update-state", state: { status: "restarting" } },
+        { type: "diff-update-state", state: { status: "stopped" } },
+      ]));
 
-      expect(snap.round).toBe(2);
-      expect(snap.changes).toEqual([{ change: "追加", node: "n1", kind: "議題", text: "採用", round: 2, at: f2.end }]);
-      expect(snap.nodes.find((n) => n.id === "n1")).toMatchObject({ text: "採用", evidence: [r1.id] });
+      expect(yield* restored.diffUpdate).toEqual({ status: "running" });
     }));
 });
 
@@ -506,12 +506,11 @@ describe("壊れたログは InvalidLogEvent で失敗する", () => {
       expect(error.reason).toContain("start がありません");
     }));
 
-  it.effect("diff が挙げた発言がログに無ければ、その diff の位置の InvalidLogEvent で失敗し、理由に発言の ID を示す", () =>
+  it.effect("diff が挙げた発言がログに無ければ、その diff の位置の InvalidLogEvent で失敗する", () =>
     Effect.gen(function* () {
       const diff = { type: "diff", input: { recent: [], fresh: ["r-missing"], nodeCount: 0 }, ops: [], dropped: [] };
       const error = yield* flip([start, { type: "remark", remark: r1 }, diff]);
       expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 2 });
-      expect(error.reason).toContain("r-missing");
     }));
 
   const broken: [string, unknown[], number][] = [

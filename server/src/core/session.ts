@@ -1,13 +1,12 @@
 import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
-import { diffMaps } from "./changes.ts";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { attributePeople } from "./people.ts";
-import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type AppliedOps, type DiffOutput, type MeetingMap } from "./map.ts";
-import { lastChangedNode, nextCurrentTopic } from "./topic.ts";
+import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
+import { recordRound, reflectDiff, stampOf, type ReflectionState } from "./reflection.ts";
 import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
-import { Remark } from "./remark.ts";
+import { hasContent, Remark } from "./remark.ts";
 import { acceptInferredNames, type InferredSpeakerName } from "./speakerNames.ts";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "./snapshot.ts";
 import { Word, WordTime } from "./words.ts";
@@ -112,16 +111,8 @@ export class InvalidLogEvent extends Schema.TaggedError<InvalidLogEvent>()("Inva
 
 const RECENT = 3;
 
-export const FILLERS: ReadonlySet<string> = new Set([
-  "あ", "え", "う", "お", "ん", "うん", "ふん", "ええ", "はあ", "へえ", "ほう",
-  "あの", "えっと", "えと", "その", "まあ", "はい",
-]);
-
-export function hasContent(text: string): boolean {
-  const words = text.replace(/[ー〜~]/g, "").split(/[\s\p{P}\p{S}]+/u).filter((w) => w !== "");
-  return words.some((w) => !FILLERS.has(w));
-}
-
+export { hasContent } from "./remark.ts";
+export { stampOf } from "./reflection.ts";
 
 export type SessionState = {
   readonly map: MeetingMap;
@@ -145,22 +136,6 @@ export type RestoredScreens = {
   readonly anchor: number | undefined;
 };
 
-type History = Pick<SessionState, "round" | "changes" | "currentTopic" | "lastChanged">;
-
-export const stampOf = (history: { round: number }, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
-
-function recordRound(history: History, before: MeetingMap, applied: Pick<AppliedOps, "map" | "changeOrder" | "combined">, stamp: { round: number; at: number }): History {
-  const { round, at } = stamp;
-  const added = diffMaps(before, applied).map((c): ChangeEntry => ({ ...c, round, at }));
-  const lastChanged = lastChangedNode(applied.map, applied.changeOrder);
-  return {
-    round,
-    changes: [...history.changes, ...added],
-    lastChanged,
-    currentTopic: nextCurrentTopic(applied.map, lastChanged, history.currentTopic),
-  };
-}
-
 const previousResponseOf = (applied: { refs: Record<string, string>; dropped: Dropped[] }): PreviousResponse | undefined =>
   Object.keys(applied.refs).length || applied.dropped.length ? { refs: applied.refs, dropped: applied.dropped } : undefined;
 
@@ -176,14 +151,14 @@ type UnsentScreen = ScreenRefs & { readonly seq: number };
 type Ledger = {
   readonly remarks: Remark[];
   readonly byId: Map<string, Remark>;
-  readonly processed: Remark[];
-  readonly known: Set<string>;
+  processed: readonly Remark[];
+  known: ReadonlySet<string>;
   readonly files: Set<string>;
   unsent: UnsentScreen[];
 };
 type Replay = {
   readonly map: MeetingMap | undefined;
-  readonly history: History;
+  readonly history: ReflectionState["history"];
   readonly received: number;
   readonly carried: string | undefined;
   readonly anchor: number | undefined;
@@ -191,45 +166,16 @@ type Replay = {
   readonly diffUpdate: DiffUpdateState;
 };
 
-const freshRemarksOf = (remarks: readonly Remark[], ids: readonly string[], invalid: (reason: string) => InvalidLogEvent): Effect.Effect<Remark[], InvalidLogEvent> => {
-  const fresh: Remark[] = [];
-  for (const id of ids) {
-    const r = remarks.find((x) => x.id === id);
-    if (!r) return Effect.fail(invalid(`ログに発言がありません: ${id}`));
-    fresh.push(r);
-  }
-  return Effect.succeed(fresh);
-};
-
-const consumeFresh = (ledger: Ledger, fresh: readonly Remark[], e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.Effect<readonly Remark[], InvalidLogEvent> => {
-  const count = e.error !== undefined ? fresh.length : e.processedRemarks ?? fresh.length;
-  if (count > fresh.length) return Effect.fail(invalid("diff の反映数が入力の発言数を超えています"));
-  const consumed = fresh.slice(0, count);
-  for (const r of consumed) {
-    ledger.known.add(r.id);
-    if (hasContent(r.text)) ledger.processed.push(r);
-  }
-  return Effect.succeed(consumed);
-};
-
-const replayDiff = Effect.fnUntraced(function* (replay: Replay, ledger: Ledger, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Replay, InvalidLogEvent> {
-  const { map } = replay;
-  if (!map) return yield* invalid("ログの diff より前に start がありません");
-  const fresh = yield* freshRemarksOf(ledger.remarks, e.input.fresh, invalid);
-  const consumed = yield* consumeFresh(ledger, fresh, e, invalid);
+const replayScreens = Effect.fnUntraced(function* (replay: Replay, ledger: Ledger, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Pick<Replay, "carried" | "anchor">, InvalidLogEvent> {
   const selectedBefore = e.input.screenCount ?? 0;
   if (selectedBefore > replay.received) return yield* invalid(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${replay.received} より大きい`);
-  const cutoff = Math.max(...fresh.map((r) => r.end));
+  const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
   const added = e.input.screens ?? [];
-  const candidates = fresh.length ? byStart(ledger.unsent.filter((h) => h.seq < selectedBefore && (h.start <= cutoff || h.image === replay.carried))) : [];
+  const candidates = e.input.fresh.length ? byStart(ledger.unsent.filter((h) => h.seq < selectedBefore && (h.start <= cutoff || h.image === replay.carried))) : [];
   const carried = replay.imagesSkipped ? undefined : carriedOf(candidates, new Set(added.flatMap((h) => (h.image === null ? [] : [h.image]))));
   const anchor = anchorAfter(added, replay.anchor);
-  if (fresh.length) ledger.unsent = ledger.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff || (h.image !== null && h.image === carried));
-  const stamp = stampOf(replay.history, consumed);
-  const applied = applyOps(map, e.ops, ledger.known, stamp, ledger.byId);
-  const history = e.error === undefined ? recordRound(replay.history, map, applied, stamp) : replay.history;
-  const diffUpdate = replay.diffUpdate.status === "paused" ? { status: "running" as const } : replay.diffUpdate;
-  return { ...replay, diffUpdate, map: applied.map, carried: fresh.length ? carried : replay.carried, anchor, history };
+  if (e.input.fresh.length) ledger.unsent = ledger.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff || (h.image !== null && h.image === carried));
+  return { carried: e.input.fresh.length ? carried : replay.carried, anchor };
 });
 
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
@@ -258,7 +204,13 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       replay = { ...replay, received: replay.received + 1 };
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
-      replay = yield* replayDiff(replay, ledger, e, invalid);
+      const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの diff より前に start がありません")));
+      const { state } = yield* Effect.fromResult(reflectDiff({ map, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
+      const screens = yield* replayScreens(replay, ledger, e, invalid);
+      ledger.known = state.ledger.known;
+      ledger.processed = state.ledger.processed;
+      replay = { ...replay, ...screens, map: state.map, history: state.history };
+      replay = { ...replay, diffUpdate: replay.diffUpdate.status === "paused" ? { status: "running" } : replay.diffUpdate };
     } else if (type === ScreenInputSkippedEvent.fields.type.literal) {
       replay = { ...replay, imagesSkipped: true };
     } else if (type === DiffUpdatePausedEvent.fields.type.literal) {
@@ -270,9 +222,9 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
   }
   const { remarks, processed, known, unsent, files } = ledger;
   const { map, history, received, carried, anchor, diffUpdate } = replay;
-  if (!map) return yield* new InvalidLogEvent({ index: 0, reason: "ログに start がありません" });
+  const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map, pending, processed, remarks, known, ...history, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), files, received, carried, anchor } };
+  return { map: restoredMap, pending, processed, remarks, known, ...history, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), files, received, carried, anchor } };
 });
 
 export function snapshotOf(state: SessionState): Snapshot {

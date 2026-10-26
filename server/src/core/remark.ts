@@ -14,6 +14,16 @@ export const Remark = Schema.Struct({
 });
 export type Remark = typeof Remark["Type"];
 
+const FILLERS: ReadonlySet<string> = new Set([
+  "あ", "え", "う", "お", "ん", "うん", "ふん", "ええ", "はあ", "へえ", "ほう",
+  "あの", "えっと", "えと", "その", "まあ", "はい",
+]);
+
+export function hasContent(text: string): boolean {
+  const words = text.replace(/[ー〜~]/g, "").split(/[\s\p{P}\p{S}]+/u).filter((w) => w !== "");
+  return words.some((w) => !FILLERS.has(w));
+}
+
 export const speakerOf = (r: Remark): string => r.speaker ?? r.track;
 
 
