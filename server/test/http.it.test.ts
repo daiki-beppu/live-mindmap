@@ -55,13 +55,9 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
   const calls: string[][] = [];
   const checks: boolean[] = [];
   const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
-  const check = Effect.sync(() => {
-    checks.push(true);
-    return { ...permission, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
-  });
-  const checkNoScreen = Effect.sync(() => {
-    checks.push(false);
-    return { microphone: permission.microphone, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
+  const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => {
+    checks.push(screen);
+    return { microphone: permission.microphone, ...(screen ? { screenCapture: permission.screenCapture } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
   });
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) =>
     Effect.gen(function* () {
@@ -95,7 +91,7 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       yield* Effect.addFinalizer(() => Effect.ignore(stop));
       return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sent.push(instruction.paused); }) };
     });
-  const service = { apps: Effect.succeed(apps), check, checkNoScreen, creationDate: () => Effect.succeed(null), launch };
+  const service = { apps: Effect.succeed(apps), check, creationDate: () => Effect.succeed(null), launch };
   return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks, sent };
 };
 

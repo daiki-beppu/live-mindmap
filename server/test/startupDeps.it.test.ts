@@ -63,11 +63,11 @@ const controlledHelpers = () => {
     yield* Effect.addFinalizer(() => stop);
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]), send: () => Effect.void };
   });
-  const check = Effect.sync(() => ({ microphone: "authorized" as const, screenCapture: true,
+  const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => ({ microphone: "authorized" as const, ...(screen ? { screenCapture: true } : {}),
     speechJa: { status: control.speechStatus, installedLocales: ["ja-JP"] },
   }));
   const installSpeechJa = Stream.fromEffect(Effect.sync(() => { control.speechStatus = "installed"; return "取得完了"; }));
-  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, checkNoScreen: check, creationDate: () => Effect.succeed(null), installSpeechJa, apps: Effect.succeed([]), launch })) };
+  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, creationDate: () => Effect.succeed(null), installSpeechJa, apps: Effect.succeed([]), launch })) };
 };
 
 const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingHelper = false) {

@@ -18,7 +18,7 @@ const deps = (state: "ready" | "missing" | "outdated" | "absent") => ManagedDeps
   update: () => Stream.die("更新は対象外"), install: () => Stream.die("確認は導入しない"), load: () => Effect.die("確認は読み込まない"),
 });
 
-const liveCheck = { screen: true, check: readyHelperChecks.check };
+const liveCheck = { screen: true, check: readyHelperChecks.check({ screen: true }) };
 
 describe("入口とモデル経路による管理依存の必要度", () => {
   it.effect("831 C6: start は cloudflared を確認も導入もせず既存依存だけで開始できる", () => Effect.gen(function* () {
@@ -152,7 +152,7 @@ describe("入口とモデル経路による管理依存の必要度", () => {
 
 describe("文字のみの録画の開始依存", () => {
   it.effect("モデル依存を提供せず、helperと日本語音声認識だけで開始できる", () => Effect.gen(function* () {
-    expect(yield* requireRecordedTranscriptDeps(readyHelperChecks.checkNoScreen)).toEqual([]);
+    expect(yield* requireRecordedTranscriptDeps(readyHelperChecks.check({ screen: false }))).toEqual([]);
   }));
   it.effect("helperを確認できないときは開始を断る", () => Effect.gen(function* () {
     const result = yield* Effect.result(requireRecordedTranscriptDeps(Effect.fail(new HelperCheckFailure({ message: "確認失敗" }))));
