@@ -17,7 +17,7 @@ export const CheckReport = Schema.Struct({
   ready: Schema.Boolean,
   items: Schema.Array(Item),
 });
-export const CheckFor = Schema.Literals(["start", "resume", "play"]);
+export const CheckFor = Schema.Literals(["start", "resume", "play", "recorded"]);
 export const ModelRoute = Schema.Literals(["claude", "openai-compatible", "chatgpt", "apple"]);
 export const StartupRefusal = Schema.TaggedStruct("StartupDepsMissing", {
   items: Schema.Array(Item).check(Schema.isMinLength(1)),

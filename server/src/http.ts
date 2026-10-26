@@ -214,10 +214,15 @@ const DepRoutes = HttpRouter.addAll([
     );
     const respondCheck = jsonOf(ServerRoutes.check.response);
     if (entry === "resume") return yield* respondCheck(yield* (yield* Sessions).checkResume);
+    const noMap = entry === "recorded" ? yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(params.get("noMap") ?? "false").pipe(
+      Effect.mapError((error) => new InvalidBody({ detail: error.message })),
+    ) : "false";
+    if (entry === "recorded" && noMap === "true") return yield* respondCheck(yield* (yield* StartupChecks).report({ entry, noMap: true }));
     const route = yield* Schema.decodeUnknownEffect(ModelRoute)(params.get("route") ?? "claude").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
     if (entry === "play") return yield* respondCheck(yield* (yield* StartupChecks).report({ entry, route }));
+    if (entry === "recorded") return yield* respondCheck(yield* (yield* StartupChecks).report({ entry, route, noMap: false }));
     const screen = yield* Schema.decodeUnknownEffect(Schema.Literals(["true", "false"]))(params.get("screen") ?? "true").pipe(
       Effect.mapError((error) => new InvalidBody({ detail: error.message })),
     );
