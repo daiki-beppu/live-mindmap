@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
 import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../../src/helpers.ts";
-import { readyHelperChecks } from "./helperCheck.ts";
+import { helperChecks } from "./helperCheck.ts";
 
 export type Remark = { start: number; end: number; text: string };
 export type Script = {
@@ -68,7 +68,7 @@ export function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []
     if (current.hold !== true) yield* finish(current.exit ?? { code: 0, signal: null });
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed(["helper stderr"]), send: () => Effect.void };
   });
-  const layer = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), creationDate, launch }));
+  const layer = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), creationDate, launch }));
   return { calls, creationDateCalls, stopSeen, layer, feed, end };
 }
 

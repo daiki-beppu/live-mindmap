@@ -1,5 +1,6 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -89,7 +90,7 @@ const starts = (session: string) => {
 function fakeHelpers(events: unknown[]) {
   const calls: string[][] = [];
   const layer = Layer.succeed(Helpers, Helpers.of({
-    ...readyHelperChecks,
+    ...helperChecks(),
     apps: Effect.succeed([]),
     launch: (args) => Effect.gen(function* () {
       calls.push([...args]);
@@ -120,7 +121,8 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     }));
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer, managedDeps: deps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(
+      sessionSinks: SessionSinks.layer.pipe(
+        Layer.provide(Layer.mergeAll(fakeExportServices(), deps, unusedApple, NodeHttpClient.layerUndici))), startupChecks: StartupChecks.layer({ prepareUpdater: planLayer }).pipe(
         Layer.provide(Layer.mergeAll(fakeExportServices(), deps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const post = () => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
@@ -151,7 +153,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
+      sessionSinks: SessionSinks.layer.pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))), startupChecks: StartupChecks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const deps = dependencies(root, { LIVE_MINDMAP_PORT: String(server.port), LIVE_MINDMAP_MODEL: "careful" });
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--model", "fast"]).pipe(Effect.provide(deps.layer));
@@ -170,7 +172,7 @@ describe("選択したモデルの実行と記録（Issue #663）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: helpers.layer,
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
+      sessionSinks: SessionSinks.layer.pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))), startupChecks: StartupChecks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), managedDeps, unusedApple, NodeHttpClient.layerUndici))),
     });
     const post = (model: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/session/start`, {
       method: "POST", headers: { "content-type": "application/json" },

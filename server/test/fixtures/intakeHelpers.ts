@@ -1,6 +1,6 @@
 import { Cause, Deferred, Effect, Queue, Ref, Scope, Stream } from "effect";
 import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo, type HelperInstruction } from "../../src/helpers.ts";
-import { readyHelperChecks } from "./helperCheck.ts";
+import { helperChecks } from "./helperCheck.ts";
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
 
@@ -98,7 +98,7 @@ export function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHe
       if (!queue) throw new Error(`起動回 ${attemptIndex} はまだ接続していない`);
       Queue.offerUnsafe(queue, JSON.stringify(event));
     };
-    return { helpers: Helpers.of({ ...readyHelperChecks, apps: Effect.succeed(APPS), launch }), calls, send, stops, sentPauses, sentInstructions, lifecycle };
+    return { helpers: Helpers.of({ ...helperChecks(), apps: Effect.succeed(APPS), launch }), calls, send, stops, sentPauses, sentInstructions, lifecycle };
   });
 }
 

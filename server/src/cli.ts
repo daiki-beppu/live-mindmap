@@ -105,7 +105,8 @@ import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScre
 import { Viewers, type SendFrame } from "./viewers.ts";
 import { StartupRefusal } from "./managedDepsProtocol.ts";
 import { ServerRoutes, type ServerRoute } from "./serverProtocol.ts";
-import { checkManagedDeps, requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
+import { requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
+import { StartupChecks } from "./startupChecks.ts";
 import { exitCodeTeardown, reportEntryFailure } from "./entryFailure.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
 import { planServerStop, readServerPid, removeServerPid, ServerProcess } from "./serverProcess.ts";
@@ -935,7 +936,7 @@ const checkCommand = Command.make(
     const report = yield* Effect.gen(function* () {
       if (entry === "resume") return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: "resume" } });
       const model = yield* resolveModelCandidate({});
-      if (entry === "play") return yield* checkManagedDeps(entry, model.route);
+      if (entry === "play") return yield* Effect.flatMap(StartupChecks, (checks) => checks.report({ entry, route: model.route })).pipe(Effect.provide(StartupChecks.layer({ prepareUpdater: planLayer })));
       return yield* requestServer(yield* portConfig, ServerRoutes.check, { query: { for: entry, route: model.route, screen: String(!noScreen) } });
     });
     yield* write(JSON.stringify(report));

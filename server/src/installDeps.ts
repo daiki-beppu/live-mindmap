@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Schema, Stream } from "effect";
 import { Helpers, HelperCheckFailure, HelperInstallFailure } from "./helpers.ts";
 import { ManagedDeps, ManagedDepsFailed } from "./managedDeps.ts";
-import { speechJaItem } from "./managedDepsCheck.ts";
+import { speechJaItem } from "./startupItems.ts";
 import type { DepNames, InstallEvent, Item } from "./managedDepsProtocol.ts";
 
 class InstallationFailed extends Schema.TaggedError<InstallationFailed>()("InstallationFailed", { message: Schema.String }) {}

@@ -1,21 +1,22 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
-import { Helpers } from "../src/helpers.ts";
+import { Helpers, HelperCheckFailure } from "../src/helpers.ts";
 import { serverPidPath, ServerProcess } from "../src/serverProcess.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
-import { forbiddenHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { directory, serverStop, unusedPort, writePid } from "./fixtures/serverStop.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 
 const serverLayers = {
-  helpers: Layer.succeed(Helpers, Helpers.of({ ...forbiddenHelperChecks, apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
-  sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+  helpers: Layer.succeed(Helpers, Helpers.of({ ...helperChecks(new HelperCheckFailure({ message: "helper がない" })), apps: Effect.succeed([]), launch: () => Effect.die("このテストでは会議を開始しない") })),
+  sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   managedDeps: readyManagedDeps,
 };
 

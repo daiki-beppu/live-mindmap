@@ -1,5 +1,6 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { mkdtemp, rm } from "node:fs/promises";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
@@ -55,7 +56,7 @@ afterAll(async () => {
 });
 
 const helperLayer = Layer.succeed(Helpers, Helpers.of({
-  ...readyHelperChecks,
+  ...helperChecks(),
   apps: Effect.succeed([]),
   launch: () => Effect.gen(function* () {
     const events = yield* Queue.make<string, Cause.Done>();
@@ -66,11 +67,12 @@ const helperLayer = Layer.succeed(Helpers, Helpers.of({
     return { events: Stream.fromQueue(events) as Stream.Stream<string>, stop, exit: Deferred.await(exit), stderrTail: Effect.succeed([]), send: () => Effect.void };
   }),
 }));
-const realSinks = SessionSinks.layer({
+const startupChecks = StartupChecks.layer({
   prepareUpdater: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({
     update: (input) => Effect.succeed({ ops: [], processedRemarks: input.fresh.length }),
   })) }),
 }).pipe(Layer.provide(fakeExportServices()));
+const realSinks = SessionSinks.layer.pipe(Layer.provide(fakeExportServices()));
 const sessionSinks = Layer.effect(SessionSinks)(Effect.gen(function* () {
   const sinks = yield* SessionSinks;
   return SessionSinks.of({ ...sinks, open: (args) => sinks.open(args).pipe(
@@ -174,7 +176,7 @@ describe("開始したセッションのローカルモード表示", () => {
       await Effect.runPromise(Effect.gen(function* () {
         const dir = yield* Effect.acquireRelease(Effect.tryPromise(() => mkdtemp(join(tmpdir(), "live-mindmap-local-view-"))),
           (path) => Effect.promise(() => rm(path, { recursive: true, force: true })));
-        const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers: helperLayer, sessionSinks, managedDeps: readyManagedDeps });
+        const server = yield* startedServer({ port: 0, sessionsDir: dir }, { helpers: helperLayer, startupChecks, sessionSinks, managedDeps: readyManagedDeps });
         wsProxyOptions.target = `ws://127.0.0.1:${server.port}`;
         const request = (path: string, body?: unknown) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}${path}`, {
           method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
