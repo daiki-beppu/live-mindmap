@@ -2,6 +2,21 @@ import { expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { logMetrics, type LogEvent } from "../src/core/index.ts";
 
+it.effect("logMetrics: processedRemarks が fresh の件数を超える成功行は InvalidLogEvent で失敗する", () => Effect.gen(function* () {
+  const events: LogEvent[] = [
+    { type: "start", title: "定例" },
+    { type: "remark", remark: { id: "r1", track: "相手", start: 0, end: 10, text: "採用について" } },
+    {
+      type: "diff", input: { recent: [], fresh: ["r1"], nodeCount: 0 },
+      ops: [], dropped: [], processedRemarks: 2,
+    },
+  ];
+
+  const error = yield* Effect.flip(logMetrics(events));
+
+  expect(error).toMatchObject({ _tag: "InvalidLogEvent" });
+}));
+
 it.effect("invConservation: 再適用でも未消費の発言を根拠にした操作は指標へ含めない", () => Effect.gen(function* () {
   const events: LogEvent[] = [
     { type: "start", title: "定例" },

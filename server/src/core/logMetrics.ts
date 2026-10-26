@@ -1,6 +1,7 @@
-import { Effect } from "effect";
-import { applyOps, emptyMap, type MeetingMap } from "./map.ts";
-import { InvalidLogEvent, stampOf, type LogEvent } from "./session.ts";
+import { Effect, Result } from "effect";
+import { emptyMap, type MeetingMap } from "./map.ts";
+import { InvalidLogEvent, type LogEvent } from "./session.ts";
+import { reflectDiff, type ReflectionState } from "./reflection.ts";
 import type { Remark } from "./remark.ts";
 
 export type LogMetrics = {
@@ -25,76 +26,51 @@ function openSiblings(map: MeetingMap): number {
 
 type DiffLogEvent = Extract<LogEvent, { readonly type: "diff" }>;
 
-const freshOf = Effect.fnUntraced(function* (
-  event: DiffLogEvent,
-  byId: ReadonlyMap<string, Remark>,
-  invalid: (reason: string) => InvalidLogEvent,
-): Effect.fn.Return<Remark[], InvalidLogEvent> {
-  const input: Remark[] = [];
-  for (const id of event.input.fresh) {
-    const r = byId.get(id);
-    if (!r) return yield* invalid(`ログに発言がありません: ${id}`);
-    input.push(r);
-  }
-  const count = event.error !== undefined ? event.input.fresh.length : event.processedRemarks ?? event.input.fresh.length;
-  return input.slice(0, count);
-});
-
-function rewrittenIds(start: MeetingMap, ops: DiffLogEvent["ops"], known: ReadonlySet<string>, stamp: { round: number; at: number }, byId: ReadonlyMap<string, Remark>): string[] {
+function rewrittenIds(start: ReflectionState, event: DiffLogEvent): Result.Result<string[], string> {
   const ids: string[] = [];
-  let before = start;
-  ops.forEach((op, i) => {
-    const after = applyOps(start, ops.slice(0, i + 1), known, stamp, byId).map;
+  let before = start.map;
+  for (const [i, op] of event.ops.entries()) {
+    const reflected = reflectDiff(start, { ...event, ops: event.ops.slice(0, i + 1) });
+    if (Result.isFailure(reflected)) return Result.fail(reflected.failure);
+    const after = reflected.success.state.map;
     if (op.op === "update") {
       for (const [id, node] of Object.entries(before.nodes)) {
         if (after.nodes[id] && after.nodes[id].text !== node.text) ids.push(id);
       }
     }
     before = after;
-  });
-  return ids;
+  }
+  return Result.succeed(ids);
 }
 
-type Progress = { readonly map: MeetingMap; readonly round: number };
-
-const applyDiff = Effect.fnUntraced(function* (
-  progress: Progress,
-  event: DiffLogEvent,
-  byId: ReadonlyMap<string, Remark>,
-  known: Set<string>,
-  invalid: (reason: string) => InvalidLogEvent,
-): Effect.fn.Return<Progress & { readonly rewritten: string[] }, InvalidLogEvent> {
-  const fresh = yield* freshOf(event, byId, invalid);
-  for (const r of fresh) known.add(r.id);
-  const stamp = stampOf({ round: progress.round }, fresh);
-  const rewritten = rewrittenIds(progress.map, event.ops, known, stamp, byId);
-  const applied = applyOps(progress.map, event.ops, known, stamp, byId);
-  return { map: applied.map, round: event.error === undefined ? stamp.round : progress.round, rewritten };
-});
-
 export const logMetrics = Effect.fnUntraced(function* (events: readonly LogEvent[]): Effect.fn.Return<LogMetrics, InvalidLogEvent> {
-  let progress: Progress | undefined;
+  let progress: ReflectionState | undefined;
   let remarks = 0;
   let maxOpenSiblings = 0;
   let index = -1;
   const invalid = (reason: string) => new InvalidLogEvent({ index, reason });
   const byId = new Map<string, Remark>();
-  const known = new Set<string>();
+  const ledger: ReflectionState["ledger"] = { byId, known: new Set(), processed: [] };
   const rewritesOf = new Map<string, number>();
 
   for (const event of events) {
     index++;
     if (event.type === "start") {
-      progress = { map: emptyMap(event.title), round: progress?.round ?? 0 };
+      progress = {
+        map: emptyMap(event.title),
+        history: progress?.history ?? { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
+        ledger: progress?.ledger ?? ledger,
+      };
     } else if (event.type === "remark") {
       remarks++;
       byId.set(event.remark.id, event.remark);
     } else if (event.type === "diff") {
       if (!progress) return yield* invalid("ログの diff より前に start がありません");
-      const next = yield* applyDiff(progress, event, byId, known, invalid);
-      for (const id of next.rewritten) rewritesOf.set(id, (rewritesOf.get(id) ?? 0) + 1);
-      progress = next;
-      maxOpenSiblings = Math.max(maxOpenSiblings, openSiblings(next.map));
+      const { state } = yield* Effect.fromResult(reflectDiff(progress, event)).pipe(Effect.mapError(invalid));
+      const rewritten = yield* Effect.fromResult(rewrittenIds(progress, event)).pipe(Effect.mapError(invalid));
+      for (const id of rewritten) rewritesOf.set(id, (rewritesOf.get(id) ?? 0) + 1);
+      progress = state;
+      maxOpenSiblings = Math.max(maxOpenSiblings, openSiblings(state.map));
     }
   }
   return {
