@@ -3,8 +3,8 @@ import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpda
 import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { attributePeople } from "./people.ts";
-import { applyOps, cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
-import { recordRound, reflectDiff, stampOf, type ReflectionState } from "./reflection.ts";
+import { cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
+import { reflectDiff, type ReflectionState } from "./reflection.ts";
 import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
 import { hasContent, Remark } from "./remark.ts";
 import { acceptInferredNames, type InferredSpeakerName } from "./speakerNames.ts";
@@ -470,24 +470,30 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             yield* log.write({ type: "diff-update-paused", reason });
             return;
           }
-          yield* Ref.update(ref, (s) => ({ ...s, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], known: new Set([...s.known, ...fresh.map((r) => r.id)]), processed: [...s.processed, ...fresh], previousResponse: undefined }));
-          yield* log.write({ type: "diff", input, ops: [], dropped: [], error: outcome.error, ...presentFields(outcome, ["judge", "call"]) });
+          const event: typeof DiffEvent.Type = { type: "diff", input, ops: [], dropped: [], error: outcome.error, ...presentFields(outcome, ["judge", "call"]) };
+          let dropped: Dropped[] = [];
+          yield* Ref.update(ref, (s) => {
+            const byId = new Map(s.remarks.map((r) => [r.id, r]));
+            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+            dropped = applied.dropped;
+            return { ...s, ...applied.state.history, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
+              diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
+          });
+          yield* log.write({ ...event, dropped });
           return;
         }
-        const { dropped, ops, accepted } = yield* Ref.modify(ref, (s) => {
-          const consumed = fresh.slice(0, outcome.count);
-          const known = new Set([...s.known, ...consumed.map((r) => r.id)]);
-          const stamp = stampOf(s, consumed);
+        const { event, dropped, accepted } = yield* Ref.modify(ref, (s) => {
           const byId = new Map(s.remarks.map((r) => [r.id, r]));
           const ops = attributePeople(outcome.ops, byId);
-          const applied = applyOps(s.map, ops, known, stamp, byId);
-          const accepted = acceptInferredNames(outcome.names, known, byId);
-          return [{ dropped: applied.dropped, ops, accepted }, {
-            ...s, ...recordRound(s, s.map, applied, stamp), diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.map, reflecting: [], previousResponse: previousResponseOf(applied),
-            known, processed: [...s.processed, ...consumed], pending: [...fresh.slice(outcome.count), ...s.pending],
+          const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
+          const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+          const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
+          return [{ event, dropped: applied.dropped, accepted }, {
+            ...s, ...applied.state.history, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
+            known: applied.state.ledger.known, processed: applied.state.ledger.processed, pending: [...fresh.slice(outcome.count), ...s.pending],
           }];
         });
-        yield* log.write({ type: "diff", input, ops, dropped, ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) });
+        yield* log.write({ ...event, dropped });
         if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
         yield* notifySpeakerNames(accepted);
       }),

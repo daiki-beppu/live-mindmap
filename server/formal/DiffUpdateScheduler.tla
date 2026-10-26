@@ -139,7 +139,7 @@ CallBegin(c) ==
 
 ResumeIfPaused == IF status = "paused" THEN "running" ELSE status
 
-\* :526–538 成功。processedRemarks（1..fresh の件数）件を反映し、残りを pending の先頭へ戻す
+\* :485–495 成功。reflectDiff が processedRemarks（1..fresh の件数）件を反映し、残りを pending の先頭へ戻す
 CallSucceed(c) ==
   /\ calls[c].pc = "update"
   /\ \E k \in 1..Len(calls[c].fresh) :
@@ -150,7 +150,7 @@ CallSucceed(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :522 失敗（一時停止・停止以外。Apple の再起動中も含む）。渡した発言は処理済みにして進む
+\* :475–481 失敗（一時停止・停止以外。Apple の再起動中も含む）。reflectDiff で渡した発言を処理済みにして進む
 CallFail(c) ==
   /\ calls[c].pc = "update"
   /\ known' = known \cup Range(calls[c].fresh)

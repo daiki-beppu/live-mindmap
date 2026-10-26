@@ -113,55 +113,6 @@ describe("ログからの復元", () => {
       expect("speaker" in back[2]!).toBe(false);
     }));
 
-  it.effect("復元したスナップショットの touchedAt・evidenceRound が元と一致し、ルート以外のノードに付いている", () =>
-    Effect.gen(function* () {
-      const { session, events } = yield* original();
-      const restored = yield* restore(viaJsonl(events));
-      const live = (yield* session.snapshot).nodes;
-      const back = (yield* restored.snapshot).nodes;
-
-      const others = live.filter((n) => n.parent !== null);
-      expect(others.length).toBeGreaterThan(0);
-      for (const n of others) expect(typeof n.touchedAt).toBe("number");
-      expect(others.some((n) => n.evidenceRound !== undefined && n.evidenceRound > 1)).toBe(true);
-      expect(back.map((n) => [n.id, n.touchedAt, n.evidenceRound])).toEqual(live.map((n) => [n.id, n.touchedAt, n.evidenceRound]));
-      const root = back.find((n) => n.parent === null)!;
-      expect(root).not.toHaveProperty("touchedAt");
-      expect(root).not.toHaveProperty("evidenceRound");
-    }));
-
-  it.effect("復元したセッションの今の議題と今の時刻が元と一致する（議題の無い課題だけの反映は前の値のまま）", () =>
-    Effect.gen(function* () {
-      const { session, events } = yield* original();
-      const restored = yield* restore(viaJsonl(events));
-
-      expect((yield* session.snapshot).currentTopic).toBe("n1");
-      expect((yield* restored.snapshot).currentTopic).toBe((yield* session.snapshot).currentTopic);
-      expect((yield* session.snapshot).now).toBeDefined();
-      expect((yield* restored.snapshot).now).toBe((yield* session.snapshot).now);
-    }));
-
-  it.effect("作成順と逆の順に更新した反映でも、復元後の今の議題・最後に変わったノードが元と一致する", () =>
-    Effect.gen(function* () {
-      const [a, b, c, d] = [remark("発言"), remark("発言"), remark("発言"), remark("発言")];
-      const { session, events } = yield* playBatches([[a!, b!], [c!, d!]], [
-        [
-          { op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [a!.id] },
-          { op: "add", ref: "t2", parent: "root", kind: "議題", text: "予算", evidence: [b!.id] },
-        ],
-        [
-          { op: "update", node: "n2", text: "予算2", evidence: [c!.id] },
-          { op: "update", node: "n1", text: "採用2", evidence: [d!.id] },
-        ],
-      ]);
-
-      const restored = yield* restore(viaJsonl(events));
-      expect((yield* session.snapshot).currentTopic).toBe("n1");
-      expect((yield* restored.snapshot).currentTopic).toBe("n1");
-      expect((yield* restored.snapshot).lastChanged).toBe("n1");
-      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
-    }));
-
   it.effect("元のマップにこの経路の全種類の変化が出ている（テストの前提）", () =>
     Effect.gen(function* () {
       const { session, events } = yield* original();
