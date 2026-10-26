@@ -148,7 +148,7 @@ struct FileReadingPauseITTests {
         }
     }
 
-    @Test("relayFilePair に渡した門で、止めている間は 2 本の音声も映像も読み進めない。止めを解くと両方の音声が最後まで読まれ、画面のイベントが続く")
+    @Test("relayFileSession に渡した門で、止めている間は 2 本の音声も映像も読み進めない。止めを解くと両方の音声が最後まで読まれ、画面のイベントが続く")
     func pausedRelayFilePairDoesNotAdvance() async throws {
         let dir = try Support.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -158,7 +158,7 @@ struct FileReadingPauseITTests {
         try await Support.writeMovie(theirs, audio: audio, videoSeconds: 4, video: .slides(switchAt: 1))
         let mine = dir.appendingPathComponent("me.wav")
         try Support.writeWAV(mine, loudSeconds: 4, silentSeconds: 0)
-        // 画面の文字認識は、プロセスで最初の 1 回だけモデルを組み立てて遅い。測る前に 1 回読ませておく（FilePairRelayITTests と同じ）
+        // 画面の文字認識は、プロセスで最初の 1 回だけモデルを組み立てて遅い。測る前に 1 回読ませておく（FileSessionRelayITTests と同じ）
         let context = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
         context?.setFillColor(gray: 1, alpha: 1)
         context?.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
@@ -181,9 +181,9 @@ struct FileReadingPauseITTests {
         let theirsLog = GatePullLog()
         let mineLog = GatePullLog()
         let relaying = Task {
-            try await relayFilePair(
-                theirs: theirs, mine: mine,
-                theirsTranscriber: GateBackgroundTranscriber("相手", log: theirsLog), mineTranscriber: GateBackgroundTranscriber("自分", log: mineLog),
+            try await relayFileSession(
+                theirs: FileSessionSource(url: theirs, transcriber: GateBackgroundTranscriber("相手", log: theirsLog), from: 0),
+                mine: FileSessionSource(url: mine, transcriber: GateBackgroundTranscriber("自分", log: mineLog), from: 0),
                 to: server, gate: gate)
         }
         defer {
@@ -204,7 +204,7 @@ struct FileReadingPauseITTests {
         await server.stop()
     }
 
-    @Test("映像のない 2 本（音声のみ）でも、relayFilePair に渡した門で止めている間は両方の音声が読み進めない。止めを解くと両方が最後まで読まれる")
+    @Test("映像のない 2 本（音声のみ）でも、relayFileSession に渡した門で止めている間は両方の音声が読み進めない。止めを解くと両方が最後まで読まれる")
     func pausedRelayFilePairAudioOnlyDoesNotAdvance() async throws {
         let dir = try Support.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -219,9 +219,9 @@ struct FileReadingPauseITTests {
         let theirsLog = GatePullLog()
         let mineLog = GatePullLog()
         let relaying = Task {
-            try await relayFilePair(
-                theirs: theirs, mine: mine,
-                theirsTranscriber: GateBackgroundTranscriber("相手", log: theirsLog), mineTranscriber: GateBackgroundTranscriber("自分", log: mineLog),
+            try await relayFileSession(
+                theirs: FileSessionSource(url: theirs, transcriber: GateBackgroundTranscriber("相手", log: theirsLog), from: 0),
+                mine: FileSessionSource(url: mine, transcriber: GateBackgroundTranscriber("自分", log: mineLog), from: 0),
                 to: server, gate: gate)
         }
         defer { relaying.cancel() }
@@ -295,31 +295,4 @@ struct FileReadingPauseITTests {
         #expect(abs(log.maxEnd(of: "相手") - 30) < 0.5)
     }
 
-    @Test("止められている間は、映像も読み進めない（画面のイベントが出ない）。止めを解くと、映像の画面と音声の結果が続く")
-    func pausedVideoDoesNotAdvance() async throws {
-        let dir = try Support.temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let wav = dir.appendingPathComponent("them.wav")
-        try Support.writeWAV(wav, loudSeconds: 6, silentSeconds: 0)
-        let movie = dir.appendingPathComponent("movie.mov")
-        try await Support.writeMovie(movie, audio: wav, videoSeconds: 6, video: .slides(switchAt: 2))
-        let gate = FileReadingGate()
-        await gate.pause()
-        let screens = GateCounter()
-        let log = GatePullLog()
-        let task = Task {
-            for try await event in try await fileSessionEvents(at: movie, with: GateBackgroundTranscriber("相手", log: log), gate: gate) {
-                if case .screen = event { screens.increment() }
-            }
-        }
-        defer { task.cancel() }
-        try await Task.sleep(for: .milliseconds(800))
-        #expect(screens.value == 0, "止めている間に画面のイベントが出た")
-        #expect(log.values.isEmpty)
-
-        await gate.resume()
-        try await task.value
-        #expect(screens.value >= 1)
-        #expect(abs(log.maxEnd(of: "相手") - 6) < 0.5)
-    }
 }
