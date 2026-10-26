@@ -28,7 +28,11 @@ server は成功の応答を、経路の `response` の Schema で書き出す�
 
 web の自分のミュートと話者の名前は、今も `fetch` で送る。本文には `JSON.stringify({ paused } satisfies typeof SelfPauseBody["Encoded"])` のように型だけを付ける（`web/src/app/meeting/command.ts`・`web/src/app/sessionLayout/command.ts`）。`import type` なので、web の bundle に server のモジュールは入らない。値として import すると、`serverProtocol.ts` が import する core と `effect` の Schema が bundle に入る。
 
-web から新しい経路を呼ぶときも同じ形にし、web を `HttpClient` に置き換えない（ADR 0023）。
+パスの文字列も web に残し、`ServerRoutes` を `import type` で取り込んで型を付ける。`postToServer`（`web/src/app/serverRequest.ts`）のパス引数は、`ServerRoutes` の全経路から `method: "POST"` の経路を `Extract` で選び、その `path` の型に限る。自分のミュートと話者の名前の呼び出しも、この引数の型で検査される。新しい POST の呼び出しにも同じ制約が働く。
+
+WebSocket は、URL に使うパス部分を `"/ws" satisfies typeof ServerRoutes.feed.path` で縛る（`web/src/app/liveFeed/subscription.ts`）。パスの誤記や server 側のパス変更による不一致は、web の `pnpm typecheck` が検出する。パス制約を列挙するテストは作らない。
+
+web から新しい経路を呼ぶときも同じ形にし、`ServerRoutes` を値として import したり、web を `HttpClient` に置き換えたりしない（ADR 0023）。
 
 ## 出典
 
