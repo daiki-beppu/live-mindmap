@@ -145,7 +145,7 @@ public struct ScreenShot: Sendable, Equatable {
 /// 基準を更新するのは送ったときだけなので、少しずつの変化もフレーム間ではなく最後に送った画面との差として積み上がる。
 /// 動いている場所（スクロール・動画・顔の小窓）は比べる対象から外し、話している人の枠の移動は送らない。
 public struct ScreenChangeDetector: Sendable {
-    private let bundleID: String
+    private let bundleID: String?
     private enum Tab: Sendable {
         case unknown
         case provisional(title: String, since: Double, candidate: Candidate?)
@@ -176,6 +176,14 @@ public struct ScreenChangeDetector: Sendable {
         self.bundleID = bundleID
     }
 
+    private init() {
+        bundleID = nil
+    }
+
+    public static func withoutTabDetection() -> Self {
+        Self()
+    }
+
     public mutating func next(_ input: ScreenInput) -> ScreenDecision {
         switch input {
         case .windowGone(let time):
@@ -188,7 +196,7 @@ public struct ScreenChangeDetector: Sendable {
     }
 
     private mutating func updateTab(for frame: ScreenFrame) {
-        guard screenBrowserBundleIDs.contains(bundleID) else { return }
+        guard let bundleID, screenBrowserBundleIDs.contains(bundleID) else { return }
         switch tab {
         case .unknown:
             if let title = frame.title, canRememberScreenTabTitle(title) {
@@ -241,7 +249,7 @@ public struct ScreenChangeDetector: Sendable {
     }
 
     private mutating func judge(_ frame: ScreenFrame) -> ScreenDecision {
-        guard screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) else {
+        if let bundleID, !screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) {
             if absentSince == nil { absentSince = frame.time }
             return clearComparisons(at: frame.time)
         }

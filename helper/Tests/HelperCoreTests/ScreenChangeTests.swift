@@ -944,6 +944,22 @@ struct ScreenFitSizeTests {
 
 @Suite("共有画面の判定器: 画像の生成とイベント化")
 struct ScreenEventTests {
+    @Test("タブを判定しない作成方法ではブラウザ風のタイトルでも即時に送り、タイトル変更と終了で再送しない")
+    func withoutTabDetectionSendsImmediatelyRegardlessOfTitle() {
+        var detector: ScreenChangeDetector = .withoutTabDetection()
+        let page = luma(fill: 100)
+        let first = ScreenFrame(luma: page, time: 2.5, title: otherTabTitle)
+        #expect(detector.screenEvent(for: first) { shot("A", lines: ["共有画面"]) } == [
+            .screen(start: 2.5, image: "A", lines: ["共有画面"]),
+        ])
+
+        for (time, title) in [(2.75, meetTitle), (3.0, "配信 - YouTube"), (3.25, otherTabTitle)] {
+            let unchanged = ScreenFrame(luma: page, time: time, title: title)
+            #expect(detector.screenEvent(for: unchanged) { shot("再送") } == [])
+        }
+        #expect(detector.finish() == [])
+    }
+
     @Test("画像の生成に失敗したら送らず、同じフレームの次の機会に送り直す（最後に送った画面は、送った画面だけ）")
     func failedEncodeIsRetriedWithSameFrame() {
         var detector = makeDetector()
