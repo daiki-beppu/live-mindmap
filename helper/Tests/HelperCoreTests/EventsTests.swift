@@ -23,8 +23,73 @@ private func wordsOf(_ json: [String: Any]) throws -> [[String: Any]] {
     try #require(json["words"] as? [[String: Any]])
 }
 
+private let helperEventExamples: [HelperEvent] = [
+    .remark(track: .相手, start: 1.5, end: 3, text: "こんにちは𠮷", duplicate: false, words: fixedWords,
+        wordTimes: [WordTime(location: 0, length: 5, start: 1.5, end: 2.25)]),
+    .partial(track: .自分, start: 4, end: 4.5, text: "はい", duplicate: true, words: [], wordTimes: []),
+    .origin(hostTime: 9_007_199_254_740_993),
+    .screen(start: 5, image: nil, lines: nil),
+    .screen(start: 6, image: "AQID", lines: ["出力しない行"], ocrFailed: true),
+    .screen(start: 7, image: "AQID", lines: ["港南店", "Zendesk"]),
+    .screen(start: 8, image: "AQID", lines: [], meetingTabTitle: "定例会議"),
+    .screenOff(start: 9, reason: .許可なし),
+    .tapSilent(start: 10.5),
+    .selfPause(paused: true, reason: .manual, start: 11),
+    .selfPause(paused: false, reason: .undetermined, start: 12),
+    .selfPauseState(SelfPauseCarryOver(manual: .pause, basis: .using, lastKnown: .idle, idleFor: 1.5)),
+    .speaker(track: .相手, start: 1.5, end: 2.75, slot: 2, isFinal: true),
+    .speakerOff(start: 13, reason: .モデルなし),
+    .fileDuration(duration: 120.5),
+    .fileAudioTracks(count: 2),
+    .speakerSettled(track: .相手, to: 14.5),
+    .speakerMixed(track: .相手, slot: 2, start: 95.5),
+    .speakerCentroid(track: .相手, slot: 2, centroid: [0.25, -0.5, 1]),
+]
+
+// case を追加したときは、見本も追加する。default で吸収しない。
+private func exampleCaseName(_ event: HelperEvent) -> String {
+    switch event {
+    case .remark: return "remark"
+    case .partial: return "partial"
+    case .origin: return "origin"
+    case .screen: return "screen"
+    case .screenOff: return "screen-off"
+    case .tapSilent: return "tap-silent"
+    case .selfPause: return "self-pause"
+    case .selfPauseState: return "self-pause-state"
+    case .speaker: return "speaker"
+    case .speakerOff: return "speaker-off"
+    case .fileDuration: return "file-duration"
+    case .fileAudioTracks: return "file-audio-tracks"
+    case .speakerSettled: return "speaker-settled"
+    case .speakerMixed: return "speaker-mixed"
+    case .speakerCentroid: return "speaker-centroid"
+    }
+}
+
 @Suite("イベントの形")
 struct EventsTests {
+    @Test("全イベントの JSONL が server と共有する見本に一致する")
+    func helperEventsMatchFixture() throws {
+        let generated = try helperEventExamples.map { try $0.jsonString() }.joined(separator: "\n") + "\n"
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/helper-events.jsonl")
+        let updateCommand = "UPDATE_HELPER_EVENTS=1 pnpm --filter @live-mindmap/helper test"
+        if ProcessInfo.processInfo.environment["UPDATE_HELPER_EVENTS"] == "1" {
+            try FileManager.default.createDirectory(at: fixture.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try generated.write(to: fixture, atomically: true, encoding: .utf8)
+        }
+        let stored: String
+        do {
+            stored = try String(contentsOf: fixture, encoding: .utf8)
+        } catch {
+            Issue.record("見本を読めません: \(error)。再生成: \(updateCommand)")
+            return
+        }
+        let cases = helperEventExamples.map(exampleCaseName).joined(separator: ", ")
+        #expect(stored == generated, "見本と Swift の出力が異なります（\(cases)）。再生成: \(updateCommand)")
+    }
+
     @Test("確定結果は発言イベントになり、トラック・開始・終了・本文・重複の印を持つ")
     func finalResultBecomesRemark() throws {
         let result = TranscriptionResult(text: "こんにちは", isFinal: true, start: 1.5, end: 3.25)
