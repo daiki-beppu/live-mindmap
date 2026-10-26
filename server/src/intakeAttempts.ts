@@ -28,8 +28,14 @@ type Link = { target: HelperAttempt | undefined; pending: ReadonlyMap<HelperInst
 
 const note = (text: string) => Console.error(withoutFinalNewline(text));
 const defectReason = (defect: unknown) => defect instanceof Error ? defect.message : String(defect);
-const handleEvent = (apply: RunOptions["apply"]) => (data: string) => decodeHelperEvent(data).pipe(
-  Effect.map((decoded) => decoded.kind === "unknown" ? undefined : decoded.event),
+const handleEvent = (apply: RunOptions["apply"], noticedTypes: Ref.Ref<ReadonlySet<string>>) => (data: string) => decodeHelperEvent(data).pipe(
+  Effect.flatMap((decoded) => Effect.gen(function* () {
+    if (decoded.kind === "known") return decoded.event;
+    const first = yield* Ref.modify(noticedTypes, (types): [boolean, ReadonlySet<string>] =>
+      types.has(decoded.type) ? [false, types] : [true, new Set([...types, decoded.type])]);
+    if (first) yield* note(`ヘルパーの知らないイベント「${decoded.type}」を読み飛ばしました。ヘルパーを作り直してください（swift build -c release --package-path helper）`);
+    return undefined;
+  })),
   Effect.catchTag("SchemaError", (error) => Effect.as(note(`ヘルパーのイベントを読み飛ばしました: ${error.message}\n`), undefined)),
   Effect.catchDefect((defect) => Effect.as(note(`ヘルパーのイベントを読み飛ばしました: ${defectReason(defect)}\n`), undefined)),
   Effect.flatMap((event) => event === undefined ? Effect.void : apply(event).pipe(
@@ -73,8 +79,9 @@ export const openIntake = Effect.fnUntraced(function* (options: {
     return { target: attempt, pending };
   }));
   const serve = Effect.fnUntraced(function* (current: Launched, apply: RunOptions["apply"]) {
+    const noticedTypes = yield* Ref.make<ReadonlySet<string>>(new Set());
     yield* Effect.forkIn(Effect.andThen(Deferred.await(stopRequested), current.attempt.stop), current.scope);
-    yield* Stream.runForEach(current.attempt.events, handleEvent(apply)).pipe(
+    yield* Stream.runForEach(current.attempt.events, handleEvent(apply, noticedTypes)).pipe(
       Effect.ensuring(SynchronizedRef.update(link, (value) => ({ ...value, target: undefined }))),
     );
     const exit = yield* current.attempt.exit;

@@ -20,7 +20,7 @@ import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { startedServer } from "./fixtures/startedServer.ts";
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 
-// Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約 6 本だけに絞る
+// Issue #240 段 3（ADR 0008）: 本物の子プロセスを使うテストは、Helpers の実物 Layer の契約に絞る
 // （order.md:40-46、CT-TEST-SPLIT）。偽の Layer・TestClock で確かめられる振る舞い（起動し直しの回数・
 // resume・argv・stop/close の重なり・updater の開閉・captions・状態のフレーム・cli status 等）は
 // server/test/sessions.test.ts・sessionSinks.it.test.ts・http.it.test.ts に移した。このファイルに残るのは、
@@ -149,6 +149,57 @@ const logEvents = (dir: string) =>
 const waitFor = (fn: () => void, options?: { timeout: number }) => Effect.promise(() => vi.waitFor(fn, options));
 
 describe("Helpers の実物 Layer の契約（本物の子プロセス・HTTP・WebSocket。CT-TEST-SPLIT）", () => {
+  it.live("未知イベントは起動ごと・typeごとに一度知らせ、再起動をまたいで同じ会議の発言を受け取る", () =>
+    Effect.gen(function* () {
+      const { cli, records, sessionDirs, stderr, writeScript } = yield* setup({ events: [
+        { type: "speaker-off", start: 0, reason: "モデルなし" },
+        { type: "heartbeat" },
+        remark("相手", 1, 2, "最初の発言"),
+        { type: "heartbeat" },
+        { type: "future-status" },
+        remark("自分", 3, 4, "再起動前の発言"),
+      ] });
+      yield* cli("start", "--app", "us.zoom.xos", "--title", "未知イベントの会議");
+      const [dir] = yield* sessionDirs();
+      if (dir === undefined) throw new Error("会議の保存先がない");
+      yield* waitFor(() => expect(readFileSync(join(dir, "log.jsonl"), "utf8")).toContain("再起動前の発言"));
+      const before = yield* logEvents(dir);
+      const noticesBefore = stderr.filter((line) => line.startsWith("ヘルパーの知らないイベント"));
+      const runs = records().filter((record) => record.type === "run");
+      expect(runs).toHaveLength(1);
+      const run = runs[0];
+      if (run?.type !== "run") throw new Error("ヘルパーが起動していない");
+      expect(before.filter((event) => event.type === "intake-stopped")).toEqual([]);
+      expect(before.filter((event) => event.type === "remark").map((event) => event.remark.text)).toEqual([
+        "最初の発言", "再起動前の発言",
+      ]);
+
+      writeScript({ events: [
+        { type: "speaker-off", start: 0, reason: "モデルなし" },
+        { type: "heartbeat" },
+        { type: "heartbeat" },
+        { type: "future-status" },
+        remark("相手", 5, 6, "再起動後の発言"),
+      ] });
+      yield* Effect.sync(() => process.kill(run.pid, "SIGKILL"));
+      yield* waitFor(() => expect(readFileSync(join(dir, "log.jsonl"), "utf8")).toContain("再起動後の発言"), { timeout: 10_000 });
+      const after = yield* logEvents(dir);
+      const noticesAfter = stderr.filter((line) => line.startsWith("ヘルパーの知らないイベント"));
+      expect(records().filter((record) => record.type === "run")).toHaveLength(2);
+      expect((yield* sessionDirs()).filter((path) => existsSync(join(path, "log.jsonl")))).toEqual([dir]);
+      expect(after.filter((event) => event.type === "remark").map((event) => event.remark.text)).toEqual([
+        "最初の発言", "再起動前の発言", "再起動後の発言",
+      ]);
+      expect(after.filter((event) => event.type === "intake-restarted")).toHaveLength(1);
+      yield* cli("stop");
+
+      const notice = (type: string) => `ヘルパーの知らないイベント「${type}」を読み飛ばしました。ヘルパーを作り直してください（swift build -c release --package-path helper）\n`;
+      expect(noticesBefore).toEqual([notice("heartbeat"), notice("future-status")]);
+      expect(noticesAfter).toEqual([
+        notice("heartbeat"), notice("future-status"), notice("heartbeat"), notice("future-status"),
+      ]);
+    }));
+
   it.live("疎通: cli apps → start → 発言 → stop → export（HTTP・/ws・子プロセスを本物で）", () =>
     Effect.gen(function* () {
       const { server, cli, calls, records, sessionDirs } = yield* setup();
