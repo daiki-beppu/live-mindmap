@@ -1,15 +1,13 @@
 import { Effect, Stream } from "effect";
 
 export const readyHelperChecks = {
-  check: Effect.succeed({ microphone: "authorized" as const, screenCapture: true, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } }),
-  checkNoScreen: Effect.succeed({ microphone: "authorized" as const, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } }),
+  check: ({ screen }: { readonly screen: boolean }) => Effect.succeed({ microphone: "authorized" as const, ...(screen ? { screenCapture: true } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } }),
   installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない"),
   creationDate: (_file: string) => Effect.succeed(null),
 };
 
 export const forbiddenHelperChecks = {
-  check: Effect.die("このテストではヘルパーを確認しない"),
-  checkNoScreen: Effect.die("このテストではヘルパーを確認しない"),
+  check: (_options: { readonly screen: boolean }) => Effect.die("このテストではヘルパーを確認しない"),
   installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない"),
   creationDate: (_file: string) => Effect.die("このテストではファイルの作成日時を読まない"),
 };
