@@ -944,6 +944,68 @@ struct ScreenFitSizeTests {
 
 @Suite("共有画面の判定器: 画像の生成とイベント化")
 struct ScreenEventTests {
+    @Test("録画の小領域は固定後に進捗を確定し、後続の累積差分は確定時刻以降の画面として送る", arguments: [false, true])
+    func smallRecordingChangeCommitsProgress(grows: Bool) throws {
+        var detector = ScreenChangeDetector.withoutTabDetection()
+        let base = luma(fill: 100)
+        _ = detector.fileScreenEvent(for: ScreenFrame(luma: base, time: 0, title: nil)) { shot("A") }
+        for slot in 1...8 {
+            #expect(detector.fileScreenEvent(for: ScreenFrame(luma: rewritten(base, firstCells: 40, to: 200), time: Double(slot) / 4, title: nil)) { shot("B") }.isEmpty)
+        }
+        let committed = try #require(detector.fileProgress)
+        #expect(committed == 2)
+        var events: [HelperEvent] = []
+        for slot in 9...16 {
+            let notified = try #require(detector.fileProgress)
+            let next = detector.fileScreenEvent(for: ScreenFrame(luma: rewritten(base, firstCells: grows && slot >= 12 ? 47 : 40, to: 200), time: Double(slot) / 4, title: nil)) { shot("B") }
+            for event in next {
+                guard case .screen(let start, _, _, _, _) = event else { Issue.record("画面以外のイベント"); continue }
+                #expect(start >= notified)
+            }
+            events += next
+        }
+        print("累積=\(grows)、2秒判定時の進捗=\(committed)、後続=\(events)")
+        if grows {
+            #expect(events.count == 1)
+            for event in events {
+                guard case .screen(let start, _, _, _, _) = event else { Issue.record("画面以外のイベント"); continue }
+                #expect(start >= committed)
+            }
+        } else { #expect(events.isEmpty) }
+    }
+
+    @Test("録画の固定画面では正常に判定した時刻まで音声を解放できる")
+    func stationaryRecordingAdvancesProgress() throws {
+        var detector = ScreenChangeDetector.withoutTabDetection()
+        #expect(detector.fileProgress == nil)
+        for slot in 0...8 {
+            let time = Double(slot) / 4
+            let events = detector.fileScreenEvent(for: ScreenFrame(luma: luma(fill: 100), time: time, title: nil)) { shot("A") }
+            #expect(events == (slot == 0 ? [.screen(start: 0, image: "A", lines: [])] : []))
+            #expect(try #require(detector.fileProgress) == time)
+        }
+    }
+
+    @Test("録画の変化保留中と画像生成失敗後も、後続画面のstartより先へ音声を解放しない", arguments: [false, true])
+    func pendingRecordingProgressSurvivesEncodeFailure(failEncode: Bool) throws {
+        var detector = ScreenChangeDetector.withoutTabDetection()
+        for slot in 0...7 {
+            let time = Double(slot) / 4
+            _ = detector.fileScreenEvent(for: ScreenFrame(luma: luma(fill: slot < 4 ? 100 : 200), time: time, title: nil)) { shot("A") }
+            let progress = try #require(detector.fileProgress)
+            #expect(progress == (slot < 4 ? time : 1))
+        }
+        let changed = ScreenFrame(luma: luma(fill: 200), time: 2, title: nil)
+        if failEncode {
+            #expect(detector.fileScreenEvent(for: changed) { nil }.isEmpty)
+            #expect(try #require(detector.fileProgress) == 1)
+        }
+        let notified = try #require(detector.fileProgress)
+        #expect(detector.fileScreenEvent(for: changed) { shot("B") } == [.screen(start: 1, image: "B", lines: [])])
+        #expect(notified <= 1)
+        #expect(try #require(detector.fileProgress) == 2)
+    }
+
     @Test("タブを判定しない作成方法ではブラウザ風のタイトルでも即時に送り、タイトル変更と終了で再送しない")
     func withoutTabDetectionSendsImmediatelyRegardlessOfTitle() {
         var detector: ScreenChangeDetector = .withoutTabDetection()

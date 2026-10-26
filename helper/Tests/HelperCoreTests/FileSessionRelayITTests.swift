@@ -1,9 +1,11 @@
+import AVFoundation
+import CoreImage
 import Foundation
 import Speech
 import Testing
 @testable import HelperCore
 
-// `cli recorded --self` の組み立て（relayFilePair）の IT。本番と同じ関数に、合成した WAV 2 本と台本どおりに結果を流す偽の文字にする役を渡し、
+// `cli recorded` の組み立て（relayFileSession）の IT。本番と同じ関数に、合成したファイルと台本どおりに結果を流す偽の文字にする役を渡し、
 // WebSocket に流れたイベントを観測する（映像の `screen` は、映像つきの mov を渡して選択規則を確かめる）。確かめること: 保留が音声の時刻で解ける（壁時計では解けない）/
 // 入力の終わりの後に届く `相手` の確定結果も `自分` の判定の文脈に入る / トラック名と重複の印がライブと同じに付く。
 
@@ -46,10 +48,12 @@ private final class ScriptedTranscriber: FileTranscriber, @unchecked Sendable {
     private let startsLock = NSLock()
     private var _firstStart: Double?
     private var _lastEnd = 0.0
+    private var _firstResultInputEnd: Double?
     /// 引いた最初の入力の開始位置（ファイルの秒）。1 つも引いていなければ nil。
     var firstStart: Double? { startsLock.withLock { _firstStart } }
     /// 引いた入力の終わりの最大値（ファイルの秒）。
     var lastEnd: Double { startsLock.withLock { _lastEnd } }
+    var firstResultInputEnd: Double? { startsLock.withLock { _firstResultInputEnd } }
 
     init(steps: [Step] = [], tail: [TranscriptionResult] = [], tailDelay: Duration = .milliseconds(300), pause: (after: Double, gate: Gate)? = nil, failWhen: (@Sendable () -> Bool)? = nil) {
         self.steps = steps
@@ -76,6 +80,9 @@ private final class ScriptedTranscriber: FileTranscriber, @unchecked Sendable {
                     }
                     for (index, step) in steps.enumerated() where end >= step.after && !fired.contains(index) {
                         fired.insert(index)
+                        if !step.results.isEmpty {
+                            startsLock.withLock { if _firstResultInputEnd == nil { _firstResultInputEnd = end } }
+                        }
                         step.results.forEach { continuation.yield($0) }
                     }
                     if fired.count == steps.count, pause == nil { reachedScript.raise() }
@@ -202,27 +209,30 @@ private struct Rig {
     let socket: URLSessionWebSocketTask
     let receiving: Task<Void, Never>
     let theirs: URL
-    let mine: URL
+    let mine: URL?
     let directory: URL
 
     /// `theirsWhiteFrom` / `mineWhiteFrom` を渡した側は、その秒から白になる映像つきの mov（`videoSeconds` 秒、既定は 4 秒）。nil の側は WAV。
-    init(theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4) async throws {
+    init(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil) async throws {
         let directory = try Support.temporaryDirectory()
         self.directory = directory
         let wav = directory.appendingPathComponent("audio.wav")
-        try Support.writeWAV(wav, loudSeconds: 4, silentSeconds: 0)
+        try Support.writeWAV(wav, loudSeconds: 4, silentSeconds: 0, sampleRate: audioSampleRate)
         func source(_ name: String, whiteFrom: Double?) async throws -> URL {
             guard let whiteFrom else {
                 let url = directory.appendingPathComponent("\(name).wav")
-                try Support.writeWAV(url, loudSeconds: 4, silentSeconds: 0)
+                try Support.writeWAV(url, loudSeconds: 4, silentSeconds: 0, sampleRate: audioSampleRate)
                 return url
             }
             let url = directory.appendingPathComponent("\(name).mov")
-            try await Support.writeMovie(url, audio: wav, videoSeconds: videoSeconds, video: .slides(switchAt: whiteFrom))
+            let content: Support.Video = if name == "them", let smallChanges {
+                .smallChanges(grows: smallChanges)
+            } else { .slides(switchAt: whiteFrom) }
+            try await Support.writeMovie(url, audio: wav, videoSeconds: videoSeconds, video: content, videoFrameRate: videoFrameRate)
             return url
         }
         theirs = try await source("them", whiteFrom: theirsWhiteFrom)
-        mine = try await source("me", whiteFrom: mineWhiteFrom)
+        mine = includeMine ? try await source("me", whiteFrom: mineWhiteFrom) : nil
         if theirsWhiteFrom != nil || mineWhiteFrom != nil {
             // Why: 送る画面の OCR は、プロセスで最初の 1 回だけ文字認識のモデルを組み立て、負荷のある機械では 20 秒かかった。
             // 映像の判定が済むまで音声は進まないので、それが下の待ちに入ると揺れる。測る前に 1 回読ませておく
@@ -232,35 +242,25 @@ private struct Rig {
         let port = try await server.start()
         socket = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         socket.resume()
-        for _ in 0..<100 where await server.clientCount != 1 { try await Task.sleep(for: .milliseconds(50)) }
-        try #require(await server.clientCount == 1)
+        let deadline = ContinuousClock.now + .seconds(30)
+        while await server.clientCount != 1 {
+            if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: "WebSocket が接続する") }
+            try await Task.sleep(for: .milliseconds(25))
+        }
         receiving = startReceiving(socket, into: inbox, screens: screens, arrivals: arrivals)
     }
 
-    func relay(theirs theirsTranscriber: ScriptedTranscriber, mine mineTranscriber: ScriptedTranscriber) -> Task<Void, Error> {
-        let server = server, theirs = theirs, mine = mine
-        return Task {
-            try await relayFilePair(theirs: theirs, mine: mine, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server)
-        }
-    }
-
-    /// トラックごとの開始位置（`theirsFrom`・`mineFrom` 秒）から読み始めて流す（起動し直し）。
-    func relay(theirs theirsTranscriber: ScriptedTranscriber, mine mineTranscriber: ScriptedTranscriber, theirsFrom: Double, mineFrom: Double) -> Task<Void, Error> {
-        let server = server, theirs = theirs, mine = mine
-        return Task {
-            try await relayFilePair(theirs: theirs, mine: mine, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server, theirsFrom: theirsFrom, mineFrom: mineFrom)
-        }
-    }
-
-    /// 映像の処理を差し替えて流す（映像を遅らせたり、止めたりするため）。
     func relay(
-        theirs theirsTranscriber: ScriptedTranscriber, mine mineTranscriber: ScriptedTranscriber, relayScreen: @escaping FileScreenRelay
+        theirs theirsTranscriber: ScriptedTranscriber, mine mineTranscriber: ScriptedTranscriber? = nil,
+        theirsFrom: Double = 0, mineFrom: Double = 0, relayScreen: FileScreenRelay? = nil
     ) -> Task<Void, Error> {
         let server = server, theirs = theirs, mine = mine
         return Task {
-            try await relayFilePair(
-                theirs: theirs, mine: mine, theirsTranscriber: theirsTranscriber, mineTranscriber: mineTranscriber, to: server,
-                relayScreen: relayScreen)
+            let theirsSource = FileSessionSource(url: theirs, transcriber: theirsTranscriber, from: theirsFrom)
+            let mineSource = try mine.map { url in
+                FileSessionSource(url: url, transcriber: try #require(mineTranscriber), from: mineFrom)
+            }
+            try await relayFileSession(theirs: theirsSource, mine: mineSource, to: server, relayScreen: relayScreen)
         }
     }
 
@@ -273,8 +273,8 @@ private struct Rig {
 }
 
 /// 成功・失敗を問わず、relay を止めて Rig を片付ける。
-private func withRig(theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, _ body: (Rig) async throws -> Void) async throws {
-    let rig = try await Rig(theirsWhiteFrom: theirsWhiteFrom, mineWhiteFrom: mineWhiteFrom, videoSeconds: videoSeconds)
+private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil, _ body: (Rig) async throws -> Void) async throws {
+    let rig = try await Rig(includeMine: includeMine, theirsWhiteFrom: theirsWhiteFrom, mineWhiteFrom: mineWhiteFrom, videoSeconds: videoSeconds, videoFrameRate: videoFrameRate, audioSampleRate: audioSampleRate, smallChanges: smallChanges)
     do {
         try await body(rig)
     } catch {
@@ -284,8 +284,8 @@ private func withRig(theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = ni
     await rig.stop()
 }
 
-@Suite("録画 2 本の組み立て（relayFilePair）", .timeLimit(.minutes(1)))
-struct FilePairRelayITTests {
+@Suite("録画のセッションの組み立て（relayFileSession）", .timeLimit(.minutes(1)))
+struct FileSessionRelayITTests {
     @Test("入力の終わりの後に届く 相手 の確定結果も、保留中の 自分 の判定の文脈に入る。相手 は track 相手・印なし、自分 は track 自分・印あり")
     func theirFinalAfterEndOfInputMarksMine() async throws {
         try await withRig { rig in
@@ -417,7 +417,7 @@ struct FilePairRelayITTests {
         }
     }
 
-    /// 映像の選択規則。`relayFilePair` が戻った後に届いた `screen` の start を見る。画面全体の変化は 1 秒間比べる対象から外れるので、
+    /// 映像の選択規則。`relayFileSession` が戻った後に届いた `screen` の start を見る。画面全体の変化は 1 秒間比べる対象から外れるので、
     /// 白に変わった秒の 1 秒後に判定され、start は変化した時刻になる。
     private func screenStarts(theirsWhiteFrom: Double?, mineWhiteFrom: Double?) async throws -> [Double] {
         var starts: [Double] = []
@@ -454,30 +454,155 @@ struct FilePairRelayITTests {
         #expect(try await screenStarts(theirsWhiteFrom: nil, mineWhiteFrom: nil).isEmpty)
     }
 
-    @Test("映像の判定が済むまで、音声の結果は流れない。映像を遅らせても、screen（start = 1.0）は end が 1.5 を超える 相手・自分 の remark より先に届く")
-    func screenPrecedesLaterRemarksWhenVideoIsDelayed() async throws {
-        try await withRig(theirsWhiteFrom: 1.0) { rig in
+    @Test("映像の判定が済むまで、音声の結果は流れない。映像を遅らせても、screen（start = 1.0）は end が 1.5 を超える 相手・自分 の remark より先に届く", arguments: [false, true])
+    func screenPrecedesLaterRemarksWhenVideoIsDelayed(includeMine: Bool) async throws {
+        try await withRig(includeMine: includeMine, theirsWhiteFrom: 1.0) { rig in
             let gate = Gate()
+            let screenWaiting = Flag()
             let server = rig.server
             // 画面の変化（1.0 秒）は 2.0 秒のフレームで判定される。判定の時刻まで音声の入力を渡さない
             let relaying = rig.relay(
-                theirs: ScriptedTranscriber(steps: [Step(after: 1.5, results: [final(sentence, 1.1, 1.5)])]),
-                mine: ScriptedTranscriber(steps: [Step(after: 1.6, results: [final(second, 1.2, 1.6)])]),
+                theirs: ScriptedTranscriber(steps: [Step(after: 1.6, results: [final(sentence, 1.1, 1.6)])]),
+                mine: includeMine ? ScriptedTranscriber(steps: [Step(after: 1.7, results: [final(second, 1.2, 1.7)])]) : nil,
                 relayScreen: { video, progress in
+                    screenWaiting.raise()
                     await gate.wait()
                     await relayFileScreen(from: video, to: server, progress: progress)
                 })
             defer { relaying.cancel(); gate.open() }
+            try await waitUntil("映像の処理が門で待つ") { screenWaiting.isRaised }
             try await Task.sleep(for: .milliseconds(500))
             #expect(rig.arrivals.values.isEmpty, "映像が止まっている間に音声の結果が流れた: \(rig.arrivals.values)")
 
             gate.open()
-            try await waitUntil("screen 2 件と remark 2 件が届く") { rig.arrivals.values.count >= 4 }
+            let expectedRemarks: Set<String> = includeMine ? ["remark 相手", "remark 自分"] : ["remark 相手"]
+            try await waitUntil("screen と全読み手の remark が届く") { rig.arrivals.values.count >= 2 + expectedRemarks.count }
             try await relaying.value
             let arrivals = rig.arrivals.values
             #expect(Array(arrivals.prefix(2)) == ["screen 0.0", "screen 1.0"], "\(arrivals)")
-            #expect(Set(arrivals.suffix(2)) == ["remark 相手", "remark 自分"], "\(arrivals)")
+            #expect(Set(arrivals.dropFirst(2)) == expectedRemarks, "\(arrivals)")
+            #expect(arrivals.count == 2 + expectedRemarks.count)
+            if !includeMine { #expect(Array(arrivals.dropFirst(2)) == ["remark 相手"]) }
         }
+    }
+
+    @Test("映像の残りを保留していても、判定済みの区間の発言は WebSocket に届く", arguments: [false, true])
+    func remarksArriveBeforeVideoFinishes(includeMine: Bool) async throws {
+        try await verifyVideoProgress(includeMine: includeMine, whiteFrom: 4, firstPause: 0.75, remarkEnd: 1.2,
+                                      expected: ["screen 0.0", "remark 相手"])
+    }
+
+    @Test("変化が未確定の間は発言を保留し、確定した画面を先に送る", arguments: [false, true])
+    func pendingScreenPrecedesRemarks(includeMine: Bool) async throws {
+        try await verifyVideoProgress(includeMine: includeMine, whiteFrom: 1, firstPause: 1.75, remarkEnd: 1.6,
+                                      expected: ["screen 0.0", "screen 1.0", "remark 相手"])
+    }
+
+    @Test("小領域が固定しても映像完了前に発言が届き、後続の累積差分は古いstartで届かない", arguments: [false, true], [false, true])
+    func smallChangeDoesNotStallRecording(includeMine: Bool, grows: Bool) async throws {
+        try await verifyVideoProgress(includeMine: includeMine, whiteFrom: 4, firstPause: 0.75, remarkEnd: 1.2,
+                                      expected: ["screen 0.0", "remark 相手"], smallChanges: grows)
+    }
+
+    private func verifyVideoProgress(includeMine: Bool, whiteFrom: Double, firstPause: Double,
+                                     remarkEnd: Double, expected: [String], smallChanges: Bool? = nil) async throws {
+        // 20 fpsは0.75・1.75秒を含む。48 kHzの入力単位はend 1.6秒を1.75秒以内で生成できる。
+        try await withRig(includeMine: includeMine, theirsWhiteFrom: whiteFrom, videoSeconds: smallChanges == nil ? 4 : 5, videoFrameRate: 20, audioSampleRate: 48_000, smallChanges: smallChanges) { rig in
+            if let smallChanges { try await validateSmallChanges(rig.theirs, grows: smallChanges) }
+            let firstRelease = Gate(), remainingVideo = Gate()
+            let firstPaused = Flag(), videoPaused = Flag(), videoFinished = Flag()
+            let server = rig.server
+            let transcriber = ScriptedTranscriber(steps: [Step(after: remarkEnd, results: [final(sentence, 1.1, remarkEnd)])])
+            let relaying = rig.relay(
+                theirs: transcriber,
+                mine: includeMine ? ScriptedTranscriber() : nil,
+                relayScreen: { video, progress in
+                    defer { videoFinished.raise() }
+                    await relayFileScreen(from: video, to: server, progress: progress, afterFrame: { time in
+                        if time == firstPause {
+                            firstPaused.raise()
+                            await firstRelease.wait()
+                        }
+                        if time == 2 {
+                            videoPaused.raise()
+                            await remainingVideo.wait()
+                        }
+                    })
+                })
+            defer { relaying.cancel(); firstRelease.open(); remainingVideo.open() }
+            try await waitUntil("映像が最初の判定位置で止まる") { firstPaused.isRaised }
+            try await waitUntil("最初の画面が届く") { !rig.screens.values.isEmpty }
+            try await Task.sleep(for: .milliseconds(500))
+            #expect(!rig.arrivals.values.contains("remark 相手"))
+            #expect(transcriber.lastEnd < remarkEnd)
+            #expect(!videoFinished.isRaised)
+
+            firstRelease.open()
+            try await waitUntil("映像が2秒で止まる") { videoPaused.isRaised }
+            try #require(!videoFinished.isRaised)
+            do {
+                try await waitUntil("映像の残りを解放する前に発言が届く") { rig.arrivals.values.contains("remark 相手") }
+            } catch {
+                Issue.record("入力終端=\(transcriber.lastEnd)、発言条件=\(remarkEnd)、受信=\(rig.arrivals.values)")
+                throw error
+            }
+            #expect(transcriber.lastEnd >= remarkEnd)
+            #expect(transcriber.lastEnd <= 2)
+            let generatingEnd = try #require(transcriber.firstResultInputEnd)
+            if remarkEnd > 1.5 { #expect(generatingEnd <= firstPause) }
+            #expect(rig.arrivals.values == expected)
+            #expect(rig.inbox.values.map(\.text) == [sentence])
+            #expect(!videoFinished.isRaised)
+            print("映像2秒で保留: includeMine=\(includeMine)、小領域=\(String(describing: smallChanges))、入力終端=\(transcriber.lastEnd)、発言生成入力終端=\(generatingEnd)、発言end=\(remarkEnd)、受信=\(rig.arrivals.values)、映像終了=\(videoFinished.isRaised)")
+            remainingVideo.open()
+            try await relaying.value
+            #expect(videoFinished.isRaised)
+            if let smallChanges {
+                let count = smallChanges ? 2 : 1
+                if smallChanges { try await waitUntil("累積差分の画面が届く") { rig.screens.values.count == count } }
+                #expect(rig.screens.values.count == count)
+                if smallChanges { #expect(try #require(rig.screens.values.last).start >= 2) }
+                print("小領域の残り解放後: includeMine=\(includeMine)、累積=\(smallChanges)、画面start=\(rig.screens.values.map(\.start))、映像終了=\(videoFinished.isRaised)")
+            }
+        }
+    }
+
+    private func validateSmallChanges(_ url: URL, grows: Bool) async throws {
+        let asset = AVURLAsset(url: url)
+        let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output)
+        try #require(reader.startReading())
+        let (counts, fixedDifference) = await onFileScreenQueue { () -> ([Int], Int) in
+            defer { reader.cancelReading() }
+            let context = CIContext()
+            var baseline: [UInt8] = [], differences: [Int] = []
+            var fixed: [UInt8] = [], fixedDifference = 0
+            var thinner = ScreenFrameThinner()
+            while let sample = output.copyNextSampleBuffer() {
+                let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                guard thinner.admits(time) else { continue }
+                guard let pixels = CMSampleBufferGetImageBuffer(sample) else { return ([], 0) }
+                let source = CIImage(cvPixelBuffer: pixels)
+                guard let image = context.createCGImage(source, from: source.extent), let luma = lumaGrid(of: image) else { return ([], 0) }
+                if time == 0.25 { fixed = luma }
+                if time > 0.25 && time <= 2 {
+                    fixedDifference = max(fixedDifference, zip(fixed, luma).map { abs(Int($0) - Int($1)) }.max() ?? 0)
+                }
+                if time == 0 { baseline = luma }
+                else if time == 0.25 || time == 3 {
+                    differences.append(zip(baseline, luma).filter { abs(Int($0) - Int($1)) > screenLumaDifferenceThreshold }.count)
+                    if time == 3 { break }
+                }
+            }
+            return (differences, fixedDifference)
+        }
+        print("復号後: grows=\(grows)、0.25秒・3秒の差分マス数=\(counts)、固定区間の最大輝度差=\(fixedDifference)")
+        try #require(counts.count == 2)
+        #expect(counts[0] > 0 && Double(counts[0]) / Double(screenGridWidth * screenGridHeight) <= screenChangedCellRatioThreshold)
+        #expect((Double(counts[1]) / Double(screenGridWidth * screenGridHeight) > screenChangedCellRatioThreshold) == grows)
+        #expect(fixedDifference <= screenMotionLumaDifferenceThreshold)
     }
 
     @Test("映像の読み出し中に音声の認識が失敗すると、映像を最後まで読まずに音声のエラーで戻り、戻った後は screen が増えない")
@@ -492,7 +617,7 @@ struct FilePairRelayITTests {
             let returned = Flag()
             let watcher = Task { _ = await relaying.result; returned.raise() }
             defer { watcher.cancel() }
-            try await waitUntil("音声の失敗で relayFilePair が戻る") { returned.isRaised }
+            try await waitUntil("音声の失敗で relayFileSession が戻る") { returned.isRaised }
 
             guard case .failure(let error) = await relaying.result else {
                 Issue.record("音声が失敗したのに正常に戻った")
@@ -502,5 +627,153 @@ struct FilePairRelayITTests {
             try await Task.sleep(for: .milliseconds(500))
             #expect(rig.screens.values.map(\.start) == [0.0], "戻った後も映像が読まれ続けた: \(rig.screens.values.map(\.start))")
         }
+    }
+
+    /// base64 の JPEG の平均の明るさ（0〜255）。件数が合わないときに、どんな画面が出たかを示すためだけに使う。
+    private func meanBrightness(_ base64: String) -> Int? {
+        guard let data = Data(base64Encoded: base64), let image = CIImage(data: data) else { return nil }
+        let context = CIContext()
+        guard let gray = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: image, kCIInputExtentKey: CIVector(cgRect: image.extent)])?.outputImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(gray, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+        return (Int(pixel[0]) + Int(pixel[1]) + Int(pixel[2])) / 3
+    }
+
+    @Test("0〜2 秒が黒、2 秒からが白の動画からは、動画の時刻（約 0 秒と約 2 秒）つきで、画像のある screen が 2 件出る。screen-off は出ない")
+    func slidesBecomeScreenEventsWithVideoTime() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .slides(switchAt: 2))
+        #expect(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).count == 1) // 前提: 映像つき
+
+        let events = try await FileScreenTestSupport.collect(movie)
+
+        let shown = FileScreenTestSupport.screens(in: events)
+        #expect(shown.count == 2, "screen の start と画像の明るさ: \(shown.map { ($0.start, $0.image.flatMap(meanBrightness)) })")
+        if shown.count == 2 {
+            #expect(abs(shown[0].start - 0) <= 0.25, "最初の画面の start: \(shown[0].start)")
+            #expect(abs(shown[1].start - 2) <= 0.25, "切り替わりの画面の start: \(shown[1].start)")
+        }
+        for screen in shown {
+            let image = try #require(screen.image, "送る画面には画像がある")
+            #expect(Data(base64Encoded: image)?.starts(with: [0xFF, 0xD8]) == true, "画像は JPEG")
+            #expect(screen.lines != nil, "画像のある screen は OCR の行（空でもよい）を持つ")
+        }
+        #expect(!events.contains { $0.type == "screen-off" })
+    }
+
+    @Test("映像のトラックが読めない動画では、start 0 の screen-off（許可なし）が先に流れ、screen は出ず、音声の結果が続く")
+    func undecodableVideoTurnsScreenOff() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let movie = try await FileScreenTestSupport.makeMovie(in: dir, video: .undecodable)
+        let track = try #require(try await AVURLAsset(url: movie).loadTracks(withMediaType: .video).first) // 前提: 映像のトラックはある
+        let reader = try AVAssetReader(asset: AVURLAsset(url: movie))
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        var readable = false
+        if reader.canAdd(output) {
+            reader.add(output)
+            readable = reader.startReading() && output.copyNextSampleBuffer() != nil
+        }
+        #expect(!readable) // 前提: BGRA では読めない
+
+        let events = try await FileScreenTestSupport.collect(movie)
+
+        let first = try #require(events.first)
+        #expect(first.type == "screen-off")
+        #expect(first.start == 0)
+        #expect(first.reason == "許可なし")
+        #expect(FileScreenTestSupport.screens(in: events).isEmpty)
+        #expect(events.dropFirst().map(\.type) == ["partial", "remark"])
+    }
+
+    @Test("音声だけのファイルでは、screen も screen-off も出ず、音声の結果だけが流れる")
+    func audioOnlyFileHasNoScreenEvents() async throws {
+        let dir = try Support.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("meeting.wav")
+        try Support.writeWAV(wav, loudSeconds: 2, silentSeconds: 4)
+        #expect(try await AVURLAsset(url: wav).loadTracks(withMediaType: .video).isEmpty) // 前提: 映像なし
+
+        let events = try await FileScreenTestSupport.collect(wav)
+
+        #expect(events.map(\.type) == ["partial", "remark"])
+    }
+
+}
+
+enum FileScreenTestSupport {
+    struct ReceivedEvent: Decodable, Sendable {
+        let type: String
+        let start: Double
+        let image: String?
+        let lines: [String]?
+        let reason: String?
+    }
+
+    static func makeMovie(in dir: URL, video: FileAudioTestSupport.Video) async throws -> URL {
+        let wav = dir.appendingPathComponent("source.wav")
+        try FileAudioTestSupport.writeWAV(wav, loudSeconds: 2, silentSeconds: 4)
+        let movie = dir.appendingPathComponent("meeting.mov")
+        try await FileAudioTestSupport.writeMovie(movie, audio: wav, videoSeconds: 6, video: video)
+        return movie
+    }
+
+    static func collect(_ url: URL) async throws -> [ReceivedEvent] {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        let socket = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        socket.resume()
+        do {
+            let deadline = ContinuousClock.now + .seconds(30)
+            while await server.clientCount != 1 {
+                if ContinuousClock.now >= deadline { throw WaitTimedOut(condition: "WebSocket が接続する") }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            // 送信完了後の目印まで受け取り、最後のイベントも届いたことを確認する。
+            let end = "file-screen-test-complete"
+            let events = try await withThrowingTaskGroup(of: [ReceivedEvent]?.self) { group in
+                group.addTask {
+                    try await relayFileSession(
+                        theirs: FileSessionSource(url: url, transcriber: ScriptedTranscriber(tail: [
+                            partial("最初の発言", 0.5, 1.5), final("最初の発言です", 0.5, 1.5),
+                        ]), from: 0), mine: nil, to: server)
+                    await server.broadcast(end)
+                    return nil
+                }
+                group.addTask {
+                    try await withTaskCancellationHandler {
+                        var events: [ReceivedEvent] = []
+                        while true {
+                            guard case .string(let text) = try await socket.receive() else { throw CocoaError(.fileReadUnknown) }
+                            if text == end { return events }
+                            events.append(try JSONDecoder().decode(ReceivedEvent.self, from: Data(text.utf8)))
+                        }
+                    } onCancel: {
+                        socket.cancel(with: .goingAway, reason: nil)
+                    }
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(60))
+                    throw WaitTimedOut(condition: "録画の全イベントが WebSocket に届く")
+                }
+                defer { group.cancelAll() }
+                for try await result in group {
+                    if let result { return result }
+                }
+                throw WaitTimedOut(condition: "録画の全イベントが WebSocket に届く")
+            }
+            socket.cancel(with: .goingAway, reason: nil)
+            await server.stop()
+            return events
+        } catch {
+            socket.cancel(with: .goingAway, reason: nil)
+            await server.stop()
+            throw error
+        }
+    }
+
+    static func screens(in events: [ReceivedEvent]) -> [ReceivedEvent] {
+        events.filter { $0.type == "screen" }
     }
 }

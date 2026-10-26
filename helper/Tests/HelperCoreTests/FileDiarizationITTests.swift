@@ -14,7 +14,7 @@ import Testing
 // 使う API（実装側が用意する）:
 //   FileDiarization.prepare(_:from:emit:) … 話者分離を準備する。使えなければ `speakerOff(start: from, reason:)` を emit して `feed` が nil になる
 //   FileDiarization.feed / run()          … 読み手が音声を渡す口 / 話者分離を走らせ、結果を emit する。流れが終わる（settled まで流し切る）と戻る
-//   transcribeFile(…, diarization:) / relayFilePair(…, theirsDiarization:) … 読み手に `feed` を渡す（`相手` 側だけ）
+//   transcribeFile(…, diarization:) / relayFileSession(…, theirsDiarization:) … 読み手に `feed` を渡す（`相手` 側だけ）
 
 private typealias Support = FileAudioTestSupport
 
@@ -354,9 +354,9 @@ struct FileDiarizationITTests {
 
         let diarizing = Task { await diarization.run() }
         let relaying = Task {
-            try await relayFilePair(
-                theirs: theirs, mine: mine,
-                theirsTranscriber: PullingTranscriber("相手", log: log), mineTranscriber: PullingTranscriber("自分", log: log),
+            try await relayFileSession(
+                theirs: FileSessionSource(url: theirs, transcriber: PullingTranscriber("相手", log: log), from: 0),
+                mine: FileSessionSource(url: mine, transcriber: PullingTranscriber("自分", log: log), from: 0),
                 to: server, theirsDiarization: feed)
         }
         defer {

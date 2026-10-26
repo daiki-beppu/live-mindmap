@@ -16,7 +16,7 @@ enum FileAudioTestSupport {
     }
 
     /// 前半 `loudSeconds` 秒が 440 Hz のサイン波、後半 `silentSeconds` 秒が完全な無音の WAV。
-    static func writeWAV(_ url: URL, loudSeconds: Double, silentSeconds: Double) throws {
+    static func writeWAV(_ url: URL, loudSeconds: Double, silentSeconds: Double, sampleRate: Double = FileAudioTestSupport.sampleRate) throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
         let frames = AVAudioFrameCount(sampleRate * (loudSeconds + silentSeconds))
         let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
@@ -42,6 +42,7 @@ enum FileAudioTestSupport {
         case black
         /// 0 秒から `switchAt` 秒の手前までが黒、`switchAt` 秒からが白（スライドが切り替わる）。
         case slides(switchAt: Double)
+        case smallChanges(grows: Bool)
         /// 映像のトラックはあるが、コーデックを BGRA に復号できない（未知の FourCC のサンプルだけを書く）。
         case undecodable
         /// 全編が白地で、黒い文字を `lines` の上から順に 1 行ずつ描く（1280x720。OCR が読める大きさ）。
@@ -57,9 +58,9 @@ enum FileAudioTestSupport {
     /// 音声（`audio`）と映像（既定は黒い 64x64 を `videoSeconds` 秒。`video` で中身を選ぶ）を持つ mov。`creationDate` を渡すと QuickTime の作成日時のメタデータを付ける。
     /// `audioStartSeconds` を渡すと、音声のトラックを movie の 0 秒ではなくその秒から始める。
     /// `moreAudio` を渡すと、`audio` の後ろに 2 本目以降の音声のトラックとして順に加える（どれも 0 秒から始める）。
-    static func writeMovie(_ url: URL, audio: URL, videoSeconds: Int, creationDate: String? = nil, audioStartSeconds: Double = 0, moreAudio: [URL] = [], video content: Video = .black) async throws {
+    static func writeMovie(_ url: URL, audio: URL, videoSeconds: Int, creationDate: String? = nil, audioStartSeconds: Double = 0, moreAudio: [URL] = [], video content: Video = .black, videoFrameRate: Int = 10) async throws {
         let video = url.deletingLastPathComponent().appendingPathComponent("video-\(UUID().uuidString).mov")
-        try await writeVideo(video, seconds: videoSeconds, content: content)
+        try await writeVideo(video, seconds: videoSeconds, content: content, frameRate: videoFrameRate)
         let composition = AVMutableComposition()
         let videoAsset = AVURLAsset(url: video)
         let audioAsset = AVURLAsset(url: audio)
@@ -89,16 +90,21 @@ enum FileAudioTestSupport {
         try await session.export(to: url, as: .mov)
     }
 
-    private static func writeVideo(_ url: URL, seconds: Int, content: Video) async throws {
+    private static func writeVideo(_ url: URL, seconds: Int, content: Video, frameRate: Int) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         if case .undecodable = content {
             try await writeUndecodableVideo(writer, seconds: seconds)
             return
         }
         let (width, height) = content.size
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        var settings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
-        ])
+        ]
+        if case .smallChanges = content {
+            // 圧縮による輝度の揺れを避け、固定区間の判定を検証する。
+            settings[AVVideoCodecKey] = AVVideoCodecType.proRes4444
+        }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
@@ -106,7 +112,7 @@ enum FileAudioTestSupport {
         writer.add(input)
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
-        for i in 0..<(seconds * 10) {
+        for i in 0..<(seconds * frameRate) {
             while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 1_000_000) }
             var buffer: CVPixelBuffer?
             CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
@@ -114,18 +120,35 @@ enum FileAudioTestSupport {
             // Why: CVPixelBufferCreate は中身を初期化しない。黒も塗らないと、使い回されたメモリの残りが映り、
             // ほかのテストと並ぶと先頭のフレームが黒でなくなって画面の切り替わりが 1 件増えた（#1090）
             switch content {
-            case .slides(let switchAt): fill(pixels, with: Double(i) / 10 >= switchAt ? 0xFF : 0x00)
+            case .slides(let switchAt): fill(pixels, with: Double(i) / Double(frameRate) >= switchAt ? 0xFF : 0x00)
+            case .smallChanges(let grows):
+                fill(pixels, with: 100)
+                let time = Double(i) / Double(frameRate)
+                if time >= 0.25 { paintCorner(pixels, size: grows && time >= 3 ? 6 : 3) }
             case .text(let lines): drawText(lines, on: pixels)
             case .black, .undecodable: fill(pixels, with: 0x00)
             }
-            adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: 10))
+            adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: CMTimeScale(frameRate)))
         }
         input.markAsFinished()
         await writer.finishWriting()
         if writer.status != .completed { throw writer.error ?? CocoaError(.fileWriteUnknown) }
     }
 
-    /// すべての画素の B・G・R・A を `byte` で塗る（0x00 は黒、0xFF は白）。
+    private static func paintCorner(_ buffer: CVPixelBuffer, size: Int) {
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return }
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<size {
+            for x in 0..<size {
+                let offset = y * CVPixelBufferGetBytesPerRow(buffer) + x * 4
+                for channel in 0..<3 { bytes[offset + channel] = 200 }
+            }
+        }
+    }
+
+    /// すべての画素の B・G・R・A を `byte` で塗る。
     private static func fill(_ buffer: CVPixelBuffer, with byte: UInt8) {
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }

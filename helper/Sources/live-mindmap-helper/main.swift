@@ -249,10 +249,10 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     if let audioDir {
         try await exportFileAudioTracks(theirs: url, mine: selfURL, into: URL(fileURLWithPath: audioDir, isDirectory: true))
     }
-    let transcriber = SpeechAnalyzerTranscriber()
-    try await transcriber.prepare()
-    let selfTranscriber = selfURL == nil ? nil : SpeechAnalyzerTranscriber()
-    try await selfTranscriber?.prepare()
+    let theirs = FileSessionSource(url: url, transcriber: SpeechAnalyzerTranscriber(), from: from ?? 0)
+    try await theirs.transcriber.prepare()
+    let mine = selfURL.map { FileSessionSource(url: $0, transcriber: SpeechAnalyzerTranscriber(), from: selfFrom ?? 0) }
+    try await mine?.transcriber.prepare()
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
@@ -284,15 +284,7 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
         await server.waitForClient()
         // 文字起こしと話者分離を並べて動かす。両方が終わる（話者分離が最後の区間と `settled` を流し切る）まで待つ
         try await diarization.run {
-            guard let selfURL, let selfTranscriber else {
-                for try await event in try await fileSessionEvents(at: url, with: transcriber, from: from ?? 0, gate: gate, diarization: diarization.feed) {
-                    await server.broadcast(try event.jsonString())
-                }
-                return
-            }
-            try await relayFilePair(
-                theirs: url, mine: selfURL, theirsTranscriber: transcriber, mineTranscriber: selfTranscriber, to: server,
-                theirsFrom: from ?? 0, mineFrom: selfFrom ?? 0, gate: gate, theirsDiarization: diarization.feed)
+            try await relayFileSession(theirs: theirs, mine: mine, to: server, gate: gate, theirsDiarization: diarization.feed)
         }
     }
     // SIGINT / SIGTERM は、読むのをやめて通常の終了経路で片付ける
