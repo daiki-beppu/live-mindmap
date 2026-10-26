@@ -353,10 +353,10 @@ private struct ScreenImageComparison: Sendable {
 
     mutating func confirmFileProgress() {
         guard let lastSent, let previous else { return }
-        let excluded = excludedCells(at: previous.time)
-        // 動きとして除外中の差分だけを待つ。送信不要と確定した差分は累積用に残す。
+        let moving = movingCells(at: previous.time)
+        // 周辺として除外した固定差分は待たない。後から送る場合のstartはfileProgressを下限にする。
         let pending = remembered.indices
-            .filter { excluded[$0] && abs(Int(previous.luma[$0]) - Int(lastSent[$0])) > screenLumaDifferenceThreshold }
+            .filter { moving[$0] && abs(Int(previous.luma[$0]) - Int(lastSent[$0])) > screenLumaDifferenceThreshold }
             .map { rememberedTime[$0] }.min()
         fileProgress = max(fileProgress ?? lastSentTime, max(lastSentTime, pending ?? previous.time))
     }
@@ -452,13 +452,16 @@ private struct ScreenImageComparison: Sendable {
         }
     }
 
+    private func movingCells(at time: Double) -> [Bool] {
+        motionAverage.indices.map { index in
+            time - lastMotionTime[index] < screenMotionHoldSeconds || motionAverage[index] > screenFrequentMotionRatio
+        }
+    }
+
     /// 比べる対象から外すマス。いま動いているマスの周りを、広い動きなら `screenWideMotionMargin`、点なら `screenPointMotionMargin` だけ広げる。
     private func excludedCells(at time: Double) -> [Bool] {
-        let count = motionAverage.count
-        var moving = [Bool](repeating: false, count: count)
-        for index in 0..<count {
-            moving[index] = time - lastMotionTime[index] < screenMotionHoldSeconds || motionAverage[index] > screenFrequentMotionRatio
-        }
+        let moving = movingCells(at: time)
+        let count = moving.count
         var excluded = moving
         for index in 0..<count where moving[index] {
             let x = index % screenGridWidth

@@ -43,6 +43,7 @@ enum FileAudioTestSupport {
         /// 0 秒から `switchAt` 秒の手前までが黒、`switchAt` 秒からが白（スライドが切り替わる）。
         case slides(switchAt: Double)
         case smallChanges(grows: Bool)
+        case textBesideVideo(column: Int, stops: Bool)
         /// 映像のトラックはあるが、コーデックを BGRA に復号できない（未知の FourCC のサンプルだけを書く）。
         case undecodable
         /// 全編が白地で、黒い文字を `lines` の上から順に 1 行ずつ描く（1280x720。OCR が読める大きさ）。
@@ -51,6 +52,7 @@ enum FileAudioTestSupport {
         /// 映像の幅と高さ。
         var size: (width: Int, height: Int) {
             if case .text = self { return (1280, 720) }
+            if case .textBesideVideo = self { return (128, 72) }
             return (64, 64)
         }
     }
@@ -104,6 +106,7 @@ enum FileAudioTestSupport {
             // 圧縮による輝度の揺れを避け、固定区間の判定を検証する。
             settings[AVVideoCodecKey] = AVVideoCodecType.proRes4444
         }
+        if case .textBesideVideo = content { settings[AVVideoCodecKey] = AVVideoCodecType.proRes4444 }
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -125,6 +128,10 @@ enum FileAudioTestSupport {
                 fill(pixels, with: 100)
                 let time = Double(i) / Double(frameRate)
                 if time >= 0.25 { paintCorner(pixels, size: grows && time >= 3 ? 6 : 3) }
+            case .textBesideVideo(let column, let stops):
+                let time = Double(i) / Double(frameRate)
+                let step = stops && time >= 2 ? 7 : Int(time * 4)
+                paintTextBesideVideo(pixels, column: column, step: step)
             case .text(let lines): drawText(lines, on: pixels)
             case .black, .undecodable: fill(pixels, with: 0x00)
             }
@@ -144,6 +151,28 @@ enum FileAudioTestSupport {
             for x in 0..<size {
                 let offset = y * CVPixelBufferGetBytesPerRow(buffer) + x * 4
                 for channel in 0..<3 { bytes[offset + channel] = 200 }
+            }
+        }
+    }
+
+    private static func paintTextBesideVideo(_ buffer: CVPixelBuffer, column: Int, step: Int) {
+        // 復号後のグレーが100・40・200になるよう、動画の色変換を補う。
+        fill(buffer, with: 90)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return }
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<72 {
+            for x in 0..<128 {
+                let offset = y * CVPixelBufferGetBytesPerRow(buffer) + x * 4
+                bytes[offset + 3] = 255
+                let value: UInt8
+                if (60..<80).contains(x), (20..<40).contains(y) {
+                    value = step % 2 == 0 ? 35 : 192
+                } else if step >= 1, x == column, (4..<52).contains(y) {
+                    value = 0
+                } else { continue }
+                for channel in 0..<3 { bytes[offset + channel] = value }
             }
         }
     }

@@ -148,9 +148,10 @@ private final class Inbox: @unchecked Sendable {
 /// 届いた `screen`・`partial`・`remark` を、届いた順に 1 列で記録する（`screen` は start、それ以外は track）。
 private final class Arrivals: @unchecked Sendable {
     private let lock = NSLock()
-    private var items: [String] = []
-    func append(_ item: String) { lock.withLock { items.append(item) } }
-    var values: [String] { lock.withLock { items } }
+    private var items: [(name: String, start: Double, end: Double?)] = []
+    func append(_ item: String, start: Double, end: Double?) { lock.withLock { items.append((item, start, end)) } }
+    var values: [String] { lock.withLock { items.map(\.name) } }
+    var timedValues: [(name: String, start: Double, end: Double?)] { lock.withLock { items } }
 }
 
 /// 届いた `screen` の start と、画像の有無。
@@ -169,14 +170,15 @@ private func startReceiving(_ task: URLSessionWebSocketTask, into inbox: Inbox, 
                   let type = object["type"] as? String else { continue }
             if type == "screen", let start = object["start"] as? Double {
                 screens.append(start: start, hasImage: object["image"] is String)
-                arrivals.append("screen \(start)")
+                arrivals.append("screen \(start)", start: start, end: nil)
                 continue
             }
             guard type == "remark" || type == "partial",
                   let track = object["track"] as? String, let body = object["text"] as? String,
-                  let duplicate = object["duplicate"] as? Bool else { continue }
+                  let duplicate = object["duplicate"] as? Bool,
+                  let start = object["start"] as? Double, let end = object["end"] as? Double else { continue }
             inbox.append(Received(type: type, track: track, text: body, duplicate: duplicate))
-            arrivals.append("\(type) \(track)")
+            arrivals.append("\(type) \(track)", start: start, end: end)
         }
     }
 }
@@ -213,7 +215,7 @@ private struct Rig {
     let directory: URL
 
     /// `theirsWhiteFrom` / `mineWhiteFrom` を渡した側は、その秒から白になる映像つきの mov（`videoSeconds` 秒、既定は 4 秒）。nil の側は WAV。
-    init(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil) async throws {
+    init(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil, theirsVideo: Support.Video? = nil) async throws {
         let directory = try Support.temporaryDirectory()
         self.directory = directory
         let wav = directory.appendingPathComponent("audio.wav")
@@ -225,7 +227,9 @@ private struct Rig {
                 return url
             }
             let url = directory.appendingPathComponent("\(name).mov")
-            let content: Support.Video = if name == "them", let smallChanges {
+            let content: Support.Video = if name == "them", let theirsVideo {
+                theirsVideo
+            } else if name == "them", let smallChanges {
                 .smallChanges(grows: smallChanges)
             } else { .slides(switchAt: whiteFrom) }
             try await Support.writeMovie(url, audio: wav, videoSeconds: videoSeconds, video: content, videoFrameRate: videoFrameRate)
@@ -273,8 +277,8 @@ private struct Rig {
 }
 
 /// 成功・失敗を問わず、relay を止めて Rig を片付ける。
-private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil, _ body: (Rig) async throws -> Void) async throws {
-    let rig = try await Rig(includeMine: includeMine, theirsWhiteFrom: theirsWhiteFrom, mineWhiteFrom: mineWhiteFrom, videoSeconds: videoSeconds, videoFrameRate: videoFrameRate, audioSampleRate: audioSampleRate, smallChanges: smallChanges)
+private func withRig(includeMine: Bool = true, theirsWhiteFrom: Double? = nil, mineWhiteFrom: Double? = nil, videoSeconds: Int = 4, videoFrameRate: Int = 10, audioSampleRate: Double = Support.sampleRate, smallChanges: Bool? = nil, theirsVideo: Support.Video? = nil, _ body: (Rig) async throws -> Void) async throws {
+    let rig = try await Rig(includeMine: includeMine, theirsWhiteFrom: theirsWhiteFrom, mineWhiteFrom: mineWhiteFrom, videoSeconds: videoSeconds, videoFrameRate: videoFrameRate, audioSampleRate: audioSampleRate, smallChanges: smallChanges, theirsVideo: theirsVideo)
     do {
         try await body(rig)
     } catch {
@@ -502,6 +506,96 @@ struct FileSessionRelayITTests {
     func smallChangeDoesNotStallRecording(includeMine: Bool, grows: Bool) async throws {
         try await verifyVideoProgress(includeMine: includeMine, whiteFrom: 4, firstPause: 0.75, remarkEnd: 1.2,
                                       expected: ["screen 0.0", "remark 相手"], smallChanges: grows)
+    }
+
+    @Test("動く領域の周辺に固定文字が残っても映像終了前に発言が届き、後続画面は後で終わる結果に先行する", arguments: [false, true], [57, 58])
+    func textBesideVideoDoesNotStallRecording(includeMine: Bool, column: Int) async throws {
+        for stops in [false, true] {
+            try await withRig(includeMine: includeMine, theirsWhiteFrom: 4, videoFrameRate: 20,
+                              audioSampleRate: 48_000, theirsVideo: .textBesideVideo(column: column, stops: stops)) { rig in
+                try await validateTextBesideVideo(rig.theirs, column: column, stops: stops)
+                let remainingVideo = Gate()
+                let videoPaused = Flag(), videoFinished = Flag()
+                let server = rig.server
+                let transcriber = ScriptedTranscriber(steps: [
+                    Step(after: 1.2, results: [final(sentence, 1.1, 1.2)]),
+                    Step(after: 3.6, results: [partial(second, 3.0, 3.6), final(second, 3.0, 3.6)]),
+                ])
+                let relaying = rig.relay(theirs: transcriber, mine: includeMine ? ScriptedTranscriber() : nil,
+                    relayScreen: { video, progress in
+                        defer { videoFinished.raise() }
+                        await relayFileScreen(from: video, to: server, progress: progress, afterFrame: { time in
+                            if time == 2 { videoPaused.raise(); await remainingVideo.wait() }
+                        })
+                    })
+                defer { relaying.cancel(); remainingVideo.open() }
+                try await waitUntil("映像が2秒で止まる") { videoPaused.isRaised }
+                do {
+                    try await waitUntil("映像の残りを解放する前に固定文字のある録画の発言が届く") {
+                        rig.inbox.values.contains { $0.type == "remark" && $0.text == sentence }
+                    }
+                } catch {
+                    Issue.record("column=\(column)、includeMine=\(includeMine)、入力終端=\(transcriber.lastEnd)、受信=\(rig.arrivals.values)、映像終了=\(videoFinished.isRaised)")
+                    throw error
+                }
+                #expect(!videoFinished.isRaised)
+                #expect(transcriber.lastEnd >= 1.2 && transcriber.lastEnd <= 2)
+                print("固定文字: column=\(column)、includeMine=\(includeMine)、stops=\(stops)、映像終了前の入力終端=\(transcriber.lastEnd)、受信=\(rig.arrivals.values)")
+                remainingVideo.open()
+                try await relaying.value
+                try await waitUntil("後続のpartialとremarkの時刻と受信順が記録される") {
+                    Set(rig.arrivals.timedValues.filter { $0.end == 3.6 }.map(\.name)) == ["partial 相手", "remark 相手"]
+                }
+                #expect(videoFinished.isRaised)
+                let arrivals = rig.arrivals.timedValues
+                let screens = arrivals.enumerated().filter { $0.element.end == nil }
+                if stops { #expect(screens.count >= 2) }
+                for (index, screen) in screens {
+                    for (resultIndex, result) in arrivals.enumerated() {
+                        if let end = result.end, end > screen.start { #expect(index < resultIndex) }
+                    }
+                }
+                print("固定文字の残り解放後: column=\(column)、includeMine=\(includeMine)、stops=\(stops)、受信=\(arrivals)")
+            }
+        }
+    }
+
+    private func validateTextBesideVideo(_ url: URL, column: Int, stops: Bool) async throws {
+        let asset = AVURLAsset(url: url)
+        let track = try #require(try await asset.loadTracks(withMediaType: .video).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output)
+        try #require(reader.startReading())
+        let frames = await onFileScreenQueue { () -> [(Double, [UInt8])] in
+            defer { reader.cancelReading() }
+            let context = CIContext()
+            var frames: [(Double, [UInt8])] = []
+            var thinner = ScreenFrameThinner()
+            while let sample = output.copyNextSampleBuffer() {
+                let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+                if time > 2 { break }
+                guard thinner.admits(time), let pixels = CMSampleBufferGetImageBuffer(sample) else { continue }
+                let source = CIImage(cvPixelBuffer: pixels)
+                guard let image = context.createCGImage(source, from: source.extent), let luma = lumaGrid(of: image) else { return [] }
+                frames.append((time, luma))
+            }
+            return frames
+        }
+        try #require(frames.count == 9)
+        for (slot, frame) in frames.enumerated() {
+            let (time, luma) = frame
+            let step = stops && slot == 8 ? 7 : slot
+            print("復号輝度: time=\(time)、背景=\(luma[0])、動画=\(luma[30 * screenGridWidth + 70])、文字=\(luma[10 * screenGridWidth + column])")
+            for y in 0..<screenGridHeight {
+                for x in 0..<screenGridWidth {
+                    let expected = (60..<80).contains(x) && (20..<40).contains(y) ? (step % 2 == 0 ? 40 : 200)
+                        : slot > 0 && x == column && (4..<52).contains(y) ? 0 : 100
+                    // 色変換の丸めで固定領域が動き扱いにならないようにする。
+                    try #require(abs(Int(luma[y * screenGridWidth + x]) - expected) <= screenMotionLumaDifferenceThreshold)
+                }
+            }
+        }
     }
 
     private func verifyVideoProgress(includeMine: Bool, whiteFrom: Double, firstPause: Double,
