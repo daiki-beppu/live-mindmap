@@ -353,8 +353,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const speechJa = { status: "installed" as const, installedLocales: ["ja-JP"] };
     const service = {
       apps: Effect.succeed([]),
-      check: Effect.sync(() => { checks.push(true); return { microphone, screenCapture, speechJa }; }),
-      checkNoScreen: Effect.sync(() => { checks.push(false); return { microphone, speechJa }; }),
+      check: ({ screen }: { readonly screen: boolean }) => Effect.sync(() => { checks.push(screen); return { microphone, ...(screen ? { screenCapture } : {}), speechJa }; }),
       creationDate: () => Effect.succeed(null),
       launch: (args: ReadonlyArray<string>) => Effect.gen(function* () {
         launches.push([...args]);
