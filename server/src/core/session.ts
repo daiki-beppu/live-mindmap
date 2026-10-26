@@ -112,7 +112,6 @@ export class InvalidLogEvent extends Schema.TaggedError<InvalidLogEvent>()("Inva
 const RECENT = 3;
 
 export { hasContent } from "./remark.ts";
-export { stampOf } from "./reflection.ts";
 
 export type SessionState = {
   readonly map: MeetingMap;

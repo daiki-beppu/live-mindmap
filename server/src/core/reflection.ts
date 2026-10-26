@@ -23,7 +23,7 @@ export type ReflectionState = {
   };
 };
 
-export const stampOf = (history: { round: number }, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
+const stampOf = (history: { round: number }, fresh: readonly Remark[]) => ({ round: history.round + 1, at: Math.max(...fresh.map((r) => r.end)) });
 
 export function recordRound(history: History, before: MeetingMap, applied: Pick<AppliedOps, "map" | "changeOrder" | "combined">, stamp: { round: number; at: number }): History {
   const { round, at } = stamp;

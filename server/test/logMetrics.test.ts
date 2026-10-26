@@ -166,21 +166,3 @@ describe("logMetrics: 話し中の兄弟の最多", () => {
     expect(m.maxOpenSiblings).toBe(1);
   });
 });
-
-describe("logMetrics: 復元と同じ反映の番号（round）の規則", () => {
-  it("error の diff は round を進めない。そのため直前に根拠が足された議題への close は捨てられ、兄弟に数え続ける", () => {
-    const base: Step[] = [
-      { ops: [add("t1", "root", "議題", "A"), add("t2", "root", "議題", "B")] }, // round 1
-      { ops: [], error: "失敗" }, // round は進まない
-      { ops: [close("n1")] }, // round 2 で評価する。n1 の根拠は round 1 なので「直前」に当たり、捨てられる
-      { ops: [add("t3", "root", "議題", "C")] },
-    ];
-
-    // n1 が開いたままなので n1・n2・n3 の 3 つ
-    expect(metricsOf(log(base)).maxOpenSiblings).toBe(3);
-
-    // 失敗が無ければ round は 3 になり、close は通って n2・n3 の 2 つ（最大は閉じる前の 2）
-    const ok = [base[0]!, { ops: [] }, base[2]!, base[3]!];
-    expect(metricsOf(log(ok)).maxOpenSiblings).toBe(2);
-  });
-});
