@@ -1825,8 +1825,6 @@ describe("差分更新の入力に載せる前回の応答（仮 ID の対応と
     }));
 });
 
-// Issue #1027: AI が返した話者の名前（names）は、ノードの根拠と同じ消費済みの発言（known）で確かめ、通った名前だけをコールバックで返す。
-// 差分更新の応答は names を持ってよい（省略できる）。コールバックは core の外（sink）が名前の表と log.jsonl を更新するための口
 describe("話者の名前の確認", () => {
   const spoken = (text: string, speaker: string | undefined, track: "自分" | "相手" = "相手"): Remark => remark(text, { track, ...(speaker !== undefined ? { speaker } : {}) });
   const name = (label: string, evidence: string, who = "田中", basis: InferredSpeakerName["basis"] = "名乗り"): InferredSpeakerName => ({ label, name: who, evidence, basis });
@@ -1854,40 +1852,32 @@ describe("話者の名前の確認", () => {
       });
     return { calls, replies, update };
   };
-  const received = () => {
-    const batches: (readonly InferredSpeakerName[])[] = [];
-    return { batches, onSpeakerNames: (names: readonly InferredSpeakerName[]) => Effect.sync(() => void batches.push(names)) };
-  };
-  const openWith = (update: (input: DiffInput) => Effect.Effect<DiffOutput, UpdateFailure>, onSpeakerNames: (names: readonly InferredSpeakerName[]) => Effect.Effect<void>, events: LogEvent[] = []) =>
-    makeSession({ title: "定例", onSpeakerNames }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
-
-  it.effect("その回で消費した発言を根拠にし、話者がラベルと一致する名前は、コールバックに渡る（基準の種類も渡る）", () =>
-    Effect.gen(function* () {
-      const intro = spoken("田中です", "相手 B");
-      const { update } = withNames({ names: [name("相手 B", intro.id)] });
-      const { batches, onSpeakerNames } = received();
-      const session = yield* openWith(update, onSpeakerNames);
-
-      yield* session.push(intro);
-      yield* session.idle;
-
-      expect(batches).toEqual([[name("相手 B", intro.id)]]);
-    }));
+  const waitForCalls = Effect.fnUntraced(function* (calls: readonly DiffInput[], count: number) {
+    const deadline = Date.now() + 1_000;
+    while (calls.length < count) {
+      if (Date.now() >= deadline) return yield* Effect.die(new Error(`差分更新が ${count} 回呼ばれるのを待ちました`));
+      yield* Effect.yieldNow;
+    }
+  });
+  const nameLines = (events: LogEvent[]) => events.filter((event) => event.type === "speaker-name");
 
   it.effect("前の回で消費した発言を根拠にした名前も通る（known は過去の回の分も含む）", () =>
     Effect.gen(function* () {
       const intro = spoken("田中です", "相手 B");
-      const next = spoken("そうですね", "相手 B");
-      const { update } = withNames({}, { names: [name("相手 B", intro.id, "田中", "呼びかけへの応答")] });
-      const { batches, onSpeakerNames } = received();
-      const session = yield* openWith(update, onSpeakerNames);
+      const next = spoken("山田です", "相手 A");
+      const { update } = withNames({}, { names: [name("相手 B", intro.id, "田中", "呼びかけへの応答"), name("相手 A", next.id, "山田")] });
+      const events: LogEvent[] = [];
+      const session = yield* open(update, events);
 
       yield* session.push(intro);
       yield* session.idle;
       yield* session.push(next);
       yield* session.idle;
 
-      expect(batches).toEqual([[name("相手 B", intro.id, "田中", "呼びかけへの応答")]]);
+      expect(nameLines(events)).toEqual([
+        { type: "speaker-name", label: "相手 B", name: "田中", source: "推定" },
+        { type: "speaker-name", label: "相手 A", name: "山田", source: "推定" },
+      ]);
     }));
 
   it.effect("根拠の発言が無い・話者がラベルと合わない・自分の発言・ラベルの無い相手の発言を根拠にした名前は捨てる。通る名前だけが渡る", () =>
@@ -1897,7 +1887,7 @@ describe("話者の名前の確認", () => {
       const b = spoken("田中です", "相手 B");
       const mine = spoken("田中さんですね", "自分", "自分");
       const bare = spoken("それは来週にしましょう", undefined);
-      const { batches, onSpeakerNames } = received();
+      const events: LogEvent[] = [];
       const { calls, replies, update } = held([{ ops: [] }, { ops: [], names: [
         name("相手 B", "r999"), // 根拠が無い
         name("相手 B", a.id), // 話者が合わない
@@ -1906,18 +1896,18 @@ describe("話者の名前の確認", () => {
         name("相手", bare.id), // ラベルが無い
         name("相手 B", b.id), // 通る
       ] }]);
-      const session = yield* openWith(update, onSpeakerNames);
+      const session = yield* open(update, events);
 
       // 1 件目で呼び出しが始まり、残りは呼び出し中に届いて次の回にまとまる
       yield* session.push(warmup);
       for (const r of [a, b, mine, bare]) yield* session.push(r);
       replies[0]!();
-      yield* settleUntil(() => calls.length === 2);
+      yield* waitForCalls(calls, 2);
       expect(freshIds(calls[1]!)).toEqual([a.id, b.id, mine.id, bare.id]);
       replies[1]!();
       yield* session.idle;
 
-      expect(batches.flat()).toEqual([name("相手 B", b.id)]);
+      expect(nameLines(events)).toEqual([{ type: "speaker-name", label: "相手 B", name: "田中", source: "推定" }]);
     }));
 
   it.effect("まだ消費していない発言（processedRemarks を超えた分）を根拠にした名前は捨てる。話者が合っていても通らない", () =>
@@ -1930,35 +1920,38 @@ describe("話者の名前の確認", () => {
         { ops: [] },
         { ops: [], processedRemarks: 1, names: [name("相手 A", second.id, "佐藤"), name("相手 B", third.id)] },
       ]);
-      const { batches, onSpeakerNames } = received();
-      const session = yield* openWith(update, onSpeakerNames);
+      const events: LogEvent[] = [];
+      const session = yield* open(update, events);
 
       yield* session.push(first);
       yield* session.push(second);
       yield* session.push(third);
       replies[0]!();
-      yield* settleUntil(() => calls.length === 2);
+      yield* waitForCalls(calls, 2);
       expect(freshIds(calls[1]!)).toEqual([second.id, third.id]);
       replies[1]!();
-      yield* settleUntil(() => batches.length === 1);
+      yield* waitForCalls(calls, 3);
+      replies[2]!();
+      yield* session.idle;
 
-      expect(batches.flat()).toEqual([name("相手 A", second.id, "佐藤")]);
+      expect(nameLines(events)).toEqual([{ type: "speaker-name", label: "相手 A", name: "佐藤", source: "推定" }]);
     }));
 
-  it.effect("名前が無い回・通る名前が無い回には、コールバックを呼ばない", () =>
+  it.effect("名前が無い回・通る名前が無い回には、名前行と export のキーを出さない", () =>
     Effect.gen(function* () {
       const a = spoken("お願いします", "相手 A");
       const b = spoken("はい", "相手 B");
       const { update } = withNames({}, { names: [name("相手 B", a.id)] });
-      const { batches, onSpeakerNames } = received();
-      const session = yield* openWith(update, onSpeakerNames);
+      const events: LogEvent[] = [];
+      const session = yield* open(update, events);
 
       yield* session.push(a);
       yield* session.idle;
       yield* session.push(b);
       yield* session.idle;
 
-      expect(batches).toEqual([]);
+      expect(nameLines(events)).toEqual([]);
+      expect(yield* session.exportJson).not.toHaveProperty("speakerNames");
     }));
 
   it.effect("反映数が不正で失敗した回（processedRemarks が入力の発言数を超える）は、応答に名前があっても使わない", () =>
@@ -1966,41 +1959,94 @@ describe("話者の名前の確認", () => {
       const intro = spoken("田中です", "相手 B");
       const events: LogEvent[] = [];
       const { update } = withNames({ names: [name("相手 B", intro.id)], processedRemarks: 5 });
-      const { batches, onSpeakerNames } = received();
-      const session = yield* openWith(update, onSpeakerNames, events);
+      const session = yield* open(update, events);
 
       yield* session.push(intro);
       yield* session.idle;
 
       expect(events.some((e) => e.type === "diff" && e.error !== undefined)).toBe(true);
-      expect(batches).toEqual([]);
+      expect(nameLines(events)).toEqual([]);
+      expect(yield* session.exportJson).not.toHaveProperty("speakerNames");
     }));
 
-  it.effect("コールバックは diff の行をログに書いた後で呼ぶ（根拠の発言は diff の行より前の remark の行にある）", () =>
+  it.effect("推定名は diff の後に書き、次の入力と export に渡す。同じ推定では行を重ねない", () =>
     Effect.gen(function* () {
       const intro = spoken("田中です", "相手 B");
+      const { calls, update } = withNames({ names: [name("相手 B", intro.id)] }, { names: [name("相手 B", intro.id)] });
       const events: LogEvent[] = [];
-      const { update } = withNames({ names: [name("相手 B", intro.id)] });
-      const order: string[] = [];
-      const session = yield* openWith(update, () => Effect.sync(() => void order.push(`callback after ${events.filter((e) => e.type === "diff").length} diff`)), events);
-
+      const session = yield* open(update, events);
+      expect(yield* session.exportJson).not.toHaveProperty("speakerNames");
       yield* session.push(intro);
       yield* session.idle;
-
-      expect(order).toEqual(["callback after 1 diff"]);
+      expect(calls[0]).not.toHaveProperty("speakerNames");
+      expect(events.map((event) => event.type)).toEqual(["start", "remark", "diff", "speaker-name"]);
+      expect(yield* session.exportJson).toHaveProperty("speakerNames", { "相手 B": "田中" });
+      yield* session.push(spoken("続けます", "相手 B"));
+      yield* session.idle;
+      expect(calls[1]!.speakerNames).toEqual(new Map([["相手 B", "田中"]]));
+      expect(calls[1]!.recent).toContainEqual(intro);
+      expect(nameLines(events)).toEqual([{ type: "speaker-name", label: "相手 B", name: "田中", source: "推定" }]);
     }));
 
-  it.effect("コールバックを渡さないセッション（cli play・復元）では、names を含む応答でも通常どおり反映される", () =>
+  it.effect("手入力の名前を trim して一度だけ記録し、変更後の入力と export に渡す。推定は手入力を替えない", () =>
     Effect.gen(function* () {
-      const intro = spoken("田中です", "相手 B");
-      const { update } = withNames({ names: [name("相手 B", intro.id)] });
+      const intro = spoken("鈴木です", "相手 B");
+      const { calls, update } = withNames({}, { names: [name("相手 B", intro.id, "鈴木")] }, {});
       const events: LogEvent[] = [];
-      const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
-
+      const session = yield* open(update, events);
       yield* session.push(intro);
       yield* session.idle;
+      expect(calls[0]).not.toHaveProperty("speakerNames");
+      expect(yield* session.exportJson).not.toHaveProperty("speakerNames");
+      yield* session.nameSpeaker({ label: "相手 B", name: " 田中　", source: "手入力" });
+      expect(yield* session.exportJson).toHaveProperty("speakerNames", { "相手 B": "田中" });
+      yield* session.nameSpeaker({ label: "相手 B", name: "田中", source: "手入力" });
+      yield* session.nameSpeaker({ label: "相手 A", name: "　 ", source: "手入力" });
+      yield* session.push(spoken("続けます", "相手 B"));
+      yield* session.idle;
+      expect(calls[1]!.speakerNames).toEqual(new Map([["相手 B", "田中"]]));
+      expect(nameLines(events)).toEqual([{ type: "speaker-name", label: "相手 B", name: "田中", source: "手入力" }]);
+      expect(yield* session.exportJson).toHaveProperty("speakerNames", { "相手 B": "田中" });
+      yield* session.nameSpeaker({ label: "相手 B", name: "佐藤", source: "手入力" });
+      expect(yield* session.exportJson).toHaveProperty("speakerNames", { "相手 B": "佐藤" });
+      yield* session.push(spoken("次の議題です", "相手 B"));
+      yield* session.idle;
+      expect(calls[2]!.speakerNames).toEqual(new Map([["相手 B", "佐藤"]]));
+      expect(calls[2]!.recent).toContainEqual(intro);
+      expect(nameLines(events)).toEqual([
+        { type: "speaker-name", label: "相手 B", name: "田中", source: "手入力" },
+        { type: "speaker-name", label: "相手 B", name: "佐藤", source: "手入力" },
+      ]);
+    }));
 
-      expect(events.filter((e) => e.type === "diff")).toHaveLength(1);
+  it.effect("推定名の付け替えは名乗りだけを受け入れ、手入力後は推定へ戻らない", () =>
+    Effect.gen(function* () {
+      const intro = spoken("田中です", "相手 B");
+      const { calls, update } = withNames(
+        { names: [name("相手 B", intro.id, "田中", "呼びかけへの応答")] },
+        { names: [name("相手 B", intro.id, "鈴木", "呼びかけへの応答")] },
+        { names: [name("相手 B", intro.id, "佐藤")] },
+        { names: [name("相手 B", intro.id, "田中")] },
+        {},
+      );
+      const events: LogEvent[] = [];
+      const session = yield* open(update, events);
+      yield* session.push(intro);
+      yield* session.idle;
+      for (const text of ["呼びかけ", "名乗り"]) {
+        yield* session.push(spoken(text, "相手 B"));
+        yield* session.idle;
+      }
+      yield* session.nameSpeaker({ label: "相手 B", name: "山田", source: "手入力" });
+      for (const text of ["推定し直す", "次の入力"]) {
+        yield* session.push(spoken(text, "相手 B"));
+        yield* session.idle;
+      }
+      expect(calls.map((call) => call.speakerNames?.get("相手 B"))).toEqual([undefined, "田中", "田中", "山田", "山田"]);
+      expect(nameLines(events).map(({ name, source }) => ({ name, source }))).toEqual([
+        { name: "田中", source: "推定" }, { name: "佐藤", source: "推定" }, { name: "山田", source: "手入力" },
+      ]);
+      expect(yield* session.exportJson).toHaveProperty("speakerNames", { "相手 B": "山田" });
     }));
 });
 

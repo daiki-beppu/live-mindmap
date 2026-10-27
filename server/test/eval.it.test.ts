@@ -14,7 +14,7 @@ import { MapCapture } from "../src/capture.ts";
 import { ReviewBuild } from "../src/review.ts";
 import { runCli } from "../src/cli.ts";
 import * as cliEntry from "../src/cli.ts";
-import { type DiffInput, type DiffResult, type DiffUsage, type Op, type Snapshot, Truth } from "../src/core/index.ts";
+import { type DiffInput, type DiffResult, type DiffUsage, type Op, type Snapshot, SpeakerNameLogEvent, REVIEW_LOG_ELEMENT_ID, Truth } from "../src/core/index.ts";
 import { fakeListener } from "./fakeListener.ts";
 import { fakeAudioMix } from "./fixtures/audioMix.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
@@ -175,7 +175,7 @@ const writeTruth = (truth: unknown) =>
 
 describe("再生で推定した名前", () => {
   for (const command of ["play", "eval"] as const) {
-    it.effect(`${command} は保存済みの名前を持ち越さず、新しい推定名をログと後続入力へ渡す`, () => Effect.gen(function* () {
+    it.effect(`${command} は保存済みの名前を持ち越さず、新しい推定名をログ・後続入力・md・html に渡す`, () => Effect.gen(function* () {
       const source = yield* Effect.acquireRelease(
         Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-replay-names-"))),
         (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
@@ -191,7 +191,10 @@ describe("再生で推定した名前", () => {
       external.openClaudeUpdater.mockReturnValue({
         update: (input: DiffInput) => Effect.sync((): DiffResult => {
           inputs.push(input);
-          return { ops: [], names: input.fresh.filter((remark) => remark.text.endsWith("です")).map((remark) => ({
+          return { ops: inputs.length === 1 ? [
+            { op: "add", ref: "topic", parent: "root", kind: "議題", text: "運用", evidence: ["r1"] },
+            { op: "add", ref: "plan", parent: "topic", kind: "案", text: "週次で確認する", evidence: ["r1"] },
+          ] : [], names: input.fresh.filter((remark) => remark.text.endsWith("です")).map((remark) => ({
             label: remark.speaker!, name: remark.text.slice(0, -2), evidence: remark.id, basis: "名乗り",
           })) };
         }),
@@ -223,6 +226,19 @@ describe("再生で推定した名前", () => {
         expect(external.openListener).not.toHaveBeenCalled();
         expect(listener.speakerNames).toEqual([]);
       }
+      const runDir = join(sessionsDir, runs[0]!);
+      const markdown = readFileSync(join(runDir, "map.md"), "utf8");
+      const html = readFileSync(join(runDir, "map.html"), "utf8");
+      const embedded = html.match(new RegExp(`<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">([^]*?)</script>`));
+      expect(embedded).not.toBeNull();
+      const embeddedEvents = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.Unknown)))(embedded![1]);
+      const embeddedNames = embeddedEvents.filter((event) => Predicate.isObject(event) && event.type === "speaker-name")
+        .map((event) => Schema.decodeUnknownSync(SpeakerNameLogEvent)(event));
+      expect(embeddedNames).toEqual([
+        { type: "speaker-name", label: "相手 A", name: "田中", source: "推定" },
+        { type: "speaker-name", label: "相手 A", name: "田中太郎", source: "推定" },
+      ]);
+      expect(markdown.split("\n").find((line) => line.includes("週次で確認する"))).toBe("  - 週次で確認する — 田中太郎（00:01）");
       deps.stdout.length = 0;
       yield* runCli(["export", "--format", "json"]).pipe(Effect.provide(deps.layer));
       expect(JSON.parse(deps.stdout.join(""))).toHaveProperty("speakerNames", { "相手 A": "田中太郎" });

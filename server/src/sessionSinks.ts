@@ -105,7 +105,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             }),
             onDiff: Effect.suspend((): Effect.Effect<void> => flow.captionsChanged),
           };
-          const { session, appendLog: appendRecordedLog, nameSpeaker } = yield* (args.noMap === true
+          const { session, appendLog: appendRecordedLog } = yield* (args.noMap === true
             ? openLoggedTranscriptSession(loggedOptions)
             : openLoggedSession({ ...loggedOptions, model: args.model }).pipe(Effect.provideService(DiffUpdater, baseUpdater!))).pipe(Effect.provideContext(exportServices));
           const started = yield* startPoolSession(dirname(dir)).pipe(Effect.provideContext(exportServices));
@@ -140,7 +140,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
               Effect.gen(function* () {
                 if (!flow.labels().includes(label)) return yield* new SpeakerNameRejected({ reason: "ラベルがない" });
                 if (name.trim() === "") return yield* new SpeakerNameRejected({ reason: "名前が空" });
-                yield* nameSpeaker({ label, name, source: "手入力" });
+                yield* session.nameSpeaker({ label, name, source: "手入力" });
               }),
             screen: (change) => captions === "途中結果から"
               ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines)).pipe(Effect.asVoid)

@@ -77,11 +77,11 @@ describe("sttReplay の Command", () => {
     expect(result._tag).toBe("Success");
     expect(inputs.map((input) => input.speakerNames?.get("相手 A"))).toEqual([undefined, "乙", "乙", "甲"]);
     const sessionDir = stdout.trimEnd().split("\n").at(-1)!.slice("セッション: ".length);
-    const decode = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Union([
-      LogEvent, Schema.Struct({ ...SpeakerNameLogEvent.fields, at: Schema.String }),
-    ])));
+    const decode = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+    const namedLine = Schema.Struct({ ...SpeakerNameLogEvent.fields, at: Schema.String });
     const names = readFileSync(join(sessionDir, "log.jsonl"), "utf8").trim().split("\n")
-      .map((line) => decode(line)).filter((event) => event.type === "speaker-name");
+      .map((line) => decode(line)).filter(Schema.is(SpeakerNameLogEvent))
+      .map((event) => Schema.decodeUnknownSync(namedLine)(event));
     expect(names.map(({ label, name, source }) => ({ label, name, source }))).toEqual([
       { label: "相手 A", name: "乙", source: "推定" },
       { label: "相手 A", name: "甲", source: "推定" },
