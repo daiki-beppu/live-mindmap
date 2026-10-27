@@ -2,10 +2,10 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
-public final class RunAudio {
-    public typealias AudioStream = AsyncThrowingStream<CapturedAudio, Error>
-    public typealias ResultStream = AsyncThrowingStream<TranscriptionResult, Error>
-    public typealias Recording = (Track, AudioStream, UInt64) throws -> (stream: AudioStream, finished: Task<Void, Error>)
+final class RunAudio {
+    typealias AudioStream = AsyncThrowingStream<CapturedAudio, Error>
+    typealias ResultStream = AsyncThrowingStream<TranscriptionResult, Error>
+    typealias Recording = (Track, AudioStream, UInt64) throws -> (stream: AudioStream, finished: Task<Void, Error>)
 
     private let requestMicrophonePermission: () async throws -> Void
     private let makeTranscriber: (Track) -> Transcriber
@@ -16,6 +16,7 @@ public final class RunAudio {
     private let echoCancelled: (AudioStream, AudioStream) throws -> AudioStream
     private let makeDiarizer: () -> SpeakerDiarizer?
     private let emitSpeaker: (HelperEvent) -> Void
+    private let now: () -> UInt64
     private var diarizer: SpeakerDiarizer?
     private var diarizerFailure: SpeakerOffReason?
     private var theirTranscriber: Transcriber?
@@ -23,7 +24,7 @@ public final class RunAudio {
     private var recordings: [Task<Void, Error>] = []
     private let selfPause: SelfPause
 
-    public init(
+    init(
         requestMicrophonePermission: @escaping () async throws -> Void,
         makeTranscriber: @escaping (Track) -> Transcriber,
         startAudio: @escaping (Track, UInt64) throws -> AudioStream,
@@ -33,7 +34,8 @@ public final class RunAudio {
         echoCancelled: @escaping (AudioStream, AudioStream) throws -> AudioStream,
         selfPause: SelfPause,
         makeDiarizer: @escaping () -> SpeakerDiarizer?,
-        emitSpeaker: @escaping (HelperEvent) -> Void
+        emitSpeaker: @escaping (HelperEvent) -> Void,
+        now: @escaping () -> UInt64 = { AudioGetCurrentHostTime() }
     ) {
         self.requestMicrophonePermission = requestMicrophonePermission
         self.makeTranscriber = makeTranscriber
@@ -45,9 +47,10 @@ public final class RunAudio {
         self.selfPause = selfPause
         self.makeDiarizer = makeDiarizer
         self.emitSpeaker = emitSpeaker
+        self.now = now
     }
 
-    public func prepare() async throws {
+    func prepare() async throws {
         var microphoneAllowed = true
         do { try await requestMicrophonePermission() }
         catch MicrophoneError.permissionDenied { microphoneAllowed = false }
@@ -71,7 +74,7 @@ public final class RunAudio {
         }
     }
 
-    public func run(
+    func run(
         origin: UInt64, marksDuplicates: Bool,
         relay: ([(Track, ResultStream)], Bool) async throws -> Void
     ) async throws {
@@ -133,7 +136,7 @@ public final class RunAudio {
     /// 話者分離を始める。使えない場合は `speaker-off` を 1 回流して nil を返す。使えるなら `audio` の流れを 2 つに分け、片方を話者分離に渡す。
     private func startDiarizer(on audio: inout AudioStream, origin: UInt64) async -> Task<Void, Never>? {
         func emitOff(_ reason: SpeakerOffReason) {
-            emitSpeaker(.speakerOff(start: offsetSeconds(from: origin, to: AudioGetCurrentHostTime()), reason: reason))
+            emitSpeaker(.speakerOff(start: offsetSeconds(from: origin, to: now()), reason: reason))
         }
         if let diarizerFailure {
             emitOff(diarizerFailure)
@@ -259,20 +262,23 @@ public final class RunAudio {
     }
 
     /// `自分` のトラックがあるか（マイクの許可がある）。無いセッションでは休止の指示が効かない。
-    public var hasMyTrack: Bool { myTranscriber != nil }
+    var hasMyTrack: Bool { myTranscriber != nil }
+
+    /// prepare で factory が nil を返した場合。準備失敗の通知は run が担う。
+    var isDiarizerAbsent: Bool { diarizer == nil && diarizerFailure == nil }
 
     /// 休止・再開を、指示を受け付けた時刻 `hostTime` の境界として求める（Issue #1069）。状態が変わったときだけ true を返す。`自分` を作らないセッション（マイクの許可が無い）では何も変えず false。
-    public func requestSelfPause(_ paused: Bool, at hostTime: UInt64) -> Bool {
+    func requestSelfPause(_ paused: Bool, at hostTime: UInt64) -> Bool {
         guard hasMyTrack else { return false }
         return selfPause.request(paused, at: hostTime)
     }
 
-    public func stop() {
+    func stop() {
         stopAudio(.相手)
         if myTranscriber != nil { stopAudio(.自分) }
     }
 
-    public func finish() async throws {
+    func finish() async throws {
         var failure: Error?
         for task in recordings {
             if case .failure(let error) = await task.result, failure == nil { failure = error }
