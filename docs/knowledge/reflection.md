@@ -50,8 +50,17 @@
 
 `reflectDiff` の検査は `fresh` と `processedRemarks` しか見ず、`ops` に依らない。行全体の反映が先に通っているので、区切りの反映は失敗しない。`rewrittenIds` が返す `Result` の失敗は、今は通らない経路だ。また、区切りごとに `recordRound`（変わったことの連結）と既知の Set の複製が走るので、1 行の仕事は操作の数 × 履歴の長さで増える。長いログで計測が遅くなったら、まずここを見る。
 
+## `diff` の行でない行は反映に入れない。話者の名前の行は `restoreState` の別の分岐で畳む
+
+反映の入力は `DiffEvent` そのもので、状態はマップ・反映の履歴・発言の台帳の 3 つ（用語集の「反映」の定義のまま）。話者の名前の行（`speaker-name`）もここで畳めば復元の分岐が 1 つ減るように見えるが、[#1630](https://github.com/daiki-beppu/live-mindmap/issues/1630) で入れないと決めた。名前の表は 3 つのどれでもなく、反映の結果も名前に依らない（提案者・担当者の割り当ては、行を組む前に発言のラベルで済んでいる）。入れると入力が「ログの行 1 件」に広がり、名前を使わない計測（`logMetrics`）まで表を運ぶ。
+
+今は `restoreState` の振り分けで、`diff` の分岐と並ぶ `speaker-name` の分岐が `speakerNames.ts` の関数を呼ぶ（[話者の名前の表](speaker-names.md)）。2 つの行は互いの結果を読まないので、ログの中の順に依らず同じ状態に戻る。ほかの種類の行で状態を戻したくなったときも、まず反映の 3 つに入るかを見て、入らなければ別の分岐にする。
+
+`restoreState` は fallow の認知的複雑度の上限（15）の近くにある。#1657 で分岐を 1 つ足すと 16 で落ち、`diff` の後の「一時停止なら動作中に」の条件式（復元の中では動作中か一時停止しか作られないので、どちらも動作中になる）を代入 1 つにまとめて戻した。分岐を足すときは、先に同じ値になる条件が無いかを見る。
+
 ## 出典
 
 - 仕様 [#1593](https://github.com/daiki-beppu/live-mindmap/issues/1593)（Formal Spec のコメントを含む）、親 [#1594](https://github.com/daiki-beppu/live-mindmap/issues/1594)
 - [#1595](https://github.com/daiki-beppu/live-mindmap/issues/1595)・[PR #1598](https://github.com/daiki-beppu/live-mindmap/pull/1598)、[#1596](https://github.com/daiki-beppu/live-mindmap/issues/1596)・[PR #1599](https://github.com/daiki-beppu/live-mindmap/pull/1599)、[#1597](https://github.com/daiki-beppu/live-mindmap/issues/1597)・[PR #1600](https://github.com/daiki-beppu/live-mindmap/pull/1600) と、それぞれの takt の run（`20261026-061655-issue-1595-wo-1-tsuno-mi-minis-2ryel7`・`20261026-072819-issue-1596-raibuno-no-wo-no-mi-ufij5c`・`20261026-094505-issue-1597-logmetrics-wo-no-mi-uu6mix`）の計画・決定ログ・報告
-- [開発ログ](../devlog/2026-10-26.md#reflect-fold)、[共有画面をキューにしたときの開発ログ](../devlog/2026-10-27.md#screen-queue)
+- 決定 [#1630](https://github.com/daiki-beppu/live-mindmap/issues/1630)、[#1657](https://github.com/daiki-beppu/live-mindmap/issues/1657)・[PR #1677](https://github.com/daiki-beppu/live-mindmap/pull/1677) の takt の run（`20261027-122913-issue-1657-de-speaker-name-no-1xwjc1`）の決定ログ
+- [開発ログ](../devlog/2026-10-26.md#reflect-fold)、[話者の名前の表をセッションへ移したときの開発ログ](../devlog/2026-10-27.md#speaker-names-in-session)、[共有画面をキューにしたときの開発ログ](../devlog/2026-10-27.md#screen-queue)
