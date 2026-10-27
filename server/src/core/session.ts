@@ -7,7 +7,7 @@ import { cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type Me
 import { reflectDiff, type ReflectionState } from "./reflection.ts";
 import * as ScreenQueue from "./screenQueue.ts";
 import { hasContent, Remark } from "./remark.ts";
-import { acceptInferredNames, type InferredSpeakerName } from "./speakerNames.ts";
+import { acceptInferredNames, nameSpeaker as updateSpeakerName, speakerNameMap, SpeakerNameLogEvent, type SpeakerNameChange, type SpeakerNameTable } from "./speakerNames.ts";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "./snapshot.ts";
 import { Word, WordTime } from "./words.ts";
 
@@ -95,7 +95,7 @@ export const VocabEvent = Schema.Struct({
   words: Schema.Array(Schema.Struct({ surface: Schema.String, romaji: Schema.NullOr(Schema.String), source: Schema.Literals(["user", "screen", "carried"]) })),
 });
 export const VocabPoolEvent = Schema.Struct({ type: Schema.Literal("vocab-pool"), session: Schema.Int });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent]);
+export const LogEvent = Schema.Union([StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, SpeakerNameLogEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 export class SessionLog extends Context.Service<SessionLog, {
@@ -114,6 +114,7 @@ const RECENT = 3;
 export { hasContent } from "./remark.ts";
 
 export type SessionState = {
+  readonly speakerNames: SpeakerNameTable;
   readonly map: MeetingMap;
   readonly pending: readonly Remark[];
   readonly processed: readonly Remark[];
@@ -202,7 +203,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
   const { map, history, queue, diffUpdate } = replay;
   const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map: restoredMap, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
+  return { map: restoredMap, speakerNames: new Map(), pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
 });
 
 export function snapshotOf(state: SessionState): Snapshot {
@@ -225,6 +226,7 @@ export function snapshotOf(state: SessionState): Snapshot {
 }
 
 export type Session = {
+  readonly nameSpeaker: (change: SpeakerNameChange) => Effect.Effect<void>;
   readonly push: (remark: Remark, original?: { readonly raw: string; readonly words: readonly Word[] }, wordTimes?: readonly WordTime[]) => Effect.Effect<void>;
   readonly idle: Effect.Effect<void>;
   readonly pushScreen: (change: ScreenChange & Pick<typeof ScreenEvent.Type, "ocrFailed">, lines?: ReadonlyArray<string>) => Effect.Effect<void>;
@@ -284,14 +286,21 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
   return { fresh: pending.slice(0, PACED_CALL_REMARKS), rest: pending.slice(PACED_CALL_REMARKS), catchUpUntil };
 }
 
-export type OnSpeakerNames = (names: readonly InferredSpeakerName[]) => Effect.Effect<void>;
-
-const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: RestoredScreens, logShiftMs: number = 0, onSpeakerNames?: OnSpeakerNames, updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
+const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: RestoredScreens, logShiftMs: number, updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
   const scope = yield* Effect.scope;
   const log = yield* SessionLog;
-  const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
   const screenTransitions = yield* Semaphore.make(1);
   const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
+
+  const nameSpeaker = (change: SpeakerNameChange): Effect.Effect<void> =>
+    Effect.uninterruptible(screenTransitions.withPermit(Effect.gen(function* () {
+      const next = yield* Ref.modify(ref, (s): [SpeakerNameTable | undefined, SessionState & Runtime] => {
+        const next = updateSpeakerName(s.speakerNames, change);
+        return [next, next === undefined ? s : { ...s, speakerNames: next }];
+      });
+      if (next === undefined) return;
+      yield* log.write({ type: "speaker-name", label: change.label, name: next.get(change.label)!.name, source: change.source });
+    })));
 
   const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
     const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -383,9 +392,10 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
         const classifyUnlessInterrupt = (cause: Cause.Cause<DiffUpdateFailure>) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)));
         const outcome = yield* Effect.forEach(input.screens ?? [], readBack).pipe(
           Effect.flatMap((screens) =>
-            Effect.suspend(() => {
+            Effect.gen(function* () {
+              const speakerNames = speakerNameMap((yield* Ref.get(ref)).speakerNames);
               const startedAt = logTimestamp(logShiftMs);
-              return Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousResponse ? { previousResponse } : {}) }))).pipe(
+              return yield* Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousResponse ? { previousResponse } : {}), ...(speakerNames.size ? { speakerNames } : {}) }))).pipe(
                 Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp(logShiftMs) } as CallTimes })),
               );
             }),
@@ -452,7 +462,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           return accepted;
         }));
         if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
-        yield* notifySpeakerNames(accepted);
+        yield* Effect.forEach(accepted, ({ label, name, basis }) => nameSpeaker({ label, name, source: "推定", basis }), { discard: true });
       }),
     );
   }
@@ -505,13 +515,14 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
     diffUpdate: Effect.map(Ref.get(ref), (s) => s.diffUpdate),
     nextRetryAt: Effect.map(Ref.get(ref), (s) => s.nextRetryAt),
     unreflectedRemarks: Effect.map(Ref.get(ref), (s) => [...s.reflecting, ...s.pending].map((r) => ({ ...r }))),
-    exportJson: Effect.map(Ref.get(ref), (s) => toJsonExport(snapshotOf(s), [...s.remarks])),
+    nameSpeaker,
+    exportJson: Effect.map(Ref.get(ref), (s) => toJsonExport(snapshotOf(s), [...s.remarks], speakerNameMap(s.speakerNames))),
   } satisfies Session;
 });
 
-type NewSessionOptions = { readonly title: string; readonly images?: boolean; readonly logShiftMs?: number; readonly onSpeakerNames?: OnSpeakerNames };
+type NewSessionOptions = { readonly title: string; readonly images?: boolean; readonly logShiftMs?: number };
 
-const createSession = Effect.fnUntraced(function* ({ title, images = true, logShiftMs = 0, onSpeakerNames }: NewSessionOptions, updater: DiffUpdater["Service"] | undefined): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
+const createSession = Effect.fnUntraced(function* ({ title, images = true, logShiftMs = 0 }: NewSessionOptions, updater: DiffUpdater["Service"] | undefined): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
   const log = yield* SessionLog;
   yield* log.write({ type: "start", title });
   if (!images) yield* log.write({
@@ -521,6 +532,7 @@ const createSession = Effect.fnUntraced(function* ({ title, images = true, logSh
   const queue = ScreenQueue.make();
   return yield* openSession({
     map: emptyMap(title),
+    speakerNames: new Map(),
     pending: [],
     processed: [],
     remarks: [],
@@ -530,7 +542,7 @@ const createSession = Effect.fnUntraced(function* ({ title, images = true, logSh
     currentTopic: undefined,
     lastChanged: undefined,
     diffUpdate: { status: "running" },
-  }, { queue: images ? queue : ScreenQueue.skipImages(queue), files: new Set() }, logShiftMs, onSpeakerNames, updater);
+  }, { queue: images ? queue : ScreenQueue.skipImages(queue), files: new Set() }, logShiftMs, updater);
 });
 
 export const makeSession = Effect.fnUntraced(function* (options: NewSessionOptions) {
@@ -541,5 +553,5 @@ export const makeTranscriptSession = (options: NewSessionOptions) => createSessi
 
 export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
   const { screens, ...state } = yield* restoreState(events);
-  return yield* openSession(state, screens, 0, undefined, yield* DiffUpdater);
+  return yield* openSession(state, screens, 0, yield* DiffUpdater);
 });

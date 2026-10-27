@@ -1,42 +1,41 @@
 # 話者の名前の包み
 
-相手の話者のラベルに付く名前（AI の推定と画面からの手入力）を、どこで持ち、どこへ出すかを触るときに読む文書。名前の表・`log.jsonl` の `speaker-name` の行・`speaker-names` の frame・`export.json`・差分更新の入力の `speakerNames` を変える処理（`server/src/sessionFiles.ts` の `openLogged` の `nameSpeaker`）と、それを使うライブ・録画からのセッション・`cli play`・`cli eval`・bench の `sttReplay` が対象になる。名前の付け方の規則（手入力は推定で変えない、推定の付け替えは名乗りのときだけ、付いた名前は外れない）は core の `speakerNames` にあり、ここでは扱わない。決定そのものは仕様 [#1437](https://github.com/daiki-beppu/live-mindmap/issues/1437) と、その元の [#1425](https://github.com/daiki-beppu/live-mindmap/issues/1425) の解決コメントにある。
+話者のラベルに付く名前の所有者と、入力・保存・配信・書き出しへの経路を説明する。名前の表は `server/src/core/session.ts` の `SessionState` が持つ。採否の規則は `core/speakerNames.ts`、ファイル保存と frame の配信は `sessionFiles.ts` が担当する。現在の分担は仕様 [#1637](https://github.com/daiki-beppu/live-mindmap/issues/1637) と実装 [#1656](https://github.com/daiki-beppu/live-mindmap/issues/1656) に従う。
 
 - 用語: [話者・話者の名前・再生・エクスポート](../../GLOSSARY.md)
-- ADR: 無し（仕様が、`openLogged` の中の配線で後から戻せると決めている）
-- 関連: [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)（`send` と開いた直後の空の frame）、[セッションの sink](session-sink.md)
+- 関連: [セッションの開始とブラウザへの送り口](session-start-and-viewers.md)、[セッションの sink](session-sink.md)
 
-## 名前を変える経路は `openLogged` が返す `nameSpeaker` の 1 つだけにする。呼び出し側に表や decorator の写しを作らない
+## 名前の変更は `Session.nameSpeaker` を通す
 
-ライブ・録画からのセッション（`sessionSinks`）、再生と評価（`cli` の `recordPlayback`）、bench（`sttReplay`）は、どれも `openLoggedSession`・`openLoggedTranscriptSession` を通る。名前の表の `Ref`、名前のロック、差分更新の入力に名前を載せる decorator、frame の送りは、その中に置いてある。呼び出し側がすることは、送り口 `send`（省略できる）を渡し、返ってきた `nameSpeaker` を呼ぶことだけだ。AI の推定名は `openLogged` が core から受けて `source: "推定"` で、画面の手入力は sink が `source: "手入力"` で、同じ `nameSpeaker` に入れる。
+名前の表はラベルごとに `{ name, source }` を持つ。画面の手入力は sink がラベルと空名を検査してから `session.nameSpeaker` に `source: "手入力"` で渡す。推定名は core が差分反映後の `known` と根拠の発言を照合し、受理した名前を同じ操作に `source: "推定"` で渡す。名前行は diff 行の後に書く。
 
-前は 3 か所が別々だった。sink は包みを持ち、bench は「ライブと共有する」と注に書いた写しを持っていたが、写しにはロックと frame が無かった。`cli play`・`cli eval` は包みを通らず、AI が返した名前を捨てていたので、`cli eval` は差分更新のプロンプトを本番と違う名前なしの入力で測っていた。「`cli play` は渡さない」に理由は書かれておらず、配線が抜けていただけだった（#1437 の Problem Statement）。
+`nameSpeaker` は既存の純粋関数で採否を決め、変更時だけ状態を更新して `SessionLog.write` に名前行を渡す。名前は trim し、空なら変更しない。手入力は推定で替えず、推定どうしの別名への変更は名乗りの場合だけ受け入れる。同じ名前・同じ source の再送では行を増やさない。`basis` は採否にだけ使い、表にも名前行にも保存しない。
 
-経路ごとに違うのは `send` を渡すかどうかだけにしてある。ライブ・録画・`cli play` は渡し、`cli eval` と bench は渡さない。再生は元のログの `speaker-name` の行を読まず、空の表から始める（`loadSessionLog` が選ぶ行に `speaker-name` が無い）。
+状態更新からログへの引き渡しは、core の既存の直列化区間で中断されないように実行する。推定名の操作は diff の区間を抜けた後に呼び、同じ semaphore を取り直さない。
 
-## 名前の見え方は 4 つある。名前を変える区間の中で、ログの行・表・`export.json` を同じ書き込みのロックの下で続けて書く
+## core が次の入力と export に現在名を渡す
 
-名前の表には、表そのもののほかに見え方が 4 つある。`log.jsonl` の `speaker-name` の行、ブラウザへの `speaker-names` の frame、`export.json`（`session.exportJson` が今の表を足して返し、`cli export` はディスクのファイルを読む）、次の差分更新の入力の `speakerNames` だ。
+差分更新を呼ぶとき、core は自分の表から `DiffInput.speakerNames` を作る。`session.exportJson` も同じ表を `toJsonExport` に渡す。表が空なら export に `speakerNames` キーを出さない。shell に名前表や updater・export の decorator は置かない。
 
-`export.json` は、core がログに 1 行書くときにも書き直される。けれども推定名の経路では、core は diff の行を書いて `export.json` を保存した後で名前を通知する。名前の操作で `export.json` を書かないと、最後の名乗りの後に発言が無いとき、ディスクの `export.json` に名前が無いか、前の名前が残る。[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517) の takt の PR レビューがこれを挙げ、マージの前に、名前の操作の中で `serialized` の下で `writeLogLine` → `Ref.set` → `writeExport` を続けて書くように直した。frame はそのロックを出た後、名前のロックの中で送る。
+ライブ・録画・再生・評価・bench は同じ core の名前操作を使う。再生は空の表から始め、元ログの名前を持ち越さない。`restoreState` も名前行を読み飛ばし、名前表は空で返す。名前行の復元は後続の #1657 の範囲となる。
 
-#1437 の形式仕様（Quint のモデル、仕様のコメント）が揃うと証明しているのは、表・ログの行・frame の 3 つだけで、`export.json` はモデルに無い。`export.json` は、実装の計画が書き出しの名前を残すために `exportJson` を包むと決めたときに増えた見え方だった。run の中の 5 人のレビューはどれも APPROVE で、PR の後の 1 人のレビューが「名前の更新はログ・表・frame だけを変える」「`exportJson` は今の表を読む」「`cli export` はディスクを読む」の 3 点を突き合わせて見つけた。名前の見え方をさらに足すときは、`nameSpeaker` の区間の中で書き、形式仕様のモデルにもその変数を足してから性質を見直す。
+## shell が名前行と export を保存し、frame を送る
 
-## 名前の操作のロックは「名前 → ログ」の順に取る。ログのロックの中では `appendLog` でなく `writeLogLine` を呼ぶ
+`openLogged` が `SessionLog.write` で名前行を受けると、ほかの行と同じ `serialized` の下で `writeLogLine` と `writeExport` を続けて実行する。その後、セッションの `exportJson.speakerNames` から現在の表を組み立て、`speaker-names` の frame を送る。開いた直後の空の frame も維持する。名前専用の表・ロック・callback は持たない。
 
-名前のロック（`namesLock`）は、名前を付けている途中の呼び出しを 1 つにする。ログのロック（`serialized`）は、ログの行と `export.json` の書き込みを 1 つずつにする。`nameSpeaker` は名前のロックを取ってから、その中でログのロックを取る。ログの側から名前のロックを取る所は作らない。公開する `exportJson` は表を `Ref.get` で読むだけで、名前のロックを取らない。
+名前変更が完了した時点で、追加の発言がなくてもディスクの `export.json` は更新済みとなる。最後の名乗りの後に発言がない場合も、名前を保存する必要がある。[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517) では、名前の操作が export を保存しないとこの条件を満たせないことが分かった。
 
-`appendLog` は自分で `serialized` を取る。どちらのロックも許可は 1 つで、取り直しはできないので、`serialized` の中で `appendLog` を呼ぶと、自分の許可を待ち続けて止まる。ロックの中では、ロックを取らない `writeLogLine` と `writeExport` を呼ぶ。
+`appendLog` は自分で `serialized` を取るため、その中から呼ばない。ロックの中では `writeLogLine` と `writeExport` を使う。保存失敗は defect として伝える。
 
-## 名前のテストは、名前を変えた直後、次の発言を入れる前に見る
+ライブと `recordPlayback` は、書き出しへ渡す名前をどちらも `session.exportJson.speakerNames` から作る。Markdown はこの名前を案の提案者などに使う。HTML はログを埋め込み、見返し画面が名前行から最後の名前を読む。
 
-`server/test/loggedSessionLog.it.test.ts` の「ログを開いたセッションの名前」が、`openLoggedSession` の口を偽の updater で叩いて、ログの行・frame・次の入力・`export.json` を見ている。
+## テストは所有する契約の入口から観測する
 
-- 「モデル付き / 地図なしでも手入力の初回設定・変更を追加発言なしで保存し、変化したときだけ名前を送る」: `nameSpeaker` を呼んだ直後に、`session.exportJson` とディスクの `export.json` の両方を見る。次の発言を入れてから見ると、その発言の保存で漏れが埋まって通ってしまう。#1517 の修正の計画は、これを「追加の発言によって保存漏れを補わせない」と書いた
-- 「推定後の手入力がログ待ちの間に中断されても…」: ログの書き込みを `Deferred` で止め、その間に中断と別ラベルの名前を入れる。待ちを解いた後、3 件目の発言を入れる前に、両ラベルの名前が揃っていることを見る
-- 「名前変更時にexportだけ保存できないときはdefectになる」: `export.json` の場所にディレクトリを置いて書けなくし、名前の操作が成功で返らないことを見る
+`server/test/session.test.ts` は、偽 updater と偽ログを使い、手入力・推定名の名前行、diff 後の順序、次回入力、export を観測する。表の Ref やロックは覗かない。純粋な採否規則の組み合わせは `speakerNames.test.ts` が担う。
 
-表の `Ref` やロックは覗かない。再生の配線は `server/test/eval.it.test.ts` の「`play` / `eval` は保存済みの名前を持ち越さず、新しい推定名をログと後続入力へ渡す」が、`cli` の入口から確かめている。`play` は frame（空の表 → 推定名）が届くこと、`eval` は送り口を開かないことも見る。
+`loggedSessionLog.it.test.ts` と `speakerNames.it.test.ts` は shell の保存と frame、sink の受付を観測する。名前変更直後、次の発言を入れる前にディスクの export を読む。中断と競合はログの書き込みを Deferred で止めて順序を決め、export 保存失敗は書き込み先にディレクトリを置いて確認する。
+
+再生の配線は `server/test/eval.it.test.ts` の play と eval の検査が担う。CLI から再生し、生成 Markdown の名前欄と HTML の埋め込み名前行を読む。play の frame と eval が送り口を開かないことも観測する。
 
 ## 名前が入力に載ると、名前は当たり、TODO の担当の一致は下がった（1 回の比較）
 

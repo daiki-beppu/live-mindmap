@@ -21,11 +21,6 @@ export const SpeakerNameLogEvent = Schema.Struct({
 });
 export type SpeakerNameLogEvent = typeof SpeakerNameLogEvent["Type"];
 
-export const speakerNamesFrame = (table: SpeakerNameTable): SpeakerNamesFrame => ({
-  type: "speaker-names",
-  names: [...table].map(([label, { name }]) => ({ label, name })),
-});
-
 export const SPEAKER_NAME_BASES = ["名乗り", "呼びかけへの応答"] as const;
 export type SpeakerNameBasis = (typeof SPEAKER_NAME_BASES)[number];
 
