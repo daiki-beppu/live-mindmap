@@ -1,4 +1,4 @@
-import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Stream, type Scope } from "effect";
+import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Semaphore, Stream, type Scope } from "effect";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
 import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
@@ -290,6 +290,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   const scope = yield* Effect.scope;
   const log = yield* SessionLog;
   const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
+  const screenTransitions = yield* Semaphore.make(1);
   const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
 
   const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
@@ -413,36 +414,43 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const requestedAt = state.status === "paused" ? undefined : outcome.pause.retryAt;
             const now = yield* Clock.currentTimeMillis;
             const nextRetryAt = requestedAt !== undefined && requestedAt > now ? requestedAt : now + DIFF_UPDATE_RETRY_MS;
-            yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.markPaused(s.screenQueue), reflecting: [], pending: [...fresh, ...s.pending], catchUpUntil: [...fresh, ...s.pending].at(-1)?.id, diffUpdate: { status: "paused" as const, reason }, nextRetryAt, previousResponse: undefined }));
-            yield* log.write({ type: "diff-update-paused", reason });
+            yield* screenTransitions.withPermit(Effect.gen(function* () {
+              yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.markPaused(s.screenQueue), reflecting: [], pending: [...fresh, ...s.pending], catchUpUntil: [...fresh, ...s.pending].at(-1)?.id, diffUpdate: { status: "paused" as const, reason }, nextRetryAt, previousResponse: undefined }));
+              yield* log.write({ type: "diff-update-paused", reason });
+            }));
             return;
           }
           const event: typeof DiffEvent.Type = { type: "diff", input, ops: [], dropped: [], error: outcome.error, ...presentFields(outcome, ["judge", "call"]) };
-          let dropped: Dropped[] = [];
-          yield* Ref.update(ref, (s) => {
-            const byId = new Map(s.remarks.map((r) => [r.id, r]));
-            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
-            const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
-            dropped = applied.dropped;
-            return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
-              diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
-          });
-          yield* log.write({ ...event, dropped });
+          yield* screenTransitions.withPermit(Effect.gen(function* () {
+            let dropped: Dropped[] = [];
+            yield* Ref.update(ref, (s) => {
+              const byId = new Map(s.remarks.map((r) => [r.id, r]));
+              const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+              const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
+              dropped = applied.dropped;
+              return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
+                diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
+            });
+            yield* log.write({ ...event, dropped });
+          }));
           return;
         }
-        const { event, dropped, accepted } = yield* Ref.modify(ref, (s) => {
-          const byId = new Map(s.remarks.map((r) => [r.id, r]));
-          const ops = attributePeople(outcome.ops, byId);
-          const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
-          const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
-          const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
-          const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
-          return [{ event, dropped: applied.dropped, accepted }, {
-            ...s, ...applied.state.history, screenQueue, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
-            known: applied.state.ledger.known, processed: applied.state.ledger.processed, pending: [...fresh.slice(outcome.count), ...s.pending],
-          }];
-        });
-        yield* log.write({ ...event, dropped });
+        const accepted = yield* screenTransitions.withPermit(Effect.gen(function* () {
+          const { event, dropped, accepted } = yield* Ref.modify(ref, (s) => {
+            const byId = new Map(s.remarks.map((r) => [r.id, r]));
+            const ops = attributePeople(outcome.ops, byId);
+            const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
+            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+            const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
+            const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
+            return [{ event, dropped: applied.dropped, accepted }, {
+              ...s, ...applied.state.history, screenQueue, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
+              known: applied.state.ledger.known, processed: applied.state.ledger.processed, pending: [...fresh.slice(outcome.count), ...s.pending],
+            }];
+          });
+          yield* log.write({ ...event, dropped });
+          return accepted;
+        }));
         if (state.status === "paused") yield* log.write({ type: "diff-update-resumed" });
         yield* notifySpeakerNames(accepted);
       }),
@@ -480,8 +488,10 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           return [file, { ...s, screenFiles: file ? new Set([...s.screenFiles, file]) : s.screenFiles }];
         });
         if (change.image && file) yield* log.writeScreen(file, change.image.bytes);
-        yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.receive(s.screenQueue, { start: change.start, image: file }, s.diffUpdate.status === "paused") }));
-        yield* log.write({ type: "screen", start: change.start, image: file, ...(change.ocrFailed === true ? { ocrFailed: true } : lines === undefined ? {} : { lines }) });
+        yield* screenTransitions.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+          yield* log.write({ type: "screen", start: change.start, image: file, ...(change.ocrFailed === true ? { ocrFailed: true } : lines === undefined ? {} : { lines }) });
+          yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.receive(s.screenQueue, { start: change.start, image: file }, s.diffUpdate.status === "paused") }));
+        })));
       }),
     pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),
     flush: Effect.gen(function* () {
