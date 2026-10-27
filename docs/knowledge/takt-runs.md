@@ -55,7 +55,7 @@ heavy IT を速くする親 [#1151](https://github.com/daiki-beppu/live-mindmap/
 
 ## companion の findings 0 も、レビューの APPROVE も、テストを流し直した証拠ではない
 
-#1316 の実装の後の companion レビュー（ai-antipattern と testing）は、1674 行の変更に findings 0 を返した。その後の本番のレビュー（architecture・backend・ai-antipattern）が、録画の正常完了の取り違えとライブの途切れの時刻の上書きの 2 つの退行を見つけた（[取り込みの試行](intake-attempts.md)）。testing のレビューは初めは APPROVE で、裁定役がテストの不足を同じ指摘にまとめた。#1446 でも同じ形になった。5 人のレビューのうち ai-antipattern だけが `cli publish --content map` の壊れた行の文の漏れを REJECT で挙げ、architecture・backend・security・testing は APPROVE だった。裁定役が testing の見落としを同じ指摘にまとめ、run は 11 段のうち 7 段をこの直しに使った（[過去のセッションのフォルダの読み側](session-folder-reading.md)）。#1447 では run の中の 5 人がみな APPROVE し、PR を作った後のマージの run のコーディングレビュー（1 人）が、名前を変えても `export.json` が書き直されない漏れを REJECT で挙げた（[話者の名前の包み](speaker-names.md)）。#1317 では、レビューはテストを流し直さず、実装の段の証跡（`command-results.json`）と最終の差分の SHA-256 が合うことだけを見て APPROVE した。
+#1316 の実装の後の companion レビュー（ai-antipattern と testing）は、1674 行の変更に findings 0 を返した。その後の本番のレビュー（architecture・backend・ai-antipattern）が、録画の正常完了の取り違えとライブの途切れの時刻の上書きの 2 つの退行を見つけた（[取り込みの試行](intake-attempts.md)）。testing のレビューは初めは APPROVE で、裁定役がテストの不足を同じ指摘にまとめた。#1446 でも同じ形になった。5 人のレビューのうち ai-antipattern だけが `cli publish --content map` の壊れた行の文の漏れを REJECT で挙げ、architecture・backend・security・testing は APPROVE だった。裁定役が testing の見落としを同じ指摘にまとめ、run は 11 段のうち 7 段をこの直しに使った（[過去のセッションのフォルダの読み側](session-folder-reading.md)）。#1447 では run の中の 5 人がみな APPROVE し、PR を作った後のマージの run のコーディングレビュー（1 人）が、名前を変えても `export.json` が書き直されない漏れを REJECT で挙げた（[話者の名前の表](speaker-names.md)）。#1317 では、レビューはテストを流し直さず、実装の段の証跡（`command-results.json`）と最終の差分の SHA-256 が合うことだけを見て APPROVE した。
 
 run の報告を読むときは、どの段が実際にコマンドを流したかを証跡のログで見る。レビューの件数が 0 でも、まとめた経路の後処理の取り違えのような、テストが元々見ていない退行は残りうる。
 
@@ -137,6 +137,21 @@ run の所要時間は、1 周で通った #1624 の 44 分に対して 1 時間
 
 このコミットの中身を知るには、PR の画面ではなく、本体の checkout の `.takt/runs/<日時>-merge-pr-<番号>-*/reports/` にある `ci-investigation.md`・`ci-fix.md`・`ci-fix-review.md` を読む。実装の run と違い、マージの run の報告はマージの後も残る。
 
+## CLI を手で流す受け入れ条件は、合成のセッションと専用の HOME で回させる。本物の会議のフォルダを読ませない
+
+[#1657](https://github.com/daiki-beppu/live-mindmap/issues/1657) の受け入れ条件には、`cli restore` の後の `export.json` と `cli export --format json` の名前を手で確かめることがあった。run は手元の会議のフォルダを使わず、実物の `openLogged` とファイルシステムで名前つきの合成のセッションを保存し、それを比較元にした。そのうえで、専用の HOME とセッションの置き場所で 2 つのコマンドを流した。
+
+```sh
+env HOME="$PWD/.takt/issue-1657-cli/home" \
+  LIVE_MINDMAP_SESSIONS="$PWD/.takt/issue-1657-cli/sessions" \
+  pnpm cli restore
+env HOME="$PWD/.takt/issue-1657-cli/home" \
+  LIVE_MINDMAP_SESSIONS="$PWD/.takt/issue-1657-cli/sessions" \
+  pnpm cli export --format json
+```
+
+ライブの保存・restore の後・標準出力の 3 つで JSON 全体が一致し、`log.jsonl` は変わらなかった。会議の中身を読まずに、コマンドの端から端までを確かめられる。CLI の手の確かめを完了条件に入れるときは、この形（合成のセッション、`HOME` と `LIVE_MINDMAP_SESSIONS` を run の中に分ける、比較の結果をファイルに残す）を本文に書いておく。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -150,6 +165,7 @@ run の所要時間は、1 周で通った #1624 の 44 分に対して 1 時間
 - 仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) の子 [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461)、[#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452)・[PR #1465](https://github.com/daiki-beppu/live-mindmap/pull/1465)、[#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)・[PR #1507](https://github.com/daiki-beppu/live-mindmap/pull/1507) の takt の run（`20261024-044654-issue-1451-sessions-no-no-wo-1-c3mkub`・`20261024-062211-issue-1452-raibuto-karanosessh-vmobcg`・`20261024-110450-issue-1454-sesshonto-cli-play-lrmuz3`）のログと報告、#1461 のマージの run（`20261024-052049-merge-pr-1461-4jlyjc`）の報告
 - 仕様 [#1437](https://github.com/daiki-beppu/live-mindmap/issues/1437) の子 [#1447](https://github.com/daiki-beppu/live-mindmap/issues/1447)・[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517)、[#1448](https://github.com/daiki-beppu/live-mindmap/issues/1448)・[PR #1520](https://github.com/daiki-beppu/live-mindmap/pull/1520) の takt の run（`20261024-150123-issue-1447-no-no-miworoguwo-ku-yghm6h`・`20261024-181251-issue-1448-cli-play-de-shita-n-zxileb`）の報告と、#1447 のマージの run（`20261024-160015-merge-pr-1517-obxbck`）の報告。[開発ログ](../devlog/2026-10-25.md#speaker-name-wrap)
 - 仕様 [#1438](https://github.com/daiki-beppu/live-mindmap/issues/1438) の子 [#1446](https://github.com/daiki-beppu/live-mindmap/issues/1446)・[PR #1515](https://github.com/daiki-beppu/live-mindmap/pull/1515) の takt の run（`20261024-133903-issue-1446-cli-no-mi-wo-sessio-ruhfky`）のレビューと裁定の報告。[開発ログ](../devlog/2026-10-25.md#session-log-reader)
+- 仕様 [#1637](https://github.com/daiki-beppu/live-mindmap/issues/1637) の子 [#1657](https://github.com/daiki-beppu/live-mindmap/issues/1657) の takt の run（`20261027-122913-issue-1657-de-speaker-name-no-1xwjc1`）の実装の報告と決定ログ。[開発ログ](../devlog/2026-10-27.md#speaker-names-in-session)
 - 仕様 [#1593](https://github.com/daiki-beppu/live-mindmap/issues/1593) の子 [#1595](https://github.com/daiki-beppu/live-mindmap/issues/1595)・[#1596](https://github.com/daiki-beppu/live-mindmap/issues/1596)・[#1597](https://github.com/daiki-beppu/live-mindmap/issues/1597) の takt の run（`20261026-061655-issue-1595-wo-1-tsuno-mi-minis-2ryel7`・`20261026-072819-issue-1596-raibuno-no-wo-no-mi-ufij5c`・`20261026-094505-issue-1597-logmetrics-wo-no-mi-uu6mix`）の trace と報告。[開発ログ](../devlog/2026-10-26.md#reflect-fold)
 - 仕様 [#1612](https://github.com/daiki-beppu/live-mindmap/issues/1612) の子 [#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624)・[PR #1641](https://github.com/daiki-beppu/live-mindmap/pull/1641)、[#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625)・[PR #1644](https://github.com/daiki-beppu/live-mindmap/pull/1644) の takt の run（`20261026-170454-issue-1624-no-no-wo-tabuwo-shi-q0xe0t`・`20261026-185815-issue-1625-karanosesshonno-hel-hdfs52`）の trace と reports、[録画を読む経路を 1 本にしたとき](../devlog/2026-10-27.md#recorded-relay-one-path)
 - 仕様 [#1611](https://github.com/daiki-beppu/live-mindmap/issues/1611) の子 [#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628)・[PR #1668](https://github.com/daiki-beppu/live-mindmap/pull/1668) の takt の run（`20261026-221216-issue-1628-cli-play-to-cli-eva-vgx5ew`・`20261026-224854-issue-1628-cli-play-to-cli-eva-6vpoxw`・`20261026-225131-issue-1628-cli-play-to-cli-eva-0y5ej7`・`20261027-035023-issue-1628-cli-play-to-cli-eva-ne56xj`）の trace と reports、PR のレビューの run（`20261027-042106-merge-pr-1668-8k68gv`・`20261027-044534-merge-pr-1668-1-q4glf1`）、[開始前の確かめを入口の表 1 つにまとめたとき](../devlog/2026-10-27.md#startup-checks-module)
