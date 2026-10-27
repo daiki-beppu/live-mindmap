@@ -51,8 +51,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         emit: { printError($0) },
         now: { AudioGetCurrentHostTime() },
         emitEvent: { event in
-            guard let json = try? event.jsonString() else { return }
-            Task { await server.broadcastRetained(json, key: "tap-silent") }
+            Task { await server.send(event) }
         }
     )
     // `自分` の休止（Issue #1069・#1071）。会議アプリのマイクの使用と手動の指示の組み合わせは `SelfPauseRule` が決める。
@@ -107,12 +106,13 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
         CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
     }
 
-    let actualPort = try await server.start()
-    printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes, output: \(outputRoute))")
-
     // 時刻の基準。音声取得を始める直前に 1 回だけ取る。録音の 0 秒も、共有画面の時刻もこれにそろえる。
     // サーバーがヘルパーを再起動したときは `--origin` で元の基準を渡し、時刻を 0 から振り直さない（Issue #161）。
     let origin = explicitOrigin ?? AudioGetCurrentHostTime()
+    // 接続可能になる前に原点を保持し、最初の配送が他のイベントになる隙間をなくす。
+    await server.send(.origin(hostTime: origin))
+    let actualPort = try await server.start()
+    printError("listening on ws://127.0.0.1:\(actualPort) (app: \(bundleID), \(targets.count) processes, output: \(outputRoute))")
     // 共有画面の取り込み（Issue #278）。失敗しても throw しない（標準エラーに 1 行出して終わる）ので、音声の `failure` には関わらない。
     // `--no-screen` と許可なしのときは作らない（ScreenCaptureKit を呼ばない）。
     let screen: ScreenCapture? = screenPlan == .capture ? ScreenCapture(bundleID: bundleID, origin: origin) : nil
@@ -129,15 +129,10 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     }
     defer { signalSources.forEach { $0.cancel() } }
 
-    // `speaker-off(モデルなし)` はサーバーがつながる前に出ることがあるので、保持して流す。`speaker` は通常の broadcast。
+    // 接続前に出た話者イベントも、同じ Task が順に送る。
     let speakerTask = Task {
         for await event in speakerEvents {
-            guard let json = try? event.jsonString() else { continue }
-            if case .speakerOff = event {
-                await server.broadcastRetained(json, key: "speaker-off")
-            } else {
-                await server.broadcast(json)
-            }
+            await server.send(event)
         }
     }
     var screenTasks: [Task<Void, Never>] = []
@@ -147,18 +142,11 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
     var inputObserver: AudioInputObserver?
     var failure: Error?
     do {
-        // 原点は接続より前に決まることが多く、通常の broadcast だとクライアント不在時に失われるので、保持して流す。
-        try await server.broadcastRetained(HelperEvent.origin(hostTime: origin).jsonString(), key: "origin")
         // 休止の状態が変わるたびに `self-pause` を、引き継ぐ状態が変わるたびに `self-pause-state` を流す。接続前に出た分も、最新の 1 件ずつ覚えて、つながったら送る。
         // `自分` を作らないセッション（マイクの許可が無い）では、休止の監視も指示の処理も始めず、イベントも出さない。
         if audio.hasMyTrack {
-            let emitSelfPause = { (event: HelperEvent) async in
-                guard let json = try? event.jsonString() else { return }
-                if case .selfPauseState = event {
-                    await server.broadcastRetained(json, key: "self-pause-state")
-                } else {
-                    await server.broadcastRetained(json, key: "self-pause")
-                }
+            let emitSelfPause: @Sendable (HelperEvent) async -> Void = { event in
+                await server.send(event)
             }
             // 始めた時点の休止の状態を、最初に 1 回知らせる。サーバーは起動の間に求められた状態を、helper が受け付けるまで知らない。
             await announceSelfPause(selfPauseRule, at: AudioGetCurrentHostTime(), origin: origin, emit: emitSelfPause)
@@ -198,9 +186,7 @@ private func run(app bundleID: String, port: UInt16, audioDir: String?, origin e
             // 許可が無い・断られた。取り込みを始めず、`screen-off` を 1 回流して音声だけで続ける。サーバーがつながる前に出るので保持する。
             printError("screen: 画面収録の許可が無い（音声だけで続ける。システム設定で、起動したターミナルに許可を与え、ターミナルを開き直す）")
             let time = offsetSeconds(from: origin, to: AudioGetCurrentHostTime())
-            if let json = try? HelperEvent.screenOff(start: time, reason: .許可なし).jsonString() {
-                await server.broadcastRetained(json, key: "screen-off")
-            }
+            await server.send(.screenOff(start: time, reason: .許可なし))
         }
         try await audio.run(origin: origin, marksDuplicates: outputRoute.marksDuplicates) { tracks, marksDuplicates in
             try await relay(tracks: tracks, to: server, duplicates: marksDuplicates ? DuplicateMarker() : nil)
@@ -256,15 +242,10 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     let server = WebSocketServer(port: port)
     let actualPort = try await server.start()
     printError("listening on ws://127.0.0.1:\(actualPort) (file: \(file), \(header.duration) s)")
-    try await broadcastFileHeader(header, on: server)
+    await broadcastFileHeader(header, on: server)
     // `相手` に話者分離をかける。使えなければ、ここで `speaker-off` を保持して流し（接続前でも後から接続したクライアントに届く）、読む速さは抑えない
     let diarization = await FileDiarization.prepare(SortformerSpeakerDiarizer(), from: from ?? 0) { event in
-        guard let json = try? event.jsonString() else { return }
-        if case .speakerOff = event {
-            await server.broadcastRetained(json, key: "speaker-off")
-        } else {
-            await server.broadcast(json)
-        }
+        await server.send(event)
     }
 
     // 差分更新が一時停止している間、サーバーは読み取りの停止を指示する（reading-pause）。止められている間は、ファイルを読み進めない。
@@ -280,7 +261,7 @@ private func transcribeFile(file: String, selfFile: String?, port: UInt16, audio
     defer { readingPauseTask?.cancel() }
 
     let work = Task {
-        // `broadcast` は接続前の送信を捨てるので、最初のクライアントを待ってから流す
+        // 録画の読み取りは、最初のクライアントが接続してから始める。
         await server.waitForClient()
         // 文字起こしと話者分離を並べて動かす。両方が終わる（話者分離が最後の区間と `settled` を流し切る）まで待つ
         try await diarization.run {

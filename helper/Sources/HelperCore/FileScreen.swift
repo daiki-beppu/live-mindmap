@@ -186,7 +186,7 @@ func relayFileScreen(
         break
     case .unreadable(let reason):
         printScreenError("動画の映像を読めない（音声だけで続ける）: \(reason)")
-        await broadcast(.screenOff(start: 0, reason: .許可なし), to: server)
+        await server.send(.screenOff(start: 0, reason: .許可なし))
     case .reading(let reading):
         // 取り消されたら、読み出しを止めて `next()` を抜けさせる（変化の無い長い区間を、次のイベントまで読み切らない）
         await withTaskCancellationHandler {
@@ -201,7 +201,7 @@ func relayFileScreen(
                     }
                 }
                 guard let (events, time, safeProgress) = stepped else { break }
-                for event in events where !Task.isCancelled { await broadcast(event, to: server) }
+                for event in events where !Task.isCancelled { await server.send(event) }
                 if let safeProgress { await progress.advance(to: safeProgress) }
                 await afterFrame?(time)
             }
@@ -211,12 +211,4 @@ func relayFileScreen(
         reading.cancel()
     }
     await progress.finish()
-}
-
-private func broadcast(_ event: HelperEvent, to server: WebSocketServer) async {
-    do {
-        await server.broadcast(try event.jsonString())
-    } catch {
-        printScreenError("画面のイベントを JSON にできなかったので送らない: \(error)")
-    }
 }

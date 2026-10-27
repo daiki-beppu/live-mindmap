@@ -6,7 +6,7 @@ public func relay<Results: AsyncSequence>(
 ) async throws where Results.Element == TranscriptionResult {
     guard let duplicates else {
         for try await result in results {
-            await server.broadcast(try event(from: result, track: track).jsonString())
+            await server.send(event(from: result, track: track))
         }
         return
     }
@@ -26,7 +26,7 @@ private func relayTheirs<Results: AsyncSequence>(
         } else {
             await duplicates.add(theirPartial: result)
         }
-        await server.broadcast(try event(from: result, track: .相手).jsonString())
+        await server.send(event(from: result, track: .相手))
     }
     await duplicates.finishTheirs()
 }
@@ -54,7 +54,7 @@ private func relayMine<Results: AsyncSequence>(
             for await decision in duplicates.mineDecisions {
                 // 他トラックのエラーなどでキャンセルされたら、判定が済んでいても送らずに終える。
                 if Task.isCancelled { return }
-                await server.broadcast(try event(from: decision.result, track: .自分, duplicate: decision.duplicate).jsonString())
+                await server.send(event(from: decision.result, track: .自分, duplicate: decision.duplicate))
             }
         }
         group.addTask {

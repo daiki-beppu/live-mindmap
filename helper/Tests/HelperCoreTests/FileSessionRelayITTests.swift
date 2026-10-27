@@ -825,14 +825,14 @@ enum FileScreenTestSupport {
                 try await Task.sleep(for: .milliseconds(25))
             }
             // 送信完了後の目印まで受け取り、最後のイベントも届いたことを確認する。
-            let end = "file-screen-test-complete"
+            let end = HelperEvent.partial(track: .相手, start: 0, end: 0, text: "file-screen-test-complete", duplicate: false, words: [], wordTimes: [])
             let events = try await withThrowingTaskGroup(of: [ReceivedEvent]?.self) { group in
                 group.addTask {
                     try await relayFileSession(
                         theirs: FileSessionSource(url: url, transcriber: ScriptedTranscriber(tail: [
                             partial("最初の発言", 0.5, 1.5), final("最初の発言です", 0.5, 1.5),
                         ]), from: 0), mine: nil, to: server)
-                    await server.broadcast(end)
+                    await server.send(end)
                     return nil
                 }
                 group.addTask {
@@ -840,7 +840,7 @@ enum FileScreenTestSupport {
                         var events: [ReceivedEvent] = []
                         while true {
                             guard case .string(let text) = try await socket.receive() else { throw CocoaError(.fileReadUnknown) }
-                            if text == end { return events }
+                            if text == (try end.jsonString()) { return events }
                             events.append(try JSONDecoder().decode(ReceivedEvent.self, from: Data(text.utf8)))
                         }
                     } onCancel: {

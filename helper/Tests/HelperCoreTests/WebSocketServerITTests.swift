@@ -1,13 +1,15 @@
 import Foundation
 import Testing
-import HelperCore
+@testable import HelperCore
 
 private func waitForClients(_ server: WebSocketServer, count: Int) async throws {
-    for _ in 0..<100 {
-        if await server.clientCount == count { return }
-        try await Task.sleep(for: .milliseconds(50))
+    let deadline = ContinuousClock.now + .seconds(5)
+    while await server.clientCount != count {
+        if ContinuousClock.now >= deadline {
+            throw WebSocketTestError.clientCountTimedOut(expected: count, actual: await server.clientCount)
+        }
+        try await Task.sleep(for: .milliseconds(20))
     }
-    Issue.record("クライアント数が \(count) にならなかった: \(await server.clientCount)")
 }
 
 private func receiveText(_ task: URLSessionWebSocketTask) async throws -> String {
@@ -18,7 +20,31 @@ private func receiveText(_ task: URLSessionWebSocketTask) async throws -> String
     }
 }
 
-private enum WebSocketTestError: Error { case binaryFrame }
+private enum WebSocketTestError: Error {
+    case binaryFrame
+    case clientCountTimedOut(expected: Int, actual: Int)
+}
+
+private func markerEvent() -> HelperEvent {
+    .partial(track: .相手, start: 99, end: 100, text: "marker", duplicate: false, words: [], wordTimes: [])
+}
+
+private final class SendDiagnostics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func write(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        lines.append(line)
+    }
+
+    var text: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.joined(separator: "\n")
+    }
+}
 
 /// 別 Task で動く待ちが終わったかを、期限付きで確かめるための印
 private actor Completion {
@@ -35,6 +61,124 @@ private actor Completion {
 
 @Suite("localhost の WebSocket", .timeLimit(.minutes(1)))
 struct WebSocketServerITTests {
+    @Test("初回接続では保持枠を表の順に送り、その後に接続前の発言・話者イベントを送信順で届ける")
+    func firstClientReceivesRetainedTableThenBufferedEvents() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let retained: [HelperEvent] = [
+            .origin(hostTime: 42),
+            .screen(start: 2, image: "latest", lines: []),
+            .screenOff(start: 3, reason: .許可なし),
+            .tapSilent(start: 10),
+            .selfPause(paused: true, reason: .manual, start: 3),
+            .selfPauseState(.initial),
+            .speakerOff(start: 1, reason: .モデルなし),
+            .fileDuration(duration: 120),
+            .fileAudioTracks(count: 2),
+        ]
+        let buffered: [HelperEvent] = [
+            .partial(track: .相手, start: 0, end: 1, text: "途中", duplicate: false, words: [], wordTimes: []),
+            .speaker(track: .相手, start: 0, end: 1, slot: 0, isFinal: true),
+            .remark(track: .相手, start: 0, end: 1, text: "発言", duplicate: false, words: [], wordTimes: []),
+            .speakerSettled(track: .相手, to: 1),
+            .speakerMixed(track: .相手, slot: 0, start: 1),
+            .speakerCentroid(track: .相手, slot: 0, centroid: [1, 0]),
+        ]
+        // 登録順や蓄積順をそのまま再送する実装を区別する。
+        for (index, event) in retained.reversed().enumerated() {
+            await server.send(event)
+            if index < buffered.count { await server.send(buffered[index]) }
+        }
+        let first = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        first.resume()
+        defer { first.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+        await server.send(markerEvent())
+        for event in retained + buffered + [markerEvent()] {
+            #expect(try await receiveText(first) == event.jsonString())
+        }
+
+        let second = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        second.resume()
+        defer { second.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 2)
+        await server.send(markerEvent())
+        for event in retained + [markerEvent()] {
+            #expect(try await receiveText(second) == event.jsonString())
+        }
+    }
+
+    @Test("同じserverで初回配送後に全接続が切れても、通常イベントの蓄積を再開しない")
+    func disconnectedServerDoesNotBufferAgain() async throws {
+        let server = WebSocketServer(port: 0)
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let url = URL(string: "ws://127.0.0.1:\(port)")!
+        let origin = HelperEvent.origin(hostTime: 42)
+        let before = HelperEvent.speakerSettled(track: .相手, to: 1)
+        await server.send(origin)
+        await server.send(before)
+        let first = URLSession.shared.webSocketTask(with: url)
+        first.resume()
+        defer { first.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+        #expect(try await receiveText(first) == origin.jsonString())
+        #expect(try await receiveText(first) == before.jsonString())
+        first.cancel(with: .goingAway, reason: nil)
+        try await waitForClients(server, count: 0)
+        await server.send(.speakerSettled(track: .相手, to: 2))
+        let latest = HelperEvent.origin(hostTime: 43)
+        await server.send(latest)
+
+        let second = URLSession.shared.webSocketTask(with: url)
+        second.resume()
+        defer { second.cancel(with: .goingAway, reason: nil) }
+        try await waitForClients(server, count: 1)
+        await server.send(markerEvent())
+        #expect(try await receiveText(second) == latest.jsonString())
+        #expect(try await receiveText(second) == markerEvent().jsonString())
+    }
+
+    @Test("エンコード失敗は種類を診断へ書いて一件だけ捨て、正常な後続を送る", arguments: [false, true])
+    func encodingFailureDoesNotStopDelivery(_ connected: Bool) async throws {
+        let diagnostics = SendDiagnostics()
+        let server = WebSocketServer(port: 0, writeStderr: { diagnostics.write($0) })
+        let port = try await server.start()
+        defer { Task { await server.stop() } }
+        let client = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        defer { client.cancel(with: .goingAway, reason: nil) }
+        if connected {
+            client.resume()
+            try await waitForClients(server, count: 1)
+        }
+        let duration = HelperEvent.fileDuration(duration: 120)
+        await server.send(duration)
+        await server.send(.fileDuration(duration: .infinity))
+        await server.send(.partial(track: .相手, start: .nan, end: 1, text: "invalid", duplicate: false, words: [], wordTimes: []))
+        await server.send(markerEvent())
+        if !connected {
+            client.resume()
+            try await waitForClients(server, count: 1)
+        }
+        #expect(try await receiveText(client) == duration.jsonString())
+        #expect(try await receiveText(client) == markerEvent().jsonString())
+        #expect(diagnostics.text.contains("file-duration") || diagnostics.text.contains("fileDuration"))
+        #expect(diagnostics.text.contains("partial"))
+    }
+
+    @Test("初回接続前の蓄積があってもwaitUntilSentは接続を待たずに戻る")
+    func bufferedEventsDoNotBlockWaitUntilSent() async throws {
+        let server = WebSocketServer(port: 0)
+        _ = try await server.start()
+        defer { Task { await server.stop() } }
+        await server.send(markerEvent())
+        let completion = Completion()
+        let waiting = Task { await server.waitUntilSent(); await completion.mark() }
+        defer { waiting.cancel() }
+        #expect(await completion.finishes(within: 5))
+    }
+
     @Test("closeで確定した保留画像は、配送タスク完了直後にサーバーを止めても最後まで届く")
     func closingRelayFinishesPendingScreenSends() async throws {
         let server = WebSocketServer(port: 0)
@@ -94,53 +238,50 @@ struct WebSocketServerITTests {
         }
         emitter.close()
         await relay.value
-        let meet = try HelperEvent.screen(start: 1, image: "meet", lines: ["meet OCR"]).jsonString()
-        #expect(try await receiveText(first) == meet)
+        let meet = HelperEvent.screen(start: 1, image: "meet", lines: ["meet OCR"])
+        #expect(try await receiveText(first) == meet.jsonString())
         #expect(try await receiveText(first) == HelperEvent.screen(start: 0, image: "gmail", lines: ["gmail OCR"]).jsonString())
-        let latest = try returnsToGmail ? HelperEvent.screen(start: 60, image: "gmail-return", lines: ["gmail-return OCR"]).jsonString() : meet
-        if returnsToGmail { #expect(try await receiveText(first) == latest) }
+        let latest = returnsToGmail ? HelperEvent.screen(start: 60, image: "gmail-return", lines: ["gmail-return OCR"]) : meet
+        if returnsToGmail { #expect(try await receiveText(first) == latest.jsonString()) }
         let late = URLSession.shared.webSocketTask(with: url)
         late.resume()
         defer { late.cancel(with: .goingAway, reason: nil) }
-        #expect(try await receiveText(late) == latest)
+        #expect(try await receiveText(late) == latest.jsonString())
         try await waitForClients(server, count: 2)
-        await server.broadcast("marker")
-        #expect(try await receiveText(first) == "marker")
-        #expect(try await receiveText(late) == "marker")
+        await server.send(markerEvent())
+        #expect(try await receiveText(first) == markerEvent().jsonString())
+        #expect(try await receiveText(late) == markerEvent().jsonString())
     }
 
-    @Test("画像とnullはstartで保持を選び、同時刻は到着順、他の保持keyは維持する", arguments: [0.0, 1, 2], [false, true])
+    @Test("画像とnullはstartで保持を選び、同時刻は到着順、他の保持枠は維持する", arguments: [0.0, 1, 2], [false, true])
     func screenRetentionUsesStart(_ start: Double, _ absent: Bool) async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
-        let (events, continuation) = AsyncStream<HelperEvent>.makeStream()
-        let origin = try HelperEvent.origin(hostTime: 42).jsonString()
-        await server.broadcastRetained(origin, key: "origin")
+        let origin = HelperEvent.origin(hostTime: 42)
+        await server.send(origin)
         let old = HelperEvent.screen(start: 1, image: "first", lines: ["first OCR"])
         let arriving = HelperEvent.screen(start: start, image: absent ? nil : "arriving", lines: absent ? nil : ["arriving OCR"])
         let off = HelperEvent.screenOff(start: 3, reason: .許可なし)
-        continuation.yield(old)
-        continuation.yield(arriving)
+        await server.send(old)
+        await server.send(arriving)
         if absent && start >= 1 {
-            continuation.yield(.screen(start: 0, image: "delayed", lines: ["delayed OCR"]))
+            await server.send(.screen(start: 0, image: "delayed", lines: ["delayed OCR"]))
         }
-        continuation.yield(off)
-        continuation.finish()
-        await relayScreenEvents(events, to: server)
+        await server.send(off)
         let late = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         late.resume()
         defer { late.cancel(with: .goingAway, reason: nil) }
-        #expect(try await receiveText(late) == origin)
+        #expect(try await receiveText(late) == origin.jsonString())
         #expect(try await receiveText(late) == (start < 1 ? old : arriving).jsonString())
         #expect(try await receiveText(late) == off.jsonString())
         try await waitForClients(server, count: 1)
-        await server.broadcast("marker")
-        #expect(try await receiveText(late) == "marker")
+        await server.send(markerEvent())
+        #expect(try await receiveText(late) == markerEvent().jsonString())
     }
 
-    @Test("接続したクライアントが broadcast したテキストをテキストフレームで受け取る")
-    func clientReceivesBroadcast() async throws {
+    @Test("接続したクライアントが send したイベントをテキストフレームで受け取る")
+    func clientReceivesEvent() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
@@ -150,13 +291,13 @@ struct WebSocketServerITTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let json = try HelperEvent.partial(track: .相手, start: 1, end: 2, text: "こんに", duplicate: false, words: transcriptWords("こんに"), wordTimes: []).jsonString()
-        await server.broadcast(json)
-        #expect(try await receiveText(task) == json)
+        let event = HelperEvent.partial(track: .相手, start: 1, end: 2, text: "こんに", duplicate: false, words: transcriptWords("こんに"), wordTimes: [])
+        await server.send(event)
+        #expect(try await receiveText(task) == event.jsonString())
     }
 
     @Test("接続中の全クライアントに同じイベントが届く")
-    func broadcastReachesEveryClient() async throws {
+    func sendReachesEveryClient() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
@@ -172,13 +313,13 @@ struct WebSocketServerITTests {
         }
         try await waitForClients(server, count: 2)
 
-        let json = try HelperEvent.remark(track: .相手, start: 1, end: 2, text: "了解です", duplicate: false, words: transcriptWords("了解です"), wordTimes: []).jsonString()
-        await server.broadcast(json)
-        #expect(try await receiveText(first) == json)
-        #expect(try await receiveText(second) == json)
+        let event = HelperEvent.remark(track: .相手, start: 1, end: 2, text: "了解です", duplicate: false, words: transcriptWords("了解です"), wordTimes: [])
+        await server.send(event)
+        #expect(try await receiveText(first) == event.jsonString())
+        #expect(try await receiveText(second) == event.jsonString())
     }
 
-    @Test("イベントは broadcast した順に届く")
+    @Test("イベントは send した順に届く")
     func preservesOrder() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
@@ -189,18 +330,19 @@ struct WebSocketServerITTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let expected = try ["あ", "あい", "あいう"].map { try HelperEvent.partial(track: .相手, start: 0, end: 1, text: $0, duplicate: false, words: transcriptWords($0), wordTimes: []).jsonString() }
-        for json in expected { await server.broadcast(json) }
+        let events = ["あ", "あい", "あいう"].map { HelperEvent.partial(track: .相手, start: 0, end: 1, text: $0, duplicate: false, words: transcriptWords($0), wordTimes: []) }
+        let expected = try events.map { try $0.jsonString() }
+        for event in events { await server.send(event) }
         var received: [String] = []
         for _ in expected { received.append(try await receiveText(task)) }
         #expect(received == expected)
     }
 
-    @Test("クライアントがいなくても broadcast は失敗しない")
-    func broadcastWithoutClients() async throws {
+    @Test("クライアントがいなくても send は失敗しない")
+    func sendWithoutClients() async throws {
         let server = WebSocketServer(port: 0)
         _ = try await server.start()
-        await server.broadcast("{}")
+        await server.send(markerEvent())
         #expect(await server.clientCount == 0)
         await server.stop()
     }
@@ -231,26 +373,24 @@ struct WebSocketServerITTests {
         #expect(await server.clientCount == 0)
     }
 
-    // Issue #161: 原点のイベントは、ヘルパーが起動した直後（接続より前）に決まることが多く、
-    // 通常の broadcast だとクライアント不在時に失われる（要件 #58）。保持して、後から接続したクライアントにも送る
-    @Test("broadcastRetained で送った内容を、後から接続したクライアントにも送る（register の受信開始より前に届く）")
-    func broadcastRetainedReachesLateJoiningClient() async throws {
+    @Test("保持するイベントを、後から接続したクライアントにも送る（register の受信開始より前に届く）")
+    func retainedEventReachesLateJoiningClient() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
 
-        let json = try HelperEvent.origin(hostTime: 9_007_199_254_740_993).jsonString()
-        await server.broadcastRetained(json) // まだ誰も接続していない
+        let event = HelperEvent.origin(hostTime: 9_007_199_254_740_993)
+        await server.send(event) // まだ誰も接続していない
 
         let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        #expect(try await receiveText(task) == json)
+        #expect(try await receiveText(task) == event.jsonString())
     }
 
-    @Test("broadcastRetained は、すでに接続しているクライアントにも通常の broadcast と同じく届く")
-    func broadcastRetainedReachesConnectedClient() async throws {
+    @Test("保持するイベントは、すでに接続しているクライアントにも通常のイベントと同じく届く")
+    func retainedEventReachesConnectedClient() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
@@ -260,37 +400,35 @@ struct WebSocketServerITTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
 
-        let json = try HelperEvent.origin(hostTime: 1).jsonString()
-        await server.broadcastRetained(json)
-        #expect(try await receiveText(task) == json)
+        let event = HelperEvent.origin(hostTime: 1)
+        await server.send(event)
+        #expect(try await receiveText(task) == event.jsonString())
     }
 
-    // Issue #278: 共有画面の `screen` も原点と同じく、接続前に出た分を覚えて、後から接続したクライアントに送る。
-    // 覚えるのは種類ごとに最新の 1 件（画像を何枚も溜めない）。接続した直後は、最初に覚えた種類の順（origin → screen）に届く
     @Test("種類ごとに最新の 1 件だけを覚え、後から接続したクライアントには origin → 最後の screen の順で届く（古い screen は届かない）")
     func retainedKeepsLatestPerKindForLateJoiningClient() async throws {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
 
-        let origin = try HelperEvent.origin(hostTime: 42).jsonString()
-        let older = try HelperEvent.screen(start: 1, image: "b2xkZXI=", lines: nil).jsonString()
-        let latest = try HelperEvent.screen(start: 2, image: "bGF0ZXN0", lines: nil).jsonString()
-        await server.broadcastRetained(origin, key: "origin")
-        await server.broadcastRetained(older, key: "screen")
-        await server.broadcastRetained(latest, key: "screen") // まだ誰も接続していない
+        let origin = HelperEvent.origin(hostTime: 42)
+        let older = HelperEvent.screen(start: 1, image: "b2xkZXI=", lines: nil)
+        let latest = HelperEvent.screen(start: 2, image: "bGF0ZXN0", lines: nil)
+        await server.send(origin)
+        await server.send(older)
+        await server.send(latest) // まだ誰も接続していない
 
         let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        #expect(try await receiveText(task) == origin)
-        #expect(try await receiveText(task) == latest)
+        #expect(try await receiveText(task) == origin.jsonString())
+        #expect(try await receiveText(task) == latest.jsonString())
 
-        // 古い screen が後ろに残っていないこと: 次に届くのは、その後に broadcast した内容
-        let marker = try HelperEvent.partial(track: .相手, start: 3, end: 4, text: "次", duplicate: false, words: transcriptWords("次"), wordTimes: []).jsonString()
-        await server.broadcast(marker)
-        #expect(try await receiveText(task) == marker)
+        // 古い screen が後ろに残っていないこと: 次に届くのは、その後に send した内容
+        let marker = HelperEvent.partial(track: .相手, start: 3, end: 4, text: "次", duplicate: false, words: transcriptWords("次"), wordTimes: [])
+        await server.send(marker)
+        #expect(try await receiveText(task) == marker.jsonString())
     }
 
     @Test("screen を覚えても、origin は上書きされず、origin だけ覚えていても screen は届かない")
@@ -299,25 +437,25 @@ struct WebSocketServerITTests {
         let port = try await server.start()
         defer { Task { await server.stop() } }
 
-        let origin = try HelperEvent.origin(hostTime: 7).jsonString()
-        await server.broadcastRetained(origin, key: "origin")
+        let origin = HelperEvent.origin(hostTime: 7)
+        await server.send(origin)
 
         let first = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         first.resume()
         defer { first.cancel(with: .goingAway, reason: nil) }
-        #expect(try await receiveText(first) == origin)
+        #expect(try await receiveText(first) == origin.jsonString())
         try await waitForClients(server, count: 1)
 
         // 接続した後に覚えさせた screen は、つながっているクライアントにも届き、origin はそのまま残る
-        let screen = try HelperEvent.screen(start: 5, image: "c2NyZWVu", lines: nil).jsonString()
-        await server.broadcastRetained(screen, key: "screen")
-        #expect(try await receiveText(first) == screen)
+        let screen = HelperEvent.screen(start: 5, image: "c2NyZWVu", lines: nil)
+        await server.send(screen)
+        #expect(try await receiveText(first) == screen.jsonString())
 
         let second = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         second.resume()
         defer { second.cancel(with: .goingAway, reason: nil) }
-        #expect(try await receiveText(second) == origin)
-        #expect(try await receiveText(second) == screen)
+        #expect(try await receiveText(second) == origin.jsonString())
+        #expect(try await receiveText(second) == screen.jsonString())
     }
 
     @Test("接続中のクライアントがいる状態で stop すると、接続が閉じて clientCount が 0 になる")
@@ -369,15 +507,15 @@ struct WebSocketServerITTests {
         let port = try await server.start()
         defer { Task { await server.stop() } }
 
-        let paused = try HelperEvent.selfPause(paused: true, reason: .manual, start: 3).jsonString()
-        let resumed = try HelperEvent.selfPause(paused: false, reason: .manual, start: 9).jsonString()
-        await server.broadcastRetained(paused, key: "self-pause")
-        await server.broadcastRetained(resumed, key: "self-pause")
+        let paused = HelperEvent.selfPause(paused: true, reason: .manual, start: 3)
+        let resumed = HelperEvent.selfPause(paused: false, reason: .manual, start: 9)
+        await server.send(paused)
+        await server.send(resumed)
 
         let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
-        #expect(try await receiveText(task) == resumed)
+        #expect(try await receiveText(task) == resumed.jsonString())
     }
 
     @Test("stop の後は、遅れて届く送信完了の通知があっても、waitUntilSent がすぐ戻る")
@@ -391,7 +529,7 @@ struct WebSocketServerITTests {
         defer { task.cancel(with: .goingAway, reason: nil) }
         try await waitForClients(server, count: 1)
         // 送った直後に stop する。送信完了の通知は stop の前にも後にも届きうる（どちらに転ぶかは環境しだいなので、前提にしない）
-        await server.broadcast("x")
+        await server.send(markerEvent())
         let beforeStop = Completion()
         Task { await server.waitUntilSent(); await beforeStop.mark() }
         await server.stop()
