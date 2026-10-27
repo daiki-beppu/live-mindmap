@@ -39,3 +39,4 @@ web から新しい経路を呼ぶときも同じ形にし、`ServerRoutes` を�
 - 仕様 [#1306](https://github.com/daiki-beppu/live-mindmap/issues/1306)、親 [#1307](https://github.com/daiki-beppu/live-mindmap/issues/1307)
 - チケット [#1308](https://github.com/daiki-beppu/live-mindmap/issues/1308)・[PR #1326](https://github.com/daiki-beppu/live-mindmap/pull/1326) の差分
 - PR のレビューの takt の run（`20261018-001428-evaluate-pull-request-1326-usi`）のレビューと裁定
+- 仕様 [#1609](https://github.com/daiki-beppu/live-mindmap/issues/1609)、チケット [#1620](https://github.com/daiki-beppu/live-mindmap/issues/1620)・[PR #1647](https://github.com/daiki-beppu/live-mindmap/pull/1647) の差分、[開発ログ](../devlog/2026-10-27.md#seam-contract-tests)

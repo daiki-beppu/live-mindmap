@@ -4,7 +4,7 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 
 - 用語: [取り込みの途切れ・録画からのセッション・一時停止](../../GLOSSARY.md)。「取り込みの試行」は実装の言葉で、用語集には載せない（仕様の決定）
 - ADR: [0008 ヘルパーのライフサイクルは、stop を印で、サーバーの終了を Scope で止める](../adr/0008-helper-lifecycle-on-effect.md)（Considered Options に、Service にせず内側のモジュールにした理由がある）
-- 関連する知識文書: [セッションの sink](session-sink.md)
+- 関連する知識文書: [セッションの sink](session-sink.md)、[helper のイベントの見本](helper-events.md)
 
 ## 試行の規則は `intakeAttempts` に置き、`intakeAttempts.test` で確かめる。`Sessions` には種類ごとの引数と手続きだけを書く
 
@@ -73,9 +73,18 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 
 timeout は、壊したところ以外の理由（台本の数が尽きた、待ちの合図を取りこぼした）でも出る。timeout だけを「検出した」根拠にしない。
 
+## 知らない helper のイベントは、試行ごと・type ごとに 1 度だけ標準エラーに知らせて読み飛ばす。数える集合は試行のたびに作る
+
+`decodeHelperEvent` は、最上位の `type` が文字列で server の union に無いとき `{ kind: "unknown", type }` を返す。`handleEvent` はその type を、試行ごとの集合（`openIntake` が試行のたびに作る `Ref`）で数え、初めての type だけ「ヘルパーの知らないイベント「<type>」を読み飛ばしました。ヘルパーを作り直してください（swift build -c release --package-path helper）」を出す。セッションは止めない。直す手段は helper を作り直して起動し直すことなので、起動し直したら空から数える。集合をセッションや server の寿命で持たない。
+
+最上位に文字列の `type` が無い入力（`{"payload":{"type":"remark"}}`・配列・`{"type":1}`）は、知らない type ではなく `SchemaError` になり、今までの読み飛ばしの文面で記録される。入れ子の `type` で分類しない。
+
+確かめているのは `server.heavy.test.ts` の「未知イベントは起動ごと・typeごとに一度知らせ、再起動をまたいで同じ会議の発言を受け取る」で、偽の helper のスクリプトを `SIGKILL` で落として起動し直させる。仕様 [#1609](https://github.com/daiki-beppu/live-mindmap/issues/1609) はこれを `intakeAttempts.test` の層で確かめると決めていたが、実装（[PR #1643](https://github.com/daiki-beppu/live-mindmap/pull/1643)）は heavy に置き、`intakeAttempts.test` には知らせのテストが無い。知らせの規則を変えるときは、heavy のこのテストを `pnpm --filter @live-mindmap/server exec vitest run test/server.heavy.test.ts` で流すか、`intakeAttempts.test` に偽の `Helpers` で同じ場面を足す。
+
 ## 出典
 
 - 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305)（Formal Spec のコメントを含む）、親 [#1315](https://github.com/daiki-beppu/live-mindmap/issues/1315)
 - チケット [#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)・[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367)、[#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368)
 - #1316 の takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）の計画・実装の報告と決定ログ・レビューと裁定・修正の報告
 - #1317 の takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）の計画・実装の報告と決定ログ・破壊検証の記録
+- 仕様 [#1609](https://github.com/daiki-beppu/live-mindmap/issues/1609)、チケット [#1618](https://github.com/daiki-beppu/live-mindmap/issues/1618)・[PR #1643](https://github.com/daiki-beppu/live-mindmap/pull/1643) の差分、[開発ログ](../devlog/2026-10-27.md#seam-contract-tests)
