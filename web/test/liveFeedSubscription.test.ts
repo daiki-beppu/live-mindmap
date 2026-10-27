@@ -1,9 +1,11 @@
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Logger, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../../server/src/core/index.ts";
 import { Message } from "../src/app/liveFeed/message.ts";
+import { init, update } from "../src/app/liveFeed/main.ts";
 import { captionDeadlineStream, liveFeedStream, RECONNECT_MS } from "../src/app/liveFeed/subscription.ts";
+import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 
 // ライブの受信（Issue #828）の Subscription の stream。WebSocket と location は最小の代役、時計は TestClock。
 // Subscription は「つながった」「frame を受けた」「切れた」の事実を Message にするだけで、1 秒後のつなぎ直しはこの stream の中にある。
@@ -173,6 +175,182 @@ describe("事実を Message にする", () => {
         yield* settle;
         expect(collected).toEqual([Message.ConnectedLiveFeed(), Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 0 })]);
         expect(sockets()).toHaveLength(1); // 無視しただけで、つなぎ直さない
+      }),
+    );
+  });
+});
+
+const waitUntil = Effect.fnUntraced(function* (condition: () => boolean, description: string) {
+  const deadline = performance.now() + 2000;
+  while (!condition()) {
+    if (performance.now() >= deadline) return yield* Effect.die(new Error(`待機期限: ${description}`));
+    yield* Effect.yieldNow;
+  }
+});
+
+type LogEntry = ReturnType<typeof Logger.formatStructured.log>;
+
+const runPage = async (body: (messages: Message[], logs: LogEntry[]) => Effect.Effect<void>) => {
+  vi.resetModules();
+  const { liveFeedStream: pageStream } = await import("../src/app/liveFeed/subscription.ts");
+  const logs: LogEntry[] = [];
+  const logger = Logger.map(Logger.formatStructured, (entry) => void logs.push(entry));
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const messages: Message[] = [];
+      const fiber = yield* Effect.forkChild(Stream.runForEach(pageStream, (m) => Effect.sync(() => void messages.push(m))));
+      yield* waitUntil(() => sockets().length === 1, "最初の WebSocket");
+      yield* body(messages, logs).pipe(Effect.ensuring(Fiber.interrupt(fiber)));
+    }).pipe(Effect.provide(TestClock.layer()), Effect.provide(Logger.layer([logger]))),
+  );
+};
+
+const warningSentence = (type: string) => `読めない画面の更新「${type}」を読み飛ばしました。server と画面の版がずれています。画面を読み込み直してください`;
+const warningText = (entry: LogEntry) => JSON.stringify({ message: entry.message, cause: entry.cause, annotations: entry.annotations });
+const flushFrames = Effect.fnUntraced(function* (messages: Message[], status: "stopped" | "running") {
+  const before = messages.length;
+  sockets().at(-1)!.receive(JSON.stringify({ type: "intake", status }));
+  yield* waitUntil(() => messages.slice(before).some((m) => m._tag === "ReceivedLiveFrame" && m.frame.type === "intake" && m.frame.status === status), `後続の intake ${status}`);
+});
+
+describe("読めない frame の警告", () => {
+  it.each([
+    {
+      type: "captions",
+      frame: { type: "captions", bubbles: [{ ...spokenBubble("字幕本文の秘密"), track: "不正値の秘密" }] },
+      path: "track",
+      secrets: ["字幕本文の秘密", "不正値の秘密"],
+    },
+    {
+      type: "snapshot",
+      frame: { type: "snapshot", snapshot: { ...snapshot, nodes: [{ ...node("root", null), text: "マップ本文の秘密" }], round: "不正値の秘密" } },
+      path: "round",
+      secrets: ["マップ本文の秘密", "不正値の秘密"],
+    },
+  ])("$type の不正な payload は type と失敗位置だけを Warning に出し、本文を出さない", async ({ type, frame, path, secrets }) => {
+    await runPage((messages, logs) =>
+      Effect.gen(function* () {
+        sockets()[0]!.open();
+        sockets()[0]!.receive(JSON.stringify(frame));
+        yield* flushFrames(messages, "stopped");
+        expect(logs).toHaveLength(1);
+        expect(logs[0]!.level).toBe("WARN");
+        expect(warningText(logs[0]!)).toContain(warningSentence(type));
+        expect(warningText(logs[0]!)).toContain(path);
+        for (const entry of logs) {
+          for (const secret of secrets) expect(warningText(entry)).not.toContain(secret);
+        }
+      }),
+    );
+  });
+
+  it("最上位の type ごとに一度だけ警告し、payload 内の type で分類しない", async () => {
+    await runPage((messages, logs) =>
+      Effect.gen(function* () {
+        const ws = sockets()[0]!;
+        ws.open();
+        yield* flushFrames(messages, "running");
+        expect(logs).toEqual([]);
+        ws.receive(JSON.stringify({ type: "future-a", payload: { type: "future-b", text: "未知の本文の秘密" } }));
+        ws.receive(JSON.stringify({ type: "future-a", payload: { text: "別の本文の秘密" } }));
+        ws.receive(JSON.stringify({ type: "future-b" }));
+        yield* flushFrames(messages, "stopped");
+        expect(logs).toHaveLength(2);
+        expect(warningText(logs[0]!)).toContain(warningSentence("future-a"));
+        expect(warningText(logs[1]!)).toContain(warningSentence("future-b"));
+        for (const entry of logs) {
+          expect(entry.level).toBe("WARN");
+          expect(warningText(entry)).toContain("$");
+          expect(warningText(entry)).not.toContain("未知の本文の秘密");
+          expect(warningText(entry)).not.toContain("別の本文の秘密");
+        }
+      }),
+    );
+  });
+
+  it("type を読めない入力は一組で一度だけ警告し、実際の文字列 type と衝突しない", async () => {
+    await runPage((messages, logs) =>
+      Effect.gen(function* () {
+        const ws = sockets()[0]!;
+        ws.open();
+        yield* flushFrames(messages, "running");
+        for (const data of [
+          '{"type": "壊れた本文の秘密"',
+          JSON.stringify({ payload: { type: "future-a" } }),
+          JSON.stringify({ type: 7 }),
+          JSON.stringify({ type: null }),
+          JSON.stringify([{ type: "future-b" }]),
+          "null",
+          "42",
+          JSON.stringify("本文中の type の秘密"),
+        ]) ws.receive(data);
+        yield* flushFrames(messages, "stopped");
+        expect(logs).toHaveLength(1);
+        const entry = logs[0]!;
+        expect(entry.level).toBe("WARN");
+        const text = warningText(entry);
+        const match = /読めない画面の更新「([^」]*)」を読み飛ばしました。server と画面の版がずれています。画面を読み込み直してください/.exec(text);
+        expect(match).not.toBeNull();
+        expect(text.replace(match![0], "")).toMatch(/\$|root|ルート|\[\]|\//);
+        for (const secret of ["壊れた本文の秘密", "本文中の type の秘密", "future-a", "future-b"]) expect(text).not.toContain(secret);
+        ws.receive(JSON.stringify({ type: match![1] }));
+        yield* flushFrames(messages, "running");
+        expect(logs).toHaveLength(2);
+        expect(warningText(logs[1]!)).toContain(warningSentence(match![1]!));
+      }),
+    );
+  });
+
+  it("同じページでつなぎ直しても既知の type と type 不明の警告を増やさず、新しい type は警告する", async () => {
+    await runPage((messages, logs) =>
+      Effect.gen(function* () {
+        const first = sockets()[0]!;
+        first.open();
+        first.receive(JSON.stringify({ type: "captions", bubbles: "bad" }));
+        first.receive("{");
+        yield* flushFrames(messages, "stopped");
+        const before = [...logs];
+        first.drop();
+        yield* waitUntil(() => messages.some((m) => m._tag === "DisconnectedLiveFeed") && first.close.mock.calls.length > 0, "切断の通知と解放");
+        yield* TestClock.adjust(RECONNECT_MS);
+        yield* waitUntil(() => sockets().length === 2, "再接続");
+        const second = sockets()[1]!;
+        second.open();
+        second.receive(JSON.stringify({ type: "captions", bubbles: null }));
+        second.receive(JSON.stringify({ type: false }));
+        second.receive(JSON.stringify({ type: "future-after-reconnect" }));
+        yield* flushFrames(messages, "running");
+        expect(before).toHaveLength(2);
+        expect(logs.slice(0, 2)).toEqual(before);
+        expect(logs).toHaveLength(3);
+        expect(warningText(logs[2]!)).toContain(warningSentence("future-after-reconnect"));
+        expect(second.close).not.toHaveBeenCalled();
+      }),
+    );
+  });
+
+  it("不正な更新を画面に通知せず既存のマップと字幕を保ち、同じ接続で後続の正常更新を届ける", async () => {
+    await runPage((messages) =>
+      Effect.gen(function* () {
+        const ws = sockets()[0]!;
+        ws.open();
+        const frames = [{ type: "snapshot", snapshot }, spokenFrame("表示済みの字幕")] as const;
+        for (const frame of frames) ws.receive(JSON.stringify(frame));
+        yield* waitUntil(() => messages.length === 3, "正常なマップと字幕の受信");
+        const before = messages.reduce((model, m) => update(model, m).model, init());
+        ws.receive(JSON.stringify({ type: "captions", bubbles: "bad" }));
+        ws.receive(JSON.stringify({ type: "snapshot", snapshot: "bad" }));
+        ws.receive(JSON.stringify({ type: "future-frame", text: "通知してはいけない" }));
+        ws.receive("{");
+        yield* flushFrames(messages, "stopped");
+        expect(messages).toEqual([
+          Message.ConnectedLiveFeed(),
+          ...frames.map((frame) => Message.ReceivedLiveFrame({ frame, receivedAt: 0 })),
+          Message.ReceivedLiveFrame({ frame: { type: "intake", status: "stopped" }, receivedAt: 0 }),
+        ]);
+        expect(messages.reduce((model, m) => update(model, m).model, init())).toEqual({ ...before, intake: "stopped" });
+        expect(sockets()).toHaveLength(1);
+        expect(ws.close).not.toHaveBeenCalled();
       }),
     );
   });
