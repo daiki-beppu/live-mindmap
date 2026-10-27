@@ -71,6 +71,14 @@ run の報告を読むときは、どの段が実際にコマンドを流した�
 
 PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「機械ゲートは審査しない」と書いて APPROVE する。#1370 のコーディングレビューは、GitHub の CI の check（型検査・unit・IT・heavy IT・E2E）の成功を見て、それを根拠にした。層が通ったかは CI の check で見る。PR の本文に結果を残させたいなら、報告を本文に書く手順をチケットの完了条件とは別に用意する。
 
+## PR の本文に書くこと（`Closes #N` など）を完了条件に入れない。run は確かめられず、レビューが全員 APPROVE でも ABORT を繰り返す
+
+takt が PR を作るのは実装の run が終わった後なので、run の中からは PR の本文を確かめられない。[#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628) は、別の issue（#1524）を同じ PR で閉じるために、完了条件に「PR の本文に `Closes #1524` を書く」を入れていた。1 本目の run は 36 分で 5 観点のレビューまで進み、全員 APPROVE、裁定も「直すものなし」だったが、最終の関門が「PR の本文の `Closes #1524` は未確認」で BLOCKED を出し、再計画が「外を待つだけ」として ABORT した。自動の再投入の 2 本も、再計画から約 2.5 分で同じ理由で ABORT した。
+
+本文を「実装の報告に `Closes #1524` を載せる（PR の本文に写る）。確かめるのは実装の報告まででよい」に書き換えると、2 本目の worktree の run は 30 分で通った。けれども、上の節のとおり 1 回で通った run の報告は PR の本文に写らない。PR のレビューの run が「本文の実行報告は定型文と `Closes #1628` だけ」で止まり、案内役の review-fix のセッションが PR の本文を手で直してから通った（[PR #1668](https://github.com/daiki-beppu/live-mindmap/pull/1668)）。チケットを起こす段も、triage のコメントも、この文書にある「写らない」を前提にしていなかった。
+
+ほかの issue を閉じる `Closes` や、PR の本文に残したい表は、チケットの完了条件に書かない。PR ができた後に人か案内役が本文に足す手順として、親 issue か仕様のコメントに書いておく。
+
 ## 実装の run の trace と reports は takt の worktree の中にあり、マージの後に消える
 
 実装の run は、`takt-worktrees/<run>/.takt/runs/` に trace と reports を書く。その worktree はマージの後に片付けられる。#1310 の run（`takt-worktrees/20261020T0215-1310-…/.takt/runs`）は、学びをまとめる前に消えていた。#1308・#1309 の worktree も残っていなかった。本体の `.takt/runs/` に残るのは、PR のレビューの run（trace・`coding-review.md`・`review-resolution.md`）と、実装の run の `interventions.jsonl`（終わった時刻と状態だけ）だけだった。
@@ -140,3 +148,4 @@ run の所要時間は、1 周で通った #1624 の 44 分に対して 1 時間
 - 仕様 [#1438](https://github.com/daiki-beppu/live-mindmap/issues/1438) の子 [#1446](https://github.com/daiki-beppu/live-mindmap/issues/1446)・[PR #1515](https://github.com/daiki-beppu/live-mindmap/pull/1515) の takt の run（`20261024-133903-issue-1446-cli-no-mi-wo-sessio-ruhfky`）のレビューと裁定の報告。[開発ログ](../devlog/2026-10-25.md#session-log-reader)
 - 仕様 [#1593](https://github.com/daiki-beppu/live-mindmap/issues/1593) の子 [#1595](https://github.com/daiki-beppu/live-mindmap/issues/1595)・[#1596](https://github.com/daiki-beppu/live-mindmap/issues/1596)・[#1597](https://github.com/daiki-beppu/live-mindmap/issues/1597) の takt の run（`20261026-061655-issue-1595-wo-1-tsuno-mi-minis-2ryel7`・`20261026-072819-issue-1596-raibuno-no-wo-no-mi-ufij5c`・`20261026-094505-issue-1597-logmetrics-wo-no-mi-uu6mix`）の trace と報告。[開発ログ](../devlog/2026-10-26.md#reflect-fold)
 - 仕様 [#1612](https://github.com/daiki-beppu/live-mindmap/issues/1612) の子 [#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624)・[PR #1641](https://github.com/daiki-beppu/live-mindmap/pull/1641)、[#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625)・[PR #1644](https://github.com/daiki-beppu/live-mindmap/pull/1644) の takt の run（`20261026-170454-issue-1624-no-no-wo-tabuwo-shi-q0xe0t`・`20261026-185815-issue-1625-karanosesshonno-hel-hdfs52`）の trace と reports、[録画を読む経路を 1 本にしたとき](../devlog/2026-10-27.md#recorded-relay-one-path)
+- 仕様 [#1611](https://github.com/daiki-beppu/live-mindmap/issues/1611) の子 [#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628)・[PR #1668](https://github.com/daiki-beppu/live-mindmap/pull/1668) の takt の run（`20261026-221216-issue-1628-cli-play-to-cli-eva-vgx5ew`・`20261026-224854-issue-1628-cli-play-to-cli-eva-6vpoxw`・`20261026-225131-issue-1628-cli-play-to-cli-eva-0y5ej7`・`20261027-035023-issue-1628-cli-play-to-cli-eva-ne56xj`）の trace と reports、PR のレビューの run（`20261027-042106-merge-pr-1668-8k68gv`・`20261027-044534-merge-pr-1668-1-q4glf1`）、[開始前の確かめを入口の表 1 つにまとめたとき](../devlog/2026-10-27.md#startup-checks-module)
