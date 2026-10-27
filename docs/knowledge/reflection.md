@@ -15,7 +15,7 @@
 | 呼ぶ側 | 反映の外で持つもの | 反映の失敗 |
 |---|---|---|
 | ライブ `callUpdater` | `attributePeople`（行を組む前に 1 回）、`InvalidProcessedRemarks` の判定、話者名の受け入れ、一時停止からの戻り、`nextRetryAt`・`reflecting`・前回の応答・`pending` の残り | `Result.getOrThrowWith` で例外にし、defect |
-| 復元 `restoreState` | 共有画面の持ち越しの再生（`replayScreens`）、一時停止からの戻り | 行の位置つきの `InvalidLogEvent` |
+| 復元 `restoreState` | 共有画面のキューの操作（[共有画面のキュー](screen-queue.md)）、一時停止からの戻り | 行の位置つきの `InvalidLogEvent` |
 | 計測 `logMetrics` | 書き換えの数え方（`rewrittenIds`）、閉じていない兄弟の数 | 行の位置つきの `InvalidLogEvent` |
 
 ## ライブでは、反映を既存の `Ref.modify`・`Ref.update` の中で呼ぶ。`Ref.get` で先に読まない
@@ -24,7 +24,7 @@
 
 ## TLA+ のモデルの注釈の行番号は、ずれている前提で読む。関数の名前と `Ref` の操作で探す
 
-`server/formal/DiffUpdateScheduler.tla` は遷移ごとに `session.ts` の行番号を注釈に書いている。#1596 は成功の回とエラーの回の 2 か所を直したが、#1597 が `session.ts` から再公開の 1 行を消したので、もう 1 行ずれた（成功の回の `Ref.modify` は注釈の 485 ではなく 484 行目）。触らなかった注釈も古く、`runCall :422` の 422 行目は `runCall` ではない。スキルは `Ref` の操作の回数・順序・条件が変わらない変更では TLC を回さなくてよいとしているので、行がずれるだけの変更では注釈を誰も直さない。対応を探すときは、注釈の行番号ではなく、`callUpdater` の中の `Ref.modify(ref` などで引く。
+`server/formal/DiffUpdateScheduler.tla` は遷移ごとに `session.ts` の行番号を注釈に書いている。スキルは `Ref` の操作の回数・順序・条件が変わらない変更では TLC を回さなくてよいとしているので、行がずれるだけの変更では注釈を誰も直さない。#1596・#1597 の後にもずれ（成功の回の `Ref.modify` が 1 行、`runCall :422` が別の行）が残り、#1654 で合わせ直したときには 80 行前後ずれていた（`startDiffIfReady` は `:393–409` ではなく `:312–328`）。スキルの「最後に合わせた PR」（今は #1674）から `git log` で後の変更を出せば、ずれの有無はわかる。対応を探すときは、注釈の行番号ではなく、`callUpdater` の中の `Ref.modify(ref` などで引く。
 
 ## 検査は新しい値を作る前に全部済ませる。失敗の回は入力の状態を書き換えない
 
@@ -32,11 +32,11 @@
 
 ## 時刻は 2 種類ある。共有画面の境は `fresh` 全体、反映の印は消費した発言だけ
 
-一部だけ処理した回（`processedRemarks` が `fresh` より少ない）では、2 つの時刻が違う。共有画面の画像を選ぶ境（`replayScreens` の `cutoff`）は `fresh` 全体の `end` の最大、反映の印は消費した発言だけの `end` の最大だ。中身のない発言も、消費していれば印の時刻に数える。`reflection.test.ts` の「部分成功では…残りの end を stamp に使わない」は、消費しない側に遅い `end`（90）を置き、取り違えたら落ちるようにしている。
+一部だけ処理した回（`processedRemarks` が `fresh` より少ない）では、2 つの時刻が違う。共有画面を選ぶ・消費する境（`ScreenQueue.select`・`consume` に渡す `cutoff`）は `fresh` 全体の `end` の最大、反映の印は消費した発言だけの `end` の最大だ。中身のない発言も、消費していれば印の時刻に数える。`reflection.test.ts` の「部分成功では…残りの end を stamp に使わない」は、消費しない側に遅い `end`（90）を置き、取り違えたら落ちるようにしている。
 
-## 復元では、`replayScreens` を `reflectDiff` の後に呼ぶ
+## 復元では、共有画面の締め切りを `reflectDiff` の後に求める
 
-`replayScreens` は台帳を `ledger.byId.get(id)!` で引く。台帳に無い id は直前の `reflectDiff` が先に弾くので安全だが、その安全は型ではなく呼ぶ順で守られている。並びを入れ替える、`replayScreens` を別の所から呼ぶ、のどちらかをするなら、id の検査を `replayScreens` の側にも持たせる。
+`restoreState` は、`ScreenQueue.consume` に渡す締め切りを `ledger.byId.get(id)!.end` で求める。台帳に無い id は直前の `reflectDiff` が先に弾くので安全だが、その安全は型ではなく呼ぶ順で守られている。並びを入れ替える、締め切りを別の所で求める、のどちらかをするなら、id の検査もそこに持たせる。
 
 ## 反映の中身は `reflection.test.ts` の期待値で、外は `restore.test.ts` の往復 1 本で確かめる。往復を足して反映の誤りを探さない
 
@@ -54,4 +54,4 @@
 
 - 仕様 [#1593](https://github.com/daiki-beppu/live-mindmap/issues/1593)（Formal Spec のコメントを含む）、親 [#1594](https://github.com/daiki-beppu/live-mindmap/issues/1594)
 - [#1595](https://github.com/daiki-beppu/live-mindmap/issues/1595)・[PR #1598](https://github.com/daiki-beppu/live-mindmap/pull/1598)、[#1596](https://github.com/daiki-beppu/live-mindmap/issues/1596)・[PR #1599](https://github.com/daiki-beppu/live-mindmap/pull/1599)、[#1597](https://github.com/daiki-beppu/live-mindmap/issues/1597)・[PR #1600](https://github.com/daiki-beppu/live-mindmap/pull/1600) と、それぞれの takt の run（`20261026-061655-issue-1595-wo-1-tsuno-mi-minis-2ryel7`・`20261026-072819-issue-1596-raibuno-no-wo-no-mi-ufij5c`・`20261026-094505-issue-1597-logmetrics-wo-no-mi-uu6mix`）の計画・決定ログ・報告
-- [開発ログ](../devlog/2026-10-26.md#reflect-fold)
+- [開発ログ](../devlog/2026-10-26.md#reflect-fold)、[共有画面をキューにしたときの開発ログ](../devlog/2026-10-27.md#screen-queue)
