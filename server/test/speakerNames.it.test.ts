@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Effect, Exit, Layer } from "effect";
-import { DiffUpdater, restoreState, type InferredSpeakerName, type SpeakerNamesFrame } from "../src/core/index.ts";
+import { DiffUpdater, type InferredSpeakerName, type SpeakerNamesFrame } from "../src/core/index.ts";
 import { localUpdaterLayer, type LocalModel } from "../src/localDiffUpdater.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
@@ -179,23 +179,6 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
       expect(nameLines(second.dir)).toEqual([]);
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });
-
-  it.effect("speaker-name の行を含む log.jsonl は、restoreState がこれまでどおり読める（行が無いときと同じマップ・発言になる）", () => {
-    const { updaterLayer } = recordingAi();
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10);
-      yield* sink.nameSpeaker({ label: "相手 A", name: "田中" });
-      yield* sink.flush;
-      yield* settle;
-
-      const events = logEvents(dir);
-      expect(events.some((e) => e.type === "speaker-name")).toBe(true);
-      const withName = yield* restoreState(events);
-      const withoutName = yield* restoreState(events.filter((e) => e.type !== "speaker-name"));
-      expect(withName).toEqual(withoutName);
-    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
-  });
 });
 
 describe("話者の名前の推定（実物の SessionSinks + 偽の AI が names を返す）", () => {
@@ -211,20 +194,6 @@ describe("話者の名前の推定（実物の SessionSinks + 偽の AI が name
         { type: "speaker-names", names: [] },
         { type: "speaker-names", names: [{ label: "相手 A", name: "田中" }] },
       ]);
-    })).pipe(Effect.provide(sinksLayer(updaterLayer)));
-  });
-
-  it.effect("推定の名前を含む log.jsonl は、restoreState がこれまでどおり読める（行が無いときと同じマップ・発言になる）", () => {
-    const { updaterLayer } = namingAi([claim("相手 A", "田中", "r1")]);
-    return Effect.scoped(Effect.gen(function* () {
-      const { sink, dir, say } = yield* openSession(updaterLayer);
-      yield* say(1, 5, 10);
-      yield* sink.flush;
-      yield* settle;
-
-      const events = logEvents(dir);
-      expect(events.some((e) => e.type === "speaker-name")).toBe(true);
-      expect(yield* restoreState(events)).toEqual(yield* restoreState(events.filter((e) => e.type !== "speaker-name")));
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });
 });

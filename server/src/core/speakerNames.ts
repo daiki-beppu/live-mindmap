@@ -21,6 +21,9 @@ export const SpeakerNameLogEvent = Schema.Struct({
 });
 export type SpeakerNameLogEvent = typeof SpeakerNameLogEvent["Type"];
 
+export const restoreSpeakerName = (current: SpeakerNameTable, event: SpeakerNameLogEvent): SpeakerNameTable =>
+  new Map(current).set(event.label, { name: event.name, source: event.source });
+
 export const SPEAKER_NAME_BASES = ["名乗り", "呼びかけへの応答"] as const;
 export type SpeakerNameBasis = (typeof SPEAKER_NAME_BASES)[number];
 
