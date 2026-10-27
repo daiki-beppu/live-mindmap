@@ -139,7 +139,7 @@ describe("remarkFlow", () => {
     expect(h.fresh().map((r) => r.id)).toEqual(["r1", "r2"]);
   }));
 
-  it.effect.each([false, true])("画像IDは連続し、画像なしの変化は番号を消費しない（保留: %s）", (buffered) => Effect.gen(function* () {
+  it.effect.each([false, true])("画面の画像・なし・文字・共有終了がfeedを通って届く（保留: %s）", (buffered) => Effect.gen(function* () {
     const feed = bufferedFeed();
     const h = yield* setup({ feed: buffered ? feed.factory : directFeed });
     yield* h.flow.screen({ start: 1, image: new Uint8Array([1]), lines: ["画面の文字"] });
@@ -150,7 +150,7 @@ describe("remarkFlow", () => {
     yield* h.flow.final(final("相手", 14, 15, "画面を確認する"));
     yield* h.flow.drain;
     yield* h.session.idle;
-    expect(h.calls.flatMap((c) => c.screens ?? []).map((s) => [s.start, s.image?.id ?? null])).toEqual([[1, "s1"], [2, null], [12, "s2"]]);
+    expect(h.calls.flatMap((c) => c.screens ?? []).map((s) => [s.start, s.image === null ? null : Array.from(s.image.bytes)])).toEqual([[1, [1]], [2, null], [12, [2]]]);
     expect(h.events.filter((e) => e.type === "screen")[0]).toMatchObject({ start: 1, lines: ["画面の文字"] });
     expect(h.events.filter((e) => e.type === "screen-off")).toEqual([{ type: "screen-off", start: 13, reason: "許可なし" }]);
   }));

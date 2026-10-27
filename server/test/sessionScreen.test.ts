@@ -2,9 +2,9 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { DiffEvent, LogEvent, makeSession, ROOT_ID, restoreSession, restoreState, type DiffInput, type DiffOutput, type Remark, type ScreenChange } from "../src/core/index.ts";
 import { gatedScripted } from "./fixtures/batches.ts";
-import { collectLog, forbiddenUpdater, logLayer, settleUntil, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
+import { collectLog, forbiddenUpdater, logLayer, updaterLayer, type UpdateFailure } from "./fixtures/sessionLayers.ts";
 
-// 共有画面の変化を受ける口（Session.pushScreen）と、差分更新の呼び出しに添える画面の選び方（core の規則）。
+// 共有画面の変化を受ける口（Session.pushScreen）と、更新器・ログへの受け渡し。
 // ファイルには書かない（ADR 0003）: 画像は SessionLog.writeScreen にバイト列で渡し、ログには { start, image: ファイル名 | null } を書く。
 
 const bytes = (s: string) => new TextEncoder().encode(s);
@@ -130,8 +130,8 @@ describe("モデルが画像を読まないセッション（Issue #665）", () 
       yield* session.pushScreen(next);
       yield* call(19);
       expect(calls).toHaveLength(2);
-      expect(calls[0]!.screens).toEqual([first]);
-      expect(calls[1]!.screens).toEqual([next]);
+      expect(calls[0]!.screens).toEqual([{ start: 1, image: { id: "0001.0.jpg", bytes: first.image!.bytes } }]);
+      expect(calls[1]!.screens).toEqual([{ start: 11, image: { id: "0011.0.jpg", bytes: next.image!.bytes } }]);
       expect(events.filter((e) => "reason" in e && String(e.reason) === skippedReason)).toEqual([]);
     }));
 });
@@ -243,7 +243,7 @@ describe("画像のバイト列の保持", () => {
       expect(written).toHaveLength(10);
       yield* call(101);
       expect(reads).toEqual(["0080.0.jpg", "0090.0.jpg", "0100.0.jpg"]);
-      expect(calls[0]!.screens).toEqual([80, 90, 100].map((t) => ({ start: t, image: { id: `s${t}`, bytes: bytes(`bytes:s${t}`) } })));
+      expect(calls[0]!.screens).toEqual([80, 90, 100].map((t, i) => ({ start: t, image: { id: reads[i], bytes: bytes(`bytes:s${t}`) } })));
     }));
 
   it.effect("同じ時刻の画像 2 件は別のファイル名で保存され、添付時もその名前で読み戻される", () =>
@@ -273,47 +273,60 @@ describe("画像のバイト列の保持", () => {
     }));
 });
 
-describe("差分更新に添える画面の選び方", () => {
-  it.effect("映り始めた時刻が新しい発言の end の最大値以下のものを、時刻順に添える。後に映り始めたものは次の呼び出しへ回す（境界は含む）", () =>
+describe("差分更新への共有画面の配線", () => {
+  it.effect("選んだ画面が更新器にはファイル名idとバイト列で、diffには同じ並びのファイル参照で渡る", () =>
     Effect.gen(function* () {
       const { session, calls, call, diffs } = yield* setup();
-      // 呼び出しの end は 20。20 ちょうどは添える。35 は後（5 と 20 は 10 秒以上離れている）
       yield* session.pushScreen(shot(20));
-      yield* session.pushScreen(shot(5)); // 受け取った順ではなく時刻順に添える
+      yield* session.pushScreen(shot(5));
+      yield* session.pushScreen(none(7));
       yield* session.pushScreen(shot(35));
       yield* call(20);
-      expect(startsOf(calls[0]!)).toEqual([5, 20]);
-      expect(calls[0]!.screens![0]!.image).toEqual({ id: "s5", bytes: bytes("bytes:s5") });
+      expect(calls[0]!.screens).toEqual([
+        { start: 5, image: { id: "0005.0.jpg", bytes: bytes("bytes:s5") } },
+        { start: 7, image: null },
+        { start: 20, image: { id: "0020.0.jpg", bytes: bytes("bytes:s20") } },
+      ]);
       expect(diffs()[0]!.input.screens).toEqual([
         { start: 5, image: "0005.0.jpg" },
+        { start: 7, image: null },
         { start: 20, image: "0020.0.jpg" },
       ]);
-
-      yield* call(40);
-      expect(startsOf(calls[1]!)).toEqual([35]);
-      expect(diffs()[1]!.input.screens).toEqual([{ start: 35, image: "0035.0.jpg" }]);
+      expect(diffs()[0]!.input.screenCount).toBe(4);
     }));
 
-  it.effect("呼び出し中に届いた変化と発言は、その呼び出しが終わった時点で次の 1 回にまとまって渡る。画面は届いた順の区切りで添わる", () =>
+  it.effect.each([false, true])("呼び出し中に届いた締め切り以下の画面と発言は、結末の後の1回にまとまって渡る（初回失敗: %s）", (failFirst) =>
     Effect.gen(function* () {
-      const { calls, update, replies } = gatedScripted([], []);
+      const { calls, update, replies } = gatedScripted(failFirst ? { _tag: "UpdateFailed", message: "失敗" } : [], []);
       const events: LogEvent[] = [];
       const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(update), collectLog(events))));
       yield* session.pushScreen(shot(0));
-      yield* session.push(remark(9)); // すぐ 1 回目の呼び出し（画面 0 が添わる）
+      yield* session.push(remark(30));
       expect(calls.map(startsOf)).toEqual([[0]]);
       yield* session.pushScreen(shot(10));
-      yield* session.push(remark(11));
+      yield* session.push(remark(31));
       yield* session.pushScreen(shot(20));
-      yield* session.push(remark(21));
+      yield* session.pushScreen(none(21));
+      yield* session.push(remark(41));
       expect(calls).toHaveLength(1); // 呼び出し中は重ならない
       replies[0]!();
-      yield* settleUntil(() => calls.length === 2);
-      expect(calls[1]!.fresh.map((x) => x.end)).toEqual([11, 21]);
-      expect(startsOf(calls[1]!)).toEqual([10, 20]);
+      const deadline = Date.now() + 5000;
+      while (calls.length < 2) {
+        if (Date.now() > deadline) throw new Error("後着の画面を添える2回目の差分更新が期限内に始まらなかった");
+        yield* Effect.yieldNow;
+      }
+      expect(calls[1]!.fresh.map((x) => x.end)).toEqual([31, 41]);
+      expect(startsOf(calls[1]!)).toEqual([10, 20, 21]);
       replies[1]!();
       yield* session.idle;
       expect(calls).toHaveLength(2);
+      const diffs = events.filter((e) => e.type === "diff");
+      expect(diffs.map((e) => e.input.screenCount)).toEqual([1, 4]);
+      expect(diffs.map((e) => e.input.screens)).toEqual([
+        [{ start: 0, image: "0000.0.jpg" }],
+        [{ start: 10, image: "0010.0.jpg" }, { start: 20, image: "0020.0.jpg" }, { start: 21, image: null }],
+      ]);
+      expect(diffs[0]!.error !== undefined).toBe(failFirst);
     }));
 
   it.effect("end の最大値は新しい発言の中の最大（先頭の発言が最大とは限らない）", () =>
@@ -326,17 +339,6 @@ describe("差分更新に添える画面の選び方", () => {
       expect(startsOf(calls[0]!)).toEqual([15]);
     }));
 
-  it.effect("該当が無い呼び出しには画面を添えない（入力にも log の input にも screens のキーが無い）", () =>
-    Effect.gen(function* () {
-      const { session, calls, call, diffs } = yield* setup();
-      yield* session.pushScreen(shot(50)); // まだ映り始めていない
-      yield* call(9);
-      // 否定のテストなので、呼び出しが実際に起きたことを先に確かめる
-      expect(calls).toHaveLength(1);
-      expect("screens" in calls[0]!).toBe(false);
-      expect("screens" in diffs()[0]!.input).toBe(false);
-    }));
-
   it.effect("変化を 1 度も受けていないセッションは、今までと同じ入力（screens のキーが無い）", () =>
     Effect.gen(function* () {
       const { calls, call, diffs } = yield* setup();
@@ -344,35 +346,6 @@ describe("差分更新に添える画面の選び方", () => {
       expect(calls).toHaveLength(1);
       expect("screens" in calls[0]!).toBe(false);
       expect("screens" in diffs()[0]!.input).toBe(false);
-    }));
-
-  it.effect("10 秒以上離れた変化が 4 件以上たまっていれば新しい 3 件だけ添える（時刻順）。添えなかった古いものは次の呼び出しに戻らない", () =>
-    Effect.gen(function* () {
-      const { session, calls, call, diffs } = yield* setup();
-      for (const t of [0, 10, 20, 30, 40]) yield* session.pushScreen(shot(t));
-      yield* call(50);
-      expect(startsOf(calls[0]!)).toEqual([20, 30, 40]);
-      expect(diffs()[0]!.input.screens).toHaveLength(3);
-
-      yield* call(60);
-      expect(calls).toHaveLength(2);
-      expect("screens" in calls[1]!).toBe(false);
-    }));
-
-  it.effect("ちょうど 3 件ならすべて添える。「なし」も 1 件に数える", () =>
-    Effect.gen(function* () {
-      const { session, calls, call, diffs } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* session.pushScreen(none(5));
-      yield* session.pushScreen(shot(10));
-      yield* call(20);
-      expect(startsOf(calls[0]!)).toEqual([0, 5, 10]);
-      expect(calls[0]!.screens![1]!.image).toBeNull();
-      expect(diffs()[0]!.input.screens).toEqual([
-        { start: 0, image: "0000.0.jpg" },
-        { start: 5, image: null },
-        { start: 10, image: "0010.0.jpg" },
-      ]);
     }));
 
   it.effect("差分更新が失敗した回の画面も処理済み（次の呼び出しに再び載せない）。失敗の diff の入力には添えた画面が残る", () =>
@@ -433,56 +406,6 @@ describe("差分更新に添える画面の選び方", () => {
       const snapshot = yield* session.snapshot;
       expect(snapshot.nodes.map((n) => n.id)).toEqual([ROOT_ID]);
       expect(Object.keys(calls[0]!).sort()).toEqual(["fresh", "map", "recent", "screens"]);
-    }));
-});
-
-describe("差分更新に添える画面: 前に添えてから 10 秒未満の変化は添えず、最新の 1 件を持ち越す（Issue #927）", () => {
-  const screensOf = (calls: readonly DiffInput[]) => calls.map(startsOf);
-
-  it.effect("前に添えた画像から 10 秒未満に映り始めた変化は、その呼び出しに添えない（log の input にも screens が無い）", () =>
-    Effect.gen(function* () {
-      const { session, calls, call, diffs } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* call(5);
-      yield* session.pushScreen(shot(5));
-      yield* call(6);
-      expect(screensOf(calls)).toEqual([[0], undefined]);
-      expect("screens" in calls[1]!).toBe(false);
-      expect("screens" in diffs()[1]!.input).toBe(false);
-    }));
-
-  it.effect("10 秒未満で添えなかった変化の最新の 1 件を持ち越し、10 秒が過ぎた後の呼び出しで添える。途中の変化は添えない", () =>
-    Effect.gen(function* () {
-      const { session, calls, reads, diffs, call } = yield* setup();
-      yield* session.pushScreen(shot(0, "X"));
-      yield* call(1);
-      yield* session.pushScreen(shot(4, "Y"));
-      yield* session.pushScreen(shot(8, "Z"));
-      yield* call(9);
-      expect(screensOf(calls)).toEqual([[0], undefined]);
-      yield* call(10);
-      expect(screensOf(calls)).toEqual([[0], undefined, [8]]);
-      expect(calls[2]!.screens![0]!.image).toEqual({ id: "Z", bytes: bytes("bytes:Z") });
-      expect(diffs()[2]!.input.screens).toEqual([{ start: 8, image: "0008.0.jpg" }]);
-      // Y は処理済みとして捨てる（後の呼び出しにも載らず、画像も読まない）
-      yield* call(30);
-      yield* call(40);
-      expect(screensOf(calls)).toEqual([[0], undefined, [8], undefined, undefined]);
-      expect(reads).not.toContain("0004.0.jpg");
-    }));
-
-});
-
-describe("共有画面のdiffログ", () => {
-  it.effect("diff のログには新しく添えた画面だけが残る", () =>
-    Effect.gen(function* () {
-      const { session, call, diffs } = yield* setup();
-      yield* session.pushScreen(shot(1));
-      yield* call(9);
-      yield* session.pushScreen(shot(11));
-      yield* call(19);
-      yield* call(29);
-      expect(diffs().map((d) => d.input.screens)).toEqual([[{ start: 1, image: "0001.0.jpg" }], [{ start: 11, image: "0011.0.jpg" }], undefined]);
     }));
 });
 
