@@ -383,6 +383,125 @@ describe("ログからの復元", () => {
     }));
 });
 
+describe("話者の名前を含むログからの復元", () => {
+  const namedSession = Effect.fnUntraced(function* () {
+    const first = remark("採用を相談します", { speaker: "相手 A" });
+    const second = remark("田中です", { speaker: "相手 B" });
+    const live = scripted([{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "採用", evidence: [first.id] }], []);
+    const events: LogEvent[] = [];
+    const session = yield* makeSession({ title: "定例" }).pipe(Effect.provide(Layer.merge(updaterLayer(live.update), collectLog(events))));
+    yield* session.push(first);
+    yield* session.idle;
+    yield* session.nameSpeaker({ label: "相手 A", name: "佐藤", source: "手入力" });
+    yield* session.push(second);
+    yield* session.idle;
+    yield* session.nameSpeaker({ label: "相手 B", name: "田中", source: "推定", basis: "呼びかけへの応答" });
+    return { session, events, live };
+  });
+
+  it.effect("手入力と推定の名前を付けた元のセッションと、復元後のsnapshot・export・続きの名前入力が一致する", () =>
+    Effect.gen(function* () {
+      const { session, events, live } = yield* namedSession();
+      const cont = scripted([]);
+      const logged: LogEvent[] = [];
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(updaterLayer(cont.update), collectLog(logged))));
+      const expected = { "相手 A": "佐藤", "相手 B": "田中" };
+      expect((yield* session.exportJson).speakerNames).toEqual(expected);
+      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+      expect(logged).toEqual([]);
+      expect(cont.calls).toEqual([]);
+
+      const next = remark("続きの発言です", { speaker: "相手 B" });
+      yield* session.push(next);
+      yield* session.idle;
+      yield* restored.push(next);
+      yield* restored.idle;
+
+      expect(cont.calls).toHaveLength(1);
+      expect(live.calls.at(-1)!.speakerNames).toEqual(new Map(Object.entries(expected)));
+      expect(cont.calls[0]!.speakerNames).toEqual(live.calls.at(-1)!.speakerNames);
+      expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+      expect(logged.map((event) => event.type)).toEqual(["remark", "diff"]);
+    }));
+
+  it.effect("名前行とdiff行の相対位置を変えても、元と同じ名前・マップ・発言に戻る", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* namedSession();
+      const names = events.filter((event) => event.type === "speaker-name");
+      const others = events.filter((event) => event.type !== "speaker-name");
+      const before = yield* restore(viaJsonl([others[0]!, ...names, ...others.slice(1)]));
+      const after = yield* restore(viaJsonl([...others, ...names]));
+      for (const restored of [before, after]) {
+        expect(yield* restored.snapshot).toEqual(yield* session.snapshot);
+        expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+        expect(yield* restored.unreflectedRemarks).toEqual(yield* session.unreflectedRemarks);
+      }
+    }));
+
+  it.effect("復元後も手入力名への推定は無変更・追記なしで、推定名への名乗りは変更して同じログに1行だけ追記する", () =>
+    Effect.gen(function* () {
+      const { session, events } = yield* namedSession();
+      const restoredLog: LogEvent[] = [];
+      const restored = yield* restoreSession(viaJsonl(events)).pipe(Effect.provide(Layer.merge(forbiddenUpdater, collectLog(restoredLog))));
+      expect((yield* restored.exportJson).speakerNames).toEqual({ "相手 A": "佐藤", "相手 B": "田中" });
+      expect(restoredLog).toEqual([]);
+      const count = events.length;
+      const protectedChange = { label: "相手 A", name: "高橋", source: "推定", basis: "名乗り" } as const;
+      yield* session.nameSpeaker(protectedChange);
+      yield* restored.nameSpeaker(protectedChange);
+      expect((yield* restored.exportJson).speakerNames).toEqual({ "相手 A": "佐藤", "相手 B": "田中" });
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+      expect(events).toHaveLength(count);
+      expect(restoredLog).toEqual([]);
+
+      const rename = { label: "相手 B", name: "鈴木", source: "推定", basis: "名乗り" } as const;
+      yield* session.nameSpeaker(rename);
+      yield* restored.nameSpeaker(rename);
+      expect((yield* restored.exportJson).speakerNames).toEqual({ "相手 A": "佐藤", "相手 B": "鈴木" });
+      expect(yield* restored.exportJson).toEqual(yield* session.exportJson);
+      expect(restoredLog).toEqual([{ type: "speaker-name", label: "相手 B", name: "鈴木", source: "推定" }]);
+      expect(events.slice(count)).toEqual(restoredLog);
+    }));
+
+  for (const source of ["手入力", "推定"] as const) {
+    it.effect(`トップレベルのspeaker-nameの名前を復元する（${source}）`, () =>
+      Effect.gen(function* () {
+        const restored = yield* restore(viaJsonl([
+          { type: "start", title: "定例" },
+          { type: "speaker-name", label: "相手 A", name: "田中", source },
+        ]));
+        expect((yield* restored.exportJson).speakerNames).toEqual({ "相手 A": "田中" });
+      }));
+  }
+
+  it.effect("名前行がないログは、本文・別typeの同名フィールド・入れ子に名前表現があっても名前表を作らない", () =>
+    Effect.gen(function* () {
+      const spoken = remark("speaker-name", { speaker: "相手 A" });
+      const restored = yield* restore([
+        { type: "start", title: "定例" },
+        { type: "remark", remark: spoken },
+        { type: "future", label: "相手 A", name: "田中", source: "手入力", event: { type: "speaker-name", label: "相手 A", name: "田中", source: "手入力" } },
+      ]);
+      expect(yield* restored.unreflectedRemarks).toEqual([spoken]);
+      expect(yield* restored.exportJson).not.toHaveProperty("speakerNames");
+    }));
+
+  for (const [field, value] of [["label", 1], ["name", null], ["source", "不明"], ["source", undefined]] as const) {
+    it.effect(`壊れたspeaker-nameの${field}=${String(value)}は位置つきInvalidLogEventで失敗する`, () =>
+      Effect.gen(function* () {
+        const error = yield* restore([
+          { type: "start", title: "定例" },
+          { type: "speaker-name", label: "相手 A", name: "田中", source: "手入力", [field]: value },
+        ]).pipe(Effect.flip);
+        expect(error).toBeInstanceOf(InvalidLogEvent);
+        expect(error).toMatchObject({ _tag: "InvalidLogEvent", index: 1 });
+        expect(error.reason).not.toBe("");
+      }));
+  }
+});
+
 // 段 6 の互換: 今の形式の log.jsonl（at・intake-*・noContent・error つきの diff・dropped つきの diff を含む合成のログ）を、そのまま復元できる
 describe("済み（close）を含むログからの復元", () => {
   // 手の n 番目が round n。1: 追加 / 2: 何もしない / 3: 閉じる（有効 2 つ・無効 3 つ）/ 4: 済みの論点の下に追加して開き直す / 5: 別の議題を閉じる

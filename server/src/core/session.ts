@@ -7,7 +7,7 @@ import { cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type Me
 import { reflectDiff, type ReflectionState } from "./reflection.ts";
 import * as ScreenQueue from "./screenQueue.ts";
 import { hasContent, Remark } from "./remark.ts";
-import { acceptInferredNames, nameSpeaker as updateSpeakerName, speakerNameMap, SpeakerNameLogEvent, type SpeakerNameChange, type SpeakerNameTable } from "./speakerNames.ts";
+import { acceptInferredNames, nameSpeaker as updateSpeakerName, restoreSpeakerName, speakerNameMap, SpeakerNameLogEvent, type SpeakerNameChange, type SpeakerNameTable } from "./speakerNames.ts";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "./snapshot.ts";
 import { Word, WordTime } from "./words.ts";
 
@@ -140,6 +140,7 @@ const typeOf = (event: unknown): unknown => (Predicate.isObject(event) && "type"
 const decodeStart = Schema.decodeUnknownEffect(StartEvent);
 const decodeRemark = Schema.decodeUnknownEffect(RemarkEvent);
 const decodeDiff = Schema.decodeUnknownEffect(DiffEvent);
+const decodeSpeakerName = Schema.decodeUnknownEffect(SpeakerNameLogEvent);
 const decodePaused = Schema.decodeUnknownEffect(DiffUpdatePausedEvent);
 const decodeScreen = Schema.decodeUnknownEffect(ScreenEvent);
 
@@ -159,6 +160,7 @@ type Replay = {
 
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
   const ledger: Ledger = { remarks: [], byId: new Map(), processed: [], known: new Set(), files: new Set() };
+  let speakerNames: SpeakerNameTable = new Map();
   let replay: Replay = {
     map: undefined, history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
     queue: ScreenQueue.make(), diffUpdate: { status: "running" },
@@ -188,8 +190,10 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       const queue = yield* Effect.fromResult(ScreenQueue.consume(replay.queue, e, cutoff)).pipe(Effect.mapError(invalid));
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
-      replay = { ...replay, queue, map: state.map, history: state.history };
-      replay = { ...replay, diffUpdate: replay.diffUpdate.status === "paused" ? { status: "running" } : replay.diffUpdate };
+      replay = { ...replay, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
+    } else if (type === SpeakerNameLogEvent.fields.type.literal) {
+      const e = yield* decodeSpeakerName(event).pipe(failed);
+      speakerNames = restoreSpeakerName(speakerNames, e);
     } else if (type === ScreenInputSkippedEvent.fields.type.literal) {
       replay = { ...replay, queue: ScreenQueue.skipImages(replay.queue) };
     } else if (type === DiffUpdatePausedEvent.fields.type.literal) {
@@ -203,7 +207,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
   const { map, history, queue, diffUpdate } = replay;
   const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map: restoredMap, speakerNames: new Map(), pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
+  return { map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
 });
 
 export function snapshotOf(state: SessionState): Snapshot {

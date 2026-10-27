@@ -1,11 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { acceptInferredNames, nameSpeaker, type InferredSpeakerName, type Remark } from "../src/core/index.ts";
+import { acceptInferredNames, nameSpeaker, restoreSpeakerName, type InferredSpeakerName, type Remark } from "../src/core/index.ts";
 
 // Issue #1026: 話者の名前の規則（GLOSSARY「話者の名前」、#610 の Alloy の manualNameSticks・namesNeverRemoved）。
 // nameSpeaker(現在の表, 変更) は、表が変わるときだけ新しい表（ラベル → { name, source }）を返し、変わらないときは undefined を返す純粋な関数。
 // 渡した表は書き換えない。出どころの「推定」は後の sub-issue が書く。今回の画面とサーバーが書くのは「手入力」だけで、規則はここで固める
 
 const table = (...rows: Array<[string, string, "推定" | "手入力"]>) => new Map(rows.map(([label, name, source]) => [label, { name, source }] as const));
+
+describe("restoreSpeakerName", () => {
+  it("保存行をラベルごとの後勝ちで畳み、名前と出どころをそのまま戻す。別ラベルと入力表は保つ", () => {
+    const current = table(["相手 B", "佐藤", "推定"]);
+    const first = restoreSpeakerName(current, { type: "speaker-name", label: "相手 A", name: "田中", source: "手入力" });
+
+    const next = restoreSpeakerName(first, { type: "speaker-name", label: "相手 A", name: " 鈴木　", source: "推定" });
+
+    expect(next).toEqual(table(["相手 B", "佐藤", "推定"], ["相手 A", " 鈴木　", "推定"]));
+    expect(first).toEqual(table(["相手 B", "佐藤", "推定"], ["相手 A", "田中", "手入力"]));
+    expect(current).toEqual(table(["相手 B", "佐藤", "推定"]));
+  });
+});
 
 describe("nameSpeaker", () => {
   it("名前の無いラベルに名前が付く。渡した表は書き換えず、新しい表を返す", () => {
