@@ -248,52 +248,13 @@ type Runtime = {
   readonly nextCall: number;
   readonly reflecting: readonly Remark[];
   readonly catchUpUntil: string | undefined;
-  readonly unsentScreens: readonly HeldScreen[];
-  readonly catchUpScreen: HeldScreen | undefined;
+  readonly screenQueue: ScreenQueue.ScreenQueue;
   readonly screenFiles: ReadonlySet<string>;
-  readonly receivedScreens: number;
-  readonly carriedScreen: string | undefined;
-  readonly lastImageStart: number | undefined;
 };
 
 type StartVerdict = "callInFlight" | "nothingToStart";
 
-const SCREEN_GAP_SECONDS = 10;
-
-type ScreenKey = { readonly start: number; readonly image: string | null };
-
-const byStart = <T extends { readonly start: number }>(list: readonly T[]): T[] => [...list].sort((a, b) => a.start - b.start);
-
-function selectScreens<T extends { readonly start: number; readonly image: string | null }>(
-  sorted: readonly T[], carried: string | undefined, anchor: number | undefined, cutoff: number,
-): T[] {
-  const chosen: T[] = [];
-  let a = anchor;
-  for (const h of sorted) {
-    if (h.image === null) {
-      chosen.push(h);
-    } else if (a === undefined || h.start >= a + SCREEN_GAP_SECONDS || (h.image === carried && cutoff >= a + SCREEN_GAP_SECONDS)) {
-      chosen.push(h);
-      a = h.start;
-    }
-  }
-  return chosen;
-}
-
-function carriedOf(sorted: readonly ScreenKey[], attachedFiles: ReadonlySet<string>): string | undefined {
-  const latest = sorted.at(-1);
-  return latest?.image != null && !attachedFiles.has(latest.image) ? latest.image : undefined;
-}
-
-function anchorAfter(attached: readonly ScreenKey[], previous: number | undefined): number | undefined {
-  return attached.findLast((h) => h.image !== null)?.start ?? previous;
-}
-
-type HeldScreen = { readonly start: number; readonly image: { readonly id: string; readonly file: string } | null };
-const laterStart = (latest: HeldScreen | undefined, screen: HeldScreen): HeldScreen => latest === undefined || screen.start >= latest.start ? screen : latest;
-
 export const PACED_CALL_REMARKS = 2;
-const SCREENS_MAX = 3;
 
 function screenFileName(start: number, used: ReadonlySet<string>): string {
   const base = start.toFixed(1).padStart(6, "0");
@@ -323,16 +284,13 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
   return { fresh: pending.slice(0, PACED_CALL_REMARKS), rest: pending.slice(PACED_CALL_REMARKS), catchUpUntil };
 }
 
-type InitialScreens = { readonly catchUp: HeldScreen | undefined; readonly unsent: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
-const noScreens: InitialScreens = { catchUp: undefined, unsent: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
-
 export type OnSpeakerNames = (names: readonly InferredSpeakerName[]) => Effect.Effect<void>;
 
-const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: InitialScreens, images: boolean, logShiftMs: number = 0, onSpeakerNames?: OnSpeakerNames, updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
+const openSession = Effect.fnUntraced(function* (initial: SessionState, screens: RestoredScreens, logShiftMs: number = 0, onSpeakerNames?: OnSpeakerNames, updater?: DiffUpdater["Service"]): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
   const scope = yield* Effect.scope;
   const log = yield* SessionLog;
   const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
-  const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, catchUpScreen: screens.catchUp, unsentScreens: screens.unsent, screenFiles: screens.files, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
+  const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
 
   const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
     const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -402,44 +360,27 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
       Effect.gen(function* () {
         const state = (yield* Ref.get(ref)).diffUpdate;
         if (state.status === "paused") yield* log.write({ type: "diff-update-retry", reason: state.reason });
-        const { map, recent, input, selectedScreens, previousResponse, before, keptUnsent } = yield* Ref.modify(ref, (s) => {
+        const cutoff = Math.max(...fresh.map((u) => u.end));
+        const { map, recent, input, previousResponse } = yield* Ref.modify(ref, (s) => {
           const recent = s.processed.slice(-RECENT);
-          const cutoff = Math.max(...fresh.map((u) => u.end));
-          const candidates = byStart(s.unsentScreens.filter((h) => h.start <= cutoff || (h.image !== null && h.image.file === s.carriedScreen)));
-          const keyed = candidates.map((h) => ({ start: h.start, image: h.image?.file ?? null, held: h }));
-          const selected = images ? selectScreens(keyed, s.carriedScreen, s.lastImageStart, cutoff) : [];
-          const chosen = s.catchUpScreen !== undefined ? selected : selected.slice(-SCREENS_MAX);
-          const selectedScreens = chosen.map((c) => c.held);
-          const carriedScreen = images ? carriedOf(keyed, new Set(chosen.flatMap((c) => (c.image === null ? [] : [c.image])))) : undefined;
           const input = {
             recent: recent.map((u) => u.id),
             fresh: fresh.map((u) => u.id),
             nodeCount: s.map.order.length - 1,
-            ...(selectedScreens.length ? { screens: selectedScreens.map((h) => ({ start: h.start, image: h.image?.file ?? null })) } : {}),
-            ...(s.receivedScreens > 0 ? { screenCount: s.receivedScreens } : {}),
+            ...ScreenQueue.select(s.screenQueue, cutoff),
           };
-          const keptUnsent = s.unsentScreens.filter((h) => h.start > cutoff || (carriedScreen !== undefined && h.image?.file === carriedScreen));
-          const before = { unsentScreens: s.unsentScreens, carriedScreen: s.carriedScreen, lastImageStart: s.lastImageStart };
-          const catchUpScreen = s.catchUpScreen !== undefined && keptUnsent.includes(s.catchUpScreen) ? s.catchUpScreen : undefined;
           return [
-            { map: s.map, recent, input, selectedScreens, previousResponse: s.previousResponse, before, keptUnsent: keptUnsent.length },
-            {
-              ...s,
-              reflecting: fresh,
-              unsentScreens: keptUnsent,
-              catchUpScreen,
-              carriedScreen,
-              lastImageStart: anchorAfter(chosen, s.lastImageStart),
-            },
+            { map: s.map, recent, input, previousResponse: s.previousResponse },
+            { ...s, reflecting: fresh },
           ];
         });
-        const readBack = (h: HeldScreen): Effect.Effect<ScreenChange> => {
-          const held = h.image;
-          return held ? Effect.map(log.readScreen(held.file), (bytes) => ({ start: h.start, image: { id: held.id, bytes } })) : Effect.succeed({ start: h.start, image: null });
+        const readBack = (screen: NonNullable<typeof input.screens>[number]): Effect.Effect<ScreenChange> => {
+          const file = screen.image;
+          return file === null ? Effect.succeed({ start: screen.start, image: null }) : Effect.map(log.readScreen(file), (bytes) => ({ start: screen.start, image: { id: file, bytes } }));
         };
         type CallTimes = { startedAt: string; endedAt: string };
         const classifyUnlessInterrupt = (cause: Cause.Cause<DiffUpdateFailure>) => (Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(classifyFailure(cause)));
-        const outcome = yield* Effect.forEach(selectedScreens, readBack).pipe(
+        const outcome = yield* Effect.forEach(input.screens ?? [], readBack).pipe(
           Effect.flatMap((screens) =>
             Effect.suspend(() => {
               const startedAt = logTimestamp(logShiftMs);
@@ -472,10 +413,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const requestedAt = state.status === "paused" ? undefined : outcome.pause.retryAt;
             const now = yield* Clock.currentTimeMillis;
             const nextRetryAt = requestedAt !== undefined && requestedAt > now ? requestedAt : now + DIFF_UPDATE_RETRY_MS;
-            yield* Ref.update(ref, (s) => {
-              const unsentScreens = [...before.unsentScreens, ...s.unsentScreens.slice(keptUnsent)];
-              return { ...s, ...before, unsentScreens, catchUpScreen: unsentScreens.reduce<HeldScreen | undefined>(laterStart, undefined), reflecting: [], pending: [...fresh, ...s.pending], catchUpUntil: [...fresh, ...s.pending].at(-1)?.id, diffUpdate: { status: "paused" as const, reason }, nextRetryAt, previousResponse: undefined };
-            });
+            yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.markPaused(s.screenQueue), reflecting: [], pending: [...fresh, ...s.pending], catchUpUntil: [...fresh, ...s.pending].at(-1)?.id, diffUpdate: { status: "paused" as const, reason }, nextRetryAt, previousResponse: undefined }));
             yield* log.write({ type: "diff-update-paused", reason });
             return;
           }
@@ -484,8 +422,9 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           yield* Ref.update(ref, (s) => {
             const byId = new Map(s.remarks.map((r) => [r.id, r]));
             const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+            const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
             dropped = applied.dropped;
-            return { ...s, ...applied.state.history, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
+            return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
               diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
           });
           yield* log.write({ ...event, dropped });
@@ -496,9 +435,10 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           const ops = attributePeople(outcome.ops, byId);
           const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
           const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+          const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
           const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
           return [{ event, dropped: applied.dropped, accepted }, {
-            ...s, ...applied.state.history, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
+            ...s, ...applied.state.history, screenQueue, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
             known: applied.state.ledger.known, processed: applied.state.ledger.processed, pending: [...fresh.slice(outcome.count), ...s.pending],
           }];
         });
@@ -540,8 +480,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           return [file, { ...s, screenFiles: file ? new Set([...s.screenFiles, file]) : s.screenFiles }];
         });
         if (change.image && file) yield* log.writeScreen(file, change.image.bytes);
-        const held: HeldScreen = { start: change.start, image: change.image && file ? { id: change.image.id, file } : null };
-        yield* Ref.update(ref, (s) => ({ ...s, receivedScreens: s.receivedScreens + 1, unsentScreens: [...s.unsentScreens, held], catchUpScreen: s.diffUpdate.status === "paused" ? laterStart(s.catchUpScreen, held) : s.catchUpScreen }));
+        yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.receive(s.screenQueue, { start: change.start, image: file }, s.diffUpdate.status === "paused") }));
         yield* log.write({ type: "screen", start: change.start, image: file, ...(change.ocrFailed === true ? { ocrFailed: true } : lines === undefined ? {} : { lines }) });
       }),
     pushScreenOff: ({ start, reason }) => log.write({ type: "screen-off", start, reason }),
@@ -569,6 +508,7 @@ const createSession = Effect.fnUntraced(function* ({ title, images = true, logSh
     type: ScreenInputSkippedEvent.fields.type.literal,
     reason: ScreenInputSkippedEvent.fields.reason.literal,
   });
+  const queue = ScreenQueue.make();
   return yield* openSession({
     map: emptyMap(title),
     pending: [],
@@ -580,7 +520,7 @@ const createSession = Effect.fnUntraced(function* ({ title, images = true, logSh
     currentTopic: undefined,
     lastChanged: undefined,
     diffUpdate: { status: "running" },
-  }, noScreens, images, logShiftMs, onSpeakerNames, updater);
+  }, { queue: images ? queue : ScreenQueue.skipImages(queue), files: new Set() }, logShiftMs, onSpeakerNames, updater);
 });
 
 export const makeSession = Effect.fnUntraced(function* (options: NewSessionOptions) {
@@ -591,8 +531,5 @@ export const makeTranscriptSession = (options: NewSessionOptions) => createSessi
 
 export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
   const { screens, ...state } = yield* restoreState(events);
-  const { queue, files } = screens;
-  const unsent = queue.unsent.map((screen): HeldScreen => ({ start: screen.start, image: screen.image === null ? null : { id: screen.image, file: screen.image } }));
-  const catchUp = queue.catchUp === undefined ? undefined : unsent[queue.unsent.indexOf(queue.catchUp)];
-  return yield* openSession(state, { unsent, files, received: queue.received, carried: queue.carried, anchor: queue.anchor, catchUp }, queue.images, 0, undefined, yield* DiffUpdater);
+  return yield* openSession(state, screens, 0, undefined, yield* DiffUpdater);
 });
