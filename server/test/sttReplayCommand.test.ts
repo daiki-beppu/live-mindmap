@@ -5,13 +5,12 @@ import { command } from "../bench/sttReplay.ts";
 import { consoleCapture, runCommand, taggedFailure } from "./benchRun.ts";
 import { evalManagedDeps } from "./fixtures/evalManagedDeps.ts";
 
-describe("sttReplay の Command: SDK の準備失敗", () => {
-  it.effect("SDK の読込失敗は入力を読む前に StartupDepsMissing となり、stdout 空・失敗の文面を stderr・exit 3 で自然終了する", () => Effect.gen(function* () {
+describe("sttReplay の Command: SDK の不足", () => {
+  it.effect("SDK の不足は入力を読む前に StartupDepsMissing となり、stdout 空・失敗の文面を stderr・exit 3 で自然終了する", () => Effect.gen(function* () {
     const managed = evalManagedDeps("missing");
     const { result, stdout, stderr } = yield* runCommand(command, ["unused-items.json"]).pipe(
       Effect.provide(managed.layer),
     );
-    expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
     const failure = taggedFailure(result);
     expect(failure?._tag).toBe("StartupDepsMissing");
 

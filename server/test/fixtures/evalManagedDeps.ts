@@ -2,10 +2,10 @@ import { Effect, Layer, Stream } from "effect";
 import { vi } from "vitest";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../../src/managedDeps.ts";
 
-export const evalManagedDeps = (state: "ready" | "missing") => {
+export const evalManagedDeps = (state: "ready" | "missing", chromium: "ready" | "missing" = "ready") => {
   const check = vi.fn((names: ReadonlyArray<string>) => Effect.succeed(names.map((name): DepItem => {
     if (name !== "claude" && name !== "chromium") throw new Error(`対象外の依存: ${name}`);
-    return { name, need: "optional" as const, state: name === "claude" ? state : "ready" as const };
+    return { name, need: "optional" as const, state: name === "claude" ? state : chromium };
   })));
   const load = vi.fn((name: string) => {
     if (name !== "claude") return Effect.die(`評価で対象外の読込: ${name}`);

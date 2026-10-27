@@ -3,13 +3,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Clock, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Console, Effect, Layer, Option, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { LogEvent, recall, Remark, SpeakerNameLogEvent, type Session } from "../src/core/index.ts";
 import { claudeUpdaterLayer } from "../src/diffUpdater.ts";
 import { ManagedDeps } from "../src/managedDeps.ts";
 import { depsDirConfig } from "../src/config.ts";
-import { startupPreparationFailure } from "../src/managedDepsCheck.ts";
+import { StartupChecks } from "../src/startupChecks.ts";
 import { describe, fileReason, oneLine, readTextFile, readTruthFile } from "../src/truthFile.ts";
 import { BENCH_VERSION, exitNaturallyForManagedDeps, readJsonFile, ReplaySessionFailed, reportFailure, write } from "./entry.ts";
 import { indexRemarks, lineDelays, percentile, SpokenLine, type Arrival } from "./sttLatency.ts";
@@ -121,9 +121,15 @@ export const command = Command.make(
     "発言を、認識結果が届いた時刻（at）で本番のセッションに流し、遅れ（差分更新が返った時刻 − 流し始め − 発言の end）と再現率を出す（Issue #97）。"
       + "end の時刻で流すと認識の遅れが消えるので、流し始めからの at の時刻どおりに届ける（push が遅れても後ろの発言に遅れを足さず、at を過ぎていれば次はすぐ流す）",
   ),
-  Command.provide(Layer.effectContext(Layer.build(claudeUpdaterLayer(defaultClaude)).pipe(
-    Effect.mapError(startupPreparationFailure),
-  ))),
+  Command.provide(Layer.effectContext(Effect.gen(function* () {
+    const { updaterLayer, warnings } = yield* (yield* StartupChecks).prepare({
+      entry: "play", route: defaultClaude.route, plan: { kind: "single", model: defaultClaude },
+    });
+    for (const warning of warnings) yield* Console.error(warning);
+    return yield* Layer.build(updaterLayer);
+  }).pipe(Effect.provide(StartupChecks.layer({
+    prepareUpdater: () => Effect.map(Layer.build(claudeUpdaterLayer(defaultClaude)), (context) => ({ layer: Layer.succeedContext(context) })),
+  }))))),
 );
 
 if (import.meta.main) {

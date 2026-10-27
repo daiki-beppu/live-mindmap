@@ -2,10 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Stream } from "effect";
 import { withFakeClaude } from "./fixtures/readyManagedDeps.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
-import { requireStartupDeps, startupPreparationFailure } from "../src/managedDepsCheck.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
-import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
-import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 
 const deps = ManagedDeps.of({
   executable: () => Effect.die("実行ファイル取得は対象外"),
@@ -16,7 +13,7 @@ const deps = ManagedDeps.of({
   update: () => Stream.die("更新は対象外"), install: () => Stream.die("確認は導入しない"), load: () => Effect.die("確認は読み込まない"),
 });
 
-describe("旧 play 経路と開始前の公開エラー", () => {
+describe("開始前の公開エラーと偽 updater 用の依存", () => {
   it.effect("偽 updater 用の確認は Claude だけ ready とし Chromium の状態と読込を保持する", () => Effect.gen(function* () {
     const fake = ManagedDeps.of({ ...deps, load: () => Effect.fail(new ManagedDepsFailed({ message: "管理依存の読込を委譲した" })) });
     const service = yield* ManagedDeps.pipe(Effect.provide(withFakeClaude(Layer.succeed(ManagedDeps, fake))));
@@ -27,28 +24,6 @@ describe("旧 play 経路と開始前の公開エラー", () => {
     const result = yield* Effect.result(service.load("chromium"));
     expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "ManagedDepsFailed", message: "管理依存の読込を委譲した" } });
   }));
-  it.effect("旧 play 経路は Claude の版違いを警告して通る", () => Effect.gen(function* () {
-    const service = ManagedDeps.of({ ...deps, check: () => Effect.succeed([
-      { name: "chromium", need: "optional", state: "ready" },
-      { name: "claude", need: "optional", state: "outdated", version: "0.0.0" },
-    ]) });
-    expect(yield* requireStartupDeps("play", "claude").pipe(Effect.provideService(ManagedDeps, service))).toEqual([
-      `警告: claude（Claude Agent SDK、約 224MB） が版違いです（入っている版 0.0.0、固定版 ${claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"]}）。そろえるには: pnpm cli update claude`,
-    ]);
-  }));
-  it.effect.each(["missing", "absent"] as const)("Claude の %s では警告を返さず必須不足になる", (state) =>
-    Effect.gen(function* () {
-      const service = ManagedDeps.of({ ...deps, check: () => Effect.succeed([
-        { name: "chromium", need: "optional", state: "missing" }, { name: "claude", need: "optional", state },
-      ]) });
-      const result = yield* Effect.result(requireStartupDeps("play", "claude").pipe(Effect.provideService(ManagedDeps, service)));
-      expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "StartupDepsMissing", items: [{ name: "claude", state }] } });
-    }));
-  it("読込失敗は識別情報で変換し、一般の準備失敗は保持する", () => {
-    expect(startupPreparationFailure(new UpdaterUnavailable({ message: "import failed", dependency: "claude" })))
-      .toMatchObject({ _tag: "StartupDepsMissing", items: [{ name: "claude", need: "required", state: "missing", size: 224_000_000 }] });
-    expect(startupPreparationFailure(new UpdaterUnavailable({ message: "接続失敗" }))).toMatchObject({ _tag: "UpdaterUnavailable", message: "接続失敗" });
-  });
   it("複数不足を指定の3行に整形する", () => {
     const error = new StartupDepsMissing({ items: [
       { name: "claude", need: "required", state: "missing", size: 224_000_000 },

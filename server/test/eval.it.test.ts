@@ -230,8 +230,8 @@ describe("再生で推定した名前", () => {
   }
 });
 
-describe("eval: 管理 SDK の不足（Issue #707）", () => {
-  it.effect("--model claude の読込失敗は stdout 空・指定の3行の stderr・exit 3 で終わる", () => Effect.gen(function* () {
+describe("eval: 開始前の依存確認", () => {
+  it.effect("--model claude は必須不足を SDK 読込・差分更新より前に拒否し、3行の stderr と exit 3 を返す", () => Effect.gen(function* () {
     const source = yield* play(scriptA);
     const sessionsDir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-deps-")));
     yield* Effect.addFinalizer(() => Effect.promise(() => rm(sessionsDir, { recursive: true, force: true })));
@@ -241,7 +241,7 @@ describe("eval: 管理 SDK の不足（Issue #707）", () => {
     const exit = yield* Effect.exit(runCli(["eval", source, "--model", "claude"]).pipe(
       Effect.provide(Layer.mergeAll(deps.layer, managed.layer)),
     ));
-    expect(managed.load).toHaveBeenCalledExactlyOnceWith("claude");
+    expect(managed.load).not.toHaveBeenCalled();
     expect(Exit.isFailure(exit)).toBe(true);
     if (Exit.isSuccess(exit)) throw new Error("不足した SDK で評価が成功しました");
     expect(Cause.findError(exit.cause)).toMatchObject({ _tag: "Success", success: { _tag: "StartupDepsMissing" } });
@@ -256,7 +256,37 @@ describe("eval: 管理 SDK の不足（Issue #707）", () => {
     expect(deps.stdout.join("")).toBe("");
     expect(deps.stderr.join("")).toBe("開始しません。足りないもの: claude（Claude Agent SDK、約 224MB）\n入れるには: pnpm cli install claude\n利用者に確認してから入れてください\n");
     expect(external.openClaudeUpdater).not.toHaveBeenCalled();
+    expect(yield* Effect.promise(() => readdir(sessionsDir))).toEqual([]);
     expect(managed.install).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+
+  it.effect("--model は Chromium 不足を最初の差分更新より前に警告し、新しいマップを集計する", () => Effect.gen(function* () {
+    const source = yield* play(scriptB);
+    const sessionsDir = yield* Effect.acquireRelease(
+      Effect.promise(() => mkdtemp(join(tmpdir(), "live-mindmap-eval-warning-"))),
+      (dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+    );
+    const deps = dependencies(sessionsDir);
+    const managed = evalManagedDeps("ready", "missing");
+    const steps: Op[][] = [[], ...scriptA];
+    let step = 0;
+    let warningsAtFirstUpdate: string | undefined;
+    external.openClaudeUpdater.mockReturnValue({
+      update: (_input: DiffInput) => Effect.sync(() => {
+        if (step === 0) warningsAtFirstUpdate = deps.stderr.join("");
+        return { ops: steps[step++] ?? [] };
+      }),
+      close: () => {},
+    });
+    yield* runCli(["eval", source, "--model", "claude"]).pipe(
+      Effect.provide(Layer.mergeAll(deps.layer, managed.layer)),
+    );
+    const warning = "警告: chromium（Chromium、約 211MB） がありません。入れるには: pnpm cli install chromium\n";
+    expect(warningsAtFirstUpdate).toBe(warning);
+    expect(deps.stderr.join("")).toBe(warning);
+    const { rows } = parseTable(deps.stdout.join(""));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ ノード: "5", 深さ: "3" });
   }).pipe(Effect.scoped));
 
   it.effect("--model なしは Claude 未導入でも保存済みのマップを集計し、SDK を確認・読み込みしない", () => Effect.gen(function* () {
@@ -300,7 +330,6 @@ describe("eval: 管理 SDK の不足（Issue #707）", () => {
       process.exitCode = saved;
     }
     expect(deps.stderr.join("")).toContain("HTTP 503");
-    expect(managed.check).not.toHaveBeenCalled();
     expect(managed.load).not.toHaveBeenCalled();
     expect(deps.stdout).toEqual([]);
   }));
