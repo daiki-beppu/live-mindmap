@@ -105,7 +105,6 @@ import { describe, fileReason, formatIssues, InvalidTruthFile, oneLine, readScre
 import { Viewers, type SendFrame } from "./viewers.ts";
 import { StartupRefusal } from "./managedDepsProtocol.ts";
 import { ServerRoutes, type ServerRoute } from "./serverProtocol.ts";
-import { requireStartupDeps, startupPreparationFailure } from "./managedDepsCheck.ts";
 import { StartupChecks } from "./startupChecks.ts";
 import { exitCodeTeardown, reportEntryFailure } from "./entryFailure.ts";
 import { StartupDepsMissing } from "./startupDepsMissing.ts";
@@ -404,9 +403,8 @@ const play = Command.make(
     function* ({ realtime, screen, transcript, model, judge, local }) {
       const plan = yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
       const selected = planModel(plan);
-      const warnings = yield* requireStartupDeps("play", selected.route);
-      const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
-      yield* writeWarnings(notice === undefined ? warnings : [...warnings, notice]);
+      const { updaterLayer, warnings } = yield* (yield* StartupChecks).prepare({ entry: "play", route: selected.route, plan });
+      yield* writeWarnings(warnings);
       return yield* Effect.gen(function* () {
         const port = yield* portConfig;
         const folder = yield* isDirectory(transcript);
@@ -436,6 +434,7 @@ const play = Command.make(
       }).pipe(Effect.provide(updaterLayer));
     },
     Effect.scoped,
+    Effect.provide(StartupChecks.layer({ prepareUpdater: planLayer })),
   ),
 ).pipe(
   Command.withDescription(
@@ -865,12 +864,12 @@ const review = Command.make(
 
 const replayedRunDir = Effect.fnUntraced(function* (source: string, plan: UpdatePlan) {
   const recorded = yield* loadSessionLog(resolve(source));
-  const { layer: updaterLayer, notice } = yield* planLayer(plan).pipe(Effect.mapError(startupPreparationFailure));
-  yield* writeWarnings(notice === undefined ? [] : [notice]);
+  const { updaterLayer, warnings } = yield* (yield* StartupChecks).prepare({ entry: "play", route: planModel(plan).route, plan });
+  yield* writeWarnings(warnings);
   return (yield* recordPlayback({ ...recorded, realtime: false }, planModel(plan)).pipe(
     Effect.provide(updaterLayer),
   )).dir;
-});
+}, Effect.provide(StartupChecks.layer({ prepareUpdater: planLayer })));
 
 const evaluatedRun = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, dir: string) {
   const path = join(dir, EXPORT_FILE);
