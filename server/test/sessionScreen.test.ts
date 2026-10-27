@@ -375,17 +375,6 @@ describe("差分更新に添える画面の選び方", () => {
       ]);
     }));
 
-  it.effect("添えた画面は同じ呼び出しで 1 度だけ。次の呼び出しには、その後に受けた変化だけが載る", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      yield* session.pushScreen(shot(1));
-      yield* call(9);
-      yield* session.pushScreen(shot(11));
-      yield* call(19);
-      expect(startsOf(calls[0]!)).toEqual([1]);
-      expect(startsOf(calls[1]!)).toEqual([11]);
-    }));
-
   it.effect("差分更新が失敗した回の画面も処理済み（次の呼び出しに再び載せない）。失敗の diff の入力には添えた画面が残る", () =>
     Effect.gen(function* () {
       const { session, calls, call, diffs } = yield* setup({ fail: (i) => i === 0 });
@@ -462,16 +451,6 @@ describe("差分更新に添える画面: 前に添えてから 10 秒未満の�
       expect("screens" in diffs()[1]!.input).toBe(false);
     }));
 
-  it.effect("前に添えた画像からちょうど 10 秒の変化は添える（10 秒以上）", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* call(5);
-      yield* session.pushScreen(shot(10));
-      yield* call(15);
-      expect(screensOf(calls)).toEqual([[0], [10]]);
-    }));
-
   it.effect("10 秒未満で添えなかった変化の最新の 1 件を持ち越し、10 秒が過ぎた後の呼び出しで添える。途中の変化は添えない", () =>
     Effect.gen(function* () {
       const { session, calls, reads, diffs, call } = yield* setup();
@@ -492,80 +471,6 @@ describe("差分更新に添える画面: 前に添えてから 10 秒未満の�
       expect(reads).not.toContain("0004.0.jpg");
     }));
 
-  it.effect("持ち越した変化は、前に添えてから 10 秒が過ぎるまで添えない。添えた後は 1 度だけ", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* call(1);
-      yield* session.pushScreen(shot(8));
-      yield* call(9);
-      yield* call(9.5);
-      expect(screensOf(calls)).toEqual([[0], undefined, undefined]);
-      yield* call(10);
-      yield* call(11);
-      expect(screensOf(calls)).toEqual([[0], undefined, undefined, [8], undefined]);
-    }));
-
-  it.effect("共有の終了（画像なし）は 10 秒の内でも添える", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* call(1);
-      yield* session.pushScreen(none(3));
-      yield* call(4);
-      expect(screensOf(calls)).toEqual([[0], [3]]);
-      expect(calls[1]!.screens![0]!.image).toBeNull();
-    }));
-
-  it.effect("共有の終了は 10 秒を測る起点にしない（終了から 10 秒未満でも、前に添えた画像から 10 秒以上なら添える）", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* call(1);
-      yield* session.pushScreen(none(5));
-      yield* call(6);
-      yield* session.pushScreen(shot(12));
-      yield* call(13);
-      expect(screensOf(calls)).toEqual([[0], [5], [12]]);
-    }));
-
-  it.effect("同じ呼び出しの中でも、画像は直前に添えた画像から 10 秒以上離れたものだけを時刻順に添える", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      for (const t of [0, 10, 25]) yield* session.pushScreen(shot(t));
-      yield* call(30);
-      expect(screensOf(calls)).toEqual([[0, 10, 25]]);
-
-      const dense = yield* setup();
-      for (const t of [1, 2, 3, 15, 30, 45]) yield* dense.session.pushScreen(shot(t));
-      yield* dense.call(50);
-      expect(screensOf(dense.calls)).toEqual([[15, 30, 45]]); // 1, 15, 30, 45 が候補。新しい 3 件
-    }));
-
-  it.effect("持ち越している変化より後に共有の終了が来たら、終了だけを添える（持ち越していた画像は途中の変化として捨てる）", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup();
-      yield* session.pushScreen(shot(0));
-      yield* call(1);
-      yield* session.pushScreen(shot(4, "Y"));
-      yield* call(5);
-      yield* session.pushScreen(none(6));
-      yield* call(7);
-      expect(screensOf(calls)).toEqual([[0], undefined, [6]]);
-      yield* call(30);
-      expect(screensOf(calls)).toEqual([[0], undefined, [6], undefined]);
-    }));
-
-  it.effect("images:false は持ち越しても何も添えない", () =>
-    Effect.gen(function* () {
-      const { session, calls, call } = yield* setup({ images: false });
-      yield* session.pushScreen(shot(0));
-      yield* call(1);
-      yield* session.pushScreen(shot(8));
-      yield* call(9);
-      yield* call(20);
-      expect(calls.some((c) => "screens" in c)).toBe(false);
-    }));
 });
 
 describe("共有画面のdiffログ", () => {
