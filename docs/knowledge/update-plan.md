@@ -32,7 +32,7 @@ server の側で黙って読み替えると、CLI が知らせた計画と実際
 `planLayer` は、セッションを動かすプロセスで呼ぶ。`start`・`recorded` は server（`server.ts` が `StartupChecks.layer` の `prepareUpdater` に渡す）、`play`・`eval` は CLI。`routed` で鍵が足りなければ、判定なしの組み込みの claude で始め、`missingKeyNotice` の 1 行を `notice` で返す。
 
 - **`start`・`recorded`**: `StartupChecks.prepare` が確認の警告の後ろに `notice` を一度だけ足す。`sessions.ts` は、その `warnings` を開始の応答で CLI へ返す
-- **`play`・`eval`**: CLI が `writeWarnings` で出す
+- **`play`・`eval --model`**: CLI が `StartupChecks.prepare` を `play` の行で呼び、`notice` を足し終えた `warnings` を `writeWarnings` で出す（[開始前の確かめ](startup-checks.md)）
 
 前は、CLI の `selectJudge` が CLI の環境で鍵を確かめて知らせを出し、server の `prepareRouted` は server の環境に鍵が無いと黙って振り分けなしにしていた。CLI の環境にだけ鍵があると、CLI は鍵が無いという知らせを出さず、server は振り分けずに組んでいた。利用者には振り分けているように見えていた。鍵を見るのを 1 か所にしたので、知らせは実際に layer を作った環境の結果だけになる。鍵を見る処理を足すときも、`planLayer` の外には置かない。
 
