@@ -25,16 +25,24 @@ public actor WebSocketServer {
     private var pendingSends = 0
     private var sendWaiters: [CheckedContinuation<Void, Never>] = []
     private let queue = DispatchQueue(label: "live-mindmap.websocket")
-    /// `broadcastRetained` で最後に送った内容。後から接続したクライアントにも送る（Issue #161）。
-    /// 種類（`key`）ごとに最新の 1 件だけ覚える（`origin` と、共有画面の `screen`）。順序は、その種類を最初に覚えた順。
-    private var retained: [(key: String, text: String)] = []
+    private var retained: [HelperEventRetentionSlot: HelperEvent] = [:]
+    /// nil は初回接続済み。全接続が切れても蓄積を再開しない。
+    private var initialEvents: [HelperEvent]? = []
+    private let writeStderr: @Sendable (String) -> Void
     /// クライアントから届いたテキストフレームを、届いた順に流す（Issue #1069。サーバーからの休止の指示）。`stop` で終わる。
     public nonisolated let messages: AsyncStream<String>
     private nonisolated let messageContinuation: AsyncStream<String>.Continuation
 
     /// `port` が 0 のときは空きポートを使う。
     public init(port: UInt16) {
+        self.init(port: port, writeStderr: { message in
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+        })
+    }
+
+    init(port: UInt16, writeStderr: @escaping @Sendable (String) -> Void) {
         requestedPort = port
+        self.writeStderr = writeStderr
         (messages, messageContinuation) = AsyncStream.makeStream(of: String.self)
     }
 
@@ -79,27 +87,31 @@ public actor WebSocketServer {
         }
     }
 
-    /// 接続中の全クライアントにテキストフレームを送る。クライアントがいなくても失敗しない。
-    public func broadcast(_ text: String) {
+    /// 種類に従って保持し、初回接続前の通常イベントも失わずに届ける。
+    public func send(_ event: HelperEvent) {
+        guard !stopped, let text = encode(event) else { return }
+        switch event.delivery(retained: retained[.screen]) {
+        case .retain(let slot): retained[slot] = event
+        case .bufferUntilFirstClient: initialEvents?.append(event)
+        case .connectedOnly: break
+        }
         for connection in clients.values {
             send(text, to: connection)
         }
     }
 
-    /// `broadcast` と同じく今つながっているクライアント全員に送り、かつ内容を覚えておく。
-    /// 後から接続したクライアントにも、接続した直後に同じ内容を送る（`register` から呼ぶ）。
-    /// 同じ `key` で覚えさせると、前の内容を置き換える（別の `key` の内容は消えない）。
-    public func broadcastRetained(_ text: String, key: String = "origin") {
-        if let index = retained.firstIndex(where: { $0.key == key }) {
-            retained[index].text = text
-        } else {
-            retained.append((key: key, text: text))
+    private func encode(_ event: HelperEvent) -> String? {
+        do {
+            return try event.jsonString()
+        } catch {
+            // EncodingError の内容には発言や画像が含まれうるので、種類名だけを記録する。
+            let kind = String(describing: event).prefix { $0 != "(" }
+            writeStderr("helper event \(kind): JSON にできなかったので送らない")
+            return nil
         }
-        broadcast(text)
     }
 
-    /// 最初のクライアントが接続するまで待つ（接続済みなら、すぐ戻る）。`broadcast` は接続前の送信を捨てるので、
-    /// 保持（`broadcastRetained`）しないイベントを流す前に呼ぶ。`stop` でも戻る。
+    /// 録画の読み始めを接続後に揃える。接続済みならすぐ戻り、`stop` でも戻る。
     public func waitForClient() async {
         if !clients.isEmpty || stopped { return }
         await withCheckedContinuation { clientWaiters.append($0) }
@@ -144,6 +156,7 @@ public actor WebSocketServer {
         listener = nil
         for connection in clients.values { connection.cancel() }
         clients.removeAll()
+        initialEvents = nil
         messageContinuation.finish()
         // 待っている呼び出しは、止まった以上これ以上待てないので戻す
         resumeAll(&clientWaiters)
@@ -171,7 +184,15 @@ public actor WebSocketServer {
     private func register(_ connection: NWConnection) {
         guard !stopped else { return connection.cancel() }
         clients[ObjectIdentifier(connection)] = connection
-        for entry in retained { send(entry.text, to: connection) }
+        for slot in HelperEventRetentionSlot.allCases {
+            if let event = retained[slot], let text = encode(event) { send(text, to: connection) }
+        }
+        if let events = initialEvents {
+            initialEvents = nil
+            for event in events {
+                if let text = encode(event) { send(text, to: connection) }
+            }
+        }
         resumeAll(&clientWaiters)
         receiveLoop(connection)
     }

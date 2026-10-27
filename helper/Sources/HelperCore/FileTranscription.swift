@@ -178,10 +178,10 @@ public func readFileHeader(of url: URL) async throws -> FileHeader {
     return FileHeader(duration: try await duration(of: source, path: url.path), audioTrackCount: source.audioTrackCount)
 }
 
-/// `file-duration`、`file-audio-tracks` の順に、別々のキーで保持して流す。後から接続したクライアントにも、この順で届く。
-public func broadcastFileHeader(_ header: FileHeader, on server: WebSocketServer) async throws {
-    try await server.broadcastRetained(HelperEvent.fileDuration(duration: header.duration).jsonString(), key: "file-duration")
-    try await server.broadcastRetained(HelperEvent.fileAudioTracks(count: header.audioTrackCount).jsonString(), key: "file-audio-tracks")
+/// `file-duration`、`file-audio-tracks` の順に流す。後から接続したクライアントにも、この順で届く。
+public func broadcastFileHeader(_ header: FileHeader, on server: WebSocketServer) async {
+    await server.send(.fileDuration(duration: header.duration))
+    await server.send(.fileAudioTracks(count: header.audioTrackCount))
 }
 
 /// ファイルの音声を、引かれたぶんだけ読んで `AnalyzerInput` にする列。各入力は、ファイル上の位置（先頭からのフレーム数）を `bufferStartTime` に持つ。

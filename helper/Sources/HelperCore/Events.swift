@@ -39,6 +39,17 @@ public enum SpeakerOffReason: String, Sendable, Equatable {
     case 途中で停止
 }
 
+enum HelperEventRetentionSlot: CaseIterable, Sendable {
+    // 接続時の再送順は起動時のイベント到着順に依存させない。
+    case origin, screen, screenOff, tapSilent, selfPause, selfPauseState, speakerOff, fileDuration, fileAudioTracks
+}
+
+enum HelperEventDelivery: Equatable, Sendable {
+    case retain(HelperEventRetentionSlot)
+    case bufferUntilFirstClient
+    case connectedOnly
+}
+
 public enum HelperEvent: Sendable, Equatable {
     case remark(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
     case partial(track: Track, start: Double, end: Double, text: String, duplicate: Bool, words: [Word], wordTimes: [WordTime])
@@ -74,6 +85,26 @@ public enum HelperEvent: Sendable, Equatable {
     /// `相手` の話者の枠 `slot` の、主な塊の声の埋め込みの重心（長さ 1。Issue #1025）。重心が変わった枠だけを、変わるたびに最新の値で流す。
     /// サーバーはラベルごとの重心を覚え、ヘルパーを起動し直した後の新しい枠を前のラベルにつなぎ直すのに使う。ヘルパーは重心をプロセスをまたいで持たない。
     case speakerCentroid(track: Track, slot: Int, centroid: [Float])
+
+    func delivery(retained: HelperEvent?) -> HelperEventDelivery {
+        switch self {
+        case .origin: return .retain(.origin)
+        case let .screen(start, _, _, _, _):
+            if case let .screen(previousStart, _, _, _, _) = retained, start < previousStart {
+                return .connectedOnly
+            }
+            return .retain(.screen)
+        case .screenOff: return .retain(.screenOff)
+        case .tapSilent: return .retain(.tapSilent)
+        case .selfPause: return .retain(.selfPause)
+        case .selfPauseState: return .retain(.selfPauseState)
+        case .speakerOff: return .retain(.speakerOff)
+        case .fileDuration: return .retain(.fileDuration)
+        case .fileAudioTracks: return .retain(.fileAudioTracks)
+        case .remark, .partial, .speaker, .speakerSettled, .speakerMixed, .speakerCentroid:
+            return .bufferUntilFirstClient
+        }
+    }
 
     /// WebSocket のテキストフレームに載せる JSON 文字列。
     public func jsonString() throws -> String {

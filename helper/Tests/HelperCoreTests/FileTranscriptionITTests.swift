@@ -258,7 +258,7 @@ struct FileTranscriptionITTests {
         let server = WebSocketServer(port: 0)
         let port = try await server.start()
         defer { Task { await server.stop() } }
-        try await broadcastFileHeader(header, on: server)
+        await broadcastFileHeader(header, on: server)
 
         let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.resume()
