@@ -1,10 +1,10 @@
 # セッションの開始とブラウザへの送り口
 
-`server/src/sessions.ts` の開始の括弧（`openSession`）・開始の準備（`prepareMap`）・状態の門番（`current`）と、`server/src/viewers.ts` の送り口（`forSession`）・frame の種類ごとの表（`END_FRAMES`）を触るときに読む。セッションの開始に段を足すとき、状態ごとに通す操作を変えるとき、ブラウザへ送る frame の種類を足すとき、セッションの終わりに画面から何を消すかを変えるときが当てはまる。形を決めたのは仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) で、元の判断は [#1426](https://github.com/daiki-beppu/live-mindmap/issues/1426)・[#1428](https://github.com/daiki-beppu/live-mindmap/issues/1428) の解決コメントにある。
+`server/src/sessions.ts` の開始の括弧（`openSession`）・開始の準備（`prepareMap`）・状態の門番（`current`）と、`server/src/viewers.ts` の送り口（`forSession`）・frame の種類ごとの表（`END_FRAMES`）を触るときに読む。セッションの開始に段を足すとき、状態ごとに通す操作を変えるとき、ブラウザへ送る frame の種類を足すとき、web が frame を受けて読む所（`web/src/app/liveFeed/subscription.ts`・`web/src/liveFeed.ts` の `applyFrame`）を触るとき、セッションの終わりに画面から何を消すかを変えるときが当てはまる。形を決めたのは仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) で、元の判断は [#1426](https://github.com/daiki-beppu/live-mindmap/issues/1426)・[#1428](https://github.com/daiki-beppu/live-mindmap/issues/1428) の解決コメントにある。
 
 - 用語: [セッション・録画からのセッション・再生・ローカルモード・自分の休止・字幕・話者の名前](../../GLOSSARY.md)
 - ADR: [0008 ヘルパーのライフサイクルは、stop を印で、サーバーの終了を Scope で止める](../adr/0008-helper-lifecycle-on-effect.md)（Service は 3 つ）、[0009 HTTP とブラウザ向けの WebSocket は effect/http で受ける](../adr/0009-http-and-browser-socket-on-effect-http.md)（先に購読してから保持値を送る）、[0023 CLI と server は 1 つの受け渡しのモジュールを共有する](../adr/0023-cli-and-server-share-one-protocol-module.md)
-- 関連: [セッションの sink](session-sink.md)、[取り込みの試行](intake-attempts.md)
+- 関連: [セッションの sink](session-sink.md)、[取り込みの試行](intake-attempts.md)、[helper のイベントの見本](helper-events.md)、[CLI と server の受け渡し](server-protocol.md)（web のパスの縛り）
 
 ## 状態で操作を断る条件は門番 `current` の表に書く。操作の中で `Ref.get(state)` を見て guard を書かない
 
@@ -62,6 +62,8 @@
 
 frame の union は `server/src/core/viewerFrame.ts` の `ViewerFrame` Schema 1 か所に置く。server の送信型と web の受信型は、この Schema から導く。種類を足すときは core の union の Schema に追加し、`END_FRAMES` に 1 行を書く。web の `applyFrame` も `Match.discriminatorsExhaustive("type")` で網羅しているので、case を書き忘れると `pnpm typecheck` が落ちる。送信は `JSON.stringify` のままにし、union の Schema で encode しない。
 
+知らない frame は `applyFrame` まで来ない。web の Subscription の decode で止まり、次の節の警告になる。前にあった「知らない type のフレームは何も変えない」テスト（union に無い値を `as unknown as` で渡していた）は、#1619 で消した。型で起こらない入力を `applyFrame` に渡すテストを足し戻さない。
+
 後からつないだクライアントに保持値を送る順は、`END_FRAMES` のキーの順になる。行を足す位置で、つないだ直後に届く順が決まる。
 
 ## 解除の frame は、その口で送った種類にだけ届く。「終わったら必ず X が届く」と前提にしない
@@ -96,6 +98,22 @@ Effect 4 の `Queue.takeAll` は、キューが空だと 1 件届くまで待つ
 
 振る舞いを変えない作り替えでは、テストは実装の前から通る。#1452 の括弧の失敗のテスト（`$kind の $failure 失敗で準備資源を閉じ、modeを送らず、同じサーバーで再開始できる`）がそうだった。サーバーの Scope が閉じたおかげで通っているのではないことは、次の 3 点で見ている。失敗の直後に準備の資源が `opened: 1, closed: 1` になっている。`session-mode` を受けた列が `[]` のまま。同じ `Sessions` で開き直すと `opened: 2, closed: 1` になる。
 
+## web は読めない frame を読み飛ばし、ページごと・type ごとに 1 度だけ console に警告する。集合は接続でなくページの寿命で持つ
+
+`web/src/app/liveFeed/subscription.ts` は、読めない frame を Message にする前に落とし、接続を続ける。警告は「読めない画面の更新「<type>」を読み飛ばしました。server と画面の版がずれています。画面を読み込み直してください」で、画面には出さない（共有画面で字幕やマップを動かさない）。直す手段は画面の読み込み直しなので、警告済みの集合はモジュールに 1 つ置き、つなぎ直し（`RECONNECT_MS`）で空にしない。接続ごとに作ると、字幕の frame が届くたびに警告が並ぶ。
+
+分類に使うのは最上位の文字列の `type` だけで、JSON が壊れている・`type` が無い・文字列でない frame は 1 つの組（キーは `undefined`、文面では「不明」）にまとめる。server の `decodeHelperEvent` も最上位の `type` だけを見る（[取り込みの試行](intake-attempts.md)）。
+
+テストは `web/test/liveFeedSubscription.test.ts` の「読めない frame の警告」にある。`vi.resetModules()` でモジュールを読み直して新しいページを作り、1 つのテストの中では同じモジュールのまま切断とつなぎ直しを挟む。本番のコードに集合を空にする口を足さない。
+
+## 警告には Schema の失敗の位置だけを渡す。失敗の文には frame の値が入る
+
+警告に frame の本文（字幕の発言・マップの文）を書かない。`SchemaError` やその message をそのまま渡すと、合わなかった値が入る。`SchemaIssue.makeFormatterStandardSchemaV1()` で形式化した失敗から `path` だけを取り、`$.bubbles.0.track` の形にして annotations に渡す。テストは見分けのつく文字列を本文と不正な値に入れ、logger に渡った message・cause・annotations に無いことを見る。
+
+union のどの候補にも合わない frame（知らない type）の失敗の位置はルート（`path: []`、文では `$`）で、`type` の欄ではない。#1621 のテストは先に `type` を仮定して外れ、実際の位置に合わせた。
+
+decode は WebSocket の `onmessage` の中でせず、stream の中（Effect の中）でする。`onmessage` は Effect の外で呼ばれるので、そこで書いた警告は差し替えた logger に届かない。`onmessage` は受けた文字列を queue に入れるだけにしている。
+
 ## `Viewers` と sink の口を変えたら、heavy の fixture と web のテストも呼び出し側として探す
 
 #1454 で、sink に渡す口が `publish`・`speak`・`speakerNames`・`diffUpdate` の 4 本から `send` 1 本になった。このとき直す範囲は light のテストだけではなかった。heavy の `localModeView.heavy.test.ts` と fixture の `test/fixtures/appleLiveServer.ts` も `args.speak` を使っていて、`args.send` に移した。run は `pnpm --filter @live-mindmap/server test:it:heavy test/localModeView.heavy.test.ts` で、その 1 ファイルを流して確かめた。
@@ -108,3 +126,5 @@ web の `web/test/liveFeedWire.test.ts` は、server の `Viewers.layer` を直�
 - チケット [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461)、[#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452)・[PR #1465](https://github.com/daiki-beppu/live-mindmap/pull/1465)、[#1453](https://github.com/daiki-beppu/live-mindmap/issues/1453)・[PR #1495](https://github.com/daiki-beppu/live-mindmap/pull/1495)、[#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)・[PR #1507](https://github.com/daiki-beppu/live-mindmap/pull/1507)
 - takt の run: `20261024-044654-issue-1451-sessions-no-no-wo-1-c3mkub`、`20261024-062211-issue-1452-raibuto-karanosessh-vmobcg`、`20261024-085250-issue-1453-viewers-ni-sesshonn-km6w3y`、`20261024-110450-issue-1454-sesshonto-cli-play-lrmuz3` の計画・テストの報告・実装の報告・決定ログ・レビュー
 - [PR #1505](https://github.com/daiki-beppu/live-mindmap/pull/1505)（`web/test/liveFeedWire.test.ts` の出どころ）
+- 仕様 [#1609](https://github.com/daiki-beppu/live-mindmap/issues/1609)、親 [#1616](https://github.com/daiki-beppu/live-mindmap/issues/1616)、チケット [#1619](https://github.com/daiki-beppu/live-mindmap/issues/1619)・[PR #1646](https://github.com/daiki-beppu/live-mindmap/pull/1646)、[#1621](https://github.com/daiki-beppu/live-mindmap/issues/1621)・[PR #1670](https://github.com/daiki-beppu/live-mindmap/pull/1670) の差分と、#1621 の takt の run（`20261027-045938-issue-1621-web-ga-menai-frame-8kl3vw`）の計画・テストの報告・決定ログ・レビュー
+- [helper・server・web の受け渡しの形のずれを、見本と型で CI に捕まえさせた話](../devlog/2026-10-27.md#seam-contract-tests)
