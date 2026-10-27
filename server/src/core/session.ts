@@ -5,7 +5,7 @@ import { toJsonExport, type JsonExport } from "./export.ts";
 import { attributePeople } from "./people.ts";
 import { cloneNode, Dropped, emptyMap, Op, pointStatus, type DiffOutput, type MeetingMap } from "./map.ts";
 import { reflectDiff, type ReflectionState } from "./reflection.ts";
-import { anchorAfter, byStart, carriedOf, selectScreens } from "./screenSelection.ts";
+import * as ScreenQueue from "./screenQueue.ts";
 import { hasContent, Remark } from "./remark.ts";
 import { acceptInferredNames, type InferredSpeakerName } from "./speakerNames.ts";
 import type { ChangeEntry, Snapshot, SnapshotNode } from "./snapshot.ts";
@@ -126,13 +126,9 @@ export type SessionState = {
   readonly diffUpdate: DiffUpdateState;
 };
 
-type ScreenRefs = { readonly start: number; readonly image: string | null };
 export type RestoredScreens = {
-  readonly unsent: readonly ScreenRefs[];
+  readonly queue: ScreenQueue.ScreenQueue;
   readonly files: ReadonlySet<string>;
-  readonly received: number;
-  readonly carried: string | undefined;
-  readonly anchor: number | undefined;
 };
 
 const previousResponseOf = (applied: { refs: Record<string, string>; dropped: Dropped[] }): PreviousResponse | undefined =>
@@ -146,42 +142,25 @@ const decodeDiff = Schema.decodeUnknownEffect(DiffEvent);
 const decodePaused = Schema.decodeUnknownEffect(DiffUpdatePausedEvent);
 const decodeScreen = Schema.decodeUnknownEffect(ScreenEvent);
 
-type UnsentScreen = ScreenRefs & { readonly seq: number };
 type Ledger = {
   readonly remarks: Remark[];
   readonly byId: Map<string, Remark>;
   processed: readonly Remark[];
   known: ReadonlySet<string>;
   readonly files: Set<string>;
-  unsent: UnsentScreen[];
 };
 type Replay = {
   readonly map: MeetingMap | undefined;
   readonly history: ReflectionState["history"];
-  readonly received: number;
-  readonly carried: string | undefined;
-  readonly anchor: number | undefined;
-  readonly imagesSkipped: boolean;
+  readonly queue: ScreenQueue.ScreenQueue;
   readonly diffUpdate: DiffUpdateState;
 };
 
-const replayScreens = Effect.fnUntraced(function* (replay: Replay, ledger: Ledger, e: typeof DiffEvent["Type"], invalid: (reason: string) => InvalidLogEvent): Effect.fn.Return<Pick<Replay, "carried" | "anchor">, InvalidLogEvent> {
-  const selectedBefore = e.input.screenCount ?? 0;
-  if (selectedBefore > replay.received) return yield* invalid(`diff の screenCount ${selectedBefore} が、ここまでの screen の行の数 ${replay.received} より大きい`);
-  const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
-  const added = e.input.screens ?? [];
-  const candidates = e.input.fresh.length ? byStart(ledger.unsent.filter((h) => h.seq < selectedBefore && (h.start <= cutoff || h.image === replay.carried))) : [];
-  const carried = replay.imagesSkipped ? undefined : carriedOf(candidates, new Set(added.flatMap((h) => (h.image === null ? [] : [h.image]))));
-  const anchor = anchorAfter(added, replay.anchor);
-  if (e.input.fresh.length) ledger.unsent = ledger.unsent.filter((h) => h.seq >= selectedBefore || h.start > cutoff || (h.image !== null && h.image === carried));
-  return { carried: e.input.fresh.length ? carried : replay.carried, anchor };
-});
-
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
-  const ledger: Ledger = { remarks: [], byId: new Map(), processed: [], known: new Set(), files: new Set(), unsent: [] };
+  const ledger: Ledger = { remarks: [], byId: new Map(), processed: [], known: new Set(), files: new Set() };
   let replay: Replay = {
     map: undefined, history: { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
-    received: 0, carried: undefined, anchor: undefined, imagesSkipped: false, diffUpdate: { status: "running" },
+    queue: ScreenQueue.make(), diffUpdate: { status: "running" },
   };
   let index = -1;
   for (const event of events) {
@@ -198,32 +177,32 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
       ledger.byId.set(e.remark.id, e.remark);
     } else if (type === ScreenEvent.fields.type.literal) {
       const e = yield* decodeScreen(event).pipe(failed);
-      ledger.unsent.push({ start: e.start, image: e.image, seq: replay.received });
       if (e.image !== null) ledger.files.add(e.image);
-      replay = { ...replay, received: replay.received + 1 };
+      replay = { ...replay, queue: ScreenQueue.receive(replay.queue, e, replay.diffUpdate.status === "paused") };
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
       const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの diff より前に start がありません")));
       const { state } = yield* Effect.fromResult(reflectDiff({ map, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
-      const screens = yield* replayScreens(replay, ledger, e, invalid);
+      const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
+      const queue = yield* Effect.fromResult(ScreenQueue.consume(replay.queue, e, cutoff)).pipe(Effect.mapError(invalid));
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
-      replay = { ...replay, ...screens, map: state.map, history: state.history };
+      replay = { ...replay, queue, map: state.map, history: state.history };
       replay = { ...replay, diffUpdate: replay.diffUpdate.status === "paused" ? { status: "running" } : replay.diffUpdate };
     } else if (type === ScreenInputSkippedEvent.fields.type.literal) {
-      replay = { ...replay, imagesSkipped: true };
+      replay = { ...replay, queue: ScreenQueue.skipImages(replay.queue) };
     } else if (type === DiffUpdatePausedEvent.fields.type.literal) {
       const e = yield* decodePaused(event).pipe(failed);
-      replay = { ...replay, diffUpdate: { status: "paused", reason: e.reason } };
+      replay = { ...replay, queue: ScreenQueue.markPaused(replay.queue), diffUpdate: { status: "paused", reason: e.reason } };
     } else if (type === DiffUpdateResumedEvent.fields.type.literal) {
       replay = { ...replay, diffUpdate: { status: "running" } };
     }
   }
-  const { remarks, processed, known, unsent, files } = ledger;
-  const { map, history, received, carried, anchor, diffUpdate } = replay;
+  const { remarks, processed, known, files } = ledger;
+  const { map, history, queue, diffUpdate } = replay;
   const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map: restoredMap, pending, processed, remarks, known, ...history, diffUpdate, screens: { unsent: unsent.map(({ start, image }) => ({ start, image })), files, received, carried, anchor } };
+  return { map: restoredMap, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
 });
 
 export function snapshotOf(state: SessionState): Snapshot {
@@ -279,6 +258,37 @@ type Runtime = {
 
 type StartVerdict = "callInFlight" | "nothingToStart";
 
+const SCREEN_GAP_SECONDS = 10;
+
+type ScreenKey = { readonly start: number; readonly image: string | null };
+
+const byStart = <T extends { readonly start: number }>(list: readonly T[]): T[] => [...list].sort((a, b) => a.start - b.start);
+
+function selectScreens<T extends { readonly start: number; readonly image: string | null }>(
+  sorted: readonly T[], carried: string | undefined, anchor: number | undefined, cutoff: number,
+): T[] {
+  const chosen: T[] = [];
+  let a = anchor;
+  for (const h of sorted) {
+    if (h.image === null) {
+      chosen.push(h);
+    } else if (a === undefined || h.start >= a + SCREEN_GAP_SECONDS || (h.image === carried && cutoff >= a + SCREEN_GAP_SECONDS)) {
+      chosen.push(h);
+      a = h.start;
+    }
+  }
+  return chosen;
+}
+
+function carriedOf(sorted: readonly ScreenKey[], attachedFiles: ReadonlySet<string>): string | undefined {
+  const latest = sorted.at(-1);
+  return latest?.image != null && !attachedFiles.has(latest.image) ? latest.image : undefined;
+}
+
+function anchorAfter(attached: readonly ScreenKey[], previous: number | undefined): number | undefined {
+  return attached.findLast((h) => h.image !== null)?.start ?? previous;
+}
+
 type HeldScreen = { readonly start: number; readonly image: { readonly id: string; readonly file: string } | null };
 const laterStart = (latest: HeldScreen | undefined, screen: HeldScreen): HeldScreen => latest === undefined || screen.start >= latest.start ? screen : latest;
 
@@ -313,8 +323,8 @@ function takeFresh(pending: readonly Remark[], catchUpUntil: string | undefined)
   return { fresh: pending.slice(0, PACED_CALL_REMARKS), rest: pending.slice(PACED_CALL_REMARKS), catchUpUntil };
 }
 
-type InitialScreens = { readonly unsent: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
-const noScreens: InitialScreens = { unsent: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
+type InitialScreens = { readonly catchUp: HeldScreen | undefined; readonly unsent: readonly HeldScreen[]; readonly files: ReadonlySet<string>; readonly received: number; readonly carried: string | undefined; readonly anchor: number | undefined };
+const noScreens: InitialScreens = { catchUp: undefined, unsent: [], files: new Set(), received: 0, carried: undefined, anchor: undefined };
 
 export type OnSpeakerNames = (names: readonly InferredSpeakerName[]) => Effect.Effect<void>;
 
@@ -322,7 +332,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   const scope = yield* Effect.scope;
   const log = yield* SessionLog;
   const notifySpeakerNames = (accepted: readonly InferredSpeakerName[]): Effect.Effect<void> => (onSpeakerNames && accepted.length > 0 ? onSpeakerNames(accepted) : Effect.void);
-  const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, catchUpScreen: undefined, unsentScreens: screens.unsent, screenFiles: screens.files, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
+  const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, catchUpScreen: screens.catchUp, unsentScreens: screens.unsent, screenFiles: screens.files, receivedScreens: screens.received, carriedScreen: screens.carried, lastImageStart: screens.anchor });
 
   const setLifecycleState = Effect.fnUntraced(function* (state: DiffUpdateState) {
     const changed = yield* Ref.modify(ref, (s): [boolean, SessionState & Runtime] =>
@@ -581,6 +591,8 @@ export const makeTranscriptSession = (options: NewSessionOptions) => createSessi
 
 export const restoreSession = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<Session, InvalidLogEvent, Scope.Scope | DiffUpdater | SessionLog> {
   const { screens, ...state } = yield* restoreState(events);
-  const hold = (ref: ScreenRefs): HeldScreen => ({ start: ref.start, image: ref.image === null ? null : { id: ref.image, file: ref.image } });
-  return yield* openSession(state, { unsent: screens.unsent.map(hold), files: screens.files, received: screens.received, carried: screens.carried, anchor: screens.anchor }, true, 0, undefined, yield* DiffUpdater);
+  const { queue, files } = screens;
+  const unsent = queue.unsent.map((screen): HeldScreen => ({ start: screen.start, image: screen.image === null ? null : { id: screen.image, file: screen.image } }));
+  const catchUp = queue.catchUp === undefined ? undefined : unsent[queue.unsent.indexOf(queue.catchUp)];
+  return yield* openSession(state, { unsent, files, received: queue.received, carried: queue.carried, anchor: queue.anchor, catchUp }, queue.images, 0, undefined, yield* DiffUpdater);
 });

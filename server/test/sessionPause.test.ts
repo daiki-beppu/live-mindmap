@@ -3,6 +3,7 @@ import { Clock, ConfigProvider, Deferred, Effect, Exit, Fiber, FileSystem, Layer
 import { HttpClient } from "effect/http";
 import { TestClock } from "effect/testing";
 import { emptyMap, LogEvent, makeSession, restoreSession, restoreState, type DiffInput, type DiffUpdateError, type Remark, type ScreenChange } from "../src/core/index.ts";
+import * as ScreenQueue from "../src/core/screenQueue.ts";
 import { prepareChatgpt } from "../src/chatgptResponses.ts";
 import { localUpdaterLayer } from "../src/localDiffUpdater.ts";
 import { classificationRequest } from "../src/localPrompt.ts";
@@ -400,7 +401,7 @@ describe("一時停止から戻った後の小分け", () => {
     const diffs = events.filter((e) => e.type === "diff");
     expect(diffs[0]?.input.screens?.map((s) => s.start)).toEqual([5, 15, 25, 35, 45]);
     const restored = yield* restoreState(events.map((e) => JSON.parse(JSON.stringify(e)) as unknown));
-    expect(restored.screens.unsent.map((h) => h.start)).toEqual([]);
+    expect(ScreenQueue.select(restored.screens.queue, 100)).toEqual({ screenCount: 5 });
   }));
 
   it.effect("停止中にたまった画面が最後の発言のendより後でも次の回に全て添え、渡し終えた後は3枚上限に戻る", () => Effect.gen(function* () {
