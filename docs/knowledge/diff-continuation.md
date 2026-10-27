@@ -33,7 +33,7 @@ ADR 0006 のとおり、変更と仮 ID の対応を送るのは開いた query 
 
 回した先へ渡す画面は、その会話にたまっていた未送の画面（`unseen[destination]`）に、この回に core が添えた画面（`input.screens`）を切らずに続けたもの。回さなかった側の `unseen` にだけ、振り分け自身の定数 `UNSEEN_SCREENS_MAX`（3、使わない会話のために費用が膨らまないように）をかける。
 
-前は、両方の会話の `unseen` を「core と同じ」と写した `SCREENS_MAX` = 3 で切ってから渡していた。core は、一時停止の間にたまった画面（`catchUpScreen` まで）を添える回だけは `SCREENS_MAX` で切らない。そのため、既定の構成（組み込みの claude で判定の鍵があるとき）では、一時停止から戻るときに追いつきで 4 件以上たまった画面のうち、古い方が回した先へ届かなかった（[#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296)、[#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) の [PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385) で直した）。写した定数は、core の決まりの例外までは写せない。
+前は、両方の会話の `unseen` を「core と同じ」と写した `SCREENS_MAX` = 3 で切ってから渡していた。core は、一時停止の間にたまった画面（追いつきの印の画面まで。今は [共有画面のキュー](screen-queue.md) が持つ）を添える回だけは `SCREENS_MAX` で切らない。そのため、既定の構成（組み込みの claude で判定の鍵があるとき）では、一時停止から戻るときに追いつきで 4 件以上たまった画面のうち、古い方が回した先へ届かなかった（[#1296](https://github.com/daiki-beppu/live-mindmap/issues/1296)、[#1312](https://github.com/daiki-beppu/live-mindmap/issues/1312) の [PR #1385](https://github.com/daiki-beppu/live-mindmap/pull/1385) で直した）。写した定数は、core の決まりの例外までは写せない。
 
 ほかのモジュールの上限を写した定数は持たない。上限が要るなら、自分の理由をコメントに書いた自分の定数にする。decorator は、core が入力に載せた件数を減らさない。
 
