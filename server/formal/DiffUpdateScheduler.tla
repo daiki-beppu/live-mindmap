@@ -3,7 +3,9 @@
    1 つの遷移は、コードで割り込まれない 1 歩（Ref.modify / Ref.update / Ref.get の 1 回）に当たる。
    遷移ごとの注釈に session.ts の行を書く。
    含めないもの: 共有画面の選び方、マップの中身、Scope を閉じたときの中断、時刻（再試行の待ちは「いつか起きる」とする）、
-   復元（restoreSession）、push の 2 歩のうち remarks への追加とログ（pending への追加だけを見る）。 *)
+   復元（restoreSession）、push の 2 歩のうち remarks への追加とログ（pending への追加だけを見る）。
+   screenTransitions は画面の記録・受け取りと結末の記録を直列化するが、モデルの Ref の歩・条件・順序は変えない。
+   ログと画面受信、およびそれらを待つ間はこのモデルに含めず、外部処理が戻り各 Fiber が進む前提を置く。 *)
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
@@ -11,7 +13,7 @@ CONSTANTS
   Kind,         \* "cloud"（ChatGPT・Claude: 一時停止がある）か "apple"（Apple Intelligence: lifecycle と停止がある）
   MaxPauses,    \* 状態空間を有限にするための、一時停止で終わる呼び出しの数の上限
   MaxLifecycle, \* 同じく、lifecycle の running / restarting の通知の数の上限
-  CatchUp       \* PACED_CALL_REMARKS（session.ts:334）
+  CatchUp       \* PACED_CALL_REMARKS（session.ts:257）
 
 \* 成功・失敗の呼び出しは 1 件以上を処理済みにし、停止の後は呼び出しが始まらないので、呼び出しの数は次で足りる
 MaxCalls == Cardinality(Remarks) + MaxPauses + 1
@@ -65,16 +67,16 @@ Init ==
   /\ pauses = 0
 
 -----------------------------------------------------------------------------
-(* startDiffIfReady（session.ts:393–409）。2 歩に分かれる。
-   1 歩目（:397）: 条件を見て、たまった発言を取り、予約の印を置く。fork した呼び出しはすぐ動き出せる（startImmediately）。
-   2 歩目（:405）: 印が自分のものなら、running に置き換える。 *)
+(* startDiffIfReady（session.ts:312–328）。2 歩に分かれる。
+   1 歩目（:316）: 条件を見て、たまった発言を取り、予約の印を置く。fork した呼び出しはすぐ動き出せる（startImmediately）。
+   2 歩目（:324）: 印が自分のものなら、running に置き換える。 *)
 Ready(retry) ==
   /\ inFlight.kind = "none"
   /\ Len(pending) > 0
   /\ IF retry THEN retryEnabled /\ status = "paused"
               ELSE status \notin {"paused", "stopped"}
 
-\* takeFresh（:360）: たまりの印があれば先頭 CatchUp 件、無ければ全部。どちらになるかは印の有無で決まるが、ここでは両方を許す
+\* takeFresh（:282）: たまりの印があれば先頭 CatchUp 件、無ければ全部。どちらになるかは印の有無で決まるが、ここでは両方を許す
 TakeSizes == {Len(pending)} \cup {IF Len(pending) < CatchUp THEN Len(pending) ELSE CatchUp}
 
 \* base は、呼び出す者が呼び出しの Fiber のとき、その pc を進めた calls
@@ -98,7 +100,7 @@ StartSwap(a) ==
   /\ starts' = [starts EXCEPT ![a] = NoCall]
 
 -----------------------------------------------------------------------------
-\* 取り込み: 発言を 1 件ずつ pending に足し（:566）、続けて startDiffIfReady を呼ぶ（:567）
+\* 取り込み: 発言を 1 件ずつ pending に足し（:480）、続けて startDiffIfReady を呼ぶ（:481）
 PushAppend ==
   /\ pusher.pc = "append"
   /\ pusher.i <= Cardinality(Remarks)
@@ -127,10 +129,10 @@ PushNext ==
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, calls, nextCall, sleepers, nextSleeper, flusher, starts, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-(* 呼び出しの Fiber（runCall :422 と callUpdater :440）。 *)
+(* 呼び出しの Fiber（runCall :341 と callUpdater :359）。 *)
 CallUnchanged == UNCHANGED <<nextCall, sleepers, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
-\* :445 結果待ちの発言に載せる
+\* :365 結果待ちの発言に載せる
 CallBegin(c) ==
   /\ calls[c].pc = "begin"
   /\ reflecting' = calls[c].fresh
@@ -139,7 +141,7 @@ CallBegin(c) ==
 
 ResumeIfPaused == IF status = "paused" THEN "running" ELSE status
 
-\* :485–495 成功。reflectDiff が processedRemarks（1..fresh の件数）件を反映し、残りを pending の先頭へ戻す
+\* :439–450 成功。reflectDiff が processedRemarks（1..fresh の件数）件を反映し、残りを pending の先頭へ戻す
 CallSucceed(c) ==
   /\ calls[c].pc = "update"
   /\ \E k \in 1..Len(calls[c].fresh) :
@@ -150,7 +152,7 @@ CallSucceed(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :475–481 失敗（一時停止・停止以外。Apple の再起動中も含む）。reflectDiff で渡した発言を処理済みにして進む
+\* :426–433 失敗（一時停止・停止以外。Apple の再起動中も含む）。reflectDiff で渡した発言を処理済みにして進む
 CallFail(c) ==
   /\ calls[c].pc = "update"
   /\ known' = known \cup Range(calls[c].fresh)
@@ -159,7 +161,7 @@ CallFail(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<pending, inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :510–520 一時停止（cloud だけ）。渡した発言を pending の先頭へ戻す
+\* :418 一時停止（cloud だけ）。渡した発言を pending の先頭へ戻す
 CallPause(c) ==
   /\ Kind = "cloud"
   /\ calls[c].pc = "update"
@@ -171,7 +173,7 @@ CallPause(c) ==
   /\ pauses' = pauses + 1
   /\ UNCHANGED <<known, inFlight, retryEnabled, starts, nextCall, sleepers, nextSleeper, pusher, flusher, lifecycleN>>
 
-\* :505–508 停止（apple だけ）。発言を戻す歩（:506）と、状態を stopped にする歩（:507 setLifecycleState）に分かれる
+\* :407–409 停止（apple だけ）。発言を戻す歩（:408）と、状態を stopped にする歩（:409 setLifecycleState）に分かれる
 CallStop(c) ==
   /\ Kind = "apple"
   /\ calls[c].pc = "update"
@@ -180,7 +182,7 @@ CallStop(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "stopping"]
   /\ UNCHANGED <<known, inFlight, status, retryEnabled, starts>> /\ CallUnchanged
 
-\* setLifecycleState（:377–382）: stopped か同じ状態なら変えない
+\* setLifecycleState（:296–301）: stopped か同じ状態なら変えない
 SetLifecycle(s) == IF status = "stopped" \/ status = s THEN status ELSE s
 
 CallStopped(c) ==
@@ -189,20 +191,20 @@ CallStopped(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "exitClear"]
   /\ UNCHANGED <<pending, known, reflecting, inFlight, retryEnabled, starts>> /\ CallUnchanged
 
-\* :426 印を外す
+\* :345 印を外す
 CallExitClear(c) ==
   /\ calls[c].pc = "exitClear"
   /\ inFlight' = [kind |-> "none", id |-> NoCall]
   /\ calls' = [calls EXCEPT ![c].pc = "exitRead"]
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, starts>> /\ CallUnchanged
 
-\* :428–433 状態を読み、一時停止なら再試行を予約し、そうでなければ続きを呼ぶ
+\* :347–352 状態を読み、一時停止なら再試行を予約し、そうでなければ続きを呼ぶ
 CallExitRead(c) ==
   /\ calls[c].pc = "exitRead"
   /\ calls' = [calls EXCEPT ![c].pc = IF status = "paused" THEN "schedule" ELSE "start"]
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, starts>> /\ CallUnchanged
 
-\* scheduleRetry（:411–419）: retryEnabled を読む歩で、許されていれば待ちの Fiber を fork する
+\* scheduleRetry（:330–338）: retryEnabled を読む歩で、許されていれば待ちの Fiber を fork する
 CallSchedule(c) ==
   /\ calls[c].pc = "schedule"
   /\ IF retryEnabled
@@ -212,7 +214,7 @@ CallSchedule(c) ==
   /\ calls' = [calls EXCEPT ![c].pc = "done"]
   /\ UNCHANGED <<pending, known, reflecting, inFlight, status, retryEnabled, nextCall, pusher, flusher, starts, lifecycleN, pauses>>
 
-\* :433 続きを呼ぶ（startDiffIfReady()）
+\* :352 続きを呼ぶ（startDiffIfReady()）
 CallStart(c) ==
   /\ calls[c].pc = "start"
   /\ \/ StartTake(<<"call", c>>, FALSE, [calls EXCEPT ![c].pc = "swap"])
@@ -228,7 +230,7 @@ CallSwap(c) ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, nextCall, sleepers, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-\* 再試行の待ち（:418）: 待ち終えたら startDiffIfReady(true) を呼ぶ
+\* 再試行の待ち（:337）: 待ち終えたら startDiffIfReady(true) を呼ぶ
 SleeperWake(s) ==
   /\ sleepers[s] = "sleeping"
   /\ \/ /\ StartTake(<<"sleeper", s>>, TRUE, calls)
@@ -245,8 +247,8 @@ SleeperSwap(s) ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, calls, nextCall, nextSleeper, pusher, flusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-(* flush（:582–588）。取り込みを止めて読み終えた後（sessions.ts stopLive の drain の後）に呼ばれる。
-   idle（:546–553）: 印が無ければ抜け、予約の印だけなら順番を譲り、running なら Fiber の終わりを待つ。 *)
+(* flush（:497–503）。取り込みを止めて読み終えた後（sessions.ts stopLive の drain の後）に呼ばれる。
+   idle（:460–467）: 印が無ければ抜け、予約の印だけなら順番を譲り、running なら Fiber の終わりを待つ。 *)
 FlushUnchanged == UNCHANGED <<pending, known, reflecting, inFlight, status, calls, nextCall, sleepers, nextSleeper, pusher, starts, lifecycleN, pauses>>
 
 FlushBegin ==
@@ -265,7 +267,7 @@ FlushIdle ==
         /\ flusher' = "idle"
   /\ UNCHANGED retryEnabled /\ FlushUnchanged
 
-\* :586 startDiffIfReady() の答えで決める。呼び出し中の印があれば（callInFlight）idle に戻る。取れたら（callInFlight）置き換えてから idle に戻る。
+\* :501 startDiffIfReady() の答えで決める。呼び出し中の印があれば（callInFlight）idle に戻る。取れたら（callInFlight）置き換えてから idle に戻る。
 \* 取れなければ（nothingToStart: たまりが無いか、一時停止・停止）抜ける。印とたまりを同じ 1 歩で見る
 FlushStart ==
   /\ flusher = "start"
@@ -287,7 +289,7 @@ FlushSwap ==
   /\ UNCHANGED <<pending, known, reflecting, status, retryEnabled, calls, nextCall, sleepers, nextSleeper, pusher, lifecycleN, pauses>>
 
 -----------------------------------------------------------------------------
-\* lifecycle（:383–385、apple だけ）: Apple Intelligence の子プロセスの再起動（appleDiffUpdater.ts:36–52）。どの時点にも割り込む
+\* lifecycle（:302–304、apple だけ）: Apple Intelligence の子プロセスの再起動（appleDiffUpdater.ts:36–52）。どの時点にも割り込む
 Lifecycle ==
   /\ Kind = "apple"
   /\ \/ /\ lifecycleN < MaxLifecycle
