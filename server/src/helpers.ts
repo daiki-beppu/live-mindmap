@@ -78,8 +78,7 @@ export class HelperInstallFailure extends Schema.TaggedError<HelperInstallFailur
 }) {}
 
 export class Helpers extends Context.Service<Helpers, {
-  check: Effect.Effect<HelperCheck, HelperCheckFailure>;
-  checkNoScreen: Effect.Effect<HelperCheck, HelperCheckFailure>;
+  check: (options: { readonly screen: boolean }) => Effect.Effect<HelperCheck, HelperCheckFailure>;
   installSpeechJa: Stream.Stream<string, HelperInstallFailure>;
   creationDate: (file: string) => Effect.Effect<string | null, HelperCreationDateFailure>;
   apps: Effect.Effect<unknown>;
@@ -137,10 +136,10 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     }),
   ).pipe(Effect.catchTag("PlatformError", (error) => listFailed(`ヘルパーの list が失敗しました: ${error.message}`)));
 
-  const check = Effect.fnUntraced(function* (noScreen: boolean) {
-    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["check", ...(noScreen ? ["--no-screen"] : [])], { forceKillAfter: stopTimeoutMs });
+  const check = Effect.fnUntraced(function* (options: { readonly screen: boolean }) {
+    const { stdout, stderr, code } = yield* runHelperCommand(spawner, helper, ["check", ...(options.screen ? [] : ["--no-screen"])], { forceKillAfter: stopTimeoutMs });
     if (code !== 0) return yield* new HelperCheckFailure({ message: `ヘルパーの check が失敗しました: ${stderr.trim() || `終了コード ${code}`}` });
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(noScreen ? HelperCheckNoScreenSchema : HelperCheckSchema))(stdout);
+    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(options.screen ? HelperCheckSchema : HelperCheckNoScreenSchema))(stdout);
   }, Effect.scoped, Effect.mapError((error) => new HelperCheckFailure({ message: error.message })));
 
   const creationDate = Effect.fnUntraced(function* (file: string) {
@@ -236,5 +235,5 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     return { events: socket.events, stop, exit: Deferred.await(exited), stderrTail, send };
   });
 
-  return Helpers.of({ apps, launch, check: check(false), checkNoScreen: check(true), installSpeechJa, creationDate });
+  return Helpers.of({ apps, launch, check, installSpeechJa, creationDate });
 });

@@ -111,6 +111,14 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 
 [#1452](https://github.com/daiki-beppu/live-mindmap/issues/1452) は、利用者に見える振る舞いを変えない作り替えだった。足した 4 条件のテストは、実装の前から全部通った。実装の担当は「失敗を作るために契約を広げない」と書いて先へ進み、レビューもそれを認めた。test-first の段で赤が出ないことを不備と読まない。代わりに、何が壊れたら落ちるテストかを本文に書いておく（[セッションの開始とブラウザへの送り口](session-start-and-viewers.md) の括弧の失敗のテスト）。
 
+[#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624) も同じ形だった。新しい作り方（`withoutTabDetection()`）の単体テストの red は、その作り方が無いことによるコンパイルエラーだけで、中で前の空文字を渡すだけの実装でも通る。守りたい約束（読み終えたら保留を流す）は今の入力では破れず、仕様も入口の IT を禁じていた。5 観点のうち 4 つが「動かして確かめていない」を指摘にしない懸念に書き、裁定は持ち越した。このときは、動かしていないことを実装の報告に書かせ、守りを作り方の名前と注に置く（[録画からのセッションの helper の経路](recorded-helper-relay.md) の最後の節）。
+
+## 計画が置いた縛りの中で直しが成り立たないと、fix の段は完了を取り消して再計画へ戻す。縛りは計画の側で外す
+
+[#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625) の直しの計画は「判定器が画面の `start` を決めるやり方は変えない」と縛っていた。1 回目の fix は、黒い固定画面と全面が変わる画面で通り、いったん完了を報告した。その後に ai-antipattern の companion が、小さな変化が固定する動画で進みが止まる反例を出した。fix の担当は、その差分を無視すると後で過去の `start` の画面が出て順が壊れることも確かめ、縛りの中では両立しないと判断した。本番のコードに手を入れないまま完了を取り消し、run は fix-replan に進んで縛りを外した。2 回目の fix・検証・2 回目のレビューは全員 APPROVE で通った。
+
+run の所要時間は、1 周で通った #1624 の 44 分に対して 1 時間 51 分で、増えた分のほとんどは 2 回の fix（19 分・16 分）と再計画（7 分）だった。計画の縛り（「〜は変えない」）は、直しの段で崩れることがある。仕様が決めたことでない縛りを計画が置いていたら、レビューの差し戻しの後に疑う。
+
 ## マージの run の「fix: apply TAKT PR review changes」は、CI の直しのことがある。中身は本体の `.takt/runs/` の報告で見る
 
 [PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461) には「fix: apply TAKT PR review changes」のコミットがある。けれども PR のレビューは APPROVE で、指摘は無かった。このコミットは、マージの run（`20261024-052049-merge-pr-1461-4jlyjc`）が CI の light IT の失敗を調べて直したものだった。直したのは、PR が持ち込んだのではないテストの待ちの不足だった（[セッションの sink](session-sink.md) の録画の stop の節）。run は、CI の失敗 → `investigate_ci`（判定 `defect`）→ `fix_ci` → 直しのレビュー → push → CI が緑、の順に進んだ。
@@ -131,3 +139,4 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 - 仕様 [#1437](https://github.com/daiki-beppu/live-mindmap/issues/1437) の子 [#1447](https://github.com/daiki-beppu/live-mindmap/issues/1447)・[PR #1517](https://github.com/daiki-beppu/live-mindmap/pull/1517)、[#1448](https://github.com/daiki-beppu/live-mindmap/issues/1448)・[PR #1520](https://github.com/daiki-beppu/live-mindmap/pull/1520) の takt の run（`20261024-150123-issue-1447-no-no-miworoguwo-ku-yghm6h`・`20261024-181251-issue-1448-cli-play-de-shita-n-zxileb`）の報告と、#1447 のマージの run（`20261024-160015-merge-pr-1517-obxbck`）の報告。[開発ログ](../devlog/2026-10-25.md#speaker-name-wrap)
 - 仕様 [#1438](https://github.com/daiki-beppu/live-mindmap/issues/1438) の子 [#1446](https://github.com/daiki-beppu/live-mindmap/issues/1446)・[PR #1515](https://github.com/daiki-beppu/live-mindmap/pull/1515) の takt の run（`20261024-133903-issue-1446-cli-no-mi-wo-sessio-ruhfky`）のレビューと裁定の報告。[開発ログ](../devlog/2026-10-25.md#session-log-reader)
 - 仕様 [#1593](https://github.com/daiki-beppu/live-mindmap/issues/1593) の子 [#1595](https://github.com/daiki-beppu/live-mindmap/issues/1595)・[#1596](https://github.com/daiki-beppu/live-mindmap/issues/1596)・[#1597](https://github.com/daiki-beppu/live-mindmap/issues/1597) の takt の run（`20261026-061655-issue-1595-wo-1-tsuno-mi-minis-2ryel7`・`20261026-072819-issue-1596-raibuno-no-wo-no-mi-ufij5c`・`20261026-094505-issue-1597-logmetrics-wo-no-mi-uu6mix`）の trace と報告。[開発ログ](../devlog/2026-10-26.md#reflect-fold)
+- 仕様 [#1612](https://github.com/daiki-beppu/live-mindmap/issues/1612) の子 [#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624)・[PR #1641](https://github.com/daiki-beppu/live-mindmap/pull/1641)、[#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625)・[PR #1644](https://github.com/daiki-beppu/live-mindmap/pull/1644) の takt の run（`20261026-170454-issue-1624-no-no-wo-tabuwo-shi-q0xe0t`・`20261026-185815-issue-1625-karanosesshonno-hel-hdfs52`）の trace と reports、[録画を読む経路を 1 本にしたとき](../devlog/2026-10-27.md#recorded-relay-one-path)

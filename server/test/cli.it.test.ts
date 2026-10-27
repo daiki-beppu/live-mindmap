@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -30,7 +31,7 @@ import { ManagedDeps } from "../src/managedDeps.ts";
 import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 import chromiumManifest from "../managed-deps/chromium/package.json" with { type: "json" };
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
-import { readyHelperChecks } from "./fixtures/helperCheck.ts";
+import { helperChecks } from "./fixtures/helperCheck.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
 import { fakeReadings, type FakeReadings } from "./fixtures/readings.ts";
 import { AppleIntelligence } from "../src/appleIntelligence.ts";
@@ -289,7 +290,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     oauth.control.refreshExpired = condition === "更新不能の期限切れ";
     oauth.control.ineligible = condition === "対象外プラン";
     const launches: string[][] = [];
-    const helpers = Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
+    const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
       launches.push([...args]);
       const queue = yield* Queue.make<string, Cause.Done>();
       const exited = yield* Deferred.make<HelperExitInfo>();
@@ -301,7 +302,7 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     const preparation = Layer.mergeAll(deps.layer, Layer.succeed(HttpClient.HttpClient, oauth.client));
     const server = yield* startedServer({ port: 0, sessionsDir: sessions }, {
       helpers, managedDeps: readyManagedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(preparation, fakeReadings().layer))),
+      sessionSinks: SessionSinks.layer.pipe(Layer.provide(Layer.mergeAll(preparation, fakeReadings().layer))), startupChecks: StartupChecks.layer({ prepareUpdater: planLayer }).pipe(Layer.provide(Layer.mergeAll(preparation, fakeReadings().layer))),
     });
     const snapshots: Snapshot[] = [];
     yield* Effect.acquireRelease(Effect.tryPromise(() => new Promise<WebSocket>((resolve, reject) => {
@@ -353,8 +354,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const speechJa = { status: "installed" as const, installedLocales: ["ja-JP"] };
     const service = {
       apps: Effect.succeed([]),
-      check: Effect.sync(() => { checks.push(true); return { microphone, screenCapture, speechJa }; }),
-      checkNoScreen: Effect.sync(() => { checks.push(false); return { microphone, speechJa }; }),
+      check: ({ screen }: { readonly screen: boolean }) => Effect.sync(() => { checks.push(screen); return { microphone, ...(screen ? { screenCapture } : {}), speechJa }; }),
       creationDate: () => Effect.succeed(null),
       launch: (args: ReadonlyArray<string>) => Effect.gen(function* () {
         launches.push([...args]);
@@ -368,7 +368,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const server = yield* startedServer({ port: 0, sessionsDir }, {
       helpers: Layer.succeed(Helpers, Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") })),
       managedDeps,
-      sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({
+      sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ readings }))), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: Layer.succeed(DiffUpdater, DiffUpdater.of({
         update: () => Effect.succeed({ ops: [] }),
         // 英字の語のカタカナの読み（Issue #642）。Zendesk だけ答える
         katakana: (words) => Effect.succeed(words.filter((w) => w === "Zendesk").map((surface) => ({ surface, katakana: "ゼンデスク" }))),

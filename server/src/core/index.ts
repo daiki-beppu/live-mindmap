@@ -56,6 +56,7 @@ export * from "./speakers.ts";
 export * from "./topic.ts";
 export * from "./transcript.ts";
 export * from "./viewingShare.ts";
+export * from "./viewerFrame.ts";
 export * from "./vocabularyPool.ts";
 export * from "./words.ts";
 export * from "./recordedProgress.ts";

@@ -1,18 +1,15 @@
-import { Effect, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
+import { HelperCheckFailure, type HelperCheck } from "../../src/helpers.ts";
 
-export const readyHelperChecks = {
-  check: Effect.succeed({ microphone: "authorized" as const, screenCapture: true, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } }),
-  checkNoScreen: Effect.succeed({ microphone: "authorized" as const, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } }),
+const ready: HelperCheck = { microphone: "authorized", screenCapture: true, speechJa: { status: "installed", installedLocales: ["ja-JP"] } };
+
+export const helperChecks = (state: HelperCheck | HelperCheckFailure = ready) => ({
+  check: ({ screen }: { readonly screen: boolean }) => Schema.is(HelperCheckFailure)(state)
+    ? Effect.fail(state)
+    : Effect.succeed({ microphone: state.microphone, speechJa: state.speechJa, ...(screen ? { screenCapture: state.screenCapture ?? false } : {}) }),
   installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない"),
   creationDate: (_file: string) => Effect.succeed(null),
-};
-
-export const forbiddenHelperChecks = {
-  check: Effect.die("このテストではヘルパーを確認しない"),
-  checkNoScreen: Effect.die("このテストではヘルパーを確認しない"),
-  installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない"),
-  creationDate: (_file: string) => Effect.die("このテストではファイルの作成日時を読まない"),
-};
+});
 
 export const readyHelperItems = [
   { name: "helper", need: "required", state: "ready", install: "swift build -c release --package-path helper" },

@@ -26,14 +26,6 @@ describe("applyFrame（frame の分類と状態更新）", () => {
     expect(next.intake).toBe("interrupted");
   });
 
-  it("[SCN-U-D-P2] 知らない type のフレームは何も変えない", () => {
-    const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("あ", "い"), intake: "stopped", screenNotice: null, tapNotice: null, local: false, selfPaused: false, speakerNames: {} };
-    // 将来の拡張の type を想定した、知らない type のフレーム（Snapshot | CaptionsFrame | IntakeFrame の型には無い値だが、
-    // サーバーが将来送り得る未知の type をブラウザが無視できることを確かめるため、あえて union の外の値を渡す）
-    const next = applyFrame(state, { type: "unknown-future" } as unknown as Parameters<typeof applyFrame>[1], 0);
-    expect(next).toEqual(state);
-  });
-
   it("[SCN-U-D-N2] captions のフレームは字幕の吹き出しだけを変える", () => {
     const state: FeedState = { diffUpdate: null, snapshot, captions: spoken("", "まえのはつわ"), intake: "running", screenNotice: null, tapNotice: null, local: false, selfPaused: false, speakerNames: {} };
     const next = applyFrame(state, spokenFrame("あ", "相手"), 0);

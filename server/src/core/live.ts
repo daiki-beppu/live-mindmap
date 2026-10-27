@@ -49,7 +49,7 @@ export type SpeakerLogEvent = Extract<HelperEvent, { type: "speaker" | "speaker-
 export const HelperPartial = Schema.Struct(helperRemarkFields);
 export type HelperPartial = typeof HelperPartial["Type"];
 
-export type DecodedHelperEvent = { kind: "known"; event: HelperEvent } | { kind: "unknown" };
+export type DecodedHelperEvent = { kind: "known"; event: HelperEvent } | { kind: "unknown"; type: string };
 
 const KNOWN_TYPES: ReadonlySet<string> = new Set(HelperEvent.members.map((member) => member.fields.type.literal));
 
@@ -60,6 +60,6 @@ const decodeEvent = Schema.decodeUnknownEffect(HelperEvent);
 export const decodeHelperEvent = Effect.fnUntraced(function* (input: string): Effect.fn.Return<DecodedHelperEvent, Schema.SchemaError> {
   const json = yield* decodeJson(input);
   const { type } = yield* decodeType(json);
-  if (!KNOWN_TYPES.has(type)) return { kind: "unknown" };
+  if (!KNOWN_TYPES.has(type)) return { kind: "unknown", type };
   return { kind: "known", event: yield* decodeEvent(json) };
 });

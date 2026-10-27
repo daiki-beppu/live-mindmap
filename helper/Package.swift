@@ -40,7 +40,7 @@ let package = Package(
         .executableTarget(name: "live-mindmap-helper", dependencies: ["HelperCore"]),
         .target(name: "AppleIntelligenceCore"),
         .executableTarget(name: "live-mindmap-apple", dependencies: ["AppleIntelligenceCore"]),
-        .testTarget(name: "HelperCoreTests", dependencies: ["HelperCore", "AppleIntelligenceCore"]),
+        .testTarget(name: "HelperCoreTests", dependencies: ["HelperCore", "AppleIntelligenceCore"], exclude: ["Fixtures"]),
         // 音声認識の確定の遅れを測る開発者向けの道具（Issue #97）。製品には含めない
         .executableTarget(name: "stt-bench", dependencies: ["HelperCore"]),
         .testTarget(name: "SttBenchTests", dependencies: ["stt-bench", "HelperCore"]),

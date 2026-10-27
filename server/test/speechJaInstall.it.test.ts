@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
@@ -28,9 +29,13 @@ const resource = Effect.fnUntraced(function* () {
   const release = yield* Deferred.make<void>();
   const state = { status: "supported" as HelperCheck["speechJa"]["status"], fail: false, checkFails: false, markInstalled: true, installs: 0, closed: 0 };
   const managedRequests: ReadonlyArray<string>[] = [];
-  const checked = Effect.suspend(() => state.checkFails
-    ? Effect.fail(new HelperCheckFailure({ message: "合成のモデル確認失敗" }))
-    : Effect.succeed({ microphone: "authorized" as const, screenCapture: true, speechJa: { status: state.status, installedLocales: ["ja-JP"] } }));
+  const checks: boolean[] = [];
+  const checked = ({ screen }: { readonly screen: boolean }) => Effect.suspend(() => {
+    checks.push(screen);
+    return state.checkFails
+      ? Effect.fail(new HelperCheckFailure({ message: "合成のモデル確認失敗" }))
+      : Effect.succeed({ microphone: "authorized" as const, ...(screen ? { screenCapture: true } : {}), speechJa: { status: state.status, installedLocales: ["ja-JP"] } });
+  });
   const installSpeechJa = Stream.concat(
     Stream.fromEffect(Effect.sync(() => { state.installs++; return "日本語モデルを取得中"; })),
     Stream.fromEffect(Effect.gen(function* () {
@@ -56,12 +61,12 @@ const resource = Effect.fnUntraced(function* () {
       }) };
     })),
   });
-  const helpers = { check: checked, checkNoScreen: checked, creationDate: () => Effect.succeed(null), installSpeechJa,
+  const helpers = { check: checked, creationDate: () => Effect.succeed(null), installSpeechJa,
     apps: Effect.die("導入は会議アプリを取得しない"), launch: () => Effect.die("導入はセッションを開始しない"),
   };
   const server = yield* startedServer({ port: 0, sessionsDir: join(root, "sessions") }, {
     helpers: Layer.succeed(Helpers, Helpers.of(helpers)), managedDeps: Layer.succeed(ManagedDeps, deps),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
   });
   const cliLayer = Layer.mergeAll(
     forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
@@ -72,7 +77,7 @@ const resource = Effect.fnUntraced(function* () {
     })),
   );
   const cli = (args: string[]) => runCliEntry(args, cliLayer);
-  return { root, state, managedRequests, server, release, cli, cliLayer };
+  return { root, state, checks, managedRequests, server, release, cli, cliLayer };
 });
 
 describe("speech-ja のサーバー経由の導入", () => {
@@ -81,10 +86,12 @@ describe("speech-ja のサーバー経由の導入", () => {
     const before = yield* r.cli(["check"]);
     expect(before.code).toBe(3);
     expect(JSON.parse(before.stdout).items.filter((item: { name: string }) => item.name === "speech-ja")).toEqual([{ ...speechItem, state: "missing" }]);
+    expect(r.checks).toEqual([true]);
     yield* Deferred.succeed(r.release, undefined);
     const installed = yield* r.cli(["install", "speech-ja"]);
     expect(installed.code).toBe(0);
     expect(JSON.parse(installed.stdout)).toEqual([speechItem]);
+    expect(r.checks).toEqual([true, false]);
     expect(installed.stderr).toContain("日本語モデルを取得中\n");
     expect(installed.stderr).toContain("日本語モデルの取得完了\n");
     expect(r.state.installs).toBe(1);
@@ -93,10 +100,12 @@ describe("speech-ja のサーバー経由の導入", () => {
     const after = yield* r.cli(["check"]);
     expect(after.code).toBe(0);
     expect(JSON.parse(after.stdout)).toMatchObject({ ready: true, items: expect.arrayContaining([speechItem]) });
+    expect(r.checks).toEqual([true, false, true]);
     r.state.status = "supported";
     const changed = yield* r.cli(["check"]);
     expect(changed.code).toBe(3);
     expect(JSON.parse(changed.stdout)).toMatchObject({ ready: false, items: expect.arrayContaining([{ ...speechItem, state: "missing" }]) });
+    expect(r.checks).toEqual([true, false, true, true]);
   }).pipe(Effect.scoped));
 
   it.live("710-4: 混在要求は Claude だけ ManagedDeps に渡し、導入対象だけをまとめて返す", () => Effect.gen(function* () {

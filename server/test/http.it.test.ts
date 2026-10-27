@@ -1,8 +1,8 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { randomBytes } from "node:crypto";
 import { connect as netConnect } from "node:net";
 import { WebSocket } from "ws";
 import { ManagedDeps } from "../src/managedDeps.ts";
-import claudeManifest from "../managed-deps/claude/package.json" with { type: "json" };
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
@@ -53,15 +53,9 @@ type AttemptScript = {
 
 const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } = { microphone: "authorized", screenCapture: true }) => {
   const calls: string[][] = [];
-  const checks: boolean[] = [];
   const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
-  const check = Effect.sync(() => {
-    checks.push(true);
-    return { ...permission, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
-  });
-  const checkNoScreen = Effect.sync(() => {
-    checks.push(false);
-    return { microphone: permission.microphone, speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
+  const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => {
+    return { microphone: permission.microphone, ...(screen ? { screenCapture: permission.screenCapture } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
   });
   const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) =>
     Effect.gen(function* () {
@@ -95,8 +89,8 @@ const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "a
       yield* Effect.addFinalizer(() => Effect.ignore(stop));
       return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exitDeferred), stderrTail: Effect.succeed(script.stderrTail ?? []), send: (instruction: { type: string; paused: boolean }) => Effect.sync(() => { if (instruction.type === "self-pause") sent.push(instruction.paused); }) };
     });
-  const service = { apps: Effect.succeed(apps), check, checkNoScreen, creationDate: () => Effect.succeed(null), launch };
-  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, checks, sent };
+  const service = { apps: Effect.succeed(apps), check, creationDate: () => Effect.succeed(null), launch };
+  return { helpers: Helpers.of({ ...service, installSpeechJa: Stream.die("このテストでは日本語モデルを導入しない") }), calls, sent };
 };
 
 const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptScript[], options: { managedDeps?: Layer.Layer<ManagedDeps>; updaterLayer?: () => Layer.Layer<DiffUpdater>; permission?: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean }; viewing?: ServerLayers["viewing"] } & Pick<ExportServicesOptions, "capture"> = {}) {
@@ -106,15 +100,16 @@ const resourceWithFakeHelpers = Effect.fnUntraced(function* (attempts: AttemptSc
   );
   const sessionsDir = join(dir, "sessions");
   const fakeHelpers = makeFakeHelpers(attempts, options.permission);
-  const sessionSinksLayer = SessionSinks.layer({
+  const startupChecks = StartupChecks.layer({
     prepareUpdater: () => Effect.succeed({ layer: options.updaterLayer ? options.updaterLayer() : updaterLayer(() => Effect.succeed({ ops: [] })) }),
   }).pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
+  const sessionSinksLayer = SessionSinks.layer.pipe(Layer.provide(fakeExportServices({ capture: options.capture })));
   const server = yield* startedServer(
     { port: 0, sessionsDir },
-    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
+    { helpers: Layer.succeed(Helpers)(fakeHelpers.helpers), startupChecks, sessionSinks: sessionSinksLayer, managedDeps: options.managedDeps ?? readyManagedDeps, ...(options.viewing === undefined ? {} : { viewing: options.viewing }) },
   );
   return {
-    server, calls: fakeHelpers.calls, checks: fakeHelpers.checks, sent: fakeHelpers.sent, sessionsDir,
+    server, calls: fakeHelpers.calls, sent: fakeHelpers.sent, sessionsDir,
     request: (method: string, path: string, body: string | undefined, origin: string | undefined) => fetch(
       `http://127.0.0.1:${server.port}${path}`,
       { method, headers: { "content-type": "application/json", ...(origin === undefined ? {} : { origin }) }, ...(body === undefined ? {} : { body }) },
@@ -424,49 +419,6 @@ describe("HTTP の失敗応答（要件8〜11）", () => {
 });
 
 describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサーバー。CT-ENTRY-LAYERS）", () => {
-  it.live("711-2: HTTP start は版違いの必須 SDK を警告して開始する", () => Effect.gen(function* () {
-    const service = {
-      executable: () => Effect.die("実行ファイル取得は対象外"),
-      check: () => Effect.succeed([{ name: "claude" as const, need: "optional" as const, state: "outdated" as const, version: "0.0.0" }]),
-      load: () => Effect.die("偽 updater は SDK を読まない"),
-      install: () => Stream.die("開始は導入しない"), update: () => Stream.die("開始は更新しない"),
-    };
-    const r = yield* resourceWithFakeHelpers([{}], { managedDeps: Layer.succeed(ManagedDeps, ManagedDeps.of(service)) });
-    const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
-    expect(response.status).toBe(200);
-    const body = yield* Effect.tryPromise(() => response.json());
-    expect(body.warnings).toEqual([`警告: claude（Claude Agent SDK、約 224MB） が版違いです（入っている版 0.0.0、固定版 ${claudeManifest.dependencies["@anthropic-ai/claude-agent-sdk"]}）。そろえるには: pnpm cli update claude`]);
-    expect(r.calls).toHaveLength(1);
-    const status = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
-    expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir: body.dir });
-  }));
-
-  it.live.each([
-    { microphone: "authorized", screenCapture: true, warnings: [] },
-    { microphone: "denied", screenCapture: false, warnings: ["マイクの許可がありません。自分の声が入りません", "画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] },
-    { microphone: "notDetermined", screenCapture: true, warnings: ["マイクの許可が未決定です。開始時に許可のダイアログが出ます"] },
-  ] as const)("C2: $microphone / screen=$screenCapture でも警告して開始する", ({ microphone, screenCapture, warnings }) => Effect.gen(function* () {
-    const r = yield* resourceWithFakeHelpers([{}], { permission: { microphone, screenCapture } });
-    const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false}', undefined));
-    expect(response.status).toBe(200);
-    const body = yield* Effect.tryPromise(() => response.json());
-    expect(body.warnings ?? []).toEqual(warnings);
-    expect(r.checks).toEqual([true]);
-    expect(r.calls).toHaveLength(1);
-    const status = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
-    expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir: body.dir });
-  }));
-
-  it.live("C4: screen=false は画面の確認と警告を省き、マイクの警告だけで開始する", () => Effect.gen(function* () {
-    const r = yield* resourceWithFakeHelpers([{}], { permission: { microphone: "denied", screenCapture: false } });
-    const response = yield* Effect.tryPromise(() => r.request("POST", "/session/start", '{"app":"us.zoom.xos","audio":false,"screen":false}', undefined));
-    expect(response.status).toBe(200);
-    expect((yield* Effect.tryPromise(() => response.json())).warnings).toEqual(["マイクの許可がありません。自分の声が入りません"]);
-    expect(r.checks).toEqual([false]);
-    expect(r.calls).toHaveLength(1);
-    expect(r.calls[0]).toContain("--no-screen");
-  }));
-
   it.live.each([false, true])("C2・C4: resume と check resume は保存済み screen=%s で許可を確認する", (screen) => Effect.gen(function* () {
     const permission = { microphone: "authorized" as "authorized" | "denied", screenCapture: false };
     const r = yield* resourceWithFakeHelpers([
@@ -494,7 +446,6 @@ describe("新しい入口（偽の Helpers・SessionSinks を受け取れるサ�
       "マイクの許可がありません。自分の声が入りません",
       ...(screen ? ["画面収録の許可がありません。共有画面は読まず、音声だけで始めます"] : []),
     ]);
-    expect(r.checks).toEqual([screen, screen, screen]);
     const status = yield* Effect.tryPromise(() => r.request("GET", "/session/status", undefined, undefined));
     expect(yield* Effect.tryPromise(() => status.json())).toMatchObject({ status: "running", dir, restarts: 1 });
   }));

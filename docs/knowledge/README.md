@@ -14,6 +14,7 @@
 - [過去のセッションのフォルダの読み側](session-folder-reading.md): `log.jsonl` などを読む CLI のコマンドや bench を足す・変えるとき、壊れた行の失敗の文を触るとき
 - [話者の名前の包み](speaker-names.md): 話者の名前を持つ・出す処理（`openLogged` の `nameSpeaker`）と、それを通るライブ・再生・評価・bench を触るとき、名前の推定のプロンプトを変えて前後を比べるとき
 - [差分更新の反映](reflection.md): ログの `diff` の行をセッションの状態に当てる `reflectDiff` と、それを呼ぶライブ・復元・計測を触るとき
+- [録画からのセッションの helper の経路](recorded-helper-relay.md): helper がファイルの音声と映像を読んで server に送る入口（`relayFileSession`）・映像の読み手・録画の進み（`fileProgress`）を触るとき
 - [takt の run](takt-runs.md): takt で実装させるとき、run の報告を読むとき
 - [README の 2 つの版](readme-versions.md): 英語の `README.md` と日本語の `README.ja.md` を直すとき、ファイルを移す PR をマージするとき
 
@@ -92,3 +93,7 @@
 - チケット [#1449](https://github.com/daiki-beppu/live-mindmap/issues/1449)・[PR #1521](https://github.com/daiki-beppu/live-mindmap/pull/1521) の差分 → [話者の名前の包み](speaker-names.md)。sub-issue に resolution コメントは無かった
 - #1449 の takt の run（`20261024-185745-issue-1449-bench-no-sttreplay-93spin`）の trace と reports → 捨てた: 計画どおり 1 周で通り、消えた口の契約のテスト 1 本を消した件も今の状態に残らない。マージの run（`20261024-192400-merge-pr-1521-llximw`）も同じく一直線で、新しい学びが無い
 - [差分更新の結果を状態に当てる手順を 1 つの純粋な畳み込みにまとめたとき](../devlog/2026-10-26.md#reflect-fold) → [ADR 0024](../adr/0024-reflect-diff-row-in-one-pure-fold.md)、[差分更新の反映](reflection.md)、[takt の run](takt-runs.md)。用語は足さなかった: 「反映」は #1595 で用語集に入っている。仕様を書く前の写しの食い違い（16 回一緒に変わった）は ADR の Considered Options に寄せた
+- [録画を読む経路を 1 本にしたとき](../devlog/2026-10-27.md#recorded-relay-one-path)、仕様 [#1612](https://github.com/daiki-beppu/live-mindmap/issues/1612)（Formal Spec のコメントを含む）・親 [#1623](https://github.com/daiki-beppu/live-mindmap/issues/1623) → [録画からのセッションの helper の経路](recorded-helper-relay.md)、[takt の run](takt-runs.md)。用語は足さなかった: 仕様が「新しいドメインの言葉は増えない」と決めていて、`fileProgress`・`withoutTabDetection` は判定器の設定。ADR は立てなかった: 画面の `start` を進みで下限にする判断は、helper の中だけで後から戻せる
+- チケット [#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624)・[PR #1641](https://github.com/daiki-beppu/live-mindmap/pull/1641)、[#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625)・[PR #1644](https://github.com/daiki-beppu/live-mindmap/pull/1644) の差分 → [録画からのセッションの helper の経路](recorded-helper-relay.md)。sub-issue に resolution コメントは無かった。PR の本文は本文の写しと「Workflow `default` completed successfully.」だけで、層の結果は run の報告で読んだ
+- #1624 の takt の run（`20261026-170454-issue-1624-no-no-wo-tabuwo-shi-q0xe0t`）の trace と reports → [takt の run](takt-runs.md)、[録画からのセッションの helper の経路](recorded-helper-relay.md)。takt の worktree に依存が無く最初の `pnpm typecheck` が `tsc: command not found` で落ちた件は捨てた: [takt の run](takt-runs.md) の 1 節目にある
+- #1625 の takt の run（`20261026-185815-issue-1625-karanosesshonno-hel-hdfs52`）の trace と reports → [録画からのセッションの helper の経路](recorded-helper-relay.md)、[takt の run](takt-runs.md)。1 回目の直しの途中で `WebSocketServerITTests.closingRelayFinishesPendingScreenSends` が 1 度だけ時間切れになった件は捨てた: 並行ビルドの後の流し直しで通り、原因は確かめられていない

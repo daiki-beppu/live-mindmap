@@ -17,7 +17,8 @@ import { ReviewBuild } from "./review.ts";
 import { layerListener, serveSessions } from "./http.ts";
 import { portOf } from "./httpServing.ts";
 import { Sessions, SessionsDir } from "./sessions.ts";
-import { SessionSinks, type SessionSinksDeps } from "./sessionSinks.ts";
+import { SessionSinks } from "./sessionSinks.ts";
+import { StartupChecks, type StartupChecksDeps } from "./startupChecks.ts";
 import { Tunnel } from "./tunnel.ts";
 import { Viewers } from "./viewers.ts";
 import { ViewingShare } from "./viewingShare.ts";
@@ -33,7 +34,7 @@ export type ListenOptions = {
 
 export type ServerOptions = ListenOptions & {
   depsDir: string;
-  prepareUpdater: SessionSinksDeps<HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | ManagedDeps>["prepareUpdater"];
+  prepareUpdater: StartupChecksDeps<HttpClient.HttpClient | FileSystem.FileSystem | AppleIntelligence | ManagedDeps>["prepareUpdater"];
   helper: HelperCommand;
 };
 
@@ -41,6 +42,7 @@ export type ServerLayers = {
   managedDeps: Layer.Layer<ManagedDeps>;
   helpers: Layer.Layer<Helpers>;
   sessionSinks: Layer.Layer<SessionSinks>;
+  startupChecks: Layer.Layer<StartupChecks, never, ManagedDeps>;
   viewing: Layer.Layer<Tunnel | ReviewBuild>;
 };
 
@@ -55,7 +57,8 @@ export const realLayers = (options: ServerOptions, exportServices: ExportService
     managedDeps,
     viewing: Layer.merge(Tunnel.layer.pipe(Layer.provide(Layer.mergeAll(managedDeps, layerChildProcessSpawner))), exported),
     helpers: Helpers.layer(options.helper).pipe(Layer.provide(layerChildProcessSpawner)),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(managedDeps, exported, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(exported)),
+    startupChecks: StartupChecks.layer({ prepareUpdater: options.prepareUpdater }).pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodeHttpClient.layerUndici, AppleIntelligence.layer(appleCommand).pipe(Layer.provide(layerChildProcessSpawner))))),
   };
 };
 
@@ -63,7 +66,7 @@ export const startup = Effect.fnUntraced(function* (options: ListenOptions, laye
   const token = makeModelTransferToken();
   const context = yield* Layer.build(
     Layer.merge(Sessions.layer, InstallDeps.layer).pipe(
-      Layer.provide(Layer.mergeAll(layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
+      Layer.provideMerge(Layer.mergeAll(layers.startupChecks, layers.sessionSinks, Layer.succeed(SessionsDir)(options.sessionsDir))),
       Layer.provideMerge(layers.helpers),
       Layer.provideMerge(layerListener(options.port)),
       Layer.provideMerge(layers.managedDeps),

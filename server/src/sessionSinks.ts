@@ -1,6 +1,5 @@
-import { Context, DateTime, Effect, FileSystem, Layer, Scope } from "effect";
+import { Context, DateTime, Effect, FileSystem, Layer, type Scope } from "effect";
 import { dirname } from "node:path";
-import type { UpdatePlan } from "./updatePlan.ts";
 import { MapCapture } from "./capture.ts";
 import { COMMON_WORDS_PATH, loadCommonWords } from "./commonWords.ts";
 import type { UpdaterUnavailable } from "./updaterUnavailable.ts";
@@ -46,10 +45,6 @@ export type RecordedSink = SinkBase & {
   discardBacklog: Effect.Effect<void>;
 };
 
-export type SessionSinksDeps<R = never> = {
-  prepareUpdater: (plan: UpdatePlan) => Effect.Effect<{ readonly layer: Layer.Layer<DiffUpdater, UpdaterUnavailable>; readonly notice?: string }, UpdaterUnavailable, R | Scope.Scope>;
-};
-
 type SinkMode =
   | { noMap?: false; model: ExecutableModel; updaterLayer: Layer.Layer<DiffUpdater, UpdaterUnavailable> }
   | { noMap: true; model?: never; updaterLayer?: never };
@@ -77,15 +72,13 @@ const TRACKS: Track[] = ["相手", "自分"];
 export const audioFileNames = (attempt: number): string[] => TRACKS.map((track) => (attempt > 1 ? `${track}-${attempt}.m4a` : `${track}.m4a`));
 
 export class SessionSinks extends Context.Service<SessionSinks, {
-  prepare: SessionSinksDeps["prepareUpdater"];
   createDir: (sessionsDir: string, at?: DateTime.DateTime) => Effect.Effect<string>;
   open: (args: OpenSessionSink & { noMap?: false }) => Effect.Effect<LiveSink, never, Scope.Scope>;
   openRecorded: (args: OpenSessionSink & { recorded: RecordedOptions }) => Effect.Effect<RecordedSink, never, Scope.Scope>;
 }>()("live-mindmap/server/SessionSinks") {
-  static readonly layer = <R>({ prepareUpdater }: SessionSinksDeps<R>): Layer.Layer<SessionSinks, never, R | MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem> =>
+  static readonly layer: Layer.Layer<SessionSinks, never, MapCapture | ReviewBuild | AudioMix | Readings | FileSystem.FileSystem> =
     Layer.effect(SessionSinks)(
       Effect.gen(function* () {
-        const preparationServices = yield* Effect.context<R>();
         const exportServices = Context.pick(MapCapture, ReviewBuild, AudioMix, FileSystem.FileSystem)(
           yield* Effect.context<MapCapture | ReviewBuild | AudioMix | FileSystem.FileSystem>(),
         );
@@ -169,10 +162,6 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           return { sink, flow };
         });
         return SessionSinks.of({
-          prepare: (plan) => Effect.gen(function* () {
-            const scope = yield* Effect.scope;
-            return yield* prepareUpdater(plan).pipe(Effect.provideContext(Context.add(preparationServices, Scope.Scope, scope)));
-          }),
           createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
           open: Effect.fnUntraced(function* (args) {
             const { sink, flow } = yield* openSink(args, "途中結果から", (_session, inlet) => directFeed(inlet));

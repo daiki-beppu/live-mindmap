@@ -145,7 +145,7 @@ public struct ScreenShot: Sendable, Equatable {
 /// 基準を更新するのは送ったときだけなので、少しずつの変化もフレーム間ではなく最後に送った画面との差として積み上がる。
 /// 動いている場所（スクロール・動画・顔の小窓）は比べる対象から外し、話している人の枠の移動は送らない。
 public struct ScreenChangeDetector: Sendable {
-    private let bundleID: String
+    private let bundleID: String?
     private enum Tab: Sendable {
         case unknown
         case provisional(title: String, since: Double, candidate: Candidate?)
@@ -176,6 +176,24 @@ public struct ScreenChangeDetector: Sendable {
         self.bundleID = bundleID
     }
 
+    private init() {
+        bundleID = nil
+    }
+
+    public static func withoutTabDetection() -> Self {
+        Self()
+    }
+
+    /// 録画で音声を解放できる時刻。後から確定する画面のstartを越えない。
+    var fileProgress: Double? { comparison.fileProgress }
+
+    /// 録画の判定と確定を一緒に行う。画像生成失敗時は復元後の比較状態を使う。
+    mutating func fileScreenEvent(for frame: ScreenFrame, encode: () -> ScreenShot?) -> [HelperEvent] {
+        let events = screenEvent(for: frame, encode: encode)
+        comparison.confirmFileProgress()
+        return events
+    }
+
     public mutating func next(_ input: ScreenInput) -> ScreenDecision {
         switch input {
         case .windowGone(let time):
@@ -188,7 +206,7 @@ public struct ScreenChangeDetector: Sendable {
     }
 
     private mutating func updateTab(for frame: ScreenFrame) {
-        guard screenBrowserBundleIDs.contains(bundleID) else { return }
+        guard let bundleID, screenBrowserBundleIDs.contains(bundleID) else { return }
         switch tab {
         case .unknown:
             if let title = frame.title, canRememberScreenTabTitle(title) {
@@ -241,7 +259,7 @@ public struct ScreenChangeDetector: Sendable {
     }
 
     private mutating func judge(_ frame: ScreenFrame) -> ScreenDecision {
-        guard screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) else {
+        if let bundleID, !screenShowsMeeting(bundleID: bundleID, title: frame.title, rememberedTitle: rememberedTabTitle) {
             if absentSince == nil { absentSince = frame.time }
             return clearComparisons(at: frame.time)
         }
@@ -330,6 +348,19 @@ private struct ScreenImageComparison: Sendable {
     private var remembered: [UInt8] = []
     private var rememberedTime: [Double] = []
 
+    /// 録画で確定した区間の終端。以後の画面のstartにも同じ下限を使う。
+    private(set) var fileProgress: Double?
+
+    mutating func confirmFileProgress() {
+        guard let lastSent, let previous else { return }
+        let moving = movingCells(at: previous.time)
+        // 周辺として除外した固定差分は待たない。後から送る場合のstartはfileProgressを下限にする。
+        let pending = remembered.indices
+            .filter { moving[$0] && abs(Int(previous.luma[$0]) - Int(lastSent[$0])) > screenLumaDifferenceThreshold }
+            .map { rememberedTime[$0] }.min()
+        fileProgress = max(fileProgress ?? lastSentTime, max(lastSentTime, pending ?? previous.time))
+    }
+
     mutating func windowGone(at time: Double) -> ScreenDecision {
         guard lastSent != nil else { return .nothing }
         reset()
@@ -379,6 +410,7 @@ private struct ScreenImageComparison: Sendable {
     }
 
     private mutating func send(_ luma: [UInt8], decidedAt time: Double, start: Double) -> ScreenDecision {
+        let start = max(start, fileProgress ?? start)
         lastSent = luma
         lastSentStart = start
         lastSentTime = time
@@ -420,13 +452,16 @@ private struct ScreenImageComparison: Sendable {
         }
     }
 
+    private func movingCells(at time: Double) -> [Bool] {
+        motionAverage.indices.map { index in
+            time - lastMotionTime[index] < screenMotionHoldSeconds || motionAverage[index] > screenFrequentMotionRatio
+        }
+    }
+
     /// 比べる対象から外すマス。いま動いているマスの周りを、広い動きなら `screenWideMotionMargin`、点なら `screenPointMotionMargin` だけ広げる。
     private func excludedCells(at time: Double) -> [Bool] {
-        let count = motionAverage.count
-        var moving = [Bool](repeating: false, count: count)
-        for index in 0..<count {
-            moving[index] = time - lastMotionTime[index] < screenMotionHoldSeconds || motionAverage[index] > screenFrequentMotionRatio
-        }
+        let moving = movingCells(at: time)
+        let count = moving.count
         var excluded = moving
         for index in 0..<count where moving[index] {
             let x = index % screenGridWidth

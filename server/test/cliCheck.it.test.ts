@@ -1,16 +1,18 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { NodeHttpClient, NodeServices } from "@effect/platform-node";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { ConfigProvider, Effect, Layer, Stream } from "effect";
+import { ConfigProvider, Effect, Layer, Schema, Stream } from "effect";
 import { StdoutIsTty } from "../src/consoleText.ts";
 import { runCliEntry } from "./fixtures/cliEntry.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { fakeScreenJpeg } from "./fixtures/screenJpeg.ts";
 import { vi } from "vitest";
-import { Helpers } from "../src/helpers.ts";
-import { readyHelperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
+import { Helpers, HelperCheckFailure, type HelperCheck } from "../src/helpers.ts";
+import { CheckReport } from "../src/managedDepsProtocol.ts";
+import { helperChecks, readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -31,17 +33,20 @@ const fakeDeps = (result: Effect.Effect<ReadonlyArray<CheckItem>, ManagedDepsFai
   return { service: ManagedDeps.of({ executable: () => Effect.die("実行ファイル取得は対象外"), check, install, update: () => Stream.die("更新は対象外"), load }), check, install };
 };
 
-const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"]) {
+const serverWith = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"], helperState?: HelperCheck | HelperCheckFailure) {
   const launch = vi.fn(() => Effect.die("check はセッションを開始しない"));
+  const helper = helperChecks(helperState);
+  const check = vi.fn(helper.check);
+  const prepareUpdater = vi.fn(() => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }));
   const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
-    helpers: Layer.succeed(Helpers, Helpers.of({ ...readyHelperChecks, apps: Effect.die("apps は対象外"), launch })),
-    sessionSinks: SessionSinks.layer({ prepareUpdater: () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) }).pipe(Layer.provide(fakeExportServices())),
+    helpers: Layer.succeed(Helpers, Helpers.of({ ...helper, check, apps: Effect.die("apps は対象外"), launch })),
+    sessionSinks: SessionSinks.layer.pipe(Layer.provide(fakeExportServices())), startupChecks: StartupChecks.layer({ prepareUpdater }).pipe(Layer.provide(fakeExportServices())),
     managedDeps: Layer.succeed(ManagedDeps, deps),
   });
-  return { ...server, launch };
+  return { ...server, launch, check, prepareUpdater };
 });
 
-const runCheck = (dir: string, port: number, model: string | null = "claude") => runCliEntry(["check"], Layer.mergeAll(
+const runCheck = (dir: string, port: number, model: string | null = "claude", args: string[] = []) => runCliEntry(["check", ...args], Layer.mergeAll(
   forbiddenManagedDeps, NodeServices.layer, unusedApple, NodeHttpClient.layerUndici, fakeExportServices(), fakeScreenJpeg().layer,
   Layer.succeed(StdoutIsTty, false),
   ConfigProvider.layer(ConfigProvider.fromEnvRecord({
@@ -49,6 +54,76 @@ const runCheck = (dir: string, port: number, model: string | null = "claude") =>
     LIVE_MINDMAP_CONFIG: join(dir, "absent.config.json"), LIVE_MINDMAP_JUDGE: "off", ...(model === null ? {} : { LIVE_MINDMAP_MODEL: model }),
   })),
 ));
+
+const recordedHelper: HelperCheck = {
+  microphone: "denied", screenCapture: false, speechJa: { status: "installed", installedLocales: ["ja-JP"] },
+};
+const recordedHelperItems = readyHelperItems.filter((item) => item.name === "helper" || item.name === "speech-ja");
+const recordedCases = [
+  ...[false, true].flatMap((noMap) => [
+    { label: `noMap=${noMap} の helper 不足`, noMap, model: "claude", helper: new HelperCheckFailure({ message: "helper がない" }),
+      helperItems: [{ ...readyHelperItems[0], state: "missing" }], claudeNeed: "required", claudeState: "ready", ready: false },
+    { label: `noMap=${noMap} の speech-ja 不足`, noMap, model: "claude", helper: { ...recordedHelper, speechJa: { status: "supported", installedLocales: [] } },
+      helperItems: recordedHelperItems.map((item) => item.name === "speech-ja" ? { ...item, state: "missing" } : item), claudeNeed: "required", claudeState: "ready", ready: false },
+  ] satisfies ReadonlyArray<{
+    label: string; noMap: boolean; model: string; helper: HelperCheck | HelperCheckFailure;
+    helperItems: ReadonlyArray<typeof CheckReport.Type.items[number]>; claudeNeed: "required"; claudeState: "ready"; ready: boolean;
+  }>),
+  { label: "マップありの Claude 不足", noMap: undefined, model: "claude", helper: recordedHelper,
+    helperItems: recordedHelperItems, claudeNeed: "required", claudeState: "missing", ready: false },
+  { label: "マップありの非 Claude 経路", noMap: undefined, model: "apple", helper: recordedHelper,
+    helperItems: recordedHelperItems, claudeNeed: "optional", claudeState: "missing", ready: true },
+  { label: "noMap は管理依存とモデル設定がなくても確認できる", noMap: true, model: "unknown-model", helper: recordedHelper,
+    helperItems: recordedHelperItems, claudeNeed: "required", claudeState: "missing", ready: true },
+] as const;
+
+describe.each(["HTTP", "CLI"] as const)("recorded の開始前の確かめ（%s）", (entry) => {
+  it.live.each(recordedCases)("$label の JSON を返し、開始・導入しない", (testCase) => Effect.gen(function* () {
+    const dir = yield* temporaryDeps;
+    const deps = fakeDeps(Effect.succeed([chromium("optional", "missing"), { ...claudeMissing, state: testCase.claudeState }]));
+    const server = yield* serverWith(dir, deps.service, testCase.helper);
+    let report: typeof CheckReport.Type;
+    if (entry === "HTTP") {
+      const query = new URLSearchParams({ for: "recorded", route: testCase.model === "unknown-model" ? "invalid" : testCase.model });
+      if (testCase.noMap !== undefined) query.set("noMap", String(testCase.noMap));
+      const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?${query}`));
+      expect(response.status).toBe(200);
+      report = yield* Schema.decodeUnknownEffect(CheckReport)(yield* Effect.tryPromise(() => response.json()));
+    } else {
+      const result = yield* runCheck(dir, server.port, testCase.model, ["--for", "recorded", ...(testCase.noMap ? ["--no-map"] : [])]);
+      expect(result.code).toBe(testCase.ready ? 0 : 3);
+      expect(result.stderr).toBe("");
+      report = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CheckReport))(result.stdout);
+    }
+    expect(report).toEqual({ ready: testCase.ready, items: [
+      ...(testCase.noMap ? [] : [
+        { name: "chromium", need: "optional", state: "missing", size: 211_000_000, install: "pnpm cli install chromium" },
+        { name: "claude", need: testCase.claudeNeed, state: testCase.claudeState, size: 224_000_000, install: "pnpm cli install claude" },
+      ]),
+      ...testCase.helperItems,
+    ] });
+    expect(server.check).toHaveBeenCalledExactlyOnceWith({ screen: false });
+    if (testCase.noMap) expect(deps.check).not.toHaveBeenCalled();
+    else expect(deps.check).toHaveBeenCalledExactlyOnceWith(["chromium", "claude"]);
+    expect(deps.install).not.toHaveBeenCalled();
+    expect(server.launch).not.toHaveBeenCalled();
+    expect(server.prepareUpdater).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped));
+});
+
+it.live("HTTP recorded は不正な noMap を確認前に拒否する", () => Effect.gen(function* () {
+  const dir = yield* temporaryDeps;
+  const deps = fakeDeps(Effect.succeed([]));
+  const server = yield* serverWith(dir, deps.service);
+  const valid = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?for=recorded&noMap=true`));
+  expect(valid.status).toBe(200);
+  expect(yield* Effect.tryPromise(() => valid.json())).toEqual({ ready: true, items: recordedHelperItems });
+  server.check.mockClear();
+  const response = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}/check?for=recorded&noMap=invalid`));
+  expect(response.status).toBe(400);
+  expect(deps.check).not.toHaveBeenCalled();
+  expect(server.check).not.toHaveBeenCalled();
+}).pipe(Effect.scoped));
 
 describe("開始せずに確かめる CLI check", () => {
   it.live("HTTP は不正なモデル経路を状態確認前に拒否する", () => Effect.gen(function* () {
@@ -127,7 +202,7 @@ describe("開始せずに確かめる CLI check", () => {
     { need: "optional", state: "absent", ready: true, code: 0 },
     { need: "required", state: "ready", ready: true, code: 0 },
     { need: "required", state: "missing", ready: false, code: 3 },
-    { need: "required", state: "outdated", ready: false, code: 0 },
+    { need: "required", state: "outdated", ready: true, code: 0 },
     { need: "required", state: "absent", ready: false, code: 3 },
   ] as const)("CLI は $need / $state の JSON を出して exit $code を返す", ({ need, state, ready, code }) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;

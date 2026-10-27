@@ -1,5 +1,6 @@
 import { Clock, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Subscription } from "foldkit";
+import type { ServerRoutes } from "../../../../server/src/serverProtocol.ts";
 import { nextCaptionDeadline } from "../../captions.ts";
 import type { Model } from "./main.ts";
 import { LiveFrame, Message } from "./message.ts";
@@ -8,7 +9,7 @@ export const RECONNECT_MS = 1000;
 
 const decodeFrame = Schema.decodeUnknownOption(Schema.fromJsonString(LiveFrame));
 
-const liveFeedUrl = (): string => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+const liveFeedUrl = (): string => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${"/ws" satisfies typeof ServerRoutes.feed.path}`;
 
 type SocketEvent = { kind: "connected" } | { kind: "frame"; frame: LiveFrame } | { kind: "disconnected" };
 

@@ -1,3 +1,4 @@
+import { StartupChecks } from "../src/startupChecks.ts";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -63,11 +64,11 @@ const controlledHelpers = () => {
     yield* Effect.addFinalizer(() => stop);
     return { events: Stream.fromQueue(queue) as Stream.Stream<string>, stop, exit: Deferred.await(exited), stderrTail: Effect.succeed([]), send: () => Effect.void };
   });
-  const check = Effect.sync(() => ({ microphone: "authorized" as const, screenCapture: true,
+  const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => ({ microphone: "authorized" as const, ...(screen ? { screenCapture: true } : {}),
     speechJa: { status: control.speechStatus, installedLocales: ["ja-JP"] },
   }));
   const installSpeechJa = Stream.fromEffect(Effect.sync(() => { control.speechStatus = "installed"; return "取得完了"; }));
-  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, checkNoScreen: check, creationDate: () => Effect.succeed(null), installSpeechJa, apps: Effect.succeed([]), launch })) };
+  return { calls, control, endings, layer: Layer.succeed(Helpers, Helpers.of({ check, creationDate: () => Effect.succeed(null), installSpeechJa, apps: Effect.succeed([]), launch })) };
 };
 
 const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingHelper = false) {
@@ -75,12 +76,14 @@ const resource = Effect.fnUntraced(function* (realPreparation: boolean, missingH
   const sessionsDir = join(root, "sessions");
   const deps = controlledDeps();
   const helpers = controlledHelpers();
-  const sinks = SessionSinks.layer({ prepareUpdater: realPreparation ? planLayer : () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) })
+  const startupChecks = StartupChecks.layer({ prepareUpdater: realPreparation ? planLayer : () => Effect.succeed({ layer: updaterLayer(() => Effect.succeed({ ops: [] })) }) })
+    .pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), deps.layer, unusedApple, NodeHttpClient.layerUndici)));
+  const sinks = SessionSinks.layer
     .pipe(Layer.provide(Layer.mergeAll(fakeExportServices(), deps.layer, unusedApple, NodeHttpClient.layerUndici)));
   const helpersLayer = missingHelper
     ? Helpers.layer({ command: join(root, "absent-helper"), args: [] }).pipe(Layer.provide(NodeChildProcessSpawner.layer), Layer.provide(NodeServices.layer))
     : helpers.layer;
-  const server = yield* startedServer({ port: 0, sessionsDir }, { managedDeps: deps.layer, helpers: helpersLayer, sessionSinks: sinks });
+  const server = yield* startedServer({ port: 0, sessionsDir }, { managedDeps: deps.layer, helpers: helpersLayer, startupChecks, sessionSinks: sinks });
   const request = (method: string, path: string, body?: object, headers?: Record<string, string>) => Effect.tryPromise(() => fetch(`http://127.0.0.1:${server.port}${path}`, {
     method, headers: { "content-type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }));
@@ -111,6 +114,22 @@ const stopIntake = Effect.fnUntraced(function* (r: Effect.Success<ReturnType<typ
 });
 
 describe("ライブの開始前の確かめ", () => {
+  it.live.each([false, true])("HTTP recorded noMap=%s は speech-ja 不足で開始を拒否する", (noMap) => Effect.gen(function* () {
+    const r = yield* resource(false);
+    r.helpers.control.speechStatus = "supported";
+    const response = yield* r.request("POST", "/session/recorded", {
+      file: join(r.root, "meeting.m4a"),
+      ...(noMap ? { noMap: true } : { model: defaultClaude }),
+    });
+    expect(response.status).toBe(503);
+    expect(yield* Effect.tryPromise(() => response.json())).toMatchObject({
+      _tag: "StartupDepsMissing",
+      items: [{ name: "speech-ja", need: "required", state: "missing", install: "pnpm cli install speech-ja" }],
+    });
+    expect(yield* r.status).toEqual({ status: "none" });
+    expect(existsSync(r.sessionsDir)).toBe(false);
+  }).pipe(Effect.scoped));
+
   it.live("Issue #983: start --judge は知らない名前をサーバーへの要求より前に断り、鍵が無ければ server が 1 行知らせて判定なしで開始する", () => Effect.gen(function* () {
     // 鍵は layer を作る server のプロセスで確かめる。名指ししない start は routed になる
     vi.stubEnv("TYPESAFE_AI_API_KEY", "");
@@ -244,16 +263,20 @@ describe("ライブの開始前の確かめ", () => {
     expect(r.deps.install).not.toHaveBeenCalled();
   }).pipe(Effect.scoped));
 
-  it.live.each([
-    { name: "claude", route: "openai-compatible", model: "synthetic", url: "http://127.0.0.1:1/v1", local: false },
-    { name: "account", route: "chatgpt", model: "synthetic", local: false },
-    { name: "apple", route: "apple", local: true },
-  ] satisfies ExecutableModel[])("HTTP は $route で Claude の欠けを開始拒否にしない", (model) => Effect.gen(function* () {
+  it.live("HTTP は非 claude 経路の Claude 不足を optional と報告し、警告せず開始する", () => Effect.gen(function* () {
+    const model: ExecutableModel = { name: "claude", route: "openai-compatible", model: "synthetic", url: "http://127.0.0.1:1/v1", local: false };
     const r = yield* resource(false);
     r.deps.state.claude = "missing";
+    const checked = yield* r.request("GET", "/check?for=start&route=openai-compatible&screen=false");
+    expect(checked.status).toBe(200);
+    const report = yield* Effect.tryPromise(() => checked.json());
+    expect(report).toMatchObject({ ready: true, items: expect.arrayContaining([
+      { name: "claude", need: "optional", state: "missing", size: 224_000_000, install: "pnpm cli install claude" },
+    ]) });
     const token = yield* readModelTransferToken(r.sessionsDir, r.server.port).pipe(Effect.provide(fakeExportServices()));
     const response = yield* r.request("POST", "/session/start", { ...startBody, model }, { [MODEL_TRANSFER_HEADER]: token! });
     expect(response.status).toBe(200);
+    expect(yield* Effect.tryPromise(() => response.json())).toMatchObject({ warnings: [] });
     expect(yield* r.status).toMatchObject({ status: "running" });
     expect(r.deps.load).not.toHaveBeenCalled();
   }).pipe(Effect.scoped));

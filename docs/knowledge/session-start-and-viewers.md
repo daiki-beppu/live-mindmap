@@ -40,9 +40,13 @@
 
 ライブと録画からのセッションの違いは、`body` の中の種類ごとの段（準備・取り込みの引数・イベントの振り分け・終わり方）にだけ書く。種類ごとの内側の記録（`SessionKind`）は作らないと決めている（#1426）。
 
-## `prepareMap` で検査の引数を組むときは、`Parameters<typeof requireStartupDeps>` から種類ごとに組む
+## `prepareMap` は入口別の入力で `StartupChecks.prepare` を一回呼ぶ
 
-仕様の案では、`prepareMap` の引数を `{ mode: "start" | "recorded"; screen?: boolean }` の 1 つのレコードにしていた。けれども `requireStartupDeps` の引数は、`["recorded", route, { check }]` と `["start" | "resume", route, { screen, check }]` の判別付きタプルの union になっている。レコードから組むと `TS2345: Type '"recorded"' is not assignable to type '"resume" | "start"'` で落ちる。#1452 の run は、`options` を `{ mode: "start"; screen: boolean } | { mode: "recorded" }` にし、`Parameters<typeof requireStartupDeps>` 型の引数を種類ごとに組んで通した。型の断定（キャスト）はしていない。
+`prepareMap` は Sessions の中に残る。`options` は `{ mode: "start"; screen: boolean } | { mode: "recorded" }` で受け、開始時の経路と計画を `StartupChecks.prepare` に渡す。`start` だけが `screen` を持ち、`recorded` は `noMap: false` を持つ。helper の確認方法を選ぶのは `StartupChecks` で、呼ぶ側から確認 Effect を渡さない。
+
+`StartupChecks` は必須不足をまとめて停止し、そろえば `prepareUpdater(plan)` を呼ぶ。依存付きの準備失敗を `StartupDepsMissing` に変換し、準備の `notice` を確認警告の末尾へ一度だけ追加する。呼び出し元のセッション Scope は `prepareMap` から渡す。
+
+録画の `noMap` と resume も同じ準備操作を一回呼ぶが、updater を組まず `warnings` だけを受け取る。resume と `checkResume` は、同じ Live に保持した開始時の経路・screen を使う。確認後の同一 Live の検証と、開始失敗・中断時に Scope を閉じる括弧の規則は維持する。
 
 ## HelperEvent を足したら、ライブの `applyEvent` と録画の `applyRecordedEvent` の両方に case を書く。`default` は置かない
 
@@ -50,11 +54,13 @@
 
 戻り値の型 `Effect.Effect<void>` は関数に明示しておく。switch の後ろに無条件の `return Effect.void` を置くと、網羅の検査が効かなくなる。HelperEvent の振り分けを sink へ移す（`sink.accept`）ことはしないと決めている（#1426）。
 
-## frame の種類を足すときは、`ViewerFrame` の union と `END_FRAMES` の 1 行だけを書く
+## frame の種類を足すときは、core の `ViewerFrame` の Schema・`END_FRAMES` の 1 行・web の `applyFrame` の case を書く
 
 `Viewers` が持つ口は `forSession`・`connect`・`drained` の 3 つだけになった（[#1453](https://github.com/daiki-beppu/live-mindmap/issues/1453)・[#1454](https://github.com/daiki-beppu/live-mindmap/issues/1454)）。前は種類ごとの送りのメソッドが 9 個あり、それぞれが「後からつないだ画面のために残すか」の規則を持っていた。種類を 1 つ足すには、メソッド・`Retained` の項目・`NOTHING_RETAINED`・`retainedFrames`・終わりの解除を、別々の場所でそろえる必要があった。
 
 今は `END_FRAMES` が、frame の `type` をキーにした mapped type になっている。値は、セッションの終わりに送る解除の frame か `"keep"`（`snapshot`・`speaker-names`）のどちらか。union に種類を足して表の行を書かなければ、`pnpm typecheck` が落ちる。#1453 の run は、union に試しの種類を 1 つ足して `TS2741` で落ちることを確かめてから戻した。ソースの文字列を固定するテストは作っていない。
+
+frame の union は `server/src/core/viewerFrame.ts` の `ViewerFrame` Schema 1 か所に置く。server の送信型と web の受信型は、この Schema から導く。種類を足すときは core の union の Schema に追加し、`END_FRAMES` に 1 行を書く。web の `applyFrame` も `Match.discriminatorsExhaustive("type")` で網羅しているので、case を書き忘れると `pnpm typecheck` が落ちる。送信は `JSON.stringify` のままにし、union の Schema で encode しない。
 
 後からつないだクライアントに保持値を送る順は、`END_FRAMES` のキーの順になる。行を足す位置で、つないだ直後に届く順が決まる。
 
