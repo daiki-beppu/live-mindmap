@@ -211,6 +211,57 @@ describe("見返しの Scene: 字幕はライブと同じ吹き出しで、最�
   });
 });
 
+describe.each([
+  ["相手 A", "佐藤"],
+  ["相手 C", "山田"],
+  ["相手 B", "相手 B"],
+])("見返しの Scene: マップの話者 %s は %s と表示する", (speaker, displayName) => {
+  const context = makeContext([
+    { at: "2026-10-01T00:00:00.000Z", type: "start", title: "名前の確認" },
+    spoken("r1", "相手", 1, 10, "図は最小限にして、資料を送ります。", speaker),
+    {
+      at: "2026-10-01T00:00:03.000Z",
+      type: "diff",
+      input: { recent: [], fresh: ["r1"], nodeCount: 0 },
+      ops: [
+        { op: "add", ref: "p1", parent: "root", kind: "案", text: "図は最小限", evidence: ["r1"], proposer: speaker },
+        { op: "add", ref: "t1", parent: "root", kind: "TODO", text: "資料を送る", evidence: ["r1"], assigneeSpeaker: speaker },
+      ],
+      dropped: [],
+    },
+    nameRow("相手 A", "佐藤", "推定"),
+    nameRow("相手 C", "山田", "手入力"),
+  ]);
+
+  it("案の提案者と TODO ノードの担当を、字幕と同じ名前で描き、未登録の話者はラベルを残す", () => {
+    scene(
+      appOf(context),
+      given(stateAt(context, 10)),
+      settle,
+      tap((sim) => {
+        expect(texts(sim, ".captions__name")).toEqual([displayName]);
+        const people = findAll(sim.html, ".map-node").flatMap((node) => {
+          const person = textsIn(node, ".map-node__person");
+          return person.length === 0 ? [] : [[textsIn(node, ".map-node__text").join(""), person.join("")]];
+        });
+        expect(people).toEqual([["図は最小限", `— ${displayName}`], ["資料を送る", `→ ${displayName}`]]);
+      }),
+    );
+  });
+
+  it("右の列の TODO の担当を、字幕と同じ名前で描き、未登録の話者はラベルを残す", () => {
+    scene(
+      appOf(context),
+      given(stateAt(context, 10)),
+      settle,
+      tap((sim) => {
+        expect(texts(sim, ".captions__name")).toEqual([displayName]);
+        expect(findAll(sim.html, ".todos__item").map((item) => [textsIn(item, ".todos__text").join(""), textsIn(item, ".todos__assignee").join("")])).toEqual([["資料を送る", displayName]]);
+      }),
+    );
+  });
+});
+
 describe("見返しの Scene: 右の列は表示面の見る状態に従い、E と右の列のボタンで出し入れできる", () => {
   it("その時刻のマップの変わったこと（.changes__item）を描き、時刻が動くと替わる", () => {
     const countAt = (time: number) => snapshotOf(plainContext, stateAt(plainContext, time)).changes.length;
