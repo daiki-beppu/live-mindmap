@@ -1,7 +1,7 @@
 import AVFoundation
 import CoreAudio
 import Foundation
-import HelperCore
+@testable import HelperCore
 import Testing
 
 private enum LiveTestError: Error, Equatable {
@@ -9,6 +9,7 @@ private enum LiveTestError: Error, Equatable {
     case diarizerStopped
     case binaryFrame
     case microphoneStart
+    case recordingFinish
 }
 
 private let finalText = "こんにちは"
@@ -35,6 +36,8 @@ private final class FakeAudio: LiveTap, LiveMicrophone {
     let onPermission = Cell<(() -> Void)?>(nil)
     let beforeStart = Cell<(() -> Void)?>(nil)
     let startFailure = Cell<LiveTestError?>(nil)
+    let receivedFrames = Cell(true)
+    let onCurrentLine = Cell<(() -> Void)?>(nil)
     let stream: AsyncThrowingStream<CapturedAudio, Error>
     let input: AsyncThrowingStream<CapturedAudio, Error>.Continuation
     init() { (stream, input) = AsyncThrowingStream.makeStream(of: CapturedAudio.self) }
@@ -46,18 +49,23 @@ private final class FakeAudio: LiveTap, LiveMicrophone {
         return stream
     }
     func stop() { stopped.update { $0 = true }; input.finish() }
-    var hasReceivedFrames: Bool { true }
-    func currentLine() -> String { "fake audio" }
+    var hasReceivedFrames: Bool { receivedFrames.value }
+    func currentLine() -> String { onCurrentLine.value?(); return "fake audio" }
 }
 
 private final class FakeClock: LiveClock {
     let time: Cell<UInt64>
+    let sleeps = Cell<[Duration]>([])
     init(time: UInt64) { self.time = Cell(time) }
     func now() -> UInt64 { time.value }
     func sleep(for duration: Duration) async throws {
-        // ポーリングではなく、入力通知をテストが明示的に起こす。
-        try await Task.sleep(for: .seconds(3600))
+        let parts = duration.components
+        let nanos = UInt64(parts.seconds) * 1_000_000_000 + UInt64(parts.attoseconds / 1_000_000_000)
+        let deadline = now() + AudioConvertNanosToHostTime(nanos)
+        sleeps.update { $0.append(duration) }
+        try await waitFor("仮想時計の待機期限") { self.now() >= deadline }
     }
+    func advanceTenSeconds() { time.update { $0 += AudioConvertNanosToHostTime(10_000_000_000) } }
 }
 
 private final class FakeUsage: LiveInputUsage {
@@ -147,7 +155,7 @@ private final class Client {
     let frames = Cell<[String]>([])
     private let receiveError = Cell<Error?>(nil)
     private let reader: Task<Void, Never>
-    init(port: UInt16) {
+    init(port: UInt16, observe: (@Sendable (String?) -> Void)? = nil) {
         task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
         task.maximumMessageSize = 8 * 1024 * 1024
         task.resume()
@@ -158,17 +166,30 @@ private final class Client {
             do {
                 while !Task.isCancelled {
                     switch try await task.receive() {
-                    case .string(let text): frames.update { $0.append(text) }
+                    case .string(let text):
+                        frames.update { $0.append(text) }
+                        observe?(text)
                     case .data: throw LiveTestError.binaryFrame
                     @unknown default: throw LiveTestError.binaryFrame
                     }
                 }
             } catch {
+                observe?(nil)
                 receiveError.update { $0 = error }
             }
         }
     }
     func close() { task.cancel(with: .goingAway, reason: nil); reader.cancel() }
+    func requireOpenWhileDeliveryIsHeld() async throws {
+        let deadline = ContinuousClock.now + .milliseconds(200)
+        repeat {
+            try #require(receiveError.value == nil, "tap-silent の配送保留中に接続が閉じた")
+            try await Task.sleep(for: .milliseconds(2))
+        } while ContinuousClock.now < deadline
+    }
+    func waitForClosed() async throws {
+        try await waitFor("server による接続終了") { self.receiveError.value != nil }
+    }
     func waitForEvent(_ event: HelperEvent) async throws {
         let text = try event.jsonString()
         do {
@@ -192,19 +213,22 @@ private final class Fixture {
     let clock: FakeClock
     init() { clock = FakeClock(time: origin + AudioConvertNanosToHostTime(6_000_000_000)) }
     var time: UInt64 { clock.now() }
-    func session(screen: LiveScreen, diarizer: FakeDiarizer? = nil, recording: URL? = nil, explicitOrigin: Bool = true) -> LiveSession {
-        LiveSession(
-            devices: LiveDevices(
-                tap: tap, microphone: microphone, makeTranscriber: { _ in FakeTranscriber() },
-                makeDiarizer: { diarizer }, inputUsage: usage, screen: screen, clock: clock
-            ),
-            settings: LiveSettings(
-                bundleID: "test.meeting", ownPID: 1, port: 0, origin: explicitOrigin ? origin : nil,
-                recording: recording.map { .init(directory: $0, attempt: 2) }, marksDuplicates: false,
-                selfPauseCarryOver: SelfPauseCarryOver(manual: .pause, basis: .idle, lastKnown: .idle, idleFor: 3),
-                controlToken: "test-control", log: { _ in }
-            )
+    func session(screen: LiveScreen, diarizer: FakeDiarizer? = nil, recording: URL? = nil, explicitOrigin: Bool = true, makeRecording: RunAudio.Recording? = nil, sendEvent: (@Sendable (HelperEvent, WebSocketServer) async -> Void)? = nil) -> LiveSession {
+        let devices = LiveDevices(
+            tap: tap, microphone: microphone, makeTranscriber: { _ in FakeTranscriber() },
+            makeDiarizer: { diarizer }, inputUsage: usage, screen: screen, clock: clock
         )
+        let settings = LiveSettings(
+            bundleID: "test.meeting", ownPID: 1, port: 0, origin: explicitOrigin ? origin : nil,
+            recording: recording.map { .init(directory: $0, attempt: 2) }, marksDuplicates: false,
+            selfPauseCarryOver: SelfPauseCarryOver(manual: .pause, basis: .idle, lastKnown: .idle, idleFor: 3),
+            controlToken: "test-control", log: { _ in }
+        )
+        if let sendEvent {
+            return LiveSession(devices: devices, settings: settings, recording: makeRecording, sendEvent: sendEvent)
+        }
+        if let makeRecording { return LiveSession(devices: devices, settings: settings, recording: makeRecording) }
+        return LiveSession(devices: devices, settings: settings)
     }
     func sample() throws -> CapturedAudio {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
@@ -231,6 +255,133 @@ private func waitForCompletion(_ result: Cell<Result<Void, Error>?>) async throw
 
 @Suite("ライブのセッション", .timeLimit(.minutes(1)))
 struct LiveSessionITTests {
+    @Test("マイクの構成変更と録音終了の失敗が重なっても構成変更を返す")
+    func microphoneConfigurationChangeWinsOverRecordingFailure() async throws {
+        let fixture = Fixture()
+        let created = Cell<[Track]>([])
+        let failed = Cell<[Track]>([])
+        let (ending, end) = AsyncStream.makeStream(of: Void.self)
+        defer { end.finish() }
+        let session = fixture.session(screen: .off, makeRecording: { track, stream, _ in
+            created.update { $0.append(track) }
+            // 音声へ録音の失敗を流さず、run 本体と finish の異なる失敗を競合させる。
+            let finished = Task<Void, Error> {
+                for await _ in ending {}
+                failed.update { $0.append(track) }
+                throw LiveTestError.recordingFinish
+            }
+            return (stream: stream, finished: finished)
+        })
+        defer { session.stop() }
+        _ = try await session.start()
+        let (running, result) = runSession(session)
+        defer { running.cancel() }
+        try await waitFor("両トラックの録音生成") { created.value.count == 2 }
+        fixture.microphone.input.finish(throwing: MicrophoneError.configurationChanged)
+        end.finish()
+        try await waitFor("マイクと録音が失敗したセッションの終了") { result.value != nil }
+
+        #expect(Set(created.value) == Set([Track.相手, .自分]))
+        #expect(Set(failed.value) == Set([Track.相手, .自分]))
+        #expect {
+            try #require(result.value).get()
+        } throws: { error in
+            if case MicrophoneError.configurationChanged = error { return true }
+            return false
+        }
+    }
+
+    @Test("無音の tap は注入時計の10秒後に接続クライアントへ通知する")
+    func silentTapUsesInjectedClock() async throws {
+        let fixture = Fixture()
+        fixture.tap.receivedFrames.update { $0 = false }
+        let session = fixture.session(screen: .off)
+        defer { session.stop() }
+        let client = Client(port: try await session.start())
+        defer { client.close() }
+        try await client.waitForEvent(.origin(hostTime: fixture.origin))
+        let (running, result) = runSession(session)
+        defer { running.cancel() }
+        try await waitFor("tap の10秒待機登録") { fixture.clock.sleeps.value.contains(.seconds(10)) }
+
+        fixture.clock.advanceTenSeconds()
+        try await client.waitForEvent(.tapSilent(start: offsetSeconds(from: fixture.origin, to: fixture.time)))
+        session.stop()
+        try await waitForCompletion(result)
+    }
+
+    @Test("無音の判定中に stop が重なっても通知を配送してから接続を閉じる")
+    func stopDuringSilentJudgementDrainsNotification() async throws {
+        let fixture = Fixture()
+        fixture.tap.receivedFrames.update { $0 = false }
+        let trace = Cell<[String]>([])
+        defer { print("tap-silent delivery sequence: \(trace.value)") }
+        let deliveryEntered = Cell(false)
+        let releaseDelivery = Cell(false)
+        defer { releaseDelivery.update { $0 = true } }
+        let expected = HelperEvent.tapSilent(start: offsetSeconds(
+            from: fixture.origin, to: fixture.time + AudioConvertNanosToHostTime(10_000_000_000)
+        ))
+        let expectedJSON = try expected.jsonString()
+        let session = fixture.session(screen: .off, sendEvent: { event, server in
+            if case .tapSilent = event {
+                trace.update { $0.append("delivery-entered") }
+                deliveryEntered.update { $0 = true }
+                do {
+                    try await waitFor("tap-silent の配送ゲート解放") { releaseDelivery.value }
+                } catch {
+                    Issue.record(error)
+                    return
+                }
+            }
+            await server.send(event)
+        })
+        defer { session.stop() }
+        let client = Client(port: try await session.start(), observe: { text in
+            if text == expectedJSON { trace.update { $0.append("tap-silent-received") } }
+            if text == nil { trace.update { $0.append("connection-closed") } }
+        })
+        defer { client.close() }
+        try await client.waitForEvent(.origin(hostTime: fixture.origin))
+        let (running, result) = runSession(session)
+        defer { running.cancel() }
+        try await waitFor("tap の10秒待機登録") { fixture.clock.sleeps.value.contains(.seconds(10)) }
+        let judging = Cell(false)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        fixture.tap.onCurrentLine.update { $0 = {
+            judging.update { $0 = true }
+            #expect(release.wait(timeout: .now() + 10) == .success)
+        } }
+        defer { fixture.tap.onCurrentLine.update { $0 = nil } }
+        fixture.clock.advanceTenSeconds()
+        try await waitFor("無音判定中の機器読み出し") { judging.value }
+        let stopping = Cell(false)
+        let stop = Task.detached {
+            trace.update { $0.append("stop-requested") }
+            stopping.update { $0 = true }
+            session.stop()
+        }
+        defer { stop.cancel() }
+        try await waitFor("判定中の停止要求") { stopping.value }
+        release.signal()
+        try await waitFor("生成済み tap-silent の配送保留") { deliveryEntered.value }
+        try await waitFor("停止要求による両入力の停止") { fixture.tap.stopped.value && fixture.microphone.stopped.value }
+        await stop.value
+        trace.update { $0.append("inputs-stopped") }
+        try await client.requireOpenWhileDeliveryIsHeld()
+        trace.update { $0.append("delivery-released") }
+        releaseDelivery.update { $0 = true }
+        try await client.waitForEvent(expected)
+        try await client.waitForClosed()
+        try await waitForCompletion(result)
+        trace.update { $0.append("run-completed") }
+        #expect(client.frames.value.filter { $0 == expectedJSON }.count == 1)
+        let received = try #require(trace.value.firstIndex(of: "tap-silent-received"))
+        let closed = try #require(trace.value.firstIndex(of: "connection-closed"))
+        #expect(received < closed)
+    }
+
     @Test("マイクの開始に失敗しても開始済み入力を停止し末尾を配送してから元の失敗を返す")
     func microphoneFailureDrainsAndClosesSession() async throws {
         let fixture = Fixture()

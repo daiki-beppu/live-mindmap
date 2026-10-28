@@ -6,20 +6,37 @@ public final class LiveSession {
     private let settings: LiveSettings
     private let server: WebSocketServer
     private let capture: LiveCapture
-    private let speakerContinuation: AsyncStream<HelperEvent>.Continuation
-    private let speakerTask: Task<Void, Never>
+    private let eventContinuation: AsyncStream<HelperEvent>.Continuation
+    private let eventTask: Task<Void, Never>
+    private let makeRecording: RunAudio.Recording?
     private var prepared: (audio: RunAudio, origin: UInt64)?
 
-    public init(devices: LiveDevices, settings: LiveSettings) {
+    public convenience init(devices: LiveDevices, settings: LiveSettings) {
+        self.init(devices: devices, settings: settings, recording: settings.recording.map { recordingSettings in
+            { track, stream, origin in
+                let recorder = try TrackRecorder(
+                    url: recordingSettings.directory.appendingPathComponent(recordingFileName(track: track, attempt: recordingSettings.attempt)),
+                    origin: origin
+                )
+                return recording(stream, to: recorder)
+            }
+        })
+    }
+
+    init(
+        devices: LiveDevices, settings: LiveSettings, recording: RunAudio.Recording?,
+        sendEvent: @escaping @Sendable (HelperEvent, WebSocketServer) async -> Void = { event, server in await server.send(event) }
+    ) {
         self.devices = devices
         self.settings = settings
+        makeRecording = recording
         let server = WebSocketServer(port: settings.port)
         self.server = server
-        capture = LiveCapture(devices: devices, settings: settings, server: server)
         let (events, continuation) = AsyncStream.makeStream(of: HelperEvent.self)
-        speakerContinuation = continuation
-        speakerTask = Task {
-            for await event in events { await server.send(event) }
+        capture = LiveCapture(devices: devices, settings: settings, emitEvent: { continuation.yield($0) })
+        eventContinuation = continuation
+        eventTask = Task {
+            for await event in events { await sendEvent(event, server) }
         }
     }
 
@@ -28,21 +45,13 @@ public final class LiveSession {
         let devices = devices
         let settings = settings
         let capture = capture
-        let speakerContinuation = speakerContinuation
+        let eventContinuation = eventContinuation
         let audio = RunAudio(
             requestMicrophonePermission: { try await devices.microphone.requestPermission() },
             makeTranscriber: devices.makeTranscriber,
             startAudio: { try capture.startAudio($0, origin: $1) },
             stopAudio: { capture.stopAudio($0) },
-            recording: settings.recording.map { recordingSettings in
-                { track, stream, origin in
-                    let recorder = try TrackRecorder(
-                        url: recordingSettings.directory.appendingPathComponent(recordingFileName(track: track, attempt: recordingSettings.attempt)),
-                        origin: origin
-                    )
-                    return recording(stream, to: recorder)
-                }
-            },
+            recording: makeRecording,
             splitAudio: split,
             echoCancelled: { microphone, reference in
                 let stream = try echoCancelled(microphone: microphone, reference: reference)
@@ -51,7 +60,7 @@ public final class LiveSession {
             },
             selfPause: SelfPause(paused: SelfPauseRule(app: settings.bundleID, ownPID: settings.ownPID, restoring: settings.selfPauseCarryOver).paused),
             makeDiarizer: devices.makeDiarizer,
-            emitSpeaker: { speakerContinuation.yield($0) },
+            emitSpeaker: { eventContinuation.yield($0) },
             now: { devices.clock.now() }
         )
         do {
@@ -70,8 +79,8 @@ public final class LiveSession {
             return port
         } catch {
             capture.stop()
-            speakerContinuation.finish()
-            await speakerTask.value
+            eventContinuation.finish()
+            await eventTask.value
             await server.stop()
             throw error
         }
@@ -134,8 +143,8 @@ public final class LiveSession {
         monitor?.stop()
 
         // 2. 流し切る。すべての producer と録音が終わるまで server を残す。
-        speakerContinuation.finish()
-        await speakerTask.value
+        eventContinuation.finish()
+        await eventTask.value
         for task in screenTasks { await task.value }
         await monitorTask?.value
         do { try await audio.finish() } catch { recordingFailure = error }
@@ -165,7 +174,7 @@ private final class LiveCapture {
     private var startedTracks: Set<Track> = []
     private var screen: (any LiveScreenSource)?
 
-    init(devices: LiveDevices, settings: LiveSettings, server: WebSocketServer) {
+    init(devices: LiveDevices, settings: LiveSettings, emitEvent: @escaping @Sendable (HelperEvent) -> Void) {
         self.devices = devices
         self.settings = settings
         silentJudgement = TapSilentJudgement(
@@ -174,7 +183,7 @@ private final class LiveCapture {
             currentLine: { devices.tap.currentLine() },
             emit: { settings.log(.tapDevices($0)) },
             now: { devices.clock.now() },
-            emitEvent: { event in Task { await server.send(event) } }
+            emitEvent: emitEvent
         )
     }
 
