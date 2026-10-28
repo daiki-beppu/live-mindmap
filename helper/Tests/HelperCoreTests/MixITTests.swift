@@ -97,7 +97,7 @@ enum MixTestSupport {
 
 private typealias Support = MixTestSupport
 
-@Suite("録音の混合")
+@Suite("録音の混合", .timeLimit(.minutes(1)))
 struct MixITTests {
 
     @Test("出力は moov が mdat より前（先頭側）にある")

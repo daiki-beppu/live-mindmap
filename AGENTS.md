@@ -53,6 +53,7 @@ Reviewers keep catching these. When a rule here is broken again, add the check t
 | No unused exports, duplicated blocks or over-complex functions | `pnpm fallow` (end of `pnpm typecheck`, CI `ts` job) |
 | `runMain`・`runSync`・`runPromise` only at the entrypoints | `server/scripts/check-entrypoints.ts` |
 | Unit tests don't open real resources | `server/scripts/check-test-layers.ts` |
+| helper の ITTests suite は1分、HeavyTests suite は2分の `.timeLimit` を付ける | helper の `typecheck` で走る `helper/scripts/checkTestLayers.ts` が `.timeLimit` の欠落を検出 |
 | Don't drop a failure silently: return it, or `Effect.ignore({ log, message })` naming what is given up; cleanup goes in `ensuring`・`onExit`・`acquireRelease` so it also runs on interruption | `server/scripts/check-ignored-failures.ts` (catches `Effect.ignore`; a swallowing `Effect.catch` or `FiberSet.awaitEmpty` is review only) |
 | A PR targets an up-to-date `main` | the `main` ruleset |
 | The PR body states the check layers run and their results, and every deliverable the issue asks for (Closes, before/after, screenshots) | review only |

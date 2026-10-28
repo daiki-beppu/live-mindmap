@@ -90,7 +90,7 @@ private let diarization: [SpeakerDiarization] = [
     .settled(to: 0.3),
 ]
 
-@Suite("run --events: 認識と話者分離のイベントを arrival つきの JSONL にする")
+@Suite("run --events: 認識と話者分離のイベントを arrival つきの JSONL にする", .timeLimit(.minutes(1)))
 struct RunEventsITTests {
     private func run(selfResults: [TranscriptionResult]? = nil, diarizer: FakeDiarizer = FakeDiarizer(items: diarization)) async throws -> (lines: [[String: Any]], diarizer: FakeDiarizer) {
         let audio = try writeSilence(seconds: 0.35)

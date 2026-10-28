@@ -42,7 +42,7 @@ private func synthesize(_ text: String, voice: String, in directory: URL) throws
     return Array(UnsafeBufferPointer(start: output.floatChannelData![0], count: Int(output.frameLength)))
 }
 
-@Suite("WeSpeakerEmbedder の声の埋め込み", .timeLimit(.minutes(5)))
+@Suite("WeSpeakerEmbedder の声の埋め込み", .timeLimit(.minutes(2)))
 struct WeSpeakerEmbedderHeavyTests {
     @Test("短い合成音声から、256 次元の有限で 0 でない埋め込みが作られる")
     func embedsSyntheticSpeech() async throws {

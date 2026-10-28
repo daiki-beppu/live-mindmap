@@ -5,7 +5,7 @@ import Testing
 // 語ごとのローマ字の読み（Issue #640）。実際の CFStringTokenizer（ja）を通す。
 // 期待値は実際のトークナイザの出力（macOS 上で確認した値）。
 
-@Suite("語ごとの読み（readings(of:)）")
+@Suite("語ごとの読み（readings(of:)）", .timeLimit(.minutes(1)))
 struct ReadingsITTests {
     @Test("漢字の語にローマ字の読みが付き、語ごとに入力の順で返る")
     func kanjiWords() {

@@ -17,7 +17,7 @@ private func readBack(_ url: URL) throws -> [Float] {
     return Array(UnsafeBufferPointer(start: try #require(buffer.floatChannelData)[0], count: Int(buffer.frameLength)))
 }
 
-@Suite("tracks: 会議のフォルダから 自分.wav と 相手.wav を書く")
+@Suite("tracks: 会議のフォルダから 自分.wav と 相手.wav を書く", .timeLimit(.minutes(1)))
 struct TracksITTests {
     @Test("進行役の行の音声だけが 自分、残りだけが 相手 に、start の位置で入り、2 本は同じ長さ（最後の end + 3 秒）")
     func splitsFilesBySpeaker() throws {
