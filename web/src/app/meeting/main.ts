@@ -20,6 +20,7 @@ import { Message } from "./message.ts";
 
 const Session = Schema.Struct({
   mapSurface: Schema.Struct({
+    foldingContext: MapSurface.Model.fields.foldingContext,
     size: MapSurface.Model.fields.size,
     nodeHeights: MapSurface.Model.fields.nodeHeights,
     isMac: MapSurface.Model.fields.isMac,

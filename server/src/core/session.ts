@@ -17,6 +17,7 @@ export type ScreenChange = {
 };
 
 export type DiffInput = {
+  readonly criteria?: readonly string[];
   map: MeetingMap;
   recent: Remark[];
   fresh: Remark[];
@@ -58,6 +59,7 @@ export class DiffUpdater extends Context.Service<DiffUpdater, {
 
 export const StartEvent = Schema.Struct({
   type: Schema.Literal("start"), title: Schema.String,
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
   model: Schema.optionalKey(Schema.Struct({ name: Schema.String, route: Schema.String, local: Schema.Boolean })),
 });
 export const RemarkEvent = Schema.Struct({ type: Schema.Literal("remark"), remark: Remark, noContent: Schema.optionalKey(Schema.Literal(true)),
@@ -114,6 +116,7 @@ const RECENT = 3;
 export { hasContent } from "./remark.ts";
 
 export type SessionState = {
+  readonly criteria?: readonly string[];
   readonly speakerNames: SpeakerNameTable;
   readonly map: MeetingMap;
   readonly pending: readonly Remark[];
@@ -152,6 +155,7 @@ type Ledger = {
   readonly files: Set<string>;
 };
 type Replay = {
+  readonly criteria?: readonly string[];
   readonly map: MeetingMap | undefined;
   readonly history: ReflectionState["history"];
   readonly queue: ScreenQueue.ScreenQueue;
@@ -173,7 +177,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     const type = typeOf(event);
     if (type === StartEvent.fields.type.literal) {
       const e = yield* decodeStart(event).pipe(failed);
-      replay = { ...replay, map: emptyMap(e.title) };
+      replay = { ...replay, criteria: e.criteria, map: emptyMap(e.title) };
     } else if (type === RemarkEvent.fields.type.literal) {
       const e = yield* decodeRemark(event).pipe(failed);
       ledger.remarks.push(e.remark);
@@ -185,7 +189,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
       const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの diff より前に start がありません")));
-      const { state } = yield* Effect.fromResult(reflectDiff({ map, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
+      const { state } = yield* Effect.fromResult(reflectDiff({ map, criteria: replay.criteria, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
       const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
       const queue = yield* Effect.fromResult(ScreenQueue.consume(replay.queue, e, cutoff)).pipe(Effect.mapError(invalid));
       ledger.known = state.ledger.known;
@@ -207,7 +211,7 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
   const { map, history, queue, diffUpdate } = replay;
   const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
+  return { ...(replay.criteria?.length ? { criteria: replay.criteria } : {}), map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
 });
 
 export function snapshotOf(state: SessionState): Snapshot {
@@ -219,6 +223,7 @@ export function snapshotOf(state: SessionState): Snapshot {
   const cited = new Set(nodes.flatMap((n) => n.evidence));
   const last = state.remarks.at(-1);
   return {
+    ...(state.criteria?.length ? { criteria: [...state.criteria] } : {}),
     nodes,
     round: state.round,
     changes: state.changes.map((c) => ({ ...c })),
@@ -397,9 +402,10 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
         const outcome = yield* Effect.forEach(input.screens ?? [], readBack).pipe(
           Effect.flatMap((screens) =>
             Effect.gen(function* () {
-              const speakerNames = speakerNameMap((yield* Ref.get(ref)).speakerNames);
+              const current = yield* Ref.get(ref);
+              const speakerNames = speakerNameMap(current.speakerNames);
               const startedAt = logTimestamp(logShiftMs);
-              return yield* Effect.exit(restore(updater.update({ map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousResponse ? { previousResponse } : {}), ...(speakerNames.size ? { speakerNames } : {}) }))).pipe(
+              return yield* Effect.exit(restore(updater.update({ ...(current.criteria?.length ? { criteria: current.criteria } : {}), map, recent: [...recent], fresh: [...fresh], ...(screens.length ? { screens } : {}), ...(previousResponse ? { previousResponse } : {}), ...(speakerNames.size ? { speakerNames } : {}) }))).pipe(
                 Effect.map((exit) => ({ exit, call: { startedAt, endedAt: logTimestamp(logShiftMs) } as CallTimes })),
               );
             }),
@@ -439,7 +445,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             let dropped: Dropped[] = [];
             yield* Ref.update(ref, (s) => {
               const byId = new Map(s.remarks.map((r) => [r.id, r]));
-              const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+              const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
               const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
               dropped = applied.dropped;
               return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
@@ -454,7 +460,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const byId = new Map(s.remarks.map((r) => [r.id, r]));
             const ops = attributePeople(outcome.ops, byId);
             const event: typeof DiffEvent.Type = { type: "diff", input, ops, dropped: [], ...presentFields(outcome, ["processedRemarks", "usage", "judge", "call"]) };
-            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
+            const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
             const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
             const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
             return [{ event, dropped: applied.dropped, accepted }, {
@@ -524,17 +530,18 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   } satisfies Session;
 });
 
-type NewSessionOptions = { readonly title: string; readonly images?: boolean; readonly logShiftMs?: number };
+type NewSessionOptions = { readonly title: string; readonly criteria?: readonly string[]; readonly images?: boolean; readonly logShiftMs?: number };
 
-const createSession = Effect.fnUntraced(function* ({ title, images = true, logShiftMs = 0 }: NewSessionOptions, updater: DiffUpdater["Service"] | undefined): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
+const createSession = Effect.fnUntraced(function* ({ title, criteria, images = true, logShiftMs = 0 }: NewSessionOptions, updater: DiffUpdater["Service"] | undefined): Effect.fn.Return<Session, never, Scope.Scope | SessionLog> {
   const log = yield* SessionLog;
-  yield* log.write({ type: "start", title });
+  yield* log.write({ type: "start", title, ...(criteria?.length ? { criteria: [...criteria] } : {}) });
   if (!images) yield* log.write({
     type: ScreenInputSkippedEvent.fields.type.literal,
     reason: ScreenInputSkippedEvent.fields.reason.literal,
   });
   const queue = ScreenQueue.make();
   return yield* openSession({
+    ...(criteria?.length ? { criteria: [...criteria] } : {}),
     map: emptyMap(title),
     speakerNames: new Map(),
     pending: [],

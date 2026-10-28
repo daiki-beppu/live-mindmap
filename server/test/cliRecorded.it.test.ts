@@ -315,6 +315,18 @@ describe("共有画面の OCR 失敗の終了通知", () => {
 });
 
 describe("cli recorded <file>", () => {
+  it.live("recorded --criteria は空行を除いた記載順の軸をモデル入力と開始ログへ渡す", () => Effect.gen(function* () {
+    const calls: DiffInput[] = [];
+    const r = yield* resource(THREE, fakeUpdater((input) => Effect.sync(() => { calls.push(input); })));
+    const file = join(r.root, "criteria.txt");
+    writeFileSync(file, " 採用のしやすさ \r\n\r\n運用負荷\n");
+    yield* r.cli(["recorded", r.file, "--criteria", file]);
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    expect(calls.length).toBeGreaterThan(0);
+    for (const input of calls) expect(input).toHaveProperty("criteria", criteria);
+    expect(logLines(onlySession(r.sessionsDir)).find((line) => line.type === "start")).toHaveProperty("criteria", criteria);
+  }).pipe(Effect.scoped));
+
   it.live("ファイルを渡すと、進み具合の行と、フォルダとmap.*のパスが出る", () => Effect.gen(function* () {
     const r = yield* resource(THREE);
     // 相対パスで渡しても、サーバー（作業フォルダが違う）には絶対パスで渡る
@@ -626,6 +638,15 @@ describe("cli recorded <file>", () => {
     expect(bodies[0]).not.toHaveProperty("judge");
     expect(r.prepared).toEqual([{ kind: "single", model }]);
     expect(r.deps.stdout.join("")).toContain(join(onlySession(r.sessionsDir), "map.md"));
+  }).pipe(Effect.scoped));
+
+  it.live("判断軸のあるローカル録画は軸を保存し、関係づけを行わないことを開始時に一度知らせる", () => Effect.gen(function* () {
+    const r = yield* resource(THREE, fakeUpdater(), { cli: { apple: availableApple, env: { LIVE_MINDMAP_JUDGE: undefined } } });
+    const file = join(r.root, "criteria.txt");
+    writeFileSync(file, "採用のしやすさ\n");
+    yield* r.cli(["recorded", r.file, "--local", "--criteria", file]);
+    expect(r.deps.stderr.join("").split("\n").filter((line) => line.includes("判断軸"))).toHaveLength(1);
+    expect(logLines(onlySession(r.sessionsDir)).find((line) => line.type === "start")).toHaveProperty("criteria", ["採用のしやすさ"]);
   }).pipe(Effect.scoped));
 
   it.live("share は録画からのセッションの最中も URL を出す", () => Effect.gen(function* () {

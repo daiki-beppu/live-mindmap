@@ -219,12 +219,13 @@ export type LoggedSessionOptions = {
   model: ExecutableModel;
   dir: string;
   title?: string;
+  criteria?: readonly string[];
   logShiftMs?: number;
   send?: SendFrame;
   onDiff?: Effect.Effect<void>;
 };
 
-const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, send, onDiff, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
+const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShiftMs = 0, send, onDiff, model }: Omit<LoggedSessionOptions, "model"> & { model: ExecutableModel | undefined }, updater: DiffUpdater["Service"] | undefined) {
   const fs = yield* FileSystem.FileSystem;
   const writeLogLine = (event: LogEvent | IntakeLogEvent | SelfPauseLogEvent) =>
     Effect.suspend(() =>
@@ -269,7 +270,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, logShiftMs = 0, se
     }),
   );
   const images = model === undefined || (model.route !== "apple" && model.images !== false);
-  const options = { title: title ?? basename(dir), images, logShiftMs };
+  const options = { title: title ?? basename(dir), criteria, images, logShiftMs };
   const session = yield* (updater === undefined ? makeTranscriptSession(options) : makeSession(options).pipe(Effect.provideService(DiffUpdater, updater))).pipe(Effect.provide(log));
   yield* Ref.set(current, session);
   if (send) {

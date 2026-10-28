@@ -14,6 +14,7 @@ export const ChangeEntry = Change.mapMembers(Tuple.map(Schema.fieldsAssign({
 })));
 export type ChangeEntry = typeof ChangeEntry["Type"];
 export const Snapshot = Schema.Struct({
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
   nodes: Schema.mutableKey(Schema.mutable(Schema.Array(SnapshotNode))),
   round: Schema.mutableKey(Schema.Finite),
   changes: Schema.mutableKey(Schema.mutable(Schema.Array(ChangeEntry))),

@@ -60,6 +60,14 @@ const setup = (script: readonly Scripted[], options: { sonnetFails?: Set<number>
 const input = (fresh: readonly Remark[], extra: Partial<DiffInput> = {}): DiffInput => ({ map: emptyMap("定例"), recent: [], fresh: [...fresh], ...extra });
 
 describe("振り分け: 行き先（しきい値 0.3）", () => {
+  it.effect("行き先を往復しても同じセッションの判断軸を両方の差分更新へ渡す", () => Effect.gen(function* () {
+    const { router, haiku, sonnet } = yield* setup([0.9, 0.1, 0.9, 0.1]);
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    for (const n of [1, 2, 3, 4]) yield* router.update(input([remark(n)], { criteria }));
+    expect([sonnet.inputs.length, haiku.inputs.length]).toEqual([2, 2]);
+    for (const handed of [...sonnet.inputs, ...haiku.inputs]) expect(handed.criteria).toEqual(criteria);
+  }));
+
   it.effect("確からしさが 0.3 ちょうど・0.9 なら Sonnet だけを呼ぶ", () => Effect.gen(function* () {
     const { router, sonnet, haiku, judge } = yield* setup([0.3, 0.9]);
     yield* router.update(input([remark(1)]));

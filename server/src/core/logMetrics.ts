@@ -57,6 +57,7 @@ export const logMetrics = Effect.fnUntraced(function* (events: readonly LogEvent
     index++;
     if (event.type === "start") {
       progress = {
+        criteria: event.criteria,
         map: emptyMap(event.title),
         history: progress?.history ?? { round: 0, changes: [], currentTopic: undefined, lastChanged: undefined },
         ledger: progress?.ledger ?? ledger,

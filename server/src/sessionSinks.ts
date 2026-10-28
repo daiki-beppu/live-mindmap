@@ -53,6 +53,7 @@ export type OpenSessionSink = SinkMode & {
   dir: string;
   title: string | undefined;
   vocab?: ReadonlyArray<string> | undefined;
+  criteria?: readonly string[];
   logShiftMs?: number;
   send: SendFrame;
 };
@@ -90,7 +91,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           makeFeed: (session: Session, inlet: Inlet) => Effect.Effect<F, never, Scope.Scope>,
           excluded?: RecordedOptions["excluded"],
         ) {
-          const { dir, title, vocab, logShiftMs, send } = args;
+          const { dir, title, vocab, criteria, logShiftMs, send } = args;
           // updater を開く。Layer はメモ化されるので、Layer.fresh でセッションごとに別の実体にする（query を使い回さない）。
           const updaterContext = args.noMap === true ? undefined : yield* Layer.build(Layer.fresh(args.updaterLayer)).pipe(Effect.orDie);
           const baseUpdater = updaterContext === undefined ? undefined : Context.get(updaterContext, DiffUpdater);
@@ -98,6 +99,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           const loggedOptions = {
             dir,
             title,
+            criteria,
             logShiftMs,
             send: (frame: ViewerFrame) => Effect.gen(function* () {
               yield* send(frame);

@@ -32,7 +32,7 @@ export function buildReviewTimeline(events: readonly unknown[]): ReviewTimeline 
       remarks.push({ remark: e.remark, index });
       byId.set(e.remark.id, e.remark);
     } else if (e.type === "diff" && e.error === undefined) {
-      const ends = e.input.fresh.map((id) => byId.get(id)?.end ?? Number.NEGATIVE_INFINITY);
+      const ends = e.input.fresh.slice(0, e.processedRemarks ?? e.input.fresh.length).map((id) => byId.get(id)?.end ?? Number.NEGATIVE_INFINITY);
       reflections.push({ round: reflections.length + 1, at: Math.max(...ends), index });
     }
   });
@@ -53,7 +53,7 @@ export function snapshotAt(timeline: ReviewTimeline, t: number): Snapshot {
   const kept = events.slice(0, cutoff).flatMap((event) => {
     const e = event as LogEvent;
     if (e.type === "remark") return keptRemarkIds.has(e.remark.id) ? [event] : [];
-    if (e.type === "diff" && e.error !== undefined) return [{ ...e, input: { ...e.input, fresh: e.input.fresh.filter((id) => keptRemarkIds.has(id)) } }];
+    if (e.type === "diff" && (e.error !== undefined || e.processedRemarks !== undefined)) return [{ ...e, input: { ...e.input, fresh: e.input.fresh.filter((id) => keptRemarkIds.has(id)) } }];
     return [event];
   });
   const snapshot = reviewSnapshot(kept);

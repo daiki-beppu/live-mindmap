@@ -1,3 +1,6 @@
+import { buildPrompt, DIFF_SYSTEM } from "./claudePrompt.ts";
+import { type DiffInput } from "./core/index.ts";
+import { decodeHttpDiffOutput, HTTP_DIFF_OUTPUT_SCHEMA } from "./httpDiffOutput.ts";
 import { Effect, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { DiffUpdatePaused } from "./core/index.ts";
@@ -80,5 +83,8 @@ export const prepareChatgpt = Effect.fnUntraced(function* (model: Extract<Execut
     Effect.flatMap((text) => Schema.decodeEffect(Schema.fromJsonString(KatakanaOutput), { onExcessProperty: "error" })(text)),
     Effect.map(toAnswers),
   ));
-  return { classify, katakana } satisfies LocalModel;
+  const update = (input: DiffInput) => refuse(exchange(DIFF_SYSTEM, buildPrompt(input), HTTP_DIFF_OUTPUT_SCHEMA).pipe(
+    Effect.flatMap(decodeHttpDiffOutput),
+  ));
+  return { classify, katakana, update };
 }, Effect.mapError((error) => Schema.is(ChatgptUnavailable)(error) ? error : chatgptRefusal("ChatGPT の資格情報を読み込めません")));

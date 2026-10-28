@@ -2,7 +2,7 @@ import { HashMap, Match, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
-import { personLine, Snapshot, type SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
+import { personLine, supportsCriteria, Snapshot, SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
 import {
   anchoredViewport,
   cameraFocus,
@@ -44,9 +44,48 @@ import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
 
+const FoldingContext = Schema.Struct({
+  currentTopic: Schema.Option(Schema.String),
+  now: Schema.Option(Schema.Finite),
+  touchedAt: Schema.Record(Schema.String, Schema.Option(Schema.Finite)),
+  talkStatus: Schema.Record(Schema.String, Schema.Option(SnapshotNode.fields.talkStatus.schema)),
+});
+const sameFoldingContext = Schema.toEquivalence(FoldingContext);
+const foldingContextOf = (snapshot: Snapshot): typeof FoldingContext.Type => ({
+  currentTopic: Option.fromUndefinedOr(snapshot.currentTopic),
+  now: Option.fromUndefinedOr(snapshot.now),
+  touchedAt: Object.fromEntries(snapshot.nodes.map((node) => [node.id, Option.fromUndefinedOr(node.touchedAt)])),
+  talkStatus: Object.fromEntries(snapshot.nodes.map((node) => [node.id, Option.fromUndefinedOr(node.talkStatus)])),
+});
+
+const sameNodeContent = Schema.toEquivalence(SnapshotNode.mapFields(({ criteria: _criteria, evidence: _evidence, evidenceRound: _evidenceRound, touchedAt: _touchedAt, talkStatus: _talkStatus, ...fields }) => fields));
+const sameNodes = Schema.toEquivalence(Schema.Array(SnapshotNode));
+const sameCriteria = Schema.toEquivalence(Schema.Array(Schema.String));
+const changedOnlyCriteria = (before: Snapshot, after: Snapshot): boolean => {
+  if (before.nodes.length !== after.nodes.length) return false;
+  const byId = new Map(before.nodes.map((node) => [node.id, node]));
+  const linked = new Set(after.nodes.filter((node) => {
+    const previous = byId.get(node.id);
+    return previous !== undefined && !sameCriteria(previous.criteria ?? [], node.criteria ?? []);
+  }).map((node) => node.id));
+  if (linked.size === 0) return false;
+  const reopened = new Set<string>();
+  for (const id of linked) {
+    for (let node = byId.get(id); node; node = node.parent ? byId.get(node.parent) : undefined) reopened.add(node.id);
+  }
+  return after.nodes.every((node, index) => {
+    const previous = before.nodes[index]!;
+    return sameNodeContent(previous, node)
+      && (linked.has(node.id) || (sameCriteria(previous.evidence, node.evidence) && previous.evidenceRound === node.evidenceRound))
+      && (reopened.has(node.id) || previous.touchedAt === node.touchedAt)
+      && (previous.talkStatus === node.talkStatus || (reopened.has(node.id) && node.talkStatus === undefined));
+  });
+};
+
 export const Model = Schema.Struct({
   mode: Schema.Literals(["still", "live", "review"]),
   snapshot: Snapshot,
+  foldingContext: FoldingContext,
   size: Schema.Option(Schema.Struct({ width: Schema.Finite, height: Schema.Finite })),
   nodeHeights: Schema.HashMap(Schema.String, Schema.Finite),
   isMac: Schema.Boolean,
@@ -70,6 +109,7 @@ const IDENTITY: Viewport = { x: 0, y: 0, zoom: 1 };
 export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): Model => ({
   mode,
   snapshot,
+  foldingContext: foldingContextOf(snapshot),
   size: Option.none(),
   nodeHeights: HashMap.empty(),
   isMac,
@@ -91,7 +131,18 @@ const MOTION_DURATION_MS = 500;
 
 const foldViewOf = (model: Model): FoldView | null => {
   if (model.mode === "still") return null;
-  return foldView(model.snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
+  const context = model.foldingContext;
+  const snapshot = {
+    ...model.snapshot,
+    currentTopic: Option.getOrUndefined(context.currentTopic),
+    now: Option.getOrUndefined(context.now),
+    nodes: model.snapshot.nodes.map((node) => ({
+      ...node,
+      touchedAt: Option.getOrUndefined(context.touchedAt[node.id] ?? Option.none()),
+      talkStatus: Option.getOrUndefined(context.talkStatus[node.id] ?? Option.none()),
+    })),
+  };
+  return foldView(snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
 };
 const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
 const layoutHeightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
@@ -332,8 +383,11 @@ export const update = (model: Model, message: Message): Return =>
     },
     ChangedSnapshot: ({ snapshot }) => {
       const replaced = modifyFields(model, { snapshot: () => snapshot });
-      const reflection = reflectionOf(model, replaced);
-      return { model: reflection === null ? reanchor(autoCamera(followTarget(model, replaced))) : applyViewing(replaced, reflection, model) };
+      const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
+      if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
+      const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
+      const reflection = reflectionOf(model, refreshed);
+      return { model: reflection === null ? reanchor(autoCamera(followTarget(model, refreshed))) : applyViewing(refreshed, reflection, model) };
     },
     MovedTime: () => (model.viewing.mode === "auto" ? { model } : pressed(model, { type: "timeMoved" })),
     PressedViewKey: ({ key, metaKey, ctrlKey, altKey }) => pressed(model, { type: "key", key, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
@@ -422,7 +476,15 @@ const classes = (...names: ReadonlyArray<string | false>): string => names.filte
 
 type H = HtmlBuilder<Message>;
 
-function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, speakerNames: SpeakerNames): Html {
+function criteriaView(h: H, node: SnapshotNode, criteria: readonly string[]): Html | null {
+  if (!criteria.length || !supportsCriteria(node.kind)) return null;
+  return h.span([h.Class("map-node__criteria")], [
+    h.span([h.Class("map-node__criteria-reserve"), h.AriaHidden(true)], criteria.map((axis) => h.span([], [axis]))),
+    h.span([h.Class("map-node__criteria-value")], (node.criteria ?? []).map((axis) => h.span([], [axis]))),
+  ]);
+}
+
+function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, speakerNames: SpeakerNames, criteria: readonly string[]): Html {
   const openness = view?.openness[node.id];
   const fold = openness?.state === "folded" || openness?.state === "bundle" ? openness : null;
   const mark = markOf(node);
@@ -437,7 +499,9 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
     [
       h.button(
         [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected))],
-        [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person text-[12px] text-gray-500")], [person]), fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
+        [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person text-[12px] text-gray-500")], [person]),
+          criteriaView(h, node, criteria),
+          fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],
       ),
       fold === null
         ? null
@@ -471,7 +535,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
         h.DataAttribute("node-id", node.id),
         h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
       ],
-      [nodeBody(h, node, view_, node.id === selectedId, model.speakerNames)],
+      [nodeBody(h, node, view_, node.id === selectedId, model.speakerNames, model.snapshot.criteria ?? [])],
     ),
   );
 
@@ -502,6 +566,10 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   return h.div(
     [h.Class("map-surface relative w-full h-full overflow-hidden z-0"), h.OnMount(ObserveMapSurface())],
     [
+      model.snapshot.criteria?.length ? h.div([h.Class("criteria-strip"), h.AriaLabel("判断軸（優先順）")], [
+        h.span([], ["判断軸（優先順）"]),
+        h.ol([], model.snapshot.criteria.map((axis) => h.li([], [axis]))),
+      ]) : null,
       h.div([h.Class("map-viewport absolute left-0 top-0 w-full h-full origin-top-left pointer-events-none z-2"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges absolute left-0 top-0 w-[1px] h-[1px] overflow-visible pointer-events-none")], edges), h.div([h.Class("map-nodes absolute left-0 top-0 pointer-events-none")], nodes)]),
       ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots absolute inset-0 z-4 pointer-events-none overflow-hidden")], edgeDotButtons)]),
     ],

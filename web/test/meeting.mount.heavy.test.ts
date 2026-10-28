@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CAPTION_SLIDE_MS } from "../src/captions.ts";
 import { CLICK_ZOOM_FACTOR, scrollPanDelta, zoomAtPoint } from "../src/camera.ts";
+import { reviewSnapshot, type Op } from "../../server/src/core/index.ts";
 import { closeSocket, connectFrames, connectionCount, meetingFrames, NOTICE_FRAMES, openMeetingPage, readMeetingViewport, sendFrame, sendFrames, startMeetingServer, MEETING_TIMEOUT, waitForMeasuredNodes, type MeetingFrames, type MeetingServer } from "./meetingPage.ts";
 import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { mapPoint, near, PAGE_VIEWPORT, rectOf, settled, styleOf } from "./reviewPage.ts";
@@ -28,6 +29,62 @@ afterAll(async () => {
 const nodeCount = (page: Page): Promise<number> => page.locator("[data-node-id]").count();
 const open = (context: BrowserContext) => openMeetingPage(context, server, { frames: frames.first });
 
+const visibleNodeRects = (page: Page) => page.locator("[data-node-id]").evaluateAll((elements) => elements.map((el) => {
+  const { left, top, width, height } = el.getBoundingClientRect();
+  return { id: el.getAttribute("data-node-id"), left, top, width, height };
+}));
+const expectNodeRects = (actual: Awaited<ReturnType<typeof visibleNodeRects>>, expected: Awaited<ReturnType<typeof visibleNodeRects>>) => {
+  expect(actual.map((rect) => rect.id)).toEqual(expected.map((rect) => rect.id));
+  for (const [i, rect] of actual.entries()) {
+    for (const key of ["left", "top", "width", "height"] as const) near(rect[key], expected[i]![key], `${rect.id}の${key}`);
+  }
+};
+
+const criteriaHistory = (closed: boolean, from: string[]) => {
+  const criteria = ["採用のしやすさ", "運用負荷"];
+  const rows: unknown[] = [{ type: "start", title: "合成会議", criteria }];
+  const reflect = (id: string, end: number, ops: Op[]) => {
+    rows.push(
+      { type: "remark", remark: { id, track: "相手", start: end - 1, end, text: "合成の発言" } },
+      { type: "diff", input: { fresh: [id], recent: [], nodeCount: 0 }, ops, dropped: [] },
+    );
+    return reviewSnapshot(rows);
+  };
+  reflect("r1", 1, [
+    { op: "add", ref: "A", parent: "root", kind: "議題", text: "前の議題", evidence: ["r1"] },
+    { op: "add", ref: "a", parent: "A", kind: "案", text: "前の案", criteria: from, evidence: ["r1"] },
+  ]);
+  reflect("r2", closed ? 2 : 1000, [
+    { op: "add", ref: "B", parent: "root", kind: "議題", text: "今の議題", evidence: ["r2"] },
+    { op: "add", ref: "b", parent: "B", kind: "案", text: "今の案", evidence: ["r2"] },
+  ]);
+  reflect("rB", closed ? 3 : 1000, [{ op: "update", node: "n4", evidence: ["rB"] }]);
+  const initial = reflect("rClose", closed ? 4 : 1000, closed ? [{ op: "close", node: "n1" }] : [{ op: "noop", reason: "相づち" }]);
+  return { initial, reflect };
+};
+
+const settledMap = async (page: Page): Promise<void> => {
+  const stable = await page.evaluate(() => new Promise<boolean>((resolve) => {
+    const read = () => JSON.stringify([
+      ...[...document.querySelectorAll("[data-node-id], .captions")].map((el) => el.getBoundingClientRect().toJSON()),
+      document.querySelector<HTMLElement>(".map-viewport")?.style.transform,
+    ]);
+    const started = performance.now();
+    let last = read();
+    let same = 0;
+    const tick = () => {
+      const current = read();
+      same = current === last ? same + 1 : 0;
+      last = current;
+      if (same >= 8) return resolve(true);
+      if (performance.now() - started > 8_000) return resolve(false);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }));
+  if (!stable) throw new Error("ノード・字幕・カメラの配置が落ち着きません");
+};
+
 describe("会議中（Foldkit 版）の入口", () => {
   it(
     "起動すると Foldkit の画面が出て、React の root も React Flow も無く、<audio> も無い。スナップショットが届くまでは待ち表示だけ",
@@ -50,6 +107,7 @@ describe("会議中（Foldkit 版）の入口", () => {
       expect(await page.evaluate(() => Object.keys(document.getElementById("root")!).filter((key) => key.startsWith("__reactContainer")))).toEqual([]);
       expect(await page.locator("audio").count()).toBe(0);
       expect(await page.locator(".intake-notice").count()).toBe(0);
+      expect(await page.locator(".criteria-strip, .map-node__criteria").count()).toBe(0);
       expect(await page.locator("[data-node-id]").count()).toBeGreaterThan(1);
     }),
     MEETING_TIMEOUT,
@@ -58,6 +116,169 @@ describe("会議中（Foldkit 版）の入口", () => {
 });
 
 describe("会議中（Foldkit 版）の Mount", () => {
+  describe.each([
+    { closed: false, from: [], updates: [["採用のしやすさ"], ["運用負荷"], [], ["採用のしやすさ"]] },
+    { closed: true, from: [], updates: [["採用のしやすさ"]] },
+    { closed: true, from: ["採用のしやすさ"], updates: [["運用負荷"]] },
+    { closed: true, from: ["運用負荷"], updates: [[]] },
+  ])("関係づけ更新（close=$closed、変更前=$from）", ({ closed, from, updates }) => {
+    it(
+      "別議題の案への関係づけ更新で、折り畳んだ議題と表示済みのノード・字幕を動かさない",
+      ({ annotate }) => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+        const { initial, reflect } = criteriaHistory(closed, from);
+        if (closed) expect(initial.nodes.find((node) => node.id === "n1")?.talkStatus).toBe("済み");
+        const page = await openMeetingPage(context, server, { frames: [spokenFrame("保持している字幕"), { type: "snapshot", snapshot: initial }] });
+        await waitForMeasuredNodes(page, 4);
+        await settledMap(page);
+        expect(await page.locator('[data-node-id="n2"]').count()).toBe(0);
+        const ids = await page.locator("[data-node-id]").evaluateAll((elements) => elements.map((el) => el.getAttribute("data-node-id")));
+        await annotate("関係づけ更新前", { body: await page.screenshot(), contentType: "image/png" });
+        for (const [index, links] of updates.entries()) {
+          await settledMap(page);
+          const before = await rectOf(page, '[data-node-id="n4"]');
+          const visibleBefore = await visibleNodeRects(page);
+          const captions = await rectOf(page, ".captions");
+          const band = await rectOf(page, ".criteria-strip");
+          const camera = await readMeetingViewport(page);
+          const id = `r${index * 2 + 3}`;
+          const next = reflect(id, (closed ? 5 : 1001) + index * 2, [{ op: "update", node: "n2", evidence: [id], criteria: links }]);
+          expect(next.currentTopic).toBe("n1");
+          expect(next.nodes.find((node) => node.id === "n2")?.criteria ?? []).toEqual(links);
+          await sendFrame(page, { type: "snapshot", snapshot: next });
+          await expect.poll(() => page.locator(".changes__item").count()).toBe(next.changes.length);
+          await settledMap(page);
+          expect(await page.locator("[data-node-id]").evaluateAll((elements) => elements.map((el) => el.getAttribute("data-node-id")))).toEqual(ids);
+          const current = await rectOf(page, '[data-node-id="n4"]');
+          const currentCaptions = await rectOf(page, ".captions");
+          const currentBand = await rectOf(page, ".criteria-strip");
+          expectNodeRects(await visibleNodeRects(page), visibleBefore);
+          for (const key of ["left", "top", "width", "height"] as const) {
+            near(current[key], before[key], `別議題更新後のノードの${key}`);
+            near(currentCaptions[key], captions[key], `別議題更新後の字幕の${key}`);
+            near(currentBand[key], band[key], `別議題更新後の帯の${key}`);
+          }
+          expect(await readMeetingViewport(page)).toEqual(camera);
+          const noop = reflect(`r${index * 2 + 4}`, (closed ? 6 : 1002) + index * 2, [{ op: "noop", reason: "相づち" }]);
+          expect(noop.currentTopic).toBe("n1");
+          expect(noop.nodes).toEqual(next.nodes);
+          const notice = `反映確認 ${index}`;
+          await sendFrame(page, { type: "snapshot", snapshot: noop });
+          await sendFrame(page, { type: "screen-notice", text: notice });
+          await expect.poll(() => page.locator(".screen-notice").innerText(), { timeout: 10_000 }).toBe(notice);
+          await settledMap(page);
+          await annotate(`関係づけ変更${index}後のnoop`, { body: await page.screenshot(), contentType: "image/png" });
+          expect(await page.locator("[data-node-id]").evaluateAll((elements) => elements.map((el) => el.getAttribute("data-node-id")))).toEqual(ids);
+          const afterNoop = await rectOf(page, '[data-node-id="n4"]');
+          const captionsAfterNoop = await rectOf(page, ".captions");
+          const bandAfterNoop = await rectOf(page, ".criteria-strip");
+          for (const key of ["left", "top", "width", "height"] as const) {
+            near(afterNoop[key], before[key], `noop後のノードの${key}`);
+            near(captionsAfterNoop[key], captions[key], `noop後の字幕の${key}`);
+            near(bandAfterNoop[key], band[key], `noop後の帯の${key}`);
+          }
+          expect(await readMeetingViewport(page)).toEqual(camera);
+          const visibleAfterNoop = await visibleNodeRects(page);
+          expectNodeRects(visibleAfterNoop, visibleBefore);
+          await annotate(`noop後の配置 ${index}`, {
+            body: JSON.stringify({ links, ids, currentTopic: noop.currentTopic, before, afterNoop, visibleBefore, visibleAfterNoop, captions, captionsAfterNoop, camera, cameraAfterNoop: await readMeetingViewport(page) }),
+            bodyEncoding: "utf-8", contentType: "application/json",
+          });
+          await page.locator('[data-node-id="n1"] .map-node').click();
+          await page.keyboard.press("Enter");
+          await expect.poll(() => page.locator('[data-node-id="n2"] .map-node__criteria-value').innerText()).toBe(links.join("\n"));
+          await page.locator('[data-node-id="n1"]').getByRole("button", { name: "畳む", exact: true }).click();
+          await expect.poll(() => page.locator('[data-node-id="n2"]').count()).toBe(0);
+        }
+      }),
+      MEETING_TIMEOUT,
+    );
+
+  });
+  it("関係づけ更新とnoop後の根拠追加で、同じ画面の自動カメラ追従が再開する", () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+    const { initial, reflect } = criteriaHistory(false, []);
+    const page = await openMeetingPage(context, server, { frames: [spokenFrame("保持している字幕"), { type: "snapshot", snapshot: initial }] });
+    await waitForMeasuredNodes(page, 4);
+    await settledMap(page);
+    const camera = await readMeetingViewport(page);
+    const linked = reflect("rLink", 1001, [{ op: "update", node: "n2", criteria: ["採用のしやすさ"], evidence: ["rLink"] }]);
+    const noop = reflect("rNoop", 1002, [{ op: "noop", reason: "相づち" }]);
+    await sendFrame(page, { type: "snapshot", snapshot: linked });
+    await sendFrame(page, { type: "snapshot", snapshot: noop });
+    await sendFrame(page, { type: "screen-notice", text: "noop反映済み" });
+    await expect.poll(() => page.locator(".screen-notice").innerText()).toBe("noop反映済み");
+    await settledMap(page);
+    expect(await readMeetingViewport(page)).toEqual(camera);
+    const resumed = reflect("rResume", 1003, [{ op: "update", node: "n2", evidence: ["rResume"] }]);
+    await sendFrame(page, { type: "snapshot", snapshot: resumed });
+    await page.locator('[data-node-id="n2"] .map-node__criteria-value').waitFor();
+    await waitForMeasuredNodes(page, 5);
+    await settledMap(page);
+    expect(await readMeetingViewport(page)).not.toEqual(camera);
+    const target = await rectOf(page, '[data-node-id="n2"]');
+    expect(target.right).toBeGreaterThan(0);
+    expect(target.left).toBeLessThan(PAGE_VIEWPORT.width);
+    expect(target.bottom).toBeGreaterThan(0);
+    expect(target.top).toBeLessThan(PAGE_VIEWPORT.height);
+  }), MEETING_TIMEOUT);
+  it(
+    "同じ画面で関係づけを追加・付け替え・解除してもノード・カメラ・字幕の位置を保つ",
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const criteria = ["採用のしやすさを重視する", "継続して担当する人の運用負荷を増やさない".repeat(3)];
+      let round = 0;
+      const snapshot = (linked: string[]) => ({
+        criteria, round: ++round, changes: [{ change: "更新", node: "n2", kind: "案", text: "試験導入", round, at: round }], remarks: [], currentTopic: "n1", lastChanged: "n2",
+        nodes: [
+          { id: "root", parent: null, kind: "会議", text: "合成会議", evidence: [] },
+          { id: "n1", parent: "root", kind: "議題", text: "導入方法", evidence: [] },
+          { id: "n2", parent: "n1", kind: "案", text: "試験導入", evidence: Array.from({ length: round }, (_, i) => `r${i}`), criteria: linked, touchedAt: round, evidenceRound: round },
+        ],
+      });
+      const page = await openMeetingPage(context, server, { frames: [
+        spokenFrame("保持している字幕"), { type: "snapshot", snapshot: snapshot([]) },
+      ] });
+      await waitForMeasuredNodes(page, 3);
+      await settled(page);
+      const selector = '[data-node-id="n2"]';
+      expect(await page.locator(selector).innerText()).toContain("試験導入");
+      const before = await rectOf(page, selector);
+      const captions = await rectOf(page, ".captions");
+      const camera = await readMeetingViewport(page);
+      const band = await rectOf(page, ".criteria-strip");
+      expect(await page.locator(".criteria-strip li").allTextContents()).toEqual(criteria);
+      for (const linked of [[criteria[0]!], [criteria[1]!], criteria, []]) {
+        await sendFrame(page, { type: "snapshot", snapshot: snapshot(linked) });
+        await page.waitForFunction(({ selector, linked, criteria }) => {
+          const text = document.querySelector<HTMLElement>(selector)?.innerText;
+          return text !== undefined && criteria.every((axis) => text.includes(axis) === linked.includes(axis));
+        }, { selector, linked, criteria }, { timeout: 10_000 });
+        await settled(page);
+        const current = await rectOf(page, selector);
+        const currentCaptions = await rectOf(page, ".captions");
+        const currentBand = await rectOf(page, ".criteria-strip");
+        for (const key of ["left", "top", "width", "height"] as const) {
+          near(current[key], before[key], `関係づけ変更後のノードの${key}`);
+          near(currentCaptions[key], captions[key], `関係づけ変更後の字幕の${key}`);
+          near(currentBand[key], band[key], `判断軸の帯の${key}`);
+        }
+        expect(await readMeetingViewport(page)).toEqual(camera);
+      }
+      const { x, y } = await mapPoint(page, "center");
+      await page.mouse.move(x, y);
+      await page.mouse.wheel(40, 90);
+      await settled(page);
+      expect(await readMeetingViewport(page)).not.toEqual(camera);
+      const panned = await readMeetingViewport(page);
+      await page.keyboard.down("Control");
+      await page.mouse.wheel(0, -120);
+      await page.keyboard.up("Control");
+      await settled(page);
+      expect((await readMeetingViewport(page)).zoom).toBeGreaterThan(panned.zoom);
+      const movedBand = await rectOf(page, ".criteria-strip");
+      for (const key of ["left", "top", "width", "height"] as const) near(movedBand[key], band[key], `パン・ズーム後の帯の${key}`);
+    }),
+    MEETING_TIMEOUT,
+  );
+
   it(
     "ResizeObserver: 画面の大きさを変えるとビューポートが測り直されて変わり、ノードは測った後の見える状態のまま",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {

@@ -31,7 +31,7 @@ const toSessionStart = (body: typeof SessionStartBody["Type"], plan: UpdatePlan)
   title: body.title,
   audio: body.audio,
   screen: body.screen,
-  vocab: body.vocab,
+  vocab: body.vocab, criteria: body.criteria,
   plan,
 });
 
@@ -125,7 +125,7 @@ const startRecordedSession = Effect.gen(function* () {
     ? { noMap: true as const }
     : { plan: yield* acceptBodyPlan(body) };
   const sessions = yield* Sessions;
-  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, realtime: body.realtime, ...mode };
+  const input: RecordedStart = { file: body.file, ...(body.selfFile === undefined ? {} : { selfFile: body.selfFile }), title: body.title, vocab: body.vocab, criteria: body.criteria, realtime: body.realtime, ...mode };
   const { dir, warnings, events } = yield* sessions.startRecorded(input);
   return HttpServerResponse.stream(
     Stream.concat(Stream.succeed<RecordedEvent>({ type: "started", dir, warnings }), events).pipe(

@@ -1,3 +1,6 @@
+import { buildPrompt, DIFF_SYSTEM } from "./claudePrompt.ts";
+import { type DiffInput } from "./core/index.ts";
+import { decodeHttpDiffOutput, HTTP_DIFF_OUTPUT_SCHEMA } from "./httpDiffOutput.ts";
 import { Config, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import type { ExecutableModel } from "./modelSelection.ts";
@@ -61,5 +64,9 @@ export const prepareCompatible = Effect.fnUntraced(function* (model: Extract<Exe
     Effect.map(toAnswers),
     Effect.mapError((error) => Schema.is(CompatibleUnavailable)(error) ? error : new CompatibleFailed({ message: "互換モデルの読みの応答が不正です" })),
   );
-  return { classify, katakana } satisfies LocalModel;
+  const update = (input: DiffInput) => exchange(DIFF_SYSTEM, buildPrompt(input), HTTP_DIFF_OUTPUT_SCHEMA).pipe(
+    Effect.flatMap(decodeHttpDiffOutput),
+    Effect.mapError((error) => Schema.is(CompatibleUnavailable)(error) ? error : new CompatibleFailed({ message: "互換モデルの差分操作が不正です" })),
+  );
+  return { classify, katakana, update };
 });

@@ -1,4 +1,5 @@
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
+import { assertStrictJsonSchema } from "./fixtures/strictJsonSchema.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Clock, ConfigProvider, Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import { HttpClient } from "effect/http";
@@ -30,6 +31,26 @@ const responsesRequest = Schema.Struct({
 });
 
 describe("ChatGPT の文数上限と通常失敗後の状態", () => {
+  it.effect("判断軸があると Responses で関係づけ更新を受け取り、軸を記載順で送る", () => Effect.gen(function* () {
+    const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    const ops = [{ op: "update", node: "n1", evidence: ["r1"], criteria: [] }];
+    const http = fakeChatgptHttp((request, call) => {
+      if (call === 1) return response(completedSse(probe));
+      const body = Schema.decodeUnknownSync(Schema.Struct({ text: Schema.Struct({ format: Schema.Struct({ schema: Schema.Unknown }) }) }))(jsonRequestBody(request));
+      assertStrictJsonSchema(body.text.format.schema);
+      return response(completedSse({ ops: ops.map((op) => ({ text: null, planStatus: null, assignee: null, assigneeSpeaker: null, ...op })), names: null }));
+    });
+    yield* provide(Effect.gen(function* () {
+      const updater = yield* open({});
+      expect((yield* updater.update({ ...input, criteria })).ops).toEqual(ops);
+      const body = Schema.decodeUnknownSync(Schema.Struct({ input: Schema.Array(Schema.Struct({ content: Schema.String })) }))(jsonRequestBody(http.requests[1]!));
+      const prompt = body.input[0]!.content;
+      expect(prompt.indexOf(criteria[0]!)).toBeGreaterThanOrEqual(0);
+      expect(prompt.indexOf(criteria[1]!)).toBeGreaterThan(prompt.indexOf(criteria[0]!));
+    }), files, http);
+  }));
+
   it.effect("長い1発言を3文以内の Responses 要求に分け、各文を一度ずつ送る", () => Effect.gen(function* () {
     const files = fakeChatgptFiles(chatgptCredentials((yield* Clock.currentTimeMillis) + 3_600_000));
     const http = fakeChatgptHttp((request) => {

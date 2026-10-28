@@ -28,10 +28,21 @@ if (!Number.isInteger(webPort) || webPort <= 0 || !Number.isInteger(eventCount) 
 }
 const runInfoPath = join(e2eDir, ".run", `${webPort}.json`);
 
-const update = (input: DiffInput) =>
-  Effect.succeed({
+const update = (input: DiffInput) => {
+  if (input.criteria?.length) {
+    const evidence = [input.fresh[0]!.id];
+    const plan = input.map.nodes.n3;
+    const ops: Op[] = plan === undefined ? [
+      { op: "add", ref: "topic", parent: "root", kind: "議題", text: "導入方針", evidence },
+      { op: "add", ref: "point", parent: "topic", kind: "論点", text: "導入の進め方", evidence },
+      { op: "add", ref: "plan", parent: "point", kind: "案", text: "段階的に導入する", evidence },
+    ] : [{ op: "update", node: plan.id, evidence, criteria: plan.evidence.length < 3 ? input.criteria.slice(plan.evidence.length - 1, plan.evidence.length) : [] }];
+    return Effect.as(Effect.sleep("6 seconds"), { ops, processedRemarks: 1 });
+  }
+  return Effect.succeed({
     ops: input.fresh.map((remark): Op => ({ op: "add", ref: `n-${remark.id}`, parent: "root", kind: "要点", text: remark.text, evidence: [remark.id] })),
   });
+};
 
 const layerChildProcessSpawner = NodeChildProcessSpawner.layer.pipe(Layer.provide(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)));
 

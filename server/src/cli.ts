@@ -307,7 +307,7 @@ const recordedScreen = (fs: FileSystem.FileSystem, dir: string, decoded: (typeof
 
 const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
   const log = yield* readSessionLog(dir).pipe(orFileFailed);
-  const { title } = yield* startOf(log);
+  const { title, criteria } = yield* startOf(log);
   const fs = yield* FileSystem.FileSystem;
   const remarks: PlaybackRemark[] = [];
   const vocabulary: (typeof VocabEvent)["Type"][] = [];
@@ -328,7 +328,7 @@ const loadSessionLog = Effect.fn("loadSessionLog")(function* (dir: string) {
         break;
     }
   }
-  return { title, remarks, screens, vocabulary };
+  return { title, criteria, remarks, screens, vocabulary };
 });
 
 const readTranscriptRemarks = Effect.fn("readTranscriptRemarks")(function* (transcript: string) {
@@ -352,13 +352,13 @@ const modelFlag = Flag.String("model").pipe(Flag.withDescription("設定した�
 const localFlag = Flag.Boolean("local").pipe(Flag.withDescription("ローカルモードを求める（Apple Intelligence の子プロセスだけを使い、会議の中身を Mac の外に出さない。--model は apple だけ組み合わせられる）"), Flag.withDefault(false));
 
 const recordPlayback = Effect.fn("recordPlayback")(function* (
-  input: { title: string; remarks: Iterable<PlaybackRemark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean; vocabulary?: ReadonlyArray<(typeof VocabEvent)["Type"]> },
+  input: { title: string; criteria?: readonly string[]; remarks: Iterable<PlaybackRemark>; screens: Iterable<PlaybackScreen<CommandFailed>>; realtime: boolean; vocabulary?: ReadonlyArray<(typeof VocabEvent)["Type"]> },
   model: ExecutableModel,
   send?: SendFrame,
 ) {
   const sessionsDir = yield* sessionsDirConfig;
   const dir = yield* createSessionDir(sessionsDir).pipe(Effect.mapError((e) => new CommandFailed({ message: describe(e) })));
-  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, send, model });
+  const { session, appendLog } = yield* openLoggedSession({ dir, title: input.title, criteria: input.criteria, send, model });
   const replaying = input.vocabulary === undefined
     ? session
     : yield* withReplayCorrection(session, {
@@ -429,7 +429,7 @@ const play = Command.make(
         yield* send({ type: "session-mode", local: selected.local });
         const { paths } = yield* recordPlayback({
           title: recorded ? recorded.title : basename(transcript).replace(/\.transcript\.json$/, ""),
-          remarks, screens, realtime, ...(recorded ? { vocabulary: recorded.vocabulary } : {}),
+          remarks, screens, realtime, ...(recorded ? { vocabulary: recorded.vocabulary, criteria: recorded.criteria } : {}),
         }, selected, send);
         yield* write(paths.map((path) => `${path}\n`).join(""));
       }).pipe(Effect.provide(updaterLayer));
@@ -469,12 +469,15 @@ const vocabFlag = Flag.File("vocab", { mustExist: true }).pipe(
   Flag.withDescription("利用者が足す語のファイル（1 行に 1 語、空行は無視）。この語で発言を直す。足せるのは開始時だけ（resume では受け取らない）"),
   Flag.optional,
 );
+const criteriaFlag = Flag.File("criteria", { mustExist: true }).pipe(Flag.withDescription("判断軸のファイル（1 行に 1 軸、記載順が優先順）。開始時だけ指定できる"), Flag.optional);
 const titleFlag = Flag.String("title").pipe(Flag.withDescription("会議の名前（省略するとセッションの開始時刻）"), Flag.optional);
-const readVocabulary = Effect.fnUntraced(function* (vocab: Option.Option<string>) {
+const readLineFile = Effect.fnUntraced(function* (vocab: Option.Option<string>) {
   if (Option.isNone(vocab)) return [];
   const text = yield* readTextFile(vocab.value).pipe(Effect.mapError((e) => new CommandFailed({ message: `${vocab.value} が読めません: ${fileReason(e)}` })));
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
 });
+
+const criteriaField = (criteria: readonly string[]) => criteria.length ? { criteria } : {};
 
 const modelTransferHeaders = Effect.fnUntraced(function* (plan: UpdatePlan, port: number) {
   if (!needsTransferToken(plan)) return undefined;
@@ -503,9 +506,11 @@ const start = Command.make(
       Flag.withDefault(false),
     ),
     vocab: vocabFlag,
+    criteria: criteriaFlag,
   },
-  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, judge, local, vocab }) {
-    const vocabulary = yield* readVocabulary(vocab);
+  Effect.fn("start")(function* ({ app, noAudio, noScreen, title, model, judge, local, vocab, criteria }) {
+    const vocabulary = yield* readLineFile(vocab);
+    const axes = yield* readLineFile(criteria);
     const plan = yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
     const port = yield* portConfig;
     const headers = yield* modelTransferHeaders(plan, port);
@@ -515,6 +520,7 @@ const start = Command.make(
       audio: !noAudio,
       screen: !noScreen,
       ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
+      ...criteriaField(axes),
       ...planBody(plan),
     }, headers });
     yield* writeWarnings(warnings ?? []);
@@ -616,16 +622,18 @@ const recorded = Command.make(
     title: recordedTitleFlag,
     judge: judgeFlag,
     vocab: vocabFlag,
+    criteria: criteriaFlag,
     realtime: Flag.Boolean("realtime").pipe(
       Flag.withDescription("発言と共有画面の変化を、音声の時刻どおりに等速で入れる（既定は待ち時間なし）"),
       Flag.withDefault(false),
     ),
   },
-  Effect.fn("recorded")(function* ({ file, self, model, judge, local, title, vocab, realtime, noMap }) {
+  Effect.fn("recorded")(function* ({ file, self, model, judge, local, title, vocab, criteria, realtime, noMap }) {
     if (noMap && (Option.isSome(model) || Option.isSome(judge) || local || realtime)) {
       return yield* new CommandFailed({ message: "--no-map と --model・--judge・--local・--realtime は併用できません" });
     }
-    const vocabulary = yield* readVocabulary(vocab);
+    const vocabulary = yield* readLineFile(vocab);
+    const axes = yield* readLineFile(criteria);
     const plan = noMap ? undefined : yield* resolvePlan({ model: Option.getOrUndefined(model), judge: Option.getOrUndefined(judge), local });
     const port = yield* portConfig;
     const headers = plan === undefined ? undefined : yield* modelTransferHeaders(plan, port);
@@ -637,6 +645,7 @@ const recorded = Command.make(
           ...(Option.isSome(self) ? { selfFile: resolve(self.value) } : {}),
           title: Option.getOrUndefined(title),
           ...(vocabulary.length > 0 ? { vocab: vocabulary } : {}),
+          ...criteriaField(axes),
           ...(realtime ? { realtime } : {}),
           ...(plan === undefined ? { noMap: true } : planBody(plan)),
         }, headers }));

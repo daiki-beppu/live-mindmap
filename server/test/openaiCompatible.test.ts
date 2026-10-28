@@ -2,6 +2,7 @@ import { unusedApple } from "./fixtures/appleIntelligence.ts";
 import { forbiddenManagedDeps } from "./fixtures/forbiddenManagedDeps.ts";
 import type { Scope } from "effect";
 import { describe, expect, it } from "@effect/vitest";
+import { assertStrictJsonSchema } from "./fixtures/strictJsonSchema.ts";
 import { ConfigProvider, Context, Effect, FileSystem, Layer, Result } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse, type HttpClientRequest } from "effect/http";
 import { applyOps, DiffUpdater, emptyMap, type DiffInput, type Op, type Remark } from "../src/core/index.ts";
@@ -50,6 +51,24 @@ const open = Effect.fnUntraced(function* (selected: CompatibleModel) {
 });
 
 describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
+  it.effect("判断軸がある通常モードは追加・更新の差分操作を受け取り、後続入力にも軸を渡す", () => Effect.gen(function* () {
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    const ops: Op[] = [{ op: "update", node: "n1", evidence: ["r1"], criteria: [criteria[1]!] }];
+    const fake = fakeClient((body, call) => {
+      if (call === 1) return none;
+      assertStrictJsonSchema(body.response_format.json_schema.schema);
+      return { ops: ops.map((op) => ({ text: null, planStatus: null, assignee: null, assigneeSpeaker: null, ...op })), names: null };
+    });
+    const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
+    const request = { ...input("試験導入を検討します"), criteria };
+    for (let i = 0; i < 2; i++) expect((yield* updater.update(request)).ops).toEqual(ops);
+    for (const { body } of fake.requests.slice(1)) {
+      const prompt = body.messages.find((m) => m.role === "user")!.content;
+      expect(prompt.indexOf(criteria[0]!)).toBeGreaterThanOrEqual(0);
+      expect(prompt.indexOf(criteria[1]!)).toBeGreaterThan(prompt.indexOf(criteria[0]!));
+    }
+  }));
+
   it.effect("設定URL・モデル・認証・出力上限・追加bodyを送り、同じ発言の複数文から操作を生成する", () => Effect.gen(function* () {
     const fake = fakeClient((_body, call) => call === 1 ? none : classified([
       { 種類: "説明", text: "面接官は3人" }, { 種類: "作業", text: "求人票を直す", 担当: "佐藤", 担当の話者: "", 期限: "来週" },

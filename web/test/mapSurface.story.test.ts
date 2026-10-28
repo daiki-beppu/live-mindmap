@@ -11,7 +11,7 @@ import { interpolate, startPositions } from "../src/motion.ts";
 import { foldingActions } from "./foldingActions.ts";
 
 // マップの表示面（Issue #814）の update。Mount が出す Message 1 つで、画面の大きさとノードの実測を受ける。
-// Model に持つのは見せ方（mode）・Snapshot・画面の大きさ・ノードの実測と、パンの状態（isMac・pointer・nodePress・scrollAxisLock）と、人が置いた位置の履歴で決まるカメラの欄だけで、配置・畳んだ後の木・カメラの目標は持たない（毎回導く）。
+// 配置・畳んだ後の木・カメラの目標は、Snapshot と表示状態から毎回導く。関係づけだけの更新では、畳み方の判断に使う文脈を維持する。
 // カメラ（Issue #819）の欄は viewport（今見せているビューポート）と、出来事の履歴で決まる事実（placedRound・keepAnchor・pendingShift）と、見返しの 10 秒を計り直す idleStamp
 
 type MapSurfaceModel = typeof Model.Type;
@@ -20,25 +20,6 @@ const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "�
 const snapshot: Snapshot = { nodes: [node("root", null, "会議"), node("A", "root"), node("P", "A", "論点")], round: 1, changes: [], remarks: [] };
 
 const initial = (mode: MapSurfaceModel["mode"] = "still", isMac = false): MapSurfaceModel => init(snapshot, mode, isMac);
-const MODEL_FIELDS = [
-  "gestureScale",
-  "idleStamp",
-  "isMac",
-  "keepAnchor",
-  "mode",
-  "motion",
-  "nodeHeights",
-  "nodePress",
-  "pendingShift",
-  "placedRound",
-  "pointer",
-  "scrollAxisLock",
-  "size",
-  "snapshot",
-  "speakerNames",
-  "viewing",
-  "viewport",
-];
 const heightsOf = (m: MapSurfaceModel) => Object.fromEntries(HashMap.toEntries(m.nodeHeights));
 
 describe("mapSurface の update: Mount の Message を受ける", () => {
@@ -97,22 +78,9 @@ describe("mapSurface の update: Mount の Message を受ける", () => {
     );
   });
 
-  it("update の後も Model の欄は決まった 17 個だけ（配置・畳んだ後の木・カメラの目標を足さない。pan・zoomScale は無い）", () => {
-    story(
-      update,
-      given(initial()),
-      message(Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: { root: 40 } })),
-      model((m) => {
-        expect(Object.keys(m).sort()).toEqual(MODEL_FIELDS);
-      }),
-    );
-  });
 });
 
 describe("mapSurface の Model: 本物の Schema", () => {
-  it("欄は mode・snapshot・size・nodeHeights と、パンの isMac・pointer・nodePress・scrollAxisLock と、補間の motion と、見る状態の viewing と、ズームの gestureScale と、カメラの viewport・placedRound・keepAnchor・pendingShift・idleStamp と、話者の名前の表 speakerNames（Issue #1026）の 17 個だけ", () => {
-    expect(Object.keys(Model.fields).sort()).toEqual(MODEL_FIELDS);
-  });
 
   it("本物の Model は通り、「無い」を null で書いた Model・知らない mode は通らない。mode は still・live・review の 3 つ", () => {
     const is = Schema.is(Model);

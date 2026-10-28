@@ -35,9 +35,11 @@ import { Viewers, type SendFrame } from "./viewers.ts";
 import { StartupChecks } from "./startupChecks.ts";
 import type { CheckReport } from "./managedDepsProtocol.ts";
 
-export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; plan: import("./updatePlan.ts").UpdatePlan };
+const criteriaNotice = (criteria: readonly string[] | undefined, local: boolean): string[] => local && criteria?.length ? ["ローカルモードでは判断軸を表示・保存しますが、ノードへの関係づけは行いません"] : [];
 
-export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; realtime: boolean } & ({ noMap: true; plan?: never } | { noMap?: false; plan: import("./updatePlan.ts").UpdatePlan });
+export type SessionStart = { app: string; title: string | undefined; audio: boolean; screen: boolean; vocab: ReadonlyArray<string>; criteria?: readonly string[]; plan: import("./updatePlan.ts").UpdatePlan };
+
+export type RecordedStart = { file: string; selfFile?: string; title: string | undefined; vocab: ReadonlyArray<string>; criteria?: readonly string[]; realtime: boolean } & ({ noMap: true; plan?: never } | { noMap?: false; plan: import("./updatePlan.ts").UpdatePlan });
 
 export class SessionsDir extends Context.Service<SessionsDir, string>()("live-mindmap/server/SessionsDir") {}
 
@@ -288,7 +290,8 @@ export class Sessions extends Context.Service<Sessions, {
       });
 
       const start = (input: SessionStart) => openSession((scope, send) => Effect.gen(function* () {
-        const { model, updaterLayer, warnings } = yield* prepareMap(input.plan, { mode: "start", screen: input.screen }, scope);
+        const { model, updaterLayer, warnings: preparedWarnings } = yield* prepareMap(input.plan, { mode: "start", screen: input.screen }, scope);
+        const warnings = [...preparedWarnings, ...criteriaNotice(input.criteria, model.local)];
         const dir = yield* sinks.createDir(sessionsDir);
         const origin = yield* Ref.make<string | undefined>(undefined);
         const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
@@ -305,7 +308,7 @@ export class Sessions extends Context.Service<Sessions, {
             };
           }),
         }).pipe(Effect.provideService(Helpers, helpers));
-        const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, send }).pipe(Scope.provide(scope));
+        const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, criteria: input.criteria, model, updaterLayer, send }).pipe(Scope.provide(scope));
         if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
         const live: Live = {
           model,
@@ -407,7 +410,7 @@ export class Sessions extends Context.Service<Sessions, {
         const prepared = input.noMap === true
           ? { noMap: true as const, ...yield* checks.prepare({ entry: "recorded", noMap: true }).pipe(Effect.provideService(Helpers, helpers)) }
           : { noMap: false as const, ...yield* prepareMap(input.plan, { mode: "recorded" }, scope) };
-        const { warnings } = prepared;
+        const warnings = [...prepared.warnings, ...criteriaNotice(input.criteria, !prepared.noMap && prepared.model.local)];
         const now = DateTime.nowUnsafe();
         const created = yield* helpers.creationDate(input.file).pipe(
           Effect.catchTag("HelperCreationDateFailure", (failure) =>
@@ -428,7 +431,7 @@ export class Sessions extends Context.Service<Sessions, {
         const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
         const sink = yield* sinks.openRecorded({
           dir, title: input.title ?? parse(input.file).name, logShiftMs: DateTime.toEpochMillis(base) - DateTime.toEpochMillis(now),
-          ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, send,
+          ...(prepared.noMap ? { noMap: true as const } : { model: prepared.model, updaterLayer: prepared.updaterLayer }), vocab: input.vocab, criteria: input.criteria, send,
           recorded: {
             realtime: input.realtime,
             excluded: (surfaces) => Effect.asVoid(Queue.offer(events, { type: "vocabulary-excluded", surfaces })),
