@@ -32,7 +32,7 @@ const at = (time: number): Model => {
   const start = init(context);
   return { ...start, playback: { ...start.playback, time } };
 };
-const expectedIds = (time: number): string[] => foldView(snapshotOf(context, at(time)), new Set(), null, new Set(), new Set()).nodes.map((n) => n.id);
+const expectedIds = (time: number): string[] => foldView(snapshotOf(context, at(time)), undefined, null).nodes.map((n) => n.id);
 const measuredAll = (time: number) => Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: Object.fromEntries(expectedIds(time).map((id) => [id, 40])) }));
 const renderedIds = (html: { children?: unknown }): string[] => {
   type V = { data?: { attrs?: Record<string, unknown> }; children?: Array<V | string> };
@@ -91,7 +91,7 @@ describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
 
   it("測定済みの後に目標の位置が変わる高さを再測定すると補間が始まり、Tick 500 の後に描く位置は新しい高さの layout になる", () => {
     const ids = expectedIds(30);
-    const nodes = foldView(snapshotOf(context, at(30)), new Set(), null, new Set(), new Set()).nodes;
+    const nodes = foldView(snapshotOf(context, at(30)), undefined, null).nodes;
     const base = Object.fromEntries(ids.map((id) => [id, 40]));
     const changed = { ...base, [ids[1]!]: 160 };
     const before = layout(nodes, base);

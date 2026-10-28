@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { bundleMembers, type FoldView } from "./folding.ts";
+import { HumanFolds, refold, type FoldView } from "./folding.ts";
 import type { Position } from "./layout.ts";
 
 const AutoCamera = Schema.Struct({ mode: Schema.Literal("auto") });
@@ -13,9 +13,7 @@ const overlayFields = {
   sideHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
   captionsHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
   selection: Schema.optionalKey(Schema.mutableKey(Schema.Struct({ id: Schema.String, byKey: Schema.Boolean }))),
-  humanOpened: Schema.optionalKey(Schema.mutableKey(Schema.ReadonlySet(Schema.String))),
-  humanFolded: Schema.optionalKey(Schema.mutableKey(Schema.ReadonlySet(Schema.String))),
-  humanUnbundled: Schema.optionalKey(Schema.mutableKey(Schema.ReadonlySet(Schema.String))),
+  humanFolds: Schema.optionalKey(Schema.mutableKey(HumanFolds)),
 };
 type Overlay = Schema.Struct.Type<typeof overlayFields>;
 export const ViewingState = Schema.Union([
@@ -25,12 +23,6 @@ export const ViewingState = Schema.Union([
   Schema.Struct({ ...DiffCamera.fields, ...overlayFields }),
 ]);
 const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
-const HUMAN_KEYS = ["humanOpened", "humanFolded", "humanUnbundled"] as const satisfies readonly (keyof Overlay)[];
-
-const EMPTY_SET: ReadonlySet<string> = new Set();
-export function humanSetsOf(state: ViewingState): { opened: ReadonlySet<string>; folded: ReadonlySet<string>; unbundled: ReadonlySet<string> } {
-  return { opened: state.humanOpened ?? EMPTY_SET, folded: state.humanFolded ?? EMPTY_SET, unbundled: state.humanUnbundled ?? EMPTY_SET };
-}
 export type ViewingState = typeof ViewingState.Type;
 
 export type ViewKey = "=" | "-" | "0" | "F" | "Z" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
@@ -49,7 +41,7 @@ export type ViewingEvent =
   | { type: "arrow"; dir: ArrowDir; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "enter"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "foldDot"; id: string }
-  | { type: "pointChange"; id: string; ancestors: readonly string[]; open: boolean }
+  | { type: "pointChange"; id: string }
   | { type: "idle" }
   | { type: "timeMoved" };
 
@@ -65,17 +57,6 @@ export type VisibleTree = {
   changed: readonly string[];
   currentTopic: string | undefined;
 };
-
-function foldToggle(tree: VisibleTree, id: string): "open" | "fold" | "unbundle" | null {
-  const state = tree.fold?.openness[id]?.state;
-  switch (state) {
-    case "folded": return "open";
-    case "open": return "fold";
-    case "bundle": return "unbundle";
-    case "fixed":
-    case undefined: return null;
-  }
-}
 
 export const CameraCommand = Schema.Union([
   Schema.Struct({ type: Schema.Literal("follow") }),
@@ -129,48 +110,27 @@ function idle(state: ViewingState): CameraCommand {
   return state.mode === "auto" ? FOLLOW : HOLD;
 }
 
-function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number] | "selection"): ViewingState {
+function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number] | "selection" | "humanFolds"): ViewingState {
   const { [key]: _removed, ...rest } = state;
   return rest;
 }
 
-function withoutHuman(state: ViewingState): ViewingState {
-  const { humanOpened: _o, humanFolded: _f, humanUnbundled: _u, ...rest } = state;
-  return rest;
-}
-
 function cameraPart(state: ViewingState): CameraViewing {
-  const { keyList: _k, sideHidden: _s, captionsHidden: _c, selection: _sel, humanOpened: _o, humanFolded: _f, humanUnbundled: _u, ...rest } = state;
+  const { keyList: _k, sideHidden: _s, captionsHidden: _c, selection: _sel, humanFolds: _human, ...rest } = state;
   return rest;
 }
 
-function releaseFolded(state: ViewingState, id: string | undefined): ViewingState {
-  if (id === undefined || !state.humanFolded?.has(id)) return state;
-  const rest = new Set(state.humanFolded);
-  rest.delete(id);
-  const { humanFolded: _f, ...others } = state;
-  return rest.size === 0 ? others : { ...others, humanFolded: rest };
-}
-
-function withHuman(state: ViewingState, id: string, to: "humanOpened" | "humanFolded"): ViewingState {
-  const from = to === "humanOpened" ? "humanFolded" : "humanOpened";
-  const { [from]: removed, ...others } = state;
-  const left = new Set(removed);
-  left.delete(id);
-  return { ...others, ...(left.size > 0 ? { [from]: left } : {}), [to]: new Set([...(state[to] ?? []), id]) };
+function withHumanFolds(state: ViewingState, human: HumanFolds | undefined): ViewingState {
+  const rest = without(state, "humanFolds");
+  return human === undefined ? rest : { ...rest, humanFolds: human };
 }
 
 function withOverlayOf(from: ViewingState, camera: CameraViewing): ViewingState {
   const out: ViewingState = { ...camera };
   for (const key of OVERLAY_KEYS) if (from[key]) out[key] = true;
   if (from.selection) out.selection = from.selection;
-  for (const key of HUMAN_KEYS) if (from[key]) out[key] = from[key];
+  if (from.humanFolds !== undefined) out.humanFolds = from.humanFolds;
   return out;
-}
-
-function isDescendant(tree: VisibleTree, id: string, ancestor: string): boolean {
-  for (let cur = tree.parents[id]; cur != null; cur = tree.parents[cur]) if (cur === ancestor) return true;
-  return false;
 }
 
 type Modifiers = { meta: boolean; ctrl: boolean; alt: boolean };
@@ -241,7 +201,7 @@ function toggled(state: ViewingState, key: "sideHidden" | "captionsHidden"): Vie
   return state[key] ? without(state, key) : { ...state, [key]: true };
 }
 
-type Reduced = { state: ViewingState; camera: CameraCommand };
+type Reduced = { state: ViewingState; camera: CameraCommand; preserveIdleTimer?: true };
 
 function reduceOverlay(state: ViewingState, event: Extract<ViewingEvent, { type: "keyList" | "side" | "captions" }>): Reduced {
   if (modified(event)) return { state, camera: idle(state) };
@@ -268,38 +228,23 @@ function foldTargetOf(state: ViewingState, event: Extract<ViewingEvent, { type: 
   return modified(event) ? undefined : state.selection?.id;
 }
 
-function unbundleRun(state: ViewingState, tree: VisibleTree, id: string, camera: CameraCommand): Reduced {
-  const members = bundleMembers(tree.fold!, id);
+function reduceFoldToggle(state: ViewingState, event: Extract<ViewingEvent, { type: "enter" | "foldDot" }>, tree: VisibleTree): Reduced {
+  const id = foldTargetOf(state, event);
+  if (id === undefined || tree.fold === null) return { state, camera: idle(state) };
+  const result = refold(tree.fold, { type: "toggle", id });
+  if (result === null) return { state, camera: idle(state) };
+  const next = withHumanFolds(state, result.human);
   return {
-    state: { ...state, humanUnbundled: new Set([...(state.humanUnbundled ?? []), ...members]), selection: { id: members[0]!, byKey: state.selection?.byKey ?? false } },
-    camera,
+    state: result.select === undefined ? next : { ...next, selection: { id: result.select, byKey: state.selection?.byKey ?? false } },
+    camera: state.mode === "auto" ? REFOCUS : { type: "keepNode", id },
   };
 }
 
-function toggleHumanFold(state: ViewingState, tree: VisibleTree, id: string, toggle: "open" | "fold", camera: CameraCommand): Reduced {
-  const next = withHuman(state, id, toggle === "open" ? "humanOpened" : "humanFolded");
-  const selected = state.selection;
-  if (toggle === "fold" && selected !== undefined && selected.id !== id && isDescendant(tree, selected.id, id)) {
-    return { state: { ...next, selection: { ...selected, id } }, camera };
-  }
-  return { state: next, camera };
-}
-
-function reduceFoldToggle(state: ViewingState, event: Extract<ViewingEvent, { type: "enter" | "foldDot" }>, tree: VisibleTree): Reduced {
-  const id = foldTargetOf(state, event);
-  const toggle = id === undefined ? null : foldToggle(tree, id);
-  if (id === undefined || toggle === null) return { state, camera: idle(state) };
-  const camera: CameraCommand = state.mode === "auto" ? REFOCUS : { type: "keepNode", id };
-  if (toggle === "unbundle") return unbundleRun(state, tree, id, camera);
-  return toggleHumanFold(state, tree, id, toggle, camera);
-}
-
 function reducePointChange(state: ViewingState, event: Extract<ViewingEvent, { type: "pointChange" }>, tree: VisibleTree): Reduced {
-  let next = state;
-  for (const a of event.ancestors) next = releaseFolded(next, a);
-  if (event.open) next = withHuman(next, event.id, "humanOpened");
-  const moved = withOverlayOf(next, { mode: "manual", topic: tree.currentTopic });
-  return { state: { ...moved, selection: { id: event.id, byKey: false } }, camera: { type: "focusNode", id: event.id } };
+  const result = tree.fold === null ? null : refold(tree.fold, { type: "point", id: event.id });
+  if (result === null) return { state: { ...state, selection: { id: event.id, byKey: false } }, camera: idle(state), preserveIdleTimer: true };
+  const moved = withOverlayOf(withHumanFolds(state, result.human), { mode: "manual", topic: tree.currentTopic });
+  return { state: { ...moved, selection: { id: result.select!, byKey: false } }, camera: { type: "focusNode", id: event.id } };
 }
 
 function reduceFitSubtree(state: ViewingState, event: Extract<ViewingEvent, { type: "key" }>, tree: VisibleTree): Reduced {
@@ -317,8 +262,12 @@ function relocateSelection(state: ViewingState, replaced: Readonly<Record<string
 function reduceViaCamera(state: ViewingState, event: CameraEvent, tree: VisibleTree, scope: ViewingScope): Reduced {
   const out = reduceCamera(cameraPart(state), event, tree, scope);
   const withSets = withOverlayOf(state, out.state);
-  if (event.type === "reflect") return { state: relocateSelection(releaseFolded(withSets, tree.currentTopic), event.replaced), camera: out.camera };
-  if (event.type === "escape" && !modified(event)) return { state: withoutHuman(without(withSets, "selection")), camera: out.camera };
+  if (event.type === "reflect") {
+    const result = tree.fold === null ? null : refold(tree.fold, { type: "reflect" });
+    const next = result === null ? withSets : withHumanFolds(withSets, result.human);
+    return { state: relocateSelection(next, event.replaced), camera: out.camera };
+  }
+  if (event.type === "escape" && !modified(event)) return { state: without(without(withSets, "selection"), "humanFolds"), camera: out.camera };
   return { state: withSets, camera: out.camera };
 }
 
@@ -327,7 +276,7 @@ export function reduceViewing(
   event: ViewingEvent,
   tree: VisibleTree,
   scope: ViewingScope = "live",
-): { state: ViewingState; camera: CameraCommand } {
+): Reduced {
   switch (event.type) {
     case "keyList":
     case "side":

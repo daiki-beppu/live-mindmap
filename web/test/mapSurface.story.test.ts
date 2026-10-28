@@ -8,6 +8,7 @@ import { CLICK_ZOOM_FACTOR, pinchZoomFactor, USER_MAX_ZOOM, USER_MIN_ZOOM, zoomA
 import { foldView } from "../src/folding.ts";
 import { layout } from "../src/layout.ts";
 import { interpolate, startPositions } from "../src/motion.ts";
+import { foldingActions } from "./foldingActions.ts";
 
 // マップの表示面（Issue #814）の update。Mount が出す Message 1 つで、画面の大きさとノードの実測を受ける。
 // Model に持つのは見せ方（mode）・Snapshot・画面の大きさ・ノードの実測と、パンの状態（isMac・pointer・nodePress・scrollAxisLock）と、人が置いた位置の履歴で決まるカメラの欄だけで、配置・畳んだ後の木・カメラの目標は持たない（毎回導く）。
@@ -584,8 +585,7 @@ describe("mapSurface の update: クリックとドラッグの見分け（MapNo
 describe("mapSurface の update: 差分更新の反映で位置が補間される", () => {
   const HEIGHTS = { root: 40, A: 64, P: 88 };
   const next: Snapshot = { ...snapshot, round: 2, nodes: [...snapshot.nodes, node("D", "A", "案")] };
-  const NO_IDS: ReadonlySet<string> = new Set();
-  const shownOf = (m: MapSurfaceModel): SnapshotNode[] => (m.mode === "live" ? foldView(m.snapshot, NO_IDS, null, NO_IDS, NO_IDS).nodes : m.snapshot.nodes);
+  const shownOf = (m: MapSurfaceModel): SnapshotNode[] => (m.mode === "live" ? foldView(m.snapshot, undefined, null).nodes : m.snapshot.nodes);
   const heightsRecord = (m: MapSurfaceModel) => heightsOf(m);
   const targetOf = (m: MapSurfaceModel) => layout(shownOf(m), heightsRecord(m));
   const measure = (nodeHeights: Record<string, number>) => Message.MeasuredMapSurface({ width: 800, height: 600, nodeHeights });
@@ -1147,12 +1147,14 @@ describe("mapSurface: 反映番号が変わったら点滅をやり直す（blin
 // 狭い幅の根拠のシートの閉じるボタン（Issue #969）。Esc と違い、選びだけを外す
 describe("mapSurface の update: 根拠のシートの閉じるボタン（ClickedEvidenceClose）", () => {
   it("選んでいたノードの選びが外れ、カメラのモードと人の開閉は残る", () => {
-    const before: MapSurfaceModel = { ...measuredLive(), viewing: { mode: "manual", topic: "A", humanOpened: new Set(["A"]), selection: { id: "P", byKey: false } } };
+    const base = measuredLive();
+    const humanFolds = foldingActions({ ...base.snapshot, currentTopic: "root", nodes: base.snapshot.nodes.map((n) => n.id === "A" ? { ...n, talkStatus: "済み" } : n) }, [{ type: "toggle", id: "A" }]).human;
+    const before: MapSurfaceModel = { ...base, viewing: { mode: "manual", topic: "A", humanFolds, selection: { id: "P", byKey: false } } };
     story(
       update,
       given(before),
       message(Message.ClickedEvidenceClose()),
-      model((m) => expect(m.viewing).toEqual({ mode: "manual", topic: "A", humanOpened: new Set(["A"]) })),
+      model((m) => expect(m.viewing).toEqual({ mode: "manual", topic: "A", humanFolds })),
     );
   });
 

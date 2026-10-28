@@ -4,7 +4,6 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { formatClock } from "../../changes.ts";
 import { evidenceOf, type Evidence } from "../../evidence.ts";
 import { todoAssignee } from "../../../../server/src/core/index.ts";
-import { humanSetsOf } from "../../viewing.ts";
 import type { Model } from "../mapSurface/main.ts";
 import { Message } from "../mapSurface/message.ts";
 
@@ -34,8 +33,7 @@ function evidenceBody(h: HtmlBuilder<Message>, { node, remarks }: Evidence): Rea
 
 function evidencePanel(h: HtmlBuilder<Message>, model: Model): Html {
   const selectedId = model.viewing.selection?.id ?? null;
-  const { opened, folded, unbundled } = humanSetsOf(model.viewing);
-  const evidence = selectedId === null ? null : evidenceOf(model.snapshot, selectedId, opened, folded, unbundled);
+  const evidence = selectedId === null ? null : evidenceOf(model.snapshot, selectedId, model.viewing.humanFolds);
   return h.section(
     [h.Class("evidence flex-1 min-h-0 box-border p-[12px] overflow-y-auto "+"[border-bottom:1px_solid_var(--color-gray-200)]"), h.AriaLabelledBy("evidence-heading")],
     [

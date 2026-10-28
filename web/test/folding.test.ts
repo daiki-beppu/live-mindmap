@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { foldView, keepTargetOf, pointedNode, type FoldView, type Openness } from "../src/folding.ts";
+import { foldView, keepTargetOf, refold, type FoldView, type Openness } from "../src/folding.ts";
+import { foldingActions } from "./foldingActions.ts";
 
 type Extra = Partial<Pick<SnapshotNode, "talkStatus" | "touchedAt" | "pointStatus">>;
 const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題", extra: Extra = {}): SnapshotNode => ({
@@ -24,7 +25,7 @@ const snap = (nodes: SnapshotNode[], extra: { currentTopic?: string; now?: numbe
     ...(extra.now !== undefined ? { now: extra.now } : {}),
   };
 };
-const NONE: ReadonlySet<string> = new Set();
+
 const ids = (nodes: SnapshotNode[]) => nodes.map((n) => n.id);
 const root = node("root", null, "会議");
 const idsInState = (view: FoldView, state: Openness["state"]) => Object.keys(view.openness).filter((id) => view.openness[id]!.state === state);
@@ -43,7 +44,7 @@ describe("foldView: 見せるノードごとの開閉", () => {
       node("U", "C"),
       node("T", "C", "TODO"),
     ];
-    const v = foldView(snap(nodes, { currentTopic: "C" }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "C" }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "run:A", "C", "P", "L", "U", "T"]);
     expect(Object.keys(v.openness).sort()).toEqual(ids(v.nodes).sort());
     expect(v.openness).toEqual({
@@ -62,7 +63,7 @@ describe("foldView: 見せるノードごとの開閉", () => {
 describe("foldView: 畳む集合", () => {
   it("済みの議題を畳む（子孫は見せない）。話し中の議題は畳まない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root"), node("B1", "B", "論点")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 100 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 100 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "B", "B1"]);
     expect(idsInState(v, "folded")).toEqual(["A"]);
   });
@@ -76,35 +77,35 @@ describe("foldView: 畳む集合", () => {
       node("P2", "A", "論点", { touchedAt: 0 }),
       node("D2", "P2", "決定"),
     ];
-    const v = foldView(snap(nodes, { currentTopic: "A", now: 5000 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "A", now: 5000 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "P1", "P2", "D2"]);
     expect(idsInState(v, "folded")).toEqual(["P1"]);
   });
 
   it("話し中の議題は、now − touchedAt が 900 秒で畳み、899 秒では畳まない", () => {
     const nodes = (): SnapshotNode[] => [root, node("A", "root", "議題", { touchedAt: 100 }), node("A1", "A", "論点"), node("B", "root")];
-    const at900 = foldView(snap(nodes(), { currentTopic: "B", now: 1000 }), NONE, null, NONE, NONE);
+    const at900 = foldView(snap(nodes(), { currentTopic: "B", now: 1000 }), undefined, null);
     expect(ids(at900.nodes)).toEqual(["root", "A", "B"]);
     expect(idsInState(at900, "folded")).toEqual(["A"]);
-    const at899 = foldView(snap(nodes(), { currentTopic: "B", now: 999 }), NONE, null, NONE, NONE);
+    const at899 = foldView(snap(nodes(), { currentTopic: "B", now: 999 }), undefined, null);
     expect(ids(at899.nodes)).toEqual(["root", "A", "A1", "B"]);
     expect(idsInState(at899, "folded")).toEqual([]);
   });
 
   it("now が無い、または touchedAt が無いときは、時間では畳まない。済みなら畳む", () => {
-    const noNow = foldView(snap([root, node("A", "root", "議題", { touchedAt: 0 }), node("B", "root")], { currentTopic: "B" }), NONE, null, NONE, NONE);
+    const noNow = foldView(snap([root, node("A", "root", "議題", { touchedAt: 0 }), node("B", "root")], { currentTopic: "B" }), undefined, null);
     expect(ids(noNow.nodes)).toEqual(["root", "A", "B"]);
     expect(idsInState(noNow, "folded")).toEqual([]);
-    const noTouched = foldView(snap([root, node("A", "root"), node("A1", "A", "論点"), node("B", "root")], { currentTopic: "B", now: 99999 }), NONE, null, NONE, NONE);
+    const noTouched = foldView(snap([root, node("A", "root"), node("A1", "A", "論点"), node("B", "root")], { currentTopic: "B", now: 99999 }), undefined, null);
     expect(ids(noTouched.nodes)).toEqual(["root", "A", "A1", "B"]);
-    const doneNoTime = foldView(snap([root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")], { currentTopic: "B" }), NONE, null, NONE, NONE);
+    const doneNoTime = foldView(snap([root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")], { currentTopic: "B" }), undefined, null);
     expect(ids(doneNoTime.nodes)).toEqual(["root", "A", "B"]);
   });
 
   it("今の議題は、済みでも 900 秒以上でも畳まない", () => {
-    const doneNow = foldView(snap([root, node("A", "root", "議題", done), node("A1", "A", "論点")], { currentTopic: "A", now: 10 }), NONE, null, NONE, NONE);
+    const doneNow = foldView(snap([root, node("A", "root", "議題", done), node("A1", "A", "論点")], { currentTopic: "A", now: 10 }), undefined, null);
     expect(ids(doneNow.nodes)).toEqual(["root", "A", "A1"]);
-    const staleNow = foldView(snap([root, node("A", "root", "議題", { touchedAt: 0 }), node("A1", "A", "論点")], { currentTopic: "A", now: 5000 }), NONE, null, NONE, NONE);
+    const staleNow = foldView(snap([root, node("A", "root", "議題", { touchedAt: 0 }), node("A1", "A", "論点")], { currentTopic: "A", now: 5000 }), undefined, null);
     expect(ids(staleNow.nodes)).toEqual(["root", "A", "A1"]);
   });
 
@@ -117,7 +118,7 @@ describe("foldView: 畳む集合", () => {
       node("A1x", "A1", "論点"),
       node("S", "root", "議題", done),
     ];
-    const v = foldView(snap(nodes, { currentTopic: "A1", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "A1", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toContain("A");
     expect(v.openness["A"]).toEqual({ state: "fixed" });
     expect(v.openness["A1"]).toEqual({ state: "fixed" });
@@ -128,14 +129,14 @@ describe("foldView: 畳む集合", () => {
 
   it("今の議題の中の済みの論点は畳む（今の議題自身は畳まない）", () => {
     const nodes = [root, node("A", "root"), node("P", "A", "論点", done), node("D", "P", "決定")];
-    const v = foldView(snap(nodes, { currentTopic: "A", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "A", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "P"]);
     expect(v.openness["P"]).toMatchObject({ state: "folded" });
   });
 
   it("開く上書きに入れたノードは畳まない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), new Set(["A"]), null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), foldingActions(snap(nodes, { currentTopic: "B", now: 10 }), [{ type: "point", id: "A" }]).human, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "A1", "B"]);
     expect(idsInState(v, "folded")).toEqual([]);
     expect(v.openness["A"]).toEqual({ state: "open", byHuman: true });
@@ -146,14 +147,14 @@ describe("foldView: 畳む集合", () => {
 describe("foldView: 子孫を見せない", () => {
   it("子が親より前に並んでいても（移動後）、畳んだ親の子孫は見せない", () => {
     const nodes = [root, node("A1", "A", "論点"), node("A", "root", "議題", done), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "B"]);
     expect(v.shownAs["A1"]).toBe("A");
   });
 
   it("畳んだ議題の子・孫は nodes に入らない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("A1a", "A1", "決定"), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), undefined, null);
     expect(ids(v.nodes)).not.toContain("A1");
     expect(ids(v.nodes)).not.toContain("A1a");
   });
@@ -170,7 +171,7 @@ describe("foldView: 畳んだ議題のまとめ", () => {
   ];
 
   it("同じ親の下で畳んだ議題が 2 つ続くと、1 つのまとめのノードにする", () => {
-    const v = foldView(snap(base(), { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(base(), { currentTopic: "C", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toHaveLength(3);
     const run = v.nodes[1]!;
     expect(v.nodes[0]!.id).toBe("root");
@@ -186,18 +187,18 @@ describe("foldView: 畳んだ議題のまとめ", () => {
 
   it("まとめのノードは、最初の議題の位置に入る", () => {
     const nodes = [root, node("X", "root"), node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root", "議題", done), node("Y", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "X", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "X", now: 10 }), undefined, null);
     expect(v.nodes.map((n) => (n.id === "X" || n.id === "Y" || n.id === "root" ? n.id : "RUN"))).toEqual(["root", "X", "RUN", "Y"]);
   });
 
   it("まとめた議題とその子孫は見せない", () => {
-    const v = foldView(snap(base(), { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(base(), { currentTopic: "C", now: 10 }), undefined, null);
     for (const id of ["A", "B", "A1", "B1"]) expect(ids(v.nodes)).not.toContain(id);
   });
 
   it("畳んだ議題が 1 つだけなら、まとめない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("C", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "C", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "C"]);
     expect(idsInState(v, "bundle")).toEqual([]);
     expect(v.openness["A"]).toMatchObject({ state: "folded" });
@@ -205,21 +206,21 @@ describe("foldView: 畳んだ議題のまとめ", () => {
 
   it("間に畳んでいない兄弟があれば、まとめない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("M", "root"), node("B", "root", "議題", done), node("C", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "C", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "M", "B", "C"]);
     expect(idsInState(v, "bundle")).toEqual([]);
   });
 
   it("親が違えば、まとめない", () => {
     const nodes = [root, node("P", "root"), node("Q", "root"), node("A", "P", "議題", done), node("B", "Q", "議題", done)];
-    const v = foldView(snap(nodes, { currentTopic: "P", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "P", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "P", "Q", "A", "B"]);
     expect(idsInState(v, "bundle")).toEqual([]);
   });
 
   it("畳んだ論点はまとめない（2 つ続いても別々に畳む）", () => {
     const nodes = [root, node("A", "root"), node("P1", "A", "論点", done), node("P2", "A", "論点", done)];
-    const v = foldView(snap(nodes, { currentTopic: "A", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "A", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "A", "P1", "P2"]);
     expect(idsInState(v, "bundle")).toEqual([]);
     expect(idsInState(v, "folded")).toEqual(["P1", "P2"]);
@@ -227,7 +228,7 @@ describe("foldView: 畳んだ議題のまとめ", () => {
 
   it("時間で畳んだ議題と済みの議題も、続いていればまとめる。3 つなら N は 3", () => {
     const nodes = [root, node("A", "root", "議題", done), node("B", "root", "議題", { touchedAt: 0 }), node("C", "root", "議題", done), node("D", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "D", now: 900 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "D", now: 900 }), undefined, null);
     expect(v.nodes[1]!.text).toBe("議題 3 件");
     expect(v.openness[v.nodes[1]!.id]).toEqual({ state: "bundle", hint: "A 〜 C", hidden: 3 });
   });
@@ -246,34 +247,34 @@ describe("foldView: 手がかりの文字と隠れた数", () => {
   ];
 
   it("子孫すべて（孫まで）を数えて「決定 2・TODO 1・未決 1」と書き、隠れた数は子孫の数（自分は数えない）", () => {
-    const v = foldView(snap(deep(), { currentTopic: "Z", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(deep(), { currentTopic: "Z", now: 10 }), undefined, null);
     expect(v.openness["A"]).toEqual({ state: "folded", hint: "決定 2・TODO 1・未決 1", hidden: 5 });
   });
 
   it("0 の項目は書かない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("T", "A", "TODO"), node("Z", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "Z", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "Z", now: 10 }), undefined, null);
     expect(v.openness["A"]).toEqual({ state: "folded", hint: "TODO 1", hidden: 1 });
   });
 
   it("決定済みの論点は未決に数えない", () => {
     const nodes = [root, node("A", "root", "議題", done), node("P", "A", "論点", { pointStatus: "決定済み" }), node("Z", "root")];
-    expect(foldView(snap(nodes, { currentTopic: "Z", now: 10 }), NONE, null, NONE, NONE).openness["A"]).toEqual({ state: "folded", hint: null, hidden: 1 });
+    expect(foldView(snap(nodes, { currentTopic: "Z", now: 10 }), undefined, null).openness["A"]).toEqual({ state: "folded", hint: null, hidden: 1 });
   });
 
   it("3 つとも 0 なら hint は null。子が無ければ hidden は 0", () => {
     const nodes = [root, node("A", "root", "議題", done), node("Z", "root")];
-    expect(foldView(snap(nodes, { currentTopic: "Z", now: 10 }), NONE, null, NONE, NONE).openness["A"]).toEqual({ state: "folded", hint: null, hidden: 0 });
+    expect(foldView(snap(nodes, { currentTopic: "Z", now: 10 }), undefined, null).openness["A"]).toEqual({ state: "folded", hint: null, hidden: 0 });
   });
 
   it("畳んだ論点の手がかりも子孫から作る", () => {
     const nodes = [root, node("A", "root"), node("P", "A", "論点", done), node("D", "P", "決定"), node("T", "P", "TODO")];
-    expect(foldView(snap(nodes, { currentTopic: "A", now: 10 }), NONE, null, NONE, NONE).openness["P"]).toEqual({ state: "folded", hint: "決定 1・TODO 1", hidden: 2 });
+    expect(foldView(snap(nodes, { currentTopic: "A", now: 10 }), undefined, null).openness["P"]).toEqual({ state: "folded", hint: "決定 1・TODO 1", hidden: 2 });
   });
 
   it("まとめのノードの hint は「最初 〜 最後」。hidden はまとめた議題とその子孫の総数", () => {
     const nodes = [root, node("A", "root", "議題", done), node("B", "root", "議題", done), node("A1", "A", "論点"), node("B1", "B", "決定"), node("B2", "B", "TODO"), node("C", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "C", now: 10 }), undefined, null);
     const run = v.nodes[1]!;
     expect(v.openness[run.id]).toEqual({ state: "bundle", hint: "A 〜 B", hidden: 5 });
   });
@@ -290,35 +291,35 @@ describe("foldView: 点滅させるノード", () => {
   ];
 
   it("見せるノードで今回変わったものが入る", () => {
-    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, changed: [["C1", 5]] }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, changed: [["C1", 5]] }), undefined, null);
     expect([...v.blink]).toEqual(["C1"]);
   });
 
   it("畳んだ議題の孫が今回変わると、その畳んだ議題が入る（孫は入らない）", () => {
-    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, changed: [["A1a", 5]] }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, changed: [["A1a", 5]] }), undefined, null);
     expect([...v.blink]).toEqual(["A"]);
   });
 
   it("まとめた議題の中が変わると、まとめのノードが入る", () => {
     const ns = [root, node("A", "root", "議題", done), node("B", "root", "議題", done), node("B1", "B", "論点"), node("C", "root")];
-    const v = foldView(snap(ns, { currentTopic: "C", now: 10, changed: [["B1", 5]] }), NONE, null, NONE, NONE);
+    const v = foldView(snap(ns, { currentTopic: "C", now: 10, changed: [["B1", 5]] }), undefined, null);
     const run = v.nodes[1]!;
     expect([...v.blink]).toEqual([run.id]);
   });
 
   it("まとめた議題自身が変わっても、まとめのノードが入る", () => {
     const ns = [root, node("A", "root", "議題", done), node("B", "root", "議題", done), node("C", "root")];
-    const v = foldView(snap(ns, { currentTopic: "C", now: 10, changed: [["A", 5]] }), NONE, null, NONE, NONE);
+    const v = foldView(snap(ns, { currentTopic: "C", now: 10, changed: [["A", 5]] }), undefined, null);
     expect([...v.blink]).toEqual([v.nodes[1]!.id]);
   });
 
   it("前の round の変化は入らない", () => {
-    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, round: 5, changed: [["A1a", 4], ["C1", 4]] }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, round: 5, changed: [["A1a", 4], ["C1", 4]] }), undefined, null);
     expect(v.blink.size).toBe(0);
   });
 
   it("畳んだ中と見せるノードの両方が変われば、両方入る", () => {
-    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, changed: [["A1a", 5], ["C1", 5]] }), NONE, null, NONE, NONE);
+    const v = foldView(snap(nodes(), { currentTopic: "C", now: 10, changed: [["A1a", 5], ["C1", 5]] }), undefined, null);
     expect(new Set(v.blink)).toEqual(new Set(["A", "C1"]));
   });
 });
@@ -335,7 +336,7 @@ describe("foldView: 隠れたノードの置き換え先", () => {
       node("P", "C", "論点", done),
       node("Pd", "P", "決定"),
     ];
-    const v = foldView(snap(ns, { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(ns, { currentTopic: "C", now: 10 }), undefined, null);
     const run = v.nodes[1]!.id;
     expect(v.shownAs["A"]).toBe(run);
     expect(v.shownAs["B"]).toBe(run);
@@ -349,9 +350,9 @@ describe("foldView: 隠れたノードの置き換え先", () => {
 describe("foldView: 選んだノードの祖先は畳まない（選んだノード自身は畳まれうる）", () => {
   it("済みの議題の下の済みの論点を選ぶと、祖先の議題は畳まれず、選んだ論点は畳んだノードとして見える", () => {
     const nodes = [root, node("A", "root", "議題", done), node("P", "A", "論点", done), node("D", "P", "決定"), node("B", "root")];
-    const none = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, null, NONE, NONE);
+    const none = foldView(snap(nodes, { currentTopic: "B", now: 10 }), undefined, null);
     expect(ids(none.nodes)).toEqual(["root", "A", "B"]);
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, "P", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), undefined, "P");
     expect(ids(v.nodes)).toEqual(["root", "A", "P", "B"]);
     expect(idsInState(v, "folded")).toEqual(["P"]);
     expect(v.shownAs["D"]).toBe("P");
@@ -359,36 +360,36 @@ describe("foldView: 選んだノードの祖先は畳まない（選んだノー
 
   it("古い話し中の議題の下のノードを選ぶと、その議題は畳まれず、選んだノードが見える", () => {
     const nodes = [root, node("A", "root", "議題", { touchedAt: 0 }), node("A1", "A", "論点"), node("A1a", "A1", "決定"), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 5000 }), NONE, "A1a", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 5000 }), undefined, "A1a");
     expect(ids(v.nodes)).toEqual(["root", "A", "A1", "A1a", "B"]);
     expect(idsInState(v, "folded")).toEqual([]);
   });
 
   it("選んだ議題自身は、畳む条件に当たれば畳まれる（畳んだノードとして見せるノードに入る）", () => {
     const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, "A", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), undefined, "A");
     expect(ids(v.nodes)).toEqual(["root", "A", "B"]);
     expect(v.openness["A"]).toEqual({ state: "folded", hint: null, hidden: 1 });
   });
 
   it("選んだノードの兄弟や子孫は守らない。畳む条件に当たる兄弟は畳まれたまま", () => {
     const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点", done), node("A2", "A", "論点", done), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, "A1", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), undefined, "A1");
     expect(ids(v.nodes)).toEqual(["root", "A", "A1", "A2", "B"]);
     expect(idsInState(v, "folded").sort()).toEqual(["A1", "A2"]);
   });
 
   it("選んでいない（null）ときと、ノードにない ID のときは、選択なしと同じ結果", () => {
     const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root", "議題", done), node("C", "root")];
-    const base = foldView(snap(nodes, { currentTopic: "C", now: 10 }), NONE, null, NONE, NONE);
-    expect(foldView(snap(nodes, { currentTopic: "C", now: 10 }), NONE, "nope", NONE, NONE)).toEqual(base);
-    expect(foldView(snap(nodes, { currentTopic: "C", now: 10 }), NONE, "run:A", NONE, NONE)).toEqual(base);
+    const base = foldView(snap(nodes, { currentTopic: "C", now: 10 }), undefined, null);
+    expect(foldView(snap(nodes, { currentTopic: "C", now: 10 }), undefined, "nope")).toEqual(base);
+    expect(foldView(snap(nodes, { currentTopic: "C", now: 10 }), undefined, "run:A")).toEqual(base);
   });
 
   it("入力のスナップショットを書き換えない", () => {
     const s = snap([root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")], { currentTopic: "B", now: 10 });
     const before = JSON.stringify(s);
-    foldView(s, NONE, "A1", NONE, NONE);
+    foldView(s, undefined, "A1");
     expect(JSON.stringify(s)).toBe(before);
   });
 });
@@ -405,13 +406,13 @@ describe("foldView: 選んだ畳んだ議題は「議題 N 件」に入れず、
   ];
 
   it("選んでいなければ 5 件が 1 つにまとまる", () => {
-    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), NONE, null, NONE, NONE);
+    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), undefined, null);
     expect(ids(v.nodes)).toEqual(["root", "run:A", "G"]);
     expect(v.nodes[1]!.text).toBe("議題 5 件");
   });
 
   it("真ん中の C を選ぶと、前の 2 件と後ろの 2 件が別のまとめになり、C は単独の畳んだ議題として残る", () => {
-    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), NONE, "C", NONE, NONE);
+    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), undefined, "C");
     expect(ids(v.nodes)).toEqual(["root", "run:A", "C", "run:E", "G"]);
     expect(v.nodes[1]!.text).toBe("議題 2 件");
     expect(v.nodes[3]!.text).toBe("議題 2 件");
@@ -422,16 +423,16 @@ describe("foldView: 選んだ畳んだ議題は「議題 N 件」に入れず、
   });
 
   it("C を選んで生じたまとめ run:E を選ぶと、C の選択が外れても run:E は E から始まるまとめとして残る", () => {
-    const afterC = foldView(snap(five(), { currentTopic: "G", now: 10 }), NONE, "C", NONE, NONE);
+    const afterC = foldView(snap(five(), { currentTopic: "G", now: 10 }), undefined, "C");
     expect(afterC.openness["run:E"]).toMatchObject({ state: "bundle" });
-    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), NONE, "run:E", NONE, NONE);
+    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), undefined, "run:E");
     expect(ids(v.nodes)).toEqual(["root", "run:A", "run:E", "G"]);
     expect(v.nodes[1]!.text).toBe("議題 3 件");
     expect(v.nodes[2]!.text).toBe("議題 2 件");
   });
 
   it("端の A を選ぶと、A は単独で、残りの 4 件が 1 つのまとめになる", () => {
-    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), NONE, "A", NONE, NONE);
+    const v = foldView(snap(five(), { currentTopic: "G", now: 10 }), undefined, "A");
     expect(ids(v.nodes)).toEqual(["root", "A", "run:B", "G"]);
     expect(v.nodes[2]!.text).toBe("議題 4 件");
   });
@@ -445,7 +446,7 @@ describe("foldView: 選んだ畳んだ議題は「議題 N 件」に入れず、
       node("C", "P", "論点"),
       node("G", "root"),
     ];
-    const v = foldView(snap(nodes, { currentTopic: "G", now: 10 }), NONE, "run:A", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "G", now: 10 }), undefined, "run:A");
     expect(ids(v.nodes)).toEqual(["root", "P", "run:A", "C", "G"]);
     expect(v.openness["P"]).toEqual({ state: "open", byHuman: false });
     expect(v.shownAs["A"]).toBe("run:A");
@@ -461,263 +462,295 @@ describe("foldView: 選んだ畳んだ議題は「議題 N 件」に入れず、
       node("C", "P", "論点"),
       node("G", "root"),
     ];
-    const v = foldView(snap(nodes, { currentTopic: "G", now: 10 }), NONE, "run:zzz", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "G", now: 10 }), undefined, "run:zzz");
     expect(ids(v.nodes)).toEqual(["root", "P", "G"]);
     expect(v.openness["P"]).toMatchObject({ state: "folded" });
   });
 
   it("3 件の真ん中を選ぶと、前後は 1 件ずつでまとめにならず、3 つとも単独の畳んだ議題になる", () => {
     const nodes = [root, node("A", "root", "議題", done), node("B", "root", "議題", done), node("C", "root", "議題", done), node("G", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "G", now: 10 }), NONE, "B", NONE, NONE);
+    const v = foldView(snap(nodes, { currentTopic: "G", now: 10 }), undefined, "B");
     expect(ids(v.nodes)).toEqual(["root", "A", "B", "C", "G"]);
     expect(idsInState(v, "bundle")).toEqual([]);
     expect(idsInState(v, "folded").sort()).toEqual(["A", "B", "C"]);
   });
 });
 
-describe("foldView: 人が畳んだもの（第 4 引数）", () => {
-  const set = (...xs: string[]): ReadonlySet<string> => new Set(xs);
+describe("refold: 人の操作列から見せる開閉を求める", () => {
+  const nodes = () => [root, node("A", "root", "議題", done), node("A1", "A", "論点", done), node("D", "A1", "決定"), node("B", "root"), node("C", "root"), node("C1", "C", "論点"), node("T", "C1", "TODO")];
+  const currentB = () => snap(nodes(), { currentTopic: "B", now: 10, changed: [["D", 5]] });
 
-  it("話し中の議題でも、人が畳んだものは畳む（子孫は見せず、畳んだノードの隠れた数に数える）。畳んでいなければ開いたまま", () => {
-    const nodes = [root, node("A", "root"), node("A1", "A", "論点"), node("A2", "A", "論点"), node("B", "root")];
-    const s = snap(nodes, { currentTopic: "B", now: 10 });
-    expect(ids(foldView(s, NONE, null, NONE, NONE).nodes)).toEqual(["root", "A", "A1", "A2", "B"]);
-    const v = foldView(s, NONE, null, set("A"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "B"]);
-    expect(v.openness["A"]).toMatchObject({ state: "folded", hidden: 2 });
-    expect(v.shownAs).toEqual({ A1: "A", A2: "A" });
+  it("畳んだ議題を開き、再び畳み、また開くと、毎回子孫と byHuman が切り替わる", () => {
+    const s = currentB();
+    const opened = foldingActions(s, [{ type: "toggle", id: "A" }]);
+    expect(ids(opened.view.nodes)).toEqual(["root", "A", "A1", "B", "C", "C1", "T"]);
+    expect(opened.view.openness["A"]).toEqual({ state: "open", byHuman: true });
+    const closed = foldingActions(s, [{ type: "toggle", id: "A" }], opened.human);
+    expect(ids(closed.view.nodes)).toEqual(["root", "A", "B", "C", "C1", "T"]);
+    expect(closed.view.openness["A"]).toEqual({ state: "folded", hint: "決定 1", hidden: 2 });
+    expect(closed.view.shownAs).toEqual({ A1: "A", D: "A" });
+    expect([...closed.view.blink]).toEqual(["A"]);
+    const reopened = foldingActions(s, [{ type: "toggle", id: "A" }], closed.human);
+    expect(reopened.view.openness["A"]).toEqual({ state: "open", byHuman: true });
+    expect(ids(reopened.view.nodes)).toEqual(ids(opened.view.nodes));
   });
 
-  it("話し中の論点も、人が畳んだら畳む", () => {
-    const nodes = [root, node("A", "root"), node("P", "A", "論点"), node("D", "P", "決定")];
-    const v = foldView(snap(nodes, { currentTopic: "A", now: 10 }), NONE, null, set("P"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "P"]);
-    expect(v.openness["P"]).toMatchObject({ state: "folded", hidden: 1 });
+  it("話し中の論点を畳むと TODO が隠れ、開き直すと見える", () => {
+    const s = currentB();
+    const closed = foldingActions(s, [{ type: "toggle", id: "C1" }]);
+    expect(closed.view.openness["C1"]).toEqual({ state: "folded", hint: "TODO 1", hidden: 1 });
+    expect(ids(closed.view.nodes)).not.toContain("T");
+    const opened = foldingActions(s, [{ type: "toggle", id: "C1" }], closed.human);
+    expect(ids(opened.view.nodes)).toContain("T");
+    expect(opened.view.openness["C1"]).toEqual({ state: "open", byHuman: true });
   });
 
-  it("人が開いたものは、同じ ID を人が畳んだ集合にも持っていても畳まない（開いた方が引かれる）", () => {
-    const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")];
-    const s = snap(nodes, { currentTopic: "B", now: 10 });
-    const v = foldView(s, set("A"), null, set("A"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "A1", "B"]);
-    expect(v.openness["A"]).toEqual({ state: "open", byHuman: true });
-    expect(ids(foldView(s, NONE, null, set("A"), NONE).nodes)).toEqual(["root", "A", "B"]);
+  it("別の議題の開閉を重ねても、先に開いた議題は開いたまま", () => {
+    const { view } = foldingActions(currentB(), [{ type: "toggle", id: "A" }, { type: "toggle", id: "C" }]);
+    expect(view.openness).toMatchObject({ A: { state: "open", byHuman: true }, C: { state: "folded", hidden: 2 } });
+    expect(ids(view.nodes)).toEqual(["root", "A", "A1", "B", "C"]);
   });
 
-  it("人が畳んだものは、選んだノードの祖先でも畳む（選択の保護より優先）。選んだノードは隠れる", () => {
-    const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("B", "root")];
-    const s = snap(nodes, { currentTopic: "B", now: 10 });
-    // 対照: 人が畳んでいなければ、選んだ A1 の祖先 A は畳まれず A1 が見える
-    expect(ids(foldView(s, NONE, "A1", NONE, NONE).nodes)).toEqual(["root", "A", "A1", "B"]);
-    const v = foldView(s, NONE, "A1", set("A"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "B"]);
-    expect(v.openness["A"]).toMatchObject({ state: "folded", hidden: 1 });
+  it("孫を選んで祖先を畳むと select は畳んだ議題になり、選択が隠れない", () => {
+    const s = currentB();
+    const out = refold(foldView(s, undefined, "T"), { type: "toggle", id: "C" });
+    expect(out?.select).toBe("C");
+    const view = foldView(s, out!.human, out!.select!);
+    expect(ids(view.nodes)).toContain("C");
+    expect(ids(view.nodes)).not.toContain("T");
   });
 
-  it("人が畳んだものが話し中の祖先でも、選んだ子孫より優先して畳む", () => {
-    const nodes = [root, node("A", "root"), node("A1", "A", "論点"), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, "A1", set("A"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "B"]);
+  it("自身・祖先・兄弟の選択と、開く向きの操作では select を返さない", () => {
+    const s = currentB();
+    for (const selectedId of [null, "C", "root", "B"]) {
+      expect(refold(foldView(s, undefined, selectedId), { type: "toggle", id: "C" })?.select).toBeUndefined();
+    }
+    expect(refold(foldView(s, undefined, "C1"), { type: "toggle", id: "A" })?.select).toBeUndefined();
   });
 
-  it("選んだノード自身を人が畳んだら畳む（選んだ畳んだ議題は残るが、中は見せない）", () => {
-    const nodes = [root, node("A", "root"), node("A1", "A", "論点"), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, "A", set("A"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "B"]);
-    expect(idsInState(v, "folded")).toEqual(["A"]);
+  it("fixed と見えていない ID の toggle は null で、元の表示を変えない", () => {
+    const s = currentB();
+    const v = foldView(s, undefined, null);
+    for (const id of ["root", "B", "T", "A1", "gone"]) expect(refold(v, { type: "toggle", id })).toBeNull();
+    expect(v).toEqual(foldView(s, undefined, null));
+    const nested = foldView({ ...s, currentTopic: "C1" }, undefined, null);
+    expect(refold(nested, { type: "toggle", id: "C" })).toBeNull();
   });
 
-  it("今の議題とその祖先は、人が畳んだ集合に入っていても畳まない", () => {
-    const nodes = [root, node("A", "root"), node("P", "A", "論点"), node("P1", "P", "決定"), node("B", "root")];
-    const s = snap(nodes, { currentTopic: "A", now: 10 });
-    const v = foldView(s, NONE, null, set("root", "A"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "P", "P1", "B"]);
-    expect(idsInState(v, "folded")).toEqual([]);
-    expect(v.openness["A"]).toEqual({ state: "fixed" });
-    // 今の議題が論点でも、その祖先の議題を畳まない
-    const v2 = foldView(snap(nodes, { currentTopic: "P", now: 10 }), NONE, null, set("A", "P"), NONE);
-    expect(ids(v2.nodes)).toEqual(["root", "A", "P", "P1", "B"]);
-    expect(v2.openness).toMatchObject({ root: { state: "fixed" }, A: { state: "fixed" }, P: { state: "fixed" } });
+  it("隠れた決定を point すると祖先が選択で開くが、人が開いた扱いにはならない", () => {
+    const s = currentB();
+    expect(ids(foldView(s, undefined, null).nodes)).not.toContain("D");
+    const out = foldingActions(s, [{ type: "point", id: "D" }]);
+    expect(out.selectedId).toBe("D");
+    expect(ids(out.view.nodes)).toContain("D");
+    expect(out.view.openness).toMatchObject({ A: { state: "open", byHuman: false }, A1: { state: "open", byHuman: false }, D: { state: "fixed" } });
+    expect(out.human).toBeUndefined();
+    expect(foldView(s, out.human, null).openness["A"]?.state).toBe("folded");
   });
 
-  it("議題・論点でないノード（決定・会議のルート）は、人が畳む集合に入れても畳まない", () => {
-    const nodes = [root, node("A", "root"), node("D", "A", "決定"), node("D1", "D", "TODO")];
-    const v = foldView(snap(nodes, { currentTopic: "A", now: 10 }), NONE, null, set("D", "root"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "A", "D", "D1"]);
-    expect(idsInState(v, "folded")).toEqual([]);
-    expect(v.openness).toMatchObject({ root: { state: "fixed" }, D: { state: "fixed" }, D1: { state: "fixed" } });
+  it("祖先の人の畳みを外し、なお畳まれる論点だけ point で開く", () => {
+    const s = currentB();
+    const folded = foldingActions(s, [{ type: "toggle", id: "A" }, { type: "toggle", id: "A" }, { type: "toggle", id: "C" }]);
+    const out = foldingActions(s, [{ type: "point", id: "A1" }], folded.human);
+    expect(ids(out.view.nodes)).toEqual(["root", "A", "A1", "D", "B", "C"]);
+    expect(out.view.openness).toMatchObject({ A: { state: "open", byHuman: false }, A1: { state: "open", byHuman: true }, C: { state: "folded" } });
+    expect(foldView(s, out.human, null).openness["A"]?.state).toBe("folded");
   });
 
-  it("人が畳んだ議題は、隣の畳んだ議題と「議題 N 件」にまとまる", () => {
-    const nodes = [root, node("A", "root", "議題", done), node("B", "root"), node("C", "root")];
-    const s = snap(nodes, { currentTopic: "C", now: 10 });
-    expect(idsInState(foldView(s, NONE, null, NONE, NONE), "folded")).toEqual(["A"]);
-    const v = foldView(s, NONE, null, set("B"), NONE);
-    expect(ids(v.nodes)).toEqual(["root", "run:A", "C"]);
-    expect(v.openness["run:A"]).toMatchObject({ state: "bundle", hidden: 2 });
+  it("対象自身の人の畳みは point で外し、既定で開く議題を人が開いた扱いにしない", () => {
+    const s = currentB();
+    const folded = foldingActions(s, [{ type: "toggle", id: "C" }]);
+    const out = foldingActions(s, [{ type: "point", id: "C" }], folded.human);
+    expect(out.selectedId).toBe("C");
+    expect(ids(out.view.nodes)).toContain("C1");
+    expect(out.view.openness["C"]).toEqual({ state: "open", byHuman: false });
+    expect(out.human).toBeUndefined();
   });
 
-  it("入力のスナップショットも、渡した集合も書き換えない", () => {
-    const nodes = [root, node("A", "root"), node("A1", "A", "論点"), node("B", "root")];
-    const s = snap(nodes, { currentTopic: "B", now: 10 });
-    const before = JSON.stringify(s);
-    const opened = set("B");
-    const folded = set("A");
-    foldView(s, opened, "A1", folded, NONE);
-    expect(JSON.stringify(s)).toBe(before);
-    expect([...opened]).toEqual(["B"]);
-    expect([...folded]).toEqual(["A"]);
-  });
-});
-
-describe("foldView: 「議題 N 件」を解いた議題（第 5 引数）の開閉", () => {
-  const set = (...xs: string[]): ReadonlySet<string> => new Set(xs);
-  // 畳んだ議題 A・D が並び、話し中の B が続く。A の下には論点 A1
-  const pair = () => [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("D", "root", "議題", done), node("B", "root")];
-  const pairSnap = () => snap(pair(), { currentTopic: "B", now: 10 });
-
-  it("対照: 解いていなければ run:A にまとまり、解ける開閉と手がかり・数を返す", () => {
-    const v = foldView(pairSnap(), NONE, null, NONE, NONE);
-    expect(ids(v.nodes)).toEqual(["root", "run:A", "B"]);
-    expect(v.openness["run:A"]).toEqual({ state: "bundle", hint: "A 〜 D", hidden: 3 });
+  it("point は既に人が開いた祖先を保ち、対象の論点だけを追加で開く", () => {
+    const s = currentB();
+    const opened = foldingActions(s, [{ type: "toggle", id: "A" }]);
+    const out = foldingActions(s, [{ type: "point", id: "A1" }], opened.human);
+    expect(out.selectedId).toBe("A1");
+    expect(out.view.openness).toMatchObject({ A: { state: "open", byHuman: true }, A1: { state: "open", byHuman: true } });
+    expect(ids(out.view.nodes)).toContain("D");
   });
 
-  it("解いた議題 A・D はまとめに入らず、それぞれ畳んだ議題として並ぶ（中身は畳んだまま、まとめは無い）", () => {
-    const v = foldView(pairSnap(), NONE, null, NONE, set("A", "D"));
-    expect(ids(v.nodes)).toEqual(["root", "A", "D", "B"]);
-    expect(idsInState(v, "folded").sort()).toEqual(["A", "D"]);
-    expect(v.openness["A"]).toMatchObject({ state: "folded", hidden: 1 });
-    expect(idsInState(v, "bundle")).toEqual([]);
-    expect(v.shownAs).toEqual({ A1: "A" });
-    expect(v.openness["run:A"]).toBeUndefined();
+  it("スナップショットに無い ID とまとめ ID の point は null", () => {
+    const v = foldView(currentB(), undefined, null);
+    for (const id of ["gone", "run:A"]) expect(refold(v, { type: "point", id })).toBeNull();
   });
 
-  it("人が開いた議題は、解いた集合に入っていても開いたまま（解いても中身は開かない。開くのは人が開いた集合だけ）", () => {
-    const opened = foldView(pairSnap(), set("A"), null, NONE, set("A", "D"));
-    expect(ids(opened.nodes)).toEqual(["root", "A", "A1", "D", "B"]);
-    expect(idsInState(opened, "folded")).toEqual(["D"]);
+  it("今の議題の人の畳みだけ reflect で解け、祖先の畳みは残る", () => {
+    const s = snap([root, node("P", "root"), node("C", "P"), node("D", "C", "決定"), node("B", "root")], { currentTopic: "B" });
+    const folded = foldingActions(s, [{ type: "toggle", id: "C" }, { type: "toggle", id: "P" }]);
+    const nowC = { ...s, currentTopic: "C" };
+    const reflected = foldingActions(nowC, [{ type: "reflect" }], folded.human);
+    expect(reflected.view.openness["C"]).toEqual({ state: "fixed" });
+    const away = foldView(s, reflected.human, null);
+    expect(away.openness["P"]?.state).toBe("folded");
+    const pointed = foldingActions(s, [{ type: "point", id: "D" }], reflected.human);
+    expect(pointed.view.openness["C"]).toEqual({ state: "open", byHuman: false });
+    expect(pointed.human).toBeUndefined();
   });
 
-  it("集合に入れた議題だけが外れる: D・A・E・F の並びで A だけ解くと、D と A は単独で並び、E・F は run:E にまとまる", () => {
-    const nodes = [root, node("D", "root", "議題", done), node("A", "root", "議題", done), node("E", "root", "議題", done), node("F", "root", "議題", done), node("B", "root")];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, null, NONE, set("A"));
-    expect(ids(v.nodes)).toEqual(["root", "D", "A", "run:E", "B"]);
-    expect(v.openness["run:E"]).toEqual({ state: "bundle", hint: "E 〜 F", hidden: 2 });
+  it("最後の人の畳みを reflect で解くと human は undefined", () => {
+    const s = currentB();
+    const folded = foldingActions(s, [{ type: "toggle", id: "C" }]);
+    const out = refold(foldView({ ...s, currentTopic: "C" }, folded.human, null), { type: "reflect" });
+    expect(out).not.toBeNull();
+    expect(out!.human).toBeUndefined();
+    expect(out!.select).toBeUndefined();
+    expect(foldView(s, out!.human, null).openness["C"]).toEqual({ state: "open", byHuman: false });
   });
 
-  it("後から畳まれた議題は、解いた集合に入っていなければ新しくまとまる（run: の ID ではなく、議題の ID の集合で覚える）", () => {
-    // 最初は A・D だけが畳まれて並ぶ。解いた後の反映で、続く E・F も畳まれた
-    const nodes = [root, node("A", "root", "議題", done), node("D", "root", "議題", done), node("E", "root", "議題", done), node("F", "root", "議題", done), node("B", "root")];
-    const s = snap(nodes, { currentTopic: "B", now: 10 });
-    const v = foldView(s, NONE, null, NONE, set("A", "D"));
-    expect(ids(v.nodes)).toEqual(["root", "A", "D", "run:E", "B"]);
-    expect(v.openness["run:E"]).toEqual({ state: "bundle", hint: "E 〜 F", hidden: 2 });
+  it("別の議題への反映・選択・時間の経過でも人の開閉は残り、human を外すと普段の表示に戻る", () => {
+    const s = currentB();
+    const changed = foldingActions(s, [{ type: "toggle", id: "A" }, { type: "toggle", id: "C" }]);
+    const reflected = foldingActions({ ...s, currentTopic: "B", now: 5000 }, [{ type: "reflect" }], changed.human, "B");
+    expect(reflected.view.openness).toMatchObject({ A: { state: "open", byHuman: true }, C: { state: "folded" } });
+    const reset = foldView(s, undefined, null);
+    expect(reset.openness).toMatchObject({ A: { state: "folded" }, C: { state: "open", byHuman: false } });
   });
 
-  it("畳まれていない・存在しない ID が入っていても、何も起きない", () => {
-    const withGhost = foldView(pairSnap(), NONE, null, NONE, set("B", "zzz"));
-    expect(withGhost).toEqual(foldView(pairSnap(), NONE, null, NONE, NONE));
+  it("消えた ID の人の操作は統合先に付け替えず、再登場した元の ID にだけ効く", () => {
+    const s = currentB();
+    const folded = foldingActions(s, [{ type: "toggle", id: "C" }]);
+    const merged: Snapshot = { ...s, currentTopic: "root", nodes: s.nodes.filter((n) => !["C", "C1", "T"].includes(n.id)), changes: [{ change: "統合", node: "B", kind: "議題", text: "B", from: ["C"], round: 5, at: 10 }] };
+    const out = foldingActions(merged, [{ type: "reflect" }], folded.human);
+    expect(out.view.openness["B"]).toEqual({ state: "open", byHuman: false });
+    expect(foldView(s, out.human, null).openness["C"]?.state).toBe("folded");
   });
 
-  it("複数のまとめがあれば、それぞれ解ける開閉と手がかり・数を返す", () => {
-    const nodes = [root, node("A", "root", "議題", done), node("D", "root", "議題", done), node("B", "root"), node("E", "root", "議題", done), node("F", "root", "議題", done), node("G", "root", "議題", done)];
-    const v = foldView(snap(nodes, { currentTopic: "B", now: 10 }), NONE, null, NONE, NONE);
-    expect(idsInState(v, "bundle")).toEqual(["run:A", "run:E"]);
-    expect(v.openness["run:A"]).toEqual({ state: "bundle", hint: "A 〜 D", hidden: 2 });
-    expect(v.openness["run:E"]).toEqual({ state: "bundle", hint: "E 〜 G", hidden: 3 });
-  });
-
-  it("渡した集合を書き換えない", () => {
-    const unbundled = set("A", "D");
-    foldView(pairSnap(), NONE, null, NONE, unbundled);
-    expect([...unbundled]).toEqual(["A", "D"]);
+  it("refold は snapshot と既存の人の操作を変更しない", () => {
+    const s = currentB();
+    const opened = foldingActions(s, [{ type: "toggle", id: "A" }]);
+    const before = structuredClone(s);
+    const view = foldView(s, opened.human, "D");
+    for (const action of [{ type: "toggle", id: "A" }, { type: "point", id: "C" }, { type: "reflect" }] as const) refold(view, action);
+    expect(s).toEqual(before);
+    expect(foldView(s, opened.human, "D")).toEqual(view);
   });
 });
 
-describe("pointedNode: 「変わったこと」から指したノードの祖先と、人が開いた集合に足すか", () => {
-  const set = (...xs: string[]): ReadonlySet<string> => new Set(xs);
-  // A（済み）の下に A1（済みの論点）と決定 A1a。B が話し中。C は話し中の議題
-  const nodes = [
-    root,
-    node("A", "root", "議題", done),
-    node("A1", "A", "論点", done),
-    node("A1a", "A1", "決定"),
-    node("B", "root"),
-    node("B1", "B", "論点"),
-    node("C", "root"),
-  ];
-  const s = snap(nodes, { currentTopic: "B", now: 10 });
-  const sorted = (xs: readonly string[]) => [...xs].sort();
+describe("refold: 一続きの議題のまとめ", () => {
+  const pair = () => snap([root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("D", "root", "議題", done), node("B", "root")], { currentTopic: "B" });
 
-  it("畳んだ議題 A を指すと、祖先は root で、A は畳む条件に当たるので開く", () => {
-    const r = pointedNode(s, "A", NONE, NONE, NONE)!;
-    expect(sorted(r.ancestors)).toEqual(["root"]);
-    expect(r.open).toBe(true);
+  it("まとめを解くと全員が元の順の畳んだ議題になり、選択は先頭へ移る", () => {
+    const s = pair();
+    const out = foldingActions(s, [{ type: "toggle", id: "run:A" }], undefined, "run:A");
+    expect(out.selectedId).toBe("A");
+    expect(ids(out.view.nodes)).toEqual(["root", "A", "D", "B"]);
+    expect(out.view.openness).toMatchObject({ A: { state: "folded", hidden: 1 }, D: { state: "folded" } });
+    expect(out.view.shownAs).toEqual({ A1: "A" });
+    expect(keepTargetOf(out.view, "run:A")).toBe("A");
+    const deselected = foldView(s, out.human, null);
+    expect(ids(deselected.nodes)).toEqual(["root", "A", "D", "B"]);
+    expect(idsInState(deselected, "bundle")).toEqual([]);
+    const opened = foldingActions(s, [{ type: "toggle", id: "A" }], out.human);
+    expect(ids(opened.view.nodes)).toContain("A1");
+    const closed = foldingActions(s, [{ type: "toggle", id: "A" }], opened.human);
+    expect(ids(closed.view.nodes)).toEqual(["root", "A", "D", "B"]);
   });
 
-  it("畳んだ議題の中に隠れた決定 A1a を指すと、祖先は root・A・A1。決定は畳まないので開かない", () => {
-    const r = pointedNode(s, "A1a", NONE, NONE, NONE)!;
-    expect(sorted(r.ancestors)).toEqual(["A", "A1", "root"]);
-    expect(r.open).toBe(false);
+  it("まとめの中の議題を point すると、その議題が選ばれて開く", () => {
+    const s = pair();
+    expect(ids(foldView(s, undefined, null).nodes)).toContain("run:A");
+    const out = foldingActions(s, [{ type: "point", id: "D" }]);
+    expect(out.selectedId).toBe("D");
+    expect(ids(out.view.nodes)).toEqual(["root", "A", "D", "B"]);
+    expect(out.view.openness["D"]).toEqual({ state: "open", byHuman: true });
+    expect(out.view.openness["A"]?.state).toBe("folded");
   });
 
-  it("畳んだ議題の中に隠れた、畳む条件に当たる論点 A1 を指すと、祖先は root・A で、A1 は開く", () => {
-    const r = pointedNode(s, "A1", NONE, NONE, NONE)!;
-    expect(sorted(r.ancestors)).toEqual(["A", "root"]);
-    expect(r.open).toBe(true);
+  it("解いた議題は反映後も別々のままで、後から畳まれた議題だけが新しくまとまる", () => {
+    const s = pair();
+    const unbundled = foldingActions(s, [{ type: "toggle", id: "run:A" }]);
+    const later = { ...s, nodes: [...s.nodes, node("E", "root", "議題", done), node("F", "root", "議題", done)] };
+    const out = foldingActions(later, [{ type: "reflect" }], unbundled.human);
+    expect(ids(out.view.nodes)).toEqual(["root", "A", "D", "B", "run:E"]);
+    expect(out.view.openness["run:E"]).toEqual({ state: "bundle", hint: "E 〜 F", hidden: 2 });
+    expect(ids(foldView(later, undefined, null).nodes)).toEqual(["root", "run:A", "B", "run:E"]);
   });
 
-  it("畳んでいないノード（話し中の C・今の議題 B・B の論点）を指しても開かない", () => {
-    for (const id of ["C", "B", "B1"]) expect(pointedNode(s, id, NONE, NONE, NONE)!.open).toBe(false);
+  it("選択が入れ子のまとめでも、祖先を畳むと snapshot 上の先頭議題で判定して選択を移す", () => {
+    const s = snap([root, node("P", "root"), node("A", "P", "議題", done), node("D", "P", "議題", done), node("B", "root")], { currentTopic: "B" });
+    const out = refold(foldView(s, undefined, "run:A"), { type: "toggle", id: "P" });
+    expect(out?.select).toBe("P");
   });
 
-  it("祖先 A を人が畳んでいても、結果は変わらない（祖先の人の畳みを外した上で判定する）", () => {
-    const r = pointedNode(s, "A1", NONE, set("A"), NONE)!;
-    expect(sorted(r.ancestors)).toEqual(["A", "root"]);
-    expect(r.open).toBe(true);
-  });
-
-  it("指したノード自身を人が畳んでいれば、開く（話し中の議題 C でも）", () => {
-    expect(pointedNode(s, "C", NONE, set("C"), NONE)!.open).toBe(true);
-  });
-
-  it("スナップショットに無い ID（まとめの run:A や消えたノード）は null", () => {
-    expect(pointedNode(s, "run:A", NONE, NONE, NONE)).toBeNull();
-    expect(pointedNode(s, "gone", NONE, NONE, NONE)).toBeNull();
-  });
-
-  it("まとめの中の畳んだ議題 D を指すと、D は開く（選んだ議題はまとめに入れない）", () => {
-    const run = snap([root, node("A", "root", "議題", done), node("D", "root", "議題", done), node("B", "root")], { currentTopic: "B", now: 10 });
-    const r = pointedNode(run, "D", NONE, NONE, NONE)!;
-    expect(sorted(r.ancestors)).toEqual(["root"]);
-    expect(r.open).toBe(true);
-  });
-
-  it("入力のスナップショットも、渡した集合も書き換えない", () => {
-    const before = JSON.stringify(s);
-    const opened = set("B");
-    const folded = set("A");
-    const unbundled = set("C");
-    pointedNode(s, "A1", opened, folded, unbundled);
-    expect(JSON.stringify(s)).toBe(before);
-    expect([[...opened], [...folded], [...unbundled]]).toEqual([["B"], ["A"], ["C"]]);
-  });
-});
-
-describe("keepTargetOf: 位置を保つ基準のノード（開閉の前の ID を、いま見えている側に置き換える）", () => {
-  const set = (...xs: string[]): ReadonlySet<string> => new Set(xs);
-  const nodes = [root, node("A", "root", "議題", done), node("A1", "A", "論点"), node("D", "root", "議題", done), node("B", "root")];
-  const s = snap(nodes, { currentTopic: "B", now: 10 });
-
-  it("解いて無くなったまとめ run:A は、見えている最初の議題 A になる（対照: まだ解く前は run:A のまま）", () => {
-    expect(keepTargetOf(foldView(s, NONE, null, NONE, NONE), "run:A")).toBe("run:A");
-    expect(keepTargetOf(foldView(s, NONE, null, NONE, set("A", "D")), "run:A")).toBe("A");
-  });
-
-  it("まとめに隠れた議題は、まとめのノードになる。見えているノードと、still（view なし）はそのまま", () => {
-    const view = foldView(s, NONE, null, NONE, NONE);
+  it("位置を保つ基準は、まとめの中の議題ならまとめ、見える ID と still ならそのまま", () => {
+    const view = foldView(pair(), undefined, null);
     expect(keepTargetOf(view, "D")).toBe("run:A");
     expect(keepTargetOf(view, "B")).toBe("B");
     expect(keepTargetOf(null, "run:A")).toBe("run:A");
+  });
+});
+
+describe("foldView: 人の操作と選択・今の議題の優先順位", () => {
+  const s = () => snap([root, node("P", "root"), node("Q", "P", "論点"), node("D", "Q", "決定"), node("B", "root")], { currentTopic: "B" });
+
+  it("人が畳んだ祖先は選択による保護より優先し、選んだ子孫を見せない", () => {
+    const snapshot = s();
+    const folded = foldingActions(snapshot, [{ type: "toggle", id: "P" }]);
+    const v = foldView(snapshot, folded.human, "D");
+    expect(ids(v.nodes)).toEqual(["root", "P", "B"]);
+    expect(v.openness["P"]).toEqual({ state: "folded", hint: "決定 1", hidden: 2 });
+    expect(v.shownAs).toEqual({ Q: "P", D: "P" });
+  });
+
+  it("人が畳んだノード自身を選んでも、中身は畳んだまま", () => {
+    const snapshot = s();
+    const folded = foldingActions(snapshot, [{ type: "toggle", id: "P" }]);
+    expect(foldView(snapshot, folded.human, "P").openness["P"]?.state).toBe("folded");
+  });
+
+  it("今の議題とその祖先は、人が畳んでいても fixed で子孫を見せる", () => {
+    const snapshot = s();
+    const folded = foldingActions(snapshot, [{ type: "toggle", id: "Q" }, { type: "toggle", id: "P" }]);
+    const v = foldView({ ...snapshot, currentTopic: "Q" }, folded.human, null);
+    expect(ids(v.nodes)).toEqual(["root", "P", "Q", "D", "B"]);
+    expect(v.openness).toMatchObject({ P: { state: "fixed" }, Q: { state: "fixed" }, D: { state: "fixed" } });
+  });
+
+  it("反映で人が開いた記録は消さず、今の議題から外れた後も開いたまま", () => {
+    const snapshot = { ...s(), nodes: s().nodes.map((n) => n.id === "P" ? { ...n, talkStatus: "済み" as const } : n) };
+    const opened = foldingActions(snapshot, [{ type: "toggle", id: "P" }]);
+    const reflected = foldingActions({ ...snapshot, currentTopic: "P" }, [{ type: "reflect" }], opened.human);
+    expect(foldView(snapshot, reflected.human, null).openness["P"]).toEqual({ state: "open", byHuman: true });
+  });
+
+  it("複数のまとめから解いたものだけが別々の議題になり、他のまとめは残る", () => {
+    const snapshot = snap([root, node("A", "root", "議題", done), node("D", "root", "議題", done), node("B", "root"), node("E", "root", "議題", done), node("F", "root", "議題", done)], { currentTopic: "B" });
+    const out = foldingActions(snapshot, [{ type: "toggle", id: "run:A" }]);
+    expect(ids(out.view.nodes)).toEqual(["root", "A", "D", "B", "run:E"]);
+    expect(out.view.openness["run:E"]).toEqual({ state: "bundle", hint: "E 〜 F", hidden: 2 });
+  });
+});
+
+describe("refold: 人が畳んだ議題と解いた議題の並び", () => {
+  it("話し中の議題を人が畳むと、隣の済みの議題とまとめになる", () => {
+    const s = snap([root, node("A", "root", "議題", done), node("B", "root"), node("C", "root")], { currentTopic: "C" });
+    expect(ids(foldView(s, undefined, null).nodes)).toEqual(["root", "A", "B", "C"]);
+    const out = foldingActions(s, [{ type: "toggle", id: "B" }]);
+    expect(ids(out.view.nodes)).toEqual(["root", "run:A", "C"]);
+    expect(out.view.openness["run:A"]).toEqual({ state: "bundle", hint: "A 〜 B", hidden: 2 });
+  });
+
+  it("以前解いた議題だけが次の反映でも別々に残り、前後の新しい議題はまとめられる", () => {
+    const before = snap([root, node("A", "root", "議題", done), node("X", "root", "議題", done), node("B", "root")], { currentTopic: "B" });
+    const unbundled = foldingActions(before, [{ type: "toggle", id: "run:A" }]);
+    const after = snap([root, node("D", "root", "議題", done), node("A", "root", "議題", done), node("E", "root", "議題", done), node("F", "root", "議題", done), node("B", "root")], { currentTopic: "B" });
+    const out = foldingActions(after, [{ type: "reflect" }], unbundled.human);
+    expect(ids(out.view.nodes)).toEqual(["root", "D", "A", "run:E", "B"]);
+    expect(out.view.openness["run:E"]).toEqual({ state: "bundle", hint: "E 〜 F", hidden: 2 });
+  });
+
+  it("まとめを解いた人の値を次の操作へ渡しても、元の値から作る表示は変わらない", () => {
+    const s = snap([root, node("A", "root", "議題", done), node("D", "root", "議題", done), node("B", "root"), node("E", "root", "議題", done), node("F", "root", "議題", done)], { currentTopic: "B" });
+    const first = foldingActions(s, [{ type: "toggle", id: "run:A" }]);
+    const next = foldingActions(s, [{ type: "toggle", id: "run:E" }, { type: "toggle", id: "A" }], first.human);
+    expect(ids(next.view.nodes)).toEqual(["root", "A", "D", "B", "E", "F"]);
+    expect(ids(foldView(s, first.human, null).nodes)).toEqual(["root", "A", "D", "B", "run:E"]);
   });
 });

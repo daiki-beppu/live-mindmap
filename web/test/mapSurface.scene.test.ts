@@ -310,10 +310,9 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
   ];
   const foldHeights = { root: 40, A: 50, A1: 60, B: 70 };
   const foldSnap = () => snap(foldNodes(), { currentTopic: "B", now: 100 });
-  const NONE: ReadonlySet<string> = new Set();
 
   it("live: 済みの議題の子は描かず、その議題は畳んだ見た目（隠れた数と手がかり）になる。位置は畳んだ後の木を layout した値", () => {
-    const view_ = foldView(foldSnap(), NONE, null, NONE, NONE);
+    const view_ = foldView(foldSnap(), undefined, null);
     const positions = layout(view_.nodes, foldHeights);
     const openness = view_.openness["A"]!;
     if (openness.state !== "folded") throw new Error("A must be folded");
@@ -657,7 +656,7 @@ describe("mapSurface の Scene: カメラ（Issue #819。ビューポートの t
 describe("mapSurface の Scene: 動き（補間中の位置でノードとエッジを描く）", () => {
   const before = snap(nodes());
   const after = snap([...nodes(), node("N", "A", "案", "新しい案")], { round: 4 });
-  const shownOf = (snapshot: Snapshot) => foldView(snapshot, new Set(), null, new Set(), new Set()).nodes;
+  const shownOf = (snapshot: Snapshot) => foldView(snapshot, undefined, null).nodes;
   const measuredLive: MapSurfaceModel = { ...modelOf(before, "live"), size: Option.some(SIZE), nodeHeights: HashMap.make(...Object.entries(HEIGHTS)) };
   // 反映の直後（補間の経過 0）の Model。update を通して作る
   const changedModel = (): MapSurfaceModel => update(measuredLive, Message.ChangedSnapshot({ snapshot: after })).model;
