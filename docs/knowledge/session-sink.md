@@ -33,7 +33,9 @@ server のセッションの sink（`server/src/sessionSinks.ts`）と、その�
 
 ## sink の型は、その経路を実際に呼ぶ口から決める。録画も話者の起動し直しと名前付けを使う
 
-仕様の型の案では、`speakersRenumbered` と `nameSpeaker` を `LiveSink` だけに置いていた。けれども録画からのセッションも、ヘルパーを起動し直せば `speakersRenumbered` を呼ぶ（`sessions.ts` の再起動の知らせ）。名前付けも、ライブと同じ `POST /session/speaker-name` で受ける。そこで [#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)）は、この 2 つを `SinkBase` に置き、`LiveSink` には `clearSpeaking` だけを残した。そうしても `cliRecorded.it` の「録画からのセッションでも、ライブと同じ POST /session/speaker-name で振られたラベルに名前を付けられる」と、起動し直した後のラベルのテストが通り続けた。
+仕様の型の案では、`speakersRenumbered` と `nameSpeaker` を `LiveSink` だけに置いていた。けれども録画からのセッションも、ヘルパーを起動し直せば `speakersRenumbered` を呼ぶ（`sessions.ts` の再起動の知らせ）。名前付けも、ライブと同じ `POST /session/speaker-name` で受ける。そこで [#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)）は、この 2 つを `SinkBase` に置いた。そうしても `cliRecorded.it` の「録画からのセッションでも、ライブと同じ POST /session/speaker-name で振られたラベルに名前を付けられる」と、起動し直した後のラベルのテストが通り続けた。
+
+ライブ専用の操作は `interrupted`。`SessionSinks.open` で settling の drain → 字幕消去をつなぎ、`Sessions` の `crashed` は会議タブの通知の reset → `sink.interrupted` → 途切れ時刻の更新の順に呼ぶ（[#1663](https://github.com/daiki-beppu/live-mindmap/issues/1663)）。中断は終了ではなく、同じ sink で後続の発言を受け取る。録画専用の `drainForRestart` と区別し、停止用の `SinkBase.drain` は残す。
 
 メンバーを片方の型から外すときは、`sessions.ts` でそのメンバーを呼んでいる箇所を、ライブと録画の両方の経路で探す。
 

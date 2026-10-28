@@ -44,7 +44,8 @@ type FakeSinksHandle = {
   readonly screens: { start: number; image: Uint8Array | null; lines?: readonly string[] }[];
   readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
-  readonly relayStats: { drained: number; cleared: number; stopped: number };
+  readonly relayStats: { interrupted: number; stopped: number };
+  readonly drainStats: { drained: number };
   readonly appended: LogLineEvent[];
   readonly speakers: SpeakerLine[]; // sink.speaker へ届いた speaker・speaker-off（届いた順）
   readonly speakerCalls: string[]; // sink.speaker（speaker:<type>）と sink.speakersRenumbered（renumbered）が呼ばれた順（Issue #1025）
@@ -64,7 +65,8 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const screens: { start: number; image: Uint8Array | null; lines?: readonly string[] }[] = [];
     const screenOffs: { start: number; reason: "指定" | "許可なし" }[] = [];
     const sequence: string[] = [];
-    const relayStats = { drained: 0, cleared: 0, stopped: 0 };
+    const relayStats = { interrupted: 0, stopped: 0 };
+    const drainStats = { drained: 0 };
     const appended: LogLineEvent[] = [];
     const speakers: SpeakerLine[] = [];
     const vocabAdded: string[][] = [];
@@ -85,7 +87,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           ocrSummary: Effect.sync(() => ({ images: savedScreens.filter((s) => s.image !== null).length, failed: savedScreens.filter((s) => s.image !== null && s.ocrFailed === true).length })),
           screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { savedScreens.push(s); screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
           screenOff: (e: Parameters<LiveSink["screenOff"]>[0]) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
-          drain: Effect.sync(() => { relayStats.drained++; }),
+          drain: Effect.sync(() => { drainStats.drained++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
           appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),
           speaker: (event: SpeakerLine) => Effect.sync(() => { speakers.push(event); speakerCalls.push(`speaker:${event.type}`); }),
@@ -97,12 +99,12 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
         return sink;
       });
     const open = (args: OpenSessionSink): Effect.Effect<LiveSink, never, Scope.Scope> =>
-      Effect.map(openBase(args), (sink) => ({ ...sink, clearSpeaking: Effect.sync(() => { relayStats.cleared++; }) }));
+      Effect.map(openBase(args), (sink) => ({ ...sink, interrupted: Effect.sync(() => { relayStats.interrupted++; }) }));
     const openRecorded: SessionSinks["Service"]["openRecorded"] = (args) =>
       Effect.map(openBase(args), (sink): RecordedSink => ({ ...sink, drainForRestart: Effect.succeed({}), finishBacklog: Effect.void, discardBacklog: Effect.void }));
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, openRecorded, createDir }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, appended, speakers, speakerCalls, vocabAdded, order, control };
+    return { sinks: SessionSinks.of({ open, openRecorded, createDir }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, drainStats, appended, speakers, speakerCalls, vocabAdded, order, control };
   });
 }
 
@@ -2270,7 +2272,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1_000);
 
         expect(fakeSinks.order).toEqual(["flush", "exports", "close"]);
-        expect(fakeSinks.relayStats.drained).toBeGreaterThanOrEqual(1);
+        expect(fakeSinks.drainStats.drained).toBeGreaterThanOrEqual(1);
         expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "ぎりぎり" });
         expect((yield* sessions.status).status).toBe("none");
         yield* sessions.start(start()); // idle に戻っているので続けて開始できる
@@ -2296,7 +2298,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
   describe("起動し直し・諦め・resume（CT-RESTART-DECISION / CT-REF-STATE）", () => {
 
-    it.effect("途切れた瞬間に drain と字幕のクリアが走る（CT-DRAIN / CT-SPEAKING-CLEAR）。stopRelays はまだ呼ばない", () =>
+    it.effect("途切れた瞬間に interrupted が走り、セッションの終了までは stopRelays を呼ばない", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
@@ -2309,8 +2311,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
 
-        expect(fakeSinks.relayStats.drained).toBeGreaterThan(0);
-        expect(fakeSinks.relayStats.cleared).toBeGreaterThan(0);
+        expect(fakeSinks.relayStats.interrupted).toBeGreaterThan(0);
         expect(fakeSinks.relayStats.stopped).toBe(0); // セッションはまだ続いている（stop の後だけ 1）
 
         yield* sessions.stop;
@@ -2379,7 +2380,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       yield* TestClock.adjust(10);
     });
 
-    it.effect("構成の変化の終了も途切れとして扱う（drain・字幕のクリア・interrupted のフレーム・起動し直した回数・intake-stopped の code 75）", () =>
+    it.effect("構成の変化の終了も途切れとして扱う（sink.interrupted・interrupted のフレーム・起動し直した回数・intake-stopped の code 75）", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([configChange(), {}]);
         const fakeSinks = yield* makeFakeSessionSinks();
@@ -2391,8 +2392,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         yield* cycle;
 
-        expect(fakeSinks.relayStats.drained).toBeGreaterThan(0);
-        expect(fakeSinks.relayStats.cleared).toBeGreaterThan(0);
+        expect(fakeSinks.relayStats.interrupted).toBeGreaterThan(0);
         expect((yield* sessions.status).restarts).toBe(1);
         expect(yield* client.intakeStatuses).toEqual(["interrupted", "running"]);
         expect(fakeSinks.appended.some((e) => e.type === "intake-stopped" && e.code === 75 && e.signal === null)).toBe(true);
