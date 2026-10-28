@@ -8,7 +8,7 @@ it("ライブと録画の入口はそれぞれに必要な操作だけを公開�
   expectTypeOf<Effect.Success<ReturnType<Sinks["open"]>>>().toEqualTypeOf<LiveSink>();
   expectTypeOf<Effect.Success<ReturnType<Sinks["openRecorded"]>>>().toEqualTypeOf<RecordedSink>();
   expectTypeOf<Extract<keyof LiveSink, "drainForRestart" | "lastRemarkEnds" | "discardBacklog" | "finishBacklog">>().toEqualTypeOf<never>();
-  expectTypeOf<Extract<keyof RecordedSink, "clearSpeaking" | "lastRemarkEnds">>().toEqualTypeOf<never>();
+  expectTypeOf<Extract<keyof RecordedSink, "interrupted" | "lastRemarkEnds">>().toEqualTypeOf<never>();
   expectTypeOf<Extract<keyof LiveSink | keyof RecordedSink, "addUserVocabulary" | "audioFileNames">>().toEqualTypeOf<never>();
   expectTypeOf<Extract<keyof Parameters<Sinks["open"]>[0], "recorded">>().toEqualTypeOf<never>();
   expectTypeOf<Effect.Success<RecordedSink["drainForRestart"]>>().toEqualTypeOf<Partial<Readonly<Record<"相手" | "自分", number>>>>();

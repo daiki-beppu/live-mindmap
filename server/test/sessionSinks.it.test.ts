@@ -29,7 +29,7 @@ import { trackedFileSystem } from "./fixtures/trackedFileSystem.ts";
 //   updaterLayer は core の Service DiffUpdater を作る Layer で、セッションごとに Layer.build(Layer.fresh(...)) して使う
 // - `createDir(sessionsDir)` がセッションのフォルダを作る（失敗すれば以後 open を呼ばない。要件3の前提）
 // - `open({ dir, title, send })` がセッションの Scope の中で 1 回呼ばれ、updater をそのセッションの Scope で開き、
-//   `LiveSink`（partial・final・drain・clearSpeaking・stopRelays・appendLog・flush・exports）を返す。
+//   `LiveSink`（partial・final・drain・interrupted・stopRelays・appendLog・flush・exports）を返す。
 //   Scope を閉じると updater が閉じる
 
 // 開いた数・閉じた数・呼ばれた数を数える偽の DiffUpdater の Layer。開くたびに別の実体（id）を作る
@@ -535,6 +535,59 @@ const logEvents = (dir: string) =>
 const finalRemark = (track: "相手" | "自分", start: number, end: number, text: string) => ({ track, start, end, text });
 
 describe("SessionSinks（実物 Layer）: 発言の確定・途中結果・書き出し", () => {
+
+  it.effect("中断は保留発言を一度だけ投入してから字幕を消し、同じ sink で受信を続けて停止できる", () => {
+    const { calls, updateGate, updaterLayer } = makeRecordingUpdater();
+    return Effect.scoped(Effect.gen(function* () {
+      const reply = yield* Deferred.make<void>();
+      updateGate.gate = reply;
+      const sinks = yield* SessionSinks;
+      const dir = yield* sinks.createDir(yield* withTmpSessionsDir());
+      const speaks: CaptionsFrame[] = [];
+      const remarksAtClear: string[][] = [];
+      const remarks = () => logEvents(dir).filter((event) => event.type === "remark").map((event) => event.remark);
+      const sink = yield* sinks.open({
+        updaterLayer, model: defaultClaude, dir, title: "途切れる会議",
+        send: (frame) => Effect.sync(() => {
+          if (frame.type !== "captions") return;
+          speaks.push(frame);
+          if (frame.bubbles.length === 0) remarksAtClear.push(remarks().map((remark) => remark.text));
+        }),
+      });
+      yield* sink.speaker(SPEAKER_OFF);
+      yield* sink.partial({ track: "相手", start: 1, end: 2, text: "途切れる前", duplicate: false });
+      expect(lastTexts(speaks, "相手")).toEqual(["途切れる前"]);
+      expect(remarks()).toEqual([]);
+      const clearsBefore = remarksAtClear.length;
+
+      yield* sink.interrupted;
+
+      const cleared = remarksAtClear.slice(clearsBefore);
+      expect(cleared.length).toBeGreaterThan(0);
+      for (const texts of cleared) expect(texts).toEqual(["途切れる前"]);
+      expect(speaks.at(-1)?.bubbles).toEqual([]);
+      expect(remarks()).toMatchObject([{ id: "r1", text: "途切れる前" }]);
+
+      yield* sink.partial({ track: "相手", start: 3, end: 4, text: "再開した後", duplicate: false });
+      yield* TestClock.adjust(SPEAKING_INTERVAL_MS);
+      yield* settleUntil(() => lastTexts(speaks, "相手")?.includes("再開した後") === true);
+      expect(lastTexts(speaks, "相手")).toContain("再開した後");
+      yield* sink.final(finalRemark("相手", 3, 4, "再開した後"));
+      yield* sink.drain;
+      yield* Deferred.succeed(reply, undefined);
+      yield* sink.flush;
+      yield* sink.stopRelays;
+
+      expect(remarks().map(({ id, text }) => ({ id, text }))).toEqual([
+        { id: "r1", text: "途切れる前" },
+        { id: "r2", text: "再開した後" },
+      ]);
+      expect(calls.flatMap((input) => input.fresh).map(({ id, text }) => ({ id, text }))).toEqual([
+        { id: "r1", text: "途切れる前" },
+        { id: "r2", text: "再開した後" },
+      ]);
+    })).pipe(Effect.provide(sinksLayer({ updaterLayer })));
+  });
 
   it.effect("発言が 1 件も来ないセッションでも、exports はそのセッションのマップ（空の会議ノード）を書き出す", () =>
     Effect.scoped(Effect.gen(function* () {

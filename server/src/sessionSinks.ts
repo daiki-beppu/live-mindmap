@@ -36,7 +36,7 @@ type SinkBase = {
 };
 
 export type LiveSink = SinkBase & {
-  clearSpeaking: Effect.Effect<void>;
+  interrupted: Effect.Effect<void>;
 };
 
 export type RecordedSink = SinkBase & {
@@ -165,7 +165,7 @@ export class SessionSinks extends Context.Service<SessionSinks, {
           createDir: (sessionsDir, at) => createSessionDir(sessionsDir, at).pipe(Effect.provideContext(exportServices), Effect.orDie),
           open: Effect.fnUntraced(function* (args) {
             const { sink, flow } = yield* openSink(args, "途中結果から", (_session, inlet) => directFeed(inlet));
-            return { ...sink, clearSpeaking: flow.clearSpeaking };
+            return { ...sink, interrupted: Effect.andThen(flow.drainForRestart, flow.clearSpeaking) };
           }),
           openRecorded: Effect.fnUntraced(function* ({ recorded, ...args }) {
             const { sink, flow } = yield* openSink(args, "入れた発言だけ", (session, inlet) => recordedFeed({

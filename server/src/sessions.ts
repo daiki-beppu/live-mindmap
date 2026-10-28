@@ -250,8 +250,7 @@ export class Sessions extends Context.Service<Sessions, {
               break;
             case "crashed":
               yield* live.meetingTabNotice.reset;
-              yield* live.sink.drain;
-              yield* live.sink.clearSpeaking;
+              yield* live.sink.interrupted;
               yield* Ref.set(live.lastInterruptedAt, DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)));
               break;
             case "running":
