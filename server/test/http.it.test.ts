@@ -17,7 +17,7 @@ import { ConfigProvider, Console, Deferred, Effect, Exit, Fiber, Layer, Queue, R
 import { TestClock } from "effect/testing";
 import { MapCapture } from "../src/capture.ts";
 import { AgentSdk, layerClaude } from "../src/claude.ts";
-import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, HelperLaunchFailure, type HelperLaunchOptions, type HelperExitInfo } from "../src/helpers.ts";
 import { reportFailure, runCli } from "../src/cli.ts";
 import { WS_CLOSE_TIMEOUT_MS } from "../src/httpServing.ts";
 import type { ServerLayers } from "../src/server.ts";
@@ -52,15 +52,15 @@ type AttemptScript = {
 };
 
 const makeFakeHelpers = (attempts: AttemptScript[], permission: { microphone: "authorized" | "denied" | "notDetermined"; screenCapture: boolean } = { microphone: "authorized", screenCapture: true }) => {
-  const calls: string[][] = [];
+  const calls: HelperLaunchOptions[] = [];
   const sent: boolean[] = []; // server から helper へ送られた休止の指示（paused の値を届いた順に）
   const check = ({ screen }: { readonly screen: boolean }) => Effect.sync(() => {
     return { microphone: permission.microphone, ...(screen ? { screenCapture: permission.screenCapture } : {}), speechJa: { status: "installed" as const, installedLocales: ["ja-JP"] } };
   });
-  const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) =>
+  const launch = (args: HelperLaunchOptions, stopRequested: Deferred.Deferred<void>) =>
     Effect.gen(function* () {
       const index = calls.length;
-      calls.push([...args]);
+      calls.push(args);
       const script = attempts[Math.min(index, attempts.length - 1)] ?? {};
       if (script.connect === false) return yield* new HelperLaunchFailure({ stderrTail: script.stderrTail ?? [] });
       if (script.hold) {

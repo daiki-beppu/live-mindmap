@@ -96,7 +96,7 @@ export const init = (context: Context, flags: Flags = WIDE): Model => {
 
 export const snapshotOf = (context: Context, model: Model): Snapshot => snapshotAt(context.timeline, model.playback.time);
 
-export const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(context, model), speakerNames: {}, ...model.mapSurface });
+export const surfaceOf = (context: Context, model: Model): MapSurface.Model => ({ mode: "review", snapshot: snapshotOf(context, model), speakerNames: context.timeline.speakerNames, ...model.mapSurface });
 
 const layoutOf = (context: Context, model: Model): SessionLayout.Model => ({
   ...model.sessionLayout,

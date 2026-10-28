@@ -1,3 +1,4 @@
+import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
@@ -61,7 +62,7 @@ describe("Helpers の接続の再試行（10ms から 200ms で頭打ちにな�
           yield* realDelay(50); // 失敗が返り、次の待ちが TestClock に登録されるまで
         });
 
-      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run"], stopRequested)));
+      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, stopRequested)));
       yield* waitFor(1);
 
       // 各間隔の 1ms 前では再試行せず、ちょうどで 1 回だけ再試行する。
@@ -87,7 +88,7 @@ describe("Helpers の停止の上限（HELPER_STOP_TIMEOUT_MS）", () => {
       const layer = Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(countingSpawner(counter)));
             const helpers = yield* Helpers.pipe(Effect.provide(layer), Effect.provideService(HELPER_STOP_TIMEOUT_MS, limit));
       const stopRequested = yield* Deferred.make<void>();
-      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run"], stopRequested)));
+      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, stopRequested)));
       for (let i = 0; i < 100 && counter.connections < 1; i++) yield* realDelay(20);
       yield* Deferred.succeed(stopRequested, undefined);
       for (let i = 0; i < 100 && counter.kills.length < 1; i++) yield* realDelay(20);
@@ -119,11 +120,10 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
     Effect.gen(function* () {
       const counter = { connections: 0, spawned: [] as ChildProcess.StandardCommand[], kills: [] as unknown[] };
       const helpers = yield* boot(counter);
-      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run", "--audio-dir", "/x"], yield* Deferred.make<void>())));
+      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE, audio: { dir: "/x", attempt: 1 } }, yield* Deferred.make<void>())));
       for (let i = 0; i < 100 && counter.connections < 1; i++) yield* realDelay(20);
 
       const args = counter.spawned[0]!.args;
-      expect(args.slice(0, 4)).toEqual(["helper-arg", "run", "--audio-dir", "/x"]);
       const port = Number(args[args.indexOf("--port") + 1]);
       expect(port).toBeGreaterThan(0);
       expect(port).not.toBe(8765);
@@ -136,7 +136,7 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
       const counter = { connections: 0, spawned: [] as ChildProcess.StandardCommand[], kills: [] as unknown[] };
       const helpers = yield* boot(counter);
       const stopRequested = yield* Deferred.make<void>();
-      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run"], stopRequested)));
+      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, stopRequested)));
       for (let i = 0; i < 100 && counter.connections < 1; i++) yield* realDelay(20);
       expect((counter.spawned[0]!.options as { forceKillAfter?: number }).forceKillAfter).toBe(5_000);
 
@@ -151,7 +151,7 @@ describe("Helpers の起動の引数・停止・中断（base server.heavy.test.
     Effect.gen(function* () {
       const counter = { connections: 0, spawned: [] as ChildProcess.StandardCommand[], kills: [] as unknown[] };
       const helpers = yield* boot(counter);
-      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch(["run"], yield* Deferred.make<void>())));
+      const fiber = yield* Effect.forkChild(Effect.scoped(helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, yield* Deferred.make<void>())));
       yield* Fiber.interrupt(fiber);
       yield* realDelay(100); // 空きポートの選択が終わる時間を待っても、起動は始まらない
 
@@ -199,7 +199,7 @@ describe("HelperAttempt.send（自分の休止の指示。Issue #1069）", () =>
       const received: string[] = [];
       const envs: Array<Record<string, string | undefined> | undefined> = [];
       const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(wsSpawner(received, envs)))));
-      const attempt = yield* helpers.launch(["run"], yield* Deferred.make<void>());
+      const attempt = yield* helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, yield* Deferred.make<void>());
       yield* attempt.send({ type: "self-pause", paused: true });
       yield* attempt.send({ type: "self-pause", paused: false });
       yield* attempt.send({ type: "reading-pause", paused: true });
@@ -219,8 +219,8 @@ describe("HelperAttempt.send（自分の休止の指示。Issue #1069）", () =>
     Effect.gen(function* () {
       const envs: Array<Record<string, string | undefined> | undefined> = [];
       const helpers = yield* Helpers.pipe(Effect.provide(Helpers.layer({ command: "fake", args: [] }).pipe(Layer.provide(wsSpawner([], envs)))));
-      yield* helpers.launch(["run"], yield* Deferred.make<void>());
-      yield* helpers.launch(["run"], yield* Deferred.make<void>());
+      yield* helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, yield* Deferred.make<void>());
+      yield* helpers.launch({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }, yield* Deferred.make<void>());
       expect(envs[0]?.[HELPER_CONTROL_TOKEN_ENV]).not.toBe(envs[1]?.[HELPER_CONTROL_TOKEN_ENV]);
     }).pipe(Effect.scoped));
 });

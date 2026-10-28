@@ -48,7 +48,6 @@ type IntakeRun = Effect.Success<ReturnType<Intake["run"]>>;
 
 type Live = {
   model: import("./modelSelection.ts").ExecutableModel;
-  app: string;
   dir: string;
   audio: boolean;
   screen: boolean;
@@ -72,8 +71,6 @@ type RecordedPause = NonNullable<RecordedProgress["paused"]>;
 type Recorded = {
   local: boolean;
   dir: string;
-  file: string;
-  selfFile: string | undefined;
   sink: RecordedSink;
   controller: Intake;
   running: Ref.Ref<IntakeRun | undefined>;
@@ -156,19 +153,6 @@ export class Sessions extends Context.Service<Sessions, {
       );
 
       const note = (text: string) => Console.error(withoutFinalNewline(text));
-
-      const runArgs = (live: Pick<Live, "app" | "dir" | "audio" | "screen">, attempt: number, origin: string | undefined, selfPause: SelfPauseState): string[] => [
-        "run",
-        "--app",
-        live.app,
-        ...(live.audio ? ["--audio-dir", live.dir, "--audio-index", String(attempt)] : []),
-        ...(live.screen ? [] : ["--no-screen"]),
-        ...(origin !== undefined ? ["--origin", origin] : []),
-        ...(selfPause.manual !== INITIAL_SELF_PAUSE_STATE.manual ? ["--self-manual", selfPause.manual] : []),
-        ...(selfPause.basis !== INITIAL_SELF_PAUSE_STATE.basis ? ["--self-basis", selfPause.basis] : []),
-        ...(selfPause.lastKnown !== INITIAL_SELF_PAUSE_STATE.lastKnown ? ["--self-last-known", selfPause.lastKnown] : []),
-        ...(selfPause.idleFor !== INITIAL_SELF_PAUSE_STATE.idleFor ? ["--self-idle-for", String(selfPause.idleFor)] : []),
-      ];
 
       const applyEvent = (live: Live, event: HelperEvent): Effect.Effect<void> => {
         switch (event.type) {
@@ -310,15 +294,21 @@ export class Sessions extends Context.Service<Sessions, {
         const selfPauseState = yield* Ref.make<SelfPauseState>(INITIAL_SELF_PAUSE_STATE);
         const controller = yield* openIntake({
           scope, commands: { "self-pause": "pending-once" },
-          argv: (attemptNo) => Effect.gen(function* () {
-            return runArgs({ app: input.app, dir, audio: input.audio, screen: input.screen }, attemptNo, yield* Ref.get(origin), yield* Ref.get(selfPauseState));
+          launchOptions: (attemptNo) => Effect.gen(function* () {
+            return {
+              kind: "run",
+              app: input.app,
+              screen: input.screen,
+              audio: input.audio ? { dir, attempt: attemptNo } : undefined,
+              origin: yield* Ref.get(origin),
+              selfPause: yield* Ref.get(selfPauseState),
+            };
           }),
         }).pipe(Effect.provideService(Helpers, helpers));
         const sink = yield* sinks.open({ dir, title: input.title, vocab: input.vocab, model, updaterLayer, send }).pipe(Scope.provide(scope));
         if (!input.screen) yield* sink.screenOff({ start: 0, reason: "指定" });
         const live: Live = {
           model,
-          app: input.app,
           dir,
           audio: input.audio,
           screen: input.screen,
@@ -402,16 +392,6 @@ export class Sessions extends Context.Service<Sessions, {
           return { paths, ocrSummary };
         });
 
-      const transcribeArgs = (recorded: Pick<Recorded, "file" | "selfFile">, from: Partial<Readonly<Record<Track, number>>>, audioDir: string | undefined): string[] => [
-        "transcribe-file",
-        "--file",
-        recorded.file,
-        ...(recorded.selfFile === undefined ? [] : ["--self-file", recorded.selfFile]),
-        ...(from.相手 === undefined ? [] : ["--from", String(from.相手)]),
-        ...(recorded.selfFile === undefined || from.自分 === undefined ? [] : ["--self-from", String(from.自分)]),
-        ...(audioDir === undefined ? [] : ["--audio-dir", audioDir]),
-      ];
-
       const concludeRecorded = Effect.fnUntraced(function* (recorded: Recorded, prepare: ReturnType<RecordedSink["end"]>, failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) {
         const prepared = yield* Effect.exit(prepare);
         const claimed = yield* Ref.modify(state, (current): [boolean, State] =>
@@ -439,7 +419,10 @@ export class Sessions extends Context.Service<Sessions, {
         const from = yield* Ref.make<Partial<Readonly<Record<Track, number>>>>({});
         const controller = yield* openIntake({
           scope, commands: { "reading-pause": "sticky" },
-          argv: (attemptNo) => Effect.map(Ref.get(from), (position) => transcribeArgs({ file: input.file, selfFile: input.selfFile }, position, attemptNo === 1 ? dir : undefined)),
+          launchOptions: (attemptNo) => Effect.map(Ref.get(from), (position) => ({
+            kind: "transcribe-file", file: input.file, selfFile: input.selfFile,
+            from: position, audioDir: attemptNo === 1 ? dir : undefined,
+          })),
         }).pipe(Effect.provideService(Helpers, helpers));
         const events = yield* Queue.unbounded<RecordedEvent, Cause.Done>();
         const progress = yield* Ref.make<RecordedProgressState>({ position: 0, duration: null, rounds: 0 });
@@ -469,8 +452,6 @@ export class Sessions extends Context.Service<Sessions, {
         const recorded: Recorded = {
           local: prepared.noMap ? false : prepared.model.local,
           dir,
-          file: input.file,
-          selfFile: input.selfFile,
           sink,
           scope,
           controller,

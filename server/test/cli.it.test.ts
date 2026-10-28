@@ -21,7 +21,7 @@ import { CHATGPT_MODEL, chatgptAuthPath, chatgptCredentials, classification, com
 import { fakeChatgptOAuth, type InvalidOAuth } from "./fixtures/chatgptOAuth.ts";
 import { planLayer } from "../src/updatePlan.ts";
 import { ChatgptEndpoints } from "../src/chatgptAuth.ts";
-import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, type HelperLaunchOptions, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import type { ViewerFrame } from "../src/viewers.ts";
 import { MODEL_TRANSFER_HEADER, modelTransferTokenPath } from "../src/modelTransferToken.ts";
@@ -289,9 +289,9 @@ describe("ChatGPT の CLI（Issue #669）", () => {
     }
     oauth.control.refreshExpired = condition === "更新不能の期限切れ";
     oauth.control.ineligible = condition === "対象外プラン";
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
-      launches.push([...args]);
+      launches.push(args);
       const queue = yield* Queue.make<string, Cause.Done>();
       const exited = yield* Deferred.make<HelperExitInfo>();
       const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
@@ -350,14 +350,14 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const root = yield* temporaryDirectory;
     const sessionsDir = join(root, "sessions");
     const checks: boolean[] = [];
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const speechJa = { status: "installed" as const, installedLocales: ["ja-JP"] };
     const service = {
       apps: Effect.succeed([]),
       check: ({ screen }: { readonly screen: boolean }) => Effect.sync(() => { checks.push(screen); return { microphone, ...(screen ? { screenCapture } : {}), speechJa }; }),
       creationDate: () => Effect.succeed(null),
-      launch: (args: ReadonlyArray<string>) => Effect.gen(function* () {
-        launches.push([...args]);
+      launch: (args: HelperLaunchOptions) => Effect.gen(function* () {
+        launches.push(args);
         const queue = yield* Queue.make<string, Cause.Done>();
         const exited = yield* Deferred.make<HelperExitInfo>();
         const stop = Effect.asVoid(Effect.andThen(Queue.end(queue), Deferred.succeed(exited, { code: null, signal: "SIGTERM" })));
@@ -391,8 +391,8 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     const r = yield* resource("authorized", true);
     yield* runCli(["start", "--app", app, "--no-audio", ...(noScreen ? ["--no-screen"] : [])]).pipe(Effect.provide(r.deps.layer));
     expect(r.launches).toHaveLength(1);
-    expect(r.launches[0]).toEqual(expect.arrayContaining(["--app", app]));
-    expect(r.launches[0]!.includes("--no-screen")).toBe(noScreen);
+    expect(r.launches[0]).toMatchObject({ kind: "run", app });
+    expect(r.launches[0]).toMatchObject({ screen: !noScreen });
     expect(r.deps.stdout).toHaveLength(1);
     const dir = r.deps.stdout[0]!.trim();
     expect(dirname(dir)).toBe(r.sessionsDir);
@@ -470,7 +470,7 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
     yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen"]).pipe(Effect.provide(r.deps.layer));
     expect(r.deps.stderr.join("")).toBe(warning + "\n");
     expect(r.launches).toHaveLength(1);
-    expect(r.launches[0]).toContain("--no-screen");
+    expect(r.launches[0]).toMatchObject({ kind: "run", screen: false });
     expect(r.checks).toEqual([false]);
     expect(existsSync(join(r.deps.stdout.join("").trim(), "log.jsonl"))).toBe(true);
   }).pipe(Effect.scoped));

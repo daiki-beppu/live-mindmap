@@ -1,3 +1,4 @@
+import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
 import { StartupChecks, type StartupChecksDeps } from "../src/startupChecks.ts";
 import { defaultClaude } from "../src/modelSelection.ts";
 import { makeFakeHelpers, type AttemptScript } from "./fixtures/intakeHelpers.ts";
@@ -265,11 +266,11 @@ describe("録画の引数と終了処理", () => {
   }).pipe(Effect.scoped));
 
   it.effect.each([
-    { ends: {}, selfFile: undefined, flags: [] },
-    { ends: { 相手: 10 }, selfFile: undefined, flags: ["--from", "10"] },
-    { ends: { 相手: 10 }, selfFile: "/self.m4a", flags: ["--self-file", "/self.m4a", "--from", "10"] },
-    { ends: { 相手: 10, 自分: 6 }, selfFile: "/self.m4a", flags: ["--self-file", "/self.m4a", "--from", "10", "--self-from", "6"] },
-  ])("再起動はsinkのトラック別endを渡し、音声の書き出し先は初回だけ渡す（$flags）", ({ ends, selfFile, flags }) => Effect.gen(function* () {
+    { ends: {}, selfFile: undefined },
+    { ends: { 相手: 10 }, selfFile: undefined },
+    { ends: { 相手: 10 }, selfFile: "/self.m4a" },
+    { ends: { 相手: 10, 自分: 6 }, selfFile: "/self.m4a" },
+  ])("再起動はsinkのトラック別endを渡し、音声の書き出し先は初回だけ渡す（$ends）", ({ ends, selfFile }) => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } } }, {}]);
     const fake = yield* makeFakeSessionSinks();
     let prepared = 0;
@@ -281,8 +282,8 @@ describe("録画の引数と終了処理", () => {
     yield* TestClock.adjust(1);
     expect(prepared).toBe(1);
     expect(helpers.calls).toEqual([
-      ["transcribe-file", "--file", "/meeting.m4a", ...(selfFile === undefined ? [] : ["--self-file", selfFile]), "--audio-dir", run.dir],
-      ["transcribe-file", "--file", "/meeting.m4a", ...flags],
+      { kind: "transcribe-file", file: "/meeting.m4a", selfFile, from: {}, audioDir: run.dir },
+      { kind: "transcribe-file", file: "/meeting.m4a", selfFile, from: ends, audioDir: undefined },
     ]);
     expect(fake.opened.count).toBe(1);
     yield* sessions.stop;
@@ -372,7 +373,7 @@ describe("録画の開始と再送の配線", () => {
     }
     expect(warnings).toEqual(created === "fail" ? [expect.stringContaining("作成日時を読めない")] : []);
     expect(run.dir).toBe(dir);
-    expect(fakeHelpers.calls).toEqual([["transcribe-file", "--file", "/main/meeting.m4a", "--self-file", "/mine/other.m4a", "--audio-dir", dir]]);
+    expect(fakeHelpers.calls).toEqual([{ kind: "transcribe-file", file: "/main/meeting.m4a", selfFile: "/mine/other.m4a", from: {}, audioDir: dir }]);
     const consuming = yield* Stream.runDrain(run.events).pipe(Effect.forkChild);
     yield* sessions.stop;
     yield* Fiber.join(consuming);
@@ -1260,7 +1261,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
     }));
 
   describe("ヘルパーのイベントの配線（CT-DECODE-WIRED / CT-DECODE-UNKNOWN / CT-DECODE-BROKEN）", () => {
-    it.effect("remark は sink.final へ、partial は sink.partial へ届き、origin は次の起動の argv に渡る", () =>
+    it.effect("remark は sink.final へ、partial は sink.partial へ届き、origin は次の起動の起動オプションに渡る", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{}, {}]);
         const fakeSinks = yield* makeFakeSessionSinks();
@@ -1274,7 +1275,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         expect(fakeSinks.partials).toContainEqual({ track: "相手", text: "とちゅう" });
         expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "かくてい" });
-        // 原点が次の起動し直しの argv に渡ることは「argv（--origin・--audio-index）」の describe で確かめる
+        // 原点が次の起動し直しの起動オプションに渡ることは「起動オプション（原点・録音の試行番号）」の describe で確かめる
       }));
 
     // Issue #639: words 付きの JSON はそのまま sink へ届く。words の無い JSON も今までどおり届く
@@ -1500,8 +1501,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       });
     const pauseEvent = (paused: boolean, startSeconds: number, reason: string = "手動") => ({ type: "self-pause", paused, reason, start: startSeconds });
     const stateEvent = (manual: string, basis: string, lastKnown: string, idleFor: number) => ({ type: "self-pause-state", manual, basis, lastKnown, idleFor });
-    // 次の起動の argv のうち、自分の休止の引き継ぎの引数だけ（フラグと値を、並んだまま）
-    const carryOverArgs = (argv: ReadonlyArray<string>) => argv.flatMap((arg, i) => (arg.startsWith("--self-") ? [arg, argv[i + 1] ?? ""] : []));
     const selfLogs = (appended: ReadonlyArray<LogLineEvent>) => appended.filter((e) => e.type === "self-paused" || e.type === "self-resumed");
 
     it.effect("setSelfPause は動いている起動回の helper へ指示を送る。値は呼んだとおり（true → false）", () =>
@@ -1680,11 +1679,11 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
     const relaunchAfter = (ms: number) => Effect.andThen(TestClock.adjust(ms), TestClock.adjust(10));
 
-    it.effect("helper が知らせた引き継ぎの状態（self-pause-state）は、起動し直した新しい起動回の引数になる。--self-paused は渡さない", () =>
+    it.effect("helper が知らせた引き継ぎの状態（self-pause-state）は、起動し直した新しい起動回の引数になる", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
-        expect(carryOverArgs(fakeHelpers.calls[0] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[0]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
 
         fakeHelpers.send(0, pauseEvent(true, 1));
         fakeHelpers.send(0, stateEvent("pause", "using", "idle", 1.5));
@@ -1692,13 +1691,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([
-          "--self-manual", "pause", "--self-basis", "using", "--self-last-known", "idle", "--self-idle-for", "1.5",
-        ]);
-        expect(fakeHelpers.calls[1]).not.toContain("--self-paused");
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: { manual: "pause", basis: "using", lastKnown: "idle", idleFor: 1.5 } });
       }));
 
-    it.effect("引き継ぎの状態は最新の 1 件だけが次の起動の引数になり、既定の値（手動なし・基準なし・読めた値なし・待ち 0）の引数は渡さない", () =>
+    it.effect("引き継ぎの状態は最新の 1 件だけが次の起動の引数になり、既定の値も状態として渡す", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
@@ -1708,10 +1704,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
 
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual(["--self-last-known", "idle", "--self-idle-for", "2"]);
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: { manual: "none", basis: "unknown", lastKnown: "idle", idleFor: 2 } });
       }));
 
-    it.effect("引き継ぎの状態が一度も届いていない、または初期状態に戻ったときは、起動し直しに休止の引数を渡さない", () =>
+    it.effect("引き継ぎの状態が一度も届いていない、または初期状態に戻ったときは、起動し直しに休止の初期状態を渡す", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([
           { unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } },
@@ -1720,13 +1716,13 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         ]);
         yield* sessions.start(start());
         yield* relaunchAfter(500);
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
 
         fakeHelpers.send(1, stateEvent("take", "idle", "idle", 3));
         fakeHelpers.send(1, stateEvent("none", "unknown", "unknown", 0));
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
-        expect(carryOverArgs(fakeHelpers.calls[2] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[2]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
       }));
 
     it.effect("壊れた self-pause-state（値が決まった語でない・待ちが負や数でない）は引き継がない", () =>
@@ -1741,7 +1737,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
 
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
       }));
 
     it.effect("self-pause-state はログにも画面にも出ない（server が覚えるだけ）", () =>
@@ -1769,7 +1765,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
       }));
 
@@ -1793,7 +1789,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         yield* relaunchAfter(500);
         expect(fakeHelpers.calls).toHaveLength(3);
-        expect(carryOverArgs(fakeHelpers.calls[2] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[2]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 2)).toEqual([]);
       }));
 
@@ -1806,7 +1802,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         fakeHelpers.send(0, stateEvent("pause", "using", "using", 0));
         yield* TestClock.adjust(1);
         yield* relaunchAfter(500);
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toContain("--self-manual");
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: { manual: "pause" } });
 
         yield* sessions.setSelfPause(false);
         yield* Deferred.succeed(gate, undefined);
@@ -1815,7 +1811,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([{ attempt: 1, paused: false }]);
       }));
 
-    it.effect("再開が受け付けられた（pause → resume のイベント）後に起動し直すと、引き継ぎの引数を渡さず、休止も送らない", () =>
+    it.effect("再開が受け付けられた（pause → resume のイベント）後に起動し直すと、引き継ぎの初期状態を渡し、休止も送らない", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{ unexpectedExit: { afterMs: 500, exit: { code: 75, signal: null } } }, {}]);
         yield* sessions.start(start());
@@ -1825,7 +1821,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* relaunchAfter(500);
 
         expect(fakeHelpers.calls).toHaveLength(2);
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
         expect(fakeHelpers.sentPauses.filter((s) => s.attempt === 1)).toEqual([]);
       }));
 
@@ -1847,12 +1843,11 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         yield* sessions.resume;
 
-        const expected = ["--self-manual", "pause", "--self-basis", "using", "--self-last-known", "idle", "--self-idle-for", "1.5"];
+        const expected = { kind: "run", selfPause: { manual: "pause", basis: "using", lastKnown: "idle", idleFor: 1.5 } };
         expect(fakeHelpers.calls).toHaveLength(4);
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual(expected); // 失敗した起動回は状態を上書きしない
-        expect(carryOverArgs(fakeHelpers.calls[2] ?? [])).toEqual(expected);
-        expect(carryOverArgs(fakeHelpers.calls[3] ?? [])).toEqual(expected);
-        expect(fakeHelpers.calls[3]).not.toContain("--self-paused");
+        expect(fakeHelpers.calls[1]).toMatchObject(expected); // 失敗した起動回は状態を上書きしない
+        expect(fakeHelpers.calls[2]).toMatchObject(expected);
+        expect(fakeHelpers.calls[3]).toMatchObject(expected);
       }));
 
     it.effect("自動で休止していた状態（手動なし・待ちが済んだ）も、止まったセッションの resume で新しい起動回の引数になる", () =>
@@ -1872,10 +1867,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.resume;
 
         expect(fakeHelpers.calls).toHaveLength(4);
-        expect(carryOverArgs(fakeHelpers.calls[3] ?? [])).toEqual(["--self-last-known", "idle", "--self-idle-for", "3"]);
+        expect(fakeHelpers.calls[3]).toMatchObject({ kind: "run", selfPause: { manual: "none", basis: "unknown", lastKnown: "idle", idleFor: 3 } });
       }));
 
-    it.effect("次のセッションには休止も引き継ぎの状態も持ち越さない（stop 後の start は引き継ぎの引数なし）", () =>
+    it.effect("次のセッションには休止も引き継ぎの状態も持ち越さない（stop 後の start は初期状態）", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{}, {}]);
         yield* sessions.start(start());
@@ -1885,7 +1880,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.stop;
         yield* sessions.start(start());
 
-        expect(carryOverArgs(fakeHelpers.calls[1] ?? [])).toEqual([]);
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", selfPause: INITIAL_SELF_PAUSE_STATE });
       }));
   });
 
@@ -2048,7 +2043,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         })));
   });
 
-  describe("共有画面を使わない（screen-off・--no-screen。Issue #280）", () => {
+  describe("共有画面を使わない（screen-off・screen:false。Issue #280）", () => {
     const NOTICE_MS = 10_000; // 「届いてから約 10 秒」
     const boot = (attempts: AttemptScript[]) =>
       Effect.gen(function* () {
@@ -2058,7 +2053,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         return { fakeHelpers, fakeSinks, ...booted };
       });
 
-    it.effect("screen:false は初回・自動の起動し直し・resume のすべての argv に --no-screen を付ける", () =>
+    it.effect("screen:false は初回・自動の起動し直し・resume のすべての起動オプションで screen:false を渡す", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([
           { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } }, // 初回。すぐ終わる
@@ -2072,10 +2067,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.resume;
 
         expect(fakeHelpers.calls).toHaveLength(4);
-        for (const argv of fakeHelpers.calls) expect(argv).toContain("--no-screen");
+        for (const options of fakeHelpers.calls) expect(options).toMatchObject({ kind: "run", screen: false });
       }));
 
-    it.effect("screen:true では、初回も起動し直しも resume も --no-screen を付けない", () =>
+    it.effect("screen:true では、初回も起動し直しも resume も screen:true を渡す", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([
           { unexpectedExit: { afterMs: 5, exit: { code: 1, signal: null } } },
@@ -2088,21 +2083,19 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* sessions.resume;
 
         expect(fakeHelpers.calls).toHaveLength(4);
-        for (const argv of fakeHelpers.calls) expect(argv).not.toContain("--no-screen");
+        for (const options of fakeHelpers.calls) expect(options).toMatchObject({ kind: "run", screen: true });
       }));
 
-    it.effect("--no-screen は値を取らない: 次の引数（--audio-dir など）を食わず、--no-audio とも独立している", () =>
+    it.effect("画面の取得と録音の指定は独立している", () =>
       Effect.gen(function* () {
         const { fakeHelpers, sessions } = yield* boot([{}, {}]);
         yield* sessions.start(start({ screen: false, audio: true }));
-        const argv = fakeHelpers.calls[0]!;
-        expect(argv).toContain("--audio-dir");
-        expect(argv[argv.indexOf("--no-screen") + 1]?.startsWith("--") ?? true).toBe(true);
+        expect(fakeHelpers.calls[0]).toMatchObject({ kind: "run", screen: false, audio: { dir: "/tmp/live-mindmap-fake/1", attempt: 1 } });
 
         yield* sessions.stop;
         yield* sessions.start(start({ screen: false, audio: false }));
-        expect(fakeHelpers.calls[1]).toContain("--no-screen");
-        expect(fakeHelpers.calls[1]).not.toContain("--audio-dir");
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", screen: false });
+        expect(fakeHelpers.calls[1]?.kind === "run" ? fakeHelpers.calls[1].audio : "unexpected kind").toBeUndefined();
       }));
 
     it.effect("screen:false のセッションは、開いた直後に screen-off（指定、start は 0）を 1 件だけ sink へ入れる。最初の発言より前で、知らせは出ない。起動し直し・resume では足さない", () =>
@@ -2672,22 +2665,22 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       }));
   });
 
-  describe("argv（--origin・--audio-index）", () => {
-    it.effect("既定の start は --audio-dir を渡す。--no-audio では渡さない", () =>
+  describe("起動オプション（原点・録音の試行番号）", () => {
+    it.effect("録音する start は録音先を渡し、録音しないときは省略する", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{}]);
         const fakeSinks = yield* makeFakeSessionSinks();
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
 
         yield* sessions.start(start({ audio: true }));
-        expect(fakeHelpers.calls[0]).toContain("--audio-dir");
+        expect(fakeHelpers.calls[0]).toMatchObject({ kind: "run", audio: { dir: "/tmp/live-mindmap-fake/1", attempt: 1 } });
 
         yield* sessions.stop;
         yield* sessions.start(start({ audio: false }));
-        expect(fakeHelpers.calls[1]).not.toContain("--audio-dir");
+        expect(fakeHelpers.calls[1]?.kind === "run" ? fakeHelpers.calls[1].audio : "unexpected kind").toBeUndefined();
       }));
 
-    it.effect("録音ファイルの番号（--audio-index）は起動回で、1 回目は番号なし", () =>
+    it.effect("録音の試行番号は初回が 1 で再起動ごとに増える", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
@@ -2698,15 +2691,15 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
         yield* sessions.start(start({ audio: true }));
         const first = fakeHelpers.calls[0]!;
-        expect(first[first.indexOf("--audio-index") + 1]).toBe("1"); // 1 回目は 1（録音ファイルの名前は番号なしになる）
+        expect(first).toMatchObject({ kind: "run", audio: { attempt: 1 } });
 
         yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
         const second = fakeHelpers.calls[1]!;
-        expect(second[second.indexOf("--audio-index") + 1]).toBe("2");
+        expect(second).toMatchObject({ kind: "run", audio: { attempt: 2 } });
       }));
 
-    it.effect("原点（--origin）は最初のヘルパーの値だけ採用し、文字列のまま次の起動し直しへ渡る", () =>
+    it.effect("原点は最初のヘルパーの値だけ採用し、文字列のまま次の起動し直しへ渡る", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
@@ -2716,7 +2709,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
 
         yield* sessions.start(start());
-        expect(fakeHelpers.calls[0]).not.toContain("--origin"); // 1 回目は、まだ原点を受け取る前に起動している
+        expect(fakeHelpers.calls[0]?.kind === "run" ? fakeHelpers.calls[0].origin : "unexpected kind").toBeUndefined(); // 1 回目は、まだ原点を受け取る前に起動している
         fakeHelpers.send(0, { type: "origin", hostTime: "9007199254740993" });
         yield* TestClock.adjust(1);
         fakeHelpers.send(0, { type: "origin", hostTime: "1" }); // 2 回目以降は無視される（最初の値だけ採用）
@@ -2726,12 +2719,10 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(10);
 
         const second = fakeHelpers.calls[1]!;
-        const originIndex = second.indexOf("--origin");
-        expect(originIndex).toBeGreaterThan(-1);
-        expect(second[originIndex + 1]).toBe("9007199254740993");
+        expect(second).toMatchObject({ kind: "run", origin: "9007199254740993" });
       }));
 
-    it.effect("壊れた原点のイベントは保持されず、起動し直しの argv にも現れない", () =>
+    it.effect("壊れた原点のイベントは保持されず、起動し直しの起動オプションにも現れない", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([
           { unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } },
@@ -2748,7 +2739,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
           yield* TestClock.adjust(500);
           yield* TestClock.adjust(10);
 
-          expect(fakeHelpers.calls[1]).not.toContain("--origin");
+          expect(fakeHelpers.calls[1]?.kind === "run" ? fakeHelpers.calls[1].origin : "unexpected kind").toBeUndefined();
         }).pipe(Effect.provideService(Console.Console, service));
       }));
   });
@@ -2913,7 +2904,7 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
   // base の server.heavy.test.ts の移動先のうち、偽の Helpers・SessionSinks と TestClock で観測できる残りの条件
   describe("セッションの中身の寿命・起動し直しをまたぐ連続性・ログ（base server.heavy.test.ts の移動先）", () => {
 
-    it.effect("--audio-dir の値は、SessionSinks が作ったセッションのフォルダで、起動し直しでも変わらない（base:733）", () =>
+    it.effect("録音先は、SessionSinks が作ったセッションのフォルダで、起動し直しでも変わらない（base:733）", () =>
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 500, exit: { code: 1, signal: null } } }, {}]);
         const fakeSinks = yield* makeFakeSessionSinks();
@@ -2922,9 +2913,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* TestClock.adjust(500);
         yield* TestClock.adjust(10);
 
-        const dirOf = (argv: ReadonlyArray<string>) => argv[argv.indexOf("--audio-dir") + 1];
-        expect(dirOf(fakeHelpers.calls[0]!)).toBe("/tmp/live-mindmap-fake/1");
-        expect(dirOf(fakeHelpers.calls[1]!)).toBe("/tmp/live-mindmap-fake/1"); // フォルダは増えない（base:848）
+        expect(fakeHelpers.calls[0]).toMatchObject({ kind: "run", audio: { dir: "/tmp/live-mindmap-fake/1" } });
+        expect(fakeHelpers.calls[1]).toMatchObject({ kind: "run", audio: { dir: "/tmp/live-mindmap-fake/1" } }); // フォルダは増えない（base:848）
       }));
 
     it.effect("起動し直しをまたいで、SessionSinks は開き直さず、発言の ID は連番で、接続中のクライアントに running のフレームが届く（base:848, 900）", () =>

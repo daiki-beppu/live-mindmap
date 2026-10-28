@@ -15,7 +15,7 @@ import { JsonExport } from "../src/core/index.ts";
 import { planLayer } from "../src/updatePlan.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { readyManagedDeps } from "./fixtures/readyManagedDeps.ts";
-import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, type HelperLaunchOptions, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { EXPORT_FILE, LOG_FILE } from "../src/sessionFiles.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -81,9 +81,9 @@ const appleProcess = Effect.fnUntraced(function* () {
   return { state, requests, layer };
 });
 const audioHelper = () => {
-  const launches: string[][] = [];
+  const launches: HelperLaunchOptions[] = [];
   const layer = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
-    launches.push([...args]);
+    launches.push(args);
     const queue = yield* Queue.make<string, Cause.Done>();
     Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
     Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "面接官は3人です。" }));
