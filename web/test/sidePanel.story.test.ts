@@ -105,17 +105,15 @@ describe("mapSurface の update: 変わったことの項目を押す（reduceVi
     );
   });
 
-  it("押す前の人の開閉・キー一覧などの他の状態は残る（関係のない祖先の畳みも外れない）", () => {
+  it("押す前の人の開閉は残る（関係のない祖先の畳みも外れない）", () => {
     const snapshot = single();
-    const before: ViewingState = { mode: "auto", keyList: true, humanFolds: foldingActions({ ...snapshot, currentTopic: "A1" }, [{ type: "toggle", id: "B" }]).human, captionsHidden: true };
+    const before: ViewingState = { mode: "auto", humanFolds: foldingActions({ ...snapshot, currentTopic: "A1" }, [{ type: "toggle", id: "B" }]).human };
     story(
       update,
       given(measuredModel(snapshot, before)),
       clickChange("A1"),
       model((m) => {
         expect(m.viewing).toEqual(reduced(before, { type: "pointChange", id: "A1" }, snapshot).state);
-        expect(m.viewing.keyList).toBe(true);
-        expect(m.viewing.captionsHidden).toBe(true);
         expect(foldView({ ...snapshot, currentTopic: "A1" }, m.viewing.humanFolds, null).openness["B"]?.state).toBe("folded");
         expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: false });
       }),

@@ -61,9 +61,7 @@ describe("ViewingState の Schema（Schema.declare で素通しにしない）",
       is({
         mode: "manual",
         topic: "B",
-        keyList: true,
         sideHidden: true,
-        captionsHidden: true,
         selection: { id: "A", byKey: true },
         humanFolds: openedA(),
       }),
@@ -112,7 +110,7 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
   });
 
   it("別のノードを click すると選択が移る。人の開閉などの他の状態はそのまま残る", () => {
-    const before: ViewingState = { mode: "manual", topic: "B", selection: { id: "B", byKey: true }, humanFolds: openedA(), keyList: true };
+    const before: ViewingState = { mode: "manual", topic: "B", selection: { id: "B", byKey: true }, humanFolds: openedA() };
     story(
       update,
       given(measuredModel(single(), "live", before)),
@@ -121,7 +119,6 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
         expect(m.viewing).toEqual(selectedBy(before, "root"));
         expect(m.viewing.mode).toBe("manual");
         expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: true });
-        expect(m.viewing.keyList).toBe(true);
         expect(m.viewing.selection).toEqual({ id: "root", byKey: false });
       }),
     );
