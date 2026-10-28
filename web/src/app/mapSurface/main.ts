@@ -272,7 +272,7 @@ const applyCommand = (model: Model, command: CameraCommand, previous: Model): Mo
   return commandStepOf(command)(reset, { size: model.size.value, previous });
 };
 
-const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select" || event.type === "deselect";
+const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "select" || event.type === "deselect";
 
 const applyViewing = (model: Model, event: ViewingEvent, previous: Model = model): Model => {
   const { state, camera, preserveIdleTimer } = reduceViewing(model.viewing, event, treeOf(model), model.mode === "review" ? "review" : "live");

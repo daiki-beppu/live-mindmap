@@ -9,9 +9,7 @@ const DiffCamera = Schema.Struct({ mode: Schema.Literal("diff"), topic: Schema.U
 type CameraViewing = typeof AutoCamera.Type | typeof ManualCamera.Type | typeof OverviewCamera.Type | typeof DiffCamera.Type;
 
 const overlayFields = {
-  keyList: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
   sideHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
-  captionsHidden: Schema.optionalKey(Schema.mutableKey(Schema.Literal(true))),
   selection: Schema.optionalKey(Schema.mutableKey(Schema.Struct({ id: Schema.String, byKey: Schema.Boolean }))),
   humanFolds: Schema.optionalKey(Schema.mutableKey(HumanFolds)),
 };
@@ -22,7 +20,7 @@ export const ViewingState = Schema.Union([
   Schema.Struct({ ...OverviewCamera.fields, ...overlayFields }),
   Schema.Struct({ ...DiffCamera.fields, ...overlayFields }),
 ]);
-const OVERLAY_KEYS = ["keyList", "sideHidden", "captionsHidden"] as const satisfies readonly (keyof Overlay)[];
+const OVERLAY_KEYS = ["sideHidden"] as const satisfies readonly (keyof Overlay)[];
 export type ViewingState = typeof ViewingState.Type;
 
 export type ViewKey = "=" | "-" | "0" | "F" | "Z" | "Shift+ArrowLeft" | "Shift+ArrowRight" | "Shift+ArrowUp" | "Shift+ArrowDown";
@@ -31,9 +29,7 @@ export type ViewingEvent =
   | { type: "userMoved" }
   | { type: "reflect"; replaced: Readonly<Record<string, string>> }
   | { type: "edgeDot"; id: string }
-  | { type: "keyList"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "side"; meta: boolean; ctrl: boolean; alt: boolean }
-  | { type: "captions"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "escape"; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "key"; key: ViewKey; meta: boolean; ctrl: boolean; alt: boolean }
   | { type: "select"; id: string }
@@ -116,7 +112,7 @@ function without(state: ViewingState, key: (typeof OVERLAY_KEYS)[number] | "sele
 }
 
 function cameraPart(state: ViewingState): CameraViewing {
-  const { keyList: _k, sideHidden: _s, captionsHidden: _c, selection: _sel, humanFolds: _human, ...rest } = state;
+  const { sideHidden: _s, selection: _sel, humanFolds: _human, ...rest } = state;
   return rest;
 }
 
@@ -197,22 +193,11 @@ function nextSelection(tree: VisibleTree, from: string | undefined, dir: ArrowDi
   }
 }
 
-function toggled(state: ViewingState, key: "sideHidden" | "captionsHidden"): ViewingState {
-  return state[key] ? without(state, key) : { ...state, [key]: true };
-}
-
 type Reduced = { state: ViewingState; camera: CameraCommand; preserveIdleTimer?: true };
 
-function reduceOverlay(state: ViewingState, event: Extract<ViewingEvent, { type: "keyList" | "side" | "captions" }>): Reduced {
+function reduceOverlay(state: ViewingState, event: Extract<ViewingEvent, { type: "side" }>): Reduced {
   if (modified(event)) return { state, camera: idle(state) };
-  switch (event.type) {
-    case "keyList":
-      return { state: state.keyList ? without(state, "keyList") : { ...state, keyList: true }, camera: idle(state) };
-    case "side":
-      return { state: toggled(state, "sideHidden"), camera: SHIFT_INTO_VIEW };
-    case "captions":
-      return { state: toggled(state, "captionsHidden"), camera: idle(state) };
-  }
+  return { state: state.sideHidden ? without(state, "sideHidden") : { ...state, sideHidden: true }, camera: SHIFT_INTO_VIEW };
 }
 
 function reduceArrow(state: ViewingState, event: Extract<ViewingEvent, { type: "arrow" }>, tree: VisibleTree): Reduced {
@@ -278,9 +263,7 @@ export function reduceViewing(
   scope: ViewingScope = "live",
 ): Reduced {
   switch (event.type) {
-    case "keyList":
     case "side":
-    case "captions":
       return reduceOverlay(state, event);
     case "select":
       return { state: { ...state, selection: { id: event.id, byKey: false } }, camera: idle(state) };
@@ -296,7 +279,6 @@ export function reduceViewing(
     case "key":
       return event.key === "Z" ? reduceFitSubtree(state, event, tree) : reduceViaCamera(state, { ...event, key: event.key }, tree, scope);
     case "escape":
-      if (!modified(event) && state.keyList) return { state: without(state, "keyList"), camera: idle(state) };
       return reduceViaCamera(state, event, tree, scope);
     case "userMoved":
     case "reflect":
@@ -308,7 +290,7 @@ export function reduceViewing(
 }
 
 type CameraEvent =
-  | Exclude<ViewingEvent, { type: "keyList" | "side" | "captions" | "select" | "deselect" | "arrow" | "enter" | "foldDot" | "pointChange" | "key" }>
+  | Exclude<ViewingEvent, { type: "side" | "select" | "deselect" | "arrow" | "enter" | "foldDot" | "pointChange" | "key" }>
   | { type: "key"; key: Exclude<ViewKey, "Z">; meta: boolean; ctrl: boolean; alt: boolean };
 
 function reduceCameraEdgeDot(state: CameraViewing, event: Extract<CameraEvent, { type: "edgeDot" }>, tree: VisibleTree): { state: CameraViewing; camera: CameraCommand } {

@@ -30,7 +30,7 @@
 
 ## 呼ぶ側の分岐を見せ方の reducer へ移すときは、マップ面が出来事の種類で決めている待機の計り直しを確かめる
 
-マップ面の `applyViewing` は、見返しで触らずに 10 秒たつと自動のカメラに戻す待機（`idleStamp`）を、出来事の種類（`keepsIdleTimer` の `side`・`captions`・`select`・`deselect`）で計り直すかどうか決めている。#1661 で、スナップショットに無い ID の変更一覧のクリックを、マップ面で `select` に変える代わりに reducer が `pointChange` のまま受けるようにしたとき、そのままでは待機を計り直す振る舞いに変わるところだった。reducer の戻り値の `preserveIdleTimer` で前の振る舞いを保っている。出来事の種類を変える・分岐を移すときは、`keepsIdleTimer` に載っている種類と、`web/test/mapSurfaceCamera.story.test.ts` の「見返しで触らずに 10 秒たつと自動に戻る」の節を見る。
+マップ面の `applyViewing` は、見返しで触らずに 10 秒たつと自動のカメラに戻す待機（`idleStamp`）を、出来事の種類（`keepsIdleTimer` の `side`・`select`・`deselect`）で計り直すかどうか決めている。#1661 で、スナップショットに無い ID の変更一覧のクリックを、マップ面で `select` に変える代わりに reducer が `pointChange` のまま受けるようにしたとき、そのままでは待機を計り直す振る舞いに変わるところだった。reducer の戻り値の `preserveIdleTimer` で前の振る舞いを保っている。出来事の種類を変える・分岐を移すときは、`keepsIdleTimer` に載っている種類と、`web/test/mapSurfaceCamera.story.test.ts` の「見返しで触らずに 10 秒たつと自動に戻る」の節を見る。
 
 ## 畳む規則のテストは `foldingActions` で操作の列を畳み込み、見せるノードと `openness` だけを期待値に書く
 
