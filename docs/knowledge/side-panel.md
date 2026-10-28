@@ -29,7 +29,7 @@
 
 ## 押してマップのノードを選ぶ段は、変わったことの項目の Message をそのまま使う
 
-`ClickedChangeItem` の update が、畳まれた祖先を開いてノードを指し、選び、スナップショットに無ければ選ぶだけにする処理をすでに持っている。親（会議中・見返し）へ知らせる出力も無い。同じ Message を使えば、押した後の見る状態とビューポートは変わったことの項目の Story テストが見ているので、Story を足さなくてよい。新しい Message を足すと、この両方を作り直すことになる。
+`ClickedChangeItem` の update は `pointChange` を見せ方の reducer に渡すだけで、畳まれた祖先を開いてノードを指し、選び、スナップショットに無ければ選ぶだけにする処理は、畳む module の `refold` の `point` が持っている（[マップの畳み方](folding.md)）。親（会議中・見返し）へ知らせる出力も無い。同じ Message を使えば、押した後の見る状態とビューポートは変わったことの項目の Story テストが見ているので、Story を足さなくてよい。新しい Message を足すと、この両方を作り直すことになる。
 
 ## 狭い幅の会議中に隠す段は、`.meeting .changes` と同じセレクタに並べる
 
@@ -50,5 +50,6 @@
 
 ## 出典
 
+- [マップの「畳めるノード」の規則を 1 つの module に集めたときの開発ログ](../devlog/2026-10-28.md#folding-module)、[PR #1690](https://github.com/daiki-beppu/live-mindmap/pull/1690)（変更一覧のクリックを `refold` の `point` に移した）
 - 仕様 [#1284](https://github.com/daiki-beppu/live-mindmap/issues/1284)、親 [#1286](https://github.com/daiki-beppu/live-mindmap/issues/1286)、チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
 - #1287 の takt の run（`20261017-060712-implement-using-only-the-files-sugyi4`）の計画・決定ログ・3 人のレビュー・修正計画・最終検証
