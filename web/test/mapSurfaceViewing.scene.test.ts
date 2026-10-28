@@ -153,7 +153,9 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
 
 describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳む", () => {
   it("畳んだ議題の隠れた数の丸は「開く」の button（map-node__count--pressable）で、隠れた数が書かれている。子は見えない", () => {
-    const hidden = foldView(single(), NONE, null, NONE, NONE).folds["A"]!.hidden;
+    const openness = foldView(single(), NONE, null, NONE, NONE).openness["A"]!;
+    if (openness.state !== "folded") throw new Error("A must be folded");
+    const hidden = openness.hidden;
     scene(
       app,
       given(measuredModel(single())),
@@ -183,7 +185,9 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   });
 
   it("「開く」を押すと子が見え、A は畳んだ見た目でなくなり、隠れた数の丸の代わりに「畳む」の小さな丸が付く。「畳む」を押すと元の畳んだ見た目に戻る", () => {
-    const hidden = foldView(single(), NONE, null, NONE, NONE).folds["A"]!.hidden;
+    const openness = foldView(single(), NONE, null, NONE, NONE).openness["A"]!;
+    if (openness.state !== "folded") throw new Error("A must be folded");
+    const hidden = openness.hidden;
     scene(
       app,
       given(measuredModel(single())),

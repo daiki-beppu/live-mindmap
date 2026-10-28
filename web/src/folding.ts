@@ -3,18 +3,28 @@ import { changedNodeIds } from "./changes.ts";
 
 export const STALE_SECONDS = 900;
 
-export type Fold = { hint: string | null; hidden: number };
+type Fold = { hint: string | null; hidden: number };
+
+export type Openness =
+  | { state: "folded"; hint: string | null; hidden: number }
+  | { state: "open"; byHuman: boolean }
+  | { state: "bundle"; hint: string | null; hidden: number }
+  | { state: "fixed" };
 
 export type FoldView = {
   nodes: SnapshotNode[];
-  folds: Record<string, Fold>;
-  summaries: ReadonlySet<string>;
+  openness: Readonly<Record<string, Openness>>;
   blink: ReadonlySet<string>;
   shownAs: Record<string, string>;
-  runs: Record<string, readonly string[]>;
 };
 
-export function runStartOf(id: string): string | null {
+const membersByView = new WeakMap<FoldView, ReadonlyMap<string, readonly string[]>>();
+
+export function bundleMembers(view: FoldView, id: string): readonly string[] {
+  return membersByView.get(view)!.get(id)!;
+}
+
+function runStartOf(id: string): string | null {
   return id.startsWith("run:") ? id.slice("run:".length) : null;
 }
 
@@ -159,6 +169,15 @@ function blinkOf(snapshot: Snapshot, shownIds: ReadonlySet<string>, shownAs: Rea
   return blink;
 }
 
+function opennessOf(nodes: readonly SnapshotNode[], bundles: Bundles, currentChain: ReadonlySet<string>, opened: ReadonlySet<string>): Record<string, Openness> {
+  return Object.fromEntries(nodes.map((node): [string, Openness] => {
+    if (Object.hasOwn(bundles.runs, node.id)) return [node.id, { state: "bundle", ...bundles.folds[node.id]! }];
+    if (Object.hasOwn(bundles.folds, node.id)) return [node.id, { state: "folded", ...bundles.folds[node.id]! }];
+    if (currentChain.has(node.id) || (node.kind !== "議題" && node.kind !== "論点")) return [node.id, { state: "fixed" }];
+    return [node.id, { state: "open", byHuman: opened.has(node.id) }];
+  }));
+}
+
 export function foldView(
   snapshot: Snapshot,
   opened: ReadonlySet<string>,
@@ -181,14 +200,14 @@ export function foldView(
   addFoldedHints(bundles.folds, folded, bundles.runOf, index.children);
   const shownAs = shownAsOf(nodes, index, shownIds, bundles.runOf);
 
-  return {
+  const view: FoldView = {
     nodes: shown,
-    folds: bundles.folds,
-    summaries: new Set([...bundles.summaryNodes.values()].map((s) => s.id)),
+    openness: opennessOf(shown, bundles, currentChain, opened),
     blink: blinkOf(snapshot, shownIds, shownAs),
     shownAs,
-    runs: bundles.runs,
   };
+  membersByView.set(view, new Map(Object.entries(bundles.runs)));
+  return view;
 }
 
 export function keepTargetOf(view: Pick<FoldView, "nodes" | "shownAs"> | null, id: string): string {
@@ -210,7 +229,7 @@ export function pointedNode(
   for (let cur = target.parent ? byId.get(target.parent) : undefined; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) ancestors.push(cur.id);
   const folded = new Set(humanFolded);
   for (const a of ancestors) folded.delete(a);
-  return { ancestors, open: id in foldView(snapshot, opened, id, folded, unbundled).folds };
+  return { ancestors, open: foldView(snapshot, opened, id, folded, unbundled).openness[id]?.state === "folded" };
 }
 
 function hintOf(below: SnapshotNode[]): string | null {

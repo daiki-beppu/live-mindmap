@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INITIAL_VIEWING, foldToggle, reduceViewing, type CameraCommand, type ViewingEvent, type ViewingState, type VisibleTree } from "../src/viewing.ts";
+import { INITIAL_VIEWING, reduceViewing, type CameraCommand, type ViewingEvent, type ViewingState, type VisibleTree } from "../src/viewing.ts";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { foldView, pointedNode } from "../src/folding.ts";
 import { relocations } from "../src/relocation.ts";
@@ -9,8 +9,7 @@ const tree = (currentTopic: string | undefined, changed: readonly string[] = [])
   ids: ["root", "n1", "n2"],
   targets: { root: { x: 0, y: 0 }, n1: { x: 200, y: 0 }, n2: { x: 200, y: 80 } },
   parents: { root: null, n1: "root", n2: "root" },
-  foldState: {},
-  runs: {},
+  fold: null,
   changed,
   currentTopic,
 });
@@ -842,8 +841,7 @@ const arrowTree = (currentTopic: string | undefined, over: Partial<VisibleTree> 
     B1: { x: 400, y: 200 },
   },
   parents: { root: null, A: "root", B: "root", A1: "A", A2: "A", B1: "B" },
-  foldState: {},
-  runs: {},
+  fold: null,
   changed: [],
   currentTopic,
   ...over,
@@ -944,7 +942,7 @@ describe("reduceViewing: 選んでいないとき、または選んだノード�
   });
 
   it("選べるノードが何もないときは、何も変えない", () => {
-    const empty: VisibleTree = { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, changed: [], currentTopic: undefined };
+    const empty: VisibleTree = { ids: [], targets: {}, parents: {}, fold: null, changed: [], currentTopic: undefined };
     const out = reduceViewing(INITIAL_VIEWING, arrow("down"), empty);
     expect(out.state).toEqual({ mode: "auto" });
     expect(out.camera).toEqual({ type: "follow" });
@@ -1221,9 +1219,7 @@ const visibleOf = (
     ids: shown.map((n) => n.id),
     targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: n.parent === null ? 0 : 200, y: i * 50 }])),
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
-    // 見せる議題・論点（まとめのノードを除く）が、畳まれているか開いているか
-    foldState: Object.fromEntries(shown.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"])),
-    runs: view.runs,
+    fold: view,
     changed: [],
     currentTopic: snapshot.currentTopic,
   };
@@ -1497,30 +1493,6 @@ const noHuman = (s: ViewingState): ViewingState => {
 const press = (state: ViewingState, event: ViewingEvent, snapshot: Snapshot, scope: "live" | "review" = "live") =>
   reduceViewing(state, event, visibleOf(snapshot, state.selection?.id ?? null, openedOf(state), foldedOf(state), unbundledOf(state)), scope);
 
-describe("foldToggle: 開く・畳むの向きと、効かないノード", () => {
-  const t = visibleOf(curB, null);
-  it("畳まれている議題は開く（open）、開いている議題・論点は畳む（fold）", () => {
-    expect(t.foldState["A"]).toBe("folded");
-    expect(foldToggle(t, "A")).toBe("open");
-    expect(foldToggle(t, "C")).toBe("fold");
-    expect(foldToggle(t, "C1")).toBe("fold");
-  });
-
-  it("今の議題とその祖先、見えていないノード、議題・論点でないノードは null", () => {
-    expect(foldToggle(t, "B")).toBeNull();
-    expect(foldToggle(t, "root")).toBeNull();
-    expect(foldToggle(t, "A1")).toBeNull(); // 畳まれて見えていない
-    expect(foldToggle(t, "gone")).toBeNull();
-    const deep = visibleOf(curB1, null);
-    expect(foldToggle(deep, "B")).toBeNull();
-    expect(foldToggle(deep, "B1")).toBeNull();
-    expect(foldToggle(deep, "C")).toBe("fold");
-    const withDecision = visibleOf(fsnap([...hnodes, fnode("D1", "C1", "決定", ["r1"])], 6, "B"), null);
-    expect(withDecision.ids).toContain("D1");
-    expect(foldToggle(withDecision, "D1")).toBeNull();
-  });
-});
-
 describe("reduceViewing: Enter と丸で、人が議題・論点を開く・畳む", () => {
   it("畳まれている選んだ議題を Enter で開くと、人が開いた集合に入る（人が畳んだ集合は置かない）。開いた議題の中が見える", () => {
     const from = selected("A", true);
@@ -1590,6 +1562,11 @@ describe("reduceViewing: Enter・丸が効かないとき", () => {
     expect(out.state).toEqual(from);
     expect(out.camera).toEqual(from.mode === "auto" ? { type: "follow" } : { type: "hold" });
   };
+
+  it.each([enter(), foldDot("A")])("開閉のない手組みの木では何もしない: $type", (event) => {
+    const from = selected("A", true);
+    expect(reduceViewing(from, event, arrowTree("B"))).toEqual({ state: from, camera: { type: "follow" } });
+  });
 
   it("⌘・Ctrl・Option のどれか付きの Enter は何もしない（対照: 修飾なしなら畳む）", () => {
     const from = selected("C", true, { mode: "manual", topic: "B" });
@@ -1857,33 +1834,23 @@ const runsSnap = fsnap(rnodes, 4, "B");
 const runsLater = fsnap([...rnodes.slice(0, 4), fnode("E", "root", "議題", ["r1"], finished), fnode("F", "root", "議題", ["r1"], finished), rnodes[4]!], 5, "B");
 const unbundledSet = (...xs: string[]): ReadonlySet<string> => new Set(xs);
 
-describe("foldToggle: 「議題 N 件」は解く向き（unbundle）", () => {
-  const t = visibleOf(runsSnap, null);
-
-  it("見えている木のまとめ run:A は unbundle。その中身の議題は見えていないので null。木の runs に入っている議題の並びが入る", () => {
-    expect(t.ids).toEqual(["root", "run:A", "B"]);
-    expect(t.runs).toEqual({ "run:A": ["A", "D"] });
-    expect(foldToggle(t, "run:A")).toBe("unbundle");
-    expect(foldToggle(t, "A")).toBeNull();
-    expect(foldToggle(t, "D")).toBeNull();
-  });
-
-  it("今の議題 B・会議 root は今までどおり null。木に無い run: も null", () => {
-    expect(foldToggle(t, "B")).toBeNull();
-    expect(foldToggle(t, "root")).toBeNull();
-    expect(foldToggle(t, "run:zzz")).toBeNull();
-  });
-
-  it("対照: 解いた後の木では、A・D が畳まれた議題として開ける（open）。run:A はもう無く null", () => {
-    const after = visibleOf(runsSnap, null, NO_OPEN, NO_OPEN, unbundledSet("A", "D"));
-    expect(after.ids).toEqual(["root", "A", "D", "B"]);
-    expect(foldToggle(after, "A")).toBe("open");
-    expect(foldToggle(after, "D")).toBe("open");
-    expect(foldToggle(after, "run:A")).toBeNull();
-  });
-});
-
 describe("reduceViewing: 「議題 N 件」を Enter か丸で解く", () => {
+  it("複数のまとめから押したものだけを元の議題順で解き、子孫は解いた集合に入れない", () => {
+    const snapshot = fsnap([
+      froot,
+      fnode("Z", "root", "議題", ["r1"], finished),
+      fnode("Z1", "Z", "論点", ["r1"]),
+      fnode("A", "root", "議題", ["r1"], finished),
+      fnode("B", "root", "議題", ["r1"]),
+      fnode("E", "root", "議題", ["r1"], finished),
+      fnode("F", "root", "議題", ["r1"], finished),
+    ], 4, "B");
+    const out = press(INITIAL_VIEWING, foldDot("run:Z"), snapshot);
+    expect([...unbundledOf(out.state)]).toEqual(["Z", "A"]);
+    expect(out.state.selection).toEqual({ id: "Z", byKey: false });
+    expect(shownIds(snapshot, out.state)).toEqual(["root", "Z", "A", "B", "run:E"]);
+  });
+
   it("選んだ run:A を Enter で解くと、入っていた議題 A・D の集合が解いた集合に入り、選択は最初の議題 A へ移る（キーで選んだ形のまま）。人が開いた集合には入らない", () => {
     const out = press(selected("run:A", true), enter(), runsSnap);
     expect([...unbundledOf(out.state)]).toEqual(["A", "D"]);
@@ -1903,7 +1870,7 @@ describe("reduceViewing: 「議題 N 件」を Enter か丸で解く", () => {
     const out = press(selected("run:A", true), enter(), runsSnap);
     expect(shownIds(runsSnap, out.state)).toEqual(["root", "A", "D", "B"]);
     const t = visibleOf(runsSnap, "A", NO_OPEN, NO_OPEN, unbundledOf(out.state));
-    expect(t.foldState).toMatchObject({ A: "folded", D: "folded" });
+    expect(t.fold?.openness).toMatchObject({ A: { state: "folded" }, D: { state: "folded" } });
   });
 
   it("数の丸（foldDot run:A）でも同じ。選んでいなければ選択は A になり、選んでいる別のノードがあっても A へ移る", () => {

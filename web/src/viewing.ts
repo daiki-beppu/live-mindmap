@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { bundleMembers, type FoldView } from "./folding.ts";
 import type { Position } from "./layout.ts";
 
 const AutoCamera = Schema.Struct({ mode: Schema.Literal("auto") });
@@ -60,21 +61,20 @@ export type VisibleTree = {
   ids: string[];
   targets: Record<string, Position>;
   parents: Record<string, string | null>;
-  foldState: Record<string, "folded" | "open">;
-  runs: Record<string, readonly string[]>;
+  fold: FoldView | null;
   changed: readonly string[];
   currentTopic: string | undefined;
 };
 
-export function foldToggle(tree: VisibleTree, id: string): "open" | "fold" | "unbundle" | null {
-  if (!tree.ids.includes(id)) return null;
-  if (tree.runs[id] !== undefined) return "unbundle";
-  const state = tree.foldState[id];
-  if (state === undefined) return null;
-  if (tree.currentTopic !== undefined) {
-    for (let cur: string | null | undefined = tree.currentTopic; cur != null; cur = tree.parents[cur]) if (cur === id) return null;
+function foldToggle(tree: VisibleTree, id: string): "open" | "fold" | "unbundle" | null {
+  const state = tree.fold?.openness[id]?.state;
+  switch (state) {
+    case "folded": return "open";
+    case "open": return "fold";
+    case "bundle": return "unbundle";
+    case "fixed":
+    case undefined: return null;
   }
-  return state === "folded" ? "open" : "fold";
 }
 
 export const CameraCommand = Schema.Union([
@@ -269,7 +269,7 @@ function foldTargetOf(state: ViewingState, event: Extract<ViewingEvent, { type: 
 }
 
 function unbundleRun(state: ViewingState, tree: VisibleTree, id: string, camera: CameraCommand): Reduced {
-  const members = tree.runs[id]!;
+  const members = bundleMembers(tree.fold!, id);
   return {
     state: { ...state, humanUnbundled: new Set([...(state.humanUnbundled ?? []), ...members]), selection: { id: members[0]!, byKey: state.selection?.byKey ?? false } },
     camera,
