@@ -10,7 +10,7 @@ import type { HelperCommand } from "../src/helpers.ts";
 
 // 本物の AudioMix の Layer が、effect/process の本物の spawner で `mix --session <dir> --out <path>` を 1 回起動して終わりを待つこと。
 // ヘルパーは偽物（fixtures/fake-helper.ts の mix）。ヘルパーの音声処理そのものはここでは確かめない。
-// argv の組み立て（--track）と失敗の写像は audioMix.test.ts（偽の ChildProcessSpawner）
+// 失敗の写像は audioMix.test.ts（偽の ChildProcessSpawner）
 const fakeHelper = join(import.meta.dirname, "fixtures/fake-helper.ts");
 
 const workspace = Effect.fnUntraced(function* () {
@@ -27,13 +27,23 @@ const workspace = Effect.fnUntraced(function* () {
   return { helper, records, out: join(dir, "out.m4a") };
 });
 
-const mixWith = (helper: HelperCommand, session: string, out: string) =>
+const mixWith = (helper: HelperCommand, session: string, out: string, track?: "自分") =>
   Effect.gen(function* () {
     const audioMix = yield* AudioMix;
-    return yield* audioMix.mix(session, out);
+    return yield* audioMix.mix(session, out, track);
   }).pipe(Effect.provide(AudioMix.layer(helper).pipe(Layer.provide(NodeServices.layer))));
 
 describe("AudioMix の実物の Layer", () => {
+  it.live("track に `自分` を渡すと、偽ヘルパーが `--track 自分` を受け取り、指定先に音声を書き出す", () =>
+    Effect.gen(function* () {
+      const { helper, records, out } = yield* workspace();
+
+      yield* mixWith(helper, "/some/session", out, "自分");
+
+      expect(records()).toEqual([{ type: "mix", argv: ["mix", "--session", "/some/session", "--out", out, "--track", "自分"] }]);
+      expect((yield* Effect.tryPromise(() => readFile(out, "utf8")))).toBe("fake-mix-output");
+    }).pipe(Effect.scoped));
+
   it.live("ヘルパーを `mix --session <dir> --out <path>` で 1 回起動し、終了コード 0 なら成功する。出力はヘルパーが --out に書く", () =>
     Effect.gen(function* () {
       const { helper, records, out } = yield* workspace();
