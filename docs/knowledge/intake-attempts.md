@@ -14,10 +14,10 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 |---|---|---|
 | `commands` | `self-pause: "pending-once"` | `reading-pause: "sticky"` |
 | `exitZero` | `"restart"` | `"finish"` |
-| `observe(crashed)` | drain・`clearSpeaking`・`lastInterruptedAt` | `from` に `sink.drainForRestart` の結果を入れる |
-| `end` の扱い | stop だけが受ける | finished → drain + finishBacklog、gaveUp → discardBacklog + finishBacklog（`concludeRecorded` の claim を通す） |
+| `observe(crashed)` | `sink.interrupted`・`lastInterruptedAt` | `from` に `sink.drainForRestart` の結果を入れる |
+| `end` の扱い | stop だけが受ける | finished → `sink.end({ kind: "入れ切る" })`、gaveUp → `sink.end({ kind: "捨てる", quiesce: Effect.void })`（`concludeRecorded` の claim を通す） |
 
-60 秒の判断・終了コード 75 の窓・接続の失敗の数え方・接続と stop の競合・指令の持ち方は、`intakeAttempts` の中にしかない。直すときは `intakeAttempts.test` に足す。偽の `Helpers`（`server/test/fixtures/intakeHelpers.ts`）と TestClock で、in-process に試せる。`sessions.test` には、状態機械と配線（argv・sink の呼び出しの順・claim・status）だけを書く。前は起動し直しのループがライブと録画で 2 本あり（約 200 行）、録画の側は CLI を通す IT でしか試していなかった（[#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)、[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367)）。
+60 秒の判断・終了コード 75 の窓・接続の失敗の数え方・接続と stop の競合・指令の持ち方は、`intakeAttempts` の中にしかない。直すときは `intakeAttempts.test` に足す。偽の `Helpers`（`server/test/fixtures/intakeHelpers.ts`）と TestClock で、in-process に試せる。`sessions.test` には、状態機械と配線（argv・sink に渡す終わり方・claim・status）だけを書く。前は起動し直しのループがライブと録画で 2 本あり（約 200 行）、録画の側は CLI を通す IT でしか試していなかった（[#1316](https://github.com/daiki-beppu/live-mindmap/issues/1316)、[PR #1367](https://github.com/daiki-beppu/live-mindmap/pull/1367)）。
 
 再開位置の決め方（`drainForRestart` が返す `TrackEnds`）と、その位置より前を捨てる処理（`applyRecordedEventFrom`）は、録画の側に残す。`intakeAttempts` は sink を知らず、受け取るのはログの書き先（`log`）だけにする。
 
@@ -56,14 +56,14 @@ server の取り込みの試行（`server/src/intakeAttempts.ts`）と、それ�
 - **再開位置**: 偽の sink の `drainForRestart` は `Effect.succeed(ends)` で固定の値を返す。settling や溜まりの規則を偽物に写さない。差し替えは `openRecorded` の戻り値を `Effect.map` で包む
 - **異常終了**: 台本の `unexpectedExit: { afterMs: 1, ... }` を `TestClock.adjust(1)` で起こす
 - **作成日時の基準**: `sessions.ts` は `DateTime.nowUnsafe()` で実時刻を読むので、TestClock では測れない。呼ぶ前と後の実時刻を取り、`base − logShiftMs` がその間に入ることを見る
-- **自然な終わりと stop の重なり**: どちらが先に claim を取るかを、`finishBacklog` や書き出しの中の Deferred で止めて決める。自然な終わりが先に取った後の `sessions.stop` は、成功ではなく失敗で返る
+- **自然な終わりと stop の重なり**: どちらが先に claim を取るかを、偽の sink の `end` や `writeOut` の中の Deferred で止めて決める。自然な終わりが先に取った後の `sessions.stop` は、成功ではなく失敗で返る
 - **後片付け**: どのテストも最後に `sessions.stop` からイベント列の fiber の join まで行う。開始の準備だけを見るテストでも、イベント列を読みながら stop しないと Scope が閉じない
 
 フォルダの採番と時刻のずらしの適用はファイルを書く側の話で、`loggedSessionLog.it` に残る。
 
 ## stop の順を見るテストは、ヘルパーの終わりも記録する。記録しないと end を待つことを証明しない
 
-#1317 の前の `sessions.test` は、録画の stop の順を `[discard, helper-stop, finish, flush, exports]` で見ていた。ヘルパーが終わる（end）時点が列に無いので、`finishBacklog` が end を待たずに走っても通る。今のテストは、偽のヘルパーの終わりを `stopDelayMs: 100` で遅らせ、`exit` に `Effect.tap` で `"end"` を記録する。stop の印に届いた時点で `[discard, helper-stop]` だけであることを見てから、`TestClock.adjust(100)` で進め、`[discard, helper-stop, end, finish, flush, exports]` になることを見る。
+#1317 の前の `sessions.test` は、録画の stop の順を `[discard, helper-stop, finish, flush, exports]` で見ていた。ヘルパーが終わる（end）時点が列に無いので、溜まりを終える処理が end を待たずに走っても通る。今のテストは、偽のヘルパーの終わりを `stopDelayMs: 100` で遅らせ、`exit` に `Effect.tap` で `"end"` を記録する。stop の印に届いた時点で `[helper-stop]` だけであることを見てから、`TestClock.adjust(100)` で進め、`[helper-stop, end, writeOut]` になることを見る。discard と finish は、[#1664](https://github.com/daiki-beppu/live-mindmap/issues/1664) で sink の `end` の内側（`remarkFlow.settle`）に入ったので、この列には出ない。その順は `remarkFlow.test` が見る（[セッションの sink](session-sink.md)）。
 
 順を約束する手続きをテストするときは、待つ相手の完了も列に入れる。
 
@@ -88,3 +88,4 @@ timeout は、壊したところ以外の理由（台本の数が尽きた、待
 - #1316 の takt の run（`20261019-223538-implement-using-only-the-files-k85l61`・`20261019-224050-implement-using-only-the-files-zgghr9`）の計画・実装の報告と決定ログ・レビューと裁定・修正の報告
 - #1317 の takt の run（`20261020-004956-implement-using-only-the-files-4gxc99`）の計画・実装の報告と決定ログ・破壊検証の記録
 - 仕様 [#1609](https://github.com/daiki-beppu/live-mindmap/issues/1609)、チケット [#1618](https://github.com/daiki-beppu/live-mindmap/issues/1618)・[PR #1643](https://github.com/daiki-beppu/live-mindmap/pull/1643) の差分、[開発ログ](../devlog/2026-10-27.md#seam-contract-tests)
+- チケット [#1663](https://github.com/daiki-beppu/live-mindmap/issues/1663)・[PR #1684](https://github.com/daiki-beppu/live-mindmap/pull/1684)、[#1664](https://github.com/daiki-beppu/live-mindmap/issues/1664)・[PR #1686](https://github.com/daiki-beppu/live-mindmap/pull/1686)（終わり方を sink の `end` に渡す形にしたときの、表と stop の順のテストの書き換え）
