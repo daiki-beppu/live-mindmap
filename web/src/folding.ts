@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
 import { changedNodeIds } from "./changes.ts";
 
@@ -18,10 +19,29 @@ export type FoldView = {
   shownAs: Record<string, string>;
 };
 
-const membersByView = new WeakMap<FoldView, ReadonlyMap<string, readonly string[]>>();
+export const HumanFolds = Schema.Struct({
+  opened: Schema.ReadonlySet(Schema.String),
+  folded: Schema.ReadonlySet(Schema.String),
+  unbundled: Schema.ReadonlySet(Schema.String),
+});
+export type HumanFolds = typeof HumanFolds.Type;
 
-export function bundleMembers(view: FoldView, id: string): readonly string[] {
-  return membersByView.get(view)!.get(id)!;
+export type FoldAction =
+  | { type: "toggle"; id: string }
+  | { type: "point"; id: string }
+  | { type: "reflect" };
+
+type Basis = {
+  snapshot: Snapshot;
+  human: HumanFolds | undefined;
+  selectedId: string | null;
+  members: ReadonlyMap<string, readonly string[]>;
+};
+const basisByView = new WeakMap<FoldView, Basis>();
+const NO_HUMAN: HumanFolds = { opened: new Set(), folded: new Set(), unbundled: new Set() };
+
+function humanOrUndefined(human: HumanFolds): HumanFolds | undefined {
+  return human.opened.size + human.folded.size + human.unbundled.size === 0 ? undefined : human;
 }
 
 function runStartOf(id: string): string | null {
@@ -180,11 +200,10 @@ function opennessOf(nodes: readonly SnapshotNode[], bundles: Bundles, currentCha
 
 export function foldView(
   snapshot: Snapshot,
-  opened: ReadonlySet<string>,
+  human: HumanFolds | undefined,
   selectedId: string | null,
-  humanFolded: ReadonlySet<string>,
-  unbundled: ReadonlySet<string>,
 ): FoldView {
+  const { opened, folded: humanFolded, unbundled } = human ?? NO_HUMAN;
   const { nodes, now, currentTopic } = snapshot;
   const index = indexNodes(nodes);
 
@@ -206,30 +225,71 @@ export function foldView(
     blink: blinkOf(snapshot, shownIds, shownAs),
     shownAs,
   };
-  membersByView.set(view, new Map(Object.entries(bundles.runs)));
+  basisByView.set(view, { snapshot, human, selectedId, members: new Map(Object.entries(bundles.runs)) });
   return view;
 }
 
-export function keepTargetOf(view: Pick<FoldView, "nodes" | "shownAs"> | null, id: string): string {
+export function keepTargetOf(view: FoldView | null, id: string): string {
   if (view === null) return id;
   return view.shownAs[id] ?? (view.nodes.some((n) => n.id === id) ? id : (runStartOf(id) ?? id));
 }
 
-export function pointedNode(
-  snapshot: Snapshot,
-  id: string,
-  opened: ReadonlySet<string>,
-  humanFolded: ReadonlySet<string>,
-  unbundled: ReadonlySet<string>,
-): { ancestors: string[]; open: boolean } | null {
-  const byId = new Map(snapshot.nodes.map((n) => [n.id, n]));
+type Refolded = { human: HumanFolds | undefined; select?: string };
+
+function toggle(view: FoldView, basis: Basis, id: string): Refolded | null {
+  const openness = Object.hasOwn(view.openness, id) ? view.openness[id] : undefined;
+  if (openness === undefined || openness.state === "fixed") return null;
+  const human = basis.human ?? NO_HUMAN;
+  if (openness.state === "bundle") {
+    const members = basis.members.get(id)!;
+    return { human: { ...human, unbundled: new Set([...human.unbundled, ...members]) }, select: members[0]! };
+  }
+  const opened = new Set(human.opened);
+  const folded = new Set(human.folded);
+  if (openness.state === "folded") {
+    opened.add(id);
+    folded.delete(id);
+  } else {
+    opened.delete(id);
+    folded.add(id);
+  }
+  const byId = new Map(basis.snapshot.nodes.map((n) => [n.id, n]));
+  const selected = basis.selectedId === null ? undefined : byId.get(runStartOf(basis.selectedId) ?? basis.selectedId);
+  const ancestors = chainIds(byId, selected?.parent ? byId.get(selected.parent) : undefined);
+  return {
+    human: humanOrUndefined({ ...human, opened, folded }),
+    ...(openness.state === "open" && ancestors.has(id) ? { select: id } : {}),
+  };
+}
+
+function point(basis: Basis, id: string): Refolded | null {
+  const byId = new Map(basis.snapshot.nodes.map((n) => [n.id, n]));
   const target = byId.get(id);
   if (!target) return null;
-  const ancestors: string[] = [];
-  for (let cur = target.parent ? byId.get(target.parent) : undefined; cur; cur = cur.parent ? byId.get(cur.parent) : undefined) ancestors.push(cur.id);
-  const folded = new Set(humanFolded);
-  for (const a of ancestors) folded.delete(a);
-  return { ancestors, open: foldView(snapshot, opened, id, folded, unbundled).openness[id]?.state === "folded" };
+  const human = basis.human ?? NO_HUMAN;
+  const folded = new Set(human.folded);
+  for (const ancestor of chainIds(byId, target)) folded.delete(ancestor);
+  const released = humanOrUndefined({ ...human, folded });
+  const view = foldView(basis.snapshot, released, id);
+  const opened = view.openness[id]?.state === "folded" ? new Set([...human.opened, id]) : human.opened;
+  return { human: humanOrUndefined({ ...human, opened, folded }), select: id };
+}
+
+export function refold(view: FoldView, action: FoldAction): Refolded | null {
+  const basis = basisByView.get(view);
+  if (!basis) return null;
+  switch (action.type) {
+    case "toggle": return toggle(view, basis, action.id);
+    case "point": return point(basis, action.id);
+    case "reflect": {
+      const human = basis.human;
+      const current = basis.snapshot.currentTopic;
+      if (human === undefined || current === undefined || !human.folded.has(current)) return null;
+      const folded = new Set(human.folded);
+      folded.delete(current);
+      return { human: humanOrUndefined({ ...human, folded }) };
+    }
+  }
 }
 
 function hintOf(below: SnapshotNode[]): string | null {

@@ -36,7 +36,7 @@ const playingAt = (time: number): Model => {
   return { ...start, playback: { ...start.playback, time, playing: true } };
 };
 const stoppedAt = (time: number): Model => ({ ...playingAt(time), playback: { ...playingAt(time).playback, playing: false } });
-const expectedIds = (time: number): string[] => foldView(snapshotOf(audioContext, stoppedAt(time)), new Set(), null, new Set(), new Set()).nodes.map((n) => n.id);
+const expectedIds = (time: number): string[] => foldView(snapshotOf(audioContext, stoppedAt(time)), undefined, null).nodes.map((n) => n.id);
 const measuredAll = (time: number) => Mount.resolve(ObserveMapSurface, MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: Object.fromEntries(expectedIds(time).map((id) => [id, 40])) }));
 const renderedIds = (html: { children?: unknown }): string[] => {
   type V = { data?: { attrs?: Record<string, unknown> }; children?: Array<V | string> };

@@ -34,12 +34,12 @@ import {
   type Viewport,
 } from "../../camera.ts";
 import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
-import { foldView, keepTargetOf, pointedNode, type FoldView } from "../../folding.ts";
+import { foldView, keepTargetOf, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
-import { type ArrowDir, type CameraCommand, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
+import { type ArrowDir, type CameraCommand, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
 import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -91,8 +91,7 @@ const MOTION_DURATION_MS = 500;
 
 const foldViewOf = (model: Model): FoldView | null => {
   if (model.mode === "still") return null;
-  const { opened, folded, unbundled } = humanSetsOf(model.viewing);
-  return foldView(model.snapshot, opened, model.viewing.selection?.id ?? null, folded, unbundled);
+  return foldView(model.snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
 };
 const shownNodesOf = (model: Model): SnapshotNode[] => foldViewOf(model)?.nodes ?? model.snapshot.nodes;
 const layoutHeightsOf = (model: Model): Record<string, number> => Object.fromEntries(HashMap.toEntries(model.nodeHeights).map(([id, height]) => [id, Math.round(height)]));
@@ -255,8 +254,8 @@ const applyCommand = (model: Model, command: CameraCommand, previous: Model): Mo
 const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "captions" || event.type === "select" || event.type === "deselect";
 
 const applyViewing = (model: Model, event: ViewingEvent, previous: Model = model): Model => {
-  const { state, camera } = reduceViewing(model.viewing, event, treeOf(model), model.mode === "review" ? "review" : "live");
-  const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (keepsIdleTimer(event) ? stamp : stamp + 1) });
+  const { state, camera, preserveIdleTimer } = reduceViewing(model.viewing, event, treeOf(model), model.mode === "review" ? "review" : "live");
+  const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (preserveIdleTimer || keepsIdleTimer(event) ? stamp : stamp + 1) });
   if (model.mode === "still") return reduced;
   const followed = followTarget(previous, reduced);
   const commanded = applyCommand(followed, camera, previous);
@@ -385,11 +384,7 @@ export const update = (model: Model, message: Message): Return =>
     ClickedNodeButtonWithoutPointer: ({ nodeId }) => clickedNode(model, nodeId),
     ClickedFoldDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "foldDot", id: nodeId }) }),
     ClickedEdgeDot: ({ nodeId }) => ({ model: applyViewing(model, { type: "edgeDot", id: nodeId }) }),
-    ClickedChangeItem: ({ nodeId }) => {
-      const { opened, folded, unbundled } = humanSetsOf(model.viewing);
-      const found = pointedNode(model.snapshot, nodeId, opened, folded, unbundled);
-      return { model: applyViewing(model, found === null ? { type: "select", id: nodeId } : { type: "pointChange", id: nodeId, ...found }) };
-    },
+    ClickedChangeItem: ({ nodeId }) => ({ model: applyViewing(model, { type: "pointChange", id: nodeId }) }),
     ClickedEvidenceClose: () => ({ model: applyViewing(model, { type: "deselect" }) }),
     ToggledSide: ({ isOpen }) => (isOpen === (model.viewing.sideHidden !== true) ? { model } : { model: applyViewing(model, { type: "side", meta: false, ctrl: false, alt: false }) }),
     WheeledMapSurface: ({ x, y, deltaX, deltaY, deltaMode, shiftKey, ctrlKey, metaKey, timeStamp }) => {

@@ -26,7 +26,7 @@ import {
 } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { layout, NODE_WIDTH } from "../src/layout.ts";
-import { humanSetsOf, type ViewingState, type ViewKey } from "../src/viewing.ts";
+import { type ViewingState, type ViewKey } from "../src/viewing.ts";
 
 // マップの表示面のカメラ（Issue #819）の Story。update に Message を流し、そのたびの Model の viewport と viewing を見る。
 // 反映で寄せる・人が動かすと止まる・全体を見て戻る・開閉で位置を保つ・列を出してずらす、を update の中の関数の呼び順として確かめる。
@@ -90,8 +90,7 @@ const dimsOf = (m: MapSurfaceModel): Record<string, { height: number }> => Objec
 const sizeOf = (m: MapSurfaceModel) => Option.getOrThrow(m.size);
 const viewOf = (m: MapSurfaceModel) => {
   if (m.mode === "still") return null;
-  const { opened, folded, unbundled } = humanSetsOf(m.viewing);
-  return foldView(m.snapshot, opened, m.viewing.selection?.id ?? null, folded, unbundled);
+  return foldView(m.snapshot, m.viewing.humanFolds, m.viewing.selection?.id ?? null);
 };
 const shownOf = (m: MapSurfaceModel): SnapshotNode[] => viewOf(m)?.nodes ?? m.snapshot.nodes;
 const targetsOf = (m: MapSurfaceModel) => layout(shownOf(m), heightsOf(m));
@@ -516,7 +515,6 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
     const view = viewOf(m)!;
     expect(view.nodes.map((n) => n.id)).not.toContain("A1");
     expect(m.viewing).toEqual({ mode: "diff", topic: "B" });
-    expect(humanSetsOf(m.viewing).opened.size).toBe(0);
     const a = nodeRect("A", targetsOf(m), dimsOf(m));
     expectViewport(m.viewport, focusViewport([a], a, sizeOf(m), USER_MIN_ZOOM));
   });
@@ -671,7 +669,7 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
 
   it("止めている間に丸を押すと、開いたノードは補間の途中も終わりも、押す前と同じ画面座標に映る（倍率は変えない）", () => {
     const { start, point, afterClick } = opened();
-    expect(afterClick.viewing.humanOpened).toEqual(new Set(["A"]));
+    expect(viewOf(afterClick)!.openness["A"]).toEqual({ state: "open", byHuman: true });
     // この入力は、補間で A が動くものでなければ検証にならない
     expectDifferent({ ...targetsOf(afterClick)["A"]!, zoom: 1 }, { ...displayedPositions(afterClick)["A"]!, zoom: 1 });
     story(
@@ -1112,6 +1110,26 @@ describe("見返しで触らずに 10 秒たつと自動に戻る", () => {
     expect(stamp(folded)).not.toBe(stamp(keyed));
     expect(stamp(update(folded, Message.PressedSideKey({ ...mods })).model)).toBe(stamp(folded));
     expect(stamp(update(folded, clickNode("B")).model)).toBe(stamp(folded));
+  });
+
+  it("見返しの manual で不存在 ID の変更項目を選んでも待機を計り直さず、有効な対象なら寄せて計り直す", () => {
+    const before = run(settle(tree(), "review"), scroll);
+    expect(before.viewing.mode).toBe("manual");
+    const selected = update(before, clickNode("B")).model;
+    expect(selected.idleStamp).toBe(before.idleStamp);
+    for (const nodeId of ["gone", "B"]) {
+      const after = update(before, Message.ClickedChangeItem({ nodeId })).model;
+      expect(after.viewing.selection).toEqual({ id: nodeId, byKey: false });
+      expect(after.viewing.mode).toBe("manual");
+      if (nodeId === "gone") {
+        expect(after.viewport).toEqual(before.viewport);
+        expect(after.idleStamp).toBe(selected.idleStamp);
+      } else {
+        expectViewport(after.viewport, nodeFocusViewport(nodeRect("B", targetsOf(after), dimsOf(after)), before.viewport.zoom, SIZE));
+        expectDifferent(after.viewport, before.viewport);
+        expect(after.idleStamp).toBe(before.idleStamp + 1);
+      }
+    }
   });
 });
 
