@@ -346,28 +346,24 @@ struct LiveSessionITTests {
         let (running, result) = runSession(session)
         defer { running.cancel() }
         try await waitFor("tap の10秒待機登録") { fixture.clock.sleeps.value.contains(.seconds(10)) }
-        let judging = Cell(false)
-        let release = DispatchSemaphore(value: 0)
-        defer { release.signal() }
+        let stopReturned = Cell(false)
         fixture.tap.onCurrentLine.update { $0 = {
-            judging.update { $0 = true }
-            #expect(release.wait(timeout: .now() + 10) == .success)
+            // 判定はロックを持ったまま協調スレッドで止まる。停止の要求も待ち合わせも協調スレッドの外で済ませ、
+            // テスト本体の進行を待たない（スレッドの少ない CI で他のテストまで止めない）。
+            let requested = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                trace.update { $0.append("stop-requested") }
+                requested.signal()
+                session.stop()
+                stopReturned.update { $0 = true }
+            }
+            #expect(requested.wait(timeout: .now() + 10) == .success)
         } }
         defer { fixture.tap.onCurrentLine.update { $0 = nil } }
         fixture.clock.advanceTenSeconds()
-        try await waitFor("無音判定中の機器読み出し") { judging.value }
-        let stopping = Cell(false)
-        let stop = Task.detached {
-            trace.update { $0.append("stop-requested") }
-            stopping.update { $0 = true }
-            session.stop()
-        }
-        defer { stop.cancel() }
-        try await waitFor("判定中の停止要求") { stopping.value }
-        release.signal()
         try await waitFor("生成済み tap-silent の配送保留") { deliveryEntered.value }
         try await waitFor("停止要求による両入力の停止") { fixture.tap.stopped.value && fixture.microphone.stopped.value }
-        await stop.value
+        try await waitFor("判定中に出した停止要求の戻り") { stopReturned.value }
         trace.update { $0.append("inputs-stopped") }
         try await client.requireOpenWhileDeliveryIsHeld()
         trace.update { $0.append("delivery-released") }
