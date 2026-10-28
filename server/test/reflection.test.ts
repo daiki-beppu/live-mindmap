@@ -36,6 +36,18 @@ const diff = (fresh: string[], extra: Partial<typeof DiffEvent.Type> = {}): type
 const topic: Op = { op: "add", ref: "t2", parent: "root", kind: "議題", text: "採用", evidence: ["r1"] };
 
 describe("diff の反映", () => {
+  it.each([undefined, "記録された失敗"])("成功・失敗の反映でセッションの判断軸を共通反映へ渡す（%s）", (error) => {
+    const criteria = ["採用のしやすさ"];
+    const before = { ...state([remark("r1", 20, "試験導入を提案します")]), criteria };
+    const op = { op: "add", ref: "plan", parent: "n1", kind: "案", text: "試験導入", evidence: ["r1"], criteria } satisfies Op;
+    const first = Result.getOrThrow(reflectDiff(before, diff(["r1"], { ops: [op], ...(error === undefined ? {} : { error }) })));
+    expect(first.state.map.nodes.n2).toHaveProperty("criteria", criteria);
+    expect(first.state).toHaveProperty("criteria", criteria);
+    const update = { op: "update", node: "n2", evidence: ["r1"], criteria: ["価格"] } satisfies Op;
+    const second = Result.getOrThrow(reflectDiff(first.state, diff(["r1"], { ops: [update] })));
+    expect(second.state.map.nodes.n2!.criteria ?? []).toEqual([]);
+  });
+
   it("成功した回は全件を消費し、最大 end で履歴を足して適用結果の dropped・refs を返す", () => {
     const r1 = remark("r1", 30, "採用を話します");
     const r2 = remark("r2", 20, "予算も話します");

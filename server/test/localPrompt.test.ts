@@ -10,6 +10,19 @@ const remark = (fields: Partial<Remark> & Pick<Remark, "id" | "start">): Remark 
 const lineOf = (prompt: string, section: string) => prompt.split(`## ${section}`)[1]!.split("\n\n## ")[0]!.split("\n").filter(Boolean);
 
 describe("classificationRequest: 発言の行に話者が出る", () => {
+  it("判断軸があるローカル入力でも従来の分類要求だけを送り、関係づけを作らない", async () => {
+    const requests: ReturnType<typeof classificationRequest>[] = [];
+    const input = { map: emptyMap("定例"), recent: [], fresh: [remark({ id: "r1", start: 0, text: "試験導入を提案します" })], criteria: ["採用のしやすさ"] };
+    const raw: Classification = { 議題: { id: "新しい議題", 題: "導入" }, 文: [{ 種類: "提案", text: "試験導入" }], 済み: "なし", 名前: [] };
+    const output = await Effect.runPromise(Effect.gen(function* () {
+      return yield* (yield* DiffUpdater).update(input);
+    }).pipe(Effect.provide(localUpdaterLayer({ katakana: () => Effect.succeed([]), classify: (request) => { requests.push(request); return Effect.succeed(raw); } }))));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.prompt).toBe(classificationRequest(input.map, input.recent, splitSentences(input.fresh[0]!)).prompt);
+    expect(output.ops.some((op) => op.op === "add" && op.kind === "案")).toBe(true);
+    for (const op of output.ops) expect(op).not.toHaveProperty("criteria");
+  });
+
   it("直前の発言の行は mm:ss と話者つき（今までの秒の生の値ではない）。自分・話者なし・ラベルあり", () => {
     const recent = [
       remark({ id: "r1", start: 194.9, text: "前の発言", speaker: "相手 A" }),

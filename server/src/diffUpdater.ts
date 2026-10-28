@@ -47,6 +47,9 @@ export const prepareUpdaterLayer = Effect.fnUntraced(function* (model: Executabl
     if (refusal !== undefined) return yield* new UpdaterUnavailable({ message: refusal.join("\n") });
     return yield* prepareAppleUpdater(model);
   }
-  const local = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
-  return localUpdaterLayer(local);
+  const remote = yield* (model.route === "chatgpt" ? prepareChatgpt(model) : prepareCompatible(model));
+  return Layer.effect(DiffUpdater, Effect.gen(function* () {
+    const legacy = Context.get(yield* Layer.build(localUpdaterLayer(remote)), DiffUpdater);
+    return DiffUpdater.of({ ...legacy, update: (input) => input.criteria?.length ? remote.update(input) : legacy.update(input) });
+  }));
 }, Effect.mapError((failure) => Schema.is(UpdaterUnavailable)(failure) ? failure : new UpdaterUnavailable({ message: failure.message })));

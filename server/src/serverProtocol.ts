@@ -16,6 +16,7 @@ export const SessionStartBody = Schema.Struct({
   audio: TrueByDefault,
   screen: TrueByDefault,
   vocab: Vocabulary,
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
   model: Schema.optionalKey(TransferredModel),
   judge: Schema.optionalKey(TransferredJudge),
 });
@@ -26,6 +27,7 @@ export const SessionRecordedBody = Schema.Struct({
   selfFile: Schema.optionalKey(Schema.NonEmptyString),
   title: Schema.optionalKey(Schema.String),
   vocab: Vocabulary,
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
   realtime: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   model: Schema.optionalKey(TransferredModel),
   judge: Schema.optionalKey(TransferredJudge),

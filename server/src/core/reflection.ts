@@ -14,6 +14,7 @@ type History = {
 };
 
 export type ReflectionState = {
+  readonly criteria?: readonly string[];
   readonly map: MeetingMap;
   readonly history: History;
   readonly ledger: {
@@ -50,10 +51,10 @@ export function reflectDiff(before: ReflectionState, event: typeof DiffEvent.Typ
   const known = new Set([...before.ledger.known, ...consumed.map((r) => r.id)]);
   const processed = [...before.ledger.processed, ...consumed.filter((r) => hasContent(r.text))];
   const stamp = stampOf(before.history, consumed);
-  const applied = applyOps(before.map, event.ops, known, stamp, before.ledger.byId);
+  const applied = applyOps(before.map, event.ops, known, stamp, before.ledger.byId, before.criteria);
   const history = event.error === undefined ? recordRound(before.history, before.map, applied, stamp) : before.history;
   return Result.succeed({
-    state: { map: applied.map, history, ledger: { byId: before.ledger.byId, known, processed } },
+    state: { ...(before.criteria?.length ? { criteria: before.criteria } : {}), map: applied.map, history, ledger: { byId: before.ledger.byId, known, processed } },
     dropped: applied.dropped,
     refs: applied.refs,
   });

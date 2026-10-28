@@ -25,6 +25,7 @@ import { ObserveAudio } from "./mount.ts";
 export const Model = Schema.Struct({
   playback: PlaybackState,
   mapSurface: Schema.Struct({
+    foldingContext: MapSurface.Model.fields.foldingContext,
     size: MapSurface.Model.fields.size,
     nodeHeights: MapSurface.Model.fields.nodeHeights,
     isMac: MapSurface.Model.fields.isMac,

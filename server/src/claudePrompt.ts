@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { children, DiffOperations, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MapNode, type MeetingMap, type PreviousResponse } from "./core/index.ts";
+import { children, DiffOperations, PlainDiffOperations, supportsCriteria, groupSize, type GroupNode, openChildCounts, pointStatus, ROOT_ID, type DiffInput, type MapNode, type MeetingMap, type PreviousResponse } from "./core/index.ts";
 import { nameOfSpeaker, remarkLine } from "./remarkLine.ts";
 
 export const NOOP_SCOPE = `noop にしてよいのは、新しい発言が次の 4 つだけでできているときに限る。
@@ -15,7 +15,7 @@ const SIBLINGS_MAX = 5;
 const SIBLINGS_NEAR = SIBLINGS_MAX;
 
 // system は毎回同じ文字列にして、前置きをキャッシュに乗せる
-export const SYSTEM = `あなたは会議のマインドマップを継続的に組み立てる担当者です。
+export const DIFF_SYSTEM = `あなたは会議のマインドマップを継続的に組み立てる担当者です。
 会議の文字起こしが少しずつ届きます。毎回、現在のマップと新しい発言を読み、マップへの差分操作だけを返してください（話者の名前を推定できたときは、下の「話者の名前」の names も返してよい）。マップを作り直してはいけません。
 
 # マップの語彙
@@ -311,9 +311,16 @@ function renderTopicList(map: MeetingMap): string {
   ].join("\n");
 }
 
-export function buildPrompt({ map, recent, fresh, previousResponse, speakerNames }: DiffInput, previous?: MeetingMap): string {
+export function buildPrompt({ map, recent, fresh, previousResponse, speakerNames, criteria }: DiffInput, previous?: MeetingMap): string {
   return [
     renderTopicList(map), "",
+    ...(criteria?.length ? [
+      "## 判断軸（上から優先順。会議の固定情報）",
+      ...criteria.map((axis, i) => `${i + 1}. ${JSON.stringify(axis)}`),
+      "案・論点・決定の add と update に、関係する軸名の配列 criteria を付ける。複数・0個とも可。上の名前だけを使う。議題・課題・要点・TODO・会議には付けない。update の省略は保持、[] は解除。議論に合わせて付け替え・解除する。有利・不利の評価や重みは付けない。判断軸はノードや枝にしない。",
+      "### 現在の関係づけ",
+      ...map.order.filter((id) => supportsCriteria(map.nodes[id]!.kind)).map((id) => `${id}: ${JSON.stringify(map.nodes[id]!.criteria ?? [])}`), "",
+    ] : []),
     ...(previous
       ? [`## 前回からのマップの変更（ルートの ID: ${ROOT_ID}）`, renderChanges(previous, map, previousResponse)]
       : [`## 現在のマップ（ルートの ID: ${ROOT_ID}）`, renderOutline(map)]), "",
@@ -322,4 +329,5 @@ export function buildPrompt({ map, recent, fresh, previousResponse, speakerNames
   ].join("\n");
 }
 
-export const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOperations, { onExcessProperty: "error" }).schema;
+export const OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(PlainDiffOperations, { onExcessProperty: "error" }).schema;
+export const CRITERIA_OUTPUT_SCHEMA = Schema.toJsonSchemaDocument(DiffOperations, { onExcessProperty: "error" }).schema;

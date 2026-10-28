@@ -53,6 +53,7 @@ function toElement(node: ExportNode, isRoot: boolean, names: SpeakerNames, speak
   };
   const person = speakers ? personLine(node, names) : null;
   if (person !== null) el.data.topic.children.push({ text: ` ${person}`, color: PERSON_COLOR });
+  if (node.criteria?.length) el.data.topic.children.push({ text: ` 判断軸：${node.criteria.join("・")}`, color: PERSON_COLOR });
   if (isRoot) {
     el.points = [[0, 0]];
     el.layout = "right";

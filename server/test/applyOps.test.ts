@@ -27,6 +27,75 @@ const base = (): MeetingMap =>
 const node = (map: MeetingMap, id: string) => map.nodes[id]!;
 const reasons = (ops: Op[], map: MeetingMap = base(), stamp?: { round: number; at: number }) => stamped(map, ops, stamp).dropped.map((d) => d.reason);
 
+describe("判断軸への関係づけ", () => {
+  const criteria = ["採用のしやすさ", "運用負荷"];
+  const apply = (map: MeetingMap, ops: Op[]) => applyOps(map, ops, known, { round: 2, at: 10 }, remarks, criteria);
+  const linked = () => {
+    const add = { op: "add", ref: "p", parent: "n2", kind: "案", text: "試験導入", evidence: ["r1"], criteria: [criteria[0]!] } satisfies Op;
+    return apply(base(), [add]).map;
+  };
+
+  it.each(["案", "論点", "決定"] as const)("%s の追加後に同じノードの関係づけを付け替えられる", (kind) => {
+    const add = { op: "add", ref: "p", parent: "n2", kind, text: "試験導入", evidence: ["r1"], criteria: [criteria[0]!] } satisfies Op;
+    const first = apply(base(), [add]);
+    expect(first.dropped).toEqual([]);
+    expect(node(first.map, "n7")).toHaveProperty("criteria", [criteria[0]]);
+    const update = { op: "update", node: "n7", evidence: ["r1"], criteria: [criteria[1]!] } satisfies Op;
+    const next = apply(first.map, [update]);
+    expect(next.dropped).toEqual([]);
+    expect(node(next.map, "n7")).toHaveProperty("criteria", [criteria[1]]);
+    expect(node(first.map, "n7")).toHaveProperty("criteria", [criteria[0]]);
+  });
+
+  it("未知名と対象外の属性・本文から関係づけを採用しない", () => {
+    const ops = [
+      { op: "add", ref: "p", parent: "n2", kind: "案", text: "試験導入", evidence: ["r1"], criteria: [criteria[0]!, "価格"] },
+      { op: "add", ref: "s", parent: "n2", kind: "要点", text: "要点", evidence: ["r1"], criteria: [criteria[0]!] },
+      { op: "add", ref: "text", parent: "n2", kind: "案", text: criteria[0]!, proposer: criteria[0]!, evidence: ["r1"] },
+    ] satisfies Op[];
+    const got = apply(base(), ops);
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n7")).toHaveProperty("criteria", [criteria[0]]);
+    expect(node(got.map, "n8")).not.toHaveProperty("criteria");
+    expect(node(got.map, "n9")).not.toHaveProperty("criteria");
+    expect(node(got.map, "n9").text).toBe(criteria[0]);
+  });
+
+  it("空配列の更新で表示済みの関係づけをすべて解除する", () => {
+    const before = linked();
+    expect(node(before, "n7")).toHaveProperty("criteria", [criteria[0]]);
+    const update = { op: "update", node: "n7", evidence: ["r1"], criteria: [] } satisfies Op;
+    const got = apply(before, [update]);
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n7").criteria ?? []).toEqual([]);
+  });
+
+  it("属性を省略した本文更新では既存の関係づけを保持する", () => {
+    const before = linked();
+    expect(node(before, "n7")).toHaveProperty("criteria", [criteria[0]]);
+    const got = apply(before, [{ op: "update", node: "n7", evidence: ["r1"], text: "段階導入" }]);
+    expect(node(got.map, "n7")).toMatchObject({ text: "段階導入", criteria: [criteria[0]] });
+  });
+
+  it.each(["議題", "課題", "要点", "TODO"] as const)("%s は追加でも更新でも関係づけを持たない", (kind) => {
+    const add = { op: "add", ref: "p", parent: "n1", kind, text: "対象外", evidence: ["r1"], criteria } satisfies Op;
+    const first = apply(base(), [add]);
+    expect(first.dropped).toEqual([]);
+    expect(node(first.map, "n7")).not.toHaveProperty("criteria");
+    const update = { op: "update", node: "n7", evidence: ["r2"], text: "本文は更新する", criteria } satisfies Op;
+    const next = apply(first.map, [update]);
+    expect(node(next.map, "n7").text).toBe("本文は更新する");
+    expect(node(next.map, "n7")).not.toHaveProperty("criteria");
+  });
+
+  it("更新でも未知名を落とし、優先順に並べて重複を取り除く", () => {
+    const update = { op: "update", node: "n7", evidence: ["r1"], criteria: ["価格", criteria[1]!, criteria[0]!, criteria[1]!] } satisfies Op;
+    const got = apply(linked(), [update]);
+    expect(got.dropped).toEqual([]);
+    expect(node(got.map, "n7")).toHaveProperty("criteria", criteria);
+  });
+});
+
 describe("applyOps: 入力のマップ", () => {
   it("どの操作を当てても、渡したマップは書き換えない", () => {
     const input = base();

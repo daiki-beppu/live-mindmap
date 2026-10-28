@@ -9,7 +9,7 @@ export type ExportNode = Omit<SnapshotNode, "parent" | "evidence" | "touchedAt" 
   evidence: Remark[];
   children: ExportNode[];
 };
-export type JsonExport = { root: ExportNode; speakerNames?: Readonly<Record<string, string>> };
+export type JsonExport = { root: ExportNode; criteria?: readonly string[]; speakerNames?: Readonly<Record<string, string>> };
 
 const ExportNode: Schema.Codec<ExportNode> = Schema.Struct({
   id: Schema.String,
@@ -17,6 +17,7 @@ const ExportNode: Schema.Codec<ExportNode> = Schema.Struct({
   text: Schema.mutableKey(Schema.String),
   planStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literals(PLAN_STATUSES))),
   proposer: Schema.optionalKey(Schema.String),
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
   assignee: Schema.optionalKey(Schema.String),
   assigneeSpeaker: Schema.optionalKey(Schema.String),
   due: Schema.optionalKey(Schema.String),
@@ -25,7 +26,7 @@ const ExportNode: Schema.Codec<ExportNode> = Schema.Struct({
   children: Schema.mutable(Schema.Array(Schema.suspend((): Schema.Codec<ExportNode> => ExportNode))),
 });
 
-export const JsonExport: Schema.Codec<JsonExport> = Schema.Struct({ root: ExportNode, speakerNames: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)) });
+export const JsonExport: Schema.Codec<JsonExport> = Schema.Struct({ root: ExportNode, criteria: Schema.optionalKey(Schema.Array(Schema.String)), speakerNames: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)) });
 
 export function toJsonExport(snapshot: Snapshot, remarks: Iterable<Remark>, names?: ReadonlyMap<string, string>): JsonExport {
   const byId = new Map([...remarks].map((r) => [r.id, r]));
@@ -37,7 +38,7 @@ export function toJsonExport(snapshot: Snapshot, remarks: Iterable<Remark>, name
       children: snapshot.nodes.filter((n) => n.parent === node.id).map(build),
     };
   };
-  return { root: build(snapshot.nodes.find((n) => n.id === ROOT_ID)!), ...(names && names.size > 0 ? { speakerNames: Object.fromEntries(names) } : {}) };
+  return { root: build(snapshot.nodes.find((n) => n.id === ROOT_ID)!), ...(snapshot.criteria?.length ? { criteria: [...snapshot.criteria] } : {}), ...(names && names.size > 0 ? { speakerNames: Object.fromEntries(names) } : {}) };
 }
 
 export function exportFiles(exp: JsonExport): Record<"map.md" | "map.json" | "map.drawnix", string> {

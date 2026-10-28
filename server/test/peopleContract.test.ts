@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { buildPrompt, OUTPUT_SCHEMA, SYSTEM } from "../src/claudePrompt.ts";
+import { buildPrompt, OUTPUT_SCHEMA, DIFF_SYSTEM as SYSTEM } from "../src/claudePrompt.ts";
 import { applyOps, type DiffInput, DiffOutput, DiffUpdater, emptyMap, LogEvent, type MeetingMap, type Op } from "../src/core/index.ts";
 
 // Issue #1023: 案の出した人（サーバーが決める）と TODO の担当の話者（AI が書く）の、AI の出力の契約・ログの形・プロンプトの文面。

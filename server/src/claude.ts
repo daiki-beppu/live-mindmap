@@ -2,7 +2,7 @@ import type { Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-age
 import { Cause, Context, Effect, Exit, Layer, Option, Queue, Ref, Schema, Scope, Stream } from "effect";
 import { DiffOperations, DiffUpdatePaused, DiffUpdater, type DiffInput, type KatakanaAnswer, type DiffResult, type DiffUsage, type MeetingMap, type ScreenChange } from "./core/index.ts";
 
-import { buildPrompt, OUTPUT_SCHEMA, SYSTEM } from "./claudePrompt.ts";
+import { buildPrompt, CRITERIA_OUTPUT_SCHEMA, OUTPUT_SCHEMA, DIFF_SYSTEM as SYSTEM } from "./claudePrompt.ts";
 import { fmtTime } from "./remarkLine.ts";
 import { KATAKANA_JSON_SCHEMA, KATAKANA_SYSTEM, KatakanaOutput, katakanaPrompt, toAnswers } from "./katakanaPrompt.ts";
 import { ManagedDeps } from "./managedDeps.ts";
@@ -109,9 +109,9 @@ export const layerClaude = (model: string) => Layer.effect(
       (o) => Queue.end(o.input).pipe(Effect.andThen(Effect.sync(() => o.query.close()))),
     );
 
-    const open = Effect.gen(function* () {
+    const open = (criteria: readonly string[] | undefined) => Effect.gen(function* () {
       const scope = yield* Scope.fork(sessionScope, "sequential");
-      return yield* acquireQuery(diffSystem, OUTPUT_SCHEMA).pipe(
+      return yield* acquireQuery(diffSystem, criteria?.length ? CRITERIA_OUTPUT_SCHEMA : OUTPUT_SCHEMA).pipe(
         Effect.map((q): Open => ({ scope, ...q, calls: 0 })),
         Scope.provide(scope),
         Effect.tapError(() => Scope.close(scope, Exit.void)),
@@ -183,7 +183,7 @@ export const layerClaude = (model: string) => Layer.effect(
         yield* discard(c.value);
         c = Option.none();
       }
-      const o = Option.isSome(c) ? c.value : yield* open;
+      const o = Option.isSome(c) ? c.value : yield* open(input.criteria);
       if (Option.isNone(c)) yield* Ref.set(current, Option.some(o));
       return yield* Effect.gen(function* () {
         yield* advance(o, (x) => ({ ...x, calls: x.calls + 1 }));

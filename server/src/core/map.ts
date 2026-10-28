@@ -22,6 +22,7 @@ export const MapNode = Schema.Struct({
   assignee: Schema.optionalKey(Schema.mutableKey(Schema.String)),
   assigneeSpeaker: Schema.optionalKey(Schema.mutableKey(Schema.String)),
   proposer: Schema.optionalKey(Schema.mutableKey(Schema.String)),
+  criteria: Schema.optionalKey(Schema.mutableKey(Schema.Array(Schema.String))),
   due: Schema.optionalKey(Schema.String),
   evidence: Schema.mutable(Schema.Array(Schema.String)),
   touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
@@ -52,6 +53,7 @@ export const Op = Schema.Union([
     assignee: Schema.optionalKey(Schema.String),
     assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker),
     proposer: Schema.optionalKey(Schema.String),
+    criteria: Schema.optionalKey(Schema.Array(Schema.String)),
     due: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
@@ -60,6 +62,7 @@ export const Op = Schema.Union([
     text: Schema.optionalKey(Schema.String),
     evidence: Evidence,
     planStatus: Schema.optionalKey(PlanStatusSchema),
+    criteria: Schema.optionalKey(Schema.Array(Schema.String)),
     assignee: Schema.optionalKey(Schema.String),
     assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker),
   }),
@@ -78,8 +81,16 @@ const DiffOps = Op.mapMembers(([add, update, ...rest]) => [
   add.mapFields(({ proposer: _proposer, ...fields }) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   update.mapFields((fields) => ({ ...fields, evidence: fields.evidence.check(Schema.isMinLength(1)) })),
   ...rest,
-]);
+] as const);
 export const DiffOperations = Schema.Struct({ ops: Schema.mutable(Schema.Array(DiffOps)), names: Schema.optionalKey(Schema.mutable(Schema.Array(InferredSpeakerName))) });
+export const PlainDiffOperations = Schema.Struct({
+  ...DiffOperations.fields,
+  ops: Schema.mutable(Schema.Array(DiffOps.mapMembers(([add, update, ...rest]) => [
+    add.mapFields(({ criteria: _criteria, ...fields }) => fields),
+    update.mapFields(({ criteria: _criteria, ...fields }) => fields),
+    ...rest,
+  ]))),
+});
 export const DiffOutput = Schema.Struct({ ...DiffOperations.fields, processedRemarks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))) });
 export type DiffOutput = typeof DiffOutput["Type"];
 
@@ -91,7 +102,13 @@ export function emptyMap(title: string): MeetingMap {
   };
 }
 
-export const cloneNode = (n: MapNode): MapNode => ({ ...n, evidence: [...n.evidence] });
+export const cloneNode = (n: MapNode): MapNode => ({ ...n, evidence: [...n.evidence], ...(n.criteria ? { criteria: [...n.criteria] } : {}) });
+
+export const supportsCriteria = (kind: MapNode["kind"]): boolean => kind === "案" || kind === "論点" || kind === "決定";
+
+function normalizedCriteria(kind: MapNode["kind"], names: readonly string[], allowed: readonly string[]): string[] {
+  return supportsCriteria(kind) ? [...new Set(allowed)].filter((name) => names.includes(name)) : [];
+}
 
 function cloneMap(map: MeetingMap): MeetingMap {
   const nodes: Record<string, MapNode> = {};
@@ -141,6 +158,7 @@ function removeNode(map: MeetingMap, id: string) {
 }
 
 type ApplyState = {
+  criteria: readonly string[];
   map: MeetingMap;
   refs: Map<string, string>;
   known: ReadonlySet<string>;
@@ -169,10 +187,12 @@ function evidenceError(known: ReadonlySet<string>, evidence: string[]): string |
   return null;
 }
 
-function newNode(op: OpOf<"add">, id: string, parent: string, round: number): MapNode {
+function newNode(op: OpOf<"add">, id: string, parent: string, round: number, allowed: readonly string[]): MapNode {
+  const criteria = normalizedCriteria(op.kind, op.criteria ?? [], allowed);
   return {
     id, parent, kind: op.kind, text: op.text, evidence: [...op.evidence],
     evidenceRound: round,
+    ...(criteria.length ? { criteria } : {}),
     ...(op.kind === "案" ? { planStatus: "検討中" as const } : {}),
     ...(op.kind === "案" && op.proposer ? { proposer: op.proposer } : {}),
     ...(op.kind === "TODO" && op.assignee ? { assignee: op.assignee } : {}),
@@ -188,7 +208,7 @@ function applyAdd(s: ApplyState, op: OpOf<"add">): Applied {
   const err = parentError(map.nodes[parentId], op.kind) ?? evidenceError(s.known, op.evidence);
   if (err) return err;
   const id = `n${map.nextId++}`;
-  map.nodes[id] = newNode(op, id, parentId, s.round);
+  map.nodes[id] = newNode(op, id, parentId, s.round, s.criteria);
   map.order.push(id);
   s.refs.set(op.ref, id);
   reopenUp(map, id);
@@ -213,6 +233,14 @@ function assignmentOf(n: MapNode, op: OpOf<"update">): { changed: boolean; apply
   return { changed: false, apply: () => {} };
 }
 
+function updateCriteria(node: MapNode, requested: readonly string[] | undefined, allowed: readonly string[]): boolean {
+  if (requested === undefined) return false;
+  const criteria = normalizedCriteria(node.kind, requested, allowed);
+  const changed = JSON.stringify(criteria) !== JSON.stringify(node.criteria ?? []);
+  if (criteria.length) node.criteria = criteria; else delete node.criteria;
+  return changed;
+}
+
 function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
   const n = target(s, op.node);
   if (!n) return "対象が無い";
@@ -221,10 +249,11 @@ function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
   if (err) return err;
   const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
   const assigned = assignmentOf(n, op);
+  const criteriaChanged = updateCriteria(n, op.criteria, s.criteria);
   const valueChanged = (!!op.text && op.text !== n.text)
     || (!!op.planStatus && op.planStatus !== n.planStatus)
     || evidenceAdded
-    || assigned.changed;
+    || assigned.changed || criteriaChanged;
   reopenUp(s.map, n.id);
   if (valueChanged) { s.changeOrder.push(n.id); touchUp(s.map, n.id, s.at); }
   if (evidenceAdded) n.evidenceRound = s.round;
@@ -336,8 +365,8 @@ function applyOp(s: ApplyState, op: Op): Applied {
 
 export type AppliedOps = { map: MeetingMap; dropped: Dropped[]; changeOrder: string[]; refs: Record<string, string>; combined: ReadonlyMap<string, readonly string[]> };
 
-export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }, remarks: ReadonlyMap<string, Remark>): AppliedOps {
-  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [], remarks, combined: new Map() };
+export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string>, stamp: { round: number; at: number }, remarks: ReadonlyMap<string, Remark>, criteria: readonly string[] = []): AppliedOps {
+  const s: ApplyState = { map: cloneMap(input), refs: new Map(), known, round: stamp.round, at: stamp.at, changeOrder: [], remarks, combined: new Map(), criteria };
   const dropped: Dropped[] = [];
   for (const op of ops) {
     const reason = applyOp(s, op);

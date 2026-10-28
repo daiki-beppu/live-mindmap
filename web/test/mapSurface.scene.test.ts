@@ -301,6 +301,31 @@ describe("mapSurface の Scene: 全体を収める（fitView の式）", () => {
 });
 
 describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
+  it("別議題の案の関係づけだけが変わっても、表示済みの木と位置を維持する", () => {
+    const before = snap([
+      node("root", null, "会議", "定例"),
+      node("A", "root", "議題", "前の議題", { touchedAt: 0 }),
+      node("A1", "A", "案", "前の案", { touchedAt: 0 }),
+      node("B", "root", "議題", "今の議題", { touchedAt: 0 }),
+      node("B1", "B", "案", "今の案", { touchedAt: 0 }),
+    ], { criteria: ["採用のしやすさ"], currentTopic: "B", now: 1000 });
+    const heights = { root: 40, A: 64, A1: 90, B: 64, B1: 90 };
+    const after = { ...before, round: 4, currentTopic: "A", now: 1001, nodes: before.nodes.map((n) => n.id === "A1" ? { ...n, criteria: ["採用のしやすさ"], touchedAt: 1001 } : n.id === "A" ? { ...n, touchedAt: 1001 } : n) };
+    scene(app, given(modelOf(before, "live")), measured(heights),
+      expectScene(wrapperOf("A1")).toBeAbsent(), expectScene(wrapperOf("B1")).toExist(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      expectScene(wrapperOf("A1")).toBeAbsent(), expectScene(wrapperOf("B1")).toExist(),
+      tap(({ html }) => {
+        const positions = layout(foldView(before, undefined, null).nodes, heights);
+        for (const id of ["root", "A", "B", "B1"]) expectNumbers(nodeTranslate(html, id), [positions[id]!.x, positions[id]!.y]);
+      }),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: { ...after, round: 5, now: 1002 } })),
+      expectScene(wrapperOf("A1")).toBeAbsent(), expectScene(wrapperOf("B1")).toExist(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: { ...after, round: 6, nodes: after.nodes.map((n) => n.id === "A1" ? { ...n, text: "議論で更新した案" } : n) } })),
+      expectScene(wrapperOf("A1")).toExist(), expectScene(wrapperOf("B1")).toBeAbsent(),
+      expectScene(selector('[data-node-id="A1"] .map-node__text')).toHaveText("議論で更新した案"),
+    );
+  });
   // 済みの議題 A（論点 A1 を持つ）と、話し中の今の議題 B
   const foldNodes = (): SnapshotNode[] => [
     node("root", null, "会議", "定例"),

@@ -259,14 +259,21 @@ describe("cli recorded --no-map", () => {
     expect(r.stdout.join("")).toContain("セッションなし");
   }).pipe(Effect.scoped));
 
-  it.live("生成したフォルダをplayへ渡すと発言に基づくマップを書き出せる", () => Effect.gen(function* () {
+  it.live.each([false, true])("生成したフォルダをplayへ渡すと発言に基づくマップを書き出せ、指定済みの判断軸も保持する（軸あり: %s）", (withCriteria) => Effect.gen(function* () {
     const r = yield* resource(THREE);
-    yield* r.cli(["recorded", r.file, "--no-map"]);
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    const file = join(r.root, "criteria.txt");
+    writeFileSync(file, criteria.join("\n"));
+    yield* r.cli(["recorded", r.file, "--no-map", ...(withCriteria ? ["--criteria", file] : [])]);
     const original = onlyFolder(r.sessionsDir);
+    expect(r.prepareUpdater).not.toHaveBeenCalled();
+    expect(r.update).not.toHaveBeenCalled();
+    expect(log(original).find((event) => event.type === "start")?.criteria).toEqual(withCriteria ? criteria : undefined);
     const outputStart = r.stdout.length;
     yield* r.cli(["play", original, "--judge", "off"], { LIVE_MINDMAP_SESSIONS: join(r.root, "replayed"), LIVE_MINDMAP_PORT: "0" });
     const replayed = dirname(r.stdout.slice(outputStart).join("").trim().split("\n")[0]!);
     const map = Schema.decodeUnknownSync(JsonExport)(JSON.parse(readFileSync(join(replayed, "map.json"), "utf8")));
+    expect(map.criteria).toEqual(withCriteria ? criteria : undefined);
     expect(map.root.children.map((node) => node.text)).toEqual(THREE.remarks.map((remark) => remark.text));
     expect(map.root.children.flatMap((node) => node.evidence).map((remark) => remark.text)).toEqual(THREE.remarks.map((remark) => remark.text));
     for (const name of ["map.md", "map.json", "map.drawnix"]) expect(existsSync(join(replayed, name))).toBe(true);

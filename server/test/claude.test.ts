@@ -2,7 +2,7 @@ import { defaultClaude } from "../src/modelSelection.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { AgentSdk, buildPrompt, claudeTuning, layerClaude, NOOP_SCOPE, QUERY_RENEW_CALLS } from "../src/claude.ts";
-import { OUTPUT_SCHEMA, SYSTEM } from "../src/claudePrompt.ts";
+import { CRITERIA_OUTPUT_SCHEMA, OUTPUT_SCHEMA, DIFF_SYSTEM as SYSTEM } from "../src/claudePrompt.ts";
 import { applyOps, DiffUpdater, DiffUpdatePaused } from "../src/core/index.ts";
 import { emptyMap, type DiffInput, type MeetingMap, type Op, type ScreenChange } from "../src/core/index.ts";
 
@@ -152,6 +152,24 @@ const growing = (n: number): DiffInput => inputOf(growingMaps[n]!, n);
 const nextTick = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
 describe("差分更新の query の使い回し", () => {
+  it.effect("判断軸を失敗後の再開と定期的な query 更新にも引き継ぐ", () => Effect.gen(function* () {
+    const { created, updater } = yield* setup((queryIndex) => queryIndex === 0 ? "fail" : "ok");
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    const request = (n: number) => ({ ...input(n), criteria });
+    expect((yield* Effect.result(updater.update(request(1))))._tag).toBe("Failure");
+    for (let n = 1; n <= QUERY_RENEW_CALLS + 1; n++) {
+      expect((yield* updater.update(request(n))).ops).toContainEqual(expect.objectContaining({ op: "noop" }));
+    }
+    expect(created).toHaveLength(3);
+    for (const query of created) {
+      expect(query.options.outputFormat.schema).toEqual(CRITERIA_OUTPUT_SCHEMA);
+      for (const prompt of texts(query)) {
+        expect(prompt.indexOf(criteria[0]!)).toBeGreaterThanOrEqual(0);
+        expect(prompt.indexOf(criteria[1]!)).toBeGreaterThan(prompt.indexOf(criteria[0]!));
+      }
+    }
+  }));
+
   it.effect("最初の呼び出しまでは query を開かない（Layer を build しただけでは開かない）", () =>
     Effect.gen(function* () {
       const { created } = yield* setup();

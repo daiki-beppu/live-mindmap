@@ -14,6 +14,7 @@ let pages: ReviewPages;
 // 点滅の再始動用の例（反映 3・4 で、論点 n2 と今の議題 n3 が続けて変わる）
 let blinkPages: ReviewPages;
 let longReviewPath: string;
+let criteriaReviewPath: string;
 // Chromium はファイルで 1 つ。テストは withContext で自分の context を持ち、独立を保つ
 let browser: Browser;
 beforeAll(async () => {
@@ -26,6 +27,18 @@ beforeAll(async () => {
     { type: "start", at: "2026-10-01T00:00:00.000Z", title: "長い会議" },
     { type: "remark", at: "2026-10-01T00:58:55.000Z", remark: { id: "r1", track: "相手", start: 3532, end: 3535, text: "次回の打ち合わせはオンラインで開きます" } },
     { type: "diff", at: "2026-10-01T00:58:55.000Z", input: { recent: [], fresh: ["r1"], nodeCount: 0 }, ops: [{ op: "add", ref: "t1", parent: "root", kind: "議題", text: "次回の打ち合わせの日程と参加方法を決める", evidence: ["r1"] }], dropped: [] },
+  ]));
+  criteriaReviewPath = join(pages.plainPath, "..", "criteria-map.html");
+  const criteria = ["採用のしやすさ", "運用負荷"];
+  await writeFile(criteriaReviewPath, embedReviewLog(template, [
+    { type: "start", at: "2026-10-01T00:00:00.000Z", title: "判断軸の見返し", criteria },
+    ...[2, 4, 6, 8].flatMap((second, index) => [
+      { type: "remark", at: `2026-10-01T00:00:0${second}.000Z`, remark: { id: `r${index}`, track: "相手", start: second - 1, end: second, text: "合成の発言" } },
+      { type: "diff", at: `2026-10-01T00:00:0${second}.000Z`, input: { recent: [], fresh: [`r${index}`], nodeCount: index === 0 ? 0 : 2 }, dropped: [], ops: index === 0 ? [
+        { op: "add", ref: "t", parent: "root", kind: "議題", text: "導入方法", evidence: ["r0"] },
+        { op: "add", ref: "a", parent: "t", kind: "案", text: "試験導入", evidence: ["r0"] },
+      ] : [{ op: "update", node: "n2", evidence: [`r${index}`], criteria: index === 3 ? [] : [criteria[index - 1]] }] },
+    ]),
   ]));
   browser = await launchBrowser();
 }, TIMEOUT);
@@ -62,6 +75,29 @@ describe("見返し（Foldkit 版）の入口", () => {
 });
 
 describe("見返し（Foldkit 版）の Mount", () => {
+  it(
+    "同じ見返し画面のスライダーで往復すると、表示済みの案の関係づけも時刻に追従する",
+    () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {
+      const page = await openReviewPage(context, criteriaReviewPath, { audio: false });
+      const slider = page.getByRole("slider", { name: "時刻" });
+      await slider.press("Home");
+      await expect.poll(() => page.locator("[data-node-id]").count()).toBe(1);
+      expect(await page.locator(".criteria-strip li").allTextContents()).toEqual(["採用のしやすさ", "運用負荷"]);
+      let time = 0;
+      for (const [target, expected] of [[2, ""], [4, "採用のしやすさ"], [6, "運用負荷"], [8, ""], [6, "運用負荷"], [4, "採用のしやすさ"], [2, ""]] as const) {
+        while (time !== target) {
+          await slider.press(time < target ? "ArrowRight" : "ArrowLeft");
+          time += time < target ? 1 : -1;
+          await expect.poll(() => shownSeconds(page)).toBe(time);
+        }
+        await expect.poll(() => shownSeconds(page)).toBe(target);
+        expect(await page.locator('[data-node-id="n2"] .map-node__text').innerText()).toBe("試験導入");
+        await expect.poll(() => page.locator('[data-node-id="n2"] .map-node__criteria-value').innerText()).toBe(expected);
+      }
+    }),
+    TIMEOUT,
+  );
+
   it(
     "<audio> の時刻: 再生すると audio.currentTime と .review-bar__time が進み、止めると paused になり、End で <audio> が会議の終わりに追従する",
     () => withContext(browser, { viewport: PAGE_VIEWPORT }, async (context) => {

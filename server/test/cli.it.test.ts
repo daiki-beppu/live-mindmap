@@ -479,6 +479,30 @@ describe("ヘルパーの開始前の確かめ（Issue #709）", () => {
   const vocabLinesOf = (sessionDir: string) =>
     readFileSync(join(sessionDir, "log.jsonl"), "utf8").split("\n").filter((l) => l !== "").map((l) => JSON.parse(l)).filter((e) => e.type === "vocab");
 
+  it.live.each([
+    { content: " 採用のしやすさ \r\n\r\n運用負荷\n", expected: ["採用のしやすさ", "運用負荷"] },
+    { content: " \n\r\n", expected: undefined },
+  ])("start --criteria の行を順に開始ログへ保存し、空ファイルは属性を足さない（$content）", ({ content, expected }) => Effect.gen(function* () {
+    const r = yield* resource("authorized", false);
+    const file = join(dirname(r.sessionsDir), "criteria.txt");
+    writeFileSync(file, content);
+    yield* runCli(["start", "--app", "us.zoom.xos", "--no-audio", "--no-screen", "--criteria", file]).pipe(Effect.provide(r.deps.layer));
+    const rows = readFileSync(join(r.deps.stdout.join("").trim(), "log.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const start = rows.find((row) => row.type === "start");
+    expect(start).toMatchObject({ type: "start" });
+    if (expected === undefined) expect(start).not.toHaveProperty("criteria");
+    else expect(start).toHaveProperty("criteria", expected);
+  }).pipe(Effect.scoped));
+
+  it.live("resume は --criteria による判断軸の変更を受け付けない", () => Effect.gen(function* () {
+    const r = yield* resource("authorized", false);
+    const file = join(dirname(r.sessionsDir), "criteria.txt");
+    writeFileSync(file, "採用のしやすさ\n");
+    const result = yield* Effect.result(runCli(["resume", "--criteria", file]).pipe(Effect.provide(r.deps.layer)));
+    expect(Result.isFailure(result)).toBe(true);
+    expect(r.launches).toEqual([]);
+  }).pipe(Effect.scoped));
+
   it.live("640: start --vocab は 1 行 1 語で読み（空行は無視）、足した語として vocab の行に残す。読みは全語を 1 回のまとめた呼び出しで作る", () => Effect.gen(function* () {
     const readings = fakeReadings({ 港南店: "kounanten", ゼンデスク: "zendesuku" });
     const r = yield* resource("authorized", false, readyManagedDeps, readings);

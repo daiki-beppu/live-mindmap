@@ -88,6 +88,25 @@ describe("buildReviewTimeline（反映の一覧・会議の長さ）", () => {
 describe("snapshotAt（時刻 t のスナップショット）", () => {
   const tl = buildReviewTimeline(events);
 
+  it("未処理の発言が残る差分でも、同じ時間軸を往復したときに処理済み時刻の関係づけを表示する", () => {
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    const timeline = buildReviewTimeline([
+      { type: "start", title: "合成会議", criteria },
+      remark("r1", "相手", 0, 2, "合成1"),
+      remark("r2", "相手", 2, 4, "合成2"),
+      remark("r3", "相手", 4, 6, "合成3"),
+      { ...diff(["r1", "r2", "r3"], [add("t", "導入方法", ["r1"]), { op: "add", ref: "a", parent: "t", kind: "案", text: "試験導入", evidence: ["r1"], criteria: [criteria[0]] }]), processedRemarks: 1 },
+      { ...diff(["r2", "r3"], [{ op: "update", node: "n2", evidence: ["r2"], criteria: [criteria[1]] }]), processedRemarks: 1 },
+      { ...diff(["r3"], [{ op: "update", node: "n2", evidence: ["r3"], criteria: [] }]), processedRemarks: 1 },
+    ]);
+    expect(timeline.reflectionTimes).toEqual([2, 4, 6]);
+    for (const [time, links] of [[2, [criteria[0]]], [4, [criteria[1]]], [6, []], [4, [criteria[1]]], [2, [criteria[0]]]] as const) {
+      const snapshot = snapshotAt(timeline, time);
+      expect(snapshot.nodes.find((node) => node.id === "n2")?.criteria ?? []).toEqual(links);
+      expect(snapshot.now).toBe(time);
+    }
+  });
+
   it("t が反映の時刻のちょうど手前では、その反映を含めず、end が t より後の発言も含めない", () => {
     const s = snapshotAt(tl, 9.9);
     expect(s.round).toBe(0);

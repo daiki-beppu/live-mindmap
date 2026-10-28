@@ -131,6 +131,26 @@ const bootSessions = (helpersLayer: Layer.Layer<Helpers>, sinksLayer: Layer.Laye
 
 describe("現在のセッションの状態による操作の許可", () => {
   it.effect.each([
+    { local: true, criteria: ["採用のしやすさ"], notices: 1 },
+    { local: false, criteria: ["採用のしやすさ"], notices: 0 },
+    { local: true, criteria: [], notices: 0 },
+  ])("ライブ開始で判断軸を sink へ渡し、ローカルかつ軸がある場合だけ一行知らせる（$local / $notices）", ({ local, criteria, notices }) => Effect.gen(function* () {
+    const helper = yield* makeFakeHelpers([{}]);
+    const fake = yield* makeFakeSessionSinks();
+    const received: OpenSessionSink[] = [];
+    const sinks = SessionSinks.of({ ...fake.sinks, open: (args) => {
+      received.push(args);
+      return fake.sinks.open(args);
+    } });
+    const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helper.helpers), Layer.succeed(SessionSinks, sinks));
+    const started = yield* sessions.start(start({ audio: false, screen: false, criteria, plan: { kind: "single", model: local ? { name: "apple", route: "apple", local: true } : defaultClaude } }));
+    expect(received).toHaveLength(1);
+    expect(received[0]!.criteria).toEqual(criteria);
+    expect(started.warnings.filter((line) => line.includes("判断軸"))).toHaveLength(notices);
+    if (notices) expect(started.warnings).toContain("ローカルモードでは判断軸を表示・保存しますが、ノードへの関係づけは行いません");
+  }));
+
+  it.effect.each([
     { operation: "resume", state: "idle", expected: "NoSession" },
     { operation: "checkResume", state: "idle", expected: "NoSession" },
     { operation: "setSelfPause", state: "idle", expected: "NoSession" },

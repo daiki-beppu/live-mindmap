@@ -24,13 +24,18 @@ function adoptedByCombine(old: MapNode, n: MapNode, combined: AppliedOps["combin
   return combined.get(n.parent)?.includes(old.parent) ?? false;
 }
 
+function changedValue(old: MapNode, n: MapNode): boolean {
+  return old.text !== n.text || old.assignee !== n.assignee || old.assigneeSpeaker !== n.assigneeSpeaker
+    || JSON.stringify(old.criteria ?? []) !== JSON.stringify(n.criteria ?? []);
+}
+
 function changeTypesOf(id: string, old: MapNode, n: MapNode, before: MeetingMap, applied: CombineRecord): ChangeType[] {
   const after = applied.map;
   const decided = n.kind === "論点" && pointStatus(before, id) === "未決" && pointStatus(after, id) === "決定済み";
   const rejected = n.kind === "案" && old.planStatus !== "却下" && n.planStatus === "却下";
   const moved = old.parent !== n.parent && !adoptedByCombine(old, n, applied.combined);
   const combined = applied.combined.has(id);
-  const textChanged = old.text !== n.text || old.assignee !== n.assignee || old.assigneeSpeaker !== n.assigneeSpeaker;
+  const textChanged = changedValue(old, n);
   const evidenceOnly = hasNew(old.evidence, n.evidence) && !decided && !rejected && !moved && !combined;
   const types: ChangeType[] = [];
   if (textChanged || evidenceOnly) types.push("更新");

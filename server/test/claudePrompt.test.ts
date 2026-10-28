@@ -13,6 +13,34 @@ beforeEach(() => {
 });
 
 describe("Agent SDK を読み込めない環境でのプロンプト生成", () => {
+  it("判断軸の省略と空配列では従来のプロンプト全文を保つ", async () => {
+    const { buildPrompt } = await import("../src/claudePrompt.ts");
+    const input = { map: emptyMap("定例"), recent: [], fresh: [] };
+    const expected = [
+      "## 議題の一覧（話し中 0・済み 0。済みと、済みの議題の下は省略）",
+      "（なし）",
+      "目安: 1 つの議題・論点の話し中の部分、1 つの案・課題・要点の話し中の配下は 15〜20 ノード。1 つの親の下の話し中の兄弟が種別によらず 5 つになったら、まとめる親を考える合図（ルート直下も含む。済みは数えない）",
+      "", "## 現在のマップ（ルートの ID: root）", "- root 会議: 定例",
+      "", "## 直前の発言（処理済み・文脈用）", "（なし）", "", "## 新しい発言", "",
+    ].join("\n");
+    expect(buildPrompt(input)).toBe(expected);
+    const empty = { ...input, criteria: [] };
+    expect(buildPrompt(empty)).toBe(expected);
+  });
+
+  it("初回と後続のモデル入力に判断軸が記載順で届く", async () => {
+    const { buildPrompt } = await import("../src/claudePrompt.ts");
+    const map = emptyMap("定例");
+    const criteria = ["採用のしやすさ", "運用負荷"];
+    const input = { map, recent: [], fresh: [], criteria };
+    for (const previous of [undefined, map]) {
+      const prompt = buildPrompt(input, previous);
+      const first = prompt.indexOf(criteria[0]!);
+      expect(first).toBeGreaterThanOrEqual(0);
+      expect(prompt.indexOf(criteria[1]!)).toBeGreaterThan(first);
+    }
+  });
+
   it("新モジュールの文・スキーマと buildPrompt を SDK なしで利用できる", async () => {
     const { buildPrompt, OUTPUT_SCHEMA } = await import("../src/claudePrompt.ts");
 
