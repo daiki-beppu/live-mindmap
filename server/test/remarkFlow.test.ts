@@ -32,7 +32,8 @@ const bufferedFeed = () => {
     remark: (c: Parameters<Inlet["remark"]>[0]) => Effect.sync(() => { pending.push(inlet.remark(c)); }),
     screen: (c: Parameters<Inlet["screen"]>[0]) => Effect.sync(() => { pending.push(inlet.screen(c)); }),
     screenOff: (o: Parameters<Inlet["screenOff"]>[0]) => Effect.sync(() => { pending.push(inlet.screenOff(o)); }),
-    drain: release,
+    finish: release,
+    discard: Effect.sync(() => { pending.length = 0; }),
   } satisfies Feed);
   return { factory, release };
 };
@@ -119,7 +120,7 @@ describe("remarkFlow", () => {
     yield* h.flow.speaker(settled(22));
     yield* h.flow.final(final("相手", 20, 22, "つぎ"));
     yield* h.flow.final(final("自分", 23, 24, "自分からも続ける"));
-    yield* h.flow.drain;
+    yield* h.flow.settle({ kind: "入れ切る" });
     yield* h.session.idle;
     expect(h.lines().map((l) => [l.remark.id, l.remark.speaker, l.remark.text])).toEqual([
       ["r1", "相手 A", "はい、"], ["r2", "相手 B", "ありがとう"], ["r3", "相手 B", "つぎ"], ["r4", "自分", "自分からも続ける"],
@@ -148,7 +149,7 @@ describe("remarkFlow", () => {
     yield* h.flow.screenOff({ start: 13, reason: "許可なし" });
     if (buffered) expect(h.events.filter((e) => e.type === "screen" || e.type === "screen-off")).toEqual([]);
     yield* h.flow.final(final("相手", 14, 15, "画面を確認する"));
-    yield* h.flow.drain;
+    yield* h.flow.settle({ kind: "入れ切る" });
     yield* h.session.idle;
     expect(h.calls.flatMap((c) => c.screens ?? []).map((s) => [s.start, s.image === null ? null : Array.from(s.image.bytes)])).toEqual([[1, [1]], [2, null], [12, [2]]]);
     expect(h.events.filter((e) => e.type === "screen")[0]).toMatchObject({ start: 1, lines: ["画面の文字"] });
@@ -164,20 +165,44 @@ describe("remarkFlow", () => {
     const expected = { id: "r1", track: "相手", start: 5, end: 8, text: "あしたの会議は" };
     expect(h.lines().map((l) => l.remark)).toEqual([expected]);
     expect(h.fresh()).toEqual([expected]);
-    yield* h.flow.drain;
+    yield* h.flow.settle({ kind: "入れ切る" });
     expect(h.lines()).toHaveLength(1);
   }));
 
-  it.effect("drainは残りの発言をfeedへ渡してからfeedをdrainする", () => Effect.gen(function* () {
+  it.effect("入れ切るは途中結果を1回だけ投入してからfeedを1回finishする", () => Effect.gen(function* () {
     const feed = bufferedFeed();
-    const h = yield* setup({ feed: feed.factory });
+    let finishes = 0;
+    const h = yield* setup({ feed: (inlet) => Effect.map(feed.factory(inlet), (f) => ({
+      ...f, finish: Effect.andThen(Effect.sync(() => { finishes++; }), f.finish),
+    })) });
     yield* h.flow.partial(partial("相手", 5, 8, "とちゅうでとめた"));
     expect(h.lines()).toEqual([]);
-    yield* h.flow.drain;
+    yield* h.flow.settle({ kind: "入れ切る" });
     yield* h.session.idle;
+    expect(h.lines().map((l) => [l.remark.id, l.remark.text])).toEqual([["r1", "とちゅうでとめた"]]);
     expect(h.fresh().map((r) => [r.id, r.text])).toEqual([["r1", "とちゅうでとめた"]]);
-    yield* h.flow.drain;
-    expect(h.lines()).toHaveLength(1);
+    expect(finishes).toBe(1);
+  }));
+
+  it.effect("捨てるはdiscard・quiesce・finishの順で進み、保留中の途中結果を投入しない", () => Effect.gen(function* () {
+    const order: string[] = [];
+    const feed = bufferedFeed();
+    const h = yield* setup({ feed: (inlet) => Effect.map(feed.factory(inlet), (f) => ({
+      ...f,
+      discard: Effect.andThen(Effect.sync(() => { order.push("discard"); }), f.discard),
+      finish: Effect.andThen(Effect.sync(() => { order.push("finish"); }), f.finish),
+    })) });
+    yield* h.flow.final(final("自分", 1, 2, "先に確定した発言"));
+    yield* feed.release;
+    yield* h.flow.partial(partial("相手", 5, 8, "保留中の途中結果"));
+    yield* tick;
+    expect(bubbles(h.frames).some((b) => b.text === "保留中の途中結果")).toBe(true);
+    expect(h.lines().map((l) => l.remark.text)).toEqual(["先に確定した発言"]);
+    yield* h.flow.settle({ kind: "捨てる", quiesce: Effect.sync(() => { order.push("quiesce"); }) });
+    yield* h.session.idle;
+    expect(order).toEqual(["discard", "quiesce", "finish"]);
+    expect(h.lines().map((l) => l.remark.text)).toEqual(["先に確定した発言"]);
+    expect(h.fresh().map((r) => r.text)).toEqual(["先に確定した発言"]);
   }));
 
   it.effect("ライブの字幕はclear後に再開でき、stop後は送らない", () => Effect.gen(function* () {
@@ -253,7 +278,7 @@ describe("remarkFlow", () => {
     const h = yield* setup();
     yield* h.flow.final(final("相手", 1, 2, "確定した発言"));
     yield* h.flow.partial(partial("相手", 5, 6, "途中の発言"));
-    yield* h.flow.drain;
+    yield* h.flow.settle({ kind: "入れ切る" });
     expect(h.lines()).toHaveLength(2);
     for (const line of h.lines()) {
       expect(line).not.toHaveProperty("raw");
@@ -286,7 +311,7 @@ describe("remarkFlow", () => {
     yield* h.flow.partial(partial("自分", 0, 7, "時計を進める"));
     yield* h.flow.speaker(speakerOff);
     yield* h.flow.partial({ ...partial("相手", 20, 21, garbled.text), words: garbled.words });
-    yield* h.flow.drain;
+    yield* h.flow.settle({ kind: "入れ切る" });
     expect(h.lines().map((l) => [l.remark.id, l.remark.text, l.raw, l.words])).toEqual([1, 2, 3].map((n) => [`r${n}`, "港南店に行きます", garbled.text, garbled.words]));
     expect(bubbles(h.frames).filter((b) => b.track === "相手").map((b) => b.text)).toEqual(["港南店に行きます", "港南店に行きます", "港南店に行きます"]);
     yield* Deferred.succeed(h.reply, undefined);

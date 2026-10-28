@@ -395,11 +395,9 @@ export class Sessions extends Context.Service<Sessions, {
 
       const closeRecorded = (recorded: Recorded) => Effect.andThen(Queue.end(recorded.events), closeSession(recorded.sink, recorded.scope));
 
-      const finishRecorded = (recorded: Recorded, failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) =>
+      const finishRecorded = (recorded: Recorded, writeOut: Effect.Success<ReturnType<RecordedSink["end"]>>["writeOut"], failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) =>
         Effect.gen(function* () {
-          yield* recorded.sink.flush;
-          const paths = yield* recorded.sink.exports;
-          const ocrSummary = yield* recorded.sink.ocrSummary;
+          const { paths, ocrSummary } = yield* writeOut;
           yield* Queue.offer(recorded.events, { type: "finished", paths, ocrSummary, ...(failure === undefined ? {} : { failure }) });
           return { paths, ocrSummary };
         });
@@ -414,14 +412,14 @@ export class Sessions extends Context.Service<Sessions, {
         ...(audioDir === undefined ? [] : ["--audio-dir", audioDir]),
       ];
 
-      const concludeRecorded = Effect.fnUntraced(function* (recorded: Recorded, prepare: Effect.Effect<void>, failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) {
+      const concludeRecorded = Effect.fnUntraced(function* (recorded: Recorded, prepare: ReturnType<RecordedSink["end"]>, failure: { code: number | null; signal: string | null; stderrTail: ReadonlyArray<string> } | undefined) {
         const prepared = yield* Effect.exit(prepare);
         const claimed = yield* Ref.modify(state, (current): [boolean, State] =>
           current.kind === "recorded" && current.recorded === recorded ? [true, { kind: "stopping" }] : [false, current]);
         if (!claimed) return;
         const finishing = Exit.isFailure(prepared)
           ? Effect.andThen(note(`録画の取り込みの終了処理に失敗した: ${Cause.pretty(prepared.cause)}\n`), Effect.failCause(prepared.cause))
-          : finishRecorded(recorded, failure === undefined ? undefined : { code: failure.code, signal: failure.signal, stderrTail: [...failure.stderrTail] });
+          : finishRecorded(recorded, prepared.value.writeOut, failure === undefined ? undefined : { code: failure.code, signal: failure.signal, stderrTail: [...failure.stderrTail] });
         yield* Effect.forkIn(finishing.pipe(Effect.ensuring(closeRecorded(recorded))), serverScope);
       });
 
@@ -498,8 +496,8 @@ export class Sessions extends Context.Service<Sessions, {
           afterPublish: Effect.asVoid(Effect.forkIn(Effect.flatMap(running.end, (end) => {
             if (end.kind === "stopped") return Effect.void;
             return end.kind === "finished"
-              ? concludeRecorded(recorded, Effect.andThen(sink.drain, sink.finishBacklog), undefined)
-              : concludeRecorded(recorded, Effect.andThen(sink.discardBacklog, sink.finishBacklog), { ...end.last.exit, stderrTail: end.last.stderrTail });
+              ? concludeRecorded(recorded, sink.end({ kind: "入れ切る" }), undefined)
+              : concludeRecorded(recorded, sink.end({ kind: "捨てる", quiesce: Effect.void }), { ...end.last.exit, stderrTail: end.last.stderrTail });
           }), scope)),
         };
       }));
@@ -510,7 +508,7 @@ export class Sessions extends Context.Service<Sessions, {
           yield* live.controller.stop;
           const running = yield* Ref.get(live.running);
           const end = running === undefined ? { kind: "stopped" as const, exit: undefined } : yield* running.end;
-          yield* live.sink.drain;
+          const { writeOut } = yield* live.sink.end({ kind: "入れ切る" });
           if (end.kind === "stopped" && end.exit?.signal === "SIGKILL") {
             yield* note(`ヘルパーが SIGTERM から ${stopTimeoutMs}ms 経っても終了しないので、SIGKILL で止めます\n`);
             if (live.audio) {
@@ -518,18 +516,17 @@ export class Sessions extends Context.Service<Sessions, {
               yield* note(`録音の書き終わりを確認できないまま、セッションを閉じます。${live.dir} の ${names} が不完全なことがあります\n`);
             }
           }
-          yield* live.sink.flush;
-          return { paths: yield* live.sink.exports, ocrSummary: yield* live.sink.ocrSummary };
+          return yield* writeOut;
         }).pipe(Effect.ensuring(closeSession(live.sink, live.scope)));
 
       const stopRecorded = (recorded: Recorded) =>
         Effect.gen(function* () {
-          yield* recorded.sink.discardBacklog;
-          yield* recorded.controller.stop;
-          const running = yield* Ref.get(recorded.running);
-          if (running !== undefined) yield* running.end;
-          yield* recorded.sink.finishBacklog;
-          return yield* finishRecorded(recorded, undefined);
+          const { writeOut } = yield* recorded.sink.end({ kind: "捨てる", quiesce: Effect.gen(function* () {
+            yield* recorded.controller.stop;
+            const running = yield* Ref.get(recorded.running);
+            if (running !== undefined) yield* running.end;
+          }) });
+          return yield* finishRecorded(recorded, writeOut, undefined);
         }).pipe(Effect.ensuring(closeRecorded(recorded)));
 
       const stop = Effect.uninterruptible(

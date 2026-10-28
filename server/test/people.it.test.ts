@@ -161,7 +161,8 @@ describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）
       const json = () => JSON.parse(readFileSync(join(dir, "map.json"), "utf8"));
 
       // 名前を付ける前: ラベルで出る。json はラベルを持ち、対応表は無い
-      yield* sink.exports;
+      const { writeOut } = yield* sink.end({ kind: "入れ切る" });
+      yield* writeOut;
       expect(md()).toContain("- 週 1 — 相手 A（00:10）");
       expect(md()).toContain("- 隔週 — 自分（00:30）");
       expect(md()).toContain("- 資料を送る（担当：相手 B・期限：10/15）（00:20）");
@@ -169,7 +170,7 @@ describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）
 
       // 相手 B に名前を付けてから書き出す（TODO は名前を付ける前にできている）
       yield* sink.nameSpeaker({ label: "相手 B", name: "田中" });
-      yield* sink.exports;
+      yield* writeOut;
       expect(md()).toContain("- 資料を送る（担当：田中・期限：10/15）（00:20）");
       expect(md().match(/資料を送る（担当：田中・期限：10\/15）（00:20）/g)).toHaveLength(2); // 冒頭の TODO 一覧とアウトライン
       expect(md()).toContain("- 週 1 — 相手 A（00:10）"); // 名前の無いラベルはそのまま
@@ -178,7 +179,7 @@ describe("書き出しの話者と名前（実物の SessionSinks + 偽の AI）
       // 付け替えた後に書き出せば、最後の名前になる。json のノードはラベルのまま
       yield* sink.nameSpeaker({ label: "相手 B", name: "高橋" });
       yield* sink.nameSpeaker({ label: "相手 A", name: "佐藤" });
-      yield* sink.exports;
+      yield* writeOut;
       expect(md()).toContain("- 資料を送る（担当：高橋・期限：10/15）（00:20）");
       expect(md()).not.toContain("田中");
       expect(md()).toContain("- 週 1 — 佐藤（00:10）");

@@ -15,6 +15,7 @@ import { Viewers } from "../src/viewers.ts";
 import { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { settleUntil } from "./fixtures/sessionLayers.ts";
 import type { JudgeModel } from "../src/judgeSelection.ts";
+import type { Ending } from "../src/remarkFlow.ts";
 import type { UpdatePlan } from "../src/updatePlan.ts";
 
 // Issue #240 段 3（ADR 0008）: Sessions の状態・start・stop・resume・status と種類別の配線を、
@@ -45,12 +46,12 @@ type FakeSinksHandle = {
   readonly screenOffs: { start: number; reason: "指定" | "許可なし" }[];
   readonly sequence: string[]; // screenOff と final が届いた順（ログの行の順を観測する）
   readonly relayStats: { interrupted: number; stopped: number };
-  readonly drainStats: { drained: number };
+  readonly ends: Ending["kind"][];
   readonly appended: LogLineEvent[];
   readonly speakers: SpeakerLine[]; // sink.speaker へ届いた speaker・speaker-off（届いた順）
   readonly speakerCalls: string[]; // sink.speaker（speaker:<type>）と sink.speakersRenumbered（renumbered）が呼ばれた順（Issue #1025）
   readonly vocabAdded: string[][]; // 開始引数で受け取った語（空でない呼び出しごと）
-  readonly order: string[]; // flush・exports・close が起きた順
+  readonly order: string[]; // writeOut・close が起きた順
   readonly control: { createDirFails: boolean };
 };
 
@@ -66,7 +67,7 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
     const screenOffs: { start: number; reason: "指定" | "許可なし" }[] = [];
     const sequence: string[] = [];
     const relayStats = { interrupted: 0, stopped: 0 };
-    const drainStats = { drained: 0 };
+    const ends: Ending["kind"][] = [];
     const appended: LogLineEvent[] = [];
     const speakers: SpeakerLine[] = [];
     const vocabAdded: string[][] = [];
@@ -84,27 +85,34 @@ function makeFakeSessionSinks(options: { exportsFails?: boolean } = {}): Effect.
           dir: args.dir,
           partial: (p: HelperPartial) => Effect.sync(() => { partials.push({ track: p.track, text: p.text }); words.partial.push((p as { words?: unknown }).words); }),
           final: (r: SettledRemark) => Effect.sync(() => { count++; sequence.push("final"); finals.push({ id: `r${count}`, track: r.track, text: r.text }); words.final.push((r as { words?: unknown }).words); }),
-          ocrSummary: Effect.sync(() => ({ images: savedScreens.filter((s) => s.image !== null).length, failed: savedScreens.filter((s) => s.image !== null && s.ocrFailed === true).length })),
           screen: (s: Parameters<LiveSink["screen"]>[0]) => Effect.sync(() => { savedScreens.push(s); screens.push({ start: s.start, image: s.image, ...(s.lines !== undefined ? { lines: s.lines } : {}) }); }),
           screenOff: (e: Parameters<LiveSink["screenOff"]>[0]) => Effect.sync(() => { sequence.push(`screenOff:${e.reason}`); screenOffs.push({ start: e.start, reason: e.reason }); }),
-          drain: Effect.sync(() => { drainStats.drained++; }),
           stopRelays: Effect.sync(() => { relayStats.stopped++; }),
           appendLog: (event: LogLineEvent) => Effect.sync(() => { appended.push(event); }),
           speaker: (event: SpeakerLine) => Effect.sync(() => { speakers.push(event); speakerCalls.push(`speaker:${event.type}`); }),
           speakersRenumbered: Effect.sync(() => { speakerCalls.push("renumbered"); }),
           nameSpeaker: () => Effect.void,
-          flush: Effect.sync(() => { order.push("flush"); }),
-          exports: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => { order.push("exports"); return [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`]; }),
+          end: Effect.fnUntraced(function* (ending: Ending) {
+            ends.push(ending.kind);
+            if (ending.kind === "捨てる") yield* ending.quiesce;
+            return { writeOut: options.exportsFails ? Effect.die(new Error("書き出しに失敗")) : Effect.sync(() => {
+              order.push("writeOut");
+              return {
+                paths: [`${args.dir}/map.md`, `${args.dir}/map.json`, `${args.dir}/map.drawnix`, `${args.dir}/map.png`],
+                ocrSummary: { images: savedScreens.filter((s) => s.image !== null).length, failed: savedScreens.filter((s) => s.image !== null && s.ocrFailed === true).length },
+              };
+            }) };
+          }),
         };
         return sink;
       });
     const open = (args: OpenSessionSink): Effect.Effect<LiveSink, never, Scope.Scope> =>
       Effect.map(openBase(args), (sink) => ({ ...sink, interrupted: Effect.sync(() => { relayStats.interrupted++; }) }));
     const openRecorded: SessionSinks["Service"]["openRecorded"] = (args) =>
-      Effect.map(openBase(args), (sink): RecordedSink => ({ ...sink, drainForRestart: Effect.succeed({}), finishBacklog: Effect.void, discardBacklog: Effect.void }));
+      Effect.map(openBase(args), (sink): RecordedSink => ({ ...sink, drainForRestart: Effect.succeed({}) }));
     let dirCount = 0;
     const createDir = (_sessionsDir: string) => Effect.suspend(() => (control.createDirFails ? Effect.die(new Error("フォルダを作れません")) : Effect.succeed(`/tmp/live-mindmap-fake/${++dirCount}`)));
-    return { sinks: SessionSinks.of({ open, openRecorded, createDir }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, drainStats, appended, speakers, speakerCalls, vocabAdded, order, control };
+    return { sinks: SessionSinks.of({ open, openRecorded, createDir }), opened, finals, partials, words, screens, screenOffs, sequence, relayStats, ends, appended, speakers, speakerCalls, vocabAdded, order, control };
   });
 }
 
@@ -145,8 +153,8 @@ describe("現在のセッションの状態による操作の許可", () => {
   ] as const)("$state の $operation は $expected を返す", ({ operation, state, expected }) => Effect.gen(function* () {
     const launchEntered = yield* Deferred.make<void>();
     const releaseLaunch = yield* Deferred.make<void>();
-    const flushEntered = yield* Deferred.make<void>();
-    const releaseFlush = yield* Deferred.make<void>();
+    const writeEntered = yield* Deferred.make<void>();
+    const releaseWrite = yield* Deferred.make<void>();
     const fakeHelpers = yield* makeFakeHelpers([{ connectGate: releaseLaunch }]);
     const helpers = Helpers.of({ ...fakeHelpers.helpers, launch: (args, stopRequested) => Effect.andThen(
       Deferred.succeed(launchEntered, undefined), fakeHelpers.helpers.launch(args, stopRequested),
@@ -155,7 +163,7 @@ describe("現在のセッションの状態による操作の許可", () => {
     const named: Parameters<RecordedSink["nameSpeaker"]>[0][] = [];
     const sinks = SessionSinks.of({ ...fake.sinks,
       open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({ ...sink,
-        flush: Effect.andThen(Deferred.succeed(flushEntered, undefined), Effect.andThen(Deferred.await(releaseFlush), sink.flush)),
+        end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({ writeOut: Effect.andThen(Deferred.succeed(writeEntered, undefined), Effect.andThen(Deferred.await(releaseWrite), writeOut)) })),
       })),
       openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({ ...sink,
         nameSpeaker: (speaker) => Effect.sync(() => { named.push(speaker); }),
@@ -193,9 +201,9 @@ describe("現在のセッションの状態による操作の許可", () => {
       yield* Fiber.join(starting);
       expect((yield* sessions.status).status).toBe("running");
       const stopping = yield* sessions.stop.pipe(Effect.forkChild);
-      yield* Deferred.await(flushEntered);
+      yield* Deferred.await(writeEntered);
       const result = duringStart ?? (yield* Effect.exit(invoke));
-      yield* Deferred.succeed(releaseFlush, undefined);
+      yield* Deferred.succeed(releaseWrite, undefined);
       yield* Fiber.join(stopping);
       expect(yield* sessions.status).toEqual({ status: "none" });
       return result;
@@ -206,17 +214,17 @@ describe("現在のセッションの状態による操作の許可", () => {
     expect(named).toEqual(state === "recorded" && operation === "setSpeakerName" ? [{ label: "相手 A", name: "山田" }] : []);
   }).pipe(Effect.scoped));
 
-  it.effect.each(["live", "recorded"] as const)("%s の flush 待機中の二重 stop は拒否し、書き出しと close は1回だけ行う", (kind) => Effect.gen(function* () {
+  it.effect.each(["live", "recorded"] as const)("%s の writeOut 待機中の二重 stop は拒否し、書き出しと close は1回だけ行う", (kind) => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{}]);
     const fake = yield* makeFakeSessionSinks();
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
-    const holdFlush = (flush: Effect.Effect<void>) => Effect.andThen(
-      Deferred.succeed(entered, undefined), Effect.andThen(Deferred.await(release), flush),
+    const holdWrite = (writeOut: Effect.Success<ReturnType<LiveSink["end"]>>["writeOut"]) => Effect.andThen(
+      Deferred.succeed(entered, undefined), Effect.andThen(Deferred.await(release), writeOut),
     );
     const sinks = SessionSinks.of({ ...fake.sinks,
-      open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({ ...sink, flush: holdFlush(sink.flush) })),
-      openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({ ...sink, flush: holdFlush(sink.flush) })),
+      open: (args) => Effect.map(fake.sinks.open(args), (sink) => ({ ...sink, end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({ writeOut: holdWrite(writeOut) })) })),
+      openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({ ...sink, end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({ writeOut: holdWrite(writeOut) })) })),
     });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     if (kind === "live") yield* sessions.start(start());
@@ -230,7 +238,7 @@ describe("現在のセッションの状態による操作の許可", () => {
     expect(Exit.isFailure(second) && Cause.squash(second.cause)).toMatchObject({ _tag: "SessionTransition" });
     expect(result.kind).toBe(kind);
     expect(result.paths).toHaveLength(4);
-    expect(fake.order).toEqual(["flush", "exports", "close"]);
+    expect(fake.order).toEqual(["writeOut", "close"]);
     expect(fake.opened.closed).toBe(1);
     expect(yield* sessions.status).toEqual({ status: "none" });
   }).pipe(Effect.scoped));
@@ -472,52 +480,53 @@ describe("録画の停止と一時停止の配線", () => {
     expect(helpers.sentInstructions).toEqual([]);
   }).pipe(Effect.scoped));
 
-  it.effect("自然終了はdrainとfinishBacklogを待ち、溜まりを捨てずに書き出す", () => Effect.gen(function* () {
+  it.effect("自然終了はendを待つ間runningを保ち、入れ切ってから書き出す", () => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 1, exit: { code: 0, signal: null } } }]);
     const fake = yield* makeFakeSessionSinks();
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
-    const order: string[] = [];
     const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({
       ...sink,
-      drain: Effect.sync(() => { order.push("drain"); }),
-      discardBacklog: Effect.sync(() => { order.push("discard"); }),
-      finishBacklog: Effect.gen(function* () { order.push("finish"); yield* Deferred.succeed(entered, undefined); yield* Deferred.await(release); }),
+      end: (ending) => Effect.gen(function* () {
+        const result = yield* sink.end(ending);
+        yield* Deferred.succeed(entered, undefined);
+        yield* Deferred.await(release);
+        return result;
+      }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     yield* TestClock.adjust(1);
     yield* Deferred.await(entered);
-    expect(order).toEqual(["drain", "finish"]);
+    expect(fake.ends).toEqual(["入れ切る"]);
     expect(fake.order).toEqual([]);
     expect(yield* sessions.status).toMatchObject({ status: "running", dir: run.dir });
     yield* Deferred.succeed(release, undefined);
     const events = yield* Fiber.join(consuming);
     expect(events.at(-1)).toMatchObject({ type: "finished" });
-    expect(fake.order).toEqual(["flush", "exports", "close"]);
+    expect(fake.order).toEqual(["writeOut", "close"]);
     expect(yield* sessions.status).toEqual({ status: "none" });
   }).pipe(Effect.scoped));
 
-  it.effect("諦めたら溜まりを捨て、finishBacklogの後で失敗を知らせて閉じる", () => Effect.gen(function* () {
+  it.effect("諦めたらendの前に記録し、捨てて書き出してから失敗を知らせて閉じる", () => Effect.gen(function* () {
     const helpers = yield* makeFakeHelpers([{ unexpectedExit: { afterMs: 1, exit: { code: 1, signal: null } }, stderrTail: ["最後の標準エラー"] }]);
     const fake = yield* makeFakeSessionSinks();
-    const order: string[] = [];
+    const rowsAtEnd: number[] = [];
     const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({
       ...sink,
-      appendLog: (event) => Effect.andThen(Effect.sync(() => { if (event.type === "intake-gave-up") order.push("gave-up"); }), sink.appendLog(event)),
-      drain: Effect.sync(() => { order.push("drain"); }),
-      discardBacklog: Effect.sync(() => { order.push("discard"); }),
-      finishBacklog: Effect.sync(() => { order.push("finish"); }),
-      flush: Effect.andThen(Effect.sync(() => { order.push("flush"); }), sink.flush),
-      exports: Effect.andThen(Effect.sync(() => { order.push("exports"); }), sink.exports),
+      end: (ending) => Effect.andThen(Effect.sync(() => {
+        rowsAtEnd.push(fake.appended.filter((e) => e.type === "intake-gave-up").length);
+      }), sink.end(ending)),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runCollect(run.events).pipe(Effect.forkChild);
     yield* TestClock.adjust(3);
     const events = yield* Fiber.join(consuming);
-    expect(order).toEqual(["gave-up", "discard", "finish", "flush", "exports"]);
+    expect(rowsAtEnd).toEqual([1]);
+    expect(fake.ends).toEqual(["捨てる"]);
+    expect(fake.order).toEqual(["writeOut", "close"]);
     expect(events.at(-1)).toMatchObject({ type: "finished", failure: { code: 1, signal: null, stderrTail: ["最後の標準エラー"] } });
     expect(fake.opened.closed).toBe(1);
     expect(yield* sessions.status).toEqual({ status: "none" });
@@ -531,26 +540,25 @@ describe("録画の停止と一時停止の配線", () => {
     const concluding = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
     const exporting = yield* Deferred.make<void>();
     const releaseExport = yield* Deferred.make<void>();
-    let finishes = 0;
     const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({
       ...sink,
-      finishBacklog: Effect.gen(function* () {
-        finishes++;
-        if (owner === "stop" && finishes === 1) {
+      end: (ending) => Effect.gen(function* () {
+        const result = yield* sink.end(ending);
+        if (owner === "stop" && ending.kind === "入れ切る") {
           yield* Deferred.succeed(concluding, yield* Effect.fiber);
           yield* Deferred.succeed(entered, undefined);
           yield* Deferred.await(release);
         }
-      }),
-      exports: Effect.gen(function* () {
-        if (owner === "自然終了") {
-          yield* Deferred.succeed(entered, undefined);
-          yield* Deferred.await(release);
-        } else {
-          yield* Deferred.succeed(exporting, undefined);
-          yield* Deferred.await(releaseExport);
-        }
-        return yield* sink.exports;
+        return { writeOut: Effect.gen(function* () {
+          if (owner === "自然終了") {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+          } else {
+            yield* Deferred.succeed(exporting, undefined);
+            yield* Deferred.await(releaseExport);
+          }
+          return yield* result.writeOut;
+        }) };
       }),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
@@ -572,7 +580,7 @@ describe("録画の停止と一時停止の配線", () => {
     }
     const events = yield* Fiber.join(consuming);
     expect(events.filter((event) => event.type === "finished")).toHaveLength(1);
-    expect(fake.order.filter((step) => step === "exports")).toHaveLength(1);
+    expect(fake.order.filter((step) => step === "writeOut")).toHaveLength(1);
     expect(fake.opened.closed).toBe(1);
     expect(yield* sessions.status).toEqual({ status: "none" });
   }).pipe(Effect.scoped));
@@ -582,7 +590,7 @@ describe("録画の停止と一時停止の配線", () => {
     const fake = yield* makeFakeSessionSinks();
     let fail = true;
     const sinks = SessionSinks.of({ ...fake.sinks, openRecorded: (args) => Effect.map(fake.sinks.openRecorded(args), (sink) => ({
-      ...sink, finishBacklog: Effect.suspend(() => fail ? Effect.die(new Error("書き込みに失敗")) : Effect.void),
+      ...sink, end: (ending) => Effect.suspend(() => fail ? Effect.die(new Error("書き込みに失敗")) : sink.end(ending)),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers.helpers), Layer.succeed(SessionSinks, sinks));
     const input: RecordedStart = { file: "/meeting.m4a", title: undefined, vocab: [], realtime: false, plan: { kind: "single", model: defaultClaude } };
@@ -595,6 +603,7 @@ describe("録画の停止と一時停止の配線", () => {
     expect((yield* Fiber.join(consuming)).filter((event) => event.type === "finished")).toEqual([]);
     expect(yield* sessions.status).toEqual({ status: "none" });
     expect(fake.opened.closed).toBe(1);
+    expect(fake.order).toEqual(["close"]);
     fail = false;
     const next = yield* sessions.startRecorded(input);
     expect(helpers.calls).toHaveLength(2);
@@ -604,7 +613,7 @@ describe("録画の停止と一時停止の配線", () => {
     expect(fake.opened.closed).toBe(2);
   }).pipe(Effect.scoped));
 
-  it.effect("stopは溜まりを捨ててからヘルパーを止め、finish後に書き出す", () => Effect.gen(function* () {
+  it.effect("録画のstopは捨てるを渡し、quiesceでヘルパーの終了を待ってから書き出す", () => Effect.gen(function* () {
     const fakeHelpers = yield* makeFakeHelpers([{ stopDelayMs: 100 }]);
     const fakeSinks = yield* makeFakeSessionSinks();
     const order: string[] = [];
@@ -622,21 +631,21 @@ describe("録画の停止と一時停止の配線", () => {
     }) });
     const sinks = SessionSinks.of({ ...fakeSinks.sinks, openRecorded: (args) => Effect.map(fakeSinks.sinks.openRecorded(args), (sink) => ({
       ...sink,
-      discardBacklog: Effect.sync(() => { order.push("discard"); }),
-      finishBacklog: Effect.sync(() => { order.push("finish"); }),
-      flush: Effect.sync(() => { order.push("flush"); }),
-      exports: Effect.andThen(Effect.sync(() => { order.push("exports"); }), sink.exports),
+      end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({
+        writeOut: Effect.andThen(Effect.sync(() => { order.push("writeOut"); }), writeOut),
+      })),
     })) });
     const { sessions } = yield* bootSessions(Layer.succeed(Helpers, helpers), Layer.succeed(SessionSinks, sinks));
     const run = yield* sessions.startRecorded({ file: "/recording.m4a", title: undefined, vocab: [], realtime: true, plan: { kind: "single", model: defaultClaude } });
     const consuming = yield* Stream.runDrain(run.events).pipe(Effect.forkChild);
     const stopping = yield* sessions.stop.pipe(Effect.forkChild);
     yield* Deferred.await(stopRequested);
-    expect(order).toEqual(["discard", "helper-stop"]);
+    expect(fakeSinks.ends).toEqual(["捨てる"]);
+    expect(order).toEqual(["helper-stop"]);
     yield* TestClock.adjust(100);
     yield* Fiber.join(stopping);
     yield* Fiber.join(consuming);
-    expect(order).toEqual(["discard", "helper-stop", "end", "finish", "flush", "exports"]);
+    expect(order).toEqual(["helper-stop", "end", "writeOut"]);
     expect(yield* sessions.status).toEqual({ status: "none" });
   }).pipe(Effect.scoped));
 
@@ -671,7 +680,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
   const preparation = Effect.fnUntraced(function* (fake: FakeSinksHandle) {
     const ready = yield* Deferred.make<void, UpdaterUnavailable>();
     const control = { ready };
-    const state = { opened: 0, closed: 0, createdDirs: 0, flushAlive: false, exportsAlive: false };
+    const state = { opened: 0, closed: 0, createdDirs: 0, writeAlive: false };
     const original = fake.sinks;
     const prepareUpdater: StartupChecksDeps["prepareUpdater"] = () => Effect.gen(function* () {
         yield* Effect.acquireRelease(
@@ -686,8 +695,9 @@ describe("推論プロセスの準備をセッションが所有する", () => {
       createDir: (dir, at) => Effect.andThen(Effect.sync(() => { state.createdDirs++; }), original.createDir(dir, at)),
       open: (args) => original.open(args).pipe(Effect.map((sink) => ({
         ...sink,
-        flush: Effect.andThen(Effect.sync(() => { state.flushAlive = state.opened > state.closed; }), sink.flush),
-        exports: Effect.andThen(Effect.sync(() => { state.exportsAlive = state.opened > state.closed; }), sink.exports),
+        end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({
+          writeOut: Effect.andThen(Effect.sync(() => { state.writeAlive = state.opened > state.closed; }), writeOut),
+        })),
       }))),
     });
     return { ready, control, state, prepareUpdater, layer: Layer.succeed(SessionSinks, sinks) };
@@ -711,7 +721,7 @@ describe("推論プロセスの準備をセッションが所有する", () => {
     expect(fake.opened.count).toBe(1);
     expect(prep.state.closed).toBe(0);
     yield* sessions.stop;
-    expect({ ...prep.state }).toEqual({ opened: 1, closed: 1, createdDirs: 1, flushAlive: true, exportsAlive: true });
+    expect({ ...prep.state }).toEqual({ opened: 1, closed: 1, createdDirs: 1, writeAlive: true });
   }));
 
   it.effect("準備を拒否したら取得済みの推論子を閉じ、同じサーバーで次の開始を行える", () => Effect.gen(function* () {
@@ -2271,8 +2281,8 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
         yield* Fiber.interrupt(stopFiber);
         yield* TestClock.adjust(1_000);
 
-        expect(fakeSinks.order).toEqual(["flush", "exports", "close"]);
-        expect(fakeSinks.drainStats.drained).toBeGreaterThanOrEqual(1);
+        expect(fakeSinks.order).toEqual(["writeOut", "close"]);
+        expect(fakeSinks.ends).toEqual(["入れ切る"]);
         expect(fakeSinks.finals).toContainEqual({ id: "r1", track: "相手", text: "ぎりぎり" });
         expect((yield* sessions.status).status).toBe("none");
         yield* sessions.start(start()); // idle に戻っているので続けて開始できる
@@ -2470,13 +2480,29 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
       Effect.gen(function* () {
         const fakeHelpers = yield* makeFakeHelpers([{ stopExit: { code: null, signal: "SIGKILL" } }]);
         const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
         const { stderr, service } = collectingStderr();
+        const warningsAt: { phase: string; warnings: string[] }[] = [];
+        const sinks = SessionSinks.of({ ...fakeSinks.sinks, open: (args) => Effect.map(fakeSinks.sinks.open(args), (sink) => ({
+          ...sink,
+          end: (ending) => Effect.gen(function* () {
+            const result = yield* sink.end(ending);
+            warningsAt.push({ phase: "end", warnings: stderr.filter((s) => s.includes("SIGKILL で止めます")) });
+            return { writeOut: Effect.andThen(Effect.sync(() => {
+              warningsAt.push({ phase: "writeOut", warnings: stderr.filter((s) => s.includes("SIGKILL で止めます")) });
+            }), result.writeOut) };
+          }),
+        })) });
+        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(sinks));
         yield* Effect.gen(function* () {
           yield* sessions.start(start({ audio: true }));
 
           yield* sessions.stop;
 
+          expect(warningsAt).toEqual([
+            { phase: "end", warnings: [] },
+            { phase: "writeOut", warnings: [expect.stringContaining("SIGKILL で止めます")] },
+          ]);
+          expect(fakeSinks.ends).toEqual(["入れ切る"]);
           expect(stderr.some((s) => s.includes("SIGKILL で止めます"))).toBe(true);
           const warning = stderr.find((s) => s.includes("録音の書き終わりを確認できない"));
           expect(warning).toBeDefined();
@@ -2886,22 +2912,6 @@ describe("Sessions（偽の Helpers・SessionSinks・TestClock）", () => {
 
   // base の server.heavy.test.ts の移動先のうち、偽の Helpers・SessionSinks と TestClock で観測できる残りの条件
   describe("セッションの中身の寿命・起動し直しをまたぐ連続性・ログ（base server.heavy.test.ts の移動先）", () => {
-    it.effect("stop は、最後の差分更新（flush）が終わってから updater（Scope）を閉じ、閉じた後には何も呼ばない（base:581）", () =>
-      Effect.gen(function* () {
-        const fakeHelpers = yield* makeFakeHelpers([{}]);
-        const fakeSinks = yield* makeFakeSessionSinks();
-        const { sessions } = yield* bootSessions(Layer.succeed(Helpers)(fakeHelpers.helpers), Layer.succeed(SessionSinks)(fakeSinks.sinks));
-        yield* sessions.start(start());
-        fakeHelpers.send(0, { type: "remark", track: "相手", start: 0, end: 1, text: "r1 の発言" });
-        yield* TestClock.adjust(1);
-
-        yield* sessions.stop;
-
-        expect(fakeSinks.order.filter((e) => e === "close")).toHaveLength(1);
-        expect(fakeSinks.order.indexOf("flush")).toBeGreaterThanOrEqual(0);
-        expect(fakeSinks.order.indexOf("flush")).toBeLessThan(fakeSinks.order.indexOf("close"));
-        expect(fakeSinks.order.at(-1)).toBe("close"); // 閉じた後に flush などが呼ばれない
-      }));
 
     it.effect("--audio-dir の値は、SessionSinks が作ったセッションのフォルダで、起動し直しでも変わらない（base:733）", () =>
       Effect.gen(function* () {
