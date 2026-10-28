@@ -11,28 +11,30 @@ import { AudioMix } from "./audioMix.ts";
 import { Readings } from "./readings.ts";
 import { makeSessionVocabulary, modelReadings } from "./sessionVocabulary.ts";
 import { recordedFeed, type RecordedFeed, type TrackEnds } from "./recordedFeed.ts";
-import { directFeed, makeRemarkFlow, type Feed, type Inlet } from "./remarkFlow.ts";
+import { directFeed, makeRemarkFlow, type Ending, type Feed, type Inlet } from "./remarkFlow.ts";
 import type { Session } from "./core/index.ts";
 import { ReviewBuild } from "./review.ts";
 import { SpeakerNameRejected } from "./sessionFailure.ts";
 import { errorMessage } from "./truthFile.ts";
 import type { SendFrame, ViewerFrame } from "./viewers.ts";
 
+type Written = {
+  paths: string[];
+  ocrSummary: typeof import("./core/recordedProgress.ts").OcrSummary.Type;
+};
+
 type SinkBase = {
   dir: string;
   partial: (p: HelperPartial) => Effect.Effect<void>;
   final: (r: SettledRemark) => Effect.Effect<void>;
   screen: Inlet["screen"];
-  ocrSummary: Effect.Effect<typeof import("./core/recordedProgress.ts").OcrSummary.Type>;
   screenOff: (off: { start: number; reason: "指定" | "許可なし" }) => Effect.Effect<void>;
-  drain: Effect.Effect<void>;
+  end: (ending: Ending) => Effect.Effect<{ writeOut: Effect.Effect<Written> }>;
   stopRelays: Effect.Effect<void>;
   speaker: (event: SpeakerLogEvent) => Effect.Effect<void>;
   speakersRenumbered: Effect.Effect<void>;
   nameSpeaker: (speaker: { label: string; name: string }) => Effect.Effect<void, SpeakerNameRejected>;
   appendLog: (event: Exclude<IntakeLogEvent, SpeakerLogEvent> | SelfPauseLogEvent) => Effect.Effect<void>;
-  flush: Effect.Effect<void>;
-  exports: Effect.Effect<string[]>;
 };
 
 export type LiveSink = SinkBase & {
@@ -41,8 +43,6 @@ export type LiveSink = SinkBase & {
 
 export type RecordedSink = SinkBase & {
   drainForRestart: Effect.Effect<TrackEnds>;
-  finishBacklog: Effect.Effect<void>;
-  discardBacklog: Effect.Effect<void>;
 };
 
 type SinkMode =
@@ -145,19 +145,22 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             screen: (change) => captions === "途中結果から"
               ? Effect.andThen(flow.screen(change), vocabulary.addScreen(change.lines)).pipe(Effect.asVoid)
               : Effect.andThen(vocabulary.addScreen(change.lines, change.start), flow.screen(change)),
-            ocrSummary: flow.ocrSummary,
             screenOff: flow.screenOff,
-            drain: flow.drain,
             stopRelays: flow.stop,
             appendLog: appendRecordedLog,
-            flush: session.flush,
-            exports: Effect.andThen(
-              Effect.andThen(vocabulary.settled, updatePoolFromSession(dir, dirname(dir))),
-              args.noMap === true ? Effect.succeed<string[]>([]) : Effect.flatMap(Effect.all([session.snapshot, session.exportJson]), ([snapshot, json]) => writeExportsAndCapture(dir, snapshot, errorMessage, new Map(Object.entries(json.speakerNames ?? {})))),
-            ).pipe(
-              Effect.provideContext(exportServices),
-              Effect.orDie,
-            ),
+            end: Effect.fnUntraced(function* (ending) {
+              yield* flow.settle(ending);
+              return { writeOut: Effect.gen(function* () {
+                yield* session.flush;
+                yield* vocabulary.settled;
+                yield* updatePoolFromSession(dir, dirname(dir));
+                const paths = args.noMap === true ? [] : yield* Effect.flatMap(
+                  Effect.all([session.snapshot, session.exportJson]),
+                  ([snapshot, json]) => writeExportsAndCapture(dir, snapshot, errorMessage, new Map(Object.entries(json.speakerNames ?? {}))),
+                );
+                return { paths, ocrSummary: yield* flow.ocrSummary };
+              }).pipe(Effect.provideContext(exportServices), Effect.orDie) };
+            }),
           };
           return { sink, flow };
         });
@@ -185,8 +188,6 @@ export class SessionSinks extends Context.Service<SessionSinks, {
             return {
               ...sink,
               drainForRestart: Effect.andThen(flow.drainForRestart, flow.feed.prepareRestart),
-              finishBacklog: flow.feed.finish,
-              discardBacklog: flow.feed.discard,
             };
           }),
         });

@@ -82,7 +82,7 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
       yield* sink.speaker(segment(5, 0, 2));
       yield* sink.speaker(settledAt(2));
       yield* sink.final({ track: "相手", start: 0, end: 2, text: "発言です" });
-      yield* sink.drain;
+      yield* sink.end({ kind: "入れ切る" });
       yield* sink.nameSpeaker({ label: "相手 A", name: "田中" });
       expect(nameLines(dir).map(({ label, name, source }) => ({ label, name, source }))).toEqual([
         { label: "相手 A", name: "田中", source: "手入力" },
@@ -116,7 +116,8 @@ describe("話者の名前（実物の SessionSinks + 偽の AI）", () => {
         { type: "speaker-names", names: [] },
         { type: "speaker-names", names: [{ label: "相手 B", name: "田中" }] },
       ]);
-      yield* sink.exports;
+      const { writeOut } = yield* sink.end({ kind: "入れ切る" });
+      yield* writeOut;
       expect(JSON.parse(readFileSync(join(dir, "map.json"), "utf8")).speakerNames).toEqual({ "相手 B": "田中" });
     })).pipe(Effect.provide(sinksLayer(updaterLayer)));
   });

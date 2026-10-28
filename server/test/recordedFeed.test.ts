@@ -72,7 +72,6 @@ const makeFeed = Effect.fnUntraced(function* (options: {
 
 type Fixture = Effect.Success<ReturnType<typeof makeFeed>>;
 const labels = (r: Fixture) => r.arrivals.map((a) => a.kind === "remark" ? a.value.rest.text : `${a.kind}@${a.value.start}`);
-const finish = (r: Fixture) => Effect.andThen(r.feed.drain, r.feed.finish);
 const withClock = <A, E, R>(body: (pending: number[]) => Effect.Effect<A, E, R>) => Effect.gen(function* () {
   const pending: number[] = [];
   const clock = yield* trackingClock(pending);
@@ -91,7 +90,7 @@ describe("recordedFeed", () => {
   it.effect("2トラックはend順に入り、相手の保留を自分が追い越さない", () => Effect.gen(function* () {
     const r = yield* makeFeed({ selfTrack: true });
     for (const c of [remark(2), remark(6), remark(4, "自分"), remark(6.2, "自分")]) yield* r.feed.remark(c);
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@2", "自分@4", "相手@6", "自分@6.2"]);
   }).pipe(Effect.scoped));
 
@@ -109,7 +108,7 @@ describe("recordedFeed", () => {
     yield* r.feed.screenOff(screenOff(3.5));
     yield* r.feed.remark(remark(2));
     yield* r.feed.remark(remark(4));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["screen@1", "相手@2", "screen@2", "screen@3", "screen-off@3.5", "相手@4"]);
     expect(r.arrivals.filter((a) => a.kind === "screen").map((a) => a.value)).toEqual([screen(1), screen(2), screen(3)]);
   }).pipe(Effect.scoped));
@@ -117,7 +116,7 @@ describe("recordedFeed", () => {
   it.effect("文字のみは更新完了を待たず、保存した順にprogressを知らせる", () => Effect.gen(function* () {
     const r = yield* makeFeed({ noMap: true, idle: Effect.die("文字のみで更新完了を待った") });
     for (const end of [2, 4, 6]) yield* r.feed.remark(remark(end));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@2", "相手@4", "相手@6"]);
     expect(r.order).toEqual(["remark", "progress", "remark", "progress", "remark", "progress"]);
     expect(r.progress).toEqual([{ position: 2, rounds: 0 }, { position: 4, rounds: 0 }, { position: 6, rounds: 0 }]);
@@ -133,7 +132,7 @@ describe("recordedFeed", () => {
     expect(labels(r)).toEqual(["相手@600"]);
     expect(r.progress).toEqual([]);
     yield* Deferred.succeed(gate, undefined);
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@600", "相手@660", "相手@750"]);
     expect(r.order).toEqual(["remark", "idle", "progress", "remark", "idle", "progress", "remark", "idle", "progress"]);
     expect(r.progress).toEqual([600, 660, 750].map((position) => ({ position, rounds: 3 })));
@@ -148,7 +147,7 @@ describe("recordedFeed", () => {
     for (const [index, at] of [2000, 6000, 8000, 12000].entries()) {
       yield* advance(pending, at, () => r.arrivals.length > index);
     }
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@2", "screen@6", "screen-off@8", "相手@12"]);
     expect(r.times).toEqual([2000, 6000, 8000, 12000]);
     expect(r.progress).toEqual([{ position: 2, rounds: 0 }, { position: 12, rounds: 0 }]);
@@ -161,7 +160,7 @@ describe("recordedFeed", () => {
     yield* advance(pending, 5000, () => r.arrivals.length > 0);
     yield* until(() => r.arrivals.length === 2, "過ぎた3秒の発言");
     yield* advance(pending, 7000, () => r.arrivals.length === 3);
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(r.times).toEqual([5000, 5000, 7000]);
     expect(labels(r)).toEqual(["自分@5", "自分@3", "自分@7"]);
   })).pipe(Effect.scoped));
@@ -188,13 +187,13 @@ describe("recordedFeed", () => {
     });
     const immediate = yield* makeFeed();
     yield* feedInput(immediate);
-    yield* finish(immediate);
+    yield* immediate.feed.finish;
     const realtime = yield* makeFeed({ realtime: true });
     yield* feedInput(realtime);
     for (const [index, at] of [2000, 6000, 8000, 12000, 15000, 22000, 32000].entries()) {
       yield* advance(pending, at, () => realtime.arrivals.length > index);
     }
-    yield* finish(realtime);
+    yield* realtime.feed.finish;
     expect(labels(immediate)).toEqual(["相手@2", "screen@6", "screen-off@8", "相手@12", "screen@15", "自分@22", "相手@32"]);
     expect(realtime.arrivals).toEqual(immediate.arrivals);
   })).pipe(Effect.scoped));
@@ -209,7 +208,7 @@ describe("recordedFeed", () => {
     expect(r.arrivals).toHaveLength(1);
     yield* Ref.set(r.count, 1);
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@0", "相手@0"]);
   }).pipe(Effect.scoped));
 
@@ -221,7 +220,7 @@ describe("recordedFeed", () => {
     expect(r.arrivals).toEqual([]);
     yield* Ref.set(r.state, { status: "stopped" });
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@0"]);
   }).pipe(Effect.scoped));
 
@@ -236,7 +235,7 @@ describe("recordedFeed", () => {
     yield* r.feed.discard;
     yield* Ref.set(r.count, 0);
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@0"]);
     expect(yield* virtualNow).toBe(0);
   }).pipe(Effect.scoped));
@@ -248,7 +247,7 @@ describe("recordedFeed", () => {
     yield* advance(pending, 2000, () => r.arrivals.length === 1);
     yield* until(() => pending.includes(12000), "discardする1件の時刻待ち");
     yield* r.feed.discard;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(yield* virtualNow).toBe(2000);
     yield* TestClock.adjust(12000);
     expect(labels(r)).toEqual(["相手@2"]);
@@ -262,19 +261,19 @@ describe("recordedFeed", () => {
     yield* r.feed.remark(remark(2));
     yield* Deferred.await(entered);
     yield* r.feed.discard;
-    const finishing = yield* Effect.forkChild(finish(r));
+    const finishing = yield* Effect.forkChild(r.feed.finish);
     expect(finishing.pollUnsafe()).toBeUndefined();
     yield* Deferred.succeed(gate, undefined);
     yield* Fiber.join(finishing);
     expect(labels(r)).toEqual(["相手@1"]);
   }).pipe(Effect.scoped));
 
-  it.effect("discardした並べ替えの保留をdrainやfinishで復活させない", () => Effect.gen(function* () {
+  it.effect("discardした並べ替えの保留をfinishで復活させない", () => Effect.gen(function* () {
     const r = yield* makeFeed({ selfTrack: true });
     yield* r.feed.remark(remark(10));
     expect(yield* r.feed.prepareRestart).toEqual({ 相手: 10 });
     yield* r.feed.discard;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(r.arrivals).toEqual([]);
   }).pipe(Effect.scoped));
 
@@ -282,7 +281,7 @@ describe("recordedFeed", () => {
     const r = yield* makeFeed();
     yield* r.feed.screen(screen(5));
     expect(yield* r.feed.prepareRestart).toEqual({});
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(r.arrivals).toEqual([]);
   }).pipe(Effect.scoped));
 
@@ -295,7 +294,7 @@ describe("recordedFeed", () => {
     expect(labels(r)).toEqual(["相手@600"]);
     expect(yield* r.feed.prepareRestart).toEqual({ 相手: 750 });
     yield* Deferred.succeed(gate, undefined);
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@600", "相手@660", "相手@750"]);
   }).pipe(Effect.scoped));
 
@@ -307,7 +306,7 @@ describe("recordedFeed", () => {
     yield* r.feed.remark(remark(6, "自分"));
     expect(yield* r.feed.prepareRestart).toEqual({ 相手: 10, 自分: 6 });
     yield* r.feed.remark(remark(14));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["自分@6", "相手@10", "相手@14"]);
   }).pipe(Effect.scoped));
 
@@ -325,7 +324,7 @@ describe("recordedFeed", () => {
     yield* r.feed.screen({ ...screen(10), lines: ["再送した画面"] });
     yield* r.feed.screenOff(screenOff(10));
     yield* r.feed.remark(remark(14));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(selfTrack
       ? ["screen@5", "自分@6", "screen@7", "相手@10", "screen@10", "screen-off@10", "相手@14"]
       : ["screen@5", "screen@7", "相手@10", "screen@10", "screen-off@10", "相手@14"]);
@@ -340,7 +339,7 @@ describe("recordedFeed", () => {
     yield* r.feed.prepareRestart;
     yield* r.feed.screenOff(screenOff(1));
     yield* r.feed.remark(remark(4));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["screen-off@1", "相手@2", "相手@4"]);
   }).pipe(Effect.scoped));
 
@@ -352,7 +351,7 @@ describe("recordedFeed", () => {
     expect(r.arrivals).toEqual([]);
     yield* Ref.set(r.state, { status: "running" });
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@1", "相手@2", "相手@3"]);
   }).pipe(Effect.scoped));
 
@@ -365,7 +364,7 @@ describe("recordedFeed", () => {
     expect(labels(r)).toEqual(["相手@1"]);
     yield* Ref.set(r.state, { status: "running" });
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@1", "相手@2", "相手@3"]);
   }).pipe(Effect.scoped));
 
@@ -386,7 +385,7 @@ describe("recordedFeed", () => {
     yield* Deferred.succeed(gate, undefined);
     yield* Fiber.join(pausing);
     yield* Fiber.join(resuming);
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@1"]);
   }).pipe(Effect.scoped));
 
@@ -400,7 +399,7 @@ describe("recordedFeed", () => {
     yield* r.feed.discard;
     yield* Ref.set(r.state, { status: "running" });
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@1"]);
     expect(yield* virtualNow).toBe(0);
   }).pipe(Effect.scoped));
@@ -408,7 +407,7 @@ describe("recordedFeed", () => {
   it.effect("holdがなければ時計を進めず全部入る", () => Effect.gen(function* () {
     const r = yield* makeFeed();
     for (const end of [1, 2, 3]) yield* r.feed.remark(remark(end));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@1", "相手@2", "相手@3"]);
     expect(yield* virtualNow).toBe(0);
   }).pipe(Effect.scoped));
@@ -426,7 +425,7 @@ describe("recordedFeed", () => {
     yield* until(() => pending.length > 0 || r.arrivals.length > 0, "再開後の待機または投入");
     // hold後のpacerの起点は仕様で固定せず、再開後に必要な時刻だけ進める。
     if (pending.length > 0) yield* TestClock.adjust(pending[0]! - (yield* virtualNow));
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@2"]);
   })).pipe(Effect.scoped));
 
@@ -443,7 +442,7 @@ describe("recordedFeed", () => {
     expect(r.arrivals).toEqual([]);
     yield* Ref.set(r.state, { status: "running" });
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(labels(r)).toEqual(["相手@2"]);
   })).pipe(Effect.scoped));
 
@@ -463,7 +462,7 @@ describe("recordedFeed", () => {
     yield* Ref.set(r.state, { status: "running" });
     yield* r.observe;
     yield* r.observe;
-    yield* finish(r);
+    yield* r.feed.finish;
     expect(r.notices).toEqual([{ reason: "ChatGPT の利用上限", retryAt: 100_000 }, { reason: "Claude の利用上限", retryAt: 400_000 }, undefined]);
     expect(labels(r)).toEqual(["相手@1"]);
   }).pipe(Effect.scoped));
