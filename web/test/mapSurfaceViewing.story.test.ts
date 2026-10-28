@@ -42,7 +42,7 @@ const tick = (deltaMs: number) => message(Message.TickedAnimationFrame({ deltaMs
 const positionsOf = (m: MapSurfaceModel) => displayedPositions(m);
 
 // select は木に依らないので、空の木で純粋な関数を呼んだ値と比べる
-const EMPTY_TREE: VisibleTree = { ids: [], targets: {}, parents: {}, foldState: {}, runs: {}, changed: [], currentTopic: undefined };
+const EMPTY_TREE: VisibleTree = { ids: [], targets: {}, parents: {}, fold: null, changed: [], currentTopic: undefined };
 const selectedBy = (state: ViewingState, id: string): ViewingState => reduceViewing(state, { type: "select", id }, EMPTY_TREE).state;
 
 describe("ViewingState の Schema（Schema.declare で素通しにしない）", () => {
