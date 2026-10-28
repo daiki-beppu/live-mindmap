@@ -1,5 +1,6 @@
 import { Effect, Predicate, Schema } from "effect";
 import { DiffUpdatePausedEvent, DiffUpdateResumedEvent } from "./diffUpdate.ts";
+import { DiscussionNoticeEvent } from "./discussionNotice.ts";
 import { DiffEvent, RemarkEvent, restoreState, ScreenEvent, ScreenInputSkippedEvent, snapshotOf, StartEvent } from "./session.ts";
 import type { Snapshot } from "./snapshot.ts";
 
@@ -12,7 +13,8 @@ const BODY_END = "</body>";
 export function embedReviewLog(html: string, events: readonly unknown[]): string {
   const at = html.lastIndexOf(BODY_END);
   if (at < 0) throw new Error("テンプレートに </body> がありません");
-  const json = JSON.stringify(events).replaceAll("<", "\\u003c");
+  const kept = events.filter((event) => !(Predicate.hasProperty(event, "type") && event.type === DiscussionNoticeEvent.fields.type.literal));
+  const json = JSON.stringify(kept).replaceAll("<", "\\u003c");
   const element = `<script type="application/json" id="${REVIEW_LOG_ELEMENT_ID}">${json}</script>`;
   return html.slice(0, at) + element + html.slice(at);
 }

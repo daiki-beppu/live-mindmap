@@ -5,10 +5,10 @@ import type { IntakeStatus } from "./intake.ts";
 
 const DEFAULT_INTAKE: IntakeStatus = "running";
 
-export type FeedState = { snapshot: Snapshot | null; captions: CaptionState; intake: IntakeStatus; screenNotice: string | null; tapNotice: string | null; diffUpdate: DiffUpdateState | null; selfPaused: SelfPaused; local: boolean; speakerNames: SpeakerNames };
+export type FeedState = { snapshot: Snapshot | null; captions: CaptionState; intake: IntakeStatus; screenNotice: string | null; tapNotice: string | null; discussionNotice: string | null; diffUpdate: DiffUpdateState | null; selfPaused: SelfPaused; local: boolean; speakerNames: SpeakerNames };
 
 export function createFeedState(): FeedState {
-  return { snapshot: null, captions: createCaptionState(), intake: DEFAULT_INTAKE, screenNotice: null, tapNotice: null, diffUpdate: null, selfPaused: false, local: false, speakerNames: {} };
+  return { snapshot: null, captions: createCaptionState(), intake: DEFAULT_INTAKE, screenNotice: null, tapNotice: null, discussionNotice: null, diffUpdate: null, selfPaused: false, local: false, speakerNames: {} };
 }
 
 export function applyFrame(state: FeedState, frame: ViewerFrame, now: number): FeedState {
@@ -19,6 +19,7 @@ export function applyFrame(state: FeedState, frame: ViewerFrame, now: number): F
       captions: (frame) => ({ ...state, captions: receiveCaptions(state.captions, frame.bubbles, now) }),
       intake: (frame) => ({ ...state, intake: frame.status }),
       "screen-notice": (frame) => ({ ...state, screenNotice: frame.text }),
+      "discussion-notice": (frame) => ({ ...state, discussionNotice: frame.text }),
       "tap-notice": (frame) => ({ ...state, tapNotice: frame.text }),
       "self-pause": (frame) => ({ ...state, selfPaused: frame.paused ? frame.reason : false }),
       "diff-update": (frame) => ({ ...state, diffUpdate: frame.state }),
@@ -33,9 +34,9 @@ export function applyCaptionDeadline(state: FeedState, at: number): FeedState {
 }
 
 export function applyOpen(state: FeedState): FeedState {
-  return { ...state, captions: createCaptionState(), screenNotice: null, tapNotice: null, selfPaused: false, local: false, speakerNames: {} };
+  return { ...state, captions: createCaptionState(), screenNotice: null, tapNotice: null, discussionNotice: null, selfPaused: false, local: false, speakerNames: {} };
 }
 
 export function applyClose(state: FeedState): FeedState {
-  return { ...state, screenNotice: null, tapNotice: null, selfPaused: false, local: false };
+  return { ...state, screenNotice: null, tapNotice: null, discussionNotice: null, selfPaused: false, local: false };
 }

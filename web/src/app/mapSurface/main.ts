@@ -511,7 +511,7 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
   );
 }
 
-export const view = Submodel.defineView<Model, Message>((model, h): Html => {
+export const view = Submodel.defineView<Model, Message, { readonly notice: () => Html | null }>((model, slots, h): Html => {
   const view_ = foldViewOf(model);
   const tree = view_ === null ? null : treeOf(model, view_);
   const selectedId = view_ === null ? null : (model.viewing.selection?.id ?? null);
@@ -566,10 +566,10 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   return h.div(
     [h.Class("map-surface relative w-full h-full overflow-hidden z-0"), h.OnMount(ObserveMapSurface())],
     [
-      model.snapshot.criteria?.length ? h.div([h.Class("criteria-strip"), h.AriaLabel("判断軸（優先順）")], [
+      h.div([h.Class("map-overlays")], [model.snapshot.criteria?.length ? h.div([h.Class("criteria-strip"), h.AriaLabel("判断軸（優先順）")], [
         h.span([], ["判断軸（優先順）"]),
         h.ol([], model.snapshot.criteria.map((axis) => h.li([], [axis]))),
-      ]) : null,
+      ]) : null, slots.notice()]),
       h.div([h.Class("map-viewport absolute left-0 top-0 w-full h-full origin-top-left pointer-events-none z-2"), h.Style({ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})` })], [h.svg([h.Class("map-edges absolute left-0 top-0 w-[1px] h-[1px] overflow-visible pointer-events-none")], edges), h.div([h.Class("map-nodes absolute left-0 top-0 pointer-events-none")], nodes)]),
       ...(edgeDotButtons.length === 0 ? [] : [h.div([h.Class("edge-dots absolute inset-0 z-4 pointer-events-none overflow-hidden")], edgeDotButtons)]),
     ],

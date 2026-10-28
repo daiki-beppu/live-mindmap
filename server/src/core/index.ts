@@ -1,3 +1,4 @@
+export * from "./discussionNotice.ts";
 export * from "./changes.ts";
 export * from "./correction.ts";
 export * from "./diffUpdate.ts";

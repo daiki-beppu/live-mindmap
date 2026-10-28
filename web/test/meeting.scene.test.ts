@@ -58,6 +58,34 @@ import {
 import { spokenBubble, spokenFrame } from "./fixtures/captions.ts";
 import { one, renderedIds } from "./sceneTree.ts";
 
+it("同じ会議画面で判断軸の全件と通知を表示し、通知消去後も判断軸を保持する", () => {
+  const criteria = ["採用のしやすさ", "運用負荷", "初期費用と継続費用"];
+  const notice = "「進め方」が 10 分決まっていません。判断軸「採用のしやすさ」「運用負荷」「初期費用と継続費用」で決められそうですか";
+  meetingScene(init(false), snapshotFrame({ ...FIRST, criteria }), settle,
+    tap((sim) => expect(texts(sim.html, ".criteria-strip li")).toEqual(criteria)),
+    frame({ type: "discussion-notice", text: notice }), settle,
+    expectScene(selector(".discussion-notice")).toHaveText(notice),
+    tap((sim) => expect(findAll(sim.html, ".criteria-strip")).toHaveLength(1)),
+    frame({ type: "discussion-notice", text: null }), settle,
+    expectScene(selector(".discussion-notice")).toBeAbsent(),
+    tap((sim) => expect(texts(sim.html, ".criteria-strip li")).toEqual(criteria)),
+  );
+});
+
+it.each([false, true])("堂々巡りの通知は初回と継続受信から画面へ届き、切断で消える（初回: %s）", (beforeSnapshot) => {
+  const notice = "「進め方」が 10 分決まっていません。何を重視して決めるかを先に確かめませんか";
+  meetingScene(init(false),
+    ...(beforeSnapshot ? [frame({ type: "discussion-notice", text: notice }), settle] : []),
+    snapshotFrame(FIRST), settle,
+    ...(!beforeSnapshot ? [frame({ type: "discussion-notice", text: notice }), settle] : []),
+    expectScene(selector(".discussion-notice")).toHaveText(notice),
+    frame({ type: "discussion-notice", text: "次の論点の知らせ" }), settle,
+    expectScene(selector(".discussion-notice")).toHaveText("次の論点の知らせ"),
+    disconnected(), settle,
+    expectScene(selector(".discussion-notice")).toBeAbsent(),
+  );
+});
+
 // 会議中の Foldkit プログラム（Issue #829）の Scene。描いた view から入り、`/ws` の frame（描いた木の外から届くので Subscription.emit で流す）が、
 // 最初のスナップショットまでの待ち表示・画面の並び・知らせ・字幕・マップ・右の列・キーまで届くことを、同じ画面（1 つの Model）の上の続きで見る。
 // 並び・class・文言は React の SessionView（.layout の直下: ローカルモード → .map → 字幕 → 取り込み → 共有画面 → 相手の音声 → 差分更新 → .side）と同じ。

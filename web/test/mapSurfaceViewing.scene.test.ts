@@ -16,7 +16,7 @@ import { foldingActions } from "./foldingActions.ts";
 
 type MapSurfaceModel = typeof Model.Type;
 type VNode = Parameters<typeof textContent>[0];
-const app = { update, view };
+const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<typeof view>[2]) => view(model, { notice: () => null }, h) };
 
 const node = (id: string, parent: string | null, kind: SnapshotNode["kind"] = "議題", extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id, parent, kind, text: id, evidence: parent ? ["r1"] : [], ...extra });
 const snap = (nodes: SnapshotNode[], extra: Partial<Snapshot> = {}): Snapshot => ({ nodes, round: 3, changes: [], remarks: [], ...extra });

@@ -62,6 +62,7 @@ export const Model = Schema.Struct({
     intakeToast: SessionLayout.Model.fields.intakeToast,
     screenToast: SessionLayout.Model.fields.screenToast,
     tapToast: SessionLayout.Model.fields.tapToast,
+    discussionToast: SessionLayout.Model.fields.discussionToast,
     viewingToast: SessionLayout.Model.fields.viewingToast,
     diffUpdate: SessionLayout.Model.fields.diffUpdate,
     local: SessionLayout.Model.fields.local,
@@ -310,7 +311,7 @@ export const makeView = (context: Context) => (model: Model, h: HtmlBuilder<Mess
             view: SessionLayout.submodelView,
             model: layoutOf(context, model),
             viewInputs: {
-              map: () => h.submodel({ slotId: "map-surface", view: MapSurface.view, model: surface, toParentMessage: toMapSurface }),
+              map: (notice) => h.submodel({ slotId: "map-surface", view: MapSurface.view, model: surface, viewInputs: { notice: () => notice }, toParentMessage: toMapSurface }),
               keyList: () => keyListView(h, model.keyList, reviewScreenOf(context), (message) => Message.GotKeyListMessage({ message })),
               side: () => h.submodel({ slotId: "side-panel", view: SidePanel.view, model: surface, toParentMessage: toMapSurface }),
             },

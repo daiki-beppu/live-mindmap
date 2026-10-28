@@ -12,6 +12,7 @@ type Script = {
   ignoreSigterm?: boolean;
   unexpectedExit?: { afterMs: number; code?: number; signal?: NodeJS.Signals };
   stderrLines?: string[];
+  schedule?: { afterMs: number; events: unknown[] }[];
 };
 
 const script = JSON.parse(readFileSync(scriptPath, "utf8")) as Script;
@@ -65,6 +66,10 @@ if (command === "check") {
   wss.on("connection", (client) => {
     record({ type: "connection" });
     for (const event of script.events) client.send(JSON.stringify(event));
+    const timers = (script.schedule ?? []).map(({ afterMs, events }) => setTimeout(() => {
+      for (const event of events) client.send(JSON.stringify(event));
+    }, afterMs));
+    client.on("close", () => { for (const timer of timers) clearTimeout(timer); });
   });
   if (script.unexpectedExit) {
     const { afterMs, code, signal } = script.unexpectedExit;

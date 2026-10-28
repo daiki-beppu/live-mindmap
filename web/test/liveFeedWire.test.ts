@@ -36,6 +36,12 @@ const publishedData = (publish: (viewers: typeof Viewers.Service) => Effect.Effe
   }).pipe(Effect.provide(Viewers.layer), Effect.scoped));
 
 describe("/ws のスナップショットのフレーム", () => {
+  it("保持した堂々巡りの通知は接続時の送信とwebの検証を通り、FoldkitのModelに届く", async () => {
+    const text = "「進め方」が 10 分決まっていません。何を重視して決めるかを先に確かめませんか";
+    const data = await publishedData((viewers) => Effect.flatMap(viewers.forSession, (send) => send({ type: "discussion-notice", text })));
+    const frame = Option.getOrThrow(decodeFrame(data));
+    expect(update(init(), Message.ReceivedLiveFrame({ frame, receivedAt: 0 })).model.discussionNotice).toEqual(Option.some(text));
+  });
   it("server が送ったスナップショットは、web の受信を通ると同じ Snapshot として Model に入る", async () => {
     const data = await publishedData((viewers) => Effect.flatMap(viewers.forSession, (send) => send({ type: "snapshot", snapshot })));
     const frame = Option.getOrThrow(decodeFrame(data));

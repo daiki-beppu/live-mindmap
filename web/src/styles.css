@@ -57,7 +57,9 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .map-node__criteria-reserve { display: block; visibility: hidden; }
 .map-node__criteria-reserve > span, .map-node__criteria-value > span { display: block; }
 .map-node__criteria-value { position: absolute; inset: 0; }
-.criteria-strip { position: absolute; left: 12px; top: 12px; z-index: 5; max-width: min(360px, 40%); font-size: 12px; line-height: 1.4; color: #6b7280; background: #fff; padding: 6px 8px; overflow-wrap: anywhere; }
+.map-overlays { position: absolute; left: 12px; right: 12px; top: 12px; z-index: 5; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; pointer-events: none; }
+.layout--local .map-overlays { top: 40px; }
+.criteria-strip { box-sizing: border-box; max-width: min(360px, 100%); font-size: 12px; line-height: 1.4; color: #6b7280; background: #fff; padding: 6px 8px; overflow-wrap: anywhere; }
 .criteria-strip ol { margin: 3px 0 0; padding-left: 20px; }
 /* 今回の反映で変わったノードは、ノードの塗りと枠だけを 1 秒周期で 3 回ゆっくり薄くして戻す。
    文字は薄くしない（opacity はノード全体にかかるので使わない）。影・バッジは足さない。
@@ -207,3 +209,5 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
     background: var(--color-gray-50); border: 1px solid var(--color-gray-200); border-radius: 8px; box-shadow: none; cursor: pointer;
   }
 }
+
+.discussion-notice { box-sizing: border-box; max-width: min(640px, 100%); padding: 8px 12px; border: 1px solid var(--color-gray-200); border-radius: 8px; background: var(--color-white); color: var(--color-gray-500); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; pointer-events: none; }

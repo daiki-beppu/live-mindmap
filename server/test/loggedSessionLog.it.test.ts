@@ -11,6 +11,27 @@ import { createSessionDir, EXPORT_FILE, LOG_FILE, openLoggedSession, openLoggedT
 import { updaterLayer } from "./fixtures/sessionLayers.ts";
 import type { ViewerFrame } from "../src/viewers.ts";
 
+it.effect("堂々巡りの frame は通知行をファイルに保存してから配信する", () => Effect.gen(function* () {
+  const dir = yield* sessionsDir;
+  const sent: ViewerFrame[] = [];
+  const opened = yield* openLoggedSession({ model: defaultClaude, dir, title: "合成会議", send: (frame) => Effect.sync(() => {
+    if (frame.type !== "discussion-notice") return;
+    const rows: unknown[] = readFileSync(join(dir, LOG_FILE), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows).toContainEqual(expect.objectContaining({ type: "discussion-notice", pointId: "n1", at: 700, text: frame.text }));
+    sent.push(frame);
+  }) }).pipe(Effect.provide(Layer.merge(NodeFileSystem.layer, updaterLayer((input) => Effect.succeed({
+    ops: input.map.order.length > 1 ? [] : [
+      { op: "add", ref: "point", parent: "root", kind: "論点", text: "進め方", evidence: [input.fresh[0]!.id] },
+      ...["A", "B", "C"].map((ref) => ({ op: "add" as const, ref, parent: "point", kind: "案" as const, text: ref, evidence: [input.fresh[0]!.id] })),
+    ],
+  })))));
+  yield* opened.session.push({ ...remark(1), start: 0, end: 1 });
+  yield* opened.session.idle;
+  yield* opened.session.push({ ...remark(2), start: 699, end: 700 });
+  yield* opened.session.idle;
+  expect(sent).toEqual([{ type: "discussion-notice", text: "「進め方」が 11 分決まっていません。何を重視して決めるかを先に確かめませんか" }]);
+}));
+
 // セッションのフォルダへの書き込み（log.jsonl の追記・export.json・フォルダ名）の契約。
 // 書き込みは FileSystem 経由の非同期になるので、同期の書き込みで自然に成り立っていた次の性質を固定する:
 // 呼んだ順に行が並ぶこと、最後に書かれた export.json が最新であること、時刻は Effect を実行した時点の実時刻であること、
