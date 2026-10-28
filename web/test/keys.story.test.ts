@@ -6,7 +6,6 @@ import * as MapSurface from "../src/app/mapSurface/main.ts";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { snapshotAt } from "../src/reviewTimeline.ts";
 import { foldView } from "../src/folding.ts";
-import { humanSetsOf } from "../src/viewing.ts";
 import { makeContext } from "../src/app/review/context.ts";
 import { init, Model, makeUpdate } from "../src/app/review/main.ts";
 import { Message } from "../src/app/review/message.ts";
@@ -191,8 +190,7 @@ describe("倍率・位置・ノードを選ぶキーは、表示面の Pressed*K
     const localUpdate = updateOf(local);
     const idOf = (text: string) => snapshotAt(local.timeline, 40).nodes.find((n) => n.text === text)!.id;
     const shown = (model: ReturnType<typeof stateAt>) => {
-      const { opened, folded, unbundled } = humanSetsOf(model.mapSurface.viewing);
-      return foldView(snapshotAt(local.timeline, 40), opened, model.mapSurface.viewing.selection?.id ?? null, folded, unbundled).nodes.map((n) => n.id);
+      return foldView(snapshotAt(local.timeline, 40), model.mapSurface.viewing.humanFolds, model.mapSurface.viewing.selection?.id ?? null).nodes.map((n) => n.id);
     };
     const base = localUpdate(stateAt(local, 40), surface(MapSurfaceMessage.MeasuredMapSurface({ width: 800, height: 600, nodeHeights: {} }))).model;
     const selected = localUpdate(base, surface(MapSurfaceMessage.ClickedNodeButton({ nodeId: idOf("T1"), clientX: 0, clientY: 0 }))).model;

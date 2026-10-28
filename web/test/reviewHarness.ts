@@ -52,7 +52,7 @@ export const stateAt = (context: Context, time: number, patch: Partial<Model["pl
 export const sideHiddenOf = (model: Model): Model => ({ ...model, mapSurface: { ...model.mapSurface, viewing: { ...model.mapSurface.viewing, sideHidden: true } } });
 
 export const expectedIds = (context: Context, time: number): string[] =>
-  foldView(snapshotOf(context, stateAt(context, time)), new Set(), null, new Set(), new Set()).nodes.map((n) => n.id);
+  foldView(snapshotOf(context, stateAt(context, time)), undefined, null).nodes.map((n) => n.id);
 
 export type Sim = SceneSimulation<Model, Message, undefined>;
 

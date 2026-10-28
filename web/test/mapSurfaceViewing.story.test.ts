@@ -8,9 +8,10 @@ import { nodeFocusViewport, nodeRect } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, reduceViewing, ViewingState, type VisibleTree } from "../src/viewing.ts";
+import { foldingActions } from "./foldingActions.ts";
 
 // マップの表示面の「見る状態」（Issue #818）の update。選ぶ・畳む・開く・縁の点を押した事実が、Model.viewing を
-// 既存の純粋な関数（reduceViewing・foldToggle・foldView）が決めたとおりに変えることを見る。期待値は、その純粋な関数を直接呼んだ値と、手で書いた値
+// 既存の純粋な関数（reduceViewing・refold・foldView）が決めたとおりに変えることを見る。期待値は、その純粋な関数を直接呼んだ値と、手で書いた値
 
 type MapSurfaceModel = typeof Model.Type;
 
@@ -27,7 +28,8 @@ const bundled = (): Snapshot =>
     now: 100,
   });
 const HEIGHTS = { root: 40, A: 50, A1: 60, A2: 50, B: 70, "run:A": 50 };
-const NONE: ReadonlySet<string> = new Set();
+const openedA = () => foldingActions(single(), [{ type: "toggle", id: "A" }]).human;
+const shownView = (m: MapSurfaceModel) => foldView(m.snapshot, m.viewing.humanFolds, m.viewing.selection?.id ?? null);
 
 const measuredModel = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live", viewing: ViewingState = INITIAL_VIEWING): MapSurfaceModel => ({
   ...init(snapshot, mode, false),
@@ -63,19 +65,15 @@ describe("ViewingState の Schema（Schema.declare で素通しにしない）",
         sideHidden: true,
         captionsHidden: true,
         selection: { id: "A", byKey: true },
-        humanOpened: new Set(["A"]),
-        humanFolded: new Set(["B"]),
-        humanUnbundled: new Set(["A2"]),
+        humanFolds: openedA(),
       }),
     ).toBe(true);
     expect(is(INITIAL_VIEWING)).toBe(true);
   });
 
   it("集合を配列で書いたもの・知らない mode・形の崩れた選択は通らない", () => {
-    expect(is({ mode: "auto", humanOpened: ["A"] })).toBe(false);
-    expect(is({ mode: "auto", humanFolded: ["A"] })).toBe(false);
-    expect(is({ mode: "auto", humanUnbundled: ["A"] })).toBe(false);
-    expect(is({ mode: "auto", humanOpened: new Set([1]) })).toBe(false);
+    expect(is({ mode: "auto", humanFolds: ["A"] })).toBe(false);
+    expect(is({ mode: "auto", humanFolds: 1 })).toBe(false);
     expect(is({ mode: "zoom" })).toBe(false);
     expect(is({ mode: "auto", selection: { id: "A" } })).toBe(false);
     expect(is({ mode: "auto", selection: { id: 1, byKey: false } })).toBe(false);
@@ -92,9 +90,9 @@ describe("mapSurface の Model: 見る状態の欄", () => {
 
   it("本物の見る状態を持つ Model は通り、集合を配列で書いた viewing は通らない", () => {
     const is = Schema.is(Model);
-    const viewing: ViewingState = { mode: "manual", topic: "B", selection: { id: "A", byKey: false }, humanOpened: new Set(["A"]) };
+    const viewing: ViewingState = { mode: "manual", topic: "B", selection: { id: "A", byKey: false }, humanFolds: openedA() };
     expect(is({ ...init(single(), "live", false), viewing })).toBe(true);
-    expect(is({ ...init(single(), "live", false), viewing: { mode: "auto", humanOpened: ["A"] } })).toBe(false);
+    expect(is({ ...init(single(), "live", false), viewing: { mode: "auto", humanFolds: ["A"] } })).toBe(false);
     expect(is({ ...init(single(), "live", false), viewing: null })).toBe(false);
   });
 });
@@ -114,7 +112,7 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
   });
 
   it("別のノードを click すると選択が移る。人の開閉などの他の状態はそのまま残る", () => {
-    const before: ViewingState = { mode: "manual", topic: "B", selection: { id: "B", byKey: true }, humanOpened: new Set(["A"]), keyList: true };
+    const before: ViewingState = { mode: "manual", topic: "B", selection: { id: "B", byKey: true }, humanFolds: openedA(), keyList: true };
     story(
       update,
       given(measuredModel(single(), "live", before)),
@@ -122,7 +120,7 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
       model((m) => {
         expect(m.viewing).toEqual(selectedBy(before, "root"));
         expect(m.viewing.mode).toBe("manual");
-        expect(m.viewing.humanOpened).toEqual(new Set(["A"]));
+        expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: true });
         expect(m.viewing.keyList).toBe(true);
         expect(m.viewing.selection).toEqual({ id: "root", byKey: false });
       }),
@@ -187,22 +185,23 @@ describe("mapSurface の update: ノード本体の click で選ぶ（reduceView
 });
 
 describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing の foldDot）", () => {
-  const opened = (): ViewingState => ({ mode: "auto", humanOpened: new Set(["A"]) });
 
-  it("畳んだ議題の丸を押すと、人が開いた集合に入る。カメラの mode と選択は変わらない", () => {
+  it("畳んだ議題の丸を押すと、子が見えて人が開いた表示になる。カメラの mode と選択は変わらない", () => {
     story(
       update,
       given(measuredModel(single())),
       clickFoldDot("A"),
       model((m) => {
-        expect(m.viewing).toEqual(opened());
-        expect(m.viewing.humanFolded).toBeUndefined();
+        expect(m.viewing.mode).toBe("auto");
+        expect(m.viewing.selection).toBeUndefined();
+        expect(shownView(m).nodes.map((n) => n.id)).toContain("A1");
+        expect(shownView(m).openness["A"]).toEqual({ state: "open", byHuman: true });
       }),
     );
   });
 
   it("開いた後は子が見える。位置は人が開いた集合で foldView が返す木を layout した値になる", () => {
-    const shown = foldView(single(), new Set(["A"]), null, NONE, NONE).nodes;
+    const shown = foldView(single(), openedA(), null).nodes;
     expect(shown.map((n) => n.id)).toContain("A1");
     const target = layout(shown, HEIGHTS);
     story(
@@ -236,15 +235,16 @@ describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing
     );
   });
 
-  it("開いたノードの丸をもう一度押すと畳む（人が畳んだ集合に入り、開いた集合からは外れる）", () => {
+  it("開いたノードの丸をもう一度押すと畳んだ表示になる", () => {
     story(
       update,
       given(measuredModel(single())),
       clickFoldDot("A"),
       clickFoldDot("A"),
       model((m) => {
-        expect(m.viewing).toEqual({ mode: "auto", humanFolded: new Set(["A"]) });
-        expect(m.viewing.humanOpened).toBeUndefined();
+        expect(m.viewing.mode).toBe("auto");
+        expect(shownView(m).nodes.map((n) => n.id)).not.toContain("A1");
+        expect(shownView(m).openness["A"]?.state).toBe("folded");
       }),
     );
   });
@@ -272,7 +272,7 @@ describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing
       clickNode("A1"),
       clickFoldDot("A"),
       model((m) => {
-        expect(m.viewing.humanFolded).toEqual(new Set(["A"]));
+        expect(shownView(m).openness["A"]?.state).toBe("folded");
         expect(m.viewing.selection).toEqual({ id: "A", byKey: false });
       }),
     );
@@ -287,22 +287,46 @@ describe("mapSurface の update: 丸の click で開く・畳む（reduceViewing
     );
   });
 
-  it("まとめのノードの丸を押すと解く: 入っていた議題が人が解いた集合に入り、選択がまとめの最初の議題へ移る。中身は畳んだまま", () => {
+  it("まとめのノードの丸を押すと個々の議題になり、選択が先頭へ移る。中身は畳んだまま", () => {
     story(
       update,
       given(measuredModel(bundled())),
       clickFoldDot("run:A"),
       model((m) => {
-        expect(m.viewing.humanUnbundled).toEqual(new Set(["A", "A2"]));
         expect(m.viewing.selection).toEqual({ id: "A", byKey: false });
-        expect(m.viewing.humanOpened).toBeUndefined();
+        expect(shownView(m).openness).toMatchObject({ A: { state: "folded" }, A2: { state: "folded" } });
         // 解いた後の位置は、解いた集合で foldView が返す木の layout
-        const shown = foldView(bundled(), NONE, "A", NONE, new Set(["A", "A2"])).nodes;
+        const shown = shownView(m).nodes;
         expect(shown.map((n) => n.id)).not.toContain("run:A");
         expect(shown.map((n) => n.id)).toContain("A2");
         expect(Object.keys(positionsOf(m)).sort()).toEqual(shown.map((n) => n.id).sort());
       }),
     );
+  });
+});
+
+describe("mapSurface の update: 反映で解いた人の畳みの保存", () => {
+  it.each(["C", "B"])("中間の今の議題が %s のとき、次の反映でも解除対象に応じた表示を保つ", (intermediateTopic) => {
+    const nodes = [node("root", null, "会議"), node("B", "root"), node("C", "root"), node("C1", "C", "論点")];
+    const initial = snap(nodes, { currentTopic: "B", now: 100 });
+    let current = measuredModel(initial, "review");
+    expect(shownView(current).nodes.map((n) => n.id)).toContain("C1");
+    expect(shownView(current).openness["C"]).toEqual({ state: "open", byHuman: false });
+
+    current = update(current, Message.ClickedFoldDot({ nodeId: "C" })).model;
+    expect(shownView(current).nodes.map((n) => n.id)).not.toContain("C1");
+    expect(shownView(current).openness["C"]?.state).toBe("folded");
+
+    current = update(current, Message.ChangedSnapshot({ snapshot: { ...initial, round: initial.round + 1, currentTopic: intermediateTopic } })).model;
+    current = update(current, Message.ChangedSnapshot({ snapshot: { ...initial, round: initial.round + 2, currentTopic: "B" } })).model;
+    const final = shownView(current);
+    if (intermediateTopic === "C") {
+      expect(final.nodes.map((n) => n.id)).toContain("C1");
+      expect(final.openness["C"]).toEqual({ state: "open", byHuman: false });
+    } else {
+      expect(final.nodes.map((n) => n.id)).not.toContain("C1");
+      expect(final.openness["C"]?.state).toBe("folded");
+    }
   });
 });
 
@@ -322,7 +346,7 @@ describe("mapSurface の update: 縁の点の click（reduceViewing の edgeDot�
 
   it("viewing に渡したうえで、そのノードへ寄る（今の倍率のまま、目標の位置と高さで測ったノードの中心が画面の中央に来る）。補間も SelectedNode も起こさない", () => {
     const start = measuredModel(single(), "live", paused);
-    const shown = foldView(single(), NONE, null, NONE, NONE).nodes;
+    const shown = foldView(single(), undefined, null).nodes;
     const expected = nodeFocusViewport(nodeRect("root", layout(shown, HEIGHTS), { root: { height: HEIGHTS.root } }), start.viewport.zoom, { width: 800, height: 600 });
     expect(expected).not.toEqual(start.viewport);
     story(
