@@ -7,7 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ConfigProvider, Deferred, Effect, Fiber, Layer, Queue, Ref, Stream, type Cause } from "effect";
 import { vi } from "vitest";
 import { planLayer } from "../src/updatePlan.ts";
-import { Helpers, HelperLaunchFailure, type HelperExitInfo, type HelperCheck } from "../src/helpers.ts";
+import { Helpers, HelperLaunchFailure, type HelperLaunchOptions, type HelperExitInfo, type HelperCheck } from "../src/helpers.ts";
 import { readyHelperItems } from "./fixtures/helperCheck.ts";
 import { ManagedDeps, ManagedDepsFailed, type DepItem } from "../src/managedDeps.ts";
 import { StartupDepsMissing } from "../src/startupDepsMissing.ts";
@@ -44,12 +44,12 @@ const controlledDeps = () => {
 };
 
 const controlledHelpers = () => {
-  const calls: string[][] = [];
+  const calls: HelperLaunchOptions[] = [];
   const control = { failRestarts: false, speechStatus: "installed" as HelperCheck["speechJa"]["status"] };
   const endings: Array<Effect.Effect<void>> = [];
-  const launch = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
+  const launch = Effect.fnUntraced(function* (args: HelperLaunchOptions) {
     const index = calls.length;
-    calls.push([...args]);
+    calls.push(args);
     if (index > 0 && control.failRestarts) return yield* new HelperLaunchFailure({ stderrTail: ["合成の起動失敗"] });
     const queue = yield* Queue.make<string, Cause.Done>();
     const exited = yield* Deferred.make<HelperExitInfo>();

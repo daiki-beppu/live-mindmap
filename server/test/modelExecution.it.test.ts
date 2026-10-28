@@ -13,7 +13,7 @@ import { runCli } from "../src/cli.ts";
 import { ManagedDeps, ManagedDepsFailed } from "../src/managedDeps.ts";
 import type { DiffOutput } from "../src/core/index.ts";
 import { planLayer } from "../src/updatePlan.ts";
-import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, type HelperLaunchOptions, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { EXPORT_FILE } from "../src/sessionFiles.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -88,12 +88,12 @@ const starts = (session: string) => {
 };
 
 function fakeHelpers(events: unknown[]) {
-  const calls: string[][] = [];
+  const calls: HelperLaunchOptions[] = [];
   const layer = Layer.succeed(Helpers, Helpers.of({
     ...helperChecks(),
     apps: Effect.succeed([]),
     launch: (args) => Effect.gen(function* () {
-      calls.push([...args]);
+      calls.push(args);
       const queue = yield* Queue.make<string, Cause.Done>();
       for (const event of events) Queue.offerUnsafe(queue, JSON.stringify(event));
       const exited = yield* Deferred.make<HelperExitInfo>();
