@@ -9,6 +9,7 @@ import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
 import { view as sideView } from "../src/app/sidePanel/main.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
 import { semanticClassesOf } from "./semanticClasses.ts";
+import { foldingActions } from "./foldingActions.ts";
 
 // 右の列（Issue #821）の Scene。描いた view から入り、選んだノードの根拠のパネルと変わったことの列が、今の画面（EvidencePanel.tsx・ChangeList.tsx）と同じ中身・同じ DOM で出ること、
 // 選択に連動して同じ画面の上で切り替わること、右の列の出す・隠すが Disclosure の panel として描かれることを見る。
@@ -56,7 +57,7 @@ const mounted = Mount.resolve(ObserveMapSurface, Message.MeasuredMapSurface({ ..
 const clickedNode = (nodeId: string) => Mount.resolve(ObserveMapSurface, Message.ClickedNodeButton({ nodeId, clientX: 0, clientY: 0 }));
 const nodeButton = (nodeId: string) => expectScene(selector(`[data-node-id="${nodeId}"] button.map-node__button`)).toExist();
 // 議題 A を開いた見る状態（論点・案・課題・TODO がマップに描かれる）
-const OPENED: ViewingState = { mode: "auto", humanOpened: new Set(["A"]) };
+const opened = (): ViewingState => ({ mode: "auto", humanFolds: foldingActions(snap(), [{ type: "toggle", id: "A" }]).human });
 const toggleSide = (isOpen: boolean) => Subscription.emit(Message.ToggledSide({ isOpen }));
 
 const EVIDENCE = selector("section.evidence");
@@ -94,7 +95,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("論点を選ぶと、種別・状態・本文と、発言を開始時刻の昇順に 時刻・トラック・文 で出す（積んだ順の r2, r1 は r1, r2 になる）", () => {
     scene(
       app,
-      given(modelOf(snap(), OPENED)),
+      given(modelOf(snap(), opened())),
       nodeButton("A1"),
       clickedNode("A1"),
       expectScene(selector("section.evidence .evidence__kind")).toHaveText("論点"),
@@ -121,7 +122,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("案の状態は planStatus、本文は HTML としてではなく文字で描く", () => {
     scene(
       app,
-      given(modelOf(snap(), OPENED)),
+      given(modelOf(snap(), opened())),
       nodeButton("A2"),
       clickedNode("A2"),
       expectScene(selector("section.evidence .evidence__kind")).toHaveText("案"),
@@ -134,7 +135,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("状態を持たない種別（課題）に切り替えると、状態の要素を出さない", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...OPENED, selection: { id: "A2", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: { id: "A2", byKey: false } })),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>2 回</b>"),
       nodeButton("A3"),
       clickedNode("A3"),
@@ -147,7 +148,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選択に連動する: 未選択から A1 を選ぶと、案内が根拠の中身に切り替わる", () => {
     scene(
       app,
-      given(modelOf(snap(), OPENED)),
+      given(modelOf(snap(), opened())),
       expectScene(selector("section.evidence p.evidence__empty")).toHaveText(EMPTY_NOT_SELECTED),
       nodeButton("A1"),
       clickedNode("A1"),
@@ -160,7 +161,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選択に連動する: A1 から A2 へ選び直すと、同じ画面の上で中身が切り替わり、前の発言は残らない", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...OPENED, selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false } })),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("面接は何回か"),
       tap((s) => expect(findAll("li.evidence__remark")(evidenceOf(s.html))).toHaveLength(2)),
       nodeButton("A2"),
@@ -174,7 +175,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
   it("選択に連動する: A2 から A4（発言なし）へ選び直すと、前の発言は残らない", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...OPENED, selection: { id: "A2", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: { id: "A2", byKey: false } })),
       expectScene(selector("section.evidence p.evidence__text")).toHaveText("<b>2 回</b>"),
       tap((s) => expect(findAll("li.evidence__remark")(evidenceOf(s.html))).toHaveLength(1)),
       nodeButton("A4"),
@@ -215,7 +216,7 @@ describe("sidePanel の Scene: 根拠のパネル（選択と連動して今と�
     const grown: Snapshot = { ...snap(), remarks: [...REMARKS, { id: "r3", track: "相手", start: 200, end: 205, text: "追加の発言" }], nodes: NODES.map((n) => (n.id === "A4" ? { ...n, evidence: ["r3"] } : n)) };
     scene(
       app,
-      given(modelOf(snap(), OPENED)),
+      given(modelOf(snap(), opened())),
       nodeButton("A4"),
       clickedNode("A4"),
       expectScene(selector("section.evidence p.evidence__empty")).toHaveText(EMPTY_NO_REMARKS),
@@ -565,7 +566,7 @@ describe("sidePanel の Scene: 右の列の出す・隠す（Disclosure の pane
   it("隠している間に選んでも、出し直すと選んだノードの根拠が出る（隠す前の選択を持ったまま隠している状態から始める）", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...OPENED, selection: { id: "A1", byKey: false }, sideHidden: true })),
+      given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false }, sideHidden: true })),
       tap((s) => expect(semanticClassesOf(classOf(sideOf(s.html)))).toEqual(["side", "side--selected", "side--hidden"])),
       nodeButton("A2"),
       clickedNode("A2"),
@@ -632,7 +633,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
   it("ノードを選ぶと .side に side--selected が付き、根拠のパネルの中に閉じるボタンが出る", () => {
     scene(
       app,
-      given(modelOf(snap(), OPENED)),
+      given(modelOf(snap(), opened())),
       nodeButton("A1"),
       clickedNode("A1"),
       tap((s) => {
@@ -647,7 +648,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
   it("右の列を隠したまま選ぶと、.side を side--hidden 付きで描き、閉じるボタンで選びを外すと .side が無くなる", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...OPENED, sideHidden: true })),
+      given(modelOf(snap(), { ...opened(), sideHidden: true })),
       expectScene(selector(".side")).toBeAbsent(),
       nodeButton("A1"),
       clickedNode("A1"),
@@ -662,7 +663,7 @@ describe("sidePanel の Scene: 狭い幅のシートの目印と閉じるボタ�
   it("閉じるボタンを押すと選びが外れ、目印も閉じるボタンも消える", () => {
     scene(
       app,
-      given(modelOf(snap(), { ...OPENED, selection: { id: "A1", byKey: false } })),
+      given(modelOf(snap(), { ...opened(), selection: { id: "A1", byKey: false } })),
       mounted,
       expectScene(selector("button.side__close")).toExist(),
       click(selector("button.side__close")),

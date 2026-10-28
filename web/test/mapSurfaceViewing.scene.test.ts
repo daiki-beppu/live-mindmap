@@ -9,6 +9,7 @@ import { edgeDots, nodeFocusViewport, nodeRect } from "../src/camera.ts";
 import { foldView } from "../src/folding.ts";
 import { layout } from "../src/layout.ts";
 import { INITIAL_VIEWING, type ViewingState } from "../src/viewing.ts";
+import { foldingActions } from "./foldingActions.ts";
 
 // マップの表示面の「見る状態」（Issue #818）の Scene。描いた view から入り、選ぶ・畳む・開く・縁の点が、今の画面（MapNode.tsx・MapView.tsx）と同じ DOM になることを見る。
 // 比べる相手は既存の純粋な関数（foldView・layout・edgeDots）。Scene は Model を見せないので、押した後の viewing の値そのものは Story（mapSurfaceViewing.story.test.ts）で見る
@@ -31,7 +32,6 @@ const bundled = (): Snapshot =>
   });
 const HEIGHTS = { root: 40, A: 50, A1: 60, A2: 50, B: 70, "run:A": 50 };
 const SIZE = { width: 800, height: 600 };
-const NONE: ReadonlySet<string> = new Set();
 
 const measuredModel = (snapshot: Snapshot, mode: MapSurfaceModel["mode"] = "live", viewing: ViewingState = INITIAL_VIEWING): MapSurfaceModel => ({
   ...init(snapshot, mode, false),
@@ -115,7 +115,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
   });
 
   it("選んだノードの祖先は畳まない: 畳んだ議題の子を選んでいる間は、その議題が開いて子が見える（foldView に選択を渡した木と同じノード・位置）", () => {
-    const shown = foldView(single(), NONE, "A1", NONE, NONE);
+    const shown = foldView(single(), undefined, "A1");
     expect(shown.nodes.map((n) => n.id)).toContain("A1");
     const positions = layout(shown.nodes, HEIGHTS);
     scene(
@@ -153,7 +153,7 @@ describe("mapSurface の Scene: ノード本体の click で選ぶ", () => {
 
 describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳む", () => {
   it("畳んだ議題の隠れた数の丸は「開く」の button（map-node__count--pressable）で、隠れた数が書かれている。子は見えない", () => {
-    const openness = foldView(single(), NONE, null, NONE, NONE).openness["A"]!;
+    const openness = foldView(single(), undefined, null).openness["A"]!;
     if (openness.state !== "folded") throw new Error("A must be folded");
     const hidden = openness.hidden;
     scene(
@@ -185,7 +185,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   });
 
   it("「開く」を押すと子が見え、A は畳んだ見た目でなくなり、隠れた数の丸の代わりに「畳む」の小さな丸が付く。「畳む」を押すと元の畳んだ見た目に戻る", () => {
-    const openness = foldView(single(), NONE, null, NONE, NONE).openness["A"]!;
+    const openness = foldView(single(), undefined, null).openness["A"]!;
     if (openness.state !== "folded") throw new Error("A must be folded");
     const hidden = openness.hidden;
     scene(
@@ -210,7 +210,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("人が開いたノードにだけ「畳む」の小さな丸が付く。今の議題とその祖先・議題でも論点でもないノードには付かない", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { mode: "auto", humanOpened: new Set(["A", "B", "root"]) })),
+      given(measuredModel(single(), "live", { mode: "auto", humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
       expectScene(foldDotOf("A")).toExist(),
       expectScene(foldDotOf("B")).toBeAbsent(),
       expectScene(foldDotOf("root")).toBeAbsent(),
@@ -223,7 +223,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("人が開いていないノードに「畳む」の小さな丸は無い（開いているだけでは付かない）", () => {
     scene(
       app,
-      given(measuredModel(single(), "live", { mode: "auto", humanOpened: new Set(["A"]) })),
+      given(measuredModel(single(), "live", { mode: "auto", humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
       expectScene(foldDotOf("B")).toBeAbsent(),
       expectScene(foldDotOf("A1")).toBeAbsent(),
       mounted,
@@ -237,7 +237,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
         measuredModel(
           snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点", { pointStatus: "未決" }), node("B", "root", "議題")], { currentTopic: "B", now: 100 }),
           "live",
-          { mode: "auto", humanFolded: new Set(["T"]) },
+          { mode: "auto", humanFolds: foldingActions(snap([node("root", null, "会議"), node("T", "root", "議題"), node("T1", "T", "論点"), node("B", "root", "議題")], { currentTopic: "B" }), [{ type: "toggle", id: "T" }]).human },
         ),
       ),
       expectScene(mapNodeOf("T")).toHaveClass("map-node--folded"),
@@ -250,7 +250,7 @@ describe("mapSurface の Scene: 隠れた数の丸で開く・小さな丸で畳
   it("still は畳まないので、丸は付かない（viewing に人が開いた集合があっても）", () => {
     scene(
       app,
-      given(measuredModel(single(), "still", { mode: "auto", humanOpened: new Set(["A"]) })),
+      given(measuredModel(single(), "still", { mode: "auto", humanFolds: foldingActions(single(), [{ type: "toggle", id: "A" }]).human })),
       expectScene(wrapperOf("A1")).toExist(),
       tap((simulation) => {
         expect(findAll(simulation.html, "button.map-node__count--pressable")).toHaveLength(0);
@@ -299,7 +299,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
   // 期待する点: 画面に映っている viewport（DOM の transform）と、目標の位置・高さから、edgeDots が返す値
   const expectedDots = (html: VNode) => {
     const [x, y, zoom] = viewportTransform(html) as [number, number, number];
-    const shown = foldView(changed(), NONE, null, NONE, NONE);
+    const shown = foldView(changed(), undefined, null);
     const ids = shown.nodes.map((n) => n.id).filter((id) => shown.blink.has(id));
     expect(ids).toEqual(["A"]);
     return edgeDots(ids, layout(shown.nodes, HEIGHTS), { A: { height: HEIGHTS.A } }, { x, y, zoom }, SIZE);
@@ -373,7 +373,7 @@ describe("mapSurface の Scene: 縁の点（画面の外で変わったノード
 
   it("点を押すと、そのノードへ寄る（今の倍率のまま、ノードの中心が画面の中央に来る viewport の transform になる）。畳んだ A を開くことはない（丸とは別の操作）", () => {
     // 寄せ先は、目標の位置と高さで測った A。倍率は押す前のまま（1）
-    const shown = foldView(changed(), NONE, null, NONE, NONE);
+    const shown = foldView(changed(), undefined, null);
     const expected = nodeFocusViewport(nodeRect("A", layout(shown.nodes, HEIGHTS), { A: { height: HEIGHTS.A } }), 1, SIZE);
     let before: number[] = [];
     scene(

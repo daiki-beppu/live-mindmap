@@ -3,6 +3,7 @@ import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/
 import { foldView } from "../src/folding.ts";
 import { relocations } from "../src/relocation.ts";
 import type { VisibleTree } from "../src/viewing.ts";
+import { foldingActions } from "./foldingActions.ts";
 
 const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], evidence: string[], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
   id,
@@ -21,11 +22,10 @@ const snap = (nodes: SnapshotNode[], round: number, currentTopic?: string, chang
   ...(currentTopic !== undefined ? { currentTopic } : {}),
 });
 const combined = (round: number, into: SnapshotNode, from: string[]): ChangeEntry => ({ change: "統合", node: into.id, kind: into.kind, text: into.text, from, round, at: round });
-const NONE: ReadonlySet<string> = new Set();
 
 // 本番と同じく、畳む見せ方の結果から見えている木を組み立てる（位置は使わない）
 const stateOf = (snapshot: Snapshot, selectedId: string | null = null) => {
-  const shown = foldView(snapshot, NONE, selectedId, NONE, NONE).nodes;
+  const shown = foldView(snapshot, undefined, selectedId).nodes;
   const tree: VisibleTree = {
     ids: shown.map((n) => n.id),
     targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
@@ -132,9 +132,9 @@ describe("relocations: 見えている木から消えたノードの移り先", 
   });
 
   it("前の木から人の畳みで隠れていた選択ノードも、消えたら移る。選択が無ければ移らない", () => {
-    const folded: ReadonlySet<string> = new Set(["A"]);
     const b = snap([...before().nodes, node("B", "root", "議題", ["r3"])], 4, "B");
-    const shown = foldView(b, NONE, "P2", folded, NONE).nodes;
+    const human = foldingActions(b, [{ type: "toggle", id: "A" }]).human;
+    const shown = foldView(b, human, "P2").nodes;
     const hiddenTree: VisibleTree = {
       ids: shown.map((n) => n.id),
       targets: Object.fromEntries(shown.map((n, i) => [n.id, { x: 0, y: i * 50 }])),
