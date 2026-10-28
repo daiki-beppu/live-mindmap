@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Result, Scope } from "effect";
 import { TestClock, TestConsole } from "effect/testing";
 import { vi } from "vitest";
+import { INITIAL_SELF_PAUSE_STATE } from "../src/core/selfPause.ts";
 import { Helpers } from "../src/helpers.ts";
 import { openIntake } from "../src/intakeAttempts.ts";
 import { makeFakeHelpers, type AttemptScript } from "./fixtures/intakeHelpers.ts";
@@ -20,7 +21,7 @@ const waitFor = (condition: () => boolean, label: string) => Effect.promise(() =
 
 const setup = Effect.fnUntraced(function* (
   scripts: AttemptScript[],
-  options: Partial<Pick<OpenOptions, "argv" | "commands">> & Partial<Pick<RunOptions, "apply" | "observe" | "exitZero">> = {},
+  options: Partial<Pick<OpenOptions, "launchOptions" | "commands">> & Partial<Pick<RunOptions, "apply" | "observe" | "exitZero">> = {},
 ) {
   const fake = yield* makeFakeHelpers(scripts);
   const scope = yield* Scope.fork(yield* Effect.scope, "sequential");
@@ -29,7 +30,7 @@ const setup = Effect.fnUntraced(function* (
   const logs: Log[] = [];
   const intake = yield* openIntake({
     scope,
-    argv: options.argv ?? ((attemptNo) => Effect.succeed(["run", "--audio-index", String(attemptNo)])),
+    launchOptions: options.launchOptions ?? ((attemptNo) => Effect.succeed({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE, audio: { dir: "/session", attempt: attemptNo } })),
     commands: options.commands ?? {},
   }).pipe(Effect.provideService(Helpers, fake.helpers));
   const run = (trigger: "auto" | "resume") => intake.run({
@@ -53,11 +54,11 @@ describe("取り込みの試行", () => {
   it.effect.each([0, 2])("最初の接続失敗はコード%sでもHelperExitedで返し、起動し直さない", (code) => Effect.gen(function* () {
     const fake = yield* makeFakeHelpers([{ connect: false, launchExit: { code, signal: null }, stderrTail: ["初回の失敗"] }]);
     const result = yield* Effect.result(openIntake({
-      scope: yield* Scope.fork(yield* Effect.scope, "sequential"), argv: () => Effect.succeed(["run"]), commands: {},
+      scope: yield* Scope.fork(yield* Effect.scope, "sequential"), launchOptions: () => Effect.succeed({ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }), commands: {},
     }).pipe(Effect.provideService(Helpers, fake.helpers)));
     expect(Result.isFailure(result)).toBe(true);
     if (Result.isFailure(result)) expect(result.failure).toMatchObject({ _tag: "HelperExited", code, signal: null, stderrTail: ["初回の失敗"] });
-    expect(fake.calls).toEqual([["run"]]);
+    expect(fake.calls).toEqual([{ kind: "run", app: "test.app", screen: true, selfPause: INITIAL_SELF_PAUSE_STATE }]);
     expect(fake.lifecycle).toContain("closed:0");
   }));
 
@@ -90,7 +91,7 @@ describe("取り込みの試行", () => {
     ]);
     yield* TestClock.adjust(10);
     expect(yield* r.running.end).toMatchObject({ kind: "gaveUp", last: { exit: { code: 9, signal: null }, stderrTail: ["最後の失敗"] } });
-    expect(r.fake.calls.map((args) => args.at(-1))).toEqual(["1", "2", "3"]);
+    expect(r.fake.calls.map((options) => options.kind === "run" ? options.audio?.attempt : undefined)).toEqual([1, 2, 3]);
     expect(yield* r.intake.stats).toEqual({ attempt: 3, restarts: 0 });
     expect(r.logs.filter((line) => line.type === "intake-stopped")).toEqual([
       { type: "intake-stopped", code: 1, signal: null, stderrTail: [] },
@@ -106,9 +107,7 @@ describe("取り込みの試行", () => {
   it.effect("再起動ごとに番号を進め、接続失敗した番号も再使用しない", () => Effect.gen(function* () {
     const r = yield* setup([crashed(1), { connect: false }, {}]);
     yield* TestClock.adjust(10);
-    expect(r.fake.calls).toEqual([
-      ["run", "--audio-index", "1"], ["run", "--audio-index", "2"], ["run", "--audio-index", "3"],
-    ]);
+    expect(r.fake.calls.map((options) => options.kind === "run" ? options.audio?.attempt : undefined)).toEqual([1, 2, 3]);
     expect(yield* r.intake.stats).toEqual({ attempt: 3, restarts: 1 });
     expect(r.transitions).toContainEqual({ kind: "connected", restarted: true });
     expect(r.transitions.map((transition) => transition.kind)).toEqual(expect.arrayContaining(["interrupted", "running"]));
@@ -253,12 +252,12 @@ describe("取り込みの試行", () => {
     }
   }));
 
-  it.effect("読み取りとexitとstderrの後に試行Scopeを閉じ、crashedが終わるまでargvを評価しない", () => Effect.gen(function* () {
+  it.effect("読み取りとexitとstderrの後に試行Scopeを閉じ、crashedが終わるまで起動オプションを評価しない", () => Effect.gen(function* () {
     const applyGate = yield* Deferred.make<void>();
     const crashGate = yield* Deferred.make<void>();
     let from = 0;
     const r = yield* setup([{ ...crashed(1), events: [JSON.stringify(remark)] }, {}], {
-      argv: (attemptNo) => Effect.sync(() => ["transcribe-file", "--from", String(from), ...(attemptNo === 1 ? ["--audio-dir", "/session"] : [])]),
+      launchOptions: (attemptNo) => Effect.sync(() => ({ kind: "transcribe-file", file: "/meeting.m4a", from: { 相手: from }, audioDir: attemptNo === 1 ? "/session" : undefined })),
       apply: () => Deferred.await(applyGate),
       observe: (transition) => transition.kind === "crashed" ? Effect.andThen(Deferred.await(crashGate), Effect.sync(() => { from = 12; })) : Effect.void,
     });
@@ -268,10 +267,10 @@ describe("取り込みの試行", () => {
     yield* Deferred.succeed(applyGate, undefined);
     yield* waitFor(() => r.transitions.some((transition) => transition.kind === "crashed"), "crashedの開始");
     expect(r.fake.lifecycle).toEqual(["exit:0", "stderr:0", "closed:0"]);
-    expect(r.fake.calls).toEqual([["transcribe-file", "--from", "0", "--audio-dir", "/session"]]);
+    expect(r.fake.calls).toEqual([{ kind: "transcribe-file", file: "/meeting.m4a", from: { 相手: 0 }, audioDir: "/session" }]);
     yield* Deferred.succeed(crashGate, undefined);
     yield* waitFor(() => r.fake.calls.length === 2, "最新の再開位置での起動");
-    expect(r.fake.calls[1]).toEqual(["transcribe-file", "--from", "12"]);
+    expect(r.fake.calls[1]).toEqual({ kind: "transcribe-file", file: "/meeting.m4a", from: { 相手: 12 }, audioDir: undefined });
     yield* r.intake.stop;
     yield* r.running.end;
   }));

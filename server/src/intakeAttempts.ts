@@ -1,6 +1,6 @@
 import { Clock, Console, Deferred, Effect, Exit, Fiber, Ref, Result, Scope, Stream, SynchronizedRef } from "effect";
 import { CONFIGURATION_CHANGE_WINDOW_MS, MAX_CONFIGURATION_CHANGES, decideIntakeRestart, decodeHelperEvent, type HelperEvent, type IntakeLogEvent } from "./core/index.ts";
-import { Helpers, type HelperAttempt, type HelperExitInfo, type HelperInstruction } from "./helpers.ts";
+import { Helpers, type HelperAttempt, type HelperExitInfo, type HelperInstruction, type HelperLaunchOptions } from "./helpers.ts";
 import { HelperExited } from "./sessionFailure.ts";
 import { withoutFinalNewline } from "./consoleText.ts";
 
@@ -45,7 +45,7 @@ const handleEvent = (apply: RunOptions["apply"], noticedTypes: Ref.Ref<ReadonlyS
 
 export const openIntake = Effect.fnUntraced(function* (options: {
   scope: Scope.Closeable;
-  argv: (attemptNo: number) => Effect.Effect<ReadonlyArray<string>>;
+  launchOptions: (attemptNo: number) => Effect.Effect<HelperLaunchOptions>;
   commands: Commands;
 }): Effect.fn.Return<Intake, HelperExited, Helpers> {
   const helpers = yield* Helpers;
@@ -56,7 +56,7 @@ export const openIntake = Effect.fnUntraced(function* (options: {
     const { attempt: attemptNo } = yield* Ref.updateAndGet(stats, (s) => ({ ...s, attempt: s.attempt + 1 }));
     const startedAt = yield* Clock.currentTimeMillis;
     const scope = yield* Scope.fork(options.scope, "sequential");
-    const result = yield* helpers.launch(yield* options.argv(attemptNo), stopRequested).pipe(Scope.provide(scope), Effect.result);
+    const result = yield* helpers.launch(yield* options.launchOptions(attemptNo), stopRequested).pipe(Scope.provide(scope), Effect.result);
     if (Result.isFailure(result)) yield* Scope.close(scope, Exit.void);
     return { result, scope, startedAt };
   });

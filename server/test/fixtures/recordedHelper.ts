@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Deferred, Effect, Layer, Queue, Stream, type Cause } from "effect";
-import { Helpers, HelperLaunchFailure, type HelperExitInfo } from "../../src/helpers.ts";
+import { Helpers, HelperLaunchFailure, type HelperLaunchOptions, type HelperExitInfo } from "../../src/helpers.ts";
 import { helperChecks } from "./helperCheck.ts";
 
 export type Remark = { start: number; end: number; text: string };
@@ -32,7 +32,7 @@ const events = (script: Script): unknown[] => [
 ];
 
 export function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []) {
-  const calls: string[][] = [];
+  const calls: HelperLaunchOptions[] = [];
   const stopSeen = Effect.runSync(Deferred.make<void>());
   const live: { queue: Queue.Queue<string, Cause.Done> | undefined; end: Effect.Effect<void> | undefined } = { queue: undefined, end: undefined };
   const feed = (event: unknown) => { Queue.offerUnsafe(live.queue!, JSON.stringify(event)); };
@@ -44,8 +44,8 @@ export function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []
       ? Effect.fail({ _tag: "HelperCreationDateFailure", message: "作成日時を読めない" } as never)
       : Effect.succeed(script.creationDate ?? null);
   };
-  const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.gen(function* () {
-    calls.push([...args]);
+  const launch = (args: HelperLaunchOptions, stopRequested: Deferred.Deferred<void>) => Effect.gen(function* () {
+    calls.push(args);
     const attemptIndex = calls.length - 1;
     const current = attempts[attemptIndex] ?? script;
     if (current.failLaunch === true) return yield* new HelperLaunchFailure({ stderrTail: ["起動できない"], exit: current.launchExit ?? { code: 1, signal: null } });
@@ -53,9 +53,9 @@ export function fakeHelpers(script: Script, attempts: ReadonlyArray<Script> = []
       yield* Deferred.await(stopRequested);
       return yield* new HelperLaunchFailure({ stderrTail: [], exit: { code: null, signal: "SIGTERM" } });
     }
-    const audioDir = args[args.indexOf("--audio-dir") + 1];
-    if (args.includes("--audio-dir") && audioDir !== undefined) writeFileSync(join(audioDir, "相手.m4a"), HELPER_AUDIO);
-    if (args.includes("--audio-dir") && args.includes("--self-file") && audioDir !== undefined) writeFileSync(join(audioDir, "自分.m4a"), HELPER_SELF_AUDIO);
+    const audioDir = args.kind === "transcribe-file" ? args.audioDir : args.audio?.dir;
+    if (audioDir !== undefined) writeFileSync(join(audioDir, "相手.m4a"), HELPER_AUDIO);
+    if (audioDir !== undefined && args.kind === "transcribe-file" && args.selfFile !== undefined) writeFileSync(join(audioDir, "自分.m4a"), HELPER_SELF_AUDIO);
     const queue = yield* Queue.make<string, Cause.Done>();
     live.queue = queue;
     const exited = yield* Deferred.make<HelperExitInfo>();

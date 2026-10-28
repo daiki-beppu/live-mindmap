@@ -1,5 +1,5 @@
 import { Cause, Deferred, Effect, Queue, Ref, Scope, Stream } from "effect";
-import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperExitInfo, type HelperInstruction } from "../../src/helpers.ts";
+import { Helpers, HelperLaunchFailure, type HelperAttempt, type HelperLaunchOptions, type HelperExitInfo, type HelperInstruction } from "../../src/helpers.ts";
 import { helperChecks } from "./helperCheck.ts";
 
 const APPS = [{ bundleID: "us.zoom.xos", name: "zoom.us" }];
@@ -20,7 +20,7 @@ export type AttemptScript = {
 
 type FakeHelpersHandle = {
   readonly helpers: Helpers["Service"];
-  readonly calls: ReadonlyArray<ReadonlyArray<string>>;
+  readonly calls: ReadonlyArray<HelperLaunchOptions>;
   readonly send: (attemptIndex: number, event: unknown) => void;
   readonly stops: number[];
   readonly sentInstructions: { attempt: number; instruction: HelperInstruction }[];
@@ -30,16 +30,16 @@ type FakeHelpersHandle = {
 
 export function makeFakeHelpers(attempts: AttemptScript[]): Effect.Effect<FakeHelpersHandle, never, Scope.Scope> {
   return Effect.gen(function* () {
-    const calls: string[][] = [];
+    const calls: HelperLaunchOptions[] = [];
     const sentInstructions: { attempt: number; instruction: HelperInstruction }[] = [];
     const lifecycle: string[] = [];
     const queues: Queue.Queue<string, Cause.Done>[] = [];
     const stops: number[] = [];
     const sentPauses: { attempt: number; paused: boolean }[] = [];
-    const launch = (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>): Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope> =>
+    const launch = (args: HelperLaunchOptions, stopRequested: Deferred.Deferred<void>): Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope> =>
       Effect.gen(function* () {
         const index = calls.length;
-        calls.push([...args]);
+        calls.push(args);
         yield* Effect.addFinalizer(() => Effect.sync(() => { lifecycle.push(`closed:${index}`); }));
         const script = attempts[Math.min(index, attempts.length - 1)] ?? {};
         if (script.connect === false) {

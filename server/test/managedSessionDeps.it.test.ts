@@ -7,7 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect";
 import { vi } from "vitest";
 import { ManagedDeps, ManagedDepsFailed, type DepEvent } from "../src/managedDeps.ts";
-import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, type HelperLaunchOptions, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { planLayer } from "../src/updatePlan.ts";
 import { realLayers, type ServerOptions } from "../src/server.ts";
@@ -66,11 +66,11 @@ fs.writeFileSync(path.join(binary, process.platform === 'win32' ? 'claude.exe' :
   return { command: process.execPath, args: [script] };
 });
 
-const helperLayer = (launches: string[][], beforeLaunch: Effect.Effect<void>) => Layer.succeed(Helpers, Helpers.of({
+const helperLayer = (launches: HelperLaunchOptions[], beforeLaunch: Effect.Effect<void>) => Layer.succeed(Helpers, Helpers.of({
   ...helperChecks(),
   apps: Effect.succeed([]),
   launch: (args) => Effect.gen(function* () {
-    launches.push([...args]);
+    launches.push(args);
     yield* beforeLaunch;
     const queue = yield* Queue.unbounded<string, Cause.Done>();
     const exit = yield* Deferred.make<HelperExitInfo>();
@@ -103,7 +103,7 @@ const rejected = (response: Response) => Effect.gen(function* () {
   }
 });
 
-const sessionServer = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"], launches: string[][], beforeLaunch: Effect.Effect<void>) {
+const sessionServer = Effect.fnUntraced(function* (dir: string, deps: ManagedDeps["Service"], launches: HelperLaunchOptions[], beforeLaunch: Effect.Effect<void>) {
   return yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
     managedDeps: Layer.succeed(ManagedDeps, deps),
     helpers: helperLayer(launches, beforeLaunch),
@@ -125,7 +125,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const root = join(dir, "deps");
     const old = yield* Effect.tryPromise(() => oldSdk(root, dir));
     const npm = yield* fakeInstaller(dir);
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     yield* Effect.gen(function* () {
       const deps = yield* ManagedDeps;
       const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
@@ -163,7 +163,7 @@ describe("712: セッションと管理実体の寿命", () => {
   it.live.each(["/deps/install", "/update"])("会議成立後の %s は導入を開始せず、停止後には同じ入口が動く", (path) => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const calls: string[] = [];
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const server = yield* sessionServer(dir, fakeDeps(Stream.succeed(result), calls), launches, Effect.void);
     yield* accepted(yield* start(server.port));
     expect(yield* status(server.port)).toMatchObject({ status: "running" });
@@ -182,7 +182,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const entered = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     const calls: string[] = [];
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const server = yield* startedServer({ port: 0, sessionsDir: join(dir, "sessions") }, {
       managedDeps: Layer.succeed(ManagedDeps, fakeDeps(Stream.succeed(result), calls)),
       helpers: helperLayer(launches, Effect.void),
@@ -204,7 +204,7 @@ describe("712: セッションと管理実体の寿命", () => {
   it.live("start の接続待ち中も導入を拒否する（公開 status が none でも導入しない）", () => Effect.gen(function* () {
     const dir = yield* temporaryDeps;
     const release = yield* Deferred.make<void>();
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const calls: string[] = [];
     const server = yield* sessionServer(dir, fakeDeps(Stream.succeed(result), calls), launches, Deferred.await(release));
     const starting = yield* start(server.port).pipe(Effect.forkChild);
@@ -229,7 +229,7 @@ describe("712: セッションと管理実体の寿命", () => {
     const release = yield* Deferred.make<void>();
     const cleaned = yield* Deferred.make<void>();
     const calls: string[] = [];
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const source = Stream.unwrap(Effect.gen(function* () {
       yield* Effect.acquireRelease(Effect.void, () => Deferred.succeed(cleaned, undefined));
       yield* Deferred.succeed(entered, undefined);
