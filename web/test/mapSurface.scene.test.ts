@@ -315,14 +315,16 @@ describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
   it("live: 済みの議題の子は描かず、その議題は畳んだ見た目（隠れた数と手がかり）になる。位置は畳んだ後の木を layout した値", () => {
     const view_ = foldView(foldSnap(), NONE, null, NONE, NONE);
     const positions = layout(view_.nodes, foldHeights);
+    const openness = view_.openness["A"]!;
+    if (openness.state !== "folded") throw new Error("A must be folded");
     scene(
       app,
       given(modelOf(foldSnap(), "live")),
       measured(foldHeights),
       expectScene(wrapperOf("A1")).toBeAbsent(),
       expectScene(mapNodeOf("A")).toHaveClass("map-node--folded"),
-      expectScene(selector('[data-node-id="A"] .map-node__count')).toHaveText(String(view_.folds["A"]!.hidden)),
-      expectScene(selector('[data-node-id="A"] .map-node__hint')).toHaveText(view_.folds["A"]!.hint!),
+      expectScene(selector('[data-node-id="A"] .map-node__count')).toHaveText(String(openness.hidden)),
+      expectScene(selector('[data-node-id="A"] .map-node__hint')).toHaveText(openness.hint!),
       expectScene(mapNodeOf("B")).not.toHaveClass("map-node--folded"),
       tap((simulation) => {
         for (const n of view_.nodes) expectNumbers(nodeTranslate(simulation.html, n.id), [positions[n.id]!.x, positions[n.id]!.y]);

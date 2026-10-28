@@ -39,7 +39,7 @@ import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
-import { type ArrowDir, type CameraCommand, foldToggle, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
+import { type ArrowDir, type CameraCommand, humanSetsOf, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
 import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -106,10 +106,7 @@ const treeOf = (model: Model, view: FoldView | null = foldViewOf(model)): Visibl
     ids: shown.map((n) => n.id),
     targets: layout(shown, layoutHeightsOf(model)),
     parents: Object.fromEntries(shown.map((n) => [n.id, n.parent])),
-    foldState: view
-      ? Object.fromEntries(shown.filter((n) => (n.kind === "議題" || n.kind === "論点") && !view.summaries.has(n.id)).map((n) => [n.id, n.id in view.folds ? "folded" : "open"]))
-      : {},
-    runs: view?.runs ?? {},
+    fold: view,
     changed: changedFocus(model.snapshot, view?.shownAs ?? {})?.ids ?? [],
     currentTopic: model.snapshot.currentTopic,
   };
@@ -317,7 +314,7 @@ export const changedSnapshot = (model: Model, snapshot: Snapshot): Model => upda
 export const movedTime = (model: Model): Model => update(model, Message.MovedTime()).model;
 
 const clickedNode = (model: Model, nodeId: string): Return =>
-  foldViewOf(model)?.summaries.has(nodeId) === true ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
+  foldViewOf(model)?.openness[nodeId]?.state === "bundle" ? { model } : { model: applyViewing(model, { type: "select", id: nodeId }), outMessage: OutMessage.SelectedNode({ nodeId }) };
 
 export const update = (model: Model, message: Message): Return =>
   Message.match<Return>(message, {
@@ -430,8 +427,9 @@ const classes = (...names: ReadonlyArray<string | false>): string => names.filte
 
 type H = HtmlBuilder<Message>;
 
-function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, toggle: ReturnType<typeof foldToggle>, opened: boolean, speakerNames: SpeakerNames): Html {
-  const fold = view?.folds[node.id] ?? null;
+function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, speakerNames: SpeakerNames): Html {
+  const openness = view?.openness[node.id];
+  const fold = openness?.state === "folded" || openness?.state === "bundle" ? openness : null;
   const mark = markOf(node);
   const person = personLine(node, speakerNames);
   return h.div(
@@ -448,10 +446,8 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
       ),
       fold === null
         ? null
-        : toggle === null
-          ? h.span([h.Class("map-node__count")], [String(fold.hidden)])
-          : h.button([h.Type("button"), h.Class(`map-node__count ${FOLD_DOT_CLASSES[0]}`), h.AriaLabel("開く"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], [String(fold.hidden)]),
-      fold === null && opened && toggle !== null ? h.button([h.Type("button"), h.Class(FOLD_DOT_CLASSES[1]), h.AriaLabel("畳む"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], []) : null,
+        : h.button([h.Type("button"), h.Class(`map-node__count ${FOLD_DOT_CLASSES[0]}`), h.AriaLabel("開く"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], [String(fold.hidden)]),
+      openness?.state === "open" && openness.byHuman ? h.button([h.Type("button"), h.Class(FOLD_DOT_CLASSES[1]), h.AriaLabel("畳む"), h.OnClick(Message.ClickedFoldDot({ nodeId: node.id }))], []) : null,
     ],
   );
 }
@@ -460,7 +456,6 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
   const view_ = foldViewOf(model);
   const tree = view_ === null ? null : treeOf(model, view_);
   const selectedId = view_ === null ? null : (model.viewing.selection?.id ?? null);
-  const { opened } = humanSetsOf(model.viewing);
   const shown = view_?.nodes ?? model.snapshot.nodes;
   const positions = displayedPositions(model);
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
@@ -481,7 +476,7 @@ export const view = Submodel.defineView<Model, Message>((model, h): Html => {
         h.DataAttribute("node-id", node.id),
         h.Style({ transform: `translate(${positions[node.id]!.x}px, ${positions[node.id]!.y}px)`, width: `${NODE_WIDTH}px`, visibility: HashMap.has(model.nodeHeights, node.id) ? "visible" : "hidden" }),
       ],
-      [nodeBody(h, node, view_, node.id === selectedId, tree === null ? null : foldToggle(tree, node.id), view_ !== null && opened.has(node.id), model.speakerNames)],
+      [nodeBody(h, node, view_, node.id === selectedId, model.speakerNames)],
     ),
   );
 
