@@ -20,27 +20,13 @@ describe("AudioMix.unavailable", () => {
     }));
 });
 
-// 本物の AudioMix の Layer が、偽の ChildProcessSpawner に渡す argv と、失敗の写像（子プロセスは起動しない）
+// 本物の AudioMix の Layer の失敗の写像（子プロセスは起動しない）
 describe("AudioMix.layer（偽の ChildProcessSpawner）", () => {
   const helper = { command: "server-helper", args: ["existing-arg"] };
-  const mixWith = (spawner: ReturnType<typeof fakeSpawner>, track?: "自分") =>
+  const mixWith = (spawner: ReturnType<typeof fakeSpawner>) =>
     Effect.gen(function* () {
-      return yield* (yield* AudioMix).mix("/some/session", "/out/mix.m4a", track);
+      return yield* (yield* AudioMix).mix("/some/session", "/out/mix.m4a");
     }).pipe(Effect.provide(AudioMix.layer(helper).pipe(Layer.provide(spawner.layer))));
-  const base = ["existing-arg", "mix", "--session", "/some/session", "--out", "/out/mix.m4a"];
-
-  it.effect("track に `自分` を渡すと、argv の末尾に `--track 自分` が付き、省くと付かない", () =>
-    Effect.gen(function* () {
-      const withTrack = fakeSpawner({ code: 0 });
-      yield* mixWith(withTrack, "自分");
-      expect(withTrack.commands.map(({ command, args }) => ({ command, args }))).toEqual([
-        { command: "server-helper", args: [...base, "--track", "自分"] },
-      ]);
-
-      const withoutTrack = fakeSpawner({ code: 0 });
-      yield* mixWith(withoutTrack);
-      expect(withoutTrack.commands.map(({ args }) => args)).toEqual([base]);
-    }));
 
   it.effect("ヘルパーが 0 以外で終わったら AudioMixFailed（defect ではない）で失敗し、message に標準エラーの末尾が入る", () =>
     Effect.gen(function* () {
