@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { exportFiles, makeSession, playback, restoreSession, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
+import { exportFiles, makeSession, nextDiscussionNotice, playback, restoreSession, restoreState, type LogEvent, type Op, type Remark, type Session } from "../src/core/index.ts";
 import { embedReviewLog, mapOnlyReviewEvents, reviewSnapshot } from "../src/core/review.ts";
 import { embeddedText, TEMPLATE } from "./fixtures/review.ts";
 import { collectLog, updaterLayer } from "./fixtures/sessionLayers.ts";
@@ -31,6 +31,29 @@ const open = Effect.fnUntraced(function* (criteria: readonly string[]) {
 });
 
 describe("堂々巡りの通知をセッションから記録する", () => {
+  it.effect.each([false, true])("初回期間に古い根拠を統合=%sで通知の起点を更新し、同じログから復元する", (combine) => Effect.gen(function* () {
+    const { session, events, advance } = yield* open([]);
+    yield* advance(session, 1, [point("A", 1)]);
+    yield* advance(session, 301, [point("B", 301)]);
+    yield* advance(session, 400, plans("n2", 3, 400));
+    expect(notices(events)).toHaveLength(0);
+    yield* advance(session, 601, combine ? [{ op: "combine", from: "n1", into: "n2" }] : []);
+    const expected = { type: "discussion-notice", pointId: "n2", at: 601, text: "「B」が 10 分決まっていません。何を重視して決めるかを先に確かめませんか" };
+    expect(notices(events)).toEqual(combine ? [expected] : []);
+    const prefix = events.slice(0, events.findLastIndex((event) => event.type === "diff") + 1);
+    const restored = yield* restoreState(prefix.map((event) => JSON.parse(JSON.stringify(event))));
+    expect(nextDiscussionNotice(restored.discussion, restored.map, 601, [])).toEqual(combine ? expected : undefined);
+    if (combine) {
+      const notified = yield* restoreState(events.map((event) => JSON.parse(JSON.stringify(event))));
+      expect(nextDiscussionNotice(notified.discussion, notified.map, 901, [])).toBeUndefined();
+      yield* advance(session, 901, []);
+      expect(notices(events)).toEqual([expected]);
+    } else {
+      yield* advance(session, 900, []);
+      expect(notices(events)).toEqual([{ ...expected, at: 900 }]);
+    }
+  }));
+
   it.effect("発言の受信と差分完了が重なっても同じ通知を二重に記録しない", () => Effect.gen(function* () {
     const events: LogEvent[] = [];
     const completing = yield* Deferred.make<void>();

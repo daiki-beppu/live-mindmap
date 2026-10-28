@@ -12,7 +12,7 @@ export type DiscussionNoticeEvent = typeof DiscussionNoticeEvent.Type;
 
 type Period =
   | { readonly status: "inactive"; readonly children: ReadonlySet<string> }
-  | { readonly status: "active"; readonly since: number; readonly baseline: ReadonlySet<string>; readonly children: ReadonlySet<string>; readonly notified: boolean; readonly readyAt: number | undefined };
+  | { readonly status: "active"; readonly origin: "evidence" | "reopened"; readonly since: number; readonly baseline: ReadonlySet<string>; readonly children: ReadonlySet<string>; readonly notified: boolean; readonly readyAt: number | undefined };
 export type DiscussionNoticeState = { readonly points: ReadonlyMap<string, Period>; readonly lastAt: number | undefined };
 
 export const createDiscussionNoticeState = (): DiscussionNoticeState => ({ points: new Map(), lastAt: undefined });
@@ -23,13 +23,14 @@ function observePoint(previous: Period | undefined, map: MeetingMap, id: string,
   if (node.talkStatus === "済み" || pointStatus(map, id) === "決定済み") return { status: "inactive", children: currentChildren };
   const first = earliestRemark(node.evidence, remarks);
   if (first === undefined) return;
-  const active = previous?.status === "active" ? previous : {
-    status: "active" as const, since: previous === undefined ? first.start : at,
+  const active: Extract<Period, { status: "active" }> = previous?.status === "active" ? previous : {
+    status: "active", origin: previous === undefined ? "evidence" : "reopened", since: previous === undefined ? first.start : at,
     baseline: previous?.children ?? new Set<string>(), children: new Set<string>(), notified: false, readyAt: undefined,
   };
+  const since = active.origin === "evidence" ? first.start : active.since;
   const seen = new Set([...active.children, ...active.baseline, ...currentChildren]);
-  const ready = at - active.since >= DISCUSSION_NOTICE_SECONDS && seen.size - active.baseline.size >= DISCUSSION_NOTICE_CHILDREN;
-  return { ...active, children: seen, readyAt: ready ? active.readyAt ?? at : undefined };
+  const ready = at - since >= DISCUSSION_NOTICE_SECONDS && seen.size - active.baseline.size >= DISCUSSION_NOTICE_CHILDREN;
+  return { ...active, since, children: seen, readyAt: ready ? active.readyAt ?? at : undefined };
 }
 
 export function observeDiscussion(state: DiscussionNoticeState, map: MeetingMap, remarks: ReadonlyMap<string, Remark>, at: number): DiscussionNoticeState {
