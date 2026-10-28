@@ -19,7 +19,7 @@ type MapSurfaceModel = ReturnType<typeof init>;
 type VNode = Parameters<typeof textContent>[0];
 
 // マップの表示面と右の列を、同じ Model から並べて描く（親が h.submodel で並べるのと同じ組み合わせ）
-const app = { update, view: (model: MapSurfaceModel, h: HtmlBuilder<Message>) => h.div([], [mapView(model, h), sideView(model, h)]) };
+const app = { update, view: (model: MapSurfaceModel, h: HtmlBuilder<Message>) => h.div([], [mapView(model, { notice: () => null }, h), sideView(model, h)]) };
 
 const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], extra: Partial<SnapshotNode> = {}): SnapshotNode => ({ id, parent, kind, text: id, evidence: [], ...extra });
 const REMARKS: Remark[] = [

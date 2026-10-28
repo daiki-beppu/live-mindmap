@@ -19,6 +19,8 @@ live-mindmap listens to your meeting app (Zoom, Google Meet, a webinar in the br
 
 Read the [full descriptions in Japanese](README.ja.md#できること).
 
+- **Notice circular discussions.** Receive a suggestion to clarify decision criteria when an unresolved question keeps accumulating children.
+
 - **Share meeting criteria** (`start --criteria <file>`, `recorded --criteria <file>`) and relate proposals, questions and decisions to them.
 
 - **Map a meeting live** (`cli start`).

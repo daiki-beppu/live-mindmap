@@ -1,0 +1,12 @@
+{
+  "apps": [{ "bundleID": "us.zoom.xos", "name": "zoom.us" }],
+  "speakers": [],
+  "events": [
+    { "type": "remark", "track": "自分", "start": 0, "end": 1, "text": "導入の進め方を相談します", "duplicate": false },
+    { "type": "partial", "track": "相手", "start": 10, "end": 11, "text": "比較を続けています" }
+  ],
+  "schedule": [{
+    "afterMs": 30000,
+    "events": [{ "type": "remark", "track": "自分", "start": 599, "end": 600, "text": "まだ案を比較しています", "duplicate": false }]
+  }]
+}

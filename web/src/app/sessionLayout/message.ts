@@ -11,6 +11,7 @@ export const Message = defineMessageUnion({
   CompletedSlideCaptions: {},
   ReceivedIntakeStatus: { status: IntakeStatus },
   ReceivedScreenNotice: { text: Schema.Option(Schema.String) },
+  ReceivedDiscussionNotice: { text: Schema.Option(Schema.String) },
   ReceivedTapNotice: { text: Schema.Option(Schema.String) },
   ReceivedSelfPause: { selfPaused: SelfPaused },
   ReceivedDiffUpdate: { state: Schema.Option(DiffUpdateState) },
@@ -25,6 +26,7 @@ export const Message = defineMessageUnion({
   ToggledCaptions: { isOpen: Schema.Boolean },
   GotIntakeToastMessage: { message: Notice.Message },
   GotScreenToastMessage: { message: Notice.Message },
+  GotDiscussionToastMessage: { message: Notice.Message },
   GotTapToastMessage: { message: Notice.Message },
   GotViewingToastMessage: { message: Notice.Message },
 });

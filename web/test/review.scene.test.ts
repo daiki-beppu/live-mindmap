@@ -1,5 +1,5 @@
 import { HashMap, Option } from "effect";
-import { expect as expectScene, given, Mount, scene, selector, tap } from "foldkit/scene";
+import { expect as expectScene, findAll, given, Mount, scene, selector, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { Message as MapSurfaceMessage } from "../src/app/mapSurface/message.ts";
 import { SlideCaptions } from "../src/app/sessionLayout/mount.ts";
@@ -41,6 +41,15 @@ const renderedIds = (html: { children?: unknown }): string[] => {
 };
 
 describe("見返しの Scene: 時刻のマップが表示面に出る", () => {
+  it("判断軸を一度表示し、通知を表示しない", () => {
+    const withCriteria = makeContext([{ type: "start", title: "定例", criteria: ["採用のしやすさ", "運用負荷"] }, ...events.slice(1)]);
+    scene({ update: makeUpdate(withCriteria), view: makeView(withCriteria) }, given(init(withCriteria)), settle,
+      tap((sim) => {
+        expect(findAll(sim.html, ".criteria-strip")).toHaveLength(1);
+        expect(findAll(sim.html, ".criteria-strip li").map(textContent)).toEqual(["採用のしやすさ", "運用負荷"]);
+        expect(findAll(sim.html, ".discussion-notice")).toHaveLength(0);
+      }));
+  });
   it("時刻 10 のマップのノードだけが描かれ、測ると見える", () => {
     expect(expectedIds(10).length).toBeGreaterThan(0);
     scene(

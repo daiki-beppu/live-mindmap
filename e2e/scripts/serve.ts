@@ -19,6 +19,7 @@ import { withFakeClaude } from "../../server/test/fixtures/readyManagedDeps.ts";
 const e2eDir = join(import.meta.dirname, "..");
 const webDir = join(e2eDir, "../web");
 const fakeHelper = join(e2eDir, "../server/test/fixtures/fake-helper.ts");
+const discussion = process.env.LIVE_MINDMAP_VERIFY_DISCUSSION === "1";
 
 const { values } = parseArgs({ options: { "web-port": { type: "string" }, events: { type: "string" } } });
 const webPort = Number(values["web-port"]);
@@ -29,6 +30,14 @@ if (!Number.isInteger(webPort) || webPort <= 0 || !Number.isInteger(eventCount) 
 const runInfoPath = join(e2eDir, ".run", `${webPort}.json`);
 
 const update = (input: DiffInput) => {
+  if (discussion) {
+    const evidence = [input.fresh[0]!.id];
+    const ops: Op[] = input.map.order.length > 1 ? [] : [
+      { op: "add", ref: "point", parent: "root", kind: "論点", text: "導入の進め方", evidence },
+      ...["段階導入", "一括導入", "試験導入"].map((text, i): Op => ({ op: "add", ref: `plan-${i}`, parent: "point", kind: "案", text, evidence })),
+    ];
+    return Effect.succeed({ ops });
+  }
   if (input.criteria?.length) {
     const evidence = [input.fresh[0]!.id];
     const plan = input.map.nodes.n3;
@@ -56,14 +65,16 @@ const program = Effect.gen(function* () {
   const sessionsDir = join(root, "sessions");
   const scriptPath = join(root, "script.json");
   const recordPath = join(root, "record.jsonl");
-  const fixture = JSON.parse(readFileSync(join(e2eDir, "fixtures/meeting.json"), "utf8")) as { apps: unknown; events: unknown[]; speakers: { before: number; [key: string]: unknown }[] };
+  const fixture = JSON.parse(readFileSync(join(e2eDir, discussion ? "fixtures/discussion.json" : "fixtures/meeting.json"), "utf8")) as { apps: unknown; events: unknown[]; speakers: { before: number; [key: string]: unknown }[]; schedule?: unknown };
   const playedEvents = fixture.events.slice(0, eventCount).flatMap((event, index) =>
     [...fixture.speakers.filter((speaker) => speaker.before === index).map(({ before: _before, ...speaker }) => speaker), event],
   );
-  writeFileSync(scriptPath, JSON.stringify({ apps: fixture.apps, events: playedEvents }));
+  writeFileSync(scriptPath, JSON.stringify({ apps: fixture.apps, events: playedEvents, ...(discussion ? { schedule: fixture.schedule } : {}) }));
   writeFileSync(recordPath, "");
 
-  const helper = { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };
+  const helper = process.env.LIVE_MINDMAP_VERIFY_REAL_HELPER === "1"
+    ? { command: join(e2eDir, "../helper/.build/debug/live-mindmap-helper"), args: [] }
+    : { command: process.execPath, args: [fakeHelper, scriptPath, recordPath] };
   const options: ServerOptions = { port: 0, sessionsDir, depsDir: join(sessionsDir, "../deps"), prepareUpdater: () => Effect.succeed({ layer: updaterLayer(update) }), helper };
   const exportServices = Layer.mergeAll(MapCapture.layer.pipe(Layer.provide(Playwright.layer)), ReviewBuild.layer, AudioMix.layer(helper).pipe(Layer.provide(layerChildProcessSpawner)), Readings.layer(helper).pipe(Layer.provide(layerChildProcessSpawner))).pipe(
     Layer.provideMerge(NodeFileSystem.layer),

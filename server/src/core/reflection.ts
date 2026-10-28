@@ -38,7 +38,7 @@ export function recordRound(history: History, before: MeetingMap, applied: Pick<
   };
 }
 
-export function reflectDiff(before: ReflectionState, event: typeof DiffEvent.Type): Result.Result<{ readonly state: ReflectionState } & Pick<AppliedOps, "dropped" | "refs">, string> {
+export function reflectDiff(before: ReflectionState, event: typeof DiffEvent.Type): Result.Result<{ readonly state: ReflectionState; readonly reflectedAt: number } & Pick<AppliedOps, "dropped" | "refs">, string> {
   const fresh: Remark[] = [];
   for (const id of event.input.fresh) {
     const remark = before.ledger.byId.get(id);
@@ -54,6 +54,7 @@ export function reflectDiff(before: ReflectionState, event: typeof DiffEvent.Typ
   const applied = applyOps(before.map, event.ops, known, stamp, before.ledger.byId, before.criteria);
   const history = event.error === undefined ? recordRound(before.history, before.map, applied, stamp) : before.history;
   return Result.succeed({
+    reflectedAt: stamp.at,
     state: { ...(before.criteria?.length ? { criteria: before.criteria } : {}), map: applied.map, history, ledger: { byId: before.ledger.byId, known, processed } },
     dropped: applied.dropped,
     refs: applied.refs,

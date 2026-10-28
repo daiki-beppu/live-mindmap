@@ -22,6 +22,7 @@ export const Model = Schema.Struct({
   intakeToast: Notice.Model,
   screenToast: Notice.Model,
   tapToast: Notice.Model,
+  discussionToast: Notice.Model,
   viewingToast: Notice.Model,
   diffUpdate: Schema.Option(DiffUpdateState),
   selfPaused: SelfPaused,
@@ -37,6 +38,7 @@ export const init = (): Model => ({
   intakeToast: Notice.init({ id: "intake-notice" }),
   screenToast: Notice.init({ id: "screen-notice" }),
   tapToast: Notice.init({ id: "tap-notice" }),
+  discussionToast: Notice.init({ id: "discussion-notice" }),
   viewingToast: Notice.init({ id: "viewing-notice" }),
   diffUpdate: Option.none(),
   selfPaused: false,
@@ -69,6 +71,13 @@ const foldTapToast = Update.foldChild({
   read: (model: Model) => Option.some(model.tapToast),
   write: (model, tapToast) => modifyFields(model, { tapToast: () => tapToast }),
   toParentMessage: (message) => Message.GotTapToastMessage({ message }),
+  foldOutMessage: ignoreOutMessage,
+});
+const foldDiscussionToast = Update.foldChild({
+  update: (toast: NoticeModel, action: NoticeAction) => action(toast),
+  read: (model: Model) => Option.some(model.discussionToast),
+  write: (model, discussionToast) => modifyFields(model, { discussionToast: () => discussionToast }),
+  toParentMessage: (message) => Message.GotDiscussionToastMessage({ message }),
   foldOutMessage: ignoreOutMessage,
 });
 const foldViewingToast = Update.foldChild({
@@ -115,6 +124,7 @@ export const update = (model: Model, message: Message): Return =>
       return noticeOf(next, foldIntakeToast, Option.none(), Option.fromNullishOr(text), status === "running" ? { duration: RESUMED_NOTICE_MS } : { sticky: true });
     },
     ReceivedScreenNotice: ({ text }) => noticeOf(model, foldScreenToast, shownText(model.screenToast), text, { sticky: true }),
+    ReceivedDiscussionNotice: ({ text }) => noticeOf(model, foldDiscussionToast, shownText(model.discussionToast), text, { sticky: true }),
     ReceivedTapNotice: ({ text }) => noticeOf(model, foldTapToast, shownText(model.tapToast), text, { sticky: true }),
     PressedSpeakerName: ({ bubbleId, label }) => {
       const bubble = model.captions.bubbles.find((b) => b.id === bubbleId);
@@ -138,12 +148,14 @@ export const update = (model: Model, message: Message): Return =>
       noticeOf(model, foldViewingToast, shownText(model.viewingToast), viewingText(mode), { sticky: true }),
     GotIntakeToastMessage: ({ message }) => foldIntakeToast(model, (toast) => Notice.update(toast, message)),
     GotScreenToastMessage: ({ message }) => foldScreenToast(model, (toast) => Notice.update(toast, message)),
+    GotDiscussionToastMessage: ({ message }) => foldDiscussionToast(model, (toast) => Notice.update(toast, message)),
     GotTapToastMessage: ({ message }) => foldTapToast(model, (toast) => Notice.update(toast, message)),
     GotViewingToastMessage: ({ message }) => foldViewingToast(model, (toast) => Notice.update(toast, message)),
   });
 
 export const receiveIntakeStatus = (model: Model, status: typeof IntakeStatus.Type): Return => update(model, Message.ReceivedIntakeStatus({ status }));
 export const receiveScreenNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedScreenNotice({ text }));
+export const receiveDiscussionNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedDiscussionNotice({ text }));
 export const receiveTapNotice = (model: Model, text: Option.Option<string>): Return => update(model, Message.ReceivedTapNotice({ text }));
 export const receiveSelfPause = (model: Model, selfPaused: SelfPaused): Return => update(model, Message.ReceivedSelfPause({ selfPaused }));
 export const receiveDiffUpdate = (model: Model, state: Model["diffUpdate"]): Return => update(model, Message.ReceivedDiffUpdate({ state }));
@@ -162,6 +174,7 @@ export const sessionLayoutFolds = <ParentModel, ParentMessage>(parent: {
     foldViewingMode: Update.foldChild({ update: changeViewingMode, ...fold }),
     foldIntake: Update.foldChild({ update: receiveIntakeStatus, ...fold }),
     foldScreenNotice: Update.foldChild({ update: receiveScreenNotice, ...fold }),
+    foldDiscussionNotice: Update.foldChild({ update: receiveDiscussionNotice, ...fold }),
     foldTapNotice: Update.foldChild({ update: receiveTapNotice, ...fold }),
     foldSelfPause: Update.foldChild({ update: receiveSelfPause, ...fold }),
     foldDiffUpdate: Update.foldChild({ update: receiveDiffUpdate, ...fold }),
@@ -287,7 +300,7 @@ function noticeViewP(h: H, toast: NoticeModel): Html | null {
   return Option.match(shownText(toast), { onNone: () => null, onSome: (text) => h.p([h.Class("viewing-notice absolute left-[16px] bottom-[4px] m-0 text-[13px] leading-[16px] whitespace-nowrap text-gray-500 pointer-events-none z-5")], [text]) });
 }
 
-type SlotViews = { readonly map: () => Html; readonly keyList: () => Html | null; readonly side: () => Html | null };
+type SlotViews = { readonly map: (notice: Html | null) => Html; readonly keyList: () => Html | null; readonly side: () => Html | null };
 export const submodelView = Submodel.defineView<Model, Message, SlotViews>((model, slots, h) =>
-  view(model, h, { map: slots.map(), keyList: slots.keyList(), side: slots.side() }),
+  view(model, h, { map: slots.map(noticeView(h, "discussion-notice", model.discussionToast)), keyList: slots.keyList(), side: slots.side() }),
 );
