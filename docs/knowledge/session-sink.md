@@ -12,7 +12,7 @@ server のセッションの sink（`server/src/sessionSinks.ts`）と、その�
 | 規則 | 置き場所 | unit |
 |---|---|---|
 | 頼んだ語の集合、画面の候補、読みの 2 段の取得、`from`、中断したときの行、`RemarkCorrection` | `sessionVocabulary` | `sessionVocabulary.test` |
-| settling → 補正 → 採番（`r1`・`s1`）→ 字幕の表 → `session.push` → relay の順、終了方式ごとの settle の順 | `remarkFlow` | `remarkFlow.test` |
+| settling → 補正 → 採番（`r1`・`s1`）→ 字幕の表 → `session.push` → relay の順、終わり方ごとの `settle` の順 | `remarkFlow` | `remarkFlow.test` |
 | 画面の待ち行列、2 トラックの並べ替え、溜まり、等速、`roomForRemark`、hold、一時停止の知らせ、作った発言の end | `recordedFeed` | `recordedFeed.test` |
 
 3 つとも `Context.Service` にはせず、引数の関数とレコードだけに依存する。FileSystem も使わない。こうすると、偽の `ReadingSource`・`Inlet`・`session` と TestClock だけで規則を試せて、ADR 0008 の「Service は 3 つ」も崩れない。溜まり（語彙の pool）のファイルの読み書きと書き出しは sink に残っている。
@@ -35,28 +35,64 @@ server のセッションの sink（`server/src/sessionSinks.ts`）と、その�
 
 仕様の型の案では、`speakersRenumbered` と `nameSpeaker` を `LiveSink` だけに置いていた。けれども録画からのセッションも、ヘルパーを起動し直せば `speakersRenumbered` を呼ぶ（`sessions.ts` の再起動の知らせ）。名前付けも、ライブと同じ `POST /session/speaker-name` で受ける。そこで [#1324](https://github.com/daiki-beppu/live-mindmap/issues/1324)（[PR #1362](https://github.com/daiki-beppu/live-mindmap/pull/1362)）は、この 2 つを `SinkBase` に置いた。そうしても `cliRecorded.it` の「録画からのセッションでも、ライブと同じ POST /session/speaker-name で振られたラベルに名前を付けられる」と、起動し直した後のラベルのテストが通り続けた。
 
-ライブ専用の操作は `interrupted`。`SessionSinks.open` で settling の drain → 字幕消去をつなぎ、`Sessions` の `crashed` は会議タブの通知の reset → `sink.interrupted` → 途切れ時刻の更新の順に呼ぶ（[#1663](https://github.com/daiki-beppu/live-mindmap/issues/1663)）。中断は終了ではなく、同じ sink で後続の発言を受け取る。録画専用の `drainForRestart` と区別する。停止は両方とも `SinkBase.end(ending)` と、その成功結果の `writeOut` を使う。
+ライブ専用の口は `interrupted` だけで、`SessionSinks.open` が settling の drain → 字幕を消す、をつなぐ。`Sessions` の `crashed` は、会議タブの通知の reset → `sink.interrupted` → 途切れた時刻の更新の順に呼ぶ（[#1663](https://github.com/daiki-beppu/live-mindmap/issues/1663)）。録画専用の口は `drainForRestart` だけだ。どちらも落ちたとき（[取り込みの途切れ](../../GLOSSARY.md)）の口で、終わり方（`Ending`）には入れない。途切れてもセッションは続き、同じ sink にその後の発言が届くからだ。`sessionSinks.test` の型のテストが、`LiveSink` に `drainForRestart` が無く、`RecordedSink` に `interrupted` が無いことを見ている。
 
 メンバーを片方の型から外すときは、`sessions.ts` でそのメンバーを呼んでいる箇所を、ライブと録画の両方の経路で探す。
 
-## 終了準備は `end(ending)`、書き出しはその結果の `writeOut` を呼ぶ
+## 終わり方は sink の振る舞いで 2 種類（`入れ切る`・`捨てる`）にする。「諦めた」と「利用者が止めた」の違いは `Sessions` の `finished.failure` に置く
 
-`Ending` は取り込みの終わらせ方を表す内部 API の型で、`remarkFlow` が定義する。
+取り込みの終わらせ方は 4 通りある（[#1536](https://github.com/daiki-beppu/live-mindmap/issues/1536) の表）。sink に渡す `Ending`（`remarkFlow` が定義する）は、sink が振る舞いを変える軸で 2 種類にした（[#1664](https://github.com/daiki-beppu/live-mindmap/issues/1664)）。
 
-| 終了方式 | `remarkFlow.settle` の順序 |
+| 終わり方 | `Sessions` が渡す `Ending` |
 |---|---|
-| `入れ切る` | settling.drain → feed.finish |
-| `捨てる` | feed.discard → quiesce → feed.finish。settling の途中結果は投入しない |
+| ライブ・止めた（`stopLive`） | `{ kind: "入れ切る" }` |
+| 録画・止めた（`stopRecorded`） | `{ kind: "捨てる", quiesce: helper を止めて end を待つ }` |
+| 録画・済んだ | `{ kind: "入れ切る" }` |
+| 録画・諦めた | `{ kind: "捨てる", quiesce: Effect.void }`（helper はもう止まっている） |
 
-ライブの `directFeed` は finish・discard ともに何もしない。録画の `recordedFeed.finish` は内部の並べ替えと画面の保留を取り出してから backlog.finish を待つ。flow や Sessions から別に feed の drain を呼ばない。
+「諦めた」と「止めた」は、CLI に流す `finished` に `failure` が付くかどうかしか違わない（[#1093](https://github.com/daiki-beppu/live-mindmap/issues/1093)）。それは `Sessions` が CLI と結ぶ契約なので、sink に 3 つ目の種類を足さない。ライブには溜まりが無いので、`directFeed` の `finish`・`discard` は両方とも `Effect.void` で、同じ `Ending` を使える。`Ending` は sink の内側の型で、用語集には載せていない。
 
-sink の `end` は settle の完了後に `{ writeOut }` を返す。writeOut は session.flush → 語彙の settled → pool 更新 → ファイル書き出し → OCR 集計の順に実行し、`{ paths, ocrSummary }` を返す。FileSystem はこの組み立てに残し、語彙・flow・feed には渡さない。writeOut は実行時点の状態を書き出すので、結果を初回でキャッシュしない。
+## 片付けの順は `remarkFlow.settle`、書き出しの順は sink の組み立ての `writeOut` に置く。終わり方専用の module は作らない
 
-Sessions は終了方式を渡す。録画の stop は helper の停止と end 待ちを quiesce として渡し、sink が discard と finish の間で実行する。自然終了と諦めは sink.end の Exit を取ってから claim し、勝者だけが writeOut と finished を実行する。諦めの行は end の前、ライブの SIGKILL 警告は end の後・writeOut の前に出す。
+| 置く規則 | 置き場所 | 順 |
+|---|---|---|
+| 溜まりを片付ける順 | `remarkFlow.settle(ending)` | `入れ切る`: settling.drain → feed.finish。`捨てる`: feed.discard → quiesce → feed.finish（settling の途中結果は入れない） |
+| 書き出しの順 | sink の組み立て（`end` が返す `writeOut`） | session.flush → 語彙の settled → pool の更新 → ファイルの書き出し → `ocrSummary`。`{ paths, ocrSummary }` を返す |
 
-claim、finished と failure、helper の停止手順、stopRelays → Scope.close → idle の後始末は Sessions が所有する。end が欠陥で失敗した場合は書き出さずに後始末する。end・writeOut は資源を取得せず、中断時の停止は既存の ensuring と Scope finalizer が担う。
+録画の `recordedFeed.finish` は、並べ替えの保留と画面の待ち行列を出してから溜まりを終える。feed の drain はこの中で 1 回だけ走るので、`settle` の外から feed の drain を呼ばない。前は `Sessions` が `drain` → `finishBacklog` と並べていて、feed の drain が 2 回走っていた。FileSystem を使うのは `writeOut` の組み立てだけで、3 つの module には渡さない。
 
-終了順序は remarkFlow の unit、終了方式・claim・通知・close は偽 sink を使う Sessions の unit、録画の全発言が1回ずつログへ届く配線は sessionsRecorded.it で確かめる。会議途中の待ちに end を使わず、ログ・差分・字幕などの実条件を期限付きで待つ。
+終わり方専用の module（`sessionEnding`）は、削除テストで pass-through だったので作らなかった（[#1537](https://github.com/daiki-beppu/live-mindmap/issues/1537)）。消すと十数行の並べ方が `remarkFlow` に戻るだけで、作ると settling と feed を別々の関数として渡すために interface が広がる。
+
+## sink の手順の途中に入る `Sessions` の手順は `quiesce` で渡す。`end` と `writeOut` の間には `Sessions` の手順を挟む
+
+録画の stop は、helper を止める**前**に捨て、helper の終わりを待った**後**に溜まりを終える（[#1238](https://github.com/daiki-beppu/live-mindmap/issues/1238)）。helper を止めて待つ手順は `Sessions` が持つので、`Sessions` はその Effect を `quiesce` として渡し、sink は discard と finish の間でそれを走らせる。
+
+`end` が `{ writeOut }` を返す 2 段にしたのは、片付ける前に書き出すコードを書けなくするためと、その間に `Sessions` の手順を挟むためだ。
+
+- 録画の「済んだ」と「諦めた」は、`end` の Exit を取ってから claim し、勝った側だけが `writeOut` と `finished` を走らせる。claim を片付けの後に置くのは、実時間の「入れ切る」に数分かかることがあり、その間も stop で割り込めるようにするため。stop の discard が溜まりの待ちを解くので、走っていた「入れ切る」も抜け、その後の claim は stop の側が取っている
+- `intake-gave-up` の行は `end` の前に、ライブの SIGKILL の注意は `end` の後・`writeOut` の前に出す
+
+claim まで sink に渡す案は、書き出しを別の fiber で走らせるためにコールバックの形になり、順が結局 `Sessions` に残ったので退けた（#1537）。claim、`finished` と `failure`、helper を止める手順は `Sessions` に置く。
+
+`writeOut` は結果を覚えず、呼ぶたびにその時点の状態を書き出す（`sessionSinks.it` の「endの後もwriteOutを実行するまで書き出さず、実行ごとに撮影する」）。`people.it` は名前を付け替えるたびに同じ `writeOut` を呼んでいる。
+
+## `end` は何も取得せず、何も閉じない。後始末は `Sessions` の `ensuring` と Scope に任せる
+
+`end`・`writeOut` は何も取得しない。`stopRelays` → Scope を閉じる → idle に戻す、の後始末は、`Sessions` の `ensuring`（`closeSession`・`closeRecorded`）から走るので、中断されても実行される。`quiesce` の途中で中断されて `finish` が飛んでも、Scope を閉じれば溜まりの worker と `remarkFlow` の finalizer が止まる。`end` が欠陥で落ちたら、書き出さずに後始末だけ走らせる。
+
+`end` は sink を閉じないので、その後も口は呼べる。`speakerNames.it` と `people.it` は、`end` の後に `nameSpeaker` を呼んでいる。終わった sink を型で閉じたわけではないので、`end` の後に呼んではいけない口ができたら、型ではなく呼ぶ側で守ることになる。
+
+## 終わり方のテストは、順を持つ module ごとに分け、組み立てのつなぎ目は `sessionsRecorded.it` の 1 本で見る
+
+| 見るもの | テスト |
+|---|---|
+| `settle` の順（`入れ切る` で途中結果が 1 回だけ入り、feed の `finish` が 1 回。`捨てる` は discard → quiesce → finish で、途中結果を入れない） | `remarkFlow.test` |
+| 渡した終わり方、`quiesce` の中で helper を止めること、`writeOut` が 1 回で閉じる前に済むこと、`intake-gave-up` の行が `end` の前 | `sessions.test`（偽の sink） |
+| 録画が済んだら、台本の発言がすべて 1 回ずつ入る | `sessionsRecorded.it` |
+
+`sessions.test` の偽の sink は、`end` が終わり方を記録し、`捨てる` なら `quiesce` を走らせて、`writeOut` を返すだけにする。discard と finish の区別は真似ない。偽の sink への呼ぶ順を見ると、`remarkFlow` の規則が 2 か所に書かれることになる（前は `["gave-up","discard","finish","flush","exports"]` を見ていた）。
+
+`remarkFlow.test` は偽の feed、`sessions.test` は偽の sink を使うので、組み立てで feed の `finish` を `settle` につなぎ忘れても（保留の発言が落ちる）、2 回つないでも（二重に入る）、どちらも落ちない。それを拾うのが `sessionsRecorded.it` の 1 本で、log の発言の id と end が台本の 3 件ちょうどであることを見る。会議の途中で発言が入るのを待つときは `end` を使わず、`waitUntil` でログ・差分・字幕の本当の条件を期限つきで待つ。
 
 ## `recorded` の名前は録画からのセッションだけに使う。ログを書くセッションは `logged`
 
@@ -137,3 +173,6 @@ stop で「入れた発言」を確かめる IT は、入ったことの証拠�
 - [#1273](https://github.com/daiki-beppu/live-mindmap/issues/1273)（停止と待ちの解除の競合）
 - 仕様 [#1305](https://github.com/daiki-beppu/live-mindmap/issues/1305) の子 [#1317](https://github.com/daiki-beppu/live-mindmap/issues/1317)・[PR #1368](https://github.com/daiki-beppu/live-mindmap/pull/1368)（IT の件数と、知らせのテストの名前）
 - 仕様 [#1436](https://github.com/daiki-beppu/live-mindmap/issues/1436) の子 [#1451](https://github.com/daiki-beppu/live-mindmap/issues/1451)・[PR #1461](https://github.com/daiki-beppu/live-mindmap/pull/1461) のマージの takt の run（`20261024-052049-merge-pr-1461-4jlyjc` の `ci-investigation.md`・`ci-fix.md`）
+- 仕様 [#1636](https://github.com/daiki-beppu/live-mindmap/issues/1636)（Formal Spec のコメントを含む）、親 [#1662](https://github.com/daiki-beppu/live-mindmap/issues/1662)、地図 [#1534](https://github.com/daiki-beppu/live-mindmap/issues/1534) の決定 [#1536](https://github.com/daiki-beppu/live-mindmap/issues/1536)・[#1537](https://github.com/daiki-beppu/live-mindmap/issues/1537)・[#1538](https://github.com/daiki-beppu/live-mindmap/issues/1538)
+- チケット [#1663](https://github.com/daiki-beppu/live-mindmap/issues/1663)・[PR #1684](https://github.com/daiki-beppu/live-mindmap/pull/1684)、[#1664](https://github.com/daiki-beppu/live-mindmap/issues/1664)・[PR #1686](https://github.com/daiki-beppu/live-mindmap/pull/1686)
+- 開発ログ [取り込みの終わらせ方を sink に 1 回で渡す形にしたとき](../devlog/2026-10-28.md#sink-ending)
