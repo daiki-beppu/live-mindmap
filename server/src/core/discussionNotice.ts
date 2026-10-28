@@ -1,0 +1,62 @@
+import { Schema } from "effect";
+import { children, pointStatus, type MeetingMap } from "./map.ts";
+import { earliestRemark, type Remark } from "./remark.ts";
+
+export const DISCUSSION_NOTICE_SECONDS = 10 * 60;
+export const DISCUSSION_NOTICE_CHILDREN = 3;
+export const DISCUSSION_NOTICE_INTERVAL = 5 * 60;
+
+export const DiscussionNoticeFrame = Schema.Struct({ type: Schema.Literal("discussion-notice"), text: Schema.NullOr(Schema.String) });
+export const DiscussionNoticeEvent = Schema.Struct({ type: Schema.Literal("discussion-notice"), pointId: Schema.String, at: Schema.Finite, text: Schema.String });
+export type DiscussionNoticeEvent = typeof DiscussionNoticeEvent.Type;
+
+type Period =
+  | { readonly status: "inactive"; readonly children: ReadonlySet<string> }
+  | { readonly status: "active"; readonly since: number; readonly baseline: ReadonlySet<string>; readonly children: ReadonlySet<string>; readonly notified: boolean; readonly readyAt: number | undefined };
+export type DiscussionNoticeState = { readonly points: ReadonlyMap<string, Period>; readonly lastAt: number | undefined };
+
+export const createDiscussionNoticeState = (): DiscussionNoticeState => ({ points: new Map(), lastAt: undefined });
+
+function observePoint(previous: Period | undefined, map: MeetingMap, id: string, remarks: ReadonlyMap<string, Remark>, at: number): Period | undefined {
+  const node = map.nodes[id]!;
+  const currentChildren = new Set(children(map, id).map((child) => child.id));
+  if (node.talkStatus === "済み" || pointStatus(map, id) === "決定済み") return { status: "inactive", children: currentChildren };
+  const first = earliestRemark(node.evidence, remarks);
+  if (first === undefined) return;
+  const active = previous?.status === "active" ? previous : {
+    status: "active" as const, since: previous === undefined ? first.start : at,
+    baseline: previous?.children ?? new Set<string>(), children: new Set<string>(), notified: false, readyAt: undefined,
+  };
+  const seen = new Set([...active.children, ...active.baseline, ...currentChildren]);
+  const ready = at - active.since >= DISCUSSION_NOTICE_SECONDS && seen.size - active.baseline.size >= DISCUSSION_NOTICE_CHILDREN;
+  return { ...active, children: seen, readyAt: ready ? active.readyAt ?? at : undefined };
+}
+
+export function observeDiscussion(state: DiscussionNoticeState, map: MeetingMap, remarks: ReadonlyMap<string, Remark>, at: number): DiscussionNoticeState {
+  const points = new Map<string, Period>();
+  for (const id of map.order) {
+    if (map.nodes[id]!.kind !== "論点") continue;
+    const period = observePoint(state.points.get(id), map, id, remarks, at);
+    if (period !== undefined) points.set(id, period);
+  }
+  return { ...state, points };
+}
+
+export function nextDiscussionNotice(state: DiscussionNoticeState, map: MeetingMap, at: number, criteria: readonly string[]): DiscussionNoticeEvent | undefined {
+  if (state.lastAt !== undefined && at - state.lastAt < DISCUSSION_NOTICE_INTERVAL) return;
+  const eligible = map.order.flatMap((id) => {
+    const period = state.points.get(id);
+    return period?.status === "active" && !period.notified && period.readyAt !== undefined ? [{ id, period }] : [];
+  }).sort((a, b) => a.period.readyAt! - b.period.readyAt!);
+  const selected = eligible[0];
+  if (selected === undefined) return;
+  const minutes = Math.floor((at - selected.period.since) / 60);
+  const advice = criteria.length === 0 ? "何を重視して決めるかを先に確かめませんか" : `判断軸${criteria.map((axis) => `「${axis}」`).join("")}で決められそうですか`;
+  return { type: "discussion-notice", pointId: selected.id, at, text: `「${map.nodes[selected.id]!.text}」が ${minutes} 分決まっていません。${advice}` };
+}
+
+export function recordDiscussionNotice(state: DiscussionNoticeState, event: DiscussionNoticeEvent): DiscussionNoticeState {
+  const period = state.points.get(event.pointId);
+  if (period?.status !== "active") throw new Error(`通知の対象期間がありません: ${event.pointId}`);
+  return { points: new Map(state.points).set(event.pointId, { ...period, notified: true }), lastAt: event.at };
+}

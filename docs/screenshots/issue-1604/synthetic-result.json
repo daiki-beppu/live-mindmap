@@ -1,0 +1,264 @@
+{
+  "originalSample": {
+    "sampleDurationSeconds": 661,
+    "recordedRemarkCount": 25,
+    "model": "Apple Intelligence",
+    "playExitCode": 0,
+    "playEventCounts": {
+      "start": 1,
+      "screen-input-skipped": 1,
+      "remark": 25,
+      "diff": 24,
+      "speaker-name": 5
+    },
+    "notices": [],
+    "chatgptPlayExitCode": 1,
+    "chatgptFailure": "未サインイン"
+  },
+  "revisedSamples": [
+    {
+      "session": "2026-10-28T13-41-32.105Z",
+      "eventCounts": {
+        "start": 1,
+        "screen-input-skipped": 1,
+        "remark": 39,
+        "diff": 39,
+        "speaker-name": 4
+      },
+      "latestRemarkEnd": 685.567625,
+      "failedDiffs": 0,
+      "droppedOps": 0,
+      "notices": [],
+      "points": [
+        {
+          "id": "n6",
+          "parent": "n5",
+          "pointStatus": "未決",
+          "talkStatus": "済み",
+          "firstEvidenceStart": 7.8503125,
+          "children": [
+            {
+              "id": "n7",
+              "kind": "案"
+            },
+            {
+              "id": "n8",
+              "kind": "案"
+            },
+            {
+              "id": "n11",
+              "kind": "案"
+            }
+          ]
+        }
+      ],
+      "version": 2,
+      "durationSeconds": 688,
+      "recordedRemarkCount": 39,
+      "playExitCode": 0,
+      "model": "Apple Intelligence",
+      "audioSha256": "08891e3c567f1757e93cdfbd61a671677cce0f67e37bf95912a25fac315a3000",
+      "inputDir": ".takt/issue1604-synthetic-v2",
+      "preservedRecordedDir": ".takt/issue1604-synthetic-v2/recorded",
+      "playLog": ".takt/issue1604-play-v2.log",
+      "analysis": ".takt/issue1604-v2-analysis.json",
+      "stateTransitions": [
+        {
+          "at": 137.3863125,
+          "pointId": "n6",
+          "pointStatus": "未決",
+          "talkStatus": "済み",
+          "childCount": 3
+        }
+      ]
+    },
+    {
+      "session": "2026-10-28T13-48-35.243Z",
+      "eventCounts": {
+        "start": 1,
+        "screen-input-skipped": 1,
+        "remark": 25,
+        "diff": 25,
+        "speaker-name": 2
+      },
+      "latestRemarkEnd": 617.471625,
+      "failedDiffs": 0,
+      "droppedOps": 0,
+      "notices": [],
+      "points": [
+        {
+          "id": "n2",
+          "parent": "n1",
+          "pointStatus": "未決",
+          "talkStatus": "話し中",
+          "firstEvidenceStart": 0,
+          "children": [
+            {
+              "id": "n21",
+              "kind": "案"
+            },
+            {
+              "id": "n22",
+              "kind": "案"
+            }
+          ]
+        },
+        {
+          "id": "n3",
+          "parent": "n1",
+          "pointStatus": "決定済み",
+          "talkStatus": "話し中",
+          "firstEvidenceStart": 3.925,
+          "children": [
+            {
+              "id": "n19",
+              "kind": "決定"
+            }
+          ]
+        }
+      ],
+      "version": 3,
+      "durationSeconds": 621,
+      "recordedRemarkCount": 25,
+      "playExitCode": 0,
+      "model": "Apple Intelligence",
+      "audioSha256": "fa793ed517a9cac529c676bb9c4e641426061298881f5cb40a86294104893bc8",
+      "inputDir": ".takt/issue1604-synthetic-v3",
+      "preservedRecordedDir": ".takt/issue1604-synthetic-v3/recorded",
+      "playLog": ".takt/issue1604-play-v3.log",
+      "analysis": ".takt/issue1604-v3-analysis.json",
+      "stateTransitions": [
+        {
+          "at": 531.1143125,
+          "pointId": "n3",
+          "pointStatus": "決定済み",
+          "talkStatus": "話し中",
+          "childCount": 1
+        }
+      ]
+    },
+    {
+      "session": "2026-10-28T13-53-40.829Z",
+      "eventCounts": {
+        "start": 1,
+        "screen-input-skipped": 1,
+        "remark": 28,
+        "diff": 28,
+        "speaker-name": 3,
+        "discussion-notice": 1
+      },
+      "latestRemarkEnd": 616.447625,
+      "failedDiffs": 1,
+      "droppedOps": 0,
+      "notices": [
+        {
+          "pointId": "n2",
+          "at": 613.5463125
+        }
+      ],
+      "points": [
+        {
+          "id": "n2",
+          "parent": "n1",
+          "pointStatus": "未決",
+          "talkStatus": "話し中",
+          "firstEvidenceStart": 0,
+          "children": [
+            {
+              "id": "n4",
+              "kind": "案"
+            },
+            {
+              "id": "n5",
+              "kind": "案"
+            },
+            {
+              "id": "n6",
+              "kind": "案"
+            },
+            {
+              "id": "n7",
+              "kind": "案"
+            },
+            {
+              "id": "n9",
+              "kind": "案"
+            },
+            {
+              "id": "n12",
+              "kind": "案"
+            },
+            {
+              "id": "n13",
+              "kind": "案"
+            },
+            {
+              "id": "n14",
+              "kind": "案"
+            },
+            {
+              "id": "n15",
+              "kind": "案"
+            },
+            {
+              "id": "n17",
+              "kind": "案"
+            },
+            {
+              "id": "n18",
+              "kind": "案"
+            },
+            {
+              "id": "n20",
+              "kind": "案"
+            }
+          ]
+        }
+      ],
+      "version": 4,
+      "durationSeconds": 620,
+      "recordedRemarkCount": 28,
+      "playExitCode": 0,
+      "model": "Apple Intelligence",
+      "audioSha256": "96b82cd263f9d7ac5b3b4d2cbb9671be7db0613e783c13b3a0ccc5d6e2962432",
+      "inputDir": ".takt/issue1604-synthetic-v4",
+      "preservedRecordedDir": ".takt/issue1604-synthetic-v4/recorded",
+      "playLog": ".takt/issue1604-play-v4.log",
+      "analysis": ".takt/issue1604-v4-analysis.json",
+      "stateTransitions": [],
+      "exportVerification": {
+        "notificationLogCount": 1,
+        "reviewNotificationCount": 0,
+        "reviewEventCount": 61,
+        "jsonNotificationFields": [],
+        "markdownNotificationCount": 0
+      },
+      "modelErrorHttpStatuses": [
+        500
+      ]
+    }
+  ],
+  "inputChanges": {
+    "2": "前版の早期決定を避ける台本へ変更。モデルは137.3863125秒で唯一の論点を済みにした。",
+    "3": "最初の問いを短くし、各提案に同じ議題名を明示。問いから二つの論点が生まれ、一つは531.1143125秒で決定済みになった。",
+    "4": "最初の問いだけをさらに短くし、音声終了を4.80秒から3.92秒へ変更。提案と間隔を保持。一つの未決論点から通知を記録。"
+  },
+  "commands": {
+    "synthesis": "node ~/live-mindmap-samples/synth/synth.mjs <inputDir> 1",
+    "recording": "bash .agents/skills/verify-live-mindmap/scripts/cli.sh <isolatedRun> recorded <inputDir>/meeting.m4a --title <title> --no-map",
+    "playback": "node server/src/cli.ts play <recordedSessionDir> --local --judge off",
+    "analysis": "node .takt/issue1604-summarize.mjs <playSessionsDir> <analysisFile>"
+  },
+  "isolation": "取り込みは実helperを使う専用verify run。再生は別の空きポート、存在しない専用設定ファイル、版ごとのセッション保存先を指定。",
+  "failedStartup": {
+    "log": ".takt/issue1604-play-v2-port-busy.log",
+    "exitCode": 1,
+    "cause": "取り込み用ポートとの重複。空きポートへ変更して正常終了。"
+  },
+  "productionSourceSha256": "ddcebe19d629c52381941367113f18a20561dc5aa71ee3dfd18bceb943fce78e",
+  "notes": [
+    "モデルの分類結果・決定・済み・保存発言は編集していない。",
+    "通知成功版でも28差分中1件はモデル応答エラー。残る27差分と通知は記録された。",
+    "前工程のChatGPT未サインインはoriginalSampleに保持。ChatGPT個別検証は再計画の必須条件ではない。"
+  ]
+}

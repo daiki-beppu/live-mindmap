@@ -42,6 +42,7 @@ const Session = Schema.Struct({
     intakeToast: SessionLayout.Model.fields.intakeToast,
     screenToast: SessionLayout.Model.fields.screenToast,
     tapToast: SessionLayout.Model.fields.tapToast,
+    discussionToast: SessionLayout.Model.fields.discussionToast,
     viewingToast: SessionLayout.Model.fields.viewingToast,
     diffUpdate: SessionLayout.Model.fields.diffUpdate,
     selfPaused: SessionLayout.Model.fields.selfPaused,
@@ -77,7 +78,7 @@ const { foldMapSurface, foldEscapeKey, keyHandlers: surfaceKeyHandlers } = surfa
   toParentMessage: (message) => Message.GotMapSurfaceMessage({ message }),
 });
 
-const { foldSessionLayout, foldViewingMode, foldIntake, foldScreenNotice, foldTapNotice, foldSelfPause, foldDiffUpdate, foldSessionMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
+const { foldSessionLayout, foldViewingMode, foldIntake, foldScreenNotice, foldTapNotice, foldDiscussionNotice, foldSelfPause, foldDiffUpdate, foldSessionMode } = SessionLayout.sessionLayoutFolds<Model, Message>({
   read: (model) => Option.map(model.session, (s) => layoutOf(model.feed, s)),
   write: (model, layout) => modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, sessionLayout: stripLayout(layout) })) }),
   toParentMessage: (message) => Message.GotSessionLayoutMessage({ message }),
@@ -102,6 +103,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
       (m: Model) => foldIntake(m, feed.intake),
       (m: Model) => foldScreenNotice(m, feed.screenNotice),
       (m: Model) => foldTapNotice(m, feed.tapNotice),
+      (m: Model) => foldDiscussionNotice(m, feed.discussionNotice),
       (m: Model) => foldSelfPause(m, feed.selfPaused),
       (m: Model) => foldDiffUpdate(m, feed.diffUpdate),
       (m: Model) => foldSessionMode(m, feed.local),
@@ -111,6 +113,7 @@ const received = (model: Model, feed: LiveFeed.Model): Return => {
   if (before.intake !== feed.intake) steps.push((m) => foldIntake(m, feed.intake));
   if (!sameOption(before.screenNotice, feed.screenNotice)) steps.push((m) => foldScreenNotice(m, feed.screenNotice));
   if (!sameOption(before.tapNotice, feed.tapNotice)) steps.push((m) => foldTapNotice(m, feed.tapNotice));
+  if (!sameOption(before.discussionNotice, feed.discussionNotice)) steps.push((m) => foldDiscussionNotice(m, feed.discussionNotice));
   if (before.selfPaused !== feed.selfPaused) steps.push((m) => foldSelfPause(m, feed.selfPaused));
   if (before.diffUpdate !== feed.diffUpdate) steps.push((m) => foldDiffUpdate(m, feed.diffUpdate));
   if (before.local !== feed.local) steps.push((m) => foldSessionMode(m, feed.local));
@@ -175,7 +178,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Html =>
         view: SessionLayout.submodelView,
         model: layoutOf(model.feed, session),
         viewInputs: {
-          map: () => h.submodel({ slotId: "map-surface", view: MapSurface.view, model: surface, toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }) }),
+          map: (notice) => h.submodel({ slotId: "map-surface", view: MapSurface.view, model: surface, viewInputs: { notice: () => notice }, toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }) }),
           keyList: () => keyListView(h, session.keyList, "live", (message) => Message.GotKeyListMessage({ message })),
           side: () => h.submodel({ slotId: "side-panel", view: SidePanel.view, model: surface, toParentMessage: (message: MapSurfaceMessage) => Message.GotMapSurfaceMessage({ message }) }),
         },

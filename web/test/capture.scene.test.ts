@@ -1,5 +1,5 @@
 import { getViewportForBounds } from "./fixtures/xyflowReference.ts";
-import { findAll, given, Mount, scene, tap } from "foldkit/scene";
+import { findAll, given, Mount, scene, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
 import { CAPTURE_OVERFLOW_ATTRIBUTE, CAPTURE_READY_ATTRIBUTE } from "../../server/src/core/capture.ts";
 import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
@@ -44,6 +44,14 @@ const viewportTransforms = (html: VNode): number[][] =>
   findAll(html, ".map-viewport").map((v) => ((v.data?.style as Record<string, string> | undefined)?.transform ?? "").match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g)?.map(Number) ?? []);
 
 describe("撮影の Scene: ready / overflow の属性", () => {
+  it("判断軸を指定順に一度表示し、通知を表示しない", () => {
+    scene(app, given(init(snap(nodes(), { criteria: ["採用のしやすさ", "運用負荷"] }))), measured(HEIGHTS),
+      tap((sim) => {
+        expect(findAll(sim.html, ".criteria-strip")).toHaveLength(1);
+        expect(findAll(sim.html, ".criteria-strip li").map(textContent)).toEqual(["採用のしやすさ", "運用負荷"]);
+        expect(findAll(sim.html, ".discussion-notice")).toHaveLength(0);
+      }));
+  });
   it("属性の名前は server と共有する名前そのもの（data-capture-ready / data-capture-overflow）", () => {
     expect(CAPTURE_READY_ATTRIBUTE).toBe("data-capture-ready");
     expect(CAPTURE_OVERFLOW_ATTRIBUTE).toBe("data-capture-overflow");

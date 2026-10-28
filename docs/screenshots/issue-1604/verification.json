@@ -1,0 +1,14 @@
+{
+  "source": "verify-live-mindmap; fake helper and updater; production session, log, feed and UI",
+  "notices": [
+    {
+      "pointId": "n1",
+      "at": 600
+    }
+  ],
+  "reviewNotificationCount": 0,
+  "reviewEventCount": 8,
+  "jsonNotificationFields": 0,
+  "localNoticeObserved": true,
+  "sessionEndClearedNotice": true
+}

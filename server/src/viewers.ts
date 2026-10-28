@@ -15,6 +15,7 @@ const END_FRAMES: {
   captions: { type: "captions", bubbles: [] },
   intake: { type: "intake", status: "none" },
   "screen-notice": { type: "screen-notice", text: null },
+  "discussion-notice": { type: "discussion-notice", text: null },
   "tap-notice": { type: "tap-notice", text: null },
   "self-pause": { type: "self-pause", paused: false },
   "diff-update": { type: "diff-update", state: null },

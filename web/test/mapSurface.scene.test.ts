@@ -17,7 +17,7 @@ import { interpolate, startPositions } from "../src/motion.ts";
 
 type MapSurfaceModel = typeof Model.Type;
 type VNode = Parameters<typeof textContent>[0];
-const app = { update, view };
+const app = { update, view: (model: Parameters<typeof view>[0], h: Parameters<typeof view>[2]) => view(model, { notice: () => null }, h) };
 
 const node = (id: string, parent: string | null, kind: SnapshotNode["kind"], text_: string, extra: Partial<SnapshotNode> = {}): SnapshotNode => ({
   id,

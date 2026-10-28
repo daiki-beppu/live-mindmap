@@ -257,6 +257,7 @@ const openLogged = Effect.fnUntraced(function* ({ dir, title, criteria, logShift
             const json = yield* session.exportJson;
             yield* send({ type: "speaker-names", names: Object.entries(json.speakerNames ?? {}).map(([label, name]) => ({ label, name })) });
           }
+          if (send && event.type === "discussion-notice") yield* send({ type: "discussion-notice", text: event.text });
           if (event.type !== "diff") return;
           if (!event.error && send) yield* Effect.flatMap(session.snapshot, (snapshot) => send({ type: "snapshot", snapshot }));
           if (onDiff) yield* onDiff;

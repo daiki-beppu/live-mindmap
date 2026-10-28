@@ -1,5 +1,6 @@
 import { Cause, Clock, Context, DateTime, Effect, Exit, Fiber, Predicate, Ref, Result, Schema, Semaphore, Stream, type Scope } from "effect";
 import { DIFF_UPDATE_RETRY_MS, DiffUpdatePaused, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, type DiffUpdateLifecycle, type DiffUpdateState } from "./diffUpdate.ts";
+import { createDiscussionNoticeState, DiscussionNoticeEvent, nextDiscussionNotice, observeDiscussion, recordDiscussionNotice, type DiscussionNoticeState } from "./discussionNotice.ts";
 import type { KatakanaAnswer } from "./latinWords.ts";
 import { toJsonExport, type JsonExport } from "./export.ts";
 import { attributePeople } from "./people.ts";
@@ -97,7 +98,7 @@ export const VocabEvent = Schema.Struct({
   words: Schema.Array(Schema.Struct({ surface: Schema.String, romaji: Schema.NullOr(Schema.String), source: Schema.Literals(["user", "screen", "carried"]) })),
 });
 export const VocabPoolEvent = Schema.Struct({ type: Schema.Literal("vocab-pool"), session: Schema.Int });
-export const LogEvent = Schema.Union([StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, SpeakerNameLogEvent]);
+export const LogEvent = Schema.Union([DiscussionNoticeEvent, StartEvent, RemarkEvent, VocabEvent, VocabPoolEvent, ScreenEvent, ScreenOffEvent, ScreenInputSkippedEvent, DiffEvent, DiffUpdatePausedEvent, DiffUpdateRetryEvent, DiffUpdateResumedEvent, DiffUpdateStateEvent, SpeakerNameLogEvent]);
 export type LogEvent = typeof LogEvent["Type"];
 
 export class SessionLog extends Context.Service<SessionLog, {
@@ -116,6 +117,7 @@ const RECENT = 3;
 export { hasContent } from "./remark.ts";
 
 export type SessionState = {
+  readonly discussion: DiscussionNoticeState;
   readonly criteria?: readonly string[];
   readonly speakerNames: SpeakerNameTable;
   readonly map: MeetingMap;
@@ -163,6 +165,7 @@ type Replay = {
 };
 
 export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknown>): Effect.fn.Return<SessionState & { readonly screens: RestoredScreens }, InvalidLogEvent> {
+  let discussion = createDiscussionNoticeState();
   const ledger: Ledger = { remarks: [], byId: new Map(), processed: [], known: new Set(), files: new Set() };
   let speakerNames: SpeakerNameTable = new Map();
   let replay: Replay = {
@@ -189,12 +192,15 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffEvent.fields.type.literal) {
       const e = yield* decodeDiff(event).pipe(failed);
       const map = yield* Effect.fromNullishOr(replay.map).pipe(Effect.mapError(() => invalid("ログの diff より前に start がありません")));
-      const { state } = yield* Effect.fromResult(reflectDiff({ map, criteria: replay.criteria, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
+      const { state, reflectedAt } = yield* Effect.fromResult(reflectDiff({ map, criteria: replay.criteria, history: replay.history, ledger }, e)).pipe(Effect.mapError(invalid));
       const cutoff = Math.max(...e.input.fresh.map((id) => ledger.byId.get(id)!.end));
       const queue = yield* Effect.fromResult(ScreenQueue.consume(replay.queue, e, cutoff)).pipe(Effect.mapError(invalid));
       ledger.known = state.ledger.known;
       ledger.processed = state.ledger.processed;
       replay = { ...replay, queue, map: state.map, history: state.history, diffUpdate: { status: "running" } };
+      discussion = observeSessionDiscussion(discussion, state.map, ledger.remarks, reflectedAt);
+    } else if (type === DiscussionNoticeEvent.fields.type.literal) {
+      discussion = yield* restoreDiscussionNotice(discussion, event, index);
     } else if (type === SpeakerNameLogEvent.fields.type.literal) {
       const e = yield* decodeSpeakerName(event).pipe(failed);
       speakerNames = restoreSpeakerName(speakerNames, e);
@@ -206,13 +212,25 @@ export const restoreState = Effect.fnUntraced(function* (events: Iterable<unknow
     } else if (type === DiffUpdateResumedEvent.fields.type.literal) {
       replay = { ...replay, diffUpdate: { status: "running" } };
     }
+    discussion = observeSessionDiscussion(discussion, replay.map, ledger.remarks);
   }
   const { remarks, processed, known, files } = ledger;
   const { map, history, queue, diffUpdate } = replay;
   const restoredMap = yield* Effect.fromNullishOr(map).pipe(Effect.mapError(() => new InvalidLogEvent({ index: 0, reason: "ログに start がありません" })));
   const pending = remarks.filter((r) => !r.duplicate && !known.has(r.id) && hasContent(r.text));
-  return { ...(replay.criteria?.length ? { criteria: replay.criteria } : {}), map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
+  return { discussion, ...(replay.criteria?.length ? { criteria: replay.criteria } : {}), map: restoredMap, speakerNames, pending, processed, remarks, known, ...history, diffUpdate, screens: { queue, files } };
 });
+
+const restoreDiscussionNotice = Effect.fnUntraced(function* (state: DiscussionNoticeState, event: unknown, index: number) {
+  const decoded = yield* Schema.decodeUnknownEffect(DiscussionNoticeEvent)(event).pipe(Effect.mapError((error) => new InvalidLogEvent({ index, reason: error.message })));
+  if (state.points.get(decoded.pointId)?.status !== "active") return yield* new InvalidLogEvent({ index, reason: "通知の対象期間がありません" });
+  return recordDiscussionNotice(state, decoded);
+});
+
+function observeSessionDiscussion(discussion: DiscussionNoticeState, map: MeetingMap | undefined, remarks: readonly Remark[], at = remarks.reduce((at, r) => Math.max(at, r.end), 0)): DiscussionNoticeState {
+  if (map === undefined) return discussion;
+  return observeDiscussion(discussion, map, new Map(remarks.map((r) => [r.id, r])), at);
+}
 
 export function snapshotOf(state: SessionState): Snapshot {
   const { map } = state;
@@ -301,8 +319,22 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
   const screenTransitions = yield* Semaphore.make(1);
   const ref = yield* Ref.make<SessionState & Runtime>({ ...initial, previousResponse: undefined, retryEnabled: true, nextRetryAt: undefined, inFlight: undefined, nextCall: 0, reflecting: [], catchUpUntil: undefined, screenQueue: screens.queue, screenFiles: screens.files });
 
+  // screenTransitions の内側で状態更新とログの順序を揃える。
+  const notifyDiscussion = Effect.gen(function* () {
+    const event = yield* Ref.modify(ref, (s) => {
+      const discussion = observeSessionDiscussion(s.discussion, s.map, s.remarks);
+      const at = s.remarks.reduce((at, r) => Math.max(at, r.end), 0);
+      const event = nextDiscussionNotice(discussion, s.map, at, s.criteria ?? []);
+      return [event, { ...s, discussion: event === undefined ? discussion : recordDiscussionNotice(discussion, event) }] as const;
+    });
+    if (event !== undefined) yield* log.write(event);
+  });
+
+  const transition = <A>(effect: Effect.Effect<A>): Effect.Effect<A> =>
+    screenTransitions.withPermit(effect.pipe(Effect.tap(() => notifyDiscussion))).pipe(Effect.uninterruptible);
+
   const nameSpeaker = (change: SpeakerNameChange): Effect.Effect<void> =>
-    Effect.uninterruptible(screenTransitions.withPermit(Effect.gen(function* () {
+    Effect.uninterruptible(transition(Effect.gen(function* () {
       const next = yield* Ref.modify(ref, (s): [SpeakerNameTable | undefined, SessionState & Runtime] => {
         const next = updateSpeakerName(s.speakerNames, change);
         return [next, next === undefined ? s : { ...s, speakerNames: next }];
@@ -434,28 +466,28 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const requestedAt = state.status === "paused" ? undefined : outcome.pause.retryAt;
             const now = yield* Clock.currentTimeMillis;
             const nextRetryAt = requestedAt !== undefined && requestedAt > now ? requestedAt : now + DIFF_UPDATE_RETRY_MS;
-            yield* screenTransitions.withPermit(Effect.gen(function* () {
+            yield* transition(Effect.gen(function* () {
               yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.markPaused(s.screenQueue), reflecting: [], pending: [...fresh, ...s.pending], catchUpUntil: [...fresh, ...s.pending].at(-1)?.id, diffUpdate: { status: "paused" as const, reason }, nextRetryAt, previousResponse: undefined }));
               yield* log.write({ type: "diff-update-paused", reason });
             }));
             return;
           }
           const event: typeof DiffEvent.Type = { type: "diff", input, ops: [], dropped: [], error: outcome.error, ...presentFields(outcome, ["judge", "call"]) };
-          yield* screenTransitions.withPermit(Effect.gen(function* () {
+          yield* transition(Effect.gen(function* () {
             let dropped: Dropped[] = [];
             yield* Ref.update(ref, (s) => {
               const byId = new Map(s.remarks.map((r) => [r.id, r]));
               const applied = Result.getOrThrowWith(reflectDiff({ map: s.map, criteria: s.criteria, history: s, ledger: { byId, known: s.known, processed: s.processed } }, event), (reason) => new Error(reason));
               const screenQueue = Result.getOrThrowWith(ScreenQueue.consume(s.screenQueue, event, cutoff), (reason) => new Error(reason));
               dropped = applied.dropped;
-              return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, known: applied.state.ledger.known, processed: applied.state.ledger.processed,
+              return { ...s, ...applied.state.history, screenQueue, map: applied.state.map, discussion: observeSessionDiscussion(s.discussion, applied.state.map, s.remarks, applied.reflectedAt), known: applied.state.ledger.known, processed: applied.state.ledger.processed,
                 diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, reflecting: [], previousResponse: undefined };
             });
             yield* log.write({ ...event, dropped });
           }));
           return;
         }
-        const accepted = yield* screenTransitions.withPermit(Effect.gen(function* () {
+        const accepted = yield* transition(Effect.gen(function* () {
           const { event, dropped, accepted } = yield* Ref.modify(ref, (s) => {
             const byId = new Map(s.remarks.map((r) => [r.id, r]));
             const ops = attributePeople(outcome.ops, byId);
@@ -465,6 +497,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
             const accepted = acceptInferredNames(outcome.names, applied.state.ledger.known, byId);
             return [{ event, dropped: applied.dropped, accepted }, {
               ...s, ...applied.state.history, screenQueue, diffUpdate: s.diffUpdate.status === "paused" ? { status: "running" as const } : s.diffUpdate, nextRetryAt: undefined, map: applied.state.map, reflecting: [], previousResponse: previousResponseOf(applied),
+              discussion: observeSessionDiscussion(s.discussion, applied.state.map, s.remarks, applied.reflectedAt),
               known: applied.state.ledger.known, processed: applied.state.ledger.processed, pending: [...fresh.slice(outcome.count), ...s.pending],
             }];
           });
@@ -491,12 +524,11 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
       Effect.gen(function* () {
         yield* Ref.update(ref, (s) => ({ ...s, remarks: [...s.remarks, r] }));
         const extra = { ...(original === undefined ? {} : { raw: original.raw, words: original.words }), ...(wordTimes === undefined ? {} : { wordTimes }) };
-        if (!r.duplicate && !hasContent(r.text)) {
-          yield* log.write({ type: "remark", remark: r, noContent: true, ...extra });
-          return;
-        }
-        yield* log.write({ type: "remark", remark: r, ...extra });
-        if (r.duplicate) return;
+        const noContent = !r.duplicate && !hasContent(r.text);
+        yield* log.write({ type: "remark", remark: r, ...(noContent ? { noContent: true } : {}), ...extra });
+        // 発言の受信は画面の保存待ちで止めない。ロック中なら、その所有者が終了時に最新状態を判定する。
+        yield* screenTransitions.withPermitsIfAvailable(1)(notifyDiscussion).pipe(Effect.uninterruptible);
+        if (r.duplicate || noContent) return;
         yield* Ref.update(ref, (s) => ({ ...s, pending: [...s.pending, r], catchUpUntil: s.diffUpdate.status === "paused" ? r.id : s.catchUpUntil }));
         yield* startDiffIfReady();
       }),
@@ -508,7 +540,7 @@ const openSession = Effect.fnUntraced(function* (initial: SessionState, screens:
           return [file, { ...s, screenFiles: file ? new Set([...s.screenFiles, file]) : s.screenFiles }];
         });
         if (change.image && file) yield* log.writeScreen(file, change.image.bytes);
-        yield* screenTransitions.withPermit(Effect.uninterruptible(Effect.gen(function* () {
+        yield* transition(Effect.uninterruptible(Effect.gen(function* () {
           yield* log.write({ type: "screen", start: change.start, image: file, ...(change.ocrFailed === true ? { ocrFailed: true } : lines === undefined ? {} : { lines }) });
           yield* Ref.update(ref, (s) => ({ ...s, screenQueue: ScreenQueue.receive(s.screenQueue, { start: change.start, image: file }, s.diffUpdate.status === "paused") }));
         })));
@@ -542,6 +574,7 @@ const createSession = Effect.fnUntraced(function* ({ title, criteria, images = t
   const queue = ScreenQueue.make();
   return yield* openSession({
     ...(criteria?.length ? { criteria: [...criteria] } : {}),
+    discussion: createDiscussionNoticeState(),
     map: emptyMap(title),
     speakerNames: new Map(),
     pending: [],

@@ -1,0 +1,100 @@
+{
+  "wide": {
+    "before": {
+      "map": {
+        "x": 0,
+        "y": 0,
+        "width": 979,
+        "height": 900,
+        "top": 0,
+        "right": 979,
+        "bottom": 900,
+        "left": 0
+      },
+      "captions": {
+        "x": 316,
+        "y": 840,
+        "width": 648,
+        "height": 36,
+        "top": 840,
+        "right": 964,
+        "bottom": 876,
+        "left": 316
+      },
+      "notice": false
+    },
+    "after": {
+      "map": {
+        "x": 0,
+        "y": 0,
+        "width": 979,
+        "height": 900,
+        "top": 0,
+        "right": 979,
+        "bottom": 900,
+        "left": 0
+      },
+      "captions": {
+        "x": 316,
+        "y": 840,
+        "width": 648,
+        "height": 36,
+        "top": 840,
+        "right": 964,
+        "bottom": 876,
+        "left": 316
+      }
+    },
+    "unchanged": true,
+    "notice": "「導入の進め方」が 10 分決まっていません。何を重視して決めるかを先に確かめませんか"
+  },
+  "narrow": {
+    "before": {
+      "map": {
+        "x": 0,
+        "y": 0,
+        "width": 390,
+        "height": 844,
+        "top": 0,
+        "right": 390,
+        "bottom": 844,
+        "left": 0
+      },
+      "captions": {
+        "x": 12,
+        "y": 784,
+        "width": 366,
+        "height": 36,
+        "top": 784,
+        "right": 378,
+        "bottom": 820,
+        "left": 12
+      },
+      "notice": false
+    },
+    "after": {
+      "map": {
+        "x": 0,
+        "y": 0,
+        "width": 390,
+        "height": 844,
+        "top": 0,
+        "right": 390,
+        "bottom": 844,
+        "left": 0
+      },
+      "captions": {
+        "x": 12,
+        "y": 784,
+        "width": 366,
+        "height": 36,
+        "top": 784,
+        "right": 378,
+        "bottom": 820,
+        "left": 12
+      }
+    },
+    "unchanged": true,
+    "notice": "「導入の進め方」が 10 分決まっていません。何を重視して決めるかを先に確かめませんか"
+  }
+}
