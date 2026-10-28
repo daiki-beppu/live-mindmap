@@ -2,7 +2,7 @@ import { HashMap, Match, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
-import { personLine, supportsCriteria, Snapshot, type SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
+import { personLine, supportsCriteria, Snapshot, SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
 import {
   anchoredViewport,
   cameraFocus,
@@ -48,13 +48,39 @@ const FoldingContext = Schema.Struct({
   currentTopic: Schema.Option(Schema.String),
   now: Schema.Option(Schema.Finite),
   touchedAt: Schema.Record(Schema.String, Schema.Option(Schema.Finite)),
+  talkStatus: Schema.Record(Schema.String, Schema.Option(SnapshotNode.fields.talkStatus.schema)),
 });
 const sameFoldingContext = Schema.toEquivalence(FoldingContext);
 const foldingContextOf = (snapshot: Snapshot): typeof FoldingContext.Type => ({
   currentTopic: Option.fromUndefinedOr(snapshot.currentTopic),
   now: Option.fromUndefinedOr(snapshot.now),
   touchedAt: Object.fromEntries(snapshot.nodes.map((node) => [node.id, Option.fromUndefinedOr(node.touchedAt)])),
+  talkStatus: Object.fromEntries(snapshot.nodes.map((node) => [node.id, Option.fromUndefinedOr(node.talkStatus)])),
 });
+
+const sameNodeContent = Schema.toEquivalence(SnapshotNode.mapFields(({ criteria: _criteria, evidence: _evidence, evidenceRound: _evidenceRound, touchedAt: _touchedAt, talkStatus: _talkStatus, ...fields }) => fields));
+const sameNodes = Schema.toEquivalence(Schema.Array(SnapshotNode));
+const sameCriteria = Schema.toEquivalence(Schema.Array(Schema.String));
+const changedOnlyCriteria = (before: Snapshot, after: Snapshot): boolean => {
+  if (before.nodes.length !== after.nodes.length) return false;
+  const byId = new Map(before.nodes.map((node) => [node.id, node]));
+  const linked = new Set(after.nodes.filter((node) => {
+    const previous = byId.get(node.id);
+    return previous !== undefined && !sameCriteria(previous.criteria ?? [], node.criteria ?? []);
+  }).map((node) => node.id));
+  if (linked.size === 0) return false;
+  const reopened = new Set<string>();
+  for (const id of linked) {
+    for (let node = byId.get(id); node; node = node.parent ? byId.get(node.parent) : undefined) reopened.add(node.id);
+  }
+  return after.nodes.every((node, index) => {
+    const previous = before.nodes[index]!;
+    return sameNodeContent(previous, node)
+      && (linked.has(node.id) || (sameCriteria(previous.evidence, node.evidence) && previous.evidenceRound === node.evidenceRound))
+      && (reopened.has(node.id) || previous.touchedAt === node.touchedAt)
+      && (previous.talkStatus === node.talkStatus || (reopened.has(node.id) && node.talkStatus === undefined));
+  });
+};
 
 export const Model = Schema.Struct({
   mode: Schema.Literals(["still", "live", "review"]),
@@ -110,7 +136,11 @@ const foldViewOf = (model: Model): FoldView | null => {
     ...model.snapshot,
     currentTopic: Option.getOrUndefined(context.currentTopic),
     now: Option.getOrUndefined(context.now),
-    nodes: model.snapshot.nodes.map((node) => ({ ...node, touchedAt: Option.getOrUndefined(context.touchedAt[node.id] ?? Option.none()) })),
+    nodes: model.snapshot.nodes.map((node) => ({
+      ...node,
+      touchedAt: Option.getOrUndefined(context.touchedAt[node.id] ?? Option.none()),
+      talkStatus: Option.getOrUndefined(context.talkStatus[node.id] ?? Option.none()),
+    })),
   };
   return foldView(snapshot, model.viewing.humanFolds, model.viewing.selection?.id ?? null);
 };
@@ -353,10 +383,8 @@ export const update = (model: Model, message: Message): Return =>
     },
     ChangedSnapshot: ({ snapshot }) => {
       const replaced = modifyFields(model, { snapshot: () => snapshot });
-      const shape = (value: Snapshot) => value.nodes.map(({ criteria: _criteria, evidence: _evidence, touchedAt: _touchedAt, evidenceRound: _evidenceRound, ...node }) => node);
-      const linksChanged = JSON.stringify(model.snapshot.nodes.map((n) => n.criteria)) !== JSON.stringify(snapshot.nodes.map((n) => n.criteria));
-      const keepsFoldingContext = linksChanged || !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
-      if (model.mode === "live" && keepsFoldingContext && JSON.stringify(shape(model.snapshot)) === JSON.stringify(shape(snapshot))) return { model: replaced };
+      const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
+      if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
       const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
       const reflection = reflectionOf(model, refreshed);
       return { model: reflection === null ? reanchor(autoCamera(followTarget(model, refreshed))) : applyViewing(refreshed, reflection, model) };

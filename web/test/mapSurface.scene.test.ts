@@ -2,7 +2,7 @@ import { getBezierPath, getViewportForBounds, Position } from "./fixtures/xyflow
 import { HashMap, Option } from "effect";
 import { attr, expect as expectScene, findAll, given, Mount, scene, selector, Subscription, tap, textContent } from "foldkit/scene";
 import { describe, expect, it } from "vitest";
-import type { Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
+import { reviewSnapshot, type Op, type Snapshot, type SnapshotNode } from "../../server/src/core/index.ts";
 import { init, Model, update, view } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import { ObserveMapSurface } from "../src/app/mapSurface/mount.ts";
@@ -301,6 +301,94 @@ describe("mapSurface の Scene: 全体を収める（fitView の式）", () => {
 });
 
 describe("mapSurface の Scene: 畳み（foldView）は live だけ", () => {
+  const criteriaSession = (closed: boolean, criteria: string[]) => {
+    const rows: unknown[] = [{ type: "start", title: "合成会議", criteria: ["採用のしやすさ", "運用負荷"] }];
+    let round = 0;
+    const reflect = (ops: (id: string) => Op[]) => {
+      const id = `r${++round}`;
+      const end = closed ? round : round === 1 ? 1 : 1000 + round;
+      rows.push({ type: "remark", remark: { id, track: "相手", start: end - 1, end, text: "合成の発言" } },
+        { type: "diff", input: { fresh: [id], recent: [], nodeCount: 0 }, ops: ops(id), dropped: [] });
+      return reviewSnapshot(rows);
+    };
+    reflect((id) => [
+      { op: "add", ref: "A", parent: "root", kind: "議題", text: "前の議題", evidence: [id] },
+      { op: "add", ref: "a", parent: "A", kind: "案", text: "前の案", criteria, evidence: [id] },
+    ]);
+    reflect((id) => [
+      { op: "add", ref: "B", parent: "root", kind: "議題", text: "今の議題", evidence: [id] },
+      { op: "add", ref: "b", parent: "B", kind: "案", text: "今の案", evidence: [id] },
+    ]);
+    reflect((id) => [{ op: "update", node: "n4", evidence: [id] }]);
+    const before = reflect(() => closed ? [{ op: "close", node: "n1" }] : [{ op: "noop", reason: "相づち" }]);
+    return { before, reflect };
+  };
+  const criteriaHeights = { root: 40, n1: 64, n2: 90, n3: 64, n4: 90 };
+
+  it("close済み議題でも本文変更を伴う関係づけ更新なら通常の表示へ戻る", () => {
+    const { before, reflect } = criteriaSession(true, []);
+    const after = reflect((id) => [{ op: "update", node: "n2", criteria: ["採用のしやすさ"], evidence: [id], text: "議論で更新した案" }]);
+    scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
+      expectScene(wrapperOf("n2")).toBeAbsent(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      expectScene(wrapperOf("n2")).toExist(),
+      expectScene(selector('[data-node-id="n2"] .map-node__text')).toHaveText("議論で更新した案"));
+  });
+
+  it.each(["still", "review"] as const)("%sでは関係づけ更新の前の表示文脈を保持しない", (mode) => {
+    const { before, reflect } = criteriaSession(true, []);
+    const after = reflect((id) => [{ op: "update", node: "n2", criteria: ["採用のしやすさ"], evidence: [id] }]);
+    scene(app, given(modelOf(before, mode)), measured(criteriaHeights),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      expectScene(wrapperOf("n2")).toExist(),
+      expectScene(selector('[data-node-id="n2"] .map-node__criteria-value')).toHaveText("採用のしやすさ"));
+  });
+
+  it.each([[[], ["採用のしやすさ"]], [["採用のしやすさ"], ["運用負荷"]], [["運用負荷"], []]])("close済み議題の関係づけ %j → %j とnoopで畳みを保持する", (from, to) => {
+    const { before, reflect } = criteriaSession(true, from);
+    expect(before.nodes.find((n) => n.id === "n1")?.talkStatus).toBe("済み");
+    const linked = reflect((id) => [{ op: "update", node: "n2", criteria: to, evidence: [id] }]);
+    expect(linked.nodes.find((n) => n.id === "n1")?.talkStatus).toBeUndefined();
+    expect(linked.nodes.find((n) => n.id === "n2")?.criteria ?? []).toEqual(to);
+    const noop = reflect(() => [{ op: "noop", reason: "相づち" }]);
+    scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
+      expectScene(wrapperOf("n2")).toBeAbsent(), expectScene(wrapperOf("n4")).toExist(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: linked })),
+      expectScene(wrapperOf("n2")).toBeAbsent(), expectScene(wrapperOf("n4")).toExist(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: noop })),
+      expectScene(wrapperOf("n2")).toBeAbsent(), expectScene(wrapperOf("n4")).toExist());
+  });
+
+  it.each([false, true])("関係づけ更新とnoop後、新しい根拠だけで通常の表示と追従を再開する（close=%s）", (closed) => {
+    const { before, reflect } = criteriaSession(closed, []);
+    const linked = reflect((id) => [{ op: "update", node: "n2", criteria: ["採用のしやすさ"], evidence: [id] }]);
+    const noop = reflect(() => [{ op: "noop", reason: "相づち" }]);
+    const resumed = reflect((id) => [{ op: "update", node: "n2", evidence: [id] }]);
+    expect(resumed.nodes.find((n) => n.id === "n2")?.evidence.length).toBe(3);
+    const normal = update(modelOf(noop, "live"), Message.MeasuredMapSurface({ ...SIZE, nodeHeights: criteriaHeights })).model;
+    const expected = update(normal, Message.ChangedSnapshot({ snapshot: resumed })).model;
+    scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: linked })),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: noop })),
+      expectScene(wrapperOf("n2")).toBeAbsent(),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: resumed })),
+      expectScene(wrapperOf("n2")).toExist(),
+      tap(({ html }) => expectNumbers(viewportTransform(html), [expected.viewport.x, expected.viewport.y, expected.viewport.zoom])));
+  });
+
+  it("関係づけ更新と同時の独立したcloseを通常更新として表示する", () => {
+    const { before, reflect } = criteriaSession(true, []);
+    reflect(() => [{ op: "noop", reason: "相づち" }]);
+    const after = reflect((id) => [
+      { op: "update", node: "n2", criteria: ["採用のしやすさ"], evidence: [id] },
+      { op: "close", node: "n3" },
+    ]);
+    expect(after.nodes.find((n) => n.id === "n3")?.talkStatus).toBe("済み");
+    scene(app, given(modelOf(before, "live")), measured(criteriaHeights),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: after })),
+      expectScene(wrapperOf("n2")).toExist(), expectScene(wrapperOf("n4")).toBeAbsent());
+  });
+
   it("別議題の案の関係づけだけが変わっても、表示済みの木と位置を維持する", () => {
     const before = snap([
       node("root", null, "会議", "定例"),
