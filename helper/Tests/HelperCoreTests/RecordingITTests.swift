@@ -35,7 +35,7 @@ private func duration(of url: URL) throws -> Double {
     return Double(file.length) / file.processingFormat.sampleRate
 }
 
-@Suite("録音")
+@Suite("録音", .timeLimit(.minutes(1)))
 struct RecordingITTests {
 
     @Test("存在しないフォルダへの録音は、初期化で throw する")

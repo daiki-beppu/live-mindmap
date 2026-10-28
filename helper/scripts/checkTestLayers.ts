@@ -44,6 +44,49 @@ function layerOf(name: string): "unit" | "it" | "heavy" {
 const SUITE_ATTRIBUTE = /^[ \t]*@Suite\b/gm;
 const TYPE_DECLARATION = /\b(?:struct|class|enum|actor)\s+([A-Za-z_]\w*)/y;
 
+function skipBlockComment(content: string, from: number): number {
+  let depth = 1;
+  let i = from + 2;
+  while (i < content.length && depth > 0) {
+    if (content.startsWith("/*", i)) depth++, i += 2;
+    else if (content.startsWith("*/", i)) depth--, i += 2;
+    else i++;
+  }
+  return i;
+}
+
+function skipString(content: string, from: number, opening: string): number {
+  const hashes = opening.slice(0, opening.indexOf('"'));
+  const delimiter = opening.slice(hashes.length) + hashes;
+  const escape = "\\" + hashes;
+  let i = from + opening.length;
+  while (i < content.length) {
+    if (content.startsWith(delimiter, i)) return i + delimiter.length;
+    if (content.startsWith(escape, i)) i += escape.length + 1;
+    else i++;
+  }
+  return i;
+}
+
+function maskNonCode(content: string): string {
+  const parts: string[] = [];
+  const openings = /\/\/|\/\*|#*(?:"""|")/g;
+  let from = 0;
+  for (let match = openings.exec(content); match; match = openings.exec(content)) {
+    const start = match.index;
+    let end: number;
+    if (match[0] === "//") {
+      const newline = content.indexOf("\n", start);
+      end = newline === -1 ? content.length : newline;
+    } else if (match[0] === "/*") end = skipBlockComment(content, start);
+    else end = skipString(content, start, match[0]);
+    parts.push(content.slice(from, start), content.slice(start, end).replace(/[^\r\n]/g, " "));
+    from = openings.lastIndex = end;
+  }
+  parts.push(content.slice(from));
+  return parts.join("");
+}
+
 function skipArguments(content: string, from: number): number {
   let i = from;
   while (/\s/.test(content[i] ?? "")) i++;
@@ -51,9 +94,7 @@ function skipArguments(content: string, from: number): number {
   let depth = 0;
   for (; i < content.length; i++) {
     const ch = content[i];
-    if (ch === '"') {
-      for (i++; i < content.length && content[i] !== '"'; i++) if (content[i] === "\\") i++;
-    } else if (ch === "(") depth++;
+    if (ch === "(") depth++;
     else if (ch === ")" && --depth === 0) return i + 1;
   }
   return content.length;
@@ -61,17 +102,8 @@ function skipArguments(content: string, from: number): number {
 
 function findDeclaredTypeName(content: string, from: number): string | undefined {
   for (let i = from; i < content.length; i++) {
-    if (content.startsWith("//", i)) {
-      const end = content.indexOf("\n", i);
-      if (end === -1) return undefined;
-      i = end;
-    } else if (content.startsWith("/*", i)) {
-      let depth = 0;
-      for (; i < content.length; i++) {
-        if (content.startsWith("/*", i)) depth++, i++;
-        else if (content.startsWith("*/", i) && (depth--, i++, depth === 0)) break;
-      }
-    } else if (content[i] === "@") {
+    if (/[{};]/.test(content[i] ?? "") || content.startsWith("@Suite", i)) return undefined;
+    if (content[i] === "@") {
       const name = /[A-Za-z_]\w*/y;
       name.lastIndex = i + 1;
       if (name.test(content)) i = skipArguments(content, name.lastIndex) - 1;
@@ -84,16 +116,28 @@ function findDeclaredTypeName(content: string, from: number): string | undefined
   return undefined;
 }
 
+function findSuites(content: string) {
+  const code = maskNonCode(content);
+  return [...code.matchAll(SUITE_ATTRIBUTE)].flatMap((attribute) => {
+    const start = attribute.index + attribute[0].length;
+    const end = skipArguments(code, start);
+    const suite = findDeclaredTypeName(code, end);
+    if (suite === undefined) return [];
+    return [{ suite, line: code.slice(0, attribute.index).split("\n").length, traits: code.slice(start, end) }];
+  });
+}
+
 export function findSuiteLayerMismatches(path: string, content: string): SuiteMismatch[] {
   const fileLayer = layerOf((path.split("/").pop() ?? path).replace(/\.swift$/, ""));
-  const mismatches: SuiteMismatch[] = [];
-  for (const attribute of content.matchAll(SUITE_ATTRIBUTE)) {
-    const suite = findDeclaredTypeName(content, skipArguments(content, attribute.index + attribute[0].length));
-    if (suite === undefined || layerOf(suite) === fileLayer) continue;
-    const atIndex = attribute.index + attribute[0].indexOf("@Suite");
-    mismatches.push({ path, line: content.slice(0, atIndex).split("\n").length, suite });
-  }
-  return mismatches;
+  return findSuites(content)
+    .filter(({ suite }) => layerOf(suite) !== fileLayer)
+    .map(({ suite, line }) => ({ path, line, suite }));
+}
+
+export function findSuitesMissingTimeLimit(path: string, content: string): SuiteMismatch[] {
+  return findSuites(content)
+    .filter(({ suite, traits }) => layerOf(suite) !== "unit" && !/\.timeLimit\s*\(/.test(traits))
+    .map(({ suite, line }) => ({ path, line, suite }));
 }
 
 function listSwiftFiles(dir: URL): string[] {
@@ -113,6 +157,12 @@ if (import.meta.main) {
   }));
   const violations = files.flatMap((f) => findRealResourceUses(f.path, f.content));
   const mismatches = files.flatMap((f) => findSuiteLayerMismatches(f.path, f.content));
+  const missingTimeLimits = files.flatMap((f) => findSuitesMissingTimeLimit(f.path, f.content));
+  for (const suite of missingTimeLimits) console.error(`${suite.path}:${suite.line}: ${suite.suite}`);
+  if (missingTimeLimits.length > 0) {
+    console.error("ITTests の @Suite に .timeLimit(.minutes(1))、HeavyTests の @Suite に .timeLimit(.minutes(2)) を付けてください。");
+    process.exitCode = 1;
+  }
   for (const m of mismatches) console.error(`${m.path}:${m.line}: ${m.suite}`);
   if (mismatches.length > 0) {
     console.error(

@@ -52,7 +52,7 @@ private final class Collector: @unchecked Sendable {
     func add(_ l: ResultLine) { lock.withLock { _lines.append(l) } }
 }
 
-@Suite("認識結果から出力の 1 行まで")
+@Suite("認識結果から出力の 1 行まで", .timeLimit(.minutes(1)))
 struct RecognizeITTests {
     @Test("結果の本文・区間・確定フラグはそのまま、到着時刻は流し始めからの秒で、届いた順に出る")
     func resultsBecomeLines() async throws {

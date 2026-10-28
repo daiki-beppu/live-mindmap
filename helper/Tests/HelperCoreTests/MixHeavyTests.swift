@@ -39,7 +39,7 @@ private func writeTracklessRecording(_ url: URL) async throws {
     #expect(tracks.isEmpty)
 }
 
-@Suite("録音の混合")
+@Suite("録音の混合", .timeLimit(.minutes(2)))
 struct MixHeavyTests {
     @Test("全トラックの全ファイルを 0 秒から重ね、一番長い入力の長さの AAC・モノラルが 1 本できる")
     func mixesAllTracksToLongest() async throws {

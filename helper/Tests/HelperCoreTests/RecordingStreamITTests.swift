@@ -35,7 +35,7 @@ private func duration(of url: URL) throws -> Double {
     return Double(file.length) / file.processingFormat.sampleRate
 }
 
-@Suite("録音のラッパー")
+@Suite("録音のラッパー", .timeLimit(.minutes(1)))
 struct RecordingStreamITTests {
     private func makeRecorder(in directory: URL, origin: UInt64) throws -> (TrackRecorder, URL) {
         let url = directory.appendingPathComponent("相手.m4a")

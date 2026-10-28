@@ -13,7 +13,7 @@ private func sine(count: Int, hz: Double, amplitude: Float) -> [Float] {
     (0..<count).map { amplitude * Float(sin(2 * Double.pi * hz * Double($0) / Double(rate))) }
 }
 
-@Suite("エコー計測: wav の書き出し")
+@Suite("エコー計測: wav の書き出し", .timeLimit(.minutes(1)))
 struct WriteWavITTests {
     @Test("writeWav は指定したサンプルレートで書き、読み戻すと同じレートと長さになる")
     func writeWavUsesGivenSampleRate() throws {

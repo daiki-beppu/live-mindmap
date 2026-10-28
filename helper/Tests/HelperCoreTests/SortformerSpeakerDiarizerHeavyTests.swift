@@ -108,7 +108,7 @@ private func dominantSlot(of line: PlacedLine, in segments: [SpeakerSegment], sh
     return overlap.max { $0.value < $1.value }?.key
 }
 
-@Suite("SortformerSpeakerDiarizer の話者分離", .timeLimit(.minutes(5)))
+@Suite("SortformerSpeakerDiarizer の話者分離", .timeLimit(.minutes(2)))
 struct SortformerSpeakerDiarizerHeavyTests {
     @Test("2 人が交互に話す音声で、確定の区間が届き、別の人には別の枠が付く。時刻は音声の取得開始に合わせて origin 基準になる")
     func distinguishesTwoSpeakers() async throws {

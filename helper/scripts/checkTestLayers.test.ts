@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findRealResourceUses, findSuiteLayerMismatches } from "./checkTestLayers.ts";
+import { findRealResourceUses, findSuiteLayerMismatches, findSuitesMissingTimeLimit } from "./checkTestLayers.ts";
 
 test("unit のファイルに WebRTCEchoCanceller( があれば、ファイル・行・文字列を返す", () => {
   const content = ["import Testing", "", "let c = try WebRTCEchoCanceller()"].join("\n");
@@ -241,4 +241,134 @@ test("引数のない属性を挟んでも、続く型宣言の型名で判定�
     { path: "FooTests.swift", line: 1, suite: "BarHeavyTests" },
   ]);
   assert.deepEqual(findSuiteLayerMismatches("FooTests.swift", "@Suite\n@MainActor\nstruct BarTests {}"), []);
+});
+
+test("時間制限のない IT suite をパス・属性の行・型名付きで返す", () => {
+  const content = 'import Testing\n@Suite("転送")\nstruct RelayITTests {}';
+  assert.deepEqual(findSuitesMissingTimeLimit("HelperCoreTests/RelayITTests.swift", content), [
+    { path: "HelperCoreTests/RelayITTests.swift", line: 2, suite: "RelayITTests" },
+  ]);
+});
+
+test("表示名とコメントの時間制限では IT suite の欠落を免除しない", () => {
+  const content = '@Suite(".timeLimit(.minutes(1))", /* .timeLimit(.minutes(1)) */ .serialized)\nstruct RelayITTests {}';
+  assert.deepEqual(findSuitesMissingTimeLimit("RelayITTests.swift", content), [
+    { path: "RelayITTests.swift", line: 1, suite: "RelayITTests" },
+  ]);
+});
+
+test("同じファイルの Heavy suite ごとに時間制限を点検する", () => {
+  const content = [
+    "@Suite(.timeLimit(.minutes(2))) struct AHeavyTests {}",
+    "@Suite struct BHeavyTests {}",
+    "@Suite(.timeLimit(.minutes(2))) struct CHeavyTests {}",
+  ].join("\n");
+  assert.deepEqual(findSuitesMissingTimeLimit("MixHeavyTests.swift", content), [
+    { path: "MixHeavyTests.swift", line: 2, suite: "BHeavyTests" },
+  ]);
+});
+
+test("複数行と入れ子の括弧を持つ時間制限を欠落と誤認しない", () => {
+  const content = [
+    "@Suite(",
+    '  "重い処理", .timeLimit(.minutes(2)),',
+    '  .disabled(if: false, "理由")',
+    ")",
+    "struct AHeavyTests {}",
+  ].join("\n");
+  assert.deepEqual(findSuitesMissingTimeLimit("AHeavyTests.swift", content), []);
+});
+
+test("時間制限のない unit suite と接尾辞が途中にある型を許可する", () => {
+  const content = "@Suite struct EventsTests {}\n@Suite struct ITTestsHelper {}\n@Suite struct HeavyTestsHelper {}";
+  assert.deepEqual(findSuitesMissingTimeLimit("EventsTests.swift", content), []);
+});
+
+test("文字列とコメント内の Heavy suite は実在する suite と扱わない", () => {
+  const content = [
+    'let example = "@Suite struct ExampleHeavyTests {}"',
+    "/*",
+    "@Suite struct OtherHeavyTests {}",
+    "*/",
+    "@Suite struct EventsTests {}",
+  ].join("\n");
+  assert.deepEqual(findSuitesMissingTimeLimit("EventsTests.swift", content), []);
+});
+
+test("時間制限の対象はファイル名ではなく suite の実型名で判定する", () => {
+  const content = '@Suite("struct FakeTests")\nstruct RelayITTests {}\n@Suite struct EventsTests {}';
+  assert.deepEqual(findSuitesMissingTimeLimit("EventsTests.swift", content), [
+    { path: "EventsTests.swift", line: 1, suite: "RelayITTests" },
+  ]);
+  assert.deepEqual(findSuitesMissingTimeLimit("RelayHeavyTests.swift", "@Suite struct EventsTests {}"), []);
+});
+
+test("テスト関数や別属性の時間制限では suite の欠落を免除しない", () => {
+  const content = [
+    "@Suite",
+    '@available(*, deprecated, message: ".timeLimit(.minutes(1))")',
+    "struct RelayITTests {",
+    "  @Test(.timeLimit(.minutes(1))) func relay() {}",
+    "}",
+  ].join("\n");
+  assert.deepEqual(findSuitesMissingTimeLimit("RelayITTests.swift", content), [
+    { path: "RelayITTests.swift", line: 1, suite: "RelayITTests" },
+  ]);
+});
+
+test("別属性とコメントを挟むインデントされた suite の属性行を返す", () => {
+  const content = [
+    "enum Outer {",
+    "  @Suite()",
+    "  // struct FakeTests",
+    "  @MainActor",
+    "  final class RelayHeavyTests {}",
+    "}",
+  ].join("\n");
+  assert.deepEqual(findSuitesMissingTimeLimit("RelayHeavyTests.swift", content), [
+    { path: "RelayHeavyTests.swift", line: 2, suite: "RelayHeavyTests" },
+  ]);
+});
+
+test("文字列と入れ子コメントの時間制限を suite の trait と扱わない", () => {
+  for (const argument of [
+    String.raw`"escaped \" .timeLimit(.minutes(1))"`,
+    '#"raw " .timeLimit(.minutes(1))"#',
+    '"""\n.timeLimit(.minutes(1))\n"""',
+    ".serialized /* outer /* nested */ .timeLimit(.minutes(1)) */",
+    ".serialized // .timeLimit(.minutes(1))\n",
+  ]) {
+    const content = `@Suite(${argument})\nstruct RelayITTests {}`;
+    assert.deepEqual(
+      findSuitesMissingTimeLimit("RelayITTests.swift", content),
+      [{ path: "RelayITTests.swift", line: 1, suite: "RelayITTests" }],
+      argument,
+    );
+  }
+});
+
+test("raw 文字列・複数行文字列・入れ子コメントの suite を読み飛ばして行番号を保つ", () => {
+  for (const example of [
+    'let example = #"@Suite struct FakeHeavyTests {}"#',
+    'let example = """\n@Suite struct FakeHeavyTests {}\n"""',
+    "/* outer /* nested */\n@Suite struct FakeHeavyTests {}\n*/",
+  ]) {
+    const content = [example, "@Suite struct RelayITTests {}"].join("\n");
+    assert.deepEqual(
+      findSuitesMissingTimeLimit("RelayITTests.swift", content),
+      [{ path: "RelayITTests.swift", line: example.split("\n").length + 1, suite: "RelayITTests" }],
+      example,
+    );
+  }
+});
+
+test("時間制限付き IT suite は欠落なし", () => {
+  assert.deepEqual(
+    findSuitesMissingTimeLimit("RelayITTests.swift", "@Suite(.timeLimit(.minutes(1))) struct RelayITTests {}"),
+    [],
+  );
+});
+
+test("suite のないソースは時間制限の欠落なし", () => {
+  assert.deepEqual(findSuitesMissingTimeLimit("Support.swift", "import Testing\nstruct HelperHeavyTests {}"), []);
 });

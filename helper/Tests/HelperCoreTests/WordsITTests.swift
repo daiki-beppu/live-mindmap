@@ -4,7 +4,7 @@ import HelperCore
 
 // 発言の語ごとの読み（Issue #639）。実際の CFStringTokenizer（ja）を通す。
 // 位置と長さは UTF-16 コード単位（NSString の範囲）で、表記は本文のその範囲と一致する。
-@Suite("発言の語ごとの読み")
+@Suite("発言の語ごとの読み", .timeLimit(.minutes(1)))
 struct WordsITTests {
     private func substring(_ text: String, _ word: Word) -> String {
         (text as NSString).substring(with: NSRange(location: word.location, length: word.length))

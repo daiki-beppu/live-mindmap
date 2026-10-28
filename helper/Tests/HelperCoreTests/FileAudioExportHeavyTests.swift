@@ -5,7 +5,7 @@ import Testing
 
 private typealias Support = FileAudioTestSupport
 
-@Suite("録画のファイルから音声を書く（exportFileAudio）", .timeLimit(.minutes(1)))
+@Suite("録画のファイルから音声を書く（exportFileAudio）", .timeLimit(.minutes(2)))
 struct FileAudioExportHeavyTests {
     @Test("WAV は、音声の長さが同じ m4a になり、音声のトラックだけを持つ")
     func wavToM4a() async throws {
