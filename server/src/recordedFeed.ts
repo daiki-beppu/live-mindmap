@@ -16,8 +16,6 @@ const timeOf = (item: RecordedItem): number => item.kind === "remark" ? item.cor
 export type RecordedFeed = Feed & {
   observe: (frame: DiffUpdateFrame) => Effect.Effect<void>;
   prepareRestart: Effect.Effect<TrackEnds>;
-  discard: Effect.Effect<void>;
-  finish: Effect.Effect<void>;
 };
 
 export const recordedFeed = (options: {
@@ -100,7 +98,6 @@ export const recordedFeed = (options: {
     screen: (change) => enqueueScreen({ kind: "screen", change }),
     screenOff: (off) => enqueueScreen({ kind: "screen-off", off }),
     observe,
-    drain,
     prepareRestart: Effect.gen(function* () {
       const ends = yield* Ref.get(madeEnd);
       const limit = Math.max(-Infinity, ...Object.values(ends));

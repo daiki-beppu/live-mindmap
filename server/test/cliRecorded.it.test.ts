@@ -214,12 +214,14 @@ describe("共有画面の OCR 失敗の終了通知", () => {
         return { ...sink,
           drainForRestart: Effect.tap(sink.drainForRestart, () => Effect.promise(() => vi.waitFor(() =>
             expect(logLines(sink.dir).filter((line) => line.type === "screen")).toHaveLength(3), { timeout: 10_000 }))),
-          exports: Effect.gen(function* () {
-            exports++;
-            yield* Deferred.succeed(exporting, undefined);
-            yield* Deferred.await(releaseExport);
-            return yield* sink.exports;
-          }),
+          end: (ending) => Effect.map(sink.end(ending), ({ writeOut }) => ({
+            writeOut: Effect.gen(function* () {
+              exports++;
+              yield* Deferred.succeed(exporting, undefined);
+              yield* Deferred.await(releaseExport);
+              return yield* writeOut;
+            }),
+          })),
         };
       }),
     });

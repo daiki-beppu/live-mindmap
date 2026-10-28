@@ -54,6 +54,14 @@ const THREE: Script = { duration: 3484, remarks: [
   { start: 700, end: 750, text: "三つ目の発言です" },
 ] };
 describe("Sessions と録画 sink の保存・再起動", () => {
+  it.live("録画が済んだら、台本の発言がすべて1回ずつ入る", () => Effect.gen(function* () {
+    const r = yield* resource(THREE);
+    const { dir } = yield* r.run();
+    expect(remarksOf(logLines(dir)).map(({ id, end }) => ({ id, end }))).toEqual([
+      { id: "r1", end: 600 }, { id: "r2", end: 660 }, { id: "r3", end: 750 },
+    ]);
+  }).pipe(Effect.scoped));
+
   it.live.each([false, true])("録画の音声ファイルを書き、自分用の録音は指定時だけ保存する（selfTrack=%s）", (selfTrack) => Effect.gen(function* () {
     const r = yield* resource(THREE);
     const { dir } = yield* r.run(selfTrack ? { selfFile: r.selfFile } : {});

@@ -10,10 +10,14 @@ export type Inlet = {
   screenOff: Session["pushScreenOff"];
 };
 
-export type Feed = Inlet & { drain: Effect.Effect<void> };
+export type Ending =
+  | { kind: "入れ切る" }
+  | { kind: "捨てる"; quiesce: Effect.Effect<void> };
+
+export type Feed = Inlet & { finish: Effect.Effect<void>; discard: Effect.Effect<void> };
 
 export const directFeed = (inlet: Inlet): Effect.Effect<Feed> =>
-  Effect.succeed({ ...inlet, drain: Effect.void });
+  Effect.succeed({ ...inlet, finish: Effect.void, discard: Effect.void });
 
 export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(options: {
   session: Pick<Session, "push" | "pushScreen" | "pushScreenOff" | "unreflectedRemarks">;
@@ -76,7 +80,14 @@ export const makeRemarkFlow = Effect.fnUntraced(function* <F extends Feed>(optio
     ocrSummary: Ref.get(ocrSummary),
     screen: feed.screen,
     screenOff: feed.screenOff,
-    drain: Effect.andThen(settling.drain, feed.drain),
+    settle: Effect.fnUntraced(function* (ending: Ending) {
+      if (ending.kind === "入れ切る") yield* settling.drain;
+      else {
+        yield* feed.discard;
+        yield* ending.quiesce;
+      }
+      yield* feed.finish;
+    }),
     drainForRestart: settling.drain,
     captionsChanged: relay.flushAll,
     clearSpeaking: relay.clear,
