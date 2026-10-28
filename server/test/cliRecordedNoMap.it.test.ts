@@ -201,7 +201,7 @@ describe("cli recorded --no-map", () => {
       ...remarkEvents({ start: 0, end: 2, text: "相手の発言" }),
     ] });
     yield* r.cli(["recorded", r.file, "--no-map", "--self", r.selfFile]);
-    expect(r.helpers.calls[0]).toEqual(expect.arrayContaining(["--self-file", r.selfFile]));
+    expect(r.helpers.calls[0]).toMatchObject({ kind: "transcribe-file", selfFile: r.selfFile });
     expect(remarks(onlyFolder(r.sessionsDir)).map(({ track, text, speaker }) => ({ track, text, speaker }))).toEqual([
       { track: "相手", text: "相手の発言", speaker: "相手 A" },
       { track: "自分", text: "自分の発言", speaker: "自分" },

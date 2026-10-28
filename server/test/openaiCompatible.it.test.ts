@@ -20,7 +20,7 @@ import type { UpdaterUnavailable } from "../src/updaterUnavailable.ts";
 import { DiffUpdater } from "../src/core/index.ts";
 import type { ExecutableModel } from "../src/modelSelection.ts";
 import { HttpClient } from "effect/http";
-import { Helpers, type HelperExitInfo } from "../src/helpers.ts";
+import { Helpers, type HelperLaunchOptions, type HelperExitInfo } from "../src/helpers.ts";
 import { SessionSinks } from "../src/sessionSinks.ts";
 import { EXPORT_FILE, LOG_FILE } from "../src/sessionFiles.ts";
 import { fakeExportServices } from "./fixtures/exportServices.ts";
@@ -172,9 +172,9 @@ describe("互換モデルの実行配線（C01・invRefusedIsInert）", () => {
   it.live.each([undefined, "SYNTHETIC_TRANSFER_KEY"])("ライブ開始は未認可の読取・通信を防ぎ、認可後のモデル拒否と正常開始を保持する（apiKeyEnv=%s）", (apiKeyEnv) => Effect.gen(function* () {
     const root = yield* temporaryDirectory;
     const http = yield* loopback(() => {});
-    const launches: string[][] = [];
+    const launches: HelperLaunchOptions[] = [];
     const helpers = Layer.succeed(Helpers, Helpers.of({ ...helperChecks(), apps: Effect.succeed([]), launch: (args) => Effect.gen(function* () {
-      launches.push([...args]);
+      launches.push(args);
       const queue = yield* Queue.make<string, Cause.Done>();
       Queue.offerUnsafe(queue, JSON.stringify({ type: "speaker-off", start: 0, reason: "モデルなし" })); // 相手の発言は話者の確定を待つので、話者分離を使えない helper にして待たせない（Issue #1021）
       Queue.offerUnsafe(queue, JSON.stringify({ type: "remark", track: "相手", start: 0, end: 1, text: "採用の進め方を共有します。" }));

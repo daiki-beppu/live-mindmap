@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import { Context, Deferred, Effect, Fiber, Layer, Predicate, Schedule, Schema, Stream, type Scope } from "effect";
 import type { PlatformError } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { HELPER_RUN_STDERR_TAIL_LINES, STDERR_TAIL_LINES, tailLines } from "./core/index.ts";
+import { HELPER_RUN_STDERR_TAIL_LINES, INITIAL_SELF_PAUSE_STATE, STDERR_TAIL_LINES, tailLines, type SelfPauseState, type Track } from "./core/index.ts";
 import { openHelperSocket } from "./helperSocket.ts";
 
 export const HELPER_STOP_TIMEOUT_MS = Context.Reference("live-mindmap/HelperStopTimeoutMs", { defaultValue: (): number => 5_000 });
@@ -32,6 +32,42 @@ export type HelperAttempt = {
 export type HelperInstruction = { type: "self-pause" | "reading-pause"; paused: boolean };
 
 export type HelperCommand = { command: string; args: string[] };
+
+export type HelperLaunchOptions =
+  | {
+    readonly kind: "run";
+    readonly app: string;
+    readonly screen: boolean;
+    readonly origin?: string;
+    readonly selfPause: SelfPauseState;
+    readonly audio?: { readonly dir: string; readonly attempt: number };
+  }
+  | {
+    readonly kind: "transcribe-file";
+    readonly file: string;
+    readonly selfFile?: string;
+    readonly from: Partial<Readonly<Record<Track, number>>>;
+    readonly audioDir?: string;
+  };
+
+const runArgs = ({ app, screen, origin, selfPause, audio }: Extract<HelperLaunchOptions, { kind: "run" }>): string[] => [
+  "run", "--app", app,
+  ...(audio === undefined ? [] : ["--audio-dir", audio.dir, "--audio-index", String(audio.attempt)]),
+  ...(screen ? [] : ["--no-screen"]),
+  ...(origin === undefined ? [] : ["--origin", origin]),
+  ...(selfPause.manual === INITIAL_SELF_PAUSE_STATE.manual ? [] : ["--self-manual", selfPause.manual]),
+  ...(selfPause.basis === INITIAL_SELF_PAUSE_STATE.basis ? [] : ["--self-basis", selfPause.basis]),
+  ...(selfPause.lastKnown === INITIAL_SELF_PAUSE_STATE.lastKnown ? [] : ["--self-last-known", selfPause.lastKnown]),
+  ...(selfPause.idleFor === INITIAL_SELF_PAUSE_STATE.idleFor ? [] : ["--self-idle-for", String(selfPause.idleFor)]),
+];
+
+const transcribeArgs = ({ file, selfFile, from, audioDir }: Extract<HelperLaunchOptions, { kind: "transcribe-file" }>): string[] => [
+  "transcribe-file", "--file", file,
+  ...(selfFile === undefined ? [] : ["--self-file", selfFile]),
+  ...(from.相手 === undefined ? [] : ["--from", String(from.相手)]),
+  ...(selfFile === undefined || from.自分 === undefined ? [] : ["--self-from", String(from.自分)]),
+  ...(audioDir === undefined ? [] : ["--audio-dir", audioDir]),
+];
 
 const readText = (stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>) => Stream.mkString(Stream.decodeText(stream));
 
@@ -82,7 +118,7 @@ export class Helpers extends Context.Service<Helpers, {
   installSpeechJa: Stream.Stream<string, HelperInstallFailure>;
   creationDate: (file: string) => Effect.Effect<string | null, HelperCreationDateFailure>;
   apps: Effect.Effect<unknown>;
-  launch: (args: ReadonlyArray<string>, stopRequested: Deferred.Deferred<void>) => Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope>;
+  launch: (options: HelperLaunchOptions, stopRequested: Deferred.Deferred<void>) => Effect.Effect<HelperAttempt, HelperLaunchFailure, Scope.Scope>;
 }>()("live-mindmap/server/Helpers") {
   static readonly layer = (helper: HelperCommand): Layer.Layer<Helpers, never, ChildProcessSpawner.ChildProcessSpawner> =>
     Layer.effect(Helpers)(make(helper));
@@ -169,7 +205,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
   })).pipe(Stream.mapError((error) => new HelperInstallFailure({ message: error.message })));
 
   const launch = Effect.fnUntraced(function* (
-    args: ReadonlyArray<string>,
+    options: HelperLaunchOptions,
     stopRequested: Deferred.Deferred<void>,
   ): Effect.fn.Return<HelperAttempt, HelperLaunchFailure, Scope.Scope> {
     const scope = yield* Effect.scope;
@@ -178,7 +214,7 @@ const make = Effect.fnUntraced(function* (helper: HelperCommand) {
     // 既定の detached: true のまま起動し、プロセスグループごと止める。forceKillAfter は Scope の後始末（kill を通らない）にも効かせる
     const handle = yield* spawner
       .spawn(
-        ChildProcess.make(helper.command, [...helper.args, ...args, "--port", String(port)], {
+        ChildProcess.make(helper.command, [...helper.args, ...(options.kind === "run" ? runArgs(options) : transcribeArgs(options)), "--port", String(port)], {
           stdin: "ignore",
           stdout: "ignore",
           env: { [HELPER_CONTROL_TOKEN_ENV]: controlToken },
