@@ -434,7 +434,7 @@ export const update = (model: Model, message: Message): Return =>
       const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
       if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
       if (sameSnapshot(model.snapshot, snapshot)) return { model: replaced };
-      if (onlyDigressionChanged(model.snapshot, snapshot) && samePositions(targetOf(model), targetOf(replaced))) return { model: replaced };
+      if (onlyDigressionChanged(model.snapshot, snapshot) && samePositions(surfaceOf(model).seen.targets, surfaceOf(replaced).seen.targets)) return { model: replaced };
       const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
       const previous = { model, surface: surfaceOf(model) };
       const surface = surfaceOf(refreshed);
