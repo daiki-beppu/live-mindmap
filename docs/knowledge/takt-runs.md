@@ -75,6 +75,8 @@ PR のレビューの run（`evaluate-pull-request-*`）も、最終の段で「
 
 裁定の段が、本文に無いことを指摘として採ることもある。[PR #1674](https://github.com/daiki-beppu/live-mindmap/pull/1674)（#1654）は、実装の run で 5 観点が全員 APPROVE だった。ところが PR のレビューの run の裁定が、「TLC の結果が PR に無い」「必須の検査の層と結果が PR に無い」の 2 件（中）を採った。実装の run の検査のログ（`.takt/issue-1654-*.log`）は、レビューの worktree からは見えない。fix の段が TLC と全部の層を回し直し、PR のレビューの run は 16 イテレーション・42 分かかった。回し直しても、マージされた本文は 1 行のままだった。
 
+採るかどうかは run ごとに揺れる。仕様 [#1702](https://github.com/daiki-beppu/live-mindmap/issues/1702) の子 [#1713](https://github.com/daiki-beppu/live-mindmap/issues/1713)・[#1715](https://github.com/daiki-beppu/live-mindmap/issues/1715) は、どちらも「足した行が直す前に落ちたことを実装の報告に書く」を完了条件に入れていた。同じモデル・同じワークフローの PR のレビューの run で、裁定の時刻は 1 分しか違わない。[PR #1742](https://github.com/daiki-beppu/live-mindmap/pull/1742)（#1715）の裁定は「未確認」として通し、[PR #1743](https://github.com/daiki-beppu/live-mindmap/pull/1743)（#1713）の裁定は「issue が報告への記載を明示している」として直す対象（中）にした。#1743 の run は 24 イテレーション・49 分かかり、#1742 の 11 イテレーション・13 分の約 4 倍だった。
+
 ## PR の本文に書くこと（`Closes #N` など）を完了条件に入れない。run は確かめられず、レビューが全員 APPROVE でも ABORT を繰り返す
 
 takt が PR を作るのは実装の run が終わった後なので、run の中からは PR の本文を確かめられない。[#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628) は、別の issue（#1524）を同じ PR で閉じるために、完了条件に「PR の本文に `Closes #1524` を書く」を入れていた。1 本目の run は 36 分で 5 観点のレビューまで進み、全員 APPROVE、裁定も「直すものなし」だったが、最終の関門が「PR の本文の `Closes #1524` は未確認」で BLOCKED を出し、再計画が「外を待つだけ」として ABORT した。自動の再投入の 2 本も、再計画から約 2.5 分で同じ理由で ABORT した。
@@ -125,11 +127,15 @@ takt の PR は squash で予約されるので、run がコミットを分け�
 
 [#1624](https://github.com/daiki-beppu/live-mindmap/issues/1624) も同じ形だった。新しい作り方（`withoutTabDetection()`）の単体テストの red は、その作り方が無いことによるコンパイルエラーだけで、中で前の空文字を渡すだけの実装でも通る。守りたい約束（読み終えたら保留を流す）は今の入力では破れず、仕様も入口の IT を禁じていた。5 観点のうち 4 つが「動かして確かめていない」を指摘にしない懸念に書き、裁定は持ち越した。このときは、動かしていないことを実装の報告に書かせ、守りを作り方の名前と注に置く（[録画からのセッションの helper の経路](recorded-helper-relay.md) の最後の節）。
 
-## 計画が置いた縛りの中で直しが成り立たないと、fix の段は完了を取り消して再計画へ戻す。縛りは計画の側で外す
+赤を先に見た順序は、後からは示せない。#1743 の fix の段は「過去の実行順序を推測で記載しない」として、別の worktree でテスト・依存・設定は PR の版のまま、本体の 1 ファイルだけを直す前の版に置き換え、足した行を名前で絞って流した。直す前の版で 4 件とも落ち、PR の版で 4 件とも通った（[カメラ](camera.md) のテストの節）。テストが直したことを捉えている証拠としては、これで足りる。上の節のとおり実装の報告は PR に写らないので、赤の証拠が要る子では、この比較を PR のコメントに残すことを完了条件に書いておく。
+
+## 計画が置いた縛りの中で直しが成り立たないと、fix の段は完了を取り消して再計画へ戻す。縛りは計画の側で外す。issue に書いた縛りは、人が書き換えるまで外れない
 
 [#1625](https://github.com/daiki-beppu/live-mindmap/issues/1625) の直しの計画は「判定器が画面の `start` を決めるやり方は変えない」と縛っていた。1 回目の fix は、黒い固定画面と全面が変わる画面で通り、いったん完了を報告した。その後に ai-antipattern の companion が、小さな変化が固定する動画で進みが止まる反例を出した。fix の担当は、その差分を無視すると後で過去の `start` の画面が出て順が壊れることも確かめ、縛りの中では両立しないと判断した。本番のコードに手を入れないまま完了を取り消し、run は fix-replan に進んで縛りを外した。2 回目の fix・検証・2 回目のレビューは全員 APPROVE で通った。
 
 run の所要時間は、1 周で通った #1624 の 44 分に対して 1 時間 51 分で、増えた分のほとんどは 2 回の fix（19 分・16 分）と再計画（7 分）だった。計画の縛り（「〜は変えない」）は、直しの段で崩れることがある。仕様が決めたことでない縛りを計画が置いていたら、レビューの差し戻しの後に疑う。
+
+縛りが issue の本文にあると、計画の側でも外せない。[#1717](https://github.com/daiki-beppu/live-mindmap/issues/1717) は「直すのは `stepCamera` の表のこの決まりだけ」と縛っていたが、約束を満たすには表の外の `reanchor` も直す必要があった（[カメラ](camera.md) の 1 節目）。1 本目の run は 56 分走って失敗し、自動の再投入の 2 本も 4 分ずつで失敗した（記録は `interventions.jsonl` の `failed` だけ）。人が issue に「`reanchor` は `shownIdOf` で直してよい」という例外を足すと、4 本目が通った。issue に「〜だけを直す」と書くときは、その約束を満たすのに要る周りの関数まで範囲に入れるか、要る分は直してよいと逃げ道を書く。
 
 ## マージの run の「fix: apply TAKT PR review changes」は、CI の直しのことがある。中身は本体の `.takt/runs/` の報告で見る
 
@@ -164,6 +170,14 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 
 指示は `context/task/order.md` の「追加の指示」に残るので、再投入の run も従いはする。それでも、ABORT の指示は run を 1 本止めるだけで、タスクは終わらない。人が引き取るときは、run に ABORT を頼むのと合わせて、タスクを列から外す。
 
+## 完了条件に回数を書くなら、何を数えるかを書く。「1 回だけ呼ぶ」は「呼ぶ所が 1 か所」とも「評価が 1 回」とも読まれる
+
+[#1710](https://github.com/daiki-beppu/live-mindmap/issues/1710) の完了条件は「マップ面の 1 回の更新で `foldView` を呼ぶのが 1 か所だけ」だった。10/28 の 3 本の run は、更新前の状態から畳む所も数えるのかを決められずに止まった。10/30 に「数えるのは更新後の状態の `FoldView` だけ」と issue にコメントすると、3 分後に始めた run は 38 分で通った。ところが PR のレビューの run の裁定役は、反映の経路で更新先を 2 回畳むことを P1 に採った。呼ぶ所は 1 か所でも、評価は 2 回ある、という数え方だ。2 回目は振る舞いとして要るもので（[カメラ](camera.md) の 3 節目）、人が「呼ぶ所が 1 か所」と読んで受け入れた。回数を完了条件に書くときは、呼ぶ所の数か評価の回数か、どの状態から作るものを数えるかまで書く。
+
+## PR のレビューの run が動いている間は、その PR に手で push しない。同じ直しが 2 つ作られ、run の push が落ちる
+
+[PR #1732](https://github.com/daiki-beppu/live-mindmap/pull/1732)（#1710）は、先に main に入った #1731 が、#1732 の消した関数を使っていて、合わせると型チェックが落ちた。人は 15:42 にその行を直すコミットを手で push した。同じころ、PR のレビューの run（`20261030-063313-merge-pr-1732-vddezh`）も同じ指摘で差し戻し、15:51〜16:01 に同じ直し（2 行の追加と 2 行の削除）を作っていた。run の push は `! [rejected] ... (fetch first)` で落ち、そのレビューは失敗で終わった。手で直す前に、その PR のレビューの run が動いていないかを見る。動いていたら、止めるか終わるのを待つ。
+
 ## 出典
 
 - チケット [#1287](https://github.com/daiki-beppu/live-mindmap/issues/1287)、[PR #1292](https://github.com/daiki-beppu/live-mindmap/pull/1292)
@@ -183,3 +197,4 @@ takt は ABORT で終わったタスクを自動で再投入する（上限 2 �
 - 仕様 [#1611](https://github.com/daiki-beppu/live-mindmap/issues/1611) の子 [#1628](https://github.com/daiki-beppu/live-mindmap/issues/1628)・[PR #1668](https://github.com/daiki-beppu/live-mindmap/pull/1668) の takt の run（`20261026-221216-issue-1628-cli-play-to-cli-eva-vgx5ew`・`20261026-224854-issue-1628-cli-play-to-cli-eva-6vpoxw`・`20261026-225131-issue-1628-cli-play-to-cli-eva-0y5ej7`・`20261027-035023-issue-1628-cli-play-to-cli-eva-ne56xj`）の trace と reports、PR のレビューの run（`20261027-042106-merge-pr-1668-8k68gv`・`20261027-044534-merge-pr-1668-1-q4glf1`）、[開始前の確かめを入口の表 1 つにまとめたとき](../devlog/2026-10-27.md#startup-checks-module)
 - 仕様 [#1638](https://github.com/daiki-beppu/live-mindmap/issues/1638) の子 [#1652](https://github.com/daiki-beppu/live-mindmap/issues/1652)・[#1653](https://github.com/daiki-beppu/live-mindmap/issues/1653)・[#1654](https://github.com/daiki-beppu/live-mindmap/issues/1654)（[PR #1674](https://github.com/daiki-beppu/live-mindmap/pull/1674)）の takt の run（`20261027-084931-issue-1653-raibu-session-no-wo-66bcbk`・`20261027-101629-issue-1654-pushscreen-wo-scree-7q88my`）の計画、PR のレビューの run（`20261027-104833-merge-pr-1674-j8t7cz`）の裁定、[共有画面の持ち越しを 1 つのキューにしたとき](../devlog/2026-10-27.md#screen-queue)
 - 仕様 [#1682](https://github.com/daiki-beppu/live-mindmap/issues/1682) の子 [#1704](https://github.com/daiki-beppu/live-mindmap/issues/1704) の takt の run（`20261028-131126-issue-1704-main-no-ruleset-no-7pe7g3`・`20261028-132535-issue-1704-main-no-ruleset-no-zd3ch2`・`20261028-132719-issue-1704-main-no-ruleset-no-sbh9j5`）の trace と reports、dotfiles#407 の timeline、[main の ruleset の strict を外したとき](../devlog/2026-10-30.md#drop-strict)
+- 仕様 [#1702](https://github.com/daiki-beppu/live-mindmap/issues/1702) の子 [#1710](https://github.com/daiki-beppu/live-mindmap/issues/1710)（takt の run `20261030-055419-issue-1710-mu-wo-1-dake-ri-no-c3xmb5`、PR のレビューの run `20261030-063313-merge-pr-1732-vddezh`・`20261030-071712-merge-pr-1732-1-8oofmo`、[PR #1732](https://github.com/daiki-beppu/live-mindmap/pull/1732) のコメント）・[#1713](https://github.com/daiki-beppu/live-mindmap/issues/1713)（`20261030-114356-merge-pr-1743-y1lqpr`）・[#1715](https://github.com/daiki-beppu/live-mindmap/issues/1715)（`20261030-114248-merge-pr-1742-nf3rm0`）・[#1717](https://github.com/daiki-beppu/live-mindmap/issues/1717)（実装の run 4 本の `interventions.jsonl`、`20261030-164903-merge-pr-1757-fve4lj`）、[画面のカメラの決め方を 1 つの表に集めたとき](../devlog/2026-10-31.md#camera-module)
