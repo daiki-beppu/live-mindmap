@@ -1,0 +1,17 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      run-ts: true
+      run-helper: true
+      run-external: true
+      restore-caches: true
+      save-shared-caches: false
+      save-main-caches: false
