@@ -1,8 +1,8 @@
 import { HashMap, Option, Schema } from "effect";
 import { given, message, model, story } from "foldkit/story";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChangeEntry, Snapshot, SnapshotNode } from "../../server/src/core/index.ts";
-import { displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
+import { Snapshot, type ChangeEntry, type SnapshotNode } from "../../server/src/core/index.ts";
+import { blinkRestartsOf, changedSnapshot, displayedPositions, init, Model, update } from "../src/app/mapSurface/main.ts";
 import { Message } from "../src/app/mapSurface/message.ts";
 import {
   cameraFocus,
@@ -593,6 +593,56 @@ describe("全体を見て、もう一度で変わったところへ寄る", () =
 
 describe("差分を見ている間のカメラ", () => {
   const inDiff = () => run(settle(withChanges(["B1"])), key("F"), key("F"));
+
+  it("印だけの付与・解除では寄せ先を変えず、根拠・履歴・点滅は更新する", () => {
+    const start = inDiff();
+    let current = start;
+    for (const [digression, round] of [[true, 3], [false, 4]] as const) {
+      const snapshot = tree({
+        round,
+        nodes: baseNodes().map((n) => n.id === "B" ? { ...n, ...(digression ? { digression: true } : {}), evidence: ["r1", `r${round}`], evidenceRound: round } : n),
+        changes: [{ change: "更新", node: "B", kind: "議題", text: "B", round, at: round }],
+      });
+      const next = changedSnapshot(current, snapshot);
+      expect(next.viewport).toEqual(start.viewport);
+      expect(next.viewing).toEqual(start.viewing);
+      expect(next.snapshot).toEqual(snapshot);
+      expect(blinkRestartsOf(current, next)).toHaveLength(1);
+      current = next;
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const received = Schema.decodeUnknownSync(Schema.fromJsonString(Snapshot))(JSON.stringify(snapshot));
+        expect(received).not.toBe(current.snapshot);
+        expect(received).toEqual(snapshot);
+        current = changedSnapshot(current, received);
+        expect(current.snapshot).toEqual(snapshot);
+        expect(current.viewport).toEqual(start.viewport);
+        expect(current.viewing).toEqual(start.viewing);
+      }
+    }
+    const overview = run(current, key("F"));
+    expectViewport(overview.viewport, overviewExpected(overview));
+    expect(overview.viewing.mode).toBe("overview");
+    const automatic = update(current, Message.PressedEscapeKey({ ...mods })).model;
+    expectViewport(automatic.viewport, focusExpected(automatic));
+    expect(automatic.viewing.mode).toBe("auto");
+  });
+
+  it("印の更新を再受信した後も、同じ round の本文変更を反映して寄せ直す", () => {
+    const start = inDiff();
+    const snapshot = tree({
+      round: 3,
+      nodes: baseNodes().map((n) => n.id === "B" ? { ...n, digression: true } : n),
+      changes: [{ change: "更新", node: "B", kind: "議題", text: "B", round: 3, at: 3 }],
+    });
+    const marked = changedSnapshot(start, snapshot);
+    const received = Schema.decodeUnknownSync(Schema.fromJsonString(Snapshot))(JSON.stringify(snapshot));
+    const repeated = changedSnapshot(marked, received);
+    const edited = { ...received, nodes: received.nodes.map((n) => n.id === "B" ? { ...n, text: "研修先の検討" } : n) };
+    const next = changedSnapshot(repeated, edited);
+    expect(next.snapshot).toEqual(edited);
+    expectViewport(next.viewport, changedExpected(next));
+    expectDifferent(next.viewport, start.viewport);
+  });
 
   it("F で全体を見る（overview）。目標の位置で全体を収めた viewport になる", () => {
     const m = run(inDiff(), key("F"));

@@ -19,6 +19,11 @@ export const SYSTEM = `あなたは会議のマインドマップに、新しい
 議題: 話し中の議題のidを選ぶ。話題が変わったら「新しい議題」を選び、題に20字以内の議題名を書く。
 済み: 話が終わって戻らない議題・論点のidを1つ。ほとんどの回は「なし」。
 
+脱線: ルートの表す会議の目的に答えていない議題の性質。新しい議題にも既存の議題にも指定できる。
+- 「脱線の確認用の議題」の全議題を見直す。済みや、今回選んだ議題以外も対象。脱線した議題の子孫には付けない。
+- 迷うとき、会議の目的がまだ話に出ていないときは付けない。後の発言で目的との関わりが分かったら外す。
+- 変更するものだけ脱線の配列に入れる。idは既存の議題idか「新しい議題」、digressionは付けるならtrue、外すならfalse、evidenceは判断の根拠となる新しい発言の行のid。文が「なし」でも解除が必要なら返す。変更がなければ省略する。
+
 名前: 行頭の「相手 A」「相手 B」のラベルに付けられる名前。確かなときだけ配列に入れる。名前がない回は空配列。誤った名前は、名前がないより悪い。
 - 根拠にしてよいのは次の2つだけ。basisに種類を書く。
   - 名乗り: そのラベル本人が名乗った発言（「田中です」）。
@@ -44,6 +49,7 @@ export type Classification = {
   readonly 文: readonly ReturnType<typeof sentenceSchema>["Type"][];
   readonly 済み: string;
   readonly 名前: readonly InferredSpeakerName[];
+  readonly 脱線?: readonly { readonly id: string; readonly digression: boolean; readonly evidence: string }[];
 };
 
 export function classificationRequest(map: MeetingMap, recent: DiffInput["recent"], sentences: readonly Sentence[], speakerNames?: DiffInput["speakerNames"]) {
@@ -59,15 +65,28 @@ export function classificationRequest(map: MeetingMap, recent: DiffInput["recent
     }
   };
   walk(ROOT_ID, 1);
+  const digressionTopics = map.order.flatMap((id) => {
+    const n = map.nodes[id]!;
+    if (n.kind !== "議題") return [];
+    const ancestors: string[] = [];
+    for (let p = n.parent; p !== null; p = map.nodes[p]!.parent) ancestors.push(p);
+    return [{ id, text: n.text, ancestors, digression: n.digression === true, talkStatus: n.talkStatus ?? "話し中" }];
+  });
   // 文を最後に生成させる（Issue #795）。Apple は最後の文の text で崩れると上限まで出し続けるので、その後ろに必須の項目を置かない
   const schema = Schema.Struct({
     議題: Schema.Struct({ id: Schema.Literals([...topics, "新しい議題"]), 題: Schema.String.check(Schema.isMaxLength(20)) }),
     済み: Schema.Literals(["なし", ...closable]),
     名前: Schema.Array(InferredSpeakerName),
+    脱線: Schema.optionalKey(Schema.Array(Schema.Struct({
+      id: Schema.Literals([...digressionTopics.map((n) => n.id), "新しい議題"]),
+      digression: Schema.Boolean,
+      evidence: Schema.Literals([...new Set(sentences.map((s) => s.remark.id))]),
+    }))),
     文: Schema.Array(sentenceSchema(points)).check(Schema.isMinLength(sentences.length), Schema.isMaxLength(sentences.length)),
   });
   const prompt = [
     "## 現在のマップ（話し中の部分）", lines.join("\n"), "",
+    "## 脱線の確認用の議題（済みも含む。ancestorsは親からルートまでのid）", JSON.stringify(digressionTopics), "",
     "## 直前の発言（処理済み・文脈用）", recent.length ? recent.map((r) => remarkLine(r, { name: nameOfSpeaker(r, speakerNames) })).join("\n") : "（なし）", "",
     `## 新しい発言（${sentences.length} 文）`, sentences.map((s, i) => `${i + 1}. ${remarkLine(s.remark, { text: s.text, name: nameOfSpeaker(s.remark, speakerNames) })}`).join("\n"),
   ].join("\n");

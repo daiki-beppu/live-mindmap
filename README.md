@@ -23,6 +23,8 @@ Read the [full descriptions in Japanese](README.ja.md#できること).
 
 - **Share meeting criteria** (`start --criteria <file>`, `recorded --criteria <file>`) and relate proposals, questions and decisions to them.
 
+- **Spot digressions.** The AI marks topics unrelated to the meeting's purpose and clears the mark when their relevance becomes clear; live and review maps use dashed, slightly faded borders.
+
 - **Map a meeting live** (`cli start`).
 - **Tell speakers apart.** Your microphone is a separate track with echo cancellation; others are split into 相手 A–D on the Mac.
 - **Name speakers.** Type a name on the caption, or let the AI infer it from self-introductions and replies to direct address.
