@@ -4,7 +4,7 @@
 
 - 用語: [畳む・今の議題・反映・見返し](../../GLOSSARY.md)
 - ADR: 無し（module の切り方は内側の構造で覆しやすいので、仕様に置いている）
-- 関連する知識文書: [右の列](side-panel.md)
+- 関連する知識文書: [右の列](side-panel.md)、[カメラ](camera.md)
 
 ## 開閉の判定はノードごとの `Openness` だけを読む。種別や今の議題の鎖を呼ぶ側で写さない
 
@@ -22,7 +22,7 @@
 
 `HumanFolds` は開いた・畳んだ・解いたの 3 つの集合を持つが、外からは `foldView` と `refold` に渡すだけにする。空になったら `refold` は `human: undefined` を返し、欄が無い状態が「人の操作なし」を表す。Esc だけは `refold` を通さず、見せ方の reducer が欄を落とす。統合で消えたノードの ID は集合に残るが、付け替えない（効かないだけで、Esc で消える）。
 
-値を Model（`ViewingState`）に置くのは、導いた値ではなく人の操作の記録だからだ。1 つの操作が人の開閉・選択・カメラを同時に変えるので、見せ方の reducer の遷移は割らず、reducer には `refold` が返す `select` を選択に書くことと、カメラの決め方だけが残る（[#1553](https://github.com/daiki-beppu/live-mindmap/issues/1553)）。
+値を Model（`ViewingState`）に置くのは、導いた値ではなく人の操作の記録だからだ。1 つの操作が人の開閉・選択・カメラを同時に変えるので、見せ方の reducer の遷移は割らず、reducer には `refold` が返す `select` を選択に書くことと、カメラに何が起きたか（`CameraInput`）を返すことだけが残る（[#1553](https://github.com/daiki-beppu/live-mindmap/issues/1553)）。カメラの見方と見る位置はカメラの module が決める（[カメラ](camera.md)）。
 
 ## 変更一覧のクリックは、祖先の人の畳みを外すだけで祖先を開いた集合に足さない。それでも指したノードは必ず見える
 
@@ -36,7 +36,7 @@
 
 `web/test/foldingActions.ts` の `foldingActions(snapshot, actions, human?, selectedId?)` は、`FoldAction` の列を 1 つずつ `refold` に通し、最後の `foldView` を返す。途中の操作が `null`（効かない）なら失敗にする。ただし `reflect` は、解く人の畳みが無ければ `null` を返す実装なので、失敗にしない（仕様の約束は `toggle` と `point` の `null` しか挙げていないが、呼ぶ側は `null` を「人の開閉はそのまま」と読むので振る舞いは同じ）。
 
-期待値に書くのは見せるノードの ID、`openness[id]`、`hint`・`hidden`、`blink`・`shownAs` で、`HumanFolds` の集合の中身は書かない。見せ方の reducer のテスト（`viewing.test.ts`）には、選択とカメラの期待値（選択を畳んだ議題・まとめの先頭・指したノードに移す、`manual`、`keepNode`・`REFOCUS`・`focusNode`）だけを置く。同じ規則の失敗を両方で拾っていた分を #1661 で外し、`viewing.test.ts` は 728 行減った。丸の click から Model・DOM までのつなぎは、層が違うのでマップ面の Story・Scene に残している。
+期待値に書くのは見せるノードの ID、`openness[id]`、`hint`・`hidden`、`blink`・`shownAs` で、`HumanFolds` の集合の中身は書かない。見せ方の reducer のテスト（`viewing.test.ts`）には、選択の期待値（選択を畳んだ議題・まとめの先頭・指したノードに移す）だけを置く。同じ規則の失敗を両方で拾っていた分を #1661 で外し、`viewing.test.ts` は 728 行減った。カメラの期待値は #1712 で `mapSurfaceCamera.story.test.ts` の表に移した（[カメラ](camera.md) のテストの節）。丸の click から Model・DOM までのつなぎは、層が違うのでマップ面の Story・Scene に残している。
 
 ## 出典
 
