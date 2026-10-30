@@ -400,7 +400,7 @@ function measuredCamera(camera: Camera, placement: Placement, input: Extract<Cam
   const changed = Option.isNone(previous.size) || (!(camera.pendingShift && widthChanged) && sizeChanged) || input.heightsChanged;
   const placed = reanchor(changed ? placeCamera(camera, placement, seen) : camera, seen);
   if (!placed.pendingShift || !widthChanged || Option.isNone(seen.size)) return placed;
-  const settled = { ...placed, pendingShift: false };
+  const settled = { ...placed, pendingShift: false, keepAnchor: Option.none() };
   return seen.scope === "still" || seen.sideHidden || seen.focus === null ? settled : { ...settled, viewport: shiftIntoView(settled.viewport, boxesOf(seen, seen.focus).rects, seen.size.value) };
 }
 
@@ -426,6 +426,7 @@ export function stepCamera(camera: Camera, input: CameraInput, previous: CameraS
   const allManual = { auto: manualInput, manual: manualInput, overview: manualInput, diff: manualInput };
   const fold = (mode: Camera["mode"]) => decision(mode, "input", "clear", "keep");
   const side = (mode: Camera["mode"]) => decision(mode, "unchanged", "side", "keep");
+  const unrelated = (mode: Camera["mode"]) => camera.pendingShift ? decision(mode, "unchanged", "keep", "keep") : mode === "auto" ? decision("auto", topicPlacement(previous, seen), "clear", "clear") : settled[mode];
   const reflected = (mode: "manual" | "overview" | "diff") => seen.currentTopic !== camera.topic ? refocused : settled[mode];
   const overview = decision("overview", "all", "clear", "current");
   const table: Record<CameraInput["type"], Record<Camera["mode"], Decision>> = {
@@ -441,7 +442,7 @@ export function stepCamera(camera: Camera, input: CameraInput, previous: CameraS
     toggledSide: { auto: side("auto"), manual: side("manual"), overview: side("overview"), diff: side("diff") },
     elapsedIdle: { ...settled, manual: seen.scope === "review" ? refocused : settled.manual },
     movedTime: { auto: decision("auto", "unchanged", "keep", "keep"), manual: seen.scope === "review" ? refocused : settled.manual, overview: seen.scope === "review" ? refocused : settled.overview, diff: seen.scope === "review" ? refocused : settled.diff },
-    unrelated: { ...settled, auto: decision("auto", topicPlacement(previous, seen), "clear", "clear") },
+    unrelated: { auto: unrelated("auto"), manual: unrelated("manual"), overview: unrelated("overview"), diff: unrelated("diff") },
     measured: { ...retained, auto: decision("auto", "refocus", "keep", "keep") },
     replacedSnapshot: retained,
     frame: { ...retained, auto: { ...retained.auto, placement: seen.scope !== "still" && seen.focus === null ? "topic" : "unchanged" }, overview: { ...retained.overview, placement: "unchanged" }, diff: { ...retained.diff, placement: "unchanged" } },
