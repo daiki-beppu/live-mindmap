@@ -56,6 +56,18 @@ describe("Agent SDK を読み込めない環境でのプロンプト生成", () 
     expect(sdkLoad).not.toHaveBeenCalled();
   });
 
+  it("脱線の現在値と解除が、初回と差分のモデル入力に現れる", async () => {
+    const { buildPrompt } = await import("../src/claudePrompt.ts");
+    const plain = applyOps(emptyMap("採用"), [{ op: "add", ref: "a", kind: "議題", parent: "root", text: "旅行", evidence: ["r1"] }], new Set(["r1"]), { round: 1, at: 1 }, new Map()).map;
+    const marked = applyOps(plain, [{ op: "update", node: "n1", digression: true, evidence: ["r1"] }], new Set(["r1"]), { round: 2, at: 2 }, new Map()).map;
+    const cleared = applyOps(marked, [{ op: "update", node: "n1", digression: false, evidence: ["r1"] }], new Set(["r1"]), { round: 3, at: 3 }, new Map()).map;
+    const promptOf = (map: typeof plain, previous?: typeof plain) => buildPrompt({ map, recent: [], fresh: [] }, previous);
+    expect(promptOf(marked)).toContain("n1 議題(脱線あり): 旅行");
+    expect(promptOf(marked, plain)).toContain("n1 議題(脱線あり): 旅行");
+    expect(promptOf(cleared, marked)).toContain("n1 議題(脱線なし): 旅行");
+    expect(sdkLoad).not.toHaveBeenCalled();
+  });
+
   // Issue #1021: 新しい発言も直前の発言も、1 行は「ID [mm:ss] 話者: 本文」。話者は 相手 A / 相手 / 自分
   it("新しい発言と直前の発言の行に話者が出る（ラベルあり・話者なし・自分。トラック名だけの古い自分の発言も 自分:）", async () => {
     const { buildPrompt } = await import("../src/claudePrompt.ts");

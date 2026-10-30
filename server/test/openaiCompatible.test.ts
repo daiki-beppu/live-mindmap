@@ -57,7 +57,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
     const fake = fakeClient((body, call) => {
       if (call === 1) return none;
       assertStrictJsonSchema(body.response_format.json_schema.schema);
-      return { ops: ops.map((op) => ({ text: null, planStatus: null, assignee: null, assigneeSpeaker: null, ...op })), names: null };
+      return { ops: ops.map((op) => ({ text: null, planStatus: null, assignee: null, assigneeSpeaker: null, digression: null, ...op })), names: null };
     });
     const updater = yield* open(model).pipe(Effect.provideService(HttpClient.HttpClient, fake.client));
     const request = { ...input("試験導入を検討します"), criteria };
@@ -119,7 +119,7 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
     expect(nodes.find((n) => n.kind === "決定")).toMatchObject({ parent: nodes.find((n) => n.kind === "論点")!.id, text: "2回にする", evidence: ["r1"] });
   }));
 
-  it.effect("話し中の議題と論点だけを送信・列挙し、既存論点への合意とcloseを変換する", () => Effect.gen(function* () {
+  it.effect("通常の分類は話し中に限り、脱線の再判断には済みの議題も送り、合意とcloseを変換する", () => Effect.gen(function* () {
     const map = applyOps(emptyMap("定例"), [
       { op: "add", ref: "a", parent: "root", kind: "議題", text: "進行中議題", evidence: ["old"] },
       { op: "add", ref: "b", parent: "a", kind: "論点", text: "進行中論点", evidence: ["old"] },
@@ -143,7 +143,9 @@ describe("OpenAI互換の要求とv5変換（C02・C03）", () => {
     const prompt = body.messages.find((m) => m.role === "user")!.content;
     expect(prompt).toContain("進行中議題");
     expect(prompt).toContain("進行中論点");
-    for (const text of ["非表示の要点", "終了議題", "終了議題の論点"]) expect(prompt).not.toContain(text);
+    for (const text of ["非表示の要点", "終了議題の論点"]) expect(prompt).not.toContain(text);
+    expect(prompt).toContain('"id":"n4","text":"終了議題"');
+    expect(schema.脱線!.items!.properties!.id!.enum).toContain("n4");
     expect(result.ops).toEqual(expect.arrayContaining([
       expect.objectContaining({ op: "add", kind: "決定", parent: "n2", evidence: ["r1"] }), { op: "close", node: "n6" },
     ]));

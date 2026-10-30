@@ -346,6 +346,21 @@ const reflectionOf = (before: PreviousSurface, after: Model, surface: Surface): 
   return { type: "reflect", replaced };
 };
 
+const sameSnapshot = Schema.toEquivalence(Snapshot);
+const NODE_DISPLAY_FIELDS = ["id", "parent", "kind", "text", "planStatus", "assignee", "assigneeSpeaker", "proposer", "due", "pointStatus", "talkStatus", "touchedAt"] as const satisfies readonly (keyof SnapshotNode)[];
+
+function onlyDigressionChanged(before: Snapshot, after: Snapshot): boolean {
+  if (before.currentTopic !== after.currentTopic || before.nodes.length !== after.nodes.length) return false;
+  const markedDifferently = (old: SnapshotNode, next: SnapshotNode) => !!old.digression !== !!next.digression;
+  if (!before.nodes.some((old, i) => markedDifferently(old, after.nodes[i]!))) return false;
+  return before.nodes.every((old, i) => {
+    const next = after.nodes[i]!;
+    if (!NODE_DISPLAY_FIELDS.every((field) => old[field] === next[field])) return false;
+    return markedDifferently(old, next) || (old.evidenceRound === next.evidenceRound
+      && old.evidence.length === next.evidence.length && old.evidence.every((id, j) => id === next.evidence[j]));
+  });
+}
+
 type Return = Update.ReturnWithOutMessage<Model, Message, OutMessage>;
 
 const CLICK_SLOP = 4;
@@ -418,6 +433,8 @@ export const update = (model: Model, message: Message): Return =>
       const replaced = modifyFields(model, { snapshot: () => snapshot });
       const unchangedWhileHeld = sameNodes(model.snapshot.nodes, snapshot.nodes) && !sameFoldingContext(model.foldingContext, foldingContextOf(model.snapshot));
       if (model.mode === "live" && (changedOnlyCriteria(model.snapshot, snapshot) || unchangedWhileHeld)) return { model: replaced };
+      if (sameSnapshot(model.snapshot, snapshot)) return { model: replaced };
+      if (onlyDigressionChanged(model.snapshot, snapshot) && samePositions(targetOf(model), targetOf(replaced))) return { model: replaced };
       const refreshed = modifyFields(replaced, { foldingContext: () => foldingContextOf(snapshot) });
       const previous = { model, surface: surfaceOf(model) };
       const surface = surfaceOf(refreshed);
@@ -522,6 +539,11 @@ function criteriaView(h: H, node: SnapshotNode, criteria: readonly string[]): Ht
   ]);
 }
 
+const digressionDescription = (h: H, node: SnapshotNode, openness: FoldView["openness"][string] | undefined) =>
+  node.kind === "議題" && node.digression === true
+    ? [h.AriaDescription(openness?.state === "bundle" ? "脱線した議題を含む" : "会議の目的に答えていない議題（脱線）")]
+    : [];
+
 function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boolean, speakerNames: SpeakerNames, criteria: readonly string[]): Html {
   const openness = view?.openness[node.id];
   const fold = openness?.state === "folded" || openness?.state === "bundle" ? openness : null;
@@ -530,13 +552,13 @@ function nodeBody(h: H, node: SnapshotNode, view: FoldView | null, selected: boo
   return h.div(
     [
       h.Class(
-        classes("map-node", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
+        classes("map-node", node.kind === "案" && node.planStatus === "却下" && "map-node--rejected", node.kind === "議題" && node.digression === true && "map-node--digression", fold !== null && "map-node--folded", selected && "map-node--selected", view?.blink.has(node.id) === true && "map-node--blink", "nopan"),
       ),
       h.Style({ "--kind-color": KIND_COLOR[node.kind] }),
     ],
     [
       h.button(
-        [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected))],
+        [h.Type("button"), h.Class(MAP_NODE_BUTTON_CLASS), h.AriaPressed(String(selected)), ...digressionDescription(h, node, openness)],
         [mark === null ? null : h.span([h.Class("map-node__mark")], [mark]), h.span([h.Class("map-node__text")], [node.text]), person === null ? null : h.span([h.Class("map-node__person text-[12px] text-gray-500")], [person]),
           criteriaView(h, node, criteria),
           fold?.hint ? h.span([h.Class("map-node__hint")], [fold.hint]) : null],

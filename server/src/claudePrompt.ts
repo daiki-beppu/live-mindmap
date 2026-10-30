@@ -40,6 +40,12 @@ export const DIFF_SYSTEM = `あなたは会議のマインドマップを継続�
 - noop: 新しい発言を見たうえで、マップを変えないと判断したことを表す。
 
 # 方針
+## 脱線
+- 議題が、ルートの表す会議の目的に答えていないとき、add・updateにdigression: trueを指定する。議題以外には指定しない。脱線した話もマップに残す。
+- 迷うとき、まだ会議の目的が話に出ていない序盤は付けない。後の発言で目的との関わりが分かったら、既存の議題へのupdateでdigression: falseを返す。付け外しの根拠となる発言idをevidenceに入れ、印だけを変えるときはtextを渡さない。
+- 脱線した議題の子孫には指定しない。印は枝の付け根の議題一つだけ。新しい子を作って印を重ねない。
+- 済みを含めた既存の議題も見直す。省略した更新は現在の印を保つ。脱線の付け外しだけの更新では、済みや今の議題は変わらない。
+
 ## 粒度
 - マップは画面共有で参加者が読み、会議の後に見返す。毎回添える「議題の一覧」を見て、話し中の議題の大きさを保つ。
 - 親子は意味で決め、話の順は形に表さない。親は、その発言が最も直接に具体化する・答える・派生する元のノードにする。直前に足したノードを親にするのではない。
@@ -134,7 +140,14 @@ function nodeLabel(map: MeetingMap, id: string, explicitPlanStatus = false): str
   const n = map.nodes[id]!;
   const status = n.kind === "論点" ? `(${pointStatus(map, id)})`
     : n.kind === "案" && (n.planStatus === "却下" || explicitPlanStatus) ? `(${n.planStatus === "却下" ? "却下" : "検討中"})` : n.planStatus === "却下" ? "(却下)" : "";
-  return `${n.id} ${n.kind}${status}: ${n.text}${n.kind === "TODO" ? todoSuffix(n) : ""}`;
+  const digression = digressionLabel(n, explicitPlanStatus);
+  return `${n.id} ${n.kind}${status}${digression}: ${n.text}${n.kind === "TODO" ? todoSuffix(n) : ""}`;
+}
+
+function digressionLabel(n: MapNode, explicit: boolean): string {
+  if (n.kind !== "議題") return "";
+  if (n.digression) return "(脱線あり)";
+  return explicit ? "(脱線なし)" : "";
 }
 
 function todoSuffix(n: MapNode): string {
@@ -198,7 +211,7 @@ function nodeChangeLines(prev: MeetingMap, cur: MeetingMap, refIds: ReadonlyMap<
       lines.push(`- 追加 ${nodeLabel(cur, id, true)} （親: ${n.parent}）${ref === undefined ? "" : `（前回の応答の仮 id ${ref}）`}`);
       continue;
     }
-    const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.assigneeSpeaker !== old.assigneeSpeaker || n.due !== old.due
+    const changed = n.text !== old.text || n.planStatus !== old.planStatus || n.assignee !== old.assignee || n.assigneeSpeaker !== old.assigneeSpeaker || n.due !== old.due || !!n.digression !== !!old.digression
       || (n.kind === "論点" && pointStatus(cur, id) !== pointStatus(prev, id));
     if (changed) lines.push(`- 更新 ${nodeLabel(cur, id, true)}`);
     if (n.parent !== old.parent) lines.push(`- 移動 ${id} → 親: ${n.parent}`);

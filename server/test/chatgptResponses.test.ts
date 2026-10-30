@@ -39,7 +39,7 @@ describe("ChatGPT の文数上限と通常失敗後の状態", () => {
       if (call === 1) return response(completedSse(probe));
       const body = Schema.decodeUnknownSync(Schema.Struct({ text: Schema.Struct({ format: Schema.Struct({ schema: Schema.Unknown }) }) }))(jsonRequestBody(request));
       assertStrictJsonSchema(body.text.format.schema);
-      return response(completedSse({ ops: ops.map((op) => ({ text: null, planStatus: null, assignee: null, assigneeSpeaker: null, ...op })), names: null }));
+      return response(completedSse({ ops: ops.map((op) => ({ text: null, planStatus: null, assignee: null, assigneeSpeaker: null, digression: null, ...op })), names: null }));
     });
     yield* provide(Effect.gen(function* () {
       const updater = yield* open({});
