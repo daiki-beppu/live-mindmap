@@ -361,7 +361,7 @@ function placeCamera(camera: Camera, placement: Placement, seen: CameraSeen): Ca
 function reanchor(camera: Camera, seen: CameraSeen): Camera {
   if (Option.isNone(camera.keepAnchor)) return camera;
   const { id, point } = camera.keepAnchor.value;
-  const at = seen.positions[id];
+  const at = seen.positions[seen.shownIdOf(seen.shownIdOf(id))];
   return at === undefined ? camera : { ...camera, viewport: anchoredViewport(camera.viewport, at, point) };
 }
 
@@ -426,7 +426,7 @@ export function stepCamera(camera: Camera, input: CameraInput, previous: CameraS
   const allManual = { auto: manualInput, manual: manualInput, overview: manualInput, diff: manualInput };
   const fold = (mode: Camera["mode"]) => decision(mode, "input", "clear", "keep");
   const side = (mode: Camera["mode"]) => decision(mode, "unchanged", "side", "keep");
-  const unrelated = (mode: Camera["mode"]) => camera.pendingShift ? decision(mode, "unchanged", "keep", "keep") : mode === "auto" ? decision("auto", topicPlacement(previous, seen), "clear", "clear") : settled[mode];
+  const unrelated = (mode: Camera["mode"]) => camera.pendingShift ? decision(mode, "unchanged", "keep", "keep") : mode === "auto" ? decision("auto", topicPlacement(previous, seen), "clear", "clear") : retained[mode];
   const reflected = (mode: "manual" | "overview" | "diff") => seen.currentTopic !== camera.topic ? refocused : settled[mode];
   const overview = decision("overview", "all", "clear", "current");
   const table: Record<CameraInput["type"], Record<Camera["mode"], Decision>> = {

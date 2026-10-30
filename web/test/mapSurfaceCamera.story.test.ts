@@ -277,16 +277,6 @@ describe("入力と前の見方から決まるカメラ", () => {
   for (const mode of modes) {
     for (const key of ["?", "C"] as const) cases.push({ input: key, before: mode, after: mode, start: () => inMode(mode), apply: (m) => parentKey(m, key), expected: unchanged });
   }
-  for (const key of ["?", "C"] as const) {
-    cases.push({
-      input: `開閉の途中の ${key}`,
-      before: "manual",
-      after: "manual",
-      start: () => run(settle(foldable()), scroll, clickFoldDot("A"), tick(100)),
-      apply: (m) => run(parentKey(m, key), tick(500)),
-      expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["A"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
-    });
-  }
   const narrow = { width: 500, height: 400 };
   const shiftExpected = (m: MapSurfaceModel) => shiftIntoView(m.camera.viewport, cameraFocus(m.snapshot)!.ids.map((id) => nodeRect(id, targetsOf(m), dimsOf(m))), narrow);
   const beforeSide = (m: MapSurfaceModel): MapSurfaceModel => ({ ...withViewport(m, { x: 100, y: 0, zoom: 1 }), viewing: { ...m.viewing, sideHidden: true } });
@@ -299,6 +289,169 @@ describe("入力と前の見方から決まるカメラ", () => {
       `${modifier}＋=`, (m) => run(m, key("=", { [modifier]: true })),
     ]),
   ];
+  const nonAutomatic: ReadonlyArray<Exclude<Mode, "auto">> = ["manual", "overview", "diff"];
+  const foldMode = (initial: MapSurfaceModel, mode: Exclude<Mode, "auto">): MapSurfaceModel =>
+    mode === "manual" ? run(initial, scroll) : mode === "overview" ? run(initial, key("F")) : run(initial, key("F"), key("F"));
+  const beforeFold = (mode: Exclude<Mode, "auto">): MapSurfaceModel =>
+    run(foldMode(settle(foldable({ round: 2, changes: [change("B1", 2)], lastChanged: "B1" })), mode), clickNode("A"), tick(500));
+  cases.push(...nonAutomatic.flatMap((mode): Case[] => {
+    const rows: Case[] = [];
+    for (const pressed of ["F", "Z"] as const) {
+      rows.push({
+        input: `開閉の途中の ${pressed} を優先する`,
+        before: mode,
+        after: pressed === "Z" ? "manual" : mode === "overview" ? "diff" : "overview",
+        start: () => run(beforeFold(mode), clickFoldDot("A"), tick(100)),
+        apply: (before) => {
+          const moved = run(before, key(pressed));
+          const expected = pressed === "F"
+            ? mode === "overview" ? changedExpected(moved) : overviewExpected(moved)
+            : subtreeViewport("A", { ids: shownOf(moved).map((n) => n.id), parents: Object.fromEntries(shownOf(moved).map((n) => [n.id, n.parent])) }, targetsOf(moved), dimsOf(moved), sizeOf(moved));
+          expectViewport(moved.camera.viewport, expected);
+          expectDifferent(moved.camera.viewport, before.camera.viewport);
+          const after = run(moved, tick(150), tick(250));
+          expectViewport(after.camera.viewport, moved.camera.viewport);
+          return after;
+        },
+        expected: (before) => run(before, key(pressed)).camera.viewport,
+      });
+    }
+    rows.push({
+      input: "開閉の途中の空でない反映で保持を外す",
+      before: mode,
+      after: mode,
+      start: () => run(beforeFold(mode), clickFoldDot("A"), tick(100)),
+      apply: (before) => {
+        const snapshot = foldable({ round: 3, changes: [change("B1", 3)], lastChanged: "B1" });
+        const reflected = run(before, changed(snapshot));
+        const expected = mode === "manual" ? before.camera.viewport : mode === "overview" ? overviewExpected(reflected) : changedExpected(reflected);
+        expectViewport(reflected.camera.viewport, expected);
+        const after = run(reflected, tick(500));
+        expectDifferent({ ...displayedPositions(after)["A"]!, zoom: 1 }, { ...displayedPositions(reflected)["A"]!, zoom: 1 });
+        expectViewport(after.camera.viewport, expected);
+        return after;
+      },
+      expected: (before, after) => mode === "manual" ? before.camera.viewport : mode === "overview" ? overviewExpected(after) : changedExpected(after),
+    });
+    for (const [input, apply] of unrelated) {
+      rows.push({
+        input: `開閉の途中の ${input} で画面座標を保つ`,
+        before: mode,
+        after: mode,
+        start: () => beforeFold(mode),
+        apply: (start) => {
+          let current = start;
+          for (const open of [true, false]) {
+            const before = current;
+            const point = screenPoint(before.camera.viewport, displayedPositions(before)["A"]!);
+            current = run(current, clickFoldDot("A"), tick(100));
+            expectDifferent({ ...displayedPositions(current)["A"]!, zoom: 1 }, { ...targetsOf(current)["A"]!, zoom: 1 });
+            const intermediate = current;
+            current = apply(current);
+            for (const deltaMs of [0, 150, 250]) {
+              if (deltaMs > 0) current = run(current, tick(deltaMs));
+              const at = screenPoint(current.camera.viewport, displayedPositions(current)["A"]!);
+              expect(current.camera.mode).toBe(mode);
+              expect(current.camera.viewport.zoom).toBe(before.camera.viewport.zoom);
+              expect(at.x).toBeCloseTo(point.x, 6);
+              expect(at.y).toBeCloseTo(point.y, 6);
+              expect(displayedPositions(current)["A1"] !== undefined).toBe(open);
+            }
+            expectDifferent({ ...displayedPositions(current)["A"]!, zoom: 1 }, { ...displayedPositions(intermediate)["A"]!, zoom: 1 });
+          }
+          return current;
+        },
+        expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["A"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
+      });
+    }
+    for (const [input, apply] of unrelated.filter(([input]) => input === "クリックで選ぶ" || input === "選択を外す")) {
+      rows.push({
+        input: `畳む途中の ${input} でまとめに移っても画面座標を保つ`,
+        before: mode,
+        after: mode,
+        start: () => {
+          const snapshot = snap([
+            node("root", null, "会議"), node("A", "root"), node("A1", "A", "論点"), node("A2", "A", "論点"),
+            node("D", "root", "議題", { talkStatus: "済み" }), node("B", "root"), node("B1", "B", "論点"),
+          ], { round: 2, currentTopic: "B", changes: [change("B1", 2)], lastChanged: "B1", now: 100 });
+          return run(foldMode(settle(snapshot), mode), measure(SIZE, { D: 60, "run:A": 50 }), tick(500), clickNode("A"));
+        },
+        apply: (before) => {
+          const point = screenPoint(before.camera.viewport, displayedPositions(before)["A"]!);
+          let current = run(before, clickFoldDot("A"), tick(100));
+          expect(shownOf(current).map((n) => n.id)).toContain("A");
+          current = apply(current);
+          expect(shownOf(current).find((n) => n.id === "run:A")?.text).toBe("議題 2 件");
+          expect(displayedPositions(current)["A"]).toBeUndefined();
+          const intermediate = displayedPositions(current)["run:A"]!;
+          expectDifferent({ ...intermediate, zoom: 1 }, { ...targetsOf(current)["run:A"]!, zoom: 1 });
+          for (const deltaMs of [0, 250, 250]) {
+            if (deltaMs > 0) current = run(current, tick(deltaMs));
+            const at = screenPoint(current.camera.viewport, displayedPositions(current)["run:A"]!);
+            expect(current.camera.mode).toBe(mode);
+            expect(current.camera.viewport.zoom).toBe(before.camera.viewport.zoom);
+            expect(at.x).toBeCloseTo(point.x, 6);
+            expect(at.y).toBeCloseTo(point.y, 6);
+          }
+          expectDifferent({ ...displayedPositions(current)["run:A"]!, zoom: 1 }, { ...intermediate, zoom: 1 });
+          return current;
+        },
+        expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["run:A"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
+      });
+    }
+    rows.push({
+      input: "畳む途中の選択解除でまとめが替わっても測り直しまで画面座標を保つ",
+      before: mode,
+      after: mode,
+      start: () => {
+        const snapshot = snap([
+          node("root", null, "会議"), node("X", "root", "議題", { talkStatus: "済み" }),
+          node("A", "root"), node("A1", "A", "論点"), node("A2", "A", "論点"),
+          node("D", "root", "議題", { talkStatus: "済み" }), node("B", "root"), node("B1", "B", "論点"),
+        ], { round: 2, currentTopic: "B", changes: [change("B1", 2)], lastChanged: "B1", now: 100 });
+        const opened = run(settle(snapshot), clickNode("A"), Message.PressedEnterKey(mods), Message.PressedEnterKey(mods),
+          measure(SIZE, { root: 200, X: 60, D: 60, "run:A": 50, "run:X": 50 }), tick(500));
+        return run(foldMode(opened, mode), clickNode("X"), tick(500));
+      },
+      apply: (before) => {
+        const point = screenPoint(before.camera.viewport, displayedPositions(before)["A"]!);
+        const expectAnchor = (current: MapSurfaceModel, id: string) => {
+          const at = screenPoint(current.camera.viewport, displayedPositions(current)[id]!);
+          expect(current.camera.mode).toBe(mode);
+          expect(current.camera.viewport.zoom).toBe(before.camera.viewport.zoom);
+          expect(at.x).toBeCloseTo(point.x, 6);
+          expect(at.y).toBeCloseTo(point.y, 6);
+        };
+        let current = run(before, clickFoldDot("A"), tick(100));
+        expect(Option.getOrThrow(current.camera.keepAnchor).id).toBe("run:A");
+        expect(shownOf(current).find((n) => n.id === "run:A")?.text).toBe("議題 2 件");
+        expectAnchor(current, "run:A");
+        expectAnchor(run(current, key("=", { metaKey: true })), "run:A");
+        current = run(current, Message.ClickedEvidenceClose());
+        expect(shownOf(current).find((n) => n.id === "run:X")?.text).toBe("議題 3 件");
+        expect(displayedPositions(current)["run:A"]).toBeUndefined();
+        expect(displayedPositions(current)["A"]).toBeUndefined();
+        expectAnchor(current, "run:X");
+        const intermediate = displayedPositions(current)["run:X"]!;
+        current = run(current, tick(250));
+        expectAnchor(current, "run:X");
+        current = run(current, tick(250));
+        expectAnchor(current, "run:X");
+        expectDifferent({ ...displayedPositions(current)["run:X"]!, zoom: 1 }, { ...intermediate, zoom: 1 });
+        const beforeMeasurement = displayedPositions(current)["run:X"]!;
+        current = run(current, measure(SIZE, { "run:X": 180 }));
+        expectDifferent({ ...targetsOf(current)["run:X"]!, zoom: 1 }, { ...beforeMeasurement, zoom: 1 });
+        expectAnchor(current, "run:X");
+        current = run(current, tick(250));
+        expectAnchor(current, "run:X");
+        current = run(current, tick(250));
+        expectAnchor(current, "run:X");
+        return current;
+      },
+      expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["run:X"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
+    });
+    return rows;
+  }));
   for (const mode of modes) {
     for (const [input, apply] of unrelated) {
       cases.push({
@@ -1079,16 +1232,6 @@ describe("開閉で位置を保つ: 開閉したノードを同じ画面座標�
     const zoomed = update(afterClick, key("=")).model;
     const after = update(zoomed, tick(100)).model;
     expect(after.camera.viewport).toEqual(zoomed.camera.viewport);
-  });
-
-  it("開閉の途中でクリック選択すると保持が外れ、残りの補間で viewport は動かない", () => {
-    const { afterClick } = opened();
-    const halfway = run(afterClick, tick(100));
-    const selected = run(halfway, clickNode("B"));
-    const after = run(selected, tick(100), tick(500));
-    expectDifferent({ ...displayedPositions(selected)["A"]!, zoom: 1 }, { ...displayedPositions(after)["A"]!, zoom: 1 });
-    expect(after.camera.mode).toBe("manual");
-    expect(after.camera.viewport).toEqual(selected.camera.viewport);
   });
 
   it("全体を見ている間の開閉も位置を保つ。保っている間は全体を収め直さず、倍率も変えない", () => {
