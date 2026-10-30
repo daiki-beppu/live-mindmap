@@ -248,16 +248,82 @@ describe("入力と前の見方から決まるカメラ", () => {
       apply: (m) => run(parentKey(m, key), tick(500)),
       expected: (before, after) => anchoredViewport(before.camera.viewport, displayedPositions(after)["A"]!, screenPoint(before.camera.viewport, displayedPositions(before)["A"]!)),
     });
+  }
+  const narrow = { width: 500, height: 400 };
+  const shiftExpected = (m: MapSurfaceModel) => shiftIntoView(m.camera.viewport, cameraFocus(m.snapshot)!.ids.map((id) => nodeRect(id, targetsOf(m), dimsOf(m))), narrow);
+  const beforeSide = (m: MapSurfaceModel): MapSurfaceModel => ({ ...withViewport(m, { x: 100, y: 0, zoom: 1 }), viewing: { ...m.viewing, sideHidden: true } });
+  const unrelated: ReadonlyArray<readonly [string, (m: MapSurfaceModel) => MapSurfaceModel]> = [
+    ["?", (m) => parentKey(m, "?")],
+    ["C", (m) => parentKey(m, "C")],
+    ["クリックで選ぶ", (m) => run(m, clickNode("B"))],
+    ["選択を外す", (m) => run(m, Message.ClickedEvidenceClose())],
+    ...(["metaKey", "ctrlKey", "altKey"] as const).map((modifier): readonly [string, (m: MapSurfaceModel) => MapSurfaceModel] => [
+      `${modifier}＋=`, (m) => run(m, key("=", { [modifier]: true })),
+    ]),
+  ];
+  for (const mode of modes) {
+    for (const [input, apply] of unrelated) {
+      cases.push({
+        input: `列幅を測る前の ${input}`,
+        before: mode,
+        after: mode,
+        start: () => beforeSide(run(inMode(mode), clickNode("A"))),
+        apply: (m) => {
+          const shown = run(m, Message.PressedSideKey(mods));
+          expectViewport(shown.camera.viewport, m.camera.viewport);
+          const next = apply(shown);
+          expect(next.camera.mode).toBe(mode);
+          expectViewport(next.camera.viewport, m.camera.viewport);
+          expectDifferent(shiftExpected(next), m.camera.viewport);
+          return run(next, measure(narrow, {}));
+        },
+        expected: (before) => shiftExpected(before),
+      });
+    }
+    if (mode === "auto") continue;
     cases.push({
-      input: `列幅を測る前の ${key}`,
-      before: "manual",
-      after: "manual",
+      input: "開閉の途中で E、幅の計測、補間の完了",
+      before: mode,
+      after: mode,
       start: () => {
-        const initial = withViewport(inMode("manual"), { x: 100, y: 0, zoom: 1 });
-        return run({ ...initial, viewing: { ...initial.viewing, sideHidden: true } }, Message.PressedSideKey(mods));
+        const initial = settle(foldable({ round: 2, changes: [change("B1", 2)], lastChanged: "B1" }));
+        const current = mode === "manual" ? run(initial, scroll) : mode === "overview" ? run(initial, key("F")) : run(initial, key("F"), key("F"));
+        return run(beforeSide(current), clickFoldDot("A"), tick(100));
       },
-      apply: (m) => run(parentKey(m, key), measure({ width: 500, height: 400 }, {})),
-      expected: (before, after) => shiftIntoView(before.camera.viewport, cameraFocus(before.snapshot)!.ids.map((id) => nodeRect(id, targetsOf(before), dimsOf(before))), sizeOf(after)),
+      apply: (m) => {
+        expectDifferent({ ...displayedPositions(m)["A"]!, zoom: 1 }, { ...targetsOf(m)["A"]!, zoom: 1 });
+        const shown = run(m, Message.PressedSideKey(mods));
+        expectViewport(shown.camera.viewport, m.camera.viewport);
+        const expected = shiftExpected(shown);
+        expectDifferent(expected, shown.camera.viewport);
+        const measured = run(shown, measure(narrow, {}));
+        expectViewport(measured.camera.viewport, expected);
+        return run(measured, tick(500));
+      },
+      expected: (before) => shiftExpected(before),
+    });
+  }
+  const cancellations: ReadonlyArray<readonly [string, Msg, Mode]> = [
+    ["人のスクロール", scroll, "manual"],
+    ["mode を変える F", key("F"), "overview"],
+    ["1 回きりの Z", key("Z"), "manual"],
+    ["空でない反映", changed(withChanges(["B3"], 3)), "manual"],
+  ];
+  for (const [input, message, after] of cancellations) {
+    cases.push({
+      input: `E の後に ${input} で保留を消す`,
+      before: "manual",
+      after,
+      start: () => beforeSide(run(inMode("manual"), clickNode("A"))),
+      apply: (m) => {
+        const shown = run(m, Message.PressedSideKey(mods));
+        expectDifferent(shiftExpected(shown), shown.camera.viewport);
+        const canceled = run(shown, message);
+        const expected = after === "overview" ? overviewExpected({ ...canceled, size: Option.some(narrow) }) : canceled.camera.viewport;
+        expectDifferent(shiftExpected(canceled), expected);
+        return run(canceled, measure(narrow, {}));
+      },
+      expected: (before, after) => after.camera.mode === "overview" ? overviewExpected(after) : run(before, message).camera.viewport,
     });
   }
 
@@ -1204,22 +1270,6 @@ describe("列を出してずらす: E で保留を立て、画面の幅が変わ
       model((m) => {
         const after = update(m, measure(NARROW, {})).model;
         expect(after.camera.viewport).toEqual(m.camera.viewport);
-      }),
-    );
-  });
-
-  it("E の後にクリック選択すると保留は消え、幅が変わってもずらさない", () => {
-    const start = hiddenColumn();
-    expectDifferent(shiftIntoView(start.camera.viewport, focusRects(start), NARROW), start.camera.viewport);
-    story(
-      update,
-      given(start),
-      message(side()),
-      message(clickNode("A")),
-      message(measure(NARROW, {})),
-      model((m) => {
-        expect(m.camera.mode).toBe("manual");
-        expect(m.camera.viewport).toEqual(start.camera.viewport);
       }),
     );
   });
