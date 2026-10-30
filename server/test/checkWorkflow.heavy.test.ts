@@ -20,15 +20,21 @@ const runStep = (json: string) =>
     encoding: "utf8",
   });
 
-const allSuccess = { changes: "success", ts: "success", heavy: "success", e2e: "success", helper: "success" };
+const allSuccess = { changes: "success", ts: "success", heavy: "success", external: "success", e2e: "success", helper: "success" };
 
 describe("check ジョブの判定", () => {
   it("success・skipped だけなら通り、それ以外の値が 1 つでもあれば落ちてジョブ名と結果を出す", () => {
     expect(runStep(needsJson(allSuccess)).status).toBe(0);
-    expect(runStep(needsJson({ changes: "success", ts: "skipped", heavy: "skipped", e2e: "skipped", helper: "skipped" })).status).toBe(0);
+    expect(runStep(needsJson({ changes: "success", ts: "skipped", heavy: "skipped", external: "skipped", e2e: "skipped", helper: "skipped" })).status).toBe(0);
     const r = runStep(needsJson({ ...allSuccess, helper: "timed_out" }));
     expect(r.status).not.toBe(0);
     expect(`${r.stdout}${r.stderr}`).toMatch(/helper\W+timed_out/);
+  });
+
+  it.each(["failure", "cancelled", "timed_out", ""])("external の結果が %j なら必須 check を失敗にする", (result) => {
+    const r = runStep(needsJson({ ...allSuccess, external: result }));
+    expect(r.status).not.toBe(0);
+    expect(`${r.stdout}${r.stderr}`).toContain(`external: ${result}`);
   });
 });
 

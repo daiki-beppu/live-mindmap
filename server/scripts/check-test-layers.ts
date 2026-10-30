@@ -6,7 +6,7 @@ export type Violation = { path: string; line: number; message: string };
 const REAL_RESOURCES = new Set(["child_process", "fs", "fs/promises", "http", "net", "ws", "playwright", "playwright-core", "@anthropic-ai/claude-agent-sdk"]);
 
 const isUnit = (path: string): boolean =>
-  /\.test\.tsx?$/.test(path) && !path.includes(".it.test.") && !path.includes(".heavy.test.");
+  /\.test\.tsx?$/.test(path) && !path.includes(".it.test.") && !path.includes(".heavy.test.") && !path.includes(".external.test.");
 
 const specifiersIn = (path: string, content: string): Array<{ spec: string; line: number }> => {
   const { program, errors } = parseSync(path, content, { sourceType: "module" });
