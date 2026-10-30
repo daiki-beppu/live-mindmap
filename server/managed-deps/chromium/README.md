@@ -34,6 +34,8 @@ pnpm cli check
 
 再起動後の最初の check では JSON の `items` にある `chromium` が `state: "outdated"`、再導入後は `state: "ready"` になる。`missing` は旧版導入の確認にならない。CLI 本体（`node server/src/cli.ts check`）の終了コードは必須依存が不足すると3、任意依存だけの不足なら0。`pnpm cli check` は本体の3をラッパーの1として返すことがあるため、対象 item の状態を読む。Chromium は任意、Claude は選択モデルの経路によって必須になる。
 
+5. リポジトリルートで `pnpm test:external` を実行する。`server/test/managedDeps.external.test.ts` を含む2本の実導入テストが走る。server ディレクトリでも `pnpm test:external` で実行できる。
+
 更新差分には管理 manifest・npm lock・server の devDependencies・pnpm lock を含め、[Checks](../../../AGENTS.md#checks) の検証を実行する。
 
 ## 過去の lock 生成記録

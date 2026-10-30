@@ -34,4 +34,6 @@ pnpm cli check
 
 再起動後の最初の check では JSON の `items` にある `claude` が `state: "outdated"`、再導入後は `state: "ready"` になる。`missing` は旧版導入の確認にならない。CLI 本体（`node server/src/cli.ts check`）の終了コードは必須依存が不足すると3、任意依存だけの不足なら0。`pnpm cli check` は本体の3をラッパーの1として返すことがあるため、対象 item の状態を読む。Claude は選択モデルが Claude 経路のとき必須になる。更新確認にモデル呼出しや API キーは不要。
 
+5. リポジトリルートで `pnpm test:external` を実行する。`server/test/managedClaude.external.test.ts` を含む2本の実導入テストが走る。server ディレクトリでも `pnpm test:external` で実行できる。
+
 更新差分には管理 manifest・npm lock・server の devDependencies・pnpm lock・固定版を合わせたテストを含め、[Checks](../../../AGENTS.md#checks) の検証を実行する。

@@ -215,7 +215,7 @@ describe("findTestLayerViolations", () => {
       expect(findTestLayerViolations(file(UNIT, content))).toEqual([]);
     });
 
-    it.each(["test/a.it.test.ts", "test/a.heavy.test.ts", "test/setup.ts", "test/benchRun.ts", "test/fixtures/x.ts"])(
+    it.each(["test/a.it.test.ts", "test/a.heavy.test.ts", "test/a.external.test.ts", "test/setup.ts", "test/benchRun.ts", "test/fixtures/x.ts"])(
       "unit でない %s は本物の資源を import していても違反にしない",
       (path) => {
         const content = `${fromImport("node:fs")}${sideEffectImport("ws")}${dynamicImport("playwright")}`;
@@ -223,7 +223,7 @@ describe("findTestLayerViolations", () => {
       },
     );
 
-    it.each(["test/a.it.test.tsx", "test/a.heavy.test.tsx"])("%s も unit ではない", (path) => {
+    it.each(["test/a.it.test.tsx", "test/a.heavy.test.tsx", "test/a.external.test.tsx"])("%s も unit ではない", (path) => {
       expect(findTestLayerViolations(file(path, fromImport("node:fs")))).toEqual([]);
     });
   });
