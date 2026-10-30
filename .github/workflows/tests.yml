@@ -1,0 +1,342 @@
+name: tests
+
+on:
+  workflow_call:
+    inputs:
+      run-ts:
+        description: Run ts, heavy and e2e
+        required: true
+        type: boolean
+      run-external:
+        description: Run tests that fetch managed dependencies
+        required: true
+        type: boolean
+      run-helper:
+        description: Run helper tests
+        required: true
+        type: boolean
+      restore-caches:
+        description: Restore preparation caches
+        required: true
+        type: boolean
+      save-shared-caches:
+        description: Save Playwright, APM and speaker-model caches on success
+        required: true
+        type: boolean
+      save-main-caches:
+        description: Save heavy managed dependencies and helper build caches
+        required: true
+        type: boolean
+    outputs:
+      results:
+        description: Results of all five test jobs
+        value: ${{ jobs.results.outputs.results }}
+
+jobs:
+  # typecheck・unit・軽い IT を server と web の両方で 1 ジョブにまとめる。Chromium は要らない
+  ts:
+    if: inputs.run-ts
+    runs-on: ubuntu-24.04
+    name: ts (typecheck・unit・IT)
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
+          install: false
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      # ルートの pnpm typecheck は helper の swift build まで走るので、TS のパッケージに絞る（server の typecheck は点検 script も走らせる）。
+      # e2e は server のソースを import して層を組むので、型で層の渡し忘れを拾う（#640 は CI の e2e まで気付けなかった）
+      - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web --filter @live-mindmap/e2e typecheck
+      - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test
+      - run: pnpm --filter @live-mindmap/server --filter @live-mindmap/web test:it
+      # 落ちても前のステップの結果を隠さないよう最後に置く。github-annotations は --fail-on-issues が無いと指摘があっても 0 で終わる
+      - run: pnpm fallow --format github-annotations --fail-on-issues
+
+  # 重い IT（--project heavy）全体を、server は 1 つ、web は 2 つの runner にテスト単位で割る。--shard はファイル単位で、ファイルの中は割れない。
+  # vitest list で一覧を取り、file:line ごとにまとめて配る（each やループの同じ行のテストは 1 つの runner に入り、重複して走らない）。
+  # 新しく足した重い IT も、設定を書き換えずにどれかの runner に入る。Chromium を入れるのはこのジョブと external・e2e ジョブ
+  heavy:
+    if: inputs.run-ts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: server
+            shard: 0
+            shards: 1
+          - package: web
+            shard: 0
+            shards: 2
+          - package: web
+            shard: 1
+            shards: 2
+    name: heavy IT (${{ matrix.package }} ${{ matrix.shard }}/${{ matrix.shards }})
+    steps:
+      - uses: actions/checkout@v7
+      # ジョブの env では runner.temp を使えないので、ステップで管理ディレクトリの置き場所を決める
+      - run: echo "LIVE_MINDMAP_DEPS=$RUNNER_TEMP/deps" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
+          install: false
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - id: chromium-cache
+        if: inputs.restore-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
+          key: managed-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/chromium/package-lock.json') }}
+      - run: pnpm --filter @live-mindmap/server deps:install chromium
+        timeout-minutes: 5
+      - id: claude-cache
+        if: inputs.restore-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/claude
+          key: managed-claude-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/claude/package-lock.json') }}
+      - run: pnpm --filter @live-mindmap/server deps:install claude
+        timeout-minutes: 5
+      - if: inputs.save-main-caches && steps.claude-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/claude
+          key: managed-claude-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/claude/package-lock.json') }}
+      - if: inputs.save-main-caches && steps.chromium-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
+          key: managed-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/chromium/package-lock.json') }}
+      - working-directory: ${{ matrix.package }}
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: |
+          tests=$(pnpm exec vitest list --project heavy --json \
+            | jq -r --arg root "$PWD/" '.[] | "\(.file | ltrimstr($root)):\(.location.line // error("location.line が無いテスト: \(.file) \(.name)"))"')
+          total=$(printf '%s\n' "$tests" | grep -c . || true)
+          mine=$(printf '%s\n' "$tests" | jq -R -s -r --argjson n "$SHARDS" --argjson i "$SHARD" 'split("\n") | map(select(. != "")) | group_by(.) | to_entries[] | select(.key % $n == $i) | .value[]')
+          count=$(printf '%s\n' "$mine" | grep -c . || true)
+          echo "runner $SHARD: $count of $total tests"
+          targets=$(printf '%s\n' "$mine" | sort -u | grep . || true)
+          if [ -z "$targets" ]; then
+            echo "runner $SHARD: 受け持ちが無いので vitest run を呼ばない"
+            exit 0
+          fi
+          echo "$targets"
+          mapfile -t target_array <<< "$targets"
+          pnpm exec vitest run --project heavy "${target_array[@]}"
+
+  # 実取得するテストは配布元の状態に依存するため、管理依存を変更する PR だけで走らせる
+  external:
+    if: inputs.run-external
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # ジョブの env では runner.temp を使えないので、ステップで管理ディレクトリの置き場所を決める
+      - run: echo "LIVE_MINDMAP_DEPS=$RUNNER_TEMP/deps" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
+          install: false
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - id: chromium-cache
+        if: inputs.restore-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/chromium
+          key: managed-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/chromium/package-lock.json') }}
+      - run: pnpm --filter @live-mindmap/server deps:install chromium
+        timeout-minutes: 5
+      - id: claude-cache
+        if: inputs.restore-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: ${{ env.LIVE_MINDMAP_DEPS }}/claude
+          key: managed-claude-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/managed-deps/claude/package-lock.json') }}
+      - run: pnpm --filter @live-mindmap/server deps:install claude
+        timeout-minutes: 5
+      - run: pnpm test:external
+        timeout-minutes: 5
+
+  # E2E（e2e/ の test:e2e、全 target）。コミットした replay cache を --strict-cache で再生するだけで、モデルも資格情報も使わない。
+  # 再生できないステップは REPLAY_STALE で落ちる。リトライは 0（e2e/package.json）。helper は fake-helper を使うので、helper だけの変更では回さない
+  e2e:
+    if: inputs.run-ts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      E2E_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        timeout-minutes: 5
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v3
+        timeout-minutes: 5
+        with:
+          install: false
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 5
+      - id: playwright
+        if: inputs.restore-caches && inputs.save-shared-caches
+        uses: actions/cache@v6
+        timeout-minutes: 5
+        with:
+          path: ~/.cache/ms-playwright
+          key: e2e-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - id: playwright-restore
+        if: inputs.restore-caches && !inputs.save-shared-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: ~/.cache/ms-playwright
+          key: e2e-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: pnpm --filter @live-mindmap/e2e test:e2e
+      - if: inputs.save-shared-caches && !inputs.restore-caches
+        uses: actions/cache/save@v6
+        timeout-minutes: 5
+        with:
+          path: ~/.cache/ms-playwright
+          key: e2e-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+  helper:
+    if: inputs.run-helper
+    # ヘルパーは SpeechAnalyzer を使うので macOS 26 の SDK が要る
+    runs-on: macos-26
+    # 通常は 5 分ほどで終わる。テストが止まったときに macOS の枠を占め続けず、ログを残して落とす
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # WebRTC AEC3 のライブラリ。キャッシュが外れたときだけ uv を入れてビルドする
+      - id: apm
+        if: inputs.restore-caches && inputs.save-shared-caches
+        uses: actions/cache@v6
+        timeout-minutes: 5
+        with:
+          path: helper/.deps/webrtc-apm
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+      - id: apm-restore
+        if: inputs.restore-caches && !inputs.save-shared-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: helper/.deps/webrtc-apm
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+      - if: steps.apm.outputs.cache-hit != 'true' && steps.apm-restore.outputs.cache-hit != 'true'
+        uses: astral-sh/setup-uv@v10.2.0
+        timeout-minutes: 5
+        with:
+          enable-cache: false
+      - if: steps.apm.outputs.cache-hit != 'true' && steps.apm-restore.outputs.cache-hit != 'true'
+        run: bash helper/scripts/build-webrtc-apm.sh
+        timeout-minutes: 5
+      - id: swift
+        run: echo "version=$(swift --version 2>&1 | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      # PR で保存したキャッシュは他の PR から使えないので、保存は main の push だけ
+      - id: build-cache
+        if: inputs.restore-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: helper/.build
+          key: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-${{ hashFiles('helper/Package.swift', 'helper/Sources/**', 'helper/Tests/**', 'helper/scripts/build-webrtc-apm.sh', 'helper/Package.resolved') }}
+          restore-keys: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-
+      # checkout で mtime が変わるので、中身のハッシュで比べて変わっていないファイルはコンパイルしない
+      - run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
+        timeout-minutes: 10
+        working-directory: helper
+      # helper の package.json の test は Command Line Tools のパスを渡す（手元に Xcode が無い前提）。
+      # ランナーには Xcode があるので swift test をそのまま使う。
+      # 層の選び方は helper/package.json の test・test:it・test:it:heavy と同じ
+      - name: unit
+        timeout-minutes: 5
+        run: swift test --skip-build --skip 'ITTests/|HeavyTests/'
+        working-directory: helper
+      - name: IT
+        timeout-minutes: 5
+        run: swift test --skip-build --filter 'ITTests/'
+        working-directory: helper
+      # 話者分離（Sortformer）と、混入の検出（WeSpeaker）のモデル。セットアップの段で前もって取得する（会議の中では取りに行かない）。キャッシュが外れたときだけ取得する
+      - id: speaker-models
+        if: inputs.restore-caches && inputs.save-shared-caches
+        uses: actions/cache@v6
+        timeout-minutes: 5
+        with:
+          path: |
+            ~/Library/Application Support/FluidAudio/Models/sortformer
+            ~/Library/Application Support/FluidAudio/Models/speaker-diarization
+          key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
+      - id: speaker-models-restore
+        if: inputs.restore-caches && !inputs.save-shared-caches
+        uses: actions/cache/restore@v6
+        timeout-minutes: 5
+        with:
+          path: |
+            ~/Library/Application Support/FluidAudio/Models/sortformer
+            ~/Library/Application Support/FluidAudio/Models/speaker-diarization
+          key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
+      - if: steps.speaker-models.outputs.cache-hit != 'true' && steps.speaker-models-restore.outputs.cache-hit != 'true'
+        run: bash helper/scripts/fetch-speaker-models.sh
+        timeout-minutes: 5
+      - name: heavy IT
+        timeout-minutes: 5
+        run: swift test --skip-build --filter 'HeavyTests/'
+        working-directory: helper
+      - if: inputs.save-main-caches && steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: helper/.build
+          key: helper-build-${{ runner.os }}-${{ steps.swift.outputs.version }}-${{ hashFiles('helper/Package.swift', 'helper/Sources/**', 'helper/Tests/**', 'helper/scripts/build-webrtc-apm.sh', 'helper/Package.resolved') }}
+      - if: inputs.save-shared-caches && !inputs.restore-caches
+        uses: actions/cache/save@v6
+        timeout-minutes: 5
+        with:
+          path: helper/.deps/webrtc-apm
+          key: webrtc-apm-${{ runner.os }}-${{ hashFiles('helper/scripts/build-webrtc-apm.sh') }}
+      - if: inputs.save-shared-caches && !inputs.restore-caches
+        uses: actions/cache/save@v6
+        timeout-minutes: 5
+        with:
+          path: |
+            ~/Library/Application Support/FluidAudio/Models/sortformer
+            ~/Library/Application Support/FluidAudio/Models/speaker-diarization
+          key: speaker-models-${{ runner.os }}-${{ hashFiles('helper/Package.resolved', 'helper/scripts/fetch-speaker-models.sh') }}
+  # 判定はcallerのcheckが行う。失敗・skippedを含めて全ジョブの結果を渡す
+  results:
+    if: always()
+    needs: [ts, heavy, external, e2e, helper]
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      results: ${{ steps.collect.outputs.results }}
+    steps:
+      - id: collect
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          results=$(printf '%s' "$NEEDS_JSON" | jq -c '.')
+          printf 'results=%s\n' "$results" >> "$GITHUB_OUTPUT"

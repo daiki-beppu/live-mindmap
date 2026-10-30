@@ -22,7 +22,20 @@ Heavy ITs need the managed Chromium. Install it with `pnpm cli install chromium`
 
 ## CI
 
-CI (`.github/workflows/check.yml`) runs the same checks split into parallel jobs, chosen by the PR's changed paths:
+CI (`.github/workflows/check.yml`) chooses tests from the PR's changed paths in `changes`, then calls `.github/workflows/tests.yml`. That reusable workflow owns the five parallel test-job definitions and their timeouts. The caller retains the PR/main-push triggers, concurrency, and required `check` job. Nightly and Weekly can call the same definitions; this extraction adds no scheduled triggers.
+
+All six `workflow_call` inputs are required Booleans:
+
+| Input | Controls | PR/main-push caller |
+|-------|----------|---------------------|
+| `run-ts` | ts, heavy, and e2e | `changes.outputs.ts == 'true'` |
+| `run-external` | external | `changes.outputs.external == 'true'` |
+| `run-helper` | helper | `changes.outputs.swift == 'true'` |
+| `restore-caches` | Preparation-cache restoration | `true` |
+| `save-shared-caches` | Playwright, APM, and speaker-model cache saving | `true`, including PRs |
+| `save-main-caches` | heavy's managed dependencies and helper's build-cache saving | main push only |
+
+The resulting test selection remains:
 
 - Docs-only PRs skip the ts, heavy, e2e, and helper jobs. Markdown changes under `server/managed-deps/**` still run external. The `changes` job and the required `check` job always run.
 - `helper/` changes add the Swift job.
@@ -32,11 +45,15 @@ CI (`.github/workflows/check.yml`) runs the same checks split into parallel jobs
 - The `external` job restores the managed Chromium and Claude caches, runs `deps:install` for both, then runs `pnpm test:external`. Its condition uses the `changes` job's `external` output.
 - The `heavy`, `external`, and `e2e` jobs install Chromium.
 
-`main` requires the `check` job to pass (ruleset). It is the final job and passes only if every job in its `needs` ended `success` or `skipped` (any other result, such as `failure`, `cancelled`, or a job no runner picked up, fails it), so keep every new job in its `needs`.
+The reusable workflow's `results` job uses `always()` and depends on all five test jobs. It transfers their results as compact JSON through a step output, job output, and workflow output; it does not decide whether the required check passes.
+
+`main` requires the caller's top-level `check` job to pass (ruleset). Its ID, name, and `if: always()` remain unchanged. It checks both its direct dependencies (`changes` and the reusable-workflow call) and all five transferred test results. It accepts only `success` or `skipped`; failure, cancellation, and any unknown result fail it. Missing or malformed test-result output also fails it. Keep new test jobs in the result collector and the caller's result validation.
+
+Cache keys, paths, fallback prefixes, and save timing remain unchanged for PRs and main pushes. heavy restores Chromium and Claude and saves misses before testing on main pushes. external restores those dependencies and never saves them. helper restores its build cache with a prefix fallback and saves misses after testing on main pushes. Playwright, APM, and speaker models retain `actions/cache`'s success-only post saving, including on PRs. For callers that disable shared-cache saving, restoration uses `actions/cache/restore`; with restoration disabled, save-only steps run after successful tests. Disabling restoration still runs the required APM build and model fetch.
 
 actionlint runs as its own workflow (`.github/workflows/actionlint.yml`) on PRs and main pushes that change `.github/**`, so it still reports red when `check.yml` fails to load and no `check` jobs run. It is not a required check.
 
-Job timeouts are about three times the normal p90 duration, rounded up to a multiple of 5 minutes, with a minimum of 5 minutes. The current limits are 5 minutes for `changes`, `check`, `e2e`, and `actionlint`, 10 minutes for `ts`, `external`, and each `heavy` runner, and 20 minutes for `helper`. The `actionlint` limit uses the minimum because its p90 has not been measured.
+Job timeouts are about three times the normal p90 duration, rounded up to a multiple of 5 minutes, with a minimum of 5 minutes. The current limits are 5 minutes for `changes`, `check`, `results`, `e2e`, and `actionlint`, 10 minutes for `ts`, `external`, and each `heavy` runner, and 20 minutes for `helper`. The `results` and `actionlint` limits use the minimum because their p90 has not been measured.
 
 External setup, dependency installation, cache restoration, the APM build, and speaker-model downloads each have a 5-minute step timeout. The helper's `swift build --build-tests` has a 10-minute timeout, and each `swift test` step has a 5-minute timeout. The external test step also has a 5-minute timeout. A step timeout does not extend the job timeout.
 

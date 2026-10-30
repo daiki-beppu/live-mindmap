@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { expect } from "vitest";
 
 export const root = join(import.meta.dirname, "../../..");
-export const workflow = readFileSync(join(root, ".github/workflows/check.yml"), "utf8");
 
-export const indentOf = (line: string): number => line.length - line.trimStart().length;
+const indentOf = (line: string): number => line.length - line.trimStart().length;
 
 export const jobLines = (job: string): string[] => {
+  const file = job === "changes" || job === "check" ? "check.yml" : "tests.yml";
+  const workflow = readFileSync(join(root, ".github/workflows", file), "utf8");
   const lines = workflow.split("\n");
   const start = lines.findIndex((l) => l === `  ${job}:`);
   expect(start).toBeGreaterThanOrEqual(0);

@@ -14,27 +14,75 @@ const needsJson = (results: Record<string, string>): string =>
     Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: {} }])),
   );
 
-const runStep = (json: string) =>
+const runStep = (json: string, parents: Record<string, string>) =>
   spawnSync("bash", ["-e", "-o", "pipefail", "-c", runScriptOf("check")], {
-    env: { ...process.env, NEEDS_JSON: json },
+    env: { ...process.env, NEEDS_JSON: needsJson(parents), TEST_RESULTS_JSON: json },
     encoding: "utf8",
   });
 
-const allSuccess = { changes: "success", ts: "success", heavy: "success", external: "success", e2e: "success", helper: "success" };
+const allSuccess = { ts: "success", heavy: "success", external: "success", e2e: "success", helper: "success" };
+const parentsSuccess = { changes: "success", tests: "success" };
 
 describe("check ジョブの判定", () => {
   it("success・skipped だけなら通り、それ以外の値が 1 つでもあれば落ちてジョブ名と結果を出す", () => {
-    expect(runStep(needsJson(allSuccess)).status).toBe(0);
-    expect(runStep(needsJson({ changes: "success", ts: "skipped", heavy: "skipped", external: "skipped", e2e: "skipped", helper: "skipped" })).status).toBe(0);
-    const r = runStep(needsJson({ ...allSuccess, helper: "timed_out" }));
+    expect(runStep(needsJson(allSuccess), parentsSuccess).status).toBe(0);
+    expect(runStep(needsJson({ ts: "skipped", heavy: "skipped", external: "skipped", e2e: "skipped", helper: "skipped" }), parentsSuccess).status).toBe(0);
+    expect(runStep(needsJson({ ...allSuccess, helper: "skipped" }), parentsSuccess).status).toBe(0);
+    const r = runStep(needsJson({ ...allSuccess, helper: "timed_out" }), parentsSuccess);
     expect(r.status).not.toBe(0);
     expect(`${r.stdout}${r.stderr}`).toMatch(/helper\W+timed_out/);
   });
 
-  it.each(["failure", "cancelled", "timed_out", ""])("external の結果が %j なら必須 check を失敗にする", (result) => {
-    const r = runStep(needsJson({ ...allSuccess, external: result }));
-    expect(r.status).not.toBe(0);
-    expect(`${r.stdout}${r.stderr}`).toContain(`external: ${result}`);
+  it.each(Object.keys(allSuccess))("%s の不許可の結果なら必須 check を失敗にする", (job) => {
+    for (const result of ["failure", "cancelled", "timed_out", ""]) {
+      const r = runStep(needsJson({ ...allSuccess, [job]: result }), parentsSuccess);
+      expect(r.status).not.toBe(0);
+      expect(`${r.stdout}${r.stderr}`).toContain(`${job}: ${result}`);
+    }
+  });
+
+  it.each(["changes", "tests"])("%s 自体が成功しなければ子結果に依存せず失敗する", (job) => {
+    for (const result of ["failure", "cancelled", "timed_out", ""]) {
+      const parents = { ...parentsSuccess, [job]: result };
+      expect(runStep(needsJson(allSuccess), parents).status).not.toBe(0);
+      expect(runStep("", parents).status).not.toBe(0);
+    }
+  });
+
+  it("changes 失敗で呼び出しが skipped になっても失敗する", () => {
+    expect(runStep("", { changes: "failure", tests: "skipped" }).status).not.toBe(0);
+  });
+
+  it.each([
+    "", "{", "{}", "null", "[]", "true",
+    needsJson({ ts: "success", heavy: "success", external: "success", e2e: "success" }),
+    JSON.stringify({ ...JSON.parse(needsJson(allSuccess)), helper: {} }),
+    JSON.stringify({ ...JSON.parse(needsJson(allSuccess)), helper: "success" }),
+    `${needsJson(allSuccess)}\n${needsJson(allSuccess)}`,
+  ])("呼び出し成功でも子結果が欠落・不正なら失敗する (%j)", (json) => {
+    expect(runStep(json, parentsSuccess).status).not.toBe(0);
+  });
+
+  it("結果出力ステップを通った各ジョブの結果から最上位 check が判定する", () => {
+    const dir = mkdtempSync(join(tmpdir(), "workflow-results-"));
+    try {
+      const output = join(dir, "output");
+      for (const result of ["success", "skipped", "failure", "cancelled"]) {
+        writeFileSync(output, "");
+        const json = needsJson({ ...allSuccess, heavy: result });
+        const collected = spawnSync("bash", ["-e", "-o", "pipefail", "-c", runScriptOf("results")], {
+          env: { ...process.env, NEEDS_JSON: json, GITHUB_OUTPUT: output }, encoding: "utf8",
+        });
+        expect(collected.status, collected.stderr).toBe(0);
+        const line = readFileSync(output, "utf8").trim();
+        expect(line.startsWith("results=")).toBe(true);
+        const transferred = line.slice("results=".length);
+        expect(JSON.parse(transferred)).toEqual(JSON.parse(json));
+        expect(runStep(transferred, parentsSuccess).status === 0).toBe(result === "success" || result === "skipped");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
