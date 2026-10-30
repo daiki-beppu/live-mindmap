@@ -29,11 +29,8 @@ const Session = Schema.Struct({
     scrollAxisLock: MapSurface.Model.fields.scrollAxisLock,
     motion: MapSurface.Model.fields.motion,
     viewing: MapSurface.Model.fields.viewing,
+    camera: MapSurface.Model.fields.camera,
     gestureScale: MapSurface.Model.fields.gestureScale,
-    viewport: MapSurface.Model.fields.viewport,
-    placedRound: MapSurface.Model.fields.placedRound,
-    keepAnchor: MapSurface.Model.fields.keepAnchor,
-    pendingShift: MapSurface.Model.fields.pendingShift,
     idleStamp: MapSurface.Model.fields.idleStamp,
   }),
   sessionLayout: Schema.Struct({
@@ -134,7 +131,7 @@ const foldSnapshot = (model: Model, previous: Snapshot, snapshot: Snapshot): Ret
   model: modifyFields(model, { session: Option.map((s: SessionModel) => ({ ...s, mapSurface: stripSurface(MapSurface.changedSnapshot({ mode: "live", snapshot: previous, speakerNames: {}, ...s.mapSurface }, snapshot)) })) }),
 });
 
-const viewingModeOf = (model: Model) => Option.map(model.session, (s) => s.mapSurface.viewing.mode);
+const viewingModeOf = (model: Model) => Option.map(model.session, (s) => s.mapSurface.camera.mode);
 const viewingNotices = (before: Model, result: Return): Return => {
   const was = viewingModeOf(before);
   const now = viewingModeOf(result.model);

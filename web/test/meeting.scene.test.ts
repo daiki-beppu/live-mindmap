@@ -100,7 +100,7 @@ const expectOnlyWaiting = (sim: Sim) => {
     expect(findAll(sim.html, css), css).toHaveLength(0);
   }
 };
-const noticeTextOf = (reference: { viewing: { mode: string } }): string[] => (reference.viewing.mode === "manual" ? [MANUAL] : reference.viewing.mode === "overview" ? [OVERVIEW] : reference.viewing.mode === "diff" ? [DIFF] : []);
+const noticeTextOf = (reference: { camera: { mode: string } }): string[] => (reference.camera.mode === "manual" ? [MANUAL] : reference.camera.mode === "overview" ? [OVERVIEW] : reference.camera.mode === "diff" ? [DIFF] : []);
 
 describe("会議中の Scene: 待ち表示（最初のスナップショットまで）", () => {
   it("起動直後は『サーバーを待っています』だけが出て、マップ・字幕・知らせ・右の列は描かない", () => {
@@ -731,7 +731,7 @@ describe("会議中の Scene: 反映（新しいスナップショット）で�
       tap((sim) => {
         reference = referenceUpdate(reference, MapSurfaceMessage.ChangedSnapshot({ snapshot: SECOND }));
         reference = referenceUpdate(reference, MapSurfaceMessage.TickedAnimationFrame({ deltaMs: 2000 }));
-        expect(reference.viewing.mode).toBe("auto");
+        expect(reference.camera.mode).toBe("auto");
         matchesReference(sim.html, reference);
         expect(viewportOf(sim.html)).not.toEqual(atFirst);
       }),

@@ -26,7 +26,6 @@ import {
   scrollAxis,
   scrollPanDelta,
   shiftIntoView,
-  shouldMoveCamera,
   subtreeViewport,
   zoomAroundCenter,
   zoomAtPoint,
@@ -281,33 +280,6 @@ describe("changedFocus と focusViewport(USER_MIN_ZOOM): 変わったノード�
     expect([...focus.ids].sort()).toEqual(["D", "Z"]);
     expect(v.zoom).toBeGreaterThan(0.75);
     expect(rects.every((r) => fits(r, v))).toBe(true);
-  });
-});
-
-describe("shouldMoveCamera: 何も変わらない反映ではカメラを動かさない", () => {
-  it("まだ寄せていない（null）ときは動かす", () => {
-    expect(shouldMoveCamera(snap({ round: 1, changes: [change("D1", 1)] }), null)).toBe(true);
-  });
-
-  it("同じ寄せ済みの状態を保ったまま、変更のある round → 変更の無い次の round → 同じ round の測り直し、と続ける", () => {
-    let placed: number | null = null;
-    const step = (s: Snapshot) => {
-      const move = shouldMoveCamera(s, placed);
-      if (move) placed = s.round;
-      return move;
-    };
-    const changed = [change("D1", 1)];
-    expect(step(snap({ round: 1, changes: changed }))).toBe(true); // 変更のある round: 寄せる
-    expect(step(snap({ round: 1, changes: changed }))).toBe(true); // 同じ round で実寸を測り直し: 寄せ直す
-    expect(step(snap({ round: 2, changes: changed }))).toBe(false); // 何も変わらない round: 動かさない
-    expect(step(snap({ round: 3, changes: changed }))).toBe(false); // さらに続けても動かさない
-    expect(step(snap({ round: 3, changes: [...changed, change("D2", 3)] }))).toBe(true); // 変更のある round: 寄せる
-  });
-
-  it("changes に載らない変更（lastChanged のみ）でも、次の round ではカメラを動かす", () => {
-    const changes = [change("D1", 1)];
-    expect(shouldMoveCamera(snap({ round: 2, changes, lastChanged: "D2" }), 1)).toBe(true);
-    expect(shouldMoveCamera(snap({ round: 2, changes }), 1)).toBe(false);
   });
 });
 

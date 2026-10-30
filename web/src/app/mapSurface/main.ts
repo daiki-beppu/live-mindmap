@@ -1,45 +1,16 @@
-import { HashMap, Match, Option, Schema } from "effect";
+import { HashMap, Option, Schema } from "effect";
 import { Submodel, type Update } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { modifyFields } from "foldkit/struct";
 import { personLine, supportsCriteria, Snapshot, SnapshotNode, type SpeakerNames } from "../../../../server/src/core/index.ts";
-import {
-  anchoredViewport,
-  cameraFocus,
-  changedFocus,
-  clampUserZoom,
-  CLICK_ZOOM_FACTOR,
-  edgeDots,
-  fitViewport,
-  focusViewport,
-  nodeFocusViewport,
-  nodeRect,
-  OVERVIEW_MIN_ZOOM,
-  overviewViewport,
-  panViewport,
-  pinchZoomFactor,
-  revealViewport,
-  screenPoint,
-  scrollAlongAxis,
-  scrollAxis,
-  scrollPanDelta,
-  shiftIntoView,
-  shouldMoveCamera,
-  subtreeViewport,
-  USER_MAX_ZOOM,
-  USER_MIN_ZOOM,
-  zoomAroundCenter,
-  zoomAtPoint,
-  type Rect,
-  type Viewport,
-} from "../../camera.ts";
+import { Camera, initialCamera, stepCamera, cameraFocus, changedFocus, CLICK_ZOOM_FACTOR, edgeDots, pinchZoomFactor, scrollAlongAxis, scrollAxis, scrollPanDelta, zoomAtPoint, type CameraInput, type CameraSeen, type Viewport } from "../../camera.ts";
 import { FOLD_DOT_CLASSES, MAP_NODE_BUTTON_CLASS } from "../../enterFold.ts";
 import { foldView, keepTargetOf, type FoldView } from "../../folding.ts";
 import { KIND_COLOR, markOf } from "../../kinds.ts";
 import { layout, NODE_WIDTH, type Position } from "../../layout.ts";
 import { interpolate, startPositions } from "../../motion.ts";
 import { relocations } from "../../relocation.ts";
-import { type ArrowDir, type CameraCommand, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
+import { type ArrowDir, INITIAL_VIEWING, reduceViewing, ViewingState, type ViewingEvent, type ViewKey, type VisibleTree } from "../../viewing.ts";
 import { RestartBlink } from "./command.ts";
 import { Message, OutMessage } from "./message.ts";
 import { ObserveMapSurface } from "./mount.ts";
@@ -95,10 +66,7 @@ export const Model = Schema.Struct({
   motion: Schema.Option(Schema.Struct({ start: Schema.HashMap(Schema.String, Schema.Struct({ x: Schema.Finite, y: Schema.Finite })), elapsedMs: Schema.Finite })),
   viewing: ViewingState,
   gestureScale: Schema.Option(Schema.Finite),
-  viewport: Schema.Struct({ x: Schema.Finite, y: Schema.Finite, zoom: Schema.Finite }),
-  placedRound: Schema.Option(Schema.Finite),
-  keepAnchor: Schema.Option(Schema.Struct({ id: Schema.String, point: Schema.Struct({ x: Schema.Finite, y: Schema.Finite }) })),
-  pendingShift: Schema.Boolean,
+  camera: Camera,
   idleStamp: Schema.Finite,
   speakerNames: Schema.Record(Schema.String, Schema.String),
 });
@@ -119,30 +87,14 @@ export const init = (snapshot: Snapshot, mode: Model["mode"], isMac: boolean): M
   motion: Option.none(),
   viewing: INITIAL_VIEWING,
   gestureScale: Option.none(),
-  viewport: IDENTITY,
-  placedRound: Option.none(),
-  keepAnchor: Option.none(),
-  pendingShift: false,
+  camera: initialCamera(),
   idleStamp: 0,
   speakerNames: {},
 });
 
 const MOTION_DURATION_MS = 500;
 
-type Size = { width: number; height: number };
-type Focus = NonNullable<ReturnType<typeof cameraFocus>>;
-type Seen = {
-  size: Model["size"];
-  targets: Record<string, Position>;
-  positions: Record<string, Position>;
-  dims: Record<string, { height: number }>;
-  ids: string[];
-  parents: Record<string, string | null>;
-  shownIdOf: (id: string) => string;
-  focus: Focus | null;
-  changed: Focus | null;
-  selection: ViewingState["selection"];
-};
+type Seen = CameraSeen & { selection: ViewingState["selection"] };
 
 const positionsOf = (motion: Model["motion"], target: Record<string, Position>): Record<string, Position> =>
   Option.match(motion, {
@@ -176,10 +128,14 @@ const surfaceOf = (model: Model) => {
     targets,
     parents,
     fold: view,
-    changed: changed?.ids ?? [],
     currentTopic: model.snapshot.currentTopic,
   };
   const seen: Seen = {
+    scope: model.mode,
+    currentTopic: model.snapshot.currentTopic,
+    round: model.snapshot.round,
+    hasChanges: model.snapshot.lastChanged !== undefined || model.snapshot.changes.some((change) => change.round === model.snapshot.round),
+    sideHidden: model.viewing.sideHidden === true,
     size: model.size,
     targets,
     positions: positionsOf(model.motion, targets),
@@ -217,17 +173,6 @@ const followTarget = (before: Model, after: Model, previous: Seen, surface: Surf
 
 const seenAfterMotion = (model: Model, seen: Seen): Seen => ({ ...seen, positions: positionsOf(model.motion, seen.targets) });
 
-const setViewport = (model: Model, viewport: Viewport): Model => modifyFields(model, { viewport: () => viewport });
-
-const minZoomOf = (model: Model): number => (model.mode === "still" ? OVERVIEW_MIN_ZOOM : USER_MIN_ZOOM);
-
-const fittedOf = (model: Model, seen: Seen, size: Size): Viewport => {
-  const rects = seen.ids
-    .filter((id) => seen.dims[id] !== undefined)
-    .map((id) => nodeRect(id, seen.positions, seen.dims));
-  return fitViewport(rects, size, minZoomOf(model), USER_MAX_ZOOM) ?? IDENTITY;
-};
-
 export const fitsAllOf = (model: Model): Option.Option<boolean> => {
   const { seen } = surfaceOf(model);
   if (Option.isNone(seen.size)) return Option.none();
@@ -235,7 +180,7 @@ export const fitsAllOf = (model: Model): Option.Option<boolean> => {
   if (!seen.ids.every((id) => seen.dims[id] !== undefined)) return Option.none();
   if (seen.ids.length === 0) return Option.some(true);
   const positions = seen.positions;
-  const { x, y, zoom } = model.viewport;
+  const { x, y, zoom } = model.camera.viewport;
   const left = Math.min(...seen.ids.map((id) => positions[id]!.x));
   const top = Math.min(...seen.ids.map((id) => positions[id]!.y));
   const right = Math.max(...seen.ids.map((id) => positions[id]!.x + NODE_WIDTH));
@@ -243,101 +188,23 @@ export const fitsAllOf = (model: Model): Option.Option<boolean> => {
   return Option.some(left * zoom + x >= 0 && top * zoom + y >= 0 && right * zoom + x <= width && bottom * zoom + y <= height);
 };
 
-const focusBoxesOf = (seen: Seen, focus: Focus): { rects: Rect[]; center: Rect } =>
-  ({ rects: focus.ids.map((id) => nodeRect(id, seen.targets, seen.dims)), center: nodeRect(focus.center, seen.targets, seen.dims) });
-
-const diffCamera = (model: Model, seen: Seen, size: Size): Model => {
-  if (Option.isSome(model.keepAnchor)) return model;
-  const changed = seen.changed;
-  if (changed === null) return model;
-  const boxes = focusBoxesOf(seen, changed);
-  return setViewport(model, focusViewport(boxes.rects, boxes.center, size, USER_MIN_ZOOM));
-};
-
-const autoCamera = (model: Model, seen: Seen): Model => {
-  if (Option.isNone(seen.size)) return model;
-  const size = seen.size.value;
-  if (model.mode === "still") return setViewport(model, fittedOf(model, seen, size));
-  if (model.viewing.mode === "manual") return model;
-  if (model.viewing.mode === "overview") {
-    if (Option.isSome(model.keepAnchor)) return model;
-    const viewport = overviewViewport(seen.ids, seen.targets, seen.dims, size);
-    return viewport === null ? model : setViewport(model, viewport);
-  }
-  if (model.viewing.mode === "diff") return diffCamera(model, seen, size);
-  const focus = seen.focus;
-  if (focus === null) return setViewport(modifyFields(model, { placedRound: () => Option.none() }), fittedOf(model, seen, size));
-  if (!shouldMoveCamera(model.snapshot, Option.getOrNull(model.placedRound))) return model;
-  const boxes = focusBoxesOf(seen, focus);
-  return setViewport(modifyFields(model, { placedRound: () => Option.some(model.snapshot.round) }), focusViewport(boxes.rects, boxes.center, size));
-};
-
-const reanchor = (model: Model, seen: Seen): Model =>
-  Option.match(model.keepAnchor, {
-    onNone: () => model,
-    onSome: ({ id, point }) => {
-      const at = seen.positions[id];
-      return at === undefined ? model : setViewport(model, anchoredViewport(model.viewport, at, point));
-    },
-  });
-
-const applyPendingShift = (before: Model, after: Model, seen: Seen): Model => {
-  if (!after.pendingShift || Option.isNone(seen.size)) return after;
-  const size = seen.size.value;
-  if (Option.isSome(before.size) && before.size.value.width === size.width) return after;
-  const settled = modifyFields(after, { pendingShift: () => false });
-  const focus = after.mode === "still" || after.viewing.sideHidden ? null : seen.focus;
-  return focus === null ? settled : setViewport(settled, shiftIntoView(after.viewport, focusBoxesOf(seen, focus).rects, size));
-};
-
-type CommandContext = { size: Size; previous: Seen; seen: Seen };
-type CommandStep = (model: Model, context: CommandContext) => Model;
-
-const clampedViewport = (viewport: Viewport, size: Size): Viewport => zoomAroundCenter(viewport, clampUserZoom(viewport.zoom), size);
-
-const commandStepOf = Match.type<CameraCommand>().pipe(
-  Match.withReturnType<CommandStep>(),
-  Match.discriminatorsExhaustive("type")({
-    follow: () => (model) => model,
-    hold: () => (model) => model,
-    fitAll: () => (model) => model,
-    fitChanged: () => (model) => model,
-    shiftIntoView: () => (model) => model,
-    refocus: () => (model) => modifyFields(model, { placedRound: () => Option.none() }),
-    zoomBy: ({ factor }) => (model, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(model.viewport.zoom * factor), size)),
-    zoomTo: ({ zoom }) => (model, { size }) => setViewport(model, zoomAroundCenter(model.viewport, clampUserZoom(zoom), size)),
-    pan: ({ dx, dy }) => (model, { size }) => setViewport(model, panViewport(clampedViewport(model.viewport, size), { dx, dy }, size)),
-    focusNode: ({ id }) => (model, { size, seen }) => setViewport(model, nodeFocusViewport(nodeRect(id, seen.targets, seen.dims), model.viewport.zoom, size)),
-    revealNode: ({ id }) => (model, { size, seen }) => setViewport(model, revealViewport(clampedViewport(model.viewport, size), nodeRect(id, seen.targets, seen.dims), size)),
-    fitSubtree: ({ id }) => (model, { size, seen }) => setViewport(model, subtreeViewport(id, seen, seen.targets, seen.dims, size)),
-    keepNode: ({ id }) => (model, { previous, seen }) => {
-      const at = previous.positions[id] ?? seen.positions[id];
-      return at === undefined ? model : modifyFields(model, { keepAnchor: () => Option.some({ id: seen.shownIdOf(id), point: screenPoint(model.viewport, at) }) });
-    },
-  }),
-);
-
-const applyCommand = (model: Model, command: CameraCommand, previous: Seen, seen: Seen): Model => {
-  const reset = modifyFields(model, { pendingShift: () => command.type === "shiftIntoView", keepAnchor: () => Option.none() });
-  if (Option.isNone(seen.size)) return reset;
-  return commandStepOf(command)(reset, { size: seen.size.value, previous, seen });
-};
+const updateCamera = (model: Model, input: CameraInput, previous: Seen, seen: Seen): Model =>
+  modifyFields(model, { camera: () => stepCamera(model.camera, input, previous, seen) });
 
 const keepsIdleTimer = (event: ViewingEvent): boolean => event.type === "side" || event.type === "select" || event.type === "deselect";
 
 type PreviousSurface = { model: Model; surface: Surface };
 
 const applyViewing = (model: Model, event: ViewingEvent, previous: PreviousSurface = { model, surface: surfaceOf(model) }, current: Surface = previous.surface): Model => {
-  const { state, camera, preserveIdleTimer } = reduceViewing(model.viewing, event, current.tree, model.mode === "review" ? "review" : "live");
-  const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (preserveIdleTimer || keepsIdleTimer(event) ? stamp : stamp + 1) });
+  const { state, input, preserveIdleTimer } = reduceViewing(model.viewing, event, current.tree);
+  const reduced = modifyFields(model, { viewing: () => state, idleStamp: (stamp) => (preserveIdleTimer || keepsIdleTimer(event) || (event.type === "timeMoved" && model.camera.mode === "auto") ? stamp : stamp + 1) });
   if (model.mode === "still") return reduced;
   const surface = state.humanFolds === model.viewing.humanFolds && state.selection?.id === model.viewing.selection?.id
-    ? { ...current, seen: { ...current.seen, selection: state.selection } }
+    ? { ...current, seen: { ...current.seen, selection: state.selection, sideHidden: state.sideHidden === true } }
     : surfaceOf(reduced);
   const followed = followTarget(previous.model, reduced, previous.surface.seen, surface);
   const seen = seenAfterMotion(followed, surface.seen);
-  const commanded = applyCommand(followed, camera, previous.surface.seen, seen);
-  return reanchor(camera.type === "shiftIntoView" || camera.type === "keepNode" ? commanded : autoCamera(commanded, seen), seen);
+  return updateCamera(followed, input, previous.surface.seen, seen);
 };
 
 const reflectionOf = (before: PreviousSurface, after: Model, surface: Surface): ViewingEvent | null => {
@@ -371,20 +238,13 @@ const buttonsBit = (button: number): number => (button === 1 ? 4 : 1);
 
 const movedByUser = (model: Model, viewport: Viewport): Model => {
   if (model.mode === "still") return model;
-  const moved = applyViewing(modifyFields(setViewport(model, viewport), { keepAnchor: () => Option.none() }), { type: "userMoved" });
-  return Option.match(moved.size, { onNone: () => moved, onSome: (size) => setViewport(moved, clampedViewport(moved.viewport, size)) });
+  const seen = surfaceOf(model).seen;
+  return modifyFields(updateCamera(model, { type: "movedByUser", viewport }, seen, seen), { idleStamp: (stamp) => stamp + 1 });
 };
 
-const panBy = (model: Model, x: number, y: number): Model => movedByUser(model, { x: model.viewport.x + x, y: model.viewport.y + y, zoom: model.viewport.zoom });
+const panBy = (model: Model, x: number, y: number): Model => movedByUser(model, { x: model.camera.viewport.x + x, y: model.camera.viewport.y + y, zoom: model.camera.viewport.zoom });
 
-const zoomBy = (model: Model, point: { x: number; y: number }, factor: number): Model => movedByUser(model, zoomAtPoint(model.viewport, point, factor));
-
-const followDisplayed = (model: Model): Model => {
-  const { seen } = surfaceOf(model);
-  const follows = model.mode !== "still" && model.viewing.mode === "auto" && seen.focus === null;
-  const anchored = reanchor(model, seen);
-  return follows ? autoCamera(anchored, seen) : anchored;
-};
+const zoomBy = (model: Model, point: { x: number; y: number }, factor: number): Model => movedByUser(model, zoomAtPoint(model.camera.viewport, point, factor));
 
 const pressed = (model: Model, event: ViewingEvent): Return => ({ model: model.mode === "still" ? model : applyViewing(model, event) });
 
@@ -418,16 +278,12 @@ export const update = (model: Model, message: Message): Return =>
         size: () => Option.some({ width, height }),
         nodeHeights: (current) => HashMap.setMany(current, Object.entries(nodeHeights)),
       });
-      const settlesShift = model.pendingShift && Option.isSome(model.size) && model.size.value.width !== width;
-      const changed =
-        Option.isNone(model.size) ||
-        (!settlesShift && (model.size.value.width !== width || model.size.value.height !== height)) ||
-        Object.entries(nodeHeights).some(([id, nodeHeight]) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeight);
+      const heightsChanged = Object.entries(nodeHeights).some(([id, nodeHeight]) => Option.getOrUndefined(HashMap.get(model.nodeHeights, id)) !== nodeHeight);
       const previous = surfaceOf(model);
       const surface = surfaceOf(measured);
       const followed = followTarget(model, measured, previous.seen, surface);
       const seen = seenAfterMotion(followed, surface.seen);
-      return { model: applyPendingShift(model, reanchor(changed ? autoCamera(followed, seen) : followed, seen), seen) };
+      return { model: updateCamera(followed, { type: "measured", heightsChanged }, previous.seen, seen) };
     },
     ChangedSnapshot: ({ snapshot }) => {
       const replaced = modifyFields(model, { snapshot: () => snapshot });
@@ -442,9 +298,9 @@ export const update = (model: Model, message: Message): Return =>
       if (reflection !== null) return { model: applyViewing(refreshed, reflection, previous, surface) };
       const followed = followTarget(model, refreshed, previous.surface.seen, surface);
       const seen = seenAfterMotion(followed, surface.seen);
-      return { model: reanchor(autoCamera(followed, seen), seen) };
+      return { model: updateCamera(followed, { type: "replacedSnapshot" }, previous.surface.seen, seen) };
     },
-    MovedTime: () => (model.viewing.mode === "auto" ? { model } : pressed(model, { type: "timeMoved" })),
+    MovedTime: () => pressed(model, { type: "timeMoved" }),
     PressedViewKey: ({ key, metaKey, ctrlKey, altKey }) => pressed(model, { type: "key", key, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     PressedArrowKey: ({ dir, metaKey, ctrlKey, altKey }) => pressed(model, { type: "arrow", dir, meta: metaKey, ctrl: ctrlKey, alt: altKey }),
     PressedEscapeKey: ({ metaKey, ctrlKey, altKey }) => pressed(model, { type: "escape", meta: metaKey, ctrl: ctrlKey, alt: altKey }),
@@ -457,7 +313,7 @@ export const update = (model: Model, message: Message): Return =>
       const ticked = modifyFields(model, {
         motion: Option.flatMap(({ start, elapsedMs }) => (elapsedMs + deltaMs >= MOTION_DURATION_MS ? Option.none() : Option.some({ start, elapsedMs: elapsedMs + deltaMs }))),
       });
-      return { model: followDisplayed(ticked) };
+      return { model: updateCamera(ticked, { type: "frame" }, surfaceOf(model).seen, surfaceOf(ticked).seen) };
     },
     PressedMapSurface: ({ clientX, clientY, button, ctrlKey, insideNoPan }) => ({
       model:
@@ -576,7 +432,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
   const selectedId = view_ === null ? null : (seen.selection?.id ?? null);
   const positions = seen.positions;
   const measured = shown.filter((n) => HashMap.has(model.nodeHeights, n.id));
-  const viewport = model.viewport;
+  const viewport = model.camera.viewport;
 
   const edges = measured.flatMap((child) => {
     const parent = child.parent === null ? undefined : measured.find((n) => n.id === child.parent);
@@ -598,7 +454,7 @@ export const view = Submodel.defineView<Model, Message, { readonly notice: () =>
   );
 
   const dots =
-    view_ === null || model.viewing.mode === "auto"
+    view_ === null || model.camera.mode === "auto"
       ? []
       : Option.match(model.size, {
           onNone: () => [],

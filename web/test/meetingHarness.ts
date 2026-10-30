@@ -156,9 +156,9 @@ export const shapeOf = (vnode: VNode | string): unknown =>
 
 export const matchesReference = (html: VNode, reference: MapSurface.Model) => {
   const viewport = viewportOf(html);
-  expectClose(viewport.x, reference.viewport.x);
-  expectClose(viewport.y, reference.viewport.y);
-  expectClose(viewport.zoom, reference.viewport.zoom);
+  expectClose(viewport.x, reference.camera.viewport.x);
+  expectClose(viewport.y, reference.camera.viewport.y);
+  expectClose(viewport.zoom, reference.camera.viewport.zoom);
   const positions = nodePositionsOf(html);
   const expected = MapSurface.displayedPositions(reference);
   for (const [id, position] of Object.entries(positions)) {

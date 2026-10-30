@@ -32,7 +32,7 @@ export const makeSubscriptions = (context: Context) => {
     idle: entry(
       { isWaiting: Schema.Boolean, stamp: Schema.Finite },
       {
-        modelToDependencies: (model) => ({ isWaiting: model.mapSurface.viewing.mode === "manual", stamp: model.mapSurface.idleStamp }),
+        modelToDependencies: (model) => ({ isWaiting: model.mapSurface.camera.mode === "manual", stamp: model.mapSurface.idleStamp }),
         dependenciesToStream: ({ isWaiting }) => Stream.map(idleElapsedStream({ isWaiting, afterMs: REVIEW_IDLE_MS }), (message) => Message.GotMapSurfaceMessage({ message })),
       },
     ),
