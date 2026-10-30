@@ -328,7 +328,7 @@ export type CameraSeen = {
   changed: Focus | null;
 };
 
-type Placement = "topic" | "unchanged" | "all" | "changes" | "input";
+type Placement = "topic" | "refocus" | "unchanged" | "all" | "changes" | "input";
 type Decision = { mode: Camera["mode"]; placement: Placement; reset: "keep" | "clear" | "refocus" | "side"; topic: "keep" | "current" | "clear" };
 const decision = (mode: Camera["mode"], placement: Placement, reset: Decision["reset"], topic: Decision["topic"]): Decision => ({ mode, placement, reset, topic });
 
@@ -353,7 +353,7 @@ function placeCamera(camera: Camera, placement: Placement, seen: CameraSeen): Ca
   }
   if (seen.focus === null) return { ...camera, placedRound: Option.none(), viewport: fittedOf(seen, size) };
   const placed = Option.getOrNull(camera.placedRound);
-  if (placed !== null && placed !== seen.round && !seen.hasChanges) return camera;
+  if (placement === "topic" && placed !== null && placed !== seen.round && !seen.hasChanges) return camera;
   const boxes = boxesOf(seen, seen.focus);
   return { ...camera, placedRound: Option.some(seen.round), viewport: focusViewport(boxes.rects, boxes.center, size) };
 }
@@ -404,6 +404,9 @@ function measuredCamera(camera: Camera, placement: Placement, input: Extract<Cam
   return seen.scope === "still" || seen.sideHidden || seen.focus === null ? settled : { ...settled, viewport: shiftIntoView(settled.viewport, boxesOf(seen, seen.focus).rects, seen.size.value) };
 }
 
+const topicPlacement = (previous: CameraSeen, seen: CameraSeen): "topic" | "refocus" =>
+  previous.ids.length !== seen.ids.length || seen.ids.some((id) => previous.targets[id]?.x !== seen.targets[id]!.x || previous.targets[id]?.y !== seen.targets[id]!.y) ? "refocus" : "topic";
+
 export function stepCamera(camera: Camera, input: CameraInput, previous: CameraSeen, seen: CameraSeen): Camera {
   const automatic = decision("auto", "topic", "clear", "clear");
   const refocused = decision("auto", "topic", "refocus", "clear");
@@ -432,14 +435,14 @@ export function stepCamera(camera: Camera, input: CameraInput, previous: CameraS
     viewKey: allManual,
     movedByUser: allManual,
     toggledOverview: { auto: overview, manual: overview, overview: seen.changed === null ? refocused : decision("diff", "changes", "clear", "current"), diff: overview },
-    escaped: { auto: automatic, manual: refocused, overview: refocused, diff: refocused },
+    escaped: { auto: refocused, manual: refocused, overview: refocused, diff: refocused },
     reflected: { auto: automatic, manual: reflected("manual"), overview: reflected("overview"), diff: reflected("diff") },
     toggledFold: { auto: refocused, manual: fold("manual"), overview: fold("overview"), diff: fold("diff") },
     toggledSide: { auto: side("auto"), manual: side("manual"), overview: side("overview"), diff: side("diff") },
     elapsedIdle: { ...settled, manual: seen.scope === "review" ? refocused : settled.manual },
     movedTime: { auto: decision("auto", "unchanged", "keep", "keep"), manual: seen.scope === "review" ? refocused : settled.manual, overview: seen.scope === "review" ? refocused : settled.overview, diff: seen.scope === "review" ? refocused : settled.diff },
-    unrelated: settled,
-    measured: retained,
+    unrelated: { ...settled, auto: decision("auto", topicPlacement(previous, seen), "clear", "clear") },
+    measured: { ...retained, auto: decision("auto", "refocus", "keep", "keep") },
     replacedSnapshot: retained,
     frame: { ...retained, auto: { ...retained.auto, placement: seen.scope !== "still" && seen.focus === null ? "topic" : "unchanged" }, overview: { ...retained.overview, placement: "unchanged" }, diff: { ...retained.diff, placement: "unchanged" } },
   };
