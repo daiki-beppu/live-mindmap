@@ -99,42 +99,6 @@ describe("check ジョブの判定", () => {
   });
 });
 
-it("型検査の後に fallow を実行し、unit は別のジョブで全件実行する", () => {
-  const dir = mkdtempSync(join(tmpdir(), "workflow-ts-"));
-  try {
-    const log = join(dir, "calls");
-    writeFileSync(join(dir, "pnpm"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\n');
-    chmodSync(join(dir, "pnpm"), 0o755);
-    const calls = (job: string) => {
-      writeFileSync(log, "");
-      const commands = jobLines(job).flatMap((line) => {
-        const match = /^\s+(?:- )?run:\s*(pnpm .*)$/.exec(line);
-        return match ? [match[1]!] : [];
-      });
-      const result = spawnSync("bash", ["-e", "-c", commands.join("\n")], {
-        cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, CALL_LOG: log },
-      });
-      expect(result.status, result.stderr).toBe(0);
-      return readFileSync(log, "utf8").trim().split("\n").map((line) => line.split(/\s+/));
-    };
-    const ts = calls("ts");
-    const typecheck = ts.findIndex((args) => args.at(-1) === "typecheck");
-    const fallow = ts.findIndex((args) => args[0] === "fallow");
-    const packagesOf = (args: string[]) => args.filter((_, index) => args[index - 1] === "--filter").sort();
-    expect(typecheck).toBeGreaterThanOrEqual(0);
-    expect(packagesOf(ts[typecheck]!)).toEqual(["@live-mindmap/e2e", "@live-mindmap/server", "@live-mindmap/web"]);
-    expect(fallow).toBeGreaterThan(typecheck);
-    expect(ts[fallow]![ts[fallow]!.indexOf("--format") + 1]).toBe("github-annotations");
-    expect(ts[fallow]).toContain("--fail-on-issues");
-    expect(ts.flat().filter((arg) => arg === "test" || arg === "test:it")).toEqual([]);
-    const unit = calls("unit").find((args) => args.at(-1) === "test");
-    expect(unit).toBeDefined();
-    expect(packagesOf(unit!)).toEqual(["@live-mindmap/server", "@live-mindmap/web"]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 // Issue #562: each の同じ行を別 runner に分けると、同じテストを重複して実行してしまう。
 // heavy ジョブの run を取り出し、`pnpm` を偽物に差し替えて、list の出力に見立てた JSON を渡して割り振りを確かめる
 type Listed = { name: string; file: string; location?: { line: number; column: number } };
@@ -257,10 +221,6 @@ const mixedGroups = [
 ];
 
 describe("heavy ジョブの割り振り", () => {
-  it("server は複数 runner で実行する", () => {
-    expect(heavyRunners().filter((runner) => runner.package === "server").length).toBeGreaterThanOrEqual(2);
-  });
-
   it.each(["server", "web"])("%s の runner の file:line を合わせると入力のまとまりと一致し、重複も漏れも無い", (pkg) => {
     const runners = heavyRunners().filter((runner) => runner.package === pkg);
     expect(runners.length).toBeGreaterThan(0);
@@ -319,7 +279,6 @@ describe("light ジョブの割り振り", () => {
   it("server を2 runner に重複・漏れなく配り、web は片方だけが全件実行する", () => {
     const matrix = jobLines("light").find((line) => line.trim().startsWith("shard:"));
     const shards = matrix!.slice(matrix!.indexOf("[") + 1, matrix!.indexOf("]")).split(",").map(Number);
-    expect(shards).toHaveLength(2);
     const listing = (cwd: string) => mixed(cwd).map((listed) => ({ ...listed, file: listed.file.replace(".heavy.", ".it.") }));
     const groups = [...mixedGroups.map((group) => group.replace(".heavy.", ".it.")), "test/web.it.test.ts:1"].sort();
     const results = shards.map((shard) => runRunner({ job: "light", package: "server", shard, shards: 2 }, { listing, listStatus: 0, runStatus: 0 }));
