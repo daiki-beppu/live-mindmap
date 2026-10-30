@@ -22,7 +22,7 @@ Heavy ITs need the managed Chromium. Install it with `pnpm cli install chromium`
 
 ## CI
 
-CI (`.github/workflows/check.yml`) chooses tests from the PR's changed paths in `changes`, then calls `.github/workflows/tests.yml`. That reusable workflow owns the five parallel test-job definitions and their timeouts. The caller retains the PR/main-push triggers, concurrency, and required `check` job. Nightly and Weekly call the same reusable workflow from separate callers.
+CI (`.github/workflows/check.yml`) chooses tests from the PR's changed paths in `changes`, then calls `.github/workflows/tests.yml`. That reusable workflow owns the seven parallel test-job definitions and their timeouts. The caller retains the PR/main-push triggers, concurrency, and required `check` job. Nightly and Weekly call the same reusable workflow from separate callers.
 
 ### 段
 
@@ -66,7 +66,7 @@ All six `workflow_call` inputs are required Booleans:
 
 | Input | Controls | PR/main-push caller |
 |-------|----------|---------------------|
-| `run-ts` | ts, heavy, and e2e | `changes.outputs.ts == 'true'` |
+| `run-ts` | ts, unit, light, heavy, and e2e | `changes.outputs.ts == 'true'` |
 | `run-external` | external | `changes.outputs.external == 'true'` |
 | `run-helper` | helper | `changes.outputs.swift == 'true'` |
 | `restore-caches` | Preparation-cache restoration | `true` |
@@ -75,27 +75,48 @@ All six `workflow_call` inputs are required Booleans:
 
 The resulting test selection remains:
 
-- Docs-only PRs skip the ts, heavy, e2e, and helper jobs. Markdown changes under `server/managed-deps/**` still run external. The `changes` job and the required `check` job always run.
+- Docs-only PRs skip the ts, unit, light, heavy, e2e, and helper jobs. Markdown changes under `server/managed-deps/**` still run external. The `changes` job and the required `check` job always run.
 - `helper/` changes add the Swift job.
-- The `ts` job runs typecheck of server, web and e2e, plus unit and light ITs of server and web, together, then runs fallow last with `--format github-annotations --fail-on-issues` (without the flag, annotations alone exit 0 even with issues).
-- The `heavy` job runs every `--project heavy` IT of server and web (a `package` matrix) split per test (grouped by `file:line`) across 1 runner for server and 2 runners for web, with new heavy ITs picked up automatically.
+- The `ts` job runs typecheck of server, web and e2e, then runs fallow last with `--format github-annotations --fail-on-issues` (without the flag, annotations alone exit 0 even with issues).
+- The `unit` job runs all server and web unit tests independently of typecheck and ITs.
+- The `light` job splits all server light ITs by file across 2 runners. Runner 0 also runs all web light ITs once.
+- The `heavy` job runs every server and web heavy IT. Server uses 2 runners: runner 0 runs only `measureBootstrap.heavy.test.ts`, and runner 1 runs the rest by `file:line`. Web uses 3 runners split by `file:line`. Tests from the same declaration, including `each`, stay together.
+- Light and heavy ITs use `scripts/run-ci-tests.sh` for both listing and execution. Listing uses `--no-staticParse --includeTaskLocation` to collect registered tests, including generated tests, instead of inferring declarations from source. New files enter the distribution automatically. No changed-test selection is used. The script propagates listing, JSON processing, and test failures. An empty assignment succeeds without invoking Vitest.
 - The `e2e` job (also gated by the `ts` output, so helper-only PRs skip it) runs `pnpm --filter @live-mindmap/e2e test:e2e` (all targets) in one runner: `--strict-cache` replays the committed cache only and `--retries 0` disables the CI default retry, no credentials (`E2E_OAUTH_CREDENTIALS`, `*_API_KEY`, `secrets.*`) are passed, and a step that cannot be replayed (`REPLAY_STALE`, a recorded mismatch) fails the job.
 - The `external` job restores the managed Chromium and Claude caches when enabled, runs `deps:install` for both, then runs `pnpm test:external`. Its condition uses the caller's `run-external` input: the `changes` job's `external` output for PR/main push, and `true` for Nightly and Weekly.
 - The `heavy`, `external`, and `e2e` jobs install Chromium.
 
-The reusable workflow's `results` job uses `always()` and depends on all five test jobs. It transfers their results as compact JSON through a step output, job output, and workflow output; it does not decide whether the required check passes.
+The reusable workflow's `results` job uses `always()` and depends on all seven test jobs. It transfers their results as compact JSON through a step output, job output, and workflow output; it does not decide whether the required check passes.
 
-`main` requires the caller's top-level `check` job to pass (ruleset). Its ID, name, and `if: always()` remain unchanged. It checks both its direct dependencies (`changes` and the reusable-workflow call) and all five transferred test results. It accepts only `success` or `skipped`; failure, cancellation, and any unknown result fail it. Missing or malformed test-result output also fails it. Keep new test jobs in the result collector and the caller's result validation.
+`main` requires the caller's top-level `check` job to pass (ruleset). Its ID, name, and `if: always()` remain unchanged. It checks both its direct dependencies (`changes` and the reusable-workflow call) and all seven transferred test results. It accepts only `success` or `skipped`; failure, cancellation, and any unknown result fail it. Missing or malformed test-result output also fails it. Keep new test jobs in the result collector and the caller's result validation.
 
 Cache keys, paths, fallback prefixes, and save timing remain unchanged for PRs and main pushes. heavy restores Chromium and Claude and saves misses before testing on main pushes. external restores those dependencies and never saves them. helper restores its build cache with a prefix fallback and saves misses after testing on main pushes. Playwright, APM, and speaker models retain `actions/cache`'s success-only post saving, including on PRs. For callers that disable shared-cache saving, restoration uses `actions/cache/restore`; with restoration disabled, save-only steps run after successful tests. Disabling restoration still runs the required APM build and model fetch.
 
 actionlint runs as its own workflow (`.github/workflows/actionlint.yml`) on PRs and main pushes that change `.github/**`, so it still reports red when `check.yml` fails to load and no `check` jobs run. It is not a required check.
 
-Job timeouts are about three times the normal p90 duration, rounded up to a multiple of 5 minutes, with a minimum of 5 minutes. The current limits are 5 minutes for `changes`, `check`, `results`, `e2e`, and `actionlint`, 10 minutes for `ts`, `external`, and each `heavy` runner, and 20 minutes for `helper`. The `results` and `actionlint` limits use the minimum because their p90 has not been measured.
+Job timeouts are about three times the normal p90 duration, rounded up to a multiple of 5 minutes, with a minimum of 5 minutes. The current limits are 5 minutes for `changes`, `check`, `results`, `ts`, `unit`, each `light` and `heavy` runner, `e2e`, and `actionlint`, 10 minutes for `external`, and 20 minutes for `helper`. The split jobs provisionally use the 5-minute minimum: a p90 estimate of at most 100 seconds gives `max(5, 5 × ceil(3 × 100 / 300)) = 5` minutes. Confirm their p90 after several CI runs. The `results` and `actionlint` limits also use the minimum because their p90 has not been measured.
 
 External setup, dependency installation, cache restoration, the APM build, and speaker-model downloads each have a 5-minute step timeout. The helper's `swift build --build-tests` has a 10-minute timeout, and each `swift test` step has a 5-minute timeout. The external test step also has a 5-minute timeout. A step timeout does not extend the job timeout.
 
 The `check` workflow uses concurrency group `${{ github.head_ref || github.run_id }}` with `cancel-in-progress: true`. A new push to the same PR cancels its older run. Pushes to `main` use separate run IDs and do not cancel each other. The cancelled run's final `check` still uses `always()` and fails for cancelled dependencies. That failure belongs to the older head SHA, so it does not block merging the new head.
+
+### Run an IT assignment locally
+
+From the repository root, use the same package, project, runner index, runner count, and grouping as CI:
+
+```sh
+bash scripts/run-ci-tests.sh server it 0 2 files list
+bash scripts/run-ci-tests.sh server it 0 2 files run
+bash scripts/run-ci-tests.sh web it 0 1 files run
+bash scripts/run-ci-tests.sh server heavy 0 2 tests run
+bash scripts/run-ci-tests.sh web heavy 0 3 tests run
+```
+
+Indices start at 0. Repeat for every runner index. `list` prints the assigned Vitest records as JSON, preserving each generated test for counting. `run` executes those assignments, combining identical selectors. `files` keeps a file on one runner; `tests` keeps a declaration on one runner. Extra arguments after `run` are forwarded to Vitest, for example `--reporter=json --outputFile=report.json`.
+
+### When to reconsider changed-test selection
+
+Reconsider selection if a split TS-side job still exceeds 60 seconds at normal p50 and cannot be split further inside a file, or if the concurrency limit makes runner waiting time comparable to running time. Start with unit tests only: pass the changed-path list from `changes` to `vitest related`, and retain full-suite triggers for lockfiles, tsconfig, fixtures, and child-process entry points. This workflow currently runs all code-determined checks on PRs.
 
 ### When main goes red
 

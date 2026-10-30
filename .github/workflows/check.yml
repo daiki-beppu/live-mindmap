@@ -74,7 +74,7 @@ jobs:
           printf '%s' "$TEST_RESULTS_JSON" | jq -e -s '
             length == 1 and (.[0] |
               type == "object" and
-              (keys == ["e2e", "external", "heavy", "helper", "ts"]) and
+              (keys == ["e2e", "external", "heavy", "helper", "light", "ts", "unit"]) and
               all(.[]; type == "object" and (.result | type == "string")))
           ' > /dev/null
           bad=$(printf '%s' "$TEST_RESULTS_JSON" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key): \(.value.result)"')
