@@ -1,9 +1,9 @@
 # takt の run
 
-takt でチケットを実装させるとき、その run の報告を読むとき、run が層を「未実証」で返したときに読む文書。takt の作業場所で検査の層を通すための前提と、run の報告に出る失敗の読み方を書く。takt の並べ方と PR の更新は [ADR 0022](../adr/0022-align-behind-prs-from-local-resident-script.md) にある。
+takt でチケットを実装させるとき、その run の報告を読むとき、run が層を「未実証」で返したときに読む文書。takt の作業場所で検査の層を通すための前提と、run の報告に出る失敗の読み方を書く。マージと main の修復の流れは [ADR 0026](../adr/0026-verify-main-after-merge-without-strict.md) にある。
 
 - 用語: 無し
-- ADR: [0022 予約済みで BEHIND の PR は、手元の常駐スクリプトが 1 件ずつ揃える](../adr/0022-align-behind-prs-from-local-resident-script.md)
+- ADR: [0026 main の ruleset は strict を必須にせず、main の push の CI を案内役が見張って直す](../adr/0026-verify-main-after-merge-without-strict.md)
 
 ## takt の作業場所には依存が入っていない。ルートの層の前に `pnpm install --frozen-lockfile` が要る
 

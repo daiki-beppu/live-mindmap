@@ -1,6 +1,6 @@
 # 予約済みで BEHIND の PR は、Actions が App のトークンで 1 件ずつ揃える
 
-> ADR 0022 で、揃える場所を手元の常駐スクリプトに置き換えた。揃える規則と strict を残す理由は、この ADR のまま。
+> ADR 0022 で、揃える場所を手元の常駐スクリプトに置き換えた。[ADR 0026](0026-verify-main-after-merge-without-strict.md) で、strict と揃える仕組みそのものを外し、main の push の CI を案内役が見張って直す形に置き換えた。
 
 main の ruleset は strict（PR の head に最新の main が入っていないとマージできない）のまま残す。自動マージを予約した PR が BEHIND で止まらないよう、GitHub Actions のワークフローが自作の GitHub App のトークンで `update-branch` を呼び、PR を 1 件ずつ順に揃える。揃えた 1 件の CI が終わる（マージされる、または落ちる）まで、次の PR は揃えない。揃える対象は、自動マージを予約したすべての PR で、作者は問わない。仕組みができたら takt-sequence 側の揃えは外し、揃える仕組みをこのワークフローに一本化する。地図 [#1177](https://github.com/daiki-beppu/live-mindmap/issues/1177) のチケット [#1182](https://github.com/daiki-beppu/live-mindmap/issues/1182) で決めた。
 
