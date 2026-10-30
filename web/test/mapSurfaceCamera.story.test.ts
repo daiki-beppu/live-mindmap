@@ -187,6 +187,43 @@ describe("入力と前の見方から決まるカメラ", () => {
     { input: "見返しの待ち時間", before: mode, after: mode === "manual" ? "auto" : mode, start: () => inMode(mode, "review"), apply: (m) => run(m, Message.ElapsedIdleTime()), expected: (before, after) => mode === "manual" ? focusExpected(after) : before.camera.viewport },
     { input: "見返しの時刻の移動", before: mode, after: "auto", start: () => inMode(mode, "review"), apply: (m) => run(m, Message.MovedTime()), expected: (before, after) => mode === "auto" ? before.camera.viewport : focusExpected(after) },
   ]);
+  const afterQuietReflection = (): MapSurfaceModel => {
+    const start = settle(foldable({ lastChanged: "B1" }));
+    const quiet = snap([...foldable().nodes, node("B2", "B", "論点")], { round: 2, currentTopic: "B", now: 100 });
+    const next = run(start, changed(quiet));
+    expect(next.camera.mode).toBe("auto");
+    expectViewport(next.camera.viewport, start.camera.viewport);
+    expectDifferent(focusExpected(next), next.camera.viewport);
+    return next;
+  };
+  const refocusedAfterQuiet = (before: MapSurfaceModel, after: MapSurfaceModel): Viewport => {
+    const expected = focusExpected(after);
+    expectDifferent(expected, before.camera.viewport);
+    return expected;
+  };
+  cases.push(
+    { input: "空の反映の後の画面サイズ変更", before: "auto", after: "auto", start: afterQuietReflection, apply: (m) => {
+      const next = run(m, measure(SMALL, {}));
+      expectDifferent(focusExpected(next), focusExpected(m));
+      return next;
+    }, expected: refocusedAfterQuiet },
+    { input: "空の反映の後のノードの高さ変更", before: "auto", after: "auto", start: afterQuietReflection, apply: (m) => {
+      const next = run(m, measure(SIZE, { B: 200 }));
+      expectDifferent(focusExpected(next), focusExpected(m));
+      return next;
+    }, expected: refocusedAfterQuiet },
+    { input: "空の反映の後の選択による畳み変更", before: "auto", after: "auto", start: afterQuietReflection, apply: (m) => {
+      expect(shownOf(m).map((n) => n.id)).not.toContain("A1");
+      const next = run(m, clickNode("A1"));
+      expect(shownOf(next).map((n) => n.id)).toContain("A1");
+      expectDifferent(focusExpected(next), focusExpected(m));
+      return next;
+    }, expected: refocusedAfterQuiet },
+    { input: "空の反映の後の Esc", before: "auto", after: "auto", start: afterQuietReflection, apply: (m) => run(m, Message.PressedEscapeKey(mods)), expected: refocusedAfterQuiet },
+  );
+  for (const mode of modes) {
+    cases.push({ input: "空の反映そのもの", before: mode, after: mode, start: () => inMode(mode), apply: (m) => run(m, changed(tree({ round: 3 }))), expected: unchanged });
+  }
   for (const [input, toggle] of [["丸で開いて畳む", clickFoldDot("A")], ["Enterで開いて畳む", Message.PressedEnterKey(mods)]] as const) {
     cases.push({
       input,
@@ -224,6 +261,7 @@ describe("入力と前の見方から決まるカメラ", () => {
       cases.push({ input: `${modifier}＋${pressed}`, before: "manual", after: "manual", start: () => run(inMode("manual"), clickNode("A")), apply: (m) => run(m, key(pressed, { [modifier]: true })), expected: unchanged });
     }
     cases.push({ input: `${modifier}＋Esc`, before: "manual", after: "manual", start: () => inMode("manual"), apply: (m) => run(m, Message.PressedEscapeKey({ ...mods, [modifier]: true })), expected: unchanged });
+    cases.push({ input: `空の反映の後の ${modifier}＋Esc`, before: "auto", after: "auto", start: afterQuietReflection, apply: (m) => run(m, Message.PressedEscapeKey({ ...mods, [modifier]: true })), expected: unchanged });
   }
   // C は親画面で字幕を切り替えるため、実際の親のキー経路を通す。
   const parentKey = (surface: MapSurfaceModel, key: "?" | "C"): MapSurfaceModel => {
@@ -501,7 +539,7 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
     expectDifferent(m.camera.viewport, start.camera.viewport);
   });
 
-  it("空の反映の後は測り直し・選択による開閉・自動の Esc でも寄せ直さず、次の変化のある反映で寄る", () => {
+  it("空の反映では動かず、続く変化のある反映で今の議題へ寄る", () => {
     const start = settle(foldable({ lastChanged: "B1" }));
     const quiet = snap([...foldable().nodes, node("B2", "B", "論点")], { round: 2, currentTopic: "B", now: 100 });
     story(
@@ -509,22 +547,6 @@ describe("反映で寄せる: 自動のとき今の議題へ寄せる・今の�
       given(start),
       message(changed(quiet)),
       model((m) => expect(m.camera.viewport).toEqual(start.camera.viewport)),
-      message(measure(SIZE, { B: 200 })),
-      model((m) => {
-        expectDifferent(focusExpected(m), start.camera.viewport);
-        expect(m.camera.viewport).toEqual(start.camera.viewport);
-      }),
-      message(clickNode("A1")),
-      model((m) => {
-        expect(shownOf(m).map((n) => n.id)).toContain("A1");
-        expect(m.camera.viewport).toEqual(start.camera.viewport);
-      }),
-      message(Message.PressedEscapeKey(mods)),
-      model((m) => {
-        expect(m.camera.mode).toBe("auto");
-        expect(shownOf(m).map((n) => n.id)).not.toContain("A1");
-        expect(m.camera.viewport).toEqual(start.camera.viewport);
-      }),
       message(changed({ ...quiet, round: 3, lastChanged: "B2" })),
       model((m) => {
         expectViewport(m.camera.viewport, focusExpected(m));
