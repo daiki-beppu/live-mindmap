@@ -557,6 +557,25 @@ describe("mapSurface の Scene: ノードの DOM は MapNode.tsx と同じ形・
     });
   });
 
+  it("脱線の表示は同じ表示面のスナップショット更新で付いて外れる", () => {
+    const original = snap(nodes());
+    const marked = { ...original, nodes: original.nodes.map((n) => n.id === "A" ? { ...n, digression: true } : n) };
+    const description = (html: VNode) => Option.getOrUndefined(attr(findAll(html, '[data-node-id="A"] button.map-node__button')[0]!, "aria-description"));
+    scene(
+      app,
+      given(modelOf(original, "still")),
+      measured(HEIGHTS),
+      expectScene(mapNodeOf("A")).not.toHaveClass("map-node--digression"),
+      tap((simulation) => expect(description(simulation.html)).toBeUndefined()),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: marked })),
+      expectScene(mapNodeOf("A")).toHaveClass("map-node--digression"),
+      tap((simulation) => expect(description(simulation.html)).toContain("脱線")),
+      Subscription.emit(Message.ChangedSnapshot({ snapshot: original })),
+      expectScene(mapNodeOf("A")).not.toHaveClass("map-node--digression"),
+      tap((simulation) => expect(description(simulation.html)).toBeUndefined()),
+    );
+  });
+
   it("却下の案だけ map-node--rejected。選択・点滅の class は、この Scene では付かない", () => {
     scene(
       app,

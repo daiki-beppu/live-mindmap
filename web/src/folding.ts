@@ -138,7 +138,7 @@ function bundleRuns(
       const last = run[run.length - 1]!;
       const id = `run:${first.id}`;
       for (const m of run) bundles.runOf.set(m.id, id);
-      bundles.summaryNodes.set(first.id, { id, parent, kind: "議題", text: `議題 ${run.length} 件`, evidence: [] });
+      bundles.summaryNodes.set(first.id, { id, parent, kind: "議題", text: `議題 ${run.length} 件`, evidence: [], ...(run.some((n) => n.digression) ? { digression: true } : {}) });
       bundles.runs[id] = run.map((m) => m.id);
       bundles.folds[id] = { hint: `${first.text} 〜 ${last.text}`, hidden: run.reduce((sum, m) => sum + 1 + descendantsOf(index.children, m.id).length, 0) };
     }

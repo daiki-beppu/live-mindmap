@@ -62,13 +62,17 @@ function toOps(raw: Classification, sentences: readonly Sentence[], map: Meeting
     topic = ROOT_ID;
     if (first !== -1 && raw.議題.題 !== "") {
       topic = nextRef();
-      ops.push({ op: "add", ref: topic, parent: ROOT_ID, kind: "議題", text: raw.議題.題, evidence: [sentences[first]!.remark.id] });
+      const digression = raw.脱線?.find((item) => item.id === "新しい議題")?.digression;
+      ops.push({ op: "add", ref: topic, parent: ROOT_ID, kind: "議題", text: raw.議題.題, evidence: [sentences[first]!.remark.id], ...(digression === undefined ? {} : { digression }) });
     }
   }
   const points = proposalPoints(map, topic, preceding);
   raw.文.forEach((s, i) => {
     ops.push(...sentenceOps(s, sentences[i]!.remark.id, topic, points, nextRef));
   });
+  for (const item of raw.脱線 ?? []) {
+    if (item.id !== "新しい議題") ops.push({ op: "update", node: item.id, digression: item.digression, evidence: [item.evidence] });
+  }
   if (raw.済み !== "なし" && raw.済み !== topic) ops.push({ op: "close", node: raw.済み });
   return ops;
 }

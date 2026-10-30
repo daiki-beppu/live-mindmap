@@ -28,6 +28,7 @@ export const MapNode = Schema.Struct({
   touchedAt: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
   evidenceRound: Schema.optionalKey(Schema.mutableKey(Schema.Finite)),
   talkStatus: Schema.optionalKey(Schema.mutableKey(Schema.Literal("済み"))),
+  digression: Schema.optionalKey(Schema.mutableKey(Schema.Boolean)),
 });
 export type MapNode = typeof MapNode["Type"];
 
@@ -55,6 +56,7 @@ export const Op = Schema.Union([
     proposer: Schema.optionalKey(Schema.String),
     criteria: Schema.optionalKey(Schema.Array(Schema.String)),
     due: Schema.optionalKey(Schema.String),
+    digression: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({
     op: Schema.Literal("update"),
@@ -65,6 +67,7 @@ export const Op = Schema.Union([
     criteria: Schema.optionalKey(Schema.Array(Schema.String)),
     assignee: Schema.optionalKey(Schema.String),
     assigneeSpeaker: Schema.optionalKey(AssigneeSpeaker),
+    digression: Schema.optionalKey(Schema.Boolean),
   }),
   Schema.Struct({ op: Schema.Literal("combine"), from: NodeRef, into: NodeRef }),
   Schema.Struct({ op: Schema.Literal("move"), node: NodeRef, parent: NodeRef }),
@@ -131,6 +134,25 @@ function isDescendant(map: MeetingMap, id: string, ancestor: string): boolean {
   return false;
 }
 
+function hasDigressionAbove(map: MeetingMap, parent: string | null): boolean {
+  for (let cur = parent ? map.nodes[parent] : undefined; cur; cur = cur.parent ? map.nodes[cur.parent] : undefined) {
+    if (cur.digression) return true;
+  }
+  return false;
+}
+
+function digressionError(map: MeetingMap, kind: MapNode["kind"], parent: string | null, value: boolean | undefined): string | null {
+  if (value === undefined) return null;
+  if (kind !== "議題") return "脱線を持つのは議題だけ";
+  return value && hasDigressionAbove(map, parent) ? "脱線した議題の子孫には付けられない" : null;
+}
+
+function removeNestedDigressions(map: MeetingMap): void {
+  for (const n of Object.values(map.nodes)) {
+    if (n.digression && hasDigressionAbove(map, n.parent)) delete n.digression;
+  }
+}
+
 const isLeafKind = (kind: MapNode["kind"]) => kind === "決定" || kind === "TODO";
 
 function parentError(parent: MapNode | undefined, kind: MapNode["kind"]): string | null {
@@ -193,6 +215,7 @@ function newNode(op: OpOf<"add">, id: string, parent: string, round: number, all
     id, parent, kind: op.kind, text: op.text, evidence: [...op.evidence],
     evidenceRound: round,
     ...(criteria.length ? { criteria } : {}),
+    ...(op.digression ? { digression: true } : {}),
     ...(op.kind === "案" ? { planStatus: "検討中" as const } : {}),
     ...(op.kind === "案" && op.proposer ? { proposer: op.proposer } : {}),
     ...(op.kind === "TODO" && op.assignee ? { assignee: op.assignee } : {}),
@@ -205,7 +228,8 @@ function applyAdd(s: ApplyState, op: OpOf<"add">): Applied {
   const { map } = s;
   if (map.nodes[op.ref] || s.refs.has(op.ref)) return "仮 ID が既存の ID と重なる";
   const parentId = resolveId(s, op.parent);
-  const err = parentError(map.nodes[parentId], op.kind) ?? evidenceError(s.known, op.evidence);
+  const err = parentError(map.nodes[parentId], op.kind) ?? evidenceError(s.known, op.evidence)
+    ?? digressionError(map, op.kind, parentId, op.digression);
   if (err) return err;
   const id = `n${map.nextId++}`;
   map.nodes[id] = newNode(op, id, parentId, s.round, s.criteria);
@@ -241,26 +265,35 @@ function updateCriteria(node: MapNode, requested: readonly string[] | undefined,
   return changed;
 }
 
+function updateFields(n: MapNode, op: OpOf<"update">, round: number, allowed: readonly string[]) {
+  const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
+  const assigned = assignmentOf(n, op);
+  const criteriaChanged = updateCriteria(n, op.criteria, allowed);
+  const contentChanged = (!!op.text && op.text !== n.text)
+    || (!!op.planStatus && op.planStatus !== n.planStatus)
+    || assigned.changed || criteriaChanged;
+  if (evidenceAdded) n.evidenceRound = round;
+  if (op.text) n.text = op.text;
+  if (op.planStatus) n.planStatus = op.planStatus;
+  assigned.apply();
+  if (op.digression === true) n.digression = true;
+  else if (op.digression === false) delete n.digression;
+  for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
+  return { contentChanged, evidenceAdded };
+}
+
 function applyUpdate(s: ApplyState, op: OpOf<"update">): Applied {
   const n = target(s, op.node);
   if (!n) return "対象が無い";
   if (op.planStatus && n.kind !== "案") return "状態を持つのは案だけ";
-  const err = evidenceError(s.known, op.evidence);
+  const err = evidenceError(s.known, op.evidence) ?? digressionError(s.map, n.kind, n.parent, op.digression);
   if (err) return err;
-  const evidenceAdded = op.evidence.some((u) => !n.evidence.includes(u));
-  const assigned = assignmentOf(n, op);
-  const criteriaChanged = updateCriteria(n, op.criteria, s.criteria);
-  const valueChanged = (!!op.text && op.text !== n.text)
-    || (!!op.planStatus && op.planStatus !== n.planStatus)
-    || evidenceAdded
-    || assigned.changed || criteriaChanged;
-  reopenUp(s.map, n.id);
-  if (valueChanged) { s.changeOrder.push(n.id); touchUp(s.map, n.id, s.at); }
-  if (evidenceAdded) n.evidenceRound = s.round;
-  if (op.text) n.text = op.text;
-  if (op.planStatus) n.planStatus = op.planStatus;
-  assigned.apply();
-  for (const u of op.evidence) if (!n.evidence.includes(u)) n.evidence.push(u);
+  const { contentChanged, evidenceAdded } = updateFields(n, op, s.round, s.criteria);
+  const digressionOnly = op.digression !== undefined && !contentChanged;
+  if (!digressionOnly) {
+    reopenUp(s.map, n.id);
+    if (contentChanged || evidenceAdded) { s.changeOrder.push(n.id); touchUp(s.map, n.id, s.at); }
+  }
   return null;
 }
 
@@ -371,6 +404,7 @@ export function applyOps(input: MeetingMap, ops: Op[], known: ReadonlySet<string
   for (const op of ops) {
     const reason = applyOp(s, op);
     if (reason) dropped.push({ op, reason });
+    else removeNestedDigressions(s.map);
   }
   return { map: s.map, dropped, changeOrder: s.changeOrder, refs: Object.fromEntries(s.refs), combined: s.combined };
 }

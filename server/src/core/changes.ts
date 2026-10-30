@@ -26,7 +26,8 @@ function adoptedByCombine(old: MapNode, n: MapNode, combined: AppliedOps["combin
 
 function changedValue(old: MapNode, n: MapNode): boolean {
   return old.text !== n.text || old.assignee !== n.assignee || old.assigneeSpeaker !== n.assigneeSpeaker
-    || JSON.stringify(old.criteria ?? []) !== JSON.stringify(n.criteria ?? []);
+    || JSON.stringify(old.criteria ?? []) !== JSON.stringify(n.criteria ?? [])
+    || !!old.digression !== !!n.digression;
 }
 
 function changeTypesOf(id: string, old: MapNode, n: MapNode, before: MeetingMap, applied: CombineRecord): ChangeType[] {

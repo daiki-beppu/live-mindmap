@@ -70,6 +70,7 @@ body { font-family: system-ui, "Hiragino Sans", sans-serif; background: var(--co
 .map-node--blink { outline: 1.5px solid #facc15; outline-offset: 2px; animation: map-node-blink 1s ease-in-out 3; }
 @keyframes map-node-blink { 50% { background-color: color-mix(in srgb, var(--kind-color) 4%, white); border-color: color-mix(in srgb, var(--kind-color) 35%, white); } }
 .map-node--rejected { opacity: 0.45; }
+.map-node--digression { border-style: dashed; opacity: 0.7; }
 .map-node--rejected .map-node__text { text-decoration: line-through; }
 /* 畳んだノード: 塗りを薄く、文字を灰色にし、手がかりの文字と、右端に隠れたノード数の小さな丸を出す。影・バッジは付けない */
 .map-node--folded { color: var(--color-gray-500); background: color-mix(in srgb, var(--kind-color) 6%, white); }

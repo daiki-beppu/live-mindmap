@@ -22,6 +22,7 @@ const ExportNode: Schema.Codec<ExportNode> = Schema.Struct({
   assigneeSpeaker: Schema.optionalKey(Schema.String),
   due: Schema.optionalKey(Schema.String),
   pointStatus: Schema.optionalKey(Schema.Literals(["未決", "決定済み"])),
+  digression: Schema.optionalKey(Schema.Boolean),
   evidence: Schema.mutable(Schema.Array(Remark)),
   children: Schema.mutable(Schema.Array(Schema.suspend((): Schema.Codec<ExportNode> => ExportNode))),
 });
